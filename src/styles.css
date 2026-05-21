@@ -1,0 +1,158 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&family=Noto+Serif+TC:wght@400;500;700&family=Fraunces:opsz,wght@9..144,400;9..144,500&display=swap');
+@import "tailwindcss" source(none);
+@import "tw-animate-css";
+@source "../src";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Roamie — 平靜的旅行夥伴。
+ * 米白、奶茶、暖灰、深墨、苔綠、陶土。
+ * 字體：Noto Serif TC (display) + Noto Sans TC (body)。
+ */
+
+@theme inline {
+  --font-display: "Noto Serif TC", "Fraunces", ui-serif, Georgia, serif;
+  --font-sans: "Noto Sans TC", ui-sans-serif, system-ui, sans-serif;
+
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 6px);
+  --radius-2xl: calc(var(--radius) + 14px);
+  --radius-3xl: calc(var(--radius) + 24px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sage: var(--sage);
+  --color-clay: var(--clay);
+  --color-cream: var(--cream);
+  --color-ink: var(--ink);
+  --color-sand: var(--sand);
+}
+
+:root {
+  --radius: 1.25rem;
+
+  --background: oklch(0.965 0.014 80);
+  --cream: oklch(0.972 0.012 85);
+  --sand: oklch(0.92 0.022 75);
+  --foreground: oklch(0.22 0.018 60);
+  --ink: oklch(0.22 0.018 60);
+
+  --card: oklch(0.99 0.006 85);
+  --card-foreground: oklch(0.22 0.018 60);
+  --popover: oklch(0.99 0.006 85);
+  --popover-foreground: oklch(0.22 0.018 60);
+
+  --primary: oklch(0.26 0.02 55);
+  --primary-foreground: oklch(0.97 0.012 85);
+
+  --secondary: oklch(0.93 0.022 78);
+  --secondary-foreground: oklch(0.28 0.02 50);
+
+  --muted: oklch(0.94 0.014 82);
+  --muted-foreground: oklch(0.5 0.018 65);
+
+  --accent: oklch(0.88 0.038 75);
+  --accent-foreground: oklch(0.28 0.02 50);
+
+  --sage: oklch(0.7 0.045 145);
+  --clay: oklch(0.66 0.1 45);
+
+  --destructive: oklch(0.55 0.18 25);
+  --destructive-foreground: oklch(0.98 0.012 85);
+
+  --border: oklch(0.88 0.02 80);
+  --input: oklch(0.91 0.015 80);
+  --ring: oklch(0.65 0.04 70);
+}
+
+.dark {
+  --background: oklch(0.18 0.012 60);
+  --foreground: oklch(0.95 0.012 85);
+  --card: oklch(0.22 0.014 60);
+  --card-foreground: oklch(0.95 0.012 85);
+  --popover: oklch(0.22 0.014 60);
+  --popover-foreground: oklch(0.95 0.012 85);
+  --primary: oklch(0.95 0.012 85);
+  --primary-foreground: oklch(0.22 0.014 60);
+  --secondary: oklch(0.28 0.018 60);
+  --secondary-foreground: oklch(0.95 0.012 85);
+  --muted: oklch(0.28 0.018 60);
+  --muted-foreground: oklch(0.72 0.02 75);
+  --accent: oklch(0.32 0.025 60);
+  --accent-foreground: oklch(0.95 0.012 85);
+  --border: oklch(0.32 0.018 60);
+  --input: oklch(0.32 0.018 60);
+  --ring: oklch(0.55 0.03 70);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html, body {
+    background-color: oklch(0.93 0.02 75);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+}
+
+@layer utilities {
+  .font-display { font-family: var(--font-display); }
+  .text-balance { text-wrap: balance; }
+  .grain {
+    background-image: radial-gradient(circle at 1px 1px, oklch(0.5 0.02 60 / 0.05) 1px, transparent 0);
+    background-size: 14px 14px;
+  }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  .shadow-soft {
+    box-shadow: 0 1px 2px oklch(0.2 0.02 60 / 0.04), 0 8px 24px oklch(0.2 0.02 60 / 0.06);
+  }
+  .shadow-lift {
+    box-shadow: 0 2px 4px oklch(0.2 0.02 60 / 0.05), 0 24px 48px -12px oklch(0.2 0.02 60 / 0.18);
+  }
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+.animate-breathe { animation: breathe 4.5s ease-in-out infinite; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-rise { animation: rise 0.6s ease-out both; }
+
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+.animate-float { animation: float-slow 5s ease-in-out infinite; }

@@ -1,0 +1,37 @@
+import { Link, useLocation } from "@tanstack/react-router";
+import { Home, MessageCircle, Map, Bookmark, User } from "lucide-react";
+
+const items = [
+  { to: "/", label: "首頁", icon: Home },
+  { to: "/chat", label: "聊聊", icon: MessageCircle },
+  { to: "/map", label: "探索", icon: Map },
+  { to: "/saved", label: "收藏", icon: Bookmark },
+  { to: "/profile", label: "我", icon: User },
+] as const;
+
+export function BottomNav() {
+  const { pathname } = useLocation();
+  return (
+    <nav className="absolute inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom,0px)]">
+      <ul className="flex items-stretch justify-between px-2 pt-2 pb-2">
+        {items.map((it) => {
+          const active = pathname === it.to;
+          const Icon = it.icon;
+          return (
+            <li key={it.to} className="flex-1">
+              <Link
+                to={it.to}
+                className={`flex flex-col items-center gap-1 rounded-2xl py-1.5 text-[11px] transition ${
+                  active ? "text-foreground" : "text-muted-foreground"
+                }`}
+              >
+                <Icon className={`h-5 w-5 ${active ? "stroke-[2.4]" : "stroke-[1.6]"}`} />
+                <span className={active ? "font-medium" : ""}>{it.label}</span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
+  );
+}

@@ -1,0 +1,71 @@
+import { supabase } from "@/integrations/supabase/client";
+import { normalizeRoamieResponse, type RoamieResponse } from "@/lib/ai/types";
+
+const GUEST_KEY = "roamie:chat";
+
+export type ChatMsg = {
+  role: "user" | "assistant";
+  content: string;
+  /** Parsed AI JSON for assistant messages when available */
+  roamie?: Partial<RoamieResponse>;
+};
+
+function readGuest(): ChatMsg[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return JSON.parse(localStorage.getItem(GUEST_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+export function writeGuestChat(msgs: ChatMsg[]) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(GUEST_KEY, JSON.stringify(msgs.slice(-40)));
+}
+
+function parseAssistantContent(content: string): { content: string; roamie?: Partial<RoamieResponse> } {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{")) return { content: trimmed };
+  try {
+    const roamie = normalizeRoamieResponse(JSON.parse(trimmed) as Record<string, unknown>);
+    return { content: roamie.summary, roamie };
+  } catch {
+    return { content: trimmed };
+  }
+}
+
+export async function loadChatHistory(limit = 30): Promise<ChatMsg[]> {
+  const { data: session } = await supabase.auth.getSession();
+  const uid = session.session?.user.id;
+  if (!uid) return readGuest();
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select("role, content, created_at")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.error(error);
+    return [];
+  }
+  return (data ?? [])
+    .reverse()
+    .map((r) => {
+      const role = r.role as "user" | "assistant";
+      if (role === "assistant") {
+        const parsed = parseAssistantContent(r.content);
+        return { role, content: parsed.content, roamie: parsed.roamie };
+      }
+      return { role, content: r.content };
+    });
+}
+
+export async function clearChatHistory(): Promise<void> {
+  const { data: session } = await supabase.auth.getSession();
+  const uid = session.session?.user.id;
+  if (!uid) {
+    if (typeof window !== "undefined") localStorage.removeItem(GUEST_KEY);
+    return;
+  }
+  await supabase.from("chat_messages").delete().eq("user_id", uid);
+}
