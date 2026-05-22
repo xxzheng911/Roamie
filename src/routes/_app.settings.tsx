@@ -6,7 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { useAuth } from "@/hooks/use-auth";
 import { useI18n } from "@/hooks/use-i18n";
 import type { AuthProviderKind } from "@/lib/auth-provider";
-import { LOCALE_LABELS } from "@/lib/i18n/types";
+import { LOCALE_LABELS, SUPPORTED_LOCALES, type Locale } from "@/lib/i18n/types";
 import { getUserProfile, saveProfileNotifications } from "@/lib/profile-storage";
 
 export const Route = createFileRoute("/_app/settings")({
@@ -26,7 +26,7 @@ function providerLabel(
 }
 
 function SettingsPage() {
-  const { t, locale } = useI18n();
+  const { t, locale, setLocale } = useI18n();
   const { isGuest, signOut } = useAuth();
   const navigate = useNavigate();
   const [signingOut, setSigningOut] = useState(false);
@@ -70,8 +70,11 @@ function SettingsPage() {
     }
   };
 
-  const handleLanguageHint = () => {
-    toast.message(t("settings.languageDeviceHint"), { duration: 5000 });
+  const handleLanguageCycle = async () => {
+    const idx = SUPPORTED_LOCALES.indexOf(locale);
+    const next = SUPPORTED_LOCALES[(idx + 1) % SUPPORTED_LOCALES.length] as Locale;
+    await setLocale(next);
+    toast.success(t("settings.languageSaved"));
   };
 
   const handleSignOut = async () => {
@@ -137,7 +140,7 @@ function SettingsPage() {
       <section className="mt-5 overflow-hidden rounded-3xl border border-border bg-card">
         <button
           type="button"
-          onClick={handleLanguageHint}
+          onClick={() => void handleLanguageCycle()}
           className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left"
         >
           <p className="text-[15px]">{t("settings.languageLabel")}</p>

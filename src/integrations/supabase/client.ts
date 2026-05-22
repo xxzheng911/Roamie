@@ -27,9 +27,10 @@ function createSupabaseClient() {
   return createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
     auth: {
       storage: typeof window !== "undefined" ? window.localStorage : undefined,
+      storageKey: "roamie-auth",
       persistSession: true,
       autoRefreshToken: true,
-      // PKCE 僅在 /auth/callback 手動 exchangeCodeForSession，避免與 getSession 自動偵測衝突
+      // 僅在 /auth/callback 手動 exchange，避免與全域 getSession 重複兌換 PKCE code
       detectSessionInUrl: false,
       flowType: "pkce",
     },

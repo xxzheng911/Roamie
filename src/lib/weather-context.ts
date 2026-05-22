@@ -32,9 +32,13 @@ const PERIOD_LABELS: Record<DayPeriod, string> = {
 export function buildTemporalWeatherContext(
   weather?: WeatherSummary | null,
   timeIso?: string,
+  timeZone?: string,
 ): TemporalWeatherContext {
   const d = timeIso ? new Date(timeIso) : new Date();
-  const hour = d.getHours();
+  const tz = timeZone ?? "Asia/Taipei";
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: tz }).format(d),
+  );
   const period = periodFromHour(hour);
   const cond = (weather?.condition ?? "").toLowerCase();
   const precip = weather?.precipProbability ?? 0;
@@ -51,7 +55,7 @@ export function buildTemporalWeatherContext(
 
   const rules: string[] = [];
   rules.push(
-    `現在是${PERIOD_LABELS[period]}（${d.toLocaleString("zh-TW", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Taipei" })}），推薦必須符合此時段。`,
+    `現在是${PERIOD_LABELS[period]}（${d.toLocaleString("zh-TW", { hour: "2-digit", minute: "2-digit", timeZone: tz })}），推薦必須符合此時段與當地營業時間。`,
   );
 
   if (period === "night" || period === "evening") {

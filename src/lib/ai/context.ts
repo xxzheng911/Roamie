@@ -6,11 +6,19 @@ import {
 } from "@/lib/preferences-storage";
 import type { WeatherSummary } from "@/lib/weather.functions";
 import { formatTemporalWeatherBlock } from "@/lib/weather-context";
+import type { Locale } from "@/lib/i18n/types";
 
 export type RoamieLocation = {
   lat: number;
   lng: number;
   city?: string;
+  country?: string;
+  placeId?: string;
+  /** 顯示用，例如 日本・大阪 */
+  displayLabel?: string;
+  address?: string;
+  timezone?: string;
+  utcOffsetMinutes?: number | null;
 };
 
 export type RoamieChatMessage = {
@@ -43,6 +51,16 @@ export type ChatPlanningHints = {
   startTime?: string;
   endTime?: string;
   conversationSummary?: string;
+  fromMoodCard?: boolean;
+  selectedCategory?: string;
+  lateNightMode?: boolean;
+  avoidTypes?: string[];
+  preferredArea?: string;
+  rejectedPlaceNames?: string[];
+  lastUserIntent?: string;
+  initialChatContext?: string;
+  fromMoodFlow?: boolean;
+  selectedMood?: string;
 };
 
 export type RoamieItineraryRequest = {
@@ -79,8 +97,26 @@ export type RoamieRequestContext = {
   planningHints?: ChatPlanningHints;
   /** 近期已推薦過的地名，避免重複 */
   recentRecommendationNames?: string[];
+  selectedPlaceIds?: string[];
+  selectedPlaceNames?: string[];
+  /** 已選 + 聊天中納入的停靠點 */
+  plannedStops?: RoamieRecommendationItem[];
   /** 使用者收藏地點名稱 */
   savedPlaceNames?: string[];
+  /** 從心情卡片推薦頁進入聊天 */
+  fromMoodCard?: boolean;
+  selectedCategory?: string;
+  lateNightMode?: boolean;
+  avoidTypes?: string[];
+  preferredArea?: string;
+  rejectedPlaceNames?: string[];
+  lastUserIntent?: string;
+  /** 心情卡片進聊天的結構化上下文 */
+  initialChatContext?: string;
+  fromMoodFlow?: boolean;
+  selectedMood?: string;
+  fromPlanForm?: boolean;
+  locale?: Locale;
 };
 
 const paceLabel: Record<string, string> = { slow: "慢", medium: "中等", active: "想多看" };
@@ -119,8 +155,9 @@ export function formatWeather(weather?: WeatherSummary | null): string {
 
 export function formatLocation(loc?: RoamieLocation): string {
   if (!loc) return "（位置未取得）";
-  return loc.city
-    ? `${loc.city}（${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}）`
+  const label = loc.displayLabel ?? loc.city ?? loc.country;
+  return label
+    ? `${label}（${loc.lat.toFixed(4)}, ${loc.lng.toFixed(4)}）`
     : `緯度 ${loc.lat.toFixed(4)}, 經度 ${loc.lng.toFixed(4)}`;
 }
 
@@ -134,13 +171,23 @@ export function formatTime(iso?: string): string {
   });
 }
 
-export function formatSelectedPlaces(places?: RoamieRecommendationItem[]): string {
+export function formatSelectedPlaces(
+  places?: (RoamieRecommendationItem & { distanceLabel?: string })[],
+): string {
   if (!places?.length) return "（無先前推薦地點，請依目的地規劃）";
   return places
     .map((p, i) => {
       const coords =
         p.lat != null && p.lng != null ? `｜座標：${p.lat}, ${p.lng}` : "";
-      return `${i + 1}. ${p.placeName ?? p.name}｜類型：${p.type}｜${p.description}｜理由：${p.reason}｜地址：${p.address}｜建議停留：${p.estimatedTime}${coords}`;
+      const hours = [
+        p.openStatusLabel ? `營業：${p.openStatusLabel}` : "",
+        p.todayHoursLabel ?? "",
+        p.nextOpenHint ? `｜${p.nextOpenHint}` : "",
+      ]
+        .filter(Boolean)
+        .join("");
+      const dist = p.distanceLabel ? `｜距離：${p.distanceLabel}` : "";
+      return `${i + 1}. ${p.placeName ?? p.name}｜類型：${p.type}｜${p.description}｜理由：${p.reason}｜地址：${p.address}${hours ? `｜${hours}` : ""}${dist}｜建議停留：${p.estimatedTime}${coords}`;
     })
     .join("\n");
 }
@@ -159,6 +206,13 @@ export function formatPlanningHints(hints?: ChatPlanningHints): string {
   if (hints.startTime || hints.endTime)
     lines.push(`時段：${hints.startTime ?? "?"} - ${hints.endTime ?? "?"}`);
   if (hints.conversationSummary) lines.push(`對話摘要：${hints.conversationSummary.slice(0, 400)}`);
+  if (hints.avoidTypes?.length) lines.push(`想避開：${hints.avoidTypes.join("、")}`);
+  if (hints.preferredArea) lines.push(`想去的區域：${hints.preferredArea}`);
+  if (hints.rejectedPlaceNames?.length)
+    lines.push(`明確不要：${hints.rejectedPlaceNames.join("、")}`);
+  if (hints.lastUserIntent) lines.push(`最新一句：${hints.lastUserIntent.slice(0, 200)}`);
+  if (hints.selectedMood) lines.push(`心情：${hints.selectedMood}`);
+  if (hints.initialChatContext) lines.push(hints.initialChatContext.slice(0, 1200));
   return lines.length ? lines.join("\n") : "（尚未收集交通/預算/時間）";
 }
 
@@ -178,6 +232,10 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
     );
   if (ctx.selectedPlaces?.length)
     lines.push(`【已選地點（優先規劃）】\n${formatSelectedPlaces(ctx.selectedPlaces)}`);
+  if (ctx.selectedPlaceNames?.length)
+    lines.push(`【selectedPlaceNames — 禁止重複推薦】${ctx.selectedPlaceNames.join("、")}`);
+  if (ctx.plannedStops?.length)
+    lines.push(`【plannedStops（行程停靠）】\n${formatSelectedPlaces(ctx.plannedStops)}`);
   if (ctx.recommendedPlaces?.length)
     lines.push(`【本頁推薦候選】\n${formatSelectedPlaces(ctx.recommendedPlaces)}`);
   if (ctx.planningHints) lines.push(`【規劃資訊】\n${formatPlanningHints(ctx.planningHints)}`);
@@ -185,6 +243,40 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
     lines.push(`【近期已推薦過，請避免重複】${ctx.recentRecommendationNames.join("、")}`);
   if (ctx.savedPlaceNames?.length)
     lines.push(`【使用者收藏地點】${ctx.savedPlaceNames.join("、")}`);
+  if (ctx.fromMoodFlow || ctx.fromMoodCard) {
+    lines.push(
+      "【來源】fromMoodFlow：使用者從心情卡片 → 推薦頁 → 聊天；必須延續【已選地點】與 selectedMood，勿用一般歡迎語重新開場。",
+    );
+  }
+  if (ctx.fromPlanForm) {
+    lines.push(
+      "【來源】fromPlanForm：使用者從「規劃新行程」進入；目的地在【位置】；禁止一次生成完整 itinerary；先推薦地點、等使用者選點後再排行程。勿推薦與目的地不同城市的地點。",
+    );
+  }
+  if (ctx.selectedMood?.trim()) lines.push(`【selectedMood】${ctx.selectedMood.trim()}`);
+  if (ctx.initialChatContext?.trim()) lines.push(ctx.initialChatContext.trim());
+  if (ctx.selectedCategory?.trim())
+    lines.push(`【心情類別】${ctx.selectedCategory.trim()}`);
+  if (ctx.lateNightMode) {
+    const nightWalk = /深夜散步|夜晚探索|想放空/.test(
+      ctx.mood ?? ctx.selectedMood ?? "",
+    );
+    lines.push(
+      nightWalk
+        ? "【深夜散步模式】必須輸出 3-5 個 recommendations 地點卡；優先夜景、河岸、步道、觀景，其次深夜咖啡、宵夜；勿第一個推 KTV。戶外景點可標「適合夜晚散步」。禁止只有文字沒有地點。"
+        : "【深夜模式】多數店家可能已休息；優先夜景、河岸散步、深夜咖啡、宵夜、酒吧；勿推薦明顯僅白天營業的早午餐。若候選少，summary 用溫暖語氣說明仍可幫忙找夜晚去處，勿說「附近沒有推薦」。",
+    );
+  }
+  if (ctx.time) lines.push(`【currentTime】${ctx.time}`);
+  if (ctx.avoidTypes?.length) lines.push(`【想避開的類型】${ctx.avoidTypes.join("、")}`);
+  if (ctx.preferredArea) lines.push(`【想去的區域】${ctx.preferredArea}`);
+  if (ctx.rejectedPlaceNames?.length)
+    lines.push(`【不要推薦的地點】${ctx.rejectedPlaceNames.join("、")}`);
+  if (ctx.lastUserIntent?.trim())
+    lines.push(`【使用者最新訊息】${ctx.lastUserIntent.trim()}`);
+  lines.push(
+    "【接續規劃】這不是新對話；請針對【使用者最新訊息】回應，並銜接【已選地點】【本頁推薦候選】；summary 結尾必須有 1 個自然下一步提問。",
+  );
   return lines.join("\n");
 }
 

@@ -208,7 +208,6 @@ export async function mergeGuestDataAfterLogin(userId: string): Promise<void> {
 
   await mergeGuestProfile(userId);
   await mergeGuestTrips(userId, GUEST_STORAGE_KEYS.itineraries);
-  await mergeGuestTrips(userId, GUEST_STORAGE_KEYS.recommendations);
   await mergeGuestPlaces(userId);
   await mergeGuestChat(userId);
   clearGuestLocalCaches();

@@ -1,7 +1,7 @@
 import { Heart, Loader2, MessageCircle, Star, X } from "lucide-react";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
-import type { PlaceResult } from "@/lib/places.functions";
+import type { PlaceResult } from "@/lib/place-result";
 
 type PlaceCard = PlaceResult & { reason: string };
 

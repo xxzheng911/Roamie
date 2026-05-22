@@ -5,7 +5,14 @@ import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { MobileFrame } from "@/components/MobileFrame";
 import { TripPlanEditor } from "@/components/TripPlanEditor";
-import { deleteItinerary, getItinerary, updateItinerary, type StoredItinerary } from "@/lib/itinerary-storage";
+import {
+  confirmSaveTrip,
+  deleteItinerary,
+  getItinerary,
+  updateItinerary,
+  type StoredItinerary,
+} from "@/lib/itinerary-storage";
+import { clearDraftTrip, loadDraftTrip } from "@/lib/trip-draft-storage";
 import type { Itinerary } from "@/lib/itinerary.functions";
 import { generateItinerary } from "@/lib/itinerary.functions";
 import { isRoamiePayloadV2, type RoamieItineraryItem, type RoamiePayloadV2, type TripPlanSettings } from "@/lib/ai/types";
@@ -17,11 +24,12 @@ import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import { resolveBudgetMode } from "@/lib/preferences-storage";
 
-type TripSearch = { id?: string };
+type TripSearch = { id?: string; draft?: string };
 
 export const Route = createFileRoute("/trip")({
   validateSearch: (s: Record<string, unknown>): TripSearch => ({
     id: typeof s.id === "string" ? s.id : undefined,
+    draft: typeof s.draft === "string" ? s.draft : undefined,
   }),
   component: Trip,
 });
@@ -34,14 +42,30 @@ const TRANSPORT_HINT: Record<string, string> = {
 };
 
 function Trip() {
-  const { id } = Route.useSearch();
+  const { id, draft } = Route.useSearch();
   const navigate = useNavigate();
   const generate = useServerFn(generateItinerary);
   const fetchWeather = useServerFn(getWeather);
   const [trip, setTrip] = useState<StoredItinerary | null>(null);
   const [loading, setLoading] = useState(true);
+  const isDraft = draft === "1";
 
   useEffect(() => {
+    if (isDraft) {
+      const payload = loadDraftTrip();
+      if (payload) {
+        setTrip({
+          id: "draft",
+          title: payload.title,
+          mood: payload.moodTag ?? null,
+          cover_image: null,
+          created_at: payload.generatedAt ?? new Date().toISOString(),
+          payload,
+        });
+      }
+      setLoading(false);
+      return;
+    }
     if (!id) {
       setLoading(false);
       return;
@@ -61,10 +85,22 @@ function Trip() {
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, isDraft]);
+
+  const handleSaveDraft = async () => {
+    if (!trip || !isDraft) return;
+    try {
+      const saved = await confirmSaveTrip(trip.payload as RoamiePayloadV2, "chat");
+      clearDraftTrip();
+      toast.success("已儲存到收藏");
+      navigate({ to: "/trip", search: { id: saved.id }, replace: true });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "儲存失敗");
+    }
+  };
 
   const handleDelete = async () => {
-    if (!trip) return;
+    if (!trip || isDraft) return;
     if (!confirm(`確定要刪除「${trip.title}」嗎？`)) return;
     try {
       await deleteItinerary(trip.id);
@@ -141,8 +177,8 @@ function Trip() {
           ]
             .filter(Boolean)
             .join("\n"),
-          startDate: new Date().toISOString().slice(0, 10),
-          endDate: new Date().toISOString().slice(0, 10),
+          startDate: settings.tripStartDate ?? new Date().toISOString().slice(0, 10),
+          endDate: settings.tripEndDate ?? settings.tripStartDate ?? new Date().toISOString().slice(0, 10),
           transport,
           selectedPlaces: [],
           preferences: prefs,
@@ -214,17 +250,31 @@ function Trip() {
             >
               <Share2 className="h-4 w-4" />
             </button>
-            <button
-              onClick={handleDelete}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
-              aria-label="刪除"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
+            {!isDraft && (
+              <button
+                onClick={handleDelete}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
+                aria-label="刪除"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
 
         <div className="px-5 pb-8 pt-5">
+          {isDraft && (
+            <div className="mb-4 rounded-2xl border border-dashed border-border bg-secondary/50 px-4 py-3 text-sm text-muted-foreground">
+              <p>這是行程草稿，尚未加入收藏。</p>
+              <button
+                type="button"
+                onClick={() => void handleSaveDraft()}
+                className="mt-3 w-full rounded-full bg-primary py-2.5 text-sm font-medium text-primary-foreground"
+              >
+                儲存這趟行程
+              </button>
+            </div>
+          )}
           <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">旅行計劃</p>
           <h1 className="mt-2 font-display text-[26px] leading-snug">{trip.title}</h1>
 

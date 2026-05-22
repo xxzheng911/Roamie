@@ -1,8 +1,15 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { callRoamieAI } from "@/lib/ai/service.server";
-import type { RoamiePayloadV2, RoamieRecommendationItem, RoamieResponse } from "@/lib/ai/types";
+import type {
+  RoamiePayloadV2,
+  RoamieRecommendationItem,
+  RoamieResponse,
+  TripTransportMode,
+} from "@/lib/ai/types";
 import { buildOutfitAdviceForTrip } from "@/lib/outfit/build-advice";
+import { normalizeTime } from "@/lib/picker-utils";
+import { buildTransitLegsForItinerary } from "@/lib/transit/build-legs.server";
 import { fetchOpenMeteoDailyForecast } from "@/lib/weather.functions";
 
 const PlaceSchema = z
@@ -55,9 +62,18 @@ const InputSchema = z.object({
   time: z.string().optional(),
   /** 穿搭風格（文青、韓系、極簡等），來自個人檔案 */
   fashionStyle: z.string().max(80).optional().default(""),
+  locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
 });
 
 export type ItineraryInput = z.infer<typeof InputSchema>;
+
+function inferTripTransport(transport?: string): TripTransportMode {
+  const t = (transport ?? "").toLowerCase();
+  if (/機車|scooter|摩托/.test(t)) return "scooter";
+  if (/開車|自驾|自駕|drive|car|租車/.test(t)) return "drive";
+  if (/捷運|地鐵|地铁|大眾|公車|公交|transit|mrt|metro/.test(t)) return "transit";
+  return "walk";
+}
 
 /** @deprecated Legacy format — kept for backward-compatible trip display */
 export type ItineraryBlock = {
@@ -100,6 +116,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
 
     const ai: RoamieResponse = await callRoamieAI({
       mode: "itinerary",
+      locale: data.locale,
       mood: data.mood,
       preferences: data.preferences as never,
       location: data.location,
@@ -149,6 +166,51 @@ export const generateItinerary = createServerFn({ method: "POST" })
       }
     }
 
+    let tripSettings: RoamiePayloadV2["tripSettings"];
+    try {
+      const weatherHint = data.weather as {
+        condition?: string;
+        precipProbability?: number;
+        tempC?: number;
+      } | null;
+      const transit = await buildTransitLegsForItinerary({
+        items: ai.itinerary.map((i) => ({
+          placeName: i.placeName,
+          title: i.title,
+          lat: i.lat,
+          lng: i.lng,
+          date: i.date,
+          time: i.time,
+        })),
+        destination: data.destination,
+        preferences: {
+          transportation: data.transport,
+          pace: data.preferences?.pace as string | undefined,
+        },
+        weather: weatherHint
+          ? {
+              ...weatherHint,
+              isRainy:
+                (weatherHint.precipProbability ?? 0) >= 40 ||
+                (weatherHint.condition ?? "").includes("雨"),
+            }
+          : undefined,
+        time: data.time,
+        useAiReasons: true,
+      });
+      tripSettings = {
+        startTime: data.time ? normalizeTime(data.time) : (ai.itinerary[0]?.time?.slice(0, 5) ?? "10:00"),
+        tripStartDate: data.startDate?.trim() || startDate,
+        tripEndDate: data.endDate?.trim() || data.startDate?.trim() || startDate,
+        transport: inferTripTransport(data.transport),
+        legMinutes: {},
+        transitLegs: Object.fromEntries(transit.legs.map((l) => [l.legKey, l])),
+        transportTips: transit.transportTips,
+      };
+    } catch (e) {
+      console.warn("[Roamie] transit legs skipped on generate", e);
+    }
+
     const itinerary: RoamiePayloadV2 = {
       ...ai,
       version: 2,
@@ -156,6 +218,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       days: data.days,
       generatedAt: new Date().toISOString(),
       outfitAdvice,
+      tripSettings,
     };
 
     return { itinerary };

@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Plus, Loader2, Trash2, MapPin, Heart, Route as RouteIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { useI18n } from "@/hooks/use-i18n";
 import cafe from "@/assets/scene-cafe.jpg";
 import { deleteItinerary, listItineraries, type StoredItinerary } from "@/lib/itinerary-storage";
 import { isRoamiePayloadV2 } from "@/lib/ai/types";
@@ -20,49 +21,52 @@ export const Route = createFileRoute("/_app/saved")({
 type Tab = "trips" | "places";
 
 function TripsEmptyState() {
+  const { t } = useI18n();
   return (
     <div className="mt-8 flex flex-col items-center gap-4 rounded-3xl border border-dashed border-border bg-card/60 px-6 py-12 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-full bg-secondary">
         <RouteIcon className="h-7 w-7 text-clay" />
       </div>
-      <p className="font-display text-xl">還沒有收藏內容</p>
+      <p className="font-display text-xl">{t("saved.emptyAllTitle")}</p>
       <p className="max-w-[260px] text-sm leading-relaxed text-muted-foreground">
-        探索附近地點，或請 Roamie 幫你規劃第一趟慢旅行。
+        {t("saved.emptyAllDesc")}
       </p>
       <Link
         to="/map"
         className="mt-1 rounded-full bg-primary px-6 py-3 text-sm text-primary-foreground"
       >
-        去探索附近地點
+        {t("saved.exploreCta")}
       </Link>
       <Link to="/plan" className="text-sm text-muted-foreground underline-offset-2 hover:underline">
-        或規劃第一趟旅程
+        {t("saved.planCta")}
       </Link>
     </div>
   );
 }
 
 function PlacesEmptyState() {
+  const { t } = useI18n();
   return (
     <div className="mt-8 flex flex-col items-center gap-4 rounded-3xl border border-dashed border-border bg-card/60 px-6 py-12 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-full bg-secondary">
         <Heart className="h-7 w-7 text-clay" />
       </div>
-      <p className="font-display text-xl">還沒有收藏地點</p>
+      <p className="font-display text-xl">{t("saved.emptyPlacesTitle")}</p>
       <p className="max-w-[260px] text-sm leading-relaxed text-muted-foreground">
-        到探索頁找喜歡的角落，點卡片上的愛心即可加入收藏。
+        {t("saved.emptyPlacesDesc")}
       </p>
       <Link
         to="/map"
         className="mt-1 rounded-full bg-primary px-6 py-3 text-sm text-primary-foreground"
       >
-        去探索頁收藏
+        {t("saved.explorePlacesCta")}
       </Link>
     </div>
   );
 }
 
 function Saved() {
+  const { t } = useI18n();
   const search = Route.useSearch();
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
   const [trips, setTrips] = useState<StoredItinerary[]>([]);
@@ -82,7 +86,7 @@ function Saved() {
           setPlaces([]);
           return;
         }
-        toast.error(err instanceof Error ? err.message : "讀取失敗");
+        toast.error(err instanceof Error ? err.message : t("saved.loadFailed"));
       })
       .finally(() => setLoading(false));
   };
@@ -98,24 +102,24 @@ function Saved() {
   const handleDeleteTrip = async (id: string, title: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!confirm(`刪除「${title}」？`)) return;
+    if (!confirm(t("saved.deleteTripConfirm", { title }))) return;
     try {
       await deleteItinerary(id);
-      toast.success("已刪除");
-      setTrips((prev) => prev.filter((t) => t.id !== id));
+      toast.success(t("saved.deleted"));
+      setTrips((prev) => prev.filter((trip) => trip.id !== id));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "刪除失敗");
+      toast.error(err instanceof Error ? err.message : t("saved.deleteFailed"));
     }
   };
 
   const handleDeletePlace = async (id: string, name: string) => {
-    if (!confirm(`移除「${name}」收藏？`)) return;
+    if (!confirm(t("saved.removePlaceConfirm", { name }))) return;
     try {
       await deletePlace(id);
-      toast.success("已移除");
+      toast.success(t("saved.removed"));
       setPlaces((prev) => prev.filter((p) => p.id !== id));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "刪除失敗");
+      toast.error(err instanceof Error ? err.message : t("saved.deleteFailed"));
     }
   };
 
@@ -125,16 +129,18 @@ function Saved() {
     <div className="px-5 pb-6 pt-3">
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="font-display text-2xl">我的收藏</h1>
+          <h1 className="font-display text-2xl">{t("saved.title")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {loading ? "載入中…" : `${trips.length} 個行程 · ${places.length} 個地點`}
+            {loading
+              ? t("common.loading")
+              : t("saved.summary", { trips: trips.length, places: places.length })}
           </p>
         </div>
         {hasAny && (
           <Link
             to="/plan"
             className="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-primary-foreground"
-            aria-label="規劃新行程"
+            aria-label={t("saved.planNewAria")}
           >
             <Plus className="h-4 w-4" />
           </Link>
@@ -142,16 +148,18 @@ function Saved() {
       </div>
 
       <div className="mt-4 flex gap-1 rounded-full border border-border bg-card p-1 text-sm">
-        {(["trips", "places"] as const).map((t) => (
+        {(["trips", "places"] as const).map((tabKey) => (
           <button
-            key={t}
+            key={tabKey}
             type="button"
-            onClick={() => setTab(t)}
+            onClick={() => setTab(tabKey)}
             className={`flex-1 rounded-full py-2 transition ${
-              tab === t ? "bg-foreground text-background" : "text-muted-foreground"
+              tab === tabKey ? "bg-foreground text-background" : "text-muted-foreground"
             }`}
           >
-            {t === "trips" ? `行程 (${trips.length})` : `地點 (${places.length})`}
+            {tabKey === "trips"
+              ? t("saved.tabTrips", { count: trips.length })
+              : t("saved.tabPlaces", { count: places.length })}
           </button>
         ))}
       </div>
@@ -165,30 +173,34 @@ function Saved() {
           <TripsEmptyState />
         ) : (
           <ul className="mt-6 space-y-3">
-            {trips.map((t) => (
-              <li key={t.id}>
+            {trips.map((trip) => (
+              <li key={trip.id}>
                 <Link
                   to="/trip"
-                  search={{ id: t.id }}
+                  search={{ id: trip.id }}
                   className="flex items-center gap-3 rounded-3xl border border-border bg-card p-3 shadow-soft transition active:scale-[0.99]"
                 >
                   <div className="h-16 w-16 shrink-0 overflow-hidden rounded-2xl">
-                    <img src={t.cover_image || cafe} alt={t.title} className="h-full w-full object-cover" />
+                    <img src={trip.cover_image || cafe} alt={trip.title} className="h-full w-full object-cover" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[15px] font-medium">{t.title}</p>
+                    <p className="truncate text-[15px] font-medium">{trip.title}</p>
                     <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {isRoamiePayloadV2(t.payload)
-                        ? `${t.payload.recommendations?.length ?? 0} 個推薦`
-                        : `${(t.payload as { destination?: string }).destination ?? ""} · ${(t.payload as { days?: number }).days ?? "?"} 天`}
-                      {t.mood ? ` · ${t.mood}` : ""}
+                      {isRoamiePayloadV2(trip.payload)
+                        ? t("saved.recCount", { count: trip.payload.recommendations?.length ?? 0 })
+                        : t("saved.tripMeta", {
+                            destination:
+                              (trip.payload as { destination?: string }).destination ?? "",
+                            days: (trip.payload as { days?: number }).days ?? "?",
+                          })}
+                      {trip.mood ? ` · ${trip.mood}` : ""}
                     </p>
                   </div>
                   <button
                     type="button"
-                    onClick={(e) => handleDeleteTrip(t.id, t.title, e)}
+                    onClick={(e) => handleDeleteTrip(trip.id, trip.title, e)}
                     className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
-                    aria-label="刪除"
+                    aria-label={t("saved.deleteAria")}
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
@@ -225,7 +237,7 @@ function Saved() {
                 type="button"
                 onClick={() => handleDeletePlace(p.id, p.name)}
                 className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
-                aria-label="移除"
+                aria-label={t("saved.removeAria")}
               >
                 <Trash2 className="h-4 w-4" />
               </button>

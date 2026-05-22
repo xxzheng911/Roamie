@@ -1,12 +1,24 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useI18n } from "@/hooks/use-i18n";
+import {
+  getPlanBudgetOptions,
+  getPlanMoodOptions,
+  getPlanStyleOptions,
+  getPlanTransportOptions,
+} from "@/lib/i18n/plan-form-options";
 import { Sparkles, Loader2, MapPin } from "lucide-react";
 import { BackButton } from "@/components/BackButton";
 import { toast } from "sonner";
-import { generateItinerary } from "@/lib/itinerary.functions";
-import { saveItinerary } from "@/lib/itinerary-storage";
-import { buildClientContextBundle, daysBetweenDates } from "@/lib/fetch-context";
+import { buildContextBundleForTrip, daysBetweenDates } from "@/lib/fetch-context";
+import { LocationSearchField } from "@/components/LocationSearchField";
+import { formatTripLocationLabel } from "@/lib/location/format";
+import type { TripLocation } from "@/lib/location/types";
+import { preparePlanTripSession } from "@/lib/plan-trip-handoff";
+import { saveChatSession, clearChatSession } from "@/lib/chat-session";
+import { clearChatHistory } from "@/lib/chat-history";
+import { RoamieDatePicker, RoamieTimePicker } from "@/components/pickers";
 import { getWeather } from "@/lib/weather.functions";
 import {
   getPreferences,
@@ -14,16 +26,12 @@ import {
   resolveBudgetMode,
   type BudgetMode,
 } from "@/lib/preferences-storage";
-import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import {
-  inferDestinationFromPlaces,
   loadItinerarySource,
   placesToInterestsText,
   type ItinerarySourceContext,
 } from "@/lib/itinerary-source";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
-import { getUserProfile } from "@/lib/profile-storage";
-import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
 
 type PlanSearch = {
   mood?: string;
@@ -42,27 +50,19 @@ export const Route = createFileRoute("/_app/plan")({
   component: PlanPage,
 });
 
-const budgetOptions = [
-  { value: "budget" as BudgetMode, label: "小資", hint: "平價、在地" },
-  { value: "standard" as BudgetMode, label: "一般", hint: "舒服自在" },
-  { value: "quality" as BudgetMode, label: "品質感", hint: "有質感但不浮誇" },
-  { value: "luxury" as BudgetMode, label: "奢華", hint: "好好享受" },
-];
-
-const transportOptions = ["大眾運輸", "步行為主", "租車自駕", "計程車/共乘", "單車"];
-
-const styleOptions = ["慢旅行", "在地美食", "文青咖啡", "自然戶外", "夜景散步", "藝術展覽"];
-const moodOptions = ["想放空", "一個人", "下雨天", "深夜散步", "找咖啡", "看海"];
-
 function PlanPage() {
+  const { t, locale } = useI18n();
   const search = Route.useSearch();
   const navigate = useNavigate();
-  const generate = useServerFn(generateItinerary);
   const fetchWeather = useServerFn(getWeather);
+  const budgetOptions = useMemo(() => getPlanBudgetOptions(locale), [locale]);
+  const transportOptions = useMemo(() => getPlanTransportOptions(locale), [locale]);
+  const styleOptions = useMemo(() => getPlanStyleOptions(locale), [locale]);
+  const moodOptions = useMemo(() => getPlanMoodOptions(locale), [locale]);
 
   const [sourceCtx, setSourceCtx] = useState<ItinerarySourceContext | null>(null);
   const [sourceLoading, setSourceLoading] = useState(true);
-  const [destination, setDestination] = useState(search.destination ?? "");
+  const [destination, setDestination] = useState<TripLocation | null>(null);
   const [days, setDays] = useState(2);
   const [budgetMode, setBudgetMode] = useState<BudgetMode>("standard");
   const [styles, setStyles] = useState<string[]>([]);
@@ -70,7 +70,8 @@ function PlanPage() {
   const [interests, setInterests] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [origin, setOrigin] = useState("");
+  const [departureTime, setDepartureTime] = useState("10:00");
+  const [origin, setOrigin] = useState<TripLocation | null>(null);
   const [travelers, setTravelers] = useState(1);
   const [transport, setTransport] = useState("");
   const [loading, setLoading] = useState(false);
@@ -84,13 +85,10 @@ function PlanPage() {
         setSourceCtx(ctx);
 
         if (ctx?.selectedPlaces?.length) {
-          const inferred = inferDestinationFromPlaces(ctx.selectedPlaces, ctx.location);
-          if (inferred) setDestination((d) => d || inferred);
           setInterests((prev) => prev || placesToInterestsText(ctx.selectedPlaces));
           if (ctx.moodTag) setMood((m) => m || ctx.moodTag!);
         }
         if (search.mood) setMood((m) => m || search.mood!);
-        if (search.destination) setDestination((d) => d || search.destination!);
       } catch (e) {
         console.error("[plan] load source failed", e);
       } finally {
@@ -114,31 +112,24 @@ function PlanPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!destination.trim()) {
-      toast.error("請輸入目的地");
+    if (!destination) {
+      toast.error(t("plan.selectDestination"));
       return;
     }
     if (startDate && endDate && endDate < startDate) {
-      toast.error("結束日期不能早於開始日期");
+      toast.error(t("plan.dateInvalid"));
       return;
     }
     const tripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : days;
 
     setLoading(true);
     try {
-      const [bundle, prefs, profile] = await Promise.all([
-        buildClientContextBundle(fetchWeather),
+      const [bundle, prefs] = await Promise.all([
+        buildContextBundleForTrip(destination, fetchWeather),
         getPreferences(),
-        getUserProfile(),
       ]);
-      const fashionStyle = resolveFashionStyle({
-        travelStyle: profile.travelStyle,
-        interests: prefs.interests,
-        style: styles.join("、"),
-      });
       const effectiveBudgetMode = budgetMode;
       await savePreferences({ ...prefs, budgetMode: effectiveBudgetMode });
-      const itineraryBudget = budgetModeToItineraryTier(effectiveBudgetMode);
 
       const mergedPlaces = selectedPlaces.length > 0 ? selectedPlaces : [];
 
@@ -149,39 +140,38 @@ function PlanPage() {
         .filter(Boolean)
         .join("\n");
 
-      console.info("[Roamie AI] plan submit", {
-        destination: destination.trim(),
+      console.info("[Roamie AI] plan submit → chat", {
+        destination: formatTripLocationLabel(destination),
         days: tripDays,
         places: mergedPlaces.length,
         from: search.from,
       });
 
-      const { itinerary } = await generate({
-        data: {
-          destination: destination.trim(),
+      clearChatSession();
+      await clearChatHistory();
+      const session = preparePlanTripSession(
+        {
+          destination,
+          origin,
           days: tripDays,
-          budget: itineraryBudget,
-          style: styles.join("、"),
           mood,
+          styles,
           interests: interestsText,
           startDate,
           endDate,
-          origin: origin.trim(),
+          departureTime,
           travelers,
           transport: transport.trim(),
+          budgetMode: effectiveBudgetMode,
           selectedPlaces: mergedPlaces,
-          preferences: prefs,
-          location: bundle.location,
-          weather: bundle.weather,
-          time: bundle.time,
-          fashionStyle: fashionStyle ?? "",
         },
-      });
-      const saved = await saveItinerary(itinerary);
-      toast.success("行程已生成！");
-      navigate({ to: "/trip", search: { id: saved.id } });
+        bundle,
+        prefs,
+      );
+      saveChatSession(session);
+      navigate({ to: "/chat", search: { from: "plan" } });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "發生未知錯誤";
+      const msg = err instanceof Error ? err.message : t("plan.submitFailed");
       console.error("[Roamie AI] plan failed", err);
       toast.error(msg);
     } finally {
@@ -195,7 +185,7 @@ function PlanPage() {
         <BackButton fallback={{ to: "/" }} />
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-clay" />
-          <h1 className="font-display text-lg">規劃新行程</h1>
+          <h1 className="font-display text-lg">{t("plan.title")}</h1>
         </div>
       </header>
 
@@ -203,12 +193,12 @@ function PlanPage() {
         {sourceLoading ? (
           <div className="flex items-center gap-2 rounded-2xl bg-secondary/80 px-4 py-3 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            載入推薦地點…
+            {t("plan.loadingPlaces")}
           </div>
         ) : selectedPlaces.length > 0 ? (
           <div className="rounded-2xl border border-border bg-secondary/50 px-4 py-3">
             <p className="text-sm font-medium">
-              已帶入 Roamie 推薦的 {selectedPlaces.length} 個地點
+              {t("plan.importedPlaces", { count: selectedPlaces.length })}
             </p>
             <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
               {selectedPlaces.map((p) => (
@@ -223,59 +213,60 @@ function PlanPage() {
           </div>
         ) : null}
 
-        <section>
-          <label className="text-sm font-medium">目的地 *</label>
-          <input
-            value={destination}
-            onChange={(e) => setDestination(e.target.value)}
-            placeholder="例如：台北、京都、宜蘭"
-            className="mt-2 w-full rounded-2xl border border-border bg-card px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30"
-            disabled={loading}
-          />
-        </section>
+        <LocationSearchField
+          label={t("plan.destination")}
+          required
+          value={destination}
+          onChange={setDestination}
+          placeholder={t("plan.destinationPlaceholder")}
+          disabled={loading}
+        />
+
+        <LocationSearchField
+          label={t("plan.origin")}
+          value={origin}
+          onChange={setOrigin}
+          placeholder={t("plan.originPlaceholder")}
+          disabled={loading}
+        />
 
         <section>
-          <label className="text-sm font-medium">出發地（選填）</label>
-          <input
-            value={origin}
-            onChange={(e) => setOrigin(e.target.value)}
-            placeholder="例如：台北車站、你家附近"
-            className="mt-2 w-full rounded-2xl border border-border bg-card px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30"
-            disabled={loading}
-          />
-        </section>
-
-        <section className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-sm font-medium">開始日期（選填）</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="mt-2 w-full rounded-2xl border border-border bg-card px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30"
-              disabled={loading}
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">結束日期（選填）</label>
-            <input
-              type="date"
-              value={endDate}
-              min={startDate || undefined}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="mt-2 w-full rounded-2xl border border-border bg-card px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30"
+          <label className="text-sm font-medium">{t("plan.travelDates")}</label>
+          <div className="mt-2">
+            <RoamieDatePicker
+              mode="range"
+              displayWithYear
+              value={{ start: startDate, end: endDate }}
+              onChange={(range) => {
+                setStartDate(range.start);
+                setEndDate(range.end);
+              }}
+              placeholder={t("plan.datePlaceholder")}
               disabled={loading}
             />
           </div>
         </section>
         {startDate && endDate && (
           <p className="text-xs text-muted-foreground">
-            共 {daysBetweenDates(startDate, endDate)} 天（已依日期覆寫下方天數滑桿）
+            {t("plan.daysRange", { days: daysBetweenDates(startDate, endDate) })}
           </p>
         )}
 
         <section>
-          <label className="text-sm font-medium">旅伴人數</label>
+          <label className="text-sm font-medium">{t("plan.departureTime")}</label>
+          <div className="mt-2">
+            <RoamieTimePicker
+              title={t("plan.departureTimeTitle")}
+              value={departureTime}
+              onChange={setDepartureTime}
+              placeholder="10:00"
+              disabled={loading}
+            />
+          </div>
+        </section>
+
+        <section>
+          <label className="text-sm font-medium">{t("plan.travelers")}</label>
           <input
             type="number"
             min={1}
@@ -288,7 +279,7 @@ function PlanPage() {
         </section>
 
         <section>
-          <label className="text-sm font-medium">天數：{days} 天</label>
+          <label className="text-sm font-medium">{t("plan.daysLabel", { days })}</label>
           <input
             type="range"
             min={1}
@@ -301,7 +292,7 @@ function PlanPage() {
         </section>
 
         <section>
-          <label className="text-sm font-medium">預算</label>
+          <label className="text-sm font-medium">{t("plan.budget")}</label>
           <div className="mt-2 grid grid-cols-3 gap-2">
             {budgetOptions.map((b) => (
               <button
@@ -323,7 +314,7 @@ function PlanPage() {
         </section>
 
         <section>
-          <label className="text-sm font-medium">交通方式（選填）</label>
+          <label className="text-sm font-medium">{t("plan.transport")}</label>
           <div className="mt-2 flex flex-wrap gap-2">
             {transportOptions.map((t) => (
               <button
@@ -344,7 +335,7 @@ function PlanPage() {
         </section>
 
         <section>
-          <label className="text-sm font-medium">旅遊風格（可多選）</label>
+          <label className="text-sm font-medium">{t("plan.styles")}</label>
           <div className="mt-2 flex flex-wrap gap-2">
             {styleOptions.map((s) => (
               <button
@@ -365,7 +356,7 @@ function PlanPage() {
         </section>
 
         <section>
-          <label className="text-sm font-medium">今天的心情</label>
+          <label className="text-sm font-medium">{t("plan.mood")}</label>
           <div className="mt-2 flex flex-wrap gap-2">
             {moodOptions.map((m) => (
               <button
@@ -386,12 +377,12 @@ function PlanPage() {
         </section>
 
         <section>
-          <label className="text-sm font-medium">其他想去的 / 備註（選填）</label>
+          <label className="text-sm font-medium">{t("plan.notes")}</label>
           <textarea
             value={interests}
             onChange={(e) => setInterests(e.target.value)}
             rows={4}
-            placeholder="Roamie 推薦地點會自動帶入；你也可以補充其他想去的…"
+            placeholder={t("plan.notesPlaceholder")}
             className="mt-2 w-full resize-none rounded-2xl border border-border bg-card px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30"
             disabled={loading}
           />
@@ -400,18 +391,25 @@ function PlanPage() {
         <button
           type="submit"
           disabled={loading || sourceLoading}
-          className="flex w-full items-center justify-center gap-2 rounded-full bg-primary py-4 text-[15px] font-medium text-primary-foreground shadow-lift transition disabled:opacity-60"
+          aria-busy={loading}
+          className="flex w-full items-center justify-center rounded-full bg-primary py-4 text-[15px] font-medium text-primary-foreground shadow-lift transition disabled:opacity-60"
         >
           {loading ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Roamie 正在幫你想…
-            </>
+            <span
+              key="plan-submit-loading"
+              className="inline-flex items-center justify-center gap-2.5"
+            >
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+              <span className="leading-none">{t("plan.submitting")}</span>
+            </span>
           ) : (
-            <>
-              <Sparkles className="h-4 w-4" />
-              生成我的行程
-            </>
+            <span
+              key="plan-submit-idle"
+              className="inline-flex items-center justify-center gap-2"
+            >
+              <Sparkles className="h-4 w-4 shrink-0" aria-hidden />
+              <span className="leading-none">{t("plan.submit")}</span>
+            </span>
           )}
         </button>
       </form>

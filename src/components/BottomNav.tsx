@@ -15,7 +15,10 @@ export function BottomNav() {
   const { t } = useI18n();
 
   return (
-    <nav className="absolute inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom,0px)]">
+    <nav
+      aria-label="主要導覽"
+      className="absolute inset-x-0 bottom-0 z-40 min-h-[var(--bottom-nav-height,4.25rem)] border-t border-border bg-card/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom,0px)]"
+    >
       <ul className="flex items-stretch justify-between px-2 pt-2 pb-2">
         {items.map((it) => {
           const active = pathname === it.to;

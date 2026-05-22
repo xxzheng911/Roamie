@@ -1,9 +1,16 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
+import { useServerFn } from "@tanstack/react-start";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
+import { TransitLegCard } from "@/components/TransitLegCard";
 import type { DailyOutfitAdvice } from "@/lib/outfit/types";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
+import { recommendTransitLegs } from "@/lib/transit.functions";
+import { buildLegKey } from "@/lib/transit/types";
+import { RoamieDatePicker, RoamieDurationPicker, RoamieTimePicker } from "@/components/pickers";
+import { daysBetweenDates } from "@/lib/fetch-context";
+import { groupItineraryByDate, listTripDates } from "@/lib/outfit/group-by-date";
 import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings, TripTransportMode } from "@/lib/ai/types";
 
 const TRANSPORT_OPTIONS: { value: TripTransportMode; label: string }[] = [
@@ -24,6 +31,54 @@ function legKey(item: RoamieItineraryItem): string {
   return item.placeName || item.title;
 }
 
+function inferTripDates(
+  items: RoamieItineraryItem[],
+  settings: TripPlanSettings,
+): { start: string; end: string } {
+  const fromSettings = settings.tripStartDate;
+  const toSettings = settings.tripEndDate;
+  if (fromSettings) {
+    return { start: fromSettings, end: toSettings || fromSettings };
+  }
+  const isoDates = [...new Set(items.map((i) => i.date?.trim()).filter((d) => d && /^\d{4}-\d{2}-\d{2}$/.test(d!)))].sort();
+  if (isoDates.length > 0) {
+    return { start: isoDates[0]!, end: isoDates[isoDates.length - 1]! };
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  return { start: today, end: today };
+}
+
+function applyTripDateRange(
+  items: RoamieItineraryItem[],
+  start: string,
+  end: string,
+): RoamieItineraryItem[] {
+  if (!start) return items;
+  const dayCount = daysBetweenDates(start, end || start);
+  const groups = [...groupItineraryByDate(items).entries()];
+  const newDates = listTripDates(items, start, dayCount);
+  const next: RoamieItineraryItem[] = [];
+  groups.forEach(([, groupItems], idx) => {
+    const date = newDates[idx] ?? newDates[newDates.length - 1] ?? start;
+    for (const item of groupItems) {
+      next.push({ ...item, date });
+    }
+  });
+  return next;
+}
+
+function updateDayDate(
+  items: RoamieItineraryItem[],
+  oldDateKey: string,
+  newIso: string,
+): RoamieItineraryItem[] {
+  return items.map((item) => {
+    const key = item.date?.trim() || "未指定日期";
+    if (key !== oldDateKey) return item;
+    return { ...item, date: newIso };
+  });
+}
+
 type Props = {
   payload: RoamiePayloadV2;
   onSave: (next: RoamiePayloadV2) => Promise<void>;
@@ -42,6 +97,14 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
   const [items, setItems] = useState<RoamieItineraryItem[]>(() => [...payload.itinerary]);
   const [saving, setSaving] = useState(false);
   const [replanning, setReplanning] = useState(false);
+  const [transitLoading, setTransitLoading] = useState(false);
+  const fetchTransit = useServerFn(recommendTransitLegs);
+  const skipInitialTransitFetch = useRef(
+    Boolean(
+      payload.tripSettings?.transitLegs &&
+        Object.keys(payload.tripSettings.transitLegs).length > 0,
+    ),
+  );
 
   const routeCoords = useMemo(
     () =>
@@ -76,6 +139,55 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
     }
   };
 
+  const refreshTransit = useCallback(async () => {
+    const withCoords = items.filter((i) => i.lat != null && i.lng != null);
+    if (withCoords.length < 2) return;
+
+    setTransitLoading(true);
+    try {
+      const result = await fetchTransit({
+        data: {
+          destination: payload.destination,
+          items: items.map((i) => ({
+            placeName: i.placeName,
+            title: i.title,
+            lat: i.lat,
+            lng: i.lng,
+            date: i.date,
+            time: i.time,
+          })),
+          preferences: {
+            transportation: TRANSPORT_LABEL[settings.transport ?? "walk"],
+            pace: payload.summary?.includes("慢") ? "慢旅" : undefined,
+          },
+          time: settings.startTime,
+          useAiReasons: true,
+        },
+      });
+      const transitLegs = Object.fromEntries(result.legs.map((l) => [l.legKey, l]));
+      setSettings((s) => ({
+        ...s,
+        transitLegs,
+        transportTips: result.transportTips,
+      }));
+    } catch (e) {
+      console.warn("[TripPlanEditor] transit advice failed", e);
+    } finally {
+      setTransitLoading(false);
+    }
+  }, [items, payload.destination, payload.summary, settings.transport, settings.startTime, fetchTransit]);
+
+  useEffect(() => {
+    if (skipInitialTransitFetch.current) {
+      skipInitialTransitFetch.current = false;
+      return;
+    }
+    const t = setTimeout(() => {
+      void refreshTransit();
+    }, 600);
+    return () => clearTimeout(t);
+  }, [refreshTransit]);
+
   const handleReplan = async () => {
     setReplanning(true);
     try {
@@ -102,16 +214,42 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
     <div className="space-y-5">
       <p className="text-sm leading-relaxed text-muted-foreground">{payload.summary}</p>
 
+      {settings.transportTips && (
+        <p className="rounded-2xl bg-secondary/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          {settings.transportTips}
+        </p>
+      )}
+
+      <RoamieDatePicker
+        mode="range"
+        label="旅行日期"
+        title="編輯行程日期"
+        value={{
+          start: inferTripDates(items, settings).start,
+          end: inferTripDates(items, settings).end,
+        }}
+        onChange={(range) => {
+          setSettings((s) => ({
+            ...s,
+            tripStartDate: range.start,
+            tripEndDate: range.end,
+          }));
+          setItems(applyTripDateRange(items, range.start, range.end));
+        }}
+        className="mb-1"
+      />
+
       <div className="grid grid-cols-2 gap-3">
-        <label className="rounded-2xl border border-border bg-card p-3">
+        <div className="flex flex-col justify-center rounded-2xl border border-border bg-card px-3 py-2.5">
           <span className="text-[11px] text-muted-foreground">出發時間</span>
-          <input
-            type="time"
+          <RoamieTimePicker
+            compact
+            title="出發時間"
             value={settings.startTime ?? "10:00"}
-            onChange={(e) => setSettings((s) => ({ ...s, startTime: e.target.value }))}
-            className="mt-1 w-full bg-transparent text-sm font-medium focus:outline-none"
+            onChange={(t) => setSettings((s) => ({ ...s, startTime: t }))}
+            className="mt-1 self-start"
           />
-        </label>
+        </div>
         <label className="rounded-2xl border border-border bg-card p-3">
           <span className="text-[11px] text-muted-foreground">交通方式</span>
           <select
@@ -149,41 +287,59 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
               : undefined);
           return (
           <section key={dateKey}>
-            <p className="mb-3 font-display text-lg">{dateKey}</p>
+            <div className="mb-3">
+              <RoamieDatePicker
+                mode="single"
+                variant="inline"
+                title="選擇日期"
+                value={/^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : inferTripDates(items, settings).start}
+                onChange={(iso) => setItems(updateDayDate(items, dateKey, iso))}
+                placeholder={dateKey}
+              />
+            </div>
             {outfit && <DayOutfitCard advice={outfit} className="mb-4" />}
             <div className="relative space-y-0 border-l border-dashed border-border pl-5">
               {dayItems.map((item, i) => {
                 const key = legKey(item);
                 const mins = settings.legMinutes?.[key] ?? 90;
+                const prev = i > 0 ? dayItems[i - 1] : null;
+                const transitKey =
+                  prev != null
+                    ? buildLegKey(prev.placeName || prev.title, item.placeName || item.title)
+                    : null;
+                const transit = transitKey ? settings.transitLegs?.[transitKey] : undefined;
+
                 return (
-                  <article key={`${key}-${i}`} className="relative pb-6 last:pb-0">
+                  <div key={`${key}-${i}`}>
+                    {transit && (
+                      <div className="relative pb-3 pl-0">
+                        <TransitLegCard leg={transit} />
+                        {transitLoading && i === 1 && (
+                          <span className="mt-1 inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" /> 更新交通建議…
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  <article className="relative pb-6 last:pb-0">
                     <span className="absolute -left-[1.35rem] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-foreground" />
                     <div className="rounded-2xl border border-border bg-card p-4 shadow-soft">
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                        <input
-                          type="time"
-                          value={item.time?.slice(0, 5) || ""}
-                          onChange={(e) => {
+                        <RoamieTimePicker
+                          compact
+                          title="抵達時間"
+                          value={item.time?.slice(0, 5) || "10:00"}
+                          onChange={(t) => {
                             const next = [...items];
                             const idx = items.indexOf(item);
-                            next[idx] = { ...item, time: e.target.value };
+                            next[idx] = { ...item, time: t };
                             setItems(next);
                           }}
-                          className="rounded-lg border border-border bg-secondary px-2 py-0.5 font-medium"
                         />
-                        <label className="flex items-center gap-1">
-                          停留
-                          <input
-                            type="number"
-                            min={15}
-                            max={480}
-                            step={15}
-                            value={mins}
-                            onChange={(e) => setLegMinutes(key, Number(e.target.value) || 90)}
-                            className="w-14 rounded-lg border border-border bg-secondary px-1.5 py-0.5 text-center"
-                          />
-                          分
-                        </label>
+                        <RoamieDurationPicker
+                          valueMinutes={mins}
+                          onChangeMinutes={(m) => setLegMinutes(key, m)}
+                        />
                       </div>
                       <h3 className="mt-2 text-[16px] font-medium leading-snug">{item.title}</h3>
                       <p className="mt-0.5 text-xs text-muted-foreground">{item.placeName}</p>
@@ -197,6 +353,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                       />
                     </div>
                   </article>
+                  </div>
                 );
               })}
             </div>

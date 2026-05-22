@@ -1,1 +1,18 @@
 project_id = "rkzohhstdfxeqxajslrt"
+
+# Cloud 專案請在 Dashboard → Authentication → URL Configuration 同步設定：
+# Site URL：http://localhost:8080（預設／電腦開發）
+# Redirect URLs 需同時包含 localhost 與 LAN IP（程式依 window.location.origin 回跳）：
+#   http://localhost:8080
+#   http://localhost:8080/auth/callback
+#   http://192.168.0.60:8080
+#   http://192.168.0.60:8080/auth/callback
+# （LAN IP 若變更，請改為目前 Mac 的區網 IP）
+[auth]
+site_url = "http://localhost:8080"
+additional_redirect_urls = [
+  "http://localhost:8080",
+  "http://localhost:8080/auth/callback",
+  "http://192.168.0.60:8080",
+  "http://192.168.0.60:8080/auth/callback",
+]

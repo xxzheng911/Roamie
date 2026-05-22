@@ -10,34 +10,24 @@ import { distanceMeters } from "@/lib/map-explore";
 import {
   DEFAULT_SEARCH_RADIUS_M,
   MAX_PLACE_DISTANCE_M,
-  PLACES_LANGUAGE,
-  PLACES_REGION,
 } from "@/lib/places-search-config";
+import {
+  geocodeRegionFromCoordinates,
+  placesRegionCodeFromCoordinates,
+} from "@/lib/geo-region";
+import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
+import { coerceLocale } from "@/lib/i18n/resolve-locale";
+import type { Locale } from "@/lib/i18n/types";
 import {
   applyAvailabilityFields,
   derivePlaceAvailability,
+  isPlaceAvailableNow,
   type PlaceHoursData,
-  type PlaceOpenStatus,
 } from "@/lib/filter-available-places";
+import { filterExplorePlaces, isTravelFriendlyPlace } from "@/lib/filter-explore-places";
+import type { PlaceResult } from "@/lib/place-result";
 
-export type PlaceResult = {
-  id: string;
-  name: string;
-  address: string | null;
-  lat: number | null;
-  lng: number | null;
-  rating: number | null;
-  userRatingCount: number | null;
-  photoName: string | null;
-  primaryType: string | null;
-  businessStatus: string | null;
-  openStatus: PlaceOpenStatus;
-  /** 營業中 / 目前未營業 / 即將打烊；已停業則不會出現在結果 */
-  openStatusLabel: string;
-  todayHoursLabel: string;
-  closingSoonNote: string;
-  nextOpenHint: string;
-};
+export type { PlaceResult } from "@/lib/place-result";
 
 export type RawPlaceHours = PlaceHoursData & {
   id: string;
@@ -48,6 +38,7 @@ export type RawPlaceHours = PlaceHoursData & {
   userRatingCount?: number;
   photos?: Array<{ name: string }>;
   primaryType?: string;
+  types?: string[];
 };
 
 const ExploreSearchInput = z.object({
@@ -58,6 +49,8 @@ const ExploreSearchInput = z.object({
   mode: z.enum(["nearby", "text", "multi"]).default("nearby"),
   includedTypes: z.array(z.string()).max(50).optional(),
   nearbyGroups: z.array(z.array(z.string()).max(10)).max(12).optional(),
+  /** 使用者 App 語言（非所在地） */
+  locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
 });
 
 type RawPlace = RawPlaceHours;
@@ -75,13 +68,15 @@ function mapRawPlaces(raw: RawPlace[]): PlaceResult[] {
   return raw
     .map((p) => {
       const hours = rawPlaceToHoursData(p);
+      const name = p.displayName?.text ?? "Unknown";
+      const type = p.primaryType ?? p.types?.[0] ?? "";
+      if (!isPlaceAvailableNow(hours, { name, type }, { context: "now" })) return null;
       const availability = derivePlaceAvailability(hours, { context: "now" });
-      if (!availability.isRecommendable) return null;
       const fields = applyAvailabilityFields({}, availability);
       return {
         place: {
           id: p.id,
-          name: p.displayName?.text ?? "Unknown",
+          name,
           address: p.formattedAddress ?? null,
           lat: p.location?.latitude ?? null,
           lng: p.location?.longitude ?? null,
@@ -89,6 +84,7 @@ function mapRawPlaces(raw: RawPlace[]): PlaceResult[] {
           userRatingCount: p.userRatingCount ?? null,
           photoName: p.photos?.[0]?.name ?? null,
           primaryType: p.primaryType ?? null,
+          types: p.types ?? null,
           businessStatus: availability.businessStatus,
           openStatus: availability.openStatus,
           openStatusLabel: fields.openStatusLabel,
@@ -101,7 +97,8 @@ function mapRawPlaces(raw: RawPlace[]): PlaceResult[] {
     })
     .filter((x): x is NonNullable<typeof x> => x != null)
     .sort((a, b) => a.sortWeight - b.sortWeight)
-    .map(({ place }) => place);
+    .map(({ place }) => place)
+    .filter(isTravelFriendlyPlace);
 }
 
 function parseGoogleError(text: string): string {
@@ -160,6 +157,14 @@ async function postPlaces(
   return { places: json.places ?? [], error: null };
 }
 
+function exploreLocale(lat: number, lng: number, userLocale?: Locale) {
+  const locale = userLocale ?? "zh-TW";
+  return {
+    languageCode: localeToGoogleLanguageCode(locale),
+    regionCode: placesRegionCodeFromCoordinates(lat, lng),
+  };
+}
+
 async function searchText(
   apiKey: string,
   query: string,
@@ -167,14 +172,16 @@ async function searchText(
   lng: number,
   radius: number,
   pageSize = 20,
+  userLocale?: Locale,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
+  const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
     textQuery: query,
-    languageCode: PLACES_LANGUAGE,
-    regionCode: PLACES_REGION,
+    languageCode,
     locationBias: locationCircle(lat, lng, radius),
     pageSize,
   };
+  if (regionCode) body.regionCode = regionCode;
 
   const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey);
   if (error) return { places: [], error };
@@ -188,15 +195,17 @@ async function searchNearby(
   radius: number,
   includedTypes: string[],
   maxResultCount = 12,
+  userLocale?: Locale,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
+  const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
     includedTypes,
-    languageCode: PLACES_LANGUAGE,
-    regionCode: PLACES_REGION,
+    languageCode,
     locationRestriction: locationCircle(lat, lng, radius),
     maxResultCount,
     rankPreference: "DISTANCE",
   };
+  if (regionCode) body.regionCode = regionCode;
 
   const { places: raw, error } = await postPlaces(placesSearchNearbyUrl(), body, apiKey);
   if (error) return { places: [], error };
@@ -209,9 +218,10 @@ async function searchMultiNearby(
   lng: number,
   radius: number,
   groups: string[][],
+  userLocale?: Locale,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const settled = await Promise.all(
-    groups.map((types) => searchNearby(apiKey, lat, lng, radius, types, 6)),
+    groups.map((types) => searchNearby(apiKey, lat, lng, radius, types, 6, userLocale)),
   );
 
   const errors = settled.map((r) => r.error).filter(Boolean);
@@ -240,13 +250,14 @@ async function lookupPlaceHoursFromRaw(
 ): Promise<PlaceHoursData | null> {
   const apiKey = requireGoogleMapsServerKey();
   const query = [name, address].filter(Boolean).join(" ").trim() || name;
+  const { languageCode, regionCode } = exploreLocale(lat, lng);
   const body: Record<string, unknown> = {
     textQuery: query,
-    languageCode: PLACES_LANGUAGE,
-    regionCode: PLACES_REGION,
+    languageCode,
     locationBias: locationCircle(lat, lng, DEFAULT_SEARCH_RADIUS_M),
     pageSize: 3,
   };
+  if (regionCode) body.regionCode = regionCode;
   const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey);
   if (error || !raw.length) return null;
   const best =
@@ -288,23 +299,49 @@ async function runExploreSearch(
   const apiKey = requireGoogleMapsServerKey();
   const center = { lat: data.lat, lng: data.lng };
   const radii = [data.radius ?? DEFAULT_SEARCH_RADIUS_M, 8_000, 5_000];
+  const userLocale = data.locale ? coerceLocale(data.locale) : undefined;
 
   for (const radius of radii) {
     let result: { places: PlaceResult[]; error: string | null };
 
     if (data.mode === "multi" && data.nearbyGroups?.length) {
-      result = await searchMultiNearby(apiKey, data.lat, data.lng, radius, data.nearbyGroups);
+      result = await searchMultiNearby(
+        apiKey,
+        data.lat,
+        data.lng,
+        radius,
+        data.nearbyGroups,
+        userLocale,
+      );
     } else if (data.mode === "nearby" && data.includedTypes?.length) {
-      result = await searchNearby(apiKey, data.lat, data.lng, radius, data.includedTypes, 20);
+      result = await searchNearby(
+        apiKey,
+        data.lat,
+        data.lng,
+        radius,
+        data.includedTypes,
+        20,
+        userLocale,
+      );
     } else if (data.query.trim()) {
-      result = await searchText(apiKey, data.query.trim(), data.lat, data.lng, radius);
+      result = await searchText(
+        apiKey,
+        data.query.trim(),
+        data.lat,
+        data.lng,
+        radius,
+        20,
+        userLocale,
+      );
     } else {
       result = { places: [], error: null };
     }
 
     if (result.error) return result;
 
-    const nearby = filterWithinDistance(result.places, center, MAX_PLACE_DISTANCE_M);
+    const nearby = filterExplorePlaces(
+      filterWithinDistance(result.places, center, MAX_PLACE_DISTANCE_M),
+    );
 
     if (nearby.length > 0) {
       return { places: nearby, error: null };

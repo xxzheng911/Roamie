@@ -253,19 +253,26 @@ export async function saveUserProfile(input: {
       personalitySummary: current.personalitySummary,
     };
 
-    const { error } = await supabase
+    const patch = {
+      display_name: next.displayName,
+      bio: next.bio,
+      avatar_url: avatarUrl,
+      cover_image_url: coverImageUrl,
+      ai_preferences: extras as never,
+    };
+
+    const { data: existing } = await supabase
       .from("profiles")
-      .upsert(
-        {
+      .select("id")
+      .eq("id", userId)
+      .maybeSingle();
+
+    const { error } = existing?.id
+      ? await supabase.from("profiles").update(patch).eq("id", userId)
+      : await supabase.from("profiles").insert({
           id: userId,
-          display_name: next.displayName,
-          bio: next.bio,
-          avatar_url: avatarUrl,
-          cover_image_url: coverImageUrl,
-          ai_preferences: extras as never,
-        },
-        { onConflict: "id" },
-      );
+          ...patch,
+        });
     if (error) throw new Error(error.message);
   } else {
     writeGuestProfile(next);

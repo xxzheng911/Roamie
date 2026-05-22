@@ -8,14 +8,18 @@ import { useAvatar } from "@/hooks/use-avatar";
 import { getWeather, type WeatherSummary } from "@/lib/weather.functions";
 import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { fetchRoamieAI } from "@/lib/ai/stream-client";
+import { isLateNightMode } from "@/lib/recommend-place-ranking";
+import { shouldActivateLateNightSceneFlow } from "@/lib/late-night-scene-recommendations";
 import { saveRecommendation } from "@/lib/recommendation-storage";
 import { listPlaces } from "@/lib/places-storage";
+import { isMissingTableError } from "@/lib/supabase-errors";
 import {
   loadRecentRecommendationNames,
   recordRecommendationNames,
 } from "@/lib/recommendation-history";
 import { listItineraries } from "@/lib/itinerary-storage";
 import { supabase } from "@/integrations/supabase/client";
+import { useI18n } from "@/hooks/use-i18n";
 
 export const Route = createFileRoute("/_app/")({
   component: Home,
@@ -33,13 +37,12 @@ const moods = [
 const TAIPEI = { lat: 25.0478, lng: 121.5319, city: "台北" };
 
 function Home() {
+  const { t, locale } = useI18n();
   const { avatarSrc } = useAvatar();
   const navigate = useNavigate();
   const fetchWeather = useServerFn(getWeather);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [wLoading, setWLoading] = useState(true);
-  const [locating, setLocating] = useState(true);
-  const [usedFallbackLocation, setUsedFallbackLocation] = useState(false);
   const [selectedMood, setSelectedMood] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [latestTripId, setLatestTripId] = useState<string | null>(null);
@@ -47,8 +50,7 @@ function Home() {
 
   useEffect(() => {
     let cancelled = false;
-    const load = (lat: number, lng: number, isFallback: boolean) => {
-      setUsedFallbackLocation(isFallback);
+    const load = (lat: number, lng: number) => {
       fetchWeather({ data: { lat, lng } })
         .then((r) => {
           if (cancelled) return;
@@ -70,21 +72,18 @@ function Home() {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           if (cancelled) return;
-          setLocating(false);
           console.info("[Roamie Location] home GPS", pos.coords.latitude, pos.coords.longitude);
-          load(pos.coords.latitude, pos.coords.longitude, false);
+          load(pos.coords.latitude, pos.coords.longitude);
         },
         (err) => {
           if (cancelled) return;
-          setLocating(false);
           console.warn("[Roamie Location] home fallback Taipei", err.code);
-          load(TAIPEI.lat, TAIPEI.lng, true);
+          load(TAIPEI.lat, TAIPEI.lng);
         },
         { timeout: 12000, maximumAge: 5 * 60 * 1000, enableHighAccuracy: true },
       );
     } else {
-      setLocating(false);
-      load(TAIPEI.lat, TAIPEI.lng, true);
+      load(TAIPEI.lat, TAIPEI.lng);
     }
     return () => {
       cancelled = true;
@@ -106,36 +105,32 @@ function Home() {
   const tempText =
     weather?.tempC !== null && weather?.tempC !== undefined ? `${Math.round(weather.tempC)}°` : "";
   const condText = weather?.condition ?? "多雲";
-  const cityText = usedFallbackLocation
-    ? TAIPEI.city
-    : weather?.city && weather.city !== "目前位置"
-      ? weather.city
-      : wLoading || locating
-        ? "定位中…"
-        : "目前位置";
-  const headerStatus = locating
-    ? "取得位置中…"
-    : wLoading
-      ? "讀取天氣中…"
-      : `${cityText} · ${condText}${tempText ? ` · ${tempText}` : ""}`;
 
   const handleRecommend = async () => {
     if (!selectedMood) {
-      toast.message("先選一個心情吧");
+      toast.message(t("home.pickMood"));
       return;
     }
     setAiLoading(true);
     try {
       const [bundle, savedPlaces] = await Promise.all([
         buildClientContextBundle(fetchWeather),
-        listPlaces(),
+        listPlaces().catch((e) => {
+          if (isMissingTableError(e)) return [];
+          throw e;
+        }),
       ]);
       const { data: session } = await supabase.auth.getSession();
       const token = session.session?.access_token;
 
+      const at = new Date(bundle.time);
       const data = await fetchRoamieAI(
         toRoamieRequest("recommend", bundle, {
           mood: selectedMood,
+          selectedCategory: selectedMood,
+          selectedMood,
+          locale,
+          lateNightMode: shouldActivateLateNightSceneFlow(selectedMood, at),
           recentRecommendationNames: loadRecentRecommendationNames(),
           savedPlaceNames: savedPlaces.map((p) => p.name),
         }),
@@ -147,7 +142,7 @@ function Home() {
       navigate({ to: "/recommendations", search: { id: saved.id } });
     } catch (e) {
       console.error("[Roamie AI] home recommend failed", e);
-      toast.error(e instanceof Error ? e.message : "推薦失敗，請稍後再試");
+      toast.error(e instanceof Error ? e.message : t("home.recommendFailed"));
     } finally {
       setAiLoading(false);
     }
@@ -157,7 +152,9 @@ function Home() {
     <div className="px-5 pt-3 pb-6 animate-rise">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm text-muted-foreground">{headerStatus}</p>
+          <p className="pointer-events-none text-sm leading-normal opacity-0" aria-hidden="true">
+            &nbsp;
+          </p>
           <h1 className="mt-1 text-2xl">嘿，今天想去哪裡走走？</h1>
         </div>
         <Link

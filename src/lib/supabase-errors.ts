@@ -7,7 +7,9 @@ export function isMissingTableError(error: unknown): boolean {
       : "";
   return (
     code === "42P01" ||
+    code === "PGRST205" ||
     msg.includes("Could not find the table") ||
+    msg.includes("schema cache") ||
     msg.includes("saved_trips") ||
     msg.includes("saved_places")
   );

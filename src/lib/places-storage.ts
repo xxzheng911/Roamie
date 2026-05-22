@@ -61,7 +61,12 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
       .insert({ ...input, user_id: userId, metadata: (input.metadata ?? {}) as never })
       .select()
       .single();
-    if (error) throw new Error(error.message);
+    if (error) {
+      if (isMissingTableError(error)) {
+        throw new Error("收藏功能尚未就緒，請稍後再試或聯絡管理員套用資料庫 migration。");
+      }
+      throw new Error(error.message);
+    }
     return data as SavedPlace;
   }
   const record: SavedPlace = {
@@ -83,7 +88,10 @@ export async function deletePlace(id: string): Promise<void> {
   const userId = await getAuthenticatedUserId();
   if (userId) {
     const { error } = await supabase.from("saved_places").delete().eq("id", id);
-    if (error) throw new Error(error.message);
+    if (error) {
+      if (isMissingTableError(error)) return;
+      throw new Error(error.message);
+    }
     return;
   }
   writeGuest(readGuest().filter((p) => p.id !== id));

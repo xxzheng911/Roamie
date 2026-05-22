@@ -25,6 +25,8 @@ export const en = {
     saved: "Saved",
     saveFailed: "Could not save",
     loadFailed: "Could not load profile",
+    signInRequired: "Please sign in first",
+    signInCta: "Go to sign in",
     guestMode: "Guest mode",
     pace: "Pace",
     vibe: "Vibe",

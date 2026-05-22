@@ -104,7 +104,7 @@ export async function callOutfitAI(input: OutfitAIInput): Promise<OutfitAIItem[]
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       max_tokens: 1200,
       temperature: 0.8,
       messages: [

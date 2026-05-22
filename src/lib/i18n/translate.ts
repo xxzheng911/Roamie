@@ -1,19 +1,11 @@
 import type { Locale } from "@/lib/i18n/types";
-import { en } from "@/lib/i18n/locales/en";
-import { ja } from "@/lib/i18n/locales/ja";
-import { ko } from "@/lib/i18n/locales/ko";
-import { zhTW } from "@/lib/i18n/locales/zh-TW";
+import { i18nMessages } from "@/lib/i18n/messages";
 
-const dictionaries = {
-  "zh-TW": zhTW,
-  en,
-  ja,
-  ko,
-} as const;
+const dictionaries = i18nMessages;
 
 export type MessageKey = string;
 
-export function translate(locale: Locale, key: MessageKey): string {
+export function translate(locale: Locale, key: MessageKey, vars?: Record<string, string | number>): string {
   const parts = key.split(".");
   let node: unknown = dictionaries[locale];
   for (const part of parts) {
@@ -24,15 +16,24 @@ export function translate(locale: Locale, key: MessageKey): string {
       break;
     }
   }
-  if (typeof node === "string") return node;
-  // Fallback to zh-TW
-  let fb: unknown = dictionaries["zh-TW"];
-  for (const part of parts) {
-    if (fb && typeof fb === "object" && part in (fb as object)) {
-      fb = (fb as Record<string, unknown>)[part];
-    } else {
-      return key;
+  let text: string | undefined;
+  if (typeof node === "string") text = node;
+  else {
+    let fb: unknown = dictionaries["zh-TW"];
+    for (const part of parts) {
+      if (fb && typeof fb === "object" && part in (fb as object)) {
+        fb = (fb as Record<string, unknown>)[part];
+      } else {
+        return key;
+      }
     }
+    text = typeof fb === "string" ? fb : undefined;
   }
-  return typeof fb === "string" ? fb : key;
+  if (!text) return key;
+  if (!vars) return text;
+  return text.replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? ""));
+}
+
+export function t(locale: Locale, key: MessageKey, vars?: Record<string, string | number>): string {
+  return translate(locale, key, vars);
 }

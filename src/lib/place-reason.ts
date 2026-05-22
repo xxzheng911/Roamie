@@ -1,4 +1,8 @@
-import type { WeatherSummary } from "@/lib/weather.functions";
+import type { WeatherSummary } from "@/lib/weather-types";
+import {
+  generatePlaceReason,
+  type UserProfileForReason,
+} from "@/lib/build-place-recommendation-reason";
 
 export type ReasonContext = {
   mood?: string;
@@ -68,27 +72,38 @@ function timeHint(hour: number): string | null {
   return null;
 }
 
-/** Fast rule-based reason for map / nearby lists */
-export function buildTemplateReason(ctx: ReasonContext): string {
+/** @deprecated 請改用 buildPlaceRecommendationReason */
+export function buildTemplateReason(
+  ctx: ReasonContext,
+  userProfile?: UserProfileForReason | null,
+): string {
+  const stub = {
+    id: "legacy",
+    name: ctx.searchQuery ?? "地點",
+    address: null,
+    lat: null,
+    lng: null,
+    rating: null,
+    userRatingCount: null,
+    photoName: null,
+    primaryType: ctx.primaryType ?? null,
+    businessStatus: null,
+    openStatus: "unknown" as const,
+    openStatusLabel: "",
+    todayHoursLabel: "",
+    closingSoonNote: "",
+    nextOpenHint: "",
+  };
   const hour = ctx.hour ?? new Date().getHours();
-  const typeKey = normalizeTypeKey(ctx.primaryType, ctx.categoryLabel);
-  const parts: string[] = [];
-
-  const mood = moodHint(ctx.mood);
-  if (mood) parts.push(mood);
-
-  const w = weatherHint(ctx.weather);
-  if (w) parts.push(w);
-
-  const d = distanceHint(ctx.distanceMeters);
-  if (d) parts.push(d);
-
-  const t = timeHint(hour);
-  if (t) parts.push(t);
-
-  const typeLines = TYPE_HINTS[typeKey] ?? ["適合慢步調繞一圈", "值得花點時間停留"];
-  parts.push(typeLines[hour % typeLines.length]);
-
-  const unique = [...new Set(parts.filter(Boolean))];
-  return unique.slice(0, 2).join("，") + "。";
+  const d = new Date();
+  d.setHours(hour, 0, 0, 0);
+  return generatePlaceReason(stub, userProfile ?? null, {
+    weather: ctx.weather,
+    currentTime: d,
+    context: {
+      mood: ctx.mood,
+      categoryLabel: ctx.categoryLabel,
+      distanceMeters: ctx.distanceMeters,
+    },
+  });
 }

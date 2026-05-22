@@ -25,6 +25,8 @@ export const ja = {
     saved: "保存しました",
     saveFailed: "保存に失敗しました",
     loadFailed: "プロフィールを読み込めませんでした",
+    signInRequired: "ログインしてください",
+    signInCta: "ログインへ",
     guestMode: "ゲストモード",
     pace: "ペース",
     vibe: "雰囲気",

@@ -49,6 +49,9 @@
 }
 
 :root {
+  /** 與 BottomNav / _app main padding 一致，探索 sheet 需避開此高度 */
+  --bottom-nav-height: 4.25rem;
+
   --radius: 1.25rem;
 
   --background: oklch(0.965 0.014 80);
@@ -131,8 +134,189 @@
   }
   .no-scrollbar::-webkit-scrollbar { display: none; }
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  .roamie-wheel-scroll::-webkit-scrollbar { display: none; }
+  .roamie-wheel-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+  /** 探索 sheet 內容區底部小間距（sheet 已用 bottom 避開 tab bar） */
+  .map-sheet-scroll-pad {
+    padding-bottom: 1rem;
+  }
+  /** 探索頁：地圖全屏 + sheet 疊層（去趣式），版權列留在地圖安全區 */
+  /** Roamie「我的位置」地圖 marker（OverlayView DOM） */
+  .roamie-user-loc {
+    position: absolute;
+    width: 48px;
+    height: 58px;
+    transform: translate(-50%, -100%);
+    cursor: pointer;
+    z-index: 9999;
+    pointer-events: auto;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    will-change: transform, left, top;
+  }
+  .roamie-user-loc__pulses {
+    position: absolute;
+    left: 50%;
+    top: 21px;
+    width: 46px;
+    height: 46px;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+  .roamie-user-loc__pulse {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle,
+      oklch(0.82 0.04 75 / 0.55) 0%,
+      oklch(0.88 0.03 80 / 0.2) 45%,
+      transparent 72%
+    );
+    animation: roamie-user-loc-pulse 3.2s ease-out infinite;
+  }
+  .roamie-user-loc__pulse--2 {
+    animation-delay: 1.5s;
+  }
+  @keyframes roamie-user-loc-pulse {
+    0% {
+      transform: scale(0.78);
+      opacity: 0.55;
+    }
+    70% {
+      opacity: 0.12;
+    }
+    100% {
+      transform: scale(1.42);
+      opacity: 0;
+    }
+  }
+  .roamie-user-loc__body {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    filter: drop-shadow(0 2px 8px oklch(0.45 0.03 65 / 0.14));
+  }
+  .roamie-user-loc__avatar-ring {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    padding: 2.5px;
+    background: #fff;
+    box-shadow:
+      0 0 0 1px oklch(0.78 0.04 75 / 0.45),
+      0 0 0 5px oklch(0.94 0.02 85 / 0.55),
+      0 2px 10px oklch(0.55 0.04 70 / 0.12);
+    flex-shrink: 0;
+  }
+  .roamie-user-loc__avatar-wrap {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    overflow: hidden;
+    background: var(--cream, #f7f3ed);
+  }
+  .roamie-user-loc__avatar-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center center;
+    display: block;
+    image-rendering: auto;
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+  }
+  .roamie-user-loc__pointer {
+    position: relative;
+    width: 16px;
+    height: 10px;
+    margin-top: -1px;
+    display: flex;
+    justify-content: center;
+    filter: drop-shadow(0 1px 2px oklch(0.5 0.03 70 / 0.15));
+  }
+  .roamie-user-loc__pointer-fill {
+    display: block;
+    width: 0;
+    height: 0;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-top: 9px solid #fff;
+  }
+  .map-page {
+    min-height: 0;
+    isolation: isolate;
+  }
+  .map-stage {
+    z-index: 0;
+    isolation: isolate;
+    overflow: hidden;
+    transform: translateZ(0);
+  }
+  .map-stage-canvas {
+    z-index: 0;
+    isolation: isolate;
+    overflow: hidden;
+  }
+  .map-stage-canvas > div {
+    position: relative !important;
+    z-index: 0 !important;
+  }
+  .map-sheet-layer {
+    isolation: isolate;
+  }
+  [data-map-explore-sheet="true"] {
+    position: relative;
+    z-index: 40;
+    background-color: var(--cream);
+  }
+  .map-explore-chips {
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    touch-action: pan-x;
+  }
+  .map-explore-chips::-webkit-scrollbar {
+    display: none;
+  }
+  /** 探索頁推薦卡片橫向 carousel */
+  .map-explore-cards {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 1rem;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    touch-action: pan-x;
+  }
+  .map-explore-cards::-webkit-scrollbar {
+    display: none;
+  }
+  .map-explore-card-item {
+    flex: 0 0 74%;
+    max-width: 20rem;
+    transform: none !important;
+  }
+  .map-explore-card-item--last {
+    margin-right: 1.5rem;
+  }
   .shadow-soft {
     box-shadow: 0 1px 2px oklch(0.2 0.02 60 / 0.04), 0 8px 24px oklch(0.2 0.02 60 / 0.06);
+  }
+  /** 探索地圖推薦卡：禁止 hover 位移／縮放（覆蓋外掛或全域 transition） */
+  .map-place-card,
+  .map-place-card:hover,
+  .map-place-card:active {
+    transform: none !important;
   }
   .shadow-lift {
     box-shadow: 0 2px 4px oklch(0.2 0.02 60 / 0.05), 0 24px 48px -12px oklch(0.2 0.02 60 / 0.18);

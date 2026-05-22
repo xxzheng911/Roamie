@@ -25,6 +25,8 @@ export const zhTW = {
     saved: "已儲存",
     saveFailed: "儲存失敗",
     loadFailed: "讀取個人資料失敗",
+    signInRequired: "請先登入",
+    signInCta: "前往登入",
     guestMode: "訪客模式",
     pace: "步調",
     vibe: "氣氛",

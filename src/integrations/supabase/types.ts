@@ -167,29 +167,41 @@ export type Database = {
       saved_trips: {
         Row: {
           cover_image: string | null
+          cover_image_url: string | null
           created_at: string
+          description: string | null
           id: string
           mood: string | null
           payload: Json | null
           title: string
+          trip_data: Json | null
+          updated_at: string
           user_id: string
         }
         Insert: {
           cover_image?: string | null
+          cover_image_url?: string | null
           created_at?: string
+          description?: string | null
           id?: string
           mood?: string | null
           payload?: Json | null
           title: string
+          trip_data?: Json | null
+          updated_at?: string
           user_id: string
         }
         Update: {
           cover_image?: string | null
+          cover_image_url?: string | null
           created_at?: string
+          description?: string | null
           id?: string
           mood?: string | null
           payload?: Json | null
           title?: string
+          trip_data?: Json | null
+          updated_at?: string
           user_id?: string
         }
         Relationships: []

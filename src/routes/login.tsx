@@ -4,8 +4,7 @@ import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
 import { LegalDocumentSheet } from "@/components/LegalDocumentSheet";
 import { TERMS_OF_SERVICE, PRIVACY_POLICY } from "@/content/legal";
-import { supabase } from "@/lib/supabase";
-import { getAuthCallbackUrl } from "@/lib/auth-oauth";
+import { startOAuthSignIn } from "@/lib/auth-oauth";
 import { useAuth } from "@/hooks/use-auth";
 import traveler from "@/assets/roamie-traveler.jpg";
 
@@ -28,31 +27,13 @@ function Login() {
     disableGuest();
     toast.message(provider === "google" ? "正在跳轉至 Google…" : "正在跳轉至 Apple…");
 
-    const redirectTo = getAuthCallbackUrl();
-
     try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: {
-          redirectTo,
-          skipBrowserRedirect: true,
-        },
-      });
-
-      if (error) {
-        console.error("[oauth] signInWithOAuth error", error);
-        toast.error("登入沒成功，待會再試一次。");
+      const result = await startOAuthSignIn(provider);
+      if (!result.ok) {
+        toast.error(result.message || "登入沒成功，待會再試一次。");
         setBusy(null);
-        return;
       }
-
-      if (data?.url) {
-        window.location.assign(data.url);
-        return;
-      }
-
-      toast.error("無法開啟登入頁面，請稍後再試。");
-      setBusy(null);
+      // 成功時整頁導向 Google，勿 setBusy(null)
     } catch (e) {
       console.error("[oauth] sign-in threw", e);
       toast.error("登入沒成功，待會再試一次。");

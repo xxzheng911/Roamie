@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { OutfitAdvicePayload } from "@/lib/outfit/types";
+import type { TransitLegAdvice } from "@/lib/transit/types";
 
 /** OpenAI strict schema 要求 recommendations / itinerary 每個 item 欄位齊全；無座標時 lat/lng 填 null */
 export const RoamieRecommendationItemSchema = z.object({
@@ -47,8 +48,15 @@ export type TripTransportMode = "walk" | "scooter" | "drive" | "transit";
 
 export type TripPlanSettings = {
   startTime?: string;
+  /** 整趟旅程開始／結束（ISO YYYY-MM-DD） */
+  tripStartDate?: string;
+  tripEndDate?: string;
   transport?: TripTransportMode;
+  /** 各站點停留時間（分） */
   legMinutes?: Record<string, number>;
+  /** 點對點智慧交通建議，key: `A→B` */
+  transitLegs?: Record<string, TransitLegAdvice>;
+  transportTips?: string;
 };
 
 /** New-format payload stored in saved_trips.payload */
@@ -60,6 +68,10 @@ export type RoamiePayloadV2 = RoamieResponse & {
   tripSettings?: TripPlanSettings;
   /** AI 每日穿搭建議（整合天氣預報） */
   outfitAdvice?: OutfitAdvicePayload;
+  /** true = 使用者已確認儲存至收藏 */
+  userSaved?: boolean;
+  source?: "chat" | "plan" | "mood_recommendation";
+  savedAt?: string;
 };
 
 export function isRoamiePayloadV2(payload: unknown): payload is RoamiePayloadV2 {

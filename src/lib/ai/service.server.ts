@@ -73,10 +73,30 @@ const RequestSchema = z.object({
       startTime: z.string().max(20).optional(),
       endTime: z.string().max(20).optional(),
       conversationSummary: z.string().max(2000).optional(),
+      fromMoodCard: z.boolean().optional(),
+      fromMoodFlow: z.boolean().optional(),
+      selectedMood: z.string().max(120).optional(),
+      selectedCategory: z.string().max(120).optional(),
+      initialChatContext: z.string().max(4000).optional(),
+      lateNightMode: z.boolean().optional(),
+      avoidTypes: z.array(z.string().max(80)).max(12).optional(),
+      preferredArea: z.string().max(80).optional(),
+      rejectedPlaceNames: z.array(z.string().max(120)).max(20).optional(),
+      lastUserIntent: z.string().max(400).optional(),
     })
     .optional(),
   recentRecommendationNames: z.array(z.string().max(200)).max(50).optional(),
   savedPlaceNames: z.array(z.string().max(200)).max(50).optional(),
+  fromMoodCard: z.boolean().optional(),
+  fromMoodFlow: z.boolean().optional(),
+  selectedMood: z.string().max(120).optional(),
+  selectedCategory: z.string().max(120).optional(),
+  initialChatContext: z.string().max(4000).optional(),
+  lateNightMode: z.boolean().optional(),
+  avoidTypes: z.array(z.string().max(80)).max(12).optional(),
+  preferredArea: z.string().max(80).optional(),
+  rejectedPlaceNames: z.array(z.string().max(120)).max(20).optional(),
+  lastUserIntent: z.string().max(400).optional(),
   messages: z
     .array(
       z.object({
@@ -102,6 +122,7 @@ const RequestSchema = z.object({
       interests: z.string().max(2000).optional(),
     })
     .optional(),
+  locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
 });
 
 export function parseRoamieRequest(body: unknown): RoamieRequestContext {
@@ -114,7 +135,12 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
   console.info("[Roamie AI] call", { mode: ctx.mode, hasKey: !!apiKey, keyPrefix: apiKey.slice(0, 7) });
   const system = buildSystemPrompt(ctx);
   const user = buildUserMessage(ctx);
-  const maxTokens = ctx.mode === "itinerary" ? 2800 : 900;
+  const lateNightRecommend =
+    ctx.mode === "recommend" &&
+    ctx.lateNightMode &&
+    /深夜散步|夜晚探索|深夜|想放空/.test(ctx.mood ?? ctx.selectedMood ?? "");
+  const maxTokens =
+    ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -123,7 +149,7 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       max_tokens: maxTokens,
       temperature: 0.85,
       messages: [
@@ -161,7 +187,12 @@ export function streamRoamieAI(ctx: RoamieRequestContext): {
   const apiKey = getOpenAIKey();
   const system = buildSystemPrompt(ctx);
   const user = buildUserMessage(ctx);
-  const maxTokens = ctx.mode === "itinerary" ? 2800 : 900;
+  const lateNightRecommend =
+    ctx.mode === "recommend" &&
+    ctx.lateNightMode &&
+    /深夜散步|夜晚探索|深夜|想放空/.test(ctx.mood ?? ctx.selectedMood ?? "");
+  const maxTokens =
+    ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
 
   let assembled = "";
   let resolveAssembly!: (v: string) => void;
@@ -176,7 +207,7 @@ export function streamRoamieAI(ctx: RoamieRequestContext): {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       max_tokens: maxTokens,
       temperature: 0.85,
       stream: true,

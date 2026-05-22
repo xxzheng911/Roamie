@@ -2,38 +2,84 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getGoogleMapsBrowserKeyError } from "@/lib/google-maps-client";
 import { loadGoogleMapsApi, triggerMapResize } from "@/lib/google-maps-loader";
+import {
+  createRoamieUserLocationOverlay,
+  ROAMIE_USER_LOCATION_LABEL,
+  type UserLocationOverlayHandle,
+} from "@/components/map/RoamieUserLocationOverlay";
+import {
+  isGoogleMapsOverlayReady,
+  resolveUserMarkerAvatarSrc,
+} from "@/lib/map-user-location-marker";
+import {
+  applyMapVisiblePadding,
+  type MapVisiblePadding,
+} from "@/lib/map-visible-padding";
 
 const LOG = "[Roamie Maps]";
 
-type Marker = { lat: number; lng: number; title?: string; selected?: boolean };
+export type MapPlaceMarker = {
+  lat: number;
+  lng: number;
+  title?: string;
+  selected?: boolean;
+};
+
+export type MapUserLocationPin = {
+  lat: number;
+  lng: number;
+  /** 已解析的大頭貼（自訂或 Roamie 預設插畫） */
+  avatarSrc: string;
+};
 
 type Props = {
   center: { lat: number; lng: number };
   zoom?: number;
-  markers?: Marker[];
-  onMarkerClick?: (index: number) => void;
+  placeMarkers?: MapPlaceMarker[];
+  userLocation?: MapUserLocationPin | null;
+  onPlaceMarkerClick?: (index: number) => void;
   className?: string;
   onLoadError?: (message: string) => void;
-  onMapReady?: () => void;
+  onMapReady?: (map: google.maps.Map) => void;
+  /** 為 sheet / bottom nav / 搜尋列保留的可視區 padding */
+  mapPadding?: MapVisiblePadding;
+  /** 點擊地圖空白區（不含 marker） */
+  onMapClick?: () => void;
 };
 
 export function GoogleMap({
   center,
   zoom = 14,
-  markers = [],
-  onMarkerClick,
+  placeMarkers = [],
+  userLocation = null,
+  onPlaceMarkerClick,
   className,
   onLoadError,
   onMapReady,
+  mapPadding,
+  onMapClick,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const centerRef = useRef(center);
   centerRef.current = center;
   const mapRef = useRef<google.maps.Map | null>(null);
-  const markersRef = useRef<google.maps.Marker[]>([]);
+  const placeMarkersRef = useRef<google.maps.Marker[]>([]);
+  const userOverlayRef = useRef<UserLocationOverlayHandle | null>(null);
+  const userInfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
+  const userLocationRef = useRef(userLocation);
+  userLocationRef.current = userLocation;
   const [loadError, setLoadError] = useState<string | null>(() => getGoogleMapsBrowserKeyError());
   const [mapReady, setMapReady] = useState(false);
   const reportedErrorRef = useRef(false);
+
+  const openUserLocationInfo = useCallback(() => {
+    const map = mapRef.current;
+    const loc = userLocationRef.current;
+    const iw = userInfoWindowRef.current;
+    if (!map || !loc || !iw) return;
+    iw.setPosition({ lat: loc.lat, lng: loc.lng });
+    iw.open({ map });
+  }, []);
 
   const reportError = useCallback(
     (message: string) => {
@@ -89,7 +135,11 @@ export function GoogleMap({
           center: centerRef.current,
           zoom,
           disableDefaultUI: true,
-          zoomControl: true,
+          zoomControl: false,
+          fullscreenControl: false,
+          streetViewControl: false,
+          mapTypeControl: false,
+          keyboardShortcuts: false,
           gestureHandling: "greedy",
           styles: [
             { featureType: "poi", stylers: [{ visibility: "off" }] },
@@ -97,8 +147,14 @@ export function GoogleMap({
           ],
         });
         console.info(LOG, "Map 實例已建立", mapRef.current);
+        if (mapPadding) {
+          applyMapVisiblePadding(mapRef.current, mapPadding);
+        }
+        userInfoWindowRef.current = new maps.InfoWindow({
+          content: `<div style="font-size:13px;padding:4px 2px;font-family:system-ui,sans-serif;color:#5c5348;">${ROAMIE_USER_LOCATION_LABEL}</div>`,
+        });
         setMapReady(true);
-        onMapReady?.();
+        onMapReady?.(mapRef.current);
         requestAnimationFrame(() => {
           if (mapRef.current) triggerMapResize(mapRef.current);
         });
@@ -109,9 +165,24 @@ export function GoogleMap({
       reportError(msg);
       return true;
     }
-  }, [zoom, onMapReady, reportError]);
+  }, [zoom, onMapReady, mapPadding, reportError]);
 
-  // Load API + create map when container has size
+  useEffect(() => {
+    if (!mapRef.current || !mapReady || !mapPadding) return;
+    applyMapVisiblePadding(mapRef.current, mapPadding);
+    triggerMapResize(mapRef.current);
+  }, [mapPadding, mapReady]);
+
+  useEffect(() => {
+    if (!mapRef.current || !mapReady || !onMapClick) return;
+    const g = window.google?.maps;
+    if (!g?.event) return;
+    const listener = mapRef.current.addListener("click", () => onMapClick());
+    return () => {
+      g.event.removeListener(listener);
+    };
+  }, [mapReady, onMapClick]);
+
   useEffect(() => {
     let cancelled = false;
     const keyError = getGoogleMapsBrowserKeyError();
@@ -150,24 +221,98 @@ export function GoogleMap({
 
   useEffect(() => {
     if (!mapRef.current || !mapReady) return;
-    mapRef.current.setCenter(center);
-    console.info(LOG, "panTo center", center);
-  }, [center.lat, center.lng, mapReady]);
+    mapRef.current.panTo(center);
+    if (zoom != null) mapRef.current.setZoom(zoom);
+    console.info(LOG, "panTo center", center, "zoom", zoom);
+  }, [center.lat, center.lng, zoom, mapReady]);
 
   useEffect(() => {
-    if (!mapRef.current || !window.google?.maps || !mapReady) return;
-    markersRef.current.forEach((m) => m.setMap(null));
-    markersRef.current = markers.map((m, i) => {
-      const marker = new window.google!.maps.Marker({
-        position: { lat: m.lat, lng: m.lng },
-        map: mapRef.current!,
-        title: m.title,
-        animation: m.selected ? window.google!.maps.Animation.BOUNCE : undefined,
+    if (!mapRef.current || !mapReady || !isGoogleMapsOverlayReady()) return;
+
+    if (!userLocation) {
+      try {
+        userOverlayRef.current?.setMap(null);
+      } catch {
+        /* ignore */
+      }
+      userOverlayRef.current = null;
+      return;
+    }
+
+    const position = { lat: userLocation.lat, lng: userLocation.lng };
+    const avatarSrc = resolveUserMarkerAvatarSrc(userLocation.avatarSrc);
+
+    if (!userOverlayRef.current) {
+      const overlay = createRoamieUserLocationOverlay(position, {
+        avatarSrc,
+        onClick: openUserLocationInfo,
       });
-      if (onMarkerClick) marker.addListener("click", () => onMarkerClick(i));
-      return marker;
+      if (!overlay) return;
+      try {
+        overlay.setMap(mapRef.current);
+        userOverlayRef.current = overlay;
+      } catch (e) {
+        console.warn(LOG, "掛載使用者定位 overlay 失敗", e);
+        userOverlayRef.current = null;
+      }
+      return;
+    }
+
+    try {
+      userOverlayRef.current.update(position, avatarSrc);
+    } catch (e) {
+      console.warn(LOG, "更新使用者定位 overlay 失敗", e);
+      try {
+        userOverlayRef.current.setMap(null);
+      } catch {
+        /* ignore */
+      }
+      userOverlayRef.current = null;
+    }
+  }, [userLocation, mapReady, openUserLocationInfo]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        userOverlayRef.current?.setMap(null);
+      } catch {
+        /* ignore */
+      }
+      userOverlayRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current || !mapReady) return;
+    const g = window.google?.maps;
+    if (!g?.Marker) return;
+
+    placeMarkersRef.current.forEach((m) => {
+      try {
+        m.setMap(null);
+      } catch {
+        /* ignore */
+      }
     });
-  }, [markers, onMarkerClick, mapReady]);
+    placeMarkersRef.current = [];
+
+    try {
+      const MarkerCtor = g.Marker;
+      placeMarkersRef.current = placeMarkers.map((m, i) => {
+        const marker = new MarkerCtor({
+          position: { lat: m.lat, lng: m.lng },
+          map: mapRef.current!,
+          title: m.title,
+          animation: m.selected ? g.Animation?.BOUNCE : undefined,
+          zIndex: m.selected ? 500 : 100,
+        });
+        if (onPlaceMarkerClick) marker.addListener("click", () => onPlaceMarkerClick(i));
+        return marker;
+      });
+    } catch (e) {
+      console.warn(LOG, "建立地圖標記失敗", e);
+    }
+  }, [placeMarkers, onPlaceMarkerClick, mapReady]);
 
   if (loadError) {
     return (
@@ -182,7 +327,7 @@ export function GoogleMap({
   return (
     <div
       ref={setContainerRef}
-      className={`h-full min-h-[240px] w-full ${className ?? ""}`}
+      className={`relative z-0 h-full min-h-[240px] w-full overflow-hidden ${className ?? ""}`}
       aria-label="Google 地圖"
     />
   );

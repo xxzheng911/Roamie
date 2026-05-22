@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { hasOAuthCallbackParams } from "@/lib/auth-oauth";
-import { readGuestFlag, writeGuestFlag } from "@/lib/auth-session";
+import { getClientAuthSession, readGuestFlag, writeGuestFlag } from "@/lib/auth-session";
 
 type AuthCtx = {
   user: User | null;
@@ -42,60 +42,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!cancelled) setLoading(false);
     };
 
-    syncGuestFromStorage();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+    const applySession = (s: Session | null) => {
       if (cancelled) return;
-
       setSession(s);
-
       if (s) {
         writeGuestFlag(false);
         setIsGuest(false);
       } else {
         syncGuestFromStorage();
       }
-
       finishLoading();
+    };
+
+    syncGuestFromStorage();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, s) => {
+      applySession(s);
     });
 
     const init = async () => {
-      // OAuth 回傳由 /auth/callback 專責 exchange，此處不呼叫 getSession 以免搶跑 PKCE
+      // PKCE 兌換僅在 /auth/callback 進行，避免搶跑 code
       if (hasOAuthCallbackParams()) {
         return;
       }
 
       try {
-        const { data, error } = await supabase.auth.getSession();
-        if (cancelled) return;
-
-        if (error) {
-          console.error("[auth] getSession failed", error);
-        }
-
-        setSession(data.session);
-
-        if (data.session) {
-          writeGuestFlag(false);
-          setIsGuest(false);
-          finishLoading();
-          return;
-        }
+        const s = await getClientAuthSession();
+        if (!cancelled) applySession(s);
       } catch (e) {
         console.error("[auth] getSession failed", e);
-      } finally {
-        if (cancelled) return;
-        syncGuestFromStorage();
-        finishLoading();
+        if (!cancelled) {
+          syncGuestFromStorage();
+          finishLoading();
+        }
       }
     };
 
-    init();
+    void init();
 
+    const fallbackMs = hasOAuthCallbackParams() ? 12_000 : 2500;
     const fallback = window.setTimeout(() => {
       syncGuestFromStorage();
       finishLoading();
-    }, hasOAuthCallbackParams() ? 8000 : 1500);
+    }, fallbackMs);
 
     return () => {
       cancelled = true;

@@ -1,4 +1,4 @@
-import { Camera, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import type { RefObject } from "react";
 import { CropEditActions } from "@/components/CropEditActions";
 import {
@@ -11,7 +11,7 @@ type Props = {
   cropFile?: File | null;
   cropRef?: RefObject<InlineImageCropHandle | null>;
   editing?: boolean;
-  uploading?: boolean;
+  busy?: boolean;
   applying?: boolean;
   onPress?: () => void;
   onCancelEdit?: () => void;
@@ -59,21 +59,21 @@ function DefaultCoverArt() {
   );
 }
 
-export function ProfileCover({
+function CoverFrame({
   coverUrl,
   cropFile,
   cropRef,
-  editing = false,
-  uploading = false,
-  applying = false,
-  onPress,
-  onCancelEdit,
-  onApplyEdit,
-  cancelLabel = "取消",
-  applyLabel = "套用",
-}: Props) {
-  const frame = (
-    <div className="relative aspect-[5/2] w-full min-h-[7.5rem] max-h-[10.5rem] bg-gradient-to-br from-[hsl(var(--accent))] via-secondary to-[hsl(38_42%_94%)]">
+  editing,
+  busy,
+}: {
+  coverUrl: string | null;
+  cropFile?: File | null;
+  cropRef?: RefObject<InlineImageCropHandle | null>;
+  editing?: boolean;
+  busy?: boolean;
+}) {
+  return (
+    <div className="relative aspect-[5/2] w-full min-h-[7.5rem] max-h-[10.5rem] overflow-hidden bg-gradient-to-br from-[hsl(var(--accent))] via-secondary to-[hsl(38_42%_94%)]">
       {cropFile && editing ? (
         <InlineImageCropViewport
           ref={cropRef}
@@ -86,8 +86,8 @@ export function ProfileCover({
         <img
           src={coverUrl}
           alt=""
-          className={`h-full w-full object-cover transition duration-500 ${
-            uploading ? "scale-[1.02] opacity-70" : ""
+          className={`h-full w-full object-cover transition duration-300 ${
+            busy ? "opacity-80" : ""
           }`}
         />
       ) : (
@@ -95,11 +95,51 @@ export function ProfileCover({
       )}
 
       {editing ? (
+        <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-foreground/10" />
+      ) : (
         <>
-          <div className="pointer-events-none absolute inset-0 bg-foreground/10" />
-          <div className="absolute right-3 top-3 z-20">
+          <div
+            className={`pointer-events-none absolute inset-0 transition duration-200 ${
+              busy
+                ? "bg-card/40"
+                : "bg-foreground/0 group-hover:bg-foreground/12 group-active:bg-foreground/18"
+            }`}
+          />
+          {busy && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-card/90 shadow-soft backdrop-blur-sm">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              </span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+export function ProfileCover({
+  coverUrl,
+  cropFile,
+  cropRef,
+  editing = false,
+  busy = false,
+  applying = false,
+  onPress,
+  onCancelEdit,
+  onApplyEdit,
+  cancelLabel = "取消",
+  applyLabel = "套用",
+}: Props) {
+  const frame = <CoverFrame coverUrl={coverUrl} cropFile={cropFile} cropRef={cropRef} editing={editing} busy={busy} />;
+
+  if (editing) {
+    return (
+      <div className="relative rounded-t-[2rem]">
+        <div className="overflow-hidden rounded-t-[2rem]">{frame}</div>
+        <div className="absolute left-0 right-0 top-full z-30 mt-1.5 px-4">
+          <div className="pointer-events-auto">
             <CropEditActions
-              placement="overlay"
               onCancel={() => onCancelEdit?.()}
               onApply={() => onApplyEdit?.()}
               applying={applying}
@@ -107,41 +147,8 @@ export function ProfileCover({
               applyLabel={applyLabel}
             />
           </div>
-          <p className="absolute bottom-2 left-0 right-0 z-10 text-center text-[10px] text-white/90 drop-shadow">
-            拖曳與雙指縮放調整封面
-          </p>
-        </>
-      ) : (
-        <div
-          className={`absolute inset-0 flex flex-col items-center justify-center gap-1.5 transition ${
-            uploading
-              ? "bg-background/50"
-              : "bg-foreground/0 group-hover:bg-foreground/25 group-active:bg-foreground/30"
-          }`}
-        >
-          {uploading ? (
-            <>
-              <Loader2 className="h-7 w-7 animate-spin text-foreground/80" />
-              <span className="text-xs font-medium text-foreground/80">上傳中…</span>
-            </>
-          ) : (
-            <>
-              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-card/90 shadow-soft backdrop-blur-sm transition group-hover:scale-105">
-                <Camera className="h-5 w-5 text-foreground/75" />
-              </span>
-              <span className="rounded-full bg-card/80 px-3 py-1 text-xs font-medium text-foreground/80 opacity-0 shadow-soft backdrop-blur-sm transition group-hover:opacity-100">
-                更換封面
-              </span>
-            </>
-          )}
         </div>
-      )}
-    </div>
-  );
-
-  if (editing) {
-    return (
-      <div className="relative block w-full overflow-hidden rounded-t-[2rem]">{frame}</div>
+      </div>
     );
   }
 
@@ -149,8 +156,8 @@ export function ProfileCover({
     <button
       type="button"
       onClick={onPress}
-      disabled={uploading}
-      className="group relative block w-full overflow-hidden rounded-t-[2rem] focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20"
+      disabled={busy}
+      className="group relative block w-full overflow-hidden rounded-t-[2rem] focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20 disabled:opacity-90"
       aria-label={coverUrl ? "更換封面" : "設定封面"}
     >
       {frame}

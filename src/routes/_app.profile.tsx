@@ -1,9 +1,20 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { ChevronRight, Settings, Sparkles, BookMarked, HeartHandshake, Pencil } from "lucide-react";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
+import {
+  ChevronRight,
+  Settings,
+  Sparkles,
+  BookMarked,
+  HeartHandshake,
+  Pencil,
+  Loader2,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useAuth } from "@/hooks/use-auth";
 import { useAvatar } from "@/hooks/use-avatar";
 import { useI18n } from "@/hooks/use-i18n";
+import { isAuthSessionMissingError, readGuestFlag } from "@/lib/auth-session";
+import { supabase } from "@/lib/supabase";
 import { CropEditActions } from "@/components/CropEditActions";
 import { ImageSourceSheet } from "@/components/ImageSourceSheet";
 import { ProfileCover } from "@/components/ProfileCover";
@@ -21,9 +32,9 @@ import {
 } from "@/lib/preferences-storage";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import {
-  deleteProfileMedia,
-  getAuthUserId,
-  uploadProfileMedia,
+  applyProfileAvatar,
+  applyProfileCover,
+  removeProfileCover,
 } from "@/lib/profile-media-storage";
 import { getUserProfile, saveUserProfile } from "@/lib/profile-storage";
 
@@ -35,6 +46,14 @@ export const Route = createFileRoute("/_app/profile")({
   validateSearch: (s: Record<string, unknown>): ProfileSearch => ({
     quiz: typeof s.quiz === "string" ? s.quiz : undefined,
   }),
+  beforeLoad: async () => {
+    if (typeof window === "undefined") return;
+    if (readGuestFlag()) return;
+    const { data } = await supabase.auth.getSession();
+    if (!data.session) {
+      throw redirect({ to: "/login" });
+    }
+  },
   component: Profile,
 });
 
@@ -52,6 +71,8 @@ function validateImageFile(file: File): boolean {
 
 function Profile() {
   const search = Route.useSearch();
+  const navigate = useNavigate();
+  const { user, loading: authLoading, isGuest } = useAuth();
   const { t, locale } = useI18n();
   const { avatarSrc, refresh: refreshAvatar } = useAvatar();
 
@@ -89,10 +110,34 @@ function Profile() {
   const coverEditing = !!coverCropFile;
   const avatarEditing = !!avatarCropFile;
 
+  const goLoginIfNeeded = (): boolean => {
+    if (user) return true;
+    navigate({ to: "/login", replace: true });
+    return false;
+  };
+
+  useEffect(() => {
+    const onCover = (e: Event) => {
+      const url = (e as CustomEvent<string | null>).detail ?? null;
+      setCoverUrl(url);
+      setCoverCropFile(null);
+    };
+    window.addEventListener(COVER_UPDATED_EVENT, onCover);
+    return () => window.removeEventListener(COVER_UPDATED_EVENT, onCover);
+  }, []);
+
+  useEffect(() => {
+    if (search.quiz === "done") {
+      setShowQuizResult(true);
+      toast.success(t("profile.quizDone"));
+    }
+  }, [search.quiz, t]);
+
   const loadProfile = async () => {
     try {
       return await getUserProfile();
     } catch (firstErr) {
+      if (!user) throw firstErr;
       console.warn("[profile] fetch failed, ensuring profile row", firstErr);
       await ensureUserProfile();
       return getUserProfile();
@@ -100,9 +145,10 @@ function Profile() {
   };
 
   const refresh = async () => {
+    if (!user && !isGuest) return;
     setLoading(true);
     try {
-      await ensureUserProfile();
+      if (user) await ensureUserProfile();
       const [itineraries, places, profile] = await Promise.all([
         listItineraries().catch(() => []),
         listPlaces().catch(() => []),
@@ -139,35 +185,32 @@ function Profile() {
       setAvoidKey(profile.prefs.avoid?.[0] ?? null);
       setShowQuizResult(!!profile.prefs.onboarded);
     } catch (e) {
+      if (e instanceof Error && isAuthSessionMissingError(e.message)) return;
       console.error("[profile] refresh failed", e);
-      toast.error(
-        e instanceof Error && e.message ? e.message : t("profile.loadFailed"),
-      );
+      const msg = e instanceof Error ? e.message : "";
+      if (msg.includes("請先登入")) return;
+      toast.error(msg || t("profile.loadFailed"));
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    refresh();
-  }, [locale, t]);
-
-  useEffect(() => {
-    const onCover = (e: Event) => {
-      const url = (e as CustomEvent<string | null>).detail ?? null;
-      setCoverUrl(url);
-      setCoverCropFile(null);
-    };
-    window.addEventListener(COVER_UPDATED_EVENT, onCover);
-    return () => window.removeEventListener(COVER_UPDATED_EVENT, onCover);
-  }, []);
-
-  useEffect(() => {
-    if (search.quiz === "done") {
-      setShowQuizResult(true);
-      toast.success(t("profile.quizDone"));
+    if (authLoading) return;
+    if (!user && !isGuest) {
+      navigate({ to: "/login", replace: true });
+      return;
     }
-  }, [search.quiz, t]);
+    void refresh();
+  }, [authLoading, user, isGuest, locale, t, navigate]);
+
+  if (authLoading || (!user && !isGuest)) {
+    return (
+      <div className="flex flex-1 items-center justify-center px-5 py-16">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   const handleSaveProfile = async () => {
     setSaving(true);
@@ -192,6 +235,7 @@ function Profile() {
   };
 
   const handleCoverApply = async () => {
+    if (!goLoginIfNeeded()) return;
     const result = await coverCropRef.current?.exportCrop();
     if (!result) {
       toast.error("請稍候，圖片載入中");
@@ -199,41 +243,31 @@ function Profile() {
     }
     setCoverApplying(true);
     try {
-      const userId = await getAuthUserId();
-      let finalUrl = result.previewUrl;
-      if (userId) {
-        finalUrl = await uploadProfileMedia(userId, "cover", result.blob);
-      }
-      await saveUserProfile({ coverImageUrl: finalUrl });
+      const finalUrl = await applyProfileCover(result.blob);
       broadcastCoverUpdate(finalUrl);
       setCoverUrl(finalUrl);
       setCoverCropFile(null);
-      toast.success(userId ? "封面已更新" : "已暫存於本機，登入後會同步至雲端");
+      toast.success("封面已更新");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "儲存失敗");
+      const msg = e instanceof Error ? e.message : "儲存失敗";
+      if (!isAuthSessionMissingError(msg)) toast.error(msg);
     } finally {
       setCoverApplying(false);
     }
   };
 
   const handleCoverRemove = async () => {
+    if (!goLoginIfNeeded()) return;
     setCoverRemoving(true);
     try {
-      const userId = await getAuthUserId();
-      if (userId) {
-        try {
-          await deleteProfileMedia(userId, "cover");
-        } catch {
-          /* may not exist */
-        }
-      }
-      await saveUserProfile({ coverImageUrl: null });
+      await removeProfileCover();
       broadcastCoverUpdate(null);
       setCoverUrl(null);
       setCoverCropFile(null);
       toast.success("已移除封面，可繼續選擇新圖片");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "刪除失敗");
+      const msg = e instanceof Error ? e.message : "刪除失敗";
+      if (!isAuthSessionMissingError(msg)) toast.error(msg);
     } finally {
       setCoverRemoving(false);
     }
@@ -249,6 +283,7 @@ function Profile() {
   };
 
   const handleAvatarApply = async () => {
+    if (!goLoginIfNeeded()) return;
     const result = await avatarCropRef.current?.exportCrop();
     if (!result) {
       toast.error("請稍候，圖片載入中");
@@ -256,18 +291,14 @@ function Profile() {
     }
     setAvatarApplying(true);
     try {
-      const userId = await getAuthUserId();
-      let finalUrl = result.previewUrl;
-      if (userId) {
-        finalUrl = await uploadProfileMedia(userId, "avatar", result.blob);
-      }
-      await saveUserProfile({ avatarUrl: finalUrl });
+      const finalUrl = await applyProfileAvatar(result.blob);
       broadcastAvatarUpdate(finalUrl);
       setAvatarCropFile(null);
       await refreshAvatar();
-      toast.success(userId ? "頭像已更新" : "已暫存於本機，登入後會同步至雲端");
+      toast.success("頭像已更新");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "儲存失敗");
+      const msg = e instanceof Error ? e.message : "儲存失敗";
+      if (!isAuthSessionMissingError(msg)) toast.error(msg);
     } finally {
       setAvatarApplying(false);
     }
@@ -304,16 +335,18 @@ function Profile() {
 
   return (
     <div className="px-5 pb-8 pt-3">
-      <div className="overflow-hidden rounded-[2rem] border border-border bg-card shadow-soft">
+      <div className="overflow-visible rounded-[2rem] border border-border bg-card shadow-soft">
         <ProfileCover
           coverUrl={coverUrl}
           cropFile={coverCropFile}
           cropRef={coverCropRef}
           editing={coverEditing}
-          uploading={coverApplying}
+          busy={coverApplying || coverRemoving}
           applying={coverApplying}
           onPress={() => {
-            if (!coverEditing && !coverApplying) setCoverSourceOpen(true);
+            if (!coverEditing && !coverApplying && !coverRemoving) {
+              setCoverSourceOpen(true);
+            }
           }}
           onCancelEdit={handleCoverCancel}
           onApplyEdit={() => void handleCoverApply()}
@@ -331,11 +364,11 @@ function Profile() {
           cameraFacing="environment"
         />
 
-        <div className="relative px-5 pb-5 pt-2">
-          <div className="absolute -top-10 left-0 z-10 w-[5.25rem]">
+        <div className="relative overflow-visible px-5 pb-5 pt-2">
+          <div className="absolute -top-10 left-0 z-20 h-[5.25rem] w-[5.25rem]">
             {avatarEditing ? (
-              <>
-                <div className="relative h-[5.25rem] w-[5.25rem] overflow-hidden rounded-[1.35rem] border-[3px] border-card bg-black shadow-soft">
+              <div className="relative h-[5.25rem] w-[5.25rem]">
+                <div className="relative h-full w-full overflow-hidden rounded-[1.35rem] border-[3px] border-card bg-black shadow-soft">
                   <InlineImageCropViewport
                     ref={avatarCropRef}
                     file={avatarCropFile!}
@@ -344,25 +377,42 @@ function Profile() {
                     className="absolute inset-0 h-full w-full"
                   />
                 </div>
-                <CropEditActions
-                  className="mt-2"
-                  placement="below"
-                  onCancel={handleAvatarCancel}
-                  onApply={() => void handleAvatarApply()}
-                  applying={avatarApplying}
-                  cancelLabel={cancelLabel}
-                  applyLabel={applyLabel}
-                />
-              </>
+                <div className="pointer-events-none absolute left-0 top-full z-30 mt-1.5 w-max max-w-[calc(100vw-2.5rem)]">
+                  <div className="pointer-events-auto">
+                    <CropEditActions
+                      align="start"
+                      onCancel={handleAvatarCancel}
+                      onApply={() => void handleAvatarApply()}
+                      applying={avatarApplying}
+                      cancelLabel={cancelLabel}
+                      applyLabel={applyLabel}
+                    />
+                  </div>
+                </div>
+              </div>
             ) : (
               <button
                 type="button"
                 onClick={() => !avatarApplying && setAvatarSourceOpen(true)}
                 disabled={avatarApplying}
-                className="h-[5.25rem] w-[5.25rem] overflow-hidden rounded-[1.35rem] border-[3px] border-card bg-secondary shadow-soft disabled:opacity-60"
+                className="group relative h-full w-full overflow-hidden rounded-[1.35rem] border-[3px] border-card bg-secondary shadow-soft disabled:opacity-90"
                 aria-label={t("profile.editAvatar")}
               >
                 <img src={avatarSrc} alt="" className="h-full w-full object-cover" />
+                <div
+                  className={`pointer-events-none absolute inset-0 rounded-[1.2rem] transition duration-200 ${
+                    avatarApplying
+                      ? "bg-card/45"
+                      : "bg-foreground/0 group-hover:bg-foreground/10 group-active:bg-foreground/15"
+                  }`}
+                />
+                {avatarApplying && (
+                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-card/95 shadow-soft backdrop-blur-sm">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-clay" aria-hidden />
+                    </span>
+                  </span>
+                )}
               </button>
             )}
           </div>
@@ -375,7 +425,7 @@ function Profile() {
             cameraFacing="user"
           />
 
-          <div className={avatarEditing ? "pt-[7.75rem]" : "pt-12"}>
+          <div className="pt-12">
             {editing ? (
               <div className="space-y-3">
                 <label className="block">

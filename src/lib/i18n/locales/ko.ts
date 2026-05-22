@@ -25,6 +25,8 @@ export const ko = {
     saved: "저장됨",
     saveFailed: "저장 실패",
     loadFailed: "프로필을 불러올 수 없습니다",
+    signInRequired: "먼저 로그인해 주세요",
+    signInCta: "로그인으로",
     guestMode: "게스트 모드",
     pace: "속도",
     vibe: "분위기",

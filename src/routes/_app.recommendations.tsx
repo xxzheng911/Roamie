@@ -11,15 +11,8 @@ import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
 import { buildClientContextBundle } from "@/lib/fetch-context";
 import { getWeather } from "@/lib/weather.functions";
 import { getPreferences } from "@/lib/preferences-storage";
-import {
-  initSessionFromRecommendation,
-  loadRecPagePicks,
-  roamieRecToChatItem,
-  saveChatSession,
-  saveRecPagePicks,
-  toggleSelectedPlace,
-  loadChatSession,
-} from "@/lib/chat-session";
+import { saveRecPagePicks, loadRecPagePicks } from "@/lib/chat-session";
+import { prepareMoodFlowSession } from "@/lib/mood-chat-handoff";
 
 type RecSearch = { id?: string };
 
@@ -97,25 +90,18 @@ function RecommendationsPage() {
         buildClientContextBundle(fetchWeather),
         getPreferences(),
       ]);
-      const selected = data.recommendations
-        .filter((r) => pickedNames.has(r.name))
-        .map(roamieRecToChatItem);
 
-      const session = initSessionFromRecommendation({
-        moodTag: data.moodTag ?? record.mood ?? undefined,
-        summary: data.summary,
-        title: data.title || record.title,
-        recommendations: data.recommendations,
-        selectedPlaces: selected,
-        recommendationId: record.id,
-        location: bundle.location,
-        weather: bundle.weather,
+      const session = prepareMoodFlowSession({
+        record,
+        payload: data,
+        bundle,
         preferences: prefs,
+        existing: loadChatSession(),
       });
       saveChatSession(session);
       navigate({
         to: "/chat",
-        search: { from: "recommendations", recommendationId: record.id },
+        search: { from: "mood", recommendationId: record.id, fromMoodFlow: "1" },
       });
     } catch (e) {
       console.error("[recommendations] chat handoff failed", e);
@@ -165,10 +151,6 @@ function RecommendationsPage() {
         return next;
       });
       toast.success(saved ? "已收藏" : "已取消收藏");
-      if (saved && id) {
-        const base = loadChatSession();
-        saveChatSession(toggleSelectedPlace(base, roamieRecToChatItem(rec)));
-      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "收藏失敗");
     } finally {

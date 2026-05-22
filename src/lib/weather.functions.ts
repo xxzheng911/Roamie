@@ -1,32 +1,18 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { geocodeReverseUrl, requireGoogleMapsServerKey } from "@/lib/google-maps.server";
+import { geocodeReverseUrl } from "@/lib/google-maps-api";
+import { requireGoogleMapsServerKey } from "@/lib/google-maps.server";
+import { geocodeRegionFromCoordinates } from "@/lib/geo-region";
+import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
+import { coerceLocale } from "@/lib/i18n/resolve-locale";
+import type { DailyForecast, WeatherSummary } from "@/lib/weather-types";
 
-export type WeatherSummary = {
-  city: string;
-  tempC: number | null;
-  feelsLikeC: number | null;
-  condition: string;
-  iconType: string;
-  isDaytime: boolean;
-  precipProbability: number | null;
-  recommendation: "outdoor" | "indoor" | "cool_indoor" | "evening";
-  recommendationText: string;
-};
-
-/** 多日預報（穿搭建議用） */
-export type DailyForecast = {
-  date: string;
-  tempHighC: number | null;
-  tempLowC: number | null;
-  precipProbability: number | null;
-  condition: string;
-  iconType: string;
-};
+export type { DailyForecast, WeatherSummary } from "@/lib/weather-types";
 
 const Input = z.object({
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
+  locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
 });
 
 const WMO_ZH: Record<number, string> = {
@@ -57,7 +43,12 @@ function recommend(tempC: number | null, precip: number | null, condition: strin
 } {
   const cond = (condition || "").toLowerCase();
   const rainy =
-    (precip ?? 0) >= 40 || cond.includes("雨") || cond.includes("rain") || cond.includes("shower");
+    (precip ?? 0) >= 40 ||
+    cond.includes("雨") ||
+    cond.includes("rain") ||
+    cond.includes("shower") ||
+    cond.includes("drizzle") ||
+    cond.includes("thunder");
   if (rainy) return { rec: "indoor", text: "今天可能下雨，找一間能待整個下午的店吧。" };
   if (tempC !== null && tempC >= 32) return { rec: "cool_indoor", text: "今天很熱，建議下午躲冷氣，傍晚再出門。" };
   if (tempC !== null && tempC <= 12) return { rec: "indoor", text: "外面有點冷，適合書店、咖啡館慢慢待。" };
@@ -79,8 +70,19 @@ async function reverseGeocodeBigDataCloud(lat: number, lng: number): Promise<str
   return json.city || json.locality || json.principalSubdivision || "";
 }
 
-async function reverseGeocodeGoogle(lat: number, lng: number, apiKey: string): Promise<string> {
-  const res = await fetch(geocodeReverseUrl(lat, lng, apiKey));
+async function reverseGeocodeGoogle(
+  lat: number,
+  lng: number,
+  apiKey: string,
+  locale?: string,
+): Promise<string> {
+  const lang = locale ? localeToGoogleLanguageCode(coerceLocale(locale)) : "zh-TW";
+  const res = await fetch(
+    geocodeReverseUrl(lat, lng, apiKey, {
+      language: lang,
+      region: geocodeRegionFromCoordinates(lat, lng),
+    }),
+  );
   if (!res.ok) {
     const text = await res.text();
     console.warn("[Roamie Weather] Google geocode failed", res.status, text.slice(0, 120));
@@ -99,10 +101,10 @@ async function reverseGeocodeGoogle(lat: number, lng: number, apiKey: string): P
   return pick("locality") || pick("administrative_area_level_2") || pick("administrative_area_level_1") || "";
 }
 
-async function reverseGeocodeCity(lat: number, lng: number): Promise<string> {
+async function reverseGeocodeCity(lat: number, lng: number, locale?: string): Promise<string> {
   try {
     const googleKey = requireGoogleMapsServerKey();
-    const city = await reverseGeocodeGoogle(lat, lng, googleKey);
+    const city = await reverseGeocodeGoogle(lat, lng, googleKey, locale);
     if (city) return city;
   } catch (e) {
     console.warn("[Roamie Weather] Google geocode skipped", e);
@@ -195,7 +197,7 @@ export const getWeatherForecast = createServerFn({ method: "POST" })
     async ({ data }): Promise<{ forecast: DailyForecast[]; city: string; error: string | null }> => {
       try {
         const forecast = await fetchOpenMeteoDailyForecast(data.lat, data.lng, data.days);
-        const city = await reverseGeocodeCity(data.lat, data.lng);
+        const city = await reverseGeocodeCity(data.lat, data.lng, data.locale);
         return { forecast, city: city || "目前位置", error: null };
       } catch (e) {
         const msg = e instanceof Error ? e.message : "forecast failed";
@@ -210,7 +212,7 @@ export const getWeather = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ weather: WeatherSummary | null; error: string | null }> => {
     try {
       const wx = await fetchOpenMeteoWeather(data.lat, data.lng);
-      const city = await reverseGeocodeCity(data.lat, data.lng);
+      const city = await reverseGeocodeCity(data.lat, data.lng, data.locale);
       const { rec, text } = recommend(wx.tempC, wx.precip, wx.condition);
 
       console.info("[Roamie Weather] ok", { city: city || "目前位置", lat: data.lat, lng: data.lng });

@@ -1,11 +1,40 @@
-import { normalizeRecommendationItem, type RoamieRecommendationItem } from "@/lib/ai/types";
+import {
+  normalizeRecommendationItem,
+  type RoamiePayloadV2,
+  type RoamieRecommendationItem,
+} from "@/lib/ai/types";
 import type { RoamieLocation } from "@/lib/ai/context";
+import type { TripLocation } from "@/lib/location/types";
+import type { Locale } from "@/lib/i18n/types";
 import type { WeatherSummary } from "@/lib/weather.functions";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { ChatMsg } from "@/lib/chat-history";
 import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
-import type { PlaceResult } from "@/lib/places.functions";
-import { buildTemplateReason } from "@/lib/place-reason";
+import type { PlaceResult } from "@/lib/place-result";
+import {
+  buildPlaceRecommendationReason,
+  type UserProfileForReason,
+} from "@/lib/build-place-recommendation-reason";
+import {
+  buildContextualMoodHandoffOpening,
+  buildHandoffRoamiePayload,
+  buildInitialChatContext,
+  prepareMoodFlowSession,
+  enrichPlacesWithDistance,
+  type MoodFlowHandoffInput,
+} from "@/lib/mood-chat-handoff";
+import {
+  mergeRecommendationsWithSelected,
+  syncSessionPlaceMemory,
+} from "@/lib/place-planning-memory";
+
+export {
+  buildContextualMoodHandoffOpening,
+  buildHandoffRoamiePayload,
+  buildInitialChatContext,
+  prepareMoodFlowSession,
+};
+export type { MoodFlowHandoffInput };
 
 const SESSION_KEY = "roamie:chat-planning";
 
@@ -31,7 +60,10 @@ export type ChatPlaceItem = RoamieRecommendationItem & {
   lng?: number | null;
   googleMapsUrl?: string;
   placeName?: string;
+  placeId?: string;
   reasonSource?: "template" | "ai";
+  distanceMeters?: number | null;
+  distanceLabel?: string;
 };
 
 /** 規劃用標準地點欄位（地圖、導航、行程） */
@@ -49,12 +81,22 @@ export type SelectedPlaceRecord = {
 
 export type ChatPlanningSession = {
   mood?: string;
+  /** 心情卡片類別（與 mood 相同或延伸標籤） */
+  selectedCategory?: string;
   discovery?: ChatDiscovery;
   preferences?: TravelPreferences;
   location?: RoamieLocation;
   weather?: WeatherSummary | null;
   recommendedPlaces: ChatPlaceItem[];
   selectedPlaces: ChatPlaceItem[];
+  selectedPlaceIds?: string[];
+  selectedPlaceNames?: string[];
+  /** 使用者拒絕的地點名稱 */
+  rejectedPlaceNames?: string[];
+  /** 已選 + 聊天中新增，用於行程 */
+  plannedStops?: ChatPlaceItem[];
+  /** 從心情推薦頁勾選的主要地點 */
+  selectedPlaceFromMood?: ChatPlaceItem;
   transportation?: string;
   budget?: string;
   pace?: string;
@@ -65,9 +107,43 @@ export type ChatPlanningSession = {
   recommendationId?: string;
   conversationSummary?: string;
   recommendationTitle?: string;
+  /** 從心情卡片 → 推薦頁 → 聊天 */
+  fromMoodCard?: boolean;
+  /** 心情卡片完整流程進聊天 */
+  fromMoodFlow?: boolean;
+  selectedMood?: string;
+  /** 進聊天時注入 AI 的結構化上下文 */
+  initialChatContext?: string;
+  /** 已完成情境開場，避免刷新重複 */
+  moodHandoffDone?: boolean;
+  /** 深夜模式（22:00–04:59） */
+  lateNightMode?: boolean;
+  /** 使用者不想去的類型／氛圍 */
+  avoidTypes?: string[];
+  /** 想去的區域或「附近」 */
+  preferredArea?: string;
+  /** 明確拒絕的地點名稱 */
+  rejectedPlaceNames?: string[];
+  /** 最後一則使用者訊息（規劃用） */
+  lastUserIntent?: string;
   /** 從推薦頁進入後需產生情境開場 */
   pendingHandoff?: boolean;
+  /** AI 產生的行程草稿（未寫入收藏） */
+  draftTrip?: RoamiePayloadV2;
+  /** 已確認儲存至收藏的行程 id */
   lastGeneratedTripId?: string;
+  /** 規劃表單選定的旅遊目的地 */
+  tripDestination?: TripLocation;
+  /** 規劃表單出發地 */
+  tripOrigin?: TripLocation | null;
+  /** 從「規劃新行程」進入聊天 */
+  fromPlanForm?: boolean;
+  /** 規劃表單開場已完成 */
+  planHandoffDone?: boolean;
+  tripStartDate?: string;
+  tripEndDate?: string;
+  tripDays?: number;
+  tripStyles?: string;
   updatedAt: string;
 };
 
@@ -210,7 +286,10 @@ export function loadChatSession(): ChatPlanningSession {
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
     if (!raw) return createEmptySession();
-    return { ...createEmptySession(), ...JSON.parse(raw) } as ChatPlanningSession;
+    return syncSessionPlaceMemory({
+      ...createEmptySession(),
+      ...JSON.parse(raw),
+    } as ChatPlanningSession);
   } catch {
     return createEmptySession();
   }
@@ -235,18 +314,34 @@ export function placeDisplayName(p: ChatPlaceItem | RoamieRecommendationItem): s
 
 export function mapPlaceResultToChatItem(
   p: PlaceResult,
-  ctx: { mood?: string; weather?: WeatherSummary | null },
+  ctx: {
+    mood?: string;
+    weather?: WeatherSummary | null;
+    userProfile?: UserProfileForReason | null;
+    categoryLabel?: string;
+    distanceMeters?: number;
+    isSavedFavorite?: boolean;
+    currentTime?: Date;
+    locale?: Locale;
+  },
 ): ChatPlaceItem {
   const lat = p.lat ?? undefined;
   const lng = p.lng ?? undefined;
   const googleMapsUrl =
     lat != null && lng != null ? buildPlaceMapsUrl(lat, lng, p.name) : undefined;
-  const reason = buildTemplateReason({
-    mood: ctx.mood,
-    weather: ctx.weather,
-    primaryType: p.primaryType,
-    categoryLabel: p.primaryType ?? undefined,
-  });
+  const reason = buildPlaceRecommendationReason(
+    p,
+    ctx.userProfile ?? null,
+    ctx.weather,
+    ctx.currentTime,
+    {
+      mood: ctx.mood,
+      categoryLabel: ctx.categoryLabel,
+      distanceMeters: ctx.distanceMeters,
+      isSavedFavorite: ctx.isSavedFavorite,
+    },
+    ctx.locale,
+  );
   return normalizeRecommendationItem({
     name: p.name,
     placeName: p.name,
@@ -283,23 +378,37 @@ export function mergeSessionFromRoamie(
   data: { moodTag?: string; recommendations?: RoamieRecommendationItem[]; summary?: string },
   phase: ChatPhase = session.phase,
 ): ChatPlanningSession {
-  const recs = (data.recommendations ?? []).map(roamieRecToChatItem);
-  return {
+  const aiRecs = (data.recommendations ?? []).map(roamieRecToChatItem);
+  const mergedRecs =
+    session.selectedPlaces.length > 0
+      ? mergeRecommendationsWithSelected(session.selectedPlaces, aiRecs, {
+          maxNew: 4,
+          location: session.location ?? null,
+        })
+      : aiRecs.length
+        ? (() => {
+            const map = new Map(session.recommendedPlaces.map((p) => [p.name, p]));
+            for (const r of aiRecs) map.set(r.name, map.has(r.name) ? { ...map.get(r.name)!, ...r } : r);
+            return [...map.values()];
+          })()
+        : session.recommendedPlaces;
+
+  return syncSessionPlaceMemory({
     ...session,
     mood: data.moodTag || session.mood,
-    recommendedPlaces: recs.length ? recs : session.recommendedPlaces,
+    recommendedPlaces: mergedRecs,
     phase,
     conversationSummary: data.summary || session.conversationSummary,
-  };
+  });
 }
 
 export function addSelectedPlace(session: ChatPlanningSession, place: ChatPlaceItem): ChatPlanningSession {
   const exists = session.selectedPlaces.some((p) => p.name === place.name);
-  return {
+  return syncSessionPlaceMemory({
     ...session,
     selectedPlaces: exists ? session.selectedPlaces : [...session.selectedPlaces, place],
     phase: session.phase === "recommend" ? "followup" : session.phase,
-  };
+  });
 }
 
 export function toggleSelectedPlace(
@@ -315,18 +424,9 @@ export function toggleSelectedPlace(
   };
 }
 
-/** 推薦頁進聊天前的靜態開場（AI 失敗時 fallback） */
+/** @deprecated 請用 buildContextualMoodHandoffOpening */
 export function buildHandoffOpeningFallback(session: ChatPlanningSession): string {
-  const mood = session.mood ? `承接你「${session.mood}」的心情，` : "";
-  const title = session.recommendationTitle ? `關於「${session.recommendationTitle}」，` : "";
-
-  if (session.selectedPlaces.length > 0) {
-    const names = session.selectedPlaces.map((p) => placeDisplayName(p)).join("、");
-    return `${mood}${title}我看到你選了 ${names}。我們可以把它排成一趟不趕路的行程。你想偏放鬆、多拍拍照，還是順便安排吃的？還有沒有其他地方想一起去？`;
-  }
-
-  const candidates = session.recommendedPlaces.map((p) => placeDisplayName(p)).join("、");
-  return `${mood}${title}我整理了幾個地方：${candidates}。你想先從哪一個開始安排？也可以跟我說想要的節奏、交通方式或預算。`;
+  return buildContextualMoodHandoffOpening(session);
 }
 
 export function updateSelectedPlaceReason(
@@ -371,12 +471,8 @@ export function extractPlanningHintsFromText(
     if (d) next.travelDate = d[0];
   }
 
-  if (next.selectedPlaces.length >= 1 && (next.transportation || next.budget || next.pace)) {
-    if (next.phase === "followup" || next.phase === "recommend") next.phase = "collect";
-  }
-
-  if (isUserConfirmingItinerary(t) && next.selectedPlaces.length >= 1) {
-    next.phase = "ready";
+  if (isUserConfirmingItinerary(t)) {
+    next.phase = next.selectedPlaces.length >= 1 ? "ready" : next.phase;
   }
 
   return next;
@@ -397,7 +493,12 @@ export function buildConversationSummary(session: ChatPlanningSession, msgs: Cha
   const d = session.discovery;
   const parts = [
     session.conversationSummary,
+    session.initialChatContext?.slice(0, 600),
     session.mood ? `心情：${session.mood}` : "",
+    session.selectedMood ? `selectedMood：${session.selectedMood}` : "",
+    session.selectedPlaces.length
+      ? `已選地點：${session.selectedPlaces.map((p) => placeDisplayName(p)).join("、")}`
+      : "",
     d?.vibe ? `今天想：${d.vibe}` : "",
     d?.companionship ? `旅伴：${d.companionship}` : "",
     d?.setting ? `室內外：${d.setting}` : "",
@@ -414,8 +515,10 @@ export function buildConversationSummary(session: ChatPlanningSession, msgs: Cha
   return parts.join("\n");
 }
 
+/** @deprecated 請用 prepareMoodFlowSession（需完整 record + bundle） */
 export function initSessionFromRecommendation(payload: {
   moodTag?: string;
+  selectedCategory?: string;
   summary?: string;
   title?: string;
   recommendations: RoamieRecommendationItem[];
@@ -424,32 +527,37 @@ export function initSessionFromRecommendation(payload: {
   location?: RoamieLocation;
   weather?: WeatherSummary | null;
   preferences?: TravelPreferences;
+  fromMoodCard?: boolean;
+  lateNightMode?: boolean;
 }): ChatPlanningSession {
   const recommended = payload.recommendations.map(roamieRecToChatItem);
-  const selected = (payload.selectedPlaces ?? []).map(roamieRecToChatItem);
-  return {
+  const selected = enrichPlacesWithDistance(
+    payload.selectedPlaces ?? [],
+    payload.location ?? null,
+  );
+  const session: ChatPlanningSession = {
     ...createEmptySession(),
     mood: payload.moodTag,
+    selectedMood: payload.moodTag,
+    selectedCategory: payload.selectedCategory ?? payload.moodTag,
     conversationSummary: payload.summary,
     recommendationTitle: payload.title,
     recommendedPlaces: recommended,
     selectedPlaces: selected,
-    phase: selected.length ? "collect" : "discover",
+    selectedPlaceFromMood: selected[0],
+    phase: selected.length ? "followup" : "collect",
     discovery: payload.moodTag ? { vibe: payload.moodTag } : {},
     recommendationId: payload.recommendationId,
     location: payload.location,
     weather: payload.weather,
     preferences: payload.preferences,
+    fromMoodCard: payload.fromMoodCard ?? true,
+    fromMoodFlow: true,
+    lateNightMode: payload.lateNightMode,
     pendingHandoff: true,
+    moodHandoffDone: false,
   };
+  session.initialChatContext = buildInitialChatContext(session);
+  return session;
 }
 
-export function buildHandoffRoamiePayload(session: ChatPlanningSession, summary: string) {
-  return {
-    title: session.recommendationTitle ?? session.mood ?? "你的慢旅行",
-    summary,
-    moodTag: session.mood ?? "",
-    recommendations: session.recommendedPlaces,
-    itinerary: [] as [],
-  };
-}

@@ -1,33 +1,85 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Search, Navigation, Heart, Loader2, Star, MessageCircle } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
-import { GoogleMap } from "@/components/GoogleMap";
-import { MapExploreSheet } from "@/components/MapExploreSheet";
-import { MapPlacePreview } from "@/components/MapPlacePreview";
-import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
-import { PlaceNavButtons } from "@/components/PlaceNavButtons";
-import { listPlaces, toggleSavePlace, type SavedPlace } from "@/lib/places-storage";
-import { searchPlaces, type PlaceResult } from "@/lib/places.functions";
-import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
-import { getWeather, type WeatherSummary } from "@/lib/weather.functions";
-import { mapPlaceResultToChatItem, addSelectedPlace, saveChatSession, loadChatSession } from "@/lib/chat-session";
-import { buildExploreQuery, savedPlacesNear } from "@/lib/map-explore";
+import { MapErrorBoundary } from "@/components/MapErrorBoundary";
 import {
+  MapExploreSheetSafe,
+  type MapExploreSheetHandle,
+} from "@/components/MapExploreSheetSafe";
+import { focusPlaceInVisibleMapArea } from "@/lib/map-focus-place";
+import { PlaceDetailSheet, ExploreSubpageHeader } from "@/components/map/PlaceDetailSheet";
+import {
+  NavigationPreviewSheet,
+  NavigationPreviewSheetHeader,
+} from "@/components/map/NavigationPreviewSheet";
+import { GoogleMapBackground } from "@/components/map/GoogleMapBackground";
+import {
+  MapExplorePlaceCards,
+  type MapExploreCardsHandle,
+} from "@/components/map/MapExplorePlaceCards";
+import { MapExploreCategoryChips } from "@/components/map/MapExploreCategoryChips";
+import { MapSearchBarOverlay } from "@/components/map/MapSearchBarOverlay";
+import { listPlaces, toggleSavePlace, type SavedPlace } from "@/lib/places-storage";
+import { searchPlaces } from "@/lib/places.functions";
+import type { PlaceResult } from "@/lib/place-result";
+import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { getWeather } from "@/lib/weather.functions";
+import type { WeatherSummary } from "@/lib/weather-types";
+import {
+  generatePlaceReason,
+  userProfileForReasonFrom,
+  type UserProfileForReason,
+} from "@/lib/build-place-recommendation-reason";
+import { usePlaceNavigation } from "@/hooks/use-place-navigation";
+import { isMapDetailOpen, type MapExploreSheetMode } from "@/lib/map-explore-sheet-mode";
+import { mapPlaceResultToChatItem, addSelectedPlace, saveChatSession, loadChatSession } from "@/lib/chat-session";
+import { getUserProfile } from "@/lib/profile-storage";
+import { getPreferences } from "@/lib/preferences-storage";
+import { useAvatar } from "@/hooks/use-avatar";
+import { buildExploreQuery, distanceMeters, formatDistanceLabel, savedPlacesNear } from "@/lib/map-explore";
+import { sortExplorePlaces } from "@/lib/sort-explore-places";
+import { filterExplorePlaces, isTravelFriendlyPlace } from "@/lib/filter-explore-places";
+import {
+  filterByExploreCategory,
+  getExploreCategoryDisplayLabel,
+  getExploreCategoryEmptyMessage,
+  matchesCategory,
+} from "@/lib/place-category";
+import { getMockMapPlaces } from "@/lib/map-mock-places";
+import {
+  COFFEE_MIN_FILTERED_RESULTS,
+  DISTRICT_MIN_FILTERED_RESULTS,
+  getExploreTextFallbackQueries,
   DEFAULT_SEARCH_RADIUS_M,
   EXPLORE_CATEGORIES,
   type ExploreCategory,
 } from "@/lib/places-search-config";
 import { TAIPEI_CENTER, normalizeDeviceLocation } from "@/lib/geo";
+import { resolveUserMarkerAvatarSrc } from "@/lib/map-user-location-marker";
+import { useI18n } from "@/hooks/use-i18n";
 
 export const Route = createFileRoute("/_app/map")({
-  component: MapView,
+  component: MapPage,
 });
 
-const MAP_ZOOM = 15;
+function MapPage() {
+  return (
+    <MapErrorBoundary>
+      <MapView />
+    </MapErrorBoundary>
+  );
+}
+
+const MAP_ZOOM_EXPLORE = 15;
+const MAP_ZOOM_PLACE = 17;
 
 type MapPlaceCard = PlaceResult & { reason: string; googleMapsUrl?: string; isSavedFavorite?: boolean };
+
+function mockMapCards(center: { lat: number; lng: number }): MapPlaceCard[] {
+  return getMockMapPlaces(center).map((p) => ({ ...p, googleMapsUrl: undefined }));
+}
 
 function savedToPlaceResult(s: SavedPlace): PlaceResult {
   return {
@@ -40,6 +92,7 @@ function savedToPlaceResult(s: SavedPlace): PlaceResult {
     userRatingCount: null,
     photoName: null,
     primaryType: s.category,
+    types: s.category ? [s.category] : null,
     businessStatus: null,
     openStatus: "unknown",
     openStatusLabel: "",
@@ -50,7 +103,7 @@ function savedToPlaceResult(s: SavedPlace): PlaceResult {
 }
 
 function resolveDeviceLocation(
-  onSuccess: (loc: { lat: number; lng: number }, label: string) => void,
+  onSuccess: (loc: { lat: number; lng: number }) => void,
   onFallback: () => void,
 ) {
   if (!navigator.geolocation) {
@@ -61,7 +114,7 @@ function resolveDeviceLocation(
     (pos) => {
       const normalized = normalizeDeviceLocation(pos.coords.latitude, pos.coords.longitude);
       if (normalized) {
-        onSuccess(normalized, "附近");
+        onSuccess(normalized);
       } else {
         onFallback();
       }
@@ -71,9 +124,45 @@ function resolveDeviceLocation(
   );
 }
 
+function sortMapCards(
+  cards: MapPlaceCard[],
+  origin: { lat: number; lng: number },
+  profile: UserProfileForReason | null,
+): MapPlaceCard[] {
+  return sortExplorePlaces(cards, origin, profile);
+}
+
+function mergePlacesById(base: PlaceResult[], extra: PlaceResult[]): PlaceResult[] {
+  const seen = new Set(base.map((p) => p.id));
+  const merged = [...base];
+  for (const p of extra) {
+    if (!seen.has(p.id)) {
+      seen.add(p.id);
+      merged.push(p);
+    }
+  }
+  return merged;
+}
+
 function MapView() {
+  const { t, locale } = useI18n();
+
+  useEffect(() => {
+    const main = document.querySelector("main");
+    if (!main) return;
+    const prev = main.style.overflow;
+    main.style.overflow = "hidden";
+    return () => {
+      main.style.overflow = prev;
+    };
+  }, []);
+
   const navigate = useNavigate();
-  const mapPageRef = useRef<HTMLDivElement>(null);
+  const { avatarSrc: rawAvatarSrc } = useAvatar();
+  const safeAvatarSrc = useMemo(
+    () => resolveUserMarkerAvatarSrc(rawAvatarSrc),
+    [rawAvatarSrc],
+  );
   const searchPlacesFn = useServerFn(searchPlaces);
   const fetchWeather = useServerFn(getWeather);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
@@ -83,37 +172,58 @@ function MapView() {
   const [results, setResults] = useState<MapPlaceCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  const [sheetMode, setSheetMode] = useState<MapExploreSheetMode>("list");
+  const [selectedPlace, setSelectedPlace] = useState<MapPlaceCard | null>(null);
+  const [selectedPlaceIndex, setSelectedPlaceIndex] = useState<number | null>(null);
   const [saved, setSaved] = useState<SavedPlace[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState(TAIPEI_CENTER);
   const [mapCenter, setMapCenter] = useState(TAIPEI_CENTER);
+  const [mapZoom, setMapZoom] = useState(MAP_ZOOM_EXPLORE);
+  const mapInstanceRef = useRef<google.maps.Map | null>(null);
+  const sheetRef = useRef<MapExploreSheetHandle>(null);
+  const cardsRef = useRef<MapExploreCardsHandle>(null);
   const [geoReady, setGeoReady] = useState(false);
+  const [hasDeviceLocation, setHasDeviceLocation] = useState(false);
+  const [locationHint, setLocationHint] = useState<string | null>(null);
   const mapErrorToastedRef = useRef(false);
+  const [mapUnavailable, setMapUnavailable] = useState(false);
+  const [reasonProfile, setReasonProfile] = useState<UserProfileForReason | null>(null);
 
   const applyFallbackLocation = useCallback(() => {
+    setHasDeviceLocation(false);
     setUserLocation(TAIPEI_CENTER);
     setMapCenter(TAIPEI_CENTER);
-    setLocationLabel("台北");
+    setLocationLabel(t("common.nearby"));
+    setLocationHint(t("map.locationFallbackHint"));
     setGeoReady(true);
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     resolveDeviceLocation(
-      (loc, label) => {
+      (loc) => {
+        setHasDeviceLocation(true);
+        setLocationHint(null);
         setUserLocation(loc);
         setMapCenter(loc);
-        setLocationLabel(label);
+        setLocationLabel(t("common.nearby"));
         setGeoReady(true);
+        fetchWeather({ data: { lat: loc.lat, lng: loc.lng } })
+          .then((r) => {
+            if (r.weather?.city?.trim()) setLocationLabel(r.weather.city.trim());
+          })
+          .catch(() => {});
       },
       applyFallbackLocation,
     );
-  }, [applyFallbackLocation]);
+  }, [applyFallbackLocation, fetchWeather]);
 
   const handleMapLoadError = useCallback((message: string) => {
+    setMapUnavailable(true);
     if (!mapErrorToastedRef.current) {
       mapErrorToastedRef.current = true;
-      toast.error(message, { duration: 6000 });
+      toast.message(t("map.mapLoadFallback"), { duration: 5000 });
+      console.warn("[Roamie Map]", message);
     }
   }, []);
 
@@ -123,6 +233,35 @@ function MapView() {
 
   useEffect(() => {
     refreshSaved();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [profile, prefs] = await Promise.all([
+          getUserProfile().catch(() => null),
+          getPreferences(),
+        ]);
+        if (cancelled) return;
+        setReasonProfile(
+          userProfileForReasonFrom(profile?.prefs ?? prefs, {
+            travelStyle: profile?.travelStyle,
+            personalityType: profile?.personalityType,
+            personalitySummary: profile?.personalitySummary,
+          }),
+        );
+      } catch {
+        if (!cancelled) {
+          getPreferences()
+            .then((prefs) => setReasonProfile(userProfileForReasonFrom(prefs)))
+            .catch(() => {});
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -138,80 +277,364 @@ function MapView() {
     const handle = setTimeout(() => {
       setLoading(true);
       setError(null);
-      const exploreQuery = buildExploreQuery(text, { weather, timeIso: new Date().toISOString() });
+      const exploreQuery = buildExploreQuery(text, {
+        weather,
+        timeIso: new Date().toISOString(),
+        userLocation,
+        userLocale: locale,
+      });
       const isFreeText = !!query.trim();
-      searchPlacesFn({
-        data: {
-          query: isFreeText ? exploreQuery : cat.query,
+      const runSearch = async () => {
+        const basePayload = {
           lat: userLocation.lat,
           lng: userLocation.lng,
           radius: DEFAULT_SEARCH_RADIUS_M,
-          mode: (isFreeText ? "text" : cat.mode) as "text" | "nearby" | "multi",
-          includedTypes: isFreeText ? undefined : cat.includedTypes,
-          nearbyGroups: isFreeText ? undefined : cat.nearbyGroups,
-        },
-      })
-        .then((r) => {
-          if (r.error) setError(r.error);
-          const nearbySaved = savedPlacesNear(userLocation, saved, 5000);
-          const apiNames = new Set(r.places.map((p) => p.name));
-          const savedCards: MapPlaceCard[] = nearbySaved
-            .filter((s) => !apiNames.has(s.name))
-            .map((s) => {
-              const base = savedToPlaceResult(s);
-              return {
-                ...base,
-                reason: "你收藏的角落，就在附近，適合順路過去看看",
-                isSavedFavorite: true,
-              };
+        };
+
+        const primary = await searchPlacesFn({
+          data: {
+            ...basePayload,
+            query: isFreeText ? exploreQuery : cat.query,
+            mode: (isFreeText ? "text" : cat.mode) as "text" | "nearby" | "multi",
+            includedTypes: isFreeText ? undefined : cat.includedTypes,
+            nearbyGroups: isFreeText ? undefined : cat.nearbyGroups,
+            locale,
+          },
+        });
+
+        let apiPlaces = primary.places;
+        let apiError = primary.error;
+
+        const applyFilters = (list: PlaceResult[]) =>
+          filterByExploreCategory(filterExplorePlaces(list), cat);
+
+        let filtered = applyFilters(apiPlaces);
+
+        if (
+          !isFreeText &&
+          cat.id === "coffee" &&
+          filtered.length < COFFEE_MIN_FILTERED_RESULTS
+        ) {
+          for (const textQuery of getExploreTextFallbackQueries("coffee", userLocation)) {
+            const fallback = await searchPlacesFn({
+              data: {
+                ...basePayload,
+                query: textQuery,
+                mode: "text",
+                locale,
+              },
             });
-          const enriched: MapPlaceCard[] = [
-            ...savedCards,
-            ...r.places.map((p) => {
-              const item = mapPlaceResultToChatItem(p, { weather });
-              return { ...p, reason: item.reason, googleMapsUrl: item.googleMapsUrl };
-            }),
-          ];
-          setResults(enriched);
-          setSelectedIdx(null);
+            if (fallback.error && !apiError) apiError = fallback.error;
+            if (fallback.places.length > 0) {
+              apiPlaces = mergePlacesById(apiPlaces, fallback.places);
+              filtered = applyFilters(apiPlaces);
+              if (filtered.length >= COFFEE_MIN_FILTERED_RESULTS) break;
+            }
+          }
+        }
+
+        if (
+          !isFreeText &&
+          cat.id === "district" &&
+          filtered.length < DISTRICT_MIN_FILTERED_RESULTS
+        ) {
+          for (const textQuery of getExploreTextFallbackQueries("district", userLocation)) {
+            const fallback = await searchPlacesFn({
+              data: {
+                ...basePayload,
+                query: textQuery,
+                mode: "text",
+                locale,
+              },
+            });
+            if (fallback.error && !apiError) apiError = fallback.error;
+            if (fallback.places.length > 0) {
+              apiPlaces = mergePlacesById(apiPlaces, fallback.places);
+              filtered = applyFilters(apiPlaces);
+              if (filtered.length >= DISTRICT_MIN_FILTERED_RESULTS) break;
+            }
+          }
+        }
+
+        if (apiError) setError(apiError);
+
+        const nearbySaved = savedPlacesNear(userLocation, saved, 5000);
+        const apiNames = new Set(apiPlaces.map((p) => p.name));
+        const savedCards: MapPlaceCard[] = nearbySaved
+          .filter((s) => !apiNames.has(s.name))
+          .filter((s) =>
+            matchesCategory(
+              { primaryType: s.category, name: s.name, types: s.category ? [s.category] : null },
+              cat,
+            ),
+          )
+          .map((s) => {
+            const base = savedToPlaceResult(s);
+            const distM =
+              base.lat != null && base.lng != null
+                ? distanceMeters(userLocation, { lat: base.lat, lng: base.lng })
+                : undefined;
+            const item = mapPlaceResultToChatItem(base, {
+              weather,
+              userProfile: reasonProfile,
+              categoryLabel: getExploreCategoryDisplayLabel(base),
+              distanceMeters: distM,
+              isSavedFavorite: true,
+              locale,
+            });
+            return {
+              ...base,
+              reason: item.reason,
+              isSavedFavorite: true,
+            };
+          });
+
+        let enriched: MapPlaceCard[] = [
+          ...savedCards,
+          ...filtered.map((p) => {
+            const distM =
+              p.lat != null && p.lng != null
+                ? distanceMeters(userLocation, { lat: p.lat, lng: p.lng })
+                : undefined;
+            const item = mapPlaceResultToChatItem(p, {
+              weather,
+              userProfile: reasonProfile,
+              categoryLabel: getExploreCategoryDisplayLabel(p),
+              distanceMeters: distM,
+              locale,
+            });
+            return { ...p, reason: item.reason, googleMapsUrl: item.googleMapsUrl };
+          }),
+        ];
+
+        if (enriched.length === 0) {
+          if (isFreeText || cat.id === "all") {
+            enriched = mockMapCards(userLocation);
+            if (apiError) {
+              setError(`${apiError}${t("map.demoPlacesNote")}`);
+            }
+          } else {
+            setError(getExploreCategoryEmptyMessage(cat.id, locale));
+          }
+        }
+
+        setResults(sortMapCards(enriched, userLocation, reasonProfile));
+        if (sheetMode === "list") {
+          setSelectedPlace(null);
+          setSelectedPlaceIndex(null);
+        }
+      };
+
+      void runSearch().catch((e) => {
+          const msg = e instanceof Error ? e.message : t("map.searchFailed");
+          if (cat.id === "all") {
+            setError(`${msg}${t("map.demoPlacesNote")}`);
+            setResults(mockMapCards(userLocation));
+          } else {
+            setError(msg);
+            setResults([]);
+          }
+          if (sheetMode === "list") {
+            setSelectedPlace(null);
+            setSelectedPlaceIndex(null);
+          }
         })
-        .catch((e) => setError(e instanceof Error ? e.message : "搜尋失敗"))
         .finally(() => setLoading(false));
     }, query.trim() ? 400 : 0);
     return () => clearTimeout(handle);
-  }, [query, cat, searchPlacesFn, geoReady, userLocation.lat, userLocation.lng, weather, saved]);
+  }, [query, cat, searchPlacesFn, geoReady, userLocation.lat, userLocation.lng, weather, saved, reasonProfile, locale, t]);
 
-  const selectedPlace = selectedIdx != null ? results[selectedIdx] ?? null : null;
+  const displayResults = useMemo(() => {
+    if (loading && !query.trim()) return [];
+    const base =
+      results.length > 0
+        ? results
+        : !loading && cat.id === "all"
+          ? mockMapCards(userLocation)
+          : [];
+    const filtered = filterByExploreCategory(filterExplorePlaces(base), cat);
+    return sortMapCards(filtered, userLocation, reasonProfile);
+  }, [results, cat, loading, query, userLocation, reasonProfile]);
 
-  const markers = useMemo(
+  const handleCategorySelect = useCallback(
+    (c: ExploreCategory) => {
+      if (c.id === cat.id) return;
+      setCat(c);
+      setMapCenter(userLocation);
+      setSheetMode("list");
+      setSelectedPlace(null);
+      setSelectedPlaceIndex(null);
+      setMapZoom(MAP_ZOOM_EXPLORE);
+      setMapCenter(userLocation);
+      setError(null);
+      if (!query.trim()) {
+        setLoading(true);
+        setResults([]);
+      }
+    },
+    [cat.id, query, userLocation],
+  );
+
+  const placeMarkers = useMemo(
     () =>
-      results
+      displayResults
         .filter((p) => p.lat != null && p.lng != null)
         .map((p) => ({
           lat: p.lat!,
           lng: p.lng!,
           title: p.name,
-          selected: selectedIdx !== null && results[selectedIdx]?.id === p.id,
+          selected: selectedPlace?.id === p.id,
         })),
-    [results, selectedIdx],
+    [displayResults, selectedPlace?.id],
   );
+
+  const selectedDestination =
+    selectedPlace?.lat != null && selectedPlace?.lng != null
+      ? { lat: selectedPlace.lat, lng: selectedPlace.lng }
+      : null;
+
+  const navigation = usePlaceNavigation({
+    origin: userLocation,
+    destination: selectedDestination,
+    weather,
+    profile: reasonProfile,
+    enabled: !!selectedPlace && isMapDetailOpen(sheetMode),
+  });
+
+  const userLocationPin = useMemo(() => {
+    if (!hasDeviceLocation) return null;
+    return {
+      lat: userLocation.lat,
+      lng: userLocation.lng,
+      avatarSrc: safeAvatarSrc,
+    };
+  }, [hasDeviceLocation, userLocation.lat, userLocation.lng, safeAvatarSrc]);
 
   const savedByName = useMemo(() => new Map(saved.map((s) => [s.name, s])), [saved]);
 
-  const selectPlace = (index: number) => {
-    setSelectedIdx(index);
-    const p = results[index];
-    if (p?.lat != null && p?.lng != null) {
-      setMapCenter({ lat: p.lat, lng: p.lng });
+  const refocusSelectedPlace = useCallback(
+    (lat: number, lng: number) => {
+      const pos = { lat, lng };
+      setMapCenter(pos);
+      setMapZoom(MAP_ZOOM_PLACE);
+      const run = () => {
+        const map = mapInstanceRef.current;
+        if (!map) return;
+        const sheet = document.querySelector<HTMLElement>("[data-map-explore-sheet]");
+        focusPlaceInVisibleMapArea(map, pos, MAP_ZOOM_PLACE, sheet);
+      };
+      requestAnimationFrame(() => requestAnimationFrame(run));
+    },
+    [],
+  );
+
+  const focusMapOnPlace = useCallback(
+    (lat: number, lng: number) => {
+      refocusSelectedPlace(lat, lng);
+    },
+    [refocusSelectedPlace],
+  );
+
+  useEffect(() => {
+    if (selectedPlace?.lat == null || selectedPlace.lng == null) return;
+    const sheet = document.querySelector("[data-map-explore-sheet]");
+    if (!sheet) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const ro = new ResizeObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        refocusSelectedPlace(selectedPlace.lat!, selectedPlace.lng!);
+      }, 100);
+    });
+    ro.observe(sheet);
+    return () => {
+      ro.disconnect();
+      clearTimeout(timer);
+    };
+  }, [selectedPlace?.id, selectedPlace?.lat, selectedPlace?.lng, refocusSelectedPlace]);
+
+  const handleMapClick = useCallback(() => {
+    if (sheetMode === "detail" || sheetMode === "navigation") {
+      sheetRef.current?.collapse("peek");
+    } else {
+      sheetRef.current?.collapse("min");
     }
-  };
+    if (selectedPlace?.lat != null && selectedPlace.lng != null) {
+      refocusSelectedPlace(selectedPlace.lat, selectedPlace.lng);
+    }
+  }, [sheetMode, selectedPlace, refocusSelectedPlace]);
+
+  const handlePlaceSelect = useCallback(
+    (index: number) => {
+      const place = displayResults[index];
+      if (!place) return;
+
+      if (place.lat == null || place.lng == null) {
+        toast.message(t("map.noCoordsDetail"));
+        return;
+      }
+
+      const distM = distanceMeters(userLocation, { lat: place.lat, lng: place.lng });
+      const reason = generatePlaceReason(place, reasonProfile, {
+        weather,
+        locale,
+        context: {
+          categoryLabel: getExploreCategoryDisplayLabel(place),
+          distanceMeters: distM,
+        },
+      });
+
+      setSelectedPlace({ ...place, reason });
+      setSelectedPlaceIndex(index);
+      setSheetMode("detail");
+      sheetRef.current?.expand();
+      focusMapOnPlace(place.lat, place.lng);
+    },
+    [displayResults, userLocation, reasonProfile, weather, focusMapOnPlace, locale, t],
+  );
+
+  const handleBackToList = useCallback(() => {
+    const scrollIdx = selectedPlaceIndex;
+    setSheetMode("list");
+    sheetRef.current?.expand();
+    if (scrollIdx != null) {
+      requestAnimationFrame(() => {
+        cardsRef.current?.scrollToIndex(scrollIdx);
+      });
+    }
+    if (selectedPlace?.lat != null && selectedPlace.lng != null) {
+      refocusSelectedPlace(selectedPlace.lat, selectedPlace.lng);
+    }
+  }, [selectedPlaceIndex, selectedPlace, refocusSelectedPlace]);
+
+  const handleNavigateFromDetail = useCallback(() => {
+    if (!selectedPlace?.lat || !selectedPlace?.lng) {
+      toast.message(t("map.noCoordsRoute"));
+      return;
+    }
+    navigation.startNavigation();
+  }, [selectedPlace, navigation]);
+
+  const handleBackToDetail = useCallback(() => {
+    setSheetMode("detail");
+  }, []);
 
   const openInChat = (p: MapPlaceCard) => {
-    const item = mapPlaceResultToChatItem(p, { weather });
+    const distM =
+      p.lat != null && p.lng != null
+        ? distanceMeters(userLocation, { lat: p.lat, lng: p.lng })
+        : undefined;
+    const item = mapPlaceResultToChatItem(p, {
+      weather,
+      userProfile: reasonProfile,
+      categoryLabel: getExploreCategoryDisplayLabel(p),
+      distanceMeters: distM,
+      locale,
+    });
     const base = loadChatSession();
     saveChatSession(addSelectedPlace({ ...base, phase: "followup" }, item));
     navigate({ to: "/chat", search: { from: "map" } });
-    toast.message(`和 Roamie 聊聊「${p.name}」`);
+    toast.message(t("map.chatAboutPlace", { name: p.name }));
   };
 
   const handleToggleSave = async (p: MapPlaceCard) => {
@@ -228,10 +651,10 @@ function MapView() {
         mood_tag: null,
         cover_image: p.photoName ? (buildPlacePhotoUrl(p.photoName, 600) ?? null) : null,
       });
-      toast.success(didSave ? "已收藏" : "已取消收藏");
+      toast.success(didSave ? t("map.saved") : t("map.unsaved"));
       refreshSaved();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "操作失敗");
+      toast.error(err instanceof Error ? err.message : t("map.actionFailed"));
     } finally {
       setBusy(null);
     }
@@ -239,231 +662,193 @@ function MapView() {
 
   const locateMe = () => {
     resolveDeviceLocation(
-      (loc, label) => {
+      (loc) => {
+        setHasDeviceLocation(true);
+        setLocationHint(null);
         setUserLocation(loc);
         setMapCenter(loc);
-        setLocationLabel(label);
-        setSelectedIdx(null);
-        toast.success("已定位");
+        setMapZoom(MAP_ZOOM_EXPLORE);
+        setLocationLabel(t("common.nearby"));
+        setSheetMode("list");
+        setSelectedPlace(null);
+        setSelectedPlaceIndex(null);
+        toast.success(t("map.located"));
+        fetchWeather({ data: { lat: loc.lat, lng: loc.lng } })
+          .then((r) => {
+            if (r.weather?.city?.trim()) setLocationLabel(r.weather.city.trim());
+          })
+          .catch(() => {});
       },
       () => {
         applyFallbackLocation();
-        toast.error("無法取得位置，已改為台北");
+        toast.message(t("map.locationFallbackHint"));
       },
     );
   };
 
+  const savedNames = useMemo(() => new Set(saved.map((s) => s.name)), [saved]);
+
+  const onMarkerClick = useCallback(
+    (markerIdx: number) => {
+      const withCoords = displayResults.filter((p) => p.lat != null && p.lng != null);
+      const p = withCoords[markerIdx];
+      if (!p) return;
+      handlePlaceSelect(displayResults.indexOf(p));
+    },
+    [displayResults, handlePlaceSelect],
+  );
+
   return (
-    <div
-      ref={mapPageRef}
-      className="relative h-[calc(100dvh-4.25rem-env(safe-area-inset-bottom,0px))] min-h-[520px] w-full overflow-hidden"
-    >
-      {/* 地圖背景 */}
-      {geoReady ? (
-        <GoogleMap
-          center={mapCenter}
-          zoom={MAP_ZOOM}
-          markers={markers}
-          onMarkerClick={(markerIdx) => {
-            const withCoords = results.filter((p) => p.lat != null && p.lng != null);
-            const p = withCoords[markerIdx];
-            if (!p) return;
-            selectPlace(results.indexOf(p));
-          }}
-          className="absolute inset-0 z-0 h-full w-full"
-          onLoadError={handleMapLoadError}
-        />
-      ) : (
-        <div className="absolute inset-0 z-0 flex items-center justify-center bg-secondary">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </div>
-      )}
-
-      {/* 搜尋欄：高 z-index，不受 sheet 拖曳影響 */}
-      <div className="absolute inset-x-0 top-0 z-[50] px-5 pt-3">
-        <div className="flex items-center gap-2 rounded-full border border-border bg-card/95 px-4 py-3 shadow-soft backdrop-blur">
-          <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜尋 Google 地圖上的任何地點"
-            className="min-w-0 flex-1 bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none"
-            autoComplete="off"
+    <div className="map-page relative h-full min-h-0 w-full overflow-hidden bg-cream">
+      {/* 地圖層：全屏背景，GoogleMap 僅在此 render 一次 */}
+      <div className="map-stage absolute inset-0 z-0 overflow-hidden">
+        {geoReady && !mapUnavailable ? (
+          <GoogleMapBackground
+            center={mapCenter}
+            zoom={mapZoom}
+            placeMarkers={placeMarkers}
+            userLocation={userLocationPin}
+            onPlaceMarkerClick={onMarkerClick}
+            onLoadError={handleMapLoadError}
+            onMapClick={handleMapClick}
+            onMapReady={(map) => {
+              mapInstanceRef.current = map;
+            }}
           />
-          <button
-            type="button"
-            onClick={locateMe}
-            className="shrink-0 rounded-full bg-secondary p-1.5"
-            aria-label="重新定位"
-          >
-            <Navigation className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-
-      <button
-        type="button"
-        onClick={locateMe}
-        className="absolute right-5 top-[4.75rem] z-[50] flex h-10 w-10 items-center justify-center rounded-full bg-card shadow-soft"
-        aria-label="我的位置"
-      >
-        <Navigation className="h-4 w-4" />
-      </button>
-
-      {/* 地點預覽卡 */}
-      {selectedPlace && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-[30%] z-[45] px-4">
-          <MapPlacePreview
-            place={selectedPlace}
-            imageUrl={
-              selectedPlace.photoName ? buildPlacePhotoUrl(selectedPlace.photoName, 800) : null
-            }
-            isSaved={savedByName.has(selectedPlace.name)}
-            isBusy={busy === selectedPlace.id}
-            onClose={() => setSelectedIdx(null)}
-            onToggleSave={() => void handleToggleSave(selectedPlace)}
-            onOpenChat={() => openInChat(selectedPlace)}
-          />
-        </div>
-      )}
-
-      {/* Draggable bottom sheet */}
-      <MapExploreSheet containerRef={mapPageRef}>
-        <div className="flex min-h-0 flex-1 flex-col px-5">
-          <div className="shrink-0 pb-2">
-            <p className="font-display text-lg leading-tight">推薦地點</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {locationLabel} · {loading ? "搜尋中…" : `${results.length} 個地方`}
-              {cat.label ? ` · ${cat.label}` : ""}
-              {saved.length > 0 ? ` · 已收藏 ${saved.length}` : ""}
+        ) : geoReady ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-cream px-8 text-center">
+            <p className="font-display text-base text-foreground">地圖暫時無法顯示</p>
+            <p className="max-w-xs text-sm text-muted-foreground">
+              仍可透過下方推薦列表探索附近地點
             </p>
           </div>
-
-          {/* 分類 chips */}
-          <div className="shrink-0 overflow-x-auto pb-3 no-scrollbar">
-            <div className="flex gap-2">
-              {EXPLORE_CATEGORIES.map((c) => (
-                <button
-                  key={c.label}
-                  type="button"
-                  onClick={() => {
-                    setCat(c);
-                    setMapCenter(userLocation);
-                    setSelectedIdx(null);
-                  }}
-                  className={`shrink-0 rounded-full border px-3.5 py-1.5 text-xs ${
-                    cat.label === c.label
-                      ? "border-foreground bg-foreground text-background"
-                      : "border-border bg-card"
-                  }`}
-                >
-                  {c.label}
-                </button>
-              ))}
-            </div>
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center bg-cream">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
+        )}
 
-          {error && (
-            <p className="shrink-0 mb-2 rounded-2xl bg-clay/15 px-3 py-2 text-xs text-clay">{error}</p>
-          )}
-
-          {/* 推薦卡片：收起時橫向預覽，展開後可上下滑動完整列表 */}
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-4 no-scrollbar">
-            {loading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-              </div>
-            ) : results.length === 0 ? (
-              <p className="py-6 text-sm text-muted-foreground">附近沒有找到地點，換個分類或關鍵字試試</p>
-            ) : (
-              <>
-                {/* 收起時可見的橫向卡片列 */}
-                <div className="-mx-5 overflow-x-auto pb-3 no-scrollbar">
-                  <div className="flex gap-3 px-5">
-                    {results.map((p, i) => {
-                      const isSaved = savedByName.has(p.name);
-                      const isBusy = busy === p.id;
-                      const img = p.photoName ? buildPlacePhotoUrl(p.photoName, 600) : null;
-                      return (
-                        <article
-                          key={`peek-${p.id}`}
-                          onClick={() => selectPlace(i)}
-                          className={`w-[64%] shrink-0 cursor-pointer overflow-hidden rounded-3xl border bg-card shadow-soft transition ${
-                            selectedIdx === i ? "border-foreground" : "border-border"
-                          }`}
-                        >
-                          <div className="relative aspect-[4/3] overflow-hidden bg-secondary">
-                            {img ? (
-                              <img
-                                src={img}
-                                alt={p.name}
-                                loading="lazy"
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                                無圖
-                              </div>
-                            )}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void handleToggleSave(p);
-                              }}
-                              disabled={isBusy}
-                              className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-card/95 shadow-soft backdrop-blur disabled:opacity-60"
-                              aria-label={isSaved ? "移除收藏" : "收藏"}
-                            >
-                              {isBusy ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <Heart
-                                  className={`h-4 w-4 ${isSaved ? "fill-clay text-clay" : "text-muted-foreground"}`}
-                                />
-                              )}
-                            </button>
-                            <span className="absolute bottom-2 left-2 rounded-full bg-card/90 px-2 py-0.5 text-[10px] text-muted-foreground backdrop-blur">
-                              {cat.label}
-                            </span>
-                          </div>
-                          <div className="p-3">
-                            <div className="flex items-center justify-between gap-2">
-                              <h3 className="truncate text-sm font-medium">{p.name}</h3>
-                              {p.rating !== null && (
-                                <span className="flex shrink-0 items-center gap-0.5 text-xs text-muted-foreground">
-                                  <Star className="h-3 w-3 fill-clay text-clay" />
-                                  {p.rating.toFixed(1)}
-                                </span>
-                              )}
-                            </div>
-                            {p.address && (
-                              <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
-                                {p.address}
-                              </p>
-                            )}
-                            <p className="mt-1.5 line-clamp-2 text-[11px] text-foreground/75">
-                              {p.reason}
-                            </p>
-                            <PlaceHoursBadge
-                              className="mt-1"
-                              statusLabel={p.openStatusLabel}
-                              todayHoursLabel={p.todayHoursLabel}
-                              closingSoonNote={p.closingSoonNote}
-                              nextOpenHint={p.nextOpenHint}
-                            />
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
+        <div className="pointer-events-none absolute inset-0 z-10">
+          <MapSearchBarOverlay
+            query={query}
+            onQueryChange={setQuery}
+            onLocate={locateMe}
+            placeholder={t("map.searchPlaceholder")}
+          />
         </div>
-      </MapExploreSheet>
+
+        {isMapDetailOpen(sheetMode) && (
+          <div
+            className="pointer-events-none absolute inset-0 z-[5] bg-ink/25 transition-opacity duration-300"
+            aria-hidden
+          />
+        )}
+      </div>
+
+      {/* Sheet：疊在地圖上方，不透明 cream、z-index 高於 map canvas */}
+      <div className="map-sheet-layer pointer-events-none absolute inset-x-0 bottom-0 z-40">
+      <MapExploreSheetSafe
+        ref={sheetRef}
+        sheetMode={sheetMode}
+        header={
+          sheetMode === "navigation" && selectedPlace ? (
+            <NavigationPreviewSheetHeader onBack={handleBackToDetail} />
+          ) : sheetMode === "detail" && selectedPlace ? (
+            <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBackToList} />
+          ) : (
+            <>
+              <div className="px-5 pb-2">
+                <p className="font-display text-lg leading-tight">推薦地點</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {locationLabel} ·{" "}
+                  {loading
+                    ? t("common.search")
+                    : t("map.placesCount", { count: displayResults.length })}
+                  {cat.id ? ` · ${t(`explore.category.${cat.id}`)}` : ""}
+                  {saved.length > 0 ? ` · 已收藏 ${saved.length}` : ""}
+                </p>
+                {locationHint && (
+                  <p className="mt-1 text-xs text-muted-foreground/90">{locationHint}</p>
+                )}
+              </div>
+
+              <MapExploreCategoryChips selected={cat} onSelect={handleCategorySelect} />
+
+              {error && (
+                <p className="mx-5 mb-2 rounded-2xl bg-clay/15 px-3 py-2 text-xs text-clay">{error}</p>
+              )}
+            </>
+          )
+        }
+      >
+        <>
+          <div className={sheetMode !== "list" ? "hidden" : undefined} aria-hidden={sheetMode !== "list"}>
+            <MapExplorePlaceCards
+              ref={cardsRef}
+              places={displayResults}
+              loading={loading}
+              categoryKey={cat.id}
+              emptyMessage={
+                !loading && displayResults.length === 0
+                  ? error ?? getExploreCategoryEmptyMessage(cat.id, locale)
+                  : null
+              }
+              highlightIndex={selectedPlaceIndex}
+              busyId={busy}
+              savedNames={savedNames}
+              userLocation={userLocation}
+              formatDistance={formatDistanceLabel}
+              distanceMeters={distanceMeters}
+              imageUrl={(photoName) => (photoName ? buildPlacePhotoUrl(photoName, 600) : null)}
+              onSelect={handlePlaceSelect}
+              onToggleSave={(p) => void handleToggleSave(p)}
+            />
+          </div>
+          {sheetMode === "detail" && selectedPlace && (
+            <PlaceDetailSheet
+              place={selectedPlace}
+              imageUrls={
+                selectedPlace.photoName
+                  ? [buildPlacePhotoUrl(selectedPlace.photoName, 800)!].filter(Boolean)
+                  : []
+              }
+              distanceLabel={
+                selectedPlace.lat != null && selectedPlace.lng != null
+                  ? formatDistanceLabel(
+                      distanceMeters(userLocation, {
+                        lat: selectedPlace.lat,
+                        lng: selectedPlace.lng,
+                      }),
+                    )
+                  : null
+              }
+              isSaved={savedByName.has(selectedPlace.name)}
+              isBusy={busy === selectedPlace.id}
+              transportModes={navigation.modes}
+              transportLoading={navigation.loading}
+              transportTip={navigation.aiTip}
+              selectedTransportMode={navigation.selectedMode}
+              onSelectTransportMode={navigation.setSelectedMode}
+              onNavigate={handleNavigateFromDetail}
+              onToggleSave={() => void handleToggleSave(selectedPlace)}
+              onOpenChat={() => openInChat(selectedPlace)}
+            />
+          )}
+          {sheetMode === "navigation" && selectedPlace && (
+            <NavigationPreviewSheet
+              placeName={selectedPlace.name}
+              modes={navigation.modes}
+              selectedMode={navigation.selectedMode}
+              onSelectMode={navigation.setSelectedMode}
+              loading={navigation.loading}
+              aiTip={navigation.aiTip}
+              onBack={handleBackToDetail}
+              onStartNavigation={navigation.startNavigation}
+            />
+          )}
+        </>
+      </MapExploreSheetSafe>
+      </div>
     </div>
   );
 }

@@ -1,8 +1,8 @@
-import { supabase } from "@/integrations/supabase/client";
-import { getAuthenticatedUserId } from "@/lib/auth-session";
 import type { RoamiePayloadV2, RoamieResponse } from "@/lib/ai/types";
+import { tagMoodRecommendationPayload } from "@/lib/saved-collection";
 
 const GUEST_KEY = "roamie:recommendations";
+const SESSION_LATEST_KEY = "roamie:recommendation-latest";
 
 export type StoredRecommendation = {
   id: string;
@@ -31,43 +31,23 @@ export function toPayloadV2(
   data: RoamieResponse,
   extra?: { destination?: string; days?: number },
 ): RoamiePayloadV2 {
-  return {
+  return tagMoodRecommendationPayload({
     ...data,
     version: 2,
     generatedAt: new Date().toISOString(),
+    itinerary: data.itinerary ?? [],
     ...extra,
-  };
+  });
 }
 
+/**
+ * 儲存心情推薦結果（僅本機暫存，不寫入 saved_trips / 收藏頁）。
+ */
 export async function saveRecommendation(
   data: RoamieResponse,
   extra?: { destination?: string; days?: number; mood?: string },
 ): Promise<StoredRecommendation> {
   const payload = toPayloadV2(data, extra);
-  const userId = await getAuthenticatedUserId();
-
-  if (userId) {
-    const { data: row, error } = await supabase
-      .from("saved_trips")
-      .insert({
-        user_id: userId,
-        title: data.title,
-        mood: extra?.mood ?? data.moodTag ?? null,
-        payload: payload as never,
-      })
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
-    return {
-      id: row.id,
-      title: row.title,
-      mood: row.mood,
-      cover_image: row.cover_image,
-      created_at: row.created_at,
-      payload,
-    };
-  }
-
   const record: StoredRecommendation = {
     id: crypto.randomUUID(),
     title: data.title,
@@ -76,34 +56,29 @@ export async function saveRecommendation(
     created_at: new Date().toISOString(),
     payload,
   };
+
   const list = readGuest();
   list.unshift(record);
   writeGuest(list.slice(0, 50));
+
+  if (typeof window !== "undefined") {
+    sessionStorage.setItem(SESSION_LATEST_KEY, JSON.stringify(record));
+  }
+
   return record;
 }
 
 export async function getRecommendation(id: string): Promise<StoredRecommendation | null> {
-  const userId = await getAuthenticatedUserId();
-
-  if (userId) {
-    const { data, error } = await supabase
-      .from("saved_trips")
-      .select("id, title, mood, cover_image, created_at, payload")
-      .eq("id", id)
-      .maybeSingle();
-    if (error) throw new Error(error.message);
-    if (!data) return null;
-    const payload = data.payload as unknown;
-    if (!payload || typeof payload !== "object") return null;
-    return {
-      id: data.id,
-      title: data.title,
-      mood: data.mood,
-      cover_image: data.cover_image,
-      created_at: data.created_at,
-      payload: payload as RoamiePayloadV2,
-    };
+  if (typeof window !== "undefined") {
+    const latestRaw = sessionStorage.getItem(SESSION_LATEST_KEY);
+    if (latestRaw) {
+      try {
+        const latest = JSON.parse(latestRaw) as StoredRecommendation;
+        if (latest.id === id) return latest;
+      } catch {
+        /* ignore */
+      }
+    }
   }
-
   return readGuest().find((r) => r.id === id) ?? null;
 }

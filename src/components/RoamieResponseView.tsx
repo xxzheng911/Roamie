@@ -6,6 +6,7 @@ import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
+import { filterRecommendationItemsForDisplay } from "@/lib/recommend-place-ranking";
 
 function ItineraryByDate({
   items,
@@ -121,7 +122,7 @@ export function RoamieResponseView({
   outfitAdvice,
 }: Props) {
   const summary = data.summary?.trim();
-  const recs = data.recommendations ?? [];
+  const recs = filterRecommendationItemsForDisplay(data.recommendations ?? []);
   const itinerary = data.itinerary ?? [];
 
   return (

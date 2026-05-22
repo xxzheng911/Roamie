@@ -58,7 +58,80 @@ export type FilterPlacesOptions = {
   atTime?: string;
 };
 
+export type PlaceIdentity = {
+  name?: string;
+  type?: string;
+};
+
 const CLOSING_SOON_MS = 60 * 60 * 1000;
+
+/** 深夜模式：22:00–04:59 */
+export function isLateNightMode(at: Date = new Date()): boolean {
+  const h = at.getHours();
+  return h >= 22 || h < 5;
+}
+
+function placeBlob(name: string, type?: string): string {
+  return `${name} ${type ?? ""}`.toLowerCase();
+}
+
+/** 戶外景觀／河岸：深夜仍可推薦（不因打烊狀態排除） */
+export function isLateNightScenicAccessible(name: string, type?: string): boolean {
+  const blob = placeBlob(name, type);
+  if (/夜景|觀景|展望|燈塔|河岸|河堤|愛河|碼頭|港區|海灣|海邊|海岸|堤|步道|散步|河濱|绿道|公園|park|駁二|夜市|waterfront|viewpoint/i.test(blob)) {
+    return true;
+  }
+  return false;
+}
+
+/** 深夜不適合推薦的類型（百貨、早午餐、一般日間景點等） */
+export function isLateNightUnsuitableType(name: string, type?: string): boolean {
+  const blob = placeBlob(name, type);
+  if (
+    /酒吧|bar|夜店|night club|pub|宵夜|夜市|居酒|ktv|卡拉|24小時|24小|二十四小時|night|夜景|河岸|便利|超商|溫泉|宵夜/i.test(
+      blob,
+    )
+  ) {
+    return false;
+  }
+  if (
+    /百貨|department|shopping mall|文創|展覽|博物館|museum|美術館|gallery|景點|觀光|早午餐|早餐|brunch|蛋餅|豆漿|吐司|晨間|morning coffee/i.test(
+      blob,
+    )
+  ) {
+    return true;
+  }
+  if (/咖啡|cafe|coffee|書店|書局/i.test(blob) && !/24|深夜|night/i.test(blob)) {
+    return true;
+  }
+  return false;
+}
+
+/** 時段與店型明顯不合 → 應完全排除 */
+export function isTimePeriodMismatch(name: string, type: string | undefined, at: Date): boolean {
+  const blob = placeBlob(name, type);
+  const hour = at.getHours();
+  const late = hour >= 22 || hour < 5;
+  const morning = hour >= 5 && hour < 11;
+
+  if (late) {
+    return isLateNightUnsuitableType(name, type);
+  }
+  if (morning) {
+    return /酒吧|夜店|night club|居酒屋|lounge bar|pub/i.test(blob);
+  }
+  if (hour >= 17 && hour < 22) {
+    return /早餐|早午餐|brunch|蛋餅店/i.test(blob);
+  }
+  return false;
+}
+
+function isOpeningSoonClosed(availability: PlaceAvailability): boolean {
+  return (
+    availability.openStatus === "closed_now" &&
+    !!availability.nextOpenHint?.trim()
+  );
+}
 
 /** weekdayDescriptions 順序：週一 (0) … 週日 (6) */
 const JS_DAY_TO_WEEKDAY_IDX: Record<number, number> = {
@@ -260,6 +333,7 @@ export function derivePlaceAvailability(
 
   const hours = data.currentOpeningHours;
   if (!hours || hours.openNow === undefined) {
+    const lateNight = isLateNightMode(at);
     return {
       businessStatus: data.businessStatus ?? null,
       openStatus: "unknown",
@@ -267,7 +341,7 @@ export function derivePlaceAvailability(
       todayHoursLabel,
       closingSoonNote: "",
       nextOpenHint: "",
-      sortWeight: 4,
+      sortWeight: lateNight ? 6 : 4,
       isRecommendable: true,
     };
   }
@@ -289,8 +363,8 @@ export function derivePlaceAvailability(
       todayHoursLabel,
       closingSoonNote: "",
       nextOpenHint,
-      sortWeight: 5,
-      isRecommendable: true,
+      sortWeight: nextOpenHint ? 5 : 12,
+      isRecommendable: context === "lenient",
     };
   }
 
@@ -319,12 +393,87 @@ export type WithAvailability<T> = T & {
   availability: PlaceAvailability;
 };
 
+/**
+ * 「現在」是否可推薦：營業中、即將打烊、即將營業；排除打烊、時段不合、深夜不合類型。
+ */
+export function isPlaceAvailableNow(
+  data: PlaceHoursData,
+  identity: PlaceIdentity,
+  options: FilterPlacesOptions = {},
+): boolean {
+  const at = options.at ?? new Date();
+  const context = options.context ?? "now";
+  const name = identity.name ?? "";
+  const type = identity.type ?? "";
+
+  if (isTimePeriodMismatch(name, type, at)) return false;
+
+  if (isLateNightMode(at) && isLateNightScenicAccessible(name, type)) return true;
+
+  const availability = derivePlaceAvailability(data, { ...options, at, context });
+
+  if (context === "scheduled") {
+    if (!availability.isRecommendable) return false;
+    return (
+      availability.openStatus === "open" ||
+      availability.openStatus === "unknown"
+    );
+  }
+
+  if (availability.openStatus === "unknown") {
+    if (isLateNightMode(at)) {
+      return !isLateNightUnsuitableType(name, type);
+    }
+    return true;
+  }
+
+  if (!availability.isRecommendable) return false;
+
+  if (availability.openStatus === "open" || availability.openStatus === "closing_soon") {
+    return true;
+  }
+
+  if (isOpeningSoonClosed(availability)) {
+    return true;
+  }
+
+  return false;
+}
+
+/** 推薦管線：只保留現在適合推薦的地點 */
+export function filterOpenPlaces<T>(
+  items: T[],
+  getHours: (item: T) => PlaceHoursData | null | undefined,
+  getIdentity: (item: T) => PlaceIdentity,
+  options: FilterPlacesOptions = {},
+): T[] {
+  const at = options.at ?? new Date();
+  return items.filter((item) =>
+    isPlaceAvailableNow(getHours(item) ?? {}, getIdentity(item), { ...options, at }),
+  );
+}
+
 export function filterAvailablePlaces<T>(
   items: T[],
   getHours: (item: T) => PlaceHoursData | null | undefined,
+  getIdentity?: (item: T) => PlaceIdentity,
   options: FilterPlacesOptions = {},
 ): T[] {
   const context = options.context ?? "now";
+
+  if (context === "now" && getIdentity) {
+    const filtered = filterOpenPlaces(items, getHours, getIdentity, options);
+    return filtered
+      .map((item) => ({
+        item,
+        availability: derivePlaceAvailability(getHours(item) ?? {}, {
+          ...options,
+          context: "now",
+        }),
+      }))
+      .sort((a, b) => a.availability.sortWeight - b.availability.sortWeight)
+      .map(({ item }) => item);
+  }
 
   const scored = items
     .map((item) => {
@@ -336,7 +485,10 @@ export function filterAvailablePlaces<T>(
 
   if (context === "scheduled") {
     return scored
-      .filter(({ availability }) => availability.openStatus === "open" || availability.openStatus === "unknown")
+      .filter(
+        ({ availability }) =>
+          availability.openStatus === "open" || availability.openStatus === "unknown",
+      )
       .sort((a, b) => a.availability.sortWeight - b.availability.sortWeight)
       .map(({ item }) => item);
   }
