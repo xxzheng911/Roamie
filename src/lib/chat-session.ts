@@ -10,12 +10,21 @@ import { buildTemplateReason } from "@/lib/place-reason";
 const SESSION_KEY = "roamie:chat-planning";
 
 export type ChatPhase =
+  | "discover"
   | "recommend"
   | "followup"
   | "collect"
   | "ready"
   | "generating"
   | "done";
+
+/** 聊天開場收集：今天想怎麼過、跟誰、室內外、必去點 */
+export type ChatDiscovery = {
+  vibe?: string;
+  companionship?: string;
+  setting?: string;
+  mustVisit?: string;
+};
 
 export type ChatPlaceItem = RoamieRecommendationItem & {
   lat?: number | null;
@@ -40,6 +49,7 @@ export type SelectedPlaceRecord = {
 
 export type ChatPlanningSession = {
   mood?: string;
+  discovery?: ChatDiscovery;
   preferences?: TravelPreferences;
   location?: RoamieLocation;
   weather?: WeatherSummary | null;
@@ -96,9 +106,103 @@ export function createEmptySession(): ChatPlanningSession {
   return {
     recommendedPlaces: [],
     selectedPlaces: [],
-    phase: "recommend",
+    phase: "discover",
+    discovery: {},
     updatedAt: new Date().toISOString(),
   };
+}
+
+const DISCOVERY_KEYS: (keyof ChatDiscovery)[] = ["vibe", "companionship", "setting"];
+
+export function nextMissingDiscoveryKey(discovery?: ChatDiscovery): keyof ChatDiscovery | null {
+  const d = discovery ?? {};
+  for (const key of DISCOVERY_KEYS) {
+    if (!d[key]?.trim()) return key;
+  }
+  return null;
+}
+
+export function isDiscoveryComplete(session: ChatPlanningSession): boolean {
+  if (session.selectedPlaces.length > 0 && session.mood) return true;
+  const d = session.discovery ?? {};
+  return DISCOVERY_KEYS.every((k) => Boolean(d[k]?.trim()));
+}
+
+export function discoveryLabel(key: keyof ChatDiscovery): string {
+  switch (key) {
+    case "vibe":
+      return "今天想放鬆、探索還是拍照";
+    case "companionship":
+      return "一個人還是朋友／情侶";
+    case "setting":
+      return "想室內還是室外";
+    case "mustVisit":
+      return "有沒有特別想去的地點";
+    default:
+      return "";
+  }
+}
+
+/** 從自然語句擷取開場四問的答案 */
+export function extractDiscoveryFromText(
+  text: string,
+  session: ChatPlanningSession,
+): ChatPlanningSession {
+  const t = text.trim();
+  if (!t) return session;
+  const discovery: ChatDiscovery = { ...session.discovery };
+
+  if (
+    !discovery.vibe &&
+    /(放鬆|放空|休息|慢下來|療癒|靜一靜)/.test(t)
+  ) {
+    discovery.vibe = "放鬆";
+  } else if (!discovery.vibe && /(探索|發現|走走看看|亂逛|挖寶|新鮮)/.test(t)) {
+    discovery.vibe = "探索";
+  } else if (!discovery.vibe && /(拍照|攝影|打卡|取景|網美|拍美照)/.test(t)) {
+    discovery.vibe = "拍照";
+  }
+
+  if (!discovery.companionship && /(一個人|獨自|自己|solo)/i.test(t)) {
+    discovery.companionship = "一個人";
+  } else if (!discovery.companionship && /(朋友|閨蜜|同學|同事|兄弟|姐妹)/.test(t)) {
+    discovery.companionship = "朋友";
+  } else if (!discovery.companionship && /(情侶|另一半|約會|兩人世界|男朋友|女朋友)/.test(t)) {
+    discovery.companionship = "情侶";
+  }
+
+  if (!discovery.setting && /(室內|室內的|不想曬|怕熱|下雨|雨)/.test(t)) {
+    discovery.setting = "室內";
+  } else if (!discovery.setting && /(室外|戶外|外面|曬太陽|海邊|公園|散步)/.test(t)) {
+    discovery.setting = "室外";
+  }
+
+  const mustVisitMatch = t.match(
+    /(?:想去|想去一下|想去看看|一定要去|想去的是|有想去的|想去的地方)[：:]?\s*(.+)/,
+  );
+  if (mustVisitMatch?.[1]) {
+    discovery.mustVisit = mustVisitMatch[1].trim().slice(0, 120);
+  } else if (
+    !discovery.mustVisit &&
+    /(沒有特別|沒有想|沒有一定要|隨意|都可以|你推)/.test(t)
+  ) {
+    discovery.mustVisit = "沒有特別";
+  }
+
+  let phase = session.phase;
+  if (phase === "discover" && isDiscoveryComplete({ ...session, discovery })) {
+    phase = "recommend";
+  }
+
+  return { ...session, discovery, phase };
+}
+
+/** 使用者明確表示可以排完整行程 */
+export function isUserConfirmingItinerary(text: string): boolean {
+  const t = text.trim();
+  return /(就這樣吧|就這樣|可以開始安排|開始安排吧|幫我排行程|生成行程|確認行程|整理成.+行程|差不多了|就這些|好，排|好，幫我排|完成了|可以了|就這幾個)/.test(
+    t,
+  );
 }
 
 export function loadChatSession(): ChatPlanningSession {
@@ -155,6 +259,10 @@ export function mapPlaceResultToChatItem(
     lat: lat ?? null,
     lng: lng ?? null,
     googleMapsUrl: googleMapsUrl ?? "",
+    openStatusLabel: p.openStatusLabel || undefined,
+    todayHoursLabel: p.todayHoursLabel || undefined,
+    closingSoonNote: p.closingSoonNote || undefined,
+    nextOpenHint: p.nextOpenHint || undefined,
   });
 }
 
@@ -240,8 +348,8 @@ export function extractPlanningHintsFromText(
   text: string,
   session: ChatPlanningSession,
 ): ChatPlanningSession {
+  let next = extractDiscoveryFromText(text, session);
   const t = text.trim();
-  let next = { ...session };
 
   const transportMatch = t.match(/(開車|走路|步行|捷運|公車|地鐵|騎車|單車|計程車|Uber)/);
   if (transportMatch) next.transportation = transportMatch[1];
@@ -264,13 +372,10 @@ export function extractPlanningHintsFromText(
   }
 
   if (next.selectedPlaces.length >= 1 && (next.transportation || next.budget || next.pace)) {
-    if (next.phase === "followup" || next.phase === "collect") next.phase = "collect";
+    if (next.phase === "followup" || next.phase === "recommend") next.phase = "collect";
   }
 
-  if (
-    /完成了|幫我排|生成行程|確認行程|整理成.+行程|好，.+排/.test(t) &&
-    next.selectedPlaces.length >= 1
-  ) {
+  if (isUserConfirmingItinerary(t) && next.selectedPlaces.length >= 1) {
     next.phase = "ready";
   }
 
@@ -280,7 +385,7 @@ export function extractPlanningHintsFromText(
 export function canGenerateItinerary(session: ChatPlanningSession): boolean {
   if (session.selectedPlaces.length < 1) return false;
   if (session.phase === "generating" || session.phase === "done") return false;
-  return session.phase === "ready" || session.phase === "collect" || session.phase === "followup";
+  return session.phase === "ready";
 }
 
 export function buildConversationSummary(session: ChatPlanningSession, msgs: ChatMsg[]): string {
@@ -289,9 +394,14 @@ export function buildConversationSummary(session: ChatPlanningSession, msgs: Cha
     .slice(-8)
     .map((m) => `${m.role === "user" ? "使用者" : "Roamie"}：${m.content.slice(0, 200)}`)
     .join("\n");
+  const d = session.discovery;
   const parts = [
     session.conversationSummary,
     session.mood ? `心情：${session.mood}` : "",
+    d?.vibe ? `今天想：${d.vibe}` : "",
+    d?.companionship ? `旅伴：${d.companionship}` : "",
+    d?.setting ? `室內外：${d.setting}` : "",
+    d?.mustVisit ? `必去：${d.mustVisit}` : "",
     session.transportation ? `交通：${session.transportation}` : "",
     session.budget ? `預算：${session.budget}` : "",
     session.pace ? `節奏：${session.pace}` : "",
@@ -324,7 +434,8 @@ export function initSessionFromRecommendation(payload: {
     recommendationTitle: payload.title,
     recommendedPlaces: recommended,
     selectedPlaces: selected,
-    phase: "collect",
+    phase: selected.length ? "collect" : "discover",
+    discovery: payload.moodTag ? { vibe: payload.moodTag } : {},
     recommendationId: payload.recommendationId,
     location: payload.location,
     weather: payload.weather,

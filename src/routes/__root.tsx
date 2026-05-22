@@ -12,6 +12,7 @@ import { Toaster } from "sonner";
 import appCss from "../styles.css?url";
 import { AuthProvider } from "@/hooks/use-auth";
 import { AvatarProvider } from "@/hooks/use-avatar";
+import { I18nProvider } from "@/hooks/use-i18n";
 
 function NotFoundComponent() {
   return (
@@ -118,10 +119,12 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <AvatarProvider>
-          <Outlet />
-          <Toaster position="top-center" />
-        </AvatarProvider>
+        <I18nProvider>
+          <AvatarProvider>
+            <Outlet />
+            <Toaster position="top-center" />
+          </AvatarProvider>
+        </I18nProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

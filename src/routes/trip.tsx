@@ -12,6 +12,8 @@ import { isRoamiePayloadV2, type RoamieItineraryItem, type RoamiePayloadV2, type
 import { buildClientContextBundle } from "@/lib/fetch-context";
 import { getWeather } from "@/lib/weather.functions";
 import { getPreferences } from "@/lib/preferences-storage";
+import { getUserProfile } from "@/lib/profile-storage";
+import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import { resolveBudgetMode } from "@/lib/preferences-storage";
 
@@ -109,10 +111,15 @@ function Trip() {
     if (!trip || !isRoamiePayloadV2(trip.payload)) return;
     const payload = trip.payload;
     try {
-      const [bundle, prefs] = await Promise.all([
+      const [bundle, prefs, profile] = await Promise.all([
         buildClientContextBundle(fetchWeather),
         getPreferences(),
+        getUserProfile(),
       ]);
+      const fashionStyle = resolveFashionStyle({
+        travelStyle: profile.travelStyle,
+        interests: prefs.interests,
+      });
       const transport = TRANSPORT_HINT[settings.transport ?? "walk"] ?? "步行";
       const legNotes = Object.entries(settings.legMinutes ?? {})
         .map(([name, min]) => `${name}停留${min}分鐘`)
@@ -142,6 +149,7 @@ function Trip() {
           location: bundle.location,
           weather: bundle.weather,
           time: bundle.time,
+          fashionStyle: fashionStyle ?? "",
         },
       });
 
@@ -150,6 +158,7 @@ function Trip() {
         ...itinerary,
         recommendations: [],
         itinerary: itinerary.itinerary,
+        outfitAdvice: itinerary.outfitAdvice ?? payload.outfitAdvice,
         tripSettings: settings,
         version: 2,
       };

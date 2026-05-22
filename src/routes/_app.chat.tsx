@@ -22,6 +22,8 @@ import {
   recordRecommendationNames,
 } from "@/lib/recommendation-history";
 import { getPreferences } from "@/lib/preferences-storage";
+import { getUserProfile } from "@/lib/profile-storage";
+import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
 import { generateItinerary } from "@/lib/itinerary.functions";
 import { saveItinerary } from "@/lib/itinerary-storage";
 import { getRecommendation } from "@/lib/recommendation-storage";
@@ -36,6 +38,9 @@ import {
   mergeSessionFromRoamie,
   addSelectedPlace,
   extractPlanningHintsFromText,
+  extractDiscoveryFromText,
+  isDiscoveryComplete,
+  isUserConfirmingItinerary,
   canGenerateItinerary,
   buildConversationSummary,
   initSessionFromRecommendation,
@@ -59,7 +64,8 @@ export const Route = createFileRoute("/_app/chat")({
 
 const GREETING: ChatMsg = {
   role: "assistant",
-  content: "嘿，今天過得怎麼樣？想找個地方放空，還是有想去的方向了？慢慢說，我聽。",
+  content:
+    "嘿，今天想出門走走嗎？先跟我聊聊——今天比較想放鬆、探索新地方，還是拍拍照？",
 };
 
 function Chat() {
@@ -205,13 +211,12 @@ function Chat() {
           content: m.role === "assistant" && m.roamie ? JSON.stringify(m.roamie) : m.content,
         }));
       const lastUser = [...apiMessages].reverse().find((m) => m.role === "user");
-      const phase =
-        overrides?.chatPhase ??
-        (session.phase === "done" ? "collect" : session.phase === "generating" ? "collect" : session.phase);
+      const clientPhase =
+        session.phase === "generating" || session.phase === "done" ? "collect" : session.phase;
 
       const apiPhase: import("@/lib/ai/context").ChatPhase =
         overrides?.chatPhase ??
-        (phase === "generating" || phase === "done" ? "collect" : phase);
+        (clientPhase === "generating" ? "collect" : clientPhase);
 
       const savedList = await listPlaces();
       return toRoamieRequest("chat", bundle, {
@@ -226,6 +231,10 @@ function Chat() {
         recentRecommendationNames: loadRecentRecommendationNames(),
         savedPlaceNames: savedList.map((p) => p.name),
         planningHints: {
+          vibe: session.discovery?.vibe,
+          companionship: session.discovery?.companionship,
+          setting: session.discovery?.setting,
+          mustVisit: session.discovery?.mustVisit,
           transportation: session.transportation,
           budget: session.budget,
           pace: session.pace,
@@ -358,16 +367,25 @@ function Chat() {
           recordRecommendationNames(full.recommendations.map((r) => r.name));
         }
 
-        let nextSession = mergeSessionFromRoamie(
-          session,
-          full,
-          opts?.phase === "followup" ? "collect" : session.phase === "recommend" ? "collect" : session.phase,
-        );
-        if (
-          /整理成一趟|幫你整理|舒服的行程|完整行程|要幫你整理/.test(full.summary) ||
-          nextSession.phase === "ready"
+        let nextSession = mergeSessionFromRoamie(session, full, session.phase);
+        if (nextSession.phase === "discover" && isDiscoveryComplete(nextSession)) {
+          nextSession = { ...nextSession, phase: "recommend" };
+        } else if (
+          full.recommendations?.length &&
+          nextSession.phase === "discover" &&
+          isDiscoveryComplete(nextSession)
         ) {
-          nextSession = { ...nextSession, phase: "ready" };
+          nextSession = { ...nextSession, phase: "recommend" };
+        } else if (
+          opts?.phase === "enrich" ||
+          opts?.phase === "followup"
+        ) {
+          nextSession = {
+            ...nextSession,
+            phase: nextSession.selectedPlaces.length ? "collect" : "followup",
+          };
+        } else if (session.phase === "recommend" && full.recommendations?.length) {
+          nextSession = { ...nextSession, phase: "recommend" };
         }
         persistSession(nextSession);
 
@@ -409,11 +427,11 @@ function Chat() {
     nextSession = { ...nextSession, phase: "followup" };
     persistSession(nextSession);
 
-    const userLine = `我很喜歡「${placeDisplayName(item)}」這種感覺（${item.type}），請當成偏好參考，不一定要第一站，幫我延伸附近適合的點與動線。`;
+    const userLine = `我對「${placeDisplayName(item)}」有興趣，想多聊聊這附近還能怎麼安排。`;
     const conversation: ChatMsg[] = [...msgs, { role: "user", content: userLine }];
     setMsgs(conversation);
 
-    await streamChat(conversation, { phase: "followup", userText: userLine, focusedPlace: item });
+    await streamChat(conversation, { phase: "enrich", userText: userLine, focusedPlace: item });
   };
 
   const send = async (overrideText?: string) => {
@@ -421,6 +439,11 @@ function Chat() {
     if (!trimmed || streaming || generating) return;
 
     let nextSession = extractPlanningHintsFromText(trimmed, session);
+    nextSession = extractDiscoveryFromText(trimmed, nextSession);
+
+    if (nextSession.phase === "discover" && isDiscoveryComplete(nextSession)) {
+      nextSession = { ...nextSession, phase: "recommend" };
+    }
     if (nextSession.phase === "recommend" && nextSession.selectedPlaces.length) {
       nextSession = { ...nextSession, phase: "collect" };
     } else if (nextSession.phase === "followup") {
@@ -432,28 +455,45 @@ function Chat() {
     setMsgs(next);
     setText("");
 
-    const apiPhase =
+    if (isUserConfirmingItinerary(trimmed) && nextSession.selectedPlaces.length >= 1) {
+      const readySession: ChatPlanningSession = { ...nextSession, phase: "ready" };
+      persistSession(readySession);
+      await handleGenerateItinerary(readySession, next);
+      return;
+    }
+
+    const apiPhase: import("@/lib/ai/context").ChatPhase =
       nextSession.phase === "ready"
         ? "confirm"
-        : nextSession.phase === "generating"
+        : nextSession.phase === "generating" || nextSession.phase === "done"
           ? "collect"
           : nextSession.phase;
 
-    await streamChat(next, {
-      phase: apiPhase as import("@/lib/ai/context").ChatPhase,
-      userText: trimmed,
-    });
+    await streamChat(next, { phase: apiPhase, userText: trimmed });
   };
 
-  const handleGenerateItinerary = async () => {
-    if (!canGenerateItinerary(session) || generating) return;
+  const handleGenerateItinerary = async (
+    sessionOverride?: ChatPlanningSession,
+    msgsOverride?: ChatMsg[],
+  ) => {
+    const activeSession = sessionOverride ?? session;
+    const activeMsgs = msgsOverride ?? msgs;
+    if (!canGenerateItinerary(activeSession) || generating) return;
     setGenerating(true);
-    persistSession({ ...session, phase: "generating" });
+    persistSession({ ...activeSession, phase: "generating" });
 
     try {
-      const bundle = await buildClientContextBundle(fetchWeather);
-      const prefs = await getPreferences();
-      const places = session.selectedPlaces;
+      const [bundle, prefs, profile] = await Promise.all([
+        buildClientContextBundle(fetchWeather),
+        getPreferences(),
+        getUserProfile(),
+      ]);
+      const fashionStyle = resolveFashionStyle({
+        travelStyle: profile.travelStyle,
+        interests: prefs.interests,
+        style: activeSession.pace === "排滿" ? "緊湊" : "慢旅行",
+      });
+      const places = activeSession.selectedPlaces;
       const destination =
         inferDestinationFromPlaces(places, bundle.location) ||
         bundle.location.city ||
@@ -466,26 +506,27 @@ function Chat() {
           destination,
           days: 1,
           budget,
-          style: session.pace === "排滿" ? "緊湊" : "慢旅行",
-          mood: session.mood ?? "",
-          interests: buildConversationSummary(session, msgs),
-          conversationSummary: buildConversationSummary(session, msgs),
-          startDate: session.travelDate || today,
-          endDate: session.travelDate || today,
+          style: activeSession.pace === "排滿" ? "緊湊" : "慢旅行",
+          mood: activeSession.mood ?? "",
+          interests: buildConversationSummary(activeSession, activeMsgs),
+          conversationSummary: buildConversationSummary(activeSession, activeMsgs),
+          startDate: activeSession.travelDate || today,
+          endDate: activeSession.travelDate || today,
           origin: bundle.location.city ?? "",
           travelers: 1,
-          transport: session.transportation ?? "",
+          transport: activeSession.transportation ?? "",
           selectedPlaces: places,
           preferences: prefs,
           location: bundle.location,
           weather: bundle.weather,
           time: bundle.time,
+          fashionStyle: fashionStyle ?? "",
         },
       });
 
       const saved = await saveItinerary(itinerary);
       const doneSession: ChatPlanningSession = {
-        ...session,
+        ...activeSession,
         phase: "done",
         lastGeneratedTripId: saved.id,
       };
@@ -494,12 +535,16 @@ function Chat() {
       const assistantMsg: ChatMsg = {
         role: "assistant",
         content: itinerary.summary,
-        roamie: { ...itinerary, itinerary: itinerary.itinerary },
+        roamie: {
+          ...itinerary,
+          itinerary: itinerary.itinerary,
+          outfitAdvice: itinerary.outfitAdvice,
+        },
       };
       setMsgs((prev) => [...prev, assistantMsg]);
       toast.success("行程已生成！");
     } catch (e) {
-      persistSession({ ...session, phase: "collect" });
+      persistSession({ ...activeSession, phase: "collect" });
       toast.error(e instanceof Error ? e.message : "生成行程失敗");
     } finally {
       setGenerating(false);
@@ -533,7 +578,24 @@ function Chat() {
   };
 
   const showGenerateBtn =
-    canGenerateItinerary(session) && session.phase !== "done" && !streaming && !generating;
+    session.phase === "ready" && session.selectedPlaces.length > 0 && !streaming && !generating;
+
+  const discoverChips = [
+    "今天想放鬆走走",
+    "想探索新地方",
+    "主要是想拍照",
+    "一個人",
+    "跟朋友",
+    "室內就好",
+    "想去室外",
+  ];
+
+  const chatChips =
+    session.phase === "discover"
+      ? discoverChips
+      : session.phase === "collect" && session.selectedPlaces.length > 0
+        ? ["就這樣吧，可以開始安排", "想再加一個咖啡廳", "節奏慢一點"]
+        : ["我今天有點累", "想找安靜的咖啡廳", "下雨天可以去哪"];
 
   return (
     <div className="flex h-full min-h-[calc(100vh-8rem)] flex-col">
@@ -604,9 +666,13 @@ function Chat() {
                   <RoamieResponseView
                     data={m.roamie ?? partial}
                     compact
-                    showItinerary={(m.roamie?.itinerary?.length ?? partial.itinerary?.length ?? 0) > 0}
+                    showItinerary={
+                      session.phase === "done" &&
+                      (m.roamie?.itinerary?.length ?? 0) > 0
+                    }
                     onSavePlace={handleSavePlace}
                     onSelectPlace={handleSelectPlace}
+                    outfitAdvice={m.roamie?.outfitAdvice}
                     selectedPlaceNames={selectedNames}
                     savingPlaceName={savingName}
                     savedPlaceNames={savedNames}
@@ -641,11 +707,11 @@ function Chat() {
 
       <div className="sticky bottom-0 border-t border-border bg-background/90 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] backdrop-blur">
         <div className="mb-2 flex gap-2 overflow-x-auto no-scrollbar">
-          {session.selectedPlaces.length > 0 && session.phase !== "done" && (
+          {showGenerateBtn && (
             <button
               type="button"
-              onClick={handleGenerateItinerary}
-              disabled={generating || streaming || !canGenerateItinerary(session)}
+              onClick={() => send("就這樣吧，可以開始安排")}
+              disabled={generating || streaming}
               className="shrink-0 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
             >
               {generating ? (
@@ -653,17 +719,7 @@ function Chat() {
               ) : (
                 <Sparkles className="mr-1 inline h-3 w-3" />
               )}
-              立即生成行程
-            </button>
-          )}
-          {showGenerateBtn && session.selectedPlaces.length === 0 && (
-            <button
-              type="button"
-              onClick={handleGenerateItinerary}
-              disabled={generating}
-              className="shrink-0 rounded-full border border-border bg-card px-3 py-1.5 text-xs disabled:opacity-50"
-            >
-              幫我整理成舒服行程
+              開始安排行程
             </button>
           )}
           {session.lastGeneratedTripId && (
@@ -683,17 +739,7 @@ function Chat() {
           >
             進階手動規劃
           </Link>
-          {session.phase === "ready" && (
-            <button
-              type="button"
-              onClick={() => send("完成了，幫我排行程")}
-              disabled={streaming || generating}
-              className="shrink-0 rounded-full border border-foreground bg-card px-3 py-1.5 text-xs font-medium"
-            >
-              完成了，幫我排行程
-            </button>
-          )}
-          {["我今天有點累", "想找安靜的咖啡廳", "下雨天可以去哪", "推薦在地小店"].map((s) => (
+          {chatChips.map((s) => (
             <button
               key={s}
               type="button"

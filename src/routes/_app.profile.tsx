@@ -1,19 +1,35 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ChevronRight, Settings, Bell, Sparkles, BookMarked, HeartHandshake, LogOut, Pencil } from "lucide-react";
-import { useEffect, useState } from "react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { ChevronRight, Settings, Sparkles, BookMarked, HeartHandshake, Pencil } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useAuth } from "@/hooks/use-auth";
 import { useAvatar } from "@/hooks/use-avatar";
-import { AvatarPickerSheet } from "@/components/AvatarPickerSheet";
+import { useI18n } from "@/hooks/use-i18n";
+import { CropEditActions } from "@/components/CropEditActions";
+import { ImageSourceSheet } from "@/components/ImageSourceSheet";
+import { ProfileCover } from "@/components/ProfileCover";
+import {
+  InlineImageCropViewport,
+  type InlineImageCropHandle,
+} from "@/components/InlineImageCropViewport";
+import { COVER_UPDATED_EVENT, broadcastCoverUpdate } from "@/lib/cover-events";
+import { broadcastAvatarUpdate } from "@/lib/avatar-events";
 import { listItineraries } from "@/lib/itinerary-storage";
 import { listPlaces } from "@/lib/places-storage";
 import {
   BUDGET_MODE_LABELS,
   resolveBudgetMode,
 } from "@/lib/preferences-storage";
+import { ensureUserProfile } from "@/lib/ensure-user-profile";
+import {
+  deleteProfileMedia,
+  getAuthUserId,
+  uploadProfileMedia,
+} from "@/lib/profile-media-storage";
 import { getUserProfile, saveUserProfile } from "@/lib/profile-storage";
 
 type ProfileSearch = { quiz?: string };
+
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 export const Route = createFileRoute("/_app/profile")({
   validateSearch: (s: Record<string, unknown>): ProfileSearch => ({
@@ -22,20 +38,34 @@ export const Route = createFileRoute("/_app/profile")({
   component: Profile,
 });
 
-const paceLabel: Record<string, string> = { slow: "慢", medium: "中等", active: "想多看" };
-const vibeLabel: Record<string, string> = { quiet: "安靜", either: "都可以", lively: "熱鬧" };
-const avoidLabel: Record<string, string> = {
-  crowds: "人潮太多",
-  packed: "行程太滿",
-  overload: "資訊過多",
-};
+function validateImageFile(file: File): boolean {
+  if (!file.type.startsWith("image/")) {
+    toast.error("請選擇圖片檔案");
+    return false;
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    toast.error("圖片請小於 8MB");
+    return false;
+  }
+  return true;
+}
 
 function Profile() {
   const search = Route.useSearch();
-  const { user, signOut } = useAuth();
-  const navigate = useNavigate();
-  const { avatarSrc, setPreview, refresh: refreshAvatar } = useAvatar();
-  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const { t, locale } = useI18n();
+  const { avatarSrc, refresh: refreshAvatar } = useAvatar();
+
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
+  const [coverSourceOpen, setCoverSourceOpen] = useState(false);
+  const [coverCropFile, setCoverCropFile] = useState<File | null>(null);
+  const [coverApplying, setCoverApplying] = useState(false);
+  const [coverRemoving, setCoverRemoving] = useState(false);
+  const coverCropRef = useRef<InlineImageCropHandle>(null);
+
+  const [avatarSourceOpen, setAvatarSourceOpen] = useState(false);
+  const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null);
+  const [avatarApplying, setAvatarApplying] = useState(false);
+  const avatarCropRef = useRef<InlineImageCropHandle>(null);
 
   const [tripCount, setTripCount] = useState(0);
   const [placeCount, setPlaceCount] = useState(0);
@@ -44,7 +74,7 @@ function Profile() {
   const [saving, setSaving] = useState(false);
   const [showQuizResult, setShowQuizResult] = useState(false);
 
-  const [displayName, setDisplayName] = useState("旅人");
+  const [displayName, setDisplayName] = useState("");
   const [bio, setBio] = useState("");
   const [travelStyle, setTravelStyle] = useState("");
   const [personalityType, setPersonalityType] = useState("");
@@ -56,29 +86,63 @@ function Profile() {
   const [budgetLabel, setBudgetLabel] = useState("—");
   const [avoidKey, setAvoidKey] = useState<string | null>(null);
 
+  const coverEditing = !!coverCropFile;
+  const avatarEditing = !!avatarCropFile;
+
+  const loadProfile = async () => {
+    try {
+      return await getUserProfile();
+    } catch (firstErr) {
+      console.warn("[profile] fetch failed, ensuring profile row", firstErr);
+      await ensureUserProfile();
+      return getUserProfile();
+    }
+  };
+
   const refresh = async () => {
     setLoading(true);
     try {
-      const [t, p, profile] = await Promise.all([listItineraries(), listPlaces(), getUserProfile()]);
-      setTripCount(t.length);
-      setPlaceCount(p.length);
+      await ensureUserProfile();
+      const [itineraries, places, profile] = await Promise.all([
+        listItineraries().catch(() => []),
+        listPlaces().catch(() => []),
+        loadProfile(),
+      ]);
+      setTripCount(itineraries.length);
+      setPlaceCount(places.length);
       setDisplayName(profile.displayName);
       setBio(profile.bio);
+      setCoverUrl(profile.coverImageUrl);
       await refreshAvatar();
       setTravelStyle(profile.travelStyle);
       setPersonalityType(profile.personalityType);
       setPersonalitySummary(profile.personalitySummary);
       setPersonalityImpression(profile.personalityImpression);
       setOnboarded(!!profile.prefs.onboarded);
-      setPace(profile.prefs.pace ? paceLabel[profile.prefs.pace] : "—");
-      setVibe(profile.prefs.vibe ? vibeLabel[profile.prefs.vibe] : "—");
+      const paceMap = {
+        slow: t("profile.paceSlow"),
+        medium: t("profile.paceMedium"),
+        active: t("profile.paceActive"),
+      } as const;
+      const vibeMap = {
+        quiet: t("profile.vibeQuiet"),
+        either: t("profile.vibeEither"),
+        lively: t("profile.vibeLively"),
+      } as const;
+      setPace(profile.prefs.pace ? paceMap[profile.prefs.pace] : t("common.dash"));
+      setVibe(profile.prefs.vibe ? vibeMap[profile.prefs.vibe] : t("common.dash"));
       setBudgetLabel(
-        profile.prefs.onboarded ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)] : "—",
+        profile.prefs.onboarded
+          ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)]
+          : t("common.dash"),
       );
       setAvoidKey(profile.prefs.avoid?.[0] ?? null);
       setShowQuizResult(!!profile.prefs.onboarded);
-    } catch {
-      toast.error("讀取個人資料失敗");
+    } catch (e) {
+      console.error("[profile] refresh failed", e);
+      toast.error(
+        e instanceof Error && e.message ? e.message : t("profile.loadFailed"),
+      );
     } finally {
       setLoading(false);
     }
@@ -86,163 +150,316 @@ function Profile() {
 
   useEffect(() => {
     refresh();
+  }, [locale, t]);
+
+  useEffect(() => {
+    const onCover = (e: Event) => {
+      const url = (e as CustomEvent<string | null>).detail ?? null;
+      setCoverUrl(url);
+      setCoverCropFile(null);
+    };
+    window.addEventListener(COVER_UPDATED_EVENT, onCover);
+    return () => window.removeEventListener(COVER_UPDATED_EVENT, onCover);
   }, []);
 
   useEffect(() => {
     if (search.quiz === "done") {
       setShowQuizResult(true);
-      toast.success("旅行個性測驗已完成");
+      toast.success(t("profile.quizDone"));
     }
-  }, [search.quiz]);
+  }, [search.quiz, t]);
 
   const handleSaveProfile = async () => {
     setSaving(true);
     try {
       await saveUserProfile({ displayName, bio, travelStyle });
       setEditing(false);
-      toast.success("已儲存");
+      toast.success(t("profile.saved"));
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "儲存失敗");
+      toast.error(e instanceof Error ? e.message : t("profile.saveFailed"));
     } finally {
       setSaving(false);
     }
   };
 
-  const handleSignOut = async () => {
+  const handleCoverPick = (file: File) => {
+    if (!validateImageFile(file)) return;
+    setCoverCropFile(file);
+  };
+
+  const handleCoverCancel = () => {
+    setCoverCropFile(null);
+  };
+
+  const handleCoverApply = async () => {
+    const result = await coverCropRef.current?.exportCrop();
+    if (!result) {
+      toast.error("請稍候，圖片載入中");
+      return;
+    }
+    setCoverApplying(true);
     try {
-      await signOut();
-      toast.success("已登出");
-      navigate({ to: "/login" });
+      const userId = await getAuthUserId();
+      let finalUrl = result.previewUrl;
+      if (userId) {
+        finalUrl = await uploadProfileMedia(userId, "cover", result.blob);
+      }
+      await saveUserProfile({ coverImageUrl: finalUrl });
+      broadcastCoverUpdate(finalUrl);
+      setCoverUrl(finalUrl);
+      setCoverCropFile(null);
+      toast.success(userId ? "封面已更新" : "已暫存於本機，登入後會同步至雲端");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "登出失敗");
+      toast.error(e instanceof Error ? e.message : "儲存失敗");
+    } finally {
+      setCoverApplying(false);
     }
   };
 
+  const handleCoverRemove = async () => {
+    setCoverRemoving(true);
+    try {
+      const userId = await getAuthUserId();
+      if (userId) {
+        try {
+          await deleteProfileMedia(userId, "cover");
+        } catch {
+          /* may not exist */
+        }
+      }
+      await saveUserProfile({ coverImageUrl: null });
+      broadcastCoverUpdate(null);
+      setCoverUrl(null);
+      setCoverCropFile(null);
+      toast.success("已移除封面，可繼續選擇新圖片");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "刪除失敗");
+    } finally {
+      setCoverRemoving(false);
+    }
+  };
+
+  const handleAvatarPick = (file: File) => {
+    if (!validateImageFile(file)) return;
+    setAvatarCropFile(file);
+  };
+
+  const handleAvatarCancel = () => {
+    setAvatarCropFile(null);
+  };
+
+  const handleAvatarApply = async () => {
+    const result = await avatarCropRef.current?.exportCrop();
+    if (!result) {
+      toast.error("請稍候，圖片載入中");
+      return;
+    }
+    setAvatarApplying(true);
+    try {
+      const userId = await getAuthUserId();
+      let finalUrl = result.previewUrl;
+      if (userId) {
+        finalUrl = await uploadProfileMedia(userId, "avatar", result.blob);
+      }
+      await saveUserProfile({ avatarUrl: finalUrl });
+      broadcastAvatarUpdate(finalUrl);
+      setAvatarCropFile(null);
+      await refreshAvatar();
+      toast.success(userId ? "頭像已更新" : "已暫存於本機，登入後會同步至雲端");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "儲存失敗");
+    } finally {
+      setAvatarApplying(false);
+    }
+  };
+
+  const countSuffix = t("profile.countUnit");
+  const tripValue = countSuffix ? `${tripCount} ${countSuffix}` : `${tripCount}`;
+  const placeValue = countSuffix ? `${placeCount} ${countSuffix}` : `${placeCount}`;
+
   const items = [
-    { icon: BookMarked, label: "已收藏的行程", value: `${tripCount} 個`, to: "/saved" as const },
+    {
+      icon: BookMarked,
+      label: t("profile.savedTrips"),
+      value: tripValue,
+      to: "/saved" as const,
+    },
     {
       icon: HeartHandshake,
-      label: "已收藏的地點",
-      value: `${placeCount} 個`,
+      label: t("profile.savedPlaces"),
+      value: placeValue,
       to: "/saved" as const,
       search: { tab: "places" },
     },
-    { icon: Bell, label: "提醒方式", value: "輕聲一點", action: () => toast("通知設定即將推出") },
-    { icon: Settings, label: "其他設定", value: "", action: () => toast("設定頁即將推出") },
+    {
+      icon: Settings,
+      label: t("profile.otherSettings"),
+      value: "",
+      to: "/settings" as const,
+    },
   ];
+
+  const cancelLabel = t("profile.cancel");
+  const applyLabel = t("profile.apply");
 
   return (
     <div className="px-5 pb-8 pt-3">
-      <div className="flex items-center justify-end">
-        <button onClick={handleSignOut} className="flex items-center gap-1 text-sm text-muted-foreground">
-          <LogOut className="h-3.5 w-3.5" /> 登出
-        </button>
-      </div>
+      <div className="overflow-hidden rounded-[2rem] border border-border bg-card shadow-soft">
+        <ProfileCover
+          coverUrl={coverUrl}
+          cropFile={coverCropFile}
+          cropRef={coverCropRef}
+          editing={coverEditing}
+          uploading={coverApplying}
+          applying={coverApplying}
+          onPress={() => {
+            if (!coverEditing && !coverApplying) setCoverSourceOpen(true);
+          }}
+          onCancelEdit={handleCoverCancel}
+          onApplyEdit={() => void handleCoverApply()}
+          cancelLabel={cancelLabel}
+          applyLabel={applyLabel}
+        />
+        <ImageSourceSheet
+          open={coverSourceOpen}
+          onOpenChange={setCoverSourceOpen}
+          title="更換封面"
+          onPickFile={handleCoverPick}
+          showRemove={!!coverUrl}
+          onRemove={() => void handleCoverRemove()}
+          removing={coverRemoving}
+          cameraFacing="environment"
+        />
 
-      <div className="mt-3 overflow-hidden rounded-[2rem] border border-border bg-card shadow-soft">
-        <div className="relative h-24 bg-gradient-to-br from-accent to-secondary">
-          <button
-            type="button"
-            onClick={() => setAvatarPickerOpen(true)}
-            className="absolute -bottom-8 left-5 h-20 w-20 overflow-hidden rounded-3xl border-4 border-card bg-secondary"
-            aria-label="更換頭像"
-          >
-            <img src={avatarSrc} alt="" className="h-full w-full object-cover" />
-          </button>
-          <AvatarPickerSheet
-            open={avatarPickerOpen}
-            onOpenChange={setAvatarPickerOpen}
-            currentSrc={avatarSrc}
-            onPreview={setPreview}
+        <div className="relative px-5 pb-5 pt-2">
+          <div className="absolute -top-10 left-0 z-10 w-[5.25rem]">
+            {avatarEditing ? (
+              <>
+                <div className="relative h-[5.25rem] w-[5.25rem] overflow-hidden rounded-[1.35rem] border-[3px] border-card bg-black shadow-soft">
+                  <InlineImageCropViewport
+                    ref={avatarCropRef}
+                    file={avatarCropFile!}
+                    aspectWidth={1}
+                    aspectHeight={1}
+                    className="absolute inset-0 h-full w-full"
+                  />
+                </div>
+                <CropEditActions
+                  className="mt-2"
+                  placement="below"
+                  onCancel={handleAvatarCancel}
+                  onApply={() => void handleAvatarApply()}
+                  applying={avatarApplying}
+                  cancelLabel={cancelLabel}
+                  applyLabel={applyLabel}
+                />
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => !avatarApplying && setAvatarSourceOpen(true)}
+                disabled={avatarApplying}
+                className="h-[5.25rem] w-[5.25rem] overflow-hidden rounded-[1.35rem] border-[3px] border-card bg-secondary shadow-soft disabled:opacity-60"
+                aria-label={t("profile.editAvatar")}
+              >
+                <img src={avatarSrc} alt="" className="h-full w-full object-cover" />
+              </button>
+            )}
+          </div>
+
+          <ImageSourceSheet
+            open={avatarSourceOpen}
+            onOpenChange={setAvatarSourceOpen}
+            title="更換頭像"
+            onPickFile={handleAvatarPick}
+            cameraFacing="user"
           />
-        </div>
-        <div className="px-5 pb-5 pt-12">
-          {editing ? (
-            <div className="space-y-3">
-              <label className="block">
-                <span className="text-[11px] text-muted-foreground">名稱</span>
-                <input
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block">
-                <span className="text-[11px] text-muted-foreground">個人簡介</span>
-                <textarea
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  rows={2}
-                  className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
-                  placeholder="一句話介紹自己"
-                />
-              </label>
-              <label className="block">
-                <span className="text-[11px] text-muted-foreground">旅行風格描述</span>
-                <textarea
-                  value={travelStyle}
-                  onChange={(e) => setTravelStyle(e.target.value)}
-                  rows={2}
-                  className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
-                  placeholder="例如：喜歡巷弄、不趕路、愛找小店"
-                />
-              </label>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setEditing(false)}
-                  className="flex-1 rounded-full border border-border py-2.5 text-sm"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveProfile}
-                  disabled={saving}
-                  className="flex-1 rounded-full bg-primary py-2.5 text-sm text-primary-foreground disabled:opacity-50"
-                >
-                  {saving ? "儲存中…" : "儲存"}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="font-display text-xl leading-tight">{displayName}</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {bio || "慢慢的旅人"}
-                    {user?.email ? ` · ${user.email}` : " · 訪客模式"}
-                  </p>
-                  {travelStyle ? (
-                    <p className="mt-2 text-sm leading-relaxed text-foreground/80">{travelStyle}</p>
-                  ) : null}
+
+          <div className={avatarEditing ? "pt-[7.75rem]" : "pt-12"}>
+            {editing ? (
+              <div className="space-y-3">
+                <label className="block">
+                  <span className="text-[11px] text-muted-foreground">{t("profile.name")}</span>
+                  <input
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[11px] text-muted-foreground">{t("profile.bio")}</span>
+                  <textarea
+                    value={bio}
+                    onChange={(e) => setBio(e.target.value)}
+                    rows={2}
+                    className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
+                    placeholder={t("profile.bioPlaceholder")}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[11px] text-muted-foreground">{t("profile.travelStyle")}</span>
+                  <textarea
+                    value={travelStyle}
+                    onChange={(e) => setTravelStyle(e.target.value)}
+                    rows={2}
+                    className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
+                    placeholder={t("profile.travelStylePlaceholder")}
+                  />
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditing(false)}
+                    className="flex-1 rounded-full border border-border py-2.5 text-sm"
+                  >
+                    {cancelLabel}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveProfile}
+                    disabled={saving}
+                    className="flex-1 rounded-full bg-primary py-2.5 text-sm text-primary-foreground disabled:opacity-50"
+                  >
+                    {saving ? t("profile.saving") : t("profile.save")}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setEditing(true)}
-                  className="rounded-full bg-secondary p-2 text-muted-foreground"
-                  aria-label="編輯個人資料"
-                >
-                  <Pencil className="h-4 w-4" />
-                </button>
               </div>
-              {onboarded && (
-                <div className="mt-4 flex gap-2">
-                  {[
-                    { k: "步調", v: pace },
-                    { k: "氣氛", v: vibe },
-                    { k: "預算", v: budgetLabel },
-                  ].map((p) => (
-                    <div key={p.k} className="flex-1 rounded-2xl bg-secondary px-3 py-2.5 text-center">
-                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{p.k}</p>
-                      <p className="mt-0.5 text-sm font-medium">{p.v}</p>
-                    </div>
-                  ))}
+            ) : (
+              <>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-display text-xl leading-tight">{displayName}</p>
+                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{bio}</p>
+                    {travelStyle ? (
+                      <p className="mt-2 text-sm leading-relaxed text-foreground/80">{travelStyle}</p>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEditing(true)}
+                    className="rounded-full bg-secondary p-2 text-muted-foreground"
+                    aria-label={t("profile.editProfile")}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
                 </div>
-              )}
-            </>
-          )}
+                {onboarded && (
+                  <div className="mt-4 flex gap-2">
+                    {[
+                      { k: t("profile.pace"), v: pace },
+                      { k: t("profile.vibe"), v: vibe },
+                      { k: t("profile.budget"), v: budgetLabel },
+                    ].map((p) => (
+                      <div key={p.k} className="flex-1 rounded-2xl bg-secondary px-3 py-2.5 text-center">
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{p.k}</p>
+                        <p className="mt-0.5 text-sm font-medium">{p.v}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -250,17 +467,22 @@ function Profile() {
         <div className="mt-5 rounded-3xl border border-border bg-card p-5 shadow-soft">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Sparkles className="h-3.5 w-3.5 text-clay" />
-            旅行個性測驗結果
+            {t("profile.personalityTitle")}
           </div>
           <p className="mt-2 font-display text-xl">{personalityType}</p>
           <p className="mt-2 text-sm text-muted-foreground">{personalitySummary}</p>
           {avoidKey && (
             <p className="mt-2 text-xs text-muted-foreground">
-              想避開：{avoidLabel[avoidKey] ?? avoidKey}
+              {t("profile.avoidPrefix")}
+              {t(`profile.avoid.${avoidKey}`) !== `profile.avoid.${avoidKey}`
+                ? t(`profile.avoid.${avoidKey}`)
+                : avoidKey}
             </p>
           )}
           <div className="mt-4 rounded-2xl bg-secondary p-4">
-            <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Roamie 對你的印象</p>
+            <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+              {t("profile.roamieImpression")}
+            </p>
             <p className="mt-2 font-display text-[17px] leading-snug">{personalityImpression}</p>
           </div>
           <div className="mt-4 flex gap-2">
@@ -269,22 +491,24 @@ function Profile() {
               search={{ from: "profile" }}
               className="flex-1 rounded-full border border-border py-3 text-center text-sm"
             >
-              重新測驗
+              {t("profile.retakeQuiz")}
             </Link>
             <button
               type="button"
               onClick={() => setShowQuizResult(false)}
               className="flex-1 rounded-full bg-primary py-3 text-center text-sm text-primary-foreground"
             >
-              返回
+              {t("profile.back")}
             </button>
           </div>
         </div>
       ) : (
         <div className="mt-5 rounded-3xl bg-secondary p-5">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Roamie 對你的印象</p>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+            {t("profile.roamieImpression")}
+          </p>
           <p className="mt-2 font-display text-[17px] leading-snug">
-            {onboarded ? personalityImpression : "「我們還不太認識你，做個小測驗幫我了解你的旅行步調吧。」"}
+            {onboarded ? personalityImpression : t("profile.quizPrompt")}
           </p>
           {!onboarded && (
             <Link
@@ -292,7 +516,7 @@ function Profile() {
               search={{ from: "profile" }}
               className="mt-4 block rounded-full bg-primary py-3 text-center text-sm text-primary-foreground"
             >
-              開始旅行個性測驗
+              {t("profile.startQuiz")}
             </Link>
           )}
         </div>
@@ -309,8 +533,8 @@ function Profile() {
               <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-secondary">
                 <Sparkles className="h-4 w-4" />
               </div>
-              <p className="flex-1 text-[15px]">旅行個性</p>
-              <p className="text-sm text-muted-foreground">查看結果</p>
+              <p className="flex-1 text-[15px]">{t("profile.personalityView")}</p>
+              <p className="text-sm text-muted-foreground">{t("profile.viewResult")}</p>
               <ChevronRight className="h-4 w-4 text-muted-foreground" />
             </button>
           </li>
@@ -354,12 +578,12 @@ function Profile() {
           search={{ from: "profile" }}
           className="mt-6 block rounded-full border border-border bg-card py-3.5 text-center text-sm"
         >
-          重新做一次旅行個性測驗
+          {t("profile.retakeQuizLink")}
         </Link>
       )}
 
       <p className="mt-8 text-center text-[11px] leading-relaxed text-muted-foreground">
-        Roamie · 不催促、不塞滿，只是陪你把下一趟走得舒服一點。
+        {t("profile.footer")}
       </p>
     </div>
   );

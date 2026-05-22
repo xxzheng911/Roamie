@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { getAuthenticatedUserId } from "@/lib/auth-session";
 
 const GUEST_KEY = "roamie:preferences";
 
@@ -48,13 +49,8 @@ function writeGuest(prefs: TravelPreferences) {
   localStorage.setItem(GUEST_KEY, JSON.stringify(prefs));
 }
 
-async function getUserId() {
-  const { data } = await supabase.auth.getSession();
-  return data.session?.user.id ?? null;
-}
-
 export async function getPreferences(): Promise<TravelPreferences> {
-  const userId = await getUserId();
+  const userId = await getAuthenticatedUserId();
   if (userId) {
     const { data, error } = await supabase
       .from("profiles")
@@ -69,7 +65,7 @@ export async function getPreferences(): Promise<TravelPreferences> {
 
 export async function savePreferences(prefs: TravelPreferences): Promise<TravelPreferences> {
   const merged = { ...(await getPreferences()), ...prefs, updated_at: new Date().toISOString() };
-  const userId = await getUserId();
+  const userId = await getAuthenticatedUserId();
   if (userId) {
     const { error } = await supabase
       .from("profiles")

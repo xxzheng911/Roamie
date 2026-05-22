@@ -14,6 +14,16 @@ export type WeatherSummary = {
   recommendationText: string;
 };
 
+/** 多日預報（穿搭建議用） */
+export type DailyForecast = {
+  date: string;
+  tempHighC: number | null;
+  tempLowC: number | null;
+  precipProbability: number | null;
+  condition: string;
+  iconType: string;
+};
+
 const Input = z.object({
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
@@ -135,6 +145,65 @@ async function fetchOpenMeteoWeather(lat: number, lng: number): Promise<{
     precip: c?.precipitation_probability ?? null,
   };
 }
+
+export async function fetchOpenMeteoDailyForecast(
+  lat: number,
+  lng: number,
+  days: number,
+): Promise<DailyForecast[]> {
+  const d = Math.min(Math.max(days, 1), 14);
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=${d}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("[Roamie Weather] daily forecast error", res.status, text.slice(0, 200));
+    throw new Error(`Open-Meteo daily ${res.status}`);
+  }
+  const json = (await res.json()) as {
+    daily?: {
+      time?: string[];
+      temperature_2m_max?: number[];
+      temperature_2m_min?: number[];
+      precipitation_probability_max?: number[];
+      weather_code?: number[];
+    };
+  };
+  const daily = json.daily;
+  const times = daily?.time ?? [];
+  return times.map((date, i) => {
+    const code = daily?.weather_code?.[i] ?? 0;
+    return {
+      date,
+      tempHighC: daily?.temperature_2m_max?.[i] ?? null,
+      tempLowC: daily?.temperature_2m_min?.[i] ?? null,
+      precipProbability: daily?.precipitation_probability_max?.[i] ?? null,
+      condition: WMO_ZH[code] ?? "多雲",
+      iconType: String(code),
+    };
+  });
+}
+
+const ForecastInput = z.object({
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  days: z.number().int().min(1).max(14).default(7),
+});
+
+export const getWeatherForecast = createServerFn({ method: "POST" })
+  .inputValidator((input) => ForecastInput.parse(input))
+  .handler(
+    async ({ data }): Promise<{ forecast: DailyForecast[]; city: string; error: string | null }> => {
+      try {
+        const forecast = await fetchOpenMeteoDailyForecast(data.lat, data.lng, data.days);
+        const city = await reverseGeocodeCity(data.lat, data.lng);
+        return { forecast, city: city || "目前位置", error: null };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "forecast failed";
+        console.error("[Roamie Weather] forecast failed:", msg);
+        return { forecast: [], city: "", error: msg };
+      }
+    },
+  );
 
 export const getWeather = createServerFn({ method: "POST" })
   .inputValidator((input) => Input.parse(input))

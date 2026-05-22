@@ -71,28 +71,43 @@ export type Database = {
       profiles: {
         Row: {
           ai_preferences: Json | null
+          auth_provider: string | null
           avatar_url: string | null
+          bio: string | null
+          cover_image_url: string | null
           created_at: string
           display_name: string | null
           id: string
+          language: string | null
+          notifications_enabled: boolean
           travel_personality: Json | null
           updated_at: string
         }
         Insert: {
           ai_preferences?: Json | null
+          auth_provider?: string | null
           avatar_url?: string | null
+          bio?: string | null
+          cover_image_url?: string | null
           created_at?: string
           display_name?: string | null
           id: string
+          language?: string | null
+          notifications_enabled?: boolean
           travel_personality?: Json | null
           updated_at?: string
         }
         Update: {
           ai_preferences?: Json | null
+          auth_provider?: string | null
           avatar_url?: string | null
+          bio?: string | null
+          cover_image_url?: string | null
           created_at?: string
           display_name?: string | null
           id?: string
+          language?: string | null
+          notifications_enabled?: boolean
           travel_personality?: Json | null
           updated_at?: string
         }

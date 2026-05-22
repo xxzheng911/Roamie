@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { getAuthenticatedUserId } from "@/lib/auth-session";
 import type { RoamiePayloadV2, RoamieResponse } from "@/lib/ai/types";
 
 const GUEST_KEY = "roamie:recommendations";
@@ -43,8 +44,7 @@ export async function saveRecommendation(
   extra?: { destination?: string; days?: number; mood?: string },
 ): Promise<StoredRecommendation> {
   const payload = toPayloadV2(data, extra);
-  const { data: sessionData } = await supabase.auth.getSession();
-  const userId = sessionData.session?.user.id;
+  const userId = await getAuthenticatedUserId();
 
   if (userId) {
     const { data: row, error } = await supabase
@@ -83,8 +83,7 @@ export async function saveRecommendation(
 }
 
 export async function getRecommendation(id: string): Promise<StoredRecommendation | null> {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const userId = sessionData.session?.user.id;
+  const userId = await getAuthenticatedUserId();
 
   if (userId) {
     const { data, error } = await supabase

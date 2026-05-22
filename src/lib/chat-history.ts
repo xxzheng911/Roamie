@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { normalizeRoamieResponse, type RoamieResponse } from "@/lib/ai/types";
 
 const GUEST_KEY = "roamie:chat";
@@ -36,8 +37,7 @@ function parseAssistantContent(content: string): { content: string; roamie?: Par
 }
 
 export async function loadChatHistory(limit = 30): Promise<ChatMsg[]> {
-  const { data: session } = await supabase.auth.getSession();
-  const uid = session.session?.user.id;
+  const uid = await getAuthenticatedUserId();
   if (!uid) return readGuest();
   const { data, error } = await supabase
     .from("chat_messages")
@@ -61,8 +61,7 @@ export async function loadChatHistory(limit = 30): Promise<ChatMsg[]> {
 }
 
 export async function clearChatHistory(): Promise<void> {
-  const { data: session } = await supabase.auth.getSession();
-  const uid = session.session?.user.id;
+  const uid = await getAuthenticatedUserId();
   if (!uid) {
     if (typeof window !== "undefined") localStorage.removeItem(GUEST_KEY);
     return;

@@ -1,10 +1,19 @@
 import type { KeyboardEvent, MouseEvent } from "react";
 import { MapPin, Clock, Sparkles, Heart, Loader2 } from "lucide-react";
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
+import type { OutfitAdvicePayload } from "@/lib/outfit/types";
+import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
+import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 
-function ItineraryByDate({ items }: { items: RoamieItineraryItem[] }) {
+function ItineraryByDate({
+  items,
+  outfitAdvice,
+}: {
+  items: RoamieItineraryItem[];
+  outfitAdvice?: OutfitAdvicePayload;
+}) {
   const groups = new Map<string, RoamieItineraryItem[]>();
   for (const item of items) {
     const key = item.date?.trim() || "未指定日期";
@@ -13,6 +22,7 @@ function ItineraryByDate({ items }: { items: RoamieItineraryItem[] }) {
     groups.set(key, list);
   }
   const sortedKeys = [...groups.keys()].sort();
+  const outfitByDate = new Map((outfitAdvice?.days ?? []).map((d) => [d.date, d]));
 
   const allCoords: LatLng[] = items
     .filter((i) => i.lat != null && i.lng != null)
@@ -36,13 +46,18 @@ function ItineraryByDate({ items }: { items: RoamieItineraryItem[] }) {
             onClick={() => openExternal(routeUrl)}
             className="rounded-full border border-border bg-card px-2.5 py-1 text-[10px]"
           >
-            整段路線導航
+            查看整段路線
           </button>
         )}
       </div>
-      {sortedKeys.map((dateKey) => (
+      {sortedKeys.map((dateKey) => {
+        const outfit =
+          outfitByDate.get(dateKey) ??
+          (outfitAdvice?.days.length === 1 ? outfitAdvice.days[0] : undefined);
+        return (
         <section key={dateKey}>
           <p className="mb-2 font-display text-sm text-foreground/90">{dateKey}</p>
+          {outfit && <DayOutfitCard advice={outfit} className="mb-3" compact />}
           <div className="space-y-2">
             {groups.get(dateKey)!.map((item, i) => (
               <article
@@ -66,7 +81,8 @@ function ItineraryByDate({ items }: { items: RoamieItineraryItem[] }) {
             ))}
           </div>
         </section>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -86,6 +102,7 @@ type Props = {
   selectedPlaceNames?: Set<string>;
   savingPlaceName?: string | null;
   savedPlaceNames?: Set<string>;
+  outfitAdvice?: OutfitAdvicePayload;
 };
 
 export function RoamieResponseView({
@@ -101,6 +118,7 @@ export function RoamieResponseView({
   selectedPlaceNames,
   savingPlaceName,
   savedPlaceNames,
+  outfitAdvice,
 }: Props) {
   const summary = data.summary?.trim();
   const recs = data.recommendations ?? [];
@@ -208,11 +226,13 @@ export function RoamieResponseView({
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{r.description}</p>
               <p className="mt-1.5 text-xs text-foreground/75">{r.reason}</p>
-              {"openStatusLabel" in r && (r as { openStatusLabel?: string }).openStatusLabel ? (
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {(r as { openStatusLabel: string }).openStatusLabel}
-                </p>
-              ) : null}
+              <PlaceHoursBadge
+                className="mt-1.5"
+                statusLabel={r.openStatusLabel}
+                todayHoursLabel={r.todayHoursLabel}
+                closingSoonNote={r.closingSoonNote}
+                nextOpenHint={r.nextOpenHint}
+              />
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                   <span className="inline-flex items-center gap-0.5">
                     <Clock className="h-3 w-3" /> {r.estimatedTime}
@@ -238,7 +258,9 @@ export function RoamieResponseView({
         </div>
       )}
 
-      {showItinerary && itinerary.length > 0 && <ItineraryByDate items={itinerary} />}
+      {showItinerary && itinerary.length > 0 && (
+        <ItineraryByDate items={itinerary} outfitAdvice={outfitAdvice} />
+      )}
     </div>
   );
 }

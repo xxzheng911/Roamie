@@ -1,4 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
+import { getAuthenticatedUserId } from "@/lib/auth-session";
+import { isMissingTableError } from "@/lib/supabase-errors";
 import type { Itinerary } from "./itinerary.functions";
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
 
@@ -30,8 +32,7 @@ function writeGuest(list: StoredItinerary[]) {
 export async function saveItinerary(
   itinerary: Itinerary | RoamiePayloadV2,
 ): Promise<StoredItinerary> {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const userId = sessionData.session?.user.id;
+  const userId = await getAuthenticatedUserId();
   const mood = isRoamiePayloadV2(itinerary)
     ? itinerary.moodTag
     : (itinerary as Itinerary).mood;
@@ -73,14 +74,16 @@ export async function saveItinerary(
 }
 
 export async function listItineraries(): Promise<StoredItinerary[]> {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const userId = sessionData.session?.user.id;
+  const userId = await getAuthenticatedUserId();
   if (userId) {
     const { data, error } = await supabase
       .from("saved_trips")
       .select("id, title, mood, cover_image, created_at, payload")
       .order("created_at", { ascending: false });
-    if (error) throw new Error(error.message);
+    if (error) {
+      if (isMissingTableError(error)) return [];
+      throw new Error(error.message);
+    }
     return (data ?? []).map((row) => ({
       id: row.id,
       title: row.title,
@@ -94,8 +97,7 @@ export async function listItineraries(): Promise<StoredItinerary[]> {
 }
 
 export async function getItinerary(id: string): Promise<StoredItinerary | null> {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const userId = sessionData.session?.user.id;
+  const userId = await getAuthenticatedUserId();
   if (userId) {
     const { data, error } = await supabase
       .from("saved_trips")
@@ -121,8 +123,7 @@ export async function updateItinerary(
   payload: Itinerary | RoamiePayloadV2,
   title?: string,
 ): Promise<StoredItinerary | null> {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const userId = sessionData.session?.user.id;
+  const userId = await getAuthenticatedUserId();
   const mood = isRoamiePayloadV2(payload) ? payload.moodTag : (payload as Itinerary).mood;
 
   if (userId) {
@@ -161,8 +162,7 @@ export async function updateItinerary(
 }
 
 export async function deleteItinerary(id: string): Promise<void> {
-  const { data: sessionData } = await supabase.auth.getSession();
-  const userId = sessionData.session?.user.id;
+  const userId = await getAuthenticatedUserId();
   if (userId) {
     const { error } = await supabase.from("saved_trips").delete().eq("id", id);
     if (error) throw new Error(error.message);

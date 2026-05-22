@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
+import { DayOutfitCard } from "@/components/DayOutfitCard";
+import type { DailyOutfitAdvice } from "@/lib/outfit/types";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings, TripTransportMode } from "@/lib/ai/types";
 
@@ -91,6 +93,11 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
     groups.set(key, list);
   }
 
+  const outfitByDate = new Map<string, DailyOutfitAdvice>();
+  for (const d of payload.outfitAdvice?.days ?? []) {
+    outfitByDate.set(d.date, d);
+  }
+
   return (
     <div className="space-y-5">
       <p className="text-sm leading-relaxed text-muted-foreground">{payload.summary}</p>
@@ -134,9 +141,16 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
       )}
 
       <div className="space-y-6">
-        {[...groups.entries()].map(([dateKey, dayItems]) => (
+        {[...groups.entries()].map(([dateKey, dayItems]) => {
+          const outfit =
+            outfitByDate.get(dateKey) ??
+            (payload.outfitAdvice?.days.length === 1
+              ? payload.outfitAdvice.days[0]
+              : undefined);
+          return (
           <section key={dateKey}>
             <p className="mb-3 font-display text-lg">{dateKey}</p>
+            {outfit && <DayOutfitCard advice={outfit} className="mb-4" />}
             <div className="relative space-y-0 border-l border-dashed border-border pl-5">
               {dayItems.map((item, i) => {
                 const key = legKey(item);
@@ -187,7 +201,8 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
               })}
             </div>
           </section>
-        ))}
+          );
+        })}
       </div>
 
       <div className="flex flex-col gap-2">

@@ -22,6 +22,8 @@ import {
   type ItinerarySourceContext,
 } from "@/lib/itinerary-source";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
+import { getUserProfile } from "@/lib/profile-storage";
+import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
 
 type PlanSearch = {
   mood?: string;
@@ -124,8 +126,16 @@ function PlanPage() {
 
     setLoading(true);
     try {
-      const bundle = await buildClientContextBundle(fetchWeather);
-      const prefs = await getPreferences();
+      const [bundle, prefs, profile] = await Promise.all([
+        buildClientContextBundle(fetchWeather),
+        getPreferences(),
+        getUserProfile(),
+      ]);
+      const fashionStyle = resolveFashionStyle({
+        travelStyle: profile.travelStyle,
+        interests: prefs.interests,
+        style: styles.join("、"),
+      });
       const effectiveBudgetMode = budgetMode;
       await savePreferences({ ...prefs, budgetMode: effectiveBudgetMode });
       const itineraryBudget = budgetModeToItineraryTier(effectiveBudgetMode);
@@ -164,6 +174,7 @@ function PlanPage() {
           location: bundle.location,
           weather: bundle.weather,
           time: bundle.time,
+          fashionStyle: fashionStyle ?? "",
         },
       });
       const saved = await saveItinerary(itinerary);

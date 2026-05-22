@@ -1,11 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
-import { supabase } from "@/integrations/supabase/client";
-
-const GUEST_KEY = "roamie:guest";
+import { supabase } from "@/lib/supabase";
+import { writeGuestFlag } from "@/lib/auth-session";
+import { mergeGuestDataAfterLogin } from "@/lib/guest-merge";
+import { ensureUserProfile, syncProfileAppFields } from "@/lib/ensure-user-profile";
+import { stripOAuthParamsFromUrl } from "@/lib/auth-oauth";
 
 export const Route = createFileRoute("/auth/callback")({
   component: AuthCallback,
@@ -14,8 +16,12 @@ export const Route = createFileRoute("/auth/callback")({
 function AuthCallback() {
   const navigate = useNavigate();
   const [status, setStatus] = useState("正在完成登入…");
+  const handledRef = useRef(false);
 
   useEffect(() => {
+    if (handledRef.current) return;
+    handledRef.current = true;
+
     let cancelled = false;
 
     const finish = async () => {
@@ -37,39 +43,69 @@ function AuthCallback() {
         return;
       }
 
-      try {
-        const code = query.get("code");
-
-        if (code) {
-          setStatus("正在驗證登入…");
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) throw error;
-        } else {
-          setStatus("正在建立工作階段…");
-          const { data, error } = await supabase.auth.getSession();
-          if (error) throw error;
-          if (!data.session) {
-            throw new Error("登入後未取得 session");
-          }
+      const code = query.get("code");
+      if (!code) {
+        console.error("[auth/callback] missing code param", window.location.href);
+        if (!cancelled) {
+          toast.error("登入連結不完整，請重新登入。");
+          navigate({ to: "/login", replace: true });
         }
+        return;
+      }
+
+      try {
+        setStatus("正在驗證登入…");
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) throw error;
 
         if (cancelled) return;
 
-        localStorage.removeItem(GUEST_KEY);
-        sessionStorage.removeItem(GUEST_KEY);
+        stripOAuthParamsFromUrl();
+
+        writeGuestFlag(false);
+
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        if (sessionError) throw sessionError;
+
+        const userId = sessionData.session?.user.id;
+        if (!userId) {
+          throw new Error("登入後未取得 session");
+        }
+
+        setStatus("正在建立個人資料…");
+        try {
+          await ensureUserProfile(userId);
+          await syncProfileAppFields(userId);
+        } catch (profileErr) {
+          console.warn("[auth/callback] ensure profile failed", profileErr);
+        }
+
+        setStatus("正在同步你的資料…");
+        try {
+          await mergeGuestDataAfterLogin(userId);
+        } catch (mergeErr) {
+          console.warn("[auth/callback] guest merge failed", mergeErr);
+        }
+
+        if (cancelled) return;
 
         toast.success("登入成功");
         navigate({ to: "/", replace: true });
       } catch (e) {
         console.error("[auth/callback] session failed", e);
         if (!cancelled) {
-          toast.error(e instanceof Error ? e.message : "登入失敗，請再試一次。");
+          const msg = e instanceof Error ? e.message : "登入失敗，請再試一次。";
+          toast.error(
+            msg.includes("PKCE") || msg.includes("code verifier")
+              ? "登入驗證失敗，請回到登入頁再試一次（請使用相同網址與分頁）。"
+              : msg,
+          );
           navigate({ to: "/login", replace: true });
         }
       }
     };
 
-    finish();
+    void finish();
 
     return () => {
       cancelled = true;

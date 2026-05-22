@@ -1,6 +1,9 @@
 /// <reference types="google.maps" />
-import { useEffect, useRef } from "react";
-import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getGoogleMapsBrowserKeyError } from "@/lib/google-maps-client";
+import { loadGoogleMapsApi, triggerMapResize } from "@/lib/google-maps-loader";
+
+const LOG = "[Roamie Maps]";
 
 type Marker = { lat: number; lng: number; title?: string; selected?: boolean };
 
@@ -10,72 +13,149 @@ type Props = {
   markers?: Marker[];
   onMarkerClick?: (index: number) => void;
   className?: string;
+  onLoadError?: (message: string) => void;
+  onMapReady?: () => void;
 };
 
-declare global {
-  interface Window {
-    google?: typeof google;
-    __roamieInitMap?: () => void;
-    __roamieMapReady?: Promise<void>;
-  }
-}
-
-function loadMapsApi(): Promise<void> {
-  if (typeof window === "undefined") return Promise.reject(new Error("SSR"));
-  if (window.google?.maps) return Promise.resolve();
-  if (window.__roamieMapReady) return window.__roamieMapReady;
-
-  const key = getGoogleMapsBrowserKey();
-
-  window.__roamieMapReady = new Promise<void>((resolve, reject) => {
-    window.__roamieInitMap = () => resolve();
-    const s = document.createElement("script");
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&loading=async&callback=__roamieInitMap`;
-    s.async = true;
-    s.defer = true;
-    s.onerror = () => reject(new Error("Failed to load Google Maps JavaScript API"));
-    document.head.appendChild(s);
-  });
-  return window.__roamieMapReady;
-}
-
-export function GoogleMap({ center, zoom = 14, markers = [], onMarkerClick, className }: Props) {
-  const ref = useRef<HTMLDivElement>(null);
+export function GoogleMap({
+  center,
+  zoom = 14,
+  markers = [],
+  onMarkerClick,
+  className,
+  onLoadError,
+  onMapReady,
+}: Props) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const centerRef = useRef(center);
+  centerRef.current = center;
   const mapRef = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.Marker[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(() => getGoogleMapsBrowserKeyError());
+  const [mapReady, setMapReady] = useState(false);
+  const reportedErrorRef = useRef(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    loadMapsApi()
-      .then(() => {
-        if (cancelled || !ref.current || !window.google) return;
-        if (!mapRef.current) {
-          mapRef.current = new window.google.maps.Map(ref.current, {
-            center,
-            zoom,
-            disableDefaultUI: true,
-            zoomControl: true,
-            gestureHandling: "greedy",
-            styles: [
-              { featureType: "poi", stylers: [{ visibility: "off" }] },
-              { featureType: "transit", stylers: [{ visibility: "off" }] },
-            ],
-          });
-        }
-      })
-      .catch((e) => console.error("[Roamie Maps] load failed", e));
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const reportError = useCallback(
+    (message: string) => {
+      console.error(LOG, message);
+      setLoadError(message);
+      if (!reportedErrorRef.current) {
+        reportedErrorRef.current = true;
+        onLoadError?.(message);
+      }
+    },
+    [onLoadError],
+  );
+
+  const setContainerRef = useCallback((node: HTMLDivElement | null) => {
+    containerRef.current = node;
+    if (node) {
+      const rect = node.getBoundingClientRect();
+      console.info(LOG, "map container mounted", {
+        width: rect.width,
+        height: rect.height,
+      });
+    }
   }, []);
 
+  const initializeMap = useCallback(async () => {
+    const el = containerRef.current;
+    if (!el) {
+      reportError("地圖容器尚未掛載（ref 為 null）");
+      return;
+    }
+
+    const rect = el.getBoundingClientRect();
+    if (rect.height < 8 || rect.width < 8) {
+      console.warn(LOG, "容器尺寸過小，延後初始化", rect);
+      return false;
+    }
+
+    try {
+      console.info(LOG, "initializeMap 開始", { center: centerRef.current, zoom, size: rect });
+      const maps = await loadGoogleMapsApi();
+      console.info(LOG, "API 就緒", {
+        hasMapCtor: typeof maps.Map === "function",
+        hasMarkerCtor: typeof maps.Marker === "function",
+      });
+
+      if (!containerRef.current) {
+        reportError("初始化時地圖容器已卸載");
+        return true;
+      }
+
+      if (!mapRef.current) {
+        mapRef.current = new maps.Map(containerRef.current, {
+          center: centerRef.current,
+          zoom,
+          disableDefaultUI: true,
+          zoomControl: true,
+          gestureHandling: "greedy",
+          styles: [
+            { featureType: "poi", stylers: [{ visibility: "off" }] },
+            { featureType: "transit", stylers: [{ visibility: "off" }] },
+          ],
+        });
+        console.info(LOG, "Map 實例已建立", mapRef.current);
+        setMapReady(true);
+        onMapReady?.();
+        requestAnimationFrame(() => {
+          if (mapRef.current) triggerMapResize(mapRef.current);
+        });
+      }
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "無法載入 Google 地圖";
+      reportError(msg);
+      return true;
+    }
+  }, [zoom, onMapReady, reportError]);
+
+  // Load API + create map when container has size
   useEffect(() => {
-    if (mapRef.current) mapRef.current.panTo(center);
-  }, [center.lat, center.lng]);
+    let cancelled = false;
+    const keyError = getGoogleMapsBrowserKeyError();
+    if (keyError) {
+      reportError(keyError);
+      return;
+    }
+
+    let attempts = 0;
+    const maxAttempts = 40;
+
+    const tryInit = async () => {
+      if (cancelled || mapRef.current) return;
+      attempts += 1;
+      const done = await initializeMap();
+      if (cancelled || done) return;
+      if (attempts < maxAttempts) {
+        requestAnimationFrame(tryInit);
+      } else {
+        reportError("地圖容器高度為 0 或過小，無法初始化。請檢查版面配置。");
+      }
+    };
+
+    tryInit();
+
+    const onResize = () => {
+      if (mapRef.current) triggerMapResize(mapRef.current);
+    };
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("resize", onResize);
+    };
+  }, [initializeMap, reportError]);
 
   useEffect(() => {
-    if (!mapRef.current || !window.google) return;
+    if (!mapRef.current || !mapReady) return;
+    mapRef.current.setCenter(center);
+    console.info(LOG, "panTo center", center);
+  }, [center.lat, center.lng, mapReady]);
+
+  useEffect(() => {
+    if (!mapRef.current || !window.google?.maps || !mapReady) return;
     markersRef.current.forEach((m) => m.setMap(null));
     markersRef.current = markers.map((m, i) => {
       const marker = new window.google!.maps.Marker({
@@ -87,7 +167,23 @@ export function GoogleMap({ center, zoom = 14, markers = [], onMarkerClick, clas
       if (onMarkerClick) marker.addListener("click", () => onMarkerClick(i));
       return marker;
     });
-  }, [markers, onMarkerClick]);
+  }, [markers, onMarkerClick, mapReady]);
 
-  return <div ref={ref} className={className} />;
+  if (loadError) {
+    return (
+      <div
+        className={`flex min-h-[240px] w-full items-center justify-center bg-secondary px-6 text-center ${className ?? ""}`}
+      >
+        <p className="max-w-xs text-sm leading-relaxed text-muted-foreground">{loadError}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={setContainerRef}
+      className={`h-full min-h-[240px] w-full ${className ?? ""}`}
+      aria-label="Google 地圖"
+    />
+  );
 }

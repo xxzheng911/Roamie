@@ -21,6 +21,7 @@ export type RoamieChatMessage = {
 export type RoamieAIMode = "chat" | "recommend" | "itinerary";
 
 export type ChatPhase =
+  | "discover"
   | "recommend"
   | "followup"
   | "collect"
@@ -31,6 +32,10 @@ export type ChatPhase =
   | "confirm";
 
 export type ChatPlanningHints = {
+  vibe?: string;
+  companionship?: string;
+  setting?: string;
+  mustVisit?: string;
   transportation?: string;
   budget?: string;
   pace?: string;
@@ -143,6 +148,10 @@ export function formatSelectedPlaces(places?: RoamieRecommendationItem[]): strin
 export function formatPlanningHints(hints?: ChatPlanningHints): string {
   if (!hints) return "（尚未收集交通/預算/時間）";
   const lines: string[] = [];
+  if (hints.vibe) lines.push(`今天想：${hints.vibe}`);
+  if (hints.companionship) lines.push(`旅伴：${hints.companionship}`);
+  if (hints.setting) lines.push(`室內外：${hints.setting}`);
+  if (hints.mustVisit) lines.push(`必去：${hints.mustVisit}`);
   if (hints.transportation) lines.push(`交通：${hints.transportation}`);
   if (hints.budget) lines.push(`預算：${hints.budget}`);
   if (hints.pace) lines.push(`節奏：${hints.pace}`);

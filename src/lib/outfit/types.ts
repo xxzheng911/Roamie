@@ -1,0 +1,57 @@
+/** 當日行程活動類型（影響穿搭建議） */
+export type TripActivityType =
+  | "shopping"
+  | "food"
+  | "outdoor"
+  | "photo"
+  | "hiking"
+  | "beach"
+  | "city"
+  | "culture"
+  | "mixed";
+
+export const TRIP_ACTIVITY_LABELS: Record<TripActivityType, string> = {
+  shopping: "逛街",
+  food: "美食",
+  outdoor: "戶外",
+  photo: "拍照",
+  hiking: "登山健行",
+  beach: "海邊",
+  city: "城市漫遊",
+  culture: "文化展覽",
+  mixed: "綜合",
+};
+
+/** 單日天氣快照（來自 Open-Meteo，非 AI 捏造） */
+export type DayWeatherSnapshot = {
+  condition: string;
+  tempHighC: number | null;
+  tempLowC: number | null;
+  precipProbability: number | null;
+  /** 日夜溫差（最高 − 最低） */
+  diurnalRangeC: number | null;
+  iconType?: string;
+};
+
+/** 每日穿搭建議 — 存入 RoamiePayloadV2.outfitAdvice */
+export type DailyOutfitAdvice = {
+  date: string;
+  dayIndex: number;
+  weather: DayWeatherSnapshot;
+  activityTypes: TripActivityType[];
+  /** 一行穿搭重點，如「短袖＋薄外套」 */
+  outfitSummary: string;
+  /** 旅伴語氣段落，有溫度與情境 */
+  narrative: string;
+  /** 攜帶提醒，如「建議攜帶折疊傘」 */
+  packingReminders: string[];
+  /** 穿搭風格語氣參考（文青、韓系等） */
+  styleTone?: string;
+};
+
+export type OutfitAdvicePayload = {
+  destination: string;
+  generatedAt: string;
+  fashionStyle?: string;
+  days: DailyOutfitAdvice[];
+};

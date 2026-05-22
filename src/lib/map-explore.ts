@@ -30,7 +30,7 @@ export function savedPlacesNear(
     .map((x) => x.place);
 }
 
-/** 依時段與天氣調整探索關鍵字 */
+/** 依時段與天氣調整探索關鍵字（維持中文，配合 locationBias 台灣附近搜尋） */
 export function buildExploreQuery(
   categoryQuery: string,
   ctx: { weather?: WeatherSummary | null; hour?: number; timeIso?: string },
@@ -39,33 +39,31 @@ export function buildExploreQuery(
   const hour = temporal.hour;
 
   if (temporal.isRainy) {
-    if (categoryQuery.includes("cafe") || categoryQuery.includes("coffee"))
-      return "indoor cafe bookstore";
-    if (categoryQuery.includes("park")) return "indoor museum gallery";
-    return "indoor cozy spot nearby";
+    if (categoryQuery.includes("咖啡")) return "室內咖啡廳 書店";
+    if (categoryQuery.includes("公園")) return "室內美術館 展覽";
+    return "室內景點 咖啡廳";
   }
 
   if (temporal.isHot) {
-    if (categoryQuery.includes("park")) return "indoor museum cafe air conditioned";
-    return "indoor cool cafe gallery nearby";
+    if (categoryQuery.includes("公園")) return "室內美術館 咖啡廳";
+    return "有冷氣的咖啡廳 室內景點";
   }
 
   if (temporal.period === "night" || temporal.period === "evening") {
-    if (categoryQuery.includes("bar") || categoryQuery.includes("night"))
-      return "night view bar evening walk";
-    if (categoryQuery.includes("food")) return "dinner restaurant night market";
-    if (categoryQuery.includes("cafe")) return "dessert cafe evening open";
-    return "night scenic walk spot open now";
+    if (categoryQuery.includes("酒吧") || categoryQuery.includes("夜景"))
+      return "酒吧 夜景";
+    if (categoryQuery.includes("小吃") || categoryQuery.includes("美食")) return "晚餐 夜市 餐廳";
+    if (categoryQuery.includes("咖啡")) return "甜點 咖啡 宵夜";
+    return "夜景 夜間景點";
   }
 
   if (hour >= 5 && hour < 11) {
-    if (categoryQuery.includes("cafe")) return "morning cafe breakfast bakery";
-    if (categoryQuery.includes("park")) return "morning walk park scenic";
+    if (categoryQuery.includes("咖啡")) return "早餐 咖啡 烘焙";
+    if (categoryQuery.includes("公園")) return "晨間公園 散步";
   }
   if (hour >= 17 && hour < 21) {
-    if (categoryQuery.includes("bar") || categoryQuery.includes("night"))
-      return "evening bar night market";
-    if (categoryQuery.includes("food")) return "dinner local restaurant";
+    if (categoryQuery.includes("酒吧") || categoryQuery.includes("夜景")) return "晚餐 酒吧 夜市";
+    if (categoryQuery.includes("小吃") || categoryQuery.includes("美食")) return "晚餐 在地餐廳";
   }
 
   return categoryQuery;

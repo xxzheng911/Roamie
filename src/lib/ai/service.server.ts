@@ -3,6 +3,7 @@ import { getOpenAIKey } from "@/lib/env.server";
 import type { RoamieRequestContext } from "./context";
 import { buildSystemPrompt, buildUserMessage } from "./prompts";
 import { mapOpenAIError, toError } from "./errors";
+import { enrichRoamieResponse } from "@/lib/enrich-roamie-places.server";
 import { ROAMIE_JSON_SCHEMA, normalizeRoamieResponse, type RoamieResponse } from "./types";
 
 const PlaceItemSchema = z
@@ -48,7 +49,17 @@ const RequestSchema = z.object({
   time: z.string().optional(),
   chatInput: z.string().max(4000).optional(),
   chatPhase: z
-    .enum(["recommend", "followup", "collect", "ready", "enrich", "handoff", "expand", "confirm"])
+    .enum([
+      "discover",
+      "recommend",
+      "followup",
+      "collect",
+      "ready",
+      "enrich",
+      "handoff",
+      "expand",
+      "confirm",
+    ])
     .optional(),
   recommendedPlaces: z.array(PlaceItemSchema).max(20).optional(),
   focusedPlace: PlaceItemSchema.optional(),
@@ -138,7 +149,8 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
   const content = result.choices?.[0]?.message?.content;
   if (!content) throw new Error("AI 回應格式錯誤，請再試一次。");
 
-  return normalizeRoamieResponse(JSON.parse(content) as Record<string, unknown>);
+  const parsed = normalizeRoamieResponse(JSON.parse(content) as Record<string, unknown>);
+  return enrichRoamieResponse(parsed, ctx);
 }
 
 /** Stream raw JSON text chunks (OpenAI SSE). */
@@ -231,9 +243,23 @@ export function streamRoamieAI(ctx: RoamieRequestContext): {
           }
         }
 
+        let finalPayload = assembled;
+        if (assembled.trim()) {
+          try {
+            const parsed = normalizeRoamieResponse(JSON.parse(assembled) as Record<string, unknown>);
+            const enriched = await enrichRoamieResponse(parsed, ctx);
+            finalPayload = JSON.stringify(enriched);
+            controller.enqueue(
+              encoder.encode(`event: final\ndata: ${JSON.stringify(enriched)}\n\n`),
+            );
+          } catch (e) {
+            console.warn("[Roamie AI] enrich after stream failed", e);
+          }
+        }
+
         controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`));
         controller.close();
-        resolveAssembly(assembled);
+        resolveAssembly(finalPayload);
       } catch (e) {
         const msg = e instanceof Error ? e.message : "AI 服務暫時無法使用";
         controller.enqueue(

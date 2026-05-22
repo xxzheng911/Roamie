@@ -1,33 +1,15 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
-import { supabase } from "@/integrations/supabase/client";
-
-const GUEST_KEY = "roamie:guest";
-
-function readGuestFlag() {
-  if (typeof window === "undefined") return false;
-  return localStorage.getItem(GUEST_KEY) === "1" || sessionStorage.getItem(GUEST_KEY) === "1";
-}
-
-function writeGuestFlag(enabled: boolean) {
-  if (typeof window === "undefined") return;
-
-  if (enabled) {
-    localStorage.setItem(GUEST_KEY, "1");
-    sessionStorage.setItem(GUEST_KEY, "1");
-    return;
-  }
-
-  localStorage.removeItem(GUEST_KEY);
-  sessionStorage.removeItem(GUEST_KEY);
-}
+import { supabase } from "@/lib/supabase";
+import { hasOAuthCallbackParams } from "@/lib/auth-oauth";
+import { readGuestFlag, writeGuestFlag } from "@/lib/auth-session";
 
 type AuthCtx = {
   user: User | null;
   session: Session | null;
   loading: boolean;
   isGuest: boolean;
-  enableGuest: () => void;
+  enableGuest: () => Promise<void>;
   disableGuest: () => void;
   signOut: () => Promise<void>;
 };
@@ -37,24 +19,10 @@ const Ctx = createContext<AuthCtx>({
   session: null,
   loading: true,
   isGuest: false,
-  enableGuest: () => {},
+  enableGuest: async () => {},
   disableGuest: () => {},
   signOut: async () => {},
 });
-
-function hasPendingOAuthCallback() {
-  if (typeof window === "undefined") return false;
-  const url = new URL(window.location.href);
-  const h = window.location.hash || "";
-  return (
-    url.searchParams.has("code") ||
-    url.searchParams.has("state") ||
-    url.searchParams.has("error_description") ||
-    h.includes("access_token") ||
-    h.includes("refresh_token") ||
-    h.includes("error_description")
-  );
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -92,6 +60,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     const init = async () => {
+      // OAuth 回傳由 /auth/callback 專責 exchange，此處不呼叫 getSession 以免搶跑 PKCE
+      if (hasOAuthCallbackParams()) {
+        return;
+      }
+
       try {
         const { data, error } = await supabase.auth.getSession();
         if (cancelled) return;
@@ -112,9 +85,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.error("[auth] getSession failed", e);
       } finally {
         if (cancelled) return;
-
-        const guest = syncGuestFromStorage();
-        if (!hasPendingOAuthCallback() || guest) finishLoading();
+        syncGuestFromStorage();
+        finishLoading();
       }
     };
 
@@ -123,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const fallback = window.setTimeout(() => {
       syncGuestFromStorage();
       finishLoading();
-    }, hasPendingOAuthCallback() ? 5000 : 1500);
+    }, hasOAuthCallbackParams() ? 8000 : 1500);
 
     return () => {
       cancelled = true;
@@ -139,7 +111,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await supabase.auth.signOut();
   };
 
-  const enableGuest = () => {
+  const enableGuest = async () => {
+    await supabase.auth.signOut();
     writeGuestFlag(true);
     setSession(null);
     setIsGuest(true);

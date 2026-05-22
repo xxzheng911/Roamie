@@ -15,7 +15,7 @@ function isAllowedOrigin(request: Request): boolean {
 
 async function resolveUser(authHeader: string | null) {
   if (!authHeader?.startsWith("Bearer ")) return null;
-  const url = process.env.SUPABASE_URL!;
+  const url = process.env.SUPABASE_URL!.replace(/\/rest\/v1\/?$/i, "").replace(/\/$/, "");
   const key = process.env.SUPABASE_PUBLISHABLE_KEY!;
   const client = createClient(url, key, {
     global: { headers: { Authorization: authHeader } },

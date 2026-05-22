@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { OutfitAdvicePayload } from "@/lib/outfit/types";
 
 /** OpenAI strict schema 要求 recommendations / itinerary 每個 item 欄位齊全；無座標時 lat/lng 填 null */
 export const RoamieRecommendationItemSchema = z.object({
@@ -13,6 +14,11 @@ export const RoamieRecommendationItemSchema = z.object({
   googleMapsUrl: z.string(),
   placeName: z.string(),
   reasonSource: z.enum(["template", "ai"]),
+  /** 營業中 / 目前未營業 / 即將打烊（伺服器 enrich 後填入） */
+  openStatusLabel: z.string().optional(),
+  todayHoursLabel: z.string().optional(),
+  closingSoonNote: z.string().optional(),
+  nextOpenHint: z.string().optional(),
 });
 
 export const RoamieItineraryItemSchema = z.object({
@@ -52,6 +58,8 @@ export type RoamiePayloadV2 = RoamieResponse & {
   days?: number;
   generatedAt?: string;
   tripSettings?: TripPlanSettings;
+  /** AI 每日穿搭建議（整合天氣預報） */
+  outfitAdvice?: OutfitAdvicePayload;
 };
 
 export function isRoamiePayloadV2(payload: unknown): payload is RoamiePayloadV2 {
@@ -110,6 +118,10 @@ export function normalizeRecommendationItem(
     googleMapsUrl: raw.googleMapsUrl ?? "",
     placeName: raw.placeName ?? raw.name,
     reasonSource: raw.reasonSource ?? "template",
+    openStatusLabel: raw.openStatusLabel,
+    todayHoursLabel: raw.todayHoursLabel,
+    closingSoonNote: raw.closingSoonNote,
+    nextOpenHint: raw.nextOpenHint,
   };
 }
 

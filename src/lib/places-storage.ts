@@ -1,4 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
+import { getAuthenticatedUserId } from "@/lib/auth-session";
+import { isMissingTableError } from "@/lib/supabase-errors";
 
 const GUEST_KEY = "roamie:places";
 
@@ -35,26 +37,24 @@ function writeGuest(list: SavedPlace[]) {
   localStorage.setItem(GUEST_KEY, JSON.stringify(list));
 }
 
-async function getUserId() {
-  const { data } = await supabase.auth.getSession();
-  return data.session?.user.id ?? null;
-}
-
 export async function listPlaces(): Promise<SavedPlace[]> {
-  const userId = await getUserId();
+  const userId = await getAuthenticatedUserId();
   if (userId) {
     const { data, error } = await supabase
       .from("saved_places")
       .select("*")
       .order("created_at", { ascending: false });
-    if (error) throw new Error(error.message);
+    if (error) {
+      if (isMissingTableError(error)) return [];
+      throw new Error(error.message);
+    }
     return (data ?? []) as SavedPlace[];
   }
   return readGuest();
 }
 
 export async function savePlace(input: NewPlace): Promise<SavedPlace> {
-  const userId = await getUserId();
+  const userId = await getAuthenticatedUserId();
   if (userId) {
     const { data, error } = await supabase
       .from("saved_places")
@@ -80,7 +80,7 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
 }
 
 export async function deletePlace(id: string): Promise<void> {
-  const userId = await getUserId();
+  const userId = await getAuthenticatedUserId();
   if (userId) {
     const { error } = await supabase.from("saved_places").delete().eq("id", id);
     if (error) throw new Error(error.message);

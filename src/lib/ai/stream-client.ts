@@ -50,6 +50,7 @@ export async function streamRoamieAI(
   const decoder = new TextDecoder();
   let buf = "";
   let assembled = "";
+  let finalFromServer: RoamieResponseType | null = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -91,11 +92,19 @@ export async function streamRoamieAI(
           /* ignore */
         }
       }
+
+      if (eventType === "final") {
+        try {
+          finalFromServer = normalizeRoamieResponse(JSON.parse(data) as Record<string, unknown>);
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
   try {
-    const full = validateAssembledJson(assembled);
+    const full = finalFromServer ?? validateAssembledJson(assembled);
     handlers.onDone?.(full);
     return full;
   } catch (e) {

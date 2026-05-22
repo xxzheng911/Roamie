@@ -5,8 +5,14 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './types';
 
+function normalizeSupabaseUrl(url: string): string {
+  return url.replace(/\/rest\/v1\/?$/i, "").replace(/\/$/, "");
+}
+
 function createSupabaseAdminClient() {
-  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_URL = process.env.SUPABASE_URL
+    ? normalizeSupabaseUrl(process.env.SUPABASE_URL)
+    : undefined;
   const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {

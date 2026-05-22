@@ -2,6 +2,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { callRoamieAI } from "@/lib/ai/service.server";
 import type { RoamiePayloadV2, RoamieRecommendationItem, RoamieResponse } from "@/lib/ai/types";
+import { buildOutfitAdviceForTrip } from "@/lib/outfit/build-advice";
+import { fetchOpenMeteoDailyForecast } from "@/lib/weather.functions";
 
 const PlaceSchema = z
   .object({
@@ -51,6 +53,8 @@ const InputSchema = z.object({
     .optional(),
   weather: z.record(z.unknown()).nullable().optional(),
   time: z.string().optional(),
+  /** 穿搭風格（文青、韓系、極簡等），來自個人檔案 */
+  fashionStyle: z.string().max(80).optional().default(""),
 });
 
 export type ItineraryInput = z.infer<typeof InputSchema>;
@@ -122,12 +126,36 @@ export const generateItinerary = createServerFn({ method: "POST" })
       },
     });
 
+    const startDate =
+      data.startDate?.trim() || new Date().toISOString().slice(0, 10);
+    const lat = data.location?.lat;
+    const lng = data.location?.lng;
+
+    let outfitAdvice: RoamiePayloadV2["outfitAdvice"];
+    if (lat != null && lng != null) {
+      try {
+        const forecast = await fetchOpenMeteoDailyForecast(lat, lng, data.days);
+        outfitAdvice = await buildOutfitAdviceForTrip({
+          destination: data.destination,
+          startDate,
+          days: data.days,
+          forecast,
+          itinerary: ai.itinerary,
+          fashionStyle: data.fashionStyle || undefined,
+          mood: data.mood || undefined,
+        });
+      } catch (e) {
+        console.warn("[Roamie] outfit advice skipped", e);
+      }
+    }
+
     const itinerary: RoamiePayloadV2 = {
       ...ai,
       version: 2,
       destination: data.destination,
       days: data.days,
       generatedAt: new Date().toISOString(),
+      outfitAdvice,
     };
 
     return { itinerary };
