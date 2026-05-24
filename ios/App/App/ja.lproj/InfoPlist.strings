@@ -1,0 +1,11 @@
+/* Localized permission descriptions — Roamie */
+
+/* Location (weather + nearby recommendations) */
+"NSLocationWhenInUseUsageDescription" = "Roamie は現在地をもとに、近くのおすすめスポットと旅の提案を表示します。";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "Roamie は現在地をもとに、近くのおすすめスポットと旅の提案を表示します。";
+
+/* Camera & photo library (avatar / cover) */
+"NSCameraUsageDescription" = "Roamie はカメラを使って、旅の写真やプロフィール画像を撮影できます。";
+"NSPhotoLibraryUsageDescription" = "Roamie は写真ライブラリにアクセスし、旅の写真やプロフィール画像をアップロードできます。";
+"NSPhotoLibraryAddUsageDescription" = "Roamie はプロフィール更新時に、選択した写真をライブラリに保存できます。";
+

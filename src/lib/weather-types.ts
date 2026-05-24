@@ -8,6 +8,10 @@ export type WeatherSummary = {
   iconType: string;
   isDaytime: boolean;
   precipProbability: number | null;
+  humidityPercent: number | null;
+  windSpeedKmh: number | null;
+  sunrise: string | null;
+  sunset: string | null;
   recommendation: "outdoor" | "indoor" | "cool_indoor" | "evening";
   recommendationText: string;
 };

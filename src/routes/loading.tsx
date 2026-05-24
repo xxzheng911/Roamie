@@ -1,14 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Loader2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { MobileFrame } from "@/components/MobileFrame";
+import { useEffect, useRef } from "react";
+import { RoamieSplashScreen } from "@/components/RoamieSplashScreen";
 import { getClientAuthSession, readGuestFlag } from "@/lib/auth-session";
+import { hasSeenOnboarding } from "@/lib/app-onboarding-storage";
 import { markBootstrapSplashShown } from "@/lib/bootstrap-splash";
 import { resolveStartupPath, type StartupPath } from "@/lib/post-auth-navigation";
-import traveler from "@/assets/roamie-traveler.jpg";
 
 const BOOTSTRAP_TIMEOUT_MS = 6_000;
-const AUTH_WAIT_MS = 2_500;
+const AUTH_WAIT_MS = 2_000;
 
 type LoadingSearch = { to?: StartupPath };
 
@@ -26,7 +25,6 @@ export const Route = createFileRoute("/loading")({
 function LoadingGate() {
   const navigate = useNavigate();
   const { to: targetFromSearch } = Route.useSearch();
-  const [status, setStatus] = useState("正在啟動 Roamie…");
   const navigatedRef = useRef(false);
 
   useEffect(() => {
@@ -38,8 +36,6 @@ function LoadingGate() {
       if (cancelled || navigatedRef.current) return;
 
       try {
-        setStatus("準備你的旅程…");
-
         const guest = readGuestFlag();
         const session = await getClientAuthSession();
         const hasSession = !!session?.user && !guest;
@@ -59,7 +55,7 @@ function LoadingGate() {
         if (!cancelled && !navigatedRef.current) {
           navigatedRef.current = true;
           markBootstrapSplashShown();
-          navigate({ to: "/login", replace: true });
+          navigate({ to: hasSeenOnboarding() ? "/login" : "/intro", replace: true });
         }
       }
     };
@@ -81,15 +77,5 @@ function LoadingGate() {
     };
   }, [navigate, targetFromSearch]);
 
-  return (
-    <MobileFrame>
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-5 px-8">
-        <div className="h-24 w-24 overflow-hidden rounded-[2rem] border-4 border-card shadow-soft">
-          <img src={traveler} alt="" className="h-full w-full object-cover" />
-        </div>
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden />
-        <p className="text-sm text-muted-foreground">{status}</p>
-      </div>
-    </MobileFrame>
-  );
+  return <RoamieSplashScreen />;
 }

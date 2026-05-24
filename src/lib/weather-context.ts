@@ -1,4 +1,5 @@
 import type { WeatherSummary } from "@/lib/weather.functions";
+import { classifyWeatherScene, type WeatherScene } from "@/lib/weather-scene";
 
 export type DayPeriod = "morning" | "afternoon" | "evening" | "night";
 
@@ -7,8 +8,11 @@ export type TemporalWeatherContext = {
   hour: number;
   period: DayPeriod;
   periodLabel: string;
+  scene: WeatherScene;
   isNight: boolean;
   isRainy: boolean;
+  isSunny: boolean;
+  isCloudy: boolean;
   isHot: boolean;
   isCold: boolean;
   tempC: number | null;
@@ -40,18 +44,20 @@ export function buildTemporalWeatherContext(
     new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: tz }).format(d),
   );
   const period = periodFromHour(hour);
-  const cond = (weather?.condition ?? "").toLowerCase();
-  const precip = weather?.precipProbability ?? 0;
   const tempC = weather?.tempC ?? null;
+  const scene = classifyWeatherScene({
+    tempC,
+    precipProbability: weather?.precipProbability,
+    condition: weather?.condition,
+    isDaytime: weather?.isDaytime,
+  });
 
-  const isRainy =
-    precip >= 40 ||
-    cond.includes("雨") ||
-    cond.includes("雷") ||
-    weather?.recommendation === "indoor";
-  const isHot = tempC !== null && tempC >= 30;
-  const isCold = tempC !== null && tempC <= 14;
-  const isNight = period === "night" || period === "evening";
+  const isRainy = scene === "rainy";
+  const isSunny = scene === "sunny";
+  const isCloudy = scene === "cloudy";
+  const isHot = scene === "hot";
+  const isCold = scene === "cold";
+  const isNight = scene === "night" || period === "night" || period === "evening";
 
   const rules: string[] = [];
   rules.push(
@@ -71,11 +77,20 @@ export function buildTemporalWeatherContext(
       "下雨／高降雨：降低戶外、海邊、登山；優先咖啡廳、書店、美術館、室內市集等可久待的室內點。",
     );
   }
+  if (isSunny) {
+    rules.push("晴天：可推薦公園、河堤、戶外散步景點、露天市集；戶外停留時間可稍長。");
+  }
+  if (isCloudy) {
+    rules.push("陰天／多雲：適合巷弄散步、展覽、書店；戶外可短停，不必刻意躲雨。");
+  }
   if (isHot) {
     rules.push("炎熱：優先冷氣室內、樹蔭少的戶外排後；傍晚再安排戶外較舒適。");
   }
   if (isCold) {
     rules.push("偏冷：優先室內溫暖場所、熱食小店。");
+  }
+  if (isNight) {
+    rules.push("夜晚：優先夜景、酒吧、深夜咖啡、適合夜間散步的河岸或巷弄。");
   }
   if (!isRainy && !isHot && period === "afternoon") {
     rules.push("天氣尚可的下午：可混合戶外巷弄與短停咖啡。");
@@ -93,8 +108,11 @@ export function buildTemporalWeatherContext(
     hour,
     period,
     periodLabel: PERIOD_LABELS[period],
+    scene,
     isNight,
     isRainy,
+    isSunny,
+    isCloudy,
     isHot,
     isCold,
     tempC,
@@ -114,7 +132,7 @@ export function formatTemporalWeatherBlock(
   const lines = [
     `【當地時間】${t.localTimeLabel}（${t.periodLabel}）`,
     `【當地天氣】${weather?.city ?? "目前位置"} · ${weather?.condition ?? "—"} · 氣溫 ${temp}${precip ? ` · ${precip}` : ""}`,
-    `【時段情境】${t.isNight ? "夜晚" : "白天"}${t.isRainy ? " · 可能下雨" : ""}${t.isHot ? " · 炎熱" : ""}${t.isCold ? " · 偏冷" : ""}`,
+    `【時段情境】${t.isNight ? "夜晚" : "白天"}${t.isRainy ? " · 可能下雨" : ""}${t.isSunny ? " · 晴朗" : ""}${t.isCloudy ? " · 陰天" : ""}${t.isHot ? " · 炎熱" : ""}${t.isCold ? " · 偏冷" : ""}`,
     `【推薦原則】\n${t.rulesForAI}`,
   ];
   if (weather?.recommendationText) {

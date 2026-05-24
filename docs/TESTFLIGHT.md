@@ -107,13 +107,18 @@ npm run cap:open:ios   # 開啟 Xcode
    - 需 1024×1024 及多尺寸（可用 [appicon.co](https://appicon.co) 產生）
 
 4. **Info.plist 權限說明**（App Store 審核必備）  
-   在 Xcode → Info 新增：
+   文案來源：`scripts/ios-permission-strings.json` → 執行 `npm run ios:permissions` 產生各語系 `InfoPlist.strings`（`en` / `zh-Hant` / `ja` / `ko`）。  
+   系統會依 **裝置語言** 自動選擇，無需寫死英文。
 
-   | Key | 繁中範例 |
-   |-----|----------|
-   | `NSLocationWhenInUseUsageDescription` | Roamie 需要你的位置來推薦附近適合慢步調探索的地點。 |
-   | `NSCameraUsageDescription` | 讓你上傳個人頭像與封面照片。 |
-   | `NSPhotoLibraryUsageDescription` | 讓你從相簿選擇頭像與封面照片。 |
+   | Key | 用途 |
+   |-----|------|
+   | `NSLocationWhenInUseUsageDescription` | 定位（天氣、附近推薦） |
+   | `NSLocationAlwaysAndWhenInUseUsageDescription` | 定位（同上，Always 備用） |
+   | `NSCameraUsageDescription` | 相機（頭像／封面） |
+   | `NSPhotoLibraryUsageDescription` | 相簿讀取 |
+   | `NSPhotoLibraryAddUsageDescription` | 相簿寫入 |
+
+   **通知權限**：iOS 系統通知對話框文字由 Apple 提供，無法透過 Info.plist 自訂；僅定位／相機／相簿可本地化。
 
 5. **Sign in with Apple** capability（若使用 Apple 登入）
 

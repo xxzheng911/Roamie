@@ -33,12 +33,12 @@ export async function requireIntroRouteAccess(): Promise<void> {
   if (typeof window === "undefined") return;
 
   const guest = readGuestFlag();
-  if (!guest) {
-    const session = await getClientAuthSession();
-    if (!session) throw redirect({ to: "/login" });
-  }
+  const session = guest ? null : await getClientAuthSession();
 
-  const next = await resolveStartupPath({ isGuest: guest, hasSession: !guest });
+  const next = await resolveStartupPath({
+    isGuest: guest,
+    hasSession: !!session,
+  });
   if (next !== "/intro") {
     throw redirect({ to: next });
   }
@@ -53,17 +53,13 @@ export async function requirePreferenceQuizRouteAccess(fromProfile: boolean): Pr
     return;
   }
 
-  const guest = readGuestFlag();
-  if (!guest) {
-    const session = await getClientAuthSession();
-    if (!session) throw redirect({ to: "/login" });
-  }
-
   if (!hasSeenOnboarding()) {
     throw redirect({ to: "/intro" });
   }
 
-  const next = await resolveStartupPath({ isGuest: guest, hasSession: !guest });
+  const guest = readGuestFlag();
+  const session = guest ? null : await getClientAuthSession();
+  const next = await resolveStartupPath({ isGuest: guest, hasSession: !!session });
   if (next !== "/onboarding") {
     throw redirect({ to: next });
   }
@@ -88,10 +84,6 @@ export async function requireAppShellAccess(): Promise<void> {
 
   const guest = readGuestFlag();
   const session = await getClientAuthSession();
-
-  if (!guest && !session) {
-    throw redirect({ to: "/login" });
-  }
 
   const next = await resolveStartupPath({ isGuest: guest, hasSession: !!session });
   if (next !== "/") {

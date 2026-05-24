@@ -2,8 +2,10 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import {
   PLACES_FIELD_MASK,
+  PLACE_DETAILS_FIELD_MASK,
   placesSearchNearbyUrl,
   placesSearchTextUrl,
+  placeDetailsUrl,
   requireGoogleMapsServerKey,
 } from "@/lib/google-maps.server";
 import { distanceMeters } from "@/lib/map-explore";
@@ -358,14 +360,80 @@ async function runExploreSearch(
   };
 }
 
+export async function executeExploreSearch(
+  data: z.infer<typeof ExploreSearchInput>,
+): Promise<{ places: PlaceResult[]; error: string | null }> {
+  try {
+    return await runExploreSearch(data);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "request failed";
+    console.error("[Roamie Places] search threw", msg);
+    return { places: [], error: msg };
+  }
+}
+
 export const searchPlaces = createServerFn({ method: "POST" })
   .inputValidator((input) => ExploreSearchInput.parse(input))
   .handler(async ({ data }): Promise<{ places: PlaceResult[]; error: string | null }> => {
-    try {
-      return await runExploreSearch(data);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "request failed";
-      console.error("[Roamie Places] search threw", msg);
-      return { places: [], error: msg };
-    }
+    return executeExploreSearch(data);
   });
+
+type PlaceDetailsRaw = RawPlace & {
+  editorialSummary?: { text?: string };
+  reviews?: Array<{ text?: { text?: string } }>;
+};
+
+export async function fetchPlaceDetailsForIntro(
+  placeId: string,
+  locale?: Locale,
+): Promise<{
+  place: PlaceResult;
+  editorialSummary: string | null;
+  reviewSnippets: string[];
+} | null> {
+  try {
+    const apiKey = requireGoogleMapsServerKey();
+    const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
+    const res = await fetch(placeDetailsUrl(placeId), {
+      headers: {
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": PLACE_DETAILS_FIELD_MASK,
+        "Accept-Language": languageCode,
+      },
+    });
+    if (!res.ok) return null;
+    const p = (await res.json()) as PlaceDetailsRaw;
+    const hours = rawPlaceToHoursData(p);
+    const availability = derivePlaceAvailability(hours, { context: "now" });
+    const fields = applyAvailabilityFields({}, availability);
+    const place: PlaceResult = {
+      id: p.id,
+      name: p.displayName?.text ?? "Unknown",
+      address: p.formattedAddress ?? null,
+      lat: p.location?.latitude ?? null,
+      lng: p.location?.longitude ?? null,
+      rating: p.rating ?? null,
+      userRatingCount: p.userRatingCount ?? null,
+      photoName: p.photos?.[0]?.name ?? null,
+      primaryType: p.primaryType ?? null,
+      types: p.types ?? null,
+      businessStatus: availability.businessStatus,
+      openStatus: availability.openStatus,
+      openStatusLabel: fields.openStatusLabel,
+      todayHoursLabel: fields.todayHoursLabel,
+      closingSoonNote: fields.closingSoonNote,
+      nextOpenHint: fields.nextOpenHint,
+    };
+    return {
+      place,
+      editorialSummary: p.editorialSummary?.text?.trim() ?? null,
+      reviewSnippets: (p.reviews ?? [])
+        .map((r) => r.text?.text?.trim())
+        .filter((t): t is string => Boolean(t))
+        .slice(0, 3),
+    };
+  } catch (e) {
+    console.warn("[Roamie Places] place details failed", placeId, e);
+    return null;
+  }
+}

@@ -1,13 +1,15 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Sparkles, ChevronRight, Search, Cloud, Loader2, HeartHandshake } from "lucide-react";
+import { Sparkles, ChevronRight, Search, HeartHandshake, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import onsen from "@/assets/scene-onsen.jpg";
 import { HomeNearbyPlaceCards } from "@/components/home/HomeNearbyPlaceCards";
+import { HomeWeatherCard } from "@/components/home/HomeWeatherCard";
 import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import { useAvatar } from "@/hooks/use-avatar";
-import { getWeather, type WeatherSummary } from "@/lib/weather.functions";
+import { useHomeWeather } from "@/hooks/use-home-weather";
+import { getWeather } from "@/lib/weather.functions";
 import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { fetchRoamieAI } from "@/lib/ai/stream-client";
 import { shouldActivateLateNightSceneFlow } from "@/lib/late-night-scene-recommendations";
@@ -27,26 +29,23 @@ import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reaso
 import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
-import { EXPLORE_CATEGORIES } from "@/lib/places-search-config";
-import { normalizeDeviceLocation } from "@/lib/geo";
+import { pickCategoriesForHome } from "@/lib/recommendation/categories";
+import { buildDailyPrepAdvice } from "@/lib/recommendation/daily-prep-advice";
+import { HomeOutfitCard } from "@/components/home/HomeOutfitCard";
 import { setMapExploreHandoff } from "@/lib/map-explore-handoff";
 
 export const Route = createFileRoute("/_app/")({
   component: Home,
 });
 
-const moods = [
+const HOME_MOODS = [
   { label: "想放空", emoji: "🍃" },
   { label: "一個人", emoji: "🚶" },
   { label: "下雨天", emoji: "☔" },
   { label: "深夜散步", emoji: "🌙" },
   { label: "找咖啡", emoji: "☕" },
   { label: "看海", emoji: "🌊" },
-];
-
-const TAIPEI = { lat: 25.0478, lng: 121.5319, city: "台北" };
-
-const HOME_EXPLORE_CATEGORIES = EXPLORE_CATEGORIES.filter((c) => c.id !== "all");
+] as const;
 
 function Home() {
   const { t, locale } = useI18n();
@@ -54,9 +53,14 @@ function Home() {
   const navigate = useNavigate();
   const fetchWeather = useServerFn(getWeather);
   const searchPlacesFn = useServerFn(searchPlaces);
-  const [weather, setWeather] = useState<WeatherSummary | null>(null);
-  const [wLoading, setWLoading] = useState(true);
-  const [userLocation, setUserLocation] = useState(TAIPEI);
+  const {
+    weather,
+    status: weatherStatus,
+    error: weatherError,
+    userLocation,
+    usedFallbackLocation,
+    reload: reloadWeather,
+  } = useHomeWeather(locale);
   const [nearbyPicks, setNearbyPicks] = useState<HomeNearbyPick[]>([]);
   const [nearbyLoading, setNearbyLoading] = useState(true);
   const [selectedMood, setSelectedMood] = useState<string | null>(null);
@@ -85,7 +89,7 @@ function Home() {
         reasonProfile,
         saved,
         searchPlacesFn,
-        categories: HOME_EXPLORE_CATEGORIES,
+        categories: pickCategoriesForHome(weather),
       });
       setNearbyPicks(picks);
     } catch (e) {
@@ -97,61 +101,16 @@ function Home() {
   }, [userLocation, weather, locale, searchPlacesFn]);
 
   useEffect(() => {
-    let cancelled = false;
-    const load = (lat: number, lng: number) => {
-      setUserLocation({ lat, lng, city: TAIPEI.city });
-      fetchWeather({ data: { lat, lng, locale } })
-        .then((r) => {
-          if (cancelled) return;
-          if (r.error) {
-            console.warn("[Roamie Weather] home:", r.error);
-          }
-          if (r.weather) {
-            setWeather(r.weather);
-            console.info("[Roamie Weather] home ok", r.weather.city, r.weather.condition);
-          } else {
-            setWeather(null);
-          }
-        })
-        .catch((e) => console.error("[Roamie Weather] home exception", e))
-        .finally(() => !cancelled && setWLoading(false));
-    };
-
-    if (typeof navigator !== "undefined" && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          if (cancelled) return;
-          const normalized = normalizeDeviceLocation(pos.coords.latitude, pos.coords.longitude);
-          const loc = normalized ?? TAIPEI;
-          console.info("[Roamie Location] home GPS", loc.lat, loc.lng);
-          load(loc.lat, loc.lng);
-        },
-        (err) => {
-          if (cancelled) return;
-          console.warn("[Roamie Location] home fallback Taipei", err.code);
-          load(TAIPEI.lat, TAIPEI.lng);
-        },
-        { timeout: 12000, maximumAge: 5 * 60 * 1000, enableHighAccuracy: true },
-      );
-    } else {
-      load(TAIPEI.lat, TAIPEI.lng);
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [fetchWeather, locale]);
-
-  useEffect(() => {
     void loadNearbyPicks();
   }, [loadNearbyPicks]);
 
   useEffect(() => {
     const onPrefs = () => {
-      if (!wLoading) void loadNearbyPicks();
+      if (weatherStatus !== "loading") void loadNearbyPicks();
     };
     window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
     return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
-  }, [wLoading, loadNearbyPicks]);
+  }, [weatherStatus, loadNearbyPicks]);
 
   const handleNearbyPick = (pick: HomeNearbyPick) => {
     setMapExploreHandoff({ categoryId: pick.categoryId, placeId: pick.id });
@@ -169,10 +128,6 @@ function Home() {
       })
       .catch(() => {});
   }, []);
-
-  const tempText =
-    weather?.tempC !== null && weather?.tempC !== undefined ? `${Math.round(weather.tempC)}°` : "";
-  const condText = weather?.condition ?? "多雲";
 
   const handleRecommend = async () => {
     if (!selectedMood) {
@@ -276,7 +231,7 @@ function Home() {
         <SectionTitle title="現在的心情" />
         <div className="app-h-scroll app-bleed-x mt-3">
           <div className="app-h-scroll-track">
-            {moods.map((m) => (
+            {HOME_MOODS.map((m) => (
               <button
                 key={m.label}
                 type="button"
@@ -337,18 +292,33 @@ function Home() {
         </Link>
       )}
 
-      <div className="mt-8 rounded-3xl bg-secondary p-5">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          {wLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Cloud className="h-4 w-4" />}
-          {weather ? `${condText}${tempText ? ` · ${tempText}` : ""}` : "讀取天氣中…"}
-        </div>
-        <h3 className="mt-2 font-display text-xl leading-snug">
-          {weather?.recommendationText ?? "等天氣資料更新…"}
-        </h3>
-        <p className="mt-2 text-sm text-muted-foreground">
-          選好心情後，點上方按鈕讓 Roamie 依天氣與位置推薦。
-        </p>
-      </div>
+      <HomeWeatherCard
+        weather={weather}
+        status={weatherStatus}
+        error={weatherError}
+        usedFallbackLocation={usedFallbackLocation}
+        onRetry={() => void reloadWeather()}
+        labels={{
+          title: t("home.weatherTitle"),
+          loading: t("home.weatherLoading"),
+          errorTitle: t("home.weatherErrorTitle"),
+          errorHint: t("home.weatherErrorHint"),
+          retry: t("home.weatherRetry"),
+          placeholderTitle: t("home.weatherPlaceholderTitle"),
+          placeholderHint: t("home.weatherPlaceholderHint"),
+          fallbackLocationHint: t("home.weatherFallbackLocation"),
+          todayLabel: t("home.weatherToday"),
+          moodHint: t("home.weatherMoodHint"),
+        }}
+      />
+
+      <HomeOutfitCard
+        advice={buildDailyPrepAdvice(weather, locale, weather?.city)}
+        labels={{
+          title: t("home.prepTitle"),
+          empty: t("home.prepEmpty"),
+        }}
+      />
 
       <div className="mt-8 rounded-3xl border border-border bg-card/70 p-5 shadow-soft">
         <div className="flex items-start gap-3">

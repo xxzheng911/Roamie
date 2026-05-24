@@ -61,6 +61,8 @@ export type ChatPlaceItem = RoamieRecommendationItem & {
   googleMapsUrl?: string;
   placeName?: string;
   placeId?: string;
+  photoName?: string | null;
+  rating?: number | null;
   reasonSource?: "template" | "ai";
   distanceMeters?: number | null;
   distanceLabel?: string;
@@ -365,8 +367,16 @@ export function roamieRecToChatItem(rec: RoamieRecommendationItem): ChatPlaceIte
   const normalized = normalizeRecommendationItem(rec);
   const lat = normalized.lat;
   const lng = normalized.lng;
+  const ext = rec as RoamieRecommendationItem & {
+    googlePlaceId?: string;
+    photoName?: string | null;
+    rating?: number | null;
+  };
   return {
     ...normalized,
+    photoName: ext.photoName ?? undefined,
+    rating: ext.rating ?? undefined,
+    placeId: ext.googlePlaceId,
     googleMapsUrl:
       normalized.googleMapsUrl ||
       (lat != null && lng != null ? buildPlaceMapsUrl(lat, lng, normalized.name) : ""),
@@ -453,6 +463,11 @@ export function extractPlanningHintsFromText(
 
   const transportMatch = t.match(/(開車|走路|步行|捷運|公車|地鐵|騎車|單車|計程車|Uber)/);
   if (transportMatch) next.transportation = transportMatch[1];
+
+  const travelersMatch = t.match(/(\d+)\s*(?:人|位)/);
+  if (travelersMatch) {
+    next.discovery = { ...next.discovery, companionship: `${travelersMatch[1]} 人` };
+  }
 
   const budgetMatch = t.match(/(預算|花費|花費|大概|約)?\s*(\d{3,5})\s*(元|塊|NT)?/);
   if (budgetMatch) next.budget = budgetMatch[2] + " 元左右";

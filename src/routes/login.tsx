@@ -1,5 +1,5 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
 import { LegalDocumentSheet } from "@/components/LegalDocumentSheet";
@@ -7,6 +7,7 @@ import { TERMS_OF_SERVICE, PRIVACY_POLICY } from "@/content/legal";
 import { isOAuthProviderEnabled } from "@/constants/auth";
 import { startOAuthSignIn, type OAuthProvider } from "@/lib/auth-oauth";
 import { useAuth } from "@/hooks/use-auth";
+import { hasSeenOnboarding } from "@/lib/app-onboarding-storage";
 import { shouldShowBootstrapSplash } from "@/lib/bootstrap-splash";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import traveler from "@/assets/roamie-traveler.jpg";
@@ -14,6 +15,15 @@ import traveler from "@/assets/roamie-traveler.jpg";
 const isDev = import.meta.env.DEV;
 
 export const Route = createFileRoute("/login")({
+  beforeLoad: async () => {
+    if (typeof window === "undefined") return;
+    if (!hasSeenOnboarding()) {
+      if (shouldShowBootstrapSplash()) {
+        throw redirect({ to: "/loading", search: { to: "/intro" } });
+      }
+      throw redirect({ to: "/intro" });
+    }
+  },
   component: Login,
 });
 
@@ -22,10 +32,12 @@ function Login() {
   const { user, loading, isGuest, enterGuestMode } = useAuth();
   const [busy, setBusy] = useState<OAuthProvider | null>(null);
   const [legalOpen, setLegalOpen] = useState<"terms" | "privacy" | null>(null);
+  const redirectedRef = useRef(false);
 
   useEffect(() => {
-    if (loading) return;
+    if (loading || redirectedRef.current) return;
     if (user && !isGuest) {
+      redirectedRef.current = true;
       void resolveStartupPath({ isGuest: false, hasSession: true }).then((to) => {
         if (shouldShowBootstrapSplash() && to !== "/login") {
           navigate({ to: "/loading", search: { to }, replace: true });

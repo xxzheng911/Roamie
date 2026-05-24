@@ -54,6 +54,7 @@ function SettingsPage() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [savingNotif, setSavingNotif] = useState(false);
   const [languageDialogOpen, setLanguageDialogOpen] = useState(false);
+  const [notifDialogOpen, setNotifDialogOpen] = useState(false);
 
   const syncNotificationsFromDevice = useCallback(async () => {
     const granted = isNotificationGranted();
@@ -102,21 +103,44 @@ function SettingsPage() {
 
   const handleNotifications = async (checked: boolean) => {
     if (savingNotif || loading) return;
+    if (checked) {
+      if (!isNotificationApiAvailable()) {
+        setSavingNotif(true);
+        try {
+          await syncNotificationsFromDevice();
+        } finally {
+          setSavingNotif(false);
+        }
+        return;
+      }
+      if (isNotificationGranted()) {
+        setSavingNotif(true);
+        try {
+          setNotificationsEnabled(true);
+          await saveProfileNotifications(true);
+          toast.success(t("settings.saved"));
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : t("settings.saveFailed"));
+        } finally {
+          setSavingNotif(false);
+        }
+        return;
+      }
+      setNotifDialogOpen(true);
+      return;
+    }
+    await syncNotificationsFromDevice();
+  };
+
+  const confirmNotificationPermission = async () => {
+    setNotifDialogOpen(false);
     setSavingNotif(true);
     try {
-      if (checked) {
-        if (!isNotificationApiAvailable()) {
-          await syncNotificationsFromDevice();
-          return;
-        }
-        await requestNotificationPermission();
-        const granted = isNotificationGranted();
-        setNotificationsEnabled(granted);
-        await saveProfileNotifications(granted);
-        if (granted) toast.success(t("settings.saved"));
-      } else {
-        await syncNotificationsFromDevice();
-      }
+      await requestNotificationPermission();
+      const granted = isNotificationGranted();
+      setNotificationsEnabled(granted);
+      await saveProfileNotifications(granted);
+      if (granted) toast.success(t("settings.saved"));
     } catch (e) {
       await syncNotificationsFromDevice();
       toast.error(e instanceof Error ? e.message : t("settings.saveFailed"));
@@ -251,6 +275,31 @@ function SettingsPage() {
               }}
             >
               {t("settings.languageHintOk")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={notifDialogOpen} onOpenChange={setNotifDialogOpen}>
+        <AlertDialogContent className="mx-auto max-w-[calc(100%-2rem)] rounded-2xl sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("settings.notificationPermissionTitle")}</AlertDialogTitle>
+            <AlertDialogDescription className="text-left leading-relaxed">
+              {t("settings.notificationPermissionBody")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-row gap-2 sm:justify-end">
+            <AlertDialogCancel className="mt-0 flex-1 sm:flex-none">
+              {t("settings.notificationPermissionCancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="flex-1 sm:flex-none"
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmNotificationPermission();
+              }}
+            >
+              {t("settings.notificationPermissionAllow")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

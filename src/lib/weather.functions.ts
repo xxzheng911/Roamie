@@ -5,6 +5,7 @@ import { requireGoogleMapsServerKey } from "@/lib/google-maps.server";
 import { geocodeRegionFromCoordinates } from "@/lib/geo-region";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
+import { buildWeatherRecommendation } from "@/lib/weather-scene";
 import type { DailyForecast, WeatherSummary } from "@/lib/weather-types";
 
 export type { DailyForecast, WeatherSummary } from "@/lib/weather-types";
@@ -37,29 +38,28 @@ const WMO_ZH: Record<number, string> = {
   95: "雷雨",
 };
 
-function recommend(tempC: number | null, precip: number | null, condition: string): {
-  rec: WeatherSummary["recommendation"];
-  text: string;
-} {
-  const cond = (condition || "").toLowerCase();
-  const rainy =
-    (precip ?? 0) >= 40 ||
-    cond.includes("雨") ||
-    cond.includes("rain") ||
-    cond.includes("shower") ||
-    cond.includes("drizzle") ||
-    cond.includes("thunder");
-  if (rainy) return { rec: "indoor", text: "今天可能下雨，找一間能待整個下午的店吧。" };
-  if (tempC !== null && tempC >= 32) return { rec: "cool_indoor", text: "今天很熱，建議下午躲冷氣，傍晚再出門。" };
-  if (tempC !== null && tempC <= 12) return { rec: "indoor", text: "外面有點冷，適合書店、咖啡館慢慢待。" };
-  return { rec: "outdoor", text: "天氣不錯，適合在巷弄裡慢慢走走。" };
+const FETCH_TIMEOUT_MS = 15_000;
+
+async function fetchWithTimeout(url: string, label: string): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    return res;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[Weather] ${label} fetch failed`, msg);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function reverseGeocodeBigDataCloud(lat: number, lng: number): Promise<string> {
   const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=zh`;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url, "BigDataCloud geocode");
   if (!res.ok) {
-    console.warn("[Roamie Weather] BigDataCloud geocode failed", res.status);
+    console.warn("[Weather] BigDataCloud geocode failed", res.status);
     return "";
   }
   const json = (await res.json()) as {
@@ -67,7 +67,9 @@ async function reverseGeocodeBigDataCloud(lat: number, lng: number): Promise<str
     locality?: string;
     principalSubdivision?: string;
   };
-  return json.city || json.locality || json.principalSubdivision || "";
+  const city = json.city || json.locality || json.principalSubdivision || "";
+  console.info("[Weather] parse city (BigDataCloud)", { city: city || "(empty)" });
+  return city;
 }
 
 async function reverseGeocodeGoogle(
@@ -77,15 +79,16 @@ async function reverseGeocodeGoogle(
   locale?: string,
 ): Promise<string> {
   const lang = locale ? localeToGoogleLanguageCode(coerceLocale(locale)) : "zh-TW";
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     geocodeReverseUrl(lat, lng, apiKey, {
       language: lang,
       region: geocodeRegionFromCoordinates(lat, lng),
     }),
+    "Google geocode",
   );
   if (!res.ok) {
     const text = await res.text();
-    console.warn("[Roamie Weather] Google geocode failed", res.status, text.slice(0, 120));
+    console.warn("[Weather] Google geocode failed", res.status, text.slice(0, 120));
     return "";
   }
   const json = (await res.json()) as {
@@ -93,12 +96,15 @@ async function reverseGeocodeGoogle(
     results?: Array<{ address_components?: Array<{ long_name: string; types: string[] }> }>;
   };
   if (json.status && json.status !== "OK") {
-    console.warn("[Roamie Weather] Google geocode status", json.status);
+    console.warn("[Weather] Google geocode status", json.status);
     return "";
   }
   const comps = json.results?.[0]?.address_components ?? [];
   const pick = (t: string) => comps.find((c) => c.types.includes(t))?.long_name;
-  return pick("locality") || pick("administrative_area_level_2") || pick("administrative_area_level_1") || "";
+  const city =
+    pick("locality") || pick("administrative_area_level_2") || pick("administrative_area_level_1") || "";
+  console.info("[Weather] parse city (Google)", { city: city || "(empty)" });
+  return city;
 }
 
 async function reverseGeocodeCity(lat: number, lng: number, locale?: string): Promise<string> {
@@ -107,7 +113,7 @@ async function reverseGeocodeCity(lat: number, lng: number, locale?: string): Pr
     const city = await reverseGeocodeGoogle(lat, lng, googleKey, locale);
     if (city) return city;
   } catch (e) {
-    console.warn("[Roamie Weather] Google geocode skipped", e);
+    console.warn("[Weather] Google geocode skipped (no key or error)", e);
   }
   return reverseGeocodeBigDataCloud(lat, lng);
 }
@@ -119,12 +125,16 @@ async function fetchOpenMeteoWeather(lat: number, lng: number): Promise<{
   iconType: string;
   isDaytime: boolean;
   precip: number | null;
+  humidityPercent: number | null;
+  windSpeedKmh: number | null;
+  sunrise: string | null;
+  sunset: string | null;
 }> {
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,apparent_temperature,precipitation_probability,weather_code,is_day&timezone=auto`;
-  const res = await fetch(url);
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,apparent_temperature,precipitation_probability,weather_code,is_day,relative_humidity_2m,wind_speed_10m&daily=sunrise,sunset&timezone=auto&forecast_days=1`;
+  const res = await fetchWithTimeout(url, "Open-Meteo current");
   if (!res.ok) {
     const text = await res.text();
-    console.error("[Roamie Weather] Open-Meteo error", res.status, text.slice(0, 200));
+    console.error("[Weather] Open-Meteo error", res.status, text.slice(0, 200));
     throw new Error(`Open-Meteo ${res.status}`);
   }
   const json = (await res.json()) as {
@@ -134,18 +144,32 @@ async function fetchOpenMeteoWeather(lat: number, lng: number): Promise<{
       precipitation_probability?: number;
       weather_code?: number;
       is_day?: number;
+      relative_humidity_2m?: number;
+      wind_speed_10m?: number;
+    };
+    daily?: {
+      sunrise?: string[];
+      sunset?: string[];
     };
   };
   const c = json.current;
   const code = c?.weather_code ?? 0;
-  return {
+  const sunriseRaw = json.daily?.sunrise?.[0];
+  const sunsetRaw = json.daily?.sunset?.[0];
+  const parsed = {
     tempC: c?.temperature_2m ?? null,
     feelsLikeC: c?.apparent_temperature ?? null,
     condition: WMO_ZH[code] ?? "多雲",
     iconType: String(code),
     isDaytime: (c?.is_day ?? 1) === 1,
     precip: c?.precipitation_probability ?? null,
+    humidityPercent: c?.relative_humidity_2m ?? null,
+    windSpeedKmh: c?.wind_speed_10m ?? null,
+    sunrise: sunriseRaw ? sunriseRaw.slice(11, 16) : null,
+    sunset: sunsetRaw ? sunsetRaw.slice(11, 16) : null,
   };
+  console.info("[Weather] parse current", parsed);
+  return parsed;
 }
 
 export async function fetchOpenMeteoDailyForecast(
@@ -155,10 +179,10 @@ export async function fetchOpenMeteoDailyForecast(
 ): Promise<DailyForecast[]> {
   const d = Math.min(Math.max(days, 1), 14);
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=${d}`;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url, "Open-Meteo daily");
   if (!res.ok) {
     const text = await res.text();
-    console.error("[Roamie Weather] daily forecast error", res.status, text.slice(0, 200));
+    console.error("[Weather] daily forecast error", res.status, text.slice(0, 200));
     throw new Error(`Open-Meteo daily ${res.status}`);
   }
   const json = (await res.json()) as {
@@ -189,6 +213,7 @@ const ForecastInput = z.object({
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
   days: z.number().int().min(1).max(14).default(7),
+  locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
 });
 
 export const getWeatherForecast = createServerFn({ method: "POST" })
@@ -196,12 +221,14 @@ export const getWeatherForecast = createServerFn({ method: "POST" })
   .handler(
     async ({ data }): Promise<{ forecast: DailyForecast[]; city: string; error: string | null }> => {
       try {
-        const forecast = await fetchOpenMeteoDailyForecast(data.lat, data.lng, data.days);
-        const city = await reverseGeocodeCity(data.lat, data.lng, data.locale);
+        const [forecast, city] = await Promise.all([
+          fetchOpenMeteoDailyForecast(data.lat, data.lng, data.days),
+          reverseGeocodeCity(data.lat, data.lng, data.locale).catch(() => ""),
+        ]);
         return { forecast, city: city || "目前位置", error: null };
       } catch (e) {
         const msg = e instanceof Error ? e.message : "forecast failed";
-        console.error("[Roamie Weather] forecast failed:", msg);
+        console.error("[Weather] forecast failed:", msg);
         return { forecast: [], city: "", error: msg };
       }
     },
@@ -210,30 +237,51 @@ export const getWeatherForecast = createServerFn({ method: "POST" })
 export const getWeather = createServerFn({ method: "POST" })
   .inputValidator((input) => Input.parse(input))
   .handler(async ({ data }): Promise<{ weather: WeatherSummary | null; error: string | null }> => {
+    console.info("[Weather] api request", { lat: data.lat, lng: data.lng, locale: data.locale });
     try {
-      const wx = await fetchOpenMeteoWeather(data.lat, data.lng);
-      const city = await reverseGeocodeCity(data.lat, data.lng, data.locale);
-      const { rec, text } = recommend(wx.tempC, wx.precip, wx.condition);
+      const [wx, city] = await Promise.all([
+        fetchOpenMeteoWeather(data.lat, data.lng),
+        reverseGeocodeCity(data.lat, data.lng, data.locale).catch((e) => {
+          console.warn("[Weather] geocode failed, continuing without city", e);
+          return "";
+        }),
+      ]);
 
-      console.info("[Roamie Weather] ok", { city: city || "目前位置", lat: data.lat, lng: data.lng });
+      const { rec, text, scene } = buildWeatherRecommendation({
+        tempC: wx.tempC,
+        precipProbability: wx.precip,
+        condition: wx.condition,
+        isDaytime: wx.isDaytime,
+      });
 
-      return {
-        weather: {
-          city: city || "目前位置",
-          tempC: wx.tempC,
-          feelsLikeC: wx.feelsLikeC,
-          condition: wx.condition,
-          iconType: wx.iconType,
-          isDaytime: wx.isDaytime,
-          precipProbability: wx.precip,
-          recommendation: rec,
-          recommendationText: text,
-        },
-        error: null,
+      const summary: WeatherSummary = {
+        city: city || "目前位置",
+        tempC: wx.tempC,
+        feelsLikeC: wx.feelsLikeC,
+        condition: wx.condition,
+        iconType: wx.iconType,
+        isDaytime: wx.isDaytime,
+        precipProbability: wx.precip,
+        humidityPercent: wx.humidityPercent,
+        windSpeedKmh: wx.windSpeedKmh,
+        sunrise: wx.sunrise,
+        sunset: wx.sunset,
+        recommendation: rec,
+        recommendationText: text,
       };
+
+      console.info("[Weather] api ok", {
+        city: summary.city,
+        scene,
+        condition: summary.condition,
+        tempC: summary.tempC,
+        isDaytime: summary.isDaytime,
+      });
+
+      return { weather: summary, error: null };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "request failed";
-      console.error("[Roamie Weather] failed:", msg);
+      console.error("[Weather] api failed:", msg);
       return { weather: null, error: msg };
     }
   });

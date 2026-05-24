@@ -39,6 +39,7 @@ export function extractChatPlanningContextFromText(
 
   const avoidTypes = new Set(session.avoidTypes ?? []);
   if (/(太吵|吵|擠|人多|不想.*人)/.test(t)) avoidTypes.add("人多吵雜");
+  if (/(不想走太多|少走路|不想走太多|不要走太多|怕走路)/.test(t)) avoidTypes.add("長距離步行");
   if (/(太貴|高價|奢侈)/.test(t)) avoidTypes.add("高價位");
   if (/(戶外|曬|太陽)/.test(t) && /(不要|不想|怕)/.test(t)) avoidTypes.add("長時間戶外曝曬");
   if (/(室內|冷氣)/.test(t) && /(想|要|偏好)/.test(t)) next.discovery = { ...next.discovery, setting: "室內" };

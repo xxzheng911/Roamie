@@ -41,6 +41,7 @@ import {
   resolveChatApiPhase,
   resolveSessionPhaseAfterReply,
 } from "@/lib/chat-planning-flow";
+import { applyTripIntentToSession, buildClarifyingQuestion, parseTripIntentFromText } from "@/lib/recommendation/trip-intent";
 import { resolveBudgetMode } from "@/lib/preferences-storage";
 import {
   loadChatSession,
@@ -725,13 +726,26 @@ function Chat() {
         setPartial({});
       } catch (e) {
         if ((e as Error).name === "AbortError") return;
-        const msg = e instanceof Error ? e.message : "聊天失敗";
         console.error("[Roamie AI] chat failed", e);
-        toast.error(msg);
+        const intent = parseTripIntentFromText(opts?.userText ?? "", session);
+        const fallbackSummary = buildClarifyingQuestion(intent, locale);
+        const hint: ChatMsg = {
+          role: "assistant",
+          content: fallbackSummary,
+          roamie: {
+            title: "",
+            summary: fallbackSummary,
+            moodTag: session.mood ?? "",
+            recommendations: [],
+            itinerary: [],
+          },
+        };
         setMsgs((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.role === "assistant" && !last.content) return prev.slice(0, -1);
-          return prev;
+          const trimmedPrev = prev.filter(
+            (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+          );
+          const next = [...trimmedPrev, hint];
+          return next;
         });
         setPartial({});
         setLastFailed(conversation);
@@ -740,7 +754,7 @@ function Chat() {
         abortRef.current = null;
       }
     },
-    [buildRequest, session, persistSession],
+    [buildRequest, session, persistSession, locale],
   );
 
   const handleSelectPlace = async (rec: RoamieRecommendationItem) => {
@@ -765,7 +779,8 @@ function Chat() {
     const trimmed = (overrideText ?? text).trim();
     if (!trimmed || streaming || generating) return;
 
-    let nextSession = extractPlanningHintsFromText(trimmed, session);
+    let nextSession = applyTripIntentToSession(trimmed, session);
+    nextSession = extractPlanningHintsFromText(trimmed, nextSession);
     nextSession = extractDiscoveryFromText(trimmed, nextSession);
     nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
 
@@ -1085,6 +1100,8 @@ function Chat() {
                     selectedPlaceNames={selectedNames}
                     savingPlaceName={savingName}
                     savedPlaceNames={savedNames}
+                    addToTripLabel={t("chat.addToTrip")}
+                    viewMapLabel={t("chat.viewMap")}
                   />
                 ) : (
                   <p className="whitespace-pre-wrap text-[15px] leading-relaxed">

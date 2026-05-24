@@ -77,6 +77,15 @@ if (existsSync(envPath)) {
   fail(".env missing — copy from .env.example");
 }
 
+for (const locale of ["en", "zh-Hant", "ja", "ko"]) {
+  const p = resolve(root, `ios/App/App/${locale}.lproj/InfoPlist.strings`);
+  if (existsSync(p)) {
+    ok(`InfoPlist.strings (${locale})`);
+  } else {
+    fail(`Missing ${locale}.lproj/InfoPlist.strings — run: npm run ios:permissions`);
+  }
+}
+
 if (failed) {
   console.error("\nFix the items above, then see docs/TESTFLIGHT.md");
   process.exit(1);

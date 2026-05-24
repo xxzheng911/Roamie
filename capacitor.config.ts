@@ -66,11 +66,13 @@ const config: CapacitorConfig = {
   },
   plugins: {
     SplashScreen: {
-      launchShowDuration: 1200,
+      launchShowDuration: 2000,
       launchAutoHide: true,
-      /** Matches LaunchScreen.storyboard + App Icon cream */
+      /** Matches LaunchScreen — traveler brand splash (#fdf5ea), not app icon */
       backgroundColor: "#fdf5ea",
       showSpinner: false,
+      androidSpinnerStyle: "small",
+      iosSpinnerStyle: "small",
       splashFullScreen: true,
       splashImmersive: true,
     },

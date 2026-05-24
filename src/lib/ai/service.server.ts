@@ -4,6 +4,9 @@ import type { RoamieRequestContext } from "./context";
 import { buildSystemPrompt, buildUserMessage } from "./prompts";
 import { mapOpenAIError, toError } from "./errors";
 import { enrichRoamieResponse } from "@/lib/enrich-roamie-places.server";
+import { mergeAiWithVerifiedCandidates } from "@/lib/recommendation/merge-verified.server";
+import { preparePlacesFirstContext } from "@/lib/recommendation/pipeline.server";
+import { buildRuleBasedRecommendSummary } from "@/lib/recommendation/fallback-summary";
 import { ROAMIE_JSON_SCHEMA, normalizeRoamieResponse, type RoamieResponse } from "./types";
 
 const PlaceItemSchema = z
@@ -131,7 +134,33 @@ export function parseRoamieRequest(body: unknown): RoamieRequestContext {
   return data as RoamieRequestContext;
 }
 
+function shouldUsePlacesFirst(ctx: RoamieRequestContext): boolean {
+  if (ctx.mode === "recommend") return true;
+  if (ctx.mode !== "chat") return false;
+  const phase = ctx.chatPhase;
+  if (!phase) return false;
+  // discover / confirm / ready：不推薦新地點（ready 走 itinerary API）
+  if (phase === "discover" || phase === "confirm" || phase === "ready") return false;
+  return true;
+}
+
+function mergeOptionsForContext(ctx: RoamieRequestContext) {
+  if (ctx.mode === "chat") {
+    return { minCount: 2, maxCount: 4 };
+  }
+  return { minCount: 3, maxCount: 5 };
+}
+
+async function withPlacesFirstPrep(ctx: RoamieRequestContext) {
+  if (!shouldUsePlacesFirst(ctx)) {
+    return { ctx, candidates: [] as Awaited<ReturnType<typeof preparePlacesFirstContext>>["candidates"] };
+  }
+  return preparePlacesFirstContext(ctx);
+}
+
 export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieResponse> {
+  const prep = await withPlacesFirstPrep(ctx);
+  ctx = prep.ctx;
   const apiKey = getOpenAIKey();
   console.info("[Roamie AI] call", { mode: ctx.mode, hasKey: !!apiKey, keyPrefix: apiKey.slice(0, 7) });
   const system = buildSystemPrompt(ctx);
@@ -176,62 +205,76 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
   const content = result.choices?.[0]?.message?.content;
   if (!content) throw new Error("AI 回應格式錯誤，請再試一次。");
 
-  const parsed = normalizeRoamieResponse(JSON.parse(content) as Record<string, unknown>);
+  let parsed = normalizeRoamieResponse(JSON.parse(content) as Record<string, unknown>);
+
+  if (prep.candidates.length) {
+    parsed = mergeAiWithVerifiedCandidates(parsed, prep.candidates, mergeOptionsForContext(ctx));
+  } else if (shouldUsePlacesFirst(ctx)) {
+    parsed = {
+      ...parsed,
+      recommendations: [],
+      summary:
+        parsed.summary?.trim() ||
+        buildRuleBasedRecommendSummary(ctx, prep.candidates.length === 0),
+    };
+  }
+
   return enrichRoamieResponse(parsed, ctx);
 }
 
 /** Stream raw JSON text chunks (OpenAI SSE). */
-export function streamRoamieAI(ctx: RoamieRequestContext): {
+export function streamRoamieAI(initialCtx: RoamieRequestContext): {
   stream: ReadableStream<Uint8Array>;
   getAssembled: () => Promise<string>;
 } {
-  const apiKey = getOpenAIKey();
-  const system = buildSystemPrompt(ctx);
-  const user = buildUserMessage(ctx);
-  const lateNightRecommend =
-    ctx.mode === "recommend" &&
-    ctx.lateNightMode &&
-    /深夜散步|夜晚探索|深夜|想放空/.test(ctx.mood ?? ctx.selectedMood ?? "");
-  const maxTokens =
-    ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
-
   let assembled = "";
   let resolveAssembly!: (v: string) => void;
   const assemblyDone = new Promise<string>((res) => {
     resolveAssembly = res;
   });
 
-  const upstreamPromise = fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-      max_tokens: maxTokens,
-      temperature: 0.85,
-      stream: true,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "roamie_response",
-          strict: true,
-          schema: ROAMIE_JSON_SCHEMA,
-        },
-      },
-    }),
-  });
-
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
       try {
-        const upstream = await upstreamPromise;
+        const prep = await withPlacesFirstPrep(initialCtx);
+        let ctx = prep.ctx;
+        const apiKey = getOpenAIKey();
+        const system = buildSystemPrompt(ctx);
+        const user = buildUserMessage(ctx);
+        const lateNightRecommend =
+          ctx.mode === "recommend" &&
+          ctx.lateNightMode &&
+          /深夜散步|夜晚探索|深夜|想放空/.test(ctx.mood ?? ctx.selectedMood ?? "");
+        const maxTokens =
+          ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
+
+        const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+            max_tokens: maxTokens,
+            temperature: 0.85,
+            stream: true,
+            messages: [
+              { role: "system", content: system },
+              { role: "user", content: user },
+            ],
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: "roamie_response",
+                strict: true,
+                schema: ROAMIE_JSON_SCHEMA,
+              },
+            },
+          }),
+        });
+
         if (!upstream.ok || !upstream.body) {
           const detail = await mapOpenAIError(upstream);
           controller.enqueue(
@@ -278,7 +321,22 @@ export function streamRoamieAI(ctx: RoamieRequestContext): {
         let finalPayload = assembled;
         if (assembled.trim()) {
           try {
-            const parsed = normalizeRoamieResponse(JSON.parse(assembled) as Record<string, unknown>);
+            let parsed = normalizeRoamieResponse(JSON.parse(assembled) as Record<string, unknown>);
+            if (prep.candidates.length) {
+              parsed = mergeAiWithVerifiedCandidates(
+                parsed,
+                prep.candidates,
+                mergeOptionsForContext(ctx),
+              );
+            } else if (shouldUsePlacesFirst(ctx)) {
+              parsed = {
+                ...parsed,
+                recommendations: [],
+                summary:
+                  parsed.summary?.trim() ||
+                  buildRuleBasedRecommendSummary(ctx, prep.candidates.length === 0),
+              };
+            }
             const enriched = await enrichRoamieResponse(parsed, ctx);
             finalPayload = JSON.stringify(enriched);
             controller.enqueue(

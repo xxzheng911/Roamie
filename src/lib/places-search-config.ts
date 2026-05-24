@@ -83,6 +83,46 @@ export const EXPLORE_CATEGORIES: ExploreCategory[] = [
     mode: "nearby",
     includedTypes: ["bar", "night_club", "tourist_attraction"],
   },
+  {
+    id: "indoor",
+    label: "室內",
+    query: "室內 百貨 書店",
+    mode: "multi",
+    nearbyGroups: [
+      ["shopping_mall", "department_store"],
+      ["museum", "art_gallery", "book_store"],
+    ],
+  },
+  {
+    id: "rainy",
+    label: "雨天",
+    query: "咖啡 書店 百貨",
+    mode: "multi",
+    nearbyGroups: [
+      ["cafe", "book_store"],
+      ["shopping_mall", "museum"],
+    ],
+  },
+  {
+    id: "photo",
+    label: "拍照",
+    query: "拍照 景觀",
+    mode: "multi",
+    nearbyGroups: [
+      ["tourist_attraction", "historical_landmark"],
+      ["art_gallery", "park"],
+    ],
+  },
+  {
+    id: "walking",
+    label: "散步",
+    query: "散步 河濱",
+    mode: "multi",
+    nearbyGroups: [
+      ["park", "national_park"],
+      ["tourist_attraction"],
+    ],
+  },
 ];
 
 /** nearby 結果經分類後少於此數時，改以 text 搜尋補齊（咖啡） */

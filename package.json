@@ -11,14 +11,15 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "cap:sync": "npm run build && node scripts/capacitor-prepare.mjs && npx cap sync",
-    "cap:sync:ios:dev": "node scripts/capacitor-prepare.mjs && npx cap sync ios",
+    "cap:sync": "npm run build && node scripts/capacitor-prepare.mjs && npm run ios:permissions && npx cap sync",
+    "cap:sync:ios:dev": "node scripts/capacitor-prepare.mjs && npm run ios:permissions && npx cap sync ios",
     "cap:copy": "node scripts/capacitor-prepare.mjs && npx cap copy",
     "cap:open:ios": "npx cap open ios",
     "cap:open:android": "npx cap open android",
     "cap:add:ios": "npx cap add ios",
     "cap:verify": "node scripts/verify-ios-prereqs.mjs",
     "ios:icons": "node scripts/generate-ios-icon.mjs",
+    "ios:permissions": "node scripts/sync-ios-permission-strings.mjs",
     "cap:add:android": "npx cap add android"
   },
   "dependencies": {

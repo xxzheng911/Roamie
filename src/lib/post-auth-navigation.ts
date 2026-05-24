@@ -30,10 +30,15 @@ async function withTimeout<T>(promise: Promise<T>, fallback: T, ms = ASYNC_STEP_
 
 /**
  * 冷啟動 / 登入後應前往的路徑：
- * onboarding 教學 → 偏好測驗 → Free/Plus 導覽（僅登入）→ 首頁
+ * 首次教學 (/intro) → 偏好測驗 (/onboarding) → 登入/訪客 → Free/Plus 導覽 → 首頁
  */
 export async function resolveStartupPath(options?: StartupOptions): Promise<StartupPath> {
-  if (typeof window === "undefined") return "/login";
+  if (typeof window === "undefined") return "/intro";
+
+  if (!hasSeenOnboarding()) return "/intro";
+
+  const quizDone = await withTimeout(isPreferenceQuizCompleted(), false);
+  if (!quizDone) return "/onboarding";
 
   const guest = options?.isGuest ?? readGuestFlag();
   let hasSession = options?.hasSession;
@@ -43,11 +48,6 @@ export async function resolveStartupPath(options?: StartupOptions): Promise<Star
   }
 
   if (!guest && !hasSession) return "/login";
-
-  if (!hasSeenOnboarding()) return "/intro";
-
-  const quizDone = await withTimeout(isPreferenceQuizCompleted(), false);
-  if (!quizDone) return "/onboarding";
 
   if (!guest && hasSession) {
     const introDone = await withTimeout(isIntroCompleted(), false);
@@ -59,5 +59,5 @@ export async function resolveStartupPath(options?: StartupOptions): Promise<Star
 
 /** @deprecated 使用 resolveStartupPath；保留給既有登入 callback */
 export async function resolveAuthenticatedHomePath(): Promise<PostAuthPath> {
-  return resolveStartupPath({ isGuest: false, hasSession: true });
+  return resolveStartupPath();
 }

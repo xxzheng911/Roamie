@@ -1,0 +1,30 @@
+{
+  "en": {
+    "NSLocationWhenInUseUsageDescription": "Roamie uses your location to recommend nearby places and personalized trips.",
+    "NSLocationAlwaysAndWhenInUseUsageDescription": "Roamie uses your location to recommend nearby places and personalized trips.",
+    "NSCameraUsageDescription": "Roamie uses the camera so you can take trip photos and update your profile picture.",
+    "NSPhotoLibraryUsageDescription": "Roamie needs access to your photos so you can upload trip photos and your profile picture.",
+    "NSPhotoLibraryAddUsageDescription": "Roamie can save photos you choose to your library when you update your profile."
+  },
+  "zh-Hant": {
+    "NSLocationWhenInUseUsageDescription": "Roamie 需要你的位置資訊，才能推薦附近適合你的地點與行程。",
+    "NSLocationAlwaysAndWhenInUseUsageDescription": "Roamie 需要你的位置資訊，才能推薦附近適合你的地點與行程。",
+    "NSCameraUsageDescription": "Roamie 需要使用相機，方便拍攝旅程照片與更新頭像。",
+    "NSPhotoLibraryUsageDescription": "Roamie 需要存取照片，方便你上傳旅程照片與個人頭像。",
+    "NSPhotoLibraryAddUsageDescription": "Roamie 可在你更新個人資料時，將選取的照片儲存到相簿。"
+  },
+  "ja": {
+    "NSLocationWhenInUseUsageDescription": "Roamie は現在地をもとに、近くのおすすめスポットと旅の提案を表示します。",
+    "NSLocationAlwaysAndWhenInUseUsageDescription": "Roamie は現在地をもとに、近くのおすすめスポットと旅の提案を表示します。",
+    "NSCameraUsageDescription": "Roamie はカメラを使って、旅の写真やプロフィール画像を撮影できます。",
+    "NSPhotoLibraryUsageDescription": "Roamie は写真ライブラリにアクセスし、旅の写真やプロフィール画像をアップロードできます。",
+    "NSPhotoLibraryAddUsageDescription": "Roamie はプロフィール更新時に、選択した写真をライブラリに保存できます。"
+  },
+  "ko": {
+    "NSLocationWhenInUseUsageDescription": "Roamie는 위치 정보를 바탕으로 주변 장소와 맞춤 여행을 추천합니다.",
+    "NSLocationAlwaysAndWhenInUseUsageDescription": "Roamie는 위치 정보를 바탕으로 주변 장소와 맞춤 여행을 추천합니다.",
+    "NSCameraUsageDescription": "Roamie는 여행 사진 촬영과 프로필 사진 업데이트를 위해 카메라를 사용합니다.",
+    "NSPhotoLibraryUsageDescription": "Roamie는 여행 사진과 프로필 사진 업로드를 위해 사진 보관함 접근이 필요합니다.",
+    "NSPhotoLibraryAddUsageDescription": "Roamie는 프로필을 업데이트할 때 선택한 사진을 보관함에 저장할 수 있습니다."
+  }
+}

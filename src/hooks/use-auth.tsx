@@ -48,7 +48,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const applySession = (s: Session | null) => {
       if (cancelled) return;
-      setSession(s);
+      setSession((prev) => {
+        const sameUser = prev?.user?.id === s?.user?.id;
+        const sameToken = prev?.access_token === s?.access_token;
+        if (sameUser && sameToken) return prev;
+        return s;
+      });
       if (s) {
         disableGuestMode();
         setIsGuest(false);

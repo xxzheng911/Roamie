@@ -26,6 +26,7 @@ import { searchPlaces } from "@/lib/places.functions";
 import type { PlaceResult } from "@/lib/place-result";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { getWeather } from "@/lib/weather.functions";
+import { getPlaceIntro } from "@/lib/recommendation.functions";
 import type { WeatherSummary } from "@/lib/weather-types";
 import {
   generatePlaceReason,
@@ -169,6 +170,14 @@ function MapView() {
   );
   const searchPlacesFn = useServerFn(searchPlaces);
   const fetchWeather = useServerFn(getWeather);
+  const fetchPlaceIntroFn = useServerFn(getPlaceIntro);
+  const [placeIntroExtra, setPlaceIntroExtra] = useState<{
+    intro?: string;
+    suitableFor?: string;
+    weatherFit?: string;
+    goNowAdvice?: string;
+    introLoading?: boolean;
+  }>({});
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState<ExploreCategory>(EXPLORE_CATEGORIES[0]);
@@ -611,6 +620,43 @@ function MapView() {
     }
   }, [sheetMode, selectedPlace, refocusSelectedPlace]);
 
+  useEffect(() => {
+    if (sheetMode !== "detail" || !selectedPlace?.id || selectedPlace.id.startsWith("saved-")) {
+      setPlaceIntroExtra({});
+      return;
+    }
+    let cancelled = false;
+    setPlaceIntroExtra({ introLoading: true });
+    void fetchPlaceIntroFn({
+      data: {
+        placeId: selectedPlace.id,
+        reason: selectedPlace.reason,
+        locale,
+      },
+    })
+      .then(({ intro, error }) => {
+        if (cancelled) return;
+        if (!intro) {
+          setPlaceIntroExtra({});
+          if (error) console.warn("[Roamie Map] place intro failed", error);
+          return;
+        }
+        setPlaceIntroExtra({
+          intro: intro.intro,
+          suitableFor: intro.suitableFor,
+          weatherFit: intro.weatherFit,
+          goNowAdvice: intro.goNowAdvice,
+          introLoading: false,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setPlaceIntroExtra({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sheetMode, selectedPlace?.id, selectedPlace?.reason, locale, fetchPlaceIntroFn]);
+
   const handlePlaceSelect = useCallback(
     (index: number) => {
       const place = displayResults[index];
@@ -868,7 +914,7 @@ function MapView() {
           </div>
           {sheetMode === "detail" && selectedPlace && (
             <PlaceDetailSheet
-              place={selectedPlace}
+              place={{ ...selectedPlace, ...placeIntroExtra }}
               imageUrls={
                 selectedPlace.photoName
                   ? [buildPlacePhotoUrl(selectedPlace.photoName, 800)!].filter(Boolean)

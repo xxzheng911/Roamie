@@ -6,10 +6,9 @@ import { tripLocationToRoamie } from "@/lib/location/to-roamie";
 import type { TripLocation } from "@/lib/location/types";
 import { resolveLocaleSync } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
+import { requestDeviceLocation } from "@/lib/device-location";
 
 type WeatherFetchInput = { lat: number; lng: number; locale?: Locale };
-
-const TAIPEI_FALLBACK = { lat: 25.0478, lng: 121.5319, city: "台北" };
 
 export type GeolocationResult = RoamieLocation & {
   usedFallback: boolean;
@@ -23,33 +22,20 @@ export type ClientContextBundle = {
   usedFallbackLocation: boolean;
 };
 
-export function getCurrentPosition(): Promise<GeolocationResult> {
-  return new Promise((resolve) => {
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      console.warn("[Roamie Location] geolocation API unavailable, using Taipei fallback");
-      resolve({ ...TAIPEI_FALLBACK, usedFallback: true });
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        console.info("[Roamie Location] GPS ok", {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        });
-        resolve({
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          usedFallback: false,
-        });
-      },
-      (err) => {
-        console.warn("[Roamie Location] GPS denied/failed, using Taipei fallback", err.code, err.message);
-        resolve({ ...TAIPEI_FALLBACK, usedFallback: true });
-      },
-      { timeout: 12000, maximumAge: 5 * 60 * 1000, enableHighAccuracy: true },
-    );
+export async function getCurrentPosition(): Promise<GeolocationResult> {
+  const loc = await requestDeviceLocation();
+  console.info("[Weather] location context", {
+    lat: loc.lat,
+    lng: loc.lng,
+    usedFallback: loc.usedFallback,
+    permission: loc.permission,
   });
+  return {
+    lat: loc.lat,
+    lng: loc.lng,
+    city: loc.city,
+    usedFallback: loc.usedFallback,
+  };
 }
 
 export async function buildClientContextBundle(
@@ -69,20 +55,24 @@ export async function buildClientContextBundle(
   let weather: WeatherSummary | null = null;
   try {
     const r = await fetchWeatherFn({ data: { lat: location.lat, lng: location.lng, locale } });
+    console.info("[Weather] api response (context)", {
+      error: r.error,
+      hasWeather: Boolean(r.weather),
+    });
     if (r.error) {
-      console.warn("[Roamie Weather] fetch error:", r.error);
+      console.warn("[Weather] fallback state (context):", r.error);
     }
     weather = r.weather;
     if (weather) {
       location.city = weather.city;
-      console.info("[Roamie Weather] ok", {
+      console.info("[Weather] parse ok (context)", {
         city: weather.city,
         condition: weather.condition,
         tempC: weather.tempC,
       });
     }
   } catch (e) {
-    console.error("[Roamie Weather] exception:", e);
+    console.error("[Weather] api exception (context):", e);
     weather = null;
   }
 
@@ -110,13 +100,14 @@ export async function buildContextBundleForTrip(
   let weather: WeatherSummary | null = null;
   try {
     const r = await fetchWeatherFn({ data: { lat: location.lat, lng: location.lng, locale } });
+    console.info("[Weather] api response (trip)", { error: r.error, hasWeather: Boolean(r.weather) });
     if (!r.error) weather = r.weather;
     if (weather) {
       location.city =
         destination.formattedName || destination.displayLabel || destination.city || weather.city;
     }
   } catch (e) {
-    console.error("[Roamie Weather] trip destination fetch failed", e);
+    console.error("[Weather] api exception (trip):", e);
   }
 
   return {

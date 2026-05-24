@@ -24,8 +24,6 @@ import {
 } from "@/lib/place-planning-memory";
 import {
   buildLateNightMoodSummary,
-  lateNightSceneRecommendations,
-  mergeLateNightRecommendations,
   shouldActivateLateNightSceneFlow,
 } from "@/lib/late-night-scene-recommendations";
 
@@ -91,24 +89,6 @@ async function enrichRecommendations(
 
   if (!recs.length) {
     const lateNightMode = isLateNightMode(at);
-    if (sceneFlow && ctx.location) {
-      const scene = lateNightSceneRecommendations({
-        location: ctx.location,
-        mood: ctx.mood ?? ctx.selectedMood,
-        maxCount: ctx.mode === "recommend" ? 5 : 6,
-      });
-      return {
-        recommendations: scene,
-        lateNightMode: true,
-        stats: {
-          total: scene.length,
-          open: scene.length,
-          closingSoon: 0,
-          closed: 0,
-          unknown: 0,
-        },
-      };
-    }
     return {
       recommendations: [],
       lateNightMode,
@@ -154,16 +134,7 @@ async function enrichRecommendations(
   });
 
   if (sceneFlow && ctx.location && recommendations.length < 3) {
-    const scene = lateNightSceneRecommendations({
-      location: ctx.location,
-      mood,
-      maxCount: 5,
-      excludeNames: recommendations.map((r) => r.name),
-    });
-    recommendations = mergeLateNightRecommendations(recommendations, scene, {
-      maxTotal: ctx.mode === "recommend" ? 5 : 8,
-      mood,
-    });
+    // 不再注入硬編深夜種子 — 僅使用 Google Places 驗證過的候選
   }
 
   return { recommendations, lateNightMode, stats };

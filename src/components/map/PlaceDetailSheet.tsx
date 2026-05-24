@@ -43,6 +43,11 @@ function TransportModeIcon({ mode }: { mode: TravelModeId }) {
 
 export type PlaceDetailData = PlaceResult & {
   reason: string;
+  intro?: string;
+  suitableFor?: string;
+  weatherFit?: string;
+  goNowAdvice?: string;
+  introLoading?: boolean;
 };
 
 type Props = {
@@ -180,6 +185,26 @@ export function PlaceDetailSheet({
           <p className="text-xs font-medium text-muted-foreground">Roamie 推薦理由</p>
           <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">{place.reason}</p>
         </div>
+
+        {(place.intro || place.introLoading) && (
+          <div className="mt-3 rounded-2xl border border-border/80 bg-secondary/40 px-4 py-3">
+            <p className="text-xs font-medium text-muted-foreground">Roamie 簡介</p>
+            {place.introLoading ? (
+              <p className="mt-1.5 text-sm text-muted-foreground">整理中…</p>
+            ) : (
+              <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">{place.intro}</p>
+            )}
+            {place.suitableFor && (
+              <p className="mt-2 text-xs text-muted-foreground">適合：{place.suitableFor}</p>
+            )}
+            {place.weatherFit && (
+              <p className="mt-1 text-xs text-muted-foreground">天氣：{place.weatherFit}</p>
+            )}
+            {place.goNowAdvice && (
+              <p className="mt-1 text-xs text-muted-foreground">{place.goNowAdvice}</p>
+            )}
+          </div>
+        )}
 
         <div className="mt-4">
           <p className="text-xs font-medium text-muted-foreground">交通方式</p>

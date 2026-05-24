@@ -1,11 +1,12 @@
 import type { KeyboardEvent, MouseEvent } from "react";
-import { MapPin, Clock, Sparkles, Heart, Loader2 } from "lucide-react";
+import { MapPin, Clock, Sparkles, Heart, Loader2, Star, Plus } from "lucide-react";
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { OutfitAdvicePayload } from "@/lib/outfit/types";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
+import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { filterRecommendationItemsForDisplay } from "@/lib/recommend-place-ranking";
 
 function ItineraryByDate({
@@ -104,6 +105,8 @@ type Props = {
   savingPlaceName?: string | null;
   savedPlaceNames?: Set<string>;
   outfitAdvice?: OutfitAdvicePayload;
+  addToTripLabel?: string;
+  viewMapLabel?: string;
 };
 
 export function RoamieResponseView({
@@ -120,6 +123,8 @@ export function RoamieResponseView({
   savingPlaceName,
   savedPlaceNames,
   outfitAdvice,
+  addToTripLabel = "加入行程",
+  viewMapLabel = "查看地圖",
 }: Props) {
   const summary = data.summary?.trim();
   const recs = filterRecommendationItemsForDisplay(data.recommendations ?? []);
@@ -162,6 +167,12 @@ export function RoamieResponseView({
                 : undefined;
             const stopBubble = (e: MouseEvent | KeyboardEvent) => e.stopPropagation();
 
+            const ext = r as RoamieRecommendationItem & {
+              photoName?: string | null;
+              rating?: number | null;
+            };
+            const photoUrl = ext.photoName ? buildPlacePhotoUrl(ext.photoName, 400) : null;
+
             return (
               <article
                 key={`${r.name}-${i}`}
@@ -179,7 +190,7 @@ export function RoamieResponseView({
                       }
                     : undefined
                 }
-                className={`rounded-2xl border p-3 animate-rise transition ${
+                className={`rounded-2xl border p-3 animate-rise transition overflow-hidden ${
                   isPicked
                     ? "border-foreground bg-secondary shadow-soft"
                     : "border-border bg-secondary/40"
@@ -189,6 +200,11 @@ export function RoamieResponseView({
                     : ""
                 } ${clickable ? "cursor-pointer active:scale-[0.99]" : ""}`}
               >
+                {photoUrl && (
+                  <div className="-mx-3 -mt-3 mb-3 aspect-[16/10] overflow-hidden bg-secondary">
+                    <img src={photoUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
+                  </div>
+                )}
                 <div className="flex items-start justify-between gap-2">
                   <h4
                     className={`text-[15px] font-medium leading-snug ${
@@ -198,6 +214,12 @@ export function RoamieResponseView({
                     {r.placeName ?? r.name}
                   </h4>
                   <div className="flex shrink-0 items-center gap-1" onClick={stopBubble} onKeyDown={stopBubble}>
+                    {ext.rating != null && (
+                      <span className="inline-flex items-center gap-0.5 rounded-full bg-card px-2 py-0.5 text-[10px] text-muted-foreground">
+                        <Star className="h-3 w-3 fill-clay text-clay" />
+                        {ext.rating.toFixed(1)}
+                      </span>
+                    )}
                     <span className="rounded-full bg-card px-2 py-0.5 text-[10px] text-muted-foreground">
                       {r.type}
                     </span>
@@ -244,7 +266,17 @@ export function RoamieResponseView({
                     </span>
                   )}
                 </div>
-                <div className="mt-2" onClick={stopBubble} onKeyDown={stopBubble}>
+                <div className="mt-2 flex flex-wrap items-center gap-2" onClick={stopBubble} onKeyDown={stopBubble}>
+                  {onSelectPlace && !pickMode && (
+                    <button
+                      type="button"
+                      onClick={() => onSelectPlace(r)}
+                      className="inline-flex items-center gap-1 rounded-full bg-foreground px-3 py-1.5 text-[11px] font-medium text-background"
+                    >
+                      <Plus className="h-3 w-3" />
+                      {addToTripLabel}
+                    </button>
+                  )}
                   <PlaceNavButtons
                     lat={r.lat}
                     lng={r.lng}

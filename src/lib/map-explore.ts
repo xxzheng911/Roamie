@@ -116,6 +116,18 @@ export function buildExploreQuery(
     return "室內景點 咖啡廳";
   }
 
+  if (temporal.isSunny) {
+    if (isPark) return "公園 河堤 散步";
+    if (isCoffee) return "露天咖啡 戶外座位";
+    return "戶外景點 散步";
+  }
+
+  if (temporal.isCloudy) {
+    if (isCoffee) return "咖啡廳 書店 巷弄";
+    if (isPark) return "公園 展覽 散步";
+    return "巷弄散步 室內小店";
+  }
+
   if (temporal.isHot) {
     if (isPark) return "室內美術館 咖啡廳";
     return "有冷氣的咖啡廳 室內景點";
