@@ -37,6 +37,7 @@ import { isMapDetailOpen, type MapExploreSheetMode } from "@/lib/map-explore-she
 import { mapPlaceResultToChatItem, addSelectedPlace, saveChatSession, loadChatSession } from "@/lib/chat-session";
 import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
+import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAvatar } from "@/hooks/use-avatar";
 import { buildExploreQuery, distanceMeters, formatDistanceLabel, savedPlacesNear } from "@/lib/map-explore";
 import { sortExplorePlaces } from "@/lib/sort-explore-places";
@@ -47,7 +48,8 @@ import {
   getExploreCategoryEmptyMessage,
   matchesCategory,
 } from "@/lib/place-category";
-import { getMockMapPlaces } from "@/lib/map-mock-places";
+import { getMockMapPlaces, getMockPlacesForCategory } from "@/lib/map-mock-places";
+import { withSearchTimeout } from "@/lib/search-timeout";
 import {
   COFFEE_MIN_FILTERED_RESULTS,
   DISTRICT_MIN_FILTERED_RESULTS,
@@ -59,6 +61,7 @@ import {
 import { TAIPEI_CENTER, normalizeDeviceLocation } from "@/lib/geo";
 import { resolveUserMarkerAvatarSrc } from "@/lib/map-user-location-marker";
 import { useI18n } from "@/hooks/use-i18n";
+import { consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
 
 export const Route = createFileRoute("/_app/map")({
   component: MapPage,
@@ -77,8 +80,9 @@ const MAP_ZOOM_PLACE = 17;
 
 type MapPlaceCard = PlaceResult & { reason: string; googleMapsUrl?: string; isSavedFavorite?: boolean };
 
-function mockMapCards(center: { lat: number; lng: number }): MapPlaceCard[] {
-  return getMockMapPlaces(center).map((p) => ({ ...p, googleMapsUrl: undefined }));
+function mockMapCards(center: { lat: number; lng: number }, cat: ExploreCategory): MapPlaceCard[] {
+  const pool = cat.id === "all" ? getMockMapPlaces(center) : getMockPlacesForCategory(center, cat);
+  return pool.map((p) => ({ ...p, googleMapsUrl: undefined }));
 }
 
 function savedToPlaceResult(s: SavedPlace): PlaceResult {
@@ -176,6 +180,7 @@ function MapView() {
   const [selectedPlace, setSelectedPlace] = useState<MapPlaceCard | null>(null);
   const [selectedPlaceIndex, setSelectedPlaceIndex] = useState<number | null>(null);
   const [saved, setSaved] = useState<SavedPlace[]>([]);
+  const savedRef = useRef<SavedPlace[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState(TAIPEI_CENTER);
   const [mapCenter, setMapCenter] = useState(TAIPEI_CENTER);
@@ -189,6 +194,8 @@ function MapView() {
   const mapErrorToastedRef = useRef(false);
   const [mapUnavailable, setMapUnavailable] = useState(false);
   const [reasonProfile, setReasonProfile] = useState<UserProfileForReason | null>(null);
+  const geoReadyRef = useRef(false);
+  const exploreHandoffRef = useRef<{ categoryId: string; placeId: string } | null>(null);
 
   const applyFallbackLocation = useCallback(() => {
     setHasDeviceLocation(false);
@@ -198,6 +205,20 @@ function MapView() {
     setLocationHint(t("map.locationFallbackHint"));
     setGeoReady(true);
   }, [t]);
+
+  useEffect(() => {
+    geoReadyRef.current = geoReady;
+  }, [geoReady]);
+
+  useEffect(() => {
+    const failSafe = window.setTimeout(() => {
+      if (!geoReadyRef.current) {
+        console.warn("[Roamie Map] geolocation slow — using default area");
+        applyFallbackLocation();
+      }
+    }, 8_000);
+    return () => window.clearTimeout(failSafe);
+  }, [applyFallbackLocation]);
 
   useEffect(() => {
     resolveDeviceLocation(
@@ -228,7 +249,12 @@ function MapView() {
   }, []);
 
   const refreshSaved = () => {
-    listPlaces().then(setSaved).catch(() => {});
+    listPlaces()
+      .then((list) => {
+        savedRef.current = list;
+        setSaved(list);
+      })
+      .catch(() => {});
   };
 
   useEffect(() => {
@@ -237,7 +263,7 @@ function MapView() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const loadReasonProfile = async () => {
       try {
         const [profile, prefs] = await Promise.all([
           getUserProfile().catch(() => null),
@@ -258,9 +284,15 @@ function MapView() {
             .catch(() => {});
         }
       }
-    })();
+    };
+    void loadReasonProfile();
+    const onPrefs = () => {
+      void loadReasonProfile();
+    };
+    window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
     return () => {
       cancelled = true;
+      window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
     };
   }, []);
 
@@ -291,16 +323,18 @@ function MapView() {
           radius: DEFAULT_SEARCH_RADIUS_M,
         };
 
-        const primary = await searchPlacesFn({
-          data: {
-            ...basePayload,
-            query: isFreeText ? exploreQuery : cat.query,
-            mode: (isFreeText ? "text" : cat.mode) as "text" | "nearby" | "multi",
-            includedTypes: isFreeText ? undefined : cat.includedTypes,
-            nearbyGroups: isFreeText ? undefined : cat.nearbyGroups,
-            locale,
-          },
-        });
+        const primary = await withSearchTimeout(
+          searchPlacesFn({
+            data: {
+              ...basePayload,
+              query: isFreeText ? exploreQuery : cat.query,
+              mode: (isFreeText ? "text" : cat.mode) as "text" | "nearby" | "multi",
+              includedTypes: isFreeText ? undefined : cat.includedTypes,
+              nearbyGroups: isFreeText ? undefined : cat.nearbyGroups,
+              locale,
+            },
+          }),
+        );
 
         let apiPlaces = primary.places;
         let apiError = primary.error;
@@ -316,14 +350,16 @@ function MapView() {
           filtered.length < COFFEE_MIN_FILTERED_RESULTS
         ) {
           for (const textQuery of getExploreTextFallbackQueries("coffee", userLocation)) {
-            const fallback = await searchPlacesFn({
-              data: {
-                ...basePayload,
-                query: textQuery,
-                mode: "text",
-                locale,
-              },
-            });
+            const fallback = await withSearchTimeout(
+              searchPlacesFn({
+                data: {
+                  ...basePayload,
+                  query: textQuery,
+                  mode: "text",
+                  locale,
+                },
+              }),
+            );
             if (fallback.error && !apiError) apiError = fallback.error;
             if (fallback.places.length > 0) {
               apiPlaces = mergePlacesById(apiPlaces, fallback.places);
@@ -339,14 +375,16 @@ function MapView() {
           filtered.length < DISTRICT_MIN_FILTERED_RESULTS
         ) {
           for (const textQuery of getExploreTextFallbackQueries("district", userLocation)) {
-            const fallback = await searchPlacesFn({
-              data: {
-                ...basePayload,
-                query: textQuery,
-                mode: "text",
-                locale,
-              },
-            });
+            const fallback = await withSearchTimeout(
+              searchPlacesFn({
+                data: {
+                  ...basePayload,
+                  query: textQuery,
+                  mode: "text",
+                  locale,
+                },
+              }),
+            );
             if (fallback.error && !apiError) apiError = fallback.error;
             if (fallback.places.length > 0) {
               apiPlaces = mergePlacesById(apiPlaces, fallback.places);
@@ -358,7 +396,7 @@ function MapView() {
 
         if (apiError) setError(apiError);
 
-        const nearbySaved = savedPlacesNear(userLocation, saved, 5000);
+        const nearbySaved = savedPlacesNear(userLocation, savedRef.current, 5000);
         const apiNames = new Set(apiPlaces.map((p) => p.name));
         const savedCards: MapPlaceCard[] = nearbySaved
           .filter((s) => !apiNames.has(s.name))
@@ -408,13 +446,16 @@ function MapView() {
         ];
 
         if (enriched.length === 0) {
-          if (isFreeText || cat.id === "all") {
-            enriched = mockMapCards(userLocation);
-            if (apiError) {
-              setError(`${apiError}${t("map.demoPlacesNote")}`);
-            }
+          if (isFreeText) {
+            setError(apiError ?? getExploreCategoryEmptyMessage(cat.id, locale));
           } else {
-            setError(getExploreCategoryEmptyMessage(cat.id, locale));
+            enriched = mockMapCards(userLocation, cat);
+            const note = t("map.demoPlacesNote");
+            if (apiError) {
+              setError(`${apiError} · ${note}`);
+            } else {
+              setError(note);
+            }
           }
         }
 
@@ -427,12 +468,13 @@ function MapView() {
 
       void runSearch().catch((e) => {
           const msg = e instanceof Error ? e.message : t("map.searchFailed");
-          if (cat.id === "all") {
-            setError(`${msg}${t("map.demoPlacesNote")}`);
-            setResults(mockMapCards(userLocation));
-          } else {
+          const note = t("map.demoPlacesNote");
+          if (query.trim()) {
             setError(msg);
             setResults([]);
+          } else {
+            setError(`${msg} · ${note}`);
+            setResults(mockMapCards(userLocation, cat));
           }
           if (sheetMode === "list") {
             setSelectedPlace(null);
@@ -442,15 +484,15 @@ function MapView() {
         .finally(() => setLoading(false));
     }, query.trim() ? 400 : 0);
     return () => clearTimeout(handle);
-  }, [query, cat, searchPlacesFn, geoReady, userLocation.lat, userLocation.lng, weather, saved, reasonProfile, locale, t]);
+  }, [query, cat, searchPlacesFn, geoReady, userLocation.lat, userLocation.lng, weather, reasonProfile, locale, t]);
 
   const displayResults = useMemo(() => {
     if (loading && !query.trim()) return [];
     const base =
       results.length > 0
         ? results
-        : !loading && cat.id === "all"
-          ? mockMapCards(userLocation)
+        : !loading && !query.trim()
+          ? mockMapCards(userLocation, cat)
           : [];
     const filtered = filterByExploreCategory(filterExplorePlaces(base), cat);
     return sortMapCards(filtered, userLocation, reasonProfile);
@@ -553,6 +595,11 @@ function MapView() {
     };
   }, [selectedPlace?.id, selectedPlace?.lat, selectedPlace?.lng, refocusSelectedPlace]);
 
+  useEffect(() => {
+    const handoff = consumeMapExploreHandoff();
+    if (handoff) exploreHandoffRef.current = handoff;
+  }, []);
+
   const handleMapClick = useCallback(() => {
     if (sheetMode === "detail" || sheetMode === "navigation") {
       sheetRef.current?.collapse("peek");
@@ -592,6 +639,21 @@ function MapView() {
     },
     [displayResults, userLocation, reasonProfile, weather, focusMapOnPlace, locale, t],
   );
+
+  useEffect(() => {
+    const handoff = exploreHandoffRef.current;
+    if (!handoff || !geoReady || loading) return;
+    if (cat.id !== handoff.categoryId) {
+      const next = EXPLORE_CATEGORIES.find((c) => c.id === handoff.categoryId);
+      if (next) setCat(next);
+      return;
+    }
+    const idx = displayResults.findIndex((p) => p.id === handoff.placeId);
+    if (idx >= 0) {
+      exploreHandoffRef.current = null;
+      handlePlaceSelect(idx);
+    }
+  }, [geoReady, loading, cat.id, displayResults, handlePlaceSelect]);
 
   const handleBackToList = useCallback(() => {
     const scrollIdx = selectedPlaceIndex;
@@ -699,7 +761,7 @@ function MapView() {
   );
 
   return (
-    <div className="map-page relative h-full min-h-0 w-full overflow-hidden bg-cream">
+    <div className="map-page relative -mt-[var(--safe-area-top)] h-[calc(100%+var(--safe-area-top))] min-h-0 w-full overflow-hidden bg-cream">
       {/* 地圖層：全屏背景，GoogleMap 僅在此 render 一次 */}
       <div className="map-stage absolute inset-0 z-0 overflow-hidden">
         {geoReady && !mapUnavailable ? (

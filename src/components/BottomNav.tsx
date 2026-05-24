@@ -17,9 +17,9 @@ export function BottomNav() {
   return (
     <nav
       aria-label="主要導覽"
-      className="absolute inset-x-0 bottom-0 z-40 min-h-[var(--bottom-nav-height,4.25rem)] border-t border-border bg-card/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom,0px)]"
+      className="bottom-nav absolute inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 backdrop-blur-xl pb-[var(--safe-area-bottom)]"
     >
-      <ul className="flex items-stretch justify-between px-2 pt-2 pb-2">
+      <ul className="flex h-[var(--bottom-nav-height,4.25rem)] items-center justify-between px-2">
         {items.map((it) => {
           const active = pathname === it.to;
           const Icon = it.icon;

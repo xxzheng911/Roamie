@@ -11,6 +11,7 @@ import {
 } from "@/lib/auth-session";
 import { mergeGuestDataAfterLogin } from "@/lib/guest-merge";
 import { ensureUserProfile, syncProfileAppFields } from "@/lib/ensure-user-profile";
+import { resolveAuthenticatedHomePath } from "@/lib/post-auth-navigation";
 import {
   readStashedOAuthRedirectTarget,
   stripOAuthParamsFromUrl,
@@ -84,7 +85,10 @@ function AuthCallback() {
       if (!code) {
         const existing = await getClientAuthSession();
         if (existing?.user) {
-          if (!cancelled) navigate({ to: "/", replace: true });
+          if (!cancelled) {
+            const next = await resolveAuthenticatedHomePath();
+            navigate({ to: next, replace: true });
+          }
           return;
         }
         if (!cancelled) {
@@ -123,7 +127,8 @@ function AuthCallback() {
         if (cancelled) return;
 
         toast.success("登入成功");
-        navigate({ to: "/", replace: true });
+        const next = await resolveAuthenticatedHomePath();
+        navigate({ to: next, replace: true });
       } catch (e) {
         console.error("[auth/callback] session failed", e, "href", window.location.href);
         if (!cancelled) {

@@ -51,6 +51,11 @@
 :root {
   /** 與 BottomNav / _app main padding 一致，探索 sheet 需避開此高度 */
   --bottom-nav-height: 4.25rem;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --app-nav-total-height: calc(var(--bottom-nav-height) + var(--safe-area-bottom));
 
   --radius: 1.25rem;
 
@@ -253,6 +258,7 @@
     isolation: isolate;
     overflow: hidden;
     transform: translateZ(0);
+    padding-top: calc(var(--safe-area-top) + 3.25rem);
   }
   .map-stage-canvas {
     z-index: 0;
@@ -309,6 +315,73 @@
   .map-explore-card-item--last {
     margin-right: 1.5rem;
   }
+  /** 首頁附近推薦：1:1 正方形探索卡片 carousel */
+  .home-nearby-cards {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 0.75rem;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    padding-left: max(1.25rem, var(--safe-area-left));
+    padding-right: max(1.25rem, var(--safe-area-right));
+    padding-top: 0.25rem;
+    padding-bottom: 0.375rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    touch-action: pan-x;
+  }
+  .home-nearby-cards::-webkit-scrollbar {
+    display: none;
+  }
+  .home-nearby-card-item {
+    flex: 0 0 auto;
+    width: 10.5rem;
+    border: none;
+    background: transparent;
+    padding: 0;
+  }
+  .home-nearby-card-item--last {
+    margin-right: max(1.25rem, var(--safe-area-right));
+  }
+  .home-nearby-card-square {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    width: 100%;
+  }
+  /** 全站橫向 scroll 區塊（首頁心情等） */
+  .app-h-scroll {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    touch-action: pan-x;
+  }
+  .app-h-scroll::-webkit-scrollbar {
+    display: none;
+  }
+  .app-h-scroll-track {
+    display: flex;
+    width: max-content;
+    min-width: min(100%, max-content);
+    gap: 0.625rem;
+    padding-left: max(1.25rem, var(--safe-area-left));
+    padding-right: max(1.25rem, var(--safe-area-right));
+  }
+
+  /** 抵消頁面水平 padding，讓橫向 scroll 可貼齊螢幕邊緣 */
+  .app-bleed-x {
+    margin-left: calc(-1 * max(1.25rem, var(--safe-area-left)));
+    margin-right: calc(-1 * max(1.25rem, var(--safe-area-right)));
+  }
+
   .shadow-soft {
     box-shadow: 0 1px 2px oklch(0.2 0.02 60 / 0.04), 0 8px 24px oklch(0.2 0.02 60 / 0.06);
   }
@@ -340,3 +413,63 @@
   50% { transform: translateY(-6px); }
 }
 .animate-float { animation: float-slow 5s ease-in-out infinite; }
+
+/* ── Native shell (Capacitor iOS / Android) ── */
+html.roamie-app,
+body.roamie-body {
+  background-color: #f7f4ef;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+.native-shell .mobile-frame-outer {
+  min-height: 100dvh;
+  background: var(--background);
+}
+
+.native-shell .mobile-frame-inner {
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.native-shell .bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: none;
+  z-index: 40;
+}
+
+.native-shell .roamie-body,
+.native-shell body {
+  -webkit-overflow-scrolling: touch;
+}
+
+.platform-ios body {
+  /* Prevent rubber-band flash above fixed headers */
+  min-height: 100dvh;
+}
+
+.platform-ios input,
+.platform-ios textarea,
+.platform-ios select {
+  font-size: 16px; /* prevents iOS zoom-on-focus */
+}
+
+.native-shell .no-scrollbar {
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise,
+  .animate-breathe,
+  .animate-float {
+    animation: none;
+  }
+}

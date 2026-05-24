@@ -1,3 +1,5 @@
+import { ROAMIE_CONTACT_EMAIL } from "@/constants/contact";
+
 export const TERMS_OF_SERVICE = `【Roamie 服務條款】
 
 最後更新日期：2026 年 5 月 22 日
@@ -117,7 +119,7 @@ Roamie 有權隨時更新本條款。
 十、聯絡方式
 
 Email：
-xxzheng911@gmail.com`;
+${ROAMIE_CONTACT_EMAIL}`;
 
 export const PRIVACY_POLICY = `【Roamie 隱私權政策】
 
@@ -213,4 +215,4 @@ Roamie 可能使用 Cookie 或分析工具，以改善產品體驗與效能。
 九、聯絡方式
 
 Email：
-xxzheng911@gmail.com`;
+${ROAMIE_CONTACT_EMAIL}`;

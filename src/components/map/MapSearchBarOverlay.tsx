@@ -7,12 +7,12 @@ type Props = {
   placeholder?: string;
 };
 
-/** 探索頁搜尋列 + 定位按鈕（疊在 map-stage 上，不含地圖） */
+/** 探索頁搜尋列 + 定位（貼近安全區下緣，避免與 _app main 雙重 padding） */
 export function MapSearchBarOverlay({ query, onQueryChange, onLocate, placeholder }: Props) {
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-10 px-5 pt-[calc(env(safe-area-inset-top,0px)+16px)]">
-      <div className="relative">
-        <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-border bg-card px-4 py-3 shadow-soft">
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-20 px-4 pt-[calc(var(--safe-area-top)+0.5rem)]">
+      <div className="pointer-events-auto flex items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-border/90 bg-card/95 px-4 py-2.5 shadow-soft backdrop-blur-sm">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
           <input
             type="search"
@@ -23,11 +23,10 @@ export function MapSearchBarOverlay({ query, onQueryChange, onLocate, placeholde
             autoComplete="off"
           />
         </div>
-
         <button
           type="button"
           onClick={onLocate}
-          className="pointer-events-auto absolute right-0 top-[calc(100%+0.75rem)] flex h-10 w-10 items-center justify-center rounded-full border border-border bg-card shadow-soft"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border/90 bg-card/95 shadow-soft backdrop-blur-sm"
           aria-label="我的位置"
         >
           <Navigation className="h-4 w-4" />

@@ -3,6 +3,7 @@ import { Plus, Loader2, Trash2, MapPin, Heart, Route as RouteIcon } from "lucide
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useI18n } from "@/hooks/use-i18n";
+import { useAuth } from "@/hooks/use-auth";
 import cafe from "@/assets/scene-cafe.jpg";
 import { deleteItinerary, listItineraries, type StoredItinerary } from "@/lib/itinerary-storage";
 import { isRoamiePayloadV2 } from "@/lib/ai/types";
@@ -67,6 +68,7 @@ function PlacesEmptyState() {
 
 function Saved() {
   const { t } = useI18n();
+  const { isGuest } = useAuth();
   const search = Route.useSearch();
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
   const [trips, setTrips] = useState<StoredItinerary[]>([]);
@@ -127,6 +129,16 @@ function Saved() {
 
   return (
     <div className="px-5 pb-6 pt-3">
+      {isGuest ? (
+        <div className="mb-4 rounded-2xl border border-border/80 bg-card/80 px-4 py-3 text-center">
+          <p className="text-sm text-muted-foreground">
+            訪客收藏僅保存在本裝置。
+            <Link to="/login" className="ml-1 text-foreground underline underline-offset-2">
+              登入以同步雲端
+            </Link>
+          </p>
+        </div>
+      ) : null}
       <div className="flex items-end justify-between">
         <div>
           <h1 className="font-display text-2xl">{t("saved.title")}</h1>

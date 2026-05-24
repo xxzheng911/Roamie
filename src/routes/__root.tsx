@@ -10,9 +10,7 @@ import {
 import { Toaster } from "sonner";
 
 import appCss from "../styles.css?url";
-import { AuthProvider } from "@/hooks/use-auth";
-import { AvatarProvider } from "@/hooks/use-avatar";
-import { I18nProvider } from "@/hooks/use-i18n";
+import { AppProviders } from "@/providers/AppProviders";
 
 function NotFoundComponent() {
   return (
@@ -77,8 +75,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { charSet: "utf-8" },
       {
         name: "viewport",
-        content: "width=device-width, initial-scale=1, viewport-fit=cover",
+        content: "width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no",
       },
+      { name: "theme-color", content: "#f7f4ef" },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-status-bar-style", content: "default" },
       { title: "Roamie｜你的慢旅行夥伴" },
       { name: "description", content: "Roamie 是一個讓你不再為了「今天要做什麼」煩惱的旅行夥伴。給你剛剛好的安排，剛剛好的留白。" },
       { property: "og:title", content: "Roamie｜你的慢旅行夥伴" },
@@ -101,11 +102,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="zh-Hant" className="roamie-app">
       <head>
         <HeadContent />
+        <style
+          dangerouslySetInnerHTML={{
+            __html: `html,body{background-color:#f7f4ef;color:#2a2520}`,
+          }}
+        />
       </head>
-      <body>
+      <body className="roamie-body antialiased">
         {children}
         <Scripts />
       </body>
@@ -118,14 +124,10 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <I18nProvider>
-          <AvatarProvider>
-            <Outlet />
-            <Toaster position="top-center" />
-          </AvatarProvider>
-        </I18nProvider>
-      </AuthProvider>
+      <AppProviders>
+        <Outlet />
+        <Toaster position="top-center" />
+      </AppProviders>
     </QueryClientProvider>
   );
 }

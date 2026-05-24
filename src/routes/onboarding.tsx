@@ -1,14 +1,20 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { ArrowRight, Check, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
+import { requirePreferenceQuizRouteAccess } from "@/lib/require-auth";
+import { readGuestFlag } from "@/lib/auth-session";
+import { resolveStartupPath } from "@/lib/post-auth-navigation";
+import { isIntroCompleted } from "@/lib/plan-tier";
 import {
   savePreferences,
   type BudgetMode,
   type TravelPreferences,
 } from "@/lib/preferences-storage";
 import { savePersonalityToProfile } from "@/lib/profile-storage";
+import { AnalyticsEvents } from "@/constants/analytics-events";
+import { trackEvent } from "@/services/analytics";
 
 type OnboardingSearch = { from?: string };
 
@@ -16,6 +22,15 @@ export const Route = createFileRoute("/onboarding")({
   validateSearch: (s: Record<string, unknown>): OnboardingSearch => ({
     from: typeof s.from === "string" ? s.from : undefined,
   }),
+  beforeLoad: async ({ search }) => {
+    await requirePreferenceQuizRouteAccess(search.from === "profile");
+    if (typeof window === "undefined") return;
+    if (search.from === "profile") return;
+    const next = await resolveStartupPath();
+    if (next !== "/onboarding") {
+      throw redirect({ to: next });
+    }
+  },
   component: Onboarding,
 });
 
@@ -76,6 +91,10 @@ function Onboarding() {
   const current = steps[step];
   const choice = picked[step];
 
+  const exitQuiz = () => {
+    navigate({ to: fromProfile ? "/profile" : "/" });
+  };
+
   const next = async () => {
     if (choice === undefined) return;
     if (step < steps.length - 1) {
@@ -94,8 +113,18 @@ function Onboarding() {
         else if (s.key === "budget") prefs.budgetMode = val as BudgetMode;
       });
       await savePersonalityToProfile(prefs);
-      toast.success("旅行個性已更新");
-      navigate({ to: "/profile", search: { quiz: "done" } });
+      trackEvent(AnalyticsEvents.ONBOARDING_COMPLETED, {
+        pace: prefs.pace,
+        vibe: prefs.vibe,
+        budget_mode: prefs.budgetMode,
+      });
+      if (fromProfile) {
+        navigate({ to: "/profile", search: { quiz: "done" } });
+      } else {
+        const guest = readGuestFlag();
+        const next = guest ? "/" : (await isIntroCompleted()) ? "/" : "/welcome";
+        navigate({ to: next, replace: true });
+      }
     } catch (e) {
       console.error("[Roamie] onboarding save failed", e);
       toast.error(e instanceof Error ? e.message : "儲存失敗");
@@ -105,18 +134,8 @@ function Onboarding() {
 
   return (
     <MobileFrame>
-      <div className="flex min-h-[calc(100vh-2rem)] md:min-h-[860px] flex-col px-6 pb-8 pt-6">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => {
-              if (step > 0) setStep(step - 1);
-              else if (fromProfile) navigate({ to: "/profile" });
-            }}
-            className="text-sm text-muted-foreground disabled:opacity-40"
-            disabled={saving}
-          >
-            {step === 0 && fromProfile ? "返回" : "上一步"}
-          </button>
+      <div className="flex min-h-0 flex-1 flex-col px-6 pb-[max(2rem,var(--safe-area-bottom))] pt-[max(1rem,var(--safe-area-top))]">
+        <div className="relative flex items-center justify-center pb-2">
           <div className="flex gap-1.5">
             {steps.map((_, i) => (
               <span
@@ -125,18 +144,17 @@ function Onboarding() {
               />
             ))}
           </div>
-          {fromProfile ? (
-            <Link to="/profile" className="text-sm text-muted-foreground">
-              取消
-            </Link>
-          ) : (
-            <Link to="/" className="text-sm text-muted-foreground">
-              跳過
-            </Link>
-          )}
+          <button
+            type="button"
+            onClick={exitQuiz}
+            disabled={saving}
+            className="absolute right-0 top-0 text-sm text-muted-foreground disabled:opacity-40"
+          >
+            取消
+          </button>
         </div>
 
-        <div className="mt-10 animate-rise" key={step}>
+        <div className="mt-8 animate-rise" key={step}>
           <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">
             第 {step + 1} 題 / 共 {steps.length} 題
           </p>

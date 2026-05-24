@@ -24,8 +24,9 @@ function interestBoost(
   if (!profile?.onboarded) return 0;
   const blob = [
     profile.travelStyle ?? "",
-    ...(profile.interests ?? []),
+    profile.personalityType ?? "",
     profile.personalitySummary ?? "",
+    ...(profile.interests ?? []),
   ]
     .join(" ")
     .toLowerCase();
@@ -33,6 +34,13 @@ function interestBoost(
   if (/美食|吃/i.test(blob) && place.openStatus === "open") boost += 0.05;
   if (/逛|購物/i.test(blob)) boost += 0.02;
   if (place.isSavedFavorite) boost += 0.08;
+
+  if (profile.pace === "slow") boost += 0.04;
+  if (profile.pace === "active") boost += 0.02;
+  if (profile.vibe === "quiet") boost += 0.03;
+  if (profile.vibe === "lively") boost += 0.02;
+  if (profile.budgetMode === "budget") boost += 0.02;
+
   return boost;
 }
 

@@ -80,6 +80,10 @@ export type Database = {
           id: string
           language: string | null
           notifications_enabled: boolean
+          plan_tier: string
+          plus_available: boolean
+          subscription_provider: string
+          subscription_status: string
           travel_personality: Json | null
           updated_at: string
         }
@@ -94,6 +98,10 @@ export type Database = {
           id: string
           language?: string | null
           notifications_enabled?: boolean
+          plan_tier?: string
+          plus_available?: boolean
+          subscription_provider?: string
+          subscription_status?: string
           travel_personality?: Json | null
           updated_at?: string
         }
@@ -108,6 +116,10 @@ export type Database = {
           id?: string
           language?: string | null
           notifications_enabled?: boolean
+          plan_tier?: string
+          plus_available?: boolean
+          subscription_provider?: string
+          subscription_status?: string
           travel_personality?: Json | null
           updated_at?: string
         }

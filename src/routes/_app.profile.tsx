@@ -1,4 +1,4 @@
-import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronRight,
   Settings,
@@ -11,9 +11,10 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
+import { GuestSignInPrompt } from "@/components/GuestSignInPrompt";
 import { useAvatar } from "@/hooks/use-avatar";
 import { useI18n } from "@/hooks/use-i18n";
-import { isAuthSessionMissingError, readGuestFlag } from "@/lib/auth-session";
+import { isAuthSessionMissingError } from "@/lib/auth-session";
 import { supabase } from "@/lib/supabase";
 import { CropEditActions } from "@/components/CropEditActions";
 import { ImageSourceSheet } from "@/components/ImageSourceSheet";
@@ -36,7 +37,9 @@ import {
   applyProfileCover,
   removeProfileCover,
 } from "@/lib/profile-media-storage";
-import { getUserProfile, saveUserProfile } from "@/lib/profile-storage";
+import { getUserProfile, saveUserProfile, type UserProfile } from "@/lib/profile-storage";
+import { buildCompanionSummary } from "@/lib/personality";
+import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 
 type ProfileSearch = { quiz?: string };
 
@@ -46,14 +49,6 @@ export const Route = createFileRoute("/_app/profile")({
   validateSearch: (s: Record<string, unknown>): ProfileSearch => ({
     quiz: typeof s.quiz === "string" ? s.quiz : undefined,
   }),
-  beforeLoad: async () => {
-    if (typeof window === "undefined") return;
-    if (readGuestFlag()) return;
-    const { data } = await supabase.auth.getSession();
-    if (!data.session) {
-      throw redirect({ to: "/login" });
-    }
-  },
   component: Profile,
 });
 
@@ -101,7 +96,9 @@ function Profile() {
   const [personalityType, setPersonalityType] = useState("");
   const [personalitySummary, setPersonalitySummary] = useState("");
   const [personalityImpression, setPersonalityImpression] = useState("");
+  const [companionSummary, setCompanionSummary] = useState("");
   const [onboarded, setOnboarded] = useState(false);
+  const [quizSyncing, setQuizSyncing] = useState(false);
   const [pace, setPace] = useState("");
   const [vibe, setVibe] = useState("");
   const [budgetLabel, setBudgetLabel] = useState("—");
@@ -126,12 +123,7 @@ function Profile() {
     return () => window.removeEventListener(COVER_UPDATED_EVENT, onCover);
   }, []);
 
-  useEffect(() => {
-    if (search.quiz === "done") {
-      setShowQuizResult(true);
-      toast.success(t("profile.quizDone"));
-    }
-  }, [search.quiz, t]);
+  const quizDoneToastShown = useRef(false);
 
   const loadProfile = async () => {
     try {
@@ -144,8 +136,72 @@ function Profile() {
     }
   };
 
+  const applyProfileToState = (profile: UserProfile) => {
+    setDisplayName(profile.displayName);
+    setBio(profile.bio);
+    setCoverUrl(profile.coverImageUrl);
+    setTravelStyle(profile.travelStyle);
+    setPersonalityType(profile.personalityType);
+    setPersonalitySummary(profile.personalitySummary);
+    setPersonalityImpression(profile.personalityImpression);
+    setCompanionSummary(buildCompanionSummary(profile.prefs));
+    setOnboarded(!!profile.prefs.onboarded);
+    const paceMap = {
+      slow: t("profile.paceSlow"),
+      medium: t("profile.paceMedium"),
+      active: t("profile.paceActive"),
+    } as const;
+    const vibeMap = {
+      quiet: t("profile.vibeQuiet"),
+      either: t("profile.vibeEither"),
+      lively: t("profile.vibeLively"),
+    } as const;
+    setPace(profile.prefs.pace ? paceMap[profile.prefs.pace] : t("common.dash"));
+    setVibe(profile.prefs.vibe ? vibeMap[profile.prefs.vibe] : t("common.dash"));
+    setBudgetLabel(
+      profile.prefs.onboarded
+        ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)]
+        : t("common.dash"),
+    );
+    setAvoidKey(profile.prefs.avoid?.[0] ?? null);
+  };
+
+  useEffect(() => {
+    if (search.quiz !== "done" || quizDoneToastShown.current) return;
+    quizDoneToastShown.current = true;
+    setQuizSyncing(true);
+    setShowQuizResult(true);
+    toast.success(t("profile.quizDone"));
+    navigate({ to: "/profile", search: {}, replace: true });
+    void (async () => {
+      try {
+        const profile = await loadProfile();
+        applyProfileToState(profile);
+      } catch (e) {
+        console.error("[profile] quiz sync failed", e);
+      } finally {
+        setQuizSyncing(false);
+      }
+    })();
+  }, [search.quiz, t, navigate]);
+
+  useEffect(() => {
+    const onPrefs = () => {
+      void (async () => {
+        try {
+          const profile = await loadProfile();
+          applyProfileToState(profile);
+        } catch (e) {
+          console.error("[profile] prefs sync failed", e);
+        }
+      })();
+    };
+    window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
+    return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
+  }, [t]);
+
   const refresh = async () => {
-    if (!user && !isGuest) return;
+    if (!user) return;
     setLoading(true);
     try {
       if (user) await ensureUserProfile();
@@ -156,34 +212,8 @@ function Profile() {
       ]);
       setTripCount(itineraries.length);
       setPlaceCount(places.length);
-      setDisplayName(profile.displayName);
-      setBio(profile.bio);
-      setCoverUrl(profile.coverImageUrl);
+      applyProfileToState(profile);
       await refreshAvatar();
-      setTravelStyle(profile.travelStyle);
-      setPersonalityType(profile.personalityType);
-      setPersonalitySummary(profile.personalitySummary);
-      setPersonalityImpression(profile.personalityImpression);
-      setOnboarded(!!profile.prefs.onboarded);
-      const paceMap = {
-        slow: t("profile.paceSlow"),
-        medium: t("profile.paceMedium"),
-        active: t("profile.paceActive"),
-      } as const;
-      const vibeMap = {
-        quiet: t("profile.vibeQuiet"),
-        either: t("profile.vibeEither"),
-        lively: t("profile.vibeLively"),
-      } as const;
-      setPace(profile.prefs.pace ? paceMap[profile.prefs.pace] : t("common.dash"));
-      setVibe(profile.prefs.vibe ? vibeMap[profile.prefs.vibe] : t("common.dash"));
-      setBudgetLabel(
-        profile.prefs.onboarded
-          ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)]
-          : t("common.dash"),
-      );
-      setAvoidKey(profile.prefs.avoid?.[0] ?? null);
-      setShowQuizResult(!!profile.prefs.onboarded);
     } catch (e) {
       if (e instanceof Error && isAuthSessionMissingError(e.message)) return;
       console.error("[profile] refresh failed", e);
@@ -201,14 +231,24 @@ function Profile() {
       navigate({ to: "/login", replace: true });
       return;
     }
+    if (isGuest || !user) return;
     void refresh();
   }, [authLoading, user, isGuest, locale, t, navigate]);
 
-  if (authLoading || (!user && !isGuest)) {
+  if (authLoading) {
     return (
       <div className="flex flex-1 items-center justify-center px-5 py-16">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
+    );
+  }
+
+  if (isGuest || !user) {
+    return (
+      <GuestSignInPrompt
+        title="登入後，建立你的 Roamie 檔案"
+        description="個人檔案、頭像與雲端同步需要登入帳號。訪客模式仍可瀏覽首頁、地圖與聊天。"
+      />
     );
   }
 
@@ -368,7 +408,7 @@ function Profile() {
           <div className="absolute -top-10 left-0 z-20 h-[5.25rem] w-[5.25rem]">
             {avatarEditing ? (
               <div className="relative h-[5.25rem] w-[5.25rem]">
-                <div className="relative h-full w-full overflow-hidden rounded-[1.35rem] border-[3px] border-card bg-black shadow-soft">
+                <div className="relative h-full w-full overflow-hidden rounded-full border-[3px] border-card bg-black shadow-soft">
                   <InlineImageCropViewport
                     ref={avatarCropRef}
                     file={avatarCropFile!}
@@ -395,12 +435,12 @@ function Profile() {
                 type="button"
                 onClick={() => !avatarApplying && setAvatarSourceOpen(true)}
                 disabled={avatarApplying}
-                className="group relative h-full w-full overflow-hidden rounded-[1.35rem] border-[3px] border-card bg-secondary shadow-soft disabled:opacity-90"
+                className="group relative h-full w-full overflow-hidden rounded-full border-[3px] border-card bg-secondary shadow-soft disabled:opacity-90"
                 aria-label={t("profile.editAvatar")}
               >
                 <img src={avatarSrc} alt="" className="h-full w-full object-cover" />
                 <div
-                  className={`pointer-events-none absolute inset-0 rounded-[1.2rem] transition duration-200 ${
+                  className={`pointer-events-none absolute inset-0 rounded-full transition duration-200 ${
                     avatarApplying
                       ? "bg-card/45"
                       : "bg-foreground/0 group-hover:bg-foreground/10 group-active:bg-foreground/15"
@@ -480,6 +520,9 @@ function Profile() {
                   <div>
                     <p className="font-display text-xl leading-tight">{displayName}</p>
                     <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{bio}</p>
+                    {onboarded && companionSummary ? (
+                      <p className="mt-2 text-sm leading-relaxed text-foreground/75">{companionSummary}</p>
+                    ) : null}
                     {travelStyle ? (
                       <p className="mt-2 text-sm leading-relaxed text-foreground/80">{travelStyle}</p>
                     ) : null}
@@ -558,7 +601,16 @@ function Profile() {
             {t("profile.roamieImpression")}
           </p>
           <p className="mt-2 font-display text-[17px] leading-snug">
-            {onboarded ? personalityImpression : t("profile.quizPrompt")}
+            {quizSyncing ? (
+              <span className="inline-flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {t("profile.quizSyncing")}
+              </span>
+            ) : onboarded ? (
+              personalityImpression
+            ) : (
+              t("profile.quizPrompt")
+            )}
           </p>
           {!onboarded && (
             <Link
@@ -584,7 +636,7 @@ function Profile() {
                 <Sparkles className="h-4 w-4" />
               </div>
               <p className="flex-1 text-[15px]">{t("profile.personalityView")}</p>
-              <p className="text-sm text-muted-foreground">{t("profile.viewResult")}</p>
+              <p className="text-sm text-muted-foreground">{t("profile.quizStatusCompleted")}</p>
               <ChevronRight className="h-4 w-4 text-muted-foreground" />
             </button>
           </li>

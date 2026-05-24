@@ -3,14 +3,19 @@ import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { hasOAuthCallbackParams } from "@/lib/auth-oauth";
 import { getClientAuthSession, readGuestFlag, writeGuestFlag } from "@/lib/auth-session";
+import {
+  disableGuestMode,
+  enableGuestMode,
+  GUEST_MODE_CHANGED_EVENT,
+  isGuestMode,
+} from "@/lib/guest-mode";
 
 type AuthCtx = {
   user: User | null;
   session: Session | null;
   loading: boolean;
   isGuest: boolean;
-  enableGuest: () => Promise<void>;
-  disableGuest: () => void;
+  enterGuestMode: () => void;
   signOut: () => Promise<void>;
 };
 
@@ -19,24 +24,23 @@ const Ctx = createContext<AuthCtx>({
   session: null,
   loading: true,
   isGuest: false,
-  enableGuest: async () => {},
-  disableGuest: () => {},
+  enterGuestMode: () => {},
   signOut: async () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
   const [isGuest, setIsGuest] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
 
-    const syncGuestFromStorage = () => {
-      const guest = readGuestFlag();
-      if (!cancelled) setIsGuest(guest);
-      return guest;
+    const syncGuest = () => {
+      if (!cancelled) setIsGuest(isGuestMode());
     };
+
+    syncGuest();
 
     const finishLoading = () => {
       if (!cancelled) setLoading(false);
@@ -46,15 +50,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       setSession(s);
       if (s) {
-        writeGuestFlag(false);
+        disableGuestMode();
         setIsGuest(false);
       } else {
-        syncGuestFromStorage();
+        setIsGuest(readGuestFlag());
       }
       finishLoading();
     };
 
-    syncGuestFromStorage();
+    const onGuestModeChanged = () => syncGuest();
+    window.addEventListener(GUEST_MODE_CHANGED_EVENT, onGuestModeChanged);
 
     const {
       data: { subscription },
@@ -63,10 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     const init = async () => {
-      // PKCE 兌換僅在 /auth/callback 進行，避免搶跑 code
-      if (hasOAuthCallbackParams()) {
-        return;
-      }
+      if (hasOAuthCallbackParams()) return;
 
       try {
         const s = await getClientAuthSession();
@@ -74,7 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         console.error("[auth] getSession failed", e);
         if (!cancelled) {
-          syncGuestFromStorage();
+          setIsGuest(readGuestFlag());
           finishLoading();
         }
       }
@@ -83,36 +85,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void init();
 
     const fallbackMs = hasOAuthCallbackParams() ? 12_000 : 2500;
-    const fallback = window.setTimeout(() => {
-      syncGuestFromStorage();
-      finishLoading();
-    }, fallbackMs);
+    const fallback = window.setTimeout(finishLoading, fallbackMs);
 
     return () => {
       cancelled = true;
+      window.clearEventListener(GUEST_MODE_CHANGED_EVENT, onGuestModeChanged);
       window.clearTimeout(fallback);
       subscription.unsubscribe();
     };
   }, []);
 
-  const signOut = async () => {
-    writeGuestFlag(false);
-    setSession(null);
-    setIsGuest(false);
-    await supabase.auth.signOut();
-  };
-
-  const enableGuest = async () => {
-    await supabase.auth.signOut();
-    writeGuestFlag(true);
+  const enterGuestMode = () => {
+    enableGuestMode();
     setSession(null);
     setIsGuest(true);
     setLoading(false);
   };
 
-  const disableGuest = () => {
-    writeGuestFlag(false);
+  const signOut = async () => {
+    const wasGuest = readGuestFlag();
+    disableGuestMode();
     setIsGuest(false);
+    setSession(null);
+    if (!wasGuest) {
+      await supabase.auth.signOut();
+    }
   };
 
   return (
@@ -122,8 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         session,
         loading,
         isGuest,
-        enableGuest,
-        disableGuest,
+        enterGuestMode,
         signOut,
       }}
     >

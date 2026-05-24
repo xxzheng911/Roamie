@@ -7,6 +7,7 @@ import {
 import type { WeatherSummary } from "@/lib/weather.functions";
 import { formatTemporalWeatherBlock } from "@/lib/weather-context";
 import type { Locale } from "@/lib/i18n/types";
+import type { PlanTier } from "@/lib/plan-tier/types";
 
 export type RoamieLocation = {
   lat: number;
@@ -117,6 +118,8 @@ export type RoamieRequestContext = {
   selectedMood?: string;
   fromPlanForm?: boolean;
   locale?: Locale;
+  /** AI 陪伴深度：free 基本 / plus 深度個人化 */
+  planTier?: PlanTier;
 };
 
 const paceLabel: Record<string, string> = { slow: "慢", medium: "中等", active: "想多看" };
@@ -132,12 +135,15 @@ const budgetLabel: Record<string, string> = {
 
 export function formatPreferences(prefs?: TravelPreferences): string {
   if (!prefs) return "（尚未設定旅行偏好）";
+  if (!prefs.onboarded) return "（尚未完成旅行偏好測驗，請先了解步調、氛圍與預算再推薦）";
   const parts: string[] = [];
+  if (prefs.personalityType) parts.push(`旅行人格：${prefs.personalityType}`);
   if (prefs.pace) parts.push(`步調：${paceLabel[prefs.pace] ?? prefs.pace}`);
   if (prefs.vibe) parts.push(`氛圍：${vibeLabel[prefs.vibe] ?? prefs.vibe}`);
   const bm = resolveBudgetMode(prefs);
   parts.push(`預算模式：${BUDGET_MODE_LABELS[bm]}（餐飲/咖啡/景點/住宿需符合此範圍）`);
   if (prefs.avoid?.length) parts.push(`想避開：${prefs.avoid.join("、")}`);
+  if (prefs.personalitySummary) parts.push(`測驗摘要：${prefs.personalitySummary}`);
   if (prefs.interests?.length) parts.push(`興趣：${prefs.interests.join("、")}`);
   return parts.length ? parts.join("；") : "（尚未設定旅行偏好）";
 }

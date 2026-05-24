@@ -1,80 +1,105 @@
 
--- profiles
-create table public.profiles (
-  id uuid primary key references auth.users(id) on delete cascade,
+-- profiles (idempotent — skip if remote already has table)
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   display_name text,
   avatar_url text,
-  travel_personality jsonb default '{}'::jsonb,
-  ai_preferences jsonb default '{}'::jsonb,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  travel_personality jsonb DEFAULT '{}'::jsonb,
+  ai_preferences jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
-alter table public.profiles enable row level security;
-create policy "profiles self select" on public.profiles for select using (auth.uid() = id);
-create policy "profiles self insert" on public.profiles for insert with check (auth.uid() = id);
-create policy "profiles self update" on public.profiles for update using (auth.uid() = id);
-create policy "profiles self delete" on public.profiles for delete using (auth.uid() = id);
+
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "profiles self select" ON public.profiles;
+CREATE POLICY "profiles self select" ON public.profiles FOR SELECT USING (auth.uid() = id);
+
+DROP POLICY IF EXISTS "profiles self insert" ON public.profiles;
+CREATE POLICY "profiles self insert" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id);
+
+DROP POLICY IF EXISTS "profiles self update" ON public.profiles;
+CREATE POLICY "profiles self update" ON public.profiles FOR UPDATE USING (auth.uid() = id);
+
+DROP POLICY IF EXISTS "profiles self delete" ON public.profiles;
+CREATE POLICY "profiles self delete" ON public.profiles FOR DELETE USING (auth.uid() = id);
 
 -- saved_trips
-create table public.saved_trips (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
+CREATE TABLE IF NOT EXISTS public.saved_trips (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   mood text,
-  title text not null,
+  title text NOT NULL,
   cover_image text,
-  payload jsonb default '{}'::jsonb,
-  created_at timestamptz not null default now()
+  payload jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
-alter table public.saved_trips enable row level security;
-create policy "trips self all" on public.saved_trips for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+ALTER TABLE public.saved_trips ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "trips self all" ON public.saved_trips;
+CREATE POLICY "trips self all" ON public.saved_trips FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- chat_messages
-create table public.chat_messages (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  role text not null check (role in ('user','assistant')),
-  content text not null,
-  created_at timestamptz not null default now()
+CREATE TABLE IF NOT EXISTS public.chat_messages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  role text NOT NULL CHECK (role IN ('user', 'assistant')),
+  content text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
-alter table public.chat_messages enable row level security;
-create policy "chat self all" on public.chat_messages for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+ALTER TABLE public.chat_messages ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "chat self all" ON public.chat_messages;
+CREATE POLICY "chat self all" ON public.chat_messages FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- itineraries
-create table public.itineraries (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  title text not null,
+CREATE TABLE IF NOT EXISTS public.itineraries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  title text NOT NULL,
   city text,
   mood text,
-  blocks jsonb default '[]'::jsonb,
-  created_at timestamptz not null default now()
+  blocks jsonb DEFAULT '[]'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
-alter table public.itineraries enable row level security;
-create policy "itin self all" on public.itineraries for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+ALTER TABLE public.itineraries ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "itin self all" ON public.itineraries;
+CREATE POLICY "itin self all" ON public.itineraries FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
 -- updated_at trigger for profiles
-create or replace function public.set_updated_at()
-returns trigger language plpgsql as $$
-begin new.updated_at = now(); return new; end; $$;
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
 
-create trigger profiles_set_updated_at
-before update on public.profiles
-for each row execute function public.set_updated_at();
+DROP TRIGGER IF EXISTS profiles_set_updated_at ON public.profiles;
+CREATE TRIGGER profiles_set_updated_at
+  BEFORE UPDATE ON public.profiles
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 -- auto-create profile on signup
-create or replace function public.handle_new_user()
-returns trigger language plpgsql security definer set search_path = public as $$
-begin
-  insert into public.profiles (id, display_name, avatar_url)
-  values (
-    new.id,
-    coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
-    new.raw_user_meta_data->>'avatar_url'
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  INSERT INTO public.profiles (id, display_name, avatar_url)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'full_name', NEW.raw_user_meta_data->>'name', split_part(NEW.email, '@', 1)),
+    NEW.raw_user_meta_data->>'avatar_url'
   )
-  on conflict (id) do nothing;
-  return new;
-end; $$;
+  ON CONFLICT (id) DO NOTHING;
+  RETURN NEW;
+END;
+$$;
 
-create trigger on_auth_user_created
-after insert on auth.users
-for each row execute function public.handle_new_user();
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();

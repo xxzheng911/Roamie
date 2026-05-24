@@ -1,5 +1,7 @@
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
+import { ensureUserProfile } from "@/lib/ensure-user-profile";
+import { broadcastPreferencesUpdate } from "@/lib/preference-events";
 
 const GUEST_KEY = "roamie:preferences";
 
@@ -49,6 +51,11 @@ function writeGuest(prefs: TravelPreferences) {
   localStorage.setItem(GUEST_KEY, JSON.stringify(prefs));
 }
 
+export async function isPreferenceQuizCompleted(): Promise<boolean> {
+  const prefs = await getPreferences();
+  return Boolean(prefs.onboarded);
+}
+
 export async function getPreferences(): Promise<TravelPreferences> {
   const userId = await getAuthenticatedUserId();
   if (userId) {
@@ -67,12 +74,33 @@ export async function savePreferences(prefs: TravelPreferences): Promise<TravelP
   const merged = { ...(await getPreferences()), ...prefs, updated_at: new Date().toISOString() };
   const userId = await getAuthenticatedUserId();
   if (userId) {
+    await ensureUserProfile();
     const { error } = await supabase
       .from("profiles")
       .upsert({ id: userId, travel_personality: merged as never }, { onConflict: "id" });
     if (error) throw new Error(error.message);
+    broadcastPreferencesUpdate(merged);
     return merged;
   }
   writeGuest(merged);
+  broadcastPreferencesUpdate(merged);
   return merged;
+}
+
+/** Dev-only: clear preference quiz completion for first-run testing */
+export async function resetPreferenceQuizForDev(): Promise<void> {
+  if (!import.meta.env.DEV) return;
+
+  const userId = await getAuthenticatedUserId();
+  if (userId) {
+    const current = await getPreferences();
+    const { onboarded: _removed, ...rest } = current;
+    await savePreferences({ ...rest, onboarded: false });
+    return;
+  }
+
+  const guest = readGuest();
+  delete guest.onboarded;
+  writeGuest(guest);
+  broadcastPreferencesUpdate(guest);
 }

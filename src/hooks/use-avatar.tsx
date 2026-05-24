@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-import traveler from "@/assets/roamie-traveler.jpg";
+import defaultAvatar from "@/assets/roamie-default-avatar.png";
 import { getUserProfile } from "@/lib/profile-storage";
 import { AVATAR_UPDATED_EVENT } from "@/lib/avatar-events";
 
@@ -37,7 +37,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(AVATAR_UPDATED_EVENT, onUpdate);
   }, [refresh]);
 
-  const avatarSrc = preview ?? avatarUrl ?? traveler;
+  const avatarSrc = preview ?? avatarUrl ?? defaultAvatar;
 
   return (
     <Ctx.Provider value={{ avatarUrl, avatarSrc, refresh, setPreview }}>{children}</Ctx.Provider>

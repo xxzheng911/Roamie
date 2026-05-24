@@ -158,9 +158,13 @@ export function hasCompletedTravelQuiz(profile: UserProfileForReason | null | un
 function inferInterestTags(profile: UserProfileForReason): string[] {
   const blob = [
     profile.travelStyle ?? "",
-    ...(profile.interests ?? []),
-    profile.personalitySummary ?? "",
     profile.personalityType ?? "",
+    profile.personalitySummary ?? "",
+    profile.pace === "slow" ? "慢 散步 療癒 發呆" : "",
+    profile.pace === "active" ? "探索 走走 多看" : "",
+    profile.vibe === "quiet" ? "安靜 書店 咖啡 角落" : "",
+    profile.vibe === "lively" ? "市集 熱鬧 生活感" : "",
+    ...(profile.interests ?? []),
     JSON.stringify(profile.aiPreferences ?? {}),
   ]
     .join(" ")

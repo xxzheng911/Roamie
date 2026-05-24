@@ -1,14 +1,15 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Sparkles, ChevronRight, Search, Cloud, Coffee, Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Sparkles, ChevronRight, Search, Cloud, Loader2, HeartHandshake } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import onsen from "@/assets/scene-onsen.jpg";
+import { HomeNearbyPlaceCards } from "@/components/home/HomeNearbyPlaceCards";
+import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import { useAvatar } from "@/hooks/use-avatar";
 import { getWeather, type WeatherSummary } from "@/lib/weather.functions";
 import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { fetchRoamieAI } from "@/lib/ai/stream-client";
-import { isLateNightMode } from "@/lib/recommend-place-ranking";
 import { shouldActivateLateNightSceneFlow } from "@/lib/late-night-scene-recommendations";
 import { saveRecommendation } from "@/lib/recommendation-storage";
 import { listPlaces } from "@/lib/places-storage";
@@ -20,6 +21,15 @@ import {
 import { listItineraries } from "@/lib/itinerary-storage";
 import { supabase } from "@/integrations/supabase/client";
 import { useI18n } from "@/hooks/use-i18n";
+import { searchPlaces } from "@/lib/places.functions";
+import { loadHomeNearbyPicks, type HomeNearbyPick } from "@/lib/explore-category-search";
+import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
+import { getUserProfile } from "@/lib/profile-storage";
+import { getPreferences } from "@/lib/preferences-storage";
+import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
+import { EXPLORE_CATEGORIES } from "@/lib/places-search-config";
+import { normalizeDeviceLocation } from "@/lib/geo";
+import { setMapExploreHandoff } from "@/lib/map-explore-handoff";
 
 export const Route = createFileRoute("/_app/")({
   component: Home,
@@ -36,22 +46,61 @@ const moods = [
 
 const TAIPEI = { lat: 25.0478, lng: 121.5319, city: "台北" };
 
+const HOME_EXPLORE_CATEGORIES = EXPLORE_CATEGORIES.filter((c) => c.id !== "all");
+
 function Home() {
   const { t, locale } = useI18n();
   const { avatarSrc } = useAvatar();
   const navigate = useNavigate();
   const fetchWeather = useServerFn(getWeather);
+  const searchPlacesFn = useServerFn(searchPlaces);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [wLoading, setWLoading] = useState(true);
+  const [userLocation, setUserLocation] = useState(TAIPEI);
+  const [nearbyPicks, setNearbyPicks] = useState<HomeNearbyPick[]>([]);
+  const [nearbyLoading, setNearbyLoading] = useState(true);
   const [selectedMood, setSelectedMood] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [latestTripId, setLatestTripId] = useState<string | null>(null);
   const [latestTripTitle, setLatestTripTitle] = useState<string | null>(null);
+  const [plusModalOpen, setPlusModalOpen] = useState(false);
+
+  const loadNearbyPicks = useCallback(async () => {
+    setNearbyLoading(true);
+    try {
+      const [profile, prefs, saved] = await Promise.all([
+        getUserProfile(locale).catch(() => null),
+        getPreferences(),
+        listPlaces().catch((e) => (isMissingTableError(e) ? [] : Promise.reject(e))),
+      ]);
+      const reasonProfile = userProfileForReasonFrom(profile?.prefs ?? prefs, {
+        travelStyle: profile?.travelStyle,
+        personalityType: profile?.personalityType,
+        personalitySummary: profile?.personalitySummary,
+      });
+      const picks = await loadHomeNearbyPicks({
+        userLocation,
+        weather,
+        locale,
+        reasonProfile,
+        saved,
+        searchPlacesFn,
+        categories: HOME_EXPLORE_CATEGORIES,
+      });
+      setNearbyPicks(picks);
+    } catch (e) {
+      console.warn("[Roamie Home] nearby picks failed", e);
+      setNearbyPicks([]);
+    } finally {
+      setNearbyLoading(false);
+    }
+  }, [userLocation, weather, locale, searchPlacesFn]);
 
   useEffect(() => {
     let cancelled = false;
     const load = (lat: number, lng: number) => {
-      fetchWeather({ data: { lat, lng } })
+      setUserLocation({ lat, lng, city: TAIPEI.city });
+      fetchWeather({ data: { lat, lng, locale } })
         .then((r) => {
           if (cancelled) return;
           if (r.error) {
@@ -72,8 +121,10 @@ function Home() {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           if (cancelled) return;
-          console.info("[Roamie Location] home GPS", pos.coords.latitude, pos.coords.longitude);
-          load(pos.coords.latitude, pos.coords.longitude);
+          const normalized = normalizeDeviceLocation(pos.coords.latitude, pos.coords.longitude);
+          const loc = normalized ?? TAIPEI;
+          console.info("[Roamie Location] home GPS", loc.lat, loc.lng);
+          load(loc.lat, loc.lng);
         },
         (err) => {
           if (cancelled) return;
@@ -88,7 +139,24 @@ function Home() {
     return () => {
       cancelled = true;
     };
-  }, [fetchWeather]);
+  }, [fetchWeather, locale]);
+
+  useEffect(() => {
+    void loadNearbyPicks();
+  }, [loadNearbyPicks]);
+
+  useEffect(() => {
+    const onPrefs = () => {
+      if (!wLoading) void loadNearbyPicks();
+    };
+    window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
+    return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
+  }, [wLoading, loadNearbyPicks]);
+
+  const handleNearbyPick = (pick: HomeNearbyPick) => {
+    setMapExploreHandoff({ categoryId: pick.categoryId, placeId: pick.id });
+    navigate({ to: "/map" });
+  };
 
   useEffect(() => {
     listItineraries()
@@ -149,17 +217,14 @@ function Home() {
   };
 
   return (
-    <div className="px-5 pt-3 pb-6 animate-rise">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="pointer-events-none text-sm leading-normal opacity-0" aria-hidden="true">
-            &nbsp;
-          </p>
-          <h1 className="mt-1 text-2xl">嘿，今天想去哪裡走走？</h1>
+    <div className="animate-rise w-full min-w-0 max-w-full overflow-x-hidden pb-6 pl-[max(1.25rem,var(--safe-area-left))] pr-[max(1.25rem,var(--safe-area-right))] pt-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-2xl leading-tight">嘿，今天想去哪裡走走？</h1>
         </div>
         <Link
           to="/profile"
-          className="h-11 w-11 overflow-hidden rounded-full border border-border bg-secondary"
+          className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-border bg-secondary"
           aria-label="個人頁"
         >
           <img src={avatarSrc} alt="" className="h-full w-full object-cover" />
@@ -183,13 +248,21 @@ function Home() {
         </div>
       </Link>
 
-      <Link
-        to="/map"
-        className="mt-3 flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3 text-sm"
-      >
-        <span className="text-muted-foreground">看看附近有哪些角落</span>
-        <span className="font-medium">附近探索 →</span>
-      </Link>
+      <section className="mt-4 min-w-0">
+        <h2 className="font-display text-[17px] leading-snug">{t("home.nearbySection")}</h2>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          {t("home.nearbyExploreDesc")}
+        </p>
+        <div className="app-bleed-x mt-3 min-w-0">
+          <HomeNearbyPlaceCards
+            places={nearbyPicks}
+            loading={nearbyLoading}
+            userLocation={userLocation}
+            emptyMessage={t("home.nearbyEmpty")}
+            onSelect={handleNearbyPick}
+          />
+        </div>
+      </section>
 
       <Link
         to="/plan"
@@ -199,10 +272,10 @@ function Home() {
         <ChevronRight className="h-4 w-4" />
       </Link>
 
-      <div className="mt-6">
+      <div className="mt-6 min-w-0">
         <SectionTitle title="現在的心情" />
-        <div className="mt-3 -mx-5 overflow-x-auto no-scrollbar">
-          <div className="flex gap-2.5 px-5">
+        <div className="app-h-scroll app-bleed-x mt-3">
+          <div className="app-h-scroll-track">
             {moods.map((m) => (
               <button
                 key={m.label}
@@ -277,15 +350,29 @@ function Home() {
         </p>
       </div>
 
-      <Link
-        to="/onboarding"
-        className="mt-8 flex items-center justify-between rounded-3xl border border-dashed border-border bg-card/60 px-5 py-4 text-sm"
-      >
-        <span className="flex items-center gap-2 text-muted-foreground">
-          <Coffee className="h-4 w-4" /> 重新調整旅行偏好
-        </span>
-        <ChevronRight className="h-4 w-4 text-muted-foreground" />
-      </Link>
+      <div className="mt-8 rounded-3xl border border-border bg-card/70 p-5 shadow-soft">
+        <div className="flex items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-secondary">
+            <HeartHandshake className="h-5 w-5 text-clay" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="font-display text-[19px] leading-snug">讓 Roamie 更懂你</h3>
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              完成旅行偏好探索，
+              解鎖更貼近你的 AI 旅伴體驗。
+            </p>
+            <button
+              type="button"
+              onClick={() => setPlusModalOpen(true)}
+              className="mt-4 rounded-full border border-border bg-background px-4 py-2 text-xs font-medium text-muted-foreground"
+            >
+              Coming Soon
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <PlusComingSoonDialog open={plusModalOpen} onOpenChange={setPlusModalOpen} />
     </div>
   );
 }

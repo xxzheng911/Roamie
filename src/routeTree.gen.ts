@@ -9,11 +9,13 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as TripRouteImport } from './routes/trip'
 import { Route as SplashRouteImport } from './routes/splash'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LoadingRouteImport } from './routes/loading'
+import { Route as IntroRouteImport } from './routes/intro'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
@@ -28,6 +30,11 @@ import { Route as AppPlanRouteImport } from './routes/_app.plan'
 import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
 
+const WelcomeRoute = WelcomeRouteImport.update({
+  id: '/welcome',
+  path: '/welcome',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TripRoute = TripRouteImport.update({
   id: '/trip',
   path: '/trip',
@@ -51,6 +58,11 @@ const LoginRoute = LoginRouteImport.update({
 const LoadingRoute = LoadingRouteImport.update({
   id: '/loading',
   path: '/loading',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const IntroRoute = IntroRouteImport.update({
+  id: '/intro',
+  path: '/intro',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppRoute = AppRouteImport.update({
@@ -120,11 +132,13 @@ const AppChatRoute = AppChatRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
+  '/intro': typeof IntroRoute
   '/loading': typeof LoadingRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/splash': typeof SplashRoute
   '/trip': typeof TripRoute
+  '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
   '/map': typeof AppMapRoute
   '/plan': typeof AppPlanRoute
@@ -138,11 +152,13 @@ export interface FileRoutesByFullPath {
   '/auth/callback': typeof AuthCallbackRoute
 }
 export interface FileRoutesByTo {
+  '/intro': typeof IntroRoute
   '/loading': typeof LoadingRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/splash': typeof SplashRoute
   '/trip': typeof TripRoute
+  '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
   '/map': typeof AppMapRoute
   '/plan': typeof AppPlanRoute
@@ -159,11 +175,13 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
+  '/intro': typeof IntroRoute
   '/loading': typeof LoadingRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/splash': typeof SplashRoute
   '/trip': typeof TripRoute
+  '/welcome': typeof WelcomeRoute
   '/_app/chat': typeof AppChatRoute
   '/_app/map': typeof AppMapRoute
   '/_app/plan': typeof AppPlanRoute
@@ -181,11 +199,13 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/intro'
     | '/loading'
     | '/login'
     | '/onboarding'
     | '/splash'
     | '/trip'
+    | '/welcome'
     | '/chat'
     | '/map'
     | '/plan'
@@ -199,11 +219,13 @@ export interface FileRouteTypes {
     | '/auth/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/intro'
     | '/loading'
     | '/login'
     | '/onboarding'
     | '/splash'
     | '/trip'
+    | '/welcome'
     | '/chat'
     | '/map'
     | '/plan'
@@ -219,11 +241,13 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_app'
+    | '/intro'
     | '/loading'
     | '/login'
     | '/onboarding'
     | '/splash'
     | '/trip'
+    | '/welcome'
     | '/_app/chat'
     | '/_app/map'
     | '/_app/plan'
@@ -240,11 +264,13 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  IntroRoute: typeof IntroRoute
   LoadingRoute: typeof LoadingRoute
   LoginRoute: typeof LoginRoute
   OnboardingRoute: typeof OnboardingRoute
   SplashRoute: typeof SplashRoute
   TripRoute: typeof TripRoute
+  WelcomeRoute: typeof WelcomeRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiGenerateItineraryRoute: typeof ApiGenerateItineraryRoute
   ApiRoamieRoute: typeof ApiRoamieRoute
@@ -253,6 +279,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/welcome': {
+      id: '/welcome'
+      path: '/welcome'
+      fullPath: '/welcome'
+      preLoaderRoute: typeof WelcomeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/trip': {
       id: '/trip'
       path: '/trip'
@@ -286,6 +319,13 @@ declare module '@tanstack/react-router' {
       path: '/loading'
       fullPath: '/loading'
       preLoaderRoute: typeof LoadingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/intro': {
+      id: '/intro'
+      path: '/intro'
+      fullPath: '/intro'
+      preLoaderRoute: typeof IntroRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app': {
@@ -408,11 +448,13 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  IntroRoute: IntroRoute,
   LoadingRoute: LoadingRoute,
   LoginRoute: LoginRoute,
   OnboardingRoute: OnboardingRoute,
   SplashRoute: SplashRoute,
   TripRoute: TripRoute,
+  WelcomeRoute: WelcomeRoute,
   ApiChatRoute: ApiChatRoute,
   ApiGenerateItineraryRoute: ApiGenerateItineraryRoute,
   ApiRoamieRoute: ApiRoamieRoute,

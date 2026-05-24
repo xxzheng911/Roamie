@@ -1,4 +1,7 @@
+import { isOAuthProviderEnabled, type OAuthProvider } from "@/constants/auth";
 import { supabase } from "@/lib/supabase";
+
+export type { OAuthProvider };
 
 /** OAuth callback 路徑（須在 Supabase Redirect URLs 白名單內） */
 export const AUTH_CALLBACK_PATH = "/auth/callback";
@@ -50,8 +53,19 @@ export function stripOAuthParamsFromUrl(): void {
 
 /** 啟動 Google / Apple OAuth（全頁導向，保留 PKCE verifier 於 localStorage） */
 export async function startOAuthSignIn(
-  provider: "google" | "apple",
+  provider: OAuthProvider,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (!isOAuthProviderEnabled(provider)) {
+    console.warn("[oauth] provider disabled", provider);
+    return {
+      ok: false,
+      message:
+        provider === "apple"
+          ? "Apple 登入尚未開放，請使用 Google 登入。"
+          : "此登入方式暫時無法使用。",
+    };
+  }
+
   const redirectTo = getAuthCallbackUrl();
   stashOAuthRedirectTarget(redirectTo);
   console.info("[oauth] start", provider, "redirectTo", redirectTo);

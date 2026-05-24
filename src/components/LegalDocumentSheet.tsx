@@ -4,6 +4,25 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { ROAMIE_CONTACT_EMAIL } from "@/constants/contact";
+
+function renderLegalContent(content: string) {
+  const parts = content.split(ROAMIE_CONTACT_EMAIL);
+  if (parts.length === 1) return content;
+  return parts.flatMap((part, index) => {
+    if (index === parts.length - 1) return [part];
+    return [
+      part,
+      <a
+        key={`email-${index}`}
+        href={`mailto:${ROAMIE_CONTACT_EMAIL}`}
+        className="text-foreground underline underline-offset-2"
+      >
+        {ROAMIE_CONTACT_EMAIL}
+      </a>,
+    ];
+  });
+}
 
 type Props = {
   open: boolean;
@@ -23,7 +42,7 @@ export function LegalDocumentSheet({ open, onOpenChange, title, content }: Props
           <SheetTitle className="font-display text-lg">{title}</SheetTitle>
         </SheetHeader>
         <div className="mt-4 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap pr-1 text-sm leading-relaxed text-foreground/90">
-          {content}
+          {renderLegalContent(content)}
         </div>
         <button
           type="button"

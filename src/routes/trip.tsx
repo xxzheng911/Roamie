@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { MobileFrame } from "@/components/MobileFrame";
 import { TripPlanEditor } from "@/components/TripPlanEditor";
+import { requireGuestOrAuthenticatedRoute } from "@/lib/require-auth";
 import {
   confirmSaveTrip,
   deleteItinerary,
@@ -31,6 +32,7 @@ export const Route = createFileRoute("/trip")({
     id: typeof s.id === "string" ? s.id : undefined,
     draft: typeof s.draft === "string" ? s.draft : undefined,
   }),
+  beforeLoad: requireGuestOrAuthenticatedRoute,
   component: Trip,
 });
 

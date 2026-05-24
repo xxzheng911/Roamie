@@ -1,6 +1,13 @@
 import { parsePartialRoamieJson } from "./parse-partial";
 import type { RoamieRequestContext } from "./context";
 import { normalizeRoamieResponse, type RoamieResponse as RoamieResponseType } from "./types";
+import { resolveEffectivePlanTier } from "@/lib/plan-tier";
+
+async function withResolvedPlanTier(ctx: RoamieRequestContext): Promise<RoamieRequestContext> {
+  if (ctx.planTier) return ctx;
+  const planTier = await resolveEffectivePlanTier();
+  return { ...ctx, planTier };
+}
 
 function validateAssembledJson(raw: string): RoamieResponseType {
   const trimmed = raw.trim();
@@ -19,13 +26,14 @@ export async function streamRoamieAI(
   handlers: StreamRoamieHandlers,
   options?: { token?: string; signal?: AbortSignal },
 ): Promise<RoamieResponseType | null> {
+  const enriched = await withResolvedPlanTier(ctx);
   const resp = await fetch("/api/roamie", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
     },
-    body: JSON.stringify(ctx),
+    body: JSON.stringify(enriched),
     signal: options?.signal,
   });
 
@@ -118,6 +126,7 @@ export async function fetchRoamieAI(
   ctx: RoamieRequestContext,
   options?: { token?: string },
 ): Promise<RoamieResponseType> {
+  const enriched = await withResolvedPlanTier(ctx);
   const resp = await fetch("/api/roamie", {
     method: "POST",
     headers: {
@@ -125,7 +134,7 @@ export async function fetchRoamieAI(
       "X-Roamie-Stream": "false",
       ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
     },
-    body: JSON.stringify(ctx),
+    body: JSON.stringify(enriched),
   });
 
   if (!resp.ok) {

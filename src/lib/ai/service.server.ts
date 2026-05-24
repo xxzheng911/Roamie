@@ -123,6 +123,7 @@ const RequestSchema = z.object({
     })
     .optional(),
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
+  planTier: z.enum(["free", "plus"]).optional(),
 });
 
 export function parseRoamieRequest(body: unknown): RoamieRequestContext {

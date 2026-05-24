@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { createClient } from "@supabase/supabase-js";
 import { callRoamieAI, parseRoamieRequest, streamRoamieAI } from "@/lib/ai/service.server";
 import type { RoamieAIErrorDetail } from "@/lib/ai/errors";
+import { AI_RATE_LIMITS, checkRateLimit } from "@/lib/rate-limit.server";
 
 function isAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get("origin") ?? request.headers.get("referer");
@@ -59,6 +60,19 @@ export const Route = createFileRoute("/api/roamie")({
 
         const stream = request.headers.get("X-Roamie-Stream") !== "false";
         const auth = await resolveUser(request.headers.get("authorization"));
+
+        const rateKey = auth?.userId ?? request.headers.get("cf-connecting-ip") ?? "anon";
+        const minuteLimit = checkRateLimit(
+          `ai:${rateKey}:min`,
+          AI_RATE_LIMITS.chatPerMinute,
+          60_000,
+        );
+        if (!minuteLimit.allowed) {
+          return new Response(
+            JSON.stringify({ error: "Too many requests", retryAfterSec: minuteLimit.retryAfterSec }),
+            { status: 429, headers: { "Content-Type": "application/json" } },
+          );
+        }
 
         if (!stream) {
           try {
