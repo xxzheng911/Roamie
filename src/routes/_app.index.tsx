@@ -32,6 +32,8 @@ import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { pickCategoriesForHome } from "@/lib/recommendation/categories";
 import { buildDailyPrepAdvice } from "@/lib/recommendation/daily-prep-advice";
 import { HomeOutfitCard } from "@/components/home/HomeOutfitCard";
+import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
+import { usePreferenceQuizCompleted } from "@/hooks/use-preference-quiz-status";
 import { setMapExploreHandoff } from "@/lib/map-explore-handoff";
 
 export const Route = createFileRoute("/_app/")({
@@ -68,8 +70,10 @@ function Home() {
   const [latestTripId, setLatestTripId] = useState<string | null>(null);
   const [latestTripTitle, setLatestTripTitle] = useState<string | null>(null);
   const [plusModalOpen, setPlusModalOpen] = useState(false);
+  const quizCompleted = usePreferenceQuizCompleted();
 
   const loadNearbyPicks = useCallback(async () => {
+    if (!userLocation) return;
     setNearbyLoading(true);
     try {
       const [profile, prefs, saved] = await Promise.all([
@@ -202,6 +206,8 @@ function Home() {
           開始 AI 對話規劃
         </div>
       </Link>
+
+      {quizCompleted === false && <PreferenceQuizCta origin="home" className="mt-4" />}
 
       <section className="mt-4 min-w-0">
         <h2 className="font-display text-[17px] leading-snug">{t("home.nearbySection")}</h2>

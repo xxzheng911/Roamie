@@ -1,10 +1,18 @@
-import brandMascot from "@/assets/roamie-brand-mascot.png";
+import { RoamieMascotFigure } from "@/components/onboarding/RoamieMascotFigure";
+import { INTRO_SCENE_POSE } from "@/lib/mascot-assets";
 
 export type IntroSlideScene = "welcome" | "journey" | "personal" | "start";
 
 type IntroSlideVisualProps = {
   scene: IntroSlideScene;
   active?: boolean;
+};
+
+const SCENE_VARIANTS: Record<IntroSlideScene, { className: string; flip?: boolean }> = {
+  welcome: { className: "intro-onboard__character--welcome" },
+  journey: { className: "intro-onboard__character--journey" },
+  personal: { className: "intro-onboard__character--personal", flip: true },
+  start: { className: "intro-onboard__character--start" },
 };
 
 export function IntroSlideBackdrop({ scene }: { scene: IntroSlideScene }) {
@@ -15,6 +23,16 @@ export function IntroSlideBackdrop({ scene }: { scene: IntroSlideScene }) {
       {scene === "journey" && <IntroPathLines />}
       {scene === "personal" && <IntroPlaceDots />}
       {scene === "start" && <span className="intro-onboard__glow intro-onboard__glow--center" />}
+      {scene === "welcome" && <IntroWelcomeSparkles />}
+    </div>
+  );
+}
+
+function IntroWelcomeSparkles() {
+  return (
+    <div className="intro-onboard__sparkles" aria-hidden>
+      <span className="intro-onboard__spark intro-onboard__spark--a" />
+      <span className="intro-onboard__spark intro-onboard__spark--b" />
     </div>
   );
 }
@@ -67,8 +85,8 @@ function IntroPlaceDots() {
       {spots.map((s) => (
         <span
           key={`${s.x}-${s.y}`}
-          className="intro-onboard__spot"
           style={{ left: s.x, top: s.y, animationDelay: s.delay }}
+          className="intro-onboard__spot"
         />
       ))}
     </div>
@@ -76,23 +94,18 @@ function IntroPlaceDots() {
 }
 
 export function IntroBrandCharacter({ scene, active = true }: IntroSlideVisualProps) {
-  const scale =
-    scene === "welcome"
-      ? "intro-onboard__character--hero"
-      : scene === "start"
-        ? "intro-onboard__character--finale"
-        : "";
+  const variant = SCENE_VARIANTS[scene];
 
   return (
     <div
       className={`intro-onboard__character-stage ${active ? "intro-onboard__character-stage--active" : ""}`}
     >
-      <span className="intro-onboard__character-shadow" aria-hidden />
-      <img
-        src={brandMascot}
-        alt=""
-        className={`intro-onboard__character ${scale}`}
-        draggable={false}
+      <RoamieMascotFigure
+        pose={INTRO_SCENE_POSE[scene]}
+        variant="intro"
+        flip={variant.flip}
+        motion="float"
+        className={variant.className}
       />
     </div>
   );

@@ -19,6 +19,7 @@ import { supabase } from "@/lib/supabase";
 import { CropEditActions } from "@/components/CropEditActions";
 import { ImageSourceSheet } from "@/components/ImageSourceSheet";
 import { ProfileCover } from "@/components/ProfileCover";
+import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
 import {
   InlineImageCropViewport,
   type InlineImageCropHandle,
@@ -595,7 +596,7 @@ function Profile() {
             </button>
           </div>
         </div>
-      ) : (
+      ) : onboarded ? (
         <div className="mt-5 rounded-3xl bg-secondary p-5">
           <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
             {t("profile.roamieImpression")}
@@ -606,22 +607,13 @@ function Profile() {
                 <Loader2 className="h-4 w-4 animate-spin" />
                 {t("profile.quizSyncing")}
               </span>
-            ) : onboarded ? (
-              personalityImpression
             ) : (
-              t("profile.quizPrompt")
+              personalityImpression
             )}
           </p>
-          {!onboarded && (
-            <Link
-              to="/onboarding"
-              search={{ from: "profile" }}
-              className="mt-4 block rounded-full bg-primary py-3 text-center text-sm text-primary-foreground"
-            >
-              {t("profile.startQuiz")}
-            </Link>
-          )}
         </div>
+      ) : (
+        <PreferenceQuizCta origin="profile" variant="profile-card" className="mt-5" />
       )}
 
       <ul className="mt-6 overflow-hidden rounded-3xl border border-border bg-card">

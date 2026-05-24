@@ -7,20 +7,17 @@ import { TERMS_OF_SERVICE, PRIVACY_POLICY } from "@/content/legal";
 import { isOAuthProviderEnabled } from "@/constants/auth";
 import { startOAuthSignIn, type OAuthProvider } from "@/lib/auth-oauth";
 import { useAuth } from "@/hooks/use-auth";
-import { hasSeenOnboarding } from "@/lib/app-onboarding-storage";
-import { shouldShowBootstrapSplash } from "@/lib/bootstrap-splash";
+import { hasSeenOnboarding, hydrateOnboardingStorage } from "@/lib/app-onboarding-storage";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
-import traveler from "@/assets/roamie-traveler.jpg";
+import { RoamieMascotFigure } from "@/components/onboarding/RoamieMascotFigure";
 
 const isDev = import.meta.env.DEV;
 
 export const Route = createFileRoute("/login")({
   beforeLoad: async () => {
     if (typeof window === "undefined") return;
+    await hydrateOnboardingStorage();
     if (!hasSeenOnboarding()) {
-      if (shouldShowBootstrapSplash()) {
-        throw redirect({ to: "/loading", search: { to: "/intro" } });
-      }
       throw redirect({ to: "/intro" });
     }
   },
@@ -39,10 +36,6 @@ function Login() {
     if (user && !isGuest) {
       redirectedRef.current = true;
       void resolveStartupPath({ isGuest: false, hasSession: true }).then((to) => {
-        if (shouldShowBootstrapSplash() && to !== "/login") {
-          navigate({ to: "/loading", search: { to }, replace: true });
-          return;
-        }
         navigate({ to, replace: true });
       });
     }
@@ -73,10 +66,6 @@ function Login() {
   const startGuest = async () => {
     enterGuestMode();
     const to = await resolveStartupPath({ isGuest: true, hasSession: false });
-    if (shouldShowBootstrapSplash()) {
-      navigate({ to: "/loading", search: { to }, replace: true });
-      return;
-    }
     navigate({ to, replace: true });
   };
 
@@ -84,8 +73,8 @@ function Login() {
     <MobileFrame>
       <div className="flex min-h-0 flex-1 flex-col px-6 pb-[max(2.5rem,var(--safe-area-bottom))] pt-[max(2.5rem,var(--safe-area-top))]">
         <div className="flex flex-1 flex-col items-center justify-center text-center">
-          <div className="h-24 w-24 overflow-hidden rounded-[2rem] border-4 border-card shadow-soft">
-            <img src={traveler} alt="" className="h-full w-full object-cover" />
+          <div className="login-mascot">
+            <RoamieMascotFigure pose="wave" variant="quiz" motion="float" />
           </div>
           <h1 className="mt-6 font-display text-[28px] leading-tight">
             慢慢來，<br />

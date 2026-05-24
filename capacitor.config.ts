@@ -66,9 +66,8 @@ const config: CapacitorConfig = {
   },
   plugins: {
     SplashScreen: {
-      launchShowDuration: 2000,
-      launchAutoHide: true,
-      /** Matches LaunchScreen — traveler brand splash (#fdf5ea), not app icon */
+      launchShowDuration: 0,
+      launchAutoHide: false,
       backgroundColor: "#fdf5ea",
       showSpinner: false,
       androidSpinnerStyle: "small",

@@ -15,6 +15,7 @@ import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { getWeather } from "@/lib/weather.functions";
 import { streamRoamieAI, fetchRoamieAI } from "@/lib/ai/stream-client";
 import { RoamieResponseView } from "@/components/RoamieResponseView";
+import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
 import type { RoamieResponse, RoamieRecommendationItem } from "@/lib/ai/types";
 import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
 import {
@@ -77,6 +78,7 @@ import {
 import { buildContextBundleForTrip } from "@/lib/fetch-context";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import { useI18n } from "@/hooks/use-i18n";
+import { usePreferenceQuizCompleted } from "@/hooks/use-preference-quiz-status";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -112,6 +114,7 @@ export const Route = createFileRoute("/_app/chat")({
 
 function Chat() {
   const { t, locale } = useI18n();
+  const quizCompleted = usePreferenceQuizCompleted();
   const search = Route.useSearch();
   const navigate = useNavigate();
   const greetingMsg = useMemo(
@@ -1066,6 +1069,9 @@ function Chat() {
       </AlertDialog>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5">
+        {quizCompleted === false && (
+          <PreferenceQuizCta origin="chat" variant="banner" className="animate-rise" />
+        )}
         {hydrating && (
           <div className="flex justify-center pt-4">
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />

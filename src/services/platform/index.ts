@@ -45,10 +45,9 @@ export async function bootstrapNativeShell(): Promise<void> {
   }
 
   try {
-    const { SplashScreen } = await import("@capacitor/splash-screen");
-    await SplashScreen.hide({ fadeOutDuration: 280 });
+    await hideNativeSplashScreen();
   } catch {
-    /* plugin optional */
+    /* optional */
   }
 
   try {

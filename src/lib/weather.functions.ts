@@ -237,7 +237,7 @@ export const getWeatherForecast = createServerFn({ method: "POST" })
 export const getWeather = createServerFn({ method: "POST" })
   .inputValidator((input) => Input.parse(input))
   .handler(async ({ data }): Promise<{ weather: WeatherSummary | null; error: string | null }> => {
-    console.info("[Weather] api request", { lat: data.lat, lng: data.lng, locale: data.locale });
+    console.info("[Weather] request params", { lat: data.lat, lng: data.lng, locale: data.locale });
     try {
       const [wx, city] = await Promise.all([
         fetchOpenMeteoWeather(data.lat, data.lng),
@@ -270,7 +270,7 @@ export const getWeather = createServerFn({ method: "POST" })
         recommendationText: text,
       };
 
-      console.info("[Weather] api ok", {
+      console.info("[Weather] response", {
         city: summary.city,
         scene,
         condition: summary.condition,

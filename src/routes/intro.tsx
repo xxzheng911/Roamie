@@ -90,7 +90,7 @@ function IntroOnboarding() {
     if (finishing) return;
     setFinishing(true);
     try {
-      markOnboardingSeen();
+      await markOnboardingSeen();
       markBootstrapSplashShown();
       trackEvent(AnalyticsEvents.ONBOARDING_COMPLETED, { flow: "app_intro" });
       const next = await resolveStartupPath();

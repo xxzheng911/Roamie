@@ -135,7 +135,9 @@ const budgetLabel: Record<string, string> = {
 
 export function formatPreferences(prefs?: TravelPreferences): string {
   if (!prefs) return "（尚未設定旅行偏好）";
-  if (!prefs.onboarded) return "（尚未完成旅行偏好測驗，請先了解步調、氛圍與預算再推薦）";
+  if (!prefs.onboarded) {
+    return "（尚未完成旅行偏好測驗；可先依位置與天氣提供通用推薦，若使用者想更個人化可輕柔引導至偏好測驗）";
+  }
   const parts: string[] = [];
   if (prefs.personalityType) parts.push(`旅行人格：${prefs.personalityType}`);
   if (prefs.pace) parts.push(`步調：${paceLabel[prefs.pace] ?? prefs.pace}`);

@@ -11,6 +11,7 @@ import { Toaster } from "sonner";
 
 import appCss from "../styles.css?url";
 import { AppProviders } from "@/providers/AppProviders";
+import { StartupGate } from "@/components/StartupGate";
 
 function NotFoundComponent() {
   return (
@@ -125,7 +126,9 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <AppProviders>
-        <Outlet />
+        <StartupGate>
+          <Outlet />
+        </StartupGate>
         <Toaster position="top-center" />
       </AppProviders>
     </QueryClientProvider>

@@ -1,12 +1,13 @@
-import roamieTraveler from "@/assets/roamie-traveler.jpg";
+import { RoamieMascotFigure } from "@/components/onboarding/RoamieMascotFigure";
 
-/** In-app brand splash — traveler character, not app icon */
+/** In-app brand splash — cutout mascot on cream UI background */
 export function RoamieSplashScreen() {
   return (
     <div className="roamie-splash" role="status" aria-live="polite" aria-busy="true">
       <div className="roamie-splash__gradient" aria-hidden />
       <div className="roamie-splash__glow roamie-splash__glow--tl" aria-hidden />
       <div className="roamie-splash__glow roamie-splash__glow--br" aria-hidden />
+      <div className="roamie-splash__glow roamie-splash__glow--center" aria-hidden />
 
       <svg
         className="roamie-splash__paths"
@@ -30,29 +31,35 @@ export function RoamieSplashScreen() {
           strokeLinecap="round"
           opacity="0.7"
         />
+        <circle className="roamie-splash__route-dot" cx="300" cy="230" r="3.5" fill="currentColor" />
+        <circle
+          className="roamie-splash__route-dot roamie-splash__route-dot--delay"
+          cx="348"
+          cy="110"
+          r="3"
+          fill="currentColor"
+        />
       </svg>
 
-      <div className="roamie-splash__content">
-        <div className="roamie-splash__character-stage">
-          <div className="roamie-splash__character-shadow" aria-hidden />
-          <img
-            src={roamieTraveler}
-            alt=""
-            className="roamie-splash__character"
-            width={240}
-            height={320}
+      <div className="roamie-splash__viewport">
+        <div className="roamie-splash__content roamie-splash__content--fade-in">
+          <RoamieMascotFigure
+            pose="wave"
+            variant="splash"
+            motion="float"
+            className="roamie-splash__character--welcome"
           />
-        </div>
 
-        <div className="roamie-splash__wordmark">
-          <h1 className="roamie-splash__brand">Roamie</h1>
-          <p className="roamie-splash__tagline">Less planning, more wandering.</p>
-        </div>
+          <div className="roamie-splash__wordmark">
+            <h1 className="roamie-splash__brand">Roamie</h1>
+            <p className="roamie-splash__tagline">Less planning, more wandering.</p>
+          </div>
 
-        <div className="roamie-splash__loader" aria-label="載入中">
-          <span className="roamie-splash__loader-dot" />
-          <span className="roamie-splash__loader-dot" />
-          <span className="roamie-splash__loader-dot" />
+          <div className="roamie-splash__loader" aria-label="載入中">
+            <span className="roamie-splash__loader-dot" />
+            <span className="roamie-splash__loader-dot" />
+            <span className="roamie-splash__loader-dot" />
+          </div>
         </div>
       </div>
     </div>

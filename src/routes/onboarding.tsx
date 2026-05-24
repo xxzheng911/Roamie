@@ -1,11 +1,11 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { ArrowRight, Check, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
+import { RoamieMascotFigure } from "@/components/onboarding/RoamieMascotFigure";
 import { requirePreferenceQuizRouteAccess } from "@/lib/require-auth";
 import { readGuestFlag } from "@/lib/auth-session";
-import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import { isIntroCompleted } from "@/lib/plan-tier";
 import {
   savePreferences,
@@ -13,6 +13,7 @@ import {
   type TravelPreferences,
 } from "@/lib/preferences-storage";
 import { savePersonalityToProfile } from "@/lib/profile-storage";
+import { QUIZ_STEP_POSE, type QuizStepKey } from "@/lib/mascot-assets";
 import { AnalyticsEvents } from "@/constants/analytics-events";
 import { trackEvent } from "@/services/analytics";
 
@@ -23,13 +24,7 @@ export const Route = createFileRoute("/onboarding")({
     from: typeof s.from === "string" ? s.from : undefined,
   }),
   beforeLoad: async ({ search }) => {
-    await requirePreferenceQuizRouteAccess(search.from === "profile");
-    if (typeof window === "undefined") return;
-    if (search.from === "profile") return;
-    const next = await resolveStartupPath();
-    if (next !== "/onboarding") {
-      throw redirect({ to: next });
-    }
+    await requirePreferenceQuizRouteAccess(search.from);
   },
   component: Onboarding,
 });
@@ -84,7 +79,8 @@ const steps: { key: StepKey; q: string; sub: string; options: StepOption[] }[] =
 function Onboarding() {
   const search = Route.useSearch();
   const navigate = useNavigate();
-  const fromProfile = search.from === "profile";
+  const quizOrigin = search.from;
+  const fromProfile = quizOrigin === "profile";
   const [step, setStep] = useState(0);
   const [picked, setPicked] = useState<Record<number, number>>({});
   const [saving, setSaving] = useState(false);
@@ -92,7 +88,15 @@ function Onboarding() {
   const choice = picked[step];
 
   const exitQuiz = () => {
-    navigate({ to: fromProfile ? "/profile" : "/" });
+    if (quizOrigin === "profile") {
+      navigate({ to: "/profile" });
+      return;
+    }
+    if (quizOrigin === "chat") {
+      navigate({ to: "/chat" });
+      return;
+    }
+    navigate({ to: "/" });
   };
 
   const next = async () => {
@@ -120,6 +124,8 @@ function Onboarding() {
       });
       if (fromProfile) {
         navigate({ to: "/profile", search: { quiz: "done" } });
+      } else if (quizOrigin === "chat") {
+        navigate({ to: "/chat", replace: true });
       } else {
         const guest = readGuestFlag();
         const next = guest ? "/" : (await isIntroCompleted()) ? "/" : "/welcome";
@@ -154,7 +160,16 @@ function Onboarding() {
           </button>
         </div>
 
-        <div className="mt-8 animate-rise" key={step}>
+        <div className="quiz-mascot" aria-hidden>
+          <RoamieMascotFigure
+            key={current.key}
+            pose={QUIZ_STEP_POSE[current.key as QuizStepKey]}
+            variant="quiz"
+            motion="fade-in"
+          />
+        </div>
+
+        <div className="mt-5 animate-rise" key={step}>
           <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">
             第 {step + 1} 題 / 共 {steps.length} 題
           </p>
