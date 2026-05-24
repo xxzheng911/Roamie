@@ -19,7 +19,8 @@
     "cap:add:ios": "npx cap add ios",
     "cap:verify": "node scripts/verify-ios-prereqs.mjs",
     "ios:icons": "node scripts/generate-ios-icon.mjs",
-    "mascot:cutout": "node scripts/process-mascot-cutouts.mjs",
+    "mascot:cutout": ".venv-rembg/bin/python scripts/process-mascot-cutouts.py",
+    "mascot:cutout:flood": "node scripts/process-mascot-cutouts.mjs",
     "ios:permissions": "node scripts/sync-ios-permission-strings.mjs",
     "cap:add:android": "npx cap add android"
   },
