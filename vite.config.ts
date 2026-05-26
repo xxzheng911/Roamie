@@ -27,6 +27,7 @@ export default defineConfig({
           manualChunks(id) {
             if (!id.includes("node_modules")) return;
             if (id.includes("@supabase")) return "vendor-supabase";
+            if (id.includes("react-dom") || /\/react\//.test(id)) return "vendor-react";
             if (id.includes("@tanstack")) return "vendor-tanstack";
             if (id.includes("@radix-ui")) return "vendor-radix";
             if (id.includes("lucide-react")) return "vendor-icons";

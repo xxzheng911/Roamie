@@ -6,7 +6,7 @@ import { MobileFrame } from "@/components/MobileFrame";
 import { useAccess } from "@/hooks/use-access";
 import { requireAuthenticatedRoute } from "@/lib/require-auth";
 import { markIntroCompleted } from "@/lib/plan-tier";
-import { resolveStartupPath } from "@/lib/post-auth-navigation";
+import { resolveStartupPathFast } from "@/lib/startup-route";
 import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
 import { clientEnv } from "@/constants/env";
 import { AnalyticsEvents } from "@/constants/analytics-events";
@@ -16,7 +16,7 @@ export const Route = createFileRoute("/welcome")({
   beforeLoad: async () => {
     await requireAuthenticatedRoute();
     if (typeof window === "undefined") return;
-    const next = await resolveStartupPath({ hasSession: true });
+    const next = resolveStartupPathFast();
     if (next !== "/welcome") {
       throw redirect({ to: next });
     }

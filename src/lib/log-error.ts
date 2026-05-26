@@ -115,6 +115,36 @@ export function formatAppErrorLine(
     .join(" ");
 }
 
+/** iOS 26 WebKit / GPU 系統層雜訊 — 不應觸發 App 錯誤 UI */
+const WEBKIT_NOISE_PATTERNS: RegExp[] = [
+  /sandbox extension/i,
+  /system wide server/i,
+  /-25204/,
+  /carenderserver/i,
+  /application environment context/i,
+  /device context/i,
+  /hide query parameters/i,
+  /webprocessproxy/i,
+  /didbecomeunresponsive/i,
+  /bootstrap lookup/i,
+  /xpc_user_sessions_get_foreground_uid/i,
+  /xpc_user_sessions/i,
+  /_axaddtoelementcache/i,
+  /wkaccessibilitywebpageobject/i,
+];
+
+export function isBenignWebKitNoise(
+  error: unknown,
+  extra?: Record<string, unknown>,
+): boolean {
+  const line = formatAppErrorLine("noise", error, extra);
+  return WEBKIT_NOISE_PATTERNS.some((pattern) => pattern.test(line));
+}
+
+function isScriptLoadFailure(extra?: Record<string, unknown>): boolean {
+  return extra?.script === true;
+}
+
 /** 是否在錯誤 UI 顯示技術細節（Xcode 真機除錯） */
 export function shouldShowErrorDetail(): boolean {
   if (import.meta.env.DEV) return true;
@@ -136,8 +166,19 @@ export function formatErrorDetail(error: unknown): string | null {
  * 一律輸出單一字串，勿傳 Error / plain object。
  */
 export function logAppError(tag: string, error: unknown, extra?: Record<string, unknown>): void {
+  if (!import.meta.env.DEV && isBenignWebKitNoise(error, extra)) return;
   const line = formatAppErrorLine(tag, error, extra);
   console.error(line);
+}
+
+/** 是否應顯示 Capacitor 全屏 fatal overlay（正式版僅 script 載入失敗） */
+export function shouldShowCapacitorFatalOverlay(
+  error: unknown,
+  extra?: Record<string, unknown>,
+): boolean {
+  if (isBenignWebKitNoise(error, extra)) return false;
+  if (isScriptLoadFailure(extra)) return true;
+  return import.meta.env.DEV;
 }
 
 let capacitorConsolePatched = false;
@@ -145,6 +186,7 @@ let capacitorConsolePatched = false;
 /** 將第三方 console.error(obj) 轉成可讀字串（Capacitor 專用） */
 export function installCapacitorConsolePatch(): void {
   if (capacitorConsolePatched || typeof window === "undefined") return;
+  if (!import.meta.env.DEV) return;
   const { isCapacitor } = detectPlatform();
   if (!isCapacitor) return;
   capacitorConsolePatched = true;

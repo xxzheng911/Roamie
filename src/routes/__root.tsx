@@ -14,9 +14,10 @@ import { Toaster } from "@/components/ui/sonner";
 import appCss from "../styles.css?url";
 import { App } from "@/App";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
+import { markBootPhase } from "@/lib/boot-diagnostics";
 import { RoamieAppErrorFallback } from "@/components/RoamieAppErrorFallback";
 import { StartupGate } from "@/components/StartupGate";
-import { removeStaticBootPlaceholder } from "@/main";
+import { scheduleRemoveStaticBootPlaceholder } from "@/main";
 import { bootstrapNativeShell } from "@/services/platform";
 import { markAppReady } from "@/lib/startup-route";
 import { toCapacitorBundledAssetHref } from "@/lib/capacitor-asset-href";
@@ -156,9 +157,17 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   useLayoutEffect(() => {
-    removeStaticBootPlaceholder();
-    void bootstrapNativeShell();
+    markBootPhase("root:layoutEffect");
+    scheduleRemoveStaticBootPlaceholder();
     markAppReady();
+    const deferNative = () => {
+      void bootstrapNativeShell();
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(deferNative, { timeout: 3_000 });
+    } else {
+      window.setTimeout(deferNative, 0);
+    }
   }, []);
 
   return (

@@ -14,8 +14,15 @@ const Ctx = createContext<AnalyticsCtx | null>(null);
 
 export function AnalyticsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
-    void getAnalyticsService().init();
-    getAnalyticsService().track(AnalyticsEvents.APP_OPEN);
+    const run = () => {
+      void getAnalyticsService().init();
+      getAnalyticsService().track(AnalyticsEvents.APP_OPEN);
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(run, { timeout: 8_000 });
+    } else {
+      window.setTimeout(run, 250);
+    }
   }, []);
 
   const track = useCallback((event: AnalyticsEventName, properties?: AnalyticsProperties) => {

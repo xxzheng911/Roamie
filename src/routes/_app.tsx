@@ -1,5 +1,7 @@
-import { createFileRoute, Outlet, useRouterState } from "@tanstack/react-router";
-import { useLayoutEffect } from "react";
+import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
+import { useLayoutEffect, useEffect, useState } from "react";
+import { markBootPhase } from "@/lib/boot-diagnostics";
+import { readBrowserPathname } from "@/lib/startup-path";
 import { MobileFrame } from "@/components/MobileFrame";
 import { BottomNav } from "@/components/BottomNav";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
@@ -16,7 +18,22 @@ function isMainScrollLockedPath(pathname: string): boolean {
 }
 
 function AppLayout() {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const router = useRouter();
+  const [pathname, setPathname] = useState(
+    () => router.state.location.pathname || readBrowserPathname(),
+  );
+
+  useEffect(() => {
+    markBootPhase("route:_app:mounted", "path=" + pathname);
+    const sync = () => setPathname(router.state.location.pathname);
+    const unsub = router.subscribe("onResolved", sync);
+    window.addEventListener("popstate", sync);
+    return () => {
+      unsub();
+      window.removeEventListener("popstate", sync);
+    };
+  }, [router]);
+
   const mainScrollLocked = isMainScrollLockedPath(pathname);
 
   useLayoutEffect(() => {

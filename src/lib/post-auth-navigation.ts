@@ -31,6 +31,7 @@ async function withTimeout<T>(promise: Promise<T>, fallback: T, ms = ASYNC_STEP_
 export async function logStartupState(next: StartupPath, options?: StartupOptions): Promise<void> {
   if (options?.skipLog) return;
   if (typeof window === "undefined") return;
+  if (!import.meta.env.DEV) return;
 
   let hasSession = options?.hasSession;
   if (hasSession === undefined) {

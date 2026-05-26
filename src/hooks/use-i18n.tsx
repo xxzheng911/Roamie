@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { resolveLocaleSync, resolveLocaleAsync, coerceLocale } from "@/lib/i18n/resolve-locale";
+import { isLoginColdStartPath, readBrowserPathname } from "@/lib/startup-path";
 import { writeStoredLocale } from "@/lib/i18n/detect-locale";
 import { saveProfileLanguage } from "@/lib/profile-storage";
 import { translate } from "@/lib/i18n/translate";
@@ -28,12 +29,34 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    resolveLocaleAsync().then((resolved) => {
-      if (!cancelled) {
-        setLocaleState(resolved);
-        writeStoredLocale(resolved);
+    const path = readBrowserPathname();
+    const deferProfileLocale = isLoginColdStartPath(path);
+
+    const run = () => {
+      resolveLocaleAsync().then((resolved) => {
+        if (!cancelled) {
+          setLocaleState(resolved);
+          writeStoredLocale(resolved);
+        }
+      });
+    };
+
+    if (deferProfileLocale) {
+      if (typeof requestIdleCallback === "function") {
+        const handle = requestIdleCallback(run, { timeout: 8_000 });
+        return () => {
+          cancelled = true;
+          cancelIdleCallback(handle);
+        };
       }
-    });
+      const handle = window.setTimeout(run, 500);
+      return () => {
+        cancelled = true;
+        clearTimeout(handle);
+      };
+    }
+
+    run();
     return () => {
       cancelled = true;
     };

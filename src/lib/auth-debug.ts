@@ -28,11 +28,12 @@ function redactUrl(url: string): string {
   }
 }
 
-/** 結構化 OAuth / session debug（不含完整 token） */
+/** 結構化 OAuth / session debug（不含完整 token）— Release 預設靜默 */
 export function logAuthDebug(
   phase: string,
   payload: AuthDebugPayload = {},
 ): void {
+  if (!import.meta.env.DEV && !isAuthDebugEnabled()) return;
   const platform = detectPlatform();
   console.info(`[auth] ${phase}`, {
     ...payload,
@@ -40,6 +41,15 @@ export function logAuthDebug(
     isCapacitor: platform.isCapacitor,
     isIOS: platform.isIOS,
   });
+}
+
+function isAuthDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem("roamie:auth-debug") === "1";
+  } catch {
+    return false;
+  }
 }
 
 export function logAuthStart(provider: OAuthProvider): void {

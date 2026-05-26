@@ -11,7 +11,16 @@ export function isAuthSessionMissingError(
   );
 }
 
-const AUTH_SESSION_TIMEOUT_MS = 4_000;
+function authSessionTimeoutMs(): number {
+  if (typeof window === "undefined") return 4_000;
+  const cap = (
+    window as Window & {
+      Capacitor?: { isNativePlatform?: () => boolean };
+    }
+  ).Capacitor;
+  // WKWebView + localStorage 在冷啟動常較慢；過短會誤判未登入並刷 warn
+  return cap?.isNativePlatform?.() ? 10_000 : 4_000;
+}
 
 /** 讀取本機持久化 session（不呼叫 Auth server，避免 Auth session missing） */
 export async function getClientAuthSession(): Promise<Session | null> {
@@ -31,9 +40,11 @@ export async function getClientAuthSession(): Promise<Session | null> {
       })(),
       new Promise<null>((resolve) => {
         timer = setTimeout(() => {
-          console.warn("[auth-session] getSession timed out — treating as signed out");
+          if (import.meta.env.DEV) {
+            console.warn("[auth-session] getSession timed out — treating as signed out");
+          }
           resolve(null);
-        }, AUTH_SESSION_TIMEOUT_MS);
+        }, authSessionTimeoutMs());
       }),
     ]);
   } finally {

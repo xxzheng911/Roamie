@@ -42,11 +42,18 @@ export function detectPlatform(): PlatformInfo {
 let bootstrapStarted = false;
 let bootstrapDone = false;
 
-/** 等 React 首屏就緒後再關原生 splash，避免 bundle 載入期間露出白屏 */
+function hasWebBootUi(): boolean {
+  if (typeof document === "undefined") return false;
+  const root = document.getElementById("root");
+  if (root && root.childElementCount > 0) return true;
+  return document.getElementById("roamie-boot-splash") != null;
+}
+
+/** 等 React 首屏或 HTML boot splash 出現後再關原生 splash，避免 bundle 載入期間露出白屏 */
 async function hideNativeSplashAfterFirstPaint(): Promise<void> {
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    if (isAppReady()) break;
+    if (isAppReady() && hasWebBootUi()) break;
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => resolve());
     });

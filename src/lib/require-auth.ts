@@ -1,15 +1,33 @@
 import { isRedirect, redirect } from "@tanstack/react-router";
 import { getClientAuthSession } from "@/lib/auth-session";
+import { markBootPhase } from "@/lib/boot-diagnostics";
 import { logAppError } from "@/lib/log-error";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import type { StartupPath } from "@/lib/post-auth-navigation";
 import { resolveStartupPathFast } from "@/lib/startup-route";
 
+const AUTH_ROUTE_TIMEOUT_MS = 4_000;
+
 /** 僅限已登入 Supabase（訪客不可進 welcome / 帳號設定等） */
 export async function requireAuthenticatedRoute(): Promise<void> {
   if (typeof window === "undefined") return;
-  const session = await getClientAuthSession();
+  try {
+    markBootPhase("gate:requireAuthenticatedRoute:start");
+  } catch {
+    // ignore
+  }
+  const session = await Promise.race([
+    getClientAuthSession(),
+    new Promise<null>((resolve) => {
+      window.setTimeout(() => resolve(null), AUTH_ROUTE_TIMEOUT_MS);
+    }),
+  ]);
   if (!session) {
+    try {
+      markBootPhase("gate:requireAuthenticatedRoute:redirect:/login");
+    } catch {
+      // ignore
+    }
     throw redirect({ to: "/login" });
   }
 }
@@ -41,9 +59,19 @@ const SHELL_GATE_TIMEOUT_MS = 5_000;
 
 export async function requireAppShellAccess(): Promise<void> {
   if (typeof window === "undefined") return;
+  try {
+    markBootPhase("gate:requireAppShellAccess:start");
+  } catch {
+    // ignore
+  }
 
   const fastNext = resolveStartupPathFast();
   if (fastNext !== "/") {
+    try {
+      markBootPhase(`gate:requireAppShellAccess:fast-redirect:${fastNext}`);
+    } catch {
+      // ignore
+    }
     redirectToStartupTarget(fastNext);
   }
 
@@ -56,6 +84,11 @@ export async function requireAppShellAccess(): Promise<void> {
     ]);
 
     if (!session) {
+      try {
+        markBootPhase("gate:requireAppShellAccess:redirect:/login");
+      } catch {
+        // ignore
+      }
       throw redirect({ to: "/login" });
     }
 
@@ -67,11 +100,21 @@ export async function requireAppShellAccess(): Promise<void> {
     ]);
 
     if (next !== "/") {
+      try {
+        markBootPhase(`gate:requireAppShellAccess:redirect:${next}`);
+      } catch {
+        // ignore
+      }
       redirectToStartupTarget(next);
     }
   } catch (e) {
     if (isRedirect(e)) throw e;
     logAppError("[requireAppShellAccess] gate failed", e);
+    try {
+      markBootPhase("gate:requireAppShellAccess:error->/login");
+    } catch {
+      // ignore
+    }
     throw redirect({ to: "/login" });
   }
 }

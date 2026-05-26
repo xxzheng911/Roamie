@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { useRouterState } from "@tanstack/react-router";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { AvatarProvider } from "@/hooks/use-avatar";
 import { I18nProvider } from "@/hooks/use-i18n";
@@ -9,13 +8,17 @@ import { AccessProvider } from "@/hooks/use-access";
 import { AddToTripProvider } from "@/hooks/use-add-to-trip";
 import { SubscriptionProvider } from "@/providers/SubscriptionProvider";
 import { assertClientEnv } from "@/constants/env";
+import { markBootPhase } from "@/lib/boot-diagnostics";
 import { isSupabaseConfigured } from "@/integrations/supabase/client";
+import {
+  readBrowserPathname,
+  shouldUseLightStartupShell,
+} from "@/lib/startup-path";
 
 type Props = { children: ReactNode };
 
-/** 僅登入／OAuth callback 冷啟動可略過重型 provider；welcome 仍需 Access（開發工具） */
-function isLoginColdStartPath(pathname: string): boolean {
-  return pathname === "/login" || pathname.startsWith("/auth/");
+function bootPhase(phase: string, detail?: string): void {
+  markBootPhase(phase, detail);
 }
 
 /** Plus / 加入行程等僅在已登入主殼層需要；登入頁不載入以縮小冷啟動 bundle */
@@ -29,13 +32,20 @@ function AuthenticatedShellProviders({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * 勿使用 useRouterState — router match 未就緒時 production 會拋 Invariant failed。
+ * pathname 每次 render 從 window 讀取（導航後父層會 re-render）。
+ */
 function ProviderGate({ children }: { children: ReactNode }) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { user, loading } = useAuth();
-  if (isLoginColdStartPath(pathname) && (loading || !user)) {
+  const pathname = readBrowserPathname();
+
+  if (shouldUseLightStartupShell(pathname, Boolean(user), loading)) {
+    bootPhase("providers:light", `u=${Boolean(user)} l=${loading ? 1 : 0}`);
     return <>{children}</>;
   }
 
+  bootPhase("providers:authed-shell", `u=${Boolean(user)} l=${loading ? 1 : 0}`);
   return <AuthenticatedShellProviders>{children}</AuthenticatedShellProviders>;
 }
 
@@ -51,6 +61,7 @@ export function AppProviders({ children }: Props) {
         "[Roamie] Supabase env missing at runtime — cloud sync disabled until rebuild with VITE_SUPABASE_* in .env",
       );
     }
+    bootPhase("providers:render");
   }
 
   return (

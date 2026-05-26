@@ -50,6 +50,8 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Roamie uses your location to recommend nearby places and personalized trips.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

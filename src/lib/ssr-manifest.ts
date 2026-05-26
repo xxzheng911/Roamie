@@ -54,6 +54,5 @@ self.$_TSR={
   router:{manifest:{routes:{}},matches:[],dehydratedData:void 0,lastMatchId:""}
 };
 self.$_TSR.e();
-self.$_TSR.h();
 </script>`;
 }

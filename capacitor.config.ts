@@ -83,8 +83,15 @@ const config: CapacitorConfig = {
       }
     : {
         server: {
+          /**
+           * iOS：勿用 https — Capacitor normalize() 會因 WKWebView 內建支援而改回 capacitor。
+           * 使用 capacitor + hostname，與 WebViewAssetHandler 註冊的 scheme 一致。
+           */
+          hostname: "localhost",
           androidScheme: "https",
-          iosScheme: "https",
+          iosScheme: "capacitor",
+          /** 明確載入 index.html（避免 capacitor://localhost/ 在部分 WK 版本停在 about:blank） */
+          appStartPath: "index.html",
         },
       }),
   ios: {
@@ -93,6 +100,10 @@ const config: CapacitorConfig = {
     contentInset: "never",
     scrollEnabled: true,
     allowsLinkPreview: false,
+    /** iOS 26 真機：避免啟動時 webView.becomeFirstResponder 觸發 GPU / CARenderServer 問題 */
+    initialFocus: false,
+    /** 真機 bundled 模式勿啟用 WKAppBoundDomains（未在 Info.plist 宣告時會阻斷 capacitor:// 載入） */
+    limitsNavigationsToAppBoundDomains: false,
     /** Matches official app icon cream (#FDF5EA) */
     backgroundColor: "#fdf5ea",
   },

@@ -1,18 +1,60 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { removeStaticBootPlaceholder } from "@/main";
 import { MobileFrame } from "@/components/MobileFrame";
-import { LegalDocumentSheet } from "@/components/LegalDocumentSheet";
 import { AuthSignInError } from "@/components/auth/AuthSignInError";
-import { TERMS_OF_SERVICE, PRIVACY_POLICY } from "@/content/legal";
 import { isOAuthProviderEnabled } from "@/constants/auth";
 import { signInWithProvider, type OAuthProvider } from "@/lib/auth-oauth";
 import { formatSupabaseRedirectAllowListHint } from "@/lib/auth-redirect";
 import { finishPostAuthRedirect } from "@/lib/auth-post-redirect";
+import { requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
+import { resolveStartupPathFast } from "@/lib/startup-route";
 import { useAuth } from "@/hooks/use-auth";
-import { RoamieMascotFigure } from "@/components/onboarding/RoamieMascotFigure";
 import { OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
+
+const RoamieMascotFigure = lazy(() =>
+  import("@/components/onboarding/RoamieMascotFigure").then((m) => ({
+    default: m.RoamieMascotFigure,
+  })),
+);
+function LegalDocumentSheetLazy({
+  open,
+  onOpenChange,
+  title,
+  doc,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  doc: "terms" | "privacy";
+}) {
+  const [content, setContent] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    void import("@/content/legal").then((m) => {
+      setContent(doc === "terms" ? m.TERMS_OF_SERVICE : m.PRIVACY_POLICY);
+    });
+  }, [open, doc]);
+
+  if (!content) return null;
+
+  return (
+    <LazyLegalSheet
+      open={open}
+      onOpenChange={onOpenChange}
+      title={title}
+      content={content}
+    />
+  );
+}
+
+const LazyLegalSheet = lazy(() =>
+  import("@/components/LegalDocumentSheet").then((m) => ({
+    default: m.LegalDocumentSheet,
+  })),
+);
 
 const isDev = import.meta.env.DEV;
 
@@ -23,6 +65,10 @@ export const Route = createFileRoute("/login")({
 function Login() {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
+
+  useLayoutEffect(() => {
+    removeStaticBootPlaceholder();
+  }, []);
   const [busy, setBusy] = useState<OAuthProvider | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [legalOpen, setLegalOpen] = useState<"terms" | "privacy" | null>(null);
@@ -32,8 +78,10 @@ function Login() {
     if (loading || redirectedRef.current) return;
     if (user) {
       redirectedRef.current = true;
-      void resolveStartupPath({ hasSession: true }).then((to) => {
-        navigate({ to, replace: true });
+      const fastTo = resolveStartupPathFast();
+      navigate({ to: fastTo, replace: true });
+      void resolveStartupPath({ hasSession: true, skipLog: true }).then((to) => {
+        if (to !== fastTo) navigate({ to, replace: true });
       });
     }
   }, [user, loading, navigate]);
@@ -67,6 +115,8 @@ function Login() {
     }
 
     setBusy(provider);
+    requestIosSnapshotRefresh("auth-busy");
+    const { toast } = await import("sonner");
     toast.message(
       provider === "google"
         ? "正在開啟 Google 登入…"
@@ -93,6 +143,7 @@ function Login() {
       if (provider === "apple" && canUseNativeAppleSignIn()) {
         const next = await resolveStartupPath({ hasSession: true });
         setBusy(null);
+        const { toast } = await import("sonner");
         toast.success("登入成功");
         finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }));
         return;
@@ -111,7 +162,9 @@ function Login() {
       <div className="flex min-h-0 flex-1 flex-col px-6 pb-[max(2.5rem,var(--safe-area-bottom))] pt-[max(2.5rem,var(--safe-area-top))]">
         <div className="flex flex-1 flex-col items-center justify-center text-center">
           <div className="login-mascot">
-            <RoamieMascotFigure pose="wave" variant="quiz" motion="float" />
+            <Suspense fallback={<div className="h-32 w-32" aria-hidden />}>
+              <RoamieMascotFigure pose="wave" variant="quiz" motion="float" />
+            </Suspense>
           </div>
           <h1 className="mt-6 font-display text-[28px] leading-tight">
             慢慢來，<br />
@@ -135,20 +188,20 @@ function Login() {
 
           <button
             type="button"
+            onClick={() => signIn("apple")}
+            disabled={busy !== null}
+            className="flex w-full items-center justify-center gap-2 rounded-full bg-ink py-4 text-[15px] font-medium text-background transition active:scale-[0.98] disabled:opacity-50"
+          >
+            <AppleIcon /> {busy === "apple" ? "Apple 登入進行中…" : "以 Apple 登入"}
+          </button>
+
+          <button
+            type="button"
             onClick={() => signIn("google")}
             disabled={busy !== null}
             className="flex w-full items-center justify-center gap-2 rounded-full bg-ink py-4 text-[15px] font-medium text-background transition active:scale-[0.98] disabled:opacity-50"
           >
             <GoogleIcon /> {busy === "google" ? "Google 登入進行中…" : "使用 Google 繼續"}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => signIn("apple")}
-            disabled={busy !== null}
-            className="flex w-full items-center justify-center gap-2 rounded-full border border-border bg-card py-4 text-[15px] font-medium text-foreground transition active:scale-[0.98] disabled:opacity-50"
-          >
-            <AppleIcon /> {busy === "apple" ? "Apple 登入進行中…" : "以 Apple 登入"}
           </button>
 
           <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
@@ -182,7 +235,7 @@ function Login() {
                 } catch {
                   /* ignore */
                 }
-                toast.success("已清除本機狀態");
+                void import("sonner").then(({ toast }) => toast.success("已清除本機狀態"));
                 window.location.replace("/login");
               }}
               className="mt-2 w-full rounded-full border border-dashed border-border py-3 text-xs text-muted-foreground"
@@ -193,18 +246,22 @@ function Login() {
         </div>
       </div>
 
-      <LegalDocumentSheet
-        open={legalOpen === "terms"}
-        onOpenChange={(o) => !o && setLegalOpen(null)}
-        title="Roamie 服務條款"
-        content={TERMS_OF_SERVICE}
-      />
-      <LegalDocumentSheet
-        open={legalOpen === "privacy"}
-        onOpenChange={(o) => !o && setLegalOpen(null)}
-        title="Roamie 隱私權政策"
-        content={PRIVACY_POLICY}
-      />
+      {legalOpen ? (
+        <Suspense fallback={null}>
+          <LegalDocumentSheetLazy
+            open={legalOpen === "terms"}
+            onOpenChange={(o) => !o && setLegalOpen(null)}
+            title="Roamie 服務條款"
+            doc="terms"
+          />
+          <LegalDocumentSheetLazy
+            open={legalOpen === "privacy"}
+            onOpenChange={(o) => !o && setLegalOpen(null)}
+            title="Roamie 隱私權政策"
+            doc="privacy"
+          />
+        </Suspense>
+      ) : null}
     </MobileFrame>
   );
 }

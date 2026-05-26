@@ -10,6 +10,9 @@ import { execSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let failed = false;
+const ultraMinimal =
+  process.env.ROAMIE_ULTRA_MINIMAL_HTML === "1" ||
+  process.env.ROAMIE_ULTRA_MINIMAL_HTML === "true";
 
 function ok(msg) {
   console.info("✓", msg);
@@ -39,7 +42,11 @@ if (existsSync(resolve(root, "dist/client/index.html"))) {
   if (html.includes("npm run ios:sim") || html.includes("完整 App 需連開發伺服器")) {
     fail("dist/client/index.html 仍是開發占位頁 — run: npm run ios:release");
   } else if (!html.includes('type="module"')) {
-    fail("dist/client/index.html 缺少 production script — run: npm run build");
+    if (ultraMinimal && html.includes("Ultra minimal HTML test")) {
+      ok("dist/client/index.html (ultra-minimal HTML mode)");
+    } else {
+      fail("dist/client/index.html 缺少 production script — run: npm run build");
+    }
   } else if (!html.includes("$_TSR")) {
     fail("dist/client/index.html 缺少 TanStack Start SPA bootstrap — run: npm run ios:release");
   } else {

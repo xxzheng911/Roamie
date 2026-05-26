@@ -1,9 +1,14 @@
-import "@/main";
+import "./boot-trace";
+import { scheduleAppInitHandlers } from "@/lib/app-init-handlers";
+
+scheduleAppInitHandlers();
+
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
 import { RoamieRoutePending } from "@/components/RoamieRoutePending";
 import { normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
 import { logAppError } from "@/lib/log-error";
+import { requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
 import { normalizeRouterSsrManifest } from "@/lib/ssr-manifest";
 import { routeTree } from "./routeTree.gen";
 
@@ -31,6 +36,12 @@ export const getRouter = () => {
     normalizeRouterSsrManifest(router);
   } catch (error) {
     logAppError("APP_INIT_ERROR", error, { source: "getRouter.normalizeRouterSsrManifest" });
+  }
+
+  if (typeof window !== "undefined") {
+    router.subscribe("onResolved", () => {
+      requestIosSnapshotRefresh("route");
+    });
   }
 
   return router;
