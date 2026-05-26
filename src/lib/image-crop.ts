@@ -35,7 +35,7 @@ export async function cropImageToAspect(
 
   ctx.drawImage(bitmap, sx, sy, cropW, cropH, 0, 0, outW, outH);
 
-  return canvasToJpegBlob(canvas, 0.88);
+  return canvasToJpegBlob(canvas, 0.82);
 }
 
 /** 正方形裁切（大頭照） */
@@ -43,9 +43,9 @@ export async function cropImageToSquare(file: File, size = 512): Promise<Blob> {
   return cropImageToAspect(file, 1, 1, size);
 }
 
-/** 手機封面比例（寬幅） */
+/** 手機封面比例（與 ProfileCover 3:2 一致） */
 export async function cropImageToCover(file: File): Promise<Blob> {
-  return cropImageToAspect(file, 5, 2, 1200);
+  return cropImageToAspect(file, 3, 2, 1024);
 }
 
 export type CropTransform = {
@@ -53,6 +53,36 @@ export type CropTransform = {
   offsetX: number;
   offsetY: number;
 };
+
+export type CenteredCropRect = {
+  cropW: number;
+  cropH: number;
+  cropLeft: number;
+  cropTop: number;
+};
+
+/** 視窗內置中、符合比例的裁切框（大頭照／封面 overlay 與 export 共用） */
+export function getCenteredCropRect(
+  viewportW: number,
+  viewportH: number,
+  aspectWidth: number,
+  aspectHeight: number,
+): CenteredCropRect {
+  const aspect = aspectWidth / aspectHeight;
+  let cropW = viewportW;
+  let cropH = viewportH;
+  if (viewportW / viewportH > aspect) {
+    cropW = viewportH * aspect;
+  } else {
+    cropH = viewportW / aspect;
+  }
+  return {
+    cropW,
+    cropH,
+    cropLeft: (viewportW - cropW) / 2,
+    cropTop: (viewportH - cropH) / 2,
+  };
+}
 
 /** 依預覽視窗的平移／縮放輸出裁切結果 */
 export async function exportCropFromTransform(
@@ -64,16 +94,12 @@ export async function exportCropFromTransform(
   aspectHeight: number,
   maxWidth = 1200,
 ): Promise<Blob> {
-  const aspect = aspectWidth / aspectHeight;
-  let cropW = viewportW;
-  let cropH = viewportH;
-  if (viewportW / viewportH > aspect) {
-    cropW = viewportH * aspect;
-  } else {
-    cropH = viewportW / aspect;
-  }
-  const cropLeft = (viewportW - cropW) / 2;
-  const cropTop = (viewportH - cropH) / 2;
+  const { cropW, cropH, cropLeft, cropTop } = getCenteredCropRect(
+    viewportW,
+    viewportH,
+    aspectWidth,
+    aspectHeight,
+  );
 
   const outW = Math.min(maxWidth, Math.round(cropW));
   const outH = Math.round(outW / aspect);
@@ -96,7 +122,7 @@ export async function exportCropFromTransform(
   const sHeight = (cropH / scale) * (outH / cropH);
 
   ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, outW, outH);
-  return canvasToJpegBlob(canvas, 0.88);
+  return canvasToJpegBlob(canvas, 0.82);
 }
 
 function loadImageSource(file: File): Promise<HTMLImageElement> {

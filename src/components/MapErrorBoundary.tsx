@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
+import { logAppError } from "@/lib/log-error";
 
 type Props = { children: ReactNode };
 
@@ -13,7 +14,7 @@ export class MapErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("[Roamie Map] render error", error, info.componentStack);
+    logAppError("[Roamie Map] render error", error, { componentStack: info.componentStack });
   }
 
   render() {

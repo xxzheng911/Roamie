@@ -113,6 +113,12 @@ export type ChatPlanningSession = {
   fromMoodCard?: boolean;
   /** 心情卡片完整流程進聊天 */
   fromMoodFlow?: boolean;
+  /** 首頁 Plus「個人化旅遊中心」→ 聊天 */
+  fromPlusHome?: boolean;
+  /** Plus 首頁動態一句描述（handoff 用） */
+  plusHomeInsight?: string;
+  /** Plus 首頁情境開場已完成 */
+  plusHomeHandoffDone?: boolean;
   selectedMood?: string;
   /** 進聊天時注入 AI 的結構化上下文 */
   initialChatContext?: string;
@@ -200,10 +206,26 @@ export function nextMissingDiscoveryKey(discovery?: ChatDiscovery): keyof ChatDi
   return null;
 }
 
+function sessionHasTripDestination(session: ChatPlanningSession): boolean {
+  return Boolean(
+    session.tripDestination?.displayLabel?.trim() ||
+      session.tripDestination?.city?.trim() ||
+      session.location?.city?.trim() ||
+      session.preferredArea?.trim(),
+  );
+}
+
 export function isDiscoveryComplete(session: ChatPlanningSession): boolean {
   if (session.selectedPlaces.length > 0 && session.mood) return true;
   const d = session.discovery ?? {};
-  return DISCOVERY_KEYS.every((k) => Boolean(d[k]?.trim()));
+  const hasVibe = Boolean(d.vibe?.trim());
+  const hasCompanionship = Boolean(d.companionship?.trim());
+  const hasSetting = Boolean(d.setting?.trim());
+  // 跨城市旅行：有目的地 + 心情 + 旅伴即可推薦（室內外可稍後再細調）
+  if (sessionHasTripDestination(session)) {
+    return hasVibe && hasCompanionship;
+  }
+  return hasVibe && hasCompanionship && hasSetting;
 }
 
 export function discoveryLabel(key: keyof ChatDiscovery): string {
@@ -245,8 +267,13 @@ export function extractDiscoveryFromText(
     discovery.companionship = "一個人";
   } else if (!discovery.companionship && /(朋友|閨蜜|同學|同事|兄弟|姐妹)/.test(t)) {
     discovery.companionship = "朋友";
-  } else if (!discovery.companionship && /(情侶|另一半|約會|兩人世界|男朋友|女朋友)/.test(t)) {
+  } else if (
+    !discovery.companionship &&
+    /(情侶|另一半|約會|兩人世界|男朋友|女朋友|女友|男友|跟女友|和女友|跟男友|和男友)/.test(t)
+  ) {
     discovery.companionship = "情侶";
+  } else if (!discovery.companionship && /(家人|爸媽|父母|小孩|孩子|親子)/.test(t)) {
+    discovery.companionship = "家人";
   }
 
   if (!discovery.setting && /(室內|室內的|不想曬|怕熱|下雨|雨)/.test(t)) {

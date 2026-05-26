@@ -23,9 +23,10 @@ export function distanceMeters(
 
 export function savedPlacesNear(
   center: { lat: number; lng: number },
-  saved: SavedPlace[],
+  saved: SavedPlace[] | null | undefined,
   maxMeters = 5000,
 ): SavedPlace[] {
+  if (!Array.isArray(saved)) return [];
   return saved
     .filter((p) => p.lat != null && p.lng != null)
     .map((p) => ({ place: p, d: distanceMeters(center, { lat: p.lat!, lng: p.lng! }) }))

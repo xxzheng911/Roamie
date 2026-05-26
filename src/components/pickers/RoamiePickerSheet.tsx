@@ -44,7 +44,7 @@ export function RoamiePickerSheet({
   };
 
   return (
-    <Drawer open={open} onOpenChange={onOpenChange}>
+    <Drawer open={open} onOpenChange={onOpenChange} modal={false}>
       <DrawerContent
         className={cn(
           "z-[60] mx-auto max-w-lg rounded-t-[1.75rem] border-0 bg-cream shadow-[0_-8px_40px_rgba(40,30,20,0.12)] [&>div:first-child]:hidden",

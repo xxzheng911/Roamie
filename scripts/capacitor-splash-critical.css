@@ -1,0 +1,66 @@
+/* Inlined into Capacitor bundled index.html — keep in sync with .roamie-splash in src/styles.css */
+.roamie-splash {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  min-height: 100svh;
+  width: 100%;
+  overflow: hidden;
+  background-color: #fdf5ea;
+  color: #2a2520;
+  padding: max(0.5rem, env(safe-area-inset-top, 0px)) max(1.75rem, env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px)) max(1.25rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem));
+  box-sizing: border-box;
+}
+.roamie-splash__gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(165deg, #fdf8f0 0%, #fdf5ea 48%, #f3ebe2 100%);
+  pointer-events: none;
+}
+.roamie-splash__viewport {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.roamie-splash__content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+.roamie-splash__brand {
+  margin: 0;
+  font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: clamp(2rem, 8vw, 2.75rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.roamie-splash__tagline {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+  color: #6b635c;
+}
+.roamie-splash__loader {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 1.5rem;
+}
+.roamie-splash__loader-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: #6b635c;
+  opacity: 0.35;
+  animation: roamie-splash-dot 1.2s ease-in-out infinite;
+}
+.roamie-splash__loader-dot:nth-child(2) { animation-delay: 0.15s; }
+.roamie-splash__loader-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes roamie-splash-dot {
+  0%, 80%, 100% { opacity: 0.35; transform: scale(1); }
+  40% { opacity: 1; transform: scale(1.15); }
+}

@@ -28,7 +28,10 @@ export function requireGoogleMapsBrowserKey(): string {
 }
 
 export function buildPlacePhotoUrl(photoName: string, maxWidth = 600): string | null {
+  if (!photoName?.trim()) return null;
   const key = getGoogleMapsBrowserKey();
-  if (!key || !isValidGoogleMapsApiKey(key)) return null;
-  return `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${maxWidth}&key=${key}`;
+  if (key && isValidGoogleMapsApiKey(key)) {
+    return `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${maxWidth}&key=${key}`;
+  }
+  return `/api/place-photo?photo=${encodeURIComponent(photoName)}&w=${maxWidth}`;
 }

@@ -106,9 +106,19 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
 
   if (isBlacklisted(types)) return "unsupported";
 
+  // Nightlife must win over cafe/food (Google types sometimes include "cafe" for bars).
+  if (hasAnyType(types, ["bar", "wine_bar", "night_club", "pub", "cocktail_bar"])) return "bar";
+  if (/酒吧|餐酒館|酒館|居酒屋|啤酒屋|調酒|cocktail|speakeasy|\bbar\b|\bpub\b/i.test(blob)) {
+    return "bar";
+  }
+
   if (/書店|書局|誠品|金石堂|茉莉|書屋/i.test(name)) return "bookstore";
   if (/燒餅|燒餅店|豆漿|早餐|蛋餅|飯糰|肉粽|鹹酥餅|水煎包|饅頭|包子店/i.test(name)) {
     if (!/蛋糕|烘焙坊|西點|甜點屋/i.test(name)) return "breakfast_shop";
+  }
+  if (/宵夜|夜食|深夜|夜晚小吃|夜間食堂/i.test(name)) {
+    // avoid misclassifying night snacks as cafe when name is explicit
+    return "food_stall";
   }
   if (/夜市/i.test(blob)) return "night_market";
   if (/博物館|美術館|纪念馆|紀念館/i.test(name)) return "museum";
@@ -142,7 +152,7 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
     return "bakery";
   }
   if (hasAnyType(types, ["dessert_shop", "ice_cream_shop", "confectionery"])) return "dessert";
-  if (hasAnyType(types, ["bar", "wine_bar", "night_club", "pub"])) return "bar";
+  if (hasAnyType(types, ["bar", "wine_bar", "night_club", "pub", "cocktail_bar"])) return "bar";
   if (hasAnyType(types, ["park", "national_park", "botanical_garden", "hiking_area"])) return "park";
   if (hasAnyType(types, ["tourist_attraction", "historical_landmark", "monument", "cultural_center"])) {
     if (hasAnyType(types, ["book_store", "bookstore"])) return "bookstore";

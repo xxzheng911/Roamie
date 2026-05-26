@@ -185,6 +185,10 @@ export function selectRecommendationsForNow(
     }
   };
 
+  if (openish.length >= max) {
+    return openish.slice(0, max);
+  }
+
   push(openish);
   push(openingSoon);
   push(unknown);
@@ -200,16 +204,41 @@ export function shouldUseLateNightEmptySummary(
   return stats.open + stats.closingSoon === 0;
 }
 
-/** 客戶端顯示前二次過濾（依 enrich 後欄位） */
-export function filterRecommendationItemsForDisplay<
-  T extends {
-    name: string;
-    type?: string;
-    openStatusLabel?: string;
-    nextOpenHint?: string;
-  },
->(items: T[]): T[] {
-  return items.filter((item) => {
+type RecommendationDisplayItem = {
+  name: string;
+  type?: string;
+  openStatusLabel?: string;
+  closingSoonNote?: string;
+  nextOpenHint?: string;
+};
+
+/** 顯示排序：營業中 → 即將打烊 → 待確認 → 稍後營業 → 未營業 */
+export function recommendationOpenDisplayPriority(item: RecommendationDisplayItem): number {
+  const label = item.openStatusLabel?.trim() ?? "";
+  const closing = item.closingSoonNote?.trim();
+
+  if (label.includes("營業中")) return 0;
+  if (closing || label.includes("即將打烊")) return 1;
+  if (!label || label.includes("待確認")) return 2;
+  if (label.includes("目前未營業") || label.includes("休息") || label.includes("打烊")) {
+    return item.nextOpenHint?.trim() ? 4 : 5;
+  }
+  return 3;
+}
+
+export function sortRecommendationItemsForDisplay<T extends RecommendationDisplayItem>(
+  items: T[],
+): T[] {
+  return [...items].sort(
+    (a, b) => recommendationOpenDisplayPriority(a) - recommendationOpenDisplayPriority(b),
+  );
+}
+
+/** 客戶端顯示前二次過濾（依 enrich 後欄位）並以營業狀態排序 */
+export function filterRecommendationItemsForDisplay<T extends RecommendationDisplayItem>(
+  items: T[],
+): T[] {
+  const filtered = items.filter((item) => {
     if (item.openStatusLabel === "目前未營業" && !item.nextOpenHint?.trim()) {
       return false;
     }
@@ -218,4 +247,5 @@ export function filterRecommendationItemsForDisplay<
     }
     return true;
   });
+  return sortRecommendationItemsForDisplay(filtered);
 }

@@ -12,10 +12,15 @@ import {
   type ChatMsg,
 } from "@/lib/chat-history";
 import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
+import { enrichRoamieContext } from "@/lib/ai/enrich-context";
+import { resolveEffectivePlanTierWithProfile } from "@/lib/access/resolve";
 import { getWeather } from "@/lib/weather.functions";
 import { streamRoamieAI, fetchRoamieAI } from "@/lib/ai/stream-client";
+import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
 import { RoamieResponseView } from "@/components/RoamieResponseView";
 import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
+import { useAddToTrip } from "@/hooks/use-add-to-trip";
+import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
 import type { RoamieResponse, RoamieRecommendationItem } from "@/lib/ai/types";
 import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
 import {
@@ -32,17 +37,23 @@ import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import { getRecommendation } from "@/lib/recommendation-storage";
 import { inferDestinationFromPlaces } from "@/lib/itinerary-source";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
-import {
-  filterRecommendationItemsForDisplay,
-  isLateNightMode,
-} from "@/lib/recommend-place-ranking";
+import { recommendationsForChatDisplay } from "@/lib/chat-display-recommendations";
+import { openRecommendationOnMap } from "@/lib/recommendation-place-handoff";
+import { logAppError } from "@/lib/log-error";
+import { isLateNightMode } from "@/lib/recommend-place-ranking";
 import {
   buildApiMessagesFromConversation,
   extractChatPlanningContextFromText,
   resolveChatApiPhase,
   resolveSessionPhaseAfterReply,
 } from "@/lib/chat-planning-flow";
-import { applyTripIntentToSession, buildClarifyingQuestion, parseTripIntentFromText } from "@/lib/recommendation/trip-intent";
+import {
+  applyTripIntentToSession,
+  buildClarifyingQuestion,
+  formatTripIntentForAi,
+  parseTripIntentFromSession,
+  parseTripIntentFromText,
+} from "@/lib/recommendation/trip-intent";
 import { resolveBudgetMode } from "@/lib/preferences-storage";
 import {
   loadChatSession,
@@ -63,6 +74,11 @@ import {
   type ChatPlaceItem,
 } from "@/lib/chat-session";
 import {
+  buildPlusHomeHandoffOpening,
+  markPlusHomeHandoffComplete,
+  preparePlusHomeChatSession,
+} from "@/lib/plus-chat-handoff";
+import {
   buildContextualMoodHandoffOpening,
   buildHandoffRoamiePayload,
   buildInitialChatContext,
@@ -78,6 +94,7 @@ import {
 import { buildContextBundleForTrip } from "@/lib/fetch-context";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import { useI18n } from "@/hooks/use-i18n";
+import { useAccess } from "@/hooks/use-access";
 import { usePreferenceQuizCompleted } from "@/hooks/use-preference-quiz-status";
 import {
   AlertDialog,
@@ -96,11 +113,13 @@ import {
   syncSessionPlaceMemory,
 } from "@/lib/place-planning-memory";
 import { isRoamiePayloadV2 } from "@/lib/ai/types";
+import { readHomeMood, writeHomeMood } from "@/lib/home-mood";
 
 type ChatSearch = {
   from?: string;
   recommendationId?: string;
   fromMoodFlow?: string;
+  mood?: string;
 };
 
 export const Route = createFileRoute("/_app/chat")({
@@ -108,6 +127,7 @@ export const Route = createFileRoute("/_app/chat")({
     from: typeof s.from === "string" ? s.from : undefined,
     recommendationId: typeof s.recommendationId === "string" ? s.recommendationId : undefined,
     fromMoodFlow: typeof s.fromMoodFlow === "string" ? s.fromMoodFlow : undefined,
+    mood: typeof s.mood === "string" ? s.mood : undefined,
   }),
   component: Chat,
 });
@@ -115,6 +135,8 @@ export const Route = createFileRoute("/_app/chat")({
 function Chat() {
   const { t, locale } = useI18n();
   const quizCompleted = usePreferenceQuizCompleted();
+  const { hasPlusAccess } = useAccess();
+  const { openAddToTrip } = useAddToTrip();
   const search = Route.useSearch();
   const navigate = useNavigate();
   const greetingMsg = useMemo(
@@ -131,12 +153,15 @@ function Chat() {
   const [partial, setPartial] = useState<Partial<RoamieResponse>>({});
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [savingName, setSavingName] = useState<string | null>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const handoffStartedRef = useRef<string | null>(null);
   const planHandoffStartedRef = useRef(false);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [keyboardInsetPx, setKeyboardInsetPx] = useState(0);
+  const [keyboardTransformFooter, setKeyboardTransformFooter] = useState(true);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const fetchWeather = useServerFn(getWeather);
@@ -153,7 +178,7 @@ function Chat() {
   }, []);
 
   useEffect(() => {
-    if (hydrating || session.fromMoodFlow || session.fromMoodCard) return;
+    if (hydrating || session.fromMoodFlow || session.fromMoodCard || session.fromPlusHome) return;
     setMsgs((prev) => {
       if (prev.length === 0) return [greetingMsg];
       if (prev.length === 1 && prev[0].role === "assistant" && !prev[0].roamie) {
@@ -161,28 +186,122 @@ function Chat() {
       }
       return prev;
     });
-  }, [greetingMsg, hydrating, session.fromMoodFlow, session.fromMoodCard]);
+  }, [greetingMsg, hydrating, session.fromMoodFlow, session.fromMoodCard, session.fromPlusHome]);
+
+  const scrollMessagesToEnd = useCallback(() => {
+    const el = messagesRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, []);
 
   useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const syncKeyboardInset = () => {
-      const inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      setKeyboardInsetPx(inset);
-    };
-    syncKeyboardInset();
-    vv.addEventListener("resize", syncKeyboardInset);
-    vv.addEventListener("scroll", syncKeyboardInset);
+    document.documentElement.classList.toggle("chat-keyboard-open", keyboardOpen);
+    const useManualInset = keyboardOpen && keyboardInsetPx > 0;
+    document.documentElement.classList.toggle("chat-keyboard-manual-inset", useManualInset);
+    document.documentElement.style.setProperty(
+      "--chat-keyboard-inset",
+      useManualInset ? `${keyboardInsetPx}px` : "0px",
+    );
     return () => {
-      vv.removeEventListener("resize", syncKeyboardInset);
-      vv.removeEventListener("scroll", syncKeyboardInset);
+      document.documentElement.classList.remove("chat-keyboard-open");
+      document.documentElement.classList.remove("chat-keyboard-manual-inset");
+      document.documentElement.style.removeProperty("--chat-keyboard-inset");
     };
-  }, []);
+  }, [keyboardOpen, keyboardInsetPx]);
+
+  useEffect(() => {
+    let removeCapKeyboard: (() => void) | undefined;
+    const cap = (
+      window as Window & { Capacitor?: { isNativePlatform?: () => boolean } }
+    ).Capacitor;
+    const isNativeShell = Boolean(cap?.isNativePlatform?.());
+
+    const applyKeyboard = (height: number, open: boolean) => {
+      setKeyboardOpen(open);
+      // Capacitor Keyboard resize:"body" 已縮小 WebView — 勿再疊加 keyboardHeight（會雙重留白）
+      if (keyboardTransformFooter && !isNativeShell) {
+        setKeyboardInsetPx(open ? Math.max(0, Math.round(height)) : 0);
+      } else if (!open) {
+        setKeyboardInsetPx(0);
+      }
+    };
+
+    if (isNativeShell) {
+      void import("@capacitor/keyboard").then(({ Keyboard }) => {
+        const onShow = (info: { keyboardHeight?: number }) => {
+          applyKeyboard(info.keyboardHeight ?? 0, true);
+          requestAnimationFrame(scrollMessagesToEnd);
+        };
+        const showWill = Keyboard.addListener("keyboardWillShow", onShow);
+        const showDid = Keyboard.addListener("keyboardDidShow", onShow);
+        const hide = Keyboard.addListener("keyboardWillHide", () => {
+          applyKeyboard(0, false);
+        });
+        removeCapKeyboard = () => {
+          void showWill.then((s) => s.remove());
+          void showDid.then((s) => s.remove());
+          void hide.then((s) => s.remove());
+        };
+      });
+    }
+
+    const vv = window.visualViewport;
+    const syncFromViewport = () => {
+      if (isNativeShell) return;
+      if (!vv) return;
+      const rawInset = Math.max(0, window.innerHeight - vv.height - (vv.offsetTop || 0));
+      const inset = Math.min(rawInset, Math.round(window.innerHeight * 0.55));
+      const open = inset > 50;
+      if (!open) {
+        if (!isNativeShell) applyKeyboard(0, false);
+        return;
+      }
+      setKeyboardOpen(true);
+      if (keyboardTransformFooter) {
+        setKeyboardInsetPx((prev) => Math.max(prev, inset));
+      }
+    };
+
+    syncFromViewport();
+    vv?.addEventListener("resize", syncFromViewport);
+    vv?.addEventListener("scroll", syncFromViewport);
+
+    return () => {
+      vv?.removeEventListener("resize", syncFromViewport);
+      vv?.removeEventListener("scroll", syncFromViewport);
+      removeCapKeyboard?.();
+    };
+  }, [keyboardTransformFooter, scrollMessagesToEnd]);
+
+  useEffect(() => {
+    if (!keyboardOpen) return;
+    scrollMessagesToEnd();
+  }, [keyboardOpen, msgs.length, scrollMessagesToEnd]);
 
   useEffect(() => {
     (async () => {
       try {
         let session = loadChatSession();
+        const moodFromHome = search.mood?.trim() || readHomeMood();
+        if (moodFromHome) {
+          session = {
+            ...session,
+            mood: moodFromHome,
+            selectedMood: moodFromHome,
+            fromMoodCard: session.fromMoodCard ?? true,
+          };
+          writeHomeMood(moodFromHome);
+          persistSession(session);
+        }
+
+        if (search.from === "plus-home" && hasPlusAccess && !session.fromPlusHome) {
+          const prefs = await getPreferences();
+          session = preparePlusHomeChatSession({
+            mood: moodFromHome ?? session.selectedMood,
+            prefs,
+          });
+          persistSession(session);
+        }
 
         const isMoodFlow =
           search.fromMoodFlow === "1" ||
@@ -241,6 +360,20 @@ function Chat() {
           planHandoffStartedRef.current = true;
           setMsgs([]);
           await runPlanFormHandoff(current);
+        } else if (
+          current.fromPlusHome &&
+          current.pendingHandoff &&
+          !current.plusHomeHandoffDone &&
+          hasPlusAccess
+        ) {
+          const summary = buildPlusHomeHandoffOpening(current, current.plusHomeInsight);
+          const opener: ChatMsg = {
+            role: "assistant",
+            content: summary,
+            roamie: buildHandoffRoamiePayload(current, summary),
+          };
+          setMsgs([opener]);
+          persistSession(markPlusHomeHandoffComplete(current));
         } else if (current.fromMoodFlow && current.moodHandoffDone) {
           const history = await loadChatHistory();
           if (history.length) {
@@ -257,7 +390,9 @@ function Chat() {
         } else {
           const history = await loadChatHistory();
           if (history.length) setMsgs(history);
-          else if (!current.fromMoodFlow && !current.fromMoodCard) setMsgs([greetingMsg]);
+          else if (!current.fromMoodFlow && !current.fromMoodCard && !current.fromPlusHome) {
+            setMsgs([greetingMsg]);
+          }
         }
       } catch (e) {
         console.error(e);
@@ -266,7 +401,7 @@ function Chat() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search.recommendationId, search.from]);
+  }, [search.recommendationId, search.from, search.mood, hasPlusAccess]);
 
   const handleSavePlace = async (rec: RoamieRecommendationItem) => {
     setSavingName(rec.name);
@@ -312,8 +447,10 @@ function Chat() {
         userText: string;
         focusedPlace: ChatPlaceItem;
       }>,
+      sessionOverride?: ChatPlanningSession,
     ) => {
-      const syncedForBundle = syncSessionPlaceMemory(session);
+      const activeSession = sessionOverride ?? session;
+      const syncedForBundle = syncSessionPlaceMemory(activeSession);
       const bundle = syncedForBundle.tripDestination
         ? await buildContextBundleForTrip(syncedForBundle.tripDestination, fetchWeather)
         : await buildClientContextBundle(fetchWeather);
@@ -324,14 +461,24 @@ function Chat() {
       const lastUser = [...apiMessages].reverse().find((m) => m.role === "user");
       const userText = overrides?.userText ?? lastUser?.content ?? "";
 
-      const apiPhase: import("@/lib/ai/context").ChatPhase =
-        overrides?.chatPhase ?? resolveChatApiPhase(session, userText);
-
       const savedList = await listPlaces();
-      const synced = syncSessionPlaceMemory(session);
+      const planTier = await resolveEffectivePlanTierWithProfile();
+      const synced = syncSessionPlaceMemory(activeSession);
+      const tripIntent = parseTripIntentFromSession(synced);
+      const apiPhase: import("@/lib/ai/context").ChatPhase =
+        overrides?.chatPhase ??
+        resolveChatApiPhase(synced, userText, undefined, tripIntent);
+      const tripIntentBlock = formatTripIntentForAi(tripIntent, prefs);
+      console.info("[Roamie AI] request context", {
+        phase: apiPhase,
+        destination: tripIntent.destinationCity ?? synced.location?.city ?? null,
+        missing: tripIntent.missingKeys,
+        planTier,
+      });
       const initialCtx = [
         synced.initialChatContext ?? buildInitialChatContext(synced),
         buildPlanningMemoryContext(synced),
+        tripIntentBlock,
       ]
         .filter(Boolean)
         .join("\n\n");
@@ -343,10 +490,11 @@ function Chat() {
         ]),
       ];
 
-      return toRoamieRequest("chat", bundle, {
+      const base = toRoamieRequest("chat", bundle, {
         mood: synced.selectedMood ?? synced.mood,
         locale,
         preferences: prefs,
+        planTier,
         chatInput: overrides?.chatInput ?? userText,
         lastUserIntent: userText || synced.lastUserIntent,
         messages: apiMessages,
@@ -383,7 +531,7 @@ function Chat() {
           startTime: synced.startTime,
           endTime: synced.endTime,
           conversationSummary: [
-            initialCtx,
+            tripIntentBlock,
             buildConversationSummary(synced, conversation),
           ]
             .filter(Boolean)
@@ -400,6 +548,20 @@ function Chat() {
           lastUserIntent: userText || synced.lastUserIntent,
         },
       });
+
+      const enriched = await enrichRoamieContext(base, {
+        session: synced,
+        userText,
+        conversation,
+        tripIntent,
+        planTier,
+        weather: bundle.weather,
+      });
+      console.info("[Roamie AI] dialogue stage", {
+        stage: enriched.conversationStage,
+        chatPhase: enriched.chatPhase,
+      });
+      return enriched;
     },
     [fetchWeather, session, locale, t],
   );
@@ -487,8 +649,10 @@ function Chat() {
           console.warn("[Roamie] handoff AI failed, using fallback", e);
         }
 
-        const filteredRecs = filterRecommendationItemsForDisplay(
-          (roamiePayload.recommendations ?? []) as ChatPlaceItem[],
+        const filteredRecs = recommendationsForChatDisplay(
+          syncedHandoff,
+          "",
+          (roamiePayload.recommendations ?? []) as RoamieRecommendationItem[],
         );
         const opener: ChatMsg = {
           role: "assistant",
@@ -603,8 +767,10 @@ function Chat() {
           console.warn("[Roamie] plan handoff AI failed, using fallback", e);
         }
 
-        const filteredRecs = filterRecommendationItemsForDisplay(
-          (roamiePayload.recommendations ?? []) as ChatPlaceItem[],
+        const filteredRecs = recommendationsForChatDisplay(
+          syncedHandoff,
+          "",
+          (roamiePayload.recommendations ?? []) as RoamieRecommendationItem[],
         );
         const opener: ChatMsg = {
           role: "assistant",
@@ -614,7 +780,7 @@ function Chat() {
         setMsgs([opener]);
         if (!authSession.session) writeGuestChat([opener]);
 
-        const recs = (roamiePayload.recommendations ?? []) as ChatPlaceItem[];
+        const recs = filteredRecs as ChatPlaceItem[];
         const nextSession = syncSessionPlaceMemory(
           markPlanHandoffComplete({
             ...syncedHandoff,
@@ -639,12 +805,15 @@ function Chat() {
         userText?: string;
         focusedPlace?: ChatPlaceItem;
       },
+      sessionOverride?: ChatPlanningSession,
     ) => {
       setStreaming(true);
       setLastFailed(null);
       setPartial({});
       const controller = new AbortController();
       abortRef.current = controller;
+      const timeoutMs = 60_000;
+      const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
       try {
         const { data: authSession } = await supabase.auth.getSession();
@@ -652,11 +821,15 @@ function Chat() {
 
         setMsgs((prev) => [...prev, { role: "assistant", content: "" }]);
 
-        const req = await buildRequest(conversation, {
-          chatPhase: opts?.phase,
-          chatInput: opts?.userText,
-          focusedPlace: opts?.focusedPlace,
-        });
+        const req = await buildRequest(
+          conversation,
+          {
+            chatPhase: opts?.phase,
+            chatInput: opts?.userText,
+            focusedPlace: opts?.focusedPlace,
+          },
+          sessionOverride,
+        );
 
         const full = await streamRoamieAI(req, {
           onPartial: (p) => {
@@ -690,13 +863,15 @@ function Chat() {
 
         const apiPhaseUsed =
           opts?.phase ?? resolveChatApiPhase(session, opts?.userText ?? "");
-        let nextSession = mergeSessionFromRoamie(session, full, session.phase);
+        let nextSession = mergeSessionFromRoamie(sessionOverride ?? session, full, (sessionOverride ?? session).phase);
         if (nextSession.recommendedPlaces.length) {
           nextSession = {
             ...nextSession,
-            recommendedPlaces: filterRecommendationItemsForDisplay(
+            recommendedPlaces: recommendationsForChatDisplay(
+              nextSession,
+              opts?.userText ?? "",
               nextSession.recommendedPlaces,
-            ),
+            ) as ChatPlaceItem[],
           };
         }
         if (nextSession.phase === "discover" && isDiscoveryComplete(nextSession)) {
@@ -712,9 +887,14 @@ function Chat() {
         };
         persistSession(nextSession);
 
+        const activeSession = sessionOverride ?? session;
         const displayFull = {
           ...full,
-          recommendations: filterRecommendationItemsForDisplay(full.recommendations ?? []),
+          recommendations: recommendationsForChatDisplay(
+            activeSession,
+            opts?.userText ?? "",
+            full.recommendations ?? [],
+          ),
         };
         setMsgs((prev) => {
           const next = [...prev];
@@ -728,17 +908,43 @@ function Chat() {
         });
         setPartial({});
       } catch (e) {
-        if ((e as Error).name === "AbortError") return;
-        console.error("[Roamie AI] chat failed", e);
-        const intent = parseTripIntentFromText(opts?.userText ?? "", session);
-        const fallbackSummary = buildClarifyingQuestion(intent, locale);
+        if ((e as Error).name === "AbortError") {
+          const activeForTimeout = sessionOverride ?? session;
+          const timeoutSummary =
+            isDiscoveryComplete(activeForTimeout) ||
+            parseTripIntentFromSession(activeForTimeout).readyForRecommendations
+              ? "連線有點久，請再試一次，我馬上幫你推薦適合的地點。"
+              : "連線有點久，請再試一次。";
+          setMsgs((prev) => {
+            const trimmedPrev = prev.filter(
+              (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+            );
+            return [
+              ...trimmedPrev,
+              { role: "assistant", content: timeoutSummary },
+            ];
+          });
+          setPartial({});
+          setLastFailed(conversation);
+          return;
+        }
+        logAppError("[Roamie AI] chat failed", e, {
+          userText: opts?.userText,
+          phase: opts?.phase,
+        });
+        const activeForFallback = sessionOverride ?? session;
+        const intent = parseTripIntentFromSession(activeForFallback);
+        const fallbackSummary =
+          isDiscoveryComplete(activeForFallback) || intent.readyForRecommendations
+            ? "我這邊連線有點不順，請再試一次，我馬上幫你推薦適合的地點。"
+            : buildClarifyingQuestion(intent, locale);
         const hint: ChatMsg = {
           role: "assistant",
           content: fallbackSummary,
           roamie: {
             title: "",
             summary: fallbackSummary,
-            moodTag: session.mood ?? "",
+            moodTag: activeForFallback.mood ?? "",
             recommendations: [],
             itinerary: [],
           },
@@ -753,12 +959,22 @@ function Chat() {
         setPartial({});
         setLastFailed(conversation);
       } finally {
+        window.clearTimeout(timeoutId);
         setStreaming(false);
         abortRef.current = null;
       }
     },
     [buildRequest, session, persistSession, locale],
   );
+
+  const handleOpenPlaceDetail = (rec: RoamieRecommendationItem) => {
+    if (rec.lat == null || rec.lng == null) {
+      toast.message("此地點尚無座標，暫時無法開啟地圖詳情");
+      return;
+    }
+    openRecommendationOnMap(rec);
+    navigate({ to: "/map" });
+  };
 
   const handleSelectPlace = async (rec: RoamieRecommendationItem) => {
     if (streaming || generating) return;
@@ -775,7 +991,7 @@ function Chat() {
     const conversation: ChatMsg[] = [...msgs, { role: "user", content: userLine }];
     setMsgs(conversation);
 
-    await streamChat(conversation, { phase: "enrich", userText: userLine, focusedPlace: item });
+    await streamChat(conversation, { phase: "enrich", userText: userLine, focusedPlace: item }, nextSession);
   };
 
   const send = async (overrideText?: string) => {
@@ -787,7 +1003,11 @@ function Chat() {
     nextSession = extractDiscoveryFromText(trimmed, nextSession);
     nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
 
-    if (nextSession.phase === "discover" && isDiscoveryComplete(nextSession)) {
+    const tripIntent = parseTripIntentFromText(trimmed, nextSession);
+    if (
+      nextSession.phase === "discover" &&
+      (isDiscoveryComplete(nextSession) || tripIntent.readyForRecommendations)
+    ) {
       nextSession = { ...nextSession, phase: "recommend" };
     }
     persistSession(nextSession);
@@ -812,9 +1032,20 @@ function Chat() {
       return;
     }
 
-    const apiPhase = resolveChatApiPhase(nextSession, trimmed);
+    if (
+      nextSession.phase === "discover" &&
+      !isDiscoveryComplete(nextSession) &&
+      !tripIntent.readyForRecommendations &&
+      tripIntent.missingKeys.length > 0
+    ) {
+      const hint = buildClarifyingQuestion(tripIntent, locale);
+      setMsgs([...next, { role: "assistant", content: hint }]);
+      return;
+    }
 
-    await streamChat(next, { phase: apiPhase, userText: trimmed });
+    const apiPhase = resolveChatApiPhase(nextSession, trimmed, undefined, tripIntent);
+
+    await streamChat(next, { phase: apiPhase, userText: trimmed }, nextSession);
   };
 
   const handleGenerateItinerary = async (
@@ -1003,7 +1234,7 @@ function Chat() {
         : ["我今天有點累", "想找安靜的咖啡廳", "下雨天可以去哪"];
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="chat-page relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <header className="relative z-20 flex shrink-0 items-center gap-2 border-b border-border bg-background/90 px-4 py-3 backdrop-blur">
         <BackButton
           preferFallback
@@ -1012,9 +1243,7 @@ function Chat() {
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-foreground"
         />
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
-          <div className="relative h-9 w-9 shrink-0 rounded-full bg-accent">
-            <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-sage" />
-          </div>
+          <RoamieAssistantAvatar className="h-9 w-9" showOnlineIndicator />
           <div className="min-w-0 flex-1">
             <p className="text-[15px] font-medium leading-tight">Roamie</p>
             <p className="truncate text-[11px] text-muted-foreground">
@@ -1068,8 +1297,11 @@ function Chat() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5">
-        {quizCompleted === false && (
+      <div
+        ref={messagesRef}
+        className="chat-messages min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5"
+      >
+        {hasPlusAccess && quizCompleted === false && (
           <PreferenceQuizCta origin="chat" variant="banner" className="animate-rise" />
         )}
         {hydrating && (
@@ -1081,8 +1313,11 @@ function Chat() {
           msgs.map((m, i) => (
             <div
               key={i}
-              className={`flex ${m.role === "user" ? "justify-end" : "justify-start"} animate-rise`}
+              className={`flex animate-rise ${m.role === "user" ? "justify-end" : "justify-start gap-2.5"}`}
             >
+              {m.role === "assistant" ? (
+                <RoamieAssistantAvatar className="h-8 w-8 self-end" />
+              ) : null}
               <div
                 className={`max-w-[88%] rounded-3xl px-4 py-3 ${
                   m.role === "user"
@@ -1101,12 +1336,15 @@ function Chat() {
                       (m.roamie?.itinerary?.length ?? 0) > 0
                     }
                     onSavePlace={handleSavePlace}
-                    onSelectPlace={handleSelectPlace}
+                    onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec))}
+                    onOpenPlaceDetail={handleOpenPlaceDetail}
+                    onDiscussPlace={handleSelectPlace}
                     outfitAdvice={m.roamie?.outfitAdvice}
                     selectedPlaceNames={selectedNames}
                     savingPlaceName={savingName}
                     savedPlaceNames={savedNames}
                     addToTripLabel={t("chat.addToTrip")}
+                    discussPlaceLabel={t("trip.discussPlace")}
                     viewMapLabel={t("chat.viewMap")}
                   />
                 ) : (
@@ -1138,11 +1376,12 @@ function Chat() {
       </div>
 
       <footer
-        className="shrink-0 border-t border-border bg-background/95 px-4 pt-3 backdrop-blur"
+        className="chat-input-bar shrink-0 border-t border-border bg-background/95 px-4 pt-2 backdrop-blur"
         style={{
-          paddingBottom: `calc(0.75rem + env(safe-area-inset-bottom, 0px) + ${keyboardInsetPx}px)`,
+          paddingBottom: keyboardOpen ? "6px" : "max(6px, env(safe-area-inset-bottom, 0px))",
         }}
       >
+        {!keyboardOpen && (
         <div className="mb-2 flex gap-2 overflow-x-auto no-scrollbar">
           {showGenerateBtn && (
             <button
@@ -1206,6 +1445,7 @@ function Chat() {
             </button>
           ))}
         </div>
+        )}
         <div className="flex items-end gap-2 rounded-3xl border border-border bg-card p-2">
           <textarea
             ref={inputRef}
@@ -1213,9 +1453,7 @@ function Chat() {
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKey}
             onFocus={() => {
-              requestAnimationFrame(() => {
-                inputRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-              });
+              requestAnimationFrame(scrollMessagesToEnd);
             }}
             rows={1}
             placeholder="告訴 Roamie 你的心情…"

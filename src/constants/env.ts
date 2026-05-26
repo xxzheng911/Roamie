@@ -22,6 +22,12 @@ export const clientEnv = {
   /** RevenueCat public SDK key (iOS/Android — safe for client) */
   revenueCatAppleKey: readVite("VITE_REVENUECAT_APPLE_KEY"),
   revenueCatGoogleKey: readVite("VITE_REVENUECAT_GOOGLE_KEY"),
+  /**
+   * Billing switch (client-safe).
+   * - default: off (dev/testflight testing should not enter payment flow)
+   * - production launch: set VITE_BILLING_ENABLED=1
+   */
+  billingEnabled: readVite("VITE_BILLING_ENABLED") === "1",
   /** Deployment environment */
   mode: import.meta.env.MODE as "development" | "production" | "test",
   isDev: import.meta.env.DEV,

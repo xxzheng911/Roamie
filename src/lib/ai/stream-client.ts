@@ -1,12 +1,11 @@
 import { parsePartialRoamieJson } from "./parse-partial";
 import type { RoamieRequestContext } from "./context";
 import { normalizeRoamieResponse, type RoamieResponse as RoamieResponseType } from "./types";
-import { resolveEffectivePlanTier } from "@/lib/plan-tier";
-
 async function withResolvedPlanTier(ctx: RoamieRequestContext): Promise<RoamieRequestContext> {
-  if (ctx.planTier) return ctx;
-  const planTier = await resolveEffectivePlanTier();
-  return { ...ctx, planTier };
+  const { applyTierToAiContext } = await import("@/lib/access/context");
+  const { resolveEffectivePlanTierWithProfile } = await import("@/lib/access/resolve");
+  const planTier = ctx.planTier ?? (await resolveEffectivePlanTierWithProfile());
+  return applyTierToAiContext({ ...ctx, planTier }, planTier);
 }
 
 function validateAssembledJson(raw: string): RoamieResponseType {

@@ -1,7 +1,11 @@
 import { getAuthenticatedUserId } from "@/lib/auth-session";
+import {
+  hasSelectedCompanionMode,
+  markCompanionModeSelected,
+  readSelectedCompanionTier,
+} from "@/lib/companion-mode-storage";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { supabase } from "@/lib/supabase";
-import { readDebugAiMode } from "./debug-ai-mode";
 import {
   DEFAULT_USER_PLAN,
   type PlanTier,
@@ -15,6 +19,12 @@ const PLAN_SELECT = "plan_tier, subscription_status, subscription_provider, plus
 function introFromAiPreferences(aiPreferences: unknown): boolean {
   if (!aiPreferences || typeof aiPreferences !== "object") return false;
   return Boolean((aiPreferences as Record<string, unknown>).intro_completed);
+}
+
+function companionTierFromAiPreferences(aiPreferences: unknown): PlanTier | null {
+  if (!aiPreferences || typeof aiPreferences !== "object") return null;
+  const raw = (aiPreferences as Record<string, unknown>).companion_mode;
+  return raw === "plus" ? "plus" : raw === "free" ? "free" : null;
 }
 
 function parsePlanRow(row: Record<string, unknown> | null | undefined): UserPlanProfile {
@@ -46,38 +56,74 @@ export async function getUserPlanProfile(userId?: string): Promise<UserPlanProfi
 }
 
 export async function isIntroCompleted(userId?: string): Promise<boolean> {
-  const plan = await getUserPlanProfile(userId);
-  return plan.introCompleted;
-}
+  if (hasSelectedCompanionMode()) return true;
 
-export async function markIntroCompleted(): Promise<void> {
-  const userId = await getAuthenticatedUserId();
-  if (!userId) return;
-  await ensureUserProfile(userId);
+  const uid = userId ?? (await getAuthenticatedUserId());
+  if (!uid) return false;
 
-  const { data, error: readError } = await supabase
+  const { data, error } = await supabase
     .from("profiles")
     .select("ai_preferences")
-    .eq("id", userId)
+    .eq("id", uid)
     .maybeSingle();
-  if (readError) throw new Error(readError.message);
+  if (error) {
+    console.warn("[plan-tier] intro check failed", error.message);
+    return false;
+  }
 
-  const prev =
-    data?.ai_preferences && typeof data.ai_preferences === "object"
-      ? (data.ai_preferences as Record<string, unknown>)
-      : {};
+  const prefs = (data as { ai_preferences?: unknown } | null)?.ai_preferences;
+  if (!introFromAiPreferences(prefs)) return false;
 
-  const { error } = await supabase
-    .from("profiles")
-    .update({ ai_preferences: { ...prev, intro_completed: true } as never })
-    .eq("id", userId);
-  if (error) throw new Error(error.message);
+  markCompanionModeSelected(companionTierFromAiPreferences(prefs) ?? "free");
+  return true;
 }
 
-/** 實際 AI 使用的 tier：debug 覆寫 > active plus > free */
+export async function markIntroCompleted(tier: PlanTier = "free"): Promise<void> {
+  markCompanionModeSelected(tier);
+
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    throw new Error("請先登入後再選擇陪伴方式");
+  }
+
+  try {
+    await ensureUserProfile(userId);
+
+    const { data, error: readError } = await supabase
+      .from("profiles")
+      .select("ai_preferences")
+      .eq("id", userId)
+      .maybeSingle();
+    if (readError) throw new Error(readError.message);
+
+    const prev =
+      data?.ai_preferences && typeof data.ai_preferences === "object"
+        ? (data.ai_preferences as Record<string, unknown>)
+        : {};
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        ai_preferences: {
+          ...prev,
+          intro_completed: true,
+          companion_mode: tier,
+        } as never,
+      })
+      .eq("id", userId);
+    if (error) throw new Error(error.message);
+  } catch (e) {
+    console.warn("[plan-tier] remote companion mode sync failed", e);
+    // Local selection already saved — navigation can proceed.
+  }
+}
+
+/** 實際 AI 使用的 tier：developer override > mock/IAP plus > free */
 export async function resolveEffectivePlanTier(): Promise<PlanTier> {
-  const debug = readDebugAiMode();
-  if (debug) return debug;
+  if (typeof window !== "undefined") {
+    const { resolveEffectivePlanTierWithProfile } = await import("@/lib/access/resolve");
+    return resolveEffectivePlanTierWithProfile();
+  }
 
   const plan = await getUserPlanProfile();
   if (plan.planTier === "plus" && (plan.subscriptionStatus === "active" || plan.subscriptionStatus === "trialing")) {

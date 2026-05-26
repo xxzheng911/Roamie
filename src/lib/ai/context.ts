@@ -8,6 +8,16 @@ import type { WeatherSummary } from "@/lib/weather.functions";
 import { formatTemporalWeatherBlock } from "@/lib/weather-context";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlanTier } from "@/lib/plan-tier/types";
+import type { ConversationStage } from "@/lib/ai/conversation-stage";
+import type { EmotionSignals } from "@/lib/ai/emotion-inference";
+import type {
+  LongTermMemorySnapshot,
+  SessionMemorySnapshot,
+} from "@/lib/ai/memory/types";
+import { formatEmotionSignalsForPrompt } from "@/lib/ai/emotion-inference";
+import { formatSessionMemoryForPrompt } from "@/lib/ai/memory/session-memory";
+import { formatLongTermMemoryForPrompt } from "@/lib/ai/memory/long-term-memory";
+import { conversationStageLabel } from "@/lib/ai/conversation-stage";
 
 export type RoamieLocation = {
   lat: number;
@@ -120,6 +130,11 @@ export type RoamieRequestContext = {
   locale?: Locale;
   /** AI 陪伴深度：free 基本 / plus 深度個人化 */
   planTier?: PlanTier;
+  /** Roamie 六段對話階段 */
+  conversationStage?: ConversationStage;
+  emotionSignals?: EmotionSignals;
+  sessionMemory?: SessionMemorySnapshot;
+  longTermMemory?: LongTermMemorySnapshot;
 };
 
 const paceLabel: Record<string, string> = { slow: "慢", medium: "中等", active: "想多看" };
@@ -234,6 +249,20 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
   ];
   if (ctx.chatInput?.trim()) lines.push(`【使用者輸入】${ctx.chatInput.trim()}`);
   if (ctx.chatPhase) lines.push(`【對話階段】${ctx.chatPhase}`);
+  if (ctx.conversationStage) {
+    lines.push(
+      `【Roamie 對話流程】${conversationStageLabel(ctx.conversationStage)}（${ctx.conversationStage}）`,
+    );
+  }
+  if (ctx.emotionSignals) {
+    lines.push(`【當下感受推測】${formatEmotionSignalsForPrompt(ctx.emotionSignals)}`);
+  }
+  if (ctx.sessionMemory) {
+    lines.push(`【本輪工作記憶（temporary）】\n${formatSessionMemoryForPrompt(ctx.sessionMemory)}`);
+  }
+  if (ctx.longTermMemory) {
+    lines.push(`【長期記憶（Plus）】\n${formatLongTermMemoryForPrompt(ctx.longTermMemory)}`);
+  }
   if (ctx.focusedPlace)
     lines.push(
       `【使用者剛選的地點】${ctx.focusedPlace.placeName ?? ctx.focusedPlace.name}（${ctx.focusedPlace.type}）— ${ctx.focusedPlace.reason}`,
@@ -282,9 +311,24 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
     lines.push(`【不要推薦的地點】${ctx.rejectedPlaceNames.join("、")}`);
   if (ctx.lastUserIntent?.trim())
     lines.push(`【使用者最新訊息】${ctx.lastUserIntent.trim()}`);
-  lines.push(
-    "【接續規劃】這不是新對話；請針對【使用者最新訊息】回應，並銜接【已選地點】【本頁推薦候選】；summary 結尾必須有 1 個自然下一步提問。",
-  );
+  const stage = ctx.conversationStage;
+  if (stage === "empathize" || stage === "infer" || stage === "clarify") {
+    lines.push(
+      "【接續規劃】先接話、理解感受；recommendations 必須 []；summary 用 1 個溫柔反問收束，不要列店名。",
+    );
+  } else if (stage === "converge") {
+    lines.push(
+      "【接續規劃】收斂方向；至多 0-2 個地點；summary 先呼應上一句，再問一個確認問題。",
+    );
+  } else if (stage === "recommend") {
+    lines.push(
+      "【接續規劃】可推薦 2-4 個地點；先呼應【使用者最新訊息】再介紹；summary 結尾一個自然下一步提問。",
+    );
+  } else {
+    lines.push(
+      "【接續規劃】針對【使用者最新訊息】回應；銜接【已選地點】；勿像搜尋引擎或客服清單。",
+    );
+  }
   return lines.join("\n");
 }
 

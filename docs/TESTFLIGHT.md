@@ -1,11 +1,9 @@
 # Roamie TestFlight 首次打包指南
 
-> **架構說明（重要）**  
-> Roamie 使用 **TanStack Start SSR**（Cloudflare Workers），不是純靜態 SPA。  
-> `npm run build` 產生的 `dist/client` **沒有完整 SPA 入口**，API 與 server functions 需連到**已部署的生產環境**。  
->  
-> TestFlight **第一版**採 **Capacitor 原生殼 + 遠端載入生產 URL**（非高風險 SPA 重構）。  
-> 原生殼仍提供：App Icon、Splash、Safe Area、Keyboard、StatusBar、未來推播等能力。
+> **架構說明**  
+> Roamie 使用 **TanStack Start**（Cloudflare Workers）。  
+> **TestFlight / 正式版**採 **Capacitor bundled 模式**：`dist/client` 內建 SPA 入口，**不需** `npm run dev` 或 `npm run ios:sim`。  
+> AI / server functions / 地圖等仍需要**網路**（連到 Supabase 與已部署的 API）。
 
 ---
 
@@ -46,37 +44,64 @@
 在 `.env` 加入（**不要 commit `.env`**）：
 
 ```bash
-CAPACITOR_SERVER_URL=https://你的生產網域.com
-VITE_APP_ORIGIN=https://你的生產網域.com
+# 正式 Web 網域確定後再填（選用；iOS TestFlight 不依賴此值）
+# VITE_APP_ORIGIN=https://your-production-domain.com
 ```
 
 Supabase Dashboard → Authentication → URL Configuration：
 
-- **Site URL**：`https://你的生產網域.com`
-- **Redirect URLs**：
-  - `https://你的生產網域.com/auth/callback`
-  - `http://localhost:8080/auth/callback`（本機開發）
+- **Site URL**：可先設 `http://localhost:8080`（本機）或之後的正式 HTTPS 網域
+- **Redirect URLs**（至少加入）：
+  - `roamie://auth/callback`（**iOS TestFlight / 真機必備** — Google、Apple、Supabase OAuth 統一）
+  - `http://localhost:8080/auth/callback`（本機 Vite）
+  - 正式網域確定後再補：`https://<你的網域>/auth/callback`（透過 `VITE_APP_ORIGIN` 設定，非寫死）
+- **Apple Sign In**：Supabase Authorized Client IDs 需含 `com.shuode.roamie`（原生）與 `com.roamie.service`（Web）
 
 Google Cloud Console → OAuth iOS client（若使用 Google 登入）：
 
-- Bundle ID：`com.roamie.app`
+- Bundle ID：`com.shuode.roamie`
 
 Apple Sign In：在 Apple Developer → Identifiers → App ID 啟用 Sign in with Apple。
 
+### OAuth 除錯（Xcode / Safari Web Inspector）
+
+登入流程會輸出 `[auth]` 日誌，包含：
+
+- `oauth.start`：`provider`、`redirectTo`（原生為 `roamie://auth/callback`）、`callbackUrl`
+- `oauth.authorize_url`：Supabase 導向 Google/Apple 的網址（token 已 redact）
+- `oauth.deep_link`：TestFlight 從 `roamie://auth/callback?code=…` 回到 App
+- `oauth.callback_opened` / `session.ok` / `session.failed`
+- `apple.native.start`：Bundle ID `com.shuode.roamie`、Supabase `redirectURI`
+
+**Google（iOS）**：Supabase OAuth → 系統瀏覽器 → `roamie://auth/callback` → App 內 `/auth/callback` 兌換 PKCE code。
+
+**Apple（iOS 真機/TestFlight）**：原生 Sign in with Apple → `signInWithIdToken`（不走 mock）。
+
+建置前請確認 `.env`：`VITE_APPLE_SIGN_IN_ENABLED=true`（否則 Apple 按鈕會停用）。
+
 ---
 
-## Step 2 — Production Build 驗證
+## Step 2 — Production Build（TestFlight 必跑）
 
 ```bash
 npm install
-npm run build
-node scripts/capacitor-prepare.mjs
+npm run ios:release
 ```
+
+等同於：`npm run build` → 產生 bundled `index.html` → `cap sync ios` → 驗證無 `server.url`。
 
 預期：
 
-- `dist/client/index.html` 已產生（Capacitor 占位用）
-- 若已設定 `CAPACITOR_SERVER_URL`，prepare 腳本會印出 URL
+- `dist/client/index.html` 含 `<script type="module" …>`（**不是**「npm run ios:sim」占位頁）
+- `dist/client/index.html` 含 `$_TSR` SPA bootstrap（TanStack Start 離線啟動必需；缺了會只剩奶油色背景）
+- `ios/App/App/capacitor.config.json` **沒有** `server.url`
+- `ios/App/App/public/` 已同步最新 assets
+
+### 若 TestFlight 只有奶油色空白畫面
+
+代表 WebView 載入了 bundled JS，但 **缺少 TanStack Start 的 `window.$_TSR` SSR 啟動資料**（production 下 hydration 會靜默失敗）。請重新執行 `npm run ios:release`，並確認 `ios/App/App/public/index.html` 內有 `$_TSR` 區塊。
+
+若 ErrorBoundary 顯示 `undefined is not an object (evaluating 'g?.routes[_.routeId]')`，代表 `$_TSR` 的 manifest 缺少 `routes: {}`（`manifest?.routes[routeId]` 在 `routes` 為 undefined 時會 crash）。請重新 `npm run ios:release` 並確認 index.html 含 `manifest:{routes:{}}`。
 
 ---
 
@@ -94,7 +119,7 @@ npm run cap:open:ios   # 開啟 Xcode
 
 1. 選 Target **App** → **Signing & Capabilities**
    - Team：你的 Apple Developer Team
-   - Bundle Identifier：`com.roamie.app`
+   - Bundle Identifier：`com.shuode.roamie`
    - Automatically manage signing：✓
 
 2. **General**
@@ -121,10 +146,18 @@ npm run cap:open:ios   # 開啟 Xcode
    **通知權限**：iOS 系統通知對話框文字由 Apple 提供，無法透過 Info.plist 自訂；僅定位／相機／相簿可本地化。
 
 5. **Sign in with Apple** capability（若使用 Apple 登入）
+   - Xcode → Target → **Signing & Capabilities** → **Sign in with Apple**
+   - 專案已含 `ios/App/App/App.entitlements`
+   - Supabase → Auth → Apple → **Authorized Client IDs** 需包含：
+     - `com.shuode.roamie`（iOS 原生 / TestFlight）
+     - `com.roamie.service`（Web OAuth，若有）
+   - `.env` 建置前：`VITE_APPLE_SIGN_IN_ENABLED=true`
 
 ---
 
 ## Step 5 — Archive & TestFlight
+
+**螢幕方向**：**iPhone** 僅直向（`UISupportedInterfaceOrientations` 只有 `UIInterfaceOrientationPortrait`；執行期 `PortraitBridgeViewController` 亦鎖 portrait）。**iPad** 的 `UISupportedInterfaceOrientations~ipad` 須含 Portrait / Upside Down / Landscape Left / Right（App Store 上架要求）；Xcode → Target **App** → General → Deployment Info 請分別確認 iPhone 與 iPad 勾選與 Info.plist 一致。
 
 1. Xcode 頂部裝置選 **Any iOS Device (arm64)**
 2. **Product → Archive**
@@ -141,6 +174,7 @@ npm run cap:open:ios   # 開啟 Xcode
 - [ ] 旅行偏好測驗完成後個人頁即時更新
 - [ ] 地圖定位、AI 對話、探索推薦
 - [ ] 聊天鍵盤不遮擋輸入框
+- [ ] **直向鎖定**：實機橫放仍維持直向（首頁、聊天、地圖、收藏、個人、登入、onboarding、sheet/modal 皆不轉橫向）
 - [ ] 飛航模式：顯示合理錯誤（非白屏 crash）
 
 ---
@@ -163,7 +197,7 @@ A: 確認 Supabase Redirect URL 包含生產網域 `/auth/callback`；TestFlight
 - [ ] App Store Connect 隱私問卷（資料收集：位置、帳號、使用狀況）
 - [ ] 年齡分級、支援 URL、隱私權政策 URL
 - [ ] 審核用測試帳號（若需登入）
-- [ ] Google Maps API key 限制 iOS bundle `com.roamie.app`
+- [ ] Google Maps API key 限制 iOS bundle `com.shuode.roamie`
 - [ ] 螢幕截圖（6.7" / 6.5" / iPad 若支援）
 
 ---

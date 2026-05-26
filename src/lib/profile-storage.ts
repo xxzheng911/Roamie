@@ -303,8 +303,16 @@ export async function savePersonalityToProfile(prefs: TravelPreferences): Promis
       personalityType: p.type,
       personalitySummary: p.summary,
     };
-    await supabase
+    const { error } = await supabase
       .from("profiles")
       .upsert({ id: userId, ai_preferences: extras as never }, { onConflict: "id" });
+    if (error) {
+      const msg = error.message ?? "";
+      if (/record\s+\"new\"\s+has\s+no\s+field\s+\"updated_at\"/i.test(msg)) {
+        console.warn("[profile] Supabase profile schema mismatch, skipped ai_preferences sync", msg);
+        return;
+      }
+      throw new Error(error.message);
+    }
   }
 }

@@ -1,4 +1,9 @@
 import type { ChatPhase } from "@/lib/ai/context";
+import {
+  chatPhaseForStage,
+  resolveConversationStage,
+} from "@/lib/ai/conversation-stage";
+import type { TripIntent } from "@/lib/recommendation/trip-intent";
 import type { ChatMsg } from "@/lib/chat-history";
 import {
   isUserConfirmingItinerary,
@@ -98,40 +103,11 @@ export function resolveChatApiPhase(
   session: ChatPlanningSession,
   userText: string,
   override?: ChatPhase,
+  tripIntent?: TripIntent,
 ): ChatPhase {
   if (override) return override;
-
-  const t = userText.trim();
-
-  if (session.phase === "ready" || isUserConfirmingItinerary(t)) return "confirm";
-  if (session.phase === "generating" || session.phase === "done") return "collect";
-  if (session.phase === "discover") return "discover";
-
-  if (
-    session.fromPlanForm &&
-    !userWantsPlanningFinalize(t) &&
-    (userWantsMoreRecommendations(t) || session.selectedPlaces.length < 3)
-  ) {
-    return "expand";
-  }
-
-  if (userWantsPlanningFinalize(t) && session.selectedPlaces.length >= 1) return "collect";
-
-  if (userWantsMoreRecommendations(t)) {
-    return session.selectedPlaces.length ? "expand" : "recommend";
-  }
-
-  if (
-    session.fromMoodFlow &&
-    session.selectedPlaces.length > 0 &&
-    !userWantsPlanningFinalize(t)
-  ) {
-    return "expand";
-  }
-
-  if (session.selectedPlaces.length) return "followup";
-  if (session.recommendedPlaces.length) return "recommend";
-  return session.phase === "collect" ? "collect" : "recommend";
+  const stage = resolveConversationStage(session, userText, tripIntent);
+  return chatPhaseForStage(stage, session, userText);
 }
 
 /** 對話紀錄給 AI：助理訊息用 summary + 地點名，避免整包 JSON 難以接話 */

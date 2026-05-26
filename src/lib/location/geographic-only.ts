@@ -5,6 +5,9 @@ export const TRIP_LOCATION_PRIMARY_TYPES = [
   "locality",
   "administrative_area_level_1",
   "administrative_area_level_2",
+  "administrative_area_level_3",
+  "sublocality",
+  "neighborhood",
 ] as const;
 
 const ALLOWED_GEO_TYPES = new Set([
@@ -12,6 +15,9 @@ const ALLOWED_GEO_TYPES = new Set([
   "locality",
   "administrative_area_level_1",
   "administrative_area_level_2",
+  "administrative_area_level_3",
+  "sublocality",
+  "neighborhood",
   "political",
   "colloquial_area",
   "archipelago",
@@ -67,7 +73,10 @@ const REJECTED_POI_TYPES = new Set([
 export function isGeographicPlaceTypes(types: string[] | undefined): boolean {
   if (!types?.length) return true;
   if (types.some((t) => REJECTED_POI_TYPES.has(t))) return false;
-  return types.some((t) => ALLOWED_GEO_TYPES.has(t));
+  if (types.some((t) => ALLOWED_GEO_TYPES.has(t))) return true;
+  /** Geocoding API 有時只回傳 geocode / plus_code */
+  if (types.includes("geocode") && !types.some((t) => REJECTED_POI_TYPES.has(t))) return true;
+  return false;
 }
 
 export function isRejectedTripLocationLabel(label: string): boolean {

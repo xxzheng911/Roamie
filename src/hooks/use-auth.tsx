@@ -1,21 +1,15 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
+import { logAppError } from "@/lib/log-error";
 import { supabase } from "@/lib/supabase";
 import { hasOAuthCallbackParams } from "@/lib/auth-oauth";
-import { getClientAuthSession, readGuestFlag, writeGuestFlag } from "@/lib/auth-session";
-import {
-  disableGuestMode,
-  enableGuestMode,
-  GUEST_MODE_CHANGED_EVENT,
-  isGuestMode,
-} from "@/lib/guest-mode";
+import { logAuthDebug } from "@/lib/auth-debug";
+import { getClientAuthSession } from "@/lib/auth-session";
 
 type AuthCtx = {
   user: User | null;
   session: Session | null;
   loading: boolean;
-  isGuest: boolean;
-  enterGuestMode: () => void;
   signOut: () => Promise<void>;
 };
 
@@ -23,24 +17,15 @@ const Ctx = createContext<AuthCtx>({
   user: null,
   session: null,
   loading: true,
-  isGuest: false,
-  enterGuestMode: () => {},
   signOut: async () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
-  const [isGuest, setIsGuest] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
-
-    const syncGuest = () => {
-      if (!cancelled) setIsGuest(isGuestMode());
-    };
-
-    syncGuest();
 
     const finishLoading = () => {
       if (!cancelled) setLoading(false);
@@ -54,21 +39,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (sameUser && sameToken) return prev;
         return s;
       });
-      if (s) {
-        disableGuestMode();
-        setIsGuest(false);
-      } else {
-        setIsGuest(readGuestFlag());
-      }
       finishLoading();
     };
 
-    const onGuestModeChanged = () => syncGuest();
-    window.addEventListener(GUEST_MODE_CHANGED_EVENT, onGuestModeChanged);
-
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, s) => {
+    } = supabase.auth.onAuthStateChange((event, s) => {
+      logAuthDebug("session.state_change", {
+        event,
+        hasSession: Boolean(s),
+        userId: s?.user?.id ?? null,
+        provider: s?.user?.app_metadata?.provider ?? null,
+      });
       applySession(s);
     });
 
@@ -79,9 +61,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const s = await getClientAuthSession();
         if (!cancelled) applySession(s);
       } catch (e) {
-        console.error("[auth] getSession failed", e);
+        logAppError("[auth] getSession failed", e);
         if (!cancelled) {
-          setIsGuest(readGuestFlag());
           finishLoading();
         }
       }
@@ -94,26 +75,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true;
-      window.clearEventListener(GUEST_MODE_CHANGED_EVENT, onGuestModeChanged);
       window.clearTimeout(fallback);
       subscription.unsubscribe();
     };
   }, []);
 
-  const enterGuestMode = () => {
-    enableGuestMode();
-    setSession(null);
-    setIsGuest(true);
-    setLoading(false);
-  };
-
   const signOut = async () => {
-    const wasGuest = readGuestFlag();
-    disableGuestMode();
-    setIsGuest(false);
     setSession(null);
-    if (!wasGuest) {
-      await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut({ scope: "global" });
+    } catch (e) {
+      console.warn("[auth] signOut failed", e);
     }
   };
 
@@ -123,8 +95,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user: session?.user ?? null,
         session,
         loading,
-        isGuest,
-        enterGuestMode,
         signOut,
       }}
     >

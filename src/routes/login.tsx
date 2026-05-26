@@ -1,72 +1,109 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
 import { LegalDocumentSheet } from "@/components/LegalDocumentSheet";
+import { AuthSignInError } from "@/components/auth/AuthSignInError";
 import { TERMS_OF_SERVICE, PRIVACY_POLICY } from "@/content/legal";
 import { isOAuthProviderEnabled } from "@/constants/auth";
-import { startOAuthSignIn, type OAuthProvider } from "@/lib/auth-oauth";
-import { useAuth } from "@/hooks/use-auth";
-import { hasSeenOnboarding, hydrateOnboardingStorage } from "@/lib/app-onboarding-storage";
+import { signInWithProvider, type OAuthProvider } from "@/lib/auth-oauth";
+import { formatSupabaseRedirectAllowListHint } from "@/lib/auth-redirect";
+import { finishPostAuthRedirect } from "@/lib/auth-post-redirect";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
+import { useAuth } from "@/hooks/use-auth";
 import { RoamieMascotFigure } from "@/components/onboarding/RoamieMascotFigure";
+import { OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
 
 const isDev = import.meta.env.DEV;
 
 export const Route = createFileRoute("/login")({
-  beforeLoad: async () => {
-    if (typeof window === "undefined") return;
-    await hydrateOnboardingStorage();
-    if (!hasSeenOnboarding()) {
-      throw redirect({ to: "/intro" });
-    }
-  },
   component: Login,
 });
 
 function Login() {
   const navigate = useNavigate();
-  const { user, loading, isGuest, enterGuestMode } = useAuth();
+  const { user, loading } = useAuth();
   const [busy, setBusy] = useState<OAuthProvider | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [legalOpen, setLegalOpen] = useState<"terms" | "privacy" | null>(null);
   const redirectedRef = useRef(false);
 
   useEffect(() => {
     if (loading || redirectedRef.current) return;
-    if (user && !isGuest) {
+    if (user) {
       redirectedRef.current = true;
-      void resolveStartupPath({ isGuest: false, hasSession: true }).then((to) => {
+      void resolveStartupPath({ hasSession: true }).then((to) => {
         navigate({ to, replace: true });
       });
     }
-  }, [user, loading, isGuest, navigate]);
+  }, [user, loading, navigate]);
+
+  useEffect(() => {
+    const onOAuthFlow = (e: Event) => {
+      const detail = (e as CustomEvent<OAuthFlowDetail>).detail;
+      if (detail.phase === "cancelled") {
+        setBusy(null);
+        return;
+      }
+      if (detail.phase === "error") {
+        setBusy(null);
+        setAuthError(detail.message);
+      }
+    };
+    window.addEventListener(OAUTH_FLOW_EVENT, onOAuthFlow);
+    return () => window.removeEventListener(OAUTH_FLOW_EVENT, onOAuthFlow);
+  }, []);
 
   const signIn = async (provider: OAuthProvider) => {
+    setAuthError(null);
+
     if (!isOAuthProviderEnabled(provider)) {
-      toast.message("Apple 登入即將開放，請先使用 Google 或訪客模式體驗。");
+      const msg =
+        provider === "apple"
+          ? "Apple 登入目前無法使用。請在 iOS App 上重試，或確認 Supabase 已啟用 Apple Provider。"
+          : "此登入方式暫時無法使用。";
+      setAuthError(msg);
       return;
     }
 
     setBusy(provider);
-    toast.message(provider === "google" ? "正在跳轉至 Google…" : "正在跳轉至 Apple…");
+    toast.message(
+      provider === "google"
+        ? "正在開啟 Google 登入…"
+        : provider === "apple"
+          ? "正在使用 Apple 登入…"
+          : "正在登入…",
+    );
 
     try {
-      const result = await startOAuthSignIn(provider);
+      const result = await signInWithProvider(provider);
       if (!result.ok) {
-        toast.error(result.message || "登入沒成功，待會再試一次。");
         setBusy(null);
+        if (result.cancelled) return;
+        let msg = result.message || "登入沒成功，待會再試一次。";
+        if (/requested path is invalid|redirect url|nonces?\s*mismatch/i.test(msg)) {
+          msg = `${msg}\n\n請確認 Supabase Redirect URLs 已加入：\n${formatSupabaseRedirectAllowListHint()}`;
+        }
+        setAuthError(msg);
+        console.error("[auth] sign-in failed", { provider, message: msg });
+        return;
       }
-    } catch (e) {
-      console.error("[oauth] sign-in threw", e);
-      toast.error("登入沒成功，待會再試一次。");
-      setBusy(null);
-    }
-  };
 
-  const startGuest = async () => {
-    enterGuestMode();
-    const to = await resolveStartupPath({ isGuest: true, hasSession: false });
-    navigate({ to, replace: true });
+      const { canUseNativeAppleSignIn } = await import("@/lib/auth-apple-native");
+      if (provider === "apple" && canUseNativeAppleSignIn()) {
+        const next = await resolveStartupPath({ hasSession: true });
+        setBusy(null);
+        toast.success("登入成功");
+        finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }));
+        return;
+      }
+
+      /* Google / Web Apple：等待 deep link → /auth/callback；busy 直到 browser 關閉或 callback */
+    } catch (e) {
+      console.error("[auth] sign-in threw", e);
+      setBusy(null);
+      setAuthError(e instanceof Error ? e.message : "登入沒成功，待會再試一次。");
+    }
   };
 
   return (
@@ -86,18 +123,23 @@ function Login() {
         </div>
 
         <div className="space-y-3">
-          {isGuest ? (
-            <p className="rounded-2xl border border-border/80 bg-card/70 px-4 py-3 text-center text-sm leading-relaxed text-muted-foreground">
-              登入後可同步本裝置的訪客行程與收藏至雲端。
-            </p>
+          {authError ? (
+            <AuthSignInError
+              variant="system"
+              title="登入暫時沒有成功"
+              message={authError}
+              onRetry={() => setAuthError(null)}
+              retryLabel="關閉"
+            />
           ) : null}
+
           <button
             type="button"
             onClick={() => signIn("google")}
             disabled={busy !== null}
             className="flex w-full items-center justify-center gap-2 rounded-full bg-ink py-4 text-[15px] font-medium text-background transition active:scale-[0.98] disabled:opacity-50"
           >
-            <GoogleIcon /> 使用 Google 繼續
+            <GoogleIcon /> {busy === "google" ? "Google 登入進行中…" : "使用 Google 繼續"}
           </button>
 
           <button
@@ -106,21 +148,8 @@ function Login() {
             disabled={busy !== null}
             className="flex w-full items-center justify-center gap-2 rounded-full border border-border bg-card py-4 text-[15px] font-medium text-foreground transition active:scale-[0.98] disabled:opacity-50"
           >
-            <AppleIcon /> 以 Apple 登入
+            <AppleIcon /> {busy === "apple" ? "Apple 登入進行中…" : "以 Apple 登入"}
           </button>
-
-          <button
-            type="button"
-            onClick={startGuest}
-            disabled={busy !== null}
-            className="flex w-full items-center justify-center rounded-full border border-border/80 bg-cream py-4 text-[15px] font-medium text-foreground/90 transition active:scale-[0.98] disabled:opacity-50"
-          >
-            訪客模式先體驗
-          </button>
-
-          <p className="text-center text-[11px] leading-relaxed text-muted-foreground">
-            訪客資料僅保存在本裝置，登入後可同步至雲端。
-          </p>
 
           <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
             繼續即代表同意 Roamie 的
@@ -146,16 +175,19 @@ function Login() {
             <button
               type="button"
               onClick={() => {
-                void import("@/lib/dev-first-run-reset").then(({ resetFirstRunForDev }) =>
-                  resetFirstRunForDev().then(() => {
-                    toast.success("已重置首次使用流程");
-                    navigate({ to: "/loading", search: { to: "/intro" }, replace: true });
-                  }),
-                );
+                // Dev-only: clear local app state for a clean boot.
+                try {
+                  localStorage.clear();
+                  sessionStorage.clear();
+                } catch {
+                  /* ignore */
+                }
+                toast.success("已清除本機狀態");
+                window.location.replace("/login");
               }}
               className="mt-2 w-full rounded-full border border-dashed border-border py-3 text-xs text-muted-foreground"
             >
-              [Dev] 重置 Onboarding
+              [Dev] 清除本機狀態
             </button>
           ) : null}
         </div>

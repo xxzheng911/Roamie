@@ -44,26 +44,17 @@ function navigateTo(url: string): boolean {
   }
 }
 
-/** Capacitor App.openUrl（預留，正式 App 注入後可用） */
-async function tryCapacitorOpenSettings(): Promise<boolean> {
+/** Capacitor 原生殼：直接開啟系統 App 設定 */
+function tryCapacitorNativeSettings(): boolean {
   const cap = window.Capacitor;
-  const openUrl = cap?.Plugins?.App?.openUrl;
-  if (!openUrl) return false;
+  if (!cap?.isNativePlatform?.()) return false;
   const platform = cap.getPlatform?.() ?? detectMobilePlatform();
-  try {
-    if (platform === "ios") {
-      await openUrl({ url: "app-settings:" });
-      return true;
-    }
-    if (platform === "android") {
-      const pkg = androidPackageId();
-      await openUrl({
-        url: `intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:${pkg};end`,
-      });
-      return true;
-    }
-  } catch (e) {
-    console.info("[Roamie] Capacitor App.openUrl settings failed", e);
+  if (platform === "ios") return navigateTo("app-settings:");
+  if (platform === "android") {
+    const pkg = androidPackageId();
+    return navigateTo(
+      `intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:${pkg};end`,
+    );
   }
   return false;
 }
@@ -107,7 +98,7 @@ export async function openAppSettings(): Promise<boolean> {
   }
 
   if (await tryNativeBridge()) return true;
-  if (await tryCapacitorOpenSettings()) return true;
+  if (tryCapacitorNativeSettings()) return true;
 
   const platform = detectMobilePlatform();
   if (platform === "ios" && tryIosAppSettings()) return true;

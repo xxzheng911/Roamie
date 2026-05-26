@@ -38,3 +38,14 @@ export function geocodeReverseUrl(
   const region = options?.region ? `&region=${options.region}` : "";
   return `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&language=${language}${region}&result_type=locality|administrative_area_level_1|administrative_area_level_2&key=${apiKey}`;
 }
+
+/** 文字 → 座標（規劃表單：日本大阪、韓國首爾等） */
+export function geocodeForwardUrl(
+  address: string,
+  apiKey: string,
+  options?: { language?: string; region?: string },
+): string {
+  const language = options?.language ?? "zh-TW";
+  const region = options?.region ? `&region=${options.region}` : "";
+  return `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&language=${language}${region}&key=${apiKey}`;
+}

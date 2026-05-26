@@ -1,55 +1,80 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import type { Locale } from "@/lib/i18n/types";
-import { requestDeviceLocation, watchDeviceLocation } from "@/lib/device-location";
+import {
+  requestDeviceLocation,
+  watchDeviceLocation,
+  type LocationPermissionState,
+} from "@/lib/device-location";
 import { getWeather, type WeatherSummary } from "@/lib/weather.functions";
+import { rememberLastSearchLocation } from "@/lib/last-search-location";
+import { fetchWeatherClientDirect } from "@/lib/weather-client";
 
 export type HomeWeatherStatus = "loading" | "ready" | "error";
 
 const FETCH_TIMEOUT_MS = 20_000;
 const LOCATION_REFETCH_MIN_M = 0.05;
 
+export type HomeUserLocation = {
+  lat: number;
+  lng: number;
+  city: string;
+  source: "capacitor" | "browser" | "fallback";
+};
+
 export function useHomeWeather(locale: Locale) {
   const fetchWeather = useServerFn(getWeather);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [status, setStatus] = useState<HomeWeatherStatus>("loading");
   const [error, setError] = useState<string | null>(null);
-  const [userLocation, setUserLocation] = useState<{
-    lat: number;
-    lng: number;
-    city: string;
-    source: "capacitor" | "browser" | "fallback";
-  } | null>(null);
+  const [userLocation, setUserLocation] = useState<HomeUserLocation | null>(null);
   const [usedFallbackLocation, setUsedFallbackLocation] = useState(false);
+  const [locationPermission, setLocationPermission] =
+    useState<LocationPermissionState>("unknown");
   const loadIdRef = useRef(0);
   const lastCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
+  const lastUsedFallbackRef = useRef(false);
 
-  const fetchForCoords = useCallback(
-    async (lat: number, lng: number, locMeta: { city: string; usedFallback: boolean; source: "capacitor" | "browser" | "fallback" }) => {
+  const fetchWeatherForCoords = useCallback(
+    async (
+      lat: number,
+      lng: number,
+      locMeta: {
+        city: string;
+        usedFallback: boolean;
+        source: "capacitor" | "browser" | "fallback";
+        permission: LocationPermissionState;
+      },
+    ) => {
       const loadId = ++loadIdRef.current;
       setStatus("loading");
       setError(null);
-      setUserLocation({ lat, lng, city: locMeta.city, source: locMeta.source });
-      setUsedFallbackLocation(locMeta.usedFallback);
 
-      console.info("[Weather] request params", { lat, lng, locale, source: locMeta.source });
+      const origin = import.meta.env.VITE_APP_ORIGIN as string | undefined;
+      console.info("[Weather] fetch start", {
+        lat,
+        lng,
+        locale,
+        source: locMeta.source,
+        viteAppOrigin: origin ?? "(not set)",
+      });
+
+      let lastError: string | null = null;
 
       try {
         const result = await Promise.race([
           fetchWeather({ data: { lat, lng, locale } }),
           new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error("weather fetch timeout")), FETCH_TIMEOUT_MS);
+            setTimeout(() => reject(new Error("weather serverFn timeout")), FETCH_TIMEOUT_MS);
           }),
         ]);
 
         if (loadId !== loadIdRef.current) return;
 
-        console.info("[Weather] response", {
+        console.info("[Weather] serverFn response", {
           error: result.error,
           hasWeather: Boolean(result.weather),
           city: result.weather?.city,
-          condition: result.weather?.condition,
-          tempC: result.weather?.tempC,
         });
 
         if (result.weather) {
@@ -58,44 +83,88 @@ export function useHomeWeather(locale: Locale) {
             city: result.weather.city || locMeta.city || "目前位置",
           };
           setWeather(parsed);
-          if (parsed.city && parsed.city !== locMeta.city) {
-            setUserLocation((prev) =>
-              prev ? { ...prev, city: parsed.city } : { lat, lng, city: parsed.city, source: locMeta.source },
-            );
-          }
+          rememberLastSearchLocation({ lat, lng, city: parsed.city });
           setStatus("ready");
           return;
         }
-
-        setWeather(null);
-        setError(result.error ?? "no_weather_data");
-        setStatus("error");
+        lastError = result.error ?? "no_weather_data";
       } catch (e) {
-        if (loadId !== loadIdRef.current) return;
-        const msg = e instanceof Error ? e.message : "weather fetch failed";
-        console.error("[Weather] response", { error: msg });
-        setWeather(null);
-        setError(msg);
-        setStatus("error");
+        const msg = e instanceof Error ? e.message : String(e);
+        lastError = `serverFn: ${msg}`;
+        console.error("[Weather] serverFn failed", { error: msg, viteAppOrigin: origin ?? null });
       }
+
+      if (loadId !== loadIdRef.current) return;
+
+      console.warn("[Weather] trying client direct fallback", { lastError });
+      const client = await fetchWeatherClientDirect(lat, lng);
+      if (loadId !== loadIdRef.current) return;
+
+      if (client.weather) {
+        const parsed = {
+          ...client.weather,
+          city: client.weather.city || locMeta.city || "目前位置",
+        };
+        setWeather(parsed);
+        rememberLastSearchLocation({ lat, lng, city: parsed.city });
+        setStatus("ready");
+        console.info("[Weather] client fallback succeeded");
+        return;
+      }
+
+      const combined = [lastError, client.error].filter(Boolean).join(" → ");
+      console.error("[Weather] all sources failed", { combined });
+      setWeather(null);
+      setError(combined || "weather unavailable");
+      setStatus("error");
     },
     [fetchWeather, locale],
   );
 
+  const applyLocation = useCallback(
+    (loc: Awaited<ReturnType<typeof requestDeviceLocation>>) => {
+      lastCoordsRef.current = { lat: loc.lat, lng: loc.lng };
+      lastUsedFallbackRef.current = loc.usedFallback;
+      setUserLocation({
+        lat: loc.lat,
+        lng: loc.lng,
+        city: loc.city || "",
+        source: loc.source,
+      });
+      setUsedFallbackLocation(loc.usedFallback);
+      setLocationPermission(loc.permission);
+      console.info("[Weather] location ready for nearby", {
+        lat: loc.lat,
+        lng: loc.lng,
+        usedFallback: loc.usedFallback,
+        permission: loc.permission,
+      });
+    },
+    [],
+  );
+
   const load = useCallback(async () => {
     const loc = await requestDeviceLocation();
-    lastCoordsRef.current = { lat: loc.lat, lng: loc.lng };
-    await fetchForCoords(loc.lat, loc.lng, {
+    applyLocation(loc);
+    await fetchWeatherForCoords(loc.lat, loc.lng, {
       city: loc.city,
       usedFallback: loc.usedFallback,
       source: loc.source,
+      permission: loc.permission,
     });
-  }, [fetchForCoords]);
+  }, [applyLocation, fetchWeatherForCoords]);
 
   useEffect(() => {
     void load();
 
+    const retryTimer = window.setTimeout(() => {
+      if (!lastUsedFallbackRef.current) return;
+      void load();
+    }, 6000);
+
     const stopWatch = watchDeviceLocation((loc) => {
+      if (loc.usedFallback) return;
+
       const prev = lastCoordsRef.current;
       const moved =
         !prev ||
@@ -104,19 +173,21 @@ export function useHomeWeather(locale: Locale) {
 
       if (!moved) return;
 
-      lastCoordsRef.current = { lat: loc.lat, lng: loc.lng };
-      void fetchForCoords(loc.lat, loc.lng, {
+      applyLocation(loc);
+      void fetchWeatherForCoords(loc.lat, loc.lng, {
         city: loc.city,
-        usedFallback: false,
+        usedFallback: loc.usedFallback,
         source: loc.source,
+        permission: loc.permission,
       });
     });
 
     return () => {
+      window.clearTimeout(retryTimer);
       loadIdRef.current += 1;
       stopWatch();
     };
-  }, [load, fetchForCoords]);
+  }, [load, applyLocation, fetchWeatherForCoords]);
 
   return {
     weather,
@@ -124,6 +195,7 @@ export function useHomeWeather(locale: Locale) {
     error,
     userLocation,
     usedFallbackLocation,
+    locationPermission,
     reload: load,
   };
 }

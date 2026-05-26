@@ -56,6 +56,8 @@
   --safe-area-left: env(safe-area-inset-left, 0px);
   --safe-area-right: env(safe-area-inset-right, 0px);
   --app-nav-total-height: calc(var(--bottom-nav-height) + var(--safe-area-bottom));
+  /** Sonner 頂部 toast：狀態列 + 動態島安全距 */
+  --toast-offset-top: calc(var(--safe-area-top) + 12px);
 
   --radius: 1.25rem;
 
@@ -308,8 +310,9 @@
     display: none;
   }
   .map-explore-card-item {
-    flex: 0 0 74%;
-    max-width: 20rem;
+    flex: 0 0 17.25rem;
+    width: 17.25rem;
+    height: 22.75rem;
     transform: none !important;
   }
   .map-explore-card-item--last {
@@ -1230,6 +1233,72 @@ body.roamie-body {
   -webkit-overflow-scrolling: touch;
 }
 
+/** 探索地圖全屏時鎖住主滾動，避免與手勢衝突；_app 依路由同步 class */
+html.map-route-active main.app-scroll {
+  overflow: hidden !important;
+}
+
+.profile-page {
+  -webkit-overflow-scrolling: touch;
+}
+
+.welcome-tier-scroll {
+  -webkit-overflow-scrolling: touch;
+}
+
+.chat-page {
+  width: 100%;
+}
+
+/**
+ * 聊天輸入列：fixed 定位，與 Bottom Tab 脫鉤。
+ * - 鍵盤收起：bottom = Tab Bar + safe area
+ * - 鍵盤展開（Capacitor body resize）：bottom = 0，貼齊鍵盤
+ * - 鍵盤展開（Web visualViewport）：bottom = --chat-keyboard-inset
+ */
+html.chat-route-active .chat-input-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  z-index: 45;
+  max-width: 100%;
+  bottom: calc(var(--bottom-nav-height, 4.25rem) + env(safe-area-inset-bottom, 0px));
+}
+
+html.chat-route-active.chat-keyboard-open .chat-input-bar,
+html.chat-keyboard-open .chat-input-bar {
+  bottom: 0;
+}
+
+html.chat-route-active.chat-keyboard-open.chat-keyboard-manual-inset .chat-input-bar,
+html.chat-keyboard-open.chat-keyboard-manual-inset .chat-input-bar {
+  bottom: var(--chat-keyboard-inset, 0px);
+}
+
+html.chat-route-active .chat-messages {
+  padding-bottom: calc(
+    var(--bottom-nav-height, 4.25rem) + var(--chat-composer-height, 5.75rem) +
+      env(safe-area-inset-bottom, 0px) + 12px
+  );
+}
+
+html.chat-keyboard-open .chat-messages {
+  padding-bottom: calc(var(--chat-composer-height, 5.75rem) + 16px);
+}
+
+/** 聊天頁：鍵盤展開時隱藏 Tab Bar */
+html.chat-keyboard-open .bottom-nav,
+html.chat-keyboard-open .bottom-nav.chat-nav-keyboard-hide {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(100%);
+}
+
+html.chat-keyboard-open main.app-scroll {
+  padding-bottom: 0 !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-rise,
   .animate-breathe,
@@ -1245,4 +1314,12 @@ body.roamie-body {
   .roamie-splash__route-dot {
     animation: none;
   }
+}
+
+/* Sonner：頂部通知避開動態島／瀏海（offset prop 備援） */
+[data-sonner-toaster][data-y-position="top"] {
+  top: var(--toast-offset-top) !important;
+}
+[data-sonner-toaster][data-y-position="top"] [data-sonner-toast] {
+  max-width: min(100vw - 2rem, 24rem);
 }

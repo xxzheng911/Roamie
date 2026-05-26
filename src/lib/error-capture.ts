@@ -1,6 +1,8 @@
 // Captures the original Error out-of-band so server.ts can recover the stack
 // when h3 has already swallowed the throw into a generic 500 Response.
 
+import { logAppError } from "@/lib/log-error";
+
 let lastCapturedError: { error: unknown; at: number } | undefined;
 const TTL_MS = 5_000;
 
@@ -9,10 +11,16 @@ function record(error: unknown) {
 }
 
 if (typeof globalThis.addEventListener === "function") {
-  globalThis.addEventListener("error", (event) => record((event as ErrorEvent).error ?? event));
-  globalThis.addEventListener("unhandledrejection", (event) =>
-    record((event as PromiseRejectionEvent).reason),
-  );
+  globalThis.addEventListener("error", (event) => {
+    const err = (event as ErrorEvent).error ?? (event as ErrorEvent).message;
+    record(err);
+    logAppError("APP_INIT_ERROR", err, { source: "globalThis.error" });
+  });
+  globalThis.addEventListener("unhandledrejection", (event) => {
+    const reason = (event as PromiseRejectionEvent).reason;
+    record(reason);
+    logAppError("APP_UNHANDLED_REJECTION", reason, { source: "globalThis.unhandledrejection" });
+  });
 }
 
 export function consumeLastCapturedError(): unknown {

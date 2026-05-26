@@ -4,20 +4,21 @@ import type { SavedPlace } from "@/lib/places-storage";
 import {
   COFFEE_MIN_FILTERED_RESULTS,
   DISTRICT_MIN_FILTERED_RESULTS,
-  DEFAULT_SEARCH_RADIUS_M,
+} from "@/lib/places-search-config";
+import { allowDemoPlaceFallback, searchRadiusMeters } from "@/lib/search-radius";
+import {
   getExploreTextFallbackQueries,
   type ExploreCategory,
 } from "@/lib/places-search-config";
 import {
   filterByExploreCategory,
   matchesCategory,
-  getExploreCategoryDisplayLabel,
 } from "@/lib/place-category";
 import { filterExplorePlaces } from "@/lib/filter-explore-places";
 import { distanceMeters, savedPlacesNear } from "@/lib/map-explore";
 import { sortExplorePlaces } from "@/lib/sort-explore-places";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
-import { mapPlaceResultToChatItem } from "@/lib/chat-session";
+import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { getMockHomeNearbyPicks, getMockPlacesForCategory } from "@/lib/map-mock-places";
 import { withSearchTimeout } from "@/lib/search-timeout";
@@ -88,11 +89,13 @@ export async function searchExploreCategoryPlaces(
   },
 ): Promise<ExplorePlaceCard[]> {
   const { userLocation, weather, locale, reasonProfile, saved, searchPlacesFn } = ctx;
+  const radius = searchRadiusMeters();
   const basePayload = {
     lat: userLocation.lat,
     lng: userLocation.lng,
-    radius: DEFAULT_SEARCH_RADIUS_M,
+    radius,
   };
+  console.info("[explore] nearby search", { category: cat.id, radius, lat: userLocation.lat, lng: userLocation.lng });
 
   const primary = await withSearchTimeout(
     searchPlacesFn({
@@ -156,61 +159,58 @@ export async function searchExploreCategoryPlaces(
     )
     .map((s) => {
       const base = savedToPlaceResult(s);
-      const distM =
-        base.lat != null && base.lng != null
-          ? distanceMeters(userLocation, { lat: base.lat, lng: base.lng })
-          : undefined;
-      const item = mapPlaceResultToChatItem(base, {
+      return buildUnifiedPlaceCard({
+        place: base,
+        categoryId: cat.id,
+        isSavedFavorite: true,
+        userLocation,
         weather,
         userProfile: reasonProfile,
-        categoryLabel: getExploreCategoryDisplayLabel(base),
-        distanceMeters: distM,
-        isSavedFavorite: true,
         locale,
       });
-      return { ...base, reason: item.reason, isSavedFavorite: true };
     });
 
   const enriched: ExplorePlaceCard[] = [
     ...savedCards,
-    ...filtered.map((p) => {
-      const distM =
-        p.lat != null && p.lng != null
-          ? distanceMeters(userLocation, { lat: p.lat, lng: p.lng })
-          : undefined;
-      const item = mapPlaceResultToChatItem(p, {
+    ...filtered.map((p) =>
+      buildUnifiedPlaceCard({
+        place: p,
+        categoryId: cat.id,
+        userLocation,
         weather,
         userProfile: reasonProfile,
-        categoryLabel: getExploreCategoryDisplayLabel(p),
-        distanceMeters: distM,
         locale,
-      });
-      return { ...p, reason: item.reason };
-    }),
+      }),
+    ),
   ];
 
-  if (enriched.length === 0) {
-    const mocks = getMockPlacesForCategory(userLocation, cat).map((p) => {
-      const distM =
-        p.lat != null && p.lng != null
-          ? distanceMeters(userLocation, { lat: p.lat, lng: p.lng })
-          : undefined;
-      const item = mapPlaceResultToChatItem(p, {
+  if (enriched.length === 0 && allowDemoPlaceFallback()) {
+    const mocks = getMockPlacesForCategory(userLocation, cat).map((p) =>
+      buildUnifiedPlaceCard({
+        place: p,
+        categoryId: cat.id,
+        userLocation,
         weather,
         userProfile: reasonProfile,
-        categoryLabel: getExploreCategoryDisplayLabel(p),
-        distanceMeters: distM,
         locale,
-      });
-      return { ...p, reason: item.reason };
-    });
+      }),
+    );
     return sortExplorePlaces(mocks, userLocation, reasonProfile);
+  }
+
+  if (enriched.length === 0) {
+    console.info("[explore] no places for category", cat.id);
   }
 
   return sortExplorePlaces(enriched, userLocation, reasonProfile);
 }
 
-export type HomeNearbyPick = ExplorePlaceCard & { categoryId: string };
+export type HomeNearbyPick = ExplorePlaceCard & {
+  categoryId: string;
+  displayCategory?: string;
+  coverImageUrl?: string;
+  distanceLabel?: string;
+};
 
 const PICKS_PER_CATEGORY = 2;
 
@@ -231,6 +231,7 @@ export async function loadHomeNearbyPicks(ctx: {
         return sorted.slice(0, PICKS_PER_CATEGORY).map((p) => ({ ...p, categoryId: cat.id }));
       } catch (e) {
         console.warn("[Roamie Home] category search failed", cat.id, e);
+        if (!allowDemoPlaceFallback()) return [];
         return getMockPlacesForCategory(ctx.userLocation, cat)
           .slice(0, PICKS_PER_CATEGORY)
           .map((p) => ({ ...p, categoryId: cat.id }));
@@ -241,11 +242,23 @@ export async function loadHomeNearbyPicks(ctx: {
   const merged = perCategory.flat();
   const deduped = new Map<string, HomeNearbyPick>();
   for (const p of merged) {
-    if (!deduped.has(p.id)) deduped.set(p.id, p);
+    const prev = deduped.get(p.id);
+    if (!prev) {
+      deduped.set(p.id, p);
+      continue;
+    }
+    /** 保留較完整的 categoryId（避免先寫入錯誤分類導致地圖 handoff 錯 tab） */
+    if (prev.categoryId === "all" && p.categoryId !== "all") {
+      deduped.set(p.id, p);
+    }
   }
 
   const sorted = sortExplorePlaces([...deduped.values()], ctx.userLocation, ctx.reasonProfile);
   if (sorted.length > 0) return sorted;
 
-  return getMockHomeNearbyPicks(ctx.userLocation, ctx.categories, PICKS_PER_CATEGORY);
+  if (allowDemoPlaceFallback()) {
+    return getMockHomeNearbyPicks(ctx.userLocation, ctx.categories, PICKS_PER_CATEGORY);
+  }
+  console.info("[Roamie Home] nearby picks empty (no mock in production)");
+  return [];
 }

@@ -1,57 +1,68 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
-import { supabase } from "@/lib/supabase";
-import {
-  getClientAuthSession,
-  isAuthSessionMissingError,
-  writeGuestFlag,
-} from "@/lib/auth-session";
-import { mergeGuestDataAfterLogin } from "@/lib/guest-merge";
-import { ensureUserProfile, syncProfileAppFields } from "@/lib/ensure-user-profile";
+import { AuthSignInError } from "@/components/auth/AuthSignInError";
+import { finishPostAuthRedirect } from "@/lib/auth-post-redirect";
+import { completeSignInAfterAuth } from "@/lib/complete-sign-in";
 import { resolveAuthenticatedHomePath } from "@/lib/post-auth-navigation";
+import { getClientAuthSession } from "@/lib/auth-session";
 import {
   readStashedOAuthRedirectTarget,
   stripOAuthParamsFromUrl,
 } from "@/lib/auth-oauth";
-import type { Session } from "@supabase/supabase-js";
+import {
+  logAuthCallbackOpened,
+  logAuthError,
+  logAuthSessionResult,
+} from "@/lib/auth-debug";
+import { resolveSessionFromCallbackUrl } from "@/lib/auth-session-from-url";
+import { OAUTH_PENDING_CALLBACK_KEY } from "@/lib/auth-oauth-deep-link";
 
 export const Route = createFileRoute("/auth/callback")({
   component: AuthCallback,
 });
 
-/** 兌換 OAuth code（單次），並等待 onAuthStateChange */
-async function completeOAuthFromCode(code: string): Promise<Session> {
-  const { error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) throw error;
-
-  const session = await getClientAuthSession();
-  if (session) return session;
-
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
-      sub.unsubscribe();
-      reject(new Error("登入後未取得 session"));
-    }, 12_000);
-
-    const {
-      data: { subscription: sub },
-    } = supabase.auth.onAuthStateChange((event, s) => {
-      if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && s) {
-        window.clearTimeout(timeout);
-        sub.unsubscribe();
-        resolve(s);
-      }
-    });
-  });
-}
-
 function AuthCallback() {
   const navigate = useNavigate();
   const [status, setStatus] = useState("正在完成登入…");
+  const [error, setError] = useState<string | null>(null);
   const handledRef = useRef(false);
+
+  const runCallback = async () => {
+    const stashed = readStashedOAuthRedirectTarget();
+    logAuthCallbackOpened();
+    logAuthSessionResult(true, {
+      step: "callback.begin",
+      stashedRedirect: stashed,
+    });
+
+    setStatus("正在驗證登入…");
+    const { session, method } = await resolveSessionFromCallbackUrl();
+
+    stripOAuthParamsFromUrl();
+
+    setStatus("正在建立個人資料…");
+    await completeSignInAfterAuth(session.user.id);
+
+    logAuthSessionResult(true, {
+      provider: session.user.app_metadata?.provider ?? "oauth",
+      method,
+      userId: session.user.id,
+      email: session.user.email ?? "(none)",
+    });
+
+    await getClientAuthSession();
+
+    const next = await resolveAuthenticatedHomePath();
+    logAuthSessionResult(true, { step: "navigate", next });
+    finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }));
+    try {
+      sessionStorage.removeItem(OAUTH_PENDING_CALLBACK_KEY);
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     if (handledRef.current) return;
@@ -59,107 +70,48 @@ function AuthCallback() {
 
     let cancelled = false;
 
-    const finish = async () => {
-      const query = new URLSearchParams(window.location.search);
-      const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-
-      const oauthError =
-        query.get("error_description") ||
-        query.get("error") ||
-        hash.get("error_description") ||
-        hash.get("error");
-
-      if (oauthError) {
-        console.error("[auth/callback] OAuth error", oauthError, window.location.href);
-        if (!cancelled) {
-          toast.error(decodeURIComponent(oauthError.replace(/\+/g, " ")));
-          navigate({ to: "/login", replace: true });
-        }
-        return;
-      }
-
-      const code = query.get("code");
-      const stashed = readStashedOAuthRedirectTarget();
-      console.info("[auth/callback]", window.location.href, "stashed", stashed);
-
-      if (!code) {
-        const existing = await getClientAuthSession();
-        if (existing?.user) {
-          if (!cancelled) {
-            const next = await resolveAuthenticatedHomePath();
-            navigate({ to: next, replace: true });
-          }
-          return;
-        }
-        if (!cancelled) {
-          toast.error("登入連結不完整，請重新登入。");
-          navigate({ to: "/login", replace: true });
-        }
-        return;
-      }
-
+    void (async () => {
       try {
-        setStatus("正在驗證登入…");
-        const session = await completeOAuthFromCode(code);
-
-        if (cancelled) return;
-
-        stripOAuthParamsFromUrl();
-        writeGuestFlag(false);
-
-        const userId = session.user.id;
-
-        setStatus("正在建立個人資料…");
-        try {
-          await ensureUserProfile(userId);
-          await syncProfileAppFields(userId);
-        } catch (profileErr) {
-          console.warn("[auth/callback] ensure profile failed", profileErr);
-        }
-
-        setStatus("正在同步你的資料…");
-        try {
-          await mergeGuestDataAfterLogin(userId);
-        } catch (mergeErr) {
-          console.warn("[auth/callback] guest merge failed", mergeErr);
-        }
-
-        if (cancelled) return;
-
-        toast.success("登入成功");
-        const next = await resolveAuthenticatedHomePath();
-        navigate({ to: next, replace: true });
+        await runCallback();
       } catch (e) {
-        console.error("[auth/callback] session failed", e, "href", window.location.href);
-        if (!cancelled) {
-          const msg = e instanceof Error ? e.message : "登入失敗，請再試一次。";
-          if (isAuthSessionMissingError(msg)) {
-            toast.error("登入尚未完成，請再試一次。");
-          } else if (
-            msg.includes("PKCE") ||
-            msg.includes("code verifier") ||
-            msg.includes("invalid flow state")
-          ) {
-            toast.error(
-              "登入驗證失敗：請用與剛才相同的網址（localhost 或 192.168.x.x）重新登入。",
-              { duration: 8000 },
-            );
-          } else if (msg.includes("redirect") || msg.includes("Redirect")) {
-            toast.error(msg, { duration: 8000 });
-          } else {
-            toast.error(msg);
-          }
-          navigate({ to: "/login", replace: true });
+        if (cancelled) return;
+        const msg = e instanceof Error ? e.message : "登入失敗，請再試一次。";
+        logAuthError("callback.failed", e, { stashedRedirect: readStashedOAuthRedirectTarget() });
+        setError(msg);
+        setStatus("");
+        try {
+          sessionStorage.removeItem(OAUTH_PENDING_CALLBACK_KEY);
+        } catch {
+          // ignore
         }
       }
-    };
-
-    void finish();
+    })();
 
     return () => {
       cancelled = true;
     };
   }, [navigate]);
+
+  if (error) {
+    return (
+      <MobileFrame>
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-6 py-10">
+          <AuthSignInError
+            message={error}
+            hint="請確認 Supabase Redirect URLs 已加入 roamie://auth/callback（與本機開發用 http://localhost:8080/auth/callback）"
+            onRetry={() => navigate({ to: "/login", replace: true })}
+            retryLabel="返回登入"
+          />
+          <Link
+            to="/"
+            className="text-sm text-muted-foreground underline-offset-2 hover:underline"
+          >
+            先以訪客模式逛逛
+          </Link>
+        </div>
+      </MobileFrame>
+    );
+  }
 
   return (
     <MobileFrame>

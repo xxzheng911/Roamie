@@ -1,4 +1,11 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { bootstrapNativeShell, detectPlatform, type PlatformInfo } from "@/services/platform";
 
 const Ctx = createContext<PlatformInfo | null>(null);
@@ -6,7 +13,7 @@ const Ctx = createContext<PlatformInfo | null>(null);
 export function PlatformProvider({ children }: { children: ReactNode }) {
   const [info, setInfo] = useState<PlatformInfo>(() => detectPlatform());
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setInfo(detectPlatform());
     void bootstrapNativeShell();
   }, []);

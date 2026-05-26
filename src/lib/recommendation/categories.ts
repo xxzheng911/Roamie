@@ -184,7 +184,10 @@ export function pickCategoriesForContext(input: {
   ).slice(0, 4);
 }
 
-/** 首頁附近推薦：依天氣調整分類優先順序 */
-export function pickCategoriesForHome(weather: WeatherSummary | null): ExploreCategory[] {
-  return pickCategoriesForContext({ weather, max: 6 });
+/** 首頁附近推薦：依天氣與心情調整分類優先順序 */
+export function pickCategoriesForHome(
+  weather: WeatherSummary | null,
+  mood?: string | null,
+): ExploreCategory[] {
+  return pickCategoriesForContext({ weather, mood: mood ?? undefined, max: 6 });
 }

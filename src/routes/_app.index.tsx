@@ -1,12 +1,13 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Sparkles, ChevronRight, Search, HeartHandshake, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Sparkles, ChevronRight, Search, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import onsen from "@/assets/scene-onsen.jpg";
 import { HomeNearbyPlaceCards } from "@/components/home/HomeNearbyPlaceCards";
 import { HomeWeatherCard } from "@/components/home/HomeWeatherCard";
-import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
+import { HomePersonalizationCard } from "@/components/home/HomePersonalizationCard";
+import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
 import { useAvatar } from "@/hooks/use-avatar";
 import { useHomeWeather } from "@/hooks/use-home-weather";
 import { getWeather } from "@/lib/weather.functions";
@@ -14,7 +15,8 @@ import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { fetchRoamieAI } from "@/lib/ai/stream-client";
 import { shouldActivateLateNightSceneFlow } from "@/lib/late-night-scene-recommendations";
 import { saveRecommendation } from "@/lib/recommendation-storage";
-import { listPlaces } from "@/lib/places-storage";
+import { listPlaces, toggleSavePlace, SAVED_PLACES_CHANGED_EVENT } from "@/lib/places-storage";
+import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { isMissingTableError } from "@/lib/supabase-errors";
 import {
   loadRecentRecommendationNames,
@@ -24,7 +26,10 @@ import { listItineraries } from "@/lib/itinerary-storage";
 import { supabase } from "@/integrations/supabase/client";
 import { useI18n } from "@/hooks/use-i18n";
 import { searchPlaces } from "@/lib/places.functions";
+import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { loadHomeNearbyPicks, type HomeNearbyPick } from "@/lib/explore-category-search";
+import { useAddToTrip } from "@/hooks/use-add-to-trip";
+import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
 import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
 import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
@@ -32,9 +37,10 @@ import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { pickCategoriesForHome } from "@/lib/recommendation/categories";
 import { buildDailyPrepAdvice } from "@/lib/recommendation/daily-prep-advice";
 import { HomeOutfitCard } from "@/components/home/HomeOutfitCard";
-import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
-import { usePreferenceQuizCompleted } from "@/hooks/use-preference-quiz-status";
 import { setMapExploreHandoff } from "@/lib/map-explore-handoff";
+import { openAppSettings } from "@/lib/open-app-settings";
+import { readHomeMood, writeHomeMood } from "@/lib/home-mood";
+import { saveChatSession, loadChatSession } from "@/lib/chat-session";
 
 export const Route = createFileRoute("/_app/")({
   component: Home,
@@ -51,29 +57,40 @@ const HOME_MOODS = [
 
 function Home() {
   const { t, locale } = useI18n();
+  const { openAddToTrip } = useAddToTrip();
   const { avatarSrc } = useAvatar();
   const navigate = useNavigate();
   const fetchWeather = useServerFn(getWeather);
-  const searchPlacesFn = useServerFn(searchPlaces);
+  const searchPlacesServerFn = useServerFn(searchPlaces);
+  const searchPlacesFn = useMemo(
+    () => createUnifiedSearchPlacesFn(searchPlacesServerFn),
+    [searchPlacesServerFn],
+  );
   const {
     weather,
     status: weatherStatus,
     error: weatherError,
     userLocation,
     usedFallbackLocation,
+    locationPermission,
     reload: reloadWeather,
   } = useHomeWeather(locale);
   const [nearbyPicks, setNearbyPicks] = useState<HomeNearbyPick[]>([]);
   const [nearbyLoading, setNearbyLoading] = useState(true);
-  const [selectedMood, setSelectedMood] = useState<string | null>(null);
+  const [selectedMood, setSelectedMood] = useState<string | null>(() => readHomeMood());
   const [aiLoading, setAiLoading] = useState(false);
   const [latestTripId, setLatestTripId] = useState<string | null>(null);
   const [latestTripTitle, setLatestTripTitle] = useState<string | null>(null);
-  const [plusModalOpen, setPlusModalOpen] = useState(false);
-  const quizCompleted = usePreferenceQuizCompleted();
+  const [prefs, setPrefs] = useState<Awaited<ReturnType<typeof getPreferences>> | null>(null);
+  const [savedPlaces, setSavedPlaces] = useState<Awaited<ReturnType<typeof listPlaces>>>([]);
+  const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
+  const [saveBusyId, setSaveBusyId] = useState<string | null>(null);
 
   const loadNearbyPicks = useCallback(async () => {
-    if (!userLocation) return;
+    if (!userLocation) {
+      setNearbyLoading(true);
+      return;
+    }
     setNearbyLoading(true);
     try {
       const [profile, prefs, saved] = await Promise.all([
@@ -87,26 +104,53 @@ function Home() {
         personalitySummary: profile?.personalitySummary,
       });
       const picks = await loadHomeNearbyPicks({
-        userLocation,
+        userLocation: { lat: userLocation.lat, lng: userLocation.lng },
         weather,
         locale,
         reasonProfile,
         saved,
         searchPlacesFn,
-        categories: pickCategoriesForHome(weather),
+        categories: pickCategoriesForHome(weather, selectedMood),
+      });
+      console.info("[Roamie Home] nearby places", {
+        count: picks.length,
+        sample: picks.slice(0, 3).map((p) => ({
+          name: p.name,
+          photoName: p.photoName ?? null,
+        })),
       });
       setNearbyPicks(picks);
+      setPrefs(prefs);
+      setSavedPlaces(saved);
+      setSavedNames(new Set(saved.map((s) => s.name)));
     } catch (e) {
       console.warn("[Roamie Home] nearby picks failed", e);
       setNearbyPicks([]);
     } finally {
       setNearbyLoading(false);
     }
-  }, [userLocation, weather, locale, searchPlacesFn]);
+  }, [userLocation, weather, locale, searchPlacesFn, selectedMood]);
+
+  const handleMoodSelect = (label: string) => {
+    const next = selectedMood === label ? null : label;
+    setSelectedMood(next);
+    writeHomeMood(next);
+    const base = loadChatSession();
+    saveChatSession({
+      ...base,
+      mood: next ?? base.mood,
+      selectedMood: next ?? base.selectedMood,
+    });
+  };
 
   useEffect(() => {
     void loadNearbyPicks();
   }, [loadNearbyPicks]);
+
+  useEffect(() => {
+    if (!userLocation) return;
+    void loadNearbyPicks();
+  }, [selectedMood, userLocation, loadNearbyPicks]);
 
   useEffect(() => {
     const onPrefs = () => {
@@ -116,9 +160,61 @@ function Home() {
     return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
   }, [weatherStatus, loadNearbyPicks]);
 
+  useEffect(() => {
+    const onAccess = () => {
+      if (weatherStatus !== "loading") void loadNearbyPicks();
+    };
+    window.addEventListener(ACCESS_CHANGED_EVENT, onAccess);
+    return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onAccess);
+  }, [weatherStatus, loadNearbyPicks]);
+
   const handleNearbyPick = (pick: HomeNearbyPick) => {
-    setMapExploreHandoff({ categoryId: pick.categoryId, placeId: pick.id });
+    setMapExploreHandoff({
+      categoryId: pick.categoryId,
+      placeId: pick.id,
+      placeSnapshot: pick,
+    });
     navigate({ to: "/map" });
+  };
+
+  const refreshSavedNames = useCallback(async () => {
+    try {
+      const saved = await listPlaces().catch((e) =>
+        isMissingTableError(e) ? [] : Promise.reject(e),
+      );
+      setSavedNames(new Set(saved.map((s) => s.name)));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    const onSaved = () => void refreshSavedNames();
+    window.addEventListener(SAVED_PLACES_CHANGED_EVENT, onSaved);
+    return () => window.removeEventListener(SAVED_PLACES_CHANGED_EVENT, onSaved);
+  }, [refreshSavedNames]);
+
+  const handleToggleSaveNearby = async (pick: HomeNearbyPick) => {
+    setSaveBusyId(pick.id);
+    try {
+      const { saved: didSave } = await toggleSavePlace({
+        name: pick.name,
+        category: pick.displayCategory ?? pick.primaryType,
+        address: pick.address,
+        city: null,
+        lat: pick.lat,
+        lng: pick.lng,
+        notes: pick.reason,
+        mood_tag: selectedMood,
+        cover_image: pick.photoName ? (buildPlacePhotoUrl(pick.photoName, 600) ?? null) : pick.coverImageUrl,
+      });
+      toast.success(didSave ? "已加入收藏" : "已取消收藏");
+      await refreshSavedNames();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "收藏失敗");
+    } finally {
+      setSaveBusyId(null);
+    }
   };
 
   useEffect(() => {
@@ -192,6 +288,7 @@ function Home() {
 
       <Link
         to="/chat"
+        search={selectedMood ? { mood: selectedMood } : undefined}
         className="mt-5 block rounded-3xl border border-border bg-card p-5 shadow-soft transition active:scale-[0.99]"
       >
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -203,34 +300,8 @@ function Home() {
         </p>
         <div className="mt-4 flex items-center gap-2 rounded-2xl bg-secondary/60 px-4 py-3 text-sm text-muted-foreground">
           <Search className="h-4 w-4" />
-          開始 AI 對話規劃
+          {selectedMood ? `帶著「${selectedMood}」開始對話` : "開始 AI 對話規劃"}
         </div>
-      </Link>
-
-      {quizCompleted === false && <PreferenceQuizCta origin="home" className="mt-4" />}
-
-      <section className="mt-4 min-w-0">
-        <h2 className="font-display text-[17px] leading-snug">{t("home.nearbySection")}</h2>
-        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-          {t("home.nearbyExploreDesc")}
-        </p>
-        <div className="app-bleed-x mt-3 min-w-0">
-          <HomeNearbyPlaceCards
-            places={nearbyPicks}
-            loading={nearbyLoading}
-            userLocation={userLocation}
-            emptyMessage={t("home.nearbyEmpty")}
-            onSelect={handleNearbyPick}
-          />
-        </div>
-      </section>
-
-      <Link
-        to="/plan"
-        className="mt-3 flex items-center justify-between rounded-2xl border border-dashed border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground"
-      >
-        <span>進階：我想手動規劃行程</span>
-        <ChevronRight className="h-4 w-4" />
       </Link>
 
       <div className="mt-6 min-w-0">
@@ -241,7 +312,7 @@ function Home() {
               <button
                 key={m.label}
                 type="button"
-                onClick={() => setSelectedMood(selectedMood === m.label ? null : m.label)}
+                onClick={() => handleMoodSelect(m.label)}
                 disabled={aiLoading}
                 className={`flex shrink-0 items-center gap-1.5 rounded-full border px-4 py-2 text-sm shadow-soft transition ${
                   selectedMood === m.label
@@ -275,6 +346,35 @@ function Home() {
         </button>
       </div>
 
+      <section className="mt-6 min-w-0">
+        <h2 className="font-display text-[17px] leading-snug">{t("home.nearbySection")}</h2>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          {t("home.nearbyExploreDesc")}
+        </p>
+        <div className="app-bleed-x mt-3 min-w-0">
+          <HomeNearbyPlaceCards
+            places={nearbyPicks}
+            loading={nearbyLoading || !userLocation}
+            userLocation={userLocation}
+            emptyMessage={t("home.nearbyEmpty")}
+            savedNames={savedNames}
+            busyId={saveBusyId}
+            onSelect={handleNearbyPick}
+            onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p))}
+            onToggleSave={(p) => void handleToggleSaveNearby(p)}
+            addToTripLabel={t("chat.addToTrip")}
+          />
+        </div>
+      </section>
+
+      <Link
+        to="/plan"
+        className="mt-3 flex items-center justify-between rounded-2xl border border-dashed border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground"
+      >
+        <span>進階：我想手動規劃行程</span>
+        <ChevronRight className="h-4 w-4" />
+      </Link>
+
       {latestTripId && latestTripTitle && (
         <Link
           to="/trip"
@@ -303,7 +403,12 @@ function Home() {
         status={weatherStatus}
         error={weatherError}
         usedFallbackLocation={usedFallbackLocation}
+        showOpenLocationSettings={
+          usedFallbackLocation &&
+          (locationPermission === "denied" || locationPermission === "restricted")
+        }
         onRetry={() => void reloadWeather()}
+        onOpenLocationSettings={() => void openAppSettings()}
         labels={{
           title: t("home.weatherTitle"),
           loading: t("home.weatherLoading"),
@@ -311,8 +416,12 @@ function Home() {
           errorHint: t("home.weatherErrorHint"),
           retry: t("home.weatherRetry"),
           placeholderTitle: t("home.weatherPlaceholderTitle"),
-          placeholderHint: t("home.weatherPlaceholderHint"),
+          placeholderHint:
+            weatherStatus === "error" || weatherError
+              ? "暫時讀不到天氣，先用附近地點陪你走走"
+              : t("home.weatherPlaceholderHint"),
           fallbackLocationHint: t("home.weatherFallbackLocation"),
+          openLocationSettings: t("home.weatherOpenLocationSettings"),
           todayLabel: t("home.weatherToday"),
           moodHint: t("home.weatherMoodHint"),
         }}
@@ -326,29 +435,15 @@ function Home() {
         }}
       />
 
-      <div className="mt-8 rounded-3xl border border-border bg-card/70 p-5 shadow-soft">
-        <div className="flex items-start gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-secondary">
-            <HeartHandshake className="h-5 w-5 text-clay" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <h3 className="font-display text-[19px] leading-snug">讓 Roamie 更懂你</h3>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              完成旅行偏好探索，
-              解鎖更貼近你的 AI 旅伴體驗。
-            </p>
-            <button
-              type="button"
-              onClick={() => setPlusModalOpen(true)}
-              className="mt-4 rounded-full border border-border bg-background px-4 py-2 text-xs font-medium text-muted-foreground"
-            >
-              Coming Soon
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <PlusComingSoonDialog open={plusModalOpen} onOpenChange={setPlusModalOpen} />
+      <HomePersonalizationCard
+        className="mt-8"
+        prefs={prefs}
+        savedPlaces={savedPlaces}
+        weather={weather}
+        nearbyPicks={nearbyPicks}
+        selectedMood={selectedMood}
+        latestTripTitle={latestTripTitle}
+      />
     </div>
   );
 }

@@ -1,17 +1,31 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useEffect, useLayoutEffect } from "react";
 import {
   Outlet,
   Link,
   createRootRouteWithContext,
   useRouter,
+  useNavigate,
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { Toaster } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
 
 import appCss from "../styles.css?url";
-import { AppProviders } from "@/providers/AppProviders";
+import { App } from "@/App";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
+import { RoamieAppErrorFallback } from "@/components/RoamieAppErrorFallback";
 import { StartupGate } from "@/components/StartupGate";
+import { removeStaticBootPlaceholder } from "@/main";
+import { bootstrapNativeShell } from "@/services/platform";
+import { markAppReady } from "@/lib/startup-route";
+import { toCapacitorBundledAssetHref } from "@/lib/capacitor-asset-href";
+import {
+  isCapacitorSpaMount,
+  normalizeCapacitorEntryPath,
+} from "@/lib/capacitor-entry-path";
+import { formatErrorDetail, logAppError } from "@/lib/log-error";
+import { normalizeRouterSsrManifest } from "@/lib/ssr-manifest";
 
 function NotFoundComponent() {
   return (
@@ -35,39 +49,51 @@ function NotFoundComponent() {
   );
 }
 
-function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
-  console.error(error);
+function ErrorComponent({ error, reset }: { error: unknown; reset: () => void }) {
+  logAppError("[Roamie] route error boundary", error);
   const router = useRouter();
+  const navigate = useNavigate();
+
+  const recoverToStartup = () => {
+    reset();
+    void router.invalidate().then(() => {
+      navigate({ to: "/login", replace: true });
+    });
+  };
+
+  const detail = formatErrorDetail(error);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="max-w-md text-center">
-        <h1 className="text-xl font-semibold tracking-tight text-foreground">
-          This page didn't load
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Something went wrong on our end. You can try refreshing or head back home.
-        </p>
-        <div className="mt-6 flex flex-wrap justify-center gap-2">
-          <button
-            onClick={() => {
-              router.invalidate();
-              reset();
-            }}
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-          >
-            Try again
-          </button>
-          <a
-            href="/"
-            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
-          >
-            Go home
-          </a>
-        </div>
-      </div>
-    </div>
+    <RoamieAppErrorFallback
+      title="Roamie 暫時無法載入"
+      message="發生未預期的錯誤。請重試，或重新啟動 App。"
+      detail={detail}
+      onRetry={() => window.location.reload()}
+      onHome={recoverToStartup}
+      retryLabel="重新整理"
+      homeLabel="重新啟動"
+    />
   );
+}
+
+/** Ensures SSR manifest shape after Capacitor SPA hydrate (manifest.routes must exist). */
+function RouterSsrManifestGuard() {
+  const router = useRouter();
+
+  useEffect(() => {
+    try {
+      normalizeCapacitorEntryPath();
+    } catch (e) {
+      logAppError("APP_INIT_ERROR", e, { source: "RouterSsrManifestGuard" });
+    }
+    try {
+      normalizeRouterSsrManifest(router);
+    } catch (e) {
+      logAppError("APP_INIT_ERROR", e, { source: "RouterSsrManifestGuard.manifest" });
+    }
+  }, [router]);
+
+  return null;
 }
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
@@ -78,6 +104,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         name: "viewport",
         content: "width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no",
       },
+      { name: "screen-orientation", content: "portrait" },
       { name: "theme-color", content: "#f7f4ef" },
       { name: "apple-mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-status-bar-style", content: "default" },
@@ -91,7 +118,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     links: [
       {
         rel: "stylesheet",
-        href: appCss,
+        href: toCapacitorBundledAssetHref(appCss),
       },
     ],
   }),
@@ -102,6 +129,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 });
 
 function RootShell({ children }: { children: React.ReactNode }) {
+  // Capacitor bundled HTML already has <html>/<body>; nesting another document in #root causes WKWebView white screen.
+  if (isCapacitorSpaMount()) {
+    return <>{children}</>;
+  }
+
   return (
     <html lang="zh-Hant" className="roamie-app">
       <head>
@@ -123,14 +155,23 @@ function RootShell({ children }: { children: React.ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
+  useLayoutEffect(() => {
+    removeStaticBootPlaceholder();
+    void bootstrapNativeShell();
+    markAppReady();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
-      <AppProviders>
-        <StartupGate>
-          <Outlet />
-        </StartupGate>
-        <Toaster position="top-center" />
-      </AppProviders>
+      <AppErrorBoundary>
+        <App>
+          <RouterSsrManifestGuard />
+          <StartupGate>
+            <Outlet />
+          </StartupGate>
+          <Toaster />
+        </App>
+      </AppErrorBoundary>
     </QueryClientProvider>
   );
 }

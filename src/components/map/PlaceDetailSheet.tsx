@@ -13,6 +13,7 @@ import {
   Star,
   TrainFront,
 } from "lucide-react";
+import { PlaceActionRow } from "@/components/PlaceActionRow";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
@@ -63,7 +64,10 @@ type Props = {
   onSelectTransportMode: (mode: TravelModeId) => void;
   onNavigate: () => void;
   onToggleSave: () => void;
+  onAddToTrip: () => void;
   onOpenChat: () => void;
+  saveLabel?: string;
+  addToTripLabel?: string;
 };
 
 export function PlaceDetailSheet({
@@ -79,7 +83,10 @@ export function PlaceDetailSheet({
   onSelectTransportMode,
   onNavigate,
   onToggleSave,
+  onAddToTrip,
   onOpenChat,
+  saveLabel = "收藏",
+  addToTripLabel = "加入行程",
 }: Props) {
   const [photoIdx, setPhotoIdx] = useState(0);
   const photos = imageUrls.length > 0 ? imageUrls : [];
@@ -267,11 +274,21 @@ export function PlaceDetailSheet({
           )}
         </div>
 
+        <PlaceActionRow
+          className="mt-4"
+          isSaved={isSaved}
+          isBusy={isBusy}
+          onToggleSave={onToggleSave}
+          onAddToTrip={onAddToTrip}
+          saveLabel={saveLabel}
+          addLabel={addToTripLabel}
+        />
+
         <button
           type="button"
           data-no-sheet-drag
           onClick={onNavigate}
-          className="mt-4 flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
         >
           <Navigation className="h-4 w-4" />
           {navButtonLabel}

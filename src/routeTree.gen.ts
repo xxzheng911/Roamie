@@ -11,15 +11,12 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as TripRouteImport } from './routes/trip'
-import { Route as SplashRouteImport } from './routes/splash'
-import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
-import { Route as LoadingRouteImport } from './routes/loading'
-import { Route as IntroRouteImport } from './routes/intro'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
+import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
 import { Route as ApiGenerateItineraryRouteImport } from './routes/api/generate-itinerary'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
@@ -28,6 +25,7 @@ import { Route as AppRecommendationsRouteImport } from './routes/_app.recommenda
 import { Route as AppProfileRouteImport } from './routes/_app.profile'
 import { Route as AppPlanRouteImport } from './routes/_app.plan'
 import { Route as AppMapRouteImport } from './routes/_app.map'
+import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
 
 const WelcomeRoute = WelcomeRouteImport.update({
@@ -40,29 +38,9 @@ const TripRoute = TripRouteImport.update({
   path: '/trip',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SplashRoute = SplashRouteImport.update({
-  id: '/splash',
-  path: '/splash',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OnboardingRoute = OnboardingRouteImport.update({
-  id: '/onboarding',
-  path: '/onboarding',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LoadingRoute = LoadingRouteImport.update({
-  id: '/loading',
-  path: '/loading',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const IntroRoute = IntroRouteImport.update({
-  id: '/intro',
-  path: '/intro',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppRoute = AppRouteImport.update({
@@ -82,6 +60,11 @@ const AuthCallbackRoute = AuthCallbackRouteImport.update({
 const ApiRoamieRoute = ApiRoamieRouteImport.update({
   id: '/api/roamie',
   path: '/api/roamie',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPlacePhotoRoute = ApiPlacePhotoRouteImport.update({
+  id: '/api/place-photo',
+  path: '/api/place-photo',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiGenerateItineraryRoute = ApiGenerateItineraryRouteImport.update({
@@ -124,6 +107,11 @@ const AppMapRoute = AppMapRouteImport.update({
   path: '/map',
   getParentRoute: () => AppRoute,
 } as any)
+const AppDeveloperRoute = AppDeveloperRouteImport.update({
+  id: '/developer',
+  path: '/developer',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppChatRoute = AppChatRouteImport.update({
   id: '/chat',
   path: '/chat',
@@ -132,14 +120,11 @@ const AppChatRoute = AppChatRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
-  '/intro': typeof IntroRoute
-  '/loading': typeof LoadingRoute
   '/login': typeof LoginRoute
-  '/onboarding': typeof OnboardingRoute
-  '/splash': typeof SplashRoute
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
+  '/developer': typeof AppDeveloperRoute
   '/map': typeof AppMapRoute
   '/plan': typeof AppPlanRoute
   '/profile': typeof AppProfileRoute
@@ -148,18 +133,16 @@ export interface FileRoutesByFullPath {
   '/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/place-photo': typeof ApiPlacePhotoRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
 }
 export interface FileRoutesByTo {
-  '/intro': typeof IntroRoute
-  '/loading': typeof LoadingRoute
   '/login': typeof LoginRoute
-  '/onboarding': typeof OnboardingRoute
-  '/splash': typeof SplashRoute
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
+  '/developer': typeof AppDeveloperRoute
   '/map': typeof AppMapRoute
   '/plan': typeof AppPlanRoute
   '/profile': typeof AppProfileRoute
@@ -168,6 +151,7 @@ export interface FileRoutesByTo {
   '/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/place-photo': typeof ApiPlacePhotoRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/': typeof AppIndexRoute
@@ -175,14 +159,11 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
-  '/intro': typeof IntroRoute
-  '/loading': typeof LoadingRoute
   '/login': typeof LoginRoute
-  '/onboarding': typeof OnboardingRoute
-  '/splash': typeof SplashRoute
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
   '/_app/chat': typeof AppChatRoute
+  '/_app/developer': typeof AppDeveloperRoute
   '/_app/map': typeof AppMapRoute
   '/_app/plan': typeof AppPlanRoute
   '/_app/profile': typeof AppProfileRoute
@@ -191,6 +172,7 @@ export interface FileRoutesById {
   '/_app/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/place-photo': typeof ApiPlacePhotoRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/_app/': typeof AppIndexRoute
@@ -199,14 +181,11 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/intro'
-    | '/loading'
     | '/login'
-    | '/onboarding'
-    | '/splash'
     | '/trip'
     | '/welcome'
     | '/chat'
+    | '/developer'
     | '/map'
     | '/plan'
     | '/profile'
@@ -215,18 +194,16 @@ export interface FileRouteTypes {
     | '/settings'
     | '/api/chat'
     | '/api/generate-itinerary'
+    | '/api/place-photo'
     | '/api/roamie'
     | '/auth/callback'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/intro'
-    | '/loading'
     | '/login'
-    | '/onboarding'
-    | '/splash'
     | '/trip'
     | '/welcome'
     | '/chat'
+    | '/developer'
     | '/map'
     | '/plan'
     | '/profile'
@@ -235,20 +212,18 @@ export interface FileRouteTypes {
     | '/settings'
     | '/api/chat'
     | '/api/generate-itinerary'
+    | '/api/place-photo'
     | '/api/roamie'
     | '/auth/callback'
     | '/'
   id:
     | '__root__'
     | '/_app'
-    | '/intro'
-    | '/loading'
     | '/login'
-    | '/onboarding'
-    | '/splash'
     | '/trip'
     | '/welcome'
     | '/_app/chat'
+    | '/_app/developer'
     | '/_app/map'
     | '/_app/plan'
     | '/_app/profile'
@@ -257,6 +232,7 @@ export interface FileRouteTypes {
     | '/_app/settings'
     | '/api/chat'
     | '/api/generate-itinerary'
+    | '/api/place-photo'
     | '/api/roamie'
     | '/auth/callback'
     | '/_app/'
@@ -264,15 +240,12 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
-  IntroRoute: typeof IntroRoute
-  LoadingRoute: typeof LoadingRoute
   LoginRoute: typeof LoginRoute
-  OnboardingRoute: typeof OnboardingRoute
-  SplashRoute: typeof SplashRoute
   TripRoute: typeof TripRoute
   WelcomeRoute: typeof WelcomeRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiGenerateItineraryRoute: typeof ApiGenerateItineraryRoute
+  ApiPlacePhotoRoute: typeof ApiPlacePhotoRoute
   ApiRoamieRoute: typeof ApiRoamieRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
 }
@@ -293,39 +266,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TripRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/splash': {
-      id: '/splash'
-      path: '/splash'
-      fullPath: '/splash'
-      preLoaderRoute: typeof SplashRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/onboarding': {
-      id: '/onboarding'
-      path: '/onboarding'
-      fullPath: '/onboarding'
-      preLoaderRoute: typeof OnboardingRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/login': {
       id: '/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/loading': {
-      id: '/loading'
-      path: '/loading'
-      fullPath: '/loading'
-      preLoaderRoute: typeof LoadingRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/intro': {
-      id: '/intro'
-      path: '/intro'
-      fullPath: '/intro'
-      preLoaderRoute: typeof IntroRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app': {
@@ -354,6 +299,13 @@ declare module '@tanstack/react-router' {
       path: '/api/roamie'
       fullPath: '/api/roamie'
       preLoaderRoute: typeof ApiRoamieRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/place-photo': {
+      id: '/api/place-photo'
+      path: '/api/place-photo'
+      fullPath: '/api/place-photo'
+      preLoaderRoute: typeof ApiPlacePhotoRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/generate-itinerary': {
@@ -412,6 +364,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMapRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/developer': {
+      id: '/_app/developer'
+      path: '/developer'
+      fullPath: '/developer'
+      preLoaderRoute: typeof AppDeveloperRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/chat': {
       id: '/_app/chat'
       path: '/chat'
@@ -424,6 +383,7 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppChatRoute: typeof AppChatRoute
+  AppDeveloperRoute: typeof AppDeveloperRoute
   AppMapRoute: typeof AppMapRoute
   AppPlanRoute: typeof AppPlanRoute
   AppProfileRoute: typeof AppProfileRoute
@@ -435,6 +395,7 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppChatRoute: AppChatRoute,
+  AppDeveloperRoute: AppDeveloperRoute,
   AppMapRoute: AppMapRoute,
   AppPlanRoute: AppPlanRoute,
   AppProfileRoute: AppProfileRoute,
@@ -448,15 +409,12 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
-  IntroRoute: IntroRoute,
-  LoadingRoute: LoadingRoute,
   LoginRoute: LoginRoute,
-  OnboardingRoute: OnboardingRoute,
-  SplashRoute: SplashRoute,
   TripRoute: TripRoute,
   WelcomeRoute: WelcomeRoute,
   ApiChatRoute: ApiChatRoute,
   ApiGenerateItineraryRoute: ApiGenerateItineraryRoute,
+  ApiPlacePhotoRoute: ApiPlacePhotoRoute,
   ApiRoamieRoute: ApiRoamieRoute,
   AuthCallbackRoute: AuthCallbackRoute,
 }

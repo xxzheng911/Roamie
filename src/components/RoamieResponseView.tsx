@@ -97,6 +97,12 @@ type Props = {
   hideRecommendations?: boolean;
   onSavePlace?: (rec: RoamieRecommendationItem) => void | Promise<void>;
   onSelectPlace?: (rec: RoamieRecommendationItem) => void;
+  /** 加入已儲存／草稿行程（sheet） */
+  onAddToTrip?: (rec: RoamieRecommendationItem) => void;
+  /** 卡片點擊：開啟地圖地點詳情 */
+  onOpenPlaceDetail?: (rec: RoamieRecommendationItem) => void;
+  /** 卡片點擊：與 Roamie 討論此地點 */
+  onDiscussPlace?: (rec: RoamieRecommendationItem) => void;
   /** 推薦頁：勾選想去（不觸發聊天） */
   pickMode?: boolean;
   pickedPlaceNames?: Set<string>;
@@ -106,6 +112,7 @@ type Props = {
   savedPlaceNames?: Set<string>;
   outfitAdvice?: OutfitAdvicePayload;
   addToTripLabel?: string;
+  discussPlaceLabel?: string;
   viewMapLabel?: string;
 };
 
@@ -116,6 +123,9 @@ export function RoamieResponseView({
   hideRecommendations = false,
   onSavePlace,
   onSelectPlace,
+  onAddToTrip,
+  onOpenPlaceDetail,
+  onDiscussPlace,
   pickMode,
   pickedPlaceNames,
   onTogglePick,
@@ -124,6 +134,7 @@ export function RoamieResponseView({
   savedPlaceNames,
   outfitAdvice,
   addToTripLabel = "加入行程",
+  discussPlaceLabel = "跟 Roamie 聊這裡",
   viewMapLabel = "查看地圖",
 }: Props) {
   const summary = data.summary?.trim();
@@ -159,12 +170,18 @@ export function RoamieResponseView({
             const isPicked = pickMode
               ? (pickedPlaceNames?.has(r.name) ?? false)
               : (selectedPlaceNames?.has(r.name) ?? false);
-            const clickable = pickMode ? !!onTogglePick : !!onSelectPlace;
+            const clickable = pickMode
+              ? !!onTogglePick
+              : !!(onOpenPlaceDetail ?? onDiscussPlace ?? onSelectPlace);
             const handleCardClick = pickMode
               ? () => onTogglePick?.(r)
-              : onSelectPlace
-                ? () => onSelectPlace(r)
-                : undefined;
+              : onOpenPlaceDetail
+                ? () => onOpenPlaceDetail(r)
+                : onDiscussPlace
+                  ? () => onDiscussPlace(r)
+                  : onSelectPlace
+                    ? () => onSelectPlace(r)
+                    : undefined;
             const stopBubble = (e: MouseEvent | KeyboardEvent) => e.stopPropagation();
 
             const ext = r as RoamieRecommendationItem & {
@@ -267,7 +284,17 @@ export function RoamieResponseView({
                   )}
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2" onClick={stopBubble} onKeyDown={stopBubble}>
-                  {onSelectPlace && !pickMode && (
+                  {onAddToTrip && (
+                    <button
+                      type="button"
+                      onClick={() => onAddToTrip(r)}
+                      className="inline-flex items-center gap-1 rounded-full bg-foreground px-3 py-1.5 text-[11px] font-medium text-background"
+                    >
+                      <Plus className="h-3 w-3" />
+                      {addToTripLabel}
+                    </button>
+                  )}
+                  {onSelectPlace && !pickMode && !onAddToTrip && (
                     <button
                       type="button"
                       onClick={() => onSelectPlace(r)}
@@ -275,6 +302,25 @@ export function RoamieResponseView({
                     >
                       <Plus className="h-3 w-3" />
                       {addToTripLabel}
+                    </button>
+                  )}
+                  {onOpenPlaceDetail && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenPlaceDetail(r)}
+                      className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-medium"
+                    >
+                      <MapPin className="h-3 w-3" />
+                      {viewMapLabel}
+                    </button>
+                  )}
+                  {onDiscussPlace && !pickMode && (
+                    <button
+                      type="button"
+                      onClick={() => onDiscussPlace(r)}
+                      className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-medium"
+                    >
+                      {discussPlaceLabel}
                     </button>
                   )}
                   <PlaceNavButtons

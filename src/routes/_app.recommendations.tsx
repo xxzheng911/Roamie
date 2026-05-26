@@ -13,6 +13,10 @@ import { getWeather } from "@/lib/weather.functions";
 import { getPreferences } from "@/lib/preferences-storage";
 import { saveRecPagePicks, loadRecPagePicks } from "@/lib/chat-session";
 import { prepareMoodFlowSession } from "@/lib/mood-chat-handoff";
+import { useAddToTrip } from "@/hooks/use-add-to-trip";
+import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
+import { openRecommendationOnMap } from "@/lib/recommendation-place-handoff";
+import { useI18n } from "@/hooks/use-i18n";
 
 type RecSearch = { id?: string };
 
@@ -24,6 +28,8 @@ export const Route = createFileRoute("/_app/recommendations")({
 });
 
 function RecommendationsPage() {
+  const { t } = useI18n();
+  const { openAddToTrip } = useAddToTrip();
   const { id } = Route.useSearch();
   const navigate = useNavigate();
   const fetchWeather = useServerFn(getWeather);
@@ -63,6 +69,18 @@ function RecommendationsPage() {
   }, [id]);
 
   const data = record?.payload && isRoamiePayloadV2(record.payload) ? record.payload : null;
+
+  const handleOpenPlaceDetail = useCallback(
+    (rec: RoamieRecommendationItem) => {
+      if (rec.lat == null || rec.lng == null) {
+        toast.message("此地點尚無座標，暫時無法開啟地圖詳情");
+        return;
+      }
+      openRecommendationOnMap(rec);
+      navigate({ to: "/map" });
+    },
+    [navigate],
+  );
 
   const handleTogglePick = useCallback(
     (rec: RoamieRecommendationItem) => {
@@ -172,7 +190,7 @@ function RecommendationsPage() {
 
       <div className="px-5 pt-5">
         <p className="mb-3 text-xs text-muted-foreground">
-          點一下卡片即可選取想去的地點，再進入聊天；沒選也可以，Roamie 會請你從候選中挑一個開始。
+          點一下卡片選取想去的地方；點「查看地圖」可開啟地點詳情。選好後再進入聊天繼續規劃。
         </p>
         <RoamieResponseView
           data={data}
@@ -180,7 +198,11 @@ function RecommendationsPage() {
           pickMode
           pickedPlaceNames={pickedNames}
           onTogglePick={handleTogglePick}
+          onOpenPlaceDetail={handleOpenPlaceDetail}
           onSavePlace={handleSavePlace}
+          onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec))}
+          addToTripLabel={t("chat.addToTrip")}
+          viewMapLabel={t("chat.viewMap")}
           savingPlaceName={savingName}
           savedPlaceNames={savedNames}
         />

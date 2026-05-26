@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/hooks/use-i18n";
@@ -18,7 +18,7 @@ import type { TripLocation } from "@/lib/location/types";
 import { preparePlanTripSession } from "@/lib/plan-trip-handoff";
 import { saveChatSession, clearChatSession } from "@/lib/chat-session";
 import { clearChatHistory } from "@/lib/chat-history";
-import { RoamieDatePicker, RoamieTimePicker } from "@/components/pickers";
+import { RoamieDatePicker } from "@/components/pickers";
 import { getWeather } from "@/lib/weather.functions";
 import {
   getPreferences,
@@ -63,14 +63,12 @@ function PlanPage() {
   const [sourceCtx, setSourceCtx] = useState<ItinerarySourceContext | null>(null);
   const [sourceLoading, setSourceLoading] = useState(true);
   const [destination, setDestination] = useState<TripLocation | null>(null);
-  const [days, setDays] = useState(2);
   const [budgetMode, setBudgetMode] = useState<BudgetMode>("standard");
   const [styles, setStyles] = useState<string[]>([]);
   const [mood, setMood] = useState<string>(search.mood ?? "");
   const [interests, setInterests] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [departureTime, setDepartureTime] = useState("10:00");
   const [origin, setOrigin] = useState<TripLocation | null>(null);
   const [travelers, setTravelers] = useState(1);
   const [transport, setTransport] = useState("");
@@ -120,7 +118,8 @@ function PlanPage() {
       toast.error(t("plan.dateInvalid"));
       return;
     }
-    const tripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : days;
+    const tripDays =
+      startDate && endDate ? daysBetweenDates(startDate, endDate) : 2;
 
     setLoading(true);
     try {
@@ -159,7 +158,7 @@ function PlanPage() {
           interests: interestsText,
           startDate,
           endDate,
-          departureTime,
+          departureTime: "",
           travelers,
           transport: transport.trim(),
           budgetMode: effectiveBudgetMode,
@@ -180,8 +179,8 @@ function PlanPage() {
   };
 
   return (
-    <div className="pb-10">
-      <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background/90 px-5 py-3 backdrop-blur">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <header className="z-10 flex shrink-0 items-center gap-3 border-b border-border bg-background px-5 py-3">
         <BackButton fallback={{ to: "/" }} />
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-clay" />
@@ -189,7 +188,8 @@ function PlanPage() {
         </div>
       </header>
 
-      <form onSubmit={handleSubmit} className="space-y-6 px-5 pt-5">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain no-scrollbar">
+        <form onSubmit={handleSubmit} className="space-y-6 px-5 pt-5 pb-8">
         {sourceLoading ? (
           <div className="flex items-center gap-2 rounded-2xl bg-secondary/80 px-4 py-3 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -253,19 +253,6 @@ function PlanPage() {
         )}
 
         <section>
-          <label className="text-sm font-medium">{t("plan.departureTime")}</label>
-          <div className="mt-2">
-            <RoamieTimePicker
-              title={t("plan.departureTimeTitle")}
-              value={departureTime}
-              onChange={setDepartureTime}
-              placeholder="10:00"
-              disabled={loading}
-            />
-          </div>
-        </section>
-
-        <section>
           <label className="text-sm font-medium">{t("plan.travelers")}</label>
           <input
             type="number"
@@ -275,19 +262,6 @@ function PlanPage() {
             onChange={(e) => setTravelers(Math.max(1, Number(e.target.value) || 1))}
             className="mt-2 w-full rounded-2xl border border-border bg-card px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30"
             disabled={loading}
-          />
-        </section>
-
-        <section>
-          <label className="text-sm font-medium">{t("plan.daysLabel", { days })}</label>
-          <input
-            type="range"
-            min={1}
-            max={7}
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
-            className="mt-3 w-full accent-primary"
-            disabled={loading || !!(startDate && endDate)}
           />
         </section>
 
@@ -412,7 +386,8 @@ function PlanPage() {
             </span>
           )}
         </button>
-      </form>
+        </form>
+      </div>
     </div>
   );
 }

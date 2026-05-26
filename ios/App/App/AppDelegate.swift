@@ -46,4 +46,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
     }
 
+    /// iPhone: portrait only. iPad: all orientations declared in Info.plist (App Store requirement).
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            return [.portrait, .portraitUpsideDown, .landscapeLeft, .landscapeRight]
+        }
+        return .portrait
+    }
+
+}
+
+/// iPhone portrait lock; iPad follows Info.plist (~ipad) orientations for App Store compliance.
+class PortraitBridgeViewController: CAPBridgeViewController {
+    override open var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            return [.portrait, .portraitUpsideDown, .landscapeLeft, .landscapeRight]
+        }
+        return .portrait
+    }
+
+    override open var shouldAutorotate: Bool {
+        return UIDevice.current.userInterfaceIdiom == .pad
+    }
 }

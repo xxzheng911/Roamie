@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronUp, Loader2, Sparkles, Trash2 } from "lucide-react";
 import { useServerFn } from "@tanstack/react-start";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
@@ -12,6 +12,15 @@ import { RoamieDatePicker, RoamieDurationPicker, RoamieTimePicker } from "@/comp
 import { daysBetweenDates } from "@/lib/fetch-context";
 import { groupItineraryByDate, listTripDates } from "@/lib/outfit/group-by-date";
 import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings, TripTransportMode } from "@/lib/ai/types";
+import { TripStopSearchField } from "@/components/TripStopSearchField";
+import { tripPlaceToItineraryItem } from "@/lib/trip/trip-place-input";
+import {
+  insertStopOnDate,
+  moveStopInDay,
+  removeStopAt,
+  updateStop,
+} from "@/lib/trip/trip-stop-mutations";
+import { useI18n } from "@/hooks/use-i18n";
 
 const TRANSPORT_OPTIONS: { value: TripTransportMode; label: string }[] = [
   { value: "walk", label: "步行" },
@@ -86,6 +95,7 @@ type Props = {
 };
 
 export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
+  const { t } = useI18n();
   const [settings, setSettings] = useState<TripPlanSettings>(
     () =>
       payload.tripSettings ?? {
@@ -204,6 +214,19 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
     list.push(item);
     groups.set(key, list);
   }
+
+  const firstWithCoords = items.find((i) => i.lat != null && i.lng != null);
+  const tripCenter = firstWithCoords
+    ? { lat: firstWithCoords.lat!, lng: firstWithCoords.lng! }
+    : undefined;
+
+  const handleAddStop = (dateKey: string, place: Parameters<typeof tripPlaceToItineraryItem>[0]) => {
+    const stop = tripPlaceToItineraryItem(place, {
+      date: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : inferTripDates(items, settings).start,
+      time: settings.startTime ?? "10:00",
+    });
+    setItems(insertStopOnDate(items, stop, { date: stop.date, position: "end" }));
+  };
 
   const outfitByDate = new Map<string, DailyOutfitAdvice>();
   for (const d of payload.outfitAdvice?.days ?? []) {
@@ -324,6 +347,34 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                   <article className="relative pb-6 last:pb-0">
                     <span className="absolute -left-[1.35rem] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-foreground" />
                     <div className="rounded-2xl border border-border bg-card p-4 shadow-soft">
+                      <div className="mb-2 flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          aria-label="上移"
+                          disabled={i === 0}
+                          onClick={() => setItems(moveStopInDay(items, dateKey, i, -1))}
+                          className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40"
+                        >
+                          <ChevronUp className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="下移"
+                          disabled={i >= dayItems.length - 1}
+                          onClick={() => setItems(moveStopInDay(items, dateKey, i, 1))}
+                          className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40"
+                        >
+                          <ChevronDown className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={t("trip.deleteStop")}
+                          onClick={() => setItems(removeStopAt(items, dateKey, i))}
+                          className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card text-muted-foreground hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                         <RoamieTimePicker
                           compact
@@ -343,7 +394,20 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                       </div>
                       <h3 className="mt-2 text-[16px] font-medium leading-snug">{item.title}</h3>
                       <p className="mt-0.5 text-xs text-muted-foreground">{item.placeName}</p>
+                      {item.address ? (
+                        <p className="mt-1 text-xs text-muted-foreground">{item.address}</p>
+                      ) : null}
                       <p className="mt-2 text-sm leading-relaxed text-foreground/80">{item.description}</p>
+                      <label className="mt-3 block text-[11px] text-muted-foreground">{t("trip.stopNotes")}</label>
+                      <textarea
+                        value={item.notes ?? ""}
+                        onChange={(e) =>
+                          setItems(updateStop(items, dateKey, i, { notes: e.target.value }))
+                        }
+                        rows={2}
+                        placeholder="停留備註、預約資訊…"
+                        className="mt-1 w-full resize-none rounded-xl border border-border bg-background/60 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                      />
                       <PlaceNavButtons
                         lat={item.lat}
                         lng={item.lng}
@@ -357,6 +421,11 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                 );
               })}
             </div>
+            <TripStopSearchField
+              label={t("trip.addStop")}
+              center={tripCenter}
+              onPick={(place) => handleAddStop(dateKey, place)}
+            />
           </section>
           );
         })}

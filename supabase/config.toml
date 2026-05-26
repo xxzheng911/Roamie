@@ -8,6 +8,12 @@ project_id = "rkzohhstdfxeqxajslrt"
 #   http://192.168.0.60:8080
 #   http://192.168.0.60:8080/auth/callback
 # （LAN IP 若變更，請改為目前 Mac 的區網 IP）
+# 本機 Supabase：原生 Apple 登入若仍 Nonces mismatch，可暫設：
+# [auth.external.apple]
+# enabled = true
+# skip_nonce_check = true
+# Cloud 專案：Dashboard → Authentication → Providers → Apple → 同上選項（若有）
+
 [auth]
 site_url = "http://localhost:8080"
 additional_redirect_urls = [

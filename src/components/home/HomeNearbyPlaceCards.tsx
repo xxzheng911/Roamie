@@ -1,5 +1,4 @@
-import { Heart, Star } from "lucide-react";
-import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
@@ -9,26 +8,23 @@ import { useI18n } from "@/hooks/use-i18n";
 type Props = {
   places: HomeNearbyPick[];
   loading?: boolean;
-  userLocation: { lat: number; lng: number };
+  userLocation: { lat: number; lng: number } | null;
   emptyMessage?: string;
+  savedNames: Set<string>;
+  busyId: string | null;
   onSelect: (place: HomeNearbyPick) => void;
+  onAddToTrip?: (place: HomeNearbyPick) => void;
+  onToggleSave?: (place: HomeNearbyPick) => void;
+  addToTripLabel?: string;
 };
 
 function distLabel(
   place: HomeNearbyPick,
   userLocation: { lat: number; lng: number },
 ): string {
+  if (place.distanceLabel) return place.distanceLabel;
   if (place.lat == null || place.lng == null) return "";
   return formatDistanceLabel(distanceMeters(userLocation, { lat: place.lat, lng: place.lng }));
-}
-
-function areaLabel(place: HomeNearbyPick): string {
-  const cat = getExploreCategoryDisplayLabel(place);
-  if (place.address?.trim()) {
-    const short = place.address.split(/[,，]/)[0]?.trim();
-    if (short && short.length <= 12) return short;
-  }
-  return cat || "附近";
 }
 
 function ratingLabel(place: HomeNearbyPick): string | null {
@@ -40,14 +36,28 @@ function ratingLabel(place: HomeNearbyPick): string | null {
   return `${place.rating.toFixed(1)}${count}`;
 }
 
+function statusLabel(place: HomeNearbyPick): string | null {
+  if (place.openStatusLabel?.trim()) return place.openStatusLabel.trim();
+  if (place.openStatus === "open") return "營業中";
+  if (place.openStatus === "closed") return "休息中";
+  return null;
+}
+
 export function HomeNearbyPlaceCards({
   places,
   loading,
   userLocation,
   emptyMessage,
+  savedNames,
+  busyId,
   onSelect,
+  onAddToTrip,
+  onToggleSave,
+  addToTripLabel = "加入行程",
 }: Props) {
   const { t } = useI18n();
+  const anchor = userLocation ?? { lat: 0, lng: 0 };
+  const canShowDistance = userLocation != null;
 
   if (loading && places.length === 0) {
     return (
@@ -76,61 +86,103 @@ export function HomeNearbyPlaceCards({
       aria-label="附近推薦地點"
     >
       {places.map((p, i) => {
-        const img = p.photoName ? buildPlacePhotoUrl(p.photoName, 480) : null;
+        const img = p.coverImageUrl;
         const isLast = i === places.length - 1;
-        const distance = distLabel(p, userLocation);
-        const area = areaLabel(p);
+        const distance = canShowDistance ? distLabel(p, anchor) : "";
+        const typeName = p.displayCategory ?? getExploreCategoryDisplayLabel(p);
         const rating = ratingLabel(p);
-        const vibe = p.reason?.trim() || "適合現在去走走";
+        const hours = statusLabel(p);
+        const vibe = p.reason?.trim() || typeName || "適合現在去走走";
+        const isSaved = savedNames.has(p.name) || Boolean(p.isSavedFavorite);
+        const isBusy = busyId === p.id;
 
         return (
-          <button
+          <article
             key={p.id}
-            type="button"
             role="listitem"
-            onClick={() => onSelect(p)}
             className={cn(
-              "home-nearby-card-item group text-left",
+              "home-nearby-card-item text-left",
               isLast && "home-nearby-card-item--last",
             )}
           >
-            <div className="home-nearby-card-square overflow-hidden rounded-[1.35rem] bg-secondary shadow-soft transition-transform duration-300 ease-out active:scale-[0.97] group-hover:scale-[1.02]">
+            <div className="home-nearby-card-square group relative overflow-hidden rounded-[1.35rem] bg-secondary shadow-soft transition-transform duration-300 ease-out active:scale-[0.97] group-hover:scale-[1.02]">
+              <button
+                type="button"
+                onClick={() => onSelect(p)}
+                className="absolute inset-0 z-0"
+                aria-label={`查看 ${p.name}`}
+              />
               {img ? (
                 <img
                   src={img}
                   alt=""
                   loading="lazy"
                   draggable={false}
-                  className="absolute inset-0 h-full w-full object-cover"
+                  className="pointer-events-none absolute inset-0 h-full w-full object-cover"
                 />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-secondary via-cream to-[#e8eef5]/60 text-xs text-muted-foreground">
-                  {getExploreCategoryDisplayLabel(p)}
-                </div>
-              )}
+              ) : null}
               <div
-                className="absolute inset-0 bg-gradient-to-t from-ink/78 via-ink/18 to-transparent"
+                className="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink/78 via-ink/18 to-transparent"
                 aria-hidden
               />
-              <div className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded-full bg-ink/35 px-2 py-1 text-[10px] text-cream backdrop-blur-sm">
-                {p.isSavedFavorite ? (
-                  <Heart className="h-3 w-3 fill-current" aria-hidden />
-                ) : rating ? (
-                  <>
-                    <Star className="h-3 w-3 fill-current text-amber-200/90" aria-hidden />
-                    <span>{rating}</span>
-                  </>
-                ) : null}
-              </div>
-              <div className="absolute inset-x-0 bottom-0 p-3 text-cream">
-                <p className="text-[10px] tracking-wide opacity-85">
-                  {[distance, area].filter(Boolean).join(" · ")}
-                </p>
-                <p className="mt-1 line-clamp-2 font-display text-[15px] leading-snug">{p.name}</p>
-                <p className="mt-1 line-clamp-2 text-[11px] leading-snug opacity-90">{vibe}</p>
-              </div>
+              {rating ? (
+                <span className="pointer-events-none absolute left-2.5 top-2.5 z-[1] flex items-center gap-1 rounded-full bg-ink/35 px-2 py-1 text-[10px] text-cream backdrop-blur-sm">
+                  <Star className="h-3 w-3 fill-current text-amber-200/90" aria-hidden />
+                  {rating}
+                </span>
+              ) : null}
+              {hours ? (
+                <span className="pointer-events-none absolute right-2.5 top-2.5 z-[1] rounded-full bg-ink/40 px-2 py-0.5 text-[10px] text-cream backdrop-blur-sm">
+                  {hours}
+                </span>
+              ) : null}
+
+              {onAddToTrip ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAddToTrip(p);
+                  }}
+                  className="absolute bottom-3 left-3 z-10 flex items-center gap-1 rounded-full bg-cream/95 px-2.5 py-1 text-[10px] font-medium text-ink shadow-soft"
+                >
+                  <Plus className="h-3 w-3" />
+                  {addToTripLabel}
+                </button>
+              ) : null}
+
+              {onToggleSave ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleSave(p);
+                  }}
+                  disabled={isBusy}
+                  className="absolute bottom-3 right-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-card/95 shadow-soft disabled:opacity-60"
+                  aria-label={isSaved ? "移除收藏" : "收藏"}
+                >
+                  {isBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  ) : (
+                    <Heart
+                      className={`h-4 w-4 ${isSaved ? "fill-clay text-clay" : "text-muted-foreground"}`}
+                    />
+                  )}
+                </button>
+              ) : null}
             </div>
-          </button>
+
+            <div className="mt-2 px-0.5">
+              <p className="line-clamp-1 font-display text-[15px] leading-snug text-foreground">
+                {p.name}
+              </p>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">
+                {[typeName, distance].filter(Boolean).join(" · ")}
+              </p>
+              <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-foreground/80">{vibe}</p>
+            </div>
+          </article>
         );
       })}
     </div>

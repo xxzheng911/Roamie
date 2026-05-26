@@ -1,5 +1,5 @@
 import type { User } from "@supabase/supabase-js";
-import { getClientAuthSession, readGuestFlag } from "@/lib/auth-session";
+import { getClientAuthSession } from "@/lib/auth-session";
 import { resolveAuthProvider } from "@/lib/auth-provider";
 import { detectDeviceLocale } from "@/lib/i18n/detect-locale";
 import { getDefaultBio, getDefaultDisplayName } from "@/lib/i18n/default-profile";
@@ -23,8 +23,6 @@ export function roamieProfileDefaults(user: User, locale: Locale = detectDeviceL
  * 若 public.profiles 尚無此使用者，建立 Roamie 預設資料（不使用 OAuth 顯示名／頭像）。
  */
 export async function ensureUserProfile(explicitUserId?: string): Promise<boolean> {
-  if (readGuestFlag()) return false;
-
   const session = await getClientAuthSession();
   const user = session?.user;
   if (!user) return false;

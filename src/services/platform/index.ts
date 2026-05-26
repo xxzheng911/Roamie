@@ -1,3 +1,10 @@
+import { attachOAuthDeepLinkListener } from "@/lib/auth-oauth-deep-link";
+import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
+import { normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
+import { hideNativeSplashScreen } from "@/lib/native-splash";
+import { isAppReady } from "@/lib/startup-route";
+import { logAppError } from "@/lib/log-error";
+
 export type PlatformKind = "web" | "ios" | "android";
 
 export type PlatformInfo = {
@@ -18,8 +25,10 @@ export function detectPlatform(): PlatformInfo {
       Capacitor?: { getPlatform?: () => string; isNativePlatform?: () => boolean };
     }
   ).Capacitor;
-  const isCapacitor = Boolean(cap?.isNativePlatform?.());
   const platform = cap?.getPlatform?.() ?? "web";
+  const isCapacitor = Boolean(
+    cap?.isNativePlatform?.() ?? (platform === "ios" || platform === "android"),
+  );
 
   return {
     kind: platform === "ios" ? "ios" : platform === "android" ? "android" : "web",
@@ -30,34 +39,79 @@ export function detectPlatform(): PlatformInfo {
   };
 }
 
-/** Apply native shell polish when running inside Capacitor. */
+let bootstrapStarted = false;
+let bootstrapDone = false;
+
+/** 等 React 首屏就緒後再關原生 splash，避免 bundle 載入期間露出白屏 */
+async function hideNativeSplashAfterFirstPaint(): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (isAppReady()) break;
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+  }
+  try {
+    await hideNativeSplashScreen();
+  } catch (e) {
+    logAppError("[platform] hideNativeSplashScreen failed", e);
+  }
+}
+
+/** Apply native shell polish when running inside Capacitor (after bridge + first paint). */
 export async function bootstrapNativeShell(): Promise<void> {
   if (typeof window === "undefined") return;
   const info = detectPlatform();
   if (!info.isCapacitor) return;
+  if (bootstrapDone) return;
+  if (bootstrapStarted) return;
+  bootstrapStarted = true;
 
   try {
-    const { StatusBar, Style } = await import("@capacitor/status-bar");
-    await StatusBar.setStyle({ style: Style.Dark });
-    await StatusBar.setBackgroundColor({ color: "#f7f4ef" });
-  } catch {
-    /* plugin optional until cap add ios */
-  }
+    normalizeCapacitorEntryPath();
+    attachOAuthDeepLinkListener();
 
-  try {
-    await hideNativeSplashScreen();
-  } catch {
-    /* optional */
-  }
+    document.documentElement.classList.add("native-shell");
+    if (info.isIOS) document.documentElement.classList.add("platform-ios");
+    if (info.isAndroid) document.documentElement.classList.add("platform-android");
 
-  try {
-    const { Keyboard } = await import("@capacitor/keyboard");
-    await Keyboard.setAccessoryBarVisible({ isVisible: false });
-  } catch {
-    /* plugin optional */
-  }
+    // 首屏 HTML 占位或 React splash 出現後即關閉原生 splash（不等 StatusBar / idle）
+    await hideNativeSplashAfterFirstPaint();
 
-  document.documentElement.classList.add("native-shell");
-  if (info.isIOS) document.documentElement.classList.add("platform-ios");
-  if (info.isAndroid) document.documentElement.classList.add("platform-android");
+    const bridgeReady = await waitForCapacitorBridge();
+    if (!bridgeReady) {
+      bootstrapDone = true;
+      return;
+    }
+
+    const polishNativeChrome = async () => {
+      try {
+        const { StatusBar, Style } = await import("@capacitor/status-bar");
+        await StatusBar.setStyle({ style: Style.Dark });
+        if (info.isAndroid) {
+          await StatusBar.setBackgroundColor({ color: "#f7f4ef" });
+        }
+      } catch (e) {
+        logAppError("[platform] StatusBar failed", e);
+      }
+
+      try {
+        const { Keyboard } = await import("@capacitor/keyboard");
+        await Keyboard.setAccessoryBarVisible({ isVisible: false });
+      } catch (e) {
+        logAppError("[platform] Keyboard.setAccessoryBarVisible failed", e);
+      }
+    };
+
+    if ("requestIdleCallback" in window) {
+      requestIdleCallback(() => void polishNativeChrome(), { timeout: 2500 });
+    } else {
+      window.setTimeout(() => void polishNativeChrome(), 80);
+    }
+
+    bootstrapDone = true;
+  } catch (e) {
+    bootstrapStarted = false;
+    logAppError("[platform] bootstrapNativeShell failed", e);
+  }
 }

@@ -1,7 +1,8 @@
 import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
-import { renderErrorPage } from "./lib/error-page";
+import { logAppError } from "@/lib/log-error";
+import { renderErrorPageFromUnknown } from "./lib/error-page";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -18,8 +19,8 @@ async function getServerEntry(): Promise<ServerEntry> {
   return serverEntryPromise;
 }
 
-function brandedErrorResponse(): Response {
-  return new Response(renderErrorPage(), {
+function brandedErrorResponse(error?: unknown): Response {
+  return new Response(renderErrorPageFromUnknown(error), {
     status: 500,
     headers: { "content-type": "text/html; charset=utf-8" },
   });
@@ -62,8 +63,9 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
     return response;
   }
 
-  console.error(consumeLastCapturedError() ?? new Error(`h3 swallowed SSR error: ${body}`));
-  return brandedErrorResponse();
+  const captured = consumeLastCapturedError() ?? new Error(`h3 swallowed SSR error: ${body}`);
+  logAppError("SSR_CATASTROPHIC_ERROR", captured, { body });
+  return brandedErrorResponse(captured);
 }
 
 export default {
@@ -73,8 +75,8 @@ export default {
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);
     } catch (error) {
-      console.error(error);
-      return brandedErrorResponse();
+      logAppError("SSR_FETCH_ERROR", error);
+      return brandedErrorResponse(error);
     }
   },
 };

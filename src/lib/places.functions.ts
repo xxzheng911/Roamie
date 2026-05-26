@@ -297,8 +297,8 @@ export async function lookupPlacesHoursBatch(
 
 async function runExploreSearch(
   data: z.infer<typeof ExploreSearchInput>,
+  apiKey: string,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
-  const apiKey = requireGoogleMapsServerKey();
   const center = { lat: data.lat, lng: data.lng };
   const radii = [data.radius ?? DEFAULT_SEARCH_RADIUS_M, 8_000, 5_000];
   const userLocale = data.locale ? coerceLocale(data.locale) : undefined;
@@ -362,9 +362,11 @@ async function runExploreSearch(
 
 export async function executeExploreSearch(
   data: z.infer<typeof ExploreSearchInput>,
+  options?: { apiKey?: string },
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   try {
-    return await runExploreSearch(data);
+    const apiKey = options?.apiKey?.trim() || requireGoogleMapsServerKey();
+    return await runExploreSearch(data, apiKey);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "request failed";
     console.error("[Roamie Places] search threw", msg);

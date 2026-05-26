@@ -1,5 +1,8 @@
 /** App Store / TestFlight bundle identifier — keep in sync with Apple Developer & Capacitor. */
-export const APP_BUNDLE_ID = "com.roamie.app";
+export const APP_BUNDLE_ID = "com.shuode.roamie";
+
+/** Apple Services ID（Web OAuth）；原生 iOS 使用 APP_BUNDLE_ID */
+export const APPLE_SERVICES_ID = "com.roamie.service";
 
 export const APP_DISPLAY_NAME = "Roamie";
 

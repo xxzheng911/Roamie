@@ -8,6 +8,10 @@ import { mergeAiWithVerifiedCandidates } from "@/lib/recommendation/merge-verifi
 import { preparePlacesFirstContext } from "@/lib/recommendation/pipeline.server";
 import { buildRuleBasedRecommendSummary } from "@/lib/recommendation/fallback-summary";
 import { ROAMIE_JSON_SCHEMA, normalizeRoamieResponse, type RoamieResponse } from "./types";
+import {
+  mergeBoundsForStage,
+  stageAllowsPlacesFirst,
+} from "@/lib/ai/conversation-stage";
 
 const PlaceItemSchema = z
   .object({
@@ -127,6 +131,9 @@ const RequestSchema = z.object({
     .optional(),
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   planTier: z.enum(["free", "plus"]).optional(),
+  conversationStage: z
+    .enum(["empathize", "infer", "clarify", "converge", "recommend", "itinerary"])
+    .optional(),
 });
 
 export function parseRoamieRequest(body: unknown): RoamieRequestContext {
@@ -137,14 +144,19 @@ export function parseRoamieRequest(body: unknown): RoamieRequestContext {
 function shouldUsePlacesFirst(ctx: RoamieRequestContext): boolean {
   if (ctx.mode === "recommend") return true;
   if (ctx.mode !== "chat") return false;
+  if (ctx.conversationStage) {
+    return stageAllowsPlacesFirst(ctx.conversationStage);
+  }
   const phase = ctx.chatPhase;
   if (!phase) return false;
-  // discover / confirm / ready：不推薦新地點（ready 走 itinerary API）
   if (phase === "discover" || phase === "confirm" || phase === "ready") return false;
   return true;
 }
 
 function mergeOptionsForContext(ctx: RoamieRequestContext) {
+  if (ctx.conversationStage) {
+    return mergeBoundsForStage(ctx.conversationStage);
+  }
   if (ctx.mode === "chat") {
     return { minCount: 2, maxCount: 4 };
   }

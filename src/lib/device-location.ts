@@ -1,11 +1,22 @@
-import { normalizeDeviceLocation, TAIPEI_CENTER } from "@/lib/geo";
+import { isDefaultTaipeiCenter, normalizeDeviceLocation, TAIPEI_CENTER } from "@/lib/geo";
+import {
+  isIosSimulatorPresetLocation,
+  pickFallbackCoordinates,
+  resolveGpsCoordinates,
+  shouldRememberCoords,
+} from "@/lib/device-location-resolve";
+import { readLastSearchLocation } from "@/lib/last-search-location";
 import { detectPlatform } from "@/services/platform";
+
+export { isIosSimulatorPresetLocation } from "@/lib/device-location-resolve";
 
 export const DEFAULT_FALLBACK_LOCATION = {
   lat: TAIPEI_CENTER.lat,
   lng: TAIPEI_CENTER.lng,
   city: "台北",
 } as const;
+
+const LAST_GOOD_COORDS_KEY = "roamie:last-device-coords";
 
 export type LocationPermissionState =
   | "granted"
@@ -20,15 +31,51 @@ export type DeviceLocationResult = {
   lng: number;
   city: string;
   permission: LocationPermissionState;
+  /** true = 未取得 GPS，使用上次有效座標或台北預設 */
   usedFallback: boolean;
   source: "capacitor" | "browser" | "fallback";
 };
 
 const GEO_OPTIONS: PositionOptions = {
-  timeout: 12_000,
+  timeout: 25_000,
   maximumAge: 60_000,
   enableHighAccuracy: true,
 };
+
+const GEO_OPTIONS_LOW: PositionOptions = {
+  timeout: 30_000,
+  maximumAge: 300_000,
+  enableHighAccuracy: false,
+};
+
+function isDevBuild(): boolean {
+  return import.meta.env.DEV && !import.meta.env.PROD;
+}
+
+function readDevOverrideCoords(): { lat: number; lng: number } | null {
+  if (!isDevBuild()) return null;
+  const latRaw = import.meta.env.VITE_CAPACITOR_DEV_LOCATION_LAT as string | undefined;
+  const lngRaw = import.meta.env.VITE_CAPACITOR_DEV_LOCATION_LNG as string | undefined;
+  if (!latRaw || !lngRaw) return null;
+  return normalizeDeviceLocation(Number(latRaw), Number(lngRaw));
+}
+
+function allowSimulatorGpsInDev(): boolean {
+  return isDevBuild() && import.meta.env.VITE_LOCATION_USE_SIMULATOR_GPS === "1";
+}
+
+function isNativeShell(): boolean {
+  const info = detectPlatform();
+  if (info.isCapacitor) return true;
+  if (typeof window === "undefined") return false;
+  const cap = (
+    window as Window & {
+      Capacitor?: { getPlatform?: () => string; isNativePlatform?: () => boolean };
+    }
+  ).Capacitor;
+  const platform = cap?.getPlatform?.();
+  return platform === "ios" || platform === "android";
+}
 
 function permissionFromGeoError(code: number): LocationPermissionState {
   if (code === 1) return "denied";
@@ -37,27 +84,76 @@ function permissionFromGeoError(code: number): LocationPermissionState {
   return "unknown";
 }
 
+function readLastGoodCoords(): { lat: number; lng: number } | null {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(LAST_GOOD_COORDS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { lat?: number; lng?: number };
+    if (typeof parsed.lat !== "number" || typeof parsed.lng !== "number") return null;
+    const normalized = normalizeDeviceLocation(parsed.lat, parsed.lng);
+    if (!normalized || isDefaultTaipeiCenter(normalized.lat, normalized.lng)) return null;
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+function rememberGoodCoords(lat: number, lng: number): void {
+  if (typeof sessionStorage === "undefined") return;
+  if (!shouldRememberCoords(lat, lng)) return;
+  const normalized = normalizeDeviceLocation(lat, lng);
+  if (!normalized) return;
+  try {
+    sessionStorage.setItem(LAST_GOOD_COORDS_KEY, JSON.stringify(normalized));
+  } catch {
+    /* ignore */
+  }
+}
+
 function readPosition(
   latitude: number,
   longitude: number,
   accuracy: number | null | undefined,
   source: "capacitor" | "browser",
 ): DeviceLocationResult | null {
-  const normalized = normalizeDeviceLocation(latitude, longitude);
-  if (!normalized) {
-    console.warn("[Weather] fallback reason", "invalid coordinates from GPS");
+  const resolved = resolveGpsCoordinates({
+    lat: latitude,
+    lng: longitude,
+    isDevBuild: isDevBuild(),
+    isNativeShell: isNativeShell(),
+    allowSimulatorGps: allowSimulatorGpsInDev(),
+    devOverride: readDevOverrideCoords(),
+    lastGood: readLastGoodCoords(),
+  });
+
+  if (!resolved) {
+    console.warn("[Location] invalid coordinates from GPS");
     return null;
   }
 
-  console.info("[Weather] current coordinates", {
-    lat: normalized.lat,
-    lng: normalized.lng,
+  if (resolved.kind === "dev-simulator-substitute") {
+    console.warn("[Location] iOS Simulator US preset → Taiwan dev coords (dev build only)", {
+      reason: resolved.substituteReason,
+      using: { lat: resolved.lat, lng: resolved.lng },
+    });
+  }
+
+  rememberGoodCoords(resolved.lat, resolved.lng);
+
+  console.info("[Location] GPS fix", {
+    lat: resolved.lat,
+    lng: resolved.lng,
     accuracy,
     source,
+    kind: resolved.kind,
+    build: import.meta.env.PROD ? "production" : "development",
+    simulatorPreset: resolved.simulatorPreset,
   });
 
   return {
-    ...normalized,
+    lat: resolved.lat,
+    lng: resolved.lng,
     city: "",
     permission: "granted",
     usedFallback: false,
@@ -65,76 +161,146 @@ function readPosition(
   };
 }
 
-async function requestCapacitorLocation(): Promise<DeviceLocationResult | null> {
-  const { isCapacitor } = detectPlatform();
-  if (!isCapacitor) return null;
+type CapGeolocation = typeof import("@capacitor/geolocation").Geolocation;
+type CapPosition = Awaited<ReturnType<CapGeolocation["getCurrentPosition"]>>;
 
+async function requestCapacitorPermissions(Geolocation: CapGeolocation): Promise<LocationPermissionState> {
   try {
-    const { Geolocation } = await import("@capacitor/geolocation");
     const status = await Geolocation.checkPermissions();
-
-    if (status.location === "denied") {
-      console.info("[Weather] location granted", false);
-      return null;
+    if (status.location === "granted" || status.coarseLocation === "granted") {
+      return "granted";
     }
-
-    if (status.location === "prompt" || status.location === "prompt-with-rationale") {
-      const req = await Geolocation.requestPermissions();
-      const granted = req.location === "granted";
-      console.info("[Weather] location granted", granted);
-      if (!granted) return null;
-    } else {
-      console.info("[Weather] location granted", status.location === "granted");
+    if (status.location === "denied" || status.coarseLocation === "denied") {
+      return "denied";
     }
-
-    const pos = await Geolocation.getCurrentPosition({
-      enableHighAccuracy: true,
-      timeout: 12_000,
-      maximumAge: 60_000,
-    });
-
-    return readPosition(
-      pos.coords.latitude,
-      pos.coords.longitude,
-      pos.coords.accuracy,
-      "capacitor",
-    );
+    const req = await Geolocation.requestPermissions();
+    if (req.location === "granted" || req.coarseLocation === "granted") return "granted";
+    if (req.location === "denied" || req.coarseLocation === "denied") return "denied";
+    return "unknown";
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.warn("[Weather] fallback reason", `capacitor geolocation: ${msg}`);
-    return null;
+    console.warn("[Location] capacitor permission request failed", e);
+    return "unknown";
   }
 }
 
-function geolocationPosition(): Promise<DeviceLocationResult | null> {
+async function waitForCapacitorWatchFix(
+  Geolocation: CapGeolocation,
+  timeoutMs: number,
+): Promise<CapPosition | null> {
+  return new Promise((resolve) => {
+    let watchId: string | undefined;
+    const timer = window.setTimeout(() => {
+      if (watchId) void Geolocation.clearWatch({ id: watchId });
+      resolve(null);
+    }, timeoutMs);
+
+    void Geolocation.watchPosition(
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 0 },
+      (pos, err) => {
+        if (!pos || err) return;
+        window.clearTimeout(timer);
+        if (watchId) void Geolocation.clearWatch({ id: watchId });
+        resolve(pos);
+      },
+    )
+      .then((id) => {
+        watchId = id;
+      })
+      .catch(() => {
+        window.clearTimeout(timer);
+        resolve(null);
+      });
+  });
+}
+
+async function readCapacitorPosition(): Promise<{
+  result: DeviceLocationResult | null;
+  permission: LocationPermissionState;
+}> {
+  if (!isNativeShell()) return { result: null, permission: "unknown" };
+
+  try {
+    const { Geolocation } = await import("@capacitor/geolocation");
+    const permission = await requestCapacitorPermissions(Geolocation);
+
+    const attempts: Parameters<CapGeolocation["getCurrentPosition"]>[0][] = [
+      { enableHighAccuracy: true, timeout: 25_000, maximumAge: 0 },
+      { enableHighAccuracy: true, timeout: 25_000, maximumAge: 60_000 },
+      { enableHighAccuracy: false, timeout: 30_000, maximumAge: 120_000 },
+    ];
+
+    for (const options of attempts) {
+      try {
+        const pos = await Geolocation.getCurrentPosition(options);
+        const parsed = readPosition(
+          pos.coords.latitude,
+          pos.coords.longitude,
+          pos.coords.accuracy,
+          "capacitor",
+        );
+        if (parsed) return { result: parsed, permission: "granted" };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("[Location] capacitor getCurrentPosition failed", msg);
+      }
+    }
+
+    const watched = await waitForCapacitorWatchFix(Geolocation, 15_000);
+    if (watched) {
+      const parsed = readPosition(
+        watched.coords.latitude,
+        watched.coords.longitude,
+        watched.coords.accuracy,
+        "capacitor",
+      );
+      if (parsed) return { result: parsed, permission: "granted" };
+    }
+
+    return { result: null, permission };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn("[Location] capacitor geolocation unavailable", msg);
+    return { result: null, permission: "unavailable" };
+  }
+}
+
+function geolocationPosition(
+  options: PositionOptions,
+): Promise<{ result: DeviceLocationResult | null; permission: LocationPermissionState | null }> {
   return new Promise((resolve) => {
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-      console.warn("[Weather] fallback reason", "browser geolocation API unavailable");
-      resolve(null);
+      resolve({ result: null, permission: null });
       return;
     }
 
     navigator.geolocation.getCurrentPosition(
       (pos) =>
-        resolve(
-          readPosition(
+        resolve({
+          result: readPosition(
             pos.coords.latitude,
             pos.coords.longitude,
             pos.coords.accuracy,
             "browser",
           ),
-        ),
-      (err) => {
-        console.warn("[Weather] fallback reason", {
-          code: err.code,
-          message: err.message,
+          permission: "granted",
+        }),
+      (err) =>
+        resolve({
+          result: null,
           permission: permissionFromGeoError(err.code),
-        });
-        resolve(null);
-      },
-      GEO_OPTIONS,
+        }),
+      options,
     );
   });
+}
+
+async function requestBrowserLocation(): Promise<{
+  result: DeviceLocationResult | null;
+  permission: LocationPermissionState | null;
+}> {
+  const high = await geolocationPosition(GEO_OPTIONS);
+  if (high.result) return high;
+  return geolocationPosition(GEO_OPTIONS_LOW);
 }
 
 async function probePermissionState(): Promise<LocationPermissionState | null> {
@@ -150,36 +316,63 @@ async function probePermissionState(): Promise<LocationPermissionState | null> {
 }
 
 function fallbackResult(permission: LocationPermissionState, reason: string): DeviceLocationResult {
-  console.warn("[Weather] fallback reason", reason);
+  const lastSearch = readLastSearchLocation();
+  const picked = pickFallbackCoordinates(readLastGoodCoords(), lastSearch);
+
+  console.warn("[Location] GPS unavailable, using fallback", {
+    reason,
+    permission,
+    coords: picked,
+    lastSearchCity: lastSearch?.city ?? null,
+    build: import.meta.env.PROD ? "production" : "development",
+  });
+
+  const fallbackCity =
+    lastSearch?.city?.trim() ||
+    (picked.usedDefaultTaipei ? DEFAULT_FALLBACK_LOCATION.city : "");
+
   return {
-    ...DEFAULT_FALLBACK_LOCATION,
+    lat: picked.lat,
+    lng: picked.lng,
+    city: fallbackCity,
     permission,
     usedFallback: true,
     source: "fallback",
   };
 }
 
-/** 取得裝置座標；僅在拒絕或失敗時回傳台北 fallback。 */
+/** 取得裝置座標；正式版僅使用真實 GPS，失敗時才 fallback。 */
 export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
+  const native = isNativeShell();
+
+  if (native) {
+    const { result: cap, permission: capPerm } = await readCapacitorPosition();
+    if (cap) return cap;
+
+    const { result: browser, permission: browserPerm } = await requestBrowserLocation();
+    if (browser) {
+      console.info("[Location] native shell used browser geolocation");
+      return browser;
+    }
+
+    const permission: LocationPermissionState =
+      capPerm === "denied" || browserPerm === "denied"
+        ? "denied"
+        : capPerm === "timeout" || browserPerm === "timeout"
+          ? "timeout"
+          : capPerm ?? browserPerm ?? "unavailable";
+
+    return fallbackResult(permission, "native GPS unavailable after Capacitor + browser");
+  }
+
+  const { result: browser, permission: browserPerm } = await requestBrowserLocation();
+  if (browser) return browser;
+
   const probed = await probePermissionState();
-  if (probed === "denied") {
-    console.info("[Weather] location granted", false);
-    return fallbackResult("denied", "permission denied before GPS request");
-  }
-
-  const capacitor = await requestCapacitorLocation();
-  if (capacitor) return capacitor;
-
-  const browser = await geolocationPosition();
-  if (browser) {
-    console.info("[Weather] location granted", true);
-    return browser;
-  }
-
   const permission: LocationPermissionState =
-    probed === "denied" ? "denied" : probed ?? "unavailable";
+    browserPerm === "denied" ? "denied" : probed ?? browserPerm ?? "unavailable";
 
-  return fallbackResult(permission, "GPS unavailable after capacitor + browser attempts");
+  return fallbackResult(permission, "browser GPS unavailable");
 }
 
 /** 監聽位置變化；回傳 cleanup。 */
@@ -188,14 +381,15 @@ export function watchDeviceLocation(
 ): () => void {
   let cancelled = false;
   let clearCapWatch: (() => void) | undefined;
-  const { isCapacitor } = detectPlatform();
+  let browserWatchId: number | undefined;
 
-  if (isCapacitor) {
+  if (isNativeShell()) {
     void (async () => {
       try {
         const { Geolocation } = await import("@capacitor/geolocation");
+        await requestCapacitorPermissions(Geolocation);
         const watchId = await Geolocation.watchPosition(
-          { enableHighAccuracy: true, timeout: 12_000, maximumAge: 60_000 },
+          { enableHighAccuracy: true, timeout: 25_000, maximumAge: 30_000 },
           (pos, err) => {
             if (cancelled || err || !pos) return;
             const parsed = readPosition(
@@ -210,13 +404,12 @@ export function watchDeviceLocation(
         clearCapWatch = () => {
           void Geolocation.clearWatch({ id: watchId });
         };
-      } catch {
-        /* browser fallback below */
+      } catch (e) {
+        console.warn("[Location] capacitor watchPosition unavailable", e);
       }
     })();
   }
 
-  let browserWatchId: number | undefined;
   if (typeof navigator !== "undefined" && navigator.geolocation) {
     browserWatchId = navigator.geolocation.watchPosition(
       (pos) => {

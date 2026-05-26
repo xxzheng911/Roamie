@@ -1,4 +1,5 @@
 import type { PlaceResult } from "@/lib/place-result";
+import { FOOD_MERCHANT_DENY_RE } from "@/lib/place-category";
 
 type PlaceLike = Pick<PlaceResult, "primaryType" | "name"> & {
   address?: string | null;
@@ -180,6 +181,7 @@ export function isTravelFriendlyPlace(place: PlaceLike): boolean {
   const type = normalizeType(place.primaryType);
 
   if (name && EXCLUDED_NAME_RE.test(name)) return false;
+  if (name && FOOD_MERCHANT_DENY_RE.test(name)) return false;
   if (name && LODGING_NAME_RE.test(name)) return false;
   if (isExcludedExploreType(type)) return false;
 
@@ -195,6 +197,10 @@ export function isTravelFriendlyPlace(place: PlaceLike): boolean {
   return false;
 }
 
-export function filterExplorePlaces<T extends PlaceLike>(places: T[]): T[] {
+export function filterExplorePlaces<T extends PlaceLike>(places: T[] | null | undefined): T[] {
+  if (!Array.isArray(places)) {
+    console.warn("[explore] filterExplorePlaces: expected array, got", places);
+    return [];
+  }
   return places.filter(isTravelFriendlyPlace);
 }

@@ -527,6 +527,7 @@ export function buildPlaceRecommendationReason(
         : new Date().getHours();
 
   const identity = resolvePlaceIdentity(place);
+  const copy = getPlaceReasonCopy(locale);
 
   if (ctx.isSavedFavorite) {
     if (!hasCompletedTravelQuiz(profile)) {

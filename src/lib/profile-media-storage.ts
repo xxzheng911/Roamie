@@ -109,3 +109,33 @@ export async function processAndUploadProfileImage(
     kind === "cover" ? await cropImageToCover(file) : await cropImageToSquare(file);
   return kind === "cover" ? applyProfileCover(blob) : applyProfileAvatar(blob);
 }
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("無法讀取圖片"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** 訪客模式：大頭貼存本機（data URL），並同步首頁頭像 */
+export async function applyGuestProfileAvatar(blob: Blob): Promise<string> {
+  const { saveUserProfile } = await import("@/lib/profile-storage");
+  const url = await blobToDataUrl(blob);
+  await saveUserProfile({ avatarUrl: url });
+  return url;
+}
+
+/** 訪客模式：封面存本機 */
+export async function applyGuestProfileCover(blob: Blob): Promise<string> {
+  const { saveUserProfile } = await import("@/lib/profile-storage");
+  const url = await blobToDataUrl(blob);
+  await saveUserProfile({ coverImageUrl: url });
+  return url;
+}
+
+export async function removeGuestProfileCover(): Promise<void> {
+  const { saveUserProfile } = await import("@/lib/profile-storage");
+  await saveUserProfile({ coverImageUrl: null });
+}

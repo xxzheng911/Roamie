@@ -78,7 +78,18 @@ export async function savePreferences(prefs: TravelPreferences): Promise<TravelP
     const { error } = await supabase
       .from("profiles")
       .upsert({ id: userId, travel_personality: merged as never }, { onConflict: "id" });
-    if (error) throw new Error(error.message);
+    if (error) {
+      // 某些環境的 profiles table trigger 會引用不存在的 updated_at 欄位，導致更新失敗。
+      // 此時仍允許完成測驗：改存本機（下次可再嘗試同步）。
+      const msg = error.message ?? "";
+      if (/record\s+\"new\"\s+has\s+no\s+field\s+\"updated_at\"/i.test(msg)) {
+        console.warn("[prefs] Supabase profile schema mismatch, falling back to localStorage", msg);
+        writeGuest(merged);
+        broadcastPreferencesUpdate(merged);
+        return merged;
+      }
+      throw new Error(error.message);
+    }
     broadcastPreferencesUpdate(merged);
     return merged;
   }

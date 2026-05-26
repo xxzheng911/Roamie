@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createClient } from "@supabase/supabase-js";
 import { callRoamieAI, parseRoamieRequest, streamRoamieAI } from "@/lib/ai/service.server";
+import { applyTierToAiContext } from "@/lib/access/context";
+import { resolveEffectivePlanTierWithProfile } from "@/lib/access/resolve";
 import type { RoamieAIErrorDetail } from "@/lib/ai/errors";
 import { AI_RATE_LIMITS, checkRateLimit } from "@/lib/rate-limit.server";
 
@@ -24,7 +26,7 @@ async function resolveUser(authHeader: string | null) {
   });
   const { data, error } = await client.auth.getUser();
   if (error || !data.user) return null;
-  return { userId: data.user.id, client };
+  return { userId: data.user.id, email: data.user.email ?? null, client };
 }
 
 export const Route = createFileRoute("/api/roamie")({
@@ -60,6 +62,8 @@ export const Route = createFileRoute("/api/roamie")({
 
         const stream = request.headers.get("X-Roamie-Stream") !== "false";
         const auth = await resolveUser(request.headers.get("authorization"));
+        const tier = await resolveEffectivePlanTierWithProfile(auth?.email ?? undefined);
+        ctx = applyTierToAiContext(ctx, tier);
 
         const rateKey = auth?.userId ?? request.headers.get("cf-connecting-ip") ?? "anon";
         const minuteLimit = checkRateLimit(

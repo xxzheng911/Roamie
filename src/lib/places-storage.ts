@@ -4,6 +4,13 @@ import { isMissingTableError } from "@/lib/supabase-errors";
 
 const GUEST_KEY = "roamie:places";
 
+export const SAVED_PLACES_CHANGED_EVENT = "roamie:saved-places-changed";
+
+function emitSavedPlacesChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(SAVED_PLACES_CHANGED_EVENT));
+}
+
 export type SavedPlace = {
   id: string;
   name: string;
@@ -67,6 +74,7 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
       }
       throw new Error(error.message);
     }
+    emitSavedPlacesChanged();
     return data as SavedPlace;
   }
   const record: SavedPlace = {
@@ -80,6 +88,7 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
   if (!list.find((p) => p.name === record.name)) {
     list.unshift(record);
     writeGuest(list.slice(0, 100));
+    emitSavedPlacesChanged();
   }
   return record;
 }
@@ -92,9 +101,11 @@ export async function deletePlace(id: string): Promise<void> {
       if (isMissingTableError(error)) return;
       throw new Error(error.message);
     }
+    emitSavedPlacesChanged();
     return;
   }
   writeGuest(readGuest().filter((p) => p.id !== id));
+  emitSavedPlacesChanged();
 }
 
 export async function isPlaceSavedByName(name: string): Promise<string | null> {

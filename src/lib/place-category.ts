@@ -92,6 +92,10 @@ const GLOBAL_ALLOW_TYPES = [
 const GLOBAL_DENY_NAME_RE =
   /汽車|機車|摩托|汽配|輪胎|維修|保修|五金|工具行|診所|醫院|牙醫|補習|托育|教堂|寺廟|墓園|殯葬|批發|物流|倉儲|有限公司(?!.*百貨)|企業社|工廠/i;
 
+/** 非餐飲：檳榔、菸酒專賣等（美食／首頁／探索共用） */
+export const FOOD_MERCHANT_DENY_RE =
+  /檳榔|槟榔|betel|菸草|烟草|香菸|香烟|雪茄|菸酒|烟酒|菸酒專|烟酒专|酒行|酒庄|酒莊|洋酒|威士忌|啤酒屋|檳榔攤|檳榔店|便利商店|超商|五金|材料行|批發|批发|wholesale|liquor\s*store|tobacco|cigarette/i;
+
 /** 名稱明確為咖啡 */
 const STRICT_CAFE_ALLOW_NAME_RE =
   /咖啡廳|咖啡館|咖啡店|珈琲|咖啡|coffee|café|cafe|espresso|latte/i;
@@ -209,8 +213,10 @@ const FOOD_TYPES = [
   "food",
   "meal_takeaway",
   "fast_food_restaurant",
-  "food_store",
 ] as const;
+
+const FOOD_RESTAURANT_NAME_RE =
+  /餐|飯|麵|食|restaurant|kitchen|食堂|小吃|料理|壽司|拉麵|燒肉|火鍋|早餐|brunch|早午餐|bistro|diner|grill|steak|bbq/i;
 
 const FOOD_DENY_TYPES = ["cafe", "coffee_shop", "bakery", "dessert_shop", "shopping_mall", "department_store"] as const;
 
@@ -427,16 +433,35 @@ function matchesDistrictStrict(place: PlaceLike): boolean {
   return false;
 }
 
+export function isExcludedFoodMerchant(place: PlaceLike): boolean {
+  const name = place.name ?? "";
+  const blob = placeBlob(place);
+  if (FOOD_MERCHANT_DENY_RE.test(name) || FOOD_MERCHANT_DENY_RE.test(blob)) return true;
+  const types = collectPlaceTypes(place);
+  if (types.includes("convenience_store") || types.includes("supermarket")) return true;
+  if (
+    hasAnyType(types, ["food_store", "wholesale_store", "store", "grocery_store"]) &&
+    !FOOD_RESTAURANT_NAME_RE.test(blob)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function matchesFoodStrict(place: PlaceLike): boolean {
   const types = collectPlaceTypes(place);
   const name = place.name ?? "";
+  const blob = placeBlob(place);
   if (isGloballyDenied(place)) return false;
+  if (isExcludedFoodMerchant(place)) return false;
   if (matchesCafeStrict(place)) return false;
   /** 紅茶、手搖等：即使標為 cafe 也歸美食 */
   if (isDrinkOrSnackFoodPlace(place)) return true;
   if (hasBlockedType(types, FOOD_DENY_TYPES)) return false;
-  if (COFFEE_EXCLUDED_NAME_RE.test(name) && !/餐廳|食堂|美食|料理/i.test(name)) return false;
-  return hasAnyType(types, FOOD_TYPES);
+  if (COFFEE_EXCLUDED_NAME_RE.test(name) && !FOOD_RESTAURANT_NAME_RE.test(blob)) return false;
+  if (hasAnyType(types, FOOD_TYPES)) return true;
+  if (types.includes("food_store") && FOOD_RESTAURANT_NAME_RE.test(blob)) return true;
+  return false;
 }
 
 function matchesParkStrict(place: PlaceLike): boolean {
@@ -503,9 +528,13 @@ export function matchesCategory(place: PlaceLike, selected: ExploreCategory | st
 }
 
 export function filterByExploreCategory<T extends PlaceLike>(
-  places: T[],
+  places: T[] | null | undefined,
   selected: ExploreCategory | string,
 ): T[] {
+  if (!Array.isArray(places)) {
+    console.warn("[explore] filterByExploreCategory: expected array, got", places);
+    return [];
+  }
   return places.filter((p) => matchesCategory(p, selected));
 }
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { OutfitAdvicePayload } from "@/lib/outfit/types";
 import type { TransitLegAdvice } from "@/lib/transit/types";
+import type { TripLocation } from "@/lib/location/types";
 
 /** OpenAI strict schema 要求 recommendations / itinerary 每個 item 欄位齊全；無座標時 lat/lng 填 null */
 export const RoamieRecommendationItemSchema = z.object({
@@ -33,6 +34,10 @@ export const RoamieItineraryItemSchema = z.object({
   placeName: z.string(),
   lat: z.number().nullable(),
   lng: z.number().nullable(),
+  address: z.string().optional(),
+  googlePlaceId: z.string().optional(),
+  placeType: z.string().optional(),
+  notes: z.string().optional(),
 });
 
 export const RoamieResponseSchema = z.object({
@@ -66,6 +71,10 @@ export type TripPlanSettings = {
 export type RoamiePayloadV2 = RoamieResponse & {
   version: 2;
   destination?: string;
+  /** 目的地（城市／區域）結構化資料 */
+  destinationLocation?: TripLocation | null;
+  /** 出發地 */
+  originLocation?: TripLocation | null;
   days?: number;
   generatedAt?: string;
   tripSettings?: TripPlanSettings;
@@ -95,6 +104,10 @@ export function normalizeItineraryItem(
     placeName: raw.placeName,
     lat: raw.lat ?? null,
     lng: raw.lng ?? null,
+    address: raw.address,
+    googlePlaceId: raw.googlePlaceId,
+    placeType: raw.placeType,
+    notes: raw.notes,
   };
 }
 

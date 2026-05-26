@@ -35,9 +35,18 @@ if (existsSync(resolve(root, "dist/client/assets"))) {
 }
 
 if (existsSync(resolve(root, "dist/client/index.html"))) {
-  ok("dist/client/index.html (capacitor-prepare)");
+  const html = readFileSync(resolve(root, "dist/client/index.html"), "utf8");
+  if (html.includes("npm run ios:sim") || html.includes("完整 App 需連開發伺服器")) {
+    fail("dist/client/index.html 仍是開發占位頁 — run: npm run ios:release");
+  } else if (!html.includes('type="module"')) {
+    fail("dist/client/index.html 缺少 production script — run: npm run build");
+  } else if (!html.includes("$_TSR")) {
+    fail("dist/client/index.html 缺少 TanStack Start SPA bootstrap — run: npm run ios:release");
+  } else {
+    ok("dist/client/index.html (production bundled SPA + $_TSR bootstrap)");
+  }
 } else {
-  fail("index.html missing — run: node scripts/capacitor-prepare.mjs");
+  fail("index.html missing — run: npm run ios:release");
 }
 
 if (existsSync(resolve(root, "ios/App/App.xcodeproj")) || existsSync(resolve(root, "ios/App/App.xcworkspace"))) {
@@ -63,18 +72,37 @@ if (has("pod")) {
   fail("CocoaPods missing — install: sudo gem install cocoapods");
 }
 
+const iosConfigPath = resolve(root, "ios/App/App/capacitor.config.json");
+if (existsSync(iosConfigPath)) {
+  try {
+    const iosConfig = JSON.parse(readFileSync(iosConfigPath, "utf8"));
+    const url = iosConfig?.server?.url;
+    if (url) {
+      fail(
+        `ios capacitor.config.json has server.url=${url} — run npm run cap:sync:ios (bundled) or cap:sync:ios:dev with CAPACITOR_LIVE_RELOAD=1`,
+      );
+    } else {
+      ok("ios capacitor.config.json has no server.url (bundled mode)");
+    }
+  } catch {
+    fail("Could not parse ios/App/App/capacitor.config.json");
+  }
+}
+
 const envPath = resolve(root, ".env");
 if (existsSync(envPath)) {
   const body = readFileSync(envPath, "utf8");
   if (/CAPACITOR_DEV_SERVER_URL=https?:\/\//.test(body)) {
-    ok("CAPACITOR_DEV_SERVER_URL set (iOS Simulator / device dev)");
-  } else if (/CAPACITOR_SERVER_URL=https?:\/\//.test(body)) {
-    ok("CAPACITOR_SERVER_URL set (production / TestFlight)");
-  } else {
-    fail("Set CAPACITOR_DEV_SERVER_URL (dev) or CAPACITOR_SERVER_URL (prod) in .env");
+    ok("CAPACITOR_DEV_SERVER_URL in .env (used only when CAPACITOR_LIVE_RELOAD=1)");
+  }
+  if (/CAPACITOR_SERVER_URL=https?:\/\//.test(body)) {
+    ok("CAPACITOR_SERVER_URL in .env (used only when CAPACITOR_USE_REMOTE_SERVER=1)");
+  }
+  if (!/CAPACITOR_(DEV_SERVER_URL|SERVER_URL)=https?:\/\//.test(body)) {
+    ok(".env has no Capacitor server URL (bundled mode OK)");
   }
 } else {
-  fail(".env missing — copy from .env.example");
+  ok(".env optional for bundled iOS builds");
 }
 
 for (const locale of ["en", "zh-Hant", "ja", "ko"]) {

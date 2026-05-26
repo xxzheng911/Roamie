@@ -4,6 +4,11 @@ export function isTaiwanCoordinates(lat: number, lng: number): boolean {
   return lat >= 21.5 && lat <= 26.5 && lng >= 118.5 && lng <= 122.5;
 }
 
+/** 北美本島（含常見 iOS Simulator 預設區域） */
+export function isContinentalUsCoordinates(lat: number, lng: number): boolean {
+  return inBox(lat, lng, 24, 49, -125, -66);
+}
+
 function inBox(
   lat: number,
   lng: number,
@@ -25,7 +30,7 @@ export function placesRegionCodeFromCoordinates(lat: number, lng: number): strin
   if (inBox(lat, lng, 22, 49, 113, 114)) return "HK";
   if (inBox(lat, lng, 1, 2, 103, 104)) return "SG";
   if (inBox(lat, lng, -44, -10, 112, 154)) return "AU";
-  if (inBox(lat, lng, 24, 49, -125, -66)) return "US";
+  if (isContinentalUsCoordinates(lat, lng)) return "US";
   if (inBox(lat, lng, 35, 71, -10, 40)) return "EU";
   return undefined;
 }
@@ -52,7 +57,7 @@ export function approximateTimezoneFromCoordinates(lat: number, lng: number): st
     if (lng < 150) return "Australia/Sydney";
     return "Australia/Brisbane";
   }
-  if (inBox(lat, lng, 24, 49, -125, -66)) {
+  if (isContinentalUsCoordinates(lat, lng)) {
     if (lng < -115) return "America/Los_Angeles";
     if (lng < -90) return "America/Denver";
     if (lng < -75) return "America/New_York";

@@ -1,13 +1,19 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Plus, Loader2, Trash2, MapPin, Heart, Route as RouteIcon } from "lucide-react";
+import { useAddToTrip } from "@/hooks/use-add-to-trip";
+import { tripPlaceFromSavedPlace } from "@/lib/trip/trip-place-input";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useI18n } from "@/hooks/use-i18n";
-import { useAuth } from "@/hooks/use-auth";
 import cafe from "@/assets/scene-cafe.jpg";
 import { deleteItinerary, listItineraries, type StoredItinerary } from "@/lib/itinerary-storage";
 import { isRoamiePayloadV2 } from "@/lib/ai/types";
-import { deletePlace, listPlaces, type SavedPlace } from "@/lib/places-storage";
+import {
+  deletePlace,
+  listPlaces,
+  SAVED_PLACES_CHANGED_EVENT,
+  type SavedPlace,
+} from "@/lib/places-storage";
 import { isMissingTableError } from "@/lib/supabase-errors";
 
 type SavedSearch = { tab?: string };
@@ -68,7 +74,8 @@ function PlacesEmptyState() {
 
 function Saved() {
   const { t } = useI18n();
-  const { isGuest } = useAuth();
+  const tt = t as unknown as (key: string, params?: Record<string, unknown>) => string;
+  const { openAddToTrip } = useAddToTrip();
   const search = Route.useSearch();
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
   const [trips, setTrips] = useState<StoredItinerary[]>([]);
@@ -95,6 +102,15 @@ function Saved() {
 
   useEffect(() => {
     refresh();
+    const onRefresh = () => refresh();
+    window.addEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
+    window.addEventListener("focus", onRefresh);
+    document.addEventListener("visibilitychange", onRefresh);
+    return () => {
+      window.removeEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
+      window.removeEventListener("focus", onRefresh);
+      document.removeEventListener("visibilitychange", onRefresh);
+    };
   }, []);
 
   useEffect(() => {
@@ -104,7 +120,7 @@ function Saved() {
   const handleDeleteTrip = async (id: string, title: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!confirm(t("saved.deleteTripConfirm", { title }))) return;
+    if (!confirm(tt("saved.deleteTripConfirm", { title }))) return;
     try {
       await deleteItinerary(id);
       toast.success(t("saved.deleted"));
@@ -115,7 +131,7 @@ function Saved() {
   };
 
   const handleDeletePlace = async (id: string, name: string) => {
-    if (!confirm(t("saved.removePlaceConfirm", { name }))) return;
+    if (!confirm(tt("saved.removePlaceConfirm", { name }))) return;
     try {
       await deletePlace(id);
       toast.success(t("saved.removed"));
@@ -129,23 +145,13 @@ function Saved() {
 
   return (
     <div className="px-5 pb-6 pt-3">
-      {isGuest ? (
-        <div className="mb-4 rounded-2xl border border-border/80 bg-card/80 px-4 py-3 text-center">
-          <p className="text-sm text-muted-foreground">
-            訪客收藏僅保存在本裝置。
-            <Link to="/login" className="ml-1 text-foreground underline underline-offset-2">
-              登入以同步雲端
-            </Link>
-          </p>
-        </div>
-      ) : null}
       <div className="flex items-end justify-between">
         <div>
           <h1 className="font-display text-2xl">{t("saved.title")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {loading
               ? t("common.loading")
-              : t("saved.summary", { trips: trips.length, places: places.length })}
+              : tt("saved.summary", { trips: trips.length, places: places.length })}
           </p>
         </div>
         {hasAny && (
@@ -170,8 +176,8 @@ function Saved() {
             }`}
           >
             {tabKey === "trips"
-              ? t("saved.tabTrips", { count: trips.length })
-              : t("saved.tabPlaces", { count: places.length })}
+              ? tt("saved.tabTrips", { count: trips.length })
+              : tt("saved.tabPlaces", { count: places.length })}
           </button>
         ))}
       </div>
@@ -199,8 +205,8 @@ function Saved() {
                     <p className="truncate text-[15px] font-medium">{trip.title}</p>
                     <p className="mt-0.5 truncate text-xs text-muted-foreground">
                       {isRoamiePayloadV2(trip.payload)
-                        ? t("saved.recCount", { count: trip.payload.recommendations?.length ?? 0 })
-                        : t("saved.tripMeta", {
+                        ? tt("saved.recCount", { count: trip.payload.recommendations?.length ?? 0 })
+                        : tt("saved.tripMeta", {
                             destination:
                               (trip.payload as { destination?: string }).destination ?? "",
                             days: (trip.payload as { days?: number }).days ?? "?",
@@ -245,14 +251,24 @@ function Saved() {
                   {[p.category, p.city, p.address].filter(Boolean).join(" · ")}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => handleDeletePlace(p.id, p.name)}
-                className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
-                aria-label={t("saved.removeAria")}
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+              <div className="flex shrink-0 flex-col gap-1">
+                <button
+                  type="button"
+                  onClick={() => openAddToTrip(tripPlaceFromSavedPlace(p))}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-foreground text-background"
+                  aria-label={t("chat.addToTrip")}
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeletePlace(p.id, p.name)}
+                  className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
+                  aria-label={t("saved.removeAria")}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
             </li>
           ))}
         </ul>

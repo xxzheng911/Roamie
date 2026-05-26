@@ -5,7 +5,8 @@ import {
   useRef,
   type PointerEvent,
 } from "react";
-import { Heart, Loader2, Star } from "lucide-react";
+import { Heart, Loader2, Plus, Star } from "lucide-react";
+import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,9 @@ export type MapPlaceCard = PlaceResult & {
   reason: string;
   googleMapsUrl?: string;
   isSavedFavorite?: boolean;
+  displayCategory?: string;
+  coverImageUrl?: string;
+  distanceLabel?: string;
 };
 
 export type MapExploreCardsHandle = {
@@ -38,6 +42,8 @@ type Props = {
   emptyMessage?: string | null;
   onSelect: (index: number) => void;
   onToggleSave: (place: MapPlaceCard) => void;
+  onAddToTrip?: (place: MapPlaceCard) => void;
+  addToTripLabel?: string;
 };
 
 const DRAG_SCROLL_THRESHOLD_PX = 10;
@@ -58,6 +64,8 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
       emptyMessage,
       onSelect,
       onToggleSave,
+      onAddToTrip,
+      addToTripLabel = "加入行程",
     },
     ref,
   ) {
@@ -135,15 +143,6 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
         }
       }
 
-      if (!drag.moved) {
-        const card = (e.target as HTMLElement).closest<HTMLElement>("[data-place-card]");
-        const idxRaw = card?.getAttribute("data-place-index");
-        if (idxRaw != null) {
-          const idx = Number(idxRaw);
-          if (!Number.isNaN(idx)) onSelect(idx);
-        }
-      }
-
       dragScrollRef.current = null;
     };
 
@@ -178,12 +177,20 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
             {places.map((p, i) => {
               const isSaved = savedNames.has(p.name);
               const isBusy = busyId === p.id;
-              const img = imageUrl(p.photoName);
+              const img =
+                p.coverImageUrl ??
+                imageUrl(p.photoName) ??
+                pickPlaceSceneFallback(p.name, {
+                  primaryType: p.primaryType,
+                  types: p.types,
+                  categoryId: categoryKey,
+                });
               const distLabel =
-                p.lat != null && p.lng != null
+                p.distanceLabel ??
+                (p.lat != null && p.lng != null
                   ? formatDistance(distFn(userLocation, { lat: p.lat, lng: p.lng }))
-                  : "";
-              const typeLabel = identityDisplayLabel(resolvePlaceIdentity(p));
+                  : "");
+              const typeLabel = p.displayCategory ?? identityDisplayLabel(resolvePlaceIdentity(p));
               const isLast = i === places.length - 1;
               return (
                 <article
@@ -191,8 +198,12 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                   data-place-card
                   data-place-index={i}
                   role="listitem"
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest("button")) return;
+                    onSelect(i);
+                  }}
                   className={cn(
-                    "map-place-card map-explore-card-item flex cursor-pointer flex-col rounded-3xl border bg-card shadow-soft transition-colors",
+                    "map-place-card map-explore-card-item flex cursor-pointer flex-col overflow-hidden rounded-3xl border bg-card shadow-soft transition-colors",
                     isLast && "map-explore-card-item--last",
                     highlightIndex === i
                       ? "border-foreground"
@@ -208,11 +219,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                         draggable={false}
                         className="pointer-events-none h-full w-full object-cover"
                       />
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                        無圖
-                      </div>
-                    )}
+                    ) : null}
                     <button
                       type="button"
                       onClick={(e) => {
@@ -220,7 +227,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                         onToggleSave(p);
                       }}
                       disabled={isBusy}
-                      className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-card shadow-soft disabled:opacity-60"
+                      className="absolute bottom-2 right-2 flex h-9 w-9 items-center justify-center rounded-full bg-card/95 shadow-soft disabled:opacity-60"
                       aria-label={isSaved ? "移除收藏" : "收藏"}
                     >
                       {isBusy ? (
@@ -235,34 +242,51 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                       {typeLabel}
                     </span>
                   </div>
-                  <div className="flex flex-col gap-1.5 p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <h3 className="line-clamp-2 flex-1 text-sm font-medium leading-snug">
-                        {p.name}
-                      </h3>
-                      <span className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-muted-foreground">
-                        {distLabel ? <span>{distLabel}</span> : null}
-                        {p.rating !== null && (
-                          <span className="flex items-center gap-0.5">
-                            <Star className="h-3 w-3 fill-clay text-clay" />
-                            {p.rating.toFixed(1)}
-                          </span>
-                        )}
-                      </span>
+                  <div className="flex min-h-0 flex-1 flex-col p-3">
+                    <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden">
+                      <div className="flex shrink-0 items-start justify-between gap-2">
+                        <h3 className="line-clamp-2 min-h-[2.5rem] flex-1 text-sm font-medium leading-snug">
+                          {p.name}
+                        </h3>
+                        <span className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-muted-foreground">
+                          {distLabel ? <span className="whitespace-nowrap">{distLabel}</span> : null}
+                          {p.rating !== null && (
+                            <span className="flex items-center gap-0.5 whitespace-nowrap">
+                              <Star className="h-3 w-3 fill-clay text-clay" />
+                              {p.rating.toFixed(1)}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <p className="line-clamp-1 min-h-[1rem] shrink-0 text-[11px] leading-snug text-muted-foreground">
+                        {p.address || "—"}
+                      </p>
+                      <p className="line-clamp-2 min-h-[2.25rem] shrink-0 text-[11px] leading-snug text-foreground/80">
+                        {p.reason}
+                      </p>
+                      <div className="min-h-[1rem] shrink-0">
+                        <PlaceHoursBadge
+                          compact
+                          statusLabel={p.openStatusLabel}
+                          todayHoursLabel={p.todayHoursLabel}
+                          closingSoonNote={p.closingSoonNote}
+                          nextOpenHint={p.nextOpenHint}
+                        />
+                      </div>
                     </div>
-                    <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">
-                      {p.address || "—"}
-                    </p>
-                    <p className="line-clamp-2 text-[11px] leading-snug text-foreground/80">
-                      {p.reason}
-                    </p>
-                    <PlaceHoursBadge
-                      compact
-                      statusLabel={p.openStatusLabel}
-                      todayHoursLabel={p.todayHoursLabel}
-                      closingSoonNote={p.closingSoonNote}
-                      nextOpenHint={p.nextOpenHint}
-                    />
+                    {onAddToTrip ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAddToTrip(p);
+                        }}
+                        className="mt-2 flex h-9 w-full shrink-0 items-center justify-center gap-1 rounded-full bg-foreground text-[11px] font-medium text-background"
+                      >
+                        <Plus className="h-3 w-3" />
+                        {addToTripLabel}
+                      </button>
+                    ) : null}
                   </div>
                 </article>
               );

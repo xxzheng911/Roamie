@@ -12,7 +12,8 @@ type SortablePlace = {
 };
 
 function openStatusScore(status?: PlaceOpenStatus): number {
-  if (status === "open") return 2;
+  if (status === "open") return 4;
+  if (status === "closing_soon") return 3;
   if (status === "unknown") return 1;
   return 0;
 }
@@ -45,7 +46,7 @@ function interestBoost(
 }
 
 /**
- * 探索推薦排序：距離（近→遠）為第一順位，其次評分、營業狀態、偏好微調。
+ * 探索推薦排序：營業中優先，同狀態內依距離（近→遠）、評分、偏好微調。
  */
 export function sortExplorePlaces<T extends SortablePlace>(
   places: T[],
@@ -53,6 +54,10 @@ export function sortExplorePlaces<T extends SortablePlace>(
   profile?: UserProfileForReason | null,
 ): T[] {
   return [...places].sort((a, b) => {
+    const openA = openStatusScore(a.openStatus);
+    const openB = openStatusScore(b.openStatus);
+    if (openA !== openB) return openB - openA;
+
     const distA =
       a.lat != null && a.lng != null
         ? distanceMeters(origin, { lat: a.lat, lng: a.lng })
@@ -70,10 +75,6 @@ export function sortExplorePlaces<T extends SortablePlace>(
     const countA = a.userRatingCount ?? 0;
     const countB = b.userRatingCount ?? 0;
     if (countA !== countB) return countB - countA;
-
-    const openA = openStatusScore(a.openStatus);
-    const openB = openStatusScore(b.openStatus);
-    if (openA !== openB) return openB - openA;
 
     const boostA = interestBoost(a, profile);
     const boostB = interestBoost(b, profile);

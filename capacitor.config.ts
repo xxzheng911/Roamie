@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 /** Keep in sync with src/constants/app.ts */
-const APP_BUNDLE_ID = "com.roamie.app";
+const APP_BUNDLE_ID = "com.shuode.roamie";
 const APP_DISPLAY_NAME = "Roamie";
 
 function readEnvFromDotEnv(key: string): string | undefined {
@@ -26,34 +26,69 @@ function readEnvFromDotEnv(key: string): string | undefined {
   return undefined;
 }
 
+function envFlag(key: string): boolean {
+  const raw = process.env[key] ?? readEnvFromDotEnv(key);
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
 /**
- * Dev: CAPACITOR_DEV_SERVER_URL (e.g. http://localhost:8080 for Simulator,
- *      http://192.168.x.x:8080 for physical device)
- * Prod/TestFlight: CAPACITOR_SERVER_URL (HTTPS deployed SSR app)
+ * Capacitor WebView load mode (pick one):
+ *
+ * 1. **Bundled assets (default, Xcode / TestFlight shell)**
+ *    Do NOT set CAPACITOR_LIVE_RELOAD or CAPACITOR_USE_REMOTE_SERVER.
+ *    WebView loads `webDir` (dist/client) from the app bundle — no server.url.
+ *
+ * 2. **Live reload dev** — set in .env or shell:
+ *    CAPACITOR_LIVE_RELOAD=1
+ *    CAPACITOR_DEV_SERVER_URL=http://localhost:8080  (Simulator)
+ *    CAPACITOR_DEV_SERVER_URL=http://192.168.x.x:8080  (physical device)
+ *    Run `npm run dev` before Xcode Run.
+ *
+ * 3. **Remote SSR (production)** — TestFlight pointing at deployed app:
+ *    CAPACITOR_USE_REMOTE_SERVER=1
+ *    CAPACITOR_SERVER_URL=https://your-production-domain.com
  */
-const devServerUrl = readEnvFromDotEnv("CAPACITOR_DEV_SERVER_URL");
-const prodServerUrl =
-  readEnvFromDotEnv("CAPACITOR_SERVER_URL") ?? readEnvFromDotEnv("VITE_APP_ORIGIN");
+const liveReload = envFlag("CAPACITOR_LIVE_RELOAD");
+const useRemoteServer = envFlag("CAPACITOR_USE_REMOTE_SERVER");
+
+const devServerUrl = liveReload ? readEnvFromDotEnv("CAPACITOR_DEV_SERVER_URL") : undefined;
+const prodServerUrl = useRemoteServer
+  ? (readEnvFromDotEnv("CAPACITOR_SERVER_URL") ?? readEnvFromDotEnv("VITE_APP_ORIGIN"))
+  : undefined;
 
 const liveUrl = (devServerUrl ?? prodServerUrl)?.replace(/\/$/, "");
 const isCleartext = liveUrl?.startsWith("http://") ?? false;
 
+if (liveUrl) {
+  console.info(
+    `[capacitor.config] server.url = ${liveUrl} (${liveReload ? "live reload" : "remote SSR"})`,
+  );
+} else {
+  console.info("[capacitor.config] bundled web assets only (no server.url)");
+}
+
 const config: CapacitorConfig = {
   appId: APP_BUNDLE_ID,
   appName: APP_DISPLAY_NAME,
+  /** TanStack Start client bundle lives in dist/client (not dist/ — no index.html at root). */
   webDir: "dist/client",
-  server: liveUrl
+  ...(liveUrl
     ? {
-        url: liveUrl,
-        cleartext: isCleartext,
-        androidScheme: isCleartext ? "http" : "https",
-        iosScheme: isCleartext ? "http" : "https",
+        server: {
+          url: liveUrl,
+          cleartext: isCleartext,
+          androidScheme: isCleartext ? "http" : "https",
+          iosScheme: isCleartext ? "http" : "https",
+        },
       }
     : {
-        androidScheme: "https",
-        iosScheme: "https",
-      },
+        server: {
+          androidScheme: "https",
+          iosScheme: "https",
+        },
+      }),
   ios: {
+    /** iPhone portrait-only; iPad orientations in Info.plist ~ipad (App Store) */
     /** Edge-to-edge WebView so env(safe-area-inset-*) matches device insets */
     contentInset: "never",
     scrollEnabled: true,
@@ -81,7 +116,8 @@ const config: CapacitorConfig = {
     },
     Keyboard: {
       resize: "body",
-      resizeOnFullScreen: true,
+      /** iOS 全螢幕 resize 易導致 WKWebView 無回應 / JS Eval 失敗 */
+      resizeOnFullScreen: false,
     },
   },
 };
