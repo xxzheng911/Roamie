@@ -2,8 +2,10 @@ import cafe from "@/assets/scene-cafe.jpg";
 import roamieDefaultCover from "@/assets/roamie-default-cover.png";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import { ROAMIE_API_FALLBACK, API_CACHE_TTL_MS } from "@/lib/api/constants";
+import { isLocalhostAppApiUrl } from "@/lib/api-base-url";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
-import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
+import { preferNonWebpImageUrl } from "@/lib/safe-image-url";
+import { isBlockedPlaceSceneUrl, pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import type { PlaceResult } from "@/lib/place-result";
 import { createRequestCache } from "@/services/requestCache";
 import { searchUnsplashImage, searchUnsplashWithQueries } from "@/services/unsplashService";
@@ -94,13 +96,15 @@ function normalizeCategory(input: PlaceImageInput): string {
     .join(" ")
     .toLowerCase();
 
+  if (/(博物|museum|文化館|紀念|gallery|美術|展覽|文物|歷史)/.test(hay)) return "museum";
   if (/(咖啡|cafe|coffee|貓|cat)/.test(hay)) return "coffee";
+  if (/(書店|書局|bookstore|library)/.test(hay)) return "bookstore";
   if (/(餐廳|restaurant|美食|food|拉麵|壽司|小吃)/.test(hay)) return "food";
   if (/(公園|park|步道|散步|walking)/.test(hay)) return "park";
   if (/(夜景|night|bar|酒吧)/.test(hay)) return "night";
   if (/(海|beach|沙灘|ocean)/.test(hay)) return "beach";
   if (/(森林|forest|山|mountain|trail)/.test(hay)) return "forest";
-  if (/(老街|old street|market|市集)/.test(hay)) return "street";
+  if (/(老街|old street|market|市集|商圈)/.test(hay)) return "street";
   return "sight";
 }
 
@@ -111,7 +115,13 @@ export function buildPlaceUnsplashQueries(input: PlaceImageInput): string[] {
   const cat = normalizeCategory(input);
   const queries: string[] = [];
 
-  if (cat === "coffee") {
+  if (cat === "museum") {
+    if (city) queries.push(`${city} museum`, `${city} cultural center`);
+    queries.push("history museum interior", "city museum architecture");
+  } else if (cat === "bookstore") {
+    if (city) queries.push(`${city} bookstore`);
+    queries.push("bookstore interior aesthetic", "library reading space");
+  } else if (cat === "coffee") {
     if (city) queries.push(`${city} cafe`);
     if (/貓|cat/i.test(name)) queries.push("cat cafe");
     queries.push("coffee shop taiwan", "cozy cafe aesthetic");
@@ -178,19 +188,12 @@ export function buildTripCoverQueries(trip: TripCoverInput): string[] {
   return [...new Set(queries.filter(Boolean))];
 }
 
-/** Roamie 預設圖（依分類；行程封面不再使用固定溫泉圖） */
-export function getRoamieDefaultImage(category?: string | null): string {
-  const hay = `${category ?? ""}`.toLowerCase();
-  if (
-    hay === "coffee" ||
-    hay === "food" ||
-    hay === "street" ||
-    hay === "sight" ||
-    /咖啡|餐廳|美食|café|cafe/.test(hay)
-  ) {
-    return cafe;
-  }
-  return roamieDefaultCover;
+/** Roamie 預設圖（依分類；不使用溫泉圖） */
+export function getRoamieDefaultImage(
+  category?: string | null,
+  name = "",
+): string {
+  return pickPlaceSceneFallback(name, { categoryId: category ?? undefined });
 }
 
 export { searchUnsplashImage };
@@ -201,7 +204,9 @@ export function resolveGooglePlacePhoto(
   width = 600,
 ): string | null {
   if (!photoName) return null;
-  return buildPlacePhotoUrl(photoName, width);
+  const built = buildPlacePhotoUrl(photoName, width);
+  if (!built || isLocalhostAppApiUrl(built)) return null;
+  return preferNonWebpImageUrl(built);
 }
 
 /** 同步 fallback（Google 或 Roamie 情境圖，不含 Unsplash） */
@@ -216,22 +221,27 @@ export function resolvePlaceCoverImageSync(
   return null;
 }
 
+export type GetPlaceImageOptions = {
+  /** 探索卡片：Google 無圖時直接用 Roamie 分類圖，不走 Unsplash（避免不相關圖） */
+  preferRoamieScene?: boolean;
+};
+
 /** 完整地點圖片解析：Google → Unsplash → Roamie 預設（含 cache + dedup） */
 export async function getPlaceImage(
   input: PlaceImageInput,
+  options?: GetPlaceImageOptions,
 ): Promise<{ url: string; source: ImageSource }> {
-  const key = placeImageCacheKey(input);
+  const key = [
+    placeImageCacheKey(input),
+    options?.preferRoamieScene ? "roamie-scene" : "unsplash",
+  ].join("|");
   return placeImageRequestCache.getOrFetch(key, async () => {
     const width = input.photoWidth ?? 600;
     const fromGoogle = resolveGooglePlacePhoto(input.photoName, width);
     if (fromGoogle) return { url: fromGoogle, source: "google" as const };
 
-    const queries = buildPlaceUnsplashQueries(input);
-    const unsplash = await searchUnsplashWithQueries(queries);
-    if (unsplash) return { url: unsplash.url, source: "unsplash" as const };
-
     const cat = normalizeCategory(input);
-    return {
+    const roamieScene = {
       url: pickPlaceSceneFallback(input.name, {
         primaryType: input.primaryType,
         types: input.types,
@@ -239,6 +249,24 @@ export async function getPlaceImage(
       }),
       source: "roamie" as const,
     };
+
+    if (options?.preferRoamieScene) {
+      return roamieScene;
+    }
+
+    const queries = buildPlaceUnsplashQueries(input);
+    const unsplash = await searchUnsplashWithQueries(queries);
+    if (unsplash && !isBlockedPlaceSceneUrl(unsplash.url)) {
+      return { url: unsplash.url, source: "unsplash" as const };
+    }
+
+    if (isBlockedPlaceSceneUrl(roamieScene.url)) {
+      return {
+        url: pickPlaceSceneFallback(input.name, { categoryId: "neutral" }),
+        source: "roamie" as const,
+      };
+    }
+    return roamieScene;
   });
 }
 

@@ -21,10 +21,13 @@ import { LOCALE_LABELS } from "@/lib/i18n/types";
 import {
   isNotificationApiAvailable,
   isNotificationGranted,
+  refreshNativeNotificationPermission,
   requestNotificationPermission,
 } from "@/lib/notification-permission";
+import { detectPlatform } from "@/services/platform";
 import { getUserProfile, saveProfileNotifications } from "@/lib/profile-storage";
 import { isDeveloperBuildEnabled, unlockDeveloperMode } from "@/lib/access/developer";
+import { isQaBuildEnabled } from "@/lib/qa-auth/build";
 import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
 import { openAppSettings } from "@/lib/open-app-settings";
 
@@ -64,6 +67,9 @@ function SettingsPage() {
   const devMode = isDeveloperBuildEnabled();
 
   const syncNotificationsFromDevice = useCallback(async () => {
+    if (detectPlatform().isNative) {
+      await refreshNativeNotificationPermission();
+    }
     const granted = isNotificationGranted();
     setNotificationsEnabled(granted);
     try {
@@ -143,7 +149,13 @@ function SettingsPage() {
     setNotifDialogOpen(false);
     setSavingNotif(true);
     try {
+      if (detectPlatform().isNative) {
+        await refreshNativeNotificationPermission();
+      }
       await requestNotificationPermission();
+      if (detectPlatform().isNative) {
+        await refreshNativeNotificationPermission();
+      }
       const granted = isNotificationGranted();
       setNotificationsEnabled(granted);
       await saveProfileNotifications(granted);
@@ -295,6 +307,15 @@ function SettingsPage() {
         <p className="mt-5 text-sm text-muted-foreground">
           Free / Roamie Plus 測試請至「我」個人頁。
         </p>
+      ) : null}
+
+      {canShowDeveloperTools && isQaBuildEnabled() ? (
+        <Link
+          to="/developer"
+          className="mt-4 flex w-full items-center justify-center rounded-full border border-dashed border-amber-500/50 py-3 text-sm font-medium text-amber-900 dark:text-amber-100"
+        >
+          QA 開發者工具
+        </Link>
       ) : null}
 
       <button

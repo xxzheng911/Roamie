@@ -39,7 +39,9 @@ export function searchRadiusLabel(mode: ExploreTransportMode): string {
   }
 }
 
-/** 正式版不使用 mock 地點；開發版可保留 demo fallback */
+/** @deprecated 請用 shouldUseCuratedPlacesFallback(apiError) */
 export function allowDemoPlaceFallback(): boolean {
   return import.meta.env.DEV && !import.meta.env.PROD;
 }
+
+export { shouldUseCuratedPlacesFallback } from "@/lib/places-api-errors";

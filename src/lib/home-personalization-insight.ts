@@ -84,6 +84,15 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
     return `你的旅行節奏偏${prefs.pace}、喜歡${prefs.vibe}——今天可以往這個方向找剛剛好的去處。`;
   }
 
+  if (prefs?.resultProfile?.travelTags?.length) {
+    const tags = prefs.resultProfile.travelTags.slice(0, 3).join("、");
+    return `照你的旅行人格「${prefs.resultProfile.personalityType}」與${tags}偏好，今天可以往這個方向找剛剛好的去處。`;
+  }
+
+  if (prefs?.surveyCompleted && prefs.personalityType) {
+    return `你是「${prefs.personalityType}」——我會依測驗結果幫你挑今天適合的地點與節奏。`;
+  }
+
   if (prefs?.personalitySummary?.trim()) {
     const short =
       prefs.personalitySummary.length > 28

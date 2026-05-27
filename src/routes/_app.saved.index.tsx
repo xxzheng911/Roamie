@@ -1,5 +1,6 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { Plus, Loader2, Trash2, MapPin, Heart, Route as RouteIcon } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { Plus, Loader2, Trash2 } from "lucide-react";
+import { SavedPlaceCard } from "@/components/saved/SavedPlaceCard";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromSavedPlace } from "@/lib/trip/trip-place-input";
 import { useEffect, useState } from "react";
@@ -16,7 +17,10 @@ import {
   SAVED_PLACES_CHANGED_EVENT,
   type SavedPlace,
 } from "@/lib/places-storage";
-import { isMissingTableError } from "@/lib/supabase-errors";
+import { isMissingColumnError, isMissingTableError } from "@/lib/supabase-errors";
+import { openSavedPlaceDetail } from "@/lib/navigate-saved-place-detail";
+import { createBlankSavedTrip } from "@/lib/trip/create-blank-trip";
+import { logTripNav, tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
 
 type SavedSearch = { tab?: string };
 
@@ -29,25 +33,27 @@ export const Route = createFileRoute("/_app/saved/")({
 
 type Tab = "trips" | "places";
 
-function TripsEmptyState() {
+function TripsEmptyState({ onNewTrip, creating }: { onNewTrip: () => void; creating: boolean }) {
   const { t } = useI18n();
   return (
     <div className="mt-8 flex flex-col items-center gap-4 rounded-3xl border border-dashed border-border bg-card/60 px-6 py-12 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-secondary">
-        <RouteIcon className="h-7 w-7 text-clay" />
-      </div>
       <p className="font-display text-xl">{t("saved.emptyAllTitle")}</p>
       <p className="max-w-[280px] text-sm leading-relaxed text-muted-foreground">
-        還沒有收藏的行程，等你和 Roamie 一起收藏第一段旅程。
+        還沒有收藏的行程，可以先建立空白行程，再自行加入想去的地點。
       </p>
+      <button
+        type="button"
+        onClick={onNewTrip}
+        disabled={creating}
+        className="mt-1 rounded-full bg-primary px-6 py-3 text-sm text-primary-foreground disabled:opacity-60"
+      >
+        {creating ? t("common.loading") : "建立空白行程"}
+      </button>
       <Link
         to="/map"
-        className="mt-1 rounded-full bg-primary px-6 py-3 text-sm text-primary-foreground"
+        className="text-sm text-muted-foreground underline-offset-2 hover:underline"
       >
         {t("saved.exploreCta")}
-      </Link>
-      <Link to="/plan" className="text-sm text-muted-foreground underline-offset-2 hover:underline">
-        {t("saved.planCta")}
       </Link>
     </div>
   );
@@ -57,9 +63,6 @@ function PlacesEmptyState() {
   const { t } = useI18n();
   return (
     <div className="mt-8 flex flex-col items-center gap-4 rounded-3xl border border-dashed border-border bg-card/60 px-6 py-12 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-secondary">
-        <Heart className="h-7 w-7 text-clay" />
-      </div>
       <p className="font-display text-xl">{t("saved.emptyPlacesTitle")}</p>
       <p className="max-w-[260px] text-sm leading-relaxed text-muted-foreground">
         {t("saved.emptyPlacesDesc")}
@@ -75,8 +78,9 @@ function PlacesEmptyState() {
 }
 
 function Saved() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const tt = t as unknown as (key: string, params?: Record<string, unknown>) => string;
+  const navigate = useNavigate();
   const { openAddToTrip } = useAddToTrip();
   const search = Route.useSearch();
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
@@ -85,6 +89,22 @@ function Saved() {
   const [loading, setLoading] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [openingPlaceId, setOpeningPlaceId] = useState<string | null>(null);
+  const [creatingTrip, setCreatingTrip] = useState(false);
+
+  const handleNewBlankTrip = async () => {
+    if (creatingTrip) return;
+    setCreatingTrip(true);
+    try {
+      const saved = await createBlankSavedTrip();
+      logTripNav("saved", saved.id);
+      await navigate(tripDetailNavigateOptions(saved.id));
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t("saved.loadFailed"));
+    } finally {
+      setCreatingTrip(false);
+    }
+  };
 
   const refresh = () => {
     setLoading(true);
@@ -92,7 +112,11 @@ function Saved() {
       .then(([tripsResult, placesResult]) => {
         if (tripsResult.status === "fulfilled") {
           setTrips(tripsResult.value);
-        } else if (isMissingTableError(tripsResult.reason)) {
+        } else if (
+          isMissingTableError(tripsResult.reason) ||
+          isMissingColumnError(tripsResult.reason)
+        ) {
+          console.warn("[SAVED_TRIPS] schema fallback empty list", tripsResult.reason);
           setTrips([]);
         } else {
           toast.error(
@@ -120,13 +144,9 @@ function Saved() {
     const onRefresh = () => refresh();
     window.addEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
     window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
-    window.addEventListener("focus", onRefresh);
-    document.addEventListener("visibilitychange", onRefresh);
     return () => {
       window.removeEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
       window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
-      window.removeEventListener("focus", onRefresh);
-      document.removeEventListener("visibilitychange", onRefresh);
     };
   }, []);
 
@@ -151,13 +171,29 @@ function Saved() {
 
   const handleDeletePlace = async (id: string, name: string) => {
     if (!confirm(tt("saved.removePlaceConfirm", { name }))) return;
+    const prev = places;
+    setPlaces((list) => list.filter((p) => p.id !== id));
     try {
       await deletePlace(id);
       toast.success(t("saved.removed"));
-      setPlaces((prev) => prev.filter((p) => p.id !== id));
     } catch (err) {
+      setPlaces(prev);
       toast.error(err instanceof Error ? err.message : t("saved.deleteFailed"));
     }
+  };
+
+  const handleOpenPlace = (p: SavedPlace) => {
+    if (openingPlaceId) return;
+    setOpeningPlaceId(p.id);
+    void openSavedPlaceDetail(p, locale, async (opts) => {
+      await navigate(opts);
+    }).then((ok) => {
+      if (!ok) {
+        toast.error(t("map.noCoordsDetail"));
+      }
+    }).finally(() => {
+      window.setTimeout(() => setOpeningPlaceId(null), 400);
+    });
   };
 
   const hasAny = trips.length > 0 || places.length > 0;
@@ -174,13 +210,19 @@ function Saved() {
           </p>
         </div>
         {hasAny && (
-          <Link
-            to="/plan"
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-primary-foreground"
+          <button
+            type="button"
+            onClick={() => void handleNewBlankTrip()}
+            disabled={creatingTrip}
+            className="flex h-10 w-10 touch-manipulation items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-60 active:scale-95"
             aria-label={t("saved.planNewAria")}
           >
-            <Plus className="h-4 w-4" />
-          </Link>
+            {creatingTrip ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}
+          </button>
         )}
       </div>
 
@@ -207,7 +249,7 @@ function Saved() {
         </div>
       ) : tab === "trips" ? (
         trips.length === 0 ? (
-          <TripsEmptyState />
+          <TripsEmptyState onNewTrip={() => void handleNewBlankTrip()} creating={creatingTrip} />
         ) : (
           <ul className="mt-6 space-y-3">
             {trips.map((trip) => (
@@ -238,43 +280,16 @@ function Saved() {
       ) : (
         <ul className="mt-6 space-y-3">
           {places.map((p) => (
-            <li
-              key={p.id}
-              className="flex items-center gap-3 rounded-3xl border border-border bg-card p-3 shadow-soft"
-            >
-              <div className="h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-secondary">
-                {p.cover_image ? (
-                  <img src={p.cover_image} alt={p.name} className="h-full w-full object-cover" />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center">
-                    <MapPin className="h-5 w-5 text-muted-foreground" />
-                  </div>
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[15px] font-medium">{p.name}</p>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {[p.category, p.city, p.address].filter(Boolean).join(" · ")}
-                </p>
-              </div>
-              <div className="flex shrink-0 flex-col gap-1">
-                <button
-                  type="button"
-                  onClick={() => openAddToTrip(tripPlaceFromSavedPlace(p))}
-                  className="flex h-9 w-9 items-center justify-center rounded-full bg-foreground text-background"
-                  aria-label={t("chat.addToTrip")}
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDeletePlace(p.id, p.name)}
-                  className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
-                  aria-label={t("saved.removeAria")}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
+            <li key={p.id}>
+              <SavedPlaceCard
+                place={p}
+                addLabel={t("chat.addToTrip")}
+                removeLabel={t("saved.removeAria")}
+                opening={openingPlaceId === p.id}
+                onOpen={handleOpenPlace}
+                onAddToTrip={(place) => openAddToTrip(tripPlaceFromSavedPlace(place))}
+                onDelete={(place) => void handleDeletePlace(place.id, place.name)}
+              />
             </li>
           ))}
         </ul>

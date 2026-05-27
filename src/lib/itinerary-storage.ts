@@ -1,6 +1,10 @@
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
-import { isMissingTableError } from "@/lib/supabase-errors";
+import {
+  formatSupabaseError,
+  isMissingColumnError,
+  isMissingTableError,
+} from "@/lib/supabase-errors";
 import type { Itinerary } from "./itinerary.functions";
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
 import { isSavedCollectionTrip, tagUserSavedTrip } from "@/lib/saved-collection";
@@ -12,6 +16,7 @@ import {
 import { resolveTripTitle } from "@/lib/trip/trip-title";
 import { resolveDisplayTitle, titleFieldsFromStored } from "@/lib/saved-trip/display";
 import type { Database } from "@/integrations/supabase/types";
+import { syncTripNotificationsAfterSave } from "@/services/notificationService";
 
 type SavedTripRowUpdate = Database["public"]["Tables"]["saved_trips"]["Update"];
 
@@ -103,6 +108,124 @@ function rowToStored(
 const TRIP_SELECT =
   "id, title, custom_title, is_title_customized, mood, cover_image, cover_image_url, custom_cover_image_url, is_cover_customized, cover_source, cover_query, created_at, updated_at, payload";
 
+/** 舊版 saved_trips（尚未套用 cover_query / custom_title 等 migration） */
+const TRIP_SELECT_LEGACY =
+  "id, title, mood, cover_image, cover_image_url, created_at, updated_at, payload";
+
+type TripInsertParams = {
+  userId: string;
+  autoTitle: string;
+  mood: string | null;
+  payload: Itinerary | RoamiePayloadV2;
+  coverMeta: TripCoverMeta;
+};
+
+function buildFullTripInsertRow(params: TripInsertParams) {
+  return {
+    user_id: params.userId,
+    title: params.autoTitle,
+    custom_title: null,
+    is_title_customized: false,
+    mood: params.mood,
+    payload: params.payload as never,
+    cover_image: params.coverMeta.cover_image,
+    cover_source: params.coverMeta.cover_source,
+    cover_query: params.coverMeta.cover_query,
+    custom_cover_image_url: null,
+    is_cover_customized: false,
+    cover_image_url: null,
+  };
+}
+
+function buildLegacyTripInsertRow(params: TripInsertParams) {
+  return {
+    user_id: params.userId,
+    title: params.autoTitle,
+    mood: params.mood,
+    payload: params.payload as never,
+    cover_image: params.coverMeta.cover_image,
+    cover_image_url: params.coverMeta.cover_image,
+  };
+}
+
+async function insertSavedTripRow(params: TripInsertParams) {
+  const full = await supabase
+    .from("saved_trips")
+    .insert(buildFullTripInsertRow(params))
+    .select(TRIP_SELECT)
+    .single();
+
+  if (!full.error) return full;
+
+  if (isMissingColumnError(full.error)) {
+    console.warn("[CORE_TRIP] insert fallback legacy schema", formatSupabaseError(full.error));
+    return supabase
+      .from("saved_trips")
+      .insert(buildLegacyTripInsertRow(params))
+      .select(TRIP_SELECT_LEGACY)
+      .single();
+  }
+
+  return full;
+}
+
+async function selectSavedTrips() {
+  const full = await supabase.from("saved_trips").select(TRIP_SELECT).order("updated_at", {
+    ascending: false,
+  });
+  if (!full.error) return full;
+  if (isMissingColumnError(full.error)) {
+    console.warn("[CORE_TRIP] select fallback legacy schema", formatSupabaseError(full.error));
+    return supabase.from("saved_trips").select(TRIP_SELECT_LEGACY).order("created_at", {
+      ascending: false,
+    });
+  }
+  return full;
+}
+
+async function selectSavedTripById(id: string) {
+  const full = await supabase.from("saved_trips").select(TRIP_SELECT).eq("id", id).maybeSingle();
+  if (!full.error) return full;
+  if (isMissingColumnError(full.error)) {
+    console.warn("[CORE_TRIP] select one fallback legacy schema", formatSupabaseError(full.error));
+    return supabase.from("saved_trips").select(TRIP_SELECT_LEGACY).eq("id", id).maybeSingle();
+  }
+  return full;
+}
+
+function stripUnsupportedTripPatch(patch: SavedTripRowUpdate): SavedTripRowUpdate {
+  const {
+    custom_title: _a,
+    is_title_customized: _b,
+    custom_cover_image_url: _c,
+    is_cover_customized: _d,
+    cover_source: _e,
+    cover_query: _f,
+    ...legacy
+  } = patch;
+  return legacy;
+}
+
+async function updateSavedTripRow(id: string, patch: SavedTripRowUpdate) {
+  const full = await supabase
+    .from("saved_trips")
+    .update(patch)
+    .eq("id", id)
+    .select(TRIP_SELECT)
+    .single();
+  if (!full.error) return full;
+  if (isMissingColumnError(full.error)) {
+    console.warn("[CORE_TRIP] update fallback legacy schema", formatSupabaseError(full.error));
+    return supabase
+      .from("saved_trips")
+      .update(stripUnsupportedTripPatch(patch))
+      .eq("id", id)
+      .select(TRIP_SELECT_LEGACY)
+      .single();
+  }
+  return full;
+}
+
 async function resolveCoverForSave(itinerary: Itinerary | RoamiePayloadV2): Promise<TripCoverMeta> {
   if (!isRoamiePayloadV2(itinerary)) {
     return { cover_image: null, cover_source: null, cover_query: null };
@@ -143,29 +266,18 @@ async function persistItinerary(itinerary: Itinerary | RoamiePayloadV2): Promise
   const autoTitle = isRoamiePayloadV2(withTitle) ? withTitle.title : (withTitle as Itinerary).title;
 
   if (userId) {
-    const { data, error } = await supabase
-      .from("saved_trips")
-      .insert({
-        user_id: userId,
-        title: autoTitle,
-        custom_title: null,
-        is_title_customized: false,
-        mood: mood ?? null,
-        payload: withTitle as never,
-        cover_image: coverMeta.cover_image,
-        cover_source: coverMeta.cover_source,
-        cover_query: coverMeta.cover_query,
-        custom_cover_image_url: null,
-        is_cover_customized: false,
-        cover_image_url: null,
-      })
-      .select(TRIP_SELECT)
-      .single();
+    const { data, error } = await insertSavedTripRow({
+      userId,
+      autoTitle,
+      mood: mood ?? null,
+      payload: withTitle,
+      coverMeta,
+    });
     if (error) {
       if (isMissingTableError(error)) {
         throw new Error("行程收藏尚未就緒，請稍後再試或聯絡管理員套用資料庫 migration。");
       }
-      throw new Error(error.message);
+      throw new Error(formatSupabaseError(error));
     }
     const stored = rowToStored(data, withTitle);
     console.info("[CORE_TRIP] created", stored.id);
@@ -187,6 +299,9 @@ export async function confirmSaveTrip(
 ): Promise<StoredItinerary> {
   const saved = await persistItinerary(tagUserSavedTrip(itinerary, source));
   broadcastTripsChanged();
+  void syncTripNotificationsAfterSave(saved).catch((e) => {
+    console.warn("[NOTIFICATION] sync after save failed", e);
+  });
   return saved;
 }
 
@@ -200,13 +315,10 @@ export async function saveItinerary(
 export async function listItineraries(): Promise<StoredItinerary[]> {
   const userId = await getAuthenticatedUserId();
   if (userId) {
-    const { data, error } = await supabase
-      .from("saved_trips")
-      .select(TRIP_SELECT)
-      .order("updated_at", { ascending: false });
+    const { data, error } = await selectSavedTrips();
     if (error) {
       if (isMissingTableError(error)) return [];
-      throw new Error(error.message);
+      throw new Error(formatSupabaseError(error));
     }
     return (data ?? [])
       .map((row) => rowToStored(row, row.payload as unknown as Itinerary | RoamiePayloadV2))
@@ -218,14 +330,10 @@ export async function listItineraries(): Promise<StoredItinerary[]> {
 export async function getItinerary(id: string): Promise<StoredItinerary | null> {
   const userId = await getAuthenticatedUserId();
   if (userId) {
-    const { data, error } = await supabase
-      .from("saved_trips")
-      .select(TRIP_SELECT)
-      .eq("id", id)
-      .maybeSingle();
+    const { data, error } = await selectSavedTripById(id);
     if (error) {
       if (isMissingTableError(error)) return null;
-      throw new Error(error.message);
+      throw new Error(formatSupabaseError(error));
     }
     if (!data) return null;
     const payload = data.payload as unknown as Itinerary | RoamiePayloadV2;
@@ -275,16 +383,11 @@ export async function updateTripMeta(
   if (meta.cover_query !== undefined) patch.cover_query = meta.cover_query;
   if (payload) patch.payload = payload as never;
 
-  const { data, error } = await supabase
-    .from("saved_trips")
-    .update(patch)
-    .eq("id", id)
-    .select(TRIP_SELECT)
-    .single();
+  const { data, error } = await updateSavedTripRow(id, patch);
 
   if (error) {
     if (isMissingTableError(error)) return null;
-    throw new Error(error.message);
+    throw new Error(formatSupabaseError(error));
   }
 
   const resolvedPayload = payload ?? (data.payload as unknown as Itinerary | RoamiePayloadV2);
@@ -313,16 +416,11 @@ export async function updateItinerary(
     patch.title = resolveTripTitle(resolvedPayload);
   }
 
-  const { data, error } = await supabase
-    .from("saved_trips")
-    .update(patch)
-    .eq("id", id)
-    .select(TRIP_SELECT)
-    .single();
+  const { data, error } = await updateSavedTripRow(id, patch);
 
   if (error) {
     if (isMissingTableError(error)) return null;
-    throw new Error(error.message);
+    throw new Error(formatSupabaseError(error));
   }
 
   const updated = rowToStored(data, resolvedPayload);

@@ -16,7 +16,6 @@ import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import { useAccess } from "@/hooks/use-access";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
 import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
-import { isDeveloperBuildEnabled } from "@/lib/access/developer";
 import { buildHomePlusInsight } from "@/lib/home-personalization-insight";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
@@ -58,18 +57,14 @@ export function HomePersonalizationCard({
     devPlusMode,
     devSubscriptionMode,
     testModeOverride,
-    canShowDeveloperTools,
     disablePlusTestMode,
   } = useAccess();
-  const { upgradeToPlus, comingSoonOpen, setComingSoonOpen } = usePlusUpgrade();
+  const { upgradeToPlus, comingSoonOpen, setComingSoonOpen, canInstantUpgrade } = usePlusUpgrade();
 
   const [manageSubOpen, setManageSubOpen] = useState(false);
   const [accessTick, setAccessTick] = useState(0);
 
-  const isDevSubscriptionMode =
-    isDeveloperBuildEnabled() ||
-    canShowDeveloperTools ||
-    testModeOverride !== "none";
+  const isDevSubscriptionMode = canInstantUpgrade || devPlusMode || testModeOverride !== "none";
 
   useEffect(() => {
     const onAccess = () => setAccessTick((n) => n + 1);

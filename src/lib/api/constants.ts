@@ -11,8 +11,7 @@ export const API_CACHE_TTL_MS = {
 /** Roamie API fallback 文案 — 失敗時不 crash、不空白 */
 export const ROAMIE_API_FALLBACK = {
   weather: "暫時讀不到天氣，但 Roamie 還是先陪你安排這趟旅程。",
-  weatherOutfit:
-    "暫時讀不到這趟旅程的天氣預報，出發前記得再看一眼當地預報，我們再一起調整穿搭與攜帶物。",
+  weatherOutfit: "先帶一件好搭的外套吧，旅行的天氣偶爾也喜歡保留驚喜 ☁️",
   routes: "路程時間暫時讀取中",
   routesLoading: "路程時間暫時讀取中。",
   image: "先用 Roamie 預設封面陪你出發。",

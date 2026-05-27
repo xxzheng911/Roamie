@@ -1,8 +1,9 @@
 import { Heart, Loader2, Plus, Star } from "lucide-react";
-import { PlaceImage } from "@/components/media/PlaceImage";
+import { PlaceCardCover } from "@/components/media/PlaceCardCover";
 import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
+import { resolvePlaceCardOpeningDisplay } from "@/lib/place-card-opening";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/hooks/use-i18n";
 
@@ -39,9 +40,15 @@ function ratingLabel(place: HomeNearbyPick): string | null {
 }
 
 function statusLabel(place: HomeNearbyPick): string | null {
-  if (place.openStatusLabel?.trim()) return place.openStatusLabel.trim();
-  if (place.openStatus === "open") return "營業中";
-  if (place.openStatus === "closed") return "休息中";
+  const opening = resolvePlaceCardOpeningDisplay({
+    id: place.id,
+    name: place.name,
+    openStatus: place.openStatus,
+    todayHoursLabel: place.todayHoursLabel,
+  });
+  if (opening.statusLabel) return opening.statusLabel;
+  if (opening.hoursLabel === "營業資訊未知") return "營業資訊未知";
+  if (opening.hoursLabel) return opening.hoursLabel;
   return null;
 }
 
@@ -89,8 +96,6 @@ export function HomeNearbyPlaceCards({
       aria-label="附近推薦地點"
     >
       {places.map((p, i) => {
-        const img = p.coverImageUrl;
-        const googlePhoto = img;
         const isLast = i === places.length - 1;
         const distance = canShowDistance ? distLabel(p, anchor) : "";
         const typeName = p.displayCategory ?? getExploreCategoryDisplayLabel(p);
@@ -126,24 +131,17 @@ export function HomeNearbyPlaceCards({
                     <Loader2 className="h-6 w-6 animate-spin text-cream" aria-hidden />
                   </div>
                 ) : null}
-                {googlePhoto ? (
-                  <img
-                    src={googlePhoto}
-                    alt=""
-                    loading="lazy"
-                    draggable={false}
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
-                ) : (
-                  <PlaceImage
-                    name={p.name}
-                    photoName={p.photoName}
-                    primaryType={p.primaryType}
-                    types={p.types}
-                    categoryId={p.categoryId}
-                    className="absolute inset-0"
-                  />
-                )}
+                <PlaceCardCover
+                  name={p.name}
+                  photoName={p.photoName}
+                  primaryType={p.primaryType}
+                  types={p.types}
+                  categoryId={p.categoryId}
+                  coverImageUrl={p.coverImageUrl}
+                  preferRoamieScene
+                  className="absolute inset-0"
+                  imgClassName="absolute inset-0 h-full w-full object-cover"
+                />
                 <div
                   className="absolute inset-0 bg-gradient-to-t from-ink/78 via-ink/18 to-transparent"
                   aria-hidden

@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import type { Locale } from "@/lib/i18n/types";
 import {
+  readBootstrapDeviceLocation,
   requestDeviceLocation,
   watchDeviceLocation,
   type LocationPermissionState,
 } from "@/lib/device-location";
+import { invalidateLocationPermissionCache } from "@/lib/location-permission-manager";
 import { getWeather, getWeatherForecast } from "@/lib/weather.functions";
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
 import { readLastSearchLocation } from "@/lib/last-search-location";
@@ -39,7 +41,16 @@ export function useHomeWeather(locale: Locale) {
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [status, setStatus] = useState<HomeWeatherStatus>("loading");
   const [error, setError] = useState<string | null>(null);
-  const [userLocation, setUserLocation] = useState<HomeUserLocation | null>(null);
+  const [userLocation, setUserLocation] = useState<HomeUserLocation | null>(() => {
+    if (typeof window === "undefined") return null;
+    const boot = readBootstrapDeviceLocation();
+    return {
+      lat: boot.lat,
+      lng: boot.lng,
+      city: boot.city,
+      source: boot.source,
+    };
+  });
   const [usedFallbackLocation, setUsedFallbackLocation] = useState(false);
   const [locationPermission, setLocationPermission] = useState<LocationPermissionState>("unknown");
   const loadIdRef = useRef(0);
@@ -185,14 +196,25 @@ export function useHomeWeather(locale: Locale) {
   }, [applyLocation, fetchWeatherForCoords, resolveWeatherLocationFallback]);
 
   useEffect(() => {
-    console.info("[WEATHER_SERVICE_VERSION] v-runtime-fallback-001");
+    console.info("[WEATHER_SERVICE_VERSION] v-client-native-002");
     console.info("[HOME_WEATHER] mounted");
     void load();
 
     const retryTimer = window.setTimeout(() => {
       if (!lastUsedFallbackRef.current) return;
+      console.info("[LOCATION] retry after fallback");
       void load();
     }, 6000);
+
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      invalidateLocationPermissionCache({ allowRequestAgain: true });
+      if (lastUsedFallbackRef.current || locationPermission === "denied") {
+        console.info("[LOCATION] resume refresh");
+        void load();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
 
     const stopWatch = watchDeviceLocation((loc) => {
       if (loc.usedFallback) return;
@@ -216,10 +238,11 @@ export function useHomeWeather(locale: Locale) {
 
     return () => {
       window.clearTimeout(retryTimer);
+      document.removeEventListener("visibilitychange", onVisible);
       loadIdRef.current += 1;
       stopWatch();
     };
-  }, [load, applyLocation, fetchWeatherForCoords]);
+  }, [load, applyLocation, fetchWeatherForCoords, locationPermission]);
 
   useEffect(() => {
     if (!weather) return;

@@ -51,6 +51,23 @@ if (existsSync(resolve(root, "dist/client/index.html"))) {
     fail("dist/client/index.html 缺少 TanStack Start SPA bootstrap — run: npm run ios:release");
   } else {
     ok("dist/client/index.html (production bundled SPA + $_TSR bootstrap)");
+    const metaMatch = html.match(/name="roamie-api-origin"\s+content="([^"]+)"/);
+    if (metaMatch?.[1]) {
+      const origin = metaMatch[1].replace(/\/$/, "");
+      if (/localhost|127\.0\.0\.1/i.test(origin)) {
+        fail(
+          `dist 內建 API origin 為 ${origin} — 請在 .env 設定 HTTPS VITE_APP_ORIGIN 後執行 npm run ios:release`,
+        );
+      } else if (!/^https:\/\//i.test(origin)) {
+        fail(`dist 內建 API origin 非 HTTPS：${origin}`);
+      } else {
+        ok(`roamie-api-origin meta: ${origin}`);
+      }
+    } else {
+      fail(
+        "dist/client/index.html 缺少 roamie-api-origin — bundled iOS 無法呼叫 AI / Places API，請設定 VITE_APP_ORIGIN 後 npm run ios:release",
+      );
+    }
   }
 } else {
   fail("index.html missing — run: npm run ios:release");

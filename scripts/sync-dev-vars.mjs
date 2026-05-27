@@ -13,6 +13,8 @@ const devVarsPath = resolve(root, ".dev.vars");
 const distDevVarsPath = resolve(root, "dist/server/.dev.vars");
 
 const SERVER_KEYS = [
+  "ROAMIE_QA_AUTH_ENABLED",
+  "ROAMIE_QA_AUTH_SECRET",
   "OPENAI_API_KEY",
   "OPENWEATHER_API_KEY",
   "EXPO_PUBLIC_OPENWEATHER_API_KEY",

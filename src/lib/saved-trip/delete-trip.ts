@@ -1,4 +1,5 @@
 import { deleteItinerary } from "@/lib/itinerary-storage";
+import { cancelTripNotifications } from "@/services/notificationService";
 
 export const TRIP_DELETE_DIALOG = {
   title: "刪除這趟行程？",
@@ -11,5 +12,8 @@ export const TRIP_DELETE_DIALOG = {
 export async function deleteTrip(tripId: string): Promise<void> {
   console.info("[DELETE_TRIP] tripId=", tripId);
   await deleteItinerary(tripId);
+  void cancelTripNotifications(tripId).catch((e) => {
+    console.warn("[NOTIFICATION] cancel on delete failed", e);
+  });
   console.info("[CORE_TRIP] deleted", tripId);
 }

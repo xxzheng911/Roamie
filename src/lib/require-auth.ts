@@ -4,9 +4,15 @@ import { logAuthFlowMarker } from "@/lib/clear-auth-state";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { logAppError } from "@/lib/log-error";
 import { isOnboardingCompletedSync, loadOnboardingState } from "@/lib/onboarding-storage";
-import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import type { StartupPath } from "@/lib/post-auth-navigation";
-import { guardStartupTarget, logStartupNavigationContext } from "@/lib/startup-navigation";
+import {
+  invalidateAppShellGateCache,
+  markAppShellGatePassed,
+  peekAppShellGateCache,
+} from "@/lib/app-shell-gate";
+import { logStartupNavigationContext } from "@/lib/startup-navigation";
+import { buildAccessSnapshot } from "@/lib/access";
+import { getUserPlanProfile } from "@/lib/plan-tier/storage";
 
 const AUTH_ROUTE_TIMEOUT_MS = 4_000;
 
@@ -39,12 +45,49 @@ export async function requireAuthenticatedRoute(): Promise<void> {
   }
 }
 
-/** 偏好測驗：自願進入；需已登入 */
+const QUIZ_GATE_TIMEOUT_MS = 5_000;
+
+/** 偏好測驗：Plus 專屬；需已登入（與 useAccess / 開發者模式判斷一致） */
 export async function requirePreferenceQuizRouteAccess(from?: string): Promise<void> {
   if (typeof window === "undefined") return;
 
   void from;
   await requireAuthenticatedRoute();
+
+  const session = await Promise.race([
+    getClientAuthSession(),
+    new Promise<null>((resolve) => {
+      window.setTimeout(() => resolve(null), QUIZ_GATE_TIMEOUT_MS);
+    }),
+  ]);
+
+  let profilePlusActive = false;
+  if (session?.user?.id) {
+    try {
+      const plan = await Promise.race([
+        getUserPlanProfile(session.user.id),
+        new Promise<null>((resolve) => {
+          window.setTimeout(() => resolve(null), QUIZ_GATE_TIMEOUT_MS);
+        }),
+      ]);
+      if (plan) {
+        profilePlusActive =
+          plan.planTier === "plus" &&
+          (plan.subscriptionStatus === "active" || plan.subscriptionStatus === "trialing");
+      } else {
+        console.warn("[TRAVEL_PREF_TEST] plan profile read timed out");
+      }
+    } catch (e) {
+      console.warn("[TRAVEL_PREF_TEST] plan profile read failed", e);
+    }
+  }
+
+  const snapshot = buildAccessSnapshot(session?.user?.email ?? null, { profilePlusActive });
+  if (!snapshot.hasPlusAccess) {
+    console.info("[TRAVEL_PREF_TEST] blocked tier=", snapshot.effectiveTier);
+    throw redirect({ to: "/profile", replace: false });
+  }
+  console.info("[TRAVEL_PREF_TEST] access ok");
 }
 
 function redirectToStartupTarget(next: StartupPath): never {
@@ -72,6 +115,7 @@ export async function requireAppShellAccess(): Promise<void> {
     await loadOnboardingState();
 
     if (!isOnboardingCompletedSync()) {
+      invalidateAppShellGateCache();
       try {
         markBootPhase("gate:requireAppShellAccess:redirect:/welcome");
       } catch {
@@ -96,6 +140,7 @@ export async function requireAppShellAccess(): Promise<void> {
     ]);
 
     if (!session?.user) {
+      invalidateAppShellGateCache();
       try {
         markBootPhase("gate:requireAppShellAccess:redirect:/login");
       } catch {
@@ -104,23 +149,11 @@ export async function requireAppShellAccess(): Promise<void> {
       blockGuestAccess("requireAppShellAccess:no-session");
     }
 
-    const next = await Promise.race([
-      resolveStartupPath({ hasSession: true, source: "requireAppShellAccess" }),
-      new Promise<StartupPath>((resolve) => {
-        window.setTimeout(() => resolve("/login"), SHELL_GATE_TIMEOUT_MS);
-      }),
-    ]);
-
-    const guarded = guardStartupTarget(next, "requireAppShellAccess");
-
-    if (guarded !== "/") {
-      try {
-        markBootPhase(`gate:requireAppShellAccess:redirect:${guarded}`);
-      } catch {
-        // ignore
-      }
-      redirectToStartupTarget(guarded);
+    if (peekAppShellGateCache(session.user.id)) {
+      return;
     }
+
+    markAppShellGatePassed(session.user.id);
   } catch (e) {
     if (isRedirect(e)) throw e;
     logAppError("[requireAppShellAccess] gate failed", e);

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { GoogleMap, type MapPlaceMarker, type MapUserLocationPin } from "@/components/GoogleMap";
+import { logMapComponentKeyDiagnostics } from "@/lib/map-boot-log";
 import { triggerMapResize } from "@/lib/google-maps-loader";
 import {
   MAP_PADDING_BOTTOM_DEFAULT,
@@ -18,6 +19,8 @@ type Props = {
   onLoadError?: (message: string) => void;
   onMapReady?: (map: google.maps.Map) => void;
   onMapClick?: () => void;
+  /** 地圖元件已掛載（用於區分 window 級錯誤與尚未嘗試載入） */
+  onMapAttempt?: () => void;
 };
 
 /**
@@ -34,10 +37,20 @@ export function GoogleMapBackground({
   onLoadError,
   onMapReady,
   onMapClick,
+  onMapAttempt,
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
   const [mapPadding, setMapPadding] = useState(() => measureMapExplorePadding());
+
+  useEffect(() => {
+    console.info("[MAP_COMPONENT] mounted");
+    logMapComponentKeyDiagnostics("MAP_COMPONENT");
+    onMapAttempt?.();
+    return () => {
+      console.info("[MAP_COMPONENT] unmounted");
+    };
+  }, [onMapAttempt]);
 
   useEffect(() => {
     const stage = stageRef.current;

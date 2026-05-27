@@ -94,33 +94,54 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
           aspectHeight,
         );
 
-        const scale = clampScale(next.scale);
-        const imgW = imgNat.w * scale;
-        const imgH = imgNat.h * scale;
-        const baseLeft = (vp.w - imgW) / 2;
-        const baseTop = (vp.h - imgH) / 2;
+        let scale = clampScale(next.scale);
+        let offsetX = next.offsetX;
+        let offsetY = next.offsetY;
 
-        // Ensure crop rect always covered by image (no black edges)
-        const minOffsetX = cropLeft + cropW - (baseLeft + imgW);
-        const maxOffsetX = cropLeft - baseLeft;
-        const minOffsetY = cropTop + cropH - (baseTop + imgH);
-        const maxOffsetY = cropTop - baseTop;
+        const panBounds = (s: number) => {
+          const imgW = imgNat.w * s;
+          const imgH = imgNat.h * s;
+          const baseLeft = (vp.w - imgW) / 2;
+          const baseTop = (vp.h - imgH) / 2;
+          return {
+            minOffsetX: cropLeft + cropW - (baseLeft + imgW),
+            maxOffsetX: cropLeft - baseLeft,
+            minOffsetY: cropTop + cropH - (baseTop + imgH),
+            maxOffsetY: cropTop - baseTop,
+          };
+        };
 
-        const clampedX = Math.min(maxOffsetX, Math.max(minOffsetX, next.offsetX));
-        const clampedY = Math.min(maxOffsetY, Math.max(minOffsetY, next.offsetY));
-
-        if (clampedX !== next.offsetX || clampedY !== next.offsetY) {
-          console.info("[Cover Black Edge Prevented]", {
-            crop: { cropW, cropH, cropLeft, cropTop },
-            img: { imgW, imgH, scale },
-            offset: {
-              before: { x: next.offsetX, y: next.offsetY },
-              after: { x: clampedX, y: clampedY },
-            },
-          });
+        // 縮放剛好貼齊裁切框時無法平移；略放大以保留單指拖曳空間
+        for (let i = 0; i < 14; i++) {
+          const { minOffsetX, maxOffsetX, minOffsetY, maxOffsetY } = panBounds(scale);
+          const xOk = minOffsetX <= maxOffsetX;
+          const yOk = minOffsetY <= maxOffsetY;
+          if (xOk && yOk) {
+            const clampedX = Math.min(maxOffsetX, Math.max(minOffsetX, offsetX));
+            const clampedY = Math.min(maxOffsetY, Math.max(minOffsetY, offsetY));
+            if (
+              import.meta.env.DEV &&
+              (clampedX !== offsetX || clampedY !== offsetY) &&
+              i === 0
+            ) {
+              console.info("[Cover Black Edge Prevented]", {
+                offset: {
+                  before: { x: offsetX, y: offsetY },
+                  after: { x: clampedX, y: clampedY },
+                },
+              });
+            }
+            return { scale, offsetX: clampedX, offsetY: clampedY };
+          }
+          scale = clampScale(scale * 1.04);
         }
 
-        return { scale, offsetX: clampedX, offsetY: clampedY };
+        const { minOffsetX, maxOffsetX, minOffsetY, maxOffsetY } = panBounds(scale);
+        return {
+          scale,
+          offsetX: Math.min(maxOffsetX, Math.max(minOffsetX, offsetX)),
+          offsetY: Math.min(maxOffsetY, Math.max(minOffsetY, offsetY)),
+        };
       },
       [initialFit, aspectWidth, aspectHeight, clampScale],
     );
@@ -213,7 +234,6 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
       onReadyChangeRef.current?.(false);
 
       const url = fileToObjectUrl(file);
-      setPreviewUrl(url);
 
       let resizeObserver: ResizeObserver | undefined;
       let cancelled = false;
@@ -224,6 +244,21 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
           imgRef.current = img;
           imgNatSizeRef.current = { w: img.naturalWidth, h: img.naturalHeight };
           setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
+
+          let displayUrl = url;
+          try {
+            const canvas = document.createElement("canvas");
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(img, 0, 0);
+              displayUrl = canvas.toDataURL("image/jpeg", 0.92);
+            }
+          } catch {
+            displayUrl = url;
+          }
+          setPreviewUrl(displayUrl);
 
           requestAnimationFrame(() => {
             requestAnimationFrame(() => syncViewportRef.current());
@@ -247,9 +282,12 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
       return () => {
         cancelled = true;
         resizeObserver?.disconnect();
-        URL.revokeObjectURL(url);
+        window.setTimeout(() => {
+          URL.revokeObjectURL(url);
+        }, 400);
         imgRef.current = null;
         imgNatSizeRef.current = null;
+        setPreviewUrl(null);
       };
     }, [file]);
 
@@ -258,13 +296,18 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
       if (!el) return;
 
       const blockNativeGestures = (event: TouchEvent) => {
-        if (event.touches.length >= 2) {
+        if (!readyRef.current) return;
+        if (event.touches.length >= 1) {
           event.preventDefault();
         }
       };
 
+      el.addEventListener("touchstart", blockNativeGestures, { passive: false });
       el.addEventListener("touchmove", blockNativeGestures, { passive: false });
-      return () => el.removeEventListener("touchmove", blockNativeGestures);
+      return () => {
+        el.removeEventListener("touchstart", blockNativeGestures);
+        el.removeEventListener("touchmove", blockNativeGestures);
+      };
     }, []);
 
     const markUserAdjusted = () => {

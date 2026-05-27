@@ -70,4 +70,15 @@ export type TripOutfitSuggestionFields = {
   weatherSource?: TripWeatherSource;
   /** 目的地／日期／天數變更時用於判斷是否重新生成 */
   outfitSuggestionInputKey?: string;
+  /** 穿搭重點標籤（防曬、防水…） */
+  outfitTags?: string[];
+  /** 畫面上顯示的即時溫度 */
+  weatherTempC?: number | null;
+  weatherFeelsLikeC?: number | null;
+  weatherCondition?: string;
+  weatherIconType?: string;
+  weatherIsDaytime?: boolean;
+  weatherPrecipPercent?: number | null;
+  /** 是否為 Plus 細緻版建議 */
+  outfitTier?: "free" | "plus";
 };

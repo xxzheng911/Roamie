@@ -1,7 +1,12 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "tanstack-start-app",
+  "name": "roamie",
   "compatibility_date": "2025-09-24",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/server.ts",
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "roamie.tw/*", "zone_name": "roamie.tw" },
+    { "pattern": "www.roamie.tw/*", "zone_name": "roamie.tw" }
+  ]
 }

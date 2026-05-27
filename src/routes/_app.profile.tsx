@@ -5,10 +5,10 @@ import {
   Route as RouteIcon,
   Pencil,
   Loader2,
-  UserRound,
   Sparkles,
+  UserRound,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useAvatar } from "@/hooks/use-avatar";
@@ -35,12 +35,19 @@ import {
   type UserProfile,
 } from "@/lib/profile-storage";
 import { buildCompanionSummary } from "@/lib/personality";
+import {
+  canShowPlusSurveyOnProfile,
+  logProfileSurveyDiagnostics,
+  resolveProfilePlusPersonalityLine,
+  resolveProfileSurveyDisplay,
+} from "@/lib/profile-survey-display";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useAccess } from "@/hooks/use-access";
 import { isDeveloperBuildEnabled } from "@/lib/access/developer";
 import { loadDraftTrip } from "@/lib/trip-draft-storage";
 import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
+import { isLikelyImageFile, normalizeImageFileForUpload } from "@/lib/image-crop";
 
 type ProfileSearch = { quiz?: string };
 
@@ -54,7 +61,7 @@ export const Route = createFileRoute("/_app/profile")({
 });
 
 function validateImageFile(file: File): boolean {
-  if (!file.type.startsWith("image/")) {
+  if (!isLikelyImageFile(file)) {
     toast.error("請選擇圖片檔案");
     return false;
   }
@@ -101,6 +108,7 @@ function Profile() {
   const [personalityImpression, setPersonalityImpression] = useState("");
   const [companionSummary, setCompanionSummary] = useState("");
   const [onboarded, setOnboarded] = useState(false);
+  const [surveyCompleted, setSurveyCompleted] = useState(false);
   const [quizSyncing, setQuizSyncing] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [pace, setPace] = useState("");
@@ -108,12 +116,6 @@ function Profile() {
   const [budgetLabel, setBudgetLabel] = useState("—");
   const [avoidKey, setAvoidKey] = useState<string | null>(null);
   const [travelTags, setTravelTags] = useState<string[]>([]);
-
-  const profileRenderCount = useRef(0);
-  profileRenderCount.current += 1;
-  useEffect(() => {
-    console.info("[PROFILE_RERENDER]", `count=${profileRenderCount.current}`);
-  });
 
   const revokeCoverPreview = useCallback(() => {
     if (coverPreviewRef.current) {
@@ -145,7 +147,12 @@ function Profile() {
 
   useAppMainScroll();
 
-  const quizCompleted = onboarded;
+  const quizCompleted = surveyCompleted;
+  const showPlusSurveyProfile = canShowPlusSurveyOnProfile(hasPlusAccess);
+  const plusPersonalityLine = useMemo(
+    () => resolveProfilePlusPersonalityLine(hasPlusAccess, travelStyle, personalityType),
+    [hasPlusAccess, travelStyle, personalityType],
+  );
 
   useEffect(() => {
     setHasDraft(Boolean(loadDraftTrip()));
@@ -180,53 +187,62 @@ function Profile() {
       setDisplayName(profile.displayName);
       setBio(profile.bio);
       setCoverUrl(profile.coverImageUrl);
-      setTravelStyle(profile.travelStyle);
-      setPersonalityType(profile.personalityType);
-      setPersonalitySummary(profile.personalitySummary);
-      setPersonalityImpression(profile.personalityImpression);
-      setCompanionSummary(buildCompanionSummary(profile.prefs));
-      setOnboarded(!!profile.prefs.onboarded);
-      const paceMap = {
-        slow: t("profile.paceSlow"),
-        medium: t("profile.paceMedium"),
-        active: t("profile.paceActive"),
-      } as const;
-      const vibeMap = {
-        quiet: t("profile.vibeQuiet"),
-        either: t("profile.vibeEither"),
-        lively: t("profile.vibeLively"),
-      } as const;
-      setPace(profile.prefs.pace ? paceMap[profile.prefs.pace] : t("common.dash"));
-      setVibe(profile.prefs.vibe ? vibeMap[profile.prefs.vibe] : t("common.dash"));
-      setBudgetLabel(
-        profile.prefs.onboarded
-          ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)]
-          : t("common.dash"),
+      setTravelStyle(profile.surveyResult?.travelStyle ?? profile.travelStyle);
+      setPersonalityType(
+        profile.surveyResult?.personalityType ?? profile.personalityType,
       );
+      setPersonalitySummary(
+        profile.surveyResult?.aiRecommendationSummary ??
+          profile.personalitySummary,
+      );
+      setPersonalityImpression(
+        profile.surveyResult?.personalityImpression ?? profile.personalityImpression,
+      );
+      const completed = Boolean(profile.surveyCompleted ?? profile.prefs.surveyCompleted ?? profile.prefs.onboarded);
+      setSurveyCompleted(completed);
+      setOnboarded(completed);
+      const surveyDisplay = resolveProfileSurveyDisplay(profile);
+      logProfileSurveyDiagnostics(profile, surveyDisplay);
+      setCompanionSummary(
+        completed ? buildCompanionSummary({ ...profile.prefs, onboarded: true }) : "",
+      );
+      if (surveyDisplay) {
+        setPace(surveyDisplay.paceLabel);
+        setVibe(surveyDisplay.vibeLabel);
+        setBudgetLabel(surveyDisplay.budgetLabel);
+      } else {
+        setPace(t("profile.paceMedium"));
+        setVibe(t("profile.vibeEither"));
+        setBudgetLabel(BUDGET_MODE_LABELS.standard);
+      }
       setAvoidKey(profile.prefs.avoid?.[0] ?? null);
-      const tags = Array.from(
-        new Set(
-          [
-            ...(profile.prefs.interests ?? []),
-            profile.prefs.pace === "slow"
-              ? "慢行"
-              : profile.prefs.pace === "active"
-                ? "探索"
-                : null,
-            profile.prefs.vibe === "quiet"
-              ? "安靜"
-              : profile.prefs.vibe === "lively"
-                ? "熱鬧"
-                : "平衡",
-            BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)],
-          ].filter((v): v is string => Boolean(v)),
-        ),
-      ).slice(0, 5);
+      const tags =
+        profile.travelTags.length > 0
+          ? profile.travelTags
+          : Array.from(
+              new Set(
+                [
+                  ...(profile.prefs.interests ?? []),
+                  profile.prefs.pace === "slow"
+                    ? "慢行"
+                    : profile.prefs.pace === "active"
+                      ? "探索"
+                      : null,
+                  profile.prefs.vibe === "quiet"
+                    ? "安靜"
+                    : profile.prefs.vibe === "lively"
+                      ? "熱鬧"
+                      : "平衡",
+                  BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)],
+                ].filter((v): v is string => Boolean(v)),
+              ),
+            ).slice(0, 8);
       setTravelTags(tags);
-      if (profile.prefs.onboarded) {
+      if (completed) {
         console.info("[TRAVEL_PREF_RESULT] loaded", {
           travelStyle: profile.travelStyle || profile.personalityType || "未命名",
           tagsCount: tags.length,
+          surveyCompleted: completed,
         });
       }
     },
@@ -277,7 +293,7 @@ function Profile() {
       if (userId) await ensureUserProfile();
       const profile = await loadProfile();
       applyProfileToState(profile);
-      if (profile.prefs.onboarded) {
+      if (profile.surveyCompleted) {
         void syncTravelPreferenceProfileFields({
           travelStyle: profile.travelStyle || profile.personalityType || "",
           prefs: profile.prefs,
@@ -299,10 +315,14 @@ function Profile() {
         language: locale,
         notificationsEnabled: true,
         authProvider: null,
-        prefs: { onboarded: false },
+        prefs: { onboarded: false, surveyCompleted: false },
         personalityType: "",
         personalitySummary: "",
         personalityImpression: "",
+        surveyCompleted: false,
+        surveyCompletedAt: null,
+        travelTags: [],
+        surveyResult: null,
       } as UserProfile);
       toast.error(msg || t("profile.loadFailed"));
     } finally {
@@ -332,7 +352,11 @@ function Profile() {
   const handleSaveProfile = async () => {
     setSaving(true);
     try {
-      await saveUserProfile({ displayName, bio, travelStyle });
+      await saveUserProfile(
+        showPlusSurveyProfile
+          ? { displayName, bio, travelStyle }
+          : { displayName, bio },
+      );
       setEditing(false);
       toast.success(t("profile.saved"));
     } catch (e) {
@@ -344,12 +368,19 @@ function Profile() {
 
   const handleCoverPick = (file: File) => {
     if (!validateImageFile(file)) return;
-    console.info("[IMAGE_PICK]", "cover", `bytes=${file.size}`, `type=${file.type}`);
-    revokeCoverPreview();
-    const u = URL.createObjectURL(file);
-    coverPreviewRef.current = u;
-    setCoverPreviewUrl(u);
-    setCoverCropFile(file);
+    void (async () => {
+      try {
+        const normalized = await normalizeImageFileForUpload(file);
+        console.info("[IMAGE_PICK]", "cover", `bytes=${normalized.size}`, `type=${normalized.type}`);
+        revokeCoverPreview();
+        const u = URL.createObjectURL(normalized);
+        coverPreviewRef.current = u;
+        setCoverPreviewUrl(u);
+        setCoverCropFile(normalized);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "圖片格式不支援，請改選 JPG 或 PNG");
+      }
+    })();
   };
 
   const handleCoverCancel = () => {
@@ -394,10 +425,15 @@ function Profile() {
 
   const handleAvatarPick = (file: File) => {
     if (!validateImageFile(file)) return;
-    console.info("[IMAGE_PICK]", "avatar", `bytes=${file.size}`, `type=${file.type}`);
-    const u = URL.createObjectURL(file);
-    setAvatarPreview(u);
-    setAvatarCropFile(file);
+    void (async () => {
+      try {
+        const normalized = await normalizeImageFileForUpload(file, { maxSide: 1536 });
+        console.info("[IMAGE_PICK]", "avatar", `bytes=${normalized.size}`, `type=${normalized.type}`);
+        setAvatarCropFile(normalized);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "圖片格式不支援，請改選 JPG 或 PNG");
+      }
+    })();
   };
 
   const handleAvatarCancel = () => {
@@ -437,16 +473,17 @@ function Profile() {
 
   const items = [
     {
-      icon: UserRound,
-      label: t("settings.account"),
-      to: "/settings" as const,
-    },
-    {
       icon: RouteIcon,
       label: "行程草稿",
       value: hasDraft ? "1 份" : "尚無",
       to: hasDraft ? "/trip" : "/chat",
       search: hasDraft ? { draft: "1" } : undefined,
+    },
+    {
+      icon: UserRound,
+      label: t("settings.account"),
+      to: "/settings" as const,
+      onNavigate: () => console.info("[PROFILE_ACCOUNT] clicked"),
     },
   ];
 
@@ -560,18 +597,20 @@ function Profile() {
                     placeholder={t("profile.bioPlaceholder")}
                   />
                 </label>
-                <label className="block">
-                  <span className="text-[11px] text-muted-foreground">
-                    {t("profile.travelStyle")}
-                  </span>
-                  <textarea
-                    value={travelStyle}
-                    onChange={(e) => setTravelStyle(e.target.value)}
-                    rows={2}
-                    className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
-                    placeholder={t("profile.travelStylePlaceholder")}
-                  />
-                </label>
+                {showPlusSurveyProfile ? (
+                  <label className="block">
+                    <span className="text-[11px] text-muted-foreground">
+                      {t("profile.travelStyle")}
+                    </span>
+                    <textarea
+                      value={travelStyle}
+                      onChange={(e) => setTravelStyle(e.target.value)}
+                      rows={2}
+                      className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
+                      placeholder={t("profile.travelStylePlaceholder")}
+                    />
+                  </label>
+                ) : null}
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -605,15 +644,17 @@ function Profile() {
                         </span>
                       ) : null}
                     </div>
-                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{bio}</p>
-                    {hasPlusAccess && onboarded && companionSummary ? (
+                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                      {bio.trim() || t("profile.defaultBio")}
+                    </p>
+                    {showPlusSurveyProfile && onboarded && companionSummary ? (
                       <p className="mt-2 text-sm leading-relaxed text-foreground/75">
                         {companionSummary}
                       </p>
                     ) : null}
-                    {travelStyle ? (
+                    {plusPersonalityLine ? (
                       <p className="mt-2 text-sm leading-relaxed text-foreground/80">
-                        {travelStyle}
+                        {plusPersonalityLine}
                       </p>
                     ) : null}
                   </div>
@@ -626,7 +667,7 @@ function Profile() {
                     <Pencil className="h-4 w-4" />
                   </button>
                 </div>
-                {hasPlusAccess && onboarded && (
+                {showPlusSurveyProfile && onboarded && (
                   <div className="mt-4 flex gap-2">
                     {[
                       { k: t("profile.pace"), v: pace },
@@ -651,61 +692,82 @@ function Profile() {
         </div>
       </div>
 
+      {showPlusSurveyProfile ? (
       <section className="mt-5 rounded-3xl border border-border bg-card p-5 shadow-soft">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Sparkles className="h-3.5 w-3.5 text-clay" />
-          Plus 旅行偏好測驗
+          旅行偏好測驗
         </div>
-        <p className="mt-2 font-display text-[18px] leading-snug">讓 Roamie 更懂你的旅行偏好</p>
-        <p className="mt-1.5 text-sm text-muted-foreground">
-          完成幾個小問題，之後推薦地點與行程時會更貼近你。
-        </p>
-        {hasPlusAccess ? (
-          <button
-            type="button"
-            onClick={() => {
-              console.info("[TRAVEL_PREF_TEST] start");
-              void navigate({ to: "/onboarding", search: { from: "profile" } });
-            }}
-            className="mt-4 w-full rounded-full bg-primary py-3 text-sm text-primary-foreground"
-          >
-            {quizCompleted ? "重新測驗" : "開始測驗"}
-          </button>
+        {quizCompleted ? (
+          <>
+            <p className="mt-2 font-display text-[18px] leading-snug">
+              {travelStyle || personalityType || "慢步放鬆型"}
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("profile.travelTagsLabel")}：
+              {travelTags.length > 0 ? travelTags.join("、") : "—"}
+            </p>
+            <p className="mt-2 text-sm leading-relaxed text-foreground/85">
+              {quizSyncing ? (
+                <span className="inline-flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t("profile.quizSyncing")}
+                </span>
+              ) : (
+                personalitySummary ||
+                "你適合慢慢走、留一點空白的旅行。Roamie 會優先幫你找安靜、有氛圍、適合散步的地方。"
+              )}
+            </p>
+          </>
         ) : (
+          <>
+            <p className="mt-2 font-display text-[18px] leading-snug">讓 Roamie 更懂你的旅行偏好</p>
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              完成幾個小問題，之後推薦地點與行程時會更貼近你。
+            </p>
+          </>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            console.info("[TRAVEL_PREF_TEST] clicked");
+            console.info("[TRAVEL_PREF_TEST] route=/preference-quiz");
+            void navigate({
+              to: "/preference-quiz",
+              search: {
+                returnTo: "/profile",
+                ...(quizCompleted ? { retake: "1" } : {}),
+              },
+            });
+          }}
+          className={`mt-4 w-full rounded-full py-3 text-sm ${
+            quizCompleted
+              ? "border border-border bg-card text-foreground"
+              : "bg-primary text-primary-foreground"
+          }`}
+        >
+          {quizCompleted ? t("profile.retakeQuiz") : t("profile.startQuiz")}
+        </button>
+      </section>
+      ) : (
+        <section className="mt-5 rounded-3xl border border-border bg-card p-5 shadow-soft">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Sparkles className="h-3.5 w-3.5 text-clay" />
+            旅行偏好測驗
+          </div>
+          <p className="mt-2 font-display text-[18px] leading-snug">Plus 專屬：更懂你的旅行風格</p>
           <button
             type="button"
             onClick={() => {
-              console.info("[TRAVEL_PREF_TEST] start");
+              console.info("[TRAVEL_PREF_TEST] clicked");
               setUpgradeOpen(true);
             }}
             className="mt-4 w-full rounded-full bg-primary py-3 text-sm text-primary-foreground"
           >
             升級 Plus 解鎖
           </button>
-        )}
-      </section>
-
-      {hasPlusAccess && quizCompleted ? (
-        <section className="mt-4 rounded-3xl bg-secondary p-5">
-          <p className="font-display text-[18px]">
-            {travelStyle || personalityType || "慢步放鬆型"}
-          </p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            標籤：{travelTags.length > 0 ? travelTags.join("、") : "安靜、散步、咖啡、自然、慢行"}
-          </p>
-          <p className="mt-2 text-sm leading-relaxed text-foreground/85">
-            {quizSyncing ? (
-              <span className="inline-flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {t("profile.quizSyncing")}
-              </span>
-            ) : (
-              personalityImpression ||
-              "你適合慢慢走、留一點空白的旅行。Roamie 會優先幫你找安靜、有氛圍、適合散步的地方。"
-            )}
-          </p>
         </section>
-      ) : null}
+      )}
 
       <section className="relative z-10 mt-6">
         <ul className="overflow-hidden rounded-3xl border border-border bg-card shadow-soft">
@@ -714,7 +776,12 @@ function Profile() {
             const cls = `flex w-full items-center gap-3 px-4 py-3.5 text-left ${i !== items.length - 1 ? "border-b border-border" : ""}`;
             return (
               <li key={it.label} className={i !== items.length - 1 ? "border-b border-border" : ""}>
-                <Link to={it.to} search={it.search} className={cls}>
+                <Link
+                  to={it.to}
+                  search={it.search}
+                  className={cls}
+                  onClick={() => it.onNavigate?.()}
+                >
                   <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-secondary">
                     <Icon className="h-4 w-4" />
                   </div>

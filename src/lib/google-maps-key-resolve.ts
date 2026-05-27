@@ -19,12 +19,26 @@ export function readGoogleMapsKeyFromClientEnv(): string | null {
   return null;
 }
 
-/** 僅在成功載入時 log 一次，不印出完整 key */
+/** 僅在成功載入時 log 一次（含 prefix / length，不印完整 key） */
 export function logGoogleMapsKeyLoadedOnce(): void {
   if (clientKeyLogged) return;
-  if (!readGoogleMapsKeyFromClientEnv()) return;
+  const key = readGoogleMapsKeyFromClientEnv();
+  if (!key) return;
   clientKeyLogged = true;
-  console.info("✅ Google Maps key loaded");
+  console.info(
+    `[GOOGLE_KEY] loaded=true prefix=${key.slice(0, 8)} length=${key.length} tag=client-once`,
+  );
+}
+
+export function logGoogleMapsKeyDiagnostics(): void {
+  const key = readGoogleMapsKeyFromClientEnv();
+  if (!key) {
+    console.warn("[GOOGLE_KEY] loaded=false tag=diagnostics");
+    return;
+  }
+  console.info(
+    `[GOOGLE_KEY] loaded=true prefix=${key.slice(0, 8)} length=${key.length} tag=diagnostics`,
+  );
 }
 
 export function googleMapsKeyMissingMessage(): string {

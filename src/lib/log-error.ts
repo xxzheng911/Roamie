@@ -131,7 +131,19 @@ const WEBKIT_NOISE_PATTERNS: RegExp[] = [
   /xpc_user_sessions/i,
   /_axaddtoelementcache/i,
   /wkaccessibilitywebpageobject/i,
+  /makeimageplus/i,
+  /'webp'\._reader/i,
+  /initimage\[0\] failed err=-50/i,
 ];
+
+/** WKWebView 有時只提供 lineno/colno，error 與 message 皆為空 */
+export function errorFromErrorEvent(event: ErrorEvent): unknown {
+  if (event.error != null) return event.error;
+  const message = event.message?.trim();
+  if (message) return new Error(message);
+  const at = `${event.filename || "unknown"}:${event.lineno ?? 0}:${event.colno ?? 0}`;
+  return new Error(`runtime error at ${at}`);
+}
 
 export function isBenignWebKitNoise(
   error: unknown,
@@ -248,10 +260,21 @@ export function buildCapacitorEarlyErrorLogScript(): string {
       roamieLog("APP_SCRIPT_LOAD_ERROR", e.message || "script failed", e.filename || "script");
       return;
     }
-    roamieLog("APP_INIT_ERROR", e.error || e.message, e.filename);
+    var reason = e.error;
+    if (reason == null) {
+      var msg = (e.message || "").trim();
+      reason = msg
+        ? new Error(msg)
+        : new Error(
+            "runtime@" + (e.filename || "unknown") + ":" + (e.lineno || 0) + ":" + (e.colno || 0),
+          );
+    }
+    roamieLog("APP_INIT_ERROR", reason, e.filename || "");
   }, true);
   window.addEventListener("unhandledrejection", function(e) {
-    roamieLog("APP_UNHANDLED_REJECTION", e.reason, "promise");
+    var reason = e.reason;
+    if (reason == null) reason = new Error("unhandled rejection (reason was undefined)");
+    roamieLog("APP_UNHANDLED_REJECTION", reason, "promise");
   });
 })();
 </script>`;

@@ -1,6 +1,7 @@
 import { Preferences } from "@capacitor/preferences";
 import { clearPendingCallbackPath, OAUTH_PENDING_CALLBACK_KEY } from "@/lib/auth-oauth-deep-link";
 import { clearOAuthCodeConsumedMarker } from "@/lib/oauth-callback-guard";
+import { invalidateAppShellGateCache } from "@/lib/app-shell-gate";
 import { clearAuthMemoryCache } from "@/lib/supabase-auth-storage";
 import { clearCompanionModeSelection } from "@/lib/companion-mode-storage";
 import { supabase } from "@/lib/supabase";
@@ -97,6 +98,7 @@ export type ClearAuthStateOptions = {
 
 /** 同步清除（不等待 native bridge / signOut）— 按鈕回登入頁必須先跑這段 */
 export function clearAuthStateSync(options: ClearAuthStateOptions = {}): void {
+  invalidateAppShellGateCache();
   clearAuthMemoryCache();
   clearWebStorageAuthKeys();
   clearLocalDeviceCaches();

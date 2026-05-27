@@ -12,7 +12,8 @@
 - [ ] Apple Developer Program（年費帳號）
 - [ ] macOS + Xcode 15+
 - [ ] Node.js 20+
-- [ ] Roamie **已部署至 Cloudflare**（取得 HTTPS 網址，例如 `https://roamie.example.com`）
+- [ ] Roamie **已部署至 Cloudflare**（`npm run deploy` — 見 [`docs/DEPLOY_CLOUDFLARE.md`](./DEPLOY_CLOUDFLARE.md)）
+- [ ] `https://roamie.tw` 可開啟（非 525）；`VITE_APP_ORIGIN=https://roamie.tw`
 
 ---
 

@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import useEmblaCarousel from "embla-carousel-react";
-import { Link } from "@tanstack/react-router";
 import {
   Bookmark,
   Calendar,
@@ -10,17 +8,18 @@ import {
   Pencil,
   Plus,
   Route as RouteIcon,
-  Sparkles,
   Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { BackButton } from "@/components/BackButton";
 import { TripCoverImage } from "@/components/media/TripCoverImage";
-import { TripStopSearchField } from "@/components/TripStopSearchField";
 import { SavedPlacesPickSheet } from "@/components/saved/SavedPlacesPickSheet";
+import { TripAddPlacePanel, type TripAddPlaceMode } from "@/components/saved/TripAddPlacePanel";
+import { TripRoamiePlanSheet } from "@/components/saved/TripRoamiePlanSheet";
 import { SavedTripEditableStopCard } from "@/components/saved/SavedTripEditableStopCard";
 import { TripOutfitCard } from "@/components/saved/TripOutfitCard";
 import { TripCoverSheet } from "@/components/saved/TripCoverSheet";
+import { ProfileImageCropSheet } from "@/components/profile/ProfileImageCropSheet";
 import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings } from "@/lib/ai/types";
 import {
   formatSavedTripDateRange,
@@ -78,12 +77,15 @@ type DayGroup = { dateKey: string; dayNumber: number; items: RoamieItineraryItem
 
 function buildDayGroups(items: RoamieItineraryItem[], settings: TripPlanSettings): DayGroup[] {
   const { start } = inferTripDates(items, settings);
+  const explicit = (settings.tripDayDates ?? []).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
   const dayCount = Math.max(
     1,
     daysBetweenDates(settings.tripStartDate ?? start, settings.tripEndDate ?? start),
     listTripDateKeys(items, start).length,
+    explicit.length,
   );
-  const dateKeys = listTripDates(items, start, dayCount);
+  const dateKeys =
+    explicit.length > 0 ? explicit : listTripDates(items, start, dayCount);
   const groups = groupStopsByDate(items);
   return dateKeys.map((dateKey, i) => ({
     dateKey,
@@ -111,8 +113,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
   );
   const [isCoverCustomized, setIsCoverCustomized] = useState(initialView.isCoverCustomized);
   const [coverSource, setCoverSource] = useState<string | null>(stored.cover_source);
+  const coverSyncRef = useRef(stored.updated_at ?? stored.created_at);
   const [editingTitle, setEditingTitle] = useState(false);
   const [coverSheetOpen, setCoverSheetOpen] = useState(false);
+  const [coverCropFile, setCoverCropFile] = useState<File | null>(null);
   const [coverBusy, setCoverBusy] = useState(false);
   const [settings, setSettings] = useState<TripPlanSettings>(
     () =>
@@ -126,7 +130,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
   const [items, setItems] = useState<RoamieItineraryItem[]>(() => [...initial.itinerary]);
   const [activeDayIndex, setActiveDayIndex] = useState(0);
   const [savedPlacesOpen, setSavedPlacesOpen] = useState(false);
+  const [roamiePlanOpen, setRoamiePlanOpen] = useState(false);
   const [addMenuDayIndex, setAddMenuDayIndex] = useState<number | null>(null);
+  const [addPlaceMode, setAddPlaceMode] = useState<TripAddPlaceMode | null>(null);
+  const addPlaceDateKeyRef = useRef<string | null>(null);
   const [transitLoading, setTransitLoading] = useState(false);
   const skipInitialTransitFetch = useRef(
     Boolean(
@@ -151,7 +158,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
     ? { lat: firstWithCoords.lat!, lng: firstWithCoords.lng! }
     : undefined;
 
-  const { loading: outfitLoading, outfitFields } = useTripOutfitSuggestion({
+  const { loading: outfitLoading, outfitFields, outfitError } = useTripOutfitSuggestion({
     initialFields: {
       outfitSuggestion: initial.outfitSuggestion,
       outfitSuggestionUpdatedAt: initial.outfitSuggestionUpdatedAt,
@@ -221,32 +228,42 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
     }
   }, [tripView.displayTitle, isTitleCustomized]);
 
+  useEffect(() => {
+    const stamp = stored.updated_at ?? stored.created_at;
+    if (stamp === coverSyncRef.current) return;
+    coverSyncRef.current = stamp;
+    const view = normalizeStoredTrip(stored);
+    setCustomCoverImageUrl(view.customCoverImageUrl);
+    setAiCoverImageUrl(view.aiGeneratedCoverImageUrl);
+    setIsCoverCustomized(view.isCoverCustomized);
+    setCoverSource(stored.cover_source);
+  }, [stored]);
+
   const safeDayIndex = Math.min(activeDayIndex, Math.max(0, dayGroups.length - 1));
   const activeDay = dayGroups[safeDayIndex];
 
-  const [emblaRef, emblaApi] = useEmblaCarousel({
-    align: "start",
-    containScroll: "trimSnaps",
-    duration: 20,
-  });
-
   useEffect(() => {
-    if (!emblaApi) return;
-    const onSelect = () => setActiveDayIndex(emblaApi.selectedScrollSnap());
-    emblaApi.on("select", onSelect);
-    onSelect();
-    return () => {
-      emblaApi.off("select", onSelect);
-    };
-  }, [emblaApi, dayGroups.length]);
+    if (safeDayIndex !== activeDayIndex) {
+      setActiveDayIndex(safeDayIndex);
+    }
+  }, [safeDayIndex, activeDayIndex]);
 
+  const tripDatesInitRef = useRef(false);
   useEffect(() => {
-    emblaApi?.scrollTo(safeDayIndex);
-  }, [emblaApi, safeDayIndex]);
+    if (tripDatesInitRef.current || settings.tripDayDates?.length) return;
+    const dates = dayGroups.map((d) => d.dateKey);
+    if (dates.length === 0) return;
+    tripDatesInitRef.current = true;
+    setSettings((s) => ({
+      ...s,
+      tripDayDates: dates,
+      tripStartDate: s.tripStartDate ?? dates[0],
+      tripEndDate: s.tripEndDate ?? dates[dates.length - 1],
+    }));
+  }, [settings.tripDayDates, dayGroups]);
 
   const scrollToDay = (index: number) => {
     setActiveDayIndex(index);
-    emblaApi?.scrollTo(index);
   };
 
   const persistItems = useCallback((next: RoamieItineraryItem[]) => {
@@ -254,18 +271,30 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
   }, []);
 
   const handleAddDay = () => {
-    const { start } = inferTripDates(items, settings);
-    const nextIso = nextDayIsoAfter(items, start);
-    const nextItems = addEmptyDay(items, nextIso);
-    const dayCount = dayGroups.length + 1;
-    setSettings((s) => ({
-      ...s,
-      tripEndDate: nextIso,
-      tripStartDate: s.tripStartDate ?? start,
-    }));
-    persistItems(nextItems);
-    scrollToDay(dayCount - 1);
-    toast.message(`已新增第 ${dayCount} 天`);
+    if (dayGroups.length >= 14) {
+      toast.error("行程最多 14 天");
+      return;
+    }
+    try {
+      const { start } = inferTripDates(items, settings);
+      const currentDates = settings.tripDayDates?.length
+        ? settings.tripDayDates
+        : dayGroups.map((d) => d.dateKey);
+      const nextIso = nextDayIsoAfter(items, currentDates[currentDates.length - 1] ?? start);
+      const nextDates = [...currentDates, nextIso];
+      const nextItems = addEmptyDay(items, nextIso);
+      setSettings((s) => ({
+        ...s,
+        tripDayDates: nextDates,
+        tripEndDate: nextIso,
+        tripStartDate: s.tripStartDate ?? start,
+      }));
+      persistItems(nextItems);
+      scrollToDay(nextDates.length - 1);
+      toast.message(`已新增第 ${nextDates.length} 天`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "新增天數失敗");
+    }
   };
 
   const handleRemoveDay = (dateKey: string, dayNumber: number) => {
@@ -281,10 +310,28 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
       );
       if (!ok) return;
     }
-    persistItems(removeDay(items, dateKey));
-    scrollToDay(Math.max(0, safeDayIndex - 1));
-    toast.message(`已刪除第 ${dayNumber} 天`);
+    try {
+      const nextDates = dayGroups.filter((d) => d.dateKey !== dateKey).map((d) => d.dateKey);
+      const nextItems = removeDay(items, dateKey);
+      setSettings((s) => ({
+        ...s,
+        tripDayDates: nextDates,
+        tripStartDate: nextDates[0],
+        tripEndDate: nextDates[nextDates.length - 1],
+      }));
+      persistItems(nextItems);
+      scrollToDay(Math.min(safeDayIndex, nextDates.length - 1));
+      toast.message(`已刪除第 ${dayNumber} 天`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "刪除天數失敗");
+    }
   };
+
+  const closeAddPlace = useCallback(() => {
+    setAddMenuDayIndex(null);
+    setAddPlaceMode(null);
+    addPlaceDateKeyRef.current = null;
+  }, []);
 
   const handleAddStop = (
     dateKey: string,
@@ -295,9 +342,60 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
       time: settings.startTime ?? "10:00",
     });
     persistItems(insertStopOnDate(items, stop, { date: stop.date, position: "end" }));
-    setAddMenuDayIndex(null);
+    closeAddPlace();
+    console.log("[TRIP_ADD_PLACE_SUCCESS]");
     toast.success("已新增地點");
   };
+
+  const handleAddStopsFromFavorites = useCallback(
+    (places: Parameters<typeof tripPlaceToItineraryItem>[0][]) => {
+      const dateKey = addPlaceDateKeyRef.current;
+      if (!dateKey || places.length === 0) return;
+      let nextItems = items;
+      for (const place of places) {
+        const stop = tripPlaceToItineraryItem(place, {
+          date: /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
+            ? dateKey
+            : inferTripDates(items, settings).start,
+          time: settings.startTime ?? "10:00",
+        });
+        nextItems = insertStopOnDate(nextItems, stop, { date: stop.date, position: "end" });
+      }
+      persistItems(nextItems);
+      closeAddPlace();
+      console.log("[TRIP_ADD_PLACE_SUCCESS]");
+      toast.success(`已加入 ${places.length} 個地點`);
+    },
+    [items, settings, persistItems, closeAddPlace],
+  );
+
+  const openAddPlaceMenu = useCallback(
+    (dayIndex: number, dateKey: string) => {
+      console.log("[TRIP_ADD_PLACE] open");
+      addPlaceDateKeyRef.current = dateKey;
+      setAddMenuDayIndex(dayIndex);
+      setAddPlaceMode("menu");
+    },
+    [],
+  );
+
+  const handleAddPlaceModeSelect = useCallback(
+    (mode: "favorites" | "manual" | "roamie") => {
+      console.log("[TRIP_ADD_PLACE] mode=", mode);
+      if (mode === "favorites") {
+        setSavedPlacesOpen(true);
+        setAddPlaceMode(null);
+        return;
+      }
+      if (mode === "roamie") {
+        setRoamiePlanOpen(true);
+        setAddPlaceMode(null);
+        return;
+      }
+      setAddPlaceMode("manual");
+    },
+    [],
+  );
 
   const patchSettings = (patch: Partial<TripPlanSettings>) => {
     setSettings((s) => ({ ...s, ...patch }));
@@ -360,11 +458,16 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
     [tripTitle, stored.id, payload, onStoredChange],
   );
 
-  const handleCoverUpload = async (file: File) => {
+  const handleCoverPick = (file: File) => {
+    setCoverSheetOpen(false);
+    setCoverCropFile(file);
+  };
+
+  const handleCoverUpload = async (blob: Blob) => {
     setCoverBusy(true);
     console.info("[IMAGE_UPLOAD] start");
     try {
-      const url = await uploadTripCover(stored.id, file);
+      const url = await uploadTripCover(stored.id, blob);
       setCustomCoverImageUrl(url);
       setIsCoverCustomized(true);
       setCoverSource("upload");
@@ -374,6 +477,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
         cover_query: null,
       });
       if (updated) onStoredChange?.(updated);
+      setCoverCropFile(null);
       console.info("[IMAGE_UPLOAD] success url=", url);
       toast.success("封面已更新");
     } catch (e) {
@@ -404,7 +508,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain">
       <div className="relative shrink-0">
         <TripCoverImage
           displayCoverImage={tripView.displayCoverImage}
@@ -525,6 +629,15 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
           weatherSource={outfitFields.weatherSource}
           suggestion={outfitFields.outfitSuggestion}
           loading={outfitLoading}
+          errorMessage={outfitError}
+          outfitTags={outfitFields.outfitTags}
+          weatherTempC={outfitFields.weatherTempC}
+          weatherFeelsLikeC={outfitFields.weatherFeelsLikeC}
+          weatherCondition={outfitFields.weatherCondition}
+          weatherIconType={outfitFields.weatherIconType}
+          weatherIsDaytime={outfitFields.weatherIsDaytime}
+          weatherPrecipPercent={outfitFields.weatherPrecipPercent}
+          outfitTier={outfitFields.outfitTier}
         />
       </div>
 
@@ -558,160 +671,141 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
         </div>
       </div>
 
-      <div ref={emblaRef} className="min-h-0 flex-1 overflow-hidden">
-        <div className="flex h-full">
-          {dayGroups.map((day) => (
-            <div
-              key={day.dateKey}
-              className="min-h-0 min-w-0 flex-[0_0_100%] overflow-y-auto overscroll-y-contain px-5 py-5"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <h2 className="text-sm font-medium text-foreground/90">
-                  {formatSavedTripDayLabel({
-                    dayNumber: day.dayNumber,
-                    date: day.dateKey,
-                    items: [] as never[],
-                  })}
-                </h2>
-                {dayGroups.length > 1 ? (
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveDay(day.dateKey, day.dayNumber)}
-                    className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
-                  >
-                    刪除此天
-                  </button>
-                ) : null}
-              </div>
+      {activeDay ? (
+        <div className="px-5 py-5 pb-10">
+          <div className="flex items-start justify-between gap-2">
+            <h2 className="text-sm font-medium text-foreground/90">
+              {formatSavedTripDayLabel({
+                dayNumber: activeDay.dayNumber,
+                date: activeDay.dateKey,
+                items: [] as never[],
+              })}
+            </h2>
+            {dayGroups.length > 1 ? (
+              <button
+                type="button"
+                onClick={() => handleRemoveDay(activeDay.dateKey, activeDay.dayNumber)}
+                className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
+              >
+                刪除此天
+              </button>
+            ) : null}
+          </div>
 
-              {day.items.length === 0 ? (
-                <p className="mt-6 rounded-2xl border border-dashed border-border bg-card/60 px-4 py-8 text-center text-sm text-muted-foreground">
-                  這一天還沒有地點，點下方按鈕新增。
-                </p>
-              ) : (
-                <div className="relative mt-4 space-y-0">
-                  {day.items.map((item, i) => {
-                    const prev = i > 0 ? day.items[i - 1] : null;
-                    const legKey = legKeyForItem(item);
-                    const transport =
-                      settings.legTransport?.[legKey] ??
-                      (settings.transport === "walk"
-                        ? "步行"
-                        : settings.transport === "drive"
-                          ? "開車"
-                          : settings.transport === "transit"
-                            ? "大眾運輸"
-                            : settings.transport === "scooter"
-                              ? "機車"
-                              : "步行");
-                    const transitKey =
-                      prev != null
-                        ? buildLegKey(prev.placeName || prev.title, item.placeName || item.title)
-                        : null;
-                    const transit = transitKey ? settings.transitLegs?.[transitKey] : undefined;
+          {activeDay.items.length === 0 ? (
+            <p className="mt-6 rounded-2xl border border-dashed border-border bg-card/60 px-4 py-8 text-center text-sm text-muted-foreground">
+              這一天還沒有地點，點下方按鈕新增。
+            </p>
+          ) : (
+            <div className="relative mt-4 space-y-0">
+              {activeDay.items.map((item, i) => {
+                const prev = i > 0 ? activeDay.items[i - 1] : null;
+                const legKey = legKeyForItem(item);
+                const transport =
+                  settings.legTransport?.[legKey] ??
+                  (settings.transport === "walk"
+                    ? "步行"
+                    : settings.transport === "drive"
+                      ? "開車"
+                      : settings.transport === "transit"
+                        ? "大眾運輸"
+                        : settings.transport === "scooter"
+                          ? "機車"
+                          : "步行");
+                const transitKey =
+                  prev != null
+                    ? buildLegKey(prev.placeName || prev.title, item.placeName || item.title)
+                    : null;
+                const transit = transitKey ? settings.transitLegs?.[transitKey] : undefined;
 
-                    return (
-                      <div key={`${day.dateKey}-${legKey}-${i}`}>
-                        <SavedTripEditableStopCard
-                          item={item}
-                          indexInDay={i}
-                          dayCount={day.items.length}
-                          settings={settings}
-                          travelTimeLabel={
-                            transitKey
-                              ? formatLegTravelTimeLabel(transit, transport, {
-                                  loading: transitLoading,
-                                })
-                              : undefined
-                          }
-                          travelTimeLoading={transitLoading}
-                          onSetArrivalTime={(t) => {
-                            const idx = items.indexOf(item);
-                            if (idx < 0) return;
-                            const next = [...items];
-                            next[idx] = { ...item, time: t };
-                            persistItems(next);
-                          }}
-                          onSetDurationMinutes={(m) => setLegMinutes(legKeyForItem(item), m)}
-                          onSetTransport={(label) => {
-                            setLegTransport(legKeyForItem(item), label);
-                            void refreshTransit();
-                          }}
-                          onMoveUp={() => persistItems(moveStopInDay(items, day.dateKey, i, -1))}
-                          onMoveDown={() => persistItems(moveStopInDay(items, day.dateKey, i, 1))}
-                          onDelete={() => persistItems(removeStopAt(items, day.dateKey, i))}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {day.items.length > 1 ? (
-                <button
-                  type="button"
-                  onClick={() => persistItems(sortStopsInDayByTime(items, day.dateKey))}
-                  className="mt-3 text-xs text-muted-foreground underline-offset-2 hover:underline"
-                >
-                  依時間重新排序
-                </button>
-              ) : null}
-
-              <div className="mt-6 space-y-3">
-                {addMenuDayIndex === day.dayNumber - 1 ? (
-                  <div className="space-y-3 rounded-2xl border border-border bg-card/80 p-3">
-                    <TripStopSearchField
-                      label="搜尋地點"
-                      onPick={(place) => handleAddStop(day.dateKey, place)}
+                return (
+                  <div key={`${activeDay.dateKey}-${legKey}-${i}`}>
+                    <SavedTripEditableStopCard
+                      item={item}
+                      indexInDay={i}
+                      dayCount={activeDay.items.length}
+                      settings={settings}
+                      travelTimeLabel={
+                        transitKey
+                          ? formatLegTravelTimeLabel(transit, transport, {
+                              loading: transitLoading,
+                            })
+                          : undefined
+                      }
+                      travelTimeLoading={transitLoading}
+                      onSetArrivalTime={(t) => {
+                        const idx = items.indexOf(item);
+                        if (idx < 0) return;
+                        const next = [...items];
+                        next[idx] = { ...item, time: t };
+                        persistItems(next);
+                      }}
+                      onSetDurationMinutes={(m) => setLegMinutes(legKeyForItem(item), m)}
+                      onSetTransport={(label) => {
+                        setLegTransport(legKeyForItem(item), label);
+                        void refreshTransit();
+                      }}
+                      onMoveUp={() =>
+                        persistItems(moveStopInDay(items, activeDay.dateKey, i, -1))
+                      }
+                      onMoveDown={() =>
+                        persistItems(moveStopInDay(items, activeDay.dateKey, i, 1))
+                      }
+                      onDelete={() => persistItems(removeStopAt(items, activeDay.dateKey, i))}
                     />
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setSavedPlacesOpen(true)}
-                        className="rounded-full border border-border bg-background px-4 py-2 text-xs"
-                      >
-                        從收藏新增
-                      </button>
-                      <Link
-                        to="/chat"
-                        className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-4 py-2 text-xs"
-                        onClick={() => setAddMenuDayIndex(null)}
-                      >
-                        <Sparkles className="h-3 w-3" />請 Roamie 推薦
-                      </Link>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setAddMenuDayIndex(null)}
-                      className="w-full text-center text-xs text-muted-foreground"
-                    >
-                      收合
-                    </button>
                   </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      scrollToDay(day.dayNumber - 1);
-                      setAddMenuDayIndex(day.dayNumber - 1);
-                    }}
-                    className="flex w-full items-center justify-center gap-2 rounded-full border border-dashed border-border bg-card/60 py-3 text-sm text-foreground/80"
-                  >
-                    <Plus className="h-4 w-4" />
-                    新增地點
-                  </button>
-                )}
-              </div>
+                );
+              })}
             </div>
-          ))}
+          )}
+
+          {activeDay.items.length > 1 ? (
+            <button
+              type="button"
+              onClick={() => persistItems(sortStopsInDayByTime(items, activeDay.dateKey))}
+              className="mt-3 text-xs text-muted-foreground underline-offset-2 hover:underline"
+            >
+              依時間重新排序
+            </button>
+          ) : null}
+
+          <div className="mt-6 space-y-3">
+            {addMenuDayIndex === activeDay.dayNumber - 1 && addPlaceMode ? (
+              <TripAddPlacePanel
+                mode={addPlaceMode}
+                onSelectMode={handleAddPlaceModeSelect}
+                onPick={(place) => handleAddStop(activeDay.dateKey, place)}
+                onCollapse={closeAddPlace}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => openAddPlaceMenu(activeDay.dayNumber - 1, activeDay.dateKey)}
+                className="flex w-full items-center justify-center gap-2 rounded-full border border-dashed border-border bg-card/60 py-3 text-sm text-foreground/80"
+              >
+                <Plus className="h-4 w-4" />
+                新增地點
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <SavedPlacesPickSheet
         open={savedPlacesOpen}
         onOpenChange={setSavedPlacesOpen}
-        onPick={(place) => {
-          const dk = activeDay?.dateKey;
+        multiSelect
+        onConfirm={handleAddStopsFromFavorites}
+      />
+
+      <TripRoamiePlanSheet
+        open={roamiePlanOpen}
+        onOpenChange={setRoamiePlanOpen}
+        tripTitle={tripTitle}
+        dayLabel={activeDay ? `第 ${activeDay.dayNumber} 天` : "行程"}
+        existingStopNames={activeDay?.items.map((i) => i.placeName || i.title) ?? []}
+        onAddPlace={(place) => {
+          const dk = addPlaceDateKeyRef.current ?? activeDay?.dateKey;
           if (dk) handleAddStop(dk, place);
         }}
       />
@@ -719,9 +813,21 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
       <TripCoverSheet
         open={coverSheetOpen}
         onOpenChange={setCoverSheetOpen}
-        onPickFile={(file) => void handleCoverUpload(file)}
+        onPickFile={handleCoverPick}
         onRegenerate={() => void handleRegenerateCover()}
         regenerating={coverBusy}
+      />
+
+      <ProfileImageCropSheet
+        open={coverCropFile != null}
+        file={coverCropFile}
+        variant="cover"
+        applying={coverBusy}
+        onOpenChange={(open) => {
+          if (!open && !coverBusy) setCoverCropFile(null);
+        }}
+        onConfirm={(blob) => handleCoverUpload(blob)}
+        doneLabel="套用"
       />
     </div>
   );

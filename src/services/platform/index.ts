@@ -1,4 +1,5 @@
 import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
+import { initNotificationPermissionsOnAppLaunch } from "@/services/notificationService";
 import { normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
 import { hideNativeSplashScreen } from "@/lib/native-splash";
 import { isAppReady } from "@/lib/startup-route";
@@ -88,6 +89,8 @@ export async function bootstrapNativeShell(): Promise<void> {
       bootstrapDone = true;
       return;
     }
+
+    void initNotificationPermissionsOnAppLaunch();
 
     const polishNativeChrome = async () => {
       try {

@@ -1,5 +1,6 @@
 import type { PlanTier } from "@/lib/plan-tier/types";
 import { getUserPlanProfile } from "@/lib/plan-tier/storage";
+import type { User } from "@supabase/supabase-js";
 import type { AccessSnapshot, SubscriptionState, TestModeOverride, UserRole } from "./types";
 import { canShowDeveloperTools, isDeveloperAccount } from "./developer";
 import {
@@ -33,11 +34,11 @@ export type BuildAccessSnapshotOptions = {
  */
 export function buildAccessSnapshot(
   email?: string | null,
-  options?: BuildAccessSnapshotOptions,
+  options?: BuildAccessSnapshotOptions & { user?: User | null },
 ): AccessSnapshot {
   const subscriptionState = readMockSubscriptionTier();
   const testModeOverride = readTestModeOverride();
-  const developerUnlocked = isDeveloperAccount(email);
+  const developerUnlocked = isDeveloperAccount(email, options?.user);
   const userRole: UserRole = developerUnlocked ? "developer" : "user";
   const subscriptionPlusActive = options?.profilePlusActive ?? false;
   const devPlusMode = testModeOverride === "force-plus";
@@ -55,7 +56,7 @@ export function buildAccessSnapshot(
       ? "free"
       : testModeOverride === "force-plus"
         ? "plus"
-        : subscriptionState;
+        : effectiveTier;
 
   return {
     subscriptionState,
@@ -68,7 +69,7 @@ export function buildAccessSnapshot(
     subscriptionPlusActive,
     effectiveTier,
     developerUnlocked,
-    canShowDeveloperTools: canShowDeveloperTools(email),
+    canShowDeveloperTools: canShowDeveloperTools(email, options?.user),
   };
 }
 

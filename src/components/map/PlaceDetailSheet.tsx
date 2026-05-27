@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Car,
   CarTaxiFront,
@@ -25,6 +25,7 @@ import {
 } from "@/lib/estimate-travel-mode";
 import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
+import { resolvePlaceCardOpeningDisplay } from "@/lib/place-card-opening";
 
 function TransportModeIcon({ mode }: { mode: TravelModeId }) {
   const cls = "h-4 w-4 shrink-0 text-muted-foreground";
@@ -94,6 +95,32 @@ export function PlaceDetailSheet({
   const photos = imageUrls.length > 0 ? imageUrls : [];
   const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place));
   const navButtonLabel = `導航・${TRAVEL_MODE_LABEL[selectedTransportMode]}`;
+  const opening = useMemo(
+    () =>
+      resolvePlaceCardOpeningDisplay({
+        id: place.id,
+        name: place.name,
+        openStatus: place.openStatus,
+        todayHoursLabel: place.todayHoursLabel,
+        closingSoonNote: place.closingSoonNote,
+        nextOpenHint: place.nextOpenHint,
+      }),
+    [
+      place.id,
+      place.name,
+      place.openStatus,
+      place.todayHoursLabel,
+      place.closingSoonNote,
+      place.nextOpenHint,
+    ],
+  );
+  const hoursStatusLabel =
+    opening.statusLabel ||
+    (opening.hoursLabel === "營業資訊未知" ? "營業資訊未知" : "");
+  const hoursDetailLabel =
+    opening.hoursLabel && opening.hoursLabel !== "營業資訊未知"
+      ? opening.hoursLabel
+      : place.todayHoursLabel;
 
   return (
     <div className="flex flex-col" data-no-sheet-drag>
@@ -177,8 +204,8 @@ export function PlaceDetailSheet({
 
         <PlaceHoursBadge
           className="mt-2"
-          statusLabel={place.openStatusLabel}
-          todayHoursLabel={place.todayHoursLabel}
+          statusLabel={hoursStatusLabel}
+          todayHoursLabel={hoursDetailLabel}
           closingSoonNote={place.closingSoonNote}
           nextOpenHint={place.nextOpenHint}
         />

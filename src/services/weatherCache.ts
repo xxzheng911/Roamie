@@ -72,6 +72,18 @@ export function clearWeatherCache(): void {
 
 const inflight = new Map<string, Promise<unknown>>();
 
+function shouldPersistWeatherCache(data: unknown): boolean {
+  if (!data || typeof data !== "object") return true;
+  const record = data as { weather?: { available?: boolean } | null; available?: boolean };
+  if ("weather" in record) {
+    return record.weather?.available !== false;
+  }
+  if ("available" in record) {
+    return record.available !== false;
+  }
+  return true;
+}
+
 /** 快取命中或 in-flight deduplication — 避免同頁 / 切頁重複 request */
 export async function getWeatherCachedOrFetch<T>(
   key: string,
@@ -86,7 +98,9 @@ export async function getWeatherCachedOrFetch<T>(
 
   const promise = fetcher()
     .then((data) => {
-      setWeatherCached(key, data, ttlMs);
+      if (shouldPersistWeatherCache(data)) {
+        setWeatherCached(key, data, ttlMs);
+      }
       return data;
     })
     .finally(() => {

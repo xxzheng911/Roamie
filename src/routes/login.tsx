@@ -43,6 +43,7 @@ import { isOnboardingCompletedSync } from "@/lib/onboarding-storage";
 import { useAuth } from "@/hooks/use-auth";
 import { emitOAuthFlow, OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
+import { QaTestLoginButton } from "@/components/qa/QaTestLoginButton";
 
 const RoamieMascotFigure = lazy(() =>
   import("@/components/onboarding/RoamieMascotFigure").then((m) => ({
@@ -452,6 +453,16 @@ function Login() {
           >
             <GoogleIcon /> {busy === "google" ? "Google 登入進行中…" : "使用 Google 繼續"}
           </button>
+
+          <QaTestLoginButton
+            disabled={busy !== null}
+            onSuccess={() => {
+              void (async () => {
+                const to = await resolveStartupPath({ hasSession: true, source: "qa-test-login" });
+                finishPostAuthRedirect(to, navigate, "login-session-restore");
+              })();
+            }}
+          />
 
           <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
             繼續即代表同意 Roamie 的

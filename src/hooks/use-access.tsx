@@ -50,14 +50,14 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   const userId = user?.id ?? null;
   const [profilePlusActive, setProfilePlusActive] = useState(false);
   const [snapshot, setSnapshot] = useState<AccessSnapshot>(() =>
-    buildAccessSnapshot(email, { profilePlusActive: false }),
+    buildAccessSnapshot(email, { profilePlusActive: false, user }),
   );
 
   const refresh = useCallback(() => {
-    const next = buildAccessSnapshot(email, { profilePlusActive });
+    const next = buildAccessSnapshot(email, { profilePlusActive, user });
     console.info("[DEV_SUBSCRIPTION] mode=", next.devSubscriptionMode);
     setSnapshot(next);
-  }, [email, profilePlusActive]);
+  }, [email, profilePlusActive, user]);
 
   useEffect(() => {
     let cancelled = false;

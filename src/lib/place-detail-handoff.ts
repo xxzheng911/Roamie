@@ -23,11 +23,65 @@ export function latLngFallbackPlaceId(lat: number, lng: number): string {
   return `latlng:${lat.toFixed(6)},${lng.toFixed(6)}`;
 }
 
-export function isGooglePlaceId(placeId: string): boolean {
-  if (!placeId.trim()) return false;
-  if (placeId.startsWith("latlng:")) return false;
-  if (placeId.startsWith("saved-")) return false;
+/** 可放進 /place/$placeId path 的 Google place id（排除地址、URL、假 id） */
+export function isRoutableGooglePlaceId(placeId: string): boolean {
+  const id = placeId.replace(/^places\//, "").trim();
+  if (!id || id.length < 8) return false;
+  if (/[/?#&\s\n]/.test(id)) return false;
+  if (id.startsWith("latlng:")) return false;
+  if (id.startsWith("saved-")) return false;
+  if (id.startsWith("temp:")) return false;
+  if (id.startsWith("rec-")) return false;
+  if (/^https?:/i.test(id)) return false;
+  if (!/[A-Za-z]/.test(id)) return false;
   return true;
+}
+
+export function isGooglePlaceId(placeId: string): boolean {
+  return isRoutableGooglePlaceId(placeId);
+}
+
+/** 非 Google place id（收藏、暫存、座標 stub）— 不應打 Places Details API */
+export function isSyntheticPlaceRouteId(placeId: string): boolean {
+  const id = placeId.trim();
+  if (!id) return true;
+  if (id.startsWith("latlng:")) return true;
+  if (id.startsWith("saved-")) return true;
+  if (id.startsWith("temp:saved-")) return true;
+  if (id.startsWith("temp:")) return true;
+  if (id.startsWith("mock-")) return true;
+  return false;
+}
+
+/** 遠端 Places Details：收藏一律用本地 handoff，避免 iOS 金鑰 403 */
+export function shouldFetchRemotePlaceDetails(
+  placeId: string,
+  source?: string | null,
+): boolean {
+  if (source === "saved") return false;
+  if (isSyntheticPlaceRouteId(placeId)) return false;
+  return isGooglePlaceId(placeId);
+}
+
+export function extractGooglePlaceIdFromMapsUrl(url: string): string | null {
+  const raw = url.trim();
+  if (!raw) return null;
+  const patterns = [
+    /[?&]query_place_id=([^&]+)/i,
+    /[?&]place_id=([^&]+)/i,
+    /\/place\/([^/?]+)/,
+  ];
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (!match?.[1]) continue;
+    try {
+      const id = decodeURIComponent(match[1].replace(/\+/g, " ")).trim();
+      if (isRoutableGooglePlaceId(id)) return id.replace(/^places\//, "");
+    } catch {
+      /* ignore malformed segment */
+    }
+  }
+  return null;
 }
 
 export function pickToPlaceDetailHandoff(pick: HomeNearbyPick): PlaceDetailHandoff {

@@ -69,10 +69,13 @@ async function resolveCapacitorPermission(shouldRequest: boolean): Promise<Locat
     }
 
     sessionRequestLogged = true;
-    console.info("[Location Permission Requested]");
+    console.info("[LOCATION_PERMISSION] native requested");
 
     const requested = await Geolocation.requestPermissions();
     state = mapCapPermission(requested);
+    if (state === "granted") {
+      console.info("[LOCATION_PERMISSION] native granted");
+    }
     return state;
   } catch (e) {
     console.warn("[Location] capacitor permission check failed", e);
@@ -133,4 +136,25 @@ export async function ensureLocationPermission(options?: {
 export function prefetchLocationPermissionStatus(): void {
   if (!isNativeShell()) return;
   void ensureLocationPermission({ request: false });
+}
+
+/**
+ * 使用者從「設定」開啟定位後回到 App 時，清除快取以便重新 check / request。
+ */
+export function invalidateLocationPermissionCache(options?: { allowRequestAgain?: boolean }): void {
+  const prev = memoryCache;
+  memoryCache = null;
+  if (options?.allowRequestAgain && (prev === "denied" || prev === "restricted")) {
+    sessionRequestLogged = false;
+  }
+  console.info("[LOCATION] permission cache cleared", { previous: prev ?? "none" });
+}
+
+export function installLocationPermissionResumeListener(): void {
+  if (typeof document === "undefined") return;
+  const onVisible = () => {
+    if (document.visibilityState !== "visible") return;
+    invalidateLocationPermissionCache({ allowRequestAgain: true });
+  };
+  document.addEventListener("visibilitychange", onVisible);
 }

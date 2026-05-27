@@ -1,6 +1,10 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  requestIosSnapshotRefresh,
+  setIosSnapshotLiveInteraction,
+} from "@/lib/ios-snapshot-bridge";
 import { logAvatarApplyPressed, logAvatarCropResult } from "@/lib/avatar-upload-log";
 import {
   InlineImageCropViewport,
@@ -80,6 +84,15 @@ export function ProfileImageCropSheet({
   const cropRef = useRef<InlineImageCropHandle>(null);
   const config = VARIANT_CONFIG[variant];
 
+  useEffect(() => {
+    if (!open) return;
+    setIosSnapshotLiveInteraction(true);
+    return () => {
+      setIosSnapshotLiveInteraction(false);
+      requestIosSnapshotRefresh("profile-crop-sheet-close", { force: true });
+    };
+  }, [open]);
+
   const handleDone = async () => {
     if (variant === "avatar") {
       logAvatarApplyPressed();
@@ -125,7 +138,8 @@ export function ProfileImageCropSheet({
       <SheetContent
         side="bottom"
         onOpenAutoFocus={(e) => e.preventDefault()}
-        className="flex h-[92dvh] max-h-[92dvh] flex-col gap-0 rounded-t-[1.75rem] border-0 bg-[#121110] p-0 text-white [&>button]:hidden"
+        className="flex h-[92dvh] max-h-[92dvh] touch-none flex-col gap-0 rounded-t-[1.75rem] border-0 bg-[#121110] p-0 text-white [&>button]:hidden"
+        style={{ touchAction: "none" }}
       >
         <SheetTitle className="sr-only">{config.title}</SheetTitle>
         <SheetDescription className="sr-only">{config.hint}</SheetDescription>

@@ -25,6 +25,9 @@ if (mode === "dev") {
   process.env.CAPACITOR_USE_REMOTE_SERVER = "1";
 } else if (mode === "bundled") {
   process.env.ROAMIE_QUIET_BOOT = "1";
+  if (process.env.ROAMIE_CAPACITOR_BUILD !== "0") {
+    process.env.ROAMIE_CAPACITOR_BUILD = "1";
+  }
 } else {
   console.error(`[cap-sync-ios] Unknown mode "${mode}" — use dev | remote | bundled`);
   process.exit(1);

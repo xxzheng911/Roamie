@@ -2,8 +2,24 @@ import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { broadcastPreferencesUpdate } from "@/lib/preference-events";
+import {
+  buildTravelProfileFields,
+  type TravelProfileFields,
+} from "@/lib/travel-profile-for-ai";
+import {
+  mergeTravelPreferencesFromProfileRow,
+  type ProfileSurveyRow,
+} from "@/lib/travel-preference-survey-save";
+
+export type { TravelProfileFields } from "@/lib/travel-profile-for-ai";
+
+let cachedProfileFields: TravelProfileFields | null = null;
+import type { SurveyCompanionship, SurveyResultProfile } from "@/lib/travel-preference-survey-types";
 
 const GUEST_KEY = "roamie:preferences";
+
+const PROFILE_PREFS_SELECT =
+  "travel_personality, travel_style, travel_preferences, travel_tags, survey_completed, survey_completed_at, ai_preferences";
 
 /** 小資 / 一般 / 品質感 / 奢華 */
 export type BudgetMode = "budget" | "standard" | "quality" | "luxury";
@@ -16,9 +32,13 @@ export type TravelPreferences = {
   budget?: "shoestring" | "comfortable" | "premium";
   budgetMode?: BudgetMode;
   interests?: string[];
+  companionship?: SurveyCompanionship;
   onboarded?: boolean;
+  surveyCompleted?: boolean;
+  surveyCompletedAt?: string;
   personalityType?: string;
   personalitySummary?: string;
+  resultProfile?: SurveyResultProfile;
   updated_at?: string;
 };
 
@@ -53,20 +73,31 @@ function writeGuest(prefs: TravelPreferences) {
 
 export async function isPreferenceQuizCompleted(): Promise<boolean> {
   const prefs = await getPreferences();
-  return Boolean(prefs.onboarded);
+  return Boolean(prefs.surveyCompleted ?? prefs.onboarded);
 }
 
 export async function getPreferences(): Promise<TravelPreferences> {
   const userId = await getAuthenticatedUserId();
-  if (!userId) return {};
+  if (!userId) return readGuest();
 
   const { data, error } = await supabase
     .from("profiles")
-    .select("travel_personality")
+    .select(PROFILE_PREFS_SELECT)
     .eq("id", userId)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  return (data?.travel_personality ?? {}) as TravelPreferences;
+  const row = data as ProfileSurveyRow | null;
+  const prefs = mergeTravelPreferencesFromProfileRow(userId, row);
+  cachedProfileFields = buildTravelProfileFields(row, prefs);
+  return prefs;
+}
+
+export function getCachedTravelProfileFields(): TravelProfileFields | null {
+  return cachedProfileFields;
+}
+
+export function setCachedTravelProfileFields(fields: TravelProfileFields | null): void {
+  cachedProfileFields = fields;
 }
 
 export async function savePreferences(prefs: TravelPreferences): Promise<TravelPreferences> {
@@ -79,17 +110,9 @@ export async function savePreferences(prefs: TravelPreferences): Promise<TravelP
     .from("profiles")
     .upsert({ id: userId, travel_personality: merged as never }, { onConflict: "id" });
   if (error) {
-    // 某些環境的 profiles table trigger 會引用不存在的 updated_at 欄位，導致更新失敗。
-    // 此時仍允許完成測驗：改存本機（下次可再嘗試同步）。
-    const msg = error.message ?? "";
-    if (/record\s+\"new\"\s+has\s+no\s+field\s+\"updated_at\"/i.test(msg)) {
-      console.warn("[prefs] Supabase profile schema mismatch, falling back to localStorage", msg);
-      writeGuest(merged);
-      broadcastPreferencesUpdate(merged);
-      return merged;
-    }
     throw new Error(error.message);
   }
+  writeGuest(merged);
   broadcastPreferencesUpdate(merged);
   return merged;
 }
@@ -101,8 +124,14 @@ export async function resetPreferenceQuizForDev(): Promise<void> {
   const userId = await getAuthenticatedUserId();
   if (userId) {
     const current = await getPreferences();
-    const { onboarded: _removed, ...rest } = current;
-    await savePreferences({ ...rest, onboarded: false });
+    const {
+      onboarded: _o,
+      surveyCompleted: _s,
+      surveyCompletedAt: _at,
+      resultProfile: _r,
+      ...rest
+    } = current;
+    await savePreferences({ ...rest, onboarded: false, surveyCompleted: false });
     return;
   }
 

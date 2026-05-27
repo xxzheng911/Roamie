@@ -3,6 +3,7 @@ import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
 import { createRequestCache } from "@/services/requestCache";
 import { unifiedResolveTripStop, unifiedSearchTripStops } from "@/lib/trip-stop-search-unified";
 import { resolveTripStop, searchTripStops, type TripStopSuggestion } from "@/lib/trip-stop-search.functions";
+import { TRIP_PLACE_USER_MESSAGE } from "@/lib/trip-place-search-log";
 
 export type PlaceLite = {
   placeId: string;
@@ -39,8 +40,13 @@ function searchKey(query: string, locale: Locale, center?: { lat: number; lng: n
   return `${locale}:${q}:${c}`;
 }
 
-export function normalizePlace(place: TripPlaceInput | PlaceLite): PlaceLite {
-  const placeId = normalizeGooglePlaceId(place.googlePlaceId ?? place.placeId ?? "");
+export function normalizePlace(
+  place: TripPlaceInput | PlaceLite,
+  routePlaceId?: string,
+): PlaceLite {
+  const placeId =
+    normalizeGooglePlaceId(place.googlePlaceId ?? place.placeId ?? routePlaceId ?? "") ||
+    (routePlaceId?.trim() ? routePlaceId.trim() : "");
   const name = (place.placeName ?? place.name ?? "").trim() || "地點";
   const address = (place.address ?? "").trim();
   return {
@@ -72,9 +78,10 @@ export async function searchPlaces(
     unifiedSearchTripStops(searchFn, query, locale, options?.center, options?.sessionToken),
   );
 
-  console.info("[PLACES_SEARCH] query=", query.trim());
-  console.info("[PLACES_SEARCH] predictions=", result.suggestions.length);
-  if (result.error) console.info("[PLACES_SEARCH] error=", result.error);
+  console.info("[TRIP_PLACE_SEARCH] endpoint=", "placesAutocomplete");
+  console.info("[TRIP_PLACE_SEARCH] query=", query.trim());
+  console.info("[TRIP_PLACE_SEARCH] predictions=", result.suggestions.length);
+  if (result.error) console.info("[TRIP_PLACE_SEARCH] error=", result.error);
   return result;
 }
 
@@ -92,43 +99,37 @@ export async function getPlaceDetails(
   const resolveFn = options?.resolveFn ?? resolveTripStop;
 
   console.info("[PLACES_DETAILS] start placeId=", normalizedPlaceId);
+  const cached = placeDetailsCache.getCached<{ place: PlaceLite | null; error: string | null }>(key);
+  if (cached?.place && Number.isFinite(cached.place.lat ?? NaN)) {
+    console.info("[PLACES_DETAILS] status=", "cache-hit");
+    return cached;
+  }
+
   try {
-    return await placeDetailsCache.getOrFetch(key, async () => {
-      const resolved = await unifiedResolveTripStop(
-        resolveFn,
-        normalizedPlaceId,
-        locale,
-        options?.fallback,
-      );
-      const normalized = resolved.place ? normalizePlace(resolved.place) : null;
-      if (!normalized) {
-        const errorMsg = resolved.error ?? "place_not_found";
-        console.error("[PLACES_DETAILS] error=", errorMsg);
-        return { place: null, error: errorMsg };
-      }
-      // Minimal required fields for successful selection.
-      if (
-        !normalized.placeId ||
-        !normalized.name ||
-        normalized.lat == null ||
-        normalized.lng == null
-      ) {
-        const fallback = options?.fallback;
-        const fallbackPlace: PlaceLite | null = fallback
-          ? {
-              placeId: normalizeGooglePlaceId(fallback.placeId),
-              name: fallback.label?.trim() || fallback.secondary?.trim() || "地點",
-              address: fallback.secondary?.trim() || fallback.label?.trim() || "地點",
-              lat: null,
-              lng: null,
-            }
-          : null;
-        console.info("[PLACES_DETAILS] normalized place=", JSON.stringify(fallbackPlace ?? normalized));
-        return { place: fallbackPlace, error: resolved.error };
-      }
-      console.info("[PLACES_DETAILS] normalized place=", JSON.stringify(normalized));
-      return { place: normalized, error: resolved.error };
-    });
+    const resolved = await unifiedResolveTripStop(
+      resolveFn,
+      normalizedPlaceId,
+      locale,
+      options?.fallback,
+    );
+    const normalized = resolved.place
+      ? normalizePlace(resolved.place, normalizedPlaceId)
+      : null;
+    if (
+      !normalized ||
+      !normalized.name ||
+      !Number.isFinite(normalized.lat ?? NaN) ||
+      !Number.isFinite(normalized.lng ?? NaN)
+    ) {
+      const errorMsg = resolved.error ?? "missing_coordinates";
+      console.error("[PLACES_DETAILS] error=", errorMsg);
+      return { place: null, error: TRIP_PLACE_USER_MESSAGE };
+    }
+    console.info("[PLACES_DETAILS] status=", "ok");
+    console.info("[PLACES_DETAILS] latLng=", `${normalized.lat},${normalized.lng}`);
+    console.info("[PLACES_DETAILS] normalized place=", JSON.stringify(normalized));
+    placeDetailsCache.setCached(key, { place: normalized, error: null });
+    return { place: normalized, error: null };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("[PLACES_DETAILS] error=", msg);

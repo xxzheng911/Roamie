@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Loader2, MapPin } from "lucide-react";
 import { searchTripStops, resolveTripStop } from "@/lib/trip-stop-search.functions";
+import { searchTripLocations, resolveTripLocation } from "@/lib/location.functions";
+import {
+  unifiedSearchTripLocations,
+  unifiedResolveTripLocation,
+} from "@/lib/location-search-unified";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import type { LocationSuggestion, TripLocation } from "@/lib/location/types";
 import { useI18n } from "@/hooks/use-i18n";
@@ -15,10 +20,22 @@ import {
   type TripPlaceFieldRole,
 } from "@/lib/trip/trip-place-ref";
 import { getPlaceDetails, searchPlaces as searchPlacesService } from "@/services/placesService";
+import {
+  logTripPlaceSearchStart,
+  logTripPlaceSearchResult,
+  logTripPlaceSelected,
+  TRIP_PLACE_USER_MESSAGE,
+} from "@/lib/trip-place-search-log";
+import { requestDeviceLocation } from "@/lib/device-location";
+import { reverseGeocodeCityClient } from "@/lib/weather/open-meteo-client";
+import { latLngFallbackPlaceId } from "@/lib/place-detail-handoff";
 
 export type LocationSearchMode = "geographic" | "place";
-const PLACE_NOT_FOUND_MESSAGE = "找不到相關地點";
-const PLACE_API_ERROR_MESSAGE = "暫時無法搜尋地點";
+const PLACE_NOT_FOUND_MESSAGE = TRIP_PLACE_USER_MESSAGE;
+
+function formatPlaceResolveError(_error: string | null | undefined): string {
+  return TRIP_PLACE_USER_MESSAGE;
+}
 
 function createPlacesSessionToken(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -64,6 +81,8 @@ export function LocationSearchField({
 
   const searchStopFn = useServerFn(searchTripStops);
   const resolveStopFn = useServerFn(resolveTripStop);
+  const searchLocationFn = useServerFn(searchTripLocations);
+  const resolveLocationFn = useServerFn(resolveTripLocation);
 
   useEffect(() => {
     if (value) {
@@ -89,45 +108,74 @@ export function LocationSearchField({
       setSearching(true);
       setSearchError(null);
       try {
-        const stopResult = await searchPlacesService(trimmed, {
-          locale,
-          sessionToken: sessionTokenRef.current,
-          searchFn: searchStopFn,
-        });
-        const list: LocationSuggestion[] = stopResult.suggestions.map((s) => ({
-          placeId: s.placeId,
-          label: s.label,
-          secondary: s.secondary,
-        }));
+        logTripPlaceSearchStart(trimmed, searchMode, fieldRole);
+        let list: LocationSuggestion[] = [];
+        let searchErr: string | null = null;
+
+        if (searchMode === "geographic") {
+          const geoResult = await unifiedSearchTripLocations(searchLocationFn, trimmed, locale);
+          list = geoResult.suggestions;
+          searchErr = geoResult.error;
+          logTripPlaceSearchResult({
+            status: searchErr ? "error" : "ok",
+            predictions: list.length,
+            error: searchErr,
+            endpoint: "geocoding|placesAutocomplete",
+            fieldRole,
+          });
+        } else {
+          const stopResult = await searchPlacesService(trimmed, {
+            locale,
+            sessionToken: sessionTokenRef.current,
+            searchFn: searchStopFn,
+          });
+          list = stopResult.suggestions.map((s) => ({
+            placeId: s.placeId,
+            label: s.label,
+            secondary: s.secondary,
+          }));
+          searchErr = stopResult.error;
+          logTripPlaceSearchResult({
+            status: searchErr ? "error" : "ok",
+            predictions: list.length,
+            error: searchErr,
+            endpoint: "placesAutocomplete|geocoding",
+            fieldRole,
+          });
+        }
 
         if (gen !== searchGenRef.current) return;
 
         logTripPlace(fieldRole, "autocomplete", {
           count: list.length,
-          error: stopResult.error ?? undefined,
+          error: searchErr ?? undefined,
           first: list[0]?.label,
         });
 
-        if (list.length === 0 && stopResult.error) {
-          setSearchError(PLACE_API_ERROR_MESSAGE);
-        } else if (list.length === 0) {
-          setSearchError(PLACE_NOT_FOUND_MESSAGE);
+        if (list.length === 0) {
+          setSearchError(
+            searchErr && !/403|PERMISSION_DENIED|REQUEST_DENIED|not authorized/i.test(searchErr)
+              ? searchErr
+              : PLACE_NOT_FOUND_MESSAGE,
+          );
         } else {
           setSearchError(null);
         }
         setSuggestions(list);
       } catch (e) {
         if (gen !== searchGenRef.current) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[TRIP_PLACE_SEARCH] error=", msg);
         console.error("[LocationSearch] failed", fieldRole, e);
         setSuggestions([]);
-        setSearchError(PLACE_API_ERROR_MESSAGE);
+        setSearchError(PLACE_NOT_FOUND_MESSAGE);
       } finally {
         if (gen === searchGenRef.current) {
           setSearching(false);
         }
       }
     },
-    [fieldRole, locale, searchMode, searchStopFn],
+    [fieldRole, locale, searchMode, searchLocationFn, searchStopFn],
   );
 
   useEffect(() => {
@@ -155,15 +203,43 @@ export function LocationSearchField({
   );
 
   const handleSelect = async (item: PlaceSearchResultItem) => {
-    console.info("[PLACE_SELECT] rawPrediction=", JSON.stringify(item));
-    console.info("[PLACE_SELECT] placeId=", item.placeId ?? "");
-    console.info("[PLACE_SELECT] description=", [item.label, item.secondary].filter(Boolean).join(" · "));
+    console.info(
+      "[PLACE_SELECT] prediction=",
+      JSON.stringify({ placeId: item.placeId, label: item.label, secondary: item.secondary }),
+    );
     logTripPlace(fieldRole, "selected", {
       placeId: item.placeId,
       label: item.label,
     });
     setResolvingId(item.placeId);
+    setSearchError(null);
     try {
+      if (searchMode === "geographic") {
+        const { location, error } = await unifiedResolveTripLocation(
+          resolveLocationFn,
+          item.placeId,
+          locale,
+          {
+            name: item.label,
+            address: item.secondary,
+          },
+        );
+        if (!location || error) {
+          setSearchError(formatPlaceResolveError(error));
+          return;
+        }
+        logTripPlace(fieldRole, "details", tripLocationToPlaceRef(location));
+        logTripPlaceSelected({
+          name: location.displayLabel || location.formattedName,
+          placeId: location.placeId,
+          lat: location.lat,
+          lng: location.lng,
+          address: location.address,
+        });
+        commitLocation(location);
+        return;
+      }
+
       const { place, error } = await getPlaceDetails(item.placeId, {
         locale,
         resolveFn: resolveStopFn,
@@ -173,12 +249,8 @@ export function LocationSearchField({
           secondary: item.secondary,
         },
       });
-      if (error && !place) {
-        setSearchError(PLACE_API_ERROR_MESSAGE);
-        return;
-      }
-      if (!place) {
-        setSearchError(t("location.resolveFailed"));
+      if (!place || error) {
+        setSearchError(formatPlaceResolveError(error));
         return;
       }
       const location = tripPlaceInputToTripLocation(
@@ -189,16 +261,31 @@ export function LocationSearchField({
           address: place.address || [item.label, item.secondary].filter(Boolean).join(" · "),
           lat: place.lat,
           lng: place.lng,
-          googlePlaceId: place.placeId,
+          googlePlaceId: place.placeId || item.placeId,
           placeType: place.placeType,
         },
         item.placeId,
       );
       logTripPlace(fieldRole, "details", tripLocationToPlaceRef(location));
+      logTripPlaceSelected({
+        name: place.name,
+        placeId: place.placeId || item.placeId,
+        lat: place.lat,
+        lng: place.lng,
+        address: place.address,
+      });
       commitLocation(location);
+      console.info(
+        "[PLACE_SELECTED] success=",
+        JSON.stringify({
+          name: place.name,
+          lat: place.lat,
+          lng: place.lng,
+        }),
+      );
     } catch (e) {
       console.error("[LocationSearch] resolve failed", fieldRole, e);
-      setSearchError(PLACE_API_ERROR_MESSAGE);
+      setSearchError(TRIP_PLACE_USER_MESSAGE);
     } finally {
       setResolvingId(null);
     }
@@ -227,7 +314,8 @@ export function LocationSearchField({
     secondary: s.secondary,
   }));
 
-  const showResults = focused && (searching || (query.trim().length > 0 && !searchError));
+  const showResults =
+    focused && (searching || suggestions.length > 0 || query.trim().length >= 2);
   const showPickHint =
     Boolean(query.trim()) && !value && !searching && !searchError && suggestions.length > 0;
 
@@ -287,6 +375,42 @@ export function LocationSearchField({
           <span className="font-medium text-foreground">{tripLocationToPlaceRef(value).name}</span>
           {value.address ? ` · ${value.address}` : null}
         </p>
+      ) : null}
+
+      {fieldRole === "start" ? (
+        <button
+          type="button"
+          onClick={() => {
+            void (async () => {
+              try {
+                const loc = await requestDeviceLocation();
+                const city = await reverseGeocodeCityClient(loc.lat, loc.lng).catch(() => "目前位置");
+                const tripLoc: TripLocation = {
+                  placeId: latLngFallbackPlaceId(loc.lat, loc.lng),
+                  country: city,
+                  city,
+                  lat: loc.lat,
+                  lng: loc.lng,
+                  formattedName: city,
+                  displayLabel: "目前位置",
+                  address: city,
+                };
+                logTripPlaceSelected({
+                  name: "目前位置",
+                  placeId: tripLoc.placeId,
+                  lat: tripLoc.lat,
+                  lng: tripLoc.lng,
+                });
+                commitLocation(tripLoc);
+              } catch {
+                setSearchError(TRIP_PLACE_USER_MESSAGE);
+              }
+            })();
+          }}
+          className="mt-2 text-xs text-clay underline-offset-2 hover:underline"
+        >
+          使用目前位置
+        </button>
       ) : null}
 
       {showPickHint ? (

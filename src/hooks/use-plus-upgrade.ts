@@ -16,8 +16,9 @@ export function usePlusUpgrade() {
 
   const canInstantUpgrade =
     import.meta.env.DEV ||
+    import.meta.env.VITE_ROAMIE_DEVELOPER === "1" ||
     isDeveloperBuildEnabled() ||
-    canShowDeveloperTools(user?.email ?? null) ||
+    canShowDeveloperTools(user?.email ?? null, user) ||
     testModeOverride !== "none";
 
   const upgradeToPlus = useCallback((): PlusUpgradeResult => {

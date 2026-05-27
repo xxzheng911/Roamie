@@ -8,6 +8,7 @@ import {
   chatPhaseForStage,
   resolveConversationStage,
 } from "@/lib/ai/conversation-stage";
+import { resolveAiUserIntent, responseModeForIntent } from "@/lib/ai/user-intent";
 import { buildSessionMemorySnapshot } from "@/lib/ai/memory/session-memory";
 import { buildLongTermMemory } from "@/lib/ai/memory/long-term-memory";
 import type { PlanTier } from "@/lib/plan-tier/types";
@@ -27,8 +28,26 @@ export async function enrichRoamieContext(
   const { session, userText, conversation, tripIntent, planTier, weather } = options;
   const tier = planTier ?? ctx.planTier ?? "free";
 
-  const conversationStage = resolveConversationStage(session, userText, tripIntent);
-  const chatPhase = chatPhaseForStage(conversationStage, session, userText);
+  const aiIntent = resolveAiUserIntent(session, userText, tripIntent, {
+    chatPhaseOverride: ctx.chatPhase,
+  });
+  responseModeForIntent(aiIntent);
+
+  const conversationStage =
+    ctx.conversationStage ??
+    (ctx.chatPhase === "handoff"
+      ? "recommend"
+      : ctx.chatPhase === "recommend" && aiIntent.type === "place_recommendation"
+        ? "recommend"
+        : resolveConversationStage(session, userText, tripIntent, aiIntent.type));
+  const computedPhase = chatPhaseForStage(conversationStage, session, userText);
+  const chatPhase =
+    ctx.chatPhase === "recommend" ||
+    ctx.chatPhase === "handoff" ||
+    ctx.chatPhase === "discover" ||
+    ctx.chatPhase === "place_discussion"
+      ? ctx.chatPhase
+      : computedPhase;
   const emotionSignals = inferEmotionSignals(userText, session, weather ?? ctx.weather);
   const sessionMemory = buildSessionMemorySnapshot(session, conversation);
 
@@ -44,6 +63,7 @@ export async function enrichRoamieContext(
   return {
     ...ctx,
     planTier: tier,
+    aiUserIntent: aiIntent.type,
     conversationStage,
     chatPhase,
     emotionSignals,

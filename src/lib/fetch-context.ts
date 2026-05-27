@@ -8,6 +8,7 @@ import { resolveLocaleSync } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
 import { requestDeviceLocation } from "@/lib/device-location";
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
+import { fetchWeatherForCoords } from "@/services/weatherFetchAdapter";
 
 type WeatherFetchInput = { lat: number; lng: number; locale?: Locale };
 
@@ -55,16 +56,17 @@ export async function buildClientContextBundle(
 
   let weather: WeatherSummary | null = null;
   try {
-    const r = await fetchWeatherFn({ data: { lat: location.lat, lng: location.lng, locale } });
+    const r = await fetchWeatherForCoords(location.lat, location.lng, locale, fetchWeatherFn);
     console.info("[Weather] api response (context)", {
       error: r.error,
-      hasWeather: Boolean(r.weather),
+      hasWeather: Boolean(r.weather?.available),
+      source: r.weather?.source,
     });
     if (r.error) {
       console.warn("[Weather] fallback state (context):", r.error);
     }
-    weather = r.weather;
-    if (weather) {
+    if (r.weather?.available) {
+      weather = r.weather;
       location.city = weather.city;
       rememberLastSearchLocation({
         lat: location.lat,
@@ -105,9 +107,13 @@ export async function buildContextBundleForTrip(
 
   let weather: WeatherSummary | null = null;
   try {
-    const r = await fetchWeatherFn({ data: { lat: location.lat, lng: location.lng, locale } });
-    console.info("[Weather] api response (trip)", { error: r.error, hasWeather: Boolean(r.weather) });
-    if (!r.error) weather = r.weather;
+    const r = await fetchWeatherForCoords(location.lat, location.lng, locale, fetchWeatherFn);
+    console.info("[Weather] api response (trip)", {
+      error: r.error,
+      hasWeather: Boolean(r.weather?.available),
+      source: r.weather?.source,
+    });
+    if (r.weather?.available) weather = r.weather;
     if (weather) {
       location.city =
         destination.formattedName || destination.displayLabel || destination.city || weather.city;

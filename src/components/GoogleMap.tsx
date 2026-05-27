@@ -1,7 +1,7 @@
 /// <reference types="google.maps" />
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getGoogleMapsBrowserKeyError } from "@/lib/google-maps-client";
-import { loadGoogleMapsApi, triggerMapResize } from "@/lib/google-maps-loader";
+import { installGoogleMapsBillingErrorListener, loadGoogleMapsApi, triggerMapResize } from "@/lib/google-maps-loader";
 import {
   createRoamieUserLocationOverlay,
   ROAMIE_USER_LOCATION_LABEL,
@@ -15,6 +15,15 @@ import {
   applyMapVisiblePadding,
   type MapVisiblePadding,
 } from "@/lib/map-visible-padding";
+import { logMapComponentKeyDiagnostics, logMapFallback } from "@/lib/map-boot-log";
+import {
+  detectGoogleMapsDomFailure,
+  googleMapsFailureUserMessage,
+} from "@/lib/maps-runtime-diagnostics";
+
+function mapContainerText(container: HTMLElement): string {
+  return [container.textContent, container.innerText].filter(Boolean).join("\n");
+}
 
 const LOG = "[Roamie Maps]";
 
@@ -68,9 +77,18 @@ export function GoogleMap({
   const userInfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
   const userLocationRef = useRef(userLocation);
   userLocationRef.current = userLocation;
-  const [loadError, setLoadError] = useState<string | null>(() => getGoogleMapsBrowserKeyError());
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const reportedErrorRef = useRef(false);
+
+  useEffect(() => {
+    const keyErr = getGoogleMapsBrowserKeyError();
+    if (keyErr) {
+      console.error("[MAP_LOAD] error=", keyErr);
+      logMapFallback("missing_or_invalid_key");
+      setLoadError(keyErr);
+    }
+  }, []);
 
   const openUserLocationInfo = useCallback(() => {
     const map = mapRef.current;
@@ -130,6 +148,12 @@ export function GoogleMap({
         return true;
       }
 
+      const authFailure = window.__roamieMapsAuthFailure;
+      if (authFailure?.message) {
+        reportError(authFailure.message);
+        return true;
+      }
+
       if (!mapRef.current) {
         mapRef.current = new maps.Map(containerRef.current, {
           center: centerRef.current,
@@ -154,6 +178,8 @@ export function GoogleMap({
           content: `<div style="font-size:13px;padding:4px 2px;font-family:system-ui,sans-serif;color:#5c5348;">${ROAMIE_USER_LOCATION_LABEL}</div>`,
         });
         setMapReady(true);
+        console.info("[MAP_LOAD] success");
+        logMapFallback("none");
         onMapReady?.(mapRef.current);
         requestAnimationFrame(() => {
           if (mapRef.current) triggerMapResize(mapRef.current);
@@ -162,6 +188,7 @@ export function GoogleMap({
       return true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : "無法載入 Google 地圖";
+      console.error("[MAP_LOAD] error=", msg);
       reportError(msg);
       return true;
     }
@@ -184,11 +211,20 @@ export function GoogleMap({
   }, [mapReady, onMapClick]);
 
   useEffect(() => {
+    installGoogleMapsBillingErrorListener();
+    console.info("[MAP_LOAD] start");
+    console.info("[MAP_COMPONENT] googleMap mounted");
+    logMapComponentKeyDiagnostics("MAP_COMPONENT");
+    return () => {
+      console.info("[MAP_COMPONENT] googleMap unmounted");
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     const keyError = getGoogleMapsBrowserKeyError();
     if (keyError) {
-      reportError(keyError);
-      return;
+      console.warn("[MAP_COMPONENT] apiKey validation error=", keyError);
     }
 
     let attempts = 0;
@@ -218,6 +254,73 @@ export function GoogleMap({
       window.removeEventListener("resize", onResize);
     };
   }, [initializeMap, reportError]);
+
+  useEffect(() => {
+    if (!mapReady || !containerRef.current) return;
+
+    const container = containerRef.current;
+    let stopped = false;
+    let observer: MutationObserver | null = null;
+    let intervalId = 0;
+
+    const teardownBrokenMap = () => {
+      try {
+        placeMarkersRef.current.forEach((m) => m.setMap(null));
+        placeMarkersRef.current = [];
+        userOverlayRef.current?.setMap(null);
+        mapRef.current = null;
+        container.replaceChildren();
+      } catch {
+        /* ignore teardown */
+      }
+    };
+
+    const runFailureCheck = (): boolean => {
+      if (stopped) return true;
+      if (window.__roamieMapsAuthFailure?.message) {
+        reportError(googleMapsFailureUserMessage(window.__roamieMapsAuthFailure.message));
+        teardownBrokenMap();
+        return true;
+      }
+      if (detectGoogleMapsDomFailure(container)) {
+        console.error("[MAP_LOAD] error=", "google_maps_dom_failure");
+        logMapFallback("dom_auth_failure");
+        reportError(googleMapsFailureUserMessage(mapContainerText(container)));
+        teardownBrokenMap();
+        return true;
+      }
+      return false;
+    };
+
+    const startChecks = () => {
+      if (stopped || runFailureCheck()) return;
+
+      observer = new MutationObserver(() => {
+        if (runFailureCheck()) observer?.disconnect();
+      });
+      observer.observe(container, { childList: true, subtree: true, characterData: true });
+
+      let checks = 0;
+      const maxChecks = 40;
+      intervalId = window.setInterval(() => {
+        checks += 1;
+        if (runFailureCheck()) {
+          window.clearInterval(intervalId);
+          return;
+        }
+        if (checks >= maxChecks) window.clearInterval(intervalId);
+      }, 250);
+    };
+
+    const graceId = window.setTimeout(startChecks, 1500);
+
+    return () => {
+      stopped = true;
+      window.clearTimeout(graceId);
+      observer?.disconnect();
+      if (intervalId) window.clearInterval(intervalId);
+    };
+  }, [mapReady, reportError]);
 
   useEffect(() => {
     if (!mapRef.current || !mapReady) return;
@@ -317,10 +420,9 @@ export function GoogleMap({
   if (loadError) {
     return (
       <div
-        className={`flex min-h-[240px] w-full items-center justify-center bg-secondary px-6 text-center ${className ?? ""}`}
-      >
-        <p className="max-w-xs text-sm leading-relaxed text-muted-foreground">{loadError}</p>
-      </div>
+        className={`h-full min-h-[240px] w-full bg-cream ${className ?? ""}`}
+        aria-hidden
+      />
     );
   }
 

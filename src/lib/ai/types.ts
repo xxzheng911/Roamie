@@ -59,6 +59,8 @@ export type TripPlanSettings = {
   /** 整趟旅程開始／結束（ISO YYYY-MM-DD） */
   tripStartDate?: string;
   tripEndDate?: string;
+  /** 明確的每日 ISO 日期（含無地點的空白天） */
+  tripDayDates?: string[];
   transport?: TripTransportMode;
   /** 各站點停留時間（分） */
   legMinutes?: Record<string, number>;

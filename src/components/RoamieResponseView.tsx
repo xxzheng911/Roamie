@@ -1,5 +1,5 @@
 import type { KeyboardEvent, MouseEvent } from "react";
-import { MapPin, Clock, Sparkles, Heart, Loader2, Star, Plus } from "lucide-react";
+import { MapPin, Clock, Sparkles, Heart, Loader2, Star, Plus, Navigation } from "lucide-react";
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { OutfitAdvicePayload } from "@/lib/outfit/types";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
@@ -99,10 +99,14 @@ type Props = {
   onSelectPlace?: (rec: RoamieRecommendationItem) => void;
   /** 加入已儲存／草稿行程（sheet） */
   onAddToTrip?: (rec: RoamieRecommendationItem) => void;
-  /** 卡片點擊：開啟地圖地點詳情 */
+  /** 卡片點擊：開啟地點詳情 */
   onOpenPlaceDetail?: (rec: RoamieRecommendationItem) => void;
-  /** 卡片點擊：與 Roamie 討論此地點 */
+  /** 與 Roamie 討論此地點 */
   onDiscussPlace?: (rec: RoamieRecommendationItem) => void;
+  /** 開啟導航（Google Maps → Apple Maps → 瀏覽器） */
+  onNavigatePlace?: (rec: RoamieRecommendationItem) => void;
+  /** 聊天推薦卡：僅保留加入行程／聊這裡／導航三按鈕 */
+  simplifiedPlaceActions?: boolean;
   /** 推薦頁：勾選想去（不觸發聊天） */
   pickMode?: boolean;
   pickedPlaceNames?: Set<string>;
@@ -126,6 +130,8 @@ export function RoamieResponseView({
   onAddToTrip,
   onOpenPlaceDetail,
   onDiscussPlace,
+  onNavigatePlace,
+  simplifiedPlaceActions = false,
   pickMode,
   pickedPlaceNames,
   onTogglePick,
@@ -151,7 +157,7 @@ export function RoamieResponseView({
       {summary && (
         <p className={`leading-relaxed ${compact ? "text-[15px]" : "text-sm"}`}>{summary}</p>
       )}
-      {!summary && (
+      {!summary && recs.length === 0 && itinerary.length === 0 && (
         <span className="inline-flex gap-1">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:120ms]" />
@@ -304,7 +310,7 @@ export function RoamieResponseView({
                       {addToTripLabel}
                     </button>
                   )}
-                  {onOpenPlaceDetail && (
+                  {!simplifiedPlaceActions && onOpenPlaceDetail && (
                     <button
                       type="button"
                       onClick={() => onOpenPlaceDetail(r)}
@@ -323,13 +329,24 @@ export function RoamieResponseView({
                       {discussPlaceLabel}
                     </button>
                   )}
-                  <PlaceNavButtons
-                    lat={r.lat}
-                    lng={r.lng}
-                    address={r.address}
-                    placeName={r.placeName ?? r.name}
-                    compact
-                  />
+                  {simplifiedPlaceActions && onNavigatePlace ? (
+                    <button
+                      type="button"
+                      onClick={() => onNavigatePlace(r)}
+                      className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-medium"
+                    >
+                      <Navigation className="h-3 w-3" />
+                      導航
+                    </button>
+                  ) : (
+                    <PlaceNavButtons
+                      lat={r.lat}
+                      lng={r.lng}
+                      address={r.address}
+                      placeName={r.placeName ?? r.name}
+                      compact
+                    />
+                  )}
                 </div>
               </article>
             );

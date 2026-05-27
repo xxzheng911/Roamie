@@ -10,11 +10,21 @@ import {
 } from "@/lib/location/geographic-only";
 import { localeToGeocodeRegion, localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
+import { isGooglePlacesPermissionError } from "@/lib/places-api-errors";
+import {
+  resolveCuratedTripLocation,
+  searchCuratedTripLocations,
+} from "@/lib/trip-location-curated";
+import {
+  logTripPlaceGeocodingFallback,
+  logTripPlaceSearchResult,
+  TRIP_PLACE_USER_MESSAGE,
+} from "@/lib/trip-place-search-log";
 
 const DEFAULT_CENTER = { lat: 25.033, lng: 121.5654 };
 const MIN_TRIP_LOCATION_QUERY_LEN = 2;
 
-export const PLACE_SEARCH_FALLBACK_MESSAGE = "暫時找不到這個地點，請換個關鍵字試試。";
+export const PLACE_SEARCH_FALLBACK_MESSAGE = TRIP_PLACE_USER_MESSAGE;
 
 function normalizeTripLocationQuery(query: string): string {
   return query.trim().replace(/\s+/g, " ");
@@ -94,6 +104,15 @@ async function clientGeocodeSuggestions(query: string, locale: Locale, apiKey: s
       error_message?: string;
       results?: GeocodeResult[];
     };
+    logTripPlaceSearchResult({
+      status: json.status ?? "unknown",
+      predictions: json.results?.length ?? 0,
+      error: json.error_message ?? null,
+      rawResponse: { status: json.status, error_message: json.error_message },
+    });
+    if (json.status === "REQUEST_DENIED" || isGooglePlacesPermissionError(json.error_message)) {
+      return { suggestions: [], error: null };
+    }
     if (json.status !== "OK" && json.status !== "ZERO_RESULTS") continue;
 
     for (const r of (json.results ?? []).slice(0, 8)) {
@@ -196,26 +215,52 @@ export async function unifiedSearchTripLocations(
     return { suggestions: [], error: null };
   }
 
+  let permissionDenied = false;
+
   try {
     const result = await searchFn({ data: { query: normalized, locale } });
+    logTripPlaceSearchResult({
+      status: result.error ? "server_error" : "ok",
+      predictions: result.suggestions.length,
+      error: result.error,
+    });
     if (result.suggestions.length > 0) {
+      logTripPlaceSearchResult({
+        status: "ok",
+        predictions: result.suggestions.length,
+        endpoint: "placesAutocomplete",
+      });
       return { suggestions: result.suggestions, error: null };
     }
     if (result.error) console.warn("[Location] server autocomplete", result.error);
+    if (isGooglePlacesPermissionError(result.error)) {
+      permissionDenied = true;
+    }
   } catch (e) {
     console.warn("[Location] server autocomplete failed", e);
+  }
+
+  const curated = searchCuratedTripLocations(normalized);
+  if (curated.length > 0) {
+    return { suggestions: curated, error: null };
+  }
+
+  if (permissionDenied) {
+    return { suggestions: [], error: TRIP_PLACE_USER_MESSAGE };
   }
 
   const key = getGoogleMapsBrowserKey();
   if (!key) {
     return {
       suggestions: [],
-      error: "無法搜尋地點，請確認已設定 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY。",
+      error: TRIP_PLACE_USER_MESSAGE,
     };
   }
 
+  console.info("[TRIP_PLACE_SEARCH] endpoint=", "geocoding");
   const client = await clientGeocodeSuggestions(normalized, locale, key);
   if (client.suggestions.length > 0) {
+    logTripPlaceGeocodingFallback(true);
     return { suggestions: client.suggestions, error: null };
   }
   return {
@@ -233,6 +278,11 @@ export async function unifiedResolveTripLocation(
   locale: Locale,
   fallback?: { name: string; address?: string; lat?: number | null; lng?: number | null },
 ): Promise<{ location: TripLocation | null; error: string | null }> {
+  const curated = resolveCuratedTripLocation(placeId);
+  if (curated) {
+    return { location: curated, error: null };
+  }
+
   try {
     const result = await resolveFn({ data: { placeId } });
     if (result.location) return result;
@@ -246,14 +296,41 @@ export async function unifiedResolveTripLocation(
     if (resolved.location) return { location: resolved.location, error: null };
   }
 
-  if (fallback?.name) {
+  if (key && fallback?.name) {
+    const geo = await clientGeocodeSuggestions(fallback.name, locale, key);
+    const hit = geo.suggestions[0];
+    if (hit) {
+      const resolved = await clientResolveTripLocation(hit.placeId, locale, key);
+      if (resolved.location) {
+        logTripPlaceGeocodingFallback(true);
+        return resolved;
+      }
+    }
+    const addr = [fallback.name, fallback.address].filter(Boolean).join(" ");
+    const geoUrl = geocodeUrl({ apiKey: key, address: addr, language: localeToGoogleLanguageCode(locale) });
+    try {
+      const res = await fetch(geoUrl);
+      const json = (await res.json()) as { status?: string; results?: GeocodeResult[] };
+      if (json.status === "OK" && json.results?.[0]) {
+        const loc = legacyGeocodeToTripLocationFromResult(json.results[0], hit?.placeId ?? placeId);
+        if (loc) {
+          logTripPlaceGeocodingFallback(true);
+          return { location: loc, error: null };
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (fallback?.name && fallback.lat != null && fallback.lng != null) {
     return {
       location: {
         placeId,
         country: fallback.name,
         city: fallback.name,
-        lat: fallback.lat ?? DEFAULT_CENTER.lat,
-        lng: fallback.lng ?? DEFAULT_CENTER.lng,
+        lat: fallback.lat,
+        lng: fallback.lng,
         formattedName: fallback.name,
         displayLabel: fallback.name,
         address: fallback.address,
@@ -262,5 +339,29 @@ export async function unifiedResolveTripLocation(
     };
   }
 
-  return { location: null, error: "無法解析地點" };
+  return { location: null, error: TRIP_PLACE_USER_MESSAGE };
+}
+
+function legacyGeocodeToTripLocationFromResult(
+  result: GeocodeResult,
+  placeId: string,
+): TripLocation | null {
+  const lat = result.geometry?.location?.lat;
+  const lng = result.geometry?.location?.lng;
+  if (lat == null || lng == null) return null;
+  const formatted = result.formatted_address?.trim() ?? "";
+  const main = formatted.split(",")[0]?.trim() || "";
+  const country = componentText(result.address_components, "country");
+  const city = resolveCity(result.address_components, main || country);
+  const formattedName = buildFormattedName(country, city, city || main);
+  return {
+    placeId: result.place_id ?? placeId,
+    country: country || city,
+    city: city || country,
+    lat,
+    lng,
+    formattedName,
+    displayLabel: formattedName,
+    address: formatted || undefined,
+  };
 }

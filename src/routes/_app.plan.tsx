@@ -8,7 +8,7 @@ import {
   getPlanStyleOptions,
   getPlanTransportOptions,
 } from "@/lib/i18n/plan-form-options";
-import { Sparkles, Loader2, MapPin } from "lucide-react";
+import { Sparkles, Loader2, MapPin, Route as RouteIcon } from "lucide-react";
 import { BackButton } from "@/components/BackButton";
 import { toast } from "sonner";
 import { buildContextBundleForTrip, daysBetweenDates } from "@/lib/fetch-context";
@@ -20,12 +20,12 @@ import {
   logTripPlace,
   tripLocationToPlaceRef,
 } from "@/lib/trip/trip-place-ref";
-import { preparePlanTripSession } from "@/lib/plan-trip-handoff";
-import { saveChatSession, clearChatSession } from "@/lib/chat-session";
-import { clearChatHistory } from "@/lib/chat-history";
+import { createTripFromPlanForm } from "@/lib/trip/create-manual-trip-from-plan";
+import { tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
 import { RoamieDatePicker } from "@/components/pickers";
 import { getWeather } from "@/lib/weather.functions";
 import { resolveTripStop } from "@/lib/trip-stop-search.functions";
+import { getPlaceDetails } from "@/services/placesService";
 import {
   getPreferences,
   savePreferences,
@@ -34,7 +34,6 @@ import {
 } from "@/lib/preferences-storage";
 import {
   loadItinerarySource,
-  placesToInterestsText,
   type ItinerarySourceContext,
 } from "@/lib/itinerary-source";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
@@ -144,6 +143,17 @@ function PlanPage() {
     getPreferences().then((p) => setBudgetMode(resolveBudgetMode(p)));
   }, []);
 
+  useEffect(() => {
+    document.documentElement.classList.add("plan-route-active");
+    const hideKb = () => {
+      void import("@capacitor/keyboard").then(({ Keyboard }) => Keyboard.hide().catch(() => {}));
+    };
+    hideKb();
+    return () => {
+      document.documentElement.classList.remove("plan-route-active");
+    };
+  }, []);
+
   const toggle = (list: string[], v: string, set: (l: string[]) => void) => {
     set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
   };
@@ -158,17 +168,30 @@ function PlanPage() {
     if (Number.isFinite(loc.lat) && Number.isFinite(loc.lng)) return loc;
     if (!loc.placeId?.trim()) return null;
     try {
-      const resolved = await resolveStopFn({ data: { placeId: loc.placeId, locale } });
-      const stop = resolved.stop;
-      if (!stop || stop.lat == null || stop.lng == null) return loc;
+      const label = loc.formattedName || loc.name || "";
+      const { place, error } = await getPlaceDetails(loc.placeId, {
+        locale,
+        resolveFn: resolveStopFn,
+        fallback: {
+          placeId: loc.placeId,
+          label,
+          secondary: loc.address || "",
+        },
+      });
+      if (!place || place.lat == null || place.lng == null) {
+        console.info("[PLACES_DETAILS] error=", error ?? "missing_coordinates");
+        return loc;
+      }
       const patched: TripLocation = {
         ...loc,
-        lat: stop.lat,
-        lng: stop.lng,
-        address: loc.address || stop.address || loc.formattedName,
+        lat: place.lat,
+        lng: place.lng,
+        address: loc.address || place.address || label,
+        formattedName: loc.formattedName || place.name || label,
       };
       if (role === "destination") setDestination(patched);
       if (role === "start") setOrigin(patched);
+      console.info("[PLACE_SELECTED] success=", JSON.stringify({ name: patched.formattedName, lat: place.lat, lng: place.lng }));
       return patched;
     } catch (error) {
       console.error("[PLACES_DETAILS] error=", error instanceof Error ? error.message : String(error));
@@ -206,18 +229,11 @@ function PlanPage() {
 
       const mergedPlaces = selectedPlaces.length > 0 ? selectedPlaces : [];
 
-      const interestsText = [
-        interests.trim(),
-        mergedPlaces.length ? `\n【Roamie 推薦地點】\n${placesToInterestsText(mergedPlaces)}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
-
-      const destRef = tripLocationToPlaceRef(destination!);
-      const startRef = origin ? tripLocationToPlaceRef(origin) : null;
+      const destRef = tripLocationToPlaceRef(resolvedDestination!);
+      const startRef = resolvedOrigin ? tripLocationToPlaceRef(resolvedOrigin) : null;
       logTripPlace("destination", "saved", destRef);
       if (startRef) logTripPlace("start", "saved", startRef);
-      console.info("[Roamie AI] plan submit → chat", {
+      console.info("[PLAN_TRIP] submit → saved trip detail", {
         destination: destRef.name,
         destinationPlaceId: destRef.placeId,
         startPlaceId: startRef?.placeId,
@@ -227,16 +243,14 @@ function PlanPage() {
         from: search.from,
       });
 
-      clearChatSession();
-      await clearChatHistory();
-      const session = preparePlanTripSession(
+      const saved = await createTripFromPlanForm(
         {
-          destination,
-          origin,
+          destination: resolvedDestination!,
+          origin: resolvedOrigin,
           days: tripDays,
           mood,
           styles,
-          interests: interestsText,
+          interests: interests.trim(),
           startDate,
           endDate,
           departureTime: "",
@@ -246,21 +260,25 @@ function PlanPage() {
           selectedPlaces: mergedPlaces,
         },
         bundle,
-        prefs,
       );
-      saveChatSession(session);
-      navigate({ to: "/chat", search: { from: "plan" } });
+      toast.success(t("plan.tripCreated"));
+      navigate(tripDetailNavigateOptions(saved.id));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : t("plan.submitFailed");
-      console.error("[Roamie AI] plan failed", err);
-      toast.error(msg);
+      const msg =
+        err instanceof Error
+          ? err.message
+          : typeof err === "object" && err && "message" in err
+            ? String((err as { message?: string }).message)
+            : t("plan.submitFailed");
+      console.error("[PLAN_TRIP] create failed", msg, err);
+      toast.error(msg || t("plan.submitFailed"));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="plan-page flex min-h-0 flex-1 flex-col pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
       <header className="z-10 flex shrink-0 items-center gap-3 border-b border-border bg-background px-5 py-3">
         <BackButton fallback={{ to: "/" }} />
         <div className="flex items-center gap-2">
@@ -296,7 +314,7 @@ function PlanPage() {
 
           <LocationSearchField
             fieldRole="destination"
-            searchMode="place"
+            searchMode="geographic"
             label={t("plan.destination")}
             required
             value={destination}
@@ -509,7 +527,7 @@ function PlanPage() {
                 key="plan-submit-idle"
                 className="inline-flex items-center justify-center gap-2"
               >
-                <Sparkles className="h-4 w-4 shrink-0" aria-hidden />
+                <RouteIcon className="h-4 w-4 shrink-0" aria-hidden />
                 <span className="leading-none">{t("plan.submit")}</span>
               </span>
             )}

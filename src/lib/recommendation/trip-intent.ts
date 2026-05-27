@@ -300,7 +300,10 @@ function finalizeTripIntent(intent: TripIntent, session: ChatPlanningSession): T
   const moodLabel = session.selectedMood ?? session.mood ?? intent.mood;
   const hasVibe = Boolean(d.vibe?.trim() || intent.mood || moodLabel);
   const hasCompanionship = Boolean(
-    d.companionship?.trim() || intent.travelers || session.travelContext?.companion,
+    d.companionship?.trim() ||
+      intent.travelers ||
+      session.travelContext?.companion ||
+      /不一定|彈性|視情況/.test(d.companionship ?? ""),
   );
   const hasSetting = Boolean(
     d.setting?.trim() ||

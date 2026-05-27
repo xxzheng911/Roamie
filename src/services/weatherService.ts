@@ -4,6 +4,10 @@
  */
 import type { Locale } from "@/lib/i18n/types";
 import { logOpenWeatherKeyLoadedOnce } from "@/lib/openweather-key-resolve";
+import {
+  fetchClientWeather,
+  shouldUseClientWeatherFetch,
+} from "@/lib/weather/client-weather-fetch";
 import type { DailyForecast, WeatherForecastResult, WeatherSummary } from "@/lib/weather-types";
 import {
   getWeatherCached,
@@ -11,6 +15,8 @@ import {
   isWeatherRequestInFlight,
   weatherCacheKey,
 } from "@/services/weatherCache";
+
+const WEATHER_SERVICE_VERSION = "v-client-native-002";
 
 export type WeatherLoadState = "idle" | "loading" | "ready" | "error";
 
@@ -75,6 +81,58 @@ function requireTestWeather(): TestWeatherFn | null {
   return boundTestWeather;
 }
 
+function unavailableWeatherSummary(): WeatherSummary {
+  return {
+    city: "目前位置",
+    tempC: null,
+    feelsLikeC: null,
+    condition: "",
+    iconType: "",
+    isDaytime: true,
+    precipProbability: null,
+    humidityPercent: null,
+    windSpeedKmh: null,
+    cloudCoverPercent: null,
+    uvi: null,
+    sunrise: null,
+    sunset: null,
+    recommendation: "indoor",
+    recommendationText: "天氣暫時無法取得，稍後重試。",
+    source: "unavailable",
+    fetchedAt: new Date().toISOString(),
+    available: false,
+  };
+}
+
+async function fetchCurrentWeatherResolved(
+  coords: WeatherCoords,
+  locale?: Locale,
+): Promise<{ weather: WeatherSummary | null; error: string | null }> {
+  if (shouldUseClientWeatherFetch()) {
+    return fetchClientWeather(coords.lat, coords.lng);
+  }
+
+  try {
+    const result = await requireFetchWeather()({
+      data: { lat: coords.lat, lng: coords.lng, locale },
+    });
+    if (result.weather?.available) return result;
+    console.info("[WEATHER_FETCH] server unavailable, trying client fallback");
+    return fetchClientWeather(coords.lat, coords.lng);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[WEATHER_FETCH] openWeather status=", "client-error");
+    console.error("[WEATHER_FETCH] server error=", msg);
+    try {
+      return await fetchClientWeather(coords.lat, coords.lng);
+    } catch (fallbackErr) {
+      const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      console.error("[WEATHER_FETCH] fallback_error=", fallbackMsg);
+      return { weather: null, error: fallbackMsg || msg };
+    }
+  }
+}
+
 export function getWeatherLoadState(
   coords: WeatherCoords,
   locale?: Locale,
@@ -93,84 +151,26 @@ export async function getWeatherByLatLng(
   coords: WeatherCoords,
   locale?: Locale,
 ): Promise<{ weather: WeatherSummary; error: string | null }> {
-  console.info("[WEATHER_SERVICE_VERSION] v-runtime-fallback-001");
+  console.info("[WEATHER_SERVICE_VERSION]", WEATHER_SERVICE_VERSION);
   console.info("[WEATHER_FETCH] start");
   const key = weatherCacheKey("current", coords.lat, coords.lng, locale);
   console.info("[WEATHER_FETCH] latLng=", `${coords.lat},${coords.lng}`);
+  console.info("[WEATHER_FETCH] clientNative=", shouldUseClientWeatherFetch());
 
   const cached = getWeatherCached<{ weather: WeatherSummary | null; error: string | null }>(key);
-  if (cached) {
+  if (cached?.weather?.available) {
     console.info("[WEATHER_FETCH] openWeather status=", "cache-hit");
-    console.info(
-      "[WEATHER_FETCH] final result=",
-      JSON.stringify(cached.weather ?? { available: false, source: "cached-unavailable" }),
-    );
-    if (!cached.weather) {
-      return {
-        weather: {
-          city: "目前位置",
-          tempC: null,
-          feelsLikeC: null,
-          condition: "",
-          iconType: "",
-          isDaytime: true,
-          precipProbability: null,
-          humidityPercent: null,
-          windSpeedKmh: null,
-          cloudCoverPercent: null,
-          uvi: null,
-          sunrise: null,
-          sunset: null,
-          recommendation: "indoor",
-          recommendationText: "天氣暫時無法取得，稍後重試。",
-          source: "unavailable",
-          fetchedAt: new Date().toISOString(),
-          available: false,
-        },
-        error: cached.error ?? "no_weather",
-      };
-    }
+    console.info("[WEATHER_FETCH] final result=", JSON.stringify(cached.weather));
     return { weather: cached.weather, error: cached.error };
   }
 
-  let result: { weather: WeatherSummary | null; error: string | null };
-  try {
-    result = await getWeatherCachedOrFetch(key, () =>
-      requireFetchWeather()({
-        data: { lat: coords.lat, lng: coords.lng, locale },
-      }),
-    );
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error("[WEATHER_FETCH] openWeather status=", "client-error");
-    console.error("[WEATHER_FETCH] final result=", msg);
-    throw e;
-  }
+  const result = await getWeatherCachedOrFetch(key, () => fetchCurrentWeatherResolved(coords, locale));
 
-  if (!result.weather) {
+  if (!result.weather?.available) {
     console.info("[WEATHER_FETCH] openWeather status=", "no-response");
     console.info("[WEATHER_FETCH] final result=", "unavailable");
     return {
-      weather: {
-        city: "目前位置",
-        tempC: null,
-        feelsLikeC: null,
-        condition: "",
-        iconType: "",
-        isDaytime: true,
-        precipProbability: null,
-        humidityPercent: null,
-        windSpeedKmh: null,
-        cloudCoverPercent: null,
-        uvi: null,
-        sunrise: null,
-        sunset: null,
-        recommendation: "indoor",
-        recommendationText: "天氣暫時無法取得，稍後重試。",
-        source: "unavailable",
-        fetchedAt: new Date().toISOString(),
-        available: false,
-      },
+      weather: unavailableWeatherSummary(),
       error: result.error ?? "no_weather",
     };
   }

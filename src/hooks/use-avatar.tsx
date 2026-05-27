@@ -58,8 +58,8 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     void refresh();
     const onUpdate = (e: Event) => {
       const url = (e as CustomEvent<string | null>).detail ?? null;
-      setAvatarUrl(url);
       setPreview(null);
+      setAvatarUrl(url);
     };
     window.addEventListener(AVATAR_UPDATED_EVENT, onUpdate);
     return () => window.removeEventListener(AVATAR_UPDATED_EVENT, onUpdate);

@@ -17,25 +17,25 @@ export function logNearbyPlaceNavigateParams(params: PlaceDetailHandoff): void {
 }
 
 export function logPlaceDetailScreenMounted(): void {
-  console.info("[Place Detail Screen Mounted]");
+  console.info("[PLACE_DETAIL] screen mounted");
 }
 
 export function logPlaceDetailParamsReceived(params: unknown): void {
-  console.info("[Place Detail Params Received]", params);
+  console.info("[PLACE_DETAIL] params=", params);
 }
 
 export function logPlaceDetailFetchStarted(placeId: string): void {
-  console.info("[Place Detail Fetch Started]", { placeId });
+  console.info("[PLACE_DETAIL] fetch start placeId=", placeId);
 }
 
 export function logPlaceDetailFetchSuccess(placeId: string): void {
-  console.info("[Place Detail Fetch Success]", { placeId });
+  console.info("[PLACE_DETAIL] fetch success placeId=", placeId);
 }
 
 export function logPlaceDetailFetchFailed(placeId: string, reason: string): void {
-  console.warn("[Place Detail Fetch Failed]", { placeId, reason });
+  console.info("[PLACE_DETAIL] fetch failed placeId=", placeId, "reason=", reason);
 }
 
 export function logPlaceDetailFallbackUsed(reason: string): void {
-  console.info("[Place Detail Fallback Used]", { reason });
+  console.info("[PLACE_DETAIL] fallback used=", reason);
 }

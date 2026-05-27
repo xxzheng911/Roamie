@@ -3,6 +3,7 @@ import {
   chatPhaseForStage,
   resolveConversationStage,
 } from "@/lib/ai/conversation-stage";
+import { resolveAiUserIntent, userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
 import type { TripIntent } from "@/lib/recommendation/trip-intent";
 import type { ChatMsg } from "@/lib/chat-history";
 import {
@@ -17,6 +18,7 @@ import type { RoamieRecommendationItem } from "@/lib/ai/types";
 export function userWantsMoreRecommendations(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (userAsksTravelTimeAdvice(t)) return false;
   return /(怎麼安排|還能|還可以|推薦|想去|想找|有沒有|附近|這一帶|晚上|散步|咖啡|餐廳|酒吧|宵夜|安靜|熱鬧|人少|換一個|別的|再幫我|幫我找|走走|坐坐|續攤|夜景)/.test(
     t,
   );
@@ -106,7 +108,10 @@ export function resolveChatApiPhase(
   tripIntent?: TripIntent,
 ): ChatPhase {
   if (override) return override;
-  const stage = resolveConversationStage(session, userText, tripIntent);
+  const aiIntent = resolveAiUserIntent(session, userText, tripIntent, {
+    chatPhaseOverride: override,
+  });
+  const stage = resolveConversationStage(session, userText, tripIntent, aiIntent.type);
   return chatPhaseForStage(stage, session, userText);
 }
 

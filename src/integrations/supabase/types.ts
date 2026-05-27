@@ -85,6 +85,11 @@ export type Database = {
           subscription_provider: string
           subscription_status: string
           travel_personality: Json | null
+          travel_preferences: Json | null
+          travel_style: string | null
+          travel_tags: Json | null
+          survey_completed: boolean
+          survey_completed_at: string | null
           updated_at: string
         }
         Insert: {
@@ -103,6 +108,11 @@ export type Database = {
           subscription_provider?: string
           subscription_status?: string
           travel_personality?: Json | null
+          travel_preferences?: Json | null
+          travel_style?: string | null
+          travel_tags?: Json | null
+          survey_completed?: boolean
+          survey_completed_at?: string | null
           updated_at?: string
         }
         Update: {
@@ -121,6 +131,11 @@ export type Database = {
           subscription_provider?: string
           subscription_status?: string
           travel_personality?: Json | null
+          travel_preferences?: Json | null
+          travel_style?: string | null
+          travel_tags?: Json | null
+          survey_completed?: boolean
+          survey_completed_at?: string | null
           updated_at?: string
         }
         Relationships: []

@@ -432,6 +432,7 @@
   min-height: 100svh;
   width: 100%;
   overflow: hidden;
+  color-scheme: light;
   background-color: #fdf5ea;
   color: #2a2520;
   padding:
@@ -440,9 +441,12 @@
     var(--splash-pad-bottom);
 }
 
-.dark .roamie-splash {
-  background-color: oklch(0.19 0.012 60);
-  color: oklch(0.95 0.012 85);
+/* 品牌載入畫面固定米色底＋深字，不跟隨 App 深色模式或系統深色 */
+.dark .roamie-splash,
+html.dark .roamie-splash,
+html:not(.light) .roamie-splash {
+  background-color: #fdf5ea;
+  color: #2a2520;
 }
 
 .roamie-splash__gradient {
@@ -457,9 +461,9 @@
 
 .dark .roamie-splash__gradient {
   background:
-    radial-gradient(ellipse 80% 50% at 20% 18%, oklch(0.28 0.02 65 / 0.45), transparent 55%),
-    radial-gradient(ellipse 70% 45% at 88% 82%, oklch(0.24 0.015 240 / 0.35), transparent 50%),
-    linear-gradient(165deg, oklch(0.21 0.012 60) 0%, oklch(0.19 0.012 60) 48%, oklch(0.17 0.01 55) 100%);
+    radial-gradient(ellipse 80% 50% at 20% 18%, rgba(253, 232, 212, 0.65), transparent 55%),
+    radial-gradient(ellipse 70% 45% at 88% 82%, rgba(223, 232, 240, 0.4), transparent 50%),
+    linear-gradient(165deg, #fdf8f0 0%, #fdf5ea 48%, #f3ebe2 100%);
 }
 
 .roamie-splash__glow {
@@ -634,7 +638,7 @@
   font-size: clamp(1.75rem, 6vw, 2rem);
   font-weight: 600;
   letter-spacing: 0.04em;
-  color: inherit;
+  color: #2a2520;
 }
 
 .roamie-splash__tagline {
@@ -645,7 +649,7 @@
   color: rgba(107, 99, 92, 0.88);
 }
 .dark .roamie-splash__tagline {
-  color: oklch(0.72 0.02 75 / 0.88);
+  color: rgba(107, 99, 92, 0.88);
 }
 
 .roamie-splash__loader {
@@ -664,7 +668,7 @@
   animation: roamie-splash-loader-dot 1.2s ease-in-out infinite;
 }
 .dark .roamie-splash__loader-dot {
-  background: oklch(0.72 0.02 75 / 0.5);
+  background: rgba(107, 99, 92, 0.45);
 }
 .roamie-splash__loader-dot:nth-child(2) {
   animation-delay: 0.2s;
@@ -713,13 +717,6 @@
   .roamie-splash__character {
     max-height: min(46vh, 380px);
     width: min(72vw, 300px);
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  html:not(.light) .roamie-splash {
-    background-color: oklch(0.19 0.012 60);
-    color: oklch(0.95 0.012 85);
   }
 }
 
@@ -1279,6 +1276,19 @@ html.map-route-active main.app-scroll {
   overflow: hidden !important;
 }
 
+/** 規劃行程：無底部 Tab Bar，鍵盤不應撐開導覽列 */
+html.plan-route-active {
+  --app-nav-total-height: 0px;
+}
+
+html.plan-route-active main.app-scroll {
+  padding-bottom: 0 !important;
+}
+
+html.plan-route-active .bottom-nav {
+  display: none !important;
+}
+
 .profile-page {
   -webkit-overflow-scrolling: touch;
 }
@@ -1299,8 +1309,9 @@ html.map-route-active main.app-scroll {
 html.chat-route-active .chat-composer-shell,
 html.chat-route-active .chat-composer {
   position: relative;
-  z-index: 10;
+  z-index: 50;
   width: 100%;
+  pointer-events: auto;
 }
 
 html.chat-route-active .chat-composer-shell {
@@ -1321,6 +1332,18 @@ html.chat-keyboard-open .bottom-nav.chat-nav-keyboard-hide {
 }
 
 html.chat-keyboard-open main.app-scroll {
+  padding-bottom: 0 !important;
+}
+
+/** 行程詳情：自行輸入地點搜尋時隱藏 Tab Bar，避免鍵盤把導覽頂起 */
+html.trip-add-place-keyboard-open .bottom-nav {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(100%);
+}
+
+html.trip-add-place-keyboard-open main.app-scroll {
   padding-bottom: 0 !important;
 }
 

@@ -1,4 +1,5 @@
 import type { PlaceResult } from "@/lib/place-result";
+import { shouldSkipPlacesClientRetry } from "@/lib/places-api-errors";
 
 type CacheEntry = {
   places: PlaceResult[];
@@ -37,6 +38,9 @@ export function writeMapPlacesCache(
   places: PlaceResult[],
   error: string | null,
 ): void {
+  if (error && shouldSkipPlacesClientRetry(error)) {
+    return;
+  }
   if (CACHE.size >= MAX_ENTRIES) {
     const oldest = [...CACHE.entries()].sort((a, b) => a[1].at - b[1].at)[0]?.[0];
     if (oldest) CACHE.delete(oldest);

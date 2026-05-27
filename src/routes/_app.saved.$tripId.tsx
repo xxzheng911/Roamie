@@ -6,6 +6,8 @@ export const Route = createFileRoute("/_app/saved/$tripId")({
   beforeLoad: ({ params }) => {
     logTripNav("SavedTripCard-route", params.tripId);
   },
+  /** 子路由切換時不要掛全屏 pending（與 router defaultPendingMs 搭配） */
+  pendingMs: 0,
   component: SavedTripDetailPage,
 });
 

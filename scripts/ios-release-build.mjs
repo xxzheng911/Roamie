@@ -8,14 +8,40 @@
 import { spawnSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readViteAppOrigin, validateProductionAppOrigin } from "./resolve-app-origin.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const env = { ...process.env, ROAMIE_QUIET_BOOT: "1" };
+const originCheck = validateProductionAppOrigin(
+  process.env.VITE_APP_ORIGIN?.trim().replace(/\/$/, "") || readViteAppOrigin(),
+);
+if (!originCheck.ok) {
+  console.error("\n[ios:release] 無法建置 TestFlight 版：");
+  console.error(originCheck.reason);
+  console.error("\n請在 .env 加入例如：");
+  console.error("  VITE_APP_ORIGIN=https://你的已部署網域\n");
+  process.exit(1);
+}
+
+const qaBuild =
+  process.env.ROAMIE_QA_BUILD === "1" || process.env.ROAMIE_QA_BUILD === "true";
+
+const env = {
+  ...process.env,
+  ROAMIE_QUIET_BOOT: "1",
+  ROAMIE_CAPACITOR_BUILD: "1",
+  VITE_APP_ORIGIN: originCheck.origin,
+  ...(qaBuild ? { VITE_ROAMIE_QA: "1" } : {}),
+};
 delete env.CAPACITOR_LIVE_RELOAD;
 delete env.CAPACITOR_DEV_SERVER_URL;
 delete env.CAPACITOR_USE_REMOTE_SERVER;
 delete env.CAPACITOR_SERVER_URL;
+
+console.info(`[ios:release] VITE_APP_ORIGIN=${originCheck.origin}`);
+if (qaBuild) {
+  console.info("[ios:release] ROAMIE_QA_BUILD=1 → VITE_ROAMIE_QA=1（登入頁顯示測試登入）");
+}
 
 function run(label, cmd, args) {
   console.info(`\n[ios:release] ${label}`);

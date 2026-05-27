@@ -210,10 +210,21 @@ const CAPACITOR_EARLY_ERROR_LOG = `<script>
       roamieLog("APP_SCRIPT_LOAD_ERROR", e.message || "script failed", e.filename || "script");
       return;
     }
-    roamieLog("APP_INIT_ERROR", e.error || e.message, e.filename);
+    var reason = e.error;
+    if (reason == null) {
+      var msg = (e.message || "").trim();
+      reason = msg
+        ? new Error(msg)
+        : new Error(
+            "runtime@" + (e.filename || "unknown") + ":" + (e.lineno || 0) + ":" + (e.colno || 0),
+          );
+    }
+    roamieLog("APP_INIT_ERROR", reason, e.filename || "");
   }, true);
   window.addEventListener("unhandledrejection", function(e) {
-    roamieLog("APP_UNHANDLED_REJECTION", e.reason, "promise");
+    var reason = e.reason;
+    if (reason == null) reason = new Error("unhandled rejection (reason was undefined)");
+    roamieLog("APP_UNHANDLED_REJECTION", reason, "promise");
   });
   try {
     roamieBootLog(
@@ -432,24 +443,12 @@ const CAPACITOR_BUNDLE_SHELL_PREFIX = `(function(){try{console.log("[APP_BOOT] R
 })();
 `;
 
-/** 極小 bootstrap：HTML shell 已顯示 UI；idle 後再載入主 bundle（勿再 import 193KB mount chunk） */
-function findVendorReactChunk(entryRelPath) {
-  const entryPath = resolve(clientDir, entryRelPath);
-  if (!existsSync(entryPath)) return null;
-  const code = readFileSync(entryPath, "utf8");
-  const m = code.match(/assets\/(vendor-react-[A-Za-z0-9_-]+\.js)/);
-  return m ? m[1] : null;
-}
-
+/** 極小 bootstrap：HTML shell 已顯示 UI；idle 後再載入主 bundle（勿單獨 import vendor chunk） */
 function writeCapacitorBootstrapLoader(clientEntryRel) {
   const minimal =
     process.env.ROAMIE_MINIMAL_BOOT === "1" ||
     process.env.ROAMIE_MINIMAL_BOOT === "true";
   const entryFile = clientEntryRel.replace(/^assets\//, "");
-  const vendorReact = findVendorReactChunk(clientEntryRel);
-  const vendorPreload = vendorReact
-    ? `import("./${vendorReact}").catch(function(){}).finally(function(){scheduleMain();});`
-    : "scheduleMain();";
   const bootstrapPath = join(assetsDir, "capacitor-bootstrap.js");
   const loader = minimal
     ? `(function(){if(window.__ROAMIE_BOOT_LOG__)window.__ROAMIE_BOOT_LOG__.log("CAPACITOR_BOOTSTRAP_LOADED",false);})();
@@ -483,7 +482,7 @@ function scheduleMain(){
   else{setTimeout(loadMainBundle,120);}
 }
 function startBootstrap(){
-  ${vendorPreload}
+  scheduleMain();
 }
 if(typeof requestAnimationFrame==="function"){
   requestAnimationFrame(function(){requestAnimationFrame(startBootstrap);});
@@ -494,7 +493,6 @@ if(typeof requestAnimationFrame==="function"){
   writeFileSync(bootstrapPath, loader, "utf8");
   console.info(
     "[capacitor-prepare] Wrote assets/capacitor-bootstrap.js →" +
-      (vendorReact ? ` preload ${vendorReact} +` : "") +
       (minimal ? " minimal-static (no import)" : ` ${entryFile}`),
   );
   return "assets/capacitor-bootstrap.js";
@@ -552,6 +550,19 @@ function patchClientBundleCreateRootReuse(entryRelPath) {
 }
 
 function writeBundledIndexHtml({ clientEntry, bootstrapEntry, stylesheet }) {
+  const appOrigin = readEnv("VITE_APP_ORIGIN")?.replace(/\/$/, "");
+  if (!appOrigin) {
+    console.warn(
+      "[capacitor-prepare] VITE_APP_ORIGIN 未設定 — TestFlight 將無法使用 AI /api；請在 .env 設定 HTTPS 正式網域後重新 build",
+    );
+  } else if (/localhost|127\.0\.0\.1/i.test(appOrigin)) {
+    console.warn(
+      `[capacitor-prepare] VITE_APP_ORIGIN=${appOrigin} 為 localhost，實機/TestFlight 無法連線`,
+    );
+  }
+  const apiOriginMeta = appOrigin
+    ? `\n    <meta name="roamie-api-origin" content="${appOrigin.replace(/"/g, "&quot;")}" />`
+    : "";
   const ultraMinimal =
     process.env.ROAMIE_ULTRA_MINIMAL_HTML === "1" ||
     process.env.ROAMIE_ULTRA_MINIMAL_HTML === "true";
@@ -625,7 +636,7 @@ function writeBundledIndexHtml({ clientEntry, bootstrapEntry, stylesheet }) {
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>Roamie｜你的慢旅行夥伴</title>
-    <meta name="roamie-build" content="${new Date().toISOString()}" />${cssLink}
+    <meta name="roamie-build" content="${new Date().toISOString()}" />${apiOriginMeta}${cssLink}
     <style>html,body{background-color:#f7f4ef;color:#2a2520;margin:0;min-height:100%}</style>
     ${splashCriticalCss ? `<style>${splashCriticalCss}</style>` : ""}
   </head>
@@ -743,6 +754,17 @@ if (!supabaseUrl || !supabaseKey) {
     "[capacitor-prepare] WARNING: VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY missing — " +
       "TestFlight build will start in guest-safe mode until .env is present at build time.",
   );
+}
+
+const googleMapsKey =
+  readEnv("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY") ?? readEnv("VITE_GOOGLE_MAPS_API_KEY");
+if (!googleMapsKey?.trim()) {
+  console.warn(
+    "[capacitor-prepare] WARNING: EXPO_PUBLIC_GOOGLE_MAPS_API_KEY missing — " +
+      "explore map will use demo places only on device.",
+  );
+} else {
+  console.info("[capacitor-prepare] GOOGLE_MAPS key present at build time");
 }
 
 const bootstrapEntry = writeCapacitorBootstrapLoader(clientEntry);

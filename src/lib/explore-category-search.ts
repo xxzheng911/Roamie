@@ -5,7 +5,12 @@ import {
   COFFEE_MIN_FILTERED_RESULTS,
   DISTRICT_MIN_FILTERED_RESULTS,
 } from "@/lib/places-search-config";
-import { allowDemoPlaceFallback, searchRadiusMeters } from "@/lib/search-radius";
+import { searchRadiusMeters, shouldUseCuratedPlacesFallback } from "@/lib/search-radius";
+import {
+  logPlacesFallbackUsed,
+  placesApiUserHint,
+  shouldSkipPlacesClientRetry,
+} from "@/lib/places-api-errors";
 import {
   getExploreTextFallbackQueries,
   type ExploreCategory,
@@ -110,14 +115,19 @@ export async function searchExploreCategoryPlaces(
     }),
   );
 
+  if (primary.error) {
+    console.info("[PLACES_API] category=", cat.id, "error=", primary.error);
+  }
+
   let apiPlaces = primary.places;
 
   const applyFilters = (list: PlaceResult[]) =>
     filterByExploreCategory(filterExplorePlaces(list), cat);
 
   let filtered = applyFilters(apiPlaces);
+  const skipExtraPlacesApi = Boolean(primary.error && shouldSkipPlacesClientRetry(primary.error));
 
-  if (cat.id === "coffee" && filtered.length < COFFEE_MIN_FILTERED_RESULTS) {
+  if (!skipExtraPlacesApi && cat.id === "coffee" && filtered.length < COFFEE_MIN_FILTERED_RESULTS) {
     for (const textQuery of getExploreTextFallbackQueries("coffee", userLocation)) {
       const fallback = await withSearchTimeout(
         searchPlacesFn({
@@ -132,7 +142,7 @@ export async function searchExploreCategoryPlaces(
     }
   }
 
-  if (cat.id === "district" && filtered.length < DISTRICT_MIN_FILTERED_RESULTS) {
+  if (!skipExtraPlacesApi && cat.id === "district" && filtered.length < DISTRICT_MIN_FILTERED_RESULTS) {
     for (const textQuery of getExploreTextFallbackQueries("district", userLocation)) {
       const fallback = await withSearchTimeout(
         searchPlacesFn({
@@ -184,7 +194,8 @@ export async function searchExploreCategoryPlaces(
     ),
   ];
 
-  if (enriched.length === 0 && allowDemoPlaceFallback()) {
+  if (enriched.length === 0 && shouldUseCuratedPlacesFallback(primary.error)) {
+    logPlacesFallbackUsed(`explore-category:${cat.id}`);
     const mocks = getMockPlacesForCategory(userLocation, cat).map((p) =>
       buildUnifiedPlaceCard({
         place: p,
@@ -215,6 +226,12 @@ export type HomeNearbyPick = ExplorePlaceCard & {
 const PICKS_PER_CATEGORY = 2;
 
 /** 各探索分類取 1～2 筆，再依旅遊偏好排序 */
+export type HomeNearbyPicksResult = {
+  picks: HomeNearbyPick[];
+  usedCuratedFallback: boolean;
+  apiError: string | null;
+};
+
 export async function loadHomeNearbyPicks(ctx: {
   userLocation: { lat: number; lng: number };
   weather: WeatherSummary | null;
@@ -223,15 +240,19 @@ export async function loadHomeNearbyPicks(ctx: {
   saved: SavedPlace[];
   searchPlacesFn: SearchPlacesFn;
   categories: ExploreCategory[];
-}): Promise<HomeNearbyPick[]> {
+}): Promise<HomeNearbyPicksResult> {
+  let lastApiError: string | null = null;
   const perCategory = await Promise.all(
     ctx.categories.map(async (cat) => {
       try {
         const sorted = await searchExploreCategoryPlaces(cat, ctx);
         return sorted.slice(0, PICKS_PER_CATEGORY).map((p) => ({ ...p, categoryId: cat.id }));
       } catch (e) {
-        console.warn("[Roamie Home] category search failed", cat.id, e);
-        if (!allowDemoPlaceFallback()) return [];
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("[Roamie Home] category search failed", cat.id, msg);
+        lastApiError = lastApiError ?? msg;
+        if (!shouldUseCuratedPlacesFallback(msg)) return [];
+        logPlacesFallbackUsed(`home-category-catch:${cat.id}`);
         return getMockPlacesForCategory(ctx.userLocation, cat)
           .slice(0, PICKS_PER_CATEGORY)
           .map((p) => ({ ...p, categoryId: cat.id }));
@@ -259,11 +280,24 @@ export async function loadHomeNearbyPicks(ctx: {
     ctx.reasonProfile,
     ctx.weather,
   );
-  if (sorted.length > 0) return sorted;
-
-  if (allowDemoPlaceFallback()) {
-    return getMockHomeNearbyPicks(ctx.userLocation, ctx.categories, PICKS_PER_CATEGORY);
+  if (sorted.length > 0) {
+    const usedMock =
+      sorted.length > 0 && sorted.every((p) => p.id.startsWith("mock-"));
+    return {
+      picks: sorted,
+      usedCuratedFallback: usedMock,
+      apiError: usedMock ? placesApiUserHint(lastApiError) ?? lastApiError : lastApiError,
+    };
   }
-  console.info("[Roamie Home] nearby picks empty (no mock in production)");
-  return [];
+
+  if (shouldUseCuratedPlacesFallback(lastApiError)) {
+    logPlacesFallbackUsed("home-nearby-empty");
+    return {
+      picks: getMockHomeNearbyPicks(ctx.userLocation, ctx.categories, PICKS_PER_CATEGORY),
+      usedCuratedFallback: true,
+      apiError: lastApiError,
+    };
+  }
+  console.info("[Roamie Home] nearby picks empty", { apiError: lastApiError });
+  return { picks: [], usedCuratedFallback: false, apiError: lastApiError };
 }

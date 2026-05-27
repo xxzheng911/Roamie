@@ -13,6 +13,10 @@ import type { LocationSuggestion, TripLocation } from "@/lib/location/types";
 import { localeToGeocodeRegion, localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
+import {
+  resolveCuratedTripLocation,
+  searchCuratedTripLocations,
+} from "@/lib/trip-location-curated";
 
 const TRIP_PLACE_DETAILS_FIELD_MASK =
   "id,displayName,formattedAddress,location,addressComponents,utcOffsetMinutes,types,primaryType";
@@ -262,9 +266,11 @@ async function geocodeQueryToSuggestions(
   }
 
   if (suggestions.length === 0) {
+    const curated = searchCuratedTripLocations(query);
+    if (curated.length > 0) return { suggestions: curated, error: null };
     return {
       suggestions: [],
-      error: "暫時找不到這個地點，請換個關鍵字試試。",
+      error: "暫時找不到這個地點，換個關鍵字試試",
     };
   }
 
@@ -272,7 +278,7 @@ async function geocodeQueryToSuggestions(
 }
 
 const INTERNATIONAL_DEST_HINT =
-  /^(首爾|首尔|大阪|東京|东京|京都|札幌|福岡|名古屋|橫濱|神戶|沖繩|台北|高雄|台中|台南|香港|新加坡|曼谷|巴黎|倫敦|紐約|洛杉磯|雪梨|墨爾本)/i;
+  /^(首爾|首尔|釜山|부산|Busan|大阪|東京|东京|京都|札幌|福岡|名古屋|橫濱|神戶|沖繩|台北|高雄|台中|台南|香港|新加坡|曼谷|巴黎|倫敦|紐約|洛杉磯|雪梨|墨爾本)/i;
 
 function prefersGeocodeFirst(query: string): boolean {
   const q = query.trim();
@@ -349,7 +355,11 @@ export const searchTripLocations = createServerFn({ method: "POST" })
       }
 
       if (suggestions.length === 0) {
-        return geocodeQueryToSuggestions(data.query.trim(), userLocale, apiKey);
+        const geo = await geocodeQueryToSuggestions(data.query.trim(), userLocale, apiKey);
+        if (geo.suggestions.length > 0) return geo;
+        const curated = searchCuratedTripLocations(trimmed);
+        if (curated.length > 0) return { suggestions: curated, error: null };
+        return geo;
       }
 
       return { suggestions, error: null };
@@ -396,6 +406,9 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
 export const resolveTripLocation = createServerFn({ method: "POST" })
   .inputValidator((input) => ResolveInput.parse(input))
   .handler(async ({ data }): Promise<{ location: TripLocation | null; error: string | null }> => {
+    const curated = resolveCuratedTripLocation(data.placeId);
+    if (curated) return { location: curated, error: null };
+
     const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
     const apiKey = requireGoogleMapsServerKey();
     const res = await fetch(placeDetailsUrl(data.placeId), {

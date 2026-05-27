@@ -113,18 +113,19 @@ export function computeInitialCropScale(
   if (options.fit === "cover-line") {
     const coverScale = Math.max(wScale, hScale);
     const orientation = getImageOrientation(imgW, imgH);
+    const panSlack = 1.03;
     if (orientation === "portrait") {
       /** 直式：寬度對齊裁切框寬，上下可拖曳（LINE 封面） */
       const widthFit = wScale * (options.padding ?? 0.96);
-      // 仍需覆蓋裁切框高度，避免黑邊
-      return Math.max(coverScale, widthFit);
+      // 仍需覆蓋裁切框高度，避免黑邊；略放大保留單指平移空間
+      return Math.max(coverScale, widthFit) * panSlack;
     }
     if (orientation === "landscape") {
       /** 橫式：以 cover scale 為下限，略偏向「看更多」但不可露黑邊 */
-      return coverScale * (options.padding ?? 1);
+      return coverScale * (options.padding ?? 1) * panSlack;
     }
     /** 方形：置中顯示，但仍必須覆蓋裁切框 */
-    return coverScale * (options.padding ?? 1);
+    return coverScale * (options.padding ?? 1) * panSlack;
   }
 
   const base =
@@ -226,19 +227,57 @@ export async function exportCropFromTransform(
 }
 
 function loadImageSource(file: File): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("圖片載入失敗"));
-    };
-    img.src = url;
+  return decodeImageFile(file).then(({ width, height, drawToCanvas }) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("圖片載入失敗");
+    drawToCanvas(ctx, width, height);
+    return loadImageFromUrl(canvas.toDataURL("image/jpeg", 0.92));
   });
+}
+
+export function isLikelyImageFile(file: File | undefined | null): file is File {
+  if (!file) return false;
+  if (file.type.startsWith("image/")) return true;
+  return /\.(jpe?g|png|gif|webp|heic|heif|bmp|tif{1,2})$/i.test(file.name);
+}
+
+async function decodeImageFile(
+  file: File,
+): Promise<{ width: number; height: number; drawToCanvas: (ctx: CanvasRenderingContext2D, w: number, h: number) => void }> {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const width = Math.max(1, bitmap.width);
+      const height = Math.max(1, bitmap.height);
+      return {
+        width,
+        height,
+        drawToCanvas: (ctx, w, h) => {
+          ctx.drawImage(bitmap, 0, 0, w, h);
+          bitmap.close?.();
+        },
+      };
+    } catch {
+      /* fall through to Image() */
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await loadImageFromUrl(objectUrl);
+    const width = Math.max(1, img.naturalWidth);
+    const height = Math.max(1, img.naturalHeight);
+    return {
+      width,
+      height,
+      drawToCanvas: (ctx, w, h) => ctx.drawImage(img, 0, 0, w, h),
+    };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 export function loadImageFromUrl(url: string): Promise<HTMLImageElement> {
@@ -283,28 +322,24 @@ export async function normalizeImageFileForUpload(
 ): Promise<File> {
   const maxSide = options?.maxSide ?? 2048;
   const quality = options?.quality ?? 0.86;
-  const objectUrl = URL.createObjectURL(file);
   try {
-    const img = await loadImageFromUrl(objectUrl);
-    const srcW = Math.max(1, img.naturalWidth);
-    const srcH = Math.max(1, img.naturalHeight);
-    const ratio = Math.min(1, maxSide / Math.max(srcW, srcH));
-    const outW = Math.max(1, Math.round(srcW * ratio));
-    const outH = Math.max(1, Math.round(srcH * ratio));
+    const decoded = await decodeImageFile(file);
+    const ratio = Math.min(1, maxSide / Math.max(decoded.width, decoded.height));
+    const outW = Math.max(1, Math.round(decoded.width * ratio));
+    const outH = Math.max(1, Math.round(decoded.height * ratio));
     const canvas = document.createElement("canvas");
     canvas.width = outW;
     canvas.height = outH;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("無法建立圖片處理畫布");
-    ctx.drawImage(img, 0, 0, outW, outH);
+    decoded.drawToCanvas(ctx, outW, outH);
     const blob = await canvasToJpegBlob(canvas, quality);
-    return new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), {
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "photo";
+    return new File([blob], `${baseName}.jpg`, {
       type: "image/jpeg",
       lastModified: Date.now(),
     });
   } catch {
     throw new Error("這張圖片格式目前不支援，請改選一般照片（JPG/PNG）");
-  } finally {
-    URL.revokeObjectURL(objectUrl);
   }
 }

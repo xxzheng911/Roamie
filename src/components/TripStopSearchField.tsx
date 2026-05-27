@@ -7,16 +7,25 @@ import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
 import { useI18n } from "@/hooks/use-i18n";
 import { toast } from "sonner";
 import { getPlaceDetails, searchPlaces as searchPlacesService } from "@/services/placesService";
+import { TRIP_PLACE_USER_MESSAGE } from "@/lib/trip-place-search-log";
 
 type Props = {
   label?: string;
   onPick: (place: TripPlaceInput) => void;
   disabled?: boolean;
+  /** button：先顯示「新增地點」按鈕；inline：直接顯示搜尋框（行程頁自行輸入） */
+  variant?: "button" | "inline";
 };
 
-export function TripStopSearchField({ label, onPick, disabled }: Props) {
+export function TripStopSearchField({
+  label,
+  onPick,
+  disabled,
+  variant = "button",
+}: Props) {
   const { t, locale } = useI18n();
-  const [open, setOpen] = useState(false);
+  const inline = variant === "inline";
+  const [open, setOpen] = useState(inline);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<PlaceSearchResultItem[]>([]);
   const [searching, setSearching] = useState(false);
@@ -25,6 +34,15 @@ export function TripStopSearchField({ label, onPick, disabled }: Props) {
   const searchFn = useServerFn(searchTripStops);
   const resolveFn = useServerFn(resolveTripStop);
 
+  useEffect(() => {
+    if (inline) {
+      document.documentElement.classList.add("trip-add-place-keyboard-open");
+      return () => {
+        document.documentElement.classList.remove("trip-add-place-keyboard-open");
+      };
+    }
+  }, [inline]);
+
   const runSearch = useCallback(
     async (q: string) => {
       const trimmed = q.trim();
@@ -32,13 +50,16 @@ export function TripStopSearchField({ label, onPick, disabled }: Props) {
         setResults([]);
         return;
       }
+      console.log("[TRIP_ADD_PLACE_SEARCH] query=", trimmed);
       setSearching(true);
       try {
         const { suggestions, error } = await searchPlacesService(trimmed, {
           locale,
           searchFn,
         });
-        if (error && suggestions.length === 0) toast.error(error);
+        if (error && suggestions.length === 0) {
+          toast.message(error);
+        }
         setResults(
           suggestions.map((s) => ({
             placeId: s.placeId,
@@ -76,10 +97,12 @@ export function TripStopSearchField({ label, onPick, disabled }: Props) {
         fallback: { placeId: item.placeId, label: item.label, secondary: item.secondary },
       });
       if (!place) {
-        toast.error(error ?? t("location.resolveFailed"));
+        const msg = error ?? TRIP_PLACE_USER_MESSAGE;
+        console.warn("[TRIP_ADD_PLACE_SELECTED] failed placeId=", item.placeId, msg);
+        toast.error(msg);
         return;
       }
-      onPick({
+      const picked: TripPlaceInput = {
         name: place.name,
         placeName: place.name,
         title: place.name,
@@ -88,9 +111,25 @@ export function TripStopSearchField({ label, onPick, disabled }: Props) {
         lng: place.lng,
         googlePlaceId: place.placeId,
         placeType: place.placeType,
-      } as TripPlaceInput);
-      setOpen(false);
-      setQuery("");
+      };
+      console.log(
+        "[TRIP_ADD_PLACE_SELECTED] place=",
+        JSON.stringify({
+          name: picked.name,
+          address: picked.address,
+          lat: picked.lat,
+          lng: picked.lng,
+          placeId: picked.googlePlaceId,
+        }),
+      );
+      onPick(picked);
+      if (!inline) {
+        setOpen(false);
+        setQuery("");
+      } else {
+        setQuery("");
+        setResults([]);
+      }
     } finally {
       setResolvingId(null);
     }
@@ -99,20 +138,25 @@ export function TripStopSearchField({ label, onPick, disabled }: Props) {
   return (
     <section>
       {label ? <p className="mb-2 text-sm font-medium text-foreground/90">{label}</p> : null}
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-card/80 py-3 text-sm text-muted-foreground transition hover:border-foreground/25 hover:bg-card disabled:opacity-50"
-      >
-        {open ? <Search className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-        {t("trip.addStop")}
-      </button>
+      {!inline ? (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => setOpen((o) => !o)}
+          className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-border bg-card/80 py-3 text-sm text-muted-foreground transition hover:border-foreground/25 hover:bg-card disabled:opacity-50"
+        >
+          {open ? <Search className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+          {t("trip.addStop")}
+        </button>
+      ) : null}
       <PlaceSearchPanel
         open={open}
         query={query}
         onQueryChange={setQuery}
-        onClose={() => setOpen(false)}
+        onClose={() => {
+          if (inline) return;
+          setOpen(false);
+        }}
         results={results.map((r) => ({
           ...r,
           photoUrl: r.photoUrl ?? null,

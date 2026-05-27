@@ -1,6 +1,12 @@
 import type { ChatPhase } from "@/lib/ai/context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { TripIntent } from "@/lib/recommendation/trip-intent";
+import {
+  userAsksTravelTimeAdvice,
+  userExplicitlyWantsPlaceList,
+  userWantsItineraryPlanning,
+  type AiUserIntentType,
+} from "@/lib/ai/user-intent";
 import { userWantsMoreRecommendations, userWantsPlanningFinalize } from "@/lib/chat-planning-flow";
 import { isDiscoveryComplete, isUserConfirmingItinerary } from "@/lib/chat-session";
 
@@ -26,13 +32,30 @@ export function conversationStageLabel(stage: ConversationStage): string {
   return STAGE_LABEL[stage];
 }
 
-/** 使用者明確要地點、店名、推薦 */
+/** @deprecated 請用 userExplicitlyWantsPlaceList */
 export function userExplicitlyWantsPlaces(text: string): boolean {
-  const t = text.trim();
-  if (!t) return false;
-  return /(推薦|去哪|哪裡|什麼地方|有沒有|幫我找|咖啡廳|餐廳|景點|酒吧|宵夜|夜景|散步|走走|逛逛|附近|這一帶|想去|帶我去)/.test(
-    t,
-  );
+  return userExplicitlyWantsPlaceList(text);
+}
+
+function conversationStageForAiIntent(
+  intent: AiUserIntentType,
+  session: ChatPlanningSession,
+  userText: string,
+): ConversationStage {
+  switch (intent) {
+    case "travel_time_advice":
+      return session.discovery?.vibe?.trim() ? "clarify" : "infer";
+    case "itinerary_planning":
+      return "itinerary";
+    case "place_recommendation":
+      return "recommend";
+    case "place_discussion":
+      return "converge";
+    case "mood_nearby":
+      return isEmotionalOrVagueTurn(userText) ? "empathize" : "clarify";
+    default:
+      return "clarify";
+  }
 }
 
 /** 偏情緒、狀態、猶豫，尚未明確要清單 */
@@ -49,27 +72,46 @@ export function resolveConversationStage(
   session: ChatPlanningSession,
   userText: string,
   tripIntent?: TripIntent,
+  aiIntentType?: AiUserIntentType,
 ): ConversationStage {
   const t = userText.trim();
 
   if (session.phase === "ready" || isUserConfirmingItinerary(t)) return "itinerary";
   if (userWantsPlanningFinalize(t) && session.selectedPlaces.length >= 1) return "itinerary";
 
+  if (aiIntentType) {
+    const fromIntent = conversationStageForAiIntent(aiIntentType, session, userText);
+    if (aiIntentType === "travel_time_advice" || aiIntentType === "mood_nearby") {
+      return fromIntent;
+    }
+    if (aiIntentType === "place_recommendation") return "recommend";
+    if (aiIntentType === "itinerary_planning") return "itinerary";
+    if (aiIntentType === "place_discussion") return "converge";
+  }
+
+  if (userAsksTravelTimeAdvice(t)) {
+    return conversationStageForAiIntent("travel_time_advice", session, userText);
+  }
+
   if (
     isDiscoveryComplete(session) ||
-    session.phase === "recommend" ||
-    tripIntent?.readyForRecommendations
+    session.phase === "recommend"
   ) {
     if (session.selectedPlaces.length >= 2 && !userWantsMoreRecommendations(t)) {
       return "converge";
     }
-    return "recommend";
+    if (userExplicitlyWantsPlaceList(t) || session.fromMoodFlow || session.fromMoodCard) {
+      return "recommend";
+    }
   }
 
   if (
-    userExplicitlyWantsPlaces(t) ||
-    userWantsMoreRecommendations(t) ||
-    (tripIntent?.readyForRecommendations && session.selectedPlaces.length === 0 && t.length > 0)
+    userExplicitlyWantsPlaceList(t) ||
+    (userWantsMoreRecommendations(t) && !userAsksTravelTimeAdvice(t)) ||
+    (tripIntent?.readyForRecommendations &&
+      session.selectedPlaces.length === 0 &&
+      t.length > 0 &&
+      userExplicitlyWantsPlaceList(t))
   ) {
     return "recommend";
   }
@@ -124,7 +166,7 @@ export function chatPhaseForStage(
 }
 
 export function stageAllowsPlaceCards(stage: ConversationStage): boolean {
-  return stage === "recommend" || stage === "converge";
+  return stage === "recommend";
 }
 
 export function stageAllowsPlacesFirst(stage: ConversationStage): boolean {

@@ -2,14 +2,18 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { runWhenCapacitorBridgeReady } from "@/lib/capacitor-bridge-ready";
 import {
+  estimateNativeKeyboardHeight,
   isCapacitorNativeShell,
   logChatKeyboardHide,
   logChatKeyboardShow,
   logComposerLayoutSnapshot,
   measureVisualViewportKeyboardInset,
+  parseKeyboardEventHeight,
   resolveComposerBottomInset,
 } from "@/lib/chat-keyboard-layout";
 import { ChatComposer } from "@/components/chat/ChatComposer";
+import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
+import { setIosSnapshotLiveInteraction } from "@/lib/ios-snapshot-bridge";
 import { useServerFn } from "@tanstack/react-start";
 import { Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { BackButton } from "@/components/BackButton";
@@ -17,12 +21,22 @@ import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { loadChatHistory, clearChatHistory, type ChatMsg } from "@/lib/chat-history";
+import { readBootstrapDeviceLocation } from "@/lib/device-location";
+import { getFreshDeviceLocationSnapshot } from "@/lib/location-store";
 import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { enrichRoamieContext } from "@/lib/ai/enrich-context";
+import { resolveAiUserIntent, responseModeForIntent } from "@/lib/ai/user-intent";
 import { resolveEffectivePlanTierWithProfile } from "@/lib/access/resolve";
-import { getWeather } from "@/lib/weather.functions";
+import { getWeather, getWeatherForecast } from "@/lib/weather.functions";
+import { bindWeatherServerFns } from "@/services/weatherService";
 import { searchPlaces } from "@/lib/places.functions";
+import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { streamRoamieAI, fetchRoamieAI } from "@/lib/ai/stream-client";
+import {
+  chatApiMisconfigUserMessage,
+  chatApiResolvedUrl,
+  isChatApiUnreachableOnNative,
+} from "@/lib/chat-api-ready";
 import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
 import { RoamieResponseView } from "@/components/RoamieResponseView";
 import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
@@ -46,7 +60,14 @@ import { getRecommendation } from "@/lib/recommendation-storage";
 import { inferDestinationFromPlaces } from "@/lib/itinerary-source";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import { recommendationsForChatDisplay } from "@/lib/chat-display-recommendations";
-import { openRecommendationOnMap } from "@/lib/recommendation-place-handoff";
+import { persistChatUiMessages, consumePreservedChatUiMessages } from "@/lib/chat-ui-store";
+import { openPlaceNavigation } from "@/lib/maps-navigation";
+import { navigateToPlaceDetailFromRecommendation } from "@/lib/ai-place-detail-nav";
+import {
+  buildPlaceDiscussionUserLine,
+  filterPlaceDiscussionRecommendations,
+  PLACE_DISCUSSION_USER_INTENT,
+} from "@/lib/chat-place-discussion";
 import { logAppError } from "@/lib/log-error";
 import { isLateNightMode } from "@/lib/recommend-place-ranking";
 import {
@@ -124,7 +145,7 @@ import {
   extractTravelIntent,
   updateTripDraftFromConversation,
 } from "@/services/aiTravelContextService";
-import { mergeTravelContext, formatTravelContextForAi } from "@/lib/ai/travel-context";
+import { mergeTravelContext, formatTravelContextForAi, isReadyForRecommendation } from "@/lib/ai/travel-context";
 import {
   markAskedClarifyKey,
   resolveChatRoute,
@@ -133,6 +154,7 @@ import {
   fallbackSearchQuery,
   generateLocalRecommendationFallback,
 } from "@/lib/ai/local-recommendation-fallback";
+import { withSearchTimeout } from "@/lib/search-timeout";
 import { getTripLegsWithDurations, travelLabelToRoutesMode } from "@/services/routesService";
 import { generateOutfitSuggestion, normalizeWeather } from "@/services/weatherService";
 import { attachCoreTripToPayload, toCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
@@ -157,7 +179,70 @@ export const Route = createFileRoute("/_app/chat")({
   component: Chat,
 });
 
+const CHAT_DISCOVER_CHIPS = [
+  "今天想放鬆走走",
+  "想探索新地方",
+  "主要是想拍照",
+  "一個人",
+  "跟朋友",
+  "室內就好",
+  "想去室外",
+] as const;
+
+const CHAT_COLLECT_CHIPS = ["就這樣吧，可以開始安排", "想再加一個咖啡廳", "節奏慢一點"] as const;
+
+const CHAT_DEFAULT_CHIPS = ["我今天有點累", "想找安靜的咖啡廳", "下雨天可以去哪"] as const;
+
+/** 快捷 chip 顯示文字 → 實際送出的使用者訊息 */
+const CHIP_OUTBOUND_TEXT: Record<string, string> = {
+  "今天想放鬆走走": "我今天想放鬆走走，請推薦適合放鬆、步調輕鬆的地點。",
+  "想探索新地方": "我想探索新地方，請推薦我還沒去過、值得逛逛的地點。",
+  "主要是想拍照": "我主要是想拍照，請推薦景色好看、適合拍照的地點。",
+  "一個人": "我一個人出門，請推薦適合獨自走走的地點。",
+  "跟朋友": "我跟朋友一起，請推薦適合小團體、好聊天的地點。",
+  "室內就好": "我想待在室內，請推薦室內景點或可以躲雨的地方。",
+  "想去室外": "我想去室外走走，請推薦戶外、空氣好的地點。",
+  "就這樣吧，可以開始安排": "就這樣吧，可以開始安排行程。",
+  "想再加一個咖啡廳": "我想再加一個咖啡廳到行程裡。",
+  "節奏慢一點": "希望行程節奏慢一點，不要太趕。",
+  "我今天有點累": "我今天有點累，請推薦輕鬆、不用走太多的地點。",
+  "想找安靜的咖啡廳": "我想找安靜的咖啡廳，適合休息或看書。",
+  "下雨天可以去哪": "下雨天可以去哪？請推薦室內或適合雨天的地點。",
+};
+
+const ADVANCED_PLANNING_CHIP_ID = "進階手動規劃";
+const ADVANCED_PLANNING_USER_TEXT = "我想進階手動規劃行程";
+const ADVANCED_PLANNING_ASSISTANT_TEXT =
+  "好呀，那這次你想從哪裡開始規劃？目的地、日期，還是想去的地方？";
+
+function hasMeaningfulRoamiePayload(data: Partial<RoamieResponse> | undefined): boolean {
+  if (!data) return false;
+  if (data.summary?.trim()) return true;
+  if ((data.recommendations?.length ?? 0) > 0) return true;
+  if ((data.itinerary?.length ?? 0) > 0) return true;
+  return false;
+}
+
+function withChatSummaryFallback(full: RoamieResponse, userText: string): RoamieResponse {
+  if (full.summary?.trim()) return full;
+  const snippet = userText.trim().slice(0, 40);
+  return {
+    ...full,
+    summary: snippet
+      ? `收到，我會依「${snippet}」幫你想下一步。`
+      : "好的，我來幫你整理一下。",
+  };
+}
+
 function Chat() {
+  useIosInteractiveRoute("chat");
+  useEffect(() => {
+    setIosSnapshotLiveInteraction(true);
+    return () => {
+      setIosSnapshotLiveInteraction(false);
+    };
+  }, []);
+
   const { t, locale } = useI18n();
   const quizCompleted = usePreferenceQuizCompleted();
   const { hasPlusAccess } = useAccess();
@@ -170,7 +255,6 @@ function Chat() {
   );
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [session, setSession] = useState<ChatPlanningSession>(() => loadChatSession());
-  const [text, setText] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [hydrating, setHydrating] = useState(true);
@@ -189,7 +273,10 @@ function Chat() {
   const planHandoffStartedRef = useRef(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [reportedKeyboardHeightPx, setReportedKeyboardHeightPx] = useState(0);
+  /** 鍵盤動畫結束後強制重算 composer inset（native resize 後 clearance 才準） */
+  const [composerLayoutRev, setComposerLayoutRev] = useState(0);
   const autoPromptHandledRef = useRef(false);
+  const preservedChatRestoredRef = useRef(false);
 
   // 快捷列固定顯示，避免鍵盤開啟/輸入時整條消失。
   const showShortcutChips = true;
@@ -199,8 +286,9 @@ function Chat() {
       resolveComposerBottomInset({
         keyboardVisible,
         reportedKeyboardHeightPx,
+        composerShellEl: composerShellRef.current,
       }),
-    [keyboardVisible, reportedKeyboardHeightPx],
+    [keyboardVisible, reportedKeyboardHeightPx, composerLayoutRev],
   );
 
   useEffect(() => {
@@ -216,8 +304,20 @@ function Chat() {
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const fetchWeather = useServerFn(getWeather);
-  const searchNearbyPlaces = useServerFn(searchPlaces);
+  const fetchForecastFn = useServerFn(getWeatherForecast);
+  const searchPlacesServerFn = useServerFn(searchPlaces);
+  const searchNearbyPlaces = useMemo(
+    () => createUnifiedSearchPlacesFn(searchPlacesServerFn),
+    [searchPlacesServerFn],
+  );
   const generate = useServerFn(generateItinerary);
+
+  useEffect(() => {
+    bindWeatherServerFns({
+      fetchWeather: fetchWeather,
+      fetchForecast: fetchForecastFn,
+    });
+  }, [fetchWeather, fetchForecastFn]);
 
   const selectedNames = useMemo(
     () => new Set(session.selectedPlaces.map((p) => p.name)),
@@ -273,6 +373,7 @@ function Chat() {
       const inset = resolveComposerBottomInset({
         keyboardVisible: open,
         reportedKeyboardHeightPx: reportedHeight,
+        composerShellEl: composerShellRef.current,
       });
 
       logComposerLayoutSnapshot({
@@ -286,8 +387,26 @@ function Chat() {
       setReportedKeyboardHeightPx(reportedHeight);
 
       if (open) {
-        requestAnimationFrame(scrollMessagesToEnd);
+        requestAnimationFrame(() => {
+          setComposerLayoutRev((n) => n + 1);
+          scrollMessagesToEnd();
+        });
       }
+    };
+
+    const reconcileNativeKeyboard = (info: unknown) => {
+      const reported = parseKeyboardEventHeight(info);
+      applyKeyboard(reported, true);
+      if (reported > 50) return;
+      requestAnimationFrame(() => {
+        const vv = measureVisualViewportKeyboardInset();
+        const capped = Math.min(vv, Math.round(window.innerHeight * 0.55));
+        if (capped > 50) {
+          applyKeyboard(capped, true);
+          return;
+        }
+        applyKeyboard(estimateNativeKeyboardHeight(), true);
+      });
     };
 
     const vv = window.visualViewport;
@@ -314,8 +433,8 @@ function Chat() {
         if (keyboardListenersCancelled) return;
         const { Keyboard } = await import("@capacitor/keyboard");
         if (keyboardListenersCancelled) return;
-        const onShow = (info: { keyboardHeight?: number }) => {
-          applyKeyboard(info.keyboardHeight ?? 0, true);
+        const onShow = (info: unknown) => {
+          reconcileNativeKeyboard(info);
         };
         const onHide = () => applyKeyboard(0, false);
         const showWill = Keyboard.addListener("keyboardWillShow", onShow);
@@ -345,8 +464,27 @@ function Chat() {
   }, [keyboardVisible, msgs.length, scrollMessagesToEnd]);
 
   useEffect(() => {
+    if (streaming) return;
+    requestAnimationFrame(scrollMessagesToEnd);
+  }, [streaming, msgs, scrollMessagesToEnd]);
+
+  useEffect(() => {
     (async () => {
       try {
+        if (preservedChatRestoredRef.current) {
+          setHydrating(false);
+          return;
+        }
+
+        const preserved = consumePreservedChatUiMessages();
+        if (preserved?.length) {
+          preservedChatRestoredRef.current = true;
+          setMsgs(preserved);
+          console.info("[CHAT_RETURN] preserved=true");
+          setHydrating(false);
+          return;
+        }
+
         let session = loadChatSession();
         const moodFromHome = search.mood?.trim() || readHomeMood();
         if (moodFromHome) {
@@ -638,6 +776,10 @@ function Chat() {
         preferredArea: synced.preferredArea,
         rejectedPlaceNames: synced.rejectedPlaceNames,
         focusedPlace: overrides?.focusedPlace,
+        userIntent:
+          overrides?.chatPhase === "place_discussion"
+            ? PLACE_DISCUSSION_USER_INTENT
+            : undefined,
         selectedPlaces: synced.selectedPlaces,
         selectedPlaceIds: synced.selectedPlaceIds,
         selectedPlaceNames: synced.selectedPlaceNames,
@@ -773,10 +915,46 @@ function Chat() {
           "",
           (roamiePayload.recommendations ?? []) as RoamieRecommendationItem[],
         );
+        if (filteredRecs.length === 0) {
+          const moodText = syncedHandoff.selectedMood ?? syncedHandoff.mood ?? "";
+          const { context } = mergeTravelContext(
+            syncedHandoff,
+            moodText ? `我想${moodText}，幫我看看附近適合去哪裡。` : "",
+          );
+          let placeResults: Awaited<ReturnType<typeof searchNearbyPlaces>>["places"] = [];
+          const lat = syncedHandoff.location?.lat ?? bundle.location?.lat;
+          const lng = syncedHandoff.location?.lng ?? bundle.location?.lng;
+          if (lat != null && lng != null) {
+            try {
+              const q = fallbackSearchQuery(context);
+              const fallback = await withSearchTimeout(
+                searchNearbyPlaces({ data: { query: q, lat, lng, mode: "text" } }),
+                20_000,
+              );
+              placeResults = fallback.places ?? [];
+              console.info("[MOOD_CHAT_PLACES] candidates=", placeResults.length);
+            } catch (fallbackErr) {
+              console.warn("[AI_FALLBACK] handoff places search failed", fallbackErr);
+            }
+          }
+          const local = generateLocalRecommendationFallback({
+            context,
+            session: syncedHandoff,
+            locale,
+            places: placeResults,
+          });
+          summary = local.summary;
+          roamiePayload = local.payload;
+        }
+        const displayRecs = recommendationsForChatDisplay(
+          syncedHandoff,
+          "",
+          (roamiePayload.recommendations ?? []) as RoamieRecommendationItem[],
+        );
         const opener: ChatMsg = {
           role: "assistant",
           content: summary,
-          roamie: { ...roamiePayload, recommendations: filteredRecs },
+          roamie: { ...roamiePayload, recommendations: displayRecs },
         };
         setMsgs([opener]);
 
@@ -795,7 +973,7 @@ function Chat() {
         setStreaming(false);
       }
     },
-    [fetchWeather, persistSession],
+    [fetchWeather, persistSession, locale, searchNearbyPlaces],
   );
 
   const runPlanFormHandoff = useCallback(
@@ -922,15 +1100,22 @@ function Chat() {
     ): Promise<boolean> => {
       const { context } = mergeTravelContext(activeSession, activeUserText);
       let placeResults: Awaited<ReturnType<typeof searchNearbyPlaces>>["places"] = [];
-      const lat = activeSession.location?.lat;
-      const lng = activeSession.location?.lng;
+      const snap = getFreshDeviceLocationSnapshot(120_000);
+      const boot = readBootstrapDeviceLocation();
+      const lat = activeSession.location?.lat ?? snap?.lat ?? boot.lat;
+      const lng = activeSession.location?.lng ?? snap?.lng ?? boot.lng;
       if (lat != null && lng != null) {
         try {
           const q = fallbackSearchQuery(context);
-          const fallback = await searchNearbyPlaces({
-            data: { query: q, lat, lng, mode: "text" },
-          });
+          const fallback = await withSearchTimeout(
+            searchNearbyPlaces({
+              data: { query: q, lat, lng, mode: "text" },
+            }),
+            20_000,
+            "搜尋逾時，改用離線推薦",
+          );
           placeResults = fallback.places ?? [];
+          console.info("[MOOD_CHAT_PLACES] candidates=", placeResults.length);
         } catch (fallbackErr) {
           console.warn("[AI_FALLBACK] places search failed", fallbackErr);
         }
@@ -987,10 +1172,41 @@ function Chat() {
       setPartial({});
       const controller = new AbortController();
       abortRef.current = controller;
-      const timeoutMs = 60_000;
+      const timeoutMs = 28_000;
       const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+      let submitOk = false;
 
       try {
+        if (isChatApiUnreachableOnNative()) {
+          console.warn("[CHAT_API] unreachable on native", {
+            url: chatApiResolvedUrl(),
+            origin: import.meta.env.VITE_APP_ORIGIN,
+          });
+          toast.message(chatApiMisconfigUserMessage());
+          setMsgs((prev) => [...prev, { role: "assistant", content: "" }]);
+          const applied = await applyLocalFallback(
+            sessionOverride ?? session,
+            opts?.userText ?? "",
+            conversation,
+          );
+          if (!applied) {
+            setMsgs((prev) => {
+              const trimmedPrev = prev.filter(
+                (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+              );
+              return [
+                ...trimmedPrev,
+                {
+                  role: "assistant",
+                  content: chatApiMisconfigUserMessage(),
+                },
+              ];
+            });
+          }
+          setPartial({});
+          return;
+        }
+
         const { data: authSession } = await supabase.auth.getSession();
         const token = authSession.session?.access_token;
 
@@ -1007,7 +1223,7 @@ function Chat() {
         );
         console.info("[AI_REPLY_REQUEST]", `phase=${req.chatPhase ?? "unknown"}`);
 
-        const full = await streamRoamieAI(
+        let full = await streamRoamieAI(
           req,
           {
             onPartial: (p) => {
@@ -1032,53 +1248,54 @@ function Chat() {
           { token, signal: controller.signal },
         );
 
-        if (!full) throw new Error("AI 沒有回應，請再試一次。");
-        console.info("[AI_REPLY_SUCCESS]", `recommendations=${full.recommendations?.length ?? 0}`);
+        if (!full) {
+          try {
+            full = await fetchRoamieAI(req, { token });
+            console.info("[CHAT_API] fetch fallback ok");
+          } catch (fetchErr) {
+            console.warn("[CHAT_API] fetch fallback failed", fetchErr);
+            throw new Error("AI 沒有回應，請再試一次。");
+          }
+        }
+        const fullWithSummary = withChatSummaryFallback(full, opts?.userText ?? "");
+        console.info(
+          "[AI_REPLY_SUCCESS]",
+          `recommendations=${fullWithSummary.recommendations?.length ?? 0}`,
+        );
 
         const userText = opts?.userText ?? "";
-        const intentForGuard = parseTripIntentFromText(userText, sessionOverride ?? session);
-        const summary = full.summary?.trim() ?? "";
+        const activeSession = sessionOverride ?? session;
+        const intentForGuard = parseTripIntentFromText(userText, activeSession);
+        const aiIntent = resolveAiUserIntent(activeSession, userText, intentForGuard, {
+          chatPhaseOverride: opts?.phase ?? req.chatPhase,
+        });
+        responseModeForIntent(aiIntent);
+        let resolvedFull = fullWithSummary;
+        if (aiIntent.type === "travel_time_advice") {
+          resolvedFull = { ...fullWithSummary, recommendations: [], itinerary: [] };
+        }
+        const summary = resolvedFull.summary?.trim() ?? "";
         const looksRepeatedClarify =
           /這趟比較想放鬆、拍照，還是吃美食/.test(summary) &&
           /(都有|都可以|都行)/.test(userText);
-        if (
-          (full.recommendations?.length ?? 0) === 0 &&
-          intentForGuard.readyForRecommendations &&
-          looksRepeatedClarify
-        ) {
-          const destination =
-            intentForGuard.destinationCity ??
-            (sessionOverride ?? session).tripDestination?.city ??
-            "釜山";
-          const fallbackSummary = [
-            `${destination} 11 月通常約 9-17°C，早晚偏涼，海風明顯，建議薄羽絨或防風外套。`,
-            "你剛說想要放鬆、拍照、美食都有，我先幫你抓 3 個方向：",
-            `1) 海景放鬆：廣安里海邊散步 + The Bay 101 夜景`,
-            "2) 情侶拍照：海東龍宮寺 + 白淺灘文化村",
-            "3) 在地美食：札嘎其市場海鮮 + 南浦洞街區小吃",
-            "要不要我接著幫你排成 5 天的輕鬆情侶行程？",
-          ].join("\n");
-          setMsgs((prev) => {
-            const next = [...prev];
-            next[next.length - 1] = {
-              role: "assistant",
-              content: fallbackSummary,
-              roamie: {
-                title: `${destination} 情侶慢旅行方向`,
-                summary: fallbackSummary,
-                moodTag: (sessionOverride ?? session).mood ?? "",
-                recommendations: [],
-                itinerary: [],
-              },
-            };
-            return next;
-          });
-          return;
+        const shouldUseLocalFallback =
+          aiIntent.type !== "travel_time_advice" &&
+          (resolvedFull.recommendations?.length ?? 0) === 0 &&
+          (intentForGuard.readyForRecommendations ||
+            looksRepeatedClarify ||
+            activeSession.fromMoodFlow ||
+            activeSession.fromMoodCard ||
+            Boolean(activeSession.mood ?? activeSession.selectedMood) ||
+            (opts?.phase === "recommend" && aiIntent.type === "place_recommendation") ||
+            (req.chatPhase === "recommend" && aiIntent.type === "place_recommendation"));
+        if (shouldUseLocalFallback) {
+          const applied = await applyLocalFallback(activeSession, userText, conversation);
+          if (applied) return;
         }
 
-        if (full.recommendations?.length) {
+        if (resolvedFull.recommendations?.length) {
           recordRecommendationNames([
-            ...full.recommendations.map((r) => r.name),
+            ...resolvedFull.recommendations.map((r) => r.name),
             ...extractPlaceNames(session.selectedPlaces),
           ]);
         }
@@ -1086,17 +1303,21 @@ function Chat() {
         const apiPhaseUsed = opts?.phase ?? resolveChatApiPhase(session, opts?.userText ?? "");
         let nextSession = mergeSessionFromRoamie(
           sessionOverride ?? session,
-          full,
+          resolvedFull,
           (sessionOverride ?? session).phase,
         );
         if (nextSession.recommendedPlaces.length) {
+          let recs = recommendationsForChatDisplay(
+            nextSession,
+            opts?.userText ?? "",
+            nextSession.recommendedPlaces,
+          ) as ChatPlaceItem[];
+          if (opts?.phase === "place_discussion" && opts.focusedPlace) {
+            recs = filterPlaceDiscussionRecommendations(recs, opts.focusedPlace) as ChatPlaceItem[];
+          }
           nextSession = {
             ...nextSession,
-            recommendedPlaces: recommendationsForChatDisplay(
-              nextSession,
-              opts?.userText ?? "",
-              nextSession.recommendedPlaces,
-            ) as ChatPlaceItem[],
+            recommendedPlaces: recs,
           };
         }
         if (nextSession.phase === "discover" && isDiscoveryComplete(nextSession)) {
@@ -1106,21 +1327,30 @@ function Chat() {
           ...nextSession,
           phase: resolveSessionPhaseAfterReply(
             nextSession,
-            Boolean(full.recommendations?.length),
+            Boolean(resolvedFull.recommendations?.length),
             apiPhaseUsed,
           ),
         };
         persistSession(nextSession);
 
-        const activeSession = sessionOverride ?? session;
-        const displayFull = {
-          ...full,
-          recommendations: recommendationsForChatDisplay(
-            activeSession,
-            opts?.userText ?? "",
-            full.recommendations ?? [],
-          ),
-        };
+        let displayRecs = recommendationsForChatDisplay(
+          activeSession,
+          opts?.userText ?? "",
+          resolvedFull.recommendations ?? [],
+        );
+        if (opts?.phase === "place_discussion" && opts.focusedPlace) {
+          displayRecs = filterPlaceDiscussionRecommendations(displayRecs, opts.focusedPlace);
+        }
+        const displayFull = withChatSummaryFallback(
+          {
+            ...resolvedFull,
+            recommendations: displayRecs,
+          },
+          userText,
+        );
+        if (opts?.phase === "place_discussion") {
+          console.info("[CHAT_ABOUT_PLACE] replyGenerated=true");
+        }
         setMsgs((prev) => {
           const next = [...prev];
           next[next.length - 1] = {
@@ -1131,6 +1361,7 @@ function Chat() {
           return next;
         });
         setPartial({});
+        submitOk = true;
       } catch (e) {
         if ((e as Error).name === "AbortError") {
           const activeForTimeout = sessionOverride ?? session;
@@ -1154,6 +1385,8 @@ function Chat() {
           setLastFailed(conversation);
           return;
         }
+        console.log("[CHAT_SUBMIT_ERROR]", e);
+        console.error("[CHAT_SEND] submit error=", e instanceof Error ? e.message : String(e));
         console.error(
           "[AI_REPLY_ERROR]",
           e instanceof Error ? e.message : String(e),
@@ -1164,8 +1397,10 @@ function Chat() {
         });
         const activeForFallback = sessionOverride ?? session;
         const activeUserText = opts?.userText ?? "";
+        const errMsg = e instanceof Error ? e.message : String(e);
         const applied = await applyLocalFallback(activeForFallback, activeUserText, conversation);
         if (!applied) {
+          if (errMsg.trim()) toast.error(errMsg);
           const hint: ChatMsg = {
             role: "assistant",
             content: "我先用目前掌握的需求幫你整理方向，你可以再跟我說想調整什麼。",
@@ -1190,23 +1425,53 @@ function Chat() {
         window.clearTimeout(timeoutId);
         setStreaming(false);
         abortRef.current = null;
+        if (submitOk) {
+          console.log("[CHAT_SUBMIT_SUCCESS]");
+        }
       }
     },
     [buildRequest, session, persistSession, locale, applyLocalFallback],
   );
 
   const handleOpenPlaceDetail = (rec: RoamieRecommendationItem) => {
-    if (rec.lat == null || rec.lng == null) {
-      toast.message("此地點尚無座標，暫時無法開啟地圖詳情");
-      return;
-    }
-    openRecommendationOnMap(rec);
-    navigate({ to: "/map" });
+    void (async () => {
+      const ok = await navigateToPlaceDetailFromRecommendation({
+        rec,
+        locale,
+        navigate: async (opts) => {
+          await navigate({ ...opts, replace: false });
+        },
+        onBeforeNavigate: () => {
+          persistChatUiMessages(msgs);
+          saveChatSession(session);
+        },
+      });
+      if (!ok) {
+        toast.message("此地點暫時無法開啟詳情，請稍後再試");
+      }
+    })();
   };
 
-  const handleSelectPlace = async (rec: RoamieRecommendationItem) => {
+  const handleNavigatePlace = (rec: RoamieRecommendationItem) => {
+    openPlaceNavigation({
+      lat: rec.lat,
+      lng: rec.lng,
+      address: rec.address,
+      placeName: rec.placeName ?? rec.name,
+    });
+  };
+
+  const handleDiscussPlace = async (rec: RoamieRecommendationItem) => {
     if (streaming || generating) return;
     const item = roamieRecToChatItem(rec);
+    const placeId = item.placeId?.trim() || rec.googlePlaceId?.trim() || "";
+    console.info("[CHAT_ABOUT_PLACE] placeId=", placeId || "(none)");
+    console.info("[CHAT_ABOUT_PLACE] context=", {
+      mode: "place_discussion",
+      selectedPlace: placeDisplayName(item),
+      userIntent: PLACE_DISCUSSION_USER_INTENT,
+    });
+
     let nextSession = addSelectedPlace(session, item);
     nextSession = {
       ...nextSession,
@@ -1215,65 +1480,19 @@ function Chat() {
     };
     persistSession(nextSession);
 
-    const userLine = `我選了「${placeDisplayName(item)}」，想多聊聊這附近還能怎麼安排。`;
+    const userLine = buildPlaceDiscussionUserLine(placeDisplayName(item));
     const conversation: ChatMsg[] = [...msgs, { role: "user", content: userLine }];
     setMsgs(conversation);
 
     await streamChat(
       conversation,
-      { phase: "enrich", userText: userLine, focusedPlace: item },
+      {
+        phase: "place_discussion",
+        userText: userLine,
+        focusedPlace: item,
+      },
       nextSession,
     );
-  };
-
-  const send = async (overrideText?: string) => {
-    const trimmed = (overrideText ?? text).trim();
-    if (!trimmed || streaming || generating) return;
-
-    let nextSession = applyTripIntentToSession(trimmed, session);
-    const merged = mergeTravelContext(nextSession, trimmed);
-    nextSession = merged.session;
-    nextSession = extractPlanningHintsFromText(trimmed, nextSession);
-    nextSession = extractDiscoveryFromText(trimmed, nextSession);
-    nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
-
-    const route = resolveChatRoute(trimmed, merged.context, nextSession, locale);
-    const tripIntent = parseTripIntentFromText(trimmed, nextSession);
-
-    if (route.mode === "recommend" || tripIntent.readyForRecommendations) {
-      nextSession = { ...nextSession, phase: "recommend" };
-    }
-
-    persistSession(nextSession);
-
-    const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
-    setMsgs(next);
-    setText("");
-
-    if (route.mode === "itinerary" || isUserConfirmingItinerary(trimmed)) {
-      if (nextSession.selectedPlaces.length < 1) {
-        toast.message("你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線。");
-        const hint: ChatMsg = {
-          role: "assistant",
-          content: "你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線 ☺️",
-        };
-        setMsgs([...next, hint]);
-        return;
-      }
-      const readySession: ChatPlanningSession = { ...nextSession, phase: "ready" };
-      persistSession(readySession);
-      await handleGenerateItinerary(readySession, next);
-      return;
-    }
-
-    if (route.mode === "clarify" && route.question && route.missingKey) {
-      nextSession = markAskedClarifyKey(nextSession, route.missingKey);
-      persistSession(nextSession);
-      setMsgs([...next, { role: "assistant", content: route.question }]);
-      return;
-    }
-
-    await streamChat(next, { phase: route.chatPhase, userText: trimmed }, nextSession);
   };
 
   const handleGenerateItinerary = async (
@@ -1438,6 +1657,145 @@ function Chat() {
     }
   };
 
+  const clearComposerInput = useCallback(() => {
+    if (inputRef.current) {
+      inputRef.current.value = "";
+    }
+  }, []);
+
+  const send = async (overrideText?: string) => {
+    const trimmed = (overrideText ?? inputRef.current?.value ?? "").trim();
+    console.log("[CHAT_SEND]", trimmed);
+    if (!trimmed) {
+      console.info("[CHAT_SEND] disabled=empty");
+      return;
+    }
+    if (generating) {
+      console.info("[CHAT_SEND] disabled=generating");
+      return;
+    }
+    if (streaming) {
+      console.warn("[CHAT_SEND] abort stale streaming");
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setStreaming(false);
+      setPartial({});
+    }
+
+    console.log("[CHAT_SUBMIT_START]");
+    console.info("[CHAT_SEND] submit start", trimmed.slice(0, 48));
+
+    let nextSession = applyTripIntentToSession(trimmed, session);
+    const merged = mergeTravelContext(nextSession, trimmed);
+    nextSession = merged.session;
+    nextSession = extractPlanningHintsFromText(trimmed, nextSession);
+    nextSession = extractDiscoveryFromText(trimmed, nextSession);
+    nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
+
+    const route = resolveChatRoute(trimmed, merged.context, nextSession, locale);
+    const tripIntent = parseTripIntentFromText(trimmed, nextSession);
+
+    if (route.mode === "recommend" || tripIntent.readyForRecommendations) {
+      nextSession = { ...nextSession, phase: "recommend" };
+    }
+
+    if (nextSession.location?.lat == null || nextSession.location?.lng == null) {
+      const snap = getFreshDeviceLocationSnapshot(120_000);
+      const boot = readBootstrapDeviceLocation();
+      nextSession = {
+        ...nextSession,
+        location: {
+          lat: snap?.lat ?? boot.lat,
+          lng: snap?.lng ?? boot.lng,
+          city: snap?.city ?? boot.city ?? nextSession.location?.city ?? "目前位置",
+        },
+      };
+      persistSession(nextSession);
+    }
+
+    persistSession(nextSession);
+
+    const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+    setMsgs(next);
+    if (!overrideText) {
+      clearComposerInput();
+    }
+
+    if (route.mode === "itinerary" || isUserConfirmingItinerary(trimmed)) {
+      if (nextSession.selectedPlaces.length < 1) {
+        toast.message("你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線。");
+        const hint: ChatMsg = {
+          role: "assistant",
+          content: "你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線 ☺️",
+        };
+        setMsgs([...next, hint]);
+        return;
+      }
+      const readySession: ChatPlanningSession = { ...nextSession, phase: "ready" };
+      persistSession(readySession);
+      await handleGenerateItinerary(readySession, next);
+      return;
+    }
+
+    if (route.mode === "clarify" && route.question && route.missingKey) {
+      const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
+      if (lastAssistant?.content.trim() === route.question.trim()) {
+        if (isReadyForRecommendation(merged.context, nextSession)) {
+          await streamChat(next, { phase: "recommend", userText: trimmed }, nextSession);
+          return;
+        }
+      }
+      nextSession = markAskedClarifyKey(nextSession, route.missingKey);
+      persistSession(nextSession);
+      setMsgs([...next, { role: "assistant", content: route.question }]);
+      return;
+    }
+
+    try {
+      await streamChat(next, { phase: route.chatPhase, userText: trimmed }, nextSession);
+      console.log("[CHAT_SUBMIT_SUCCESS]");
+    } catch (e) {
+      console.log("[CHAT_SUBMIT_ERROR]", e);
+      throw e;
+    }
+  };
+
+  const sendRef = useRef(send);
+  sendRef.current = send;
+
+  const handleComposerSend = useCallback((trimmed: string) => {
+    void sendRef.current(trimmed);
+  }, []);
+
+  const handleAdvancedPlanning = useCallback(() => {
+    const nextSession: ChatPlanningSession = {
+      ...session,
+      phase: "collect",
+    };
+    persistSession(nextSession);
+    setMsgs((prev) => {
+      const next = [
+        ...prev,
+        { role: "user" as const, content: ADVANCED_PLANNING_USER_TEXT },
+        { role: "assistant" as const, content: ADVANCED_PLANNING_ASSISTANT_TEXT },
+      ];
+      persistChatUiMessages(next);
+      return next;
+    });
+  }, [session, persistSession]);
+
+  const handleChipSend = useCallback(
+    (chipId: string) => {
+      if (chipId === ADVANCED_PLANNING_CHIP_ID) {
+        handleAdvancedPlanning();
+        return;
+      }
+      const outbound = CHIP_OUTBOUND_TEXT[chipId] ?? chipId;
+      void sendRef.current(outbound);
+    },
+    [handleAdvancedPlanning],
+  );
+
   const retry = async () => {
     if (!lastFailed || streaming) return;
     await streamChat(lastFailed);
@@ -1470,19 +1828,12 @@ function Chat() {
       setMsgs([greetingMsg]);
       setLastFailed(null);
       setPartial({});
-      setText("");
+      clearComposerInput();
       setClearDialogOpen(false);
     } catch {
       toast.error("清空失敗");
     } finally {
       setClearing(false);
-    }
-  };
-
-  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
     }
   };
 
@@ -1512,22 +1863,19 @@ function Chat() {
     }
   };
 
-  const discoverChips = [
-    "今天想放鬆走走",
-    "想探索新地方",
-    "主要是想拍照",
-    "一個人",
-    "跟朋友",
-    "室內就好",
-    "想去室外",
-  ];
+  const chatChips = useMemo(
+    () =>
+      session.phase === "discover"
+        ? CHAT_DISCOVER_CHIPS
+        : session.phase === "collect" && session.selectedPlaces.length > 0
+          ? CHAT_COLLECT_CHIPS
+          : CHAT_DEFAULT_CHIPS,
+    [session.phase, session.selectedPlaces.length],
+  );
 
-  const chatChips =
-    session.phase === "discover"
-      ? discoverChips
-      : session.phase === "collect" && session.selectedPlaces.length > 0
-        ? ["就這樣吧，可以開始安排", "想再加一個咖啡廳", "節奏慢一點"]
-        : ["我今天有點累", "想找安靜的咖啡廳", "下雨天可以去哪"];
+  const handleComposerFocus = useCallback(() => {
+    requestAnimationFrame(scrollMessagesToEnd);
+  }, [scrollMessagesToEnd]);
 
   return (
     <div
@@ -1632,9 +1980,16 @@ function Chat() {
                 >
                   {m.role === "user" ? (
                     <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
-                  ) : m.roamie || (streaming && i === msgs.length - 1 && partial.summary) ? (
+                  ) : m.content?.trim() ? (
+                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
+                  ) : hasMeaningfulRoamiePayload(m.roamie) ||
+                    (streaming && i === msgs.length - 1) ? (
                     <RoamieResponseView
-                      data={m.roamie ?? partial}
+                      data={
+                        hasMeaningfulRoamiePayload(m.roamie)
+                          ? m.roamie!
+                          : { ...partial, summary: partial.summary ?? "" }
+                      }
                       compact
                       showItinerary={
                         session.phase === "done" && (m.roamie?.itinerary?.length ?? 0) > 0
@@ -1642,24 +1997,23 @@ function Chat() {
                       onSavePlace={handleSavePlace}
                       onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec))}
                       onOpenPlaceDetail={handleOpenPlaceDetail}
-                      onDiscussPlace={handleSelectPlace}
+                      onDiscussPlace={handleDiscussPlace}
+                      onNavigatePlace={handleNavigatePlace}
+                      simplifiedPlaceActions
                       outfitAdvice={m.roamie?.outfitAdvice}
                       selectedPlaceNames={selectedNames}
                       savingPlaceName={savingName}
                       savedPlaceNames={savedNames}
                       addToTripLabel={t("chat.addToTrip")}
                       discussPlaceLabel={t("trip.discussPlace")}
-                      viewMapLabel={t("chat.viewMap")}
                     />
                   ) : (
                     <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
-                      {m.content || (
-                        <span className="inline-flex gap-1">
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:120ms]" />
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:240ms]" />
-                        </span>
-                      )}
+                      <span className="inline-flex gap-1">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:120ms]" />
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:240ms]" />
+                      </span>
                     </p>
                   )}
                 </div>
@@ -1681,22 +2035,17 @@ function Chat() {
 
         <div
           ref={composerShellRef}
-          className="chat-composer-shell shrink-0 transition-[padding-bottom] duration-200 ease-out"
+          className="chat-composer-shell relative z-50 shrink-0 transition-[padding-bottom] duration-200 ease-out"
           style={{
-            paddingBottom: `calc(max(6px, env(safe-area-inset-bottom, 0px)) + ${
-              keyboardVisible ? composerBottomInset : 0
-            }px)`,
+            paddingBottom: keyboardVisible
+              ? `${composerBottomInset}px`
+              : "max(6px, env(safe-area-inset-bottom, 0px))",
           }}
         >
           <div className="chat-keyboard-follow-group">
             <ChatComposer
-              text={text}
-              onTextChange={setText}
-              onSend={() => void send()}
-              onKeyDown={handleKey}
-              onFocus={() => {
-                requestAnimationFrame(scrollMessagesToEnd);
-              }}
+              onSend={handleComposerSend}
+              onFocus={handleComposerFocus}
               disabled={streaming || generating}
               showShortcutChips={showShortcutChips}
               keyboardOpen={keyboardVisible}
@@ -1708,8 +2057,9 @@ function Chat() {
               hasDraftTrip={hasDraftTrip}
               lastGeneratedTripId={session.lastGeneratedTripId}
               chatChips={chatChips}
-              onChipSend={(s) => void send(s)}
-              onGenerateClick={() => void send("就這樣吧，可以開始安排")}
+              onChipSend={handleChipSend}
+              onAdvancedPlanning={handleAdvancedPlanning}
+              onGenerateClick={() => void sendRef.current("就這樣吧，可以開始安排")}
               onSaveTrip={() => void handleConfirmSaveTrip()}
               onViewDraft={() => navigate({ to: "/trip", search: { draft: "1" } })}
               onViewSavedTrip={(tripId) => {

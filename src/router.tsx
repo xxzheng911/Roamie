@@ -30,7 +30,9 @@ export const getRouter = () => {
     scrollRestoration: true,
     defaultPreloadStaleTime: 0,
     defaultPendingComponent: RoamieRoutePending,
-    defaultPendingMinMs: 0,
+    /** 避免子路由切換時瞬間閃出全屏 loading（實機尤其明顯） */
+    defaultPendingMs: 220,
+    defaultPendingMinMs: 120,
   });
 
   try {
@@ -40,6 +42,16 @@ export const getRouter = () => {
   }
 
   if (typeof window !== "undefined") {
+    router.subscribe("onLoad", (event) => {
+      if (event.type === "onLoad" && event.routeError) {
+        logAppError("ROUTER_ROUTE_LOAD_ERROR", event.routeError, {
+          routeId: event.routeId,
+          path: window.location.pathname,
+        });
+      }
+    });
+
+    let routeSnapshotTimer: ReturnType<typeof setTimeout> | undefined;
     router.subscribe("onResolved", () => {
       const path = window.location.pathname.replace(/\/+$/, "") || "/";
       if (
@@ -50,7 +62,10 @@ export const getRouter = () => {
       ) {
         return;
       }
-      requestIosSnapshotRefresh("route", { force: true });
+      if (routeSnapshotTimer) clearTimeout(routeSnapshotTimer);
+      routeSnapshotTimer = setTimeout(() => {
+        requestIosSnapshotRefresh("route", { force: true });
+      }, 450);
     });
   }
 

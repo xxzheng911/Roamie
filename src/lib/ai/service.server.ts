@@ -12,6 +12,7 @@ import {
   mergeBoundsForStage,
   stageAllowsPlacesFirst,
 } from "@/lib/ai/conversation-stage";
+import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
 
 const PlaceItemSchema = z
   .object({
@@ -63,6 +64,7 @@ const RequestSchema = z.object({
       "collect",
       "ready",
       "enrich",
+      "place_discussion",
       "handoff",
       "expand",
       "confirm",
@@ -141,7 +143,23 @@ export function parseRoamieRequest(body: unknown): RoamieRequestContext {
   return data as RoamieRequestContext;
 }
 
+function shouldStripPlaceCards(ctx: RoamieRequestContext): boolean {
+  return (
+    ctx.aiUserIntent === "travel_time_advice" ||
+    userAsksTravelTimeAdvice(ctx.chatInput ?? ctx.lastUserIntent ?? "")
+  );
+}
+
+function applyIntentResponseGuards(
+  parsed: RoamieResponse,
+  ctx: RoamieRequestContext,
+): RoamieResponse {
+  if (!shouldStripPlaceCards(ctx)) return parsed;
+  return { ...parsed, recommendations: [], itinerary: [] };
+}
+
 function shouldUsePlacesFirst(ctx: RoamieRequestContext): boolean {
+  if (shouldStripPlaceCards(ctx)) return false;
   if (ctx.mode === "recommend") return true;
   if (ctx.mode !== "chat") return false;
   if (ctx.conversationStage) {
@@ -217,7 +235,10 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
   const content = result.choices?.[0]?.message?.content;
   if (!content) throw new Error("AI 回應格式錯誤，請再試一次。");
 
-  let parsed = normalizeRoamieResponse(JSON.parse(content) as Record<string, unknown>);
+  let parsed = applyIntentResponseGuards(
+    normalizeRoamieResponse(JSON.parse(content) as Record<string, unknown>),
+    ctx,
+  );
 
   if (prep.candidates.length) {
     parsed = mergeAiWithVerifiedCandidates(parsed, prep.candidates, mergeOptionsForContext(ctx));
@@ -333,7 +354,10 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
         let finalPayload = assembled;
         if (assembled.trim()) {
           try {
-            let parsed = normalizeRoamieResponse(JSON.parse(assembled) as Record<string, unknown>);
+            let parsed = applyIntentResponseGuards(
+              normalizeRoamieResponse(JSON.parse(assembled) as Record<string, unknown>),
+              ctx,
+            );
             if (prep.candidates.length) {
               parsed = mergeAiWithVerifiedCandidates(
                 parsed,

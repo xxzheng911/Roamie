@@ -13,6 +13,9 @@ import {
   isHttpUrl,
 } from "@/lib/auth-session";
 import type { AuthProviderKind } from "@/lib/auth-provider";
+import type { SurveyResultProfile } from "@/lib/travel-preference-survey-types";
+import { resolveBudgetMode } from "@/lib/preferences-storage";
+import { loadTravelPreferenceSurveyForUser } from "@/lib/travel-preference-survey-save";
 
 const GUEST_PROFILE_KEY = "roamie:user-profile";
 const GUEST_SETTINGS_KEY = "roamie:profile-settings";
@@ -20,6 +23,15 @@ const GUEST_SETTINGS_KEY = "roamie:profile-settings";
 export type ProfileExtras = {
   travelStyle?: string;
   travelPreferences?: string[];
+  travelPersonality?: {
+    type?: string;
+    summary?: string;
+    impression?: string;
+  };
+  travelTags?: string[];
+  surveyCompleted?: boolean;
+  surveyCompletedAt?: string;
+  companionshipPreference?: string;
   pacePreference?: string;
   transportPreference?: string;
   vibePreference?: string;
@@ -42,6 +54,10 @@ export type UserProfile = {
   personalityType: string;
   personalitySummary: string;
   personalityImpression: string;
+  surveyCompleted: boolean;
+  surveyCompletedAt: string | null;
+  travelTags: string[];
+  surveyResult: SurveyResultProfile | null;
   aiPreferences?: Record<string, unknown>;
 };
 
@@ -178,8 +194,23 @@ export async function getUserProfile(localeOverride?: Locale): Promise<UserProfi
   const guestSettings = readGuestSettings();
   const guestLocale = guestSettings.language ?? localeOverride ?? "zh-TW";
 
-  const prefs = await getPreferences();
-  const personality = derivePersonality(prefs);
+  const [prefs, surveySnapshot] = await Promise.all([
+    getPreferences(),
+    loadTravelPreferenceSurveyForUser(userId).catch((e) => {
+      console.error("[PROFILE_SURVEY] load failed", e);
+      return null;
+    }),
+  ]);
+
+  const mergedPrefs = surveySnapshot?.prefs ?? prefs;
+  const surveyCompleted = Boolean(
+    surveySnapshot?.surveyCompleted ?? mergedPrefs.surveyCompleted ?? mergedPrefs.onboarded,
+  );
+  if (surveyCompleted) {
+    console.info("[PROFILE] surveyLoaded=", mergedPrefs.personalityType ?? "unknown");
+  }
+  const personality = derivePersonality(mergedPrefs);
+  const surveyResult = surveySnapshot?.resultProfile ?? mergedPrefs.resultProfile ?? null;
 
   let data = await fetchProfileRow(userId);
   if (!data) {
@@ -203,15 +234,41 @@ export async function getUserProfile(localeOverride?: Locale): Promise<UserProfi
     avatarUrl,
     coverImageUrl,
     bio: storedBio || getDefaultBio(locale),
-    travelStyle: extras.travelStyle ?? "",
+    travelStyle:
+      surveySnapshot?.travelStyle ??
+      extras.travelStyle ??
+      mergedPrefs.personalityType ??
+      "",
     language: locale,
     notificationsEnabled: data?.notifications_enabled ?? false,
     authProvider: (data?.auth_provider as AuthProviderKind) ?? null,
-    prefs,
-    personalityType: prefs.personalityType ?? extras.personalityType ?? personality.type,
+    prefs: {
+      ...mergedPrefs,
+      surveyCompleted,
+      onboarded: surveyCompleted || mergedPrefs.onboarded,
+      resultProfile: surveyResult ?? mergedPrefs.resultProfile,
+    },
+    personalityType:
+      surveyResult?.personalityType ??
+      mergedPrefs.personalityType ??
+      extras.personalityType ??
+      personality.type,
     personalitySummary:
-      prefs.personalitySummary ?? extras.personalitySummary ?? personality.summary,
-    personalityImpression: personality.impression,
+      surveyResult?.aiRecommendationSummary ??
+      mergedPrefs.personalitySummary ??
+      extras.personalitySummary ??
+      personality.summary,
+    personalityImpression:
+      surveyResult?.personalityImpression ?? personality.impression,
+    surveyCompleted,
+    surveyCompletedAt:
+      surveySnapshot?.surveyCompletedAt ?? mergedPrefs.surveyCompletedAt ?? null,
+    travelTags:
+      surveySnapshot?.travelTags ??
+      (Array.isArray(extras.travelTags) ? extras.travelTags : []) ??
+      surveyResult?.travelTags ??
+      [],
+    surveyResult,
     aiPreferences: extras,
   };
 }
@@ -311,15 +368,70 @@ export async function savePersonalityToProfile(prefs: TravelPreferences): Promis
   }
 }
 
+export async function syncTravelPreferenceSurveyFields(
+  prefs: TravelPreferences,
+  result: SurveyResultProfile,
+): Promise<void> {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) return;
+
+  const payload: ProfileExtras = {
+    travelStyle: result.travelStyle,
+    travelPreferences: prefs.interests ?? [],
+    travelPersonality: {
+      type: result.personalityType,
+      summary: result.personalitySummary,
+      impression: result.personalityImpression,
+    },
+    travelTags: result.travelTags,
+    surveyCompleted: true,
+    surveyCompletedAt: prefs.surveyCompletedAt ?? new Date().toISOString(),
+    companionshipPreference: prefs.companionship ?? "",
+    pacePreference: prefs.pace ?? "",
+    vibePreference: prefs.vibe ?? "",
+    budgetPreference: resolveBudgetMode(prefs),
+    personalityType: result.personalityType,
+    personalitySummary: result.aiRecommendationSummary,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from("profiles")
+    .upsert({ id: userId, ai_preferences: payload as never }, { onConflict: "id" });
+  if (error) {
+    const msg = error.message ?? "";
+    if (/record\s+\"new\"\s+has\s+no\s+field\s+\"updated_at\"/i.test(msg)) {
+      console.warn("[profile] survey ai_preferences sync skipped (schema)", msg);
+      return;
+    }
+    throw new Error(error.message);
+  }
+}
+
 export async function syncTravelPreferenceProfileFields(input: {
   travelStyle?: string;
   prefs: TravelPreferences;
 }): Promise<void> {
   const userId = await getAuthenticatedUserId();
   if (!userId) return;
+  const result = input.prefs.resultProfile;
   const payload: ProfileExtras = {
-    travelStyle: input.travelStyle?.trim() || "",
+    travelStyle: input.travelStyle?.trim() || result?.travelStyle || input.prefs.personalityType || "",
     travelPreferences: input.prefs.interests ?? [],
+    travelPersonality: result
+      ? {
+          type: result.personalityType,
+          summary: result.personalitySummary,
+          impression: result.personalityImpression,
+        }
+      : {
+          type: input.prefs.personalityType,
+          summary: input.prefs.personalitySummary,
+        },
+    travelTags: result?.travelTags ?? input.prefs.interests ?? [],
+    surveyCompleted: Boolean(input.prefs.surveyCompleted ?? input.prefs.onboarded),
+    surveyCompletedAt: input.prefs.surveyCompletedAt,
+    companionshipPreference: input.prefs.companionship ?? "",
     pacePreference: input.prefs.pace ?? "",
     transportPreference:
       ((input.prefs as TravelPreferences & { transportPreference?: string }).transportPreference ??

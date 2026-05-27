@@ -48,7 +48,7 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
   const badge = t("quizCta.badge");
   const title = t("quizCta.title");
   const desc = t("quizCta.desc");
-  const button = t("quizCta.button");
+  const button = hasPlusAccess ? t("profile.startQuiz") : t("quizCta.button");
 
   const upgradeDialog = (
     <PlusUpgradeDialog open={upgradeOpen} onOpenChange={setUpgradeOpen} feature="quiz" />
@@ -90,8 +90,8 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
 
     return (
       <Link
-        to="/onboarding"
-        search={{ from: origin }}
+        to="/preference-quiz"
+        search={{ returnTo: origin === "chat" ? "/chat" : "/profile" }}
         className={`block rounded-2xl border border-clay/25 bg-accent/50 px-4 py-3.5 transition active:scale-[0.99] ${className ?? ""}`}
       >
         {inner}
@@ -106,8 +106,8 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
           <QuizCtaContent badge={badge} title={title} desc={desc} button={button} />
           {hasPlusAccess ? (
             <Link
-              to="/onboarding"
-              search={{ from: origin }}
+              to="/preference-quiz"
+              search={{ returnTo: "/profile" }}
               className="mt-4 block rounded-full bg-primary py-3 text-center text-sm text-primary-foreground"
             >
               {button}
@@ -159,8 +159,8 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
 
   return (
     <Link
-      to="/onboarding"
-      search={{ from: origin }}
+      to="/preference-quiz"
+      search={{ returnTo: "/profile" }}
       className={`block rounded-3xl border border-border bg-card p-5 shadow-soft transition active:scale-[0.99] ${className ?? ""}`}
     >
       {cardBody}

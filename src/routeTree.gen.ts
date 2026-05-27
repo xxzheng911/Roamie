@@ -18,6 +18,7 @@ import { Route as AppIndexRouteImport } from './routes/_app.index'
 import { Route as LoginLegalRouteImport } from './routes/login/legal'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
+import { Route as ApiQaAuthRouteImport } from './routes/api/qa-auth'
 import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
 import { Route as ApiGenerateItineraryRouteImport } from './routes/api/generate-itinerary'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
@@ -25,6 +26,7 @@ import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSavedRouteImport } from './routes/_app.saved'
 import { Route as AppRecommendationsRouteImport } from './routes/_app.recommendations'
 import { Route as AppProfileRouteImport } from './routes/_app.profile'
+import { Route as AppPreferenceQuizRouteImport } from './routes/_app.preference-quiz'
 import { Route as AppPlanRouteImport } from './routes/_app.plan'
 import { Route as AppPlaceRouteImport } from './routes/_app.place'
 import { Route as AppMapRouteImport } from './routes/_app.map'
@@ -32,6 +34,7 @@ import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
 import { Route as AppSavedIndexRouteImport } from './routes/_app.saved.index'
 import { Route as AppSavedTripIdRouteImport } from './routes/_app.saved.$tripId'
+import { Route as AppPlacePlaceIdRouteImport } from './routes/_app.place.$placeId'
 
 const WelcomeRoute = WelcomeRouteImport.update({
   id: '/welcome',
@@ -77,6 +80,11 @@ const ApiRoamieRoute = ApiRoamieRouteImport.update({
   path: '/api/roamie',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiQaAuthRoute = ApiQaAuthRouteImport.update({
+  id: '/api/qa-auth',
+  path: '/api/qa-auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPlacePhotoRoute = ApiPlacePhotoRouteImport.update({
   id: '/api/place-photo',
   path: '/api/place-photo',
@@ -110,6 +118,11 @@ const AppRecommendationsRoute = AppRecommendationsRouteImport.update({
 const AppProfileRoute = AppProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppPreferenceQuizRoute = AppPreferenceQuizRouteImport.update({
+  id: '/preference-quiz',
+  path: '/preference-quiz',
   getParentRoute: () => AppRoute,
 } as any)
 const AppPlanRoute = AppPlanRouteImport.update({
@@ -147,6 +160,11 @@ const AppSavedTripIdRoute = AppSavedTripIdRouteImport.update({
   path: '/$tripId',
   getParentRoute: () => AppSavedRoute,
 } as any)
+const AppPlacePlaceIdRoute = AppPlacePlaceIdRouteImport.update({
+  id: '/$placeId',
+  path: '/$placeId',
+  getParentRoute: () => AppPlaceRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -157,8 +175,9 @@ export interface FileRoutesByFullPath {
   '/chat': typeof AppChatRoute
   '/developer': typeof AppDeveloperRoute
   '/map': typeof AppMapRoute
-  '/place': typeof AppPlaceRoute
+  '/place': typeof AppPlaceRouteWithChildren
   '/plan': typeof AppPlanRoute
+  '/preference-quiz': typeof AppPreferenceQuizRoute
   '/profile': typeof AppProfileRoute
   '/recommendations': typeof AppRecommendationsRoute
   '/saved': typeof AppSavedRouteWithChildren
@@ -166,9 +185,11 @@ export interface FileRoutesByFullPath {
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
+  '/api/qa-auth': typeof ApiQaAuthRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
+  '/place/$placeId': typeof AppPlacePlaceIdRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
   '/saved/': typeof AppSavedIndexRoute
 }
@@ -180,18 +201,21 @@ export interface FileRoutesByTo {
   '/chat': typeof AppChatRoute
   '/developer': typeof AppDeveloperRoute
   '/map': typeof AppMapRoute
-  '/place': typeof AppPlaceRoute
+  '/place': typeof AppPlaceRouteWithChildren
   '/plan': typeof AppPlanRoute
+  '/preference-quiz': typeof AppPreferenceQuizRoute
   '/profile': typeof AppProfileRoute
   '/recommendations': typeof AppRecommendationsRoute
   '/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
+  '/api/qa-auth': typeof ApiQaAuthRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
   '/': typeof AppIndexRoute
+  '/place/$placeId': typeof AppPlacePlaceIdRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
   '/saved': typeof AppSavedIndexRoute
 }
@@ -205,8 +229,9 @@ export interface FileRoutesById {
   '/_app/chat': typeof AppChatRoute
   '/_app/developer': typeof AppDeveloperRoute
   '/_app/map': typeof AppMapRoute
-  '/_app/place': typeof AppPlaceRoute
+  '/_app/place': typeof AppPlaceRouteWithChildren
   '/_app/plan': typeof AppPlanRoute
+  '/_app/preference-quiz': typeof AppPreferenceQuizRoute
   '/_app/profile': typeof AppProfileRoute
   '/_app/recommendations': typeof AppRecommendationsRoute
   '/_app/saved': typeof AppSavedRouteWithChildren
@@ -214,10 +239,12 @@ export interface FileRoutesById {
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
+  '/api/qa-auth': typeof ApiQaAuthRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/place/$placeId': typeof AppPlacePlaceIdRoute
   '/_app/saved/$tripId': typeof AppSavedTripIdRoute
   '/_app/saved/': typeof AppSavedIndexRoute
 }
@@ -234,6 +261,7 @@ export interface FileRouteTypes {
     | '/map'
     | '/place'
     | '/plan'
+    | '/preference-quiz'
     | '/profile'
     | '/recommendations'
     | '/saved'
@@ -241,9 +269,11 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/generate-itinerary'
     | '/api/place-photo'
+    | '/api/qa-auth'
     | '/api/roamie'
     | '/auth/callback'
     | '/login/legal'
+    | '/place/$placeId'
     | '/saved/$tripId'
     | '/saved/'
   fileRoutesByTo: FileRoutesByTo
@@ -257,16 +287,19 @@ export interface FileRouteTypes {
     | '/map'
     | '/place'
     | '/plan'
+    | '/preference-quiz'
     | '/profile'
     | '/recommendations'
     | '/settings'
     | '/api/chat'
     | '/api/generate-itinerary'
     | '/api/place-photo'
+    | '/api/qa-auth'
     | '/api/roamie'
     | '/auth/callback'
     | '/login/legal'
     | '/'
+    | '/place/$placeId'
     | '/saved/$tripId'
     | '/saved'
   id:
@@ -281,6 +314,7 @@ export interface FileRouteTypes {
     | '/_app/map'
     | '/_app/place'
     | '/_app/plan'
+    | '/_app/preference-quiz'
     | '/_app/profile'
     | '/_app/recommendations'
     | '/_app/saved'
@@ -288,10 +322,12 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/generate-itinerary'
     | '/api/place-photo'
+    | '/api/qa-auth'
     | '/api/roamie'
     | '/auth/callback'
     | '/login/legal'
     | '/_app/'
+    | '/_app/place/$placeId'
     | '/_app/saved/$tripId'
     | '/_app/saved/'
   fileRoutesById: FileRoutesById
@@ -305,6 +341,7 @@ export interface RootRouteChildren {
   ApiChatRoute: typeof ApiChatRoute
   ApiGenerateItineraryRoute: typeof ApiGenerateItineraryRoute
   ApiPlacePhotoRoute: typeof ApiPlacePhotoRoute
+  ApiQaAuthRoute: typeof ApiQaAuthRoute
   ApiRoamieRoute: typeof ApiRoamieRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
 }
@@ -374,6 +411,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiRoamieRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/qa-auth': {
+      id: '/api/qa-auth'
+      path: '/api/qa-auth'
+      fullPath: '/api/qa-auth'
+      preLoaderRoute: typeof ApiQaAuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/place-photo': {
       id: '/api/place-photo'
       path: '/api/place-photo'
@@ -421,6 +465,13 @@ declare module '@tanstack/react-router' {
       path: '/profile'
       fullPath: '/profile'
       preLoaderRoute: typeof AppProfileRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/preference-quiz': {
+      id: '/_app/preference-quiz'
+      path: '/preference-quiz'
+      fullPath: '/preference-quiz'
+      preLoaderRoute: typeof AppPreferenceQuizRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/plan': {
@@ -472,8 +523,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSavedTripIdRouteImport
       parentRoute: typeof AppSavedRoute
     }
+    '/_app/place/$placeId': {
+      id: '/_app/place/$placeId'
+      path: '/$placeId'
+      fullPath: '/place/$placeId'
+      preLoaderRoute: typeof AppPlacePlaceIdRouteImport
+      parentRoute: typeof AppPlaceRoute
+    }
   }
 }
+
+interface AppPlaceRouteChildren {
+  AppPlacePlaceIdRoute: typeof AppPlacePlaceIdRoute
+}
+
+const AppPlaceRouteChildren: AppPlaceRouteChildren = {
+  AppPlacePlaceIdRoute: AppPlacePlaceIdRoute,
+}
+
+const AppPlaceRouteWithChildren = AppPlaceRoute._addFileChildren(
+  AppPlaceRouteChildren,
+)
 
 interface AppSavedRouteChildren {
   AppSavedTripIdRoute: typeof AppSavedTripIdRoute
@@ -493,8 +563,9 @@ interface AppRouteChildren {
   AppChatRoute: typeof AppChatRoute
   AppDeveloperRoute: typeof AppDeveloperRoute
   AppMapRoute: typeof AppMapRoute
-  AppPlaceRoute: typeof AppPlaceRoute
+  AppPlaceRoute: typeof AppPlaceRouteWithChildren
   AppPlanRoute: typeof AppPlanRoute
+  AppPreferenceQuizRoute: typeof AppPreferenceQuizRoute
   AppProfileRoute: typeof AppProfileRoute
   AppRecommendationsRoute: typeof AppRecommendationsRoute
   AppSavedRoute: typeof AppSavedRouteWithChildren
@@ -506,8 +577,9 @@ const AppRouteChildren: AppRouteChildren = {
   AppChatRoute: AppChatRoute,
   AppDeveloperRoute: AppDeveloperRoute,
   AppMapRoute: AppMapRoute,
-  AppPlaceRoute: AppPlaceRoute,
+  AppPlaceRoute: AppPlaceRouteWithChildren,
   AppPlanRoute: AppPlanRoute,
+  AppPreferenceQuizRoute: AppPreferenceQuizRoute,
   AppProfileRoute: AppProfileRoute,
   AppRecommendationsRoute: AppRecommendationsRoute,
   AppSavedRoute: AppSavedRouteWithChildren,
@@ -536,6 +608,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChatRoute: ApiChatRoute,
   ApiGenerateItineraryRoute: ApiGenerateItineraryRoute,
   ApiPlacePhotoRoute: ApiPlacePhotoRoute,
+  ApiQaAuthRoute: ApiQaAuthRoute,
   ApiRoamieRoute: ApiRoamieRoute,
   AuthCallbackRoute: AuthCallbackRoute,
 }

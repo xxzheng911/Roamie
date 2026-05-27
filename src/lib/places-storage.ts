@@ -51,11 +51,21 @@ function writeLocalCache(userId: string | null, list: SavedPlace[]): void {
   localStorage.setItem(localCacheKey(userId), JSON.stringify(list));
 }
 
+function placeStableKey(p: SavedPlace): string {
+  const pid = p.metadata?.placeId;
+  if (typeof pid === "string" && pid.trim()) return `pid:${pid.trim()}`;
+  const nameKey = p.name.trim().toLowerCase();
+  if (p.lat != null && p.lng != null) {
+    return `geo:${nameKey}:${p.lat.toFixed(4)}:${p.lng.toFixed(4)}`;
+  }
+  return `id:${p.id || nameKey}`;
+}
+
 function mergePlacesByIdOrName(...groups: SavedPlace[][]): SavedPlace[] {
   const map = new Map<string, SavedPlace>();
   for (const g of groups) {
     for (const p of g) {
-      const key = p.id || `name:${p.name}`;
+      const key = placeStableKey(p);
       if (!map.has(key)) map.set(key, p);
     }
   }
@@ -148,26 +158,36 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
 }
 
 export async function deletePlace(id: string): Promise<void> {
+  console.info("[FAVORITE_PLACE_DELETE] start placeId=", id);
   const userId = await resolveStableUserId();
-  if (userId) {
+  const local = mergePlacesByIdOrName(readLocalCache(userId), readLocalCache(null));
+  const target = local.find((p) => p.id === id);
+
+  const filtered = local.filter((p) => p.id !== id);
+  writeLocalCache(userId, filtered);
+  writeLocalCache(null, filtered);
+  console.info("[FAVORITE_PLACE_DELETE] local removed");
+
+  if (userId && target && !id.startsWith("guest-")) {
     const { error } = await supabase.from("saved_places").delete().eq("id", id);
     if (error) {
-      if (isMissingTableError(error)) return;
+      if (isMissingTableError(error)) {
+        emitSavedPlacesChanged();
+        console.info("[FAVORITE_PLACE_DELETE] completed");
+        return;
+      }
+      writeLocalCache(userId, local);
+      writeLocalCache(null, local);
       throw new Error(error.message);
     }
-    const local = mergePlacesByIdOrName(readLocalCache(userId), readLocalCache(null));
-    const filtered = local.filter((p) => p.id !== id);
-    writeLocalCache(userId, filtered);
-    writeLocalCache(null, filtered);
-    emitSavedPlacesChanged();
-    return;
+    console.info("[FAVORITE_PLACE_DELETE] remote removed");
+  } else if (userId && target?.name) {
+    const { error } = await supabase.from("saved_places").delete().eq("user_id", userId).eq("name", target.name);
+    if (!error) console.info("[FAVORITE_PLACE_DELETE] remote removed");
   }
-  const local = readLocalCache(null);
-  writeLocalCache(
-    null,
-    local.filter((p) => p.id !== id),
-  );
+
   emitSavedPlacesChanged();
+  console.info("[FAVORITE_PLACE_DELETE] completed");
 }
 
 export async function isPlaceSavedByName(name: string): Promise<string | null> {

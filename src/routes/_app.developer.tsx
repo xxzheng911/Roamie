@@ -1,4 +1,5 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
+import { isQaBuildEnabled } from "@/lib/qa-auth/build";
 import { ChevronLeft } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -19,9 +20,8 @@ import { clearBootstrapSplashForDev } from "@/lib/bootstrap-splash";
 
 export const Route = createFileRoute("/_app/developer")({
   beforeLoad: () => {
-    if (!import.meta.env.DEV) {
-      // Never expose developer tools in production/TestFlight builds.
-      throw new Error("Developer tools are disabled");
+    if (!isQaBuildEnabled()) {
+      throw redirect({ to: "/settings" });
     }
   },
   component: DeveloperSettingsPage,

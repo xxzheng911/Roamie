@@ -1,6 +1,8 @@
 import { parsePartialRoamieJson } from "./parse-partial";
 import type { RoamieRequestContext } from "./context";
 import { normalizeRoamieResponse, type RoamieResponse as RoamieResponseType } from "./types";
+import { isLocalhostAppApiUrl, resolveAppApiUrl } from "@/lib/api-base-url";
+import { isChatApiUnreachableOnNative } from "@/lib/chat-api-ready";
 async function withResolvedPlanTier(ctx: RoamieRequestContext): Promise<RoamieRequestContext> {
   const { applyTierToAiContext } = await import("@/lib/access/context");
   const { resolveEffectivePlanTierWithProfile } = await import("@/lib/access/resolve");
@@ -26,15 +28,33 @@ export async function streamRoamieAI(
   options?: { token?: string; signal?: AbortSignal },
 ): Promise<RoamieResponseType | null> {
   const enriched = await withResolvedPlanTier(ctx);
-  const resp = await fetch("/api/roamie", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
-    },
-    body: JSON.stringify(enriched),
-    signal: options?.signal,
-  });
+  const url = resolveAppApiUrl("/api/roamie");
+  console.info("[CHAT_API] stream url=", url);
+
+  if (isChatApiUnreachableOnNative() || isLocalhostAppApiUrl(url)) {
+    const msg = "無法連線到 AI 服務（請設定正式 VITE_APP_ORIGIN 後重新 build）。";
+    console.warn("[CHAT_API] stream blocked on native", { url });
+    handlers.onError?.(msg);
+    return null;
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      },
+      body: JSON.stringify(enriched),
+      signal: options?.signal,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[CHAT_API] stream network error", { url, msg });
+    handlers.onError?.("無法連線到 AI 服務，請確認網路或 VITE_APP_ORIGIN 設定。");
+    return null;
+  }
 
   if (!resp.ok || !resp.body) {
     let errMsg = "AI 服務暫時無法使用";
@@ -126,15 +146,29 @@ export async function fetchRoamieAI(
   options?: { token?: string },
 ): Promise<RoamieResponseType> {
   const enriched = await withResolvedPlanTier(ctx);
-  const resp = await fetch("/api/roamie", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Roamie-Stream": "false",
-      ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
-    },
-    body: JSON.stringify(enriched),
-  });
+  const url = resolveAppApiUrl("/api/roamie");
+  console.info("[CHAT_API] fetch url=", url);
+
+  if (isChatApiUnreachableOnNative() || isLocalhostAppApiUrl(url)) {
+    throw new Error("無法連線到 AI 服務（請設定正式 VITE_APP_ORIGIN 後重新 build）。");
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Roamie-Stream": "false",
+        ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      },
+      body: JSON.stringify(enriched),
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[CHAT_API] fetch network error", { url, msg });
+    throw new Error("無法連線到 AI 服務，請確認網路或 VITE_APP_ORIGIN 設定。");
+  }
 
   if (!resp.ok) {
     let errMsg = "AI 服務暫時無法使用";

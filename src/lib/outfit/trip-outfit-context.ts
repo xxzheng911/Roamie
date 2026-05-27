@@ -2,17 +2,31 @@ import type { RoamieItineraryItem, TripTransportMode } from "@/lib/ai/types";
 import type { TripLocation } from "@/lib/location/types";
 import { inferActivityTypesFromDayItems } from "@/lib/outfit/infer-activities";
 
+export function buildTripItemsFingerprint(items: { date?: string; placeName?: string; title?: string }[]): string {
+  return items
+    .slice(0, 24)
+    .map((i) => `${i.date ?? ""}:${i.placeName ?? i.title ?? ""}`)
+    .join(";")
+    .slice(0, 280);
+}
+
 export function buildOutfitInputKey(params: {
   destination: string;
   startDate: string;
   endDate: string;
   dayCount: number;
+  itemsFingerprint?: string;
+  weatherSignature?: string;
+  weatherRefreshTick?: number;
 }): string {
   return [
     params.destination.trim().toLowerCase(),
     params.startDate.trim(),
     params.endDate.trim(),
     String(params.dayCount),
+    params.itemsFingerprint?.trim() || "",
+    params.weatherSignature?.trim() || "",
+    params.weatherRefreshTick != null ? `w${params.weatherRefreshTick}` : "",
   ].join("|");
 }
 

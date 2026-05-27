@@ -22,6 +22,7 @@ import {
 } from "@/lib/filter-available-places";
 import { filterExplorePlaces, isTravelFriendlyPlace } from "@/lib/filter-explore-places";
 import type { PlaceResult } from "@/lib/place-result";
+import { logPlacesApiResponse } from "@/lib/places-api-errors";
 
 export type { PlaceResult } from "@/lib/place-result";
 
@@ -150,9 +151,18 @@ async function postPlaces(
   if (!res.ok) {
     const text = await res.text();
     const detail = parseGoogleError(text);
+    const errMsg = `Google Places API ${res.status}: ${detail}`;
+    logPlacesApiResponse(res.status, errMsg, text);
+    if (/API_KEY_IOS_APP_BLOCKED/i.test(detail)) {
+      console.warn(
+        "[PLACES_API] ios_key_blocked — server 請使用 GOOGLE_PLACES_SERVER_API_KEY（非 iOS App 限制）",
+      );
+    }
     console.error("[Roamie Places] request failed", res.status, url, detail);
-    return { places: [], error: `Google Places API ${res.status}: ${detail}` };
+    return { places: [], error: errMsg };
   }
+
+  logPlacesApiResponse(res.status, null);
 
   const json = (await res.json()) as { places?: RawPlace[] };
   return { places: json.places ?? [], error: null };
@@ -454,9 +464,10 @@ type PlaceDetailsScreenRaw = PlaceDetailsRaw & {
 export async function fetchPlaceDetailsForScreen(
   placeId: string,
   locale?: Locale,
+  options?: { apiKey?: string },
 ): Promise<PlaceDetailsScreenResult | null> {
   try {
-    const apiKey = await getServerMapsKey();
+    const apiKey = options?.apiKey?.trim() || (await getServerMapsKey());
     const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
     const res = await fetch(placeDetailsUrl(placeId), {
       headers: {
@@ -509,7 +520,11 @@ export const getPlaceDetails = createServerFn({ method: "POST" })
   .inputValidator((input) => PlaceDetailsInput.parse(input))
   .handler(
     async ({ data }): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> => {
-      if (data.placeId.startsWith("latlng:") || data.placeId.startsWith("saved-")) {
+      if (
+        data.placeId.startsWith("latlng:") ||
+        data.placeId.startsWith("saved-") ||
+        data.placeId.startsWith("temp:")
+      ) {
         return { place: null, error: "synthetic_id" };
       }
       try {

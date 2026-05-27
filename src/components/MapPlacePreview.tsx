@@ -2,6 +2,7 @@ import { Heart, Loader2, MessageCircle, Star, X } from "lucide-react";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import type { PlaceResult } from "@/lib/place-result";
+import { resolvePlaceCardOpeningDisplay } from "@/lib/place-card-opening";
 
 type PlaceCard = PlaceResult & { reason: string };
 
@@ -73,7 +74,17 @@ export function MapPlacePreview({
           <p className="mt-2 text-sm leading-relaxed text-foreground/85">{place.reason}</p>
           <PlaceHoursBadge
             className="mt-2"
-            statusLabel={place.openStatusLabel}
+            statusLabel={
+              resolvePlaceCardOpeningDisplay({
+                id: place.id,
+                name: place.name,
+                openStatus: place.openStatus,
+                todayHoursLabel: place.todayHoursLabel,
+                closingSoonNote: place.closingSoonNote,
+                nextOpenHint: place.nextOpenHint,
+              }).statusLabel ||
+              (place.openStatus === "unknown" ? "營業資訊未知" : "")
+            }
             todayHoursLabel={place.todayHoursLabel}
             closingSoonNote={place.closingSoonNote}
             nextOpenHint={place.nextOpenHint}

@@ -8,8 +8,14 @@ import {
 import { readLastSearchLocation } from "@/lib/last-search-location";
 import {
   ensureLocationPermission,
+  getCachedLocationPermission,
   type LocationPermissionState,
 } from "@/lib/location-permission-manager";
+import {
+  deviceLocationFromSnapshot,
+  getFreshDeviceLocationSnapshot,
+  updateDeviceLocationStore,
+} from "@/lib/location-store";
 import { detectPlatform } from "@/services/platform";
 
 export { isIosSimulatorPresetLocation } from "@/lib/device-location-resolve";
@@ -201,7 +207,8 @@ async function readCapacitorPosition(): Promise<{
   try {
     const { Geolocation } = await import("@capacitor/geolocation");
     const permission = await ensureLocationPermission({ request: true });
-    if (permission !== "granted") {
+    console.info("[LOCATION] permission=", permission);
+    if (permissionBlocksGps(permission)) {
       return { result: null, permission };
     }
 
@@ -250,6 +257,11 @@ function geolocationPosition(
   options: PositionOptions,
 ): Promise<{ result: DeviceLocationResult | null; permission: LocationPermissionState | null }> {
   return new Promise((resolve) => {
+    if (isNativeShell()) {
+      console.info("[WEB_GEOLOCATION] disabled", { method: "getCurrentPosition" });
+      resolve({ result: null, permission: null });
+      return;
+    }
     if (typeof navigator === "undefined" || !navigator.geolocation) {
       resolve({ result: null, permission: null });
       return;
@@ -323,28 +335,79 @@ function fallbackResult(permission: LocationPermissionState, reason: string): De
   };
 }
 
-/** 取得裝置座標；正式版僅使用真實 GPS，失敗時才 fallback。 */
-export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
+/** 首屏立即使用的座標（不等 GPS），避免附近推薦一直 loading */
+export function readBootstrapDeviceLocation(): DeviceLocationResult {
+  const permission = getCachedLocationPermission() ?? "unknown";
+  const picked = pickFallbackCoordinates(readLastGoodCoords(), readLastSearchLocation());
+  const lastSearch = readLastSearchLocation();
+  return {
+    lat: picked.lat,
+    lng: picked.lng,
+    city:
+      lastSearch?.city?.trim() ||
+      (picked.usedDefaultTaipei ? DEFAULT_FALLBACK_LOCATION.city : ""),
+    permission,
+    usedFallback: true,
+    source: "fallback",
+  };
+}
+
+function permissionBlocksGps(permission: LocationPermissionState): boolean {
+  return permission === "denied" || permission === "restricted";
+}
+
+function publishDeviceLocation(loc: DeviceLocationResult): DeviceLocationResult {
+  updateDeviceLocationStore(loc);
+  return loc;
+}
+
+let inflightLocationRequest: Promise<DeviceLocationResult> | null = null;
+
+async function fetchDeviceLocation(): Promise<DeviceLocationResult> {
+  console.info("[LOCATION] request start", { native: isNativeShell() });
   const native = isNativeShell();
 
   if (native) {
     const { result: cap, permission: capPerm } = await readCapacitorPosition();
-    if (cap) return cap;
+    console.info("[LOCATION] capacitor result", {
+      permission: capPerm,
+      ok: Boolean(cap),
+      usedFallback: cap?.usedFallback ?? true,
+    });
+    if (cap) return publishDeviceLocation(cap);
 
-    return fallbackResult(
-      capPerm,
-      "native GPS unavailable (Capacitor only; no browser geolocation fallback)",
+    return publishDeviceLocation(
+      fallbackResult(
+        capPerm,
+        "native GPS unavailable (Capacitor only; no browser geolocation fallback)",
+      ),
     );
   }
 
   const { result: browser, permission: browserPerm } = await requestBrowserLocation();
-  if (browser) return browser;
+  if (browser) return publishDeviceLocation(browser);
 
   const probed = await probePermissionState();
   const permission: LocationPermissionState =
     browserPerm === "denied" ? "denied" : probed ?? browserPerm ?? "unavailable";
 
-  return fallbackResult(permission, "browser GPS unavailable");
+  return publishDeviceLocation(fallbackResult(permission, "browser GPS unavailable"));
+}
+
+/** 取得裝置座標；正式版僅使用真實 GPS，失敗時才 fallback。 */
+export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
+  const cached = getFreshDeviceLocationSnapshot();
+  if (cached && !cached.usedFallback) {
+    console.info("[LOCATION_STORE] reuse", { lat: cached.lat, lng: cached.lng });
+    return deviceLocationFromSnapshot(cached);
+  }
+
+  if (inflightLocationRequest) return inflightLocationRequest;
+
+  inflightLocationRequest = fetchDeviceLocation().finally(() => {
+    inflightLocationRequest = null;
+  });
+  return inflightLocationRequest;
 }
 
 /** 監聽位置變化；回傳 cleanup。 */
@@ -359,7 +422,7 @@ export function watchDeviceLocation(
     void (async () => {
       try {
         const permission = await ensureLocationPermission({ request: false });
-        if (permission !== "granted") return;
+        if (permissionBlocksGps(permission)) return;
 
         const { Geolocation } = await import("@capacitor/geolocation");
         const watchId = await Geolocation.watchPosition(
@@ -372,7 +435,7 @@ export function watchDeviceLocation(
               pos.coords.accuracy,
               "capacitor",
             );
-            if (parsed) onUpdate(parsed);
+            if (parsed) onUpdate(publishDeviceLocation(parsed));
           },
         );
         clearCapWatch = () => {
@@ -382,9 +445,7 @@ export function watchDeviceLocation(
         console.warn("[Location] capacitor watchPosition unavailable", e);
       }
     })();
-  }
-
-  if (typeof navigator !== "undefined" && navigator.geolocation) {
+  } else if (typeof navigator !== "undefined" && navigator.geolocation) {
     browserWatchId = navigator.geolocation.watchPosition(
       (pos) => {
         if (cancelled) return;
@@ -394,7 +455,7 @@ export function watchDeviceLocation(
           pos.coords.accuracy,
           "browser",
         );
-        if (parsed) onUpdate(parsed);
+        if (parsed) onUpdate(publishDeviceLocation(parsed));
       },
       () => {},
       GEO_OPTIONS,

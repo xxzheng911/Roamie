@@ -17,12 +17,19 @@ export const Route = createFileRoute("/api/place-photo")({
         try {
           const key = requireGoogleMapsServerKey();
           const mediaUrl = `https://places.googleapis.com/v1/${photo}/media?maxWidthPx=${maxW}&key=${key}`;
-          const res = await fetch(mediaUrl, { redirect: "follow" });
+          const res = await fetch(mediaUrl, {
+            redirect: "follow",
+            headers: { Accept: "image/jpeg, image/png, image/*;q=0.8" },
+          });
           if (!res.ok) {
             console.warn("[place-photo] upstream failed", res.status, photo);
             return new Response(null, { status: 502 });
           }
           const contentType = res.headers.get("content-type") ?? "image/jpeg";
+          if (contentType.toLowerCase().includes("webp")) {
+            console.warn("[place-photo] upstream webp rejected for iOS compatibility", photo);
+            return new Response(null, { status: 415 });
+          }
           const body = await res.arrayBuffer();
           return new Response(body, {
             status: 200,

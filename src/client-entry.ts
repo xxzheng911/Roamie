@@ -6,3 +6,12 @@ import { Capacitor } from "@capacitor/core";
 
 console.log("[REAL_ENTRY] src/client-entry.ts loaded");
 console.log("[REAL_ENTRY] platform=", Capacitor.getPlatform?.() ?? "unknown");
+
+if (typeof window !== "undefined") {
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason;
+    if (reason != null) return;
+    console.error("[APP_UNHANDLED_REJECTION] reason was undefined");
+    event.preventDefault();
+  });
+}

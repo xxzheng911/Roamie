@@ -4,6 +4,18 @@ import { requireAuthenticatedUser } from "@/lib/auth-session";
 const BUCKET = "profile-media";
 const MAX_BYTES = 4 * 1024 * 1024;
 
+/** 同一路徑 upsert 後 public URL 不變，需 bust 快取才能即時顯示新圖 */
+export function cacheBustStorageUrl(publicUrl: string, version = Date.now()): string {
+  try {
+    const u = new URL(publicUrl);
+    u.searchParams.set("v", String(version));
+    return u.toString();
+  } catch {
+    const sep = publicUrl.includes("?") ? "&" : "?";
+    return `${publicUrl}${sep}v=${version}`;
+  }
+}
+
 function tripCoverPath(userId: string, tripId: string): string {
   return `${userId}/trips/${tripId}/cover.jpg`;
 }
@@ -29,5 +41,5 @@ export async function uploadTripCover(tripId: string, blob: Blob): Promise<strin
   if (error) throw new Error(`上傳失敗：${error.message}`);
 
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
-  return data.publicUrl;
+  return cacheBustStorageUrl(data.publicUrl);
 }

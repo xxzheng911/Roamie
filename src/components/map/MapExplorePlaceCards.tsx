@@ -6,8 +6,13 @@ import {
   type PointerEvent,
 } from "react";
 import { Heart, Loader2, Plus, Star } from "lucide-react";
-import { PlaceImage } from "@/components/media/PlaceImage";
+import { PlaceCardCover } from "@/components/media/PlaceCardCover";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
+import { logPlaceCardImage } from "@/lib/place-card-image-log";
+import {
+  logPlaceCardOpening,
+  resolvePlaceCardOpeningDisplay,
+} from "@/lib/place-card-opening";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
@@ -94,6 +99,12 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
       if (!el) return;
       el.scrollLeft = 0;
     }, [categoryKey]);
+
+    useEffect(() => {
+      for (const p of places) {
+        logPlaceCardOpening(p.name, resolvePlaceCardOpeningDisplay(p));
+      }
+    }, [places]);
 
     const onCarouselPointerDown = (e: PointerEvent<HTMLDivElement>) => {
       if (e.button !== 0) return;
@@ -186,6 +197,8 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                   ? formatDistance(distFn(userLocation, { lat: p.lat, lng: p.lng }))
                   : "");
               const typeLabel = p.displayCategory ?? identityDisplayLabel(resolvePlaceIdentity(p));
+              const imageCategoryId = p.categoryId ?? p.primaryType ?? categoryKey;
+              const opening = resolvePlaceCardOpeningDisplay(p);
               const isLast = i === places.length - 1;
               return (
                 <article
@@ -206,24 +219,34 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                   )}
                 >
                   <div className="relative h-[170px] w-full shrink-0 overflow-hidden rounded-t-[1.4rem] bg-secondary">
-                    {googleImg ? (
-                      <img
-                        src={googleImg}
-                        alt={p.name}
-                        loading="lazy"
-                        draggable={false}
-                        className="pointer-events-none h-full w-full object-cover"
-                      />
-                    ) : (
-                      <PlaceImage
-                        name={p.name}
-                        photoName={p.photoName}
-                        primaryType={p.primaryType}
-                        types={p.types}
-                        categoryId={categoryKey}
-                        className="pointer-events-none h-full w-full"
-                      />
-                    )}
+                    <PlaceCardCover
+                      name={p.name}
+                      photoName={p.photoName}
+                      primaryType={p.primaryType}
+                      types={p.types}
+                      categoryId={imageCategoryId}
+                      coverImageUrl={googleImg}
+                      preferRoamieScene
+                      alt={p.name}
+                      className="pointer-events-none h-full w-full"
+                      imgClassName="pointer-events-none h-full w-full object-cover"
+                      onGoogleLoad={() => {
+                        logPlaceCardImage(p.name, {
+                          categoryId: imageCategoryId,
+                          primaryType: p.primaryType,
+                          types: p.types,
+                          imageSource: "google",
+                        });
+                      }}
+                      onGoogleError={() => {
+                        logPlaceCardImage(p.name, {
+                          categoryId: imageCategoryId,
+                          primaryType: p.primaryType,
+                          types: p.types,
+                          imageSource: "google_error",
+                        });
+                      }}
+                    />
                     <button
                       type="button"
                       onClick={(e) => {
@@ -271,10 +294,12 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                       <div className="min-h-[1rem] shrink-0">
                         <PlaceHoursBadge
                           compact
-                          statusLabel={p.openStatusLabel}
-                          todayHoursLabel={p.todayHoursLabel}
-                          closingSoonNote={p.closingSoonNote}
-                          nextOpenHint={p.nextOpenHint}
+                          statusLabel={opening.statusLabel}
+                          todayHoursLabel={opening.hoursLabel}
+                          closingSoonNote={
+                            opening.openNow != null ? p.closingSoonNote : undefined
+                          }
+                          nextOpenHint={opening.openNow != null ? p.nextOpenHint : undefined}
                         />
                       </div>
                     </div>

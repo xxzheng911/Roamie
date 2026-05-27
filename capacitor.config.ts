@@ -130,6 +130,11 @@ const config: CapacitorConfig = {
       resize: "native",
       resizeOnFullScreen: true,
     },
+    LocalNotifications: {
+      smallIcon: "ic_stat_icon_config_sample",
+      iconColor: "#c4785a",
+      sound: "default",
+    },
   },
 };
 

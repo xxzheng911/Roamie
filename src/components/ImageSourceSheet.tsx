@@ -7,7 +7,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { normalizeImageFileForUpload } from "@/lib/image-crop";
+import { normalizeImageFileForUpload, isLikelyImageFile } from "@/lib/image-crop";
 
 type Props = {
   open: boolean;
@@ -35,7 +35,10 @@ export function ImageSourceSheet({
   const cameraRef = useRef<HTMLInputElement>(null);
 
   const handleFile = async (file: File | undefined) => {
-    if (!file?.type.startsWith("image/")) return;
+    if (!isLikelyImageFile(file)) {
+      toast.error("請選擇圖片檔案");
+      return;
+    }
     try {
       const normalized = await normalizeImageFileForUpload(file);
       onOpenChange(false);
@@ -95,7 +98,7 @@ export function ImageSourceSheet({
         <input
           ref={albumRef}
           type="file"
-          accept="image/*"
+          accept="image/jpeg,image/png,image/jpg,image/*"
           className="hidden"
           onChange={(e) => {
             void handleFile(e.target.files?.[0]);
@@ -105,7 +108,7 @@ export function ImageSourceSheet({
         <input
           ref={cameraRef}
           type="file"
-          accept="image/*"
+          accept="image/jpeg,image/png,image/jpg,image/*"
           capture={cameraFacing}
           className="hidden"
           onChange={(e) => {

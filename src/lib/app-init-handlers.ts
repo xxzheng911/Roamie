@@ -3,6 +3,7 @@
  */
 import { normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
 import {
+  errorFromErrorEvent,
   formatAppErrorLine,
   installCapacitorConsolePatch,
   logAppError,
@@ -15,7 +16,11 @@ import {
 import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
 import { attachOAuthDeepLinkListener, readPendingCallbackPath } from "@/lib/auth-oauth-deep-link";
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
-import { prefetchLocationPermissionStatus } from "@/lib/location-permission-manager";
+import {
+  installLocationPermissionResumeListener,
+  prefetchLocationPermissionStatus,
+} from "@/lib/location-permission-manager";
+import { installWebGeolocationShim } from "@/lib/web-geolocation-shim";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { loadOnboardingState } from "@/lib/onboarding-storage";
 
@@ -59,6 +64,9 @@ function showCapacitorFatalOverlay(
 
 /** 非阻塞：讓 createRoot 有機會先執行 */
 export function scheduleAppInitHandlers(): void {
+  if (typeof window !== "undefined") {
+    installWebGeolocationShim();
+  }
   if (appInitInstalled || typeof window === "undefined") return;
 
   const run = () => {
@@ -80,7 +88,7 @@ function installAppInitHandlersCore(): void {
   window.addEventListener(
     "error",
     (event) => {
-      const err = (event as ErrorEvent).error ?? event.message;
+      const err = errorFromErrorEvent(event as ErrorEvent);
       const extra = {
         source: "window.error",
         filename: event.filename,
@@ -114,6 +122,7 @@ function installAppInitHandlersCore(): void {
         if (!ready) return;
         await loadOnboardingState();
         prefetchLocationPermissionStatus();
+        installLocationPermissionResumeListener();
         void warmSupabaseAuthStorage();
         attachOAuthDeepLinkListener();
         recoverPendingOAuthCallbackPath();

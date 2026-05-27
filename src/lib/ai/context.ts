@@ -4,6 +4,8 @@ import {
   resolveBudgetMode,
   type TravelPreferences,
 } from "@/lib/preferences-storage";
+import { formatTravelProfileForAi, type TravelProfileFields } from "@/lib/travel-profile-for-ai";
+import { getCachedTravelProfileFields } from "@/lib/preferences-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { formatTemporalWeatherBlock } from "@/lib/weather-context";
 import type { Locale } from "@/lib/i18n/types";
@@ -18,6 +20,8 @@ import { formatEmotionSignalsForPrompt } from "@/lib/ai/emotion-inference";
 import { formatSessionMemoryForPrompt } from "@/lib/ai/memory/session-memory";
 import { formatLongTermMemoryForPrompt } from "@/lib/ai/memory/long-term-memory";
 import { conversationStageLabel } from "@/lib/ai/conversation-stage";
+import type { AiUserIntentType } from "@/lib/ai/user-intent";
+import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
 
 export type RoamieLocation = {
   lat: number;
@@ -46,6 +50,7 @@ export type ChatPhase =
   | "collect"
   | "ready"
   | "enrich"
+  | "place_discussion"
   | "handoff"
   | "expand"
   | "confirm";
@@ -101,6 +106,8 @@ export type RoamieRequestContext = {
   itineraryRequest?: RoamieItineraryRequest;
   /** Chat planning flow phase */
   chatPhase?: ChatPhase;
+  /** place_discussion 等模式的使用者意圖 */
+  userIntent?: string;
   focusedPlace?: RoamieRecommendationItem;
   selectedPlaces?: RoamieRecommendationItem[];
   /** 心情推薦頁帶入的完整候選清單 */
@@ -132,6 +139,8 @@ export type RoamieRequestContext = {
   planTier?: PlanTier;
   /** Roamie 六段對話階段 */
   conversationStage?: ConversationStage;
+  /** 使用者本輪問題類型（旅行時間 / 地點 / 行程等） */
+  aiUserIntent?: AiUserIntentType;
   emotionSignals?: EmotionSignals;
   sessionMemory?: SessionMemorySnapshot;
   longTermMemory?: LongTermMemorySnapshot;
@@ -148,20 +157,55 @@ const budgetLabel: Record<string, string> = {
   high: "舒適",
 };
 
-export function formatPreferences(prefs?: TravelPreferences): string {
-  if (!prefs) return "（尚未設定旅行偏好）";
-  if (!prefs.onboarded) {
+const companionshipLabel: Record<string, string> = {
+  solo: "獨旅",
+  couple: "兩人",
+  friends: "朋友同行",
+  family: "家人",
+  flexible: "不一定（彈性安排，不限定人數）",
+};
+
+export function formatPreferences(
+  prefs?: TravelPreferences,
+  profileFields?: TravelProfileFields | null,
+): string {
+  if (!prefs && !profileFields) return "（尚未設定旅行偏好）";
+
+  if (profileFields?.surveyCompleted) {
+    const base = formatTravelProfileForAi(profileFields, prefs);
+    const bm = prefs ? resolveBudgetMode(prefs) : "standard";
+    return `${base}；預算模式：${BUDGET_MODE_LABELS[bm]}（餐飲/咖啡/景點/住宿需符合此範圍）`;
+  }
+
+  const completed = Boolean(prefs?.surveyCompleted ?? prefs?.onboarded);
+  if (!completed) {
     return "（尚未完成旅行偏好測驗；可先依位置與天氣提供通用推薦，若使用者想更個人化可輕柔引導至偏好測驗）";
   }
   const parts: string[] = [];
-  if (prefs.personalityType) parts.push(`旅行人格：${prefs.personalityType}`);
-  if (prefs.pace) parts.push(`步調：${paceLabel[prefs.pace] ?? prefs.pace}`);
-  if (prefs.vibe) parts.push(`氛圍：${vibeLabel[prefs.vibe] ?? prefs.vibe}`);
+  const snapshot = prefs?.resultProfile;
+  const travelStyle = snapshot?.travelStyle ?? prefs?.personalityType;
+  if (travelStyle) parts.push(`旅行風格：${travelStyle}`);
+  if (prefs?.personalityType || snapshot?.personalityType) {
+    parts.push(`旅行人格：${snapshot?.personalityType ?? prefs?.personalityType}`);
+  }
+  if (snapshot?.travelTags?.length) {
+    parts.push(`偏好標籤：${snapshot.travelTags.join("、")}`);
+  }
+  if (prefs?.pace) parts.push(`步調：${paceLabel[prefs.pace] ?? prefs.pace}`);
+  if (prefs?.vibe) parts.push(`氛圍：${vibeLabel[prefs.vibe] ?? prefs.vibe}`);
   const bm = resolveBudgetMode(prefs);
   parts.push(`預算模式：${BUDGET_MODE_LABELS[bm]}（餐飲/咖啡/景點/住宿需符合此範圍）`);
-  if (prefs.avoid?.length) parts.push(`想避開：${prefs.avoid.join("、")}`);
-  if (prefs.personalitySummary) parts.push(`測驗摘要：${prefs.personalitySummary}`);
-  if (prefs.interests?.length) parts.push(`興趣：${prefs.interests.join("、")}`);
+  if (prefs?.companionship) {
+    parts.push(`同行方式：${companionshipLabel[prefs.companionship] ?? prefs.companionship}`);
+  }
+  if (prefs?.avoid?.length) parts.push(`想避開：${prefs.avoid.join("、")}`);
+  if (snapshot?.recommendedStyle) parts.push(`推薦風格：${snapshot.recommendedStyle}`);
+  if (snapshot?.suitableDirections?.length) {
+    parts.push(`適合方向：${snapshot.suitableDirections.join("；")}`);
+  }
+  if (prefs?.personalitySummary) parts.push(`測驗摘要：${prefs.personalitySummary}`);
+  if (prefs?.interests?.length) parts.push(`興趣：${prefs.interests.join("、")}`);
+  console.info("[AI_CONTEXT] travelProfileApplied=true");
   return parts.length ? parts.join("；") : "（尚未設定旅行偏好）";
 }
 
@@ -253,12 +297,13 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
   const lines = [
     formatTemporalWeatherBlock(ctx.weather, ctx.time),
     `【心情】${ctx.mood?.trim() || "（未指定，請從對話推測）"}`,
-    `【旅行偏好】${formatPreferences(ctx.preferences)}`,
+    `【旅行偏好】${formatPreferences(ctx.preferences, getCachedTravelProfileFields())}`,
     `【位置】${formatLocation(ctx.location)}`,
     `【天氣摘要】${formatWeather(ctx.weather)}`,
   ];
   if (ctx.chatInput?.trim()) lines.push(`【使用者輸入】${ctx.chatInput.trim()}`);
   if (ctx.chatPhase) lines.push(`【對話階段】${ctx.chatPhase}`);
+  if (ctx.userIntent?.trim()) lines.push(`【使用者意圖】${ctx.userIntent.trim()}`);
   if (ctx.conversationStage) {
     lines.push(
       `【Roamie 對話流程】${conversationStageLabel(ctx.conversationStage)}（${ctx.conversationStage}）`,
@@ -321,6 +366,14 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
     lines.push(`【不要推薦的地點】${ctx.rejectedPlaceNames.join("、")}`);
   if (ctx.lastUserIntent?.trim())
     lines.push(`【使用者最新訊息】${ctx.lastUserIntent.trim()}`);
+  if (
+    ctx.aiUserIntent === "travel_time_advice" ||
+    userAsksTravelTimeAdvice(ctx.chatInput ?? ctx.lastUserIntent ?? "")
+  ) {
+    lines.push(
+      "【旅行時間建議 — 本輪重點】使用者問的是何時去、去幾天、季節是否適合，不是地點清單。recommendations 與 itinerary 必須 []。summary 需涵蓋：該月份/季節是否適合、建議天數、一天節奏、天氣與穿搭、情侶/同行者語氣；可輕提區域名稱作方向參考但勿列店名卡。結尾問「比較想走放鬆海景路線，還是美食拍照路線？」或是否要我推薦幾個地點。",
+    );
+  }
   const stage = ctx.conversationStage;
   if (stage === "empathize" || stage === "infer" || stage === "clarify") {
     lines.push(

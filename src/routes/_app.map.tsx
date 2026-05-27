@@ -1,5 +1,4 @@
 import { createFileRoute, useNavigate, useRouterState } from "@tanstack/react-router";
-import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
@@ -15,6 +14,8 @@ import {
   NavigationPreviewSheetHeader,
 } from "@/components/map/NavigationPreviewSheet";
 import { GoogleMapBackground } from "@/components/map/GoogleMapBackground";
+import { MapExploreMapSkeleton } from "@/components/map/MapExploreMapSkeleton";
+import { MapExploreMapStatusBanner } from "@/components/map/MapExploreMapStatusBanner";
 import {
   MapExplorePlaceCards,
   type MapExploreCardsHandle,
@@ -26,6 +27,7 @@ import { searchPlaces } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import type { PlaceResult } from "@/lib/place-result";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { isRoutableGooglePlaceId } from "@/lib/place-detail-handoff";
 import { getWeather } from "@/lib/weather.functions";
 import { getPlaceIntro } from "@/lib/recommendation.functions";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -54,7 +56,14 @@ import {
   matchesCategory,
 } from "@/lib/place-category";
 import { getMockMapPlaces, getMockPlacesForCategory } from "@/lib/map-mock-places";
-import { allowDemoPlaceFallback, searchRadiusMeters } from "@/lib/search-radius";
+import { searchRadiusMeters } from "@/lib/search-radius";
+import {
+  isGooglePlacesQuotaError,
+  logPlacesFallbackUsed,
+  shouldSkipPlacesClientRetry,
+  isGoogleBillingDisabledError,
+  shouldUseCuratedPlacesFallback,
+} from "@/lib/places-api-errors";
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
 import { withSearchTimeout } from "@/lib/search-timeout";
 import {
@@ -66,9 +75,24 @@ import {
   type ExploreCategory,
 } from "@/lib/places-search-config";
 import { TAIPEI_CENTER } from "@/lib/geo";
-import { requestDeviceLocation, watchDeviceLocation } from "@/lib/device-location";
+import {
+  readBootstrapDeviceLocation,
+  requestDeviceLocation,
+  watchDeviceLocation,
+} from "@/lib/device-location";
 import { resolveUserMarkerAvatarSrc } from "@/lib/map-user-location-marker";
+import {
+  logExploreMapBoot,
+  logMapComponentKeyDiagnostics,
+  logMapFallback,
+} from "@/lib/map-boot-log";
+import {
+  googleMapsFailureUserMessage,
+  installGoogleMapsWindowErrorListener,
+  logMapRuntimeDiagnostics,
+} from "@/lib/maps-runtime-diagnostics";
 import { useI18n } from "@/hooks/use-i18n";
+import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
 import {
   buildMapPlacesCacheKey,
@@ -85,6 +109,13 @@ export const Route = createFileRoute("/_app/map")({
 });
 
 function MapPage() {
+  useEffect(() => {
+    logExploreMapBoot();
+    return () => {
+      console.info("[EXPLORE_SCREEN] unmounted");
+    };
+  }, []);
+
   return (
     <MapErrorBoundary>
       <MapView />
@@ -94,6 +125,12 @@ function MapPage() {
 
 const MAP_ZOOM_EXPLORE = 15;
 const MAP_ZOOM_PLACE = 17;
+
+function readInitialMapCoords(): { lat: number; lng: number } {
+  if (typeof window === "undefined") return TAIPEI_CENTER;
+  const boot = readBootstrapDeviceLocation();
+  return { lat: boot.lat, lng: boot.lng };
+}
 
 type MapPlaceCard = PlaceResult & {
   reason: string;
@@ -150,6 +187,7 @@ function mergePlacesById(base: PlaceResult[], extra: PlaceResult[]): PlaceResult
 }
 
 function MapView() {
+  useIosInteractiveRoute("map-explore");
   const { t, locale } = useI18n();
   const tt = t as unknown as (key: string, params?: Record<string, unknown>) => string;
   const { openAddToTrip } = useAddToTrip();
@@ -157,8 +195,14 @@ function MapView() {
   const navSig = useRouterState({ select: (s) => JSON.stringify(s.location) });
 
   useEffect(() => {
+    console.info("[EXPLORE_SCREEN] mapView mounted");
+    logMapComponentKeyDiagnostics("MAP_COMPONENT");
+    logMapRuntimeDiagnostics();
     document.documentElement.classList.add("map-route-active");
-    return () => document.documentElement.classList.remove("map-route-active");
+    return () => {
+      document.documentElement.classList.remove("map-route-active");
+      console.info("[EXPLORE_SCREEN] mapView unmounted");
+    };
   }, []);
 
   const lastSearchCenterRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -201,29 +245,54 @@ function MapView() {
   const [saved, setSaved] = useState<SavedPlace[]>([]);
   const savedRef = useRef<SavedPlace[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
-  const [userLocation, setUserLocation] = useState(TAIPEI_CENTER);
-  const [mapCenter, setMapCenter] = useState(TAIPEI_CENTER);
+  const [userLocation, setUserLocation] = useState(readInitialMapCoords);
+  const [mapCenter, setMapCenter] = useState(readInitialMapCoords);
   const [mapZoom, setMapZoom] = useState(MAP_ZOOM_EXPLORE);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
   const sheetRef = useRef<MapExploreSheetHandle>(null);
   const cardsRef = useRef<MapExploreCardsHandle>(null);
-  const [geoReady, setGeoReady] = useState(false);
+  const [geoReady, setGeoReady] = useState(() => typeof window !== "undefined");
   const [locating, setLocating] = useState(false);
-  const [hasDeviceLocation, setHasDeviceLocation] = useState(false);
   const [locationHint, setLocationHint] = useState<string | null>(null);
   const mapErrorToastedRef = useRef(false);
+  const mapLoadAttemptedRef = useRef(false);
+  const mapAutoRetryRef = useRef(0);
+  const mapAutoRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const MAP_AUTO_RETRY_MAX = 3;
+  /** 一律先嘗試掛載 GoogleMap，失敗後才 fallback（確保 [MAP_LOAD] log 會執行） */
   const [mapUnavailable, setMapUnavailable] = useState(false);
+  const [mapFallbackBilling, setMapFallbackBilling] = useState(false);
+  const [mapRemountKey, setMapRemountKey] = useState(0);
+  const [mapRetrying, setMapRetrying] = useState(false);
+
+  const showGoogleMap = geoReady && !mapUnavailable;
+  useEffect(() => {
+    console.info("[EXPLORE_SCREEN] render map=", showGoogleMap);
+    if (!showGoogleMap && geoReady) {
+      logMapFallback(mapUnavailable ? "map_unavailable" : "geo_not_ready");
+    }
+  }, [showGoogleMap, geoReady, mapUnavailable]);
   const [reasonProfile, setReasonProfile] = useState<UserProfileForReason | null>(null);
   const exploreHandoffRef = useRef<MapExploreHandoff | null>(null);
 
   const applyDeviceLocation = useCallback(
     (loc: Awaited<ReturnType<typeof requestDeviceLocation>>) => {
-      setUserLocation({ lat: loc.lat, lng: loc.lng });
-      setMapCenter({ lat: loc.lat, lng: loc.lng });
-      setHasDeviceLocation(!loc.usedFallback);
+      const next = { lat: loc.lat, lng: loc.lng };
+      setUserLocation(next);
+      setMapCenter(next);
       setLocationHint(loc.usedFallback ? t("map.locationFallbackHint") : null);
       setLocationLabel(t("common.nearby"));
       setGeoReady(true);
+      console.info("[MAP_LOCATION] using store lat/lng", {
+        lat: loc.lat,
+        lng: loc.lng,
+        usedFallback: loc.usedFallback,
+        source: loc.source,
+        permission: loc.permission,
+      });
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.panTo(next);
+      }
       fetchWeather({ data: { lat: loc.lat, lng: loc.lng } })
         .then((r) => {
           if (r.weather?.city?.trim()) {
@@ -238,16 +307,20 @@ function MapView() {
   );
 
   useEffect(() => {
+    const boot = readBootstrapDeviceLocation();
+    console.info("[MAP_LOCATION] using store lat/lng", {
+      phase: "bootstrap",
+      lat: boot.lat,
+      lng: boot.lng,
+      permission: boot.permission,
+    });
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     void (async () => {
       const loc = await requestDeviceLocation();
       if (cancelled) return;
-      console.info("[Roamie Map] device location", {
-        lat: loc.lat,
-        lng: loc.lng,
-        usedFallback: loc.usedFallback,
-        source: loc.source,
-      });
       applyDeviceLocation(loc);
     })();
 
@@ -259,26 +332,92 @@ function MapView() {
   useEffect(() => {
     const stopWatch = watchDeviceLocation((loc) => {
       if (loc.usedFallback) return;
-      setHasDeviceLocation(true);
       setLocationHint(null);
       const next = { lat: loc.lat, lng: loc.lng };
       setUserLocation(next);
-      setMapCenter((prev) => {
-        const moved =
-          Math.abs(prev.lat - loc.lat) > 0.00015 || Math.abs(prev.lng - loc.lng) > 0.00015;
-        return moved ? next : prev;
+      setMapCenter(next);
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.panTo(next);
+      }
+      console.info("[MAP_LOCATION] using store lat/lng", {
+        phase: "watch",
+        lat: loc.lat,
+        lng: loc.lng,
       });
     });
     return stopWatch;
   }, []);
 
-  const handleMapLoadError = useCallback((message: string) => {
-    setMapUnavailable(true);
-    if (!mapErrorToastedRef.current) {
-      mapErrorToastedRef.current = true;
-      toast.message(t("map.mapLoadFallback"), { duration: 5000 });
-      console.warn("[Roamie Map]", message);
+  const handleMapLoadError = useCallback(
+    (message: string, reason = "load_error") => {
+      if (!mapLoadAttemptedRef.current && reason === "window_error") return;
+
+      const billingLikely =
+        isGoogleBillingDisabledError(message) ||
+        /For development purposes only|ApiNotActivated|InvalidKeyMapError/i.test(message);
+
+      if (mapAutoRetryRef.current < MAP_AUTO_RETRY_MAX && !billingLikely) {
+        mapAutoRetryRef.current += 1;
+        const attempt = mapAutoRetryRef.current;
+        const delayMs = 700 * attempt;
+        console.info("[MAP_LOAD] auto retry", attempt, "in", delayMs, "ms reason=", reason);
+        setMapRetrying(true);
+        if (mapAutoRetryTimerRef.current) clearTimeout(mapAutoRetryTimerRef.current);
+        mapAutoRetryTimerRef.current = setTimeout(() => {
+          mapErrorToastedRef.current = false;
+          if (typeof window !== "undefined") {
+            window.__roamieMapsAuthFailure = undefined;
+          }
+          setMapFallbackBilling(false);
+          setMapUnavailable(false);
+          setMapRemountKey((k) => k + 1);
+        }, delayMs);
+        return;
+      }
+
+      setMapRetrying(false);
+      setMapUnavailable(true);
+      setMapFallbackBilling(billingLikely);
+      logMapFallback(reason);
+      mapInstanceRef.current = null;
+      if (!mapErrorToastedRef.current) {
+        mapErrorToastedRef.current = true;
+        console.warn("[MAP_LOAD] error=", message);
+        toast.message(t("map.mapBannerToast"), {
+          description: t("map.mapBannerToastDesc"),
+        });
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    return installGoogleMapsWindowErrorListener((msg) => {
+      handleMapLoadError(msg, "window_error");
+    });
+  }, [handleMapLoadError]);
+
+  const retryMapLoad = useCallback(() => {
+    mapAutoRetryRef.current = 0;
+    setMapRetrying(true);
+    if (mapAutoRetryTimerRef.current) {
+      clearTimeout(mapAutoRetryTimerRef.current);
+      mapAutoRetryTimerRef.current = null;
     }
+    mapErrorToastedRef.current = false;
+    if (typeof window !== "undefined") {
+      window.__roamieMapsAuthFailure = undefined;
+    }
+    setMapFallbackBilling(false);
+    setMapUnavailable(false);
+    setMapRemountKey((k) => k + 1);
+    console.info("[MAP_LOAD] retry");
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (mapAutoRetryTimerRef.current) clearTimeout(mapAutoRetryTimerRef.current);
+    };
   }, []);
 
   const refreshSaved = () => {
@@ -415,7 +554,12 @@ function MapView() {
 
         let filtered = applyFilters(apiPlaces);
 
+        const quotaExhausted = isGooglePlacesQuotaError(apiError);
+        const skipExtraPlacesApi = Boolean(apiError && shouldSkipPlacesClientRetry(apiError));
+
         if (
+          !skipExtraPlacesApi &&
+          !quotaExhausted &&
           !isFreeText &&
           cat.id === "coffee" &&
           filtered.length < COFFEE_MIN_FILTERED_RESULTS
@@ -441,6 +585,8 @@ function MapView() {
         }
 
         if (
+          !skipExtraPlacesApi &&
+          !quotaExhausted &&
           !isFreeText &&
           cat.id === "district" &&
           filtered.length < DISTRICT_MIN_FILTERED_RESULTS
@@ -465,7 +611,9 @@ function MapView() {
           }
         }
 
-        if (apiError) setError(apiError);
+        if (apiError) {
+          console.info("[PLACES_API] error=", apiError);
+        }
 
         const nearbySaved = savedPlacesNear(center, savedRef.current, 5000);
         const apiNames = new Set(apiPlaces.map((p) => p.name));
@@ -521,17 +669,13 @@ function MapView() {
 
         if (enriched.length === 0) {
           if (isFreeText) {
-            setError(apiError ?? getExploreCategoryEmptyMessage(cat.id, locale));
-          } else if (allowDemoPlaceFallback()) {
+            setError(getExploreCategoryEmptyMessage(cat.id, locale));
+          } else if (shouldUseCuratedPlacesFallback(apiError)) {
+            logPlacesFallbackUsed(`map-explore:${cat.id}`);
             enriched = mockMapCards(center, cat);
-            const note = t("map.demoPlacesNote");
-            if (apiError) {
-              setError(`${apiError} · ${note}`);
-            } else {
-              setError(note);
-            }
+            setError(null);
           } else {
-            setError(apiError ?? getExploreCategoryEmptyMessage(cat.id, locale));
+            setError(getExploreCategoryEmptyMessage(cat.id, locale));
             console.info("[explore] map places empty", { category: cat.id, apiError });
           }
         }
@@ -546,15 +690,15 @@ function MapView() {
 
       void runSearch().catch((e) => {
           const msg = e instanceof Error ? e.message : t("map.searchFailed");
-          const note = t("map.demoPlacesNote");
           if (query.trim()) {
-            setError(msg);
+            setError(t("map.searchBusy"));
             setResults([]);
-          } else if (allowDemoPlaceFallback()) {
-            setError(`${msg} · ${note}`);
+          } else if (shouldUseCuratedPlacesFallback(msg)) {
+            logPlacesFallbackUsed("map-search-catch");
+            setError(null);
             setResults(mockMapCards(center, cat));
           } else {
-            setError(msg);
+            setError(t("map.searchBusy"));
             setResults([]);
           }
           if (sheetMode === "list") {
@@ -588,7 +732,7 @@ function MapView() {
     const base =
       results.length > 0
         ? results
-        : !loading && !query.trim() && allowDemoPlaceFallback()
+        : !loading && !query.trim() && shouldUseCuratedPlacesFallback(error)
           ? mockMapCards(userLocation, cat)
           : [];
     const filtered = filterByExploreCategory(filterExplorePlaces(base), filterCat);
@@ -641,13 +785,13 @@ function MapView() {
   });
 
   const userLocationPin = useMemo(() => {
-    if (!hasDeviceLocation) return null;
+    if (!geoReady) return null;
     return {
       lat: userLocation.lat,
       lng: userLocation.lng,
       avatarSrc: safeAvatarSrc,
     };
-  }, [hasDeviceLocation, userLocation.lat, userLocation.lng, safeAvatarSrc]);
+  }, [geoReady, userLocation.lat, userLocation.lng, safeAvatarSrc]);
 
   const savedByName = useMemo(() => new Map(saved.map((s) => [s.name, s])), [saved]);
 
@@ -863,16 +1007,18 @@ function MapView() {
   const handleToggleSave = async (p: MapPlaceCard) => {
     setBusy(p.id);
     try {
+      const nearbyLabel = t("common.nearby");
       const { saved: didSave } = await toggleSavePlace({
         name: p.name,
         category: p.primaryType,
         address: p.address,
-        city: locationLabel,
+        city: locationLabel === nearbyLabel ? null : locationLabel,
         lat: p.lat,
         lng: p.lng,
         notes: p.reason,
         mood_tag: null,
         cover_image: p.photoName ? (buildPlacePhotoUrl(p.photoName, 600) ?? null) : null,
+        metadata: isRoutableGooglePlaceId(p.id) ? { placeId: p.id } : {},
       });
       toast.success(didSave ? t("map.saved") : t("map.unsaved"));
       refreshSaved();
@@ -924,31 +1070,57 @@ function MapView() {
     <div className="map-page relative -mt-[var(--safe-area-top)] h-[calc(100%+var(--safe-area-top))] min-h-0 w-full overflow-hidden bg-cream">
       {/* 地圖層：全屏背景，GoogleMap 僅在此 render 一次 */}
       <div className="map-stage absolute inset-0 z-0 overflow-hidden">
-        {geoReady && !mapUnavailable ? (
+        {(!showGoogleMap || mapRetrying) && (
+          <MapExploreMapSkeleton
+            variant={mapRetrying ? "retrying" : geoReady ? "idle" : "loading"}
+          />
+        )}
+        {showGoogleMap ? (
           <GoogleMapBackground
+            key={mapRemountKey}
             center={mapCenter}
             zoom={mapZoom}
             placeMarkers={placeMarkers}
             userLocation={userLocationPin}
             onPlaceMarkerClick={onMarkerClick}
+            onMapAttempt={() => {
+              mapLoadAttemptedRef.current = true;
+            }}
             onLoadError={handleMapLoadError}
             onMapClick={handleMapClick}
             onMapReady={(map) => {
+              mapLoadAttemptedRef.current = true;
+              mapAutoRetryRef.current = 0;
+              setMapRetrying(false);
+              if (mapAutoRetryTimerRef.current) {
+                clearTimeout(mapAutoRetryTimerRef.current);
+                mapAutoRetryTimerRef.current = null;
+              }
               mapInstanceRef.current = map;
+              setMapUnavailable(false);
+              console.info("[MAP_LOAD] success");
+              logMapFallback("none");
+              const auth = window.__roamieMapsAuthFailure;
+              if (auth?.message) {
+                logMapFallback("gm_auth_on_ready");
+                handleMapLoadError(auth.message, "gm_auth_on_ready");
+              }
             }}
           />
-        ) : geoReady ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-cream px-8 text-center">
-            <p className="font-display text-base text-foreground">地圖暫時無法顯示</p>
-            <p className="max-w-xs text-sm text-muted-foreground">
-              仍可透過下方推薦列表探索附近地點
-            </p>
-          </div>
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center bg-cream">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        )}
+        ) : null}
+        {geoReady && mapUnavailable ? (
+          <MapExploreMapStatusBanner
+            message={t("map.mapBannerTitle")}
+            detail={
+              mapFallbackBilling
+                ? t("map.billingFallbackSubtitle")
+                : t("map.mapBannerSubtitle")
+            }
+            onRetry={retryMapLoad}
+            retryLabel={t("map.mapRetry")}
+            retrying={mapRetrying}
+          />
+        ) : null}
 
         <div className="pointer-events-none absolute inset-0 z-10">
           <MapSearchBarOverlay
@@ -1029,7 +1201,9 @@ function MapView() {
               userLocation={userLocation}
               formatDistance={formatDistanceLabel}
               distanceMeters={distanceMeters}
-              imageUrl={(photoName) => (photoName ? buildPlacePhotoUrl(photoName, 600) : null)}
+              imageUrl={(photoName) =>
+                photoName ? buildPlacePhotoUrl(photoName, 400) : null
+              }
               onSelect={handlePlaceSelect}
               onToggleSave={(p) => void handleToggleSave(p)}
               onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p))}
