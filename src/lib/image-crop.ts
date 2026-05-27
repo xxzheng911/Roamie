@@ -62,6 +62,50 @@ export type CenteredCropRect = {
 };
 
 /** 視窗內置中、符合比例的裁切框（大頭照／封面 overlay 與 export 共用） */
+export type CropOrientation = "portrait" | "landscape" | "square";
+
+export function getImageOrientation(imgW: number, imgH: number): CropOrientation {
+  if (imgH <= 0 || imgW <= 0) return "square";
+  const ratio = imgW / imgH;
+  if (ratio < 0.92) return "portrait";
+  if (ratio > 1.08) return "landscape";
+  return "square";
+}
+
+/**
+ * 初始縮放：avatar 用 contain + 留白，避免一進場就過度放大。
+ */
+export function computeInitialCropScale(
+  imgW: number,
+  imgH: number,
+  cropW: number,
+  cropH: number,
+  options: {
+    fit: "contain" | "cover";
+    padding?: number;
+  },
+): number {
+  const wScale = cropW / imgW;
+  const hScale = cropH / imgH;
+  const base = options.fit === "contain" ? Math.min(wScale, hScale) : Math.max(wScale, hScale);
+
+  if (options.padding != null) {
+    return base * options.padding;
+  }
+
+  if (options.fit === "cover") {
+    return base;
+  }
+
+  const orientation = getImageOrientation(imgW, imgH);
+  const paddingByOrientation: Record<CropOrientation, number> = {
+    portrait: 0.82,
+    landscape: 0.86,
+    square: 0.88,
+  };
+  return base * paddingByOrientation[orientation];
+}
+
 export function getCenteredCropRect(
   viewportW: number,
   viewportH: number,
@@ -101,8 +145,9 @@ export async function exportCropFromTransform(
     aspectHeight,
   );
 
-  const outW = Math.min(maxWidth, Math.round(cropW));
-  const outH = Math.round(outW / aspect);
+  const aspect = aspectWidth / aspectHeight;
+  const outW = Math.max(1, Math.min(maxWidth, Math.round(cropW)));
+  const outH = Math.max(1, Math.round(outW / aspect));
 
   const canvas = document.createElement("canvas");
   canvas.width = outW;

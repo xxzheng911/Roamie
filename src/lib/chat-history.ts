@@ -11,20 +11,6 @@ export type ChatMsg = {
   roamie?: Partial<RoamieResponse>;
 };
 
-function readGuest(): ChatMsg[] {
-  if (typeof window === "undefined") return [];
-  try {
-    return JSON.parse(localStorage.getItem(GUEST_KEY) || "[]");
-  } catch {
-    return [];
-  }
-}
-
-export function writeGuestChat(msgs: ChatMsg[]) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(GUEST_KEY, JSON.stringify(msgs.slice(-40)));
-}
-
 function parseAssistantContent(content: string): { content: string; roamie?: Partial<RoamieResponse> } {
   const trimmed = content.trim();
   if (!trimmed.startsWith("{")) return { content: trimmed };
@@ -38,7 +24,7 @@ function parseAssistantContent(content: string): { content: string; roamie?: Par
 
 export async function loadChatHistory(limit = 30): Promise<ChatMsg[]> {
   const uid = await getAuthenticatedUserId();
-  if (!uid) return readGuest();
+  if (!uid) return [];
   const { data, error } = await supabase
     .from("chat_messages")
     .select("role, content, created_at")

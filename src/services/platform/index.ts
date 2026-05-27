@@ -1,4 +1,3 @@
-import { attachOAuthDeepLinkListener } from "@/lib/auth-oauth-deep-link";
 import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
 import { normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
 import { hideNativeSplashScreen } from "@/lib/native-splash";
@@ -76,7 +75,6 @@ export async function bootstrapNativeShell(): Promise<void> {
 
   try {
     normalizeCapacitorEntryPath();
-    attachOAuthDeepLinkListener();
 
     document.documentElement.classList.add("native-shell");
     if (info.isIOS) document.documentElement.classList.add("platform-ios");

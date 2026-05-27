@@ -7,7 +7,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isBridgeLikelyReady(): boolean {
+/** 同步判斷 Capacitor bridge 是否已就緒（登入頁應為 true，避免多餘 await 吃掉 iOS user activation） */
+export function isCapacitorBridgeReady(): boolean {
   if (typeof window === "undefined") return false;
   const cap = (
     window as Window & {
@@ -50,7 +51,7 @@ export async function waitForCapacitorBridge(
 
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    if (isBridgeLikelyReady()) return true;
+    if (isCapacitorBridgeReady()) return true;
     await sleep(BRIDGE_POLL_MS);
   }
 

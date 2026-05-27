@@ -1,13 +1,26 @@
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { getClientAuthSession } from "@/lib/auth-session";
-import { logAuthDebug, logAuthError } from "@/lib/auth-debug";
+import { clearAuthState } from "@/lib/clear-auth-state";
+import { logAuthDebug, logAuthError, logGoogleOAuthMarker } from "@/lib/auth-debug";
+import { markOAuthCodeConsumed } from "@/lib/oauth-callback-guard";
+import { restoreOAuthPkceVerifier } from "@/lib/supabase-auth-storage";
 
 /** PKCE：用 ?code= 兌換 session */
 export async function exchangeOAuthCode(code: string): Promise<Session> {
   logAuthDebug("oauth.exchange_code", { codeLength: code.length });
+  const restored = await restoreOAuthPkceVerifier();
+  logAuthDebug("oauth.pkce_restore", { restored });
   const { error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error) throw error;
+  if (error) {
+    if (/pkce|code verifier/i.test(error.message)) {
+      logGoogleOAuthMarker("failed", { message: error.message, step: "exchangeCodeForSession" });
+      await clearAuthState({ reason: "pkce-exchange-failed" });
+    }
+    throw error;
+  }
+
+  markOAuthCodeConsumed(code);
 
   const session = await getClientAuthSession();
   if (session) return session;
@@ -66,12 +79,30 @@ export function readOAuthErrorFromUrl(
   }
 }
 
-export async function resolveSessionFromCallbackUrl(): Promise<{
+export type OAuthCallbackSearch = {
+  code?: string;
+  error?: string;
+  error_description?: string;
+};
+
+export async function resolveSessionFromCallbackUrl(
+  routeSearch?: OAuthCallbackSearch,
+): Promise<{
   session: Session;
   method: "code" | "hash" | "existing";
 }> {
   const query = new URLSearchParams(window.location.search);
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+
+  if (routeSearch?.code && !query.has("code")) {
+    query.set("code", routeSearch.code);
+  }
+  if (routeSearch?.error && !query.has("error")) {
+    query.set("error", routeSearch.error);
+  }
+  if (routeSearch?.error_description && !query.has("error_description")) {
+    query.set("error_description", routeSearch.error_description);
+  }
 
   const oauthError = readOAuthErrorFromUrl(query, hash);
   if (oauthError) {

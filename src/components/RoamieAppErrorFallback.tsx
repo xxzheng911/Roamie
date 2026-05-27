@@ -24,7 +24,9 @@ export function RoamieAppErrorFallback({
   const handleHome =
     onHome ??
     (() => {
-      window.location.href = "/login";
+      void import("@/lib/clear-auth-state").then(({ resetToLoginScreen }) => {
+        void resetToLoginScreen("app-error-fallback");
+      });
     });
 
   return (

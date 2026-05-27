@@ -58,6 +58,13 @@ export async function getAuthenticatedUserId(): Promise<string | null> {
   return session?.user?.id ?? null;
 }
 
+/** 須已登入；未登入時拋錯（正式流程不使用訪客 session） */
+export async function requireAuthenticatedUserId(): Promise<string> {
+  const id = await getAuthenticatedUserId();
+  if (!id) throw new Error("請先登入");
+  return id;
+}
+
 /** 上傳 profile 圖片前必須通過 — 不使用訪客／匿名 */
 export async function requireAuthenticatedUser(): Promise<{ id: string }> {
   const session = await getClientAuthSession();

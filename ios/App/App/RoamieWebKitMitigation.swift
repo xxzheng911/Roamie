@@ -1,6 +1,8 @@
 import UIKit
 import WebKit
 import Capacitor
+import AuthenticationServices
+import SafariServices
 
 /*
  iOS 26 WebKit / GPU system warnings (native console — not suppressible from app code):
@@ -331,13 +333,21 @@ enum RoamieWebKitMitigation {
             block()
             return
         }
+        let requiredFrames = isIOS26OrNewer ? 12 : 3
+        let postDelay: TimeInterval = isIOS26OrNewer ? 0.4 : 0
         var frames = 0
         let proxy = RoamieDisplayLinkProxy { link in
             frames += 1
-            if frames >= 3 {
+            if frames >= requiredFrames {
                 link.invalidate()
-                RoamieNativeLog.debug("⚡️ [Roamie] DISPLAY_WARMUP frames=\(frames) — starting WK load")
-                block()
+                RoamieNativeLog.debug(
+                    "⚡️ [Roamie] DISPLAY_WARMUP frames=\(frames) delay=\(postDelay)s — starting WK load"
+                )
+                if postDelay > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + postDelay, execute: block)
+                } else {
+                    block()
+                }
             }
         }
         let link = CADisplayLink(target: proxy, selector: #selector(RoamieDisplayLinkProxy.tick))
@@ -546,6 +556,17 @@ enum RoamieRecoveryWebView {
 
 // MARK: - iOS 26 snapshot renderer (mirror = primary display; WKWebView = input/JS)
 
+/// Full-screen mirror overlay that never intercepts touches (UIImageView pass-through is unreliable on iOS 26).
+final class RoamiePassThroughImageView: UIImageView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        nil
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        false
+    }
+}
+
 /// Snapshot-first on iOS 26: WINDOW_MIRROR is the formal display path; live compositor is never auto-restored.
 enum RoamieCompositorFallback {
     private enum DisplayMode: String {
@@ -566,6 +587,13 @@ enum RoamieCompositorFallback {
     private static var loggedOnce = Set<String>()
     private static var lastCapturedURL: String?
     private static var lastSpaCaptureAt: Date?
+    private static var liveInteractionDepth = 0
+    private static var legalOverlayOpen = false
+    /// After WebContent process death, skip evaluateJavaScript until the next successful navigation.
+    private static var webContentJsReliable = true
+    /// OAuth / login live mode — skip mirror capture (stale splash + extra WebContent work).
+    private static var pauseMirrorRefreshUntil: Date?
+    private static var processReloadAttempts = 0
 
     private static let maxCapturesPerNavigation = 2
     private static let snapshotTimeout: TimeInterval = 12
@@ -575,6 +603,10 @@ enum RoamieCompositorFallback {
 
     static func bind(_ webView: WKWebView) {
         boundWebView = webView
+    }
+
+    static func boundWebViewForScripts() -> WKWebView? {
+        boundWebView
     }
 
     static func onNavigationStarted(_ webView: WKWebView) {
@@ -595,12 +627,19 @@ enum RoamieCompositorFallback {
     static func onNavigationFinished(_ webView: WKWebView) {
         guard isActive else { return }
         bind(webView)
+        webContentJsReliable = true
+        processReloadAttempts = 0
         configureWebViewForInput(webView)
         cancelPendingEvaluations()
 
         if usesSnapshotRenderer {
+            if liveInteractionDepth > 0 {
+                reelevateInputIfNeeded(webView)
+                logOnce("nav_finish_skip_live", "⚡️ [Roamie] SNAPSHOT nav_finish skipped — live interaction (OAuth/SPA)")
+                return
+            }
             logOnce("snapshot_renderer", "⚡️ [Roamie] SNAPSHOT_RENDERER active — mirror display, WKWebView input")
-            scheduleEvaluation(after: 1.0, reason: "nav_finish")
+            scheduleEvaluation(after: 3.5, reason: "nav_finish")
             scheduleBootMirrorCatchupIfNeeded()
             return
         }
@@ -612,12 +651,28 @@ enum RoamieCompositorFallback {
     static func onProcessTerminated(_ webView: WKWebView) {
         guard isActive else { return }
         bind(webView)
+        webContentJsReliable = false
+        snapshotInFlight = false
         capturesThisNavigation = 0
-        logOnce("process_terminated", "⚡️ [Roamie] SNAPSHOT_RENDERER process_terminated — reload then re-capture on finish")
-        if let last = lastMirrorImage() {
-            activateSnapshotRenderer(reason: "process_terminated_stale", snapshot: last)
+        processReloadAttempts += 1
+        liveInteractionDepth = max(liveInteractionDepth, 1)
+        cancelPendingEvaluations()
+        if let window = webView.window {
+            window.viewWithTag(windowMirrorTag)?.isHidden = true
         }
-        webView.reload()
+        elevateWebViewHostForInput(webView)
+        logOnce(
+            "process_terminated",
+            "⚡️ [Roamie] SNAPSHOT_RENDERER process_terminated attempt=\(processReloadAttempts) — live input, defer reload"
+        )
+        guard processReloadAttempts <= 2 else {
+            RoamieNativeLog.critical("⚡️ [Roamie] PROCESS_TERMINATED cap reached — no further reload")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak webView] in
+            guard let webView, boundWebView === webView else { return }
+            webView.reload()
+        }
     }
 
     static func onHostViewAppeared(_ webView: WKWebView) {
@@ -642,32 +697,196 @@ enum RoamieCompositorFallback {
         capturesThisNavigation = 0
         lastCapturedURL = nil
         lastSpaCaptureAt = nil
+        liveInteractionDepth = 0
+        legalOverlayOpen = false
+    }
+
+    /// Legal overlay: allow mirror refresh while scrolling (do not disable WK scroll — breaks taps).
+    static func setLegalOverlayOpen(_ open: Bool) {
+        guard isActive, usesSnapshotRenderer, let webView = boundWebView else { return }
+        legalOverlayOpen = open
+        if open {
+            RoamieNativeLog.critical("⚡️ [Roamie] LEGAL overlay open")
+            requestSpaSnapshotRefresh(force: true)
+        } else {
+            RoamieNativeLog.critical("⚡️ [Roamie] LEGAL overlay closed")
+            webView.scrollView.isScrollEnabled = true
+            webView.scrollView.bounces = true
+        }
+    }
+
+    /// Force mirror + input restore after OAuth browser / stuck live depth (Google login return).
+    static func resetInteractionState() {
+        guard isActive, usesSnapshotRenderer, let webView = boundWebView else { return }
+        liveInteractionDepth = 0
+        legalOverlayOpen = false
+        configureWebViewForInput(webView)
+
+        if let image = lastMirrorImage() {
+            presentWindowMirror(image)
+        }
+        elevateWebViewHostForInput(webView)
+
+        requestSpaSnapshotRefresh(force: true)
+        RoamieNativeLog.critical("⚡️ [Roamie] INTERACTION reset (mirror under webView, depth=0)")
+    }
+
+    /// Pause WINDOW_MIRROR capture during login / OAuth (avoids stale splash + WebContent churn).
+    static func pauseMirrorRefresh(for seconds: TimeInterval) {
+        pauseMirrorRefreshUntil = Date().addingTimeInterval(seconds)
+    }
+
+    /// Before presenting SFSafariViewController — live WebView + pause mirror so OAuth sheet can appear.
+    static func onOAuthOpen() {
+        guard isActive, usesSnapshotRenderer, let webView = boundWebView else { return }
+        cancelPendingEvaluations()
+        legalOverlayOpen = false
+        liveInteractionDepth = 1
+        pauseMirrorRefresh(for: 120)
+        processReloadAttempts = 0
+        hideBootPlaceholder()
+        if let window = webView.window {
+            window.viewWithTag(windowMirrorTag)?.isHidden = true
+        }
+        applyLiveInteractionVisuals(webView)
+        RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_OPEN live WebView (mirror paused 120s)")
+    }
+
+    /// OAuth browser closed — stay on live WebView; do not refresh mirror to a stale boot/login frame.
+    static func onOAuthReturn() {
+        guard isActive, usesSnapshotRenderer, let webView = boundWebView else { return }
+        cancelPendingEvaluations()
+        legalOverlayOpen = false
+        liveInteractionDepth = 1
+        pauseMirrorRefresh(for: 90)
+        processReloadAttempts = 0
+        hideBootPlaceholder()
+        if let window = webView.window {
+            window.viewWithTag(windowMirrorTag)?.isHidden = true
+        }
+        applyLiveInteractionVisuals(webView)
+        RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_RETURN live WebView (mirror refresh paused 90s)")
+    }
+
+    private static func isMirrorRefreshPaused() -> Bool {
+        if liveInteractionDepth > 0 { return true }
+        if let until = pauseMirrorRefreshUntil, Date() < until { return true }
+        return false
+    }
+
+    /// Re-apply z-order after layout / host view appear (JS bridge may have run before window was ready).
+    static func reelevateInputIfNeeded(_ webView: WKWebView) {
+        guard isActive, usesSnapshotRenderer else { return }
+        bind(webView)
+        configureWebViewForInput(webView)
+        if liveInteractionDepth > 0 {
+            applyLiveInteractionVisuals(webView)
+        } else {
+            elevateWebViewHostForInput(webView)
+        }
+    }
+
+    /// Sheet / modal open: hide mirror and elevate WKWebView above it for direct touch handling.
+    static func setLiveInteraction(_ active: Bool, forced: Bool = false) {
+        guard isActive, usesSnapshotRenderer, let webView = boundWebView else { return }
+        if forced {
+            liveInteractionDepth = active ? 1 : 0
+        } else if active {
+            liveInteractionDepth += 1
+        } else {
+            liveInteractionDepth = max(0, liveInteractionDepth - 1)
+        }
+        applyLiveInteractionVisuals(webView)
+    }
+
+    private static func applyLiveInteractionVisuals(_ webView: WKWebView) {
+        let useLive = liveInteractionDepth > 0
+        if useLive {
+            webView.isHidden = false
+            webView.alpha = 1
+            webView.isUserInteractionEnabled = true
+            webView.scrollView.isUserInteractionEnabled = true
+            webView.scrollView.isScrollEnabled = true
+
+            if let window = webView.window {
+                window.viewWithTag(windowMirrorTag)?.isHidden = true
+            }
+            elevateWebViewHostForInput(webView)
+            scheduleLiveInteractionReapply(webView)
+            RoamieNativeLog.critical("⚡️ [Roamie] INTERACTION mode=live depth=\(liveInteractionDepth) (mirror hidden, webView elevated)")
+            return
+        }
+
+        configureWebViewForInput(webView)
+
+        if let image = lastMirrorImage() {
+            presentWindowMirror(image)
+        } else {
+            elevateWebViewHostForInput(webView)
+        }
+
+        if !isMirrorRefreshPaused() {
+            requestSpaSnapshotRefresh(force: true)
+        }
+        RoamieNativeLog.critical("⚡️ [Roamie] INTERACTION mode=mirror depth=\(liveInteractionDepth)")
+    }
+
+    private static func scheduleLiveInteractionReapply(_ webView: WKWebView) {
+        guard liveInteractionDepth > 0 else { return }
+        for delay in [0.08, 0.4] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard liveInteractionDepth > 0, boundWebView === webView else { return }
+                applyLiveInteractionVisuals(webView)
+            }
+        }
     }
 
     /// SPA / auth UI refresh — rate-limited, does not count toward nav capture cap, never restores live compositor.
     static func requestSpaSnapshotRefresh(force: Bool = false) {
         guard isActive, usesSnapshotRenderer, boundWebView != nil else { return }
         guard mode == .snapshotRenderer || mode == .booting else { return }
+        if isMirrorRefreshPaused(), !legalOverlayOpen {
+            logOnce("spa_paused", "⚡️ [Roamie] SNAPSHOT spa_ui paused (live/OAuth)")
+            return
+        }
+        guard liveInteractionDepth == 0 || legalOverlayOpen else { return }
+
+        if snapshotInFlight {
+            if force {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    requestSpaSnapshotRefresh(force: true)
+                }
+            }
+            return
+        }
 
         let now = Date()
         if !force,
+           !legalOverlayOpen,
            let last = lastSpaCaptureAt,
            now.timeIntervalSince(last) < spaCaptureMinInterval {
             return
         }
-        lastSpaCaptureAt = now
 
-        captureSnapshot(label: "spa_ui", countsTowardCap: false) { image in
-            guard let image, imageHasContent(image) else { return }
-            activateSnapshotRenderer(reason: "spa_ui", snapshot: image)
+        guard let webView = boundWebView else { return }
+        isDomReadyForSnapshot(webView) { ready in
+            guard ready else {
+                logOnce("spa_not_ready", "⚡️ [Roamie] SNAPSHOT spa_ui skipped — DOM not ready")
+                return
+            }
+            lastSpaCaptureAt = Date()
+            captureSnapshot(label: "spa_ui", countsTowardCap: false) { image in
+                guard let image, imageHasMeaningfulContent(image) else { return }
+                activateSnapshotRenderer(reason: "spa_ui", snapshot: image)
+            }
         }
     }
 
     /// One-time catch-up after index.html nav — JS bundle may paint after first nav_finish snapshot.
     private static func scheduleBootMirrorCatchupIfNeeded() {
-        guard isActive, usesSnapshotRenderer else { return }
+        guard isActive, usesSnapshotRenderer, !isMirrorRefreshPaused() else { return }
         logOnce("boot_catchup", "⚡️ [Roamie] SNAPSHOT_RENDERER boot catchup scheduled")
-        for delay in [1.5, 3.0, 5.0] {
+        for delay in [4.0, 7.0, 11.0, 15.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 requestSpaSnapshotRefresh(force: true)
             }
@@ -728,18 +947,41 @@ enum RoamieCompositorFallback {
         pendingEvaluations.append(timer)
     }
 
-    /// WKWebView stays interactive under the non-interactive mirror overlay.
+    /// WKWebView stays interactive; WINDOW_MIRROR stays *below* the host view (never on top).
     private static func configureWebViewForInput(_ webView: WKWebView) {
         RoamieWebKitMitigation.applySoftwareRendering(to: webView)
         webView.isHidden = false
         webView.isUserInteractionEnabled = true
+        webView.scrollView.isUserInteractionEnabled = true
         webView.scrollView.isScrollEnabled = true
         if mode == .snapshotRenderer {
-            webView.alpha = 0.01
+            webView.alpha = 1
             RoamieWebKitMitigation.relaxLiveCompositorForSnapshotInput(webView)
+            elevateWebViewHostForInput(webView)
         } else {
             webView.alpha = 1
         }
+    }
+
+    private static func webViewHostContainer(in window: UIWindow, webView: WKWebView) -> UIView {
+        var container: UIView = webView
+        while let parent = container.superview, parent !== window {
+            container = parent
+        }
+        return container
+    }
+
+    /// Keep Capacitor + WKWebView above the mirror so taps reach the web layer on iOS 26.
+    private static func elevateWebViewHostForInput(_ webView: WKWebView) {
+        guard usesSnapshotRenderer, let window = webView.window else { return }
+        let host = webViewHostContainer(in: window, webView: webView)
+        if let mirror = window.viewWithTag(windowMirrorTag) {
+            if mirror.superview === window {
+                window.insertSubview(mirror, belowSubview: host)
+            }
+            mirror.isHidden = liveInteractionDepth > 0
+        }
+        window.bringSubviewToFront(host)
     }
 
     private static func showBootPlaceholder(on webView: WKWebView) {
@@ -802,9 +1044,19 @@ enum RoamieCompositorFallback {
         }
 
         captureSnapshot(label: reason) { image in
-            if let image, imageHasContent(image), let webView = boundWebView {
-                lastCapturedURL = webView.url?.absoluteString
-                probeLiveCompositorDiagnostic(webView)
+            if let image, imageHasContent(image), boundWebView != nil {
+                let score = imageContentScore(image)
+                if reason == "nav_finish", score < 12 {
+                    logOnce("nav_finish_weak", "⚡️ [Roamie] SNAPSHOT nav_finish weak score=\(score) — retry")
+                    if capturesThisNavigation < maxCapturesPerNavigation {
+                        scheduleEvaluation(after: 1.5, reason: "nav_finish-retry")
+                    }
+                    return
+                }
+                lastCapturedURL = boundWebView?.url?.absoluteString
+                if let webView = boundWebView {
+                    probeLiveCompositorDiagnostic(webView)
+                }
                 activateSnapshotRenderer(reason: reason, snapshot: image)
                 return
             }
@@ -814,8 +1066,10 @@ enum RoamieCompositorFallback {
                 return
             }
 
-            guard let webView = boundWebView else { return }
-            tryRecoveryWebViewSnapshot(for: webView)
+            guard boundWebView != nil else { return }
+            if let webView = boundWebView {
+                tryRecoveryWebViewSnapshot(for: webView)
+            }
         }
     }
 
@@ -857,35 +1111,53 @@ enum RoamieCompositorFallback {
 
     private static func activateSnapshotRenderer(reason: String, snapshot: UIImage) {
         guard let webView = boundWebView else { return }
+        guard liveInteractionDepth == 0 || legalOverlayOpen else { return }
+
+        let newScore = imageContentScore(snapshot)
+        if let existing = lastMirrorImage() {
+            let oldScore = imageContentScore(existing)
+            if newScore < max(8, Int(Double(oldScore) * 0.55)) {
+                RoamieNativeLog.critical(
+                    "⚡️ [Roamie] MIRROR keep previous reason=\(reason) newScore=\(newScore) oldScore=\(oldScore)"
+                )
+                return
+            }
+        }
+
         mode = .snapshotRenderer
         configureWebViewForInput(webView)
         hideBootPlaceholder()
         cancelPendingEvaluations()
         presentWindowMirror(snapshot)
+        RoamieNativeLog.critical(
+            "⚡️ [Roamie] MIRROR updated reason=\(reason) size=\(Int(snapshot.size.width))x\(Int(snapshot.size.height)) score=\(newScore)"
+        )
         logOnce("mirror_on", "⚡️ [Roamie] COMPOSITOR mode=mirror (\(reason)) — snapshot renderer, no auto-live")
     }
 
     private static func presentWindowMirror(_ image: UIImage) {
         guard let webView = boundWebView, let window = webView.window else { return }
+        let host = webViewHostContainer(in: window, webView: webView)
 
-        let mirror: UIImageView
-        if let existing = window.viewWithTag(windowMirrorTag) as? UIImageView {
+        let mirror: RoamiePassThroughImageView
+        if let existing = window.viewWithTag(windowMirrorTag) as? RoamiePassThroughImageView {
             mirror = existing
         } else {
-            mirror = UIImageView(frame: window.bounds)
+            window.viewWithTag(windowMirrorTag)?.removeFromSuperview()
+            mirror = RoamiePassThroughImageView(frame: window.bounds)
             mirror.tag = windowMirrorTag
             mirror.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             mirror.isUserInteractionEnabled = false
             mirror.isAccessibilityElement = false
             mirror.contentMode = .scaleToFill
             mirror.backgroundColor = cream
-            window.addSubview(mirror)
-            logOnce("window_mirror", "⚡️ [Roamie] WINDOW_MIRROR active (input passes through to WKWebView)")
+            window.insertSubview(mirror, belowSubview: host)
+            logOnce("window_mirror", "⚡️ [Roamie] WINDOW_MIRROR below WK host (webView receives taps)")
         }
         mirror.frame = window.bounds
         mirror.image = image
-        mirror.isHidden = false
-        window.bringSubviewToFront(mirror)
+        mirror.isHidden = liveInteractionDepth > 0
+        elevateWebViewHostForInput(webView)
         configureWebViewForInput(webView)
     }
 
@@ -894,7 +1166,7 @@ enum RoamieCompositorFallback {
     }
 
     private static func lastMirrorImage() -> UIImage? {
-        (boundWebView?.window?.viewWithTag(windowMirrorTag) as? UIImageView)?.image
+        (boundWebView?.window?.viewWithTag(windowMirrorTag) as? RoamiePassThroughImageView)?.image
     }
 
     /// Diagnostic only — never switches display back to live on iOS 26.
@@ -928,6 +1200,11 @@ enum RoamieCompositorFallback {
             completion(nil)
             return
         }
+        if !webContentJsReliable, webView.isLoading {
+            logOnce("capture_skip_unreliable", "⚡️ [Roamie] SNAPSHOT skipped — WebContent recovering")
+            completion(nil)
+            return
+        }
         guard !snapshotInFlight else {
             completion(nil)
             return
@@ -938,21 +1215,75 @@ enum RoamieCompositorFallback {
             capturesThisNavigation += 1
         }
 
-        takeSnapshotImpl(from: webView, label: label) { image in
-            snapshotInFlight = false
-            completion(image)
+        prepareWebViewForSnapshot(webView) {
+            takeSnapshotImpl(from: webView, label: label) { image in
+                snapshotInFlight = false
+                completion(image)
+            }
+        }
+    }
+
+    /// Drop outer HTML boot splash only once interactive UI exists; always restore alpha before capture.
+    private static let domReadyForSnapshotScript = """
+    (function(){
+      var root=document.getElementById('root');
+      var ready=document.documentElement.dataset.roamieAppReady==='1';
+      var interactive=root?root.querySelector('button,a[href],input,form,main,nav')!=null:false;
+      if(ready||interactive){
+        document.getElementById('roamie-boot-splash')?.remove();
+        document.getElementById('roamie-static-boot')?.remove();
+      }
+      return !!(ready||interactive);
+    })()
+    """
+
+    /// iOS 26 snapshot renderer: never call evaluateJavaScript (often kills struggling WebContent).
+    private static func shouldAvoidJavaScriptProbe() -> Bool {
+        usesSnapshotRenderer || !webContentJsReliable
+    }
+
+    private static func isDomReadyForSnapshot(_ webView: WKWebView, completion: @escaping (Bool) -> Void) {
+        if shouldAvoidJavaScriptProbe() {
+            let ready = !webView.isLoading && webView.estimatedProgress >= 0.85
+            completion(ready)
+            return
+        }
+        webView.evaluateJavaScript(domReadyForSnapshotScript) { result, error in
+            if error != nil {
+                webContentJsReliable = false
+                completion(!webView.isLoading && webView.estimatedProgress >= 0.85)
+                return
+            }
+            completion((result as? Bool) == true)
+        }
+    }
+
+    private static func prepareWebViewForSnapshot(_ webView: WKWebView, then work: @escaping () -> Void) {
+        if shouldAvoidJavaScriptProbe() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+            return
+        }
+        webView.evaluateJavaScript(domReadyForSnapshotScript) { _, error in
+            if error != nil {
+                webContentJsReliable = false
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
         }
     }
 
     fileprivate static func takeSnapshotImpl(from webView: WKWebView, label: String, completion: @escaping (UIImage?) -> Void) {
+        webView.isHidden = false
+        webView.alpha = 1
+
         var completed = false
         let finish: (UIImage?) -> Void = { image in
             guard !completed else { return }
             completed = true
+            configureWebViewForInput(webView)
             if let image, imageHasContent(image) {
                 logState(
                     "⚡️ [Roamie] SNAPSHOT \(label) ok size=\(Int(image.size.width))x\(Int(image.size.height)) " +
-                        "content=\(imageHasContent(image)) captures=\(capturesThisNavigation)"
+                        "score=\(imageContentScore(image)) captures=\(capturesThisNavigation)"
                 )
             } else {
                 logCriticalOnce("snapshot_fail_\(label)", "⚡️ [Roamie] SNAPSHOT \(label) failed")
@@ -998,11 +1329,11 @@ enum RoamieCompositorFallback {
         return imageHasContent(image)
     }
 
-    private static func imageHasContent(_ image: UIImage) -> Bool {
-        guard let cg = image.cgImage else { return true }
-        let width = min(cg.width, 64)
-        let height = min(cg.height, 64)
-        guard width > 0, height > 0 else { return false }
+    private static func imageContentScore(_ image: UIImage) -> Int {
+        guard let cg = image.cgImage else { return 999 }
+        let width = min(cg.width, 96)
+        let height = min(cg.height, 96)
+        guard width > 0, height > 0 else { return 0 }
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
         guard let ctx = CGContext(
             data: &pixels,
@@ -1012,17 +1343,169 @@ enum RoamieCompositorFallback {
             bytesPerRow: width * 4,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return true }
+        ) else { return 999 }
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
         let creamR = 253, creamG = 245, creamB = 234
         var nonBackground = 0
-        for i in stride(from: 0, to: pixels.count, by: 16) {
+        var darkPixels = 0
+        for i in stride(from: 0, to: pixels.count, by: 4) {
             let r = Int(pixels[i]), g = Int(pixels[i + 1]), b = Int(pixels[i + 2])
             if abs(r - creamR) > 18 || abs(g - creamG) > 18 || abs(b - creamB) > 18 {
                 nonBackground += 1
             }
+            if r < 80 && g < 80 && b < 80 {
+                darkPixels += 1
+            }
         }
-        return nonBackground > 2
+        return nonBackground + darkPixels * 3
+    }
+
+    private static func imageHasContent(_ image: UIImage) -> Bool {
+        imageContentScore(image) > 2
+    }
+
+    /// SPA mirror refresh needs real UI (login buttons / nav), not cream blank after splash removal.
+    private static func imageHasMeaningfulContent(_ image: UIImage) -> Bool {
+        imageContentScore(image) >= 24
+    }
+}
+
+// MARK: - Native OAuth (ASWebAuthenticationSession — bypasses broken Capacitor Browser.present on iOS 26)
+
+final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = RoamieOAuthPresenter()
+
+    private static var activeSession: ASWebAuthenticationSession?
+    private static var safariFallback: SFSafariViewController?
+
+    static func start(urlString: String) {
+        guard let url = URL(string: urlString), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            notifyJsFailure("invalid_oauth_url")
+            return
+        }
+
+        RoamieCompositorFallback.onOAuthOpen()
+
+        DispatchQueue.main.async {
+            activeSession?.cancel()
+            safariFallback = nil
+
+            let session = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: "roamie"
+            ) { callbackURL, error in
+                activeSession = nil
+                if let error = error as? ASWebAuthenticationSessionError,
+                   error.code == .canceledLogin {
+                    RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_SESSION cancelled")
+                    notifyJsCancelled()
+                    return
+                }
+                if let error {
+                    RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_SESSION error \(error.localizedDescription)")
+                    notifyJsFailure(error.localizedDescription)
+                    return
+                }
+                guard let callbackURL else {
+                    notifyJsFailure("missing_callback_url")
+                    return
+                }
+                RoamieNativeLog.critical("⚡️ [Roamie] OPEN_URL scheme=roamie url=\(callbackURL.absoluteString)")
+                deliverCallbackToWebView(callbackURL.absoluteString)
+            }
+
+            session.presentationContextProvider = RoamieOAuthPresenter.shared
+            session.prefersEphemeralWebBrowserSession = false
+            activeSession = session
+
+            if session.start() {
+                RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_SESSION started (ASWebAuthenticationSession)")
+                notifyJsStarted()
+                return
+            }
+
+            activeSession = nil
+            RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_SESSION start() false — trying SFSafariViewController")
+            if presentSafariFallback(url: url) {
+                notifyJsStarted()
+            } else {
+                notifyJsFailure("unable_to_present_oauth_browser")
+            }
+        }
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        if let window = RoamieCompositorFallback.boundWebViewForScripts()?.window {
+            return window
+        }
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            if let key = windowScene.windows.first(where: { $0.isKeyWindow }) {
+                return key
+            }
+        }
+        return ASPresentationAnchor()
+    }
+
+    private static func topPresenter() -> UIViewController? {
+        guard let root = RoamieCompositorFallback.boundWebViewForScripts()?.window?.rootViewController else {
+            return nil
+        }
+        var top = root
+        while let presented = top.presentedViewController {
+            top = presented
+        }
+        return top
+    }
+
+    @discardableResult
+    private static func presentSafariFallback(url: URL) -> Bool {
+        guard let presenter = topPresenter() else { return false }
+        let safari = SFSafariViewController(url: url)
+        safari.modalPresentationStyle = .fullScreen
+        safariFallback = safari
+        presenter.present(safari, animated: true) {
+            RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_SAFARI presented")
+        }
+        return true
+    }
+
+    private static func deliverCallbackToWebView(_ url: String) {
+        guard let webView = RoamieCompositorFallback.boundWebViewForScripts() else { return }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["url": url]),
+              let json = String(data: data, encoding: .utf8) else { return }
+        let js = "window.__roamieHandleOAuthReturn && window.__roamieHandleOAuthReturn(\(json));"
+        DispatchQueue.main.async {
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+
+    private static func evaluateJsEvent(_ name: String, detail: String?) {
+        guard let webView = RoamieCompositorFallback.boundWebViewForScripts() else { return }
+        let detailJson: String
+        if let detail, let data = try? JSONSerialization.data(withJSONObject: ["message": detail]),
+           let encoded = String(data: data, encoding: .utf8) {
+            detailJson = encoded
+        } else {
+            detailJson = "null"
+        }
+        let js = "window.dispatchEvent(new CustomEvent('\(name)', { detail: \(detailJson) }));"
+        DispatchQueue.main.async {
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+
+    private static func notifyJsStarted() {
+        evaluateJsEvent("roamie-oauth-native-started", detail: nil)
+    }
+
+    private static func notifyJsCancelled() {
+        evaluateJsEvent("roamie-oauth-native-cancelled", detail: nil)
+    }
+
+    private static func notifyJsFailure(_ message: String) {
+        evaluateJsEvent("roamie-oauth-native-error", detail: message)
     }
 }
 
@@ -1032,8 +1515,51 @@ enum RoamieCompositorFallback {
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "roamieSnapshot" else { return }
+        if let body = message.body as? [String: Any], let mode = body["mode"] as? String {
+            DispatchQueue.main.async {
+                switch mode {
+                case "live":
+                    RoamieCompositorFallback.setLiveInteraction(true)
+                case "live-force":
+                    RoamieCompositorFallback.pauseMirrorRefresh(for: 120)
+                    RoamieCompositorFallback.setLiveInteraction(true, forced: true)
+                case "oauth-open":
+                    RoamieCompositorFallback.onOAuthOpen()
+                case "oauth-start":
+                    if let url = body["url"] as? String {
+                        RoamieOAuthPresenter.start(urlString: url)
+                    } else {
+                        RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_START missing url")
+                    }
+                case "oauth-return":
+                    RoamieCompositorFallback.onOAuthReturn()
+                case "reset-interaction":
+                    RoamieCompositorFallback.resetInteractionState()
+                case "legal-overlay":
+                    RoamieCompositorFallback.setLegalOverlayOpen(true)
+                case "legal-overlay-off":
+                    RoamieCompositorFallback.setLegalOverlayOpen(false)
+                case "mirror":
+                    RoamieCompositorFallback.setLiveInteraction(false)
+                    RoamieCompositorFallback.setLegalOverlayOpen(false)
+                case "mirror-force":
+                    RoamieCompositorFallback.setLiveInteraction(false, forced: true)
+                    RoamieCompositorFallback.setLegalOverlayOpen(false)
+                default:
+                    break
+                }
+            }
+            return
+        }
+
+        let force: Bool
+        if let body = message.body as? [String: Any] {
+            force = (body["force"] as? Bool) == true
+        } else {
+            force = false
+        }
         DispatchQueue.main.async {
-            RoamieCompositorFallback.requestSpaSnapshotRefresh()
+            RoamieCompositorFallback.requestSpaSnapshotRefresh(force: force)
         }
     }
 }

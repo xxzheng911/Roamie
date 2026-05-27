@@ -57,7 +57,7 @@ export async function listPlaces(): Promise<SavedPlace[]> {
     }
     return (data ?? []) as SavedPlace[];
   }
-  return readGuest();
+  return [];
 }
 
 export async function savePlace(input: NewPlace): Promise<SavedPlace> {
@@ -77,20 +77,7 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
     emitSavedPlacesChanged();
     return data as SavedPlace;
   }
-  const record: SavedPlace = {
-    ...input,
-    metadata: input.metadata ?? {},
-    id: crypto.randomUUID(),
-    created_at: new Date().toISOString(),
-  };
-  const list = readGuest();
-  // de-dupe by name
-  if (!list.find((p) => p.name === record.name)) {
-    list.unshift(record);
-    writeGuest(list.slice(0, 100));
-    emitSavedPlacesChanged();
-  }
-  return record;
+  throw new Error("請先登入");
 }
 
 export async function deletePlace(id: string): Promise<void> {
@@ -104,8 +91,7 @@ export async function deletePlace(id: string): Promise<void> {
     emitSavedPlacesChanged();
     return;
   }
-  writeGuest(readGuest().filter((p) => p.id !== id));
-  emitSavedPlacesChanged();
+  throw new Error("請先登入");
 }
 
 export async function isPlaceSavedByName(name: string): Promise<string | null> {

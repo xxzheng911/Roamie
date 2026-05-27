@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { RoamieRoutePending } from "@/components/RoamieRoutePending";
 import { markBootPhase } from "@/lib/boot-diagnostics";
+import { requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
 
 export function markSessionBootstrapped(): void {
   // Kept for compatibility; cold-start gate removed.
@@ -51,6 +52,7 @@ export function StartupGate({ children }: Props) {
     if (hasUi) {
       setSlow(false);
       markBootPhase("startup-gate:has-ui");
+      requestIosSnapshotRefresh("startup-gate-has-ui", { force: true });
     }
   }, [hasUi]);
 

@@ -152,6 +152,8 @@ export type ChatPlanningSession = {
   tripEndDate?: string;
   tripDays?: number;
   tripStyles?: string;
+  /** 規劃表單旅伴人數 */
+  tripCompanionCount?: number;
   updatedAt: string;
 };
 

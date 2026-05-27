@@ -6,6 +6,10 @@ import {
   shouldRememberCoords,
 } from "@/lib/device-location-resolve";
 import { readLastSearchLocation } from "@/lib/last-search-location";
+import {
+  ensureLocationPermission,
+  type LocationPermissionState,
+} from "@/lib/location-permission-manager";
 import { detectPlatform } from "@/services/platform";
 
 export { isIosSimulatorPresetLocation } from "@/lib/device-location-resolve";
@@ -18,13 +22,7 @@ export const DEFAULT_FALLBACK_LOCATION = {
 
 const LAST_GOOD_COORDS_KEY = "roamie:last-device-coords";
 
-export type LocationPermissionState =
-  | "granted"
-  | "denied"
-  | "restricted"
-  | "timeout"
-  | "unavailable"
-  | "unknown";
+export type { LocationPermissionState } from "@/lib/location-permission-manager";
 
 export type DeviceLocationResult = {
   lat: number;
@@ -164,25 +162,6 @@ function readPosition(
 type CapGeolocation = typeof import("@capacitor/geolocation").Geolocation;
 type CapPosition = Awaited<ReturnType<CapGeolocation["getCurrentPosition"]>>;
 
-async function requestCapacitorPermissions(Geolocation: CapGeolocation): Promise<LocationPermissionState> {
-  try {
-    const status = await Geolocation.checkPermissions();
-    if (status.location === "granted" || status.coarseLocation === "granted") {
-      return "granted";
-    }
-    if (status.location === "denied" || status.coarseLocation === "denied") {
-      return "denied";
-    }
-    const req = await Geolocation.requestPermissions();
-    if (req.location === "granted" || req.coarseLocation === "granted") return "granted";
-    if (req.location === "denied" || req.coarseLocation === "denied") return "denied";
-    return "unknown";
-  } catch (e) {
-    console.warn("[Location] capacitor permission request failed", e);
-    return "unknown";
-  }
-}
-
 async function waitForCapacitorWatchFix(
   Geolocation: CapGeolocation,
   timeoutMs: number,
@@ -221,7 +200,10 @@ async function readCapacitorPosition(): Promise<{
 
   try {
     const { Geolocation } = await import("@capacitor/geolocation");
-    const permission = await requestCapacitorPermissions(Geolocation);
+    const permission = await ensureLocationPermission({ request: true });
+    if (permission !== "granted") {
+      return { result: null, permission };
+    }
 
     const attempts: Parameters<CapGeolocation["getCurrentPosition"]>[0][] = [
       { enableHighAccuracy: true, timeout: 25_000, maximumAge: 0 },
@@ -349,20 +331,10 @@ export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
     const { result: cap, permission: capPerm } = await readCapacitorPosition();
     if (cap) return cap;
 
-    const { result: browser, permission: browserPerm } = await requestBrowserLocation();
-    if (browser) {
-      console.info("[Location] native shell used browser geolocation");
-      return browser;
-    }
-
-    const permission: LocationPermissionState =
-      capPerm === "denied" || browserPerm === "denied"
-        ? "denied"
-        : capPerm === "timeout" || browserPerm === "timeout"
-          ? "timeout"
-          : capPerm ?? browserPerm ?? "unavailable";
-
-    return fallbackResult(permission, "native GPS unavailable after Capacitor + browser");
+    return fallbackResult(
+      capPerm,
+      "native GPS unavailable (Capacitor only; no browser geolocation fallback)",
+    );
   }
 
   const { result: browser, permission: browserPerm } = await requestBrowserLocation();
@@ -386,8 +358,10 @@ export function watchDeviceLocation(
   if (isNativeShell()) {
     void (async () => {
       try {
+        const permission = await ensureLocationPermission({ request: false });
+        if (permission !== "granted") return;
+
         const { Geolocation } = await import("@capacitor/geolocation");
-        await requestCapacitorPermissions(Geolocation);
         const watchId = await Geolocation.watchPosition(
           { enableHighAccuracy: true, timeout: 25_000, maximumAge: 30_000 },
           (pos, err) => {

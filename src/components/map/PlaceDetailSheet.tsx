@@ -49,6 +49,8 @@ export type PlaceDetailData = PlaceResult & {
   weatherFit?: string;
   goNowAdvice?: string;
   introLoading?: boolean;
+  website?: string | null;
+  phone?: string | null;
 };
 
 type Props = {
@@ -186,6 +188,29 @@ export function PlaceDetailSheet({
             <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>{place.address}</span>
           </p>
+        )}
+
+        {(place.phone || place.website) && (
+          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            {place.phone ? (
+              <a
+                href={`tel:${place.phone.replace(/\s/g, "")}`}
+                className="rounded-full border border-border bg-card px-3 py-1 text-foreground"
+              >
+                {place.phone}
+              </a>
+            ) : null}
+            {place.website ? (
+              <a
+                href={place.website}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-full border border-border bg-card px-3 py-1 text-foreground"
+              >
+                官網
+              </a>
+            ) : null}
+          </div>
         )}
 
         <div className="mt-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3">

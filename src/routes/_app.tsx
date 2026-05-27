@@ -1,6 +1,7 @@
 import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
 import { useLayoutEffect, useEffect, useState } from "react";
 import { markBootPhase } from "@/lib/boot-diagnostics";
+import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { MobileFrame } from "@/components/MobileFrame";
 import { BottomNav } from "@/components/BottomNav";
@@ -19,6 +20,10 @@ function isMainScrollLockedPath(pathname: string): boolean {
 
 function AppLayout() {
   const router = useRouter();
+
+  useLayoutEffect(() => {
+    scheduleIosSnapshotRefreshBurst("app-shell");
+  }, []);
   const [pathname, setPathname] = useState(
     () => router.state.location.pathname || readBrowserPathname(),
   );

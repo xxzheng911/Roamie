@@ -40,7 +40,16 @@ export const getRouter = () => {
 
   if (typeof window !== "undefined") {
     router.subscribe("onResolved", () => {
-      requestIosSnapshotRefresh("route");
+      const path = window.location.pathname.replace(/\/+$/, "") || "/";
+      if (
+        path === "/login" ||
+        path.startsWith("/login/") ||
+        path === "/auth/callback" ||
+        path === "/welcome"
+      ) {
+        return;
+      }
+      requestIosSnapshotRefresh("route", { force: true });
     });
   }
 

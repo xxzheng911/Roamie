@@ -185,7 +185,9 @@ export async function unifiedSearchTripLocations(
 
   try {
     const result = await searchFn({ data: { query: normalized, locale } });
-    if (result.suggestions.length > 0) return result;
+    if (result.suggestions.length > 0) {
+      return { suggestions: result.suggestions, error: null };
+    }
     if (result.error) console.warn("[Location] server autocomplete", result.error);
   } catch (e) {
     console.warn("[Location] server autocomplete failed", e);
@@ -196,7 +198,11 @@ export async function unifiedSearchTripLocations(
     return { suggestions: [], error: "無法搜尋地點，請確認已設定 VITE_GOOGLE_MAPS_API_KEY。" };
   }
 
-  return clientGeocodeSuggestions(normalized, locale, key);
+  const client = await clientGeocodeSuggestions(normalized, locale, key);
+  if (client.suggestions.length > 0) {
+    return { suggestions: client.suggestions, error: null };
+  }
+  return client;
 }
 
 export async function unifiedResolveTripLocation(

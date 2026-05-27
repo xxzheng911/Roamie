@@ -37,7 +37,13 @@ import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { pickCategoriesForHome } from "@/lib/recommendation/categories";
 import { buildDailyPrepAdvice } from "@/lib/recommendation/daily-prep-advice";
 import { HomeOutfitCard } from "@/components/home/HomeOutfitCard";
-import { setMapExploreHandoff } from "@/lib/map-explore-handoff";
+import { pickToPlaceDetailHandoff, setPlaceDetailHandoff } from "@/lib/place-detail-handoff";
+import {
+  logNearbyPlaceCardPressed,
+  logNearbyPlaceId,
+  logNearbyPlaceNavigateParams,
+  logNearbyPlaceNavigateToDetail,
+} from "@/lib/place-detail-log";
 import { openAppSettings } from "@/lib/open-app-settings";
 import { readHomeMood, writeHomeMood } from "@/lib/home-mood";
 import { saveChatSession, loadChatSession } from "@/lib/chat-session";
@@ -85,6 +91,7 @@ function Home() {
   const [savedPlaces, setSavedPlaces] = useState<Awaited<ReturnType<typeof listPlaces>>>([]);
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [saveBusyId, setSaveBusyId] = useState<string | null>(null);
+  const [navigatingPlaceId, setNavigatingPlaceId] = useState<string | null>(null);
 
   const loadNearbyPicks = useCallback(async () => {
     if (!userLocation) {
@@ -169,12 +176,21 @@ function Home() {
   }, [weatherStatus, loadNearbyPicks]);
 
   const handleNearbyPick = (pick: HomeNearbyPick) => {
-    setMapExploreHandoff({
-      categoryId: pick.categoryId,
-      placeId: pick.id,
-      placeSnapshot: pick,
-    });
-    navigate({ to: "/map" });
+    logNearbyPlaceCardPressed(pick.id, pick.name);
+    logNearbyPlaceId(pick.id);
+    const handoff = pickToPlaceDetailHandoff(pick);
+    logNearbyPlaceNavigateParams(handoff);
+    setPlaceDetailHandoff(handoff);
+    logNearbyPlaceNavigateToDetail();
+    setNavigatingPlaceId(pick.id);
+    void navigate({
+      to: "/place",
+      search: {
+        placeId: handoff.placeId || undefined,
+        lat: pick.lat ?? undefined,
+        lng: pick.lng ?? undefined,
+      },
+    }).finally(() => setNavigatingPlaceId(null));
   };
 
   const refreshSavedNames = useCallback(async () => {
@@ -359,6 +375,7 @@ function Home() {
             emptyMessage={t("home.nearbyEmpty")}
             savedNames={savedNames}
             busyId={saveBusyId}
+            navigatingPlaceId={navigatingPlaceId}
             onSelect={handleNearbyPick}
             onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p))}
             onToggleSave={(p) => void handleToggleSaveNearby(p)}

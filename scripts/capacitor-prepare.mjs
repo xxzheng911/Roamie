@@ -314,6 +314,10 @@ const CAPACITOR_PATH_NORMALIZE = `<script>
   function hasCompanion(){
     try{return localStorage.getItem("roamie:companionModeCompleted")==="true";}catch(e){return false;}
   }
+  if(location.search.indexOf("code=")>=0&&p!=="/auth/callback"){
+    history.replaceState(history.state,"","/auth/callback"+q+h);
+    return;
+  }
   if(p==="/auth/callback"||location.search.indexOf("code=")>=0)return;
   if(p==="/login"||p==="/welcome"||p==="/trip")return;
   var target="/";
@@ -341,29 +345,12 @@ self.$_TSR.e();
 </script>`;
 
 /** 露出 HTML boot splash；勿等 React（否則長時間只顯示原生 splash / 白底） */
+/** Do not call SplashScreen from index.html — bridge is not ready and triggers native JS Eval on iOS 26. */
 const CAPACITOR_HIDE_NATIVE_SPLASH = `<script>
 (function(){
-  function bootLog(msg, critical) {
-    if (window.__ROAMIE_BOOT_LOG__) window.__ROAMIE_BOOT_LOG__.log("ROAMIE_BOOT " + msg, critical);
-  }
-  var loggedHide = false;
-  function tryHide() {
-    var cap = window.Capacitor;
-    if (!cap || !cap.Plugins || !cap.Plugins.SplashScreen) return false;
-    cap.Plugins.SplashScreen.hide({ fadeOutDuration: 0 });
-    if (!loggedHide) {
-      loggedHide = true;
-      bootLog("native_splash_hidden", false);
-    }
-    return true;
-  }
-  if (!tryHide()) {
-    var n = 0;
-    var id = setInterval(function() {
-      if (tryHide() || ++n > 60) clearInterval(id);
-    }, 100);
-  }
-  setTimeout(tryHide, 400);
+  try{
+    if(window.__ROAMIE_BOOT_LOG__)window.__ROAMIE_BOOT_LOG__.log("ROAMIE_INDEX_HTML_LOADED",false);
+  }catch(_){}
 })();
 </script>`;
 

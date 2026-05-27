@@ -1,4 +1,14 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { cn } from "@/lib/utils";
+import {
+  isCapacitorNativeShell,
+  logChatInputLayoutRendered,
+  logChatKeyboardHide,
+  logChatKeyboardShow,
+  logInputBarOffsetUpdated,
+  logKeyboardHeight,
+  resolveChatPageBottomInset,
+} from "@/lib/chat-keyboard-layout";
 import { useServerFn } from "@tanstack/react-start";
 import { Send, Sparkles, Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { BackButton } from "@/components/BackButton";
@@ -7,7 +17,6 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
   loadChatHistory,
-  writeGuestChat,
   clearChatHistory,
   type ChatMsg,
 } from "@/lib/chat-history";
@@ -161,7 +170,6 @@ function Chat() {
   const planHandoffStartedRef = useRef(false);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [keyboardInsetPx, setKeyboardInsetPx] = useState(0);
-  const [keyboardTransformFooter, setKeyboardTransformFooter] = useState(true);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const fetchWeather = useServerFn(getWeather);
@@ -196,33 +204,28 @@ function Chat() {
 
   useEffect(() => {
     document.documentElement.classList.toggle("chat-keyboard-open", keyboardOpen);
-    const useManualInset = keyboardOpen && keyboardInsetPx > 0;
-    document.documentElement.classList.toggle("chat-keyboard-manual-inset", useManualInset);
-    document.documentElement.style.setProperty(
-      "--chat-keyboard-inset",
-      useManualInset ? `${keyboardInsetPx}px` : "0px",
-    );
     return () => {
       document.documentElement.classList.remove("chat-keyboard-open");
-      document.documentElement.classList.remove("chat-keyboard-manual-inset");
-      document.documentElement.style.removeProperty("--chat-keyboard-inset");
     };
-  }, [keyboardOpen, keyboardInsetPx]);
+  }, [keyboardOpen]);
 
   useEffect(() => {
     let removeCapKeyboard: (() => void) | undefined;
-    const cap = (
-      window as Window & { Capacitor?: { isNativePlatform?: () => boolean } }
-    ).Capacitor;
-    const isNativeShell = Boolean(cap?.isNativePlatform?.());
+    const isNativeShell = isCapacitorNativeShell();
 
     const applyKeyboard = (height: number, open: boolean) => {
+      const inset = resolveChatPageBottomInset(open, height);
+      if (open) {
+        logChatKeyboardShow(height);
+        logKeyboardHeight(height);
+      } else {
+        logChatKeyboardHide();
+      }
+      logInputBarOffsetUpdated(inset, open);
       setKeyboardOpen(open);
-      // Capacitor Keyboard resize:"body" 已縮小 WebView — 勿再疊加 keyboardHeight（會雙重留白）
-      if (keyboardTransformFooter && !isNativeShell) {
-        setKeyboardInsetPx(open ? Math.max(0, Math.round(height)) : 0);
-      } else if (!open) {
-        setKeyboardInsetPx(0);
+      setKeyboardInsetPx(inset);
+      if (open) {
+        requestAnimationFrame(scrollMessagesToEnd);
       }
     };
 
@@ -230,17 +233,17 @@ function Chat() {
       void import("@capacitor/keyboard").then(({ Keyboard }) => {
         const onShow = (info: { keyboardHeight?: number }) => {
           applyKeyboard(info.keyboardHeight ?? 0, true);
-          requestAnimationFrame(scrollMessagesToEnd);
         };
+        const onHide = () => applyKeyboard(0, false);
         const showWill = Keyboard.addListener("keyboardWillShow", onShow);
         const showDid = Keyboard.addListener("keyboardDidShow", onShow);
-        const hide = Keyboard.addListener("keyboardWillHide", () => {
-          applyKeyboard(0, false);
-        });
+        const hideWill = Keyboard.addListener("keyboardWillHide", onHide);
+        const hideDid = Keyboard.addListener("keyboardDidHide", onHide);
         removeCapKeyboard = () => {
           void showWill.then((s) => s.remove());
           void showDid.then((s) => s.remove());
-          void hide.then((s) => s.remove());
+          void hideWill.then((s) => s.remove());
+          void hideDid.then((s) => s.remove());
         };
       });
     }
@@ -253,25 +256,35 @@ function Chat() {
       const inset = Math.min(rawInset, Math.round(window.innerHeight * 0.55));
       const open = inset > 50;
       if (!open) {
-        if (!isNativeShell) applyKeyboard(0, false);
+        applyKeyboard(0, false);
         return;
       }
-      setKeyboardOpen(true);
-      if (keyboardTransformFooter) {
-        setKeyboardInsetPx((prev) => Math.max(prev, inset));
-      }
+      applyKeyboard(inset, true);
     };
 
-    syncFromViewport();
-    vv?.addEventListener("resize", syncFromViewport);
-    vv?.addEventListener("scroll", syncFromViewport);
+    if (!isNativeShell) {
+      syncFromViewport();
+      vv?.addEventListener("resize", syncFromViewport);
+      vv?.addEventListener("scroll", syncFromViewport);
+    }
 
     return () => {
       vv?.removeEventListener("resize", syncFromViewport);
       vv?.removeEventListener("scroll", syncFromViewport);
       removeCapKeyboard?.();
     };
-  }, [keyboardTransformFooter, scrollMessagesToEnd]);
+  }, [scrollMessagesToEnd]);
+
+  const chatPageBottomInset = keyboardOpen ? keyboardInsetPx : 0;
+
+  useEffect(() => {
+    logChatInputLayoutRendered({
+      keyboardOpen,
+      keyboardInsetPx,
+      chatPageBottomInset,
+      native: isCapacitorNativeShell(),
+    });
+  }, [keyboardOpen, keyboardInsetPx, chatPageBottomInset]);
 
   useEffect(() => {
     if (!keyboardOpen) return;
@@ -660,7 +673,6 @@ function Chat() {
           roamie: { ...roamiePayload, recommendations: filteredRecs },
         };
         setMsgs([opener]);
-        if (!authSession.session) writeGuestChat([opener]);
 
         const recs = (roamiePayload.recommendations ?? []) as ChatPlaceItem[];
 
@@ -742,7 +754,7 @@ function Chat() {
             startDate: syncedHandoff.tripStartDate ?? "",
             endDate: syncedHandoff.tripEndDate ?? "",
             departureTime: syncedHandoff.startTime ?? "",
-            travelers: 1,
+            travelers: syncedHandoff.tripCompanionCount ?? 1,
             transport: syncedHandoff.transportation ?? "",
             budgetMode: syncedHandoff.budget ?? "",
           },
@@ -778,7 +790,6 @@ function Chat() {
           roamie: { ...roamiePayload, recommendations: filteredRecs },
         };
         setMsgs([opener]);
-        if (!authSession.session) writeGuestChat([opener]);
 
         const recs = filteredRecs as ChatPlaceItem[];
         const nextSession = syncSessionPlaceMemory(
@@ -903,7 +914,6 @@ function Chat() {
             content: displayFull.summary,
             roamie: displayFull,
           };
-          if (!authSession.session) writeGuestChat(next);
           return next;
         });
         setPartial({});
@@ -1096,7 +1106,7 @@ function Chat() {
           origin: activeSession.tripOrigin
             ? formatTripLocationLabel(activeSession.tripOrigin)
             : bundle.location.city ?? "",
-          travelers: 1,
+          travelers: activeSession.tripCompanionCount ?? 1,
           transport: activeSession.transportation ?? "",
           selectedPlaces: places,
           preferences: prefs,
@@ -1171,7 +1181,6 @@ function Chat() {
       const fresh = createEmptySession();
       persistSession(fresh);
       setMsgs([greetingMsg]);
-      writeGuestChat([greetingMsg]);
       setLastFailed(null);
       setPartial({});
       setText("");
@@ -1234,7 +1243,13 @@ function Chat() {
         : ["我今天有點累", "想找安靜的咖啡廳", "下雨天可以去哪"];
 
   return (
-    <div className="chat-page relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+    <div
+      className={cn(
+        "chat-page relative flex h-full min-h-0 flex-1 flex-col overflow-hidden",
+        !keyboardOpen && "pb-[var(--app-nav-total-height)]",
+      )}
+      style={chatPageBottomInset > 0 ? { paddingBottom: chatPageBottomInset } : undefined}
+    >
       <header className="relative z-20 flex shrink-0 items-center gap-2 border-b border-border bg-background/90 px-4 py-3 backdrop-blur">
         <BackButton
           preferFallback

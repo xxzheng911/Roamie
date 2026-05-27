@@ -1,5 +1,10 @@
 import { getClientAuthSession } from "@/lib/auth-session";
 import { hasSelectedCompanionMode } from "@/lib/companion-mode-storage";
+import {
+  hydrateOnboardingStatus,
+  isOnboardingCompletedSync,
+  logSkipOnboarding,
+} from "@/lib/onboarding-storage";
 import { isIntroCompleted } from "@/lib/plan-tier";
 import { isPreferenceQuizCompleted } from "@/lib/preferences-storage";
 
@@ -71,13 +76,20 @@ export async function resolveStartupPath(options?: StartupOptions): Promise<Star
     return next;
   }
 
+  await hydrateOnboardingStatus();
+
   const introDone =
-    hasSelectedCompanionMode() || (await withTimeout(isIntroCompleted(), false));
+    isOnboardingCompletedSync() ||
+    hasSelectedCompanionMode() ||
+    (await withTimeout(isIntroCompleted(), false));
+
   if (!introDone) {
     const next: StartupPath = "/welcome";
     await logStartupState(next, options);
     return next;
   }
+
+  logSkipOnboarding("resolveStartupPath");
 
   const next: StartupPath = "/";
   await logStartupState(next, options);

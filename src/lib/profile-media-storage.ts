@@ -1,11 +1,34 @@
 import { supabase } from "@/lib/supabase";
 import { requireAuthenticatedUser } from "@/lib/auth-session";
+import {
+  logAvatarPublicUrlCreated,
+  logAvatarUploadFailed,
+  logAvatarUploadStarted,
+  logAvatarUploadSuccess,
+  logProfileAvatarUpdateFailed,
+  logProfileAvatarUpdateStarted,
+  logProfileAvatarUpdateSuccess,
+} from "@/lib/avatar-upload-log";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { cropImageToCover, cropImageToSquare } from "@/lib/image-crop";
 
 export type ProfileMediaKind = "avatar" | "cover";
 
 const BUCKET = "profile-media";
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+
+function normalizeAvatarBlob(blob: Blob): Blob {
+  if (blob.size === 0) {
+    throw new Error("裁切後的圖片為空，請重新選擇");
+  }
+  if (blob.size > MAX_AVATAR_BYTES) {
+    throw new Error("圖片過大，請縮小後再試（上限 2MB）");
+  }
+  if (blob.type === "image/jpeg" || blob.type === "image/png") {
+    return blob;
+  }
+  return new Blob([blob], { type: "image/jpeg" });
+}
 
 /** profile-media/{userId}/avatar.jpg | cover.jpg */
 export function profileMediaPath(userId: string, kind: ProfileMediaKind): string {
@@ -27,18 +50,28 @@ export async function uploadProfileMedia(
   await ensureUserProfile(userId);
 
   const path = profileMediaPath(userId, kind);
-  const { error } = await supabase.storage.from(BUCKET).upload(path, blob, {
+  const body = kind === "avatar" ? normalizeAvatarBlob(blob) : blob;
+
+  logAvatarUploadStarted({ userId, kind, path, bytes: body.size, contentType: body.type });
+
+  const { error } = await supabase.storage.from(BUCKET).upload(path, body, {
     upsert: true,
     contentType: "image/jpeg",
     cacheControl: "3600",
   });
   if (error) {
-    console.error("[profile-media] upload failed", { path, message: error.message });
-    throw new Error(error.message);
+    logAvatarUploadFailed({ path, message: error.message, statusCode: (error as { statusCode?: string }).statusCode });
+    throw new Error(`上傳失敗：${error.message}`);
   }
 
+  logAvatarUploadSuccess({ path, bytes: body.size });
+
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
-  return `${data.publicUrl}?v=${Date.now()}`;
+  const url = `${data.publicUrl}?v=${Date.now()}`;
+  if (kind === "avatar") {
+    logAvatarPublicUrlCreated(url);
+  }
+  return url;
 }
 
 export async function deleteProfileMedia(
@@ -61,12 +94,17 @@ export async function applyProfileAvatar(blob: Blob): Promise<string> {
   await ensureUserProfile(id);
   const url = await uploadProfileMedia(id, "avatar", blob);
 
+  logProfileAvatarUpdateStarted(id);
   const { error } = await supabase
     .from("profiles")
     .update({ avatar_url: url })
     .eq("id", id);
-  if (error) throw new Error(error.message);
+  if (error) {
+    logProfileAvatarUpdateFailed({ userId: id, message: error.message });
+    throw new Error(`更新個人資料失敗：${error.message}`);
+  }
 
+  logProfileAvatarUpdateSuccess(id);
   return url;
 }
 
@@ -110,32 +148,3 @@ export async function processAndUploadProfileImage(
   return kind === "cover" ? applyProfileCover(blob) : applyProfileAvatar(blob);
 }
 
-async function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("無法讀取圖片"));
-    reader.readAsDataURL(blob);
-  });
-}
-
-/** 訪客模式：大頭貼存本機（data URL），並同步首頁頭像 */
-export async function applyGuestProfileAvatar(blob: Blob): Promise<string> {
-  const { saveUserProfile } = await import("@/lib/profile-storage");
-  const url = await blobToDataUrl(blob);
-  await saveUserProfile({ avatarUrl: url });
-  return url;
-}
-
-/** 訪客模式：封面存本機 */
-export async function applyGuestProfileCover(blob: Blob): Promise<string> {
-  const { saveUserProfile } = await import("@/lib/profile-storage");
-  const url = await blobToDataUrl(blob);
-  await saveUserProfile({ coverImageUrl: url });
-  return url;
-}
-
-export async function removeGuestProfileCover(): Promise<void> {
-  const { saveUserProfile } = await import("@/lib/profile-storage");
-  await saveUserProfile({ coverImageUrl: null });
-}

@@ -1,3 +1,4 @@
+import { useLayoutEffect } from "react";
 import {
   Sheet,
   SheetContent,
@@ -5,6 +6,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { ROAMIE_CONTACT_EMAIL } from "@/constants/contact";
+import { requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
 
 function renderLegalContent(content: string) {
   const parts = content.split(ROAMIE_CONTACT_EMAIL);
@@ -32,22 +34,39 @@ type Props = {
 };
 
 export function LegalDocumentSheet({ open, onOpenChange, title, content }: Props) {
+  useLayoutEffect(() => {
+    if (!open) return;
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        requestIosSnapshotRefresh("legal-sheet-layout", { force: true });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [open, content]);
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="bottom"
-        className="flex max-h-[min(92dvh,720px)] flex-col rounded-t-[2rem] px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6"
+        overlayClassName="z-[110]"
+        className="z-[120] flex max-h-[min(92dvh,720px)] flex-col rounded-t-[2rem] px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6"
       >
         <SheetHeader className="shrink-0 text-left">
           <SheetTitle className="font-display text-lg">{title}</SheetTitle>
         </SheetHeader>
-        <div className="mt-4 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap pr-1 text-sm leading-relaxed text-foreground/90">
+        <div
+          className="mt-4 min-h-0 flex-1 overflow-y-auto overscroll-contain whitespace-pre-wrap pr-1 text-sm leading-relaxed text-foreground/90"
+        >
           {renderLegalContent(content)}
         </div>
         <button
           type="button"
           onClick={() => onOpenChange(false)}
-          className="mt-4 shrink-0 w-full rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground"
+          className="mt-4 w-full shrink-0 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground"
         >
           關閉
         </button>

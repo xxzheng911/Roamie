@@ -1,4 +1,5 @@
 import type { RoamiePayloadV2, RoamieResponse } from "@/lib/ai/types";
+import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { tagMoodRecommendationPayload } from "@/lib/saved-collection";
 
 const GUEST_KEY = "roamie:recommendations";
@@ -47,6 +48,9 @@ export async function saveRecommendation(
   data: RoamieResponse,
   extra?: { destination?: string; days?: number; mood?: string },
 ): Promise<StoredRecommendation> {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) throw new Error("請先登入");
+
   const payload = toPayloadV2(data, extra);
   const record: StoredRecommendation = {
     id: crypto.randomUUID(),
@@ -80,5 +84,7 @@ export async function getRecommendation(id: string): Promise<StoredRecommendatio
       }
     }
   }
+  const userId = await getAuthenticatedUserId();
+  if (!userId) return null;
   return readGuest().find((r) => r.id === id) ?? null;
 }

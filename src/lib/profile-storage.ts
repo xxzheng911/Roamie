@@ -163,61 +163,47 @@ export async function saveProfileNotifications(enabled: boolean): Promise<void> 
 }
 
 export async function getUserProfile(localeOverride?: Locale): Promise<UserProfile> {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    throw new Error("請先登入");
+  }
+
   const guestSettings = readGuestSettings();
-  const guest = readGuestProfile();
   const guestLocale = guestSettings.language ?? localeOverride ?? "zh-TW";
 
   const prefs = await getPreferences();
   const personality = derivePersonality(prefs);
 
-  const userId = await getAuthenticatedUserId();
-  if (userId) {
-    let data = await fetchProfileRow(userId);
-    if (!data) {
-      await ensureUserProfile(userId);
-      data = await fetchProfileRow(userId);
-    }
-
-    const locale = mapLocale(data?.language, guestLocale);
-    const extras = (data?.ai_preferences ?? {}) as ProfileExtras;
-
-    let avatarUrl = sanitizeAvatarUrl(data?.avatar_url ?? null);
-    let coverImageUrl = data?.cover_image_url ?? null;
-    if (avatarUrl && isDataUrl(avatarUrl)) avatarUrl = null;
-    if (coverImageUrl && isDataUrl(coverImageUrl)) coverImageUrl = null;
-
-    const storedName = data?.display_name?.trim();
-    const storedBio = data?.bio?.trim();
-
-    return {
-      displayName: storedName || getDefaultDisplayName(locale),
-      avatarUrl,
-      coverImageUrl,
-      bio: storedBio || getDefaultBio(locale),
-      travelStyle: extras.travelStyle ?? "",
-      language: locale,
-      notificationsEnabled: data?.notifications_enabled ?? false,
-      authProvider: (data?.auth_provider as AuthProviderKind) ?? null,
-      prefs,
-      personalityType: prefs.personalityType ?? extras.personalityType ?? personality.type,
-      personalitySummary:
-        prefs.personalitySummary ?? extras.personalitySummary ?? personality.summary,
-      personalityImpression: personality.impression,
-    };
+  let data = await fetchProfileRow(userId);
+  if (!data) {
+    await ensureUserProfile(userId);
+    data = await fetchProfileRow(userId);
   }
 
+  const locale = mapLocale(data?.language, guestLocale);
+  const extras = (data?.ai_preferences ?? {}) as ProfileExtras;
+
+  let avatarUrl = sanitizeAvatarUrl(data?.avatar_url ?? null);
+  let coverImageUrl = data?.cover_image_url ?? null;
+  if (avatarUrl && isDataUrl(avatarUrl)) avatarUrl = null;
+  if (coverImageUrl && isDataUrl(coverImageUrl)) coverImageUrl = null;
+
+  const storedName = data?.display_name?.trim();
+  const storedBio = data?.bio?.trim();
+
   return {
-    displayName: guest.displayName ?? getDefaultDisplayName(guestLocale),
-    avatarUrl: sanitizeAvatarUrl(guest.avatarUrl ?? null),
-    coverImageUrl: guest.coverImageUrl ?? null,
-    bio: guest.bio ?? getDefaultBio(guestLocale),
-    travelStyle: guest.travelStyle ?? "",
-    language: guestLocale,
-    notificationsEnabled: guestSettings.notificationsEnabled ?? false,
-    authProvider: null,
+    displayName: storedName || getDefaultDisplayName(locale),
+    avatarUrl,
+    coverImageUrl,
+    bio: storedBio || getDefaultBio(locale),
+    travelStyle: extras.travelStyle ?? "",
+    language: locale,
+    notificationsEnabled: data?.notifications_enabled ?? false,
+    authProvider: (data?.auth_provider as AuthProviderKind) ?? null,
     prefs,
-    personalityType: prefs.personalityType ?? personality.type,
-    personalitySummary: prefs.personalitySummary ?? personality.summary,
+    personalityType: prefs.personalityType ?? extras.personalityType ?? personality.type,
+    personalitySummary:
+      prefs.personalitySummary ?? extras.personalitySummary ?? personality.summary,
     personalityImpression: personality.impression,
   };
 }
@@ -275,7 +261,7 @@ export async function saveUserProfile(input: {
         });
     if (error) throw new Error(error.message);
   } else {
-    writeGuestProfile(next);
+    throw new Error("請先登入");
   }
 
   if (input.avatarUrl !== undefined) {

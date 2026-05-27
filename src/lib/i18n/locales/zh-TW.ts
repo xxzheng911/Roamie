@@ -27,7 +27,6 @@ export const zhTW = {
     loadFailed: "讀取個人資料失敗",
     signInRequired: "請先登入",
     signInCta: "前往登入",
-    guestMode: "訪客模式",
     pace: "步調",
     vibe: "氣氛",
     budget: "預算",
@@ -82,7 +81,6 @@ export const zhTW = {
   },
   login: {
     title: "登入 Roamie",
-    guest: "先逛逛（訪客模式）",
   },
   home: {
     greeting: "今天想怎麼走？",

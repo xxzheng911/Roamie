@@ -65,18 +65,7 @@ async function persistItinerary(
     };
   }
 
-  const record: StoredItinerary = {
-    id: crypto.randomUUID(),
-    title: itinerary.title,
-    mood: mood ?? null,
-    cover_image: null,
-    created_at: new Date().toISOString(),
-    payload: itinerary,
-  };
-  const list = readGuest();
-  list.unshift(record);
-  writeGuest(list.slice(0, 50));
-  return record;
+  throw new Error("請先登入");
 }
 
 /** 使用者確認「儲存行程」後才寫入收藏（saved_trips） */
@@ -116,7 +105,7 @@ export async function listItineraries(): Promise<StoredItinerary[]> {
       }))
       .filter((row) => isSavedCollectionTrip(row.payload));
   }
-  return readGuest().filter((row) => isSavedCollectionTrip(row.payload));
+  return [];
 }
 
 export async function getItinerary(id: string): Promise<StoredItinerary | null> {
@@ -143,9 +132,7 @@ export async function getItinerary(id: string): Promise<StoredItinerary | null> 
       payload,
     };
   }
-  const guest = readGuest().find((it) => it.id === id);
-  if (!guest || !isSavedCollectionTrip(guest.payload)) return null;
-  return guest;
+  return null;
 }
 
 export async function updateItinerary(
@@ -181,17 +168,7 @@ export async function updateItinerary(
     };
   }
 
-  const list = readGuest();
-  const idx = list.findIndex((it) => it.id === id);
-  if (idx < 0) return null;
-  list[idx] = {
-    ...list[idx],
-    title: title ?? list[idx].title,
-    mood: mood ?? list[idx].mood,
-    payload,
-  };
-  writeGuest(list);
-  return list[idx];
+  throw new Error("請先登入");
 }
 
 export async function deleteItinerary(id: string): Promise<void> {
@@ -204,5 +181,5 @@ export async function deleteItinerary(id: string): Promise<void> {
     }
     return;
   }
-  writeGuest(readGuest().filter((it) => it.id !== id));
+  throw new Error("請先登入");
 }

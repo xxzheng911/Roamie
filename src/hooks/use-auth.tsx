@@ -4,6 +4,7 @@ import { logAppError } from "@/lib/log-error";
 import { supabase } from "@/lib/supabase";
 import { hasOAuthCallbackParams } from "@/lib/auth-oauth";
 import { logAuthDebug } from "@/lib/auth-debug";
+import { clearAuthState } from "@/lib/clear-auth-state";
 import { getClientAuthSession } from "@/lib/auth-session";
 import { isLoginColdStartPath, readBrowserPathname } from "@/lib/startup-path";
 
@@ -110,11 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     setSession(null);
-    try {
-      await supabase.auth.signOut({ scope: "global" });
-    } catch (e) {
-      console.warn("[auth] signOut failed", e);
-    }
+    await clearAuthState({ reason: "user-sign-out" });
   };
 
   return (

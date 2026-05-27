@@ -58,42 +58,38 @@ export async function isPreferenceQuizCompleted(): Promise<boolean> {
 
 export async function getPreferences(): Promise<TravelPreferences> {
   const userId = await getAuthenticatedUserId();
-  if (userId) {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("travel_personality")
-      .eq("id", userId)
-      .maybeSingle();
-    if (error) throw new Error(error.message);
-    return (data?.travel_personality ?? {}) as TravelPreferences;
-  }
-  return readGuest();
+  if (!userId) return {};
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("travel_personality")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data?.travel_personality ?? {}) as TravelPreferences;
 }
 
 export async function savePreferences(prefs: TravelPreferences): Promise<TravelPreferences> {
   const merged = { ...(await getPreferences()), ...prefs, updated_at: new Date().toISOString() };
   const userId = await getAuthenticatedUserId();
-  if (userId) {
-    await ensureUserProfile();
-    const { error } = await supabase
-      .from("profiles")
-      .upsert({ id: userId, travel_personality: merged as never }, { onConflict: "id" });
-    if (error) {
-      // 某些環境的 profiles table trigger 會引用不存在的 updated_at 欄位，導致更新失敗。
-      // 此時仍允許完成測驗：改存本機（下次可再嘗試同步）。
-      const msg = error.message ?? "";
-      if (/record\s+\"new\"\s+has\s+no\s+field\s+\"updated_at\"/i.test(msg)) {
-        console.warn("[prefs] Supabase profile schema mismatch, falling back to localStorage", msg);
-        writeGuest(merged);
-        broadcastPreferencesUpdate(merged);
-        return merged;
-      }
-      throw new Error(error.message);
+  if (!userId) throw new Error("請先登入");
+
+  await ensureUserProfile();
+  const { error } = await supabase
+    .from("profiles")
+    .upsert({ id: userId, travel_personality: merged as never }, { onConflict: "id" });
+  if (error) {
+    // 某些環境的 profiles table trigger 會引用不存在的 updated_at 欄位，導致更新失敗。
+    // 此時仍允許完成測驗：改存本機（下次可再嘗試同步）。
+    const msg = error.message ?? "";
+    if (/record\s+\"new\"\s+has\s+no\s+field\s+\"updated_at\"/i.test(msg)) {
+      console.warn("[prefs] Supabase profile schema mismatch, falling back to localStorage", msg);
+      writeGuest(merged);
+      broadcastPreferencesUpdate(merged);
+      return merged;
     }
-    broadcastPreferencesUpdate(merged);
-    return merged;
+    throw new Error(error.message);
   }
-  writeGuest(merged);
   broadcastPreferencesUpdate(merged);
   return merged;
 }
@@ -110,8 +106,8 @@ export async function resetPreferenceQuizForDev(): Promise<void> {
     return;
   }
 
-  const guest = readGuest();
-  delete guest.onboarded;
-  writeGuest(guest);
-  broadcastPreferencesUpdate(guest);
+  const local = readGuest();
+  delete local.onboarded;
+  writeGuest(local);
+  broadcastPreferencesUpdate(local);
 }

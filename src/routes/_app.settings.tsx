@@ -161,7 +161,8 @@ function SettingsPage() {
     try {
       await signOut();
       toast.success(t("profile.signedOut"));
-      navigate({ to: "/login" });
+      const { resetToLoginScreen } = await import("@/lib/clear-auth-state");
+      await resetToLoginScreen("settings-sign-out");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t("settings.saveFailed"));
     } finally {

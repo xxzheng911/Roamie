@@ -126,9 +126,9 @@ const config: CapacitorConfig = {
       backgroundColor: "#f7f4ef",
     },
     Keyboard: {
-      resize: "body",
-      /** iOS 全螢幕 resize 易導致 WKWebView 無回應 / JS Eval 失敗 */
-      resizeOnFullScreen: false,
+      /** native：由 JS 依 keyboardHeight 調整聊天輸入列（body resize 在 iOS 26 WKWebView 常失效） */
+      resize: "native",
+      resizeOnFullScreen: true,
     },
   },
 };

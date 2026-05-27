@@ -27,7 +27,6 @@ export const ko = {
     loadFailed: "프로필을 불러올 수 없습니다",
     signInRequired: "먼저 로그인해 주세요",
     signInCta: "로그인으로",
-    guestMode: "게스트 모드",
     pace: "속도",
     vibe: "분위기",
     budget: "예산",
@@ -82,7 +81,6 @@ export const ko = {
   },
   login: {
     title: "Roamie 로그인",
-    guest: "게스트로 둘러보기",
   },
   home: {
     greeting: "오늘은 어떻게 걸어볼까요?",

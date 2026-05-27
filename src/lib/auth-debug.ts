@@ -52,6 +52,19 @@ function isAuthDebugEnabled(): boolean {
   }
 }
 
+export function logGoogleOAuthMarker(
+  phase: "clicked" | "started" | "failed",
+  detail: AuthDebugPayload = {},
+): void {
+  const marker =
+    phase === "clicked"
+      ? "[Google Login Clicked]"
+      : phase === "started"
+        ? "[Google OAuth Started]"
+        : "[Google OAuth Failed]";
+  console.info(marker, detail);
+}
+
 export function logAuthStart(provider: OAuthProvider): void {
   const redirectTo = getOAuthRedirectUrl();
   const callbackPath =
@@ -109,7 +122,7 @@ export function logAuthError(
 export const OAUTH_FLOW_EVENT = "roamie:oauth-flow";
 
 export type OAuthFlowDetail =
-  | { phase: "return"; path: string }
+  | { phase: "return"; path: string; href?: string }
   | { phase: "cancelled" }
   | { phase: "error"; message: string };
 

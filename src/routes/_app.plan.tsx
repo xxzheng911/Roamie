@@ -15,6 +15,11 @@ import { buildContextBundleForTrip, daysBetweenDates } from "@/lib/fetch-context
 import { LocationSearchField } from "@/components/LocationSearchField";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import type { TripLocation } from "@/lib/location/types";
+import {
+  isValidTripPlaceRef,
+  logTripPlace,
+  tripLocationToPlaceRef,
+} from "@/lib/trip/trip-place-ref";
 import { preparePlanTripSession } from "@/lib/plan-trip-handoff";
 import { saveChatSession, clearChatSession } from "@/lib/chat-session";
 import { clearChatHistory } from "@/lib/chat-history";
@@ -71,8 +76,43 @@ function PlanPage() {
   const [endDate, setEndDate] = useState("");
   const [origin, setOrigin] = useState<TripLocation | null>(null);
   const [travelers, setTravelers] = useState(1);
+  const [travelersCustom, setTravelersCustom] = useState(false);
   const [transport, setTransport] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const TRAVELER_QUICK = [1, 2, 3, 4] as const;
+
+  const isValidTravelers = (n: number) => Number.isInteger(n) && n >= 1 && n <= 99;
+
+  const validateTripPlaces = (): boolean => {
+    const destRef = destination ? tripLocationToPlaceRef(destination) : null;
+    if (!isValidTripPlaceRef(destRef)) {
+      logTripPlace("destination", "validation", { reason: "missing_destination" });
+      toast.error(t("plan.selectPlaceFromList"));
+      return false;
+    }
+    if (!origin) {
+      logTripPlace("start", "validation", { reason: "missing_start" });
+      toast.error(t("plan.pickPlaceFromResults"));
+      return false;
+    }
+    const startRef = tripLocationToPlaceRef(origin);
+    if (!isValidTripPlaceRef(startRef)) {
+      logTripPlace("start", "validation", { reason: "invalid_start" });
+      toast.error(t("plan.selectPlaceFromList"));
+      return false;
+    }
+    if (
+      destRef!.placeId === startRef.placeId &&
+      Math.abs(destRef!.lat - startRef.lat) < 1e-6 &&
+      Math.abs(destRef!.lng - startRef.lng) < 1e-6
+    ) {
+      logTripPlace("destination", "validation", { reason: "same_as_start" });
+      toast.error(t("plan.samePlace"));
+      return false;
+    }
+    return true;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -110,8 +150,9 @@ function PlanPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!destination) {
-      toast.error(t("plan.selectDestination"));
+    if (!validateTripPlaces()) return;
+    if (!isValidTravelers(travelers)) {
+      toast.error(t("plan.invalidTravelers"));
       return;
     }
     if (startDate && endDate && endDate < startDate) {
@@ -139,8 +180,15 @@ function PlanPage() {
         .filter(Boolean)
         .join("\n");
 
+      const destRef = tripLocationToPlaceRef(destination!);
+      const startRef = origin ? tripLocationToPlaceRef(origin) : null;
+      logTripPlace("destination", "saved", destRef);
+      if (startRef) logTripPlace("start", "saved", startRef);
       console.info("[Roamie AI] plan submit → chat", {
-        destination: formatTripLocationLabel(destination),
+        destination: destRef.name,
+        destinationPlaceId: destRef.placeId,
+        startPlaceId: startRef?.placeId,
+        travelers,
         days: tripDays,
         places: mergedPlaces.length,
         from: search.from,
@@ -214,6 +262,8 @@ function PlanPage() {
         ) : null}
 
         <LocationSearchField
+          fieldRole="destination"
+          searchMode="geographic"
           label={t("plan.destination")}
           required
           value={destination}
@@ -223,7 +273,10 @@ function PlanPage() {
         />
 
         <LocationSearchField
+          fieldRole="start"
+          searchMode="place"
           label={t("plan.origin")}
+          required
           value={origin}
           onChange={setOrigin}
           placeholder={t("plan.originPlaceholder")}
@@ -254,15 +307,57 @@ function PlanPage() {
 
         <section>
           <label className="text-sm font-medium">{t("plan.travelers")}</label>
-          <input
-            type="number"
-            min={1}
-            max={12}
-            value={travelers}
-            onChange={(e) => setTravelers(Math.max(1, Number(e.target.value) || 1))}
-            className="mt-2 w-full rounded-2xl border border-border bg-card px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30"
-            disabled={loading}
-          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            {TRAVELER_QUICK.map((n) => (
+              <button
+                key={n}
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  setTravelersCustom(false);
+                  setTravelers(n);
+                }}
+                className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
+                  !travelersCustom && travelers === n
+                    ? "border-foreground bg-foreground text-background"
+                    : "border-border bg-card"
+                }`}
+              >
+                {n} 人
+              </button>
+            ))}
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => setTravelersCustom(true)}
+              className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
+                travelersCustom
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border bg-card"
+              }`}
+            >
+              {t("plan.travelersCustom")}
+            </button>
+          </div>
+          {travelersCustom ? (
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={String(travelers)}
+              onChange={(e) => {
+                const raw = e.target.value.replace(/\D/g, "");
+                if (!raw) {
+                  setTravelers(0);
+                  return;
+                }
+                setTravelers(Math.min(99, Number.parseInt(raw, 10)));
+              }}
+              placeholder="1–99"
+              className="mt-2 w-full rounded-2xl border border-border bg-card px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30"
+              disabled={loading}
+            />
+          ) : null}
         </section>
 
         <section>

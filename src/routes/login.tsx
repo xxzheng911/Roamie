@@ -1,62 +1,78 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { cn } from "@/lib/utils";
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { removeStaticBootPlaceholder } from "@/main";
 import { MobileFrame } from "@/components/MobileFrame";
 import { AuthSignInError } from "@/components/auth/AuthSignInError";
 import { isOAuthProviderEnabled } from "@/constants/auth";
+import { hasPendingOAuthCallback, readPendingCallbackPath } from "@/lib/auth-oauth-deep-link";
+import { shouldSkipOAuthCallbackNavigation } from "@/lib/oauth-callback-guard";
+import { clearAuthState } from "@/lib/clear-auth-state";
+import { getClientAuthSession } from "@/lib/auth-session";
+import { hasLikelyPersistedSession } from "@/lib/startup-route";
+import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
+import { logGoogleOAuthMarker } from "@/lib/auth-debug";
 import { signInWithProvider, type OAuthProvider } from "@/lib/auth-oauth";
 import { formatSupabaseRedirectAllowListHint } from "@/lib/auth-redirect";
 import { finishPostAuthRedirect } from "@/lib/auth-post-redirect";
-import { requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
+import {
+  ensureIosLoginLiveInteraction,
+  notifyIosOAuthOpen,
+  notifyIosOAuthReturn,
+  scheduleIosSnapshotRefreshBurst,
+  setIosLegalOverlayOpen,
+  setIosSnapshotLiveInteractionForced,
+} from "@/lib/ios-snapshot-bridge";
+import { detectPlatform } from "@/services/platform";
+import { hydrateOnboardingStatus } from "@/lib/onboarding-storage";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import { resolveStartupPathFast } from "@/lib/startup-route";
 import { useAuth } from "@/hooks/use-auth";
-import { OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
+import { emitOAuthFlow, OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
+import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
 
 const RoamieMascotFigure = lazy(() =>
   import("@/components/onboarding/RoamieMascotFigure").then((m) => ({
     default: m.RoamieMascotFigure,
   })),
 );
-function LegalDocumentSheetLazy({
-  open,
-  onOpenChange,
-  title,
+function LegalDocumentOverlayLazy({
   doc,
+  onClose,
 }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  title: string;
   doc: "terms" | "privacy";
+  onClose: () => void;
 }) {
   const [content, setContent] = useState<string | null>(null);
+  const title = doc === "terms" ? "Roamie 服務條款" : "Roamie 隱私權政策";
 
   useEffect(() => {
-    if (!open) return;
     void import("@/content/legal").then((m) => {
       setContent(doc === "terms" ? m.TERMS_OF_SERVICE : m.PRIVACY_POLICY);
     });
-  }, [open, doc]);
+  }, [doc]);
 
-  if (!content) return null;
+  if (!content) {
+    return (
+      <div className="absolute inset-0 z-[200] flex items-center justify-center bg-background/95">
+        <p className="text-sm text-muted-foreground">載入中…</p>
+      </div>
+    );
+  }
 
-  return (
-    <LazyLegalSheet
-      open={open}
-      onOpenChange={onOpenChange}
-      title={title}
-      content={content}
-    />
-  );
+  return <LazyLegalDocumentOverlay title={title} content={content} onClose={onClose} />;
 }
 
-const LazyLegalSheet = lazy(() =>
-  import("@/components/LegalDocumentSheet").then((m) => ({
-    default: m.LegalDocumentSheet,
+const LazyLegalDocumentOverlay = lazy(() =>
+  import("@/components/LegalDocumentOverlay").then((m) => ({
+    default: m.LegalDocumentOverlay,
   })),
 );
 
 const isDev = import.meta.env.DEV;
+const OAUTH_BUSY_TIMEOUT_MS = 120_000;
+const APPLE_BUSY_TIMEOUT_MS = 90_000;
 
 export const Route = createFileRoute("/login")({
   component: Login,
@@ -64,24 +80,83 @@ export const Route = createFileRoute("/login")({
 
 function Login() {
   const navigate = useNavigate();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isLegalPage = pathname.replace(/\/+$/, "").startsWith("/login/legal");
   const { user, loading } = useAuth();
-
-  useLayoutEffect(() => {
-    removeStaticBootPlaceholder();
-  }, []);
   const [busy, setBusy] = useState<OAuthProvider | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [legalOpen, setLegalOpen] = useState<"terms" | "privacy" | null>(null);
   const redirectedRef = useRef(false);
+  const oauthBusyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearOAuthBusyTimer = () => {
+    if (oauthBusyTimerRef.current != null) {
+      window.clearTimeout(oauthBusyTimerRef.current);
+      oauthBusyTimerRef.current = null;
+    }
+  };
+
+  const startOAuthBusyTimer = (ms = OAUTH_BUSY_TIMEOUT_MS, message?: string) => {
+    clearOAuthBusyTimer();
+    oauthBusyTimerRef.current = window.setTimeout(() => {
+      oauthBusyTimerRef.current = null;
+      setBusy(null);
+      setAuthError(
+        message ??
+          "登入逾時，請再試一次。若已看到 Google 登入完成，請關閉瀏覽器視窗後重試。",
+      );
+    }, ms);
+  };
+  const closeLegal = () => {
+    setLegalOpen(null);
+  };
+
+  const openLegal = (doc: "terms" | "privacy") => {
+    if (detectPlatform().isCapacitor && detectPlatform().isIOS) {
+      void navigate({ to: "/login/legal", search: { doc }, replace: false }).catch(() => {
+        window.location.assign(`/login/legal?doc=${doc}`);
+      });
+      return;
+    }
+    setLegalOpen(doc);
+  };
+
+  useLayoutEffect(() => {
+    if (isLegalPage) return;
+    removeStaticBootPlaceholder();
+  }, [isLegalPage]);
+
+  useIosInteractiveRoute(isLegalPage ? "__skip__" : "login");
+
+  useEffect(() => {
+    if (isLegalPage) return;
+    if (detectPlatform().isCapacitor) {
+      void warmSupabaseAuthStorage();
+    }
+  }, [isLegalPage]);
+
+  useEffect(() => {
+    if (isLegalPage || loading || user) return;
+    if (hasPendingOAuthCallback()) return;
+    if (!hasLikelyPersistedSession()) return;
+    void (async () => {
+      const session = await getClientAuthSession();
+      if (!session?.user) {
+        await clearAuthState({ reason: "login-stale-local-session" });
+      }
+    })();
+  }, [isLegalPage, loading, user]);
 
   useEffect(() => {
     if (loading || redirectedRef.current) return;
     if (user) {
       redirectedRef.current = true;
-      const fastTo = resolveStartupPathFast();
-      navigate({ to: fastTo, replace: true });
-      void resolveStartupPath({ hasSession: true, skipLog: true }).then((to) => {
-        if (to !== fastTo) navigate({ to, replace: true });
+      void hydrateOnboardingStatus().then(() => {
+        const fastTo = resolveStartupPathFast();
+        navigate({ to: fastTo, replace: true });
+        void resolveStartupPath({ hasSession: true, skipLog: true }).then((to) => {
+          if (to !== fastTo) navigate({ to, replace: true });
+        });
       });
     }
   }, [user, loading, navigate]);
@@ -89,21 +164,99 @@ function Login() {
   useEffect(() => {
     const onOAuthFlow = (e: Event) => {
       const detail = (e as CustomEvent<OAuthFlowDetail>).detail;
+      if (detail.phase === "return") {
+        clearOAuthBusyTimer();
+        setBusy(null);
+        setLegalOpen(null);
+        notifyIosOAuthReturn();
+        if (detail.path) {
+          void navigateOAuthAppPath(detail.path);
+        }
+        return;
+      }
       if (detail.phase === "cancelled") {
+        clearOAuthBusyTimer();
         setBusy(null);
         return;
       }
       if (detail.phase === "error") {
+        clearOAuthBusyTimer();
         setBusy(null);
+        void clearAuthState({ reason: "oauth-flow-error" });
         setAuthError(detail.message);
       }
     };
+    const onNativeCancelled = () => {
+      clearOAuthBusyTimer();
+      setBusy(null);
+      emitOAuthFlow({ phase: "cancelled" });
+    };
+    const onNativeError = (e: Event) => {
+      clearOAuthBusyTimer();
+      setBusy(null);
+      const detail = (e as CustomEvent<{ message?: string }>).detail;
+      setAuthError(detail?.message ?? "無法開啟 Google 登入視窗");
+    };
+
     window.addEventListener(OAUTH_FLOW_EVENT, onOAuthFlow);
-    return () => window.removeEventListener(OAUTH_FLOW_EVENT, onOAuthFlow);
+    window.addEventListener("roamie-oauth-native-cancelled", onNativeCancelled);
+    window.addEventListener("roamie-oauth-native-error", onNativeError);
+    return () => {
+      window.removeEventListener(OAUTH_FLOW_EVENT, onOAuthFlow);
+      window.removeEventListener("roamie-oauth-native-cancelled", onNativeCancelled);
+      window.removeEventListener("roamie-oauth-native-error", onNativeError);
+      clearOAuthBusyTimer();
+    };
+  }, []);
+
+  useEffect(() => {
+    const platform = detectPlatform();
+    if (!platform.isCapacitor) return;
+
+    let removeAppListener: (() => void) | undefined;
+
+    void import("@capacitor/app").then(({ App }) => {
+      void App.addListener("appStateChange", ({ isActive }) => {
+        if (!isActive) return;
+        const pending = readPendingCallbackPath();
+        if (!pending) return;
+        void (async () => {
+          if (await shouldSkipOAuthCallbackNavigation(pending)) {
+            clearOAuthBusyTimer();
+            setBusy(null);
+            return;
+          }
+          clearOAuthBusyTimer();
+          setBusy(null);
+          notifyIosOAuthReturn();
+          await navigateOAuthAppPath(pending);
+        })();
+      }).then((handle) => {
+        removeAppListener = () => {
+          void handle.remove();
+        };
+      });
+    });
+
+    return () => {
+      removeAppListener?.();
+    };
   }, []);
 
   const signIn = async (provider: OAuthProvider) => {
+    if (provider === "google") {
+      logGoogleOAuthMarker("clicked");
+    }
     setAuthError(null);
+    clearOAuthBusyTimer();
+
+    const platform = detectPlatform();
+    if (platform.isCapacitor && platform.isIOS) {
+      ensureIosLoginLiveInteraction();
+      if (provider === "google") {
+        notifyIosOAuthOpen();
+      }
+    }
 
     if (!isOAuthProviderEnabled(provider)) {
       const msg =
@@ -114,8 +267,17 @@ function Login() {
       return;
     }
 
+    setLegalOpen(null);
+    setIosLegalOverlayOpen(false);
     setBusy(provider);
-    requestIosSnapshotRefresh("auth-busy");
+    if (provider === "google") {
+      startOAuthBusyTimer();
+    } else if (provider === "apple") {
+      startOAuthBusyTimer(
+        APPLE_BUSY_TIMEOUT_MS,
+        "Apple 登入逾時，請再試一次。若已完成 Face ID，請稍候或重新開啟 App。",
+      );
+    }
     const { toast } = await import("sonner");
     toast.message(
       provider === "google"
@@ -128,10 +290,15 @@ function Login() {
     try {
       const result = await signInWithProvider(provider);
       if (!result.ok) {
+        clearOAuthBusyTimer();
         setBusy(null);
         if (result.cancelled) return;
+        if (provider === "google") {
+          logGoogleOAuthMarker("failed", { message: result.message });
+          await clearAuthState({ reason: "google-sign-in-failed" });
+        }
         let msg = result.message || "登入沒成功，待會再試一次。";
-        if (/requested path is invalid|redirect url|nonces?\s*mismatch/i.test(msg)) {
+        if (/requested path is invalid|redirect url|nonces?\s*mismatch|pkce/i.test(msg)) {
           msg = `${msg}\n\n請確認 Supabase Redirect URLs 已加入：\n${formatSupabaseRedirectAllowListHint()}`;
         }
         setAuthError(msg);
@@ -141,8 +308,14 @@ function Login() {
 
       const { canUseNativeAppleSignIn } = await import("@/lib/auth-apple-native");
       if (provider === "apple" && canUseNativeAppleSignIn()) {
-        const next = await resolveStartupPath({ hasSession: true });
+        clearOAuthBusyTimer();
         setBusy(null);
+        setIosLegalOverlayOpen(false);
+        setIosSnapshotLiveInteractionForced(true);
+        notifyIosOAuthReturn();
+        scheduleIosSnapshotRefreshBurst("apple-sign-in");
+
+        const next = await resolveStartupPath({ hasSession: true });
         const { toast } = await import("sonner");
         toast.success("登入成功");
         finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }));
@@ -152,14 +325,31 @@ function Login() {
       /* Google / Web Apple：等待 deep link → /auth/callback；busy 直到 browser 關閉或 callback */
     } catch (e) {
       console.error("[auth] sign-in threw", e);
+      clearOAuthBusyTimer();
       setBusy(null);
+      if (provider === "google") {
+        logGoogleOAuthMarker("failed", {
+          message: e instanceof Error ? e.message : String(e),
+        });
+        await clearAuthState({ reason: "google-sign-in-threw" });
+      }
       setAuthError(e instanceof Error ? e.message : "登入沒成功，待會再試一次。");
     }
   };
 
+  if (isLegalPage) {
+    return <Outlet />;
+  }
+
   return (
     <MobileFrame>
-      <div className="flex min-h-0 flex-1 flex-col px-6 pb-[max(2.5rem,var(--safe-area-bottom))] pt-[max(2.5rem,var(--safe-area-top))]">
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col px-6 pb-[max(2.5rem,var(--safe-area-bottom))] pt-[max(2.5rem,var(--safe-area-top))]",
+          legalOpen && "pointer-events-none select-none",
+        )}
+        aria-hidden={legalOpen ? true : undefined}
+      >
         <div className="flex flex-1 flex-col items-center justify-center text-center">
           <div className="login-mascot">
             <Suspense fallback={<div className="h-32 w-32" aria-hidden />}>
@@ -208,7 +398,7 @@ function Login() {
             繼續即代表同意 Roamie 的
             <button
               type="button"
-              onClick={() => setLegalOpen("terms")}
+              onClick={() => openLegal("terms")}
               className="mx-0.5 text-foreground underline underline-offset-2"
             >
               服務條款
@@ -216,7 +406,7 @@ function Login() {
             與
             <button
               type="button"
-              onClick={() => setLegalOpen("privacy")}
+              onClick={() => openLegal("privacy")}
               className="mx-0.5 text-foreground underline underline-offset-2"
             >
               隱私權政策
@@ -247,19 +437,14 @@ function Login() {
       </div>
 
       {legalOpen ? (
-        <Suspense fallback={null}>
-          <LegalDocumentSheetLazy
-            open={legalOpen === "terms"}
-            onOpenChange={(o) => !o && setLegalOpen(null)}
-            title="Roamie 服務條款"
-            doc="terms"
-          />
-          <LegalDocumentSheetLazy
-            open={legalOpen === "privacy"}
-            onOpenChange={(o) => !o && setLegalOpen(null)}
-            title="Roamie 隱私權政策"
-            doc="privacy"
-          />
+        <Suspense
+          fallback={
+            <div className="absolute inset-0 z-[200] flex items-center justify-center bg-background/95">
+              <p className="text-sm text-muted-foreground">載入中…</p>
+            </div>
+          }
+        >
+          <LegalDocumentOverlayLazy doc={legalOpen} onClose={closeLegal} />
         </Suspense>
       ) : null}
     </MobileFrame>

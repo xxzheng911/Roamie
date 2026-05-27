@@ -1,4 +1,5 @@
 import { SignInWithApple } from "@capacitor-community/apple-sign-in";
+import type { Session } from "@supabase/supabase-js";
 import { APP_BUNDLE_ID } from "@/constants/app";
 import { createAppleSignInNonce } from "@/lib/auth-nonce";
 import { assertSupabaseConfiguredForAuth } from "@/lib/supabase-project-url";
@@ -6,8 +7,10 @@ import { logAuthDebug, logAuthError, logAuthSessionResult } from "@/lib/auth-deb
 import { supabase } from "@/lib/supabase";
 import { detectPlatform } from "@/services/platform";
 
+const APPLE_SUPABASE_TIMEOUT_MS = 25_000;
+
 export type AppleNativeSignInResult =
-  | { ok: true }
+  | { ok: true; session: Session }
   | { ok: false; message: string; cancelled?: boolean };
 
 export function canUseNativeAppleSignIn(): boolean {
@@ -56,21 +59,47 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
       nonce: hashedNonce,
     });
 
+    logAuthDebug("apple.native.authorized", {
+      hasIdentityToken: Boolean(appleResult.response?.identityToken),
+    });
+
     const identityToken = appleResult.response?.identityToken;
     if (!identityToken) {
       logAuthSessionResult(false, { provider: "apple", reason: "no_identity_token" });
       return { ok: false, message: "Apple 未回傳 identity token" };
     }
 
-    const { data, error } = await supabase.auth.signInWithIdToken({
-      provider: "apple",
-      token: identityToken,
-      nonce: rawNonce,
+    const signInStartedAt = Date.now();
+    const { data, error } = await Promise.race([
+      supabase.auth.signInWithIdToken({
+        provider: "apple",
+        token: identityToken,
+        nonce: rawNonce,
+      }),
+      new Promise<{ data: { session: null; user: null }; error: Error }>((resolve) => {
+        window.setTimeout(
+          () =>
+            resolve({
+              data: { session: null, user: null },
+              error: new Error("apple_supabase_sign_in_timeout"),
+            }),
+          APPLE_SUPABASE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+
+    logAuthDebug("apple.native.supabase_done", {
+      ms: Date.now() - signInStartedAt,
+      hasSession: Boolean(data.session),
+      error: error?.message ?? null,
     });
 
     if (error) {
       logAuthError("apple.signInWithIdToken", error);
       const detail = error.message?.trim() || "Supabase 拒絕 Apple token";
+      if (/apple_supabase_sign_in_timeout/i.test(detail)) {
+        return { ok: false, message: "連線登入服務逾時，請確認網路後再試。" };
+      }
       const nonceMismatch = /nonces?\s*mismatch/i.test(detail);
       if (nonceMismatch) {
         return {
@@ -98,7 +127,7 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
       isPrivateEmail: data.user?.email?.includes("@privaterelay.appleid.com") ?? false,
     });
 
-    return { ok: true };
+    return { ok: true, session: data.session };
   } catch (e) {
     if (isUserCancelled(e)) {
       logAuthDebug("apple.native.cancelled", {});

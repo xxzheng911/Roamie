@@ -24,6 +24,10 @@ export function placeDetailsUrl(placeId: string): string {
 export const PLACE_DETAILS_FIELD_MASK =
   "id,displayName,formattedAddress,location,rating,userRatingCount,photos,primaryType,types,regularOpeningHours,currentOpeningHours,businessStatus,utcOffsetMinutes,editorialSummary,reviews";
 
+/** 地點詳情頁：含官網與電話 */
+export const PLACE_DETAILS_SCREEN_FIELD_MASK =
+  "id,displayName,formattedAddress,location,rating,userRatingCount,photos,primaryType,types,regularOpeningHours,currentOpeningHours,businessStatus,utcOffsetMinutes,websiteUri,nationalPhoneNumber,internationalPhoneNumber";
+
 export function placePhotoMediaUrl(photoName: string, maxWidth: number, apiKey: string): string {
   return `${PLACES_API}/${photoName}/media?maxWidthPx=${maxWidth}&key=${apiKey}`;
 }

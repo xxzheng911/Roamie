@@ -12,12 +12,14 @@ type Props = {
   preferFallback?: boolean;
   className?: string;
   label?: string;
+  onBack?: () => void;
 };
 
-export function BackButton({ fallback, preferFallback, className, label = "返回" }: Props) {
+export function BackButton({ fallback, preferFallback, className, label = "返回", onBack }: Props) {
   const navigate = useNavigate();
 
   const handleBack = () => {
+    onBack?.();
     if (!preferFallback && typeof window !== "undefined" && window.history.length > 1) {
       window.history.back();
       return;

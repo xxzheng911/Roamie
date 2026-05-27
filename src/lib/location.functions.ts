@@ -278,6 +278,19 @@ export const searchTripLocations = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ suggestions: LocationSuggestion[]; error: string | null }> => {
     const apiKey = requireGoogleMapsServerKey();
     const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
+    const autocompleteBody: Record<string, unknown> = {
+      input: data.query.trim(),
+      languageCode: localeToGoogleLanguageCode(userLocale),
+      includedPrimaryTypes: [...TRIP_LOCATION_PRIMARY_TYPES],
+    };
+    if (userLocale === "zh-TW") {
+      autocompleteBody.locationBias = {
+        circle: {
+          center: { latitude: 25.033963, longitude: 121.564472 },
+          radius: 80_000,
+        },
+      };
+    }
     const res = await fetch(placesAutocompleteUrl(), {
       method: "POST",
       headers: {
@@ -285,11 +298,7 @@ export const searchTripLocations = createServerFn({ method: "POST" })
         "X-Goog-Api-Key": apiKey,
         "X-Goog-FieldMask": AUTOCOMPLETE_FIELD_MASK,
       },
-      body: JSON.stringify({
-        input: data.query.trim(),
-        languageCode: localeToGoogleLanguageCode(userLocale),
-        includedPrimaryTypes: [...TRIP_LOCATION_PRIMARY_TYPES],
-      }),
+      body: JSON.stringify(autocompleteBody),
     });
 
     if (!res.ok) {

@@ -1,11 +1,12 @@
 import { AUTH_CALLBACK_PATH } from "@/constants/auth-redirect";
 import { hasOAuthCallbackParams } from "@/lib/auth-oauth";
-import { hasSelectedCompanionMode } from "@/lib/companion-mode-storage";
+import { readPendingCallbackPath } from "@/lib/auth-oauth-deep-link";
+import { isOnboardingCompletedSync } from "@/lib/onboarding-storage";
 import type { StartupPath } from "@/lib/post-auth-navigation";
 
 const SUPABASE_AUTH_STORAGE_KEY = "roamie-auth";
 
-/** 本機是否可能有 Supabase session（不發網路請求） */
+/** 本機是否可能有有效 Supabase session（不發網路；須含 user + 未過期 token） */
 export function hasLikelyPersistedSession(): boolean {
   if (typeof window === "undefined") return false;
   try {
@@ -14,8 +15,9 @@ export function hasLikelyPersistedSession(): boolean {
     const parsed = JSON.parse(raw) as {
       access_token?: string;
       expires_at?: number;
+      user?: { id?: string };
     };
-    if (!parsed?.access_token) return false;
+    if (!parsed?.access_token || !parsed?.user?.id) return false;
     if (typeof parsed.expires_at === "number") {
       const expiresMs = parsed.expires_at * 1000;
       if (expiresMs < Date.now() - 60_000) return false;
@@ -29,7 +31,7 @@ export function hasLikelyPersistedSession(): boolean {
 /** 冷啟動路由（僅讀本機狀態，避免卡在 Supabase 網路） */
 export function resolveStartupPathFast(): StartupPath {
   if (!hasLikelyPersistedSession()) return "/login";
-  if (!hasSelectedCompanionMode()) return "/welcome";
+  if (!isOnboardingCompletedSync()) return "/welcome";
   return "/";
 }
 
@@ -42,7 +44,8 @@ export function ensureColdStartPath(): void {
 
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
   if (path === AUTH_CALLBACK_PATH || hasOAuthCallbackParams()) return;
-  if (path === "/login" || path === "/welcome" || path === "/trip") return;
+  if (readPendingCallbackPath()) return;
+  if (path === "/login" || path.startsWith("/login/") || path === "/welcome" || path === "/trip") return;
   if (path.startsWith("/auth/")) return;
 
   const target = resolveStartupPathFast();

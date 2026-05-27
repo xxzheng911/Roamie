@@ -38,6 +38,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+        if url.scheme == "roamie" {
+            RoamieNativeLog.debug("⚡️ [Roamie] OPEN_URL scheme=roamie url=\(url.absoluteString)")
+        }
         return ApplicationDelegateProxy.shared.application(app, open: url, options: options)
     }
 
@@ -171,10 +174,6 @@ class PortraitBridgeViewController: CAPBridgeViewController {
         }
 
         RoamieWebKitMitigation.configureWebView(webView)
-        if RoamieWebKitMitigation.isIOS26OrNewer {
-            RoamieCompositorFallback.bind(webView)
-            RoamieCompositorFallback.onNavigationStarted(webView)
-        }
 
         let strategy = RoamieWebKitMitigation.loadStrategy
         if strategy == .inlineHTML {
@@ -219,16 +218,16 @@ class PortraitBridgeViewController: CAPBridgeViewController {
             RoamieNativeLog.debug("⚡️ [Roamie] WK_LOAD strategy=capacitorScheme url=\(url)")
         }
         RoamieWebKitMitigation.runAfterDisplayWarmup { [weak self] in
-            guard let self else { return }
-            if let webView = self.webView, RoamieWebKitMitigation.isIOS26OrNewer {
+            guard let self, let webView = self.webView else { return }
+            if RoamieWebKitMitigation.isIOS26OrNewer {
                 RoamieCompositorFallback.bind(webView)
-                RoamieCompositorFallback.onNavigationStarted(webView)
+            }
+            if let capBridge = self.bridge as? CapacitorBridge {
+                capBridge.webViewDelegationHandler.willLoadWebview(webView)
             }
             self.loadWebView()
-            if let webView = self.webView {
-                DispatchQueue.main.async {
-                    RoamieWebKitMitigation.nudgeCompositorIfNeeded(webView)
-                }
+            DispatchQueue.main.async {
+                RoamieWebKitMitigation.nudgeCompositorIfNeeded(webView)
             }
         }
     }
@@ -292,7 +291,9 @@ class PortraitBridgeViewController: CAPBridgeViewController {
         if RoamieWebKitMitigation.isIOS26OrNewer, let webView = webView {
             RoamieCompositorFallback.bind(webView)
             RoamieCompositorFallback.onHostViewAppeared(webView)
+            RoamieCompositorFallback.reelevateInputIfNeeded(webView)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                RoamieCompositorFallback.reelevateInputIfNeeded(webView)
                 RoamieWebKitMitigation.nudgeCompositorIfNeeded(webView)
             }
         }

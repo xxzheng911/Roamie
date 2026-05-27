@@ -11,6 +11,7 @@ import {
   blobToDataUrl,
   exportCropFromTransform,
   fileToObjectUrl,
+  computeInitialCropScale,
   getCenteredCropRect,
   loadImageFromUrl,
   type CropTransform,
@@ -37,8 +38,8 @@ type Props = {
   onReadyChange?: (ready: boolean) => void;
 };
 
-const MIN_SCALE = 0.35;
-const MAX_SCALE = 6;
+const MIN_SCALE = 0.2;
+const MAX_SCALE = 5;
 
 type PointerPoint = { x: number; y: number };
 
@@ -87,12 +88,11 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
     const computeInitialScale = useCallback(
       (img: HTMLImageElement, vpW: number, vpH: number) => {
         const { cropW, cropH } = getCenteredCropRect(vpW, vpH, aspectWidth, aspectHeight);
-        const wScale = cropW / img.naturalWidth;
-        const hScale = cropH / img.naturalHeight;
-        const base =
-          initialFit === "contain" ? Math.min(wScale, hScale) : Math.max(wScale, hScale);
-        const pad = fitPadding ?? (initialFit === "contain" ? 0.95 : 1);
-        return clampScale(base * pad);
+        const scale = computeInitialCropScale(img.naturalWidth, img.naturalHeight, cropW, cropH, {
+          fit: initialFit,
+          padding: fitPadding,
+        });
+        return clampScale(scale);
       },
       [initialFit, fitPadding, aspectWidth, aspectHeight],
     );
@@ -294,20 +294,47 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
     const exportCrop = useCallback(async () => {
       const img = imgRef.current;
       const vp = viewportRef.current;
-      if (!img || !vp || !readyRef.current || loadError) return null;
+      if (!img || !vp) {
+        console.warn("[Avatar Crop] export skipped — missing img or viewport");
+        return null;
+      }
+      if (loadError) {
+        console.warn("[Avatar Crop] export skipped — load error", loadError);
+        return null;
+      }
+      if (!readyRef.current) {
+        console.warn("[Avatar Crop] export skipped — viewport not ready");
+        return null;
+      }
+      const vpW = vp.clientWidth;
+      const vpH = vp.clientHeight;
+      if (vpW < 8 || vpH < 8) {
+        console.warn("[Avatar Crop] export skipped — viewport too small", { vpW, vpH });
+        return null;
+      }
       try {
         const blob = await exportCropFromTransform(
           img,
-          vp.clientWidth,
-          vp.clientHeight,
+          vpW,
+          vpH,
           transformRef.current,
           aspectWidth,
           aspectHeight,
           exportMaxWidth,
         );
-        const preview = await blobToDataUrl(blob);
+        if (!blob.size) {
+          console.warn("[Avatar Crop] export produced empty blob");
+          return null;
+        }
+        let preview = "";
+        try {
+          preview = await blobToDataUrl(blob);
+        } catch (e) {
+          console.warn("[Avatar Crop] preview data url failed (non-fatal)", e);
+        }
         return { blob, previewUrl: preview };
-      } catch {
+      } catch (e) {
+        console.error("[Avatar Crop] export failed", e);
         return null;
       }
     }, [aspectWidth, aspectHeight, exportMaxWidth, loadError]);

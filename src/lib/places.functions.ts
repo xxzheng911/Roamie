@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   PLACES_FIELD_MASK,
   PLACE_DETAILS_FIELD_MASK,
+  PLACE_DETAILS_SCREEN_FIELD_MASK,
   placesSearchNearbyUrl,
   placesSearchTextUrl,
   placeDetailsUrl,
@@ -439,3 +440,90 @@ export async function fetchPlaceDetailsForIntro(
     return null;
   }
 }
+
+export type PlaceDetailsScreenResult = PlaceResult & {
+  website: string | null;
+  phone: string | null;
+  coverImageUrl?: string | null;
+};
+
+type PlaceDetailsScreenRaw = PlaceDetailsRaw & {
+  websiteUri?: string;
+  nationalPhoneNumber?: string;
+  internationalPhoneNumber?: string;
+};
+
+export async function fetchPlaceDetailsForScreen(
+  placeId: string,
+  locale?: Locale,
+): Promise<PlaceDetailsScreenResult | null> {
+  try {
+    const apiKey = requireGoogleMapsServerKey();
+    const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
+    const res = await fetch(placeDetailsUrl(placeId), {
+      headers: {
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": PLACE_DETAILS_SCREEN_FIELD_MASK,
+        "Accept-Language": languageCode,
+      },
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      console.warn("[Roamie Places] place details screen HTTP", res.status, detail.slice(0, 200));
+      return null;
+    }
+    const p = (await res.json()) as PlaceDetailsScreenRaw;
+    const hours = rawPlaceToHoursData(p);
+    const availability = derivePlaceAvailability(hours, { context: "now" });
+    const fields = applyAvailabilityFields({}, availability);
+    return {
+      id: p.id,
+      name: p.displayName?.text ?? "Unknown",
+      address: p.formattedAddress ?? null,
+      lat: p.location?.latitude ?? null,
+      lng: p.location?.longitude ?? null,
+      rating: p.rating ?? null,
+      userRatingCount: p.userRatingCount ?? null,
+      photoName: p.photos?.[0]?.name ?? null,
+      primaryType: p.primaryType ?? null,
+      types: p.types ?? null,
+      businessStatus: availability.businessStatus,
+      openStatus: availability.openStatus,
+      openStatusLabel: fields.openStatusLabel,
+      todayHoursLabel: fields.todayHoursLabel,
+      closingSoonNote: fields.closingSoonNote,
+      nextOpenHint: fields.nextOpenHint,
+      website: p.websiteUri?.trim() || null,
+      phone: p.nationalPhoneNumber?.trim() || p.internationalPhoneNumber?.trim() || null,
+    };
+  } catch (e) {
+    console.warn("[Roamie Places] place details screen failed", placeId, e);
+    return null;
+  }
+}
+
+const PlaceDetailsInput = z.object({
+  placeId: z.string().min(1),
+  locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
+});
+
+export const getPlaceDetails = createServerFn({ method: "POST" })
+  .inputValidator((input) => PlaceDetailsInput.parse(input))
+  .handler(
+    async ({
+      data,
+    }): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> => {
+      if (data.placeId.startsWith("latlng:") || data.placeId.startsWith("saved-")) {
+        return { place: null, error: "synthetic_id" };
+      }
+      try {
+        const locale = coerceLocale(data.locale);
+        const place = await fetchPlaceDetailsForScreen(data.placeId, locale);
+        if (!place) return { place: null, error: "place_not_found" };
+        return { place, error: null };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "place_details_failed";
+        return { place: null, error: msg };
+      }
+    },
+  );

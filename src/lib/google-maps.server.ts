@@ -3,6 +3,7 @@ import { isValidGoogleMapsApiKey } from "@/lib/google-maps-key";
 export {
   PLACES_FIELD_MASK,
   PLACE_DETAILS_FIELD_MASK,
+  PLACE_DETAILS_SCREEN_FIELD_MASK,
   geocodeReverseUrl,
   placePhotoMediaUrl,
   placesAutocompleteUrl,

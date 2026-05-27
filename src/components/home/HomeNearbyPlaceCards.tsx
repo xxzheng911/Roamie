@@ -12,6 +12,7 @@ type Props = {
   emptyMessage?: string;
   savedNames: Set<string>;
   busyId: string | null;
+  navigatingPlaceId?: string | null;
   onSelect: (place: HomeNearbyPick) => void;
   onAddToTrip?: (place: HomeNearbyPick) => void;
   onToggleSave?: (place: HomeNearbyPick) => void;
@@ -50,6 +51,7 @@ export function HomeNearbyPlaceCards({
   emptyMessage,
   savedNames,
   busyId,
+  navigatingPlaceId,
   onSelect,
   onAddToTrip,
   onToggleSave,
@@ -95,92 +97,105 @@ export function HomeNearbyPlaceCards({
         const vibe = p.reason?.trim() || typeName || "適合現在去走走";
         const isSaved = savedNames.has(p.name) || Boolean(p.isSavedFavorite);
         const isBusy = busyId === p.id;
+        const isNavigating = navigatingPlaceId === p.id;
 
         return (
           <article
             key={p.id}
             role="listitem"
             className={cn(
-              "home-nearby-card-item text-left",
+              "home-nearby-card-item relative text-left",
               isLast && "home-nearby-card-item--last",
             )}
           >
-            <div className="home-nearby-card-square group relative overflow-hidden rounded-[1.35rem] bg-secondary shadow-soft transition-transform duration-300 ease-out active:scale-[0.97] group-hover:scale-[1.02]">
-              <button
-                type="button"
-                onClick={() => onSelect(p)}
-                className="absolute inset-0 z-0"
-                aria-label={`查看 ${p.name}`}
-              />
-              {img ? (
-                <img
-                  src={img}
-                  alt=""
-                  loading="lazy"
-                  draggable={false}
-                  className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+            <button
+              type="button"
+              disabled={isNavigating}
+              aria-busy={isNavigating}
+              onClick={() => onSelect(p)}
+              className="absolute inset-0 z-0 rounded-[1.35rem] transition active:scale-[0.98] disabled:cursor-wait"
+              aria-label={`查看 ${p.name}`}
+            />
+
+            <div className="relative z-[1] pointer-events-none">
+              <div className="home-nearby-card-square relative overflow-hidden rounded-[1.35rem] bg-secondary shadow-soft">
+                {isNavigating ? (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-ink/25 backdrop-blur-[1px]">
+                    <Loader2 className="h-6 w-6 animate-spin text-cream" aria-hidden />
+                  </div>
+                ) : null}
+                {img ? (
+                  <img
+                    src={img}
+                    alt=""
+                    loading="lazy"
+                    draggable={false}
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                ) : null}
+                <div
+                  className="absolute inset-0 bg-gradient-to-t from-ink/78 via-ink/18 to-transparent"
+                  aria-hidden
                 />
-              ) : null}
-              <div
-                className="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink/78 via-ink/18 to-transparent"
-                aria-hidden
-              />
-              {rating ? (
-                <span className="pointer-events-none absolute left-2.5 top-2.5 z-[1] flex items-center gap-1 rounded-full bg-ink/35 px-2 py-1 text-[10px] text-cream backdrop-blur-sm">
-                  <Star className="h-3 w-3 fill-current text-amber-200/90" aria-hidden />
-                  {rating}
-                </span>
-              ) : null}
-              {hours ? (
-                <span className="pointer-events-none absolute right-2.5 top-2.5 z-[1] rounded-full bg-ink/40 px-2 py-0.5 text-[10px] text-cream backdrop-blur-sm">
-                  {hours}
-                </span>
-              ) : null}
+                {rating ? (
+                  <span className="absolute left-2.5 top-2.5 flex items-center gap-1 rounded-full bg-ink/35 px-2 py-1 text-[10px] text-cream backdrop-blur-sm">
+                    <Star className="h-3 w-3 fill-current text-amber-200/90" aria-hidden />
+                    {rating}
+                  </span>
+                ) : null}
+                {hours ? (
+                  <span className="absolute right-2.5 top-2.5 rounded-full bg-ink/40 px-2 py-0.5 text-[10px] text-cream backdrop-blur-sm">
+                    {hours}
+                  </span>
+                ) : null}
 
-              {onAddToTrip ? (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onAddToTrip(p);
-                  }}
-                  className="absolute bottom-3 left-3 z-10 flex items-center gap-1 rounded-full bg-cream/95 px-2.5 py-1 text-[10px] font-medium text-ink shadow-soft"
-                >
-                  <Plus className="h-3 w-3" />
-                  {addToTripLabel}
-                </button>
-              ) : null}
+                {onAddToTrip ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAddToTrip(p);
+                    }}
+                    className="pointer-events-auto absolute bottom-3 left-3 z-10 flex items-center gap-1 rounded-full bg-cream/95 px-2.5 py-1 text-[10px] font-medium text-ink shadow-soft"
+                  >
+                    <Plus className="h-3 w-3" />
+                    {addToTripLabel}
+                  </button>
+                ) : null}
 
-              {onToggleSave ? (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleSave(p);
-                  }}
-                  disabled={isBusy}
-                  className="absolute bottom-3 right-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-card/95 shadow-soft disabled:opacity-60"
-                  aria-label={isSaved ? "移除收藏" : "收藏"}
-                >
-                  {isBusy ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                  ) : (
-                    <Heart
-                      className={`h-4 w-4 ${isSaved ? "fill-clay text-clay" : "text-muted-foreground"}`}
-                    />
-                  )}
-                </button>
-              ) : null}
-            </div>
+                {onToggleSave ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleSave(p);
+                    }}
+                    disabled={isBusy}
+                    className="pointer-events-auto absolute bottom-3 right-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-card/95 shadow-soft disabled:opacity-60"
+                    aria-label={isSaved ? "移除收藏" : "收藏"}
+                  >
+                    {isBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    ) : (
+                      <Heart
+                        className={`h-4 w-4 ${isSaved ? "fill-clay text-clay" : "text-muted-foreground"}`}
+                      />
+                    )}
+                  </button>
+                ) : null}
+              </div>
 
-            <div className="mt-2 px-0.5">
-              <p className="line-clamp-1 font-display text-[15px] leading-snug text-foreground">
-                {p.name}
-              </p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">
-                {[typeName, distance].filter(Boolean).join(" · ")}
-              </p>
-              <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-foreground/80">{vibe}</p>
+              <div className="mt-2 px-0.5">
+                <p className="line-clamp-1 font-display text-[15px] leading-snug text-foreground">
+                  {p.name}
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {[typeName, distance].filter(Boolean).join(" · ")}
+                </p>
+                <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-foreground/80">
+                  {vibe}
+                </p>
+              </div>
             </div>
           </article>
         );

@@ -4,6 +4,7 @@ import {
   markCompanionModeSelected,
   readSelectedCompanionTier,
 } from "@/lib/companion-mode-storage";
+import { markOnboardingCompletedSync } from "@/lib/onboarding-storage";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { supabase } from "@/lib/supabase";
 import {
@@ -74,12 +75,16 @@ export async function isIntroCompleted(userId?: string): Promise<boolean> {
   const prefs = (data as { ai_preferences?: unknown } | null)?.ai_preferences;
   if (!introFromAiPreferences(prefs)) return false;
 
-  markCompanionModeSelected(companionTierFromAiPreferences(prefs) ?? "free");
+  const tier = companionTierFromAiPreferences(prefs) ?? "free";
+  markOnboardingCompletedSync();
+  markCompanionModeSelected(tier);
   return true;
 }
 
 export async function markIntroCompleted(tier: PlanTier = "free"): Promise<void> {
   markCompanionModeSelected(tier);
+  const { markOnboardingCompleted } = await import("@/lib/onboarding-storage");
+  await markOnboardingCompleted();
 
   const userId = await getAuthenticatedUserId();
   if (!userId) {

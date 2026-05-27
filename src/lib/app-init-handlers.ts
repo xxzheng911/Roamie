@@ -12,7 +12,12 @@ import {
   AUTH_CALLBACK_PATH,
   hasOAuthCallbackParams,
 } from "@/lib/auth-oauth";
-import { readPendingCallbackPath } from "@/lib/auth-oauth-deep-link";
+import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
+import { attachOAuthDeepLinkListener, readPendingCallbackPath } from "@/lib/auth-oauth-deep-link";
+import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
+import { prefetchLocationPermissionStatus } from "@/lib/location-permission-manager";
+import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
+import { hydrateOnboardingStatus } from "@/lib/onboarding-storage";
 import { ensureColdStartPath } from "@/lib/startup-route";
 
 let appInitInstalled = false;
@@ -23,12 +28,9 @@ function recoverPendingOAuthCallbackPath(): void {
   if (hasOAuthCallbackParams()) return;
   const pending = readPendingCallbackPath();
   if (!pending || !pending.startsWith(`${AUTH_CALLBACK_PATH}?`)) return;
-  try {
-    window.history.replaceState(window.history.state, "", pending);
-    window.dispatchEvent(new PopStateEvent("popstate"));
-  } catch (error) {
+  void navigateOAuthAppPath(pending).catch((error) => {
     logAppError("APP_INIT_ERROR", error, { source: "recoverPendingOAuthCallbackPath" });
-  }
+  });
 }
 
 function showCapacitorFatalOverlay(
@@ -105,8 +107,22 @@ function installAppInitHandlersCore(): void {
 
   try {
     normalizeCapacitorEntryPath();
-    recoverPendingOAuthCallbackPath();
-    ensureColdStartPath();
+    const cap = (
+      window as Window & { Capacitor?: { isNativePlatform?: () => boolean } }
+    ).Capacitor;
+    if (cap?.isNativePlatform?.()) {
+      void waitForCapacitorBridge().then(async (ready) => {
+        if (!ready) return;
+        await hydrateOnboardingStatus();
+        ensureColdStartPath();
+        prefetchLocationPermissionStatus();
+        void warmSupabaseAuthStorage();
+        attachOAuthDeepLinkListener();
+        recoverPendingOAuthCallbackPath();
+      });
+    } else {
+      void hydrateOnboardingStatus().then(() => ensureColdStartPath());
+    }
   } catch (error) {
     logAppError("APP_INIT_ERROR", error, { source: "normalizeCapacitorEntryPath" });
   }

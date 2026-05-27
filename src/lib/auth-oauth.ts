@@ -7,6 +7,7 @@ import {
   getOAuthRedirectUrl,
 } from "@/lib/auth-redirect";
 import { assertSupabaseConfiguredForAuth } from "@/lib/supabase-project-url";
+import { clearAuthState } from "@/lib/clear-auth-state";
 import {
   emitOAuthFlow,
   logAuthAuthorizeUrl,
@@ -14,8 +15,21 @@ import {
   logAuthError,
   logAuthSessionResult,
   logAuthStart,
+  logGoogleOAuthMarker,
 } from "@/lib/auth-debug";
+import {
+  isCapacitorBridgeReady,
+  waitForCapacitorBridge,
+} from "@/lib/capacitor-bridge-ready";
+import { canUseIosNativeOAuth, openIosNativeOAuth } from "@/lib/ios-oauth-native";
+import { notifyIosOAuthOpen } from "@/lib/ios-snapshot-bridge";
+import { persistOAuthPkceVerifier, warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { detectPlatform } from "@/services/platform";
+import { Browser } from "@capacitor/browser";
+import {
+  attachOAuthDeepLinkListener,
+  hasPendingOAuthCallback,
+} from "@/lib/auth-oauth-deep-link";
 import { supabase } from "@/lib/supabase";
 
 export type { OAuthProvider };
@@ -43,11 +57,50 @@ const OAUTH_REDIRECT_KEY = "roamie:oauth-redirect-to";
 let browserListenerAttached = false;
 let oauthReturnClosingBrowser = false;
 
+const OAUTH_BROWSER_OPEN_TIMEOUT_MS = 12_000;
+
+async function openOAuthBrowser(url: string, provider: OAuthProvider): Promise<void> {
+  logAuthDebug("oauth.browser.open.start", { provider, native: canUseIosNativeOAuth() });
+
+  if (canUseIosNativeOAuth()) {
+    try {
+      await openIosNativeOAuth(url);
+      logAuthDebug("oauth.browser.opened", { provider, via: "ASWebAuthenticationSession" });
+      return;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("native_oauth_cancelled")) {
+        throw e;
+      }
+      if (!msg.includes("native_oauth_bridge_missing")) {
+        logAuthError("oauth.native_open", e, { provider });
+      }
+      // fall through to Capacitor Browser
+    }
+  }
+
+  const platform = detectPlatform();
+  if (platform.isCapacitor) {
+    notifyIosOAuthOpen();
+  }
+
+  await Promise.race([
+    Browser.open({ url, presentationStyle: "fullscreen" }),
+    new Promise<never>((_, reject) => {
+      window.setTimeout(
+        () => reject(new Error("oauth_browser_open_timeout")),
+        OAUTH_BROWSER_OPEN_TIMEOUT_MS,
+      );
+    }),
+  ]);
+
+  logAuthDebug("oauth.browser.opened", { provider, via: "CapacitorBrowser" });
+}
+
 async function closeOAuthBrowser(): Promise<void> {
   const platform = detectPlatform();
   if (!platform.isCapacitor) return;
   try {
-    const { Browser } = await import("@capacitor/browser");
     oauthReturnClosingBrowser = true;
     await Browser.close();
     logAuthDebug("oauth.browser.close", {});
@@ -62,16 +115,24 @@ function attachOAuthBrowserListener(): void {
   if (!platform.isCapacitor) return;
 
   browserListenerAttached = true;
-  void import("@capacitor/browser").then(({ Browser }) => {
-    void Browser.addListener("browserFinished", () => {
-      if (oauthReturnClosingBrowser) {
-        oauthReturnClosingBrowser = false;
-        logAuthDebug("oauth.browser.finished", { withoutCallback: false, reason: "closed_by_return" });
+  void Browser.addListener("browserFinished", () => {
+    if (oauthReturnClosingBrowser) {
+      oauthReturnClosingBrowser = false;
+      logAuthDebug("oauth.browser.finished", { withoutCallback: false, reason: "closed_by_return" });
+      return;
+    }
+    window.setTimeout(() => {
+      if (oauthReturnClosingBrowser) return;
+      if (hasOAuthCallbackParams() || hasPendingOAuthCallback()) {
+        logAuthDebug("oauth.browser.finished", {
+          withoutCallback: false,
+          reason: "callback_pending",
+        });
         return;
       }
       logAuthDebug("oauth.browser.finished", { withoutCallback: true });
       emitOAuthFlow({ phase: "cancelled" });
-    });
+    }, 400);
   });
 }
 
@@ -128,7 +189,7 @@ export async function signInWithProvider(provider: OAuthProvider): Promise<SignI
       return native;
     }
     try {
-      await completeSignInAfterAuth();
+      await completeSignInAfterAuth(undefined, native.session);
       logAuthSessionResult(true, { provider: "apple", flow: "native" });
       return { ok: true };
     } catch (e) {
@@ -172,8 +233,21 @@ export async function startOAuthSignIn(
 
   const redirectTo = getOAuthRedirectUrl();
   stashOAuthRedirectTarget(redirectTo);
-  attachOAuthBrowserListener();
 
+  if (platform.isCapacitor) {
+    attachOAuthDeepLinkListener();
+    if (!isCapacitorBridgeReady()) {
+      await waitForCapacitorBridge(8_000);
+    }
+    await warmSupabaseAuthStorage();
+  }
+
+  logAuthDebug("oauth.signInWithOAuth.start", { provider, redirectTo });
+  if (provider === "google") {
+    logGoogleOAuthMarker("started", { redirectTo });
+  }
+
+  const oauthStartedAt = Date.now();
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider,
     options: {
@@ -182,8 +256,23 @@ export async function startOAuthSignIn(
     },
   });
 
+  logAuthDebug("oauth.signInWithOAuth.done", {
+    provider,
+    ms: Date.now() - oauthStartedAt,
+    hasUrl: Boolean(data?.url),
+    error: error?.message ?? null,
+  });
+
+  if (Date.now() - oauthStartedAt > 25_000) {
+    return { ok: false, message: "連線登入服務逾時，請確認網路後再試。" };
+  }
+
   if (error) {
     logAuthError("oauth.signInWithOAuth", error, { provider, redirectTo });
+    if (provider === "google") {
+      logGoogleOAuthMarker("failed", { message: error.message });
+      await clearAuthState({ reason: "google-oauth-sign-in-failed" });
+    }
     return { ok: false, message: error.message };
   }
 
@@ -211,12 +300,30 @@ export async function startOAuthSignIn(
   logAuthAuthorizeUrl(provider, data.url);
 
   if (platform.isCapacitor) {
+    const pkceReady = await persistOAuthPkceVerifier();
+    if (!pkceReady) {
+      logAuthError("oauth.pkce_missing", new Error("pkce verifier not persisted"), { provider });
+      return {
+        ok: false,
+        message: "登入準備失敗，請關閉 App 後再試一次。",
+      };
+    }
+    attachOAuthBrowserListener();
     try {
-      const { Browser } = await import("@capacitor/browser");
-      await Browser.open({ url: data.url, presentationStyle: "fullscreen" });
+      await openOAuthBrowser(data.url, provider);
       return { ok: true };
     } catch (e) {
       logAuthError("oauth.browser_open", e, { provider });
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("native_oauth_cancelled")) {
+        return { ok: false, message: "已取消登入", cancelled: true };
+      }
+      if (msg.includes("oauth_browser_open_timeout") || msg.includes("native_oauth_start_timeout")) {
+        return {
+          ok: false,
+          message: "登入視窗開啟逾時，請確認網路後再試一次。",
+        };
+      }
       return { ok: false, message: "無法開啟登入視窗，請稍後再試。" };
     }
   }

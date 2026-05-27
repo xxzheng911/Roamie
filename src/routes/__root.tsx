@@ -15,8 +15,12 @@ import appCss from "../styles.css?url";
 import { App } from "@/App";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { markBootPhase } from "@/lib/boot-diagnostics";
+import { detectPlatform } from "@/services/platform";
+import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
 import { RoamieAppErrorFallback } from "@/components/RoamieAppErrorFallback";
+import { OnboardingHydrationGate } from "@/components/OnboardingHydrationGate";
 import { StartupGate } from "@/components/StartupGate";
+import { OAuthRouterBridge } from "@/components/OAuthRouterBridge";
 import { scheduleRemoveStaticBootPlaceholder } from "@/main";
 import { bootstrapNativeShell } from "@/services/platform";
 import { markAppReady } from "@/lib/startup-route";
@@ -57,8 +61,8 @@ function ErrorComponent({ error, reset }: { error: unknown; reset: () => void })
 
   const recoverToStartup = () => {
     reset();
-    void router.invalidate().then(() => {
-      navigate({ to: "/login", replace: true });
+    void import("@/lib/clear-auth-state").then(({ resetToLoginScreen }) => {
+      void resetToLoginScreen("root-error-recover");
     });
   };
 
@@ -160,6 +164,10 @@ function RootComponent() {
     markBootPhase("root:layoutEffect");
     scheduleRemoveStaticBootPlaceholder();
     markAppReady();
+    const platform = detectPlatform();
+    if (!(platform.isCapacitor && platform.isIOS)) {
+      scheduleIosSnapshotRefreshBurst("root-ready");
+    }
     const deferNative = () => {
       void bootstrapNativeShell();
     };
@@ -175,9 +183,12 @@ function RootComponent() {
       <AppErrorBoundary>
         <App>
           <RouterSsrManifestGuard />
-          <StartupGate>
-            <Outlet />
-          </StartupGate>
+          <OAuthRouterBridge />
+          <OnboardingHydrationGate>
+            <StartupGate>
+              <Outlet />
+            </StartupGate>
+          </OnboardingHydrationGate>
           <Toaster />
         </App>
       </AppErrorBoundary>

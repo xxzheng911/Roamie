@@ -27,7 +27,6 @@ export const en = {
     loadFailed: "Could not load profile",
     signInRequired: "Please sign in first",
     signInCta: "Go to sign in",
-    guestMode: "Guest mode",
     pace: "Pace",
     vibe: "Vibe",
     budget: "Budget",
@@ -82,7 +81,6 @@ export const en = {
   },
   login: {
     title: "Sign in to Roamie",
-    guest: "Browse as guest",
   },
   home: {
     greeting: "How do you want to wander today?",

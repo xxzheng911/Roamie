@@ -65,13 +65,26 @@ export function formatSupabaseRedirectAllowListHint(): string {
   return suggestedSupabaseRedirectUrls().join("\n");
 }
 
-/** 將 `roamie://auth/callback?code=…` 或 Supabase callback 轉成 WebView 內 `/auth/callback?…` */
+/** 將 OAuth deep link 轉成 WebView 內 `/auth/callback?…` */
 export function oauthDeepLinkToAppPath(url: string): string | null {
   try {
     if (!isOAuthDeepLinkUrl(url)) return null;
     const parsed = new URL(url);
     const search = parsed.search || "";
-    const hash = parsed.hash || "";
+    const hash = parsed.hash && parsed.hash !== "#" ? parsed.hash : "";
+
+    if (parsed.protocol === `${APP_SCHEME}:`) {
+      // roamie://auth/callback → hostname "auth", pathname "/callback"
+      const fromHost =
+        parsed.hostname && parsed.pathname && parsed.pathname !== "/"
+          ? `/${parsed.hostname}${parsed.pathname}`
+          : parsed.pathname && parsed.pathname !== "/"
+            ? parsed.pathname
+            : AUTH_CALLBACK_PATH;
+      const normalized = fromHost.replace(/\/+$/, "") || AUTH_CALLBACK_PATH;
+      return `${normalized}${search}${hash}`;
+    }
+
     return `${AUTH_CALLBACK_PATH}${search}${hash}`;
   } catch {
     return null;

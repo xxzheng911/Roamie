@@ -1,4 +1,10 @@
 /* Inlined into Capacitor bundled index.html — keep in sync with .roamie-splash in src/styles.css */
+#roamie-boot-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  pointer-events: none;
+}
 .roamie-splash {
   position: relative;
   display: flex;

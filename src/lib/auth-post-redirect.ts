@@ -1,4 +1,5 @@
 import { markSessionBootstrapped } from "@/components/StartupGate";
+import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
 import { detectPlatform } from "@/services/platform";
 
 function toAbsoluteAppPath(path: string): string {
@@ -19,6 +20,9 @@ export function finishPostAuthRedirect(path: string, navigate?: RouterNavigate):
   const platform = detectPlatform();
 
   if (platform.isCapacitor && navigate) {
+    if (platform.isIOS) {
+      scheduleIosSnapshotRefreshBurst("post-auth");
+    }
     navigate({ to: normalized, replace: true });
     return;
   }

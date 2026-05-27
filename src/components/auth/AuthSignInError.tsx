@@ -58,7 +58,7 @@ export function AuthSignInError({
         <button
           type="button"
           onClick={onRetry}
-          className="mt-4 w-full rounded-full bg-ink py-3 text-sm font-medium text-background"
+          className="relative z-10 mt-4 w-full touch-manipulation rounded-full bg-ink py-3 text-sm font-medium text-background active:scale-[0.98]"
         >
           {retryLabel}
         </button>

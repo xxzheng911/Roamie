@@ -1,11 +1,16 @@
 /**
  * Client bootstrap（TanStack Start 由 router.tsx import，等同 main 進入點）
  */
-/** 移除 index.html 靜態占位（#root 已有內容後才移除，避免 router 初始化中空窗白屏） */
-export function removeStaticBootPlaceholder(): void {
+/** 移除外層 HTML boot splash（在 #root 外，會佔滿 viewport 導致 iOS snapshot 永遠截到 loading） */
+export function dismissExternalBootSplash(): void {
   if (typeof document === "undefined") return;
   document.getElementById("roamie-boot-splash")?.remove();
   document.getElementById("roamie-static-boot")?.remove();
+}
+
+/** 移除 index.html 靜態占位（#root 已有內容後才移除，避免 router 初始化中空窗白屏） */
+export function removeStaticBootPlaceholder(): void {
+  dismissExternalBootSplash();
 }
 
 function rootHasVisibleContent(): boolean {

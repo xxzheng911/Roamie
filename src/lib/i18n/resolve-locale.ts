@@ -13,7 +13,7 @@ export async function resolveLocaleAsync(): Promise<Locale> {
     const profileLang = await getProfileLanguage();
     if (profileLang) return profileLang;
   } catch {
-    /* guest / offline */
+    /* offline / device locale */
   }
   return resolveLocaleSync();
 }

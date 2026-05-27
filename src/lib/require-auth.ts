@@ -1,14 +1,20 @@
 import { isRedirect, redirect } from "@tanstack/react-router";
 import { getClientAuthSession } from "@/lib/auth-session";
+import { logAuthFlowMarker } from "@/lib/clear-auth-state";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { logAppError } from "@/lib/log-error";
+import { hydrateOnboardingStatus } from "@/lib/onboarding-storage";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import type { StartupPath } from "@/lib/post-auth-navigation";
-import { resolveStartupPathFast } from "@/lib/startup-route";
 
 const AUTH_ROUTE_TIMEOUT_MS = 4_000;
 
-/** 僅限已登入 Supabase（訪客不可進 welcome / 帳號設定等） */
+function blockGuestAccess(reason: string, target: StartupPath = "/login"): never {
+  logAuthFlowMarker("[Auth Guard Blocked Guest Access]", { reason, target });
+  throw redirect({ to: target });
+}
+
+/** 僅限已登入 Supabase */
 export async function requireAuthenticatedRoute(): Promise<void> {
   if (typeof window === "undefined") return;
   try {
@@ -22,25 +28,21 @@ export async function requireAuthenticatedRoute(): Promise<void> {
       window.setTimeout(() => resolve(null), AUTH_ROUTE_TIMEOUT_MS);
     }),
   ]);
-  if (!session) {
+  if (!session?.user) {
     try {
       markBootPhase("gate:requireAuthenticatedRoute:redirect:/login");
     } catch {
       // ignore
     }
-    throw redirect({ to: "/login" });
+    blockGuestAccess("requireAuthenticatedRoute:no-session");
   }
-}
-
-/** @deprecated 已移除訪客模式，等同 requireAuthenticatedRoute */
-export async function requireGuestOrAuthenticatedRoute(): Promise<void> {
-  return requireAuthenticatedRoute();
 }
 
 /** 偏好測驗：自願進入；需已登入 */
 export async function requirePreferenceQuizRouteAccess(from?: string): Promise<void> {
   if (typeof window === "undefined") return;
 
+  void from;
   await requireAuthenticatedRoute();
 }
 
@@ -52,8 +54,8 @@ function redirectToStartupTarget(next: StartupPath): never {
 }
 
 /**
- * 主 App 殼層：須完成品牌教學；已登入使用者須完成 Plus 導覽。
- * 旅行偏好測驗不在此 gate 內，由使用者自願進入。
+ * 主 App 殼層：須有有效 Supabase session；未登入一律 /login。
+ * 不以 localStorage 快取或 companion 本機旗標代替登入。
  */
 const SHELL_GATE_TIMEOUT_MS = 5_000;
 
@@ -65,16 +67,6 @@ export async function requireAppShellAccess(): Promise<void> {
     // ignore
   }
 
-  const fastNext = resolveStartupPathFast();
-  if (fastNext !== "/") {
-    try {
-      markBootPhase(`gate:requireAppShellAccess:fast-redirect:${fastNext}`);
-    } catch {
-      // ignore
-    }
-    redirectToStartupTarget(fastNext);
-  }
-
   try {
     const session = await Promise.race([
       getClientAuthSession(),
@@ -83,19 +75,21 @@ export async function requireAppShellAccess(): Promise<void> {
       }),
     ]);
 
-    if (!session) {
+    if (!session?.user) {
       try {
         markBootPhase("gate:requireAppShellAccess:redirect:/login");
       } catch {
         // ignore
       }
-      throw redirect({ to: "/login" });
+      blockGuestAccess("requireAppShellAccess:no-session");
     }
+
+    await hydrateOnboardingStatus();
 
     const next = await Promise.race([
       resolveStartupPath({ hasSession: true }),
       new Promise<StartupPath>((resolve) => {
-        window.setTimeout(() => resolve("/"), SHELL_GATE_TIMEOUT_MS);
+        window.setTimeout(() => resolve("/login"), SHELL_GATE_TIMEOUT_MS);
       }),
     ]);
 
@@ -115,6 +109,6 @@ export async function requireAppShellAccess(): Promise<void> {
     } catch {
       // ignore
     }
-    throw redirect({ to: "/login" });
+    blockGuestAccess("requireAppShellAccess:error");
   }
 }

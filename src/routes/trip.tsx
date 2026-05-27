@@ -1,11 +1,13 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Share2, Trash2, MapPin, Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Share2, Trash2, MapPin, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { MobileFrame } from "@/components/MobileFrame";
+import { BackButton } from "@/components/BackButton";
 import { TripPlanEditor } from "@/components/TripPlanEditor";
-import { requireGuestOrAuthenticatedRoute } from "@/lib/require-auth";
+import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
+import { requireAuthenticatedRoute } from "@/lib/require-auth";
 import {
   confirmSaveTrip,
   deleteItinerary,
@@ -32,7 +34,7 @@ export const Route = createFileRoute("/trip")({
     id: typeof s.id === "string" ? s.id : undefined,
     draft: typeof s.draft === "string" ? s.draft : undefined,
   }),
-  beforeLoad: requireGuestOrAuthenticatedRoute,
+  beforeLoad: requireAuthenticatedRoute,
   component: Trip,
 });
 
@@ -43,17 +45,70 @@ const TRANSPORT_HINT: Record<string, string> = {
   transit: "大眾運輸",
 };
 
+function TripScreenShell({
+  headerRight,
+  children,
+  onScroll,
+}: {
+  headerRight?: ReactNode;
+  children: ReactNode;
+  onScroll?: () => void;
+}) {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <header className="z-20 flex shrink-0 items-center justify-between border-b border-border bg-background/95 px-5 pb-3 pt-[var(--safe-area-top)] backdrop-blur">
+        <BackButton
+          fallback={{ to: "/saved" }}
+          onBack={() => console.info("[Trip Plan Back Pressed]")}
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
+        />
+        {headerRight ? <div className="flex gap-2">{headerRight}</div> : <span className="w-9" />}
+      </header>
+      <main
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain no-scrollbar"
+        onScroll={onScroll}
+      >
+        {children}
+      </main>
+    </div>
+  );
+}
+
 function Trip() {
   const { id, draft } = Route.useSearch();
   const navigate = useNavigate();
   const generate = useServerFn(generateItinerary);
   const fetchWeather = useServerFn(getWeather);
   const [trip, setTrip] = useState<StoredItinerary | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const scrollLoggedRef = useRef(false);
   const isDraft = draft === "1";
 
+  useIosInteractiveRoute("trip-plan");
+
   useEffect(() => {
+    console.info("[Trip Plan Screen Mounted]", { id, isDraft });
+  }, [id, isDraft]);
+
+  useEffect(() => {
+    if (!loading) {
+      console.info("[Trip Plan Loading End]", { hasTrip: Boolean(trip), loadError });
+    }
+  }, [loading, trip, loadError]);
+
+  const handleScroll = useCallback(() => {
+    if (scrollLoggedRef.current) return;
+    scrollLoggedRef.current = true;
+    console.info("[Trip Plan Scroll Enabled]");
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadError(null);
+
     if (isDraft) {
+      console.info("[Trip Plan Data Loading]", { source: "draft" });
       const payload = loadDraftTrip();
       if (payload) {
         setTrip({
@@ -64,26 +119,45 @@ function Trip() {
           created_at: payload.generatedAt ?? new Date().toISOString(),
           payload,
         });
+        console.info("[Trip Plan Data Loaded]", { source: "draft", title: payload.title });
+      } else {
+        console.info("[Trip Plan Data Error]", { source: "draft", reason: "empty_draft" });
+        setLoadError("找不到行程草稿");
       }
       setLoading(false);
       return;
     }
+
     if (!id) {
+      console.info("[Trip Plan Data Error]", { reason: "missing_id" });
+      setLoadError("缺少行程編號");
       setLoading(false);
       return;
     }
-    let cancelled = false;
+
+    console.info("[Trip Plan Data Loading]", { id });
     getItinerary(id)
       .then((data) => {
-        if (!cancelled) setTrip(data);
+        if (cancelled) return;
+        if (data) {
+          setTrip(data);
+          console.info("[Trip Plan Data Loaded]", { id: data.id, title: data.title });
+        } else {
+          setLoadError("找不到這個行程");
+          console.info("[Trip Plan Data Error]", { id, reason: "not_found" });
+        }
       })
       .catch((err) => {
-        console.error(err);
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : "讀取行程失敗";
+        console.info("[Trip Plan Data Error]", { id, message });
+        setLoadError(message);
         toast.error("讀取行程失敗");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
     return () => {
       cancelled = true;
     };
@@ -210,26 +284,57 @@ function Trip() {
     }
   };
 
+  const headerActions =
+    trip && !loading ? (
+      <>
+        <button
+          type="button"
+          onClick={() => void handleShare()}
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
+          aria-label="分享"
+        >
+          <Share2 className="h-4 w-4" />
+        </button>
+        {!isDraft && (
+          <button
+            type="button"
+            onClick={() => void handleDelete()}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
+            aria-label="刪除"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )}
+      </>
+    ) : null;
+
   if (loading) {
     return (
       <MobileFrame>
-        <div className="flex min-h-[600px] flex-col items-center justify-center gap-3">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">讀取行程中…</p>
-        </div>
+        <TripScreenShell onScroll={handleScroll}>
+          <div className="flex min-h-[50vh] flex-col items-center justify-center gap-3 px-8">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">讀取行程中…</p>
+          </div>
+        </TripScreenShell>
       </MobileFrame>
     );
   }
 
-  if (!trip) {
+  if (!trip || loadError) {
     return (
       <MobileFrame>
-        <div className="flex min-h-[600px] flex-col items-center justify-center gap-4 px-8 text-center">
-          <p className="text-sm text-muted-foreground">找不到這個行程</p>
-          <Link to="/plan" className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground">
-            規劃新行程
-          </Link>
-        </div>
+        <TripScreenShell onScroll={handleScroll}>
+          <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-8 text-center">
+            <p className="text-sm text-muted-foreground">{loadError ?? "找不到這個行程"}</p>
+            <Link to="/plan" className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground">
+              規劃新行程
+            </Link>
+            <Link to="/saved" className="text-sm text-muted-foreground underline">
+              查看所有行程
+            </Link>
+          </div>
+        </TripScreenShell>
       </MobileFrame>
     );
   }
@@ -239,32 +344,8 @@ function Trip() {
 
   return (
     <MobileFrame>
-      <div className="min-h-[calc(100vh-2rem)] md:min-h-[860px]">
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-background/90 px-5 py-3 backdrop-blur">
-          <Link to="/saved" className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary" aria-label="返回">
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <div className="flex gap-2">
-            <button
-              onClick={handleShare}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
-              aria-label="分享"
-            >
-              <Share2 className="h-4 w-4" />
-            </button>
-            {!isDraft && (
-              <button
-                onClick={handleDelete}
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
-                aria-label="刪除"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="px-5 pb-8 pt-5">
+      <TripScreenShell headerRight={headerActions} onScroll={handleScroll}>
+        <div className="px-5 pb-10 pt-5">
           {isDraft && (
             <div className="mb-4 rounded-2xl border border-dashed border-border bg-secondary/50 px-4 py-3 text-sm text-muted-foreground">
               <p>這是行程草稿，尚未加入收藏。</p>
@@ -328,7 +409,7 @@ function Trip() {
             </Link>
           </div>
         </div>
-      </div>
+      </TripScreenShell>
     </MobileFrame>
   );
 }

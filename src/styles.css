@@ -1229,6 +1229,47 @@ body.roamie-body {
   font-size: 16px; /* prevents iOS zoom-on-focus */
 }
 
+/** Login legal overlay — inner scroll; mirror refresh on scroll (iOS Capacitor) */
+html.legal-overlay-open,
+html.legal-overlay-open body {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+
+html.legal-overlay-open .legal-overlay-scroll {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  overflow-y: scroll;
+}
+
+/** iOS Capacitor full-page legal — document scroll via WKWebView (not nested overlay) */
+html.legal-page-scroll,
+html.legal-page-scroll body {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
+  height: auto !important;
+  min-height: 100dvh;
+}
+
+html.legal-page-scroll .mobile-frame-outer,
+html.legal-page-scroll .mobile-frame-inner {
+  overflow: visible !important;
+  height: auto !important;
+  min-height: 100dvh;
+}
+
+html.legal-page-scroll .legal-page-root {
+  min-height: 100dvh;
+}
+
+html.legal-page-scroll .legal-page-body {
+  padding-bottom: 2rem;
+}
+
 .native-shell .no-scrollbar {
   -webkit-overflow-scrolling: touch;
 }
@@ -1251,39 +1292,17 @@ html.map-route-active main.app-scroll {
 }
 
 /**
- * 聊天輸入列：fixed 定位，與 Bottom Tab 脫鉤。
- * - 鍵盤收起：bottom = Tab Bar + safe area
- * - 鍵盤展開（Capacitor body resize）：bottom = 0，貼齊鍵盤
- * - 鍵盤展開（Web visualViewport）：bottom = --chat-keyboard-inset
+ * 聊天頁：flex 欄位佈局（header | messages | input），勿 fixed 輸入列。
+ * 鍵盤 inset 由 .chat-page padding-bottom（React）控制；收起時保留 Tab Bar 空間。
  */
 html.chat-route-active .chat-input-bar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  z-index: 45;
-  max-width: 100%;
-  bottom: calc(var(--bottom-nav-height, 4.25rem) + env(safe-area-inset-bottom, 0px));
-}
-
-html.chat-route-active.chat-keyboard-open .chat-input-bar,
-html.chat-keyboard-open .chat-input-bar {
-  bottom: 0;
-}
-
-html.chat-route-active.chat-keyboard-open.chat-keyboard-manual-inset .chat-input-bar,
-html.chat-keyboard-open.chat-keyboard-manual-inset .chat-input-bar {
-  bottom: var(--chat-keyboard-inset, 0px);
+  position: relative;
+  z-index: 10;
+  width: 100%;
 }
 
 html.chat-route-active .chat-messages {
-  padding-bottom: calc(
-    var(--bottom-nav-height, 4.25rem) + var(--chat-composer-height, 5.75rem) +
-      env(safe-area-inset-bottom, 0px) + 12px
-  );
-}
-
-html.chat-keyboard-open .chat-messages {
-  padding-bottom: calc(var(--chat-composer-height, 5.75rem) + 16px);
+  padding-bottom: 0.75rem;
 }
 
 /** 聊天頁：鍵盤展開時隱藏 Tab Bar */

@@ -1,7 +1,7 @@
 /** 登入頁冷啟動（可略過重型 provider / 背景 auth） */
 export function isLoginColdStartPath(pathname: string): boolean {
   const path = pathname.replace(/\/+$/, "") || "/";
-  return path === "/login";
+  return path === "/login" || path.startsWith("/login/");
 }
 
 export function isAuthCallbackPath(pathname: string): boolean {

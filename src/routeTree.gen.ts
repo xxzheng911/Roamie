@@ -14,6 +14,7 @@ import { Route as TripRouteImport } from './routes/trip'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
+import { Route as LoginLegalRouteImport } from './routes/login/legal'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
 import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
@@ -24,9 +25,11 @@ import { Route as AppSavedRouteImport } from './routes/_app.saved'
 import { Route as AppRecommendationsRouteImport } from './routes/_app.recommendations'
 import { Route as AppProfileRouteImport } from './routes/_app.profile'
 import { Route as AppPlanRouteImport } from './routes/_app.plan'
+import { Route as AppPlaceRouteImport } from './routes/_app.place'
 import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
+import { Route as AppSavedTripIdRouteImport } from './routes/_app.saved.$tripId'
 
 const WelcomeRoute = WelcomeRouteImport.update({
   id: '/welcome',
@@ -51,6 +54,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppRoute,
+} as any)
+const LoginLegalRoute = LoginLegalRouteImport.update({
+  id: '/legal',
+  path: '/legal',
+  getParentRoute: () => LoginRoute,
 } as any)
 const AuthCallbackRoute = AuthCallbackRouteImport.update({
   id: '/auth/callback',
@@ -102,6 +110,11 @@ const AppPlanRoute = AppPlanRouteImport.update({
   path: '/plan',
   getParentRoute: () => AppRoute,
 } as any)
+const AppPlaceRoute = AppPlaceRouteImport.update({
+  id: '/place',
+  path: '/place',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppMapRoute = AppMapRouteImport.update({
   id: '/map',
   path: '/map',
@@ -117,65 +130,79 @@ const AppChatRoute = AppChatRouteImport.update({
   path: '/chat',
   getParentRoute: () => AppRoute,
 } as any)
+const AppSavedTripIdRoute = AppSavedTripIdRouteImport.update({
+  id: '/$tripId',
+  path: '/$tripId',
+  getParentRoute: () => AppSavedRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
-  '/login': typeof LoginRoute
+  '/login': typeof LoginRouteWithChildren
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
   '/developer': typeof AppDeveloperRoute
   '/map': typeof AppMapRoute
+  '/place': typeof AppPlaceRoute
   '/plan': typeof AppPlanRoute
   '/profile': typeof AppProfileRoute
   '/recommendations': typeof AppRecommendationsRoute
-  '/saved': typeof AppSavedRoute
+  '/saved': typeof AppSavedRouteWithChildren
   '/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/login/legal': typeof LoginLegalRoute
+  '/saved/$tripId': typeof AppSavedTripIdRoute
 }
 export interface FileRoutesByTo {
-  '/login': typeof LoginRoute
+  '/login': typeof LoginRouteWithChildren
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
   '/developer': typeof AppDeveloperRoute
   '/map': typeof AppMapRoute
+  '/place': typeof AppPlaceRoute
   '/plan': typeof AppPlanRoute
   '/profile': typeof AppProfileRoute
   '/recommendations': typeof AppRecommendationsRoute
-  '/saved': typeof AppSavedRoute
+  '/saved': typeof AppSavedRouteWithChildren
   '/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/login/legal': typeof LoginLegalRoute
   '/': typeof AppIndexRoute
+  '/saved/$tripId': typeof AppSavedTripIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
-  '/login': typeof LoginRoute
+  '/login': typeof LoginRouteWithChildren
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
   '/_app/chat': typeof AppChatRoute
   '/_app/developer': typeof AppDeveloperRoute
   '/_app/map': typeof AppMapRoute
+  '/_app/place': typeof AppPlaceRoute
   '/_app/plan': typeof AppPlanRoute
   '/_app/profile': typeof AppProfileRoute
   '/_app/recommendations': typeof AppRecommendationsRoute
-  '/_app/saved': typeof AppSavedRoute
+  '/_app/saved': typeof AppSavedRouteWithChildren
   '/_app/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/login/legal': typeof LoginLegalRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/saved/$tripId': typeof AppSavedTripIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -187,6 +214,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/developer'
     | '/map'
+    | '/place'
     | '/plan'
     | '/profile'
     | '/recommendations'
@@ -197,6 +225,8 @@ export interface FileRouteTypes {
     | '/api/place-photo'
     | '/api/roamie'
     | '/auth/callback'
+    | '/login/legal'
+    | '/saved/$tripId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -205,6 +235,7 @@ export interface FileRouteTypes {
     | '/chat'
     | '/developer'
     | '/map'
+    | '/place'
     | '/plan'
     | '/profile'
     | '/recommendations'
@@ -215,7 +246,9 @@ export interface FileRouteTypes {
     | '/api/place-photo'
     | '/api/roamie'
     | '/auth/callback'
+    | '/login/legal'
     | '/'
+    | '/saved/$tripId'
   id:
     | '__root__'
     | '/_app'
@@ -225,6 +258,7 @@ export interface FileRouteTypes {
     | '/_app/chat'
     | '/_app/developer'
     | '/_app/map'
+    | '/_app/place'
     | '/_app/plan'
     | '/_app/profile'
     | '/_app/recommendations'
@@ -235,12 +269,14 @@ export interface FileRouteTypes {
     | '/api/place-photo'
     | '/api/roamie'
     | '/auth/callback'
+    | '/login/legal'
     | '/_app/'
+    | '/_app/saved/$tripId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
-  LoginRoute: typeof LoginRoute
+  LoginRoute: typeof LoginRouteWithChildren
   TripRoute: typeof TripRoute
   WelcomeRoute: typeof WelcomeRoute
   ApiChatRoute: typeof ApiChatRoute
@@ -286,6 +322,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/login/legal': {
+      id: '/login/legal'
+      path: '/legal'
+      fullPath: '/login/legal'
+      preLoaderRoute: typeof LoginLegalRouteImport
+      parentRoute: typeof LoginRoute
     }
     '/auth/callback': {
       id: '/auth/callback'
@@ -357,6 +400,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppPlanRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/place': {
+      id: '/_app/place'
+      path: '/place'
+      fullPath: '/place'
+      preLoaderRoute: typeof AppPlaceRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/map': {
       id: '/_app/map'
       path: '/map'
@@ -378,17 +428,37 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppChatRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/saved/$tripId': {
+      id: '/_app/saved/$tripId'
+      path: '/$tripId'
+      fullPath: '/saved/$tripId'
+      preLoaderRoute: typeof AppSavedTripIdRouteImport
+      parentRoute: typeof AppSavedRoute
+    }
   }
 }
+
+interface AppSavedRouteChildren {
+  AppSavedTripIdRoute: typeof AppSavedTripIdRoute
+}
+
+const AppSavedRouteChildren: AppSavedRouteChildren = {
+  AppSavedTripIdRoute: AppSavedTripIdRoute,
+}
+
+const AppSavedRouteWithChildren = AppSavedRoute._addFileChildren(
+  AppSavedRouteChildren,
+)
 
 interface AppRouteChildren {
   AppChatRoute: typeof AppChatRoute
   AppDeveloperRoute: typeof AppDeveloperRoute
   AppMapRoute: typeof AppMapRoute
+  AppPlaceRoute: typeof AppPlaceRoute
   AppPlanRoute: typeof AppPlanRoute
   AppProfileRoute: typeof AppProfileRoute
   AppRecommendationsRoute: typeof AppRecommendationsRoute
-  AppSavedRoute: typeof AppSavedRoute
+  AppSavedRoute: typeof AppSavedRouteWithChildren
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
 }
@@ -397,19 +467,30 @@ const AppRouteChildren: AppRouteChildren = {
   AppChatRoute: AppChatRoute,
   AppDeveloperRoute: AppDeveloperRoute,
   AppMapRoute: AppMapRoute,
+  AppPlaceRoute: AppPlaceRoute,
   AppPlanRoute: AppPlanRoute,
   AppProfileRoute: AppProfileRoute,
   AppRecommendationsRoute: AppRecommendationsRoute,
-  AppSavedRoute: AppSavedRoute,
+  AppSavedRoute: AppSavedRouteWithChildren,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
+interface LoginRouteChildren {
+  LoginLegalRoute: typeof LoginLegalRoute
+}
+
+const LoginRouteChildren: LoginRouteChildren = {
+  LoginLegalRoute: LoginLegalRoute,
+}
+
+const LoginRouteWithChildren = LoginRoute._addFileChildren(LoginRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
-  LoginRoute: LoginRoute,
+  LoginRoute: LoginRouteWithChildren,
   TripRoute: TripRoute,
   WelcomeRoute: WelcomeRoute,
   ApiChatRoute: ApiChatRoute,

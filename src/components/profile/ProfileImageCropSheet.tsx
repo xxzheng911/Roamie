@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { logAvatarApplyPressed, logAvatarCropResult } from "@/lib/avatar-upload-log";
 import {
   InlineImageCropViewport,
   type InlineImageCropHandle,
@@ -43,11 +44,12 @@ const VARIANT_CONFIG: Record<
     hint: "單指拖曳、雙指縮放",
     aspectWidth: 1,
     aspectHeight: 1,
-    initialFit: "cover",
-    fitPadding: 1.02,
+    /** 完整顯示主體 + 四周留白（勿用 cover，會一進場就過度放大） */
+    initialFit: "contain",
+    fitPadding: 0.86,
     exportMaxWidth: 512,
     maskClass:
-      "aspect-square w-[min(100%,72dvh)] max-w-[min(100vw-2rem,22rem)] rounded-full ring-2 ring-white/90",
+      "aspect-square w-[min(92vw,34rem)] max-h-[min(78dvh,34rem)] rounded-full ring-2 ring-white/90",
   },
   cover: {
     title: "調整封面",
@@ -55,7 +57,7 @@ const VARIANT_CONFIG: Record<
     aspectWidth: 3,
     aspectHeight: 2,
     initialFit: "cover",
-    fitPadding: 1.02,
+    fitPadding: 1,
     exportMaxWidth: 1024,
     maskClass:
       "aspect-[3/2] w-[min(100%,72dvh)] max-w-[min(100vw-2rem,26rem)] rounded-md ring-2 ring-white/90",
@@ -77,18 +79,36 @@ export function ProfileImageCropSheet({
   const config = VARIANT_CONFIG[variant];
 
   const handleDone = async () => {
+    if (variant === "avatar") {
+      logAvatarApplyPressed();
+    }
     try {
+      if (!cropRef.current?.isReady()) {
+        toast.error("圖片尚未載入完成，請稍候再按套用");
+        return;
+      }
       const result = await cropRef.current?.exportCrop();
-      if (!result) {
+      if (!result?.blob?.size) {
+        logAvatarCropResult({ ok: false, reason: "empty_crop" });
         toast.error(
-          variant === "avatar" ? "頭像暫時更新失敗，請稍後再試。" : "封面暫時更新失敗，請稍後再試。",
+          variant === "avatar"
+            ? "無法產生裁切圖片，請調整後再試"
+            : "無法產生裁切圖片，請調整後再試",
         );
         return;
       }
+      logAvatarCropResult({
+        ok: true,
+        bytes: result.blob.size,
+        type: result.blob.type,
+        previewLength: result.previewUrl?.length ?? 0,
+      });
       await onConfirm(result.blob);
-    } catch {
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "未知錯誤";
+      console.error("[ProfileImageCropSheet] confirm failed", e);
       toast.error(
-        variant === "avatar" ? "頭像暫時更新失敗，請稍後再試。" : "封面暫時更新失敗，請稍後再試。",
+        variant === "avatar" ? `頭像更新失敗：${msg}` : `封面更新失敗：${msg}`,
       );
     }
   };

@@ -54,7 +54,7 @@ async function reverseGeocodeCityClient(lat: number, lng: number): Promise<strin
   return json.city || json.locality || json.principalSubdivision || "";
 }
 
-/** 瀏覽器直連 Open-Meteo（訪客／bundled 在 serverFn 失敗時使用） */
+/** 瀏覽器直連 Open-Meteo（bundled 在 serverFn 失敗時使用） */
 export async function fetchWeatherClientDirect(
   lat: number,
   lng: number,

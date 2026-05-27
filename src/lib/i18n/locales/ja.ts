@@ -27,7 +27,6 @@ export const ja = {
     loadFailed: "プロフィールを読み込めませんでした",
     signInRequired: "ログインしてください",
     signInCta: "ログインへ",
-    guestMode: "ゲストモード",
     pace: "ペース",
     vibe: "雰囲気",
     budget: "予算",
@@ -82,7 +81,6 @@ export const ja = {
   },
   login: {
     title: "Roamieにログイン",
-    guest: "ゲストで見る",
   },
   home: {
     greeting: "今日はどんな歩き方？",

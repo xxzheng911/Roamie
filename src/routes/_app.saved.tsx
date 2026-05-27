@@ -2,12 +2,12 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Plus, Loader2, Trash2, MapPin, Heart, Route as RouteIcon } from "lucide-react";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromSavedPlace } from "@/lib/trip/trip-place-input";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useI18n } from "@/hooks/use-i18n";
-import cafe from "@/assets/scene-cafe.jpg";
+import { SavedTripCard } from "@/components/saved/SavedTripCard";
 import { deleteItinerary, listItineraries, type StoredItinerary } from "@/lib/itinerary-storage";
-import { isRoamiePayloadV2 } from "@/lib/ai/types";
+import { normalizeStoredTrip } from "@/lib/saved-trip/normalize";
 import {
   deletePlace,
   listPlaces,
@@ -35,8 +35,8 @@ function TripsEmptyState() {
         <RouteIcon className="h-7 w-7 text-clay" />
       </div>
       <p className="font-display text-xl">{t("saved.emptyAllTitle")}</p>
-      <p className="max-w-[260px] text-sm leading-relaxed text-muted-foreground">
-        {t("saved.emptyAllDesc")}
+      <p className="max-w-[280px] text-sm leading-relaxed text-muted-foreground">
+        還沒有收藏的行程，等你和 Roamie 一起收藏第一段旅程。
       </p>
       <Link
         to="/map"
@@ -143,6 +143,11 @@ function Saved() {
 
   const hasAny = trips.length > 0 || places.length > 0;
 
+  const tripViews = useMemo(
+    () => trips.map((row) => normalizeStoredTrip(row)),
+    [trips],
+  );
+
   return (
     <div className="px-5 pb-6 pt-3">
       <div className="flex items-end justify-between">
@@ -191,38 +196,25 @@ function Saved() {
           <TripsEmptyState />
         ) : (
           <ul className="mt-6 space-y-3">
-            {trips.map((trip) => (
+            {tripViews.map((trip) => (
               <li key={trip.id}>
-                <Link
-                  to="/trip"
-                  search={{ id: trip.id }}
-                  className="flex items-center gap-3 rounded-3xl border border-border bg-card p-3 shadow-soft transition active:scale-[0.99]"
-                >
-                  <div className="h-16 w-16 shrink-0 overflow-hidden rounded-2xl">
-                    <img src={trip.cover_image || cafe} alt={trip.title} className="h-full w-full object-cover" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[15px] font-medium">{trip.title}</p>
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {isRoamiePayloadV2(trip.payload)
-                        ? tt("saved.recCount", { count: trip.payload.recommendations?.length ?? 0 })
-                        : tt("saved.tripMeta", {
-                            destination:
-                              (trip.payload as { destination?: string }).destination ?? "",
-                            days: (trip.payload as { days?: number }).days ?? "?",
-                          })}
-                      {trip.mood ? ` · ${trip.mood}` : ""}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(e) => handleDeleteTrip(trip.id, trip.title, e)}
-                    className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
-                    aria-label={t("saved.deleteAria")}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </Link>
+                <SavedTripCard
+                  trip={trip}
+                  deleteSlot={
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void handleDeleteTrip(trip.id, trip.title, e);
+                      }}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
+                      aria-label={t("saved.deleteAria")}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  }
+                />
               </li>
             ))}
           </ul>

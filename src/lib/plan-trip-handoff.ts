@@ -12,10 +12,15 @@ import { formatTripLocationLabel } from "@/lib/location/format";
 import { tripLocationToRoamie } from "@/lib/location/to-roamie";
 import type { TripLocation } from "@/lib/location/types";
 import { syncSessionPlaceMemory } from "@/lib/place-planning-memory";
+import {
+  isValidTripPlaceRef,
+  logTripPlace,
+  tripLocationToPlaceRef,
+} from "@/lib/trip/trip-place-ref";
 
 export type PlanTripFormInput = {
   destination: TripLocation;
-  origin?: TripLocation | null;
+  origin: TripLocation | null;
   days: number;
   mood: string;
   styles: string[];
@@ -78,6 +83,29 @@ export function preparePlanTripSession(
   bundle: ClientContextBundle,
   preferences?: TravelPreferences,
 ): ChatPlanningSession {
+  const destRef = tripLocationToPlaceRef(form.destination);
+  if (!isValidTripPlaceRef(destRef)) {
+    logTripPlace("destination", "validation", { reason: "handoff_invalid_destination" });
+    throw new Error("目的地資料不完整，請重新從搜尋結果選擇");
+  }
+  if (!form.origin) {
+    logTripPlace("start", "validation", { reason: "handoff_missing_start" });
+    throw new Error("請選擇出發地");
+  }
+  const startRef = tripLocationToPlaceRef(form.origin);
+  if (!isValidTripPlaceRef(startRef)) {
+    logTripPlace("start", "validation", { reason: "handoff_invalid_start" });
+    throw new Error("出發地資料不完整，請重新從搜尋結果選擇");
+  }
+  if (
+    destRef.placeId === startRef.placeId &&
+    Math.abs(destRef.lat - startRef.lat) < 1e-6 &&
+    Math.abs(destRef.lng - startRef.lng) < 1e-6
+  ) {
+    logTripPlace("destination", "validation", { reason: "handoff_same_place" });
+    throw new Error("出發地與目的地不能相同");
+  }
+
   const destRoamie = tripLocationToRoamie(form.destination);
   const selectedFromForm = (form.selectedPlaces ?? []).map(roamieRecToChatItem);
   const initialChatContext = buildPlanTripInitialContext(form, bundle);
@@ -100,6 +128,7 @@ export function preparePlanTripSession(
     tripStartDate: form.startDate || undefined,
     tripEndDate: form.endDate || undefined,
     tripDays: form.days,
+    tripCompanionCount: form.travelers,
     tripStyles: form.styles.length ? form.styles.join("、") : undefined,
     startTime: form.departureTime || undefined,
     transportation: form.transport || undefined,

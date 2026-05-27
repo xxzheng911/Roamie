@@ -16,7 +16,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useAvatar } from "@/hooks/use-avatar";
 import { useI18n } from "@/hooks/use-i18n";
-import { isAuthSessionMissingError } from "@/lib/auth-session";
+import { getClientAuthSession, isAuthSessionMissingError } from "@/lib/auth-session";
 import { supabase } from "@/lib/supabase";
 import { ImageSourceSheet } from "@/components/ImageSourceSheet";
 import { ProfileCover } from "@/components/ProfileCover";
@@ -29,13 +29,11 @@ import {
   resolveBudgetMode,
 } from "@/lib/preferences-storage";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
+import { logAvatarFileReadSuccess } from "@/lib/avatar-upload-log";
 import {
   applyProfileAvatar,
   applyProfileCover,
-  applyGuestProfileAvatar,
-  applyGuestProfileCover,
   removeProfileCover,
-  removeGuestProfileCover,
 } from "@/lib/profile-media-storage";
 import { getUserProfile, saveUserProfile, type UserProfile } from "@/lib/profile-storage";
 import { buildCompanionSummary } from "@/lib/personality";
@@ -275,9 +273,7 @@ function Profile() {
   const handleCoverApply = async (blob: Blob) => {
     setCoverApplying(true);
     try {
-      const finalUrl = user
-        ? await applyProfileCover(blob)
-        : await applyGuestProfileCover(blob);
+      const finalUrl = await applyProfileCover(blob);
       broadcastCoverUpdate(finalUrl);
       setCoverUrl(finalUrl);
       setCoverCropFile(null);
@@ -293,11 +289,7 @@ function Profile() {
   const handleCoverRemove = async () => {
     setCoverRemoving(true);
     try {
-      if (user) {
-        await removeProfileCover();
-      } else {
-        await removeGuestProfileCover();
-      }
+      await removeProfileCover();
       broadcastCoverUpdate(null);
       setCoverUrl(null);
       setCoverCropFile(null);
@@ -322,14 +314,28 @@ function Profile() {
   const handleAvatarConfirm = async (blob: Blob) => {
     setAvatarApplying(true);
     try {
-      const finalUrl = user ? await applyProfileAvatar(blob) : await applyGuestProfileAvatar(blob);
+      const session = await getClientAuthSession();
+      if (!session?.user) {
+        toast.error("請重新登入後再試");
+        return;
+      }
+      logAvatarFileReadSuccess({
+        bytes: blob.size,
+        type: blob.type || "image/jpeg",
+        userId: session.user.id,
+      });
+      const finalUrl = await applyProfileAvatar(blob);
       broadcastAvatarUpdate(finalUrl);
       setAvatarCropFile(null);
       await refreshAvatar();
       toast.success("頭像已更新");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "儲存失敗";
-      if (!isAuthSessionMissingError(msg)) toast.error(msg);
+      if (isAuthSessionMissingError(msg)) {
+        toast.error("請重新登入後再試");
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setAvatarApplying(false);
     }
@@ -619,9 +625,10 @@ function Profile() {
           onClick={() => {
             setSigningOut(true);
             void signOut()
-              .then(() => {
+              .then(async () => {
                 toast.success(t("profile.signedOut"));
-                navigate({ to: "/login", replace: true });
+                const { resetToLoginScreen } = await import("@/lib/clear-auth-state");
+                await resetToLoginScreen("profile-sign-out");
               })
               .catch((e) => {
                 toast.error(e instanceof Error ? e.message : t("profile.saveFailed"));

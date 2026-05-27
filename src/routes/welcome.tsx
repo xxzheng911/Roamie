@@ -4,8 +4,14 @@ import { ArrowRight, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
 import { useAccess } from "@/hooks/use-access";
+import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { requireAuthenticatedRoute } from "@/lib/require-auth";
 import { markIntroCompleted } from "@/lib/plan-tier";
+import {
+  hydrateOnboardingStatus,
+  logShowOnboardingFirstLaunch,
+  logSkipOnboarding,
+} from "@/lib/onboarding-storage";
 import { resolveStartupPathFast } from "@/lib/startup-route";
 import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
 import { clientEnv } from "@/constants/env";
@@ -16,10 +22,13 @@ export const Route = createFileRoute("/welcome")({
   beforeLoad: async () => {
     await requireAuthenticatedRoute();
     if (typeof window === "undefined") return;
+    await hydrateOnboardingStatus();
     const next = resolveStartupPathFast();
     if (next !== "/welcome") {
+      logSkipOnboarding("welcome-beforeLoad");
       throw redirect({ to: next });
     }
+    logShowOnboardingFirstLaunch();
   },
   component: Welcome,
 });
@@ -44,6 +53,7 @@ const INTRO_STEPS = [
 
 function Welcome() {
   const navigate = useNavigate();
+  useIosInteractiveRoute("welcome");
   const { enablePlusTestMode, disablePlusTestMode, canShowDeveloperTools } = useAccess();
   const [step, setStep] = useState(0);
   const [finishing, setFinishing] = useState(false);
@@ -81,8 +91,7 @@ function Welcome() {
         disablePlusTestMode();
       }
 
-      // 樂觀完成「已選擇陪伴方式」；遠端同步失敗不阻擋
-      void markIntroCompleted(tier);
+      await markIntroCompleted(tier);
       trackEvent(AnalyticsEvents.INTRO_COMPLETED, { tier_choice: tier });
       goHome();
     } catch (e) {
