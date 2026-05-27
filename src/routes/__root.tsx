@@ -4,6 +4,7 @@ import {
   Outlet,
   Link,
   createRootRouteWithContext,
+  redirect,
   useRouter,
   useNavigate,
   HeadContent,
@@ -18,19 +19,26 @@ import { markBootPhase } from "@/lib/boot-diagnostics";
 import { detectPlatform } from "@/services/platform";
 import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
 import { RoamieAppErrorFallback } from "@/components/RoamieAppErrorFallback";
-import { OnboardingHydrationGate } from "@/components/OnboardingHydrationGate";
 import { StartupGate } from "@/components/StartupGate";
 import { OAuthRouterBridge } from "@/components/OAuthRouterBridge";
 import { scheduleRemoveStaticBootPlaceholder } from "@/main";
 import { bootstrapNativeShell } from "@/services/platform";
 import { markAppReady } from "@/lib/startup-route";
 import { toCapacitorBundledAssetHref } from "@/lib/capacitor-asset-href";
-import {
-  isCapacitorSpaMount,
-  normalizeCapacitorEntryPath,
-} from "@/lib/capacitor-entry-path";
+import { isCapacitorSpaMount, normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
 import { formatErrorDetail, logAppError } from "@/lib/log-error";
 import { normalizeRouterSsrManifest } from "@/lib/ssr-manifest";
+import { useServerFn } from "@tanstack/react-start";
+import {
+  routesComputeDistance,
+  routesComputeDuration,
+  routesComputeTripLegs,
+  routesTestConnection,
+} from "@/lib/routes.functions";
+import { getWeather, getWeatherForecast, weatherTestConnection } from "@/lib/weather.functions";
+import { runApiBootstrap } from "@/services/apiBootstrap";
+import { isOnboardingCompletedSync, loadOnboardingState } from "@/lib/onboarding-storage";
+import { readBrowserPathname } from "@/lib/startup-path";
 
 function NotFoundComponent() {
   return (
@@ -102,6 +110,20 @@ function RouterSsrManifestGuard() {
 }
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
+  beforeLoad: async () => {
+    if (typeof window === "undefined") return;
+    await loadOnboardingState();
+    if (isOnboardingCompletedSync()) return;
+    const path = readBrowserPathname().replace(/\/+$/, "") || "/";
+    if (path === "/welcome" || path === "/onboarding") return;
+    if (path.startsWith("/auth/")) return;
+    console.log("[ONBOARDING_GUARD] blocked home redirect", {
+      source: "root-beforeLoad",
+      from: path,
+      targetRoute: "/welcome",
+    });
+    throw redirect({ to: "/welcome" });
+  },
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -114,9 +136,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "apple-mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-status-bar-style", content: "default" },
       { title: "Roamie｜你的慢旅行夥伴" },
-      { name: "description", content: "Roamie 是一個讓你不再為了「今天要做什麼」煩惱的旅行夥伴。給你剛剛好的安排，剛剛好的留白。" },
+      {
+        name: "description",
+        content:
+          "Roamie 是一個讓你不再為了「今天要做什麼」煩惱的旅行夥伴。給你剛剛好的安排，剛剛好的留白。",
+      },
       { property: "og:title", content: "Roamie｜你的慢旅行夥伴" },
-      { property: "og:description", content: "一個溫柔的 AI 旅行夥伴，幫你避開人潮、留下舒服的空白。" },
+      {
+        property: "og:description",
+        content: "一個溫柔的 AI 旅行夥伴，幫你避開人潮、留下舒服的空白。",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
     ],
@@ -159,8 +188,28 @@ function RootShell({ children }: { children: React.ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const routesDuration = useServerFn(routesComputeDuration);
+  const routesDistance = useServerFn(routesComputeDistance);
+  const routesTripLegs = useServerFn(routesComputeTripLegs);
+  const routesTest = useServerFn(routesTestConnection);
+  const fetchWeather = useServerFn(getWeather);
+  const fetchForecast = useServerFn(getWeatherForecast);
+  const weatherTest = useServerFn(weatherTestConnection);
 
   useLayoutEffect(() => {
+    runApiBootstrap({
+      weather: {
+        fetchWeather: (args) => fetchWeather(args),
+        fetchForecast: (args) => fetchForecast(args),
+        testConnection: () => weatherTest(),
+      },
+      routes: {
+        computeDuration: (args) => routesDuration(args),
+        computeDistance: (args) => routesDistance(args),
+        computeTripLegs: (args) => routesTripLegs(args),
+        testConnection: () => routesTest(),
+      },
+    });
     markBootPhase("root:layoutEffect");
     scheduleRemoveStaticBootPlaceholder();
     markAppReady();
@@ -184,11 +233,9 @@ function RootComponent() {
         <App>
           <RouterSsrManifestGuard />
           <OAuthRouterBridge />
-          <OnboardingHydrationGate>
-            <StartupGate>
-              <Outlet />
-            </StartupGate>
-          </OnboardingHydrationGate>
+          <StartupGate>
+            <Outlet />
+          </StartupGate>
           <Toaster />
         </App>
       </AppErrorBoundary>

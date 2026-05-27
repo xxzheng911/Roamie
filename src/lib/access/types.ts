@@ -17,6 +17,8 @@ export type AccessSnapshot = {
   isPlusUser: boolean;
   /** TestFlight / 開發：force-plus 測試模式 */
   devPlusMode: boolean;
+  /** Dev/testing subscription switch state */
+  devSubscriptionMode: SubscriptionState;
   /** Supabase profiles：plan_tier=plus 且訂閱有效 */
   subscriptionPlusActive: boolean;
   /** Tier sent to AI prompts */

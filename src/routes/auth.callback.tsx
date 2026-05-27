@@ -6,6 +6,10 @@ import { AuthSignInError } from "@/components/auth/AuthSignInError";
 import { finishPostAuthRedirect } from "@/lib/auth-post-redirect";
 import { completeSignInAfterAuth } from "@/lib/complete-sign-in";
 import { resolveAuthenticatedHomePath } from "@/lib/post-auth-navigation";
+import {
+  guardStartupTarget,
+  logStartupNavigationContext,
+} from "@/lib/startup-navigation";
 import { getClientAuthSession } from "@/lib/auth-session";
 import {
   readStashedOAuthRedirectTarget,
@@ -48,6 +52,15 @@ function AuthCallback() {
   const [error, setError] = useState<string | null>(null);
   const handledRef = useRef(false);
 
+  const finishAuthRedirect = async (step: string) => {
+    const next = guardStartupTarget(
+      await resolveAuthenticatedHomePath({ source: "auth-callback" }),
+      "auth-callback",
+    );
+    await logStartupNavigationContext("auth-callback", next, { step });
+    finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }), "auth-callback");
+  };
+
   const runCallback = async () => {
     const stashed = readStashedOAuthRedirectTarget();
     logAuthCallbackOpened();
@@ -61,8 +74,7 @@ function AuthCallback() {
       logAuthSessionResult(true, { step: "callback.skip_existing_session", userId: existing.user.id });
       clearPendingCallbackPath();
       stripOAuthParamsFromUrl();
-      const next = await resolveAuthenticatedHomePath();
-      finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }));
+      await finishAuthRedirect("skip_existing_session");
       return;
     }
 
@@ -75,8 +87,7 @@ function AuthCallback() {
       logAuthSessionResult(true, { step: "callback.skip_consumed_code" });
       clearPendingCallbackPath();
       stripOAuthParamsFromUrl();
-      const next = await resolveAuthenticatedHomePath();
-      finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }));
+      await finishAuthRedirect("skip_consumed_code");
       return;
     }
 
@@ -104,9 +115,13 @@ function AuthCallback() {
 
     await getClientAuthSession();
 
-    const next = await resolveAuthenticatedHomePath();
+    const next = guardStartupTarget(
+      await resolveAuthenticatedHomePath({ source: "auth-callback" }),
+      "auth-callback",
+    );
     logAuthSessionResult(true, { step: "navigate", next });
-    finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }));
+    await logStartupNavigationContext("auth-callback", next, { step: "oauth_complete" });
+    finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }), "auth-callback");
     clearPendingCallbackPath();
   };
 

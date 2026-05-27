@@ -1,11 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import {
-  geocodeForwardUrl,
-  placesAutocompleteUrl,
-  placeDetailsUrl,
-} from "@/lib/google-maps-api";
-import { requireGoogleMapsServerKey } from "@/lib/google-maps.server";
+import { geocodeForwardUrl, placesAutocompleteUrl, placeDetailsUrl } from "@/lib/google-maps-api";
 import { formatTripLocationLabel, timezoneLabelFromOffset } from "@/lib/location/format";
 import {
   buildFormattedName,
@@ -146,12 +141,18 @@ type LegacyGeocodeResult = {
   types?: string[];
 };
 
-function legacyComponentText(components: LegacyGeocodeComponent[] | undefined, type: string): string {
+function legacyComponentText(
+  components: LegacyGeocodeComponent[] | undefined,
+  type: string,
+): string {
   const c = components?.find((x) => x.types?.includes(type));
   return c?.long_name?.trim() || c?.short_name?.trim() || "";
 }
 
-function legacyResolveCity(components: LegacyGeocodeComponent[] | undefined, fallback: string): string {
+function legacyResolveCity(
+  components: LegacyGeocodeComponent[] | undefined,
+  fallback: string,
+): string {
   const locality = legacyComponentText(components, "locality");
   if (locality) return locality;
   const admin2 = legacyComponentText(components, "administrative_area_level_2");
@@ -232,10 +233,7 @@ async function geocodeQueryToSuggestions(
 ): Promise<{ suggestions: LocationSuggestion[]; error: string | null }> {
   const language = localeToGoogleLanguageCode(userLocale);
   const region = localeToGeocodeRegion(userLocale);
-  const queries = [
-    query.trim(),
-    query.trim().replace(/[·・,，/\s]+/g, ""),
-  ].filter(Boolean);
+  const queries = [query.trim(), query.trim().replace(/[·・,，/\s]+/g, "")].filter(Boolean);
   const uniqueQueries = [...new Set(queries)];
 
   const suggestions: LocationSuggestion[] = [];
@@ -266,92 +264,110 @@ async function geocodeQueryToSuggestions(
   if (suggestions.length === 0) {
     return {
       suggestions: [],
-      error: "找不到符合的地點，請輸入國家、城市或地區（例如：日本、東京、大阪）。",
+      error: "暫時找不到這個地點，請換個關鍵字試試。",
     };
   }
 
   return { suggestions, error: null };
 }
 
+const INTERNATIONAL_DEST_HINT =
+  /^(首爾|首尔|大阪|東京|东京|京都|札幌|福岡|名古屋|橫濱|神戶|沖繩|台北|高雄|台中|台南|香港|新加坡|曼谷|巴黎|倫敦|紐約|洛杉磯|雪梨|墨爾本)/i;
+
+function prefersGeocodeFirst(query: string): boolean {
+  const q = query.trim();
+  return q.length <= 8 || INTERNATIONAL_DEST_HINT.test(q);
+}
+
 export const searchTripLocations = createServerFn({ method: "POST" })
   .inputValidator((input) => AutocompleteInput.parse(input))
-  .handler(async ({ data }): Promise<{ suggestions: LocationSuggestion[]; error: string | null }> => {
-    const apiKey = requireGoogleMapsServerKey();
-    const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
-    const autocompleteBody: Record<string, unknown> = {
-      input: data.query.trim(),
-      languageCode: localeToGoogleLanguageCode(userLocale),
-      includedPrimaryTypes: [...TRIP_LOCATION_PRIMARY_TYPES],
-    };
-    if (userLocale === "zh-TW") {
-      autocompleteBody.locationBias = {
-        circle: {
-          center: { latitude: 25.033963, longitude: 121.564472 },
-          radius: 80_000,
-        },
+  .handler(
+    async ({ data }): Promise<{ suggestions: LocationSuggestion[]; error: string | null }> => {
+      const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
+      const apiKey = requireGoogleMapsServerKey();
+      const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
+      const trimmed = data.query.trim();
+
+      if (prefersGeocodeFirst(trimmed)) {
+        const geo = await geocodeQueryToSuggestions(trimmed, userLocale, apiKey);
+        if (geo.suggestions.length > 0) return geo;
+      }
+
+      const autocompleteBody: Record<string, unknown> = {
+        input: trimmed,
+        languageCode: localeToGoogleLanguageCode(userLocale),
+        includedPrimaryTypes: [...TRIP_LOCATION_PRIMARY_TYPES],
       };
-    }
-    const res = await fetch(placesAutocompleteUrl(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": AUTOCOMPLETE_FIELD_MASK,
-      },
-      body: JSON.stringify(autocompleteBody),
-    });
-
-    if (!res.ok) {
-      const detail = parseGoogleError(await res.text());
-      console.error("[Roamie Location] autocomplete failed", res.status, detail);
-      return geocodeQueryToSuggestions(data.query.trim(), userLocale, apiKey);
-    }
-
-    const json = (await res.json()) as { suggestions?: AutocompleteSuggestion[] };
-    const suggestions: LocationSuggestion[] = [];
-    const seen = new Set<string>();
-
-    for (const s of json.suggestions ?? []) {
-      const pred = s.placePrediction;
-      const placeId = pred?.placeId;
-      if (!placeId) continue;
-
-      const types = pred?.types ?? [];
-      if (types.length > 0 && !isGeographicPlaceTypes(types)) continue;
-
-      const main = pred?.structuredFormat?.mainText?.text ?? pred?.text?.text ?? "";
-      const secondary = pred?.structuredFormat?.secondaryText?.text?.trim();
-      const label = formatGeographicSuggestionLabel(main, secondary);
-      if (!label || isRejectedTripLocationLabel(label)) continue;
-      if (seen.has(label)) continue;
-      seen.add(label);
-
-      suggestions.push({
-        placeId,
-        label,
-        ...(secondary && !label.includes(secondary) ? { secondary } : {}),
+      if (userLocale === "zh-TW" && !INTERNATIONAL_DEST_HINT.test(trimmed)) {
+        autocompleteBody.locationBias = {
+          circle: {
+            center: { latitude: 25.033963, longitude: 121.564472 },
+            radius: 80_000,
+          },
+        };
+      }
+      const res = await fetch(placesAutocompleteUrl(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": AUTOCOMPLETE_FIELD_MASK,
+        },
+        body: JSON.stringify(autocompleteBody),
       });
-    }
 
-    if (suggestions.length === 0) {
-      return geocodeQueryToSuggestions(data.query.trim(), userLocale, apiKey);
-    }
+      if (!res.ok) {
+        const detail = parseGoogleError(await res.text());
+        console.error("[Roamie Location] autocomplete failed", res.status, detail);
+        return geocodeQueryToSuggestions(data.query.trim(), userLocale, apiKey);
+      }
 
-    return { suggestions, error: null };
-  });
+      const json = (await res.json()) as { suggestions?: AutocompleteSuggestion[] };
+      const suggestions: LocationSuggestion[] = [];
+      const seen = new Set<string>();
+
+      for (const s of json.suggestions ?? []) {
+        const pred = s.placePrediction;
+        const placeId = pred?.placeId;
+        if (!placeId) continue;
+
+        const types = pred?.types ?? [];
+        if (types.length > 0 && !isGeographicPlaceTypes(types)) continue;
+
+        const main = pred?.structuredFormat?.mainText?.text ?? pred?.text?.text ?? "";
+        const secondary = pred?.structuredFormat?.secondaryText?.text?.trim();
+        const label = formatGeographicSuggestionLabel(main, secondary);
+        if (!label || isRejectedTripLocationLabel(label)) continue;
+        if (seen.has(label)) continue;
+        seen.add(label);
+
+        suggestions.push({
+          placeId,
+          label,
+          ...(secondary && !label.includes(secondary) ? { secondary } : {}),
+        });
+      }
+
+      if (suggestions.length === 0) {
+        return geocodeQueryToSuggestions(data.query.trim(), userLocale, apiKey);
+      }
+
+      return { suggestions, error: null };
+    },
+  );
 
 /** 文字查詢地點（無 autocomplete 結果時：日本大阪、韓國首爾等） */
 export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
   .inputValidator((input) => GeocodeTextInput.parse(input))
   .handler(async ({ data }): Promise<{ location: TripLocation | null; error: string | null }> => {
+    const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
     const apiKey = requireGoogleMapsServerKey();
     const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
     const language = localeToGoogleLanguageCode(userLocale);
     const region = localeToGeocodeRegion(userLocale);
-    const queries = [
-      data.query.trim(),
-      data.query.trim().replace(/[·・,，/\s]+/g, ""),
-    ].filter(Boolean);
+    const queries = [data.query.trim(), data.query.trim().replace(/[·・,，/\s]+/g, "")].filter(
+      Boolean,
+    );
     const uniqueQueries = [...new Set(queries)];
 
     for (const q of uniqueQueries) {
@@ -374,12 +390,13 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
       if (location) return { location, error: null };
     }
 
-    return { location: null, error: "找不到符合的地點，請換個關鍵字試試" };
+    return { location: null, error: "暫時找不到這個地點，請換個關鍵字試試。" };
   });
 
 export const resolveTripLocation = createServerFn({ method: "POST" })
   .inputValidator((input) => ResolveInput.parse(input))
   .handler(async ({ data }): Promise<{ location: TripLocation | null; error: string | null }> => {
+    const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
     const apiKey = requireGoogleMapsServerKey();
     const res = await fetch(placeDetailsUrl(data.placeId), {
       method: "GET",

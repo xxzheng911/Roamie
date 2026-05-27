@@ -17,6 +17,13 @@ export type ProfileMediaKind = "avatar" | "cover";
 const BUCKET = "profile-media";
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
+function formatProfileUpdateError(message: string): string {
+  if (/record\s+"new"\s+has\s+no\s+field\s+"updated_at"/i.test(message)) {
+    return "個人資料資料庫尚未更新，請聯絡管理員套用最新 migration（profiles.updated_at）";
+  }
+  return `更新個人資料失敗：${message}`;
+}
+
 function normalizeAvatarBlob(blob: Blob): Blob {
   if (blob.size === 0) {
     throw new Error("裁切後的圖片為空，請重新選擇");
@@ -35,7 +42,10 @@ export function profileMediaPath(userId: string, kind: ProfileMediaKind): string
   return `${userId}/${kind}.jpg`;
 }
 
-export { getAuthenticatedUserId as getAuthUserId, requireAuthenticatedUser } from "@/lib/auth-session";
+export {
+  getAuthenticatedUserId as getAuthUserId,
+  requireAuthenticatedUser,
+} from "@/lib/auth-session";
 
 export async function uploadProfileMedia(
   userId: string,
@@ -60,24 +70,27 @@ export async function uploadProfileMedia(
     cacheControl: "3600",
   });
   if (error) {
-    logAvatarUploadFailed({ path, message: error.message, statusCode: (error as { statusCode?: string }).statusCode });
+    logAvatarUploadFailed({
+      path,
+      message: error.message,
+      statusCode: (error as { statusCode?: string }).statusCode,
+    });
     throw new Error(`上傳失敗：${error.message}`);
   }
 
   logAvatarUploadSuccess({ path, bytes: body.size });
 
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
-  const url = `${data.publicUrl}?v=${Date.now()}`;
+  /** Stable URL only — avoid ?v=timestamp loops and unnecessary image reloads (upsert + cacheControl). */
+  const url = data.publicUrl;
   if (kind === "avatar") {
     logAvatarPublicUrlCreated(url);
   }
+  console.info("[IMAGE_UPLOAD]", `kind=${kind}`, `path=${path}`, `bytes=${body.size}`);
   return url;
 }
 
-export async function deleteProfileMedia(
-  userId: string,
-  kind: ProfileMediaKind,
-): Promise<void> {
+export async function deleteProfileMedia(userId: string, kind: ProfileMediaKind): Promise<void> {
   const authed = await requireAuthenticatedUser();
   if (authed.id !== userId) {
     throw new Error("只能刪除自己的個人資料");
@@ -95,16 +108,14 @@ export async function applyProfileAvatar(blob: Blob): Promise<string> {
   const url = await uploadProfileMedia(id, "avatar", blob);
 
   logProfileAvatarUpdateStarted(id);
-  const { error } = await supabase
-    .from("profiles")
-    .update({ avatar_url: url })
-    .eq("id", id);
+  const { error } = await supabase.from("profiles").update({ avatar_url: url }).eq("id", id);
   if (error) {
     logProfileAvatarUpdateFailed({ userId: id, message: error.message });
-    throw new Error(`更新個人資料失敗：${error.message}`);
+    throw new Error(formatProfileUpdateError(error.message));
   }
 
   logProfileAvatarUpdateSuccess(id);
+  console.info("[PROFILE_UPDATED]", "avatar_url");
   return url;
 }
 
@@ -114,12 +125,10 @@ export async function applyProfileCover(blob: Blob): Promise<string> {
   await ensureUserProfile(id);
   const url = await uploadProfileMedia(id, "cover", blob);
 
-  const { error } = await supabase
-    .from("profiles")
-    .update({ cover_image_url: url })
-    .eq("id", id);
-  if (error) throw new Error(error.message);
+  const { error } = await supabase.from("profiles").update({ cover_image_url: url }).eq("id", id);
+  if (error) throw new Error(formatProfileUpdateError(error.message));
 
+  console.info("[PROFILE_UPDATED]", "cover_image_url");
   return url;
 }
 
@@ -132,19 +141,14 @@ export async function removeProfileCover(): Promise<void> {
   } catch {
     /* file may not exist */
   }
-  const { error } = await supabase
-    .from("profiles")
-    .update({ cover_image_url: null })
-    .eq("id", id);
-  if (error) throw new Error(error.message);
+  const { error } = await supabase.from("profiles").update({ cover_image_url: null }).eq("id", id);
+  if (error) throw new Error(formatProfileUpdateError(error.message));
 }
 
 export async function processAndUploadProfileImage(
   file: File,
   kind: ProfileMediaKind,
 ): Promise<string> {
-  const blob =
-    kind === "cover" ? await cropImageToCover(file) : await cropImageToSquare(file);
+  const blob = kind === "cover" ? await cropImageToCover(file) : await cropImageToSquare(file);
   return kind === "cover" ? applyProfileCover(blob) : applyProfileAvatar(blob);
 }
-

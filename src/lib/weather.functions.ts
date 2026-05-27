@@ -1,14 +1,14 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { KAOHSIUNG_COORDS } from "@/lib/api/constants";
 import { geocodeReverseUrl } from "@/lib/google-maps-api";
-import { requireGoogleMapsServerKey } from "@/lib/google-maps.server";
 import { geocodeRegionFromCoordinates } from "@/lib/geo-region";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
-import { buildWeatherRecommendation } from "@/lib/weather-scene";
-import type { DailyForecast, WeatherSummary } from "@/lib/weather-types";
+import { buildUnavailableWeatherSummary } from "@/lib/weather-scene";
+import type { DailyForecast, WeatherForecastResult, WeatherSummary } from "@/lib/weather-types";
 
-export type { DailyForecast, WeatherSummary } from "@/lib/weather-types";
+export type { DailyForecast, WeatherSummary, WeatherForecastResult } from "@/lib/weather-types";
 
 const Input = z.object({
   lat: z.number().min(-90).max(90),
@@ -16,60 +16,16 @@ const Input = z.object({
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
 });
 
-const WMO_ZH: Record<number, string> = {
-  0: "晴朗",
-  1: "大致晴朗",
-  2: "多雲",
-  3: "陰天",
-  45: "有霧",
-  48: "霧凇",
-  51: "毛毛雨",
-  53: "毛毛雨",
-  55: "毛毛雨",
-  61: "小雨",
-  63: "中雨",
-  65: "大雨",
-  71: "小雪",
-  73: "中雪",
-  75: "大雪",
-  80: "陣雨",
-  81: "陣雨",
-  82: "強陣雨",
-  95: "雷雨",
-};
-
-const FETCH_TIMEOUT_MS = 15_000;
-
-async function fetchWithTimeout(url: string, label: string): Promise<Response> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    return res;
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[Weather] ${label} fetch failed`, msg);
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function reverseGeocodeBigDataCloud(lat: number, lng: number): Promise<string> {
   const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=zh`;
-  const res = await fetchWithTimeout(url, "BigDataCloud geocode");
-  if (!res.ok) {
-    console.warn("[Weather] BigDataCloud geocode failed", res.status);
-    return "";
-  }
+  const res = await fetch(url);
+  if (!res.ok) return "";
   const json = (await res.json()) as {
     city?: string;
     locality?: string;
     principalSubdivision?: string;
   };
-  const city = json.city || json.locality || json.principalSubdivision || "";
-  console.info("[Weather] parse city (BigDataCloud)", { city: city || "(empty)" });
-  return city;
+  return json.city || json.locality || json.principalSubdivision || "";
 }
 
 async function reverseGeocodeGoogle(
@@ -79,134 +35,87 @@ async function reverseGeocodeGoogle(
   locale?: string,
 ): Promise<string> {
   const lang = locale ? localeToGoogleLanguageCode(coerceLocale(locale)) : "zh-TW";
-  const res = await fetchWithTimeout(
+  const res = await fetch(
     geocodeReverseUrl(lat, lng, apiKey, {
       language: lang,
       region: geocodeRegionFromCoordinates(lat, lng),
     }),
-    "Google geocode",
   );
-  if (!res.ok) {
-    const text = await res.text();
-    console.warn("[Weather] Google geocode failed", res.status, text.slice(0, 120));
-    return "";
-  }
+  if (!res.ok) return "";
   const json = (await res.json()) as {
     status?: string;
     results?: Array<{ address_components?: Array<{ long_name: string; types: string[] }> }>;
   };
-  if (json.status && json.status !== "OK") {
-    console.warn("[Weather] Google geocode status", json.status);
-    return "";
-  }
+  if (json.status && json.status !== "OK") return "";
   const comps = json.results?.[0]?.address_components ?? [];
   const pick = (t: string) => comps.find((c) => c.types.includes(t))?.long_name;
-  const city =
-    pick("locality") || pick("administrative_area_level_2") || pick("administrative_area_level_1") || "";
-  console.info("[Weather] parse city (Google)", { city: city || "(empty)" });
-  return city;
+  return (
+    pick("locality") ||
+    pick("administrative_area_level_2") ||
+    pick("administrative_area_level_1") ||
+    ""
+  );
 }
 
 async function reverseGeocodeCity(lat: number, lng: number, locale?: string): Promise<string> {
   try {
+    const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
     const googleKey = requireGoogleMapsServerKey();
     const city = await reverseGeocodeGoogle(lat, lng, googleKey, locale);
     if (city) return city;
-  } catch (e) {
-    console.warn("[Weather] Google geocode skipped (no key or error)", e);
+  } catch {
+    /* no google key */
   }
   return reverseGeocodeBigDataCloud(lat, lng);
 }
 
-async function fetchOpenMeteoWeather(lat: number, lng: number): Promise<{
+async function fetchOpenMeteoCurrentFallback(lat: number, lng: number): Promise<{
   tempC: number | null;
-  feelsLikeC: number | null;
-  condition: string;
-  iconType: string;
-  isDaytime: boolean;
-  precip: number | null;
-  humidityPercent: number | null;
-  windSpeedKmh: number | null;
-  sunrise: string | null;
-  sunset: string | null;
+  windKmh: number | null;
+  weatherCode: number | null;
+  isDay: boolean;
 }> {
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,apparent_temperature,precipitation_probability,weather_code,is_day,relative_humidity_2m,wind_speed_10m&daily=sunrise,sunset&timezone=auto&forecast_days=1`;
-  const res = await fetchWithTimeout(url, "Open-Meteo current");
-  if (!res.ok) {
-    const text = await res.text();
-    console.error("[Weather] Open-Meteo error", res.status, text.slice(0, 200));
-    throw new Error(`Open-Meteo ${res.status}`);
-  }
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
+    `&current=temperature_2m,weather_code,is_day,wind_speed_10m&timezone=auto`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`open-meteo ${res.status}`);
   const json = (await res.json()) as {
     current?: {
       temperature_2m?: number;
-      apparent_temperature?: number;
-      precipitation_probability?: number;
       weather_code?: number;
       is_day?: number;
-      relative_humidity_2m?: number;
       wind_speed_10m?: number;
     };
-    daily?: {
-      sunrise?: string[];
-      sunset?: string[];
-    };
   };
-  const c = json.current;
-  const code = c?.weather_code ?? 0;
-  const sunriseRaw = json.daily?.sunrise?.[0];
-  const sunsetRaw = json.daily?.sunset?.[0];
-  const parsed = {
-    tempC: c?.temperature_2m ?? null,
-    feelsLikeC: c?.apparent_temperature ?? null,
-    condition: WMO_ZH[code] ?? "多雲",
-    iconType: String(code),
-    isDaytime: (c?.is_day ?? 1) === 1,
-    precip: c?.precipitation_probability ?? null,
-    humidityPercent: c?.relative_humidity_2m ?? null,
-    windSpeedKmh: c?.wind_speed_10m ?? null,
-    sunrise: sunriseRaw ? sunriseRaw.slice(11, 16) : null,
-    sunset: sunsetRaw ? sunsetRaw.slice(11, 16) : null,
+  return {
+    tempC: json.current?.temperature_2m ?? null,
+    windKmh: json.current?.wind_speed_10m ?? null,
+    weatherCode: json.current?.weather_code ?? null,
+    isDay: (json.current?.is_day ?? 1) === 1,
   };
-  console.info("[Weather] parse current", parsed);
-  return parsed;
 }
 
+function openMeteoCodeToCondition(code: number | null): string {
+  if (code == null) return "多雲";
+  if (code === 0) return "晴朗";
+  if ([1, 2].includes(code)) return "少雲";
+  if (code === 3) return "多雲";
+  if ([45, 48].includes(code)) return "有霧";
+  if ([51, 53, 55, 61, 63, 65, 80, 81, 82].includes(code)) return "有雨";
+  if ([71, 73, 75, 85, 86].includes(code)) return "有雪";
+  if ([95, 96, 99].includes(code)) return "雷雨";
+  return "多雲";
+}
+
+/** @deprecated 使用 openWeatherGetForecast；保留名稱供舊 import */
 export async function fetchOpenMeteoDailyForecast(
   lat: number,
   lng: number,
   days: number,
 ): Promise<DailyForecast[]> {
-  const d = Math.min(Math.max(days, 1), 14);
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=${d}`;
-  const res = await fetchWithTimeout(url, "Open-Meteo daily");
-  if (!res.ok) {
-    const text = await res.text();
-    console.error("[Weather] daily forecast error", res.status, text.slice(0, 200));
-    throw new Error(`Open-Meteo daily ${res.status}`);
-  }
-  const json = (await res.json()) as {
-    daily?: {
-      time?: string[];
-      temperature_2m_max?: number[];
-      temperature_2m_min?: number[];
-      precipitation_probability_max?: number[];
-      weather_code?: number[];
-    };
-  };
-  const daily = json.daily;
-  const times = daily?.time ?? [];
-  return times.map((date, i) => {
-    const code = daily?.weather_code?.[i] ?? 0;
-    return {
-      date,
-      tempHighC: daily?.temperature_2m_max?.[i] ?? null,
-      tempLowC: daily?.temperature_2m_min?.[i] ?? null,
-      precipProbability: daily?.precipitation_probability_max?.[i] ?? null,
-      condition: WMO_ZH[code] ?? "多雲",
-      iconType: String(code),
-    };
-  });
+  const { openWeatherGetForecast } = await import("@/lib/weather/openweather.server");
+  return openWeatherGetForecast(lat, lng, days);
 }
 
 const ForecastInput = z.object({
@@ -218,70 +127,121 @@ const ForecastInput = z.object({
 
 export const getWeatherForecast = createServerFn({ method: "POST" })
   .inputValidator((input) => ForecastInput.parse(input))
-  .handler(
-    async ({ data }): Promise<{ forecast: DailyForecast[]; city: string; error: string | null }> => {
-      try {
-        const [forecast, city] = await Promise.all([
-          fetchOpenMeteoDailyForecast(data.lat, data.lng, data.days),
-          reverseGeocodeCity(data.lat, data.lng, data.locale).catch(() => ""),
-        ]);
-        return { forecast, city: city || "目前位置", error: null };
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "forecast failed";
-        console.error("[Weather] forecast failed:", msg);
-        return { forecast: [], city: "", error: msg };
-      }
-    },
-  );
+  .handler(async ({ data }): Promise<WeatherForecastResult> => {
+    try {
+      const { openWeatherGetForecast } = await import("@/lib/weather/openweather.server");
+      const [forecast, city] = await Promise.all([
+        openWeatherGetForecast(data.lat, data.lng, data.days),
+        reverseGeocodeCity(data.lat, data.lng, data.locale).catch(() => ""),
+      ]);
+      return {
+        forecast,
+        city: city || "目前位置",
+        error: null,
+        available: forecast.length > 0,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "forecast failed";
+      console.error("[Weather] OpenWeather forecast failed:", msg);
+      return { forecast: [], city: "", error: msg, available: false };
+    }
+  });
 
 export const getWeather = createServerFn({ method: "POST" })
   .inputValidator((input) => Input.parse(input))
   .handler(async ({ data }): Promise<{ weather: WeatherSummary | null; error: string | null }> => {
-    console.info("[Weather] request params", { lat: data.lat, lng: data.lng, locale: data.locale });
+    const { hasOpenWeatherApiKey } = await import("@/lib/openweather-key-resolve.server");
+    console.info("[WEATHER_SERVICE_VERSION] v-runtime-fallback-001");
+    console.info("[WEATHER_FETCH] start");
+    console.info("[WEATHER_FETCH] keyLoaded=", hasOpenWeatherApiKey());
+    console.info("[WEATHER_FETCH] latLng=", `${data.lat},${data.lng}`);
     try {
-      const [wx, city] = await Promise.all([
-        fetchOpenMeteoWeather(data.lat, data.lng),
-        reverseGeocodeCity(data.lat, data.lng, data.locale).catch((e) => {
-          console.warn("[Weather] geocode failed, continuing without city", e);
-          return "";
+      const openWeatherUrl =
+        `https://api.openweathermap.org/data/3.0/onecall?lat=${data.lat}&lon=${data.lng}` +
+        "&appid=***&units=metric&lang=zh_tw&exclude=minutely,alerts";
+      console.info("[WEATHER_FETCH] openWeather request url=", openWeatherUrl);
+      const { openWeatherGetCurrent } = await import("@/lib/weather/openweather.server");
+      const city = await reverseGeocodeCity(data.lat, data.lng, data.locale).catch(() => "");
+      const summary = await openWeatherGetCurrent(data.lat, data.lng, city);
+      if (city && summary.city === "目前位置") {
+        summary.city = city;
+      }
+      console.info("[WEATHER_FETCH] openWeather status=", 200);
+      console.info(
+        "[WEATHER_FETCH] openWeather body=",
+        JSON.stringify({
+          city: summary.city,
+          condition: summary.condition,
+          temperature: summary.tempC,
+          available: summary.available,
+          source: summary.source,
         }),
-      ]);
-
-      const { rec, text, scene } = buildWeatherRecommendation({
-        tempC: wx.tempC,
-        precipProbability: wx.precip,
-        condition: wx.condition,
-        isDaytime: wx.isDaytime,
-      });
-
-      const summary: WeatherSummary = {
-        city: city || "目前位置",
-        tempC: wx.tempC,
-        feelsLikeC: wx.feelsLikeC,
-        condition: wx.condition,
-        iconType: wx.iconType,
-        isDaytime: wx.isDaytime,
-        precipProbability: wx.precip,
-        humidityPercent: wx.humidityPercent,
-        windSpeedKmh: wx.windSpeedKmh,
-        sunrise: wx.sunrise,
-        sunset: wx.sunset,
-        recommendation: rec,
-        recommendationText: text,
-      };
-
-      console.info("[Weather] response", {
-        city: summary.city,
-        scene,
-        condition: summary.condition,
-        tempC: summary.tempC,
-        isDaytime: summary.isDaytime,
-      });
-
+      );
+      console.info("[WEATHER_FETCH] final result=", JSON.stringify(summary));
       return { weather: summary, error: null };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "request failed";
-      console.error("[Weather] api failed:", msg);
-      return { weather: null, error: msg };
+      console.error("[Weather] OpenWeather current failed:", msg);
+      console.error("[WEATHER_FETCH] openWeather status=", "error");
+      console.error("[WEATHER_FETCH] openWeather body=", msg);
+      console.info("[WEATHER_FETCH] fallback start");
+      try {
+        const city = await reverseGeocodeCity(data.lat, data.lng, data.locale).catch(() => "");
+        const meteo = await fetchOpenMeteoCurrentFallback(data.lat, data.lng);
+        const summary: WeatherSummary = {
+          city: city || "目前位置",
+          tempC: meteo.tempC,
+          feelsLikeC: meteo.tempC,
+          condition: openMeteoCodeToCondition(meteo.weatherCode),
+          iconType: meteo.weatherCode != null ? String(meteo.weatherCode) : "0",
+          isDaytime: meteo.isDay,
+          precipProbability: null,
+          humidityPercent: null,
+          windSpeedKmh: meteo.windKmh,
+          cloudCoverPercent: null,
+          uvi: null,
+          sunrise: null,
+          sunset: null,
+          recommendation: meteo.isDay ? "outdoor" : "evening",
+          recommendationText: "已使用備援天氣來源。",
+          source: "open-meteo-fallback",
+          fetchedAt: new Date().toISOString(),
+          available: true,
+        };
+        console.info("[WEATHER_FETCH] fallback source=open-meteo-fallback");
+        console.info("[WEATHER_FETCH] final result=", JSON.stringify(summary));
+        return { weather: summary, error: null };
+      } catch (fallbackErr) {
+        const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        console.error("[WEATHER_FETCH] fallback_error=", fallbackMsg);
+        const fallback = buildUnavailableWeatherSummary();
+        console.info("[WEATHER_FETCH] final result=", JSON.stringify(fallback));
+        return { weather: fallback, error: msg };
+      }
     }
   });
+
+/** dev / 連線測試：高雄市天氣 */
+export const weatherTestConnection = createServerFn({ method: "POST" }).handler(async () => {
+  const { lat, lng } = KAOHSIUNG_COORDS;
+  try {
+    const { openWeatherGetCurrent, openWeatherGetForecast } =
+      await import("@/lib/weather/openweather.server");
+    const [summary, forecast] = await Promise.all([
+      openWeatherGetCurrent(lat, lng, "高雄"),
+      openWeatherGetForecast(lat, lng, 3),
+    ]);
+    const today = forecast[0];
+    return {
+      ok: true as const,
+      city: summary.city,
+      temperature: summary.tempC,
+      description: summary.condition,
+      rainProbability: today?.precipProbability ?? summary.precipProbability ?? null,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "OpenWeather test failed";
+    console.error("[Weather] test connection failed:", msg);
+    return { ok: false as const, statusCode: 0, message: msg };
+  }
+});

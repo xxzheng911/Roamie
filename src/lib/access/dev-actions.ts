@@ -3,8 +3,7 @@ import { clearChatSession } from "@/lib/chat-session";
 import { listItineraries, deleteItinerary } from "@/lib/itinerary-storage";
 import { listPlaces, deletePlace } from "@/lib/places-storage";
 import { savePreferences } from "@/lib/preferences-storage";
-import { clearCompanionModeSelection } from "@/lib/companion-mode-storage";
-import { clearOnboardingCompleted } from "@/lib/onboarding-storage";
+import { resetOnboardingState } from "@/lib/onboarding-storage";
 import { broadcastAccessChange } from "./events";
 import { setMockSubscriptionTier, setTestModeOverride } from "./resolve";
 import type { SubscriptionState, TestModeOverride } from "./types";
@@ -39,9 +38,7 @@ export async function clearSavedCollections(): Promise<void> {
 }
 
 export async function forceOnboarding(): Promise<void> {
-  // Dev-only: reset companion mode selection & quiz state.
-  clearCompanionModeSelection();
-  await clearOnboardingCompleted();
+  await resetOnboardingState();
   await resetTravelPreference();
 }
 

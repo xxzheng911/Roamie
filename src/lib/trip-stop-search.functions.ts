@@ -5,7 +5,6 @@ import {
   placeDetailsUrl,
   PLACE_DETAILS_FIELD_MASK,
 } from "@/lib/google-maps-api";
-import { requireGoogleMapsServerKey } from "@/lib/google-maps.server";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
@@ -22,6 +21,7 @@ const StopSearchInput = z.object({
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   lat: z.number().optional(),
   lng: z.number().optional(),
+  sessionToken: z.string().min(8).max(128).optional(),
 });
 
 const ResolveStopInput = z.object({
@@ -47,6 +47,10 @@ export type ResolvedTripStop = TripStopSuggestion & {
   rating: number | null;
 };
 
+function normalizeGooglePlaceId(raw: string): string {
+  return raw.replace(/^places\//, "").trim();
+}
+
 function parseGoogleError(text: string): string {
   try {
     const j = JSON.parse(text) as { error?: { message?: string; status?: string } };
@@ -59,81 +63,103 @@ function parseGoogleError(text: string): string {
 
 export const searchTripStops = createServerFn({ method: "POST" })
   .inputValidator((input) => StopSearchInput.parse(input))
-  .handler(async ({ data }): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> => {
-    const apiKey = requireGoogleMapsServerKey();
-    const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
-    const body: Record<string, unknown> = {
-      input: data.query.trim(),
-      languageCode: localeToGoogleLanguageCode(userLocale),
-      regionCode: PLACES_REGION,
-    };
-    if (data.lat != null && data.lng != null) {
-      body.locationBias = {
-        circle: {
-          center: { latitude: data.lat, longitude: data.lng },
-          radius: 50_000,
-        },
+  .handler(
+    async ({ data }): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> => {
+      const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
+      const apiKey = requireGoogleMapsServerKey();
+      const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
+      const body: Record<string, unknown> = {
+        input: data.query.trim(),
+        languageCode: localeToGoogleLanguageCode(userLocale),
+        regionCode: PLACES_REGION,
       };
-    }
-
-    const res = await fetch(placesAutocompleteUrl(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": AUTOCOMPLETE_MASK,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const detail = parseGoogleError(await res.text());
-      return { suggestions: [], error: detail };
-    }
-
-    const json = (await res.json()) as {
-      suggestions?: Array<{
-        placePrediction?: {
-          placeId?: string;
-          text?: { text?: string };
-          structuredFormat?: {
-            mainText?: { text?: string };
-            secondaryText?: { text?: string };
-          };
-          types?: string[];
+      if (data.sessionToken) {
+        body.sessionToken = data.sessionToken;
+      }
+      if (data.lat != null && data.lng != null) {
+        body.locationBias = {
+          circle: {
+            center: { latitude: data.lat, longitude: data.lng },
+            radius: 50_000,
+          },
         };
-      }>;
-    };
+      }
 
-    const suggestions: TripStopSuggestion[] = [];
-    const seen = new Set<string>();
-    for (const s of json.suggestions ?? []) {
-      const pred = s.placePrediction;
-      const placeId = pred?.placeId;
-      if (!placeId || seen.has(placeId)) continue;
-      seen.add(placeId);
-      const label =
-        pred?.structuredFormat?.mainText?.text?.trim() ||
-        pred?.text?.text?.trim() ||
-        "";
-      if (!label) continue;
-      suggestions.push({
-        placeId,
-        label,
-        secondary: pred?.structuredFormat?.secondaryText?.text?.trim(),
-        types: pred?.types,
+      const res = await fetch(placesAutocompleteUrl(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": AUTOCOMPLETE_MASK,
+        },
+        body: JSON.stringify(body),
       });
-    }
 
-    return { suggestions, error: null };
-  });
+      if (!res.ok) {
+        const detail = parseGoogleError(await res.text());
+        console.info("[PLACES_SEARCH] query=", data.query.trim());
+        console.info("[PLACES_SEARCH] endpoint=", "placesAutocomplete");
+        console.info("[PLACES_SEARCH] predictions=", 0);
+        console.info("[PLACES_SEARCH] error=", detail);
+        return { suggestions: [], error: detail };
+      }
+
+      const json = (await res.json()) as {
+        suggestions?: Array<{
+          placePrediction?: {
+            placeId?: string;
+            place?: string;
+            text?: { text?: string };
+            structuredFormat?: {
+              mainText?: { text?: string };
+              secondaryText?: { text?: string };
+            };
+            types?: string[];
+          };
+        }>;
+      };
+
+      const suggestions: TripStopSuggestion[] = [];
+      const seen = new Set<string>();
+      for (const s of json.suggestions ?? []) {
+        const pred = s.placePrediction;
+        const placeId = normalizeGooglePlaceId(
+          pred?.placeId ?? (pred?.place ? pred.place.replace(/^places\//, "") : ""),
+        );
+        if (!placeId || seen.has(placeId)) continue;
+        seen.add(placeId);
+        const label =
+          pred?.structuredFormat?.mainText?.text?.trim() || pred?.text?.text?.trim() || "";
+        if (!label) continue;
+        suggestions.push({
+          placeId,
+          label,
+          secondary: pred?.structuredFormat?.secondaryText?.text?.trim(),
+          types: pred?.types,
+        });
+      }
+
+      console.info("[PLACES_SEARCH] query=", data.query.trim());
+      console.info("[PLACES_SEARCH] endpoint=", "placesAutocomplete");
+      console.info("[PLACES_SEARCH] predictions=", suggestions.length);
+      if (suggestions.length === 0) {
+        console.info("[PLACES_SEARCH] error=", "ZERO_RESULTS");
+      }
+      return { suggestions, error: null };
+    },
+  );
 
 export const resolveTripStop = createServerFn({ method: "POST" })
   .inputValidator((input) => ResolveStopInput.parse(input))
   .handler(async ({ data }): Promise<{ stop: ResolvedTripStop | null; error: string | null }> => {
+    const normalizedPlaceId = normalizeGooglePlaceId(data.placeId);
+    const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
     const apiKey = requireGoogleMapsServerKey();
     const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
-    const res = await fetch(placeDetailsUrl(data.placeId), {
+    const requestUrl = placeDetailsUrl(normalizedPlaceId);
+    console.info("[PLACES_DETAILS] start placeId=", normalizedPlaceId);
+    console.info("[PLACES_DETAILS] request url=", requestUrl);
+    const res = await fetch(requestUrl, {
       method: "GET",
       headers: {
         "X-Goog-Api-Key": apiKey,
@@ -141,9 +167,20 @@ export const resolveTripStop = createServerFn({ method: "POST" })
         "Accept-Language": localeToGoogleLanguageCode(userLocale),
       },
     });
+    console.info("[PLACES_DETAILS] status=", res.status);
 
     if (!res.ok) {
-      return { stop: null, error: parseGoogleError(await res.text()) };
+      const rawError = await res.text();
+      console.error("[PLACES_DETAILS] raw response=", rawError.slice(0, 500));
+      const parsedError = parseGoogleError(rawError);
+      if (parsedError.includes("REQUEST_DENIED")) {
+        return {
+          stop: null,
+          error:
+            "Places API Details 權限未開，或 API key restriction 未允許 Places API，或 billing 設定有問題。",
+        };
+      }
+      return { stop: null, error: parsedError };
     }
 
     const raw = (await res.json()) as {
@@ -156,12 +193,14 @@ export const resolveTripStop = createServerFn({ method: "POST" })
       rating?: number;
       photos?: Array<{ name: string }>;
     };
+    console.info("[PLACES_DETAILS] raw response=", JSON.stringify(raw).slice(0, 1000));
 
     const name = raw.displayName?.text?.trim() || "地點";
     const lat = raw.location?.latitude ?? null;
     const lng = raw.location?.longitude ?? null;
+    const effectivePlaceId = normalizeGooglePlaceId(raw.id ?? normalizedPlaceId);
     const place: PlaceResult = {
-      id: raw.id ?? data.placeId,
+      id: effectivePlaceId,
       name,
       address: raw.formattedAddress ?? null,
       lat,
@@ -181,7 +220,7 @@ export const resolveTripStop = createServerFn({ method: "POST" })
 
     return {
       stop: {
-        placeId: place.id,
+        placeId: effectivePlaceId,
         label: name,
         secondary: place.address ?? undefined,
         name,

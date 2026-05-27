@@ -30,6 +30,7 @@ function AppLayout() {
 
   useEffect(() => {
     markBootPhase("route:_app:mounted", "path=" + pathname);
+    console.info("[ROUTE_MOUNT]", pathname);
     const sync = () => setPathname(router.state.location.pathname);
     const unsub = router.subscribe("onResolved", sync);
     window.addEventListener("popstate", sync);

@@ -1,8 +1,13 @@
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 import { distanceMeters } from "@/lib/map-explore";
+import type { WeatherSummary } from "@/lib/weather-types";
+import { weatherRankingBoost } from "@/lib/weather/weather-place-ranking";
 
 type SortablePlace = {
+  name?: string;
+  primaryType?: string | null;
+  types?: string[] | null;
   lat: number | null;
   lng: number | null;
   rating: number | null;
@@ -10,6 +15,10 @@ type SortablePlace = {
   openStatus?: PlaceOpenStatus;
   isSavedFavorite?: boolean;
 };
+
+function placeTextForWeather(p: SortablePlace): string {
+  return [p.name, p.primaryType, ...(p.types ?? [])].filter(Boolean).join(" ");
+}
 
 function openStatusScore(status?: PlaceOpenStatus): number {
   if (status === "open") return 4;
@@ -52,6 +61,7 @@ export function sortExplorePlaces<T extends SortablePlace>(
   places: T[],
   origin: { lat: number; lng: number },
   profile?: UserProfileForReason | null,
+  weather?: WeatherSummary | null,
 ): T[] {
   return [...places].sort((a, b) => {
     const openA = openStatusScore(a.openStatus);
@@ -76,8 +86,8 @@ export function sortExplorePlaces<T extends SortablePlace>(
     const countB = b.userRatingCount ?? 0;
     if (countA !== countB) return countB - countA;
 
-    const boostA = interestBoost(a, profile);
-    const boostB = interestBoost(b, profile);
+    const boostA = interestBoost(a, profile) + weatherRankingBoost(weather, placeTextForWeather(a));
+    const boostB = interestBoost(b, profile) + weatherRankingBoost(weather, placeTextForWeather(b));
     if (boostA !== boostB) return boostB - boostA;
 
     return 0;

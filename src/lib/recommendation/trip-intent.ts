@@ -72,6 +72,14 @@ function parseCityOrArea(text: string): { city?: string; area?: string } {
     if (KNOWN_DESTINATION_RE.test(city) || city.length >= 2) return { city };
   }
 
+  const directGo = trimmed.match(/去([\u4e00-\u9fffA-Za-z]{2,8})(?:\s*\d|\s*天|，|。|$)/);
+  if (directGo?.[1]) {
+    const city = directGo[1].trim();
+    if (KNOWN_DESTINATION_RE.test(city) || city.length >= 2) {
+      return { city: city.replace(/(市|縣|都|府)$/, "") };
+    }
+  }
+
   const abroadMatch = trimmed.match(
     /(?:去|到|玩|旅行|旅遊|想去)[^\u4e00-\u9fff]{0,8}?([\u4e00-\u9fff]{2,8})/,
   );
@@ -203,6 +211,7 @@ export function parseTripIntentFromText(
 
   const mood =
     base.mood ||
+    (/(都有|都可以|都行|混合)/i.test(t) ? "混合" : undefined) ||
     (/(放空|relax|放鬆)/i.test(t) ? "放鬆" : undefined) ||
     (/(拍照|photo)/i.test(t) ? "拍照" : undefined) ||
     (/(美食|吃)/.test(t) ? "美食" : undefined);
@@ -288,26 +297,37 @@ function finalizeTripIntent(intent: TripIntent, session: ChatPlanningSession): T
     session.location?.lng != null &&
     (Math.abs(session.location.lat) > 0.001 || Math.abs(session.location.lng) > 0.001);
 
-  const hasVibe = Boolean(d.vibe?.trim() || intent.mood || session.mood);
-  const hasCompanionship = Boolean(d.companionship?.trim() || intent.travelers);
-  const hasSetting = Boolean(d.setting?.trim());
+  const moodLabel = session.selectedMood ?? session.mood ?? intent.mood;
+  const hasVibe = Boolean(d.vibe?.trim() || intent.mood || moodLabel);
+  const hasCompanionship = Boolean(
+    d.companionship?.trim() || intent.travelers || session.travelContext?.companion,
+  );
+  const hasSetting = Boolean(
+    d.setting?.trim() ||
+      session.travelContext?.setting ||
+      /散步|咖啡|雨|海|夜景/.test(moodLabel ?? ""),
+  );
   const tripDestinationKnown = hasDestination || sessionHasTripDestination(session);
+  const moodFlow = session.fromMoodCard || session.fromMoodFlow;
 
-  if (!hasDestination && !hasGpsAnchor && session.fromPlanForm !== true) {
+  if (!hasDestination && !hasGpsAnchor && session.fromPlanForm !== true && !moodFlow) {
     missing.push("destination");
   }
   if (!hasVibe) missing.push("vibe");
-  if (!hasCompanionship) missing.push("companionship");
-  if (!hasSetting && !tripDestinationKnown) missing.push("setting");
+  if (!hasCompanionship && !moodFlow) missing.push("companionship");
+  if (!hasSetting && !tripDestinationKnown && !moodFlow) missing.push("setting");
 
   const tripPlanningReady = tripDestinationKnown && hasVibe && hasCompanionship;
   const localDayReady = hasVibe && hasCompanionship && hasSetting;
-  const nearbyReady = hasGpsAnchor && hasVibe && hasCompanionship && hasSetting;
+  const nearbyReady =
+    (hasGpsAnchor && hasVibe && hasCompanionship) ||
+    (moodFlow && hasGpsAnchor && moodLabel);
 
   const readyForRecommendations =
     session.selectedPlaces.length > 0 ||
     session.fromPlanForm === true ||
     session.fromMoodFlow === true ||
+    session.fromMoodCard === true ||
     tripPlanningReady ||
     localDayReady ||
     nearbyReady;

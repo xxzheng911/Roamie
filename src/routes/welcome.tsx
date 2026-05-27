@@ -3,32 +3,43 @@ import { useState } from "react";
 import { ArrowRight, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
-import { useAccess } from "@/hooks/use-access";
+import { useAccessOptional } from "@/hooks/use-access";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
-import { requireAuthenticatedRoute } from "@/lib/require-auth";
+import { getClientAuthSession } from "@/lib/auth-session";
+import { forceFreeMode, forcePlusMode, applyMockSubscription } from "@/lib/access/dev-actions";
 import { markIntroCompleted } from "@/lib/plan-tier";
 import {
-  hydrateOnboardingStatus,
+  loadOnboardingState,
+  isOnboardingCompletedSync,
   logShowOnboardingFirstLaunch,
   logSkipOnboarding,
 } from "@/lib/onboarding-storage";
-import { resolveStartupPathFast } from "@/lib/startup-route";
+import { resolveStartupPath } from "@/lib/post-auth-navigation";
+import {
+  guardStartupTarget,
+  logStartupNavigationContext,
+} from "@/lib/startup-navigation";
 import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
+import { resetOnboardingState } from "@/lib/onboarding-storage";
 import { clientEnv } from "@/constants/env";
 import { AnalyticsEvents } from "@/constants/analytics-events";
 import { trackEvent } from "@/services/analytics";
 
 export const Route = createFileRoute("/welcome")({
   beforeLoad: async () => {
-    await requireAuthenticatedRoute();
     if (typeof window === "undefined") return;
-    await hydrateOnboardingStatus();
-    const next = resolveStartupPathFast();
-    if (next !== "/welcome") {
-      logSkipOnboarding("welcome-beforeLoad");
-      throw redirect({ to: next });
+    await loadOnboardingState();
+    if (!isOnboardingCompletedSync()) {
+      logShowOnboardingFirstLaunch();
+      return;
     }
-    logShowOnboardingFirstLaunch();
+
+    logSkipOnboarding("welcome-beforeLoad");
+    const session = await getClientAuthSession();
+    const hasSession = Boolean(session?.user);
+    const next = guardStartupTarget(hasSession ? "/" : "/login", "welcome-beforeLoad");
+    await logStartupNavigationContext("welcome-beforeLoad", next);
+    throw redirect({ to: next });
   },
   component: Welcome,
 });
@@ -54,19 +65,19 @@ const INTRO_STEPS = [
 function Welcome() {
   const navigate = useNavigate();
   useIosInteractiveRoute("welcome");
-  const { enablePlusTestMode, disablePlusTestMode, canShowDeveloperTools } = useAccess();
+  const access = useAccessOptional();
+  const canShowDeveloperTools = access?.canShowDeveloperTools ?? import.meta.env.DEV;
   const [step, setStep] = useState(0);
   const [finishing, setFinishing] = useState(false);
   const isTierStep = step >= INTRO_STEPS.length;
 
-  const goHome = () => {
-    navigate({ to: "/", replace: true });
-    // iOS WebView 偶發 router replace 未生效：加一個保底硬跳轉，避免卡在 welcome
-    window.setTimeout(() => {
-      if (window.location.pathname === "/welcome") {
-        window.location.replace("/");
-      }
-    }, 120);
+  const goNextAfterOnboarding = async () => {
+    const next = guardStartupTarget(
+      await resolveStartupPath({ skipLog: true, source: "welcome-complete" }),
+      "welcome-complete",
+    );
+    await logStartupNavigationContext("welcome-complete", next);
+    navigate({ to: next, replace: true });
   };
 
   const completeSelection = async (tier: "free" | "plus") => {
@@ -74,26 +85,30 @@ function Welcome() {
     setFinishing(true);
 
     try {
-      // 先把本機模式寫好（Access + companion selection），不讓 Supabase 寫入延遲卡住跳轉
       if (tier === "plus") {
-        // 開發模式 / 尚未接上訂閱 SDK（TestFlight 測試階段）：
-        // 不進付款流程，直接切換 Plus，確保全站權限可測。
         const billingConfigured = Boolean(clientEnv.revenueCatAppleKey || clientEnv.revenueCatGoogleKey);
         const shouldBypassBilling =
           import.meta.env.DEV || canShowDeveloperTools || !clientEnv.billingEnabled || !billingConfigured;
         if (shouldBypassBilling) {
-          enablePlusTestMode();
+          if (access) {
+            access.enablePlusTestMode();
+          } else {
+            applyMockSubscription("plus");
+            forcePlusMode();
+          }
         } else {
-          // 正式環境：先觸發訂閱管理入口（可能導去 App Store/Play）
           void openSubscriptionManagement();
         }
+      } else if (access) {
+        access.disablePlusTestMode();
       } else {
-        disablePlusTestMode();
+        applyMockSubscription("free");
+        forceFreeMode();
       }
 
       await markIntroCompleted(tier);
       trackEvent(AnalyticsEvents.INTRO_COMPLETED, { tier_choice: tier });
-      goHome();
+      await goNextAfterOnboarding();
     } catch (e) {
       console.error("[welcome] companion mode selection failed", e);
       toast.error(e instanceof Error ? e.message : "無法完成設定，請再試一次");
@@ -110,9 +125,22 @@ function Welcome() {
     }
   };
 
+  const isDev = import.meta.env.DEV;
+
   return (
     <MobileFrame>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {isDev ? (
+          <button
+            type="button"
+            className="absolute right-3 top-[max(0.5rem,var(--safe-area-top))] z-20 rounded-full border border-dashed border-border px-2 py-1 text-[10px] text-muted-foreground"
+            onClick={() => {
+              void resetOnboardingState().then(() => window.location.reload());
+            }}
+          >
+            [Dev] 重置教學
+          </button>
+        ) : null}
         {!isTierStep ? (
           <div className="flex min-h-0 flex-1 flex-col px-8 pb-[max(2rem,var(--safe-area-bottom))] pt-[max(1.5rem,var(--safe-area-top))]">
             <div className="flex justify-center gap-1.5 pb-2">

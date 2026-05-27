@@ -115,7 +115,7 @@ async function enrichRecommendations(
   );
 
   const mood = ctx.mood ?? ctx.selectedMood;
-  const ranked = rankRecommendations(openOnly, hoursMap, at, mood);
+  const ranked = rankRecommendations(openOnly, hoursMap, at, mood, ctx.weather ?? null);
   const stats = summarizeAvailabilityStats(ranked);
   const lateNightMode = isLateNightMode(at) || sceneFlow;
 

@@ -22,7 +22,7 @@ export const TRIP_ACTIVITY_LABELS: Record<TripActivityType, string> = {
   mixed: "綜合",
 };
 
-/** 單日天氣快照（來自 Open-Meteo，非 AI 捏造） */
+/** 單日天氣快照（來自 OpenWeather，非 AI 捏造） */
 export type DayWeatherSnapshot = {
   condition: string;
   tempHighC: number | null;
@@ -31,6 +31,8 @@ export type DayWeatherSnapshot = {
   /** 日夜溫差（最高 − 最低） */
   diurnalRangeC: number | null;
   iconType?: string;
+  cloudCoverPercent?: number | null;
+  uvi?: number | null;
 };
 
 /** 每日穿搭建議 — 存入 RoamiePayloadV2.outfitAdvice */
@@ -54,4 +56,18 @@ export type OutfitAdvicePayload = {
   generatedAt: string;
   fashionStyle?: string;
   days: DailyOutfitAdvice[];
+};
+
+/** 整趟行程穿搭建議 — 存入 RoamiePayloadV2 */
+export type TripWeatherSource = "openweather" | "unavailable";
+
+export type TripOutfitSuggestionFields = {
+  /** 2–4 句穿搭建議正文 */
+  outfitSuggestion?: string;
+  outfitSuggestionUpdatedAt?: string;
+  /** 天氣 / 溫度摘要 */
+  weatherSummary?: string;
+  weatherSource?: TripWeatherSource;
+  /** 目的地／日期／天數變更時用於判斷是否重新生成 */
+  outfitSuggestionInputKey?: string;
 };

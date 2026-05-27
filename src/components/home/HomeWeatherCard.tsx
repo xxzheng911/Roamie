@@ -60,7 +60,7 @@ export function HomeWeatherCard({
     );
   }
 
-  if (status === "ready" && weather) {
+  if (status === "ready" && weather && weather.available === true) {
     const temp = formatWeatherTemp(weather);
     const emoji = weatherSummaryEmoji(weather);
     return (
@@ -69,7 +69,11 @@ export function HomeWeatherCard({
           <span aria-hidden>{emoji}</span>
           <span>
             {labels.todayLabel} · {weather.city}
-            {temp ? ` · ${weather.condition} ${temp}` : ` · ${weather.condition}`}
+            {weather.available && temp
+              ? ` · ${weather.condition} ${temp}`
+              : weather.available
+                ? ` · ${weather.condition}`
+                : ""}
           </span>
         </div>
         <h3 className="mt-2 font-display text-xl leading-snug">{weather.recommendationText}</h3>

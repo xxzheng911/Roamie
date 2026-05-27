@@ -100,3 +100,34 @@ export function addEmptyDay(items: RoamieItineraryItem[], isoDate: string): Roam
   if (!groups.has(isoDate)) groups.set(isoDate, []);
   return flattenStopGroups(groups);
 }
+
+export function removeDay(items: RoamieItineraryItem[], date: string): RoamieItineraryItem[] {
+  const groups = groupStopsByDate(items);
+  groups.delete(date);
+  return flattenStopGroups(groups);
+}
+
+export function nextDayIsoAfter(items: RoamieItineraryItem[], fallbackStart?: string): string {
+  const keys = listTripDateKeys(items, fallbackStart).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+  const base = keys.length > 0 ? keys[keys.length - 1]! : fallbackStart ?? new Date().toISOString().slice(0, 10);
+  const d = new Date(`${base}T12:00:00`);
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+export function sortStopsInDayByTime(items: RoamieItineraryItem[], date: string): RoamieItineraryItem[] {
+  const groups = groupStopsByDate(items);
+  const dayList = [...(groups.get(date) ?? [])];
+  const parse = (t: string) => {
+    const m = t.trim().match(/(\d{1,2}):(\d{2})/);
+    if (!m) return 9999;
+    return Number.parseInt(m[1], 10) * 60 + Number.parseInt(m[2], 10);
+  };
+  dayList.sort((a, b) => parse(a.time ?? "") - parse(b.time ?? ""));
+  groups.set(date, dayList);
+  return flattenStopGroups(groups);
+}
+
+export function legKeyForItem(item: RoamieItineraryItem): string {
+  return item.placeName || item.title;
+}

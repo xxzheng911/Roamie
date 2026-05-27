@@ -54,7 +54,9 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   );
 
   const refresh = useCallback(() => {
-    setSnapshot(buildAccessSnapshot(email, { profilePlusActive }));
+    const next = buildAccessSnapshot(email, { profilePlusActive });
+    console.info("[DEV_SUBSCRIPTION] mode=", next.devSubscriptionMode);
+    setSnapshot(next);
   }, [email, profilePlusActive]);
 
   useEffect(() => {
@@ -104,12 +106,14 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   const enablePlusTestMode = useCallback(() => {
     applyMockSubscription("plus");
     forcePlusMode();
+    console.info("[DEV_SUBSCRIPTION] switched_to_plus");
     refresh();
   }, [refresh]);
 
   const disablePlusTestMode = useCallback(() => {
     applyMockSubscription("free");
     forceFreeMode();
+    console.info("[DEV_SUBSCRIPTION] switched_to_free");
     refresh();
   }, [refresh]);
 

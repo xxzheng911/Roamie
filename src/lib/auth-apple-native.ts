@@ -1,4 +1,3 @@
-import { SignInWithApple } from "@capacitor-community/apple-sign-in";
 import type { Session } from "@supabase/supabase-js";
 import { APP_BUNDLE_ID } from "@/constants/app";
 import { createAppleSignInNonce } from "@/lib/auth-nonce";
@@ -37,6 +36,12 @@ function isUserCancelled(error: unknown): boolean {
 export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> {
   if (!canUseNativeAppleSignIn()) {
     return { ok: false, message: "目前裝置不支援原生 Apple 登入" };
+  }
+
+  const mod = await import("@capacitor-community/apple-sign-in").catch(() => null);
+  const SignInWithApple = mod?.SignInWithApple;
+  if (!SignInWithApple) {
+    return { ok: false, message: "Apple 登入模組尚未就緒（請確認 iOS 原生插件已安裝）" };
   }
 
   const configError = assertSupabaseConfiguredForAuth();

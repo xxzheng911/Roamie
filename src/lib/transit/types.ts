@@ -51,7 +51,11 @@ export type TransitWeatherHint = {
   condition?: string;
   precipProbability?: number | null;
   tempC?: number | null;
+  feelsLikeC?: number | null;
   isRainy?: boolean;
+  isHot?: boolean;
+  isNight?: boolean;
+  uvi?: number | null;
 };
 
 export type TransitLegInput = {

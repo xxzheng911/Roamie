@@ -1,17 +1,11 @@
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
-import type { LegDurationEstimate } from "@/lib/google-directions.server";
+import type { LegDurationEstimate } from "@/lib/routes/types";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { formatDistanceLabel } from "@/lib/map-explore";
 
 export type TravelModeId = "walk" | "motorcycle" | "drive" | "transit" | "taxi";
 
-export const TRAVEL_MODE_ORDER: TravelModeId[] = [
-  "walk",
-  "motorcycle",
-  "drive",
-  "transit",
-  "taxi",
-];
+export const TRAVEL_MODE_ORDER: TravelModeId[] = ["walk", "motorcycle", "drive", "transit", "taxi"];
 
 export const TRAVEL_MODE_LABEL: Record<TravelModeId, string> = {
   walk: "步行",
@@ -21,8 +15,7 @@ export const TRAVEL_MODE_LABEL: Record<TravelModeId, string> = {
   taxi: "計程車",
 };
 
-export const TRANSIT_MVP_NOTICE =
-  "實際班次與轉乘請以 Google Maps / 交通業者資訊為準";
+export const TRANSIT_MVP_NOTICE = "實際班次與轉乘請以 Google Maps / 交通業者資訊為準";
 
 export const TAXI_NAV_TOAST = "將以開車路線開啟，可再於地圖 App 選擇計程車服務";
 
@@ -135,7 +128,10 @@ export function mergeTravelDurations(
   local: TravelModeEstimate[],
   durations: LegDurationEstimate,
 ): TravelModeEstimate[] {
-  return estimateTravelModesLocal(durations.distanceMeters || local[0]?.distanceMeters || 0, durations);
+  return estimateTravelModesLocal(
+    durations.distanceMeters || local[0]?.distanceMeters || 0,
+    durations,
+  );
 }
 
 export type TransportRecommendContext = {

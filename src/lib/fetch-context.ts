@@ -1,7 +1,7 @@
 import { getPreferences } from "@/lib/preferences-storage";
 import type { RoamieLocation, RoamieRequestContext } from "@/lib/ai/context";
 import type { RoamieAIMode } from "@/lib/ai/context";
-import type { WeatherSummary } from "@/lib/weather.functions";
+import type { WeatherSummary } from "@/lib/weather-types";
 import { tripLocationToRoamie } from "@/lib/location/to-roamie";
 import type { TripLocation } from "@/lib/location/types";
 import { resolveLocaleSync } from "@/lib/i18n/resolve-locale";

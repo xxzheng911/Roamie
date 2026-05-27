@@ -1,6 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { buildTransitLegsForItinerary } from "@/lib/transit/build-legs.server";
 import type { TransitLegAdvice } from "@/lib/transit/types";
 
 const LegItemSchema = z.object({
@@ -43,10 +42,11 @@ export type RecommendTransitResult = {
   transportTips: string;
 };
 
-/** 智慧交通建議：點到點分析（Google Distance Matrix + Roamie 規則 / AI） */
+/** 智慧交通建議：點到點分析（Google Routes API + Roamie 規則 / AI） */
 export const recommendTransitLegs = createServerFn({ method: "POST" })
   .inputValidator((input) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<RecommendTransitResult> => {
+    const { buildTransitLegsForItinerary } = await import("@/lib/transit/build-legs.server");
     const weather = data.weather
       ? {
           ...data.weather,

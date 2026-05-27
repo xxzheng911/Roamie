@@ -56,6 +56,8 @@ export function HomePersonalizationCard({
   const {
     hasPlusAccess,
     devPlusMode,
+    devSubscriptionMode,
+    testModeOverride,
     canShowDeveloperTools,
     disablePlusTestMode,
   } = useAccess();
@@ -64,7 +66,10 @@ export function HomePersonalizationCard({
   const [manageSubOpen, setManageSubOpen] = useState(false);
   const [accessTick, setAccessTick] = useState(0);
 
-  const showDevToggle = isDeveloperBuildEnabled() || canShowDeveloperTools;
+  const isDevSubscriptionMode =
+    isDeveloperBuildEnabled() ||
+    canShowDeveloperTools ||
+    testModeOverride !== "none";
 
   useEffect(() => {
     const onAccess = () => setAccessTick((n) => n + 1);
@@ -129,10 +134,19 @@ export function HomePersonalizationCard({
   };
 
   const handleReturnFreeProd = () => {
+    if (isDevSubscriptionMode) {
+      console.info("[SUBSCRIPTION_MODAL] skipped_in_dev");
+      handleReturnFreeDev();
+      return;
+    }
     setManageSubOpen(true);
   };
 
   const handleOpenSubscriptionManagement = async () => {
+    if (isDevSubscriptionMode) {
+      console.info("[SUBSCRIPTION_MODAL] skipped_in_dev");
+      return;
+    }
     const ok = await openSubscriptionManagement();
     if (!ok) {
       toast.message("請至 App Store 或 Google Play 的「訂閱」管理 Roamie Plus");
@@ -159,6 +173,11 @@ export function HomePersonalizationCard({
               {devPlusMode ? (
                 <p className="mt-2 text-xs font-medium text-clay">目前為 Plus 開發／測試模式</p>
               ) : null}
+              {isDevSubscriptionMode ? (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  開發訂閱狀態：{devSubscriptionMode === "plus" ? "Plus" : "Free"}
+                </p>
+              ) : null}
               <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                 <button
                   type="button"
@@ -169,7 +188,7 @@ export function HomePersonalizationCard({
                 </button>
                 <button
                   type="button"
-                  onClick={showDevToggle ? handleReturnFreeDev : handleReturnFreeProd}
+                  onClick={isDevSubscriptionMode ? handleReturnFreeDev : handleReturnFreeProd}
                   className="rounded-full border border-border bg-card/80 px-5 py-2.5 text-sm font-medium text-muted-foreground transition hover:text-foreground"
                 >
                   返回 Free 模式

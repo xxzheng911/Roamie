@@ -10,6 +10,12 @@ import { groupItineraryByDate, listTripDates } from "@/lib/outfit/group-by-date"
 import { formatDateRangeLabel, formatDateWithWeekday } from "@/lib/picker-utils";
 import { buildLegKey } from "@/lib/transit/types";
 import type { StoredItinerary } from "@/lib/itinerary-storage";
+import {
+  coverFieldsFromStored,
+  resolveDisplayCoverImage,
+  resolveDisplayTitle,
+  titleFieldsFromStored,
+} from "@/lib/saved-trip/display";
 import type { SavedTripDay, SavedTripDayItem, SavedTripView } from "@/lib/saved-trip/types";
 
 const UNSET = "尚未設定";
@@ -94,7 +100,10 @@ function itemToSaved(
     address: raw.address?.trim() || UNSET,
     category: inferCategory(raw),
     duration: legMinutesFor(settings, raw.placeName, raw.title),
-    transportMode: transportLabel(settings?.transport),
+    transportMode:
+      settings?.legTransport?.[placeName] ??
+      settings?.legTransport?.[raw.title] ??
+      transportLabel(settings?.transport),
     travelTimeToNext: travelToNext(settings, raw, next),
     note: raw.notes?.trim() || raw.description?.trim() || "",
     placeId: raw.googlePlaceId?.trim() ?? "",
@@ -111,16 +120,14 @@ function daysFromV2(payload: RoamiePayloadV2): SavedTripDay[] {
     payload.tripSettings?.tripStartDate?.trim() ||
     items.map((i) => i.date?.trim()).find((d) => d && /^\d{4}-\d{2}-\d{2}$/.test(d)) ||
     new Date().toISOString().slice(0, 10);
-  const dayCount = payload.days ?? daysBetweenDates(start, payload.tripSettings?.tripEndDate || start);
+  const dayCount =
+    payload.days ?? daysBetweenDates(start, payload.tripSettings?.tripEndDate || start);
   const orderedDates = listTripDates(items, start, dayCount);
   const groups = groupItineraryByDate(items);
 
   return orderedDates.map((iso, idx) => {
     const dayNumber = idx + 1;
-    const groupKey =
-      [...groups.keys()].find((k) => k === iso) ??
-      [...groups.keys()][idx] ??
-      iso;
+    const groupKey = [...groups.keys()].find((k) => k === iso) ?? [...groups.keys()][idx] ?? iso;
     const dayItems = [...(groups.get(groupKey) ?? groups.get(iso) ?? [])].sort(
       (a, b) => parseTimeSortKey(a.time ?? "") - parseTimeSortKey(b.time ?? ""),
     );
@@ -234,6 +241,10 @@ export function normalizeStoredTrip(trip: StoredItinerary): SavedTripView {
   }
 
   const dateRange = resolveDateRange(payload, days);
+  const titleFields = titleFieldsFromStored(trip);
+  const coverFields = coverFieldsFromStored(trip);
+  const displayTitle = resolveDisplayTitle(titleFields);
+  const displayCoverImage = resolveDisplayCoverImage(coverFields);
 
   if (days.length === 0 && summary) {
     days = [
@@ -245,9 +256,17 @@ export function normalizeStoredTrip(trip: StoredItinerary): SavedTripView {
     ];
   }
 
+  const autoTitle =
+    trip.title?.trim() ||
+    (isRoamiePayloadV2(payload) ? payload.title : (payload as Itinerary).title) ||
+    "我的行程";
+
   return {
     id: trip.id,
-    title: trip.title?.trim() || (isRoamiePayloadV2(payload) ? payload.title : (payload as Itinerary).title) || "我的行程",
+    title: titleFields.title || autoTitle,
+    customTitle: titleFields.customTitle,
+    isTitleCustomized: titleFields.isTitleCustomized,
+    displayTitle,
     destination,
     dateRange,
     dayCount: Math.max(dayCount, days.length, 1),
@@ -255,9 +274,18 @@ export function normalizeStoredTrip(trip: StoredItinerary): SavedTripView {
     transportMode,
     companionCount,
     isSaved: true,
+    coverImageUrl: coverFields.coverImageUrl,
+    customCoverImageUrl: coverFields.customCoverImageUrl,
+    aiGeneratedCoverImageUrl: coverFields.aiGeneratedCoverImageUrl,
+    isCoverCustomized: coverFields.isCoverCustomized,
+    displayCoverImage,
     coverImage: trip.cover_image,
+    coverSource: trip.cover_source ?? null,
+    coverQuery: trip.cover_query ?? null,
     mood: trip.mood,
     days,
+    createdAt: trip.created_at,
+    updatedAt: trip.updated_at ?? trip.created_at,
   };
 }
 

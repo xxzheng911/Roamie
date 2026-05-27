@@ -3,6 +3,7 @@ import { ChevronLeft } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useAccess } from "@/hooks/use-access";
+import { runOpenWeatherDevTest, runRoutesDevTest, type ApiDevTestResult } from "@/services/apiDevTools";
 import {
   clearSavedCollections,
   forceFreeMode,
@@ -58,8 +59,33 @@ function DevActionButton({
   );
 }
 
+function ApiTestResultCard({ result }: { result: ApiDevTestResult | null }) {
+  if (!result) return null;
+  return (
+    <div
+      className={`rounded-2xl border px-4 py-3 text-sm ${
+        result.ok ? "border-emerald-500/30 bg-emerald-500/5" : "border-destructive/30 bg-destructive/5"
+      }`}
+    >
+      <p className="font-medium">{result.ok ? "✅ API connected" : "❌ API failed"}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{result.label}</p>
+      {result.ok ? (
+        <p className="mt-2 text-xs">{result.detail}</p>
+      ) : (
+        <>
+          <p className="mt-2 text-xs">status: {result.statusCode ?? "—"}</p>
+          <p className="mt-1 text-xs">{result.message}</p>
+          {result.hint ? <pre className="mt-2 whitespace-pre-wrap text-[10px] opacity-80">{result.hint}</pre> : null}
+        </>
+      )}
+    </div>
+  );
+}
+
 function DeveloperSettingsPage() {
   const navigate = useNavigate();
+  const [weatherTestResult, setWeatherTestResult] = useState<ApiDevTestResult | null>(null);
+  const [routesTestResult, setRoutesTestResult] = useState<ApiDevTestResult | null>(null);
   const {
     canShowDeveloperTools,
     subscriptionState,
@@ -86,7 +112,7 @@ function DeveloperSettingsPage() {
     await forceOnboarding();
     clearBootstrapSplashForDev();
     toast.success("已重置 onboarding");
-    navigate({ to: "/login", replace: true });
+    navigate({ to: "/welcome", replace: true });
   };
 
   return (
@@ -108,6 +134,34 @@ function DeveloperSettingsPage() {
           角色：<strong>{userRole}</strong> · 有效方案：<strong>{effectiveTier === "plus" ? "Plus" : "Free"}</strong>
           {testModeOverride !== "none" ? ` · 覆寫：${testModeOverride}` : ""}
         </p>
+      </section>
+
+      <section className="mt-5 space-y-2">
+        <p className="px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          API 連線測試
+        </p>
+        <DevActionButton
+          label="Test OpenWeather（高雄）"
+          desc="temperature · description · rain probability"
+          onClick={async () => {
+            const result = await runOpenWeatherDevTest();
+            setWeatherTestResult(result);
+            if (result.ok) toast.success("OpenWeather 連線成功");
+            else toast.error(result.message);
+          }}
+        />
+        <ApiTestResultCard result={weatherTestResult} />
+        <DevActionButton
+          label="Test Routes API（高雄車站 → 駁二 · WALK）"
+          desc="Google Routes computeRoutes"
+          onClick={async () => {
+            const result = await runRoutesDevTest();
+            setRoutesTestResult(result);
+            if (result.ok) toast.success("Routes API 連線成功");
+            else toast.error(result.message);
+          }}
+        />
+        <ApiTestResultCard result={routesTestResult} />
       </section>
 
       <section className="mt-5 space-y-2">

@@ -1,25 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Loader2, Sparkles, Trash2 } from "lucide-react";
-import { useServerFn } from "@tanstack/react-start";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
-import { TransitLegCard } from "@/components/TransitLegCard";
 import type { DailyOutfitAdvice } from "@/lib/outfit/types";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
-import { recommendTransitLegs } from "@/lib/transit.functions";
+import { formatLegTravelTimeLabel } from "@/lib/saved-trip/travel-time";
+import { syncTripLegsFromGoogleRoutes } from "@/lib/saved-trip/sync-route-legs";
 import { buildLegKey } from "@/lib/transit/types";
 import { RoamieDatePicker, RoamieDurationPicker, RoamieTimePicker } from "@/components/pickers";
 import { daysBetweenDates } from "@/lib/fetch-context";
 import { groupItineraryByDate, listTripDates } from "@/lib/outfit/group-by-date";
-import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings, TripTransportMode } from "@/lib/ai/types";
+import type {
+  RoamieItineraryItem,
+  RoamiePayloadV2,
+  TripPlanSettings,
+  TripTransportMode,
+} from "@/lib/ai/types";
 import { TripStopSearchField } from "@/components/TripStopSearchField";
 import { tripPlaceToItineraryItem } from "@/lib/trip/trip-place-input";
-import {
-  insertStopOnDate,
-  moveStopInDay,
-  removeStopAt,
-  updateStop,
-} from "@/lib/trip/trip-stop-mutations";
+import { insertStopOnDate, moveStopInDay, removeStopAt } from "@/lib/trip/trip-stop-mutations";
 import { useI18n } from "@/hooks/use-i18n";
 
 const TRANSPORT_OPTIONS: { value: TripTransportMode; label: string }[] = [
@@ -49,7 +48,9 @@ function inferTripDates(
   if (fromSettings) {
     return { start: fromSettings, end: toSettings || fromSettings };
   }
-  const isoDates = [...new Set(items.map((i) => i.date?.trim()).filter((d) => d && /^\d{4}-\d{2}-\d{2}$/.test(d!)))].sort();
+  const isoDates = [
+    ...new Set(items.map((i) => i.date?.trim()).filter((d) => d && /^\d{4}-\d{2}-\d{2}$/.test(d!))),
+  ].sort();
   if (isoDates.length > 0) {
     return { start: isoDates[0]!, end: isoDates[isoDates.length - 1]! };
   }
@@ -108,11 +109,9 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
   const [saving, setSaving] = useState(false);
   const [replanning, setReplanning] = useState(false);
   const [transitLoading, setTransitLoading] = useState(false);
-  const fetchTransit = useServerFn(recommendTransitLegs);
   const skipInitialTransitFetch = useRef(
     Boolean(
-      payload.tripSettings?.transitLegs &&
-        Object.keys(payload.tripSettings.transitLegs).length > 0,
+      payload.tripSettings?.transitLegs && Object.keys(payload.tripSettings.transitLegs).length > 0,
     ),
   );
 
@@ -129,7 +128,12 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
       ? buildDirectionsUrl(routeCoords[routeCoords.length - 1], {
           origin: routeCoords[0],
           waypoints: routeCoords.length > 2 ? routeCoords.slice(1, -1) : undefined,
-          travelMode: settings.transport === "drive" ? "driving" : settings.transport === "transit" ? "transit" : "walking",
+          travelMode:
+            settings.transport === "drive"
+              ? "driving"
+              : settings.transport === "transit"
+                ? "transit"
+                : "walking",
         })
       : null;
 
@@ -155,37 +159,14 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
 
     setTransitLoading(true);
     try {
-      const result = await fetchTransit({
-        data: {
-          destination: payload.destination,
-          items: items.map((i) => ({
-            placeName: i.placeName,
-            title: i.title,
-            lat: i.lat,
-            lng: i.lng,
-            date: i.date,
-            time: i.time,
-          })),
-          preferences: {
-            transportation: TRANSPORT_LABEL[settings.transport ?? "walk"],
-            pace: payload.summary?.includes("慢") ? "慢旅" : undefined,
-          },
-          time: settings.startTime,
-          useAiReasons: true,
-        },
-      });
-      const transitLegs = Object.fromEntries(result.legs.map((l) => [l.legKey, l]));
-      setSettings((s) => ({
-        ...s,
-        transitLegs,
-        transportTips: result.transportTips,
-      }));
+      const transitLegs = await syncTripLegsFromGoogleRoutes(items, settings);
+      setSettings((s) => ({ ...s, transitLegs }));
     } catch (e) {
-      console.warn("[TripPlanEditor] transit advice failed", e);
+      console.warn("[TripPlanEditor] Google Routes leg sync failed", e);
     } finally {
       setTransitLoading(false);
     }
-  }, [items, payload.destination, payload.summary, settings.transport, settings.startTime, fetchTransit]);
+  }, [items, settings]);
 
   useEffect(() => {
     if (skipInitialTransitFetch.current) {
@@ -220,7 +201,10 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
     ? { lat: firstWithCoords.lat!, lng: firstWithCoords.lng! }
     : undefined;
 
-  const handleAddStop = (dateKey: string, place: Parameters<typeof tripPlaceToItineraryItem>[0]) => {
+  const handleAddStop = (
+    dateKey: string,
+    place: Parameters<typeof tripPlaceToItineraryItem>[0],
+  ) => {
     const stop = tripPlaceToItineraryItem(place, {
       date: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : inferTripDates(items, settings).start,
       time: settings.startTime ?? "10:00",
@@ -262,34 +246,23 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
         className="mb-1"
       />
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col justify-center rounded-2xl border border-border bg-card px-3 py-2.5">
-          <span className="text-[11px] text-muted-foreground">出發時間</span>
-          <RoamieTimePicker
-            compact
-            title="出發時間"
-            value={settings.startTime ?? "10:00"}
-            onChange={(t) => setSettings((s) => ({ ...s, startTime: t }))}
-            className="mt-1 self-start"
-          />
-        </div>
-        <label className="rounded-2xl border border-border bg-card p-3">
-          <span className="text-[11px] text-muted-foreground">交通方式</span>
-          <select
-            value={settings.transport ?? "walk"}
-            onChange={(e) =>
-              setSettings((s) => ({ ...s, transport: e.target.value as TripTransportMode }))
-            }
-            className="mt-1 w-full bg-transparent text-sm font-medium focus:outline-none"
-          >
-            {TRANSPORT_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <label className="block rounded-2xl border border-border bg-card p-3">
+        <span className="text-[11px] text-muted-foreground">預設交通方式</span>
+        <select
+          value={settings.transport ?? "walk"}
+          onChange={(e) => {
+            setSettings((s) => ({ ...s, transport: e.target.value as TripTransportMode }));
+            void refreshTransit();
+          }}
+          className="mt-1 w-full bg-transparent text-sm font-medium focus:outline-none"
+        >
+          {TRANSPORT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
 
       {routeUrl && (
         <button
@@ -305,128 +278,120 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
         {[...groups.entries()].map(([dateKey, dayItems]) => {
           const outfit =
             outfitByDate.get(dateKey) ??
-            (payload.outfitAdvice?.days.length === 1
-              ? payload.outfitAdvice.days[0]
-              : undefined);
+            (payload.outfitAdvice?.days.length === 1 ? payload.outfitAdvice.days[0] : undefined);
           return (
-          <section key={dateKey}>
-            <div className="mb-3">
-              <RoamieDatePicker
-                mode="single"
-                variant="inline"
-                title="選擇日期"
-                value={/^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : inferTripDates(items, settings).start}
-                onChange={(iso) => setItems(updateDayDate(items, dateKey, iso))}
-                placeholder={dateKey}
-              />
-            </div>
-            {outfit && <DayOutfitCard advice={outfit} className="mb-4" />}
-            <div className="relative space-y-0 border-l border-dashed border-border pl-5">
-              {dayItems.map((item, i) => {
-                const key = legKey(item);
-                const mins = settings.legMinutes?.[key] ?? 90;
-                const prev = i > 0 ? dayItems[i - 1] : null;
-                const transitKey =
-                  prev != null
-                    ? buildLegKey(prev.placeName || prev.title, item.placeName || item.title)
-                    : null;
-                const transit = transitKey ? settings.transitLegs?.[transitKey] : undefined;
+            <section key={dateKey}>
+              <div className="mb-3">
+                <RoamieDatePicker
+                  mode="single"
+                  variant="inline"
+                  title="選擇日期"
+                  value={
+                    /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
+                      ? dateKey
+                      : inferTripDates(items, settings).start
+                  }
+                  onChange={(iso) => setItems(updateDayDate(items, dateKey, iso))}
+                  placeholder={dateKey}
+                />
+              </div>
+              {outfit && <DayOutfitCard advice={outfit} className="mb-4" />}
+              <div className="relative space-y-0 border-l border-dashed border-border pl-5">
+                {dayItems.map((item, i) => {
+                  const key = legKey(item);
+                  const mins = settings.legMinutes?.[key] ?? 90;
+                  const prev = i > 0 ? dayItems[i - 1] : null;
+                  const transitKey =
+                    prev != null
+                      ? buildLegKey(prev.placeName || prev.title, item.placeName || item.title)
+                      : null;
+                  const transit = transitKey ? settings.transitLegs?.[transitKey] : undefined;
+                  const transportLabel = TRANSPORT_LABEL[settings.transport ?? "walk"];
 
-                return (
-                  <div key={`${key}-${i}`}>
-                    {transit && (
-                      <div className="relative pb-3 pl-0">
-                        <TransitLegCard leg={transit} />
-                        {transitLoading && i === 1 && (
-                          <span className="mt-1 inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-                            <Loader2 className="h-3 w-3 animate-spin" /> 更新交通建議…
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  <article className="relative pb-6 last:pb-0">
-                    <span className="absolute -left-[1.35rem] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-foreground" />
-                    <div className="rounded-2xl border border-border bg-card p-4 shadow-soft">
-                      <div className="mb-2 flex items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          aria-label="上移"
-                          disabled={i === 0}
-                          onClick={() => setItems(moveStopInDay(items, dateKey, i, -1))}
-                          className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40"
-                        >
-                          <ChevronUp className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="下移"
-                          disabled={i >= dayItems.length - 1}
-                          onClick={() => setItems(moveStopInDay(items, dateKey, i, 1))}
-                          className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40"
-                        >
-                          <ChevronDown className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={t("trip.deleteStop")}
-                          onClick={() => setItems(removeStopAt(items, dateKey, i))}
-                          className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card text-muted-foreground hover:text-destructive"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                        <RoamieTimePicker
-                          compact
-                          title="抵達時間"
-                          value={item.time?.slice(0, 5) || "10:00"}
-                          onChange={(t) => {
-                            const next = [...items];
-                            const idx = items.indexOf(item);
-                            next[idx] = { ...item, time: t };
-                            setItems(next);
-                          }}
-                        />
-                        <RoamieDurationPicker
-                          valueMinutes={mins}
-                          onChangeMinutes={(m) => setLegMinutes(key, m)}
-                        />
-                      </div>
-                      <h3 className="mt-2 text-[16px] font-medium leading-snug">{item.title}</h3>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{item.placeName}</p>
-                      {item.address ? (
-                        <p className="mt-1 text-xs text-muted-foreground">{item.address}</p>
-                      ) : null}
-                      <p className="mt-2 text-sm leading-relaxed text-foreground/80">{item.description}</p>
-                      <label className="mt-3 block text-[11px] text-muted-foreground">{t("trip.stopNotes")}</label>
-                      <textarea
-                        value={item.notes ?? ""}
-                        onChange={(e) =>
-                          setItems(updateStop(items, dateKey, i, { notes: e.target.value }))
-                        }
-                        rows={2}
-                        placeholder="停留備註、預約資訊…"
-                        className="mt-1 w-full resize-none rounded-xl border border-border bg-background/60 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
-                      />
-                      <PlaceNavButtons
-                        lat={item.lat}
-                        lng={item.lng}
-                        placeName={item.placeName}
-                        compact
-                        className="mt-3"
-                      />
+                  return (
+                    <div key={`${key}-${i}`}>
+                      <article className="relative pb-6 last:pb-0">
+                        <span className="absolute -left-[1.35rem] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-foreground" />
+                        <div className="rounded-2xl border border-border bg-card p-4 shadow-soft">
+                          {transitKey && i > 0 ? (
+                            <p className="mb-3 text-xs text-muted-foreground">
+                              {formatLegTravelTimeLabel(transit, transportLabel, {
+                                loading: transitLoading,
+                              })}
+                            </p>
+                          ) : null}
+                          <div className="mb-2 flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              aria-label="上移"
+                              disabled={i === 0}
+                              onClick={() => setItems(moveStopInDay(items, dateKey, i, -1))}
+                              className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40"
+                            >
+                              <ChevronUp className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label="下移"
+                              disabled={i >= dayItems.length - 1}
+                              onClick={() => setItems(moveStopInDay(items, dateKey, i, 1))}
+                              className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40"
+                            >
+                              <ChevronDown className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={t("trip.deleteStop")}
+                              onClick={() => setItems(removeStopAt(items, dateKey, i))}
+                              className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card text-muted-foreground hover:text-destructive"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                            <RoamieTimePicker
+                              compact
+                              title="抵達時間"
+                              value={item.time?.slice(0, 5) || "10:00"}
+                              onChange={(t) => {
+                                const next = [...items];
+                                const idx = items.indexOf(item);
+                                next[idx] = { ...item, time: t };
+                                setItems(next);
+                              }}
+                            />
+                            <RoamieDurationPicker
+                              valueMinutes={mins}
+                              onChangeMinutes={(m) => setLegMinutes(key, m)}
+                            />
+                          </div>
+                          <h3 className="mt-2 text-[16px] font-medium leading-snug">
+                            {item.placeName || item.title}
+                          </h3>
+                          {item.address ? (
+                            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                              {item.address}
+                            </p>
+                          ) : null}
+                          <PlaceNavButtons
+                            lat={item.lat}
+                            lng={item.lng}
+                            placeName={item.placeName}
+                            compact
+                            className="mt-3"
+                          />
+                        </div>
+                      </article>
                     </div>
-                  </article>
-                  </div>
-                );
-              })}
-            </div>
-            <TripStopSearchField
-              label={t("trip.addStop")}
-              center={tripCenter}
-              onPick={(place) => handleAddStop(dateKey, place)}
-            />
-          </section>
+                  );
+                })}
+              </div>
+              <TripStopSearchField
+                label={t("trip.addStop")}
+                center={tripCenter}
+                onPick={(place) => handleAddStop(dateKey, place)}
+              />
+            </section>
           );
         })}
       </div>
@@ -438,7 +403,11 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
           disabled={replanning || items.length < 1}
           className="flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
-          {replanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+          {replanning ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Sparkles className="h-4 w-4" />
+          )}
           依交通與停留時間重新規劃路線
         </button>
         <button

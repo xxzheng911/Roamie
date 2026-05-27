@@ -180,9 +180,15 @@ export type Database = {
         Row: {
           cover_image: string | null
           cover_image_url: string | null
+          cover_query: string | null
+          cover_source: string | null
           created_at: string
+          custom_cover_image_url: string | null
+          custom_title: string | null
           description: string | null
           id: string
+          is_cover_customized: boolean
+          is_title_customized: boolean
           mood: string | null
           payload: Json | null
           title: string
@@ -193,9 +199,15 @@ export type Database = {
         Insert: {
           cover_image?: string | null
           cover_image_url?: string | null
+          cover_query?: string | null
+          cover_source?: string | null
           created_at?: string
+          custom_cover_image_url?: string | null
+          custom_title?: string | null
           description?: string | null
           id?: string
+          is_cover_customized?: boolean
+          is_title_customized?: boolean
           mood?: string | null
           payload?: Json | null
           title: string
@@ -206,9 +218,15 @@ export type Database = {
         Update: {
           cover_image?: string | null
           cover_image_url?: string | null
+          cover_query?: string | null
+          cover_source?: string | null
           created_at?: string
+          custom_cover_image_url?: string | null
+          custom_title?: string | null
           description?: string | null
           id?: string
+          is_cover_customized?: boolean
+          is_title_customized?: boolean
           mood?: string | null
           payload?: Json | null
           title?: string

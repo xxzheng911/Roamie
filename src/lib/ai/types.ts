@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { OutfitAdvicePayload } from "@/lib/outfit/types";
+import type { OutfitAdvicePayload, TripOutfitSuggestionFields } from "@/lib/outfit/types";
 import type { TransitLegAdvice } from "@/lib/transit/types";
 import type { TripLocation } from "@/lib/location/types";
 
@@ -62,29 +62,35 @@ export type TripPlanSettings = {
   transport?: TripTransportMode;
   /** 各站點停留時間（分） */
   legMinutes?: Record<string, number>;
+  /** 各站點交通方式標籤（可自訂，如捷運、Uber） */
+  legTransport?: Record<string, string>;
   /** 點對點智慧交通建議，key: `A→B` */
   transitLegs?: Record<string, TransitLegAdvice>;
   transportTips?: string;
 };
 
 /** New-format payload stored in saved_trips.payload */
-export type RoamiePayloadV2 = RoamieResponse & {
-  version: 2;
-  destination?: string;
-  /** 目的地（城市／區域）結構化資料 */
-  destinationLocation?: TripLocation | null;
-  /** 出發地 */
-  originLocation?: TripLocation | null;
-  days?: number;
-  generatedAt?: string;
-  tripSettings?: TripPlanSettings;
-  /** AI 每日穿搭建議（整合天氣預報） */
-  outfitAdvice?: OutfitAdvicePayload;
-  /** true = 使用者已確認儲存至收藏 */
-  userSaved?: boolean;
-  source?: "chat" | "plan" | "mood_recommendation";
-  savedAt?: string;
-};
+export type RoamiePayloadV2 = RoamieResponse &
+  TripOutfitSuggestionFields & {
+    version: 2;
+    destination?: string;
+    /** 目的地（城市／區域）結構化資料 */
+    destinationLocation?: TripLocation | null;
+    /** 出發地 */
+    originLocation?: TripLocation | null;
+    days?: number;
+    generatedAt?: string;
+    tripSettings?: TripPlanSettings;
+    /** AI 每日穿搭建議（整合天氣預報） */
+    outfitAdvice?: OutfitAdvicePayload;
+    weatherSummary?: string;
+    outfitSuggestion?: string;
+    coreTrip?: Record<string, unknown>;
+    /** true = 使用者已確認儲存至收藏 */
+    userSaved?: boolean;
+    source?: "chat" | "plan" | "mood_recommendation";
+    savedAt?: string;
+  };
 
 export function isRoamiePayloadV2(payload: unknown): payload is RoamiePayloadV2 {
   if (!payload || typeof payload !== "object") return false;

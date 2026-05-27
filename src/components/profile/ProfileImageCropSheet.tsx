@@ -33,7 +33,7 @@ const VARIANT_CONFIG: Record<
     hint: string;
     aspectWidth: number;
     aspectHeight: number;
-    initialFit: "contain" | "cover";
+    initialFit: "contain" | "cover-line";
     fitPadding: number;
     exportMaxWidth: number;
     maskClass: string;
@@ -54,13 +54,15 @@ const VARIANT_CONFIG: Record<
   cover: {
     title: "調整封面",
     hint: "單指拖曳、雙指縮放",
+    /** 與 ProfileCover aspect-[3/2] 一致 */
     aspectWidth: 3,
     aspectHeight: 2,
-    initialFit: "cover",
-    fitPadding: 1,
+    /** LINE 風格：fit-to-width / contain，勿用 cover 填滿 */
+    initialFit: "cover-line",
+    fitPadding: 0.94,
     exportMaxWidth: 1024,
     maskClass:
-      "aspect-[3/2] w-[min(100%,72dvh)] max-w-[min(100vw-2rem,26rem)] rounded-md ring-2 ring-white/90",
+      "aspect-[3/2] w-[min(calc(100vw-2rem),40rem)] max-h-[min(42dvh,18rem)] rounded-md ring-2 ring-white/90",
   },
 };
 

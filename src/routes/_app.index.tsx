@@ -3,7 +3,7 @@ import { Sparkles, ChevronRight, Search, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
-import onsen from "@/assets/scene-onsen.jpg";
+import { HomeTripCard } from "@/components/home/HomeTripCard";
 import { HomeNearbyPlaceCards } from "@/components/home/HomeNearbyPlaceCards";
 import { HomeWeatherCard } from "@/components/home/HomeWeatherCard";
 import { HomePersonalizationCard } from "@/components/home/HomePersonalizationCard";
@@ -22,7 +22,8 @@ import {
   loadRecentRecommendationNames,
   recordRecommendationNames,
 } from "@/lib/recommendation-history";
-import { listItineraries } from "@/lib/itinerary-storage";
+import { SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
+import { getLatestCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
 import { supabase } from "@/integrations/supabase/client";
 import { useI18n } from "@/hooks/use-i18n";
 import { searchPlaces } from "@/lib/places.functions";
@@ -61,6 +62,15 @@ const HOME_MOODS = [
   { label: "看海", emoji: "🌊" },
 ] as const;
 
+const MOOD_CHAT_PROMPTS: Record<string, string> = {
+  深夜散步: "我想深夜散步，幫我看看附近適合去哪裡。",
+  下雨天: "今天下雨天，幫我推薦幾個適合放鬆的地方。",
+  找咖啡: "我想找咖啡廳坐坐，幫我挑幾個順路的選項。",
+  想放空: "我今天想放空，幫我安排一段輕鬆行程。",
+  一個人: "我想一個人慢慢走走，推薦適合獨處的地方。",
+  看海: "我想去看海放鬆一下，幫我規劃方向。",
+};
+
 function Home() {
   const { t, locale } = useI18n();
   const { openAddToTrip } = useAddToTrip();
@@ -85,8 +95,7 @@ function Home() {
   const [nearbyLoading, setNearbyLoading] = useState(true);
   const [selectedMood, setSelectedMood] = useState<string | null>(() => readHomeMood());
   const [aiLoading, setAiLoading] = useState(false);
-  const [latestTripId, setLatestTripId] = useState<string | null>(null);
-  const [latestTripTitle, setLatestTripTitle] = useState<string | null>(null);
+  const [latestTrip, setLatestTrip] = useState<CoreTrip | null>(null);
   const [prefs, setPrefs] = useState<Awaited<ReturnType<typeof getPreferences>> | null>(null);
   const [savedPlaces, setSavedPlaces] = useState<Awaited<ReturnType<typeof listPlaces>>>([]);
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
@@ -109,6 +118,7 @@ function Home() {
         travelStyle: profile?.travelStyle,
         personalityType: profile?.personalityType,
         personalitySummary: profile?.personalitySummary,
+        aiPreferences: profile?.aiPreferences,
       });
       const picks = await loadHomeNearbyPicks({
         userLocation: { lat: userLocation.lat, lng: userLocation.lng },
@@ -148,6 +158,33 @@ function Home() {
       mood: next ?? base.mood,
       selectedMood: next ?? base.selectedMood,
     });
+    if (!next) return;
+    const prompt = MOOD_CHAT_PROMPTS[next] ?? `我現在想要「${next}」的行程，請給我建議。`;
+    console.info("[MOOD_CHAT_START]", `mood=${next}`);
+    console.info("[MOOD_CHAT_ROUTE]", "target=/chat");
+    try {
+      void navigate({
+        to: "/chat",
+        search: {
+          mood: next,
+          from: "mood",
+          prompt,
+        },
+      });
+      saveChatSession({
+        ...loadChatSession(),
+        mood: next,
+        selectedMood: next,
+        fromMoodCard: true,
+        fromMoodFlow: true,
+      });
+    } catch (error) {
+      console.error(
+        "[MOOD_CHAT_ERROR]",
+        error instanceof Error ? error.message : String(error),
+      );
+      toast.error("目前無法開啟聊聊，請稍後再試");
+    }
   };
 
   useEffect(() => {
@@ -222,7 +259,9 @@ function Home() {
         lng: pick.lng,
         notes: pick.reason,
         mood_tag: selectedMood,
-        cover_image: pick.photoName ? (buildPlacePhotoUrl(pick.photoName, 600) ?? null) : pick.coverImageUrl,
+        cover_image: pick.photoName
+          ? (buildPlacePhotoUrl(pick.photoName, 600) ?? null)
+          : pick.coverImageUrl,
       });
       toast.success(didSave ? "已加入收藏" : "已取消收藏");
       await refreshSavedNames();
@@ -233,17 +272,24 @@ function Home() {
     }
   };
 
-  useEffect(() => {
-    listItineraries()
-      .then((trips) => {
-        const latest = trips[0];
-        if (latest) {
-          setLatestTripId(latest.id);
-          setLatestTripTitle(latest.title);
-        }
-      })
-      .catch(() => {});
+  const refreshLatestTrip = useCallback(() => {
+    void getLatestCoreTrip()
+      .then((view) => setLatestTrip(view))
+      .catch(() => setLatestTrip(null));
   }, []);
+
+  useEffect(() => {
+    refreshLatestTrip();
+    const onRefresh = () => refreshLatestTrip();
+    window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
+    window.addEventListener("focus", onRefresh);
+    document.addEventListener("visibilitychange", onRefresh);
+    return () => {
+      window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
+      window.removeEventListener("focus", onRefresh);
+      document.removeEventListener("visibilitychange", onRefresh);
+    };
+  }, [refreshLatestTrip]);
 
   const handleRecommend = async () => {
     if (!selectedMood) {
@@ -308,8 +354,7 @@ function Home() {
         className="mt-5 block rounded-3xl border border-border bg-card p-5 shadow-soft transition active:scale-[0.99]"
       >
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Sparkles className="h-3.5 w-3.5 text-clay" />
-          和 Roamie 聊聊
+          <Sparkles className="h-3.5 w-3.5 text-clay" />和 Roamie 聊聊
         </div>
         <p className="mt-3 font-display text-[19px] leading-snug">
           「先說說心情，我幫你挑幾個地方，再一起把行程定下來。」
@@ -392,28 +437,7 @@ function Home() {
         <ChevronRight className="h-4 w-4" />
       </Link>
 
-      {latestTripId && latestTripTitle && (
-        <Link
-          to="/trip"
-          search={{ id: latestTripId }}
-          className="mt-7 block overflow-hidden rounded-3xl border border-border bg-card shadow-soft"
-        >
-          <div className="relative aspect-[16/10] overflow-hidden">
-            <img src={onsen} alt="" loading="lazy" className="h-full w-full object-cover" />
-            <div className="absolute inset-0 bg-gradient-to-t from-ink/55 via-transparent" />
-            <div className="absolute bottom-0 left-0 right-0 p-4 text-cream">
-              <p className="text-[11px] uppercase tracking-[0.2em] opacity-80">繼續你的行程</p>
-              <h3 className="mt-1 font-display text-xl">{latestTripTitle}</h3>
-            </div>
-          </div>
-          <div className="flex items-center justify-between px-5 py-3.5 text-sm">
-            <span className="text-muted-foreground">Roamie 幫你安排的旅程</span>
-            <span className="inline-flex items-center gap-1 text-foreground">
-              繼續 <ChevronRight className="h-4 w-4" />
-            </span>
-          </div>
-        </Link>
-      )}
+      {latestTrip ? <HomeTripCard trip={latestTrip} /> : null}
 
       <HomeWeatherCard
         weather={weather}
@@ -459,7 +483,7 @@ function Home() {
         weather={weather}
         nearbyPicks={nearbyPicks}
         selectedMood={selectedMood}
-        latestTripTitle={latestTripTitle}
+        latestTripTitle={latestTrip?.displayTitle ?? null}
       />
     </div>
   );

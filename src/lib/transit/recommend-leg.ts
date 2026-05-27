@@ -1,5 +1,9 @@
-import type { LegDurationEstimate } from "@/lib/google-directions.server";
-import { isJapanOrKorea, resolveRegionProfile, type RegionProfile } from "@/lib/transit/region-profiles";
+import type { LegDurationEstimate } from "@/lib/routes/types";
+import {
+  isJapanOrKorea,
+  resolveRegionProfile,
+  type RegionProfile,
+} from "@/lib/transit/region-profiles";
 import {
   buildLegKey,
   type TransitComplexity,
@@ -51,7 +55,8 @@ function parseHour(time?: string): number | null {
 }
 
 function prefersTaxi(prefs: TransitPreferences): boolean {
-  const t = `${prefs.transportation ?? ""} ${prefs.pace ?? ""} ${prefs.companionship ?? ""}`.toLowerCase();
+  const t =
+    `${prefs.transportation ?? ""} ${prefs.pace ?? ""} ${prefs.companionship ?? ""}`.toLowerCase();
   return /計程|taxi|uber|輕鬆|長輩|爸媽|媽媽|爸爸|小孩|親子|行李|趕|累/.test(t);
 }
 
@@ -102,6 +107,8 @@ function buildReason(
       return "時間偏晚，大眾運輸選擇較少，搭車比較省心。";
     }
     if (weather.isRainy) return "下雨天移動，搭車比較舒服。";
+    if (weather.isHot) return "天氣偏熱，這段搭車會比較輕鬆。";
+    if (weather.isNight) return "夜間移動，搭車或大眾運輸較安心。";
     if (prefersTaxi(prefs)) return "依你的旅遊節奏，這段搭車會比較省力。";
     if (drive != null && walk != null && drive + 8 < walk) {
       return `開車約 ${drive} 分鐘，比步行省不少時間。`;
@@ -153,11 +160,30 @@ function pickMode(
     return { mode: "drive", complexity: "medium", minutes: driveMin };
   }
 
-  if (dist <= 550 && walkMin <= 8 && !weather.isRainy) {
+  if (weather.isHot && dist > 500) {
+    return { mode: "taxi", complexity: "low", minutes: driveMin };
+  }
+
+  if (weather.isNight && dist > 900 && walkMin > 12) {
+    return {
+      mode: region.id === "bangkok" ? "uber" : "taxi",
+      complexity: "low",
+      minutes: driveMin,
+    };
+  }
+
+  if (dist <= 550 && walkMin <= 8 && !weather.isRainy && !(weather.isHot ?? false)) {
     return { mode: "walk", complexity: "low", minutes: walkMin };
   }
 
-  if (dist <= 1200 && walkMin <= 15 && prefersWalk(prefs) && !weather.isRainy && !isRushHour(hour)) {
+  if (
+    dist <= 1200 &&
+    walkMin <= 15 &&
+    prefersWalk(prefs) &&
+    !weather.isRainy &&
+    !(weather.isHot ?? false) &&
+    !isRushHour(hour)
+  ) {
     return { mode: "walk", complexity: "low", minutes: walkMin };
   }
 
@@ -165,7 +191,11 @@ function pickMode(
   const complexMetro = region.metroComplexity === "high" && dist > 900;
 
   if (late || (complexMetro && prefersTaxi(prefs))) {
-    return { mode: region.id === "bangkok" ? "uber" : "uber", complexity: "medium", minutes: driveMin };
+    return {
+      mode: region.id === "bangkok" ? "uber" : "uber",
+      complexity: "medium",
+      minutes: driveMin,
+    };
   }
 
   if (weather.isRainy && dist > 700) {

@@ -8,6 +8,7 @@ import { loadDraftTrip, saveDraftTrip } from "@/lib/trip-draft-storage";
 import { insertStopOnDate } from "@/lib/trip/trip-stop-mutations";
 import { tripPlaceToItineraryItem, type TripPlaceInput } from "@/lib/trip/trip-place-input";
 import { tagUserSavedTrip } from "@/lib/saved-collection";
+import { generateTripTitle } from "@/lib/trip/trip-title";
 
 export type AppendPlaceTarget =
   | { kind: "draft" }
@@ -34,10 +35,16 @@ export async function appendPlaceToTrip(
   });
 
   if (target.kind === "new") {
+    const autoTitle =
+      target.title.trim() ||
+      generateTripTitle({
+        destination: target.destination ?? place.address,
+        placeName: place.placeName,
+      });
     const payload: RoamiePayloadV2 = tagUserSavedTrip(
       {
         version: 2,
-        title: target.title,
+        title: autoTitle,
         summary: `Roamie 陪你慢慢整理「${place.placeName}」開始的旅程。`,
         moodTag: "",
         recommendations: [],

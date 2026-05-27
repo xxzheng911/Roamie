@@ -1,4 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import defaultAvatar from "@/assets/roamie-default-avatar.png";
 import { getUserProfile } from "@/lib/profile-storage";
 import { AVATAR_UPDATED_EVENT } from "@/lib/avatar-events";
@@ -17,7 +25,20 @@ const Ctx = createContext<AvatarCtx | null>(null);
 export function AvatarProvider({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
+  const [preview, setPreviewState] = useState<string | null>(null);
+
+  const setPreview = useCallback((url: string | null) => {
+    setPreviewState((prev) => {
+      if (prev?.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(prev);
+        } catch {
+          /* noop */
+        }
+      }
+      return url;
+    });
+  }, []);
   const pathname = readBrowserPathname();
   const skipProfileFetch = shouldUseLightStartupShell(pathname, Boolean(user), loading);
 
@@ -29,7 +50,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     } catch {
       /* keep last */
     }
-  }, []);
+  }, [setPreview]);
 
   useEffect(() => {
     if (skipProfileFetch) return;
@@ -46,11 +67,12 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
 
   const avatarSrc = preview ?? avatarUrl ?? defaultAvatar;
 
-  return (
-    <Ctx.Provider value={{ avatarUrl, avatarSrc, refresh, setPreview }}>
-      {children}
-    </Ctx.Provider>
+  const ctx = useMemo(
+    () => ({ avatarUrl, avatarSrc, refresh, setPreview }),
+    [avatarUrl, avatarSrc, refresh, setPreview],
   );
+
+  return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>;
 }
 
 export function useAvatar() {

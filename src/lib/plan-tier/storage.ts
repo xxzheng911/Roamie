@@ -4,7 +4,6 @@ import {
   markCompanionModeSelected,
   readSelectedCompanionTier,
 } from "@/lib/companion-mode-storage";
-import { markOnboardingCompletedSync } from "@/lib/onboarding-storage";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { supabase } from "@/lib/supabase";
 import {
@@ -75,9 +74,7 @@ export async function isIntroCompleted(userId?: string): Promise<boolean> {
   const prefs = (data as { ai_preferences?: unknown } | null)?.ai_preferences;
   if (!introFromAiPreferences(prefs)) return false;
 
-  const tier = companionTierFromAiPreferences(prefs) ?? "free";
-  markOnboardingCompletedSync();
-  markCompanionModeSelected(tier);
+  // 遠端 profile 僅供查詢；不可覆寫本機 onboarding 完成狀態（裝置級首次體驗）。
   return true;
 }
 
@@ -87,9 +84,7 @@ export async function markIntroCompleted(tier: PlanTier = "free"): Promise<void>
   await markOnboardingCompleted();
 
   const userId = await getAuthenticatedUserId();
-  if (!userId) {
-    throw new Error("請先登入後再選擇陪伴方式");
-  }
+  if (!userId) return;
 
   try {
     await ensureUserProfile(userId);

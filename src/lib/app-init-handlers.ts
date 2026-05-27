@@ -17,8 +17,7 @@ import { attachOAuthDeepLinkListener, readPendingCallbackPath } from "@/lib/auth
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
 import { prefetchLocationPermissionStatus } from "@/lib/location-permission-manager";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
-import { hydrateOnboardingStatus } from "@/lib/onboarding-storage";
-import { ensureColdStartPath } from "@/lib/startup-route";
+import { loadOnboardingState } from "@/lib/onboarding-storage";
 
 let appInitInstalled = false;
 
@@ -113,15 +112,14 @@ function installAppInitHandlersCore(): void {
     if (cap?.isNativePlatform?.()) {
       void waitForCapacitorBridge().then(async (ready) => {
         if (!ready) return;
-        await hydrateOnboardingStatus();
-        ensureColdStartPath();
+        await loadOnboardingState();
         prefetchLocationPermissionStatus();
         void warmSupabaseAuthStorage();
         attachOAuthDeepLinkListener();
         recoverPendingOAuthCallbackPath();
       });
     } else {
-      void hydrateOnboardingStatus().then(() => ensureColdStartPath());
+      void loadOnboardingState();
     }
   } catch (error) {
     logAppError("APP_INIT_ERROR", error, { source: "normalizeCapacitorEntryPath" });

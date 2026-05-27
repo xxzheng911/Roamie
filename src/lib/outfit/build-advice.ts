@@ -1,10 +1,16 @@
 import type { RoamieItineraryItem } from "@/lib/ai/types";
 import type { DailyForecast } from "@/lib/weather.functions";
-import { callOutfitAI, buildScheduleSummary, type OutfitAIItem } from "@/lib/outfit/outfit-ai.server";
 import { buildFallbackOutfitAdvice } from "@/lib/outfit/fallback-outfit";
 import { groupItineraryByDate } from "@/lib/outfit/group-by-date";
 import { inferActivityTypesFromDayItems } from "@/lib/outfit/infer-activities";
 import type { DailyOutfitAdvice, OutfitAdvicePayload } from "@/lib/outfit/types";
+
+type OutfitAIItem = {
+  date: string;
+  outfitSummary?: string;
+  narrative?: string;
+  packingReminders?: string[];
+};
 
 function resolveItemsForDay(
   f: DailyForecast,
@@ -46,16 +52,15 @@ function mergeForecastWithAI(
         tempHighC: hi,
         tempLowC: lo,
         precipProbability: f.precipProbability,
-        diurnalRangeC:
-          hi != null && lo != null ? Math.round((hi - lo) * 10) / 10 : null,
+        diurnalRangeC: hi != null && lo != null ? Math.round((hi - lo) * 10) / 10 : null,
         iconType: f.iconType,
+        cloudCoverPercent: f.cloudCoverPercent ?? null,
+        uvi: f.uvi ?? null,
       },
       activityTypes: activities,
       outfitSummary: ai?.outfitSummary ?? "舒適好走的日常穿搭",
       narrative: ai?.narrative ?? "記得依天氣多帶一層，讓自己走得舒服。",
-      packingReminders: ai?.packingReminders?.length
-        ? ai.packingReminders
-        : [],
+      packingReminders: ai?.packingReminders?.length ? ai.packingReminders : [],
       styleTone: fashionStyle,
     };
   });
@@ -70,11 +75,10 @@ export async function buildOutfitAdviceForTrip(params: {
   fashionStyle?: string;
   mood?: string;
 }): Promise<OutfitAdvicePayload> {
+  const { callOutfitAI, buildScheduleSummary } = await import("@/lib/outfit/outfit-ai.server");
   const itemsByDate = groupItineraryByDate(params.itinerary);
   const forecast =
-    params.forecast.length > 0
-      ? params.forecast.slice(0, params.days)
-      : params.forecast;
+    params.forecast.length > 0 ? params.forecast.slice(0, params.days) : params.forecast;
 
   if (!forecast.length) {
     return {

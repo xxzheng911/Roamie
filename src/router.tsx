@@ -1,3 +1,4 @@
+import "./client-entry";
 import "./boot-trace";
 import { scheduleAppInitHandlers } from "@/lib/app-init-handlers";
 

@@ -167,6 +167,10 @@ export function formatErrorDetail(error: unknown): string | null {
  */
 export function logAppError(tag: string, error: unknown, extra?: Record<string, unknown>): void {
   if (!import.meta.env.DEV && isBenignWebKitNoise(error, extra)) return;
+  const s = serializeError(error);
+  console.error("[APP_ERROR] source=", tag);
+  console.error("[APP_ERROR] message=", s.message);
+  console.error("[APP_ERROR] stack=", s.stack ?? s.raw ?? "");
   const line = formatAppErrorLine(tag, error, extra);
   console.error(line);
 }

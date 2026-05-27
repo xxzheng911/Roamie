@@ -20,15 +20,14 @@ export function tripLocationToPlaceRef(loc: TripLocation): TripPlaceRef {
   };
 }
 
-export function tripPlaceInputToTripLocation(place: TripPlaceInput, placeId: string): TripLocation | null {
-  if (place.lat == null || place.lng == null) return null;
+export function tripPlaceInputToTripLocation(place: TripPlaceInput, placeId: string): TripLocation {
   const name = place.placeName || place.name;
   return {
     placeId: place.googlePlaceId ?? placeId,
     country: name,
     city: name,
-    lat: place.lat,
-    lng: place.lng,
+    lat: place.lat ?? Number.NaN,
+    lng: place.lng ?? Number.NaN,
     formattedName: name,
     displayLabel: name,
     address: place.address,

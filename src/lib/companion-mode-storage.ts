@@ -1,12 +1,17 @@
 import type { PlanTier } from "@/lib/plan-tier/types";
-import { isOnboardingCompletedSync, markOnboardingCompletedSync } from "@/lib/onboarding-storage";
+import { markOnboardingCompletedSync } from "@/lib/onboarding-storage";
 
 /** Device-local：登入後是否已完成「選擇旅行陪伴方式」 */
 export const COMPANION_MODE_COMPLETED_KEY = "roamie:companionModeCompleted";
 export const COMPANION_MODE_TIER_KEY = "roamie:companionModeTier";
 
 export function hasSelectedCompanionMode(): boolean {
-  return isOnboardingCompletedSync();
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(COMPANION_MODE_COMPLETED_KEY) === "true";
+  } catch {
+    return false;
+  }
 }
 
 export function readSelectedCompanionTier(): PlanTier | null {

@@ -27,6 +27,8 @@ import {
   mergeRecommendationsWithSelected,
   syncSessionPlaceMemory,
 } from "@/lib/place-planning-memory";
+import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 
 export {
   buildContextualMoodHandoffOpening,
@@ -106,6 +108,10 @@ export type ChatPlanningSession = {
   startTime?: string;
   endTime?: string;
   phase: ChatPhase;
+  /** Canonical AI travel context (merged each turn) */
+  travelContext?: CanonicalTravelContext;
+  /** Clarifying keys already asked — avoid repeat questions */
+  askedClarifyKeys?: TripIntentMissingKey[];
   recommendationId?: string;
   conversationSummary?: string;
   recommendationTitle?: string;
@@ -219,14 +225,28 @@ function sessionHasTripDestination(session: ChatPlanningSession): boolean {
 
 export function isDiscoveryComplete(session: ChatPlanningSession): boolean {
   if (session.selectedPlaces.length > 0 && session.mood) return true;
+  if (session.fromMoodCard || session.fromMoodFlow) return true;
   const d = session.discovery ?? {};
-  const hasVibe = Boolean(d.vibe?.trim());
-  const hasCompanionship = Boolean(d.companionship?.trim());
-  const hasSetting = Boolean(d.setting?.trim());
+  const moodLabel = session.selectedMood ?? session.mood;
+  const hasVibe = Boolean(d.vibe?.trim() || moodLabel?.trim() || session.travelContext?.vibe);
+  const hasCompanionship = Boolean(
+    d.companionship?.trim() || session.travelContext?.companion?.trim(),
+  );
+  const hasSetting = Boolean(
+    d.setting?.trim() ||
+      session.travelContext?.setting ||
+      /散步|咖啡|雨|海/.test(moodLabel ?? ""),
+  );
   // 跨城市旅行：有目的地 + 心情 + 旅伴即可推薦（室內外可稍後再細調）
   if (sessionHasTripDestination(session)) {
     return hasVibe && hasCompanionship;
   }
+  const hasGps =
+    session.location?.lat != null &&
+    session.location?.lng != null &&
+    moodLabel &&
+    hasCompanionship;
+  if (hasGps && hasVibe) return true;
   return hasVibe && hasCompanionship && hasSetting;
 }
 
@@ -263,6 +283,8 @@ export function extractDiscoveryFromText(
     discovery.vibe = "探索";
   } else if (!discovery.vibe && /(拍照|攝影|打卡|取景|網美|拍美照)/.test(t)) {
     discovery.vibe = "拍照";
+  } else if (!discovery.vibe && /(都有|都可以|都行|混合|都想要)/.test(t)) {
+    discovery.vibe = "混合";
   }
 
   if (!discovery.companionship && /(一個人|獨自|自己|solo)/i.test(t)) {
@@ -282,6 +304,8 @@ export function extractDiscoveryFromText(
     discovery.setting = "室內";
   } else if (!discovery.setting && /(室外|戶外|外面|曬太陽|海邊|公園|散步)/.test(t)) {
     discovery.setting = "室外";
+  } else if (!discovery.setting && /(都可以|都行|都有|看情況)/.test(t)) {
+    discovery.setting = "都可以";
   }
 
   const mustVisitMatch = t.match(

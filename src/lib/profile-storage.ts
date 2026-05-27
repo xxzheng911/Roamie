@@ -19,6 +19,12 @@ const GUEST_SETTINGS_KEY = "roamie:profile-settings";
 
 export type ProfileExtras = {
   travelStyle?: string;
+  travelPreferences?: string[];
+  pacePreference?: string;
+  transportPreference?: string;
+  vibePreference?: string;
+  budgetPreference?: string;
+  updatedAt?: string;
   personalityType?: string;
   personalitySummary?: string;
 };
@@ -36,6 +42,7 @@ export type UserProfile = {
   personalityType: string;
   personalitySummary: string;
   personalityImpression: string;
+  aiPreferences?: Record<string, unknown>;
 };
 
 type GuestSettings = {
@@ -205,6 +212,7 @@ export async function getUserProfile(localeOverride?: Locale): Promise<UserProfi
     personalitySummary:
       prefs.personalitySummary ?? extras.personalitySummary ?? personality.summary,
     personalityImpression: personality.impression,
+    aiPreferences: extras,
   };
 }
 
@@ -301,4 +309,29 @@ export async function savePersonalityToProfile(prefs: TravelPreferences): Promis
       throw new Error(error.message);
     }
   }
+}
+
+export async function syncTravelPreferenceProfileFields(input: {
+  travelStyle?: string;
+  prefs: TravelPreferences;
+}): Promise<void> {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) return;
+  const payload: ProfileExtras = {
+    travelStyle: input.travelStyle?.trim() || "",
+    travelPreferences: input.prefs.interests ?? [],
+    pacePreference: input.prefs.pace ?? "",
+    transportPreference:
+      ((input.prefs as TravelPreferences & { transportPreference?: string }).transportPreference ??
+        "") || "",
+    vibePreference: input.prefs.vibe ?? "",
+    budgetPreference: resolveBudgetMode(input.prefs),
+    updatedAt: new Date().toISOString(),
+    personalityType: input.prefs.personalityType,
+    personalitySummary: input.prefs.personalitySummary,
+  };
+  const { error } = await supabase
+    .from("profiles")
+    .upsert({ id: userId, ai_preferences: payload as never }, { onConflict: "id" });
+  if (error) throw new Error(error.message);
 }

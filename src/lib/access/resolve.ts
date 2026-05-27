@@ -50,6 +50,12 @@ export function buildAccessSnapshot(
   const hasPlusAccess = effectiveTier === "plus";
   /** subscriptionPlusActive || devPlusMode（force-free 覆寫時為 false） */
   const isPlusUser = hasPlusAccess;
+  const devSubscriptionMode: SubscriptionState =
+    testModeOverride === "force-free"
+      ? "free"
+      : testModeOverride === "force-plus"
+        ? "plus"
+        : subscriptionState;
 
   return {
     subscriptionState,
@@ -58,6 +64,7 @@ export function buildAccessSnapshot(
     hasPlusAccess,
     isPlusUser,
     devPlusMode,
+    devSubscriptionMode,
     subscriptionPlusActive,
     effectiveTier,
     developerUnlocked,

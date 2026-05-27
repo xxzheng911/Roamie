@@ -11,15 +11,19 @@ export type PlusUpgradeResult = "upgraded" | "coming_soon";
  */
 export function usePlusUpgrade() {
   const { user } = useAuth();
-  const { enablePlusTestMode } = useAccess();
+  const { enablePlusTestMode, testModeOverride } = useAccess();
   const [comingSoonOpen, setComingSoonOpen] = useState(false);
 
   const canInstantUpgrade =
-    import.meta.env.DEV || isDeveloperBuildEnabled() || canShowDeveloperTools(user?.email ?? null);
+    import.meta.env.DEV ||
+    isDeveloperBuildEnabled() ||
+    canShowDeveloperTools(user?.email ?? null) ||
+    testModeOverride !== "none";
 
   const upgradeToPlus = useCallback((): PlusUpgradeResult => {
     if (canInstantUpgrade) {
       enablePlusTestMode();
+      console.info("[DEV_SUBSCRIPTION] switched_to_plus");
       toast.success("已啟用 Roamie Plus");
       return "upgraded";
     }

@@ -55,8 +55,26 @@ const CAPACITOR_BOOT_LOG_HELPER = `<script>
 window.__ROAMIE_BOOT_LOG__={
   quiet:${quietBoot ? "true" : "false"},
   verbose:function(){try{return localStorage.getItem("roamie:boot-diagnostics")==="1";}catch(_){return false;}},
-  log:function(msg,critical){if(critical||this.verbose()||!this.quiet)console.error(msg);}
+  log:function(msg,critical){
+    var s=String(msg||"");
+    if(s.indexOf("[APP_BOOT]")>=0||s.indexOf("[ONBOARDING_GUARD]")>=0||s.indexOf("REAL ENTRY")>=0){
+      console.log(s);
+      return;
+    }
+    if(critical||this.verbose()||!this.quiet)console.error(s);
+  }
 };
+</script>`;
+
+/** 最早執行：在 React bundle 之前；Xcode 必須看得到才算改對入口 */
+const CAPACITOR_REAL_ENTRY_PROBE = `<script>
+console.log("[APP_BOOT] REAL ENTRY FILE LOADED: dist/client/index.html");
+console.log("[APP_BOOT] boot-trace loaded (index.html inline)");
+try{
+  if(window.Capacitor&&typeof window.Capacitor.getPlatform==="function"){
+    console.log("[APP_BOOT] platform:",window.Capacitor.getPlatform());
+  }
+}catch(_){}
 </script>`;
 
 function findClientEntryFromManifest() {
@@ -298,10 +316,21 @@ const CAPACITOR_PATH_NORMALIZE = `<script>
   var p=location.pathname.replace(/\\/+$/, "") || "/";
   var q=location.search||"";
   var h=location.hash||"";
-  var legacy={"/loading":1,"/intro":1,"/splash":1,"/onboarding":1};
+  var legacy={"/loading":1,"/intro":1,"/splash":1};
+  if(p==="/onboarding"){
+    console.log("[ONBOARDING_GUARD] boot redirect to onboarding (inline /onboarding)");
+    history.replaceState(history.state,"","/welcome"+q+h);
+    return;
+  }
   if(p===""||p==="/"||p==="/index.html"||p.endsWith("/index.html")||legacy[p]){
     history.replaceState(history.state,"","/"+q+h);
     p="/";
+  }
+  function hasOnboardingCompleted(){
+    try{
+      if(localStorage.getItem("onboarding_completed")==="true")return true;
+      return false;
+    }catch(e){return false;}
   }
   function hasSession(){
     try{
@@ -311,19 +340,28 @@ const CAPACITOR_PATH_NORMALIZE = `<script>
       return Boolean(j&&j.access_token);
     }catch(e){return false;}
   }
-  function hasCompanion(){
-    try{return localStorage.getItem("roamie:companionModeCompleted")==="true";}catch(e){return false;}
-  }
   if(location.search.indexOf("code=")>=0&&p!=="/auth/callback"){
     history.replaceState(history.state,"","/auth/callback"+q+h);
     return;
   }
   if(p==="/auth/callback"||location.search.indexOf("code=")>=0)return;
-  if(p==="/login"||p==="/welcome"||p==="/trip")return;
+  if(p.startsWith("/auth/"))return;
+  if(p==="/welcome"||p==="/login"||p==="/trip"||p.indexOf("/login/")===0)return;
+  if(!hasOnboardingCompleted()){
+    if(p!=="/welcome"){
+      console.log("[ONBOARDING_GUARD] boot redirect to onboarding (inline)");
+      history.replaceState(history.state,"","/welcome"+q+h);
+    }
+    return;
+  }
   var target="/";
   if(!hasSession())target="/login";
-  else if(!hasCompanion())target="/welcome";
-  if(p!==target)history.replaceState(history.state,"",target+q+h);
+  if(p!==target){
+    if(target==="/"){
+      console.log("[ONBOARDING_GUARD] blocked home redirect (inline -> login)");
+    }
+    history.replaceState(history.state,"",target+q+h);
+  }
 })();
 </script>`;
 
@@ -384,7 +422,7 @@ function patchClientBundleForCapacitorSpa(entryRelPath) {
 }
 
 /** bundle 第一行 marker — Release 走 __ROAMIE_BOOT_LOG__，Debug 仍可 verbose */
-const CAPACITOR_BUNDLE_SHELL_PREFIX = `(function(){try{if(window.__ROAMIE_BOOT_LOG__)window.__ROAMIE_BOOT_LOG__.log("MAIN_TSX_LOADED",false);}catch(_){}})();
+const CAPACITOR_BUNDLE_SHELL_PREFIX = `(function(){try{console.log("[APP_BOOT] REAL ENTRY FILE LOADED: client-bundle");console.log("[APP_BOOT] boot-trace loaded");if(window.__ROAMIE_BOOT_LOG__)window.__ROAMIE_BOOT_LOG__.log("MAIN_TSX_LOADED",true);}catch(_){}})();
 (function(){
   var root=document.getElementById("root");
   if(!root||root.childElementCount>0)return;
@@ -577,6 +615,7 @@ function writeBundledIndexHtml({ clientEntry, bootstrapEntry, stylesheet }) {
     `<!DOCTYPE html>
 <html lang="zh-Hant" class="roamie-app">
   <head>
+    ${CAPACITOR_REAL_ENTRY_PROBE}
     ${CAPACITOR_BOOT_LOG_HELPER}
     ${CAPACITOR_INDEX_HTML_PROBE}
     <base href="./" />

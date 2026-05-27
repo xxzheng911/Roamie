@@ -1,4 +1,10 @@
-import { createFileRoute, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Outlet,
+  redirect,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
@@ -25,9 +31,15 @@ import {
   setIosSnapshotLiveInteractionForced,
 } from "@/lib/ios-snapshot-bridge";
 import { detectPlatform } from "@/services/platform";
-import { hydrateOnboardingStatus } from "@/lib/onboarding-storage";
+import { loadOnboardingState } from "@/lib/onboarding-storage";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import { resolveStartupPathFast } from "@/lib/startup-route";
+import {
+  guardStartupTarget,
+  isOnWelcomeRoute,
+  logStartupNavigationContext,
+} from "@/lib/startup-navigation";
+import { isOnboardingCompletedSync } from "@/lib/onboarding-storage";
 import { useAuth } from "@/hooks/use-auth";
 import { emitOAuthFlow, OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
@@ -75,6 +87,17 @@ const OAUTH_BUSY_TIMEOUT_MS = 120_000;
 const APPLE_BUSY_TIMEOUT_MS = 90_000;
 
 export const Route = createFileRoute("/login")({
+  beforeLoad: async () => {
+    if (typeof window === "undefined") return;
+    await loadOnboardingState();
+    if (!isOnboardingCompletedSync()) {
+      console.log("[ONBOARDING_GUARD] blocked home redirect", {
+        source: "login-beforeLoad",
+        targetRoute: "/welcome",
+      });
+      throw redirect({ to: "/welcome" });
+    }
+  },
   component: Login,
 });
 
@@ -102,8 +125,7 @@ function Login() {
       oauthBusyTimerRef.current = null;
       setBusy(null);
       setAuthError(
-        message ??
-          "登入逾時，請再試一次。若已看到 Google 登入完成，請關閉瀏覽器視窗後重試。",
+        message ?? "登入逾時，請再試一次。若已看到 Google 登入完成，請關閉瀏覽器視窗後重試。",
       );
     }, ms);
   };
@@ -151,11 +173,40 @@ function Login() {
     if (loading || redirectedRef.current) return;
     if (user) {
       redirectedRef.current = true;
-      void hydrateOnboardingStatus().then(() => {
-        const fastTo = resolveStartupPathFast();
+      void loadOnboardingState().then(async () => {
+        if (!isOnboardingCompletedSync()) {
+          const fastTo = guardStartupTarget("/welcome", "login-session-restore");
+          console.log("[ONBOARDING_GUARD] blocked home redirect", {
+            source: "login-session-restore",
+            targetRoute: fastTo,
+          });
+          await logStartupNavigationContext("login-session-restore", fastTo, {
+            reason: "onboarding_incomplete",
+            trigger: "Login.useEffect(user)->onboarding_incomplete",
+          });
+          navigate({ to: fastTo, replace: true });
+          return;
+        }
+
+        if (isOnWelcomeRoute()) {
+          console.info("[Startup Navigation Skipped]", {
+            source: "login-session-restore",
+            reason: "onboarding_in_progress_on_welcome",
+            currentRoute: "/welcome",
+          });
+          return;
+        }
+
+        const fastTo = guardStartupTarget(resolveStartupPathFast(), "login-session-restore");
+        await logStartupNavigationContext("login-session-restore", fastTo);
         navigate({ to: fastTo, replace: true });
-        void resolveStartupPath({ hasSession: true, skipLog: true }).then((to) => {
-          if (to !== fastTo) navigate({ to, replace: true });
+        void resolveStartupPath({
+          hasSession: true,
+          skipLog: true,
+          source: "login-session-restore",
+        }).then((to) => {
+          const guarded = guardStartupTarget(to, "login-session-restore");
+          if (guarded !== fastTo) navigate({ to: guarded, replace: true });
         });
       });
     }
@@ -315,10 +366,17 @@ function Login() {
         notifyIosOAuthReturn();
         scheduleIosSnapshotRefreshBurst("apple-sign-in");
 
-        const next = await resolveStartupPath({ hasSession: true });
+        const next = guardStartupTarget(
+          await resolveStartupPath({ hasSession: true, source: "login-session-restore" }),
+          "login-session-restore",
+        );
         const { toast } = await import("sonner");
         toast.success("登入成功");
-        finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }));
+        finishPostAuthRedirect(
+          next,
+          (opts) => navigate({ to: opts.to, replace: opts.replace }),
+          "login-session-restore",
+        );
         return;
       }
 
@@ -357,7 +415,8 @@ function Login() {
             </Suspense>
           </div>
           <h1 className="mt-6 font-display text-[28px] leading-tight">
-            慢慢來，<br />
+            慢慢來，
+            <br />
             Roamie 等你。
           </h1>
           <p className="mt-3 max-w-[260px] text-sm leading-relaxed text-muted-foreground">
@@ -419,14 +478,21 @@ function Login() {
               type="button"
               onClick={() => {
                 // Dev-only: clear local app state for a clean boot.
-                try {
-                  localStorage.clear();
-                  sessionStorage.clear();
-                } catch {
-                  /* ignore */
-                }
-                void import("sonner").then(({ toast }) => toast.success("已清除本機狀態"));
-                window.location.replace("/login");
+                void (async () => {
+                  try {
+                    localStorage.clear();
+                    sessionStorage.clear();
+                  } catch {
+                    /* ignore */
+                  }
+                  const [{ resetOnboardingState }, { toast }] = await Promise.all([
+                    import("@/lib/onboarding-storage"),
+                    import("sonner"),
+                  ]);
+                  await resetOnboardingState();
+                  toast.success("已重置 onboarding / 首次啟動");
+                  window.location.replace("/welcome");
+                })();
               }}
               className="mt-2 w-full rounded-full border border-dashed border-border py-3 text-xs text-muted-foreground"
             >
@@ -462,10 +528,22 @@ function AppleIcon() {
 function GoogleIcon() {
   return (
     <svg viewBox="0 0 48 48" className="h-4 w-4" aria-hidden>
-      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
-      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 16 19 13 24 13c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.6 8.3 6.3 14.7z" />
-      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z" />
-      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.1 5.6l6.2 5.2c-.4.4 6.6-4.8 6.6-14.8 0-1.3-.1-2.4-.4-3.5z" />
+      <path
+        fill="#FFC107"
+        d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"
+      />
+      <path
+        fill="#FF3D00"
+        d="M6.3 14.7l6.6 4.8C14.6 16 19 13 24 13c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.6 8.3 6.3 14.7z"
+      />
+      <path
+        fill="#4CAF50"
+        d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"
+      />
+      <path
+        fill="#1976D2"
+        d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.1 5.6l6.2 5.2c-.4.4 6.6-4.8 6.6-14.8 0-1.3-.1-2.4-.4-3.5z"
+      />
     </svg>
   );
 }

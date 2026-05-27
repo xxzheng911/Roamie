@@ -27,7 +27,12 @@ export type SavedTripDay = {
 
 export type SavedTripView = {
   id: string;
+  /** 自動產生的預設名稱 */
   title: string;
+  customTitle: string | null;
+  isTitleCustomized: boolean;
+  /** 列表／詳情顯示用 */
+  displayTitle: string;
   destination: string;
   dateRange: SavedTripDateRange;
   /** 行程天數（含首尾） */
@@ -36,7 +41,19 @@ export type SavedTripView = {
   transportMode: string;
   companionCount: string;
   isSaved: boolean;
+  /** 非自訂預設封面 */
+  coverImageUrl: string | null;
+  customCoverImageUrl: string | null;
+  aiGeneratedCoverImageUrl: string | null;
+  isCoverCustomized: boolean;
+  /** 列表／詳情顯示用 */
+  displayCoverImage: string;
+  /** @deprecated 使用 resolveTripCoverUrl / displayCoverImage */
   coverImage: string | null;
+  coverSource: string | null;
+  coverQuery: string | null;
   mood: string | null;
   days: SavedTripDay[];
+  createdAt: string;
+  updatedAt: string;
 };

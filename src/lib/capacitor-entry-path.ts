@@ -1,5 +1,5 @@
-/** 舊版冷啟動／onboarding 路由（已移除，須導回根路徑由 React gate 決定去向） */
-const LEGACY_STARTUP_PATHS = new Set(["/loading", "/intro", "/splash", "/onboarding"]);
+/** 舊版冷啟動路由（onboarding 請走 /welcome，勿併入 /） */
+const LEGACY_STARTUP_PATHS = new Set(["/loading", "/intro", "/splash"]);
 
 /** Capacitor bundled index.html mounts React into #root (no SSR document shell). */
 export function isCapacitorSpaMount(): boolean {
@@ -18,6 +18,11 @@ export function normalizeCapacitorEntryPath(): void {
 
   if (normalized === "/index.html" || normalized.endsWith("/index.html")) {
     window.history.replaceState(window.history.state, "", `/${search}${hash}`);
+    return;
+  }
+
+  if (normalized === "/onboarding") {
+    window.history.replaceState(window.history.state, "", `/welcome${search}${hash}`);
     return;
   }
 

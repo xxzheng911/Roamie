@@ -2,24 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Plus, Search } from "lucide-react";
 import { searchTripStops, resolveTripStop } from "@/lib/trip-stop-search.functions";
-import {
-  unifiedResolveTripStop,
-  unifiedSearchTripStops,
-} from "@/lib/trip-stop-search-unified";
 import { PlaceSearchPanel, type PlaceSearchResultItem } from "@/components/PlaceSearchPanel";
-import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
 import { useI18n } from "@/hooks/use-i18n";
 import { toast } from "sonner";
+import { getPlaceDetails, searchPlaces as searchPlacesService } from "@/services/placesService";
 
 type Props = {
   label?: string;
   onPick: (place: TripPlaceInput) => void;
-  center?: { lat: number; lng: number };
   disabled?: boolean;
 };
 
-export function TripStopSearchField({ label, onPick, center, disabled }: Props) {
+export function TripStopSearchField({ label, onPick, disabled }: Props) {
   const { t, locale } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -39,12 +34,10 @@ export function TripStopSearchField({ label, onPick, center, disabled }: Props) 
       }
       setSearching(true);
       try {
-        const { suggestions, error } = await unifiedSearchTripStops(
-          searchFn,
-          trimmed,
+        const { suggestions, error } = await searchPlacesService(trimmed, {
           locale,
-          center,
-        );
+          searchFn,
+        });
         if (error && suggestions.length === 0) toast.error(error);
         setResults(
           suggestions.map((s) => ({
@@ -62,7 +55,7 @@ export function TripStopSearchField({ label, onPick, center, disabled }: Props) 
         setSearching(false);
       }
     },
-    [searchFn, locale, center, t],
+    [searchFn, locale, t],
   );
 
   useEffect(() => {
@@ -77,17 +70,25 @@ export function TripStopSearchField({ label, onPick, center, disabled }: Props) 
   const handleSelect = async (item: PlaceSearchResultItem) => {
     setResolvingId(item.placeId);
     try {
-      const { place, error } = await unifiedResolveTripStop(
-        resolveFn,
-        item.placeId,
+      const { place, error } = await getPlaceDetails(item.placeId, {
         locale,
-        { placeId: item.placeId, label: item.label, secondary: item.secondary },
-      );
+        resolveFn,
+        fallback: { placeId: item.placeId, label: item.label, secondary: item.secondary },
+      });
       if (!place) {
         toast.error(error ?? t("location.resolveFailed"));
         return;
       }
-      onPick(place);
+      onPick({
+        name: place.name,
+        placeName: place.name,
+        title: place.name,
+        address: place.address,
+        lat: place.lat,
+        lng: place.lng,
+        googlePlaceId: place.placeId,
+        placeType: place.placeType,
+      } as TripPlaceInput);
       setOpen(false);
       setQuery("");
     } finally {
@@ -114,9 +115,7 @@ export function TripStopSearchField({ label, onPick, center, disabled }: Props) 
         onClose={() => setOpen(false)}
         results={results.map((r) => ({
           ...r,
-          photoUrl:
-            r.photoUrl ??
-            pickPlaceSceneFallback(r.label, { primaryType: r.typeLabel ?? null }),
+          photoUrl: r.photoUrl ?? null,
         }))}
         searching={searching}
         resolvingId={resolvingId}

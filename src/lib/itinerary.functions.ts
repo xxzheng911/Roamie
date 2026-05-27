@@ -1,6 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { callRoamieAI } from "@/lib/ai/service.server";
 import type {
   RoamiePayloadV2,
   RoamieRecommendationItem,
@@ -9,8 +8,6 @@ import type {
 } from "@/lib/ai/types";
 import { buildOutfitAdviceForTrip } from "@/lib/outfit/build-advice";
 import { normalizeTime } from "@/lib/picker-utils";
-import { buildTransitLegsForItinerary } from "@/lib/transit/build-legs.server";
-import { fetchOpenMeteoDailyForecast } from "@/lib/weather.functions";
 
 const PlaceSchema = z
   .object({
@@ -55,9 +52,7 @@ const InputSchema = z.object({
   transport: z.string().max(120).optional().default(""),
   selectedPlaces: z.array(PlaceSchema).max(20).optional().default([]),
   preferences: z.record(z.unknown()).optional(),
-  location: z
-    .object({ lat: z.number(), lng: z.number(), city: z.string().optional() })
-    .optional(),
+  location: z.object({ lat: z.number(), lng: z.number(), city: z.string().optional() }).optional(),
   weather: z.record(z.unknown()).nullable().optional(),
   time: z.string().optional(),
   /** 穿搭風格（文青、韓系、極簡等），來自個人檔案 */
@@ -110,6 +105,12 @@ export type Itinerary = {
 export const generateItinerary = createServerFn({ method: "POST" })
   .inputValidator((input) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<{ itinerary: RoamiePayloadV2 }> => {
+    const [{ callRoamieAI }, { buildTransitLegsForItinerary }, { openWeatherGetForecast }] =
+      await Promise.all([
+        import("@/lib/ai/service.server"),
+        import("@/lib/transit/build-legs.server"),
+        import("@/lib/weather/openweather.server"),
+      ]);
     const selectedPlaces = (data.selectedPlaces ?? []) as RoamieRecommendationItem[];
 
     const interestsText = [data.interests, data.conversationSummary].filter(Boolean).join("\n\n");
@@ -143,15 +144,14 @@ export const generateItinerary = createServerFn({ method: "POST" })
       },
     });
 
-    const startDate =
-      data.startDate?.trim() || new Date().toISOString().slice(0, 10);
+    const startDate = data.startDate?.trim() || new Date().toISOString().slice(0, 10);
     const lat = data.location?.lat;
     const lng = data.location?.lng;
 
     let outfitAdvice: RoamiePayloadV2["outfitAdvice"];
     if (lat != null && lng != null) {
       try {
-        const forecast = await fetchOpenMeteoDailyForecast(lat, lng, data.days);
+        const forecast = await openWeatherGetForecast(lat, lng, data.days);
         outfitAdvice = await buildOutfitAdviceForTrip({
           destination: data.destination,
           startDate,
@@ -172,7 +172,11 @@ export const generateItinerary = createServerFn({ method: "POST" })
         condition?: string;
         precipProbability?: number;
         tempC?: number;
+        feelsLikeC?: number;
+        isDaytime?: boolean;
+        uvi?: number;
       } | null;
+      const temp = weatherHint?.feelsLikeC ?? weatherHint?.tempC;
       const transit = await buildTransitLegsForItinerary({
         items: ai.itinerary.map((i) => ({
           placeName: i.placeName,
@@ -193,13 +197,18 @@ export const generateItinerary = createServerFn({ method: "POST" })
               isRainy:
                 (weatherHint.precipProbability ?? 0) >= 40 ||
                 (weatherHint.condition ?? "").includes("雨"),
+              isHot: temp != null && temp >= 32,
+              isNight: weatherHint.isDaytime === false,
+              uvi: weatherHint.uvi ?? null,
             }
           : undefined,
         time: data.time,
         useAiReasons: true,
       });
       tripSettings = {
-        startTime: data.time ? normalizeTime(data.time) : (ai.itinerary[0]?.time?.slice(0, 5) ?? "10:00"),
+        startTime: data.time
+          ? normalizeTime(data.time)
+          : (ai.itinerary[0]?.time?.slice(0, 5) ?? "10:00"),
         tripStartDate: data.startDate?.trim() || startDate,
         tripEndDate: data.endDate?.trim() || data.startDate?.trim() || startDate,
         transport: inferTripTransport(data.transport),

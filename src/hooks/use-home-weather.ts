@@ -6,9 +6,12 @@ import {
   watchDeviceLocation,
   type LocationPermissionState,
 } from "@/lib/device-location";
-import { getWeather, type WeatherSummary } from "@/lib/weather.functions";
+import { getWeather, getWeatherForecast } from "@/lib/weather.functions";
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
-import { fetchWeatherClientDirect } from "@/lib/weather-client";
+import { readLastSearchLocation } from "@/lib/last-search-location";
+import { KAOHSIUNG_COORDS } from "@/lib/api/constants";
+import { bindWeatherServerFns, getCurrentWeather } from "@/services/weatherService";
+import type { WeatherSummary } from "@/lib/weather-types";
 
 export type HomeWeatherStatus = "loading" | "ready" | "error";
 
@@ -23,14 +26,22 @@ export type HomeUserLocation = {
 };
 
 export function useHomeWeather(locale: Locale) {
-  const fetchWeather = useServerFn(getWeather);
+  const fetchWeatherFn = useServerFn(getWeather);
+  const fetchForecastFn = useServerFn(getWeatherForecast);
+
+  useEffect(() => {
+    bindWeatherServerFns({
+      fetchWeather: fetchWeatherFn,
+      fetchForecast: fetchForecastFn,
+    });
+  }, [fetchWeatherFn, fetchForecastFn]);
+
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [status, setStatus] = useState<HomeWeatherStatus>("loading");
   const [error, setError] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState<HomeUserLocation | null>(null);
   const [usedFallbackLocation, setUsedFallbackLocation] = useState(false);
-  const [locationPermission, setLocationPermission] =
-    useState<LocationPermissionState>("unknown");
+  const [locationPermission, setLocationPermission] = useState<LocationPermissionState>("unknown");
   const loadIdRef = useRef(0);
   const lastCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const lastUsedFallbackRef = useRef(false);
@@ -45,116 +56,137 @@ export function useHomeWeather(locale: Locale) {
         source: "capacitor" | "browser" | "fallback";
         permission: LocationPermissionState;
       },
-    ) => {
+    ): Promise<{ available: boolean; error: string | null }> => {
+      console.info("[HOME_WEATHER] requesting weather");
+      console.info("[HOME_WEATHER] location=", `${lat},${lng}|city=${locMeta.city || "目前位置"}`);
+      console.info("[WEATHER_FETCH] latLng=", `${lat},${lng}`);
       const loadId = ++loadIdRef.current;
       setStatus("loading");
       setError(null);
 
-      const origin = import.meta.env.VITE_APP_ORIGIN as string | undefined;
-      console.info("[Weather] fetch start", {
-        lat,
-        lng,
-        locale,
-        source: locMeta.source,
-        viteAppOrigin: origin ?? "(not set)",
-      });
-
-      let lastError: string | null = null;
-
       try {
         const result = await Promise.race([
-          fetchWeather({ data: { lat, lng, locale } }),
+          getCurrentWeather({ lat, lng }, locale),
           new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error("weather serverFn timeout")), FETCH_TIMEOUT_MS);
+            setTimeout(() => reject(new Error("weather timeout")), FETCH_TIMEOUT_MS);
           }),
         ]);
 
-        if (loadId !== loadIdRef.current) return;
+        if (loadId !== loadIdRef.current) return { available: false, error: "stale_request" };
 
-        console.info("[Weather] serverFn response", {
-          error: result.error,
-          hasWeather: Boolean(result.weather),
-          city: result.weather?.city,
-        });
-
-        if (result.weather) {
-          const parsed = {
-            ...result.weather,
-            city: result.weather.city || locMeta.city || "目前位置",
-          };
-          setWeather(parsed);
-          rememberLastSearchLocation({ lat, lng, city: parsed.city });
-          setStatus("ready");
-          return;
-        }
-        lastError = result.error ?? "no_weather_data";
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        lastError = `serverFn: ${msg}`;
-        console.error("[Weather] serverFn failed", { error: msg, viteAppOrigin: origin ?? null });
-      }
-
-      if (loadId !== loadIdRef.current) return;
-
-      console.warn("[Weather] trying client direct fallback", { lastError });
-      const client = await fetchWeatherClientDirect(lat, lng);
-      if (loadId !== loadIdRef.current) return;
-
-      if (client.weather) {
+        const weatherSafe = result.weather;
         const parsed = {
-          ...client.weather,
-          city: client.weather.city || locMeta.city || "目前位置",
+          ...weatherSafe,
+          city: weatherSafe.city || locMeta.city || "目前位置",
         };
         setWeather(parsed);
         rememberLastSearchLocation({ lat, lng, city: parsed.city });
         setStatus("ready");
-        console.info("[Weather] client fallback succeeded");
-        return;
+        console.info("[HOME_WEATHER] result=", JSON.stringify(parsed));
+        console.info(
+          "[WEATHER_FETCH] response=",
+          `${parsed.city}|${parsed.condition}|${parsed.tempC ?? "na"}|available=${parsed.available}`,
+        );
+        if (result.error && !parsed.available) {
+          setError(result.error);
+          return { available: false, error: result.error };
+        } else {
+          setError(null);
+          return { available: Boolean(parsed.available), error: null };
+        }
+      } catch (e) {
+        if (loadId !== loadIdRef.current) return { available: false, error: "stale_request" };
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[Weather] fetch failed", msg);
+        console.error("[WEATHER_FETCH] error=", msg);
+        console.error("[HOME_WEATHER] error=", msg);
+        setWeather(null);
+        setError(msg);
+        setStatus("error");
+        return { available: false, error: msg };
       }
-
-      const combined = [lastError, client.error].filter(Boolean).join(" → ");
-      console.error("[Weather] all sources failed", { combined });
-      setWeather(null);
-      setError(combined || "weather unavailable");
-      setStatus("error");
     },
-    [fetchWeather, locale],
+    [locale],
   );
 
-  const applyLocation = useCallback(
+  const applyLocation = useCallback((loc: Awaited<ReturnType<typeof requestDeviceLocation>>) => {
+    lastCoordsRef.current = { lat: loc.lat, lng: loc.lng };
+    lastUsedFallbackRef.current = loc.usedFallback;
+    setUserLocation({
+      lat: loc.lat,
+      lng: loc.lng,
+      city: loc.city || "",
+      source: loc.source,
+    });
+    setUsedFallbackLocation(loc.usedFallback);
+    setLocationPermission(loc.permission);
+  }, []);
+
+  const resolveWeatherLocationFallback = useCallback(
     (loc: Awaited<ReturnType<typeof requestDeviceLocation>>) => {
-      lastCoordsRef.current = { lat: loc.lat, lng: loc.lng };
-      lastUsedFallbackRef.current = loc.usedFallback;
-      setUserLocation({
-        lat: loc.lat,
-        lng: loc.lng,
-        city: loc.city || "",
-        source: loc.source,
-      });
-      setUsedFallbackLocation(loc.usedFallback);
-      setLocationPermission(loc.permission);
-      console.info("[Weather] location ready for nearby", {
-        lat: loc.lat,
-        lng: loc.lng,
-        usedFallback: loc.usedFallback,
-        permission: loc.permission,
-      });
+      if (!loc.usedFallback) return loc;
+      const mapCenter = readLastSearchLocation();
+      if (mapCenter) {
+        console.info(
+          "[WEATHER_LOCATION_FALLBACK] using=",
+          `map-center|${mapCenter.lat},${mapCenter.lng}`,
+        );
+        return {
+          ...loc,
+          lat: mapCenter.lat,
+          lng: mapCenter.lng,
+          city: mapCenter.city ?? loc.city,
+          usedFallback: true,
+          source: "fallback" as const,
+        };
+      }
+      if (loc.city?.trim()) {
+        console.info("[WEATHER_LOCATION_FALLBACK] using=", `user-city|${loc.city.trim()}`);
+        return loc;
+      }
+      console.info(
+        "[WEATHER_LOCATION_FALLBACK] using=",
+        `default-kaohsiung|${KAOHSIUNG_COORDS.lat},${KAOHSIUNG_COORDS.lng}`,
+      );
+      return {
+        ...loc,
+        lat: KAOHSIUNG_COORDS.lat,
+        lng: KAOHSIUNG_COORDS.lng,
+        city: "高雄市",
+        usedFallback: true,
+        source: "fallback" as const,
+      };
     },
     [],
   );
 
   const load = useCallback(async () => {
-    const loc = await requestDeviceLocation();
+    const rawLoc = await requestDeviceLocation();
+    const loc = resolveWeatherLocationFallback(rawLoc);
     applyLocation(loc);
-    await fetchWeatherForCoords(loc.lat, loc.lng, {
+    const first = await fetchWeatherForCoords(loc.lat, loc.lng, {
       city: loc.city,
       usedFallback: loc.usedFallback,
       source: loc.source,
       permission: loc.permission,
     });
-  }, [applyLocation, fetchWeatherForCoords]);
+    if (!first.available || loc.usedFallback) {
+      const last = readLastSearchLocation();
+      if (last && (Math.abs(last.lat - loc.lat) > 0.0001 || Math.abs(last.lng - loc.lng) > 0.0001)) {
+        console.info("[WEATHER_FETCH] fallback source=last-search-location");
+        await fetchWeatherForCoords(last.lat, last.lng, {
+          city: last.city ?? "目的地",
+          usedFallback: true,
+          source: "fallback",
+          permission: loc.permission,
+        });
+      }
+    }
+  }, [applyLocation, fetchWeatherForCoords, resolveWeatherLocationFallback]);
 
   useEffect(() => {
+    console.info("[WEATHER_SERVICE_VERSION] v-runtime-fallback-001");
+    console.info("[HOME_WEATHER] mounted");
     void load();
 
     const retryTimer = window.setTimeout(() => {
@@ -188,6 +220,16 @@ export function useHomeWeather(locale: Locale) {
       stopWatch();
     };
   }, [load, applyLocation, fetchWeatherForCoords]);
+
+  useEffect(() => {
+    if (!weather) return;
+    console.info("[HOME_WEATHER] result=", JSON.stringify(weather));
+  }, [weather]);
+
+  useEffect(() => {
+    if (!error) return;
+    console.error("[HOME_WEATHER] error=", error);
+  }, [error]);
 
   return {
     weather,

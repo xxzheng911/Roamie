@@ -3,20 +3,20 @@ import {
   type PlaceRecommendationContext,
   type UserProfileForReason,
 } from "@/lib/build-place-recommendation-reason";
-import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import type { ExplorePlaceCard } from "@/lib/explore-category-search";
-import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import type { PlaceResult } from "@/lib/place-result";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
 import type { Locale } from "@/lib/i18n/types";
 import type { WeatherSummary } from "@/lib/weather-types";
+import { resolvePlaceCoverImageSync } from "@/services/placeImageService";
 
 export type UnifiedPlaceCard = ExplorePlaceCard & {
   categoryId?: string;
   /** 與地點身分一致的分類標籤（非探索 chip） */
   displayCategory: string;
-  coverImageUrl: string;
+  /** Google 照片 URL；無則由 PlaceImage 元件 async 解析 Unsplash fallback */
+  coverImageUrl: string | null;
   distanceLabel?: string;
 };
 
@@ -32,19 +32,12 @@ export type BuildUnifiedPlaceCardInput = {
   photoWidth?: number;
 };
 
-/** 同一地點的封面圖：Google 照片優先，否則依名稱＋分類選 Roamie 情境圖 */
+/** 同一地點的封面圖：僅 Google 照片（同步）；Unsplash fallback 由 PlaceImage 元件處理 */
 export function resolvePlaceCoverImage(
   place: PlaceResult,
   options?: { categoryId?: string; photoWidth?: number },
-): string {
-  const width = options?.photoWidth ?? 600;
-  const fromGoogle = place.photoName ? buildPlacePhotoUrl(place.photoName, width) : null;
-  if (fromGoogle) return fromGoogle;
-  return pickPlaceSceneFallback(place.name, {
-    primaryType: place.primaryType,
-    types: place.types,
-    categoryId: options?.categoryId,
-  });
+): string | null {
+  return resolvePlaceCoverImageSync(place, options);
 }
 
 export function resolvePlaceDisplayCategory(place: PlaceResult): string {

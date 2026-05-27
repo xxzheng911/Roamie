@@ -195,14 +195,14 @@ export async function searchExploreCategoryPlaces(
         locale,
       }),
     );
-    return sortExplorePlaces(mocks, userLocation, reasonProfile);
+    return sortExplorePlaces(mocks, userLocation, reasonProfile, weather);
   }
 
   if (enriched.length === 0) {
     console.info("[explore] no places for category", cat.id);
   }
 
-  return sortExplorePlaces(enriched, userLocation, reasonProfile);
+  return sortExplorePlaces(enriched, userLocation, reasonProfile, weather);
 }
 
 export type HomeNearbyPick = ExplorePlaceCard & {
@@ -253,7 +253,12 @@ export async function loadHomeNearbyPicks(ctx: {
     }
   }
 
-  const sorted = sortExplorePlaces([...deduped.values()], ctx.userLocation, ctx.reasonProfile);
+  const sorted = sortExplorePlaces(
+    [...deduped.values()],
+    ctx.userLocation,
+    ctx.reasonProfile,
+    ctx.weather,
+  );
   if (sorted.length > 0) return sorted;
 
   if (allowDemoPlaceFallback()) {

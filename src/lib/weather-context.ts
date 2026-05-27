@@ -1,4 +1,4 @@
-import type { WeatherSummary } from "@/lib/weather.functions";
+import type { WeatherSummary } from "@/lib/weather-types";
 import { classifyWeatherScene, type WeatherScene } from "@/lib/weather-scene";
 
 export type DayPeriod = "morning" | "afternoon" | "evening" | "night";
@@ -84,7 +84,12 @@ export function buildTemporalWeatherContext(
     rules.push("陰天／多雲：適合巷弄散步、展覽、書店；戶外可短停，不必刻意躲雨。");
   }
   if (isHot) {
-    rules.push("炎熱：優先冷氣室內、樹蔭少的戶外排後；傍晚再安排戶外較舒適。");
+    rules.push(
+      "炎熱：優先冷氣室內、冰品、百貨；避免長時間戶外步行；紫外線強時注意防曬與補水。",
+    );
+  }
+  if ((weather?.uvi ?? 0) >= 7) {
+    rules.push("紫外線偏強：戶外停留縮短，推薦有遮蔭或室內景點。");
   }
   if (isCold) {
     rules.push("偏冷：優先室內溫暖場所、熱食小店。");
@@ -129,9 +134,13 @@ export function formatTemporalWeatherBlock(
     t.tempC !== null ? `${Math.round(t.tempC)}°C` : weather?.tempC != null ? `${Math.round(weather.tempC)}°C` : "未知";
   const precip =
     weather?.precipProbability != null ? `降雨機率 ${weather.precipProbability}%` : "";
+  const clouds =
+    weather?.cloudCoverPercent != null ? `雲量 ${weather.cloudCoverPercent}%` : "";
+  const uvi = weather?.uvi != null ? `UV ${Math.round(weather.uvi)}` : "";
+  const sunset = weather?.sunset ? `日落 ${weather.sunset}` : "";
   const lines = [
     `【當地時間】${t.localTimeLabel}（${t.periodLabel}）`,
-    `【當地天氣】${weather?.city ?? "目前位置"} · ${weather?.condition ?? "—"} · 氣溫 ${temp}${precip ? ` · ${precip}` : ""}`,
+    `【當地天氣】${weather?.available === false ? weather.recommendationText : `${weather?.city ?? "目前位置"} · ${weather?.condition ?? "—"} · 氣溫 ${temp}${precip ? ` · ${precip}` : ""}${clouds ? ` · ${clouds}` : ""}${uvi ? ` · ${uvi}` : ""}${sunset ? ` · ${sunset}` : ""}`}`,
     `【時段情境】${t.isNight ? "夜晚" : "白天"}${t.isRainy ? " · 可能下雨" : ""}${t.isSunny ? " · 晴朗" : ""}${t.isCloudy ? " · 陰天" : ""}${t.isHot ? " · 炎熱" : ""}${t.isCold ? " · 偏冷" : ""}`,
     `【推薦原則】\n${t.rulesForAI}`,
   ];

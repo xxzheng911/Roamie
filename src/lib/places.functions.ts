@@ -7,17 +7,10 @@ import {
   placesSearchNearbyUrl,
   placesSearchTextUrl,
   placeDetailsUrl,
-  requireGoogleMapsServerKey,
-} from "@/lib/google-maps.server";
+} from "@/lib/google-maps-api";
 import { distanceMeters } from "@/lib/map-explore";
-import {
-  DEFAULT_SEARCH_RADIUS_M,
-  MAX_PLACE_DISTANCE_M,
-} from "@/lib/places-search-config";
-import {
-  geocodeRegionFromCoordinates,
-  placesRegionCodeFromCoordinates,
-} from "@/lib/geo-region";
+import { DEFAULT_SEARCH_RADIUS_M, MAX_PLACE_DISTANCE_M } from "@/lib/places-search-config";
+import { geocodeRegionFromCoordinates, placesRegionCodeFromCoordinates } from "@/lib/geo-region";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
@@ -112,6 +105,11 @@ function parseGoogleError(text: string): string {
     /* ignore */
   }
   return text.slice(0, 200);
+}
+
+async function getServerMapsKey(): Promise<string> {
+  const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
+  return requireGoogleMapsServerKey();
 }
 
 function locationCircle(lat: number, lng: number, radius: number) {
@@ -251,7 +249,7 @@ async function lookupPlaceHoursFromRaw(
   lng: number,
   address?: string | null,
 ): Promise<PlaceHoursData | null> {
-  const apiKey = requireGoogleMapsServerKey();
+  const apiKey = await getServerMapsKey();
   const query = [name, address].filter(Boolean).join(" ").trim() || name;
   const { languageCode, regionCode } = exploreLocale(lat, lng);
   const body: Record<string, unknown> = {
@@ -366,7 +364,7 @@ export async function executeExploreSearch(
   options?: { apiKey?: string },
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   try {
-    const apiKey = options?.apiKey?.trim() || requireGoogleMapsServerKey();
+    const apiKey = options?.apiKey?.trim() || (await getServerMapsKey());
     return await runExploreSearch(data, apiKey);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "request failed";
@@ -395,7 +393,7 @@ export async function fetchPlaceDetailsForIntro(
   reviewSnippets: string[];
 } | null> {
   try {
-    const apiKey = requireGoogleMapsServerKey();
+    const apiKey = await getServerMapsKey();
     const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
     const res = await fetch(placeDetailsUrl(placeId), {
       headers: {
@@ -458,7 +456,7 @@ export async function fetchPlaceDetailsForScreen(
   locale?: Locale,
 ): Promise<PlaceDetailsScreenResult | null> {
   try {
-    const apiKey = requireGoogleMapsServerKey();
+    const apiKey = await getServerMapsKey();
     const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
     const res = await fetch(placeDetailsUrl(placeId), {
       headers: {
@@ -510,9 +508,7 @@ const PlaceDetailsInput = z.object({
 export const getPlaceDetails = createServerFn({ method: "POST" })
   .inputValidator((input) => PlaceDetailsInput.parse(input))
   .handler(
-    async ({
-      data,
-    }): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> => {
+    async ({ data }): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> => {
       if (data.placeId.startsWith("latlng:") || data.placeId.startsWith("saved-")) {
         return { place: null, error: "synthetic_id" };
       }

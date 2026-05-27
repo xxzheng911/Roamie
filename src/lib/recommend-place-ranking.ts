@@ -13,6 +13,7 @@ import {
   shouldActivateLateNightSceneFlow,
 } from "@/lib/late-night-scene-recommendations";
 import type { WeatherSummary } from "@/lib/weather-types";
+import { weatherRankingBoost } from "@/lib/weather/weather-place-ranking";
 
 export { isLateNightMode } from "@/lib/filter-available-places";
 
@@ -53,6 +54,7 @@ export function rankRecommendationItem(
   hours: PlaceHoursData,
   at: Date,
   mood?: string | null,
+  weather?: WeatherSummary | null,
 ): RankedRecommendation | null {
   const identity = { name: rec.name, type: rec.type };
   if (!isPlaceAvailableNow(hours, identity, { context: "now", at })) {
@@ -77,6 +79,8 @@ export function rankRecommendationItem(
     rankScore += lateNightCategoryRankScore(cat, mood);
   }
 
+  rankScore += weatherRankingBoost(weather, `${rec.name} ${rec.type} ${rec.description}`);
+
   return { rec, availability, rankScore };
 }
 
@@ -85,9 +89,10 @@ export function rankRecommendations(
   hoursMap: Map<string, PlaceHoursData>,
   at: Date = new Date(),
   mood?: string | null,
+  weather?: WeatherSummary | null,
 ): RankedRecommendation[] {
   return recs
-    .map((rec) => rankRecommendationItem(rec, hoursMap.get(rec.name) ?? {}, at, mood))
+    .map((rec) => rankRecommendationItem(rec, hoursMap.get(rec.name) ?? {}, at, mood, weather))
     .filter((x): x is RankedRecommendation => x != null)
     .sort((a, b) => a.rankScore - b.rankScore);
 }

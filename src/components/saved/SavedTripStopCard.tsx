@@ -34,9 +34,6 @@ export function SavedTripStopCard({ item, isLast }: Props) {
       <div className="rounded-3xl border border-border bg-card p-4 shadow-soft">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <p className="text-sm font-medium tabular-nums text-muted-foreground">{item.time}</p>
-          <span className="rounded-full bg-secondary/80 px-2.5 py-0.5 text-[11px] text-muted-foreground">
-            {item.category}
-          </span>
         </div>
         <h3 className="mt-1.5 text-[16px] font-medium leading-snug">{item.placeName}</h3>
         {item.address && item.address !== "尚未設定" ? (
@@ -67,12 +64,6 @@ export function SavedTripStopCard({ item, isLast }: Props) {
                 <Footprints className="h-3 w-3" />
                 {item.travelTimeToNext}
               </dd>
-            </div>
-          ) : null}
-          {item.note ? (
-            <div className="flex gap-2">
-              <dt className="shrink-0 text-foreground/70">備註</dt>
-              <dd className="text-foreground/80">{item.note}</dd>
             </div>
           ) : null}
         </dl>

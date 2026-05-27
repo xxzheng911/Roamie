@@ -1,33 +1,26 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
-  Bell,
   ChevronRight,
-  Globe,
   LogOut,
   Route as RouteIcon,
-  Settings,
-  SlidersHorizontal,
   Pencil,
   Loader2,
   UserRound,
+  Sparkles,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useAvatar } from "@/hooks/use-avatar";
 import { useI18n } from "@/hooks/use-i18n";
 import { getClientAuthSession, isAuthSessionMissingError } from "@/lib/auth-session";
-import { supabase } from "@/lib/supabase";
 import { ImageSourceSheet } from "@/components/ImageSourceSheet";
 import { ProfileCover } from "@/components/ProfileCover";
 import { AvatarCropSheet } from "@/components/profile/AvatarCropSheet";
 import { ProfileImageCropSheet } from "@/components/profile/ProfileImageCropSheet";
 import { COVER_UPDATED_EVENT, broadcastCoverUpdate } from "@/lib/cover-events";
 import { broadcastAvatarUpdate } from "@/lib/avatar-events";
-import {
-  BUDGET_MODE_LABELS,
-  resolveBudgetMode,
-} from "@/lib/preferences-storage";
+import { BUDGET_MODE_LABELS, resolveBudgetMode } from "@/lib/preferences-storage";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { logAvatarFileReadSuccess } from "@/lib/avatar-upload-log";
 import {
@@ -35,14 +28,19 @@ import {
   applyProfileCover,
   removeProfileCover,
 } from "@/lib/profile-media-storage";
-import { getUserProfile, saveUserProfile, type UserProfile } from "@/lib/profile-storage";
+import {
+  getUserProfile,
+  saveUserProfile,
+  syncTravelPreferenceProfileFields,
+  type UserProfile,
+} from "@/lib/profile-storage";
 import { buildCompanionSummary } from "@/lib/personality";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useAccess } from "@/hooks/use-access";
 import { isDeveloperBuildEnabled } from "@/lib/access/developer";
-import { ProfilePlanSwitcher } from "@/components/profile/ProfilePlanSwitcher";
 import { loadDraftTrip } from "@/lib/trip-draft-storage";
+import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
 
 type ProfileSearch = { quiz?: string };
 
@@ -71,13 +69,18 @@ function Profile() {
   const search = Route.useSearch();
   const navigate = useNavigate();
   const { user, loading: authLoading, signOut } = useAuth();
+  const userId = user?.id;
+  const userEmail = user?.email;
   const { t, locale } = useI18n();
-  const { avatarSrc, refresh: refreshAvatar } = useAvatar();
+  const { avatarSrc, refresh: refreshAvatar, setPreview: setAvatarPreview } = useAvatar();
   const { hasPlusAccess } = useAccess();
   const [hasDraft, setHasDraft] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
+  /** Local blob preview after pick — never write unstable ?t= URLs into profile state */
+  const [coverPreviewUrl, setCoverPreviewUrl] = useState<string | null>(null);
+  const coverPreviewRef = useRef<string | null>(null);
   const [coverSourceOpen, setCoverSourceOpen] = useState(false);
   const [coverCropFile, setCoverCropFile] = useState<File | null>(null);
   const [coverApplying, setCoverApplying] = useState(false);
@@ -99,12 +102,50 @@ function Profile() {
   const [companionSummary, setCompanionSummary] = useState("");
   const [onboarded, setOnboarded] = useState(false);
   const [quizSyncing, setQuizSyncing] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [pace, setPace] = useState("");
   const [vibe, setVibe] = useState("");
   const [budgetLabel, setBudgetLabel] = useState("—");
   const [avoidKey, setAvoidKey] = useState<string | null>(null);
+  const [travelTags, setTravelTags] = useState<string[]>([]);
+
+  const profileRenderCount = useRef(0);
+  profileRenderCount.current += 1;
+  useEffect(() => {
+    console.info("[PROFILE_RERENDER]", `count=${profileRenderCount.current}`);
+  });
+
+  const revokeCoverPreview = useCallback(() => {
+    if (coverPreviewRef.current) {
+      try {
+        URL.revokeObjectURL(coverPreviewRef.current);
+      } catch {
+        /* noop */
+      }
+      coverPreviewRef.current = null;
+    }
+    setCoverPreviewUrl(null);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const u = coverPreviewRef.current;
+      if (u) {
+        try {
+          URL.revokeObjectURL(u);
+        } catch {
+          /* noop */
+        }
+        coverPreviewRef.current = null;
+      }
+      setAvatarPreview(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup on unmount only
+  }, []);
 
   useAppMainScroll();
+
+  const quizCompleted = onboarded;
 
   useEffect(() => {
     setHasDraft(Boolean(loadDraftTrip()));
@@ -112,56 +153,85 @@ function Profile() {
 
   useEffect(() => {
     const onCover = (e: Event) => {
+      revokeCoverPreview();
       const url = (e as CustomEvent<string | null>).detail ?? null;
       setCoverUrl(url);
       setCoverCropFile(null);
     };
     window.addEventListener(COVER_UPDATED_EVENT, onCover);
     return () => window.removeEventListener(COVER_UPDATED_EVENT, onCover);
-  }, []);
+  }, [revokeCoverPreview]);
 
   const quizDoneToastShown = useRef(false);
 
-  const loadProfile = async () => {
+  const loadProfile = useCallback(async () => {
     try {
       return await getUserProfile();
     } catch (firstErr) {
-      if (!user) throw firstErr;
+      if (!userId) throw firstErr;
       console.warn("[profile] fetch failed, ensuring profile row", firstErr);
       await ensureUserProfile();
       return getUserProfile();
     }
-  };
+  }, [userId]);
 
-  const applyProfileToState = (profile: UserProfile) => {
-    setDisplayName(profile.displayName);
-    setBio(profile.bio);
-    setCoverUrl(profile.coverImageUrl);
-    setTravelStyle(profile.travelStyle);
-    setPersonalityType(profile.personalityType);
-    setPersonalitySummary(profile.personalitySummary);
-    setPersonalityImpression(profile.personalityImpression);
-    setCompanionSummary(buildCompanionSummary(profile.prefs));
-    setOnboarded(!!profile.prefs.onboarded);
-    const paceMap = {
-      slow: t("profile.paceSlow"),
-      medium: t("profile.paceMedium"),
-      active: t("profile.paceActive"),
-    } as const;
-    const vibeMap = {
-      quiet: t("profile.vibeQuiet"),
-      either: t("profile.vibeEither"),
-      lively: t("profile.vibeLively"),
-    } as const;
-    setPace(profile.prefs.pace ? paceMap[profile.prefs.pace] : t("common.dash"));
-    setVibe(profile.prefs.vibe ? vibeMap[profile.prefs.vibe] : t("common.dash"));
-    setBudgetLabel(
-      profile.prefs.onboarded
-        ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)]
-        : t("common.dash"),
-    );
-    setAvoidKey(profile.prefs.avoid?.[0] ?? null);
-  };
+  const applyProfileToState = useCallback(
+    (profile: UserProfile) => {
+      setDisplayName(profile.displayName);
+      setBio(profile.bio);
+      setCoverUrl(profile.coverImageUrl);
+      setTravelStyle(profile.travelStyle);
+      setPersonalityType(profile.personalityType);
+      setPersonalitySummary(profile.personalitySummary);
+      setPersonalityImpression(profile.personalityImpression);
+      setCompanionSummary(buildCompanionSummary(profile.prefs));
+      setOnboarded(!!profile.prefs.onboarded);
+      const paceMap = {
+        slow: t("profile.paceSlow"),
+        medium: t("profile.paceMedium"),
+        active: t("profile.paceActive"),
+      } as const;
+      const vibeMap = {
+        quiet: t("profile.vibeQuiet"),
+        either: t("profile.vibeEither"),
+        lively: t("profile.vibeLively"),
+      } as const;
+      setPace(profile.prefs.pace ? paceMap[profile.prefs.pace] : t("common.dash"));
+      setVibe(profile.prefs.vibe ? vibeMap[profile.prefs.vibe] : t("common.dash"));
+      setBudgetLabel(
+        profile.prefs.onboarded
+          ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)]
+          : t("common.dash"),
+      );
+      setAvoidKey(profile.prefs.avoid?.[0] ?? null);
+      const tags = Array.from(
+        new Set(
+          [
+            ...(profile.prefs.interests ?? []),
+            profile.prefs.pace === "slow"
+              ? "慢行"
+              : profile.prefs.pace === "active"
+                ? "探索"
+                : null,
+            profile.prefs.vibe === "quiet"
+              ? "安靜"
+              : profile.prefs.vibe === "lively"
+                ? "熱鬧"
+                : "平衡",
+            BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)],
+          ].filter((v): v is string => Boolean(v)),
+        ),
+      ).slice(0, 5);
+      setTravelTags(tags);
+      if (profile.prefs.onboarded) {
+        console.info("[TRAVEL_PREF_RESULT] loaded", {
+          travelStyle: profile.travelStyle || profile.personalityType || "未命名",
+          tagsCount: tags.length,
+        });
+      }
+    },
+    [t],
+  );
 
   useEffect(() => {
     if (search.quiz !== "done" || quizDoneToastShown.current) return;
@@ -179,7 +249,7 @@ function Profile() {
         setQuizSyncing(false);
       }
     })();
-  }, [search.quiz, t, navigate]);
+  }, [search.quiz, t, navigate, loadProfile, applyProfileToState]);
 
   useEffect(() => {
     const onPrefs = () => {
@@ -194,23 +264,34 @@ function Profile() {
     };
     window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
     return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
-  }, [t]);
+  }, [loadProfile, applyProfileToState]);
 
-  const refresh = async () => {
+  useEffect(() => {
+    console.info("[TRAVEL_PREF_TEST] visible");
+  }, []);
+
+  const refresh = useCallback(async () => {
     setLoading(true);
-    console.info("[profile] loading", { hasUser: !!user });
+    console.info("[profile] loading", { userId });
     try {
-      if (user) await ensureUserProfile();
+      if (userId) await ensureUserProfile();
       const profile = await loadProfile();
       applyProfileToState(profile);
+      if (profile.prefs.onboarded) {
+        void syncTravelPreferenceProfileFields({
+          travelStyle: profile.travelStyle || profile.personalityType || "",
+          prefs: profile.prefs,
+        }).catch((e) => console.error("[profile] travel-pref sync failed", e));
+      }
       await refreshAvatar();
+      console.info("[PROFILE] loaded");
     } catch (e) {
       if (e instanceof Error && isAuthSessionMissingError(e.message)) return;
       console.error("[profile] refresh failed", e);
       const msg = e instanceof Error ? e.message : "";
       if (msg.includes("請先登入")) return;
       applyProfileToState({
-        displayName: user?.email?.split("@")[0] || t("profile.defaultName"),
+        displayName: userEmail?.split("@")[0] || t("profile.defaultName"),
         bio: "",
         avatarUrl: null,
         coverImageUrl: null,
@@ -227,16 +308,16 @@ function Profile() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [userId, userEmail, locale, t, loadProfile, refreshAvatar, applyProfileToState]);
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    if (!userId) {
       navigate({ to: "/login", replace: true });
       return;
     }
     void refresh();
-  }, [authLoading, user, locale, t, navigate]);
+  }, [authLoading, userId, locale, navigate, refresh]);
 
   if (authLoading) {
     return (
@@ -263,18 +344,26 @@ function Profile() {
 
   const handleCoverPick = (file: File) => {
     if (!validateImageFile(file)) return;
+    console.info("[IMAGE_PICK]", "cover", `bytes=${file.size}`, `type=${file.type}`);
+    revokeCoverPreview();
+    const u = URL.createObjectURL(file);
+    coverPreviewRef.current = u;
+    setCoverPreviewUrl(u);
     setCoverCropFile(file);
   };
 
   const handleCoverCancel = () => {
+    revokeCoverPreview();
     setCoverCropFile(null);
   };
 
   const handleCoverApply = async (blob: Blob) => {
     setCoverApplying(true);
     try {
+      console.info("[IMAGE_UPLOAD]", "cover", `bytes=${blob.size}`);
       const finalUrl = await applyProfileCover(blob);
       broadcastCoverUpdate(finalUrl);
+      revokeCoverPreview();
       setCoverUrl(finalUrl);
       setCoverCropFile(null);
       toast.success("封面已更新");
@@ -291,6 +380,7 @@ function Profile() {
     try {
       await removeProfileCover();
       broadcastCoverUpdate(null);
+      revokeCoverPreview();
       setCoverUrl(null);
       setCoverCropFile(null);
       toast.success("已移除封面，可繼續選擇新圖片");
@@ -304,10 +394,14 @@ function Profile() {
 
   const handleAvatarPick = (file: File) => {
     if (!validateImageFile(file)) return;
+    console.info("[IMAGE_PICK]", "avatar", `bytes=${file.size}`, `type=${file.type}`);
+    const u = URL.createObjectURL(file);
+    setAvatarPreview(u);
     setAvatarCropFile(file);
   };
 
   const handleAvatarCancel = () => {
+    setAvatarPreview(null);
     setAvatarCropFile(null);
   };
 
@@ -324,10 +418,10 @@ function Profile() {
         type: blob.type || "image/jpeg",
         userId: session.user.id,
       });
+      console.info("[IMAGE_UPLOAD]", "avatar", `bytes=${blob.size}`);
       const finalUrl = await applyProfileAvatar(blob);
       broadcastAvatarUpdate(finalUrl);
       setAvatarCropFile(null);
-      await refreshAvatar();
       toast.success("頭像已更新");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "儲存失敗";
@@ -343,8 +437,8 @@ function Profile() {
 
   const items = [
     {
-      icon: SlidersHorizontal,
-      label: "偏好設定",
+      icon: UserRound,
+      label: t("settings.account"),
       to: "/settings" as const,
     },
     {
@@ -353,26 +447,6 @@ function Profile() {
       value: hasDraft ? "1 份" : "尚無",
       to: hasDraft ? "/trip" : "/chat",
       search: hasDraft ? { draft: "1" } : undefined,
-    },
-    {
-      icon: UserRound,
-      label: t("settings.account"),
-      to: "/settings" as const,
-    },
-    {
-      icon: Bell,
-      label: t("settings.notificationsLabel"),
-      to: "/settings" as const,
-    },
-    {
-      icon: Globe,
-      label: t("settings.languageLabel"),
-      to: "/settings" as const,
-    },
-    {
-      icon: Settings,
-      label: t("profile.otherSettings"),
-      to: "/settings" as const,
     },
   ];
 
@@ -383,7 +457,7 @@ function Profile() {
     <div className="profile-page flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-3 no-scrollbar">
       <div className="overflow-visible rounded-[2rem] border border-border bg-card shadow-soft">
         <ProfileCover
-          coverUrl={coverUrl}
+          coverUrl={coverPreviewUrl ?? coverUrl}
           busy={coverApplying || coverRemoving}
           onPress={() => {
             if (!coverApplying && !coverRemoving) {
@@ -487,7 +561,9 @@ function Profile() {
                   />
                 </label>
                 <label className="block">
-                  <span className="text-[11px] text-muted-foreground">{t("profile.travelStyle")}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {t("profile.travelStyle")}
+                  </span>
                   <textarea
                     value={travelStyle}
                     onChange={(e) => setTravelStyle(e.target.value)}
@@ -531,10 +607,14 @@ function Profile() {
                     </div>
                     <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{bio}</p>
                     {hasPlusAccess && onboarded && companionSummary ? (
-                      <p className="mt-2 text-sm leading-relaxed text-foreground/75">{companionSummary}</p>
+                      <p className="mt-2 text-sm leading-relaxed text-foreground/75">
+                        {companionSummary}
+                      </p>
                     ) : null}
                     {travelStyle ? (
-                      <p className="mt-2 text-sm leading-relaxed text-foreground/80">{travelStyle}</p>
+                      <p className="mt-2 text-sm leading-relaxed text-foreground/80">
+                        {travelStyle}
+                      </p>
                     ) : null}
                   </div>
                   <button
@@ -553,8 +633,13 @@ function Profile() {
                       { k: t("profile.vibe"), v: vibe },
                       { k: t("profile.budget"), v: budgetLabel },
                     ].map((p) => (
-                      <div key={p.k} className="flex-1 rounded-2xl bg-secondary px-3 py-2.5 text-center">
-                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{p.k}</p>
+                      <div
+                        key={p.k}
+                        className="flex-1 rounded-2xl bg-secondary px-3 py-2.5 text-center"
+                      >
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                          {p.k}
+                        </p>
                         <p className="mt-0.5 text-sm font-medium">{p.v}</p>
                       </div>
                     ))}
@@ -566,53 +651,84 @@ function Profile() {
         </div>
       </div>
 
-      <ProfilePlanSwitcher className="mt-5" />
+      <section className="mt-5 rounded-3xl border border-border bg-card p-5 shadow-soft">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Sparkles className="h-3.5 w-3.5 text-clay" />
+          Plus 旅行偏好測驗
+        </div>
+        <p className="mt-2 font-display text-[18px] leading-snug">讓 Roamie 更懂你的旅行偏好</p>
+        <p className="mt-1.5 text-sm text-muted-foreground">
+          完成幾個小問題，之後推薦地點與行程時會更貼近你。
+        </p>
+        {hasPlusAccess ? (
+          <button
+            type="button"
+            onClick={() => {
+              console.info("[TRAVEL_PREF_TEST] start");
+              void navigate({ to: "/onboarding", search: { from: "profile" } });
+            }}
+            className="mt-4 w-full rounded-full bg-primary py-3 text-sm text-primary-foreground"
+          >
+            {quizCompleted ? "重新測驗" : "開始測驗"}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              console.info("[TRAVEL_PREF_TEST] start");
+              setUpgradeOpen(true);
+            }}
+            className="mt-4 w-full rounded-full bg-primary py-3 text-sm text-primary-foreground"
+          >
+            升級 Plus 解鎖
+          </button>
+        )}
+      </section>
 
-      {hasPlusAccess && onboarded && (
-        <div className="mt-5 rounded-3xl bg-secondary p-5">
-          <p className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
-            {t("profile.roamieImpression")}
+      {hasPlusAccess && quizCompleted ? (
+        <section className="mt-4 rounded-3xl bg-secondary p-5">
+          <p className="font-display text-[18px]">
+            {travelStyle || personalityType || "慢步放鬆型"}
           </p>
-          <p className="mt-2 font-display text-[17px] leading-snug">
+          <p className="mt-2 text-xs text-muted-foreground">
+            標籤：{travelTags.length > 0 ? travelTags.join("、") : "安靜、散步、咖啡、自然、慢行"}
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-foreground/85">
             {quizSyncing ? (
               <span className="inline-flex items-center gap-2 text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 {t("profile.quizSyncing")}
               </span>
             ) : (
-              personalityImpression
+              personalityImpression ||
+              "你適合慢慢走、留一點空白的旅行。Roamie 會優先幫你找安靜、有氛圍、適合散步的地方。"
             )}
           </p>
-        </div>
-      )}
+        </section>
+      ) : null}
 
       <section className="relative z-10 mt-6">
-        <p className="mb-2 px-1 text-xs font-medium text-muted-foreground">
-          {t("profile.otherSettings")}
-        </p>
-      <ul className="overflow-hidden rounded-3xl border border-border bg-card shadow-soft">
-        {items.map((it, i) => {
-          const Icon = it.icon;
-          const cls = `flex w-full items-center gap-3 px-4 py-3.5 text-left ${i !== items.length - 1 ? "border-b border-border" : ""}`;
-          return (
-            <li key={it.label} className={i !== items.length - 1 ? "border-b border-border" : ""}>
-              <Link to={it.to} search={it.search} className={cls}>
-                <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-secondary">
-                  <Icon className="h-4 w-4" />
-                </div>
-                <p className="flex-1 text-[15px]">{it.label}</p>
-                {"value" in it && it.value ? (
-                  <p className="text-sm text-muted-foreground">{it.value}</p>
-                ) : null}
-                <ChevronRight className="h-4 w-4 text-muted-foreground" />
-              </Link>
-            </li>
-          );
-        })}
+        <ul className="overflow-hidden rounded-3xl border border-border bg-card shadow-soft">
+          {items.map((it, i) => {
+            const Icon = it.icon;
+            const cls = `flex w-full items-center gap-3 px-4 py-3.5 text-left ${i !== items.length - 1 ? "border-b border-border" : ""}`;
+            return (
+              <li key={it.label} className={i !== items.length - 1 ? "border-b border-border" : ""}>
+                <Link to={it.to} search={it.search} className={cls}>
+                  <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-secondary">
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <p className="flex-1 text-[15px]">{it.label}</p>
+                  {"value" in it && it.value ? (
+                    <p className="text-sm text-muted-foreground">{it.value}</p>
+                  ) : null}
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                </Link>
+              </li>
+            );
+          })}
         </ul>
       </section>
-
-      {/* Preference quiz flow removed in production; keep profile simple. */}
 
       <p className="mt-8 text-center text-[11px] leading-relaxed text-muted-foreground">
         {t("profile.footer")}
@@ -623,6 +739,7 @@ function Profile() {
           type="button"
           disabled={signingOut}
           onClick={() => {
+            console.info("[LOGOUT] clicked");
             setSigningOut(true);
             void signOut()
               .then(async () => {
@@ -645,6 +762,7 @@ function Profile() {
           {t("settings.signOutAccount")}
         </button>
       ) : null}
+      <PlusUpgradeDialog open={upgradeOpen} onOpenChange={setUpgradeOpen} feature="quiz" />
 
       <div aria-hidden className="h-6 shrink-0" />
     </div>

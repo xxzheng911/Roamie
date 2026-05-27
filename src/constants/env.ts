@@ -13,8 +13,9 @@ export const clientEnv = {
   supabaseUrl: readVite("VITE_SUPABASE_URL"),
   /** Supabase anon/publishable key (public, RLS-protected) */
   supabasePublishableKey: readVite("VITE_SUPABASE_PUBLISHABLE_KEY"),
-  /** Maps key is server-proxied; client may receive ephemeral token via API only */
-  googleMapsKey: readVite("VITE_GOOGLE_MAPS_API_KEY"),
+  /** Maps key（優先 EXPO_PUBLIC，供 Capacitor / RN） */
+  googleMapsKey:
+    readVite("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY") ?? readVite("VITE_GOOGLE_MAPS_API_KEY"),
   /** Analytics (optional, public write keys only) */
   posthogKey: readVite("VITE_POSTHOG_KEY"),
   posthogHost: readVite("VITE_POSTHOG_HOST") ?? "https://app.posthog.com",

@@ -1,19 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { Loader2, MapPin } from "lucide-react";
-import {
-  searchTripLocations,
-  resolveTripLocation,
-} from "@/lib/location.functions";
 import { searchTripStops, resolveTripStop } from "@/lib/trip-stop-search.functions";
-import { unifiedSearchTripLocations, unifiedResolveTripLocation } from "@/lib/location-search-unified";
-import {
-  unifiedResolveTripStop,
-  unifiedSearchTripStops,
-} from "@/lib/trip-stop-search-unified";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import type { LocationSuggestion, TripLocation } from "@/lib/location/types";
 import { useI18n } from "@/hooks/use-i18n";
+import { cn } from "@/lib/utils";
 import type { PlaceSearchResultItem } from "@/components/PlaceSearchPanel";
 import { PlaceSearchResultsList } from "@/components/PlaceSearchResultsList";
 import {
@@ -22,8 +14,18 @@ import {
   tripPlaceInputToTripLocation,
   type TripPlaceFieldRole,
 } from "@/lib/trip/trip-place-ref";
+import { getPlaceDetails, searchPlaces as searchPlacesService } from "@/services/placesService";
 
 export type LocationSearchMode = "geographic" | "place";
+const PLACE_NOT_FOUND_MESSAGE = "找不到相關地點";
+const PLACE_API_ERROR_MESSAGE = "暫時無法搜尋地點";
+
+function createPlacesSessionToken(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `places-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
 type Props = {
   label: string;
@@ -32,9 +34,7 @@ type Props = {
   placeholder: string;
   disabled?: boolean;
   required?: boolean;
-  /** 獨立欄位識別（日誌與除錯） */
   fieldRole: TripPlaceFieldRole;
-  /** geographic：國家/城市；place：車站/地址/POI（出發地） */
   searchMode?: LocationSearchMode;
 };
 
@@ -60,9 +60,8 @@ export function LocationSearchField({
   const searchGenRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const committedLabelRef = useRef<string | null>(null);
+  const sessionTokenRef = useRef(createPlacesSessionToken());
 
-  const searchGeoFn = useServerFn(searchTripLocations);
-  const resolveGeoFn = useServerFn(resolveTripLocation);
   const searchStopFn = useServerFn(searchTripStops);
   const resolveStopFn = useServerFn(resolveTripStop);
 
@@ -90,35 +89,29 @@ export function LocationSearchField({
       setSearching(true);
       setSearchError(null);
       try {
-        let list: LocationSuggestion[] = [];
-        let error: string | null = null;
-
-        if (searchMode === "place") {
-          const stopResult = await unifiedSearchTripStops(searchStopFn, trimmed, locale);
-          list = stopResult.suggestions.map((s) => ({
-            placeId: s.placeId,
-            label: s.label,
-            secondary: s.secondary,
-          }));
-          error = stopResult.error;
-        } else {
-          const geoResult = await unifiedSearchTripLocations(searchGeoFn, trimmed, locale);
-          list = geoResult.suggestions;
-          error = geoResult.error;
-        }
+        const stopResult = await searchPlacesService(trimmed, {
+          locale,
+          sessionToken: sessionTokenRef.current,
+          searchFn: searchStopFn,
+        });
+        const list: LocationSuggestion[] = stopResult.suggestions.map((s) => ({
+          placeId: s.placeId,
+          label: s.label,
+          secondary: s.secondary,
+        }));
 
         if (gen !== searchGenRef.current) return;
 
         logTripPlace(fieldRole, "autocomplete", {
           count: list.length,
-          error: error ?? undefined,
+          error: stopResult.error ?? undefined,
           first: list[0]?.label,
         });
 
-        if (list.length === 0 && error) {
-          setSearchError(error);
+        if (list.length === 0 && stopResult.error) {
+          setSearchError(PLACE_API_ERROR_MESSAGE);
         } else if (list.length === 0) {
-          setSearchError(t("location.notFound"));
+          setSearchError(PLACE_NOT_FOUND_MESSAGE);
         } else {
           setSearchError(null);
         }
@@ -127,14 +120,14 @@ export function LocationSearchField({
         if (gen !== searchGenRef.current) return;
         console.error("[LocationSearch] failed", fieldRole, e);
         setSuggestions([]);
-        setSearchError(t("location.searchFailed"));
+        setSearchError(PLACE_API_ERROR_MESSAGE);
       } finally {
         if (gen === searchGenRef.current) {
           setSearching(false);
         }
       }
     },
-    [fieldRole, locale, searchGeoFn, searchMode, searchStopFn, t],
+    [fieldRole, locale, searchMode, searchStopFn],
   );
 
   useEffect(() => {
@@ -154,6 +147,7 @@ export function LocationSearchField({
       setFocused(false);
       setSuggestions([]);
       setSearchError(null);
+      sessionTokenRef.current = createPlacesSessionToken();
       onChange(location);
       logTripPlace(fieldRole, "saved", tripLocationToPlaceRef(location));
     },
@@ -161,53 +155,50 @@ export function LocationSearchField({
   );
 
   const handleSelect = async (item: PlaceSearchResultItem) => {
+    console.info("[PLACE_SELECT] rawPrediction=", JSON.stringify(item));
+    console.info("[PLACE_SELECT] placeId=", item.placeId ?? "");
+    console.info("[PLACE_SELECT] description=", [item.label, item.secondary].filter(Boolean).join(" · "));
     logTripPlace(fieldRole, "selected", {
       placeId: item.placeId,
       label: item.label,
     });
     setResolvingId(item.placeId);
     try {
-      if (searchMode === "place") {
-        const { place, error } = await unifiedResolveTripStop(resolveStopFn, item.placeId, locale, {
+      const { place, error } = await getPlaceDetails(item.placeId, {
+        locale,
+        resolveFn: resolveStopFn,
+        fallback: {
           placeId: item.placeId,
           label: item.label,
           secondary: item.secondary,
-        });
-        if (error && !place) {
-          setSearchError(error);
-          return;
-        }
-        if (!place) {
-          setSearchError(t("location.resolveFailed"));
-          return;
-        }
-        const location = tripPlaceInputToTripLocation(place, item.placeId);
-        if (!location) {
-          setSearchError(t("location.resolveFailed"));
-          return;
-        }
-        logTripPlace(fieldRole, "details", tripLocationToPlaceRef(location));
-        commitLocation(location);
-        return;
-      }
-
-      const { location, error } = await unifiedResolveTripLocation(resolveGeoFn, item.placeId, locale, {
-        name: item.label,
-        address: item.secondary,
+        },
       });
-      if (error && !location) {
-        setSearchError(error);
+      if (error && !place) {
+        setSearchError(PLACE_API_ERROR_MESSAGE);
         return;
       }
-      if (!location) {
+      if (!place) {
         setSearchError(t("location.resolveFailed"));
         return;
       }
+      const location = tripPlaceInputToTripLocation(
+        {
+          name: place.name,
+          placeName: place.name,
+          title: place.name,
+          address: place.address || [item.label, item.secondary].filter(Boolean).join(" · "),
+          lat: place.lat,
+          lng: place.lng,
+          googlePlaceId: place.placeId,
+          placeType: place.placeType,
+        },
+        item.placeId,
+      );
       logTripPlace(fieldRole, "details", tripLocationToPlaceRef(location));
       commitLocation(location);
     } catch (e) {
       console.error("[LocationSearch] resolve failed", fieldRole, e);
-      setSearchError(t("location.resolveFailed"));
+      setSearchError(PLACE_API_ERROR_MESSAGE);
     } finally {
       setResolvingId(null);
     }
@@ -236,11 +227,12 @@ export function LocationSearchField({
     secondary: s.secondary,
   }));
 
-  const showResults = focused && (searching || query.trim().length > 0);
-  const showPickHint = Boolean(query.trim()) && !value && !searching && !searchError;
+  const showResults = focused && (searching || (query.trim().length > 0 && !searchError));
+  const showPickHint =
+    Boolean(query.trim()) && !value && !searching && !searchError && suggestions.length > 0;
 
   return (
-    <section className="relative">
+    <section className={cn("relative", focused && "z-30")}>
       <label className="text-sm font-medium">
         {label}
         {required ? " *" : ""}
@@ -261,6 +253,7 @@ export function LocationSearchField({
             setSearchError(null);
             if (!next.trim()) {
               committedLabelRef.current = null;
+              sessionTokenRef.current = createPlacesSessionToken();
               onChange(null);
               setSuggestions([]);
               return;
@@ -313,7 +306,7 @@ export function LocationSearchField({
           resolvingId={resolvingId}
           onSelect={(item) => void handleSelect(item)}
           query={query}
-          emptyMessage={t("location.notFound")}
+          emptyMessage={PLACE_NOT_FOUND_MESSAGE}
         />
       ) : null}
     </section>

@@ -3,7 +3,16 @@ import { classifyWeatherScene } from "@/lib/weather-scene";
 
 /** 首頁天氣卡情境 emoji */
 export function weatherSummaryEmoji(weather: WeatherSummary): string {
-  const scene = classifyWeatherScene(weather);
+  const scene =
+    weather.scene ??
+    classifyWeatherScene({
+      tempC: weather.tempC,
+      feelsLikeC: weather.feelsLikeC,
+      precipProbability: weather.precipProbability,
+      condition: weather.condition,
+      isDaytime: weather.isDaytime,
+      cloudCoverPercent: weather.cloudCoverPercent,
+    });
   switch (scene) {
     case "rainy":
       return "🌧️";

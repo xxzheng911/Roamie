@@ -3,6 +3,7 @@ import { bootDiagnosticLog, isBootDiagnosticsEnabled } from "@/lib/boot-diagnost
 import { mountImmediateBootShell } from "@/lib/immediate-boot-shell";
 
 bootDiagnosticLog("MAIN_TSX_LOADED");
+console.log("[APP_BOOT] boot-trace loaded");
 mountImmediateBootShell();
 
 function bootMark(phase: string, extra?: Record<string, unknown>) {

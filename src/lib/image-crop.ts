@@ -72,8 +72,28 @@ export function getImageOrientation(imgW: number, imgH: number): CropOrientation
   return "square";
 }
 
+export type CropInitialFit = "contain" | "cover" | "cover-line";
+
 /**
- * 初始縮放：avatar 用 contain + 留白，避免一進場就過度放大。
+ * 封面裁切允許縮放到的最小倍率（相對於 fit-to-width / contain），方便使用者縮小看全圖。
+ */
+export function computeCoverMinimumCropScale(
+  imgW: number,
+  imgH: number,
+  cropW: number,
+  cropH: number,
+): number {
+  // 封面必須永遠覆蓋裁切框（避免黑邊）→ minimum 必須 >= cover scale
+  const wScale = cropW / imgW;
+  const hScale = cropH / imgH;
+  return Math.max(wScale, hScale);
+}
+
+/**
+ * 初始縮放：
+ * - contain：頭像（完整顯示 + 留白）
+ * - cover：填滿裁切框（舊行為，勿用於封面）
+ * - cover-line：橫向封面，優先 fit-to-width，橫圖/方圖用 contain，避免一進場過度放大
  */
 export function computeInitialCropScale(
   imgW: number,
@@ -81,16 +101,37 @@ export function computeInitialCropScale(
   cropW: number,
   cropH: number,
   options: {
-    fit: "contain" | "cover";
+    fit: CropInitialFit;
     padding?: number;
   },
 ): number {
   const wScale = cropW / imgW;
   const hScale = cropH / imgH;
-  const base = options.fit === "contain" ? Math.min(wScale, hScale) : Math.max(wScale, hScale);
+  const containScale = Math.min(wScale, hScale);
+  const pad = options.padding ?? 1;
 
-  if (options.padding != null) {
-    return base * options.padding;
+  if (options.fit === "cover-line") {
+    const coverScale = Math.max(wScale, hScale);
+    const orientation = getImageOrientation(imgW, imgH);
+    if (orientation === "portrait") {
+      /** 直式：寬度對齊裁切框寬，上下可拖曳（LINE 封面） */
+      const widthFit = wScale * (options.padding ?? 0.96);
+      // 仍需覆蓋裁切框高度，避免黑邊
+      return Math.max(coverScale, widthFit);
+    }
+    if (orientation === "landscape") {
+      /** 橫式：以 cover scale 為下限，略偏向「看更多」但不可露黑邊 */
+      return coverScale * (options.padding ?? 1);
+    }
+    /** 方形：置中顯示，但仍必須覆蓋裁切框 */
+    return coverScale * (options.padding ?? 1);
+  }
+
+  const base =
+    options.fit === "contain" ? containScale : Math.max(wScale, hScale);
+
+  if (options.padding != null && options.fit !== "contain") {
+    return base * pad;
   }
 
   if (options.fit === "cover") {
@@ -161,12 +202,26 @@ export async function exportCropFromTransform(
   const imgLeft = (viewportW - imgW) / 2 + offsetX;
   const imgTop = (viewportH - imgH) / 2 + offsetY;
 
-  const sx = ((cropLeft - imgLeft) / scale) * (outW / cropW);
-  const sy = ((cropTop - imgTop) / scale) * (outH / cropH);
+  const rawSx = ((cropLeft - imgLeft) / scale) * (outW / cropW);
+  const rawSy = ((cropTop - imgTop) / scale) * (outH / cropH);
   const sWidth = (cropW / scale) * (outW / cropW);
   const sHeight = (cropH / scale) * (outH / cropH);
 
+  // Clamp crop area to image bounds (avoid black edges even if UI clamp misses)
+  const maxSx = Math.max(0, img.naturalWidth - sWidth);
+  const maxSy = Math.max(0, img.naturalHeight - sHeight);
+  const sx = Math.min(maxSx, Math.max(0, rawSx));
+  const sy = Math.min(maxSy, Math.max(0, rawSy));
+  if (sx !== rawSx || sy !== rawSy) {
+    console.info("[Cover Crop Clamped]", {
+      raw: { sx: rawSx, sy: rawSy, sWidth, sHeight },
+      clamped: { sx, sy },
+      img: { w: img.naturalWidth, h: img.naturalHeight },
+    });
+  }
+
   ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, outW, outH);
+  console.info("[Cover Crop Output Size]", { outW, outH });
   return canvasToJpegBlob(canvas, 0.82);
 }
 
@@ -216,4 +271,40 @@ export function blobToDataUrl(blob: Blob): Promise<string> {
 
 export function fileToObjectUrl(file: File): string {
   return URL.createObjectURL(file);
+}
+
+/**
+ * iOS 實機可能拿到 HEIC/HDR/HJPG；先轉成標準 JPEG，避免 WebKit decode / HJPG err=-39。
+ * 透過 canvas 重新編碼可移除大部分 HDR / metadata。
+ */
+export async function normalizeImageFileForUpload(
+  file: File,
+  options?: { maxSide?: number; quality?: number },
+): Promise<File> {
+  const maxSide = options?.maxSide ?? 2048;
+  const quality = options?.quality ?? 0.86;
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await loadImageFromUrl(objectUrl);
+    const srcW = Math.max(1, img.naturalWidth);
+    const srcH = Math.max(1, img.naturalHeight);
+    const ratio = Math.min(1, maxSide / Math.max(srcW, srcH));
+    const outW = Math.max(1, Math.round(srcW * ratio));
+    const outH = Math.max(1, Math.round(srcH * ratio));
+    const canvas = document.createElement("canvas");
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("無法建立圖片處理畫布");
+    ctx.drawImage(img, 0, 0, outW, outH);
+    const blob = await canvasToJpegBlob(canvas, quality);
+    return new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), {
+      type: "image/jpeg",
+      lastModified: Date.now(),
+    });
+  } catch {
+    throw new Error("這張圖片格式目前不支援，請改選一般照片（JPG/PNG）");
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }

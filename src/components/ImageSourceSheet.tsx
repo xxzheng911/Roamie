@@ -1,11 +1,13 @@
 import { useRef } from "react";
 import { Camera, ImageIcon, Loader2, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { normalizeImageFileForUpload } from "@/lib/image-crop";
 
 type Props = {
   open: boolean;
@@ -32,10 +34,15 @@ export function ImageSourceSheet({
   const albumRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = (file: File | undefined) => {
+  const handleFile = async (file: File | undefined) => {
     if (!file?.type.startsWith("image/")) return;
-    onOpenChange(false);
-    onPickFile(file);
+    try {
+      const normalized = await normalizeImageFileForUpload(file);
+      onOpenChange(false);
+      onPickFile(normalized);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "圖片格式不支援，請改選 JPG 或 PNG");
+    }
   };
 
   return (
@@ -91,7 +98,7 @@ export function ImageSourceSheet({
           accept="image/*"
           className="hidden"
           onChange={(e) => {
-            handleFile(e.target.files?.[0]);
+            void handleFile(e.target.files?.[0]);
             e.target.value = "";
           }}
         />
@@ -102,7 +109,7 @@ export function ImageSourceSheet({
           capture={cameraFacing}
           className="hidden"
           onChange={(e) => {
-            handleFile(e.target.files?.[0]);
+            void handleFile(e.target.files?.[0]);
             e.target.value = "";
           }}
         />

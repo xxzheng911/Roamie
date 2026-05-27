@@ -11,6 +11,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
+import { logTripNav, tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
 
 const AddToTripSheetLazy = lazy(() =>
   import("@/components/AddToTripSheet").then((m) => ({ default: m.AddToTripSheet })),
@@ -67,10 +68,12 @@ export function AddToTripProvider({ children }: { children: ReactNode }) {
         toast.success("已加入行程");
         setSheetOpen(false);
         setPlace(null);
-        navigate({
-          to: "/trip",
-          search: result.isDraft ? { draft: "1" } : { id: result.tripId },
-        });
+        if (result.isDraft) {
+          navigate({ to: "/trip", search: { draft: "1" } });
+        } else {
+          logTripNav("AddToTrip", result.tripId);
+          navigate(tripDetailNavigateOptions(result.tripId));
+        }
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "加入行程失敗");
       } finally {

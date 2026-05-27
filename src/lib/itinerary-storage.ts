@@ -4,15 +4,49 @@ import { isMissingTableError } from "@/lib/supabase-errors";
 import type { Itinerary } from "./itinerary.functions";
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
 import { isSavedCollectionTrip, tagUserSavedTrip } from "@/lib/saved-collection";
+import {
+  getTripCoverImage,
+  tripCoverInputFromPayload,
+  type ImageSource,
+} from "@/services/placeImageService";
+import { resolveTripTitle } from "@/lib/trip/trip-title";
+import { resolveDisplayTitle, titleFieldsFromStored } from "@/lib/saved-trip/display";
+import type { Database } from "@/integrations/supabase/types";
+
+type SavedTripRowUpdate = Database["public"]["Tables"]["saved_trips"]["Update"];
 
 const GUEST_KEY = "roamie:itineraries";
 
+export const SAVED_TRIPS_CHANGED_EVENT = "roamie:saved-trips-changed";
+
+function broadcastTripsChanged() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(SAVED_TRIPS_CHANGED_EVENT));
+}
+
+export type TripCoverMeta = {
+  cover_image: string | null;
+  cover_source: ImageSource | null;
+  cover_query: string | null;
+};
+
 export type StoredItinerary = {
   id: string;
+  /** 自動產生的預設名稱 */
   title: string;
+  custom_title: string | null;
+  is_title_customized: boolean;
   mood: string | null;
+  /** AI / Unsplash 生成封面 */
   cover_image: string | null;
+  /** @deprecated 請用 custom_cover_image_url */
+  cover_image_url: string | null;
+  custom_cover_image_url: string | null;
+  is_cover_customized: boolean;
+  cover_source: ImageSource | null;
+  cover_query: string | null;
   created_at: string;
+  updated_at: string;
   payload: Itinerary | RoamiePayloadV2;
 };
 
@@ -30,24 +64,102 @@ function writeGuest(list: StoredItinerary[]) {
   localStorage.setItem(GUEST_KEY, JSON.stringify(list));
 }
 
-async function persistItinerary(
-  itinerary: Itinerary | RoamiePayloadV2,
-): Promise<StoredItinerary> {
+function rowToStored(
+  row: {
+    id: string;
+    title: string;
+    custom_title?: string | null;
+    is_title_customized?: boolean | null;
+    mood: string | null;
+    cover_image: string | null;
+    cover_image_url?: string | null;
+    custom_cover_image_url?: string | null;
+    is_cover_customized?: boolean | null;
+    cover_source?: string | null;
+    cover_query?: string | null;
+    created_at: string;
+    updated_at?: string;
+  },
+  payload: Itinerary | RoamiePayloadV2,
+): StoredItinerary {
+  return {
+    id: row.id,
+    title: row.title,
+    custom_title: row.custom_title ?? null,
+    is_title_customized: Boolean(row.is_title_customized),
+    mood: row.mood,
+    cover_image: row.cover_image,
+    cover_image_url: row.cover_image_url ?? null,
+    custom_cover_image_url: row.custom_cover_image_url ?? row.cover_image_url ?? null,
+    is_cover_customized: Boolean(row.is_cover_customized),
+    cover_source: (row.cover_source as ImageSource | null) ?? null,
+    cover_query: row.cover_query ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at ?? row.created_at,
+    payload,
+  };
+}
+
+const TRIP_SELECT =
+  "id, title, custom_title, is_title_customized, mood, cover_image, cover_image_url, custom_cover_image_url, is_cover_customized, cover_source, cover_query, created_at, updated_at, payload";
+
+async function resolveCoverForSave(itinerary: Itinerary | RoamiePayloadV2): Promise<TripCoverMeta> {
+  if (!isRoamiePayloadV2(itinerary)) {
+    return { cover_image: null, cover_source: null, cover_query: null };
+  }
+  const cover = await getTripCoverImage(tripCoverInputFromPayload(itinerary));
+  return {
+    cover_image: cover.url,
+    cover_source: cover.source,
+    cover_query: cover.query,
+  };
+}
+
+/** 僅新建行程：寫入自動標題到 title 欄（不標記為自訂） */
+function withAutoTitle(itinerary: Itinerary | RoamiePayloadV2): Itinerary | RoamiePayloadV2 {
+  if (!isRoamiePayloadV2(itinerary)) return itinerary;
+  const autoTitle = resolveTripTitle(itinerary);
+  return { ...itinerary, title: autoTitle };
+}
+
+function payloadTitleForSave(
+  existing: StoredItinerary | null,
+  payload: Itinerary | RoamiePayloadV2,
+): Itinerary | RoamiePayloadV2 {
+  if (!isRoamiePayloadV2(payload)) return payload;
+  if (existing?.is_title_customized) {
+    const display = resolveDisplayTitle(titleFieldsFromStored(existing));
+    return { ...payload, title: display };
+  }
+  const autoTitle = resolveTripTitle(payload);
+  return { ...payload, title: autoTitle };
+}
+
+async function persistItinerary(itinerary: Itinerary | RoamiePayloadV2): Promise<StoredItinerary> {
+  const withTitle = withAutoTitle(itinerary);
   const userId = await getAuthenticatedUserId();
-  const mood = isRoamiePayloadV2(itinerary)
-    ? itinerary.moodTag
-    : (itinerary as Itinerary).mood;
+  const mood = isRoamiePayloadV2(withTitle) ? withTitle.moodTag : (withTitle as Itinerary).mood;
+  const coverMeta = await resolveCoverForSave(withTitle);
+  const autoTitle = isRoamiePayloadV2(withTitle) ? withTitle.title : (withTitle as Itinerary).title;
 
   if (userId) {
     const { data, error } = await supabase
       .from("saved_trips")
       .insert({
         user_id: userId,
-        title: itinerary.title,
+        title: autoTitle,
+        custom_title: null,
+        is_title_customized: false,
         mood: mood ?? null,
-        payload: itinerary as never,
+        payload: withTitle as never,
+        cover_image: coverMeta.cover_image,
+        cover_source: coverMeta.cover_source,
+        cover_query: coverMeta.cover_query,
+        custom_cover_image_url: null,
+        is_cover_customized: false,
+        cover_image_url: null,
       })
-      .select()
+      .select(TRIP_SELECT)
       .single();
     if (error) {
       if (isMissingTableError(error)) {
@@ -55,17 +167,17 @@ async function persistItinerary(
       }
       throw new Error(error.message);
     }
-    return {
-      id: data.id,
-      title: data.title,
-      mood: data.mood,
-      cover_image: data.cover_image,
-      created_at: data.created_at,
-      payload: itinerary,
-    };
+    const stored = rowToStored(data, withTitle);
+    console.info("[CORE_TRIP] created", stored.id);
+    return stored;
   }
 
   throw new Error("請先登入");
+}
+
+function afterTripMutation(result: StoredItinerary | null): StoredItinerary | null {
+  if (result) broadcastTripsChanged();
+  return result;
 }
 
 /** 使用者確認「儲存行程」後才寫入收藏（saved_trips） */
@@ -73,7 +185,9 @@ export async function confirmSaveTrip(
   itinerary: Itinerary | RoamiePayloadV2,
   source: "chat" | "plan" = "chat",
 ): Promise<StoredItinerary> {
-  return persistItinerary(tagUserSavedTrip(itinerary, source));
+  const saved = await persistItinerary(tagUserSavedTrip(itinerary, source));
+  broadcastTripsChanged();
+  return saved;
 }
 
 /** @deprecated 請改用 confirmSaveTrip；保留給內部相容 */
@@ -88,21 +202,14 @@ export async function listItineraries(): Promise<StoredItinerary[]> {
   if (userId) {
     const { data, error } = await supabase
       .from("saved_trips")
-      .select("id, title, mood, cover_image, created_at, payload")
-      .order("created_at", { ascending: false });
+      .select(TRIP_SELECT)
+      .order("updated_at", { ascending: false });
     if (error) {
       if (isMissingTableError(error)) return [];
       throw new Error(error.message);
     }
     return (data ?? [])
-      .map((row) => ({
-        id: row.id,
-        title: row.title,
-        mood: row.mood,
-        cover_image: row.cover_image,
-        created_at: row.created_at,
-        payload: row.payload as unknown as Itinerary | RoamiePayloadV2,
-      }))
+      .map((row) => rowToStored(row, row.payload as unknown as Itinerary | RoamiePayloadV2))
       .filter((row) => isSavedCollectionTrip(row.payload));
   }
   return [];
@@ -113,7 +220,7 @@ export async function getItinerary(id: string): Promise<StoredItinerary | null> 
   if (userId) {
     const { data, error } = await supabase
       .from("saved_trips")
-      .select("id, title, mood, cover_image, created_at, payload")
+      .select(TRIP_SELECT)
       .eq("id", id)
       .maybeSingle();
     if (error) {
@@ -123,63 +230,147 @@ export async function getItinerary(id: string): Promise<StoredItinerary | null> 
     if (!data) return null;
     const payload = data.payload as unknown as Itinerary | RoamiePayloadV2;
     if (!isSavedCollectionTrip(payload)) return null;
-    return {
-      id: data.id,
-      title: data.title,
-      mood: data.mood,
-      cover_image: data.cover_image,
-      created_at: data.created_at,
-      payload,
-    };
+    return rowToStored(data, payload);
   }
   return null;
+}
+
+export type TripMetaUpdate = {
+  /** 僅更新自動標題（未自訂時） */
+  title?: string;
+  custom_title?: string | null;
+  is_title_customized?: boolean;
+  /** AI 封面（重新生成時） */
+  cover_image?: string | null;
+  cover_image_url?: string | null;
+  custom_cover_image_url?: string | null;
+  is_cover_customized?: boolean;
+  cover_source?: ImageSource | null;
+  cover_query?: string | null;
+};
+
+export async function updateTripMeta(
+  id: string,
+  meta: TripMetaUpdate,
+  payload?: RoamiePayloadV2 | Itinerary,
+): Promise<StoredItinerary | null> {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) throw new Error("請先登入");
+
+  const patch: SavedTripRowUpdate = {};
+  if (meta.title != null) patch.title = meta.title;
+  if (meta.custom_title !== undefined) patch.custom_title = meta.custom_title;
+  if (meta.is_title_customized !== undefined) {
+    patch.is_title_customized = meta.is_title_customized;
+  }
+  if (meta.cover_image !== undefined) patch.cover_image = meta.cover_image;
+  if (meta.cover_image_url !== undefined) patch.cover_image_url = meta.cover_image_url;
+  if (meta.custom_cover_image_url !== undefined) {
+    patch.custom_cover_image_url = meta.custom_cover_image_url;
+  }
+  if (meta.is_cover_customized !== undefined) {
+    patch.is_cover_customized = meta.is_cover_customized;
+  }
+  if (meta.cover_source !== undefined) patch.cover_source = meta.cover_source;
+  if (meta.cover_query !== undefined) patch.cover_query = meta.cover_query;
+  if (payload) patch.payload = payload as never;
+
+  const { data, error } = await supabase
+    .from("saved_trips")
+    .update(patch)
+    .eq("id", id)
+    .select(TRIP_SELECT)
+    .single();
+
+  if (error) {
+    if (isMissingTableError(error)) return null;
+    throw new Error(error.message);
+  }
+
+  const resolvedPayload = payload ?? (data.payload as unknown as Itinerary | RoamiePayloadV2);
+  return afterTripMutation(rowToStored(data, resolvedPayload));
 }
 
 export async function updateItinerary(
   id: string,
   payload: Itinerary | RoamiePayloadV2,
-  title?: string,
 ): Promise<StoredItinerary | null> {
   const userId = await getAuthenticatedUserId();
-  const mood = isRoamiePayloadV2(payload) ? payload.moodTag : (payload as Itinerary).mood;
+  if (!userId) throw new Error("請先登入");
 
-  if (userId) {
-    const { data, error } = await supabase
-      .from("saved_trips")
-      .update({
-        title: title ?? (isRoamiePayloadV2(payload) ? payload.title : (payload as Itinerary).title),
-        mood: mood ?? null,
-        payload: payload as never,
-      })
-      .eq("id", id)
-      .select()
-      .single();
-    if (error) {
-      if (isMissingTableError(error)) return null;
-      throw new Error(error.message);
-    }
-    return {
-      id: data.id,
-      title: data.title,
-      mood: data.mood,
-      cover_image: data.cover_image,
-      created_at: data.created_at,
-      payload,
-    };
+  const existing = await getItinerary(id);
+  const resolvedPayload = payloadTitleForSave(existing, payload);
+  const mood = isRoamiePayloadV2(resolvedPayload)
+    ? resolvedPayload.moodTag
+    : (resolvedPayload as Itinerary).mood;
+
+  const patch: SavedTripRowUpdate = {
+    mood: mood ?? null,
+    payload: resolvedPayload as never,
+  };
+
+  if (!existing?.is_title_customized && isRoamiePayloadV2(resolvedPayload)) {
+    patch.title = resolveTripTitle(resolvedPayload);
   }
 
-  throw new Error("請先登入");
+  const { data, error } = await supabase
+    .from("saved_trips")
+    .update(patch)
+    .eq("id", id)
+    .select(TRIP_SELECT)
+    .single();
+
+  if (error) {
+    if (isMissingTableError(error)) return null;
+    throw new Error(error.message);
+  }
+
+  const updated = rowToStored(data, resolvedPayload);
+  console.info("[CORE_TRIP] updated", updated.id);
+  return afterTripMutation(updated);
 }
 
 export async function deleteItinerary(id: string): Promise<void> {
   const userId = await getAuthenticatedUserId();
   if (userId) {
-    const { error } = await supabase.from("saved_trips").delete().eq("id", id);
+    const { error } = await supabase
+      .from("saved_trips")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", userId);
     if (error) {
-      if (isMissingTableError(error)) return;
+      if (isMissingTableError(error)) {
+        const prev = readGuest();
+        writeGuest(prev.filter((t) => t.id !== id));
+        broadcastTripsChanged();
+        return;
+      }
       throw new Error(error.message);
     }
+    broadcastTripsChanged();
     return;
   }
+
+  const prevGuest = readGuest();
+  const nextGuest = prevGuest.filter((t) => t.id !== id);
+  if (nextGuest.length !== prevGuest.length) {
+    writeGuest(nextGuest);
+    broadcastTripsChanged();
+    return;
+  }
+
   throw new Error("請先登入");
+}
+
+/** 使用者主動重新生成 AI 封面；不影響 is_cover_customized / custom_cover_image_url */
+export async function regenerateTripCover(
+  id: string,
+  payload: RoamiePayloadV2,
+): Promise<StoredItinerary | null> {
+  const cover = await getTripCoverImage(tripCoverInputFromPayload(payload));
+  return updateTripMeta(id, {
+    cover_image: cover.url,
+    cover_source: cover.source,
+    cover_query: cover.query,
+  });
 }

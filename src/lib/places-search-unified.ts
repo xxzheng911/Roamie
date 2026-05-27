@@ -25,7 +25,7 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
     if (!key) {
       return {
         places: [],
-        error: "無法取得附近推薦。請確認已設定 VITE_GOOGLE_MAPS_API_KEY。",
+        error: "無法取得附近推薦。請確認已設定 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY。",
       };
     }
 

@@ -1,11 +1,11 @@
 /** Server-only env helpers (never import from client components). */
 
 import { isPlaceholderSecret, resolveServerEnv } from "@/lib/load-env.server";
+import { readGoogleMapsKeyFromServerEnv } from "@/lib/google-maps-key-resolve.server";
+import { requireOpenWeatherApiKey } from "@/lib/openweather-key-resolve.server";
 
 export function resolveGoogleMapsKey(): string | undefined {
-  const resolved =
-    resolveServerEnv("GOOGLE_MAPS_API_KEY") ?? resolveServerEnv("VITE_GOOGLE_MAPS_API_KEY");
-  return resolved?.value;
+  return readGoogleMapsKeyFromServerEnv() ?? undefined;
 }
 
 export function getOpenAIKey(): string {
@@ -40,4 +40,9 @@ export function getOpenAIKey(): string {
 
   console.info("[Roamie AI] OPENAI_API_KEY loaded from", resolved.source, "prefix:", apiKey.slice(0, 12) + "…");
   return apiKey;
+}
+
+/** @deprecated 使用 requireOpenWeatherApiKey；保留別名供既有 import */
+export function getOpenWeatherApiKey(): string {
+  return requireOpenWeatherApiKey();
 }

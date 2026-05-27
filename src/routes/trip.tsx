@@ -1,6 +1,8 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { Share2, Trash2, MapPin, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
+import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { MobileFrame } from "@/components/MobileFrame";
@@ -10,7 +12,6 @@ import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { requireAuthenticatedRoute } from "@/lib/require-auth";
 import {
   confirmSaveTrip,
-  deleteItinerary,
   getItinerary,
   updateItinerary,
   type StoredItinerary,
@@ -18,7 +19,12 @@ import {
 import { clearDraftTrip, loadDraftTrip } from "@/lib/trip-draft-storage";
 import type { Itinerary } from "@/lib/itinerary.functions";
 import { generateItinerary } from "@/lib/itinerary.functions";
-import { isRoamiePayloadV2, type RoamieItineraryItem, type RoamiePayloadV2, type TripPlanSettings } from "@/lib/ai/types";
+import {
+  isRoamiePayloadV2,
+  type RoamieItineraryItem,
+  type RoamiePayloadV2,
+  type TripPlanSettings,
+} from "@/lib/ai/types";
 import { buildClientContextBundle } from "@/lib/fetch-context";
 import { getWeather } from "@/lib/weather.functions";
 import { getPreferences } from "@/lib/preferences-storage";
@@ -26,6 +32,7 @@ import { getUserProfile } from "@/lib/profile-storage";
 import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import { resolveBudgetMode } from "@/lib/preferences-storage";
+import { logTripNav, TRIP_DETAIL_ROUTE } from "@/lib/trip/trip-detail-nav";
 
 type TripSearch = { id?: string; draft?: string };
 
@@ -34,7 +41,14 @@ export const Route = createFileRoute("/trip")({
     id: typeof s.id === "string" ? s.id : undefined,
     draft: typeof s.draft === "string" ? s.draft : undefined,
   }),
-  beforeLoad: requireAuthenticatedRoute,
+  beforeLoad: async ({ search }) => {
+    await requireAuthenticatedRoute();
+    if (typeof window === "undefined") return;
+    if (search.id && search.draft !== "1") {
+      logTripNav("trip-route-legacy-redirect", search.id);
+      throw redirect({ to: TRIP_DETAIL_ROUTE, params: { tripId: search.id } });
+    }
+  },
   component: Trip,
 });
 
@@ -82,6 +96,8 @@ function Trip() {
   const [trip, setTrip] = useState<StoredItinerary | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const scrollLoggedRef = useRef(false);
   const isDraft = draft === "1";
 
@@ -116,7 +132,11 @@ function Trip() {
           title: payload.title,
           mood: payload.moodTag ?? null,
           cover_image: null,
+          cover_image_url: null,
+          cover_source: null,
+          cover_query: null,
           created_at: payload.generatedAt ?? new Date().toISOString(),
+          updated_at: payload.generatedAt ?? new Date().toISOString(),
           payload,
         });
         console.info("[Trip Plan Data Loaded]", { source: "draft", title: payload.title });
@@ -128,40 +148,13 @@ function Trip() {
       return;
     }
 
-    if (!id) {
-      console.info("[Trip Plan Data Error]", { reason: "missing_id" });
-      setLoadError("缺少行程編號");
-      setLoading(false);
-      return;
-    }
-
-    console.info("[Trip Plan Data Loading]", { id });
-    getItinerary(id)
-      .then((data) => {
-        if (cancelled) return;
-        if (data) {
-          setTrip(data);
-          console.info("[Trip Plan Data Loaded]", { id: data.id, title: data.title });
-        } else {
-          setLoadError("找不到這個行程");
-          console.info("[Trip Plan Data Error]", { id, reason: "not_found" });
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        const message = err instanceof Error ? err.message : "讀取行程失敗";
-        console.info("[Trip Plan Data Error]", { id, message });
-        setLoadError(message);
-        toast.error("讀取行程失敗");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
+    console.info("[Trip Plan Data Error]", { reason: "draft_only_route" });
+    setLoadError("請從首頁或收藏開啟已儲存的行程");
+    setLoading(false);
     return () => {
       cancelled = true;
     };
-  }, [id, isDraft]);
+  }, [isDraft]);
 
   const handleSaveDraft = async () => {
     if (!trip || !isDraft) return;
@@ -169,7 +162,8 @@ function Trip() {
       const saved = await confirmSaveTrip(trip.payload as RoamiePayloadV2, "chat");
       clearDraftTrip();
       toast.success("已儲存到收藏");
-      navigate({ to: "/trip", search: { id: saved.id }, replace: true });
+      logTripNav("trip-draft-saved", saved.id);
+      navigate({ to: TRIP_DETAIL_ROUTE, params: { tripId: saved.id }, replace: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "儲存失敗");
     }
@@ -177,13 +171,16 @@ function Trip() {
 
   const handleDelete = async () => {
     if (!trip || isDraft) return;
-    if (!confirm(`確定要刪除「${trip.title}」嗎？`)) return;
+    setDeleting(true);
     try {
-      await deleteItinerary(trip.id);
+      await deleteTrip(trip.id);
       toast.success("已刪除");
-      navigate({ to: "/saved" });
+      setDeleteOpen(false);
+      navigate({ to: "/saved", search: { tab: "trips" } });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "刪除失敗");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -254,7 +251,8 @@ function Trip() {
             .filter(Boolean)
             .join("\n"),
           startDate: settings.tripStartDate ?? new Date().toISOString().slice(0, 10),
-          endDate: settings.tripEndDate ?? settings.tripStartDate ?? new Date().toISOString().slice(0, 10),
+          endDate:
+            settings.tripEndDate ?? settings.tripStartDate ?? new Date().toISOString().slice(0, 10),
           transport,
           selectedPlaces: [],
           preferences: prefs,
@@ -298,7 +296,7 @@ function Trip() {
         {!isDraft && (
           <button
             type="button"
-            onClick={() => void handleDelete()}
+            onClick={() => setDeleteOpen(true)}
             className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
             aria-label="刪除"
           >
@@ -327,10 +325,17 @@ function Trip() {
         <TripScreenShell onScroll={handleScroll}>
           <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-8 text-center">
             <p className="text-sm text-muted-foreground">{loadError ?? "找不到這個行程"}</p>
-            <Link to="/plan" className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground">
+            <Link
+              to="/plan"
+              className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground"
+            >
               規劃新行程
             </Link>
-            <Link to="/saved" className="text-sm text-muted-foreground underline">
+            <Link
+              to="/saved"
+              search={{ tab: "trips" }}
+              className="text-sm text-muted-foreground underline"
+            >
               查看所有行程
             </Link>
           </div>
@@ -410,6 +415,12 @@ function Trip() {
           </div>
         </div>
       </TripScreenShell>
+      <TripDeleteConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        onConfirm={handleDelete}
+        confirming={deleting}
+      />
     </MobileFrame>
   );
 }
@@ -425,7 +436,9 @@ function TripLegacy({ it }: { it: Itinerary }) {
         <span>{it.days} 天</span>
       </div>
       <p className="mt-4 rounded-2xl bg-secondary p-4 text-sm leading-relaxed">{it.summary}</p>
-      <p className="mt-4 text-sm text-muted-foreground">此為舊版行程格式，建議重新規劃以使用完整時間軸編輯。</p>
+      <p className="mt-4 text-sm text-muted-foreground">
+        此為舊版行程格式，建議重新規劃以使用完整時間軸編輯。
+      </p>
     </>
   );
 }

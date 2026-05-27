@@ -1292,13 +1292,19 @@ html.map-route-active main.app-scroll {
 }
 
 /**
- * 聊天頁：flex 欄位佈局（header | messages | input），勿 fixed 輸入列。
- * 鍵盤 inset 由 .chat-page padding-bottom（React）控制；收起時保留 Tab Bar 空間。
+ * 聊天頁：flex 欄位佈局（header | messages | composer-shell）。
+ * 鍵盤位移由 .chat-composer-shell 的 padding-bottom 控制（整組 chips + input 同步移動）。
+ * 收起時 .chat-page 保留 Tab Bar 空間。
  */
-html.chat-route-active .chat-input-bar {
+html.chat-route-active .chat-composer-shell,
+html.chat-route-active .chat-composer {
   position: relative;
   z-index: 10;
   width: 100%;
+}
+
+html.chat-route-active .chat-composer-shell {
+  will-change: padding-bottom;
 }
 
 html.chat-route-active .chat-messages {

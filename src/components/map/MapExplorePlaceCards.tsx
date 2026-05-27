@@ -6,7 +6,7 @@ import {
   type PointerEvent,
 } from "react";
 import { Heart, Loader2, Plus, Star } from "lucide-react";
-import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
+import { PlaceImage } from "@/components/media/PlaceImage";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { cn } from "@/lib/utils";
@@ -177,14 +177,9 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
             {places.map((p, i) => {
               const isSaved = savedNames.has(p.name);
               const isBusy = busyId === p.id;
-              const img =
+              const googleImg =
                 p.coverImageUrl ??
-                imageUrl(p.photoName) ??
-                pickPlaceSceneFallback(p.name, {
-                  primaryType: p.primaryType,
-                  types: p.types,
-                  categoryId: categoryKey,
-                });
+                imageUrl(p.photoName);
               const distLabel =
                 p.distanceLabel ??
                 (p.lat != null && p.lng != null
@@ -211,15 +206,24 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                   )}
                 >
                   <div className="relative h-[170px] w-full shrink-0 overflow-hidden rounded-t-[1.4rem] bg-secondary">
-                    {img ? (
+                    {googleImg ? (
                       <img
-                        src={img}
+                        src={googleImg}
                         alt={p.name}
                         loading="lazy"
                         draggable={false}
                         className="pointer-events-none h-full w-full object-cover"
                       />
-                    ) : null}
+                    ) : (
+                      <PlaceImage
+                        name={p.name}
+                        photoName={p.photoName}
+                        primaryType={p.primaryType}
+                        types={p.types}
+                        categoryId={categoryKey}
+                        className="pointer-events-none h-full w-full"
+                      />
+                    )}
                     <button
                       type="button"
                       onClick={(e) => {

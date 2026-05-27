@@ -22,6 +22,7 @@ import {
   mergeRecommendationsWithSelected,
   syncSessionPlaceMemory,
 } from "@/lib/place-planning-memory";
+import { mergeTravelContext } from "@/lib/ai/travel-context";
 
 const MOOD_HANDOFF_DONE_PREFIX = "roamie:mood-handoff-done:";
 
@@ -256,7 +257,11 @@ export function prepareMoodFlowSession(input: MoodFlowHandoffInput): ChatPlannin
   };
 
   merged.initialChatContext = buildInitialChatContext(merged);
-  return syncSessionPlaceMemory(merged);
+  const withContext = mergeTravelContext(
+    merged,
+    moodTag ? `我想${moodTag}，幫我看看附近適合去哪裡。` : "",
+  );
+  return syncSessionPlaceMemory(withContext.session);
 }
 
 export function markMoodHandoffComplete(session: ChatPlanningSession): ChatPlanningSession {

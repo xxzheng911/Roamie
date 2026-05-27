@@ -4,7 +4,7 @@ import {
   resolveBudgetMode,
   type TravelPreferences,
 } from "@/lib/preferences-storage";
-import type { WeatherSummary } from "@/lib/weather.functions";
+import type { WeatherSummary } from "@/lib/weather-types";
 import { formatTemporalWeatherBlock } from "@/lib/weather-context";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlanTier } from "@/lib/plan-tier/types";
@@ -167,13 +167,23 @@ export function formatPreferences(prefs?: TravelPreferences): string {
 
 export function formatWeather(weather?: WeatherSummary | null): string {
   if (!weather) return "（天氣資料未取得）";
+  if (!weather.available) return weather.recommendationText;
   const temp =
     weather.tempC !== null && weather.tempC !== undefined ? `${Math.round(weather.tempC)}°C` : "";
+  const feels =
+    weather.feelsLikeC != null && Math.abs(weather.feelsLikeC - (weather.tempC ?? 0)) >= 2
+      ? `、體感 ${Math.round(weather.feelsLikeC)}°C`
+      : "";
   const precip =
     weather.precipProbability !== null && weather.precipProbability !== undefined
       ? `、降雨機率 ${weather.precipProbability}%`
       : "";
-  return `${weather.city || "目前位置"} · ${weather.condition}${temp ? ` · ${temp}` : ""}${precip} · ${weather.recommendationText}`;
+  const clouds =
+    weather.cloudCoverPercent != null ? `、雲量 ${weather.cloudCoverPercent}%` : "";
+  const uvi = weather.uvi != null && weather.uvi >= 3 ? `、UV ${Math.round(weather.uvi)}` : "";
+  const sun =
+    weather.sunset && !weather.isDaytime ? `、日落 ${weather.sunset}` : "";
+  return `${weather.city || "目前位置"} · ${weather.condition}${temp ? ` · ${temp}${feels}` : ""}${precip}${clouds}${uvi}${sun} · ${weather.recommendationText}`;
 }
 
 export function formatLocation(loc?: RoamieLocation): string {

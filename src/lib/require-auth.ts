@@ -3,9 +3,10 @@ import { getClientAuthSession } from "@/lib/auth-session";
 import { logAuthFlowMarker } from "@/lib/clear-auth-state";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { logAppError } from "@/lib/log-error";
-import { hydrateOnboardingStatus } from "@/lib/onboarding-storage";
+import { isOnboardingCompletedSync, loadOnboardingState } from "@/lib/onboarding-storage";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import type { StartupPath } from "@/lib/post-auth-navigation";
+import { guardStartupTarget, logStartupNavigationContext } from "@/lib/startup-navigation";
 
 const AUTH_ROUTE_TIMEOUT_MS = 4_000;
 
@@ -68,6 +69,25 @@ export async function requireAppShellAccess(): Promise<void> {
   }
 
   try {
+    await loadOnboardingState();
+
+    if (!isOnboardingCompletedSync()) {
+      try {
+        markBootPhase("gate:requireAppShellAccess:redirect:/welcome");
+      } catch {
+        // ignore
+      }
+      console.log("[ONBOARDING_GUARD] blocked home redirect", {
+        source: "requireAppShellAccess",
+        targetRoute: "/welcome",
+        reason: "onboarding_incomplete",
+      });
+      logStartupNavigationContext("requireAppShellAccess", "/welcome", {
+        reason: "onboarding_incomplete",
+      }).catch(() => {});
+      throw redirect({ to: "/welcome" });
+    }
+
     const session = await Promise.race([
       getClientAuthSession(),
       new Promise<null>((resolve) => {
@@ -84,22 +104,22 @@ export async function requireAppShellAccess(): Promise<void> {
       blockGuestAccess("requireAppShellAccess:no-session");
     }
 
-    await hydrateOnboardingStatus();
-
     const next = await Promise.race([
-      resolveStartupPath({ hasSession: true }),
+      resolveStartupPath({ hasSession: true, source: "requireAppShellAccess" }),
       new Promise<StartupPath>((resolve) => {
         window.setTimeout(() => resolve("/login"), SHELL_GATE_TIMEOUT_MS);
       }),
     ]);
 
-    if (next !== "/") {
+    const guarded = guardStartupTarget(next, "requireAppShellAccess");
+
+    if (guarded !== "/") {
       try {
-        markBootPhase(`gate:requireAppShellAccess:redirect:${next}`);
+        markBootPhase(`gate:requireAppShellAccess:redirect:${guarded}`);
       } catch {
         // ignore
       }
-      redirectToStartupTarget(next);
+      redirectToStartupTarget(guarded);
     }
   } catch (e) {
     if (isRedirect(e)) throw e;

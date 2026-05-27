@@ -83,7 +83,13 @@ export function isRejectedTripLocationLabel(label: string): boolean {
   const t = label.trim();
   if (!t) return true;
   if (/\d+\s*號|\d+-\d+|^\d+/.test(t)) return true;
-  if (/(餐廳|咖啡|咖啡廳|飯店|旅館|民宿|超商|便利商店|百貨|商場|書店|藥局|醫院|學校|站|機場|港口|碼頭|寺|廟|宮|神社|博物館|美術館|樂園|夜市|店$|館$)/.test(t)) {
+  // 車站／機場等交通節點可作為出發地或目的地關鍵字
+  if (/車站|火車站|高鐵|捷運站|地鐵站|機場|空港|Airport/i.test(t)) return false;
+  if (
+    /(餐廳|咖啡|咖啡廳|飯店|旅館|民宿|超商|便利商店|百貨|商場|書店|藥局|醫院|學校|港口|碼頭|寺|廟|宮|神社|博物館|美術館|樂園|夜市|店$|館$)/.test(
+      t,
+    )
+  ) {
     return true;
   }
   return false;

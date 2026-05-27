@@ -1,4 +1,5 @@
 import { Heart, Loader2, Plus, Star } from "lucide-react";
+import { PlaceImage } from "@/components/media/PlaceImage";
 import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
@@ -89,6 +90,7 @@ export function HomeNearbyPlaceCards({
     >
       {places.map((p, i) => {
         const img = p.coverImageUrl;
+        const googlePhoto = img;
         const isLast = i === places.length - 1;
         const distance = canShowDistance ? distLabel(p, anchor) : "";
         const typeName = p.displayCategory ?? getExploreCategoryDisplayLabel(p);
@@ -124,15 +126,24 @@ export function HomeNearbyPlaceCards({
                     <Loader2 className="h-6 w-6 animate-spin text-cream" aria-hidden />
                   </div>
                 ) : null}
-                {img ? (
+                {googlePhoto ? (
                   <img
-                    src={img}
+                    src={googlePhoto}
                     alt=""
                     loading="lazy"
                     draggable={false}
                     className="absolute inset-0 h-full w-full object-cover"
                   />
-                ) : null}
+                ) : (
+                  <PlaceImage
+                    name={p.name}
+                    photoName={p.photoName}
+                    primaryType={p.primaryType}
+                    types={p.types}
+                    categoryId={p.categoryId}
+                    className="absolute inset-0"
+                  />
+                )}
                 <div
                   className="absolute inset-0 bg-gradient-to-t from-ink/78 via-ink/18 to-transparent"
                   aria-hidden

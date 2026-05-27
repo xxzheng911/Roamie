@@ -308,6 +308,7 @@ function MapView() {
             travelStyle: profile?.travelStyle,
             personalityType: profile?.personalityType,
             personalitySummary: profile?.personalitySummary,
+            aiPreferences: profile?.aiPreferences,
           }),
         );
       } catch {

@@ -22,7 +22,7 @@ export function BottomNav({ hiddenOnKeyboard = false }: Props) {
   return (
     <nav
       aria-label="主要導覽"
-      className={`bottom-nav absolute inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 backdrop-blur-xl pb-[var(--safe-area-bottom)] transition-[opacity,transform] duration-200 ${
+      className={`bottom-nav fixed inset-x-0 bottom-0 z-40 border-t border-border bg-card/95 backdrop-blur-xl pb-[var(--safe-area-bottom)] transition-[opacity,transform] duration-200 ${
         hiddenOnKeyboard ? "chat-nav-keyboard-hide" : ""
       }`}
     >

@@ -1,18 +1,9 @@
 import { useMemo, useState } from "react";
-import {
-  Bookmark,
-  Calendar,
-  MapPin,
-  Users,
-  Route as RouteIcon,
-} from "lucide-react";
+import { Bookmark, Calendar, MapPin, Users, Route as RouteIcon } from "lucide-react";
 import { BackButton } from "@/components/BackButton";
 import { SavedTripStopCard } from "@/components/saved/SavedTripStopCard";
-import {
-  formatSavedTripDateRange,
-  formatSavedTripDayLabel,
-  type SavedTripView,
-} from "@/lib/saved-trip/normalize";
+import { formatSavedTripDateRange, formatSavedTripDayLabel } from "@/lib/saved-trip/normalize";
+import type { SavedTripView } from "@/lib/saved-trip/types";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -40,10 +31,8 @@ export function SavedTripDetailView({ trip, headerRight }: Props) {
           {headerRight ?? <span className="w-9" />}
         </div>
 
-        <p className="mt-3 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-          收藏行程
-        </p>
-        <h1 className="mt-1 font-display text-[22px] leading-snug">{trip.title}</h1>
+        <p className="mt-3 text-xs uppercase tracking-[0.2em] text-muted-foreground">收藏行程</p>
+        <h1 className="mt-1 font-display text-[22px] leading-snug">{trip.displayTitle}</h1>
 
         <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1 rounded-full bg-secondary/80 px-2.5 py-1">

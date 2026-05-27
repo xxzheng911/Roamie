@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, MapPin, Search, X } from "lucide-react";
+import { Loader2, Search, X } from "lucide-react";
+import { PlaceImage } from "@/components/media/PlaceImage";
 import { useI18n } from "@/hooks/use-i18n";
 import { cn } from "@/lib/utils";
 
@@ -114,7 +115,14 @@ export function PlaceSearchPanel({
                   className="mt-0.5 h-10 w-10 shrink-0 rounded-lg object-cover"
                 />
               ) : (
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-clay" />
+                <div className="mt-0.5 h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-secondary">
+                  <PlaceImage
+                    name={s.label}
+                    primaryType={s.typeLabel}
+                    initialUrl={null}
+                    className="h-full w-full"
+                  />
+                </div>
               )}
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium leading-snug">{s.label}</span>

@@ -14,6 +14,8 @@ import { coerceLocale } from "@/lib/i18n/resolve-locale";
 const DEFAULT_CENTER = { lat: 25.033, lng: 121.5654 };
 const MIN_TRIP_LOCATION_QUERY_LEN = 2;
 
+export const PLACE_SEARCH_FALLBACK_MESSAGE = "暫時找不到這個地點，請換個關鍵字試試。";
+
 function normalizeTripLocationQuery(query: string): string {
   return query.trim().replace(/\s+/g, " ");
 }
@@ -113,10 +115,7 @@ async function clientGeocodeSuggestions(query: string, locale: Locale, apiKey: s
   }
 
   if (suggestions.length === 0) {
-    return {
-      suggestions: [],
-      error: "找不到符合的地點，請輸入國家、城市或地區（例如：日本、東京、大阪）。",
-    };
+    return { suggestions: [], error: PLACE_SEARCH_FALLBACK_MESSAGE };
   }
   return { suggestions, error: null };
 }
@@ -127,18 +126,29 @@ async function clientResolveTripLocation(placeId: string, locale: Locale, apiKey
   const region = localeToGeocodeRegion(userLocale);
   const res = await fetch(geocodeUrl({ apiKey, placeId, language, region }));
   if (!res.ok) return { location: null as TripLocation | null, error: "無法解析地點" };
-  const json = (await res.json()) as { status?: string; error_message?: string; results?: GeocodeResult[] };
+  const json = (await res.json()) as {
+    status?: string;
+    error_message?: string;
+    results?: GeocodeResult[];
+  };
   if (json.status !== "OK") {
-    return { location: null as TripLocation | null, error: json.error_message ?? json.status ?? "無法解析地點" };
+    return {
+      location: null as TripLocation | null,
+      error: json.error_message ?? json.status ?? "無法解析地點",
+    };
   }
   const best = (json.results ?? [])[0];
   if (!best) return { location: null as TripLocation | null, error: "無法解析地點" };
   if (!isGeographicPlaceTypes(best.types)) {
-    return { location: null as TripLocation | null, error: "請選擇國家、城市或地區（非店家或景點）" };
+    return {
+      location: null as TripLocation | null,
+      error: "請選擇國家、城市或地區（非店家或景點）",
+    };
   }
   const lat = best.geometry?.location?.lat;
   const lng = best.geometry?.location?.lng;
-  if (lat == null || lng == null) return { location: null as TripLocation | null, error: "無法解析地點座標" };
+  if (lat == null || lng == null)
+    return { location: null as TripLocation | null, error: "無法解析地點座標" };
   const formatted = best.formatted_address?.trim() ?? "";
   const main = formatted.split(",")[0]?.trim() || "";
   const country = componentText(best.address_components, "country") || main;
@@ -149,7 +159,10 @@ async function clientResolveTripLocation(placeId: string, locale: Locale, apiKey
     undefined;
   const formattedName = buildFormattedName(country, city || country, city || country);
   if (!formattedName || isRejectedTripLocationLabel(formattedName)) {
-    return { location: null as TripLocation | null, error: "請輸入國家、城市或地區（非店家或景點）" };
+    return {
+      location: null as TripLocation | null,
+      error: "請輸入國家、城市或地區（非店家或景點）",
+    };
   }
   return {
     location: {
@@ -195,14 +208,20 @@ export async function unifiedSearchTripLocations(
 
   const key = getGoogleMapsBrowserKey();
   if (!key) {
-    return { suggestions: [], error: "無法搜尋地點，請確認已設定 VITE_GOOGLE_MAPS_API_KEY。" };
+    return {
+      suggestions: [],
+      error: "無法搜尋地點，請確認已設定 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY。",
+    };
   }
 
   const client = await clientGeocodeSuggestions(normalized, locale, key);
   if (client.suggestions.length > 0) {
     return { suggestions: client.suggestions, error: null };
   }
-  return client;
+  return {
+    suggestions: [],
+    error: client.error ?? PLACE_SEARCH_FALLBACK_MESSAGE,
+  };
 }
 
 export async function unifiedResolveTripLocation(
