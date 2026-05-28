@@ -383,6 +383,7 @@ function MapView() {
       if (!mapErrorToastedRef.current) {
         mapErrorToastedRef.current = true;
         console.warn("[MAP_LOAD] error=", message);
+        console.info("[MAP_FALLBACK] reason=", reason);
         toast.message(t("map.mapBannerToast"), {
           description: t("map.mapBannerToastDesc"),
         });

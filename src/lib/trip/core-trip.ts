@@ -1,7 +1,7 @@
 import type { StoredItinerary } from "@/lib/itinerary-storage";
 import { getItinerary, listItineraries } from "@/lib/itinerary-storage";
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
-import { getRoamieDefaultImage } from "@/services/placeImageService";
+import { defaultRoamieTripCover } from "@/services/placeImageService";
 import { buildLegKey } from "@/lib/transit/types";
 
 export type CoreTripPlace = {
@@ -43,11 +43,12 @@ export function resolveCoreTripTitle(trip: CoreTrip): string {
 }
 
 export function resolveCoreTripCoverImage(trip: CoreTrip): string {
-  return (
-    trip.customCoverImageUrl?.trim() ||
-    trip.aiGeneratedCoverImageUrl?.trim() ||
-    getRoamieDefaultImage("roamie")
-  );
+  if (trip.isCoverCustomized && trip.customCoverImageUrl?.trim()) {
+    return trip.customCoverImageUrl.trim();
+  }
+  const ai = trip.aiGeneratedCoverImageUrl?.trim();
+  if (ai) return ai;
+  return defaultRoamieTripCover;
 }
 
 function transportLabel(mode?: string): string {

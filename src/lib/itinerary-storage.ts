@@ -33,6 +33,9 @@ export type TripCoverMeta = {
   cover_image: string | null;
   cover_source: ImageSource | null;
   cover_query: string | null;
+  destination_name?: string | null;
+  normalized_destination_key?: string | null;
+  ai_generated_destination_cover_url?: string | null;
 };
 
 export type StoredItinerary = {
@@ -131,6 +134,10 @@ function buildFullTripInsertRow(params: TripInsertParams) {
     cover_image: params.coverMeta.cover_image,
     cover_source: params.coverMeta.cover_source,
     cover_query: params.coverMeta.cover_query,
+    destination_name: params.coverMeta.destination_name ?? null,
+    normalized_destination_key: params.coverMeta.normalized_destination_key ?? null,
+    ai_generated_destination_cover_url:
+      params.coverMeta.ai_generated_destination_cover_url ?? params.coverMeta.cover_image,
     custom_cover_image_url: null,
     is_cover_customized: false,
     cover_image_url: null,
@@ -231,10 +238,14 @@ async function resolveCoverForSave(itinerary: Itinerary | RoamiePayloadV2): Prom
     return { cover_image: null, cover_source: null, cover_query: null };
   }
   const cover = await getTripCoverImage(tripCoverInputFromPayload(itinerary));
+  const unsplashUrl = cover.unsplashDestinationCoverUrl ?? cover.url;
   return {
-    cover_image: cover.url,
+    cover_image: unsplashUrl,
     cover_source: cover.source,
-    cover_query: cover.query,
+    cover_query: cover.query ?? cover.normalizedDestinationKey,
+    destination_name: cover.destinationName,
+    normalized_destination_key: cover.normalizedDestinationKey,
+    ai_generated_destination_cover_url: unsplashUrl,
   };
 }
 
@@ -466,9 +477,13 @@ export async function regenerateTripCover(
   payload: RoamiePayloadV2,
 ): Promise<StoredItinerary | null> {
   const cover = await getTripCoverImage(tripCoverInputFromPayload(payload));
+  const unsplashUrl = cover.unsplashDestinationCoverUrl ?? cover.url;
   return updateTripMeta(id, {
-    cover_image: cover.url,
+    cover_image: unsplashUrl,
     cover_source: cover.source,
-    cover_query: cover.query,
-  });
+    cover_query: cover.query ?? cover.normalizedDestinationKey,
+    destination_name: cover.destinationName,
+    normalized_destination_key: cover.normalizedDestinationKey,
+    ai_generated_destination_cover_url: unsplashUrl,
+  } as SavedTripRowUpdate);
 }

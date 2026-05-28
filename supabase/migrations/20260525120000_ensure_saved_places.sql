@@ -50,8 +50,43 @@ ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS created_at timestamptz 
 ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
 UPDATE public.saved_places SET name = '未命名地點' WHERE name IS NULL OR btrim(name) = '';
-UPDATE public.saved_places SET metadata = COALESCE(metadata, place_data, '{}'::jsonb) WHERE metadata IS NULL;
-UPDATE public.saved_places SET cover_image = photo_url WHERE cover_image IS NULL AND photo_url IS NOT NULL;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_places' AND column_name = 'metadata'
+  ) AND EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_places' AND column_name = 'place_data'
+  ) THEN
+    UPDATE public.saved_places
+    SET metadata = COALESCE(metadata, place_data, '{}'::jsonb)
+    WHERE metadata IS NULL;
+  ELSIF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_places' AND column_name = 'metadata'
+  ) THEN
+    UPDATE public.saved_places SET metadata = COALESCE(metadata, '{}'::jsonb) WHERE metadata IS NULL;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_places' AND column_name = 'photo_url'
+  ) AND EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_places' AND column_name = 'cover_image'
+  ) THEN
+    UPDATE public.saved_places
+    SET cover_image = photo_url
+    WHERE cover_image IS NULL
+      AND photo_url IS NOT NULL
+      AND btrim(photo_url) <> '';
+  END IF;
+END $$;
 
 ALTER TABLE public.saved_places ALTER COLUMN name SET NOT NULL;
 ALTER TABLE public.saved_places ALTER COLUMN metadata SET DEFAULT '{}'::jsonb;

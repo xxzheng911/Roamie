@@ -135,6 +135,8 @@ export function parseTravelContextFromText(
   const moodHint = session.selectedMood ?? session.mood;
   const preset = moodHint ? MOOD_PRESETS[moodHint] : undefined;
 
+  const tiredMood = /(累|疲|倦|沒力)/.test(t) ? "今天有點累" : undefined;
+
   return {
     destination:
       parseDestination(t) ??
@@ -146,7 +148,7 @@ export function parseTravelContextFromText(
     startDate: session.tripStartDate ?? session.travelDate,
     endDate: session.tripEndDate,
     days: parseDays(t) ?? session.tripDays,
-    mood: preset?.mood ?? moodHint ?? parseVibe(t),
+    mood: preset?.mood ?? moodHint ?? tiredMood ?? parseVibe(t),
     companion: parseCompanion(t) ?? session.discovery?.companionship,
     interests: parseInterests(t, moodHint),
     transportMode: parseTransport(t) ?? session.transportation,

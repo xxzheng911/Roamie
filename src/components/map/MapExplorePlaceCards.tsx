@@ -220,13 +220,13 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                 >
                   <div className="relative h-[170px] w-full shrink-0 overflow-hidden rounded-t-[1.4rem] bg-secondary">
                     <PlaceCardCover
+                      placeId={p.id}
                       name={p.name}
                       photoName={p.photoName}
                       primaryType={p.primaryType}
                       types={p.types}
                       categoryId={imageCategoryId}
                       coverImageUrl={googleImg}
-                      preferRoamieScene
                       alt={p.name}
                       className="pointer-events-none h-full w-full"
                       imgClassName="pointer-events-none h-full w-full object-cover"

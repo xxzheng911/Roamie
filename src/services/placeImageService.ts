@@ -1,4 +1,3 @@
-import cafe from "@/assets/scene-cafe.jpg";
 import roamieDefaultCover from "@/assets/roamie-default-cover.png";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import { ROAMIE_API_FALLBACK, API_CACHE_TTL_MS } from "@/lib/api/constants";
@@ -8,12 +7,38 @@ import { preferNonWebpImageUrl } from "@/lib/safe-image-url";
 import { isBlockedPlaceSceneUrl, pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import type { PlaceResult } from "@/lib/place-result";
 import { createRequestCache } from "@/services/requestCache";
-import { searchUnsplashImage, searchUnsplashWithQueries } from "@/services/unsplashService";
+import { normalizeCategoryFromPlace } from "@/lib/place-image/place-category";
+import { fetchUnsplashPlaceImage } from "@/lib/place-image/fetch-unsplash-place-image";
+import { fetchDestinationCover } from "@/lib/place-image/fetch-destination-cover";
+import { logPlaceImage } from "@/lib/place-image/place-image-log";
+import { logTripCover } from "@/lib/place-image/trip-cover-log";
+import {
+  extractPrimaryDestinationLabel,
+  normalizeDestinationKey,
+} from "@/lib/destination/normalize-destination-key";
+import {
+  buildPlaceUnsplashQueries,
+  buildTripCoverQueries,
+  buildTripCoverQuery,
+  extractCityFromText,
+} from "@/lib/unsplash/unsplash-queries";
+import type { PlaceImageInput, TripCoverInput } from "@/lib/place-image/place-image-types";
 
-export type ImageSource = "google" | "unsplash" | "upload" | "default" | "roamie";
+export type { PlaceImageInput, TripCoverInput } from "@/lib/place-image/place-image-types";
 
-/** 圖片 API 失敗或無圖時的 Roamie 文案 */
+/** 地點卡片圖片來源 */
+export type PlaceImageSource = "google" | "unsplash" | "default";
+
+/** 行程封面來源 */
+export type TripCoverSource = "custom" | "unsplash" | "default";
+
+/** @deprecated 請改用 PlaceImageSource / TripCoverSource */
+export type ImageSource = PlaceImageSource | TripCoverSource | "upload" | "roamie" | "ai";
+
 export const ROAMIE_IMAGE_FALLBACK_MESSAGE = ROAMIE_API_FALLBACK.image;
+
+export const roamieDefaultPlaceImage = roamieDefaultCover;
+export const defaultRoamieTripCover = roamieDefaultCover;
 
 const placeImageRequestCache = createRequestCache({
   prefix: "place-image",
@@ -23,6 +48,7 @@ const placeImageRequestCache = createRequestCache({
 
 function placeImageCacheKey(input: PlaceImageInput): string {
   return [
+    input.placeId ?? "",
     input.name,
     input.photoName ?? "",
     input.categoryId ?? "",
@@ -36,169 +62,19 @@ function placeImageCacheKey(input: PlaceImageInput): string {
 }
 
 function tripCoverCacheKey(trip: TripCoverInput): string {
-  return [
-    trip.destination ?? "",
-    trip.title ?? "",
-    trip.mood ?? "",
-    trip.moodTag ?? "",
-    trip.city ?? "",
-    trip.category ?? "",
-  ]
-    .join("|")
-    .trim()
-    .toLowerCase();
-}
-
-export type PlaceImageInput = {
-  name: string;
-  photoName?: string | null;
-  primaryType?: string | null;
-  types?: string[] | null;
-  categoryId?: string;
-  category?: string;
-  city?: string | null;
-  photoWidth?: number;
-};
-
-export type TripCoverInput = {
-  destination?: string | null;
-  title?: string | null;
-  mood?: string | null;
-  moodTag?: string | null;
-  city?: string | null;
-  category?: string | null;
-};
-
-const TAIWAN_CITIES = [
-  "台北", "新北", "桃園", "台中", "台南", "高雄", "基隆", "新竹", "苗栗", "彰化",
-  "南投", "雲林", "嘉義", "屏東", "宜蘭", "花蓮", "台東", "澎湖", "金門", "連江",
-];
-
-const JP_CITIES = ["東京", "大阪", "京都", "札幌", "福岡", "名古屋", "橫濱", "神戶", "沖繩"];
-
-function extractCity(text: string): string | null {
-  const hay = text.trim();
-  for (const c of [...TAIWAN_CITIES, ...JP_CITIES]) {
-    if (hay.includes(c)) return c;
-  }
-  const m = hay.match(/([\u4e00-\u9fff]{2,4})(市|縣|區|町|村)/);
-  return m?.[1] ?? null;
-}
-
-function normalizeCategory(input: PlaceImageInput): string {
-  const hay = [
-    input.category ?? "",
-    input.categoryId ?? "",
-    input.primaryType ?? "",
-    ...(input.types ?? []),
-    input.name,
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  if (/(博物|museum|文化館|紀念|gallery|美術|展覽|文物|歷史)/.test(hay)) return "museum";
-  if (/(咖啡|cafe|coffee|貓|cat)/.test(hay)) return "coffee";
-  if (/(書店|書局|bookstore|library)/.test(hay)) return "bookstore";
-  if (/(餐廳|restaurant|美食|food|拉麵|壽司|小吃)/.test(hay)) return "food";
-  if (/(公園|park|步道|散步|walking)/.test(hay)) return "park";
-  if (/(夜景|night|bar|酒吧)/.test(hay)) return "night";
-  if (/(海|beach|沙灘|ocean)/.test(hay)) return "beach";
-  if (/(森林|forest|山|mountain|trail)/.test(hay)) return "forest";
-  if (/(老街|old street|market|市集|商圈)/.test(hay)) return "street";
-  return "sight";
-}
-
-/** 地點 Unsplash 搜尋 query 列表（依優先順序） */
-export function buildPlaceUnsplashQueries(input: PlaceImageInput): string[] {
-  const name = input.name.trim();
-  const city = input.city?.trim() || extractCity(name) || "";
-  const cat = normalizeCategory(input);
-  const queries: string[] = [];
-
-  if (cat === "museum") {
-    if (city) queries.push(`${city} museum`, `${city} cultural center`);
-    queries.push("history museum interior", "city museum architecture");
-  } else if (cat === "bookstore") {
-    if (city) queries.push(`${city} bookstore`);
-    queries.push("bookstore interior aesthetic", "library reading space");
-  } else if (cat === "coffee") {
-    if (city) queries.push(`${city} cafe`);
-    if (/貓|cat/i.test(name)) queries.push("cat cafe");
-    queries.push("coffee shop taiwan", "cozy cafe aesthetic");
-  } else if (cat === "food") {
-    if (city) queries.push(`${city} restaurant`);
-    queries.push("restaurant taiwan", "food travel aesthetic");
-  } else if (cat === "park") {
-    if (city) queries.push(`${city} park`);
-    queries.push("park taiwan", "city park soft light");
-  } else if (cat === "night") {
-    if (city) queries.push(`${city} night city`);
-    queries.push("night travel aesthetic", "city lights soft");
-  } else if (cat === "beach") {
-    queries.push("beach taiwan soft", "coastal travel aesthetic");
-  } else if (cat === "forest") {
-    queries.push("forest taiwan soft", "nature travel aesthetic");
-  } else if (cat === "street") {
-    if (city) queries.push(`${city} old street`);
-    queries.push("taiwan street travel", "alley aesthetic travel");
-  } else {
-    if (city) queries.push(`${city} travel`);
-    queries.push("taiwan travel aesthetic");
-  }
-
-  return [...new Set(queries.filter(Boolean))];
-}
-
-/** 行程封面 Unsplash query */
-export function buildTripCoverQuery(trip: TripCoverInput): string {
   const dest = trip.destination?.trim() || trip.city?.trim() || "";
-  const city = extractCity(dest) || dest.split(/[,，、\s]/)[0]?.trim() || "";
-  const mood = (trip.moodTag ?? trip.mood ?? "").trim();
-  const category = trip.category?.trim() || "";
-
-  const parts: string[] = [];
-  if (city) parts.push(city);
-  if (category) parts.push(category);
-  if (mood) parts.push(mood);
-  parts.push("旅行");
-
-  return parts.filter(Boolean).join(" ");
+  return normalizeDestinationKey(dest || trip.title || "unknown");
 }
 
-/** 行程封面多 query fallback */
-export function buildTripCoverQueries(trip: TripCoverInput): string[] {
-  const dest = trip.destination?.trim() || trip.city?.trim() || "";
-  const city = extractCity(dest) || dest.split(/[,，、\s]/)[0]?.trim() || "";
-  const mood = (trip.moodTag ?? trip.mood ?? "").trim();
-  const title = trip.title?.trim() || "";
-
-  const queries: string[] = [];
-  if (city && mood) queries.push(`${city} ${mood} 旅行`);
-  if (city) queries.push(`${city} 旅行`);
-  if (title && title.length <= 12) queries.push(`${title} travel`);
-  if (/咖啡/.test(mood + title + dest)) queries.push(`${city || "taiwan"} coffee travel`);
-  if (/散步|老街/.test(mood + title + dest)) queries.push(`${city || "taiwan"} street walk travel`);
-  if (/夜景|night/i.test(mood + title + dest)) queries.push(`${city || "city"} night travel aesthetic`);
-  if (/森林|放空|forest/i.test(mood + title + dest)) queries.push("forest travel soft aesthetic");
-  if (/海|beach/i.test(mood + title + dest)) queries.push("beach travel soft aesthetic");
-
-  const primary = buildTripCoverQuery(trip);
-  if (primary) queries.unshift(primary);
-
-  return [...new Set(queries.filter(Boolean))];
-}
-
-/** Roamie 預設圖（依分類；不使用溫泉圖） */
+/** Roamie 分類預設圖（Google / Unsplash 皆無時） */
 export function getRoamieDefaultImage(
   category?: string | null,
   name = "",
 ): string {
-  return pickPlaceSceneFallback(name, { categoryId: category ?? undefined });
+  const url = pickPlaceSceneFallback(name, { categoryId: category ?? undefined });
+  return isBlockedPlaceSceneUrl(url) ? roamieDefaultPlaceImage : url;
 }
 
-export { searchUnsplashImage };
-
-/** Google 照片 URL（同步） */
 export function resolveGooglePlacePhoto(
   photoName: string | null | undefined,
   width = 600,
@@ -209,88 +85,126 @@ export function resolveGooglePlacePhoto(
   return preferNonWebpImageUrl(built);
 }
 
-/** 同步 fallback（Google 或 Roamie 情境圖，不含 Unsplash） */
 export function resolvePlaceCoverImageSync(
   place: PlaceResult | PlaceImageInput,
   options?: { categoryId?: string; photoWidth?: number },
 ): string | null {
   const width = options?.photoWidth ?? 600;
   const photoName = "photoName" in place ? place.photoName : undefined;
-  const fromGoogle = resolveGooglePlacePhoto(photoName, width);
-  if (fromGoogle) return fromGoogle;
-  return null;
+  return resolveGooglePlacePhoto(photoName, width);
 }
 
 export type GetPlaceImageOptions = {
-  /** 探索卡片：Google 無圖時直接用 Roamie 分類圖，不走 Unsplash（避免不相關圖） */
+  /** @deprecated 已不再跳過 Unsplash */
   preferRoamieScene?: boolean;
 };
 
-/** 完整地點圖片解析：Google → Unsplash → Roamie 預設（含 cache + dedup） */
+/**
+ * 地點圖片：Google Places → Unsplash → 分類預設
+ */
 export async function getPlaceImage(
   input: PlaceImageInput,
-  options?: GetPlaceImageOptions,
-): Promise<{ url: string; source: ImageSource }> {
-  const key = [
-    placeImageCacheKey(input),
-    options?.preferRoamieScene ? "roamie-scene" : "unsplash",
-  ].join("|");
+  _options?: GetPlaceImageOptions,
+): Promise<{ url: string; source: PlaceImageSource }> {
+  const key = placeImageCacheKey(input);
   return placeImageRequestCache.getOrFetch(key, async () => {
     const width = input.photoWidth ?? 600;
     const fromGoogle = resolveGooglePlacePhoto(input.photoName, width);
-    if (fromGoogle) return { url: fromGoogle, source: "google" as const };
-
-    const cat = normalizeCategory(input);
-    const roamieScene = {
-      url: pickPlaceSceneFallback(input.name, {
-        primaryType: input.primaryType,
-        types: input.types,
-        categoryId: input.categoryId ?? cat,
-      }),
-      source: "roamie" as const,
-    };
-
-    if (options?.preferRoamieScene) {
-      return roamieScene;
+    if (fromGoogle) {
+      logPlaceImage(input.name, {
+        googlePhotoFound: true,
+        unsplashUsed: false,
+        source: "google",
+      });
+      return { url: fromGoogle, source: "google" as const };
     }
 
-    const queries = buildPlaceUnsplashQueries(input);
-    const unsplash = await searchUnsplashWithQueries(queries);
-    if (unsplash && !isBlockedPlaceSceneUrl(unsplash.url)) {
+    const category = normalizeCategoryFromPlace(input);
+    const unsplash = await fetchUnsplashPlaceImage({
+      placeId: input.placeId,
+      name: input.name,
+      category,
+      city: input.city ?? extractCityFromText(input.name),
+      country: input.country,
+      primaryType: input.primaryType,
+      types: input.types,
+    });
+
+    if (unsplash.url && !isBlockedPlaceSceneUrl(unsplash.url)) {
+      logPlaceImage(input.name, {
+        googlePhotoFound: false,
+        unsplashUsed: true,
+        source: "unsplash",
+      });
       return { url: unsplash.url, source: "unsplash" as const };
     }
 
-    if (isBlockedPlaceSceneUrl(roamieScene.url)) {
-      return {
-        url: pickPlaceSceneFallback(input.name, { categoryId: "neutral" }),
-        source: "roamie" as const,
-      };
-    }
-    return roamieScene;
+    const categoryDefault = getRoamieDefaultImage(category, input.name);
+    logPlaceImage(input.name, {
+      googlePhotoFound: false,
+      unsplashUsed: false,
+      source: "default",
+    });
+    return { url: categoryDefault, source: "default" as const };
   });
 }
 
-/** 行程封面：Unsplash → Roamie 預設（含 cache + dedup） */
-export async function getTripCoverImage(
-  trip: TripCoverInput,
-): Promise<{ url: string; source: ImageSource; query: string | null }> {
-  const key = tripCoverCacheKey(trip);
-  return placeImageRequestCache.getOrFetch(`trip:${key}`, async () => {
-    const queries = buildTripCoverQueries(trip);
-    const unsplash = await searchUnsplashWithQueries(queries);
-    if (unsplash) {
-      return { url: unsplash.url, source: "unsplash" as const, query: unsplash.query };
+export type TripCoverResult = {
+  url: string;
+  source: TripCoverSource;
+  query: string | null;
+  destinationName: string | null;
+  normalizedDestinationKey: string | null;
+  unsplashDestinationCoverUrl: string | null;
+};
+
+/** 行程封面：Unsplash 目的地（共用 cache）→ Roamie 預設 */
+export async function getTripCoverImage(trip: TripCoverInput): Promise<TripCoverResult> {
+  const destRaw = trip.destination?.trim() || trip.city?.trim() || trip.title?.trim() || "";
+  const destinationName = extractPrimaryDestinationLabel(destRaw);
+  const normalizedDestinationKey = normalizeDestinationKey(destinationName || destRaw);
+  const cacheKey = tripCoverCacheKey(trip);
+
+  return placeImageRequestCache.getOrFetch(`trip:${cacheKey}`, async () => {
+    const cover = await fetchDestinationCover({
+      destination: destinationName || destRaw,
+      city: trip.city ?? extractCityFromText(destRaw),
+      country: trip.country,
+      mood: trip.mood ?? trip.moodTag,
+      moodTag: trip.moodTag,
+      title: trip.title,
+    });
+
+    logTripCover({
+      destination: destinationName || destRaw,
+      normalizedKey: cover.normalizedKey,
+      customCover: false,
+      unsplashCacheHit: cover.cacheHit,
+      source: cover.url ? "unsplash" : "default",
+    });
+
+    if (cover.url && !isBlockedPlaceSceneUrl(cover.url)) {
+      return {
+        url: cover.url,
+        source: "unsplash" as const,
+        query: cover.query ?? cover.normalizedKey,
+        destinationName: cover.destinationName,
+        normalizedDestinationKey: cover.normalizedKey,
+        unsplashDestinationCoverUrl: cover.url,
+      };
     }
 
     return {
-      url: roamieDefaultCover,
-      source: "roamie" as const,
-      query: queries[0] ?? null,
+      url: defaultRoamieTripCover,
+      source: "default" as const,
+      query: null,
+      destinationName: destinationName || null,
+      normalizedDestinationKey: cover.normalizedKey,
+      unsplashDestinationCoverUrl: null,
     };
   });
 }
 
-/** 從 RoamiePayloadV2 提取封面輸入 */
 export function tripCoverInputFromPayload(payload: RoamiePayloadV2): TripCoverInput {
   const firstStop = payload.itinerary?.[0];
   const category = firstStop?.placeType ?? undefined;
@@ -299,7 +213,9 @@ export function tripCoverInputFromPayload(payload: RoamiePayloadV2): TripCoverIn
     title: payload.title,
     moodTag: payload.moodTag,
     mood: payload.moodTag,
-    city: payload.destinationLocation?.city ?? extractCity(payload.destination ?? ""),
+    city: payload.destinationLocation?.city ?? extractCityFromText(payload.destination ?? ""),
     category,
   };
 }
+
+export { buildPlaceUnsplashQueries, buildTripCoverQuery, buildTripCoverQueries };

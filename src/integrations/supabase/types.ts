@@ -146,6 +146,8 @@ export type Database = {
           category: string | null
           city: string | null
           cover_image: string | null
+          image_url: string | null
+          image_source: string | null
           created_at: string
           id: string
           lat: number | null
@@ -162,6 +164,8 @@ export type Database = {
           category?: string | null
           city?: string | null
           cover_image?: string | null
+          image_url?: string | null
+          image_source?: string | null
           created_at?: string
           id?: string
           lat?: number | null
@@ -178,6 +182,8 @@ export type Database = {
           category?: string | null
           city?: string | null
           cover_image?: string | null
+          image_url?: string | null
+          image_source?: string | null
           created_at?: string
           id?: string
           lat?: number | null

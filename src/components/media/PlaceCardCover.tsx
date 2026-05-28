@@ -16,12 +16,13 @@ type Props = PlaceImageInput & {
   className?: string;
   imgClassName?: string;
   alt?: string;
+  /** @deprecated 已不再跳過 AI */
   preferRoamieScene?: boolean;
   onGoogleLoad?: () => void;
   onGoogleError?: () => void;
 };
 
-/** Google 封面優先；載入失敗或無效 URL 時改 PlaceImage（Unsplash / Roamie 預設） */
+/** Google 封面優先；載入失敗或無效 URL 時改 PlaceImage（AI → 分類預設） */
 export function PlaceCardCover({
   coverImageUrl,
   className,

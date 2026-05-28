@@ -1,5 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
+import { normalizeSavedPlaceImageFields } from "@/lib/saved-places-image";
 import { isMissingTableError } from "@/lib/supabase-errors";
 
 const GUEST_KEY = "roamie:places";
@@ -112,11 +113,17 @@ export async function listPlaces(): Promise<SavedPlace[]> {
 
 export async function savePlace(input: NewPlace): Promise<SavedPlace> {
   const userId = await resolveStableUserId();
+  const imageFields = normalizeSavedPlaceImageFields(input);
   if (userId) {
     console.info("[FAVORITE_PLACE] added placeId=", input.metadata?.placeId ?? input.name);
     const { data, error } = await supabase
       .from("saved_places")
-      .insert({ ...input, user_id: userId, metadata: (input.metadata ?? {}) as never })
+      .insert({
+        ...input,
+        ...imageFields,
+        user_id: userId,
+        metadata: (input.metadata ?? {}) as never,
+      })
       .select()
       .single();
     if (error) {
@@ -144,9 +151,7 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
     lng: input.lng,
     notes: input.notes,
     mood_tag: input.mood_tag,
-    cover_image: input.cover_image,
-    image_url: null,
-    image_source: null,
+    ...normalizeSavedPlaceImageFields(input),
     metadata: input.metadata ?? {},
     created_at: new Date().toISOString(),
   };

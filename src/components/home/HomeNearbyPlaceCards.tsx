@@ -132,13 +132,13 @@ export function HomeNearbyPlaceCards({
                   </div>
                 ) : null}
                 <PlaceCardCover
+                  placeId={p.id}
                   name={p.name}
                   photoName={p.photoName}
                   primaryType={p.primaryType}
                   types={p.types}
                   categoryId={p.categoryId}
                   coverImageUrl={p.coverImageUrl}
-                  preferRoamieScene
                   className="absolute inset-0"
                   imgClassName="absolute inset-0 h-full w-full object-cover"
                 />

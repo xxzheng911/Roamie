@@ -20,7 +20,9 @@ import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
 import { Route as ApiQaAuthRouteImport } from './routes/api/qa-auth'
 import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
+import { Route as ApiPlaceImageRouteImport } from './routes/api/place-image'
 import { Route as ApiGenerateItineraryRouteImport } from './routes/api/generate-itinerary'
+import { Route as ApiDestinationCoverRouteImport } from './routes/api/destination-cover'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSavedRouteImport } from './routes/_app.saved'
@@ -90,9 +92,19 @@ const ApiPlacePhotoRoute = ApiPlacePhotoRouteImport.update({
   path: '/api/place-photo',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPlaceImageRoute = ApiPlaceImageRouteImport.update({
+  id: '/api/place-image',
+  path: '/api/place-image',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiGenerateItineraryRoute = ApiGenerateItineraryRouteImport.update({
   id: '/api/generate-itinerary',
   path: '/api/generate-itinerary',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDestinationCoverRoute = ApiDestinationCoverRouteImport.update({
+  id: '/api/destination-cover',
+  path: '/api/destination-cover',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiChatRoute = ApiChatRouteImport.update({
@@ -183,7 +195,9 @@ export interface FileRoutesByFullPath {
   '/saved': typeof AppSavedRouteWithChildren
   '/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
+  '/api/destination-cover': typeof ApiDestinationCoverRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/place-image': typeof ApiPlaceImageRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
   '/api/qa-auth': typeof ApiQaAuthRoute
   '/api/roamie': typeof ApiRoamieRoute
@@ -208,7 +222,9 @@ export interface FileRoutesByTo {
   '/recommendations': typeof AppRecommendationsRoute
   '/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
+  '/api/destination-cover': typeof ApiDestinationCoverRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/place-image': typeof ApiPlaceImageRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
   '/api/qa-auth': typeof ApiQaAuthRoute
   '/api/roamie': typeof ApiRoamieRoute
@@ -237,7 +253,9 @@ export interface FileRoutesById {
   '/_app/saved': typeof AppSavedRouteWithChildren
   '/_app/settings': typeof AppSettingsRoute
   '/api/chat': typeof ApiChatRoute
+  '/api/destination-cover': typeof ApiDestinationCoverRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/place-image': typeof ApiPlaceImageRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
   '/api/qa-auth': typeof ApiQaAuthRoute
   '/api/roamie': typeof ApiRoamieRoute
@@ -267,7 +285,9 @@ export interface FileRouteTypes {
     | '/saved'
     | '/settings'
     | '/api/chat'
+    | '/api/destination-cover'
     | '/api/generate-itinerary'
+    | '/api/place-image'
     | '/api/place-photo'
     | '/api/qa-auth'
     | '/api/roamie'
@@ -292,7 +312,9 @@ export interface FileRouteTypes {
     | '/recommendations'
     | '/settings'
     | '/api/chat'
+    | '/api/destination-cover'
     | '/api/generate-itinerary'
+    | '/api/place-image'
     | '/api/place-photo'
     | '/api/qa-auth'
     | '/api/roamie'
@@ -320,7 +342,9 @@ export interface FileRouteTypes {
     | '/_app/saved'
     | '/_app/settings'
     | '/api/chat'
+    | '/api/destination-cover'
     | '/api/generate-itinerary'
+    | '/api/place-image'
     | '/api/place-photo'
     | '/api/qa-auth'
     | '/api/roamie'
@@ -339,7 +363,9 @@ export interface RootRouteChildren {
   TripRoute: typeof TripRoute
   WelcomeRoute: typeof WelcomeRoute
   ApiChatRoute: typeof ApiChatRoute
+  ApiDestinationCoverRoute: typeof ApiDestinationCoverRoute
   ApiGenerateItineraryRoute: typeof ApiGenerateItineraryRoute
+  ApiPlaceImageRoute: typeof ApiPlaceImageRoute
   ApiPlacePhotoRoute: typeof ApiPlacePhotoRoute
   ApiQaAuthRoute: typeof ApiQaAuthRoute
   ApiRoamieRoute: typeof ApiRoamieRoute
@@ -425,11 +451,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPlacePhotoRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/place-image': {
+      id: '/api/place-image'
+      path: '/api/place-image'
+      fullPath: '/api/place-image'
+      preLoaderRoute: typeof ApiPlaceImageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/generate-itinerary': {
       id: '/api/generate-itinerary'
       path: '/api/generate-itinerary'
       fullPath: '/api/generate-itinerary'
       preLoaderRoute: typeof ApiGenerateItineraryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/destination-cover': {
+      id: '/api/destination-cover'
+      path: '/api/destination-cover'
+      fullPath: '/api/destination-cover'
+      preLoaderRoute: typeof ApiDestinationCoverRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/chat': {
@@ -606,7 +646,9 @@ const rootRouteChildren: RootRouteChildren = {
   TripRoute: TripRoute,
   WelcomeRoute: WelcomeRoute,
   ApiChatRoute: ApiChatRoute,
+  ApiDestinationCoverRoute: ApiDestinationCoverRoute,
   ApiGenerateItineraryRoute: ApiGenerateItineraryRoute,
+  ApiPlaceImageRoute: ApiPlaceImageRoute,
   ApiPlacePhotoRoute: ApiPlacePhotoRoute,
   ApiQaAuthRoute: ApiQaAuthRoute,
   ApiRoamieRoute: ApiRoamieRoute,

@@ -59,6 +59,10 @@ function PlanPage() {
   const { t, locale } = useI18n();
   const search = Route.useSearch();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    console.info("[CREATE_TRIP] screen mounted from=", search.from ?? "direct");
+  }, [search.from]);
   const fetchWeather = useServerFn(getWeather);
   const resolveStopFn = useServerFn(resolveTripStop);
   const budgetOptions = useMemo(() => getPlanBudgetOptions(locale), [locale]);
@@ -219,6 +223,7 @@ function PlanPage() {
     const tripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : 2;
 
     setLoading(true);
+    console.info("[CREATE_TRIP] submit");
     try {
       const [bundle, prefs] = await Promise.all([
         buildContextBundleForTrip(destination, fetchWeather),
@@ -261,9 +266,12 @@ function PlanPage() {
         },
         bundle,
       );
+      console.info("[CREATE_TRIP] created tripId=", saved.id);
       toast.success(t("plan.tripCreated"));
+      console.info("[CREATE_TRIP] navigate TripDetail");
       navigate(tripDetailNavigateOptions(saved.id));
     } catch (err) {
+      console.info("[CREATE_TRIP] error=", err instanceof Error ? err.message : String(err));
       const msg =
         err instanceof Error
           ? err.message

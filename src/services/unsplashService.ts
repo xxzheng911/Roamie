@@ -12,11 +12,16 @@ export type UnsplashSearchResult = {
 };
 
 function accessKey(): string | null {
-  const key = import.meta.env.VITE_UNSPLASH_ACCESS_KEY as string | undefined;
+  const key =
+    (import.meta.env.VITE_UNSPLASH_ACCESS_KEY as string | undefined) ??
+    (import.meta.env.UNSPLASH_ACCESS_KEY as string | undefined);
   return key?.trim() || null;
 }
 
-/** 搜尋 Unsplash 圖片（含 memory + localStorage 快取） */
+/**
+ * 搜尋 Unsplash 圖片（含 memory + localStorage 快取）。
+ * 正式流程請走 /api/place-image 與 /api/destination-cover（server 使用 UNSPLASH_ACCESS_KEY + Supabase cache）。
+ */
 export async function searchUnsplashImage(query: string): Promise<UnsplashSearchResult | null> {
   const trimmed = query.trim();
   if (!trimmed) return null;

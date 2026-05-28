@@ -14,6 +14,35 @@ import {
 } from "@/lib/ai/conversation-stage";
 import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
 
+type OpenAiChatMessage = { role: "system" | "user" | "assistant"; content: string };
+
+/** Chat 模式：多輪 messages；其餘模式維持 system + 單一 user */
+function buildOpenAiMessages(ctx: RoamieRequestContext): OpenAiChatMessage[] {
+  const system = buildSystemPrompt(ctx);
+  const history = (ctx.messages ?? []).filter((m) => m.content.trim());
+
+  if (ctx.mode === "chat" && history.length > 0) {
+    const msgs: OpenAiChatMessage[] = [{ role: "system", content: system }];
+    for (const m of history.slice(-14)) {
+      msgs.push({ role: m.role, content: m.content });
+    }
+    const latest = ctx.chatInput?.trim() || ctx.lastUserIntent?.trim();
+    const lastInHistory = history[history.length - 1];
+    if (latest && !(lastInHistory?.role === "user" && lastInHistory.content === latest)) {
+      msgs.push({
+        role: "user",
+        content: `${latest}\n\n（請接續上一輪對話，輸出符合 schema 的 JSON；勿重複開場白）`,
+      });
+    }
+    return msgs;
+  }
+
+  return [
+    { role: "system", content: system },
+    { role: "user", content: buildUserMessage(ctx) },
+  ];
+}
+
 const PlaceItemSchema = z
   .object({
     name: z.string(),
@@ -193,8 +222,7 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
   ctx = prep.ctx;
   const apiKey = getOpenAIKey();
   console.info("[Roamie AI] call", { mode: ctx.mode, hasKey: !!apiKey, keyPrefix: apiKey.slice(0, 7) });
-  const system = buildSystemPrompt(ctx);
-  const user = buildUserMessage(ctx);
+  const messages = buildOpenAiMessages(ctx);
   const lateNightRecommend =
     ctx.mode === "recommend" &&
     ctx.lateNightMode &&
@@ -212,10 +240,7 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
       model: process.env.OPENAI_MODEL || "gpt-4o-mini",
       max_tokens: maxTokens,
       temperature: 0.85,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
+      messages,
       response_format: {
         type: "json_schema",
         json_schema: {
@@ -273,8 +298,7 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
         const prep = await withPlacesFirstPrep(initialCtx);
         let ctx = prep.ctx;
         const apiKey = getOpenAIKey();
-        const system = buildSystemPrompt(ctx);
-        const user = buildUserMessage(ctx);
+        const messages = buildOpenAiMessages(ctx);
         const lateNightRecommend =
           ctx.mode === "recommend" &&
           ctx.lateNightMode &&
@@ -293,10 +317,7 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
             max_tokens: maxTokens,
             temperature: 0.85,
             stream: true,
-            messages: [
-              { role: "system", content: system },
-              { role: "user", content: user },
-            ],
+            messages,
             response_format: {
               type: "json_schema",
               json_schema: {

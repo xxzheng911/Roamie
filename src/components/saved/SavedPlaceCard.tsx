@@ -1,5 +1,6 @@
 import { Loader2, Plus, Trash2 } from "lucide-react";
 import { PlaceCardCover } from "@/components/media/PlaceCardCover";
+import { resolveSavedPlaceImageUrl } from "@/lib/saved-places-image";
 import type { SavedPlace } from "@/lib/places-storage";
 
 type Props = {
@@ -45,11 +46,11 @@ export function SavedPlaceCard({
     >
       <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-2xl bg-secondary">
         <PlaceCardCover
+          placeId={place.place_id}
           name={place.name}
           categoryId={place.category}
           primaryType={place.category}
-          coverImageUrl={place.cover_image ?? place.image_url}
-          preferRoamieScene
+          coverImageUrl={resolveSavedPlaceImageUrl(place)}
           alt=""
           className="h-full w-full"
           imgClassName="h-full w-full object-cover"

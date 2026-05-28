@@ -26,7 +26,7 @@ export type ChatComposerProps = {
   onViewSavedTrip: (tripId: string) => void;
 };
 
-const CHIP_DEBOUNCE_MS = 400;
+const CHIP_DEBOUNCE_MS = 120;
 
 const ShortcutChips = memo(function ShortcutChips({
   keyboardOpen,

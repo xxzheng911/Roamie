@@ -19,8 +19,6 @@ import {
 } from "@/lib/places-storage";
 import { isMissingColumnError, isMissingTableError } from "@/lib/supabase-errors";
 import { openSavedPlaceDetail } from "@/lib/navigate-saved-place-detail";
-import { createBlankSavedTrip } from "@/lib/trip/create-blank-trip";
-import { logTripNav, tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
 
 type SavedSearch = { tab?: string };
 
@@ -33,22 +31,26 @@ export const Route = createFileRoute("/_app/saved/")({
 
 type Tab = "trips" | "places";
 
-function TripsEmptyState({ onNewTrip, creating }: { onNewTrip: () => void; creating: boolean }) {
+function TripsEmptyState() {
   const { t } = useI18n();
   return (
     <div className="mt-8 flex flex-col items-center gap-4 rounded-3xl border border-dashed border-border bg-card/60 px-6 py-12 text-center">
       <p className="font-display text-xl">{t("saved.emptyAllTitle")}</p>
       <p className="max-w-[280px] text-sm leading-relaxed text-muted-foreground">
-        還沒有收藏的行程，可以先建立空白行程，再自行加入想去的地點。
+        跟 Roamie 聊聊，或去探索地圖收藏喜歡的地點，再一起排成行程。
       </p>
-      <button
-        type="button"
-        onClick={onNewTrip}
-        disabled={creating}
-        className="mt-1 rounded-full bg-primary px-6 py-3 text-sm text-primary-foreground disabled:opacity-60"
+      <Link
+        to="/plan"
+        className="mt-1 rounded-full bg-primary px-6 py-3 text-sm text-primary-foreground"
       >
-        {creating ? t("common.loading") : "建立空白行程"}
-      </button>
+        {t("saved.planCta")}
+      </Link>
+      <Link
+        to="/chat"
+        className="text-sm text-muted-foreground underline-offset-2 hover:underline"
+      >
+        AI 幫我規劃第一趟旅程
+      </Link>
       <Link
         to="/map"
         className="text-sm text-muted-foreground underline-offset-2 hover:underline"
@@ -90,22 +92,6 @@ function Saved() {
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [openingPlaceId, setOpeningPlaceId] = useState<string | null>(null);
-  const [creatingTrip, setCreatingTrip] = useState(false);
-
-  const handleNewBlankTrip = async () => {
-    if (creatingTrip) return;
-    setCreatingTrip(true);
-    try {
-      const saved = await createBlankSavedTrip();
-      logTripNav("saved", saved.id);
-      await navigate(tripDetailNavigateOptions(saved.id));
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : t("saved.loadFailed"));
-    } finally {
-      setCreatingTrip(false);
-    }
-  };
-
   const refresh = () => {
     setLoading(true);
     Promise.allSettled([listCoreTrips(), listPlaces()])
@@ -210,19 +196,13 @@ function Saved() {
           </p>
         </div>
         {hasAny && (
-          <button
-            type="button"
-            onClick={() => void handleNewBlankTrip()}
-            disabled={creatingTrip}
-            className="flex h-10 w-10 touch-manipulation items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-60 active:scale-95"
+          <Link
+            to="/plan"
+            className="flex h-10 w-10 touch-manipulation items-center justify-center rounded-full bg-primary text-primary-foreground active:scale-95"
             aria-label={t("saved.planNewAria")}
           >
-            {creatingTrip ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Plus className="h-4 w-4" />
-            )}
-          </button>
+            <Plus className="h-4 w-4" />
+          </Link>
         )}
       </div>
 
@@ -249,7 +229,7 @@ function Saved() {
         </div>
       ) : tab === "trips" ? (
         trips.length === 0 ? (
-          <TripsEmptyState onNewTrip={() => void handleNewBlankTrip()} creating={creatingTrip} />
+          <TripsEmptyState />
         ) : (
           <ul className="mt-6 space-y-3">
             {trips.map((trip) => (

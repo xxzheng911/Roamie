@@ -24,8 +24,21 @@ export function readOptionalWebAuthCallback(): string | null {
 
 /** 建議在 Supabase 後台加入的 Redirect URLs（不含尚未決定的正式網域） */
 export function suggestedSupabaseRedirectUrls(): string[] {
-  const urls = [OAUTH_DEEP_LINK_REDIRECT, LOCAL_DEV_AUTH_CALLBACK];
+  const urls = [
+    OAUTH_DEEP_LINK_REDIRECT,
+    `${APP_SCHEME}://localhost`,
+    "capacitor://localhost",
+    LOCAL_DEV_AUTH_CALLBACK,
+  ];
   const web = readOptionalWebAuthCallback();
-  if (web) urls.push(web);
-  return urls;
+  if (web) {
+    urls.push(web);
+    try {
+      const origin = new URL(web).origin;
+      urls.push(origin);
+    } catch {
+      /* ignore */
+    }
+  }
+  return [...new Set(urls)];
 }

@@ -96,6 +96,7 @@ function Home() {
     () => createUnifiedSearchPlacesFn(searchPlacesServerFn),
     [searchPlacesServerFn],
   );
+  const searchNearbyPlaces = searchPlacesFn;
   const {
     weather,
     status: weatherStatus,
@@ -192,6 +193,133 @@ function Home() {
     }
   }, [userLocation, weather, locale, searchPlacesFn, selectedMood]);
 
+  const runMoodRecommendation = useCallback(
+    async (moodLabel: string) => {
+      if (moodRequestRef.current === moodLabel) return;
+      moodRequestRef.current = moodLabel;
+      console.info("[MOOD_CONTEXT] created mood=", moodLabel);
+      setAiLoading(true);
+
+      const saveLocalMoodFallback = async (
+        bundle: Awaited<ReturnType<typeof buildClientContextBundle>>,
+      ): Promise<boolean> => {
+        const moodSession = {
+          ...loadChatSession(),
+          mood: moodLabel,
+          selectedMood: moodLabel,
+          fromMoodFlow: true,
+          fromMoodCard: true,
+          location: bundle.location,
+          weather: bundle.weather,
+        };
+        const userText =
+          MOOD_CHAT_PROMPTS[moodLabel] ?? `我現在想要「${moodLabel}」的行程，請給我建議。`;
+        const { context } = mergeTravelContext(moodSession, userText);
+        let placeResults: Awaited<ReturnType<typeof searchNearbyPlaces>>["places"] = [];
+        const lat = bundle.location?.lat;
+        const lng = bundle.location?.lng;
+        if (lat != null && lng != null) {
+          console.info("[MOOD_CHAT_LOCATION] latLng=", lat, lng);
+          try {
+            const q = fallbackSearchQuery(context);
+            const fallback = await withSearchTimeout(
+              searchNearbyPlaces({ data: { query: q, lat, lng, mode: "text" } }),
+              20_000,
+            );
+            placeResults = fallback.places ?? [];
+            console.info("[MOOD_CHAT_PLACES] candidates=", placeResults.length);
+          } catch (fallbackErr) {
+            console.warn("[AI_FALLBACK] home places search failed", fallbackErr);
+          }
+        }
+        const { summary, payload } = generateLocalRecommendationFallback({
+          context,
+          session: moodSession,
+          locale,
+          places: placeResults,
+        });
+        const recs = payload.recommendations ?? [];
+        if (!recs.length && !summary.trim()) return false;
+        const hasReal = recs.some(
+          (r) => r.lat != null && r.lng != null && !/附近.*散步|附近.*咖啡/i.test(r.name),
+        );
+        if (!hasReal) {
+          toast.message("附近暫時找不到合適的真實地點，請到探索地圖看看或換個心情試試。");
+          return false;
+        }
+        console.info("[AI_FALLBACK] used mood=", moodLabel);
+        recordRecommendationNames(recs.map((r) => r.name));
+        const saved = await saveRecommendation({ ...payload, summary }, { mood: moodLabel });
+        navigate({ to: "/recommendations", search: { id: saved.id } });
+        return true;
+      };
+
+      try {
+        const [bundle, savedPlacesList] = await Promise.all([
+          buildClientContextBundle(fetchWeather),
+          listPlaces().catch((e) => {
+            if (isMissingTableError(e)) return [];
+            throw e;
+          }),
+        ]);
+        const lat = bundle.location?.lat;
+        const lng = bundle.location?.lng;
+        if (lat != null && lng != null) {
+          console.info("[MOOD_CHAT_LOCATION] latLng=", lat, lng);
+        }
+        const { data: session } = await supabase.auth.getSession();
+        const token = session.session?.access_token;
+
+        const at = new Date(bundle.time);
+        const data = await fetchRoamieAI(
+          toRoamieRequest("recommend", bundle, {
+            mood: moodLabel,
+            selectedCategory: moodLabel,
+            selectedMood: moodLabel,
+            locale,
+            lateNightMode: shouldActivateLateNightSceneFlow(moodLabel, at),
+            recentRecommendationNames: loadRecentRecommendationNames(),
+            savedPlaceNames: savedPlacesList.map((p) => p.name),
+          }),
+          { token },
+        );
+
+        console.info("[AI_RECOMMENDATION] generated count=", data.recommendations?.length ?? 0);
+
+        const verifiedRecs = (data.recommendations ?? []).filter(
+          (r) => r.lat != null && r.lng != null && !/附近.*散步|附近.*咖啡/i.test(r.name),
+        );
+        if (verifiedRecs.length === 0) {
+          const usedFallback = await saveLocalMoodFallback(bundle);
+          if (usedFallback) return;
+          toast.message("附近暫時找不到合適的真實地點，請到探索地圖看看。");
+          return;
+        }
+
+        recordRecommendationNames(verifiedRecs.map((r) => r.name));
+        const saved = await saveRecommendation(
+          { ...data, recommendations: verifiedRecs },
+          { mood: moodLabel },
+        );
+        navigate({ to: "/recommendations", search: { id: saved.id } });
+      } catch (e) {
+        console.error("[Roamie AI] home recommend failed", e);
+        try {
+          const bundle = await buildClientContextBundle(fetchWeather);
+          const usedFallback = await saveLocalMoodFallback(bundle);
+          if (usedFallback) return;
+        } catch (fallbackErr) {
+          console.warn("[AI_FALLBACK] home recommend fallback failed", fallbackErr);
+        }
+        toast.error(e instanceof Error ? e.message : t("home.recommendFailed"));
+      } finally {
+        setAiLoading(false);
+        moodRequestRef.current = null;
+      }
+    },
+    [fetchWeather, locale, navigate, searchNearbyPlaces, t],
+  );
+
   const handleMoodSelect = (label: string) => {
     const next = selectedMood === label ? null : label;
     console.info("[MOOD_SELECT] mood=", next ?? "cleared");
@@ -200,10 +328,8 @@ function Home() {
       writeHomeMood(null);
       return;
     }
-    if (moodRequestRef.current === next) return;
-    moodRequestRef.current = next;
-    console.info("[MOOD_REQUEST] start");
     setLastMood(next);
+    writeHomeMood(next);
     const base = loadChatSession();
     saveChatSession({
       ...base,
@@ -212,20 +338,7 @@ function Home() {
       fromMoodCard: true,
       fromMoodFlow: true,
     });
-    const prompt = MOOD_CHAT_PROMPTS[next] ?? `我現在想要「${next}」的行程，請給我建議。`;
-    void navigate({
-      to: "/chat",
-      search: {
-        mood: next,
-        from: "mood",
-        prompt,
-      },
-    }).finally(() => {
-      console.info("[MOOD_REQUEST] completed");
-      writeHomeMood(null);
-      setSelectedMood(null);
-      moodRequestRef.current = null;
-    });
+    void runMoodRecommendation(next);
   };
 
   useEffect(() => {
@@ -361,98 +474,7 @@ function Home() {
       toast.message(t("home.pickMood"));
       return;
     }
-    setAiLoading(true);
-
-    const saveLocalMoodFallback = async (
-      bundle: Awaited<ReturnType<typeof buildClientContextBundle>>,
-    ): Promise<boolean> => {
-      const moodSession = {
-        ...loadChatSession(),
-        mood: selectedMood,
-        selectedMood,
-        fromMoodFlow: true,
-        fromMoodCard: true,
-        location: bundle.location,
-        weather: bundle.weather,
-      };
-      const userText =
-        MOOD_CHAT_PROMPTS[selectedMood] ?? `我現在想要「${selectedMood}」的行程，請給我建議。`;
-      const { context } = mergeTravelContext(moodSession, userText);
-      let placeResults: Awaited<ReturnType<typeof searchNearbyPlaces>>["places"] = [];
-      const lat = bundle.location?.lat;
-      const lng = bundle.location?.lng;
-      if (lat != null && lng != null) {
-        try {
-          const q = fallbackSearchQuery(context);
-          const fallback = await withSearchTimeout(
-            searchNearbyPlaces({ data: { query: q, lat, lng, mode: "text" } }),
-            20_000,
-          );
-          placeResults = fallback.places ?? [];
-          console.info("[MOOD_CHAT_PLACES] candidates=", placeResults.length);
-        } catch (fallbackErr) {
-          console.warn("[AI_FALLBACK] home places search failed", fallbackErr);
-        }
-      }
-      const { summary, payload } = generateLocalRecommendationFallback({
-        context,
-        session: moodSession,
-        locale,
-        places: placeResults,
-      });
-      if (!(payload.recommendations?.length ?? 0) && !summary.trim()) return false;
-      recordRecommendationNames((payload.recommendations ?? []).map((r) => r.name));
-      const saved = await saveRecommendation({ ...payload, summary }, { mood: selectedMood });
-      navigate({ to: "/recommendations", search: { id: saved.id } });
-      return true;
-    };
-
-    try {
-      const [bundle, savedPlaces] = await Promise.all([
-        buildClientContextBundle(fetchWeather),
-        listPlaces().catch((e) => {
-          if (isMissingTableError(e)) return [];
-          throw e;
-        }),
-      ]);
-      const { data: session } = await supabase.auth.getSession();
-      const token = session.session?.access_token;
-
-      const at = new Date(bundle.time);
-      const data = await fetchRoamieAI(
-        toRoamieRequest("recommend", bundle, {
-          mood: selectedMood,
-          selectedCategory: selectedMood,
-          selectedMood,
-          locale,
-          lateNightMode: shouldActivateLateNightSceneFlow(selectedMood, at),
-          recentRecommendationNames: loadRecentRecommendationNames(),
-          savedPlaceNames: savedPlaces.map((p) => p.name),
-        }),
-        { token },
-      );
-
-      if ((data.recommendations?.length ?? 0) === 0) {
-        const usedFallback = await saveLocalMoodFallback(bundle);
-        if (usedFallback) return;
-      }
-
-      recordRecommendationNames(data.recommendations.map((r) => r.name));
-      const saved = await saveRecommendation(data, { mood: selectedMood });
-      navigate({ to: "/recommendations", search: { id: saved.id } });
-    } catch (e) {
-      console.error("[Roamie AI] home recommend failed", e);
-      try {
-        const bundle = await buildClientContextBundle(fetchWeather);
-        const usedFallback = await saveLocalMoodFallback(bundle);
-        if (usedFallback) return;
-      } catch (fallbackErr) {
-        console.warn("[AI_FALLBACK] home recommend fallback failed", fallbackErr);
-      }
-      toast.error(e instanceof Error ? e.message : t("home.recommendFailed"));
-    } finally {
-      setAiLoading(false);
-    }
+    await runMoodRecommendation(selectedMood);
   };
 
   return (
@@ -571,9 +593,10 @@ function Home() {
 
       <Link
         to="/plan"
+        search={{ from: "home" }}
         className="mt-3 flex items-center justify-between rounded-2xl border border-dashed border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground"
       >
-        <span>進階：我想手動規劃行程</span>
+        <span>規劃新行程</span>
         <ChevronRight className="h-4 w-4" />
       </Link>
 

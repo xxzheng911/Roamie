@@ -12,8 +12,21 @@ ALTER TABLE public.saved_places
   ADD COLUMN IF NOT EXISTS image_url text,
   ADD COLUMN IF NOT EXISTS image_source text;
 
-UPDATE public.saved_places
-SET image_url = cover_image
-WHERE image_url IS NULL AND cover_image IS NOT NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_places' AND column_name = 'image_url'
+  ) AND EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_places' AND column_name = 'cover_image'
+  ) THEN
+    UPDATE public.saved_places
+    SET image_url = cover_image
+    WHERE image_url IS NULL
+      AND cover_image IS NOT NULL
+      AND btrim(cover_image) <> '';
+  END IF;
+END $$;
 
 NOTIFY pgrst, 'reload schema';

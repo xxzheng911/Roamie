@@ -33,7 +33,7 @@ export function SavedTripCard({ trip, deleteSlot }: Props) {
               coverImageUrl={null}
               customCoverImageUrl={trip.customCoverImageUrl}
               aiGeneratedCoverImageUrl={trip.aiGeneratedCoverImageUrl}
-              isCoverCustomized={Boolean(trip.customCoverImageUrl)}
+              isCoverCustomized={trip.isCoverCustomized}
               mood="roamie"
               className="h-full w-full rounded-2xl"
             />

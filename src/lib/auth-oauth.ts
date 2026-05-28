@@ -183,6 +183,7 @@ export async function signInWithProvider(provider: OAuthProvider): Promise<SignI
   logAuthStart(provider);
 
   if (provider === "apple" && canUseNativeAppleSignIn()) {
+    console.info("[APPLE_AUTH] redirect=native-id-token (no browser OAuth)");
     const native = await signInWithAppleNative();
     if (!native.ok) {
       if (!native.cancelled) logAuthError("apple.native", native.message);
@@ -232,6 +233,9 @@ export async function startOAuthSignIn(
   }
 
   const redirectTo = getOAuthRedirectUrl();
+  if (provider === "apple") {
+    console.info("[APPLE_AUTH] redirect=", redirectTo);
+  }
   stashOAuthRedirectTarget(redirectTo);
 
   if (platform.isCapacitor) {

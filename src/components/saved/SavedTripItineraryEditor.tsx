@@ -473,7 +473,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
       setCoverSource("upload");
       const updated = await updateTripMeta(stored.id, {
         ...buildCustomCoverPatch(url),
-        cover_source: "upload",
+        cover_source: "custom",
         cover_query: null,
       });
       if (updated) onStoredChange?.(updated);

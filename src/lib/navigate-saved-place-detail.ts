@@ -1,4 +1,5 @@
 import type { SavedPlace } from "@/lib/places-storage";
+import { resolveSavedPlaceImageUrl } from "@/lib/saved-places-image";
 import {
   isRoutableGooglePlaceId,
   latLngFallbackPlaceId,
@@ -29,7 +30,7 @@ function buildHandoffFromSaved(p: SavedPlace, routePlaceId: string): PlaceDetail
     address: p.address,
     lat: p.lat,
     lng: p.lng,
-    photoUrl: p.cover_image ?? p.image_url ?? null,
+    photoUrl: resolveSavedPlaceImageUrl(p),
     category: p.category,
   };
 }

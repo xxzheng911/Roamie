@@ -15,7 +15,7 @@ export type UnifiedPlaceCard = ExplorePlaceCard & {
   categoryId?: string;
   /** 與地點身分一致的分類標籤（非探索 chip） */
   displayCategory: string;
-  /** Google 照片 URL；無則由 PlaceImage 元件 async 解析 Unsplash fallback */
+  /** Google 照片 URL；無則由 PlaceImage 元件 async 解析（AI → 分類預設） */
   coverImageUrl: string | null;
   distanceLabel?: string;
 };
@@ -32,7 +32,7 @@ export type BuildUnifiedPlaceCardInput = {
   photoWidth?: number;
 };
 
-/** 同一地點的封面圖：僅 Google 照片（同步）；Unsplash fallback 由 PlaceImage 元件處理 */
+/** 同一地點的封面圖：僅 Google 照片（同步）；其餘由 PlaceImage 元件處理 */
 export function resolvePlaceCoverImage(
   place: PlaceResult,
   options?: { categoryId?: string; photoWidth?: number },

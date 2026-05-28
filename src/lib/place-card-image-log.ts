@@ -1,4 +1,5 @@
-import type { ImageSource } from "@/services/placeImageService";
+import { logPlaceImage } from "@/lib/place-image/place-image-log";
+import type { PlaceImageSource } from "@/services/placeImageService";
 import { placeSceneCategoryLabel } from "@/lib/place-scene-fallback";
 
 export function logPlaceCardImage(
@@ -7,7 +8,7 @@ export function logPlaceCardImage(
     categoryId?: string;
     primaryType?: string | null;
     types?: string[] | null;
-    imageSource: ImageSource | string;
+    imageSource: PlaceImageSource | string;
   },
 ): void {
   const category = placeSceneCategoryLabel(placeName, {
@@ -23,4 +24,9 @@ export function logPlaceCardImage(
     "imageSource=",
     options.imageSource,
   );
+  logPlaceImage(placeName, {
+    googlePhotoFound: options.imageSource === "google",
+    unsplashUsed: options.imageSource === "unsplash",
+    source: options.imageSource,
+  });
 }

@@ -151,9 +151,15 @@ import {
   resolveChatRoute,
 } from "@/lib/ai/chat-router";
 import {
+  formatConversationIntentForAi,
+  parseConversationIntent,
+  shouldUseCompanionAiReply,
+} from "@/lib/ai/conversation-intent";
+import {
   fallbackSearchQuery,
   generateLocalRecommendationFallback,
 } from "@/lib/ai/local-recommendation-fallback";
+import { filterVerifiedRecommendations } from "@/lib/place-verification";
 import { withSearchTimeout } from "@/lib/search-timeout";
 import { getTripLegsWithDurations, travelLabelToRoutesMode } from "@/services/routesService";
 import { generateOutfitSuggestion, normalizeWeather } from "@/services/weatherService";
@@ -708,7 +714,9 @@ function Chat() {
         missing: tripIntent.missingKeys,
         planTier,
       });
+      const intentBlock = formatConversationIntentForAi(parseConversationIntent(userText));
       const initialCtx = [
+        intentBlock,
         buildTravelContext(
           userText,
           updateTripDraftFromConversation(
@@ -1738,6 +1746,17 @@ function Chat() {
     }
 
     if (route.mode === "clarify" && route.question && route.missingKey) {
+      if (shouldUseCompanionAiReply(trimmed, nextSession)) {
+        console.info("[AI_ROUTE] companion_ai_over_clarify", trimmed.slice(0, 40));
+        try {
+          await streamChat(next, { phase: "discover", userText: trimmed }, nextSession);
+          console.log("[CHAT_SUBMIT_SUCCESS]");
+        } catch (e) {
+          console.log("[CHAT_SUBMIT_ERROR]", e);
+          throw e;
+        }
+        return;
+      }
       const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
       if (lastAssistant?.content.trim() === route.question.trim()) {
         if (isReadyForRecommendation(merged.context, nextSession)) {
@@ -1768,24 +1787,13 @@ function Chat() {
   }, []);
 
   const handleAdvancedPlanning = useCallback(() => {
-    const nextSession: ChatPlanningSession = {
-      ...session,
-      phase: "collect",
-    };
-    persistSession(nextSession);
-    setMsgs((prev) => {
-      const next = [
-        ...prev,
-        { role: "user" as const, content: ADVANCED_PLANNING_USER_TEXT },
-        { role: "assistant" as const, content: ADVANCED_PLANNING_ASSISTANT_TEXT },
-      ];
-      persistChatUiMessages(next);
-      return next;
-    });
-  }, [session, persistSession]);
+    console.info("[CHAT_CHIP_CLICK] chipId=", ADVANCED_PLANNING_CHIP_ID, "→ /plan");
+    void navigate({ to: "/plan", search: { from: "chat" } });
+  }, [navigate]);
 
   const handleChipSend = useCallback(
     (chipId: string) => {
+      console.info("[CHAT_CHIP_CLICK] chipId=", chipId);
       if (chipId === ADVANCED_PLANNING_CHIP_ID) {
         handleAdvancedPlanning();
         return;

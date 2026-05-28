@@ -10,7 +10,7 @@ type Props = PlaceImageInput & {
   alt?: string;
 };
 
-/** 附近地點卡片圖：Google → Unsplash → Roamie 預設 */
+/** 附近地點卡片圖：Google → AI → 分類預設 */
 export function PlaceImage({
   initialUrl,
   className,

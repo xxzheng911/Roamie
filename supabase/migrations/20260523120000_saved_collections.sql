@@ -17,9 +17,24 @@ UPDATE public.saved_trips
 SET payload = trip_data
 WHERE (payload IS NULL OR payload = '{}'::jsonb) AND trip_data IS NOT NULL;
 
-UPDATE public.saved_trips
-SET cover_image = cover_image_url
-WHERE cover_image IS NULL AND cover_image_url IS NOT NULL;
+ALTER TABLE public.saved_trips ADD COLUMN IF NOT EXISTS cover_image_url text;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_trips' AND column_name = 'cover_image_url'
+  ) AND EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_trips' AND column_name = 'cover_image'
+  ) THEN
+    UPDATE public.saved_trips
+    SET cover_image = cover_image_url
+    WHERE cover_image IS NULL
+      AND cover_image_url IS NOT NULL
+      AND btrim(cover_image_url) <> '';
+  END IF;
+END $$;
 
 ALTER TABLE public.saved_trips ENABLE ROW LEVEL SECURITY;
 
@@ -49,13 +64,27 @@ ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS category text;
 ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS city text;
 ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS notes text;
 ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS mood_tag text;
+ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS photo_url text;
 ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS cover_image text;
 ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
-UPDATE public.saved_places
-SET cover_image = photo_url
-WHERE cover_image IS NULL AND photo_url IS NOT NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_places' AND column_name = 'photo_url'
+  ) AND EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_places' AND column_name = 'cover_image'
+  ) THEN
+    UPDATE public.saved_places
+    SET cover_image = photo_url
+    WHERE cover_image IS NULL
+      AND photo_url IS NOT NULL
+      AND btrim(photo_url) <> '';
+  END IF;
+END $$;
 
 ALTER TABLE public.saved_places ENABLE ROW LEVEL SECURITY;
 

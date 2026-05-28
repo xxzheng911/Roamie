@@ -3,6 +3,7 @@ import { isUserConfirmingItinerary } from "@/lib/chat-session";
 import type { ChatPhase } from "@/lib/ai/context";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
+import { shouldUseCompanionAiReply } from "@/lib/ai/conversation-intent";
 import {
   type CanonicalTravelContext,
   isReadyForRecommendation,
@@ -76,7 +77,7 @@ export function resolveChatRoute(
   }
 
   const nextKey = nextUnaskedKey(ctx, session);
-  if (nextKey) {
+  if (nextKey && !shouldUseCompanionAiReply(userText, session)) {
     const question = buildClarifyQuestion(nextKey, ctx, locale);
     console.info("[AI_ROUTE] next_question", nextKey, logTravelContext(ctx));
     return { mode: "clarify", chatPhase: "discover", missingKey: nextKey, question };

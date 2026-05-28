@@ -337,7 +337,7 @@ export function buildUserMessage(ctx: RoamieRequestContext): string {
     const history = (ctx.messages ?? []).filter((m) => m.content.trim());
     const latest = ctx.chatInput?.trim() || ctx.lastUserIntent?.trim();
 
-    if (ctx.chatPhase === "discover" && history.length <= 1) {
+    if (history.length === 0) {
       return latest || "請像旅伴了解我今天想怎麼過（JSON）。";
     }
     if (ctx.chatPhase === "handoff") {

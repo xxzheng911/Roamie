@@ -49,6 +49,7 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
     return { ok: false, message: configError };
   }
 
+  console.info("[APPLE_AUTH] start clientId=", APP_BUNDLE_ID);
   logAuthDebug("apple.native.start", {
     provider: "apple",
     clientId: APP_BUNDLE_ID,
@@ -64,6 +65,7 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
       nonce: hashedNonce,
     });
 
+    console.info("[APPLE_AUTH] callback received hasToken=", Boolean(appleResult.response?.identityToken));
     logAuthDebug("apple.native.authorized", {
       hasIdentityToken: Boolean(appleResult.response?.identityToken),
     });
@@ -132,14 +134,17 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
       isPrivateEmail: data.user?.email?.includes("@privaterelay.appleid.com") ?? false,
     });
 
+    console.info("[APPLE_AUTH] success userId=", data.user?.id ?? "(none)");
     return { ok: true, session: data.session };
   } catch (e) {
     if (isUserCancelled(e)) {
+      console.info("[APPLE_AUTH] error=cancelled");
       logAuthDebug("apple.native.cancelled", {});
       return { ok: false, message: "已取消登入", cancelled: true };
     }
-    logAuthError("apple.native.failed", e);
     const msg = e instanceof Error ? e.message : "Apple 登入失敗";
+    console.info("[APPLE_AUTH] error=", msg);
+    logAuthError("apple.native.failed", e);
     return { ok: false, message: msg };
   }
 }

@@ -43,9 +43,22 @@ WHERE payload IS NULL OR payload = '{}'::jsonb;
 UPDATE public.saved_trips
 SET trip_data = COALESCE(NULLIF(trip_data, '{}'::jsonb), payload, '{}'::jsonb)
 WHERE trip_data IS NULL OR trip_data = '{}'::jsonb;
-UPDATE public.saved_trips
-SET cover_image = cover_image_url
-WHERE cover_image IS NULL AND cover_image_url IS NOT NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_trips' AND column_name = 'cover_image_url'
+  ) AND EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'saved_trips' AND column_name = 'cover_image'
+  ) THEN
+    UPDATE public.saved_trips
+    SET cover_image = cover_image_url
+    WHERE cover_image IS NULL
+      AND cover_image_url IS NOT NULL
+      AND btrim(cover_image_url) <> '';
+  END IF;
+END $$;
 
 ALTER TABLE public.saved_trips ALTER COLUMN title SET NOT NULL;
 ALTER TABLE public.saved_trips ALTER COLUMN payload SET DEFAULT '{}'::jsonb;
