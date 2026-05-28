@@ -28,8 +28,7 @@ export function resolvePlaceCardOpeningDisplay(place: {
   nextOpenHint?: string;
 }): PlaceCardOpeningDisplay {
   const hoursRaw = place.todayHoursLabel?.trim() ?? "";
-  const hoursOnly =
-    hoursRaw && !hoursRaw.includes("待確認") ? stripTodayPrefix(hoursRaw) : "";
+  const hoursOnly = hoursRaw && !hoursRaw.includes("待確認") ? stripTodayPrefix(hoursRaw) : "";
 
   if (place.openStatus === "open") {
     return {
@@ -61,7 +60,7 @@ export function resolvePlaceCardOpeningDisplay(place: {
   if (place.id?.startsWith("mock-")) {
     return {
       statusLabel: "",
-      hoursLabel: "營業資訊未知",
+      hoursLabel: "暫時無法確認營業時間",
       openNow: null,
       source: "mock",
     };
@@ -69,16 +68,13 @@ export function resolvePlaceCardOpeningDisplay(place: {
 
   return {
     statusLabel: "",
-    hoursLabel: "營業資訊未知",
+    hoursLabel: "暫時無法確認營業時間",
     openNow: null,
     source: "unknown",
   };
 }
 
-export function logPlaceCardOpening(
-  placeName: string,
-  display: PlaceCardOpeningDisplay,
-): void {
+export function logPlaceCardOpening(placeName: string, display: PlaceCardOpeningDisplay): void {
   console.info(
     "[PLACE_OPENING] placeName=",
     placeName,

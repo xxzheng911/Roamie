@@ -31,7 +31,7 @@ const env = {
   ROAMIE_QUIET_BOOT: "1",
   ROAMIE_CAPACITOR_BUILD: "1",
   VITE_APP_ORIGIN: originCheck.origin,
-  ...(qaBuild ? { VITE_ROAMIE_QA: "1" } : {}),
+  ...(qaBuild ? { VITE_ROAMIE_QA: "1", VITE_DEBUG_DIAGNOSTICS: "1" } : {}),
 };
 delete env.CAPACITOR_LIVE_RELOAD;
 delete env.CAPACITOR_DEV_SERVER_URL;
@@ -40,7 +40,9 @@ delete env.CAPACITOR_SERVER_URL;
 
 console.info(`[ios:release] VITE_APP_ORIGIN=${originCheck.origin}`);
 if (qaBuild) {
-  console.info("[ios:release] ROAMIE_QA_BUILD=1 → VITE_ROAMIE_QA=1（登入頁顯示測試登入）");
+  console.info(
+    "[ios:release] ROAMIE_QA_BUILD=1 → VITE_ROAMIE_QA=1、VITE_DEBUG_DIAGNOSTICS=1（QA 登入 + 推薦卡診斷）",
+  );
 }
 
 function run(label, cmd, args) {

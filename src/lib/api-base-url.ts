@@ -19,18 +19,30 @@ export function resolveAppApiUrl(path: string): string {
   const metaOrigin = readBundledApiOriginMeta();
   const origin = (configured ?? metaOrigin)?.replace(/\/$/, "");
   const platform = detectPlatform();
+  const isCapacitorProtocol = window.location.protocol === "capacitor:";
 
-  if (platform.isCapacitor && origin) {
+  // On TestFlight, Capacitor bridge can initialize later than first render.
+  // If protocol is capacitor:, always prefer absolute API origin when available.
+  if ((platform.isCapacitor || isCapacitorProtocol) && origin) {
     return `${origin}${normalized}`;
   }
 
-  if (platform.isCapacitor && window.location.protocol === "capacitor:" && !origin) {
+  if ((platform.isCapacitor || isCapacitorProtocol) && !origin) {
     console.warn(
       "[API] VITE_APP_ORIGIN is not set — bundled iOS cannot reach /api. Set VITE_APP_ORIGIN at build time or use CAPACITOR_DEV_SERVER_URL for live reload.",
     );
   }
 
   return normalized;
+}
+
+export function resolveAppApiBaseUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const configured = import.meta.env.VITE_APP_ORIGIN as string | undefined;
+  const metaOrigin = readBundledApiOriginMeta();
+  const origin = (configured ?? metaOrigin)?.replace(/\/$/, "");
+  if (!origin) return null;
+  return origin;
 }
 
 function readConfiguredAppOrigin(): string | undefined {

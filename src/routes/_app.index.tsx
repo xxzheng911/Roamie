@@ -34,10 +34,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useI18n } from "@/hooks/use-i18n";
 import { searchPlaces } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
-import {
-  loadHomeNearbyPicks,
-  type HomeNearbyPick,
-} from "@/lib/explore-category-search";
+import { loadHomeNearbyPicks, type HomeNearbyPick } from "@/lib/explore-category-search";
 import { EXPLORE_CATEGORIES } from "@/lib/places-search-config";
 import { getMockHomeNearbyPicks } from "@/lib/map-mock-places";
 import { logPlacesFallbackUsed, shouldUseCuratedPlacesFallback } from "@/lib/places-api-errors";
@@ -47,10 +44,21 @@ import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reaso
 import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
+import {
+  buildHomeNearbyCacheKey,
+  readHomeNearbyCache,
+  writeHomeNearbyCache,
+} from "@/lib/home-nearby-cache";
 import { pickCategoriesForHome } from "@/lib/recommendation/categories";
 import { buildDailyPrepAdvice } from "@/lib/recommendation/daily-prep-advice";
 import { HomeOutfitCard } from "@/components/home/HomeOutfitCard";
-import { pickToPlaceDetailHandoff, setPlaceDetailHandoff } from "@/lib/place-detail-handoff";
+import {
+  isRoutableGooglePlaceId,
+  latLngFallbackPlaceId,
+  pickToPlaceDetailHandoff,
+  setPlaceDetailHandoff,
+} from "@/lib/place-detail-handoff";
+import { setPlaceDetailStoreEntry } from "@/lib/place-detail-store";
 import {
   logNearbyPlaceCardPressed,
   logNearbyPlaceId,
@@ -61,6 +69,7 @@ import { openAppSettings } from "@/lib/open-app-settings";
 import { readBootstrapDeviceLocation } from "@/lib/device-location";
 import { readHomeMood, writeHomeMood } from "@/lib/home-mood";
 import { saveChatSession, loadChatSession } from "@/lib/chat-session";
+import { filterVerifiedRecommendations } from "@/lib/place-verification";
 
 export const Route = createFileRoute("/_app/")({
   component: Home,
@@ -129,6 +138,24 @@ function Home() {
       city: boot.city,
       source: "fallback" as const,
     };
+    const categories = pickCategoriesForHome(weather, selectedMood);
+    const nearbyCacheKey = buildHomeNearbyCacheKey({
+      lat: anchor.lat,
+      lng: anchor.lng,
+      locale,
+      mood: selectedMood,
+      categoryIds: categories.map((c) => c.id),
+    });
+    const cachedNearby = readHomeNearbyCache(nearbyCacheKey);
+    if (cachedNearby) {
+      console.info("[PLACES_CACHE] home nearby hit");
+      setNearbyPicks(cachedNearby.picks);
+      setNearbyCuratedFallback(cachedNearby.usedCuratedFallback);
+      setNearbyApiError(cachedNearby.apiError);
+      setNearbyLoading(false);
+      return;
+    }
+
     setNearbyLoading(true);
     try {
       const [profile, prefs, saved] = await Promise.all([
@@ -142,7 +169,6 @@ function Home() {
         personalitySummary: profile?.personalitySummary,
         aiPreferences: profile?.aiPreferences,
       });
-      const categories = pickCategoriesForHome(weather, selectedMood);
       const { picks, usedCuratedFallback, apiError } = await loadHomeNearbyPicks({
         userLocation: { lat: anchor.lat, lng: anchor.lng },
         weather,
@@ -161,6 +187,8 @@ function Home() {
           photoName: p.photoName ?? null,
         })),
       });
+      const nearbyResult = { picks, usedCuratedFallback, apiError };
+      writeHomeNearbyCache(nearbyCacheKey, nearbyResult);
       setNearbyPicks(picks);
       setNearbyCuratedFallback(usedCuratedFallback);
       setNearbyApiError(apiError);
@@ -240,9 +268,7 @@ function Home() {
         });
         const recs = payload.recommendations ?? [];
         if (!recs.length && !summary.trim()) return false;
-        const hasReal = recs.some(
-          (r) => r.lat != null && r.lng != null && !/附近.*散步|附近.*咖啡/i.test(r.name),
-        );
+        const hasReal = filterVerifiedRecommendations(recs).length > 0;
         if (!hasReal) {
           toast.message("附近暫時找不到合適的真實地點，請到探索地圖看看或換個心情試試。");
           return false;
@@ -286,9 +312,7 @@ function Home() {
 
         console.info("[AI_RECOMMENDATION] generated count=", data.recommendations?.length ?? 0);
 
-        const verifiedRecs = (data.recommendations ?? []).filter(
-          (r) => r.lat != null && r.lng != null && !/附近.*散步|附近.*咖啡/i.test(r.name),
-        );
+        const verifiedRecs = filterVerifiedRecommendations(data.recommendations ?? []);
         if (verifiedRecs.length === 0) {
           const usedFallback = await saveLocalMoodFallback(bundle);
           if (usedFallback) return;
@@ -338,7 +362,6 @@ function Home() {
       fromMoodCard: true,
       fromMoodFlow: true,
     });
-    void runMoodRecommendation(next);
   };
 
   useEffect(() => {
@@ -368,11 +391,6 @@ function Home() {
   }, [loadNearbyPicks]);
 
   useEffect(() => {
-    if (!userLocation) return;
-    void loadNearbyPicks();
-  }, [selectedMood, userLocation, loadNearbyPicks]);
-
-  useEffect(() => {
     const onPrefs = () => {
       if (weatherStatus !== "loading") void loadNearbyPicks();
     };
@@ -388,23 +406,49 @@ function Home() {
     return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onAccess);
   }, [weatherStatus, loadNearbyPicks]);
 
-  const handleNearbyPick = (pick: HomeNearbyPick) => {
+  const handleNearbyPick = async (pick: HomeNearbyPick) => {
     logNearbyPlaceCardPressed(pick.id, pick.name);
     logNearbyPlaceId(pick.id);
-    const handoff = pickToPlaceDetailHandoff(pick);
-    logNearbyPlaceNavigateParams(handoff);
-    setPlaceDetailHandoff(handoff);
-    logNearbyPlaceNavigateToDetail();
-    setNavigatingPlaceId(pick.id);
-    const pid = handoff.placeId?.trim();
-    if (!pid) {
-      setNavigatingPlaceId(null);
+
+    let placeId = (pick.id?.trim() ?? "").replace(/^places\//, "");
+    if (!placeId && pick.lat != null && pick.lng != null) {
+      placeId = latLngFallbackPlaceId(pick.lat, pick.lng);
+    }
+    if (!placeId) {
+      toast.message("無法開啟此地點詳情");
       return;
     }
-    void navigate({
-      to: "/place/$placeId",
-      params: { placeId: pid },
-    }).finally(() => setNavigatingPlaceId(null));
+    if (
+      !isRoutableGooglePlaceId(placeId) &&
+      !placeId.startsWith("mock-") &&
+      !placeId.startsWith("latlng:")
+    ) {
+      if (pick.lat != null && pick.lng != null) {
+        placeId = latLngFallbackPlaceId(pick.lat, pick.lng);
+      } else {
+        toast.message("無法開啟此地點詳情");
+        return;
+      }
+    }
+
+    const handoff = { ...pickToPlaceDetailHandoff(pick), placeId };
+    logNearbyPlaceNavigateParams(handoff);
+    setPlaceDetailHandoff(handoff);
+    setPlaceDetailStoreEntry(placeId, handoff);
+    logNearbyPlaceNavigateToDetail();
+    setNavigatingPlaceId(pick.id);
+    try {
+      await navigate({
+        to: "/place/$placeId",
+        params: { placeId },
+        search: { from: "home" },
+      });
+    } catch (e) {
+      console.error("[home] place detail navigate failed", e);
+      toast.error("無法開啟地點詳情");
+    } finally {
+      setNavigatingPlaceId(null);
+    }
   };
 
   const refreshSaved = useCallback(async () => {
@@ -478,7 +522,7 @@ function Home() {
   };
 
   return (
-    <div className="animate-rise w-full min-w-0 max-w-full overflow-x-hidden pb-6 pl-[max(1.25rem,var(--safe-area-left))] pr-[max(1.25rem,var(--safe-area-right))] pt-2">
+    <div className="animate-rise w-full min-w-0 max-w-full overflow-x-hidden pb-[calc(var(--app-nav-total-height)+1.5rem)] pl-[max(1.25rem,var(--safe-area-left))] pr-[max(1.25rem,var(--safe-area-right))] pt-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <h1 className="text-2xl leading-tight">嘿，今天想去哪裡走走？</h1>
@@ -503,9 +547,11 @@ function Home() {
         <p className="mt-3 font-display text-[19px] leading-snug">
           「先說說心情，我幫你挑幾個地方，再一起把行程定下來。」
         </p>
-        <div className="mt-4 flex items-center gap-2 rounded-2xl bg-secondary/60 px-4 py-3 text-sm text-muted-foreground">
-          <Search className="h-4 w-4" />
-          {selectedMood ? `帶著「${selectedMood}」開始對話` : "開始 AI 對話規劃"}
+        <div className="mt-4 flex min-h-[3rem] items-center gap-2 rounded-2xl bg-secondary/60 px-4 py-3 text-sm text-muted-foreground">
+          <Search className="h-4 w-4 shrink-0" />
+          <span className="line-clamp-2">
+            {selectedMood ? `帶著「${selectedMood}」開始對話` : "開始 AI 對話規劃"}
+          </span>
         </div>
       </Link>
 
@@ -531,14 +577,14 @@ function Home() {
             ))}
           </div>
         </div>
-        {lastMood && !selectedMood ? (
-          <p className="mt-2 text-xs text-muted-foreground">最近選擇：{lastMood}</p>
-        ) : null}
+        <p className="mt-2 min-h-[1.125rem] text-xs text-muted-foreground">
+          {lastMood && !selectedMood ? `最近選擇：${lastMood}` : "\u00a0"}
+        </p>
         <button
           type="button"
           onClick={handleRecommend}
           disabled={aiLoading || !selectedMood}
-          className="mt-4 flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-[15px] font-medium text-primary-foreground shadow-lift disabled:opacity-50"
+          className="mt-4 flex min-h-[3.25rem] w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-[15px] font-medium text-primary-foreground shadow-lift disabled:opacity-50"
         >
           {aiLoading ? (
             <>
@@ -587,6 +633,8 @@ function Home() {
             onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p))}
             onToggleSave={(p) => void handleToggleSaveNearby(p)}
             addToTripLabel={t("chat.addToTrip")}
+            fallbackReason={nearbyCuratedFallback ? (nearbyApiError ?? "curated_fallback") : null}
+            apiError={nearbyApiError}
           />
         </div>
       </section>

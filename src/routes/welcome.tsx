@@ -24,10 +24,16 @@ import { resetOnboardingState } from "@/lib/onboarding-storage";
 import { clientEnv } from "@/constants/env";
 import { AnalyticsEvents } from "@/constants/analytics-events";
 import { trackEvent } from "@/services/analytics";
+import { ensureIosLoginLiveInteraction } from "@/lib/ios-snapshot-bridge";
+import { detectPlatform } from "@/services/platform";
 
 export const Route = createFileRoute("/welcome")({
   beforeLoad: async () => {
     if (typeof window === "undefined") return;
+    const platform = detectPlatform();
+    if (platform.isCapacitor && platform.isIOS) {
+      ensureIosLoginLiveInteraction();
+    }
     await loadOnboardingState();
     if (!isOnboardingCompletedSync()) {
       logShowOnboardingFirstLaunch();

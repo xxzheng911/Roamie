@@ -3,6 +3,7 @@ import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import { ROAMIE_API_FALLBACK, API_CACHE_TTL_MS } from "@/lib/api/constants";
 import { isLocalhostAppApiUrl } from "@/lib/api-base-url";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { getCachedPlacePhotoUrl } from "@/lib/place-photo-url-cache";
 import { preferNonWebpImageUrl } from "@/lib/safe-image-url";
 import { isBlockedPlaceSceneUrl, pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import type { PlaceResult } from "@/lib/place-result";
@@ -80,9 +81,11 @@ export function resolveGooglePlacePhoto(
   width = 600,
 ): string | null {
   if (!photoName) return null;
-  const built = buildPlacePhotoUrl(photoName, width);
-  if (!built || isLocalhostAppApiUrl(built)) return null;
-  return preferNonWebpImageUrl(built);
+  return getCachedPlacePhotoUrl(photoName, width, () => {
+    const built = buildPlacePhotoUrl(photoName, width);
+    if (!built || isLocalhostAppApiUrl(built)) return null;
+    return preferNonWebpImageUrl(built);
+  });
 }
 
 export function resolvePlaceCoverImageSync(

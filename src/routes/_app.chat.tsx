@@ -22,6 +22,8 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { loadChatHistory, clearChatHistory, type ChatMsg } from "@/lib/chat-history";
 import { readBootstrapDeviceLocation } from "@/lib/device-location";
+import { resolveEffectiveDeviceCoords } from "@/lib/effective-device-location";
+import { isValidDeviceCoordinate } from "@/lib/geo";
 import { getFreshDeviceLocationSnapshot } from "@/lib/location-store";
 import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { enrichRoamieContext } from "@/lib/ai/enrich-context";
@@ -39,6 +41,8 @@ import {
 } from "@/lib/chat-api-ready";
 import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
 import { RoamieResponseView } from "@/components/RoamieResponseView";
+import { RecommendationDiagnosticsToolbar } from "@/components/debug/RecommendationDiagnosticsToolbar";
+import { isDiagnosticsModeEnabled } from "@/lib/debug/recommendation-diagnostics";
 import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
@@ -145,11 +149,12 @@ import {
   extractTravelIntent,
   updateTripDraftFromConversation,
 } from "@/services/aiTravelContextService";
-import { mergeTravelContext, formatTravelContextForAi, isReadyForRecommendation } from "@/lib/ai/travel-context";
 import {
-  markAskedClarifyKey,
-  resolveChatRoute,
-} from "@/lib/ai/chat-router";
+  mergeTravelContext,
+  formatTravelContextForAi,
+  isReadyForRecommendation,
+} from "@/lib/ai/travel-context";
+import { markAskedClarifyKey, resolveChatRoute } from "@/lib/ai/chat-router";
 import {
   formatConversationIntentForAi,
   parseConversationIntent,
@@ -185,38 +190,27 @@ export const Route = createFileRoute("/_app/chat")({
   component: Chat,
 });
 
-const CHAT_DISCOVER_CHIPS = [
-  "今天想放鬆走走",
-  "想探索新地方",
-  "主要是想拍照",
-  "一個人",
-  "跟朋友",
-  "室內就好",
-  "想去室外",
-] as const;
-
-const CHAT_COLLECT_CHIPS = ["就這樣吧，可以開始安排", "想再加一個咖啡廳", "節奏慢一點"] as const;
-
-const CHAT_DEFAULT_CHIPS = ["我今天有點累", "想找安靜的咖啡廳", "下雨天可以去哪"] as const;
+/** 固定快捷選項（不依 session.phase 切換） */
+const CHAT_SHORTCUT_CHIPS = ["我今天有點累", "想找安靜的咖啡廳", "下雨天可以去哪"] as const;
 
 /** 快捷 chip 顯示文字 → 實際送出的使用者訊息 */
 const CHIP_OUTBOUND_TEXT: Record<string, string> = {
-  "今天想放鬆走走": "我今天想放鬆走走，請推薦適合放鬆、步調輕鬆的地點。",
-  "想探索新地方": "我想探索新地方，請推薦我還沒去過、值得逛逛的地點。",
-  "主要是想拍照": "我主要是想拍照，請推薦景色好看、適合拍照的地點。",
-  "一個人": "我一個人出門，請推薦適合獨自走走的地點。",
-  "跟朋友": "我跟朋友一起，請推薦適合小團體、好聊天的地點。",
-  "室內就好": "我想待在室內，請推薦室內景點或可以躲雨的地方。",
-  "想去室外": "我想去室外走走，請推薦戶外、空氣好的地點。",
+  今天想放鬆走走: "我今天想放鬆走走，請推薦適合放鬆、步調輕鬆的地點。",
+  想探索新地方: "我想探索新地方，請推薦我還沒去過、值得逛逛的地點。",
+  主要是想拍照: "我主要是想拍照，請推薦景色好看、適合拍照的地點。",
+  一個人: "我一個人出門，請推薦適合獨自走走的地點。",
+  跟朋友: "我跟朋友一起，請推薦適合小團體、好聊天的地點。",
+  室內就好: "我想待在室內，請推薦室內景點或可以躲雨的地方。",
+  想去室外: "我想去室外走走，請推薦戶外、空氣好的地點。",
   "就這樣吧，可以開始安排": "就這樣吧，可以開始安排行程。",
-  "想再加一個咖啡廳": "我想再加一個咖啡廳到行程裡。",
-  "節奏慢一點": "希望行程節奏慢一點，不要太趕。",
-  "我今天有點累": "我今天有點累，請推薦輕鬆、不用走太多的地點。",
-  "想找安靜的咖啡廳": "我想找安靜的咖啡廳，適合休息或看書。",
-  "下雨天可以去哪": "下雨天可以去哪？請推薦室內或適合雨天的地點。",
+  想再加一個咖啡廳: "我想再加一個咖啡廳到行程裡。",
+  節奏慢一點: "希望行程節奏慢一點，不要太趕。",
+  我今天有點累: "我今天有點累，請推薦輕鬆、不用走太多的地點。",
+  想找安靜的咖啡廳: "我想找安靜的咖啡廳，適合休息或看書。",
+  下雨天可以去哪: "下雨天可以去哪？請推薦室內或適合雨天的地點。",
 };
 
-const ADVANCED_PLANNING_CHIP_ID = "進階手動規劃";
+const ADVANCED_PLANNING_CHIP_ID = "手動規劃";
 const ADVANCED_PLANNING_USER_TEXT = "我想進階手動規劃行程";
 const ADVANCED_PLANNING_ASSISTANT_TEXT =
   "好呀，那這次你想從哪裡開始規劃？目的地、日期，還是想去的地方？";
@@ -234,9 +228,7 @@ function withChatSummaryFallback(full: RoamieResponse, userText: string): Roamie
   const snippet = userText.trim().slice(0, 40);
   return {
     ...full,
-    summary: snippet
-      ? `收到，我會依「${snippet}」幫你想下一步。`
-      : "好的，我來幫你整理一下。",
+    summary: snippet ? `收到，我會依「${snippet}」幫你想下一步。` : "好的，我來幫你整理一下。",
   };
 }
 
@@ -495,8 +487,7 @@ function Chat() {
         const moodFromHome = search.mood?.trim() || readHomeMood();
         if (moodFromHome) {
           const moodPrompt =
-            search.prompt?.trim() ||
-            `我想${moodFromHome}，幫我看看附近適合去哪裡。`;
+            search.prompt?.trim() || `我想${moodFromHome}，幫我看看附近適合去哪裡。`;
           let moodSession: ChatPlanningSession = {
             ...session,
             mood: moodFromHome,
@@ -785,9 +776,7 @@ function Chat() {
         rejectedPlaceNames: synced.rejectedPlaceNames,
         focusedPlace: overrides?.focusedPlace,
         userIntent:
-          overrides?.chatPhase === "place_discussion"
-            ? PLACE_DISCUSSION_USER_INTENT
-            : undefined,
+          overrides?.chatPhase === "place_discussion" ? PLACE_DISCUSSION_USER_INTENT : undefined,
         selectedPlaces: synced.selectedPlaces,
         selectedPlaceIds: synced.selectedPlaceIds,
         selectedPlaceNames: synced.selectedPlaceNames,
@@ -1108,10 +1097,9 @@ function Chat() {
     ): Promise<boolean> => {
       const { context } = mergeTravelContext(activeSession, activeUserText);
       let placeResults: Awaited<ReturnType<typeof searchNearbyPlaces>>["places"] = [];
-      const snap = getFreshDeviceLocationSnapshot(120_000);
-      const boot = readBootstrapDeviceLocation();
-      const lat = activeSession.location?.lat ?? snap?.lat ?? boot.lat;
-      const lng = activeSession.location?.lng ?? snap?.lng ?? boot.lng;
+      const effective = resolveEffectiveDeviceCoords({ sessionLocation: activeSession.location });
+      const lat = effective?.lat;
+      const lng = effective?.lng;
       if (lat != null && lng != null) {
         try {
           const q = fallbackSearchQuery(context);
@@ -1140,11 +1128,12 @@ function Chat() {
         payload.recommendations ?? [],
       );
       setMsgs((prev) => {
-        const trimmedPrev = prev.filter(
-          (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
-        );
+        const withoutTrailingAssistant =
+          prev.length > 0 && prev[prev.length - 1]?.role === "assistant"
+            ? prev.slice(0, -1)
+            : prev;
         return [
-          ...trimmedPrev,
+          ...withoutTrailingAssistant,
           {
             role: "assistant",
             content: summary,
@@ -1282,10 +1271,19 @@ function Chat() {
         if (aiIntent.type === "travel_time_advice") {
           resolvedFull = { ...fullWithSummary, recommendations: [], itinerary: [] };
         }
+        const verifiedRecommendations = filterVerifiedRecommendations(
+          resolvedFull.recommendations ?? [],
+        );
+        if (verifiedRecommendations.length !== (resolvedFull.recommendations?.length ?? 0)) {
+          resolvedFull = {
+            ...resolvedFull,
+            recommendations: verifiedRecommendations,
+          };
+        }
+
         const summary = resolvedFull.summary?.trim() ?? "";
         const looksRepeatedClarify =
-          /這趟比較想放鬆、拍照，還是吃美食/.test(summary) &&
-          /(都有|都可以|都行)/.test(userText);
+          /這趟比較想放鬆、拍照，還是吃美食/.test(summary) && /(都有|都可以|都行)/.test(userText);
         const shouldUseLocalFallback =
           aiIntent.type !== "travel_time_advice" &&
           (resolvedFull.recommendations?.length ?? 0) === 0 &&
@@ -1395,10 +1393,7 @@ function Chat() {
         }
         console.log("[CHAT_SUBMIT_ERROR]", e);
         console.error("[CHAT_SEND] submit error=", e instanceof Error ? e.message : String(e));
-        console.error(
-          "[AI_REPLY_ERROR]",
-          e instanceof Error ? e.message : String(e),
-        );
+        console.error("[AI_REPLY_ERROR]", e instanceof Error ? e.message : String(e));
         logAppError("[Roamie AI] chat failed", e, {
           userText: opts?.userText,
           phase: opts?.phase,
@@ -1599,13 +1594,14 @@ function Chat() {
           ...itinerary.tripSettings,
           tripStartDate: startDate,
           tripEndDate: endDate,
-          transport: activeSession.transportation === "開車"
-            ? "drive"
-            : activeSession.transportation === "大眾運輸"
-              ? "transit"
-              : activeSession.transportation === "機車"
-                ? "scooter"
-                : "walk",
+          transport:
+            activeSession.transportation === "開車"
+              ? "drive"
+              : activeSession.transportation === "大眾運輸"
+                ? "transit"
+                : activeSession.transportation === "機車"
+                  ? "scooter"
+                  : "walk",
           transitLegs: Object.fromEntries(
             routeLegs.map((leg, idx) => [
               `${itinerary.itinerary[idx]?.placeName ?? idx}→${itinerary.itinerary[idx + 1]?.placeName ?? idx + 1}`,
@@ -1671,7 +1667,10 @@ function Chat() {
     }
   }, []);
 
-  const send = async (overrideText?: string) => {
+  const send = async (
+    overrideText?: string,
+    options?: { forcePhase?: import("@/lib/ai/context").ChatPhase },
+  ) => {
     const trimmed = (overrideText ?? inputRef.current?.value ?? "").trim();
     console.log("[CHAT_SEND]", trimmed);
     if (!trimmed) {
@@ -1707,18 +1706,22 @@ function Chat() {
       nextSession = { ...nextSession, phase: "recommend" };
     }
 
-    if (nextSession.location?.lat == null || nextSession.location?.lng == null) {
-      const snap = getFreshDeviceLocationSnapshot(120_000);
-      const boot = readBootstrapDeviceLocation();
-      nextSession = {
-        ...nextSession,
-        location: {
-          lat: snap?.lat ?? boot.lat,
-          lng: snap?.lng ?? boot.lng,
-          city: snap?.city ?? boot.city ?? nextSession.location?.city ?? "目前位置",
-        },
-      };
-      persistSession(nextSession);
+    const sessionCoordsValid =
+      nextSession.location != null &&
+      isValidDeviceCoordinate(nextSession.location.lat, nextSession.location.lng);
+    if (!sessionCoordsValid) {
+      const effective = resolveEffectiveDeviceCoords({ sessionLocation: nextSession.location });
+      if (effective) {
+        nextSession = {
+          ...nextSession,
+          location: {
+            lat: effective.lat,
+            lng: effective.lng,
+            city: effective.city ?? nextSession.location?.city ?? "目前位置",
+          },
+        };
+        persistSession(nextSession);
+      }
     }
 
     persistSession(nextSession);
@@ -1771,11 +1774,16 @@ function Chat() {
     }
 
     try {
-      await streamChat(next, { phase: route.chatPhase, userText: trimmed }, nextSession);
+      await streamChat(
+        next,
+        { phase: options?.forcePhase ?? route.chatPhase, userText: trimmed },
+        nextSession,
+      );
       console.log("[CHAT_SUBMIT_SUCCESS]");
     } catch (e) {
       console.log("[CHAT_SUBMIT_ERROR]", e);
-      throw e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.trim()) toast.error(msg);
     }
   };
 
@@ -1794,14 +1802,23 @@ function Chat() {
   const handleChipSend = useCallback(
     (chipId: string) => {
       console.info("[CHAT_CHIP_CLICK] chipId=", chipId);
+      if (hydrating || generating) return;
+      if (streaming) {
+        abortRef.current?.abort();
+        abortRef.current = null;
+        setStreaming(false);
+        setPartial({});
+      }
       if (chipId === ADVANCED_PLANNING_CHIP_ID) {
         handleAdvancedPlanning();
         return;
       }
       const outbound = CHIP_OUTBOUND_TEXT[chipId] ?? chipId;
-      void sendRef.current(outbound);
+      const forceRecommend =
+        chipId.includes("下雨") || chipId.includes("咖啡") || chipId.includes("累");
+      void sendRef.current(outbound, { forcePhase: forceRecommend ? "recommend" : undefined });
     },
-    [handleAdvancedPlanning],
+    [handleAdvancedPlanning, hydrating],
   );
 
   const retry = async () => {
@@ -1871,15 +1888,7 @@ function Chat() {
     }
   };
 
-  const chatChips = useMemo(
-    () =>
-      session.phase === "discover"
-        ? CHAT_DISCOVER_CHIPS
-        : session.phase === "collect" && session.selectedPlaces.length > 0
-          ? CHAT_COLLECT_CHIPS
-          : CHAT_DEFAULT_CHIPS,
-    [session.phase, session.selectedPlaces.length],
-  );
+  const chatChips = CHAT_SHORTCUT_CHIPS;
 
   const handleComposerFocus = useCallback(() => {
     requestAnimationFrame(scrollMessagesToEnd);
@@ -1988,8 +1997,60 @@ function Chat() {
                 >
                   {m.role === "user" ? (
                     <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
+                  ) : (m.roamie?.recommendations?.length ?? 0) > 0 ||
+                    (m.roamie?.itinerary?.length ?? 0) > 0 ? (
+                    <RoamieResponseView
+                      data={m.roamie!}
+                      compact
+                      showItinerary={
+                        session.phase === "done" && (m.roamie?.itinerary?.length ?? 0) > 0
+                      }
+                      onSavePlace={handleSavePlace}
+                      onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec))}
+                      onOpenPlaceDetail={handleOpenPlaceDetail}
+                      onDiscussPlace={handleDiscussPlace}
+                      onNavigatePlace={handleNavigatePlace}
+                      simplifiedPlaceActions
+                      outfitAdvice={m.roamie?.outfitAdvice}
+                      selectedPlaceNames={selectedNames}
+                      savingPlaceName={savingName}
+                      savedPlaceNames={savedNames}
+                      addToTripLabel={t("chat.addToTrip")}
+                      discussPlaceLabel={t("trip.discussPlace")}
+                    />
                   ) : m.content?.trim() ? (
-                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
+                    <>
+                      <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
+                      {isDiagnosticsModeEnabled() ? (
+                        <RecommendationDiagnosticsToolbar
+                          scope="聊聊（純文字）"
+                          items={[]}
+                          downloadPayload={{ chat_recommendation_cards: [] }}
+                          exportMeta={{
+                            scope: "聊聊（純文字）",
+                            note: "助理以純文字回覆，未產生地點卡（常見於附近無營業中結果）",
+                            summary_excerpt: m.content.slice(0, 800),
+                            response_kind: "text_only",
+                            chat_phase: session.phase,
+                            last_error: lastFailed ? "previous_stream_failed" : null,
+                            user_location: (() => {
+                              const effective = resolveEffectiveDeviceCoords({
+                                sessionLocation: session.location,
+                              });
+                              return effective
+                                ? { lat: effective.lat, lng: effective.lng, source: effective.source }
+                                : null;
+                            })(),
+                            location_invalid:
+                              session.location != null &&
+                              !isValidDeviceCoordinate(
+                                session.location.lat,
+                                session.location.lng,
+                              ),
+                          }}
+                        />
+                      ) : null}
+                    </>
                   ) : hasMeaningfulRoamiePayload(m.roamie) ||
                     (streaming && i === msgs.length - 1) ? (
                     <RoamieResponseView

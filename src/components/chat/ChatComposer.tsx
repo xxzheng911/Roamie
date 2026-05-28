@@ -97,7 +97,7 @@ const ShortcutChips = memo(function ShortcutChips({
   );
 
   const fireAdvancedPlanning = useCallback(() => {
-    const chipId = "進階手動規劃";
+    const chipId = "手動規劃";
     const now = Date.now();
     if (now - lastChipFireRef.current < CHIP_DEBOUNCE_MS) return;
     lastChipFireRef.current = now;
@@ -163,11 +163,11 @@ const ShortcutChips = memo(function ShortcutChips({
         onClick={fireAdvancedPlanning}
         disabled={streaming || generating}
         className={cn(
-          chipClass("進階手動規劃"),
+          chipClass("手動規劃"),
           "border-dashed bg-card/80 text-muted-foreground",
         )}
       >
-        進階手動規劃
+        手動規劃
       </button>
       {visibleChips.map((s) => {
         const isActive = activeChip === s;

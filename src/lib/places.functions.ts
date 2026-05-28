@@ -9,6 +9,10 @@ import {
   placeDetailsUrl,
 } from "@/lib/google-maps-api";
 import { distanceMeters } from "@/lib/map-explore";
+import { PLACES_SEARCH_LIMITS } from "@/lib/places-cache-config";
+import { shouldSkipPlacesClientRetry } from "@/lib/places-api-errors";
+import { getServerCachedExploreSearch } from "@/lib/places-search-server-cache";
+import { getServerCachedPlaceDetailsScreen } from "@/lib/places-details-server-cache";
 import { DEFAULT_SEARCH_RADIUS_M, MAX_PLACE_DISTANCE_M } from "@/lib/places-search-config";
 import { geocodeRegionFromCoordinates, placesRegionCodeFromCoordinates } from "@/lib/geo-region";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
@@ -38,7 +42,7 @@ export type RawPlaceHours = PlaceHoursData & {
   types?: string[];
 };
 
-const ExploreSearchInput = z.object({
+export const ExploreSearchInput = z.object({
   query: z.string().min(0).max(120).default(""),
   lat: z.number(),
   lng: z.number(),
@@ -182,7 +186,7 @@ async function searchText(
   lat: number,
   lng: number,
   radius: number,
-  pageSize = 20,
+  pageSize = PLACES_SEARCH_LIMITS.textPageSize,
   userLocale?: Locale,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
@@ -205,7 +209,7 @@ async function searchNearby(
   lng: number,
   radius: number,
   includedTypes: string[],
-  maxResultCount = 12,
+  maxResultCount = PLACES_SEARCH_LIMITS.nearbyMaxResults,
   userLocale?: Locale,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
@@ -232,7 +236,17 @@ async function searchMultiNearby(
   userLocale?: Locale,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const settled = await Promise.all(
-    groups.map((types) => searchNearby(apiKey, lat, lng, radius, types, 6, userLocale)),
+    groups.map((types) =>
+      searchNearby(
+        apiKey,
+        lat,
+        lng,
+        radius,
+        types,
+        PLACES_SEARCH_LIMITS.multiNearbyPerGroup,
+        userLocale,
+      ),
+    ),
   );
 
   const errors = settled.map((r) => r.error).filter(Boolean);
@@ -250,7 +264,7 @@ async function searchMultiNearby(
     }
   }
 
-  return { places: merged.slice(0, 24), error: null };
+  return { places: merged.slice(0, PLACES_SEARCH_LIMITS.multiNearbyMergedMax), error: null };
 }
 
 async function lookupPlaceHoursFromRaw(
@@ -331,7 +345,7 @@ async function runExploreSearch(
         data.lng,
         radius,
         data.includedTypes,
-        20,
+        PLACES_SEARCH_LIMITS.nearbyMaxResults,
         userLocale,
       );
     } else if (data.query.trim()) {
@@ -341,7 +355,7 @@ async function runExploreSearch(
         data.lat,
         data.lng,
         radius,
-        20,
+        PLACES_SEARCH_LIMITS.textPageSize,
         userLocale,
       );
     } else {
@@ -386,7 +400,11 @@ export async function executeExploreSearch(
 export const searchPlaces = createServerFn({ method: "POST" })
   .inputValidator((input) => ExploreSearchInput.parse(input))
   .handler(async ({ data }): Promise<{ places: PlaceResult[]; error: string | null }> => {
-    return executeExploreSearch(data);
+    return getServerCachedExploreSearch(
+      data,
+      () => executeExploreSearch(data),
+      (r) => !(r.error && shouldSkipPlacesClientRetry(r.error)),
+    );
   });
 
 type PlaceDetailsRaw = RawPlace & {
@@ -529,7 +547,9 @@ export const getPlaceDetails = createServerFn({ method: "POST" })
       }
       try {
         const locale = coerceLocale(data.locale);
-        const place = await fetchPlaceDetailsForScreen(data.placeId, locale);
+        const place = await getServerCachedPlaceDetailsScreen(data.placeId, locale, () =>
+          fetchPlaceDetailsForScreen(data.placeId, locale),
+        );
         if (!place) return { place: null, error: "place_not_found" };
         return { place, error: null };
       } catch (e) {

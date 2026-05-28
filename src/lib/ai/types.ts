@@ -24,6 +24,10 @@ export const RoamieRecommendationItemSchema = z.object({
   todayHoursLabel: z.string().optional(),
   closingSoonNote: z.string().optional(),
   nextOpenHint: z.string().optional(),
+  recommendationSource: z.string().optional(),
+  nearbyPlacesSource: z.string().optional(),
+  aiFallbackSource: z.string().optional(),
+  fallbackReason: z.string().optional(),
 });
 
 export const RoamieItineraryItemSchema = z.object({
@@ -127,7 +131,9 @@ export function normalizeRoamieResponse(raw: Record<string, unknown>): RoamieRes
     : [];
   const itin = Array.isArray(raw.itinerary)
     ? raw.itinerary.map((i) =>
-        normalizeItineraryItem(i as Partial<RoamieItineraryItem> & { placeName: string; title: string }),
+        normalizeItineraryItem(
+          i as Partial<RoamieItineraryItem> & { placeName: string; title: string },
+        ),
       )
     : [];
   return RoamieResponseSchema.parse({
@@ -162,6 +168,10 @@ export function normalizeRecommendationItem(
     todayHoursLabel: raw.todayHoursLabel,
     closingSoonNote: raw.closingSoonNote,
     nextOpenHint: raw.nextOpenHint,
+    recommendationSource: raw.recommendationSource,
+    nearbyPlacesSource: raw.nearbyPlacesSource,
+    aiFallbackSource: raw.aiFallbackSource,
+    fallbackReason: raw.fallbackReason,
   };
 }
 

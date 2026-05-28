@@ -28,6 +28,8 @@ import {
   type PlaceDetailViewModel,
 } from "@/lib/place-detail-resolve";
 import { fetchPlaceDetailsForScreen, getPlaceDetails } from "@/lib/places.functions";
+import { createUnifiedPlaceDetailsFn } from "@/lib/place-details-unified";
+import { getCachedPlaceDetailsForScreen } from "@/lib/place-details-request-cache";
 import { readGoogleMapsKeyFromClientEnv } from "@/lib/google-maps-key-resolve";
 import { canReachBundledAppApiOrigin } from "@/lib/api-base-url";
 import { getPlaceDetails as resolvePlaceDetailsLite } from "@/services/placesService";
@@ -65,7 +67,11 @@ function PlaceDetailPage() {
   const navigate = Route.useNavigate();
   const router = Route.useRouter();
   const { t, locale } = useI18n();
-  const fetchPlaceDetailsFn = useServerFn(getPlaceDetails);
+  const fetchPlaceDetailsServerFn = useServerFn(getPlaceDetails);
+  const fetchPlaceDetailsFn = useMemo(
+    () => createUnifiedPlaceDetailsFn(fetchPlaceDetailsServerFn),
+    [fetchPlaceDetailsServerFn],
+  );
   const fetchPlaceIntroFn = useServerFn(getPlaceIntro);
   const fetchWeatherFn = useServerFn(getWeather);
   const { openAddToTrip } = useAddToTrip();
@@ -193,9 +199,14 @@ function PlaceDetailPage() {
         const clientKey = readGoogleMapsKeyFromClientEnv();
         if (clientKey) {
           try {
-            const clientFetched = await fetchPlaceDetailsForScreen(handoff.placeId, locale, {
-              apiKey: clientKey,
-            });
+            const clientFetched = await getCachedPlaceDetailsForScreen(
+              handoff.placeId,
+              locale,
+              () =>
+                fetchPlaceDetailsForScreen(handoff.placeId, locale, {
+                  apiKey: clientKey,
+                }),
+            );
             if (!cancelled && clientFetched) {
               logPlaceDetailFetchSuccess(handoff.placeId);
               setPlace(mergeFetchedPlace(base, clientFetched));

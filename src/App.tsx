@@ -8,6 +8,8 @@ import { AppProviders } from "@/providers/AppProviders";
 import { logAppBoot, logAppBootSnapshot } from "@/lib/app-boot-log";
 import { detectPlatform } from "@/services/platform";
 import { readBrowserPathname } from "@/lib/startup-path";
+import { ensureIosLoginLiveInteraction } from "@/lib/ios-snapshot-bridge";
+import { dismissExternalBootSplash } from "@/main";
 import { logAppError } from "@/lib/log-error";
 
 type Props = { children: ReactNode };
@@ -15,6 +17,10 @@ type Props = { children: ReactNode };
 export function App({ children }: Props) {
   useEffect(() => {
     const platform = detectPlatform();
+    if (platform.isCapacitor && platform.isIOS) {
+      ensureIosLoginLiveInteraction();
+      dismissExternalBootSplash();
+    }
     console.info("[REAL_APP] mounted", {
       isCapacitor: platform.isCapacitor,
       isIOS: platform.isIOS,

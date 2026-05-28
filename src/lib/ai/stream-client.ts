@@ -1,8 +1,50 @@
+import { CapacitorHttp } from "@capacitor/core";
 import { parsePartialRoamieJson } from "./parse-partial";
 import type { RoamieRequestContext } from "./context";
 import { normalizeRoamieResponse, type RoamieResponse as RoamieResponseType } from "./types";
 import { isLocalhostAppApiUrl, resolveAppApiUrl } from "@/lib/api-base-url";
 import { isChatApiUnreachableOnNative } from "@/lib/chat-api-ready";
+import { detectPlatform } from "@/services/platform";
+
+function isNativeCapacitorShell(): boolean {
+  if (typeof window === "undefined") return false;
+  return (
+    detectPlatform().isCapacitor ||
+    window.location.protocol === "capacitor:" ||
+    window.location.protocol === "ionic:"
+  );
+}
+
+async function postRoamieApi(
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; status: number; bodyText: string }> {
+  if (isNativeCapacitorShell()) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    const response = await CapacitorHttp.post({
+      url,
+      headers,
+      data: JSON.parse(body) as Record<string, unknown>,
+      connectTimeout: 60_000,
+      readTimeout: 60_000,
+    });
+    const bodyText =
+      typeof response.data === "string" ? response.data : JSON.stringify(response.data ?? {});
+    return {
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      bodyText,
+    };
+  }
+
+  const resp = await fetch(url, { method: "POST", headers, body, signal });
+  const bodyText = await resp.text();
+  return { ok: resp.ok, status: resp.status, bodyText };
+}
 async function withResolvedPlanTier(ctx: RoamieRequestContext): Promise<RoamieRequestContext> {
   const { applyTierToAiContext } = await import("@/lib/access/context");
   const { resolveEffectivePlanTierWithProfile } = await import("@/lib/access/resolve");
@@ -38,17 +80,17 @@ export async function streamRoamieAI(
     return null;
   }
 
-  let resp: Response;
+  let status: number;
+  let bodyText: string;
   try {
-    resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
-      },
-      body: JSON.stringify(enriched),
-      signal: options?.signal,
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
+    };
+    const posted = await postRoamieApi(url, JSON.stringify(enriched), headers, options?.signal);
+    status = posted.status;
+    bodyText = posted.bodyText;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[CHAT_API] stream network error", { url, msg });
@@ -56,24 +98,29 @@ export async function streamRoamieAI(
     return null;
   }
 
-  if (!resp.ok || !resp.body) {
+  if (status < 200 || status >= 300) {
     let errMsg = "AI 服務暫時無法使用";
     try {
-      const j = (await resp.json()) as { error?: string; code?: string; status?: number };
+      const j = JSON.parse(bodyText) as { error?: string; code?: string; status?: number };
       console.error("[Roamie AI] stream HTTP error", {
-        status: resp.status,
+        status,
         code: j.code,
         error: j.error,
       });
       if (j.error) errMsg = j.error;
     } catch {
-      console.error("[Roamie AI] stream HTTP error", { status: resp.status });
+      console.error("[Roamie AI] stream HTTP error", { status });
     }
     handlers.onError?.(errMsg);
     return null;
   }
 
-  const reader = resp.body.getReader();
+  const reader = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(bodyText));
+      controller.close();
+    },
+  }).getReader();
   const decoder = new TextDecoder();
   let buf = "";
   let assembled = "";
@@ -153,40 +200,40 @@ export async function fetchRoamieAI(
     throw new Error("無法連線到 AI 服務（請設定正式 VITE_APP_ORIGIN 後重新 build）。");
   }
 
-  let resp: Response;
+  let status: number;
+  let bodyText: string;
   try {
-    resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Roamie-Stream": "false",
-        ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
-      },
-      body: JSON.stringify(enriched),
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "X-Roamie-Stream": "false",
+      ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
+    };
+    const posted = await postRoamieApi(url, JSON.stringify(enriched), headers);
+    status = posted.status;
+    bodyText = posted.bodyText;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[CHAT_API] fetch network error", { url, msg });
     throw new Error("無法連線到 AI 服務，請確認網路或 VITE_APP_ORIGIN 設定。");
   }
 
-  if (!resp.ok) {
+  if (status < 200 || status >= 300) {
     let errMsg = "AI 服務暫時無法使用";
     try {
-      const j = (await resp.json()) as { error?: string; code?: string; status?: number };
+      const j = JSON.parse(bodyText) as { error?: string; code?: string; status?: number };
       console.error("[Roamie AI] fetch HTTP error", {
-        status: resp.status,
+        status,
         code: j.code,
         error: j.error,
       });
       if (j.error) errMsg = j.error;
     } catch {
-      console.error("[Roamie AI] fetch HTTP error", { status: resp.status });
+      console.error("[Roamie AI] fetch HTTP error", { status });
     }
     throw new Error(errMsg);
   }
 
-  const json = (await resp.json()) as { data?: RoamieResponseType; error?: string };
+  const json = JSON.parse(bodyText) as { data?: RoamieResponseType; error?: string };
   if (json.error) throw new Error(json.error);
   if (!json.data) throw new Error("AI 回應格式錯誤");
   return json.data;

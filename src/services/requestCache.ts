@@ -55,7 +55,11 @@ export function createRequestCache(options: RequestCacheOptions) {
     writePersisted(key, entry);
   }
 
-  async function getOrFetch<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+  async function getOrFetch<T>(
+    key: string,
+    fetcher: () => Promise<T>,
+    shouldCache: (data: T) => boolean = () => true,
+  ): Promise<T> {
     const cached = getCached<T>(key);
     if (cached !== null) return cached;
 
@@ -64,7 +68,7 @@ export function createRequestCache(options: RequestCacheOptions) {
 
     const promise = fetcher()
       .then((data) => {
-        setCached(key, data);
+        if (shouldCache(data)) setCached(key, data);
         return data;
       })
       .finally(() => {

@@ -3,6 +3,82 @@ import { logGoogleMapsKeyDiagnostics } from "@/lib/google-maps-key-resolve";
 import { isGoogleBillingDisabledError } from "@/lib/places-api-errors";
 import { detectPlatform } from "@/services/platform";
 
+const MAPS_SDK_NOISE_PATTERNS = [
+  /sdkError\.sessionStatus/i,
+  /Evaluating ['"]?[^'"]*sdkError/i,
+  /Google Maps JavaScript API error/i,
+  /InvalidKeyMapError/i,
+  /RefererNotAllowedMapError/i,
+  /ApiNotActivatedMapError/i,
+];
+
+function googleMapsSdkNoiseLine(
+  error: unknown,
+  extra?: Record<string, unknown>,
+  hint?: string,
+): string {
+  return [
+    error instanceof Error ? error.message : String(error ?? ""),
+    hint ?? "",
+    typeof extra?.eventMessage === "string" ? extra.eventMessage : "",
+    extra?.filename ?? "",
+    extra?.source ?? "",
+    typeof extra?.lineno === "number" ? String(extra.lineno) : "",
+    typeof extra?.colno === "number" ? String(extra.colno) : "",
+  ].join(" ");
+}
+
+/** WKWebView 對 Maps/React 內部錯誤有時只回 event.message === "undefined" 且 e.error 為空 */
+export function isWebKitAmbiguousUndefinedError(
+  error: unknown,
+  extra?: Record<string, unknown>,
+  hint?: string,
+): boolean {
+  const eventMessage =
+    hint ?? (typeof extra?.eventMessage === "string" ? extra.eventMessage : "");
+  if (eventMessage !== "undefined") return false;
+  if (error != null && error instanceof Error && error.message && error.message !== "undefined") {
+    return false;
+  }
+  const filename = String(extra?.filename ?? "");
+  if (/maps\.googleapis\.com/i.test(filename)) return true;
+  if (typeof document !== "undefined") {
+    const mapsScript = document.querySelector('script[data-roamie-maps="1"]');
+    if (mapsScript) {
+      if (/capacitor:\/\/localhost\/assets\/index-[^/]+\.js/i.test(filename)) return true;
+      if (/\/assets\/index-[^/]+\.js/i.test(filename)) return true;
+    }
+  }
+  return false;
+}
+
+/** Maps JS 內部在授權失敗時常拋出（勿當 App 啟動致命錯誤） */
+export function isGoogleMapsSdkInternalError(
+  error: unknown,
+  extra?: Record<string, unknown>,
+  hint?: string,
+): boolean {
+  const line = googleMapsSdkNoiseLine(error, extra, hint);
+  return (
+    MAPS_SDK_NOISE_PATTERNS.some((re) => re.test(line)) ||
+    isWebKitAmbiguousUndefinedError(error, extra, hint)
+  );
+}
+
+export function recordGoogleMapsSdkFailureFromError(
+  error: unknown,
+  hint?: string,
+  extra?: Record<string, unknown>,
+): void {
+  if (typeof window === "undefined") return;
+  if (!isGoogleMapsSdkInternalError(error, extra, hint)) return;
+  const message = googleMapsFailureUserMessage(
+    error instanceof Error ? error.message : String(error),
+  );
+  window.__roamieMapsAuthFailure = { message };
+  console.info("[MAP_FALLBACK] reason=maps_js_sdk_error");
+}
+
 const MAP_FAILURE_PATTERNS = [
   /無法正確載入\s*Google\s*地圖/i,
   /這個網頁無法.*Google\s*地圖/i,
@@ -30,9 +106,14 @@ export function installGoogleMapsWindowErrorListener(
   if (typeof window === "undefined") return () => {};
 
   const handler = (ev: ErrorEvent) => {
+    recordGoogleMapsSdkFailureFromError(ev.error ?? ev.message);
     const msg = [ev.message, ev.filename, String(ev.error ?? "")].filter(Boolean).join(" ");
     if (!msg.trim()) return;
-    if (!MAP_FAILURE_PATTERNS.some((re) => re.test(msg)) && !isGoogleBillingDisabledError(msg)) {
+    if (
+      !MAP_FAILURE_PATTERNS.some((re) => re.test(msg)) &&
+      !isGoogleBillingDisabledError(msg) &&
+      !isGoogleMapsSdkInternalError(ev.error ?? ev.message)
+    ) {
       return;
     }
     onFailure(googleMapsFailureUserMessage(msg));

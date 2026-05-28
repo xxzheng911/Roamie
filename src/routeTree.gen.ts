@@ -19,8 +19,10 @@ import { Route as LoginLegalRouteImport } from './routes/login/legal'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
 import { Route as ApiQaAuthRouteImport } from './routes/api/qa-auth'
+import { Route as ApiPlacesSearchRouteImport } from './routes/api/places-search'
 import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
 import { Route as ApiPlaceImageRouteImport } from './routes/api/place-image'
+import { Route as ApiPlaceDetailsRouteImport } from './routes/api/place-details'
 import { Route as ApiGenerateItineraryRouteImport } from './routes/api/generate-itinerary'
 import { Route as ApiDestinationCoverRouteImport } from './routes/api/destination-cover'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
@@ -87,6 +89,11 @@ const ApiQaAuthRoute = ApiQaAuthRouteImport.update({
   path: '/api/qa-auth',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPlacesSearchRoute = ApiPlacesSearchRouteImport.update({
+  id: '/api/places-search',
+  path: '/api/places-search',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPlacePhotoRoute = ApiPlacePhotoRouteImport.update({
   id: '/api/place-photo',
   path: '/api/place-photo',
@@ -95,6 +102,11 @@ const ApiPlacePhotoRoute = ApiPlacePhotoRouteImport.update({
 const ApiPlaceImageRoute = ApiPlaceImageRouteImport.update({
   id: '/api/place-image',
   path: '/api/place-image',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPlaceDetailsRoute = ApiPlaceDetailsRouteImport.update({
+  id: '/api/place-details',
+  path: '/api/place-details',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiGenerateItineraryRoute = ApiGenerateItineraryRouteImport.update({
@@ -197,8 +209,10 @@ export interface FileRoutesByFullPath {
   '/api/chat': typeof ApiChatRoute
   '/api/destination-cover': typeof ApiDestinationCoverRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/place-details': typeof ApiPlaceDetailsRoute
   '/api/place-image': typeof ApiPlaceImageRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
+  '/api/places-search': typeof ApiPlacesSearchRoute
   '/api/qa-auth': typeof ApiQaAuthRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
@@ -224,8 +238,10 @@ export interface FileRoutesByTo {
   '/api/chat': typeof ApiChatRoute
   '/api/destination-cover': typeof ApiDestinationCoverRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/place-details': typeof ApiPlaceDetailsRoute
   '/api/place-image': typeof ApiPlaceImageRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
+  '/api/places-search': typeof ApiPlacesSearchRoute
   '/api/qa-auth': typeof ApiQaAuthRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
@@ -255,8 +271,10 @@ export interface FileRoutesById {
   '/api/chat': typeof ApiChatRoute
   '/api/destination-cover': typeof ApiDestinationCoverRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
+  '/api/place-details': typeof ApiPlaceDetailsRoute
   '/api/place-image': typeof ApiPlaceImageRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
+  '/api/places-search': typeof ApiPlacesSearchRoute
   '/api/qa-auth': typeof ApiQaAuthRoute
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
@@ -287,8 +305,10 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/destination-cover'
     | '/api/generate-itinerary'
+    | '/api/place-details'
     | '/api/place-image'
     | '/api/place-photo'
+    | '/api/places-search'
     | '/api/qa-auth'
     | '/api/roamie'
     | '/auth/callback'
@@ -314,8 +334,10 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/destination-cover'
     | '/api/generate-itinerary'
+    | '/api/place-details'
     | '/api/place-image'
     | '/api/place-photo'
+    | '/api/places-search'
     | '/api/qa-auth'
     | '/api/roamie'
     | '/auth/callback'
@@ -344,8 +366,10 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/destination-cover'
     | '/api/generate-itinerary'
+    | '/api/place-details'
     | '/api/place-image'
     | '/api/place-photo'
+    | '/api/places-search'
     | '/api/qa-auth'
     | '/api/roamie'
     | '/auth/callback'
@@ -365,8 +389,10 @@ export interface RootRouteChildren {
   ApiChatRoute: typeof ApiChatRoute
   ApiDestinationCoverRoute: typeof ApiDestinationCoverRoute
   ApiGenerateItineraryRoute: typeof ApiGenerateItineraryRoute
+  ApiPlaceDetailsRoute: typeof ApiPlaceDetailsRoute
   ApiPlaceImageRoute: typeof ApiPlaceImageRoute
   ApiPlacePhotoRoute: typeof ApiPlacePhotoRoute
+  ApiPlacesSearchRoute: typeof ApiPlacesSearchRoute
   ApiQaAuthRoute: typeof ApiQaAuthRoute
   ApiRoamieRoute: typeof ApiRoamieRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
@@ -444,6 +470,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiQaAuthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/places-search': {
+      id: '/api/places-search'
+      path: '/api/places-search'
+      fullPath: '/api/places-search'
+      preLoaderRoute: typeof ApiPlacesSearchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/place-photo': {
       id: '/api/place-photo'
       path: '/api/place-photo'
@@ -456,6 +489,13 @@ declare module '@tanstack/react-router' {
       path: '/api/place-image'
       fullPath: '/api/place-image'
       preLoaderRoute: typeof ApiPlaceImageRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/place-details': {
+      id: '/api/place-details'
+      path: '/api/place-details'
+      fullPath: '/api/place-details'
+      preLoaderRoute: typeof ApiPlaceDetailsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/generate-itinerary': {
@@ -648,8 +688,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiChatRoute: ApiChatRoute,
   ApiDestinationCoverRoute: ApiDestinationCoverRoute,
   ApiGenerateItineraryRoute: ApiGenerateItineraryRoute,
+  ApiPlaceDetailsRoute: ApiPlaceDetailsRoute,
   ApiPlaceImageRoute: ApiPlaceImageRoute,
   ApiPlacePhotoRoute: ApiPlacePhotoRoute,
+  ApiPlacesSearchRoute: ApiPlacesSearchRoute,
   ApiQaAuthRoute: ApiQaAuthRoute,
   ApiRoamieRoute: ApiRoamieRoute,
   AuthCallbackRoute: AuthCallbackRoute,

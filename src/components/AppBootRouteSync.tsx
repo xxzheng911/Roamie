@@ -3,6 +3,12 @@ import { useRouter } from "@tanstack/react-router";
 import { logAppBoot, logAppBootSnapshot, ONBOARDING_ROUTE } from "@/lib/app-boot-log";
 import { isOnboardingCompletedSync, isOnboardingHydrated } from "@/lib/onboarding-storage";
 import type { StartupPath } from "@/lib/post-auth-navigation";
+import {
+  ensureIosLoginLiveInteraction,
+  scheduleIosSnapshotRefreshBurst,
+} from "@/lib/ios-snapshot-bridge";
+import { dismissExternalBootSplash } from "@/main";
+import { detectPlatform } from "@/services/platform";
 import { readBrowserPathname } from "@/lib/startup-path";
 
 /** 已登入冷啟動若 URL 已在主殼層深連結，勿強制改寫為首頁（避免行程詳情等閃回 /） */
@@ -71,6 +77,12 @@ export function AppBootRouteSync({ targetRoute, onApplied }: Props) {
         logAppBoot("target route:", { route: readBrowserPathname(), intended: normalizedTarget });
         await logAppBootSnapshot(normalizedTarget);
       } finally {
+        dismissExternalBootSplash();
+        const platform = detectPlatform();
+        if (platform.isCapacitor && platform.isIOS) {
+          ensureIosLoginLiveInteraction();
+          scheduleIosSnapshotRefreshBurst("boot-route-sync");
+        }
         onApplied();
       }
     })();

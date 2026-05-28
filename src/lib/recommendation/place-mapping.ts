@@ -36,6 +36,8 @@ export function placeResultToCandidate(
     todayHoursLabel: place.todayHoursLabel,
     closingSoonNote: place.closingSoonNote,
     nextOpenHint: place.nextOpenHint,
+    recommendationSource: "places_first_verified",
+    nearbyPlacesSource: "google_places_nearby",
   };
 
   return {

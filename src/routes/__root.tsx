@@ -214,7 +214,11 @@ function RootComponent() {
     scheduleRemoveStaticBootPlaceholder();
     markAppReady();
     const platform = detectPlatform();
-    if (!(platform.isCapacitor && platform.isIOS)) {
+    if (platform.isCapacitor && platform.isIOS) {
+      void import("@/lib/ios-snapshot-bridge").then(({ ensureIosLoginLiveInteraction }) => {
+        ensureIosLoginLiveInteraction();
+      });
+    } else {
       scheduleIosSnapshotRefreshBurst("root-ready");
     }
     const deferNative = () => {

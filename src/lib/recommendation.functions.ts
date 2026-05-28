@@ -4,6 +4,7 @@ import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import { buildPlaceIntroFromFacts } from "@/lib/recommendation/place-intro";
 import type { PlaceIntroPayload } from "@/lib/recommendation/types";
 import { fetchPlaceDetailsForIntro } from "@/lib/places.functions";
+import { getServerCachedPlaceDetailsIntro } from "@/lib/places-details-server-cache";
 
 const Input = z.object({
   placeId: z.string().min(1),
@@ -18,7 +19,9 @@ export const getPlaceIntro = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ intro: PlaceIntroPayload | null; error: string | null }> => {
     try {
       const locale = coerceLocale(data.locale);
-      const details = await fetchPlaceDetailsForIntro(data.placeId, locale);
+      const details = await getServerCachedPlaceDetailsIntro(data.placeId, locale, () =>
+        fetchPlaceDetailsForIntro(data.placeId, locale),
+      );
       if (!details) {
         return { intro: null, error: "place_not_found" };
       }

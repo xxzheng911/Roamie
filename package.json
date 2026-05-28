@@ -22,6 +22,8 @@
     "cap:sync:ios": "ROAMIE_CAPACITOR_BUILD=1 npm run build && node scripts/cap-sync-ios.mjs bundled",
     "cap:sync:ios:release": "node scripts/ios-release-build.mjs",
     "ios:release": "node scripts/ios-release-build.mjs",
+    "ios:release:qa": "ROAMIE_QA_BUILD=1 node scripts/ios-release-build.mjs",
+    "build:ios:qa": "npm run ios:release:qa",
     "cap:sync:ios:dev": "node scripts/cap-sync-ios.mjs dev",
     "cap:check:dev": "node scripts/check-cap-dev-server.mjs",
     "ios:sim": "node scripts/ios-simulator-dev.mjs",

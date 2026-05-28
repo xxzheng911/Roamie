@@ -21,6 +21,11 @@ import {
   prefetchLocationPermissionStatus,
 } from "@/lib/location-permission-manager";
 import { installWebGeolocationShim } from "@/lib/web-geolocation-shim";
+import {
+  isGoogleMapsSdkInternalError,
+  logMapRuntimeDiagnostics,
+  recordGoogleMapsSdkFailureFromError,
+} from "@/lib/maps-runtime-diagnostics";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { loadOnboardingState } from "@/lib/onboarding-storage";
 
@@ -66,6 +71,7 @@ function showCapacitorFatalOverlay(
 export function scheduleAppInitHandlers(): void {
   if (typeof window !== "undefined") {
     installWebGeolocationShim();
+    logMapRuntimeDiagnostics();
   }
   if (appInitInstalled || typeof window === "undefined") return;
 
@@ -89,13 +95,17 @@ function installAppInitHandlersCore(): void {
     "error",
     (event) => {
       const err = errorFromErrorEvent(event as ErrorEvent);
+      const eventMessage = (event as ErrorEvent).message?.trim() ?? "";
+      recordGoogleMapsSdkFailureFromError(err, eventMessage, extra);
       const extra = {
         source: "window.error",
+        eventMessage,
         filename: event.filename,
         lineno: event.lineno,
         colno: event.colno,
         script: (event.target as HTMLElement | null)?.tagName === "SCRIPT",
       };
+      if (isGoogleMapsSdkInternalError(err, extra, eventMessage)) return;
       logAppError("APP_INIT_ERROR", err, extra);
       showCapacitorFatalOverlay("APP_INIT_ERROR", err, extra);
     },
@@ -104,6 +114,8 @@ function installAppInitHandlersCore(): void {
 
   window.addEventListener("unhandledrejection", (event) => {
     const reason = (event as PromiseRejectionEvent).reason;
+    recordGoogleMapsSdkFailureFromError(reason);
+    if (isGoogleMapsSdkInternalError(reason, { source: "unhandledrejection" })) return;
     logAppError("APP_UNHANDLED_REJECTION", reason, {
       source: "unhandledrejection",
     });

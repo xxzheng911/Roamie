@@ -13,6 +13,7 @@ import {
 import { logStartupNavigationContext } from "@/lib/startup-navigation";
 import { buildAccessSnapshot } from "@/lib/access";
 import { getUserPlanProfile } from "@/lib/plan-tier/storage";
+import { detectPlatform } from "@/services/platform";
 
 const AUTH_ROUTE_TIMEOUT_MS = 4_000;
 
@@ -101,7 +102,11 @@ function redirectToStartupTarget(next: StartupPath): never {
  * 主 App 殼層：須有有效 Supabase session；未登入一律 /login。
  * 不以 localStorage 快取或 companion 本機旗標代替登入。
  */
-const SHELL_GATE_TIMEOUT_MS = 5_000;
+/** 須 ≥ getClientAuthSession 冷啟動逾時，否則有 token 仍被誤判未登入 */
+function shellGateTimeoutMs(): number {
+  const { isCapacitor } = detectPlatform();
+  return isCapacitor ? 12_000 : 5_000;
+}
 
 export async function requireAppShellAccess(): Promise<void> {
   if (typeof window === "undefined") return;
@@ -135,7 +140,7 @@ export async function requireAppShellAccess(): Promise<void> {
     const session = await Promise.race([
       getClientAuthSession(),
       new Promise<null>((resolve) => {
-        window.setTimeout(() => resolve(null), SHELL_GATE_TIMEOUT_MS);
+        window.setTimeout(() => resolve(null), shellGateTimeoutMs());
       }),
     ]);
 

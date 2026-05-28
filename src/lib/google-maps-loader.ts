@@ -5,7 +5,10 @@ import {
 } from "@/lib/google-maps-client";
 import { logGoogleKeyStatus } from "@/lib/map-boot-log";
 import { isGoogleBillingDisabledError } from "@/lib/places-api-errors";
-import { googleMapsBillingUserMessage } from "@/lib/maps-runtime-diagnostics";
+import {
+  googleMapsBillingUserMessage,
+  googleMapsFailureUserMessage,
+} from "@/lib/maps-runtime-diagnostics";
 
 const LOG = "[Roamie Maps]";
 
@@ -164,10 +167,26 @@ export async function loadGoogleMapsApi(): Promise<GoogleMapsApi> {
       if (!window.google?.maps?.importLibrary) {
         throw new Error("script 載入後仍找不到 google.maps.importLibrary");
       }
-      const mapsLib = await window.google.maps.importLibrary("maps");
+      const mapsLib = (await window.google.maps.importLibrary("maps")) as {
+        Map?: typeof google.maps.Map;
+        sdkError?: { sessionStatus?: unknown };
+      };
+      const sdkErr = mapsLib?.sdkError;
+      if (sdkErr != null) {
+        const message = googleMapsFailureUserMessage(
+          `Maps JS sdkError (sessionStatus=${String(sdkErr.sessionStatus ?? "unknown")})`,
+        );
+        recordMapsAuthFailure(message, "importLibrary_sdkError");
+        throw new Error(message);
+      }
+      if (typeof mapsLib?.Map !== "function") {
+        const message = googleMapsFailureUserMessage("Maps JS 未載入 Map 建構子");
+        recordMapsAuthFailure(message, "importLibrary_missing_map_ctor");
+        throw new Error(message);
+      }
       console.info("[MAP_LOAD] success");
       console.info(LOG, "importLibrary(maps) 完成", {
-        Map: !!(mapsLib as { Map?: unknown }).Map,
+        Map: true,
         mapsVersion: window.google?.maps?.version,
       });
       return window.google!.maps;

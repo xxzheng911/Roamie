@@ -11,11 +11,16 @@ import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
 import { buildClientContextBundle } from "@/lib/fetch-context";
 import { getWeather } from "@/lib/weather.functions";
 import { getPreferences } from "@/lib/preferences-storage";
-import { saveRecPagePicks, loadRecPagePicks } from "@/lib/chat-session";
+import {
+  loadChatSession,
+  saveChatSession,
+  saveRecPagePicks,
+  loadRecPagePicks,
+} from "@/lib/chat-session";
 import { prepareMoodFlowSession } from "@/lib/mood-chat-handoff";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
-import { openRecommendationOnMap } from "@/lib/recommendation-place-handoff";
+import { openPlaceNavigation } from "@/lib/maps-navigation";
 import { useI18n } from "@/hooks/use-i18n";
 
 type RecSearch = { id?: string };
@@ -70,17 +75,14 @@ function RecommendationsPage() {
 
   const data = record?.payload && isRoamiePayloadV2(record.payload) ? record.payload : null;
 
-  const handleOpenPlaceDetail = useCallback(
-    (rec: RoamieRecommendationItem) => {
-      if (rec.lat == null || rec.lng == null) {
-        toast.message("此地點尚無座標，暫時無法開啟地圖詳情");
-        return;
-      }
-      openRecommendationOnMap(rec);
-      navigate({ to: "/map" });
-    },
-    [navigate],
-  );
+  const handleNavigatePlace = useCallback((rec: RoamieRecommendationItem) => {
+    openPlaceNavigation({
+      lat: rec.lat,
+      lng: rec.lng,
+      address: rec.address,
+      placeName: rec.placeName ?? rec.name,
+    });
+  }, []);
 
   const handleTogglePick = useCallback(
     (rec: RoamieRecommendationItem) => {
@@ -104,10 +106,30 @@ function RecommendationsPage() {
       return;
     }
     try {
-      const [bundle, prefs] = await Promise.all([
-        buildClientContextBundle(fetchWeather),
-        getPreferences(),
-      ]);
+      let bundle: Awaited<ReturnType<typeof buildClientContextBundle>>;
+      let prefs: Awaited<ReturnType<typeof getPreferences>>;
+      try {
+        [bundle, prefs] = await Promise.all([
+          buildClientContextBundle(fetchWeather),
+          getPreferences(),
+        ]);
+      } catch (ctxErr) {
+        console.warn("[recommendations] context bundle failed, using session fallback", ctxErr);
+        const existing = loadChatSession();
+        prefs = await getPreferences();
+        const loc = existing.location ?? {
+          lat: 25.033,
+          lng: 121.565,
+          city: "台北",
+        };
+        bundle = {
+          preferences: prefs,
+          location: loc,
+          weather: existing.weather ?? null,
+          time: new Date().toISOString(),
+          usedFallbackLocation: !existing.location,
+        };
+      }
 
       const session = prepareMoodFlowSession({
         record,
@@ -117,13 +139,13 @@ function RecommendationsPage() {
         existing: loadChatSession(),
       });
       saveChatSession(session);
-      navigate({
+      await navigate({
         to: "/chat",
         search: { from: "mood", recommendationId: record.id, fromMoodFlow: "1" },
       });
     } catch (e) {
       console.error("[recommendations] chat handoff failed", e);
-      toast.error("無法進入聊天");
+      toast.error(e instanceof Error ? e.message : "無法進入聊天");
     }
   };
 
@@ -179,8 +201,8 @@ function RecommendationsPage() {
   const pickCount = pickedNames.size;
 
   return (
-    <div className="pb-10">
-      <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-background/90 px-5 py-3 backdrop-blur">
+    <div className="pb-[calc(var(--app-nav-total-height)+1.5rem)]">
+      <header className="sticky top-0 z-10 flex shrink-0 items-center gap-3 border-b border-border bg-background/90 px-5 py-3 backdrop-blur">
         <BackButton preferFallback fallback={{ to: "/" }} />
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-clay" />
@@ -190,7 +212,7 @@ function RecommendationsPage() {
 
       <div className="px-5 pt-5">
         <p className="mb-3 text-xs text-muted-foreground">
-          點一下卡片選取想去的地方；點「查看地圖」可開啟地點詳情。選好後再進入聊天繼續規劃。
+          點一下卡片選取想去的地方。選好後再進入聊天繼續規劃。
         </p>
         <RoamieResponseView
           data={data}
@@ -198,11 +220,11 @@ function RecommendationsPage() {
           pickMode
           pickedPlaceNames={pickedNames}
           onTogglePick={handleTogglePick}
-          onOpenPlaceDetail={handleOpenPlaceDetail}
           onSavePlace={handleSavePlace}
           onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec))}
+          onNavigatePlace={handleNavigatePlace}
+          simplifiedPlaceActions
           addToTripLabel={t("chat.addToTrip")}
-          viewMapLabel={t("chat.viewMap")}
           savingPlaceName={savingName}
           savedPlaceNames={savedNames}
         />

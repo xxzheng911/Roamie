@@ -14,4 +14,4 @@ export const IOS_MIN_VERSION = "15.0";
 /** App Store marketing version (sync with ios/App/App/Info.plist after cap sync) */
 export const APP_MARKETING_VERSION = "1.0.0";
 
-export const APP_BUILD_NUMBER = "1";
+export const APP_BUILD_NUMBER = "9";

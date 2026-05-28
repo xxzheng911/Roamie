@@ -1,5 +1,15 @@
 import type { KeyboardEvent, MouseEvent } from "react";
-import { MapPin, Clock, Sparkles, Heart, Loader2, Star, Plus, Navigation } from "lucide-react";
+import { useState } from "react";
+import {
+  MapPin,
+  Clock,
+  Sparkles,
+  Heart,
+  Loader2,
+  Star,
+  Plus,
+  Navigation,
+} from "lucide-react";
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { OutfitAdvicePayload } from "@/lib/outfit/types";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
@@ -9,6 +19,53 @@ import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-naviga
 import { PlaceCardCover } from "@/components/media/PlaceCardCover";
 import { resolveGooglePlacePhoto } from "@/services/placeImageService";
 import { filterRecommendationItemsForDisplay } from "@/lib/recommend-place-ranking";
+import { RecommendationDebugPanel } from "@/components/debug/RecommendationDebugPanel";
+import { RecommendationDiagnosticsToolbar } from "@/components/debug/RecommendationDiagnosticsToolbar";
+import {
+  isDiagnosticsModeEnabled,
+  type RecommendationDiagnosticSnapshot,
+} from "@/lib/debug/recommendation-diagnostics";
+
+function buildChatRecommendationSnapshots(
+  recs: RoamieRecommendationItem[],
+  imageSourceByKey: Record<string, string>,
+): RecommendationDiagnosticSnapshot[] {
+  return recs.map((r, i) => {
+    const ext = r as RoamieRecommendationItem & {
+      photoName?: string | null;
+      placeId?: string | null;
+      googlePlaceId?: string | null;
+    };
+    const key = `${r.name}-${i}`;
+    const isMock = /附近.*散步|附近.*咖啡/i.test(r.name);
+    const imageSource = imageSourceByKey[key] ?? null;
+    return {
+      card_id: key,
+      title: r.placeName ?? r.name,
+      place_id: ext.placeId ?? ext.googlePlaceId ?? null,
+      source_type: isMock ? "mock" : r.fallbackReason ? "fallback" : "google_places",
+      is_verified_real_place: !isMock && r.lat != null && r.lng != null,
+      location_source: "device_location",
+      photo_source: imageSource,
+      photo_url: resolveGooglePlacePhoto(ext.photoName, 400),
+      photo_reference: ext.photoName ?? null,
+      photo_fallback_reason:
+        imageSource === "unsplash" || imageSource === "fallback"
+          ? (r.fallbackReason ?? "google_photo_unavailable")
+          : null,
+      opening_hours_source:
+        r.openStatusLabel || r.todayHoursLabel ? "google_opening_hours" : "unknown_hours",
+      opening_hours_status: r.openStatusLabel ?? null,
+      business_status: null,
+      distance_source: r.lat != null ? "coordinates_distance" : null,
+      recommendation_source: r.recommendationSource ?? "chat_recommendation",
+      fallback_triggered: Boolean(r.fallbackReason),
+      fallback_reason: r.fallbackReason ?? null,
+      api_error: null,
+      created_at: new Date().toISOString(),
+    };
+  });
+}
 
 function ItineraryByDate({
   items,
@@ -58,32 +115,32 @@ function ItineraryByDate({
           outfitByDate.get(dateKey) ??
           (outfitAdvice?.days.length === 1 ? outfitAdvice.days[0] : undefined);
         return (
-        <section key={dateKey}>
-          <p className="mb-2 font-display text-sm text-foreground/90">{dateKey}</p>
-          {outfit && <DayOutfitCard advice={outfit} className="mb-3" compact />}
-          <div className="space-y-2">
-            {groups.get(dateKey)!.map((item, i) => (
-              <article
-                key={`${dateKey}-${item.time}-${i}`}
-                className="rounded-2xl border border-border bg-card p-3"
-              >
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span className="font-medium">{item.time}</span>
-                  <span>{item.placeName}</span>
-                </div>
-                <h4 className="mt-1 text-[15px] font-medium">{item.title}</h4>
-                <p className="mt-1 text-sm text-muted-foreground">{item.description}</p>
-                <PlaceNavButtons
-                  lat={item.lat}
-                  lng={item.lng}
-                  placeName={item.placeName}
-                  compact
-                  className="mt-2"
-                />
-              </article>
-            ))}
-          </div>
-        </section>
+          <section key={dateKey}>
+            <p className="mb-2 font-display text-sm text-foreground/90">{dateKey}</p>
+            {outfit && <DayOutfitCard advice={outfit} className="mb-3" compact />}
+            <div className="space-y-2">
+              {groups.get(dateKey)!.map((item, i) => (
+                <article
+                  key={`${dateKey}-${item.time}-${i}`}
+                  className="rounded-2xl border border-border bg-card p-3"
+                >
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span className="font-medium">{item.time}</span>
+                    <span>{item.placeName}</span>
+                  </div>
+                  <h4 className="mt-1 text-[15px] font-medium">{item.title}</h4>
+                  <p className="mt-1 text-sm text-muted-foreground">{item.description}</p>
+                  <PlaceNavButtons
+                    lat={item.lat}
+                    lng={item.lng}
+                    placeName={item.placeName}
+                    compact
+                    className="mt-2"
+                  />
+                </article>
+              ))}
+            </div>
+          </section>
         );
       })}
     </div>
@@ -147,9 +204,39 @@ export function RoamieResponseView({
   const summary = data.summary?.trim();
   const recs = filterRecommendationItemsForDisplay(data.recommendations ?? []);
   const itinerary = data.itinerary ?? [];
+  const [imageSourceByKey, setImageSourceByKey] = useState<Record<string, string>>({});
+  const showDiagnostics = isDiagnosticsModeEnabled();
+  const chatDiagnosticItems = buildChatRecommendationSnapshots(recs, imageSourceByKey);
+  const rawRecCount = data.recommendations?.length ?? 0;
+  const exportMeta = {
+    scope: "聊聊推薦",
+    note:
+      recs.length === 0
+        ? rawRecCount > 0
+          ? "有 AI recommendations 但皆未通過真實地點驗證"
+          : "此則回覆無地點卡（可能僅 summary 或上游 Places 為空）"
+        : undefined,
+    summary_excerpt: (summary ?? data.summary ?? "").slice(0, 800) || undefined,
+    raw_recommendation_count: rawRecCount,
+    filtered_recommendation_count: recs.length,
+    response_kind:
+      recs.length > 0
+        ? ("roamie_cards" as const)
+        : rawRecCount > 0
+          ? ("empty_roamie" as const)
+          : ("empty_roamie" as const),
+  };
 
   return (
     <div className="space-y-3">
+      {showDiagnostics ? (
+        <RecommendationDiagnosticsToolbar
+          scope="聊聊推薦"
+          items={chatDiagnosticItems}
+          downloadPayload={{ chat_recommendation_cards: chatDiagnosticItems }}
+          exportMeta={exportMeta}
+        />
+      ) : null}
       {data.moodTag && (
         <span className="inline-block rounded-full bg-sage/15 px-2.5 py-0.5 text-[11px] text-foreground/80">
           {data.moodTag}
@@ -174,6 +261,7 @@ export function RoamieResponseView({
             </p>
           )}
           {recs.map((r, i) => {
+            const key = `${r.name}-${i}`;
             const isPicked = pickMode
               ? (pickedPlaceNames?.has(r.name) ?? false)
               : (selectedPlaceNames?.has(r.name) ?? false);
@@ -201,7 +289,7 @@ export function RoamieResponseView({
 
             return (
               <article
-                key={`${r.name}-${i}`}
+                key={key}
                 role={clickable ? "button" : undefined}
                 tabIndex={clickable ? 0 : undefined}
                 aria-pressed={clickable ? isPicked : undefined}
@@ -251,6 +339,11 @@ export function RoamieResponseView({
                     alt={r.name}
                     className="h-full w-full"
                     imgClassName="h-full w-full object-cover"
+                    onImageSourceChange={(source) =>
+                      setImageSourceByKey((prev) =>
+                        prev[key] === source ? prev : { ...prev, [key]: source },
+                      )
+                    }
                   />
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col gap-2">
@@ -261,7 +354,11 @@ export function RoamieResponseView({
                   >
                     {r.placeName ?? r.name}
                   </h4>
-                  <div className="mt-auto flex items-center justify-end gap-1" onClick={stopBubble} onKeyDown={stopBubble}>
+                  <div
+                    className="mt-auto flex items-center justify-end gap-1"
+                    onClick={stopBubble}
+                    onKeyDown={stopBubble}
+                  >
                     {onSavePlace && (
                       <button
                         type="button"
@@ -278,7 +375,9 @@ export function RoamieResponseView({
                         ) : (
                           <Heart
                             className={`h-3.5 w-3.5 ${
-                              savedPlaceNames?.has(r.name) ? "fill-clay text-clay" : "text-muted-foreground"
+                              savedPlaceNames?.has(r.name)
+                                ? "fill-clay text-clay"
+                                : "text-muted-foreground"
                             }`}
                           />
                         )}
@@ -287,15 +386,15 @@ export function RoamieResponseView({
                   </div>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{r.description}</p>
-              <p className="mt-1.5 text-xs text-foreground/75">{r.reason}</p>
-              <PlaceHoursBadge
-                className="mt-1.5"
-                statusLabel={r.openStatusLabel}
-                todayHoursLabel={r.todayHoursLabel}
-                closingSoonNote={r.closingSoonNote}
-                nextOpenHint={r.nextOpenHint}
-              />
-              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                <p className="mt-1.5 text-xs text-foreground/75">{r.reason}</p>
+                <PlaceHoursBadge
+                  className="mt-1.5"
+                  statusLabel={r.openStatusLabel}
+                  todayHoursLabel={r.todayHoursLabel}
+                  closingSoonNote={r.closingSoonNote}
+                  nextOpenHint={r.nextOpenHint}
+                />
+                <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                   <span className="inline-flex items-center gap-0.5">
                     <Clock className="h-3 w-3" /> {r.estimatedTime}
                   </span>
@@ -305,7 +404,30 @@ export function RoamieResponseView({
                     </span>
                   )}
                 </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2" onClick={stopBubble} onKeyDown={stopBubble}>
+                <RecommendationDebugPanel
+                  dataSource={r.fallbackReason ? "fallback_chain" : "recommendation"}
+                  imageSource={imageSourceByKey[key] ?? null}
+                  verified={
+                    r.lat != null && r.lng != null && !/附近.*散步|附近.*咖啡/i.test(r.name)
+                      ? "verified"
+                      : "mock_or_generic"
+                  }
+                  openingHoursSource={
+                    r.openStatusLabel || r.todayHoursLabel
+                      ? "google_opening_hours"
+                      : "unknown_hours"
+                  }
+                  placeId={ext.placeId ?? ext.googlePlaceId ?? null}
+                  fallbackReason={r.fallbackReason ?? null}
+                  recommendationSource={r.recommendationSource ?? null}
+                  nearbyPlacesSource={r.nearbyPlacesSource ?? null}
+                  aiFallbackSource={r.aiFallbackSource ?? null}
+                />
+                <div
+                  className="mt-2 flex flex-wrap items-center gap-2"
+                  onClick={stopBubble}
+                  onKeyDown={stopBubble}
+                >
                   {onAddToTrip && (
                     <button
                       type="button"
@@ -326,7 +448,7 @@ export function RoamieResponseView({
                       {addToTripLabel}
                     </button>
                   )}
-                  {!simplifiedPlaceActions && onOpenPlaceDetail && (
+                  {onOpenPlaceDetail && !simplifiedPlaceActions && (
                     <button
                       type="button"
                       onClick={() => onOpenPlaceDetail(r)}
@@ -336,7 +458,7 @@ export function RoamieResponseView({
                       {viewMapLabel}
                     </button>
                   )}
-                  {onDiscussPlace && !pickMode && (
+                  {onDiscussPlace && !pickMode && !simplifiedPlaceActions && (
                     <button
                       type="button"
                       onClick={() => onDiscussPlace(r)}
@@ -352,9 +474,9 @@ export function RoamieResponseView({
                       className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-medium"
                     >
                       <Navigation className="h-3 w-3" />
-                      導航
+                      查看路線
                     </button>
-                  ) : (
+                  ) : !simplifiedPlaceActions ? (
                     <PlaceNavButtons
                       lat={r.lat}
                       lng={r.lng}
@@ -362,7 +484,7 @@ export function RoamieResponseView({
                       placeName={r.placeName ?? r.name}
                       compact
                     />
-                  )}
+                  ) : null}
                 </div>
               </article>
             );

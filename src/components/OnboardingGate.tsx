@@ -11,7 +11,11 @@ import {
 } from "@/lib/onboarding-storage";
 import { resolveStartupPathFast } from "@/lib/startup-route";
 import type { StartupPath } from "@/lib/post-auth-navigation";
+import { ensureIosLoginLiveInteraction } from "@/lib/ios-snapshot-bridge";
+import { dismissExternalBootSplash } from "@/main";
 import { readBrowserPathname } from "@/lib/startup-path";
+
+const BOOT_GATE_MAX_MS = 15_000;
 
 type Props = { children: ReactNode };
 
@@ -36,6 +40,10 @@ export function OnboardingGate({ children }: Props) {
 
     installDevOnboardingGlobals();
 
+    if (platform.isCapacitor && platform.isIOS) {
+      ensureIosLoginLiveInteraction();
+    }
+
     let cancelled = false;
     void (async () => {
       await loadOnboardingState();
@@ -57,6 +65,24 @@ export function OnboardingGate({ children }: Props) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (routeSynced) {
+      dismissExternalBootSplash();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      console.warn("[OnboardingGate] boot gate timeout — unblocking UI", {
+        hydrated,
+        routeSynced,
+        path: readBrowserPathname(),
+      });
+      dismissExternalBootSplash();
+      ensureIosLoginLiveInteraction();
+      setRouteSynced(true);
+    }, BOOT_GATE_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [hydrated, routeSynced]);
 
   if (!hydrated || !routeSynced) {
     return (

@@ -186,6 +186,23 @@ const CAPACITOR_BODY_ROOT_SHELL = `<script>
 /** 與 src/lib/log-error.ts buildCapacitorEarlyErrorLogScript() 同步 */
 const CAPACITOR_EARLY_ERROR_LOG = `<script>
 (function(){
+  function isMapsSdkNoise(text) {
+    if (!text) return false;
+    return /sdkError\\.sessionStatus/i.test(text)
+      || /Evaluating ['"]?[^'"]*sdkError/i.test(text)
+      || /Google Maps JavaScript API error/i.test(text)
+      || /InvalidKeyMapError/i.test(text)
+      || /RefererNotAllowedMapError/i.test(text);
+  }
+  function isAmbiguousWebKitUndefined(e, reason) {
+    if ((e.message || "") !== "undefined") return false;
+    if (e.error != null && reason && reason.message && reason.message !== "undefined") return false;
+    var f = e.filename || "";
+    if (f.indexOf("maps.googleapis.com") >= 0) return true;
+    if (!document.querySelector('script[data-roamie-maps="1"]')) return false;
+    return f.indexOf("/assets/index-") >= 0
+      || f.indexOf("capacitor://localhost/assets/index-") >= 0;
+  }
   function roamieLog(tag, reason, source) {
     var msg = "(unknown)";
     var stack = "";
@@ -219,11 +236,21 @@ const CAPACITOR_EARLY_ERROR_LOG = `<script>
             "runtime@" + (e.filename || "unknown") + ":" + (e.lineno || 0) + ":" + (e.colno || 0),
           );
     }
+    var line = (e.message || "") + " " + (reason && reason.message ? reason.message : "");
+    if (isMapsSdkNoise(line) || isAmbiguousWebKitUndefined(e, reason)) {
+      try {
+        window.__roamieMapsAuthFailure = { message: "Google 地圖無法載入（Maps JS 授權）" };
+        console.info("[MAP_FALLBACK] reason=maps_js_sdk_error (early)");
+      } catch (_) {}
+      return;
+    }
     roamieLog("APP_INIT_ERROR", reason, e.filename || "");
   }, true);
   window.addEventListener("unhandledrejection", function(e) {
     var reason = e.reason;
     if (reason == null) reason = new Error("unhandled rejection (reason was undefined)");
+    var rejLine = reason instanceof Error ? reason.message : String(reason);
+    if (isMapsSdkNoise(rejLine)) return;
     roamieLog("APP_UNHANDLED_REJECTION", reason, "promise");
   });
   try {

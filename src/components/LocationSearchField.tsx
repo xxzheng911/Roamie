@@ -29,6 +29,10 @@ import {
 import { requestDeviceLocation } from "@/lib/device-location";
 import { reverseGeocodeCityClient } from "@/lib/weather/open-meteo-client";
 import { latLngFallbackPlaceId } from "@/lib/place-detail-handoff";
+import {
+  PLACES_AUTOCOMPLETE_DEBOUNCE_MS,
+  PLACES_AUTOCOMPLETE_MIN_CHARS,
+} from "@/lib/places-cache-config";
 
 export type LocationSearchMode = "geographic" | "place";
 const PLACE_NOT_FOUND_MESSAGE = TRIP_PLACE_USER_MESSAGE;
@@ -99,7 +103,7 @@ export function LocationSearchField({
     async (q: string) => {
       const trimmed = q.trim();
       logTripPlace(fieldRole, "search", { query: trimmed, mode: searchMode });
-      if (trimmed.length < 2) {
+      if (trimmed.length < PLACES_AUTOCOMPLETE_MIN_CHARS) {
         setSuggestions([]);
         setSearchError(null);
         return;
@@ -181,7 +185,7 @@ export function LocationSearchField({
   useEffect(() => {
     if (!focused) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => void runSearch(query), 300);
+    debounceRef.current = setTimeout(() => void runSearch(query), PLACES_AUTOCOMPLETE_DEBOUNCE_MS);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };

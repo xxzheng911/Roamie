@@ -1,4 +1,6 @@
+import { isGoogleMapsSdkInternalError } from "@/lib/maps-runtime-diagnostics";
 import { detectPlatform } from "@/services/platform";
+import { isQaBuildEnabled } from "@/lib/qa-auth/build";
 
 export type SerializedError = {
   kind: string;
@@ -178,6 +180,18 @@ export function formatErrorDetail(error: unknown): string | null {
  * 一律輸出單一字串，勿傳 Error / plain object。
  */
 export function logAppError(tag: string, error: unknown, extra?: Record<string, unknown>): void {
+  const eventMessage =
+    typeof extra?.eventMessage === "string" ? extra.eventMessage : undefined;
+  if (isGoogleMapsSdkInternalError(error, extra, eventMessage)) {
+    if (tag === "APP_INIT_ERROR") {
+      console.info(
+        "[MAP_FALLBACK] suppressed APP_INIT_ERROR (maps_js_noise)",
+        extra?.filename ?? "",
+        eventMessage ?? "",
+      );
+    }
+    return;
+  }
   if (!import.meta.env.DEV && isBenignWebKitNoise(error, extra)) return;
   const s = serializeError(error);
   console.error("[APP_ERROR] source=", tag);
@@ -192,7 +206,9 @@ export function shouldShowCapacitorFatalOverlay(
   error: unknown,
   extra?: Record<string, unknown>,
 ): boolean {
-  if (isBenignWebKitNoise(error, extra)) return false;
+  if (isBenignWebKitNoise(error, extra) || isGoogleMapsSdkInternalError(error, extra)) {
+    return false;
+  }
   if (isScriptLoadFailure(extra)) return true;
   return import.meta.env.DEV;
 }
@@ -202,7 +218,13 @@ let capacitorConsolePatched = false;
 /** 將第三方 console.error(obj) 轉成可讀字串（Capacitor 專用） */
 export function installCapacitorConsolePatch(): void {
   if (capacitorConsolePatched || typeof window === "undefined") return;
-  if (!import.meta.env.DEV) return;
+  if (
+    !import.meta.env.DEV &&
+    !isQaBuildEnabled() &&
+    import.meta.env.VITE_DEBUG_DIAGNOSTICS !== "1"
+  ) {
+    return;
+  }
   const { isCapacitor } = detectPlatform();
   if (!isCapacitor) return;
   capacitorConsolePatched = true;
@@ -239,6 +261,23 @@ export function installCapacitorConsolePatch(): void {
 export function buildCapacitorEarlyErrorLogScript(): string {
   return `<script>
 (function(){
+  function isMapsSdkNoise(text) {
+    if (!text) return false;
+    return /sdkError\\.sessionStatus/i.test(text)
+      || /Evaluating ['"]?[^'"]*sdkError/i.test(text)
+      || /Google Maps JavaScript API error/i.test(text)
+      || /InvalidKeyMapError/i.test(text)
+      || /RefererNotAllowedMapError/i.test(text);
+  }
+  function isAmbiguousWebKitUndefined(e, reason) {
+    if ((e.message || "") !== "undefined") return false;
+    if (e.error != null && reason && reason.message && reason.message !== "undefined") return false;
+    var f = e.filename || "";
+    if (f.indexOf("maps.googleapis.com") >= 0) return true;
+    if (!document.querySelector('script[data-roamie-maps="1"]')) return false;
+    return f.indexOf("/assets/index-") >= 0
+      || f.indexOf("capacitor://localhost/assets/index-") >= 0;
+  }
   function roamieLog(tag, reason, source) {
     var msg = "(unknown)";
     var stack = "";
@@ -268,6 +307,14 @@ export function buildCapacitorEarlyErrorLogScript(): string {
         : new Error(
             "runtime@" + (e.filename || "unknown") + ":" + (e.lineno || 0) + ":" + (e.colno || 0),
           );
+    }
+    var line = (e.message || "") + " " + (reason && reason.message ? reason.message : "");
+    if (isMapsSdkNoise(line) || isAmbiguousWebKitUndefined(e, reason)) {
+      try {
+        window.__roamieMapsAuthFailure = { message: "Google 地圖無法載入（Maps JS 授權）" };
+        console.info("[MAP_FALLBACK] reason=maps_js_sdk_error (early)");
+      } catch (_) {}
+      return;
     }
     roamieLog("APP_INIT_ERROR", reason, e.filename || "");
   }, true);

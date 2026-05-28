@@ -1,21 +1,18 @@
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-  type PointerEvent,
-} from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, type PointerEvent } from "react";
 import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceCardCover } from "@/components/media/PlaceCardCover";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { logPlaceCardImage } from "@/lib/place-card-image-log";
-import {
-  logPlaceCardOpening,
-  resolvePlaceCardOpeningDisplay,
-} from "@/lib/place-card-opening";
+import { logPlaceCardOpening, resolvePlaceCardOpeningDisplay } from "@/lib/place-card-opening";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
+import { useState } from "react";
+import { RecommendationDiagnosticsToolbar } from "@/components/debug/RecommendationDiagnosticsToolbar";
+import {
+  isDiagnosticsModeEnabled,
+  type RecommendationDiagnosticSnapshot,
+} from "@/lib/debug/recommendation-diagnostics";
 
 export type MapPlaceCard = PlaceResult & {
   reason: string;
@@ -38,10 +35,7 @@ type Props = {
   savedNames: Set<string>;
   userLocation: { lat: number; lng: number };
   formatDistance: (meters: number) => string;
-  distanceMeters: (
-    from: { lat: number; lng: number },
-    to: { lat: number; lng: number },
-  ) => number;
+  distanceMeters: (from: { lat: number; lng: number }, to: { lat: number; lng: number }) => number;
   imageUrl: (photoName: string | null) => string | null;
   categoryKey: string;
   emptyMessage?: string | null;
@@ -49,6 +43,9 @@ type Props = {
   onToggleSave: (place: MapPlaceCard) => void;
   onAddToTrip?: (place: MapPlaceCard) => void;
   addToTripLabel?: string;
+  locationSource?: "device_location" | "fallback_location" | "mock_location";
+  apiError?: string | null;
+  fallbackReason?: string | null;
 };
 
 const DRAG_SCROLL_THRESHOLD_PX = 10;
@@ -71,6 +68,9 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
       onToggleSave,
       onAddToTrip,
       addToTripLabel = "加入行程",
+      locationSource = "device_location",
+      apiError,
+      fallbackReason,
     },
     ref,
   ) {
@@ -82,6 +82,42 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
       scrollLeft: number;
       pointerId: number;
     } | null>(null);
+    const [imageSourceById, setImageSourceById] = useState<Record<string, string>>({});
+    const showDiagnostics = isDiagnosticsModeEnabled();
+
+    const buildSnapshot = (p: MapPlaceCard): RecommendationDiagnosticSnapshot => {
+      const isMock = p.id.startsWith("mock-");
+      const imageSource = imageSourceById[p.id] ?? null;
+      const triggered = isMock || Boolean(fallbackReason);
+      return {
+        card_id: p.id,
+        title: p.name,
+        place_id: p.id || null,
+        source_type: isMock ? "mock" : triggered ? "fallback" : "google_places",
+        is_verified_real_place: !isMock && p.lat != null && p.lng != null,
+        location_source: isMock ? "mock_location" : locationSource,
+        photo_source: imageSource,
+        photo_url: p.coverImageUrl ?? imageUrl(p.photoName) ?? null,
+        photo_reference: p.photoName ?? null,
+        photo_fallback_reason:
+          imageSource === "unsplash" || imageSource === "fallback"
+            ? (fallbackReason ?? "google_photo_unavailable")
+            : null,
+        opening_hours_source: p.openStatus === "unknown" ? "unknown_hours" : "google_opening_hours",
+        opening_hours_status: p.openStatus,
+        business_status: p.businessStatus ?? null,
+        distance_source: p.distanceLabel
+          ? "precomputed_distance"
+          : p.lat != null
+            ? "computed_distance"
+            : null,
+        recommendation_source: isMock ? "map_mock_cards" : "map_places_search",
+        fallback_triggered: triggered,
+        fallback_reason: fallbackReason ?? null,
+        api_error: apiError ?? null,
+        created_at: new Date().toISOString(),
+      };
+    };
 
     useImperativeHandle(ref, () => ({
       scrollToIndex(index: number) {
@@ -161,6 +197,25 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
 
     return (
       <div className="relative min-w-0 w-full">
+        {showDiagnostics ? (
+          <div className="mb-2 px-6">
+            <RecommendationDiagnosticsToolbar
+              scope="探索地圖"
+              items={places.map((p) => buildSnapshot(p))}
+              downloadPayload={{
+                map_recommendation_cards: places.map((p) => buildSnapshot(p)),
+              }}
+              exportMeta={{
+                scope: "探索地圖",
+                note:
+                  places.length === 0
+                    ? (apiError ?? fallbackReason ?? "地圖推薦列表為空")
+                    : (fallbackReason ?? apiError ?? undefined),
+                filtered_recommendation_count: places.length,
+              }}
+            />
+          </div>
+        ) : null}
         {loading && (
           <div className="pointer-events-none absolute inset-x-6 top-0 z-10 flex justify-center py-2">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -188,9 +243,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
             {places.map((p, i) => {
               const isSaved = savedNames.has(p.name);
               const isBusy = busyId === p.id;
-              const googleImg =
-                p.coverImageUrl ??
-                imageUrl(p.photoName);
+              const googleImg = p.coverImageUrl ?? imageUrl(p.photoName);
               const distLabel =
                 p.distanceLabel ??
                 (p.lat != null && p.lng != null
@@ -246,6 +299,11 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                           imageSource: "google_error",
                         });
                       }}
+                      onImageSourceChange={(source) =>
+                        setImageSourceById((prev) =>
+                          prev[p.id] === source ? prev : { ...prev, [p.id]: source },
+                        )
+                      }
                     />
                     <button
                       type="button"
@@ -276,7 +334,9 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                           {p.name}
                         </h3>
                         <span className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-muted-foreground">
-                          {distLabel ? <span className="whitespace-nowrap">{distLabel}</span> : null}
+                          {distLabel ? (
+                            <span className="whitespace-nowrap">{distLabel}</span>
+                          ) : null}
                           {p.rating !== null && (
                             <span className="flex items-center gap-0.5 whitespace-nowrap">
                               <Star className="h-3 w-3 fill-clay text-clay" />
@@ -296,9 +356,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                           compact
                           statusLabel={opening.statusLabel}
                           todayHoursLabel={opening.hoursLabel}
-                          closingSoonNote={
-                            opening.openNow != null ? p.closingSoonNote : undefined
-                          }
+                          closingSoonNote={opening.openNow != null ? p.closingSoonNote : undefined}
                           nextOpenHint={opening.openNow != null ? p.nextOpenHint : undefined}
                         />
                       </div>

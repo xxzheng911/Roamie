@@ -7,6 +7,7 @@ import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
 import { useI18n } from "@/hooks/use-i18n";
 import { toast } from "sonner";
 import { getPlaceDetails, searchPlaces as searchPlacesService } from "@/services/placesService";
+import { PLACES_AUTOCOMPLETE_DEBOUNCE_MS } from "@/lib/places-cache-config";
 import { TRIP_PLACE_USER_MESSAGE } from "@/lib/trip-place-search-log";
 
 type Props = {
@@ -82,7 +83,7 @@ export function TripStopSearchField({
   useEffect(() => {
     if (!open) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => runSearch(query), 280);
+    debounceRef.current = setTimeout(() => runSearch(query), PLACES_AUTOCOMPLETE_DEBOUNCE_MS);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };

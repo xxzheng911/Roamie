@@ -54,21 +54,32 @@ function buildSummary(ctx: CanonicalTravelContext, placeCount: number): string {
   ].join("\n");
 }
 
-export function generateLocalRecommendationFallback(
-  input: LocalFallbackInput,
-): { summary: string; payload: RoamiePayloadV2; places: ChatPlaceItem[] } {
+export function generateLocalRecommendationFallback(input: LocalFallbackInput): {
+  summary: string;
+  payload: RoamiePayloadV2;
+  places: ChatPlaceItem[];
+} {
   const { context: ctx, session, locale = "zh-TW", places = [] } = input;
   console.info("[AI_FALLBACK] used", logTravelContext(ctx));
 
   const verified = filterVerifiedPlaceResults(places);
-  const candidates: ChatPlaceItem[] = verified.slice(0, 4).map((p) =>
-    mapPlaceResultToChatItem(p, {
-      mood: ctx.mood,
-      weather: ctx.weather,
-      locale,
-      currentTime: new Date(),
-    }),
-  );
+  const candidates: ChatPlaceItem[] = verified
+    .slice(0, 4)
+    .map((p) =>
+      mapPlaceResultToChatItem(p, {
+        mood: ctx.mood,
+        weather: ctx.weather,
+        locale,
+        currentTime: new Date(),
+      }),
+    )
+    .map((item) => ({
+      ...item,
+      recommendationSource: "local_verified_places",
+      nearbyPlacesSource: "places_text_search",
+      aiFallbackSource: "local_recommendation_fallback",
+      fallbackReason: "ai_or_network_fallback",
+    }));
 
   const summary = buildSummary(ctx, candidates.length);
   const moodTag = ctx.mood ?? session.selectedMood ?? "";
@@ -81,7 +92,11 @@ export function generateLocalRecommendationFallback(
     itinerary: [],
   };
 
-  console.info("[AI_RECOMMENDATION] generated", `count=${candidates.length}`, logTravelContext(ctx));
+  console.info(
+    "[AI_RECOMMENDATION] generated",
+    `count=${candidates.length}`,
+    logTravelContext(ctx),
+  );
 
   return { summary, payload, places: candidates };
 }

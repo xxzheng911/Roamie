@@ -40,11 +40,14 @@ export function isGoogleMapsKeyMissingError(error: string | null | undefined): b
 
 /** 正式版在 API 權限/金鑰/配額問題時仍顯示 Roamie 預設角落 */
 export function shouldUseCuratedPlacesFallback(apiError?: string | null): boolean {
+  const allowCuratedFallback = import.meta.env.VITE_ALLOW_CURATED_FALLBACK === "1";
+  if (import.meta.env.DEV && !import.meta.env.PROD) return true;
+  if (!allowCuratedFallback) return false;
   if (isGoogleBillingDisabledError(apiError)) return true;
   if (isGooglePlacesPermissionError(apiError)) return true;
   if (isGooglePlacesQuotaError(apiError)) return true;
   if (isGoogleMapsKeyMissingError(apiError)) return true;
-  return import.meta.env.DEV && !import.meta.env.PROD;
+  return false;
 }
 
 export function logPlacesApiResponse(

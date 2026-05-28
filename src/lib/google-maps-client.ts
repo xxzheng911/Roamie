@@ -35,20 +35,25 @@ function directGooglePlacePhotoUrl(photoName: string, maxWidth: number): string 
   return `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${maxWidth}&key=${key}`;
 }
 
-export function buildPlacePhotoUrl(photoName: string, maxWidth = 600): string | null {
-  if (!photoName?.trim()) return null;
+function proxyGooglePlacePhotoUrl(photoName: string, maxWidth: number): string {
   const proxyPath = `/api/place-photo?photo=${encodeURIComponent(photoName)}&w=${maxWidth}`;
   const { isCapacitor } = detectPlatform();
-
-  if (isCapacitor) {
-    if (canReachBundledAppApiOrigin()) {
-      const proxied = resolveAppApiUrl(proxyPath);
-      if (proxied.startsWith("http")) return proxied;
-    }
-    return directGooglePlacePhotoUrl(photoName, maxWidth);
+  if (isCapacitor && canReachBundledAppApiOrigin()) {
+    const resolved = resolveAppApiUrl(proxyPath);
+    if (resolved.startsWith("http")) return resolved;
   }
-
-  const direct = directGooglePlacePhotoUrl(photoName, maxWidth);
-  if (direct) return direct;
   return proxyPath;
+}
+
+export function buildPlacePhotoCandidateUrls(photoName: string, maxWidth = 600): string[] {
+  if (!photoName?.trim()) return [];
+  const direct = directGooglePlacePhotoUrl(photoName, maxWidth);
+  const proxy = proxyGooglePlacePhotoUrl(photoName, maxWidth);
+  const candidates = [direct, proxy].filter((u): u is string => Boolean(u?.trim()));
+  return [...new Set(candidates)];
+}
+
+export function buildPlacePhotoUrl(photoName: string, maxWidth = 600): string | null {
+  if (!photoName?.trim()) return null;
+  return buildPlacePhotoCandidateUrls(photoName, maxWidth)[0] ?? null;
 }

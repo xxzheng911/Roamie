@@ -3,10 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { MapErrorBoundary } from "@/components/MapErrorBoundary";
-import {
-  MapExploreSheetSafe,
-  type MapExploreSheetHandle,
-} from "@/components/MapExploreSheetSafe";
+import { MapExploreSheetSafe, type MapExploreSheetHandle } from "@/components/MapExploreSheetSafe";
 import { focusPlaceInVisibleMapArea } from "@/lib/map-focus-place";
 import { PlaceDetailSheet, ExploreSubpageHeader } from "@/components/map/PlaceDetailSheet";
 import {
@@ -38,7 +35,12 @@ import {
 } from "@/lib/build-place-recommendation-reason";
 import { usePlaceNavigation } from "@/hooks/use-place-navigation";
 import { isMapDetailOpen, type MapExploreSheetMode } from "@/lib/map-explore-sheet-mode";
-import { mapPlaceResultToChatItem, addSelectedPlace, saveChatSession, loadChatSession } from "@/lib/chat-session";
+import {
+  mapPlaceResultToChatItem,
+  addSelectedPlace,
+  saveChatSession,
+  loadChatSession,
+} from "@/lib/chat-session";
 import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
@@ -46,7 +48,12 @@ import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAvatar } from "@/hooks/use-avatar";
-import { buildExploreQuery, distanceMeters, formatDistanceLabel, savedPlacesNear } from "@/lib/map-explore";
+import {
+  buildExploreQuery,
+  distanceMeters,
+  formatDistanceLabel,
+  savedPlacesNear,
+} from "@/lib/map-explore";
 import { sortExplorePlaces } from "@/lib/sort-explore-places";
 import { filterExplorePlaces, isTravelFriendlyPlace } from "@/lib/filter-explore-places";
 import {
@@ -94,15 +101,7 @@ import {
 import { useI18n } from "@/hooks/use-i18n";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
-import {
-  buildMapPlacesCacheKey,
-  readMapPlacesCache,
-  writeMapPlacesCache,
-} from "@/lib/map-places-cache";
-import {
-  locationMovedEnough,
-  weatherCacheKey,
-} from "@/lib/map-location-throttle";
+import { locationMovedEnough, weatherCacheKey } from "@/lib/map-location-throttle";
 
 export const Route = createFileRoute("/_app/map")({
   component: MapPage,
@@ -207,6 +206,7 @@ function MapView() {
 
   const lastSearchCenterRef = useRef<{ lat: number; lng: number } | null>(null);
   const lastWeatherFetchCenterRef = useRef<{ lat: number; lng: number } | null>(null);
+  const lastWatchedLocationRef = useRef<{ lat: number; lng: number } | null>(null);
   const searchRequestIdRef = useRef(0);
   const prevQueryRef = useRef("");
   const prevCatIdRef = useRef(cat.id);
@@ -215,10 +215,7 @@ function MapView() {
 
   const navigate = useNavigate();
   const { avatarSrc: rawAvatarSrc } = useAvatar();
-  const safeAvatarSrc = useMemo(
-    () => resolveUserMarkerAvatarSrc(rawAvatarSrc),
-    [rawAvatarSrc],
-  );
+  const safeAvatarSrc = useMemo(() => resolveUserMarkerAvatarSrc(rawAvatarSrc), [rawAvatarSrc]);
   const searchPlacesServerFn = useServerFn(searchPlaces);
   const searchPlacesFn = useMemo(
     () => createUnifiedSearchPlacesFn(searchPlacesServerFn),
@@ -246,6 +243,11 @@ function MapView() {
   const savedRef = useRef<SavedPlace[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState(readInitialMapCoords);
+  const [userLocationSource, setUserLocationSource] = useState<
+    "device_location" | "fallback_location" | "mock_location"
+  >("fallback_location");
+  const [mapPlacesApiError, setMapPlacesApiError] = useState<string | null>(null);
+  const [mapFallbackReason, setMapFallbackReason] = useState<string | null>(null);
   const [mapCenter, setMapCenter] = useState(readInitialMapCoords);
   const [mapZoom, setMapZoom] = useState(MAP_ZOOM_EXPLORE);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
@@ -276,13 +278,22 @@ function MapView() {
   const exploreHandoffRef = useRef<MapExploreHandoff | null>(null);
 
   const applyDeviceLocation = useCallback(
-    (loc: Awaited<ReturnType<typeof requestDeviceLocation>>) => {
+    (
+      loc: Awaited<ReturnType<typeof requestDeviceLocation>>,
+      options?: { followMap?: boolean; refreshWeather?: boolean },
+    ) => {
+      const followMap = options?.followMap ?? true;
+      const refreshWeather = options?.refreshWeather ?? true;
       const next = { lat: loc.lat, lng: loc.lng };
       setUserLocation(next);
-      setMapCenter(next);
+      setUserLocationSource(loc.usedFallback ? "fallback_location" : "device_location");
+      if (followMap) {
+        setMapCenter(next);
+      }
       setLocationHint(loc.usedFallback ? t("map.locationFallbackHint") : null);
       setLocationLabel(t("common.nearby"));
       setGeoReady(true);
+      lastWatchedLocationRef.current = next;
       console.info("[MAP_LOCATION] using store lat/lng", {
         lat: loc.lat,
         lng: loc.lng,
@@ -290,8 +301,11 @@ function MapView() {
         source: loc.source,
         permission: loc.permission,
       });
-      if (mapInstanceRef.current) {
+      if (followMap && mapInstanceRef.current) {
         mapInstanceRef.current.panTo(next);
+      }
+      if (!refreshWeather) {
+        return;
       }
       fetchWeather({ data: { lat: loc.lat, lng: loc.lng } })
         .then((r) => {
@@ -334,11 +348,11 @@ function MapView() {
       if (loc.usedFallback) return;
       setLocationHint(null);
       const next = { lat: loc.lat, lng: loc.lng };
-      setUserLocation(next);
-      setMapCenter(next);
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.panTo(next);
+      if (!locationMovedEnough(lastWatchedLocationRef.current, next, 120)) {
+        return;
       }
+      lastWatchedLocationRef.current = next;
+      setUserLocation(next);
       console.info("[MAP_LOCATION] using store lat/lng", {
         phase: "watch",
         lat: loc.lat,
@@ -348,49 +362,46 @@ function MapView() {
     return stopWatch;
   }, []);
 
-  const handleMapLoadError = useCallback(
-    (message: string, reason = "load_error") => {
-      if (!mapLoadAttemptedRef.current && reason === "window_error") return;
+  const handleMapLoadError = useCallback((message: string, reason = "load_error") => {
+    if (!mapLoadAttemptedRef.current && reason === "window_error") return;
 
-      const billingLikely =
-        isGoogleBillingDisabledError(message) ||
-        /For development purposes only|ApiNotActivated|InvalidKeyMapError/i.test(message);
+    const billingLikely =
+      isGoogleBillingDisabledError(message) ||
+      /For development purposes only|ApiNotActivated|InvalidKeyMapError/i.test(message);
 
-      if (mapAutoRetryRef.current < MAP_AUTO_RETRY_MAX && !billingLikely) {
-        mapAutoRetryRef.current += 1;
-        const attempt = mapAutoRetryRef.current;
-        const delayMs = 700 * attempt;
-        console.info("[MAP_LOAD] auto retry", attempt, "in", delayMs, "ms reason=", reason);
-        setMapRetrying(true);
-        if (mapAutoRetryTimerRef.current) clearTimeout(mapAutoRetryTimerRef.current);
-        mapAutoRetryTimerRef.current = setTimeout(() => {
-          mapErrorToastedRef.current = false;
-          if (typeof window !== "undefined") {
-            window.__roamieMapsAuthFailure = undefined;
-          }
-          setMapFallbackBilling(false);
-          setMapUnavailable(false);
-          setMapRemountKey((k) => k + 1);
-        }, delayMs);
-        return;
-      }
+    if (mapAutoRetryRef.current < MAP_AUTO_RETRY_MAX && !billingLikely) {
+      mapAutoRetryRef.current += 1;
+      const attempt = mapAutoRetryRef.current;
+      const delayMs = 700 * attempt;
+      console.info("[MAP_LOAD] auto retry", attempt, "in", delayMs, "ms reason=", reason);
+      setMapRetrying(true);
+      if (mapAutoRetryTimerRef.current) clearTimeout(mapAutoRetryTimerRef.current);
+      mapAutoRetryTimerRef.current = setTimeout(() => {
+        mapErrorToastedRef.current = false;
+        if (typeof window !== "undefined") {
+          window.__roamieMapsAuthFailure = undefined;
+        }
+        setMapFallbackBilling(false);
+        setMapUnavailable(false);
+        setMapRemountKey((k) => k + 1);
+      }, delayMs);
+      return;
+    }
 
-      setMapRetrying(false);
-      setMapUnavailable(true);
-      setMapFallbackBilling(billingLikely);
-      logMapFallback(reason);
-      mapInstanceRef.current = null;
-      if (!mapErrorToastedRef.current) {
-        mapErrorToastedRef.current = true;
-        console.warn("[MAP_LOAD] error=", message);
-        console.info("[MAP_FALLBACK] reason=", reason);
-        toast.message(t("map.mapBannerToast"), {
-          description: t("map.mapBannerToastDesc"),
-        });
-      }
-    },
-    [],
-  );
+    setMapRetrying(false);
+    setMapUnavailable(true);
+    setMapFallbackBilling(billingLikely);
+    logMapFallback(reason);
+    mapInstanceRef.current = null;
+    if (!mapErrorToastedRef.current) {
+      mapErrorToastedRef.current = true;
+      console.warn("[MAP_LOAD] error=", message);
+      console.info("[MAP_FALLBACK] reason=", reason);
+      toast.message(t("map.mapBannerToast"), {
+        description: t("map.mapBannerToastDesc"),
+      });
+    }
+  }, []);
 
   useEffect(() => {
     return installGoogleMapsWindowErrorListener((msg) => {
@@ -511,14 +522,6 @@ function MapView() {
             userLocale: locale,
           });
       const filterCat = isFreeText ? EXPLORE_CATEGORIES[0] : cat;
-      const cacheKey = buildMapPlacesCacheKey({
-        lat: center.lat,
-        lng: center.lng,
-        query: isFreeText ? text : cat.query,
-        categoryId: isFreeText ? "search" : cat.id,
-        locale,
-      });
-
       const runSearch = async () => {
         const basePayload = {
           lat: center.lat,
@@ -526,28 +529,21 @@ function MapView() {
           radius: searchRadiusMeters(),
         };
 
-        const cached = readMapPlacesCache(cacheKey);
-        let apiPlaces = cached?.places ?? [];
-        let apiError = cached?.error ?? null;
+        const primary = await withSearchTimeout(
+          searchPlacesFn({
+            data: {
+              ...basePayload,
+              query: isFreeText ? searchQuery : cat.query,
+              mode: (isFreeText ? "text" : cat.mode) as "text" | "nearby" | "multi",
+              includedTypes: isFreeText ? undefined : cat.includedTypes,
+              nearbyGroups: isFreeText ? undefined : cat.nearbyGroups,
+              locale,
+            },
+          }),
+        );
 
-        if (!cached) {
-          const primary = await withSearchTimeout(
-            searchPlacesFn({
-              data: {
-                ...basePayload,
-                query: isFreeText ? searchQuery : cat.query,
-                mode: (isFreeText ? "text" : cat.mode) as "text" | "nearby" | "multi",
-                includedTypes: isFreeText ? undefined : cat.includedTypes,
-                nearbyGroups: isFreeText ? undefined : cat.nearbyGroups,
-                locale,
-              },
-            }),
-          );
-
-          apiPlaces = Array.isArray(primary.places) ? primary.places : [];
-          apiError = primary.error;
-          writeMapPlacesCache(cacheKey, apiPlaces, apiError);
-        }
+        let apiPlaces = Array.isArray(primary.places) ? primary.places : [];
+        let apiError = primary.error;
 
         if (requestId !== searchRequestIdRef.current) return;
         const applyFilters = (list: PlaceResult[]) =>
@@ -615,6 +611,8 @@ function MapView() {
         if (apiError) {
           console.info("[PLACES_API] error=", apiError);
         }
+        setMapPlacesApiError(apiError ?? null);
+        setMapFallbackReason(null);
 
         const nearbySaved = savedPlacesNear(center, savedRef.current, 5000);
         const apiNames = new Set(apiPlaces.map((p) => p.name));
@@ -644,6 +642,7 @@ function MapView() {
             });
             return {
               ...card,
+              coverImageUrl: card.coverImageUrl ?? undefined,
               googleMapsUrl: item.googleMapsUrl,
             };
           });
@@ -664,19 +663,26 @@ function MapView() {
               userProfile: reasonProfile,
               locale,
             });
-            return { ...card, googleMapsUrl: item.googleMapsUrl };
+            return {
+              ...card,
+              coverImageUrl: card.coverImageUrl ?? undefined,
+              googleMapsUrl: item.googleMapsUrl,
+            };
           }),
         ];
 
         if (enriched.length === 0) {
           if (isFreeText) {
             setError(getExploreCategoryEmptyMessage(cat.id, locale));
+            setMapFallbackReason("free_text_empty");
           } else if (shouldUseCuratedPlacesFallback(apiError)) {
             logPlacesFallbackUsed(`map-explore:${cat.id}`);
             enriched = mockMapCards(center, cat);
             setError(null);
+            setMapFallbackReason(`curated_fallback:${cat.id}`);
           } else {
             setError(getExploreCategoryEmptyMessage(cat.id, locale));
+            setMapFallbackReason("empty_without_fallback");
             console.info("[explore] map places empty", { category: cat.id, apiError });
           }
         }
@@ -689,19 +695,24 @@ function MapView() {
         }
       };
 
-      void runSearch().catch((e) => {
+      void runSearch()
+        .catch((e) => {
           const msg = e instanceof Error ? e.message : t("map.searchFailed");
           if (query.trim()) {
             setError(t("map.searchBusy"));
             setResults([]);
+            setMapFallbackReason("query_search_error");
           } else if (shouldUseCuratedPlacesFallback(msg)) {
             logPlacesFallbackUsed("map-search-catch");
             setError(null);
             setResults(mockMapCards(center, cat));
+            setMapFallbackReason("map-search-catch");
           } else {
             setError(t("map.searchBusy"));
             setResults([]);
+            setMapFallbackReason("map_search_error");
           }
+          setMapPlacesApiError(msg);
           if (sheetMode === "list") {
             setSelectedPlace(null);
             setSelectedPlaceIndex(null);
@@ -796,21 +807,18 @@ function MapView() {
 
   const savedByName = useMemo(() => new Map(saved.map((s) => [s.name, s])), [saved]);
 
-  const refocusSelectedPlace = useCallback(
-    (lat: number, lng: number) => {
-      const pos = { lat, lng };
-      setMapCenter(pos);
-      setMapZoom(MAP_ZOOM_PLACE);
-      const run = () => {
-        const map = mapInstanceRef.current;
-        if (!map) return;
-        const sheet = document.querySelector<HTMLElement>("[data-map-explore-sheet]");
-        focusPlaceInVisibleMapArea(map, pos, MAP_ZOOM_PLACE, sheet);
-      };
-      requestAnimationFrame(() => requestAnimationFrame(run));
-    },
-    [],
-  );
+  const refocusSelectedPlace = useCallback((lat: number, lng: number) => {
+    const pos = { lat, lng };
+    setMapCenter(pos);
+    setMapZoom(MAP_ZOOM_PLACE);
+    const run = () => {
+      const map = mapInstanceRef.current;
+      if (!map) return;
+      const sheet = document.querySelector<HTMLElement>("[data-map-explore-sheet]");
+      focusPlaceInVisibleMapArea(map, pos, MAP_ZOOM_PLACE, sheet);
+    };
+    requestAnimationFrame(() => requestAnimationFrame(run));
+  }, []);
 
   const focusMapOnPlace = useCallback(
     (lat: number, lng: number) => {
@@ -1009,6 +1017,7 @@ function MapView() {
     setBusy(p.id);
     try {
       const nearbyLabel = t("common.nearby");
+      const coverImage = p.photoName ? (buildPlacePhotoUrl(p.photoName, 600) ?? null) : null;
       const { saved: didSave } = await toggleSavePlace({
         name: p.name,
         category: p.primaryType,
@@ -1018,7 +1027,9 @@ function MapView() {
         lng: p.lng,
         notes: p.reason,
         mood_tag: null,
-        cover_image: p.photoName ? (buildPlacePhotoUrl(p.photoName, 600) ?? null) : null,
+        cover_image: coverImage,
+        image_url: coverImage,
+        image_source: coverImage ? "google" : null,
         metadata: isRoutableGooglePlaceId(p.id) ? { placeId: p.id } : {},
       });
       toast.success(didSave ? t("map.saved") : t("map.unsaved"));
@@ -1039,7 +1050,7 @@ function MapView() {
           lng: loc.lng,
           usedFallback: loc.usedFallback,
         });
-        applyDeviceLocation(loc);
+        applyDeviceLocation(loc, { followMap: true, refreshWeather: true });
         lastSearchCenterRef.current = null;
         lastWeatherFetchCenterRef.current = null;
         setMapZoom(MAP_ZOOM_EXPLORE);
@@ -1113,9 +1124,7 @@ function MapView() {
           <MapExploreMapStatusBanner
             message={t("map.mapBannerTitle")}
             detail={
-              mapFallbackBilling
-                ? t("map.billingFallbackSubtitle")
-                : t("map.mapBannerSubtitle")
+              mapFallbackBilling ? t("map.billingFallbackSubtitle") : t("map.mapBannerSubtitle")
             }
             onRetry={retryMapLoad}
             retryLabel={t("map.mapRetry")}
@@ -1150,116 +1159,122 @@ function MapView() {
 
       {/* Sheet：疊在地圖上方，不透明 cream、z-index 高於 map canvas */}
       <div className="map-sheet-layer pointer-events-none absolute inset-x-0 bottom-0 z-40">
-      <MapExploreSheetSafe
-        ref={sheetRef}
-        sheetMode={sheetMode}
-        header={
-          sheetMode === "navigation" && selectedPlace ? (
-            <NavigationPreviewSheetHeader onBack={handleBackToDetail} />
-          ) : sheetMode === "detail" && selectedPlace ? (
-            <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBackToList} />
-          ) : (
-            <>
-              <div className="px-5 pb-2">
-                <p className="font-display text-lg leading-tight">推薦地點</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {locationLabel} ·{" "}
-                  {loading
-                    ? t("common.search")
-                    : tt("map.placesCount", { count: displayResults.length })}
-                  {cat.id ? ` · ${t(`explore.category.${cat.id}`)}` : ""}
-                  {saved.length > 0 ? ` · 已收藏 ${saved.length}` : ""}
-                </p>
-                {locationHint && (
-                  <p className="mt-1 text-xs text-muted-foreground/90">{locationHint}</p>
+        <MapExploreSheetSafe
+          ref={sheetRef}
+          sheetMode={sheetMode}
+          header={
+            sheetMode === "navigation" && selectedPlace ? (
+              <NavigationPreviewSheetHeader onBack={handleBackToDetail} />
+            ) : sheetMode === "detail" && selectedPlace ? (
+              <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBackToList} />
+            ) : (
+              <>
+                <div className="px-5 pb-2">
+                  <p className="font-display text-lg leading-tight">推薦地點</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {locationLabel} ·{" "}
+                    {loading
+                      ? t("common.search")
+                      : tt("map.placesCount", { count: displayResults.length })}
+                    {cat.id ? ` · ${t(`explore.category.${cat.id}`)}` : ""}
+                    {saved.length > 0 ? ` · 已收藏 ${saved.length}` : ""}
+                  </p>
+                  {locationHint && (
+                    <p className="mt-1 text-xs text-muted-foreground/90">{locationHint}</p>
+                  )}
+                </div>
+
+                <MapExploreCategoryChips selected={cat} onSelect={handleCategorySelect} />
+
+                {error && (
+                  <p className="mx-5 mb-2 rounded-2xl bg-clay/15 px-3 py-2 text-xs text-clay">
+                    {error}
+                  </p>
                 )}
-              </div>
-
-              <MapExploreCategoryChips selected={cat} onSelect={handleCategorySelect} />
-
-              {error && (
-                <p className="mx-5 mb-2 rounded-2xl bg-clay/15 px-3 py-2 text-xs text-clay">{error}</p>
-              )}
-            </>
-          )
-        }
-      >
-        <>
-          <div className={sheetMode !== "list" ? "hidden" : undefined} aria-hidden={sheetMode !== "list"}>
-            <MapExplorePlaceCards
-              ref={cardsRef}
-              places={displayResults}
-              loading={loading}
-              categoryKey={cat.id}
-              emptyMessage={
-                !loading && displayResults.length === 0
-                  ? error ?? getExploreCategoryEmptyMessage(cat.id, locale)
-                  : null
-              }
-              highlightIndex={selectedPlaceIndex}
-              busyId={busy}
-              savedNames={savedNames}
-              userLocation={userLocation}
-              formatDistance={formatDistanceLabel}
-              distanceMeters={distanceMeters}
-              imageUrl={(photoName) =>
-                photoName ? buildPlacePhotoUrl(photoName, 400) : null
-              }
-              onSelect={handlePlaceSelect}
-              onToggleSave={(p) => void handleToggleSave(p)}
-              onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p))}
-              addToTripLabel={t("chat.addToTrip")}
-            />
-          </div>
-          {sheetMode === "detail" && selectedPlace && (
-            <PlaceDetailSheet
-              place={{ ...selectedPlace, ...placeIntroExtra }}
-              imageUrls={
-                selectedPlace.photoName
-                  ? [buildPlacePhotoUrl(selectedPlace.photoName, 800)!].filter(Boolean)
-                  : selectedPlace.coverImageUrl
-                    ? [selectedPlace.coverImageUrl]
-                    : []
-              }
-              distanceLabel={
-                selectedPlace.lat != null && selectedPlace.lng != null
-                  ? formatDistanceLabel(
-                      distanceMeters(userLocation, {
-                        lat: selectedPlace.lat,
-                        lng: selectedPlace.lng,
-                      }),
-                    )
-                  : null
-              }
-              isSaved={savedByName.has(selectedPlace.name)}
-              isBusy={busy === selectedPlace.id}
-              transportModes={navigation.modes}
-              transportLoading={navigation.loading}
-              transportTip={navigation.aiTip}
-              selectedTransportMode={navigation.selectedMode}
-              onSelectTransportMode={navigation.setSelectedMode}
-              onNavigate={handleNavigateFromDetail}
-              onToggleSave={() => void handleToggleSave(selectedPlace)}
-              onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(selectedPlace))}
-              addToTripLabel={t("chat.addToTrip")}
-              saveLabel="收藏"
-              onOpenChat={() => openInChat(selectedPlace)}
-            />
-          )}
-          {sheetMode === "navigation" && selectedPlace && (
-            <NavigationPreviewSheet
-              placeName={selectedPlace.name}
-              modes={navigation.modes}
-              selectedMode={navigation.selectedMode}
-              onSelectMode={navigation.setSelectedMode}
-              loading={navigation.loading}
-              aiTip={navigation.aiTip}
-              onBack={handleBackToDetail}
-              onStartNavigation={navigation.startNavigation}
-            />
-          )}
-        </>
-      </MapExploreSheetSafe>
+              </>
+            )
+          }
+        >
+          <>
+            <div
+              className={sheetMode !== "list" ? "hidden" : undefined}
+              aria-hidden={sheetMode !== "list"}
+            >
+              <MapExplorePlaceCards
+                ref={cardsRef}
+                places={displayResults}
+                loading={loading}
+                categoryKey={cat.id}
+                emptyMessage={
+                  !loading && displayResults.length === 0
+                    ? (error ?? getExploreCategoryEmptyMessage(cat.id, locale))
+                    : null
+                }
+                highlightIndex={selectedPlaceIndex}
+                busyId={busy}
+                savedNames={savedNames}
+                userLocation={userLocation}
+                formatDistance={formatDistanceLabel}
+                distanceMeters={distanceMeters}
+                imageUrl={(photoName) => (photoName ? buildPlacePhotoUrl(photoName, 400) : null)}
+                onSelect={handlePlaceSelect}
+                onToggleSave={(p) => void handleToggleSave(p)}
+                onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p))}
+                addToTripLabel={t("chat.addToTrip")}
+                locationSource={userLocationSource}
+                apiError={mapPlacesApiError}
+                fallbackReason={mapFallbackReason}
+              />
+            </div>
+            {sheetMode === "detail" && selectedPlace && (
+              <PlaceDetailSheet
+                place={{ ...selectedPlace, ...placeIntroExtra }}
+                imageUrls={
+                  selectedPlace.photoName
+                    ? [buildPlacePhotoUrl(selectedPlace.photoName, 800)!].filter(Boolean)
+                    : selectedPlace.coverImageUrl
+                      ? [selectedPlace.coverImageUrl]
+                      : []
+                }
+                distanceLabel={
+                  selectedPlace.lat != null && selectedPlace.lng != null
+                    ? formatDistanceLabel(
+                        distanceMeters(userLocation, {
+                          lat: selectedPlace.lat,
+                          lng: selectedPlace.lng,
+                        }),
+                      )
+                    : null
+                }
+                isSaved={savedByName.has(selectedPlace.name)}
+                isBusy={busy === selectedPlace.id}
+                transportModes={navigation.modes}
+                transportLoading={navigation.loading}
+                transportTip={navigation.aiTip}
+                selectedTransportMode={navigation.selectedMode}
+                onSelectTransportMode={navigation.setSelectedMode}
+                onNavigate={handleNavigateFromDetail}
+                onToggleSave={() => void handleToggleSave(selectedPlace)}
+                onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(selectedPlace))}
+                addToTripLabel={t("chat.addToTrip")}
+                saveLabel="收藏"
+                onOpenChat={() => openInChat(selectedPlace)}
+              />
+            )}
+            {sheetMode === "navigation" && selectedPlace && (
+              <NavigationPreviewSheet
+                placeName={selectedPlace.name}
+                modes={navigation.modes}
+                selectedMode={navigation.selectedMode}
+                onSelectMode={navigation.setSelectedMode}
+                loading={navigation.loading}
+                aiTip={navigation.aiTip}
+                onBack={handleBackToDetail}
+                onStartNavigation={navigation.startNavigation}
+              />
+            )}
+          </>
+        </MapExploreSheetSafe>
       </div>
     </div>
   );

@@ -6,6 +6,9 @@ import {
   isGooglePlacesIosAppBlockedError,
   shouldSkipPlacesClientRetry,
 } from "@/lib/places-api-errors";
+import { getCachedExploreSearch } from "@/lib/places-explore-cache";
+import { searchPlacesViaBundledApi } from "@/lib/places-search-api";
+import { detectPlatform } from "@/services/platform";
 
 let placesSearchBlockedError: string | null = null;
 
@@ -15,23 +18,47 @@ function rememberPlacesSearchBlock(error: string | null | undefined): void {
     placesSearchBlockedError = error;
     if (isGooglePlacesIosAppBlockedError(error)) {
       console.warn(
-        "[PLACES_API] ios_key_blocked=true — Places REST 需 GOOGLE_PLACES_SERVER_API_KEY（勿用僅 iOS 限制的金鑰）",
+        "[PLACES_API] ios_key_blocked=true — 請經 /api/places-search 使用 GOOGLE_PLACES_SERVER_API_KEY",
       );
     }
   }
 }
 
+function shouldUseBundledPlacesHttp(): boolean {
+  if (typeof window === "undefined") return false;
+  if (!canReachBundledAppApiOrigin()) return false;
+  const platform = detectPlatform();
+  return (
+    platform.isCapacitor ||
+    window.location.protocol === "capacitor:" ||
+    window.location.protocol === "ionic:"
+  );
+}
+
 /**
- * TestFlight / bundled：server 不可用時改 client Places；
- * 若金鑰為 iOS App 限制則不再重試（避免 403 洗版）。
+ * Web：TanStack serverFn → 必要時 client Places。
+ * TestFlight / Capacitor：僅 POST https://roamie.tw/api/places-search（server 金鑰），
+ * 不再用 VITE_GOOGLE_MAPS_API_KEY 從 WebView 直連 Google（會 403 iOS client empty）。
  */
 export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPlacesFn {
-  const skipServerOnNative = typeof window !== "undefined" && !canReachBundledAppApiOrigin();
+  const useBundledHttp = shouldUseBundledPlacesHttp();
 
-  return async (args) => {
+  const fetchUncached = async (data: Parameters<SearchPlacesFn>[0]["data"]) => {
     if (placesSearchBlockedError) {
       return { places: [], error: placesSearchBlockedError };
     }
+
+    if (useBundledHttp) {
+      const httpResult = await searchPlacesViaBundledApi(data);
+      if (httpResult.error) rememberPlacesSearchBlock(httpResult.error);
+      console.info("[PLACES_API] bundled_http", {
+        count: httpResult.places.length,
+        error: httpResult.error,
+      });
+      return httpResult;
+    }
+
+    const skipServerOnNative = typeof window !== "undefined" && !canReachBundledAppApiOrigin();
 
     if (skipServerOnNative) {
       const key = getGoogleMapsBrowserKey();
@@ -42,13 +69,13 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
             "無法取得附近推薦。請在 .env 設定 VITE_APP_ORIGIN（HTTPS 正式網域）與 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY 後重新 build。",
         };
       }
-      const clientResult = await executeExploreSearch(args.data, { apiKey: key });
+      const clientResult = await executeExploreSearch(data, { apiKey: key });
       if (clientResult.error) rememberPlacesSearchBlock(clientResult.error);
       return clientResult;
     }
 
     try {
-      const result = await serverFn(args);
+      const result = await serverFn({ data });
       if (result.places.length > 0) return result;
       if (result.error) {
         rememberPlacesSearchBlock(result.error);
@@ -57,8 +84,8 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
         }
         console.warn("[Roamie Places] server search empty", {
           error: result.error,
-          mode: args.data.mode,
-          query: args.data.query,
+          mode: data.mode,
+          query: data.query,
         });
       }
     } catch (e) {
@@ -78,10 +105,18 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
       };
     }
 
-    const clientResult = await executeExploreSearch(args.data, { apiKey: key });
+    const clientResult = await executeExploreSearch(data, { apiKey: key });
     if (clientResult.error) {
       rememberPlacesSearchBlock(clientResult.error);
     }
     return clientResult;
+  };
+
+  return async (args) => {
+    if (placesSearchBlockedError) {
+      return { places: [], error: placesSearchBlockedError };
+    }
+
+    return getCachedExploreSearch(args.data, () => fetchUncached(args.data));
   };
 }

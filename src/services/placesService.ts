@@ -1,5 +1,6 @@
 import type { Locale } from "@/lib/i18n/types";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
+import { PLACES_AUTOCOMPLETE_MIN_CHARS, PLACES_CACHE_TTL_MS } from "@/lib/places-cache-config";
 import { createRequestCache } from "@/services/requestCache";
 import { unifiedResolveTripStop, unifiedSearchTripStops } from "@/lib/trip-stop-search-unified";
 import { resolveTripStop, searchTripStops, type TripStopSuggestion } from "@/lib/trip-stop-search.functions";
@@ -25,12 +26,12 @@ function normalizeGooglePlaceId(raw: string): string {
 
 const autocompleteCache = createRequestCache({
   prefix: "places-autocomplete",
-  ttlMs: 5 * 60 * 1000,
+  ttlMs: PLACES_CACHE_TTL_MS.autocomplete,
 });
 
 const placeDetailsCache = createRequestCache({
   prefix: "places-details",
-  ttlMs: 24 * 60 * 60 * 1000,
+  ttlMs: PLACES_CACHE_TTL_MS.placeDetails,
   persist: true,
 });
 
@@ -70,16 +71,20 @@ export async function searchPlaces(
     searchFn?: SearchPlacesFn;
   },
 ): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> {
+  const trimmed = query.trim();
+  if (trimmed.length < PLACES_AUTOCOMPLETE_MIN_CHARS) {
+    return { suggestions: [], error: null };
+  }
   const locale = options?.locale ?? "zh-TW";
-  const key = searchKey(query, locale, options?.center);
+  const key = searchKey(trimmed, locale, options?.center);
   const searchFn = options?.searchFn ?? searchTripStops;
 
   const result = await autocompleteCache.getOrFetch(key, () =>
-    unifiedSearchTripStops(searchFn, query, locale, options?.center, options?.sessionToken),
+    unifiedSearchTripStops(searchFn, trimmed, locale, options?.center, options?.sessionToken),
   );
 
   console.info("[TRIP_PLACE_SEARCH] endpoint=", "placesAutocomplete");
-  console.info("[TRIP_PLACE_SEARCH] query=", query.trim());
+  console.info("[TRIP_PLACE_SEARCH] query=", trimmed);
   console.info("[TRIP_PLACE_SEARCH] predictions=", result.suggestions.length);
   if (result.error) console.info("[TRIP_PLACE_SEARCH] error=", result.error);
   return result;

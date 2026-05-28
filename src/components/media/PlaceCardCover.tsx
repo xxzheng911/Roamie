@@ -2,6 +2,7 @@ import { useState } from "react";
 import { PlaceImage } from "@/components/media/PlaceImage";
 import { isLocalhostAppApiUrl } from "@/lib/api-base-url";
 import { preferNonWebpImageUrl } from "@/lib/safe-image-url";
+import { buildPlacePhotoCandidateUrls } from "@/lib/google-maps-client";
 import type { PlaceImageInput } from "@/services/placeImageService";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +21,7 @@ type Props = PlaceImageInput & {
   preferRoamieScene?: boolean;
   onGoogleLoad?: () => void;
   onGoogleError?: () => void;
+  onImageSourceChange?: (source: "google-photo" | "proxy-photo" | "unsplash" | "fallback") => void;
 };
 
 /** Google 封面優先；載入失敗或無效 URL 時改 PlaceImage（AI → 分類預設） */
@@ -31,12 +33,20 @@ export function PlaceCardCover({
   preferRoamieScene,
   onGoogleLoad,
   onGoogleError,
+  onImageSourceChange,
   ...input
 }: Props) {
-  const [googleFailed, setGoogleFailed] = useState(false);
-  const googleImg = sanitizePlaceCardPhotoUrl(coverImageUrl);
+  const [googleCandidateIndex, setGoogleCandidateIndex] = useState(0);
+  const googleCandidates = [
+    sanitizePlaceCardPhotoUrl(coverImageUrl),
+    ...buildPlacePhotoCandidateUrls(input.photoName ?? "", 600).map((u) =>
+      sanitizePlaceCardPhotoUrl(u),
+    ),
+  ].filter((u, idx, arr): u is string => Boolean(u) && arr.indexOf(u) === idx);
+  const googleImg = googleCandidates[googleCandidateIndex] ?? null;
 
-  if (googleImg && !googleFailed) {
+  if (googleImg) {
+    const sourceType = googleImg.includes("/api/place-photo") ? "proxy-photo" : "google-photo";
     return (
       <img
         src={googleImg}
@@ -44,10 +54,17 @@ export function PlaceCardCover({
         loading="lazy"
         draggable={false}
         className={cn("h-full w-full object-cover", imgClassName)}
-        onLoad={onGoogleLoad}
+        onLoad={() => {
+          onImageSourceChange?.(sourceType);
+          onGoogleLoad?.();
+        }}
         onError={() => {
-          setGoogleFailed(true);
-          onGoogleError?.();
+          const nextIdx = googleCandidateIndex + 1;
+          if (nextIdx < googleCandidates.length) {
+            setGoogleCandidateIndex(nextIdx);
+          } else {
+            onGoogleError?.();
+          }
         }}
       />
     );
@@ -60,6 +77,9 @@ export function PlaceCardCover({
       alt={alt}
       className={className}
       imgClassName={imgClassName}
+      onSourceChange={(source) =>
+        onImageSourceChange?.(source === "unsplash" ? "unsplash" : "fallback")
+      }
     />
   );
 }

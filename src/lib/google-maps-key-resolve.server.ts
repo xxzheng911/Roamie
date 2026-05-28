@@ -23,6 +23,13 @@ export function readGoogleMapsKeyFromServerEnv(): string | null {
     const trimmed = resolved?.value?.trim();
     if (trimmed && isValidGoogleMapsApiKey(trimmed)) return trimmed;
   }
+  return null;
+}
+
+/** Maps JS / 舊相容：允許共用 VITE/EXPO 金鑰（勿用於 Places REST） */
+export function readGoogleMapsSharedKeyFromServerEnv(): string | null {
+  const serverOnly = readGoogleMapsKeyFromServerEnv();
+  if (serverOnly) return serverOnly;
   for (const name of SHARED_KEY_ENV) {
     const resolved = resolveServerEnv(name);
     const trimmed = resolved?.value?.trim();
@@ -34,8 +41,10 @@ export function readGoogleMapsKeyFromServerEnv(): string | null {
 export function requireGoogleMapsServerKey(): string {
   const key = readGoogleMapsKeyFromServerEnv();
   if (!key) {
-    console.error("[Roamie Maps] Missing API key.", googleMapsKeyMissingMessage());
-    throw new Error(googleMapsKeyMissingMessage());
+    const msg =
+      "缺少 GOOGLE_PLACES_SERVER_API_KEY（Worker 請用 server 金鑰，勿用僅 iOS 限制的 VITE_GOOGLE_MAPS_API_KEY）。執行 npm run sync:env 後 wrangler secret bulk .dev.vars";
+    console.error("[Roamie Maps]", msg);
+    throw new Error(msg);
   }
   if (!isValidGoogleMapsApiKey(key)) {
     throw new Error(
@@ -48,8 +57,8 @@ export function requireGoogleMapsServerKey(): string {
       SERVER_ONLY_KEY_ENV.find((name) => {
         const v = resolveServerEnv(name)?.value?.trim();
         return v && isValidGoogleMapsApiKey(v);
-      }) ?? "shared";
-    console.info("[GOOGLE_KEY] server loaded=true source=", source);
+      }) ?? "server-only";
+    console.info("[GOOGLE_KEY] server places key loaded=true source=", source);
   }
   return key;
 }

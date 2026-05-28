@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Plus, Loader2, Trash2 } from "lucide-react";
+import { Loader2, Trash2 } from "lucide-react";
 import { SavedPlaceCard } from "@/components/saved/SavedPlaceCard";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromSavedPlace } from "@/lib/trip/trip-place-input";
@@ -32,30 +32,20 @@ export const Route = createFileRoute("/_app/saved/")({
 type Tab = "trips" | "places";
 
 function TripsEmptyState() {
-  const { t } = useI18n();
   return (
     <div className="mt-8 flex flex-col items-center gap-4 rounded-3xl border border-dashed border-border bg-card/60 px-6 py-12 text-center">
-      <p className="font-display text-xl">{t("saved.emptyAllTitle")}</p>
+      <p className="font-display text-xl">還沒有收藏內容</p>
       <p className="max-w-[280px] text-sm leading-relaxed text-muted-foreground">
         跟 Roamie 聊聊，或去探索地圖收藏喜歡的地點，再一起排成行程。
       </p>
       <Link
-        to="/plan"
+        to="/chat"
         className="mt-1 rounded-full bg-primary px-6 py-3 text-sm text-primary-foreground"
       >
-        {t("saved.planCta")}
+        規劃第一趟旅程
       </Link>
-      <Link
-        to="/chat"
-        className="text-sm text-muted-foreground underline-offset-2 hover:underline"
-      >
-        AI 幫我規劃第一趟旅程
-      </Link>
-      <Link
-        to="/map"
-        className="text-sm text-muted-foreground underline-offset-2 hover:underline"
-      >
-        {t("saved.exploreCta")}
+      <Link to="/map" className="text-sm text-muted-foreground underline-offset-2 hover:underline">
+        去探索附近地點
       </Link>
     </div>
   );
@@ -106,7 +96,9 @@ function Saved() {
           setTrips([]);
         } else {
           toast.error(
-            tripsResult.reason instanceof Error ? tripsResult.reason.message : t("saved.loadFailed"),
+            tripsResult.reason instanceof Error
+              ? tripsResult.reason.message
+              : t("saved.loadFailed"),
           );
         }
 
@@ -173,16 +165,16 @@ function Saved() {
     setOpeningPlaceId(p.id);
     void openSavedPlaceDetail(p, locale, async (opts) => {
       await navigate(opts);
-    }).then((ok) => {
-      if (!ok) {
-        toast.error(t("map.noCoordsDetail"));
-      }
-    }).finally(() => {
-      window.setTimeout(() => setOpeningPlaceId(null), 400);
-    });
+    })
+      .then((ok) => {
+        if (!ok) {
+          toast.error(t("map.noCoordsDetail"));
+        }
+      })
+      .finally(() => {
+        window.setTimeout(() => setOpeningPlaceId(null), 400);
+      });
   };
-
-  const hasAny = trips.length > 0 || places.length > 0;
 
   return (
     <div className="px-5 pb-6 pt-3">
@@ -195,15 +187,6 @@ function Saved() {
               : tt("saved.summary", { trips: trips.length, places: places.length })}
           </p>
         </div>
-        {hasAny && (
-          <Link
-            to="/plan"
-            className="flex h-10 w-10 touch-manipulation items-center justify-center rounded-full bg-primary text-primary-foreground active:scale-95"
-            aria-label={t("saved.planNewAria")}
-          >
-            <Plus className="h-4 w-4" />
-          </Link>
-        )}
       </div>
 
       <div className="mt-4 flex gap-1 rounded-full border border-border bg-card p-1 text-sm">
