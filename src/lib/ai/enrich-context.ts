@@ -12,6 +12,7 @@ import { resolveAiUserIntent, responseModeForIntent } from "@/lib/ai/user-intent
 import { buildSessionMemorySnapshot } from "@/lib/ai/memory/session-memory";
 import { buildLongTermMemory } from "@/lib/ai/memory/long-term-memory";
 import type { PlanTier } from "@/lib/plan-tier/types";
+import { buildNormalizedTravelContextLog, logContextNormalized } from "@/lib/ai/context-normalize";
 
 /** 組裝對話階段、情緒推測、本輪／長期記憶後再送 AI */
 export async function enrichRoamieContext(
@@ -51,6 +52,12 @@ export async function enrichRoamieContext(
   const emotionSignals = inferEmotionSignals(userText, session, weather ?? ctx.weather);
   const sessionMemory = buildSessionMemorySnapshot(session, conversation);
 
+  if (session.travelContext || session.conversationContext) {
+    logContextNormalized(
+      buildNormalizedTravelContextLog(userText, session, session.travelContext),
+    );
+  }
+
   let longTermMemory = ctx.longTermMemory;
   if (tier === "plus" && !longTermMemory) {
     try {
@@ -68,6 +75,7 @@ export async function enrichRoamieContext(
     chatPhase,
     emotionSignals,
     sessionMemory,
+    conversationContext: session.conversationContext ?? ctx.conversationContext,
     longTermMemory: tier === "plus" ? longTermMemory : undefined,
   };
 }

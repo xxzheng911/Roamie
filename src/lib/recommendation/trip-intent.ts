@@ -1,4 +1,9 @@
 import type { RoamieRequestContext } from "@/lib/ai/context";
+import {
+  extractKnownDestinationFromText,
+  KNOWN_DESTINATION_NAMES,
+  normalizeDestination,
+} from "@/lib/ai/normalize-destination";
 import { isDiscoveryComplete, type ChatPlanningSession } from "@/lib/chat-session";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 
@@ -50,11 +55,62 @@ function uniqPush(arr: string[], value: string): string[] {
   return [...arr, v];
 }
 
-const KNOWN_DESTINATION_RE =
-  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
+const KNOWN_SORTED = KNOWN_DESTINATION_NAMES.split("|").sort((a, b) => b.length - a.length);
+
+const KNOWN_DESTINATION_RE = new RegExp(
+  `^(${KNOWN_SORTED.join("|")})(市|縣|都|府)?$`,
+  "iu",
+);
+
+const KNOWN_DESTINATION_IN_TEXT_RE = new RegExp(
+  `(${KNOWN_SORTED.join("|")})(?:市|縣|都|府)?`,
+  "iu",
+);
+
+const DESTINATION_FALSE_POSITIVES = new Set([
+  "比較好",
+  "比较好",
+  "更好",
+  "最好",
+  "好玩",
+  "方便",
+  "適合",
+  "合适",
+  "附近",
+  "這裡",
+  "这里",
+  "那裡",
+  "那里",
+  "看看",
+  "逛逛",
+  "走走",
+]);
+
+function isPlausibleDestination(name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed.length < 2 || trimmed.length > 16) return false;
+  if (DESTINATION_FALSE_POSITIVES.has(trimmed)) return false;
+  if (normalizeDestination(trimmed)) return true;
+  if (KNOWN_DESTINATION_RE.test(trimmed)) return true;
+  return false;
+}
 
 function parseCityOrArea(text: string): { city?: string; area?: string } {
   const trimmed = text.trim();
+
+  const fromKnown = extractKnownDestinationFromText(trimmed);
+  if (fromKnown) {
+    console.info("[trip-intent] parsed known destination in text", { input: trimmed, city: fromKnown });
+    return { city: fromKnown };
+  }
+
+  const knownInText = trimmed.match(KNOWN_DESTINATION_IN_TEXT_RE);
+  if (knownInText?.[1]) {
+    const city = normalizeDestination(knownInText[1].trim()) ?? knownInText[1].trim();
+    console.info("[trip-intent] parsed known destination in text", { input: trimmed, city });
+    return { city };
+  }
+
   if (trimmed.length >= 2 && trimmed.length <= 16) {
     const bare = trimmed.match(KNOWN_DESTINATION_RE);
     if (bare) {
@@ -68,23 +124,28 @@ function parseCityOrArea(text: string): { city?: string; area?: string } {
     /(?:去|到|在|逛|玩|旅行|旅遊|目的地|想去|想去的是)[：:\s]*([^\s，,。！!？?]{2,12}(?:市|縣|區|里|町|府|道|都|國|島)?)/,
   );
   if (cityMatch?.[1]) {
-    const city = cityMatch[1].trim();
-    if (KNOWN_DESTINATION_RE.test(city) || city.length >= 2) return { city };
+    const city =
+      normalizeDestination(cityMatch[1].trim()) ??
+      extractKnownDestinationFromText(cityMatch[1]);
+    if (city && isPlausibleDestination(city)) return { city };
   }
 
   const directGo = trimmed.match(/去([\u4e00-\u9fffA-Za-z]{2,8})(?:\s*\d|\s*天|，|。|$)/);
   if (directGo?.[1]) {
-    const city = directGo[1].trim();
-    if (KNOWN_DESTINATION_RE.test(city) || city.length >= 2) {
-      return { city: city.replace(/(市|縣|都|府)$/, "") };
-    }
+    const city =
+      normalizeDestination(directGo[1].trim()) ??
+      extractKnownDestinationFromText(directGo[1]);
+    if (city && isPlausibleDestination(city)) return { city };
   }
 
   const abroadMatch = trimmed.match(
     /(?:去|到|玩|旅行|旅遊|想去)[^\u4e00-\u9fff]{0,8}?([\u4e00-\u9fff]{2,8})/,
   );
-  if (abroadMatch?.[1] && KNOWN_DESTINATION_RE.test(abroadMatch[1].trim())) {
-    return { city: abroadMatch[1].trim() };
+  if (abroadMatch?.[1]) {
+    const city =
+      normalizeDestination(abroadMatch[1].trim()) ??
+      extractKnownDestinationFromText(abroadMatch[1]);
+    if (city && isPlausibleDestination(city)) return { city };
   }
 
   const enCity = trimmed.match(

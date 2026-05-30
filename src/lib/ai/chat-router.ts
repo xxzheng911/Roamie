@@ -10,9 +10,15 @@ import {
   logTravelContext,
   missingContextKeys,
 } from "@/lib/ai/travel-context";
+import { isFlexiblePreferenceReply } from "@/lib/ai/flexible-preference";
+import {
+  isReadyForPlanningConfirm,
+  shouldOrchestrateCompanion,
+  userWantsPlanNow,
+} from "@/lib/ai/conversation-state";
 import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
 
-export type AiChatRouteMode = "clarify" | "recommend" | "itinerary";
+export type AiChatRouteMode = "clarify" | "recommend" | "itinerary" | "companion";
 
 export type AiChatRoute = {
   mode: AiChatRouteMode;
@@ -22,14 +28,11 @@ export type AiChatRoute = {
 };
 
 const CLARIFY_ZH: Record<TripIntentMissingKey, (ctx: CanonicalTravelContext) => string> = {
-  destination: (ctx) =>
-    ctx.destination
-      ? `好的，我們從${ctx.destination}出發。這趟比較想放鬆、拍照，還是吃美食？`
-      : "你想從哪個地區開始逛呢？",
-  vibe: () => "這趟比較想放鬆、拍照，還是吃美食？",
+  destination: () => "你想去哪裡玩呢？跟我說城市就可以～",
+  vibe: () => "這趟比較想放鬆散步、拍照打卡、美食探索，還是都有呢？",
   setting: () => "今天比較想待在室內，還是戶外走走？",
-  companionship: () => "這次是一個人，還是跟朋友／家人一起？",
-  date: () => "大概哪一天出門呢？",
+  companionship: () => "你是自己旅行，還是跟朋友、家人一起呢？",
+  date: () => "你預計什麼時候出發呢？",
 };
 
 function buildClarifyQuestion(
@@ -39,11 +42,11 @@ function buildClarifyQuestion(
 ): string {
   if (locale !== "zh-TW") {
     const en: Record<TripIntentMissingKey, string> = {
-      destination: "Which area would you like to start from?",
-      vibe: "More into relaxing, photos, or food?",
+      destination: "Where would you like to go?",
+      vibe: "Relaxing walks, photos, food, or a bit of everything?",
       setting: "Prefer indoors or outdoors?",
       companionship: "Solo or with friends/family?",
-      date: "Which day are you heading out?",
+      date: "When are you planning to go?",
     };
     return en[key];
   }
@@ -67,9 +70,22 @@ export function resolveChatRoute(
   session: ChatPlanningSession,
   locale: Locale = "zh-TW",
 ): AiChatRoute {
-  if (isUserConfirmingItinerary(userText)) {
+  if (isUserConfirmingItinerary(userText) || userWantsPlanNow(userText)) {
     console.info("[AI_ROUTE] itinerary_mode", logTravelContext(ctx));
     return { mode: "itinerary", chatPhase: "handoff" };
+  }
+
+  if (shouldOrchestrateCompanion(session)) {
+    if (isReadyForPlanningConfirm(session.conversationState)) {
+      console.info("[AI_ROUTE] companion_confirming", logTravelContext(ctx));
+      return { mode: "companion", chatPhase: "discover" };
+    }
+    if (isFlexiblePreferenceReply(userText)) {
+      console.info("[AI_ROUTE] companion_flexible", logTravelContext(ctx));
+      return { mode: "companion", chatPhase: "discover" };
+    }
+    console.info("[AI_ROUTE] companion_gathering", logTravelContext(ctx));
+    return { mode: "companion", chatPhase: "discover" };
   }
 
   if (userAsksTravelTimeAdvice(userText)) {

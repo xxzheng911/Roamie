@@ -1,5 +1,6 @@
 import { MapPin, Clock, Footprints } from "lucide-react";
 import { toast } from "sonner";
+import { PlaceAffiliateLinks } from "@/components/affiliate/PlaceAffiliateLinks";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import type { SavedTripDayItem } from "@/lib/saved-trip/types";
 
@@ -68,6 +69,13 @@ export function SavedTripStopCard({ item, isLast }: Props) {
           ) : null}
         </dl>
 
+        <PlaceAffiliateLinks
+          placeName={item.placeName}
+          source="trip_detail"
+          placeTypeHints={{ typeLabel: item.category }}
+          compact
+          className="mt-3"
+        />
         {hasNav ? (
           <PlaceNavButtons
             lat={item.lat}
@@ -75,7 +83,7 @@ export function SavedTripStopCard({ item, isLast }: Props) {
             address={item.address !== "尚未設定" ? item.address : undefined}
             placeName={item.placeName}
             compact
-            className="mt-3"
+            className="mt-2"
           />
         ) : (
           <button

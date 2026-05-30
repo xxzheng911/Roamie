@@ -1,4 +1,5 @@
 import { ChevronDown, ChevronUp, Clock, MapPin, Route as RouteIcon, Trash2 } from "lucide-react";
+import { PlaceAffiliateLinks } from "@/components/affiliate/PlaceAffiliateLinks";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { RoamieDurationPicker, RoamieTimePicker } from "@/components/pickers";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
@@ -155,13 +156,23 @@ export function SavedTripEditableStopCard({
         />
       ) : null}
 
+      <PlaceAffiliateLinks
+        placeName={placeName}
+        source="trip_detail"
+        placeTypeHints={{
+          typeLabel: item.placeType,
+          placeName: item.title,
+        }}
+        compact
+        className="mt-3"
+      />
       <PlaceNavButtons
         lat={item.lat}
         lng={item.lng}
         address={item.address}
         placeName={item.placeName}
         compact
-        className="mt-3"
+        className="mt-2"
       />
     </article>
   );

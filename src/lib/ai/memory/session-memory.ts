@@ -19,7 +19,8 @@ export function buildSessionMemorySnapshot(
     transportation: session.transportation,
     pace: session.pace ?? session.discovery?.pace,
     lastUserIntent: session.lastUserIntent,
-    conversationSummary: session.planningHints?.conversationSummary,
+    conversationSummary:
+      session.conversationSummary ?? session.planningHints?.conversationSummary,
     turnCount: userTurns,
   };
 }

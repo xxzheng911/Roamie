@@ -1,6 +1,17 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
+import { applyCleanDestinationToTravelContext } from "@/lib/ai/context-normalize";
+import {
+  extractKnownDestinationFromText,
+  normalizeDestination,
+  resolveCleanDestination,
+} from "@/lib/ai/normalize-destination";
+import {
+  formatTravelSeasonForAi,
+  inferTravelSeason,
+  parseMonthNumber,
+} from "@/lib/ai/travel-season";
 
 /** Canonical travel context — merged on every user turn */
 export type CanonicalTravelContext = {
@@ -21,6 +32,8 @@ export type CanonicalTravelContext = {
   tripPurpose?: string;
   vibe?: string;
   setting?: string;
+  travelSeason?: string;
+  seasonHighlights?: string[];
 };
 
 export const EMPTY_TRAVEL_CONTEXT: CanonicalTravelContext = {
@@ -39,29 +52,15 @@ const MOOD_PRESETS: Record<
   看海: { mood: "看海", vibe: "放鬆", setting: "室外", tripPurpose: "coastal", interests: ["海邊", "散步"] },
 };
 
-const KNOWN_CITY_NAMES =
-  "台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本";
-
-const KNOWN_CITIES = new RegExp(`^(${KNOWN_CITY_NAMES})(市|縣|都|府)?$`, "i");
-const KNOWN_CITY_IN_TEXT = new RegExp(`(${KNOWN_CITY_NAMES})(?:市|縣|都|府)?`, "i");
-
 function uniqStrings(values: Array<string | undefined | null>): string[] {
   return [...new Set(values.filter((v): v is string => Boolean(v?.trim())).map((v) => v!.trim()))];
 }
 
-function parseDestination(text: string): string | undefined {
-  const t = text.trim();
-  const direct = t.match(/去([\u4e00-\u9fffA-Za-z]{2,8})(?:\s*\d|\s*天|，|。|$)/);
-  if (direct?.[1] && (KNOWN_CITIES.test(direct[1]) || direct[1].length >= 2)) {
-    return direct[1].replace(/(市|縣|都|府)$/, "");
-  }
-  const abroad = t.match(/(?:去|到|玩|旅行|旅遊|想去)[^\u4e00-\u9fff]{0,4}?([\u4e00-\u9fff]{2,8})/);
-  if (abroad?.[1] && KNOWN_CITIES.test(abroad[1])) return abroad[1];
-  const bare = t.match(KNOWN_CITIES);
-  if (bare) return `${bare[1]}${bare[2] ?? ""}`;
-  const embedded = t.match(KNOWN_CITY_IN_TEXT);
-  if (embedded?.[1]) return embedded[1].replace(/(市|縣|都|府)$/, "");
-  return undefined;
+function parseDestination(text: string, session: ChatPlanningSession): string | undefined {
+  return resolveCleanDestination(text, {
+    sessionDestination: session.travelContext?.destination ?? session.tripDestination?.city,
+    preferredArea: session.preferredArea,
+  });
 }
 
 function parseCompanion(text: string): string | undefined {
@@ -75,15 +74,23 @@ function parseCompanion(text: string): string | undefined {
 }
 
 function parseDays(text: string): number | undefined {
+  const duo = text.match(/(\d+)\s*天\s*(\d+)\s*夜/);
+  if (duo) return Math.min(30, Math.max(1, Number.parseInt(duo[1], 10)));
   const m = text.match(/(\d+)\s*天/);
   if (!m) return undefined;
   return Math.min(30, Math.max(1, Number.parseInt(m[1], 10)));
 }
 
-function parseMonth(text: string): string | undefined {
+function parseMonth(text: string, ref = new Date()): string | undefined {
   const m = text.match(/(\d{1,2})\s*月/);
-  if (!m) return undefined;
-  return `${Number.parseInt(m[1], 10)}月`;
+  if (m) return `${Number.parseInt(m[1], 10)}月`;
+  if (/下個月|下个月/.test(text)) {
+    const d = new Date(ref);
+    d.setMonth(d.getMonth() + 1);
+    return `${d.getMonth() + 1}月`;
+  }
+  if (/這個月|这个月/.test(text)) return `${ref.getMonth() + 1}月`;
+  return undefined;
 }
 
 function parseInterests(text: string, mood?: string): string[] {
@@ -96,13 +103,15 @@ function parseInterests(text: string, mood?: string): string[] {
   if (/(散步|走走|慢步)/.test(text)) tags.push("散步");
   if (/(室內|下雨|雨天)/.test(text)) tags.push("室內");
   if (/(自然|公園|海)/.test(text)) tags.push("自然");
+  if (/(楓葉|賞楓|紅葉)/.test(text)) tags.push("楓葉");
+  if (/(櫻花|賞櫻)/.test(text)) tags.push("櫻花");
   if (mood && MOOD_PRESETS[mood]?.interests) tags.push(...(MOOD_PRESETS[mood].interests ?? []));
   return uniqStrings(tags);
 }
 
 function parseTransport(text: string): string | undefined {
+  if (/(自駕|租车|租車|開車|drive)/i.test(text)) return "drive";
   if (/(步行|走路|walk)/i.test(text)) return "walk";
-  if (/(開車|drive)/i.test(text)) return "drive";
   if (/(捷運|公車|地鐵|大眾運輸|transit)/i.test(text)) return "transit";
   return undefined;
 }
@@ -142,14 +151,12 @@ export function parseTravelContextFromText(
 
   const tiredMood = /(累|疲|倦|沒力)/.test(t) ? "今天有點累" : undefined;
 
+  const clean = parseDestination(t, session);
+
   return {
-    destination:
-      parseDestination(t) ??
-      session.tripDestination?.city ??
-      session.tripDestination?.displayLabel ??
-      session.preferredArea,
+    destination: clean,
     currentLocation: session.location?.city,
-    travelMonth: parseMonth(t),
+    travelMonth: parseMonth(t) ?? (session.travelContext?.travelMonth),
     startDate: session.tripStartDate ?? session.travelDate,
     endDate: session.tripEndDate,
     days: parseDays(t) ?? session.tripDays,
@@ -175,10 +182,17 @@ export function mergeTravelContext(
   const moodKey = session.selectedMood ?? session.mood;
   const preset = moodKey ? MOOD_PRESETS[moodKey] : undefined;
 
+  const cleanParsedDest = parsed.destination
+    ? normalizeDestination(parsed.destination) ?? extractKnownDestinationFromText(userText)
+    : undefined;
+
   const merged: CanonicalTravelContext = {
     ...prev,
     ...Object.fromEntries(Object.entries(parsed).filter(([, v]) => v != null && v !== "")),
-    destination: parsed.destination ?? prev.destination,
+    destination:
+      cleanParsedDest ??
+      normalizeDestination(prev.destination) ??
+      normalizeDestination(session.tripDestination?.city),
     currentLocation: session.location?.city ?? prev.currentLocation,
     mood: parsed.mood ?? preset?.mood ?? prev.mood ?? moodKey,
     vibe: parsed.vibe ?? preset?.vibe ?? prev.vibe ?? session.discovery?.vibe,
@@ -199,7 +213,9 @@ export function mergeTravelContext(
     tripPurpose: parsed.tripPurpose ?? preset?.tripPurpose ?? prev.tripPurpose,
   };
 
-  console.info("[AI_CONTEXT] parsed", logTravelContext(merged));
+  const normalized = applyCleanDestinationToTravelContext(merged, userText, session);
+
+  console.info("[AI_CONTEXT] parsed", logTravelContext(normalized));
 
   const discovery = { ...session.discovery };
   if (merged.vibe && !discovery.vibe) discovery.vibe = merged.vibe;
@@ -216,22 +232,31 @@ export function mergeTravelContext(
     if (!discovery.companionship) discovery.companionship = "情侶";
   }
 
+  const destLabel = normalized.destination;
   const nextSession: ChatPlanningSession = {
     ...session,
-    travelContext: merged,
+    travelContext: normalized,
     discovery,
-    mood: merged.mood ?? session.mood,
-    tripDays: merged.days ?? session.tripDays,
-    travelDate: merged.startDate ?? session.travelDate,
-    tripStartDate: merged.startDate ?? session.tripStartDate,
-    tripEndDate: merged.endDate ?? session.tripEndDate,
-    transportation: merged.transportMode ?? session.transportation,
-    budget: merged.budgetLevel ?? session.budget,
-    preferredArea: merged.destination ?? session.preferredArea,
+    mood: normalized.mood ?? session.mood,
+    tripDays: normalized.days ?? session.tripDays,
+    travelDate: normalized.startDate ?? session.travelDate,
+    tripStartDate: normalized.startDate ?? session.tripStartDate,
+    tripEndDate: normalized.endDate ?? session.tripEndDate,
+    transportation: normalized.transportMode ?? session.transportation,
+    budget: normalized.budgetLevel ?? session.budget,
+    preferredArea: destLabel ?? normalizeDestination(session.preferredArea),
+    tripDestination: destLabel
+      ? {
+          city: destLabel,
+          displayLabel: destLabel,
+          lat: session.tripDestination?.lat ?? 0,
+          lng: session.tripDestination?.lng ?? 0,
+        }
+      : session.tripDestination,
   };
 
-  console.info("[AI_CONTEXT] updated", logTravelContext(merged));
-  return { context: merged, session: nextSession };
+  console.info("[AI_CONTEXT] updated", logTravelContext(normalized));
+  return { context: normalized, session: nextSession };
 }
 
 export function logTravelContext(ctx: CanonicalTravelContext): string {
@@ -308,7 +333,17 @@ export function formatTravelContextForAi(ctx: CanonicalTravelContext): string {
   if (ctx.vibe) lines.push(`vibe: ${ctx.vibe}`);
   if (ctx.setting) lines.push(`setting: ${ctx.setting}`);
   if (ctx.interests.length) lines.push(`interests: ${ctx.interests.join("、")}`);
-  if (ctx.transportMode) lines.push(`transportMode: ${ctx.transportMode}`);
+  if (ctx.transportMode) {
+    const label =
+      ctx.transportMode === "drive"
+        ? "自駕"
+        : ctx.transportMode === "walk"
+          ? "步行"
+          : ctx.transportMode === "transit"
+            ? "大眾運輸"
+            : ctx.transportMode;
+    lines.push(`transportMode: ${label}`);
+  }
   if (ctx.budgetLevel) lines.push(`budgetLevel: ${ctx.budgetLevel}`);
   if (ctx.travelStyle) lines.push(`travelStyle: ${ctx.travelStyle}`);
   if (ctx.tripPurpose) lines.push(`tripPurpose: ${ctx.tripPurpose}`);
@@ -316,6 +351,18 @@ export function formatTravelContextForAi(ctx: CanonicalTravelContext): string {
     lines.push(
       `weather: ${ctx.weather.city} ${ctx.weather.condition} ${ctx.weather.tempC ?? ""}°C`,
     );
+  }
+  const monthNum = parseMonthNumber({
+    travelMonth: ctx.travelMonth,
+    startDate: ctx.startDate,
+  });
+  const season = inferTravelSeason({
+    destination: ctx.destination,
+    month: monthNum,
+  });
+  if (season) {
+    lines.push("【季節與氣候】");
+    lines.push(formatTravelSeasonForAi(season));
   }
   return lines.join("\n");
 }

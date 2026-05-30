@@ -76,6 +76,18 @@ npm run cap:open:ios
   - No seed data, admin UI, or Klook/KKday product API until partner approval
 - UI must use `buildAffiliateOffer()` / `openAffiliateOffer()` — never hardcode partner URLs in components
 
+## AI conversation memory
+
+- **Supabase** `public.conversation_context` (one row per `user_id`, cross-device)
+- Client store: `src/lib/conversation-context-store.ts` — load on login, debounced upsert after each turn
+- Server upsert: `/api/roamie` after each AI reply when `knownTravelContext` is sent
+- Bootstrap order: `src/lib/chat-bootstrap.ts` — context → `chat_messages` → message parser merge
+- In-memory + prompt: `ChatPlanningSession.conversationContext` (`src/lib/ai/conversation-context.ts`)
+- **Known Travel Context** injected at system prompt top (`formatKnownTravelContextForPrompt`)
+- Plus reserved: `conversation_context.plus_memory` jsonb (`src/lib/ai/plus-conversation-memory.ts`)
+- Season inference: `src/lib/ai/travel-season.ts`; chat turns: **20** (`CHAT_HISTORY_TURNS_FOR_AI`)
+- Local cache: `sessionStorage` (`roamie:chat-planning`) for fast reload; Supabase is source of truth when logged in
+
 ## Localization
 
 - Messages: `src/lib/i18n/messages.ts` (zh-TW, en, ja, ko)

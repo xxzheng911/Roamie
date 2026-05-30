@@ -3,6 +3,8 @@ import type { ChatPlanningSession, ChatPlaceItem } from "@/lib/chat-session";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import { logTravelContext } from "@/lib/ai/travel-context";
+import { normalizeDestination } from "@/lib/ai/normalize-destination";
+import { buildPlaceSearchQuery } from "@/lib/ai/place-search-query";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import { filterVerifiedPlaceResults } from "@/lib/place-verification";
@@ -33,7 +35,8 @@ export function buildMoodRecommendationSummary(
   tone?: MoodRecommendationIntent["summaryTone"],
 ): string {
   const mood = ctx.mood ?? "今天";
-  const dest = ctx.destination ?? ctx.currentLocation ?? "附近";
+  const dest =
+    normalizeDestination(ctx.destination) ?? ctx.currentLocation ?? "附近";
   const resolvedTone =
     tone ??
     (/下雨|雨/.test(mood)
@@ -148,9 +151,9 @@ export function generateLocalRecommendationFallback(input: LocalFallbackInput): 
 }
 
 export function fallbackSearchQuery(ctx: CanonicalTravelContext): string {
-  const mood = ctx.mood ?? "";
-  if (mood) return moodSearchQuery(mood);
-  if (ctx.interests.includes("咖啡")) return "cafe coffee";
-  if (ctx.interests.includes("美食")) return "restaurant local food";
-  return "nearby places";
+  return buildPlaceSearchQuery({
+    destination: ctx.destination,
+    mood: ctx.mood,
+    interests: ctx.interests,
+  });
 }

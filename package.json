@@ -16,6 +16,8 @@
     "preview": "vite preview",
     "verify:location": "npx vite-node scripts/verify-location-logic.mjs",
     "verify:chat": "npx vite-node scripts/verify-chat-pipeline.mjs",
+    "verify:conversation": "npx vite-node scripts/verify-conversation-context.mjs",
+    "verify:destination": "npx vite-node scripts/verify-normalize-destination.mjs",
     "verify:chat:full": "npx vite-node scripts/verify-chat-full-qa.mjs",
     "verify:chat:comprehensive": "npx vite-node scripts/verify-chat-comprehensive.mjs",
     "apple:client-secret": "node scripts/generate-apple-client-secret.mjs",

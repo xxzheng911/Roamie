@@ -10,12 +10,16 @@ import {
   type TravelAdviceHint,
 } from "@/lib/ai/travel-advice-fallback";
 import { CHAT_PIPELINE_FALLBACK } from "@/lib/chat/chat-pipeline-constants";
+import { resolveCompanionDialogueReply } from "@/lib/ai/companion-dialogue";
+import { shouldOrchestrateCompanion } from "@/lib/ai/conversation-state";
 
 export { CHAT_PIPELINE_FALLBACK };
 
 export type InstantChatReply = {
   summary: string;
-  source: "local_travel" | "local_itinerary" | "generic_fallback";
+  source: "local_travel" | "local_itinerary" | "generic_fallback" | "companion_dialogue";
+  showConfirmChips?: boolean;
+  startItinerary?: boolean;
 };
 
 const ITINERARY_HINTS: Record<string, Record<string, string>> = {
@@ -78,13 +82,25 @@ function buildItineraryAdviceReply(
   return CHAT_PIPELINE_FALLBACK;
 }
 
-/** 不需 OpenAI 即可回覆的訊息（天氣、季節行程建議） */
+/** 不需 OpenAI 即可回覆的訊息（旅伴編排、天氣、季節建議） */
 export function resolveInstantChatReply(
   userText: string,
   session: ChatPlanningSession,
 ): InstantChatReply | null {
   const trimmed = userText.trim();
   if (!trimmed) return null;
+
+  if (shouldOrchestrateCompanion(session)) {
+    const companion = resolveCompanionDialogueReply(trimmed, session);
+    if (companion) {
+      return {
+        summary: companion.summary,
+        source: "companion_dialogue",
+        showConfirmChips: companion.showConfirmChips,
+        startItinerary: companion.startItinerary,
+      };
+    }
+  }
 
   const hint = buildTravelAdviceHint(trimmed, session);
 

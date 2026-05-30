@@ -13,8 +13,12 @@ import {
   stageAllowsPlacesFirst,
 } from "@/lib/ai/conversation-stage";
 import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
+import { CHAT_HISTORY_TURNS_FOR_AI } from "@/lib/ai/conversation-context";
 
 type OpenAiChatMessage = { role: "system" | "user" | "assistant"; content: string };
+
+const CHAT_CONTINUITY_SUFFIX =
+  "（接續上一輪對話：必須讀取【Conversation Memory】與先前訊息；勿重複開場、勿更換已知目的地/季節；輸出符合 schema 的 JSON）";
 
 /** Chat 模式：多輪 messages；其餘模式維持 system + 單一 user */
 function buildOpenAiMessages(ctx: RoamieRequestContext): OpenAiChatMessage[] {
@@ -23,7 +27,7 @@ function buildOpenAiMessages(ctx: RoamieRequestContext): OpenAiChatMessage[] {
 
   if (ctx.mode === "chat" && history.length > 0) {
     const msgs: OpenAiChatMessage[] = [{ role: "system", content: system }];
-    for (const m of history.slice(-14)) {
+    for (const m of history.slice(-CHAT_HISTORY_TURNS_FOR_AI)) {
       msgs.push({ role: m.role, content: m.content });
     }
     const latest = ctx.chatInput?.trim() || ctx.lastUserIntent?.trim();
@@ -31,8 +35,13 @@ function buildOpenAiMessages(ctx: RoamieRequestContext): OpenAiChatMessage[] {
     if (latest && !(lastInHistory?.role === "user" && lastInHistory.content === latest)) {
       msgs.push({
         role: "user",
-        content: `${latest}\n\n（請接續上一輪對話，輸出符合 schema 的 JSON；勿重複開場白）`,
+        content: `${latest}\n\n${CHAT_CONTINUITY_SUFFIX}`,
       });
+    } else if (lastInHistory?.role === "user") {
+      msgs[msgs.length - 1] = {
+        role: "user",
+        content: `${lastInHistory.content}\n\n${CHAT_CONTINUITY_SUFFIX}`,
+      };
     }
     return msgs;
   }
@@ -162,6 +171,21 @@ const RequestSchema = z.object({
     .optional(),
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   planTier: z.enum(["free", "plus"]).optional(),
+  knownTravelContext: z
+    .object({
+      destination: z.string().max(120).optional(),
+      travelDate: z.string().max(40).optional(),
+      travelDays: z.number().int().min(1).max(30).optional(),
+      season: z.string().max(200).optional(),
+      weather: z.string().max(400).optional(),
+      budget: z.string().max(120).optional(),
+      transportation: z.string().max(120).optional(),
+      companions: z.string().max(120).optional(),
+      mood: z.string().max(120).optional(),
+      selectedPlaces: z.array(z.string().max(200)).max(30).optional(),
+      sessionExtras: z.record(z.unknown()).optional(),
+    })
+    .optional(),
   conversationStage: z
     .enum(["empathize", "infer", "clarify", "converge", "recommend", "itinerary"])
     .optional(),

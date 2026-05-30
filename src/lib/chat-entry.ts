@@ -34,12 +34,25 @@ export function isExplicitChatEntry(search: ChatRouteSearch): boolean {
   return resolveChatEntry(search) !== "tab";
 }
 
-/** 底部 Tab「聊聊」：一般聊天，不帶心情 handoff 狀態 */
+/** 底部 Tab「聊聊」：一般聊天，不帶心情 handoff 狀態；保留 Supabase 旅遊記憶 */
 export function sessionForDefaultTab(existing: ChatPlanningSession): ChatPlanningSession {
   return {
     ...createEmptySession(),
     location: existing.location,
     weather: existing.weather,
+    travelContext: existing.travelContext,
+    conversationContext: existing.conversationContext,
+    tripDestination: existing.tripDestination,
+    tripDays: existing.tripDays,
+    tripStartDate: existing.tripStartDate,
+    tripEndDate: existing.tripEndDate,
+    travelDate: existing.travelDate,
+    transportation: existing.transportation,
+    budget: existing.budget,
+    mood: existing.mood,
+    selectedMood: existing.selectedMood,
+    discovery: existing.discovery,
+    preferredArea: existing.preferredArea,
     chatEntry: "tab",
     phase: "discover",
     pendingHandoff: false,

@@ -1,4 +1,5 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { normalizeDestination, resolveCleanDestination } from "@/lib/ai/normalize-destination";
 import { parseTravelContextFromText } from "@/lib/ai/travel-context";
 
 /** 輕量 hint，避免 instant-reply 依賴 user-intent */
@@ -29,8 +30,7 @@ const MONTH_CLIMATE: Record<string, Record<string, string>> = {
 };
 
 function normalizeCity(name?: string | null): string | undefined {
-  const raw = name?.trim().replace(/(市|縣|都|府|道)$/u, "");
-  return raw || undefined;
+  return normalizeDestination(name);
 }
 
 function asksWeather(text: string): boolean {
@@ -44,11 +44,11 @@ export function buildTravelAdviceFallbackReply(
   intent?: TravelAdviceHint,
 ): string {
   const parsed = parseTravelContextFromText(userText, session);
-  const destination =
-    normalizeCity(intent?.destination) ??
-    normalizeCity(parsed.destination) ??
-    normalizeCity(session.tripDestination?.city) ??
-    normalizeCity(session.preferredArea);
+  const destination = resolveCleanDestination(userText, {
+    rawDestination: intent?.destination ?? parsed.destination,
+    sessionDestination: session.travelContext?.destination ?? session.tripDestination?.city,
+    preferredArea: session.preferredArea,
+  });
   const month = intent?.travelMonth ?? parsed.travelMonth;
 
   if (asksWeather(userText)) {

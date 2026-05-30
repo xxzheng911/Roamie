@@ -215,11 +215,17 @@ const ComposerInputRow = memo(function ComposerInputRow({
   const [hasText, setHasText] = useState(false);
   const composingRef = useRef(false);
   const lastSendRef = useRef(0);
+  const lastSuccessfulSendAtRef = useRef(0);
+  const lastKnownValueRef = useRef("");
   const sendBtnRef = useRef<HTMLButtonElement>(null);
-  const submitRef = useRef<() => void>(() => {});
+  const submitRef = useRef<(source: "button" | "form" | "enter" | "native-touchend") => void>(
+    () => {},
+  );
 
   const flushInputValue = useCallback(() => {
-    const value = inputRef.current?.value ?? "";
+    const domValue = inputRef.current?.value ?? "";
+    const value = domValue || lastKnownValueRef.current;
+    lastKnownValueRef.current = value;
     onDraftChange?.(value);
     setHasText(value.trim().length > 0);
     return value;
@@ -229,6 +235,7 @@ const ComposerInputRow = memo(function ComposerInputRow({
 
   const syncHasText = useCallback(
     (value: string) => {
+      lastKnownValueRef.current = value;
       onDraftChange?.(value);
       setHasText(value.trim().length > 0);
     },
@@ -246,23 +253,30 @@ const ComposerInputRow = memo(function ComposerInputRow({
     (source: "button" | "form" | "enter" | "native-touchend" = "button") => {
       if (disabled) {
         console.info("[CHAT_SEND] blocked=disabled", source);
-        return;
+        return false;
       }
       if (composingRef.current) {
         console.info("[CHAT_SEND] blocked=ime-composing", source);
-        return;
+        return false;
       }
 
       const trimmed = readTrimmed();
       console.info("[CHAT_SEND]", { source, text: trimmed.slice(0, 80) });
       if (!trimmed) {
+        if (
+          source === "native-touchend" &&
+          Date.now() - lastSuccessfulSendAtRef.current < 400
+        ) {
+          return false;
+        }
         console.info("[CHAT_SEND] blocked=empty", source);
-        return;
+        return false;
       }
 
       const now = Date.now();
-      if (now - lastSendRef.current < CHIP_DEBOUNCE_MS) return;
+      if (now - lastSendRef.current < CHIP_DEBOUNCE_MS) return false;
       lastSendRef.current = now;
+      lastSuccessfulSendAtRef.current = now;
 
       console.info("[CHAT_SUBMIT_START]", source);
       onSend(trimmed);
@@ -270,13 +284,15 @@ const ComposerInputRow = memo(function ComposerInputRow({
       if (inputRef.current) {
         inputRef.current.value = "";
       }
+      lastKnownValueRef.current = "";
       setHasText(false);
       onDraftChange?.("");
+      return true;
     },
     [disabled, inputRef, onDraftChange, onSend, readTrimmed],
   );
 
-  submitRef.current = () => submit("native-touchend");
+  submitRef.current = submit;
 
   useEffect(() => {
     if (!isCapacitorNativeShell()) return;
@@ -287,7 +303,15 @@ const ComposerInputRow = memo(function ComposerInputRow({
       if (disabled) return;
       e.preventDefault();
       e.stopPropagation();
-      submitRef.current();
+      const attemptSend = () => {
+        if (submitRef.current("native-touchend")) return;
+        window.setTimeout(() => {
+          submitRef.current("native-touchend");
+        }, 50);
+      };
+      requestAnimationFrame(() => {
+        requestAnimationFrame(attemptSend);
+      });
     };
 
     btn.addEventListener("touchend", onTouchEnd, { passive: false });
@@ -355,11 +379,11 @@ const ComposerInputRow = memo(function ComposerInputRow({
       />
       <button
         ref={sendBtnRef}
-        type="submit"
+        type="button"
         data-chat-send-btn=""
         disabled={sendDisabled}
         onPointerUp={(e) => {
-          if (e.button !== 0 || sendDisabled) return;
+          if (e.button !== 0 || sendDisabled || isCapacitorNativeShell()) return;
           e.preventDefault();
           submit("button");
         }}

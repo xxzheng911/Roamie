@@ -7,6 +7,8 @@ import { resolveAiUserIntent } from "@/lib/ai/user-intent";
 import { userAsksTravelTimeAdviceText } from "@/lib/ai/travel-advice-fallback";
 import type { TripIntent } from "@/lib/recommendation/trip-intent";
 import type { ChatMsg } from "@/lib/chat-history";
+import { CHAT_HISTORY_TURNS_FOR_AI } from "@/lib/ai/conversation-context";
+import { normalizeDestination } from "@/lib/ai/normalize-destination";
 import {
   isUserConfirmingItinerary,
   roamieRecToChatItem,
@@ -63,9 +65,18 @@ export function extractChatPlanningContextFromText(
     /(?:在|到|去|這附近|附近|那一帶|區域)(.{2,24}?)(?:走走|逛逛|安排|推薦|有|嗎|吧|呢|，|。|$)/,
   );
   if (areaMatch?.[1] && areaMatch[1].length >= 2) {
-    next.preferredArea = areaMatch[1].trim().slice(0, 40);
+    const raw = areaMatch[1].trim().slice(0, 40);
+    const cleanArea = normalizeDestination(raw);
+    if (cleanArea) next.preferredArea = cleanArea;
   }
-  if (/這附近|這一帶|這邊/.test(t) && !next.preferredArea) {
+  if (/^(那附近|那邊|那里|那裡|附近還有|附近呢)/.test(t)) {
+    const anchor =
+      session.conversationContext?.nearbyAnchor ??
+      session.conversationContext?.lastDiscussedPlace ??
+      session.selectedPlaces[0]?.name ??
+      session.recommendedPlaces[0]?.name;
+    if (anchor) next.preferredArea = `${anchor}附近`;
+  } else if (/這附近|這一帶|這邊/.test(t) && !next.preferredArea) {
     next.preferredArea = "目前位置附近";
   }
 
@@ -138,7 +149,8 @@ export function buildApiMessagesFromConversation(conversation: ChatMsg[]): {
       role: m.role,
       content: formatMessageForAiContext(m),
     }))
-    .filter((m) => m.content.length > 0);
+    .filter((m) => m.content.length > 0)
+    .slice(-CHAT_HISTORY_TURNS_FOR_AI);
 }
 
 export function resolveSessionPhaseAfterReply(

@@ -1,4 +1,5 @@
 import { Loader2, Plus, Trash2 } from "lucide-react";
+import { PlaceAffiliateLinks } from "@/components/affiliate/PlaceAffiliateLinks";
 import { PlaceCardCover } from "@/components/media/PlaceCardCover";
 import { resolveSavedPlaceImageUrl } from "@/lib/saved-places-image";
 import type { SavedPlace } from "@/lib/places-storage";
@@ -63,6 +64,13 @@ export function SavedPlaceCard({
       </div>
       <div className="min-w-0 flex-1 text-left">
         <p className="truncate text-[15px] font-medium leading-snug text-foreground">{place.name}</p>
+        <PlaceAffiliateLinks
+          placeName={place.name}
+          source="saved"
+          placeTypeHints={{ typeLabel: place.category }}
+          compact
+          className="mt-2"
+        />
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <button

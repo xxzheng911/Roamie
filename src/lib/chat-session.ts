@@ -30,6 +30,10 @@ import {
 } from "@/lib/place-planning-memory";
 import type { PlaceSelectionSource } from "@/lib/trip-planning-state";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import type { ConversationContext } from "@/lib/ai/conversation-context";
+import type { ConversationState } from "@/lib/ai/conversation-state";
+import type { ConversationPlanningState } from "@/lib/ai/conversation-planning-state";
+import { isFlexiblePreferenceReply } from "@/lib/ai/flexible-preference";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import type { ChatEntryKind } from "@/lib/chat-entry";
 
@@ -113,6 +117,12 @@ export type ChatPlanningSession = {
   phase: ChatPhase;
   /** Canonical AI travel context (merged each turn) */
   travelContext?: CanonicalTravelContext;
+  /** 旅遊顧問對話記憶（目的地、季節、交通、代名詞錨點等） */
+  conversationContext?: ConversationContext;
+  /** 旅伴對話狀態（目的地、天數、偏好、階段） */
+  conversationState?: ConversationState;
+  /** @deprecated 請用 conversationState */
+  planningState?: ConversationPlanningState;
   /** Clarifying keys already asked — avoid repeat questions */
   askedClarifyKeys?: TripIntentMissingKey[];
   recommendationId?: string;
@@ -324,6 +334,9 @@ export function extractDiscoveryFromText(
   if (phase === "discover" && isDiscoveryComplete({ ...session, discovery })) {
     phase = "recommend";
   }
+  if (isFlexiblePreferenceReply(t) && session.conversationState?.destination) {
+    phase = phase === "discover" ? "followup" : phase;
+  }
 
   return { ...session, discovery, phase };
 }
@@ -463,12 +476,25 @@ export function mergeSessionFromRoamie(
           })()
         : session.recommendedPlaces;
 
+  const firstRec = aiRecs[0];
+  const lastPlace = firstRec ? placeDisplayName(firstRec) : undefined;
+
   return syncSessionPlaceMemory({
     ...session,
     mood: data.moodTag || session.mood,
     recommendedPlaces: mergedRecs,
     phase,
     conversationSummary: data.summary || session.conversationSummary,
+    conversationContext: lastPlace
+      ? {
+          ...(session.conversationContext ?? {
+            selectedPlaces: session.selectedPlaces.map(placeDisplayName),
+            updatedAt: new Date().toISOString(),
+          }),
+          lastDiscussedPlace: lastPlace,
+          updatedAt: new Date().toISOString(),
+        }
+      : session.conversationContext,
   });
 }
 
@@ -532,7 +558,9 @@ export function extractPlanningHintsFromText(
   const next = extractDiscoveryFromText(text, session);
   const t = text.trim();
 
-  const transportMatch = t.match(/(開車|走路|步行|捷運|公車|地鐵|騎車|單車|計程車|Uber)/);
+  if (/(自駕|租车|租車)/.test(t)) next.transportation = "自駕";
+  else if (/(開車)/.test(t)) next.transportation = "自駕";
+  const transportMatch = t.match(/(走路|步行|捷運|公車|地鐵|騎車|單車|計程車|Uber)/);
   if (transportMatch) next.transportation = transportMatch[1];
 
   const travelersMatch = t.match(/(\d+)\s*(?:人|位)/);
@@ -574,7 +602,7 @@ export function canGenerateItinerary(session: ChatPlanningSession): boolean {
 export function buildConversationSummary(session: ChatPlanningSession, msgs: ChatMsg[]): string {
   const recent = msgs
     .filter((m) => m.content.trim())
-    .slice(-8)
+    .slice(-20)
     .map((m) => `${m.role === "user" ? "使用者" : "Roamie"}：${m.content.slice(0, 200)}`)
     .join("\n");
   const d = session.discovery;

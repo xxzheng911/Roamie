@@ -1,5 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
+import { clearConversationContext } from "@/lib/conversation-context-store";
 import { normalizeRoamieResponse, type RoamieResponse } from "@/lib/ai/types";
 
 const GUEST_KEY = "roamie:chat";
@@ -53,4 +54,5 @@ export async function clearChatHistory(): Promise<void> {
     return;
   }
   await supabase.from("chat_messages").delete().eq("user_id", uid);
+  await clearConversationContext();
 }

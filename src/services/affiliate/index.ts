@@ -1,6 +1,20 @@
-import { AnalyticsEvents } from "@/constants/analytics-events";
-import { trackEvent } from "@/services/analytics";
 import type { AffiliateClickContext, AffiliateOffer, AffiliateProvider } from "./types";
+import { trackAffiliateClick } from "./track-affiliate-click";
+
+export {
+  AffiliateService,
+  generateKlookLink,
+  generateKKdayLink,
+  type PlaceExperienceAffiliateLink,
+} from "./affiliate-service";
+export {
+  resolveAffiliatePlaceIntent,
+  affiliateIntentLabel,
+  affiliateIntentFromPlaceInput,
+  type AffiliatePlaceIntent,
+  type AffiliatePlaceTypeInput,
+} from "./affiliate-place-intent";
+export { trackAffiliateClick, type AffiliateClickPayload } from "./track-affiliate-click";
 
 type PartnerConfig = {
   id: AffiliateProvider["id"];
@@ -49,11 +63,13 @@ export function openAffiliateOffer(
   offer: AffiliateOffer,
   ctx: Omit<AffiliateClickContext, "offerId" | "partnerId">,
 ): void {
-  trackEvent(AnalyticsEvents.AFFILIATE_CLICK, {
-    offer_id: offer.id,
-    partner_id: offer.partnerId,
+  trackAffiliateClick({
+    platform: offer.partnerId,
+    place_name: offer.title,
     source: ctx.source,
-    type: offer.type,
+    timestamp: new Date().toISOString(),
+    affiliate_intent:
+      offer.type === "hotel" ? "accommodation" : "experiences",
   });
   if (typeof window !== "undefined") {
     window.open(offer.outboundUrl, "_blank", "noopener,noreferrer");

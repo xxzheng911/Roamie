@@ -22,6 +22,12 @@ import { formatLongTermMemoryForPrompt } from "@/lib/ai/memory/long-term-memory"
 import { conversationStageLabel } from "@/lib/ai/conversation-stage";
 import type { AiUserIntentType } from "@/lib/ai/user-intent";
 import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
+import type { ConversationContext } from "@/lib/ai/conversation-context";
+import {
+  formatConversationContextForAi,
+  formatKnownTravelContextForPrompt,
+} from "@/lib/ai/conversation-context";
+import type { KnownTravelContextPayload } from "@/lib/conversation-context-sync.server";
 
 export type RoamieLocation = {
   lat: number;
@@ -144,6 +150,10 @@ export type RoamieRequestContext = {
   emotionSignals?: EmotionSignals;
   sessionMemory?: SessionMemorySnapshot;
   longTermMemory?: LongTermMemorySnapshot;
+  /** 結構化對話記憶（目的地、季節、交通、代名詞錨點） */
+  conversationContext?: ConversationContext;
+  /** Snapshot for Supabase upsert after each AI turn */
+  knownTravelContext?: KnownTravelContextPayload;
 };
 
 const paceLabel: Record<string, string> = { slow: "慢", medium: "中等", active: "想多看" };
@@ -294,7 +304,9 @@ export function formatPlanningHints(hints?: ChatPlanningHints): string {
 }
 
 export function buildContextBlock(ctx: RoamieRequestContext): string {
+  const knownBlock = formatKnownTravelContextForPrompt(ctx.conversationContext);
   const lines = [
+    ...(knownBlock ? [knownBlock] : []),
     formatTemporalWeatherBlock(ctx.weather, ctx.time),
     `【心情】${ctx.mood?.trim() || "（未指定，請從對話推測）"}`,
     `【旅行偏好】${formatPreferences(ctx.preferences, getCachedTravelProfileFields())}`,
@@ -311,6 +323,9 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
   }
   if (ctx.emotionSignals) {
     lines.push(`【當下感受推測】${formatEmotionSignalsForPrompt(ctx.emotionSignals)}`);
+  }
+  if (ctx.conversationContext) {
+    lines.push(formatConversationContextForAi(ctx.conversationContext));
   }
   if (ctx.sessionMemory) {
     lines.push(`【本輪工作記憶（temporary）】\n${formatSessionMemoryForPrompt(ctx.sessionMemory)}`);

@@ -50,6 +50,57 @@ export type Database = {
         }
         Relationships: []
       }
+      conversation_context: {
+        Row: {
+          budget: string | null
+          companions: string | null
+          destination: string | null
+          mood: string | null
+          plus_memory: Json
+          season: string | null
+          selected_places: Json
+          session_extras: Json
+          transportation: string | null
+          travel_date: string | null
+          travel_days: number | null
+          updated_at: string
+          user_id: string
+          weather: string | null
+        }
+        Insert: {
+          budget?: string | null
+          companions?: string | null
+          destination?: string | null
+          mood?: string | null
+          plus_memory?: Json
+          season?: string | null
+          selected_places?: Json
+          session_extras?: Json
+          transportation?: string | null
+          travel_date?: string | null
+          travel_days?: number | null
+          updated_at?: string
+          user_id: string
+          weather?: string | null
+        }
+        Update: {
+          budget?: string | null
+          companions?: string | null
+          destination?: string | null
+          mood?: string | null
+          plus_memory?: Json
+          season?: string | null
+          selected_places?: Json
+          session_extras?: Json
+          transportation?: string | null
+          travel_date?: string | null
+          travel_days?: number | null
+          updated_at?: string
+          user_id?: string
+          weather?: string | null
+        }
+        Relationships: []
+      }
       chat_messages: {
         Row: {
           content: string

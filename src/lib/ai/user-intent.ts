@@ -2,13 +2,22 @@ import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { TripIntent } from "@/lib/recommendation/trip-intent";
 import { userWantsPlanningFinalize } from "@/lib/chat-planning-flow";
 import { isUserConfirmingItinerary } from "@/lib/chat-session";
+import { buildNormalizedTravelContextLog, logContextNormalized } from "@/lib/ai/context-normalize";
+import { resolveCleanDestination } from "@/lib/ai/normalize-destination";
 import { parseTravelContextFromText } from "@/lib/ai/travel-context";
+import { isFlexiblePreferenceReply } from "@/lib/ai/flexible-preference";
+import {
+  hasEstablishedTripPlanningContext,
+  resolveSessionDestination,
+  shouldOrchestrateCompanion,
+} from "@/lib/ai/conversation-state";
 
 function isEmotionalOrVagueTurn(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (isFlexiblePreferenceReply(t)) return false;
   if (matchesTravelTimeAdvicePatterns(t) || matchesExplicitPlaceListPatterns(t)) return false;
-  return /(累|疲|倦|煩|悶|孤單|孤獨|無聊|壓力|焦慮|難過|開心|興奮|想放空|想走走|不知道|隨便|都可以|沒想法|有點)/.test(
+  return /(累|疲|倦|煩|悶|孤單|孤獨|無聊|壓力|焦慮|難過|開心|興奮|想放空|想走走|不知道|沒想法|有點)/.test(
     t,
   );
 }
@@ -106,14 +115,27 @@ export function resolveAiUserIntent(
 ): AiUserIntent {
   const t = userText.trim();
   const parsed = parseTravelContextFromText(t, session);
-  const destination =
-    tripIntent?.destinationCity?.trim() ||
-    tripIntent?.destinationArea?.trim() ||
-    parsed.destination?.trim() ||
-    session.tripDestination?.city?.trim() ||
-    session.tripDestination?.displayLabel?.trim();
+  const destination = resolveCleanDestination(t, {
+    rawDestination:
+      tripIntent?.destinationCity?.trim() ||
+      tripIntent?.destinationArea?.trim() ||
+      parsed.destination?.trim(),
+    sessionDestination:
+      session.travelContext?.destination ??
+      session.tripDestination?.city ??
+      session.tripDestination?.displayLabel,
+    preferredArea: session.preferredArea,
+  });
   const travelMonth = extractTravelMonth(t, tripIntent) ?? parsed.travelMonth;
   const companion = companionLabel(t, tripIntent, session);
+
+  logContextNormalized(
+    buildNormalizedTravelContextLog(t, session, {
+      ...parsed,
+      destination: destination ?? parsed.destination,
+      travelMonth,
+    }),
+  );
 
   let type: AiUserIntentType;
 
@@ -130,11 +152,24 @@ export function resolveAiUserIntent(
       userExplicitlyWantsPlaceList(t) || session.selectedPlaces.length > 0
         ? "place_recommendation"
         : "mood_nearby";
+  } else if (shouldOrchestrateCompanion(session)) {
+    type = "travel_time_advice";
+  } else if (
+    hasEstablishedTripPlanningContext(session) ||
+    resolveSessionDestination(session) ||
+    userAsksTravelTimeAdvice(t)
+  ) {
+    type = "travel_time_advice";
   } else {
     type = "mood_nearby";
   }
 
-  const intent: AiUserIntent = { type, destination, travelMonth, companion };
+  const intent: AiUserIntent = {
+    type,
+    destination: destination ?? resolveSessionDestination(session),
+    travelMonth: travelMonth ?? session.conversationContext?.travelMonth ?? session.travelContext?.travelMonth,
+    companion,
+  };
   console.info("[AI_INTENT] type=", intent.type);
   console.info(
     "[AI_CONTEXT] destination=",

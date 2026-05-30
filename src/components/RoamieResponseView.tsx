@@ -14,6 +14,7 @@ import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/typ
 import type { OutfitAdvicePayload } from "@/lib/outfit/types";
 import { outfitAdviceDays } from "@/lib/outfit/types";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
+import { PlaceAffiliateLinks } from "@/components/affiliate/PlaceAffiliateLinks";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
@@ -546,6 +547,12 @@ export function RoamieResponseView({
                       compact
                     />
                   ) : null}
+                  <PlaceAffiliateLinks
+                    placeName={r.placeName ?? r.name}
+                    source="chat"
+                    placeTypeHints={{ typeLabel: r.type }}
+                    compact
+                  />
                 </div>
               </article>
             );

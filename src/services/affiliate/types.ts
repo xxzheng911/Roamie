@@ -27,7 +27,7 @@ export type AffiliateOffer = {
 export type AffiliateClickContext = {
   offerId: string;
   partnerId: AffiliatePartnerId;
-  source: "chat" | "map" | "itinerary" | "home";
+  source: "chat" | "map" | "itinerary" | "home" | "trip_detail" | "saved";
   userId?: string;
 };
 

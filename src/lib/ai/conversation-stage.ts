@@ -9,6 +9,8 @@ import {
 } from "@/lib/ai/user-intent";
 import { userWantsMoreRecommendations, userWantsPlanningFinalize } from "@/lib/chat-planning-flow";
 import { isDiscoveryComplete, isUserConfirmingItinerary } from "@/lib/chat-session";
+import { isFlexiblePreferenceReply } from "@/lib/ai/flexible-preference";
+import { isPlanningContextComplete } from "@/lib/ai/conversation-state";
 
 /** Roamie 六段對話：理解 → 推測 → 確認 → 收斂 → 推薦 → 行程 */
 export type ConversationStage =
@@ -62,8 +64,9 @@ function conversationStageForAiIntent(
 export function isEmotionalOrVagueTurn(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (isFlexiblePreferenceReply(t)) return false;
   if (userExplicitlyWantsPlaces(t)) return false;
-  return /(累|疲|倦|還好|有點|心情|感覺|不知道|不確定|隨便|都可以|放空|難過|開心|想一個人|想安靜|不想動|沒力|壓力|煩|無聊|還行|普通)/.test(
+  return /(累|疲|倦|還好|有點|心情|感覺|不知道|不確定|隨便|放空|難過|開心|想一個人|想安靜|不想動|沒力|壓力|煩|無聊|還行|普通)/.test(
     t,
   );
 }
@@ -122,6 +125,10 @@ export function resolveConversationStage(
 
   if (session.selectedPlaces.length >= 1 && userWantsMoreRecommendations(t)) {
     return "recommend";
+  }
+
+  if (isFlexiblePreferenceReply(t) && isPlanningContextComplete(session.conversationState)) {
+    return "converge";
   }
 
   if (isEmotionalOrVagueTurn(t)) {

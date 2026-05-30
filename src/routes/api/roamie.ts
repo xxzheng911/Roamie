@@ -5,6 +5,7 @@ import { applyTierToAiContext } from "@/lib/access/context";
 import { resolveEffectivePlanTierWithProfile } from "@/lib/access/resolve";
 import type { RoamieAIErrorDetail } from "@/lib/ai/errors";
 import { AI_RATE_LIMITS, checkRateLimit } from "@/lib/rate-limit.server";
+import { upsertKnownTravelContext } from "@/lib/conversation-context-sync.server";
 
 function isAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get("origin") ?? request.headers.get("referer");
@@ -92,6 +93,13 @@ export const Route = createFileRoute("/api/roamie")({
                 role: "assistant",
                 content: JSON.stringify(data),
               });
+              if (ctx.knownTravelContext) {
+                await upsertKnownTravelContext(
+                  auth.client,
+                  auth.userId,
+                  ctx.knownTravelContext,
+                );
+              }
             }
             return new Response(JSON.stringify({ data }), {
               status: 200,
@@ -130,6 +138,13 @@ export const Route = createFileRoute("/api/roamie")({
                 role: "assistant",
                 content: raw.trim(),
               });
+              if (ctx.knownTravelContext) {
+                await upsertKnownTravelContext(
+                  auth.client,
+                  auth.userId,
+                  ctx.knownTravelContext,
+                );
+              }
             } catch (e) {
               console.error("roamie persist failed:", e);
             }

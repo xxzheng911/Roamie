@@ -2,6 +2,7 @@ import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { AiUserIntent } from "@/lib/ai/user-intent";
 import { isAiItineraryServiceUnavailableError } from "@/lib/ai/local-itinerary-fallback";
 import { CHAT_PIPELINE_FALLBACK } from "@/lib/chat/chat-pipeline-constants";
+import { buildContextPreservingChatFallback } from "@/lib/ai/conversation-state";
 import { resolveInstantChatReply } from "@/lib/chat/chat-instant-reply";
 import {
   buildTravelAdviceFallbackReply,
@@ -30,6 +31,14 @@ export function buildChatFallbackReply(
     travelMonth: intent.travelMonth,
   });
   if (travelReply) return travelReply;
+
+  if (
+    session.conversationState?.destination ||
+    session.planningState?.destination ||
+    session.conversationContext?.destination
+  ) {
+    return buildContextPreservingChatFallback(session);
+  }
 
   return CHAT_PIPELINE_FALLBACK;
 }
