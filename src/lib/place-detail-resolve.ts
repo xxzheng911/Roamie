@@ -104,13 +104,23 @@ export function handoffToPlaceDetailData(handoff: PlaceDetailHandoff): PlaceDeta
   const snap = handoff.snapshot;
   if (snap) {
     return {
-      ...snap,
-      coverImageUrl: snap.coverImageUrl ?? handoff.photoUrl ?? undefined,
+      id: snap.id || handoff.placeId,
+      name: snap.name || handoff.name,
+      address: snap.address ?? handoff.address,
+      lat: snap.lat ?? handoff.lat,
+      lng: snap.lng ?? handoff.lng,
+      rating: snap.rating ?? handoff.rating ?? null,
+      userRatingCount: snap.userRatingCount ?? handoff.userRatingCount ?? null,
+      photoName: snap.photoName ?? handoff.photoName ?? null,
+      primaryType: snap.primaryType ?? handoff.category ?? null,
+      types: snap.types ?? (handoff.category ? [handoff.category] : null),
+      businessStatus: snap.businessStatus ?? null,
       openStatus: snap.openStatus ?? "unknown",
       openStatusLabel: snap.openStatusLabel ?? "",
       todayHoursLabel: snap.todayHoursLabel ?? "",
       closingSoonNote: snap.closingSoonNote ?? "",
       nextOpenHint: snap.nextOpenHint ?? "",
+      coverImageUrl: snap.coverImageUrl ?? handoff.photoUrl ?? undefined,
       reason: snap.reason?.trim() || handoff.reason?.trim() || "適合現在去走走",
       website: null,
       phone: null,
@@ -147,11 +157,11 @@ export function canFetchGooglePlaceDetails(placeId: string): boolean {
 export { shouldFetchRemotePlaceDetails } from "@/lib/place-detail-handoff";
 
 export function buildPlaceImageUrls(place: PlaceDetailViewModel): string[] {
-  const fromPhoto = place.photoName ? buildPlacePhotoUrl(place.photoName, 800) : null;
-  const urls = [fromPhoto, place.coverImageUrl].filter(
-    (u): u is string => typeof u === "string" && u.length > 0,
-  );
-  return [...new Set(urls)];
+  const url =
+    (place.photoName ? buildPlacePhotoUrl(place.photoName, 800) : null) ??
+    place.coverImageUrl ??
+    null;
+  return url ? [url] : [];
 }
 
 export function mergeFetchedPlace(
@@ -169,6 +179,7 @@ export function mergeFetchedPlace(
     reason: base.reason,
     website: fetched.website,
     phone: fetched.phone,
-    coverImageUrl: base.coverImageUrl,
+    coverImageUrl: base.coverImageUrl ?? fetched.coverImageUrl ?? undefined,
+    photoName: fetched.photoName ?? base.photoName,
   };
 }

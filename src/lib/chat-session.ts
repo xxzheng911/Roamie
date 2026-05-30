@@ -25,10 +25,13 @@ import {
 } from "@/lib/mood-chat-handoff";
 import {
   mergeRecommendationsWithSelected,
+  placeIdentityKey,
   syncSessionPlaceMemory,
 } from "@/lib/place-planning-memory";
+import type { PlaceSelectionSource } from "@/lib/trip-planning-state";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
+import type { ChatEntryKind } from "@/lib/chat-entry";
 
 export {
   buildContextualMoodHandoffOpening,
@@ -142,8 +145,16 @@ export type ChatPlanningSession = {
   lastUserIntent?: string;
   /** 從推薦頁進入後需產生情境開場 */
   pendingHandoff?: boolean;
+  /** 聊聊入口：tab | home_mood | mood_recommendation */
+  chatEntry?: ChatEntryKind;
+  /** 已選地點來源 */
+  selectionSource?: PlaceSelectionSource;
   /** AI 產生的行程草稿（未寫入收藏） */
   draftTrip?: RoamiePayloadV2;
+  /** 最近一次行程生成錯誤（diagnostics） */
+  lastItineraryError?: string | null;
+  /** 最近一次行程生成來源 */
+  lastItineraryGenerationSource?: PlaceSelectionSource | string | null;
   /** 已確認儲存至收藏的行程 id */
   lastGeneratedTripId?: string;
   /** 規劃表單選定的旅遊目的地 */
@@ -464,12 +475,19 @@ export function mergeSessionFromRoamie(
 export function addSelectedPlace(
   session: ChatPlanningSession,
   place: ChatPlaceItem,
+  opts?: { source?: PlaceSelectionSource },
 ): ChatPlanningSession {
-  const exists = session.selectedPlaces.some((p) => p.name === place.name);
+  const key = placeIdentityKey(place);
+  const exists = session.selectedPlaces.some((p) => placeIdentityKey(p) === key);
+  const nextPhase =
+    session.phase === "recommend" || session.phase === "discover"
+      ? "followup"
+      : session.phase;
   return syncSessionPlaceMemory({
     ...session,
     selectedPlaces: exists ? session.selectedPlaces : [...session.selectedPlaces, place],
-    phase: session.phase === "recommend" ? "followup" : session.phase,
+    selectionSource: opts?.source ?? session.selectionSource,
+    phase: nextPhase,
   });
 }
 
@@ -477,13 +495,14 @@ export function toggleSelectedPlace(
   session: ChatPlanningSession,
   place: ChatPlaceItem,
 ): ChatPlanningSession {
-  const exists = session.selectedPlaces.some((p) => p.name === place.name);
-  return {
+  const key = placeIdentityKey(place);
+  const exists = session.selectedPlaces.some((p) => placeIdentityKey(p) === key);
+  return syncSessionPlaceMemory({
     ...session,
     selectedPlaces: exists
-      ? session.selectedPlaces.filter((p) => p.name !== place.name)
+      ? session.selectedPlaces.filter((p) => placeIdentityKey(p) !== key)
       : [...session.selectedPlaces, place],
-  };
+  });
 }
 
 /** @deprecated 請用 buildContextualMoodHandoffOpening */
@@ -547,8 +566,9 @@ export function extractPlanningHintsFromText(
 
 export function canGenerateItinerary(session: ChatPlanningSession): boolean {
   if (session.selectedPlaces.length < 1) return false;
-  if (session.phase === "generating" || session.phase === "done") return false;
-  return session.phase === "ready";
+  if (session.phase === "generating") return false;
+  if (session.phase === "done" && session.draftTrip) return false;
+  return true;
 }
 
 export function buildConversationSummary(session: ChatPlanningSession, msgs: ChatMsg[]): string {

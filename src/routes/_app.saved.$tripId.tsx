@@ -3,6 +3,9 @@ import { TripDetailScreen } from "@/components/trip/TripDetailScreen";
 import { logTripNav } from "@/lib/trip/trip-detail-nav";
 
 export const Route = createFileRoute("/_app/saved/$tripId")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    back: search.back === "saved" ? ("saved" as const) : undefined,
+  }),
   beforeLoad: ({ params }) => {
     logTripNav("SavedTripCard-route", params.tripId);
   },
@@ -13,12 +16,14 @@ export const Route = createFileRoute("/_app/saved/$tripId")({
 
 function SavedTripDetailPage() {
   const { tripId } = Route.useParams();
+  const { back } = Route.useSearch();
   const navigate = Route.useNavigate();
 
   return (
     <TripDetailScreen
       tripId={tripId}
       navSource="SavedTripCard"
+      preferSavedBack={back === "saved"}
       onDeleted={() => navigate({ to: "/saved", search: { tab: "trips" } })}
     />
   );

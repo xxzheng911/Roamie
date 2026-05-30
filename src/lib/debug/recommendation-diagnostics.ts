@@ -22,6 +22,29 @@ export type DiagnosticsExportMeta = {
   last_error?: string | null;
   user_location?: { lat: number; lng: number; source?: string } | null;
   location_invalid?: boolean;
+  recommendation_source?: string | null;
+  place_id?: string | null;
+  dedupe_result?: {
+    input_count: number;
+    output_count: number;
+    removed_duplicates: number;
+  } | null;
+  fallback_reason?: string | null;
+  mood?: string | null;
+  detected_intent?: string | null;
+  selected_tags?: string[] | null;
+  place_types?: string[] | null;
+  ranking_reason?: string | null;
+  selectedPlaces?: Array<{
+    name: string;
+    place_id: string | null;
+    lat: number | null;
+    lng: number | null;
+    address: string;
+  }> | null;
+  itineraryPayload?: Record<string, unknown> | null;
+  generationSource?: string | null;
+  errorMessage?: string | null;
 };
 
 export type RecommendationDiagnosticSnapshot = {
@@ -43,6 +66,11 @@ export type RecommendationDiagnosticSnapshot = {
   fallback_triggered: boolean;
   fallback_reason: string | null;
   api_error: string | null;
+  mood?: string | null;
+  detected_intent?: string | null;
+  selected_tags?: string[] | null;
+  place_types?: string[] | null;
+  ranking_reason?: string | null;
   created_at: string;
 };
 

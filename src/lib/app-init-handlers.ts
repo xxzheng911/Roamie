@@ -96,7 +96,6 @@ function installAppInitHandlersCore(): void {
     (event) => {
       const err = errorFromErrorEvent(event as ErrorEvent);
       const eventMessage = (event as ErrorEvent).message?.trim() ?? "";
-      recordGoogleMapsSdkFailureFromError(err, eventMessage, extra);
       const extra = {
         source: "window.error",
         eventMessage,
@@ -105,6 +104,7 @@ function installAppInitHandlersCore(): void {
         colno: event.colno,
         script: (event.target as HTMLElement | null)?.tagName === "SCRIPT",
       };
+      recordGoogleMapsSdkFailureFromError(err, eventMessage, extra);
       if (isGoogleMapsSdkInternalError(err, extra, eventMessage)) return;
       logAppError("APP_INIT_ERROR", err, extra);
       showCapacitorFatalOverlay("APP_INIT_ERROR", err, extra);

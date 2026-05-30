@@ -52,6 +52,39 @@ export async function fetchOpenMeteoCurrent(lat: number, lng: number): Promise<{
   };
 }
 
+export async function fetchOpenMeteoDailyForecast(
+  lat: number,
+  lng: number,
+  days: number,
+): Promise<import("@/lib/weather-types").DailyForecast[]> {
+  const d = Math.min(Math.max(days, 1), 16);
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
+    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
+    `&timezone=auto&forecast_days=${d}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`open-meteo daily ${res.status}`);
+  const json = (await res.json()) as {
+    daily?: {
+      time?: string[];
+      weather_code?: number[];
+      temperature_2m_max?: number[];
+      temperature_2m_min?: number[];
+      precipitation_probability_max?: number[];
+    };
+  };
+  const daily = json.daily;
+  if (!daily?.time?.length) return [];
+  return daily.time.slice(0, d).map((date, i) => ({
+    date,
+    tempHighC: daily.temperature_2m_max?.[i] ?? null,
+    tempLowC: daily.temperature_2m_min?.[i] ?? null,
+    precipProbability: daily.precipitation_probability_max?.[i] ?? null,
+    condition: openMeteoCodeToCondition(daily.weather_code?.[i] ?? null),
+    iconType: String(daily.weather_code?.[i] ?? 0),
+  }));
+}
+
 export async function buildWeatherSummaryFromOpenMeteo(
   lat: number,
   lng: number,

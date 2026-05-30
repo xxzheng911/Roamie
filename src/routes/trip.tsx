@@ -32,7 +32,7 @@ import { getUserProfile } from "@/lib/profile-storage";
 import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import { resolveBudgetMode } from "@/lib/preferences-storage";
-import { logTripNav, TRIP_DETAIL_ROUTE } from "@/lib/trip/trip-detail-nav";
+import { logTripNav, TRIP_DETAIL_ROUTE, tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
 
 type TripSearch = { id?: string; draft?: string };
 
@@ -163,7 +163,7 @@ function Trip() {
       clearDraftTrip();
       toast.success("已儲存到收藏");
       logTripNav("trip-draft-saved", saved.id);
-      navigate({ to: TRIP_DETAIL_ROUTE, params: { tripId: saved.id }, replace: true });
+      navigate(tripDetailNavigateOptions(saved.id, { back: "saved", replace: true }));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "儲存失敗");
     }

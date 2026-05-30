@@ -18,11 +18,12 @@ export type PersonalityResult = {
   impression: string;
 };
 
-export function derivePersonality(prefs: TravelPreferences): PersonalityResult {
-  const pace = prefs.pace ?? "medium";
-  const vibe = prefs.vibe ?? "either";
-  const avoid = prefs.avoid?.[0];
-  const budget = BUDGET_MODE_LABELS[resolveBudgetMode(prefs)];
+export function derivePersonality(prefs: TravelPreferences | null | undefined): PersonalityResult {
+  const safe = prefs ?? {};
+  const pace = safe.pace ?? "medium";
+  const vibe = safe.vibe ?? "either";
+  const avoid = safe.avoid?.[0];
+  const budget = BUDGET_MODE_LABELS[resolveBudgetMode(safe)];
 
   let type = "巷弄漫遊者";
   if (pace === "slow" && vibe === "quiet") type = "慢步療癒者";
@@ -55,8 +56,8 @@ export function derivePersonality(prefs: TravelPreferences): PersonalityResult {
 }
 
 /** Roamie 夥伴語氣的測驗結果摘要（個人簡介用） */
-export function buildCompanionSummary(prefs: TravelPreferences): string {
-  if (!prefs.onboarded) return "";
+export function buildCompanionSummary(prefs: TravelPreferences | null | undefined): string {
+  if (!prefs?.onboarded) return "";
 
   const pace = prefs.pace ?? "medium";
   const vibe = prefs.vibe ?? "either";

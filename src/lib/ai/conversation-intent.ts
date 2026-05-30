@@ -66,11 +66,14 @@ export function parseConversationIntent(text: string): ParsedConversationIntent 
   return { intents, moodLabel, wantsRecommendations, isEmotional };
 }
 
+import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
+
 /** 陪伴式對話應走真實 AI，不要用固定 clarify 模板 */
 export function shouldUseCompanionAiReply(
   userText: string,
   session: { fromMoodFlow?: boolean; fromMoodCard?: boolean; fromPlanForm?: boolean },
 ): boolean {
+  if (userAsksTravelTimeAdvice(userText)) return true;
   if (session.fromPlanForm) return false;
   if (session.fromMoodFlow || session.fromMoodCard) return true;
 

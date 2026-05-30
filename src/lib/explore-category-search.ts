@@ -42,6 +42,7 @@ export type SearchPlacesInput = {
   includedTypes?: string[];
   nearbyGroups?: string[][];
   locale?: Locale;
+  availabilityContext?: "now" | "lenient";
 };
 
 export type SearchPlacesFn = (
@@ -225,6 +226,49 @@ export type HomeNearbyPick = ExplorePlaceCard & {
 
 const PICKS_PER_CATEGORY = 2;
 
+export type FetchPlaceDetailsForPickFn = (placeId: string) => Promise<PlaceResult | null>;
+
+function mergePickHoursFromDetails(pick: HomeNearbyPick, details: PlaceResult): HomeNearbyPick {
+  return {
+    ...pick,
+    openStatus: details.openStatus,
+    openStatusLabel: details.openStatusLabel,
+    todayHoursLabel: details.todayHoursLabel,
+    closingSoonNote: details.closingSoonNote,
+    nextOpenHint: details.nextOpenHint,
+    photoName: pick.photoName ?? details.photoName,
+    businessStatus: details.businessStatus ?? pick.businessStatus,
+  };
+}
+
+/** 搜尋結果常缺 openNow；用 Place Details 補齊營業狀態與今日時段 */
+export async function enrichHomeNearbyPicksHours(
+  picks: HomeNearbyPick[],
+  fetchDetails?: FetchPlaceDetailsForPickFn,
+): Promise<HomeNearbyPick[]> {
+  if (!fetchDetails || picks.length === 0) return picks;
+
+  const needsEnrich = picks.filter(
+    (pick) => pick.openStatus === "unknown" && !pick.id.startsWith("mock-"),
+  );
+  if (needsEnrich.length === 0) return picks;
+
+  const enrichedById = new Map<string, HomeNearbyPick>();
+  await Promise.all(
+    needsEnrich.map(async (pick) => {
+      try {
+        const details = await fetchDetails(pick.id);
+        if (details) enrichedById.set(pick.id, mergePickHoursFromDetails(pick, details));
+      } catch (e) {
+        console.warn("[Roamie Home] pick hours enrich failed", pick.id, e);
+      }
+    }),
+  );
+
+  if (enrichedById.size === 0) return picks;
+  return picks.map((pick) => enrichedById.get(pick.id) ?? pick);
+}
+
 /** 各探索分類取 1～2 筆，再依旅遊偏好排序 */
 export type HomeNearbyPicksResult = {
   picks: HomeNearbyPick[];
@@ -240,6 +284,7 @@ export async function loadHomeNearbyPicks(ctx: {
   saved: SavedPlace[];
   searchPlacesFn: SearchPlacesFn;
   categories: ExploreCategory[];
+  fetchPlaceDetailsFn?: FetchPlaceDetailsForPickFn;
 }): Promise<HomeNearbyPicksResult> {
   let lastApiError: string | null = null;
   const perCategory = await Promise.all(
@@ -283,8 +328,11 @@ export async function loadHomeNearbyPicks(ctx: {
   if (sorted.length > 0) {
     const usedMock =
       sorted.length > 0 && sorted.every((p) => p.id.startsWith("mock-"));
+    const picks = usedMock
+      ? sorted
+      : await enrichHomeNearbyPicksHours(sorted, ctx.fetchPlaceDetailsFn);
     return {
-      picks: sorted,
+      picks,
       usedCuratedFallback: usedMock,
       apiError: usedMock ? placesApiUserHint(lastApiError) ?? lastApiError : lastApiError,
     };

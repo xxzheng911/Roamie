@@ -155,6 +155,9 @@ export function hasCompletedTravelQuiz(profile: UserProfileForReason | null | un
   return Boolean(profile?.onboarded);
 }
 
+/** 地點詳情／推薦理由用的空 profile（避免 null prefs crash） */
+export const EMPTY_USER_PROFILE_FOR_REASON: UserProfileForReason = {};
+
 function inferInterestTags(profile: UserProfileForReason): string[] {
   const blob = [
     profile.travelStyle ?? "",
@@ -543,7 +546,7 @@ export function buildPlaceRecommendationReason(
 
 /** 從完整 profile + prefs 組裝理由用資料 */
 export function userProfileForReasonFrom(
-  prefs: TravelPreferences,
+  prefs: TravelPreferences | null | undefined,
   extras?: {
     travelStyle?: string;
     personalityType?: string;
@@ -552,6 +555,15 @@ export function userProfileForReasonFrom(
     aiPreferences?: Record<string, unknown>;
   },
 ): UserProfileForReason {
+  if (!prefs) {
+    return {
+      travelStyle: extras?.travelStyle,
+      personalityType: extras?.personalityType,
+      personalitySummary: extras?.personalitySummary,
+      mood: extras?.mood,
+      aiPreferences: extras?.aiPreferences,
+    };
+  }
   return {
     onboarded: prefs.onboarded,
     pace: prefs.pace,

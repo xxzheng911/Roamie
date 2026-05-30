@@ -113,7 +113,7 @@ export async function openWeatherGetCurrent(
   });
 }
 
-/** 取得每日預報（最多 14 天；One Call 約 8 天） */
+/** 取得每日預報（最多 14 天；OpenWeather → Open-Meteo 備援） */
 export async function openWeatherGetForecast(
   lat: number,
   lng: number,
@@ -122,15 +122,33 @@ export async function openWeatherGetForecast(
   const d = Math.min(Math.max(days, 1), 14);
   const cacheKey = `ow:forecast:${lat.toFixed(3)}:${lng.toFixed(3)}:${d}`;
   return cachedWeatherFetch(cacheKey, async () => {
-    try {
-      const one = await fetchOneCall(lat, lng);
-      const forecast = parseOneCallDailyForecast(one, d);
-      if (forecast.length > 0) return forecast;
-    } catch (e) {
-      console.warn("[OpenWeather] onecall forecast failed, trying 2.5", e);
+    const { hasOpenWeatherApiKey } = await import("@/lib/openweather-key-resolve.server");
+    if (hasOpenWeatherApiKey()) {
+      try {
+        const one = await fetchOneCall(lat, lng);
+        const forecast = parseOneCallDailyForecast(one, d);
+        if (forecast.length > 0) return forecast;
+      } catch (e) {
+        console.warn("[OpenWeather] onecall forecast failed, trying 2.5", e);
+      }
+
+      try {
+        const { list, tz } = await fetchForecast25(lat, lng);
+        const forecast = aggregateForecast25ToDaily(list, tz, d);
+        if (forecast.length > 0) return forecast;
+      } catch (e) {
+        console.warn("[OpenWeather] 2.5 forecast failed, trying open-meteo", e);
+      }
+    } else {
+      console.warn("[OpenWeather] no API key, using open-meteo for forecast");
     }
 
-    const { list, tz } = await fetchForecast25(lat, lng);
-    return aggregateForecast25ToDaily(list, tz, d);
+    const { fetchOpenMeteoDailyForecast } = await import("@/lib/weather/open-meteo-client");
+    const meteo = await fetchOpenMeteoDailyForecast(lat, lng, d);
+    if (meteo.length > 0) {
+      console.info("[WEATHER_FETCH] forecast source=open-meteo-fallback days=", meteo.length);
+      return meteo;
+    }
+    return [];
   });
 }

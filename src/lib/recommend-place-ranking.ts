@@ -1,5 +1,5 @@
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
-import type { PlaceAvailability, PlaceHoursData } from "@/lib/filter-available-places";
+import type { PlaceAvailability, PlaceHoursData, FilterPlacesContext } from "@/lib/filter-available-places";
 import {
   derivePlaceAvailability,
   isLateNightMode,
@@ -55,13 +55,14 @@ export function rankRecommendationItem(
   at: Date,
   mood?: string | null,
   weather?: WeatherSummary | null,
+  filterContext: FilterPlacesContext = "now",
 ): RankedRecommendation | null {
   const identity = { name: rec.name, type: rec.type };
-  if (!isPlaceAvailableNow(hours, identity, { context: "now", at })) {
+  if (!isPlaceAvailableNow(hours, identity, { context: filterContext, at })) {
     return null;
   }
 
-  let availability = derivePlaceAvailability(hours, { context: "now", at });
+  let availability = derivePlaceAvailability(hours, { context: filterContext, at });
   const lateNight = isLateNightMode(at);
   if (lateNight && isLateNightScenicAccessible(rec.name, rec.type)) {
     availability = {
@@ -90,9 +91,12 @@ export function rankRecommendations(
   at: Date = new Date(),
   mood?: string | null,
   weather?: WeatherSummary | null,
+  filterContext: FilterPlacesContext = "now",
 ): RankedRecommendation[] {
   return recs
-    .map((rec) => rankRecommendationItem(rec, hoursMap.get(rec.name) ?? {}, at, mood, weather))
+    .map((rec) =>
+      rankRecommendationItem(rec, hoursMap.get(rec.name) ?? {}, at, mood, weather, filterContext),
+    )
     .filter((x): x is RankedRecommendation => x != null)
     .sort((a, b) => a.rankScore - b.rankScore);
 }

@@ -12,12 +12,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { BackButton } from "@/components/BackButton";
+import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { TripCoverImage } from "@/components/media/TripCoverImage";
 import { SavedPlacesPickSheet } from "@/components/saved/SavedPlacesPickSheet";
 import { TripAddPlacePanel, type TripAddPlaceMode } from "@/components/saved/TripAddPlacePanel";
 import { TripRoamiePlanSheet } from "@/components/saved/TripRoamiePlanSheet";
 import { SavedTripEditableStopCard } from "@/components/saved/SavedTripEditableStopCard";
-import { TripOutfitCard } from "@/components/saved/TripOutfitCard";
 import { TripCoverSheet } from "@/components/saved/TripCoverSheet";
 import { ProfileImageCropSheet } from "@/components/profile/ProfileImageCropSheet";
 import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings } from "@/lib/ai/types";
@@ -50,8 +50,9 @@ import { tripPlaceToItineraryItem } from "@/lib/trip/trip-place-input";
 import { resolveTripTitle } from "@/lib/trip/trip-title";
 import { daysBetweenDates } from "@/lib/fetch-context";
 import { listTripDates } from "@/lib/outfit/group-by-date";
+import { outfitAdviceDays } from "@/lib/outfit/types";
 import { resolveTripDestination } from "@/lib/outfit/trip-outfit-context";
-import { useTripOutfitSuggestion } from "@/hooks/use-trip-outfit-suggestion";
+import { useTripOutfitAdvice } from "@/hooks/use-trip-outfit-advice";
 import { cn } from "@/lib/utils";
 
 function inferTripDates(
@@ -96,11 +97,18 @@ function buildDayGroups(items: RoamieItineraryItem[], settings: TripPlanSettings
 
 type Props = {
   stored: StoredItinerary;
+  /** 行程建立完成後進入詳情，返回固定回收藏頁 */
+  preferSavedBack?: boolean;
   headerRight?: React.ReactNode;
   onStoredChange?: (stored: StoredItinerary) => void;
 };
 
-export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }: Props) {
+export function SavedTripItineraryEditor({
+  stored,
+  preferSavedBack,
+  headerRight,
+  onStoredChange,
+}: Props) {
   const initial = stored.payload as RoamiePayloadV2;
   const initialView = useMemo(() => normalizeStoredTrip(stored), [stored]);
   const [tripTitle, setTripTitle] = useState(() => initialView.displayTitle);
@@ -153,30 +161,40 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
     [initial.destination, initial.destinationLocation, items],
   );
 
-  const firstWithCoords = items.find((i) => i.lat != null && i.lng != null);
-  const tripCenter = firstWithCoords
-    ? { lat: firstWithCoords.lat!, lng: firstWithCoords.lng! }
-    : undefined;
+  const outfitCoords = useMemo(() => {
+    const loc = initial.destinationLocation;
+    if (loc?.lat != null && loc?.lng != null) {
+      return { lat: loc.lat, lng: loc.lng };
+    }
+    const fromItem = items.find((i) => i.lat != null && i.lng != null);
+    if (fromItem?.lat != null && fromItem?.lng != null) {
+      return { lat: fromItem.lat, lng: fromItem.lng };
+    }
+    return { lat: null as number | null, lng: null as number | null };
+  }, [initial.destinationLocation, items]);
 
-  const { loading: outfitLoading, outfitFields, outfitError } = useTripOutfitSuggestion({
-    initialFields: {
-      outfitSuggestion: initial.outfitSuggestion,
-      outfitSuggestionUpdatedAt: initial.outfitSuggestionUpdatedAt,
-      weatherSummary: initial.weatherSummary,
-      weatherSource: initial.weatherSource,
-      outfitSuggestionInputKey: initial.outfitSuggestionInputKey,
-    },
+  const {
+    outfitAdvice,
+    outfitAdviceInputKey,
+    adviceByDate,
+    loading: outfitLoading,
+    error: outfitError,
+    weatherUnavailable,
+    unavailableMessage,
+  } = useTripOutfitAdvice({
+    initialAdvice: initial.outfitAdvice,
+    initialInputKey: initial.outfitAdviceInputKey,
     items,
     settings,
     destination: outfitDestination,
-    fallbackDestination: initial.destination,
     destinationLocation: initial.destinationLocation,
     dateRange: {
       start: settings.tripStartDate ?? tripDatesForOutfit.start,
       end: settings.tripEndDate ?? tripDatesForOutfit.end,
     },
     dayCount: dayGroups.length,
-    tripCenter,
+    lat: outfitCoords.lat,
+    lng: outfitCoords.lng,
     moodTag: initial.moodTag,
   });
 
@@ -187,9 +205,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
       itinerary: items,
       tripSettings: settings,
       recommendations: [],
-      ...outfitFields,
+      outfitAdvice,
+      outfitAdviceInputKey,
     }),
-    [initial, tripTitle, items, settings, outfitFields],
+    [initial, tripTitle, items, settings, outfitAdvice, outfitAdviceInputKey],
   );
 
   const { saving, saveError } = useDebouncedTripSave(stored.id, payload, true);
@@ -241,6 +260,14 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
 
   const safeDayIndex = Math.min(activeDayIndex, Math.max(0, dayGroups.length - 1));
   const activeDay = dayGroups[safeDayIndex];
+
+  const adviceForActiveDay = useMemo(() => {
+    if (!activeDay) return undefined;
+    const byDate = adviceByDate.get(activeDay.dateKey);
+    if (byDate) return byDate;
+    const days = outfitAdviceDays(outfitAdvice);
+    return days[activeDay.dayNumber - 1];
+  }, [activeDay, adviceByDate, outfitAdvice]);
 
   useEffect(() => {
     if (safeDayIndex !== activeDayIndex) {
@@ -524,6 +551,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
         <div className="absolute inset-0 bg-gradient-to-t from-background via-background/20 to-transparent" />
         <div className="absolute left-3 top-3">
           <BackButton
+            preferFallback={preferSavedBack}
             fallback={{ to: "/saved", search: { tab: "trips" } }}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-background/80 backdrop-blur"
           />
@@ -619,28 +647,6 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
         ) : null}
       </header>
 
-      <div className="shrink-0 px-5 pt-3">
-        <TripOutfitCard
-          destination={
-            tripView.destination !== "尚未設定" ? tripView.destination : outfitDestination
-          }
-          dateRange={tripView.dateRange}
-          weatherSummary={outfitFields.weatherSummary}
-          weatherSource={outfitFields.weatherSource}
-          suggestion={outfitFields.outfitSuggestion}
-          loading={outfitLoading}
-          errorMessage={outfitError}
-          outfitTags={outfitFields.outfitTags}
-          weatherTempC={outfitFields.weatherTempC}
-          weatherFeelsLikeC={outfitFields.weatherFeelsLikeC}
-          weatherCondition={outfitFields.weatherCondition}
-          weatherIconType={outfitFields.weatherIconType}
-          weatherIsDaytime={outfitFields.weatherIsDaytime}
-          weatherPrecipPercent={outfitFields.weatherPrecipPercent}
-          outfitTier={outfitFields.outfitTier}
-        />
-      </div>
-
       <div className="shrink-0 border-b border-border bg-background/90 px-5 py-3">
         <div className="flex items-center gap-2">
           <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto no-scrollbar">
@@ -691,6 +697,17 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
               </button>
             ) : null}
           </div>
+
+          <DayOutfitCard
+            className="mt-5"
+            destination={
+              tripView.destination !== "尚未設定" ? tripView.destination : outfitDestination
+            }
+            advice={adviceForActiveDay}
+            loading={outfitLoading}
+            unavailable={weatherUnavailable && !outfitLoading}
+            unavailableMessage={outfitError ?? unavailableMessage}
+          />
 
           {activeDay.items.length === 0 ? (
             <p className="mt-6 rounded-2xl border border-dashed border-border bg-card/60 px-4 py-8 text-center text-sm text-muted-foreground">

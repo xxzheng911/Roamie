@@ -13,13 +13,15 @@ type Props = {
   tripId: string;
   /** 導航來源（HomeTripCard / SavedTripCard / …） */
   navSource: string;
+  /** 行程建立完成後進入詳情，返回固定回收藏頁 */
+  preferSavedBack?: boolean;
   onDeleted?: () => void;
 };
 
 /**
  * 正式行程詳情：載入 saved_trips 後以 SavedTripItineraryEditor 手動編輯。
  */
-export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
+export function TripDetailScreen({ tripId, navSource, preferSavedBack, onDeleted }: Props) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [stored, setStored] = useState<StoredItinerary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -121,6 +123,7 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
     <div className="flex min-h-0 flex-1 flex-col">
       <SavedTripItineraryEditor
         stored={stored}
+        preferSavedBack={preferSavedBack}
         headerRight={deleteButton}
         onStoredChange={setStored}
       />

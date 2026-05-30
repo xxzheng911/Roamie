@@ -23,7 +23,6 @@ import {
   transportLabelForPrompt,
 } from "@/lib/outfit/trip-outfit-context";
 import type { RoamieItineraryItem, TripTransportMode } from "@/lib/ai/types";
-import { geocodeForwardUrl } from "@/lib/google-maps-api";
 import type { TripLocation } from "@/lib/location/types";
 import type { TripWeatherSource } from "@/lib/outfit/types";
 
@@ -282,40 +281,14 @@ async function resolveTripCoords(input: GenerateOutfitSuggestionInput): Promise<
   lat: number;
   lng: number;
 } | null> {
-  if (input.lat != null && input.lng != null) {
-    return { lat: input.lat, lng: input.lng };
-  }
-  const loc = input.destinationLocation;
-  if (loc?.lat != null && loc?.lng != null) {
-    return { lat: loc.lat, lng: loc.lng };
-  }
-
-  const destination = resolveTripDestination({
+  const { resolveOutfitCoords } = await import("@/lib/outfit/resolve-outfit-coords");
+  return resolveOutfitCoords({
     destination: input.destination,
     destinationLocation: input.destinationLocation,
     itinerary: input.items,
+    lat: input.lat,
+    lng: input.lng,
   });
-  if (!destination || destination === "你的目的地") return null;
-
-  try {
-    const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
-    const apiKey = requireGoogleMapsServerKey();
-    const res = await fetch(
-      geocodeForwardUrl(destination, apiKey, { language: "zh-TW", region: "tw" }),
-    );
-    if (!res.ok) return null;
-    const json = (await res.json()) as {
-      status?: string;
-      results?: Array<{ geometry?: { location?: { lat?: number; lng?: number } } }>;
-    };
-    if (json.status !== "OK" || !json.results?.[0]?.geometry?.location) return null;
-    const { lat, lng } = json.results[0].geometry.location;
-    if (lat == null || lng == null) return null;
-    return { lat, lng };
-  } catch (e) {
-    console.warn("[Roamie TripOutfit] geocode destination failed", e);
-    return null;
-  }
 }
 
 /** 依行程資料生成整趟穿搭建議 */

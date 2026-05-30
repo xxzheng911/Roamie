@@ -14,6 +14,7 @@ import {
   TrainFront,
 } from "lucide-react";
 import { PlaceActionRow } from "@/components/PlaceActionRow";
+import { PlaceCardCover } from "@/components/media/PlaceCardCover";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
@@ -52,6 +53,7 @@ export type PlaceDetailData = PlaceResult & {
   introLoading?: boolean;
   website?: string | null;
   phone?: string | null;
+  coverImageUrl?: string | null;
 };
 
 type Props = {
@@ -125,14 +127,18 @@ export function PlaceDetailSheet({
   return (
     <div className="flex flex-col" data-no-sheet-drag>
       <div className="relative mx-5 mt-1 aspect-[16/10] overflow-hidden rounded-3xl bg-secondary shadow-soft">
-        {photos.length > 0 ? (
-          <>
-            <img
-              src={photos[photoIdx]}
-              alt={place.name}
-              className="h-full w-full object-cover"
-            />
-            {photos.length > 1 && (
+        <PlaceCardCover
+          placeId={place.id}
+          name={place.name}
+          photoName={place.photoName}
+          primaryType={place.primaryType}
+          types={place.types}
+          coverImageUrl={photos.length > 0 ? photos[photoIdx] : place.coverImageUrl}
+          className="h-full w-full"
+          imgClassName="h-full w-full object-cover"
+          alt={place.name}
+        />
+        {photos.length > 1 ? (
               <>
                 <button
                   type="button"
@@ -162,13 +168,7 @@ export function PlaceDetailSheet({
                   ))}
                 </div>
               </>
-            )}
-          </>
-        ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            尚無照片
-          </div>
-        )}
+        ) : null}
         <button
           type="button"
           onClick={onToggleSave}

@@ -22,6 +22,7 @@ import {
   applyAvailabilityFields,
   derivePlaceAvailability,
   isPlaceAvailableNow,
+  type FilterPlacesContext,
   type PlaceHoursData,
 } from "@/lib/filter-available-places";
 import { filterExplorePlaces, isTravelFriendlyPlace } from "@/lib/filter-explore-places";
@@ -52,6 +53,8 @@ export const ExploreSearchInput = z.object({
   nearbyGroups: z.array(z.array(z.string()).max(10)).max(12).optional(),
   /** 使用者 App 語言（非所在地） */
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
+  /** now：只推營業中；lenient：聊天／心情可含休息中 */
+  availabilityContext: z.enum(["now", "lenient"]).optional().default("now"),
 });
 
 type RawPlace = RawPlaceHours;
@@ -65,14 +68,19 @@ export function rawPlaceToHoursData(p: RawPlace): PlaceHoursData {
   };
 }
 
-function mapRawPlaces(raw: RawPlace[]): PlaceResult[] {
+function mapRawPlaces(
+  raw: RawPlace[],
+  availabilityContext: FilterPlacesContext = "now",
+): PlaceResult[] {
   return raw
     .map((p) => {
       const hours = rawPlaceToHoursData(p);
       const name = p.displayName?.text ?? "Unknown";
       const type = p.primaryType ?? p.types?.[0] ?? "";
-      if (!isPlaceAvailableNow(hours, { name, type }, { context: "now" })) return null;
-      const availability = derivePlaceAvailability(hours, { context: "now" });
+      if (!isPlaceAvailableNow(hours, { name, type }, { context: availabilityContext })) {
+        return null;
+      }
+      const availability = derivePlaceAvailability(hours, { context: availabilityContext });
       const fields = applyAvailabilityFields({}, availability);
       return {
         place: {
@@ -188,6 +196,7 @@ async function searchText(
   radius: number,
   pageSize = PLACES_SEARCH_LIMITS.textPageSize,
   userLocale?: Locale,
+  availabilityContext: FilterPlacesContext = "now",
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
@@ -200,7 +209,7 @@ async function searchText(
 
   const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey);
   if (error) return { places: [], error };
-  return { places: mapRawPlaces(raw), error: null };
+  return { places: mapRawPlaces(raw, availabilityContext), error: null };
 }
 
 async function searchNearby(
@@ -211,6 +220,7 @@ async function searchNearby(
   includedTypes: string[],
   maxResultCount = PLACES_SEARCH_LIMITS.nearbyMaxResults,
   userLocale?: Locale,
+  availabilityContext: FilterPlacesContext = "now",
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
@@ -224,7 +234,7 @@ async function searchNearby(
 
   const { places: raw, error } = await postPlaces(placesSearchNearbyUrl(), body, apiKey);
   if (error) return { places: [], error };
-  return { places: mapRawPlaces(raw), error: null };
+  return { places: mapRawPlaces(raw, availabilityContext), error: null };
 }
 
 async function searchMultiNearby(
@@ -234,6 +244,7 @@ async function searchMultiNearby(
   radius: number,
   groups: string[][],
   userLocale?: Locale,
+  availabilityContext: FilterPlacesContext = "now",
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const settled = await Promise.all(
     groups.map((types) =>
@@ -245,6 +256,7 @@ async function searchMultiNearby(
         types,
         PLACES_SEARCH_LIMITS.multiNearbyPerGroup,
         userLocale,
+        availabilityContext,
       ),
     ),
   );
@@ -325,6 +337,7 @@ async function runExploreSearch(
   const center = { lat: data.lat, lng: data.lng };
   const radii = [data.radius ?? DEFAULT_SEARCH_RADIUS_M, 8_000, 5_000];
   const userLocale = data.locale ? coerceLocale(data.locale) : undefined;
+  const availabilityContext = data.availabilityContext ?? "now";
 
   for (const radius of radii) {
     let result: { places: PlaceResult[]; error: string | null };
@@ -337,6 +350,7 @@ async function runExploreSearch(
         radius,
         data.nearbyGroups,
         userLocale,
+        availabilityContext,
       );
     } else if (data.mode === "nearby" && data.includedTypes?.length) {
       result = await searchNearby(
@@ -347,6 +361,7 @@ async function runExploreSearch(
         data.includedTypes,
         PLACES_SEARCH_LIMITS.nearbyMaxResults,
         userLocale,
+        availabilityContext,
       );
     } else if (data.query.trim()) {
       result = await searchText(
@@ -357,6 +372,7 @@ async function runExploreSearch(
         radius,
         PLACES_SEARCH_LIMITS.textPageSize,
         userLocale,
+        availabilityContext,
       );
     } else {
       result = { places: [], error: null };

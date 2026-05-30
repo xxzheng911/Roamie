@@ -26,6 +26,8 @@ function isMainScrollLockedPath(pathname: string): boolean {
     pathname === "/chat" ||
     pathname === "/map" ||
     pathname === "/plan" ||
+    pathname === "/recommendations" ||
+    pathname.startsWith("/place/") ||
     isSavedTripDetailPath(pathname)
   );
 }

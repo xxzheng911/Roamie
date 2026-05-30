@@ -49,8 +49,12 @@ export function buildPlacePhotoCandidateUrls(photoName: string, maxWidth = 600):
   if (!photoName?.trim()) return [];
   const direct = directGooglePlacePhotoUrl(photoName, maxWidth);
   const proxy = proxyGooglePlacePhotoUrl(photoName, maxWidth);
-  const candidates = [direct, proxy].filter((u): u is string => Boolean(u?.trim()));
-  return [...new Set(candidates)];
+  const { isCapacitor } = detectPlatform();
+  const preferProxy = isCapacitor && canReachBundledAppApiOrigin();
+  const candidates = preferProxy
+    ? [proxy, direct]
+    : [direct, proxy];
+  return [...new Set(candidates.filter((u): u is string => Boolean(u?.trim())))];
 }
 
 export function buildPlacePhotoUrl(photoName: string, maxWidth = 600): string | null {

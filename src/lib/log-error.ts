@@ -274,6 +274,8 @@ export function buildCapacitorEarlyErrorLogScript(): string {
     if (e.error != null && reason && reason.message && reason.message !== "undefined") return false;
     var f = e.filename || "";
     if (f.indexOf("maps.googleapis.com") >= 0) return true;
+    if (/vendor-react-[^/]+\\.js/i.test(f)) return true;
+    if (/vendor-tanstack-[^/]+\\.js/i.test(f)) return true;
     if (!document.querySelector('script[data-roamie-maps="1"]')) return false;
     return f.indexOf("/assets/index-") >= 0
       || f.indexOf("capacitor://localhost/assets/index-") >= 0;

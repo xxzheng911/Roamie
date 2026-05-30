@@ -1,10 +1,11 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { z } from "zod";
 import { PlaceDetailSheet, ExploreSubpageHeader } from "@/components/map/PlaceDetailSheet";
+import { PlaceDetailErrorBoundary } from "@/components/PlaceDetailErrorBoundary";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { useI18n } from "@/hooks/use-i18n";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
@@ -45,7 +46,7 @@ import {
   mapPlaceResultToChatItem,
   saveChatSession,
 } from "@/lib/chat-session";
-import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
+import { userProfileForReasonFrom, EMPTY_USER_PROFILE_FOR_REASON } from "@/lib/build-place-recommendation-reason";
 import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
 import { getWeather } from "@/lib/weather.functions";
@@ -57,15 +58,37 @@ const searchSchema = z.object({
 
 export const Route = createFileRoute("/_app/place/$placeId")({
   validateSearch: (search) => searchSchema.parse(search),
-  component: PlaceDetailPage,
+  component: PlaceDetailRoute,
 });
+
+function PlaceDetailRoute() {
+  const { t } = useI18n();
+  const navigate = Route.useNavigate();
+  const router = useRouter();
+  const search = Route.useSearch();
+
+  const handleBackFallback = useCallback(() => {
+    if (search.from === "home") {
+      void navigate({ to: "/", replace: false });
+      return;
+    }
+    if (window.history.length > 1) router.history.back();
+    else void navigate({ to: "/" });
+  }, [navigate, router.history, search.from]);
+
+  return (
+    <PlaceDetailErrorBoundary title={t("map.placeDetail")} onBack={handleBackFallback}>
+      <PlaceDetailPage />
+    </PlaceDetailErrorBoundary>
+  );
+}
 
 function PlaceDetailPage() {
   useIosInteractiveRoute("place-detail");
   const { placeId: placeIdParam } = Route.useParams();
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
-  const router = Route.useRouter();
+  const router = useRouter();
   const { t, locale } = useI18n();
   const fetchPlaceDetailsServerFn = useServerFn(getPlaceDetails);
   const fetchPlaceDetailsFn = useMemo(
@@ -94,9 +117,7 @@ function PlaceDetailPage() {
   const [usedFallback, setUsedFallback] = useState(false);
   const [userLocation, setUserLocation] = useState(TAIPEI_CENTER);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
-  const [reasonProfile, setReasonProfile] = useState(
-    userProfileForReasonFrom(null, null),
-  );
+  const [reasonProfile, setReasonProfile] = useState(EMPTY_USER_PROFILE_FOR_REASON);
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [introExtra, setIntroExtra] = useState<{
@@ -258,10 +279,17 @@ function PlaceDetailPage() {
         setUserLocation({ lat: loc.lat, lng: loc.lng });
       })
       .catch(() => {});
-    void Promise.all([getUserProfile(), getPreferences(), listPlaces().catch(() => [])])
+    void Promise.all([getUserProfile().catch(() => null), getPreferences(), listPlaces().catch(() => [])])
       .then(([profile, prefs, saved]) => {
         if (cancelled) return;
-        setReasonProfile(userProfileForReasonFrom(profile, prefs));
+        setReasonProfile(
+          userProfileForReasonFrom(profile?.prefs ?? prefs, {
+            travelStyle: profile?.travelStyle,
+            personalityType: profile?.personalityType,
+            personalitySummary: profile?.personalitySummary,
+            aiPreferences: profile?.aiPreferences,
+          }),
+        );
         setSavedNames(new Set(saved.map((s) => s.name)));
         const lat = place?.lat ?? userLocation.lat;
         const lng = place?.lng ?? userLocation.lng;
@@ -351,6 +379,14 @@ function PlaceDetailPage() {
       void navigate({ to: "/", replace: false });
       return;
     }
+    if (search.from === "recommendations") {
+      if (window.history.length > 1) {
+        router.history.back();
+        return;
+      }
+      void navigate({ to: "/", replace: false });
+      return;
+    }
     if (window.history.length > 1) {
       router.history.back();
       return;
@@ -431,52 +467,54 @@ function PlaceDetailPage() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col pb-4">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden pb-4">
       <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBack} />
 
-      {loading ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
-          <Loader2 className="h-7 w-7 animate-spin text-clay" aria-hidden />
-          <p className="text-sm text-muted-foreground">載入地點資訊…</p>
-        </div>
-      ) : fetchError && usedFallback && !place.address && place.lat == null ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-16 text-center">
-          <p className="text-sm text-muted-foreground">暫時讀不到這個地點，稍後再試一次</p>
-          <button
-            type="button"
-            onClick={handleBack}
-            className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground"
-          >
-            返回
-          </button>
-        </div>
-      ) : (
-        <>
-          {usedFallback && fetchError ? (
-            <p className="mx-5 mb-1 rounded-2xl bg-secondary/80 px-3 py-2 text-xs text-muted-foreground">
-              部分資訊暫時無法更新，先顯示已知內容
-            </p>
-          ) : null}
-          <PlaceDetailSheet
-            place={{ ...place, ...introExtra }}
-            imageUrls={imageUrls}
-            distanceLabel={distanceLabel}
-            isSaved={savedNames.has(place.name)}
-            isBusy={busy}
-            transportModes={navigation.modes}
-            transportLoading={navigation.loading}
-            transportTip={navigation.aiTip}
-            selectedTransportMode={navigation.selectedMode}
-            onSelectTransportMode={navigation.setSelectedMode}
-            onNavigate={handleNavigate}
-            onToggleSave={() => void handleToggleSave()}
-            onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(place))}
-            addToTripLabel={t("chat.addToTrip")}
-            saveLabel="收藏"
-            onOpenChat={handleOpenChat}
-          />
-        </>
-      )}
+        {loading ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
+            <Loader2 className="h-7 w-7 animate-spin text-clay" aria-hidden />
+            <p className="text-sm text-muted-foreground">載入地點資訊…</p>
+          </div>
+        ) : fetchError && usedFallback && !place.address && place.lat == null ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-16 text-center">
+            <p className="text-sm text-muted-foreground">暫時讀不到這個地點，稍後再試一次</p>
+            <button
+              type="button"
+              onClick={handleBack}
+              className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground"
+            >
+              返回
+            </button>
+          </div>
+        ) : (
+          <>
+            {usedFallback && fetchError ? (
+              <p className="mx-5 mb-1 rounded-2xl bg-secondary/80 px-3 py-2 text-xs text-muted-foreground">
+                部分資訊暫時無法更新，先顯示已知內容
+              </p>
+            ) : null}
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+              <PlaceDetailSheet
+                place={{ ...place, ...introExtra }}
+                imageUrls={imageUrls}
+                distanceLabel={distanceLabel}
+                isSaved={savedNames.has(place.name)}
+                isBusy={busy}
+                transportModes={navigation.modes}
+                transportLoading={navigation.loading}
+                transportTip={navigation.aiTip}
+                selectedTransportMode={navigation.selectedMode}
+                onSelectTransportMode={navigation.setSelectedMode}
+                onNavigate={handleNavigate}
+                onToggleSave={() => void handleToggleSave()}
+                onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(place))}
+                addToTripLabel={t("chat.addToTrip")}
+                saveLabel="收藏"
+                onOpenChat={handleOpenChat}
+              />
+            </div>
+          </>
+        )}
     </div>
   );
 }

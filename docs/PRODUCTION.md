@@ -70,7 +70,10 @@ npm run cap:open:ios
 
 ## Affiliate
 
-- Provider registry: `src/services/affiliate/`
+- Provider registry: `src/services/affiliate/` — outbound URL builders for partners (Booking, Klook search links, etc.)
+- Product catalog (reserved): `public.affiliate_products` — types in `src/services/affiliate/affiliate-product.ts`
+  - Columns: `id`, `title`, `destination`, `category`, `platform`, `affiliate_url`, `image_url`, `is_active`, `created_at`
+  - No seed data, admin UI, or Klook/KKday product API until partner approval
 - UI must use `buildAffiliateOffer()` / `openAffiliateOffer()` — never hardcode partner URLs in components
 
 ## Localization

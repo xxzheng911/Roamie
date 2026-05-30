@@ -1,25 +1,33 @@
 import type { RoamieItineraryItem } from "@/lib/ai/types";
 import type { DailyForecast } from "@/lib/weather.functions";
+import { ROAMIE_WEATHER_UNAVAILABLE_OUTFIT } from "@/lib/weather/constants";
 import { buildFallbackOutfitAdvice } from "@/lib/outfit/fallback-outfit";
-import { groupItineraryByDate } from "@/lib/outfit/group-by-date";
+import { groupItineraryByDate, listTripDates } from "@/lib/outfit/group-by-date";
+import {
+  categoriesToOutfitSummary,
+  inferCategoriesForItineraryDay,
+  mergeAccessoriesIntoPacking,
+} from "@/lib/outfit/infer-outfit-categories";
 import { inferActivityTypesFromDayItems } from "@/lib/outfit/infer-activities";
 import type { DailyOutfitAdvice, OutfitAdvicePayload } from "@/lib/outfit/types";
+import type { OutfitCategoryAdvice } from "@/lib/outfit/types";
 
 type OutfitAIItem = {
   date: string;
   outfitSummary?: string;
   narrative?: string;
   packingReminders?: string[];
+  categories?: OutfitCategoryAdvice;
 };
 
 function resolveItemsForDay(
-  f: DailyForecast,
+  tripDate: string,
   fIndex: number,
   forecastLen: number,
   itemsByDate: Map<string, RoamieItineraryItem[]>,
   allItems: RoamieItineraryItem[],
 ): RoamieItineraryItem[] {
-  const direct = itemsByDate.get(f.date);
+  const direct = itemsByDate.get(tripDate);
   if (direct?.length) return direct;
   if (forecastLen === 1) return allItems;
   const keys = [...itemsByDate.keys()].filter((k) => k !== "未指定日期").sort();
@@ -30,6 +38,7 @@ function resolveItemsForDay(
 
 function mergeForecastWithAI(
   forecast: DailyForecast[],
+  tripDates: string[],
   aiItems: OutfitAIItem[],
   itemsByDate: Map<string, RoamieItineraryItem[]>,
   allItems: RoamieItineraryItem[],
@@ -38,14 +47,23 @@ function mergeForecastWithAI(
   const aiByDate = new Map(aiItems.map((a) => [a.date, a]));
 
   return forecast.map((f, i) => {
-    const items = resolveItemsForDay(f, i, forecast.length, itemsByDate, allItems);
+    const tripDate = tripDates[i] ?? f.date;
+    const items = resolveItemsForDay(tripDate, i, forecast.length, itemsByDate, allItems);
     const activities = inferActivityTypesFromDayItems(items);
-    const ai = aiByDate.get(f.date);
+    const ai = aiByDate.get(tripDate) ?? aiByDate.get(f.date);
     const hi = f.tempHighC;
     const lo = f.tempLowC;
+    const categories =
+      ai?.categories ??
+      inferCategoriesForItineraryDay(f, items, fashionStyle);
+    const outfitSummary = ai?.outfitSummary?.trim() || categoriesToOutfitSummary(categories);
+    const packingReminders = mergeAccessoriesIntoPacking(
+      categories,
+      ai?.packingReminders?.length ? ai.packingReminders : [],
+    );
 
     return {
-      date: f.date,
+      date: tripDate,
       dayIndex: i + 1,
       weather: {
         condition: f.condition,
@@ -58,9 +76,10 @@ function mergeForecastWithAI(
         uvi: f.uvi ?? null,
       },
       activityTypes: activities,
-      outfitSummary: ai?.outfitSummary ?? "舒適好走的日常穿搭",
+      outfitSummary,
       narrative: ai?.narrative ?? "記得依天氣多帶一層，讓自己走得舒服。",
-      packingReminders: ai?.packingReminders?.length ? ai.packingReminders : [],
+      packingReminders,
+      categories,
       styleTone: fashionStyle,
     };
   });
@@ -81,18 +100,16 @@ export async function buildOutfitAdviceForTrip(params: {
     params.forecast.length > 0 ? params.forecast.slice(0, params.days) : params.forecast;
 
   if (!forecast.length) {
-    return {
-      destination: params.destination,
-      generatedAt: new Date().toISOString(),
-      fashionStyle: params.fashionStyle,
-      days: [],
-    };
+    return buildUnavailableOutfitAdvice(params.destination);
   }
 
+  const tripDates = listTripDates(params.itinerary, params.startDate, params.days);
+
   const dayInputs = forecast.map((f, i) => {
-    const items = itemsByDate.get(f.date) ?? [];
+    const tripDate = tripDates[i] ?? f.date;
+    const items = itemsByDate.get(tripDate) ?? [];
     return {
-      date: f.date,
+      date: tripDate,
       dayIndex: i + 1,
       forecast: f,
       activities: inferActivityTypesFromDayItems(items),
@@ -113,6 +130,7 @@ export async function buildOutfitAdviceForTrip(params: {
       fashionStyle: params.fashionStyle,
       days: mergeForecastWithAI(
         forecast,
+        tripDates,
         aiItems,
         itemsByDate,
         params.itinerary,
@@ -125,10 +143,21 @@ export async function buildOutfitAdviceForTrip(params: {
       destination: params.destination,
       generatedAt: new Date().toISOString(),
       fashionStyle: params.fashionStyle,
-      days: buildFallbackOutfitAdvice(forecast, itemsByDate, {
+      days: buildFallbackOutfitAdvice(forecast, tripDates, itemsByDate, {
         fashionStyle: params.fashionStyle,
         startDate: params.startDate,
       }),
     };
   }
+}
+
+/** 天氣 API 無法取得時的回傳 payload */
+export function buildUnavailableOutfitAdvice(destination: string): OutfitAdvicePayload {
+  return {
+    destination,
+    generatedAt: new Date().toISOString(),
+    days: [],
+    status: "weather_unavailable",
+    statusMessage: ROAMIE_WEATHER_UNAVAILABLE_OUTFIT,
+  };
 }

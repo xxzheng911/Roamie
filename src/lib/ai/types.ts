@@ -89,6 +89,8 @@ export type RoamiePayloadV2 = RoamieResponse &
     tripSettings?: TripPlanSettings;
     /** AI 每日穿搭建議（整合天氣預報） */
     outfitAdvice?: OutfitAdvicePayload;
+    /** 穿搭建議快取 key（目的地／日期／行程變更時重算） */
+    outfitAdviceInputKey?: string;
     weatherSummary?: string;
     outfitSuggestion?: string;
     coreTrip?: Record<string, unknown>;

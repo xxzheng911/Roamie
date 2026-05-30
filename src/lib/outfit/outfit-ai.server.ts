@@ -4,12 +4,32 @@ import type { DailyForecast } from "@/lib/weather.functions";
 import { formatActivityTypesForPrompt, inferActivityTypesFromDayItems } from "@/lib/outfit/infer-activities";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
 
+import type { OutfitCategoryAdvice } from "@/lib/outfit/types";
+
 export type OutfitAIItem = {
   date: string;
   outfitSummary: string;
   narrative: string;
   packingReminders: string[];
+  categories: OutfitCategoryAdvice;
 };
+
+const CATEGORY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    top: { type: "string", description: "上衣建議，如 薄長袖、短袖上衣" },
+    outerwear: { type: "string", description: "外套建議，如 輕便外套、防潑水外套；不需外套時寫「可不穿外套」" },
+    bottom: { type: "string", description: "褲裝建議，如 長褲、休閒短褲" },
+    footwear: { type: "string", description: "鞋款建議，如 舒適運動鞋、防滑鞋" },
+    accessories: {
+      type: "array",
+      items: { type: "string" },
+      description: "配件，如 太陽眼鏡、折疊傘、防曬帽、圍巾；無則空陣列",
+    },
+  },
+  required: ["top", "outerwear", "bottom", "footwear", "accessories"],
+} as const;
 
 const OUTFIT_SCHEMA = {
   type: "object",
@@ -32,8 +52,9 @@ const OUTFIT_SCHEMA = {
             items: { type: "string" },
             description: "1-3 項攜帶提醒",
           },
+          categories: CATEGORY_SCHEMA,
         },
-        required: ["date", "outfitSummary", "narrative", "packingReminders"],
+        required: ["date", "outfitSummary", "narrative", "packingReminders", "categories"],
       },
     },
   },
@@ -68,6 +89,8 @@ ${styleBlock}
 - 提及日夜溫差時要給具體建議（如晚上加外套）
 - 下雨要提雨具與鞋款；登山健行要提鞋與機能；海邊要防曬；大量步行要舒適鞋
 - outfitSummary 簡短（約 8–20 字），可用「＋」連接單品
+- categories 必須依當日天氣與行程類型填寫，每一天的建議不可相同
+- 冬季寒冷目的地（如北海道）需羽絨／保暖層；夏季熱帶（如沖繩）需透氣防曬；秋季（如京都）可建議薄針織
 - packingReminders 1-3 項，每項一句，可含 emoji 開頭如 ☔ 👟
 - 每個 date 都要有一筆 dailyOutfits`;
 }

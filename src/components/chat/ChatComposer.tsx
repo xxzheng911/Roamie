@@ -1,13 +1,15 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Send, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isCapacitorNativeShell } from "@/lib/chat-keyboard-layout";
 
 export type ChatComposerProps = {
   /** 僅在點擊送出時呼叫；不在 onChange 觸發 */
   onSend: (text: string) => void;
   onFocus?: () => void;
-  /** 僅 AI streaming / generating 時為 true，與鍵盤無關 */
-  disabled: boolean;
+  onDraftChange?: (value: string) => void;
+  /** streaming / generating 時鎖定送出 */
+  disabled?: boolean;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   showShortcutChips: boolean;
   keyboardOpen: boolean;
@@ -195,48 +197,102 @@ const ShortcutChips = memo(function ShortcutChips({
 const ComposerInputRow = memo(function ComposerInputRow({
   onSend,
   onFocus,
+  onDraftChange,
   disabled,
   streaming,
   generating,
   inputRef,
-}: Pick<ChatComposerProps, "onSend" | "onFocus" | "disabled" | "streaming" | "generating" | "inputRef">) {
+}: Pick<
+  ChatComposerProps,
+  | "onSend"
+  | "onFocus"
+  | "onDraftChange"
+  | "disabled"
+  | "streaming"
+  | "generating"
+  | "inputRef"
+>) {
   const [hasText, setHasText] = useState(false);
   const composingRef = useRef(false);
   const lastSendRef = useRef(0);
+  const sendBtnRef = useRef<HTMLButtonElement>(null);
+  const submitRef = useRef<() => void>(() => {});
 
-  const readTrimmed = useCallback(() => inputRef.current?.value.trim() ?? "", [inputRef]);
-
-  const syncHasText = useCallback((value: string) => {
+  const flushInputValue = useCallback(() => {
+    const value = inputRef.current?.value ?? "";
+    onDraftChange?.(value);
     setHasText(value.trim().length > 0);
-  }, []);
+    return value;
+  }, [inputRef, onDraftChange]);
+
+  const readTrimmed = useCallback(() => flushInputValue().trim(), [flushInputValue]);
+
+  const syncHasText = useCallback(
+    (value: string) => {
+      onDraftChange?.(value);
+      setHasText(value.trim().length > 0);
+    },
+    [onDraftChange],
+  );
 
   const handleInput = useCallback(
     (e: React.FormEvent<HTMLTextAreaElement>) => {
-      const value = e.currentTarget.value;
-      syncHasText(value);
+      syncHasText(e.currentTarget.value);
     },
     [syncHasText],
   );
 
-  const submit = useCallback(() => {
-    if (composingRef.current) return;
-    const trimmed = readTrimmed();
-    const sendDisabled = disabled || !trimmed;
-    console.log("[CHAT_SEND]", trimmed);
-    if (sendDisabled) return;
+  const submit = useCallback(
+    (source: "button" | "form" | "enter" | "native-touchend" = "button") => {
+      if (disabled) {
+        console.info("[CHAT_SEND] blocked=disabled", source);
+        return;
+      }
+      if (composingRef.current) {
+        console.info("[CHAT_SEND] blocked=ime-composing", source);
+        return;
+      }
 
-    const now = Date.now();
-    if (now - lastSendRef.current < CHIP_DEBOUNCE_MS) return;
-    lastSendRef.current = now;
+      const trimmed = readTrimmed();
+      console.info("[CHAT_SEND]", { source, text: trimmed.slice(0, 80) });
+      if (!trimmed) {
+        console.info("[CHAT_SEND] blocked=empty", source);
+        return;
+      }
 
-    console.log("[CHAT_SUBMIT_START]");
-    onSend(trimmed);
+      const now = Date.now();
+      if (now - lastSendRef.current < CHIP_DEBOUNCE_MS) return;
+      lastSendRef.current = now;
 
-    if (inputRef.current) {
-      inputRef.current.value = "";
-    }
-    setHasText(false);
-  }, [disabled, inputRef, onSend, readTrimmed]);
+      console.info("[CHAT_SUBMIT_START]", source);
+      onSend(trimmed);
+
+      if (inputRef.current) {
+        inputRef.current.value = "";
+      }
+      setHasText(false);
+      onDraftChange?.("");
+    },
+    [disabled, inputRef, onDraftChange, onSend, readTrimmed],
+  );
+
+  submitRef.current = () => submit("native-touchend");
+
+  useEffect(() => {
+    if (!isCapacitorNativeShell()) return;
+    const btn = sendBtnRef.current;
+    if (!btn) return;
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (disabled) return;
+      e.preventDefault();
+      e.stopPropagation();
+      submitRef.current();
+    };
+
+    btn.addEventListener("touchend", onTouchEnd, { passive: false });
+    return () => btn.removeEventListener("touchend", onTouchEnd);
+  }, [disabled]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -246,20 +302,30 @@ const ComposerInputRow = memo(function ComposerInputRow({
       }
       if (e.key === "Enter" && !e.shiftKey && !composingRef.current) {
         e.preventDefault();
-        submit();
+        submit("enter");
       }
     },
     [submit],
   );
 
-  const sendDisabled = disabled || !hasText;
+  const handleFocus = useCallback(
+    (e: React.FocusEvent<HTMLTextAreaElement>) => {
+      syncHasText(e.currentTarget.value);
+      onFocus?.();
+    },
+    [onFocus, syncHasText],
+  );
+
+  const busy = streaming || generating;
+  /** 僅 busy 時 disabled；空內容用 opacity，避免 iOS 未同步 hasText 導致無法點擊 */
+  const sendDisabled = disabled;
 
   return (
     <form
       className="flex items-end gap-2 rounded-3xl border border-border bg-card p-2"
       onSubmit={(e) => {
         e.preventDefault();
-        submit();
+        submit("form");
       }}
     >
       <textarea
@@ -275,7 +341,8 @@ const ComposerInputRow = memo(function ComposerInputRow({
           syncHasText(e.currentTarget.value);
         }}
         onKeyDown={handleKeyDown}
-        onFocus={onFocus}
+        onFocus={handleFocus}
+        onBlur={(e) => syncHasText(e.currentTarget.value)}
         rows={1}
         placeholder="告訴 Roamie 你的心情…"
         autoComplete="off"
@@ -287,21 +354,22 @@ const ComposerInputRow = memo(function ComposerInputRow({
         aria-label="輸入訊息"
       />
       <button
+        ref={sendBtnRef}
         type="submit"
+        data-chat-send-btn=""
+        disabled={sendDisabled}
         onPointerUp={(e) => {
           if (e.button !== 0 || sendDisabled) return;
           e.preventDefault();
-          submit();
+          submit("button");
         }}
-        disabled={sendDisabled}
-        className="flex h-10 w-10 shrink-0 touch-manipulation items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-50"
+        className={cn(
+          "flex h-10 w-10 shrink-0 touch-manipulation items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-50",
+          !hasText && !sendDisabled && "opacity-50",
+        )}
         aria-label="送出"
       >
-        {streaming || generating ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <Send className="h-4 w-4" />
-        )}
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
       </button>
     </form>
   );
@@ -320,13 +388,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   return (
     <div
-      className="chat-composer relative z-50 border-t border-border bg-background/95 px-4 pt-2 backdrop-blur"
-      style={{ touchAction: "manipulation" }}
+      className="chat-composer relative z-[210] border-t border-border bg-background px-4 pt-2"
+      style={{ touchAction: "manipulation", pointerEvents: "auto" }}
     >
       {showShortcutChips ? <ShortcutChips {...props} /> : null}
       <ComposerInputRow
         onSend={props.onSend}
         onFocus={props.onFocus}
+        onDraftChange={props.onDraftChange}
         disabled={props.disabled}
         streaming={props.streaming}
         generating={props.generating}

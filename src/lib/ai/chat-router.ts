@@ -10,6 +10,7 @@ import {
   logTravelContext,
   missingContextKeys,
 } from "@/lib/ai/travel-context";
+import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
 
 export type AiChatRouteMode = "clarify" | "recommend" | "itinerary";
 
@@ -69,6 +70,11 @@ export function resolveChatRoute(
   if (isUserConfirmingItinerary(userText)) {
     console.info("[AI_ROUTE] itinerary_mode", logTravelContext(ctx));
     return { mode: "itinerary", chatPhase: "handoff" };
+  }
+
+  if (userAsksTravelTimeAdvice(userText)) {
+    console.info("[AI_ROUTE] travel_advice_mode", logTravelContext(ctx));
+    return { mode: "recommend", chatPhase: "discover" };
   }
 
   if (isReadyForRecommendation(ctx, session)) {

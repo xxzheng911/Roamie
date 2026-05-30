@@ -333,6 +333,36 @@ export function derivePlaceAvailability(
 
   const hours = data.currentOpeningHours;
   if (!hours || hours.openNow === undefined) {
+    const inferredNow = isOpenAtScheduled(data, at);
+    if (inferredNow === true) {
+      return {
+        businessStatus: data.businessStatus ?? null,
+        openStatus: "open",
+        displayStatus: "營業中",
+        todayHoursLabel,
+        closingSoonNote: "",
+        nextOpenHint: "",
+        sortWeight: 0,
+        isRecommendable: true,
+      };
+    }
+    if (inferredNow === false) {
+      let nextOpenHint = "";
+      const next = findNextOpenFromPeriods(data, at);
+      if (next) {
+        nextOpenHint = formatNextOpenLabel(next, localInstant(at, data.utcOffsetMinutes));
+      }
+      return {
+        businessStatus: data.businessStatus ?? null,
+        openStatus: "closed_now",
+        displayStatus: "目前未營業",
+        todayHoursLabel,
+        closingSoonNote: "",
+        nextOpenHint,
+        sortWeight: nextOpenHint ? 5 : 12,
+        isRecommendable: context === "lenient",
+      };
+    }
     const lateNight = isLateNightMode(at);
     return {
       businessStatus: data.businessStatus ?? null,
@@ -435,6 +465,17 @@ export function isPlaceAvailableNow(
 
   if (isOpeningSoonClosed(availability)) {
     return true;
+  }
+
+  /** 心情／聊天推薦：保留休息中地點（卡片顯示「休息中」），只排除永久／暫停營業 */
+  if (context === "lenient") {
+    if (
+      availability.openStatus === "permanently_closed" ||
+      availability.openStatus === "temporarily_closed"
+    ) {
+      return false;
+    }
+    return availability.isRecommendable;
   }
 
   return false;

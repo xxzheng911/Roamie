@@ -52,6 +52,45 @@ async function withResolvedPlanTier(ctx: RoamieRequestContext): Promise<RoamieRe
   return applyTierToAiContext({ ...ctx, planTier }, planTier);
 }
 
+/** 避免 initialChatContext 過大導致 JSON.stringify stack overflow */
+function serializeRoamieRequest(ctx: RoamieRequestContext): string {
+  const slim: RoamieRequestContext = {
+    ...ctx,
+    initialChatContext: ctx.initialChatContext?.slice(0, 4000),
+    planningHints: ctx.planningHints
+      ? {
+          ...ctx.planningHints,
+          initialChatContext: ctx.planningHints.initialChatContext?.slice(0, 1200),
+          conversationSummary: ctx.planningHints.conversationSummary?.slice(0, 800),
+        }
+      : undefined,
+    messages: ctx.messages?.slice(-12),
+    selectedPlaces: ctx.selectedPlaces?.slice(0, 12),
+    plannedStops: ctx.plannedStops?.slice(0, 12),
+    recommendedPlaces: ctx.recommendedPlaces?.slice(0, 8),
+    recentRecommendationNames: ctx.recentRecommendationNames?.slice(0, 12),
+    savedPlaceNames: ctx.savedPlaceNames?.slice(0, 20),
+  };
+  try {
+    return JSON.stringify(slim);
+  } catch (e) {
+    console.warn("[CHAT_API] request serialize retry with minimal payload", e);
+    return JSON.stringify({
+      mode: slim.mode,
+      mood: slim.mood,
+      locale: slim.locale,
+      chatInput: slim.chatInput,
+      chatPhase: slim.chatPhase,
+      aiUserIntent: slim.aiUserIntent,
+      messages: slim.messages?.slice(-6),
+      location: slim.location,
+      weather: slim.weather,
+      time: slim.time,
+      planTier: slim.planTier,
+    });
+  }
+}
+
 function validateAssembledJson(raw: string): RoamieResponseType {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("AI 沒有回應，請再試一次。");
@@ -88,7 +127,7 @@ export async function streamRoamieAI(
       Accept: "text/event-stream",
       ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
     };
-    const posted = await postRoamieApi(url, JSON.stringify(enriched), headers, options?.signal);
+    const posted = await postRoamieApi(url, serializeRoamieRequest(enriched), headers, options?.signal);
     status = posted.status;
     bodyText = posted.bodyText;
   } catch (e) {
@@ -194,7 +233,7 @@ export async function fetchRoamieAI(
 ): Promise<RoamieResponseType> {
   const enriched = await withResolvedPlanTier(ctx);
   const url = resolveAppApiUrl("/api/roamie");
-  console.info("[CHAT_API] fetch url=", url);
+  console.info("[CHAT_API_REQUEST]", { url, mode: enriched.mode, chatPhase: enriched.chatPhase });
 
   if (isChatApiUnreachableOnNative() || isLocalhostAppApiUrl(url)) {
     throw new Error("無法連線到 AI 服務（請設定正式 VITE_APP_ORIGIN 後重新 build）。");
@@ -208,7 +247,7 @@ export async function fetchRoamieAI(
       "X-Roamie-Stream": "false",
       ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
     };
-    const posted = await postRoamieApi(url, JSON.stringify(enriched), headers);
+    const posted = await postRoamieApi(url, serializeRoamieRequest(enriched), headers);
     status = posted.status;
     bodyText = posted.bodyText;
   } catch (e) {
@@ -221,20 +260,30 @@ export async function fetchRoamieAI(
     let errMsg = "AI 服務暫時無法使用";
     try {
       const j = JSON.parse(bodyText) as { error?: string; code?: string; status?: number };
-      console.error("[Roamie AI] fetch HTTP error", {
+      console.error("[CHAT_API_ERROR]", {
         status,
         code: j.code,
         error: j.error,
       });
       if (j.error) errMsg = j.error;
     } catch {
-      console.error("[Roamie AI] fetch HTTP error", { status });
+      console.error("[CHAT_API_ERROR]", { status, body: bodyText.slice(0, 200) });
     }
     throw new Error(errMsg);
   }
 
   const json = JSON.parse(bodyText) as { data?: RoamieResponseType; error?: string };
-  if (json.error) throw new Error(json.error);
-  if (!json.data) throw new Error("AI 回應格式錯誤");
+  if (json.error) {
+    console.error("[CHAT_API_ERROR]", { error: json.error });
+    throw new Error(json.error);
+  }
+  if (!json.data) {
+    console.error("[CHAT_API_ERROR]", { error: "empty_data" });
+    throw new Error("AI 回應格式錯誤");
+  }
+  console.info("[CHAT_API_RESPONSE]", {
+    summaryLen: json.data.summary?.length ?? 0,
+    recommendations: json.data.recommendations?.length ?? 0,
+  });
   return json.data;
 }

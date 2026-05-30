@@ -36,6 +36,7 @@ export function buildExploreSearchCacheKey(data: SearchPlacesInput): string {
     types,
     groups,
     data.locale ?? "zh-TW",
+    data.availabilityContext ?? "now",
   ].join("§");
 }
 

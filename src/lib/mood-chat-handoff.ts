@@ -234,6 +234,8 @@ export function prepareMoodFlowSession(input: MoodFlowHandoffInput): ChatPlannin
     lateNightMode: isLateNightMode(new Date(bundle.time)),
     pendingHandoff: true,
     moodHandoffDone: false,
+    chatEntry: "mood_recommendation",
+    selectionSource: "recommendations",
   };
 
   const merged: ChatPlanningSession = {
@@ -254,6 +256,8 @@ export function prepareMoodFlowSession(input: MoodFlowHandoffInput): ChatPlannin
     recommendationId: record.id,
     pendingHandoff: existing?.moodHandoffDone ? false : true,
     moodHandoffDone: existing?.moodHandoffDone ?? false,
+    chatEntry: "mood_recommendation",
+    selectionSource: "recommendations",
   };
 
   merged.initialChatContext = buildInitialChatContext(merged);

@@ -2,6 +2,7 @@ import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { TripIntent } from "@/lib/recommendation/trip-intent";
 import { userWantsPlanningFinalize } from "@/lib/chat-planning-flow";
 import { isUserConfirmingItinerary } from "@/lib/chat-session";
+import { parseTravelContextFromText } from "@/lib/ai/travel-context";
 
 function isEmotionalOrVagueTurn(text: string): boolean {
   const t = text.trim();
@@ -33,17 +34,18 @@ function matchesTravelTimeAdvicePatterns(t: string): boolean {
     /(旅行時間|行程時間|什麼時候去|何時去|適合去嗎|適不適合去|適合嗎|去幾天|玩幾天|待幾天|安排幾天|幾天夠|幾天比較|待多久|要待多久)/.test(
       t,
     ) ||
+    /(天氣|氣候|溫度|冷不冷|熱不熱|會冷|會熱|穿什麼).{0,12}(怎麼樣|如何|好不好)/.test(t) ||
     /(推薦|建議).{0,8}(時間|幾天|天數|什麼時候)/.test(t) ||
     /(時間|幾天|天數|什麼時候).{0,8}(推薦|建議)/.test(t) ||
     (/\d{1,2}\s*月/.test(t) &&
-      /(去|玩|旅行|旅遊)/.test(t) &&
-      /(推薦|建議|適合|時間|幾天|天數|嗎)/.test(t))
+      /(去|玩|旅行|旅遊|行程|天氣|氣候)/.test(t) &&
+      /(推薦|建議|適合|時間|幾天|天數|嗎|怎麼樣|如何|安排|規劃)/.test(t))
   );
 }
 
 function matchesExplicitPlaceListPatterns(t: string): boolean {
   return (
-    /(推薦.{0,8}(地點|景點|店|咖啡|餐廳|酒吧|宵夜|夜景|散步)|去哪|哪裡|什麼地方|附近有|這一帶|幫我找|帶我去|景點|攻略|必去)/.test(
+    /(推薦.{0,8}(地點|景點|店|咖啡|餐廳|酒吧|宵夜|夜景|散步)|去哪|哪裡|什麼地方|附近有|這一帶|幫我找|帶我去|想找.{0,6}(咖啡|餐廳|酒吧|地方|景點)|景點|攻略|必去)/.test(
       t,
     ) ||
     (/推薦/.test(t) && !/時間|幾天|天數|什麼時候/.test(t))
@@ -103,12 +105,14 @@ export function resolveAiUserIntent(
   options?: { chatPhaseOverride?: string },
 ): AiUserIntent {
   const t = userText.trim();
+  const parsed = parseTravelContextFromText(t, session);
   const destination =
     tripIntent?.destinationCity?.trim() ||
     tripIntent?.destinationArea?.trim() ||
+    parsed.destination?.trim() ||
     session.tripDestination?.city?.trim() ||
     session.tripDestination?.displayLabel?.trim();
-  const travelMonth = extractTravelMonth(t, tripIntent);
+  const travelMonth = extractTravelMonth(t, tripIntent) ?? parsed.travelMonth;
   const companion = companionLabel(t, tripIntent, session);
 
   let type: AiUserIntentType;

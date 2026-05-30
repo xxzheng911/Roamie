@@ -269,7 +269,7 @@ function PlanPage() {
       console.info("[CREATE_TRIP] created tripId=", saved.id);
       toast.success(t("plan.tripCreated"));
       console.info("[CREATE_TRIP] navigate TripDetail");
-      navigate(tripDetailNavigateOptions(saved.id));
+      navigate(tripDetailNavigateOptions(saved.id, { back: "saved", replace: true }));
     } catch (err) {
       console.info("[CREATE_TRIP] error=", err instanceof Error ? err.message : String(err));
       const msg =

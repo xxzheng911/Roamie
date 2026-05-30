@@ -14,11 +14,9 @@ import { getWeather } from "@/lib/weather.functions";
 import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { fetchRoamieAI } from "@/lib/ai/stream-client";
 import {
-  fallbackSearchQuery,
   generateLocalRecommendationFallback,
 } from "@/lib/ai/local-recommendation-fallback";
 import { mergeTravelContext } from "@/lib/ai/travel-context";
-import { withSearchTimeout } from "@/lib/search-timeout";
 import { shouldActivateLateNightSceneFlow } from "@/lib/late-night-scene-recommendations";
 import { saveRecommendation } from "@/lib/recommendation-storage";
 import { listPlaces, toggleSavePlace, SAVED_PLACES_CHANGED_EVENT } from "@/lib/places-storage";
@@ -32,7 +30,7 @@ import { SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
 import { getLatestCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
 import { supabase } from "@/integrations/supabase/client";
 import { useI18n } from "@/hooks/use-i18n";
-import { searchPlaces } from "@/lib/places.functions";
+import { searchPlaces, getPlaceDetails } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { loadHomeNearbyPicks, type HomeNearbyPick } from "@/lib/explore-category-search";
 import { EXPLORE_CATEGORIES } from "@/lib/places-search-config";
@@ -52,24 +50,20 @@ import {
 import { pickCategoriesForHome } from "@/lib/recommendation/categories";
 import { buildDailyPrepAdvice } from "@/lib/recommendation/daily-prep-advice";
 import { HomeOutfitCard } from "@/components/home/HomeOutfitCard";
-import {
-  isRoutableGooglePlaceId,
-  latLngFallbackPlaceId,
-  pickToPlaceDetailHandoff,
-  setPlaceDetailHandoff,
-} from "@/lib/place-detail-handoff";
-import { setPlaceDetailStoreEntry } from "@/lib/place-detail-store";
-import {
-  logNearbyPlaceCardPressed,
-  logNearbyPlaceId,
-  logNearbyPlaceNavigateParams,
-  logNearbyPlaceNavigateToDetail,
-} from "@/lib/place-detail-log";
+import { homeMoodPrompt } from "@/lib/chat-entry";
+import { loadChatSession } from "@/lib/chat-session";
+import { navigateToNearbyPlaceDetail } from "@/lib/navigate-nearby-place-detail";
 import { openAppSettings } from "@/lib/open-app-settings";
 import { readBootstrapDeviceLocation } from "@/lib/device-location";
-import { readHomeMood, writeHomeMood } from "@/lib/home-mood";
-import { saveChatSession, loadChatSession } from "@/lib/chat-session";
+import { writeHomeMood } from "@/lib/home-mood";
+import type { PlaceResult } from "@/lib/place-result";
 import { filterVerifiedRecommendations } from "@/lib/place-verification";
+import { searchPlacesWithMoodFallback } from "@/lib/places-mood-search";
+import { dedupeRoamieRecommendations } from "@/lib/recommendation-dedupe";
+import {
+  countValidMoodRecommendations,
+  resolveMoodRecommendationIntent,
+} from "@/lib/recommendation/mood-place-pipeline";
 
 export const Route = createFileRoute("/_app/")({
   component: Home,
@@ -101,6 +95,7 @@ function Home() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const fetchWeather = useServerFn(getWeather);
   const searchPlacesServerFn = useServerFn(searchPlaces);
+  const fetchPlaceDetailsServerFn = useServerFn(getPlaceDetails);
   const searchPlacesFn = useMemo(
     () => createUnifiedSearchPlacesFn(searchPlacesServerFn),
     [searchPlacesServerFn],
@@ -120,7 +115,6 @@ function Home() {
   const [nearbyApiError, setNearbyApiError] = useState<string | null>(null);
   const [nearbyLoading, setNearbyLoading] = useState(true);
   const [selectedMood, setSelectedMood] = useState<string | null>(null);
-  const [lastMood, setLastMood] = useState<string | null>(() => readHomeMood());
   const moodRequestRef = useRef<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [latestTrip, setLatestTrip] = useState<CoreTrip | null>(null);
@@ -177,6 +171,10 @@ function Home() {
         saved,
         searchPlacesFn,
         categories,
+        fetchPlaceDetailsFn: async (placeId) => {
+          const { place } = await fetchPlaceDetailsServerFn({ data: { placeId, locale } });
+          return place;
+        },
       });
       console.info("[Roamie Home] nearby places", {
         count: picks.length,
@@ -219,7 +217,7 @@ function Home() {
     } finally {
       setNearbyLoading(false);
     }
-  }, [userLocation, weather, locale, searchPlacesFn, selectedMood]);
+  }, [userLocation, weather, locale, searchPlacesFn, fetchPlaceDetailsServerFn, selectedMood]);
 
   const runMoodRecommendation = useCallback(
     async (moodLabel: string) => {
@@ -243,39 +241,62 @@ function Home() {
         const userText =
           MOOD_CHAT_PROMPTS[moodLabel] ?? `我現在想要「${moodLabel}」的行程，請給我建議。`;
         const { context } = mergeTravelContext(moodSession, userText);
-        let placeResults: Awaited<ReturnType<typeof searchNearbyPlaces>>["places"] = [];
+        let placeResults: PlaceResult[] = [];
         const lat = bundle.location?.lat;
         const lng = bundle.location?.lng;
         if (lat != null && lng != null) {
           console.info("[MOOD_CHAT_LOCATION] latLng=", lat, lng);
           try {
-            const q = fallbackSearchQuery(context);
-            const fallback = await withSearchTimeout(
-              searchNearbyPlaces({ data: { query: q, lat, lng, mode: "text" } }),
-              20_000,
+            const moodSearch = await searchPlacesWithMoodFallback(searchNearbyPlaces, {
+              mood: moodLabel,
+              lat,
+              lng,
+              minCount: 3,
+              maxCount: 6,
+              userText,
+              weather: bundle.weather,
+            });
+            placeResults = moodSearch.places;
+            console.info(
+              "[MOOD_CHAT_PLACES] candidates=",
+              placeResults.length,
+              "intent=",
+              moodSearch.intent.detectedIntent,
+              "queries=",
+              moodSearch.queriesTried.join("|"),
             );
-            placeResults = fallback.places ?? [];
-            console.info("[MOOD_CHAT_PLACES] candidates=", placeResults.length);
           } catch (fallbackErr) {
             console.warn("[AI_FALLBACK] home places search failed", fallbackErr);
           }
         }
+        const moodSearchIntent = resolveMoodRecommendationIntent(moodLabel, {
+          userText,
+          weather: bundle.weather,
+        });
         const { summary, payload } = generateLocalRecommendationFallback({
           context,
           session: moodSession,
           locale,
           places: placeResults,
+          summaryTone: moodSearchIntent.summaryTone,
         });
         const recs = payload.recommendations ?? [];
         if (!recs.length && !summary.trim()) return false;
-        const hasReal = filterVerifiedRecommendations(recs).length > 0;
-        if (!hasReal) {
+        const verified = filterVerifiedRecommendations(recs);
+        const { recommendations: dedupedVerified } = dedupeRoamieRecommendations(verified, {
+          minCount: 1,
+          maxCount: 4,
+        });
+        if (dedupedVerified.length === 0) {
           toast.message("附近暫時找不到合適的真實地點，請到探索地圖看看或換個心情試試。");
           return false;
         }
-        console.info("[AI_FALLBACK] used mood=", moodLabel);
-        recordRecommendationNames(recs.map((r) => r.name));
-        const saved = await saveRecommendation({ ...payload, summary }, { mood: moodLabel });
+        console.info("[AI_FALLBACK] used mood=", moodLabel, "count=", dedupedVerified.length);
+        recordRecommendationNames(dedupedVerified.map((r) => r.name));
+        const saved = await saveRecommendation(
+          { ...payload, summary, recommendations: dedupedVerified },
+          { mood: moodLabel },
+        );
         navigate({ to: "/recommendations", search: { id: saved.id } });
         return true;
       };
@@ -313,16 +334,39 @@ function Home() {
         console.info("[AI_RECOMMENDATION] generated count=", data.recommendations?.length ?? 0);
 
         const verifiedRecs = filterVerifiedRecommendations(data.recommendations ?? []);
-        if (verifiedRecs.length === 0) {
+        const { recommendations: dedupedRecs, meta: dedupeMeta } = dedupeRoamieRecommendations(
+          verifiedRecs,
+          { minCount: 3, maxCount: 4 },
+        );
+        console.info("[REC_DEDUPE] home_ai", dedupeMeta);
+        const { validCount } = countValidMoodRecommendations(dedupedRecs, moodLabel, {
+          userText: MOOD_CHAT_PROMPTS[moodLabel],
+          weather: bundle.weather,
+        });
+        if (validCount < 2) {
+          console.info("[MOOD_PIPELINE] home_ai rejected", { validCount, mood: moodLabel });
+          const usedFallback = await saveLocalMoodFallback(bundle);
+          if (usedFallback) return;
+        }
+        const summarySaysIndoor = /室內|下雨|咖啡|休息|累/.test(data.summary ?? "");
+        if (summarySaysIndoor && validCount < dedupedRecs.length) {
+          console.info("[MOOD_PIPELINE] home_ai summary/cards mismatch", {
+            validCount,
+            total: dedupedRecs.length,
+          });
+          const usedFallback = await saveLocalMoodFallback(bundle);
+          if (usedFallback) return;
+        }
+        if (dedupedRecs.length === 0) {
           const usedFallback = await saveLocalMoodFallback(bundle);
           if (usedFallback) return;
           toast.message("附近暫時找不到合適的真實地點，請到探索地圖看看。");
           return;
         }
 
-        recordRecommendationNames(verifiedRecs.map((r) => r.name));
+        recordRecommendationNames(dedupedRecs.map((r) => r.name));
         const saved = await saveRecommendation(
-          { ...data, recommendations: verifiedRecs },
+          { ...data, recommendations: dedupedRecs },
           { mood: moodLabel },
         );
         navigate({ to: "/recommendations", search: { id: saved.id } });
@@ -348,20 +392,7 @@ function Home() {
     const next = selectedMood === label ? null : label;
     console.info("[MOOD_SELECT] mood=", next ?? "cleared");
     setSelectedMood(next);
-    if (!next) {
-      writeHomeMood(null);
-      return;
-    }
-    setLastMood(next);
     writeHomeMood(next);
-    const base = loadChatSession();
-    saveChatSession({
-      ...base,
-      mood: next,
-      selectedMood: next,
-      fromMoodCard: true,
-      fromMoodFlow: true,
-    });
   };
 
   useEffect(() => {
@@ -407,42 +438,10 @@ function Home() {
   }, [weatherStatus, loadNearbyPicks]);
 
   const handleNearbyPick = async (pick: HomeNearbyPick) => {
-    logNearbyPlaceCardPressed(pick.id, pick.name);
-    logNearbyPlaceId(pick.id);
-
-    let placeId = (pick.id?.trim() ?? "").replace(/^places\//, "");
-    if (!placeId && pick.lat != null && pick.lng != null) {
-      placeId = latLngFallbackPlaceId(pick.lat, pick.lng);
-    }
-    if (!placeId) {
-      toast.message("無法開啟此地點詳情");
-      return;
-    }
-    if (
-      !isRoutableGooglePlaceId(placeId) &&
-      !placeId.startsWith("mock-") &&
-      !placeId.startsWith("latlng:")
-    ) {
-      if (pick.lat != null && pick.lng != null) {
-        placeId = latLngFallbackPlaceId(pick.lat, pick.lng);
-      } else {
-        toast.message("無法開啟此地點詳情");
-        return;
-      }
-    }
-
-    const handoff = { ...pickToPlaceDetailHandoff(pick), placeId };
-    logNearbyPlaceNavigateParams(handoff);
-    setPlaceDetailHandoff(handoff);
-    setPlaceDetailStoreEntry(placeId, handoff);
-    logNearbyPlaceNavigateToDetail();
     setNavigatingPlaceId(pick.id);
     try {
-      await navigate({
-        to: "/place/$placeId",
-        params: { placeId },
-        search: { from: "home" },
-      });
+      const ok = await navigateToNearbyPlaceDetail(pick, navigate, { from: "home" });
+      if (!ok) toast.message("無法開啟此地點詳情");
     } catch (e) {
       console.error("[home] place detail navigate failed", e);
       toast.error("無法開啟地點詳情");
@@ -538,7 +537,15 @@ function Home() {
 
       <Link
         to="/chat"
-        search={selectedMood ? { mood: selectedMood } : undefined}
+        search={
+          selectedMood
+            ? {
+                from: "home-mood",
+                mood: selectedMood,
+                prompt: homeMoodPrompt(selectedMood, MOOD_CHAT_PROMPTS[selectedMood]),
+              }
+            : { from: "tab" }
+        }
         className="mt-5 block rounded-3xl border border-border bg-card p-5 shadow-soft transition active:scale-[0.99]"
       >
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -577,14 +584,11 @@ function Home() {
             ))}
           </div>
         </div>
-        <p className="mt-2 min-h-[1.125rem] text-xs text-muted-foreground">
-          {lastMood && !selectedMood ? `最近選擇：${lastMood}` : "\u00a0"}
-        </p>
         <button
           type="button"
           onClick={handleRecommend}
           disabled={aiLoading || !selectedMood}
-          className="mt-4 flex min-h-[3.25rem] w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-[15px] font-medium text-primary-foreground shadow-lift disabled:opacity-50"
+          className="mt-3 flex min-h-[3.25rem] w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-[15px] font-medium text-primary-foreground shadow-lift disabled:opacity-50"
         >
           {aiLoading ? (
             <>

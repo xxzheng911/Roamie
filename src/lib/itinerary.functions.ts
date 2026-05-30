@@ -58,6 +58,17 @@ const InputSchema = z.object({
   /** 穿搭風格（文青、韓系、極簡等），來自個人檔案 */
   fashionStyle: z.string().max(80).optional().default(""),
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
+  destinationLocation: z
+    .object({
+      lat: z.number().optional(),
+      lng: z.number().optional(),
+      formattedName: z.string().optional(),
+      displayLabel: z.string().optional(),
+      city: z.string().optional(),
+      country: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
 });
 
 export type ItineraryInput = z.infer<typeof InputSchema>;
@@ -145,13 +156,22 @@ export const generateItinerary = createServerFn({ method: "POST" })
     });
 
     const startDate = data.startDate?.trim() || new Date().toISOString().slice(0, 10);
-    const lat = data.location?.lat;
-    const lng = data.location?.lng;
 
     let outfitAdvice: RoamiePayloadV2["outfitAdvice"];
-    if (lat != null && lng != null) {
-      try {
-        const forecast = await openWeatherGetForecast(lat, lng, data.days);
+    try {
+      const { resolveOutfitCoords } = await import("@/lib/outfit/resolve-outfit-coords");
+      const { buildUnavailableOutfitAdvice } = await import("@/lib/outfit/build-advice");
+      const coords = await resolveOutfitCoords({
+        destination: data.destination,
+        destinationLocation: data.destinationLocation as never,
+        itinerary: ai.itinerary,
+        lat: data.location?.lat,
+        lng: data.location?.lng,
+      });
+      if (!coords) {
+        outfitAdvice = buildUnavailableOutfitAdvice(data.destination);
+      } else {
+        const forecast = await openWeatherGetForecast(coords.lat, coords.lng, data.days);
         outfitAdvice = await buildOutfitAdviceForTrip({
           destination: data.destination,
           startDate,
@@ -161,9 +181,11 @@ export const generateItinerary = createServerFn({ method: "POST" })
           fashionStyle: data.fashionStyle || undefined,
           mood: data.mood || undefined,
         });
-      } catch (e) {
-        console.warn("[Roamie] outfit advice skipped", e);
       }
+    } catch (e) {
+      console.warn("[Roamie] outfit advice skipped", e);
+      const { buildUnavailableOutfitAdvice } = await import("@/lib/outfit/build-advice");
+      outfitAdvice = buildUnavailableOutfitAdvice(data.destination);
     }
 
     let tripSettings: RoamiePayloadV2["tripSettings"];

@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { OutfitAdvicePayload } from "@/lib/outfit/types";
+import { outfitAdviceDays } from "@/lib/outfit/types";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
@@ -25,16 +26,24 @@ import {
   isDiagnosticsModeEnabled,
   type RecommendationDiagnosticSnapshot,
 } from "@/lib/debug/recommendation-diagnostics";
+import { peekLastMoodPipelineMeta } from "@/lib/places-mood-search";
+import type { MoodPipelineMeta } from "@/lib/recommendation/mood-place-pipeline";
+import { peekLastItineraryDiagnostics } from "@/lib/trip-planning-state";
 
 function buildChatRecommendationSnapshots(
   recs: RoamieRecommendationItem[],
   imageSourceByKey: Record<string, string>,
+  pipelineMeta?: MoodPipelineMeta | null,
+  moodTag?: string,
 ): RecommendationDiagnosticSnapshot[] {
   return recs.map((r, i) => {
     const ext = r as RoamieRecommendationItem & {
       photoName?: string | null;
       placeId?: string | null;
       googlePlaceId?: string | null;
+      rankingReason?: string;
+      moodTags?: string[];
+      placeTypes?: string[];
     };
     const key = `${r.name}-${i}`;
     const isMock = /附近.*散步|附近.*咖啡/i.test(r.name);
@@ -62,6 +71,11 @@ function buildChatRecommendationSnapshots(
       fallback_triggered: Boolean(r.fallbackReason),
       fallback_reason: r.fallbackReason ?? null,
       api_error: null,
+      mood: pipelineMeta?.mood ?? moodTag ?? null,
+      detected_intent: pipelineMeta?.detected_intent ?? null,
+      selected_tags: ext.moodTags ?? pipelineMeta?.selected_tags ?? null,
+      place_types: ext.placeTypes ?? null,
+      ranking_reason: ext.rankingReason ?? pipelineMeta?.ranking_reasons?.[i] ?? null,
       created_at: new Date().toISOString(),
     };
   });
@@ -82,7 +96,7 @@ function ItineraryByDate({
     groups.set(key, list);
   }
   const sortedKeys = [...groups.keys()].sort();
-  const outfitByDate = new Map((outfitAdvice?.days ?? []).map((d) => [d.date, d]));
+  const outfitByDate = new Map(outfitAdviceDays(outfitAdvice).map((d) => [d.date, d]));
 
   const allCoords: LatLng[] = items
     .filter((i) => i.lat != null && i.lng != null)
@@ -111,9 +125,9 @@ function ItineraryByDate({
         )}
       </div>
       {sortedKeys.map((dateKey) => {
+        const days = outfitAdviceDays(outfitAdvice);
         const outfit =
-          outfitByDate.get(dateKey) ??
-          (outfitAdvice?.days.length === 1 ? outfitAdvice.days[0] : undefined);
+          outfitByDate.get(dateKey) ?? (days.length === 1 ? days[0] : undefined);
         return (
           <section key={dateKey}>
             <p className="mb-2 font-display text-sm text-foreground/90">{dateKey}</p>
@@ -153,6 +167,12 @@ type Props = {
   showItinerary?: boolean;
   /** 行程頁：隱藏推薦區塊 */
   hideRecommendations?: boolean;
+  /** 聊天規劃：點卡片加入 selectedPlaces，不開地點詳情 */
+  planningMode?: boolean;
+  /** 每張推薦卡下方的「生成行程」 */
+  onGenerateItinerary?: (rec: RoamieRecommendationItem) => void;
+  generatingItinerary?: boolean;
+  generateItineraryLabel?: string;
   onSavePlace?: (rec: RoamieRecommendationItem) => void | Promise<void>;
   onSelectPlace?: (rec: RoamieRecommendationItem) => void;
   /** 加入已儲存／草稿行程（sheet） */
@@ -190,6 +210,10 @@ export function RoamieResponseView({
   onDiscussPlace,
   onNavigatePlace,
   simplifiedPlaceActions = false,
+  planningMode = false,
+  onGenerateItinerary,
+  generatingItinerary = false,
+  generateItineraryLabel = "生成行程",
   pickMode,
   pickedPlaceNames,
   onTogglePick,
@@ -206,7 +230,14 @@ export function RoamieResponseView({
   const itinerary = data.itinerary ?? [];
   const [imageSourceByKey, setImageSourceByKey] = useState<Record<string, string>>({});
   const showDiagnostics = isDiagnosticsModeEnabled();
-  const chatDiagnosticItems = buildChatRecommendationSnapshots(recs, imageSourceByKey);
+  const pipelineMeta = peekLastMoodPipelineMeta();
+  const itineraryDiagnostics = peekLastItineraryDiagnostics();
+  const chatDiagnosticItems = buildChatRecommendationSnapshots(
+    recs,
+    imageSourceByKey,
+    pipelineMeta,
+    data.moodTag,
+  );
   const rawRecCount = data.recommendations?.length ?? 0;
   const exportMeta = {
     scope: "聊聊推薦",
@@ -225,6 +256,17 @@ export function RoamieResponseView({
         : rawRecCount > 0
           ? ("empty_roamie" as const)
           : ("empty_roamie" as const),
+    mood: pipelineMeta?.mood ?? data.moodTag ?? null,
+    detected_intent: pipelineMeta?.detected_intent ?? null,
+    selected_tags: pipelineMeta?.selected_tags ?? null,
+    place_types: pipelineMeta?.ranking_reasons ?? null,
+    ranking_reason: pipelineMeta?.ranking_reasons?.join(" | ") ?? null,
+    recommendation_source: recs[0]?.recommendationSource ?? null,
+    fallback_reason: recs.find((r) => r.fallbackReason)?.fallbackReason ?? null,
+    selectedPlaces: itineraryDiagnostics?.selectedPlaces ?? null,
+    itineraryPayload: itineraryDiagnostics?.itineraryPayload ?? null,
+    generationSource: itineraryDiagnostics?.generationSource ?? null,
+    errorMessage: itineraryDiagnostics?.errorMessage ?? null,
   };
 
   return (
@@ -267,16 +309,20 @@ export function RoamieResponseView({
               : (selectedPlaceNames?.has(r.name) ?? false);
             const clickable = pickMode
               ? !!onTogglePick
-              : !!(onOpenPlaceDetail ?? onDiscussPlace ?? onSelectPlace);
+              : planningMode
+                ? !!onSelectPlace
+                : !!(onOpenPlaceDetail ?? onDiscussPlace ?? onSelectPlace);
             const handleCardClick = pickMode
               ? () => onTogglePick?.(r)
-              : onOpenPlaceDetail
-                ? () => onOpenPlaceDetail(r)
-                : onDiscussPlace
-                  ? () => onDiscussPlace(r)
-                  : onSelectPlace
-                    ? () => onSelectPlace(r)
-                    : undefined;
+              : planningMode && onSelectPlace
+                ? () => onSelectPlace(r)
+                : onOpenPlaceDetail
+                  ? () => onOpenPlaceDetail(r)
+                  : onDiscussPlace
+                    ? () => onDiscussPlace(r)
+                    : onSelectPlace
+                      ? () => onSelectPlace(r)
+                      : undefined;
             const stopBubble = (e: MouseEvent | KeyboardEvent) => e.stopPropagation();
 
             const ext = r as RoamieRecommendationItem & {
@@ -428,7 +474,22 @@ export function RoamieResponseView({
                   onClick={stopBubble}
                   onKeyDown={stopBubble}
                 >
-                  {onAddToTrip && (
+                  {onGenerateItinerary ? (
+                    <button
+                      type="button"
+                      onClick={() => onGenerateItinerary(r)}
+                      disabled={generatingItinerary}
+                      className="inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1.5 text-[11px] font-medium text-primary-foreground disabled:opacity-50"
+                    >
+                      {generatingItinerary ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3 w-3" />
+                      )}
+                      {generateItineraryLabel}
+                    </button>
+                  ) : null}
+                  {onAddToTrip && !planningMode ? (
                     <button
                       type="button"
                       onClick={() => onAddToTrip(r)}
@@ -437,7 +498,7 @@ export function RoamieResponseView({
                       <Plus className="h-3 w-3" />
                       {addToTripLabel}
                     </button>
-                  )}
+                  ) : null}
                   {onSelectPlace && !pickMode && !onAddToTrip && (
                     <button
                       type="button"

@@ -17,7 +17,7 @@ type Props = { children: ReactNode };
 
 function hasMeaningfulUi(root: HTMLElement): boolean {
   return (
-    root.querySelector("main,nav,[role=main],button,a[href],input,form") != null
+    root.querySelector("main,nav,[role=main],button,a[href],input,textarea,form") != null
   );
 }
 

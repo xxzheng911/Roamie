@@ -34,6 +34,7 @@ export function BottomNav({ hiddenOnKeyboard = false }: Props) {
             <li key={it.to} className="flex-1">
               <Link
                 to={it.to}
+                search={it.to === "/chat" ? { from: "tab" } : undefined}
                 className={`flex flex-col items-center gap-1 rounded-2xl py-1.5 text-[11px] transition ${
                   active ? "text-foreground" : "text-muted-foreground"
                 }`}

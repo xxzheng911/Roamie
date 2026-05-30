@@ -35,6 +35,15 @@ export type DayWeatherSnapshot = {
   uvi?: number | null;
 };
 
+/** 結構化穿搭建議分類 */
+export type OutfitCategoryAdvice = {
+  top: string;
+  outerwear: string;
+  bottom: string;
+  footwear: string;
+  accessories: string[];
+};
+
 /** 每日穿搭建議 — 存入 RoamiePayloadV2.outfitAdvice */
 export type DailyOutfitAdvice = {
   date: string;
@@ -47,15 +56,21 @@ export type DailyOutfitAdvice = {
   narrative: string;
   /** 攜帶提醒，如「建議攜帶折疊傘」 */
   packingReminders: string[];
+  /** 結構化分類建議（上衣、外套、褲裝、鞋款、配件） */
+  categories?: OutfitCategoryAdvice;
   /** 穿搭風格語氣參考（文青、韓系等） */
   styleTone?: string;
 };
+
+export type OutfitAdviceStatus = "ready" | "weather_unavailable";
 
 export type OutfitAdvicePayload = {
   destination: string;
   generatedAt: string;
   fashionStyle?: string;
   days: DailyOutfitAdvice[];
+  status?: OutfitAdviceStatus;
+  statusMessage?: string;
 };
 
 /** 整趟行程穿搭建議 — 存入 RoamiePayloadV2 */
@@ -82,3 +97,22 @@ export type TripOutfitSuggestionFields = {
   /** 是否為 Plus 細緻版建議 */
   outfitTier?: "free" | "plus";
 };
+
+/** 舊 payload 可能缺少 days 陣列，讀取前一律正規化避免 .days.length 崩潰 */
+export function normalizeOutfitAdvicePayload(
+  raw?: OutfitAdvicePayload | null,
+): OutfitAdvicePayload | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  return {
+    destination: typeof raw.destination === "string" ? raw.destination : "",
+    generatedAt: typeof raw.generatedAt === "string" ? raw.generatedAt : new Date().toISOString(),
+    fashionStyle: raw.fashionStyle,
+    days: Array.isArray(raw.days) ? raw.days : [],
+    status: raw.status,
+    statusMessage: raw.statusMessage,
+  };
+}
+
+export function outfitAdviceDays(raw?: OutfitAdvicePayload | null): DailyOutfitAdvice[] {
+  return normalizeOutfitAdvicePayload(raw)?.days ?? [];
+}

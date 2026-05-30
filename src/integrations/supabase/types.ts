@@ -14,6 +14,42 @@ export type Database = {
   }
   public: {
     Tables: {
+      affiliate_products: {
+        Row: {
+          affiliate_url: string
+          category: string | null
+          created_at: string
+          destination: string | null
+          id: string
+          image_url: string | null
+          is_active: boolean
+          platform: string
+          title: string
+        }
+        Insert: {
+          affiliate_url: string
+          category?: string | null
+          created_at?: string
+          destination?: string | null
+          id?: string
+          image_url?: string | null
+          is_active?: boolean
+          platform: string
+          title: string
+        }
+        Update: {
+          affiliate_url?: string
+          category?: string | null
+          created_at?: string
+          destination?: string | null
+          id?: string
+          image_url?: string | null
+          is_active?: boolean
+          platform?: string
+          title?: string
+        }
+        Relationships: []
+      }
       chat_messages: {
         Row: {
           content: string

@@ -28,6 +28,7 @@ export function buildServerExploreSearchCacheKey(
     types,
     groups,
     data.locale ?? "zh-TW",
+    data.availabilityContext ?? "now",
   ].join("§");
 }
 

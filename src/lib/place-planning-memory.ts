@@ -29,22 +29,54 @@ function normalizeAddress(address?: string): string {
   return address.trim().toLowerCase().replace(/\s+/g, "");
 }
 
-/** 穩定 id：placeId > name+address */
-export function placeIdentityKey(p: PlaceLike): string {
-  if (p.placeId?.trim()) return `id:${p.placeId.trim()}`;
+/** 穩定 id：googlePlaceId / placeId > name+address */
+export function placeIdentityKey(p: PlaceLike & { googlePlaceId?: string }): string {
+  const gid = p.googlePlaceId?.trim()?.replace(/^places\//, "");
+  if (gid && !gid.startsWith("mock-") && !gid.startsWith("temp:")) return `id:${gid}`;
+  const pid = p.placeId?.trim()?.replace(/^places\//, "");
+  if (pid && !pid.startsWith("mock-") && !pid.startsWith("temp:") && !pid.startsWith("saved-")) {
+    return `id:${pid}`;
+  }
   const name = normalizePlaceName(p.placeName ?? p.name);
   const addr = normalizeAddress(p.address);
   return addr ? `na:${name}@${addr}` : `n:${name}`;
 }
 
-/** 名稱高度相似（子字串或編輯距離簡化） */
+function hasCjkText(text: string): boolean {
+  return /[\u3400-\u9fff]/.test(text);
+}
+
+function minSimilarNameLength(name: string): number {
+  return hasCjkText(name) ? 2 : 3;
+}
+
+function commonNamePrefixLength(a: string, b: string): number {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+  return i;
+}
+
+/** 名稱高度相似（子字串、共用前綴，如 愛河 vs 愛河之心） */
 export function isSimilarPlaceName(a: string, b: string): boolean {
   const na = normalizePlaceName(a);
   const nb = normalizePlaceName(b);
   if (!na || !nb) return false;
   if (na === nb) return true;
-  if (na.length >= 3 && nb.length >= 3 && (na.includes(nb) || nb.includes(na))) return true;
+
+  const minLen = Math.min(minSimilarNameLength(na), minSimilarNameLength(nb));
+  if (na.length >= minLen && nb.length >= minLen && (na.includes(nb) || nb.includes(na))) {
+    return true;
+  }
+
+  const prefixLen = commonNamePrefixLength(na, nb);
+  if (prefixLen >= minLen) return true;
+
   return false;
+}
+
+/** 同一景區／地標命名家族的最大距離（公尺） */
+export function similarPlaceClusterRadiusMeters(a: string, b: string): number {
+  return isSimilarPlaceName(a, b) ? 1500 : 200;
 }
 
 export function isDuplicatePlace(a: PlaceLike, b: PlaceLike): boolean {
@@ -58,17 +90,29 @@ export function isDuplicatePlace(a: PlaceLike, b: PlaceLike): boolean {
   return false;
 }
 
-/** 依 placeIdentityKey 去重，保留先出現者 */
+/** 依 placeIdentityKey 去重，保留先出現者；同名近距離也視為重複 */
 export function dedupePlaces<T extends PlaceLike>(places: T[]): T[] {
   const seen = new Set<string>();
   const out: T[] = [];
   for (const p of places) {
     const key = placeIdentityKey(p);
     if (seen.has(key)) continue;
+    if (out.some((existing) => isNearDuplicatePlace(existing, p))) continue;
     seen.add(key);
     out.push(p);
   }
   return out;
+}
+
+function isNearDuplicatePlace(a: PlaceLike, b: PlaceLike): boolean {
+  const nameA = a.placeName ?? a.name;
+  const nameB = b.placeName ?? b.name;
+  if (!isSimilarPlaceName(nameA, nameB)) return false;
+  if (a.lat != null && a.lng != null && b.lat != null && b.lng != null) {
+    const maxDist = similarPlaceClusterRadiusMeters(nameA, nameB);
+    return distanceMeters({ lat: a.lat, lng: a.lng }, { lat: b.lat, lng: b.lng }) < maxDist;
+  }
+  return true;
 }
 
 export function filterAlreadySelectedPlaces<T extends PlaceLike>(
@@ -177,10 +221,9 @@ export function mergeRecommendationsWithSelected(
   return dedupePlaces([...base, ...newOnes]);
 }
 
-/** 行程生成用：已選優先，含聊天中新增的 plannedStops */
+/** 行程生成用：僅使用使用者已選地點 */
 export function buildTripFromSelectedPlaces(session: ChatPlanningSession): ChatPlaceItem[] {
   const synced = syncSessionPlaceMemory(session);
-  if (synced.plannedStops?.length) return synced.plannedStops;
   return synced.selectedPlaces;
 }
 

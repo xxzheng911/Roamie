@@ -39,8 +39,11 @@ const MOOD_PRESETS: Record<
   看海: { mood: "看海", vibe: "放鬆", setting: "室外", tripPurpose: "coastal", interests: ["海邊", "散步"] },
 };
 
-const KNOWN_CITIES =
-  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
+const KNOWN_CITY_NAMES =
+  "台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本";
+
+const KNOWN_CITIES = new RegExp(`^(${KNOWN_CITY_NAMES})(市|縣|都|府)?$`, "i");
+const KNOWN_CITY_IN_TEXT = new RegExp(`(${KNOWN_CITY_NAMES})(?:市|縣|都|府)?`, "i");
 
 function uniqStrings(values: Array<string | undefined | null>): string[] {
   return [...new Set(values.filter((v): v is string => Boolean(v?.trim())).map((v) => v!.trim()))];
@@ -56,6 +59,8 @@ function parseDestination(text: string): string | undefined {
   if (abroad?.[1] && KNOWN_CITIES.test(abroad[1])) return abroad[1];
   const bare = t.match(KNOWN_CITIES);
   if (bare) return `${bare[1]}${bare[2] ?? ""}`;
+  const embedded = t.match(KNOWN_CITY_IN_TEXT);
+  if (embedded?.[1]) return embedded[1].replace(/(市|縣|都|府)$/, "");
   return undefined;
 }
 

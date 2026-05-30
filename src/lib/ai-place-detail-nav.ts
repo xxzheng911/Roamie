@@ -115,6 +115,7 @@ export type PlaceDetailNavigateArgs = {
     replace?: boolean;
   }) => Promise<void>;
   onBeforeNavigate?: () => void;
+  from?: string;
 };
 
 export async function navigateToPlaceDetailFromRecommendation({
@@ -122,6 +123,7 @@ export async function navigateToPlaceDetailFromRecommendation({
   locale,
   navigate,
   onBeforeNavigate,
+  from = "chat",
 }: PlaceDetailNavigateArgs): Promise<boolean> {
   const rawPlace = {
     name: rec.placeName ?? rec.name,
@@ -154,7 +156,7 @@ export async function navigateToPlaceDetailFromRecommendation({
     await navigate({
       to: "/place/$placeId",
       params: { placeId },
-      search: { from: "chat" },
+      search: { from },
       replace: false,
     });
     console.info("[PLACE_ROUTE] push success");

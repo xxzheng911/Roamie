@@ -66,6 +66,15 @@ export function resolvePlaceCardOpeningDisplay(place: {
     };
   }
 
+  if (hoursOnly) {
+    return {
+      statusLabel: "",
+      hoursLabel: hoursOnly,
+      openNow: null,
+      source: "unknown",
+    };
+  }
+
   return {
     statusLabel: "",
     hoursLabel: "暫時無法確認營業時間",

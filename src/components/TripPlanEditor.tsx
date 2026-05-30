@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Loader2, Sparkles, Trash2 } from "lucide-react"
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
 import type { DailyOutfitAdvice } from "@/lib/outfit/types";
+import { outfitAdviceDays } from "@/lib/outfit/types";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 import { formatLegTravelTimeLabel } from "@/lib/saved-trip/travel-time";
 import { syncTripLegsFromGoogleRoutes } from "@/lib/saved-trip/sync-route-legs";
@@ -213,7 +214,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
   };
 
   const outfitByDate = new Map<string, DailyOutfitAdvice>();
-  for (const d of payload.outfitAdvice?.days ?? []) {
+  for (const d of outfitAdviceDays(payload.outfitAdvice)) {
     outfitByDate.set(d.date, d);
   }
 
@@ -276,9 +277,9 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
 
       <div className="space-y-6">
         {[...groups.entries()].map(([dateKey, dayItems]) => {
+          const adviceDays = outfitAdviceDays(payload.outfitAdvice);
           const outfit =
-            outfitByDate.get(dateKey) ??
-            (payload.outfitAdvice?.days.length === 1 ? payload.outfitAdvice.days[0] : undefined);
+            outfitByDate.get(dateKey) ?? (adviceDays.length === 1 ? adviceDays[0] : undefined);
           return (
             <section key={dateKey}>
               <div className="mb-3">

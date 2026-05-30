@@ -4,6 +4,8 @@ import { confirmSaveTrip, type StoredItinerary } from "@/lib/itinerary-storage";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import type { PlanTripFormInput } from "@/lib/plan-trip-handoff";
 import { listTripDates } from "@/lib/outfit/group-by-date";
+import { generateTripDailyOutfitAdvice } from "@/lib/outfit/outfit-daily.functions";
+import { buildOutfitInputKey, buildTripItemsFingerprint } from "@/lib/outfit/trip-outfit-context";
 import {
   tripPlaceFromRecommendation,
   tripPlaceToItineraryItem,
@@ -107,5 +109,33 @@ export async function createTripFromPlanForm(
   bundle: ClientContextBundle,
 ): Promise<StoredItinerary> {
   const payload = buildManualTripPayloadFromPlan(form, bundle);
+  const destLabel = formatTripLocationLabel(form.destination);
+  const startDate = form.startDate || new Date().toISOString().slice(0, 10);
+  const endDate = form.endDate || startDate;
+
+  try {
+    const outfitAdvice = await generateTripDailyOutfitAdvice({
+      data: {
+        destination: destLabel,
+        destinationLocation: form.destination,
+        startDate,
+        endDate,
+        dayCount: form.days,
+        items: payload.itinerary,
+        mood: form.mood,
+      },
+    });
+    payload.outfitAdvice = outfitAdvice;
+    payload.outfitAdviceInputKey = buildOutfitInputKey({
+      destination: destLabel,
+      startDate,
+      endDate,
+      dayCount: form.days,
+      itemsFingerprint: buildTripItemsFingerprint(payload.itinerary),
+    });
+  } catch (e) {
+    console.warn("[PLAN_TRIP] outfit advice skipped", e);
+  }
+
   return confirmSaveTrip(payload, "plan");
 }

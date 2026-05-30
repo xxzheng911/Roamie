@@ -107,15 +107,18 @@ async function enrichRecommendations(
   );
 
   const normalized = recs.map((r) => normalizeRecommendationItem(r));
+  const filterContext: FilterPlacesContext =
+    opts.context === "scheduled" ? "scheduled" : "lenient";
   const openOnly = filterOpenPlaces(
     normalized,
     (r) => hoursMap.get(r.name) ?? {},
     (r) => ({ name: r.name, type: r.type }),
-    { context: "now", at },
+    { context: filterContext, at },
   );
 
   const mood = ctx.mood ?? ctx.selectedMood;
-  const ranked = rankRecommendations(openOnly, hoursMap, at, mood, ctx.weather ?? null);
+  const pool = openOnly.length ? openOnly : normalized;
+  const ranked = rankRecommendations(pool, hoursMap, at, mood, ctx.weather ?? null, filterContext);
   const stats = summarizeAvailabilityStats(ranked);
   const lateNightMode = isLateNightMode(at) || sceneFlow;
 
@@ -193,7 +196,6 @@ export async function enrichRoamieResponse(
   if (selected.length) {
     const filtered = filterAlreadyRecommendedPlaces(enrichedRecs, {
       selected,
-      recommended: ctx.recommendedPlaces,
       rejectedNames: ctx.rejectedPlaceNames,
       recentNames: ctx.recentRecommendationNames,
     });
@@ -202,8 +204,8 @@ export async function enrichRoamieResponse(
       location: ctx.location ?? null,
     });
   } else if (enrichedRecs.length) {
+    // 勿用 ctx.recommendedPlaces：Places-first 管線中那是 AI 候選池，不是「已推薦過」
     finalRecs = filterAlreadyRecommendedPlaces(enrichedRecs, {
-      recommended: ctx.recommendedPlaces,
       rejectedNames: ctx.rejectedPlaceNames,
       recentNames: ctx.recentRecommendationNames,
     });

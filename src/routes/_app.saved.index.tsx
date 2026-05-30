@@ -39,7 +39,8 @@ function TripsEmptyState() {
         跟 Roamie 聊聊，或去探索地圖收藏喜歡的地點，再一起排成行程。
       </p>
       <Link
-        to="/chat"
+        to="/plan"
+        search={{ from: "saved" }}
         className="mt-1 rounded-full bg-primary px-6 py-3 text-sm text-primary-foreground"
       >
         規劃第一趟旅程

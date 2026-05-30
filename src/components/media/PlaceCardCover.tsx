@@ -37,6 +37,7 @@ export function PlaceCardCover({
   ...input
 }: Props) {
   const [googleCandidateIndex, setGoogleCandidateIndex] = useState(0);
+  const [googleFailed, setGoogleFailed] = useState(false);
   const googleCandidates = [
     sanitizePlaceCardPhotoUrl(coverImageUrl),
     ...buildPlacePhotoCandidateUrls(input.photoName ?? "", 600).map((u) =>
@@ -45,7 +46,7 @@ export function PlaceCardCover({
   ].filter((u, idx, arr): u is string => Boolean(u) && arr.indexOf(u) === idx);
   const googleImg = googleCandidates[googleCandidateIndex] ?? null;
 
-  if (googleImg) {
+  if (googleImg && !googleFailed) {
     const sourceType = googleImg.includes("/api/place-photo") ? "proxy-photo" : "google-photo";
     return (
       <img
@@ -62,9 +63,10 @@ export function PlaceCardCover({
           const nextIdx = googleCandidateIndex + 1;
           if (nextIdx < googleCandidates.length) {
             setGoogleCandidateIndex(nextIdx);
-          } else {
-            onGoogleError?.();
+            return;
           }
+          setGoogleFailed(true);
+          onGoogleError?.();
         }}
       />
     );

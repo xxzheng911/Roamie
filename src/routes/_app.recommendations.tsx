@@ -21,6 +21,7 @@ import { prepareMoodFlowSession } from "@/lib/mood-chat-handoff";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
 import { openPlaceNavigation } from "@/lib/maps-navigation";
+import { navigateToPlaceDetailFromRecommendation } from "@/lib/ai-place-detail-nav";
 import { useI18n } from "@/hooks/use-i18n";
 
 type RecSearch = { id?: string };
@@ -33,7 +34,7 @@ export const Route = createFileRoute("/_app/recommendations")({
 });
 
 function RecommendationsPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { openAddToTrip } = useAddToTrip();
   const { id } = Route.useSearch();
   const navigate = useNavigate();
@@ -84,6 +85,18 @@ function RecommendationsPage() {
     });
   }, []);
 
+  const handleOpenPlaceDetail = useCallback(
+    async (rec: RoamieRecommendationItem) => {
+      await navigateToPlaceDetailFromRecommendation({
+        rec,
+        locale,
+        navigate,
+        from: "recommendations",
+      });
+    },
+    [locale, navigate],
+  );
+
   const handleTogglePick = useCallback(
     (rec: RoamieRecommendationItem) => {
       if (!id) return;
@@ -102,7 +115,7 @@ function RecommendationsPage() {
     if (!record || !data) return;
     if (!data.recommendations?.length) {
       toast.message("沒有推薦地點，請先和 Roamie 聊聊");
-      navigate({ to: "/chat" });
+      navigate({ to: "/chat", search: { from: "tab" } });
       return;
     }
     try {
@@ -201,16 +214,17 @@ function RecommendationsPage() {
   const pickCount = pickedNames.size;
 
   return (
-    <div className="pb-[calc(var(--app-nav-total-height)+1.5rem)]">
-      <header className="sticky top-0 z-10 flex shrink-0 items-center gap-3 border-b border-border bg-background/90 px-5 py-3 backdrop-blur">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <header className="z-20 flex shrink-0 items-center gap-3 border-b border-border bg-background/95 px-5 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/90">
         <BackButton preferFallback fallback={{ to: "/" }} />
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-clay" />
-          <h1 className="font-display text-lg leading-tight">{data.title || record.title}</h1>
+        <div className="flex min-w-0 items-center gap-2">
+          <Sparkles className="h-4 w-4 shrink-0 text-clay" />
+          <h1 className="truncate font-display text-lg leading-tight">{data.title || record.title}</h1>
         </div>
       </header>
 
-      <div className="px-5 pt-5">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-[calc(var(--app-nav-total-height)+1.5rem)]">
+        <div className="px-5 pt-5">
         <p className="mb-3 text-xs text-muted-foreground">
           點一下卡片選取想去的地方。選好後再進入聊天繼續規劃。
         </p>
@@ -222,6 +236,7 @@ function RecommendationsPage() {
           onTogglePick={handleTogglePick}
           onSavePlace={handleSavePlace}
           onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec))}
+          onOpenPlaceDetail={handleOpenPlaceDetail}
           onNavigatePlace={handleNavigatePlace}
           simplifiedPlaceActions
           addToTripLabel={t("chat.addToTrip")}
@@ -246,6 +261,7 @@ function RecommendationsPage() {
           >
             進階：手動填寫行程表單
           </Link>
+        </div>
         </div>
       </div>
     </div>
