@@ -85,6 +85,14 @@ import {
   resolveInstantChatReply,
 } from "@/lib/chat/chat-pipeline";
 import {
+  getAssistantDisplayText,
+  hasMeaningfulRoamiePayload,
+  repairTrailingAssistantMessage,
+  replaceTrailingAssistantMessage,
+} from "@/lib/chat/assistant-message";
+import { resolveCompanionDialogueReply } from "@/lib/ai/companion-dialogue";
+import { shouldUseLocalCompanionReply } from "@/lib/ai/conversation-state";
+import {
   loadMoodChatMessages,
   moodChatThreadKey,
   persistMoodChatMessages,
@@ -275,14 +283,6 @@ const ADVANCED_PLANNING_USER_TEXT = "我想進階手動規劃行程";
 const ADVANCED_PLANNING_ASSISTANT_TEXT =
   "好呀，那這次你想從哪裡開始規劃？目的地、日期，還是想去的地方？";
 
-function hasMeaningfulRoamiePayload(data: Partial<RoamieResponse> | undefined): boolean {
-  if (!data) return false;
-  if (data.summary?.trim()) return true;
-  if ((data.recommendations?.length ?? 0) > 0) return true;
-  if ((data.itinerary?.length ?? 0) > 0) return true;
-  return false;
-}
-
 function withChatSummaryFallback(full: RoamieResponse, userText: string): RoamieResponse {
   if (full.summary?.trim()) return full;
   const snippet = userText.trim().slice(0, 40);
@@ -317,24 +317,6 @@ async function resolveContextBundleForSession(
     };
   }
   return buildClientContextBundle(fetchWeatherFn);
-}
-
-function replaceTrailingAssistantMessage(
-  prev: ChatMsg[],
-  content: string,
-  roamie?: Partial<RoamieResponse>,
-): ChatMsg[] {
-  const trimmedPrev = prev.filter(
-    (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content?.trim()),
-  );
-  return [
-    ...trimmedPrev,
-    {
-      role: "assistant",
-      content,
-      ...(roamie ? { roamie } : {}),
-    },
-  ];
 }
 
 function applyTravelAdviceFallbackToMsgs(
@@ -514,11 +496,25 @@ function Chat() {
       summary: string,
       activeSession: ChatPlanningSession,
       source: string,
+      roamieExtra?: Partial<RoamieResponse>,
     ) => {
-      const next = appendAssistantToConversation(conversation, summary, activeSession);
+      const text = summary.trim() || buildContextPreservingChatFallback(activeSession);
+      const last = conversation.at(-1);
+      const roamie: Partial<RoamieResponse> = {
+        title: "",
+        summary: text,
+        moodTag: activeSession.mood ?? activeSession.selectedMood ?? "",
+        recommendations: roamieExtra?.recommendations ?? [],
+        itinerary: roamieExtra?.itinerary ?? [],
+        ...roamieExtra,
+      };
+      const next =
+        last?.role === "assistant"
+          ? replaceTrailingAssistantMessage(conversation, text, roamie)
+          : appendAssistantToConversation(conversation, text, activeSession);
       setMsgs(next);
       msgsRef.current = next;
-      console.info("[CHAT_ASSISTANT_MESSAGE_ADDED]", { source, excerpt: summary.slice(0, 80) });
+      console.info("[CHAT_ASSISTANT_MESSAGE_ADDED]", { source, excerpt: text.slice(0, 80) });
       console.info("[CHAT_RENDER_COMPLETE]");
       return next;
     },
@@ -1911,19 +1907,18 @@ function Chat() {
           } else {
             const applied = await applyLocalFallback(activeForTimeout, activeUserText, conversation);
             if (!applied) {
-              setMsgs((prev) => {
-                const trimmedPrev = prev.filter(
-                  (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
-                );
-                const summary = buildChatFallbackReply(activeUserText, activeForTimeout, aiIntent);
-                return [
-                  ...trimmedPrev,
-                  {
-                    role: "assistant",
-                    content: summary,
-                  },
-                ];
-              });
+              const summary =
+                buildChatFallbackReply(activeUserText, activeForTimeout, aiIntent) ??
+                buildContextPreservingChatFallback(activeForTimeout);
+              setMsgs((prev) =>
+                replaceTrailingAssistantMessage(prev, summary, {
+                  title: "",
+                  summary,
+                  moodTag: activeForTimeout.mood ?? "",
+                  recommendations: [],
+                  itinerary: [],
+                }),
+              );
             }
           }
           setPartial({});
@@ -2449,6 +2444,51 @@ function Chat() {
 
       persistSession(activeSession);
 
+      if (shouldUseLocalCompanionReply(activeSession) && !options?.forcePhase) {
+        const companion = resolveCompanionDialogueReply(trimmed, activeSession);
+        if (companion?.summary) {
+          let nextSession: ChatPlanningSession = {
+            ...activeSession,
+            phase: "followup",
+          };
+          if (companion.showConfirmChips && nextSession.conversationState) {
+            nextSession = {
+              ...nextSession,
+              conversationState: { ...nextSession.conversationState, stage: "confirming" },
+            };
+          }
+          if (companion.startItinerary) {
+            const dest = resolveSessionDestination(nextSession);
+            const days = nextSession.conversationState?.days ?? nextSession.tripDays ?? 5;
+            nextSession = {
+              ...nextSession,
+              phase: "generating",
+              tripDays: days,
+              tripDestination: dest
+                ? { city: dest, displayLabel: dest, lat: 0, lng: 0 }
+                : nextSession.tripDestination,
+            };
+            persistSession(nextSession);
+            commitAssistantReply(nextWithUser, companion.summary, nextSession, companion.source);
+            const planPrompt = dest
+              ? `請依照我們聊過的條件（${dest}、${nextSession.conversationState?.travelMonth ?? ""}、${days} 天），幫我規劃完整每日行程並列出景點。`
+              : "請依照對話記憶，幫我規劃完整每日行程。";
+            await streamChat(msgsRef.current, { phase: "collect", userText: planPrompt }, nextSession);
+            gotAssistantReply = !conversationMissingAssistantReply(msgsRef.current);
+            return;
+          }
+          commitAssistantReply(nextWithUser, companion.summary, nextSession, companion.source);
+          persistSession(nextSession);
+          gotAssistantReply = true;
+          return;
+        }
+        const fallback = buildContextPreservingChatFallback(activeSession);
+        commitAssistantReply(nextWithUser, fallback, activeSession, "companion_fallback");
+        persistSession(activeSession);
+        gotAssistantReply = true;
+        return;
+      }
+
       const instant = resolveInstantChatReply(trimmed, activeSession);
       if (instant?.summary) {
         let nextSession: ChatPlanningSession = {
@@ -2603,6 +2643,12 @@ function Chat() {
           activeSession,
           trimmed,
         );
+      } else {
+        setMsgs((prev) => {
+          const repaired = repairTrailingAssistantMessage(prev, activeSession, trimmed);
+          if (repaired !== prev) msgsRef.current = repaired;
+          return repaired;
+        });
       }
     }
   };
@@ -2845,10 +2891,25 @@ function Chat() {
                 >
                   {m.role === "user" ? (
                     <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
+                  ) : streaming &&
+                    i === msgs.length - 1 &&
+                    !partial.summary?.trim() &&
+                    !(partial.recommendations?.length ?? 0) ? (
+                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
+                      <span className="inline-flex gap-1">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:120ms]" />
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:240ms]" />
+                      </span>
+                    </p>
                   ) : (m.roamie?.recommendations?.length ?? 0) > 0 ||
-                    (m.roamie?.itinerary?.length ?? 0) > 0 ? (
+                    (m.roamie?.itinerary?.length ?? 0) > 0 ||
+                    hasMeaningfulRoamiePayload(m.roamie) ? (
                     <RoamieResponseView
-                      data={m.roamie!}
+                      data={{
+                        ...m.roamie!,
+                        summary: getAssistantDisplayText(m, session),
+                      }}
                       compact
                       showItinerary={
                         session.phase === "done" && (m.roamie?.itinerary?.length ?? 0) > 0
@@ -2868,9 +2929,11 @@ function Chat() {
                       addToTripLabel={t("chat.addToTrip")}
                       discussPlaceLabel={t("trip.discussPlace")}
                     />
-                  ) : m.content?.trim() ? (
+                  ) : (
                     <>
-                      <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
+                      <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
+                        {getAssistantDisplayText(m, session)}
+                      </p>
                       {isDiagnosticsModeEnabled() ? (
                         <RecommendationDiagnosticsToolbar
                           scope="聊聊（純文字）"
@@ -2879,7 +2942,7 @@ function Chat() {
                           exportMeta={{
                             scope: "聊聊（純文字）",
                             note: "助理以純文字回覆，未產生地點卡（常見於附近無營業中結果）",
-                            summary_excerpt: m.content.slice(0, 800),
+                            summary_excerpt: getAssistantDisplayText(m, session).slice(0, 800),
                             response_kind: "text_only",
                             chat_phase: session.phase,
                             last_error: lastFailed ? "previous_stream_failed" : null,
@@ -2901,62 +2964,6 @@ function Chat() {
                         />
                       ) : null}
                     </>
-                  ) : hasMeaningfulRoamiePayload(m.roamie) ? (
-                    <RoamieResponseView
-                      data={m.roamie!}
-                      compact
-                      showItinerary={
-                        session.phase === "done" && (m.roamie?.itinerary?.length ?? 0) > 0
-                      }
-                      onSavePlace={handleSavePlace}
-                      onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec))}
-                      onSelectPlace={handleSelectPlaceForPlanning}
-                      onGenerateItinerary={(rec) => void handleGenerateItineraryFromPlace(rec)}
-                      generatingItinerary={generating}
-                      onNavigatePlace={handleNavigatePlace}
-                      planningMode
-                      simplifiedPlaceActions
-                      outfitAdvice={m.roamie?.outfitAdvice}
-                      selectedPlaceNames={selectedNames}
-                      savingPlaceName={savingName}
-                      savedPlaceNames={savedNames}
-                      addToTripLabel={t("chat.addToTrip")}
-                      discussPlaceLabel={t("trip.discussPlace")}
-                    />
-                  ) : streaming && i === msgs.length - 1 ? (
-                    hasMeaningfulRoamiePayload(partial) || partial.summary?.trim() ? (
-                      <RoamieResponseView
-                        data={{ ...partial, summary: partial.summary ?? "" }}
-                        compact
-                        showItinerary={false}
-                        onSavePlace={handleSavePlace}
-                        onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec))}
-                        onSelectPlace={handleSelectPlaceForPlanning}
-                        onGenerateItinerary={(rec) => void handleGenerateItineraryFromPlace(rec)}
-                        generatingItinerary={generating}
-                        onNavigatePlace={handleNavigatePlace}
-                        planningMode
-                        simplifiedPlaceActions
-                        outfitAdvice={partial.outfitAdvice}
-                        selectedPlaceNames={selectedNames}
-                        savingPlaceName={savingName}
-                        savedPlaceNames={savedNames}
-                        addToTripLabel={t("chat.addToTrip")}
-                        discussPlaceLabel={t("trip.discussPlace")}
-                      />
-                    ) : (
-                      <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
-                        <span className="inline-flex gap-1">
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:120ms]" />
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:240ms]" />
-                        </span>
-                      </p>
-                    )
-                  ) : (
-                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-muted-foreground">
-                      {buildContextPreservingChatFallback(session)}
-                    </p>
                   )}
                 </div>
               </div>

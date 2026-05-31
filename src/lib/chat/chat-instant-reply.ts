@@ -124,14 +124,15 @@ export function resolveInstantChatReply(
 }
 
 export function buildAssistantChatMsg(summary: string, session: ChatPlanningSession): ChatMsg {
+  const text = summary.trim();
   const roamie: Partial<RoamieResponse> = {
     title: "",
-    summary,
+    summary: text,
     moodTag: session.mood ?? session.selectedMood ?? "",
     recommendations: [],
     itinerary: [],
   };
-  return { role: "assistant", content: summary, roamie };
+  return { role: "assistant", content: text, roamie };
 }
 
 export function appendAssistantToConversation(

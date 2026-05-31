@@ -147,7 +147,21 @@ export function resolveCompanionDialogueReply(
   }
 
   const destInText = extractKnownDestinationFromText(t);
-  if (destInText && /(玩|去|旅|想)/.test(t) && !state.travelMonth && state.days == null) {
+  const monthInText = t.match(/(\d{1,2})\s*月/)?.[0];
+
+  if (destInText && monthInText && state.days == null) {
+    return {
+      summary: buildAfterMonth({
+        ...state,
+        destination: destInText,
+        travelMonth: monthInText,
+      }),
+      source: "companion_dialogue",
+      stage: "gathering",
+    };
+  }
+
+  if (destInText && /(玩|去|旅|想|怎麼樣|適合)/.test(t) && !state.travelMonth && state.days == null) {
     return {
       summary: buildWelcomeDestination(destInText),
       source: "companion_dialogue",

@@ -49,6 +49,20 @@ export function shouldOrchestrateCompanion(session: ChatPlanningSession): boolea
   return true;
 }
 
+const COMPANION_LOCAL_REPLY_STAGES: ConversationStage[] = [
+  "idle",
+  "discovering",
+  "gathering",
+  "confirming",
+];
+
+/** 此階段應優先本地旅伴回覆，不走易失敗的 SSE */
+export function shouldUseLocalCompanionReply(session: ChatPlanningSession): boolean {
+  if (!shouldOrchestrateCompanion(session)) return false;
+  const stage = session.conversationState?.stage ?? "idle";
+  return COMPANION_LOCAL_REPLY_STAGES.includes(stage);
+}
+
 export function resolveSessionDestination(session: ChatPlanningSession): string | undefined {
   return (
     normalizeDestination(session.conversationState?.destination) ??
