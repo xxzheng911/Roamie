@@ -247,6 +247,25 @@ export function resolveCuratedTripLocation(placeId: string): TripLocation | null
   return { ...hit.location };
 }
 
+/** 依城市／目的地名稱對應精選座標（行程 bootstrap 用） */
+export function resolveCuratedTripLocationByDestination(destination: string): TripLocation | null {
+  const trimmed = destination.trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  const hit = CURATED_DESTINATIONS.find((entry) =>
+    entry.aliases.some(
+      (alias) =>
+        alias === trimmed ||
+        alias.toLowerCase() === lower ||
+        trimmed.includes(alias) ||
+        alias.includes(trimmed),
+    ),
+  );
+  if (!hit) return null;
+  console.info("[TRIP_PLACE_SEARCH] source=curated byDestination=", hit.location.displayLabel);
+  return { ...hit.location };
+}
+
 export function curatedTripLocationToPlaceInput(loc: TripLocation) {
   return {
     name: loc.city || loc.displayLabel,

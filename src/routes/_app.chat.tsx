@@ -73,9 +73,12 @@ import {
 } from "@/lib/ai/companion-prompt";
 import {
   buildContextPreservingChatFallback,
+  isReadyForPlanningConfirm,
   resolveSessionDestination,
   shouldOrchestrateCompanion,
+  userAffirmsTripPlanning,
 } from "@/lib/ai/conversation-state";
+import { bootstrapCompanionTripPlaces } from "@/lib/planning/companion-itinerary-bootstrap";
 import { recommendationsForChatDisplay } from "@/lib/chat-display-recommendations";
 import {
   appendAssistantToConversation,
@@ -2041,15 +2044,30 @@ function Chat() {
     msgsOverride?: ChatMsg[],
     generationSource?: PlaceSelectionSource | string,
   ) => {
-    const activeSession = sessionOverride ?? session;
+    let activeSession = sessionOverride ?? session;
     const activeMsgs = msgsOverride ?? msgs;
     const source =
       generationSource ??
       activeSession.lastItineraryGenerationSource ??
       inferPlaceSelectionSource(activeSession);
 
-    const rawPlaces = buildTripFromSelectedPlaces(activeSession);
-    const places = normalizePlacesForItinerary(rawPlaces);
+    let rawPlaces = buildTripFromSelectedPlaces(activeSession);
+    let places = normalizePlacesForItinerary(rawPlaces);
+
+    if (places.length < 1 && isReadyForPlanningConfirm(activeSession.conversationState)) {
+      try {
+        activeSession = await bootstrapCompanionTripPlaces(
+          activeSession,
+          searchNearbyPlaces,
+          locale,
+        );
+        persistSession(activeSession);
+        rawPlaces = buildTripFromSelectedPlaces(activeSession);
+        places = normalizePlacesForItinerary(rawPlaces);
+      } catch (bootstrapErr) {
+        console.warn("[ITINERARY] companion bootstrap failed", bootstrapErr);
+      }
+    }
 
     if (places.length < 1) {
       toast.message("請先選擇至少一個想去的地方，再生成行程。");
@@ -2067,7 +2085,11 @@ function Chat() {
     }
 
     setGenerating(true);
-    persistSession({ ...activeSession, phase: "generating", lastItineraryGenerationSource: source });
+    persistSession({
+      ...activeSession,
+      phase: "generating",
+      lastItineraryGenerationSource: source,
+    });
 
     const payloadPreview = {
       destination: activeSession.tripDestination
@@ -2458,23 +2480,33 @@ function Chat() {
             };
           }
           if (companion.startItinerary) {
-            const dest = resolveSessionDestination(nextSession);
             const days = nextSession.conversationState?.days ?? nextSession.tripDays ?? 5;
             nextSession = {
               ...nextSession,
               phase: "generating",
               tripDays: days,
-              tripDestination: dest
-                ? { city: dest, displayLabel: dest, lat: 0, lng: 0 }
-                : nextSession.tripDestination,
+              conversationState: nextSession.conversationState
+                ? {
+                    ...nextSession.conversationState,
+                    stage: "planning_confirmed",
+                    updatedAt: new Date().toISOString(),
+                  }
+                : nextSession.conversationState,
             };
-            persistSession(nextSession);
             commitAssistantReply(nextWithUser, companion.summary, nextSession, companion.source);
-            const planPrompt = dest
-              ? `請依照我們聊過的條件（${dest}、${nextSession.conversationState?.travelMonth ?? ""}、${days} 天），幫我規劃完整每日行程並列出景點。`
-              : "請依照對話記憶，幫我規劃完整每日行程。";
-            await streamChat(msgsRef.current, { phase: "collect", userText: planPrompt }, nextSession);
-            gotAssistantReply = !conversationMissingAssistantReply(msgsRef.current);
+            try {
+              nextSession = await bootstrapCompanionTripPlaces(
+                nextSession,
+                searchNearbyPlaces,
+                locale,
+              );
+              persistSession(nextSession);
+              await handleGenerateItinerary(nextSession, msgsRef.current, "chat");
+            } catch (planErr) {
+              console.error("[COMPANION_ITINERARY] failed", planErr);
+              toast.error(planErr instanceof Error ? planErr.message : "生成行程失敗");
+            }
+            gotAssistantReply = true;
             return;
           }
           commitAssistantReply(nextWithUser, companion.summary, nextSession, companion.source);
@@ -2505,27 +2537,33 @@ function Chat() {
           };
         }
         if (instant.startItinerary) {
-          const dest = resolveSessionDestination(nextSession);
           const days = nextSession.conversationState?.days ?? nextSession.tripDays ?? 5;
           nextSession = {
             ...nextSession,
             phase: "generating",
             tripDays: days,
-            tripDestination: dest
-              ? { city: dest, displayLabel: dest, lat: 0, lng: 0 }
-              : nextSession.tripDestination,
+            conversationState: nextSession.conversationState
+              ? {
+                  ...nextSession.conversationState,
+                  stage: "planning_confirmed",
+                  updatedAt: new Date().toISOString(),
+                }
+              : nextSession.conversationState,
           };
-          persistSession(nextSession);
           commitAssistantReply(nextWithUser, instant.summary, nextSession, instant.source);
-          const planPrompt = dest
-            ? `請依照我們聊過的條件（${dest}、${nextSession.conversationState?.travelMonth ?? ""}、${days} 天），幫我規劃完整每日行程並列出景點。`
-            : "請依照對話記憶，幫我規劃完整每日行程。";
-          await streamChat(
-            msgsRef.current,
-            { phase: "collect", userText: planPrompt },
-            nextSession,
-          );
-          gotAssistantReply = !conversationMissingAssistantReply(msgsRef.current);
+          try {
+            nextSession = await bootstrapCompanionTripPlaces(
+              nextSession,
+              searchNearbyPlaces,
+              locale,
+            );
+            persistSession(nextSession);
+            await handleGenerateItinerary(nextSession, msgsRef.current, "chat");
+          } catch (planErr) {
+            console.error("[COMPANION_ITINERARY] failed", planErr);
+            toast.error(planErr instanceof Error ? planErr.message : "生成行程失敗");
+          }
+          gotAssistantReply = true;
           return;
         }
         commitAssistantReply(nextWithUser, instant.summary, nextSession, instant.source);
@@ -2544,8 +2582,31 @@ function Chat() {
         }
       }
 
-      if (route.mode === "itinerary" || isUserConfirmingItinerary(trimmed)) {
-        if (activeSession.selectedPlaces.length < 1) {
+      if (
+        route.mode === "itinerary" ||
+        isUserConfirmingItinerary(trimmed) ||
+        userAffirmsTripPlanning(trimmed)
+      ) {
+        let readySession: ChatPlanningSession = {
+          ...activeSession,
+          phase: "ready",
+          tripDays: activeSession.conversationState?.days ?? activeSession.tripDays,
+        };
+        if (
+          readySession.selectedPlaces.length < 1 &&
+          isReadyForPlanningConfirm(readySession.conversationState)
+        ) {
+          try {
+            readySession = await bootstrapCompanionTripPlaces(
+              readySession,
+              searchNearbyPlaces,
+              locale,
+            );
+          } catch (bootstrapErr) {
+            console.warn("[ITINERARY] route bootstrap failed", bootstrapErr);
+          }
+        }
+        if (readySession.selectedPlaces.length < 1) {
           toast.message("你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線。");
           commitAssistantReply(
             nextWithUser,
@@ -2556,7 +2617,6 @@ function Chat() {
           gotAssistantReply = true;
           return;
         }
-        const readySession: ChatPlanningSession = { ...activeSession, phase: "ready" };
         persistSession(readySession);
         await handleGenerateItinerary(readySession, nextWithUser);
         gotAssistantReply = true;
@@ -2649,6 +2709,42 @@ function Chat() {
           if (repaired !== prev) msgsRef.current = repaired;
           return repaired;
         });
+        const sess = sessionRef.current;
+        const last = msgsRef.current.at(-1);
+        if (
+          userAffirmsTripPlanning(trimmed) &&
+          isReadyForPlanningConfirm(sess.conversationState) &&
+          last?.role === "assistant" &&
+          !hasMeaningfulRoamiePayload(last.roamie) &&
+          !generatingRef.current &&
+          sess.phase !== "generating" &&
+          sess.phase !== "done"
+        ) {
+          void (async () => {
+            try {
+              let recoverySession: ChatPlanningSession = {
+                ...sess,
+                phase: "generating",
+                conversationState: sess.conversationState
+                  ? {
+                      ...sess.conversationState,
+                      stage: "planning_confirmed",
+                      updatedAt: new Date().toISOString(),
+                    }
+                  : sess.conversationState,
+              };
+              recoverySession = await bootstrapCompanionTripPlaces(
+                recoverySession,
+                searchNearbyPlaces,
+                locale,
+              );
+              persistSession(recoverySession);
+              await handleGenerateItinerary(recoverySession, msgsRef.current, "chat");
+            } catch (recoveryErr) {
+              console.warn("[PLANNING_RECOVERY] empty_roamie fallback failed", recoveryErr);
+            }
+          })();
+        }
       }
     }
   };

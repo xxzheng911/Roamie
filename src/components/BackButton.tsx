@@ -19,7 +19,10 @@ export function BackButton({ fallback, preferFallback, className, label = "è¿”å›
   const navigate = useNavigate();
 
   const handleBack = () => {
-    onBack?.();
+    if (onBack) {
+      onBack();
+      return;
+    }
     if (!preferFallback && typeof window !== "undefined" && window.history.length > 1) {
       window.history.back();
       return;

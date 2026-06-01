@@ -1,7 +1,17 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { BackButton } from "@/components/BackButton";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { SurveyResultScreen } from "@/components/survey/SurveyResultScreen";
 import { useAccess } from "@/hooks/use-access";
 import { useTravelPreferenceSurvey } from "@/hooks/use-travel-preference-survey";
@@ -66,6 +76,7 @@ function PreferenceQuizPage() {
   const { hasPlusAccess } = useAccess();
   const survey = useTravelPreferenceSurvey();
   const startedRef = useRef(false);
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const budgetOptions = getPlanBudgetOptions(locale);
 
   const returnTo = search.returnTo ?? "/profile";
@@ -155,18 +166,35 @@ function PreferenceQuizPage() {
     survey.showPreviewFromAnswers(survey.answers);
   };
 
-  const handleBack = () => {
+  const handleBack = useCallback(() => {
     if (survey.phase === "result") return;
     if (survey.canGoBack) {
       survey.prevStep();
       return;
     }
-    if (survey.isBlockingExit) {
-      toast.message("請先完成測驗，或持續回答後再離開");
-      return;
-    }
+    setLeaveDialogOpen(true);
+  }, [survey]);
+
+  const confirmLeaveQuiz = useCallback(() => {
+    setLeaveDialogOpen(false);
+    survey.finishSession();
     void navigate({ to: safeReturnTo });
-  };
+  }, [navigate, safeReturnTo, survey]);
+
+  useEffect(() => {
+    if (!survey.sessionActive || survey.phase !== "quiz") return;
+    const onPopState = () => {
+      if (survey.canGoBack) {
+        survey.prevStep();
+        window.history.pushState({ surveyWizard: survey.currentStep }, "");
+      } else {
+        setLeaveDialogOpen(true);
+        window.history.pushState({ surveyWizard: "blocked" }, "");
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [survey.sessionActive, survey.phase, survey.canGoBack, survey.currentStep, survey]);
 
   const handleFinish = async () => {
     console.info("[SURVEY_COMPLETE_BUTTON] clicked");
@@ -219,12 +247,22 @@ function PreferenceQuizPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col px-5 pb-8 pt-3">
+      <AlertDialog open={leaveDialogOpen} onOpenChange={setLeaveDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>確定要離開旅行偏好設定嗎？</AlertDialogTitle>
+            <AlertDialogDescription>
+              目前未完成的內容將不會儲存。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>繼續填寫</AlertDialogCancel>
+            <AlertDialogAction onClick={() => confirmLeaveQuiz()}>離開</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <div className="flex items-center gap-2">
-        <BackButton
-          fallback={{ to: safeReturnTo }}
-          preferFallback={survey.currentStep === 0}
-          onBack={handleBack}
-        />
+        <BackButton fallback={{ to: safeReturnTo }} onBack={handleBack} />
         <div className="min-w-0 flex-1">
           <h1 className="font-display text-xl">旅行偏好測驗</h1>
           <p className="text-xs text-muted-foreground">

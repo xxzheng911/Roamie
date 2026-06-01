@@ -14,6 +14,7 @@ export type ConversationStage =
   | "discovering"
   | "gathering"
   | "confirming"
+  | "planning_confirmed"
   | "planning"
   | "refining";
 
@@ -266,7 +267,20 @@ export function monthSeasonHint(destination: string, month?: string): string {
 }
 
 export function userWantsPlanNow(text: string): boolean {
-  return /(立即規劃|幫我排|開始規劃|排一版|排行程|好，排|確認，?排)/.test(text.trim());
+  const t = text.trim();
+  return /(立即規劃|幫我排|開始規劃|排一版|排行程|生成行程|好，?請?幫我排|確認，?排)/.test(t);
+}
+
+/** 使用者在確認階段同意開始排行程（含簡短肯定） */
+export function userAffirmsTripPlanning(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (userWantsPlanNow(t)) return true;
+  if (/^(好|可以|ok|yes|沒問題|行|好啊|好呀|好的|就這樣|開始吧|來吧)[。！～~]?$/i.test(t)) {
+    return true;
+  }
+  if (/^(好|可以).{0,12}(排|規劃|行程)/.test(t)) return true;
+  return false;
 }
 
 export function userWantsChatMore(text: string): boolean {

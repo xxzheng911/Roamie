@@ -14,7 +14,7 @@ import { isFlexiblePreferenceReply } from "@/lib/ai/flexible-preference";
 import {
   isReadyForPlanningConfirm,
   shouldOrchestrateCompanion,
-  userWantsPlanNow,
+  userAffirmsTripPlanning,
 } from "@/lib/ai/conversation-state";
 import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
 
@@ -70,7 +70,7 @@ export function resolveChatRoute(
   session: ChatPlanningSession,
   locale: Locale = "zh-TW",
 ): AiChatRoute {
-  if (isUserConfirmingItinerary(userText) || userWantsPlanNow(userText)) {
+  if (isUserConfirmingItinerary(userText) || userAffirmsTripPlanning(userText)) {
     console.info("[AI_ROUTE] itinerary_mode", logTravelContext(ctx));
     return { mode: "itinerary", chatPhase: "handoff" };
   }

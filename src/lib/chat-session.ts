@@ -344,9 +344,15 @@ export function extractDiscoveryFromText(
 /** 使用者明確表示可以排完整行程 */
 export function isUserConfirmingItinerary(text: string): boolean {
   const t = text.trim();
-  return /(就這樣吧|就這樣|可以開始安排|開始安排吧|幫我排行程|生成行程|確認行程|整理成.+行程|差不多了|就這些|好，排|好，幫我排|完成了|可以了|就這幾個)/.test(
-    t,
-  );
+  if (
+    /(就這樣吧|就這樣|可以開始安排|開始安排吧|幫我排行程|生成行程|確認行程|整理成.+行程|差不多了|就這些|好，排|好，幫我排|完成了|可以了|就這幾個|排一版)/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/^(好|可以)[。！～~]?$/.test(t)) return true;
+  return false;
 }
 
 export function loadChatSession(): ChatPlanningSession {
@@ -606,7 +612,24 @@ export function buildConversationSummary(session: ChatPlanningSession, msgs: Cha
     .map((m) => `${m.role === "user" ? "使用者" : "Roamie"}：${m.content.slice(0, 200)}`)
     .join("\n");
   const d = session.discovery;
+  const cs = session.conversationState;
+  const planningCtx = cs
+    ? [
+        cs.destination ? `目的地：${cs.destination}` : "",
+        cs.travelMonth ? `月份：${cs.travelMonth}` : "",
+        cs.days != null ? `天數：${cs.days}` : "",
+        cs.companions ? `旅伴：${cs.companions}` : "",
+        cs.preferences.includes("flexible")
+          ? "偏好：彈性安排"
+          : cs.preferences.length
+            ? `偏好：${cs.preferences.join("、")}`
+            : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
   const parts = [
+    planningCtx,
     session.conversationSummary,
     session.initialChatContext?.slice(0, 600),
     session.mood ? `心情：${session.mood}` : "",

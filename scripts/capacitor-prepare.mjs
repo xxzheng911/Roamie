@@ -578,6 +578,15 @@ function patchClientBundleCreateRootReuse(entryRelPath) {
   console.info("[capacitor-prepare] Patched createRoot to reuse capacitor-mount root");
 }
 
+const AGODA_VERIFICATION_BODY =
+  "agoda-partner-site-verification: AgodaPartnerVerification.html\n";
+
+function writeAgodaPartnerVerificationFile() {
+  const target = resolve(clientDir, "AgodaPartnerVerification.htm");
+  writeFileSync(target, AGODA_VERIFICATION_BODY, "utf8");
+  console.info("[capacitor-prepare] Wrote AgodaPartnerVerification.htm");
+}
+
 function writeBundledIndexHtml({ clientEntry, bootstrapEntry, stylesheet }) {
   const appOrigin = readEnv("VITE_APP_ORIGIN")?.replace(/\/$/, "");
   if (!appOrigin) {
@@ -660,6 +669,7 @@ function writeBundledIndexHtml({ clientEntry, bootstrapEntry, stylesheet }) {
     ${CAPACITOR_INDEX_HTML_PROBE}
     <base href="./" />
     <meta charset="UTF-8" />
+    <meta name="agd-partner-manual-verification" content="" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
     <meta name="theme-color" content="#f7f4ef" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -809,6 +819,7 @@ writeBundledIndexHtml({
   bootstrapEntry,
   stylesheet,
 });
+writeAgodaPartnerVerificationFile();
 pruneOrphanClientAssets(clientEntry);
 patchBundleBootTrace(clientEntry);
 patchClientBundleForCapacitorSpa(clientEntry);

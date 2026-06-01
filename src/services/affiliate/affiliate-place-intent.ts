@@ -45,7 +45,7 @@ const TICKET_TYPES = new Set([
 const EXPERIENCE_TYPES = new Set(["travel_agency", "tour_agency"]);
 
 const ACCOMMODATION_RE =
-  /住宿|飯店|旅館|民宿|宾馆|旅店|度假村|\bhotel\b|\bhostel\b|\bmotel\b|\blodging\b|\binn\b|\bresort\b/i;
+  /住宿|飯店|酒店|旅館|民宿|宾馆|旅店|度假村|\bhotel\b|\bhostel\b|\bmotel\b|\blodging\b|\binn\b|\bresort\b/i;
 
 const EXPERIENCE_RE =
   /一日遊|半日遊|多日遊|包車|私人導覽|導覽團|導覽|體驗活動|體驗課|體驗|工作坊|和服體驗|料理教室|浮潛|潛水|潜水|獨木舟|露營|溫泉券|票券體驗|city\s*tour|day\s*tour|guided\s*tour|experience\s*tour|workshop/i;
@@ -58,7 +58,7 @@ const TICKET_TYPE_LABEL_RE =
 
 const EXPERIENCE_TYPE_LABEL_RE = /一日遊|導覽|體驗活動|體驗|行程|包車|tour/i;
 
-const ACCOMMODATION_TYPE_LABEL_RE = /飯店|住宿|旅館|民宿|hotel|lodging/i;
+const ACCOMMODATION_TYPE_LABEL_RE = /飯店|酒店|住宿|旅館|民宿|hotel|lodging/i;
 
 function collectHaystack(input: AffiliatePlaceTypeInput): string {
   return [

@@ -7,8 +7,8 @@ import {
   resolveSessionDestination,
   shouldOrchestrateCompanion,
   syncConversationState,
+  userAffirmsTripPlanning,
   userWantsChatMore,
-  userWantsPlanNow,
   type ConversationState,
 } from "@/lib/ai/conversation-state";
 import { isFlexiblePreferenceReply } from "@/lib/ai/flexible-preference";
@@ -119,11 +119,11 @@ export function resolveCompanionDialogueReply(
   const t = userText.trim();
   if (!t) return null;
 
-  if (userWantsPlanNow(t) && isReadyForPlanningConfirm(state)) {
+  if (userAffirmsTripPlanning(t) && isReadyForPlanningConfirm(state)) {
     return {
       summary: "好，我來幫你整理一版行程～",
       source: "companion_dialogue",
-      stage: "planning",
+      stage: "planning_confirmed",
       startItinerary: true,
     };
   }
