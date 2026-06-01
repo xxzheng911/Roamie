@@ -28,6 +28,8 @@ import {
 import { filterExplorePlaces, isTravelFriendlyPlace } from "@/lib/filter-explore-places";
 import type { PlaceResult } from "@/lib/place-result";
 import { logPlacesApiResponse } from "@/lib/places-api-errors";
+import { recordPlacesApiCallServer } from "@/lib/places-api-telemetry.server";
+import type { PlacesApiSurface } from "@/lib/places-api-telemetry";
 
 export type { PlaceResult } from "@/lib/place-result";
 
@@ -55,6 +57,8 @@ export const ExploreSearchInput = z.object({
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   /** now：只推營業中；lenient：聊天／心情可含休息中 */
   availabilityContext: z.enum(["now", "lenient"]).optional().default("now"),
+  /** 成本 telemetry：home / map / ai */
+  telemetrySurface: z.enum(["home", "map", "ai", "chat", "other"]).optional(),
 });
 
 type RawPlace = RawPlaceHours;
@@ -149,7 +153,13 @@ async function postPlaces(
   url: string,
   body: Record<string, unknown>,
   apiKey: string,
+  telemetry?: { sku: "nearby" | "text"; surface?: PlacesApiSurface },
 ): Promise<{ places: RawPlace[]; error: string | null }> {
+  if (telemetry) {
+    recordPlacesApiCallServer(telemetry.sku, telemetry.surface ?? "other", {
+      url: telemetry.sku === "nearby" ? "searchNearby" : "searchText",
+    });
+  }
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -197,6 +207,7 @@ async function searchText(
   pageSize = PLACES_SEARCH_LIMITS.textPageSize,
   userLocale?: Locale,
   availabilityContext: FilterPlacesContext = "now",
+  telemetrySurface?: PlacesApiSurface,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
@@ -207,7 +218,10 @@ async function searchText(
   };
   if (regionCode) body.regionCode = regionCode;
 
-  const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey);
+  const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey, {
+    sku: "text",
+    surface: telemetrySurface,
+  });
   if (error) return { places: [], error };
   return { places: mapRawPlaces(raw, availabilityContext), error: null };
 }
@@ -221,6 +235,7 @@ async function searchNearby(
   maxResultCount = PLACES_SEARCH_LIMITS.nearbyMaxResults,
   userLocale?: Locale,
   availabilityContext: FilterPlacesContext = "now",
+  telemetrySurface?: PlacesApiSurface,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
@@ -232,7 +247,10 @@ async function searchNearby(
   };
   if (regionCode) body.regionCode = regionCode;
 
-  const { places: raw, error } = await postPlaces(placesSearchNearbyUrl(), body, apiKey);
+  const { places: raw, error } = await postPlaces(placesSearchNearbyUrl(), body, apiKey, {
+    sku: "nearby",
+    surface: telemetrySurface,
+  });
   if (error) return { places: [], error };
   return { places: mapRawPlaces(raw, availabilityContext), error: null };
 }
@@ -245,6 +263,7 @@ async function searchMultiNearby(
   groups: string[][],
   userLocale?: Locale,
   availabilityContext: FilterPlacesContext = "now",
+  telemetrySurface?: PlacesApiSurface,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const settled = await Promise.all(
     groups.map((types) =>
@@ -257,6 +276,7 @@ async function searchMultiNearby(
         PLACES_SEARCH_LIMITS.multiNearbyPerGroup,
         userLocale,
         availabilityContext,
+        telemetrySurface,
       ),
     ),
   );
@@ -304,30 +324,13 @@ async function lookupPlaceHoursFromRaw(
   return rawPlaceToHoursData(best);
 }
 
+/** @deprecated P0：不再對 AI 回覆批次 Text Search；保留簽名供相容 */
 export async function lookupPlacesHoursBatch(
   items: Array<{ name: string; address?: string | null; lat?: number | null; lng?: number | null }>,
-  center: { lat: number; lng: number },
+  _center: { lat: number; lng: number },
 ): Promise<Map<string, PlaceHoursData>> {
-  const map = new Map<string, PlaceHoursData>();
-  const unique = [...new Map(items.map((i) => [i.name, i])).values()];
-  const concurrency = 4;
-
-  for (let i = 0; i < unique.length; i += concurrency) {
-    const chunk = unique.slice(i, i + concurrency);
-    const results = await Promise.all(
-      chunk.map(async (item) => {
-        const lat = item.lat ?? center.lat;
-        const lng = item.lng ?? center.lng;
-        const hours = await lookupPlaceHoursFromRaw(item.name, lat, lng, item.address);
-        return { name: item.name, hours };
-      }),
-    );
-    for (const { name, hours } of results) {
-      if (hours) map.set(name, hours);
-    }
-  }
-
-  return map;
+  void items;
+  return new Map();
 }
 
 async function runExploreSearch(
@@ -338,6 +341,7 @@ async function runExploreSearch(
   const radii = [data.radius ?? DEFAULT_SEARCH_RADIUS_M, 8_000, 5_000];
   const userLocale = data.locale ? coerceLocale(data.locale) : undefined;
   const availabilityContext = data.availabilityContext ?? "now";
+  const telemetrySurface = data.telemetrySurface;
 
   for (const radius of radii) {
     let result: { places: PlaceResult[]; error: string | null };
@@ -351,6 +355,7 @@ async function runExploreSearch(
         data.nearbyGroups,
         userLocale,
         availabilityContext,
+        telemetrySurface,
       );
     } else if (data.mode === "nearby" && data.includedTypes?.length) {
       result = await searchNearby(
@@ -362,6 +367,7 @@ async function runExploreSearch(
         PLACES_SEARCH_LIMITS.nearbyMaxResults,
         userLocale,
         availabilityContext,
+        telemetrySurface,
       );
     } else if (data.query.trim()) {
       result = await searchText(
@@ -373,6 +379,7 @@ async function runExploreSearch(
         PLACES_SEARCH_LIMITS.textPageSize,
         userLocale,
         availabilityContext,
+        telemetrySurface,
       );
     } else {
       result = { places: [], error: null };
@@ -498,9 +505,10 @@ type PlaceDetailsScreenRaw = PlaceDetailsRaw & {
 export async function fetchPlaceDetailsForScreen(
   placeId: string,
   locale?: Locale,
-  options?: { apiKey?: string },
+  options?: { apiKey?: string; telemetrySurface?: PlacesApiSurface },
 ): Promise<PlaceDetailsScreenResult | null> {
   try {
+    recordPlacesApiCallServer("details", options?.telemetrySurface ?? "other", { placeId });
     const apiKey = options?.apiKey?.trim() || (await getServerMapsKey());
     const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
     const res = await fetch(placeDetailsUrl(placeId), {

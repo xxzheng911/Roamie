@@ -7,12 +7,14 @@ import {
 import { DEFAULT_SEARCH_RADIUS_M } from "@/lib/places-search-config";
 import type { SearchPlacesInput } from "@/lib/explore-category-search";
 import { createRequestCache } from "@/services/requestCache";
+import { recordPlacesApiCall } from "@/lib/places-api-telemetry";
 
 export type ExploreSearchResult = { places: PlaceResult[]; error: string | null };
 
 const exploreSearchCache = createRequestCache({
   prefix: "places-explore",
   ttlMs: PLACES_CACHE_TTL_MS.explore,
+  persist: true,
 });
 
 function snapCoord(value: number): string {
@@ -60,5 +62,20 @@ export async function getCachedExploreSearch(
     return cached;
   }
 
-  return exploreSearchCache.getOrFetch(key, fetcher, shouldPersistExploreResult);
+  return exploreSearchCache.getOrFetch(key, async () => {
+    const result = await fetcher();
+    const surface = data.telemetrySurface;
+    if (surface && shouldPersistExploreResult(result)) {
+      if (data.mode === "text") {
+        recordPlacesApiCall("text", surface);
+      } else if (data.mode === "multi" && data.nearbyGroups?.length) {
+        for (let i = 0; i < data.nearbyGroups.length; i += 1) {
+          recordPlacesApiCall("nearby", surface);
+        }
+      } else {
+        recordPlacesApiCall("nearby", surface);
+      }
+    }
+    return result;
+  }, shouldPersistExploreResult);
 }

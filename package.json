@@ -21,6 +21,7 @@
     "verify:affiliate": "node --experimental-strip-types scripts/verify-affiliate-intent.mjs",
     "verify:chat:full": "npx vite-node scripts/verify-chat-full-qa.mjs",
     "verify:chat:comprehensive": "npx vite-node scripts/verify-chat-comprehensive.mjs",
+    "verify:places-api-telemetry": "npx vite-node scripts/verify-places-api-telemetry.mjs",
     "apple:client-secret": "node scripts/generate-apple-client-secret.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",

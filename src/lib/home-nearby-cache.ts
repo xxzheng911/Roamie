@@ -1,4 +1,3 @@
-import type { Locale } from "@/lib/i18n/types";
 import {
   PLACES_CACHE_TTL_MS,
   PLACES_COORD_GRID_DECIMALS,
@@ -9,25 +8,25 @@ import { createRequestCache } from "@/services/requestCache";
 const homeNearbyCache = createRequestCache({
   prefix: "home-nearby",
   ttlMs: PLACES_CACHE_TTL_MS.homeNearby,
+  persist: true,
 });
 
 function snapCoord(value: number): string {
   return value.toFixed(PLACES_COORD_GRID_DECIMALS);
 }
 
+/** 固定 key：location grid + category ids + mood（不含 locale / weather 字串） */
 export function buildHomeNearbyCacheKey(parts: {
   lat: number;
   lng: number;
-  locale: Locale;
   mood: string | null;
   categoryIds: string[];
 }): string {
   return [
     snapCoord(parts.lat),
     snapCoord(parts.lng),
-    parts.locale,
-    parts.mood ?? "",
     parts.categoryIds.slice().sort().join(","),
+    parts.mood ?? "",
   ].join("§");
 }
 

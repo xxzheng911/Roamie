@@ -30,12 +30,21 @@ import { SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
 import { getLatestCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
 import { supabase } from "@/integrations/supabase/client";
 import { useI18n } from "@/hooks/use-i18n";
-import { searchPlaces, getPlaceDetails } from "@/lib/places.functions";
+import { searchPlaces } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { loadHomeNearbyPicks, type HomeNearbyPick } from "@/lib/explore-category-search";
 import { EXPLORE_CATEGORIES } from "@/lib/places-search-config";
 import { getMockHomeNearbyPicks } from "@/lib/map-mock-places";
 import { logPlacesFallbackUsed, shouldUseCuratedPlacesFallback } from "@/lib/places-api-errors";
+import {
+  HOME_NEARBY_LOCATION_DEBOUNCE_MS,
+  PLACES_COORD_GRID_DECIMALS,
+} from "@/lib/places-cache-config";
+import {
+  logPlacesApiTelemetrySummary,
+  recordPlacesApiCall,
+  resetPlacesApiTelemetry,
+} from "@/lib/places-api-telemetry";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
 import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
@@ -95,7 +104,6 @@ function Home() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const fetchWeather = useServerFn(getWeather);
   const searchPlacesServerFn = useServerFn(searchPlaces);
-  const fetchPlaceDetailsServerFn = useServerFn(getPlaceDetails);
   const searchPlacesFn = useMemo(
     () => createUnifiedSearchPlacesFn(searchPlacesServerFn),
     [searchPlacesServerFn],
@@ -123,33 +131,39 @@ function Home() {
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [saveBusyId, setSaveBusyId] = useState<string | null>(null);
   const [navigatingPlaceId, setNavigatingPlaceId] = useState<string | null>(null);
+  const nearbyFetchInFlightRef = useRef<string | null>(null);
+
+  const locationGridKey = useMemo(() => {
+    if (!userLocation) return null;
+    return `${userLocation.lat.toFixed(PLACES_COORD_GRID_DECIMALS)},${userLocation.lng.toFixed(PLACES_COORD_GRID_DECIMALS)}`;
+  }, [userLocation?.lat, userLocation?.lng]);
 
   const loadNearbyPicks = useCallback(async () => {
-    const boot = readBootstrapDeviceLocation();
-    const anchor = userLocation ?? {
-      lat: boot.lat,
-      lng: boot.lng,
-      city: boot.city,
-      source: "fallback" as const,
-    };
+    if (!userLocation || weatherStatus === "loading") return;
+
     const categories = pickCategoriesForHome(weather, selectedMood);
     const nearbyCacheKey = buildHomeNearbyCacheKey({
-      lat: anchor.lat,
-      lng: anchor.lng,
-      locale,
+      lat: userLocation.lat,
+      lng: userLocation.lng,
       mood: selectedMood,
       categoryIds: categories.map((c) => c.id),
     });
+
+    if (nearbyFetchInFlightRef.current === nearbyCacheKey) return;
+
     const cachedNearby = readHomeNearbyCache(nearbyCacheKey);
     if (cachedNearby) {
-      console.info("[PLACES_CACHE] home nearby hit");
+      console.info("[PLACES_CACHE] home nearby hit", { key: nearbyCacheKey });
       setNearbyPicks(cachedNearby.picks);
       setNearbyCuratedFallback(cachedNearby.usedCuratedFallback);
       setNearbyApiError(cachedNearby.apiError);
       setNearbyLoading(false);
+      logPlacesApiTelemetrySummary("home", { cacheHit: true, categories: categories.length });
       return;
     }
 
+    nearbyFetchInFlightRef.current = nearbyCacheKey;
+    resetPlacesApiTelemetry("home");
     setNearbyLoading(true);
     try {
       const [profile, prefs, saved] = await Promise.all([
@@ -164,26 +178,19 @@ function Home() {
         aiPreferences: profile?.aiPreferences,
       });
       const { picks, usedCuratedFallback, apiError } = await loadHomeNearbyPicks({
-        userLocation: { lat: anchor.lat, lng: anchor.lng },
+        userLocation: { lat: userLocation.lat, lng: userLocation.lng },
         weather,
         locale,
         reasonProfile,
         saved,
         searchPlacesFn,
         categories,
-        fetchPlaceDetailsFn: async (placeId) => {
-          const { place } = await fetchPlaceDetailsServerFn({ data: { placeId, locale } });
-          return place;
-        },
       });
       console.info("[Roamie Home] nearby places", {
         count: picks.length,
         usedCuratedFallback,
         apiError: apiError ?? null,
-        sample: picks.slice(0, 3).map((p) => ({
-          name: p.name,
-          photoName: p.photoName ?? null,
-        })),
+        categories: categories.map((c) => c.id),
       });
       const nearbyResult = { picks, usedCuratedFallback, apiError };
       writeHomeNearbyCache(nearbyCacheKey, nearbyResult);
@@ -193,17 +200,21 @@ function Home() {
       setPrefs(prefs);
       setSavedPlaces(saved);
       setSavedNames(new Set(saved.map((s) => s.name)));
+      logPlacesApiTelemetrySummary("home", {
+        cacheHit: false,
+        categories: categories.length,
+        picks: picks.length,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[Roamie Home] nearby picks failed", msg);
       if (shouldUseCuratedPlacesFallback(msg)) {
         logPlacesFallbackUsed("home-load-catch");
         const fallbackCategories = pickCategoriesForHome(weather, selectedMood);
-        const loc = userLocation ?? { lat: anchor.lat, lng: anchor.lng };
         setNearbyPicks(
           getMockHomeNearbyPicks(
-            { lat: loc.lat, lng: loc.lng },
-            fallbackCategories.length ? fallbackCategories : EXPLORE_CATEGORIES.slice(0, 4),
+            { lat: userLocation.lat, lng: userLocation.lng },
+            fallbackCategories.length ? fallbackCategories : EXPLORE_CATEGORIES.slice(0, 3),
             2,
           ),
         );
@@ -215,15 +226,17 @@ function Home() {
         setNearbyApiError(msg);
       }
     } finally {
+      nearbyFetchInFlightRef.current = null;
       setNearbyLoading(false);
     }
-  }, [userLocation, weather, locale, searchPlacesFn, fetchPlaceDetailsServerFn, selectedMood]);
+  }, [userLocation, weather, weatherStatus, locale, searchPlacesFn, selectedMood]);
 
   const runMoodRecommendation = useCallback(
     async (moodLabel: string) => {
       if (moodRequestRef.current === moodLabel) return;
       moodRequestRef.current = moodLabel;
       console.info("[MOOD_CONTEXT] created mood=", moodLabel);
+      resetPlacesApiTelemetry("ai");
       setAiLoading(true);
 
       const saveLocalMoodFallback = async (
@@ -381,6 +394,7 @@ function Home() {
         }
         toast.error(e instanceof Error ? e.message : t("home.recommendFailed"));
       } finally {
+        logPlacesApiTelemetrySummary("ai", { mood: moodLabel });
         setAiLoading(false);
         moodRequestRef.current = null;
       }
@@ -418,24 +432,31 @@ function Home() {
   }, [pathname]);
 
   useEffect(() => {
-    void loadNearbyPicks();
-  }, [loadNearbyPicks]);
+    if (pathname !== "/") return;
+    if (!locationGridKey || weatherStatus === "loading") return;
+
+    const timer = window.setTimeout(() => {
+      void loadNearbyPicks();
+    }, HOME_NEARBY_LOCATION_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [pathname, locationGridKey, weatherStatus, selectedMood, loadNearbyPicks]);
 
   useEffect(() => {
     const onPrefs = () => {
-      if (weatherStatus !== "loading") void loadNearbyPicks();
+      if (weatherStatus !== "loading" && userLocation) void loadNearbyPicks();
     };
     window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
     return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
-  }, [weatherStatus, loadNearbyPicks]);
+  }, [weatherStatus, userLocation, loadNearbyPicks]);
 
   useEffect(() => {
     const onAccess = () => {
-      if (weatherStatus !== "loading") void loadNearbyPicks();
+      if (weatherStatus !== "loading" && userLocation) void loadNearbyPicks();
     };
     window.addEventListener(ACCESS_CHANGED_EVENT, onAccess);
     return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onAccess);
-  }, [weatherStatus, loadNearbyPicks]);
+  }, [weatherStatus, userLocation, loadNearbyPicks]);
 
   const handleNearbyPick = async (pick: HomeNearbyPick) => {
     setNavigatingPlaceId(pick.id);
@@ -639,6 +660,7 @@ function Home() {
             addToTripLabel={t("chat.addToTrip")}
             fallbackReason={nearbyCuratedFallback ? (nearbyApiError ?? "curated_fallback") : null}
             apiError={nearbyApiError}
+            onPlacePhotoLoad={() => recordPlacesApiCall("photo", "home")}
           />
         </div>
       </section>

@@ -17,15 +17,18 @@ import {
   selectRecommendationsForNow,
   summarizeAvailabilityStats,
 } from "@/lib/recommend-place-ranking";
-import { lookupPlacesHoursBatch } from "@/lib/places.functions";
-import {
-  filterAlreadyRecommendedPlaces,
-  mergeRecommendationsWithSelected,
-} from "@/lib/place-planning-memory";
 import {
   buildLateNightMoodSummary,
   shouldActivateLateNightSceneFlow,
 } from "@/lib/late-night-scene-recommendations";
+import {
+  filterAlreadyRecommendedPlaces,
+  mergeRecommendationsWithSelected,
+} from "@/lib/place-planning-memory";
+
+function emptyHoursMap(names: string[]): Map<string, PlaceHoursData> {
+  return new Map(names.map((name) => [name, {}]));
+}
 
 export type EnrichRoamieOptions = {
   context: FilterPlacesContext;
@@ -83,7 +86,6 @@ async function enrichRecommendations(
   opts: EnrichRoamieOptions,
   ctx: RoamieRequestContext,
 ): Promise<{ recommendations: RoamieRecommendationItem[]; lateNightMode: boolean; stats: ReturnType<typeof summarizeAvailabilityStats> }> {
-  const center = { lat: opts.lat!, lng: opts.lng! };
   const at = opts.at ?? new Date();
   const sceneFlow = shouldActivateLateNightSceneFlow(ctx.mood ?? ctx.selectedMood, at);
 
@@ -96,15 +98,7 @@ async function enrichRecommendations(
     };
   }
 
-  const hoursMap = await lookupPlacesHoursBatch(
-    recs.map((r) => ({
-      name: r.name,
-      address: r.address,
-      lat: r.lat,
-      lng: r.lng,
-    })),
-    center,
-  );
+  const hoursMap = emptyHoursMap(recs.map((r) => r.name));
 
   const normalized = recs.map((r) => normalizeRecommendationItem(r));
   const filterContext: FilterPlacesContext =
@@ -147,17 +141,10 @@ async function enrichItinerary(
   items: RoamieItineraryItem[],
   opts: EnrichRoamieOptions,
 ): Promise<RoamieItineraryItem[]> {
-  const center = { lat: opts.lat!, lng: opts.lng! };
   const names = [...new Set(items.map((i) => i.placeName).filter(Boolean))];
   if (!names.length) return items;
 
-  const hoursMap = await lookupPlacesHoursBatch(
-    names.map((name) => {
-      const item = items.find((i) => i.placeName === name);
-      return { name, lat: item?.lat, lng: item?.lng };
-    }),
-    center,
-  );
+  const hoursMap = emptyHoursMap(names);
 
   const kept: RoamieItineraryItem[] = [];
 

@@ -71,6 +71,10 @@ import {
   isGoogleBillingDisabledError,
   shouldUseCuratedPlacesFallback,
 } from "@/lib/places-api-errors";
+import {
+  logPlacesApiTelemetrySummary,
+  resetPlacesApiTelemetry,
+} from "@/lib/places-api-telemetry";
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
 import { withSearchTimeout } from "@/lib/search-timeout";
 import {
@@ -513,6 +517,7 @@ function MapView() {
       const text = query.trim() || cat.query;
       setLoading(true);
       setError(null);
+      resetPlacesApiTelemetry("map");
       const searchQuery = isFreeText
         ? text
         : buildExploreQuery(text, {
@@ -538,6 +543,7 @@ function MapView() {
               includedTypes: isFreeText ? undefined : cat.includedTypes,
               nearbyGroups: isFreeText ? undefined : cat.nearbyGroups,
               locale,
+              telemetrySurface: "map",
             },
           }),
         );
@@ -569,6 +575,7 @@ function MapView() {
                   query: textQuery,
                   mode: "text",
                   locale,
+                  telemetrySurface: "map",
                 },
               }),
             );
@@ -596,6 +603,7 @@ function MapView() {
                   query: textQuery,
                   mode: "text",
                   locale,
+                  telemetrySurface: "map",
                 },
               }),
             );
@@ -689,6 +697,11 @@ function MapView() {
 
         if (requestId !== searchRequestIdRef.current) return;
         setResults(sortMapCards(enriched, center, reasonProfile));
+        logPlacesApiTelemetrySummary("map", {
+          category: cat.id,
+          freeText: isFreeText,
+          resultCount: enriched.length,
+        });
         if (sheetMode === "list") {
           setSelectedPlace(null);
           setSelectedPlaceIndex(null);

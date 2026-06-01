@@ -1,4 +1,5 @@
 import type { Locale } from "@/lib/i18n/types";
+import type { PlacesApiSurface } from "@/lib/places-api-telemetry";
 import type { PlaceResult } from "@/lib/place-result";
 import type { SavedPlace } from "@/lib/places-storage";
 import {
@@ -43,6 +44,7 @@ export type SearchPlacesInput = {
   nearbyGroups?: string[][];
   locale?: Locale;
   availabilityContext?: "now" | "lenient";
+  telemetrySurface?: PlacesApiSurface;
 };
 
 export type SearchPlacesFn = (
@@ -92,6 +94,9 @@ export async function searchExploreCategoryPlaces(
     reasonProfile: UserProfileForReason | null;
     saved: SavedPlace[];
     searchPlacesFn: SearchPlacesFn;
+    /** 首頁成本優化：略過 coffee/district Text Search fallback */
+    skipTextSearchFallback?: boolean;
+    telemetrySurface?: PlacesApiSurface;
   },
 ): Promise<ExplorePlaceCard[]> {
   const { userLocation, weather, locale, reasonProfile, saved, searchPlacesFn } = ctx;
@@ -112,6 +117,7 @@ export async function searchExploreCategoryPlaces(
         includedTypes: cat.includedTypes,
         nearbyGroups: cat.nearbyGroups,
         locale,
+        telemetrySurface: ctx.telemetrySurface,
       },
     }),
   );
@@ -128,7 +134,7 @@ export async function searchExploreCategoryPlaces(
   let filtered = applyFilters(apiPlaces);
   const skipExtraPlacesApi = Boolean(primary.error && shouldSkipPlacesClientRetry(primary.error));
 
-  if (!skipExtraPlacesApi && cat.id === "coffee" && filtered.length < COFFEE_MIN_FILTERED_RESULTS) {
+  if (!skipExtraPlacesApi && !ctx.skipTextSearchFallback && cat.id === "coffee" && filtered.length < COFFEE_MIN_FILTERED_RESULTS) {
     for (const textQuery of getExploreTextFallbackQueries("coffee", userLocation)) {
       const fallback = await withSearchTimeout(
         searchPlacesFn({
@@ -143,7 +149,7 @@ export async function searchExploreCategoryPlaces(
     }
   }
 
-  if (!skipExtraPlacesApi && cat.id === "district" && filtered.length < DISTRICT_MIN_FILTERED_RESULTS) {
+  if (!skipExtraPlacesApi && !ctx.skipTextSearchFallback && cat.id === "district" && filtered.length < DISTRICT_MIN_FILTERED_RESULTS) {
     for (const textQuery of getExploreTextFallbackQueries("district", userLocation)) {
       const fallback = await withSearchTimeout(
         searchPlacesFn({
@@ -284,13 +290,13 @@ export async function loadHomeNearbyPicks(ctx: {
   saved: SavedPlace[];
   searchPlacesFn: SearchPlacesFn;
   categories: ExploreCategory[];
-  fetchPlaceDetailsFn?: FetchPlaceDetailsForPickFn;
 }): Promise<HomeNearbyPicksResult> {
   let lastApiError: string | null = null;
+  const searchCtx = { ...ctx, skipTextSearchFallback: true, telemetrySurface: "home" as const };
   const perCategory = await Promise.all(
     ctx.categories.map(async (cat) => {
       try {
-        const sorted = await searchExploreCategoryPlaces(cat, ctx);
+        const sorted = await searchExploreCategoryPlaces(cat, searchCtx);
         return sorted.slice(0, PICKS_PER_CATEGORY).map((p) => ({ ...p, categoryId: cat.id }));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -328,11 +334,8 @@ export async function loadHomeNearbyPicks(ctx: {
   if (sorted.length > 0) {
     const usedMock =
       sorted.length > 0 && sorted.every((p) => p.id.startsWith("mock-"));
-    const picks = usedMock
-      ? sorted
-      : await enrichHomeNearbyPicksHours(sorted, ctx.fetchPlaceDetailsFn);
     return {
-      picks,
+      picks: sorted,
       usedCuratedFallback: usedMock,
       apiError: usedMock ? placesApiUserHint(lastApiError) ?? lastApiError : lastApiError,
     };

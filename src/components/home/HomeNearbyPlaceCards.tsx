@@ -28,6 +28,7 @@ type Props = {
   addToTripLabel?: string;
   fallbackReason?: string | null;
   apiError?: string | null;
+  onPlacePhotoLoad?: () => void;
 };
 
 const DRAG_SCROLL_THRESHOLD_PX = 10;
@@ -74,6 +75,7 @@ export function HomeNearbyPlaceCards({
   addToTripLabel = "加入行程",
   fallbackReason,
   apiError,
+  onPlacePhotoLoad,
 }: Props) {
   const { t } = useI18n();
   const anchor = userLocation ?? { lat: 0, lng: 0 };
@@ -301,6 +303,7 @@ export function HomeNearbyPlaceCards({
                     coverImageUrl={p.coverImageUrl}
                     className="absolute inset-0"
                     imgClassName="absolute inset-0 h-full w-full object-cover"
+                    onGoogleLoad={() => onPlacePhotoLoad?.()}
                     onImageSourceChange={(source) =>
                       setImageSourceById((prev) =>
                         prev[p.id] === source ? prev : { ...prev, [p.id]: source },

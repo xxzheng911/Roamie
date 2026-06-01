@@ -184,10 +184,14 @@ export function pickCategoriesForContext(input: {
   ).slice(0, 4);
 }
 
-/** 首頁附近推薦：依天氣與心情調整分類優先順序 */
+/** 首頁附近推薦：核心 3 分類（降低成本） */
 export function pickCategoriesForHome(
   weather: WeatherSummary | null,
   mood?: string | null,
 ): ExploreCategory[] {
-  return pickCategoriesForContext({ weather, mood: mood ?? undefined, max: 6 });
+  const picked = pickCategoriesForContext({ weather, mood: mood ?? undefined, max: 3 });
+  if (picked.length > 0) return picked;
+  return RECOMMENDATION_CATEGORY_DEFS.filter((c) =>
+    ["coffee", "food", "sight"].includes(c.id),
+  );
 }

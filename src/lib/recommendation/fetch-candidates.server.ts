@@ -1,5 +1,6 @@
-import type { Locale } from "@/lib/i18n/types";
-import { executeExploreSearch } from "@/lib/places.functions";
+import type { z } from "zod";
+import { executeExploreSearch, ExploreSearchInput } from "@/lib/places.functions";
+import { getServerCachedExploreSearch } from "@/lib/places-search-server-cache";
 import type { PlaceResult } from "@/lib/place-result";
 import { getCategoryDef, pickCategoriesForContext } from "@/lib/recommendation/categories";
 import { placeResultToCandidate } from "@/lib/recommendation/place-mapping";
@@ -8,9 +9,17 @@ import type {
   RecommendationContext,
   VerifiedPlaceCandidate,
 } from "@/lib/recommendation/types";
+import { shouldSkipPlacesClientRetry } from "@/lib/places-api-errors";
+import {
+  logPlacesApiTelemetrySummaryServer,
+  resetPlacesApiTelemetryServer,
+} from "@/lib/places-api-telemetry.server";
+
+type SearchInput = z.infer<typeof ExploreSearchInput>;
 
 const PER_CATEGORY_LIMIT = 4;
 const MAX_TOTAL_CANDIDATES = 28;
+const AI_CATEGORY_MAX = 3;
 
 function mergeByPlaceId(places: PlaceResult[]): PlaceResult[] {
   const seen = new Set<string>();
@@ -23,14 +32,13 @@ function mergeByPlaceId(places: PlaceResult[]): PlaceResult[] {
   return out;
 }
 
-async function searchCategory(
+function buildSearchInput(
   categoryId: RecommendationCategoryId,
   ctx: RecommendationContext,
-): Promise<VerifiedPlaceCandidate[]> {
+): SearchInput | null {
   const def = getCategoryDef(categoryId);
-  if (!def) return [];
-
-  const { places, error } = await executeExploreSearch({
+  if (!def) return null;
+  return {
     lat: ctx.location.lat,
     lng: ctx.location.lng,
     query: def.query,
@@ -38,7 +46,22 @@ async function searchCategory(
     includedTypes: def.includedTypes,
     nearbyGroups: def.nearbyGroups,
     locale: ctx.locale,
-  });
+    telemetrySurface: "ai",
+  };
+}
+
+async function searchCategory(
+  categoryId: RecommendationCategoryId,
+  ctx: RecommendationContext,
+): Promise<VerifiedPlaceCandidate[]> {
+  const input = buildSearchInput(categoryId, ctx);
+  if (!input) return [];
+
+  const { places, error } = await getServerCachedExploreSearch(
+    input,
+    () => executeExploreSearch(input),
+    (r) => !(r.error && shouldSkipPlacesClientRetry(r.error)),
+  );
 
   if (error) {
     console.warn("[Roamie Rec] category search failed", categoryId, error);
@@ -57,10 +80,12 @@ async function searchCategory(
 export async function fetchVerifiedCandidates(
   ctx: RecommendationContext,
 ): Promise<VerifiedPlaceCandidate[]> {
+  resetPlacesApiTelemetryServer("ai");
+
   const categories = pickCategoriesForContext({
     weather: ctx.weather,
     mood: ctx.mood,
-    max: 6,
+    max: AI_CATEGORY_MAX,
     constraints: ctx.constraints,
   });
 
@@ -94,7 +119,12 @@ export async function fetchVerifiedCandidates(
     (c) => !savedBoost.some((b) => b.googlePlaceId === c.googlePlaceId),
   );
 
-  return [...savedBoost, ...rest].slice(0, MAX_TOTAL_CANDIDATES);
+  const result = [...savedBoost, ...rest].slice(0, MAX_TOTAL_CANDIDATES);
+  logPlacesApiTelemetrySummaryServer("ai", {
+    categories: categories.length,
+    candidates: result.length,
+  });
+  return result;
 }
 
 export function candidatesToAiList(candidates: VerifiedPlaceCandidate[]): string {

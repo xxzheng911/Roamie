@@ -1,12 +1,16 @@
 /** Google Places 快取 TTL（毫秒） */
 export const PLACES_CACHE_TTL_MS = {
-  /** 附近探索：5–10 分鐘區間，取 8 分鐘 */
-  explore: 8 * 60 * 1000,
-  homeNearby: 8 * 60 * 1000,
+  /** 探索搜尋 server + client */
+  explore: 30 * 60 * 1000,
+  /** 首頁附近推薦 persist cache */
+  homeNearby: 30 * 60 * 1000,
   autocomplete: 5 * 60 * 1000,
   placePhoto: 24 * 60 * 60 * 1000,
   placeDetails: 24 * 60 * 60 * 1000,
 } as const;
+
+/** 首頁 location debounce（毫秒）— 避免 GPS 微調連續打 API */
+export const HOME_NEARBY_LOCATION_DEBOUNCE_MS = 500;
 
 /** 座標網格精度：約 110m，同區域視為同一 cache bucket */
 export const PLACES_COORD_GRID_DECIMALS = 3;
