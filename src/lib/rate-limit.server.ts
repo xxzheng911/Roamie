@@ -25,7 +25,7 @@ export function checkRateLimit(
   return { allowed: true };
 }
 
-/** AI chat — align with FREE_TIER_LIMITS on client; enforce server-side in /api/roamie */
+/** Abuse prevention only — not product tier limits. @see docs/PRODUCT_ARCHITECTURE.md */
 export const AI_RATE_LIMITS = {
   chatPerMinute: 8,
   chatPerDay: 120,

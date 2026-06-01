@@ -5,6 +5,14 @@ import type { ConversationContext } from "@/lib/ai/conversation-context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { placeDisplayName } from "@/lib/chat-session";
 import type { PlusConversationMemory } from "@/lib/ai/plus-conversation-memory";
+import { EMPTY_PLUS_CONVERSATION_MEMORY } from "@/lib/ai/plus-conversation-memory";
+import {
+  buildPlusMemoryFromSources,
+  parsePlusMemory,
+} from "@/lib/ai/plus-memory-sync";
+import { buildTravelProfileFields } from "@/lib/travel-profile-for-ai";
+import { getPreferences } from "@/lib/preferences-storage";
+import { listPlaces } from "@/lib/places-storage";
 import { normalizeDestination } from "@/lib/ai/normalize-destination";
 
 export type ConversationContextRow = Tables<"conversation_context">;
@@ -18,7 +26,7 @@ export type SessionExtras = {
   outfitSuggestion?: string;
 };
 
-const EMPTY_PLUS_MEMORY: PlusConversationMemory = {};
+const EMPTY_PLUS_MEMORY: PlusConversationMemory = EMPTY_PLUS_CONVERSATION_MEMORY;
 
 function seasonText(ctx: ConversationContext | undefined): string | null {
   if (!ctx) return null;
@@ -36,6 +44,7 @@ export function conversationContextToRow(
   userId: string,
   ctx: ConversationContext | undefined,
   session?: ChatPlanningSession,
+  options?: { plusMemory?: PlusConversationMemory },
 ): TablesInsert<"conversation_context"> {
   const season = seasonText(ctx);
   const extras: SessionExtras = {
@@ -71,7 +80,7 @@ export function conversationContextToRow(
       ? ctx.selectedPlaces
       : (session?.selectedPlaces ?? []).map(placeDisplayName),
     session_extras: extras as unknown as TablesInsert<"conversation_context">["session_extras"],
-    plus_memory: EMPTY_PLUS_MEMORY as unknown as TablesInsert<"conversation_context">["plus_memory"],
+    plus_memory: (options?.plusMemory ?? EMPTY_PLUS_MEMORY) as unknown as TablesInsert<"conversation_context">["plus_memory"],
     updated_at: new Date().toISOString(),
   };
 }
@@ -174,6 +183,10 @@ export function applyPersistedContextToSession(
   };
 }
 
+export function rowPlusMemory(row: ConversationContextRow): PlusConversationMemory {
+  return parsePlusMemory(row.plus_memory);
+}
+
 export async function loadConversationContext(): Promise<ConversationContextRow | null> {
   const uid = await getAuthenticatedUserId();
   if (!uid) return null;
@@ -197,7 +210,28 @@ export async function saveConversationContext(
   const uid = await getAuthenticatedUserId();
   if (!uid) return;
 
-  const row = conversationContextToRow(uid, session.conversationContext, session);
+  const existing = await loadConversationContext();
+  const existingPlus = parsePlusMemory(existing?.plus_memory);
+
+  let plusMemory = existingPlus;
+  try {
+    const [prefs, places] = await Promise.all([getPreferences(), listPlaces()]);
+    const savedCategories = [
+      ...new Set(places.map((p) => p.category).filter(Boolean) as string[]),
+    ];
+    plusMemory = buildPlusMemoryFromSources({
+      prefs,
+      profileFields: buildTravelProfileFields(null, prefs),
+      savedCategories,
+      existing: existingPlus,
+    });
+  } catch (e) {
+    console.warn("[conversation_context] plus_memory refresh skipped", e);
+  }
+
+  const row = conversationContextToRow(uid, session.conversationContext, session, {
+    plusMemory,
+  });
   const { error } = await supabase.from("conversation_context").upsert(row, {
     onConflict: "user_id",
   });

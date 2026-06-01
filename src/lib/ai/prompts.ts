@@ -236,14 +236,16 @@ ${hasSelected ? "- 若有【已選地點】：可問「要不要我幫你把這�
 }
 
 function travelProfileInstructions(ctx: RoamieRequestContext): string {
+  if (ctx.planTier !== "plus") return "";
   const prefs = ctx.preferences;
   if (!prefs?.surveyCompleted && !prefs?.onboarded) return "";
-  const block = formatPreferences(prefs);
-  return `【旅行偏好測驗 — 必須遵守】
+  const block = formatPreferences(prefs, undefined, "plus");
+  return `【Travel Profile — Plus 必須遵守】
 ${block}
 - 推薦地點、對話語氣、行程節奏都要符合上述人格與興趣
 - 獨旅/家人/朋友同行會影響動線與停留時間
-- 拍照/美食/自然/購物等興趣要反映在 reason 與類型選擇`;
+- 拍照/美食/自然/購物/夜生活等興趣要反映在 reason 與類型選擇
+- 若有【使用者收藏地點】或【長期記憶（Plus）】，優先呼應收藏類型與偏好標籤`;
 }
 
 export function buildSystemPrompt(ctx: RoamieRequestContext): string {
@@ -321,6 +323,7 @@ ${hintsBlock}
 
 規則：
 - 上述地點必須盡量全部安排進 itinerary
+${ctx.planTier === "plus" && ctx.savedPlaceNames?.length ? `- Plus：參考【使用者收藏地點】的類型與風格安排相似節奏（${ctx.savedPlaceNames.slice(0, 6).join("、")}）` : ""}
 - 必須依【位置】【天氣摘要】【旅行日期】規劃：考慮當地平均溫度、降雨、體感、季節（冬夏衣著與戶外可行性）
 - 查詢並呼應旅行區間內的節慶、聖誕/年末活動、紅字假期；景點推薦要符合當時活動氛圍
 - 下雨或高降雨機率：動線以室內、百貨、咖啡廳、展覽為主，戶外點改備選或縮短停留

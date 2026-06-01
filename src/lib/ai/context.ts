@@ -178,18 +178,26 @@ const companionshipLabel: Record<string, string> = {
 export function formatPreferences(
   prefs?: TravelPreferences,
   profileFields?: TravelProfileFields | null,
+  planTier?: import("@/lib/plan-tier/types").PlanTier,
 ): string {
   if (!prefs && !profileFields) return "（尚未設定旅行偏好）";
 
-  if (profileFields?.surveyCompleted) {
+  const isPlus = planTier === "plus";
+
+  if (isPlus && profileFields?.surveyCompleted) {
     const base = formatTravelProfileForAi(profileFields, prefs);
     const bm = prefs ? resolveBudgetMode(prefs) : "standard";
     return `${base}；預算模式：${BUDGET_MODE_LABELS[bm]}（餐飲/咖啡/景點/住宿需符合此範圍）`;
   }
 
   const completed = Boolean(prefs?.surveyCompleted ?? prefs?.onboarded);
-  if (!completed) {
-    return "（尚未完成旅行偏好測驗；可先依位置與天氣提供通用推薦，若使用者想更個人化可輕柔引導至偏好測驗）";
+  if (!completed || !isPlus) {
+    if (!prefs) return "（尚未設定旅行偏好）";
+    const basic: string[] = [];
+    if (prefs.pace) basic.push(`步調：${paceLabel[prefs.pace] ?? prefs.pace}`);
+    if (prefs.vibe) basic.push(`氛圍：${vibeLabel[prefs.vibe] ?? prefs.vibe}`);
+    if (prefs.avoid?.length) basic.push(`想避開：${prefs.avoid.join("、")}`);
+    return basic.length ? basic.join("；") : "（尚未設定旅行偏好）";
   }
   const parts: string[] = [];
   const snapshot = prefs?.resultProfile;
@@ -309,7 +317,7 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
     ...(knownBlock ? [knownBlock] : []),
     formatTemporalWeatherBlock(ctx.weather, ctx.time),
     `【心情】${ctx.mood?.trim() || "（未指定，請從對話推測）"}`,
-    `【旅行偏好】${formatPreferences(ctx.preferences, getCachedTravelProfileFields())}`,
+    `【旅行偏好】${formatPreferences(ctx.preferences, getCachedTravelProfileFields(), ctx.planTier)}`,
     `【位置】${formatLocation(ctx.location)}`,
     `【天氣摘要】${formatWeather(ctx.weather)}`,
   ];
@@ -349,7 +357,11 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
   if (ctx.recentRecommendationNames?.length)
     lines.push(`【近期已推薦過，請避免重複】${ctx.recentRecommendationNames.join("、")}`);
   if (ctx.savedPlaceNames?.length)
-    lines.push(`【使用者收藏地點】${ctx.savedPlaceNames.join("、")}`);
+    lines.push(
+      ctx.planTier === "plus"
+        ? `【使用者收藏地點 — Plus 請納入推薦與行程考量】${ctx.savedPlaceNames.join("、")}`
+        : `【使用者收藏地點】${ctx.savedPlaceNames.join("、")}`,
+    );
   if (ctx.fromMoodFlow || ctx.fromMoodCard) {
     lines.push(
       "【來源】fromMoodFlow：使用者從心情卡片 → 推薦頁 → 聊天；必須延續【已選地點】與 selectedMood，勿用一般歡迎語重新開場。",

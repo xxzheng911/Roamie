@@ -1,4 +1,4 @@
-import { FREE_TIER_LIMITS, FEATURE_TIER_MAP } from "@/constants/subscription";
+import { FEATURE_TIER_MAP } from "@/constants/subscription";
 import type {
   FeatureGateResult,
   SubscriptionFeature,
@@ -17,40 +17,23 @@ export function hasTier(
   return tierRank(status.tier) >= tierRank(required);
 }
 
+export function isPlusFeature(feature: SubscriptionFeature): boolean {
+  return FEATURE_TIER_MAP[feature] === "plus";
+}
+
+/**
+ * Free users have full core product access — no daily caps.
+ * Only Plus personalization features require plus tier.
+ */
 export function canUseFeature(
   status: SubscriptionStatus,
-  usage: UsageCounters,
+  _usage: UsageCounters,
   feature: SubscriptionFeature,
 ): FeatureGateResult {
   const requiredTier = FEATURE_TIER_MAP[feature];
   if (!hasTier(status, requiredTier)) {
     return { allowed: false, reason: "premium_required", feature };
   }
-
-  if (status.tier === "plus" || status.tier === "premium") return { allowed: true };
-
-  switch (feature) {
-    case "ai_chat":
-      if (usage.aiChatsToday >= FREE_TIER_LIMITS.aiChatsPerDay) {
-        return { allowed: false, reason: "limit_reached", feature };
-      }
-      break;
-    case "itinerary_generate":
-      if (usage.itineraryGenerationsToday >= FREE_TIER_LIMITS.itineraryGenerationsPerDay) {
-        return { allowed: false, reason: "limit_reached", feature };
-      }
-      break;
-    case "hidden_locals":
-    case "advanced_travel_modes":
-    case "ai_memory":
-    case "smart_itinerary":
-    case "weather_planning":
-    case "unlimited_ai":
-      return { allowed: false, reason: "premium_required", feature };
-    default:
-      break;
-  }
-
   return { allowed: true };
 }
 
@@ -96,6 +79,7 @@ export function writeLocalUsage(usage: UsageCounters): void {
   localStorage.setItem(USAGE_KEY, JSON.stringify(usage));
 }
 
+/** Optional analytics counters — not used for tier gating */
 export function incrementUsage(
   feature: SubscriptionFeature,
   usage: UsageCounters,
@@ -103,11 +87,11 @@ export function incrementUsage(
   const today = new Date().toISOString().slice(0, 10);
   const base = usage.resetAt === today ? usage : defaultUsage();
   const next = { ...base, resetAt: today };
-  if (feature === "ai_chat" || feature === "unlimited_ai") next.aiChatsToday += 1;
-  if (feature === "itinerary_generate" || feature === "smart_itinerary") {
+  if (feature === "ai_chat" || feature === "deep_conversation") next.aiChatsToday += 1;
+  if (feature === "itinerary_planning" || feature === "itinerary_optimization") {
     next.itineraryGenerationsToday += 1;
   }
-  if (feature === "hidden_locals" || feature === "advanced_travel_modes") {
+  if (feature === "proactive_inspiration" || feature === "collection_insights") {
     next.advancedRecommendationsToday += 1;
   }
   writeLocalUsage(next);

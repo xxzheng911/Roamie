@@ -80,8 +80,12 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
     return `照你最近的對話「${chatHint}」，我會用比較像旅伴的方式，陪你慢慢收斂今天的路線。`;
   }
 
-  if (prefs?.vibe && prefs.pace) {
-    return `你的旅行節奏偏${prefs.pace}、喜歡${prefs.vibe}——今天可以往這個方向找剛剛好的去處。`;
+  if (savedCats.length === 1 && prefs?.surveyCompleted && prefs.personalityType) {
+    return `你常收藏${savedCats[0]}，又是「${prefs.personalityType}」——我會依測驗結果幫你挑今天適合的地點與節奏。`;
+  }
+
+  if (prefs?.surveyCompleted && prefs.personalityType) {
+    return `你是「${prefs.personalityType}」——我會依測驗結果幫你挑今天適合的地點與節奏。`;
   }
 
   if (prefs?.resultProfile?.travelTags?.length) {
@@ -89,8 +93,8 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
     return `照你的旅行人格「${prefs.resultProfile.personalityType}」與${tags}偏好，今天可以往這個方向找剛剛好的去處。`;
   }
 
-  if (prefs?.surveyCompleted && prefs.personalityType) {
-    return `你是「${prefs.personalityType}」——我會依測驗結果幫你挑今天適合的地點與節奏。`;
+  if (prefs?.vibe && prefs.pace) {
+    return `你的旅行節奏偏${prefs.pace}、喜歡${prefs.vibe}——今天可以往這個方向找剛剛好的去處。`;
   }
 
   if (prefs?.personalitySummary?.trim()) {

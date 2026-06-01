@@ -13,6 +13,7 @@ import { buildSessionMemorySnapshot } from "@/lib/ai/memory/session-memory";
 import { buildLongTermMemory } from "@/lib/ai/memory/long-term-memory";
 import type { PlanTier } from "@/lib/plan-tier/types";
 import { buildNormalizedTravelContextLog, logContextNormalized } from "@/lib/ai/context-normalize";
+import { loadConversationContext, rowPlusMemory } from "@/lib/conversation-context-store";
 
 /** 組裝對話階段、情緒推測、本輪／長期記憶後再送 AI */
 export async function enrichRoamieContext(
@@ -61,7 +62,9 @@ export async function enrichRoamieContext(
   let longTermMemory = ctx.longTermMemory;
   if (tier === "plus" && !longTermMemory) {
     try {
-      longTermMemory = await buildLongTermMemory("client");
+      const persisted = await loadConversationContext();
+      const plusMemory = persisted ? rowPlusMemory(persisted) : null;
+      longTermMemory = await buildLongTermMemory("client", plusMemory);
     } catch (e) {
       console.warn("[Roamie AI] long-term memory", e);
     }

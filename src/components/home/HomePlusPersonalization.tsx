@@ -103,7 +103,7 @@ export function HomePlusPersonalization({
           <span className="min-w-0 flex-1">
             <p className="font-display text-[17px]">讓 Roamie 更懂你</p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Plus 會記住旅行風格、收藏與互動，提供更深入的個人化推薦。
+              Free 已可完整規劃旅行。Plus 記住你的偏好與收藏，成為專屬旅行顧問。
             </p>
             <span className="mt-2 inline-block text-xs font-medium text-clay">
               立即升級 Plus

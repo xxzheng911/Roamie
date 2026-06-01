@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
+import { PLUS_VALUE_PROPS } from "@/constants/subscription";
 import { useAccess } from "@/hooks/use-access";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
 import { isDeveloperBuildEnabled } from "@/lib/access/developer";
@@ -27,28 +28,21 @@ type Props = {
 const FEATURE_COPY: Record<NonNullable<Props["feature"]>, { title: string; body: string }> = {
   general: {
     title: "Roamie Plus",
-    body: "Plus 讓 Roamie 長期記住你的旅行風格、收藏與互動，在對話與推薦中提供更深入的個人化。免費版仍可正常使用 AI 對話、天氣與附近推薦。",
+    body: "Free 已可完整規劃旅行。Plus 讓 Roamie 越來越懂你 — 記住偏好、分析收藏、主動推薦靈感，像專屬旅行顧問一樣陪伴你。",
   },
   quiz: {
     title: "旅行性格測驗 — Plus",
-    body: "完成測驗後，Roamie 會記住你的旅行風格，並在每次推薦時融入你的偏好。",
+    body: "完成測驗後，Roamie 會建立你的 Travel Profile，並在每次推薦時融入你的旅行人格。",
   },
   memory: {
     title: "Roamie 長期旅行記憶",
-    body: "Plus 會記住你收藏過的地點、常選的類型與互動紀錄，讓推薦越來越懂你。",
+    body: "Plus 會永久記住你喜歡的城市、餐廳類型、旅行節奏，未來規劃直接套用，不用每次重講。",
   },
   personalized: {
     title: "Plus 個人化推薦",
-    body: "依照你的心情、時間、天氣與收藏偏好，Roamie 會整理更適合你的去處。",
+    body: "依收藏洞察、季節、天氣與旅行偏好，Roamie 在首頁主動給你「今日靈感」與專屬推薦。",
   },
 };
-
-const PLUS_FEATURES = [
-  "長期記住旅行偏好與收藏",
-  "更深度的個人化推薦",
-  "旅行性格測驗與記憶設定",
-  "情境式對話與行程整理",
-] as const;
 
 /**
  * Plus 功能介紹 + TestFlight 測試模式切換（不接真實付款）。
@@ -127,7 +121,7 @@ export function RoamiePlusIntroDialog({
                 <>
                   <p>{copy.body}</p>
                   <ul className="space-y-1.5 text-xs">
-                    {PLUS_FEATURES.map((line) => (
+                    {PLUS_VALUE_PROPS.map((line) => (
                       <li key={line} className="flex gap-2">
                         <span className="text-clay">·</span>
                         <span>{line}</span>

@@ -7,6 +7,8 @@ import {
   resolveBudgetMode,
 } from "@/lib/preferences-storage";
 import type { LongTermMemorySnapshot } from "@/lib/ai/memory/types";
+import type { PlusConversationMemory } from "@/lib/ai/plus-conversation-memory";
+import { mergePlusMemoryIntoSnapshot } from "@/lib/ai/plus-memory-sync";
 
 const PACE_LABEL: Record<string, string> = {
   slow: "慢旅、留白多",
@@ -34,8 +36,11 @@ function inferTraitsFromPrefs(
   return traits;
 }
 
-/** Plus：從 profile、偏好、收藏、行程建立長期記憶 */
-export async function buildLongTermMemory(userId: string): Promise<LongTermMemorySnapshot> {
+/** Plus：從 profile、偏好、收藏、行程建立長期記憶（可合併 Supabase plus_memory） */
+export async function buildLongTermMemory(
+  userId: string,
+  plusMemory?: PlusConversationMemory | null,
+): Promise<LongTermMemorySnapshot> {
   void userId;
   const [profile, prefs, places, itineraries] = await Promise.all([
     getUserProfile().catch(() => null),
@@ -64,7 +69,7 @@ export async function buildLongTermMemory(userId: string): Promise<LongTermMemor
   const traits = inferTraitsFromPrefs(prefs, savedPlaceCategories);
   if (profile?.personalityType) traits.push(`旅行人格：${profile.personalityType}`);
 
-  return {
+  const base: LongTermMemorySnapshot = {
     displayName: profile?.displayName,
     travelStyle: profile?.travelStyle,
     personalityType: profile?.personalityType,
@@ -80,6 +85,7 @@ export async function buildLongTermMemory(userId: string): Promise<LongTermMemor
     tripCount: itineraries.length,
     traits: [...new Set(traits)],
   };
+  return mergePlusMemoryIntoSnapshot(base, plusMemory);
 }
 
 export function formatLongTermMemoryForPrompt(memory: LongTermMemorySnapshot): string {

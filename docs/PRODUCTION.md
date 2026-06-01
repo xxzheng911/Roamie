@@ -1,5 +1,7 @@
 # Roamie Production & App Store Readiness
 
+> **Product tiers:** See [`docs/PRODUCT_ARCHITECTURE.md`](./PRODUCT_ARCHITECTURE.md) — Free is fully usable; Plus is personalization, not feature unlocks.
+
 > **Stack note:** Roamie runs on **TanStack Start + Vite + Cloudflare Workers**, not Next.js. Capacitor wraps the built web bundle for iOS/Android.
 
 ## Architecture (implemented foundations)

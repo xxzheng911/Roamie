@@ -25,11 +25,11 @@ import type { SavedPlace } from "@/lib/places-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
 
-const FREE_FEATURE_TAGS = [
+const PLUS_INTRO_TAGS = [
   "長期旅行記憶",
-  "收藏地點推薦",
-  "更深層 AI 對話",
-  "個人化行程規劃",
+  "Travel Profile",
+  "收藏洞察",
+  "今日靈感",
 ] as const;
 
 type Props = {
@@ -227,10 +227,10 @@ export function HomePersonalizationCard({
           <div className="min-w-0 flex-1">
             <h3 className="font-display text-[19px] leading-snug">讓 Roamie 更懂你</h3>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              讓 AI 記住你的旅行偏好、收藏地點與旅遊習慣，獲得更貼近你的行程推薦。
+              Free 已可完整規劃旅行。Plus 讓 Roamie 記住你的偏好與收藏，成為專屬旅行顧問。
             </p>
             <ul className="mt-3 flex flex-wrap gap-1.5">
-              {FREE_FEATURE_TAGS.map((tag) => (
+              {PLUS_INTRO_TAGS.map((tag) => (
                 <li
                   key={tag}
                   className="rounded-full border border-border/80 bg-background/80 px-2.5 py-1 text-[11px] font-medium text-foreground/85"

@@ -189,6 +189,42 @@ const RequestSchema = z.object({
   conversationStage: z
     .enum(["empathize", "infer", "clarify", "converge", "recommend", "itinerary"])
     .optional(),
+  longTermMemory: z
+    .object({
+      displayName: z.string().optional(),
+      travelStyle: z.string().optional(),
+      personalityType: z.string().optional(),
+      personalitySummary: z.string().optional(),
+      pace: z.string().optional(),
+      vibe: z.string().optional(),
+      budgetLabel: z.string().optional(),
+      avoid: z.array(z.string()).optional(),
+      interests: z.array(z.string()).optional(),
+      savedPlaceNames: z.array(z.string()).optional(),
+      savedPlaceCategories: z.array(z.string()).optional(),
+      recentTripDestinations: z.array(z.string()).optional(),
+      tripCount: z.number().optional(),
+      traits: z.array(z.string()).optional(),
+    })
+    .optional(),
+  sessionMemory: z
+    .object({
+      mood: z.string().optional(),
+      selectedMood: z.string().optional(),
+      preferredArea: z.string().optional(),
+      avoidTypes: z.array(z.string()).optional(),
+      rejectedPlaceNames: z.array(z.string()).optional(),
+      selectedPlaceNames: z.array(z.string()).optional(),
+      companionship: z.string().optional(),
+      setting: z.string().optional(),
+      transportation: z.string().optional(),
+      pace: z.string().optional(),
+      lastUserIntent: z.string().optional(),
+      conversationSummary: z.string().optional(),
+      turnCount: z.number().optional(),
+    })
+    .optional(),
+  emotionSignals: z.record(z.string()).optional(),
 });
 
 export function parseRoamieRequest(body: unknown): RoamieRequestContext {

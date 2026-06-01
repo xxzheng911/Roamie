@@ -70,6 +70,10 @@ function serializeRoamieRequest(ctx: RoamieRequestContext): string {
     recommendedPlaces: ctx.recommendedPlaces?.slice(0, 8),
     recentRecommendationNames: ctx.recentRecommendationNames?.slice(0, 12),
     savedPlaceNames: ctx.savedPlaceNames?.slice(0, 20),
+    longTermMemory: ctx.longTermMemory,
+    sessionMemory: ctx.sessionMemory,
+    conversationStage: ctx.conversationStage,
+    emotionSignals: ctx.emotionSignals,
   };
   try {
     return JSON.stringify(slim);
