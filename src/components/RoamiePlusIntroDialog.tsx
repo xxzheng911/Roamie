@@ -15,7 +15,6 @@ import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import { PLUS_VALUE_PROPS } from "@/constants/subscription";
 import { useAccess } from "@/hooks/use-access";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
-import { isDeveloperBuildEnabled } from "@/lib/access/developer";
 
 type Props = {
   open: boolean;
@@ -62,7 +61,7 @@ export function RoamiePlusIntroDialog({
   } = useAccess();
   const { upgradeToPlus, comingSoonOpen, setComingSoonOpen } = usePlusUpgrade();
   const copy = FEATURE_COPY[feature];
-  const showTestControls = isDeveloperBuildEnabled() || canShowDeveloperTools;
+  const showTestControls = canShowDeveloperTools;
 
   const handleUpgradePlus = () => {
     const result = upgradeToPlus();

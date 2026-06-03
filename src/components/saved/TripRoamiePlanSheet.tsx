@@ -169,21 +169,21 @@ export function TripRoamiePlanSheet({
         side="bottom"
         className="flex max-h-[85dvh] flex-col rounded-t-[1.75rem] border-0 bg-background px-0 pb-[max(1rem,env(safe-area-inset-bottom))]"
       >
-        <SheetTitle className="flex items-center gap-2 px-5 text-base font-medium">
+        <SheetTitle className="flex items-center justify-center gap-2 px-5 text-center text-base font-medium">
           <Sparkles className="h-4 w-4 text-primary" />
-          請 Roamie 幫我安排
+          讓 Roamie 幫我安排
         </SheetTitle>
-        <p className="mt-1 px-5 text-xs text-muted-foreground">
-          {dayLabel} · 在行程頁內完成，不會跳轉聊天
+        <p className="mt-1 px-5 text-center text-xs text-muted-foreground">
+          {dayLabel} · 為這一天推薦地點（不會跳轉備註頁或聊天）
         </p>
 
         <div className="mt-4 space-y-3 px-5">
-          <textarea
+          <input
+            type="text"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            rows={3}
-            placeholder="描述你想補的地點或氛圍…"
-            className="w-full resize-none rounded-2xl border border-border bg-card px-4 py-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/30"
+            placeholder="例如：下午咖啡、順路景點、晚餐"
+            className="w-full rounded-2xl border border-border bg-card px-4 py-3 text-center text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/30"
           />
           <div className="flex flex-wrap gap-2">
             {EXAMPLE_PROMPTS.map((ex) => (
@@ -201,7 +201,7 @@ export function TripRoamiePlanSheet({
             type="button"
             disabled={loading || !prompt.trim()}
             onClick={() => void runPlan()}
-            className="flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+            className="flex w-full min-h-[3rem] items-center justify-center gap-2 rounded-full bg-primary py-3 text-center text-sm font-medium text-primary-foreground disabled:opacity-50"
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             產生建議

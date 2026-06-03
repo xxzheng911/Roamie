@@ -15,6 +15,7 @@ export function HomeTripCard({ trip }: Props) {
     <Link
       to={TRIP_DETAIL_ROUTE}
       params={{ tripId: trip.id }}
+      search={{ from: "home" }}
       onClick={() => logTripNav("HomeTripCard", trip.id)}
       className="mt-7 block overflow-hidden rounded-3xl border border-border bg-card shadow-soft"
     >

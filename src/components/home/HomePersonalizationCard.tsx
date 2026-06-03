@@ -58,13 +58,15 @@ export function HomePersonalizationCard({
     devSubscriptionMode,
     testModeOverride,
     disablePlusTestMode,
+    canShowDeveloperTools,
   } = useAccess();
-  const { upgradeToPlus, comingSoonOpen, setComingSoonOpen, canInstantUpgrade } = usePlusUpgrade();
+  const { upgradeToPlus, comingSoonOpen, setComingSoonOpen } = usePlusUpgrade();
 
   const [manageSubOpen, setManageSubOpen] = useState(false);
   const [accessTick, setAccessTick] = useState(0);
 
-  const isDevSubscriptionMode = canInstantUpgrade || devPlusMode || testModeOverride !== "none";
+  const isDevSubscriptionMode =
+    canShowDeveloperTools && (devPlusMode || testModeOverride !== "none");
 
   useEffect(() => {
     const onAccess = () => setAccessTick((n) => n + 1);
@@ -165,10 +167,10 @@ export function HomePersonalizationCard({
                 Roamie 正在記住你的旅行節奏
               </h3>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{plusInsight}</p>
-              {devPlusMode ? (
+              {canShowDeveloperTools && devPlusMode ? (
                 <p className="mt-2 text-xs font-medium text-clay">目前為 Plus 開發／測試模式</p>
               ) : null}
-              {isDevSubscriptionMode ? (
+              {canShowDeveloperTools && isDevSubscriptionMode ? (
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   開發訂閱狀態：{devSubscriptionMode === "plus" ? "Plus" : "Free"}
                 </p>
@@ -181,13 +183,23 @@ export function HomePersonalizationCard({
                 >
                   開始規劃我的旅程
                 </button>
-                <button
-                  type="button"
-                  onClick={isDevSubscriptionMode ? handleReturnFreeDev : handleReturnFreeProd}
-                  className="rounded-full border border-border bg-card/80 px-5 py-2.5 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-                >
-                  返回 Free 模式
-                </button>
+                {canShowDeveloperTools && isDevSubscriptionMode ? (
+                  <button
+                    type="button"
+                    onClick={handleReturnFreeDev}
+                    className="rounded-full border border-border bg-card/80 px-5 py-2.5 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+                  >
+                    返回 Free 模式
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleReturnFreeProd}
+                    className="rounded-full border border-border bg-card/80 px-5 py-2.5 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+                  >
+                    管理訂閱
+                  </button>
+                )}
               </div>
             </div>
           </div>

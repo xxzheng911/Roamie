@@ -9,6 +9,13 @@ import {
 import { getCachedExploreSearch } from "@/lib/places-explore-cache";
 import { searchPlacesViaBundledApi } from "@/lib/places-search-api";
 import { detectPlatform } from "@/services/platform";
+import {
+  logExploreSearchRequest,
+  logExploreSearchResponse,
+  logExploreSearchSkipped,
+} from "@/lib/explore-places-search-diagnostics";
+import { resolveAppApiUrl } from "@/lib/api-base-url";
+import { DEFAULT_SEARCH_RADIUS_M } from "@/lib/places-search-config";
 
 let placesSearchBlockedError: string | null = null;
 
@@ -45,6 +52,11 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
 
   const fetchUncached = async (data: Parameters<SearchPlacesFn>[0]["data"]) => {
     if (placesSearchBlockedError) {
+      if (data.telemetrySurface === "map" && data.mode === "text") {
+        logExploreSearchSkipped("places_search_blocked", {
+          error: placesSearchBlockedError,
+        });
+      }
       return { places: [], error: placesSearchBlockedError };
     }
 
@@ -52,9 +64,25 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
       const httpResult = await searchPlacesViaBundledApi(data);
       if (httpResult.error) rememberPlacesSearchBlock(httpResult.error);
       console.info("[PLACES_API] bundled_http", {
+        endpoint: resolveAppApiUrl("/api/places-search"),
         count: httpResult.places.length,
         error: httpResult.error,
+        query: data.query,
+        exploreMapTextSearch: data.exploreMapTextSearch,
       });
+      if (
+        data.telemetrySurface === "map" &&
+        data.mode === "text" &&
+        httpResult.places.length === 0
+      ) {
+        logExploreSearchResponse({
+          status: httpResult.error ? "bundled_error" : "bundled_empty",
+          resultCount: 0,
+          firstPlaceName: null,
+          error: httpResult.error,
+          transport: "bundled_api",
+        });
+      }
       return httpResult;
     }
 
@@ -114,7 +142,40 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
 
   return async (args) => {
     if (placesSearchBlockedError) {
+      console.warn("[PLACES_API] search_blocked", { error: placesSearchBlockedError });
+      if (args.data.telemetrySurface === "map" && args.data.mode === "text") {
+        logExploreSearchSkipped("places_search_blocked", {
+          error: placesSearchBlockedError,
+        });
+      }
       return { places: [], error: placesSearchBlockedError };
+    }
+
+    if (args.data.telemetrySurface === "map" && args.data.mode === "text") {
+      const transport = useBundledHttp
+        ? "bundled_api"
+        : "server_fn_or_client_execute";
+      console.info("[EXPLORE_SEARCH_UNIFIED]", {
+        transport,
+        useBundledHttp,
+        endpoint: useBundledHttp ? resolveAppApiUrl("/api/places-search") : "serverFn",
+        query: args.data.query,
+        rawQuery: args.data.rawQuery,
+        exploreMapTextSearch: args.data.exploreMapTextSearch,
+      });
+      if (!useBundledHttp) {
+        logExploreSearchRequest({
+          rawQuery: args.data.rawQuery ?? args.data.query,
+          finalQuery: args.data.query,
+          lat: args.data.lat,
+          lng: args.data.lng,
+          radius: args.data.radius ?? DEFAULT_SEARCH_RADIUS_M,
+          endpoint: "serverFn:searchPlaces",
+          transport: "server_fn",
+          mode: "text",
+          exploreMapTextSearch: args.data.exploreMapTextSearch,
+        });
+      }
     }
 
     return getCachedExploreSearch(args.data, () => fetchUncached(args.data));

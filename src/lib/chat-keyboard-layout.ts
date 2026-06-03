@@ -3,6 +3,62 @@ import { detectPlatform } from "@/services/platform";
 /** 輸入列與鍵盤上緣的留白（px） */
 export const CHAT_KEYBOARD_GAP_PX = 10;
 
+/** 訊息列表與 fixed composer 之間的額外間距 */
+export const CHAT_MESSAGES_COMPOSER_GAP_PX = 8;
+
+/**
+ * 固定估算的 BottomComposer 高度（chips + input）。
+ * 勿用 ResizeObserver 動態量測 — 與 keyboard bottom 聯動會造成 layout ↔ setState 迴圈。
+ */
+export const CHAT_COMPOSER_ESTIMATE_HEIGHT_PX = 140;
+
+let cachedAppNavTotalHeightPx: number | null = null;
+
+/** 鍵盤關閉時 fixed composer 的 bottom（px，對齊 Tab Bar 上緣） */
+export function readAppNavTotalHeightPx(): number {
+  if (cachedAppNavTotalHeightPx != null) return cachedAppNavTotalHeightPx;
+  if (typeof document === "undefined") return 72;
+  const nav = document.querySelector(".bottom-nav");
+  const navH =
+    nav instanceof HTMLElement ? Math.round(nav.getBoundingClientRect().height) : 56;
+  cachedAppNavTotalHeightPx = navH + readSafeAreaBottomPx();
+  return cachedAppNavTotalHeightPx;
+}
+
+/** fixed BottomComposer 的 bottom 偏移（px） */
+export function resolveChatComposerFixedBottomPx(
+  keyboardVisible: boolean,
+  keyboardHeightPx: number,
+): number {
+  if (keyboardVisible) {
+    return Math.max(0, Math.round(keyboardHeightPx));
+  }
+  return readAppNavTotalHeightPx();
+}
+
+/** 訊息區 padding-bottom，避免被 fixed composer 遮住 */
+export function resolveChatMessagesPaddingBottomPx(params: {
+  keyboardVisible: boolean;
+  keyboardHeightPx: number;
+}): number {
+  const composerBottom = resolveChatComposerFixedBottomPx(
+    params.keyboardVisible,
+    params.keyboardHeightPx,
+  );
+  return (
+    CHAT_COMPOSER_ESTIMATE_HEIGHT_PX + composerBottom + CHAT_MESSAGES_COMPOSER_GAP_PX
+  );
+}
+
+export function logChatComposerBottomUpdated(params: {
+  keyboardVisible: boolean;
+  keyboardHeightPx: number;
+  composerFixedBottomPx: number;
+  messagesPaddingBottomPx: number;
+}): void {
+  console.info("[CHAT_COMPOSER_BOTTOM_UPDATED]", params);
+}
+
 export function isCapacitorNativeShell(): boolean {
   if (typeof window === "undefined") return false;
   const cap = (
@@ -71,9 +127,9 @@ export function measureComposerClearanceAboveLayoutBottom(
 
 /**
  * ChatComposer 外層 shell 的單一 bottom inset（不含 TabBar；鍵盤開啟時 TabBar 已隱藏）。
- * - Capacitor resize:native + plugin 有高度：WebView 已上移，僅加 gap（勿再加 keyboardHeight）
- * - visualViewport 已縮小且 native 未撐起 composer：用 vv inset + gap
- * - plugin 高度為 0：估計高度 + gap（native resize 與 plugin 皆失效時）
+ * - Capacitor resize:native 且 WebView 真的被推高（vv 縮小或 composer clearance 大）：僅 gap
+ * - resize:none（iOS 26）：用 plugin keyboardHeight（或估計值）+ gap 手動抬升
+ * - visualViewport 已縮小：用 vv inset + gap
  */
 export function resolveComposerBottomInset(params: {
   keyboardVisible: boolean;
@@ -85,38 +141,19 @@ export function resolveComposerBottomInset(params: {
   const vvInset = measureVisualViewportKeyboardInset();
   const keyboardPx = Math.max(0, Math.round(params.reportedKeyboardHeightPx));
   const nativeShell = isCapacitorNativeShell();
-
-  if (nativeShell && keyboardPx > 50) {
+  // 僅用 visualViewport 判斷 native resize 是否已推高 WebView。
+  // 勿用 composer clearance：resize:none 時手動 paddingBottom 會假性抬高 clearance，造成 inset 震盪 → stack overflow。
+  if (nativeShell && vvInset > 50) {
     return CHAT_KEYBOARD_GAP_PX;
   }
 
   if (vvInset > 50) {
-    const clearance = measureComposerClearanceAboveLayoutBottom(
-      params.composerShellEl ?? null,
-    );
-    if (nativeShell && clearance > keyboardPx * 0.55) {
-      return CHAT_KEYBOARD_GAP_PX;
-    }
     return vvInset + CHAT_KEYBOARD_GAP_PX;
   }
 
-  if (nativeShell) {
-    const clearance = measureComposerClearanceAboveLayoutBottom(
-      params.composerShellEl ?? null,
-    );
-    if (clearance > 120) {
-      return CHAT_KEYBOARD_GAP_PX;
-    }
-    const manualLift =
-      keyboardPx > 50 ? keyboardPx : estimateNativeKeyboardHeight();
-    return manualLift + CHAT_KEYBOARD_GAP_PX;
-  }
-
-  if (keyboardPx > 50) {
-    return keyboardPx + CHAT_KEYBOARD_GAP_PX;
-  }
-
-  return CHAT_KEYBOARD_GAP_PX;
+  const manualLift =
+    keyboardPx > 50 ? keyboardPx : estimateNativeKeyboardHeight();
+  return manualLift + CHAT_KEYBOARD_GAP_PX;
 }
 
 /** @deprecated 使用 resolveComposerBottomInset */

@@ -44,6 +44,8 @@ export function isWebKitAmbiguousUndefinedError(
   if (/maps\.googleapis\.com/i.test(filename)) return true;
   if (/vendor-react-[^/]+\.js/i.test(filename)) return true;
   if (/vendor-tanstack-[^/]+\.js/i.test(filename)) return true;
+  if (/capacitor:\/\/localhost\/assets\/index-[^/]+\.js/i.test(filename)) return true;
+  if (/\/assets\/index-[^/]+\.js/i.test(filename)) return true;
   if (typeof document !== "undefined") {
     const mapsScript = document.querySelector('script[data-roamie-maps="1"]');
     if (mapsScript) {

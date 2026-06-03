@@ -1,8 +1,7 @@
 import { useEffect } from "react";
 import { toast } from "sonner";
 import { useAccess } from "@/hooks/use-access";
-import { isDeveloperBuildEnabled, unlockDeveloperMode } from "@/lib/access/developer";
-import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
+import { isDeveloperBuildEnabled } from "@/lib/access/developer";
 
 /**
  * 個人頁：Free / Plus 切換（測試用）
@@ -11,14 +10,7 @@ import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
  * - 真實上線後（billingEnabled=true 且非開發版）：不顯示
  */
 export function ProfilePlanSwitcher({ className }: { className?: string }) {
-  const { hasPlusAccess, enablePlusTestMode, disablePlusTestMode, refresh } = useAccess();
-
-  useEffect(() => {
-    unlockDeveloperMode();
-    window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT));
-    refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const { hasPlusAccess, enablePlusTestMode, disablePlusTestMode } = useAccess();
 
   const show = import.meta.env.DEV || isDeveloperBuildEnabled();
   if (!show) return null;

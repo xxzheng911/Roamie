@@ -7,6 +7,7 @@ import {
 import { normalizeDestination, extractKnownDestinationFromText } from "@/lib/ai/normalize-destination";
 import { parseTravelContextFromText } from "@/lib/ai/travel-context";
 import { inferTravelSeason, parseMonthNumber } from "@/lib/ai/travel-season";
+import { isConversationStateTripComplete } from "@/lib/ai/trip-context-completeness";
 
 /** Roamie 旅伴對話階段 */
 export type ConversationStage =
@@ -114,6 +115,13 @@ function inferStage(state: ConversationState, session: ChatPlanningSession): Con
 /** 還缺什麼（一次只問一項） */
 export function nextGatheringField(state: ConversationState | undefined): GatheringField {
   if (!state?.destination) return "destination";
+
+  if (isConversationStateTripComplete(state)) {
+    if (!hasPreferences(state)) return "preferences";
+    if (!state.companions?.trim()) return "companions";
+    return "none";
+  }
+
   if (!state.travelMonth && !state.travelDate && state.days == null) return "travelMonth";
   if (state.days == null) return "days";
   if (!hasPreferences(state)) return "preferences";
@@ -139,10 +147,16 @@ export function syncConversationState(
   const flexible = isFlexiblePreferenceReply(t);
   const prev = session.conversationState;
 
+  const destFromText = extractKnownDestinationFromText(t);
   const destination =
-    resolveSessionDestination(session) ??
+    (destFromText ? normalizeDestination(destFromText) : undefined) ??
     (parsed.destination ? normalizeDestination(parsed.destination) : undefined) ??
-    prev?.destination;
+    prev?.destination ??
+    normalizeDestination(session.conversationContext?.destination) ??
+    normalizeDestination(session.travelContext?.destination) ??
+    normalizeDestination(session.tripDestination?.city) ??
+    normalizeDestination(session.tripDestination?.displayLabel) ??
+    normalizeDestination(session.preferredArea);
 
   const travelMonth =
     session.conversationContext?.travelMonth ??

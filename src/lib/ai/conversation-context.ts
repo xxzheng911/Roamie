@@ -17,6 +17,10 @@ import {
 import { formatWeather } from "@/lib/ai/context";
 import { resolveCleanDestination } from "@/lib/ai/normalize-destination";
 import {
+  mergeMustIncludePlaces,
+  parseMustIncludePlaces,
+} from "@/lib/ai/must-include-places";
+import {
   syncConversationState,
   type ConversationState,
 } from "@/lib/ai/conversation-state";
@@ -40,6 +44,8 @@ export type ConversationContext = {
   lastDiscussedPlace?: string;
   /** 「那附近」解析後的搜尋錨點 */
   nearbyAnchor?: string;
+  /** 使用者指定必去景點 */
+  mustIncludePlaces?: string[];
   interests?: string[];
   outfitSuggestion?: string;
   updatedAt: string;
@@ -197,6 +203,10 @@ export function updateConversationContext(
       ? [...new Set([...(prev?.interests ?? []), ...partial.interests])]
       : prev?.interests,
     outfitSuggestion: partial.outfitSuggestion ?? prev?.outfitSuggestion,
+    mustIncludePlaces: mergeMustIncludePlaces(
+      prev?.mustIncludePlaces,
+      parseMustIncludePlaces(userText),
+    ),
     updatedAt: new Date().toISOString(),
   };
 
@@ -288,6 +298,7 @@ export function formatConversationContextForAi(
     ["討論焦點", ctx?.lastDiscussedPlace],
     ["附近錨點", ctx?.nearbyAnchor],
     ["穿搭", ctx?.outfitSuggestion],
+    ["必去景點", ctx?.mustIncludePlaces?.join("、")],
     ["規劃階段", planning?.stage],
     [
       "偏好彈性",

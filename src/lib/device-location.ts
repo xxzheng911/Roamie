@@ -11,8 +11,10 @@ import {
   getCachedLocationPermission,
   type LocationPermissionState,
 } from "@/lib/location-permission-manager";
+import { tryGateLocationPublish } from "@/lib/location-publish-gate";
 import {
   deviceLocationFromSnapshot,
+  getDeviceLocationSnapshot,
   getFreshDeviceLocationSnapshot,
   updateDeviceLocationStore,
 } from "@/lib/location-store";
@@ -144,16 +146,6 @@ function readPosition(
   }
 
   rememberGoodCoords(resolved.lat, resolved.lng);
-
-  console.info("[Location] GPS fix", {
-    lat: resolved.lat,
-    lng: resolved.lng,
-    accuracy,
-    source,
-    kind: resolved.kind,
-    build: import.meta.env.PROD ? "production" : "development",
-    simulatorPreset: resolved.simulatorPreset,
-  });
 
   return {
     lat: resolved.lat,
@@ -356,14 +348,193 @@ function permissionBlocksGps(permission: LocationPermissionState): boolean {
   return permission === "denied" || permission === "restricted";
 }
 
-function publishDeviceLocation(loc: DeviceLocationResult): DeviceLocationResult {
-  updateDeviceLocationStore(loc);
-  return loc;
+function publishDeviceLocation(
+  loc: DeviceLocationResult,
+  accuracy?: number | null,
+): DeviceLocationResult {
+  const { accept } = tryGateLocationPublish(loc, accuracy);
+  if (!accept) {
+    const snap = getDeviceLocationSnapshot();
+    if (snap) return deviceLocationFromSnapshot(snap);
+    return loc;
+  }
+  const snap = updateDeviceLocationStore(loc);
+  return deviceLocationFromSnapshot(snap);
+}
+
+/** 僅地圖／即時追蹤使用 watchPosition；首頁用 getCurrentPosition */
+export type LocationWatchScope = "map";
+
+type LocationWatchListener = (loc: DeviceLocationResult) => void;
+const watchListeners = new Set<LocationWatchListener>();
+const activeWatchScopes = new Set<LocationWatchScope>();
+
+let appWatchActive = true;
+let watchRunning = false;
+let logicalWatchId = 0;
+let activeCapacitorWatchId: string | null = null;
+let activeBrowserWatchId: number | null = null;
+let capacitorWatchCancelled = false;
+
+function hasActiveWatchConsumers(): boolean {
+  return watchListeners.size > 0 && activeWatchScopes.size > 0;
+}
+
+function shouldRunHardwareWatch(): boolean {
+  return appWatchActive && hasActiveWatchConsumers();
+}
+
+function logWatchCallbackIgnored(reason: string): void {
+  if (!appWatchActive || !watchRunning) return;
+  console.info("[LOCATION_WATCH_CALLBACK_IGNORED]", { reason });
+}
+
+export function isLocationWatchAppActive(): boolean {
+  return appWatchActive;
+}
+
+function dispatchWatchUpdate(parsed: DeviceLocationResult, accuracy?: number | null): void {
+  if (!appWatchActive) {
+    logWatchCallbackIgnored("app_inactive");
+    return;
+  }
+  const published = publishDeviceLocation(parsed, accuracy);
+  for (const listener of watchListeners) {
+    listener(published);
+  }
+}
+
+function stopHardwareLocationWatch(reason: string): void {
+  if (!watchRunning && !activeCapacitorWatchId && activeBrowserWatchId == null) return;
+
+  capacitorWatchCancelled = true;
+  const capId = activeCapacitorWatchId;
+  activeCapacitorWatchId = null;
+
+  if (capId && isNativeShell()) {
+    void (async () => {
+      try {
+        const { Geolocation } = await import("@capacitor/geolocation");
+        await Geolocation.clearWatch({ id: capId });
+      } catch (e) {
+        console.warn("[LOCATION_WATCH] clearWatch failed", e);
+      }
+    })();
+  }
+
+  if (activeBrowserWatchId != null && typeof navigator !== "undefined" && navigator.geolocation) {
+    navigator.geolocation.clearWatch(activeBrowserWatchId);
+    activeBrowserWatchId = null;
+  }
+
+  watchRunning = false;
+  console.info("[LOCATION_WATCH_STOPPED]", { watchId: logicalWatchId, reason });
+}
+
+function startHardwareLocationWatch(): void {
+  if (!shouldRunHardwareWatch()) return;
+
+  if (watchRunning) {
+    console.info("[LOCATION_WATCH_ALREADY_ACTIVE]", { watchId: logicalWatchId });
+    return;
+  }
+
+  logicalWatchId += 1;
+  watchRunning = true;
+  capacitorWatchCancelled = false;
+  console.info("[LOCATION_WATCH_STARTED]", { watchId: logicalWatchId });
+
+  if (isNativeShell()) {
+    void (async () => {
+      try {
+        const permission = await ensureLocationPermission({ request: false });
+        if (permissionBlocksGps(permission) || !shouldRunHardwareWatch()) {
+          watchRunning = false;
+          return;
+        }
+
+        const { Geolocation } = await import("@capacitor/geolocation");
+        const capWatchId = await Geolocation.watchPosition(
+          { enableHighAccuracy: true, timeout: 25_000, maximumAge: 30_000 },
+          (pos, err) => {
+            if (capacitorWatchCancelled || !watchRunning || !shouldRunHardwareWatch()) return;
+            if (!appWatchActive) {
+              logWatchCallbackIgnored("app_inactive");
+              return;
+            }
+            if (err || !pos) return;
+            const parsed = readPosition(
+              pos.coords.latitude,
+              pos.coords.longitude,
+              pos.coords.accuracy,
+              "capacitor",
+            );
+            if (parsed) dispatchWatchUpdate(parsed, pos.coords.accuracy);
+          },
+        );
+
+        if (capacitorWatchCancelled || !shouldRunHardwareWatch()) {
+          await Geolocation.clearWatch({ id: capWatchId });
+          watchRunning = false;
+          return;
+        }
+
+        activeCapacitorWatchId = capWatchId;
+      } catch (e) {
+        watchRunning = false;
+        console.warn("[Location] capacitor watchPosition unavailable", e);
+      }
+    })();
+    return;
+  }
+
+  if (typeof navigator !== "undefined" && navigator.geolocation) {
+    activeBrowserWatchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        if (!watchRunning || !shouldRunHardwareWatch()) return;
+        if (!appWatchActive) {
+          logWatchCallbackIgnored("app_inactive");
+          return;
+        }
+        const parsed = readPosition(
+          pos.coords.latitude,
+          pos.coords.longitude,
+          pos.coords.accuracy,
+          "browser",
+        );
+        if (parsed) dispatchWatchUpdate(parsed, pos.coords.accuracy);
+      },
+      () => {},
+      GEO_OPTIONS,
+    );
+  }
+}
+
+function syncHardwareLocationWatch(): void {
+  if (shouldRunHardwareWatch()) {
+    startHardwareLocationWatch();
+  } else {
+    stopHardwareLocationWatch(
+      !appWatchActive ? "app_inactive" : "no_active_consumers",
+    );
+  }
+}
+
+/** App 前景／背景（由 location-watch-lifecycle 呼叫） */
+export function setLocationWatchAppActive(active: boolean, reason: string): void {
+  if (appWatchActive === active) return;
+  appWatchActive = active;
+  if (!active) {
+    stopHardwareLocationWatch(reason);
+  } else if (hasActiveWatchConsumers()) {
+    syncHardwareLocationWatch();
+  }
 }
 
 let inflightLocationRequest: Promise<DeviceLocationResult> | null = null;
 
 async function fetchDeviceLocation(): Promise<DeviceLocationResult> {
+  console.info("[LOCATION_GET_CURRENT_POSITION_START]", { native: isNativeShell() });
   console.info("[LOCATION] request start", { native: isNativeShell() });
   const native = isNativeShell();
 
@@ -374,32 +545,71 @@ async function fetchDeviceLocation(): Promise<DeviceLocationResult> {
       ok: Boolean(cap),
       usedFallback: cap?.usedFallback ?? true,
     });
-    if (cap) return publishDeviceLocation(cap);
+    if (cap) {
+      console.info("[LOCATION_GET_CURRENT_POSITION_SUCCESS]", {
+        lat: cap.lat,
+        lng: cap.lng,
+        source: cap.source,
+        usedFallback: cap.usedFallback,
+      });
+      return publishDeviceLocation(cap);
+    }
 
-    return publishDeviceLocation(
+    const fallback = publishDeviceLocation(
       fallbackResult(
         capPerm,
         "native GPS unavailable (Capacitor only; no browser geolocation fallback)",
       ),
     );
+    console.info("[LOCATION_GET_CURRENT_POSITION_SUCCESS]", {
+      lat: fallback.lat,
+      lng: fallback.lng,
+      source: fallback.source,
+      usedFallback: fallback.usedFallback,
+    });
+    return fallback;
   }
 
   const { result: browser, permission: browserPerm } = await requestBrowserLocation();
-  if (browser) return publishDeviceLocation(browser);
+  if (browser) {
+    console.info("[LOCATION_GET_CURRENT_POSITION_SUCCESS]", {
+      lat: browser.lat,
+      lng: browser.lng,
+      source: browser.source,
+      usedFallback: browser.usedFallback,
+    });
+    return publishDeviceLocation(browser);
+  }
 
   const probed = await probePermissionState();
   const permission: LocationPermissionState =
     browserPerm === "denied" ? "denied" : probed ?? browserPerm ?? "unavailable";
 
-  return publishDeviceLocation(fallbackResult(permission, "browser GPS unavailable"));
+  const fallback = publishDeviceLocation(fallbackResult(permission, "browser GPS unavailable"));
+  console.info("[LOCATION_GET_CURRENT_POSITION_SUCCESS]", {
+    lat: fallback.lat,
+    lng: fallback.lng,
+    source: fallback.source,
+    usedFallback: fallback.usedFallback,
+  });
+  return fallback;
 }
 
+export type RequestDeviceLocationOptions = {
+  /** 略過 60s 內快取，強制重新 getCurrentPosition（手動重新定位） */
+  force?: boolean;
+};
+
 /** 取得裝置座標；正式版僅使用真實 GPS，失敗時才 fallback。 */
-export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
-  const cached = getFreshDeviceLocationSnapshot();
-  if (cached && !cached.usedFallback) {
-    console.info("[LOCATION_STORE] reuse", { lat: cached.lat, lng: cached.lng });
-    return deviceLocationFromSnapshot(cached);
+export async function requestDeviceLocation(
+  options?: RequestDeviceLocationOptions,
+): Promise<DeviceLocationResult> {
+  if (!options?.force) {
+    const cached = getFreshDeviceLocationSnapshot();
+    if (cached && !cached.usedFallback) {
+      console.info("[LOCATION_STORE] reuse", { lat: cached.lat, lng: cached.lng });
+      return deviceLocationFromSnapshot(cached);
+    }
   }
 
   if (inflightLocationRequest) return inflightLocationRequest;
@@ -410,63 +620,36 @@ export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
   return inflightLocationRequest;
 }
 
-/** 監聽位置變化；回傳 cleanup。 */
+/** 監聽位置變化（全域單一 watch，僅 map）；首頁請用 requestDeviceLocation。 */
 export function watchDeviceLocation(
   onUpdate: (loc: DeviceLocationResult) => void,
+  options?: { scope?: LocationWatchScope | "home" },
 ): () => void {
-  let cancelled = false;
-  let clearCapWatch: (() => void) | undefined;
-  let browserWatchId: number | undefined;
-
-  if (isNativeShell()) {
-    void (async () => {
-      try {
-        const permission = await ensureLocationPermission({ request: false });
-        if (permissionBlocksGps(permission)) return;
-
-        const { Geolocation } = await import("@capacitor/geolocation");
-        const watchId = await Geolocation.watchPosition(
-          { enableHighAccuracy: true, timeout: 25_000, maximumAge: 30_000 },
-          (pos, err) => {
-            if (cancelled || err || !pos) return;
-            const parsed = readPosition(
-              pos.coords.latitude,
-              pos.coords.longitude,
-              pos.coords.accuracy,
-              "capacitor",
-            );
-            if (parsed) onUpdate(publishDeviceLocation(parsed));
-          },
-        );
-        clearCapWatch = () => {
-          void Geolocation.clearWatch({ id: watchId });
-        };
-      } catch (e) {
-        console.warn("[Location] capacitor watchPosition unavailable", e);
-      }
-    })();
-  } else if (typeof navigator !== "undefined" && navigator.geolocation) {
-    browserWatchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        if (cancelled) return;
-        const parsed = readPosition(
-          pos.coords.latitude,
-          pos.coords.longitude,
-          pos.coords.accuracy,
-          "browser",
-        );
-        if (parsed) onUpdate(publishDeviceLocation(parsed));
-      },
-      () => {},
-      GEO_OPTIONS,
-    );
+  const scope = options?.scope;
+  if (scope === "home") {
+    console.info("[LOCATION_WATCH_IGNORED_HOME]", {
+      reason: "home_uses_get_current_position_only",
+    });
+    const snap = getDeviceLocationSnapshot();
+    if (snap) onUpdate(deviceLocationFromSnapshot(snap));
+    return () => {};
   }
 
+  if (!scope) {
+    console.warn("[LOCATION_WATCH] missing scope; pass map for live tracking");
+  } else if (scope === "map") {
+    activeWatchScopes.add(scope);
+  }
+
+  watchListeners.add(onUpdate);
+  syncHardwareLocationWatch();
+
+  const snap = getDeviceLocationSnapshot();
+  if (snap) onUpdate(deviceLocationFromSnapshot(snap));
+
   return () => {
-    cancelled = true;
-    clearCapWatch?.();
-    if (browserWatchId !== undefined && navigator.geolocation) {
-      navigator.geolocation.clearWatch(browserWatchId);
-    }
+    watchListeners.delete(onUpdate);
+    if (scope === "map") activeWatchScopes.delete(scope);
+    syncHardwareLocationWatch();
   };
 }

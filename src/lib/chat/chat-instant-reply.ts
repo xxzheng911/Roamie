@@ -12,6 +12,19 @@ import {
 import { CHAT_PIPELINE_FALLBACK } from "@/lib/chat/chat-pipeline-constants";
 import { resolveCompanionDialogueReply } from "@/lib/ai/companion-dialogue";
 import { shouldOrchestrateCompanion } from "@/lib/ai/conversation-state";
+import {
+  userRequestsFullItineraryPlanning,
+  userRequestsItineraryGeneration,
+} from "@/lib/ai/itinerary-trigger";
+import {
+  buildDateRangeRecommendationReply,
+  decideAiNextStep,
+  extractTripContextSlice,
+  isTripContextComplete,
+  logAiNextStepDecision,
+  logTripContextCompleteness,
+  userAsksDateRangeRecommendation,
+} from "@/lib/ai/trip-context-completeness";
 
 export { CHAT_PIPELINE_FALLBACK };
 
@@ -49,6 +62,7 @@ export function userAsksDestinationItineraryAdvice(
 ): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (userAsksDateRangeRecommendation(t)) return false;
   if (userAsksTravelTimeAdviceText(t) && /(天氣|氣候|溫度|下雨|穿什麼)/.test(t)) return false;
   return (
     /(行程|怎麼安排|如何安排|安排|幾天幾夜|規劃|路線|待幾天|玩幾天)/.test(t) &&
@@ -90,6 +104,58 @@ export function resolveInstantChatReply(
   const trimmed = userText.trim();
   if (!trimmed) return null;
 
+  const tripCtx = logTripContextCompleteness(session, trimmed);
+  const nextStep = decideAiNextStep(session, trimmed);
+  logAiNextStepDecision(session, trimmed);
+
+  if (nextStep.action === "generate_itinerary" || userRequestsFullItineraryPlanning(trimmed)) {
+    return null;
+  }
+
+  const hint = buildTravelAdviceHint(trimmed, session);
+
+  if (userAsksDateRangeRecommendation(trimmed)) {
+    const dateCtx = isTripContextComplete(tripCtx)
+      ? tripCtx
+      : extractTripContextSlice(session, trimmed);
+    if (isTripContextComplete(dateCtx)) {
+      const dateReply = buildDateRangeRecommendationReply(dateCtx);
+      if (dateReply) {
+        return { summary: dateReply, source: "local_travel" };
+      }
+    }
+  }
+
+  if (nextStep.action === "answer_date_recommendation") {
+    const dateReply = buildDateRangeRecommendationReply(extractTripContextSlice(session, trimmed));
+    if (dateReply) return { summary: dateReply, source: "local_travel" };
+  }
+
+  /** 季節／時段建議優先於旅伴編排，避免攔截「東京 11 月 vs 12 月」這類問題 */
+  if (
+    userAsksTravelTimeAdviceText(trimmed) &&
+    !userAsksDateRangeRecommendation(trimmed) &&
+    nextStep.action !== "answer_date_recommendation"
+  ) {
+    const travel = tryLocalTravelAdviceReply(trimmed, session, hint);
+    if (travel) return { summary: travel, source: "local_travel" };
+    const fallback = buildTravelAdviceFallbackReply(trimmed, session, hint);
+    if (fallback && !fallback.startsWith("你想問哪個城市")) {
+      return { summary: fallback, source: "local_travel" };
+    }
+  }
+
+  if (
+    userAsksDestinationItineraryAdvice(trimmed, session) &&
+    !userAsksDateRangeRecommendation(trimmed)
+  ) {
+    if (userRequestsItineraryGeneration(trimmed)) return null;
+    const itinerary = buildItineraryAdviceReply(trimmed, session, hint);
+    if (itinerary && itinerary !== CHAT_PIPELINE_FALLBACK) {
+      return { summary: itinerary, source: "local_itinerary" };
+    }
+  }
+
   if (shouldOrchestrateCompanion(session)) {
     const companion = resolveCompanionDialogueReply(trimmed, session);
     if (companion) {
@@ -100,24 +166,6 @@ export function resolveInstantChatReply(
         startItinerary: companion.startItinerary,
       };
     }
-  }
-
-  const hint = buildTravelAdviceHint(trimmed, session);
-
-  if (userAsksTravelTimeAdviceText(trimmed)) {
-    const travel = tryLocalTravelAdviceReply(trimmed, session, hint);
-    if (travel) return { summary: travel, source: "local_travel" };
-    const fallback = buildTravelAdviceFallbackReply(trimmed, session, hint);
-    if (fallback && !fallback.startsWith("你想問哪個城市")) {
-      return { summary: fallback, source: "local_travel" };
-    }
-  }
-
-  if (userAsksDestinationItineraryAdvice(trimmed, session)) {
-    return {
-      summary: buildItineraryAdviceReply(trimmed, session, hint),
-      source: "local_itinerary",
-    };
   }
 
   return null;
@@ -143,10 +191,3 @@ export function appendAssistantToConversation(
   return [...conversation, buildAssistantChatMsg(summary, session)];
 }
 
-export function conversationMissingAssistantReply(conversation: ChatMsg[]): boolean {
-  const last = conversation.at(-1);
-  if (!last) return false;
-  if (last.role === "user") return true;
-  if (last.role === "assistant" && !last.content?.trim()) return true;
-  return false;
-}

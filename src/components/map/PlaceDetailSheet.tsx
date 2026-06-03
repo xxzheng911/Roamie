@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Car,
   CarTaxiFront,
@@ -14,6 +14,7 @@ import {
   TrainFront,
 } from "lucide-react";
 import { PlaceActionRow } from "@/components/PlaceActionRow";
+import { PlaceAffiliateLinks } from "@/components/affiliate/PlaceAffiliateLinks";
 import { PlaceCardCover } from "@/components/media/PlaceCardCover";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
@@ -26,7 +27,11 @@ import {
 } from "@/lib/estimate-travel-mode";
 import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
-import { resolvePlaceCardOpeningDisplay } from "@/lib/place-card-opening";
+import { resolvePlaceDetailRecommendationText } from "@/lib/place/place-detail-ai-content";
+import {
+  logPlaceDetailHoursSource,
+  resolvePlaceDetailHoursDisplay,
+} from "@/lib/place/place-detail-hours";
 
 function TransportModeIcon({ mode }: { mode: TravelModeId }) {
   const cls = "h-4 w-4 shrink-0 text-muted-foreground";
@@ -46,14 +51,26 @@ function TransportModeIcon({ mode }: { mode: TravelModeId }) {
 
 export type PlaceDetailData = PlaceResult & {
   reason: string;
+  /** AI 生成推薦理由（優先顯示） */
+  recommendationReason?: string;
+  /** AI 地點簡介 */
+  aiIntro?: string;
+  reasonSource?: "ai_generated" | "google_places" | "fallback" | "handoff";
   intro?: string;
   suitableFor?: string;
   weatherFit?: string;
   goNowAdvice?: string;
   introLoading?: boolean;
+  highlights?: string[];
+  visitTips?: string[];
+  suggestedStay?: string;
+  routeTips?: string;
+  cautions?: string;
   website?: string | null;
   phone?: string | null;
   coverImageUrl?: string | null;
+  /** Google Places Details 已寫入營業時間 */
+  hoursFromGoogleDetails?: boolean;
 };
 
 type Props = {
@@ -73,6 +90,8 @@ type Props = {
   onOpenChat: () => void;
   saveLabel?: string;
   addToTripLabel?: string;
+  affiliateCity?: string | null;
+  showAffiliateLinks?: boolean;
 };
 
 export function PlaceDetailSheet({
@@ -92,37 +111,51 @@ export function PlaceDetailSheet({
   onOpenChat,
   saveLabel = "收藏",
   addToTripLabel = "加入行程",
+  affiliateCity,
+  showAffiliateLinks = false,
 }: Props) {
+  const recommendationText = resolvePlaceDetailRecommendationText(place);
   const [photoIdx, setPhotoIdx] = useState(0);
   const photos = imageUrls.length > 0 ? imageUrls : [];
   const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place));
   const navButtonLabel = `導航・${TRAVEL_MODE_LABEL[selectedTransportMode]}`;
   const opening = useMemo(
     () =>
-      resolvePlaceCardOpeningDisplay({
-        id: place.id,
-        name: place.name,
-        openStatus: place.openStatus,
-        todayHoursLabel: place.todayHoursLabel,
-        closingSoonNote: place.closingSoonNote,
-        nextOpenHint: place.nextOpenHint,
+      resolvePlaceDetailHoursDisplay(place, {
+        fromGoogleDetails: place.hoursFromGoogleDetails,
       }),
     [
       place.id,
       place.name,
       place.openStatus,
+      place.openStatusLabel,
       place.todayHoursLabel,
       place.closingSoonNote,
       place.nextOpenHint,
+      place.businessStatus,
+      place.hoursFromGoogleDetails,
     ],
   );
-  const hoursStatusLabel =
-    opening.statusLabel ||
-    (opening.hoursLabel === "營業資訊未知" ? "營業資訊未知" : "");
-  const hoursDetailLabel =
-    opening.hoursLabel && opening.hoursLabel !== "營業資訊未知"
-      ? opening.hoursLabel
-      : place.todayHoursLabel;
+
+  useEffect(() => {
+    logPlaceDetailHoursSource({
+      placeName: place.name,
+      placeId: place.id,
+      source: opening.hoursSource,
+      openNow: opening.openNow,
+      todayHoursLabel: opening.hoursLabel || opening.statusLabel || "",
+    });
+  }, [
+    place.id,
+    place.name,
+    opening.source,
+    opening.openNow,
+    opening.hoursLabel,
+    opening.statusLabel,
+  ]);
+
+  const hoursStatusLabel = opening.statusLabel;
+  const hoursDetailLabel = opening.hoursLabel;
 
   return (
     <div className="flex flex-col" data-no-sheet-drag>
@@ -240,30 +273,25 @@ export function PlaceDetailSheet({
           </div>
         )}
 
-        <div className="mt-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3">
-          <p className="text-xs font-medium text-muted-foreground">Roamie 推薦理由</p>
-          <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">{place.reason}</p>
-        </div>
-
-        {(place.intro || place.introLoading) && (
-          <div className="mt-3 rounded-2xl border border-border/80 bg-secondary/40 px-4 py-3">
-            <p className="text-xs font-medium text-muted-foreground">Roamie 簡介</p>
-            {place.introLoading ? (
+        <div className="mt-4 space-y-3">
+          <div className="rounded-2xl border border-border/80 bg-card/60 px-4 py-3">
+            <p className="text-xs font-medium text-muted-foreground">Roamie 推薦理由</p>
+            {place.introLoading && !recommendationText ? (
               <p className="mt-1.5 text-sm text-muted-foreground">整理中…</p>
             ) : (
-              <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">{place.intro}</p>
-            )}
-            {place.suitableFor && (
-              <p className="mt-2 text-xs text-muted-foreground">適合：{place.suitableFor}</p>
-            )}
-            {place.weatherFit && (
-              <p className="mt-1 text-xs text-muted-foreground">天氣：{place.weatherFit}</p>
-            )}
-            {place.goNowAdvice && (
-              <p className="mt-1 text-xs text-muted-foreground">{place.goNowAdvice}</p>
+              <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">
+                {recommendationText || "整理中…"}
+              </p>
             )}
           </div>
-        )}
+
+          {place.suggestedStay?.trim() && !place.introLoading ? (
+            <div className="rounded-2xl border border-border/80 bg-card/50 px-4 py-3">
+              <p className="text-xs font-medium text-muted-foreground">建議停留時間</p>
+              <p className="mt-1.5 text-sm text-foreground/90">{place.suggestedStay}</p>
+            </div>
+          ) : null}
+        </div>
 
         <div className="mt-4">
           <p className="text-xs font-medium text-muted-foreground">交通方式</p>
@@ -335,6 +363,25 @@ export function PlaceDetailSheet({
           saveLabel={saveLabel}
           addLabel={addToTripLabel}
         />
+
+        {showAffiliateLinks ? (
+          <div className="mt-4 rounded-2xl border border-border/80 bg-card/60 p-4">
+            <p className="text-xs font-medium text-muted-foreground">相關體驗 / 訂票平台</p>
+            <PlaceAffiliateLinks
+              className="mt-3"
+              placeName={place.name}
+              city={affiliateCity}
+              source="trip_detail"
+              usePlatformLabels
+              placeTypeHints={{
+                placeName: place.name,
+                primaryType: place.primaryType,
+                types: place.types,
+                typeLabel: place.primaryType,
+              }}
+            />
+          </div>
+        ) : null}
 
         <button
           type="button"

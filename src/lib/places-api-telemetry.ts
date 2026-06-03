@@ -47,6 +47,13 @@ export function getPlacesApiTelemetry(surface: PlacesApiSurface): PlacesApiTelem
   return { ...(surfaceBuckets.get(surface) ?? EMPTY) };
 }
 
+export function getAllPlacesApiTelemetry(): Record<PlacesApiSurface, PlacesApiTelemetryCounts> {
+  const surfaces: PlacesApiSurface[] = ["home", "map", "ai", "chat", "other"];
+  return Object.fromEntries(
+    surfaces.map((surface) => [surface, getPlacesApiTelemetry(surface)]),
+  ) as Record<PlacesApiSurface, PlacesApiTelemetryCounts>;
+}
+
 /** 流程結束時輸出摘要 */
 export function logPlacesApiTelemetrySummary(
   surface: PlacesApiSurface,

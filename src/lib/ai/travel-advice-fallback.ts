@@ -1,6 +1,14 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { normalizeDestination, resolveCleanDestination } from "@/lib/ai/normalize-destination";
 import { parseTravelContextFromText } from "@/lib/ai/travel-context";
+import {
+  buildCompleteContextFollowUpReply,
+  buildDateRangeRecommendationReply,
+  extractTripContextSlice,
+  isTripContextComplete,
+  userAsksDateRangeRecommendation,
+} from "@/lib/ai/trip-context-completeness";
+import { userRequestsFullItineraryPlanning } from "@/lib/ai/itinerary-trigger";
 
 /** 輕量 hint，避免 instant-reply 依賴 user-intent */
 export type TravelAdviceHint = {
@@ -43,13 +51,40 @@ export function buildTravelAdviceFallbackReply(
   session: ChatPlanningSession,
   intent?: TravelAdviceHint,
 ): string {
+  if (userRequestsFullItineraryPlanning(userText)) {
+    return "";
+  }
+  const ctx = extractTripContextSlice(session, userText);
   const parsed = parseTravelContextFromText(userText, session);
-  const destination = resolveCleanDestination(userText, {
-    rawDestination: intent?.destination ?? parsed.destination,
-    sessionDestination: session.travelContext?.destination ?? session.tripDestination?.city,
-    preferredArea: session.preferredArea,
-  });
-  const month = intent?.travelMonth ?? parsed.travelMonth;
+  const destination =
+    ctx.destination ??
+    resolveCleanDestination(userText, {
+      rawDestination: intent?.destination ?? parsed.destination,
+      sessionDestination: session.travelContext?.destination ?? session.tripDestination?.city,
+      preferredArea: session.preferredArea,
+    });
+  const month = ctx.travelMonth ?? intent?.travelMonth ?? parsed.travelMonth;
+  const days = ctx.days ?? parsed.days;
+
+  if (isTripContextComplete({ ...ctx, destination, travelMonth: month, days })) {
+    if (userAsksDateRangeRecommendation(userText)) {
+      const dateReply = buildDateRangeRecommendationReply({
+        destination,
+        travelMonth: month,
+        days,
+        travelDate: ctx.travelDate,
+      });
+      if (dateReply) return dateReply;
+    }
+    if (!asksWeather(userText)) {
+      return buildCompleteContextFollowUpReply({
+        destination,
+        travelMonth: month,
+        days,
+        travelDate: ctx.travelDate,
+      });
+    }
+  }
 
   if (asksWeather(userText)) {
     if (destination && month && MONTH_CLIMATE[destination]?.[month]) {
@@ -62,6 +97,15 @@ export function buildTravelAdviceFallbackReply(
       return `${destination}的天氣會依月份差很多；你可以告訴我想去的月份，我再幫你整理氣溫、降雨和穿著建議。`;
     }
     return "你想問哪個城市、哪個月份的天氣呢？告訴我目的地和時間，我可以幫你整理氣溫範圍和穿著建議。";
+  }
+
+  if (destination && month && days != null && days >= 1) {
+    const dateReply = buildDateRangeRecommendationReply({
+      destination,
+      travelMonth: month,
+      days,
+    });
+    if (dateReply) return dateReply;
   }
 
   if (destination && month) {
@@ -85,6 +129,9 @@ export function tryLocalTravelAdviceReply(
   session: ChatPlanningSession,
   intent?: TravelAdviceHint,
 ): string | null {
+  const tokyoCompare = buildTokyoLateYearComparisonReply(userText);
+  if (tokyoCompare) return tokyoCompare;
+
   const reply = buildTravelAdviceFallbackReply(userText, session, intent);
   if (GENERIC_REPLY_PREFIXES.some((p) => reply.startsWith(p))) return null;
   return reply;
@@ -98,9 +145,21 @@ function matchesTravelTimeAdvicePatterns(t: string): boolean {
     /(天氣|氣候|溫度|冷不冷|熱不熱|會冷|會熱|穿什麼).{0,12}(怎麼樣|如何|好不好)/.test(t) ||
     /(推薦|建議).{0,8}(時間|幾天|天數|什麼時候)/.test(t) ||
     /(時間|幾天|天數|什麼時候).{0,8}(推薦|建議)/.test(t) ||
+    (/(時段|哪個.*比較|比較好|怎麼安排|哪個好)/.test(t) &&
+      /\d{1,2}\s*月/.test(t) &&
+      /(去|玩|旅行|旅遊|東京|大阪|京都|釜山|首爾)/.test(t)) ||
     (/\d{1,2}\s*月/.test(t) &&
       /(去|玩|旅行|旅遊|行程|天氣|氣候)/.test(t) &&
       /(推薦|建議|適合|時間|幾天|天數|嗎|怎麼樣|如何|安排|規劃)/.test(t))
+  );
+}
+
+function buildTokyoLateYearComparisonReply(text: string): string | null {
+  if (!/東京/.test(text)) return null;
+  if (!/(11\s*月|11月底|12\s*月|12月初)/.test(text)) return null;
+  if (!/(比較|哪個|時段|怎麼安排|好不好|適合)/.test(text)) return null;
+  return (
+    "若以氣候與人潮綜合看，11 月底東京約 10–16°C、秋末偏乾，紅葉尾聲但人潮仍多；12 月初約 8–14°C、更涼爽，聖誕點燈與冬季活動開始，週末人潮通常比 11 月底再高一點。若想少一點人、天氣仍舒服，我會略偏 11 月底平日；若你喜歡冬季氛圍、可以接受更冷一點，12 月初也很適合。你比較在意人少、拍照，還是聖誕氣氛？"
   );
 }
 
@@ -108,6 +167,8 @@ function matchesTravelTimeAdvicePatterns(t: string): boolean {
 export function userAsksTravelTimeAdviceText(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (userRequestsFullItineraryPlanning(t)) return false;
+  if (userAsksDateRangeRecommendation(t)) return false;
   return matchesTravelTimeAdvicePatterns(t);
 }
 
@@ -115,10 +176,11 @@ export function buildTravelAdviceHint(
   userText: string,
   session: ChatPlanningSession,
 ): TravelAdviceHint {
-  const parsed = parseTravelContextFromText(userText, session);
+  const slice = extractTripContextSlice(session, userText);
   const month = userText.match(/(\d{1,2})\s*月/)?.[1];
   return {
-    destination: parsed.destination,
-    travelMonth: parsed.travelMonth ?? (month ? `${Number.parseInt(month, 10)}月` : undefined),
+    destination: slice.destination,
+    travelMonth:
+      slice.travelMonth ?? (month ? `${Number.parseInt(month, 10)}月` : undefined),
   };
 }

@@ -1,4 +1,5 @@
 import type { RoamieItineraryItem } from "@/lib/ai/types";
+import { addDaysISO, parseISODate, todayISO, toISODate } from "@/lib/picker-utils";
 
 export function groupItineraryByDate(items: RoamieItineraryItem[]): Map<string, RoamieItineraryItem[]> {
   const groups = new Map<string, RoamieItineraryItem[]>();
@@ -20,12 +21,10 @@ export function listTripDates(
   if (fromItems.length >= days) {
     return fromItems.sort().slice(0, days);
   }
-  const base = startDate || new Date().toISOString().slice(0, 10);
+  const base = startDate || todayISO();
   const out: string[] = [];
   for (let i = 0; i < days; i++) {
-    const d = new Date(base);
-    d.setDate(d.getDate() + i);
-    out.push(d.toISOString().slice(0, 10));
+    out.push(addDaysISO(base, i));
   }
   return out;
 }

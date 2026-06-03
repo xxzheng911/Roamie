@@ -1,8 +1,8 @@
 import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
-import { isQaBuildEnabled } from "@/lib/qa-auth/build";
 import { ChevronLeft } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { DeveloperToolSections } from "@/components/developer/DeveloperToolSections";
 import { useAccess } from "@/hooks/use-access";
 import { runOpenWeatherDevTest, runRoutesDevTest, type ApiDevTestResult } from "@/services/apiDevTools";
 import {
@@ -15,16 +15,17 @@ import {
   resetUserMemory,
 } from "@/lib/access/dev-actions";
 import { lockDeveloperMode } from "@/lib/access/developer";
+import { readDeveloperUnlocked } from "@/lib/access/storage";
 import { broadcastAccessChange } from "@/lib/access/events";
 import { clearBootstrapSplashForDev } from "@/lib/bootstrap-splash";
 
 export const Route = createFileRoute("/_app/developer")({
   beforeLoad: () => {
-    if (!isQaBuildEnabled()) {
-      throw redirect({ to: "/settings" });
+    if (typeof window !== "undefined" && !readDeveloperUnlocked()) {
+      throw redirect({ to: "/profile" });
     }
   },
-  component: DeveloperSettingsPage,
+  component: DeveloperCenterPage,
 });
 
 function DevActionButton({
@@ -82,7 +83,7 @@ function ApiTestResultCard({ result }: { result: ApiDevTestResult | null }) {
   );
 }
 
-function DeveloperSettingsPage() {
+function DeveloperCenterPage() {
   const navigate = useNavigate();
   const [weatherTestResult, setWeatherTestResult] = useState<ApiDevTestResult | null>(null);
   const [routesTestResult, setRoutesTestResult] = useState<ApiDevTestResult | null>(null);
@@ -100,9 +101,12 @@ function DeveloperSettingsPage() {
   if (!canShowDeveloperTools) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center px-5 py-16">
-        <p className="text-sm text-muted-foreground">開發者模式未啟用</p>
+        <p className="text-sm text-muted-foreground">Developer Mode 未開啟</p>
+        <p className="mt-2 text-center text-xs text-muted-foreground">
+          請至「其他設定 → 關於 Roamie」連續點擊版本號 7 次
+        </p>
         <Link to="/settings" className="mt-4 text-sm text-foreground underline">
-          返回設定
+          前往設定
         </Link>
       </div>
     );
@@ -119,54 +123,31 @@ function DeveloperSettingsPage() {
     <div className="px-5 pb-10 pt-3">
       <div className="flex items-center gap-2">
         <Link
-          to="/settings"
+          to="/profile"
           className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary text-muted-foreground"
           aria-label="返回"
         >
           <ChevronLeft className="h-5 w-5" />
         </Link>
-        <h1 className="font-display text-xl">Developer Settings</h1>
+        <h1 className="font-display text-xl">Developer Center</h1>
       </div>
 
       <section className="mt-6 rounded-3xl border border-dashed border-amber-500/40 bg-amber-500/5 p-5">
-        <p className="text-xs font-semibold uppercase tracking-widest text-amber-700">Debug only</p>
+        <p className="text-xs font-semibold uppercase tracking-widest text-amber-700">Developer Mode</p>
         <p className="mt-2 text-sm text-muted-foreground">
-          角色：<strong>{userRole}</strong> · 有效方案：<strong>{effectiveTier === "plus" ? "Plus" : "Free"}</strong>
+          角色：<strong>{userRole}</strong> · 有效方案：
+          <strong>{effectiveTier === "plus" ? "Plus" : "Free"}</strong>
           {testModeOverride !== "none" ? ` · 覆寫：${testModeOverride}` : ""}
         </p>
       </section>
 
-      <section className="mt-5 space-y-2">
-        <p className="px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          API 連線測試
-        </p>
-        <DevActionButton
-          label="Test OpenWeather（高雄）"
-          desc="temperature · description · rain probability"
-          onClick={async () => {
-            const result = await runOpenWeatherDevTest();
-            setWeatherTestResult(result);
-            if (result.ok) toast.success("OpenWeather 連線成功");
-            else toast.error(result.message);
-          }}
-        />
-        <ApiTestResultCard result={weatherTestResult} />
-        <DevActionButton
-          label="Test Routes API（高雄車站 → 駁二 · WALK）"
-          desc="Google Routes computeRoutes"
-          onClick={async () => {
-            const result = await runRoutesDevTest();
-            setRoutesTestResult(result);
-            if (result.ok) toast.success("Routes API 連線成功");
-            else toast.error(result.message);
-          }}
-        />
-        <ApiTestResultCard result={routesTestResult} />
-      </section>
+      <div className="mt-6">
+        <DeveloperToolSections />
+      </div>
 
-      <section className="mt-5 space-y-2">
+      <section className="mt-8 space-y-2">
         <p className="px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Mock Subscription
+          Subscription Simulator
         </p>
         <div className="flex gap-2">
           {(["free", "plus"] as const).map((tier) => (
@@ -187,13 +168,7 @@ function DeveloperSettingsPage() {
             </button>
           ))}
         </div>
-      </section>
-
-      <section className="mt-5 space-y-2">
-        <p className="px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Force test mode
-        </p>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 pt-1">
           <button
             type="button"
             onClick={() => {
@@ -233,8 +208,36 @@ function DeveloperSettingsPage() {
           </button>
         </div>
         <p className="px-1 text-[11px] text-muted-foreground">
-          Developer 預設擁有 Plus；Force Free 可模擬一般免費使用者體驗。目前 Plus 存取：{hasPlusAccess ? "是" : "否"}
+          目前 Plus 存取：{hasPlusAccess ? "是" : "否"}
         </p>
+      </section>
+
+      <section className="mt-6 space-y-2">
+        <p className="px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          API 連線測試
+        </p>
+        <DevActionButton
+          label="Test OpenWeather（高雄）"
+          desc="temperature · description · rain probability"
+          onClick={async () => {
+            const result = await runOpenWeatherDevTest();
+            setWeatherTestResult(result);
+            if (result.ok) toast.success("OpenWeather 連線成功");
+            else toast.error(result.message);
+          }}
+        />
+        <ApiTestResultCard result={weatherTestResult} />
+        <DevActionButton
+          label="Test Routes API（高雄車站 → 駁二 · WALK）"
+          desc="Google Routes computeRoutes"
+          onClick={async () => {
+            const result = await runRoutesDevTest();
+            setRoutesTestResult(result);
+            if (result.ok) toast.success("Routes API 連線成功");
+            else toast.error(result.message);
+          }}
+        />
+        <ApiTestResultCard result={routesTestResult} />
       </section>
 
       <section className="mt-6 space-y-2">
@@ -271,6 +274,23 @@ function DeveloperSettingsPage() {
           desc="重新進入 intro / 首次使用流程"
           onClick={runOnboardingReset}
         />
+        <DevActionButton
+          label="清除本機狀態"
+          desc="清空 localStorage / sessionStorage 並重置 onboarding（等同舊登入頁 Dev 按鈕）"
+          destructive
+          onClick={async () => {
+            try {
+              localStorage.clear();
+              sessionStorage.clear();
+            } catch {
+              /* ignore */
+            }
+            await forceOnboarding();
+            clearBootstrapSplashForDev();
+            toast.success("已清除本機狀態");
+            window.location.replace("/welcome");
+          }}
+        />
       </section>
 
       <button
@@ -278,12 +298,12 @@ function DeveloperSettingsPage() {
         onClick={() => {
           lockDeveloperMode();
           broadcastAccessChange();
-          toast.message("已鎖定開發者模式");
-          navigate({ to: "/settings" });
+          toast.message("Developer Mode 已關閉");
+          navigate({ to: "/profile" });
         }}
         className="mt-8 w-full rounded-full border border-border py-3 text-sm text-muted-foreground"
       >
-        鎖定 Developer Mode
+        關閉 Developer Mode
       </button>
     </div>
   );

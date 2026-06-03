@@ -2,8 +2,17 @@
 
 export const WEEKDAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"] as const;
 
+/** 使用者本地時區的今日（YYYY-MM-DD），避免 UTC 切日差一天 */
 export function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  return toISODate(new Date());
+}
+
+export function localTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return "UTC";
+  }
 }
 
 export function toISODate(d: Date): string {

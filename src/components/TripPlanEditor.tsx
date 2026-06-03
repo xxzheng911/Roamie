@@ -389,6 +389,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
               </div>
               <TripStopSearchField
                 label={t("trip.addStop")}
+                destination={payload.destination}
                 center={tripCenter}
                 onPick={(place) => handleAddStop(dateKey, place)}
               />

@@ -9,13 +9,20 @@ import { normalizeLocale } from "@/lib/i18n/detect-locale";
 import type { Locale } from "@/lib/i18n/types";
 import {
   getAuthenticatedUserId,
+  getClientAuthSession,
   isDataUrl,
   isHttpUrl,
 } from "@/lib/auth-session";
 import type { AuthProviderKind } from "@/lib/auth-provider";
 import type { SurveyResultProfile } from "@/lib/travel-preference-survey-types";
+import { canonicalTravelStyleFromResult } from "@/lib/travel-preference-canonical";
 import { resolveBudgetMode } from "@/lib/preferences-storage";
 import { loadTravelPreferenceSurveyForUser } from "@/lib/travel-preference-survey-save";
+import {
+  logTravelPrefLoadedPlus,
+  logTravelPrefSkippedFree,
+  readHasPlusAccessSync,
+} from "@/lib/subscription-plus-features";
 
 const GUEST_PROFILE_KEY = "roamie:user-profile";
 const GUEST_SETTINGS_KEY = "roamie:profile-settings";
@@ -185,32 +192,70 @@ export async function saveProfileNotifications(enabled: boolean): Promise<void> 
   if (error) throw new Error(error.message);
 }
 
-export async function getUserProfile(localeOverride?: Locale): Promise<UserProfile> {
+export type GetUserProfileOptions = {
+  /** 僅 Plus 才載入旅行偏好測驗；未傳則依目前訂閱快照判斷 */
+  includePlusSurvey?: boolean;
+  userEmail?: string | null;
+};
+
+export async function getUserProfile(
+  localeOverride?: Locale,
+  options?: GetUserProfileOptions,
+): Promise<UserProfile> {
   const userId = await getAuthenticatedUserId();
   if (!userId) {
     throw new Error("請先登入");
   }
 
+  const session = await getClientAuthSession();
+  const userEmail = options?.userEmail ?? session?.user?.email ?? null;
+  const includePlusSurvey =
+    options?.includePlusSurvey ?? readHasPlusAccessSync(userEmail, { user: session?.user ?? null });
+
   const guestSettings = readGuestSettings();
   const guestLocale = guestSettings.language ?? localeOverride ?? "zh-TW";
 
+  if (!includePlusSurvey) {
+    logTravelPrefSkippedFree("getUserProfile_not_plus");
+  }
+
   const [prefs, surveySnapshot] = await Promise.all([
     getPreferences(),
-    loadTravelPreferenceSurveyForUser(userId).catch((e) => {
-      console.error("[PROFILE_SURVEY] load failed", e);
-      return null;
-    }),
+    includePlusSurvey
+      ? loadTravelPreferenceSurveyForUser(userId)
+          .then((snap) => {
+            if (snap?.surveyCompleted) logTravelPrefLoadedPlus();
+            return snap;
+          })
+          .catch((e) => {
+            console.error("[PROFILE_SURVEY] load failed", e);
+            return null;
+          })
+      : Promise.resolve(null),
   ]);
 
-  const mergedPrefs = surveySnapshot?.prefs ?? prefs;
-  const surveyCompleted = Boolean(
-    surveySnapshot?.surveyCompleted ?? mergedPrefs.surveyCompleted ?? mergedPrefs.onboarded,
-  );
+  const mergedPrefs = includePlusSurvey && surveySnapshot?.prefs ? surveySnapshot.prefs : prefs;
+  const surveyCompleted = includePlusSurvey
+    ? Boolean(
+        surveySnapshot?.surveyCompleted ??
+          mergedPrefs.surveyCompleted ??
+          mergedPrefs.onboarded,
+      )
+    : false;
   if (surveyCompleted) {
     console.info("[PROFILE] surveyLoaded=", mergedPrefs.personalityType ?? "unknown");
   }
   const personality = derivePersonality(mergedPrefs);
-  const surveyResult = surveySnapshot?.resultProfile ?? mergedPrefs.resultProfile ?? null;
+  const surveyResultRaw =
+    includePlusSurvey && surveySnapshot?.resultProfile
+      ? surveySnapshot.resultProfile
+      : includePlusSurvey
+        ? (mergedPrefs.resultProfile ?? null)
+        : null;
+  const surveyResult = surveyResultRaw;
+  const canonicalSurveyStyle = includePlusSurvey
+    ? canonicalTravelStyleFromResult(surveyResult)
+    : "";
 
   let data = await fetchProfileRow(userId);
   if (!data) {
@@ -234,54 +279,68 @@ export async function getUserProfile(localeOverride?: Locale): Promise<UserProfi
     avatarUrl,
     coverImageUrl,
     bio: storedBio || getDefaultBio(locale),
-    travelStyle:
-      surveySnapshot?.travelStyle ??
-      extras.travelStyle ??
-      mergedPrefs.personalityType ??
-      "",
+    travelStyle: includePlusSurvey
+      ? (canonicalSurveyStyle ||
+          surveySnapshot?.travelStyle ||
+          canonicalTravelStyleFromResult(surveyResult) ||
+          extras.travelStyle?.trim() ||
+          mergedPrefs.personalityType?.trim() ||
+          "")
+      : (extras.travelStyle?.trim() ?? ""),
     language: locale,
     notificationsEnabled: data?.notifications_enabled ?? false,
     authProvider: (data?.auth_provider as AuthProviderKind) ?? null,
     prefs: {
       ...mergedPrefs,
       surveyCompleted,
-      onboarded: surveyCompleted || mergedPrefs.onboarded,
-      resultProfile: surveyResult ?? mergedPrefs.resultProfile,
+      onboarded: includePlusSurvey ? surveyCompleted || mergedPrefs.onboarded : false,
+      resultProfile: surveyResult ?? (includePlusSurvey ? mergedPrefs.resultProfile : undefined),
+      personalityType: includePlusSurvey ? mergedPrefs.personalityType : undefined,
+      personalitySummary: includePlusSurvey ? mergedPrefs.personalitySummary : undefined,
     },
-    personalityType:
-      surveyResult?.personalityType ??
-      mergedPrefs.personalityType ??
-      extras.personalityType ??
-      personality.type,
-    personalitySummary:
-      surveyResult?.aiRecommendationSummary ??
-      mergedPrefs.personalitySummary ??
-      extras.personalitySummary ??
-      personality.summary,
-    personalityImpression:
-      surveyResult?.personalityImpression ?? personality.impression,
+    personalityType: includePlusSurvey
+      ? (canonicalSurveyStyle ||
+          (surveyResult?.personalityType ??
+            mergedPrefs.personalityType ??
+            extras.personalityType ??
+            personality.type))
+      : "",
+    personalitySummary: includePlusSurvey
+      ? (surveyResult?.aiRecommendationSummary ??
+        mergedPrefs.personalitySummary ??
+        extras.personalitySummary ??
+        personality.summary)
+      : "",
+    personalityImpression: includePlusSurvey
+      ? (surveyResult?.personalityImpression ?? personality.impression)
+      : "",
     surveyCompleted,
-    surveyCompletedAt:
-      surveySnapshot?.surveyCompletedAt ?? mergedPrefs.surveyCompletedAt ?? null,
-    travelTags:
-      surveySnapshot?.travelTags ??
-      (Array.isArray(extras.travelTags) ? extras.travelTags : []) ??
-      surveyResult?.travelTags ??
-      [],
+    surveyCompletedAt: includePlusSurvey
+      ? (surveySnapshot?.surveyCompletedAt ?? mergedPrefs.surveyCompletedAt ?? null)
+      : null,
+    travelTags: includePlusSurvey
+      ? (surveySnapshot?.travelTags ??
+        (Array.isArray(extras.travelTags) ? extras.travelTags : []) ??
+        surveyResult?.travelTags ??
+        [])
+      : [],
     surveyResult,
     aiPreferences: extras,
   };
 }
 
-export async function saveUserProfile(input: {
-  displayName?: string;
-  avatarUrl?: string | null;
-  coverImageUrl?: string | null;
-  bio?: string;
-  travelStyle?: string;
-}): Promise<UserProfile> {
+export async function saveUserProfile(
+  input: {
+    displayName?: string;
+    avatarUrl?: string | null;
+    coverImageUrl?: string | null;
+    bio?: string;
+    travelStyle?: string;
+  },
+  options?: GetUserProfileOptions,
+): Promise<UserProfile> {
   const userId = await getAuthenticatedUserId();
-  const current = await getUserProfile();
+  const current = await getUserProfile(undefined, options);
 
   const next = {
     displayName: input.displayName?.trim() ?? current.displayName,
@@ -336,7 +395,7 @@ export async function saveUserProfile(input: {
     broadcastCoverUpdate(next.coverImageUrl);
   }
 
-  return getUserProfile(current.language);
+  return getUserProfile(current.language, options);
 }
 
 export async function savePersonalityToProfile(prefs: TravelPreferences): Promise<void> {

@@ -28,6 +28,12 @@ import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { getMockHomeNearbyPicks, getMockPlacesForCategory } from "@/lib/map-mock-places";
 import { withSearchTimeout } from "@/lib/search-timeout";
+import {
+  logNearbyPlaceNormalizeSkipped,
+  logNearbyRawPlacesReceived,
+  placeResultToNearbyPick,
+  sanitizeHomeNearbyPick,
+} from "@/lib/nearby-place-normalize";
 
 export type ExplorePlaceCard = PlaceResult & {
   reason: string;
@@ -45,6 +51,10 @@ export type SearchPlacesInput = {
   locale?: Locale;
   availabilityContext?: "now" | "lenient";
   telemetrySurface?: PlacesApiSurface;
+  /** 探索地圖關鍵字搜尋 */
+  exploreMapTextSearch?: boolean;
+  /** 使用者原始輸入（診斷） */
+  rawQuery?: string;
 };
 
 export type SearchPlacesFn = (
@@ -97,6 +107,7 @@ export async function searchExploreCategoryPlaces(
     /** 首頁成本優化：略過 coffee/district Text Search fallback */
     skipTextSearchFallback?: boolean;
     telemetrySurface?: PlacesApiSurface;
+    availabilityContext?: "now" | "lenient";
   },
 ): Promise<ExplorePlaceCard[]> {
   const { userLocation, weather, locale, reasonProfile, saved, searchPlacesFn } = ctx;
@@ -118,6 +129,7 @@ export async function searchExploreCategoryPlaces(
         nearbyGroups: cat.nearbyGroups,
         locale,
         telemetrySurface: ctx.telemetrySurface,
+        availabilityContext: ctx.availabilityContext,
       },
     }),
   );
@@ -189,16 +201,26 @@ export async function searchExploreCategoryPlaces(
 
   const enriched: ExplorePlaceCard[] = [
     ...savedCards,
-    ...filtered.map((p) =>
-      buildUnifiedPlaceCard({
-        place: p,
-        categoryId: cat.id,
-        userLocation,
-        weather,
-        userProfile: reasonProfile,
-        locale,
-      }),
-    ),
+    ...filtered.flatMap((place) => {
+      try {
+        const card = buildUnifiedPlaceCard({
+          place,
+          categoryId: cat.id,
+          userLocation,
+          weather,
+          userProfile: reasonProfile,
+          locale,
+        });
+        return [card];
+      } catch (e) {
+        logNearbyPlaceNormalizeSkipped(
+          e instanceof Error ? e.message : "build_unified_card_failed",
+          { placeId: place.id, name: place.name },
+        );
+        const fallback = placeResultToNearbyPick(place, { categoryId: cat.id });
+        return fallback ? [fallback] : [];
+      }
+    }),
   ];
 
   if (enriched.length === 0 && shouldUseCuratedPlacesFallback(primary.error)) {
@@ -228,6 +250,10 @@ export type HomeNearbyPick = ExplorePlaceCard & {
   displayCategory?: string;
   coverImageUrl?: string;
   distanceLabel?: string;
+  /** Place Details 回傳的多張 Google photo resource name */
+  photoNames?: string[];
+  /** 原始營業時間（供卡片顯示與 debug） */
+  hoursData?: import("@/lib/filter-available-places").PlaceHoursData;
 };
 
 const PICKS_PER_CATEGORY = 2;
@@ -240,6 +266,7 @@ function mergePickHoursFromDetails(pick: HomeNearbyPick, details: PlaceResult): 
     openStatus: details.openStatus,
     openStatusLabel: details.openStatusLabel,
     todayHoursLabel: details.todayHoursLabel,
+    closesAtLabel: details.closesAtLabel,
     closingSoonNote: details.closingSoonNote,
     nextOpenHint: details.nextOpenHint,
     photoName: pick.photoName ?? details.photoName,
@@ -292,7 +319,12 @@ export async function loadHomeNearbyPicks(ctx: {
   categories: ExploreCategory[];
 }): Promise<HomeNearbyPicksResult> {
   let lastApiError: string | null = null;
-  const searchCtx = { ...ctx, skipTextSearchFallback: true, telemetrySurface: "home" as const };
+  const searchCtx = {
+    ...ctx,
+    skipTextSearchFallback: true,
+    telemetrySurface: "home" as const,
+    availabilityContext: "lenient" as const,
+  };
   const perCategory = await Promise.all(
     ctx.categories.map(async (cat) => {
       try {
@@ -312,6 +344,7 @@ export async function loadHomeNearbyPicks(ctx: {
   );
 
   const merged = perCategory.flat();
+  logNearbyRawPlacesReceived(merged.length);
   const deduped = new Map<string, HomeNearbyPick>();
   for (const p of merged) {
     const prev = deduped.get(p.id);
@@ -330,7 +363,10 @@ export async function loadHomeNearbyPicks(ctx: {
     ctx.userLocation,
     ctx.reasonProfile,
     ctx.weather,
-  );
+  ).flatMap((pick) => {
+    const normalized = sanitizeHomeNearbyPick(pick);
+    return normalized ? [normalized] : [];
+  });
   if (sorted.length > 0) {
     const usedMock =
       sorted.length > 0 && sorted.every((p) => p.id.startsWith("mock-"));

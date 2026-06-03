@@ -100,6 +100,11 @@ export function setCachedTravelProfileFields(fields: TravelProfileFields | null)
   cachedProfileFields = fields;
 }
 
+/** 測驗完成或重測後清除記憶體快取，避免舊 travel_style 被讀取 */
+export function clearCachedTravelProfileFields(): void {
+  cachedProfileFields = null;
+}
+
 export async function savePreferences(prefs: TravelPreferences): Promise<TravelPreferences> {
   const merged = { ...(await getPreferences()), ...prefs, updated_at: new Date().toISOString() };
   const userId = await getAuthenticatedUserId();

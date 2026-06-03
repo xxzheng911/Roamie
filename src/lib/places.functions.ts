@@ -26,6 +26,16 @@ import {
   type PlaceHoursData,
 } from "@/lib/filter-available-places";
 import { filterExplorePlaces, isTravelFriendlyPlace } from "@/lib/filter-explore-places";
+import { isPermissiveExploreMapRawPlace } from "@/lib/explore-map-search";
+import {
+  buildRequestDeniedDiagnostics,
+  logExploreSearchRequest,
+  logExploreSearchResponse,
+  logExploreSearchResponseBody,
+  maskApiKeyHint,
+  textSearchEndpoint,
+} from "@/lib/explore-places-search-diagnostics";
+import { exploreMapTextSearchViaAutocomplete } from "@/lib/explore-map-text-search-fallback";
 import type { PlaceResult } from "@/lib/place-result";
 import { logPlacesApiResponse } from "@/lib/places-api-errors";
 import { recordPlacesApiCallServer } from "@/lib/places-api-telemetry.server";
@@ -59,14 +69,20 @@ export const ExploreSearchInput = z.object({
   availabilityContext: z.enum(["now", "lenient"]).optional().default("now"),
   /** 成本 telemetry：home / map / ai */
   telemetrySurface: z.enum(["home", "map", "ai", "chat", "other"]).optional(),
+  /** 探索地圖自由搜尋：不套用 50km 硬限制、寬鬆類型 */
+  exploreMapTextSearch: z.boolean().optional(),
+  /** 使用者原始輸入（診斷 log；final 為 query） */
+  rawQuery: z.string().max(120).optional(),
 });
 
 type RawPlace = RawPlaceHours;
 
 export function rawPlaceToHoursData(p: RawPlace): PlaceHoursData {
+  const legacyOpening = (p as PlaceHoursData & { openingHours?: PlaceHoursData["currentOpeningHours"] })
+    .openingHours;
   return {
     businessStatus: p.businessStatus,
-    currentOpeningHours: p.currentOpeningHours,
+    currentOpeningHours: p.currentOpeningHours ?? legacyOpening ?? null,
     regularOpeningHours: p.regularOpeningHours,
     utcOffsetMinutes: p.utcOffsetMinutes,
   };
@@ -75,7 +91,9 @@ export function rawPlaceToHoursData(p: RawPlace): PlaceHoursData {
 function mapRawPlaces(
   raw: RawPlace[],
   availabilityContext: FilterPlacesContext = "now",
+  options?: { permissiveMapTypes?: boolean },
 ): PlaceResult[] {
+  const permissive = options?.permissiveMapTypes === true;
   return raw
     .map((p) => {
       const hours = rawPlaceToHoursData(p);
@@ -102,6 +120,7 @@ function mapRawPlaces(
           openStatus: availability.openStatus,
           openStatusLabel: fields.openStatusLabel,
           todayHoursLabel: fields.todayHoursLabel,
+          closesAtLabel: fields.closesAtLabel,
           closingSoonNote: fields.closingSoonNote,
           nextOpenHint: fields.nextOpenHint,
         } satisfies PlaceResult,
@@ -111,7 +130,9 @@ function mapRawPlaces(
     .filter((x): x is NonNullable<typeof x> => x != null)
     .sort((a, b) => a.sortWeight - b.sortWeight)
     .map(({ place }) => place)
-    .filter(isTravelFriendlyPlace);
+    .filter((place) =>
+      permissive ? isPermissiveExploreMapRawPlace(place) : isTravelFriendlyPlace(place),
+    );
 }
 
 function parseGoogleError(text: string): string {
@@ -154,7 +175,34 @@ async function postPlaces(
   body: Record<string, unknown>,
   apiKey: string,
   telemetry?: { sku: "nearby" | "text"; surface?: PlacesApiSurface },
+  exploreDiag?: {
+    query: string;
+    lat: number;
+    lng: number;
+    radius: number;
+    mapTextSearch?: boolean;
+  },
 ): Promise<{ places: RawPlace[]; error: string | null }> {
+  const isExploreText =
+    telemetry?.sku === "text" &&
+    telemetry?.surface === "map" &&
+    exploreDiag != null;
+
+  if (isExploreText) {
+    logExploreSearchRequest({
+      rawQuery: exploreDiag.query,
+      finalQuery: exploreDiag.query,
+      lat: exploreDiag.lat,
+      lng: exploreDiag.lng,
+      radius: exploreDiag.radius,
+      endpoint: url,
+      transport: "google_direct",
+      mode: "text",
+      exploreMapTextSearch: exploreDiag.mapTextSearch,
+      locationBias: body.locationBias != null,
+    });
+  }
+
   if (telemetry) {
     recordPlacesApiCallServer(telemetry.sku, telemetry.surface ?? "other", {
       url: telemetry.sku === "nearby" ? "searchNearby" : "searchText",
@@ -170,11 +218,32 @@ async function postPlaces(
     body: JSON.stringify(body),
   });
 
+  const responseText = await res.text();
+  let json: { places?: RawPlace[]; error?: { message?: string; status?: string } } = {};
+  try {
+    json = JSON.parse(responseText) as typeof json;
+  } catch {
+    json = {};
+  }
+
   if (!res.ok) {
-    const text = await res.text();
-    const detail = parseGoogleError(text);
+    const detail = parseGoogleError(responseText);
     const errMsg = `Google Places API ${res.status}: ${detail}`;
-    logPlacesApiResponse(res.status, errMsg, text);
+    logPlacesApiResponse(res.status, errMsg, responseText);
+    if (isExploreText) {
+      logExploreSearchResponse({
+        status: res.status,
+        resultCount: 0,
+        firstPlaceName: null,
+        rawResultCount: 0,
+        error: errMsg,
+        transport: "google_direct",
+      });
+      logExploreSearchResponseBody(
+        json && Object.keys(json).length > 0 ? json : responseText,
+      );
+      buildRequestDeniedDiagnostics(errMsg, "google_direct_server_key", apiKey);
+    }
     if (/API_KEY_IOS_APP_BLOCKED/i.test(detail)) {
       console.warn(
         "[PLACES_API] ios_key_blocked — server 請使用 GOOGLE_PLACES_SERVER_API_KEY（非 iOS App 限制）",
@@ -185,9 +254,24 @@ async function postPlaces(
   }
 
   logPlacesApiResponse(res.status, null);
+  const rawPlaces = json.places ?? [];
+  const firstName = rawPlaces[0]?.displayName?.text ?? null;
 
-  const json = (await res.json()) as { places?: RawPlace[] };
-  return { places: json.places ?? [], error: null };
+  if (isExploreText) {
+    logExploreSearchResponse({
+      status: res.status,
+      resultCount: rawPlaces.length,
+      firstPlaceName: firstName,
+      rawResultCount: rawPlaces.length,
+      transport: "google_direct",
+    });
+    if (rawPlaces.length === 0) {
+      logExploreSearchResponseBody(json);
+      console.info("[EXPLORE_SEARCH_RESPONSE] apiKeyHint=", maskApiKeyHint(apiKey));
+    }
+  }
+
+  return { places: rawPlaces, error: null };
 }
 
 function exploreLocale(lat: number, lng: number, userLocale?: Locale) {
@@ -208,22 +292,45 @@ async function searchText(
   userLocale?: Locale,
   availabilityContext: FilterPlacesContext = "now",
   telemetrySurface?: PlacesApiSurface,
+  mapRawOpts?: { permissiveMapTypes?: boolean; mapTextSearch?: boolean },
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
     textQuery: query,
     languageCode,
-    locationBias: locationCircle(lat, lng, radius),
     pageSize,
   };
+  if (!mapRawOpts?.mapTextSearch) {
+    body.locationBias = locationCircle(lat, lng, radius);
+  }
   if (regionCode) body.regionCode = regionCode;
 
-  const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey, {
-    sku: "text",
-    surface: telemetrySurface,
-  });
+  const exploreDiag =
+    telemetrySurface === "map"
+      ? { query, lat, lng, radius, mapTextSearch: mapRawOpts?.mapTextSearch }
+      : undefined;
+
+  const { places: raw, error } = await postPlaces(
+    textSearchEndpoint(),
+    body,
+    apiKey,
+    {
+      sku: "text",
+      surface: telemetrySurface,
+    },
+    exploreDiag,
+  );
   if (error) return { places: [], error };
-  return { places: mapRawPlaces(raw, availabilityContext), error: null };
+  const mapped = mapRawPlaces(raw, availabilityContext, mapRawOpts);
+  if (telemetrySurface === "map") {
+    console.info("[EXPLORE_SEARCH_MAP_RAW]", {
+      rawCount: raw.length,
+      mappedCount: mapped.length,
+      permissive: mapRawOpts?.permissiveMapTypes === true,
+      availabilityContext,
+    });
+  }
+  return { places: mapped, error: null };
 }
 
 async function searchNearby(
@@ -340,8 +447,17 @@ async function runExploreSearch(
   const center = { lat: data.lat, lng: data.lng };
   const radii = [data.radius ?? DEFAULT_SEARCH_RADIUS_M, 8_000, 5_000];
   const userLocale = data.locale ? coerceLocale(data.locale) : undefined;
-  const availabilityContext = data.availabilityContext ?? "now";
+  const availabilityContext =
+    data.availabilityContext ??
+    (data.exploreMapTextSearch ? "lenient" : "now");
   const telemetrySurface = data.telemetrySurface;
+  const mapTextSearch =
+    data.exploreMapTextSearch === true ||
+    (data.telemetrySurface === "map" && data.mode === "text");
+  const maxDistanceM = mapTextSearch ? 800_000 : MAX_PLACE_DISTANCE_M;
+  const mapRawOpts = mapTextSearch
+    ? { permissiveMapTypes: true, mapTextSearch: true }
+    : undefined;
 
   for (const radius of radii) {
     let result: { places: PlaceResult[]; error: string | null };
@@ -370,6 +486,15 @@ async function runExploreSearch(
         telemetrySurface,
       );
     } else if (data.query.trim()) {
+      if (telemetrySurface === "map") {
+        console.info("[EXPLORE_SEARCH_RUN_TEXT]", {
+          query: data.query.trim(),
+          radius,
+          mapTextSearch,
+          lat: data.lat,
+          lng: data.lng,
+        });
+      }
       result = await searchText(
         apiKey,
         data.query.trim(),
@@ -380,24 +505,86 @@ async function runExploreSearch(
         userLocale,
         availabilityContext,
         telemetrySurface,
+        mapTextSearch ? mapRawOpts : undefined,
       );
     } else {
+      if (telemetrySurface === "map") {
+        console.info("[EXPLORE_SEARCH_SKIPPED]", { reason: "empty_query_trim" });
+      }
       result = { places: [], error: null };
     }
 
-    if (result.error) return result;
+    if (result.error) {
+      if (telemetrySurface === "map") {
+        console.info("[EXPLORE_SEARCH_RESPONSE]", {
+          status: "error",
+          resultCount: 0,
+          firstPlaceName: null,
+          error: result.error,
+        });
+        buildRequestDeniedDiagnostics(result.error, "runExploreSearch", apiKey);
+      }
+      return result;
+    }
 
-    const nearby = filterExplorePlaces(
-      filterWithinDistance(result.places, center, MAX_PLACE_DISTANCE_M),
-    );
+    const mapped = result.places;
+
+    let within = filterWithinDistance(mapped, center, maxDistanceM);
+    if (mapTextSearch && within.length === 0 && mapped.length > 0) {
+      within = mapped;
+    }
+
+    const nearby = mapTextSearch
+      ? within
+      : filterExplorePlaces(within);
 
     if (nearby.length > 0) {
+      if (telemetrySurface === "map") {
+        console.info("[EXPLORE_SEARCH_RESPONSE]", {
+          status: "ok",
+          resultCount: nearby.length,
+          firstPlaceName: nearby[0]?.name ?? null,
+          rawResultCount: mapped.length,
+          mappedResultCount: mapped.length,
+        });
+      }
       return { places: nearby, error: null };
     }
 
-    if (result.places.length > 0 && nearby.length === 0) {
+    if (mapped.length > 0 && nearby.length === 0) {
+      if (telemetrySurface === "map") {
+        console.info("[EXPLORE_SEARCH_FILTER_EMPTY]", {
+          query: data.query,
+          radius,
+          mappedCount: mapped.length,
+          mapTextSearch,
+        });
+      }
       continue;
     }
+  }
+
+  if (mapTextSearch && data.query.trim()) {
+    const rawQ = data.rawQuery?.trim() || data.query.trim();
+    const fb = await exploreMapTextSearchViaAutocomplete(apiKey, {
+      rawQuery: rawQ,
+      finalQuery: data.query.trim(),
+      lat: data.lat,
+      lng: data.lng,
+      radius: data.radius ?? DEFAULT_SEARCH_RADIUS_M,
+      locale: userLocale ?? "zh-TW",
+    });
+    if (fb.places.length > 0) {
+      return fb;
+    }
+  }
+
+  if (telemetrySurface === "map") {
+    console.info("[EXPLORE_SEARCH_RESPONSE]", {
+      status: "empty_after_radii_and_autocomplete",
+      resultCount: 0,
+      firstPlaceName: null,
+    });
   }
 
   return {
@@ -426,7 +613,9 @@ export const searchPlaces = createServerFn({ method: "POST" })
     return getServerCachedExploreSearch(
       data,
       () => executeExploreSearch(data),
-      (r) => !(r.error && shouldSkipPlacesClientRetry(r.error)),
+      (r) =>
+        r.places.length > 0 &&
+        !(r.error && shouldSkipPlacesClientRetry(r.error)),
     );
   });
 
@@ -473,6 +662,7 @@ export async function fetchPlaceDetailsForIntro(
       openStatus: availability.openStatus,
       openStatusLabel: fields.openStatusLabel,
       todayHoursLabel: fields.todayHoursLabel,
+      closesAtLabel: fields.closesAtLabel,
       closingSoonNote: fields.closingSoonNote,
       nextOpenHint: fields.nextOpenHint,
     };
@@ -493,11 +683,15 @@ export async function fetchPlaceDetailsForIntro(
 export type PlaceDetailsScreenResult = PlaceResult & {
   website: string | null;
   phone: string | null;
+  googleMapsUri?: string | null;
   coverImageUrl?: string | null;
+  photoNames?: string[];
+  hoursData?: PlaceHoursData;
 };
 
 type PlaceDetailsScreenRaw = PlaceDetailsRaw & {
   websiteUri?: string;
+  googleMapsUri?: string;
   nationalPhoneNumber?: string;
   internationalPhoneNumber?: string;
 };
@@ -525,8 +719,11 @@ export async function fetchPlaceDetailsForScreen(
     }
     const p = (await res.json()) as PlaceDetailsScreenRaw;
     const hours = rawPlaceToHoursData(p);
-    const availability = derivePlaceAvailability(hours, { context: "now" });
+    const availability = derivePlaceAvailability(hours, { context: "lenient" });
     const fields = applyAvailabilityFields({}, availability);
+    const photoNames = (p.photos ?? [])
+      .map((ph) => ph.name?.trim())
+      .filter((n): n is string => Boolean(n));
     return {
       id: p.id,
       name: p.displayName?.text ?? "Unknown",
@@ -535,17 +732,21 @@ export async function fetchPlaceDetailsForScreen(
       lng: p.location?.longitude ?? null,
       rating: p.rating ?? null,
       userRatingCount: p.userRatingCount ?? null,
-      photoName: p.photos?.[0]?.name ?? null,
+      photoName: photoNames[0] ?? null,
+      photoNames,
+      hoursData: hours,
       primaryType: p.primaryType ?? null,
       types: p.types ?? null,
       businessStatus: availability.businessStatus,
       openStatus: availability.openStatus,
       openStatusLabel: fields.openStatusLabel,
       todayHoursLabel: fields.todayHoursLabel,
+      closesAtLabel: fields.closesAtLabel,
       closingSoonNote: fields.closingSoonNote,
       nextOpenHint: fields.nextOpenHint,
       website: p.websiteUri?.trim() || null,
       phone: p.nationalPhoneNumber?.trim() || p.internationalPhoneNumber?.trim() || null,
+      googleMapsUri: p.googleMapsUri?.trim() || null,
     };
   } catch (e) {
     console.warn("[Roamie Places] place details screen failed", placeId, e);

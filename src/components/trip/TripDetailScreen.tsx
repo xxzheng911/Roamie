@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { SavedTripItineraryEditor } from "@/components/saved/SavedTripItineraryEditor";
@@ -7,41 +7,59 @@ import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDia
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { isRoamiePayloadV2 } from "@/lib/ai/types";
 import { getItinerary, type StoredItinerary } from "@/lib/itinerary-storage";
-import { TRIP_DETAIL_COMPONENT } from "@/lib/trip/trip-detail-nav";
+import { seedCoreTripPersistedFingerprint } from "@/lib/trip/core-trip-update-guard";
+import { tripPayloadFingerprint } from "@/lib/trip/trip-payload-persist";
+import {
+  logTripDetailMount,
+  logTripDetailReloadSkipped,
+  resetTripDetailSkipLogs,
+} from "@/lib/trip/trip-detail-log";
+
+import type { TripDetailFromSource } from "@/lib/trip/trip-detail-back";
 
 type Props = {
   tripId: string;
   /** 導航來源（HomeTripCard / SavedTripCard / …） */
   navSource: string;
-  /** 行程建立完成後進入詳情，返回固定回收藏頁 */
-  preferSavedBack?: boolean;
+  /** URL search 來源，決定返回目的地 */
+  fromSource?: TripDetailFromSource;
   onDeleted?: () => void;
 };
 
 /**
  * 正式行程詳情：載入 saved_trips 後以 SavedTripItineraryEditor 手動編輯。
  */
-export function TripDetailScreen({ tripId, navSource, preferSavedBack, onDeleted }: Props) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
+export function TripDetailScreen({ tripId, navSource, fromSource = "saved", onDeleted }: Props) {
   const [stored, setStored] = useState<StoredItinerary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  const mountLoggedRef = useRef<string | null>(null);
+  const loadStartedRef = useRef<string | null>(null);
+
   useEffect(() => {
-    console.info("[TRIP_DETAIL] mounted tripId=", tripId);
-    console.info("[TRIP_DETAIL] route name=", pathname);
-    console.info("[TRIP_DETAIL] using component=", TRIP_DETAIL_COMPONENT);
-    console.info("[TRIP_DETAIL] navSource=", navSource);
-  }, [tripId, pathname, navSource]);
+    if (mountLoggedRef.current === tripId) return;
+    mountLoggedRef.current = tripId;
+    resetTripDetailSkipLogs(tripId);
+    logTripDetailMount(tripId);
+  }, [tripId]);
 
   useEffect(() => {
     let cancelled = false;
+
+    if (loadStartedRef.current === tripId && stored?.id === tripId) {
+      logTripDetailReloadSkipped(tripId, "already_loaded");
+      return;
+    }
+
+    loadStartedRef.current = tripId;
     if (!stored || stored.id !== tripId) {
       setLoading(true);
       setError(null);
     }
+
     getItinerary(tripId)
       .then((row) => {
         if (cancelled) return;
@@ -56,6 +74,7 @@ export function TripDetailScreen({ tripId, navSource, preferSavedBack, onDeleted
           return;
         }
         console.info("[TRIP_DETAIL] StoredItinerary loaded tripId=", row.id);
+        seedCoreTripPersistedFingerprint(row.id, row.payload, row.mood);
         setStored(row);
       })
       .catch((e) => {
@@ -65,10 +84,42 @@ export function TripDetailScreen({ tripId, navSource, preferSavedBack, onDeleted
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
     return () => {
       cancelled = true;
     };
   }, [tripId]);
+
+  const handleStoredChange = useCallback((row: StoredItinerary) => {
+    setStored((prev) => {
+      if (!prev || prev.id !== row.id) return row;
+
+      const prevStart = isRoamiePayloadV2(prev.payload)
+        ? prev.payload.tripSettings?.tripStartDate ?? ""
+        : "";
+      const nextStart = isRoamiePayloadV2(row.payload)
+        ? row.payload.tripSettings?.tripStartDate ?? ""
+        : "";
+      const prevDayDates = isRoamiePayloadV2(prev.payload)
+        ? (prev.payload.tripSettings?.tripDayDates ?? []).join(",")
+        : "";
+      const nextDayDates = isRoamiePayloadV2(row.payload)
+        ? (row.payload.tripSettings?.tripDayDates ?? []).join(",")
+        : "";
+      const datesChanged = prevStart !== nextStart || prevDayDates !== nextDayDates;
+
+      const prevFp = tripPayloadFingerprint(prev.payload, prev.mood);
+      const nextFp = tripPayloadFingerprint(row.payload, row.mood);
+      if (prevFp === nextFp && !datesChanged) {
+        logTripDetailReloadSkipped(row.id, "same_fingerprint");
+        return prev;
+      }
+      if (isRoamiePayloadV2(row.payload)) {
+        seedCoreTripPersistedFingerprint(row.id, row.payload, row.mood);
+      }
+      return row;
+    });
+  }, []);
 
   const handleDelete = async () => {
     if (!stored) return;
@@ -122,10 +173,12 @@ export function TripDetailScreen({ tripId, navSource, preferSavedBack, onDeleted
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <SavedTripItineraryEditor
+        key={stored.id}
         stored={stored}
-        preferSavedBack={preferSavedBack}
+        navSource={navSource}
+        fromSource={fromSource}
         headerRight={deleteButton}
-        onStoredChange={setStored}
+        onStoredChange={handleStoredChange}
       />
       <TripDeleteConfirmDialog
         open={deleteOpen}

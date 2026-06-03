@@ -17,6 +17,12 @@ import {
   userAffirmsTripPlanning,
 } from "@/lib/ai/conversation-state";
 import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
+import { userRequestsItineraryGeneration } from "@/lib/ai/itinerary-trigger";
+import {
+  extractTripContextSlice,
+  isTripContextComplete,
+  userAsksDateRangeRecommendation,
+} from "@/lib/ai/trip-context-completeness";
 
 export type AiChatRouteMode = "clarify" | "recommend" | "itinerary" | "companion";
 
@@ -70,7 +76,11 @@ export function resolveChatRoute(
   session: ChatPlanningSession,
   locale: Locale = "zh-TW",
 ): AiChatRoute {
-  if (isUserConfirmingItinerary(userText) || userAffirmsTripPlanning(userText)) {
+  if (
+    isUserConfirmingItinerary(userText) ||
+    userAffirmsTripPlanning(userText) ||
+    userRequestsItineraryGeneration(userText)
+  ) {
     console.info("[AI_ROUTE] itinerary_mode", logTravelContext(ctx));
     return { mode: "itinerary", chatPhase: "handoff" };
   }
@@ -90,6 +100,15 @@ export function resolveChatRoute(
 
   if (userAsksTravelTimeAdvice(userText)) {
     console.info("[AI_ROUTE] travel_advice_mode", logTravelContext(ctx));
+    return { mode: "recommend", chatPhase: "discover" };
+  }
+
+  const tripSlice = extractTripContextSlice(session, userText);
+  if (
+    userAsksDateRangeRecommendation(userText) &&
+    isTripContextComplete(tripSlice)
+  ) {
+    console.info("[AI_ROUTE] date_recommendation_mode", logTravelContext(ctx));
     return { mode: "recommend", chatPhase: "discover" };
   }
 

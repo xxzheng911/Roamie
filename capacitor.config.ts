@@ -126,8 +126,11 @@ const config: CapacitorConfig = {
       backgroundColor: "#f7f4ef",
     },
     Keyboard: {
-      /** native：由 JS 依 keyboardHeight 調整聊天輸入列（body resize 在 iOS 26 WKWebView 常失效） */
-      resize: "native",
+      /**
+       * iOS 26：native resize 會讓 Keyboard plugin 在 WebContent 未就緒時反覆 eval JS（JS Eval error）。
+       * 聊天輸入列改由 chat-keyboard-layout.ts 手動抬升。
+       */
+      resize: "none",
       resizeOnFullScreen: true,
     },
     LocalNotifications: {

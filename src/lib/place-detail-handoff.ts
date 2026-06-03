@@ -1,7 +1,17 @@
+import type { RoamieItineraryItem } from "@/lib/ai/types";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
+import type { PlaceIntroItineraryContext } from "@/lib/place/generate-place-intro";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 
 const HANDOFF_KEY = "roamie:place-detail-handoff";
+
+export type PlaceDetailRouteContext = {
+  source: "trip_sequence" | "current_location";
+  fromPlace: string;
+  toPlace: string;
+  originLat?: number;
+  originLng?: number;
+};
 
 export type PlaceDetailHandoff = {
   placeId: string;
@@ -17,6 +27,13 @@ export type PlaceDetailHandoff = {
   categoryId?: string;
   reason?: string;
   snapshot?: HomeNearbyPick;
+  /** 從行程卡片帶入的簡介情境（詳情頁可再與 trip 合併） */
+  itineraryContext?: PlaceIntroItineraryContext;
+  /** 原始行程項目（供 placeId 解析與 hydration） */
+  itineraryItem?: RoamieItineraryItem;
+  tripId?: string;
+  city?: string | null;
+  routeContext?: PlaceDetailRouteContext;
 };
 
 export function latLngFallbackPlaceId(lat: number, lng: number): string {
@@ -59,6 +76,7 @@ export function shouldFetchRemotePlaceDetails(
   source?: string | null,
 ): boolean {
   if (source === "saved") return false;
+  if (source === "trip_detail") return true;
   if (isSyntheticPlaceRouteId(placeId)) return false;
   return isGooglePlaceId(placeId);
 }
@@ -105,7 +123,7 @@ export function pickToPlaceDetailHandoff(pick: HomeNearbyPick): PlaceDetailHando
     userRatingCount: pick.userRatingCount,
     category: pick.displayCategory ?? pick.primaryType ?? null,
     categoryId: pick.categoryId,
-    reason: pick.reason,
+    reason: pick.reason?.trim(),
     snapshot: pick,
   };
 }

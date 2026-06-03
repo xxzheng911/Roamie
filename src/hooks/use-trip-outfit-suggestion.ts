@@ -8,6 +8,8 @@ import {
   buildTripItemsFingerprint,
 } from "@/lib/outfit/trip-outfit-context";
 import type { TripOutfitSuggestionFields } from "@/lib/outfit/types";
+import { EMPTY_TRIP_OUTFIT_FIELDS } from "@/lib/outfit/stable-outfit-fields";
+import { logOutfitSuggestionSkipped } from "@/lib/trip/trip-detail-log";
 import { WEATHER_CACHE_TTL_MS, ROAMIE_WEATHER_UNAVAILABLE_OUTFIT } from "@/lib/weather/constants";
 
 type Params = {
@@ -22,6 +24,9 @@ type Params = {
   tripCenter?: { lat: number; lng: number };
   moodTag?: string;
   enabled?: boolean;
+  /** 詳情頁勿定時刷新天氣 key，避免 inputKey 變動觸發重算與寫入 */
+  refreshWeather?: boolean;
+  tripId?: string;
 };
 
 export function useTripOutfitSuggestion({
@@ -36,8 +41,12 @@ export function useTripOutfitSuggestion({
   tripCenter,
   moodTag,
   enabled = true,
+  refreshWeather = false,
+  tripId,
 }: Params) {
   const fetchSuggestion = useServerFn(generateTripOutfitSuggestion);
+  const fetchSuggestionRef = useRef(fetchSuggestion);
+  fetchSuggestionRef.current = fetchSuggestion;
   const generatingRef = useRef(false);
   const [weatherRefreshTick, setWeatherRefreshTick] = useState(0);
 
@@ -94,27 +103,36 @@ export function useTripOutfitSuggestion({
     outfitFields.outfitSuggestionInputKey === inputKey;
 
   const pendingRegeneration =
-    outfitFields.outfitSuggestionInputKey !== inputKey && Boolean(dateRange.start);
-  const showLoading = loading || pendingRegeneration;
+    enabled &&
+    outfitFields.outfitSuggestionInputKey !== inputKey &&
+    Boolean(dateRange.start);
+  const showLoading = enabled && (loading || pendingRegeneration);
   const displayFields =
-    outfitFields.outfitSuggestionInputKey === inputKey ? outfitFields : {};
+    !enabled || outfitFields.outfitSuggestionInputKey === inputKey
+      ? outfitFields
+      : EMPTY_TRIP_OUTFIT_FIELDS;
 
   useEffect(() => {
+    if (!refreshWeather) return;
     const timer = window.setInterval(() => {
       setWeatherRefreshTick((t) => t + 1);
     }, WEATHER_CACHE_TTL_MS);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [refreshWeather]);
 
   useEffect(() => {
-    if (!enabled || isCached || generatingRef.current) return;
-    if (!dateRange.start) return;
+    if (!enabled || !dateRange.start) return;
+    if (isCached) {
+      if (tripId) logOutfitSuggestionSkipped(tripId, "already_cached");
+      return;
+    }
+    if (generatingRef.current) return;
 
     generatingRef.current = true;
     setLoading(true);
     setOutfitError(null);
 
-    void fetchSuggestion({
+    void fetchSuggestionRef.current({
       data: {
         destination: resolvedDestination || undefined,
         startDate: dateRange.start,
@@ -193,10 +211,8 @@ export function useTripOutfitSuggestion({
     tripCenter,
     destinationLocation?.lat,
     destinationLocation?.lng,
-    destinationLocation,
     moodTag,
     weatherRefreshTick,
-    fetchSuggestion,
   ]);
 
   return {

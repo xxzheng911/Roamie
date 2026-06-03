@@ -1,4 +1,3 @@
-import { ROAMIE_API_FALLBACK } from "@/lib/api/constants";
 import type { TransitLegAdvice } from "@/lib/transit/types";
 
 export function travelMinutesForMode(leg: TransitLegAdvice, transportLabel: string): number | null {
@@ -16,15 +15,16 @@ export function travelMinutesForMode(leg: TransitLegAdvice, transportLabel: stri
   return leg.durationMinutes ?? null;
 }
 
+/** 路程時間未取得時回傳空字串（UI 不顯示佔位文案） */
 export function formatLegTravelTimeLabel(
   leg: TransitLegAdvice | undefined,
   transportLabel: string,
   opts?: { loading?: boolean },
 ): string {
-  if (opts?.loading) return ROAMIE_API_FALLBACK.routesLoading;
-  if (!leg) return ROAMIE_API_FALLBACK.routesLoading;
+  if (opts?.loading) return "";
+  if (!leg) return "";
   const mins = travelMinutesForMode(leg, transportLabel);
-  if (mins == null) return ROAMIE_API_FALLBACK.routesLoading;
+  if (mins == null) return "";
   const label = transportLabel.trim() || "移動";
   return `${label} 約 ${mins} 分鐘`;
 }

@@ -21,6 +21,7 @@ import { MapExploreCategoryChips } from "@/components/map/MapExploreCategoryChip
 import { MapSearchBarOverlay } from "@/components/map/MapSearchBarOverlay";
 import { listPlaces, toggleSavePlace, type SavedPlace } from "@/lib/places-storage";
 import { searchPlaces } from "@/lib/places.functions";
+import { resolveTripStop, searchTripStops } from "@/lib/trip-stop-search.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import type { PlaceResult } from "@/lib/place-result";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
@@ -76,7 +77,19 @@ import {
   resetPlacesApiTelemetry,
 } from "@/lib/places-api-telemetry";
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
-import { withSearchTimeout } from "@/lib/search-timeout";
+import { isSearchTimeoutError, withSearchTimeout } from "@/lib/search-timeout";
+import { detectExploreSearchMode } from "@/lib/explore-search-mode";
+import { logExploreMapMovedToResult } from "@/lib/explore-unified-place-search";
+import { runExploreMapTextSearchPipeline } from "@/lib/explore-map-text-search-run";
+import {
+  EXPLORE_TEXT_SEARCH_TIMEOUT_MS,
+  logExploreSearchBlocked,
+  logExploreSearchInflightCleared,
+  logExploreSearchInflightSet,
+  logExploreSearchRequestStart,
+  logExploreSearchRequestTimeout,
+} from "@/lib/explore-search-lifecycle";
+import { clearExploreSearchInflight } from "@/lib/places-explore-cache";
 import {
   COFFEE_MIN_FILTERED_RESULTS,
   DISTRICT_MIN_FILTERED_RESULTS,
@@ -106,6 +119,29 @@ import { useI18n } from "@/hooks/use-i18n";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
 import { locationMovedEnough, weatherCacheKey } from "@/lib/map-location-throttle";
+import {
+  buildExploreMapSearchQuery,
+  EXPLORE_FREE_TEXT_EMPTY_MESSAGE,
+  logExploreBottomSheetSource,
+  logExplorePlaceCardRendered,
+  logExploreSearchEmpty,
+  logExploreSearchFailed,
+  logExploreSearchFetchStart,
+  logExploreSearchFetchSuccess,
+  logExploreSearchQueryBuiltV2,
+  logExploreSearchResultsApplied,
+  logExploreResultsStateChanged,
+  logExploreSearchStart,
+  logExploreSearchSubmit,
+  logExploreSearchSuccess,
+  resolveExploreSearchCenter,
+  type ExploreSearchCenter,
+} from "@/lib/explore-map-search";
+import {
+  logExploreSearchRequest,
+  logExploreSearchSkipped,
+} from "@/lib/explore-places-search-diagnostics";
+import { resolveAppApiUrl } from "@/lib/api-base-url";
 
 export const Route = createFileRoute("/_app/map")({
   component: MapPage,
@@ -215,15 +251,24 @@ function MapView() {
   const prevQueryRef = useRef("");
   const prevCatIdRef = useRef(cat.id);
   const pendingImmediateSearchRef = useRef(false);
+  const exploreSearchInFlightRef = useRef(false);
+  const nearbyPlacesInFlightRef = useRef(false);
+  const locationUpdatingRef = useRef(false);
+  const textSearchAnchorRef = useRef<ExploreSearchCenter | null>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
 
   const navigate = useNavigate();
   const { avatarSrc: rawAvatarSrc } = useAvatar();
   const safeAvatarSrc = useMemo(() => resolveUserMarkerAvatarSrc(rawAvatarSrc), [rawAvatarSrc]);
   const searchPlacesServerFn = useServerFn(searchPlaces);
+  const searchTripStopsFn = useServerFn(searchTripStops);
+  const resolveTripStopFn = useServerFn(resolveTripStop);
   const searchPlacesFn = useMemo(
     () => createUnifiedSearchPlacesFn(searchPlacesServerFn),
     [searchPlacesServerFn],
+  );
+  const lastBottomSheetSourceRef = useRef<"searchResults" | "nearbyPlaces" | "savedPlaces">(
+    "nearbyPlaces",
   );
   const fetchWeather = useServerFn(getWeather);
   const fetchPlaceIntroFn = useServerFn(getPlaceIntro);
@@ -348,21 +393,38 @@ function MapView() {
   }, [applyDeviceLocation]);
 
   useEffect(() => {
-    const stopWatch = watchDeviceLocation((loc) => {
-      if (loc.usedFallback) return;
-      setLocationHint(null);
-      const next = { lat: loc.lat, lng: loc.lng };
-      if (!locationMovedEnough(lastWatchedLocationRef.current, next, 120)) {
-        return;
-      }
-      lastWatchedLocationRef.current = next;
-      setUserLocation(next);
-      console.info("[MAP_LOCATION] using store lat/lng", {
-        phase: "watch",
-        lat: loc.lat,
-        lng: loc.lng,
-      });
-    });
+    const stopWatch = watchDeviceLocation(
+      (loc) => {
+        locationUpdatingRef.current = true;
+        try {
+          if (loc.usedFallback) return;
+          if (exploreSearchInFlightRef.current) {
+            logExploreSearchBlocked("location_watch_during_text_search", {
+              searchInFlight: true,
+              nearbyInFlight: nearbyPlacesInFlightRef.current,
+              locationUpdating: true,
+              extra: { lat: loc.lat, lng: loc.lng },
+            });
+            return;
+          }
+          setLocationHint(null);
+          const next = { lat: loc.lat, lng: loc.lng };
+          if (!locationMovedEnough(lastWatchedLocationRef.current, next, 120)) {
+            return;
+          }
+          lastWatchedLocationRef.current = next;
+          setUserLocation(next);
+          console.info("[MAP_LOCATION] using store lat/lng", {
+            phase: "watch",
+            lat: loc.lat,
+            lng: loc.lng,
+          });
+        } finally {
+          locationUpdatingRef.current = false;
+        }
+      },
+      { scope: "map" },
+    );
     return stopWatch;
   }, []);
 
@@ -494,56 +556,363 @@ function MapView() {
       .catch(() => {});
   }, [geoReady, userLocation.lat, userLocation.lng, fetchWeather]);
 
-  useEffect(() => {
-    if (!geoReady) return;
+  const flightSnapshot = useCallback(
+    () => ({
+      searchInFlight: exploreSearchInFlightRef.current,
+      nearbyInFlight: nearbyPlacesInFlightRef.current,
+      locationUpdating: locationUpdatingRef.current,
+    }),
+    [],
+  );
 
-    const center = { lat: userLocation.lat, lng: userLocation.lng };
-    const queryDirty = prevQueryRef.current !== query;
-    const catDirty = prevCatIdRef.current !== cat.id;
+  /** 手動關鍵字搜尋：獨立 inFlight / 10s timeout，不受 GPS / nearby refresh 觸發 */
+  useEffect(() => {
+    if (!geoReady || !query.trim()) return;
+
+    const text = query.trim();
     prevQueryRef.current = query;
+
+    const debounceMs = pendingImmediateSearchRef.current ? 0 : 450;
+    pendingImmediateSearchRef.current = false;
+
+    const handle = setTimeout(() => {
+      if (exploreSearchInFlightRef.current) {
+        logExploreSearchBlocked("text_search_already_in_flight", {
+          ...flightSnapshot(),
+          extra: { query: text },
+        });
+        return;
+      }
+
+      const anchor =
+        textSearchAnchorRef.current ??
+        resolveExploreSearchCenter({
+          mapCenter,
+          userLocation,
+          userLocationSource,
+          locationLabel,
+        });
+      const center = { lat: anchor.lat, lng: anchor.lng };
+      const requestId = ++searchRequestIdRef.current;
+      const { mode: searchMode } = detectExploreSearchMode(text);
+      const builtQuery =
+        searchMode === "global_place"
+          ? text
+          : buildExploreMapSearchQuery(text, {
+              city: anchor.city ?? locationLabel,
+            });
+      const radius = searchRadiusMeters();
+      const filterCat = EXPLORE_CATEGORIES[0];
+      const cachePayload = {
+        lat: center.lat,
+        lng: center.lng,
+        radius,
+        query: builtQuery,
+        mode: "text" as const,
+        locale,
+        telemetrySurface: "map" as const,
+        availabilityContext: "lenient" as const,
+        exploreMapTextSearch: true,
+        rawQuery: text,
+      };
+
+      exploreSearchInFlightRef.current = true;
+      logExploreSearchInflightSet({ requestId, query: text, mode: "text" });
+      logExploreSearchRequestStart({
+        requestId,
+        rawQuery: text,
+        finalQuery: builtQuery,
+        lat: center.lat,
+        lng: center.lng,
+        timeoutMs: EXPLORE_TEXT_SEARCH_TIMEOUT_MS,
+      });
+      logExploreSearchRequest({
+        rawQuery: text,
+        finalQuery: builtQuery,
+        lat: center.lat,
+        lng: center.lng,
+        radius,
+        endpoint: resolveAppApiUrl("/api/places-search"),
+        transport: "map_ui",
+        mode: "text",
+        exploreMapTextSearch: true,
+      });
+
+      setResults([]);
+      setLoading(true);
+      setError(null);
+      setMapFallbackReason(null);
+      resetPlacesApiTelemetry("map");
+      logExploreSearchFetchStart();
+
+      const clearTextInflight = (reason: string) => {
+        exploreSearchInFlightRef.current = false;
+        clearExploreSearchInflight(cachePayload);
+        logExploreSearchInflightCleared({ requestId, query: text, reason });
+      };
+
+      void (async () => {
+        try {
+          const { filtered, apiError, mode: resultMode } = await withSearchTimeout(
+            runExploreMapTextSearchPipeline(
+              searchPlacesFn,
+              searchTripStopsFn,
+              resolveTripStopFn,
+              {
+                rawQuery: text,
+                finalQuery: builtQuery,
+                lat: center.lat,
+                lng: center.lng,
+                radius,
+                locale,
+                destination: searchMode === "global_place" ? null : locationLabel,
+              },
+            ),
+            EXPLORE_TEXT_SEARCH_TIMEOUT_MS,
+            "搜尋逾時，請稍後再試",
+          );
+
+          if (requestId !== searchRequestIdRef.current) return;
+
+          setMapPlacesApiError(apiError ?? null);
+          logExploreSearchFetchSuccess({
+            resultCount: filtered.length,
+            firstResultName: filtered[0]?.name ?? null,
+          });
+
+          const enriched: MapPlaceCard[] = filtered.map((p) => {
+            const card = buildUnifiedPlaceCard({
+              place: p,
+              categoryId: filterCat.id,
+              userLocation: center,
+              weather,
+              userProfile: reasonProfile,
+              locale,
+            });
+            const item = mapPlaceResultToChatItem(p, {
+              weather,
+              userProfile: reasonProfile,
+              locale,
+            });
+            return {
+              ...card,
+              coverImageUrl: card.coverImageUrl ?? undefined,
+              googleMapsUrl: item.googleMapsUrl,
+            };
+          });
+
+          if (enriched.length === 0) {
+            if (apiError) {
+              logExploreSearchFailed({
+                query: builtQuery,
+                lat: center.lat,
+                lng: center.lng,
+                radius,
+                error: apiError,
+              });
+            } else {
+              logExploreSearchEmpty({
+                query: builtQuery,
+                lat: center.lat,
+                lng: center.lng,
+                radius,
+                error: apiError,
+              });
+            }
+            setError(
+              apiError && !isSearchTimeoutError(apiError)
+                ? apiError
+                : EXPLORE_FREE_TEXT_EMPTY_MESSAGE,
+            );
+            setMapFallbackReason("free_text_empty");
+          } else {
+            setError(null);
+          }
+
+          lastBottomSheetSourceRef.current = "searchResults";
+          const sorted =
+            resultMode === "global_place"
+              ? enriched
+              : sortMapCards(enriched, center, reasonProfile);
+          setResults(sorted);
+
+          const lead = sorted[0];
+          if (lead?.lat != null && lead?.lng != null) {
+            const distFromUser = distanceMeters(userLocation, {
+              lat: lead.lat,
+              lng: lead.lng,
+            });
+            if (resultMode === "global_place" || distFromUser > 30_000) {
+              const pos = { lat: lead.lat, lng: lead.lng };
+              setMapCenter(pos);
+              setMapZoom(distFromUser > 200_000 ? 10 : MAP_ZOOM_PLACE);
+              mapInstanceRef.current?.panTo(pos);
+              logExploreMapMovedToResult({
+                placeName: lead.name,
+                lat: lead.lat,
+                lng: lead.lng,
+              });
+            }
+          }
+          logExploreSearchResultsApplied({
+            resultCount: enriched.length,
+            displayMode: "searchResults",
+          });
+          logExploreBottomSheetSource({
+            source: "searchResults",
+            count: enriched.length,
+            query: text,
+            isFreeText: true,
+          });
+          logExploreResultsStateChanged({
+            phase: "search_applied",
+            query: text,
+            isFreeText: true,
+            resultsCount: enriched.length,
+            displayCount: enriched.length,
+            loading: false,
+            bottomSheetSource: "searchResults",
+            reason: "text_search_completed",
+            requestId,
+          });
+          logExploreSearchSuccess({
+            query: builtQuery,
+            lat: center.lat,
+            lng: center.lng,
+            radius,
+            resultCount: enriched.length,
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : t("map.searchFailed");
+          if (requestId !== searchRequestIdRef.current) return;
+          if (isSearchTimeoutError(msg)) {
+            logExploreSearchRequestTimeout({
+              requestId,
+              query: text,
+              timeoutMs: EXPLORE_TEXT_SEARCH_TIMEOUT_MS,
+              message: msg,
+            });
+            clearExploreSearchInflight(cachePayload);
+          }
+          setError(isSearchTimeoutError(msg) ? msg : t("map.searchBusy"));
+          setResults([]);
+          setMapFallbackReason("query_search_error");
+          setMapPlacesApiError(msg);
+          logExploreResultsStateChanged({
+            phase: "search_error",
+            query: text,
+            isFreeText: true,
+            resultsCount: 0,
+            displayCount: 0,
+            loading: false,
+            reason: isSearchTimeoutError(msg) ? "text_search_timeout" : "text_search_error",
+            requestId,
+          });
+        } finally {
+          if (searchRequestIdRef.current === requestId) {
+            clearTextInflight("text_search_finally");
+            setLoading(false);
+          }
+        }
+      })();
+    }, debounceMs);
+
+    return () => clearTimeout(handle);
+  }, [
+    query,
+    searchTrigger,
+    geoReady,
+    locale,
+    locationLabel,
+    searchPlacesFn,
+    searchTripStopsFn,
+    resolveTripStopFn,
+    weatherCacheKey(weather),
+    reasonProfile,
+    flightSnapshot,
+    t,
+  ]);
+
+  /** 分類 / 附近推薦：query 為空時才跑；text search 進行中不啟動 */
+  useEffect(() => {
+    if (!geoReady || query.trim()) return;
+
+    const searchCenter = resolveExploreSearchCenter({
+      mapCenter,
+      userLocation,
+      userLocationSource,
+      locationLabel,
+    });
+    const center = { lat: searchCenter.lat, lng: searchCenter.lng };
+
+    const catDirty = prevCatIdRef.current !== cat.id;
     prevCatIdRef.current = cat.id;
 
     const moved = locationMovedEnough(lastSearchCenterRef.current, center);
-    if (!moved && !queryDirty && !catDirty && lastSearchCenterRef.current) {
+    if (!moved && !catDirty && lastSearchCenterRef.current) {
       return;
     }
 
-    const isFreeText = !!query.trim();
-    const debounceMs = pendingImmediateSearchRef.current ? 0 : isFreeText ? 450 : 0;
+    if (exploreSearchInFlightRef.current) {
+      logExploreSearchBlocked("nearby_deferred_text_in_flight", flightSnapshot());
+      return;
+    }
+
+    const debounceMs = 0;
     pendingImmediateSearchRef.current = false;
     const handle = setTimeout(() => {
       lastSearchCenterRef.current = { ...center };
       const requestId = ++searchRequestIdRef.current;
-      const text = query.trim() || cat.query;
+      const text = cat.query;
+      nearbyPlacesInFlightRef.current = true;
+      logExploreSearchInflightSet({ requestId, query: text, mode: "nearby" });
+
       setLoading(true);
       setError(null);
       resetPlacesApiTelemetry("map");
-      const searchQuery = isFreeText
-        ? text
-        : buildExploreQuery(text, {
-            weather,
-            timeIso: new Date().toISOString(),
-            userLocation: center,
-            userLocale: locale,
-          });
-      const filterCat = isFreeText ? EXPLORE_CATEGORIES[0] : cat;
+      const builtQuery = buildExploreQuery(text, {
+        weather,
+        timeIso: new Date().toISOString(),
+        userLocation: center,
+        userLocale: locale,
+      });
+      const filterCat = cat;
+      const radius = searchRadiusMeters();
+
+      logExploreSearchStart({
+        query: builtQuery,
+        lat: center.lat,
+        lng: center.lng,
+        radius,
+        mode: cat.mode,
+        freeText: false,
+      });
+      logExploreSearchQueryBuiltV2({
+        rawQuery: text,
+        finalQuery: builtQuery,
+        lat: center.lat,
+        lng: center.lng,
+      });
+      logExploreSearchFetchStart();
+
       const runSearch = async () => {
         const basePayload = {
           lat: center.lat,
           lng: center.lng,
-          radius: searchRadiusMeters(),
+          radius,
         };
 
         const primary = await withSearchTimeout(
           searchPlacesFn({
             data: {
               ...basePayload,
-              query: isFreeText ? searchQuery : cat.query,
-              mode: (isFreeText ? "text" : cat.mode) as "text" | "nearby" | "multi",
-              includedTypes: isFreeText ? undefined : cat.includedTypes,
-              nearbyGroups: isFreeText ? undefined : cat.nearbyGroups,
+              query: cat.query,
+              mode: cat.mode as "text" | "nearby" | "multi",
+              includedTypes: cat.includedTypes,
+              nearbyGroups: cat.nearbyGroups,
               locale,
               telemetrySurface: "map",
+              availabilityContext: "now",
             },
           }),
         );
@@ -552,18 +921,18 @@ function MapView() {
         let apiError = primary.error;
 
         if (requestId !== searchRequestIdRef.current) return;
+
+        const quotaExhausted = isGooglePlacesQuotaError(apiError);
+        const skipExtraPlacesApi = Boolean(apiError && shouldSkipPlacesClientRetry(apiError));
+
         const applyFilters = (list: PlaceResult[]) =>
           filterByExploreCategory(filterExplorePlaces(list), filterCat);
 
         let filtered = applyFilters(apiPlaces);
 
-        const quotaExhausted = isGooglePlacesQuotaError(apiError);
-        const skipExtraPlacesApi = Boolean(apiError && shouldSkipPlacesClientRetry(apiError));
-
         if (
           !skipExtraPlacesApi &&
           !quotaExhausted &&
-          !isFreeText &&
           cat.id === "coffee" &&
           filtered.length < COFFEE_MIN_FILTERED_RESULTS
         ) {
@@ -591,7 +960,6 @@ function MapView() {
         if (
           !skipExtraPlacesApi &&
           !quotaExhausted &&
-          !isFreeText &&
           cat.id === "district" &&
           filtered.length < DISTRICT_MIN_FILTERED_RESULTS
         ) {
@@ -622,42 +990,13 @@ function MapView() {
         setMapPlacesApiError(apiError ?? null);
         setMapFallbackReason(null);
 
-        const nearbySaved = savedPlacesNear(center, savedRef.current, 5000);
-        const apiNames = new Set(apiPlaces.map((p) => p.name));
-        const savedCards: MapPlaceCard[] = nearbySaved
-          .filter((s) => !apiNames.has(s.name))
-          .filter((s) =>
-            matchesCategory(
-              { primaryType: s.category, name: s.name, types: s.category ? [s.category] : null },
-              filterCat,
-            ),
-          )
-          .map((s) => {
-            const base = savedToPlaceResult(s);
-            const card = buildUnifiedPlaceCard({
-              place: base,
-              categoryId: filterCat.id,
-              isSavedFavorite: true,
-              userLocation: center,
-              weather,
-              userProfile: reasonProfile,
-              locale,
-            });
-            const item = mapPlaceResultToChatItem(base, {
-              weather,
-              userProfile: reasonProfile,
-              locale,
-            });
-            return {
-              ...card,
-              coverImageUrl: card.coverImageUrl ?? undefined,
-              googleMapsUrl: item.googleMapsUrl,
-            };
-          });
+        logExploreSearchFetchSuccess({
+          resultCount: filtered.length,
+          firstResultName: filtered[0]?.name ?? null,
+        });
 
-        let enriched: MapPlaceCard[] = [
-          ...savedCards,
-          ...filtered.map((p) => {
+        const mapSearchHitsToCards = (list: PlaceResult[]): MapPlaceCard[] =>
+          list.map((p) => {
             const card = buildUnifiedPlaceCard({
               place: p,
               categoryId: filterCat.id,
@@ -676,14 +1015,71 @@ function MapView() {
               coverImageUrl: card.coverImageUrl ?? undefined,
               googleMapsUrl: item.googleMapsUrl,
             };
-          }),
-        ];
+          });
+
+        let enriched: MapPlaceCard[];
+        let bottomSheetSource: "searchResults" | "nearbyPlaces" | "savedPlaces";
+
+        {
+          const nearbySaved = savedPlacesNear(center, savedRef.current, 5000);
+          const apiNames = new Set(apiPlaces.map((p) => p.name));
+          const savedCards: MapPlaceCard[] = nearbySaved
+            .filter((s) => !apiNames.has(s.name))
+            .filter((s) =>
+              matchesCategory(
+                {
+                  primaryType: s.category,
+                  name: s.name,
+                  types: s.category ? [s.category] : null,
+                },
+                filterCat,
+              ),
+            )
+            .map((s) => {
+              const base = savedToPlaceResult(s);
+              const card = buildUnifiedPlaceCard({
+                place: base,
+                categoryId: filterCat.id,
+                isSavedFavorite: true,
+                userLocation: center,
+                weather,
+                userProfile: reasonProfile,
+                locale,
+              });
+              const item = mapPlaceResultToChatItem(base, {
+                weather,
+                userProfile: reasonProfile,
+                locale,
+              });
+              return {
+                ...card,
+                coverImageUrl: card.coverImageUrl ?? undefined,
+                googleMapsUrl: item.googleMapsUrl,
+              };
+            });
+          enriched = [...savedCards, ...mapSearchHitsToCards(filtered)];
+          bottomSheetSource = savedCards.length > 0 ? "savedPlaces" : "nearbyPlaces";
+        }
 
         if (enriched.length === 0) {
-          if (isFreeText) {
-            setError(getExploreCategoryEmptyMessage(cat.id, locale));
-            setMapFallbackReason("free_text_empty");
-          } else if (shouldUseCuratedPlacesFallback(apiError)) {
+          if (apiError) {
+            logExploreSearchFailed({
+              query: builtQuery,
+              lat: center.lat,
+              lng: center.lng,
+              radius,
+              error: apiError,
+            });
+          } else {
+            logExploreSearchEmpty({
+              query: builtQuery,
+              lat: center.lat,
+              lng: center.lng,
+              radius,
+              error: apiError,
+            });
+          }
+          if (shouldUseCuratedPlacesFallback(apiError)) {
             logPlacesFallbackUsed(`map-explore:${cat.id}`);
             enriched = mockMapCards(center, cat);
             setError(null);
@@ -695,11 +1091,49 @@ function MapView() {
           }
         }
 
-        if (requestId !== searchRequestIdRef.current) return;
+        if (requestId !== searchRequestIdRef.current) {
+          logExploreResultsStateChanged({
+            phase: "search_applied",
+            query: text,
+            isFreeText: false,
+            resultsCount: 0,
+            displayCount: 0,
+            loading: false,
+            reason: "stale_request_discarded",
+            requestId,
+            apiPlacesCount: apiPlaces.length,
+          });
+          return;
+        }
+        lastBottomSheetSourceRef.current = bottomSheetSource;
         setResults(sortMapCards(enriched, center, reasonProfile));
+        logExploreSearchResultsApplied({
+          resultCount: enriched.length,
+          displayMode: "nearbyPlaces",
+        });
+        logExploreBottomSheetSource({
+          source: bottomSheetSource,
+          count: enriched.length,
+          query: text,
+          isFreeText: false,
+        });
+        logExploreSearchSuccess({
+          query: builtQuery,
+          lat: center.lat,
+          lng: center.lng,
+          radius,
+          resultCount: enriched.length,
+        });
+        for (const card of enriched.slice(0, 8)) {
+          logExplorePlaceCardRendered({
+            placeName: card.name,
+            placeId: card.id,
+            category: card.displayCategory ?? card.primaryType,
+          });
+        }
         logPlacesApiTelemetrySummary("map", {
           category: cat.id,
-          freeText: isFreeText,
+          freeText: false,
           resultCount: enriched.length,
         });
         if (sheetMode === "list") {
@@ -711,11 +1145,7 @@ function MapView() {
       void runSearch()
         .catch((e) => {
           const msg = e instanceof Error ? e.message : t("map.searchFailed");
-          if (query.trim()) {
-            setError(t("map.searchBusy"));
-            setResults([]);
-            setMapFallbackReason("query_search_error");
-          } else if (shouldUseCuratedPlacesFallback(msg)) {
+          if (shouldUseCuratedPlacesFallback(msg)) {
             logPlacesFallbackUsed("map-search-catch");
             setError(null);
             setResults(mockMapCards(center, cat));
@@ -732,7 +1162,15 @@ function MapView() {
           }
         })
         .finally(() => {
-          if (searchRequestIdRef.current === requestId) setLoading(false);
+          if (searchRequestIdRef.current === requestId) {
+            nearbyPlacesInFlightRef.current = false;
+            logExploreSearchInflightCleared({
+              requestId,
+              query: text,
+              reason: "nearby_search_finally",
+            });
+            setLoading(false);
+          }
         });
     }, debounceMs);
     return () => clearTimeout(handle);
@@ -742,27 +1180,51 @@ function MapView() {
     cat.query,
     cat.mode,
     searchPlacesFn,
-    geoReady,
+    mapCenter.lat,
+    mapCenter.lng,
     userLocation.lat,
     userLocation.lng,
+    userLocationSource,
+    locationLabel,
     weatherCacheKey(weather),
     locale,
-    searchTrigger,
+    flightSnapshot,
     t,
   ]);
 
+  const isExploreTextSearch = !!query.trim();
+
+  useEffect(() => {
+    if (!query.trim()) return;
+    logExploreResultsStateChanged({
+      phase: "display_results",
+      query: query.trim(),
+      isFreeText: true,
+      resultsCount: results.length,
+      displayCount: loading ? 0 : results.length,
+      loading,
+      bottomSheetSource: lastBottomSheetSourceRef.current,
+      reason: loading
+        ? "displayResults_empty_while_loading"
+        : "displayResults_from_results_state",
+    });
+  }, [query, results.length, loading, isExploreTextSearch]);
+
   const displayResults = useMemo(() => {
-    if (loading && !query.trim()) return [];
-    const filterCat = query.trim() ? EXPLORE_CATEGORIES[0] : cat;
+    if (isExploreTextSearch) {
+      if (loading) return [];
+      return sortMapCards(results, userLocation, reasonProfile);
+    }
+    if (loading) return [];
     const base =
       results.length > 0
         ? results
-        : !loading && !query.trim() && shouldUseCuratedPlacesFallback(error)
+        : shouldUseCuratedPlacesFallback(error)
           ? mockMapCards(userLocation, cat)
           : [];
-    const filtered = filterByExploreCategory(filterExplorePlaces(base), filterCat);
+    const filtered = filterByExploreCategory(filterExplorePlaces(base), cat);
     return sortMapCards(filtered, userLocation, reasonProfile);
-  }, [results, cat, loading, query, userLocation, reasonProfile]);
+  }, [results, cat, loading, isExploreTextSearch, userLocation, reasonProfile, error]);
 
   const handleCategorySelect = useCallback(
     (c: ExploreCategory) => {
@@ -1148,12 +1610,59 @@ function MapView() {
         <div className="pointer-events-none absolute inset-0 z-10">
           <MapSearchBarOverlay
             query={query}
-            onQueryChange={setQuery}
+            onQueryChange={(value) => {
+              setQuery(value);
+              if (value.trim()) {
+                setResults([]);
+                setLoading(true);
+                setError(null);
+                setMapFallbackReason(null);
+                logExploreResultsStateChanged({
+                  phase: "query_change_clear",
+                  query: value.trim(),
+                  isFreeText: true,
+                  resultsCount: 0,
+                  displayCount: 0,
+                  loading: true,
+                  reason: "onQueryChange_cleared_results",
+                });
+              }
+            }}
             onSubmit={() => {
-              if (!query.trim()) return;
+              const q = query.trim();
+              if (!q) return;
+              textSearchAnchorRef.current = resolveExploreSearchCenter({
+                mapCenter,
+                userLocation,
+                userLocationSource,
+                locationLabel,
+              });
+              logExploreSearchSubmit({
+                query: q,
+                lat: textSearchAnchorRef.current.lat,
+                lng: textSearchAnchorRef.current.lng,
+              });
+              exploreSearchInFlightRef.current = false;
+              searchRequestIdRef.current += 1;
               pendingImmediateSearchRef.current = true;
               lastSearchCenterRef.current = null;
               prevQueryRef.current = "";
+              setResults([]);
+              setLoading(true);
+              setError(null);
+              setMapFallbackReason(null);
+              logExploreResultsStateChanged({
+                phase: "submit_clear",
+                query: q,
+                isFreeText: true,
+                resultsCount: 0,
+                displayCount: 0,
+                loading: true,
+                reason: "onSubmit_cleared_results",
+              });
+              setSheetMode("list");
+              setSelectedPlace(null);
+              setSelectedPlaceIndex(null);
               setSearchTrigger((n) => n + 1);
             }}
             onLocate={locateMe}
@@ -1183,14 +1692,24 @@ function MapView() {
             ) : (
               <>
                 <div className="px-5 pb-2">
-                  <p className="font-display text-lg leading-tight">推薦地點</p>
+                  <p className="font-display text-lg leading-tight">
+                    {isExploreTextSearch ? "搜尋結果" : "推薦地點"}
+                  </p>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    {locationLabel} ·{" "}
-                    {loading
-                      ? t("common.search")
-                      : tt("map.placesCount", { count: displayResults.length })}
-                    {cat.id ? ` · ${t(`explore.category.${cat.id}`)}` : ""}
-                    {saved.length > 0 ? ` · 已收藏 ${saved.length}` : ""}
+                    {isExploreTextSearch ? (
+                      loading
+                        ? t("common.search")
+                        : `搜尋結果 · ${displayResults.length} 個地點`
+                    ) : (
+                      <>
+                        {locationLabel} ·{" "}
+                        {loading
+                          ? t("common.search")
+                          : tt("map.placesCount", { count: displayResults.length })}
+                        {cat.id ? ` · ${t(`explore.category.${cat.id}`)}` : ""}
+                        {saved.length > 0 ? ` · 已收藏 ${saved.length}` : ""}
+                      </>
+                    )}
                   </p>
                   {locationHint && (
                     <p className="mt-1 text-xs text-muted-foreground/90">{locationHint}</p>
@@ -1220,7 +1739,9 @@ function MapView() {
                 categoryKey={cat.id}
                 emptyMessage={
                   !loading && displayResults.length === 0
-                    ? (error ?? getExploreCategoryEmptyMessage(cat.id, locale))
+                    ? isExploreTextSearch
+                      ? (error ?? EXPLORE_FREE_TEXT_EMPTY_MESSAGE)
+                      : (error ?? getExploreCategoryEmptyMessage(cat.id, locale))
                     : null
                 }
                 highlightIndex={selectedPlaceIndex}

@@ -22,6 +22,8 @@
     "verify:chat:full": "npx vite-node scripts/verify-chat-full-qa.mjs",
     "verify:chat:comprehensive": "npx vite-node scripts/verify-chat-comprehensive.mjs",
     "verify:places-api-telemetry": "npx vite-node scripts/verify-places-api-telemetry.mjs",
+    "verify:trip-detail": "node scripts/verify-trip-detail-render-stability.mjs",
+    "test": "vitest run",
     "apple:client-secret": "node scripts/generate-apple-client-secret.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -131,6 +133,7 @@
     "prettier": "^3.7.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^3.2.4"
   }
 }

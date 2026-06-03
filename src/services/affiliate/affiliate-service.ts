@@ -4,6 +4,7 @@ import {
   type AffiliatePlaceTypeInput,
 } from "./affiliate-place-intent";
 import { trackAffiliateClick } from "./track-affiliate-click";
+import { openAffiliateBrowser } from "./open-affiliate-browser";
 import type { AffiliateClickContext, AffiliatePartnerId } from "./types";
 
 /** Klook / KKday 搜尋導購（依地點名稱動態生成，無商品資料庫） */
@@ -27,6 +28,24 @@ function readEnv(keys: readonly string[]): string {
 
 function normalizePlaceQuery(placeName: string): string {
   return placeName.trim();
+}
+
+/** 組合城市 + 地點名稱作為 Klook / KKday 搜尋字 */
+export function buildAffiliateSearchQuery(placeName: string, city?: string | null): string {
+  const name = normalizePlaceQuery(placeName);
+  const cityPart = (city ?? "").trim();
+  if (!cityPart) return name;
+  if (!name) return cityPart;
+  if (name.includes(cityPart)) return name;
+  return `${cityPart} ${name}`;
+}
+
+export function buildKlookAffiliateUrl(placeName: string, city?: string | null): string | null {
+  return AffiliateService.generateKlookLink(buildAffiliateSearchQuery(placeName, city));
+}
+
+export function buildKKdayAffiliateUrl(placeName: string, city?: string | null): string | null {
+  return AffiliateService.generateKKdayLink(buildAffiliateSearchQuery(placeName, city));
 }
 
 export type PlaceExperienceAffiliateLink = {
@@ -85,28 +104,30 @@ export const AffiliateService = {
   getPlaceExperienceLinks(
     placeName: string,
     typeInput?: AffiliatePlaceTypeInput,
+    options?: { city?: string | null; usePlatformLabels?: boolean },
   ): PlaceExperienceAffiliateLink[] {
     const { intent, label } = affiliateIntentFromPlaceInput({
       placeName,
       ...typeInput,
     });
+    const query = buildAffiliateSearchQuery(placeName, options?.city);
     const links: PlaceExperienceAffiliateLink[] = [];
-    const klook = this.generateKlookLink(placeName);
+    const klook = this.generateKlookLink(query);
     if (klook) {
       links.push({
         platform: "klook",
         partnerId: "klook",
-        label,
+        label: options?.usePlatformLabels ? "在 Klook 查看相關體驗" : label,
         url: klook,
         intent,
       });
     }
-    const kkday = this.generateKKdayLink(placeName);
+    const kkday = this.generateKKdayLink(query);
     if (kkday) {
       links.push({
         platform: "kkday",
         partnerId: "kkday",
-        label,
+        label: options?.usePlatformLabels ? "在 KKday 查看相關體驗" : label,
         url: kkday,
         intent,
       });
@@ -114,14 +135,18 @@ export const AffiliateService = {
     return links;
   },
 
-  openExperienceLink(
+  async openExperienceLink(
     link: PlaceExperienceAffiliateLink,
     ctx: {
       source: AffiliateClickContext["source"];
       placeName: string;
     },
-  ): void {
+  ): Promise<void> {
     const place_name = normalizePlaceQuery(ctx.placeName);
+    console.info("[AFFILIATE_LINK_CLICKED]", {
+      platform: link.platform,
+      placeName: place_name,
+    });
     trackAffiliateClick({
       platform: link.platform,
       place_name,
@@ -129,9 +154,7 @@ export const AffiliateService = {
       timestamp: new Date().toISOString(),
       affiliate_intent: link.intent,
     });
-    if (typeof window !== "undefined") {
-      window.open(link.url, "_blank", "noopener,noreferrer");
-    }
+    await openAffiliateBrowser(link.url, link.platform);
   },
 };
 

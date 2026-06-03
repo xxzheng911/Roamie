@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { useAccess } from "@/hooks/use-access";
 import { useAuth } from "@/hooks/use-auth";
-import { canShowDeveloperTools, isDeveloperBuildEnabled } from "@/lib/access/developer";
+import { canShowDeveloperTools } from "@/lib/access/developer";
 
 export type PlusUpgradeResult = "upgraded" | "coming_soon";
 
@@ -15,16 +15,11 @@ export function usePlusUpgrade() {
   const [comingSoonOpen, setComingSoonOpen] = useState(false);
 
   const canInstantUpgrade =
-    import.meta.env.DEV ||
-    import.meta.env.VITE_ROAMIE_DEVELOPER === "1" ||
-    isDeveloperBuildEnabled() ||
-    canShowDeveloperTools(user?.email ?? null, user) ||
-    testModeOverride !== "none";
+    canShowDeveloperTools(user?.email ?? null, user) || testModeOverride !== "none";
 
   const upgradeToPlus = useCallback((): PlusUpgradeResult => {
     if (canInstantUpgrade) {
       enablePlusTestMode();
-      console.info("[DEV_SUBSCRIPTION] switched_to_plus");
       toast.success("已啟用 Roamie Plus");
       return "upgraded";
     }

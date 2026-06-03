@@ -25,6 +25,10 @@ type Props = {
   placeholder?: string;
   emptyMessage?: string;
   className?: string;
+  /** 僅顯示輸入列（結果由父層 fixed 區塊渲染） */
+  hideResults?: boolean;
+  hideCloseButton?: boolean;
+  onInputFocus?: () => void;
 };
 
 /** 內嵌地點搜尋（不用 Drawer，避免鍵盤把輸入框頂掉） */
@@ -40,6 +44,9 @@ export function PlaceSearchPanel({
   placeholder,
   emptyMessage,
   className,
+  hideResults = false,
+  hideCloseButton = false,
+  onInputFocus,
 }: Props) {
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -67,6 +74,7 @@ export function PlaceSearchPanel({
           type="search"
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
+          onFocus={onInputFocus}
           placeholder={placeholder ?? t("location.searchPlaceholder")}
           className="min-w-0 flex-1 bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none"
           autoComplete="off"
@@ -85,15 +93,18 @@ export function PlaceSearchPanel({
         {searching ? (
           <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
         ) : null}
-        <button
-          type="button"
-          onClick={onClose}
-          className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
-        >
-          {t("picker.cancel")}
-        </button>
+        {hideCloseButton ? null : (
+          <button
+            type="button"
+            onClick={onClose}
+            className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
+          >
+            {t("picker.cancel")}
+          </button>
+        )}
       </div>
 
+      {hideResults ? null : (
       <ul className="max-h-[min(45vh,320px)] overflow-y-auto overscroll-contain p-1">
         {results.length === 0 && query.trim() && !searching ? (
           <li className="px-3 py-8 text-center text-sm text-muted-foreground">
@@ -142,6 +153,7 @@ export function PlaceSearchPanel({
           </li>
         ))}
       </ul>
+      )}
     </div>
   );
 }

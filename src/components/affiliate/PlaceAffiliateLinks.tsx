@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { ExternalLink } from "lucide-react";
 import {
   AffiliateService,
@@ -13,6 +13,9 @@ type Props = {
   placeName: string;
   source: AffiliateClickContext["source"];
   placeTypeHints?: AffiliatePlaceTypeInput;
+  city?: string | null;
+  /** 地點詳情頁使用平台專屬 CTA 文案 */
+  usePlatformLabels?: boolean;
   className?: string;
   compact?: boolean;
   /** 點擊時阻止事件冒泡（卡片可點場景） */
@@ -23,6 +26,8 @@ export function PlaceAffiliateLinks({
   placeName,
   source,
   placeTypeHints,
+  city,
+  usePlatformLabels,
   className,
   compact,
   stopPropagation = true,
@@ -36,21 +41,28 @@ export function PlaceAffiliateLinks({
     [typeInput],
   );
   const links = useMemo(
-    () => AffiliateService.getPlaceExperienceLinks(placeName, typeInput),
-    [placeName, typeInput],
+    () => AffiliateService.getPlaceExperienceLinks(placeName, typeInput, { city, usePlatformLabels }),
+    [placeName, typeInput, city, usePlatformLabels],
   );
+
+  useEffect(() => {
+    for (const link of links) {
+      console.info("[AFFILIATE_LINK_RENDERED]", {
+        platform: link.platform,
+        placeName,
+        url: link.url,
+      });
+    }
+  }, [links, placeName]);
 
   if (!links.length) return null;
 
-  const handleClick = (
-    e: React.MouseEvent,
-    link: PlaceExperienceAffiliateLink,
-  ) => {
+  const handleClick = (e: React.MouseEvent, link: PlaceExperienceAffiliateLink) => {
     if (stopPropagation) {
       e.preventDefault();
       e.stopPropagation();
     }
-    AffiliateService.openExperienceLink(link, { source, placeName });
+    void AffiliateService.openExperienceLink(link, { source, placeName });
   };
 
   const btnClass = compact

@@ -21,6 +21,7 @@ import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { type BudgetMode } from "@/lib/preferences-storage";
 import { loadTravelPreferenceSurveyForUser } from "@/lib/travel-preference-survey-save";
 import { requirePreferenceQuizRouteAccess } from "@/lib/require-auth";
+import { logTravelPrefSkippedFree } from "@/lib/subscription-plus-features";
 import type { SurveyCompanionship } from "@/lib/travel-preference-survey-types";
 import {
   openSurveyResultView,
@@ -83,9 +84,14 @@ function PreferenceQuizPage() {
   const safeReturnTo = returnTo === "/" ? "/profile" : returnTo;
 
   useEffect(() => {
+    if (!hasPlusAccess) {
+      logTravelPrefSkippedFree("preference_quiz_route_free");
+      void navigate({ to: "/profile", replace: true });
+      return;
+    }
     console.info("[TRAVEL_PREF_TEST] mounted");
     console.info("[TRAVEL_PREF_TEST] route=/preference-quiz");
-  }, []);
+  }, [hasPlusAccess, navigate]);
 
   useEffect(() => {
     if (!hasPlusAccess) return;

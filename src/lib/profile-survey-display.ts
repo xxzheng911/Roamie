@@ -136,15 +136,16 @@ export function resolveProfilePlusPersonalityLine(
 export function logProfileSurveyDiagnostics(
   profile: UserProfile,
   display: ProfileSurveyDisplay | null,
+  hasPlusAccess: boolean,
 ): void {
+  if (!hasPlusAccess) return;
   const completed = Boolean(
     profile.surveyCompleted ?? profile.prefs.surveyCompleted ?? profile.prefs.onboarded,
   );
+  const travel_style = (profile.surveyResult?.travelStyle || profile.travelStyle || profile.personalityType || "").trim();
   console.info("[PROFILE_SURVEY] loaded=", completed);
-  console.info(
-    "[PROFILE_SURVEY] travel_style=",
-    profile.travelStyle || profile.personalityType || "(none)",
-  );
+  console.info("[PROFILE_SURVEY] result=", travel_style || "(none)");
+  console.info("[PROFILE_SURVEY] travel_style=", travel_style || "(none)");
   console.info(
     "[PROFILE_SURVEY] tags=",
     profile.travelTags.length ? profile.travelTags.join("、") : "(none)",

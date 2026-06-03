@@ -4,7 +4,6 @@ import { isLocalhostAppApiUrl, resolveAppApiBaseUrl, resolveAppApiUrl } from "@/
 import { detectPlatform } from "@/services/platform";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { markOnboardingCompleted } from "@/lib/onboarding-storage";
-import { unlockDeveloperMode } from "@/lib/access/developer";
 import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
 import { APP_BUILD_NUMBER, APP_MARKETING_VERSION } from "@/constants/app";
 import { QA_CLIENT_BUILD_HEADER } from "./constants";
@@ -415,7 +414,6 @@ export async function signInAsQaTestUser(options?: {
   });
 
   await markOnboardingCompleted();
-  unlockDeveloperMode();
   window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT));
 
   try {

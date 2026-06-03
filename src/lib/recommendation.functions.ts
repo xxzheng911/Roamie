@@ -16,14 +16,18 @@ const Input = z.object({
 
 export const getPlaceIntro = createServerFn({ method: "POST" })
   .inputValidator((input) => Input.parse(input))
-  .handler(async ({ data }): Promise<{ intro: PlaceIntroPayload | null; error: string | null }> => {
+  .handler(async ({ data }): Promise<{
+    intro: PlaceIntroPayload | null;
+    editorialSummary: string | null;
+    error: string | null;
+  }> => {
     try {
       const locale = coerceLocale(data.locale);
       const details = await getServerCachedPlaceDetailsIntro(data.placeId, locale, () =>
         fetchPlaceDetailsForIntro(data.placeId, locale),
       );
       if (!details) {
-        return { intro: null, error: "place_not_found" };
+        return { intro: null, editorialSummary: null, error: "place_not_found" };
       }
       const intro = buildPlaceIntroFromFacts({
         place: details.place,
@@ -32,10 +36,14 @@ export const getPlaceIntro = createServerFn({ method: "POST" })
         editorialSummary: details.editorialSummary,
         reviewSnippets: details.reviewSnippets,
       });
-      return { intro, error: null };
+      return {
+        intro,
+        editorialSummary: details.editorialSummary,
+        error: null,
+      };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "intro failed";
       console.error("[Roamie PlaceIntro]", msg);
-      return { intro: null, error: msg };
+      return { intro: null, editorialSummary: null, error: msg };
     }
   });

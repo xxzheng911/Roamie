@@ -79,6 +79,12 @@ export function createRequestCache(options: RequestCacheOptions) {
     return promise;
   }
 
+  /** 解除 in-flight dedupe（timeout / 取消時避免後續搜尋卡住） */
+  function clearInflight(key?: string): void {
+    if (key) inflight.delete(key);
+    else inflight.clear();
+  }
+
   function clear(): void {
     memory.clear();
     inflight.clear();
@@ -95,5 +101,5 @@ export function createRequestCache(options: RequestCacheOptions) {
     }
   }
 
-  return { getCached, setCached, getOrFetch, clear };
+  return { getCached, setCached, getOrFetch, clearInflight, clear };
 }

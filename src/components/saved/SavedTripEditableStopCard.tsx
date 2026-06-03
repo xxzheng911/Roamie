@@ -1,20 +1,37 @@
-import { ChevronDown, ChevronUp, Clock, MapPin, Route as RouteIcon, Trash2 } from "lucide-react";
-import { PlaceAffiliateLinks } from "@/components/affiliate/PlaceAffiliateLinks";
+import { useEffect, useRef } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import {
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  ExternalLink,
+  MapPin,
+  Route as RouteIcon,
+  Trash2,
+} from "lucide-react";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { RoamieDurationPicker, RoamieTimePicker } from "@/components/pickers";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
+import { formatDurationMinutes } from "@/lib/picker-utils";
+import { navigateToTripPlaceDetail } from "@/lib/navigate-trip-place-detail";
 import { SAVED_TRIP_TRANSPORT_OPTIONS } from "@/lib/saved-trip/editor-constants";
 import { legKeyForItem } from "@/lib/trip/trip-stop-mutations";
+import { logTripPlaceCardRendered } from "@/lib/trip-place-card-log";
 import { cn } from "@/lib/utils";
 
 type Props = {
+  tripId: string;
+  tripDestination?: string;
+  dayNumber?: number;
+  sameDayStopNames?: string[];
   item: RoamieItineraryItem;
   indexInDay: number;
   dayCount: number;
   settings: TripPlanSettings;
-  /** 與上一站的點到點耗時（Google Routes） */
+  /** 與上一站的點到點耗時（Google Routes）；空字串則不顯示 */
   travelTimeLabel?: string;
-  travelTimeLoading?: boolean;
+  /** 同日上一站（地點詳情交通用 trip_sequence） */
+  prevStopItem?: RoamieItineraryItem | null;
   onSetArrivalTime: (time: string) => void;
   onSetDurationMinutes: (minutes: number) => void;
   onSetTransport: (label: string) => void;
@@ -24,12 +41,16 @@ type Props = {
 };
 
 export function SavedTripEditableStopCard({
+  tripId,
+  tripDestination,
+  dayNumber,
+  sameDayStopNames,
   item,
   indexInDay,
   dayCount,
   settings,
   travelTimeLabel,
-  travelTimeLoading,
+  prevStopItem,
   onSetArrivalTime,
   onSetDurationMinutes,
   onSetTransport,
@@ -37,8 +58,10 @@ export function SavedTripEditableStopCard({
   onMoveDown,
   onDelete,
 }: Props) {
+  const navigate = useNavigate();
   const legKey = legKeyForItem(item);
   const durationMins = settings.legMinutes?.[legKey] ?? 60;
+  const stayDurationLabel = `停留 ${formatDurationMinutes(durationMins)}`;
   const transport =
     settings.legTransport?.[legKey] ??
     (settings.transport === "walk"
@@ -55,45 +78,65 @@ export function SavedTripEditableStopCard({
   );
   const placeName = item.placeName || item.title;
   const address = item.address?.trim();
+  const renderLoggedRef = useRef(false);
+  useEffect(() => {
+    if (renderLoggedRef.current) return;
+    renderLoggedRef.current = true;
+    logTripPlaceCardRendered({
+      placeName,
+      stayDurationLabel,
+      buttons: ["查看地點詳情", "查看路線"],
+    });
+  }, [placeName, stayDurationLabel]);
+
+  const openPlaceDetail = () => {
+    void navigateToTripPlaceDetail(item, tripId, navigate, {
+      destination: tripDestination,
+      city: tripDestination,
+      dayNumber,
+      nearbyStops: sameDayStopNames,
+      prevItem: prevStopItem,
+    });
+  };
 
   return (
-    <article className="relative rounded-3xl border border-border bg-card p-4 shadow-soft">
-      {indexInDay > 0 && travelTimeLabel ? (
-        <p className="mb-3 text-xs text-muted-foreground">
-          {travelTimeLoading ? "計算路程中…" : travelTimeLabel}
-        </p>
+    <article className="relative rounded-3xl border border-border bg-card p-3 pt-3 shadow-soft sm:p-4">
+      {indexInDay > 0 && travelTimeLabel?.trim() ? (
+        <p className="mb-2 text-xs text-muted-foreground">{travelTimeLabel}</p>
       ) : null}
 
-      <div className="mb-2 flex items-center justify-end gap-1">
-        <button
-          type="button"
-          aria-label="上移"
-          disabled={indexInDay === 0}
-          onClick={onMoveUp}
-          className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 disabled:opacity-40"
-        >
-          <ChevronUp className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          aria-label="下移"
-          disabled={indexInDay >= dayCount - 1}
-          onClick={onMoveDown}
-          className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 disabled:opacity-40"
-        >
-          <ChevronDown className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          aria-label="刪除地點"
-          onClick={onDelete}
-          className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 text-muted-foreground hover:text-destructive"
-        >
-          <Trash2 className="h-4 w-4" />
-        </button>
+      <div className="flex items-start justify-between gap-2">
+        <h3 className="min-w-0 flex-1 text-[16px] font-medium leading-snug">{placeName}</h3>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            aria-label="上移"
+            disabled={indexInDay === 0}
+            onClick={onMoveUp}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 disabled:opacity-40"
+          >
+            <ChevronUp className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            aria-label="下移"
+            disabled={indexInDay >= dayCount - 1}
+            onClick={onMoveDown}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 disabled:opacity-40"
+          >
+            <ChevronDown className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            aria-label="刪除地點"
+            onClick={onDelete}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 text-muted-foreground hover:text-destructive"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
-      <h3 className="text-[16px] font-medium leading-snug">{placeName}</h3>
       {address ? (
         <p className="mt-1 flex items-start gap-1 text-xs leading-relaxed text-muted-foreground">
           <MapPin className="mt-0.5 h-3 w-3 shrink-0" />
@@ -101,7 +144,7 @@ export function SavedTripEditableStopCard({
         </p>
       ) : null}
 
-      <div className="mt-3 flex flex-wrap items-center gap-3">
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <div className="inline-flex items-center gap-1.5 rounded-full bg-secondary/70 px-3 py-1.5 text-xs">
           <Clock className="h-3.5 w-3.5 text-muted-foreground" />
           <span className="text-muted-foreground">抵達</span>
@@ -113,9 +156,12 @@ export function SavedTripEditableStopCard({
           />
         </div>
 
-        <div className="inline-flex items-center gap-1.5 rounded-full bg-secondary/70 px-3 py-1.5 text-xs text-muted-foreground">
-          <span>停留</span>
+        <div className="inline-flex items-center gap-1.5 rounded-full bg-secondary/70 px-3 py-1.5 text-xs">
+          <Clock className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+          <span className="text-muted-foreground">停留</span>
           <RoamieDurationPicker
+            compact
+            showPrefixLabel={false}
             valueMinutes={durationMins}
             onChangeMinutes={onSetDurationMinutes}
           />
@@ -156,24 +202,24 @@ export function SavedTripEditableStopCard({
         />
       ) : null}
 
-      <PlaceAffiliateLinks
-        placeName={placeName}
-        source="trip_detail"
-        placeTypeHints={{
-          typeLabel: item.placeType,
-          placeName: item.title,
-        }}
-        compact
-        className="mt-3"
-      />
-      <PlaceNavButtons
-        lat={item.lat}
-        lng={item.lng}
-        address={item.address}
-        placeName={item.placeName}
-        compact
-        className="mt-2"
-      />
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={openPlaceDetail}
+          className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[10px] font-medium text-foreground/90 active:scale-[0.98]"
+        >
+          <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
+          查看地點詳情
+        </button>
+        <PlaceNavButtons
+          lat={item.lat}
+          lng={item.lng}
+          address={item.address}
+          placeName={item.placeName}
+          compact
+          className="mt-0"
+        />
+      </div>
     </article>
   );
 }

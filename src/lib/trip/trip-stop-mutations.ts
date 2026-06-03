@@ -1,4 +1,5 @@
 import type { RoamieItineraryItem } from "@/lib/ai/types";
+import { addDaysISO, parseISODate, todayISO, toISODate } from "@/lib/picker-utils";
 
 export function groupStopsByDate(items: RoamieItineraryItem[]): Map<string, RoamieItineraryItem[]> {
   const groups = new Map<string, RoamieItineraryItem[]>();
@@ -24,7 +25,7 @@ export function listTripDateKeys(items: RoamieItineraryItem[], fallbackStart?: s
   const keys = [...new Set(items.map((i) => i.date?.trim() || "未指定日期"))];
   if (keys.length > 0) return keys.sort();
   if (fallbackStart) return [fallbackStart];
-  return [new Date().toISOString().slice(0, 10)];
+  return [todayISO()];
 }
 
 export function insertStopOnDate(
@@ -109,10 +110,11 @@ export function removeDay(items: RoamieItineraryItem[], date: string): RoamieIti
 
 export function nextDayIsoAfter(items: RoamieItineraryItem[], fallbackStart?: string): string {
   const keys = listTripDateKeys(items, fallbackStart).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
-  const base = keys.length > 0 ? keys[keys.length - 1]! : fallbackStart ?? new Date().toISOString().slice(0, 10);
-  const d = new Date(`${base}T12:00:00`);
+  const base = keys.length > 0 ? keys[keys.length - 1]! : fallbackStart ?? todayISO();
+  const d = parseISODate(base);
+  if (!d) return addDaysISO(base, 1);
   d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
+  return toISODate(d);
 }
 
 export function sortStopsInDayByTime(items: RoamieItineraryItem[], date: string): RoamieItineraryItem[] {

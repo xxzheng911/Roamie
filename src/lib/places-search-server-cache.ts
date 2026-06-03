@@ -29,6 +29,8 @@ export function buildServerExploreSearchCacheKey(
     groups,
     data.locale ?? "zh-TW",
     data.availabilityContext ?? "now",
+    data.exploreMapTextSearch ? "mapText" : "",
+    "exploreV2",
   ].join("§");
 }
 

@@ -70,7 +70,9 @@ export const Route = createFileRoute("/api/places-search")({
           const result = await getServerCachedExploreSearch(
             data,
             () => executeExploreSearch(data),
-            (r) => !(r.error && shouldSkipPlacesClientRetry(r.error)),
+            (r) =>
+              r.places.length > 0 &&
+              !(r.error && shouldSkipPlacesClientRetry(r.error)),
           );
           return jsonResponse(request, result);
         } catch (e) {

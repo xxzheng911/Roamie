@@ -3,10 +3,20 @@ import { PlaceCardCover } from "@/components/media/PlaceCardCover";
 import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
-import { resolvePlaceCardOpeningDisplay } from "@/lib/place-card-opening";
+import {
+  logHomeNearbyCardData,
+  logHomeNearbyCardsData,
+  logPlaceCardSource,
+} from "@/lib/place-card-debug";
+import {
+  pickPrimaryPhotoName,
+  resolveHomeNearbyHoursDisplay,
+  resolveHomeNearbyImageSource,
+} from "@/lib/home-nearby-card-display";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/hooks/use-i18n";
-import { useRef, useState, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { logNearbyPlacesRendered } from "@/lib/nearby-place-normalize";
 import { RecommendationDebugPanel } from "@/components/debug/RecommendationDebugPanel";
 import { RecommendationDiagnosticsToolbar } from "@/components/debug/RecommendationDiagnosticsToolbar";
 import {
@@ -49,16 +59,11 @@ function ratingLabel(place: HomeNearbyPick): string | null {
 }
 
 function statusLabel(place: HomeNearbyPick): string | null {
-  const opening = resolvePlaceCardOpeningDisplay({
-    id: place.id,
-    name: place.name,
-    openStatus: place.openStatus,
-    todayHoursLabel: place.todayHoursLabel,
-  });
-  if (opening.statusLabel) return opening.statusLabel;
-  if (opening.hoursLabel === "暫時無法確認營業時間") return "暫時無法確認營業時間";
-  if (opening.hoursLabel) return opening.hoursLabel;
-  return null;
+  const display = resolveHomeNearbyHoursDisplay(place);
+  if (display.statusLabel && display.hoursLabel) {
+    return `${display.statusLabel} · ${display.hoursLabel}`;
+  }
+  return display.statusLabel || display.hoursLabel || null;
 }
 
 export function HomeNearbyPlaceCards({
@@ -91,6 +96,24 @@ export function HomeNearbyPlaceCards({
     pointerId: number;
   } | null>(null);
   const suppressNextClickRef = useRef(false);
+
+  useEffect(() => {
+    console.info("[HOME_NEARBY_CARDS_MOUNT]", {
+      loading: Boolean(loading),
+      placesCount: places.length,
+    });
+    if (loading) return;
+    if (places.length === 0) {
+      console.info("[HOME_NEARBY_CARDS] empty_after_load");
+      return;
+    }
+    logNearbyPlacesRendered(places.length);
+    logHomeNearbyCardsData(places);
+    for (const p of places) {
+      const imageSource = resolveHomeNearbyImageSource(p);
+      logPlaceCardSource(p, imageSource === "google" ? "google-photo" : null);
+    }
+  }, [loading, places]);
 
   const onCarouselPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -255,6 +278,7 @@ export function HomeNearbyPlaceCards({
         onPointerCancel={endCarouselPointer}
       >
         {places.map((p, i) => {
+          const primaryPhoto = pickPrimaryPhotoName(p);
           const isLast = i === places.length - 1;
           const distance = canShowDistance ? distLabel(p, anchor) : "";
           const typeName = p.displayCategory ?? getExploreCategoryDisplayLabel(p);
@@ -296,19 +320,21 @@ export function HomeNearbyPlaceCards({
                   <PlaceCardCover
                     placeId={p.id}
                     name={p.name}
-                    photoName={p.photoName}
+                    photoName={primaryPhoto}
+                    photoNames={p.photoNames}
                     primaryType={p.primaryType}
                     types={p.types}
                     categoryId={p.categoryId}
-                    coverImageUrl={p.coverImageUrl}
+                    coverImageUrl={primaryPhoto ? null : p.coverImageUrl}
                     className="absolute inset-0"
                     imgClassName="absolute inset-0 h-full w-full object-cover"
                     onGoogleLoad={() => onPlacePhotoLoad?.()}
-                    onImageSourceChange={(source) =>
+                    onImageSourceChange={(source) => {
+                      logPlaceCardSource(p, source);
                       setImageSourceById((prev) =>
                         prev[p.id] === source ? prev : { ...prev, [p.id]: source },
-                      )
-                    }
+                      );
+                    }}
                   />
                   <div
                     className="absolute inset-0 bg-gradient-to-t from-ink/78 via-ink/18 to-transparent"

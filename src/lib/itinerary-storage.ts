@@ -17,6 +17,16 @@ import { resolveTripTitle } from "@/lib/trip/trip-title";
 import { resolveDisplayTitle, titleFieldsFromStored } from "@/lib/saved-trip/display";
 import type { Database } from "@/integrations/supabase/types";
 import { syncTripNotificationsAfterSave } from "@/services/notificationService";
+import {
+  abortCoreTripUpdate,
+  beginCoreTripUpdate,
+  endCoreTripUpdate,
+  evaluateCoreTripUpdate,
+  logCoreTripUpdateRequested,
+  logCoreTripUpdateSkipped,
+  logCoreTripUpdateSuccess,
+  seedCoreTripPersistedFingerprint,
+} from "@/lib/trip/core-trip-update-guard";
 
 type SavedTripRowUpdate = Database["public"]["Tables"]["saved_trips"]["Update"];
 
@@ -24,9 +34,15 @@ const GUEST_KEY = "roamie:itineraries";
 
 export const SAVED_TRIPS_CHANGED_EVENT = "roamie:saved-trips-changed";
 
+let broadcastTripsTimer: ReturnType<typeof setTimeout> | null = null;
+
 function broadcastTripsChanged() {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new Event(SAVED_TRIPS_CHANGED_EVENT));
+  if (broadcastTripsTimer) clearTimeout(broadcastTripsTimer);
+  broadcastTripsTimer = setTimeout(() => {
+    broadcastTripsTimer = null;
+    window.dispatchEvent(new Event(SAVED_TRIPS_CHANGED_EVENT));
+  }, 800);
 }
 
 export type TripCoverMeta = {
@@ -291,6 +307,9 @@ async function persistItinerary(itinerary: Itinerary | RoamiePayloadV2): Promise
       throw new Error(formatSupabaseError(error));
     }
     const stored = rowToStored(data, withTitle);
+    if (isRoamiePayloadV2(withTitle)) {
+      seedCoreTripPersistedFingerprint(stored.id, withTitle, mood ?? null);
+    }
     console.info("[CORE_TRIP] created", stored.id);
     return stored;
   }
@@ -309,6 +328,9 @@ export async function confirmSaveTrip(
   source: "chat" | "plan" = "chat",
 ): Promise<StoredItinerary> {
   const saved = await persistItinerary(tagUserSavedTrip(itinerary, source));
+  if (isRoamiePayloadV2(saved.payload)) {
+    seedCoreTripPersistedFingerprint(saved.id, saved.payload, saved.mood);
+  }
   broadcastTripsChanged();
   void syncTripNotificationsAfterSave(saved).catch((e) => {
     console.warn("[NOTIFICATION] sync after save failed", e);
@@ -351,7 +373,9 @@ export async function getItinerary(id: string): Promise<StoredItinerary | null> 
     if (!isSavedCollectionTrip(payload)) return null;
     return rowToStored(data, payload);
   }
-  return null;
+  const guest = readGuest().find((t) => t.id === id) ?? null;
+  if (!guest || !isSavedCollectionTrip(guest.payload)) return null;
+  return guest;
 }
 
 export type TripMetaUpdate = {
@@ -408,9 +432,12 @@ export async function updateTripMeta(
 export async function updateItinerary(
   id: string,
   payload: Itinerary | RoamiePayloadV2,
+  options?: { reason?: string },
 ): Promise<StoredItinerary | null> {
+  const reason = options?.reason ?? "update_itinerary";
+  logCoreTripUpdateRequested(id, reason);
+
   const userId = await getAuthenticatedUserId();
-  if (!userId) throw new Error("請先登入");
 
   const existing = await getItinerary(id);
   const resolvedPayload = payloadTitleForSave(existing, payload);
@@ -418,25 +445,74 @@ export async function updateItinerary(
     ? resolvedPayload.moodTag
     : (resolvedPayload as Itinerary).mood;
 
-  const patch: SavedTripRowUpdate = {
-    mood: mood ?? null,
-    payload: resolvedPayload as never,
-  };
+  const decision = evaluateCoreTripUpdate({
+    tripId: id,
+    existingPayload: existing?.payload,
+    existingMood: existing?.mood,
+    nextPayload: resolvedPayload,
+    nextMood: mood ?? null,
+  });
 
-  if (!existing?.is_title_customized && isRoamiePayloadV2(resolvedPayload)) {
-    patch.title = resolveTripTitle(resolvedPayload);
+  if (!decision.shouldWrite) {
+    logCoreTripUpdateSkipped(
+      id,
+      reason,
+      decision.changedFields,
+      decision.skipReason ?? "unchanged",
+    );
+    return existing;
   }
 
-  const { data, error } = await updateSavedTripRow(id, patch);
+  beginCoreTripUpdate(id);
+  try {
+    if (!userId) {
+      const guestList = readGuest();
+      const idx = guestList.findIndex((t) => t.id === id);
+      if (idx < 0) throw new Error("找不到行程");
+      const prev = guestList[idx]!;
+      const updatedAt = new Date().toISOString();
+      const nextRow: StoredItinerary = {
+        ...prev,
+        mood: mood ?? prev.mood,
+        payload: resolvedPayload,
+        updated_at: updatedAt,
+        title:
+          !prev.is_title_customized && isRoamiePayloadV2(resolvedPayload)
+            ? resolveTripTitle(resolvedPayload)
+            : prev.title,
+      };
+      guestList[idx] = nextRow;
+      writeGuest(guestList);
+      endCoreTripUpdate(id, decision.nextFingerprint);
+      logCoreTripUpdateSuccess(id, reason, decision.changedFields);
+      return afterTripMutation(nextRow);
+    }
 
-  if (error) {
-    if (isMissingTableError(error)) return null;
-    throw new Error(formatSupabaseError(error));
+    const patch: SavedTripRowUpdate = {
+      mood: mood ?? null,
+      payload: resolvedPayload as never,
+    };
+
+    if (!existing?.is_title_customized && isRoamiePayloadV2(resolvedPayload)) {
+      patch.title = resolveTripTitle(resolvedPayload);
+    }
+
+    const { data, error } = await updateSavedTripRow(id, patch);
+
+    if (error) {
+      if (isMissingTableError(error)) return null;
+      throw new Error(formatSupabaseError(error));
+    }
+
+    const updated = rowToStored(data, resolvedPayload);
+    endCoreTripUpdate(id, decision.nextFingerprint);
+    logCoreTripUpdateSuccess(id, reason, decision.changedFields);
+    console.info("[CORE_TRIP] updated", updated.id);
+    return afterTripMutation(updated);
+  } catch (e) {
+    abortCoreTripUpdate(id);
+    throw e;
   }
-
-  const updated = rowToStored(data, resolvedPayload);
-  console.info("[CORE_TRIP] updated", updated.id);
-  return afterTripMutation(updated);
 }
 
 export async function deleteItinerary(id: string): Promise<void> {

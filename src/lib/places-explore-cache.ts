@@ -8,6 +8,7 @@ import { DEFAULT_SEARCH_RADIUS_M } from "@/lib/places-search-config";
 import type { SearchPlacesInput } from "@/lib/explore-category-search";
 import { createRequestCache } from "@/services/requestCache";
 import { recordPlacesApiCall } from "@/lib/places-api-telemetry";
+import { logExploreSearchSkipped } from "@/lib/explore-places-search-diagnostics";
 
 export type ExploreSearchResult = { places: PlaceResult[]; error: string | null };
 
@@ -39,11 +40,23 @@ export function buildExploreSearchCacheKey(data: SearchPlacesInput): string {
     groups,
     data.locale ?? "zh-TW",
     data.availabilityContext ?? "now",
+    data.exploreMapTextSearch ? "mapText" : "",
+    "exploreV2",
   ].join("§");
 }
 
-function shouldPersistExploreResult(result: ExploreSearchResult): boolean {
+function shouldPersistExploreResult(
+  result: ExploreSearchResult,
+  data: SearchPlacesInput,
+): boolean {
   if (result.error && shouldSkipPlacesClientRetry(result.error)) return false;
+  if (
+    data.telemetrySurface === "map" &&
+    data.mode === "text" &&
+    result.places.length === 0
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -59,13 +72,21 @@ export async function getCachedExploreSearch(
   const cached = exploreSearchCache.getCached<ExploreSearchResult>(key);
   if (cached !== null) {
     console.info("[PLACES_CACHE] explore hit", { key: key.slice(0, 48) });
+    if (data.telemetrySurface === "map" && data.mode === "text") {
+      logExploreSearchSkipped("cache_hit", {
+        query: data.query,
+        resultCount: cached.places.length,
+        error: cached.error,
+        key: key.slice(0, 48),
+      });
+    }
     return cached;
   }
 
   return exploreSearchCache.getOrFetch(key, async () => {
     const result = await fetcher();
     const surface = data.telemetrySurface;
-    if (surface && shouldPersistExploreResult(result)) {
+    if (surface && shouldPersistExploreResult(result, data)) {
       if (data.mode === "text") {
         recordPlacesApiCall("text", surface);
       } else if (data.mode === "multi" && data.nearbyGroups?.length) {
@@ -77,5 +98,11 @@ export async function getCachedExploreSearch(
       }
     }
     return result;
-  }, shouldPersistExploreResult);
+  }, (result) => shouldPersistExploreResult(result, data));
+}
+
+export function clearExploreSearchInflight(data: SearchPlacesInput): void {
+  const key = buildExploreSearchCacheKey(data);
+  exploreSearchCache.clearInflight(key);
+  console.info("[PLACES_CACHE] explore inflight cleared", { key: key.slice(0, 48) });
 }

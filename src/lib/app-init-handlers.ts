@@ -105,7 +105,12 @@ function installAppInitHandlersCore(): void {
         script: (event.target as HTMLElement | null)?.tagName === "SCRIPT",
       };
       recordGoogleMapsSdkFailureFromError(err, eventMessage, extra);
-      if (isGoogleMapsSdkInternalError(err, extra, eventMessage)) return;
+      if (isGoogleMapsSdkInternalError(err, extra, eventMessage)) {
+        if (import.meta.env.DEV) {
+          console.info("[APP_INIT] suppressed benign error", eventMessage, extra?.filename ?? "");
+        }
+        return;
+      }
       logAppError("APP_INIT_ERROR", err, extra);
       showCapacitorFatalOverlay("APP_INIT_ERROR", err, extra);
     },

@@ -85,9 +85,15 @@ export async function requirePreferenceQuizRouteAccess(from?: string): Promise<v
 
   const snapshot = buildAccessSnapshot(session?.user?.email ?? null, { profilePlusActive });
   if (!snapshot.hasPlusAccess) {
-    console.info("[TRAVEL_PREF_TEST] blocked tier=", snapshot.effectiveTier);
+    console.info("[PLUS_FEATURE_BLOCKED]", {
+      feature: "travel_preference_quiz",
+      reason: "tier_not_plus",
+      tier: snapshot.effectiveTier,
+    });
+    console.info("[TRAVEL_PREF_SKIPPED_FREE]", { reason: "quiz_route_guard" });
     throw redirect({ to: "/profile", replace: false });
   }
+  console.info("[PLUS_FEATURE_LOADED]", { feature: "travel_preference_quiz" });
   console.info("[TRAVEL_PREF_TEST] access ok");
 }
 

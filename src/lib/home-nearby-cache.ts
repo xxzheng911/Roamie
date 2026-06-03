@@ -3,6 +3,7 @@ import {
   PLACES_COORD_GRID_DECIMALS,
 } from "@/lib/places-cache-config";
 import type { HomeNearbyPicksResult } from "@/lib/explore-category-search";
+import { HOME_NEARBY_CACHE_VERSION } from "@/lib/home-nearby-enrich";
 import { createRequestCache } from "@/services/requestCache";
 
 const homeNearbyCache = createRequestCache({
@@ -23,6 +24,7 @@ export function buildHomeNearbyCacheKey(parts: {
   categoryIds: string[];
 }): string {
   return [
+    HOME_NEARBY_CACHE_VERSION,
     snapCoord(parts.lat),
     snapCoord(parts.lng),
     parts.categoryIds.slice().sort().join(","),

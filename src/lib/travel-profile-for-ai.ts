@@ -1,4 +1,5 @@
 import type { TravelPreferences } from "@/lib/preferences-storage";
+import { canonicalTravelStyleFromResult } from "@/lib/travel-preference-canonical";
 import type { ProfileSurveyRow } from "@/lib/travel-preference-survey-save";
 
 export type TravelPersonalityFacet = {
@@ -26,19 +27,15 @@ export function buildTravelProfileFields(
     travelTags?: string[];
   };
   const snapshot = prefs.resultProfile;
+  const travel_style = canonicalTravelStyleFromResult(snapshot) || extras.travelStyle?.trim() || prefs.personalityType?.trim() || row?.travel_style?.trim() || "";
   const travelPersonality: TravelPersonalityFacet = extras.travelPersonality ?? {
-    type: snapshot?.personalityType ?? prefs.personalityType,
+    type: travel_style || (snapshot?.personalityType ?? prefs.personalityType),
     summary: snapshot?.personalitySummary ?? prefs.personalitySummary,
     impression: snapshot?.personalityImpression,
   };
 
   return {
-    travelStyle:
-      row?.travel_style?.trim() ||
-      extras.travelStyle ||
-      snapshot?.travelStyle ||
-      prefs.personalityType ||
-      "",
+    travelStyle: travel_style,
     travelPreferences: Array.isArray(row?.travel_preferences)
       ? (row.travel_preferences as string[])
       : (prefs.interests ?? []),

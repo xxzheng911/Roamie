@@ -32,15 +32,16 @@ export function isDeveloperAccount(
   email: string | null | undefined,
   user?: User | null,
 ): boolean {
+  if (readDeveloperUnlocked()) return true;
   if (!isDeveloperBuildEnabled()) return false;
   if (user && isQaTestUser(user)) return true;
   if (import.meta.env.VITE_ROAMIE_DEVELOPER === "1") return true;
   if (isDeveloperEmail(email)) return true;
-  return readDeveloperUnlocked();
+  return false;
 }
 
+/** 使用者手動解鎖 Developer Mode（設定 → 關於 Roamie → 版本號 ×7） */
 export function unlockDeveloperMode(): void {
-  if (!isDeveloperBuildEnabled()) return;
   writeDeveloperUnlocked(true);
 }
 
@@ -48,9 +49,14 @@ export function lockDeveloperMode(): void {
   writeDeveloperUnlocked(false);
 }
 
+/** Developer Center / QA UI 是否可見（預設關閉，僅手動解鎖後顯示） */
+export function isDeveloperModeUnlocked(): boolean {
+  return readDeveloperUnlocked();
+}
+
 export function canShowDeveloperTools(
-  email: string | null | undefined,
-  user?: User | null,
+  _email: string | null | undefined,
+  _user?: User | null,
 ): boolean {
-  return isDeveloperBuildEnabled() && isDeveloperAccount(email, user);
+  return readDeveloperUnlocked();
 }

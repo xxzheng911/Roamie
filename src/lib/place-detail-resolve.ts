@@ -1,4 +1,6 @@
 import type { PlaceDetailData } from "@/components/map/PlaceDetailSheet";
+import type { PlacePhotoSource } from "@/lib/place/place-detail-logs";
+import { isGenericPlaceReason } from "@/lib/place/place-intro-constants";
 import {
   type PlaceDetailHandoff,
   isGooglePlaceId,
@@ -15,10 +17,23 @@ export type PlaceDetailSearch = {
   lng?: number;
 };
 
+function resolveHandoffReason(
+  snapReason?: string | null,
+  handoffReason?: string | null,
+): string {
+  for (const candidate of [snapReason, handoffReason]) {
+    const t = candidate?.trim();
+    if (t && !isGenericPlaceReason(t)) return t;
+  }
+  return "";
+}
+
 export type PlaceDetailViewModel = PlaceDetailData & {
   coverImageUrl?: string;
   website?: string | null;
   phone?: string | null;
+  googleMapsUri?: string | null;
+  photoNames?: string[];
 };
 
 function decodeRoutePlaceId(routePlaceId?: string): string {
@@ -100,9 +115,31 @@ export function resolvePlaceDetailHandoff(
   };
 }
 
+function emptyOpeningFields() {
+  return {
+    businessStatus: null as string | null,
+    openStatus: "unknown" as const,
+    openStatusLabel: "",
+    todayHoursLabel: "",
+    closingSoonNote: "",
+    nextOpenHint: "",
+    hoursFromGoogleDetails: false,
+  };
+}
+
 export function handoffToPlaceDetailData(handoff: PlaceDetailHandoff): PlaceDetailViewModel {
+  const omitCardHours = canFetchGooglePlaceDetails(handoff.placeId);
   const snap = handoff.snapshot;
   if (snap) {
+    const opening = omitCardHours ? emptyOpeningFields() : {
+      businessStatus: snap.businessStatus ?? null,
+      openStatus: snap.openStatus ?? ("unknown" as const),
+      openStatusLabel: snap.openStatusLabel ?? "",
+      todayHoursLabel: snap.todayHoursLabel ?? "",
+      closingSoonNote: snap.closingSoonNote ?? "",
+      nextOpenHint: snap.nextOpenHint ?? "",
+      hoursFromGoogleDetails: false,
+    };
     return {
       id: snap.id || handoff.placeId,
       name: snap.name || handoff.name,
@@ -114,14 +151,9 @@ export function handoffToPlaceDetailData(handoff: PlaceDetailHandoff): PlaceDeta
       photoName: snap.photoName ?? handoff.photoName ?? null,
       primaryType: snap.primaryType ?? handoff.category ?? null,
       types: snap.types ?? (handoff.category ? [handoff.category] : null),
-      businessStatus: snap.businessStatus ?? null,
-      openStatus: snap.openStatus ?? "unknown",
-      openStatusLabel: snap.openStatusLabel ?? "",
-      todayHoursLabel: snap.todayHoursLabel ?? "",
-      closingSoonNote: snap.closingSoonNote ?? "",
-      nextOpenHint: snap.nextOpenHint ?? "",
+      ...opening,
       coverImageUrl: snap.coverImageUrl ?? handoff.photoUrl ?? undefined,
-      reason: snap.reason?.trim() || handoff.reason?.trim() || "適合現在去走走",
+      reason: resolveHandoffReason(snap.reason, handoff.reason),
       website: null,
       phone: null,
     };
@@ -137,13 +169,8 @@ export function handoffToPlaceDetailData(handoff: PlaceDetailHandoff): PlaceDeta
     photoName: handoff.photoName ?? null,
     primaryType: handoff.category ?? null,
     types: handoff.category ? [handoff.category] : null,
-    businessStatus: null,
-    openStatus: "unknown",
-    openStatusLabel: "",
-    todayHoursLabel: "",
-    closingSoonNote: "",
-    nextOpenHint: "",
-    reason: handoff.reason?.trim() || "適合現在去走走",
+    ...emptyOpeningFields(),
+    reason: resolveHandoffReason(undefined, handoff.reason),
     coverImageUrl: handoff.photoUrl ?? undefined,
     website: null,
     phone: null,
@@ -157,29 +184,76 @@ export function canFetchGooglePlaceDetails(placeId: string): boolean {
 export { shouldFetchRemotePlaceDetails } from "@/lib/place-detail-handoff";
 
 export function buildPlaceImageUrls(place: PlaceDetailViewModel): string[] {
-  const url =
-    (place.photoName ? buildPlacePhotoUrl(place.photoName, 800) : null) ??
-    place.coverImageUrl ??
-    null;
-  return url ? [url] : [];
+  return buildPlaceImageUrlsWithSource(place).urls;
 }
 
+export function buildPlaceImageUrlsWithSource(
+  place: PlaceDetailViewModel,
+  handoff?: { photoUrl?: string | null },
+): { urls: string[]; source: PlacePhotoSource; hasGooglePhoto: boolean } {
+  const googleUrl = place.photoName ? buildPlacePhotoUrl(place.photoName, 800) : null;
+  const googlePhotos = (place.photoNames ?? [])
+    .map((name) => buildPlacePhotoUrl(name, 800))
+    .filter((u): u is string => Boolean(u));
+
+  if (googleUrl || googlePhotos.length > 0) {
+    const urls = googlePhotos.length > 0 ? googlePhotos : googleUrl ? [googleUrl] : [];
+    return { urls, source: "google_places", hasGooglePhoto: true };
+  }
+
+  const itineraryUrl = handoff?.photoUrl?.trim() || place.coverImageUrl?.trim();
+  if (itineraryUrl && !itineraryUrl.includes("unsplash")) {
+    return { urls: [itineraryUrl], source: "itinerary", hasGooglePhoto: false };
+  }
+  if (itineraryUrl) {
+    return { urls: [itineraryUrl], source: "unsplash", hasGooglePhoto: false };
+  }
+
+  return { urls: [], source: "fallback", hasGooglePhoto: false };
+}
+
+/** Google Details 優先，不讓 itinerary / fallback 蓋掉 Google 欄位 */
+export function mergeGooglePlaceIntoDetail(
+  itineraryBase: PlaceDetailViewModel,
+  fetched: PlaceDetailsScreenResult,
+  handoff?: { photoUrl?: string | null },
+): PlaceDetailViewModel {
+  const googlePhoto = fetched.photoName ?? fetched.photoNames?.[0] ?? null;
+  const googlePhotoUrl = googlePhoto ? buildPlacePhotoUrl(googlePhoto, 800) : null;
+
+  return {
+    ...itineraryBase,
+    id: fetched.id || itineraryBase.id,
+    name: fetched.name || itineraryBase.name,
+    address: fetched.address ?? itineraryBase.address,
+    lat: fetched.lat ?? itineraryBase.lat,
+    lng: fetched.lng ?? itineraryBase.lng,
+    rating: fetched.rating ?? itineraryBase.rating,
+    userRatingCount: fetched.userRatingCount ?? itineraryBase.userRatingCount,
+    primaryType: fetched.primaryType ?? itineraryBase.primaryType,
+    types: fetched.types ?? itineraryBase.types,
+    businessStatus: fetched.businessStatus ?? itineraryBase.businessStatus,
+    openStatus: fetched.openStatus,
+    openStatusLabel: fetched.openStatusLabel,
+    todayHoursLabel: fetched.todayHoursLabel,
+    closesAtLabel: fetched.closesAtLabel,
+    closingSoonNote: fetched.closingSoonNote,
+    nextOpenHint: fetched.nextOpenHint,
+    hoursFromGoogleDetails: true,
+    website: fetched.website ?? itineraryBase.website,
+    phone: fetched.phone ?? itineraryBase.phone,
+    googleMapsUri: fetched.googleMapsUri ?? itineraryBase.googleMapsUri,
+    photoName: googlePhoto ?? itineraryBase.photoName,
+    photoNames: fetched.photoNames ?? itineraryBase.photoNames,
+    coverImageUrl: googlePhotoUrl ?? handoff?.photoUrl ?? itineraryBase.coverImageUrl,
+    reason: itineraryBase.reason,
+  };
+}
+
+/** @deprecated 使用 mergeGooglePlaceIntoDetail */
 export function mergeFetchedPlace(
   base: PlaceDetailViewModel,
   fetched: PlaceDetailsScreenResult,
 ): PlaceDetailViewModel {
-  return {
-    ...base,
-    ...fetched,
-    id: fetched.id || base.id,
-    name: fetched.name || base.name,
-    address: fetched.address ?? base.address,
-    lat: fetched.lat ?? base.lat,
-    lng: fetched.lng ?? base.lng,
-    reason: base.reason,
-    website: fetched.website,
-    phone: fetched.phone,
-    coverImageUrl: base.coverImageUrl ?? fetched.coverImageUrl ?? undefined,
-    photoName: fetched.photoName ?? base.photoName,
-  };
+  return mergeGooglePlaceIntoDetail(base, fetched);
 }

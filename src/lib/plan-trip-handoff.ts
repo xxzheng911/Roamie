@@ -82,17 +82,19 @@ export function preparePlanTripSession(
   form: PlanTripFormInput,
   bundle: ClientContextBundle,
   preferences?: TravelPreferences,
+  options?: { plusConsultant?: boolean; skipOriginValidation?: boolean },
 ): ChatPlanningSession {
   const destRef = tripLocationToPlaceRef(form.destination);
   if (!isValidTripPlaceRef(destRef)) {
     logTripPlace("destination", "validation", { reason: "handoff_invalid_destination" });
     throw new Error("目的地資料不完整，請重新從搜尋結果選擇");
   }
-  if (!form.origin) {
+  const effectiveOrigin = form.origin ?? form.destination;
+  if (!options?.skipOriginValidation && !form.origin) {
     logTripPlace("start", "validation", { reason: "handoff_missing_start" });
     throw new Error("請選擇出發地");
   }
-  const startRef = tripLocationToPlaceRef(form.origin);
+  const startRef = tripLocationToPlaceRef(effectiveOrigin);
   if (!isValidTripPlaceRef(startRef)) {
     logTripPlace("start", "validation", { reason: "handoff_invalid_start" });
     throw new Error("出發地資料不完整，請重新從搜尋結果選擇");
@@ -100,7 +102,8 @@ export function preparePlanTripSession(
   if (
     destRef.placeId === startRef.placeId &&
     Math.abs(destRef.lat - startRef.lat) < 1e-6 &&
-    Math.abs(destRef.lng - startRef.lng) < 1e-6
+    Math.abs(destRef.lng - startRef.lng) < 1e-6 &&
+    form.origin != null
   ) {
     logTripPlace("destination", "validation", { reason: "handoff_same_place" });
     throw new Error("出發地與目的地不能相同");
@@ -108,18 +111,25 @@ export function preparePlanTripSession(
 
   const destRoamie = tripLocationToRoamie(form.destination);
   const selectedFromForm = (form.selectedPlaces ?? []).map(roamieRecToChatItem);
-  const initialChatContext = buildPlanTripInitialContext(form, bundle);
+  const plusConsultant = options?.plusConsultant === true;
+  const initialChatContext = plusConsultant
+    ? buildPlusPlanTripInitialContext(form, bundle)
+    : buildPlanTripInitialContext(form, bundle);
 
   const base: ChatPlanningSession = {
     ...createEmptySession(),
-    phase: "collect",
+    phase: plusConsultant ? "followup" : "collect",
     mood: form.mood || undefined,
     preferences,
     location: destRoamie as RoamieLocation,
     weather: bundle.weather,
     tripDestination: form.destination,
-    tripOrigin: form.origin ?? undefined,
+    tripOrigin: form.origin ?? form.destination,
     fromPlanForm: true,
+    planPlusConsultant: plusConsultant,
+    planConsultantStage: plusConsultant ? "outline" : undefined,
+    planConsultantRequirements: plusConsultant ? [] : undefined,
+    planConsultantAskedKeys: plusConsultant ? [] : undefined,
     pendingHandoff: true,
     travelDate:
       form.startDate && form.endDate
@@ -141,6 +151,44 @@ export function preparePlanTripSession(
   };
 
   return syncSessionPlaceMemory(base);
+}
+
+function buildPlusPlanTripInitialContext(
+  form: PlanTripFormInput,
+  bundle: ClientContextBundle,
+): string {
+  const base = buildPlanTripInitialContext(form, bundle);
+  return [
+    base,
+    "",
+    "【Plus 旅遊顧問 — 必守】",
+    "- 一次只問一個問題，語氣自然像旅伴",
+    "- 記錄使用者指定的景點、餐廳、天數安排、禁忌；生成行程時不得忽略",
+    "- 若指定「第一天去某地」必須安排在第一天",
+    "- 若有日出行程，當天減少景點或安排晚起／午休",
+    "- 使用者說「開始安排」後才輸出完整 itinerary",
+  ].join("\n");
+}
+
+/** 從聊天 session 還原規劃表單（Plus 顧問完成後生成行程） */
+export function planTripFormFromSession(session: ChatPlanningSession): PlanTripFormInput | null {
+  if (!session.tripDestination) return null;
+  const styles = session.tripStyles?.split(/[、,]/).map((s) => s.trim()).filter(Boolean) ?? [];
+  return {
+    destination: session.tripDestination,
+    origin: session.tripOrigin ?? null,
+    days: session.tripDays ?? 3,
+    mood: session.mood ?? "",
+    styles,
+    interests: "",
+    startDate: session.tripStartDate ?? "",
+    endDate: session.tripEndDate ?? "",
+    departureTime: session.startTime ?? "",
+    travelers: session.tripCompanionCount ?? 1,
+    transport: session.transportation ?? "",
+    budgetMode: session.budget ?? "standard",
+    selectedPlaces: undefined,
+  };
 }
 
 export function markPlanHandoffComplete(

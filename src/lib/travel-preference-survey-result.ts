@@ -91,13 +91,20 @@ export function buildSurveyResultProfile(answers: SurveyAnswers): SurveyResultPr
     .filter(Boolean)
     .join("。");
 
-  console.info("[SURVEY] resultGenerated=", personality.type);
+  const travel_style = personality.type.trim();
+
+  console.info("[TRAVEL_PREF_RESULT_GENERATED]", {
+    result: travel_style,
+    travel_style,
+    source: "survey_derive",
+  });
+  console.info("[SURVEY] resultGenerated=", travel_style);
 
   return {
-    personalityType: personality.type,
+    personalityType: travel_style,
     personalitySummary: personality.summary,
     personalityImpression: personality.impression,
-    travelStyle: personality.type,
+    travelStyle: travel_style,
     preferenceTypes,
     recommendedStyle,
     suitableDirections,

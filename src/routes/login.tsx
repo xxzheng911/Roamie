@@ -43,7 +43,6 @@ import { isOnboardingCompletedSync } from "@/lib/onboarding-storage";
 import { useAuth } from "@/hooks/use-auth";
 import { emitOAuthFlow, OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
-import { QaTestLoginButton } from "@/components/qa/QaTestLoginButton";
 
 const RoamieMascotFigure = lazy(() =>
   import("@/components/onboarding/RoamieMascotFigure").then((m) => ({
@@ -83,7 +82,6 @@ const LazyLegalDocumentOverlay = lazy(() =>
   })),
 );
 
-const isDev = import.meta.env.DEV;
 const OAUTH_BUSY_TIMEOUT_MS = 120_000;
 const APPLE_BUSY_TIMEOUT_MS = 90_000;
 
@@ -454,16 +452,6 @@ function Login() {
             <GoogleIcon /> {busy === "google" ? "Google 登入進行中…" : "使用 Google 繼續"}
           </button>
 
-          <QaTestLoginButton
-            disabled={busy !== null}
-            onSuccess={() => {
-              void (async () => {
-                const to = await resolveStartupPath({ hasSession: true, source: "qa-test-login" });
-                finishPostAuthRedirect(to, navigate, "login-session-restore");
-              })();
-            }}
-          />
-
           <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
             繼續即代表同意 Roamie 的
             <button
@@ -483,33 +471,6 @@ function Login() {
             </button>
             。
           </p>
-
-          {isDev ? (
-            <button
-              type="button"
-              onClick={() => {
-                // Dev-only: clear local app state for a clean boot.
-                void (async () => {
-                  try {
-                    localStorage.clear();
-                    sessionStorage.clear();
-                  } catch {
-                    /* ignore */
-                  }
-                  const [{ resetOnboardingState }, { toast }] = await Promise.all([
-                    import("@/lib/onboarding-storage"),
-                    import("sonner"),
-                  ]);
-                  await resetOnboardingState();
-                  toast.success("已重置 onboarding / 首次啟動");
-                  window.location.replace("/welcome");
-                })();
-              }}
-              className="mt-2 w-full rounded-full border border-dashed border-border py-3 text-xs text-muted-foreground"
-            >
-              [Dev] 清除本機狀態
-            </button>
-          ) : null}
         </div>
       </div>
 

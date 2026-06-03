@@ -72,7 +72,7 @@ export function AddToTripProvider({ children }: { children: ReactNode }) {
           navigate({ to: "/trip", search: { draft: "1" } });
         } else {
           logTripNav("AddToTrip", result.tripId);
-          navigate(tripDetailNavigateOptions(result.tripId));
+          navigate(tripDetailNavigateOptions(result.tripId, { from: "saved" }));
         }
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "加入行程失敗");

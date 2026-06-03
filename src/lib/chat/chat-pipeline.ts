@@ -3,8 +3,8 @@ export { CHAT_PIPELINE_FALLBACK } from "@/lib/chat/chat-pipeline-constants";
 export {
   appendAssistantToConversation,
   buildAssistantChatMsg,
-  conversationMissingAssistantReply,
   resolveInstantChatReply,
   userAsksDestinationItineraryAdvice,
   type InstantChatReply,
 } from "@/lib/chat/chat-instant-reply";
+export { conversationMissingAssistantReply } from "@/lib/chat/chat-append-assistant";

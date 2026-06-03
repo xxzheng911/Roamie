@@ -10,7 +10,7 @@ export const PLACES_CACHE_TTL_MS = {
 } as const;
 
 /** 首頁 location debounce（毫秒）— 避免 GPS 微調連續打 API */
-export const HOME_NEARBY_LOCATION_DEBOUNCE_MS = 500;
+export const HOME_NEARBY_LOCATION_DEBOUNCE_MS = 600;
 
 /** 座標網格精度：約 110m，同區域視為同一 cache bucket */
 export const PLACES_COORD_GRID_DECIMALS = 3;

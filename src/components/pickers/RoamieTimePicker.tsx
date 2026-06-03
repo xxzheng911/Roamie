@@ -66,7 +66,7 @@ export function RoamieTimePicker({
           disabled={disabled}
           onClick={() => setOpen(true)}
           className={cn(
-            "rounded-lg border border-border bg-secondary px-2.5 py-0.5 text-xs font-medium text-foreground transition active:scale-[0.98] disabled:opacity-50",
+            "border-0 bg-transparent p-0 text-xs font-medium text-foreground transition active:opacity-80 disabled:opacity-50",
             className,
           )}
         >

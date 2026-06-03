@@ -4,13 +4,19 @@ import {
   type TripStopSuggestion,
   type ResolvedTripStop,
 } from "@/lib/trip-stop-search.functions";
+import { buildTripStopSearchQuery } from "@/lib/trip/build-trip-stop-search-query";
+import { searchPlacesViaBundledApi } from "@/lib/places-search-api";
 import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
 import {
   geocodeForwardUrl,
   placeDetailsUrl,
-  PLACE_DETAILS_FIELD_MASK,
+  PLACE_DETAILS_SCREEN_FIELD_MASK,
   placesAutocompleteUrl,
 } from "@/lib/google-maps-api";
+import {
+  applyAvailabilityFields,
+  derivePlaceAvailability,
+} from "@/lib/filter-available-places";
 import type { Locale } from "@/lib/i18n/types";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
@@ -23,25 +29,97 @@ import {
   searchCuratedTripLocations,
 } from "@/lib/trip-location-curated";
 import { isGooglePlacesPermissionError } from "@/lib/places-api-errors";
+import { DEFAULT_SEARCH_RADIUS_M } from "@/lib/places-search-config";
 
 function normalizeGooglePlaceId(raw: string): string {
   return raw.replace(/^places\//, "").trim();
+}
+
+function resolvedStopToTripPlace(s: ResolvedTripStop): TripPlaceInput {
+  return {
+    name: s.name,
+    placeName: s.name,
+    title: s.name,
+    address: s.address,
+    lat: s.lat,
+    lng: s.lng,
+    googlePlaceId: s.placeId,
+    placeType: s.placeType,
+    types: s.types,
+    googleMapsUrl: s.googleMapsUrl,
+    googleMapsUri: s.googleMapsUri ?? undefined,
+    photoName: s.photoName,
+    rating: s.rating,
+    userRatingCount: s.userRatingCount ?? null,
+    businessStatus: s.businessStatus ?? null,
+    openStatusLabel: s.openStatusLabel,
+    todayHoursLabel: s.todayHoursLabel,
+  };
+}
+
+async function textSearchTripStops(
+  scopedQuery: string,
+  locale: Locale,
+  center: { lat: number; lng: number },
+): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> {
+  console.info("[TRIP_PLACE_SEARCH] endpoint=", "placesSearchText");
+  console.info("[TRIP_PLACE_SEARCH] query=", scopedQuery);
+  const { places, error } = await searchPlacesViaBundledApi({
+    query: scopedQuery,
+    lat: center.lat,
+    lng: center.lng,
+    radius: DEFAULT_SEARCH_RADIUS_M,
+    mode: "text",
+    locale,
+    availabilityContext: "lenient",
+    telemetrySurface: "other",
+  });
+  if (error && places.length === 0) {
+    console.info("[TRIP_PLACE_SEARCH] error=", error);
+    return { suggestions: [], error };
+  }
+  const suggestions: TripStopSuggestion[] = [];
+  const seen = new Set<string>();
+  for (const p of places) {
+    const placeId = normalizeGooglePlaceId(p.id);
+    if (!placeId || seen.has(placeId)) continue;
+    seen.add(placeId);
+    suggestions.push({
+      placeId,
+      label: p.name,
+      secondary: p.address ?? undefined,
+      types: p.types ?? undefined,
+    });
+    if (suggestions.length >= 12) break;
+  }
+  console.info("[TRIP_PLACE_SEARCH] predictions=", suggestions.length);
+  return { suggestions, error: null };
 }
 
 export async function unifiedSearchTripStops(
   searchFn: (args: {
     data: { query: string; locale?: Locale; lat?: number; lng?: number; sessionToken?: string };
   }) => Promise<{ suggestions: TripStopSuggestion[]; error: string | null }>,
-  query: string,
+  userQuery: string,
   locale: Locale,
-  center?: { lat: number; lng: number },
-  sessionToken?: string,
+  options?: {
+    center?: { lat: number; lng: number };
+    destination?: string | null;
+    sessionToken?: string;
+  },
 ): Promise<{ suggestions: TripStopSuggestion[]; error: string | null }> {
+  const scopedQuery = buildTripStopSearchQuery(userQuery, options?.destination);
+  const center = options?.center;
+  const sessionToken = options?.sessionToken;
+  if (!scopedQuery.trim()) {
+    return { suggestions: [], error: null };
+  }
+
   let permissionDenied = false;
   try {
     const result = await searchFn({
       data: {
-        query,
+        query: scopedQuery,
         locale,
         ...(center ? { lat: center.lat, lng: center.lng } : {}),
         ...(sessionToken ? { sessionToken } : {}),
@@ -56,7 +134,12 @@ export async function unifiedSearchTripStops(
     console.warn("[TripStop] server search failed", e);
   }
 
-  const curated = searchCuratedTripLocations(query.trim());
+  if (center && !permissionDenied) {
+    const textResult = await textSearchTripStops(scopedQuery, locale, center);
+    if (textResult.suggestions.length > 0) return textResult;
+  }
+
+  const curated = searchCuratedTripLocations(scopedQuery.trim());
   if (curated.length > 0) {
     return {
       suggestions: curated.map((c) => ({
@@ -83,7 +166,7 @@ export async function unifiedSearchTripStops(
   console.info("[TRIP_PLACE_SEARCH] endpoint=", "placesAutocomplete");
 
   const body: Record<string, unknown> = {
-    input: query.trim(),
+    input: scopedQuery.trim(),
     languageCode: localeToGoogleLanguageCode(locale),
   };
   if (sessionToken) body.sessionToken = sessionToken;
@@ -104,7 +187,11 @@ export async function unifiedSearchTripStops(
       const err = text.slice(0, 180) || "autocomplete_failed";
       console.info("[TRIP_PLACE_SEARCH] status=", res.status);
       console.info("[TRIP_PLACE_SEARCH] error=", err);
-      return geocodeStopSuggestions(query, locale, key);
+      if (center) {
+        const textResult = await textSearchTripStops(scopedQuery, locale, center);
+        if (textResult.suggestions.length > 0) return textResult;
+      }
+      return geocodeStopSuggestions(scopedQuery, locale, key);
     }
     const json = (await res.json()) as {
       suggestions?: Array<{
@@ -137,11 +224,21 @@ export async function unifiedSearchTripStops(
     if (suggestions.length > 0) {
       return { suggestions, error: null };
     }
-    return geocodeStopSuggestions(query, locale, key);
+    if (center) {
+      const textResult = await textSearchTripStops(scopedQuery, locale, center);
+      if (textResult.suggestions.length > 0) return textResult;
+    }
+    return geocodeStopSuggestions(scopedQuery, locale, key);
   } catch (e) {
     console.warn("[TripStop] browser autocomplete failed", e);
     const key = getGoogleMapsBrowserKey();
-    if (key) return geocodeStopSuggestions(query, locale, key);
+    if (key) {
+      if (center) {
+        const textResult = await textSearchTripStops(scopedQuery, locale, center);
+        if (textResult.suggestions.length > 0) return textResult;
+      }
+      return geocodeStopSuggestions(scopedQuery, locale, key);
+    }
     return { suggestions: [], error: TRIP_PLACE_USER_MESSAGE };
   }
 }
@@ -210,7 +307,7 @@ async function clientResolveTripStopDetails(
   const res = await fetch(placeDetailsUrl(normalizedPlaceId), {
     headers: {
       "X-Goog-Api-Key": key,
-      "X-Goog-FieldMask": PLACE_DETAILS_FIELD_MASK,
+      "X-Goog-FieldMask": PLACE_DETAILS_SCREEN_FIELD_MASK,
       "Accept-Language": localeToGoogleLanguageCode(locale),
     },
   });
@@ -227,7 +324,13 @@ async function clientResolveTripStopDetails(
     primaryType?: string;
     types?: string[];
     rating?: number;
+    userRatingCount?: number;
     photos?: Array<{ name?: string }>;
+    businessStatus?: string;
+    currentOpeningHours?: unknown;
+    regularOpeningHours?: unknown;
+    utcOffsetMinutes?: number;
+    googleMapsUri?: string;
   };
 
   const lat = raw.location?.latitude ?? null;
@@ -236,12 +339,22 @@ async function clientResolveTripStopDetails(
 
   const name = raw.displayName?.text?.trim() || "地點";
   const effectivePlaceId = normalizeGooglePlaceId(raw.id ?? normalizedPlaceId);
+  const hoursData = {
+    businessStatus: raw.businessStatus ?? null,
+    currentOpeningHours: raw.currentOpeningHours ?? null,
+    regularOpeningHours: raw.regularOpeningHours ?? null,
+    utcOffsetMinutes: raw.utcOffsetMinutes,
+  };
+  const availability = derivePlaceAvailability(hoursData, { context: "lenient" });
+  const hourFields = applyAvailabilityFields({}, availability);
   const placeType = identityDisplayLabel(
     resolvePlaceIdentity({
+      name,
       primaryType: raw.primaryType ?? null,
       types: raw.types ?? null,
     }),
   );
+  const mapsUri = raw.googleMapsUri?.trim() || null;
 
   return {
     name,
@@ -252,9 +365,15 @@ async function clientResolveTripStopDetails(
     lng,
     googlePlaceId: effectivePlaceId,
     placeType,
-    googleMapsUrl: buildPlaceMapsUrl(lat, lng, name),
+    types: raw.types,
+    googleMapsUrl: mapsUri || buildPlaceMapsUrl(lat, lng, name),
+    googleMapsUri: mapsUri ?? undefined,
     photoName: raw.photos?.[0]?.name ?? null,
     rating: raw.rating ?? null,
+    userRatingCount: raw.userRatingCount ?? null,
+    businessStatus: raw.businessStatus ?? null,
+    openStatusLabel: hourFields.openStatusLabel as string,
+    todayHoursLabel: hourFields.todayHoursLabel as string,
   };
 }
 
@@ -329,23 +448,7 @@ export async function unifiedResolveTripStop(
   try {
     const result = await resolveFn({ data: { placeId: normalizedPlaceId, locale } });
     if (result.stop?.lat != null && result.stop?.lng != null) {
-      const s = result.stop;
-      return {
-        place: {
-          name: s.name,
-          placeName: s.name,
-          title: s.name,
-          address: s.address,
-          lat: s.lat,
-          lng: s.lng,
-          googlePlaceId: s.placeId,
-          placeType: s.placeType,
-          googleMapsUrl: s.googleMapsUrl,
-          photoName: s.photoName,
-          rating: s.rating,
-        },
-        error: null,
-      };
+      return { place: resolvedStopToTripPlace(result.stop), error: null };
     }
   } catch (e) {
     console.warn("[TripStop] resolve failed", e);

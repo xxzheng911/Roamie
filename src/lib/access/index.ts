@@ -13,6 +13,7 @@ export {
   unlockDeveloperMode,
   lockDeveloperMode,
   canShowDeveloperTools,
+  isDeveloperModeUnlocked,
 } from "./developer";
 export {
   buildAccessSnapshot,

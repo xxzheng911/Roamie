@@ -15,10 +15,16 @@ export type TripPlaceInput = {
   lng: number | null;
   googlePlaceId?: string;
   placeType?: string;
+  types?: string[];
   description?: string;
   googleMapsUrl?: string;
+  googleMapsUri?: string;
   photoName?: string | null;
   rating?: number | null;
+  userRatingCount?: number | null;
+  businessStatus?: string | null;
+  openStatusLabel?: string;
+  todayHoursLabel?: string;
 };
 
 export function tripPlaceFromRecommendation(rec: RoamieRecommendationItem): TripPlaceInput {

@@ -3,6 +3,7 @@ import WebKit
 import Capacitor
 import AuthenticationServices
 import SafariServices
+import ObjectiveC
 
 /*
  iOS 26 WebKit / GPU system warnings (native console — not suppressible from app code):
@@ -607,6 +608,17 @@ enum RoamieCompositorFallback {
 
     static func boundWebViewForScripts() -> WKWebView? {
         boundWebView
+    }
+
+    /// Capacitor `eval(js:)` / Keyboard plugin events: defer while WebContent is loading or snapshot work is in flight.
+    static func shouldDeferCapacitorBridgeEval(webView: WKWebView?) -> Bool {
+        guard let webView else { return true }
+        if webView.isLoading { return true }
+        if webView.estimatedProgress < 0.92 { return true }
+        guard isActive else { return false }
+        if snapshotInFlight { return true }
+        if !webContentJsReliable { return true }
+        return false
     }
 
     static func onNavigationStarted(_ webView: WKWebView) {
@@ -1368,6 +1380,73 @@ enum RoamieCompositorFallback {
     private static func imageHasMeaningfulContent(_ image: UIImage) -> Bool {
         imageContentScore(image) >= 24
     }
+
+    /// OAuth / native → web: defer until WebContent is idle (avoids Capacitor "JS Eval error" spam).
+    static func evaluateJavaScriptWhenReady(
+        _ javaScript: String,
+        label: String,
+        attempt: Int = 0,
+        maxAttempts: Int = 16,
+        completion: ((Any?, Error?) -> Void)? = nil
+    ) {
+        guard let webView = boundWebView else {
+            RoamieNativeLog.debug("⚡️ [Roamie] JS_SKIP \(label) webView=nil")
+            return
+        }
+
+        let busy = webView.isLoading || snapshotInFlight
+        if (!webContentJsReliable || busy), attempt < maxAttempts {
+            if attempt == 0 {
+                logOnce(
+                    "js_defer_\(label)",
+                    "⚡️ [Roamie] JS_DEFER \(label) reliable=\(webContentJsReliable) loading=\(webView.isLoading) snap=\(snapshotInFlight)"
+                )
+            }
+            let delay = min(0.15 + Double(attempt) * 0.12, 1.5)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                evaluateJavaScriptWhenReady(
+                    javaScript,
+                    label: label,
+                    attempt: attempt + 1,
+                    maxAttempts: maxAttempts,
+                    completion: completion
+                )
+            }
+            return
+        }
+
+        if !webContentJsReliable || busy {
+            RoamieNativeLog.critical("⚡️ [Roamie] JS_SKIP \(label) after \(maxAttempts) attempts")
+            completion?(nil, nil)
+            return
+        }
+
+        webView.evaluateJavaScript(javaScript) { result, error in
+            if let error {
+                webContentJsReliable = false
+                if label.hasPrefix("cap-bridge-eval") {
+                    logOnce("cap_js_fail", "⚡️ [Roamie] CAP_JS_FAIL (will retry) \(error.localizedDescription)")
+                } else {
+                    RoamieNativeLog.critical("⚡️ [Roamie] JS_FAIL \(label) \(error.localizedDescription)")
+                }
+                if attempt < maxAttempts {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        evaluateJavaScriptWhenReady(
+                            javaScript,
+                            label: "\(label)-retry",
+                            attempt: attempt + 1,
+                            maxAttempts: maxAttempts,
+                            completion: completion
+                        )
+                    }
+                } else {
+                    completion?(result, error)
+                }
+                return
+            }
+            completion?(result, nil)
+        }
+    }
 }
 
 // MARK: - Native OAuth (ASWebAuthenticationSession — bypasses broken Capacitor Browser.present on iOS 26)
@@ -1472,17 +1551,17 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
     }
 
     private static func deliverCallbackToWebView(_ url: String) {
-        guard let webView = RoamieCompositorFallback.boundWebViewForScripts() else { return }
+        guard RoamieCompositorFallback.boundWebViewForScripts() != nil else { return }
         guard let data = try? JSONSerialization.data(withJSONObject: ["url": url]),
               let json = String(data: data, encoding: .utf8) else { return }
         let js = "window.__roamieHandleOAuthReturn && window.__roamieHandleOAuthReturn(\(json));"
         DispatchQueue.main.async {
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            RoamieCompositorFallback.evaluateJavaScriptWhenReady(js, label: "oauth-callback")
         }
     }
 
     private static func evaluateJsEvent(_ name: String, detail: String?) {
-        guard let webView = RoamieCompositorFallback.boundWebViewForScripts() else { return }
+        guard RoamieCompositorFallback.boundWebViewForScripts() != nil else { return }
         let detailJson: String
         if let detail, let data = try? JSONSerialization.data(withJSONObject: ["message": detail]),
            let encoded = String(data: data, encoding: .utf8) {
@@ -1492,7 +1571,7 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
         }
         let js = "window.dispatchEvent(new CustomEvent('\(name)', { detail: \(detailJson) }));"
         DispatchQueue.main.async {
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            RoamieCompositorFallback.evaluateJavaScriptWhenReady(js, label: "oauth-event-\(name)")
         }
     }
 
@@ -1684,5 +1763,77 @@ enum RoamieWKNavLog {
         decisionHandler: @escaping (WKPermissionDecision) -> Void
     ) {
         decisionHandler(.deny)
+    }
+}
+
+// MARK: - Capacitor bridge eval guard (iOS 26 device)
+
+/// Swizzle `CapacitorBridge.eval(js:)` so plugin events (Keyboard, App resume, etc.) wait for a ready WKWebView.
+enum RoamieCapacitorEvalGuard {
+    private static var installed = false
+    fileprivate static let maxAttempts = 40
+
+    static func installIfNeeded() {
+        guard !installed else { return }
+        #if targetEnvironment(simulator)
+        return
+        #else
+        guard RoamieWebKitMitigation.isIOS26OrNewer else { return }
+        installed = true
+
+        let cls: AnyClass = CapacitorBridge.self
+        let original = #selector(CapacitorBridge.eval(js:))
+        let swizzled = #selector(CapacitorBridge.roamie_guardedEval(js:))
+        guard let originalMethod = class_getInstanceMethod(cls, original),
+              let swizzledMethod = class_getInstanceMethod(cls, swizzled) else {
+            RoamieNativeLog.critical("⚡️ [Roamie] CAP_EVAL_GUARD install failed")
+            installed = false
+            return
+        }
+        method_exchangeImplementations(originalMethod, swizzledMethod)
+        RoamieNativeLog.critical("⚡️ [Roamie] CAP_EVAL_GUARD installed")
+        #endif
+    }
+
+    static func scheduleEval(bridge: CapacitorBridge, js: String, attempt: Int) {
+        let delay = min(0.1 + Double(attempt) * 0.12, 2.5)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak bridge] in
+            guard let bridge else { return }
+            bridge.roamie_performGuardedEval(js: js, outerAttempt: attempt + 1)
+        }
+    }
+}
+
+extension CapacitorBridge {
+    /// Swizzled entry — must match `eval(js:)` selector (single parameter).
+    @objc func roamie_guardedEval(js: String) {
+        roamie_performGuardedEval(js: js, outerAttempt: 0)
+    }
+
+    /// Replaces Capacitor `eval(js:)` — retries quietly instead of spamming `JS Eval error`.
+    fileprivate func roamie_performGuardedEval(js: String, outerAttempt: Int) {
+        guard let webView = getWebView() else { return }
+        if RoamieWebKitMitigation.isIOS26OrNewer {
+            RoamieCompositorFallback.bind(webView)
+        }
+
+        if RoamieCompositorFallback.shouldDeferCapacitorBridgeEval(webView: webView) {
+            if outerAttempt < RoamieCapacitorEvalGuard.maxAttempts {
+                RoamieCapacitorEvalGuard.scheduleEval(bridge: self, js: js, attempt: outerAttempt)
+            }
+            return
+        }
+
+        RoamieCompositorFallback.evaluateJavaScriptWhenReady(
+            js,
+            label: "cap-bridge-eval",
+            maxAttempts: 20,
+            completion: { _, error in
+                guard error != nil else { return }
+                if outerAttempt < RoamieCapacitorEvalGuard.maxAttempts {
+                    RoamieCapacitorEvalGuard.scheduleEval(bridge: self, js: js, attempt: outerAttempt)
+                }
+            }
+        )
     }
 }

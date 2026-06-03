@@ -16,6 +16,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         RoamieNativeLog.debug("⚡️ [Roamie] RUNTIME=device model=\(UIDevice.current.model) ios=\(UIDevice.current.systemVersion)")
         #endif
         RoamieBundledWebProbe.logPackagedIndexHtml()
+        RoamieCapacitorEvalGuard.installIfNeeded()
         if let window = window {
             window.backgroundColor = UIColor(red: 253 / 255, green: 245 / 255, blue: 234 / 255, alpha: 1)
         }

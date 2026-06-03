@@ -17,6 +17,8 @@ export type PlaceResult = {
   openStatus: PlaceOpenStatus;
   openStatusLabel: string;
   todayHoursLabel: string;
+  /** 營業中：營業至 HH:mm */
+  closesAtLabel?: string;
   closingSoonNote: string;
   nextOpenHint: string;
 };

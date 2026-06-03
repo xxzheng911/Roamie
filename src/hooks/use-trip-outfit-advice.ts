@@ -43,6 +43,8 @@ export function useTripOutfitAdvice({
   enabled = true,
 }: Params) {
   const fetchAdvice = useServerFn(generateTripDailyOutfitAdvice);
+  const fetchAdviceRef = useRef(fetchAdvice);
+  fetchAdviceRef.current = fetchAdvice;
   const generatingRef = useRef(false);
   const attemptedKeyRef = useRef<string | null>(null);
 
@@ -93,7 +95,7 @@ export function useTripOutfitAdvice({
     setLoading(true);
     setError(null);
 
-    void fetchAdvice({
+    void fetchAdviceRef.current({
       data: {
         destination,
         destinationLocation,
@@ -151,7 +153,6 @@ export function useTripOutfitAdvice({
     lat,
     lng,
     moodTag,
-    fetchAdvice,
     hasAdviceDays,
   ]);
 

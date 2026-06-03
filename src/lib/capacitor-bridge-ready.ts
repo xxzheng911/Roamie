@@ -1,3 +1,4 @@
+import { isAppReady } from "@/lib/startup-route";
 import { detectPlatform } from "@/services/platform";
 
 const BRIDGE_POLL_MS = 48;
@@ -49,9 +50,12 @@ export async function waitForCapacitorBridge(
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
 
+  const { isIOS } = detectPlatform();
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    if (isCapacitorBridgeReady()) return true;
+    const bridgeReady = isCapacitorBridgeReady();
+    const appReady = !isIOS || isAppReady();
+    if (bridgeReady && appReady) return true;
     await sleep(BRIDGE_POLL_MS);
   }
 

@@ -114,15 +114,27 @@ function itemToSaved(
 
 function daysFromV2(payload: RoamiePayloadV2): SavedTripDay[] {
   const items = [...(payload.itinerary ?? [])];
-  if (items.length === 0) return [];
+  const explicit = (payload.tripSettings?.tripDayDates ?? []).filter((d) =>
+    /^\d{4}-\d{2}-\d{2}$/.test(d),
+  );
 
   const start =
     payload.tripSettings?.tripStartDate?.trim() ||
     items.map((i) => i.date?.trim()).find((d) => d && /^\d{4}-\d{2}-\d{2}$/.test(d)) ||
     new Date().toISOString().slice(0, 10);
-  const dayCount =
-    payload.days ?? daysBetweenDates(start, payload.tripSettings?.tripEndDate || start);
-  const orderedDates = listTripDates(items, start, dayCount);
+
+  const orderedDates =
+    explicit.length > 0
+      ? explicit
+      : (() => {
+          if (items.length === 0) return [];
+          const dayCount =
+            payload.days ??
+            daysBetweenDates(start, payload.tripSettings?.tripEndDate || start);
+          return listTripDates(items, start, dayCount);
+        })();
+
+  if (orderedDates.length === 0 && items.length === 0) return [];
   const groups = groupItineraryByDate(items);
 
   return orderedDates.map((iso, idx) => {

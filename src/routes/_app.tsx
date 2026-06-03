@@ -3,6 +3,7 @@ import { useLayoutEffect, useEffect, useState } from "react";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
+import { detectPlatform } from "@/services/platform";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { MobileFrame } from "@/components/MobileFrame";
 import { BottomNav } from "@/components/BottomNav";
@@ -10,6 +11,7 @@ import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { requireAppShellAccess } from "@/lib/require-auth";
 import { cn } from "@/lib/utils";
 import { QaTestUserBadge } from "@/components/qa/QaTestUserBadge";
+import { bootstrapLocationWatchLifecycle } from "@/lib/location-watch-lifecycle";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: requireAppShellAccess,
@@ -41,11 +43,18 @@ function AppLayout() {
   useIosInteractiveRoute("app-shell");
 
   useLayoutEffect(() => {
+    const { isCapacitor, isIOS } = detectPlatform();
+    // iOS: AppBootRouteSync already schedules mirror catch-up — avoid duplicate WebContent work.
+    if (isCapacitor && isIOS) return;
     scheduleIosSnapshotRefreshBurst("app-shell");
   }, []);
   const [pathname, setPathname] = useState(
     () => router.state.location.pathname || readBrowserPathname(),
   );
+
+  useEffect(() => {
+    bootstrapLocationWatchLifecycle();
+  }, []);
 
   useEffect(() => {
     markBootPhase("route:_app:mounted", "path=" + pathname);

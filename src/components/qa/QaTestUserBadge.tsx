@@ -1,11 +1,12 @@
 import { useAuth } from "@/hooks/use-auth";
+import { readDeveloperUnlocked } from "@/lib/access/storage";
 import { isQaBuildEnabled } from "@/lib/qa-auth/build";
 import { isQaTestUser } from "@/lib/qa-auth/user";
 
 export function QaTestUserBadge() {
   const { user } = useAuth();
 
-  if (!isQaBuildEnabled() || !isQaTestUser(user)) return null;
+  if (!readDeveloperUnlocked() || !isQaBuildEnabled() || !isQaTestUser(user)) return null;
 
   return (
     <div

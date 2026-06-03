@@ -276,9 +276,10 @@ export function buildCapacitorEarlyErrorLogScript(): string {
     if (f.indexOf("maps.googleapis.com") >= 0) return true;
     if (/vendor-react-[^/]+\\.js/i.test(f)) return true;
     if (/vendor-tanstack-[^/]+\\.js/i.test(f)) return true;
-    if (!document.querySelector('script[data-roamie-maps="1"]')) return false;
-    return f.indexOf("/assets/index-") >= 0
-      || f.indexOf("capacitor://localhost/assets/index-") >= 0;
+    if (f.indexOf("capacitor://localhost/assets/index-") >= 0) return true;
+    if (f.indexOf("/assets/index-") >= 0) return true;
+    if (document.querySelector('script[data-roamie-maps="1"]')) return true;
+    return false;
   }
   function roamieLog(tag, reason, source) {
     var msg = "(unknown)";

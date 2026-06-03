@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { OutfitAdvicePayload, TripOutfitSuggestionFields } from "@/lib/outfit/types";
 import type { TransitLegAdvice } from "@/lib/transit/types";
 import type { TripLocation } from "@/lib/location/types";
+import type { TripDayPlan } from "@/lib/trip/build-day-plans";
 
 /** OpenAI strict schema 要求 recommendations / itinerary 每個 item 欄位齊全；無座標時 lat/lng 填 null */
 export const RoamieRecommendationItemSchema = z.object({
@@ -85,6 +86,8 @@ export type RoamiePayloadV2 = RoamieResponse &
     /** 出發地 */
     originLocation?: TripLocation | null;
     days?: number;
+    /** 依日期分組的行程（chat / plan 生成後寫入） */
+    dayPlans?: TripDayPlan[];
     generatedAt?: string;
     tripSettings?: TripPlanSettings;
     /** AI 每日穿搭建議（整合天氣預報） */
@@ -93,6 +96,9 @@ export type RoamiePayloadV2 = RoamieResponse &
     outfitAdviceInputKey?: string;
     weatherSummary?: string;
     outfitSuggestion?: string;
+    /** 與 outfitSuggestion 同義，相容舊欄位 */
+    clothingAdvice?: string;
+    outfitHint?: string;
     coreTrip?: Record<string, unknown>;
     /** true = 使用者已確認儲存至收藏 */
     userSaved?: boolean;

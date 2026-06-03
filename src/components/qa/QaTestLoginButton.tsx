@@ -11,6 +11,9 @@ type Props = {
   onSuccess?: () => void;
 };
 
+/**
+ * QA 測試登入 + 診斷面板（僅在 Developer Center 掛載，勿放登入頁）。
+ */
 export function QaTestLoginButton({ disabled, onSuccess }: Props) {
   const [busy, setBusy] = useState(false);
   const [diagnostics, setDiagnostics] = useState<QaLoginDiagnosticSnapshot>({
@@ -26,7 +29,13 @@ export function QaTestLoginButton({ disabled, onSuccess }: Props) {
     created_at: new Date().toISOString(),
   });
 
-  if (!isQaBuildEnabled()) return null;
+  if (!isQaBuildEnabled()) {
+    return (
+      <p className="rounded-2xl border border-border bg-background px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+        此 build 未啟用 QA Auth（需 VITE_ROAMIE_QA=1）。正式版請使用 Apple / Google 登入。
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-2">
@@ -58,7 +67,7 @@ export function QaTestLoginButton({ disabled, onSuccess }: Props) {
         <FlaskConical className="h-4 w-4 shrink-0" aria-hidden />
         {busy ? "測試登入中…" : "測試登入（QA · 無需 Google / Apple）"}
       </button>
-      <div className="rounded-2xl border border-amber-300/80 bg-amber-50/90 p-2 text-[11px] leading-relaxed text-amber-950">
+      <div className="rounded-2xl border border-amber-300/80 bg-amber-50/90 p-2 text-[11px] leading-relaxed text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
         <div className="mb-1 flex items-center justify-between">
           <p className="font-medium">QA 診斷</p>
           <button
@@ -70,7 +79,7 @@ export function QaTestLoginButton({ disabled, onSuccess }: Props) {
                 else toastCopyResult(false);
               });
             }}
-            className="inline-flex items-center gap-1 rounded-full border border-amber-400/70 bg-amber-100 px-2 py-0.5 text-[10px]"
+            className="inline-flex items-center gap-1 rounded-full border border-amber-400/70 bg-amber-100 px-2 py-0.5 text-[10px] dark:bg-amber-900/50"
           >
             <Copy className="h-3 w-3" />
             複製 QA 診斷

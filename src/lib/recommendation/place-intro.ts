@@ -1,45 +1,13 @@
 import type { Locale } from "@/lib/i18n/types";
-import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import type { PlaceResult } from "@/lib/place-result";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { classifyWeatherScene } from "@/lib/weather-scene";
 import type { PlaceIntroPayload } from "@/lib/recommendation/types";
-
-const SPARSE_MSG: Record<Locale, string> = {
-  "zh-TW": "目前資料較少，Roamie 先依地點類型與周邊環境為你整理。",
-  en: "Details are limited — Roamie summarized this spot from its type and surroundings.",
-  ja: "情報が少ないため、種類と周辺から整理しました。",
-  ko: "정보가 적어 유형과 주변을 바탕으로 정리했어요.",
-};
-
-function templateIntro(place: PlaceResult, locale: Locale): PlaceIntroPayload {
-  const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place));
-  const sparse = !place.rating && !place.address;
-  const loc = locale in SPARSE_MSG ? locale : "en";
-
-  const ratingPart =
-    place.rating != null
-      ? locale === "zh-TW"
-        ? `評分 ${place.rating.toFixed(1)}`
-        : `Rated ${place.rating.toFixed(1)}`
-      : "";
-
-  const intro = sparse
-    ? SPARSE_MSG[loc]
-    : locale === "zh-TW"
-      ? `${place.name}是一間${typeLabel}。${ratingPart ? `${ratingPart}，` : ""}適合順路安排進今天的行程。`
-      : `${place.name} is a ${typeLabel}. ${ratingPart ? `${ratingPart}. ` : ""}Easy to fit into today's plan.`;
-
-  return {
-    intro,
-    recommendReason: "",
-    suitableFor: locale === "zh-TW" ? "想慢慢逛、不趕行程的人" : "Anyone who prefers a relaxed pace",
-    weatherFit: weatherFitText(null, locale),
-    goNowAdvice: place.openStatusLabel || (locale === "zh-TW" ? "出發前可再確認營業時間" : "Check hours before you go"),
-    dataSparse: sparse,
-    source: "template",
-  };
-}
+import {
+  generatePlaceIntro,
+  placeDetailToIntroInput,
+} from "@/lib/place/generate-place-intro";
+import { isGenericPlaceReason } from "@/lib/place/place-intro-constants";
 
 function weatherFitText(weather: WeatherSummary | null, locale: Locale): string {
   if (!weather) {
@@ -91,53 +59,39 @@ export type PlaceIntroInput = {
   reviewSnippets?: string[];
 };
 
-/** 依 Google Places 資料產生地點介紹（不憑空編造） */
+/** 依 Google Places 資料產生地點介紹（合併編輯摘要與行程情境） */
 export function buildPlaceIntroFromFacts(input: PlaceIntroInput): PlaceIntroPayload {
-  const { place, reason, weather, locale, editorialSummary, reviewSnippets } = input;
-  const base = templateIntro(place, locale);
-  const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place));
+  const { place, reason, weather, locale, editorialSummary } = input;
+  const generated = generatePlaceIntro(
+    placeDetailToIntroInput(place, { editorialSummary }),
+    {},
+    {
+      locale,
+      weather,
+      existingReason: isGenericPlaceReason(reason) ? null : reason,
+    },
+  );
 
-  const facts: string[] = [];
-  if (editorialSummary?.trim()) facts.push(editorialSummary.trim());
-  if (place.rating != null) {
-    facts.push(
+  let intro = generated.intro;
+  if (editorialSummary?.trim() && !intro.includes(editorialSummary.trim().slice(0, 20))) {
+    intro =
       locale === "zh-TW"
-        ? `Google 評分 ${place.rating.toFixed(1)}`
-        : `Google rating ${place.rating.toFixed(1)}`,
-    );
+        ? `${place.name}：${editorialSummary.trim().slice(0, 200)}`
+        : `${place.name}: ${editorialSummary.trim().slice(0, 200)}`;
   }
-  if (reviewSnippets?.length) {
-    facts.push(
-      locale === "zh-TW"
-        ? `訪客提到：${reviewSnippets.slice(0, 2).join("；")}`
-        : `Visitors mention: ${reviewSnippets.slice(0, 2).join("; ")}`,
-    );
-  }
-  if (place.todayHoursLabel) {
-    facts.push(
-      locale === "zh-TW" ? `今日營業：${place.todayHoursLabel}` : `Hours: ${place.todayHoursLabel}`,
-    );
-  }
-
-  const hasRichData = facts.length >= 2 || Boolean(editorialSummary?.trim());
-  const intro = hasRichData
-    ? locale === "zh-TW"
-      ? `${place.name}是${typeLabel}。${facts.slice(0, 3).join("。")}。`
-      : `${place.name} — ${typeLabel}. ${facts.slice(0, 3).join(". ")}.`
-    : base.intro;
 
   return {
     intro: intro.slice(0, 280),
-    recommendReason: reason?.trim() || base.recommendReason,
-    suitableFor: base.suitableFor,
+    recommendReason: generated.recommendReason,
+    suitableFor: generated.suitableFor,
     weatherFit: weatherFitText(weather ?? null, locale),
     goNowAdvice:
       place.openStatus === "open"
         ? locale === "zh-TW"
           ? "現在適合前往"
           : "Good time to go now"
-        : place.nextOpenHint || base.goNowAdvice,
-    dataSparse: !hasRichData,
-    source: hasRichData ? "ai" : "template",
+        : place.nextOpenHint || generated.visitTips[0] || "",
+    dataSparse: false,
+    source: editorialSummary?.trim() ? "ai" : "template",
   };
 }

@@ -7,6 +7,7 @@ import {
   Loader2,
   Sparkles,
   UserRound,
+  Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -44,7 +45,8 @@ import {
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useAccess } from "@/hooks/use-access";
-import { isDeveloperBuildEnabled } from "@/lib/access/developer";
+import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
+import { logTravelPrefSkippedFree } from "@/lib/subscription-plus-features";
 import { loadDraftTrip } from "@/lib/trip-draft-storage";
 import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
 import { isLikelyImageFile, normalizeImageFileForUpload } from "@/lib/image-crop";
@@ -80,7 +82,7 @@ function Profile() {
   const userEmail = user?.email;
   const { t, locale } = useI18n();
   const { avatarSrc, refresh: refreshAvatar, setPreview: setAvatarPreview } = useAvatar();
-  const { hasPlusAccess } = useAccess();
+  const { hasPlusAccess, canShowDeveloperTools } = useAccess();
   const [hasDraft, setHasDraft] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
@@ -171,22 +173,53 @@ function Profile() {
 
   const quizDoneToastShown = useRef(false);
 
+  const profileLoadOptions = useMemo(
+    () => ({
+      includePlusSurvey: hasPlusAccess,
+      userEmail: userEmail ?? undefined,
+    }),
+    [hasPlusAccess, userEmail],
+  );
+
   const loadProfile = useCallback(async () => {
     try {
-      return await getUserProfile();
+      return await getUserProfile(locale, profileLoadOptions);
     } catch (firstErr) {
       if (!userId) throw firstErr;
       console.warn("[profile] fetch failed, ensuring profile row", firstErr);
       await ensureUserProfile();
-      return getUserProfile();
+      return getUserProfile(locale, profileLoadOptions);
     }
-  }, [userId]);
+  }, [userId, locale, profileLoadOptions]);
+
+  const clearPlusProfileUiState = useCallback(() => {
+    setTravelStyle("");
+    setPersonalityType("");
+    setPersonalitySummary("");
+    setPersonalityImpression("");
+    setSurveyCompleted(false);
+    setOnboarded(false);
+    setCompanionSummary("");
+    setTravelTags([]);
+    setPace(t("profile.paceMedium"));
+    setVibe(t("profile.vibeEither"));
+    setBudgetLabel(BUDGET_MODE_LABELS.standard);
+    setAvoidKey(null);
+    setQuizSyncing(false);
+  }, [t]);
 
   const applyProfileToState = useCallback(
-    (profile: UserProfile) => {
+    (profile: UserProfile, plusActive: boolean) => {
       setDisplayName(profile.displayName);
       setBio(profile.bio);
       setCoverUrl(profile.coverImageUrl);
+
+      if (!plusActive) {
+        logTravelPrefSkippedFree("profile_ui_free");
+        clearPlusProfileUiState();
+        return;
+      }
+
       setTravelStyle(profile.surveyResult?.travelStyle ?? profile.travelStyle);
       setPersonalityType(
         profile.surveyResult?.personalityType ?? profile.personalityType,
@@ -198,11 +231,13 @@ function Profile() {
       setPersonalityImpression(
         profile.surveyResult?.personalityImpression ?? profile.personalityImpression,
       );
-      const completed = Boolean(profile.surveyCompleted ?? profile.prefs.surveyCompleted ?? profile.prefs.onboarded);
+      const completed = Boolean(
+        profile.surveyCompleted ?? profile.prefs.surveyCompleted ?? profile.prefs.onboarded,
+      );
       setSurveyCompleted(completed);
       setOnboarded(completed);
       const surveyDisplay = resolveProfileSurveyDisplay(profile);
-      logProfileSurveyDiagnostics(profile, surveyDisplay);
+      logProfileSurveyDiagnostics(profile, surveyDisplay, true);
       setCompanionSummary(
         completed ? buildCompanionSummary({ ...profile.prefs, onboarded: true }) : "",
       );
@@ -239,14 +274,22 @@ function Profile() {
             ).slice(0, 8);
       setTravelTags(tags);
       if (completed) {
+        const travel_style =
+          profile.surveyResult?.travelStyle ||
+          profile.surveyResult?.personalityType ||
+          profile.travelStyle ||
+          profile.personalityType ||
+          "未命名";
         console.info("[TRAVEL_PREF_RESULT] loaded", {
-          travelStyle: profile.travelStyle || profile.personalityType || "未命名",
+          result: travel_style,
+          travel_style,
+          source: "profile_reload",
           tagsCount: tags.length,
           surveyCompleted: completed,
         });
       }
     },
-    [t],
+    [t, clearPlusProfileUiState],
   );
 
   useEffect(() => {
@@ -258,21 +301,21 @@ function Profile() {
     void (async () => {
       try {
         const profile = await loadProfile();
-        applyProfileToState(profile);
+        applyProfileToState(profile, hasPlusAccess);
       } catch (e) {
         console.error("[profile] quiz sync failed", e);
       } finally {
         setQuizSyncing(false);
       }
     })();
-  }, [search.quiz, t, navigate, loadProfile, applyProfileToState]);
+  }, [search.quiz, t, navigate, loadProfile, applyProfileToState, hasPlusAccess]);
 
   useEffect(() => {
     const onPrefs = () => {
       void (async () => {
         try {
           const profile = await loadProfile();
-          applyProfileToState(profile);
+          applyProfileToState(profile, hasPlusAccess);
         } catch (e) {
           console.error("[profile] prefs sync failed", e);
         }
@@ -280,11 +323,13 @@ function Profile() {
     };
     window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
     return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
-  }, [loadProfile, applyProfileToState]);
+  }, [loadProfile, applyProfileToState, hasPlusAccess]);
 
   useEffect(() => {
-    console.info("[TRAVEL_PREF_TEST] visible");
-  }, []);
+    if (hasPlusAccess) {
+      console.info("[TRAVEL_PREF_TEST] visible");
+    }
+  }, [hasPlusAccess]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -292,8 +337,8 @@ function Profile() {
     try {
       if (userId) await ensureUserProfile();
       const profile = await loadProfile();
-      applyProfileToState(profile);
-      if (profile.surveyCompleted) {
+      applyProfileToState(profile, hasPlusAccess);
+      if (hasPlusAccess && profile.surveyCompleted) {
         void syncTravelPreferenceProfileFields({
           travelStyle: profile.travelStyle || profile.personalityType || "",
           prefs: profile.prefs,
@@ -323,12 +368,21 @@ function Profile() {
         surveyCompletedAt: null,
         travelTags: [],
         surveyResult: null,
-      } as UserProfile);
+      } as UserProfile, hasPlusAccess);
       toast.error(msg || t("profile.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, [userId, userEmail, locale, t, loadProfile, refreshAvatar, applyProfileToState]);
+  }, [
+    userId,
+    userEmail,
+    locale,
+    t,
+    loadProfile,
+    refreshAvatar,
+    applyProfileToState,
+    hasPlusAccess,
+  ]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -339,6 +393,15 @@ function Profile() {
     void refresh();
   }, [authLoading, userId, locale, navigate, refresh]);
 
+  useEffect(() => {
+    if (!userId) return;
+    const onAccess = () => {
+      void refresh();
+    };
+    window.addEventListener(ACCESS_CHANGED_EVENT, onAccess);
+    return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onAccess);
+  }, [userId, refresh]);
+
   if (authLoading) {
     return (
       <div className="flex flex-1 items-center justify-center px-5 py-16">
@@ -347,8 +410,6 @@ function Profile() {
     );
   }
 
-  const devMode = isDeveloperBuildEnabled();
-
   const handleSaveProfile = async () => {
     setSaving(true);
     try {
@@ -356,6 +417,7 @@ function Profile() {
         showPlusSurveyProfile
           ? { displayName, bio, travelStyle }
           : { displayName, bio },
+        profileLoadOptions,
       );
       setEditing(false);
       toast.success(t("profile.saved"));
@@ -638,11 +700,6 @@ function Profile() {
                       <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                         {hasPlusAccess ? "Plus" : "Free"}
                       </span>
-                      {devMode ? (
-                        <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-800 dark:text-amber-200">
-                          DEV
-                        </span>
-                      ) : null}
                     </div>
                     <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
                       {bio.trim() || t("profile.defaultBio")}
@@ -796,6 +853,21 @@ function Profile() {
           })}
         </ul>
       </section>
+
+      {canShowDeveloperTools ? (
+        <section className="relative z-10 mt-6">
+          <Link
+            to="/developer"
+            className="flex w-full items-center gap-3 rounded-3xl border border-dashed border-amber-500/40 bg-amber-500/5 px-4 py-3.5 shadow-soft"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-amber-500/15">
+              <Wrench className="h-4 w-4 text-amber-800 dark:text-amber-200" />
+            </div>
+            <p className="flex-1 text-[15px] font-medium">Developer Center</p>
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          </Link>
+        </section>
+      ) : null}
 
       <p className="mt-8 text-center text-[11px] leading-relaxed text-muted-foreground">
         {t("profile.footer")}

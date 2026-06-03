@@ -11,6 +11,8 @@ import {
   resolveSessionDestination,
   shouldOrchestrateCompanion,
 } from "@/lib/ai/conversation-state";
+import { userRequestsItineraryGeneration } from "@/lib/ai/itinerary-trigger";
+import { userAsksDateRangeRecommendation } from "@/lib/ai/trip-context-completeness";
 
 function isEmotionalOrVagueTurn(text: string): boolean {
   const t = text.trim();
@@ -39,6 +41,7 @@ export type AiUserIntent = {
 export type AiResponseMode = "text_only" | "place_cards" | "itinerary";
 
 function matchesTravelTimeAdvicePatterns(t: string): boolean {
+  if (userAsksDateRangeRecommendation(t)) return false;
   return (
     /(旅行時間|行程時間|什麼時候去|何時去|適合去嗎|適不適合去|適合嗎|去幾天|玩幾天|待幾天|安排幾天|幾天夠|幾天比較|待多久|要待多久)/.test(
       t,
@@ -65,6 +68,7 @@ function matchesExplicitPlaceListPatterns(t: string): boolean {
 export function userAsksTravelTimeAdvice(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (userAsksDateRangeRecommendation(t)) return false;
   if (matchesExplicitPlaceListPatterns(t) && !matchesTravelTimeAdvicePatterns(t)) return false;
   if (userWantsItineraryPlanning(t)) return false;
   return matchesTravelTimeAdvicePatterns(t);
@@ -84,6 +88,7 @@ export function userWantsItineraryPlanning(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   if (isUserConfirmingItinerary(t) || userWantsPlanningFinalize(t)) return true;
+  if (userRequestsItineraryGeneration(t)) return true;
   return /(排行程|排成行程|幫我排|規劃行程|行程安排|幾日遊|行程表)/.test(t) && /\d+\s*天/.test(t);
 }
 

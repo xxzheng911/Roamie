@@ -13,6 +13,19 @@ import {
 } from "@/lib/ai/conversation-state";
 import { isFlexiblePreferenceReply } from "@/lib/ai/flexible-preference";
 import { extractKnownDestinationFromText } from "@/lib/ai/normalize-destination";
+import {
+  canAutoGenerateItineraryFromSession,
+  ITINERARY_GENERATING_MESSAGE,
+  prepareSessionForItineraryGeneration,
+  userRequestsItineraryGeneration,
+} from "@/lib/ai/itinerary-trigger";
+import {
+  buildDateRangeRecommendationReply,
+  buildCompleteContextFollowUpReply,
+  extractTripContextSlice,
+  isTripContextComplete,
+  userAsksDateRangeRecommendation,
+} from "@/lib/ai/trip-context-completeness";
 
 export type CompanionDialogueReply = {
   summary: string;
@@ -113,19 +126,61 @@ export function resolveCompanionDialogueReply(
 ): CompanionDialogueReply | null {
   if (!shouldOrchestrateCompanion(session)) return null;
 
-  const state = session.conversationState;
+  let state = session.conversationState;
   if (!state) return null;
 
   const t = userText.trim();
   if (!t) return null;
 
+  const tripCtx = extractTripContextSlice(session, t);
+  if (tripCtx.days != null) {
+    state = { ...state, days: tripCtx.days };
+  }
+  if (tripCtx.travelMonth) {
+    state = { ...state, travelMonth: tripCtx.travelMonth };
+  }
+  if (tripCtx.destination) {
+    state = { ...state, destination: tripCtx.destination };
+  }
+
+  if (isTripContextComplete(tripCtx) && userAsksDateRangeRecommendation(t)) {
+    const dateReply = buildDateRangeRecommendationReply(tripCtx);
+    if (dateReply) {
+      return {
+        summary: dateReply,
+        source: "companion_dialogue",
+        stage: "gathering",
+      };
+    }
+  }
+
   if (userAffirmsTripPlanning(t) && isReadyForPlanningConfirm(state)) {
     return {
-      summary: "好，我來幫你整理一版行程～",
+      summary: ITINERARY_GENERATING_MESSAGE,
       source: "companion_dialogue",
       stage: "planning_confirmed",
       startItinerary: true,
     };
+  }
+
+  if (userRequestsItineraryGeneration(t)) {
+    const prepared = prepareSessionForItineraryGeneration(session, t);
+    if (canAutoGenerateItineraryFromSession(prepared)) {
+      return {
+        summary: ITINERARY_GENERATING_MESSAGE,
+        source: "companion_dialogue",
+        stage: "planning_confirmed",
+        startItinerary: true,
+      };
+    }
+    const destInText = extractKnownDestinationFromText(t);
+    if (destInText) {
+      return {
+        summary: buildWelcomeDestination(destInText),
+        source: "companion_dialogue",
+        stage: "gathering",
+      };
+    }
   }
 
   if (userWantsChatMore(t)) {
@@ -161,7 +216,7 @@ export function resolveCompanionDialogueReply(
     };
   }
 
-  if (destInText && /(玩|去|旅|想|怎麼樣|適合)/.test(t) && !state.travelMonth && state.days == null) {
+  if (destInText && /(玩|去|旅|想|怎麼樣|適合|行程)/.test(t) && !state.travelMonth && state.days == null) {
     return {
       summary: buildWelcomeDestination(destInText),
       source: "companion_dialogue",
@@ -178,14 +233,42 @@ export function resolveCompanionDialogueReply(
     };
   }
 
-  if (/(\d+)\s*天/.test(t) && state.destination && !state.preferences.length) {
+  if (/(\d+)\s*天/.test(t) && state.destination) {
     const m = t.match(/(\d+)\s*天/);
     const days = m ? Number.parseInt(m[1], 10) : state.days;
-    return {
-      summary: buildAskPreferences(state.destination, days ?? state.days),
-      source: "companion_dialogue",
-      stage: "gathering",
-    };
+    const mergedCtx = { ...tripCtx, destination: state.destination, days: days ?? state.days };
+    if (isTripContextComplete(mergedCtx) && userAsksDateRangeRecommendation(t)) {
+      const dateReply = buildDateRangeRecommendationReply(mergedCtx);
+      if (dateReply) {
+        return {
+          summary: dateReply,
+          source: "companion_dialogue",
+          stage: "gathering",
+        };
+      }
+    }
+    if (isTripContextComplete(mergedCtx)) {
+      if (!state.preferences.length) {
+        return {
+          summary: buildCompleteContextFollowUpReply(mergedCtx),
+          source: "companion_dialogue",
+          stage: "gathering",
+        };
+      }
+      return {
+        summary: buildConfirmPrompt({ ...state, days: mergedCtx.days }),
+        source: "companion_dialogue",
+        stage: "confirming",
+        showConfirmChips: true,
+      };
+    }
+    if (!state.preferences.length) {
+      return {
+        summary: buildAskPreferences(state.destination, days ?? state.days),
+        source: "companion_dialogue",
+        stage: "gathering",
+      };
+    }
   }
 
   if (

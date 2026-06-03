@@ -4,7 +4,6 @@ import type { Locale } from "@/lib/i18n/types";
 import {
   readBootstrapDeviceLocation,
   requestDeviceLocation,
-  watchDeviceLocation,
   type LocationPermissionState,
 } from "@/lib/device-location";
 import { invalidateLocationPermissionCache } from "@/lib/location-permission-manager";
@@ -18,7 +17,6 @@ import type { WeatherSummary } from "@/lib/weather-types";
 export type HomeWeatherStatus = "loading" | "ready" | "error";
 
 const FETCH_TIMEOUT_MS = 20_000;
-const LOCATION_REFETCH_MIN_M = 0.05;
 
 export type HomeUserLocation = {
   lat: number;
@@ -56,6 +54,9 @@ export function useHomeWeather(locale: Locale) {
   const loadIdRef = useRef(0);
   const lastCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
   const lastUsedFallbackRef = useRef(false);
+  const foregroundRefreshDoneRef = useRef(false);
+  const loadRef = useRef<() => Promise<void>>(async () => {});
+  const locationPermissionRef = useRef(locationPermission);
 
   const fetchWeatherForCoords = useCallback(
     async (
@@ -171,8 +172,8 @@ export function useHomeWeather(locale: Locale) {
     [],
   );
 
-  const load = useCallback(async () => {
-    const rawLoc = await requestDeviceLocation();
+  const load = useCallback(async (forceGps = false) => {
+    const rawLoc = await requestDeviceLocation(forceGps ? { force: true } : undefined);
     const loc = resolveWeatherLocationFallback(rawLoc);
     applyLocation(loc);
     const first = await fetchWeatherForCoords(loc.lat, loc.lng, {
@@ -195,54 +196,41 @@ export function useHomeWeather(locale: Locale) {
     }
   }, [applyLocation, fetchWeatherForCoords, resolveWeatherLocationFallback]);
 
+  loadRef.current = load;
+  locationPermissionRef.current = locationPermission;
+
   useEffect(() => {
     console.info("[WEATHER_SERVICE_VERSION] v-client-native-002");
     console.info("[HOME_WEATHER] mounted");
-    void load();
+    void loadRef.current();
 
     const retryTimer = window.setTimeout(() => {
       if (!lastUsedFallbackRef.current) return;
       console.info("[LOCATION] retry after fallback");
-      void load();
+      void loadRef.current();
     }, 6000);
 
     const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState === "hidden") {
+        foregroundRefreshDoneRef.current = false;
+        return;
+      }
+      if (foregroundRefreshDoneRef.current) return;
+      foregroundRefreshDoneRef.current = true;
       invalidateLocationPermissionCache({ allowRequestAgain: true });
-      if (lastUsedFallbackRef.current || locationPermission === "denied") {
-        console.info("[LOCATION] resume refresh");
-        void load();
+      if (lastUsedFallbackRef.current || locationPermissionRef.current === "denied") {
+        console.info("[LOCATION] resume refresh (foreground once)");
+        void loadRef.current();
       }
     };
     document.addEventListener("visibilitychange", onVisible);
-
-    const stopWatch = watchDeviceLocation((loc) => {
-      if (loc.usedFallback) return;
-
-      const prev = lastCoordsRef.current;
-      const moved =
-        !prev ||
-        Math.abs(prev.lat - loc.lat) > LOCATION_REFETCH_MIN_M ||
-        Math.abs(prev.lng - loc.lng) > LOCATION_REFETCH_MIN_M;
-
-      if (!moved) return;
-
-      applyLocation(loc);
-      void fetchWeatherForCoords(loc.lat, loc.lng, {
-        city: loc.city,
-        usedFallback: loc.usedFallback,
-        source: loc.source,
-        permission: loc.permission,
-      });
-    });
 
     return () => {
       window.clearTimeout(retryTimer);
       document.removeEventListener("visibilitychange", onVisible);
       loadIdRef.current += 1;
-      stopWatch();
     };
-  }, [load, applyLocation, fetchWeatherForCoords, locationPermission]);
+  }, [applyLocation, fetchWeatherForCoords]);
 
   useEffect(() => {
     if (!weather) return;
@@ -261,6 +249,6 @@ export function useHomeWeather(locale: Locale) {
     userLocation,
     usedFallbackLocation,
     locationPermission,
-    reload: load,
+    reload: () => load(true),
   };
 }

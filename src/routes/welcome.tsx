@@ -72,7 +72,7 @@ function Welcome() {
   const navigate = useNavigate();
   useIosInteractiveRoute("welcome");
   const access = useAccessOptional();
-  const canShowDeveloperTools = access?.canShowDeveloperTools ?? import.meta.env.DEV;
+  const canShowDeveloperTools = access?.canShowDeveloperTools ?? false;
   const [step, setStep] = useState(0);
   const [finishing, setFinishing] = useState(false);
   const isTierStep = step >= INTRO_STEPS.length;
@@ -94,7 +94,7 @@ function Welcome() {
       if (tier === "plus") {
         const billingConfigured = Boolean(clientEnv.revenueCatAppleKey || clientEnv.revenueCatGoogleKey);
         const shouldBypassBilling =
-          import.meta.env.DEV || canShowDeveloperTools || !clientEnv.billingEnabled || !billingConfigured;
+          canShowDeveloperTools || !clientEnv.billingEnabled || !billingConfigured;
         if (shouldBypassBilling) {
           if (access) {
             access.enablePlusTestMode();
@@ -131,12 +131,12 @@ function Welcome() {
     }
   };
 
-  const isDev = import.meta.env.DEV;
+  const isDevResetVisible = access?.canShowDeveloperTools ?? false;
 
   return (
     <MobileFrame>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {isDev ? (
+        {isDevResetVisible ? (
           <button
             type="button"
             className="absolute right-3 top-[max(0.5rem,var(--safe-area-top))] z-20 rounded-full border border-dashed border-border px-2 py-1 text-[10px] text-muted-foreground"

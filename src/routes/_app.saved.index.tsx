@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useI18n } from "@/hooks/use-i18n";
 import { SavedTripCard } from "@/components/saved/SavedTripCard";
+import { PlanCreateNewTripPlusButton } from "@/components/plan/PlanCreateNewTripCard";
 import { SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
@@ -42,6 +43,7 @@ function TripsEmptyState() {
         to="/plan"
         search={{ from: "saved" }}
         className="mt-1 rounded-full bg-primary px-6 py-3 text-sm text-primary-foreground"
+        data-plan-entry="v2"
       >
         規劃第一趟旅程
       </Link>
@@ -215,29 +217,32 @@ function Saved() {
         trips.length === 0 ? (
           <TripsEmptyState />
         ) : (
-          <ul className="mt-6 space-y-3">
-            {trips.map((trip) => (
-              <li key={trip.id}>
-                <SavedTripCard
-                  trip={trip}
-                  deleteSlot={
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setDeleteTarget({ id: trip.id, title: resolveCoreTripTitle(trip) });
-                      }}
-                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
-                      aria-label={t("saved.deleteAria")}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  }
-                />
-              </li>
-            ))}
-          </ul>
+          <div className="mt-6 w-full min-w-0">
+            <ul className="flex w-full min-w-0 flex-col gap-3">
+              {trips.map((trip) => (
+                <li key={trip.id} className="w-full min-w-0">
+                  <SavedTripCard
+                    trip={trip}
+                    deleteSlot={
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDeleteTarget({ id: trip.id, title: resolveCoreTripTitle(trip) });
+                        }}
+                        className="flex h-9 w-9 shrink-0 touch-manipulation items-center justify-center rounded-full text-muted-foreground hover:bg-secondary active:scale-95"
+                        aria-label={t("saved.deleteAria")}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    }
+                  />
+                </li>
+              ))}
+            </ul>
+            <PlanCreateNewTripPlusButton from="saved" />
+          </div>
         )
       ) : places.length === 0 ? (
         <PlacesEmptyState />

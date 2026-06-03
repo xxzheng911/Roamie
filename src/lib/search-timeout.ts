@@ -16,3 +16,7 @@ export async function withSearchTimeout<T>(
     if (timer) clearTimeout(timer);
   }
 }
+
+export function isSearchTimeoutError(message: string): boolean {
+  return /逾時|timeout/i.test(message);
+}

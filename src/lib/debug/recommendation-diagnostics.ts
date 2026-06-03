@@ -6,9 +6,7 @@ import {
   toastCopyResult,
   toastJsonExportResult,
 } from "@/lib/debug/clipboard-export";
-import { isDeveloperBuildEnabled } from "@/lib/access/developer";
-import { readDeveloperUnlocked } from "@/lib/access/storage";
-import { isQaBuildEnabled } from "@/lib/qa-auth/build";
+import { isDeveloperModeUnlocked } from "@/lib/access/developer";
 
 /** 無推薦卡時仍匯出，方便回報 AI / Places 失敗 */
 export type DiagnosticsExportMeta = {
@@ -99,13 +97,9 @@ type DiagnosticsPayload = {
   export_meta?: DiagnosticsExportMeta | null;
 };
 
-/** TestFlight QA / 開發者解鎖後顯示推薦卡診斷（非僅 import.meta.env.DEV） */
+/** 僅 Developer Mode 解鎖後顯示推薦卡診斷 UI（logging 不受影響） */
 export function isDiagnosticsModeEnabled(): boolean {
-  if (import.meta.env.DEV) return true;
-  if (import.meta.env.VITE_DEBUG_DIAGNOSTICS === "1") return true;
-  if (isQaBuildEnabled()) return true;
-  if (isDeveloperBuildEnabled() && readDeveloperUnlocked()) return true;
-  return false;
+  return isDeveloperModeUnlocked();
 }
 
 function summarizePayload(payload: Omit<DiagnosticsPayload, "created_at">): DiagnosticsPayload {

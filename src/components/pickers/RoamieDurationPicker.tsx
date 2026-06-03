@@ -26,6 +26,10 @@ type Props = {
   onChangeMinutes: (minutes: number) => void;
   disabled?: boolean;
   className?: string;
+  /** 按鈕內是否顯示「停留」前綴（外層已有標籤時設 false） */
+  showPrefixLabel?: boolean;
+  /** 緊湊觸發（用於行程卡 pill 內，僅顯示時長數值） */
+  compact?: boolean;
 };
 
 /** 滾輪式停留時間（15 分鐘刻度） */
@@ -34,6 +38,8 @@ export function RoamieDurationPicker({
   onChangeMinutes,
   disabled,
   className,
+  showPrefixLabel = true,
+  compact = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const split = splitDurationMinutes(valueMinutes);
@@ -51,18 +57,21 @@ export function RoamieDurationPicker({
     onChangeMinutes(parseDurationToMinutes(Number(draftH), Number(draftM)));
   };
 
+  const triggerClass = compact
+    ? "border-0 bg-transparent p-0 text-xs font-medium text-foreground transition active:opacity-80 disabled:opacity-50"
+    : "inline-flex items-center gap-1 rounded-lg border border-border bg-secondary px-2 py-0.5 text-xs font-medium text-foreground transition active:scale-[0.98] disabled:opacity-50";
+
   return (
     <>
       <button
         type="button"
         disabled={disabled}
         onClick={() => setOpen(true)}
-        className={cn(
-          "inline-flex items-center gap-1 rounded-lg border border-border bg-secondary px-2 py-0.5 text-xs font-medium text-foreground transition active:scale-[0.98] disabled:opacity-50",
-          className,
-        )}
+        className={cn(triggerClass, className)}
       >
-        <span className="text-muted-foreground">停留</span>
+        {!compact && showPrefixLabel ? (
+          <span className="text-muted-foreground">停留</span>
+        ) : null}
         <span>{formatDurationMinutes(valueMinutes)}</span>
       </button>
 

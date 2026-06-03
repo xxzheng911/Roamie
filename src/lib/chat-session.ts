@@ -175,6 +175,12 @@ export type ChatPlanningSession = {
   fromPlanForm?: boolean;
   /** 規劃表單開場已完成 */
   planHandoffDone?: boolean;
+  /** Plus：規劃表單進入 AI 旅遊顧問模式 */
+  planPlusConsultant?: boolean;
+  planConsultantStage?: "outline" | "gathering" | "ready";
+  /** Plus 顧問模式收集的使用者需求（必須遵守） */
+  planConsultantRequirements?: string[];
+  planConsultantAskedKeys?: string[];
   tripStartDate?: string;
   tripEndDate?: string;
   tripDays?: number;
@@ -600,7 +606,7 @@ export function extractPlanningHintsFromText(
 
 export function canGenerateItinerary(session: ChatPlanningSession): boolean {
   if (session.selectedPlaces.length < 1) return false;
-  if (session.phase === "generating") return false;
+  /** 允許 phase=generating：聊聊已顯示「正在整理行程」後會呼叫 handleGenerateItinerary */
   if (session.phase === "done" && session.draftTrip) return false;
   return true;
 }

@@ -12,6 +12,10 @@ import {
   inferTravelSeason,
   parseMonthNumber,
 } from "@/lib/ai/travel-season";
+import {
+  mergeMustIncludePlaces,
+  parseMustIncludePlaces,
+} from "@/lib/ai/must-include-places";
 
 /** Canonical travel context — merged on every user turn */
 export type CanonicalTravelContext = {
@@ -34,6 +38,8 @@ export type CanonicalTravelContext = {
   setting?: string;
   travelSeason?: string;
   seasonHighlights?: string[];
+  /** 使用者指定必去景點 */
+  mustIncludePlaces?: string[];
 };
 
 export const EMPTY_TRAVEL_CONTEXT: CanonicalTravelContext = {
@@ -82,6 +88,8 @@ function parseDays(text: string): number | undefined {
 }
 
 function parseMonth(text: string, ref = new Date()): string | undefined {
+  const mid = text.match(/(\d{1,2})\s*月\s*中/);
+  if (mid) return `${Number.parseInt(mid[1], 10)}月中`;
   const m = text.match(/(\d{1,2})\s*月/);
   if (m) return `${Number.parseInt(m[1], 10)}月`;
   if (/下個月|下个月/.test(text)) {
@@ -159,7 +167,12 @@ export function parseTravelContextFromText(
     travelMonth: parseMonth(t) ?? (session.travelContext?.travelMonth),
     startDate: session.tripStartDate ?? session.travelDate,
     endDate: session.tripEndDate,
-    days: parseDays(t) ?? session.tripDays,
+    days:
+      parseDays(t) ??
+      session.conversationState?.days ??
+      session.conversationContext?.travelDays ??
+      session.travelContext?.days ??
+      session.tripDays,
     mood: preset?.mood ?? moodHint ?? tiredMood ?? parseVibe(t),
     companion: parseCompanion(t) ?? session.discovery?.companionship,
     interests: parseInterests(t, moodHint),
@@ -170,6 +183,10 @@ export function parseTravelContextFromText(
     tripPurpose: preset?.tripPurpose,
     vibe: parseVibe(t, moodHint) ?? session.discovery?.vibe,
     setting: parseSetting(t, moodHint) ?? session.discovery?.setting,
+    mustIncludePlaces: mergeMustIncludePlaces(
+      session.travelContext?.mustIncludePlaces,
+      parseMustIncludePlaces(t),
+    ),
   };
 }
 
@@ -211,6 +228,10 @@ export function mergeTravelContext(
     weather: session.weather ?? prev.weather ?? null,
     interests: uniqStrings([...prev.interests, ...(parsed.interests ?? [])]),
     tripPurpose: parsed.tripPurpose ?? preset?.tripPurpose ?? prev.tripPurpose,
+    mustIncludePlaces: mergeMustIncludePlaces(
+      prev.mustIncludePlaces,
+      parsed.mustIncludePlaces ?? parseMustIncludePlaces(userText),
+    ),
   };
 
   const normalized = applyCleanDestinationToTravelContext(merged, userText, session);

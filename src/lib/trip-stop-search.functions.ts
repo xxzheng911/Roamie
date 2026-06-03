@@ -3,8 +3,12 @@ import { z } from "zod";
 import {
   placesAutocompleteUrl,
   placeDetailsUrl,
-  PLACE_DETAILS_FIELD_MASK,
+  PLACE_DETAILS_SCREEN_FIELD_MASK,
 } from "@/lib/google-maps-api";
+import {
+  applyAvailabilityFields,
+  derivePlaceAvailability,
+} from "@/lib/filter-available-places";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
@@ -42,9 +46,15 @@ export type ResolvedTripStop = TripStopSuggestion & {
   lat: number | null;
   lng: number | null;
   placeType: string;
+  types?: string[];
   googleMapsUrl: string;
+  googleMapsUri?: string | null;
   photoName: string | null;
   rating: number | null;
+  userRatingCount?: number | null;
+  businessStatus?: string | null;
+  openStatusLabel?: string;
+  todayHoursLabel?: string;
 };
 
 function normalizeGooglePlaceId(raw: string): string {
@@ -163,7 +173,7 @@ export const resolveTripStop = createServerFn({ method: "POST" })
       method: "GET",
       headers: {
         "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": PLACE_DETAILS_FIELD_MASK,
+        "X-Goog-FieldMask": PLACE_DETAILS_SCREEN_FIELD_MASK,
         "Accept-Language": localeToGoogleLanguageCode(userLocale),
       },
     });
@@ -191,7 +201,16 @@ export const resolveTripStop = createServerFn({ method: "POST" })
       primaryType?: string;
       types?: string[];
       rating?: number;
+      userRatingCount?: number;
       photos?: Array<{ name: string }>;
+      businessStatus?: string;
+      currentOpeningHours?: unknown;
+      regularOpeningHours?: unknown;
+      utcOffsetMinutes?: number;
+      websiteUri?: string;
+      googleMapsUri?: string;
+      nationalPhoneNumber?: string;
+      internationalPhoneNumber?: string;
     };
     console.info("[PLACES_DETAILS] raw response=", JSON.stringify(raw).slice(0, 1000));
 
@@ -199,6 +218,14 @@ export const resolveTripStop = createServerFn({ method: "POST" })
     const lat = raw.location?.latitude ?? null;
     const lng = raw.location?.longitude ?? null;
     const effectivePlaceId = normalizeGooglePlaceId(raw.id ?? normalizedPlaceId);
+    const hoursData = {
+      businessStatus: raw.businessStatus ?? null,
+      currentOpeningHours: raw.currentOpeningHours ?? null,
+      regularOpeningHours: raw.regularOpeningHours ?? null,
+      utcOffsetMinutes: raw.utcOffsetMinutes,
+    };
+    const availability = derivePlaceAvailability(hoursData, { context: "lenient" });
+    const hourFields = applyAvailabilityFields({}, availability);
     const place: PlaceResult = {
       id: effectivePlaceId,
       name,
@@ -206,31 +233,42 @@ export const resolveTripStop = createServerFn({ method: "POST" })
       lat,
       lng,
       rating: raw.rating ?? null,
-      userRatingCount: null,
+      userRatingCount: raw.userRatingCount ?? null,
       photoName: raw.photos?.[0]?.name ?? null,
       primaryType: raw.primaryType ?? null,
       types: raw.types ?? null,
-      businessStatus: null,
-      openStatus: "unknown",
-      openStatusLabel: "",
-      todayHoursLabel: "",
-      closingSoonNote: "",
-      nextOpenHint: "",
+      businessStatus: raw.businessStatus ?? null,
+      openStatus: availability.openStatus,
+      openStatusLabel: hourFields.openStatusLabel as string,
+      todayHoursLabel: hourFields.todayHoursLabel as string,
+      closingSoonNote: hourFields.closingSoonNote as string,
+      nextOpenHint: hourFields.nextOpenHint as string,
     };
+
+    const mapsUri = raw.googleMapsUri?.trim() || null;
+    const mapsUrl =
+      mapsUri ||
+      (lat != null && lng != null ? buildPlaceMapsUrl(lat, lng, name) : "");
 
     return {
       stop: {
         placeId: effectivePlaceId,
         label: name,
         secondary: place.address ?? undefined,
+        types: raw.types,
         name,
         address: place.address ?? "",
         lat,
         lng,
         placeType: identityDisplayLabel(resolvePlaceIdentity(place)),
-        googleMapsUrl: buildPlaceMapsUrl(name, lat, lng),
+        googleMapsUrl: mapsUrl,
+        googleMapsUri: mapsUri,
         photoName: place.photoName,
         rating: place.rating,
+        userRatingCount: place.userRatingCount,
+        businessStatus: place.businessStatus,
+        openStatusLabel: place.openStatusLabel,
+        todayHoursLabel: place.todayHoursLabel,
       },
       error: null,
     };

@@ -40,7 +40,17 @@ const DESTINATION_LANDMARKS: Record<string, string[]> = {
     "東大門",
     "汉江公园",
   ],
-  東京: ["淺草寺", "東京鐵塔", "上野公園", "新宿御苑", "澀谷", "秋葉原", "明治神宮"],
+  東京: [
+    "淺草寺",
+    "東京鐵塔",
+    "上野公園",
+    "新宿御苑",
+    "澀谷",
+    "秋葉原",
+    "明治神宮",
+    "富士山",
+    "哈利波特影城",
+  ],
   大阪: ["大阪城", "道頓堀", "通天閣", "環球影城", "心齋橋", "黑門市場"],
   京都: ["清水寺", "伏見稻荷大社", "嵐山", "金閣寺", "祇園", "二条城"],
 };
@@ -49,6 +59,43 @@ function landmarkCandidates(destination: string): string[] {
   const norm = normalizeDestination(destination) ?? destination;
   if (DESTINATION_LANDMARKS[norm]) return DESTINATION_LANDMARKS[norm];
   return [`${norm} 景點`, `${norm} 美食`, `${norm} 市場`, `${norm} 公園`];
+}
+
+function curatedLandmarkPlace(
+  tripLoc: TripLocation,
+  landmark: string,
+  destination: string,
+): ChatPlaceItem {
+  return {
+    name: landmark,
+    placeName: landmark,
+    lat: tripLoc.lat,
+    lng: tripLoc.lng,
+    type: "景點",
+    address: `${destination} ${landmark}`,
+    description: `${landmark} — 可依喜好調整停留時間`,
+    reason: "精選地標（稍後可補齊座標）",
+    reasonSource: "template",
+    estimatedTime: "約 2 小時",
+    recommendationSource: "chat",
+    nearbyPlacesSource: "curated_fallback",
+  };
+}
+
+function appendCuratedLandmarksWithoutSearch(
+  collected: ChatPlaceItem[],
+  existingKeys: Set<string>,
+  tripLoc: TripLocation,
+  destination: string,
+  targetCount: number,
+): void {
+  for (const landmark of landmarkCandidates(destination)) {
+    if (collected.length >= targetCount) break;
+    const key = placeIdentityKey({ placeName: landmark, name: landmark });
+    if (existingKeys.has(key)) continue;
+    existingKeys.add(key);
+    collected.push(curatedLandmarkPlace(tripLoc, landmark, destination));
+  }
 }
 
 function destinationFallbackPlace(
@@ -86,7 +133,10 @@ async function searchLandmark(
       radius: 30_000,
     },
   });
-  if (error) console.warn("[COMPANION_BOOTSTRAP] search error", query, error);
+  if (error) {
+    console.warn("[COMPANION_BOOTSTRAP] search error", query, error);
+    /** 已有 selectedPlaces 時不應因搜尋失敗中斷；此處僅記 log */
+  }
   return filterVerifiedPlaceResults(places).slice(0, 2).map((p) =>
     mapPlaceResultToChatItem(p, {
       locale,
@@ -105,6 +155,26 @@ export async function bootstrapCompanionTripPlaces(
 ): Promise<ChatPlanningSession> {
   const dest = resolveSessionDestination(session);
   const days = session.conversationState?.days ?? session.tripDays ?? 5;
+
+  if (session.selectedPlaces.length > 0) {
+    const tripLoc =
+      (dest ? resolveCuratedTripLocationByDestination(dest) : null) ??
+      session.tripDestination ??
+      null;
+    console.info("[SELECTED_PLACES_READY]", {
+      count: session.selectedPlaces.length,
+      destination: dest,
+      days,
+      skipPlacesSearch: true,
+    });
+    return {
+      ...session,
+      tripDays: days,
+      tripDestination: tripLoc ?? session.tripDestination,
+      lastItineraryGenerationSource: session.lastItineraryGenerationSource ?? "chat",
+    };
+  }
+
   const targetCount = Math.min(12, Math.max(6, days * 2));
 
   const tripLoc =
@@ -122,6 +192,42 @@ export async function bootstrapCompanionTripPlaces(
   const existingKeys = new Set(next.selectedPlaces.map(placeIdentityKey));
   const collected: ChatPlaceItem[] = [...next.selectedPlaces];
 
+  const mustInclude =
+    session.travelContext?.mustIncludePlaces ??
+    session.conversationContext?.mustIncludePlaces ??
+    [];
+
+  if (tripLoc && mustInclude.length > 0) {
+    for (const place of mustInclude) {
+      const query = place.includes(dest ?? tripLoc.city)
+        ? place
+        : `${dest ?? tripLoc.city} ${place}`;
+      try {
+        const items = await searchLandmark(searchFn, query, tripLoc, locale);
+        for (const item of items) {
+          const key = placeIdentityKey(item);
+          if (existingKeys.has(key)) continue;
+          existingKeys.add(key);
+          collected.push(item);
+        }
+        if (items.length === 0) {
+          const key = placeIdentityKey({ placeName: place, name: place });
+          if (!existingKeys.has(key)) {
+            existingKeys.add(key);
+            collected.push(curatedLandmarkPlace(tripLoc, place, dest ?? tripLoc.city));
+          }
+        }
+      } catch (e) {
+        console.warn("[COMPANION_BOOTSTRAP] must-include search failed", query, e);
+        const key = placeIdentityKey({ placeName: place, name: place });
+        if (!existingKeys.has(key)) {
+          existingKeys.add(key);
+          collected.push(curatedLandmarkPlace(tripLoc, place, dest ?? tripLoc.city));
+        }
+      }
+    }
+  }
+
   if (tripLoc && collected.length < targetCount) {
     for (const landmark of landmarkCandidates(dest ?? tripLoc.city)) {
       if (collected.length >= targetCount) break;
@@ -134,9 +240,33 @@ export async function bootstrapCompanionTripPlaces(
           existingKeys.add(key);
           collected.push(item);
         }
+        if (items.length === 0) {
+          const landmarkName = landmark.replace(new RegExp(`^${dest ?? tripLoc.city}\\s*`), "").trim() || landmark;
+          const key = placeIdentityKey({ placeName: landmarkName, name: landmarkName });
+          if (!existingKeys.has(key)) {
+            existingKeys.add(key);
+            collected.push(curatedLandmarkPlace(tripLoc, landmarkName, dest ?? tripLoc.city));
+          }
+        }
       } catch (e) {
         console.warn("[COMPANION_BOOTSTRAP] landmark failed", query, e);
+        const landmarkName = landmark.replace(new RegExp(`^${dest ?? tripLoc.city}\\s*`), "").trim() || landmark;
+        const key = placeIdentityKey({ placeName: landmarkName, name: landmarkName });
+        if (!existingKeys.has(key)) {
+          existingKeys.add(key);
+          collected.push(curatedLandmarkPlace(tripLoc, landmarkName, dest ?? tripLoc.city));
+        }
       }
+    }
+
+    if (collected.length < Math.min(4, targetCount)) {
+      appendCuratedLandmarksWithoutSearch(
+        collected,
+        existingKeys,
+        tripLoc,
+        dest ?? tripLoc.city,
+        targetCount,
+      );
     }
   }
 

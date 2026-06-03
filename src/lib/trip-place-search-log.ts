@@ -2,7 +2,8 @@ import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
 import { isGooglePlacesPermissionError } from "@/lib/places-api-errors";
 import type { TripPlaceFieldRole } from "@/lib/trip/trip-place-ref";
 
-export const TRIP_PLACE_USER_MESSAGE = "暫時找不到這個地點，換個關鍵字試試";
+export const TRIP_PLACE_USER_MESSAGE =
+  "暫時找不到完全符合的地點，要不要換個關鍵字試試？";
 
 function fieldLabel(role: TripPlaceFieldRole): "destination" | "origin" {
   return role === "destination" ? "destination" : "origin";

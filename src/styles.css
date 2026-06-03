@@ -1302,10 +1302,10 @@ html.plan-route-active .bottom-nav {
 }
 
 /**
- * 聊天頁：flex 欄位佈局（header | messages | composer-shell）。
- * 鍵盤位移由 .chat-composer-shell 的 padding-bottom 控制（整組 chips + input 同步移動）。
- * 收起時 .chat-page 保留 Tab Bar 空間。
+ * 聊天頁：header + messages（flex-1）+ fixed .chat-bottom-composer。
+ * 鍵盤開啟時 bottom = keyboardHeight；關閉時 bottom = --app-nav-total-height。
  */
+html.chat-route-active .chat-bottom-composer,
 html.chat-route-active .chat-composer-shell,
 html.chat-route-active .chat-composer {
   z-index: 200;
@@ -1314,8 +1314,8 @@ html.chat-route-active .chat-composer {
   isolation: isolate;
 }
 
-html.chat-route-active .chat-composer-shell {
-  will-change: bottom, padding-bottom;
+html.chat-route-active .chat-bottom-composer {
+  /* 避免 will-change 觸發 iOS WKWebView layout 震盪 */
 }
 
 html.chat-route-active .chat-messages {
@@ -1345,6 +1345,10 @@ html.trip-add-place-keyboard-open .bottom-nav {
 
 html.trip-add-place-keyboard-open main.app-scroll {
   padding-bottom: 0 !important;
+}
+
+.trip-add-place-composer .rounded-2xl {
+  border-radius: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

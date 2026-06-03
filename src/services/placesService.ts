@@ -13,8 +13,15 @@ export type PlaceLite = {
   lat: number | null;
   lng: number | null;
   placeType?: string;
+  types?: string[];
   photoName?: string | null;
   rating?: number | null;
+  userRatingCount?: number | null;
+  businessStatus?: string | null;
+  googleMapsUrl?: string;
+  googleMapsUri?: string;
+  openStatusLabel?: string;
+  todayHoursLabel?: string;
 };
 
 type SearchPlacesFn = typeof searchTripStops;
@@ -57,8 +64,15 @@ export function normalizePlace(
     lat: place.lat ?? null,
     lng: place.lng ?? null,
     placeType: place.placeType,
+    types: place.types,
     photoName: place.photoName ?? null,
     rating: place.rating ?? null,
+    userRatingCount: place.userRatingCount ?? null,
+    businessStatus: place.businessStatus ?? null,
+    googleMapsUrl: place.googleMapsUrl,
+    googleMapsUri: place.googleMapsUri,
+    openStatusLabel: place.openStatusLabel,
+    todayHoursLabel: place.todayHoursLabel,
   };
 }
 
@@ -67,6 +81,7 @@ export async function searchPlaces(
   options?: {
     locale?: Locale;
     center?: { lat: number; lng: number };
+    destination?: string | null;
     sessionToken?: string;
     searchFn?: SearchPlacesFn;
   },
@@ -80,7 +95,11 @@ export async function searchPlaces(
   const searchFn = options?.searchFn ?? searchTripStops;
 
   const result = await autocompleteCache.getOrFetch(key, () =>
-    unifiedSearchTripStops(searchFn, trimmed, locale, options?.center, options?.sessionToken),
+    unifiedSearchTripStops(searchFn, trimmed, locale, {
+      center: options?.center,
+      destination: options?.destination,
+      sessionToken: options?.sessionToken,
+    }),
   );
 
   console.info("[TRIP_PLACE_SEARCH] endpoint=", "placesAutocomplete");

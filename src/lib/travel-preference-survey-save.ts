@@ -3,7 +3,16 @@ import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { broadcastPreferencesUpdate } from "@/lib/preference-events";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { ProfileExtras } from "@/lib/profile-storage";
-import { resolveBudgetMode, setCachedTravelProfileFields } from "@/lib/preferences-storage";
+import {
+  clearCachedTravelProfileFields,
+  resolveBudgetMode,
+  setCachedTravelProfileFields,
+} from "@/lib/preferences-storage";
+import {
+  canonicalTravelStyleFromResult,
+  syncSurveyResultTravelStyle,
+  travelPrefLogPayload,
+} from "@/lib/travel-preference-canonical";
 import { buildTravelProfileFields } from "@/lib/travel-profile-for-ai";
 import {
   buildSurveyResultProfile,
@@ -57,11 +66,12 @@ function buildAiPreferencesExtras(
   prefs: TravelPreferences,
   result: SurveyResultProfile,
 ): ProfileExtras {
+  const travel_style = canonicalTravelStyleFromResult(result);
   return {
-    travelStyle: result.travelStyle,
+    travelStyle: travel_style,
     travelPreferences: prefs.interests ?? [],
     travelPersonality: {
-      type: result.personalityType,
+      type: travel_style,
       summary: result.personalitySummary,
       impression: result.personalityImpression,
     },
@@ -72,7 +82,7 @@ function buildAiPreferencesExtras(
     pacePreference: prefs.pace ?? "",
     vibePreference: prefs.vibe ?? "",
     budgetPreference: resolveBudgetMode(prefs),
-    personalityType: result.personalityType,
+    personalityType: travel_style,
     personalitySummary: result.aiRecommendationSummary,
     updatedAt: new Date().toISOString(),
   };
@@ -107,16 +117,19 @@ export async function saveTravelPreferenceResult(
   userId: string,
   answers: SurveyAnswers,
 ): Promise<SaveTravelPreferenceResultOutcome> {
-  console.info("[SURVEY_SAVE] start userId=", userId);
-
-  const result = buildSurveyResultProfile(answers);
-  console.info("[SURVEY_RESULT] generated=", result.personalityType);
+  const result = syncSurveyResultTravelStyle(buildSurveyResultProfile(answers));
+  const travel_style = canonicalTravelStyleFromResult(result);
+  console.info("[TRAVEL_PREF_SAVE_START]", travelPrefLogPayload(travel_style, travel_style, "survey_complete"));
+  console.info("[SURVEY_RESULT] generated=", result.travelStyle);
 
   const prefs = surveyAnswersToTravelPreferences(answers, result);
+  prefs.personalityType = result.travelStyle;
   const snapshot = snapshotFromPrefs(prefs, result);
 
+  clearCachedTravelProfileFields();
+  clearLocalTravelPreferenceSurvey(userId);
   writeLocalTravelPreferenceSurvey(userId, snapshot);
-  console.info("[SURVEY_SAVE] localSaved=true");
+  console.info("[TRAVEL_PREF_CACHE_CLEARED]", travelPrefLogPayload(result.travelStyle, result.travelStyle, "pre_supabase_write"));
 
   await ensureUserProfile(userId);
 
@@ -124,7 +137,7 @@ export async function saveTravelPreferenceResult(
   const completedAt = prefs.surveyCompletedAt ?? new Date().toISOString();
 
   const personalityPayload = {
-    type: result.personalityType,
+    type: result.travelStyle,
     summary: result.personalitySummary,
     impression: result.personalityImpression,
   };
@@ -132,7 +145,9 @@ export async function saveTravelPreferenceResult(
   const patch = {
     travel_personality: {
       ...prefs,
+      personalityType: result.travelStyle,
       personality: personalityPayload,
+      resultProfile: result,
       updated_at: completedAt,
     } as never,
     travel_style: result.travelStyle,
@@ -188,28 +203,53 @@ export async function saveTravelPreferenceResult(
     console.error("[SURVEY_SAVE] error=", msg);
     throw new Error(msg);
   }
+
+  const savedStyle = canonicalTravelStyleFromResult(result);
+  const verifiedStyle = (verify.travel_style ?? "").trim();
+  if (verifiedStyle && verifiedStyle !== savedStyle) {
+    console.warn("[TRAVEL_PREF_SAVE] travel_style mismatch — repairing", {
+      expected: savedStyle,
+      got: verifiedStyle,
+    });
+    const { error: repairError } = await supabase
+      .from("profiles")
+      .update({ travel_style: savedStyle })
+      .eq("id", userId);
+    if (repairError) {
+      console.error("[SURVEY_SAVE] travel_style repair failed", repairError.message);
+    } else {
+      verify.travel_style = savedStyle;
+    }
+  }
+
+  console.info("[TRAVEL_PREF_SAVE_SUCCESS]", travelPrefLogPayload(savedStyle, savedStyle, "supabase"));
   console.info("[SURVEY_SAVE] supabaseSaved=true", {
     survey_completed_at: verify.survey_completed_at,
-    travel_style: verify.travel_style,
+    travel_style: savedStyle,
   });
   console.info("[SURVEY_SAVE] success");
-  broadcastPreferencesUpdate(prefs);
+
+  const reloaded = await loadTravelPreferenceSurveyForUser(userId);
+  const reloadStyle = canonicalTravelStyleFromResult(reloaded?.resultProfile ?? result);
+  console.info("[TRAVEL_PREF_RELOAD_SUCCESS]", travelPrefLogPayload(reloadStyle, reloadStyle, "post_save"));
+
+  broadcastPreferencesUpdate({ ...prefs, personalityType: savedStyle, resultProfile: result });
   setCachedTravelProfileFields(
     buildTravelProfileFields(
       {
         travel_personality: patch.travel_personality,
-        travel_style: verify.travel_style,
+        travel_style: savedStyle,
         travel_preferences: prefs.interests,
         travel_tags: verify.travel_tags,
         survey_completed: verify.survey_completed,
         survey_completed_at: verify.survey_completed_at,
-        ai_preferences: aiExtras,
+        ai_preferences: { ...aiExtras, travelStyle: savedStyle, personalityType: savedStyle },
       },
-      prefs,
+      { ...prefs, personalityType: savedStyle, resultProfile: result },
     ),
   );
 
-  return { prefs, result, localSaved: true, supabaseSaved };
+  return { prefs: { ...prefs, personalityType: savedStyle, resultProfile: result }, result, localSaved: true, supabaseSaved };
 }
 
 export type ProfileSurveyRow = {
@@ -233,7 +273,11 @@ export function mergeTravelPreferencesFromProfileRow(
 
   const resultFromRemote = remotePersonality.resultProfile;
   const resultFromLocal = local?.resultProfile;
-  const resultProfile = resultFromRemote ?? resultFromLocal;
+  const resultProfileRaw = resultFromRemote ?? resultFromLocal;
+  const resultProfile = resultProfileRaw
+    ? syncSurveyResultTravelStyle(resultProfileRaw)
+    : undefined;
+  const canonicalStyle = canonicalTravelStyleFromResult(resultProfile);
 
   const extras = (row?.ai_preferences ?? {}) as {
     pacePreference?: string;
@@ -268,9 +312,10 @@ export function mergeTravelPreferencesFromProfileRow(
       undefined,
     onboarded: remoteCompleted || localCompleted || remotePersonality.onboarded,
     personalityType:
-      remotePersonality.personalityType ??
-      local?.prefs.personalityType ??
-      (typeof row?.travel_style === "string" ? row.travel_style : undefined),
+      canonicalStyle ||
+      remotePersonality.personalityType ||
+      local?.prefs.personalityType ||
+      undefined,
     personalitySummary:
       remotePersonality.personalitySummary ?? local?.prefs.personalitySummary,
     interests:
@@ -324,17 +369,30 @@ export async function loadTravelPreferenceSurveyForUser(
         })
       : null);
 
-  console.info("[PROFILE_SURVEY] loaded survey_completed=", completed);
-  console.info("[PROFILE_SURVEY] result=", result?.personalityType ?? "none");
+  const syncedResult = result ? syncSurveyResultTravelStyle(result) : null;
+  const travel_style = canonicalTravelStyleFromResult(syncedResult);
 
-  if (!completed || !result) return null;
+  console.info("[PROFILE_SURVEY] loaded survey_completed=", completed);
+  console.info("[PROFILE_SURVEY] result=", travel_style || "none");
+  console.info(
+    "[PROFILE_SURVEY] travel_style=",
+    travel_style || "(none)",
+  );
+
+  if (!completed || !syncedResult) return null;
 
   return {
-    prefs: { ...prefs, surveyCompleted: true, onboarded: true, resultProfile: result },
-    resultProfile: result,
+    prefs: {
+      ...prefs,
+      surveyCompleted: true,
+      onboarded: true,
+      resultProfile: syncedResult,
+      personalityType: travel_style,
+    },
+    resultProfile: syncedResult,
     surveyCompleted: true,
     surveyCompletedAt: data?.survey_completed_at ?? prefs.surveyCompletedAt ?? null,
-    travelStyle: data?.travel_style ?? result.travelStyle,
+    travelStyle: travel_style,
     travelPreferences: Array.isArray(data?.travel_preferences)
       ? (data.travel_preferences as string[])
       : (prefs.interests ?? []),

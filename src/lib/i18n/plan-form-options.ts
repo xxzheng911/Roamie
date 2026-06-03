@@ -62,15 +62,7 @@ export function getPlanStyleOptions(locale: Locale): string[] {
   }
 }
 
-export function getPlanMoodOptions(locale: Locale): string[] {
-  switch (locale) {
-    case "en":
-      return ["Need a break", "Solo time", "Rainy day", "Late-night walk", "Coffee hunt", "By the sea"];
-    case "ja":
-      return ["のんびり", "ひとり", "雨の日", "深夜散歩", "カフェ探し", "海"];
-    case "ko":
-      return ["쉬고 싶어", "혼자", "비 오는 날", "심야 산책", "카페", "바다"];
-    default:
-      return ["想放空", "一個人", "下雨天", "深夜散步", "找咖啡", "看海"];
-  }
+/** @deprecated 規劃頁 v2 已移除「今天的心情」區塊 */
+export function getPlanMoodOptions(_locale: Locale): string[] {
+  return [];
 }

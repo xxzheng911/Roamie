@@ -42,10 +42,13 @@ export type PlaceAvailability = {
   /** 卡片顯示：營業中 / 目前未營業 / 即將打烊；已停業則不推薦故無 label */
   displayStatus: string;
   todayHoursLabel: string;
+  /** 營業中時：營業至 HH:mm */
+  closesAtLabel: string;
   closingSoonNote: string;
   nextOpenHint: string;
   sortWeight: number;
   isRecommendable: boolean;
+  hoursSourceField: OpeningHoursSourceField;
 };
 
 export type FilterPlacesContext = "now" | "scheduled" | "lenient";
@@ -228,6 +231,73 @@ function getTodayHoursFromDescriptions(data: PlaceHoursData, at: Date): string {
   return hoursPart || line;
 }
 
+/** regularOpeningHours.periods 推算今日時段（Descriptions 缺或語系不符時） */
+export function formatTodayHoursFromPeriods(data: PlaceHoursData, at: Date): string {
+  const periods = data.regularOpeningHours?.periods;
+  if (!periods?.length) return "";
+
+  const local = localInstant(at, data.utcOffsetMinutes);
+  const dow = local.getDay();
+  const segments: string[] = [];
+
+  for (const period of periods) {
+    if (period.open?.day !== dow) continue;
+    const oh = period.open.hour ?? 0;
+    const om = period.open.minute ?? 0;
+    let closePart = "";
+    if (period.close && (period.close.day ?? dow) === dow) {
+      closePart = formatTimeHm(period.close.hour ?? 0, period.close.minute ?? 0);
+    }
+    segments.push(closePart ? `${formatTimeHm(oh, om)}–${closePart}` : `${formatTimeHm(oh, om)}–`);
+  }
+
+  return segments.join(", ");
+}
+
+function formatClosesAtLabel(data: PlaceHoursData, at: Date): string {
+  const nextClose = data.currentOpeningHours?.nextCloseTime;
+  if (!nextClose) return "";
+  const closeAt = new Date(nextClose);
+  if (Number.isNaN(closeAt.getTime())) return "";
+  const local = localInstant(closeAt, data.utcOffsetMinutes);
+  return `營業至 ${formatTimeHm(local.getHours(), local.getMinutes())}`;
+}
+
+export type OpeningHoursSourceField =
+  | "currentOpeningHours.openNow"
+  | "currentOpeningHours.weekdayDescriptions"
+  | "regularOpeningHours.weekdayDescriptions"
+  | "regularOpeningHours.periods"
+  | "businessStatus"
+  | "none";
+
+export function inferOpeningHoursSourceField(
+  data: PlaceHoursData,
+  availability: PlaceAvailability,
+): OpeningHoursSourceField {
+  if (
+    availability.openStatus === "open" ||
+    availability.openStatus === "closing_soon" ||
+    availability.openStatus === "closed_now"
+  ) {
+    if (data.currentOpeningHours?.openNow !== undefined) {
+      return "currentOpeningHours.openNow";
+    }
+  }
+  if (availability.businessStatus) return "businessStatus";
+  const todayRaw = getTodayHoursFromDescriptions(data, new Date());
+  if (todayRaw) {
+    if (data.regularOpeningHours?.weekdayDescriptions?.length) {
+      return "regularOpeningHours.weekdayDescriptions";
+    }
+    return "currentOpeningHours.weekdayDescriptions";
+  }
+  if (data.regularOpeningHours?.periods?.length) {
+    return "regularOpeningHours.periods";
+  }
+  return "none";
+}
+
 function isOpenAtScheduled(data: PlaceHoursData, at: Date, atTime?: string): boolean | null {
   const periods = data.regularOpeningHours?.periods;
   if (!periods?.length) return null;
@@ -265,33 +335,40 @@ export function derivePlaceAvailability(
   const at = options.at ?? new Date();
   const biz = (data.businessStatus ?? "").toUpperCase();
 
+  const emptyAvailability = (
+    partial: Partial<PlaceAvailability> & Pick<PlaceAvailability, "openStatus" | "sortWeight" | "isRecommendable">,
+  ): PlaceAvailability => ({
+    businessStatus: data.businessStatus ?? null,
+    displayStatus: "",
+    todayHoursLabel: "",
+    closesAtLabel: "",
+    closingSoonNote: "",
+    nextOpenHint: "",
+    hoursSourceField: "none",
+    ...partial,
+  });
+
   if (biz === "CLOSED_PERMANENTLY") {
-    return {
-      businessStatus: data.businessStatus ?? null,
+    return emptyAvailability({
       openStatus: "permanently_closed",
-      displayStatus: "",
-      todayHoursLabel: "",
-      closingSoonNote: "",
-      nextOpenHint: "",
       sortWeight: 99,
       isRecommendable: false,
-    };
+      hoursSourceField: "businessStatus",
+    });
   }
 
   if (biz === "CLOSED_TEMPORARILY") {
-    return {
-      businessStatus: data.businessStatus ?? null,
+    return emptyAvailability({
       openStatus: "temporarily_closed",
-      displayStatus: "",
-      todayHoursLabel: "",
-      closingSoonNote: "",
-      nextOpenHint: "",
+      displayStatus: "暫時歇業",
       sortWeight: 98,
-      isRecommendable: false,
-    };
+      isRecommendable: context === "lenient",
+      hoursSourceField: "businessStatus",
+    });
   }
 
-  const todayRaw = getTodayHoursFromDescriptions(data, at);
+  const todayRaw =
+    getTodayHoursFromDescriptions(data, at) || formatTodayHoursFromPeriods(data, at);
   const hasHoursData =
     data.currentOpeningHours?.openNow !== undefined ||
     !!todayRaw ||
@@ -300,34 +377,48 @@ export function derivePlaceAvailability(
   const todayHoursLabel = hasHoursData
     ? todayRaw
       ? `今日 ${todayRaw}`
-      : "營業時間待確認"
-    : "營業時間待確認";
+      : ""
+    : "";
+
+  const buildAvailability = (
+    partial: Partial<PlaceAvailability> &
+      Pick<PlaceAvailability, "openStatus" | "sortWeight" | "isRecommendable">,
+  ): PlaceAvailability => {
+    const merged: PlaceAvailability = {
+      businessStatus: data.businessStatus ?? null,
+      displayStatus: partial.displayStatus ?? "",
+      todayHoursLabel: partial.todayHoursLabel ?? todayHoursLabel,
+      closesAtLabel: partial.closesAtLabel ?? "",
+      closingSoonNote: partial.closingSoonNote ?? "",
+      nextOpenHint: partial.nextOpenHint ?? "",
+      openStatus: partial.openStatus,
+      sortWeight: partial.sortWeight,
+      isRecommendable: partial.isRecommendable,
+      hoursSourceField: partial.hoursSourceField ?? "none",
+    };
+    if (merged.hoursSourceField === "none") {
+      merged.hoursSourceField = inferOpeningHoursSourceField(data, merged);
+    }
+    return merged;
+  };
 
   if (context === "scheduled") {
     const scheduledOpen = isOpenAtScheduled(data, at, options.atTime);
     if (scheduledOpen === false) {
-      return {
-        businessStatus: data.businessStatus ?? null,
+      return buildAvailability({
         openStatus: "closed_now",
-        displayStatus: "目前未營業",
-        todayHoursLabel,
-        closingSoonNote: "",
-        nextOpenHint: "",
+        displayStatus: "已打烊",
         sortWeight: 10,
         isRecommendable: false,
-      };
+      });
     }
     if (scheduledOpen === true) {
-      return {
-        businessStatus: data.businessStatus ?? null,
+      return buildAvailability({
         openStatus: "open",
         displayStatus: "營業中",
-        todayHoursLabel,
-        closingSoonNote: "",
-        nextOpenHint: "",
         sortWeight: 0,
         isRecommendable: true,
-      };
+      });
     }
   }
 
@@ -335,16 +426,13 @@ export function derivePlaceAvailability(
   if (!hours || hours.openNow === undefined) {
     const inferredNow = isOpenAtScheduled(data, at);
     if (inferredNow === true) {
-      return {
-        businessStatus: data.businessStatus ?? null,
+      return buildAvailability({
         openStatus: "open",
         displayStatus: "營業中",
-        todayHoursLabel,
-        closingSoonNote: "",
-        nextOpenHint: "",
         sortWeight: 0,
         isRecommendable: true,
-      };
+        hoursSourceField: "regularOpeningHours.periods",
+      });
     }
     if (inferredNow === false) {
       let nextOpenHint = "";
@@ -352,28 +440,21 @@ export function derivePlaceAvailability(
       if (next) {
         nextOpenHint = formatNextOpenLabel(next, localInstant(at, data.utcOffsetMinutes));
       }
-      return {
-        businessStatus: data.businessStatus ?? null,
+      return buildAvailability({
         openStatus: "closed_now",
-        displayStatus: "目前未營業",
-        todayHoursLabel,
-        closingSoonNote: "",
+        displayStatus: "已打烊",
         nextOpenHint,
         sortWeight: nextOpenHint ? 5 : 12,
         isRecommendable: context === "lenient",
-      };
+        hoursSourceField: "regularOpeningHours.periods",
+      });
     }
     const lateNight = isLateNightMode(at);
-    return {
-      businessStatus: data.businessStatus ?? null,
+    return buildAvailability({
       openStatus: "unknown",
-      displayStatus: "",
-      todayHoursLabel,
-      closingSoonNote: "",
-      nextOpenHint: "",
       sortWeight: lateNight ? 6 : 4,
       isRecommendable: true,
-    };
+    });
   }
 
   if (!hours.openNow) {
@@ -386,16 +467,14 @@ export function derivePlaceAvailability(
         nextOpenHint = formatNextOpenLabel(next, localInstant(at, data.utcOffsetMinutes));
       }
     }
-    return {
-      businessStatus: data.businessStatus ?? null,
+    return buildAvailability({
       openStatus: "closed_now",
-      displayStatus: "目前未營業",
-      todayHoursLabel,
-      closingSoonNote: "",
+      displayStatus: "已打烊",
       nextOpenHint,
       sortWeight: nextOpenHint ? 5 : 12,
       isRecommendable: context === "lenient",
-    };
+      hoursSourceField: "currentOpeningHours.openNow",
+    });
   }
 
   let closingSoonNote = "";
@@ -407,16 +486,17 @@ export function derivePlaceAvailability(
     }
   }
 
-  return {
-    businessStatus: data.businessStatus ?? null,
+  const closesAtLabel = formatClosesAtLabel(data, at);
+
+  return buildAvailability({
     openStatus: closingSoonNote ? "closing_soon" : "open",
     displayStatus: closingSoonNote ? "即將打烊" : "營業中",
-    todayHoursLabel,
+    closesAtLabel,
     closingSoonNote,
-    nextOpenHint: "",
     sortWeight: closingSoonNote ? 1 : 0,
     isRecommendable: true,
-  };
+    hoursSourceField: "currentOpeningHours.openNow",
+  });
 }
 
 export type WithAvailability<T> = T & {
@@ -467,14 +547,10 @@ export function isPlaceAvailableNow(
     return true;
   }
 
-  /** 心情／聊天推薦：保留休息中地點（卡片顯示「休息中」），只排除永久／暫停營業 */
+  /** 心情／首頁附近：保留休息中／暫時歇業地點，只排除永久歇業 */
   if (context === "lenient") {
-    if (
-      availability.openStatus === "permanently_closed" ||
-      availability.openStatus === "temporarily_closed"
-    ) {
-      return false;
-    }
+    if (availability.openStatus === "permanently_closed") return false;
+    if (availability.openStatus === "temporarily_closed") return true;
     return availability.isRecommendable;
   }
 
@@ -546,6 +622,7 @@ export function applyAvailabilityFields<T extends Record<string, unknown>>(
 ): T & {
   openStatusLabel: string;
   todayHoursLabel: string;
+  closesAtLabel: string;
   closingSoonNote: string;
   nextOpenHint: string;
 } {
@@ -553,6 +630,7 @@ export function applyAvailabilityFields<T extends Record<string, unknown>>(
     ...item,
     openStatusLabel: availability.displayStatus,
     todayHoursLabel: availability.todayHoursLabel,
+    closesAtLabel: availability.closesAtLabel,
     closingSoonNote: availability.closingSoonNote,
     nextOpenHint: availability.nextOpenHint,
   };

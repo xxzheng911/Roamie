@@ -26,8 +26,8 @@ import {
 } from "@/lib/notification-permission";
 import { detectPlatform } from "@/services/platform";
 import { getUserProfile, saveProfileNotifications } from "@/lib/profile-storage";
-import { isDeveloperBuildEnabled, unlockDeveloperMode } from "@/lib/access/developer";
-import { isQaBuildEnabled } from "@/lib/qa-auth/build";
+import { APP_BUILD_NUMBER, APP_MARKETING_VERSION } from "@/constants/app";
+import { unlockDeveloperMode } from "@/lib/access/developer";
 import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
 import { openAppSettings } from "@/lib/open-app-settings";
 
@@ -51,10 +51,6 @@ function SettingsPage() {
   const navigate = useNavigate();
   const [signingOut, setSigningOut] = useState(false);
   const {
-    effectiveTier,
-    subscriptionState,
-    hasPlusAccess,
-    canShowDeveloperTools,
     refresh: refreshAccess,
   } = useAccess();
   const [devTapCount, setDevTapCount] = useState(0);
@@ -64,7 +60,8 @@ function SettingsPage() {
   const [savingNotif, setSavingNotif] = useState(false);
   const [languageDialogOpen, setLanguageDialogOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
-  const devMode = isDeveloperBuildEnabled();
+
+  const versionLabel = `Roamie v${APP_MARKETING_VERSION} (Build ${APP_BUILD_NUMBER})`;
 
   const syncNotificationsFromDevice = useCallback(async () => {
     if (detectPlatform().isNative) {
@@ -303,38 +300,29 @@ function SettingsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {devMode ? (
-        <p className="mt-5 text-sm text-muted-foreground">
-          Free / Roamie Plus 測試請至「我」個人頁。
+      <section className="mt-5 overflow-hidden rounded-3xl border border-border bg-card">
+        <p className="border-b border-border px-6 py-2.5 text-[15px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          {t("settings.about")}
         </p>
-      ) : null}
-
-      {canShowDeveloperTools && isQaBuildEnabled() ? (
-        <Link
-          to="/developer"
-          className="mt-4 flex w-full items-center justify-center rounded-full border border-dashed border-amber-500/50 py-3 text-sm font-medium text-amber-900 dark:text-amber-100"
+        <button
+          type="button"
+          onClick={() => {
+            const next = devTapCount + 1;
+            setDevTapCount(next);
+            if (next >= 7) {
+              unlockDeveloperMode();
+              window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT));
+              refreshAccess();
+              toast.success("Developer Mode 已開啟");
+              setDevTapCount(0);
+            }
+          }}
+          className="flex w-full flex-col items-start gap-0.5 px-8 py-4 text-left"
         >
-          QA 開發者工具
-        </Link>
-      ) : null}
-
-      <button
-        type="button"
-        onClick={() => {
-          const next = devTapCount + 1;
-          setDevTapCount(next);
-          if (next >= 7 && import.meta.env.DEV) {
-            unlockDeveloperMode();
-            window.dispatchEvent(new CustomEvent(ACCESS_CHANGED_EVENT));
-            refreshAccess();
-            toast.success("Developer Mode 已解鎖");
-            setDevTapCount(0);
-          }
-        }}
-        className="mt-6 w-full py-1 text-center text-[10px] text-muted-foreground/30"
-      >
-        Roamie · {effectiveTier}
-      </button>
+          <p className="text-[15px]">{t("settings.aboutApp")}</p>
+          <p className="text-sm text-muted-foreground">{versionLabel}</p>
+        </button>
+      </section>
 
       <button
         type="button"

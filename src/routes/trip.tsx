@@ -163,7 +163,7 @@ function Trip() {
       clearDraftTrip();
       toast.success("已儲存到收藏");
       logTripNav("trip-draft-saved", saved.id);
-      navigate(tripDetailNavigateOptions(saved.id, { back: "saved", replace: true }));
+      navigate(tripDetailNavigateOptions(saved.id, { from: "plan", replace: true }));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "儲存失敗");
     }

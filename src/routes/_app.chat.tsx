@@ -1,17 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
-import { runWhenCapacitorBridgeReady } from "@/lib/capacitor-bridge-ready";
 import {
-  estimateNativeKeyboardHeight,
+  CHAT_MESSAGES_COMPOSER_GAP_PX,
   isCapacitorNativeShell,
-  logComposerLayoutSnapshot,
-  measureVisualViewportKeyboardInset,
-  parseKeyboardEventHeight,
-  resolveComposerBottomInset,
 } from "@/lib/chat-keyboard-layout";
 import { ChatComposer } from "@/components/chat/ChatComposer";
+import { useChatKeyboardLayout } from "@/hooks/use-chat-keyboard-layout";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
-import { setIosSnapshotLiveInteractionForced, requestIosSnapshotRefresh, ensureIosLoginLiveInteraction } from "@/lib/ios-snapshot-bridge";
+import { setIosSnapshotLiveInteractionForced, ensureIosLoginLiveInteraction } from "@/lib/ios-snapshot-bridge";
 import { useServerFn } from "@tanstack/react-start";
 import { Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { BackButton } from "@/components/BackButton";
@@ -76,17 +72,33 @@ import {
   isReadyForPlanningConfirm,
   resolveSessionDestination,
   shouldOrchestrateCompanion,
+  syncConversationState,
   userAffirmsTripPlanning,
 } from "@/lib/ai/conversation-state";
 import { bootstrapCompanionTripPlaces } from "@/lib/planning/companion-itinerary-bootstrap";
+import {
+  canAutoGenerateItineraryFromSession,
+  ITINERARY_GENERATION_FAILED_MESSAGE,
+  ITINERARY_GENERATING_MESSAGE,
+  prepareSessionForItineraryGeneration,
+  shouldAutoStartItineraryFromChat,
+  userRequestsItineraryGeneration,
+} from "@/lib/ai/itinerary-trigger";
+import { attachDayPlansToPayload } from "@/lib/trip/build-day-plans";
 import { recommendationsForChatDisplay } from "@/lib/chat-display-recommendations";
 import {
   appendAssistantToConversation,
   buildAssistantChatMsg,
   CHAT_PIPELINE_FALLBACK,
-  conversationMissingAssistantReply,
   resolveInstantChatReply,
 } from "@/lib/chat/chat-pipeline";
+import {
+  appendAssistantMessageToConversation,
+  assistantMessageIsVisible,
+  conversationMissingAssistantReply,
+  logAiResponseSkipped,
+  logChatFallbackShown,
+} from "@/lib/chat/chat-append-assistant";
 import {
   getAssistantDisplayText,
   hasMeaningfulRoamiePayload,
@@ -154,7 +166,39 @@ import {
   isMoodHandoffDoneForRec,
   clearMoodHandoffStorage,
 } from "@/lib/mood-chat-handoff";
-import { buildPlanTripHandoffOpening, markPlanHandoffComplete } from "@/lib/plan-trip-handoff";
+import {
+  buildPlanTripHandoffOpening,
+  markPlanHandoffComplete,
+  planTripFormFromSession,
+} from "@/lib/plan-trip-handoff";
+import { generateAndSaveItineraryFromPlan } from "@/lib/trip/generate-itinerary-from-plan";
+import {
+  buildDateRangeRecommendationReply,
+  decideAiNextStep,
+  extractTripContextSlice,
+  isTripContextComplete,
+  logAiNextStepDecision,
+  logChatContextMerged,
+  logTripContextCompleteness,
+  userAsksDateRangeRecommendation,
+} from "@/lib/ai/trip-context-completeness";
+import {
+  buildStructuredChatItinerary,
+  countMustPlacesInItinerary,
+} from "@/lib/ai/structured-chat-itinerary";
+import {
+  buildSafeItineraryGeneratorPayload,
+  logItineraryGeneratorFailed,
+  logItinerarySafePayloadReady,
+} from "@/lib/trip/safe-itinerary-payload";
+import {
+  appendPlanConsultantRequirements,
+  buildPlusPlanConsultantOpening,
+  extractPlanConsultantRequirementsFromText,
+  markPlanConsultantQuestionAsked,
+  resolvePlusPlanConsultantReply,
+} from "@/lib/plan/plus-plan-consultant";
+import { buildLongTermMemory } from "@/lib/ai/memory/long-term-memory";
 import { buildContextBundleForTrip } from "@/lib/fetch-context";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import { useI18n } from "@/hooks/use-i18n";
@@ -362,12 +406,14 @@ function withChatTimeout<T>(promise: Promise<T>, ms: number, signal?: AbortSigna
   });
 }
 
+const CHAT_UI_STUCK_MESSAGE =
+  "Roamie 剛剛有回覆，但畫面更新時卡住了，請再試一次。";
+
 function Chat() {
   useIosInteractiveRoute("chat");
   useEffect(() => {
     ensureIosLoginLiveInteraction();
     setIosSnapshotLiveInteractionForced(true);
-    requestIosSnapshotRefresh("chat-mount", { force: true });
   }, []);
 
   const { t, locale } = useI18n();
@@ -399,8 +445,7 @@ function Chat() {
   const headerRef = useRef<HTMLElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const composerShellRef = useRef<HTMLDivElement>(null);
-  const keyboardOpenRef = useRef(false);
+  const bottomComposerRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const handoffStartedRef = useRef<string | null>(null);
   const homeMoodOpenerStartedRef = useRef<string | null>(null);
@@ -409,45 +454,40 @@ function Chat() {
   const busySinceRef = useRef<number | null>(null);
   const streamingRef = useRef(false);
   const generatingRef = useRef(false);
+  const itineraryGenInFlightRef = useRef(false);
+  const [itineraryStuckDraftOffer, setItineraryStuckDraftOffer] = useState(false);
+  const itineraryStuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   streamingRef.current = streaming;
   generatingRef.current = generating;
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const [reportedKeyboardHeightPx, setReportedKeyboardHeightPx] = useState(0);
-  /** 鍵盤動畫結束後強制重算 composer inset（native resize 後 clearance 才準） */
-  const [composerLayoutRev, setComposerLayoutRev] = useState(0);
-  const [composerPadPx, setComposerPadPx] = useState(140);
+
+  useEffect(() => {
+    if (!generating) {
+      setItineraryStuckDraftOffer(false);
+      if (itineraryStuckTimerRef.current) {
+        clearTimeout(itineraryStuckTimerRef.current);
+        itineraryStuckTimerRef.current = null;
+      }
+      return;
+    }
+    itineraryStuckTimerRef.current = setTimeout(() => {
+      setItineraryStuckDraftOffer(true);
+    }, 15_000);
+    return () => {
+      if (itineraryStuckTimerRef.current) {
+        clearTimeout(itineraryStuckTimerRef.current);
+        itineraryStuckTimerRef.current = null;
+      }
+    };
+  }, [generating]);
   const autoPromptHandledRef = useRef(false);
   const preservedChatRestoredRef = useRef(false);
-  const keyboardLayoutRef = useRef({ visible: false, height: 0 });
-  const composerPadRef = useRef(140);
   const scrollEndScheduledRef = useRef(false);
+  const lastScrollMsgCountRef = useRef(0);
+  const sendInFlightRef = useRef(false);
 
   // 快捷列固定顯示，避免鍵盤開啟/輸入時整條消失。
   const showShortcutChips = true;
 
-  const composerBottomInset = useMemo(
-    () =>
-      resolveComposerBottomInset({
-        keyboardVisible,
-        reportedKeyboardHeightPx,
-        composerShellEl: composerShellRef.current,
-      }),
-    [keyboardVisible, reportedKeyboardHeightPx, composerLayoutRev],
-  );
-
-  useEffect(() => {
-    const el = composerShellRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      const h = Math.round(el.getBoundingClientRect().height);
-      const nextPad = h + 10;
-      if (nextPad === composerPadRef.current) return;
-      composerPadRef.current = nextPad;
-      setComposerPadPx(nextPad);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [keyboardVisible, showShortcutChips]);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const fetchWeather = useServerFn(getWeather);
@@ -493,6 +533,17 @@ function Chat() {
     scheduleSaveConversationContext(next);
   }, []);
 
+  const showChatUiFallback = useCallback((reason: string) => {
+    logChatFallbackShown(reason);
+    toast.message(CHAT_UI_STUCK_MESSAGE);
+  }, []);
+
+  const applyMsgsToChat = useCallback((next: ChatMsg[]) => {
+    msgsRef.current = next;
+    setMsgs(next);
+    return next;
+  }, []);
+
   const commitAssistantReply = useCallback(
     (
       conversation: ChatMsg[],
@@ -502,7 +553,7 @@ function Chat() {
       roamieExtra?: Partial<RoamieResponse>,
     ) => {
       const text = summary.trim() || buildContextPreservingChatFallback(activeSession);
-      const last = conversation.at(-1);
+      console.info("[AI_RESPONSE_RECEIVED]", { source, excerpt: text.slice(0, 120) });
       const roamie: Partial<RoamieResponse> = {
         title: "",
         summary: text,
@@ -511,18 +562,47 @@ function Chat() {
         itinerary: roamieExtra?.itinerary ?? [],
         ...roamieExtra,
       };
-      const next =
-        last?.role === "assistant"
-          ? replaceTrailingAssistantMessage(conversation, text, roamie)
-          : appendAssistantToConversation(conversation, text, activeSession);
-      setMsgs(next);
-      msgsRef.current = next;
-      console.info("[CHAT_ASSISTANT_MESSAGE_ADDED]", { source, excerpt: text.slice(0, 80) });
-      console.info("[CHAT_RENDER_COMPLETE]");
+      const { conversation: next, ok, error } = appendAssistantMessageToConversation(
+        conversation,
+        text,
+        activeSession,
+        roamie,
+      );
+      if (!ok) {
+        console.error("[CHAT_RENDER_ERROR]", error);
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+      applyMsgsToChat(next);
+      console.info("[CHAT_ASSISTANT_MESSAGE_APPENDED]", {
+        source,
+        messageCount: next.length,
+        lastMessageRole: next.at(-1)?.role ?? null,
+        excerpt: text.slice(0, 80),
+      });
       return next;
     },
-    [],
+    [applyMsgsToChat],
   );
+
+  const userMessageCount = useMemo(
+    () => msgs.filter((m) => m.role === "user" && m.content.trim()).length,
+    [msgs],
+  );
+
+  useEffect(() => {
+    const last = msgs.at(-1);
+    const lastText =
+      last?.role === "user"
+        ? (last.content?.slice(0, 120) ?? "")
+        : last?.role === "assistant"
+          ? (last.content?.trim() || last.roamie?.summary?.trim() || "").slice(0, 120)
+          : "";
+    console.info("[CHAT_MESSAGES_RENDERED]", {
+      count: msgs.length,
+      lastMessageRole: last?.role ?? null,
+      lastMessageText: lastText,
+    });
+  }, [msgs]);
 
   const ensurePipelineFallbackReply = useCallback(
     (conversation: ChatMsg[], activeSession: ChatPlanningSession, userText: string) => {
@@ -537,6 +617,46 @@ function Chat() {
       return commitAssistantReply(conversation, summary, activeSession, "pipeline_fallback");
     },
     [commitAssistantReply],
+  );
+
+  const ensureAssistantReplyForTurn = useCallback(
+    (
+      conversation: ChatMsg[],
+      userText: string,
+      activeSession: ChatPlanningSession,
+      reason: string,
+    ): ChatMsg[] => {
+      if (!conversationMissingAssistantReply(conversation)) return conversation;
+
+      const step = decideAiNextStep(activeSession, userText);
+      console.info("[AI_RESPONSE_REQUEST_START]", {
+        action: step.action,
+        reason,
+        userText: userText.slice(0, 80),
+      });
+
+      const instant = resolveInstantChatReply(userText, activeSession);
+      if (instant?.summary?.trim() && !instant.startItinerary) {
+        try {
+          return commitAssistantReply(
+            conversation,
+            instant.summary,
+            { ...activeSession, phase: "followup" },
+            instant.source,
+          );
+        } catch (e) {
+          console.error("[CHAT_APPEND_ASSISTANT_FAILED]", e);
+        }
+      }
+
+      try {
+        return ensurePipelineFallbackReply(conversation, activeSession, userText);
+      } catch (e) {
+        console.error("[CHAT_APPEND_ASSISTANT_FAILED]", e);
+        return conversation;
+      }
+    },
+    [commitAssistantReply, ensurePipelineFallbackReply],
   );
 
   const resetChatBusyState = useCallback(() => {
@@ -589,146 +709,34 @@ function Chat() {
     el.scrollTop = el.scrollHeight;
   }, []);
 
-  const scheduleScrollMessagesToEnd = useCallback(() => {
+  const scheduleScrollMessagesToEnd = useCallback((reason: string) => {
     if (scrollEndScheduledRef.current) return;
     scrollEndScheduledRef.current = true;
     requestAnimationFrame(() => {
       scrollEndScheduledRef.current = false;
       scrollMessagesToEnd();
+      console.info("[CHAT_SCROLL_TO_BOTTOM]", { reason });
     });
   }, [scrollMessagesToEnd]);
 
-  useEffect(() => {
-    document.documentElement.classList.toggle("chat-keyboard-open", keyboardVisible);
-    return () => {
-      document.documentElement.classList.remove("chat-keyboard-open");
-    };
-  }, [keyboardVisible]);
-
-  useEffect(() => {
-    let removeCapKeyboard: (() => void) | undefined;
-    const isNativeShell = isCapacitorNativeShell();
-
-    const applyKeyboard = (reportedHeight: number, open: boolean) => {
-      const roundedHeight = Math.max(0, Math.round(reportedHeight));
-      const prev = keyboardLayoutRef.current;
-      if (prev.visible === open && prev.height === roundedHeight) return;
-
-      keyboardLayoutRef.current = { visible: open, height: roundedHeight };
-      keyboardOpenRef.current = open;
-
-      const headerHeightPx = headerRef.current
-        ? Math.round(headerRef.current.getBoundingClientRect().height)
-        : 0;
-
-      const inset = resolveComposerBottomInset({
-        keyboardVisible: open,
-        reportedKeyboardHeightPx: roundedHeight,
-        composerShellEl: composerShellRef.current,
-      });
-
-      if (import.meta.env.DEV) {
-        logComposerLayoutSnapshot({
-          keyboardVisible: open,
-          reportedKeyboardHeightPx: roundedHeight,
-          composerBottomInsetPx: inset,
-          headerHeightPx,
-        });
-      }
-
-      setKeyboardVisible(open);
-      setReportedKeyboardHeightPx(roundedHeight);
-
-      if (open) {
-        setComposerLayoutRev((n) => n + 1);
-        scheduleScrollMessagesToEnd();
-      }
-    };
-
-    const reconcileNativeKeyboard = (info: unknown) => {
-      const reported = parseKeyboardEventHeight(info);
-      if (reported > 50) {
-        applyKeyboard(reported, true);
-        return;
-      }
-      requestAnimationFrame(() => {
-        const vv = measureVisualViewportKeyboardInset();
-        const capped = Math.min(vv, Math.round(window.innerHeight * 0.55));
-        if (capped > 50) {
-          applyKeyboard(capped, true);
-          return;
-        }
-        applyKeyboard(estimateNativeKeyboardHeight(), true);
-      });
-    };
-
-    const vv = window.visualViewport;
-    let viewportSyncFrame = 0;
-    const syncFromViewport = () => {
-      if (!vv) return;
-      if (viewportSyncFrame) cancelAnimationFrame(viewportSyncFrame);
-      viewportSyncFrame = requestAnimationFrame(() => {
-        viewportSyncFrame = 0;
-        const shrink = measureVisualViewportKeyboardInset();
-        const capped = Math.min(shrink, Math.round(window.innerHeight * 0.55));
-        if (capped > 50) {
-          applyKeyboard(capped, true);
-          return;
-        }
-        if (!isNativeShell && keyboardOpenRef.current) {
-          applyKeyboard(0, false);
-        }
-      });
-    };
-
-    if (!isNativeShell) {
-      syncFromViewport();
-      vv?.addEventListener("resize", syncFromViewport);
-    }
-
-    let keyboardListenersCancelled = false;
-    if (isNativeShell) {
-      void runWhenCapacitorBridgeReady("chat.keyboardListeners", async () => {
-        if (keyboardListenersCancelled) return;
-        const { Keyboard } = await import("@capacitor/keyboard");
-        if (keyboardListenersCancelled) return;
-        const onShow = (info: unknown) => {
-          reconcileNativeKeyboard(info);
-        };
-        const onHide = () => applyKeyboard(0, false);
-        const showWill = Keyboard.addListener("keyboardWillShow", onShow);
-        const showDid = Keyboard.addListener("keyboardDidShow", onShow);
-        const hideWill = Keyboard.addListener("keyboardWillHide", onHide);
-        const hideDid = Keyboard.addListener("keyboardDidHide", onHide);
-        removeCapKeyboard = () => {
-          void showWill.then((s) => s.remove());
-          void showDid.then((s) => s.remove());
-          void hideWill.then((s) => s.remove());
-          void hideDid.then((s) => s.remove());
-        };
-      });
-    }
-
-    return () => {
-      keyboardListenersCancelled = true;
-      if (viewportSyncFrame) cancelAnimationFrame(viewportSyncFrame);
-      vv?.removeEventListener("resize", syncFromViewport);
-      removeCapKeyboard?.();
-    };
-  }, [scheduleScrollMessagesToEnd]);
-
-  useEffect(() => {
-    if (!keyboardVisible) return;
-    scheduleScrollMessagesToEnd();
-  }, [keyboardVisible, msgs.length, scheduleScrollMessagesToEnd]);
+  const {
+    keyboardVisible,
+    composerFixedBottomPx,
+    messagesPaddingBottomPx,
+    notifyInputFocused,
+  } = useChatKeyboardLayout({
+    bottomComposerRef,
+  });
 
   useEffect(() => {
     if (streaming) return;
-    scheduleScrollMessagesToEnd();
+    if (msgs.length === lastScrollMsgCountRef.current) return;
+    lastScrollMsgCountRef.current = msgs.length;
+    scheduleScrollMessagesToEnd("msgs.length");
   }, [streaming, msgs.length, scheduleScrollMessagesToEnd]);
 
   useEffect(() => {
-    if (hydrating) return;
+    if (hydrating || sendInFlightRef.current) return;
     const conv = msgsRef.current;
     if (!conv.some((m) => m.role === "user" && m.content.trim())) return;
     const next = rehydrateSessionFromMessages(sessionRef.current, conv);
@@ -737,7 +745,7 @@ function Chat() {
     if (prevKey !== nextKey) {
       persistSession(next);
     }
-  }, [hydrating, msgs.length, persistSession]);
+  }, [hydrating, userMessageCount, persistSession]);
 
   useEffect(() => {
     (async () => {
@@ -1476,40 +1484,46 @@ function Chat() {
           },
         });
 
-        const summary = buildPlanTripHandoffOpening(
-          {
-            destination: dest,
-            origin: syncedHandoff.tripOrigin,
-            days: syncedHandoff.tripDays ?? 2,
-            mood: syncedHandoff.mood ?? "",
-            styles: syncedHandoff.tripStyles?.split(/[、,]/).filter(Boolean) ?? [],
-            interests: "",
-            startDate: syncedHandoff.tripStartDate ?? "",
-            endDate: syncedHandoff.tripEndDate ?? "",
-            departureTime: syncedHandoff.startTime ?? "",
-            travelers: syncedHandoff.tripCompanionCount ?? 1,
-            transport: syncedHandoff.transportation ?? "",
-            budgetMode: syncedHandoff.budget ?? "",
-          },
-          bundle,
-          locale,
-        );
-        let summaryText = summary;
+        const formForOpening = {
+          destination: dest,
+          origin: syncedHandoff.tripOrigin ?? null,
+          days: syncedHandoff.tripDays ?? 2,
+          mood: "",
+          styles: syncedHandoff.tripStyles?.split(/[、,]/).filter(Boolean) ?? [],
+          interests: "",
+          startDate: syncedHandoff.tripStartDate ?? "",
+          endDate: syncedHandoff.tripEndDate ?? "",
+          departureTime: syncedHandoff.startTime ?? "",
+          travelers: syncedHandoff.tripCompanionCount ?? 1,
+          transport: syncedHandoff.transportation ?? "",
+          budgetMode: syncedHandoff.budget ?? "standard",
+        };
+        let summaryText = syncedHandoff.planPlusConsultant
+          ? buildPlusPlanConsultantOpening(
+              formForOpening,
+              bundle,
+              authSession.session?.user?.id
+                ? await buildLongTermMemory(authSession.session.user.id).catch(() => null)
+                : null,
+            )
+          : buildPlanTripHandoffOpening(formForOpening, bundle, locale);
 
         let roamiePayload = buildHandoffRoamiePayload(syncedHandoff, summaryText);
 
-        try {
-          const full = await fetchRoamieAI(req, { token });
-          if (full.summary?.trim()) {
-            summaryText = full.summary;
-            const aiRecs =
-              full.recommendations?.length > 0
-                ? full.recommendations.map(roamieRecToChatItem)
-                : undefined;
-            roamiePayload = buildHandoffRoamiePayload(syncedHandoff, summaryText, aiRecs);
+        if (!syncedHandoff.planPlusConsultant) {
+          try {
+            const full = await fetchRoamieAI(req, { token });
+            if (full.summary?.trim()) {
+              summaryText = full.summary;
+              const aiRecs =
+                full.recommendations?.length > 0
+                  ? full.recommendations.map(roamieRecToChatItem)
+                  : undefined;
+              roamiePayload = buildHandoffRoamiePayload(syncedHandoff, summaryText, aiRecs);
+            }
+          } catch (e) {
+            console.warn("[Roamie] plan handoff AI failed, using fallback", e);
           }
-        } catch (e) {
-          console.warn("[Roamie] plan handoff AI failed, using fallback", e);
         }
 
         const filteredRecs = recommendationsForChatDisplay(
@@ -1645,6 +1659,10 @@ function Chat() {
       let submitOk = false;
 
       try {
+        console.info("[AI_RESPONSE_REQUEST_START]", {
+          path: "stream_chat_inner",
+          userText: (opts?.userText ?? "").slice(0, 80),
+        });
         if (isChatApiUnreachableOnNative()) {
           console.warn("[CHAT_API] unreachable on native", {
             url: chatApiResolvedUrl(),
@@ -1759,6 +1777,10 @@ function Chat() {
           "[AI_REPLY_SUCCESS]",
           `recommendations=${fullWithSummary.recommendations?.length ?? 0}`,
         );
+        console.info("[AI_RESPONSE_RECEIVED]", {
+          source: "ai_stream",
+          excerpt: (fullWithSummary.summary ?? "").slice(0, 120),
+        });
 
         const userText = opts?.userText ?? "";
         const activeSession = sessionOverride ?? session;
@@ -1878,21 +1900,31 @@ function Chat() {
         if (opts?.phase === "place_discussion") {
           console.info("[CHAT_ABOUT_PLACE] replyGenerated=true");
         }
-        setMsgs((prev) => {
-          const next = [...prev];
-          next[next.length - 1] = {
-            role: "assistant",
-            content: displayFull.summary,
-            roamie: displayFull,
-          };
-          msgsRef.current = next;
-          return next;
-        });
-        console.info("[CHAT_ASSISTANT_MESSAGE_ADDED]", {
-          source: "ai_stream",
-          excerpt: displayFull.summary.slice(0, 80),
-        });
-        console.info("[CHAT_RENDER_COMPLETE]");
+        const summaryText = displayFull.summary?.trim() ?? "";
+        const { conversation: streamed, ok } = appendAssistantMessageToConversation(
+          msgsRef.current,
+          summaryText,
+          activeSession,
+          displayFull,
+        );
+        if (ok) {
+          setMsgs(streamed);
+          msgsRef.current = streamed;
+          console.info("[CHAT_ASSISTANT_MESSAGE_APPENDED]", {
+            source: "ai_stream",
+            count: streamed.length,
+            excerpt: summaryText.slice(0, 80),
+          });
+        } else {
+          console.error("[CHAT_RENDER_ERROR]", "ai_stream_append_failed");
+          const fallback = ensurePipelineFallbackReply(
+            msgsRef.current,
+            activeSession,
+            userText,
+          );
+          setMsgs(fallback);
+          msgsRef.current = fallback;
+        }
         setPartial({});
         submitOk = true;
       } catch (e) {
@@ -2000,7 +2032,7 @@ function Chat() {
         }
       }
     },
-    [buildRequest, session, persistSession, locale, applyLocalFallback],
+    [buildRequest, session, persistSession, locale, applyLocalFallback, ensurePipelineFallbackReply],
   );
 
   const handleSelectPlaceForPlanning = useCallback(
@@ -2043,7 +2075,20 @@ function Chat() {
     sessionOverride?: ChatPlanningSession,
     msgsOverride?: ChatMsg[],
     generationSource?: PlaceSelectionSource | string,
+    options?: { forceLocalDraft?: boolean },
   ) => {
+    console.info("[ITINERARY_TRIGGERED]", {
+      source: generationSource ?? session.lastItineraryGenerationSource,
+      forceLocalDraft: options?.forceLocalDraft ?? false,
+    });
+
+    if (options?.forceLocalDraft) {
+      itineraryGenInFlightRef.current = false;
+    } else if (itineraryGenInFlightRef.current) {
+      console.warn("[ITINERARY_FAILED]", { step: "precheck", error: "already_in_flight" });
+      return;
+    }
+
     let activeSession = sessionOverride ?? session;
     const activeMsgs = msgsOverride ?? msgs;
     const source =
@@ -2054,7 +2099,15 @@ function Chat() {
     let rawPlaces = buildTripFromSelectedPlaces(activeSession);
     let places = normalizePlacesForItinerary(rawPlaces);
 
-    if (places.length < 1 && isReadyForPlanningConfirm(activeSession.conversationState)) {
+    if (rawPlaces.length > 0) {
+      console.info("[SELECTED_PLACES_READY]", { count: rawPlaces.length });
+    }
+
+    if (
+      places.length < 1 &&
+      (isReadyForPlanningConfirm(activeSession.conversationState) ||
+        canAutoGenerateItineraryFromSession(activeSession))
+    ) {
       try {
         activeSession = await bootstrapCompanionTripPlaces(
           activeSession,
@@ -2069,6 +2122,21 @@ function Chat() {
       }
     }
 
+    const destinationLabel =
+      activeSession.conversationState?.destination ??
+      (activeSession.tripDestination
+        ? formatTripLocationLabel(activeSession.tripDestination)
+        : null) ??
+      activeSession.tripDestination?.city;
+    const tripDaysCtx = activeSession.conversationState?.days ?? activeSession.tripDays;
+
+    console.info("[ITINERARY_CONTEXT_READY]", {
+      destination: destinationLabel,
+      days: tripDaysCtx,
+      selectedPlacesCount: places.length,
+      source,
+    });
+
     if (places.length < 1) {
       toast.message("請先選擇至少一個想去的地方，再生成行程。");
       recordItineraryDiagnostics({
@@ -2077,14 +2145,18 @@ function Chat() {
         errorMessage: "selectedPlaces_empty",
         itineraryPayload: null,
       });
+      console.warn("[ITINERARY_FAILED]", { step: "places", error: "selectedPlaces_empty" });
       return;
     }
 
-    if (!canGenerateItinerary({ ...activeSession, selectedPlaces: rawPlaces }) || generating) {
+    if (!canGenerateItinerary({ ...activeSession, selectedPlaces: rawPlaces })) {
+      console.warn("[ITINERARY_FAILED]", { step: "precheck", error: "cannot_generate" });
       return;
     }
 
+    itineraryGenInFlightRef.current = true;
     setGenerating(true);
+    setItineraryStuckDraftOffer(false);
     persistSession({
       ...activeSession,
       phase: "generating",
@@ -2130,40 +2202,55 @@ function Chat() {
       const tripDays = activeSession.tripDays ?? 1;
       const budget = budgetModeToItineraryTier(resolveBudgetMode(prefs));
 
-      const generatePayload = {
-        destination,
-        days: tripDays,
-        budget,
-        style: activeSession.tripStyles || (activeSession.pace === "排滿" ? "緊湊" : "慢旅行"),
-        mood: activeSession.mood ?? "",
-        interests: buildConversationSummary(activeSession, activeMsgs),
-        conversationSummary: buildConversationSummary(activeSession, activeMsgs),
-        startDate,
-        endDate,
-        origin: activeSession.tripOrigin
-          ? formatTripLocationLabel(activeSession.tripOrigin)
-          : (bundle.location.city ?? ""),
-        travelers: activeSession.tripCompanionCount ?? 1,
-        transport: activeSession.transportation ?? "",
-        selectedPlaces: places,
-        preferences: prefs,
-        location: bundle.location,
-        weather: bundle.weather,
-        time: activeSession.startTime || bundle.time,
-        fashionStyle: fashionStyle ?? "",
-        locale,
-        destinationLocation: activeSession.tripDestination ?? undefined,
-      };
+      const generatePayload = buildSafeItineraryGeneratorPayload(
+        {
+          destination,
+          days: tripDays,
+          budget,
+          style: activeSession.tripStyles || (activeSession.pace === "排滿" ? "緊湊" : "慢旅行"),
+          mood: activeSession.mood ?? "",
+          interests: buildConversationSummary(activeSession, activeMsgs),
+          conversationSummary: buildConversationSummary(activeSession, activeMsgs),
+          startDate,
+          endDate,
+          origin: activeSession.tripOrigin
+            ? formatTripLocationLabel(activeSession.tripOrigin)
+            : (bundle.location.city ?? ""),
+          travelers: activeSession.tripCompanionCount ?? 1,
+          transport: activeSession.transportation ?? "",
+          selectedPlaces: places,
+          preferences: prefs as ItineraryInput["preferences"],
+          location: bundle.location,
+          weather: bundle.weather,
+          time: activeSession.startTime || bundle.time,
+          fashionStyle: fashionStyle ?? "",
+          locale,
+          destinationLocation: activeSession.tripDestination ?? undefined,
+        },
+        activeMsgs,
+      );
+      logItinerarySafePayloadReady(generatePayload, {
+        recentMessagesCount: Math.min(activeMsgs.length, 6),
+      });
 
       recordItineraryDiagnostics({
         selectedPlaces: selectedPlacesDiagnosticsSnapshot(rawPlaces),
         generationSource: source,
         errorMessage: null,
-        itineraryPayload: generatePayload as unknown as Record<string, unknown>,
+        itineraryPayload: {
+          destination: generatePayload.destination,
+          days: generatePayload.days,
+          selectedPlacesCount: generatePayload.selectedPlaces?.length ?? 0,
+        },
       });
 
       let itinerary: RoamiePayloadV2;
-      let usedLocalItineraryFallback = false;
+      let usedLocalItineraryFallback = Boolean(options?.forceLocalDraft);
+      const mustIncludePlaces =
+        activeSession.travelContext?.mustIncludePlaces ??
+        activeSession.conversationContext?.mustIncludePlaces ??
+        [];
+
       const localFallbackInput = {
         destination,
         days: tripDays,
@@ -2181,38 +2268,76 @@ function Chat() {
         travelers: activeSession.tripCompanionCount ?? 1,
       };
 
-      if (shouldUseBundledGenerateItineraryApi()) {
-        const { data: authSession } = await supabase.auth.getSession();
-        const token = authSession.session?.access_token;
-        const apiResult = await generateItineraryViaBundledApi(
-          generatePayload as ItineraryInput,
-          { token: token ?? undefined },
-        );
-        if (apiResult.itinerary) {
-          itinerary = apiResult.itinerary;
-        } else if (isAiItineraryServiceUnavailableError(apiResult.error ?? "")) {
-          console.warn("[ITINERARY] AI unavailable, using local fallback", apiResult.error);
-          itinerary = buildLocalItineraryFallback(localFallbackInput);
+      const ITINERARY_GEN_TIMEOUT_MS = 15_000;
+
+      const runItineraryGeneration = async (): Promise<RoamiePayloadV2> => {
+        if (mustIncludePlaces.length > 0 || options?.forceLocalDraft) {
+          const structured = buildStructuredChatItinerary({
+            destination,
+            days: tripDays,
+            startDate,
+            endDate,
+            mustIncludePlaces,
+            mood: activeSession.mood ?? "",
+            transport: activeSession.transportation ?? "",
+            weatherSummary: bundle.weather
+              ? `${bundle.weather.city} ${bundle.weather.condition}`
+              : undefined,
+            destinationLocation: activeSession.tripDestination ?? undefined,
+            selectedPlaces: places,
+          });
           usedLocalItineraryFallback = true;
-        } else {
+          return structured;
+        }
+        if (options?.forceLocalDraft) {
+          return buildLocalItineraryFallback(localFallbackInput);
+        }
+        if (shouldUseBundledGenerateItineraryApi()) {
+          const { data: authSession } = await supabase.auth.getSession();
+          const token = authSession.session?.access_token;
+          const apiResult = await generateItineraryViaBundledApi(generatePayload, {
+            token: token ?? undefined,
+          });
+          if (apiResult.itinerary) return apiResult.itinerary;
+          if (isAiItineraryServiceUnavailableError(apiResult.error ?? "")) {
+            console.warn("[ITINERARY] AI unavailable, using local fallback", apiResult.error);
+            usedLocalItineraryFallback = true;
+            return buildLocalItineraryFallback(localFallbackInput);
+          }
           throw new Error(apiResult.error ?? "生成行程失敗");
         }
-      } else {
         try {
           const response = await generate({ data: generatePayload });
           if (!response?.itinerary) {
             throw new Error("生成行程失敗（伺服器無回應）");
           }
-          itinerary = response.itinerary;
+          return response.itinerary;
         } catch (genErr) {
           const genMsg = genErr instanceof Error ? genErr.message : "生成行程失敗";
           if (isAiItineraryServiceUnavailableError(genMsg)) {
             console.warn("[ITINERARY] AI unavailable, using local fallback", genMsg);
-            itinerary = buildLocalItineraryFallback(localFallbackInput);
             usedLocalItineraryFallback = true;
-          } else {
-            throw genErr;
+            return buildLocalItineraryFallback(localFallbackInput);
           }
+          throw genErr;
+        }
+      };
+
+      try {
+        itinerary = await Promise.race([
+          runItineraryGeneration(),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error("ITINERARY_TIMEOUT")), ITINERARY_GEN_TIMEOUT_MS);
+          }),
+        ]);
+      } catch (raceErr) {
+        const raceMsg = raceErr instanceof Error ? raceErr.message : String(raceErr);
+        if (raceMsg === "ITINERARY_TIMEOUT" && places.length > 0) {
+          console.warn("[ITINERARY_FAILED]", { step: "generate_timeout", error: raceMsg });
+          itinerary = buildLocalItineraryFallback(localFallbackInput);
+          usedLocalItineraryFallback = true;
+        } else {
+          throw raceErr;
         }
       }
 
@@ -2251,7 +2376,7 @@ function Chat() {
         console.warn("[ITINERARY] cover image skipped", coverErr);
       }
 
-      let tripPayload: RoamiePayloadV2 = {
+      let tripPayload: RoamiePayloadV2 = attachDayPlansToPayload({
         ...itinerary,
         destination,
         destinationLocation: activeSession.tripDestination ?? undefined,
@@ -2289,8 +2414,25 @@ function Chat() {
             ]),
           ),
         },
-      };
+      });
+
+      const includedMustPlaces = countMustPlacesInItinerary(
+        mergedItinerary,
+        mustIncludePlaces,
+      );
+      console.info("[ITINERARY_JSON_CREATED]", {
+        days: tripDays,
+        totalPlaces: mergedItinerary.length,
+        includedMustPlaces,
+        dayPlans: tripPayload.dayPlans?.length ?? tripDays,
+      });
+
+      console.info("[ITINERARY_SAVE_START]", {
+        title: tripPayload.title,
+        places: mergedItinerary.length,
+      });
       const saved = await confirmSaveTrip(tripPayload, "chat");
+      console.info("[ITINERARY_SAVED]", { tripId: saved.id, title: saved.title });
       clearDraftTrip();
 
       const doneSession: ChatPlanningSession = {
@@ -2329,9 +2471,14 @@ function Chat() {
         usedLocalItineraryFallback ? "已建立基本行程（AI 暫不可用）" : "行程已建立並加入收藏",
       );
       logTripNav("ChatGeneratedTrip", saved.id);
-      navigate(tripDetailNavigateOptions(saved.id, { back: "saved", replace: true }));
+      console.info("[ITINERARY_NAVIGATED]", { tripId: saved.id });
+      setGenerating(false);
+      await new Promise<void>((r) => setTimeout(r, 80));
+      navigate(tripDetailNavigateOptions(saved.id, { from: "chat", replace: true }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "生成行程失敗";
+      logItineraryGeneratorFailed("save_or_generate", e);
+      console.error("[ITINERARY_FAILED]", { step: "save_or_generate", error: msg });
       persistSession({
         ...activeSession,
         phase: "followup",
@@ -2347,12 +2494,14 @@ function Chat() {
         ...prev,
         {
           role: "assistant",
-          content: `行程生成失敗：${msg}\n\n請確認網路連線後再試一次，或稍後重按「開始安排行程」。`,
+          content: ITINERARY_GENERATION_FAILED_MESSAGE,
         },
       ]);
-      toast.error(msg);
+      toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
     } finally {
+      itineraryGenInFlightRef.current = false;
       setGenerating(false);
+      setItineraryStuckDraftOffer(false);
     }
   };
 
@@ -2418,26 +2567,142 @@ function Chat() {
     let nextWithUser: ChatMsg[] = [];
     let activeSession = sessionRef.current;
     let gotAssistantReply = false;
+    let nextStepDecision: ReturnType<typeof decideAiNextStep> = {
+      action: "ask_missing_field",
+      reason: "not_evaluated",
+    };
+    let route: ReturnType<typeof resolveChatRoute> | undefined;
+    sendInFlightRef.current = true;
 
     try {
       const userMsg: ChatMsg = { role: "user", content: userVisible };
       nextWithUser = [...msgsRef.current, userMsg];
-      setMsgs(nextWithUser);
-      msgsRef.current = nextWithUser;
-      console.info("[CHAT_USER_MESSAGE_ADDED]", userVisible.slice(0, 80));
+      applyMsgsToChat(nextWithUser);
+      console.info("[CHAT_USER_MESSAGE_APPENDED]", {
+        messageCount: nextWithUser.length,
+        preview: userVisible.slice(0, 80),
+      });
       if (!overrideText) {
         clearComposerInput();
       }
 
+      const prevTripCtx = extractTripContextSlice(sessionRef.current);
       activeSession = applyTripIntentToSession(trimmed, sessionRef.current);
+      activeSession = syncConversationState(activeSession, trimmed);
       const merged = mergeTravelContext(activeSession, trimmed);
       activeSession = merged.session;
       activeSession = extractPlanningHintsFromText(trimmed, activeSession);
       activeSession = extractDiscoveryFromText(trimmed, activeSession);
       activeSession = extractChatPlanningContextFromText(trimmed, activeSession);
       activeSession = updateConversationContext(activeSession, trimmed, nextWithUser);
+      logChatContextMerged(prevTripCtx, trimmed, extractTripContextSlice(activeSession));
+      logTripContextCompleteness(activeSession, trimmed);
+      nextStepDecision = decideAiNextStep(activeSession, trimmed);
+      logAiNextStepDecision(activeSession, trimmed);
 
-      const route = resolveChatRoute(trimmed, merged.context, activeSession, locale);
+      if (!options?.forcePhase && nextStepDecision.action === "generate_itinerary") {
+        const tripSlice = extractTripContextSlice(activeSession, trimmed);
+        console.info("[ITINERARY_TRIGGERED]", {
+          source: "chat",
+          destination: tripSlice.destination ?? null,
+          days: tripSlice.days ?? null,
+          mustIncludePlaces: tripSlice.mustIncludePlaces ?? [],
+        });
+        let genSession = prepareSessionForItineraryGeneration(activeSession, trimmed);
+        genSession = {
+          ...genSession,
+          phase: "generating",
+          lastItineraryGenerationSource: "chat",
+        };
+        persistSession(genSession);
+        setGenerating(true);
+        commitAssistantReply(
+          nextWithUser,
+          ITINERARY_GENERATING_MESSAGE,
+          genSession,
+          "itinerary_planning",
+        );
+        try {
+          console.info("[ITINERARY_CONTEXT_READY]", {
+            destination: genSession.conversationState?.destination,
+            days: genSession.conversationState?.days ?? genSession.tripDays,
+            mustIncludePlaces:
+              genSession.travelContext?.mustIncludePlaces ??
+              genSession.conversationContext?.mustIncludePlaces ??
+              [],
+          });
+          if (genSession.selectedPlaces.length < 1) {
+            genSession = await bootstrapCompanionTripPlaces(genSession, searchNearbyPlaces, locale);
+            persistSession(genSession);
+          }
+          await handleGenerateItinerary(genSession, msgsRef.current, "chat");
+        } catch (planErr) {
+          console.error("[ITINERARY] generate_itinerary_action failed", planErr);
+          setMsgs((prev) => [
+            ...prev,
+            { role: "assistant", content: ITINERARY_GENERATION_FAILED_MESSAGE },
+          ]);
+          toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
+          persistSession({ ...genSession, phase: "followup" });
+        } finally {
+          setGenerating(false);
+        }
+        return;
+      }
+
+      if (!options?.forcePhase) {
+        const priorityInstant = resolveInstantChatReply(trimmed, activeSession);
+        if (priorityInstant?.summary?.trim() && !priorityInstant.startItinerary) {
+          console.info("[AI_RESPONSE_REQUEST_START]", {
+            action: nextStepDecision.action,
+            path: "priority_instant",
+            source: priorityInstant.source,
+          });
+          nextWithUser = commitAssistantReply(
+            nextWithUser,
+            priorityInstant.summary,
+            { ...activeSession, phase: "followup" },
+            priorityInstant.source,
+          );
+          gotAssistantReply = !conversationMissingAssistantReply(nextWithUser);
+          if (!gotAssistantReply) {
+            logAiResponseSkipped("priority_instant_invisible", {
+              source: priorityInstant.source,
+            });
+          }
+        } else if (priorityInstant?.startItinerary) {
+          logAiResponseSkipped("priority_instant_start_itinerary", {
+            source: priorityInstant.source,
+          });
+        } else if (
+          nextStepDecision.action === "answer_date_recommendation" ||
+          userAsksDateRangeRecommendation(trimmed)
+        ) {
+          const dateReply = buildDateRangeRecommendationReply(
+            extractTripContextSlice(activeSession, trimmed),
+          );
+          if (dateReply) {
+            console.info("[AI_RESPONSE_REQUEST_START]", {
+              action: "answer_date_recommendation",
+              path: "priority_date_forced",
+            });
+            nextWithUser = commitAssistantReply(
+              nextWithUser,
+              dateReply,
+              { ...activeSession, phase: "followup" },
+              "date_recommendation_forced",
+            );
+            gotAssistantReply = !conversationMissingAssistantReply(nextWithUser);
+          } else {
+            logAiResponseSkipped("date_recommendation_empty", {
+              action: nextStepDecision.action,
+              context: extractTripContextSlice(activeSession, trimmed),
+            });
+          }
+        }
+      }
+
+      route = resolveChatRoute(trimmed, merged.context, activeSession, locale);
       const tripIntent = parseTripIntentFromText(trimmed, activeSession);
 
       if (
@@ -2466,6 +2731,153 @@ function Chat() {
 
       persistSession(activeSession);
 
+      if (gotAssistantReply && !conversationMissingAssistantReply(nextWithUser)) {
+        persistSession({
+          ...activeSession,
+          phase: "followup",
+        });
+        return;
+      }
+      if (gotAssistantReply) {
+        gotAssistantReply = false;
+        logAiResponseSkipped("early_return_without_visible_assistant", {
+          path: "after_context_persist",
+        });
+      }
+
+      if (!options?.forcePhase && activeSession.planPlusConsultant) {
+        const notes = extractPlanConsultantRequirementsFromText(trimmed);
+        let consultantSession = appendPlanConsultantRequirements(activeSession, notes);
+        consultantSession = markPlanConsultantQuestionAsked(consultantSession, trimmed);
+        const consultant = resolvePlusPlanConsultantReply(trimmed, consultantSession);
+        if (consultant) {
+          if (consultant.startItinerary) {
+            console.info("[ITINERARY_TRIGGERED]", { path: "plus_plan_consultant" });
+            consultantSession = {
+              ...consultantSession,
+              phase: "generating",
+              planConsultantStage: "ready",
+            };
+            persistSession(consultantSession);
+            setGenerating(true);
+            commitAssistantReply(
+              nextWithUser,
+              ITINERARY_GENERATING_MESSAGE,
+              consultantSession,
+              "plus_plan_consultant",
+            );
+            try {
+              const form = planTripFormFromSession(consultantSession);
+              if (!form || !consultantSession.tripDestination) {
+                throw new Error("缺少規劃表單資料");
+              }
+              const bundle = await buildContextBundleForTrip(
+                consultantSession.tripDestination,
+                fetchWeather,
+              );
+              const prefs = await getPreferences();
+              const saved = await generateAndSaveItineraryFromPlan(
+                form,
+                bundle,
+                prefs,
+                {
+                  locale,
+                  searchNearbyPlaces,
+                  generateItinerary: generate,
+                },
+                consultantSession,
+              );
+              console.info("[ITINERARY_NAVIGATED]", { tripId: saved.id });
+              setGenerating(false);
+              await new Promise<void>((r) => setTimeout(r, 80));
+              navigate(tripDetailNavigateOptions(saved.id, { from: "chat", replace: true }));
+            } catch (planErr) {
+              console.error("[PLUS_PLAN] generate failed", planErr);
+              setMsgs((prev) => [
+                ...prev,
+                { role: "assistant", content: ITINERARY_GENERATION_FAILED_MESSAGE },
+              ]);
+              toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
+            } finally {
+              setGenerating(false);
+            }
+          } else {
+            commitAssistantReply(
+              nextWithUser,
+              consultant.summary,
+              { ...consultantSession, planConsultantStage: consultant.stage },
+              "plus_plan_consultant",
+            );
+            persistSession({ ...consultantSession, planConsultantStage: consultant.stage });
+          }
+          gotAssistantReply = true;
+          return;
+        }
+      }
+
+      if (!options?.forcePhase && shouldAutoStartItineraryFromChat(trimmed, activeSession)) {
+        console.info("[ITINERARY_TRIGGERED]", { text: trimmed.slice(0, 80), path: "chat_send" });
+        let genSession = prepareSessionForItineraryGeneration(activeSession, trimmed);
+        genSession = {
+          ...genSession,
+          phase: "generating",
+          lastItineraryGenerationSource: "chat",
+        };
+        persistSession(genSession);
+        setGenerating(true);
+        commitAssistantReply(
+          nextWithUser,
+          ITINERARY_GENERATING_MESSAGE,
+          genSession,
+          "itinerary_planning",
+        );
+        try {
+          console.info("[ITINERARY_CONTEXT_READY]", {
+            destination: genSession.conversationState?.destination,
+            days: genSession.conversationState?.days ?? genSession.tripDays,
+          });
+          if (genSession.selectedPlaces.length < 1) {
+            genSession = await bootstrapCompanionTripPlaces(genSession, searchNearbyPlaces, locale);
+            persistSession(genSession);
+          }
+          await handleGenerateItinerary(genSession, msgsRef.current, "chat");
+        } catch (planErr) {
+          console.error("[ITINERARY] auto_start failed", planErr);
+          setMsgs((prev) => [
+            ...prev,
+            { role: "assistant", content: ITINERARY_GENERATION_FAILED_MESSAGE },
+          ]);
+          toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
+          persistSession({ ...genSession, phase: "followup" });
+        } finally {
+          setGenerating(false);
+        }
+        gotAssistantReply = true;
+        return;
+      }
+
+      const earlyInstant = !options?.forcePhase
+        ? resolveInstantChatReply(trimmed, activeSession)
+        : null;
+      if (earlyInstant?.summary && !earlyInstant.startItinerary) {
+        let nextSession: ChatPlanningSession = {
+          ...activeSession,
+          phase: "followup",
+        };
+        if (earlyInstant.showConfirmChips && nextSession.conversationState) {
+          nextSession = {
+            ...nextSession,
+            conversationState: {
+              ...nextSession.conversationState,
+              stage: "confirming",
+            },
+          };
+        }
+        commitAssistantReply(nextWithUser, earlyInstant.summary, nextSession, earlyInstant.source);
+        persistSession(nextSession);
+        return;
+      }
+
       if (shouldUseLocalCompanionReply(activeSession) && !options?.forcePhase) {
         const companion = resolveCompanionDialogueReply(trimmed, activeSession);
         if (companion?.summary) {
@@ -2480,11 +2892,13 @@ function Chat() {
             };
           }
           if (companion.startItinerary) {
+            let nextSession = prepareSessionForItineraryGeneration(activeSession, trimmed);
             const days = nextSession.conversationState?.days ?? nextSession.tripDays ?? 5;
             nextSession = {
               ...nextSession,
               phase: "generating",
               tripDays: days,
+              lastItineraryGenerationSource: "chat",
               conversationState: nextSession.conversationState
                 ? {
                     ...nextSession.conversationState,
@@ -2493,18 +2907,29 @@ function Chat() {
                   }
                 : nextSession.conversationState,
             };
+            persistSession(nextSession);
+            setGenerating(true);
             commitAssistantReply(nextWithUser, companion.summary, nextSession, companion.source);
             try {
-              nextSession = await bootstrapCompanionTripPlaces(
-                nextSession,
-                searchNearbyPlaces,
-                locale,
-              );
-              persistSession(nextSession);
+              if (nextSession.selectedPlaces.length < 1) {
+                nextSession = await bootstrapCompanionTripPlaces(
+                  nextSession,
+                  searchNearbyPlaces,
+                  locale,
+                );
+                persistSession(nextSession);
+              }
               await handleGenerateItinerary(nextSession, msgsRef.current, "chat");
             } catch (planErr) {
               console.error("[COMPANION_ITINERARY] failed", planErr);
-              toast.error(planErr instanceof Error ? planErr.message : "生成行程失敗");
+              setMsgs((prev) => [
+                ...prev,
+                { role: "assistant", content: ITINERARY_GENERATION_FAILED_MESSAGE },
+              ]);
+              toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
+              persistSession({ ...nextSession, phase: "followup" });
+            } finally {
+              setGenerating(false);
             }
             gotAssistantReply = true;
             return;
@@ -2537,11 +2962,13 @@ function Chat() {
           };
         }
         if (instant.startItinerary) {
+          let nextSession = prepareSessionForItineraryGeneration(activeSession, trimmed);
           const days = nextSession.conversationState?.days ?? nextSession.tripDays ?? 5;
           nextSession = {
             ...nextSession,
             phase: "generating",
             tripDays: days,
+            lastItineraryGenerationSource: "chat",
             conversationState: nextSession.conversationState
               ? {
                   ...nextSession.conversationState,
@@ -2550,18 +2977,29 @@ function Chat() {
                 }
               : nextSession.conversationState,
           };
+          persistSession(nextSession);
+          setGenerating(true);
           commitAssistantReply(nextWithUser, instant.summary, nextSession, instant.source);
           try {
-            nextSession = await bootstrapCompanionTripPlaces(
-              nextSession,
-              searchNearbyPlaces,
-              locale,
-            );
-            persistSession(nextSession);
+            if (nextSession.selectedPlaces.length < 1) {
+              nextSession = await bootstrapCompanionTripPlaces(
+                nextSession,
+                searchNearbyPlaces,
+                locale,
+              );
+              persistSession(nextSession);
+            }
             await handleGenerateItinerary(nextSession, msgsRef.current, "chat");
           } catch (planErr) {
             console.error("[COMPANION_ITINERARY] failed", planErr);
-            toast.error(planErr instanceof Error ? planErr.message : "生成行程失敗");
+            setMsgs((prev) => [
+              ...prev,
+              { role: "assistant", content: ITINERARY_GENERATION_FAILED_MESSAGE },
+            ]);
+            toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
+            persistSession({ ...nextSession, phase: "followup" });
+          } finally {
+            setGenerating(false);
           }
           gotAssistantReply = true;
           return;
@@ -2585,17 +3023,31 @@ function Chat() {
       if (
         route.mode === "itinerary" ||
         isUserConfirmingItinerary(trimmed) ||
-        userAffirmsTripPlanning(trimmed)
+        userAffirmsTripPlanning(trimmed) ||
+        userRequestsItineraryGeneration(trimmed)
       ) {
-        let readySession: ChatPlanningSession = {
-          ...activeSession,
-          phase: "ready",
-          tripDays: activeSession.conversationState?.days ?? activeSession.tripDays,
-        };
+        let readySession: ChatPlanningSession = userRequestsItineraryGeneration(trimmed)
+          ? prepareSessionForItineraryGeneration(activeSession, trimmed)
+          : {
+              ...activeSession,
+              phase: "ready",
+              tripDays: activeSession.conversationState?.days ?? activeSession.tripDays,
+            };
+        if (!userRequestsItineraryGeneration(trimmed)) {
+          readySession = { ...readySession, phase: "ready" };
+        }
         if (
           readySession.selectedPlaces.length < 1 &&
-          isReadyForPlanningConfirm(readySession.conversationState)
+          (isReadyForPlanningConfirm(readySession.conversationState) ||
+            canAutoGenerateItineraryFromSession(readySession))
         ) {
+          commitAssistantReply(
+            nextWithUser,
+            ITINERARY_GENERATING_MESSAGE,
+            { ...readySession, phase: "generating" },
+            "itinerary_route",
+          );
+          setGenerating(true);
           try {
             readySession = await bootstrapCompanionTripPlaces(
               readySession,
@@ -2607,18 +3059,27 @@ function Chat() {
           }
         }
         if (readySession.selectedPlaces.length < 1) {
-          toast.message("你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線。");
-          commitAssistantReply(
-            nextWithUser,
-            "你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線 ☺️",
-            activeSession,
-            "itinerary_hint",
-          );
+          if (userRequestsItineraryGeneration(trimmed)) {
+            setMsgs((prev) => [
+              ...prev,
+              { role: "assistant", content: ITINERARY_GENERATION_FAILED_MESSAGE },
+            ]);
+            toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
+          } else {
+            toast.message("你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線。");
+            commitAssistantReply(
+              nextWithUser,
+              "你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線 ☺️",
+              activeSession,
+              "itinerary_hint",
+            );
+          }
+          setGenerating(false);
           gotAssistantReply = true;
           return;
         }
-        persistSession(readySession);
-        await handleGenerateItinerary(readySession, nextWithUser);
+        persistSession({ ...readySession, phase: "generating" });
+        await handleGenerateItinerary(readySession, nextWithUser, "chat");
         gotAssistantReply = true;
         return;
       }
@@ -2630,6 +3091,29 @@ function Chat() {
         !options?.forcePhase &&
         !shouldOrchestrateCompanion(activeSession)
       ) {
+        if (
+          userAsksDateRangeRecommendation(trimmed) &&
+          isTripContextComplete(extractTripContextSlice(activeSession, trimmed))
+        ) {
+          const dateReply = buildDateRangeRecommendationReply(
+            extractTripContextSlice(activeSession, trimmed),
+          );
+          if (dateReply) {
+            console.info("[AI_RESPONSE_REQUEST_START]", {
+              action: "answer_date_recommendation",
+              path: "clarify_override_date",
+            });
+            commitAssistantReply(
+              nextWithUser,
+              dateReply,
+              { ...activeSession, phase: "followup" },
+              "date_recommendation_clarify_override",
+            );
+            persistSession({ ...activeSession, phase: "followup" });
+            gotAssistantReply = true;
+            return;
+          }
+        }
         if (shouldUseCompanionAiReply(trimmed, activeSession)) {
           console.info("[AI_ROUTE] companion_ai_over_clarify", trimmed.slice(0, 40));
           await streamChat(nextWithUser, { phase: "discover", userText: trimmed }, activeSession);
@@ -2678,37 +3162,104 @@ function Chat() {
         }
       }
 
+      if (conversationMissingAssistantReply(nextWithUser)) {
+        const preStreamInstant = resolveInstantChatReply(trimmed, activeSession);
+        if (preStreamInstant?.summary?.trim() && !preStreamInstant.startItinerary) {
+          console.info("[AI_RESPONSE_REQUEST_START]", {
+            action: nextStepDecision.action,
+            path: "pre_stream_instant",
+            source: preStreamInstant.source,
+          });
+          nextWithUser = commitAssistantReply(
+            nextWithUser,
+            preStreamInstant.summary,
+            { ...activeSession, phase: "followup" },
+            preStreamInstant.source,
+          );
+          persistSession({ ...activeSession, phase: "followup" });
+          gotAssistantReply = !conversationMissingAssistantReply(nextWithUser);
+          if (gotAssistantReply) {
+            console.log("[CHAT_SUBMIT_SUCCESS]");
+            return;
+          }
+        }
+      }
+
+      console.info("[AI_RESPONSE_REQUEST_START]", {
+        action: nextStepDecision.action,
+        path: "stream_chat",
+        phase: options?.forcePhase ?? route.chatPhase,
+      });
       await streamChat(
         nextWithUser,
         { phase: options?.forcePhase ?? route.chatPhase, userText: trimmed },
         activeSession,
       );
       gotAssistantReply = !conversationMissingAssistantReply(msgsRef.current);
+      if (!gotAssistantReply) {
+        nextWithUser = ensureAssistantReplyForTurn(
+          msgsRef.current.length ? msgsRef.current : nextWithUser,
+          trimmed,
+          activeSession,
+          "after_stream_empty",
+        );
+        gotAssistantReply = !conversationMissingAssistantReply(nextWithUser);
+      }
       console.log("[CHAT_SUBMIT_SUCCESS]");
     } catch (e) {
       console.error("[CHAT_API_ERROR]", e);
       console.log("[CHAT_SUBMIT_ERROR]", e);
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.trim()) toast.error(msg);
-      ensurePipelineFallbackReply(
+      if (msg.trim() && !/Maximum call stack/i.test(msg)) {
+        toast.error(msg);
+      }
+      const fallbackConv = ensureAssistantReplyForTurn(
         msgsRef.current.length ? msgsRef.current : nextWithUser,
-        activeSession,
         trimmed,
+        activeSession,
+        /Maximum call stack/i.test(msg) ? "catch_stack_overflow" : "catch_error",
       );
-      gotAssistantReply = true;
+      if (!assistantMessageIsVisible(fallbackConv.at(-1))) {
+        showChatUiFallback(/Maximum call stack/i.test(msg) ? "stack_overflow" : "catch_append_failed");
+      }
+      gotAssistantReply = assistantMessageIsVisible(fallbackConv.at(-1));
     } finally {
-      if (!gotAssistantReply) {
-        ensurePipelineFallbackReply(
-          msgsRef.current.length ? msgsRef.current : nextWithUser,
-          activeSession,
-          trimmed,
-        );
+      sendInFlightRef.current = false;
+      let conv = msgsRef.current.length ? msgsRef.current : nextWithUser;
+      if (conversationMissingAssistantReply(conv)) {
+        conv = ensureAssistantReplyForTurn(conv, trimmed, activeSession, "finally_missing");
+        gotAssistantReply = !conversationMissingAssistantReply(conv);
       } else {
-        setMsgs((prev) => {
-          const repaired = repairTrailingAssistantMessage(prev, activeSession, trimmed);
-          if (repaired !== prev) msgsRef.current = repaired;
-          return repaired;
+        const repaired = repairTrailingAssistantMessage(conv, activeSession, trimmed);
+        if (repaired !== conv) {
+          applyMsgsToChat(repaired);
+          conv = repaired;
+        }
+      }
+      if (!assistantMessageIsVisible(conv.at(-1))) {
+        logChatFallbackShown("finalize_invisible_assistant");
+        try {
+          conv = ensureAssistantReplyForTurn(conv, trimmed, activeSession, "finalize_retry");
+        } catch (finalizeErr) {
+          console.error("[CHAT_APPEND_ASSISTANT_FAILED]", finalizeErr);
+        }
+        if (!assistantMessageIsVisible(conv.at(-1))) {
+          showChatUiFallback("finalize_failed");
+        }
+      }
+      if (!gotAssistantReply && assistantMessageIsVisible(conv.at(-1))) {
+        gotAssistantReply = true;
+      }
+      if (
+        !gotAssistantReply &&
+        conversationMissingAssistantReply(msgsRef.current.length ? msgsRef.current : nextWithUser)
+      ) {
+        logAiResponseSkipped("turn_complete_no_assistant", {
+          routeMode: route?.mode ?? null,
+          nextAction: nextStepDecision.action,
         });
+      }
+      if (!gotAssistantReply) {
         const sess = sessionRef.current;
         const last = msgsRef.current.at(-1);
         if (
@@ -2733,12 +3284,14 @@ function Chat() {
                     }
                   : sess.conversationState,
               };
-              recoverySession = await bootstrapCompanionTripPlaces(
-                recoverySession,
-                searchNearbyPlaces,
-                locale,
-              );
-              persistSession(recoverySession);
+              if (recoverySession.selectedPlaces.length < 1) {
+                recoverySession = await bootstrapCompanionTripPlaces(
+                  recoverySession,
+                  searchNearbyPlaces,
+                  locale,
+                );
+                persistSession(recoverySession);
+              }
               await handleGenerateItinerary(recoverySession, msgsRef.current, "chat");
             } catch (recoveryErr) {
               console.warn("[PLANNING_RECOVERY] empty_roamie fallback failed", recoveryErr);
@@ -2854,7 +3407,7 @@ function Chat() {
       });
       toast.success("已儲存到收藏");
       logTripNav("ChatSavedTrip", saved.id);
-      navigate(tripDetailNavigateOptions(saved.id, { back: "saved", replace: true }));
+      navigate(tripDetailNavigateOptions(saved.id, { from: "chat", replace: true }));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "儲存失敗");
     }
@@ -2868,7 +3421,7 @@ function Chat() {
   const handleComposerFocus = useCallback(() => {
     ensureIosLoginLiveInteraction();
     setIosSnapshotLiveInteractionForced(true);
-    requestIosSnapshotRefresh("chat-composer-focus", { force: true });
+    notifyInputFocused();
     if (inputRef.current) {
       const v = inputRef.current.value;
       if (v.trim()) console.info("[CHAT_COMPOSER] focus value len=", v.length);
@@ -2878,16 +3431,10 @@ function Chat() {
       console.warn("[CHAT_COMPOSER] reset stale busy", stuckMs);
       resetChatBusyState();
     }
-    requestAnimationFrame(scrollMessagesToEnd);
-  }, [resetChatBusyState, scrollMessagesToEnd]);
+  }, [notifyInputFocused, resetChatBusyState]);
 
   return (
-    <div
-      className={cn(
-        "chat-page relative flex h-full min-h-0 flex-1 flex-col overflow-hidden",
-        !keyboardVisible && "pb-[var(--app-nav-total-height)]",
-      )}
-    >
+    <div className="chat-page relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <header
         ref={headerRef}
         className="relative z-20 flex shrink-0 items-center gap-2 border-b border-border bg-background/90 px-4 py-3 backdrop-blur"
@@ -2904,7 +3451,7 @@ function Chat() {
             <p className="text-[15px] font-medium leading-tight">Roamie</p>
             <p className="truncate text-[11px] text-muted-foreground">
               {generating
-                ? "正在整理你的行程…"
+                ? "Roamie 正在整理行程…"
                 : streaming
                   ? "Roamie 正在幫你想…"
                   : openerLoading
@@ -2926,6 +3473,26 @@ function Chat() {
           <Trash2 className="h-5 w-5" />
         </button>
       </header>
+
+      {generating && itineraryStuckDraftOffer && session.selectedPlaces.length > 0 ? (
+        <div className="relative z-10 shrink-0 border-b border-amber-200/70 bg-amber-50/95 px-4 py-3 dark:border-amber-900/50 dark:bg-amber-950/40">
+          <p className="text-sm leading-snug text-amber-950 dark:text-amber-100">
+            Roamie 整理行程時卡住了，要不要先用已選的 {session.selectedPlaces.length}{" "}
+            個地點建立草稿行程？
+          </p>
+          <button
+            type="button"
+            className="mt-2 rounded-full bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700"
+            onClick={() => {
+              void handleGenerateItinerary(session, msgs, "stuck_draft_cta", {
+                forceLocalDraft: true,
+              });
+            }}
+          >
+            建立草稿行程
+          </button>
+        </div>
+      ) : null}
 
       <AlertDialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
         <AlertDialogContent className="mx-auto max-w-[calc(100%-2rem)] rounded-2xl sm:max-w-md">
@@ -2955,12 +3522,11 @@ function Chat() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <div className="chat-keyboard-column flex min-h-0 flex-1 flex-col">
-        <div
-          ref={messagesRef}
-          className="chat-messages min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5"
-          style={{ paddingBottom: composerPadPx }}
-        >
+      <div
+        ref={messagesRef}
+        className="chat-messages min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5"
+        style={{ paddingBottom: messagesPaddingBottomPx }}
+      >
           {hasPlusAccess && quizCompleted === false && (
             <PreferenceQuizCta origin="chat" variant="banner" className="animate-rise" />
           )}
@@ -3076,19 +3642,20 @@ function Chat() {
             </div>
           )}
           <div ref={bottomRef} />
-        </div>
+      </div>
 
-        <div
-          ref={composerShellRef}
-          className="chat-composer-shell pointer-events-auto relative z-[200] shrink-0 transition-[padding-bottom] duration-200 ease-out"
-          style={{
-            paddingBottom: keyboardVisible
-              ? `${composerBottomInset}px`
-              : "max(6px, env(safe-area-inset-bottom, 0px))",
-          }}
-        >
-          <div className="chat-keyboard-follow-group">
-            <ChatComposer
+      <div
+        ref={bottomComposerRef}
+        className="chat-bottom-composer chat-composer-shell pointer-events-auto fixed inset-x-0 z-[200] border-t border-border bg-background/95 backdrop-blur"
+        style={{
+          bottom: `${composerFixedBottomPx}px`,
+          paddingBottom: keyboardVisible
+            ? `${CHAT_MESSAGES_COMPOSER_GAP_PX}px`
+            : "max(6px, env(safe-area-inset-bottom, 0px))",
+        }}
+      >
+        <div className="chat-keyboard-follow-group">
+          <ChatComposer
               onSend={handleComposerSend}
               onFocus={handleComposerFocus}
               onDraftChange={(value) => {
@@ -3112,10 +3679,9 @@ function Chat() {
               onViewDraft={() => navigate({ to: "/trip", search: { draft: "1" } })}
               onViewSavedTrip={(tripId) => {
                 logTripNav("ChatGeneratedTrip", tripId);
-                navigate(tripDetailNavigateOptions(tripId, { back: "saved", replace: true }));
+                navigate(tripDetailNavigateOptions(tripId, { from: "chat", replace: true }));
               }}
             />
-          </div>
         </div>
       </div>
     </div>

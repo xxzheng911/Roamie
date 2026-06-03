@@ -21,6 +21,12 @@ import {
   type TestModeOverride,
 } from "@/lib/access";
 import { getUserPlanProfile } from "@/lib/plan-tier/storage";
+import {
+  logPlusFeatureBlocked,
+  logPlusFeatureLoaded,
+  logSubscriptionModeResolved,
+  logTravelPrefSkippedFree,
+} from "@/lib/subscription-plus-features";
 
 type AccessCtx = AccessSnapshot & {
   refresh: () => void;
@@ -53,11 +59,18 @@ export function AccessProvider({ children }: { children: ReactNode }) {
     buildAccessSnapshot(email, { profilePlusActive: false, user }),
   );
 
+  const commitSnapshot = useCallback(
+    (next: AccessSnapshot, reason: string) => {
+      logSubscriptionModeResolved(next, reason);
+      setSnapshot(next);
+    },
+    [],
+  );
+
   const refresh = useCallback(() => {
     const next = buildAccessSnapshot(email, { profilePlusActive, user });
-    console.info("[DEV_SUBSCRIPTION] mode=", next.devSubscriptionMode);
-    setSnapshot(next);
-  }, [email, profilePlusActive, user]);
+    commitSnapshot(next, "refresh");
+  }, [email, profilePlusActive, user, commitSnapshot]);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,16 +119,19 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   const enablePlusTestMode = useCallback(() => {
     applyMockSubscription("plus");
     forcePlusMode();
-    console.info("[DEV_SUBSCRIPTION] switched_to_plus");
-    refresh();
-  }, [refresh]);
+    const next = buildAccessSnapshot(email, { profilePlusActive, user });
+    commitSnapshot(next, "switched_to_plus");
+    logPlusFeatureLoaded("travel_preference");
+  }, [email, profilePlusActive, user, commitSnapshot]);
 
   const disablePlusTestMode = useCallback(() => {
     applyMockSubscription("free");
     forceFreeMode();
-    console.info("[DEV_SUBSCRIPTION] switched_to_free");
-    refresh();
-  }, [refresh]);
+    const next = buildAccessSnapshot(email, { profilePlusActive, user });
+    commitSnapshot(next, "switched_to_free");
+    logPlusFeatureBlocked("travel_preference", "dev_mode_free");
+    logTravelPrefSkippedFree("dev_mode_switched_to_free");
+  }, [email, profilePlusActive, user, commitSnapshot]);
 
   const value = useMemo(
     () => ({
