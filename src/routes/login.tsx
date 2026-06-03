@@ -301,6 +301,9 @@ function Login() {
   const signIn = async (provider: OAuthProvider) => {
     if (provider === "google") {
       logGoogleOAuthMarker("clicked");
+    } else if (provider === "apple") {
+      const { emitAppleAuthMarker } = await import("@/lib/apple-auth-log");
+      emitAppleAuthMarker("[APPLE_AUTH_BUTTON_PRESSED]");
     }
     setAuthError(null);
     clearOAuthBusyTimer();
@@ -362,7 +365,11 @@ function Login() {
           msg = `${msg}\n\n請確認 Supabase Redirect URLs 已加入：\n${formatSupabaseRedirectAllowListHint()}`;
         }
         setAuthError(msg);
-        console.error("[auth] sign-in failed", { provider, message: msg });
+        const appleFailure =
+          provider === "apple" && "appleFailure" in result ? result.appleFailure : undefined;
+        console.error(
+          `[auth] sign-in failed ${JSON.stringify({ provider, message: msg, appleFailure })}`,
+        );
         return;
       }
 

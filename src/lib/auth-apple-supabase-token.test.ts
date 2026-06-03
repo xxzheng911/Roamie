@@ -46,7 +46,7 @@ import {
 describe("exchangeAppleIdTokenWithSupabase", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("VITE_SUPABASE_PUBLISHABLE_KEY", "test-anon-key");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "test-anon-key-123456789012345");
     mockSignInWithIdToken.mockResolvedValue({
       data: { session: { user: { id: "u1" } } },
       error: null,

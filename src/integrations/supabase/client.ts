@@ -2,31 +2,38 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { createCapacitorSupabaseFetch } from "@/lib/native-capacitor-http";
+import {
+  getSupabaseEnvCheckSnapshot,
+  isSupabaseViteEnvValid,
+  logSupabaseEnvCheck,
+  normalizeSupabaseProjectUrl,
+} from "@/lib/vite-supabase-env";
 import type { Database } from "./types";
 
 const supabaseGlobalFetch = createCapacitorSupabaseFetch();
 
-function normalizeSupabaseUrl(url: string): string {
-  // Some environments accidentally set VITE_SUPABASE_URL to .../rest/v1 or .../auth/v1.
-  // Supabase client expects the project base origin (https://<ref>.supabase.co).
-  return url.replace(/\/(rest|auth)\/v1\/?$/i, "").replace(/\/$/, "");
+function readViteEnvString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "undefined") return undefined;
+  return trimmed;
 }
 
+/** 僅讀 import.meta.env.VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY */
 function readSupabaseEnv(): { url?: string; key?: string } {
-  const rawUrl = import.meta.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-  const key =
-    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY;
+  const rawUrl = readViteEnvString(import.meta.env.VITE_SUPABASE_URL);
+  const rawKey = readViteEnvString(import.meta.env.VITE_SUPABASE_ANON_KEY);
   return {
-    url: rawUrl ? normalizeSupabaseUrl(rawUrl) : undefined,
-    key: typeof key === "string" && key.length > 0 ? key : undefined,
+    url: rawUrl ? normalizeSupabaseProjectUrl(rawUrl) : undefined,
+    key: rawKey,
   };
 }
 
-/** Build-time / runtime：Supabase 是否已設定（TestFlight 需在 build 時帶入 VITE_*） */
 export function isSupabaseConfigured(): boolean {
-  const { url, key } = readSupabaseEnv();
-  return Boolean(url && key);
+  return isSupabaseViteEnvValid();
 }
+
+export { logSupabaseEnvCheck, getSupabaseEnvCheckSnapshot };
 
 let configWarningLogged = false;
 let clientInstance: SupabaseClient<Database> | null = null;
@@ -37,11 +44,11 @@ function logMissingConfigOnce(): void {
   const { url, key } = readSupabaseEnv();
   const missing = [
     ...(!url ? ["VITE_SUPABASE_URL"] : []),
-    ...(!key ? ["VITE_SUPABASE_PUBLISHABLE_KEY"] : []),
+    ...(!key ? ["VITE_SUPABASE_ANON_KEY"] : []),
   ];
   console.error(
     `[Supabase] Missing environment variable(s): ${missing.join(", ")}. ` +
-      "App will not be able to sign in. Rebuild with .env for TestFlight.",
+      "Rebuild with .env (Dashboard → API → anon public key) then npm run cap:sync:ios.",
   );
 }
 
@@ -51,7 +58,6 @@ function createSupabaseClient(): SupabaseClient<Database> {
 
   if (!url || !key) {
     logMissingConfigOnce();
-    // 不 throw：避免 Capacitor 冷啟動整包 JS 在 import 階段就崩潰
     return createClient<Database>(
       "https://placeholder.supabase.co",
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSJ9.missing-build-env",
@@ -82,13 +88,11 @@ function createSupabaseClient(): SupabaseClient<Database> {
   });
 }
 
-/** 全專案唯一瀏覽器 Supabase client（延遲建立，import 時不 throw） */
 export function getSupabaseClient(): SupabaseClient<Database> {
   clientInstance ??= createSupabaseClient();
   return clientInstance;
 }
 
-/** @deprecated 請用 getSupabaseClient；保留相容與 Proxy 轉發 */
 export const supabase: SupabaseClient<Database> = new Proxy({} as SupabaseClient<Database>, {
   get(_target, prop) {
     const client = getSupabaseClient();

@@ -11,8 +11,8 @@ function readVite(key: string): string | undefined {
 export const clientEnv = {
   /** Supabase project URL (public) */
   supabaseUrl: readVite("VITE_SUPABASE_URL"),
-  /** Supabase anon/publishable key (public, RLS-protected) */
-  supabasePublishableKey: readVite("VITE_SUPABASE_PUBLISHABLE_KEY"),
+  /** Supabase anon public key (Dashboard → API) */
+  supabaseAnonKey: readVite("VITE_SUPABASE_ANON_KEY"),
   /** Maps key（優先 EXPO_PUBLIC，供 Capacitor / RN） */
   googleMapsKey:
     readVite("EXPO_PUBLIC_GOOGLE_MAPS_API_KEY") ?? readVite("VITE_GOOGLE_MAPS_API_KEY"),
@@ -36,9 +36,7 @@ export const clientEnv = {
 } as const;
 
 export function assertClientEnv(): void {
-  if (!clientEnv.supabaseUrl || !clientEnv.supabasePublishableKey) {
-    console.error(
-      "[Roamie] Missing VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY. Check .env",
-    );
+  if (!clientEnv.supabaseUrl || !clientEnv.supabaseAnonKey) {
+    console.error("[Roamie] Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. Check .env");
   }
 }

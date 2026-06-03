@@ -4,6 +4,7 @@
  * - bundled（TestFlight / Release）：從 TanStack Start manifest 產生可離線啟動的 index.html
  * - dev / remote：僅提示 WebView 將使用 server.url（由 capacitor.config 決定）
  */
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   readFileSync,
@@ -786,13 +787,16 @@ if (!existsSync(entryPath)) {
 
 const stylesheet = findMainStylesheet();
 
-const supabaseUrl = readEnv("VITE_SUPABASE_URL");
-const supabaseKey = readEnv("VITE_SUPABASE_PUBLISHABLE_KEY");
-if (!supabaseUrl || !supabaseKey) {
-  console.warn(
-    "[capacitor-prepare] WARNING: VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY missing — " +
-      "TestFlight build will start in guest-safe mode until .env is present at build time.",
+const supabaseEnvCheck = spawnSync(
+  "node",
+  ["scripts/supabase-env-check.mjs", `--bundle-dir=${assetsDir}`],
+  { cwd: root, stdio: "inherit", env: process.env },
+);
+if (supabaseEnvCheck.status !== 0) {
+  console.error(
+    "[capacitor-prepare] Supabase env check failed — fix .env then rebuild (npm run build)",
   );
+  process.exit(supabaseEnvCheck.status ?? 1);
 }
 
 const googleMapsKey =

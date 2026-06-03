@@ -6,6 +6,7 @@ import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
 import { nativeHttpRequest } from "@/lib/native-capacitor-http";
 import { detectPlatform } from "@/services/platform";
+import { describeAuthError } from "@/lib/apple-auth-error";
 import {
   logAppleAuthTokenExchangeError,
   logAppleAuthTokenExchangeStart,
@@ -13,6 +14,7 @@ import {
   logAppleAuthTokenExchangeTimeout,
   logAppleAuthSessionReady,
 } from "@/lib/apple-auth-log";
+import { readSupabaseEnvForClient } from "@/lib/supabase-env";
 
 /** 單次 exchange 上限（含最多 2 次嘗試） */
 const EXCHANGE_JS_TIMEOUT_MS = 55_000;
@@ -26,8 +28,7 @@ let exchangeInflight: Promise<{
 }> | null = null;
 
 function readAnonKey(): string | null {
-  const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-  return typeof key === "string" && key.trim().length > 0 ? key.trim() : null;
+  return readSupabaseEnvForClient().key ?? null;
 }
 
 type TokenResponse = {
@@ -70,7 +71,9 @@ export async function exchangeAppleIdTokenWithSupabase(
   rawNonce: string,
 ): Promise<{ session: Session | null; error: Error | null; via: string }> {
   if (exchangeInflight) {
-    console.info("[APPLE_AUTH] exchange_join_inflight");
+    void import("@/lib/apple-auth-log").then(({ emitAppleAuthMarker }) => {
+      emitAppleAuthMarker("[APPLE_AUTH_EXCHANGE_JOIN_INFLIGHT]");
+    });
     return exchangeInflight;
   }
 
@@ -142,8 +145,10 @@ async function exchangeOnce(
     preferClient: boolean;
   },
 ): Promise<{ session: Session | null; error: Error | null; via: string }> {
-  logAppleAuthTokenExchangeStart({ host: ctx.host, attempt: ctx.attempt });
+  const via = ctx.preferClient ? "signInWithIdToken" : "http_post";
+  logAppleAuthTokenExchangeStart({ host: ctx.host, attempt: ctx.attempt, via });
   const startedAt = Date.now();
+  const elapsed = () => Date.now() - startedAt;
 
   try {
     const result = await withJsTimeout(
@@ -156,7 +161,7 @@ async function exchangeOnce(
 
     if (result.session) {
       logAppleAuthTokenExchangeSuccess({
-        ms: Date.now() - startedAt,
+        ms: elapsed(),
         via: result.via,
         userId: result.session.user?.id,
       });
@@ -164,10 +169,11 @@ async function exchangeOnce(
       return result;
     }
 
-    const msg = result.error?.message ?? "unknown";
+    const detail = describeAuthError(result.error);
+    const msg = detail.message;
     if (/timeout|逾時|apple_supabase_sign_in_timeout/i.test(msg)) {
       logAppleAuthTokenExchangeTimeout({
-        ms: Date.now() - startedAt,
+        ms: elapsed(),
         attempt: ctx.attempt,
         via: result.via,
       });
@@ -179,36 +185,38 @@ async function exchangeOnce(
     }
 
     logAppleAuthTokenExchangeError({
-      ms: Date.now() - startedAt,
+      ms: elapsed(),
       attempt: ctx.attempt,
       via: result.via,
-      message: msg,
+      ...detail,
+      httpStatus: result.httpStatus,
     });
     return { session: null, error: result.error ?? new Error(msg), via: result.via };
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const detail = describeAuthError(e);
+    const msg = detail.message;
     if (/timeout|逾時/i.test(msg)) {
       logAppleAuthTokenExchangeTimeout({
-        ms: Date.now() - startedAt,
+        ms: elapsed(),
         attempt: ctx.attempt,
-        via: ctx.preferClient ? "signInWithIdToken" : "http_post",
+        via,
       });
       return {
         session: null,
         error: new Error("apple_supabase_sign_in_timeout"),
-        via: ctx.preferClient ? "signInWithIdToken" : "http_post",
+        via,
       };
     }
     logAppleAuthTokenExchangeError({
-      ms: Date.now() - startedAt,
+      ms: elapsed(),
       attempt: ctx.attempt,
-      via: ctx.preferClient ? "signInWithIdToken" : "http_post",
-      message: msg,
+      via,
+      ...detail,
     });
     return {
       session: null,
       error: e instanceof Error ? e : new Error(msg),
-      via: ctx.preferClient ? "signInWithIdToken" : "http_post",
+      via,
     };
   }
 }
@@ -238,7 +246,12 @@ async function withJsTimeout<T>(
 async function signInWithIdTokenOnce(
   identityToken: string,
   rawNonce: string,
-): Promise<{ session: Session | null; error: Error | null; via: string }> {
+): Promise<{
+  session: Session | null;
+  error: Error | null;
+  via: string;
+  httpStatus?: number;
+}> {
   const { data, error } = await supabase.auth.signInWithIdToken({
     provider: "apple",
     token: identityToken,
@@ -246,7 +259,7 @@ async function signInWithIdTokenOnce(
   });
 
   if (error) {
-    return { session: null, error, via: "signInWithIdToken" };
+    return { session: null, error, via: "signInWithIdToken", httpStatus: (error as { status?: number }).status };
   }
   if (!data.session) {
     return { session: null, error: new Error("no_session"), via: "signInWithIdToken" };
@@ -260,7 +273,12 @@ async function postTokenHttpOnce(
   anonKey: string,
   identityToken: string,
   rawNonce: string,
-): Promise<{ session: Session | null; error: Error | null; via: string }> {
+): Promise<{
+  session: Session | null;
+  error: Error | null;
+  via: string;
+  httpStatus?: number;
+}> {
   const url = `${baseUrl}/auth/v1/token?grant_type=id_token`;
   const http = await nativeHttpRequest(url, "POST", {
     headers: {
@@ -282,7 +300,10 @@ async function postTokenHttpOnce(
   if (http.status < 200 || http.status >= 300) {
     const detail =
       body.error_description || body.msg || body.error || `HTTP ${http.status}`;
-    return { session: null, error: new Error(detail), via: "http_post" };
+    const err = new Error(detail) as Error & { status?: number; code?: string };
+    err.status = http.status;
+    if (typeof body.error === "string") err.code = body.error;
+    return { session: null, error: err, via: "http_post", httpStatus: http.status };
   }
 
   if (!body.access_token || !body.refresh_token) {

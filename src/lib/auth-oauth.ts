@@ -34,7 +34,11 @@ import { supabase } from "@/lib/supabase";
 
 export type { OAuthProvider };
 
-export type SignInResult = { ok: true } | { ok: false; message: string; cancelled?: boolean };
+import type { AppleAuthFailure } from "@/lib/apple-auth-log";
+
+export type SignInResult =
+  | { ok: true }
+  | { ok: false; message: string; cancelled?: boolean; appleFailure?: AppleAuthFailure };
 
 function isValidSupabaseAuthorizeUrl(url: string): boolean {
   try {
@@ -183,11 +187,25 @@ export async function signInWithProvider(provider: OAuthProvider): Promise<SignI
   logAuthStart(provider);
 
   if (provider === "apple" && canUseNativeAppleSignIn()) {
-    console.info("[APPLE_AUTH] redirect=native-id-token (no browser OAuth)");
+    const { emitAppleAuthMarker } = await import("@/lib/apple-auth-log");
+    emitAppleAuthMarker("[APPLE_AUTH_NATIVE_FLOW]", { redirect: "native-id-token" });
     const native = await signInWithAppleNative();
     if (!native.ok) {
-      if (!native.cancelled) logAuthError("apple.native", native.message);
-      return native;
+      if (!native.cancelled) {
+        logAuthError("apple.native", native.failure?.message ?? native.message, {
+          failure: native.failure,
+          phase: native.failure?.phase,
+          code: native.failure?.code,
+          status: native.failure?.status,
+          via: native.failure?.via,
+        });
+      }
+      return {
+        ok: false,
+        message: native.message,
+        cancelled: native.cancelled,
+        appleFailure: native.failure,
+      };
     }
     try {
       await completeSignInAfterAuth(undefined, native.session);

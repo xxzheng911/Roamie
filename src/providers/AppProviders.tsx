@@ -9,7 +9,8 @@ import { AddToTripProvider } from "@/hooks/use-add-to-trip";
 import { SubscriptionProvider } from "@/providers/SubscriptionProvider";
 import { assertClientEnv } from "@/constants/env";
 import { markBootPhase } from "@/lib/boot-diagnostics";
-import { isSupabaseConfigured } from "@/integrations/supabase/client";
+import { isSupabaseConfigured, logSupabaseEnvCheck } from "@/integrations/supabase/client";
+import { detectPlatform } from "@/services/platform";
 import {
   readBrowserPathname,
   shouldUseLightStartupShell,
@@ -56,6 +57,9 @@ function ProviderGate({ children }: { children: ReactNode }) {
 export function AppProviders({ children }: Props) {
   if (typeof window !== "undefined") {
     assertClientEnv();
+    if (detectPlatform().isCapacitor) {
+      logSupabaseEnvCheck();
+    }
     if (!isSupabaseConfigured()) {
       console.warn(
         "[Roamie] Supabase env missing at runtime — cloud sync disabled until rebuild with VITE_SUPABASE_* in .env",

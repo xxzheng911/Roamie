@@ -8,20 +8,39 @@ import {
   exchangeAppleIdTokenWithSupabase,
 } from "@/lib/auth-apple-supabase-token";
 import {
+  describeAuthError,
+  mapAppleExchangeErrorToUserMessage,
+} from "@/lib/apple-auth-error";
+import {
   APPLE_SIGN_IN_TEMP_FAIL_MSG,
+  logAppleAuthCredentialReceived,
+  logAppleAuthIdTokenMissing,
   logAppleAuthIdTokenReceived,
+  logAppleAuthNativeAuthorize,
+  logAppleAuthSignInFailed,
   logAppleAuthStart,
+  type AppleAuthFailure,
 } from "@/lib/apple-auth-log";
 import {
+  describeAppleIdentityTokenInput,
+  normalizeAppleIdentityToken,
+} from "@/lib/apple-identity-token";
+import {
   isSupabaseConnectivityError,
+  isSupabaseHostnameUnreachableError,
+  SUPABASE_HOST_UNREACHABLE_MSG,
   SUPABASE_UNAVAILABLE_USER_MSG,
 } from "@/lib/supabase-connectivity";
 import { detectPlatform } from "@/services/platform";
-import { readSupabaseProjectUrl } from "@/lib/supabase-project-url";
+import {
+  diagnoseSupabaseUrlForNativeBuild,
+  readSupabaseProjectHost,
+  readSupabaseProjectUrl,
+} from "@/lib/supabase-project-url";
 
 export type AppleNativeSignInResult =
   | { ok: true; session: Session }
-  | { ok: false; message: string; cancelled?: boolean };
+  | { ok: false; message: string; cancelled?: boolean; failure?: AppleAuthFailure };
 
 let appleNativeSignInInflight: Promise<AppleNativeSignInResult> | null = null;
 
@@ -42,23 +61,43 @@ function isUserCancelled(error: unknown): boolean {
   );
 }
 
-function mapExchangeErrorToUserMessage(detail: string, error?: unknown): string {
+function userMessageForFailure(
+  detail: ReturnType<typeof describeAuthError>,
+  error?: unknown,
+): string {
+  if (diagnoseSupabaseUrlForNativeBuild()) {
+    return SUPABASE_HOST_UNREACHABLE_MSG;
+  }
+  if (error && isSupabaseHostnameUnreachableError(error)) {
+    return SUPABASE_HOST_UNREACHABLE_MSG;
+  }
   if (error && isSupabaseConnectivityError(error)) {
     return SUPABASE_UNAVAILABLE_USER_MSG;
   }
-  if (/apple_supabase_sign_in_timeout|逾時|timeout/i.test(detail)) {
-    return APPLE_SIGN_IN_TEMP_FAIL_MSG;
-  }
-  if (/nonces?\s*mismatch/i.test(detail)) {
-    return (
-      "Apple 登入失敗：nonce 驗證不一致。請確認 Supabase Dashboard → Authentication → Apple 已啟用，" +
-      "且 Client IDs 含 App bundle ID（com.shuode.roamie）。"
-    );
-  }
-  if (/supabase_not_configured/i.test(detail)) {
-    return "雲端登入未設定，請更新 App 後再試。";
-  }
-  return APPLE_SIGN_IN_TEMP_FAIL_MSG;
+  return mapAppleExchangeErrorToUserMessage(detail, error);
+}
+
+function fail(
+  phase: AppleAuthFailure["phase"],
+  message: string,
+  extra: Partial<AppleAuthFailure> = {},
+  error?: unknown,
+): AppleNativeSignInResult {
+  const detail = describeAuthError(error ?? { message });
+  const failure: AppleAuthFailure = {
+    phase,
+    message: extra.message ?? detail.message ?? message,
+    code: extra.code ?? detail.code,
+    status: extra.status ?? detail.status,
+    name: extra.name ?? detail.name,
+    via: extra.via,
+  };
+  logAppleAuthSignInFailed(failure);
+  return {
+    ok: false,
+    message: userMessageForFailure(failure, error) || message,
+    failure,
+  };
 }
 
 /**
@@ -66,11 +105,13 @@ function mapExchangeErrorToUserMessage(detail: string, error?: unknown): string 
  */
 export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> {
   if (!canUseNativeAppleSignIn()) {
-    return { ok: false, message: "目前裝置不支援原生 Apple 登入" };
+    return fail("unknown", "目前裝置不支援原生 Apple 登入", { code: "unsupported_platform" });
   }
 
   if (appleNativeSignInInflight) {
-    console.info("[APPLE_AUTH] sign_in_join_inflight");
+    void import("@/lib/apple-auth-log").then(({ emitAppleAuthMarker }) => {
+      emitAppleAuthMarker("[APPLE_AUTH_SIGN_IN_JOIN_INFLIGHT]");
+    });
     return appleNativeSignInInflight;
   }
 
@@ -84,20 +125,34 @@ async function runNativeAppleSignIn(): Promise<AppleNativeSignInResult> {
   const mod = await import("@capacitor-community/apple-sign-in").catch(() => null);
   const SignInWithApple = mod?.SignInWithApple;
   if (!SignInWithApple) {
-    return { ok: false, message: "Apple 登入模組尚未就緒（請確認 iOS 原生插件已安裝）" };
+    return fail("plugin_missing", "Apple 登入模組尚未就緒（請確認 iOS 原生插件已安裝）", {
+      code: "apple_plugin_missing",
+    });
   }
 
   const configError = assertSupabaseConfiguredForAuth();
   if (configError) {
-    return { ok: false, message: configError };
+    return fail("supabase_config", configError, { code: "supabase_not_configured" });
   }
 
-  logAppleAuthStart({ clientId: APP_BUNDLE_ID });
+  const supabaseHost = readSupabaseProjectHost();
+  const urlIssue = diagnoseSupabaseUrlForNativeBuild();
+  logAppleAuthStart({
+    clientId: APP_BUNDLE_ID,
+    supabaseHost: supabaseHost ?? "(unset)",
+    supabaseUrlIssue: urlIssue,
+  });
+  if (urlIssue) {
+    return fail("supabase_config", SUPABASE_HOST_UNREACHABLE_MSG, {
+      code: urlIssue,
+    });
+  }
   logAuthDebug("apple.native.start", { provider: "apple", clientId: APP_BUNDLE_ID });
 
   try {
     const { raw: rawNonce, hashed: hashedNonce } = await createAppleSignInNonce();
 
+    logAppleAuthNativeAuthorize();
     const appleResult = await SignInWithApple.authorize({
       clientId: APP_BUNDLE_ID,
       redirectURI: "",
@@ -105,17 +160,35 @@ async function runNativeAppleSignIn(): Promise<AppleNativeSignInResult> {
       nonce: hashedNonce,
     });
 
-    const identityToken = appleResult.response?.identityToken;
-    logAppleAuthIdTokenReceived(Boolean(identityToken));
+    const response = appleResult.response;
+    logAppleAuthCredentialReceived({
+      hasUser: Boolean(response?.user),
+      hasEmail: Boolean(response?.email),
+      hasAuthorizationCode: Boolean(response?.authorizationCode),
+    });
     logAuthDebug("apple.native.authorized", {
-      hasIdentityToken: Boolean(identityToken),
+      hasUser: Boolean(response?.user),
+      hasEmail: Boolean(response?.email),
+      hasAuthorizationCode: Boolean(response?.authorizationCode),
     });
 
-    if (!identityToken) {
+    const rawIdentityToken = response?.identityToken;
+    const normalized = normalizeAppleIdentityToken(rawIdentityToken);
+
+    if (normalized.ok) {
+      logAppleAuthIdTokenReceived({ ...normalized.meta, normalized: true });
+    } else {
+      logAppleAuthIdTokenMissing({
+        ...describeAppleIdentityTokenInput(rawIdentityToken),
+        normalized: false,
+      });
       logAuthSessionResult(false, { provider: "apple", reason: "no_identity_token" });
-      return { ok: false, message: "Apple 未回傳 identity token" };
+      return fail("no_identity_token", "Apple 未回傳 identity token", {
+        code: "APPLE_AUTH_ID_TOKEN_MISSING",
+      });
     }
 
+    const identityToken = normalized.token;
     const projectUrl = readSupabaseProjectUrl();
     const host = projectUrl ? new URL(projectUrl).host : "(unset)";
 
@@ -129,18 +202,29 @@ async function runNativeAppleSignIn(): Promise<AppleNativeSignInResult> {
       host,
       hasSession: Boolean(session),
       error: error?.message ?? null,
+      errorCode: (error as { code?: string })?.code ?? null,
     });
 
     if (error) {
-      logAuthError("apple.token_exchange", error);
+      const detail = describeAuthError(error);
+      logAuthError("apple.token_exchange", error, { via, ...detail });
       await clearPartialAppleAuthSession();
-      return { ok: false, message: mapExchangeErrorToUserMessage(error.message, error) };
+      const failure: AppleAuthFailure = { phase: "token_exchange", ...detail, via };
+      logAppleAuthSignInFailed(failure);
+      return {
+        ok: false,
+        message: userMessageForFailure(detail, error),
+        failure,
+      };
     }
 
     if (!session?.user) {
       await clearPartialAppleAuthSession();
       logAuthSessionResult(false, { provider: "apple", reason: "no_session" });
-      return { ok: false, message: APPLE_SIGN_IN_TEMP_FAIL_MSG };
+      return fail("no_session", APPLE_SIGN_IN_TEMP_FAIL_MSG, {
+        code: "no_session",
+        via,
+      });
     }
 
     logAuthSessionResult(true, {
@@ -151,16 +235,20 @@ async function runNativeAppleSignIn(): Promise<AppleNativeSignInResult> {
       isPrivateEmail: session.user.email?.includes("@privaterelay.appleid.com") ?? false,
     });
 
-    console.info("[APPLE_AUTH] success userId=", session.user.id);
+    const { emitAppleAuthMarker } = await import("@/lib/apple-auth-log");
+    emitAppleAuthMarker("[APPLE_AUTH_NATIVE_SUCCESS]", { userId: session.user.id });
     return { ok: true, session };
   } catch (e) {
     if (isUserCancelled(e)) {
       logAuthDebug("apple.native.cancelled", {});
-      return { ok: false, message: "已取消登入", cancelled: true };
+      return { ok: false, message: "已取消登入", cancelled: true, failure: { phase: "cancelled", message: "cancelled" } };
     }
     await clearPartialAppleAuthSession();
-    const msg = e instanceof Error ? e.message : "Apple 登入失敗";
-    logAuthError("apple.native.failed", e);
-    return { ok: false, message: mapExchangeErrorToUserMessage(msg, e) };
+    const detail = describeAuthError(e);
+    logAuthError("apple.native.failed", e, detail);
+    return fail("native_authorize", userMessageForFailure(detail, e), {
+      ...detail,
+      code: detail.code ?? (e as { code?: string })?.code,
+    }, e);
   }
 }
