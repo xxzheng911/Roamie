@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { resolveExploreSearchApiKey } from "@/lib/explore-search-diagnostic";
 import { executeExploreSearch } from "@/lib/places.functions";
 
-describe("executeExploreSearch map text", () => {
+/** Live Google calls; opt in with RUN_EXPLORE_SEARCH_LIVE_TESTS=1 */
+const runLiveExplore =
+  process.env.RUN_EXPLORE_SEARCH_LIVE_TESTS === "1" &&
+  Boolean(resolveExploreSearchApiKey());
+
+describe.skipIf(!runLiveExplore)("executeExploreSearch map text", () => {
   it("returns 高雄車站 with exploreMapTextSearch", async () => {
     const r = await executeExploreSearch({
       query: "高雄車站",

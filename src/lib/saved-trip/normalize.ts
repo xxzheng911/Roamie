@@ -216,7 +216,10 @@ function formatDateRangeDisplay(range: SavedTripView["dateRange"]): string {
   if (range.start && range.end) {
     return formatDateRangeLabel(range.start, range.end, { withYear: true });
   }
-  return UNSET;
+  if (range.start) {
+    return formatDateWithWeekday(range.start);
+  }
+  return "尚未設定日期";
 }
 
 /** 將 stored trip 轉為詳情／列表用統一格式；舊資料安全 fallback */

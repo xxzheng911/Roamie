@@ -64,19 +64,44 @@ export function extractPrimaryDestinationLabel(destination: string): string {
   return parts[0] ?? raw;
 }
 
+function resolveKnownDestinationKey(label: string): string | null {
+  const trimmed = label.trim();
+  if (!trimmed) return null;
+  return DESTINATION_ALIASES[trimmed] ?? DESTINATION_ALIASES[trimmed.toLowerCase()] ?? null;
+}
+
+/** 從較長字串中找出內嵌的已知城市（例：東京三日遊 → tokyo） */
+function findEmbeddedDestinationKey(text: string): string | null {
+  const cjkLabels = Object.keys(DESTINATION_ALIASES).filter((k) => /[\u4e00-\u9fff]/.test(k));
+  cjkLabels.sort((a, b) => b.length - a.length);
+  for (const label of cjkLabels) {
+    if (text.includes(label)) return DESTINATION_ALIASES[label];
+  }
+  return null;
+}
+
 /**
  * 將目的地正規化為 cache key（例：釜山 / Busan / 부산 → busan）。
- * 用於跨使用者共用 AI 目的地封面。
+ * 用於跨裝置、跨次開啟共用同一張 Unsplash 目的地封面。
  */
 export function normalizeDestinationKey(destination: string): string {
-  const primary = extractPrimaryDestinationLabel(destination);
-  if (!primary) return "unknown";
+  const raw = destination.trim();
+  if (!raw) return "unknown";
 
-  const direct = DESTINATION_ALIASES[primary] ?? DESTINATION_ALIASES[primary.toLowerCase()];
-  if (direct) return direct;
+  const primary = extractPrimaryDestinationLabel(raw);
+
+  const fromPrimary = resolveKnownDestinationKey(primary);
+  if (fromPrimary) return fromPrimary;
+
+  const fromEmbedded = findEmbeddedDestinationKey(raw) ?? findEmbeddedDestinationKey(primary);
+  if (fromEmbedded) return fromEmbedded;
 
   const latin = slugifyLatin(primary);
-  if (latin.length >= 2) return latin;
+  if (latin.length >= 2) {
+    const fromLatin = resolveKnownDestinationKey(latin.replace(/-/g, " "));
+    if (fromLatin) return fromLatin;
+    return latin;
+  }
 
   const hash = Array.from(primary)
     .reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) | 0, 0)

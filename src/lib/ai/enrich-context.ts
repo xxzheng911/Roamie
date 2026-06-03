@@ -14,6 +14,13 @@ import { buildLongTermMemory } from "@/lib/ai/memory/long-term-memory";
 import type { PlanTier } from "@/lib/plan-tier/types";
 import { buildNormalizedTravelContextLog, logContextNormalized } from "@/lib/ai/context-normalize";
 import { loadConversationContext, rowPlusMemory } from "@/lib/conversation-context-store";
+import {
+  logPlusMemoryAppliedToChat,
+  logPlusMemoryError,
+  logPlusMemoryLoad,
+  logPlusMemorySkippedFree,
+} from "@/lib/ai/plus-memory-log";
+import { formatLongTermMemoryForPrompt } from "@/lib/ai/memory/long-term-memory";
 
 /** 組裝對話階段、情緒推測、本輪／長期記憶後再送 AI */
 export async function enrichRoamieContext(
@@ -64,10 +71,21 @@ export async function enrichRoamieContext(
     try {
       const persisted = await loadConversationContext();
       const plusMemory = persisted ? rowPlusMemory(persisted) : null;
+      logPlusMemoryLoad({ source: "chat_enrich", memory: plusMemory });
       longTermMemory = await buildLongTermMemory("client", plusMemory);
+      const preview = formatLongTermMemoryForPrompt(longTermMemory);
+      if (preview.trim()) {
+        logPlusMemoryAppliedToChat({
+          traitCount: longTermMemory.traits?.length ?? 0,
+          preview: preview.slice(0, 200),
+        });
+      }
     } catch (e) {
+      logPlusMemoryError("chat_enrich", e);
       console.warn("[Roamie AI] long-term memory", e);
     }
+  } else if (tier !== "plus") {
+    logPlusMemorySkippedFree("chat_enrich");
   }
 
   return {

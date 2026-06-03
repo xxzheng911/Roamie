@@ -8,8 +8,15 @@ import type { PlusConversationMemory } from "@/lib/ai/plus-conversation-memory";
 import { EMPTY_PLUS_CONVERSATION_MEMORY } from "@/lib/ai/plus-conversation-memory";
 import {
   buildPlusMemoryFromSources,
+  mergeSessionIntoPlusMemory,
   parsePlusMemory,
 } from "@/lib/ai/plus-memory-sync";
+import {
+  logPlusMemoryError,
+  logPlusMemorySave,
+  logPlusMemorySkippedFree,
+} from "@/lib/ai/plus-memory-log";
+import { resolveEffectivePlanTierWithProfile } from "@/lib/access/resolve";
 import { buildTravelProfileFields } from "@/lib/travel-profile-for-ai";
 import { getPreferences } from "@/lib/preferences-storage";
 import { listPlaces } from "@/lib/places-storage";
@@ -213,20 +220,28 @@ export async function saveConversationContext(
   const existing = await loadConversationContext();
   const existingPlus = parsePlusMemory(existing?.plus_memory);
 
+  const tier = await resolveEffectivePlanTierWithProfile();
   let plusMemory = existingPlus;
-  try {
-    const [prefs, places] = await Promise.all([getPreferences(), listPlaces()]);
-    const savedCategories = [
-      ...new Set(places.map((p) => p.category).filter(Boolean) as string[]),
-    ];
-    plusMemory = buildPlusMemoryFromSources({
-      prefs,
-      profileFields: buildTravelProfileFields(null, prefs),
-      savedCategories,
-      existing: existingPlus,
-    });
-  } catch (e) {
-    console.warn("[conversation_context] plus_memory refresh skipped", e);
+  if (tier === "plus") {
+    try {
+      const [prefs, places] = await Promise.all([getPreferences(), listPlaces()]);
+      const savedCategories = [
+        ...new Set(places.map((p) => p.category).filter(Boolean) as string[]),
+      ];
+      plusMemory = buildPlusMemoryFromSources({
+        prefs,
+        profileFields: buildTravelProfileFields(null, prefs),
+        savedCategories,
+        existing: existingPlus,
+      });
+      plusMemory = mergeSessionIntoPlusMemory(plusMemory, session);
+      logPlusMemorySave({ memory: plusMemory, mergedFromChat: true });
+    } catch (e) {
+      logPlusMemoryError("save_refresh", e);
+      console.warn("[conversation_context] plus_memory refresh skipped", e);
+    }
+  } else {
+    logPlusMemorySkippedFree("save_conversation_context");
   }
 
   const row = conversationContextToRow(uid, session.conversationContext, session, {

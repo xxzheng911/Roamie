@@ -27,6 +27,7 @@ import {
   logCoreTripUpdateSuccess,
   seedCoreTripPersistedFingerprint,
 } from "@/lib/trip/core-trip-update-guard";
+import { persistTripStaged } from "@/lib/trip/trip-staged-persist";
 
 type SavedTripRowUpdate = Database["public"]["Tables"]["saved_trips"]["Update"];
 
@@ -249,10 +250,32 @@ async function updateSavedTripRow(id: string, patch: SavedTripRowUpdate) {
   return full;
 }
 
+function isGoogleTripCoverUrl(url: string): boolean {
+  return (
+    url.includes("place-photo") ||
+    url.includes("googleusercontent") ||
+    url.includes("maps.googleapis")
+  );
+}
+
 async function resolveCoverForSave(itinerary: Itinerary | RoamiePayloadV2): Promise<TripCoverMeta> {
   if (!isRoamiePayloadV2(itinerary)) {
     return { cover_image: null, cover_source: null, cover_query: null };
   }
+
+  const preset = itinerary.aiGeneratedCoverImageUrl?.trim();
+  if (preset) {
+    const source = isGoogleTripCoverUrl(preset) ? "google" : ("unsplash" as ImageSource);
+    return {
+      cover_image: preset,
+      cover_source: source,
+      cover_query: itinerary.destination ?? null,
+      destination_name: itinerary.destination ?? null,
+      normalized_destination_key: itinerary.destination ?? null,
+      ai_generated_destination_cover_url: preset,
+    };
+  }
+
   const cover = await getTripCoverImage(tripCoverInputFromPayload(itinerary));
   const unsplashUrl = cover.unsplashDestinationCoverUrl ?? cover.url;
   return {
@@ -285,36 +308,79 @@ function payloadTitleForSave(
   return { ...payload, title: autoTitle };
 }
 
-async function persistItinerary(itinerary: Itinerary | RoamiePayloadV2): Promise<StoredItinerary> {
+export type ConfirmSaveTripOptions = {
+  /** 略過 Unsplash 封面解析（手動建立、或 AI 已帶 cover URL） */
+  skipCoverResolve?: boolean;
+  /** 僅寫入空殼行程（手動空白行程） */
+  shellOnly?: boolean;
+  /** 使用分階段 insert + update，避免 jsonb 過大 timeout */
+  staged?: boolean;
+  /** 預先解析的封面 meta */
+  coverMeta?: TripCoverMeta;
+  source?: "chat" | "plan";
+};
+
+async function persistItinerary(
+  itinerary: Itinerary | RoamiePayloadV2,
+  options?: ConfirmSaveTripOptions,
+): Promise<StoredItinerary> {
   const withTitle = withAutoTitle(itinerary);
   const userId = await getAuthenticatedUserId();
   const mood = isRoamiePayloadV2(withTitle) ? withTitle.moodTag : (withTitle as Itinerary).mood;
-  const coverMeta = await resolveCoverForSave(withTitle);
   const autoTitle = isRoamiePayloadV2(withTitle) ? withTitle.title : (withTitle as Itinerary).title;
 
-  if (userId) {
-    const { data, error } = await insertSavedTripRow({
-      userId,
-      autoTitle,
-      mood: mood ?? null,
-      payload: withTitle,
+  if (!userId) {
+    throw new Error("請先登入");
+  }
+
+  let coverMeta = options?.coverMeta;
+  if (!coverMeta) {
+    if (options?.skipCoverResolve && isRoamiePayloadV2(withTitle)) {
+      const preset = withTitle.aiGeneratedCoverImageUrl?.trim();
+      coverMeta = {
+        cover_image: preset ?? null,
+        cover_source: preset ? "unsplash" : null,
+        cover_query: withTitle.destination ?? null,
+        destination_name: withTitle.destination ?? null,
+        normalized_destination_key: withTitle.destination ?? null,
+        ai_generated_destination_cover_url: preset ?? null,
+      };
+    } else {
+      coverMeta = await resolveCoverForSave(withTitle);
+    }
+  }
+
+  const useStaged = options?.staged !== false && isRoamiePayloadV2(withTitle);
+  if (useStaged) {
+    const stored = await persistTripStaged(withTitle, {
+      source: options?.source ?? "plan",
       coverMeta,
+      shellOnly: options?.shellOnly,
     });
-    if (error) {
-      if (isMissingTableError(error)) {
-        throw new Error("行程收藏尚未就緒，請稍後再試或聯絡管理員套用資料庫 migration。");
-      }
-      throw new Error(formatSupabaseError(error));
-    }
-    const stored = rowToStored(data, withTitle);
-    if (isRoamiePayloadV2(withTitle)) {
-      seedCoreTripPersistedFingerprint(stored.id, withTitle, mood ?? null);
-    }
-    console.info("[CORE_TRIP] created", stored.id);
+    seedCoreTripPersistedFingerprint(stored.id, stored.payload as RoamiePayloadV2, mood ?? null);
+    console.info("[CORE_TRIP] created staged", stored.id);
     return stored;
   }
 
-  throw new Error("請先登入");
+  const { data, error } = await insertSavedTripRow({
+    userId,
+    autoTitle,
+    mood: mood ?? null,
+    payload: withTitle,
+    coverMeta,
+  });
+  if (error) {
+    if (isMissingTableError(error)) {
+      throw new Error("行程收藏尚未就緒，請稍後再試或聯絡管理員套用資料庫 migration。");
+    }
+    throw new Error(formatSupabaseError(error));
+  }
+  const stored = rowToStored(data, withTitle);
+  if (isRoamiePayloadV2(withTitle)) {
+    seedCoreTripPersistedFingerprint(stored.id, withTitle, mood ?? null);
+  }
+  console.info("[CORE_TRIP] created", stored.id);
+  return stored;
 }
 
 function afterTripMutation(result: StoredItinerary | null): StoredItinerary | null {
@@ -326,8 +392,13 @@ function afterTripMutation(result: StoredItinerary | null): StoredItinerary | nu
 export async function confirmSaveTrip(
   itinerary: Itinerary | RoamiePayloadV2,
   source: "chat" | "plan" = "chat",
+  options?: ConfirmSaveTripOptions,
 ): Promise<StoredItinerary> {
-  const saved = await persistItinerary(tagUserSavedTrip(itinerary, source));
+  const saved = await persistItinerary(tagUserSavedTrip(itinerary, source), {
+    staged: true,
+    source,
+    ...options,
+  });
   if (isRoamiePayloadV2(saved.payload)) {
     seedCoreTripPersistedFingerprint(saved.id, saved.payload, saved.mood);
   }

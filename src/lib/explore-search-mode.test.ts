@@ -17,4 +17,16 @@ describe("detectExploreSearchMode", () => {
   it("detects Starbucks as nearby_category", () => {
     expect(detectExploreSearchMode("Starbucks").mode).toBe("nearby_category");
   });
+
+  it("detects Stellar Garden as global_place", () => {
+    expect(detectExploreSearchMode("Stellar Garden").mode).toBe("global_place");
+  });
+
+  it("detects 台北101 as global_place", () => {
+    expect(detectExploreSearchMode("台北101").mode).toBe("global_place");
+  });
+
+  it("detects 淺草寺 as global_place", () => {
+    expect(detectExploreSearchMode("淺草寺").mode).toBe("global_place");
+  });
 });

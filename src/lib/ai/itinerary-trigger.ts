@@ -24,7 +24,7 @@ import {
 export const ITINERARY_GENERATING_MESSAGE = "Roamie 正在整理行程…";
 
 export const ITINERARY_GENERATION_FAILED_MESSAGE =
-  "我剛剛整理行程時卡住了，可以再跟我說一次目的地和天數嗎？";
+  "Roamie 暫時想不到好點子，請稍後再試一次。";
 
 /** 明確要求完整行程安排（含必去、幫我安排、幫我規劃等） */
 export function userRequestsFullItineraryPlanning(text: string): boolean {

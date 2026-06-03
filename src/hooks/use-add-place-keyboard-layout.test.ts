@@ -29,7 +29,7 @@ describe("resolveAddPlaceInputBottomPx", () => {
       vvInsetPx: 0,
     });
     expect(r.finalBottom).toBe(335);
-    expect(r.strategy).toBe("keyboard_height_with_padding_gap");
+    expect(r.strategy).toBe("keyboard_height_only");
   });
 
   it("uses gap only when visual viewport already lifted", async () => {
@@ -38,8 +38,8 @@ describe("resolveAddPlaceInputBottomPx", () => {
       keyboardHeightPx: 335,
       vvInsetPx: 280,
     });
-    expect(r.finalBottom).toBe(ADD_PLACE_KEYBOARD_GAP_PX);
-    expect(r.strategy).toBe("visual_viewport_gap_only");
+    expect(r.finalBottom).toBe(8);
+    expect(r.strategy).toBe("viewport_resized");
   });
 
   it("does not add tab bar when keyboard closed", () => {

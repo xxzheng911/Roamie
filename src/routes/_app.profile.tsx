@@ -2,7 +2,6 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronRight,
   LogOut,
-  Route as RouteIcon,
   Pencil,
   Loader2,
   Sparkles,
@@ -47,7 +46,6 @@ import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useAccess } from "@/hooks/use-access";
 import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
 import { logTravelPrefSkippedFree } from "@/lib/subscription-plus-features";
-import { loadDraftTrip } from "@/lib/trip-draft-storage";
 import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
 import { isLikelyImageFile, normalizeImageFileForUpload } from "@/lib/image-crop";
 
@@ -83,7 +81,6 @@ function Profile() {
   const { t, locale } = useI18n();
   const { avatarSrc, refresh: refreshAvatar, setPreview: setAvatarPreview } = useAvatar();
   const { hasPlusAccess, canShowDeveloperTools } = useAccess();
-  const [hasDraft, setHasDraft] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
@@ -155,10 +152,6 @@ function Profile() {
     () => resolveProfilePlusPersonalityLine(hasPlusAccess, travelStyle, personalityType),
     [hasPlusAccess, travelStyle, personalityType],
   );
-
-  useEffect(() => {
-    setHasDraft(Boolean(loadDraftTrip()));
-  }, []);
 
   useEffect(() => {
     const onCover = (e: Event) => {
@@ -534,13 +527,6 @@ function Profile() {
   };
 
   const items = [
-    {
-      icon: RouteIcon,
-      label: "行程草稿",
-      value: hasDraft ? "1 份" : "尚無",
-      to: hasDraft ? "/trip" : "/chat",
-      search: hasDraft ? { draft: "1" } : undefined,
-    },
     {
       icon: UserRound,
       label: t("settings.account"),

@@ -16,7 +16,7 @@ const GENERIC_TITLES = new Set([
   "",
 ]);
 
-function extractAreaLabel(destination: string): string {
+export function extractAreaLabel(destination: string): string {
   const trimmed = destination.trim();
   if (!trimmed) return "";
   const parts = trimmed.split(/[,，、]/).map((s) => s.trim()).filter(Boolean);

@@ -7,13 +7,17 @@ import {
 } from "@/lib/generate-itinerary-api";
 import type { ItineraryInput } from "@/lib/itinerary.functions";
 import { buildLocalItineraryFallback, isAiItineraryServiceUnavailableError } from "@/lib/ai/local-itinerary-fallback";
-import { confirmSaveTrip, type StoredItinerary } from "@/lib/itinerary-storage";
+import { confirmSaveTrip, type StoredItinerary, type TripCoverMeta } from "@/lib/itinerary-storage";
 import type { ClientContextBundle } from "@/lib/fetch-context";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { buildTripFromSelectedPlaces } from "@/lib/place-planning-memory";
 import { normalizePlacesForItinerary } from "@/lib/trip-planning-state";
-import { bootstrapCompanionTripPlaces } from "@/lib/planning/companion-itinerary-bootstrap";
+import { bootstrapPlanPlacesMinimal } from "@/lib/plan/plan-places-bootstrap";
+import {
+  curatedTripLocationToPlaceInput,
+  resolveCuratedTripLocationByDestination,
+} from "@/lib/trip-location-curated";
 import type { SearchPlacesFn } from "@/lib/explore-category-search";
 import { preparePlanTripSession, type PlanTripFormInput } from "@/lib/plan-trip-handoff";
 import type { BudgetMode, TravelPreferences } from "@/lib/preferences-storage";
@@ -27,12 +31,36 @@ import { getTripCoverImage } from "@/services/placeImageService";
 import { getTripLegsWithDurations, travelLabelToRoutesMode } from "@/services/routesService";
 import { buildOutfitInputKey, buildTripItemsFingerprint } from "@/lib/outfit/trip-outfit-context";
 import { supabase } from "@/lib/supabase";
-import { buildPlanConsultantConstraintsText } from "@/lib/plan/plus-plan-consultant";
+import { buildPlanFormContextForAi } from "@/lib/plan/plan-style-itinerary";
 import {
   buildSafeItineraryGeneratorPayload,
   logItineraryGeneratorFailed,
   logItinerarySafePayloadReady,
 } from "@/lib/trip/safe-itinerary-payload";
+import {
+  appendPlusMemoryToSummary,
+  resolvePlusMemoryForItinerary,
+} from "@/lib/ai/plus-memory-for-itinerary";
+import {
+  logPlanAiBeforeOpenai,
+  logPlanAiError,
+  logPlanAiOpenAiRequestStart,
+  logPlanAiOpenAiResponseReceived,
+  logPlanAiParseSuccess,
+  logPlanAiSaveSuccess,
+  logPlanAiTripCreated,
+} from "@/lib/plan/plan-ai-generation-log";
+import { withTimeout } from "@/lib/async/with-timeout";
+import { PLAN_AI_SAVE_TIMEOUT_MS } from "@/lib/plan/plan-flow-timeouts";
+import {
+  logItineraryCreated,
+  logOpenAiRequest,
+  logOpenAiResponse,
+  logTripGenerationContext,
+  logTripGenerationError,
+  logTripGenerationStart,
+  logTripSaveSuccess,
+} from "@/lib/trip/trip-generation-log";
 
 export type PlanItineraryProgressStep =
   | "context"
@@ -47,20 +75,25 @@ export type GenerateItineraryFromPlanDeps = {
   generateItinerary: (input: { data: ItineraryInput }) => Promise<{ itinerary?: RoamiePayloadV2 }>;
 };
 
-function buildPlanConversationSummary(
-  session: ChatPlanningSession,
-  form: PlanTripFormInput,
-): string {
-  const parts = [
-    `【規劃新行程】目的地：${formatTripLocationLabel(form.destination)}，${form.days} 天`,
-    form.styles.length ? `旅行風格：${form.styles.join("、")}` : "",
-    form.transport ? `交通：${form.transport}` : "",
-    `預算：${form.budgetMode}`,
-    form.startDate && form.endDate ? `日期：${form.startDate}～${form.endDate}` : "",
-    `旅伴：${form.travelers} 人`,
-    buildPlanConsultantConstraintsText(session),
-  ].filter(Boolean);
-  return parts.join("\n");
+export type GenerateItineraryFromPlanOptions = {
+  /** 已送出 OpenAI 請求時回呼（用於解除 pre-OpenAI watchdog） */
+  onOpenAiRequestStart?: () => void;
+};
+
+function buildPlanConversationSummary(form: PlanTripFormInput): string {
+  const destLabel = formatTripLocationLabel(form.destination);
+  const originLabel = form.origin ? formatTripLocationLabel(form.origin) : null;
+  return buildPlanFormContextForAi({
+    destinationLabel: destLabel,
+    originLabel,
+    startDate: form.startDate,
+    endDate: form.endDate,
+    days: form.days,
+    travelers: form.travelers,
+    budgetMode: form.budgetMode,
+    transport: form.transport,
+    styles: form.styles,
+  });
 }
 
 export async function generateAndSaveItineraryFromPlan(
@@ -70,8 +103,10 @@ export async function generateAndSaveItineraryFromPlan(
   deps: GenerateItineraryFromPlanDeps,
   sessionOverride?: ChatPlanningSession,
   onProgress?: (step: PlanItineraryProgressStep) => void,
+  options?: GenerateItineraryFromPlanOptions,
 ): Promise<StoredItinerary> {
-  console.info("[ITINERARY_TRIGGERED]", { path: "plan_form" });
+  logTripGenerationStart("plan_form");
+  logTripGenerationContext(form);
   onProgress?.("context");
 
   let session =
@@ -92,22 +127,51 @@ export async function generateAndSaveItineraryFromPlan(
   });
 
   onProgress?.("places");
-  session = await bootstrapCompanionTripPlaces(session, deps.searchNearbyPlaces, deps.locale);
-  await new Promise<void>((r) => setTimeout(r, 0));
+  session = bootstrapPlanPlacesMinimal(session, form);
 
   let rawPlaces = buildTripFromSelectedPlaces(session);
   let places = normalizePlacesForItinerary(rawPlaces);
+  const destLabelEarly = formatTripLocationLabel(form.destination);
   if (places.length < 1) {
+    const tripLoc =
+      session.tripDestination ??
+      resolveCuratedTripLocationByDestination(destLabelEarly) ??
+      null;
+    if (tripLoc) {
+      const anchor = curatedTripLocationToPlaceInput(tripLoc);
+      places = normalizePlacesForItinerary([
+        {
+          name: anchor.name,
+          placeName: anchor.placeName,
+          lat: tripLoc.lat,
+          lng: tripLoc.lng,
+          type: "目的地",
+          address: formatTripLocationLabel(form.destination),
+          description: "目的地錨點",
+          reason: "規劃表單目的地",
+          reasonSource: "template",
+        },
+      ]);
+    }
+  }
+  if (places.length < 1) {
+    logPlanAiError("no_places", new Error("無法建立行程地點"));
     throw new Error("無法建立行程地點，請稍後再試");
   }
 
   onProgress?.("weather");
-  const [profile] = await Promise.all([getUserProfile()]);
-  const fashionStyle = resolveFashionStyle({
-    travelStyle: profile.travelStyle,
-    interests: prefs.interests,
-    style: session.tripStyles || "慢旅行",
-  });
+  let fashionStyle = "";
+  try {
+    const profile = await withTimeout(getUserProfile(), 2_500, "plan_profile_for_outfit");
+    fashionStyle =
+      resolveFashionStyle({
+        travelStyle: profile.travelStyle,
+        interests: prefs.interests,
+        style: session.tripStyles || "慢旅行",
+      }) ?? "";
+  } catch (e) {
+    console.warn("[PLAN_AI] profile/outfit context skipped", e);
+  }
   const destination =
     formatTripLocationLabel(form.destination) ||
     inferDestinationFromPlaces(places, bundle.location) ||
@@ -120,13 +184,27 @@ export async function generateAndSaveItineraryFromPlan(
   const budget = budgetModeToItineraryTier(
     resolveBudgetMode({ ...prefs, budgetMode: form.budgetMode as BudgetMode }),
   );
-  const summary = buildPlanConversationSummary(session, form);
+  let summary = buildPlanConversationSummary(form);
+  const styleLine = form.styles.length ? form.styles.join("、") : session.tripStyles || "";
+
+  let plusMemBlock = "";
+  try {
+    const plusMem = await withTimeout(
+      resolvePlusMemoryForItinerary(destination),
+      3_000,
+      "plan_plus_memory",
+    );
+    plusMemBlock = plusMem.memoryBlock;
+  } catch (e) {
+    console.warn("[PLAN_AI] plus memory skipped", e);
+  }
+  summary = appendPlusMemoryToSummary(summary, plusMemBlock);
 
   const generatePayload: ItineraryInput = buildSafeItineraryGeneratorPayload({
     destination,
     days: tripDays,
     budget,
-    style: session.tripStyles || "慢旅行",
+    style: styleLine || "慢旅行",
     mood: "",
     interests: summary,
     conversationSummary: summary,
@@ -145,10 +223,26 @@ export async function generateAndSaveItineraryFromPlan(
     destinationLocation: form.destination,
   });
   logItinerarySafePayloadReady(generatePayload);
+  logPlanAiBeforeOpenai({
+    destination,
+    days: tripDays,
+    selectedPlacesCount: places.length,
+    bootstrapSkipped: true,
+  });
+  logOpenAiRequest(generatePayload);
+  logPlanAiOpenAiRequestStart({
+    destination,
+    days: tripDays,
+    style: styleLine || "慢旅行",
+    transport: form.transport,
+    selectedPlacesCount: places.length,
+  });
+  options?.onOpenAiRequestStart?.();
 
   onProgress?.("generate");
   await new Promise<void>((r) => setTimeout(r, 0));
   let itinerary: RoamiePayloadV2;
+  let usedLocalFallback = false;
   const localFallbackInput = {
     destination,
     days: tripDays,
@@ -164,38 +258,70 @@ export async function generateAndSaveItineraryFromPlan(
     travelers: form.travelers,
   };
 
+  const applyLocalFallback = (reason: string) => {
+    console.warn("[TRIP_GENERATION_ERROR] plan local fallback:", reason);
+    itinerary = buildLocalItineraryFallback(localFallbackInput);
+    usedLocalFallback = true;
+  };
+
   try {
     if (shouldUseBundledGenerateItineraryApi()) {
       const { data: authSession } = await supabase.auth.getSession();
       const token = authSession.session?.access_token;
-      const apiResult = await generateItineraryViaBundledApi(generatePayload, {
-        token: token ?? undefined,
-      });
+      const apiResult = await withTimeout(
+        generateItineraryViaBundledApi(generatePayload, { token: token ?? undefined }),
+        120_000,
+        "plan_generate_itinerary_api",
+      );
       if (apiResult.itinerary) {
         itinerary = apiResult.itinerary;
-      } else if (isAiItineraryServiceUnavailableError(apiResult.error ?? "")) {
-        itinerary = buildLocalItineraryFallback(localFallbackInput);
+      } else if (
+        isAiItineraryServiceUnavailableError(apiResult.error ?? "") ||
+        /格式錯誤|HTTP|timeout|逾時/i.test(apiResult.error ?? "")
+      ) {
+        applyLocalFallback(apiResult.error ?? "bundled_api_unavailable");
       } else {
         throw new Error(apiResult.error ?? "生成行程失敗");
       }
     } else {
       try {
-        const response = await deps.generateItinerary({ data: generatePayload });
+        const response = await withTimeout(
+          deps.generateItinerary({ data: generatePayload }),
+          120_000,
+          "plan_generate_itinerary_server_fn",
+        );
         if (!response?.itinerary) throw new Error("生成行程失敗（伺服器無回應）");
         itinerary = response.itinerary;
       } catch (genErr) {
         const genMsg = genErr instanceof Error ? genErr.message : "生成行程失敗";
-        if (isAiItineraryServiceUnavailableError(genMsg)) {
-          itinerary = buildLocalItineraryFallback(localFallbackInput);
+        if (isAiItineraryServiceUnavailableError(genMsg) || /逾時|timeout/i.test(genMsg)) {
+          applyLocalFallback(genMsg);
         } else {
           throw genErr;
         }
       }
     }
   } catch (genOuter) {
+    logPlanAiError("openai", genOuter);
+    logTripGenerationError("openai", genOuter);
     logItineraryGeneratorFailed("generate", genOuter);
-    throw genOuter;
+    if (places.length > 0) {
+      applyLocalFallback(genOuter instanceof Error ? genOuter.message : String(genOuter));
+    } else {
+      throw genOuter;
+    }
   }
+
+  logOpenAiResponse({
+    title: itinerary.title,
+    itemCount: itinerary.itinerary?.length ?? 0,
+    dayCount: tripDays,
+  });
+  logPlanAiOpenAiResponseReceived({
+    title: itinerary.title,
+    itemCount: itinerary.itinerary?.length ?? 0,
+    usedLocalFallback,
+  });
 
   const mergedItinerary = ensureSelectedPlacesInItinerary(
     itinerary.itinerary ?? [],
@@ -204,22 +330,52 @@ export async function generateAndSaveItineraryFromPlan(
   );
   itinerary.itinerary = mergedItinerary;
 
-  console.info("[ITINERARY_JSON_CREATED]", {
+  if (mergedItinerary.length < 1) {
+    logPlanAiError("empty_itinerary", new Error("AI 回傳空行程"));
+    if (!usedLocalFallback && places.length > 0) {
+      itinerary = buildLocalItineraryFallback(localFallbackInput);
+      itinerary.itinerary = ensureSelectedPlacesInItinerary(
+        itinerary.itinerary ?? [],
+        rawPlaces,
+        startDate,
+      );
+      usedLocalFallback = true;
+    }
+    if ((itinerary.itinerary?.length ?? 0) < 1) {
+      logTripGenerationError("empty_itinerary", new Error("AI 回傳空行程"));
+      throw new Error("行程內容為空，請稍後再試");
+    }
+  }
+
+  logPlanAiParseSuccess({
+    itemCount: itinerary.itinerary?.length ?? 0,
     title: itinerary.title,
-    items: mergedItinerary.length,
+    usedLocalFallback,
   });
 
-  const legPlaces = mergedItinerary
+  const finalItineraryItems = itinerary.itinerary ?? [];
+
+  logItineraryCreated({
+    title: itinerary.title,
+    itemCount: finalItineraryItems.length,
+    days: tripDays,
+  });
+
+  const legPlaces = finalItineraryItems
     .filter((p) => p.lat != null && p.lng != null)
     .map((p) => ({ lat: p.lat as number, lng: p.lng as number }));
   let routeLegs: Array<{ durationMinutes: number; distanceMeters: number }> = [];
   try {
-    routeLegs = await getTripLegsWithDurations(
-      legPlaces,
-      travelLabelToRoutesMode(form.transport || "步行"),
+    routeLegs = await withTimeout(
+      getTripLegsWithDurations(
+        legPlaces,
+        travelLabelToRoutesMode(form.transport || "步行"),
+      ),
+      5_000,
+      "plan_trip_route_legs",
     );
   } catch {
-    /* optional */
+    console.warn("[PLAN_AI] route legs skipped");
   }
 
   const weatherSummary = bundle.weather
@@ -228,15 +384,19 @@ export async function generateAndSaveItineraryFromPlan(
 
   let coverUrl = "";
   try {
-    const cover = await getTripCoverImage({
-      destination,
-      mood: "",
-      moodTag: "",
-      title: itinerary.title,
-    });
+    const cover = await withTimeout(
+      getTripCoverImage({
+        destination,
+        mood: "",
+        moodTag: "",
+        title: itinerary.title,
+      }),
+      3_000,
+      "plan_trip_cover",
+    );
     coverUrl = cover.url;
   } catch {
-    /* optional */
+    console.warn("[PLAN_AI] cover resolve skipped");
   }
 
   const transportMode =
@@ -285,7 +445,34 @@ export async function generateAndSaveItineraryFromPlan(
   });
 
   onProgress?.("save");
-  const saved = await confirmSaveTrip(tripPayload, "plan");
+  const coverMeta: TripCoverMeta = {
+    cover_image: coverUrl || null,
+    cover_source: coverUrl ? "unsplash" : null,
+    cover_query: destination,
+    destination_name: destination,
+    normalized_destination_key: destination,
+    ai_generated_destination_cover_url: coverUrl || null,
+  };
+
+  let saved: StoredItinerary;
+  try {
+    saved = await withTimeout(
+      confirmSaveTrip(tripPayload, "plan", {
+        skipCoverResolve: true,
+        coverMeta,
+        staged: true,
+      }),
+      PLAN_AI_SAVE_TIMEOUT_MS,
+      "plan_save_trip",
+    );
+  } catch (saveErr) {
+    logPlanAiError("save", saveErr);
+    logTripGenerationError("save", saveErr);
+    throw saveErr;
+  }
+  logTripSaveSuccess({ tripId: saved.id, title: saved.title });
+  logPlanAiSaveSuccess({ tripId: saved.id, title: saved.title });
+  logPlanAiTripCreated({ tripId: saved.id, title: saved.title });
   console.info("[ITINERARY_SAVED]", { tripId: saved.id, title: saved.title });
   return saved;
 }

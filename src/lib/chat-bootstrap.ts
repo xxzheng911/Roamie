@@ -6,6 +6,8 @@ import {
 } from "@/lib/conversation-context-store";
 import { rehydrateSessionFromMessages } from "@/lib/ai/conversation-context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { logPlusMemoryLoad } from "@/lib/ai/plus-memory-log";
+import { rowPlusMemory } from "@/lib/conversation-context-store";
 
 /**
  * Login bootstrap order:
@@ -20,6 +22,7 @@ export async function bootstrapChatFromSupabase(
   let session = localSession;
   if (row) {
     session = applyPersistedContextToSession(session, row);
+    logPlusMemoryLoad({ source: "chat_bootstrap", memory: rowPlusMemory(row) });
     console.info("[conversation_context] loaded", { destination: row.destination });
   }
 

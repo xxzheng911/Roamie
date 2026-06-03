@@ -3,6 +3,11 @@ import type { LongTermMemorySnapshot } from "@/lib/ai/memory/types";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { TravelProfileFields } from "@/lib/travel-profile-for-ai";
 
+export {
+  extractPlusMemoryFromUserText,
+  mergeSessionIntoPlusMemory,
+} from "@/lib/ai/plus-memory-from-chat";
+
 /** Merge persisted plus_memory into runtime long-term snapshot for AI prompt */
 export function mergePlusMemoryIntoSnapshot(
   base: LongTermMemorySnapshot,

@@ -41,6 +41,12 @@ export type PlanTripFormProps = {
   styleIds: string[];
   onToggleStyle: (id: string) => void;
   onSubmit: (e: React.FormEvent) => void;
+  onCreateTrip: () => void;
+  /** 「讓 Roamie 幫我安排」生成中 */
+  roamieArranging?: boolean;
+  creatingTrip?: boolean;
+  /** 全螢幕生成中：隱藏底部按鈕，避免與 overlay 重疊 */
+  hideFooterActions?: boolean;
 };
 
 const TRAVELER_QUICK = [1, 2, 3, 4] as const;
@@ -73,7 +79,12 @@ export function PlanTripForm({
   styleIds,
   onToggleStyle,
   onSubmit,
+  onCreateTrip,
+  roamieArranging = false,
+  creatingTrip = false,
+  hideFooterActions = false,
 }: PlanTripFormProps) {
+  const footerDisabled = busy || sourceLoading || roamieArranging || creatingTrip;
   return (
     <form onSubmit={onSubmit} className="space-y-6 px-5 pt-5 pb-8" data-plan-ui-version="2">
       {sourceLoading ? (
@@ -243,24 +254,56 @@ export function PlanTripForm({
         />
       </section>
 
-      <button
-        type="submit"
-        disabled={busy || sourceLoading}
-        aria-busy={busy}
-        className="flex w-full items-center justify-center rounded-full bg-primary py-4 text-[15px] font-medium text-primary-foreground shadow-lift transition disabled:opacity-60"
-      >
-        {busy ? (
-          <span className="inline-flex items-center justify-center gap-2.5">
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
-            <span className="leading-none">{t("plan.submitting")}</span>
-          </span>
-        ) : (
-          <span className="inline-flex items-center justify-center gap-2">
-            <RouteIcon className="h-4 w-4 shrink-0" aria-hidden />
-            <span className="leading-none">{t("plan.submit")}</span>
-          </span>
-        )}
-      </button>
+      {!hideFooterActions ? (
+        <div className="space-y-3 pt-1">
+          <button
+            type="button"
+            disabled={footerDisabled}
+            aria-busy={creatingTrip}
+            onClick={onCreateTrip}
+            className="flex w-full items-center justify-center rounded-full border border-border bg-card py-4 text-[15px] font-medium text-foreground shadow-sm transition disabled:opacity-60"
+          >
+            {creatingTrip ? (
+              <span
+                key="create-loading"
+                className="inline-flex items-center justify-center gap-2.5 whitespace-nowrap"
+              >
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                <span>{t("plan.creatingTrip")}</span>
+              </span>
+            ) : (
+              <span key="create-idle" className="whitespace-nowrap">
+                {t("plan.createTrip")}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="submit"
+            disabled={footerDisabled}
+            aria-busy={roamieArranging}
+            aria-live="polite"
+            className="relative flex w-full min-h-[3.25rem] items-center justify-center rounded-full bg-primary px-4 py-4 text-[15px] font-medium text-primary-foreground shadow-lift transition disabled:opacity-60"
+          >
+            <span
+              key={roamieArranging ? "roamie-arranging" : "roamie-idle"}
+              className="inline-flex max-w-full items-center justify-center gap-2.5 whitespace-nowrap"
+            >
+              {roamieArranging ? (
+                <>
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                  <span>{t("plan.arranging")}</span>
+                </>
+              ) : (
+                <>
+                  <RouteIcon className="h-4 w-4 shrink-0" aria-hidden />
+                  <span>{t("plan.submit")}</span>
+                </>
+              )}
+            </span>
+          </button>
+        </div>
+      ) : null}
     </form>
   );
 }

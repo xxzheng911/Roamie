@@ -192,6 +192,21 @@ import {
   logItinerarySafePayloadReady,
 } from "@/lib/trip/safe-itinerary-payload";
 import {
+  appendPlusMemoryToSummary,
+  resolvePlusMemoryForItinerary,
+} from "@/lib/ai/plus-memory-for-itinerary";
+import {
+  logChatGenerateItinerarySuccess,
+  logChatGenerateItineraryTriggered,
+  logChatTripGenerationContext,
+  logItineraryCreated,
+  logOpenAiRequest,
+  logOpenAiResponse,
+  logTripGenerationError,
+  logTripGenerationStart,
+  logTripSaveSuccess,
+} from "@/lib/trip/trip-generation-log";
+import {
   appendPlanConsultantRequirements,
   buildPlusPlanConsultantOpening,
   extractPlanConsultantRequirementsFromText,
@@ -2077,9 +2092,16 @@ function Chat() {
     generationSource?: PlaceSelectionSource | string,
     options?: { forceLocalDraft?: boolean },
   ) => {
-    console.info("[ITINERARY_TRIGGERED]", {
-      source: generationSource ?? session.lastItineraryGenerationSource,
-      forceLocalDraft: options?.forceLocalDraft ?? false,
+    const genSource = generationSource ?? session.lastItineraryGenerationSource ?? "chat";
+    logTripGenerationStart(genSource);
+    logChatGenerateItineraryTriggered({
+      source: genSource,
+      destination:
+        sessionOverride?.conversationState?.destination ??
+        session.conversationState?.destination ??
+        null,
+      days: sessionOverride?.tripDays ?? session.tripDays ?? null,
+      selectedPlacesCount: buildTripFromSelectedPlaces(sessionOverride ?? session).length,
     });
 
     if (options?.forceLocalDraft) {
@@ -2136,6 +2158,7 @@ function Chat() {
       selectedPlacesCount: places.length,
       source,
     });
+    logChatTripGenerationContext(activeSession, { source, selectedPlacesCount: places.length });
 
     if (places.length < 1) {
       toast.message("請先選擇至少一個想去的地方，再生成行程。");
@@ -2202,6 +2225,13 @@ function Chat() {
       const tripDays = activeSession.tripDays ?? 1;
       const budget = budgetModeToItineraryTier(resolveBudgetMode(prefs));
 
+      const baseConversationSummary = buildConversationSummary(activeSession, activeMsgs);
+      const plusMem = await resolvePlusMemoryForItinerary(destination);
+      const conversationSummary = appendPlusMemoryToSummary(
+        baseConversationSummary,
+        plusMem.memoryBlock,
+      );
+
       const generatePayload = buildSafeItineraryGeneratorPayload(
         {
           destination,
@@ -2209,8 +2239,8 @@ function Chat() {
           budget,
           style: activeSession.tripStyles || (activeSession.pace === "排滿" ? "緊湊" : "慢旅行"),
           mood: activeSession.mood ?? "",
-          interests: buildConversationSummary(activeSession, activeMsgs),
-          conversationSummary: buildConversationSummary(activeSession, activeMsgs),
+          interests: conversationSummary,
+          conversationSummary,
           startDate,
           endDate,
           origin: activeSession.tripOrigin
@@ -2232,6 +2262,7 @@ function Chat() {
       logItinerarySafePayloadReady(generatePayload, {
         recentMessagesCount: Math.min(activeMsgs.length, 6),
       });
+      logOpenAiRequest(generatePayload);
 
       recordItineraryDiagnostics({
         selectedPlaces: selectedPlacesDiagnosticsSnapshot(rawPlaces),
@@ -2348,6 +2379,23 @@ function Chat() {
       );
       itinerary.itinerary = mergedItinerary;
 
+      logOpenAiResponse({
+        title: itinerary.title,
+        itemCount: mergedItinerary.length,
+        dayCount: tripDays,
+      });
+
+      if (mergedItinerary.length < 1) {
+        logTripGenerationError("empty_itinerary", new Error("empty_itinerary"));
+        throw new Error("行程內容為空，請稍後再試");
+      }
+
+      logItineraryCreated({
+        title: itinerary.title,
+        itemCount: mergedItinerary.length,
+        days: tripDays,
+      });
+
       const legPlaces = mergedItinerary
         .filter((p) => p.lat != null && p.lng != null)
         .map((p) => ({ lat: p.lat as number, lng: p.lng as number }));
@@ -2432,6 +2480,13 @@ function Chat() {
         places: mergedItinerary.length,
       });
       const saved = await confirmSaveTrip(tripPayload, "chat");
+      logTripSaveSuccess({ tripId: saved.id, title: saved.title });
+      logChatGenerateItinerarySuccess({
+        tripId: saved.id,
+        title: saved.title,
+        itemCount: mergedItinerary.length,
+        usedLocalFallback: usedLocalItineraryFallback,
+      });
       console.info("[ITINERARY_SAVED]", { tripId: saved.id, title: saved.title });
       clearDraftTrip();
 
@@ -2477,6 +2532,7 @@ function Chat() {
       navigate(tripDetailNavigateOptions(saved.id, { from: "chat", replace: true }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "生成行程失敗";
+      logTripGenerationError("save_or_generate", e);
       logItineraryGeneratorFailed("save_or_generate", e);
       console.error("[ITINERARY_FAILED]", { step: "save_or_generate", error: msg });
       persistSession({
@@ -2497,7 +2553,7 @@ function Chat() {
           content: ITINERARY_GENERATION_FAILED_MESSAGE,
         },
       ]);
-      toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
+      toast.error(ITINERARY_GENERATION_FAILED_MESSAGE);
     } finally {
       itineraryGenInFlightRef.current = false;
       setGenerating(false);
@@ -2642,7 +2698,7 @@ function Chat() {
             ...prev,
             { role: "assistant", content: ITINERARY_GENERATION_FAILED_MESSAGE },
           ]);
-          toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
+          toast.error(ITINERARY_GENERATION_FAILED_MESSAGE);
           persistSession({ ...genSession, phase: "followup" });
         } finally {
           setGenerating(false);
@@ -2729,6 +2785,7 @@ function Chat() {
         }
       }
 
+      activeSession = { ...activeSession, lastUserIntent: trimmed };
       persistSession(activeSession);
 
       if (gotAssistantReply && !conversationMissingAssistantReply(nextWithUser)) {

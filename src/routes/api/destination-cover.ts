@@ -4,7 +4,7 @@ import {
   saveDestinationCoverToCache,
 } from "@/lib/ai/image-cache.server";
 import { normalizeDestinationKey } from "@/lib/destination/normalize-destination-key";
-import { buildTripCoverQueries } from "@/lib/unsplash/unsplash-queries";
+import { buildDestinationCoverQueries } from "@/lib/unsplash/unsplash-queries";
 import { searchUnsplashWithQueries } from "@/lib/unsplash/unsplash.server";
 import { checkRateLimit } from "@/lib/rate-limit.server";
 
@@ -46,6 +46,11 @@ export const Route = createFileRoute("/api/destination-cover")({
 
         const cached = await getDestinationCoverFromCache(normalizedKey);
         if (cached?.image_url) {
+          console.info("[DEST_COVER_CACHE]", {
+            layer: "supabase",
+            normalizedKey,
+            cacheHit: true,
+          });
           return Response.json({
             url: cached.image_url,
             query: cached.query,
@@ -59,13 +64,16 @@ export const Route = createFileRoute("/api/destination-cover")({
         }
 
         try {
-          const queries = buildTripCoverQueries({
-            destination: destinationName,
+          const queries = buildDestinationCoverQueries({
+            destinationName,
             city: body.city,
             country: body.country,
-            mood: body.mood,
-            moodTag: body.moodTag,
-            title: body.title,
+          });
+          console.info("[DEST_COVER_CACHE]", {
+            layer: "unsplash",
+            normalizedKey,
+            cacheHit: false,
+            queryCount: queries.length,
           });
           const hit = await searchUnsplashWithQueries(queries);
           if (!hit) {

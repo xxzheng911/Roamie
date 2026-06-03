@@ -7,6 +7,7 @@ import {
   type ChatPlaceItem,
 } from "@/lib/chat-session";
 import type { SearchPlacesFn } from "@/lib/explore-category-search";
+import { withTimeout } from "@/lib/async/with-timeout";
 import { filterVerifiedPlaceResults } from "@/lib/place-verification";
 import { placeIdentityKey } from "@/lib/place-planning-memory";
 import {
@@ -15,6 +16,11 @@ import {
 } from "@/lib/trip-location-curated";
 import type { TripLocation } from "@/lib/location/types";
 import { normalizeDestination } from "@/lib/ai/normalize-destination";
+import {
+  buildStyleAwarePlaceSearchQueries,
+  parsePlanStyleLabels,
+  shouldSkipGenericDestinationLandmarks,
+} from "@/lib/plan/plan-style-itinerary";
 
 /** AI 候選真實地標（再以 Google Places 驗證） */
 const DESTINATION_LANDMARKS: Record<string, string[]> = {
@@ -117,13 +123,21 @@ function destinationFallbackPlace(
   };
 }
 
+export type CompanionBootstrapOptions = {
+  /** 風格導向搜尋最多嘗試幾個 query（規劃頁建議 5–6，避免長時間 loading） */
+  maxStyleQueries?: number;
+  /** 單次 Places 搜尋逾時（毫秒） */
+  searchTimeoutMs?: number;
+};
+
 async function searchLandmark(
   searchFn: SearchPlacesFn,
   query: string,
   tripLoc: TripLocation,
   locale: Locale,
+  searchTimeoutMs?: number,
 ): Promise<ChatPlaceItem[]> {
-  const { places, error } = await searchFn({
+  const run = searchFn({
     data: {
       query,
       lat: tripLoc.lat,
@@ -133,6 +147,14 @@ async function searchLandmark(
       radius: 30_000,
     },
   });
+  const { places, error } = searchTimeoutMs
+    ? await withTimeout(run, searchTimeoutMs, `places_search:${query.slice(0, 40)}`).catch(
+        (e) => {
+          console.warn("[COMPANION_BOOTSTRAP] search timeout", query, e);
+          return { places: [] as Awaited<ReturnType<SearchPlacesFn>>["places"], error: String(e) };
+        },
+      )
+    : await run;
   if (error) {
     console.warn("[COMPANION_BOOTSTRAP] search error", query, error);
     /** 已有 selectedPlaces 時不應因搜尋失敗中斷；此處僅記 log */
@@ -152,7 +174,10 @@ export async function bootstrapCompanionTripPlaces(
   session: ChatPlanningSession,
   searchFn: SearchPlacesFn,
   locale: Locale = "zh-TW",
+  options?: CompanionBootstrapOptions,
 ): Promise<ChatPlanningSession> {
+  const maxStyleQueries = options?.maxStyleQueries ?? 14;
+  const searchTimeoutMs = options?.searchTimeoutMs ?? 20_000;
   const dest = resolveSessionDestination(session);
   const days = session.conversationState?.days ?? session.tripDays ?? 5;
 
@@ -197,13 +222,49 @@ export async function bootstrapCompanionTripPlaces(
     session.conversationContext?.mustIncludePlaces ??
     [];
 
+  const styleLabels = parsePlanStyleLabels(session.tripStyles);
+  const skipGenericLandmarks = shouldSkipGenericDestinationLandmarks(styleLabels);
+
+  if (tripLoc && styleLabels.length > 0) {
+    const styleQueries = buildStyleAwarePlaceSearchQueries(dest ?? tripLoc.city, styleLabels).slice(
+      0,
+      maxStyleQueries,
+    );
+    console.info("[COMPANION_BOOTSTRAP] style-first search", {
+      destination: dest,
+      styles: styleLabels,
+      queryCount: styleQueries.length,
+      skipGenericLandmarks,
+    });
+    for (const query of styleQueries) {
+      if (collected.length >= targetCount) break;
+      try {
+        const items = await searchLandmark(
+          searchFn,
+          query,
+          tripLoc,
+          locale,
+          searchTimeoutMs,
+        );
+        for (const item of items) {
+          const key = placeIdentityKey(item);
+          if (existingKeys.has(key)) continue;
+          existingKeys.add(key);
+          collected.push(item);
+        }
+      } catch (e) {
+        console.warn("[COMPANION_BOOTSTRAP] style search failed", query, e);
+      }
+    }
+  }
+
   if (tripLoc && mustInclude.length > 0) {
     for (const place of mustInclude) {
       const query = place.includes(dest ?? tripLoc.city)
         ? place
         : `${dest ?? tripLoc.city} ${place}`;
       try {
-        const items = await searchLandmark(searchFn, query, tripLoc, locale);
+        const items = await searchLandmark(searchFn, query, tripLoc, locale, searchTimeoutMs);
         for (const item of items) {
           const key = placeIdentityKey(item);
           if (existingKeys.has(key)) continue;
@@ -228,12 +289,12 @@ export async function bootstrapCompanionTripPlaces(
     }
   }
 
-  if (tripLoc && collected.length < targetCount) {
+  if (tripLoc && collected.length < targetCount && !skipGenericLandmarks) {
     for (const landmark of landmarkCandidates(dest ?? tripLoc.city)) {
       if (collected.length >= targetCount) break;
       const query = landmark.includes(dest ?? "") ? landmark : `${dest ?? tripLoc.city} ${landmark}`;
       try {
-        const items = await searchLandmark(searchFn, query, tripLoc, locale);
+        const items = await searchLandmark(searchFn, query, tripLoc, locale, searchTimeoutMs);
         for (const item of items) {
           const key = placeIdentityKey(item);
           if (existingKeys.has(key)) continue;

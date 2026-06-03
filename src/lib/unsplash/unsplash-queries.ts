@@ -74,6 +74,37 @@ export function buildTripCoverQuery(trip: TripCoverInput): string {
   return parts.filter(Boolean).join(" ");
 }
 
+/**
+ * 目的地封面 Unsplash query（僅依城市／目的地，不含 mood）。
+ * 同一 normalized key 應永遠對應同一張圖，供 destination_cover_cache 共用。
+ */
+export function buildDestinationCoverQueries(input: {
+  destinationName: string;
+  city?: string | null;
+  country?: string | null;
+}): string[] {
+  const dest = extractPrimaryDestinationLabel(input.destinationName.trim());
+  const city =
+    input.city?.trim() ||
+    extractCityFromText(input.destinationName) ||
+    extractCityFromText(dest) ||
+    "";
+  const displayCity = city || dest.split(/[,，、\s]/)[0]?.trim() || "";
+  const queries: string[] = [];
+  if (displayCity) {
+    queries.push(
+      `${displayCity} travel`,
+      `${displayCity} cityscape travel`,
+      `${displayCity} skyline soft travel`,
+    );
+  }
+  if (dest && dest !== displayCity && dest.length <= 24) {
+    queries.push(`${dest} travel`);
+  }
+  queries.push("travel destination aesthetic");
+  return [...new Set(queries.filter(Boolean))];
+}
+
 /** 行程封面 Unsplash query 列表 */
 export function buildTripCoverQueries(trip: TripCoverInput): string[] {
   const dest = extractPrimaryDestinationLabel(

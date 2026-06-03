@@ -126,6 +126,16 @@ export const generateItinerary = createServerFn({ method: "POST" })
 
     const interestsText = [data.interests, data.conversationSummary].filter(Boolean).join("\n\n");
 
+    console.info("[OPENAI_REQUEST]", {
+      mode: "itinerary",
+      destination: data.destination,
+      days: data.days,
+      style: data.style,
+      transport: data.transport,
+      travelers: data.travelers,
+      selectedPlaces: data.selectedPlaces?.length ?? 0,
+    });
+
     const ai: RoamieResponse = await callRoamieAI({
       mode: "itinerary",
       locale: data.locale,
@@ -153,6 +163,12 @@ export const generateItinerary = createServerFn({ method: "POST" })
         transport: data.transport,
         selectedPlaces,
       },
+    });
+
+    console.info("[OPENAI_RESPONSE]", {
+      title: ai.title,
+      itineraryCount: ai.itinerary?.length ?? 0,
+      recommendationsCount: ai.recommendations?.length ?? 0,
     });
 
     const startDate = data.startDate?.trim() || new Date().toISOString().slice(0, 10);

@@ -98,6 +98,19 @@ export function logTripContextCompleteness(
   userText?: string,
 ): TripContextSlice {
   const slice = extractTripContextSlice(session, userText);
+  console.info("[CHAT_CONTEXT_PARSED]", {
+    source: "trip_context_slice",
+    destination: slice.destination ?? null,
+    travelMonth: slice.travelMonth ?? null,
+    travelDate: slice.travelDate ?? null,
+    days: slice.days ?? null,
+    budget: session.budget ?? session.conversationContext?.budget ?? null,
+    transport: session.transportation ?? session.conversationContext?.transportation ?? null,
+    travelStyles: session.tripStyles ?? null,
+    travelers: session.tripCompanionCount ?? null,
+    fromPlanForm: Boolean(session.fromPlanForm),
+    isComplete: isTripContextComplete(slice),
+  });
   console.info("[TRIP_CONTEXT_COMPLETENESS]", {
     destination: slice.destination ?? null,
     travelMonth: slice.travelMonth ?? null,

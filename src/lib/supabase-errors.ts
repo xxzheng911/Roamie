@@ -36,6 +36,16 @@ export function isMissingColumnError(error: unknown): boolean {
   );
 }
 
+export function isStatementTimeoutError(error: unknown): boolean {
+  const msg = errorMessage(error).toLowerCase();
+  return (
+    /statement timeout/i.test(msg) ||
+    /canceling statement due to statement timeout/i.test(msg) ||
+    /query timeout/i.test(msg) ||
+    errorCode(error) === "57014"
+  );
+}
+
 export function formatSupabaseError(error: unknown): string {
   return errorMessage(error) || "未知錯誤";
 }

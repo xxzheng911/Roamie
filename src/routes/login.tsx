@@ -20,6 +20,11 @@ import { hasLikelyPersistedSession } from "@/lib/startup-route";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { logGoogleOAuthMarker } from "@/lib/auth-debug";
 import { signInWithProvider, type OAuthProvider } from "@/lib/auth-oauth";
+import { logAppleAuthNavigateHome } from "@/lib/apple-auth-log";
+import {
+  isSupabaseConnectivityError,
+  SUPABASE_UNAVAILABLE_USER_MSG,
+} from "@/lib/supabase-connectivity";
 import { formatSupabaseRedirectAllowListHint } from "@/lib/auth-redirect";
 import { finishPostAuthRedirect } from "@/lib/auth-post-redirect";
 import {
@@ -346,8 +351,13 @@ function Login() {
         if (provider === "google") {
           logGoogleOAuthMarker("failed", { message: result.message });
           await clearAuthState({ reason: "google-sign-in-failed" });
+        } else if (provider === "apple") {
+          await clearAuthState({ reason: "apple-sign-in-failed" });
         }
         let msg = result.message || "登入沒成功，待會再試一次。";
+        if (isSupabaseConnectivityError({ message: msg })) {
+          msg = SUPABASE_UNAVAILABLE_USER_MSG;
+        }
         if (/requested path is invalid|redirect url|nonces?\s*mismatch|pkce/i.test(msg)) {
           msg = `${msg}\n\n請確認 Supabase Redirect URLs 已加入：\n${formatSupabaseRedirectAllowListHint()}`;
         }
@@ -371,6 +381,7 @@ function Login() {
         );
         const { toast } = await import("sonner");
         toast.success("登入成功");
+        logAppleAuthNavigateHome(next);
         finishPostAuthRedirect(
           next,
           (opts) => navigate({ to: opts.to, replace: opts.replace }),
@@ -389,6 +400,8 @@ function Login() {
           message: e instanceof Error ? e.message : String(e),
         });
         await clearAuthState({ reason: "google-sign-in-threw" });
+      } else if (provider === "apple") {
+        await clearAuthState({ reason: "apple-sign-in-threw" });
       }
       setAuthError(e instanceof Error ? e.message : "登入沒成功，待會再試一次。");
     }

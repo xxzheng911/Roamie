@@ -34,7 +34,13 @@ export type PlaceImageSource = "google" | "unsplash" | "default";
 export type TripCoverSource = "custom" | "unsplash" | "default";
 
 /** @deprecated 請改用 PlaceImageSource / TripCoverSource */
-export type ImageSource = PlaceImageSource | TripCoverSource | "upload" | "roamie" | "ai";
+export type ImageSource =
+  | PlaceImageSource
+  | TripCoverSource
+  | "google"
+  | "upload"
+  | "roamie"
+  | "ai";
 
 export const ROAMIE_IMAGE_FALLBACK_MESSAGE = ROAMIE_API_FALLBACK.image;
 

@@ -1,5 +1,5 @@
 import { CapacitorHttp } from "@capacitor/core";
-import { resolveAppApiUrl } from "@/lib/api-base-url";
+import { canReachBundledAppApiOrigin, resolveAppApiUrl } from "@/lib/api-base-url";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import type { ItineraryInput } from "@/lib/itinerary.functions";
 import { detectPlatform } from "@/services/platform";
@@ -20,7 +20,7 @@ function isNativeCapacitorShell(): boolean {
 
 /** Capacitor 打包後經 VITE_APP_ORIGIN 呼叫 /api/generate-itinerary */
 export function shouldUseBundledGenerateItineraryApi(): boolean {
-  return isNativeCapacitorShell();
+  return isNativeCapacitorShell() && canReachBundledAppApiOrigin();
 }
 
 function parseGenerateItineraryResponse(
@@ -62,14 +62,26 @@ export async function generateItineraryViaBundledApi(
   if (options?.token) headers.Authorization = `Bearer ${options.token}`;
 
   if (isNativeCapacitorShell()) {
-    const response = await CapacitorHttp.post({
-      url,
-      headers,
-      data: payload as unknown as Record<string, unknown>,
-      connectTimeout: 120_000,
-      readTimeout: 120_000,
-    });
-    return parseGenerateItineraryResponse(response.status, response.data);
+    if (!canReachBundledAppApiOrigin()) {
+      return {
+        itinerary: null,
+        error:
+          "VITE_APP_ORIGIN 未設定，無法連線行程生成 API。請重新 build 或使用本地行程備援。",
+      };
+    }
+    try {
+      const response = await CapacitorHttp.post({
+        url,
+        headers,
+        data: payload as unknown as Record<string, unknown>,
+        connectTimeout: 120_000,
+        readTimeout: 120_000,
+      });
+      return parseGenerateItineraryResponse(response.status, response.data);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { itinerary: null, error: message || "CapacitorHttp 行程生成失敗" };
+    }
   }
 
   const res = await fetch(url, {

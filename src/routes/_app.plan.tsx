@@ -2,7 +2,6 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/hooks/use-i18n";
-import { useAccess } from "@/hooks/use-access";
 import { getPlanBudgetOptions, getPlanTransportOptions } from "@/lib/i18n/plan-form-options";
 import {
   getPlanTravelStyleCards,
@@ -11,7 +10,18 @@ import {
 import { Sparkles } from "lucide-react";
 import { BackButton } from "@/components/BackButton";
 import { toast } from "sonner";
-import { buildContextBundleForTrip, daysBetweenDates } from "@/lib/fetch-context";
+import { daysBetweenDates } from "@/lib/fetch-context";
+import {
+  executePlanAiGeneration,
+  fetchPlanAiBundleWithOptionalWeather,
+  logPlanAiPreOpenAiWatchdog,
+} from "@/lib/plan/plan-ai-flow";
+import {
+  executeManualTripCreate,
+  loadPlanPrefsWithTimeout,
+  logManualTripNavigateFailure,
+} from "@/lib/plan/plan-manual-flow";
+import { PLAN_PRE_OPENAI_TIMEOUT_MS } from "@/lib/plan/plan-flow-timeouts";
 import { PlanItineraryGeneratingScreen } from "@/components/plan/PlanItineraryGeneratingScreen";
 import { PlanTripForm } from "@/components/plan/PlanTripForm";
 import type { TripLocation } from "@/lib/location/types";
@@ -38,15 +48,31 @@ import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { searchPlaces } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { generateItinerary } from "@/lib/itinerary.functions";
-import { generateAndSaveItineraryFromPlan } from "@/lib/trip/generate-itinerary-from-plan";
 import {
-  preparePlanTripSession,
-  type PlanTripFormInput,
-} from "@/lib/plan-trip-handoff";
-import { saveChatSession } from "@/lib/chat-session";
+  logManualTripContextReady,
+  logManualTripCreateClicked,
+  logManualTripError,
+  logManualTripLoadingCleared,
+  logManualTripNavigate,
+} from "@/lib/trip/trip-persist-log";
+import { TRIP_DETAIL_ROUTE } from "@/lib/trip/trip-detail-nav";
+import type { PlanTripFormInput } from "@/lib/plan-trip-handoff";
 import { ITINERARY_GENERATION_FAILED_MESSAGE } from "@/lib/ai/itinerary-trigger";
 import { runWhenCapacitorBridgeReady } from "@/lib/capacitor-bridge-ready";
+import {
+  logPlanAiBlocked,
+  logPlanAiButtonClicked,
+  logPlanAiContextReady,
+  logPlanAiError,
+  logPlanAiLoadingCleared,
+  logPlanAiNavigateFailed,
+  logPlanAiNavigateTrip,
+} from "@/lib/plan/plan-ai-generation-log";
 import { PLAN_PAGE_UI_VERSION } from "@/lib/plan/plan-page-version";
+import {
+  isSupabaseConnectivityError,
+  SUPABASE_UNAVAILABLE_USER_MSG,
+} from "@/lib/supabase-connectivity";
 
 type PlanSearch = {
   mood?: string;
@@ -71,7 +97,6 @@ function placesToInterestsText(places: RoamieRecommendationItem[]): string {
 
 function PlanPage() {
   const { t, locale } = useI18n();
-  const { hasPlusAccess } = useAccess();
   const search = Route.useSearch();
   const navigate = useNavigate();
 
@@ -105,6 +130,7 @@ function PlanPage() {
   const [travelersCustom, setTravelersCustom] = useState(false);
   const [transport, setTransport] = useState("");
   const [loading, setLoading] = useState(false);
+  const [creatingBlankTrip, setCreatingBlankTrip] = useState(false);
   const [generatingTrip, setGeneratingTrip] = useState(false);
 
   const isValidTravelers = (n: number) => Number.isInteger(n) && n >= 1 && n <= 99;
@@ -215,79 +241,213 @@ function PlanPage() {
     };
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const resolvedDestination = await ensureLocationHasCoords(destination, "destination");
-    const resolvedOrigin = origin
-      ? await ensureLocationHasCoords(origin, "start")
-      : resolvedDestination;
-    if (resolvedDestination) setDestination(resolvedDestination);
-    if (resolvedOrigin && origin) setOrigin(resolvedOrigin);
-    if (!validateDestination(resolvedDestination)) return;
-    if (!isValidTravelers(travelers)) {
-      toast.error(t("plan.invalidTravelers"));
-      return;
-    }
-    if (startDate && endDate && endDate < startDate) {
-      toast.error(t("plan.dateInvalid"));
-      return;
-    }
-    if (styleIds.length < 1) {
-      toast.message(t("plan.stylesRequired"));
-      return;
-    }
+  const handleCreateTrip = async () => {
+    logManualTripCreateClicked();
+    setCreatingBlankTrip(true);
 
-    const tripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : 2;
-    const form = buildFormInput(resolvedDestination!, resolvedOrigin ?? resolvedDestination!, tripDays);
-
-    setLoading(true);
-    console.info("[CREATE_TRIP] submit ui=v2 plus=", hasPlusAccess);
     try {
-      const [bundle, prefs] = await Promise.all([
-        buildContextBundleForTrip(resolvedDestination!, fetchWeather),
-        getPreferences(),
-      ]);
-      await savePreferences({ ...prefs, budgetMode });
-
-      if (hasPlusAccess) {
-        const session = preparePlanTripSession(form, bundle, prefs, {
-          plusConsultant: true,
-          skipOriginValidation: true,
-        });
-        saveChatSession(session);
-        console.info("[PLAN_TRIP] plus → AI consultant chat (not legacy notes)");
-        navigate({ to: "/chat", search: { from: "plan" } });
+      const resolvedDestination = destination;
+      const destRef = resolvedDestination
+        ? tripLocationToPlaceRef(resolvedDestination)
+        : null;
+      if (!isValidTripPlaceRef(destRef)) {
+        logTripPlace("destination", "validation", { reason: "create_trip_missing_destination" });
+        toast.error(t("plan.enterDestinationFirst"));
+        return;
+      }
+      if (!isValidTravelers(travelers)) {
+        toast.error(t("plan.invalidTravelers"));
+        return;
+      }
+      if (startDate && endDate && endDate < startDate) {
+        toast.error(t("plan.dateInvalid"));
         return;
       }
 
-      await new Promise<void>((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      const tripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : 2;
+      const form = buildFormInput(
+        resolvedDestination!,
+        origin ?? resolvedDestination!,
+        tripDays,
+      );
+      logManualTripContextReady({
+        destination: form.destination.displayLabel || form.destination.formattedName,
+        days: form.days,
+        travelers: form.travelers,
+        hasDates: Boolean(form.startDate && form.endDate),
       });
-      setGeneratingTrip(true);
-      await new Promise<void>((r) => setTimeout(r, 50));
 
-      const saved = await generateAndSaveItineraryFromPlan(form, bundle, prefs, {
-        locale,
-        searchNearbyPlaces,
-        generateItinerary: generateItineraryFn,
-      });
-      console.info("[ITINERARY_NAVIGATED]", { tripId: saved.id, path: "plan_form" });
-      toast.success(t("plan.tripCreated"));
-      setGeneratingTrip(false);
-      await new Promise<void>((r) => setTimeout(r, 80));
-      navigate(tripDetailNavigateOptions(saved.id, { from: "plan", replace: true }));
-      return;
+      const prefs = await loadPlanPrefsWithTimeout();
+      void savePreferences({ ...prefs, budgetMode }).catch(() => {});
+
+      const saved = await executeManualTripCreate(form, prefs);
+      toast.success(t("plan.blankTripCreated"));
+      const navOpts = tripDetailNavigateOptions(saved.id, { from: "plan", replace: true });
+      try {
+        await navigate(navOpts);
+        logManualTripNavigate(saved.id, TRIP_DETAIL_ROUTE);
+      } catch (navErr) {
+        logManualTripNavigateFailure(saved.id, TRIP_DETAIL_ROUTE, navErr);
+        toast.error(t("plan.submitFailed"));
+      }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[PLAN_TRIP] submit failed", msg, err);
-      toast.message(ITINERARY_GENERATION_FAILED_MESSAGE);
+      logManualTripError("create", err);
+      console.error("[CREATE_TRIP] blank manual failed", err);
+      toast.error(
+        isSupabaseConnectivityError(err)
+          ? SUPABASE_UNAVAILABLE_USER_MSG
+          : ITINERARY_GENERATION_FAILED_MESSAGE,
+      );
     } finally {
-      setLoading(false);
-      setGeneratingTrip(false);
+      setCreatingBlankTrip(false);
+      logManualTripLoadingCleared();
     }
   };
 
-  const busy = loading || generatingTrip;
+  const clearPlanAiLoading = () => {
+    setLoading(false);
+    setGeneratingTrip(false);
+    logPlanAiLoadingCleared();
+  };
+
+  /** 「讓 Roamie 幫我安排」— 完整 AI 生成 → 儲存 → 導向行程詳情 */
+  const handleRoamieGenerate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    logPlanAiButtonClicked();
+    void runWhenCapacitorBridgeReady("plan_ai_hide_keyboard", async () => {
+      const { Keyboard } = await import("@capacitor/keyboard");
+      await Keyboard.hide().catch(() => {});
+    });
+
+    let openAiRequestStarted = false;
+    let preOpenAiWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+    let resolvedDestination: TripLocation | null = null;
+    let form: PlanTripFormInput | null = null;
+    let bundle: Awaited<ReturnType<typeof fetchPlanAiBundleWithOptionalWeather>> | null =
+      null;
+
+    setLoading(true);
+    try {
+      resolvedDestination = destination;
+      if (resolvedDestination) setDestination(resolvedDestination);
+      if (!validateDestination(resolvedDestination)) {
+        logPlanAiBlocked({
+          reason: "missing_destination",
+          hasDestination: false,
+          hasDate: Boolean(startDate && endDate),
+          hasStyles: styleIds.length > 0,
+          hasWeather: false,
+        });
+        return;
+      }
+      if (!isValidTravelers(travelers)) {
+        toast.error(t("plan.invalidTravelers"));
+        return;
+      }
+      if (startDate && endDate && endDate < startDate) {
+        toast.error(t("plan.dateInvalid"));
+        return;
+      }
+      if (styleIds.length < 1) {
+        logPlanAiBlocked({
+          reason: "styles_required",
+          hasDestination: true,
+          hasDate: Boolean(startDate && endDate),
+          hasStyles: false,
+          hasWeather: false,
+        });
+        toast.message(t("plan.stylesRequired"));
+        return;
+      }
+
+      const tripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : 2;
+      form = buildFormInput(
+        resolvedDestination!,
+        origin ?? resolvedDestination!,
+        tripDays,
+      );
+      logPlanAiContextReady(form);
+
+      const prefs = await loadPlanPrefsWithTimeout();
+      bundle = await fetchPlanAiBundleWithOptionalWeather(
+        resolvedDestination!,
+        fetchWeather,
+        prefs,
+      );
+
+      void savePreferences({ ...prefs, budgetMode }).catch((prefErr) => {
+        console.warn("[PLAN_AI] savePreferences background failed", prefErr);
+      });
+
+      setGeneratingTrip(true);
+
+      const blockedCtx = {
+        hasDestination: true,
+        hasDate: Boolean(form.startDate && form.endDate),
+        hasStyles: form.styles.length > 0,
+        hasWeather: Boolean(bundle.weather?.available),
+      };
+
+      preOpenAiWatchdog = setTimeout(() => {
+        if (!openAiRequestStarted) {
+          logPlanAiPreOpenAiWatchdog(blockedCtx, form);
+        }
+      }, PLAN_PRE_OPENAI_TIMEOUT_MS);
+
+      const saved = await executePlanAiGeneration(
+        {
+          destination: resolvedDestination!,
+          form,
+          prefs,
+          fetchWeather,
+          deps: {
+            locale,
+            searchNearbyPlaces,
+            generateItinerary: generateItineraryFn,
+          },
+          generationOptions: {
+            onOpenAiRequestStart: () => {
+              openAiRequestStarted = true;
+              if (preOpenAiWatchdog) clearTimeout(preOpenAiWatchdog);
+            },
+          },
+        },
+        bundle,
+      );
+
+      toast.success(t("plan.tripCreated"));
+      const navOpts = tripDetailNavigateOptions(saved.id, { from: "plan", replace: true });
+      try {
+        await navigate(navOpts);
+        logPlanAiNavigateTrip({ tripId: saved.id, route: TRIP_DETAIL_ROUTE });
+        console.info("[ITINERARY_NAVIGATED]", { tripId: saved.id, path: "plan_form" });
+      } catch (navErr) {
+        logPlanAiNavigateFailed({
+          tripId: saved.id,
+          route: TRIP_DETAIL_ROUTE,
+          error: navErr,
+        });
+        logPlanAiError("navigate", navErr);
+        toast.error(ITINERARY_GENERATION_FAILED_MESSAGE);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logPlanAiError("submit", err);
+      console.error("[PLAN_TRIP] roamie_generate failed", msg, err);
+      toast.error(
+        isSupabaseConnectivityError(err)
+          ? SUPABASE_UNAVAILABLE_USER_MSG
+          : ITINERARY_GENERATION_FAILED_MESSAGE,
+      );
+    } finally {
+      if (preOpenAiWatchdog) clearTimeout(preOpenAiWatchdog);
+      clearPlanAiLoading();
+    }
+  };
+
+  const busy = loading || generatingTrip || creatingBlankTrip;
+  const roamieArranging = (loading || generatingTrip) && !creatingBlankTrip;
   const tripDaysLabel =
     startDate && endDate
       ? t("plan.daysRange", { days: daysBetweenDates(startDate, endDate) })
@@ -356,7 +516,11 @@ function PlanPage() {
               prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
             )
           }
-          onSubmit={handleSubmit}
+          onSubmit={handleRoamieGenerate}
+          onCreateTrip={() => void handleCreateTrip()}
+          roamieArranging={roamieArranging}
+          creatingTrip={creatingBlankTrip}
+          hideFooterActions={generatingTrip}
         />
       </div>
     </div>

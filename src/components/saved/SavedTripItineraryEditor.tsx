@@ -97,7 +97,6 @@ import {
   logTripAddPlaceRenderConfirmed,
   logTripAddPlaceSaveFailed,
   logTripAddPlaceSelected,
-  saveTripItineraryAfterAddPlace,
 } from "@/lib/trip/trip-add-place-persist";
 import {
   logTripDeletePlaceClicked,
@@ -105,6 +104,16 @@ import {
   logTripDeletePlaceSaveFailed,
   saveTripItineraryAfterDeletePlace,
 } from "@/lib/trip/trip-delete-place-persist";
+import {
+  dayStopNames,
+  findStopByPlaceName,
+  logTripItineraryReloadVerify,
+  logTripStopReorderSaved,
+  logTripStopTimeSaved,
+  reloadTripItineraryPayload,
+  saveTripItineraryToStorage,
+  type TripItineraryPersistReason,
+} from "@/lib/trip/trip-itinerary-persist";
 import { buildSeasonOutfitAdvicePayload } from "@/lib/outfit/trip-season-outfit-suggestion";
 import {
   logDailyOutfitAlertRendered,
@@ -816,40 +825,54 @@ export function SavedTripItineraryEditor({
 
   const [placeSaveBusy, setPlaceSaveBusy] = useState(false);
 
+  const applyPersistedItinerary = useCallback(
+    (updated: StoredItinerary, nextPayload: RoamiePayloadV2) => {
+      initialPayloadRef.current = {
+        ...nextPayload,
+        title: effectiveTitleRef.current,
+      };
+      setItems([...(nextPayload.itinerary ?? [])]);
+      seedCoreTripPersistedFingerprint(stored.id, initialPayloadRef.current, updated.mood);
+      onStoredChange?.({
+        ...updated,
+        payload: initialPayloadRef.current,
+        updated_at: updated.updated_at ?? new Date().toISOString(),
+      });
+    },
+    [stored.id, onStoredChange],
+  );
+
   const persistItineraryItemsToStorage = useCallback(
     async (
       nextItems: RoamieItineraryItem[],
-      meta: { savedPlaceName: string; dayIndex: number; nextSettings?: TripPlanSettings },
+      meta: {
+        reason: TripItineraryPersistReason;
+        dayIndex: number;
+        nextSettings?: TripPlanSettings;
+        savedPlaceName?: string;
+      },
     ): Promise<boolean> => {
       const nextSettings = meta.nextSettings ?? settings;
       const nextPayload = buildPayloadFromItems(nextItems, nextSettings);
       setPlaceSaveBusy(true);
       try {
-        const updated = await saveTripItineraryAfterAddPlace(
+        const updated = await saveTripItineraryToStorage(
           stored.id,
           nextPayload,
-          meta.savedPlaceName,
+          meta.reason,
         );
         if (!updated?.payload || !isRoamiePayloadV2(updated.payload)) {
           logTripAddPlaceSaveFailed({ error: "invalid_updated_payload" });
           return false;
         }
-        initialPayloadRef.current = {
-          ...updated.payload,
-          title: effectiveTitleRef.current,
-        };
-        setItems([...(updated.payload.itinerary ?? [])]);
-        seedCoreTripPersistedFingerprint(stored.id, initialPayloadRef.current, updated.mood);
-        onStoredChange?.({
-          ...updated,
-          payload: initialPayloadRef.current,
-          updated_at: updated.updated_at ?? new Date().toISOString(),
-        });
-        logTripAddPlaceRenderConfirmed({
-          tripId: stored.id,
-          placeName: meta.savedPlaceName,
-          dayIndex: meta.dayIndex,
-        });
+        applyPersistedItinerary(updated, updated.payload);
+        if (meta.savedPlaceName) {
+          logTripAddPlaceRenderConfirmed({
+            tripId: stored.id,
+            placeName: meta.savedPlaceName,
+            dayIndex: meta.dayIndex,
+          });
+        }
         return true;
       } catch (e) {
         logTripAddPlaceSaveFailed({
@@ -860,7 +883,78 @@ export function SavedTripItineraryEditor({
         setPlaceSaveBusy(false);
       }
     },
-    [stored.id, settings, buildPayloadFromItems, onStoredChange],
+    [stored.id, settings, buildPayloadFromItems, applyPersistedItinerary],
+  );
+
+  const handlePersistItineraryChange = useCallback(
+    async (
+      nextItems: RoamieItineraryItem[],
+      meta: {
+        reason: TripItineraryPersistReason;
+        dayIndex: number;
+        dateKey: string;
+        rollbackItems: RoamieItineraryItem[];
+        placeName?: string;
+        newTime?: string;
+      },
+    ): Promise<boolean> => {
+      if (placeSaveBusy) return false;
+      persistItems(nextItems);
+
+      const ok = await persistItineraryItemsToStorage(nextItems, {
+        reason: meta.reason,
+        dayIndex: meta.dayIndex,
+      });
+
+      if (!ok) {
+        persistItems(meta.rollbackItems);
+        toast.error("儲存失敗，請再試一次");
+        return false;
+      }
+
+      if (meta.reason === "trip_stop_time" && meta.placeName && meta.newTime) {
+        logTripStopTimeSaved({
+          tripId: stored.id,
+          placeName: meta.placeName,
+          time: meta.newTime,
+          date: meta.dateKey,
+        });
+      }
+
+      if (meta.reason === "trip_stop_reorder" || meta.reason === "trip_stop_sort_by_time") {
+        logTripStopReorderSaved({
+          tripId: stored.id,
+          date: meta.dateKey,
+          placeNames: dayStopNames(initialPayloadRef.current, meta.dateKey),
+        });
+      }
+
+      const reloaded = await reloadTripItineraryPayload(stored.id);
+      if (reloaded) {
+        let verifyOk = true;
+        if (meta.reason === "trip_stop_time" && meta.placeName && meta.newTime) {
+          const row = findStopByPlaceName(reloaded, meta.placeName, meta.dateKey);
+          verifyOk = row?.time === meta.newTime;
+        } else if (
+          meta.reason === "trip_stop_reorder" ||
+          meta.reason === "trip_stop_sort_by_time"
+        ) {
+          const names = dayStopNames(reloaded, meta.dateKey);
+          const expected = dayStopNames(initialPayloadRef.current, meta.dateKey);
+          verifyOk =
+            names.length === expected.length &&
+            names.every((n, idx) => n === expected[idx]);
+        }
+        logTripItineraryReloadVerify({
+          tripId: stored.id,
+          reason: meta.reason,
+          ok: verifyOk,
+        });
+      }
+
+      return true;
+    },
+    [placeSaveBusy, persistItems, persistItineraryItemsToStorage, stored.id],
   );
 
   const handleAddDay = () => {
@@ -1045,6 +1139,7 @@ export function SavedTripItineraryEditor({
       });
 
       const ok = await persistItineraryItemsToStorage(nextItems, {
+        reason: "trip_add_place",
         savedPlaceName: place.name,
         dayIndex,
       });
@@ -1086,6 +1181,7 @@ export function SavedTripItineraryEditor({
       persistItems(nextItems);
       const label = places.length === 1 ? places[0]!.name : `${places.length} 個地點`;
       const ok = await persistItineraryItemsToStorage(nextItems, {
+        reason: "trip_add_place",
         savedPlaceName: label,
         dayIndex,
       });
@@ -1533,19 +1629,38 @@ export function SavedTripItineraryEditor({
                         if (idx < 0) return;
                         const next = [...items];
                         next[idx] = { ...item, time: t };
-                        persistItems(next);
+                        void handlePersistItineraryChange(next, {
+                          reason: "trip_stop_time",
+                          dayIndex: safeDayIndex,
+                          dateKey: activeDay.dateKey,
+                          rollbackItems: items,
+                          placeName: item.placeName || item.title || "地點",
+                          newTime: t,
+                        });
                       }}
                       onSetDurationMinutes={(m) => setLegMinutes(legKeyForItem(item), m)}
                       onSetTransport={(label) => {
                         setLegTransport(legKeyForItem(item), label);
                         void refreshTransit();
                       }}
-                      onMoveUp={() =>
-                        persistItems(moveStopInDay(items, activeDay.dateKey, i, -1))
-                      }
-                      onMoveDown={() =>
-                        persistItems(moveStopInDay(items, activeDay.dateKey, i, 1))
-                      }
+                      onMoveUp={() => {
+                        const next = moveStopInDay(items, activeDay.dateKey, i, -1);
+                        void handlePersistItineraryChange(next, {
+                          reason: "trip_stop_reorder",
+                          dayIndex: safeDayIndex,
+                          dateKey: activeDay.dateKey,
+                          rollbackItems: items,
+                        });
+                      }}
+                      onMoveDown={() => {
+                        const next = moveStopInDay(items, activeDay.dateKey, i, 1);
+                        void handlePersistItineraryChange(next, {
+                          reason: "trip_stop_reorder",
+                          dayIndex: safeDayIndex,
+                          dateKey: activeDay.dateKey,
+                          rollbackItems: items,
+                        });
+                      }}
                       onDelete={() =>
                         void handleDeleteStop(
                           activeDay.dateKey,
@@ -1564,7 +1679,15 @@ export function SavedTripItineraryEditor({
           {activeDay.items.length > 1 ? (
             <button
               type="button"
-              onClick={() => persistItems(sortStopsInDayByTime(items, activeDay.dateKey))}
+              onClick={() => {
+                const next = sortStopsInDayByTime(items, activeDay.dateKey);
+                void handlePersistItineraryChange(next, {
+                  reason: "trip_stop_sort_by_time",
+                  dayIndex: safeDayIndex,
+                  dateKey: activeDay.dateKey,
+                  rollbackItems: items,
+                });
+              }}
               className="mt-3 text-xs text-muted-foreground underline-offset-2 hover:underline"
             >
               依時間重新排序

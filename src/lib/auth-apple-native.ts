@@ -3,14 +3,27 @@ import { APP_BUNDLE_ID } from "@/constants/app";
 import { createAppleSignInNonce } from "@/lib/auth-nonce";
 import { assertSupabaseConfiguredForAuth } from "@/lib/supabase-project-url";
 import { logAuthDebug, logAuthError, logAuthSessionResult } from "@/lib/auth-debug";
-import { supabase } from "@/lib/supabase";
+import {
+  clearPartialAppleAuthSession,
+  exchangeAppleIdTokenWithSupabase,
+} from "@/lib/auth-apple-supabase-token";
+import {
+  APPLE_SIGN_IN_TEMP_FAIL_MSG,
+  logAppleAuthIdTokenReceived,
+  logAppleAuthStart,
+} from "@/lib/apple-auth-log";
+import {
+  isSupabaseConnectivityError,
+  SUPABASE_UNAVAILABLE_USER_MSG,
+} from "@/lib/supabase-connectivity";
 import { detectPlatform } from "@/services/platform";
-
-const APPLE_SUPABASE_TIMEOUT_MS = 25_000;
+import { readSupabaseProjectUrl } from "@/lib/supabase-project-url";
 
 export type AppleNativeSignInResult =
   | { ok: true; session: Session }
   | { ok: false; message: string; cancelled?: boolean };
+
+let appleNativeSignInInflight: Promise<AppleNativeSignInResult> | null = null;
 
 export function canUseNativeAppleSignIn(): boolean {
   if (typeof window === "undefined") return false;
@@ -29,15 +42,45 @@ function isUserCancelled(error: unknown): boolean {
   );
 }
 
+function mapExchangeErrorToUserMessage(detail: string, error?: unknown): string {
+  if (error && isSupabaseConnectivityError(error)) {
+    return SUPABASE_UNAVAILABLE_USER_MSG;
+  }
+  if (/apple_supabase_sign_in_timeout|逾時|timeout/i.test(detail)) {
+    return APPLE_SIGN_IN_TEMP_FAIL_MSG;
+  }
+  if (/nonces?\s*mismatch/i.test(detail)) {
+    return (
+      "Apple 登入失敗：nonce 驗證不一致。請確認 Supabase Dashboard → Authentication → Apple 已啟用，" +
+      "且 Client IDs 含 App bundle ID（com.shuode.roamie）。"
+    );
+  }
+  if (/supabase_not_configured/i.test(detail)) {
+    return "雲端登入未設定，請更新 App 後再試。";
+  }
+  return APPLE_SIGN_IN_TEMP_FAIL_MSG;
+}
+
 /**
- * iOS 原生 Sign in with Apple → Supabase signInWithIdToken（不開 Safari OAuth）。
- * 原生插件忽略 JS 的 redirectURI；僅 clientId / nonce 會傳入 ASAuthorizationAppleIDProvider。
+ * iOS 原生 Sign in with Apple → Supabase session（不開 Safari OAuth）。
  */
 export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> {
   if (!canUseNativeAppleSignIn()) {
     return { ok: false, message: "目前裝置不支援原生 Apple 登入" };
   }
 
+  if (appleNativeSignInInflight) {
+    console.info("[APPLE_AUTH] sign_in_join_inflight");
+    return appleNativeSignInInflight;
+  }
+
+  appleNativeSignInInflight = runNativeAppleSignIn().finally(() => {
+    appleNativeSignInInflight = null;
+  });
+  return appleNativeSignInInflight;
+}
+
+async function runNativeAppleSignIn(): Promise<AppleNativeSignInResult> {
   const mod = await import("@capacitor-community/apple-sign-in").catch(() => null);
   const SignInWithApple = mod?.SignInWithApple;
   if (!SignInWithApple) {
@@ -49,11 +92,8 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
     return { ok: false, message: configError };
   }
 
-  console.info("[APPLE_AUTH] start clientId=", APP_BUNDLE_ID);
-  logAuthDebug("apple.native.start", {
-    provider: "apple",
-    clientId: APP_BUNDLE_ID,
-  });
+  logAppleAuthStart({ clientId: APP_BUNDLE_ID });
+  logAuthDebug("apple.native.start", { provider: "apple", clientId: APP_BUNDLE_ID });
 
   try {
     const { raw: rawNonce, hashed: hashedNonce } = await createAppleSignInNonce();
@@ -65,86 +105,62 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
       nonce: hashedNonce,
     });
 
-    console.info("[APPLE_AUTH] callback received hasToken=", Boolean(appleResult.response?.identityToken));
+    const identityToken = appleResult.response?.identityToken;
+    logAppleAuthIdTokenReceived(Boolean(identityToken));
     logAuthDebug("apple.native.authorized", {
-      hasIdentityToken: Boolean(appleResult.response?.identityToken),
+      hasIdentityToken: Boolean(identityToken),
     });
 
-    const identityToken = appleResult.response?.identityToken;
     if (!identityToken) {
       logAuthSessionResult(false, { provider: "apple", reason: "no_identity_token" });
       return { ok: false, message: "Apple 未回傳 identity token" };
     }
 
-    const signInStartedAt = Date.now();
-    const { data, error } = await Promise.race([
-      supabase.auth.signInWithIdToken({
-        provider: "apple",
-        token: identityToken,
-        nonce: rawNonce,
-      }),
-      new Promise<{ data: { session: null; user: null }; error: Error }>((resolve) => {
-        window.setTimeout(
-          () =>
-            resolve({
-              data: { session: null, user: null },
-              error: new Error("apple_supabase_sign_in_timeout"),
-            }),
-          APPLE_SUPABASE_TIMEOUT_MS,
-        );
-      }),
-    ]);
+    const projectUrl = readSupabaseProjectUrl();
+    const host = projectUrl ? new URL(projectUrl).host : "(unset)";
+
+    const { session, error, via } = await exchangeAppleIdTokenWithSupabase(
+      identityToken,
+      rawNonce,
+    );
 
     logAuthDebug("apple.native.supabase_done", {
-      ms: Date.now() - signInStartedAt,
-      hasSession: Boolean(data.session),
+      via,
+      host,
+      hasSession: Boolean(session),
       error: error?.message ?? null,
     });
 
     if (error) {
-      logAuthError("apple.signInWithIdToken", error);
-      const detail = error.message?.trim() || "Supabase 拒絕 Apple token";
-      if (/apple_supabase_sign_in_timeout/i.test(detail)) {
-        return { ok: false, message: "連線登入服務逾時，請確認網路後再試。" };
-      }
-      const nonceMismatch = /nonces?\s*mismatch/i.test(detail);
-      if (nonceMismatch) {
-        return {
-          ok: false,
-          message:
-            "Apple 登入失敗：nonce 驗證不一致。請確認 Supabase Dashboard → Authentication → Apple 已啟用，且 Client IDs 含 App bundle ID；若仍失敗可暫開 skip nonce check（見專案 supabase/config.toml 註解）。",
-        };
-      }
-      return {
-        ok: false,
-        message: `Apple 登入失敗：${detail}`,
-      };
+      logAuthError("apple.token_exchange", error);
+      await clearPartialAppleAuthSession();
+      return { ok: false, message: mapExchangeErrorToUserMessage(error.message, error) };
     }
 
-    if (!data.session) {
+    if (!session?.user) {
+      await clearPartialAppleAuthSession();
       logAuthSessionResult(false, { provider: "apple", reason: "no_session" });
-      return { ok: false, message: "Supabase 未建立 session" };
+      return { ok: false, message: APPLE_SIGN_IN_TEMP_FAIL_MSG };
     }
 
     logAuthSessionResult(true, {
       provider: "apple",
       flow: "native",
-      userId: data.user?.id,
-      email: data.user?.email ?? "(hidden or none)",
-      isPrivateEmail: data.user?.email?.includes("@privaterelay.appleid.com") ?? false,
+      userId: session.user.id,
+      email: session.user.email ?? "(hidden or none)",
+      isPrivateEmail: session.user.email?.includes("@privaterelay.appleid.com") ?? false,
     });
 
-    console.info("[APPLE_AUTH] success userId=", data.user?.id ?? "(none)");
-    return { ok: true, session: data.session };
+    console.info("[APPLE_AUTH] success userId=", session.user.id);
+    return { ok: true, session };
   } catch (e) {
     if (isUserCancelled(e)) {
-      console.info("[APPLE_AUTH] error=cancelled");
       logAuthDebug("apple.native.cancelled", {});
       return { ok: false, message: "已取消登入", cancelled: true };
     }
+    await clearPartialAppleAuthSession();
     const msg = e instanceof Error ? e.message : "Apple 登入失敗";
-    console.info("[APPLE_AUTH] error=", msg);
     logAuthError("apple.native.failed", e);
-    return { ok: false, message: msg };
+    return { ok: false, message: mapExchangeErrorToUserMessage(msg, e) };
   }
 }

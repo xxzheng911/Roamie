@@ -1,7 +1,10 @@
-import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
-import { getItinerary, updateItinerary, type StoredItinerary } from "@/lib/itinerary-storage";
-import { seedCoreTripPersistedFingerprint } from "@/lib/trip/core-trip-update-guard";
-import { logTripDateCacheInvalidated } from "@/lib/trip/trip-date-edit";
+import type { RoamiePayloadV2 } from "@/lib/ai/types";
+import type { StoredItinerary } from "@/lib/itinerary-storage";
+import {
+  itineraryPlaceNames,
+  reloadTripItineraryPayload,
+  saveTripItineraryToStorage,
+} from "@/lib/trip/trip-itinerary-persist";
 
 export function logTripAddPlaceSelected(params: {
   placeName: string;
@@ -66,31 +69,21 @@ export async function saveTripItineraryAfterAddPlace(
   savedPlaceName: string,
 ): Promise<StoredItinerary | null> {
   logTripAddPlaceSaveStart({ tripId });
-  logTripDateCacheInvalidated({ tripId });
 
   try {
-    const updated = await updateItinerary(tripId, payload, { reason: "trip_add_place" });
+    const updated = await saveTripItineraryToStorage(tripId, payload, "trip_add_place");
     if (!updated) {
       logTripAddPlaceSaveFailed({ error: "update_returned_null" });
       return null;
     }
 
-    if (isRoamiePayloadV2(updated.payload)) {
-      seedCoreTripPersistedFingerprint(tripId, updated.payload, updated.mood);
-      logTripAddPlaceSaveSuccess({ tripId, savedPlaceName });
-
-      const reloaded = await getItinerary(tripId);
-      if (reloaded?.payload && isRoamiePayloadV2(reloaded.payload)) {
-        const names = (reloaded.payload.itinerary ?? []).map(
-          (i) => i.placeName || i.title || "",
-        );
-        if (!names.some((n) => n === savedPlaceName)) {
-          console.warn("[TRIP_ADD_PLACE_SAVE_SUCCESS] reload_missing_place", {
-            tripId,
-            savedPlaceName,
-          });
-        }
-      }
+    logTripAddPlaceSaveSuccess({ tripId, savedPlaceName });
+    const reloaded = await reloadTripItineraryPayload(tripId);
+    if (reloaded && !itineraryPlaceNames(reloaded).some((n) => n === savedPlaceName)) {
+      console.warn("[TRIP_ADD_PLACE_SAVE_SUCCESS] reload_missing_place", {
+        tripId,
+        savedPlaceName,
+      });
     }
 
     return updated;

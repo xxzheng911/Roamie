@@ -5,6 +5,10 @@ import { planTierPrompt } from "@/lib/ai/plan-prompts";
 import type { ConversationStage } from "@/lib/ai/conversation-stage";
 import { conversationStageLabel } from "@/lib/ai/conversation-stage";
 import { userAsksTravelTimeAdvice } from "@/lib/ai/user-intent";
+import {
+  buildTravelStylePriorityPromptBlock,
+  parsePlanStyleLabels,
+} from "@/lib/plan/plan-style-itinerary";
 
 const PERSONA_ZH = `你是 Roamie，溫柔、慢步調的旅行夥伴（繁體台灣中文）。
 - 像會接話的朋友：先聽懂感受，再一起收斂；不要像 Google 搜尋或客服機器人
@@ -298,6 +302,8 @@ ${context}`;
     req.budget === "low" ? "省錢" : req.budget === "high" ? "舒適" : "適中";
   const placesBlock = formatSelectedPlaces(req.selectedPlaces);
   const hintsBlock = formatPlanningHints(ctx.planningHints);
+  const styleLabels = parsePlanStyleLabels(req.style);
+  const styleBlock = buildTravelStylePriorityPromptBlock(styleLabels);
 
   return `${persona}
 
@@ -320,6 +326,7 @@ ${placesBlock}
 
 【對話中收集的規劃資訊】
 ${hintsBlock}
+${styleBlock ? `\n${styleBlock}\n` : ""}
 
 規則：
 - 上述地點必須盡量全部安排進 itinerary

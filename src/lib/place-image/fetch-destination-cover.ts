@@ -7,6 +7,7 @@ import {
   readLocalDestinationCover,
   writeLocalDestinationCover,
 } from "@/lib/place-image/place-image-local-cache";
+import { logDestCoverCache } from "@/lib/place-image/dest-cover-cache-log";
 import { createRequestCache } from "@/services/requestCache";
 import { API_CACHE_TTL_MS } from "@/lib/api/constants";
 
@@ -25,24 +26,51 @@ export type FetchDestinationCoverInput = {
   title?: string | null;
 };
 
-export async function fetchDestinationCover(
-  input: FetchDestinationCoverInput,
-): Promise<{
+type CoverFetchResult = {
   url: string | null;
   normalizedKey: string;
   destinationName: string;
   cacheHit: boolean;
   query?: string;
-}> {
+};
+
+function persistUrlToLocalCache(normalizedKey: string, url: string | null): void {
+  if (url?.trim()) writeLocalDestinationCover(normalizedKey, url.trim());
+}
+
+export async function fetchDestinationCover(
+  input: FetchDestinationCoverInput,
+): Promise<CoverFetchResult> {
   const destinationName = extractPrimaryDestinationLabel(input.destination);
   const normalizedKey = normalizeDestinationKey(destinationName);
 
   const local = readLocalDestinationCover(normalizedKey);
   if (local) {
+    logDestCoverCache({
+      normalizedKey,
+      destinationName,
+      layer: "local",
+      cacheHit: true,
+      url: local,
+    });
     return { url: local, normalizedKey, destinationName, cacheHit: true };
   }
 
-  return destCoverCache.getOrFetch(normalizedKey, async () => {
+  type CachedPayload = CoverFetchResult;
+  const sessionCached = destCoverCache.getCached<CachedPayload>(normalizedKey);
+  if (sessionCached?.url) {
+    persistUrlToLocalCache(normalizedKey, sessionCached.url);
+    logDestCoverCache({
+      normalizedKey,
+      destinationName,
+      layer: "session",
+      cacheHit: true,
+      url: sessionCached.url,
+    });
+    return { ...sessionCached, cacheHit: true };
+  }
+
+  const result = await destCoverCache.getOrFetch(normalizedKey, async () => {
     try {
       const res = await fetch(resolveAppApiUrl("/api/destination-cover"), {
         method: "POST",
@@ -58,6 +86,12 @@ export async function fetchDestinationCover(
         }),
       });
       if (!res.ok) {
+        logDestCoverCache({
+          normalizedKey,
+          destinationName,
+          layer: "miss",
+          cacheHit: false,
+        });
         return { url: null, normalizedKey, destinationName, cacheHit: false };
       }
       const json = (await res.json()) as {
@@ -67,16 +101,32 @@ export async function fetchDestinationCover(
         query?: string;
       };
       const url = json.url?.trim() || null;
-      if (url) writeLocalDestinationCover(normalizedKey, url);
+      const apiCacheHit = Boolean(json.cacheHit);
+      logDestCoverCache({
+        normalizedKey,
+        destinationName,
+        layer: apiCacheHit ? "supabase" : "unsplash",
+        cacheHit: apiCacheHit,
+        url,
+      });
       return {
         url,
         normalizedKey: json.normalizedDestinationKey ?? normalizedKey,
         destinationName,
-        cacheHit: Boolean(json.cacheHit),
+        cacheHit: apiCacheHit,
         query: json.query,
       };
     } catch {
+      logDestCoverCache({
+        normalizedKey,
+        destinationName,
+        layer: "miss",
+        cacheHit: false,
+      });
       return { url: null, normalizedKey, destinationName, cacheHit: false };
     }
   });
+
+  persistUrlToLocalCache(normalizedKey, result.url);
+  return result;
 }
