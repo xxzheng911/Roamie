@@ -1,6 +1,11 @@
 import { markSessionBootstrapped } from "@/components/StartupGate";
 import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
 import { ONBOARDING_ROUTE } from "@/lib/app-boot-log";
+import {
+  markStartupResolved,
+  shouldSkipStartupNavigation,
+} from "@/lib/startup-boot-state";
+import { readBrowserPathname } from "@/lib/startup-path";
 import { canNavigateToHome } from "@/lib/startup-navigation";
 import { detectPlatform } from "@/services/platform";
 
@@ -21,6 +26,12 @@ export type PostAuthRedirectSource =
  * OAuth 完成後導向。Capacitor 優先用 in-app router，避免整頁 reload 白屏。
  * 主頁導向須本機 onboarding 已完成。
  */
+let lastPostAuthTarget: string | null = null;
+
+export function resetPostAuthRedirect(): void {
+  lastPostAuthTarget = null;
+}
+
 export function finishPostAuthRedirect(
   path: string,
   navigate?: RouterNavigate,
@@ -29,10 +40,25 @@ export function finishPostAuthRedirect(
   markSessionBootstrapped();
 
   const normalized = path.startsWith("/") ? path : `/${path}`;
-  const currentRoute =
-    typeof window !== "undefined"
-      ? window.location.pathname.replace(/\/+$/, "") || "/"
-      : normalized;
+  const currentRoute = readBrowserPathname();
+
+  if (
+    lastPostAuthTarget === normalized &&
+    shouldSkipStartupNavigation(currentRoute, normalized)
+  ) {
+    if (normalized === "/") {
+      markStartupResolved("/");
+    }
+    return;
+  }
+
+  if (shouldSkipStartupNavigation(currentRoute, normalized)) {
+    lastPostAuthTarget = normalized;
+    if (normalized === "/") {
+      markStartupResolved("/");
+    }
+    return;
+  }
 
   if (normalized === "/" && !canNavigateToHome()) {
     console.log("[ONBOARDING_GUARD] blocked home redirect", {
@@ -58,11 +84,16 @@ export function finishPostAuthRedirect(
   const target = path.startsWith("/") ? path : `/${path}`;
   const platform = detectPlatform();
 
+  lastPostAuthTarget = target;
+
   if (platform.isCapacitor && navigate) {
     if (platform.isIOS) {
       scheduleIosSnapshotRefreshBurst("post-auth");
     }
     navigate({ to: target, replace: true });
+    if (target === "/") {
+      markStartupResolved("/");
+    }
     return;
   }
 

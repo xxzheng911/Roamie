@@ -40,6 +40,8 @@ export function detectPlatform(): PlatformInfo {
 
 let bootstrapStarted = false;
 let bootstrapDone = false;
+let nativeChromePolished = false;
+let polishNativeChromeScheduled = false;
 
 function hasWebBootUi(): boolean {
   if (typeof document === "undefined") return false;
@@ -90,6 +92,8 @@ export async function bootstrapNativeShell(): Promise<void> {
     }
 
     const polishNativeChrome = async () => {
+      if (nativeChromePolished) return;
+      nativeChromePolished = true;
       try {
         const { StatusBar, Style } = await import("@capacitor/status-bar");
         await StatusBar.setStyle({ style: Style.Dark });
@@ -108,10 +112,13 @@ export async function bootstrapNativeShell(): Promise<void> {
       }
     };
 
-    if ("requestIdleCallback" in window) {
-      requestIdleCallback(() => void polishNativeChrome(), { timeout: 2500 });
-    } else {
-      window.setTimeout(() => void polishNativeChrome(), 80);
+    if (!polishNativeChromeScheduled) {
+      polishNativeChromeScheduled = true;
+      if ("requestIdleCallback" in window) {
+        requestIdleCallback(() => void polishNativeChrome(), { timeout: 2500 });
+      } else {
+        window.setTimeout(() => void polishNativeChrome(), 80);
+      }
     }
 
     bootstrapDone = true;

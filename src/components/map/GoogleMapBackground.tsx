@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { GoogleMap, type MapPlaceMarker, type MapUserLocationPin } from "@/components/GoogleMap";
 import { triggerMapResize } from "@/lib/google-maps-loader";
 import {
@@ -37,7 +37,14 @@ export function GoogleMapBackground({
 }: Props) {
   const stageRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
+  const onMapReadyPropRef = useRef(onMapReady);
+  onMapReadyPropRef.current = onMapReady;
   const [mapPadding, setMapPadding] = useState(() => measureMapExplorePadding());
+
+  const handleMapReady = useCallback((map: google.maps.Map) => {
+    mapInstanceRef.current = map;
+    onMapReadyPropRef.current?.(map);
+  }, []);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -88,10 +95,7 @@ export function GoogleMapBackground({
         onLoadError={onLoadError}
         mapPadding={mapPadding}
         onMapClick={onMapClick}
-        onMapReady={(map) => {
-          mapInstanceRef.current = map;
-          onMapReady?.(map);
-        }}
+        onMapReady={handleMapReady}
         className="h-full w-full"
       />
     </div>

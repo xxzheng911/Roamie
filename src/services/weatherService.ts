@@ -6,9 +6,19 @@ import type { Locale } from "@/lib/i18n/types";
 import { logOpenWeatherKeyLoadedOnce } from "@/lib/openweather-key-resolve";
 import type { DailyForecast, WeatherForecastResult, WeatherSummary } from "@/lib/weather-types";
 import {
+  WEATHER_CACHE_TTL_MS,
+  WEATHER_UNAVAILABLE_CACHE_TTL_MS,
+} from "@/lib/weather/constants";
+import {
+  fetchOpenMeteoCurrentWeather,
+  logWeatherResponse,
+} from "@/lib/weather-open-meteo-client";
+import { detectPlatform } from "@/services/platform";
+import {
   getWeatherCached,
   getWeatherCachedOrFetch,
   isWeatherRequestInFlight,
+  setWeatherCached,
   weatherCacheKey,
 } from "@/services/weatherCache";
 
@@ -88,6 +98,39 @@ export function getWeatherLoadState(
   return "idle";
 }
 
+async function fetchCapacitorCurrentWeather(
+  coords: WeatherCoords,
+  locale?: Locale,
+  cityHint = "目前位置",
+): Promise<{ weather: WeatherSummary | null; error: string | null }> {
+  if (boundFetchWeather) {
+    try {
+      const server = await boundFetchWeather({
+        data: { lat: coords.lat, lng: coords.lng, locale },
+      });
+      if (server.weather?.available) {
+        return server;
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[WEATHER_FETCH] capacitor serverFn failed, using open-meteo", msg);
+    }
+  }
+
+  const meteo = await fetchOpenMeteoCurrentWeather(coords.lat, coords.lng, cityHint);
+  logWeatherResponse("open-meteo-client", {
+    lat: coords.lat,
+    lng: coords.lng,
+    locale,
+    status: meteo.httpStatus,
+    city: meteo.weather.city,
+    tempC: meteo.weather.tempC,
+    available: meteo.weather.available,
+    error: meteo.error,
+  });
+  return { weather: meteo.weather, error: meteo.error };
+}
+
 /** 依經緯度取得即時天氣（含快取 + dedup） */
 export async function getWeatherByLatLng(
   coords: WeatherCoords,
@@ -97,6 +140,13 @@ export async function getWeatherByLatLng(
   console.info("[WEATHER_FETCH] start");
   const key = weatherCacheKey("current", coords.lat, coords.lng, locale);
   console.info("[WEATHER_FETCH] latLng=", `${coords.lat},${coords.lng}`);
+  console.info("[WEATHER_REQUEST]", {
+    lat: coords.lat,
+    lng: coords.lng,
+    locale: locale ?? null,
+    platform: detectPlatform().kind,
+    isCapacitor: detectPlatform().isCapacitor,
+  });
 
   const cached = getWeatherCached<{ weather: WeatherSummary | null; error: string | null }>(key);
   if (cached) {
@@ -105,6 +155,25 @@ export async function getWeatherByLatLng(
       "[WEATHER_FETCH] final result=",
       JSON.stringify(cached.weather ?? { available: false, source: "cached-unavailable" }),
     );
+    if (cached.weather?.available) {
+      return { weather: cached.weather, error: cached.error };
+    }
+    if (detectPlatform().isCapacitor && (!cached.weather || !cached.weather.available)) {
+      console.info("[WEATHER_FETCH] capacitor retry open-meteo after cached-unavailable");
+      try {
+        const meteo = await fetchCapacitorCurrentWeather(
+          coords,
+          locale,
+          cached.weather?.city ?? "目前位置",
+        );
+        if (meteo.weather?.available) {
+          setWeatherCached(key, { weather: meteo.weather, error: null }, WEATHER_CACHE_TTL_MS);
+          return { weather: meteo.weather, error: null };
+        }
+      } catch (e) {
+        console.warn("[WEATHER_FETCH] capacitor open-meteo retry failed", e);
+      }
+    }
     if (!cached.weather) {
       return {
         weather: {
@@ -134,47 +203,134 @@ export async function getWeatherByLatLng(
   }
 
   let result: { weather: WeatherSummary | null; error: string | null };
+  const fetcher = detectPlatform().isCapacitor
+    ? () => fetchCapacitorCurrentWeather(coords, locale)
+    : () =>
+        requireFetchWeather()({
+          data: { lat: coords.lat, lng: coords.lng, locale },
+        });
+
   try {
-    result = await getWeatherCachedOrFetch(key, () =>
-      requireFetchWeather()({
-        data: { lat: coords.lat, lng: coords.lng, locale },
-      }),
+    result = await getWeatherCachedOrFetch(
+      key,
+      fetcher,
+      WEATHER_CACHE_TTL_MS,
+      {
+        resolveTtl: (data) =>
+          !data.weather || data.weather.available === false
+            ? WEATHER_UNAVAILABLE_CACHE_TTL_MS
+            : WEATHER_CACHE_TTL_MS,
+      },
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[WEATHER_FETCH] openWeather status=", "client-error");
     console.error("[WEATHER_FETCH] final result=", msg);
-    throw e;
+    if (detectPlatform().isCapacitor) {
+      const meteo = await fetchCapacitorCurrentWeather(coords, locale);
+      if (meteo.weather?.available) {
+        setWeatherCached(key, { weather: meteo.weather, error: null }, WEATHER_CACHE_TTL_MS);
+        return { weather: meteo.weather, error: null };
+      }
+      result = meteo;
+    } else {
+      throw e;
+    }
+  }
+
+  const needsClientFallback =
+    !result.weather ||
+    result.weather.available === false ||
+    result.error != null;
+
+  if (needsClientFallback && detectPlatform().isCapacitor) {
+    console.info("[WEATHER_FETCH] client open-meteo fallback try");
+    try {
+      const meteo = await fetchOpenMeteoCurrentWeather(
+        coords.lat,
+        coords.lng,
+        result.weather?.city ?? "目前位置",
+      );
+      logWeatherResponse("open-meteo-client", {
+        lat: coords.lat,
+        lng: coords.lng,
+        locale,
+        status: meteo.httpStatus,
+        city: meteo.weather.city,
+        tempC: meteo.weather.tempC,
+        available: meteo.weather.available,
+        error: meteo.error,
+      });
+      if (meteo.weather.available) {
+        setWeatherCached(
+          key,
+          { weather: meteo.weather, error: null },
+          WEATHER_CACHE_TTL_MS,
+        );
+        return { weather: meteo.weather, error: null };
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logWeatherResponse("open-meteo-client", {
+        lat: coords.lat,
+        lng: coords.lng,
+        locale,
+        status: "error",
+        error: msg,
+        available: false,
+      });
+    }
   }
 
   if (!result.weather) {
     console.info("[WEATHER_FETCH] openWeather status=", "no-response");
     console.info("[WEATHER_FETCH] final result=", "unavailable");
+    const unavailable = {
+      city: "目前位置",
+      tempC: null,
+      feelsLikeC: null,
+      condition: "",
+      iconType: "",
+      isDaytime: true,
+      precipProbability: null,
+      humidityPercent: null,
+      windSpeedKmh: null,
+      cloudCoverPercent: null,
+      uvi: null,
+      sunrise: null,
+      sunset: null,
+      recommendation: "indoor" as const,
+      recommendationText: "天氣暫時無法取得，稍後重試。",
+      source: "unavailable",
+      fetchedAt: new Date().toISOString(),
+      available: false,
+    };
+    logWeatherResponse("unavailable", {
+      lat: coords.lat,
+      lng: coords.lng,
+      locale,
+      status: "no-response",
+      city: unavailable.city,
+      tempC: null,
+      available: false,
+      error: result.error ?? "no_weather",
+    });
     return {
-      weather: {
-        city: "目前位置",
-        tempC: null,
-        feelsLikeC: null,
-        condition: "",
-        iconType: "",
-        isDaytime: true,
-        precipProbability: null,
-        humidityPercent: null,
-        windSpeedKmh: null,
-        cloudCoverPercent: null,
-        uvi: null,
-        sunrise: null,
-        sunset: null,
-        recommendation: "indoor",
-        recommendationText: "天氣暫時無法取得，稍後重試。",
-        source: "unavailable",
-        fetchedAt: new Date().toISOString(),
-        available: false,
-      },
+      weather: unavailable,
       error: result.error ?? "no_weather",
     };
   }
 
+  logWeatherResponse(result.weather.source ?? "server", {
+    lat: coords.lat,
+    lng: coords.lng,
+    locale,
+    status: "ok",
+    city: result.weather.city,
+    tempC: result.weather.tempC,
+    available: result.weather.available,
+    error: result.error,
+  });
   console.info("[WEATHER_FETCH] final result=", JSON.stringify(result.weather));
   return { weather: result.weather, error: result.error };
 }

@@ -21,7 +21,6 @@ import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { logGoogleOAuthMarker } from "@/lib/auth-debug";
 import { signInWithProvider, type OAuthProvider } from "@/lib/auth-oauth";
 import { formatSupabaseRedirectAllowListHint } from "@/lib/auth-redirect";
-import { finishPostAuthRedirect } from "@/lib/auth-post-redirect";
 import {
   ensureIosLoginLiveInteraction,
   notifyIosOAuthOpen,
@@ -30,16 +29,14 @@ import {
   setIosLegalOverlayOpen,
   setIosSnapshotLiveInteractionForced,
 } from "@/lib/ios-snapshot-bridge";
+import {
+  isPostLoginNavigationCommitted,
+  navigateOnceAfterLogin,
+} from "@/lib/login-navigation";
 import { detectPlatform } from "@/services/platform";
 import { loadOnboardingState } from "@/lib/onboarding-storage";
-import { resolveStartupPath } from "@/lib/post-auth-navigation";
-import { resolveStartupPathFast } from "@/lib/startup-route";
-import {
-  guardStartupTarget,
-  isOnWelcomeRoute,
-  logStartupNavigationContext,
-} from "@/lib/startup-navigation";
 import { isOnboardingCompletedSync } from "@/lib/onboarding-storage";
+import { isBootCompleted } from "@/lib/startup-boot-state";
 import { useAuth } from "@/hooks/use-auth";
 import { emitOAuthFlow, OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
@@ -171,45 +168,20 @@ function Login() {
 
   useEffect(() => {
     if (loading || redirectedRef.current) return;
-    if (user) {
+    if (!user) return;
+    if (isPostLoginNavigationCommitted()) {
       redirectedRef.current = true;
-      void loadOnboardingState().then(async () => {
-        if (!isOnboardingCompletedSync()) {
-          const fastTo = guardStartupTarget("/welcome", "login-session-restore");
-          console.log("[ONBOARDING_GUARD] blocked home redirect", {
-            source: "login-session-restore",
-            targetRoute: fastTo,
-          });
-          await logStartupNavigationContext("login-session-restore", fastTo, {
-            reason: "onboarding_incomplete",
-            trigger: "Login.useEffect(user)->onboarding_incomplete",
-          });
-          navigate({ to: fastTo, replace: true });
-          return;
-        }
-
-        if (isOnWelcomeRoute()) {
-          console.info("[Startup Navigation Skipped]", {
-            source: "login-session-restore",
-            reason: "onboarding_in_progress_on_welcome",
-            currentRoute: "/welcome",
-          });
-          return;
-        }
-
-        const fastTo = guardStartupTarget(resolveStartupPathFast(), "login-session-restore");
-        await logStartupNavigationContext("login-session-restore", fastTo);
-        navigate({ to: fastTo, replace: true });
-        void resolveStartupPath({
-          hasSession: true,
-          skipLog: true,
-          source: "login-session-restore",
-        }).then((to) => {
-          const guarded = guardStartupTarget(to, "login-session-restore");
-          if (guarded !== fastTo) navigate({ to: guarded, replace: true });
-        });
-      });
+      return;
     }
+    if (isBootCompleted()) {
+      redirectedRef.current = true;
+      return;
+    }
+    redirectedRef.current = true;
+    void navigateOnceAfterLogin(
+      (opts) => navigate({ to: opts.to, replace: opts.replace }),
+      "login-session-restore",
+    );
   }, [user, loading, navigate]);
 
   useEffect(() => {
@@ -366,14 +338,10 @@ function Login() {
         notifyIosOAuthReturn();
         scheduleIosSnapshotRefreshBurst("apple-sign-in");
 
-        const next = guardStartupTarget(
-          await resolveStartupPath({ hasSession: true, source: "login-session-restore" }),
-          "login-session-restore",
-        );
         const { toast } = await import("sonner");
         toast.success("登入成功");
-        finishPostAuthRedirect(
-          next,
+        redirectedRef.current = true;
+        await navigateOnceAfterLogin(
           (opts) => navigate({ to: opts.to, replace: opts.replace }),
           "login-session-restore",
         );

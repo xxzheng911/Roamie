@@ -10,6 +10,7 @@ import {
   ensureLocationPermission,
   type LocationPermissionState,
 } from "@/lib/location-permission-manager";
+import { distanceMeters } from "@/lib/map-explore";
 import { detectPlatform } from "@/services/platform";
 
 export { isIosSimulatorPresetLocation } from "@/lib/device-location-resolve";
@@ -45,6 +46,19 @@ const GEO_OPTIONS_LOW: PositionOptions = {
   maximumAge: 300_000,
   enableHighAccuracy: false,
 };
+
+/** 同一座標或小幅移動（<100m）不 publish / 不刷 GPS fix log */
+const LOCATION_PUBLISH_MIN_DISTANCE_M = 100;
+const REQUEST_RESULT_TTL_MS = 20_000;
+
+let lastPublishedLocation: { lat: number; lng: number } | null = null;
+let requestInFlight: Promise<DeviceLocationResult> | null = null;
+let lastRequestResult: { at: number; result: DeviceLocationResult } | null = null;
+
+type LocationListener = (loc: DeviceLocationResult) => void;
+const locationListeners = new Set<LocationListener>();
+let globalWatchCleanup: (() => void) | null = null;
+let globalWatchStarting = false;
 
 function isDevBuild(): boolean {
   return import.meta.env.DEV && !import.meta.env.PROD;
@@ -109,10 +123,40 @@ function rememberGoodCoords(lat: number, lng: number): void {
   }
 }
 
-function readPosition(
+function coordsMovedEnough(lat: number, lng: number): boolean {
+  if (!lastPublishedLocation) return true;
+  return (
+    distanceMeters(lastPublishedLocation, { lat, lng }) >= LOCATION_PUBLISH_MIN_DISTANCE_M
+  );
+}
+
+function markPublishedCoords(lat: number, lng: number): void {
+  lastPublishedLocation = { lat, lng };
+  lastRequestResult = null;
+}
+
+function logGpsFix(
+  lat: number,
+  lng: number,
+  accuracy: number | null | undefined,
+  source: "capacitor" | "browser",
+  kind: string,
+  simulatorPreset?: boolean,
+): void {
+  console.info("[Location] GPS fix", {
+    lat,
+    lng,
+    accuracy,
+    source,
+    kind,
+    build: import.meta.env.PROD ? "production" : "development",
+    simulatorPreset,
+  });
+}
+
+function parseGpsPosition(
   latitude: number,
   longitude: number,
-  accuracy: number | null | undefined,
   source: "capacitor" | "browser",
 ): DeviceLocationResult | null {
   const resolved = resolveGpsCoordinates({
@@ -139,16 +183,6 @@ function readPosition(
 
   rememberGoodCoords(resolved.lat, resolved.lng);
 
-  console.info("[Location] GPS fix", {
-    lat: resolved.lat,
-    lng: resolved.lng,
-    accuracy,
-    source,
-    kind: resolved.kind,
-    build: import.meta.env.PROD ? "production" : "development",
-    simulatorPreset: resolved.simulatorPreset,
-  });
-
   return {
     lat: resolved.lat,
     lng: resolved.lng,
@@ -157,6 +191,135 @@ function readPosition(
     usedFallback: false,
     source,
   };
+}
+
+/** 單次定位：回傳座標；僅在移動超過閾值時記錄 GPS fix */
+function readPositionForRequest(
+  latitude: number,
+  longitude: number,
+  accuracy: number | null | undefined,
+  source: "capacitor" | "browser",
+): DeviceLocationResult | null {
+  const parsed = parseGpsPosition(latitude, longitude, source);
+  if (!parsed) return null;
+
+  if (coordsMovedEnough(parsed.lat, parsed.lng)) {
+    markPublishedCoords(parsed.lat, parsed.lng);
+    logGpsFix(
+      parsed.lat,
+      parsed.lng,
+      accuracy,
+      source,
+      "request",
+      undefined,
+    );
+  }
+
+  return parsed;
+}
+
+/** watch 回調：小幅移動直接 skip，不通知訂閱者 */
+function readPositionForWatch(
+  latitude: number,
+  longitude: number,
+  accuracy: number | null | undefined,
+  source: "capacitor" | "browser",
+): DeviceLocationResult | null {
+  const parsed = parseGpsPosition(latitude, longitude, source);
+  if (!parsed) return null;
+
+  if (!coordsMovedEnough(parsed.lat, parsed.lng)) {
+    console.info("[Location] LOCATION_WATCH_SKIP_SAME_COORDS", {
+      lat: parsed.lat,
+      lng: parsed.lng,
+      accuracy,
+      source,
+      minDistanceM: LOCATION_PUBLISH_MIN_DISTANCE_M,
+    });
+    return null;
+  }
+
+  markPublishedCoords(parsed.lat, parsed.lng);
+  logGpsFix(parsed.lat, parsed.lng, accuracy, source, "watch");
+  return parsed;
+}
+
+function notifyLocationListeners(loc: DeviceLocationResult): void {
+  for (const listener of locationListeners) {
+    listener(loc);
+  }
+}
+
+function ensureGlobalLocationWatch(): void {
+  if (globalWatchCleanup || globalWatchStarting) return;
+
+  const native = isNativeShell();
+
+  if (native) {
+    globalWatchStarting = true;
+    void (async () => {
+      try {
+        const permission = await ensureLocationPermission({ request: true });
+        if (permission !== "granted") {
+          console.warn("[Location] watch skipped — permission not granted", { permission });
+          return;
+        }
+        if (globalWatchCleanup) return;
+
+        const { Geolocation } = await import("@capacitor/geolocation");
+        const watchId = await Geolocation.watchPosition(
+          { enableHighAccuracy: true, timeout: 25_000, maximumAge: 30_000 },
+          (pos, err) => {
+            if (err || !pos) return;
+            const parsed = readPositionForWatch(
+              pos.coords.latitude,
+              pos.coords.longitude,
+              pos.coords.accuracy,
+              "capacitor",
+            );
+            if (parsed) notifyLocationListeners(parsed);
+          },
+        );
+        globalWatchCleanup = () => {
+          void Geolocation.clearWatch({ id: watchId });
+        };
+      } catch (e) {
+        console.warn("[Location] capacitor watchPosition unavailable", e);
+      } finally {
+        globalWatchStarting = false;
+      }
+    })();
+    return;
+  }
+
+  if (typeof navigator === "undefined" || !navigator.geolocation) return;
+
+  globalWatchStarting = true;
+
+  const browserWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const parsed = readPositionForWatch(
+        pos.coords.latitude,
+        pos.coords.longitude,
+        pos.coords.accuracy,
+        "browser",
+      );
+      if (parsed) notifyLocationListeners(parsed);
+    },
+    () => {},
+    GEO_OPTIONS,
+  );
+
+  globalWatchCleanup = () => {
+    navigator.geolocation.clearWatch(browserWatchId);
+  };
+  globalWatchStarting = false;
+}
+
+function stopGlobalLocationWatchIfIdle(): void {
+  if (locationListeners.size > 0) return;
+  globalWatchCleanup?.();
+  globalWatchCleanup = null;
 }
 
 type CapGeolocation = typeof import("@capacitor/geolocation").Geolocation;
@@ -214,7 +377,7 @@ async function readCapacitorPosition(): Promise<{
     for (const options of attempts) {
       try {
         const pos = await Geolocation.getCurrentPosition(options);
-        const parsed = readPosition(
+        const parsed = readPositionForRequest(
           pos.coords.latitude,
           pos.coords.longitude,
           pos.coords.accuracy,
@@ -229,7 +392,7 @@ async function readCapacitorPosition(): Promise<{
 
     const watched = await waitForCapacitorWatchFix(Geolocation, 15_000);
     if (watched) {
-      const parsed = readPosition(
+      const parsed = readPositionForRequest(
         watched.coords.latitude,
         watched.coords.longitude,
         watched.coords.accuracy,
@@ -258,7 +421,7 @@ function geolocationPosition(
     navigator.geolocation.getCurrentPosition(
       (pos) =>
         resolve({
-          result: readPosition(
+          result: readPositionForRequest(
             pos.coords.latitude,
             pos.coords.longitude,
             pos.coords.accuracy,
@@ -323,8 +486,7 @@ function fallbackResult(permission: LocationPermissionState, reason: string): De
   };
 }
 
-/** 取得裝置座標；正式版僅使用真實 GPS，失敗時才 fallback。 */
-export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
+async function requestDeviceLocationInternal(): Promise<DeviceLocationResult> {
   const native = isNativeShell();
 
   if (native) {
@@ -347,65 +509,73 @@ export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
   return fallbackResult(permission, "browser GPS unavailable");
 }
 
-/** 監聽位置變化；回傳 cleanup。 */
-export function watchDeviceLocation(
-  onUpdate: (loc: DeviceLocationResult) => void,
-): () => void {
-  let cancelled = false;
-  let clearCapWatch: (() => void) | undefined;
-  let browserWatchId: number | undefined;
+/** GPS 權限已 granted 但尚未取得 fix 時，不應改用 remembered city。 */
+export function shouldUseRememberedLocationFallback(loc: DeviceLocationResult): boolean {
+  if (!loc.usedFallback) return false;
+  return loc.permission === "denied" || loc.permission === "unavailable";
+}
 
-  if (isNativeShell()) {
-    void (async () => {
-      try {
-        const permission = await ensureLocationPermission({ request: false });
-        if (permission !== "granted") return;
+/** 仍在等真實 GPS 時，不應以台北 fallback 打 weather / nearby。 */
+export function shouldDeferUntilGpsFix(loc: DeviceLocationResult): boolean {
+  return loc.usedFallback && !shouldUseRememberedLocationFallback(loc);
+}
 
-        const { Geolocation } = await import("@capacitor/geolocation");
-        const watchId = await Geolocation.watchPosition(
-          { enableHighAccuracy: true, timeout: 25_000, maximumAge: 30_000 },
-          (pos, err) => {
-            if (cancelled || err || !pos) return;
-            const parsed = readPosition(
-              pos.coords.latitude,
-              pos.coords.longitude,
-              pos.coords.accuracy,
-              "capacitor",
-            );
-            if (parsed) onUpdate(parsed);
-          },
-        );
-        clearCapWatch = () => {
-          void Geolocation.clearWatch({ id: watchId });
-        };
-      } catch (e) {
-        console.warn("[Location] capacitor watchPosition unavailable", e);
+/** 等待 singleton watch 回傳第一個真實 GPS（用於冷啟動 weather 前）。 */
+export function waitForDeviceGpsFix(timeoutMs = 20_000): Promise<DeviceLocationResult | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: DeviceLocationResult | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      stop();
+      resolve(value);
+    };
+
+    const timer = window.setTimeout(() => finish(null), timeoutMs);
+    const stop = subscribeDeviceLocation((loc) => {
+      if (!loc.usedFallback) finish(loc);
+    });
+  });
+}
+
+/** 取得裝置座標；正式版僅使用真實 GPS，失敗時才 fallback。 */
+export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
+  const now = Date.now();
+  if (
+    lastRequestResult &&
+    !lastRequestResult.result.usedFallback &&
+    now - lastRequestResult.at < REQUEST_RESULT_TTL_MS
+  ) {
+    return lastRequestResult.result;
+  }
+  if (requestInFlight) return requestInFlight;
+
+  requestInFlight = requestDeviceLocationInternal()
+    .then((result) => {
+      if (!result.usedFallback) {
+        lastRequestResult = { at: Date.now(), result };
       }
-    })();
-  }
+      return result;
+    })
+    .finally(() => {
+      requestInFlight = null;
+    });
 
-  if (typeof navigator !== "undefined" && navigator.geolocation) {
-    browserWatchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        if (cancelled) return;
-        const parsed = readPosition(
-          pos.coords.latitude,
-          pos.coords.longitude,
-          pos.coords.accuracy,
-          "browser",
-        );
-        if (parsed) onUpdate(parsed);
-      },
-      () => {},
-      GEO_OPTIONS,
-    );
-  }
+  return requestInFlight;
+}
 
+/** 訂閱全域 singleton watch；App active / remount 不會重建 watcher。 */
+export function subscribeDeviceLocation(onUpdate: LocationListener): () => void {
+  locationListeners.add(onUpdate);
+  ensureGlobalLocationWatch();
   return () => {
-    cancelled = true;
-    clearCapWatch?.();
-    if (browserWatchId !== undefined && navigator.geolocation) {
-      navigator.geolocation.clearWatch(browserWatchId);
-    }
+    locationListeners.delete(onUpdate);
+    stopGlobalLocationWatchIfIdle();
   };
+}
+
+/** 監聽位置變化；回傳 cleanup（委派 singleton watch）。 */
+export function watchDeviceLocation(onUpdate: LocationListener): () => void {
+  return subscribeDeviceLocation(onUpdate);
 }

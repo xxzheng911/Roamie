@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { logAppBoot, ONBOARDING_ROUTE } from "@/lib/app-boot-log";
+import { logNavSkipSameRoute, shouldLogOnboardingGuardMounted } from "@/lib/startup-boot-state";
 import {
   getOnboardingStorageSource,
   isOnboardingCompletedSync,
@@ -20,18 +21,15 @@ function isAuthCallbackPath(pathname: string): boolean {
 export function OnboardingRouteGuard() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const mountedRef = useRef(false);
   const lastBlockedRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      logAppBoot("onboarding guard mounted", {
-        currentRoute: pathname.replace(/\/+$/, "") || "/",
-        onboardingHydrated: isOnboardingHydrated(),
-        onboardingCompleted: isOnboardingHydrated() ? isOnboardingCompletedSync() : null,
-      });
-    }
+    if (!shouldLogOnboardingGuardMounted()) return;
+    logAppBoot("onboarding guard mounted", {
+      currentRoute: pathname.replace(/\/+$/, "") || "/",
+      onboardingHydrated: isOnboardingHydrated(),
+      onboardingCompleted: isOnboardingHydrated() ? isOnboardingCompletedSync() : null,
+    });
   }, [pathname]);
 
   useEffect(() => {
@@ -39,7 +37,14 @@ export function OnboardingRouteGuard() {
 
     const currentRoute = pathname.replace(/\/+$/, "") || "/";
     if (isOnboardingCompletedSync()) return;
-    if (currentRoute === ONBOARDING_ROUTE || currentRoute === "/onboarding") return;
+    if (currentRoute === ONBOARDING_ROUTE || currentRoute === "/onboarding") {
+      logNavSkipSameRoute({
+        source: "OnboardingRouteGuard",
+        current: currentRoute,
+        target: ONBOARDING_ROUTE,
+      });
+      return;
+    }
     if (isAuthCallbackPath(currentRoute)) return;
     if (lastBlockedRef.current === currentRoute) return;
     lastBlockedRef.current = currentRoute;

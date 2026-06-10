@@ -22,6 +22,9 @@ let hydrated = false;
 /** hydrate 後的記憶體快取（isOnboardingCompletedSync 只讀此值） */
 let cachedCompleted = false;
 let lastStorageSource: OnboardingStorageSource = "none";
+let preferencesOnboardingRead = false;
+let cachedPreferencesOnboarding: boolean | null = null;
+let devGlobalsInstalled = false;
 
 function readLocalOnboardingFlag(): boolean {
   if (typeof window === "undefined") return false;
@@ -50,17 +53,32 @@ function writeLocalOnboardingFlag(completed: boolean): void {
 }
 
 async function readPreferencesOnboardingFlag(): Promise<boolean | null> {
+  if (preferencesOnboardingRead) {
+    return cachedPreferencesOnboarding;
+  }
+
   const platform = detectPlatform();
-  if (!platform.isCapacitor) return null;
+  if (!platform.isCapacitor) {
+    preferencesOnboardingRead = true;
+    cachedPreferencesOnboarding = null;
+    return null;
+  }
   const bridgeReady = await waitForCapacitorBridge(4_000);
-  if (!bridgeReady) return null;
+  if (!bridgeReady) {
+    preferencesOnboardingRead = true;
+    cachedPreferencesOnboarding = null;
+    return null;
+  }
   try {
     const { value } = await Preferences.get({ key: ONBOARDING_COMPLETED_KEY });
-    if (value === "true") return true;
-    if (value === "false") return false;
-    return null;
+    const parsed = value === "true" ? true : value === "false" ? false : null;
+    preferencesOnboardingRead = true;
+    cachedPreferencesOnboarding = parsed;
+    return parsed;
   } catch (e) {
     console.warn("[Onboarding] Preferences.get failed", e);
+    preferencesOnboardingRead = true;
+    cachedPreferencesOnboarding = null;
     return null;
   }
 }
@@ -123,7 +141,9 @@ export async function hydrateOnboardingStatus(): Promise<boolean> {
   if (hydratePromise) return hydratePromise;
 
   hydratePromise = (async () => {
-    console.info("[Onboarding Status Loading]");
+    if (!hydrated) {
+      console.info("[Onboarding Status Loading]");
+    }
 
     const fromPrefs = await readPreferencesOnboardingFlag();
     const fromLocal = readLocalOnboardingFlag();
@@ -174,7 +194,11 @@ export async function clearOnboardingCompleted(): Promise<void> {
   writeLocalOnboardingFlag(false);
   await writePreferencesOnboardingFlag(false);
   hydrated = false;
+  preferencesOnboardingRead = false;
+  cachedPreferencesOnboarding = null;
   lastStorageSource = "none";
+  const { resetWelcomeBootForOnboardingReset } = await import("@/lib/startup-boot-state");
+  resetWelcomeBootForOnboardingReset();
   console.info("[Onboarding] cleared");
 }
 
@@ -236,6 +260,8 @@ export async function resetOnboardingState(): Promise<void> {
 
 export function installDevOnboardingGlobals(): void {
   if (typeof window === "undefined") return;
+  if (devGlobalsInstalled) return;
+  devGlobalsInstalled = true;
   const w = window as Window & {
     __ROAMIE_DEV__?: {
       resetOnboarding: () => Promise<void>;

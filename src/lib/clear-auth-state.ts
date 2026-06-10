@@ -1,4 +1,6 @@
 import { Preferences } from "@capacitor/preferences";
+import { resetPostAuthRedirect } from "@/lib/auth-post-redirect";
+import { resetPostLoginNavigation } from "@/lib/login-navigation";
 import { clearPendingCallbackPath, OAUTH_PENDING_CALLBACK_KEY } from "@/lib/auth-oauth-deep-link";
 import { clearOAuthCodeConsumedMarker } from "@/lib/oauth-callback-guard";
 import { clearAuthMemoryCache } from "@/lib/supabase-auth-storage";
@@ -97,6 +99,8 @@ export type ClearAuthStateOptions = {
 
 /** 同步清除（不等待 native bridge / signOut）— 按鈕回登入頁必須先跑這段 */
 export function clearAuthStateSync(options: ClearAuthStateOptions = {}): void {
+  resetPostLoginNavigation();
+  resetPostAuthRedirect();
   clearAuthMemoryCache();
   clearWebStorageAuthKeys();
   clearLocalDeviceCaches();

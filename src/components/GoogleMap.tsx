@@ -1,6 +1,7 @@
 /// <reference types="google.maps" />
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getGoogleMapsBrowserKeyError } from "@/lib/google-maps-client";
+import { logMapsOnce } from "@/lib/google-maps-init-log";
 import { loadGoogleMapsApi, triggerMapResize } from "@/lib/google-maps-loader";
 import {
   createRoamieUserLocationOverlay,
@@ -62,7 +63,14 @@ export function GoogleMap({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const centerRef = useRef(center);
   centerRef.current = center;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const onMapReadyRef = useRef(onMapReady);
+  onMapReadyRef.current = onMapReady;
+  const mapPaddingRef = useRef(mapPadding);
+  mapPaddingRef.current = mapPadding;
   const mapRef = useRef<google.maps.Map | null>(null);
+  const initStartedRef = useRef(false);
   const placeMarkersRef = useRef<google.maps.Marker[]>([]);
   const userOverlayRef = useRef<UserLocationOverlayHandle | null>(null);
   const userInfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
@@ -97,7 +105,7 @@ export function GoogleMap({
     containerRef.current = node;
     if (node) {
       const rect = node.getBoundingClientRect();
-      console.info(LOG, "map container mounted", {
+      logMapsOnce("container-mounted", "map container mounted", {
         width: rect.width,
         height: rect.height,
       });
@@ -118,9 +126,13 @@ export function GoogleMap({
     }
 
     try {
-      console.info(LOG, "initializeMap 開始", { center: centerRef.current, zoom, size: rect });
+      logMapsOnce("initialize-start", "initializeMap 開始", {
+        center: centerRef.current,
+        zoom: zoomRef.current,
+        size: rect,
+      });
       const maps = await loadGoogleMapsApi();
-      console.info(LOG, "API 就緒", {
+      logMapsOnce("api-ready", "API 就緒", {
         hasMapCtor: typeof maps.Map === "function",
         hasMarkerCtor: typeof maps.Marker === "function",
       });
@@ -133,7 +145,7 @@ export function GoogleMap({
       if (!mapRef.current) {
         mapRef.current = new maps.Map(containerRef.current, {
           center: centerRef.current,
-          zoom,
+          zoom: zoomRef.current,
           disableDefaultUI: true,
           zoomControl: false,
           fullscreenControl: false,
@@ -146,15 +158,16 @@ export function GoogleMap({
             { featureType: "transit", stylers: [{ visibility: "off" }] },
           ],
         });
-        console.info(LOG, "Map 實例已建立", mapRef.current);
-        if (mapPadding) {
-          applyMapVisiblePadding(mapRef.current, mapPadding);
+        logMapsOnce("map-instance-created", "Map 實例已建立");
+        const padding = mapPaddingRef.current;
+        if (padding) {
+          applyMapVisiblePadding(mapRef.current, padding);
         }
         userInfoWindowRef.current = new maps.InfoWindow({
           content: `<div style="font-size:13px;padding:4px 2px;font-family:system-ui,sans-serif;color:#5c5348;">${ROAMIE_USER_LOCATION_LABEL}</div>`,
         });
         setMapReady(true);
-        onMapReady?.(mapRef.current);
+        onMapReadyRef.current?.(mapRef.current);
         requestAnimationFrame(() => {
           if (mapRef.current) triggerMapResize(mapRef.current);
         });
@@ -165,7 +178,7 @@ export function GoogleMap({
       reportError(msg);
       return true;
     }
-  }, [zoom, onMapReady, mapPadding, reportError]);
+  }, [reportError]);
 
   useEffect(() => {
     if (!mapRef.current || !mapReady || !mapPadding) return;
@@ -190,6 +203,11 @@ export function GoogleMap({
       reportError(keyError);
       return;
     }
+
+    if (initStartedRef.current && mapRef.current) {
+      return;
+    }
+    initStartedRef.current = true;
 
     let attempts = 0;
     const maxAttempts = 40;
@@ -223,7 +241,7 @@ export function GoogleMap({
     if (!mapRef.current || !mapReady) return;
     mapRef.current.panTo(center);
     if (zoom != null) mapRef.current.setZoom(zoom);
-    console.info(LOG, "panTo center", center, "zoom", zoom);
+    logMapsOnce(`pan-${center.lat}-${center.lng}-${zoom}`, "panTo center", { center, zoom });
   }, [center.lat, center.lng, zoom, mapReady]);
 
   useEffect(() => {

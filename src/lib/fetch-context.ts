@@ -66,11 +66,13 @@ export async function buildClientContextBundle(
     weather = r.weather;
     if (weather) {
       location.city = weather.city;
-      rememberLastSearchLocation({
-        lat: location.lat,
-        lng: location.lng,
-        city: weather.city,
-      });
+      if (weather.available !== false && !geo.usedFallback) {
+        rememberLastSearchLocation({
+          lat: location.lat,
+          lng: location.lng,
+          city: weather.city,
+        });
+      }
       console.info("[Weather] parse ok (context)", {
         city: weather.city,
         condition: weather.condition,

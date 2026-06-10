@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
-import { runWhenCapacitorBridgeReady } from "@/lib/capacitor-bridge-ready";
+import { subscribeCapacitorKeyboard } from "@/lib/capacitor-keyboard-bridge";
 import {
   isCapacitorNativeShell,
   logChatKeyboardHide,
@@ -245,6 +245,8 @@ function Chat() {
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, []);
+  const scrollMessagesToEndRef = useRef(scrollMessagesToEnd);
+  scrollMessagesToEndRef.current = scrollMessagesToEnd;
 
   useEffect(() => {
     document.documentElement.classList.toggle("chat-keyboard-open", keyboardVisible);
@@ -286,7 +288,7 @@ function Chat() {
       setReportedKeyboardHeightPx(reportedHeight);
 
       if (open) {
-        requestAnimationFrame(scrollMessagesToEnd);
+        requestAnimationFrame(() => scrollMessagesToEndRef.current());
       }
     };
 
@@ -308,36 +310,19 @@ function Chat() {
     vv?.addEventListener("resize", syncFromViewport);
     vv?.addEventListener("scroll", syncFromViewport);
 
-    let keyboardListenersCancelled = false;
     if (isNativeShell) {
-      void runWhenCapacitorBridgeReady("chat.keyboardListeners", async () => {
-        if (keyboardListenersCancelled) return;
-        const { Keyboard } = await import("@capacitor/keyboard");
-        if (keyboardListenersCancelled) return;
-        const onShow = (info: { keyboardHeight?: number }) => {
-          applyKeyboard(info.keyboardHeight ?? 0, true);
-        };
-        const onHide = () => applyKeyboard(0, false);
-        const showWill = Keyboard.addListener("keyboardWillShow", onShow);
-        const showDid = Keyboard.addListener("keyboardDidShow", onShow);
-        const hideWill = Keyboard.addListener("keyboardWillHide", onHide);
-        const hideDid = Keyboard.addListener("keyboardDidHide", onHide);
-        removeCapKeyboard = () => {
-          void showWill.then((s) => s.remove());
-          void showDid.then((s) => s.remove());
-          void hideWill.then((s) => s.remove());
-          void hideDid.then((s) => s.remove());
-        };
+      removeCapKeyboard = subscribeCapacitorKeyboard({
+        onShow: (height) => applyKeyboard(height, true),
+        onHide: () => applyKeyboard(0, false),
       });
     }
 
     return () => {
-      keyboardListenersCancelled = true;
       vv?.removeEventListener("resize", syncFromViewport);
       vv?.removeEventListener("scroll", syncFromViewport);
       removeCapKeyboard?.();
     };
-  }, [scrollMessagesToEnd]);
+  }, []);
 
   useEffect(() => {
     if (!keyboardVisible) return;

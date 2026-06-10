@@ -6,6 +6,11 @@ import {
 } from "@/lib/onboarding-storage";
 import { hasLikelyPersistedSession } from "@/lib/startup-route";
 import { ONBOARDING_ROUTE } from "@/lib/app-boot-log";
+import {
+  logNavSkipSameRoute,
+  shouldLogStartupNav,
+  shouldSkipStartupNavigation,
+} from "@/lib/startup-boot-state";
 import { readBrowserPathname } from "@/lib/startup-path";
 import type { StartupPath } from "@/lib/post-auth-navigation";
 
@@ -65,6 +70,35 @@ export function guardStartupTarget(
   const onboardingCompleted = isOnboardingCompletedSync();
   const onboardingHydrated = isOnboardingHydrated();
 
+  if (shouldSkipStartupNavigation(currentRoute, target)) {
+    logNavSkipSameRoute({ source: `guardStartupTarget:${source}`, current: currentRoute, target });
+    return target;
+  }
+
+  if (target === "/welcome" && onboardingHydrated && onboardingCompleted) {
+    const corrected: StartupPath = hasLikelyPersistedSession() ? "/" : "/login";
+    if (shouldSkipStartupNavigation(currentRoute, corrected)) {
+      logNavSkipSameRoute({
+        source: `guardStartupTarget:${source}:completed-onboarding`,
+        current: currentRoute,
+        target: corrected,
+      });
+      return corrected;
+    }
+    if (shouldLogStartupNav(`${source}:welcome-blocked`, corrected)) {
+      console.info("[Startup Navigation Allowed]", {
+        source,
+        trigger: "guardStartupTarget:block-welcome-after-onboarding",
+        currentRoute,
+        onboardingCompleted,
+        onboardingHydrated,
+        storageSource: getOnboardingStorageSource(),
+        targetRoute: corrected,
+      });
+    }
+    return corrected;
+  }
+
   if (target === "/" && (!onboardingHydrated || !onboardingCompleted)) {
     const redirectedTo = ONBOARDING_ROUTE;
     console.log("[ONBOARDING_GUARD] blocked home redirect", {
@@ -81,15 +115,17 @@ export function guardStartupTarget(
     return redirectedTo;
   }
 
-  console.info("[Startup Navigation Allowed]", {
-    source,
-    trigger: "guardStartupTarget",
-    currentRoute,
-    onboardingCompleted,
-    onboardingHydrated,
-    storageSource: getOnboardingStorageSource(),
-    targetRoute: target,
-  });
+  if (shouldLogStartupNav(source, target)) {
+    console.info("[Startup Navigation Allowed]", {
+      source,
+      trigger: "guardStartupTarget",
+      currentRoute,
+      onboardingCompleted,
+      onboardingHydrated,
+      storageSource: getOnboardingStorageSource(),
+      targetRoute: target,
+    });
+  }
 
   return target;
 }
@@ -135,6 +171,9 @@ export async function logStartupNavigationContext(
   extra?: Record<string, unknown>,
 ): Promise<void> {
   const session = await getClientAuthSession().catch(() => null);
+  const userId = session?.user?.id ?? null;
+
+  if (!shouldLogStartupNav(source, target, userId)) return;
 
   console.info("[Startup Navigation Context]", {
     source,

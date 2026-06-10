@@ -7,6 +7,12 @@ import { isOnboardingCompletedSync, loadOnboardingState } from "@/lib/onboarding
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
 import type { StartupPath } from "@/lib/post-auth-navigation";
 import { guardStartupTarget, logStartupNavigationContext } from "@/lib/startup-navigation";
+import {
+  isBootCompleted,
+  markStartupResolved,
+  shouldSkipStartupNavigation,
+} from "@/lib/startup-boot-state";
+import { readBrowserPathname } from "@/lib/startup-path";
 
 const AUTH_ROUTE_TIMEOUT_MS = 4_000;
 
@@ -82,10 +88,33 @@ export async function requireAppShellAccess(): Promise<void> {
         targetRoute: "/welcome",
         reason: "onboarding_incomplete",
       });
-      logStartupNavigationContext("requireAppShellAccess", "/welcome", {
+      void logStartupNavigationContext("requireAppShellAccess", "/welcome", {
         reason: "onboarding_incomplete",
-      }).catch(() => {});
+      });
       throw redirect({ to: "/welcome" });
+    }
+
+    const currentPath = readBrowserPathname();
+    if (shouldSkipStartupNavigation(currentPath, "/")) {
+      const quickSession = await Promise.race([
+        getClientAuthSession(),
+        new Promise<null>((resolve) => {
+          window.setTimeout(() => resolve(null), AUTH_ROUTE_TIMEOUT_MS);
+        }),
+      ]);
+      if (quickSession?.user) {
+        markStartupResolved("/");
+        try {
+          markBootPhase("gate:requireAppShellAccess:skip:already-home");
+        } catch {
+          // ignore
+        }
+        return;
+      }
+    }
+
+    if (isBootCompleted() && shouldSkipStartupNavigation(currentPath, "/")) {
+      return;
     }
 
     const session = await Promise.race([

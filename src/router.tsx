@@ -5,15 +5,26 @@ import { scheduleAppInitHandlers } from "@/lib/app-init-handlers";
 scheduleAppInitHandlers();
 
 import { QueryClient } from "@tanstack/react-query";
-import { createRouter } from "@tanstack/react-router";
+import { createRouter, type AnyRouter } from "@tanstack/react-router";
 import { RoamieRoutePending } from "@/components/RoamieRoutePending";
 import { normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
 import { logAppError } from "@/lib/log-error";
 import { requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
 import { normalizeRouterSsrManifest } from "@/lib/ssr-manifest";
+import { logRouterCreate } from "@/lib/startup-boot-state";
 import { routeTree } from "./routeTree.gen";
 
+let sharedQueryClient: QueryClient | null = null;
+let sharedRouter: AnyRouter | null = null;
+
 export const getRouter = () => {
+  if (sharedRouter) {
+    logRouterCreate(true);
+    return sharedRouter;
+  }
+
+  logRouterCreate(false);
+
   if (typeof window !== "undefined") {
     try {
       normalizeCapacitorEntryPath();
@@ -22,11 +33,11 @@ export const getRouter = () => {
     }
   }
 
-  const queryClient = new QueryClient();
+  sharedQueryClient = new QueryClient();
 
   const router = createRouter({
     routeTree,
-    context: { queryClient },
+    context: { queryClient: sharedQueryClient },
     scrollRestoration: true,
     defaultPreloadStaleTime: 0,
     defaultPendingComponent: RoamieRoutePending,
@@ -54,5 +65,6 @@ export const getRouter = () => {
     });
   }
 
+  sharedRouter = router;
   return router;
 };

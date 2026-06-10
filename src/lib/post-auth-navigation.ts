@@ -11,6 +11,7 @@ import {
   logStartupNavigationContext,
   type StartupNavigationSource,
 } from "@/lib/startup-navigation";
+import { isBootCompleted } from "@/lib/startup-boot-state";
 
 export type StartupPath = "/login" | "/welcome" | "/";
 
@@ -84,6 +85,15 @@ export async function resolveStartupPath(options?: StartupOptions): Promise<Star
   await loadOnboardingState();
 
   const onboardingCompleted = isOnboardingCompletedSync();
+
+  if (isBootCompleted() && onboardingCompleted) {
+    if (hasSession === undefined) {
+      hasSession = !!(await getClientAuthSession());
+    }
+    if (hasSession) {
+      return "/";
+    }
+  }
 
   if (!onboardingCompleted) {
     const next = guardStartupTarget("/welcome", source);

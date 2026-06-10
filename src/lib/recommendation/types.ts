@@ -48,7 +48,7 @@ export type VerifiedPlaceCandidate = RoamieRecommendationItem & {
 export type DailyPrepAdvice = {
   headline: string;
   bullets: string[];
-  source: "rules" | "ai";
+  source: "rules" | "rules-fallback" | "ai";
 };
 
 export type PlaceIntroPayload = {

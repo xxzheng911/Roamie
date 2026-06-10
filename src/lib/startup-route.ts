@@ -12,7 +12,18 @@ import {
   logStartupBootDecision,
   logStartupNavigationContext,
 } from "@/lib/startup-navigation";
+import {
+  getLastResolvedStartupTarget,
+  hasResolvedStartup,
+  isWelcomeBootSettled,
+  shouldLogStartupNav,
+} from "@/lib/startup-boot-state";
 import { readBrowserPathname } from "@/lib/startup-path";
+
+function pathIsWelcome(): boolean {
+  const path = readBrowserPathname().replace(/\/+$/, "") || "/";
+  return path === "/welcome" || path === "/onboarding";
+}
 
 const SUPABASE_AUTH_STORAGE_KEY = "roamie-auth";
 
@@ -43,18 +54,32 @@ export function hasLikelyPersistedSession(): boolean {
  * onboarding 未完成時一律 /welcome，不受 session / dev 影響。
  */
 export function resolveStartupPathFast(): StartupPath {
+  if (hasResolvedStartup()) {
+    const cached = getLastResolvedStartupTarget();
+    if (cached) return cached;
+  }
+
+  const onboardingCompleted = isOnboardingCompletedSync();
+
+  if (isWelcomeBootSettled() && !onboardingCompleted) {
+    return "/welcome";
+  }
+
   if (!isOnboardingHydrated()) {
     console.warn("[Startup][fast] onboarding not hydrated — defaulting to /welcome");
     return "/welcome";
   }
-
-  const onboardingCompleted = isOnboardingCompletedSync();
   const isFirstLaunch = !onboardingCompleted;
   const hasSession = hasLikelyPersistedSession();
   const rawNext: StartupPath = !onboardingCompleted ? "/welcome" : !hasSession ? "/login" : "/";
   const next = guardStartupTarget(rawNext, "resolveStartupPathFast");
 
-  if (typeof window !== "undefined") {
+  if (
+    typeof window !== "undefined" &&
+    !isWelcomeBootSettled() &&
+    !(pathIsWelcome() && !onboardingCompleted) &&
+    shouldLogStartupNav("resolveStartupPathFast", next)
+  ) {
     void logStartupBootDecision({
       phase: "resolveStartupPathFast",
       onboardingCompleted,

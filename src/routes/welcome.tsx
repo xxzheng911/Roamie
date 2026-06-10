@@ -19,6 +19,8 @@ import {
   guardStartupTarget,
   logStartupNavigationContext,
 } from "@/lib/startup-navigation";
+import { logNavSkipSameRoute, shouldSkipStartupNavigation } from "@/lib/startup-boot-state";
+import { readBrowserPathname } from "@/lib/startup-path";
 import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
 import { resetOnboardingState } from "@/lib/onboarding-storage";
 import { clientEnv } from "@/constants/env";
@@ -38,6 +40,11 @@ export const Route = createFileRoute("/welcome")({
     const session = await getClientAuthSession();
     const hasSession = Boolean(session?.user);
     const next = guardStartupTarget(hasSession ? "/" : "/login", "welcome-beforeLoad");
+    const current = readBrowserPathname();
+    if (shouldSkipStartupNavigation(current, next)) {
+      logNavSkipSameRoute({ source: "welcome-beforeLoad", current, target: next });
+      return;
+    }
     await logStartupNavigationContext("welcome-beforeLoad", next);
     throw redirect({ to: next });
   },
@@ -76,6 +83,11 @@ function Welcome() {
       await resolveStartupPath({ skipLog: true, source: "welcome-complete" }),
       "welcome-complete",
     );
+    const current = readBrowserPathname();
+    if (shouldSkipStartupNavigation(current, next)) {
+      logNavSkipSameRoute({ source: "welcome-complete", current, target: next });
+      return;
+    }
     await logStartupNavigationContext("welcome-complete", next);
     navigate({ to: next, replace: true });
   };

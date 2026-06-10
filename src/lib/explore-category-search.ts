@@ -5,6 +5,8 @@ import {
   COFFEE_MIN_FILTERED_RESULTS,
   DISTRICT_MIN_FILTERED_RESULTS,
 } from "@/lib/places-search-config";
+import { shouldUseHomeNearbyFailureMocks } from "@/lib/home-nearby-fallback";
+import { logHomeNearbyDataReady } from "@/lib/places-diagnostics";
 import { allowDemoPlaceFallback, searchRadiusMeters } from "@/lib/search-radius";
 import {
   getExploreTextFallbackQueries,
@@ -231,7 +233,7 @@ export async function loadHomeNearbyPicks(ctx: {
         return sorted.slice(0, PICKS_PER_CATEGORY).map((p) => ({ ...p, categoryId: cat.id }));
       } catch (e) {
         console.warn("[Roamie Home] category search failed", cat.id, e);
-        if (!allowDemoPlaceFallback()) return [];
+        if (!allowDemoPlaceFallback() && !shouldUseHomeNearbyFailureMocks()) return [];
         return getMockPlacesForCategory(ctx.userLocation, cat)
           .slice(0, PICKS_PER_CATEGORY)
           .map((p) => ({ ...p, categoryId: cat.id }));
@@ -259,11 +261,38 @@ export async function loadHomeNearbyPicks(ctx: {
     ctx.reasonProfile,
     ctx.weather,
   );
-  if (sorted.length > 0) return sorted;
+  if (sorted.length > 0) {
+    logHomeNearbyDataReady({
+      count: sorted.length,
+      lat: ctx.userLocation.lat,
+      lng: ctx.userLocation.lng,
+      categories: ctx.categories.map((c) => c.id),
+      fromMock: false,
+    });
+    return sorted;
+  }
 
-  if (allowDemoPlaceFallback()) {
-    return getMockHomeNearbyPicks(ctx.userLocation, ctx.categories, PICKS_PER_CATEGORY);
+  if (allowDemoPlaceFallback() || shouldUseHomeNearbyFailureMocks()) {
+    console.info("[Roamie Home] nearby picks using failure fallback mocks");
+    const mocks = getMockHomeNearbyPicks(ctx.userLocation, ctx.categories, PICKS_PER_CATEGORY);
+    logHomeNearbyDataReady({
+      count: mocks.length,
+      lat: ctx.userLocation.lat,
+      lng: ctx.userLocation.lng,
+      categories: ctx.categories.map((c) => c.id),
+      fromMock: true,
+      error: "api_empty_using_mocks",
+    });
+    return mocks;
   }
   console.info("[Roamie Home] nearby picks empty (no mock in production)");
+  logHomeNearbyDataReady({
+    count: 0,
+    lat: ctx.userLocation.lat,
+    lng: ctx.userLocation.lng,
+    categories: ctx.categories.map((c) => c.id),
+    fromMock: false,
+    error: "no_results",
+  });
   return [];
 }

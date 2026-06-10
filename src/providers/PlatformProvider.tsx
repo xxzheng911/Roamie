@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { bootstrapNativeShell, detectPlatform, type PlatformInfo } from "@/services/platform";
+import { detectPlatform, type PlatformInfo } from "@/services/platform";
 
 const Ctx = createContext<PlatformInfo | null>(null);
 
@@ -15,7 +15,6 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
 
   useLayoutEffect(() => {
     setInfo(detectPlatform());
-    void bootstrapNativeShell();
   }, []);
 
   const value = useMemo(() => info, [info]);

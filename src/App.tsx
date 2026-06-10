@@ -6,6 +6,7 @@ import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { OnboardingGate } from "@/components/OnboardingGate";
 import { AppProviders } from "@/providers/AppProviders";
 import { logAppBoot, logAppBootSnapshot } from "@/lib/app-boot-log";
+import { logAppRemountSource, shouldLogAppMounted } from "@/lib/startup-boot-state";
 import { detectPlatform } from "@/services/platform";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { logAppError } from "@/lib/log-error";
@@ -14,6 +15,10 @@ type Props = { children: ReactNode };
 
 export function App({ children }: Props) {
   useEffect(() => {
+    logAppRemountSource("App");
+
+    if (!shouldLogAppMounted()) return;
+
     const platform = detectPlatform();
     console.info("[REAL_APP] mounted", {
       isCapacitor: platform.isCapacitor,

@@ -72,11 +72,16 @@ export function clearWeatherCache(): void {
 
 const inflight = new Map<string, Promise<unknown>>();
 
+type WeatherCacheFetchOptions<T> = {
+  resolveTtl?: (data: T) => number;
+};
+
 /** 快取命中或 in-flight deduplication — 避免同頁 / 切頁重複 request */
 export async function getWeatherCachedOrFetch<T>(
   key: string,
   fetcher: () => Promise<T>,
   ttlMs = WEATHER_CACHE_TTL_MS,
+  options?: WeatherCacheFetchOptions<T>,
 ): Promise<T> {
   const cached = getWeatherCached<T>(key);
   if (cached !== null) return cached;
@@ -86,7 +91,8 @@ export async function getWeatherCachedOrFetch<T>(
 
   const promise = fetcher()
     .then((data) => {
-      setWeatherCached(key, data, ttlMs);
+      const resolvedTtl = options?.resolveTtl?.(data) ?? ttlMs;
+      setWeatherCached(key, data, resolvedTtl);
       return data;
     })
     .finally(() => {

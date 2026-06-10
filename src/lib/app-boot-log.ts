@@ -4,6 +4,7 @@ import {
   isOnboardingCompletedSync,
   isOnboardingHydrated,
 } from "@/lib/onboarding-storage";
+import { shouldLogAppBoot, shouldLogAppBootSnapshot } from "@/lib/startup-boot-state";
 import { detectPlatform } from "@/services/platform";
 import { readBrowserPathname } from "@/lib/startup-path";
 
@@ -18,6 +19,12 @@ export const ONBOARDING_ROUTE = "/welcome";
 
 /** Xcode / WKWebView 預設可見；production quietBoot 不會吃掉 console.log */
 export function logAppBoot(message: string, extra?: Record<string, unknown>): void {
+  const dedupeKey =
+    extra && Object.keys(extra).length > 0
+      ? `${message}:${JSON.stringify(extra)}`
+      : message;
+  if (!shouldLogAppBoot(dedupeKey)) return;
+
   const line = `[APP_BOOT] ${message}`;
   if (extra && Object.keys(extra).length > 0) {
     console.log(line, extra);
@@ -32,6 +39,8 @@ export function logAppBoot(message: string, extra?: Record<string, unknown>): vo
 }
 
 export async function logAppBootSnapshot(targetRoute?: string): Promise<void> {
+  if (!shouldLogAppBootSnapshot()) return;
+
   const platform = detectPlatform();
   const session = await getClientAuthSession().catch(() => null);
   logAppBoot("snapshot", {

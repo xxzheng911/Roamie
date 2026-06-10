@@ -1,6 +1,8 @@
 import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
 import { useLayoutEffect, useEffect, useState } from "react";
+import { useI18n } from "@/hooks/use-i18n";
 import { markBootPhase } from "@/lib/boot-diagnostics";
+import { ensureHomeWeatherBootstrap } from "@/lib/home-weather-bootstrap";
 import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { MobileFrame } from "@/components/MobileFrame";
@@ -20,13 +22,22 @@ function isMainScrollLockedPath(pathname: string): boolean {
 
 function AppLayout() {
   const router = useRouter();
+  const { locale } = useI18n();
+
+  const [pathname, setPathname] = useState(
+    () => router.state.location.pathname || readBrowserPathname(),
+  );
 
   useLayoutEffect(() => {
     scheduleIosSnapshotRefreshBurst("app-shell");
   }, []);
-  const [pathname, setPathname] = useState(
-    () => router.state.location.pathname || readBrowserPathname(),
-  );
+
+  useLayoutEffect(() => {
+    const path = pathname.replace(/\/+$/, "") || "/";
+    if (path !== "/") return;
+    console.info("[HOME_SHELL] index route active");
+    ensureHomeWeatherBootstrap(locale, "app-shell");
+  }, [pathname, locale]);
 
   useEffect(() => {
     markBootPhase("route:_app:mounted", "path=" + pathname);

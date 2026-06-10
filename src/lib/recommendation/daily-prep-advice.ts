@@ -138,17 +138,53 @@ function pickKey(weather: WeatherSummary): keyof (typeof COPY)["zh-TW"] {
   return "fair";
 }
 
+function defaultPrepAdvice(locale: Locale, city?: string): DailyPrepAdvice {
+  const loc = locale in COPY ? locale : "en";
+  const block = COPY[loc].fair;
+  const cityPrefix = city?.trim();
+  return {
+    headline: cityPrefix ? `${cityPrefix} · ${block.headline}` : block.headline,
+    bullets: block.bullets,
+    source: "rules-fallback",
+  };
+}
+
 /** 今日穿搭／旅遊準備（規則式 fallback，不依 AI） */
 export function buildDailyPrepAdvice(
   weather: WeatherSummary | null,
   locale: Locale,
   city?: string,
 ): DailyPrepAdvice | null {
-  if (!weather) return null;
+  if (!weather) {
+    console.info("[OUTFIT_SOURCE]", {
+      source: "rules-fallback",
+      reason: "weather_null",
+      city: city ?? null,
+    });
+    return defaultPrepAdvice(locale, city);
+  }
+
+  if (weather.available === false) {
+    console.info("[OUTFIT_SOURCE]", {
+      source: "rules-fallback",
+      reason: "weather_unavailable",
+      city: city ?? weather.city ?? null,
+      weatherSource: weather.source,
+    });
+    return defaultPrepAdvice(locale, city ?? weather.city);
+  }
+
   const loc = locale in COPY ? locale : "en";
   const key = pickKey(weather);
   const block = COPY[loc][key] ?? COPY[loc].fair;
   const cityPrefix = city || weather.city;
+  console.info("[OUTFIT_SOURCE]", {
+    source: "weather-rules",
+    sceneKey: key,
+    city: cityPrefix,
+    tempC: weather.tempC,
+    available: weather.available,
+  });
   return {
     headline: cityPrefix ? `${cityPrefix} · ${block.headline}` : block.headline,
     bullets: block.bullets,

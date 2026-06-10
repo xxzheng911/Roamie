@@ -220,7 +220,7 @@ function MapView() {
     (loc: Awaited<ReturnType<typeof requestDeviceLocation>>) => {
       setUserLocation({ lat: loc.lat, lng: loc.lng });
       setMapCenter({ lat: loc.lat, lng: loc.lng });
-      setHasDeviceLocation(!loc.usedFallback);
+      setHasDeviceLocation(true);
       setLocationHint(loc.usedFallback ? t("map.locationFallbackHint") : null);
       setLocationLabel(t("common.nearby"));
       setGeoReady(true);
@@ -261,6 +261,10 @@ function MapView() {
       if (loc.usedFallback) return;
       setHasDeviceLocation(true);
       setLocationHint(null);
+      console.info("[Roamie Map] GPS watch update", {
+        lat: loc.lat,
+        lng: loc.lng,
+      });
       const next = { lat: loc.lat, lng: loc.lng };
       setUserLocation(next);
       setMapCenter((prev) => {

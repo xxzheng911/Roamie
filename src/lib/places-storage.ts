@@ -6,7 +6,12 @@ const GUEST_KEY = "roamie:places";
 
 export const SAVED_PLACES_CHANGED_EVENT = "roamie:saved-places-changed";
 
+function invalidateListPlacesCache(): void {
+  listPlacesCache = null;
+}
+
 function emitSavedPlacesChanged(): void {
+  invalidateListPlacesCache();
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event(SAVED_PLACES_CHANGED_EVENT));
 }
@@ -62,6 +67,10 @@ function mergePlacesByIdOrName(...groups: SavedPlace[][]): SavedPlace[] {
   return [...map.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
+const LIST_PLACES_CACHE_TTL_MS = 30_000;
+let listPlacesInflight: Promise<SavedPlace[]> | null = null;
+let listPlacesCache: { at: number; data: SavedPlace[] } | null = null;
+
 async function resolveStableUserId(): Promise<string | null> {
   const fromSession = await getAuthenticatedUserId();
   if (fromSession) return fromSession;
@@ -74,7 +83,7 @@ async function resolveStableUserId(): Promise<string | null> {
   }
 }
 
-export async function listPlaces(): Promise<SavedPlace[]> {
+async function listPlacesInternal(): Promise<SavedPlace[]> {
   const userId = await resolveStableUserId();
   if (userId) {
     const { data, error } = await supabase
@@ -98,6 +107,25 @@ export async function listPlaces(): Promise<SavedPlace[]> {
   const local = readLocalCache(null);
   console.info("[SAVED_PLACES] loaded count=", local.length);
   return local;
+}
+
+export async function listPlaces(): Promise<SavedPlace[]> {
+  const now = Date.now();
+  if (listPlacesCache && now - listPlacesCache.at < LIST_PLACES_CACHE_TTL_MS) {
+    return listPlacesCache.data;
+  }
+  if (listPlacesInflight) return listPlacesInflight;
+
+  listPlacesInflight = listPlacesInternal()
+    .then((data) => {
+      listPlacesCache = { at: Date.now(), data };
+      return data;
+    })
+    .finally(() => {
+      listPlacesInflight = null;
+    });
+
+  return listPlacesInflight;
 }
 
 export async function savePlace(input: NewPlace): Promise<SavedPlace> {

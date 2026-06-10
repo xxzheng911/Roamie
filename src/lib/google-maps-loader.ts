@@ -3,6 +3,7 @@ import {
   getGoogleMapsBrowserKey,
   getGoogleMapsBrowserKeyError,
 } from "@/lib/google-maps-client";
+import { logMapsOnce } from "@/lib/google-maps-init-log";
 
 const LOG = "[Roamie Maps]";
 
@@ -21,7 +22,7 @@ function waitForImportLibrary(timeoutMs: number): Promise<void> {
     const start = Date.now();
     const tick = () => {
       if (window.google?.maps?.importLibrary) {
-        console.info(LOG, "window.google.maps.importLibrary 已就緒");
+        logMapsOnce("import-library-ready", "window.google.maps.importLibrary 已就緒");
         resolve();
         return;
       }
@@ -49,20 +50,20 @@ function injectMapsScript(): Promise<void> {
   const existing = document.querySelector<HTMLScriptElement>('script[data-roamie-maps="1"]');
 
   if (existing) {
-    console.info(LOG, "重用既有 script tag");
+    logMapsOnce("script-reuse", "重用既有 script tag");
     if (window.google?.maps?.importLibrary) return Promise.resolve();
     return waitForImportLibrary(20_000);
   }
 
   return new Promise((resolve, reject) => {
-    console.info(LOG, "注入 script", { src: src.replace(key, "***") });
+    logMapsOnce("script-inject", "注入 script", { src: src.replace(key, "***") });
     const s = document.createElement("script");
     s.dataset.roamieMaps = "1";
     s.src = src;
     s.async = true;
     s.defer = true;
     s.onload = () => {
-      console.info(LOG, "script onload", {
+      logMapsOnce("script-onload", "script onload", {
         hasGoogle: !!window.google,
         hasMaps: !!window.google?.maps,
       });
@@ -92,10 +93,10 @@ export async function loadGoogleMapsApi(): Promise<GoogleMapsApi> {
   }
 
   if (window.google?.maps?.importLibrary) {
-    console.info(LOG, "API 已載入，略過 inject");
+    logMapsOnce("api-cached", "API 已載入，略過 inject");
     try {
       await window.google.maps.importLibrary("maps");
-      console.info(LOG, "importLibrary(maps) ok (cached)");
+      logMapsOnce("import-library-maps-cached", "importLibrary(maps) ok (cached)");
       return window.google.maps;
     } catch (e) {
       console.warn(LOG, "importLibrary 失敗，重新載入", e);
@@ -110,7 +111,7 @@ export async function loadGoogleMapsApi(): Promise<GoogleMapsApi> {
         throw new Error("script 載入後仍找不到 google.maps.importLibrary");
       }
       const mapsLib = await window.google.maps.importLibrary("maps");
-      console.info(LOG, "importLibrary(maps) 完成", {
+      logMapsOnce("import-library-maps-done", "importLibrary(maps) 完成", {
         Map: !!(mapsLib as { Map?: unknown }).Map,
         mapsVersion: window.google?.maps?.version,
       });
