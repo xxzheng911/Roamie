@@ -1,8 +1,13 @@
 import type { SearchPlacesInput } from "@/lib/explore-category-search";
-import type { PlaceResult } from "@/lib/place-result";
+import { normalizedLocationKey } from "@/lib/effective-location";
+import {
+  normalizePlacesSearchResult,
+  type PlacesSearchResult,
+} from "@/lib/places-search-normalize";
+import { logPlacesApiSkipDuplicate } from "@/lib/places-diagnostics";
 import { searchRadiusMeters } from "@/lib/search-radius";
 
-export type PlacesSearchResult = { places: PlaceResult[]; error: string | null };
+export type { PlacesSearchResult };
 
 const PLACES_SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
 const PLACES_SEARCH_FAILED_TTL_MS = 5 * 60 * 1000;
@@ -14,12 +19,14 @@ const inFlightMap = new Map<string, Promise<PlacesSearchResult>>();
 const failedKeyUntil = new Map<string, number>();
 const clientFallbackAttempted = new Set<string>();
 
+/** 同一 Places 請求 dedupe key：3 位小數座標 + radius + mode + query + includedTypes + locale */
 export function buildPlacesSearchKey(data: SearchPlacesInput): string {
-  const rounded = `${data.lat.toFixed(3)}:${data.lng.toFixed(3)}`;
+  const locationKey = normalizedLocationKey(data.lat, data.lng);
   const radius = data.radius ?? searchRadiusMeters();
-  const types = data.includedTypes?.join(",") ?? "";
-  const groups = data.nearbyGroups?.map((g) => g.join("|")).join(";") ?? "";
-  return `${rounded}:${radius}:${data.mode}:${data.query}:${types}:${groups}:${data.locale ?? ""}`;
+  const types = [...(data.includedTypes ?? [])].sort().join(",");
+  const query = (data.query ?? "").trim();
+  const locale = data.locale ?? "";
+  return `${locationKey}:${radius}:${data.mode}:${query}:${types}:${locale}`;
 }
 
 function readCached(key: string, now = Date.now()): PlacesSearchResult | null {
@@ -57,31 +64,32 @@ export function getPlacesSearchCachedOrRun(
 
   if (isFailedKey(key, now)) {
     const cached = readCached(key, now);
-    console.info("[PLACES_SEARCH_SKIP_FAILED_TTL]", { key });
+    logPlacesApiSkipDuplicate("failed_ttl", { key, cached: Boolean(cached) });
     return Promise.resolve(cached ?? { places: [], error: "places_search_cached_failure" });
   }
 
   const cached = readCached(key, now);
   if (cached) {
-    console.info("[PLACES_SEARCH_SKIP_CACHE]", { key });
+    logPlacesApiSkipDuplicate("cache", { key, count: cached.places.length });
     return Promise.resolve(cached);
   }
 
   const inflight = inFlightMap.get(key);
   if (inflight) {
-    console.info("[PLACES_SEARCH_SKIP_IN_FLIGHT]", { key });
+    logPlacesApiSkipDuplicate("in_flight", { key });
     return inflight;
   }
 
   const promise = runner()
     .then((result) => {
+      const normalized = normalizePlacesSearchResult(result);
       const ttl =
-        result.places.length > 0 ? PLACES_SEARCH_CACHE_TTL_MS : PLACES_SEARCH_FAILED_TTL_MS;
-      writeCached(key, result, ttl);
-      if (result.places.length === 0) {
+        normalized.places.length > 0 ? PLACES_SEARCH_CACHE_TTL_MS : PLACES_SEARCH_FAILED_TTL_MS;
+      writeCached(key, normalized, ttl);
+      if (normalized.places.length === 0) {
         markPlacesSearchFailed(key);
       }
-      return result;
+      return normalized;
     })
     .catch((e) => {
       markPlacesSearchFailed(key);

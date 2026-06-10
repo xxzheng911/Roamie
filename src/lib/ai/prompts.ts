@@ -110,6 +110,22 @@ ${ctx.lateNightMode && /深夜散步|夜晚|深夜/.test(ctx.selectedMood ?? ctx
 - itinerary：[]`;
   }
 
+  if (phase === "expand" && ctx.fromPlanAi) {
+    const exclude = ctx.selectedPlaceNames?.length
+      ? ctx.selectedPlaceNames.join("、")
+      : "";
+    return `模式：AI 行程規劃模式（expand + fromPlanAi）
+- 必須讀取【initialChatContext】中的出發地、目的地、天數、交通、旅遊風格、心情、天氣
+- **禁止**輸出完整多日 itinerary；只推薦 3 個左右具體地點（recommendations 含 name/address/lat/lng）
+- 依【旅遊風格推薦邏輯】與心情、交通方式、天數推薦；保持類型多樣，勿連續推同類型
+- summary：簡短、像旅伴對話（例：「依照你選的高雄一日遊、美食探索，我找到幾個不錯的地方」）；勿長篇大論
+- 勿推薦與目的地不同城市的地點；勿重複【selectedPlaceNames】${exclude ? `：${exclude}` : ""}
+- 使用者可說換一批、想要更多咖啡廳、看夜景、離捷運近等—下一輪依最新訊息調整
+- ${REC_ITEM_RULES}
+- ${PLACES_FIRST_CHAT}
+- itinerary：[]`;
+  }
+
   if (phase === "expand" && ctx.fromPlanForm) {
     const exclude = ctx.selectedPlaceNames?.length
       ? ctx.selectedPlaceNames.join("、")

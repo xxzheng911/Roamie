@@ -21,6 +21,8 @@ import {
   tripLocationToPlaceRef,
 } from "@/lib/trip/trip-place-ref";
 import { preparePlanTripSession } from "@/lib/plan-trip-handoff";
+import { savePlanFormDraft, loadPlanFormDraft } from "@/lib/plan-form-draft-storage";
+import { normalizePlanTravelStyles } from "@/lib/plan-travel-style";
 import { saveChatSession, clearChatSession } from "@/lib/chat-session";
 import { clearChatHistory } from "@/lib/chat-history";
 import { RoamieDatePicker } from "@/components/pickers";
@@ -34,7 +36,6 @@ import {
 } from "@/lib/preferences-storage";
 import {
   loadItinerarySource,
-  placesToInterestsText,
   type ItinerarySourceContext,
 } from "@/lib/itinerary-source";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
@@ -73,7 +74,6 @@ function PlanPage() {
   const [budgetMode, setBudgetMode] = useState<BudgetMode>("standard");
   const [styles, setStyles] = useState<string[]>([]);
   const [mood, setMood] = useState<string>(search.mood ?? "");
-  const [interests, setInterests] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [origin, setOrigin] = useState<TripLocation | null>(null);
@@ -117,6 +117,21 @@ function PlanPage() {
   };
 
   useEffect(() => {
+    const draft = loadPlanFormDraft();
+    if (!draft) return;
+    if (draft.destination) setDestination(draft.destination);
+    if (draft.origin) setOrigin(draft.origin);
+    setBudgetMode(draft.budgetMode);
+    if (draft.styles.length) setStyles(draft.styles);
+    if (draft.mood) setMood(draft.mood);
+    if (draft.startDate) setStartDate(draft.startDate);
+    if (draft.endDate) setEndDate(draft.endDate);
+    setTravelers(draft.travelers);
+    setTravelersCustom(draft.travelersCustom);
+    if (draft.transport) setTransport(draft.transport);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
@@ -125,7 +140,6 @@ function PlanPage() {
         setSourceCtx(ctx);
 
         if (ctx?.selectedPlaces?.length) {
-          setInterests((prev) => prev || placesToInterestsText(ctx.selectedPlaces));
           if (ctx.moodTag) setMood((m) => m || ctx.moodTag!);
         }
         if (search.mood) setMood((m) => m || search.mood!);
@@ -176,8 +190,25 @@ function PlanPage() {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const saveCurrentDraft = (
+    dest: TripLocation | null,
+    start: TripLocation | null,
+  ) => {
+    savePlanFormDraft({
+      destination: dest,
+      origin: start,
+      budgetMode,
+      styles,
+      mood,
+      startDate,
+      endDate,
+      travelers,
+      travelersCustom,
+      transport,
+    });
+  };
+
+  const startPlanChat = async (planAiMode: boolean) => {
     const [resolvedDestination, resolvedOrigin] = await Promise.all([
       ensureLocationHasCoords(destination, "destination"),
       ensureLocationHasCoords(origin, "start"),
@@ -194,27 +225,23 @@ function PlanPage() {
       return;
     }
     const tripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : 2;
+    const dest = resolvedDestination ?? destination;
+    const start = resolvedOrigin ?? origin;
 
     setLoading(true);
     try {
       const [bundle, prefs] = await Promise.all([
-        buildContextBundleForTrip(destination, fetchWeather),
+        buildContextBundleForTrip(dest, fetchWeather),
         getPreferences(),
       ]);
       const effectiveBudgetMode = budgetMode;
       await savePreferences({ ...prefs, budgetMode: effectiveBudgetMode });
 
       const mergedPlaces = selectedPlaces.length > 0 ? selectedPlaces : [];
+      const normalizedStyles = normalizePlanTravelStyles(styles, styleOptions);
 
-      const interestsText = [
-        interests.trim(),
-        mergedPlaces.length ? `\n【Roamie 推薦地點】\n${placesToInterestsText(mergedPlaces)}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
-
-      const destRef = tripLocationToPlaceRef(destination!);
-      const startRef = origin ? tripLocationToPlaceRef(origin) : null;
+      const destRef = tripLocationToPlaceRef(dest!);
+      const startRef = start ? tripLocationToPlaceRef(start) : null;
       logTripPlace("destination", "saved", destRef);
       if (startRef) logTripPlace("start", "saved", startRef);
       console.info("[Roamie AI] plan submit → chat", {
@@ -224,19 +251,21 @@ function PlanPage() {
         travelers,
         days: tripDays,
         places: mergedPlaces.length,
-        from: search.from,
+        planAiMode,
       });
+
+      saveCurrentDraft(dest, start);
 
       clearChatSession();
       await clearChatHistory();
       const session = preparePlanTripSession(
         {
-          destination,
-          origin,
+          destination: dest!,
+          origin: start,
           days: tripDays,
           mood,
           styles,
-          interests: interestsText,
+          normalizedStyles,
           startDate,
           endDate,
           departureTime: "",
@@ -247,9 +276,13 @@ function PlanPage() {
         },
         bundle,
         prefs,
+        { planAiMode, localeStyleOptions: styleOptions },
       );
       saveChatSession(session);
-      navigate({ to: "/chat", search: { from: "plan" } });
+      navigate({
+        to: "/chat",
+        search: { from: planAiMode ? "plan-ai" : "plan" },
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : t("plan.submitFailed");
       console.error("[Roamie AI] plan failed", err);
@@ -257,6 +290,15 @@ function PlanPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await startPlanChat(false);
+  };
+
+  const handleAiAssist = async () => {
+    await startPlanChat(true);
   };
 
   return (
@@ -478,18 +520,6 @@ function PlanPage() {
             </div>
           </section>
 
-          <section>
-            <label className="text-sm font-medium">{t("plan.notes")}</label>
-            <textarea
-              value={interests}
-              onChange={(e) => setInterests(e.target.value)}
-              rows={4}
-              placeholder={t("plan.notesPlaceholder")}
-              className="mt-2 w-full resize-none rounded-2xl border border-border bg-card px-4 py-3 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30"
-              disabled={loading}
-            />
-          </section>
-
           <button
             type="submit"
             disabled={loading || sourceLoading}
@@ -513,6 +543,15 @@ function PlanPage() {
                 <span className="leading-none">{t("plan.submit")}</span>
               </span>
             )}
+          </button>
+
+          <button
+            type="button"
+            disabled={loading || sourceLoading}
+            onClick={() => void handleAiAssist()}
+            className="flex w-full items-center justify-center rounded-full border border-border bg-card py-4 text-[15px] font-medium text-foreground transition disabled:opacity-60"
+          >
+            {t("plan.aiAssist")}
           </button>
         </form>
       </div>

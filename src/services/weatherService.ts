@@ -4,6 +4,12 @@
  */
 import type { Locale } from "@/lib/i18n/types";
 import { logOpenWeatherKeyLoadedOnce } from "@/lib/openweather-key-resolve";
+import {
+  logOpenWeatherRequest,
+  logOpenWeatherResponse,
+  logWeatherFetch,
+} from "@/lib/weather-diagnostics";
+import { fetchOpenWeatherCurrentClient } from "@/lib/weather/openweather-client";
 import type { DailyForecast, WeatherForecastResult, WeatherSummary } from "@/lib/weather-types";
 import {
   WEATHER_CACHE_TTL_MS,
@@ -103,19 +109,79 @@ async function fetchCapacitorCurrentWeather(
   locale?: Locale,
   cityHint = "目前位置",
 ): Promise<{ weather: WeatherSummary | null; error: string | null }> {
+  logWeatherFetch("capacitor_start", {
+    lat: coords.lat,
+    lng: coords.lng,
+    locale: locale ?? null,
+    cityHint,
+    hasBoundServerFn: Boolean(boundFetchWeather),
+  });
+
   if (boundFetchWeather) {
+    logOpenWeatherRequest({
+      transport: "serverFn",
+      lat: coords.lat,
+      lng: coords.lng,
+      locale: locale ?? null,
+    });
     try {
       const server = await boundFetchWeather({
         data: { lat: coords.lat, lng: coords.lng, locale },
       });
+      logOpenWeatherResponse({
+        transport: "serverFn",
+        ok: true,
+        lat: coords.lat,
+        lng: coords.lng,
+        available: server.weather?.available ?? false,
+        source: server.weather?.source ?? null,
+        city: server.weather?.city ?? null,
+        tempC: server.weather?.tempC ?? null,
+        error: server.error,
+      });
       if (server.weather?.available) {
+        logWeatherFetch("capacitor_serverFn_ok", {
+          lat: coords.lat,
+          lng: coords.lng,
+          source: server.weather.source,
+        });
         return server;
       }
+      logWeatherFetch("capacitor_serverFn_unavailable", {
+        lat: coords.lat,
+        lng: coords.lng,
+        error: server.error,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.warn("[WEATHER_FETCH] capacitor serverFn failed, using open-meteo", msg);
+      logOpenWeatherResponse({
+        transport: "serverFn",
+        ok: false,
+        lat: coords.lat,
+        lng: coords.lng,
+        error: msg,
+      });
+      logWeatherFetch("capacitor_serverFn_failed", { lat: coords.lat, lng: coords.lng, error: msg });
     }
+  } else {
+    logWeatherFetch("capacitor_serverFn_not_bound", { lat: coords.lat, lng: coords.lng });
   }
+
+  const clientOw = await fetchOpenWeatherCurrentClient(coords.lat, coords.lng, cityHint);
+  if (clientOw.weather?.available) {
+    logWeatherFetch("capacitor_client_openweather_ok", {
+      lat: coords.lat,
+      lng: coords.lng,
+      source: clientOw.weather.source,
+    });
+    return clientOw;
+  }
+
+  logWeatherFetch("capacitor_open_meteo_fallback", {
+    lat: coords.lat,
+    lng: coords.lng,
+    openWeatherError: clientOw.error,
+  });
 
   const meteo = await fetchOpenMeteoCurrentWeather(coords.lat, coords.lng, cityHint);
   logWeatherResponse("open-meteo-client", {
@@ -137,29 +203,30 @@ export async function getWeatherByLatLng(
   locale?: Locale,
 ): Promise<{ weather: WeatherSummary; error: string | null }> {
   console.info("[WEATHER_SERVICE_VERSION] v-runtime-fallback-001");
-  console.info("[WEATHER_FETCH] start");
-  const key = weatherCacheKey("current", coords.lat, coords.lng, locale);
-  console.info("[WEATHER_FETCH] latLng=", `${coords.lat},${coords.lng}`);
-  console.info("[WEATHER_REQUEST]", {
+  logWeatherFetch("start", {
     lat: coords.lat,
     lng: coords.lng,
     locale: locale ?? null,
-    platform: detectPlatform().kind,
-    isCapacitor: detectPlatform().isCapacitor,
+    cacheKind: "current",
   });
+  const key = weatherCacheKey("current", coords.lat, coords.lng, locale);
 
   const cached = getWeatherCached<{ weather: WeatherSummary | null; error: string | null }>(key);
   if (cached) {
-    console.info("[WEATHER_FETCH] openWeather status=", "cache-hit");
-    console.info(
-      "[WEATHER_FETCH] final result=",
-      JSON.stringify(cached.weather ?? { available: false, source: "cached-unavailable" }),
-    );
+    logWeatherFetch("cache_hit", {
+      lat: coords.lat,
+      lng: coords.lng,
+      available: cached.weather?.available ?? false,
+      source: cached.weather?.source ?? "cached-unavailable",
+    });
     if (cached.weather?.available) {
       return { weather: cached.weather, error: cached.error };
     }
     if (detectPlatform().isCapacitor && (!cached.weather || !cached.weather.available)) {
-      console.info("[WEATHER_FETCH] capacitor retry open-meteo after cached-unavailable");
+      logWeatherFetch("capacitor_retry_after_cached_unavailable", {
+        lat: coords.lat,
+        lng: coords.lng,
+      });
       try {
         const meteo = await fetchCapacitorCurrentWeather(
           coords,
@@ -224,8 +291,7 @@ export async function getWeatherByLatLng(
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[WEATHER_FETCH] openWeather status=", "client-error");
-    console.error("[WEATHER_FETCH] final result=", msg);
+    logWeatherFetch("client_error", { lat: coords.lat, lng: coords.lng, error: msg });
     if (detectPlatform().isCapacitor) {
       const meteo = await fetchCapacitorCurrentWeather(coords, locale);
       if (meteo.weather?.available) {
@@ -244,7 +310,7 @@ export async function getWeatherByLatLng(
     result.error != null;
 
   if (needsClientFallback && detectPlatform().isCapacitor) {
-    console.info("[WEATHER_FETCH] client open-meteo fallback try");
+    logWeatherFetch("client_open_meteo_fallback_try", { lat: coords.lat, lng: coords.lng });
     try {
       const meteo = await fetchOpenMeteoCurrentWeather(
         coords.lat,
@@ -283,8 +349,7 @@ export async function getWeatherByLatLng(
   }
 
   if (!result.weather) {
-    console.info("[WEATHER_FETCH] openWeather status=", "no-response");
-    console.info("[WEATHER_FETCH] final result=", "unavailable");
+    logWeatherFetch("no_response", { lat: coords.lat, lng: coords.lng });
     const unavailable = {
       city: "目前位置",
       tempC: null,
@@ -331,7 +396,15 @@ export async function getWeatherByLatLng(
     available: result.weather.available,
     error: result.error,
   });
-  console.info("[WEATHER_FETCH] final result=", JSON.stringify(result.weather));
+  logWeatherFetch("final_result", {
+    lat: coords.lat,
+    lng: coords.lng,
+    available: result.weather.available,
+    source: result.weather.source,
+    city: result.weather.city,
+    tempC: result.weather.tempC,
+    error: result.error,
+  });
   return { weather: result.weather, error: result.error };
 }
 

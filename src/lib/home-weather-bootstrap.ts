@@ -1,13 +1,10 @@
 import type { Locale } from "@/lib/i18n/types";
-import { KAOHSIUNG_COORDS } from "@/lib/api/constants";
 import {
-  requestDeviceLocation,
-  shouldDeferUntilGpsFix,
-  shouldUseRememberedLocationFallback,
-  subscribeDeviceLocation,
-  waitForDeviceGpsFix,
-  type LocationPermissionState,
-} from "@/lib/device-location";
+  ensureEffectiveLocationBootstrap,
+  getEffectiveLocationSnapshot,
+  subscribeEffectiveLocation,
+  type EffectiveLocationSnapshot,
+} from "@/lib/effective-location";
 import {
   getWeatherFetchInFlight,
   markWeatherFetchStarted,
@@ -18,13 +15,21 @@ import {
 import {
   readHomeSessionUserLocation,
   readHomeSessionWeather,
-  writeHomeSessionUserLocation,
   writeHomeSessionWeather,
 } from "@/lib/home-session-cache";
-import { rememberLastSearchLocation, readLastSearchLocation } from "@/lib/last-search-location";
-import { getCurrentWeather } from "@/services/weatherService";
+import { rememberLastSearchLocation } from "@/lib/last-search-location";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { HomeSessionUserLocation } from "@/lib/home-session-cache";
+import type { LocationPermissionState } from "@/lib/device-location";
+
+/** 避免與主 bundle 循環依賴（Capacitor 啟動時會拿到 undefined export） */
+function logHomeWeather(event: string, extra?: Record<string, unknown>): void {
+  console.info("[HOME_WEATHER]", event, extra ?? {});
+}
+
+function logWeatherFetch(event: string, extra?: Record<string, unknown>): void {
+  console.info("[WEATHER_FETCH]", event, extra ?? {});
+}
 
 export type HomeWeatherBootstrapState = {
   weather: WeatherSummary | null;
@@ -44,7 +49,7 @@ let bootstrapped = false;
 let locale: Locale = "zh-TW";
 let loadId = 0;
 let hasDisplayedWeather = Boolean(readHomeSessionWeather()?.available);
-let stopLocationWatch: (() => void) | null = null;
+let lastAppliedCoordKey = "";
 
 let state: HomeWeatherBootstrapState = {
   weather: readHomeSessionWeather(),
@@ -98,53 +103,56 @@ export function getHomeWeatherBootstrapState(): HomeWeatherBootstrapState {
   return state;
 }
 
-function applyLocation(loc: Awaited<ReturnType<typeof requestDeviceLocation>>): void {
-  console.info("[HOME_WEATHER] location applied", {
-    lat: loc.lat,
-    lng: loc.lng,
-    city: loc.city || null,
-    source: loc.source,
-    usedFallback: loc.usedFallback,
-    permission: loc.permission,
-  });
-  const next: HomeSessionUserLocation = {
-    lat: loc.lat,
-    lng: loc.lng,
-    city: loc.city || "",
-    source: loc.source,
-  };
-  writeHomeSessionUserLocation(next);
-  patchState({
-    userLocation: next,
-    usedFallbackLocation: loc.usedFallback,
-    locationPermission: loc.permission,
-  });
+/** 與 homeNearbyLoadKey 相同精度，避免 GPS 微調反覆 patch state */
+function coordBucketKey(lat: number, lng: number): string {
+  return `${lat.toFixed(3)}:${lng.toFixed(3)}`;
 }
 
-function resolveWeatherLocationFallback(
-  loc: Awaited<ReturnType<typeof requestDeviceLocation>>,
-) {
-  if (!loc.usedFallback) return loc;
-  const mapCenter = readLastSearchLocation();
-  if (mapCenter) {
-    return {
-      ...loc,
-      lat: mapCenter.lat,
-      lng: mapCenter.lng,
-      city: mapCenter.city ?? loc.city,
-      usedFallback: true,
-      source: "fallback" as const,
-    };
-  }
-  if (loc.city?.trim()) return loc;
-  return {
-    ...loc,
-    lat: KAOHSIUNG_COORDS.lat,
-    lng: KAOHSIUNG_COORDS.lng,
-    city: "高雄市",
-    usedFallback: true,
-    source: "fallback" as const,
+function coordsEqual(
+  a: { lat: number; lng: number } | null | undefined,
+  b: { lat: number; lng: number },
+): boolean {
+  if (a == null) return false;
+  return coordBucketKey(a.lat, a.lng) === coordBucketKey(b.lat, b.lng);
+}
+
+/** @returns true when state was patched (coords changed) */
+function applyEffectiveLocation(eff: EffectiveLocationSnapshot): boolean {
+  const prev = state.userLocation;
+  const next: HomeSessionUserLocation = {
+    lat: eff.lat,
+    lng: eff.lng,
+    city: eff.city || "",
+    source: eff.source === "gps" ? "capacitor" : "fallback",
   };
+  if (coordsEqual(prev, next)) {
+    return false;
+  }
+
+  if (import.meta.env.DEV) {
+    console.info("[LOCATION_UPDATE]", {
+      trigger: "effective_location",
+      lat: eff.lat,
+      lng: eff.lng,
+      locationKey: eff.locationKey,
+      source: eff.source,
+    });
+    logHomeWeather("location_applied", {
+      lat: eff.lat,
+      lng: eff.lng,
+      city: eff.city || null,
+      source: eff.source,
+      locationKey: eff.locationKey,
+    });
+  }
+
+  lastAppliedCoordKey = eff.locationKey;
+  patchState({
+    userLocation: next,
+    usedFallbackLocation: eff.isFallback,
+    locationPermission: eff.permission,
+  });
+  return true;
 }
 
 async function fetchWeatherForCoords(
@@ -162,13 +170,15 @@ async function fetchWeatherForCoords(
   const force = options?.force === true;
 
   if (!force && shouldSkipWeatherFetch(fetchKey)) {
-    console.info("[HOME_WEATHER] WEATHER_FETCH_SKIP_TTL", { key: fetchKey });
+    logHomeWeather("fetch_skip_ttl", { key: fetchKey, lat, lng });
+    logWeatherFetch("skip_ttl", { key: fetchKey, trigger: "location_effect", lat, lng });
     return;
   }
 
   const inFlight = getWeatherFetchInFlight(fetchKey);
   if (!force && inFlight) {
-    console.info("[HOME_WEATHER] WEATHER_FETCH_SKIP_IN_FLIGHT", { key: fetchKey });
+    logHomeWeather("fetch_skip_in_flight", { key: fetchKey, lat, lng });
+    logWeatherFetch("skip_in_flight", { key: fetchKey, trigger: "location_effect", lat, lng });
     await inFlight;
     return;
   }
@@ -182,11 +192,21 @@ async function fetchWeatherForCoords(
   markWeatherFetchStarted(fetchKey);
 
   const runFetch = async () => {
-    console.info("[HOME_WEATHER] requesting weather");
-    console.info("[HOME_WEATHER] location=", `${lat},${lng}|city=${locMeta.city || "目前位置"}`);
-    console.info("[WEATHER_FETCH] latLng=", `${lat},${lng}`);
+    logHomeWeather("requesting_weather", {
+      lat,
+      lng,
+      city: locMeta.city || "目前位置",
+      fetchKey,
+      force: force ?? false,
+      locSource: locMeta.source,
+      usedFallback: locMeta.usedFallback,
+    });
+    logWeatherFetch("bootstrap_latLng", { lat, lng, fetchKey, force: force ?? false });
 
     try {
+      const { getCurrentWeather } = await import(
+        /* @vite-ignore */ "@/services/weatherService"
+      );
       const result = await Promise.race([
         getCurrentWeather({ lat, lng }, locale),
         new Promise<never>((_, reject) => {
@@ -205,11 +225,22 @@ async function fetchWeatherForCoords(
       if (parsed.available) {
         rememberLastSearchLocation({ lat, lng, city: parsed.city });
       }
-      console.info("[HOME_WEATHER] result=", JSON.stringify(parsed));
-      console.info(
-        "[WEATHER_FETCH] response=",
-        `${parsed.city}|${parsed.condition}|${parsed.tempC ?? "na"}|available=${parsed.available}`,
-      );
+      logHomeWeather("result", {
+        city: parsed.city,
+        condition: parsed.condition,
+        tempC: parsed.tempC,
+        available: parsed.available,
+        source: parsed.source,
+      });
+      logWeatherFetch("bootstrap_response", {
+        lat,
+        lng,
+        city: parsed.city,
+        condition: parsed.condition,
+        tempC: parsed.tempC,
+        available: parsed.available,
+        source: parsed.source,
+      });
       patchState({
         weather: parsed,
         status: "ready",
@@ -218,7 +249,8 @@ async function fetchWeatherForCoords(
     } catch (e) {
       if (currentLoadId !== loadId) return;
       const msg = e instanceof Error ? e.message : String(e);
-      console.error("[HOME_WEATHER] error=", msg);
+      logHomeWeather("error", { lat, lng, message: msg });
+      logWeatherFetch("bootstrap_error", { lat, lng, error: msg });
       const fallback = unavailableWeatherSummary(locMeta.city);
       hasDisplayedWeather = true;
       writeHomeSessionWeather(fallback);
@@ -234,46 +266,18 @@ async function fetchWeatherForCoords(
 }
 
 async function loadWeather(options?: { force?: boolean; showLoading?: boolean }): Promise<void> {
-  let rawLoc = await requestDeviceLocation();
+  const eff = await ensureEffectiveLocationBootstrap();
+  if (!eff.isReadyForPlaces) return;
 
-  applyLocation(rawLoc);
-  console.info("[HOME_NEARBY] location-ready", {
-    lat: rawLoc.lat,
-    lng: rawLoc.lng,
-    usedFallback: rawLoc.usedFallback,
-    permission: rawLoc.permission,
-    source: rawLoc.source,
-  });
-
-  if (shouldDeferUntilGpsFix(rawLoc)) {
-    console.info("[HOME_WEATHER] waiting for GPS fix before weather fetch");
-    const gpsFix = await waitForDeviceGpsFix(20_000);
-    if (gpsFix) {
-      rawLoc = gpsFix;
-      applyLocation(rawLoc);
-      console.info("[HOME_WEATHER] using GPS fix", { lat: gpsFix.lat, lng: gpsFix.lng });
-    } else {
-      console.info("[HOME_WEATHER] GPS wait timeout — proceeding with available coordinates", {
-        lat: rawLoc.lat,
-        lng: rawLoc.lng,
-        usedFallback: rawLoc.usedFallback,
-      });
-    }
-  }
-
-  const loc = shouldUseRememberedLocationFallback(rawLoc)
-    ? resolveWeatherLocationFallback(rawLoc)
-    : rawLoc;
-
-  applyLocation(loc);
+  applyEffectiveLocation(eff);
   await fetchWeatherForCoords(
-    loc.lat,
-    loc.lng,
+    eff.lat,
+    eff.lng,
     {
-      city: loc.city,
-      usedFallback: loc.usedFallback,
-      source: loc.source,
-      permission: loc.permission,
+      city: eff.city,
+      usedFallback: eff.isFallback,
+      source: eff.source === "gps" ? "capacitor" : "fallback",
+      permission: eff.permission,
     },
     options,
   );
@@ -282,35 +286,42 @@ async function loadWeather(options?: { force?: boolean; showLoading?: boolean })
 /** App shell / Home 共用；只初始化一次 */
 export function ensureHomeWeatherBootstrap(nextLocale: Locale, source: string): void {
   locale = nextLocale;
-  console.info("[HOME_WEATHER] ensure", { source, bootstrapped });
+  logHomeWeather("ensure", { source, bootstrapped });
 
   if (bootstrapped) return;
   bootstrapped = true;
 
   console.info("[WEATHER_SERVICE_VERSION] v-runtime-fallback-001");
-  console.info("[HOME_WEATHER] mounted", { source });
-  console.info("[WEATHER_FETCH] start", { source });
+  logHomeWeather("mounted", { source });
+  logWeatherFetch("bootstrap_start", { source });
 
   const hasCachedWeather = Boolean(readHomeSessionWeather()?.available);
   void loadWeather({ showLoading: !hasCachedWeather });
+}
 
-  if (!stopLocationWatch) {
-    stopLocationWatch = subscribeDeviceLocation((loc) => {
-      if (loc.usedFallback) return;
-      applyLocation(loc);
-      void fetchWeatherForCoords(
-        loc.lat,
-        loc.lng,
-        {
-          city: loc.city,
-          usedFallback: loc.usedFallback,
-          source: loc.source,
-          permission: loc.permission,
-        },
-        { showLoading: false },
-      );
-    });
-  }
+/**
+ * 首頁天氣連動：訂閱 effective location bucket 變更（不重複 GPS watch）。
+ */
+export function subscribeHomeWeatherLocationWatch(): () => void {
+  let lastKey = getEffectiveLocationSnapshot()?.locationKey ?? "";
+  return subscribeEffectiveLocation(() => {
+    const eff = getEffectiveLocationSnapshot();
+    if (!eff?.isReadyForPlaces) return;
+    if (eff.locationKey === lastKey) return;
+    lastKey = eff.locationKey;
+    if (!applyEffectiveLocation(eff)) return;
+    void fetchWeatherForCoords(
+      eff.lat,
+      eff.lng,
+      {
+        city: eff.city,
+        usedFallback: eff.isFallback,
+        source: eff.source === "gps" ? "capacitor" : "fallback",
+        permission: eff.permission,
+      },
+      { showLoading: false },
+    );
+  });
 }
 
 export function reloadHomeWeatherBootstrap(nextLocale: Locale): void {

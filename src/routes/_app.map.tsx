@@ -66,7 +66,11 @@ import {
   type ExploreCategory,
 } from "@/lib/places-search-config";
 import { TAIPEI_CENTER } from "@/lib/geo";
-import { requestDeviceLocation, watchDeviceLocation } from "@/lib/device-location";
+import { requestDeviceLocation } from "@/lib/device-location";
+import { useEffectiveLocation } from "@/hooks/use-effective-location";
+import { normalizedLocationKey } from "@/lib/effective-location";
+import { logMapNearbyReady } from "@/lib/places-diagnostics";
+import { filterHomeNearbyPlaceResults } from "@/lib/home-nearby-places-filter";
 import { resolveUserMarkerAvatarSrc } from "@/lib/map-user-location-marker";
 import { useI18n } from "@/hooks/use-i18n";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
@@ -133,8 +137,10 @@ function sortMapCards(
   cards: MapPlaceCard[],
   origin: { lat: number; lng: number },
   profile: UserProfileForReason | null,
+  categoryId: string,
+  weather: WeatherSummary | null,
 ): MapPlaceCard[] {
-  return sortExplorePlaces(cards, origin, profile);
+  return sortExplorePlaces(cards, origin, profile, weather, categoryId);
 }
 
 function mergePlacesById(base: PlaceResult[], extra: PlaceResult[]): PlaceResult[] {
@@ -161,7 +167,7 @@ function MapView() {
     return () => document.documentElement.classList.remove("map-route-active");
   }, []);
 
-  const lastSearchCenterRef = useRef<{ lat: number; lng: number } | null>(null);
+  const lastSearchLocationKeyRef = useRef<string | null>(null);
   const lastWeatherFetchCenterRef = useRef<{ lat: number; lng: number } | null>(null);
   const searchRequestIdRef = useRef(0);
   const prevQueryRef = useRef("");
@@ -215,66 +221,51 @@ function MapView() {
   const [mapUnavailable, setMapUnavailable] = useState(false);
   const [reasonProfile, setReasonProfile] = useState<UserProfileForReason | null>(null);
   const exploreHandoffRef = useRef<MapExploreHandoff | null>(null);
+  const effectiveLocation = useEffectiveLocation();
 
-  const applyDeviceLocation = useCallback(
-    (loc: Awaited<ReturnType<typeof requestDeviceLocation>>) => {
-      setUserLocation({ lat: loc.lat, lng: loc.lng });
-      setMapCenter({ lat: loc.lat, lng: loc.lng });
-      setHasDeviceLocation(true);
-      setLocationHint(loc.usedFallback ? t("map.locationFallbackHint") : null);
+  const applyEffectiveLocationToMap = useCallback(
+    (lat: number, lng: number, isFallback: boolean) => {
+      const next = { lat, lng };
+      setUserLocation(next);
+      setMapCenter(next);
+      setHasDeviceLocation(!isFallback);
+      setLocationHint(isFallback ? t("map.locationFallbackHint") : null);
       setLocationLabel(t("common.nearby"));
       setGeoReady(true);
-      fetchWeather({ data: { lat: loc.lat, lng: loc.lng } })
+    },
+    [t],
+  );
+
+  useEffect(() => {
+    if (!effectiveLocation?.isReadyForPlaces) return;
+    applyEffectiveLocationToMap(
+      effectiveLocation.lat,
+      effectiveLocation.lng,
+      effectiveLocation.isFallback,
+    );
+    if (lastWeatherFetchCenterRef.current == null) {
+      const next = { lat: effectiveLocation.lat, lng: effectiveLocation.lng };
+      lastWeatherFetchCenterRef.current = next;
+      fetchWeather({ data: next })
         .then((r) => {
           if (r.weather?.city?.trim()) {
             const city = r.weather.city.trim();
             setLocationLabel(city);
-            rememberLastSearchLocation({ lat: loc.lat, lng: loc.lng, city });
+            rememberLastSearchLocation({ ...next, city });
           }
+          setWeather(r.weather);
         })
         .catch(() => {});
-    },
-    [fetchWeather, t],
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const loc = await requestDeviceLocation();
-      if (cancelled) return;
-      console.info("[Roamie Map] device location", {
-        lat: loc.lat,
-        lng: loc.lng,
-        usedFallback: loc.usedFallback,
-        source: loc.source,
-      });
-      applyDeviceLocation(loc);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [applyDeviceLocation]);
-
-  useEffect(() => {
-    const stopWatch = watchDeviceLocation((loc) => {
-      if (loc.usedFallback) return;
-      setHasDeviceLocation(true);
-      setLocationHint(null);
-      console.info("[Roamie Map] GPS watch update", {
-        lat: loc.lat,
-        lng: loc.lng,
-      });
-      const next = { lat: loc.lat, lng: loc.lng };
-      setUserLocation(next);
-      setMapCenter((prev) => {
-        const moved =
-          Math.abs(prev.lat - loc.lat) > 0.00015 || Math.abs(prev.lng - loc.lng) > 0.00015;
-        return moved ? next : prev;
-      });
-    });
-    return stopWatch;
-  }, []);
+    }
+  }, [
+    effectiveLocation?.locationKey,
+    effectiveLocation?.isReadyForPlaces,
+    effectiveLocation?.isFallback,
+    effectiveLocation?.lat,
+    effectiveLocation?.lng,
+    applyEffectiveLocationToMap,
+    fetchWeather,
+  ]);
 
   const handleMapLoadError = useCallback((message: string) => {
     setMapUnavailable(true);
@@ -347,13 +338,14 @@ function MapView() {
     if (!geoReady) return;
 
     const center = { lat: userLocation.lat, lng: userLocation.lng };
+    const locationKey = normalizedLocationKey(center.lat, center.lng);
     const queryDirty = prevQueryRef.current !== query;
     const catDirty = prevCatIdRef.current !== cat.id;
     prevQueryRef.current = query;
     prevCatIdRef.current = cat.id;
 
-    const moved = locationMovedEnough(lastSearchCenterRef.current, center);
-    if (!moved && !queryDirty && !catDirty && lastSearchCenterRef.current) {
+    const moved = lastSearchLocationKeyRef.current !== locationKey;
+    if (!moved && !queryDirty && !catDirty && lastSearchLocationKeyRef.current) {
       return;
     }
 
@@ -361,7 +353,7 @@ function MapView() {
     const debounceMs = pendingImmediateSearchRef.current ? 0 : isFreeText ? 450 : 0;
     pendingImmediateSearchRef.current = false;
     const handle = setTimeout(() => {
-      lastSearchCenterRef.current = { ...center };
+      lastSearchLocationKeyRef.current = locationKey;
       const requestId = ++searchRequestIdRef.current;
       const text = query.trim() || cat.query;
       setLoading(true);
@@ -415,7 +407,7 @@ function MapView() {
 
         if (requestId !== searchRequestIdRef.current) return;
         const applyFilters = (list: PlaceResult[]) =>
-          filterByExploreCategory(filterExplorePlaces(list), filterCat);
+          filterByExploreCategory(filterExplorePlaces(list, { logDrop: false }), filterCat);
 
         let filtered = applyFilters(apiPlaces);
 
@@ -523,6 +515,12 @@ function MapView() {
           }),
         ];
 
+        enriched = filterHomeNearbyPlaceResults(enriched, {
+          categoryId: filterCat.id,
+          caller: `mapSearch:${filterCat.id}`,
+          context: "explore_map",
+        });
+
         if (enriched.length === 0) {
           if (isFreeText) {
             setError(apiError ?? getExploreCategoryEmptyMessage(cat.id, locale));
@@ -541,7 +539,21 @@ function MapView() {
         }
 
         if (requestId !== searchRequestIdRef.current) return;
-        setResults(sortMapCards(enriched, center, reasonProfile));
+        const sorted = sortMapCards(
+          enriched,
+          center,
+          reasonProfile,
+          isFreeText ? "all" : cat.id,
+          weather,
+        );
+        setResults(sorted);
+        logMapNearbyReady({
+          count: sorted.length,
+          locationKey,
+          categoryId: isFreeText ? "search" : cat.id,
+          query: isFreeText ? text : cat.query,
+          fromCache: Boolean(cached),
+        });
         if (sheetMode === "list") {
           setSelectedPlace(null);
           setSelectedPlaceIndex(null);
@@ -596,8 +608,8 @@ function MapView() {
           ? mockMapCards(userLocation, cat)
           : [];
     const filtered = filterByExploreCategory(filterExplorePlaces(base), filterCat);
-    return sortMapCards(filtered, userLocation, reasonProfile);
-  }, [results, cat, loading, query, userLocation, reasonProfile]);
+    return sortMapCards(filtered, userLocation, reasonProfile, filterCat.id, weather);
+  }, [results, cat, loading, query, userLocation, reasonProfile, weather]);
 
   const handleCategorySelect = useCallback(
     (c: ExploreCategory) => {
@@ -896,8 +908,8 @@ function MapView() {
           lng: loc.lng,
           usedFallback: loc.usedFallback,
         });
-        applyDeviceLocation(loc);
-        lastSearchCenterRef.current = null;
+        applyEffectiveLocationToMap(loc.lat, loc.lng, loc.usedFallback);
+        lastSearchLocationKeyRef.current = null;
         lastWeatherFetchCenterRef.current = null;
         setMapZoom(MAP_ZOOM_EXPLORE);
         setSheetMode("list");
@@ -961,7 +973,7 @@ function MapView() {
             onSubmit={() => {
               if (!query.trim()) return;
               pendingImmediateSearchRef.current = true;
-              lastSearchCenterRef.current = null;
+              lastSearchLocationKeyRef.current = null;
               prevQueryRef.current = "";
               setSearchTrigger((n) => n + 1);
             }}

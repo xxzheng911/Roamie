@@ -86,3 +86,36 @@ export function buildPlanTripHandoffOpening(
     }
   }
 }
+
+/** 「讓 Roamie 替我安排」專屬開場 */
+export function buildPlanAiHandoffOpening(
+  form: PlanTripFormInput,
+  _bundle: ClientContextBundle,
+  locale: Locale,
+): string {
+  const dest = formatTripLocationLabel(form.destination);
+  const styleSep = locale === "en" ? ", " : "、";
+  const styles = form.styles.slice(0, 4).join(styleSep);
+  const days = form.days;
+  const mood = form.mood?.trim();
+
+  if (locale === "en") {
+    const styleBit = styles ? ` with ${styles}` : "";
+    const moodBit = mood ? ` and a ${mood} mood` : "";
+    return `Based on your ${days}-day trip to ${dest}${styleBit}${moodBit}, I found a few spots worth checking out. Tell me which ones you like—or ask for more cafes, night views, or a fresh batch.`;
+  }
+  if (locale === "ja") {
+    const styleBit = styles ? `、${styles}` : "";
+    const moodBit = mood ? `、${mood}な気分` : "";
+    return `${dest}の${days}日${styleBit}${moodBit}に合いそうな場所をいくつか見つけました。気になるものを教えてください。別の候補やカフェ追加もOKです。`;
+  }
+  if (locale === "ko") {
+    const styleBit = styles ? `, ${styles}` : "";
+    const moodBit = mood ? `, ${mood} 기분` : "";
+    return `${dest} ${days}일 여행${styleBit}${moodBit}에 맞는 곳 몇 군데 골라봤어요. 마음에 드는 곳 알려주세요—다른 후보나 카페 추가도 괜찮아요.`;
+  }
+
+  const styleBit = styles ? `、${styles}` : "";
+  const moodBit = mood ? `、${mood}的心情` : "";
+  return `依照你選擇的${dest}${days}日遊${styleBit}${moodBit}，我幫你找到幾個不錯的地方。看看有哪幾個喜歡—也可以跟我說想換一批、多加咖啡廳或看夜景。`;
+}

@@ -10,7 +10,8 @@ function inferExploreCategoryId(type: string): string {
   if (/景點|觀光|museum|attraction|藝廊|博物/.test(t)) return "sight";
   if (/商圈|夜市|購物|shopping|market|文創|伴手/.test(t)) return "district";
   if (/美食|餐|food|restaurant|小吃|bar|夜/.test(t)) return "food";
-  if (/公園|park|自然|步道|海/.test(t)) return "park";
+  if (/公園|park|自然|步道|海|拍照|photo/.test(t)) return "sight";
+  if (/酒吧|居酒|宵夜|深夜|night/i.test(t)) return "night";
   return "all";
 }
 

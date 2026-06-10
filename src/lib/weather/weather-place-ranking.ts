@@ -19,11 +19,13 @@ export function weatherRankingBoost(
 
   const text = placeText.toLowerCase();
   const indoor =
-    /咖啡|書店|百貨|商場|美術|博物|展覽|室內|mall|museum|gallery|cafe|coffee|department|library|溫泉|spa|onset/i.test(
+    /咖啡|甜點|書店|百貨|商場|美術|博物|展覽|室內|市集|mall|museum|gallery|cafe|coffee|department|library|書局|溫泉|spa|onset/i.test(
       text,
     );
   const outdoor =
-    /公園|河|步道|海|沙灘|登山|健行|戶外|park|beach|hiking|trail|河岸|夜景|view/i.test(text);
+    /公園|河|步道|海|沙灘|登山|健行|露營|山區|戶外|park|beach|hiking|trail|河岸|峽谷|瀑布|camp/i.test(
+      text,
+    );
   const night =
     /酒吧|夜店|夜景|夜市|bar|club|night|pub|居酒屋|宵夜/i.test(text);
   const cool =
@@ -31,8 +33,8 @@ export function weatherRankingBoost(
 
   switch (scene) {
     case "rainy":
-      if (indoor) return -3;
-      if (outdoor) return 8;
+      if (indoor) return -4;
+      if (outdoor) return 7;
       return 0;
     case "hot":
       if (indoor || cool) return -2;

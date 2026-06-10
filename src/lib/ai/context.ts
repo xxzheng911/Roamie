@@ -127,6 +127,8 @@ export type RoamieRequestContext = {
   fromMoodFlow?: boolean;
   selectedMood?: string;
   fromPlanForm?: boolean;
+  fromPlanAi?: boolean;
+  planAiMode?: boolean;
   locale?: Locale;
   /** AI 陪伴深度：free 基本 / plus 深度個人化 */
   planTier?: PlanTier;
@@ -298,6 +300,11 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
   if (ctx.fromPlanForm) {
     lines.push(
       "【來源】fromPlanForm：使用者從「規劃新行程」進入；目的地在【位置】；禁止一次生成完整 itinerary；先推薦地點、等使用者選點後再排行程。勿推薦與目的地不同城市的地點。",
+    );
+  }
+  if (ctx.fromPlanAi || ctx.planAiMode) {
+    lines.push(
+      "【來源】fromPlanAi：使用者從「讓 Roamie 替我安排」進入 AI 行程規劃模式；必須依【旅遊風格推薦邏輯】推薦真實 Google Places 地點；先推薦 3 個左右、維持對話感；禁止一進聊天就輸出完整多日行程；使用者可換一批、加咖啡廳、看夜景等，依上下文持續推薦；最後才由使用者按「生成完整行程」。",
     );
   }
   if (ctx.selectedMood?.trim()) lines.push(`【selectedMood】${ctx.selectedMood.trim()}`);

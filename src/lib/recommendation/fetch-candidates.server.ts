@@ -1,4 +1,7 @@
-import type { Locale } from "@/lib/i18n/types";
+import {
+  isRecommendablePlace,
+  placeResultToRecommendableInput,
+} from "@/lib/is-recommendable-place";
 import { executeExploreSearch } from "@/lib/places.functions";
 import type { PlaceResult } from "@/lib/place-result";
 import { getCategoryDef, pickCategoriesForContext } from "@/lib/recommendation/categories";
@@ -46,6 +49,12 @@ async function searchCategory(
   }
 
   return mergeByPlaceId(places)
+    .filter((p) =>
+      isRecommendablePlace(
+        placeResultToRecommendableInput(p, { categoryId }),
+        "ai_recommend",
+      ).ok,
+    )
     .slice(0, PER_CATEGORY_LIMIT)
     .map((p) => placeResultToCandidate(p, categoryId))
     .filter((c): c is VerifiedPlaceCandidate => c != null);

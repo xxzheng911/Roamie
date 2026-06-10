@@ -26,6 +26,13 @@ export function searchRadiusMeters(mode: ExploreTransportMode = "default"): numb
   }
 }
 
+/** 首頁附近推薦：較小半徑，避免跨區結果 */
+export function homeNearbySearchRadiusMeters(): number {
+  return 2_500;
+}
+
+export const HOME_NEARBY_MAX_DISTANCE_M = 3_000;
+
 export function searchRadiusLabel(mode: ExploreTransportMode): string {
   switch (mode) {
     case "walk":

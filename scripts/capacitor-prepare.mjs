@@ -21,6 +21,28 @@ const clientDir = resolve(root, "dist/client");
 const assetsDir = resolve(clientDir, "assets");
 const indexPath = resolve(clientDir, "index.html");
 const envPath = resolve(root, ".env");
+const appBundleMetaPath = resolve(root, "src/generated/app-bundle-meta.ts");
+
+function readAppBundleMetaForInlineLog() {
+  try {
+    if (!existsSync(appBundleMetaPath)) {
+      return { commitHash: "unknown", commitShort: "unknown", branch: "unknown", buildTime: "unknown" };
+    }
+    const text = readFileSync(appBundleMetaPath, "utf8");
+    const pick = (name) => {
+      const m = text.match(new RegExp(`export const ${name} = "([^"]*)"`));
+      return m?.[1] ?? "unknown";
+    };
+    return {
+      commitHash: pick("APP_BUILD_COMMIT"),
+      commitShort: pick("APP_BUILD_COMMIT_SHORT"),
+      branch: pick("APP_BUILD_BRANCH"),
+      buildTime: pick("APP_BUILD_TIME"),
+    };
+  } catch {
+    return { commitHash: "unknown", commitShort: "unknown", branch: "unknown", buildTime: "unknown" };
+  }
+}
 
 function readEnv(key) {
   if (process.env[key]) return process.env[key];
@@ -67,9 +89,18 @@ window.__ROAMIE_BOOT_LOG__={
 </script>`;
 
 /** 最早執行：在 React bundle 之前；Xcode 必須看得到才算改對入口 */
+const appBundleMeta = readAppBundleMetaForInlineLog();
 const CAPACITOR_REAL_ENTRY_PROBE = `<script>
 console.log("[APP_BOOT] REAL ENTRY FILE LOADED: dist/client/index.html");
 console.log("[APP_BOOT] boot-trace loaded (index.html inline)");
+console.info("[APP_BUNDLE_VERSION]", {
+  source: "index.html-inline",
+  bundleId: "com.shuode.roamie",
+  commitHash: ${JSON.stringify(appBundleMeta.commitHash)},
+  commitShort: ${JSON.stringify(appBundleMeta.commitShort)},
+  branch: ${JSON.stringify(appBundleMeta.branch)},
+  buildTime: ${JSON.stringify(appBundleMeta.buildTime)},
+});
 try{
   if(window.Capacitor&&typeof window.Capacitor.getPlatform==="function"){
     console.log("[APP_BOOT] platform:",window.Capacitor.getPlatform());

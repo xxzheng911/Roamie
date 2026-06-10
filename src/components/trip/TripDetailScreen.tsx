@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
-import { Clock, Loader2, MapPin, Navigation, RouteIcon, Trash2 } from "lucide-react";
+import { useRouterState } from "@tanstack/react-router";
+import { Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { SavedTripItineraryEditor } from "@/components/saved/SavedTripItineraryEditor";
 import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
+import { getItinerary, type StoredItinerary } from "@/lib/itinerary-storage";
 import { TRIP_DETAIL_COMPONENT } from "@/lib/trip/trip-detail-nav";
-import { getCoreTripById, resolveCoreTripTitle, type CoreTrip } from "@/lib/trip/core-trip";
-import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 
 type Props = {
   tripId: string;
@@ -16,11 +16,11 @@ type Props = {
 };
 
 /**
- * 唯一正式行程詳情頁：僅接受 tripId，進入後以 getItinerary(tripId) 載入。
+ * 唯一正式行程詳情頁：載入 StoredItinerary 並使用可編輯行程編輯器。
  */
 export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const [trip, setTrip] = useState<CoreTrip | null>(null);
+  const [stored, setStored] = useState<StoredItinerary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -37,16 +37,16 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    getCoreTripById(tripId)
+    getItinerary(tripId)
       .then((row) => {
         if (cancelled) return;
         if (!row) {
           setError("找不到這個行程");
-          setTrip(null);
+          setStored(null);
           return;
         }
-        console.info("[TRIP_DETAIL] CoreTrip loaded tripId=", row.id);
-        setTrip(row);
+        console.info("[TRIP_DETAIL] StoredItinerary loaded tripId=", row.id);
+        setStored(row);
       })
       .catch((e) => {
         if (cancelled) return;
@@ -61,10 +61,10 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
   }, [tripId]);
 
   const handleDelete = async () => {
-    if (!trip) return;
+    if (!stored) return;
     setDeleting(true);
     try {
-      await deleteTrip(trip.id);
+      await deleteTrip(stored.id);
       toast.success("已刪除");
       setDeleteOpen(false);
       onDeleted?.();
@@ -83,17 +83,10 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
     );
   }
 
-  if (error || !trip) {
+  if (error || !stored) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-20 text-center">
         <p className="text-sm text-muted-foreground">{error ?? "找不到行程"}</p>
-        <Link
-          to="/saved"
-          search={{ tab: "trips" }}
-          className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground"
-        >
-          返回收藏
-        </Link>
       </div>
     );
   }
@@ -102,7 +95,7 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
     <button
       type="button"
       onClick={() => setDeleteOpen(true)}
-      className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary text-muted-foreground"
+      className="flex h-9 w-9 items-center justify-center rounded-full bg-background/80 text-muted-foreground backdrop-blur"
       aria-label="刪除行程"
     >
       <Trash2 className="h-4 w-4" />
@@ -111,54 +104,11 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
 
   return (
     <>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <header className="shrink-0 border-b border-border bg-background/95 px-5 pb-4 pt-3 backdrop-blur">
-          <div className="flex items-center justify-between gap-2">
-            <Link
-              to="/saved"
-              search={{ tab: "trips" }}
-              className="rounded-full bg-secondary px-3 py-1.5 text-xs text-muted-foreground"
-            >
-              返回
-            </Link>
-            {deleteButton}
-          </div>
-          <h1 className="mt-3 font-display text-[22px] leading-snug">{resolveCoreTripTitle(trip)}</h1>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {trip.days} 天 · {trip.destinationPlace?.name ?? "未設定目的地"}
-          </p>
-        </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <div className="space-y-3">
-            {trip.places.map((place, index) => (
-              <article key={`${place.placeId || place.name}-${index}`} className="rounded-2xl border border-border bg-card p-4">
-                <h3 className="text-sm font-medium">{place.name}</h3>
-                <p className="mt-1 flex items-start gap-1 text-xs text-muted-foreground">
-                  <MapPin className="mt-0.5 h-3 w-3" />
-                  {place.address || "尚未設定"}
-                </p>
-                <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                  <p className="flex items-center gap-1"><Clock className="h-3 w-3" />抵達時間：{place.arrivalTime || "尚未設定"}</p>
-                  <p>停留時間：{place.duration}</p>
-                  <p className="flex items-center gap-1"><RouteIcon className="h-3 w-3" />交通方式：{place.transportMode || "尚未設定"}</p>
-                  <p>點到點耗時：{place.pointToPointDuration}</p>
-                </div>
-                <PlaceNavButtons
-                  lat={place.lat}
-                  lng={place.lng}
-                  address={place.address || undefined}
-                  placeName={place.name}
-                  compact
-                  className="mt-3"
-                />
-              </article>
-            ))}
-          </div>
-          {trip.places.length === 0 ? (
-            <p className="mt-8 text-center text-sm text-muted-foreground">此行程尚未包含地點</p>
-          ) : null}
-        </div>
-      </div>
+      <SavedTripItineraryEditor
+        stored={stored}
+        headerRight={deleteButton}
+        onStoredChange={setStored}
+      />
       <TripDeleteConfirmDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}

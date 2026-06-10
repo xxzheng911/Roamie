@@ -53,7 +53,9 @@ import { daysBetweenDates } from "@/lib/fetch-context";
 import { listTripDates } from "@/lib/outfit/group-by-date";
 import { resolveTripDestination } from "@/lib/outfit/trip-outfit-context";
 import { useTripOutfitSuggestion } from "@/hooks/use-trip-outfit-suggestion";
-import { cn } from "@/lib/utils";
+import { buildFlightAffiliateOffers, buildHotelAffiliateOffers, buildPlaceTicketOffers } from "@/lib/affiliate/affiliate-links";
+import { buildTripAffiliateContext } from "@/lib/affiliate/affiliate-types";
+import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
 
 function inferTripDates(
   items: RoamieItineraryItem[],
@@ -220,6 +222,28 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
       setTripTitle(tripView.displayTitle);
     }
   }, [tripView.displayTitle, isTitleCustomized]);
+
+  const affiliateCtx = useMemo(
+    () =>
+      buildTripAffiliateContext({
+        tripId: stored.id,
+        payload,
+        items,
+        dayCount: dayGroups.length,
+        destinationLabel:
+          tripView.destination !== "尚未設定" ? tripView.destination : outfitDestination,
+      }),
+    [stored.id, payload, items, dayGroups.length, tripView.destination, outfitDestination],
+  );
+
+  const hotelAffiliateOffers = useMemo(
+    () => buildHotelAffiliateOffers(affiliateCtx),
+    [affiliateCtx],
+  );
+  const flightAffiliateOffers = useMemo(
+    () => buildFlightAffiliateOffers(affiliateCtx),
+    [affiliateCtx],
+  );
 
   const safeDayIndex = Math.min(activeDayIndex, Math.max(0, dayGroups.length - 1));
   const activeDay = dayGroups[safeDayIndex];
@@ -641,6 +665,11 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
                           onMoveDown={() => persistItems(moveStopInDay(items, day.dateKey, i, 1))}
                           onDelete={() => persistItems(removeStopAt(items, day.dateKey, i))}
                         />
+                        <TripAffiliateSection
+                          kind="ticket"
+                          offers={buildPlaceTicketOffers(item)}
+                          compact
+                        />
                       </div>
                     );
                   })}
@@ -706,6 +735,13 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
           ))}
         </div>
       </div>
+
+      {hotelAffiliateOffers.length > 0 || flightAffiliateOffers.length > 0 ? (
+        <div className="shrink-0 space-y-3 border-t border-border bg-background/95 px-5 py-4">
+          <TripAffiliateSection kind="hotel" offers={hotelAffiliateOffers} />
+          <TripAffiliateSection kind="flight" offers={flightAffiliateOffers} />
+        </div>
+      ) : null}
 
       <SavedPlacesPickSheet
         open={savedPlacesOpen}

@@ -11,7 +11,8 @@ export function isBootDiagnosticsEnabled(): boolean {
 
 export function bootDiagnosticLog(message: string): void {
   if (!isBootDiagnosticsEnabled()) return;
-  console.error(message);
+  // 用 info 避免 Xcode 將啟動里程碑誤判為 JS 異常（console.error 會顯示紅字）
+  console.info("[BOOT_DIAG]", message);
 }
 
 declare global {

@@ -26,6 +26,7 @@ export type ChatComposerProps = {
   onSaveTrip: () => void;
   onViewDraft: () => void;
   onViewSavedTrip: (tripId: string) => void;
+  generateBtnLabel?: string;
 };
 
 function ShortcutChips({
@@ -42,6 +43,7 @@ function ShortcutChips({
   onSaveTrip,
   onViewDraft,
   onViewSavedTrip,
+  generateBtnLabel = "開始安排行程",
 }: Pick<
   ChatComposerProps,
   | "keyboardOpen"
@@ -57,6 +59,7 @@ function ShortcutChips({
   | "onSaveTrip"
   | "onViewDraft"
   | "onViewSavedTrip"
+  | "generateBtnLabel"
 >) {
   const chipClass = cn(
     "shrink-0 rounded-full border border-border bg-card text-foreground/80 disabled:opacity-50",
@@ -85,7 +88,7 @@ function ShortcutChips({
           ) : (
             <Sparkles className="mr-1 inline h-3 w-3" />
           )}
-          開始安排行程
+          {generateBtnLabel}
         </button>
       )}
       {showSaveTripBtn && (

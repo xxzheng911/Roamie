@@ -13,6 +13,10 @@ import { tripLocationToRoamie } from "@/lib/location/to-roamie";
 import type { TripLocation } from "@/lib/location/types";
 import { syncSessionPlaceMemory } from "@/lib/place-planning-memory";
 import {
+  buildTravelStyleAiContext,
+  normalizePlanTravelStyles,
+} from "@/lib/plan-travel-style";
+import {
   isValidTripPlaceRef,
   logTripPlace,
   tripLocationToPlaceRef,
@@ -24,7 +28,8 @@ export type PlanTripFormInput = {
   days: number;
   mood: string;
   styles: string[];
-  interests: string;
+  /** zh-TW 正規化後的旅遊風格（推薦邏輯用） */
+  normalizedStyles?: string[];
   startDate: string;
   endDate: string;
   departureTime: string;
@@ -34,9 +39,16 @@ export type PlanTripFormInput = {
   selectedPlaces?: RoamieRecommendationItem[];
 };
 
+export type PreparePlanTripOptions = {
+  /** true = 「讓 Roamie 替我安排」AI 行程規劃模式 */
+  planAiMode?: boolean;
+  localeStyleOptions?: string[];
+};
+
 export function buildPlanTripInitialContext(
   form: PlanTripFormInput,
   bundle: ClientContextBundle,
+  options?: PreparePlanTripOptions,
 ): string {
   const destLabel = formatTripLocationLabel(form.destination);
   const dateLine =
@@ -48,8 +60,16 @@ export function buildPlanTripInitialContext(
     ? `${w.city ?? destLabel}：${w.condition}，約 ${w.tempC}°C${w.precipProbability != null ? `，降雨機率 ${w.precipProbability}%` : ""}`
     : "（尚未取得）";
 
+  const styleKeys = normalizePlanTravelStyles(
+    form.normalizedStyles?.length ? form.normalizedStyles : form.styles,
+    options?.localeStyleOptions ?? form.styles,
+  );
+  const styleContext = buildTravelStyleAiContext(styleKeys);
+
   const lines = [
-    "【規劃新行程 → 聊天規劃｜初始上下文】",
+    options?.planAiMode
+      ? "【規劃新行程 → AI 行程規劃模式｜初始上下文】"
+      : "【規劃新行程 → 聊天規劃｜初始上下文】",
     `tripDestination：${destLabel}（${form.destination.lat.toFixed(4)}, ${form.destination.lng.toFixed(4)}）`,
     form.origin ? `tripOrigin：${formatTripLocationLabel(form.origin)}` : "",
     `travelDates：${dateLine}`,
@@ -58,30 +78,32 @@ export function buildPlanTripInitialContext(
     form.transport ? `transport：${form.transport}` : "",
     form.styles.length ? `travelStyles：${form.styles.join("、")}` : "",
     form.mood ? `mood：${form.mood}` : "",
-    form.interests.trim() ? `extraNotes：${form.interests.trim()}` : "",
     `budgetMode：${form.budgetMode}`,
     `destinationWeather：${weatherLine}`,
     form.destination.timezone ? `timezone：${form.destination.timezone}` : "",
+    styleContext,
     "",
     "【規劃流程 — 必守】",
-    "- 這是使用者從「規劃新行程」進入的多輪對話",
+    options?.planAiMode
+      ? "- 這是「讓 Roamie 替我安排」專屬 AI 行程規劃模式"
+      : "- 這是使用者從「規劃新行程」進入的多輪對話",
     "- **禁止**在未經使用者選點前就輸出完整多日 itinerary",
-    "- 先依目的地、旅行日期、偏好、當地天氣與季節，推薦 3–5 個適合的地點",
+    "- 先依目的地、旅行日期、偏好、當地天氣與季節，推薦 3 個左右真實 Google Places 地點",
     "- 記住【已選地點】【已拒絕】；勿推薦不同城市或重複地點",
-    "- 考慮當地節慶、紅字假期、營業時間、季節（例：12 月聖誕活動、年末市集）",
-    "- 下雨時優先室內；排除非營業、公休、永久停業",
+    "- 使用者可要求換一批、加咖啡廳、看夜景等，依上下文持續推薦",
     "- 語氣像懂旅行的旅伴，有溫度、情境式，不要像客服",
-    "- 使用者選夠地點後，再邀請整理成完整行程",
+    "- 使用者選夠地點後，再邀請按「生成完整行程」整理成正式行程",
   ];
   return lines.filter(Boolean).join("\n");
 }
 
-export { buildPlanTripHandoffOpening } from "@/lib/i18n/plan-handoff-copy";
+export { buildPlanTripHandoffOpening, buildPlanAiHandoffOpening } from "@/lib/i18n/plan-handoff-copy";
 
 export function preparePlanTripSession(
   form: PlanTripFormInput,
   bundle: ClientContextBundle,
   preferences?: TravelPreferences,
+  options?: PreparePlanTripOptions,
 ): ChatPlanningSession {
   const destRef = tripLocationToPlaceRef(form.destination);
   if (!isValidTripPlaceRef(destRef)) {
@@ -106,9 +128,10 @@ export function preparePlanTripSession(
     throw new Error("出發地與目的地不能相同");
   }
 
+  const planAiMode = options?.planAiMode === true;
   const destRoamie = tripLocationToRoamie(form.destination);
   const selectedFromForm = (form.selectedPlaces ?? []).map(roamieRecToChatItem);
-  const initialChatContext = buildPlanTripInitialContext(form, bundle);
+  const initialChatContext = buildPlanTripInitialContext(form, bundle, options);
 
   const base: ChatPlanningSession = {
     ...createEmptySession(),
@@ -120,6 +143,8 @@ export function preparePlanTripSession(
     tripDestination: form.destination,
     tripOrigin: form.origin ?? undefined,
     fromPlanForm: true,
+    fromPlanAi: planAiMode,
+    planAiMode,
     pendingHandoff: true,
     travelDate:
       form.startDate && form.endDate

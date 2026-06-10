@@ -3,7 +3,7 @@
 const PLACES_API = "https://places.googleapis.com/v1";
 
 export const PLACES_FIELD_MASK =
-  "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.photos,places.primaryType,places.types,places.businessStatus,places.currentOpeningHours,places.regularOpeningHours,places.utcOffsetMinutes";
+  "places.id,places.displayName,places.formattedAddress,places.shortFormattedAddress,places.location,places.rating,places.userRatingCount,places.photos,places.primaryType,places.types,places.businessStatus,places.currentOpeningHours,places.regularOpeningHours,places.utcOffsetMinutes";
 
 export function placesSearchTextUrl(): string {
   return `${PLACES_API}/places:searchText`;
@@ -26,7 +26,7 @@ export const PLACE_DETAILS_FIELD_MASK =
 
 /** 地點詳情頁：含官網與電話 */
 export const PLACE_DETAILS_SCREEN_FIELD_MASK =
-  "id,displayName,formattedAddress,location,rating,userRatingCount,photos,primaryType,types,regularOpeningHours,currentOpeningHours,businessStatus,utcOffsetMinutes,websiteUri,nationalPhoneNumber,internationalPhoneNumber";
+  "id,displayName,formattedAddress,shortFormattedAddress,location,rating,userRatingCount,photos,primaryType,types,regularOpeningHours,currentOpeningHours,businessStatus,utcOffsetMinutes,websiteUri,nationalPhoneNumber,internationalPhoneNumber";
 
 export function placePhotoMediaUrl(photoName: string, maxWidth: number, apiKey: string): string {
   return `${PLACES_API}/${photoName}/media?maxWidthPx=${maxWidth}&key=${apiKey}`;

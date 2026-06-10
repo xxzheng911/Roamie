@@ -2,7 +2,6 @@ import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
 import { useLayoutEffect, useEffect, useState } from "react";
 import { useI18n } from "@/hooks/use-i18n";
 import { markBootPhase } from "@/lib/boot-diagnostics";
-import { ensureHomeWeatherBootstrap } from "@/lib/home-weather-bootstrap";
 import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { MobileFrame } from "@/components/MobileFrame";
@@ -17,7 +16,12 @@ export const Route = createFileRoute("/_app")({
 });
 
 function isMainScrollLockedPath(pathname: string): boolean {
-  return pathname === "/chat" || pathname === "/map" || pathname === "/plan";
+  return (
+    pathname === "/chat" ||
+    pathname === "/map" ||
+    pathname === "/plan" ||
+    /^\/saved\/[^/]+$/.test(pathname)
+  );
 }
 
 function AppLayout() {
@@ -30,13 +34,18 @@ function AppLayout() {
 
   useLayoutEffect(() => {
     scheduleIosSnapshotRefreshBurst("app-shell");
+    void import("@/lib/effective-location").then(({ ensureEffectiveLocationBootstrap }) => {
+      ensureEffectiveLocationBootstrap();
+    });
   }, []);
 
   useLayoutEffect(() => {
     const path = pathname.replace(/\/+$/, "") || "/";
     if (path !== "/") return;
     console.info("[HOME_SHELL] index route active");
-    ensureHomeWeatherBootstrap(locale, "app-shell");
+    void import("@/lib/home-weather-bootstrap").then(({ ensureHomeWeatherBootstrap }) => {
+      ensureHomeWeatherBootstrap(locale, "app-shell");
+    });
   }, [pathname, locale]);
 
   useEffect(() => {

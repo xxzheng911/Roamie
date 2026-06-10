@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { z } from "zod";
 import { PlaceDetailSheet, ExploreSubpageHeader } from "@/components/map/PlaceDetailSheet";
+import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { useI18n } from "@/hooks/use-i18n";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
@@ -27,7 +28,13 @@ import {
   resolvePlaceDetailHandoff,
   type PlaceDetailViewModel,
 } from "@/lib/place-detail-resolve";
-import { getPlaceDetails } from "@/lib/places.functions";
+import {
+  fetchPlaceDetailsForScreenWithKey,
+  getPlaceDetails,
+  type PlaceDetailsScreenResult,
+} from "@/lib/places.functions";
+import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
+import { detectPlatform } from "@/services/platform";
 import { getPlaceIntro } from "@/lib/recommendation.functions";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
 import { requestDeviceLocation } from "@/lib/device-location";
@@ -43,6 +50,10 @@ import {
 import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
 import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
+import {
+  resolvePlaceDisplayAddress,
+  sanitizeGooglePlaceAddress,
+} from "@/lib/place-display-address";
 import { getWeather } from "@/lib/weather.functions";
 import type { WeatherSummary } from "@/lib/weather-types";
 
@@ -59,9 +70,23 @@ export const Route = createFileRoute("/_app/place")({
 
 function PlaceDetailPage() {
   useIosInteractiveRoute("place-detail");
+  useAppMainScroll();
+
+  useLayoutEffect(() => {
+    document.documentElement.classList.add("place-route-active");
+    const main = document.querySelector("main.app-scroll");
+    if (main instanceof HTMLElement) {
+      main.style.overflow = "hidden";
+    }
+    return () => {
+      document.documentElement.classList.remove("place-route-active");
+      if (main instanceof HTMLElement) {
+        main.style.removeProperty("overflow");
+      }
+    };
+  }, []);
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
-  const router = Route.useRouter();
   const { t, locale } = useI18n();
   const fetchPlaceDetailsFn = useServerFn(getPlaceDetails);
   const fetchPlaceIntroFn = useServerFn(getPlaceIntro);
@@ -79,9 +104,7 @@ function PlaceDetailPage() {
   const [usedFallback, setUsedFallback] = useState(false);
   const [userLocation, setUserLocation] = useState(TAIPEI_CENTER);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
-  const [reasonProfile, setReasonProfile] = useState(
-    userProfileForReasonFrom(null, null),
-  );
+  const [reasonProfile, setReasonProfile] = useState(() => userProfileForReasonFrom({}));
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [introExtra, setIntroExtra] = useState<{
@@ -118,14 +141,35 @@ function PlaceDetailPage() {
 
     logPlaceDetailFetchStarted(handoff.placeId);
     let cancelled = false;
+    const applyFetched = (fetched: PlaceDetailsScreenResult) => {
+      logPlaceDetailFetchSuccess(handoff.placeId);
+      setPlace(mergeFetchedPlace(base, fetched));
+      setFetchError(null);
+      setUsedFallback(false);
+    };
+
     void fetchPlaceDetailsFn({ data: { placeId: handoff.placeId, locale } })
-      .then(({ place: fetched, error }) => {
+      .then(async ({ place: fetched, error }) => {
         if (cancelled) return;
         if (fetched) {
-          logPlaceDetailFetchSuccess(handoff.placeId);
-          setPlace(mergeFetchedPlace(base, fetched));
-          setFetchError(null);
+          applyFetched(fetched);
           return;
+        }
+        if (detectPlatform().isCapacitor) {
+          const mapsKey = getGoogleMapsBrowserKey();
+          if (mapsKey) {
+            const clientPlace = await fetchPlaceDetailsForScreenWithKey(
+              handoff.placeId,
+              mapsKey,
+              locale,
+            );
+            if (cancelled) return;
+            if (clientPlace) {
+              console.info("[PLACE_DETAIL] client places details ok", handoff.placeId);
+              applyFetched(clientPlace);
+              return;
+            }
+          }
         }
         logPlaceDetailFetchFailed(handoff.placeId, error ?? "unknown");
         logPlaceDetailFallbackUsed(error ?? "fetch_failed");
@@ -157,10 +201,21 @@ function PlaceDetailPage() {
         setUserLocation({ lat: loc.lat, lng: loc.lng });
       })
       .catch(() => {});
-    void Promise.all([getUserProfile(), getPreferences(), listPlaces().catch(() => [])])
+    void Promise.all([
+      getUserProfile(locale).catch(() => null),
+      getPreferences().catch(() => ({} as Awaited<ReturnType<typeof getPreferences>>)),
+      listPlaces().catch(() => []),
+    ])
       .then(([profile, prefs, saved]) => {
         if (cancelled) return;
-        setReasonProfile(userProfileForReasonFrom(profile, prefs));
+        setReasonProfile(
+          userProfileForReasonFrom(profile?.prefs ?? prefs, {
+            travelStyle: profile?.travelStyle,
+            personalityType: profile?.personalityType,
+            personalitySummary: profile?.personalitySummary,
+            aiPreferences: profile?.aiPreferences,
+          }),
+        );
         setSavedNames(new Set(saved.map((s) => s.name)));
         const lat = place?.lat ?? userLocation.lat;
         const lng = place?.lng ?? userLocation.lng;
@@ -227,18 +282,39 @@ function PlaceDetailPage() {
 
   const imageUrls = useMemo(() => (place ? buildPlaceImageUrls(place) : []), [place]);
 
+  const placeForSheet = useMemo(() => {
+    if (!place) return null;
+    const google = place as PlaceDetailsScreenResult;
+    const address =
+      resolvePlaceDisplayAddress(
+        {
+          formattedAddress: google.googleFormattedAddress,
+          shortFormattedAddress: google.googleShortFormattedAddress,
+          vicinity: google.googleVicinity,
+          address: place.address,
+        },
+        {
+          hasCoords: place.lat != null && place.lng != null,
+          locale,
+          googleFieldsOnly: Boolean(google.googleFormattedAddress),
+        },
+      ) ??
+      (place.address ? sanitizeGooglePlaceAddress(place.address) : null);
+    return { ...place, ...introExtra, address };
+  }, [place, introExtra, locale]);
+
   const distanceLabel = useMemo(() => {
     if (!place || place.lat == null || place.lng == null) return null;
     return formatDistanceLabel(distanceMeters(userLocation, { lat: place.lat, lng: place.lng }));
   }, [place, userLocation]);
 
   const handleBack = useCallback(() => {
-    if (window.history.length > 1) {
-      router.history.back();
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      window.history.back();
       return;
     }
     navigate({ to: "/" });
-  }, [navigate, router.history]);
+  }, [navigate]);
 
   const handleToggleSave = async () => {
     if (!place) return;
@@ -310,7 +386,7 @@ function PlaceDetailPage() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col pb-4">
+    <div className="place-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain">
       <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBack} />
 
       {loading ? (
@@ -337,7 +413,7 @@ function PlaceDetailPage() {
             </p>
           ) : null}
           <PlaceDetailSheet
-            place={{ ...place, ...introExtra }}
+            place={placeForSheet ?? place}
             imageUrls={imageUrls}
             distanceLabel={distanceLabel}
             isSaved={savedNames.has(place.name)}

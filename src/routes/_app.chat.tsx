@@ -95,7 +95,8 @@ import {
   isMoodHandoffDoneForRec,
   clearMoodHandoffStorage,
 } from "@/lib/mood-chat-handoff";
-import { buildPlanTripHandoffOpening, markPlanHandoffComplete } from "@/lib/plan-trip-handoff";
+import { buildPlanTripHandoffOpening, buildPlanAiHandoffOpening, markPlanHandoffComplete } from "@/lib/plan-trip-handoff";
+import { clearPlanFormDraft } from "@/lib/plan-form-draft-storage";
 import { buildContextBundleForTrip } from "@/lib/fetch-context";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import { useI18n } from "@/hooks/use-i18n";
@@ -413,7 +414,7 @@ function Chat() {
           setMsgs([]);
           await runRecommendationHandoff(current);
         } else if (
-          search.from === "plan" &&
+          (search.from === "plan" || search.from === "plan-ai") &&
           current.fromPlanForm &&
           current.pendingHandoff &&
           !current.planHandoffDone &&
@@ -615,6 +616,8 @@ function Chat() {
         fromMoodCard: synced.fromMoodCard,
         fromMoodFlow: synced.fromMoodFlow,
         fromPlanForm: synced.fromPlanForm,
+        fromPlanAi: synced.fromPlanAi,
+        planAiMode: synced.planAiMode,
         selectedMood: synced.selectedMood ?? synced.mood,
         selectedCategory: synced.selectedCategory ?? synced.mood,
         initialChatContext: initialCtx,
@@ -816,6 +819,8 @@ function Chat() {
           chatPhase: "expand",
           time: bundle.time,
           fromPlanForm: true,
+          fromPlanAi: syncedHandoff.fromPlanAi,
+          planAiMode: syncedHandoff.planAiMode,
           initialChatContext: initialCtx,
           selectedPlaces: syncedHandoff.selectedPlaces,
           selectedPlaceIds: syncedHandoff.selectedPlaceIds,
@@ -834,24 +839,22 @@ function Chat() {
           },
         });
 
-        const summary = buildPlanTripHandoffOpening(
-          {
-            destination: dest,
-            origin: syncedHandoff.tripOrigin,
-            days: syncedHandoff.tripDays ?? 2,
-            mood: syncedHandoff.mood ?? "",
-            styles: syncedHandoff.tripStyles?.split(/[、,]/).filter(Boolean) ?? [],
-            interests: "",
-            startDate: syncedHandoff.tripStartDate ?? "",
-            endDate: syncedHandoff.tripEndDate ?? "",
-            departureTime: syncedHandoff.startTime ?? "",
-            travelers: syncedHandoff.tripCompanionCount ?? 1,
-            transport: syncedHandoff.transportation ?? "",
-            budgetMode: syncedHandoff.budget ?? "",
-          },
-          bundle,
-          locale,
-        );
+        const formInput = {
+          destination: dest,
+          origin: syncedHandoff.tripOrigin,
+          days: syncedHandoff.tripDays ?? 2,
+          mood: syncedHandoff.mood ?? "",
+          styles: syncedHandoff.tripStyles?.split(/[、,]/).filter(Boolean) ?? [],
+          startDate: syncedHandoff.tripStartDate ?? "",
+          endDate: syncedHandoff.tripEndDate ?? "",
+          departureTime: syncedHandoff.startTime ?? "",
+          travelers: syncedHandoff.tripCompanionCount ?? 1,
+          transport: syncedHandoff.transportation ?? "",
+          budgetMode: syncedHandoff.budget ?? "",
+        };
+        const summary = syncedHandoff.planAiMode
+          ? buildPlanAiHandoffOpening(formInput, bundle, locale)
+          : buildPlanTripHandoffOpening(formInput, bundle, locale);
         let summaryText = summary;
 
         let roamiePayload = buildHandoffRoamiePayload(syncedHandoff, summaryText);
@@ -896,7 +899,7 @@ function Chat() {
         setStreaming(false);
       }
     },
-    [fetchWeather, persistSession],
+    [fetchWeather, persistSession, locale],
   );
 
   const applyLocalFallback = useCallback(
@@ -1396,6 +1399,24 @@ function Chat() {
       console.info("[CORE_TRIP] created", "draft");
       saveDraftTrip(draftPayload);
 
+      const isPlanAi = activeSession.fromPlanAi || activeSession.planAiMode;
+
+      if (isPlanAi) {
+        const saved = await confirmSaveTrip(draftPayload, "chat");
+        clearDraftTrip();
+        clearPlanFormDraft();
+        persistSession({
+          ...activeSession,
+          phase: "done",
+          draftTrip: undefined,
+          lastGeneratedTripId: saved.id,
+        });
+        toast.success("行程已建立");
+        logTripNav("PlanAiGenerated", saved.id);
+        navigate(tripDetailNavigateOptions(saved.id));
+        return;
+      }
+
       const doneSession: ChatPlanningSession = {
         ...activeSession,
         phase: "done",
@@ -1472,9 +1493,12 @@ function Chat() {
   };
 
   const hasDraftTrip = Boolean(session.draftTrip ?? loadDraftTrip());
+  const isPlanAiMode = Boolean(session.fromPlanAi || session.planAiMode);
   const showGenerateBtn =
-    session.phase === "ready" &&
-    session.selectedPlaces.length > 0 &&
+    (isPlanAiMode
+      ? canGenerateItinerary(session)
+      : session.phase === "ready" &&
+        session.selectedPlaces.length > 0) &&
     !streaming &&
     !generating &&
     !hasDraftTrip;
@@ -1507,8 +1531,9 @@ function Chat() {
     "想去室外",
   ];
 
-  const chatChips =
-    session.phase === "discover"
+  const chatChips = isPlanAiMode
+    ? ["換一批", "想要更多咖啡廳", "想看夜景", "離捷運近一點"]
+    : session.phase === "discover"
       ? discoverChips
       : session.phase === "collect" && session.selectedPlaces.length > 0
         ? ["就這樣吧，可以開始安排", "想再加一個咖啡廳", "節奏慢一點"]
@@ -1527,8 +1552,12 @@ function Chat() {
       >
         <BackButton
           preferFallback
-          fallback={{ to: "/" }}
-          label="回首頁"
+          fallback={
+            session.fromPlanForm || session.fromPlanAi
+              ? { to: "/plan" }
+              : { to: "/" }
+          }
+          label={session.fromPlanForm || session.fromPlanAi ? "回規劃頁" : "回首頁"}
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-foreground"
         />
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -1693,8 +1722,15 @@ function Chat() {
               hasDraftTrip={hasDraftTrip}
               lastGeneratedTripId={session.lastGeneratedTripId}
               chatChips={chatChips}
+              generateBtnLabel={
+                isPlanAiMode ? t("chat.generateFullItinerary") : undefined
+              }
               onChipSend={(s) => void send(s)}
-              onGenerateClick={() => void send("就這樣吧，可以開始安排")}
+              onGenerateClick={() =>
+                void (isPlanAiMode
+                  ? handleGenerateItinerary()
+                  : send("就這樣吧，可以開始安排"))
+              }
               onSaveTrip={() => void handleConfirmSaveTrip()}
               onViewDraft={() => navigate({ to: "/trip", search: { draft: "1" } })}
               onViewSavedTrip={(tripId) => {

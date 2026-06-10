@@ -1,4 +1,5 @@
-/** 首頁附近推薦 API 失敗時仍顯示靜態 fallback 卡（不改 UI，只補資料） */
+/** 首頁附近推薦：正式版不使用 mock；僅 DEV 且明確開啟時才允許 failure mock */
 export function shouldUseHomeNearbyFailureMocks(): boolean {
-  return true;
+  if (import.meta.env.PROD) return false;
+  return import.meta.env.DEV && import.meta.env.VITE_HOME_NEARBY_MOCK_ON_FAIL === "1";
 }

@@ -1,4 +1,9 @@
 import { requireOpenWeatherApiKey } from "@/lib/openweather-key-resolve.server";
+import {
+  logOpenWeatherRequest,
+  logOpenWeatherResponse,
+  maskApiKey,
+} from "@/lib/weather-diagnostics";
 import { API_CACHE_TTL_MS } from "@/lib/api/constants";
 import { createServerRequestCache } from "@/lib/server-request-cache";
 import {
@@ -29,6 +34,13 @@ async function fetchWithTimeout(url: string, label: string): Promise<Response> {
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       console.error("[WEATHER_FETCH] openWeather body=", body.slice(0, 240));
+      logOpenWeatherResponse({
+        transport: "server",
+        endpoint: label,
+        ok: false,
+        httpStatus: res.status,
+        bodyPreview: body.slice(0, 240),
+      });
       return new Response(body, { status: res.status, statusText: res.statusText });
     }
     return res;
@@ -45,12 +57,30 @@ async function fetchOneCall(lat: number, lng: number): Promise<OneCallResponse> 
   const key = requireOpenWeatherApiKey();
   const url = `https://api.openweathermap.org/data/3.0/onecall?lat=${lat}&lon=${lng}&appid=${key}&units=${OW_UNITS}&lang=${OW_LANG}&exclude=minutely,alerts`;
   console.info("[WEATHER_FETCH] openWeather request url=", url.replace(key, "***"));
+  logOpenWeatherRequest({
+    transport: "server",
+    endpoint: "onecall",
+    lat,
+    lng,
+    url: url.replace(key, "***"),
+    keyPrefix: maskApiKey(key),
+  });
   const res = await fetchWithTimeout(url, "onecall");
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`One Call ${res.status}: ${text.slice(0, 120)}`);
   }
-  return (await res.json()) as OneCallResponse;
+  const json = (await res.json()) as OneCallResponse;
+  logOpenWeatherResponse({
+    transport: "server",
+    endpoint: "onecall",
+    ok: true,
+    httpStatus: res.status,
+    lat,
+    lng,
+    hasCurrent: Boolean(json.current),
+  });
+  return json;
 }
 
 async function fetchCurrent25(lat: number, lng: number): Promise<{
@@ -61,6 +91,14 @@ async function fetchCurrent25(lat: number, lng: number): Promise<{
   const key = requireOpenWeatherApiKey();
   const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${key}&units=${OW_UNITS}&lang=${OW_LANG}`;
   console.info("[WEATHER_FETCH] openWeather request url=", url.replace(key, "***"));
+  logOpenWeatherRequest({
+    transport: "server",
+    endpoint: "current25",
+    lat,
+    lng,
+    url: url.replace(key, "***"),
+    keyPrefix: maskApiKey(key),
+  });
   const res = await fetchWithTimeout(url, "current");
   if (!res.ok) {
     const text = await res.text();
@@ -70,6 +108,15 @@ async function fetchCurrent25(lat: number, lng: number): Promise<{
     name?: string;
     timezone?: number;
   };
+  logOpenWeatherResponse({
+    transport: "server",
+    endpoint: "current25",
+    ok: true,
+    httpStatus: res.status,
+    lat,
+    lng,
+    city: json.name ?? null,
+  });
   return { json, city: json.name ?? "", tz: json.timezone ?? 0 };
 }
 

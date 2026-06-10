@@ -250,7 +250,7 @@ export function missingContextKeys(
   const hasDestination = Boolean(ctx.destination?.trim() || session.tripDestination);
   const hasMoodFlow = session.fromMoodCard || session.fromMoodFlow || Boolean(ctx.mood);
 
-  if (!hasDestination && !hasGps && !session.fromPlanForm) missing.push("destination");
+  if (!hasDestination && !hasGps && !session.fromPlanForm && !session.fromPlanAi) missing.push("destination");
   if (!ctx.vibe && !ctx.mood) missing.push("vibe");
 
   const hasCompanion = Boolean(ctx.companion?.trim() || session.discovery?.companionship?.trim());
@@ -271,7 +271,7 @@ export function isReadyForRecommendation(
   session: ChatPlanningSession,
 ): boolean {
   if (session.selectedPlaces.length > 0) return true;
-  if (session.fromPlanForm) return true;
+  if (session.fromPlanForm || session.fromPlanAi) return true;
   if (session.fromMoodFlow || session.fromMoodCard) return true;
 
   const missing = missingContextKeys(ctx, session);

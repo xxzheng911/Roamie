@@ -1,4 +1,5 @@
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
+import { sanitizeHomeNearbyPicksForDisplay } from "@/lib/home-nearby-display";
 import type { WeatherSummary } from "@/lib/weather-types";
 
 export type HomeSessionUserLocation = {
@@ -39,15 +40,16 @@ export function writeHomeSessionUserLocation(loc: HomeSessionUserLocation | null
 }
 
 export function readHomeSessionNearbyPicks(): HomeNearbyPick[] {
-  return snapshot.nearbyPicks;
+  return sanitizeHomeNearbyPicksForDisplay(snapshot.nearbyPicks, { logDrop: false });
 }
 
 export function writeHomeSessionNearbyPicks(
   picks: HomeNearbyPick[],
   loadKey: string | null,
 ): void {
-  snapshot.nearbyPicks = picks;
-  snapshot.nearbyLoadKey = loadKey;
+  const sanitized = sanitizeHomeNearbyPicksForDisplay(picks, { logDrop: false });
+  snapshot.nearbyPicks = sanitized;
+  snapshot.nearbyLoadKey = sanitized.length > 0 ? loadKey : null;
 }
 
 export function readHomeSessionNearbyLoadKey(): string | null {

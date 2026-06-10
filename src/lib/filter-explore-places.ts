@@ -1,3 +1,7 @@
+import {
+  isRecommendablePlace,
+  placeResultToRecommendableInput,
+} from "@/lib/is-recommendable-place";
 import type { PlaceResult } from "@/lib/place-result";
 import { FOOD_MERCHANT_DENY_RE } from "@/lib/place-category";
 
@@ -197,10 +201,35 @@ export function isTravelFriendlyPlace(place: PlaceLike): boolean {
   return false;
 }
 
-export function filterExplorePlaces<T extends PlaceLike>(places: T[] | null | undefined): T[] {
+type RecommendablePlaceLike = PlaceLike &
+  Partial<
+    Pick<
+      PlaceResult,
+      "id" | "businessStatus" | "openStatus" | "rating" | "userRatingCount" | "types"
+    >
+  >;
+
+export function filterExplorePlaces<T extends RecommendablePlaceLike>(
+  places: T[] | null | undefined,
+  options?: { logDrop?: boolean },
+): T[] {
   if (!Array.isArray(places)) {
     console.warn("[explore] filterExplorePlaces: expected array, got", places);
     return [];
   }
-  return places.filter(isTravelFriendlyPlace);
+  return places.filter((place) => {
+    const input = placeResultToRecommendableInput({
+      id: place.id ?? "",
+      name: place.name ?? "",
+      businessStatus: place.businessStatus ?? null,
+      openStatus: place.openStatus ?? "unknown",
+      rating: place.rating ?? null,
+      userRatingCount: place.userRatingCount ?? null,
+      primaryType: place.primaryType ?? null,
+      types: place.types ?? null,
+    });
+    return isRecommendablePlace(input, "explore_map", {
+      logDrop: options?.logDrop ?? true,
+    }).ok;
+  });
 }

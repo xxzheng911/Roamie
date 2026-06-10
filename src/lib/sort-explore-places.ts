@@ -54,36 +54,43 @@ function interestBoost(
   return boost;
 }
 
+function distanceFromOrigin(place: SortablePlace, origin: { lat: number; lng: number }): number {
+  return place.lat != null && place.lng != null
+    ? distanceMeters(origin, { lat: place.lat, lng: place.lng })
+    : Number.POSITIVE_INFINITY;
+}
+
 /**
- * 探索推薦排序：營業中優先，同狀態內依距離（近→遠）、評分、偏好微調。
+ * 探索推薦排序：營業中優先；美食重評價／評論數；夜晚重 openNow。
  */
 export function sortExplorePlaces<T extends SortablePlace>(
   places: T[],
   origin: { lat: number; lng: number },
   profile?: UserProfileForReason | null,
   weather?: WeatherSummary | null,
+  categoryId?: string,
 ): T[] {
   return [...places].sort((a, b) => {
     const openA = openStatusScore(a.openStatus);
     const openB = openStatusScore(b.openStatus);
     if (openA !== openB) return openB - openA;
 
-    const distA =
-      a.lat != null && a.lng != null
-        ? distanceMeters(origin, { lat: a.lat, lng: a.lng })
-        : Number.POSITIVE_INFINITY;
-    const distB =
-      b.lat != null && b.lng != null
-        ? distanceMeters(origin, { lat: b.lat, lng: b.lng })
-        : Number.POSITIVE_INFINITY;
-    if (distA !== distB) return distA - distB;
-
     const ratingA = a.rating ?? 0;
     const ratingB = b.rating ?? 0;
-    if (ratingA !== ratingB) return ratingB - ratingA;
-
     const countA = a.userRatingCount ?? 0;
     const countB = b.userRatingCount ?? 0;
+
+    if (categoryId === "food" || categoryId === "night") {
+      if (ratingA !== ratingB) return ratingB - ratingA;
+      if (countA !== countB) return countB - countA;
+      return distanceFromOrigin(a, origin) - distanceFromOrigin(b, origin);
+    }
+
+    const distA = distanceFromOrigin(a, origin);
+    const distB = distanceFromOrigin(b, origin);
+    if (distA !== distB) return distA - distB;
+
+    if (ratingA !== ratingB) return ratingB - ratingA;
     if (countA !== countB) return countB - countA;
 
     const boostA = interestBoost(a, profile) + weatherRankingBoost(weather, placeTextForWeather(a));

@@ -6,6 +6,7 @@ import {
   getHomeWeatherBootstrapState,
   reloadHomeWeatherBootstrap,
   subscribeHomeWeatherBootstrap,
+  subscribeHomeWeatherLocationWatch,
 } from "@/lib/home-weather-bootstrap";
 import { getWeather, getWeatherForecast } from "@/lib/weather.functions";
 import { bindWeatherServerFns } from "@/services/weatherService";
@@ -25,6 +26,11 @@ export function useHomeWeather(locale: Locale) {
       fetchForecast: fetchForecastFn,
     });
     ensureHomeWeatherBootstrap(locale, "useHomeWeather");
+    const stopLocationWatch = subscribeHomeWeatherLocationWatch();
+    return () => {
+      console.info("[Location] home weather watch unsubscribe");
+      stopLocationWatch();
+    };
   }, [fetchWeatherFn, fetchForecastFn, locale]);
 
   const snapshot = useSyncExternalStore(

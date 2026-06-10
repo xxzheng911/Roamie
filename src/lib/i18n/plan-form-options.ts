@@ -52,13 +52,49 @@ export function getPlanTransportOptions(locale: Locale): string[] {
 export function getPlanStyleOptions(locale: Locale): string[] {
   switch (locale) {
     case "en":
-      return ["Slow travel", "Local food", "Café culture", "Outdoors", "Night stroll", "Art & museums"];
+      return [
+        "Food exploration",
+        "Café culture",
+        "Outdoors",
+        "City wandering",
+        "Art & exhibitions",
+        "Cultural experiences",
+        "Family-friendly",
+        "Camping & outdoors",
+      ];
     case "ja":
-      return ["スロー旅", "ご当地グルメ", "カフェ", "自然・アウトドア", "夜散歩", "アート・展覧会"];
+      return [
+        "グルメ探索",
+        "カフェ",
+        "自然・アウトドア",
+        "街歩き",
+        "アート・展覧会",
+        "文化体験",
+        "親子",
+        "キャンプ",
+      ];
     case "ko":
-      return ["슬로우 여행", "로컬 맛집", "카페", "자연·야외", "야간 산책", "예술·전시"];
+      return [
+        "미식 탐험",
+        "카페",
+        "자연·야외",
+        "도시 산책",
+        "예술·전시",
+        "문화 체험",
+        "가족",
+        "캠핑",
+      ];
     default:
-      return ["慢旅行", "在地美食", "文青咖啡", "自然戶外", "夜景散步", "藝術展覽"];
+      return [
+        "美食探索",
+        "文青咖啡",
+        "自然戶外",
+        "城市漫遊",
+        "藝術展覽",
+        "文化體驗",
+        "親子同遊",
+        "露營野遊",
+      ];
   }
 }
 

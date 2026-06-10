@@ -271,10 +271,12 @@ function isGloballyDenied(place: PlaceLike): boolean {
 
 export function matchesAllExplore(place: PlaceLike): boolean {
   if (isGloballyDenied(place)) return false;
-  const types = collectPlaceTypes(place);
-  if (hasBlockedType(types, GLOBAL_DENY_TYPES)) return false;
-  if (hasAnyType(types, GLOBAL_ALLOW_TYPES)) return true;
-  return inferPlaceCategory(place) !== "unknown";
+  return (
+    matchesCafeStrict(place) ||
+    matchesAttractionStrict(place) ||
+    matchesDistrictStrict(place) ||
+    matchesFoodStrict(place)
+  );
 }
 
 /** 茶飲、加水站、冰品等（即使 types 含 cafe 也排除） */
@@ -327,6 +329,13 @@ function matchesCafeStrict(place: PlaceLike): boolean {
   if (typesIncludeCafe(place)) return true;
   if (hasName) return true;
 
+  if (
+    hasAnyType(types, ["bakery", "dessert_shop", "ice_cream_shop"]) &&
+    /甜點|蛋糕|烘焙|甜品|dessert|patisserie|景觀|老宅/i.test(name)
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -359,10 +368,15 @@ function matchesDepartmentStoreStrict(place: PlaceLike): boolean {
 
 function matchesAttractionStrict(place: PlaceLike): boolean {
   const types = collectPlaceTypes(place);
+  const name = place.name ?? "";
   if (isGloballyDenied(place)) return false;
   if (hasBlockedType(types, ATTRACTION_DENY_TYPES)) return false;
   if (hasAnyType(types, ["book_store", "bookstore", "library"])) return false;
-  return hasAnyType(types, ATTRACTION_TYPES);
+  if (hasAnyType(types, ATTRACTION_TYPES)) return true;
+  if (/展望|觀景|地標|瞭望|viewpoint|observatory|landmark/i.test(name)) {
+    return !hasBlockedType(types, ATTRACTION_DENY_TYPES);
+  }
+  return false;
 }
 
 /**
@@ -471,6 +485,9 @@ function matchesParkStrict(place: PlaceLike): boolean {
   return hasAnyType(types, PARK_TYPES);
 }
 
+const NIGHT_NAME_ALLOW_RE =
+  /酒吧|居酒|餐酒|宵夜|深夜|bar|pub|night\s*club|夜店|夜市|izakaya/i;
+
 function matchesNightStrict(place: PlaceLike): boolean {
   const types = collectPlaceTypes(place);
   const blob = placeBlob(place);
@@ -478,6 +495,22 @@ function matchesNightStrict(place: PlaceLike): boolean {
   if (hasAnyType(types, NIGHT_TYPES)) return true;
   if (/夜市/i.test(blob) && hasAnyType(types, ["market", "flea_market", "tourist_attraction"])) {
     return true;
+  }
+  if (NIGHT_NAME_ALLOW_RE.test(blob)) {
+    if (
+      hasAnyType(types, [
+        "restaurant",
+        "cafe",
+        "coffee_shop",
+        "meal_takeaway",
+        "fast_food_restaurant",
+        "bakery",
+        "market",
+        "flea_market",
+      ])
+    ) {
+      return true;
+    }
   }
   return false;
 }

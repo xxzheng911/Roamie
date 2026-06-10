@@ -152,6 +152,9 @@ export type ChatPlanningSession = {
   tripOrigin?: TripLocation | null;
   /** 從「規劃新行程」進入聊天 */
   fromPlanForm?: boolean;
+  /** 「讓 Roamie 替我安排」AI 行程規劃模式 */
+  fromPlanAi?: boolean;
+  planAiMode?: boolean;
   /** 規劃表單開場已完成 */
   planHandoffDone?: boolean;
   tripStartDate?: string;
@@ -549,6 +552,13 @@ export function extractPlanningHintsFromText(
 export function canGenerateItinerary(session: ChatPlanningSession): boolean {
   if (session.selectedPlaces.length < 1) return false;
   if (session.phase === "generating" || session.phase === "done") return false;
+  if (session.fromPlanAi || session.planAiMode) {
+    return (
+      session.phase === "collect" ||
+      session.phase === "followup" ||
+      session.phase === "ready"
+    );
+  }
   return session.phase === "ready";
 }
 

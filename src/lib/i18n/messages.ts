@@ -6,7 +6,6 @@ const exploreCategory = {
   sight: "景點",
   district: "商圈",
   food: "美食",
-  park: "公園",
   night: "夜晚",
 } as const;
 
@@ -16,7 +15,6 @@ const exploreCategoryEn = {
   sight: "Sights",
   district: "Districts",
   food: "Food",
-  park: "Parks",
   night: "Night",
 } as const;
 
@@ -26,7 +24,6 @@ const exploreCategoryJa = {
   sight: "スポット",
   district: "エリア",
   food: "グルメ",
-  park: "公園",
   night: "夜",
 } as const;
 
@@ -36,7 +33,6 @@ const exploreCategoryKo = {
   sight: "명소",
   district: "상권",
   food: "맛집",
-  park: "공원",
   night: "밤",
 } as const;
 
@@ -93,6 +89,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       clearConfirm: "清除",
       generating: "Roamie 正在整理行程…",
       sendPlaceholder: "跟 Roamie 說說你想怎麼玩…",
+      generateFullItinerary: "生成完整行程",
       addToTrip: "加入行程",
       viewMap: "查看地圖",
     },
@@ -124,6 +121,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       notes: "其他想去的 / 備註（選填）",
       notesPlaceholder: "Roamie 推薦地點會自動帶入；你也可以補充其他想去的…",
       submit: "生成我的行程",
+      aiAssist: "讓 Roamie 替我安排",
       submitting: "Roamie 正在幫你想…",
       selectDestination: "請選擇目的地",
       pickPlaceFromResults: "請從搜尋結果中選擇一個地點",
@@ -336,6 +334,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       clearConfirm: "Clear",
       generating: "Roamie is building your itinerary…",
       sendPlaceholder: "Tell Roamie how you want to travel…",
+      generateFullItinerary: "Generate full itinerary",
       addToTrip: "Add to trip",
       viewMap: "View on map",
     },
@@ -367,6 +366,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       notes: "Notes (optional)",
       notesPlaceholder: "Recommended places are added automatically—you can add more here.",
       submit: "Start planning",
+      aiAssist: "Let Roamie plan for me",
       submitting: "Roamie is thinking…",
       selectDestination: "Please choose a destination",
       pickPlaceFromResults: "Pick a place from the search results",
@@ -583,6 +583,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       clearConfirm: "消去",
       generating: "Roamie が旅程を整理中…",
       sendPlaceholder: "どんな旅がいいか教えてね…",
+      generateFullItinerary: "旅程を完成させる",
       addToTrip: "旅程に追加",
       viewMap: "地図で見る",
     },
@@ -614,6 +615,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       notes: "メモ（任意）",
       notesPlaceholder: "おすすめは自動で入ります。追記もどうぞ。",
       submit: "旅程を始める",
+      aiAssist: "Roamie に任せる",
       submitting: "Roamie が考え中…",
       selectDestination: "目的地を選んでください",
       dateInvalid: "終了日は開始日以降に",
@@ -819,6 +821,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       clearConfirm: "지우기",
       generating: "Roamie가 일정을 정리 중…",
       sendPlaceholder: "어떤 여행이 좋은지 알려줘…",
+      generateFullItinerary: "전체 일정 생성",
       addToTrip: "일정에 추가",
       viewMap: "지도에서 보기",
     },
@@ -850,6 +853,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       notes: "메모(선택)",
       notesPlaceholder: "추천 장소는 자동 반영됩니다. 추가 입력 가능.",
       submit: "여정 시작하기",
+      aiAssist: "Roamie에게 맡기기",
       submitting: "Roamie가 생각 중…",
       selectDestination: "목적지를 선택하세요",
       dateInvalid: "종료일은 시작일 이후여야 합니다",

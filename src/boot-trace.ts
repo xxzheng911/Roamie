@@ -1,8 +1,10 @@
 /** 最早 client 診斷（須為 main / router 第一個 import） */
 import { bootDiagnosticLog, isBootDiagnosticsEnabled } from "@/lib/boot-diagnostics";
+import { logAppBundleVersion } from "@/lib/app-bundle-version";
 import { mountImmediateBootShell } from "@/lib/immediate-boot-shell";
 
 bootDiagnosticLog("MAIN_TSX_LOADED");
+logAppBundleVersion("main");
 console.log("[APP_BOOT] boot-trace loaded");
 mountImmediateBootShell();
 

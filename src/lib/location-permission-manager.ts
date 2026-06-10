@@ -1,4 +1,5 @@
-import { detectPlatform } from "@/services/platform";
+import { getCapacitorGeolocation } from "@/lib/capacitor-geolocation";
+import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 
 export type LocationPermissionState =
   | "granted"
@@ -17,16 +18,7 @@ let inflight: Promise<LocationPermissionState> | null = null;
 let sessionRequestLogged = false;
 
 function isNativeShell(): boolean {
-  const info = detectPlatform();
-  if (info.isCapacitor) return true;
-  if (typeof window === "undefined") return false;
-  const cap = (
-    window as Window & {
-      Capacitor?: { getPlatform?: () => string; isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  const platform = cap?.getPlatform?.();
-  return platform === "ios" || platform === "android";
+  return isCapacitorNativeShell();
 }
 
 function mapCapPermission(status: CapPermissionStatus): LocationPermissionState {
@@ -56,7 +48,7 @@ async function probeBrowserPermission(): Promise<LocationPermissionState | null>
 
 async function resolveCapacitorPermission(shouldRequest: boolean): Promise<LocationPermissionState> {
   try {
-    const { Geolocation } = await import("@capacitor/geolocation");
+    const Geolocation = getCapacitorGeolocation();
     const checked = await Geolocation.checkPermissions();
     let state = mapCapPermission(checked);
 

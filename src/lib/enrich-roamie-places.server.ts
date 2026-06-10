@@ -17,6 +17,10 @@ import {
   selectRecommendationsForNow,
   summarizeAvailabilityStats,
 } from "@/lib/recommend-place-ranking";
+import {
+  isRecommendablePlace,
+  itineraryToRecommendableInput,
+} from "@/lib/is-recommendable-place";
 import { lookupPlacesHoursBatch } from "@/lib/places.functions";
 import {
   filterAlreadyRecommendedPlaces,
@@ -170,6 +174,20 @@ async function enrichItinerary(
     ) {
       continue;
     }
+
+    const availability = derivePlaceAvailability(hours, {
+      context: "scheduled",
+      at,
+      atTime: item.time,
+    });
+    const recommendable = isRecommendablePlace(
+      itineraryToRecommendableInput(item, {
+        businessStatus: availability.businessStatus,
+        openStatus: availability.openStatus,
+      }),
+      "plan_trip",
+    );
+    if (!recommendable.ok) continue;
 
     kept.push(item);
   }

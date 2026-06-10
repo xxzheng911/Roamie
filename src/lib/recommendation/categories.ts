@@ -1,4 +1,5 @@
 import type { ExploreCategory } from "@/lib/places-search-config";
+import { styleCategoryBoosts, type PlanTravelStyleZh } from "@/lib/plan-travel-style";
 import { classifyWeatherScene, type WeatherScene } from "@/lib/weather-scene";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { RecommendationCategoryId } from "@/lib/recommendation/types";
@@ -8,28 +9,37 @@ export const RECOMMENDATION_CATEGORY_DEFS: ExploreCategory[] = [
   {
     id: "coffee",
     label: "咖啡",
-    query: "咖啡店",
-    mode: "nearby",
-    includedTypes: ["cafe"],
+    query: "咖啡廳 景觀咖啡 老宅咖啡 甜點",
+    mode: "multi",
+    nearbyGroups: [
+      ["cafe"],
+      ["bakery", "dessert_shop", "ice_cream_shop"],
+    ],
   },
   {
     id: "food",
     label: "美食",
-    query: "美食 餐廳",
+    query: "餐廳 小吃 火鍋 燒肉 壽司 在地特色",
     mode: "nearby",
     includedTypes: ["restaurant", "meal_takeaway", "food_store"],
   },
   {
     id: "sight",
     label: "景點",
-    query: "景點 觀光景點",
+    query: "觀光景點 展望台 博物館 美術館 地標",
     mode: "nearby",
-    includedTypes: ["tourist_attraction", "museum", "art_gallery", "historical_landmark"],
+    includedTypes: [
+      "tourist_attraction",
+      "museum",
+      "art_gallery",
+      "historical_landmark",
+      "monument",
+    ],
   },
   {
     id: "district",
     label: "商圈",
-    query: "商圈 夜市 購物",
+    query: "百貨 商場 市集 購物街區",
     mode: "multi",
     nearbyGroups: [
       ["shopping_mall", "department_store"],
@@ -68,12 +78,13 @@ export const RECOMMENDATION_CATEGORY_DEFS: ExploreCategory[] = [
   {
     id: "night",
     label: "夜晚適合",
-    query: "夜景 夜市 酒吧",
+    query: "酒吧 居酒屋 宵夜 夜市 深夜咖啡",
     mode: "multi",
     nearbyGroups: [
-      ["bar", "night_club"],
-      ["tourist_attraction"],
-      ["restaurant", "cafe"],
+      ["bar", "night_club", "pub"],
+      ["restaurant", "meal_takeaway"],
+      ["cafe", "bakery"],
+      ["market", "flea_market"],
     ],
   },
   {
@@ -130,6 +141,7 @@ export function pickCategoriesForContext(input: {
   constraints?: string[];
   settingPreference?: "indoor" | "outdoor" | "either";
   needsRainBackup?: boolean;
+  travelStyles?: PlanTravelStyleZh[];
 }): ExploreCategory[] {
   const max = input.max ?? 6;
   const scene = classifyWeatherScene({
@@ -154,6 +166,10 @@ export function pickCategoriesForContext(input: {
   }
   if (/深夜|夜|night/i.test(input.mood ?? "")) ids.add("night");
   if (/咖啡|coffee/i.test(input.mood ?? "")) ids.add("coffee");
+
+  if (input.travelStyles?.length) {
+    for (const id of styleCategoryBoosts(input.travelStyles)) ids.add(id);
+  }
 
   const avoidWalk = input.constraints?.some((c) => /少走路|walk/i.test(c));
   if (avoidWalk) {
@@ -184,10 +200,98 @@ export function pickCategoriesForContext(input: {
   ).slice(0, 4);
 }
 
-/** 首頁附近推薦：依天氣與心情調整分類優先順序 */
+const HOME_CATEGORY_IDS = ["coffee", "food", "sight", "district", "night"] as const;
+
+const HOME_MOOD_CATEGORY_IDS: Record<string, (typeof HOME_CATEGORY_IDS)[number][]> = {
+  想放空: ["coffee", "sight", "district"],
+  一個人: ["coffee", "sight", "food"],
+  下雨天: ["coffee", "district", "sight"],
+  深夜散步: ["night", "coffee", "district"],
+  找咖啡: ["coffee", "food", "district"],
+  看海: ["sight", "food", "district"],
+};
+
+function homeTimePeriod(hour: number): "day" | "evening" | "night" {
+  if (hour >= 22 || hour < 5) return "night";
+  if (hour >= 17) return "evening";
+  return "day";
+}
+
+function isHomeRainy(weather: WeatherSummary | null): boolean {
+  const scene = classifyWeatherScene({
+    tempC: weather?.tempC,
+    precipProbability: weather?.precipProbability,
+    condition: weather?.condition,
+    isDaytime: weather?.isDaytime,
+  });
+  return scene === "rainy";
+}
+
+function defaultHomeCategoryIds(
+  weather: WeatherSummary | null,
+  hour: number,
+): (typeof HOME_CATEGORY_IDS)[number][] {
+  const period = homeTimePeriod(hour);
+  const rainy = isHomeRainy(weather);
+
+  if (period === "night") {
+    return rainy
+      ? ["coffee", "night", "district", "food"]
+      : ["night", "food", "district", "coffee"];
+  }
+  if (period === "evening") {
+    return rainy
+      ? ["coffee", "sight", "district", "food"]
+      : ["sight", "coffee", "district", "food"];
+  }
+  return rainy
+    ? ["coffee", "district", "sight", "food"]
+    : ["coffee", "food", "sight", "district"];
+}
+
+function resolveHomeCategoryIds(
+  weather: WeatherSummary | null,
+  mood?: string | null,
+  at = new Date(),
+): (typeof HOME_CATEGORY_IDS)[number][] {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      hour12: false,
+      timeZone: "Asia/Taipei",
+    }).format(at),
+  );
+
+  const moodKey = mood?.trim()
+    ? Object.keys(HOME_MOOD_CATEGORY_IDS).find((k) => mood.includes(k))
+    : undefined;
+  if (moodKey) {
+    return HOME_MOOD_CATEGORY_IDS[moodKey].slice(0, 4);
+  }
+
+  if (/雨|rain/i.test(mood ?? "")) {
+    return isHomeRainy(weather)
+      ? ["coffee", "district", "sight", "food"]
+      : ["coffee", "food", "district", "sight"];
+  }
+  if (/深夜|夜|night/i.test(mood ?? "")) {
+    return ["night", "food", "coffee", "district"];
+  }
+  if (/咖啡|coffee/i.test(mood ?? "")) {
+    return ["coffee", "food", "district", "sight"];
+  }
+
+  return defaultHomeCategoryIds(weather, hour);
+}
+
+/** 首頁附近推薦：依 GPS 時段、天氣（與可選心情）決定搜尋分類 */
 export function pickCategoriesForHome(
   weather: WeatherSummary | null,
   mood?: string | null,
+  options?: { at?: Date },
 ): ExploreCategory[] {
-  return pickCategoriesForContext({ weather, mood: mood ?? undefined, max: 6 });
+  const ids = resolveHomeCategoryIds(weather, mood, options?.at);
+  return ids
+    .map((id) => getCategoryDef(id))
+    .filter((c): c is ExploreCategory => Boolean(c));
 }

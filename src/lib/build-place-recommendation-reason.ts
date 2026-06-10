@@ -541,9 +541,9 @@ export function buildPlaceRecommendationReason(
   return buildReasonFromIdentity(place, identity, profile, ctx, weather, hour, personalized, locale);
 }
 
-/** 從完整 profile + prefs 組裝理由用資料 */
+/** 從完整 profile + prefs 組裝理由用資料（prefs 未載入時安全 fallback） */
 export function userProfileForReasonFrom(
-  prefs: TravelPreferences,
+  prefs: TravelPreferences | null | undefined,
   extras?: {
     travelStyle?: string;
     personalityType?: string;
@@ -552,15 +552,16 @@ export function userProfileForReasonFrom(
     aiPreferences?: Record<string, unknown>;
   },
 ): UserProfileForReason {
+  const safe = prefs ?? {};
   return {
-    onboarded: prefs.onboarded,
-    pace: prefs.pace,
-    vibe: prefs.vibe,
-    budgetMode: resolveBudgetMode(prefs),
-    interests: prefs.interests,
+    onboarded: safe.onboarded ?? false,
+    pace: safe.pace,
+    vibe: safe.vibe,
+    budgetMode: resolveBudgetMode(safe),
+    interests: safe.interests,
     travelStyle: extras?.travelStyle,
-    personalityType: extras?.personalityType ?? prefs.personalityType,
-    personalitySummary: extras?.personalitySummary ?? prefs.personalitySummary,
+    personalityType: extras?.personalityType ?? safe.personalityType,
+    personalitySummary: extras?.personalitySummary ?? safe.personalitySummary,
     mood: extras?.mood,
     aiPreferences: extras?.aiPreferences,
   };

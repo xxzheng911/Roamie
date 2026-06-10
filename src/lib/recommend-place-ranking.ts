@@ -1,6 +1,10 @@
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { PlaceAvailability, PlaceHoursData } from "@/lib/filter-available-places";
 import {
+  isRecommendablePlace,
+  recommendationToRecommendableInput,
+} from "@/lib/is-recommendable-place";
+import {
   derivePlaceAvailability,
   isLateNightMode,
   isLateNightScenicAccessible,
@@ -62,6 +66,16 @@ export function rankRecommendationItem(
   }
 
   let availability = derivePlaceAvailability(hours, { context: "now", at });
+
+  const recommendable = isRecommendablePlace(
+    recommendationToRecommendableInput(rec, {
+      businessStatus: availability.businessStatus,
+      openStatus: availability.openStatus,
+    }),
+    "ai_recommend",
+  );
+  if (!recommendable.ok) return null;
+
   const lateNight = isLateNightMode(at);
   if (lateNight && isLateNightScenicAccessible(rec.name, rec.type)) {
     availability = {
@@ -212,6 +226,9 @@ export function shouldUseLateNightEmptySummary(
 type RecommendationDisplayItem = {
   name: string;
   type?: string;
+  googlePlaceId?: string;
+  rating?: number | null;
+  userRatingCount?: number | null;
   openStatusLabel?: string;
   closingSoonNote?: string;
   nextOpenHint?: string;
@@ -244,6 +261,12 @@ export function filterRecommendationItemsForDisplay<T extends RecommendationDisp
   items: T[],
 ): T[] {
   const filtered = items.filter((item) => {
+    const recommendable = isRecommendablePlace(
+      recommendationToRecommendableInput(item),
+      "ai_recommend",
+      { logDrop: false },
+    );
+    if (!recommendable.ok) return false;
     if (item.openStatusLabel === "目前未營業" && !item.nextOpenHint?.trim()) {
       return false;
     }

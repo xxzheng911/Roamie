@@ -6,6 +6,10 @@ import {
 } from "@/lib/place-detail-handoff";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
+import {
+  resolvePlaceDisplayAddress,
+  sanitizeGooglePlaceAddress,
+} from "@/lib/place-display-address";
 
 export type PlaceDetailSearch = {
   placeId?: string;
@@ -58,11 +62,24 @@ export function resolvePlaceDetailHandoff(
   return null;
 }
 
+function resolveHandoffAddress(
+  handoff: PlaceDetailHandoff,
+  snap?: PlaceDetailHandoff["snapshot"],
+): string | null {
+  const raw = snap?.address ?? handoff.address;
+  const sanitized = raw ? sanitizeGooglePlaceAddress(raw) : null;
+  return resolvePlaceDisplayAddress(
+    { address: sanitized },
+    { hasCoords: (snap?.lat ?? handoff.lat) != null && (snap?.lng ?? handoff.lng) != null },
+  );
+}
+
 export function handoffToPlaceDetailData(handoff: PlaceDetailHandoff): PlaceDetailViewModel {
   const snap = handoff.snapshot;
   if (snap) {
     return {
       ...snap,
+      address: resolveHandoffAddress(handoff, snap),
       coverImageUrl: snap.coverImageUrl ?? handoff.photoUrl ?? undefined,
       reason: snap.reason?.trim() || handoff.reason?.trim() || "適合現在去走走",
       website: null,
@@ -72,7 +89,7 @@ export function handoffToPlaceDetailData(handoff: PlaceDetailHandoff): PlaceDeta
   return {
     id: handoff.placeId,
     name: handoff.name,
-    address: handoff.address,
+    address: resolveHandoffAddress(handoff),
     lat: handoff.lat,
     lng: handoff.lng,
     rating: handoff.rating ?? null,
@@ -109,12 +126,23 @@ export function mergeFetchedPlace(
   base: PlaceDetailViewModel,
   fetched: PlaceDetailsScreenResult,
 ): PlaceDetailViewModel {
+  const hasCoords =
+    (fetched.lat ?? base.lat) != null && (fetched.lng ?? base.lng) != null;
+  const resolvedAddress = resolvePlaceDisplayAddress(
+    {
+      formattedAddress: fetched.googleFormattedAddress,
+      shortFormattedAddress: fetched.googleShortFormattedAddress,
+      vicinity: fetched.googleVicinity,
+    },
+    { hasCoords, googleFieldsOnly: true },
+  );
+
   return {
     ...base,
     ...fetched,
     id: fetched.id || base.id,
     name: fetched.name || base.name,
-    address: fetched.address ?? base.address,
+    address: resolvedAddress,
     lat: fetched.lat ?? base.lat,
     lng: fetched.lng ?? base.lng,
     reason: base.reason,

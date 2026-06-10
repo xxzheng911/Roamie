@@ -20,8 +20,13 @@ import {
   isPlaceAvailableNow,
   type PlaceHoursData,
 } from "@/lib/filter-available-places";
-import { filterExplorePlaces, isTravelFriendlyPlace } from "@/lib/filter-explore-places";
+import { filterExplorePlaces } from "@/lib/filter-explore-places";
+import {
+  isRecommendablePlace,
+  placeResultToRecommendableInput,
+} from "@/lib/is-recommendable-place";
 import type { PlaceResult } from "@/lib/place-result";
+import { resolvePlaceDisplayAddress } from "@/lib/place-display-address";
 
 export type { PlaceResult } from "@/lib/place-result";
 
@@ -29,6 +34,8 @@ export type RawPlaceHours = PlaceHoursData & {
   id: string;
   displayName?: { text?: string };
   formattedAddress?: string;
+  shortFormattedAddress?: string;
+  vicinity?: string;
   location?: { latitude: number; longitude: number };
   rating?: number;
   userRatingCount?: number;
@@ -73,7 +80,11 @@ function mapRawPlaces(raw: RawPlace[]): PlaceResult[] {
         place: {
           id: p.id,
           name,
-          address: p.formattedAddress ?? null,
+          address: resolvePlaceDisplayAddress({
+            formattedAddress: p.formattedAddress,
+            shortFormattedAddress: p.shortFormattedAddress,
+            vicinity: p.vicinity,
+          }),
           lat: p.location?.latitude ?? null,
           lng: p.location?.longitude ?? null,
           rating: p.rating ?? null,
@@ -94,7 +105,9 @@ function mapRawPlaces(raw: RawPlace[]): PlaceResult[] {
     .filter((x): x is NonNullable<typeof x> => x != null)
     .sort((a, b) => a.sortWeight - b.sortWeight)
     .map(({ place }) => place)
-    .filter(isTravelFriendlyPlace);
+    .filter((place) =>
+      isRecommendablePlace(placeResultToRecommendableInput(place), "explore_map").ok,
+    );
 }
 
 function parseGoogleError(text: string): string {
@@ -410,7 +423,11 @@ export async function fetchPlaceDetailsForIntro(
     const place: PlaceResult = {
       id: p.id,
       name: p.displayName?.text ?? "Unknown",
-      address: p.formattedAddress ?? null,
+      address: resolvePlaceDisplayAddress({
+        formattedAddress: p.formattedAddress,
+        shortFormattedAddress: p.shortFormattedAddress,
+        vicinity: p.vicinity,
+      }),
       lat: p.location?.latitude ?? null,
       lng: p.location?.longitude ?? null,
       rating: p.rating ?? null,
@@ -443,6 +460,9 @@ export type PlaceDetailsScreenResult = PlaceResult & {
   website: string | null;
   phone: string | null;
   coverImageUrl?: string | null;
+  googleFormattedAddress?: string | null;
+  googleShortFormattedAddress?: string | null;
+  googleVicinity?: string | null;
 };
 
 type PlaceDetailsScreenRaw = PlaceDetailsRaw & {
@@ -451,12 +471,55 @@ type PlaceDetailsScreenRaw = PlaceDetailsRaw & {
   internationalPhoneNumber?: string;
 };
 
-export async function fetchPlaceDetailsForScreen(
+function mapPlaceDetailsScreenRaw(
+  p: PlaceDetailsScreenRaw,
+  locale?: Locale,
+): PlaceDetailsScreenResult {
+  const hours = rawPlaceToHoursData(p);
+  const availability = derivePlaceAvailability(hours, { context: "now" });
+  const fields = applyAvailabilityFields({}, availability);
+  const hasCoords = p.location?.latitude != null && p.location?.longitude != null;
+  const googleFields = {
+    formattedAddress: p.formattedAddress,
+    shortFormattedAddress: p.shortFormattedAddress,
+    vicinity: p.vicinity,
+  };
+  return {
+    id: p.id,
+    name: p.displayName?.text ?? "Unknown",
+    address: resolvePlaceDisplayAddress(googleFields, {
+      hasCoords,
+      locale,
+      googleFieldsOnly: true,
+    }),
+    googleFormattedAddress: p.formattedAddress ?? null,
+    googleShortFormattedAddress: p.shortFormattedAddress ?? null,
+    googleVicinity: p.vicinity ?? null,
+    lat: p.location?.latitude ?? null,
+    lng: p.location?.longitude ?? null,
+    rating: p.rating ?? null,
+    userRatingCount: p.userRatingCount ?? null,
+    photoName: p.photos?.[0]?.name ?? null,
+    primaryType: p.primaryType ?? null,
+    types: p.types ?? null,
+    businessStatus: availability.businessStatus,
+    openStatus: availability.openStatus,
+    openStatusLabel: fields.openStatusLabel,
+    todayHoursLabel: fields.todayHoursLabel,
+    closingSoonNote: fields.closingSoonNote,
+    nextOpenHint: fields.nextOpenHint,
+    website: p.websiteUri?.trim() || null,
+    phone: p.nationalPhoneNumber?.trim() || p.internationalPhoneNumber?.trim() || null,
+  };
+}
+
+/** 瀏覽器直連 Google Places Details（Capacitor bundle 無 server 時） */
+export async function fetchPlaceDetailsForScreenWithKey(
   placeId: string,
+  apiKey: string,
   locale?: Locale,
 ): Promise<PlaceDetailsScreenResult | null> {
   try {
-    const apiKey = await getServerMapsKey();
     const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
     const res = await fetch(placeDetailsUrl(placeId), {
       headers: {
@@ -467,33 +530,24 @@ export async function fetchPlaceDetailsForScreen(
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
-      console.warn("[Roamie Places] place details screen HTTP", res.status, detail.slice(0, 200));
+      console.warn("[Roamie Places] place details client HTTP", res.status, detail.slice(0, 200));
       return null;
     }
     const p = (await res.json()) as PlaceDetailsScreenRaw;
-    const hours = rawPlaceToHoursData(p);
-    const availability = derivePlaceAvailability(hours, { context: "now" });
-    const fields = applyAvailabilityFields({}, availability);
-    return {
-      id: p.id,
-      name: p.displayName?.text ?? "Unknown",
-      address: p.formattedAddress ?? null,
-      lat: p.location?.latitude ?? null,
-      lng: p.location?.longitude ?? null,
-      rating: p.rating ?? null,
-      userRatingCount: p.userRatingCount ?? null,
-      photoName: p.photos?.[0]?.name ?? null,
-      primaryType: p.primaryType ?? null,
-      types: p.types ?? null,
-      businessStatus: availability.businessStatus,
-      openStatus: availability.openStatus,
-      openStatusLabel: fields.openStatusLabel,
-      todayHoursLabel: fields.todayHoursLabel,
-      closingSoonNote: fields.closingSoonNote,
-      nextOpenHint: fields.nextOpenHint,
-      website: p.websiteUri?.trim() || null,
-      phone: p.nationalPhoneNumber?.trim() || p.internationalPhoneNumber?.trim() || null,
-    };
+    return mapPlaceDetailsScreenRaw(p, locale);
+  } catch (e) {
+    console.warn("[Roamie Places] place details client failed", placeId, e);
+    return null;
+  }
+}
+
+export async function fetchPlaceDetailsForScreen(
+  placeId: string,
+  locale?: Locale,
+): Promise<PlaceDetailsScreenResult | null> {
+  try {
+    const apiKey = await getServerMapsKey();
+    return await fetchPlaceDetailsForScreenWithKey(placeId, apiKey, locale);
   } catch (e) {
     console.warn("[Roamie Places] place details screen failed", placeId, e);
     return null;

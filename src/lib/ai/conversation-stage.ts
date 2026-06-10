@@ -108,7 +108,7 @@ export function chatPhaseForStage(
 ): ChatPhase {
   if (stage === "itinerary") return session.selectedPlaces.length ? "confirm" : "collect";
   if (stage === "recommend") {
-    if (session.fromPlanForm && session.selectedPlaces.length < 3) return "expand";
+    if ((session.fromPlanForm || session.fromPlanAi) && session.selectedPlaces.length < 3) return "expand";
     if (session.fromMoodFlow && session.selectedPlaces.length > 0) return "expand";
     if (session.selectedPlaces.length) return "expand";
     if (session.recommendedPlaces.length) return "recommend";

@@ -10,8 +10,10 @@ import {
   ensureLocationPermission,
   type LocationPermissionState,
 } from "@/lib/location-permission-manager";
-import { distanceMeters } from "@/lib/map-explore";
-import { detectPlatform } from "@/services/platform";
+import { registerAppStateChangeListener } from "@/lib/capacitor-app-listener";
+import { getCapacitorGeolocation } from "@/lib/capacitor-geolocation";
+import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
+import { distanceMeters } from "@/lib/geo-distance";
 
 export { isIosSimulatorPresetLocation } from "@/lib/device-location-resolve";
 
@@ -33,6 +35,7 @@ export type DeviceLocationResult = {
   /** true = 未取得 GPS，使用上次有效座標或台北預設 */
   usedFallback: boolean;
   source: "capacitor" | "browser" | "fallback";
+  accuracy?: number | null;
 };
 
 const GEO_OPTIONS: PositionOptions = {
@@ -47,11 +50,16 @@ const GEO_OPTIONS_LOW: PositionOptions = {
   enableHighAccuracy: false,
 };
 
-/** 同一座標或小幅移動（<100m）不 publish / 不刷 GPS fix log */
+/** 與首頁 nearby bucket 一致；同一 bucket 不 publish / 不觸發 listener */
+function coordBucketKey(lat: number, lng: number): string {
+  return `${lat.toFixed(3)}:${lng.toFixed(3)}`;
+}
+
 const LOCATION_PUBLISH_MIN_DISTANCE_M = 100;
 const REQUEST_RESULT_TTL_MS = 20_000;
 
 let lastPublishedLocation: { lat: number; lng: number } | null = null;
+let lastPublishedBucket: string | null = null;
 let requestInFlight: Promise<DeviceLocationResult> | null = null;
 let lastRequestResult: { at: number; result: DeviceLocationResult } | null = null;
 
@@ -59,6 +67,13 @@ type LocationListener = (loc: DeviceLocationResult) => void;
 const locationListeners = new Set<LocationListener>();
 let globalWatchCleanup: (() => void) | null = null;
 let globalWatchStarting = false;
+let watchPausedForAppState = false;
+let appStateListenerRegistered = false;
+/** 取消進行中的 watchPosition 建立（pause / unsubscribe 時遞增） */
+let watchStartGeneration = 0;
+
+const LOCATION_VERBOSE_LOGS = import.meta.env.DEV;
+let lastSkipBucketLogKey = "";
 
 function isDevBuild(): boolean {
   return import.meta.env.DEV && !import.meta.env.PROD;
@@ -77,16 +92,7 @@ function allowSimulatorGpsInDev(): boolean {
 }
 
 function isNativeShell(): boolean {
-  const info = detectPlatform();
-  if (info.isCapacitor) return true;
-  if (typeof window === "undefined") return false;
-  const cap = (
-    window as Window & {
-      Capacitor?: { getPlatform?: () => string; isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  const platform = cap?.getPlatform?.();
-  return platform === "ios" || platform === "android";
+  return isCapacitorNativeShell();
 }
 
 function permissionFromGeoError(code: number): LocationPermissionState {
@@ -111,6 +117,10 @@ function readLastGoodCoords(): { lat: number; lng: number } | null {
   }
 }
 
+export function getLastKnownDeviceCoords(): { lat: number; lng: number } | null {
+  return readLastGoodCoords();
+}
+
 function rememberGoodCoords(lat: number, lng: number): void {
   if (typeof sessionStorage === "undefined") return;
   if (!shouldRememberCoords(lat, lng)) return;
@@ -124,6 +134,8 @@ function rememberGoodCoords(lat: number, lng: number): void {
 }
 
 function coordsMovedEnough(lat: number, lng: number): boolean {
+  const bucket = coordBucketKey(lat, lng);
+  if (lastPublishedBucket === bucket) return false;
   if (!lastPublishedLocation) return true;
   return (
     distanceMeters(lastPublishedLocation, { lat, lng }) >= LOCATION_PUBLISH_MIN_DISTANCE_M
@@ -132,6 +144,7 @@ function coordsMovedEnough(lat: number, lng: number): boolean {
 
 function markPublishedCoords(lat: number, lng: number): void {
   lastPublishedLocation = { lat, lng };
+  lastPublishedBucket = coordBucketKey(lat, lng);
   lastRequestResult = null;
 }
 
@@ -143,6 +156,7 @@ function logGpsFix(
   kind: string,
   simulatorPreset?: boolean,
 ): void {
+  if (!LOCATION_VERBOSE_LOGS && kind === "watch") return;
   console.info("[Location] GPS fix", {
     lat,
     lng,
@@ -158,6 +172,7 @@ function parseGpsPosition(
   latitude: number,
   longitude: number,
   source: "capacitor" | "browser",
+  accuracy?: number | null,
 ): DeviceLocationResult | null {
   const resolved = resolveGpsCoordinates({
     lat: latitude,
@@ -190,6 +205,7 @@ function parseGpsPosition(
     permission: "granted",
     usedFallback: false,
     source,
+    accuracy: accuracy ?? null,
   };
 }
 
@@ -200,7 +216,7 @@ function readPositionForRequest(
   accuracy: number | null | undefined,
   source: "capacitor" | "browser",
 ): DeviceLocationResult | null {
-  const parsed = parseGpsPosition(latitude, longitude, source);
+  const parsed = parseGpsPosition(latitude, longitude, source, accuracy);
   if (!parsed) return null;
 
   if (coordsMovedEnough(parsed.lat, parsed.lng)) {
@@ -225,17 +241,15 @@ function readPositionForWatch(
   accuracy: number | null | undefined,
   source: "capacitor" | "browser",
 ): DeviceLocationResult | null {
-  const parsed = parseGpsPosition(latitude, longitude, source);
+  const parsed = parseGpsPosition(latitude, longitude, source, accuracy);
   if (!parsed) return null;
 
   if (!coordsMovedEnough(parsed.lat, parsed.lng)) {
-    console.info("[Location] LOCATION_WATCH_SKIP_SAME_COORDS", {
-      lat: parsed.lat,
-      lng: parsed.lng,
-      accuracy,
-      source,
-      minDistanceM: LOCATION_PUBLISH_MIN_DISTANCE_M,
-    });
+    const bucket = coordBucketKey(parsed.lat, parsed.lng);
+    if (lastSkipBucketLogKey !== bucket) {
+      lastSkipBucketLogKey = bucket;
+      console.info("[LOCATION_UPDATE_SKIP_SAME_BUCKET]", { locationKey: bucket });
+    }
     return null;
   }
 
@@ -245,15 +259,78 @@ function readPositionForWatch(
 }
 
 function notifyLocationListeners(loc: DeviceLocationResult): void {
+  if (LOCATION_VERBOSE_LOGS) {
+    console.info("[LOCATION_UPDATE]", {
+      trigger: "gps_watch",
+      lat: loc.lat,
+      lng: loc.lng,
+      source: loc.source,
+      usedFallback: loc.usedFallback,
+      listenerCount: locationListeners.size,
+    });
+  }
   for (const listener of locationListeners) {
     listener(loc);
   }
 }
 
+function shouldKeepGlobalWatch(startGen: number): boolean {
+  return (
+    !watchPausedForAppState &&
+    locationListeners.size > 0 &&
+    startGen === watchStartGeneration
+  );
+}
+
+function pauseGlobalLocationWatch(reason: string): void {
+  watchStartGeneration += 1;
+  if (globalWatchCleanup) {
+    globalWatchCleanup();
+    globalWatchCleanup = null;
+  }
+  globalWatchStarting = false;
+  if (LOCATION_VERBOSE_LOGS) {
+    console.info("[Location] watch paused", {
+      reason,
+      listeners: locationListeners.size,
+    });
+  }
+}
+
+function resumeGlobalLocationWatchIfNeeded(): void {
+  if (watchPausedForAppState) return;
+  if (locationListeners.size === 0) return;
+  ensureGlobalLocationWatch();
+}
+
+function ensureAppStateWatchControl(): void {
+  if (appStateListenerRegistered || typeof window === "undefined") return;
+  if (!isNativeShell()) return;
+  appStateListenerRegistered = true;
+
+  void registerAppStateChangeListener((isActive) => {
+    if (isActive) {
+      watchPausedForAppState = false;
+      console.info("[Location] app active — resume watch if needed");
+      resumeGlobalLocationWatchIfNeeded();
+      return;
+    }
+    watchPausedForAppState = true;
+    pauseGlobalLocationWatch("app_inactive");
+  }).catch((e) => {
+    appStateListenerRegistered = false;
+    console.warn("[Location] appStateChange listener unavailable", e);
+  });
+}
+
 function ensureGlobalLocationWatch(): void {
+  ensureAppStateWatchControl();
+  if (watchPausedForAppState) return;
+  if (locationListeners.size === 0) return;
   if (globalWatchCleanup || globalWatchStarting) return;
 
   const native = isNativeShell();
+  const startGen = watchStartGeneration;
 
   if (native) {
     globalWatchStarting = true;
@@ -264,13 +341,14 @@ function ensureGlobalLocationWatch(): void {
           console.warn("[Location] watch skipped — permission not granted", { permission });
           return;
         }
-        if (globalWatchCleanup) return;
+        if (!shouldKeepGlobalWatch(startGen)) return;
 
-        const { Geolocation } = await import("@capacitor/geolocation");
+        const Geolocation = getCapacitorGeolocation();
         const watchId = await Geolocation.watchPosition(
           { enableHighAccuracy: true, timeout: 25_000, maximumAge: 30_000 },
           (pos, err) => {
             if (err || !pos) return;
+            if (locationListeners.size === 0) return;
             const parsed = readPositionForWatch(
               pos.coords.latitude,
               pos.coords.longitude,
@@ -280,9 +358,20 @@ function ensureGlobalLocationWatch(): void {
             if (parsed) notifyLocationListeners(parsed);
           },
         );
+        if (!shouldKeepGlobalWatch(startGen)) {
+          void Geolocation.clearWatch({ id: watchId });
+          console.info("[Location] watch aborted after subscribe (no listeners)", {
+            listeners: locationListeners.size,
+          });
+          return;
+        }
         globalWatchCleanup = () => {
           void Geolocation.clearWatch({ id: watchId });
         };
+        console.info("[Location] watch started", {
+          platform: "capacitor",
+          listeners: locationListeners.size,
+        });
       } catch (e) {
         console.warn("[Location] capacitor watchPosition unavailable", e);
       } finally {
@@ -298,6 +387,7 @@ function ensureGlobalLocationWatch(): void {
 
   const browserWatchId = navigator.geolocation.watchPosition(
     (pos) => {
+      if (locationListeners.size === 0) return;
       const parsed = readPositionForWatch(
         pos.coords.latitude,
         pos.coords.longitude,
@@ -314,12 +404,15 @@ function ensureGlobalLocationWatch(): void {
     navigator.geolocation.clearWatch(browserWatchId);
   };
   globalWatchStarting = false;
+  console.info("[Location] watch started", {
+    platform: "browser",
+    listeners: locationListeners.size,
+  });
 }
 
 function stopGlobalLocationWatchIfIdle(): void {
   if (locationListeners.size > 0) return;
-  globalWatchCleanup?.();
-  globalWatchCleanup = null;
+  pauseGlobalLocationWatch("no_listeners");
 }
 
 type CapGeolocation = typeof import("@capacitor/geolocation").Geolocation;
@@ -362,7 +455,7 @@ async function readCapacitorPosition(): Promise<{
   if (!isNativeShell()) return { result: null, permission: "unknown" };
 
   try {
-    const { Geolocation } = await import("@capacitor/geolocation");
+    const Geolocation = getCapacitorGeolocation();
     const permission = await ensureLocationPermission({ request: true });
     if (permission !== "granted") {
       return { result: null, permission };
@@ -565,12 +658,18 @@ export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
   return requestInFlight;
 }
 
-/** 訂閱全域 singleton watch；App active / remount 不會重建 watcher。 */
+/** 訂閱全域 singleton watch；最後一個訂閱者 unsubscribe 時 clearWatch。 */
 export function subscribeDeviceLocation(onUpdate: LocationListener): () => void {
   locationListeners.add(onUpdate);
+  if (LOCATION_VERBOSE_LOGS) {
+    console.info("[Location] subscribeDeviceLocation", { listeners: locationListeners.size });
+  }
   ensureGlobalLocationWatch();
   return () => {
     locationListeners.delete(onUpdate);
+    if (LOCATION_VERBOSE_LOGS) {
+      console.info("[Location] unsubscribeDeviceLocation", { listeners: locationListeners.size });
+    }
     stopGlobalLocationWatchIfIdle();
   };
 }
