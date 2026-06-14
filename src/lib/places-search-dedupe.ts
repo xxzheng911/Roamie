@@ -1,11 +1,11 @@
 import type { SearchPlacesInput } from "@/lib/explore-category-search";
-import { normalizedLocationKey } from "@/lib/effective-location";
+import { normalizedLocationKey } from "@/lib/location-key";
 import {
   normalizePlacesSearchResult,
   type PlacesSearchResult,
 } from "@/lib/places-search-normalize";
-import { logPlacesApiSkipDuplicate } from "@/lib/places-diagnostics";
-import { searchRadiusMeters } from "@/lib/search-radius";
+import { logPlacesApiSkipDuplicate, logPlacesCacheHit } from "@/lib/places-diagnostics";
+import { homeNearbySearchRadiusMeters } from "@/lib/search-radius";
 
 export type { PlacesSearchResult };
 
@@ -19,14 +19,20 @@ const inFlightMap = new Map<string, Promise<PlacesSearchResult>>();
 const failedKeyUntil = new Map<string, number>();
 const clientFallbackAttempted = new Set<string>();
 
-/** 同一 Places 請求 dedupe key：3 位小數座標 + radius + mode + query + includedTypes + locale */
+function nearbyGroupsKey(groups?: string[][]): string {
+  if (!groups?.length) return "";
+  return groups.map((g) => [...g].sort().join("+")).join("|");
+}
+
+/** 同一 Places 請求 dedupe key：3 位小數座標 + radius + mode + query + types + nearbyGroups + locale */
 export function buildPlacesSearchKey(data: SearchPlacesInput): string {
   const locationKey = normalizedLocationKey(data.lat, data.lng);
-  const radius = data.radius ?? searchRadiusMeters();
+  const radius = data.radius ?? homeNearbySearchRadiusMeters();
   const types = [...(data.includedTypes ?? [])].sort().join(",");
+  const groups = nearbyGroupsKey(data.nearbyGroups);
   const query = (data.query ?? "").trim();
   const locale = data.locale ?? "";
-  return `${locationKey}:${radius}:${data.mode}:${query}:${types}:${locale}`;
+  return `${locationKey}:${radius}:${data.mode}:${query}:${types}:${groups}:${locale}`;
 }
 
 function readCached(key: string, now = Date.now()): PlacesSearchResult | null {
@@ -70,7 +76,7 @@ export function getPlacesSearchCachedOrRun(
 
   const cached = readCached(key, now);
   if (cached) {
-    logPlacesApiSkipDuplicate("cache", { key, count: cached.places.length });
+    logPlacesCacheHit(key, cached.places.length, "api");
     return Promise.resolve(cached);
   }
 

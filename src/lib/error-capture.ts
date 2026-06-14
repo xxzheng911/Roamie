@@ -10,12 +10,29 @@ function record(error: unknown) {
   lastCapturedError = { error, at: Date.now() };
 }
 
+function isEmptyWindowError(event: ErrorEvent): boolean {
+  const err = event.error;
+  const msg = typeof event.message === "string" ? event.message : "";
+  return (
+    (err == null || err === "") &&
+    (!msg || msg === "Script error.")
+  );
+}
+
 if (typeof globalThis.addEventListener === "function") {
   globalThis.addEventListener("error", (event) => {
-    const err = (event as ErrorEvent).error ?? (event as ErrorEvent).message;
+    const errEvent = event as ErrorEvent;
+    if (errEvent.target instanceof HTMLScriptElement) return;
+    if (isEmptyWindowError(errEvent)) return;
+    const err = errEvent.error ?? errEvent.message;
     record(err);
     if (!isBenignWebKitNoise(err, { source: "globalThis.error" })) {
-      logAppError("APP_INIT_ERROR", err, { source: "globalThis.error" });
+      logAppError("APP_INIT_ERROR", err, {
+        source: "globalThis.error",
+        filename: errEvent.filename,
+        lineno: errEvent.lineno,
+        colno: errEvent.colno,
+      });
     }
   });
   globalThis.addEventListener("unhandledrejection", (event) => {

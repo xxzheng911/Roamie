@@ -12,6 +12,7 @@ import {
   statSync,
   rmSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -241,7 +242,13 @@ const CAPACITOR_EARLY_ERROR_LOG = `<script>
       roamieLog("APP_SCRIPT_LOAD_ERROR", e.message || "script failed", e.filename || "script");
       return;
     }
-    roamieLog("APP_INIT_ERROR", e.error || e.message, e.filename);
+    var err = e.error;
+    var msg = typeof e.message === "string" ? e.message : "";
+    if ((err == null || err === "") && (!msg || msg === "Script error.")) {
+      return;
+    }
+    var loc = (e.filename || "") + ":" + (e.lineno || 0) + ":" + (e.colno || 0);
+    roamieLog("APP_INIT_ERROR", err || msg, loc);
   }, true);
   window.addEventListener("unhandledrejection", function(e) {
     roamieLog("APP_UNHANDLED_REJECTION", e.reason, "promise");
@@ -561,25 +568,27 @@ function patchClientRouterSuspense(entryRelPath) {
   console.info("[capacitor-prepare] Patched router bootstrap Suspense fallback");
 }
 
-/** 主 bundle 結尾 reuse 已存在的 _capRoot（capacitor-mount.js 先 mount） */
+/** 主 bundle：每次冷啟動建立新 root，並記錄 React uncaught error（勿 reuse 舊 _capRoot） */
 function patchClientBundleCreateRootReuse(entryRelPath) {
   const entryPath = resolve(clientDir, entryRelPath);
   let code = readFileSync(entryPath, "utf8");
-  const re = /(\w+)\.createRoot\(document\.getElementById\("root"\)\s*\?\?\s*document\.body\)\.render\(/;
-  if (!re.test(code)) {
-    console.warn("[capacitor-prepare] createRoot reuse patch skipped (pattern not found)");
+  const mountRe = /(\w+)\.createRoot\(document\.getElementById\("root"\)\s*\?\?\s*document\.body\)\.render\(/;
+  const reuseRe =
+    /\(function\(\)\{var _el=document\.getElementById\("root"\)\?\?document\.body;[^]*?\}\)\(\)\.render\(/;
+  const freshMount =
+    '(function(){var _el=document.getElementById("root")??document.body;try{delete _el._capRoot;}catch(_){}var _opts={onUncaughtError:function(err,info){try{var msg=err&&(err.message||String(err))||"(no message)";var boot=window.__ROAMIE_BOOT__||{};boot.error=msg;window.__ROAMIE_BOOT__=boot;console.error("[REACT_UNCAUGHT] "+msg+(info&&info.componentStack?" componentStack="+info.componentStack:""));}catch(_){}}};return $1.createRoot(_el,_opts);})().render(';
+
+  if (reuseRe.test(code)) {
+    code = code.replace(reuseRe, freshMount);
+  } else if (mountRe.test(code)) {
+    code = code.replace(mountRe, freshMount);
+  } else {
+    console.warn("[capacitor-prepare] createRoot boot patch skipped (pattern not found)");
     return;
   }
-  if (code.includes("_capRoot")) {
-    console.info("[capacitor-prepare] createRoot reuse patch already present");
-    return;
-  }
-  code = code.replace(
-    re,
-    '(function(){var _el=document.getElementById("root")??document.body;if(_el._capRoot)return _el._capRoot;var _r=$1.createRoot(_el);_el._capRoot=_r;return _r;})().render(',
-  );
+
   writeFileSync(entryPath, code, "utf8");
-  console.info("[capacitor-prepare] Patched createRoot to reuse capacitor-mount root");
+  console.info("[capacitor-prepare] Patched createRoot (fresh root + onUncaughtError)");
 }
 
 function writeBundledIndexHtml({ clientEntry, bootstrapEntry, stylesheet }) {
@@ -799,3 +808,7 @@ console.info("[capacitor-prepare] Wrote production bundled index.html");
 console.info(`[capacitor-prepare]   script: ./${clientEntry}`);
 if (stylesheet) console.info(`[capacitor-prepare]   style:  ./${stylesheet}`);
 console.info("[capacitor-prepare] WebView will load bundled assets (no server.url)");
+
+spawnSync(process.execPath, [resolve(root, "scripts/patch-capacitor-geolocation.mjs")], {
+  stdio: "inherit",
+});

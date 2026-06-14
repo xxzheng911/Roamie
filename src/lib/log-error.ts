@@ -248,7 +248,13 @@ export function buildCapacitorEarlyErrorLogScript(): string {
       roamieLog("APP_SCRIPT_LOAD_ERROR", e.message || "script failed", e.filename || "script");
       return;
     }
-    roamieLog("APP_INIT_ERROR", e.error || e.message, e.filename);
+    var err = e.error;
+    var msg = typeof e.message === "string" ? e.message : "";
+    if ((err == null || err === "") && (!msg || msg === "Script error.")) {
+      return;
+    }
+    var loc = (e.filename || "") + ":" + (e.lineno || 0) + ":" + (e.colno || 0);
+    roamieLog("APP_INIT_ERROR", err || msg, loc);
   }, true);
   window.addEventListener("unhandledrejection", function(e) {
     roamieLog("APP_UNHANDLED_REJECTION", e.reason, "promise");

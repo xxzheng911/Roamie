@@ -9,6 +9,15 @@ const placesHomeDiagnostics = {
   homeRenderCount: 0,
 };
 
+const loggedSkipKeys = new Set<string>();
+const loggedLocationSkipKeys = new Set<string>();
+const loggedCacheHitKeys = new Set<string>();
+
+function skipLogKey(reason: string, detail: Record<string, unknown>): string {
+  const id = detail.key ?? detail.locationKey ?? detail.loadKey;
+  return `${reason}:${String(id ?? "")}`;
+}
+
 export function incrementPlacesApiCallCount(): void {
   placesHomeDiagnostics.apiCallCount += 1;
 }
@@ -76,23 +85,35 @@ export function logPlacesResponse(
     sample: normalized.places.slice(0, 2).map((p) => p.name),
     ...extra,
   });
-  if (source === "client") {
-    console.info("[PLACES_FALLBACK_RESPONSE]", {
-      lat: data.lat,
-      lng: data.lng,
-      mode: data.mode,
-      query: data.query,
-      count: normalized.places.length,
-      ...extra,
-    });
-  }
+}
+
+/** API / 分類結果 cache 命中（每 key 只 log 一次） */
+export function logPlacesCacheHit(
+  key: string,
+  count: number,
+  layer: "api" | "map_category" | "category",
+): void {
+  const dedupeKey = `${layer}:${key}`;
+  if (loggedCacheHitKeys.has(dedupeKey)) return;
+  loggedCacheHitKeys.add(dedupeKey);
+  console.info("[PLACES_CACHE_HIT]", { layer, key, count });
 }
 
 export function logPlacesApiSkipDuplicate(
   reason: "cache" | "in_flight" | "failed_ttl" | "client_fallback" | "nearby_ttl" | "nearby_in_flight",
   detail: Record<string, unknown>,
 ): void {
+  const dedupeKey = skipLogKey(reason, detail);
+  if (loggedSkipKeys.has(dedupeKey)) return;
+  loggedSkipKeys.add(dedupeKey);
   console.info("[PLACES_API_SKIP_DUPLICATE]", { reason, ...detail });
+}
+
+/** 相同 locationKey 的 GPS 微調 skip 只 log 一次 */
+export function logLocationUpdateSkipOnce(locationKey: string): void {
+  if (loggedLocationSkipKeys.has(locationKey)) return;
+  loggedLocationSkipKeys.add(locationKey);
+  console.info("[LOCATION_UPDATE_SKIP_SAME_BUCKET]", { locationKey });
 }
 
 export function logHomeNearbyDataReady(detail: {

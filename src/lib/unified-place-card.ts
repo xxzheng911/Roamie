@@ -41,7 +41,8 @@ export function resolvePlaceCoverImage(
 }
 
 export function resolvePlaceDisplayCategory(place: PlaceResult): string {
-  return identityDisplayLabel(resolvePlaceIdentity(place));
+  const identity = resolvePlaceIdentity(place);
+  return identityDisplayLabel(identity, place);
 }
 
 export function resolvePlaceDistanceLabel(

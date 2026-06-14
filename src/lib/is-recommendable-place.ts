@@ -251,11 +251,16 @@ function minReviewsFor(place: RecommendablePlaceInput): number {
   return GENERAL_MIN_REVIEWS;
 }
 
+const loggedFilterDropKeys = new Set<string>();
+
 export function logPlaceRecommendFilterDrop(
   place: RecommendablePlaceInput,
   dropReason: string,
   context?: RecommendablePlaceContext,
 ): void {
+  const dropKey = `${resolvePlaceId(place) || place.name}:${dropReason}:${context ?? ""}`;
+  if (loggedFilterDropKeys.has(dropKey)) return;
+  loggedFilterDropKeys.add(dropKey);
   console.info("[PLACE_RECOMMEND_FILTER_DROP]", {
     name: place.name ?? "",
     placeId: resolvePlaceId(place) || null,

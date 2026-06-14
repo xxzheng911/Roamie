@@ -1,13 +1,13 @@
 import { KAOHSIUNG_COORDS } from "@/lib/api/constants";
 import { distanceMeters } from "@/lib/geo-distance";
+import { normalizedLocationKey } from "@/lib/location-key";
 import {
   DEFAULT_FALLBACK_LOCATION,
   getLastKnownDeviceCoords,
+  getSessionDeviceLocation,
   requestDeviceLocation,
   shouldDeferUntilGpsFix,
   shouldUseRememberedLocationFallback,
-  subscribeDeviceLocation,
-  waitForDeviceGpsFix,
   type DeviceLocationResult,
   type LocationPermissionState,
 } from "@/lib/device-location";
@@ -33,19 +33,17 @@ export type EffectiveLocationSnapshot = {
   accuracy: number | null;
 };
 
-const GPS_WAIT_MS = 20_000;
 const MAX_POOR_ACCURACY_M = 200;
 /** GPS 位移小於此距離不更新 locationKey、不觸發 Places */
-const PLACES_LOCATION_MIN_MOVE_M = 100;
+const PLACES_LOCATION_MIN_MOVE_M = 300;
 
 let snapshot: EffectiveLocationSnapshot | null = null;
 let bootstrapPromise: Promise<EffectiveLocationSnapshot> | null = null;
-let watchCleanup: (() => void) | null = null;
 const listeners = new Set<() => void>();
 
-export function normalizedLocationKey(lat: number, lng: number): string {
-  return `${lat.toFixed(3)}:${lng.toFixed(3)}`;
-}
+export { normalizedLocationKey } from "@/lib/location-key";
+
+const loggedLocationSkipKeys = new Set<string>();
 
 export function getEffectiveLocationSnapshot(): EffectiveLocationSnapshot | null {
   return snapshot;
@@ -63,13 +61,14 @@ function notify(): void {
 }
 
 function logSkipSameBucket(locationKey: string): void {
-  if (snapshot?.locationKey === locationKey) {
-    console.info("[LOCATION_UPDATE_SKIP_SAME_BUCKET]", { locationKey });
-  }
+  if (snapshot?.locationKey !== locationKey) return;
+  if (loggedLocationSkipKeys.has(locationKey)) return;
+  loggedLocationSkipKeys.add(locationKey);
+  console.info("[LOCATION_PATCH_SKIP_SAME_KEY]", { locationKey });
 }
 
 function logEffectiveReady(next: EffectiveLocationSnapshot): void {
-  console.info("[LOCATION_EFFECTIVE_READY]", {
+  console.info("[LOCATION_PATCH_APPLIED]", {
     locationKey: next.locationKey,
     lat: next.lat,
     lng: next.lng,
@@ -77,6 +76,7 @@ function logEffectiveReady(next: EffectiveLocationSnapshot): void {
     isFallback: next.isFallback,
     isReadyForPlaces: next.isReadyForPlaces,
     accuracy: next.accuracy,
+    via: "effective_location",
   });
 }
 
@@ -212,31 +212,20 @@ function publish(next: EffectiveLocationSnapshot, reason: string): boolean {
   return true;
 }
 
-function ensureEffectiveLocationWatch(): void {
-  if (watchCleanup) return;
-  watchCleanup = subscribeDeviceLocation((loc) => {
-    if (loc.usedFallback) return;
-    const next = toSnapshot(loc, { readyForPlaces: true, status: "ready" });
-    publish(next, "watch");
-  });
-}
-
 async function bootstrapEffectiveLocation(): Promise<EffectiveLocationSnapshot> {
-  let loc = await requestDeviceLocation();
+  console.info("[LOCATION_INIT]", { via: "effective_location_bootstrap" });
 
+  const cachedSession = getSessionDeviceLocation();
+  const loc = cachedSession ?? (await requestDeviceLocation());
+
+  let finalLoc = loc;
   if (shouldDeferUntilGpsFix(loc)) {
     publish(
       toSnapshot(loc, { readyForPlaces: false, status: "pending_gps" }),
       "pending_gps",
     );
-    const gpsFix = await waitForDeviceGpsFix(GPS_WAIT_MS);
-    if (gpsFix) {
-      loc = gpsFix;
-    }
-  }
-
-  let finalLoc = loc;
-  if (!loc.usedFallback && loc.source !== "fallback") {
+    finalLoc = resolvePlacesFallback(loc.permission);
+  } else if (!loc.usedFallback && loc.source !== "fallback") {
     finalLoc = loc;
   } else if (shouldUseRememberedLocationFallback(loc)) {
     finalLoc = resolveWeatherStyleFallback(loc);
@@ -246,13 +235,19 @@ async function bootstrapEffectiveLocation(): Promise<EffectiveLocationSnapshot> 
 
   const ready = toSnapshot(finalLoc, { readyForPlaces: true, status: "ready" });
   publish(ready, "bootstrap_ready");
-  ensureEffectiveLocationWatch();
   return snapshot ?? ready;
 }
 
 /** App 啟動後解析有效定位；Places / 地圖共用。 */
 export function ensureEffectiveLocationBootstrap(): Promise<EffectiveLocationSnapshot> {
   if (snapshot?.isReadyForPlaces) {
+    console.info("[LOCATION_CACHE_HIT]", {
+      locationKey: snapshot.locationKey,
+      lat: snapshot.lat,
+      lng: snapshot.lng,
+      source: snapshot.source,
+      via: "effective_location_snapshot",
+    });
     return Promise.resolve(snapshot);
   }
   if (!bootstrapPromise) {

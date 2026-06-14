@@ -15,6 +15,13 @@ export type ExploreCategory = {
   nearbyGroups?: string[][];
 };
 
+/** 探索地圖「全部」分頁：拆成實際子分類查詢，不用單一模糊 query */
+export const EXPLORE_ALL_SUBCATEGORY_IDS = ["coffee", "sight", "district", "food"] as const;
+
+export function getExploreCategoryById(id: string): ExploreCategory | undefined {
+  return EXPLORE_CATEGORIES.find((c) => c.id === id);
+}
+
 export const EXPLORE_CATEGORIES: ExploreCategory[] = [
   {
     id: "all",
@@ -71,13 +78,13 @@ export const EXPLORE_CATEGORIES: ExploreCategory[] = [
   {
     id: "night",
     label: "夜晚",
-    query: "酒吧 居酒屋 宵夜 夜市 深夜咖啡",
+    query: "酒吧 居酒屋 餐酒館 宵夜 夜市 深夜餐廳 深夜咖啡",
     mode: "multi",
     nearbyGroups: [
-      ["bar", "night_club", "pub"],
-      ["restaurant", "meal_takeaway"],
-      ["cafe", "bakery"],
-      ["market", "flea_market"],
+      ["bar", "pub", "night_club", "wine_bar"],
+      ["restaurant", "meal_takeaway", "food_store"],
+      ["cafe", "coffee_shop", "bakery"],
+      ["market", "flea_market", "tourist_attraction"],
     ],
   },
 ];
@@ -102,6 +109,20 @@ export const DISTRICT_TEXT_FALLBACK_QUERIES = [
   "Outlet",
 ] as const;
 
+/** nearby 結果經分類後少於此數時，改以 text 搜尋補齊（夜晚） */
+export const NIGHT_MIN_FILTERED_RESULTS = 2;
+
+export const NIGHT_TEXT_FALLBACK_QUERIES = [
+  "宵夜",
+  "夜市",
+  "深夜餐廳",
+  "居酒屋",
+  "餐酒館",
+  "酒吧",
+  "深夜咖啡",
+  "深夜甜點",
+] as const;
+
 export const PLACES_LANGUAGE = "zh-TW" as const;
 /** 行程規劃 autocomplete 預設；探索地圖改依 userLocation 動態決定 */
 export const PLACES_REGION = "TW" as const;
@@ -118,6 +139,15 @@ const DISTRICT_FALLBACK_INTL = [
   "main street",
 ] as const;
 
+const NIGHT_FALLBACK_INTL = [
+  "late night food",
+  "night market",
+  "izakaya",
+  "bar",
+  "pub",
+  "late night cafe",
+] as const;
+
 /** 探索頁 text 補齊查詢（依使用者所在地） */
 export function getExploreTextFallbackQueries(
   categoryId: string,
@@ -129,6 +159,9 @@ export function getExploreTextFallbackQueries(
   }
   if (categoryId === "district") {
     return inTaiwan ? DISTRICT_TEXT_FALLBACK_QUERIES : DISTRICT_FALLBACK_INTL;
+  }
+  if (categoryId === "night") {
+    return inTaiwan ? NIGHT_TEXT_FALLBACK_QUERIES : NIGHT_FALLBACK_INTL;
   }
   return [];
 }

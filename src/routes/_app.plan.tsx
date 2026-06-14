@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/hooks/use-i18n";
 import {
   getPlanBudgetOptions,
-  getPlanMoodOptions,
   getPlanStyleOptions,
   getPlanTransportOptions,
 } from "@/lib/i18n/plan-form-options";
@@ -66,7 +65,6 @@ function PlanPage() {
   const budgetOptions = useMemo(() => getPlanBudgetOptions(locale), [locale]);
   const transportOptions = useMemo(() => getPlanTransportOptions(locale), [locale]);
   const styleOptions = useMemo(() => getPlanStyleOptions(locale), [locale]);
-  const moodOptions = useMemo(() => getPlanMoodOptions(locale), [locale]);
 
   const [sourceCtx, setSourceCtx] = useState<ItinerarySourceContext | null>(null);
   const [sourceLoading, setSourceLoading] = useState(true);
@@ -437,21 +435,23 @@ function PlanPage() {
 
           <section>
             <label className="text-sm font-medium">{t("plan.budget")}</label>
-            <div className="mt-2 grid grid-cols-3 gap-2">
+            <div className="mt-2 grid grid-cols-4 gap-1.5">
               {budgetOptions.map((b) => (
                 <button
                   key={b.value}
                   type="button"
                   onClick={() => setBudgetMode(b.value)}
                   disabled={loading}
-                  className={`rounded-2xl border px-3 py-3 text-center transition ${
+                  className={`flex min-h-[3.25rem] flex-col items-center justify-center rounded-2xl border px-2 py-2 text-center transition ${
                     budgetMode === b.value
                       ? "border-foreground bg-foreground text-background"
                       : "border-border bg-card"
                   }`}
                 >
-                  <p className="text-sm font-medium">{b.label}</p>
-                  <p className="mt-0.5 text-[11px] opacity-70">{b.hint}</p>
+                  <span className="block h-5 text-sm font-medium leading-5">{b.label}</span>
+                  <span className="mt-1 block h-3.5 whitespace-nowrap text-[10px] leading-[14px] opacity-70">
+                    {b.hint}
+                  </span>
                 </button>
               ))}
             </div>
@@ -494,27 +494,6 @@ function PlanPage() {
                   }`}
                 >
                   {s}
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section>
-            <label className="text-sm font-medium">{t("plan.mood")}</label>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {moodOptions.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setMood(mood === m ? "" : m)}
-                  disabled={loading}
-                  className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
-                    mood === m
-                      ? "border-foreground bg-foreground text-background"
-                      : "border-border bg-card"
-                  }`}
-                >
-                  {m}
                 </button>
               ))}
             </div>

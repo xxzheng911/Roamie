@@ -104,6 +104,14 @@ const STRICT_CAFE_ALLOW_NAME_RE =
 const COFFEE_EXCLUDED_NAME_RE =
   /紅茶|茶飲|手搖|果汁|冰品|豆花|燒餅|早餐|加水站|加水屋|加水|水站|水屋|飲水|RO水|桶裝水|礦泉水|純水|濾水/i;
 
+/** 咖啡分類排除：酒吧／餐酒館／宵夜小吃（即使 types 含 cafe） */
+const COFFEE_NIGHTLIFE_EXCLUDE_RE =
+  /酒吧|餐酒館|居酒屋|夜店|night\s*club|\bbar\b|\bpub\b|izakaya|宵夜店|小吃店|桶仔雞|桶子雞|鹹酥雞|炸物攤|熱炒/i;
+
+/** 明確餐飲／小吃名稱（優先於 bar type 誤標） */
+export const EXPLICIT_FOOD_NAME_RE =
+  /桶仔雞|桶子雞|鹹酥雞|盐酥鸡|炸物|熱炒|小吃|宵夜|滷味|燒烤|串燒|蚵仔|麵線|臭豆腐|鹽水雞|姜母鴨|刈包|肉圓|碗粿|飲食攤|夜市美食|脆皮|唐揚|炸雞|滷味攤|鹽酥|鹽水|雞排|牛排館|火鍋|燒肉|壽司|拉麵|便當|外帶餐|餐車|攤販/i;
+
 /** 無咖啡名稱時，僅有泛用 type 不算咖啡 */
 const GENERIC_TYPES_NEED_COFFEE_NAME = ["store", "food", "point_of_interest"] as const;
 
@@ -213,16 +221,23 @@ const FOOD_TYPES = [
   "food",
   "meal_takeaway",
   "fast_food_restaurant",
+  "food_store",
 ] as const;
 
 const FOOD_RESTAURANT_NAME_RE =
-  /餐|飯|麵|食|restaurant|kitchen|食堂|小吃|料理|壽司|拉麵|燒肉|火鍋|早餐|brunch|早午餐|bistro|diner|grill|steak|bbq/i;
+  /餐|飯|麵|食|restaurant|kitchen|食堂|小吃|料理|壽司|拉麵|燒肉|火鍋|早餐|brunch|早午餐|bistro|diner|grill|steak|bbq|桶仔雞|桶子雞|鹹酥雞|炸物|熱炒|宵夜|滷味|燴飯|水餃|鍋貼|炒飯|便當|外帶|攤|雞排/i;
 
 const FOOD_DENY_TYPES = ["cafe", "coffee_shop", "bakery", "dessert_shop", "shopping_mall", "department_store"] as const;
 
 const PARK_TYPES = ["park", "national_park", "botanical_garden", "hiking_area"] as const;
 
-const NIGHT_TYPES = ["bar", "wine_bar", "night_club", "pub"] as const;
+const NIGHT_TYPES = ["bar", "wine_bar", "night_club", "pub", "cocktail_bar"] as const;
+
+const NIGHT_BAR_NAME_RE =
+  /酒吧|居酒屋|餐酒館|酒館|啤酒屋|調酒|cocktail|speakeasy|\bbar\b|\bpub\b|izakaya|夜店|night\s*club/i;
+
+const NIGHT_LATE_FOOD_NAME_RE =
+  /宵夜|深夜|夜市|late\s*night|夜食|深夜咖啡|深夜甜點|night\s*market/i;
 
 const DISPLAY_LABELS: Record<PlaceCategory, string> = {
   cafe: "咖啡",
@@ -272,10 +287,11 @@ function isGloballyDenied(place: PlaceLike): boolean {
 export function matchesAllExplore(place: PlaceLike): boolean {
   if (isGloballyDenied(place)) return false;
   return (
+    matchesFoodStrict(place) ||
     matchesCafeStrict(place) ||
+    matchesNightStrict(place) ||
     matchesAttractionStrict(place) ||
-    matchesDistrictStrict(place) ||
-    matchesFoodStrict(place)
+    matchesDistrictStrict(place)
   );
 }
 
@@ -303,13 +319,35 @@ function typesIncludeCafe(place: PlaceLike): boolean {
  * 咖啡分類：須符合 (primaryType=cafe | types 含 cafe | 名稱含咖啡關鍵字)，
  * 且不得命中排除關鍵字；store/food/poi 無咖啡名稱一律排除。
  */
+/** 桶仔雞、小吃等明確餐飲；優先於 bar type 誤標 */
+export function isExplicitFoodMerchant(place: PlaceLike): boolean {
+  const blob = placeBlob(place);
+  if (EXPLICIT_FOOD_NAME_RE.test(blob)) return true;
+  const types = collectPlaceTypes(place);
+  if (
+    hasAnyType(types, FOOD_TYPES) &&
+    (FOOD_RESTAURANT_NAME_RE.test(blob) || EXPLICIT_FOOD_NAME_RE.test(blob))
+  ) {
+    return true;
+  }
+  if (types.includes("food_store") && FOOD_RESTAURANT_NAME_RE.test(blob)) return true;
+  return false;
+}
+
 function matchesCafeStrict(place: PlaceLike): boolean {
   if (isGloballyDenied(place)) return false;
   if (isDrinkOrSnackFoodPlace(place)) return false;
+  if (isExplicitFoodMerchant(place)) return false;
 
   const name = place.name ?? "";
   const blob = placeBlob(place);
   if (COFFEE_EXCLUDED_NAME_RE.test(name) || COFFEE_EXCLUDED_NAME_RE.test(blob)) {
+    return false;
+  }
+  if (
+    (COFFEE_NIGHTLIFE_EXCLUDE_RE.test(name) || COFFEE_NIGHTLIFE_EXCLUDE_RE.test(blob)) &&
+    !hasCoffeeName(place)
+  ) {
     return false;
   }
 
@@ -467,6 +505,7 @@ function matchesFoodStrict(place: PlaceLike): boolean {
   const name = place.name ?? "";
   const blob = placeBlob(place);
   if (isGloballyDenied(place)) return false;
+  if (isExplicitFoodMerchant(place)) return true;
   if (isExcludedFoodMerchant(place)) return false;
   if (matchesCafeStrict(place)) return false;
   /** 紅茶、手搖等：即使標為 cafe 也歸美食 */
@@ -485,45 +524,115 @@ function matchesParkStrict(place: PlaceLike): boolean {
   return hasAnyType(types, PARK_TYPES);
 }
 
-const NIGHT_NAME_ALLOW_RE =
-  /酒吧|居酒|餐酒|宵夜|深夜|bar|pub|night\s*club|夜店|夜市|izakaya/i;
-
 function matchesNightStrict(place: PlaceLike): boolean {
   const types = collectPlaceTypes(place);
   const blob = placeBlob(place);
   if (isGloballyDenied(place)) return false;
-  if (hasAnyType(types, NIGHT_TYPES)) return true;
+
   if (/夜市/i.test(blob) && hasAnyType(types, ["market", "flea_market", "tourist_attraction"])) {
     return true;
   }
-  if (NIGHT_NAME_ALLOW_RE.test(blob)) {
+
+  if (NIGHT_LATE_FOOD_NAME_RE.test(blob)) {
     if (
       hasAnyType(types, [
         "restaurant",
-        "cafe",
-        "coffee_shop",
         "meal_takeaway",
         "fast_food_restaurant",
+        "food_store",
+        "food",
+        "cafe",
+        "coffee_shop",
         "bakery",
         "market",
         "flea_market",
+        "bar",
+        "pub",
       ])
     ) {
       return true;
     }
   }
+
+  if (NIGHT_BAR_NAME_RE.test(blob)) return true;
+
+  if (hasAnyType(types, NIGHT_TYPES)) {
+    if (isExplicitFoodMerchant(place)) return false;
+    return NIGHT_BAR_NAME_RE.test(blob);
+  }
+
   return false;
 }
 
+type PlaceLikeWithOpen = PlaceLike & { openStatus?: string | null };
+
+function isNightOpenOrUnknown(place: PlaceLikeWithOpen): boolean {
+  return (
+    place.openStatus === "open" ||
+    place.openStatus === "closing_soon" ||
+    place.openStatus === "unknown" ||
+    place.openStatus == null
+  );
+}
+
+/** 探索地圖「夜晚」分頁：含酒吧、宵夜、夜市與目前營業中的餐飲／咖啡 */
+function matchesNightExplore(place: PlaceLikeWithOpen): boolean {
+  if (isGloballyDenied(place)) return false;
+  if (matchesNightStrict(place)) return true;
+
+  const types = collectPlaceTypes(place);
+  const blob = placeBlob(place);
+
+  if (/夜市/i.test(blob)) {
+    if (
+      hasAnyType(types, [
+        "market",
+        "flea_market",
+        "tourist_attraction",
+        "restaurant",
+        "meal_takeaway",
+        "food_store",
+      ])
+    ) {
+      return true;
+    }
+  }
+
+  if (!isNightOpenOrUnknown(place)) return false;
+
+  if (/早餐|早午餐|豆漿|燒餅/i.test(blob) && !/宵夜|深夜|24|夜市/i.test(blob)) {
+    return false;
+  }
+
+  if (isExplicitFoodMerchant(place)) return true;
+
+  if (
+    hasAnyType(types, [
+      "restaurant",
+      "meal_takeaway",
+      "fast_food_restaurant",
+      "food_store",
+      "cafe",
+      "coffee_shop",
+      "bakery",
+    ])
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/** 分類優先順序：美食 → 咖啡 → 夜晚 → 商圈 → 景點 */
 function inferPlaceCategory(place: PlaceLike): PlaceCategory {
-  if (matchesCafeStrict(place)) return "cafe";
-  if (isDrinkOrSnackFoodPlace(place)) return "food";
-  if (matchesDistrictStrict(place) || matchesDepartmentStoreStrict(place)) return "district";
-  if (hasAnyType(collectPlaceTypes(place), ["book_store", "bookstore"])) return "bookstore";
-  if (matchesNightStrict(place)) return "nightlife";
   if (matchesFoodStrict(place)) return "food";
-  if (matchesParkStrict(place)) return "park";
+  if (isDrinkOrSnackFoodPlace(place)) return "food";
+  if (matchesCafeStrict(place)) return "cafe";
+  if (matchesNightStrict(place)) return "nightlife";
+  if (matchesDistrictStrict(place) || matchesDepartmentStoreStrict(place)) return "district";
   if (matchesAttractionStrict(place)) return "attraction";
+  if (hasAnyType(collectPlaceTypes(place), ["book_store", "bookstore"])) return "bookstore";
+  if (matchesParkStrict(place)) return "park";
   return "unknown";
 }
 
@@ -541,7 +650,7 @@ const STRICT_LABEL_MATCHERS: Record<string, (place: PlaceLike) => boolean> = {
   商圈: matchesDistrictStrict,
   美食: matchesFoodStrict,
   公園: matchesParkStrict,
-  夜晚: matchesNightStrict,
+  夜晚: matchesNightExplore,
 };
 
 function getCategoryLabel(selected: ExploreCategory | string): string {

@@ -10,10 +10,13 @@ import {
   ensureLocationPermission,
   type LocationPermissionState,
 } from "@/lib/location-permission-manager";
-import { registerAppStateChangeListener } from "@/lib/capacitor-app-listener";
 import { getCapacitorGeolocation } from "@/lib/capacitor-geolocation";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
-import { distanceMeters } from "@/lib/geo-distance";
+import {
+  isHomeLocationBootstrapped,
+  isHomeLocationMode,
+  markHomeLocationBootstrapped,
+} from "@/lib/location-coordinator";
 
 export { isIosSimulatorPresetLocation } from "@/lib/device-location-resolve";
 
@@ -50,30 +53,14 @@ const GEO_OPTIONS_LOW: PositionOptions = {
   enableHighAccuracy: false,
 };
 
-/** 與首頁 nearby bucket 一致；同一 bucket 不 publish / 不觸發 listener */
 function coordBucketKey(lat: number, lng: number): string {
   return `${lat.toFixed(3)}:${lng.toFixed(3)}`;
 }
 
-const LOCATION_PUBLISH_MIN_DISTANCE_M = 100;
-const REQUEST_RESULT_TTL_MS = 20_000;
-
-let lastPublishedLocation: { lat: number; lng: number } | null = null;
 let lastPublishedBucket: string | null = null;
 let requestInFlight: Promise<DeviceLocationResult> | null = null;
-let lastRequestResult: { at: number; result: DeviceLocationResult } | null = null;
-
-type LocationListener = (loc: DeviceLocationResult) => void;
-const locationListeners = new Set<LocationListener>();
-let globalWatchCleanup: (() => void) | null = null;
-let globalWatchStarting = false;
-let watchPausedForAppState = false;
-let appStateListenerRegistered = false;
-/** 取消進行中的 watchPosition 建立（pause / unsubscribe 時遞增） */
-let watchStartGeneration = 0;
-
-const LOCATION_VERBOSE_LOGS = import.meta.env.DEV;
-let lastSkipBucketLogKey = "";
+/** 本次 App session 的有效 GPS（首頁 / 天氣 / nearby 共用） */
+let sessionLocation: DeviceLocationResult | null = null;
 
 function isDevBuild(): boolean {
   return import.meta.env.DEV && !import.meta.env.PROD;
@@ -121,6 +108,10 @@ export function getLastKnownDeviceCoords(): { lat: number; lng: number } | null 
   return readLastGoodCoords();
 }
 
+export function getSessionDeviceLocation(): DeviceLocationResult | null {
+  return sessionLocation;
+}
+
 function rememberGoodCoords(lat: number, lng: number): void {
   if (typeof sessionStorage === "undefined") return;
   if (!shouldRememberCoords(lat, lng)) return;
@@ -133,38 +124,19 @@ function rememberGoodCoords(lat: number, lng: number): void {
   }
 }
 
-function coordsMovedEnough(lat: number, lng: number): boolean {
-  const bucket = coordBucketKey(lat, lng);
-  if (lastPublishedBucket === bucket) return false;
-  if (!lastPublishedLocation) return true;
-  return (
-    distanceMeters(lastPublishedLocation, { lat, lng }) >= LOCATION_PUBLISH_MIN_DISTANCE_M
-  );
-}
-
 function markPublishedCoords(lat: number, lng: number): void {
-  lastPublishedLocation = { lat, lng };
   lastPublishedBucket = coordBucketKey(lat, lng);
-  lastRequestResult = null;
 }
 
-function logGpsFix(
-  lat: number,
-  lng: number,
-  accuracy: number | null | undefined,
-  source: "capacitor" | "browser",
-  kind: string,
-  simulatorPreset?: boolean,
-): void {
-  if (!LOCATION_VERBOSE_LOGS && kind === "watch") return;
-  console.info("[Location] GPS fix", {
-    lat,
-    lng,
-    accuracy,
-    source,
-    kind,
-    build: import.meta.env.PROD ? "production" : "development",
-    simulatorPreset,
+function logLocationSuccess(result: DeviceLocationResult, via: string): void {
+  console.info("[LOCATION_SUCCESS]", {
+    lat: result.lat,
+    lng: result.lng,
+    source: result.source,
+    usedFallback: result.usedFallback,
+    permission: result.permission,
+    accuracy: result.accuracy ?? null,
+    via,
   });
 }
 
@@ -197,6 +169,7 @@ function parseGpsPosition(
   }
 
   rememberGoodCoords(resolved.lat, resolved.lng);
+  markPublishedCoords(resolved.lat, resolved.lng);
 
   return {
     lat: resolved.lat,
@@ -209,244 +182,7 @@ function parseGpsPosition(
   };
 }
 
-/** 單次定位：回傳座標；僅在移動超過閾值時記錄 GPS fix */
-function readPositionForRequest(
-  latitude: number,
-  longitude: number,
-  accuracy: number | null | undefined,
-  source: "capacitor" | "browser",
-): DeviceLocationResult | null {
-  const parsed = parseGpsPosition(latitude, longitude, source, accuracy);
-  if (!parsed) return null;
-
-  if (coordsMovedEnough(parsed.lat, parsed.lng)) {
-    markPublishedCoords(parsed.lat, parsed.lng);
-    logGpsFix(
-      parsed.lat,
-      parsed.lng,
-      accuracy,
-      source,
-      "request",
-      undefined,
-    );
-  }
-
-  return parsed;
-}
-
-/** watch 回調：小幅移動直接 skip，不通知訂閱者 */
-function readPositionForWatch(
-  latitude: number,
-  longitude: number,
-  accuracy: number | null | undefined,
-  source: "capacitor" | "browser",
-): DeviceLocationResult | null {
-  const parsed = parseGpsPosition(latitude, longitude, source, accuracy);
-  if (!parsed) return null;
-
-  if (!coordsMovedEnough(parsed.lat, parsed.lng)) {
-    const bucket = coordBucketKey(parsed.lat, parsed.lng);
-    if (lastSkipBucketLogKey !== bucket) {
-      lastSkipBucketLogKey = bucket;
-      console.info("[LOCATION_UPDATE_SKIP_SAME_BUCKET]", { locationKey: bucket });
-    }
-    return null;
-  }
-
-  markPublishedCoords(parsed.lat, parsed.lng);
-  logGpsFix(parsed.lat, parsed.lng, accuracy, source, "watch");
-  return parsed;
-}
-
-function notifyLocationListeners(loc: DeviceLocationResult): void {
-  if (LOCATION_VERBOSE_LOGS) {
-    console.info("[LOCATION_UPDATE]", {
-      trigger: "gps_watch",
-      lat: loc.lat,
-      lng: loc.lng,
-      source: loc.source,
-      usedFallback: loc.usedFallback,
-      listenerCount: locationListeners.size,
-    });
-  }
-  for (const listener of locationListeners) {
-    listener(loc);
-  }
-}
-
-function shouldKeepGlobalWatch(startGen: number): boolean {
-  return (
-    !watchPausedForAppState &&
-    locationListeners.size > 0 &&
-    startGen === watchStartGeneration
-  );
-}
-
-function pauseGlobalLocationWatch(reason: string): void {
-  watchStartGeneration += 1;
-  if (globalWatchCleanup) {
-    globalWatchCleanup();
-    globalWatchCleanup = null;
-  }
-  globalWatchStarting = false;
-  if (LOCATION_VERBOSE_LOGS) {
-    console.info("[Location] watch paused", {
-      reason,
-      listeners: locationListeners.size,
-    });
-  }
-}
-
-function resumeGlobalLocationWatchIfNeeded(): void {
-  if (watchPausedForAppState) return;
-  if (locationListeners.size === 0) return;
-  ensureGlobalLocationWatch();
-}
-
-function ensureAppStateWatchControl(): void {
-  if (appStateListenerRegistered || typeof window === "undefined") return;
-  if (!isNativeShell()) return;
-  appStateListenerRegistered = true;
-
-  void registerAppStateChangeListener((isActive) => {
-    if (isActive) {
-      watchPausedForAppState = false;
-      console.info("[Location] app active — resume watch if needed");
-      resumeGlobalLocationWatchIfNeeded();
-      return;
-    }
-    watchPausedForAppState = true;
-    pauseGlobalLocationWatch("app_inactive");
-  }).catch((e) => {
-    appStateListenerRegistered = false;
-    console.warn("[Location] appStateChange listener unavailable", e);
-  });
-}
-
-function ensureGlobalLocationWatch(): void {
-  ensureAppStateWatchControl();
-  if (watchPausedForAppState) return;
-  if (locationListeners.size === 0) return;
-  if (globalWatchCleanup || globalWatchStarting) return;
-
-  const native = isNativeShell();
-  const startGen = watchStartGeneration;
-
-  if (native) {
-    globalWatchStarting = true;
-    void (async () => {
-      try {
-        const permission = await ensureLocationPermission({ request: true });
-        if (permission !== "granted") {
-          console.warn("[Location] watch skipped — permission not granted", { permission });
-          return;
-        }
-        if (!shouldKeepGlobalWatch(startGen)) return;
-
-        const Geolocation = getCapacitorGeolocation();
-        const watchId = await Geolocation.watchPosition(
-          { enableHighAccuracy: true, timeout: 25_000, maximumAge: 30_000 },
-          (pos, err) => {
-            if (err || !pos) return;
-            if (locationListeners.size === 0) return;
-            const parsed = readPositionForWatch(
-              pos.coords.latitude,
-              pos.coords.longitude,
-              pos.coords.accuracy,
-              "capacitor",
-            );
-            if (parsed) notifyLocationListeners(parsed);
-          },
-        );
-        if (!shouldKeepGlobalWatch(startGen)) {
-          void Geolocation.clearWatch({ id: watchId });
-          console.info("[Location] watch aborted after subscribe (no listeners)", {
-            listeners: locationListeners.size,
-          });
-          return;
-        }
-        globalWatchCleanup = () => {
-          void Geolocation.clearWatch({ id: watchId });
-        };
-        console.info("[Location] watch started", {
-          platform: "capacitor",
-          listeners: locationListeners.size,
-        });
-      } catch (e) {
-        console.warn("[Location] capacitor watchPosition unavailable", e);
-      } finally {
-        globalWatchStarting = false;
-      }
-    })();
-    return;
-  }
-
-  if (typeof navigator === "undefined" || !navigator.geolocation) return;
-
-  globalWatchStarting = true;
-
-  const browserWatchId = navigator.geolocation.watchPosition(
-    (pos) => {
-      if (locationListeners.size === 0) return;
-      const parsed = readPositionForWatch(
-        pos.coords.latitude,
-        pos.coords.longitude,
-        pos.coords.accuracy,
-        "browser",
-      );
-      if (parsed) notifyLocationListeners(parsed);
-    },
-    () => {},
-    GEO_OPTIONS,
-  );
-
-  globalWatchCleanup = () => {
-    navigator.geolocation.clearWatch(browserWatchId);
-  };
-  globalWatchStarting = false;
-  console.info("[Location] watch started", {
-    platform: "browser",
-    listeners: locationListeners.size,
-  });
-}
-
-function stopGlobalLocationWatchIfIdle(): void {
-  if (locationListeners.size > 0) return;
-  pauseGlobalLocationWatch("no_listeners");
-}
-
 type CapGeolocation = typeof import("@capacitor/geolocation").Geolocation;
-type CapPosition = Awaited<ReturnType<CapGeolocation["getCurrentPosition"]>>;
-
-async function waitForCapacitorWatchFix(
-  Geolocation: CapGeolocation,
-  timeoutMs: number,
-): Promise<CapPosition | null> {
-  return new Promise((resolve) => {
-    let watchId: string | undefined;
-    const timer = window.setTimeout(() => {
-      if (watchId) void Geolocation.clearWatch({ id: watchId });
-      resolve(null);
-    }, timeoutMs);
-
-    void Geolocation.watchPosition(
-      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 0 },
-      (pos, err) => {
-        if (!pos || err) return;
-        window.clearTimeout(timer);
-        if (watchId) void Geolocation.clearWatch({ id: watchId });
-        resolve(pos);
-      },
-    )
-      .then((id) => {
-        watchId = id;
-      })
-      .catch(() => {
-        window.clearTimeout(timer);
-        resolve(null);
-      });
-  });
-}
 
 async function readCapacitorPosition(): Promise<{
   result: DeviceLocationResult | null;
@@ -462,36 +198,24 @@ async function readCapacitorPosition(): Promise<{
     }
 
     const attempts: Parameters<CapGeolocation["getCurrentPosition"]>[0][] = [
-      { enableHighAccuracy: true, timeout: 25_000, maximumAge: 0 },
-      { enableHighAccuracy: true, timeout: 25_000, maximumAge: 60_000 },
-      { enableHighAccuracy: false, timeout: 30_000, maximumAge: 120_000 },
+      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 60_000 },
+      { enableHighAccuracy: false, timeout: 15_000, maximumAge: 120_000 },
     ];
 
     for (const options of attempts) {
       try {
         const pos = await Geolocation.getCurrentPosition(options);
-        const parsed = readPositionForRequest(
+        const parsed = parseGpsPosition(
           pos.coords.latitude,
           pos.coords.longitude,
-          pos.coords.accuracy,
           "capacitor",
+          pos.coords.accuracy,
         );
         if (parsed) return { result: parsed, permission: "granted" };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn("[Location] capacitor getCurrentPosition failed", msg);
       }
-    }
-
-    const watched = await waitForCapacitorWatchFix(Geolocation, 15_000);
-    if (watched) {
-      const parsed = readPositionForRequest(
-        watched.coords.latitude,
-        watched.coords.longitude,
-        watched.coords.accuracy,
-        "capacitor",
-      );
-      if (parsed) return { result: parsed, permission: "granted" };
     }
 
     return { result: null, permission };
@@ -514,11 +238,11 @@ function geolocationPosition(
     navigator.geolocation.getCurrentPosition(
       (pos) =>
         resolve({
-          result: readPositionForRequest(
+          result: parseGpsPosition(
             pos.coords.latitude,
             pos.coords.longitude,
-            pos.coords.accuracy,
             "browser",
+            pos.coords.accuracy,
           ),
           permission: "granted",
         }),
@@ -613,42 +337,55 @@ export function shouldDeferUntilGpsFix(loc: DeviceLocationResult): boolean {
   return loc.usedFallback && !shouldUseRememberedLocationFallback(loc);
 }
 
-/** 等待 singleton watch 回傳第一個真實 GPS（用於冷啟動 weather 前）。 */
-export function waitForDeviceGpsFix(timeoutMs = 20_000): Promise<DeviceLocationResult | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (value: DeviceLocationResult | null) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timer);
-      stop();
-      resolve(value);
-    };
+export type RequestDeviceLocationOptions = {
+  /** 略過 session cache，強制重新 getCurrentPosition */
+  force?: boolean;
+};
 
-    const timer = window.setTimeout(() => finish(null), timeoutMs);
-    const stop = subscribeDeviceLocation((loc) => {
-      if (!loc.usedFallback) finish(loc);
-    });
-  });
-}
+export async function requestDeviceLocation(
+  options?: RequestDeviceLocationOptions,
+): Promise<DeviceLocationResult> {
+  const force = options?.force === true;
 
-/** 取得裝置座標；正式版僅使用真實 GPS，失敗時才 fallback。 */
-export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
-  const now = Date.now();
   if (
-    lastRequestResult &&
-    !lastRequestResult.result.usedFallback &&
-    now - lastRequestResult.at < REQUEST_RESULT_TTL_MS
+    force &&
+    isHomeLocationMode() &&
+    isHomeLocationBootstrapped() &&
+    sessionLocation &&
+    !sessionLocation.usedFallback
   ) {
-    return lastRequestResult.result;
+    console.info("[LOCATION_CACHE_HIT]", {
+      lat: sessionLocation.lat,
+      lng: sessionLocation.lng,
+      source: sessionLocation.source,
+      via: "home_force_blocked",
+    });
+    return sessionLocation;
   }
-  if (requestInFlight) return requestInFlight;
 
+  if (!force && sessionLocation && !sessionLocation.usedFallback) {
+    console.info("[LOCATION_CACHE_HIT]", {
+      lat: sessionLocation.lat,
+      lng: sessionLocation.lng,
+      source: sessionLocation.source,
+      via: "session",
+    });
+    return sessionLocation;
+  }
+
+  if (requestInFlight) {
+    console.info("[LOCATION_INIT]", { reason: "join_in_flight", force });
+    return requestInFlight;
+  }
+
+  console.info("[LOCATION_INIT]", { reason: "request", force });
   requestInFlight = requestDeviceLocationInternal()
     .then((result) => {
       if (!result.usedFallback) {
-        lastRequestResult = { at: Date.now(), result };
+        sessionLocation = result;
+        markHomeLocationBootstrapped();
       }
+      logLocationSuccess(result, force ? "request_force" : "request");
       return result;
     })
     .finally(() => {
@@ -656,25 +393,4 @@ export async function requestDeviceLocation(): Promise<DeviceLocationResult> {
     });
 
   return requestInFlight;
-}
-
-/** 訂閱全域 singleton watch；最後一個訂閱者 unsubscribe 時 clearWatch。 */
-export function subscribeDeviceLocation(onUpdate: LocationListener): () => void {
-  locationListeners.add(onUpdate);
-  if (LOCATION_VERBOSE_LOGS) {
-    console.info("[Location] subscribeDeviceLocation", { listeners: locationListeners.size });
-  }
-  ensureGlobalLocationWatch();
-  return () => {
-    locationListeners.delete(onUpdate);
-    if (LOCATION_VERBOSE_LOGS) {
-      console.info("[Location] unsubscribeDeviceLocation", { listeners: locationListeners.size });
-    }
-    stopGlobalLocationWatchIfIdle();
-  };
-}
-
-/** 監聽位置變化；回傳 cleanup（委派 singleton watch）。 */
-export function watchDeviceLocation(onUpdate: LocationListener): () => void {
-  return subscribeDeviceLocation(onUpdate);
 }

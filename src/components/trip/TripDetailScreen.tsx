@@ -103,7 +103,7 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
   );
 
   return (
-    <>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <SavedTripItineraryEditor
         stored={stored}
         headerRight={deleteButton}
@@ -115,6 +115,6 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
         onConfirm={handleDelete}
         confirming={deleting}
       />
-    </>
+    </div>
   );
 }

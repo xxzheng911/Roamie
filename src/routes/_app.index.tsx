@@ -223,7 +223,7 @@ function Home() {
             categories,
             locationKey: eff.locationKey,
           }),
-          { logDrop: true },
+          { logDrop: false },
         );
         setNearbyPicks(picks);
         writeHomeSessionNearbyPicks(picks, loadKey);
@@ -300,7 +300,7 @@ function Home() {
   );
 
   const nearbyLoadKey =
-    effectiveLocation?.isReadyForPlaces
+    effectiveLocation?.isReadyForPlaces && weatherStatus !== "loading"
       ? homeNearbyLoadKey(
           effectiveLocation.lat,
           effectiveLocation.lng,
@@ -328,12 +328,17 @@ function Home() {
         sessionLoadKey,
       )
     ) {
+      logPlacesApiSkipDuplicate("nearby_ttl", {
+        key: nearbyLoadKey,
+        caller: "nearby_effect",
+        reason: "existing_or_completed",
+      });
       setNearbyLoading(false);
       return;
     }
 
     void loadNearbyPicksRef.current("nearby_effect");
-  }, [nearbyLoadKey, effectiveLocation?.isReadyForPlaces]);
+  }, [nearbyLoadKey, effectiveLocation?.isReadyForPlaces, weatherStatus]);
 
   useEffect(() => {
     const onPrefs = () => {

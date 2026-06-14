@@ -6,6 +6,8 @@ import { generateTripOutfitSuggestion } from "@/lib/outfit/outfit.functions";
 import { buildOutfitInputKey } from "@/lib/outfit/trip-outfit-context";
 import type { TripOutfitSuggestionFields } from "@/lib/outfit/types";
 
+const PENDING_OUTFIT_FIELDS = Object.freeze({}) as TripOutfitSuggestionFields;
+
 type Params = {
   initialFields: TripOutfitSuggestionFields;
   items: RoamieItineraryItem[];
@@ -67,8 +69,11 @@ export function useTripOutfitSuggestion({
   const pendingRegeneration =
     outfitFields.outfitSuggestionInputKey !== inputKey && Boolean(dateRange.start);
   const showLoading = loading || pendingRegeneration;
-  const displayFields =
-    outfitFields.outfitSuggestionInputKey === inputKey ? outfitFields : {};
+  const displayFields = useMemo(
+    () =>
+      outfitFields.outfitSuggestionInputKey === inputKey ? outfitFields : PENDING_OUTFIT_FIELDS,
+    [outfitFields, inputKey],
+  );
 
   useEffect(() => {
     if (!enabled || isCached || generatingRef.current) return;

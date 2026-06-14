@@ -9,6 +9,7 @@ import { BottomNav } from "@/components/BottomNav";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { requireAppShellAccess } from "@/lib/require-auth";
 import { cn } from "@/lib/utils";
+import { enterHomeLocationMode, leaveHomeLocationMode } from "@/lib/location-coordinator";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: requireAppShellAccess,
@@ -24,6 +25,12 @@ function isMainScrollLockedPath(pathname: string): boolean {
   );
 }
 
+function stopLocationWatch(reason: string): void {
+  void import("@/lib/location-watch-cleanup").then(({ stopNavigationLocationWatch }) =>
+    stopNavigationLocationWatch(reason),
+  );
+}
+
 function AppLayout() {
   const router = useRouter();
   const { locale } = useI18n();
@@ -34,10 +41,25 @@ function AppLayout() {
 
   useLayoutEffect(() => {
     scheduleIosSnapshotRefreshBurst("app-shell");
+    const path = (router.state.location.pathname || readBrowserPathname()).replace(/\/+$/, "") || "/";
+    if (path === "/") {
+      enterHomeLocationMode();
+      stopLocationWatch("home_route_active");
+    }
     void import("@/lib/effective-location").then(({ ensureEffectiveLocationBootstrap }) => {
       ensureEffectiveLocationBootstrap();
     });
-  }, []);
+  }, [router]);
+
+  useLayoutEffect(() => {
+    const path = pathname.replace(/\/+$/, "") || "/";
+    if (path === "/") {
+      enterHomeLocationMode();
+      stopLocationWatch("home_route_active");
+    } else {
+      leaveHomeLocationMode();
+    }
+  }, [pathname]);
 
   useLayoutEffect(() => {
     const path = pathname.replace(/\/+$/, "") || "/";
@@ -59,6 +81,13 @@ function AppLayout() {
       window.removeEventListener("popstate", sync);
     };
   }, [router]);
+
+  useEffect(() => {
+    const path = pathname.replace(/\/+$/, "") || "/";
+    if (path !== "/map") {
+      stopLocationWatch("left_map_route");
+    }
+  }, [pathname]);
 
   const mainScrollLocked = isMainScrollLockedPath(pathname);
 

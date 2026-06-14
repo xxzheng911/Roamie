@@ -1,28 +1,30 @@
 import type { PlaceResult } from "@/lib/place-result";
+import { normalizedLocationKey } from "@/lib/location-key";
+import { logPlacesCacheHit } from "@/lib/places-diagnostics";
 
-type CacheEntry = {
+export type MapPlacesCacheEntry = {
   places: PlaceResult[];
   error: string | null;
   at: number;
 };
 
-const CACHE = new Map<string, CacheEntry>();
+const CACHE = new Map<string, MapPlacesCacheEntry>();
+const IN_FLIGHT = new Map<string, Promise<MapPlacesCacheEntry>>();
 const TTL_MS = 5 * 60 * 1000;
 const MAX_ENTRIES = 48;
 
-function cacheKey(parts: {
+/** locationKey + categoryId + locale — 首頁與探索地圖共用分類結果快取 */
+export function buildMapPlacesCacheKey(parts: {
   lat: number;
   lng: number;
-  query: string;
   categoryId: string;
   locale: string;
 }): string {
-  const lat = parts.lat.toFixed(3);
-  const lng = parts.lng.toFixed(3);
-  return `${lat}|${lng}|${parts.categoryId}|${parts.query.trim().toLowerCase()}|${parts.locale}`;
+  const locationKey = normalizedLocationKey(parts.lat, parts.lng);
+  return `${locationKey}:${parts.categoryId}:${parts.locale}`;
 }
 
-export function readMapPlacesCache(key: string): CacheEntry | null {
+export function readMapPlacesCache(key: string): MapPlacesCacheEntry | null {
   const hit = CACHE.get(key);
   if (!hit) return null;
   if (Date.now() - hit.at > TTL_MS) {
@@ -41,15 +43,35 @@ export function writeMapPlacesCache(
     const oldest = [...CACHE.entries()].sort((a, b) => a[1].at - b[1].at)[0]?.[0];
     if (oldest) CACHE.delete(oldest);
   }
-  CACHE.set(key, { places, error, at: Date.now() });
+  CACHE.set(key, {
+    places,
+    error: places.length > 0 ? null : error,
+    at: Date.now(),
+  });
 }
 
-export function buildMapPlacesCacheKey(parts: {
-  lat: number;
-  lng: number;
-  query: string;
-  categoryId: string;
-  locale: string;
-}): string {
-  return cacheKey(parts);
+export function getMapPlacesCachedOrRun(
+  key: string,
+  runner: () => Promise<{ places: PlaceResult[]; error: string | null }>,
+): Promise<MapPlacesCacheEntry> {
+  const cached = readMapPlacesCache(key);
+  if (cached) {
+    logPlacesCacheHit(key, cached.places.length, "map_category");
+    return Promise.resolve(cached);
+  }
+
+  const inflight = IN_FLIGHT.get(key);
+  if (inflight) return inflight;
+
+  const promise = runner()
+    .then((result) => {
+      writeMapPlacesCache(key, result.places, result.error);
+      return readMapPlacesCache(key) ?? { places: result.places, error: result.error, at: Date.now() };
+    })
+    .finally(() => {
+      IN_FLIGHT.delete(key);
+    });
+
+  IN_FLIGHT.set(key, promise);
+  return promise;
 }

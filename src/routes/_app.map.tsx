@@ -58,31 +58,38 @@ import { allowDemoPlaceFallback, searchRadiusMeters } from "@/lib/search-radius"
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
 import { withSearchTimeout } from "@/lib/search-timeout";
 import {
-  COFFEE_MIN_FILTERED_RESULTS,
-  DISTRICT_MIN_FILTERED_RESULTS,
-  getExploreTextFallbackQueries,
   DEFAULT_SEARCH_RADIUS_M,
+  EXPLORE_ALL_SUBCATEGORY_IDS,
   EXPLORE_CATEGORIES,
   type ExploreCategory,
 } from "@/lib/places-search-config";
+import {
+  searchExploreAllPlaces,
+  searchExploreCategoryPlaces,
+  type ExplorePlaceCard,
+  type HomeNearbyPick,
+} from "@/lib/explore-category-search";
 import { TAIPEI_CENTER } from "@/lib/geo";
 import { requestDeviceLocation } from "@/lib/device-location";
+import { subscribeNavigationLocationWatch } from "@/lib/navigation-location-watch";
+import {
+  enterNavigationLocationMode,
+  leaveNavigationLocationMode,
+} from "@/lib/location-coordinator";
 import { useEffectiveLocation } from "@/hooks/use-effective-location";
-import { normalizedLocationKey } from "@/lib/effective-location";
+import { normalizedLocationKey } from "@/lib/location-key";
 import { logMapNearbyReady } from "@/lib/places-diagnostics";
 import { filterHomeNearbyPlaceResults } from "@/lib/home-nearby-places-filter";
 import { resolveUserMarkerAvatarSrc } from "@/lib/map-user-location-marker";
 import { useI18n } from "@/hooks/use-i18n";
+import type { Locale } from "@/lib/i18n/types";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
 import {
   buildMapPlacesCacheKey,
+  getMapPlacesCachedOrRun,
   readMapPlacesCache,
-  writeMapPlacesCache,
 } from "@/lib/map-places-cache";
-import {
-  locationMovedEnough,
-  weatherCacheKey,
-} from "@/lib/map-location-throttle";
+import { locationMovedEnough } from "@/lib/map-location-throttle";
 
 export const Route = createFileRoute("/_app/map")({
   component: MapPage,
@@ -143,16 +150,23 @@ function sortMapCards(
   return sortExplorePlaces(cards, origin, profile, weather, categoryId);
 }
 
-function mergePlacesById(base: PlaceResult[], extra: PlaceResult[]): PlaceResult[] {
-  const seen = new Set(base.map((p) => p.id));
-  const merged = [...base];
-  for (const p of extra) {
-    if (!seen.has(p.id)) {
-      seen.add(p.id);
-      merged.push(p);
-    }
-  }
-  return merged;
+function exploreCardsToMapCards(
+  cards: ExplorePlaceCard[],
+  opts: {
+    weather: WeatherSummary | null;
+    reasonProfile: UserProfileForReason | null;
+    locale: Locale;
+  },
+): MapPlaceCard[] {
+  return cards.map((p) => {
+    const item = mapPlaceResultToChatItem(p, opts);
+    const cover = (p as HomeNearbyPick).coverImageUrl;
+    return {
+      ...p,
+      coverImageUrl: cover ?? undefined,
+      googleMapsUrl: item.googleMapsUrl,
+    } satisfies MapPlaceCard;
+  });
 }
 
 function MapView() {
@@ -167,7 +181,7 @@ function MapView() {
     return () => document.documentElement.classList.remove("map-route-active");
   }, []);
 
-  const lastSearchLocationKeyRef = useRef<string | null>(null);
+  const lastMapSearchSessionRef = useRef<string | null>(null);
   const lastWeatherFetchCenterRef = useRef<{ lat: number; lng: number } | null>(null);
   const searchRequestIdRef = useRef(0);
   const prevQueryRef = useRef("");
@@ -261,8 +275,6 @@ function MapView() {
     effectiveLocation?.locationKey,
     effectiveLocation?.isReadyForPlaces,
     effectiveLocation?.isFallback,
-    effectiveLocation?.lat,
-    effectiveLocation?.lng,
     applyEffectiveLocationToMap,
     fetchWeather,
   ]);
@@ -336,24 +348,25 @@ function MapView() {
 
   useEffect(() => {
     if (!geoReady) return;
+    if (!effectiveLocation?.isReadyForPlaces) return;
 
-    const center = { lat: userLocation.lat, lng: userLocation.lng };
-    const locationKey = normalizedLocationKey(center.lat, center.lng);
+    const center = { lat: effectiveLocation.lat, lng: effectiveLocation.lng };
+    const locationKey = effectiveLocation.locationKey;
     const queryDirty = prevQueryRef.current !== query;
     const catDirty = prevCatIdRef.current !== cat.id;
     prevQueryRef.current = query;
     prevCatIdRef.current = cat.id;
 
-    const moved = lastSearchLocationKeyRef.current !== locationKey;
-    if (!moved && !queryDirty && !catDirty && lastSearchLocationKeyRef.current) {
+    const isFreeText = !!query.trim();
+    const sessionKey = `${locationKey}:${isFreeText ? `search:${query.trim().toLowerCase()}` : cat.id}:${locale}`;
+    if (lastMapSearchSessionRef.current === sessionKey && !queryDirty && !catDirty) {
       return;
     }
 
-    const isFreeText = !!query.trim();
     const debounceMs = pendingImmediateSearchRef.current ? 0 : isFreeText ? 450 : 0;
     pendingImmediateSearchRef.current = false;
     const handle = setTimeout(() => {
-      lastSearchLocationKeyRef.current = locationKey;
+      lastMapSearchSessionRef.current = sessionKey;
       const requestId = ++searchRequestIdRef.current;
       const text = query.trim() || cat.query;
       setLoading(true);
@@ -367,178 +380,193 @@ function MapView() {
             userLocale: locale,
           });
       const filterCat = isFreeText ? EXPLORE_CATEGORIES[0] : cat;
+      const allSubQuery = EXPLORE_ALL_SUBCATEGORY_IDS.join("+");
       const cacheKey = buildMapPlacesCacheKey({
         lat: center.lat,
         lng: center.lng,
-        query: isFreeText ? text : cat.query,
         categoryId: isFreeText ? "search" : cat.id,
         locale,
       });
+      const cardOpts = { weather, reasonProfile, locale };
 
       const runSearch = async () => {
-        const basePayload = {
-          lat: center.lat,
-          lng: center.lng,
-          radius: searchRadiusMeters(),
-        };
+        let enriched: MapPlaceCard[] = [];
+        let fromCache = false;
+        let emptyError: string | null = null;
 
-        const cached = readMapPlacesCache(cacheKey);
-        let apiPlaces = cached?.places ?? [];
-        let apiError = cached?.error ?? null;
+        if (!isFreeText) {
+          const cachedHit = readMapPlacesCache(cacheKey);
+          if (cachedHit) {
+            fromCache = true;
+            enriched = exploreCardsToMapCards(cachedHit.places as ExplorePlaceCard[], cardOpts);
+            emptyError = cachedHit.error;
+            if (requestId !== searchRequestIdRef.current) return;
+            if (enriched.length > 0) {
+              setError(null);
+            } else {
+              setError(emptyError ?? getExploreCategoryEmptyMessage(cat.id, locale));
+            }
+            const sorted = sortMapCards(
+              enriched,
+              center,
+              reasonProfile,
+              cat.id,
+              weather,
+            );
+            setResults(sorted);
+            logMapNearbyReady({
+              count: sorted.length,
+              locationKey,
+              categoryId: cat.id,
+              query: cat.id === "all" ? allSubQuery : cat.query,
+              fromCache: true,
+            });
+            if (sheetMode === "list") {
+              setSelectedPlace(null);
+              setSelectedPlaceIndex(null);
+            }
+            return;
+          }
+        }
 
-        if (!cached) {
+        if (!isFreeText && cat.id === "all") {
+          const cachedBefore = readMapPlacesCache(cacheKey);
+          fromCache = cachedBefore !== null;
+          const entry = await getMapPlacesCachedOrRun(cacheKey, async () => {
+            const subCards = await searchExploreAllPlaces({
+              userLocation: center,
+              weather,
+              locale,
+              reasonProfile,
+              saved: savedRef.current,
+              searchPlacesFn,
+              locationKey,
+            });
+            const cards = exploreCardsToMapCards(subCards, cardOpts);
+            return { places: cards, error: null };
+          });
+          enriched = exploreCardsToMapCards(entry.places as ExplorePlaceCard[], cardOpts);
+          emptyError = entry.error;
+        } else if (!isFreeText) {
+          const cachedBefore = readMapPlacesCache(cacheKey);
+          fromCache = cachedBefore !== null;
+          const entry = await getMapPlacesCachedOrRun(cacheKey, async () => {
+            const cards = await searchExploreCategoryPlaces(cat, {
+              userLocation: center,
+              weather,
+              locale,
+              reasonProfile,
+              saved: savedRef.current,
+              searchPlacesFn,
+              forHome: false,
+            });
+            const mapped = exploreCardsToMapCards(cards, cardOpts);
+            return { places: mapped, error: null };
+          });
+          enriched = exploreCardsToMapCards(entry.places as ExplorePlaceCard[], cardOpts);
+          emptyError = entry.error;
+        } else {
+          const basePayload = {
+            lat: center.lat,
+            lng: center.lng,
+            radius: searchRadiusMeters(),
+          };
+
           const primary = await withSearchTimeout(
             searchPlacesFn({
               data: {
                 ...basePayload,
-                query: isFreeText ? searchQuery : cat.query,
-                mode: (isFreeText ? "text" : cat.mode) as "text" | "nearby" | "multi",
-                includedTypes: isFreeText ? undefined : cat.includedTypes,
-                nearbyGroups: isFreeText ? undefined : cat.nearbyGroups,
+                query: searchQuery,
+                mode: "text",
                 locale,
               },
             }),
           );
 
-          apiPlaces = Array.isArray(primary.places) ? primary.places : [];
-          apiError = primary.error;
-          writeMapPlacesCache(cacheKey, apiPlaces, apiError);
-        }
+          const apiPlaces = Array.isArray(primary.places) ? primary.places : [];
+          emptyError = primary.error ?? null;
 
-        if (requestId !== searchRequestIdRef.current) return;
-        const applyFilters = (list: PlaceResult[]) =>
-          filterByExploreCategory(filterExplorePlaces(list, { logDrop: false }), filterCat);
+          if (requestId !== searchRequestIdRef.current) return;
 
-        let filtered = applyFilters(apiPlaces);
+          const applyFilters = (list: PlaceResult[]) =>
+            filterByExploreCategory(filterExplorePlaces(list, { logDrop: false }), filterCat);
 
-        if (
-          !isFreeText &&
-          cat.id === "coffee" &&
-          filtered.length < COFFEE_MIN_FILTERED_RESULTS
-        ) {
-          for (const textQuery of getExploreTextFallbackQueries("coffee", center)) {
-            const fallback = await withSearchTimeout(
-              searchPlacesFn({
-                data: {
-                  ...basePayload,
-                  query: textQuery,
-                  mode: "text",
-                  locale,
-                },
-              }),
-            );
-            if (fallback.error && !apiError) apiError = fallback.error;
-            if (fallback.places.length > 0) {
-              apiPlaces = mergePlacesById(apiPlaces, fallback.places);
-              filtered = applyFilters(apiPlaces);
-              if (filtered.length >= COFFEE_MIN_FILTERED_RESULTS) break;
-            }
-          }
-        }
+          let filtered = applyFilters(apiPlaces);
 
-        if (
-          !isFreeText &&
-          cat.id === "district" &&
-          filtered.length < DISTRICT_MIN_FILTERED_RESULTS
-        ) {
-          for (const textQuery of getExploreTextFallbackQueries("district", center)) {
-            const fallback = await withSearchTimeout(
-              searchPlacesFn({
-                data: {
-                  ...basePayload,
-                  query: textQuery,
-                  mode: "text",
-                  locale,
-                },
-              }),
-            );
-            if (fallback.error && !apiError) apiError = fallback.error;
-            if (fallback.places.length > 0) {
-              apiPlaces = mergePlacesById(apiPlaces, fallback.places);
-              filtered = applyFilters(apiPlaces);
-              if (filtered.length >= DISTRICT_MIN_FILTERED_RESULTS) break;
-            }
-          }
-        }
-
-        if (apiError) setError(apiError);
-
-        const nearbySaved = savedPlacesNear(center, savedRef.current, 5000);
-        const apiNames = new Set(apiPlaces.map((p) => p.name));
-        const savedCards: MapPlaceCard[] = nearbySaved
-          .filter((s) => !apiNames.has(s.name))
-          .filter((s) =>
-            matchesCategory(
-              { primaryType: s.category, name: s.name, types: s.category ? [s.category] : null },
-              filterCat,
-            ),
-          )
-          .map((s) => {
-            const base = savedToPlaceResult(s);
-            const card = buildUnifiedPlaceCard({
-              place: base,
-              categoryId: filterCat.id,
-              isSavedFavorite: true,
-              userLocation: center,
-              weather,
-              userProfile: reasonProfile,
-              locale,
+          const nearbySaved = savedPlacesNear(center, savedRef.current, 5000);
+          const apiNames = new Set(apiPlaces.map((p) => p.name));
+          const savedCards: MapPlaceCard[] = nearbySaved
+            .filter((s) => !apiNames.has(s.name))
+            .filter((s) =>
+              matchesCategory(
+                { primaryType: s.category, name: s.name, types: s.category ? [s.category] : null },
+                filterCat,
+              ),
+            )
+            .map((s) => {
+              const base = savedToPlaceResult(s);
+              const card = buildUnifiedPlaceCard({
+                place: base,
+                categoryId: filterCat.id,
+                isSavedFavorite: true,
+                userLocation: center,
+                weather,
+                userProfile: reasonProfile,
+                locale,
+              });
+              const item = mapPlaceResultToChatItem(base, {
+                weather,
+                userProfile: reasonProfile,
+                locale,
+              });
+              return {
+                ...card,
+                googleMapsUrl: item.googleMapsUrl,
+              };
             });
-            const item = mapPlaceResultToChatItem(base, {
-              weather,
-              userProfile: reasonProfile,
-              locale,
-            });
-            return {
-              ...card,
-              googleMapsUrl: item.googleMapsUrl,
-            };
+
+          enriched = [
+            ...savedCards,
+            ...filtered.map((p) => {
+              const card = buildUnifiedPlaceCard({
+                place: p,
+                categoryId: filterCat.id,
+                userLocation: center,
+                weather,
+                userProfile: reasonProfile,
+                locale,
+              });
+              const item = mapPlaceResultToChatItem(p, {
+                weather,
+                userProfile: reasonProfile,
+                locale,
+              });
+              return { ...card, googleMapsUrl: item.googleMapsUrl };
+            }),
+          ];
+
+          enriched = filterHomeNearbyPlaceResults(enriched, {
+            categoryId: filterCat.id,
+            caller: `mapSearch:${filterCat.id}`,
+            context: "explore_map",
+            logDrop: false,
           });
-
-        let enriched: MapPlaceCard[] = [
-          ...savedCards,
-          ...filtered.map((p) => {
-            const card = buildUnifiedPlaceCard({
-              place: p,
-              categoryId: filterCat.id,
-              userLocation: center,
-              weather,
-              userProfile: reasonProfile,
-              locale,
-            });
-            const item = mapPlaceResultToChatItem(p, {
-              weather,
-              userProfile: reasonProfile,
-              locale,
-            });
-            return { ...card, googleMapsUrl: item.googleMapsUrl };
-          }),
-        ];
-
-        enriched = filterHomeNearbyPlaceResults(enriched, {
-          categoryId: filterCat.id,
-          caller: `mapSearch:${filterCat.id}`,
-          context: "explore_map",
-        });
-
-        if (enriched.length === 0) {
-          if (isFreeText) {
-            setError(apiError ?? getExploreCategoryEmptyMessage(cat.id, locale));
-          } else if (allowDemoPlaceFallback()) {
-            enriched = mockMapCards(center, cat);
-            const note = t("map.demoPlacesNote");
-            if (apiError) {
-              setError(`${apiError} · ${note}`);
-            } else {
-              setError(note);
-            }
-          } else {
-            setError(apiError ?? getExploreCategoryEmptyMessage(cat.id, locale));
-            console.info("[explore] map places empty", { category: cat.id, apiError });
-          }
         }
 
         if (requestId !== searchRequestIdRef.current) return;
+
+        if (enriched.length > 0) {
+          setError(null);
+        } else if (allowDemoPlaceFallback() && !isFreeText) {
+          enriched = mockMapCards(center, cat);
+          setError(t("map.demoPlacesNote"));
+        } else {
+          setError(emptyError ?? getExploreCategoryEmptyMessage(cat.id, locale));
+          if (!isFreeText) {
+            console.info("[explore] map places empty", { category: cat.id, emptyError });
+          }
+        }
+
         const sorted = sortMapCards(
           enriched,
           center,
@@ -551,8 +579,8 @@ function MapView() {
           count: sorted.length,
           locationKey,
           categoryId: isFreeText ? "search" : cat.id,
-          query: isFreeText ? text : cat.query,
-          fromCache: Boolean(cached),
+          query: isFreeText ? text : cat.id === "all" ? allSubQuery : cat.query,
+          fromCache,
         });
         if (sheetMode === "list") {
           setSelectedPlace(null);
@@ -590,12 +618,10 @@ function MapView() {
     cat.mode,
     searchPlacesFn,
     geoReady,
-    userLocation.lat,
-    userLocation.lng,
-    weatherCacheKey(weather),
+    effectiveLocation?.locationKey,
+    effectiveLocation?.isReadyForPlaces,
     locale,
     searchTrigger,
-    t,
   ]);
 
   const displayResults = useMemo(() => {
@@ -724,6 +750,17 @@ function MapView() {
       refocusSelectedPlace(selectedPlace.lat, selectedPlace.lng);
     }
   }, [sheetMode, selectedPlace, refocusSelectedPlace]);
+
+  useEffect(() => {
+    if (sheetMode !== "navigation") {
+      leaveNavigationLocationMode();
+      return;
+    }
+    enterNavigationLocationMode();
+    return subscribeNavigationLocationWatch((loc) => {
+      applyEffectiveLocationToMap(loc.lat, loc.lng, loc.usedFallback);
+    });
+  }, [sheetMode, applyEffectiveLocationToMap]);
 
   useEffect(() => {
     if (sheetMode !== "detail" || !selectedPlace?.id || selectedPlace.id.startsWith("saved-")) {

@@ -3,10 +3,12 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
   type PointerEvent,
 } from "react";
 import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceImage } from "@/components/media/PlaceImage";
+import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { cn } from "@/lib/utils";
@@ -47,6 +49,40 @@ type Props = {
 };
 
 const DRAG_SCROLL_THRESHOLD_PX = 10;
+
+/** Google 圖（含 WebP）載入失敗時只 fallback 一次到 Roamie 預設圖 */
+function PlaceCardCoverImage({
+  src,
+  alt,
+  categoryKey,
+}: {
+  src: string;
+  alt: string;
+  categoryKey: string;
+}) {
+  const [displaySrc, setDisplaySrc] = useState(src);
+  const [usedFallback, setUsedFallback] = useState(false);
+
+  useEffect(() => {
+    setDisplaySrc(src);
+    setUsedFallback(false);
+  }, [src]);
+
+  return (
+    <img
+      src={displaySrc}
+      alt={alt}
+      loading="lazy"
+      draggable={false}
+      className="pointer-events-none h-full w-full object-cover"
+      onError={() => {
+        if (usedFallback) return;
+        setUsedFallback(true);
+        setDisplaySrc(getRoamieDefaultImage(categoryKey));
+      }}
+    />
+  );
+}
 
 export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
   function MapExplorePlaceCards(
@@ -185,7 +221,8 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                 (p.lat != null && p.lng != null
                   ? formatDistance(distFn(userLocation, { lat: p.lat, lng: p.lng }))
                   : "");
-              const typeLabel = p.displayCategory ?? identityDisplayLabel(resolvePlaceIdentity(p));
+              const typeLabel =
+                p.displayCategory ?? identityDisplayLabel(resolvePlaceIdentity(p), p);
               const isLast = i === places.length - 1;
               return (
                 <article
@@ -207,12 +244,10 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                 >
                   <div className="relative h-[170px] w-full shrink-0 overflow-hidden rounded-t-[1.4rem] bg-secondary">
                     {googleImg ? (
-                      <img
+                      <PlaceCardCoverImage
                         src={googleImg}
                         alt={p.name}
-                        loading="lazy"
-                        draggable={false}
-                        className="pointer-events-none h-full w-full object-cover"
+                        categoryKey={categoryKey}
                       />
                     ) : (
                       <PlaceImage

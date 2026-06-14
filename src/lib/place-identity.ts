@@ -1,5 +1,10 @@
 import type { PlaceResult } from "@/lib/place-result";
-import { isDrinkOrSnackFoodPlace, isExploreCoffeePlace } from "@/lib/place-category";
+import {
+  EXPLICIT_FOOD_NAME_RE,
+  isDrinkOrSnackFoodPlace,
+  isExplicitFoodMerchant,
+  isExploreCoffeePlace,
+} from "@/lib/place-category";
 
 /** Roamie 推薦文案用：地點真實身分（優先於 UI 分類 chip） */
 export type PlaceIdentity =
@@ -106,10 +111,10 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
 
   if (isBlacklisted(types)) return "unsupported";
 
-  // Nightlife must win over cafe/food (Google types sometimes include "cafe" for bars).
-  if (hasAnyType(types, ["bar", "wine_bar", "night_club", "pub", "cocktail_bar"])) return "bar";
-  if (/酒吧|餐酒館|酒館|居酒屋|啤酒屋|調酒|cocktail|speakeasy|\bbar\b|\bpub\b/i.test(blob)) {
-    return "bar";
+  if (isExplicitFoodMerchant(place)) {
+    if (/宵夜|深夜|夜市|夜食/i.test(blob)) return "food_stall";
+    if (/小吃|攤|桶仔雞|鹹酥雞|炸物|滷味/i.test(name)) return "food_stall";
+    return "restaurant";
   }
 
   if (/書店|書局|誠品|金石堂|茉莉|書屋/i.test(name)) return "bookstore";
@@ -152,7 +157,13 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
     return "bakery";
   }
   if (hasAnyType(types, ["dessert_shop", "ice_cream_shop", "confectionery"])) return "dessert";
-  if (hasAnyType(types, ["bar", "wine_bar", "night_club", "pub", "cocktail_bar"])) return "bar";
+
+  if (
+    hasAnyType(types, ["bar", "wine_bar", "night_club", "pub", "cocktail_bar"]) ||
+    /酒吧|餐酒館|酒館|居酒屋|啤酒屋|調酒|cocktail|speakeasy|\bbar\b|\bpub\b|izakaya/i.test(blob)
+  ) {
+    if (!EXPLICIT_FOOD_NAME_RE.test(blob)) return "bar";
+  }
   if (hasAnyType(types, ["park", "national_park", "botanical_garden", "hiking_area"])) return "park";
   if (hasAnyType(types, ["tourist_attraction", "historical_landmark", "monument", "cultural_center"])) {
     if (hasAnyType(types, ["book_store", "bookstore"])) return "bookstore";
@@ -186,7 +197,20 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
   return "generic";
 }
 
-export function identityDisplayLabel(identity: PlaceIdentity): string {
+export function identityDisplayLabel(
+  identity: PlaceIdentity,
+  place?: PlaceIdentityInput,
+): string {
+  const blob = place ? placeBlob(place) : "";
+  if (place) {
+    if (identity === "food_stall" || identity === "restaurant") {
+      if (/宵夜|深夜|夜食/i.test(blob)) return "宵夜";
+    }
+    if (identity === "bar" && isExplicitFoodMerchant(place)) {
+      return /宵夜|深夜/i.test(blob) ? "宵夜" : "美食";
+    }
+  }
+
   const labels: Record<PlaceIdentity, string> = {
     bookstore: "書店",
     breakfast_shop: "早餐",

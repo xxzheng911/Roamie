@@ -45,12 +45,8 @@
   font-size: clamp(2rem, 8vw, 2.75rem);
   font-weight: 600;
   letter-spacing: -0.02em;
-  color: #3a3532;
-}
-@media (prefers-color-scheme: dark) {
-  html:not(.light) .roamie-splash__brand {
-    color: #f5f0e8;
-  }
+  /* 奶油底啟動畫面：不跟隨系統深色模式改淺色 */
+  color: #2a211c;
 }
 .roamie-splash__tagline {
   margin: 0.35rem 0 0;

@@ -636,15 +636,24 @@
   font-size: clamp(1.75rem, 6vw, 2rem);
   font-weight: 600;
   letter-spacing: 0.04em;
-  color: #3a3532;
+  color: #2a211c;
 }
+
+/* 靜態 boot splash 固定奶油底 — 字樣維持深色 */
+#roamie-boot-splash .roamie-splash__brand {
+  color: #2a211c;
+}
+
 .dark .roamie-splash__brand {
-  color: inherit;
+  color: oklch(0.95 0.012 85);
 }
 
 @media (prefers-color-scheme: dark) {
   html:not(.light) .roamie-splash__brand {
-    color: inherit;
+    color: oklch(0.95 0.012 85);
+  }
+  html:not(.light) #roamie-boot-splash .roamie-splash__brand {
+    color: #2a211c;
   }
 }
 

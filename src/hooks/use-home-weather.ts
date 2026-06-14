@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useSyncExternalStore } from "react";
+import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import type { Locale } from "@/lib/i18n/types";
 import {
@@ -19,19 +19,29 @@ export type HomeUserLocation = HomeSessionUserLocation;
 export function useHomeWeather(locale: Locale) {
   const fetchWeatherFn = useServerFn(getWeather);
   const fetchForecastFn = useServerFn(getWeatherForecast);
+  const fetchWeatherRef = useRef(fetchWeatherFn);
+  const fetchForecastRef = useRef(fetchForecastFn);
+  fetchWeatherRef.current = fetchWeatherFn;
+  fetchForecastRef.current = fetchForecastFn;
 
   useLayoutEffect(() => {
     bindWeatherServerFns({
-      fetchWeather: fetchWeatherFn,
-      fetchForecast: fetchForecastFn,
+      fetchWeather: (...args) => fetchWeatherRef.current(...args),
+      fetchForecast: (...args) => fetchForecastRef.current(...args),
     });
+  }, [fetchWeatherFn, fetchForecastFn]);
+
+  useLayoutEffect(() => {
     ensureHomeWeatherBootstrap(locale, "useHomeWeather");
+  }, [locale]);
+
+  useLayoutEffect(() => {
     const stopLocationWatch = subscribeHomeWeatherLocationWatch();
     return () => {
-      console.info("[Location] home weather watch unsubscribe");
+      console.info("[Location] home effective-location listener unsubscribe");
       stopLocationWatch();
     };
-  }, [fetchWeatherFn, fetchForecastFn, locale]);
+  }, []);
 
   const snapshot = useSyncExternalStore(
     subscribeHomeWeatherBootstrap,

@@ -10,41 +10,20 @@ import {
   isCrossBorderTrip,
   isTicketEligiblePlace,
 } from "@/lib/affiliate/affiliate-types";
+import {
+  getAffiliateEnv,
+  warnAffiliateOnce,
+  type AffiliateEnvConfig,
+} from "@/lib/affiliate/affiliate-env";
 
-type AffiliateEnvConfig = {
-  tripAccountId: string;
-  tripWebsiteId: string;
-  klookAid: string;
-  kkdayCid: string;
-  agodaAid: string;
-  bookingAid: string;
-};
-
-function readEnv(key: string): string {
-  const v = import.meta.env[key];
-  return typeof v === "string" ? v.trim() : "";
-}
-
-export function readAffiliateEnv(): AffiliateEnvConfig {
-  return {
-    tripAccountId: readEnv("VITE_TRIP_ACCOUNT_ID"),
-    tripWebsiteId: readEnv("VITE_TRIP_WEBSITE_ID"),
-    klookAid: readEnv("VITE_KLOOK_AID"),
-    kkdayCid: readEnv("VITE_KKDAY_CID"),
-    agodaAid: readEnv("VITE_AFFILIATE_AGODA_AID"),
-    bookingAid: readEnv("VITE_AFFILIATE_BOOKING_AID"),
-  };
-}
+export { getAffiliateEnv, readAffiliateEnv } from "@/lib/affiliate/affiliate-env";
 
 function encodeQuery(value: string): string {
   return encodeURIComponent(value.trim());
 }
 
 function buildTripHotelUrl(destination: string, env: AffiliateEnvConfig): string | null {
-  if (!env.tripAccountId || !env.tripWebsiteId) {
-    console.warn("[Affiliate] Trip.com hotel link disabled: missing VITE_TRIP_ACCOUNT_ID or VITE_TRIP_WEBSITE_ID");
-    return null;
-  }
+  if (!env.tripAccountId || !env.tripWebsiteId) return null;
   const qs = new URLSearchParams({
     city: destination,
     Allianceid: env.tripAccountId,
@@ -54,10 +33,7 @@ function buildTripHotelUrl(destination: string, env: AffiliateEnvConfig): string
 }
 
 function buildTripFlightUrl(destination: string, env: AffiliateEnvConfig): string | null {
-  if (!env.tripAccountId || !env.tripWebsiteId) {
-    console.warn("[Affiliate] Trip.com flight link disabled: missing VITE_TRIP_ACCOUNT_ID or VITE_TRIP_WEBSITE_ID");
-    return null;
-  }
+  if (!env.tripAccountId || !env.tripWebsiteId) return null;
   const qs = new URLSearchParams({
     Allianceid: env.tripAccountId,
     SID: env.tripWebsiteId,
@@ -68,28 +44,40 @@ function buildTripFlightUrl(destination: string, env: AffiliateEnvConfig): strin
 }
 
 function buildKlookUrl(query: string, env: AffiliateEnvConfig): string | null {
-  if (!env.klookAid) {
-    console.warn("[Affiliate] Klook link disabled: missing VITE_KLOOK_AID");
-    return null;
-  }
+  if (!env.klookAid) return null;
   const qs = new URLSearchParams({ query, aid: env.klookAid });
   return `https://www.klook.com/zh-TW/search/?${qs.toString()}`;
 }
 
 function buildKkdayUrl(query: string, env: AffiliateEnvConfig): string | null {
-  if (!env.kkdayCid) {
-    console.warn("[Affiliate] KKday link disabled: missing VITE_KKDAY_CID");
-    return null;
-  }
+  if (!env.kkdayCid) return null;
   const qs = new URLSearchParams({ keyword: query, cid: env.kkdayCid });
   return `https://www.kkday.com/zh-tw/search?${qs.toString()}`;
 }
 
-/** Agoda：無 affiliate id 時使用一般搜尋入口（TODO: 串接 VITE_AFFILIATE_AGODA_AID） */
-function buildAgodaUrl(destination: string, env: AffiliateEnvConfig): string {
-  const qs = new URLSearchParams({ city: destination });
-  if (env.agodaAid) qs.set("cid", env.agodaAid);
-  return `https://www.agoda.com/search?${qs.toString()}`;
+/** Agoda：使用 VITE_AGODA_AFFILIATE_URL 的 cid 組搜尋入口（不串 API、不查房價） */
+function buildAgodaUrl(destination: string, env: AffiliateEnvConfig): string | null {
+  if (!env.agodaAffiliateUrl) return null;
+  try {
+    const affiliate = new URL(env.agodaAffiliateUrl);
+    const cid = affiliate.searchParams.get("cid");
+    const hl = affiliate.searchParams.get("hl");
+    const dest = destination.trim();
+    if (cid && dest) {
+      const search = new URL("https://www.agoda.com/search");
+      search.searchParams.set("cid", cid);
+      search.searchParams.set("city", dest);
+      if (hl) search.searchParams.set("hl", hl);
+      return search.toString();
+    }
+    return env.agodaAffiliateUrl;
+  } catch {
+    warnAffiliateOnce(
+      "agoda_invalid_env",
+      "[Affiliate] Agoda link disabled: invalid VITE_AGODA_AFFILIATE_URL",
+    );
+    return null;
+  }
 }
 
 /** Booking.com：無 affiliate id 時使用一般搜尋入口 */
@@ -118,9 +106,16 @@ function offer(
 
 export function buildHotelAffiliateOffers(ctx: TripAffiliateContext): AffiliateLinkOffer[] {
   if (ctx.dayCount < 2) return [];
-  const env = readAffiliateEnv();
+  const env = getAffiliateEnv();
   const dest = ctx.destinationLabel;
   return [
+    offer(
+      "agoda",
+      "hotel",
+      "Agoda 尋找住宿",
+      buildAgodaUrl(dest, env),
+      "missing_agoda_env",
+    ),
     offer(
       "trip",
       "hotel",
@@ -133,7 +128,7 @@ export function buildHotelAffiliateOffers(ctx: TripAffiliateContext): AffiliateL
 
 export function buildFlightAffiliateOffers(ctx: TripAffiliateContext): AffiliateLinkOffer[] {
   if (!isCrossBorderTrip(ctx.originLocation, ctx.destinationLocation)) return [];
-  const env = readAffiliateEnv();
+  const env = getAffiliateEnv();
   const dest = ctx.destinationLabel;
   return [
     offer(
@@ -149,7 +144,7 @@ export function buildFlightAffiliateOffers(ctx: TripAffiliateContext): Affiliate
 export function buildTicketAffiliateOffers(placeQuery: string): AffiliateLinkOffer[] {
   const q = placeQuery.trim();
   if (!q) return [];
-  const env = readAffiliateEnv();
+  const env = getAffiliateEnv();
   return [
     offer("klook", "activity_ticket", "Klook", buildKlookUrl(q, env), "missing_klook_env"),
     offer("kkday", "activity_ticket", "KKday", buildKkdayUrl(q, env), "missing_kkday_env"),

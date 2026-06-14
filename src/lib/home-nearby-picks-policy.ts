@@ -1,4 +1,4 @@
-import { normalizedLocationKey } from "@/lib/effective-location";
+import { normalizedLocationKey } from "@/lib/location-key";
 
 const HOME_NEARBY_LOAD_TTL_MS = 5 * 60 * 1000;
 
@@ -6,7 +6,7 @@ let lastLoadKey = "";
 let lastLoadAt = 0;
 let loadInFlight: Promise<unknown> | null = null;
 let loadInFlightKey = "";
-const completedLoadKeys = new Set<string>();
+const completedLoadKeys = new Map<string, number>();
 
 export function homeNearbyCategoriesKey(categoryIds: readonly string[]): string {
   return [...categoryIds].sort().join(",");
@@ -33,13 +33,17 @@ export function shouldSkipHomeNearbyLoadWithData(
   sessionLoadKey: string | null,
   now = Date.now(),
 ): boolean {
-  if (completedLoadKeys.has(key)) return true;
+  const completedAt = completedLoadKeys.get(key);
+  if (completedAt !== undefined) {
+    if (now - completedAt < HOME_NEARBY_LOAD_TTL_MS) return true;
+    completedLoadKeys.delete(key);
+  }
   if (hasExistingPicks && sessionLoadKey === key) return true;
   return shouldSkipHomeNearbyLoad(key, now);
 }
 
-export function markHomeNearbyLoadComplete(key: string): void {
-  completedLoadKeys.add(key);
+export function markHomeNearbyLoadComplete(key: string, now = Date.now()): void {
+  completedLoadKeys.set(key, now);
 }
 
 /** @deprecated 請改用 homeNearbyLoadKey；保留給舊 log */

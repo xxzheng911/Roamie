@@ -92,7 +92,7 @@ export function PlaceDetailSheet({
 }: Props) {
   const [photoIdx, setPhotoIdx] = useState(0);
   const photos = imageUrls.length > 0 ? imageUrls : [];
-  const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place));
+  const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place), place);
   const navButtonLabel = `導航・${TRAVEL_MODE_LABEL[selectedTransportMode]}`;
 
   return (

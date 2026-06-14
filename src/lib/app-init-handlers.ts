@@ -15,7 +15,6 @@ import {
 import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
 import { attachOAuthDeepLinkListener, readPendingCallbackPath } from "@/lib/auth-oauth-deep-link";
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
-import { prefetchLocationPermissionStatus } from "@/lib/location-permission-manager";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { loadOnboardingState } from "@/lib/onboarding-storage";
 
@@ -88,6 +87,12 @@ function installAppInitHandlersCore(): void {
         colno: event.colno,
         script: (event.target as HTMLElement | null)?.tagName === "SCRIPT",
       };
+      if (
+        !extra.script &&
+        (err == null || err === "" || (typeof err === "string" && err === "Script error."))
+      ) {
+        return;
+      }
       logAppError("APP_INIT_ERROR", err, extra);
       showCapacitorFatalOverlay("APP_INIT_ERROR", err, extra);
     },
@@ -113,6 +118,13 @@ function installAppInitHandlersCore(): void {
       void waitForCapacitorBridge().then(async (ready) => {
         if (!ready) return;
         await loadOnboardingState();
+        try {
+          const { purgeStaleLocationWatch } = await import("@/lib/location-watch-cleanup");
+          await purgeStaleLocationWatch("app_boot");
+        } catch (error) {
+          logAppError("APP_INIT_ERROR", error, { source: "purgeStaleLocationWatch" });
+        }
+        const { prefetchLocationPermissionStatus } = await import("@/lib/location-permission-manager");
         prefetchLocationPermissionStatus();
         void warmSupabaseAuthStorage();
         attachOAuthDeepLinkListener();

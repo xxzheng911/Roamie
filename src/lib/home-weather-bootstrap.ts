@@ -118,6 +118,14 @@ function coordsEqual(
 
 /** @returns true when state was patched (coords changed) */
 function applyEffectiveLocation(eff: EffectiveLocationSnapshot): boolean {
+  if (eff.locationKey === lastAppliedCoordKey) {
+    console.info("[LOCATION_PATCH_SKIP_SAME_KEY]", {
+      locationKey: eff.locationKey,
+      via: "home_weather",
+    });
+    return false;
+  }
+
   const prev = state.userLocation;
   const next: HomeSessionUserLocation = {
     lat: eff.lat,
@@ -126,6 +134,10 @@ function applyEffectiveLocation(eff: EffectiveLocationSnapshot): boolean {
     source: eff.source === "gps" ? "capacitor" : "fallback",
   };
   if (coordsEqual(prev, next)) {
+    console.info("[LOCATION_PATCH_SKIP_SAME_KEY]", {
+      locationKey: eff.locationKey,
+      via: "home_weather_coords",
+    });
     return false;
   }
 
@@ -147,6 +159,12 @@ function applyEffectiveLocation(eff: EffectiveLocationSnapshot): boolean {
   }
 
   lastAppliedCoordKey = eff.locationKey;
+  console.info("[LOCATION_PATCH_APPLIED]", {
+    locationKey: eff.locationKey,
+    lat: eff.lat,
+    lng: eff.lng,
+    via: "home_weather",
+  });
   patchState({
     userLocation: next,
     usedFallbackLocation: eff.isFallback,
@@ -300,7 +318,7 @@ export function ensureHomeWeatherBootstrap(nextLocale: Locale, source: string): 
 }
 
 /**
- * 首頁天氣連動：訂閱 effective location bucket 變更（不重複 GPS watch）。
+ * 首頁天氣：訂閱 effective location store（不建立 GPS watch）。
  */
 export function subscribeHomeWeatherLocationWatch(): () => void {
   let lastKey = getEffectiveLocationSnapshot()?.locationKey ?? "";

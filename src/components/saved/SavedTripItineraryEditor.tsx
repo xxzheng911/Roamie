@@ -28,6 +28,7 @@ import {
   normalizeStoredTrip,
 } from "@/lib/saved-trip/normalize";
 import { useDebouncedTripSave } from "@/lib/saved-trip/use-debounced-trip-save";
+import { cn } from "@/lib/utils";
 import type { StoredItinerary } from "@/lib/itinerary-storage";
 import { regenerateTripCover, updateTripMeta } from "@/lib/itinerary-storage";
 import { buildCustomCoverPatch, buildCustomTitlePatch } from "@/lib/saved-trip/display";
@@ -54,7 +55,7 @@ import { listTripDates } from "@/lib/outfit/group-by-date";
 import { resolveTripDestination } from "@/lib/outfit/trip-outfit-context";
 import { useTripOutfitSuggestion } from "@/hooks/use-trip-outfit-suggestion";
 import { buildFlightAffiliateOffers, buildHotelAffiliateOffers, buildPlaceTicketOffers } from "@/lib/affiliate/affiliate-links";
-import { buildTripAffiliateContext } from "@/lib/affiliate/affiliate-types";
+import { buildTripAffiliateContext, type AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
 
 function inferTripDates(
@@ -74,6 +75,10 @@ function inferTripDates(
   }
   const today = new Date().toISOString().slice(0, 10);
   return { start: today, end: today };
+}
+
+function placeAffiliateKey(item: RoamieItineraryItem): string {
+  return `${item.placeType ?? ""}|${item.title}|${item.placeName ?? ""}|${item.description ?? ""}`;
 }
 
 type DayGroup = { dateKey: string; dayNumber: number; items: RoamieItineraryItem[] };
@@ -182,9 +187,25 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
       itinerary: items,
       tripSettings: settings,
       recommendations: [],
-      ...outfitFields,
+      outfitSuggestion: outfitFields.outfitSuggestion ?? initial.outfitSuggestion,
+      outfitSuggestionUpdatedAt:
+        outfitFields.outfitSuggestionUpdatedAt ?? initial.outfitSuggestionUpdatedAt,
+      weatherSummary: outfitFields.weatherSummary ?? initial.weatherSummary,
+      weatherSource: outfitFields.weatherSource ?? initial.weatherSource,
+      outfitSuggestionInputKey:
+        outfitFields.outfitSuggestionInputKey ?? initial.outfitSuggestionInputKey,
     }),
-    [initial, tripTitle, items, settings, outfitFields],
+    [
+      initial,
+      tripTitle,
+      items,
+      settings,
+      outfitFields.outfitSuggestion,
+      outfitFields.outfitSuggestionUpdatedAt,
+      outfitFields.weatherSummary,
+      outfitFields.weatherSource,
+      outfitFields.outfitSuggestionInputKey,
+    ],
   );
 
   const { saving, saveError } = useDebouncedTripSave(stored.id, payload, true);
@@ -223,27 +244,59 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
     }
   }, [tripView.displayTitle, isTitleCustomized]);
 
-  const affiliateCtx = useMemo(
-    () =>
-      buildTripAffiliateContext({
-        tripId: stored.id,
-        payload,
-        items,
-        dayCount: dayGroups.length,
-        destinationLabel:
-          tripView.destination !== "尚未設定" ? tripView.destination : outfitDestination,
-      }),
-    [stored.id, payload, items, dayGroups.length, tripView.destination, outfitDestination],
+  const affiliateDayCount = dayGroups.length;
+  const affiliateDestinationLabel =
+    tripView.destination !== "尚未設定" ? tripView.destination : outfitDestination;
+  const affiliateDestinationCountry =
+    payload.destinationLocation?.country ?? initial.destinationLocation?.country ?? "";
+  const affiliateOriginCountry =
+    payload.originLocation?.country ?? initial.originLocation?.country ?? "";
+  const affiliatePlacesSignature = useMemo(
+    () => items.map((item) => placeAffiliateKey(item)).join("\n"),
+    [items],
   );
 
-  const hotelAffiliateOffers = useMemo(
-    () => buildHotelAffiliateOffers(affiliateCtx),
-    [affiliateCtx],
-  );
-  const flightAffiliateOffers = useMemo(
-    () => buildFlightAffiliateOffers(affiliateCtx),
-    [affiliateCtx],
-  );
+  const hotelAffiliateOffers = useMemo(() => {
+    const ctx = buildTripAffiliateContext({
+      tripId: stored.id,
+      payload: {
+        destinationLocation: payload.destinationLocation ?? initial.destinationLocation ?? null,
+        originLocation: payload.originLocation ?? initial.originLocation ?? null,
+      } as RoamiePayloadV2,
+      items: [],
+      dayCount: affiliateDayCount,
+      destinationLabel: affiliateDestinationLabel,
+    });
+    return buildHotelAffiliateOffers(ctx);
+  }, [stored.id, affiliateDayCount, affiliateDestinationLabel]);
+
+  const flightAffiliateOffers = useMemo(() => {
+    const ctx = buildTripAffiliateContext({
+      tripId: stored.id,
+      payload: {
+        destinationLocation: payload.destinationLocation ?? initial.destinationLocation ?? null,
+        originLocation: payload.originLocation ?? initial.originLocation ?? null,
+      } as RoamiePayloadV2,
+      items: [],
+      dayCount: affiliateDayCount,
+      destinationLabel: affiliateDestinationLabel,
+    });
+    return buildFlightAffiliateOffers(ctx);
+  }, [
+    stored.id,
+    affiliateDayCount,
+    affiliateDestinationLabel,
+    affiliateDestinationCountry,
+    affiliateOriginCountry,
+  ]);
+
+  const placeTicketOffersByKey = useMemo(() => {
+    const map = new Map<string, AffiliateLinkOffer[]>();
+    for (const item of items) {
+      map.set(placeAffiliateKey(item), buildPlaceTicketOffers(item));
+    }
+    return map;
+  }, [affiliatePlacesSignature]);
 
   const safeDayIndex = Math.min(activeDayIndex, Math.max(0, dayGroups.length - 1));
   const activeDay = dayGroups[safeDayIndex];
@@ -667,7 +720,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
                         />
                         <TripAffiliateSection
                           kind="ticket"
-                          offers={buildPlaceTicketOffers(item)}
+                          offers={placeTicketOffersByKey.get(placeAffiliateKey(item)) ?? []}
                           compact
                         />
                       </div>
