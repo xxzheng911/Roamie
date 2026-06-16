@@ -1,6 +1,7 @@
+import { PLACES_HOME_LOAD_TTL_MS } from "@/lib/places-api-guard";
 import { normalizedLocationKey } from "@/lib/location-key";
 
-const HOME_NEARBY_LOAD_TTL_MS = 5 * 60 * 1000;
+const HOME_NEARBY_LOAD_TTL_MS = PLACES_HOME_LOAD_TTL_MS;
 
 let lastLoadKey = "";
 let lastLoadAt = 0;

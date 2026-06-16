@@ -4,13 +4,13 @@ import {
   normalizePlacesSearchResult,
   type PlacesSearchResult,
 } from "@/lib/places-search-normalize";
-import { logPlacesApiSkipDuplicate, logPlacesCacheHit } from "@/lib/places-diagnostics";
+import {
+  PLACES_SEARCH_CACHE_TTL_MS,
+  PLACES_FAILED_CACHE_TTL_MS,
+} from "@/lib/places-api-guard";
+import { logPlacesCacheHit, logPlacesCacheMiss, logPlacesDedupePending } from "@/lib/places-api-guard";
+import { logPlacesApiSkipDuplicate } from "@/lib/places-diagnostics";
 import { homeNearbySearchRadiusMeters } from "@/lib/search-radius";
-
-export type { PlacesSearchResult };
-
-const PLACES_SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
-const PLACES_SEARCH_FAILED_TTL_MS = 5 * 60 * 1000;
 
 type CacheEntry = { data: PlacesSearchResult; expiresAt: number };
 
@@ -32,7 +32,8 @@ export function buildPlacesSearchKey(data: SearchPlacesInput): string {
   const groups = nearbyGroupsKey(data.nearbyGroups);
   const query = (data.query ?? "").trim();
   const locale = data.locale ?? "";
-  return `${locationKey}:${radius}:${data.mode}:${query}:${types}:${groups}:${locale}`;
+  const categoryId = data.categoryId ?? "";
+  return `${locationKey}:${radius}:${categoryId}:${data.mode}:${query}:${types}:${groups}:${locale}`;
 }
 
 function readCached(key: string, now = Date.now()): PlacesSearchResult | null {
@@ -51,7 +52,7 @@ function isFailedKey(key: string, now = Date.now()): boolean {
 }
 
 export function markPlacesSearchFailed(key: string, now = Date.now()): void {
-  failedKeyUntil.set(key, now + PLACES_SEARCH_FAILED_TTL_MS);
+  failedKeyUntil.set(key, now + PLACES_FAILED_CACHE_TTL_MS);
 }
 
 export function hasPlacesClientFallbackAttempted(key: string): boolean {
@@ -65,6 +66,7 @@ export function markPlacesClientFallbackAttempted(key: string): void {
 export function getPlacesSearchCachedOrRun(
   key: string,
   runner: () => Promise<PlacesSearchResult>,
+  logMeta?: Pick<import("@/lib/explore-category-search").SearchPlacesInput, "query" | "categoryId" | "mode">,
 ): Promise<PlacesSearchResult> {
   const now = Date.now();
 
@@ -76,13 +78,15 @@ export function getPlacesSearchCachedOrRun(
 
   const cached = readCached(key, now);
   if (cached) {
-    logPlacesCacheHit(key, cached.places.length, "api");
+    logPlacesCacheHit(key);
     return Promise.resolve(cached);
   }
 
+  logPlacesCacheMiss(key);
+
   const inflight = inFlightMap.get(key);
   if (inflight) {
-    logPlacesApiSkipDuplicate("in_flight", { key });
+    logPlacesDedupePending(key);
     return inflight;
   }
 
@@ -90,7 +94,7 @@ export function getPlacesSearchCachedOrRun(
     .then((result) => {
       const normalized = normalizePlacesSearchResult(result);
       const ttl =
-        normalized.places.length > 0 ? PLACES_SEARCH_CACHE_TTL_MS : PLACES_SEARCH_FAILED_TTL_MS;
+        normalized.places.length > 0 ? PLACES_SEARCH_CACHE_TTL_MS : PLACES_FAILED_CACHE_TTL_MS;
       writeCached(key, normalized, ttl);
       if (normalized.places.length === 0) {
         markPlacesSearchFailed(key);
@@ -103,7 +107,7 @@ export function getPlacesSearchCachedOrRun(
         places: [],
         error: e instanceof Error ? e.message : String(e),
       };
-      writeCached(key, empty, PLACES_SEARCH_FAILED_TTL_MS);
+      writeCached(key, empty, PLACES_FAILED_CACHE_TTL_MS);
       return empty;
     })
     .finally(() => {

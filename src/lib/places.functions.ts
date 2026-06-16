@@ -27,6 +27,12 @@ import {
 } from "@/lib/is-recommendable-place";
 import type { PlaceResult } from "@/lib/place-result";
 import { resolvePlaceDisplayAddress } from "@/lib/place-display-address";
+import {
+  buildPlacesHttpKey,
+  logPlacesCacheHit,
+  logPlacesCacheMiss,
+  runPlacesApiDeduped,
+} from "@/lib/places-api-guard";
 
 export type { PlaceResult } from "@/lib/place-result";
 
@@ -54,6 +60,7 @@ const ExploreSearchInput = z.object({
   nearbyGroups: z.array(z.array(z.string()).max(10)).max(12).optional(),
   /** 使用者 App 語言（非所在地） */
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
+  categoryId: z.string().max(32).optional(),
 });
 
 type RawPlace = RawPlaceHours;
@@ -149,26 +156,47 @@ async function postPlaces(
   url: string,
   body: Record<string, unknown>,
   apiKey: string,
+  callType: "nearby" | "text",
 ): Promise<{ places: RawPlace[]; error: string | null }> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Goog-Api-Key": apiKey,
-      "X-Goog-FieldMask": PLACES_FIELD_MASK,
-    },
-    body: JSON.stringify(body),
+  const circle =
+    (body.locationRestriction as { circle?: { center?: { latitude?: number; longitude?: number } } })
+      ?.circle ??
+    (body.locationBias as { circle?: { center?: { latitude?: number; longitude?: number } } })
+      ?.circle;
+  const httpKey = buildPlacesHttpKey(callType, {
+    lat: circle?.center?.latitude,
+    lng: circle?.center?.longitude,
+    query: typeof body.textQuery === "string" ? body.textQuery : "",
+    types: Array.isArray(body.includedTypes) ? body.includedTypes.join(",") : "",
+    radius: (circle as { radius?: number } | undefined)?.radius,
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    const detail = parseGoogleError(text);
-    console.error("[Roamie Places] request failed", res.status, url, detail);
-    return { places: [], error: `Google Places API ${res.status}: ${detail}` };
-  }
+  const guarded = await runPlacesApiDeduped(httpKey, callType, async () => {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": PLACES_FIELD_MASK,
+      },
+      body: JSON.stringify(body),
+    });
 
-  const json = (await res.json()) as { places?: RawPlace[] };
-  return { places: json.places ?? [], error: null };
+    if (!res.ok) {
+      const text = await res.text();
+      const detail = parseGoogleError(text);
+      console.error("[Roamie Places] request failed", res.status, url, detail);
+      return { places: [] as RawPlace[], error: `Google Places API ${res.status}: ${detail}` };
+    }
+
+    const json = (await res.json()) as { places?: RawPlace[] };
+    return { places: json.places ?? [], error: null as string | null };
+  });
+
+  if (guarded === null) {
+    return { places: [], error: "places_rate_limited" };
+  }
+  return guarded;
 }
 
 function exploreLocale(lat: number, lng: number, userLocale?: Locale) {
@@ -197,7 +225,7 @@ async function searchText(
   };
   if (regionCode) body.regionCode = regionCode;
 
-  const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey);
+  const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey, "text");
   if (error) return { places: [], error };
   return { places: mapRawPlaces(raw), error: null };
 }
@@ -221,7 +249,7 @@ async function searchNearby(
   };
   if (regionCode) body.regionCode = regionCode;
 
-  const { places: raw, error } = await postPlaces(placesSearchNearbyUrl(), body, apiKey);
+  const { places: raw, error } = await postPlaces(placesSearchNearbyUrl(), body, apiKey, "nearby");
   if (error) return { places: [], error };
   return { places: mapRawPlaces(raw), error: null };
 }
@@ -272,7 +300,7 @@ async function lookupPlaceHoursFromRaw(
     pageSize: 3,
   };
   if (regionCode) body.regionCode = regionCode;
-  const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey);
+  const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey, "text");
   if (error || !raw.length) return null;
   const best =
     raw.find((p) => (p.displayName?.text ?? "") === name) ??
@@ -312,58 +340,52 @@ async function runExploreSearch(
   apiKey: string,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const center = { lat: data.lat, lng: data.lng };
-  const radii = [data.radius ?? DEFAULT_SEARCH_RADIUS_M, 8_000, 5_000];
+  const radius = data.radius ?? DEFAULT_SEARCH_RADIUS_M;
   const userLocale = data.locale ? coerceLocale(data.locale) : undefined;
 
-  for (const radius of radii) {
-    let result: { places: PlaceResult[]; error: string | null };
+  let result: { places: PlaceResult[]; error: string | null };
 
-    if (data.mode === "multi" && data.nearbyGroups?.length) {
-      result = await searchMultiNearby(
-        apiKey,
-        data.lat,
-        data.lng,
-        radius,
-        data.nearbyGroups,
-        userLocale,
-      );
-    } else if (data.mode === "nearby" && data.includedTypes?.length) {
-      result = await searchNearby(
-        apiKey,
-        data.lat,
-        data.lng,
-        radius,
-        data.includedTypes,
-        20,
-        userLocale,
-      );
-    } else if (data.query.trim()) {
-      result = await searchText(
-        apiKey,
-        data.query.trim(),
-        data.lat,
-        data.lng,
-        radius,
-        20,
-        userLocale,
-      );
-    } else {
-      result = { places: [], error: null };
-    }
-
-    if (result.error) return result;
-
-    const nearby = filterExplorePlaces(
-      filterWithinDistance(result.places, center, MAX_PLACE_DISTANCE_M),
+  if (data.mode === "multi" && data.nearbyGroups?.length) {
+    result = await searchMultiNearby(
+      apiKey,
+      data.lat,
+      data.lng,
+      radius,
+      data.nearbyGroups,
+      userLocale,
     );
+  } else if (data.mode === "nearby" && data.includedTypes?.length) {
+    result = await searchNearby(
+      apiKey,
+      data.lat,
+      data.lng,
+      radius,
+      data.includedTypes,
+      20,
+      userLocale,
+    );
+  } else if (data.query.trim()) {
+    result = await searchText(
+      apiKey,
+      data.query.trim(),
+      data.lat,
+      data.lng,
+      radius,
+      20,
+      userLocale,
+    );
+  } else {
+    result = { places: [], error: null };
+  }
 
-    if (nearby.length > 0) {
-      return { places: nearby, error: null };
-    }
+  if (result.error) return result;
 
-    if (result.places.length > 0 && nearby.length === 0) {
-      continue;
-    }
+  const nearby = filterExplorePlaces(
+    filterWithinDistance(result.places, center, MAX_PLACE_DISTANCE_M),
+  );
+
+  if (nearby.length > 0) {
+    return { places: nearby, error: null };
   }
 
   return {
@@ -514,31 +536,54 @@ function mapPlaceDetailsScreenRaw(
 }
 
 /** 瀏覽器直連 Google Places Details（Capacitor bundle 無 server 時） */
+const detailsScreenCache = new Map<
+  string,
+  { at: number; data: PlaceDetailsScreenResult }
+>();
+const DETAILS_SCREEN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
 export async function fetchPlaceDetailsForScreenWithKey(
   placeId: string,
   apiKey: string,
   locale?: Locale,
 ): Promise<PlaceDetailsScreenResult | null> {
-  try {
-    const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
-    const res = await fetch(placeDetailsUrl(placeId), {
-      headers: {
-        "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": PLACE_DETAILS_SCREEN_FIELD_MASK,
-        "Accept-Language": languageCode,
-      },
-    });
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      console.warn("[Roamie Places] place details client HTTP", res.status, detail.slice(0, 200));
+  const cacheKey = `${locale ?? "zh-TW"}:${placeId}`;
+  const cached = detailsScreenCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < DETAILS_SCREEN_CACHE_TTL_MS) {
+    logPlacesCacheHit(cacheKey);
+    return cached.data;
+  }
+
+  logPlacesCacheMiss(cacheKey);
+
+  const httpKey = buildPlacesHttpKey("details", { placeId, locale: locale ?? "zh-TW" });
+  const guarded = await runPlacesApiDeduped(httpKey, "details", async () => {
+    try {
+      const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
+      const res = await fetch(placeDetailsUrl(placeId), {
+        headers: {
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": PLACE_DETAILS_SCREEN_FIELD_MASK,
+          "Accept-Language": languageCode,
+        },
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        console.warn("[Roamie Places] place details client HTTP", res.status, detail.slice(0, 200));
+        return null;
+      }
+      const p = (await res.json()) as PlaceDetailsScreenRaw;
+      return mapPlaceDetailsScreenRaw(p, locale);
+    } catch (e) {
+      console.warn("[Roamie Places] place details client failed", placeId, e);
       return null;
     }
-    const p = (await res.json()) as PlaceDetailsScreenRaw;
-    return mapPlaceDetailsScreenRaw(p, locale);
-  } catch (e) {
-    console.warn("[Roamie Places] place details client failed", placeId, e);
-    return null;
+  });
+
+  if (guarded) {
+    detailsScreenCache.set(cacheKey, { at: Date.now(), data: guarded });
   }
+  return guarded;
 }
 
 export async function fetchPlaceDetailsForScreen(

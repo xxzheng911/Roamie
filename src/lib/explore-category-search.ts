@@ -2,10 +2,6 @@ import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { SavedPlace } from "@/lib/places-storage";
 import {
-  COFFEE_MIN_FILTERED_RESULTS,
-  DISTRICT_MIN_FILTERED_RESULTS,
-  NIGHT_MIN_FILTERED_RESULTS,
-  EXPLORE_ALL_SUBCATEGORY_IDS,
   getExploreCategoryById,
 } from "@/lib/places-search-config";
 import { shouldUseHomeNearbyFailureMocks } from "@/lib/home-nearby-fallback";
@@ -28,6 +24,21 @@ import {
 } from "@/lib/place-category";
 import { filterExplorePlaces } from "@/lib/filter-explore-places";
 import { filterHomeNearbyPlaceResults } from "@/lib/home-nearby-places-filter";
+import {
+  cityCategoryTextQueries,
+  cityRecommendMaxDistanceMeters,
+  cityRecommendSearchRadiusMeters,
+  logExploreFilterResult,
+  logExplorePlacesRaw,
+  type ExploreRecommendMode,
+} from "@/lib/explore-recommend-mode";
+import { EXPLORE_MAX_FALLBACK_QUERIES, firstFallbackQuery } from "@/lib/explore-api-budget";
+import {
+  buildExploreRawPoolKey,
+  mergeIntoExploreRawPool,
+  readExploreRawPool,
+  writeExploreRawPool,
+} from "@/lib/explore-raw-places-pool";
 import {
   sortExploreCategoryPlaces,
   sortHomeNearbyPlacesWithContext,
@@ -53,6 +64,8 @@ export type SearchPlacesInput = {
   includedTypes?: string[];
   nearbyGroups?: string[][];
   locale?: Locale;
+  /** 探索分類 id（cache / log 用） */
+  categoryId?: string;
 };
 
 export type SearchPlacesFn = (
@@ -78,6 +91,148 @@ function mergePlacesById(base: PlaceResult[], extra: PlaceResult[]): PlaceResult
   return merged;
 }
 
+type ExploreFilterOptions = {
+  cat: ExploreCategory;
+  forHome: boolean;
+  cityMode: boolean;
+  filterContext: "home_nearby" | "explore_map" | "explore_map_city";
+  exploreFilterContext: "explore_map" | "explore_map_city";
+  userLocation: { lat: number; lng: number };
+  logDrop: boolean;
+};
+
+function applyExploreCategoryFilters(
+  list: PlaceResult[],
+  options: ExploreFilterOptions,
+  relax = false,
+): PlaceResult[] {
+  const { cat, forHome, cityMode, filterContext, exploreFilterContext, userLocation, logDrop } =
+    options;
+  const rawCount = list.length;
+  const context = relax ? (cityMode ? "explore_map_city" : "explore_map") : exploreFilterContext;
+  const filtered = filterHomeNearbyPlaceResults(
+    filterByExploreCategory(
+      filterExplorePlaces(list, { logDrop: relax ? false : logDrop, context }),
+      cat,
+    ),
+    {
+      categoryId: cat.id,
+      caller: relax
+        ? `searchExploreCategoryPlaces:${cat.id}:relaxed`
+        : `searchExploreCategoryPlaces:${cat.id}`,
+      origin: forHome || cityMode ? userLocation : undefined,
+      maxDistanceM: cityMode ? cityRecommendMaxDistanceMeters() : undefined,
+      context: relax ? (cityMode ? "explore_map_city" : "explore_map") : filterContext,
+      logDrop: false,
+    },
+  );
+  if (!relax) logExploreFilterResult(rawCount, filtered.length);
+  return filtered;
+}
+
+function filterPlacesForExploreCategory(
+  list: PlaceResult[],
+  options: ExploreFilterOptions,
+): PlaceResult[] {
+  const strict = applyExploreCategoryFilters(list, options, false);
+  if (strict.length > 0 || list.length === 0) return strict;
+  console.info(`[EXPLORE_FILTER_RELAX] category=${options.cat.id} rawCount=${list.length}`);
+  return applyExploreCategoryFilters(list, options, true);
+}
+
+async function runSingleTextFallback(
+  basePayload: { lat: number; lng: number; radius: number },
+  textQuery: string,
+  cat: ExploreCategory,
+  locale: Locale,
+  searchPlacesFn: SearchPlacesFn,
+): Promise<PlaceResult[]> {
+  const fallback = await withSearchTimeout(
+    searchPlacesFn({
+      data: {
+        ...basePayload,
+        query: textQuery,
+        mode: "text",
+        locale,
+        categoryId: cat.id,
+      },
+    }),
+  );
+  return Array.isArray(fallback.places) ? fallback.places : [];
+}
+
+/** 從 raw pool 本地篩選（切換分類時不重新打 API） */
+export function buildExploreCardsFromRawPlaces(
+  rawPlaces: PlaceResult[],
+  cat: ExploreCategory,
+  ctx: {
+    userLocation: { lat: number; lng: number };
+    weather: WeatherSummary | null;
+    locale: Locale;
+    reasonProfile: UserProfileForReason | null;
+    saved: SavedPlace[];
+    forHome: boolean;
+    recommendMode: ExploreRecommendMode;
+  },
+): ExplorePlaceCard[] {
+  const cityMode = !ctx.forHome && ctx.recommendMode === "city";
+  const filterContext = cityMode ? "explore_map_city" : ctx.forHome ? "home_nearby" : "explore_map";
+  const exploreFilterContext = cityMode ? "explore_map_city" : "explore_map";
+  const maxSavedDistance = cityMode ? cityRecommendMaxDistanceMeters() : 5000;
+  const filterOpts: ExploreFilterOptions = {
+    cat,
+    forHome: ctx.forHome,
+    cityMode,
+    filterContext,
+    exploreFilterContext,
+    userLocation: ctx.userLocation,
+    logDrop: false,
+  };
+
+  const filtered = filterPlacesForExploreCategory(rawPlaces, filterOpts);
+  const nearbySaved = ctx.forHome
+    ? []
+    : savedPlacesNear(ctx.userLocation, ctx.saved, maxSavedDistance);
+  const apiNames = new Set(rawPlaces.map((p) => p.name));
+  const savedCards: ExplorePlaceCard[] = nearbySaved
+    .filter((s) => !apiNames.has(s.name))
+    .filter((s) =>
+      matchesCategory(
+        { primaryType: s.category, name: s.name, types: s.category ? [s.category] : null },
+        cat,
+      ),
+    )
+    .map((s) =>
+      buildUnifiedPlaceCard({
+        place: savedToPlaceResult(s),
+        categoryId: cat.id,
+        isSavedFavorite: true,
+        userLocation: ctx.userLocation,
+        weather: ctx.weather,
+        userProfile: ctx.reasonProfile,
+        locale: ctx.locale,
+      }),
+    );
+
+  const enriched: ExplorePlaceCard[] = [
+    ...savedCards,
+    ...filtered.map((p) =>
+      buildUnifiedPlaceCard({
+        place: p,
+        categoryId: cat.id,
+        userLocation: ctx.userLocation,
+        weather: ctx.weather,
+        userProfile: ctx.reasonProfile,
+        locale: ctx.locale,
+      }),
+    ),
+  ];
+
+  return ctx.forHome
+    ? sortHomeNearbyPlacesWithContext(enriched, ctx.userLocation, { weather: ctx.weather })
+    : sortExploreCategoryPlaces(enriched, ctx.userLocation, cat.id);
+}
+
 function savedToPlaceResult(s: SavedPlace): PlaceResult {
   return {
     id: `saved-${s.id}`,
@@ -100,14 +255,63 @@ function savedToPlaceResult(s: SavedPlace): PlaceResult {
 }
 
 const categorySearchInFlight = new Map<string, Promise<ExplorePlaceCard[]>>();
+const rawPoolInFlight = new Map<string, Promise<PlaceResult[]>>();
+
+/** 單次 multi-nearby 填滿 raw pool，首頁與探索分類切換共用 */
+export async function ensureExploreRawPool(
+  userLocation: { lat: number; lng: number },
+  recommendMode: ExploreRecommendMode,
+  searchPlacesFn: SearchPlacesFn,
+  locale: Locale,
+  radius?: number,
+): Promise<PlaceResult[]> {
+  const key = buildExploreRawPoolKey(userLocation.lat, userLocation.lng, recommendMode);
+  const existing = readExploreRawPool(key);
+  if (existing?.length) return existing;
+
+  const inflight = rawPoolInFlight.get(key);
+  if (inflight) return inflight;
+
+  const allCat = getExploreCategoryById("all");
+  if (!allCat) return [];
+
+  const promise = (async () => {
+    const basePayload = {
+      lat: userLocation.lat,
+      lng: userLocation.lng,
+      radius: radius ?? homeNearbySearchRadiusMeters(),
+    };
+    const primary = await withSearchTimeout(
+      searchPlacesFn({
+        data: {
+          ...basePayload,
+          query: allCat.query,
+          mode: allCat.mode,
+          nearbyGroups: allCat.nearbyGroups,
+          locale,
+          categoryId: "all",
+        },
+      }),
+    );
+    const places = Array.isArray(primary.places) ? primary.places : [];
+    if (places.length) writeExploreRawPool(key, places);
+    return places;
+  })().finally(() => {
+    rawPoolInFlight.delete(key);
+  });
+
+  rawPoolInFlight.set(key, promise);
+  return promise;
+}
 
 function categorySearchFlightKey(
   locationKey: string,
   categoryId: string,
   locale: Locale,
   forHome: boolean,
+  mode: ExploreRecommendMode = "nearby",
 ): string {
-  return `${locationKey}:${categoryId}:${locale}:${forHome ? "home" : "explore"}`;
+  return `${locationKey}:${categoryId}:${locale}:${forHome ? "home" : "explore"}:${mode}`;
 }
 
 function warmMapCategoryCache(
@@ -190,12 +394,15 @@ export async function searchExploreCategoryPlaces(
     saved: SavedPlace[];
     searchPlacesFn: SearchPlacesFn;
     forHome?: boolean;
+    recommendMode?: ExploreRecommendMode;
+    cityLabel?: string;
   },
 ): Promise<ExplorePlaceCard[]> {
   const { userLocation, weather, locale, reasonProfile, saved, searchPlacesFn } = ctx;
   const forHome = ctx.forHome === true;
+  const recommendMode = forHome ? "nearby" : (ctx.recommendMode ?? "nearby");
   const locationKey = normalizedLocationKey(userLocation.lat, userLocation.lng);
-  const flightKey = categorySearchFlightKey(locationKey, cat.id, locale, forHome);
+  const flightKey = categorySearchFlightKey(locationKey, cat.id, locale, forHome, recommendMode);
 
   if (!forHome) {
     const mapKey = buildMapPlacesCacheKey({
@@ -203,6 +410,7 @@ export async function searchExploreCategoryPlaces(
       lng: userLocation.lng,
       categoryId: cat.id,
       locale,
+      mode: recommendMode,
     });
     const mapCached = readMapPlacesCache(mapKey);
     if (mapCached?.places.length) {
@@ -217,6 +425,8 @@ export async function searchExploreCategoryPlaces(
   const promise = searchExploreCategoryPlacesInner(cat, {
     ...ctx,
     forHome,
+    recommendMode,
+    cityLabel: ctx.cityLabel,
   }).finally(() => {
     categorySearchInFlight.delete(flightKey);
   });
@@ -234,113 +444,98 @@ async function searchExploreCategoryPlacesInner(
     saved: SavedPlace[];
     searchPlacesFn: SearchPlacesFn;
     forHome: boolean;
+    recommendMode: ExploreRecommendMode;
+    cityLabel?: string;
   },
 ): Promise<ExplorePlaceCard[]> {
   const { userLocation, weather, locale, reasonProfile, saved, searchPlacesFn, forHome } = ctx;
-  /** 首頁與探索地圖分類搜尋共用半徑，讓 places-search-dedupe cache key 一致 */
-  const radius = homeNearbySearchRadiusMeters();
+  const cityMode = !forHome && ctx.recommendMode === "city";
+  const filterContext = cityMode ? "explore_map_city" : forHome ? "home_nearby" : "explore_map";
+  const exploreFilterContext = cityMode ? "explore_map_city" : "explore_map";
+  const radius = cityMode ? cityRecommendSearchRadiusMeters() : homeNearbySearchRadiusMeters();
+  const maxSavedDistance = cityMode ? cityRecommendMaxDistanceMeters() : 5000;
   const basePayload = {
     lat: userLocation.lat,
     lng: userLocation.lng,
     radius,
   };
 
-  const primary = await withSearchTimeout(
-    searchPlacesFn({
-      data: {
-        ...basePayload,
-        query: cat.query,
-        mode: cat.mode,
-        includedTypes: cat.includedTypes,
-        nearbyGroups: cat.nearbyGroups,
-        locale,
-      },
-    }),
-  );
+  const rawPoolKey = buildExploreRawPoolKey(userLocation.lat, userLocation.lng, ctx.recommendMode);
+  let apiPlaces = readExploreRawPool(rawPoolKey) ?? [];
+  let usedRawPool = apiPlaces.length > 0;
 
-  let apiPlaces = Array.isArray(primary.places) ? primary.places : [];
-
-  const applyFilters = (list: PlaceResult[]) =>
-    filterHomeNearbyPlaceResults(
-      filterByExploreCategory(filterExplorePlaces(list, { logDrop: false }), cat),
-      {
-        categoryId: cat.id,
-        caller: `searchExploreCategoryPlaces:${cat.id}`,
-        origin: forHome ? userLocation : undefined,
-        context: forHome ? "home_nearby" : "explore_map",
-        logDrop: false,
-      },
+  if (!apiPlaces.length) {
+    const primary = await withSearchTimeout(
+      searchPlacesFn({
+        data: {
+          ...basePayload,
+          query: cat.query,
+          mode: cat.mode,
+          includedTypes:
+            cityMode && cat.id === "sight"
+              ? [...(cat.includedTypes ?? []), "park", "point_of_interest"]
+              : cat.includedTypes,
+          nearbyGroups: cat.nearbyGroups,
+          locale,
+          categoryId: cat.id,
+        },
+      }),
     );
+    apiPlaces = Array.isArray(primary.places) ? primary.places : [];
+    if (apiPlaces.length) writeExploreRawPool(rawPoolKey, apiPlaces);
+  }
 
-  let filtered = applyFilters(apiPlaces);
+  logExplorePlacesRaw(apiPlaces.length);
 
-  if (!forHome && cat.id === "coffee" && filtered.length < COFFEE_MIN_FILTERED_RESULTS) {
-    for (const textQuery of getExploreTextFallbackQueries("coffee", userLocation)) {
-      const fallback = await withSearchTimeout(
-        searchPlacesFn({
-          data: { ...basePayload, query: textQuery, mode: "text", locale },
-        }),
-      );
-      const fallbackPlaces = Array.isArray(fallback.places) ? fallback.places : [];
-      if (fallbackPlaces.length > 0) {
-        apiPlaces = mergePlacesById(apiPlaces, fallbackPlaces);
-        filtered = applyFilters(apiPlaces);
-        if (filtered.length >= COFFEE_MIN_FILTERED_RESULTS) break;
-      }
+  const filterOpts: ExploreFilterOptions = {
+    cat,
+    forHome,
+    cityMode,
+    filterContext,
+    exploreFilterContext,
+    userLocation,
+    logDrop: cityMode,
+  };
+
+  let filtered = filterPlacesForExploreCategory(apiPlaces, filterOpts);
+
+  let fallbackQueriesUsed = 0;
+
+  const tryFallback = async (textQuery: string | null) => {
+    if (!textQuery || fallbackQueriesUsed >= EXPLORE_MAX_FALLBACK_QUERIES) return;
+    fallbackQueriesUsed += 1;
+    const fallbackPlaces = await runSingleTextFallback(
+      basePayload,
+      textQuery,
+      cat,
+      locale,
+      searchPlacesFn,
+    );
+    if (fallbackPlaces.length > 0) {
+      apiPlaces = mergePlacesById(apiPlaces, fallbackPlaces);
+      mergeIntoExploreRawPool(rawPoolKey, fallbackPlaces);
+      logExplorePlacesRaw(apiPlaces.length);
+      filtered = filterPlacesForExploreCategory(apiPlaces, filterOpts);
+    }
+  };
+
+  // 僅在 primary API 無 raw 結果時才 fallback；raw pool 有資料時不再加打 query
+  if (apiPlaces.length === 0 && !usedRawPool) {
+    const cityLabel = ctx.cityLabel?.trim() || "";
+    if (cityMode) {
+      await tryFallback(firstFallbackQuery(cityCategoryTextQueries(cat.id, cityLabel)));
+    } else if (!forHome && cat.id === "coffee") {
+      await tryFallback(firstFallbackQuery(getExploreTextFallbackQueries("coffee", userLocation)));
+    } else if (!forHome && cat.id === "district") {
+      await tryFallback(firstFallbackQuery(getExploreTextFallbackQueries("district", userLocation)));
+    } else if (!forHome && cat.id === "night") {
+      await tryFallback(firstFallbackQuery(getExploreTextFallbackQueries("night", userLocation)));
+    } else if (forHome) {
+      await tryFallback(firstFallbackQuery(HOME_TEXT_FALLBACK_QUERIES[cat.id] ?? []));
     }
   }
 
-  if (!forHome && cat.id === "district" && filtered.length < DISTRICT_MIN_FILTERED_RESULTS) {
-    for (const textQuery of getExploreTextFallbackQueries("district", userLocation)) {
-      const fallback = await withSearchTimeout(
-        searchPlacesFn({
-          data: { ...basePayload, query: textQuery, mode: "text", locale },
-        }),
-      );
-      const fallbackPlaces = Array.isArray(fallback.places) ? fallback.places : [];
-      if (fallbackPlaces.length > 0) {
-        apiPlaces = mergePlacesById(apiPlaces, fallbackPlaces);
-        filtered = applyFilters(apiPlaces);
-        if (filtered.length >= DISTRICT_MIN_FILTERED_RESULTS) break;
-      }
-    }
-  }
-
-  if (!forHome && cat.id === "night" && filtered.length < NIGHT_MIN_FILTERED_RESULTS) {
-    for (const textQuery of getExploreTextFallbackQueries("night", userLocation)) {
-      const fallback = await withSearchTimeout(
-        searchPlacesFn({
-          data: { ...basePayload, query: textQuery, mode: "text", locale },
-        }),
-      );
-      const fallbackPlaces = Array.isArray(fallback.places) ? fallback.places : [];
-      if (fallbackPlaces.length > 0) {
-        apiPlaces = mergePlacesById(apiPlaces, fallbackPlaces);
-        filtered = applyFilters(apiPlaces);
-        if (filtered.length >= NIGHT_MIN_FILTERED_RESULTS) break;
-      }
-    }
-  }
-
-  if (forHome && filtered.length === 0) {
-    for (const textQuery of HOME_TEXT_FALLBACK_QUERIES[cat.id] ?? []) {
-      const fallback = await withSearchTimeout(
-        searchPlacesFn({
-          data: { ...basePayload, query: textQuery, mode: "text", locale },
-        }),
-      );
-      const fallbackPlaces = Array.isArray(fallback.places) ? fallback.places : [];
-      if (fallbackPlaces.length > 0) {
-        apiPlaces = mergePlacesById(apiPlaces, fallbackPlaces);
-        filtered = applyFilters(apiPlaces);
-        if (filtered.length > 0) break;
-      }
-    }
-  }
-
-  const nearbySaved = forHome
-    ? []
-    : savedPlacesNear(userLocation, saved, 5000);
+  const nearbySaved = forHome ? [] : savedPlacesNear(userLocation, saved, maxSavedDistance);
   const apiNames = new Set(apiPlaces.map((p) => p.name));
   const savedCards: ExplorePlaceCard[] = nearbySaved
     .filter((s) => !apiNames.has(s.name))
@@ -400,8 +595,9 @@ async function searchExploreCategoryPlacesInner(
   const filteredEnriched = filterHomeNearbyPlaceResults(enriched, {
     categoryId: cat.id,
     caller: `searchExploreCategoryPlaces:${cat.id}:final`,
-    origin: forHome ? userLocation : undefined,
-    context: forHome ? "home_nearby" : "explore_map",
+    origin: forHome || cityMode ? userLocation : undefined,
+    maxDistanceM: cityMode ? cityRecommendMaxDistanceMeters() : undefined,
+    context: filterContext,
     logDrop: false,
   });
 
@@ -415,6 +611,7 @@ async function searchExploreCategoryPlacesInner(
     lng: userLocation.lng,
     categoryId: cat.id,
     locale,
+    mode: cityMode ? "city" : "nearby",
   });
   const sorted = sortExploreCategoryPlaces(filteredEnriched, userLocation, cat.id);
   writeMapPlacesCache(mapKey, sorted, null);
@@ -430,7 +627,7 @@ export type HomeNearbyPick = ExplorePlaceCard & {
 
 const PICKS_PER_CATEGORY = 2;
 
-/** 探索地圖「全部」：依序查 coffee / sight / district / food，合併結果 */
+/** 探索地圖「全部」：僅單次查詢（不再依序查 4 子分類） */
 export async function searchExploreAllPlaces(ctx: {
   userLocation: { lat: number; lng: number };
   weather: WeatherSummary | null;
@@ -439,32 +636,12 @@ export async function searchExploreAllPlaces(ctx: {
   saved: SavedPlace[];
   searchPlacesFn: SearchPlacesFn;
   locationKey?: string;
+  recommendMode?: ExploreRecommendMode;
+  cityLabel?: string;
 }): Promise<ExplorePlaceCard[]> {
-  const deduped = new Map<string, ExplorePlaceCard>();
-
-  for (const subId of EXPLORE_ALL_SUBCATEGORY_IDS) {
-    const cat = getExploreCategoryById(subId);
-    if (!cat) continue;
-    try {
-      const sorted = await searchExploreCategoryPlaces(cat, { ...ctx, forHome: false });
-      let added = 0;
-      for (const p of sorted) {
-        if (deduped.has(p.id)) continue;
-        deduped.set(p.id, { ...p, categoryId: cat.id });
-        added += 1;
-      }
-      console.info("[MAP_ALL_SUBCATEGORY]", {
-        categoryId: cat.id,
-        query: cat.query,
-        count: added,
-        locationKey: ctx.locationKey ?? null,
-      });
-    } catch (e) {
-      console.warn("[Roamie Map] all-tab subcategory search failed", subId, e);
-    }
-  }
-
-  return sortExploreCategoryPlaces([...deduped.values()], ctx.userLocation, "all");
+  const allCat = getExploreCategoryById("all");
+  if (!allCat) return [];
+  return searchExploreCategoryPlaces(allCat, { ...ctx, forHome: false });
 }
 
 /** 各探索分類依序取 1～2 筆；任一分類有結果即納入，全部 0 筆才空狀態 */
@@ -478,6 +655,13 @@ export async function loadHomeNearbyPicks(ctx: {
   categories: ExploreCategory[];
   locationKey?: string;
 }): Promise<HomeNearbyPick[]> {
+  await ensureExploreRawPool(
+    ctx.userLocation,
+    "nearby",
+    ctx.searchPlacesFn,
+    ctx.locale,
+  );
+
   const deduped = new Map<string, HomeNearbyPick>();
 
   for (const cat of ctx.categories) {

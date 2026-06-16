@@ -1,6 +1,6 @@
 import { KAOHSIUNG_COORDS } from "@/lib/api/constants";
 import { distanceMeters } from "@/lib/geo-distance";
-import { normalizedLocationKey } from "@/lib/location-key";
+import { logPlacesSkipSmallLocationChange } from "@/lib/places-api-guard";
 import {
   DEFAULT_FALLBACK_LOCATION,
   getLastKnownDeviceCoords,
@@ -35,7 +35,7 @@ export type EffectiveLocationSnapshot = {
 
 const MAX_POOR_ACCURACY_M = 200;
 /** GPS 位移小於此距離不更新 locationKey、不觸發 Places */
-const PLACES_LOCATION_MIN_MOVE_M = 300;
+const PLACES_LOCATION_MIN_MOVE_M = 500;
 
 let snapshot: EffectiveLocationSnapshot | null = null;
 let bootstrapPromise: Promise<EffectiveLocationSnapshot> | null = null;
@@ -187,6 +187,12 @@ function publish(next: EffectiveLocationSnapshot, reason: string): boolean {
     return false;
   }
   if (!movedEnoughForPlacesUpdate(snapshot, next.lat, next.lng)) {
+    if (snapshot) {
+      const dist = Math.round(
+        distanceMeters({ lat: snapshot.lat, lng: snapshot.lng }, { lat: next.lat, lng: next.lng }),
+      );
+      logPlacesSkipSmallLocationChange(dist);
+    }
     logSkipSameBucket(snapshot?.locationKey ?? next.locationKey);
     return false;
   }

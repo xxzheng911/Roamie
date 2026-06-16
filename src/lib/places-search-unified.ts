@@ -11,15 +11,18 @@ import {
 } from "@/lib/places-search-dedupe";
 import {
   logPlacesApiSkipDuplicate,
-  logPlacesRequest,
-  logPlacesResponse,
+  logPlacesApiCall,
 } from "@/lib/places-diagnostics";
+import { isPlacesRateLimited } from "@/lib/places-api-guard";
 import { normalizePlacesSearchResult } from "@/lib/places-search-normalize";
 
 async function runClientSearch(
   args: Parameters<SearchPlacesFn>[0],
   key: string,
 ): Promise<ReturnType<SearchPlacesFn>> {
+  if (isPlacesRateLimited()) {
+    return { places: [], error: "places_rate_limited" };
+  }
   if (hasPlacesClientFallbackAttempted(key)) {
     logPlacesApiSkipDuplicate("client_fallback", { key });
     return {
@@ -31,11 +34,7 @@ async function runClientSearch(
   markPlacesClientFallbackAttempted(key);
 
   const mapsKey = getGoogleMapsBrowserKey();
-  logPlacesRequest("client", args.data, {
-    key,
-    hasBrowserKey: Boolean(mapsKey),
-    keyPrefix: mapsKey ? mapsKey.slice(0, 8) : null,
-  });
+  logPlacesApiCall("client", args.data);
 
   if (!mapsKey) {
     markPlacesSearchFailed(key);
@@ -43,7 +42,6 @@ async function runClientSearch(
       places: [],
       error: "無法取得附近推薦。請確認已設定 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY。",
     });
-    logPlacesResponse("client", args.data, empty, { key, reason: "missing_browser_key" });
     return empty;
   }
 
@@ -51,16 +49,13 @@ async function runClientSearch(
     const clientResult = normalizePlacesSearchResult(
       await executeExploreSearch(args.data, { apiKey: mapsKey }),
     );
-    logPlacesResponse("client", args.data, clientResult, { key });
     return clientResult;
   } catch (e) {
     markPlacesSearchFailed(key);
-    const empty = normalizePlacesSearchResult({
+    return normalizePlacesSearchResult({
       places: [],
       error: e instanceof Error ? e.message : String(e),
     });
-    logPlacesResponse("client", args.data, empty, { key, threw: true });
-    return empty;
   }
 }
 
@@ -79,21 +74,32 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
         return runClientSearch(args, key);
       }
 
-      logPlacesRequest("server", args.data, { key });
+      logPlacesApiCall("server", args.data);
 
       let serverResult = normalizePlacesSearchResult(undefined);
 
       try {
         serverResult = normalizePlacesSearchResult(await serverFn(args));
-        logPlacesResponse("server", args.data, serverResult, { key });
         if (serverResult.places.length > 0) return serverResult;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         serverResult = { places: [], error: msg };
-        logPlacesResponse("server", args.data, serverResult, { key, threw: true });
+        if (serverResult.places.length === 0 && serverResult.error) {
+          console.info(`[PLACES_API_EMPTY] error=${serverResult.error}`);
+        }
+      }
+
+      if (isPlacesRateLimited()) {
+        return serverResult.places.length > 0
+          ? serverResult
+          : { places: [], error: "places_rate_limited" };
       }
 
       return runClientSearch(args, key);
+    }, {
+      categoryId: args.data.categoryId,
+      query: args.data.query,
+      mode: args.data.mode,
     });
   };
 }

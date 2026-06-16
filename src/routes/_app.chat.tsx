@@ -22,6 +22,7 @@ import { enrichRoamieContext } from "@/lib/ai/enrich-context";
 import { resolveEffectivePlanTierWithProfile } from "@/lib/access/resolve";
 import { getWeather } from "@/lib/weather.functions";
 import { searchPlaces } from "@/lib/places.functions";
+import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { streamRoamieAI, fetchRoamieAI } from "@/lib/ai/stream-client";
 import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
 import { RoamieResponseView } from "@/components/RoamieResponseView";
@@ -126,6 +127,18 @@ import {
   updateTripDraftFromConversation,
 } from "@/services/aiTravelContextService";
 import { mergeTravelContext, formatTravelContextForAi } from "@/lib/ai/travel-context";
+import { detectChatIntent, isNearbyPlaceIntent } from "@/lib/ai/chat-intent";
+import {
+  applyDiningContextFromText,
+  isFoodPreferenceReply,
+  parseFoodPreference,
+  resolveChatIntent,
+  restaurantCuisineQuestion,
+  shouldAskRestaurantCuisine,
+  shouldFetchNearbyPlaces,
+} from "@/lib/ai/chat-dining-flow";
+import { buildNearbyPlaceRecommendation, restaurantSearchFallbackQueries } from "@/lib/ai/chat-place-recommendation";
+import { resolveChatLocation } from "@/lib/ai/resolve-chat-location";
 import {
   markAskedClarifyKey,
   resolveChatRoute,
@@ -217,7 +230,11 @@ function Chat() {
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const fetchWeather = useServerFn(getWeather);
-  const searchNearbyPlaces = useServerFn(searchPlaces);
+  const searchNearbyPlacesServerFn = useServerFn(searchPlaces);
+  const searchNearbyPlaces = useMemo(
+    () => createUnifiedSearchPlacesFn(searchNearbyPlacesServerFn),
+    [searchNearbyPlacesServerFn],
+  );
   const generate = useServerFn(generateItinerary);
 
   const selectedNames = useMemo(
@@ -902,38 +919,203 @@ function Chat() {
     [fetchWeather, persistSession, locale],
   );
 
+  const pushNearbyPlaceRecommendation = useCallback(
+    async (
+      activeSession: ChatPlanningSession,
+      userText: string,
+      conversation: ChatMsg[],
+      intent: import("@/lib/ai/chat-intent").NearbyPlaceIntent,
+    ): Promise<boolean> => {
+      let workingSession = await resolveChatLocation(activeSession);
+      const lat = workingSession.location?.lat;
+      const lng = workingSession.location?.lng;
+      if (lat == null || lng == null) {
+        console.warn("[CHAT_PLACES_REQUEST] skipped reason=no_location");
+        return false;
+      }
+
+      const merged = mergeTravelContext(workingSession, userText);
+      workingSession = merged.session;
+
+      try {
+        const { summary, payload } = await buildNearbyPlaceRecommendation({
+          intent,
+          lat,
+          lng,
+          locale,
+          context: merged.context,
+          searchPlaces: searchNearbyPlaces,
+          foodPreference: workingSession.foodPreference,
+        });
+        const sessionWithIntent: ChatPlanningSession = {
+          ...workingSession,
+          activeChatIntent: intent,
+          phase: "recommend",
+          travelContext: merged.context,
+        };
+        const filteredRecs = recommendationsForChatDisplay(
+          sessionWithIntent,
+          userText,
+          payload.recommendations ?? [],
+        );
+        if (!filteredRecs.length) {
+          console.warn("[CHAT_PLACE_CARD_RENDER] count=0 after_filter");
+          return false;
+        }
+
+        setMsgs((prev) => {
+          const trimmedPrev = prev.filter(
+            (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+          );
+          const base = trimmedPrev.length === conversation.length ? conversation : trimmedPrev;
+          return [
+            ...base,
+            {
+              role: "assistant",
+              content: summary,
+              roamie: { ...payload, recommendations: filteredRecs },
+            },
+          ];
+        });
+
+        const recs = filteredRecs as ChatPlaceItem[];
+        persistSession(
+          syncSessionPlaceMemory({
+            ...sessionWithIntent,
+            recommendedPlaces: recs,
+          }),
+        );
+        setPartial({});
+        return true;
+      } catch (e) {
+        console.warn(
+          "[CHAT_PLACES_REQUEST] failed",
+          e instanceof Error ? e.message : String(e),
+        );
+        return false;
+      }
+    },
+    [locale, persistSession, searchNearbyPlaces],
+  );
+
   const applyLocalFallback = useCallback(
     async (
       activeSession: ChatPlanningSession,
       activeUserText: string,
       conversation: ChatMsg[],
+      reason: string,
     ): Promise<boolean> => {
+      console.info(`[CHAT_FALLBACK_USED] reason=${reason}`);
+
+      const intent = resolveChatIntent(activeUserText, activeSession);
+      if (
+        isNearbyPlaceIntent(intent) &&
+        shouldFetchNearbyPlaces(intent, activeSession, activeUserText)
+      ) {
+        const applied = await pushNearbyPlaceRecommendation(
+          activeSession,
+          activeUserText,
+          conversation,
+          intent,
+        );
+        if (applied) return true;
+      }
+
+      if (
+        activeSession.activeChatIntent &&
+        isNearbyPlaceIntent(activeSession.activeChatIntent) &&
+        (activeSession.foodPreference || isFoodPreferenceReply(activeUserText))
+      ) {
+        const applied = await pushNearbyPlaceRecommendation(
+          activeSession,
+          activeUserText,
+          conversation,
+          activeSession.activeChatIntent,
+        );
+        if (applied) return true;
+      }
+
       const { context } = mergeTravelContext(activeSession, activeUserText);
       let placeResults: Awaited<ReturnType<typeof searchNearbyPlaces>>["places"] = [];
       const lat = activeSession.location?.lat;
       const lng = activeSession.location?.lng;
+      const isRestaurantFlow =
+        activeSession.activeChatIntent === "restaurant" ||
+        resolveChatIntent(activeUserText, activeSession) === "restaurant";
+
       if (lat != null && lng != null) {
-        try {
-          const q = fallbackSearchQuery(context);
-          const fallback = await searchNearbyPlaces({
-            data: { query: q, lat, lng, mode: "text" },
-          });
-          placeResults = fallback.places ?? [];
-        } catch (fallbackErr) {
-          console.warn("[AI_FALLBACK] places search failed", fallbackErr);
+        const attempts = isRestaurantFlow
+          ? restaurantSearchFallbackQueries(activeSession.foodPreference)
+          : [{ query: fallbackSearchQuery(context), mode: "text" as const }];
+        for (const attempt of attempts) {
+          try {
+            console.info(
+              `[CHAT_PLACES_REQUEST] type=fallback mode=${attempt.mode} query=${attempt.query || "(nearby)"}`,
+            );
+            const fallback = await searchNearbyPlaces({
+              data: {
+                query: attempt.query,
+                lat,
+                lng,
+                mode: attempt.mode,
+                includedTypes: attempt.includedTypes,
+                locale,
+              },
+            });
+            placeResults = fallback.places ?? [];
+            console.info(`[CHAT_PLACES_SUCCESS] count=${placeResults.length}`);
+            if (placeResults.length > 0) break;
+          } catch (fallbackErr) {
+            console.warn("[CHAT_PLACES_REQUEST] failed", fallbackErr);
+          }
         }
       }
+
+      if (isRestaurantFlow && !placeResults.length) {
+        const area = context.destination ?? context.currentLocation ?? "附近";
+        const emptySummary = `目前在${area}暫時找不到符合的餐廳，可以換個菜系或稍後再試。`;
+        setMsgs((prev) => {
+          const trimmedPrev = prev.filter(
+            (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+          );
+          return [
+            ...trimmedPrev,
+            {
+              role: "assistant",
+              content: emptySummary,
+              roamie: {
+                title: "Roamie 推薦",
+                summary: emptySummary,
+                moodTag: activeSession.mood ?? "",
+                recommendations: [],
+                itinerary: [],
+              },
+            },
+          ];
+        });
+        return false;
+      }
+
       const { summary, payload } = generateLocalRecommendationFallback({
         context,
         session: activeSession,
         locale,
         places: placeResults ?? [],
       });
+      const sessionForDisplay: ChatPlanningSession = {
+        ...activeSession,
+        activeChatIntent: activeSession.activeChatIntent ?? "restaurant",
+        phase: "recommend",
+        travelContext: context,
+      };
       const filteredRecs = recommendationsForChatDisplay(
-        activeSession,
+        sessionForDisplay,
         activeUserText,
         payload.recommendations ?? [],
       );
+      if (!filteredRecs.length) {
+        return false;
+      }
       setMsgs((prev) => {
         const trimmedPrev = prev.filter(
           (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
@@ -948,16 +1130,14 @@ function Chat() {
         ];
       });
       const nextSession = syncSessionPlaceMemory({
-        ...activeSession,
-        travelContext: context,
-        phase: "recommend",
+        ...sessionForDisplay,
         recommendedPlaces: filteredRecs as ChatPlaceItem[],
       });
       persistSession(nextSession);
       setPartial({});
-      return true;
+      return filteredRecs.length > 0;
     },
-    [locale, persistSession, searchNearbyPlaces],
+    [locale, persistSession, searchNearbyPlaces, pushNearbyPlaceRecommendation],
   );
 
   const streamChat = useCallback(
@@ -1123,7 +1303,12 @@ function Chat() {
         if ((e as Error).name === "AbortError") {
           const activeForTimeout = sessionOverride ?? session;
           const activeUserText = opts?.userText ?? "";
-          const applied = await applyLocalFallback(activeForTimeout, activeUserText, conversation);
+          const applied = await applyLocalFallback(
+            activeForTimeout,
+            activeUserText,
+            conversation,
+            "ai_timeout",
+          );
           if (!applied) {
             setMsgs((prev) => {
               const trimmedPrev = prev.filter(
@@ -1143,7 +1328,7 @@ function Chat() {
           return;
         }
         console.error(
-          "[AI_REPLY_ERROR]",
+          "[CHAT_AI_REPLY_ERROR]",
           e instanceof Error ? e.message : String(e),
         );
         logAppError("[Roamie AI] chat failed", e, {
@@ -1152,7 +1337,12 @@ function Chat() {
         });
         const activeForFallback = sessionOverride ?? session;
         const activeUserText = opts?.userText ?? "";
-        const applied = await applyLocalFallback(activeForFallback, activeUserText, conversation);
+        const applied = await applyLocalFallback(
+          activeForFallback,
+          activeUserText,
+          conversation,
+          "ai_reply_failed",
+        );
         if (!applied) {
           const hint: ChatMsg = {
             role: "assistant",
@@ -1219,16 +1409,34 @@ function Chat() {
     if (!trimmed || streaming || generating) return;
 
     let nextSession = applyTripIntentToSession(trimmed, session);
+    nextSession = applyDiningContextFromText(trimmed, nextSession);
+
+    const intent = resolveChatIntent(trimmed, nextSession);
+
+    if (isNearbyPlaceIntent(intent) || nextSession.activeChatIntent === "restaurant") {
+      nextSession = await resolveChatLocation(nextSession);
+    }
+
     const merged = mergeTravelContext(nextSession, trimmed);
     nextSession = merged.session;
     nextSession = extractPlanningHintsFromText(trimmed, nextSession);
     nextSession = extractDiscoveryFromText(trimmed, nextSession);
     nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
 
-    const route = resolveChatRoute(trimmed, merged.context, nextSession, locale);
+    if (isFoodPreferenceReply(trimmed) && nextSession.activeChatIntent === "restaurant") {
+      const food = parseFoodPreference(trimmed);
+      if (food) nextSession = { ...nextSession, foodPreference: food };
+    }
+
+    const route = resolveChatRoute(trimmed, merged.context, nextSession, locale, intent);
     const tripIntent = parseTripIntentFromText(trimmed, nextSession);
 
-    if (route.mode === "recommend" || tripIntent.readyForRecommendations) {
+    if (
+      route.mode === "recommend" ||
+      tripIntent.readyForRecommendations ||
+      isNearbyPlaceIntent(intent) ||
+      nextSession.activeChatIntent === "restaurant"
+    ) {
       nextSession = { ...nextSession, phase: "recommend" };
     }
 
@@ -1254,11 +1462,63 @@ function Chat() {
       return;
     }
 
+    if (
+      nextSession.activeChatIntent === "restaurant" &&
+      shouldAskRestaurantCuisine(nextSession) &&
+      !isFoodPreferenceReply(trimmed)
+    ) {
+      const question = restaurantCuisineQuestion();
+      persistSession({ ...nextSession, phase: "recommend" });
+      setMsgs([...next, { role: "assistant", content: question }]);
+      return;
+    }
+
     if (route.mode === "clarify" && route.question && route.missingKey) {
+      if (nextSession.activeChatIntent === "restaurant") {
+        const question = restaurantCuisineQuestion();
+        persistSession({ ...nextSession, phase: "recommend" });
+        setMsgs([...next, { role: "assistant", content: question }]);
+        return;
+      }
       nextSession = markAskedClarifyKey(nextSession, route.missingKey);
       persistSession(nextSession);
       setMsgs([...next, { role: "assistant", content: route.question }]);
       return;
+    }
+
+    const nearbyIntent = isNearbyPlaceIntent(intent)
+      ? intent
+      : nextSession.activeChatIntent && isNearbyPlaceIntent(nextSession.activeChatIntent)
+        ? nextSession.activeChatIntent
+        : null;
+
+    if (
+      nearbyIntent &&
+      shouldFetchNearbyPlaces(nearbyIntent, nextSession, trimmed) &&
+      nextSession.location?.lat != null &&
+      nextSession.location?.lng != null
+    ) {
+      setStreaming(true);
+      try {
+        const applied = await pushNearbyPlaceRecommendation(
+          nextSession,
+          trimmed,
+          next,
+          nearbyIntent,
+        );
+        if (applied) return;
+        const fallbackApplied = await applyLocalFallback(
+          nextSession,
+          trimmed,
+          next,
+          "places_empty",
+        );
+        if (fallbackApplied) return;
+        toast.message("暫時找不到附近餐廳，請稍後再試。");
+        return;
+      } finally {
+        setStreaming(false);
+      }
     }
 
     await streamChat(next, { phase: route.chatPhase, userText: trimmed }, nextSession);

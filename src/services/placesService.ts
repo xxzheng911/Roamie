@@ -1,5 +1,6 @@
 import type { Locale } from "@/lib/i18n/types";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
+import { logPlacesCacheHit } from "@/lib/places-api-guard";
 import { createRequestCache } from "@/services/requestCache";
 import { unifiedResolveTripStop, unifiedSearchTripStops } from "@/lib/trip-stop-search-unified";
 import { resolveTripStop, searchTripStops, type TripStopSuggestion } from "@/lib/trip-stop-search.functions";
@@ -68,14 +69,9 @@ export async function searchPlaces(
   const key = searchKey(query, locale, options?.center);
   const searchFn = options?.searchFn ?? searchTripStops;
 
-  const result = await autocompleteCache.getOrFetch(key, () =>
+  return autocompleteCache.getOrFetch(key, () =>
     unifiedSearchTripStops(searchFn, query, locale, options?.center, options?.sessionToken),
   );
-
-  console.info("[PLACES_SEARCH] query=", query.trim());
-  console.info("[PLACES_SEARCH] predictions=", result.suggestions.length);
-  if (result.error) console.info("[PLACES_SEARCH] error=", result.error);
-  return result;
 }
 
 export async function getPlaceDetails(
@@ -91,7 +87,12 @@ export async function getPlaceDetails(
   const key = `${locale}:${normalizedPlaceId}`;
   const resolveFn = options?.resolveFn ?? resolveTripStop;
 
-  console.info("[PLACES_DETAILS] start placeId=", normalizedPlaceId);
+  const cached = placeDetailsCache.getCached<{ place: PlaceLite | null; error: string | null }>(key);
+  if (cached !== null) {
+    logPlacesCacheHit(key);
+    return cached;
+  }
+
   try {
     return await placeDetailsCache.getOrFetch(key, async () => {
       const resolved = await unifiedResolveTripStop(
@@ -106,7 +107,6 @@ export async function getPlaceDetails(
         console.error("[PLACES_DETAILS] error=", errorMsg);
         return { place: null, error: errorMsg };
       }
-      // Minimal required fields for successful selection.
       if (
         !normalized.placeId ||
         !normalized.name ||
@@ -123,10 +123,8 @@ export async function getPlaceDetails(
               lng: null,
             }
           : null;
-        console.info("[PLACES_DETAILS] normalized place=", JSON.stringify(fallbackPlace ?? normalized));
         return { place: fallbackPlace, error: resolved.error };
       }
-      console.info("[PLACES_DETAILS] normalized place=", JSON.stringify(normalized));
       return { place: normalized, error: resolved.error };
     });
   } catch (error) {

@@ -1,5 +1,6 @@
 import type { PlaceResult } from "@/lib/place-result";
 import { normalizedLocationKey } from "@/lib/location-key";
+import { PLACES_NEARBY_CACHE_TTL_MS } from "@/lib/places-api-guard";
 import { logPlacesCacheHit } from "@/lib/places-diagnostics";
 
 export type MapPlacesCacheEntry = {
@@ -10,7 +11,7 @@ export type MapPlacesCacheEntry = {
 
 const CACHE = new Map<string, MapPlacesCacheEntry>();
 const IN_FLIGHT = new Map<string, Promise<MapPlacesCacheEntry>>();
-const TTL_MS = 5 * 60 * 1000;
+const TTL_MS = PLACES_NEARBY_CACHE_TTL_MS;
 const MAX_ENTRIES = 48;
 
 /** locationKey + categoryId + locale — 首頁與探索地圖共用分類結果快取 */
@@ -19,9 +20,11 @@ export function buildMapPlacesCacheKey(parts: {
   lng: number;
   categoryId: string;
   locale: string;
+  mode?: "city" | "nearby";
 }): string {
   const locationKey = normalizedLocationKey(parts.lat, parts.lng);
-  return `${locationKey}:${parts.categoryId}:${parts.locale}`;
+  const modeSuffix = parts.mode === "city" ? ":city" : "";
+  return `${locationKey}:${parts.categoryId}:${parts.locale}${modeSuffix}`;
 }
 
 export function readMapPlacesCache(key: string): MapPlacesCacheEntry | null {
