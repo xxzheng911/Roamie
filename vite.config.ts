@@ -30,8 +30,10 @@ export default defineConfig({
               id.includes("/lib/capacitor-native-shell") ||
               id.includes("/lib/capacitor-app-listener") ||
               id.includes("/lib/capacitor-geolocation") ||
+              id.includes("/lib/capacitor-local-notifications") ||
               id.includes("node_modules/@capacitor/app/") ||
-              id.includes("node_modules/@capacitor/geolocation/")
+              id.includes("node_modules/@capacitor/geolocation/") ||
+              id.includes("node_modules/@capacitor/local-notifications/")
             ) {
               return "chunk-capacitor-plugins";
             }

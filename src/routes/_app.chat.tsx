@@ -29,7 +29,19 @@ import { RoamieResponseView } from "@/components/RoamieResponseView";
 import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
-import { logTripNav, tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
+import { logTripNav, tripDetailNavigateOptions, TRIP_DETAIL_ROUTE } from "@/lib/trip/trip-detail-nav";
+import {
+  consumeTripAddPlaceHandoff,
+  fetchTripAddPlaceFollowUpRecommendations,
+  fetchTripAddPlaceRecommendations,
+  isTripAddPlaceSession,
+  markTripAddPlaceHandoffComplete,
+  parseTripAddPlaceFollowUpIntent,
+  prepareTripAddPlaceSession,
+  reinforceTripAddPlaceSession,
+  tripAddPlaceRecommendationsToSession,
+} from "@/lib/trip/trip-add-place-handoff";
+import { appendPlaceToTrip } from "@/lib/trip/append-place-to-trip";
 import type { RoamieResponse, RoamieRecommendationItem } from "@/lib/ai/types";
 import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
 import {
@@ -47,7 +59,22 @@ import { getRecommendation } from "@/lib/recommendation-storage";
 import { inferDestinationFromPlaces } from "@/lib/itinerary-source";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import { finalizeChatRecommendationDisplay } from "@/lib/chat-display-recommendations";
-import { openRecommendationOnMap } from "@/lib/recommendation-place-handoff";
+import { openRecommendationPlaceDetail } from "@/lib/recommendation-place-handoff";
+import {
+  buildPlaceDetailFollowUpReply,
+  buildPlaceDetailReply,
+  enterPlaceDetailChat,
+  isPlaceDetailChatActive,
+  parsePlaceDetailFollowUp,
+  sessionWithPlaceDetailSearchCenter,
+} from "@/lib/ai/place-detail-chat";
+import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
+import {
+  clearChatUiCache,
+  consumeChatUiCache,
+  peekChatUiCache,
+  preserveChatUiForPlaceDetail,
+} from "@/lib/chat-ui-cache";
 import { logAppError } from "@/lib/log-error";
 import { isLateNightMode } from "@/lib/recommend-place-ranking";
 import {
@@ -163,6 +190,13 @@ import {
   markAskedClarifyKey,
   resolveChatRoute,
 } from "@/lib/ai/chat-router";
+import { resolveDestinationAdvice } from "@/lib/ai/destination-advice";
+import {
+  applyBudgetRefinementToSession,
+  buildBudgetRefinementSummary,
+  isBudgetRefinementText,
+  refineRecommendationItemsForBudget,
+} from "@/lib/ai/budget-refinement";
 import {
   fallbackSearchQuery,
   generateLocalRecommendationFallback,
@@ -178,16 +212,29 @@ type ChatSearch = {
   fromMoodFlow?: string;
   mood?: string;
   prompt?: string;
+  tripId?: string;
+  day?: number;
 };
 
 export const Route = createFileRoute("/_app/chat")({
-  validateSearch: (s: Record<string, unknown>): ChatSearch => ({
-    from: typeof s.from === "string" ? s.from : undefined,
-    recommendationId: typeof s.recommendationId === "string" ? s.recommendationId : undefined,
-    fromMoodFlow: typeof s.fromMoodFlow === "string" ? s.fromMoodFlow : undefined,
-    mood: typeof s.mood === "string" ? s.mood : undefined,
-    prompt: typeof s.prompt === "string" ? s.prompt : undefined,
-  }),
+  validateSearch: (s: Record<string, unknown>): ChatSearch => {
+    const dayRaw = s.day;
+    const day =
+      typeof dayRaw === "number"
+        ? dayRaw
+        : typeof dayRaw === "string" && dayRaw.trim()
+          ? Number.parseInt(dayRaw, 10)
+          : undefined;
+    return {
+      from: typeof s.from === "string" ? s.from : undefined,
+      recommendationId: typeof s.recommendationId === "string" ? s.recommendationId : undefined,
+      fromMoodFlow: typeof s.fromMoodFlow === "string" ? s.fromMoodFlow : undefined,
+      mood: typeof s.mood === "string" ? s.mood : undefined,
+      prompt: typeof s.prompt === "string" ? s.prompt : undefined,
+      tripId: typeof s.tripId === "string" ? s.tripId : undefined,
+      day: day != null && Number.isFinite(day) && day > 0 ? day : undefined,
+    };
+  },
   component: Chat,
 });
 
@@ -203,6 +250,7 @@ function Chat() {
     [t],
   );
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
+  const msgsRef = useRef<ChatMsg[]>([]);
   const [session, setSession] = useState<ChatPlanningSession>(() => loadChatSession());
   const [text, setText] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -221,10 +269,16 @@ function Chat() {
   const abortRef = useRef<AbortController | null>(null);
   const handoffStartedRef = useRef<string | null>(null);
   const planHandoffStartedRef = useRef(false);
+  const tripAddPlaceHandoffStartedRef = useRef(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [reportedKeyboardHeightPx, setReportedKeyboardHeightPx] = useState(0);
   const autoPromptHandledRef = useRef(false);
   const homeMoodShortcutEngagedRef = useRef(false);
+  const pendingScrollTopRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    msgsRef.current = msgs;
+  }, [msgs]);
 
   // 快捷列固定顯示，避免鍵盤開啟/輸入時整條消失。
   const showShortcutChips = true;
@@ -283,8 +337,9 @@ function Chat() {
 
   useEffect(() => {
     return () => {
-      if (homeMoodShortcutEngagedRef.current) return;
+      if (peekChatUiCache()) return;
       const pending = loadChatSession();
+      if (pending.homeMoodShortcutEngaged || homeMoodShortcutEngagedRef.current) return;
       if (!shouldDiscardHomeMoodShortcutSession(pending)) return;
       abortRef.current?.abort();
       clearChatSession();
@@ -395,8 +450,41 @@ function Chat() {
   useEffect(() => {
     (async () => {
       try {
+        const uiCache = consumeChatUiCache();
+        if (uiCache?.msgs?.length) {
+          let session = loadChatSession();
+          homeMoodShortcutEngagedRef.current = true;
+          if (session.homeMoodShortcutEntry && !session.homeMoodShortcutEngaged) {
+            session = markHomeMoodShortcutEngaged(session);
+            saveChatSession(session);
+          }
+          setSession(session);
+          setMsgs(uiCache.msgs);
+          pendingScrollTopRef.current = uiCache.scrollTop;
+          const places = await listPlaces();
+          setSavedNames(new Set(places.map((p) => p.name)));
+          return;
+        }
+
         let session = loadChatSession();
         homeMoodShortcutEngagedRef.current = Boolean(session.homeMoodShortcutEngaged);
+
+        if (search.from === "trip_add_place") {
+          const handoff = consumeTripAddPlaceHandoff();
+          if (handoff && (!search.tripId || handoff.tripId === search.tripId)) {
+            const bundle = handoff.destinationLocation
+              ? await buildContextBundleForTrip(handoff.destinationLocation, fetchWeather)
+              : await buildClientContextBundle(fetchWeather);
+            const enrichedHandoff = {
+              ...handoff,
+              weather: handoff.weather ?? bundle.weather,
+            };
+            session = prepareTripAddPlaceSession(enrichedHandoff, bundle);
+            await clearChatHistory();
+            persistSession(session);
+            homeMoodShortcutEngagedRef.current = true;
+          }
+        }
 
         const homeShortcutEntry = isHomeMoodShortcutSearch(search);
         if (!homeShortcutEntry && shouldDiscardHomeMoodShortcutSession(session)) {
@@ -406,7 +494,7 @@ function Chat() {
         }
 
         const moodId = normalizeHomeMoodId(search.mood?.trim() || readHomeMood());
-        if (moodId && homeShortcutEntry) {
+        if (search.from !== "trip_add_place" && moodId && homeShortcutEntry) {
           const moodLabel = t(`home.moods.${moodId}`);
           const moodPrompt =
             search.prompt?.trim() || t(`home.moodPrompts.${moodId}`);
@@ -422,7 +510,7 @@ function Chat() {
           homeMoodShortcutEngagedRef.current = false;
           clearHomeMoodUiSelection();
           persistSession(session);
-        } else if (moodId) {
+        } else if (moodId && !session.homeMoodShortcutEngaged && search.from !== "trip_add_place") {
           const moodLabel = t(`home.moods.${moodId}`);
           const moodPrompt =
             search.prompt?.trim() || t(`home.moodPrompts.${moodId}`);
@@ -501,6 +589,17 @@ function Chat() {
           setMsgs([]);
           await runRecommendationHandoff(current);
         } else if (
+          search.from === "trip_add_place" &&
+          current.fromTripAddPlace &&
+          current.tripAddPlaceContext &&
+          current.pendingHandoff &&
+          !current.tripAddPlaceHandoffDone &&
+          !tripAddPlaceHandoffStartedRef.current
+        ) {
+          tripAddPlaceHandoffStartedRef.current = true;
+          setMsgs([]);
+          await runTripAddPlaceHandoff(current);
+        } else if (
           (search.from === "plan" || search.from === "plan-ai") &&
           current.fromPlanForm &&
           current.pendingHandoff &&
@@ -544,7 +643,8 @@ function Chat() {
             !current.fromMoodFlow &&
             !current.fromMoodCard &&
             !current.fromPlusHome &&
-            !current.homeMoodShortcutEntry
+            !current.homeMoodShortcutEntry &&
+            !current.fromTripAddPlace
           ) {
             setMsgs([greetingMsg]);
           }
@@ -556,7 +656,7 @@ function Chat() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search.recommendationId, search.from, search.mood, hasPlusAccess, t]);
+  }, [search.recommendationId, search.from, search.mood, search.tripId, hasPlusAccess, t]);
 
   useEffect(() => {
     if (hydrating) return;
@@ -576,6 +676,30 @@ function Chat() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrating, search.prompt]);
+
+  const handleAddToTripFromChat = useCallback(
+    async (rec: RoamieRecommendationItem) => {
+      markShortcutEngaged();
+      const ctx = session.tripAddPlaceContext;
+      if (session.fromTripAddPlace && ctx) {
+        try {
+          await appendPlaceToTrip(
+            { kind: "trip", tripId: ctx.tripId },
+            tripPlaceFromRecommendation(rec),
+            { date: ctx.dateKey, position: "end" },
+          );
+          toast.success("已加入行程");
+          logTripNav("ChatTripAddPlace", ctx.tripId);
+          navigate(tripDetailNavigateOptions(ctx.tripId, { day: ctx.selectedDay }));
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : "加入行程失敗");
+        }
+        return;
+      }
+      openAddToTrip(tripPlaceFromRecommendation(rec));
+    },
+    [session.fromTripAddPlace, session.tripAddPlaceContext, navigate, openAddToTrip],
+  );
 
   const handleSavePlace = async (rec: RoamieRecommendationItem) => {
     markShortcutEngaged();
@@ -610,8 +734,17 @@ function Chat() {
   };
 
   useEffect(() => {
+    if (hydrating) return;
+    if (pendingScrollTopRef.current != null && messagesRef.current) {
+      const top = pendingScrollTopRef.current;
+      pendingScrollTopRef.current = null;
+      requestAnimationFrame(() => {
+        if (messagesRef.current) messagesRef.current.scrollTop = top;
+      });
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [msgs, streaming, partial, generating]);
+  }, [msgs, streaming, partial, generating, hydrating]);
 
   const buildRequest = useCallback(
     async (
@@ -687,6 +820,26 @@ function Chat() {
         synced.travelContext ? formatTravelContextForAi(synced.travelContext) : "",
         synced.tripPlanningContext
           ? formatTripPlanningContextForAi(synced.tripPlanningContext)
+          : "",
+        synced.placeDetailFocus
+          ? [
+              "【Place Detail Context】",
+              `mode: place_detail`,
+              `previousMode: ${synced.previousConversationMode ?? "mood_recommend"}`,
+              `selectedPlace: ${placeDisplayName(synced.placeDetailFocus)}`,
+              synced.placeDetailFocus.placeId
+                ? `placeId: ${synced.placeDetailFocus.placeId}`
+                : "",
+              synced.placeDetailFocus.address
+                ? `address: ${synced.placeDetailFocus.address}`
+                : "",
+              synced.placeDetailFocus.type ? `type: ${synced.placeDetailFocus.type}` : "",
+              synced.placeDetailFocus.reason
+                ? `recommendationReason: ${synced.placeDetailFocus.reason}`
+                : "",
+            ]
+              .filter(Boolean)
+              .join("\n")
           : "",
       ]
         .filter(Boolean)
@@ -1010,6 +1163,46 @@ function Chat() {
     [fetchWeather, persistSession, locale],
   );
 
+  const runTripAddPlaceHandoff = useCallback(
+    async (handoffSession: ChatPlanningSession) => {
+      const ctx = handoffSession.tripAddPlaceContext;
+      if (!ctx) return;
+      setStreaming(true);
+      try {
+        const { summary, recommendations } = await fetchTripAddPlaceRecommendations({
+          ctx,
+          searchPlaces: searchNearbyPlaces,
+          locale,
+        });
+        const sessionWithRecs = tripAddPlaceRecommendationsToSession(handoffSession, recommendations);
+        const { summary: displaySummary, recommendations: filteredRecs } =
+          finalizeChatRecommendationDisplay(sessionWithRecs, "", summary, recommendations);
+        const opener: ChatMsg = {
+          role: "assistant",
+          content: displaySummary,
+          roamie: {
+            title: "Roamie 推薦",
+            summary: displaySummary,
+            moodTag: handoffSession.mood ?? ctx.travelStyle ?? "",
+            recommendations: filteredRecs,
+            itinerary: [],
+          },
+        };
+        setMsgs([opener]);
+        persistSession(
+          markTripAddPlaceHandoffComplete({
+            ...sessionWithRecs,
+            recommendedPlaces: filteredRecs as ChatPlaceItem[],
+          }),
+        );
+        console.info("[Roamie] trip add place handoff ok", ctx.tripId, `day=${ctx.selectedDay}`);
+      } finally {
+        setStreaming(false);
+      }
+    },
+    [locale, persistSession, searchNearbyPlaces],
+  );
+
   const pushNearbyPlaceRecommendation = useCallback(
     async (
       activeSession: ChatPlanningSession,
@@ -1037,12 +1230,18 @@ function Chat() {
           context: merged.context,
           searchPlaces: searchNearbyPlaces,
           foodPreference: workingSession.foodPreference,
+          excludedCategories:
+            workingSession.excludedCategories ?? merged.context.excludedCategories,
         });
         const sessionWithIntent: ChatPlanningSession = {
           ...workingSession,
           activeChatIntent: intent,
           phase: "recommend",
-          travelContext: merged.context,
+          travelContext: {
+            ...merged.context,
+            excludedCategories:
+              workingSession.excludedCategories ?? merged.context.excludedCategories,
+          },
         };
         const { summary: displaySummary, recommendations: filteredRecs } =
           finalizeChatRecommendationDisplay(
@@ -1052,6 +1251,18 @@ function Chat() {
             payload.recommendations ?? [],
           );
         if (!filteredRecs.length) {
+          if ((payload.recommendations ?? []).length === 0 && summary.trim()) {
+            setMsgs((prev) => {
+              const trimmedPrev = prev.filter(
+                (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+              );
+              const base = trimmedPrev.length === conversation.length ? conversation : trimmedPrev;
+              return [...base, { role: "assistant", content: summary }];
+            });
+            persistSession(sessionWithIntent);
+            setPartial({});
+            return true;
+          }
           console.warn("[CHAT_PLACE_CARD_RENDER] count=0 after_filter");
           return false;
         }
@@ -1103,6 +1314,76 @@ function Chat() {
       reason: string,
     ): Promise<boolean> => {
       console.info(`[CHAT_FALLBACK_USED] reason=${reason}`);
+
+      if (isPlaceDetailChatActive(activeSession)) {
+        return false;
+      }
+
+      if (isTripAddPlaceSession(activeSession) && activeSession.tripAddPlaceContext) {
+        const followUp = parseTripAddPlaceFollowUpIntent(activeUserText);
+        if (followUp) {
+          const reinforced = reinforceTripAddPlaceSession(activeSession, activeUserText);
+          const { summary, recommendations } = await fetchTripAddPlaceFollowUpRecommendations({
+            ctx: reinforced.tripAddPlaceContext!,
+            intent: followUp,
+            searchPlaces: searchNearbyPlaces,
+            locale,
+          });
+          const sessionWithRecs = tripAddPlaceRecommendationsToSession(reinforced, recommendations);
+          const { summary: displaySummary, recommendations: filteredRecs } =
+            finalizeChatRecommendationDisplay(sessionWithRecs, activeUserText, summary, recommendations);
+          setMsgs((prev) => {
+            const trimmedPrev = prev.filter(
+              (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+            );
+            return [
+              ...trimmedPrev,
+              {
+                role: "assistant",
+                content: displaySummary,
+                roamie: {
+                  title: "Roamie 推薦",
+                  summary: displaySummary,
+                  moodTag: sessionWithRecs.mood ?? "",
+                  recommendations: filteredRecs,
+                  itinerary: [],
+                },
+              },
+            ];
+          });
+          persistSession({
+            ...sessionWithRecs,
+            recommendedPlaces: filteredRecs as ChatPlaceItem[],
+            activeChatIntent: followUp,
+          });
+          setPartial({});
+          return true;
+        }
+        return false;
+      }
+
+      const mergedForAdvice = mergeTravelContext(activeSession, activeUserText);
+      const advice = resolveDestinationAdvice(
+        mergedForAdvice.context,
+        mergedForAdvice.session,
+        activeUserText,
+      );
+      if (advice.reply) {
+        setMsgs((prev) => {
+          const trimmedPrev = prev.filter(
+            (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+          );
+          return [...trimmedPrev, { role: "assistant", content: advice.reply! }];
+        });
+        persistSession({
+          ...mergedForAdvice.session,
+          pendingQuestion: advice.pendingQuestion,
+          lastResolvedPendingQuestion: undefined,
+          adviceSelectionThisTurn: undefined,
+        });
+        setPartial({});
+        return true;
+      }
 
       const intent = resolveChatIntent(activeUserText, activeSession);
       if (
@@ -1365,13 +1646,21 @@ function Chat() {
           (sessionOverride ?? session).phase,
         );
         const activeSession = sessionOverride ?? session;
-        const { summary: displaySummary, recommendations: displayRecs } =
+        const followUpIntent = parsePlaceDetailFollowUp(opts?.userText ?? "");
+        let { summary: displaySummary, recommendations: displayRecs } =
           finalizeChatRecommendationDisplay(
             activeSession,
             opts?.userText ?? "",
             full.summary ?? "",
             full.recommendations ?? [],
           );
+        if (
+          isPlaceDetailChatActive(activeSession) &&
+          followUpIntent !== "nearby_cafe" &&
+          followUpIntent !== "nearby_late_snack"
+        ) {
+          displayRecs = [];
+        }
         if (displayRecs.length) {
           nextSession = {
             ...nextSession,
@@ -1451,6 +1740,28 @@ function Chat() {
           "ai_reply_failed",
         );
         if (!applied) {
+          const fallbackMerged = mergeTravelContext(activeForFallback, activeUserText);
+          const advice = resolveDestinationAdvice(
+            fallbackMerged.context,
+            fallbackMerged.session,
+            activeUserText,
+          );
+          if (advice.reply) {
+            setMsgs((prev) => {
+              const trimmedPrev = prev.filter(
+                (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+              );
+              return [...trimmedPrev, { role: "assistant", content: advice.reply! }];
+            });
+            persistSession({
+              ...fallbackMerged.session,
+              pendingQuestion: advice.pendingQuestion,
+              lastResolvedPendingQuestion: undefined,
+              adviceSelectionThisTurn: undefined,
+            });
+            setPartial({});
+            return;
+          }
           const hint: ChatMsg = {
             role: "assistant",
             content: "我先用目前掌握的需求幫你整理方向，你可以再跟我說想調整什麼。",
@@ -1483,34 +1794,49 @@ function Chat() {
   const handleOpenPlaceDetail = (rec: RoamieRecommendationItem) => {
     markShortcutEngaged();
     if (rec.lat == null || rec.lng == null) {
-      toast.message("此地點尚無座標，暫時無法開啟地圖詳情");
+      toast.message("此地點尚無座標，暫時無法開啟地點詳情");
       return;
     }
-    openRecommendationOnMap(rec);
-    navigate({ to: "/map" });
+    preserveChatUiForPlaceDetail(
+      msgsRef.current,
+      messagesRef.current?.scrollTop ?? 0,
+    );
+    const handoff = openRecommendationPlaceDetail(rec);
+    void navigate({
+      to: "/place",
+      search: {
+        placeId: handoff.placeId || undefined,
+        lat: handoff.lat ?? undefined,
+        lng: handoff.lng ?? undefined,
+        returnTo: "chat",
+      },
+    });
   };
 
-  const handleSelectPlace = async (rec: RoamieRecommendationItem) => {
+  const handleDiscussPlace = (rec: RoamieRecommendationItem) => {
     if (streaming || generating) return;
     markShortcutEngaged();
     const item = roamieRecToChatItem(rec);
-    let nextSession = addSelectedPlace(session, item);
-    nextSession = {
-      ...nextSession,
-      selectedPlaceFromMood: item,
-      phase: "followup",
-    };
+    const nextSession = enterPlaceDetailChat(session, item);
     persistSession(nextSession);
 
-    const userLine = `我選了「${placeDisplayName(item)}」，想多聊聊這附近還能怎麼安排。`;
-    const conversation: ChatMsg[] = [...msgs, { role: "user", content: userLine }];
-    setMsgs(conversation);
-
-    await streamChat(
-      conversation,
-      { phase: "enrich", userText: userLine, focusedPlace: item },
-      nextSession,
-    );
+    const userLine = `想聊聊 ${placeDisplayName(item)}`;
+    const assistantLine = buildPlaceDetailReply(item, nextSession);
+    setMsgs((prev) => [
+      ...prev,
+      { role: "user", content: userLine },
+      {
+        role: "assistant",
+        content: assistantLine,
+        roamie: {
+          title: placeDisplayName(item),
+          summary: assistantLine,
+          moodTag: nextSession.mood ?? nextSession.selectedMood ?? "",
+          recommendations: [],
+          itinerary: [],
+        },
+      },
+    ]);
   };
 
   const send = async (
@@ -1519,6 +1845,145 @@ function Chat() {
   ) => {
     const trimmed = (overrideText ?? text).trim();
     if (!trimmed || streaming || generating) return;
+
+    if (isPlaceDetailChatActive(session)) {
+      markShortcutEngaged();
+      const followUp = parsePlaceDetailFollowUp(trimmed);
+      const userMsg: ChatMsg = { role: "user", content: trimmed };
+      const baseConversation = [...msgs, userMsg];
+      setMsgs(baseConversation);
+      setText("");
+
+      if (followUp === "add_to_trip" && session.placeDetailFocus) {
+        const focus = session.placeDetailFocus;
+        let nextSession = addSelectedPlace(session, focus);
+        nextSession = enterPlaceDetailChat(nextSession, focus);
+        persistSession(nextSession);
+        const reply =
+          buildPlaceDetailFollowUpReply("add_to_trip", nextSession) ??
+          `好的，已把「${placeDisplayName(focus)}」記下來。`;
+        setMsgs([...baseConversation, { role: "assistant", content: reply }]);
+        return;
+      }
+
+      if (followUp === "view_route" && session.placeDetailFocus) {
+        const focus = session.placeDetailFocus;
+        if (focus.lat != null && focus.lng != null) {
+          window.open(buildPlaceMapsUrl(focus.lat, focus.lng, focus.name), "_blank", "noopener");
+        }
+        const reply =
+          buildPlaceDetailFollowUpReply("view_route", session) ??
+          "已為你開啟路線，也可以直接點卡片上的查看路線。";
+        setMsgs([...baseConversation, { role: "assistant", content: reply }]);
+        return;
+      }
+
+      if (followUp === "nearby_cafe" || followUp === "nearby_late_snack") {
+        const centered = sessionWithPlaceDetailSearchCenter(session);
+        const nearbyIntent = followUp === "nearby_cafe" ? "cafe" : "restaurant";
+        const nextSession = {
+          ...centered,
+          activeChatIntent: nearbyIntent,
+          phase: "recommend" as const,
+        };
+        persistSession(nextSession);
+        const preface = buildPlaceDetailFollowUpReply(followUp, nextSession);
+        const conversationWithPreface = preface
+          ? [...baseConversation, { role: "assistant", content: preface }]
+          : baseConversation;
+        if (preface) setMsgs(conversationWithPreface);
+        setStreaming(true);
+        try {
+          const applied = await pushNearbyPlaceRecommendation(
+            nextSession,
+            trimmed,
+            conversationWithPreface,
+            nearbyIntent,
+          );
+          if (!applied) {
+            toast.message("暫時找不到附近地點，可以換個描述再試。");
+          }
+        } finally {
+          setStreaming(false);
+        }
+        return;
+      }
+
+      let nextSession = enterPlaceDetailChat(session, session.placeDetailFocus!);
+      const merged = mergeTravelContext(nextSession, trimmed);
+      nextSession = merged.session;
+      persistSession(nextSession);
+      await streamChat(
+        baseConversation,
+        {
+          phase: "followup",
+          userText: trimmed,
+          focusedPlace: session.placeDetailFocus,
+        },
+        nextSession,
+      );
+      return;
+    }
+
+    if (isTripAddPlaceSession(session) && session.tripAddPlaceContext) {
+      markShortcutEngaged();
+      const userMsg: ChatMsg = { role: "user", content: trimmed };
+      const baseConversation = [...msgs, userMsg];
+      setMsgs(baseConversation);
+      setText("");
+
+      let nextSession = reinforceTripAddPlaceSession(session, trimmed);
+      const followUp = parseTripAddPlaceFollowUpIntent(trimmed);
+      if (followUp) {
+        nextSession = { ...nextSession, activeChatIntent: followUp, phase: "recommend" };
+      }
+      persistSession(nextSession);
+
+      if (followUp) {
+        setStreaming(true);
+        try {
+          const { summary, recommendations } = await fetchTripAddPlaceFollowUpRecommendations({
+            ctx: nextSession.tripAddPlaceContext!,
+            intent: followUp,
+            searchPlaces: searchNearbyPlaces,
+            locale,
+          });
+          const sessionWithRecs = tripAddPlaceRecommendationsToSession(nextSession, recommendations);
+          const { summary: displaySummary, recommendations: filteredRecs } =
+            finalizeChatRecommendationDisplay(
+              sessionWithRecs,
+              trimmed,
+              summary,
+              recommendations,
+            );
+          persistSession({
+            ...sessionWithRecs,
+            recommendedPlaces: filteredRecs as ChatPlaceItem[],
+            activeChatIntent: followUp,
+          });
+          setMsgs([
+            ...baseConversation,
+            {
+              role: "assistant",
+              content: displaySummary,
+              roamie: {
+                title: "Roamie 推薦",
+                summary: displaySummary,
+                moodTag: sessionWithRecs.mood ?? "",
+                recommendations: filteredRecs,
+                itinerary: [],
+              },
+            },
+          ]);
+        } finally {
+          setStreaming(false);
+        }
+        return;
+      }
+
+      await streamChat(baseConversation, { phase: "followup", userText: trimmed }, nextSession);
+      return;
+    }
 
     let nextSession = applyTripIntentToSession(trimmed, session);
     if (opts?.source !== "auto") {
@@ -1532,9 +1997,23 @@ function Chat() {
 
     const merged = mergeTravelContext(nextSession, trimmed);
     nextSession = merged.session;
+    if (isBudgetRefinementText(trimmed)) {
+      nextSession = applyBudgetRefinementToSession(trimmed, {
+        ...nextSession,
+        travelContext: merged.context,
+      });
+    }
     const planningMerge = mergeTripPlanningContext(trimmed, nextSession, merged.context);
     nextSession = planningMerge.session;
     const conversationMode = resolveConversationMode(trimmed, nextSession);
+
+    if (intent === "destination_advice") {
+      nextSession = {
+        ...nextSession,
+        activeChatIntent: "destination_advice",
+        conversationMode: "destination_planning",
+      };
+    }
 
     nextSession = extractPlanningHintsFromText(trimmed, nextSession);
     nextSession = extractDiscoveryFromText(trimmed, nextSession);
@@ -1548,7 +2027,8 @@ function Chat() {
     const inferredNearbyIntent =
       conversationMode === "destination_planning" ||
       conversationMode === "mood_recommend" ||
-      conversationMode === "place_focus"
+      conversationMode === "place_focus" ||
+      intent === "destination_advice"
         ? null
         : inferNearbyIntentFromContext(merged.context, trimmed, nextSession);
 
@@ -1569,11 +2049,14 @@ function Chat() {
     const tripIntent = parseTripIntentFromText(trimmed, nextSession);
 
     if (
-      route.mode === "recommend" ||
-      tripIntent.readyForRecommendations ||
-      isNearbyPlaceIntent(intent) ||
-      nextSession.activeChatIntent === "restaurant" ||
-      inferredNearbyIntent
+      (route.mode === "recommend" ||
+        tripIntent.readyForRecommendations ||
+        isNearbyPlaceIntent(intent) ||
+        intent === "refine_recommendations" ||
+        nextSession.activeChatIntent === "restaurant" ||
+        inferredNearbyIntent) &&
+      intent !== "destination_advice" &&
+      route.mode !== "advice"
     ) {
       nextSession = { ...nextSession, phase: "recommend" };
     }
@@ -1635,6 +2118,17 @@ function Chat() {
       return;
     }
 
+    if (route.mode === "advice" && route.question) {
+      persistSession({
+        ...nextSession,
+        pendingQuestion: route.pendingQuestion,
+        lastResolvedPendingQuestion: undefined,
+        adviceSelectionThisTurn: undefined,
+      });
+      setMsgs([...next, { role: "assistant", content: route.question }]);
+      return;
+    }
+
     if (route.mode === "clarify" && route.question && route.missingKey) {
       if (nextSession.activeChatIntent === "restaurant") {
         const question = restaurantCuisineQuestion();
@@ -1666,6 +2160,78 @@ function Chat() {
       if (applied) return;
       if (nearbyIntent === "restaurant") {
         toast.message("暫時找不到附近餐廳，請稍後再試。");
+        return;
+      }
+    }
+
+    if (intent === "refine_recommendations" || isBudgetRefinementText(trimmed)) {
+      const refineIntent =
+        (nextSession.activeChatIntent && isNearbyPlaceIntent(nextSession.activeChatIntent)
+          ? nextSession.activeChatIntent
+          : null) ??
+        inferNearbyIntentFromContext(
+          nextSession.travelContext ?? merged.context,
+          trimmed,
+          nextSession,
+        ) ??
+        "attraction";
+
+      if (sessionHasLocation(nextSession)) {
+        setStreaming(true);
+        try {
+          const applied = await pushNearbyPlaceRecommendation(
+            nextSession,
+            trimmed,
+            next,
+            refineIntent,
+          );
+          if (applied) return;
+        } finally {
+          setStreaming(false);
+        }
+      }
+
+      const existingRecs =
+        nextSession.recommendedPlaces.length > 0
+          ? nextSession.recommendedPlaces
+          : [...msgs]
+              .reverse()
+              .find((m) => m.role === "assistant" && m.roamie?.recommendations?.length)
+              ?.roamie?.recommendations ?? [];
+
+      const refinedItems = refineRecommendationItemsForBudget(existingRecs, "low").slice(0, 5);
+      if (refinedItems.length > 0) {
+        const summary = buildBudgetRefinementSummary(
+          nextSession.travelContext ?? merged.context,
+          refinedItems,
+        );
+        const sessionWithRefine: ChatPlanningSession = {
+          ...nextSession,
+          activeChatIntent: refineIntent,
+          phase: "followup",
+        };
+        const { summary: displaySummary, recommendations: filteredRecs } =
+          finalizeChatRecommendationDisplay(sessionWithRefine, trimmed, summary, refinedItems);
+        persistSession(
+          syncSessionPlaceMemory({
+            ...sessionWithRefine,
+            recommendedPlaces: filteredRecs as ChatPlaceItem[],
+          }),
+        );
+        setMsgs([
+          ...next,
+          {
+            role: "assistant",
+            content: displaySummary,
+            roamie: {
+              title: "Roamie 推薦",
+              summary: displaySummary,
+              moodTag: sessionWithRefine.mood ?? merged.context.mood ?? "",
+              recommendations: filteredRecs,
+              itinerary: [],
+            },
+          },
+        ]);
         return;
       }
     }
@@ -1870,6 +2436,7 @@ function Chat() {
       const recId = session.recommendationId;
       await clearChatHistory();
       clearChatSession();
+      clearChatUiCache();
       clearDraftTrip();
       clearMoodHandoffStorage(recId);
       handoffStartedRef.current = null;
@@ -1955,12 +2522,22 @@ function Chat() {
         <BackButton
           preferFallback
           fallback={
-            session.fromPlanForm || session.fromPlanAi
-              ? { to: "/plan" }
-              : { to: "/" }
+            session.fromTripAddPlace && session.tripAddPlaceContext
+              ? {
+                  to: TRIP_DETAIL_ROUTE,
+                  params: { tripId: session.tripAddPlaceContext.tripId },
+                  search: { day: session.tripAddPlaceContext.selectedDay },
+                }
+              : session.fromPlanForm || session.fromPlanAi
+                ? { to: "/plan" }
+                : { to: "/" }
           }
           label={
-            session.fromPlanForm || session.fromPlanAi ? t("chat.backToPlan") : t("chat.backToHome")
+            session.fromTripAddPlace
+              ? "返回行程"
+              : session.fromPlanForm || session.fromPlanAi
+                ? t("chat.backToPlan")
+                : t("chat.backToHome")
           }
           className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-foreground"
         />
@@ -2061,11 +2638,10 @@ function Chat() {
                       }
                       onSavePlace={handleSavePlace}
                       onAddToTrip={(rec) => {
-                        markShortcutEngaged();
-                        openAddToTrip(tripPlaceFromRecommendation(rec));
+                        void handleAddToTripFromChat(rec);
                       }}
                       onOpenPlaceDetail={handleOpenPlaceDetail}
-                      onDiscussPlace={handleSelectPlace}
+                      onDiscussPlace={handleDiscussPlace}
                       outfitAdvice={m.roamie?.outfitAdvice}
                       selectedPlaceNames={selectedNames}
                       savingPlaceName={savingName}

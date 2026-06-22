@@ -2,6 +2,7 @@ import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { ChatPlanningSession, ChatPlaceItem } from "@/lib/chat-session";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { lowBudgetSearchQuery, buildBudgetRefinementSummary } from "@/lib/ai/budget-refinement";
 import { logTravelContext } from "@/lib/ai/travel-context";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
@@ -13,7 +14,10 @@ export type LocalFallbackInput = {
   places?: PlaceResult[];
 };
 
-function moodSearchQuery(mood: string): string {
+function moodSearchQuery(mood: string, ctx?: CanonicalTravelContext): string {
+  if (ctx?.budgetPreference === "low" || ctx?.tripPurpose === "refine_recommendations") {
+    return lowBudgetSearchQuery("attraction", mood).query;
+  }
   if (/深夜散步/.test(mood)) return "night walk riverside park night view cafe";
   if (/找咖啡|咖啡/.test(mood)) return "cafe coffee quiet";
   if (/下雨天|雨/.test(mood)) return "indoor museum cafe bookstore";
@@ -22,7 +26,11 @@ function moodSearchQuery(mood: string): string {
   return `${mood} nearby places`;
 }
 
-function buildSummary(ctx: CanonicalTravelContext, placeCount: number): string {
+function buildSummary(ctx: CanonicalTravelContext, placeCount: number, places: PlaceResult[] = []): string {
+  if (ctx.budgetPreference === "low" || ctx.tripPurpose === "refine_recommendations") {
+    return buildBudgetRefinementSummary(ctx, places.slice(0, placeCount));
+  }
+
   const mood = ctx.mood ?? "今天";
   const dest = ctx.destination ?? ctx.currentLocation ?? "附近";
   const month = ctx.travelMonth ? `${ctx.travelMonth}的` : "";
@@ -92,7 +100,7 @@ export function generateLocalRecommendationFallback(
     };
   }
 
-  const summary = buildSummary(ctx, candidates.length);
+  const summary = buildSummary(ctx, candidates.length, places);
   const moodTag = ctx.mood ?? session.selectedMood ?? "";
 
   const payload: RoamiePayloadV2 = {
@@ -110,7 +118,7 @@ export function generateLocalRecommendationFallback(
 
 export function fallbackSearchQuery(ctx: CanonicalTravelContext): string {
   const mood = ctx.mood ?? "";
-  if (mood) return moodSearchQuery(mood);
+  if (mood) return moodSearchQuery(mood, ctx);
   if (ctx.interests.includes("咖啡")) return "cafe coffee";
   if (ctx.interests.includes("美食")) return "restaurant local food";
   return "nearby places";

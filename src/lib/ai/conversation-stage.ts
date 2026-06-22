@@ -2,6 +2,10 @@ import type { ChatPhase } from "@/lib/ai/context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { isNearbyPlaceIntent } from "@/lib/ai/chat-intent";
 import { isFoodPreferenceReply } from "@/lib/ai/chat-dining-flow";
+import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
+import { isFlexiblePreferenceReply } from "@/lib/ai/destination-advice";
+import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
+import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import type { TripIntent } from "@/lib/recommendation/trip-intent";
 import { userWantsMoreRecommendations, userWantsPlanningFinalize } from "@/lib/chat-planning-flow";
 import { isDiscoveryComplete, isUserConfirmingItinerary } from "@/lib/chat-session";
@@ -41,6 +45,9 @@ export function userExplicitlyWantsPlaces(text: string): boolean {
 export function isEmotionalOrVagueTurn(text: string, session?: ChatPlanningSession): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (session && (isDestinationAdviceActive(session) || isFlexiblePreferenceReply(t))) {
+    return false;
+  }
   if (userExplicitlyWantsPlaces(t)) return false;
   if (
     session?.activeChatIntent &&
@@ -61,6 +68,8 @@ export function resolveConversationStage(
 ): ConversationStage {
   const t = userText.trim();
 
+  if (isBudgetRefinementText(t)) return "recommend";
+
   if (
     session.activeChatIntent &&
     isNearbyPlaceIntent(session.activeChatIntent) &&
@@ -79,9 +88,13 @@ export function resolveConversationStage(
       session.travelContext?.vibe ||
       session.fromMoodFlow ||
       session.fromMoodCard ||
-      /(放鬆|走走|散步|累|下雨|咖啡|都可以)/.test(t),
+      (!isDestinationAdviceActive(session) && /(放鬆|走走|散步|累|下雨|咖啡|都可以)/.test(t)),
   );
-  if (hasGps && moodSignal) return "recommend";
+  if (isPlaceDetailChatActive(session)) {
+    return userExplicitlyWantsPlaces(t) ? "recommend" : "converge";
+  }
+
+  if (hasGps && moodSignal && !isDestinationAdviceActive(session)) return "recommend";
 
   if (session.phase === "ready" || isUserConfirmingItinerary(t)) return "itinerary";
   if (userWantsPlanningFinalize(t) && session.selectedPlaces.length >= 1) return "itinerary";

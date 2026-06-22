@@ -29,6 +29,8 @@ import {
 } from "@/lib/place-planning-memory";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
+import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
+import { isFlexiblePreferenceReply } from "@/lib/ai/destination-advice";
 
 export {
   buildContextualMoodHandoffOpening,
@@ -169,14 +171,30 @@ export type ChatPlanningSession = {
   foodPreference?: string;
   /** 用餐時間提示：tomorrow_noon … */
   diningTimeHint?: string;
+  /** 排除菜系／類型（含同義詞，如 火鍋、義式、pizza） */
+  excludedCategories?: string[];
   /** 首頁心情 chip 直入聊聊（未經推薦頁） */
   homeMoodShortcutEntry?: boolean;
   /** 使用者已與該次首頁心情快捷對話互動 */
   homeMoodShortcutEngaged?: boolean;
   /** 目的地行程規劃上下文（每輪合併更新） */
   tripPlanningContext?: import("@/lib/ai/trip-planning-context").TripPlanningContext;
+  /** 上一輪 AI 問題的待選選項 */
+  pendingQuestion?: import("@/lib/ai/destination-pending-question").PendingQuestion;
+  /** 本輪剛解析到的選項回覆（用於推進下一步） */
+  adviceSelectionThisTurn?: string;
+  /** 本輪選項回覆對應的 pending 問題（推進回覆後清除） */
+  lastResolvedPendingQuestion?: import("@/lib/ai/destination-pending-question").PendingQuestion;
   /** 聊聊對話模式分流 */
   conversationMode?: import("@/lib/ai/trip-planning-context").ChatConversationMode;
+  /** 「跟 Roamie 聊這裡」焦點地點 */
+  placeDetailFocus?: ChatPlaceItem;
+  /** 進入 place detail 前的對話模式 */
+  previousConversationMode?: import("@/lib/ai/trip-planning-context").ChatConversationMode;
+  /** 行程內頁 → 請 Roamie 推薦下一個地點 */
+  fromTripAddPlace?: boolean;
+  tripAddPlaceContext?: import("@/lib/trip/trip-add-place-handoff").TripAddPlaceContext;
+  tripAddPlaceHandoffDone?: boolean;
   updatedAt: string;
 };
 
@@ -305,6 +323,9 @@ export function extractDiscoveryFromText(
     /(都有|都可以|都行|混合|都想要)/.test(t) &&
     session.activeChatIntent !== "restaurant" &&
     session.activeChatIntent !== "cafe" &&
+    session.activeChatIntent !== "destination_advice" &&
+    !isDestinationAdviceActive(session) &&
+    !isFlexiblePreferenceReply(t) &&
     !/(餐廳|吃飯|聚餐|咖啡|日式|燒肉|火鍋|義式)/.test(t)
   ) {
     discovery.vibe = "混合";

@@ -11,7 +11,8 @@ import {
   type ChatPlaceItem,
   type ChatPlanningSession,
 } from "@/lib/chat-session";
-import type { RoamieRecommendationItem } from "@/lib/ai/types";
+import { applyExclusionToSession } from "@/lib/ai/recommendation-exclusion";
+import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
 
 /** 使用者想繼續探索、調整推薦方向 */
 export function userWantsMoreRecommendations(text: string): boolean {
@@ -37,15 +38,16 @@ export function extractChatPlanningContextFromText(
   const t = text.trim();
   if (!t) return session;
 
-  let next: ChatPlanningSession = {
-    ...session,
+  let next: ChatPlanningSession = applyExclusionToSession(text, session);
+  next = {
+    ...next,
     lastUserIntent: t.slice(0, 200),
   };
 
   const avoidTypes = new Set(session.avoidTypes ?? []);
   if (/(太吵|吵|擠|人多|不想.*人)/.test(t)) avoidTypes.add("人多吵雜");
   if (/(不想走太多|少走路|不想走太多|不要走太多|怕走路)/.test(t)) avoidTypes.add("長距離步行");
-  if (/(太貴|高價|奢侈)/.test(t)) avoidTypes.add("高價位");
+  if (/(太貴|高價|奢侈)/.test(t) || isBudgetRefinementText(t)) avoidTypes.add("高價位");
   if (/(戶外|曬|太陽)/.test(t) && /(不要|不想|怕)/.test(t)) avoidTypes.add("長時間戶外曝曬");
   if (/(室內|冷氣)/.test(t) && /(想|要|偏好)/.test(t)) next.discovery = { ...next.discovery, setting: "室內" };
 
@@ -76,7 +78,7 @@ export function extractChatPlanningContextFromText(
 
   if (userWantsPlanningFinalize(t) && next.selectedPlaces.length >= 1) {
     next.phase = "ready";
-  } else if (userWantsMoreRecommendations(t)) {
+  } else if (userWantsMoreRecommendations(t) || isBudgetRefinementText(t)) {
     if (next.phase === "collect" || next.phase === "discover") {
       next.phase = next.selectedPlaces.length ? "followup" : "recommend";
     }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
   Camera,
@@ -11,7 +11,6 @@ import {
 import { toast } from "sonner";
 import { BackButton } from "@/components/BackButton";
 import { TripCoverImage } from "@/components/media/TripCoverImage";
-import { TripStopSearchField } from "@/components/TripStopSearchField";
 import { SavedPlacesPickSheet } from "@/components/saved/SavedPlacesPickSheet";
 import { SavedTripEditableStopCard } from "@/components/saved/SavedTripEditableStopCard";
 import { TripLegTransportConnector } from "@/components/saved/TripLegTransportConnector";
@@ -104,6 +103,10 @@ import { useI18n } from "@/hooks/use-i18n";
 import { geocodeTripLocationFromText } from "@/lib/location.functions";
 import { resolveTripStop } from "@/lib/trip-stop-search.functions";
 import { resolveTripStopCoords } from "@/lib/trip-stop-coords";
+import {
+  buildTripAddPlaceContext,
+  writeTripAddPlaceHandoff,
+} from "@/lib/trip/trip-add-place-handoff";
 
 function inferTripDates(
   items: RoamieItineraryItem[],
@@ -236,9 +239,12 @@ type Props = {
   stored: StoredItinerary;
   headerRight?: React.ReactNode;
   onStoredChange?: (stored: StoredItinerary) => void;
+  /** 1-based day number from route search */
+  initialDay?: number;
 };
 
-export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }: Props) {
+export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, initialDay }: Props) {
+  const navigate = useNavigate();
   const { locale } = useI18n();
   const geocodeLocationFn = useServerFn(geocodeTripLocationFromText);
   const resolveTripStopFn = useServerFn(resolveTripStop);
@@ -269,7 +275,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
       },
   );
   const [items, setItems] = useState<RoamieItineraryItem[]>(() => [...initial.itinerary]);
-  const [activeDayIndex, setActiveDayIndex] = useState(0);
+  const [activeDayIndex, setActiveDayIndex] = useState(() =>
+    initialDay != null && initialDay > 0 ? initialDay - 1 : 0,
+  );
   const [savedPlacesOpen, setSavedPlacesOpen] = useState(false);
   const [addMenuDayIndex, setAddMenuDayIndex] = useState<number | null>(null);
   const [transitLoading, setTransitLoading] = useState(false);
@@ -1511,31 +1519,50 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange }
 
             <div className="mt-6 space-y-3">
               {addMenuDayIndex === activeDay.dayNumber - 1 ? (
-                <div className="space-y-3 rounded-2xl border border-border bg-card/80 p-3">
-                  <TripStopSearchField
-                    label="搜尋地點"
-                    onPick={(place) => handleAddStop(activeDay.dateKey, place)}
-                  />
-                  <div className="flex flex-wrap gap-2">
+                <div className="space-y-2 rounded-2xl border border-border bg-card/80 p-3">
+                  <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={() => setSavedPlacesOpen(true)}
-                      className="rounded-full border border-border bg-background px-4 py-2 text-xs"
+                      className="rounded-full border border-border bg-background px-3 py-2.5 text-xs font-medium"
                     >
                       從收藏新增
                     </button>
-                    <Link
-                      to="/chat"
-                      className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-4 py-2 text-xs"
-                      onClick={() => setAddMenuDayIndex(null)}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!activeDay) return;
+                        const handoff = buildTripAddPlaceContext({
+                          stored,
+                          payload,
+                          settings,
+                          dayIndex: safeDayIndex,
+                          selectedDay: activeDay.dayNumber,
+                          dateKey: activeDay.dateKey,
+                          dayItems: activeDay.items,
+                          dayCount: dayGroups.filter((d) => !d.isUnassigned).length,
+                        });
+                        writeTripAddPlaceHandoff(handoff);
+                        setAddMenuDayIndex(null);
+                        void navigate({
+                          to: "/chat",
+                          search: {
+                            from: "trip_add_place",
+                            tripId: stored.id,
+                            day: activeDay.dayNumber,
+                          },
+                        });
+                      }}
+                      className="inline-flex items-center justify-center gap-1 rounded-full border border-border bg-background px-3 py-2.5 text-xs font-medium"
                     >
-                      <Sparkles className="h-3 w-3" />請 Roamie 推薦
-                    </Link>
+                      <Sparkles className="h-3 w-3" />
+                      請 Roamie 推薦
+                    </button>
                   </div>
                   <button
                     type="button"
                     onClick={() => setAddMenuDayIndex(null)}
-                    className="w-full text-center text-xs text-muted-foreground"
+                    className="w-full py-1 text-center text-xs text-muted-foreground"
                   >
                     收合
                   </button>

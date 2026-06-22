@@ -25,113 +25,256 @@ export type TicketAffiliateDecision = {
   searchKeyword: string;
 };
 
-/** 熱門景點 / 地標 / 體驗型 Google types（全球通用） */
-const HOT_LANDMARK_TYPES = new Set([
-  "tourist_attraction",
-  "landmark",
-  "natural_feature",
-  "museum",
-  "art_gallery",
-  "aquarium",
-  "zoo",
+const POI_MIN_RATING = 4.2;
+const POI_MIN_REVIEWS = 1000;
+
+/** 熱門景點白名單（子字串比對，支援日韓港台新泰等） */
+const FAMOUS_LANDMARK_KEYWORDS = [
+  // 日本
+  "富士山",
+  "mount fuji",
+  "河口湖",
+  "kawaguchiko",
+  "哈利波特",
+  "harry potter",
+  "warner bros",
+  "東京迪士尼",
+  "tokyo disney",
+  "迪士尼",
+  "disneyland",
+  "disney sea",
+  "disneysea",
+  "晴空塔",
+  "skytree",
+  "sky tree",
+  "東京鐵塔",
+  "东京铁塔",
+  "tokyo tower",
+  "淺草寺",
+  "浅草寺",
+  "sensoji",
+  "senso-ji",
+  "雷門",
+  "雷门",
+  "kaminarimon",
+  "kaminari mon",
+  "仲見世",
+  "仲见世",
+  "nakamise",
+  "上野動物園",
+  "上野动物园",
+  "ueno zoo",
+  "teamlab",
+  "team lab",
+  "澀谷sky",
+  "涩谷sky",
+  "shibuya sky",
+  "大阪環球",
+  "大阪环球",
+  "universal studios japan",
+  "usj",
+  "環球影城",
+  "环球影城",
+  "清水寺",
+  "kiyomizu",
+  "伏見稻荷",
+  "伏见稻荷",
+  "fushimi inari",
+  "道頓堀",
+  "道顿堀",
+  "dotonbori",
+  "奈良公園",
+  "奈良公园",
+  "nara park",
+  "上野公園",
+  "上野公园",
+  "ueno park",
+  "箱根",
+  "hakone",
+  "鎌倉",
+  "镰仓",
+  "kamakura",
+  "日光",
+  "nikko",
+  "六本木之丘",
+  "roppongi hills",
+  "東京站",
+  "东京站",
+  "築地",
+  "tsukiji",
+  "豪德寺",
+  "gotokuji",
+  // 韓國
+  "首爾塔",
+  "首尔塔",
+  "n seoul tower",
+  "namsan tower",
+  "景福宮",
+  "景福宫",
+  "gyeongbokgung",
+  "樂天世界",
+  "乐天世界",
+  "lotte world",
+  "海雲台",
+  "海云台",
+  "haeundae",
+  "南怡島",
+  "南怡岛",
+  "nami island",
+  "naminara",
+  "愛寶樂園",
+  "爱宝乐园",
+  "everland",
+  // 香港
+  "香港迪士尼",
+  "hong kong disneyland",
+  "維多利亞港",
+  "维多利亚港",
+  "victoria harbour",
+  "victoria harbor",
+  "太平山",
+  "peak tram",
+  "海洋公園",
+  "海洋公园",
+  "ocean park",
+  // 新加坡
+  "新加坡環球",
+  "新加坡环球",
+  "universal studios singapore",
+  "濱海灣花園",
+  "滨海湾花园",
+  "gardens by the bay",
+  "merlion",
+  "魚尾獅",
+  "鱼尾狮",
+  "sentosa",
+  "聖淘沙",
+  "圣淘沙",
+  // 泰國
+  "大皇宮",
+  "大皇宫",
+  "grand palace",
+  "臥佛寺",
+  "卧佛寺",
+  "wat pho",
+  "鄭王廟",
+  "郑王庙",
+  "wat arun",
+  "水上市場",
+  "floating market",
+  // 台灣
+  "台北101",
+  "taipei 101",
+  "九份",
+  "jiufen",
+  "jioufen",
+  "日月潭",
+  "sun moon lake",
+  "阿里山",
+  "alishan",
+  "太魯閣",
+  "太鲁阁",
+  "taroko",
+  "清境",
+  "cingjing",
+  "墾丁",
+  "kenting",
+  "故宮",
+  "national palace museum",
+  // 其他國際
+  "eiffel",
+  "艾菲爾",
+  "埃菲尔",
+  "louvre",
+  "羅浮宮",
+  "罗浮宫",
+  "colosseum",
+  "鬥獸場",
+  "斗兽场",
+  "sagrada",
+  "聖家堂",
+  "圣家堂",
+  "burj khalifa",
+  "哈利法塔",
+  "marina bay sands",
+  "legoland",
+  "seaworld",
+  "yosemite",
+  "yellowstone",
+  "grand canyon",
+];
+
+/** 類型輔助：需搭配人氣門檻 */
+const POPULARITY_ELIGIBLE_TYPES = new Set([
   "amusement_park",
   "theme_park",
-  "observation_deck",
-  "cable_car",
-  "hot_spring",
-  "spa",
-  "public_bath",
-  "monument",
+  "museum",
+  "aquarium",
+  "zoo",
+  "art_gallery",
+  "tourist_attraction",
+  "place_of_worship",
+  "landmark",
   "historical_landmark",
   "historical_place",
+  "cultural_landmark",
+  "monument",
+  "observation_deck",
   "performing_arts_theater",
   "planetarium",
-  "cultural_landmark",
-  "national_park",
-  "state_park",
+  "natural_feature",
 ]);
 
-/** 無票券意圖、應一律排除的類型 */
-const NEVER_TICKET_TYPES = new Set([
-  "restaurant",
+/** 預設排除類型（白名單可覆寫） */
+const DEFAULT_EXCLUDED_TYPES = new Set([
+  "park",
   "cafe",
   "coffee_shop",
-  "bar",
-  "wine_bar",
-  "pub",
+  "restaurant",
   "bakery",
+  "bar",
   "meal_takeaway",
   "meal_delivery",
   "food",
   "fast_food_restaurant",
   "ice_cream_shop",
+  "store",
+  "clothing_store",
+  "convenience_store",
+  "supermarket",
+  "grocery_store",
+  "shopping_mall",
+  "department_store",
   "lodging",
   "hotel",
   "motel",
   "hostel",
   "guest_house",
   "bed_and_breakfast",
-  "shopping_mall",
-  "department_store",
-  "store",
-  "clothing_store",
-  "convenience_store",
-  "supermarket",
-  "grocery_store",
-  "drugstore",
-  "pharmacy",
-  "book_store",
-  "bookstore",
-  "library",
-  "hardware_store",
-  "home_goods_store",
-  "electronics_store",
-  "furniture_store",
+  "transit_station",
   "train_station",
   "subway_station",
   "bus_station",
-  "transit_station",
-  "airport",
   "light_rail_station",
+  "airport",
   "parking",
   "gas_station",
-  "hospital",
-  "doctor",
-  "dentist",
+  "pharmacy",
+  "drugstore",
+  "library",
   "school",
-  "primary_school",
-  "secondary_school",
-  "university",
-  "local_government_office",
-  "police",
-  "fire_station",
-  "car_repair",
-  "car_dealer",
-  "real_estate_agency",
+  "hospital",
   "residential",
-  "apartment_building",
-  "housing_complex",
 ]);
 
-const TICKET_EXPERIENCE_KEYWORD_RE =
-  /disney|迪士尼|universal|usj|環球影城|环球影城|warner\s*bros|harry\s*potter|哈利波特|teamlab|skytree|sky\s*tree|晴空塔|tokyo\s*tower|東京鐵塔|东京铁塔|taipei\s*101|台北101|observatory|展望台|lookout|viewpoint|museum|博物館|博物馆|gallery|美術館|美术馆|aquarium|水族館|水族馆|zoo|動物園|动物园|cable\s*car|纜車|缆车|gondola|ropeway|hot\s*spring|溫泉|温泉|onsen|day\s*tour|一日遊|一日游|theme\s*park|樂園|乐园|amusement|studio|影城|palace|宮殿|宫殿|castle|城堡|temple|shrine|神社|寺廟|寺庙|monastery|cathedral|mosque|synagogue|pagoda|island|島|岛|lake|湖|mountain|山|tower|鐵塔|铁塔|landmark|heritage|ruins|fortress|citadel|memorial|monument|national\s*park|state\s*park|botanical\s*garden|safari|water\s*park|observation\s*deck|skydeck|planetarium|aquarium|zoo|gallery|louvre|羅浮宮|罗浮宫|eiffel|艾菲爾|埃菲尔|arc\s*de\s*triomphe|凱旋門|凯旋门|stonehenge|巨石陣|巨石阵|colosseum|鬥獸場|斗兽场|sagrada|聖家堂|圣家堂|acropolis|衛城|卫城|petra|pyramid|金字塔|burj|marina\s*bay|merlion|sentosa|環球|环球|ocean\s*park|海洋公園|海洋公园|legoland|seaworld|uss|環球影城|環球影視/i;
+const EXCLUDE_NAME_RE =
+  /餐廳|餐厅|美食|咖啡廳|咖啡厅|咖啡|cafe|coffee|restaurant|bistro|diner|brunch|甜點|甜点|dessert|bakery|bar(?!\s*celona)|pub|lounge|居酒屋|hotel|hostel|motel|lodging|inn(?!\s*isfree)|便利商店|超商|convenience\s*store|7[\-\s]?eleven|family\s*mart|lawson|車站(?!\s*前)|station(?!\s*hill)|terminal(?!\s*21)|parking|停車|pharmacy|drugstore|bookstore|書店|书店|supermarket|grocery|材料行|hardware/i;
 
-const TOUR_DESTINATION_RE =
-  /富士山|河口湖|箱根|鎌倉|镰仓|日光|奈良|阿里山|日月潭|太魯閣|太鲁阁|九份|清境|南怡島|南怡岛|海雲台|海云台|大叻|峴港|岘港|巴拿山|普吉|普吉島|普吉岛|峇里|巴厘|巴厘岛|大峽谷|大峡谷|藍山|蓝山|巨石陣|巨石阵|羅浮宮|罗浮宫|凱旋門|凯旋门|艾菲爾|埃菲尔|fuji|kawaguchiko|hakone|kamakura|nikko|nara|alishan|sun\s*moon\s*lake|jiufen|jioufen|qingjing|cingjing|naminara|nami\s*island|haeundae|dalat|danang|ba\s*na\s*hills|phuket|bali|grand\s*canyon|blue\s*mountains|stonehenge|louvre|eiffel|arc\s*de\s*triomphe|taroko|ueno|gyoen|yosemite|yellowstone|banff|machu\s*picchu|angkor|petra|santorini|capri|pompeii|versailles|neuschwanstein|matterhorn|jurassic\s*coast|great\s*barrier|uluru|sigiriya|bromo|komodo|el\s*nido|palawan|boracay|jeju|seoraksan|gyeongju|hawaii|maui|niagara|banff|whistler|queenstown|milford|fiordland/i;
+const GENERIC_LOCAL_PARK_RE =
+  /河濱|河滨|河堤|綠地|绿地|散步|步道|親水|亲水|社區公園|社区公园|鄰里公園|邻里公园|小型公園|小型公园|local\s*park|neighborhood\s*park|riverside\s*park|linear\s*park|dog\s*park|playground/i;
 
-const POPULAR_PARK_RE =
-  /national\s*park|state\s*park|國家公園|国立公園|國立公園|上野|御苑|gyoen|ueno|shinjuku\s*gyoen|新宿御苑|yoyogi|代代木|central\s*park|hyde\s*park|royal\s*botanic|kew\s*gardens|botanic\s*garden|太魯閣|taroko|grand\s*canyon|yosemite|yellowstone|banff|kruger|serengeti|fiordland|glacier\s*national|zion|bryce|acadia|sequoia|redwood|joshua\s*tree|death\s*valley|everglades|rocky\s*mountain/i;
-
-const EXCLUDE_DISTRICT_RE =
-  /商店街|步行街|商业街|點心橫丁|仲見世|shopping\s*street|shopping\s*district|market\s*street|arcade|boutique\s*street|promenade(?!\s*de)|plaza(?!\s*hotel)|souq|souk|night\s*market|flea\s*market|farmers\s*market/i;
-
-const EXCLUDE_FOOD_LODGING_RE =
-  /餐廳|餐厅|美食|咖啡廳|咖啡厅|咖啡|cafe|coffee|restaurant|bistro|diner|brunch|bar(?!\s*celona)|pub|lounge|居酒屋|hotel|hostel|motel|lodging|inn(?!\s*isfree)|resort(?!\s*world)|bnb|便利商店|超商|convenience\s*store|7[\-\s]?eleven|family\s*mart|lawson|車站(?!\s*前)|station(?!\s*hill)|terminal(?!\s*21)|parking|停車|pharmacy|drugstore|bookstore|書店|书店|hardware|材料行|supermarket|grocery/i;
-
-const POI_MIN_RATING = 4.2;
-const POI_MIN_REVIEWS = 500;
-const PARK_MIN_RATING = 4.0;
-const PARK_MIN_REVIEWS = 20;
+const DAY_TOUR_DESTINATION_RE =
+  /富士山|河口湖|箱根|鎌倉|镰仓|日光|奈良|阿里山|日月潭|太魯閣|太鲁阁|九份|清境|南怡島|南怡岛|海雲台|海云台|大叻|峴港|岘港|巴拿山|普吉|普吉島|普吉岛|峇里|巴厘|巴厘岛|大峽谷|大峡谷|fuji|kawaguchiko|hakone|kamakura|nikko|nara|alishan|sun\s*moon\s*lake|jiufen|jioufen|qingjing|cingjing|naminara|nami\s*island|haeundae|dalat|danang|ba\s*na\s*hills|phuket|bali|grand\s*canyon|taroko|yosemite|yellowstone|banff|machu\s*picchu|angkor|petra|santorini|capri|pompeii|versailles|neuschwanstein|matterhorn|hawaii|maui|niagara|whistler|queenstown|milford|fiordland/i;
 
 function normalizeTypes(place: TicketAffiliatePlaceInput): string[] {
   const out = new Set<string>();
@@ -152,11 +295,23 @@ function normalizeTypes(place: TicketAffiliatePlaceInput): string[] {
       out.add(pt);
     }
   }
+  const category = (place.category ?? "").trim().toLowerCase();
+  if (category) out.add(category);
   return [...out];
 }
 
 function placeDisplayName(place: TicketAffiliatePlaceInput): string {
   return (place.placeName || place.name || place.title || "").trim();
+}
+
+function normalizeSearchText(text: string): string {
+  return text.normalize("NFKC").toLowerCase().replace(/\s+/g, "").trim();
+}
+
+export function isFamousLandmarkName(name: string): boolean {
+  const normalized = normalizeSearchText(name);
+  if (!normalized) return false;
+  return FAMOUS_LANDMARK_KEYWORDS.some((kw) => normalized.includes(normalizeSearchText(kw)));
 }
 
 function tripDestination(tripContext?: TicketAffiliateTripContext): string {
@@ -167,48 +322,54 @@ function tripDestination(tripContext?: TicketAffiliateTripContext): string {
   );
 }
 
-function hasZeroQuality(place: TicketAffiliatePlaceInput): boolean {
-  const rating = place.rating;
-  const reviews = place.userRatingCount;
-  if (rating == null && reviews == null) return false;
-  return (rating ?? 0) <= 0 || (reviews ?? 0) <= 0;
-}
-
-function isHighQualityPoi(place: TicketAffiliatePlaceInput, types: string[]): boolean {
-  if (!types.includes("point_of_interest")) return false;
-  return (place.rating ?? 0) >= POI_MIN_RATING && (place.userRatingCount ?? 0) >= POI_MIN_REVIEWS;
-}
-
-function isPopularParkOrGarden(
-  place: TicketAffiliatePlaceInput,
-  types: string[],
-  name: string,
-): boolean {
-  const isParkLike = types.some((t) =>
-    ["park", "botanical_garden", "national_park", "state_park"].includes(t),
-  );
-  if (!isParkLike && !POPULAR_PARK_RE.test(name)) return false;
-
-  if (types.some((t) => ["national_park", "state_park"].includes(t))) return true;
-  if (POPULAR_PARK_RE.test(name)) return true;
-  if (TOUR_DESTINATION_RE.test(name)) return true;
-
-  return (
-    (place.rating ?? 0) >= PARK_MIN_RATING && (place.userRatingCount ?? 0) >= PARK_MIN_REVIEWS
-  );
-}
-
-function isDayTourDestination(name: string): boolean {
-  return TOUR_DESTINATION_RE.test(name);
-}
-
 function joinSearchKeyword(destination: string, keyword: string): string {
   const dest = destination.trim();
   const text = keyword.trim();
   if (!text) return dest;
   if (!dest) return text;
-  if (text.includes(dest)) return text;
+  if (normalizeSearchText(text).includes(normalizeSearchText(dest))) return text;
   return `${dest} ${text}`;
+}
+
+function cleanPlaceNameForSearch(name: string): string {
+  return name
+    .replace(/[（(].*?[）)]/g, "")
+    .replace(/\d+[\-‐‑–—]?\d*\s*(丁目|chōme|chome).*/i, "")
+    .replace(/[,，|｜].*$/, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function resolveSearchKeywordCore(name: string): string {
+  const cleaned = cleanPlaceNameForSearch(name);
+  const normalized = normalizeSearchText(cleaned);
+
+  if (/淺草|浅草|asakusa/.test(normalized) && /雷門|雷门|kaminari/.test(normalized)) {
+    return "淺草 雷門";
+  }
+  if (/淺草寺|sensoji|senso-ji/.test(normalized)) {
+    return "淺草寺";
+  }
+  if (/仲見世|仲见世|nakamise/.test(normalized)) {
+    return "淺草 仲見世";
+  }
+  if (/富士山|mount\s*fuji|\bfuji\b/.test(normalized) && !/河口湖|kawaguchiko/.test(normalized)) {
+    return "富士山 河口湖";
+  }
+  if (/河口湖|kawaguchiko/.test(normalized)) {
+    return "河口湖 富士山";
+  }
+  if (/team\s*lab|teamlab/.test(normalized)) {
+    return "teamLab";
+  }
+  if (/澀谷sky|涩谷sky|shibuya\s*sky/.test(normalized)) {
+    return "澀谷 Sky";
+  }
+  if (/哈利波特|harry\s*potter|warner\s*bros/.test(normalized)) {
+    return "東京哈利波特影城";
+  }
+
+  return cleaned;
 }
 
 export function buildTicketAffiliateSearchKeyword(
@@ -217,25 +378,36 @@ export function buildTicketAffiliateSearchKeyword(
 ): string {
   const name = placeDisplayName(place);
   const destination = tripDestination(tripContext);
+  const keyword = resolveSearchKeywordCore(name);
 
-  if (/富士山|mount\s*fuji|\bfuji\b/i.test(name) && !/河口湖|kawaguchiko|lake\s*kawaguchi/i.test(name)) {
-    return joinSearchKeyword(destination, "富士山 河口湖 一日遊");
-  }
-  if (/河口湖|kawaguchiko|lake\s*kawaguchi/i.test(name)) {
-    return joinSearchKeyword(destination, "河口湖 富士山 一日遊");
+  if (DAY_TOUR_DESTINATION_RE.test(keyword) && !/一日遊|一日游|day\s*tour/i.test(keyword)) {
+    return joinSearchKeyword(destination, `${keyword} 一日遊`);
   }
 
-  if (isDayTourDestination(name) && !/一日遊|一日游|day\s*tour/i.test(name)) {
-    return joinSearchKeyword(destination, `${name} 一日遊`);
-  }
-
-  return joinSearchKeyword(destination, name);
+  return joinSearchKeyword(destination, keyword);
 }
 
-function hasExcludedPrimaryType(types: string[]): boolean {
-  if (types.length === 0) return false;
-  const primary = types[0];
-  return primary ? NEVER_TICKET_TYPES.has(primary) : false;
+function hasPopularitySignal(place: TicketAffiliatePlaceInput): boolean {
+  const rating = place.rating;
+  const reviews = place.userRatingCount;
+  if (rating == null || reviews == null) return false;
+  return rating >= POI_MIN_RATING && reviews >= POI_MIN_REVIEWS;
+}
+
+function hasExcludedType(types: string[]): boolean {
+  return types.some((t) => DEFAULT_EXCLUDED_TYPES.has(t));
+}
+
+function isGenericLocalPark(name: string, types: string[]): boolean {
+  if (isFamousLandmarkName(name)) return false;
+  if (types.some((t) => ["national_park", "state_park"].includes(t))) return false;
+  if (GENERIC_LOCAL_PARK_RE.test(name)) return true;
+  if (!types.includes("park")) return false;
+  return /公園|公园|\bpark\b|\bgarden\b/i.test(name);
+}
+
+function hasPopularityEligibleType(types: string[]): boolean {
+  return types.some((t) => POPULARITY_ELIGIBLE_TYPES.has(t));
 }
 
 export function shouldShowTicketAffiliate(
@@ -258,44 +430,24 @@ export function shouldShowTicketAffiliate(
     return logDecision(false, "missing_name");
   }
 
-  if (hasZeroQuality(place)) {
-    return logDecision(false, "zero_rating_or_reviews");
+  if (EXCLUDE_NAME_RE.test(name)) {
+    return logDecision(false, "excluded_retail_food_lodging_name");
   }
 
-  if (TICKET_EXPERIENCE_KEYWORD_RE.test(name)) {
-    return logDecision(true, "ticket_experience_keyword");
+  if (isGenericLocalPark(name, types)) {
+    return logDecision(false, "excluded_generic_park");
   }
 
-  if (TOUR_DESTINATION_RE.test(name)) {
-    return logDecision(true, "tour_destination_match");
+  if (isFamousLandmarkName(name)) {
+    return logDecision(true, "famous_landmark_whitelist");
   }
 
-  if (EXCLUDE_FOOD_LODGING_RE.test(name)) {
-    return logDecision(false, "excluded_food_lodging_retail_name");
+  if (hasExcludedType(types)) {
+    return logDecision(false, "excluded_default_type");
   }
 
-  if (EXCLUDE_DISTRICT_RE.test(name)) {
-    return logDecision(false, "excluded_shopping_street");
-  }
-
-  if (hasExcludedPrimaryType(types)) {
-    return logDecision(false, "excluded_primary_type");
-  }
-
-  if (types.some((t) => HOT_LANDMARK_TYPES.has(t))) {
-    return logDecision(true, "hot_landmark_type");
-  }
-
-  if (isHighQualityPoi(place, types)) {
-    return logDecision(true, "high_quality_poi");
-  }
-
-  if (isPopularParkOrGarden(place, types, name)) {
-    return logDecision(true, "popular_park_or_nature");
-  }
-
-  if (types.some((t) => NEVER_TICKET_TYPES.has(t)) && !types.some((t) => HOT_LANDMARK_TYPES.has(t))) {
-    return logDecision(false, "excluded_google_type");
+  if (hasPopularityEligibleType(types) && hasPopularitySignal(place)) {
+    return logDecision(true, "eligible_type_with_popularity");
   }
 
   return logDecision(false, "not_ticketable");

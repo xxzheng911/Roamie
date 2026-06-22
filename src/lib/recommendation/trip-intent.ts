@@ -1,7 +1,15 @@
 import type { RoamieRequestContext } from "@/lib/ai/context";
 import { isDiscoveryComplete, type ChatPlanningSession } from "@/lib/chat-session";
 import type { TravelPreferences } from "@/lib/preferences-storage";
-import { tripLocationFromCity } from "@/lib/ai/trip-planning-context";
+import {
+  isMoodRecommendationSession,
+  isValidParsedDestinationLabel,
+  normalizeCityLabel,
+  parseDestinationFromText,
+  tripLocationFromCity,
+} from "@/lib/ai/trip-planning-context";
+import { isDestinationAdviceActive, isFlexiblePreferenceReply } from "@/lib/ai/destination-advice";
+import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 
 /** 從對話解析出的結構化旅行意圖 */
@@ -55,14 +63,26 @@ function uniqPush(arr: string[], value: string): string[] {
 const KNOWN_DESTINATION_RE =
   /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
 
+function acceptCity(candidate: string | undefined): string | undefined {
+  if (!candidate) return undefined;
+  const normalized = normalizeCityLabel(candidate);
+  if (!isValidParsedDestinationLabel(normalized)) return undefined;
+  return normalized;
+}
+
 function parseCityOrArea(text: string): { city?: string; area?: string } {
   const trimmed = text.trim();
+  const parsed = parseDestinationFromText(trimmed);
+  if (parsed) return { city: parsed };
+
   if (trimmed.length >= 2 && trimmed.length <= 16) {
     const bare = trimmed.match(KNOWN_DESTINATION_RE);
     if (bare) {
-      const city = `${bare[1]}${bare[2] ?? ""}`;
-      console.info("[trip-intent] parsed bare destination", { input: trimmed, city });
-      return { city };
+      const city = acceptCity(`${bare[1]}${bare[2] ?? ""}`);
+      if (city) {
+        console.info("[trip-intent] parsed bare destination", { input: trimmed, city });
+        return { city };
+      }
     }
   }
 
@@ -70,34 +90,41 @@ function parseCityOrArea(text: string): { city?: string; area?: string } {
     /(?:去|到|在|逛|玩|旅行|旅遊|目的地|想去|想去的是)[：:\s]*([^\s，,。！!？?]{2,12}(?:市|縣|區|里|町|府|道|都|國|島)?)/,
   );
   if (cityMatch?.[1]) {
-    const city = cityMatch[1].trim();
-    if (KNOWN_DESTINATION_RE.test(city) || city.length >= 2) return { city };
+    const city = acceptCity(cityMatch[1].trim());
+    if (city && (KNOWN_DESTINATION_RE.test(city) || city.length >= 2)) return { city };
   }
 
   const directGo = trimmed.match(/去([\u4e00-\u9fffA-Za-z]{2,8})(?:\s*\d|\s*天|，|。|$)/);
   if (directGo?.[1]) {
-    const city = directGo[1].trim();
-    if (KNOWN_DESTINATION_RE.test(city) || city.length >= 2) {
-      return { city: city.replace(/(市|縣|都|府)$/, "") };
+    const city = acceptCity(directGo[1].trim());
+    if (city && (KNOWN_DESTINATION_RE.test(city) || city.length >= 2)) {
+      return { city };
     }
   }
 
   const abroadMatch = trimmed.match(
     /(?:去|到|玩|旅行|旅遊|想去)[^\u4e00-\u9fff]{0,8}?([\u4e00-\u9fff]{2,8})/,
   );
-  if (abroadMatch?.[1] && KNOWN_DESTINATION_RE.test(abroadMatch[1].trim())) {
-    return { city: abroadMatch[1].trim() };
+  if (abroadMatch?.[1]) {
+    const city = acceptCity(abroadMatch[1].trim());
+    if (city && KNOWN_DESTINATION_RE.test(city)) return { city };
   }
 
   const enCity = trimmed.match(
     /\b(?:in|to|visit|explore)\s+([A-Za-z][A-Za-z\s]{1,24})/i,
   );
-  if (enCity?.[1]) return { city: enCity[1].trim() };
+  if (enCity?.[1]) {
+    const city = acceptCity(enCity[1].trim());
+    if (city) return { city };
+  }
 
   const areaMatch = trimmed.match(
     /(?:從|在|到)(.{2,16}?)(?:開始|逛|走|附近|這一帶|區)/,
   );
-  if (areaMatch?.[1]) return { area: areaMatch[1].trim() };
+  if (areaMatch?.[1]) {
+    const area = areaMatch[1].trim();
+    if (isValidParsedDestinationLabel(area)) return { area };
+  }
 
   return {};
 }
@@ -146,7 +173,7 @@ function parseConstraints(text: string): string[] {
   if (/(怕熱|怕晒|怕曬|不想曬|不要曬)/.test(text)) out.push("怕熱怕曬");
   if (/(怕吵|太吵|不要吵|安靜)/.test(text)) out.push("要安靜");
   if (/(怕擠|人多|不要人太多)/.test(text)) out.push("怕人多");
-  if (/(預算|省一點|小資|不要太貴)/.test(text)) out.push("預算有限");
+  if (/(預算|省一點|小資|不要太貴)/.test(text) || isBudgetRefinementText(text)) out.push("預算有限");
   if (/(無障礙|輪椅|推車)/.test(text)) out.push("無障礙");
   return out;
 }
@@ -173,11 +200,13 @@ export function parseTripIntentFromText(
   text: string,
   session: ChatPlanningSession,
 ): TripIntent {
-  const t = text.trim();
-  const base = parseTripIntentFromSession(session);
-  if (!t) return base;
+  try {
+    const t = text.trim();
+    const base = parseTripIntentFromSession(session);
+    if (!t) return base;
 
-  const { city, area } = parseCityOrArea(t);
+    const skipDestParse = isMoodRecommendationSession(session);
+    const { city, area } = skipDestParse ? {} : parseCityOrArea(t);
   const origin = parseOrigin(t);
   const travelers = parseTravelers(t);
   const food = parseFoodPreference(t);
@@ -211,15 +240,17 @@ export function parseTripIntentFromText(
 
   const mood =
     base.mood ||
-    (/(都有|都可以|都行|混合)/i.test(t) ? "混合" : undefined) ||
+    (!isDestinationAdviceActive(session) && !isFlexiblePreferenceReply(t) && /(都有|都可以|都行|混合)/i.test(t)
+      ? "混合"
+      : undefined) ||
     (/(放空|relax|放鬆)/i.test(t) ? "放鬆" : undefined) ||
     (/(拍照|photo)/i.test(t) ? "拍照" : undefined) ||
     (/(美食|吃)/.test(t) ? "美食" : undefined);
 
   const merged: TripIntent = {
     ...base,
-    destinationCity: city || base.destinationCity || session.location?.city,
-    destinationArea: area || base.destinationArea || session.preferredArea,
+    destinationCity: city || base.destinationCity || (skipDestParse ? undefined : session.location?.city),
+    destinationArea: area || base.destinationArea || (skipDestParse ? undefined : session.preferredArea),
     origin: origin || base.origin,
     mustVisitPlaces: mustVisit,
     rejectedPlaces: rejected,
@@ -238,6 +269,10 @@ export function parseTripIntentFromText(
   };
 
   return finalizeTripIntent(merged, session);
+  } catch (e) {
+    console.warn("[trip-intent] parseTripIntentFromText failed", e);
+    return parseTripIntentFromSession(session);
+  }
 }
 
 export function parseTripIntentFromSession(session: ChatPlanningSession): TripIntent {
@@ -374,18 +409,20 @@ export function applyTripIntentToSession(
   text: string,
   session: ChatPlanningSession,
 ): ChatPlanningSession {
-  const intent = parseTripIntentFromText(text, session);
-  const rejected = new Set(session.rejectedPlaceNames ?? []);
-  for (const r of intent.rejectedPlaces) rejected.add(r);
+  try {
+    const intent = parseTripIntentFromText(text, session);
+    const rejected = new Set(session.rejectedPlaceNames ?? []);
+    for (const r of intent.rejectedPlaces) rejected.add(r);
 
-  const avoid = new Set(session.avoidTypes ?? []);
-  if (intent.constraints.includes("少走路")) avoid.add("長距離步行");
-  if (intent.constraints.includes("怕熱怕曬")) avoid.add("長時間戶外曝曬");
-  if (intent.constraints.includes("怕人多")) avoid.add("人多吵雜");
+    const avoid = new Set(session.avoidTypes ?? []);
+    if (intent.constraints.includes("少走路")) avoid.add("長距離步行");
+    if (intent.constraints.includes("怕熱怕曬")) avoid.add("長時間戶外曝曬");
+    if (intent.constraints.includes("怕人多")) avoid.add("人多吵雜");
 
-  const destCity = intent.destinationCity?.trim();
-  const destArea = intent.destinationArea?.trim();
-  const destLabel = destCity || destArea;
+    const skipDestParse = isMoodRecommendationSession(session);
+    const destCity = skipDestParse ? undefined : intent.destinationCity?.trim();
+    const destArea = skipDestParse ? undefined : intent.destinationArea?.trim();
+    const destLabel = destCity || destArea;
 
   const nextLocation =
     destCity && session.location
@@ -400,7 +437,7 @@ export function applyTripIntentToSession(
 
   const tripDays = parseTripDays(text);
   const discovery = { ...session.discovery };
-  if (intent.mood && !discovery.vibe) {
+  if (intent.mood && !discovery.vibe && !isDestinationAdviceActive(session)) {
     discovery.vibe = intent.mood;
   }
   if (!discovery.companionship) {
@@ -419,7 +456,9 @@ export function applyTripIntentToSession(
   const nextSession: ChatPlanningSession = {
     ...session,
     location: nextLocation,
-    preferredArea: destArea || destCity || session.preferredArea,
+    preferredArea: skipDestParse
+      ? session.preferredArea
+      : destArea || destCity || session.preferredArea,
     mood: intent.mood || session.mood,
     transportation: intent.transport || session.transportation,
     budget: intent.budget || session.budget,
@@ -444,6 +483,10 @@ export function applyTripIntentToSession(
   }
 
   return nextSession;
+  } catch (e) {
+    console.warn("[trip-intent] applyTripIntentToSession failed", e);
+    return session;
+  }
 }
 
 export function formatTripIntentForAi(intent: TripIntent, prefs?: TravelPreferences): string {

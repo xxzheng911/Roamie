@@ -6,8 +6,11 @@ import {
 import { isNearbyPlaceIntent } from "@/lib/ai/chat-intent";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { filterRecommendationItemsForDisplay } from "@/lib/recommend-place-ranking";
+import { refineRecommendationItemsForBudget } from "@/lib/ai/budget-refinement";
+import { filterRecommendationsByExclusion } from "@/lib/ai/recommendation-exclusion";
 import { parseTripIntentFromSession } from "@/lib/recommendation/trip-intent";
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { isPlaceDetailChatActive, parsePlaceDetailFollowUp } from "@/lib/ai/place-detail-chat";
 
 /** 將摘要中的地點數量改為與實際渲染張數一致 */
 export function alignChatRecommendationCount(summary: string, count: number): string {
@@ -51,8 +54,25 @@ export function recommendationsForChatDisplay(
   const list = items ?? [];
   if (!list.length) return [];
 
+  if (isPlaceDetailChatActive(session)) {
+    const followUp = parsePlaceDetailFollowUp(userText);
+    if (followUp !== "nearby_cafe" && followUp !== "nearby_late_snack") {
+      return [];
+    }
+  }
+
   if (session.activeChatIntent && isNearbyPlaceIntent(session.activeChatIntent)) {
-    const filtered = filterRecommendationItemsForDisplay(list);
+    let working = list;
+    if (
+      session.travelContext?.budgetPreference === "low" ||
+      session.travelContext?.tripPurpose === "refine_recommendations"
+    ) {
+      working = refineRecommendationItemsForBudget(working, "low");
+    }
+    const excluded =
+      session.excludedCategories ?? session.travelContext?.excludedCategories ?? [];
+    working = filterRecommendationsByExclusion(working, excluded);
+    const filtered = filterRecommendationItemsForDisplay(working);
     const count = Math.min(filtered.length, 5);
     console.info(`[CHAT_PLACE_CARD_RENDER] count=${count}`);
     return filtered.slice(0, 5);
@@ -65,8 +85,16 @@ export function recommendationsForChatDisplay(
   );
   if (!stageAllowsPlaceCards(stage)) return [];
 
+  let working = list;
+  if (
+    session.travelContext?.budgetPreference === "low" ||
+    session.travelContext?.tripPurpose === "refine_recommendations"
+  ) {
+    working = refineRecommendationItemsForBudget(working, "low");
+  }
+
   const { maxCount } = mergeBoundsForStage(stage);
-  const filtered = filterRecommendationItemsForDisplay(list).slice(0, maxCount);
+  const filtered = filterRecommendationItemsForDisplay(working).slice(0, maxCount);
   console.info(`[CHAT_PLACE_CARD_RENDER] count=${filtered.length}`);
   return filtered;
 }

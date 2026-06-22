@@ -12,13 +12,15 @@ type Props = {
   tripId: string;
   /** 導航來源（HomeTripCard / SavedTripCard / …） */
   navSource: string;
+  /** 回到行程時預選第幾天（1-based） */
+  initialDay?: number;
   onDeleted?: () => void;
 };
 
 /**
  * 唯一正式行程詳情頁：載入 StoredItinerary 並使用可編輯行程編輯器。
  */
-export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
+export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: Props) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [stored, setStored] = useState<StoredItinerary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -108,6 +110,7 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
         stored={stored}
         headerRight={deleteButton}
         onStoredChange={setStored}
+        initialDay={initialDay}
       />
       <TripDeleteConfirmDialog
         open={deleteOpen}

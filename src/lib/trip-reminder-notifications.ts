@@ -1,5 +1,5 @@
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
-import { isCapacitorNativeShell } from "@/lib/chat-keyboard-layout";
+import { getCapacitorLocalNotifications } from "@/lib/capacitor-local-notifications";
 import { listItineraries, SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
 import { resolveDisplayTitle, titleFieldsFromStored } from "@/lib/saved-trip/display";
 import { getProfileNotificationsEnabled } from "@/lib/profile-storage";
@@ -48,18 +48,8 @@ function reminderAtLocal(dateYmd: string, hour = 9): Date {
   return new Date(y, m - 1, d, hour, 0, 0, 0);
 }
 
-async function getLocalNotificationsPlugin() {
-  if (!isCapacitorNativeShell()) return null;
-  try {
-    const { LocalNotifications } = await import("@capacitor/local-notifications");
-    return LocalNotifications;
-  } catch {
-    return null;
-  }
-}
-
 export async function cancelAllTripReminders(): Promise<void> {
-  const plugin = await getLocalNotificationsPlugin();
+  const plugin = getCapacitorLocalNotifications();
   if (!plugin) return;
   try {
     const pending = await plugin.getPending();
@@ -75,7 +65,7 @@ export async function cancelAllTripReminders(): Promise<void> {
 }
 
 export async function scheduleTripReminders(locale: Locale = "zh-TW"): Promise<void> {
-  const plugin = await getLocalNotificationsPlugin();
+  const plugin = getCapacitorLocalNotifications();
   if (!plugin) return;
   if (!(await isNotificationGrantedAsync())) return;
 
@@ -144,7 +134,9 @@ export function ensureTripReminderBootstrap(getLocale: () => Locale): void {
   bootstrapStarted = true;
 
   const sync = () => {
-    void syncTripReminderNotifications(getLocale());
+    void syncTripReminderNotifications(getLocale()).catch((e) => {
+      console.warn("[trip-reminders] bootstrap sync failed", e);
+    });
   };
 
   sync();

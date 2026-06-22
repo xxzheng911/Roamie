@@ -4,13 +4,33 @@ import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { isNearbyPlaceIntent, type ChatIntent } from "@/lib/ai/chat-intent";
 import {
   hasRemoteDestination,
+  isKnownCountryLabel,
+  isKnownTouristCityLabel,
   missingDestinationPlanningKeys,
+  normalizeDestinationLabel,
+  parseDestinationFromText,
+  parseDestinationSelectionFromText,
+  isMoodRecommendationSession,
   type ChatConversationMode,
 } from "@/lib/ai/trip-planning-context";
+import {
+  isDestinationAdviceActive,
+  isFlexiblePreferenceReply,
+  parseDestinationAdvicePurpose,
+} from "@/lib/ai/destination-advice";
+import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
+import {
+  applyBudgetRefinementToContext,
+  isBudgetRefinementText,
+  parseBudgetPreferenceFromText,
+} from "@/lib/ai/budget-refinement";
+import { applyDestinationPendingSelection } from "@/lib/ai/destination-pending-question";
 
 /** Canonical travel context — merged on every user turn */
 export type CanonicalTravelContext = {
   destination?: string;
+  /** 國家層級目的地（城市選定後保留） */
+  destinationCountry?: string;
   currentLocation?: string;
   travelMonth?: string;
   startDate?: string;
@@ -27,6 +47,15 @@ export type CanonicalTravelContext = {
   tripPurpose?: string;
   vibe?: string;
   setting?: string;
+  /** 多城市組合（如曼谷＋芭達雅） */
+  destinationCities?: string[];
+  /** 使用者選定的行程風格／路線組合 */
+  selectedTripStyle?: string;
+  /** 排除菜系／類型關鍵字（含同義詞） */
+  excludedCategories?: string[];
+  /** low = 省預算／平價／免費偏好 */
+  budgetPreference?: "low" | "medium" | "high";
+  priceSensitivity?: boolean;
 };
 
 export const EMPTY_TRAVEL_CONTEXT: CanonicalTravelContext = {
@@ -53,7 +82,12 @@ function uniqStrings(values: Array<string | undefined | null>): string[] {
 }
 
 function parseDestination(text: string): string | undefined {
-  return parseDestinationFromText(text);
+  try {
+    return parseDestinationFromText(text);
+  } catch (e) {
+    console.warn("[AI_CONTEXT] parseDestination failed", e);
+    return undefined;
+  }
 }
 
 function parseCompanion(text: string): string | undefined {
@@ -98,6 +132,7 @@ function parseTransport(text: string): string | undefined {
 }
 
 function parseBudget(text: string): string | undefined {
+  if (parseBudgetPreferenceFromText(text) === "low") return "budget";
   if (/(小資|省一點|budget)/i.test(text)) return "budget";
   if (/(奢華|premium|luxury)/i.test(text)) return "luxury";
   if (/(品質|quality)/i.test(text)) return "quality";
@@ -132,34 +167,104 @@ function parseSetting(text: string, mood?: string): string | undefined {
   return undefined;
 }
 
+function parseDestinationFromTurn(
+  text: string,
+  skipDestParse: boolean,
+): string | undefined {
+  if (skipDestParse) return undefined;
+  return (
+    parseDestinationFromText(text) ??
+    parseDestinationSelectionFromText(text)
+  );
+}
+
+function mergeDestinationFields(
+  prev: CanonicalTravelContext,
+  newlyParsed?: string,
+): Pick<CanonicalTravelContext, "destination" | "destinationCountry"> {
+  if (!newlyParsed) {
+    return {
+      destination: prev.destination,
+      destinationCountry: prev.destinationCountry,
+    };
+  }
+
+  const label = normalizeDestinationLabel(newlyParsed);
+
+  if (isKnownCountryLabel(label) && !isKnownTouristCityLabel(label)) {
+    return { destination: label, destinationCountry: label };
+  }
+
+  if (isKnownTouristCityLabel(label)) {
+    const country =
+      prev.destination && isKnownCountryLabel(prev.destination)
+        ? normalizeDestinationLabel(prev.destination)
+        : prev.destinationCountry;
+    return {
+      destination: label,
+      destinationCountry: country,
+    };
+  }
+
+  return {
+    destination: label,
+    destinationCountry: prev.destinationCountry,
+  };
+}
+
 export function parseTravelContextFromText(
   text: string,
   session: ChatPlanningSession,
 ): Partial<CanonicalTravelContext> {
   const t = text.trim();
   if (!t) return {};
-  const moodHint = session.selectedMood ?? session.mood;
-  const preset = moodHint ? MOOD_PRESETS[moodHint] : undefined;
-  const skipFlexibleVibe =
-    session.activeChatIntent === "restaurant" ||
-    session.activeChatIntent === "cafe" ||
-    /^(都可以|都行|不限|沒特別|隨意|你推)$/.test(t);
-
-  if (/^(都可以|都行|不限|沒特別|沒有特別|隨意|你推|都行吧|隨便)$/.test(t)) {
+  if (session.adviceSelectionThisTurn) {
     const prev = session.travelContext;
     return {
-      vibe: prev?.vibe ?? session.discovery?.vibe ?? preset?.vibe ?? "放鬆",
+      days: parseDays(t) ?? prev?.days,
+      travelMonth: parseMonth(t) ?? prev?.travelMonth,
+      mood: prev?.mood ?? session.mood,
+      vibe: prev?.vibe,
+      setting: prev?.setting,
+      tripPurpose: prev?.tripPurpose,
+    };
+  }
+  const moodHint = session.selectedMood ?? session.mood;
+  const preset = moodHint ? MOOD_PRESETS[moodHint] : undefined;
+  const skipDestParse = isMoodRecommendationSession(session);
+  const adviceActive = isDestinationAdviceActive(session);
+  const skipFlexibleVibe =
+    adviceActive ||
+    session.activeChatIntent === "destination_advice" ||
+    session.activeChatIntent === "restaurant" ||
+    session.activeChatIntent === "cafe" ||
+    isFlexiblePreferenceReply(t);
+
+  if (isFlexiblePreferenceReply(t)) {
+    const prev = session.travelContext;
+    return {
+      destination: prev?.destination ?? session.tripPlanningContext?.destination,
+      destinationCountry: prev?.destinationCountry,
+      travelMonth: prev?.travelMonth,
+      days: prev?.days ?? session.tripDays,
+      tripPurpose: prev?.tripPurpose ?? session.travelContext?.tripPurpose,
+      vibe: adviceActive ? prev?.vibe : prev?.vibe ?? session.discovery?.vibe ?? preset?.vibe ?? "放鬆",
       setting: prev?.setting ?? session.discovery?.setting ?? preset?.setting ?? "either",
-      mood: prev?.mood ?? preset?.mood ?? moodHint,
+      mood: adviceActive ? prev?.mood : prev?.mood ?? preset?.mood ?? moodHint,
     };
   }
 
-  return {
-    destination:
-      parseDestination(t) ??
-      session.tripDestination?.city ??
-      session.tripDestination?.displayLabel ??
-      session.preferredArea,
+  const tripPurpose = isBudgetRefinementText(t)
+    ? "refine_recommendations"
+    : parseDestinationAdvicePurpose(t) ?? session.travelContext?.tripPurpose;
+
+  const budgetRefinement = isBudgetRefinementText(t)
+    ? applyBudgetRefinementToContext(t, session.travelContext ?? { interests: [] })
+    : {};
+
+  const newlyParsedDest = parseDestinationFromTurn(t, skipDestParse);
+
+  const base: Partial<CanonicalTravelContext> = {
     currentLocation: session.location?.city,
     travelMonth: parseMonth(t),
     startDate: session.tripStartDate ?? session.travelDate,
@@ -172,83 +277,199 @@ export function parseTravelContextFromText(
     budgetLevel: parseBudget(t) ?? session.budget,
     travelStyle: session.tripStyles ?? session.pace,
     weather: session.weather ?? null,
-    tripPurpose: preset?.tripPurpose,
+    tripPurpose: tripPurpose ?? preset?.tripPurpose,
     vibe: parseVibe(t, moodHint, { skipFlexibleVibe }) ?? session.discovery?.vibe,
     setting: parseSetting(t, moodHint) ?? session.discovery?.setting,
+    ...budgetRefinement,
   };
+
+  if (newlyParsedDest) {
+    const mergedDest = mergeDestinationFields(
+      session.travelContext ?? EMPTY_TRAVEL_CONTEXT,
+      newlyParsedDest,
+    );
+    base.destination = mergedDest.destination;
+    base.destinationCountry = mergedDest.destinationCountry;
+  }
+
+  return base;
 }
 
 export function mergeTravelContext(
   session: ChatPlanningSession,
   userText: string,
 ): { context: CanonicalTravelContext; session: ChatPlanningSession } {
-  const prev = session.travelContext ?? EMPTY_TRAVEL_CONTEXT;
-  const parsed = parseTravelContextFromText(userText, session);
-  const moodKey = session.selectedMood ?? session.mood;
-  const preset = moodKey ? MOOD_PRESETS[moodKey] : undefined;
+  try {
+    if (session.fromTripAddPlace && session.tripAddPlaceContext) {
+      const ctx = session.tripAddPlaceContext;
+      const prev = session.travelContext ?? EMPTY_TRAVEL_CONTEXT;
+      const lat = ctx.lastPlace?.lat ?? ctx.destinationLocation?.lat;
+      const lng = ctx.lastPlace?.lng ?? ctx.destinationLocation?.lng;
+      const merged: CanonicalTravelContext = {
+        ...prev,
+        destination: ctx.destination,
+        currentLocation: ctx.currentPlaces.map((p) => p.name).join("、") || ctx.destination,
+        tripPurpose: "trip_add_place",
+        mood: ctx.travelStyle ?? prev.mood ?? session.mood,
+        transportMode: ctx.transportationMode ?? prev.transportMode ?? session.transportation,
+        budgetLevel: ctx.budget ?? prev.budgetLevel ?? session.budget,
+        days: ctx.tripDates.dayCount ?? prev.days ?? session.tripDays,
+        startDate: ctx.tripDates.start ?? prev.startDate ?? session.tripStartDate,
+        endDate: ctx.tripDates.end ?? prev.endDate ?? session.tripEndDate,
+        weather: ctx.weather ?? session.weather ?? prev.weather ?? null,
+      };
+      const followUpIntent =
+        /(三餐|早餐|午餐|晚餐|宵夜|早午餐|吃飯|用餐|找餐廳|找美食|想吃|安排.{0,4}餐|餐廳|美食|吃什麼)/.test(
+          userText.trim(),
+        )
+          ? "restaurant"
+          : /(咖啡廳|咖啡店|咖啡|café|cafe)/i.test(userText)
+            ? "cafe"
+            : /(散步|景點|走走|逛逛|參觀|景觀|下午茶)/.test(userText)
+              ? "attraction"
+              : undefined;
+      const nextSession: ChatPlanningSession = {
+        ...session,
+        fromTripAddPlace: true,
+        tripAddPlaceContext: ctx,
+        conversationMode: "trip_add_place",
+        travelContext: merged,
+        preferredArea: ctx.destination,
+        activeChatIntent: followUpIntent ?? session.activeChatIntent,
+        location:
+          lat != null && lng != null && (Math.abs(lat) > 0.001 || Math.abs(lng) > 0.001)
+            ? {
+                lat,
+                lng,
+                city: ctx.destination,
+                ...(session.location?.placeId ? { placeId: session.location.placeId } : {}),
+              }
+            : session.location,
+        phase: session.phase === "discover" ? "followup" : session.phase,
+      };
+      return { context: merged, session: nextSession };
+    }
 
-  const merged: CanonicalTravelContext = {
-    ...prev,
-    ...Object.fromEntries(Object.entries(parsed).filter(([, v]) => v != null && v !== "")),
-    destination: parsed.destination ?? prev.destination,
-    currentLocation: session.location?.city ?? prev.currentLocation,
-    mood: parsed.mood ?? preset?.mood ?? prev.mood ?? moodKey,
-    vibe: parsed.vibe ?? preset?.vibe ?? prev.vibe ?? session.discovery?.vibe,
-    setting: parsed.setting ?? preset?.setting ?? prev.setting ?? session.discovery?.setting,
-    companion:
-      parsed.companion ??
-      prev.companion ??
-      session.discovery?.companionship,
-    days: parsed.days ?? prev.days ?? session.tripDays,
-    travelMonth: parsed.travelMonth ?? prev.travelMonth,
-    startDate: parsed.startDate ?? prev.startDate ?? session.tripStartDate,
-    endDate: parsed.endDate ?? prev.endDate ?? session.tripEndDate,
-    transportMode: parsed.transportMode ?? prev.transportMode ?? session.transportation,
-    budgetLevel: parsed.budgetLevel ?? prev.budgetLevel ?? session.budget,
-    travelStyle: parsed.travelStyle ?? prev.travelStyle ?? session.tripStyles,
-    weather: session.weather ?? prev.weather ?? null,
-    interests: uniqStrings([...prev.interests, ...(parsed.interests ?? [])]),
-    tripPurpose: parsed.tripPurpose ?? preset?.tripPurpose ?? prev.tripPurpose,
-  };
+    const prev = session.travelContext ?? EMPTY_TRAVEL_CONTEXT;
+    const pendingSelection = applyDestinationPendingSelection(userText, session);
+    const workingSession = pendingSelection.session;
 
-  console.info("[AI_CONTEXT] parsed", logTravelContext(merged));
+    const parsed = parseTravelContextFromText(userText, workingSession);
+    const moodKey = workingSession.selectedMood ?? workingSession.mood;
+    const preset = moodKey ? MOOD_PRESETS[moodKey] : undefined;
+    const skipDestParse =
+      isMoodRecommendationSession(workingSession) || Boolean(pendingSelection.selectedOption);
 
-  const discovery = { ...session.discovery };
-  if (merged.vibe && !discovery.vibe) discovery.vibe = merged.vibe;
-  if (merged.companion && !discovery.companionship) {
-    discovery.companionship =
-      merged.companion === "女友" ? "情侶" : merged.companion;
+    const destMerge = pendingSelection.selectedOption
+      ? {
+          destination: pendingSelection.contextPatch.destination ?? prev.destination,
+          destinationCountry:
+            pendingSelection.contextPatch.destinationCountry ?? prev.destinationCountry,
+        }
+      : parsed.destination
+        ? {
+            destination: parsed.destination,
+            destinationCountry: parsed.destinationCountry,
+          }
+        : {
+            destination: skipDestParse
+              ? prev.destination ??
+                workingSession.tripDestination?.city ??
+                workingSession.tripDestination?.displayLabel
+              : prev.destination,
+            destinationCountry: prev.destinationCountry,
+          };
+
+    const merged: CanonicalTravelContext = {
+      ...prev,
+      ...pendingSelection.contextPatch,
+      ...Object.fromEntries(
+        Object.entries(parsed).filter(
+          ([key, v]) => v != null && v !== "" && key !== "destination" && key !== "destinationCountry",
+        ),
+      ),
+      ...destMerge,
+      currentLocation: workingSession.location?.city ?? prev.currentLocation,
+      mood: parsed.mood ?? preset?.mood ?? prev.mood ?? moodKey,
+      vibe: parsed.vibe ?? preset?.vibe ?? prev.vibe ?? workingSession.discovery?.vibe,
+      setting: parsed.setting ?? preset?.setting ?? prev.setting ?? workingSession.discovery?.setting,
+      companion:
+        parsed.companion ??
+        prev.companion ??
+        workingSession.discovery?.companionship,
+      days: parsed.days ?? prev.days ?? workingSession.tripDays,
+      travelMonth: parsed.travelMonth ?? prev.travelMonth,
+      startDate: parsed.startDate ?? prev.startDate ?? workingSession.tripStartDate,
+      endDate: parsed.endDate ?? prev.endDate ?? workingSession.tripEndDate,
+      transportMode: parsed.transportMode ?? prev.transportMode ?? workingSession.transportation,
+      budgetLevel: parsed.budgetLevel ?? prev.budgetLevel ?? workingSession.budget,
+      travelStyle:
+        pendingSelection.contextPatch.travelStyle ??
+        parsed.travelStyle ??
+        prev.travelStyle ??
+        workingSession.tripStyles,
+      weather: workingSession.weather ?? prev.weather ?? null,
+      interests: uniqStrings([...prev.interests, ...(parsed.interests ?? [])]),
+      tripPurpose:
+        pendingSelection.contextPatch.tripPurpose ??
+        parsed.tripPurpose ??
+        preset?.tripPurpose ??
+        prev.tripPurpose,
+      destinationCities: pendingSelection.contextPatch.destinationCities ?? prev.destinationCities,
+      selectedTripStyle:
+        pendingSelection.contextPatch.selectedTripStyle ?? prev.selectedTripStyle,
+      excludedCategories:
+        workingSession.excludedCategories ?? prev.excludedCategories,
+    };
+
+    console.info("[AI_CONTEXT] parsed", logTravelContext(merged));
+
+    const discovery = { ...workingSession.discovery };
+    if (merged.vibe && !discovery.vibe) discovery.vibe = merged.vibe;
+    if (merged.companion && !discovery.companionship) {
+      discovery.companionship =
+        merged.companion === "女友" ? "情侶" : merged.companion;
+    }
+    if (merged.setting && !discovery.setting) discovery.setting = merged.setting;
+
+    if (merged.companion === "女友" || merged.companion === "男友") {
+      merged.vibe = merged.vibe ?? "情侶";
+      merged.mood = merged.mood ?? "情侶旅行";
+      merged.tripPurpose = merged.tripPurpose ?? "couple_trip";
+      if (!discovery.companionship) discovery.companionship = "情侶";
+    }
+
+    const nextSession: ChatPlanningSession = {
+      ...workingSession,
+      travelContext: merged,
+      discovery,
+      mood: merged.mood ?? workingSession.mood,
+      tripDays: merged.days ?? workingSession.tripDays,
+      travelDate: merged.startDate ?? workingSession.travelDate,
+      tripStartDate: merged.startDate ?? workingSession.tripStartDate,
+      tripEndDate: merged.endDate ?? workingSession.tripEndDate,
+      transportation: merged.transportMode ?? workingSession.transportation,
+      budget: merged.budgetLevel ?? workingSession.budget,
+      preferredArea: skipDestParse
+        ? workingSession.preferredArea
+        : merged.destination ?? workingSession.preferredArea,
+    };
+
+    console.info("[AI_CONTEXT] updated", logTravelContext(merged));
+    return { context: merged, session: nextSession };
+  } catch (e) {
+    console.warn("[AI_CONTEXT] mergeTravelContext failed", e);
+    return {
+      context: session.travelContext ?? EMPTY_TRAVEL_CONTEXT,
+      session,
+    };
   }
-  if (merged.setting && !discovery.setting) discovery.setting = merged.setting;
-
-  if (merged.companion === "女友" || merged.companion === "男友") {
-    merged.vibe = merged.vibe ?? "情侶";
-    merged.mood = merged.mood ?? "情侶旅行";
-    merged.tripPurpose = merged.tripPurpose ?? "couple_trip";
-    if (!discovery.companionship) discovery.companionship = "情侶";
-  }
-
-  const nextSession: ChatPlanningSession = {
-    ...session,
-    travelContext: merged,
-    discovery,
-    mood: merged.mood ?? session.mood,
-    tripDays: merged.days ?? session.tripDays,
-    travelDate: merged.startDate ?? session.travelDate,
-    tripStartDate: merged.startDate ?? session.tripStartDate,
-    tripEndDate: merged.endDate ?? session.tripEndDate,
-    transportation: merged.transportMode ?? session.transportation,
-    budget: merged.budgetLevel ?? session.budget,
-    preferredArea: merged.destination ?? session.preferredArea,
-  };
-
-  console.info("[AI_CONTEXT] updated", logTravelContext(merged));
-  return { context: merged, session: nextSession };
 }
 
 export function logTravelContext(ctx: CanonicalTravelContext): string {
   return JSON.stringify({
     destination: ctx.destination ?? "—",
+    destinationCountry: ctx.destinationCountry ?? "—",
     mood: ctx.mood ?? "—",
     days: ctx.days ?? "—",
     companion: ctx.companion ?? "—",
@@ -283,8 +504,14 @@ export function missingContextKeys(
   if (
     session.conversationMode === "destination_planning" ||
     session.tripPlanningContext?.intent === "destination_planning" ||
-    intent === "trip_planning"
+    intent === "trip_planning" ||
+    intent === "destination_advice" ||
+    isDestinationAdviceActive(session, ctx)
   ) {
+    if (isDestinationAdviceActive(session, ctx) || intent === "destination_advice") {
+      const dest = ctx.destination ?? session.tripPlanningContext?.destination;
+      return dest?.trim() ? [] : ["destination"];
+    }
     return missingDestinationPlanningKeys(ctx, session);
   }
 
@@ -317,6 +544,10 @@ export function isReadyForRecommendation(
   session: ChatPlanningSession,
   intent: ChatIntent = "general",
 ): boolean {
+  if (isDestinationAdviceActive(session, ctx) || intent === "destination_advice") {
+    return false;
+  }
+  if (isPlaceDetailChatActive(session)) return false;
   if (session.selectedPlaces.length > 0) return true;
   if (session.fromPlanForm || session.fromPlanAi) return true;
   if (session.fromMoodFlow || session.fromMoodCard) return true;
@@ -367,6 +598,7 @@ export function isReadyForRecommendation(
 export function formatTravelContextForAi(ctx: CanonicalTravelContext): string {
   const lines = ["【Canonical Travel Context】"];
   if (ctx.destination) lines.push(`destination: ${ctx.destination}`);
+  if (ctx.destinationCountry) lines.push(`destinationCountry: ${ctx.destinationCountry}`);
   if (ctx.currentLocation) lines.push(`currentLocation: ${ctx.currentLocation}`);
   if (ctx.travelMonth) lines.push(`travelMonth: ${ctx.travelMonth}`);
   if (ctx.startDate) lines.push(`startDate: ${ctx.startDate}`);
@@ -381,6 +613,8 @@ export function formatTravelContextForAi(ctx: CanonicalTravelContext): string {
   if (ctx.budgetLevel) lines.push(`budgetLevel: ${ctx.budgetLevel}`);
   if (ctx.travelStyle) lines.push(`travelStyle: ${ctx.travelStyle}`);
   if (ctx.tripPurpose) lines.push(`tripPurpose: ${ctx.tripPurpose}`);
+  if (ctx.budgetPreference) lines.push(`budgetPreference: ${ctx.budgetPreference}`);
+  if (ctx.priceSensitivity) lines.push(`priceSensitivity: true`);
   if (ctx.weather) {
     lines.push(
       `weather: ${ctx.weather.city} ${ctx.weather.condition} ${ctx.weather.tempC ?? ""}°C`,

@@ -105,9 +105,9 @@ export function formatLegTravelTimeLabel(
       leg.transportStatus === "transit_unavailable" ||
       leg.reason === "transit_unavailable"
     ) {
-      return "大眾運輸暫時無法讀取";
+      return "暫時無法取得大眾運輸時間";
     }
-    return "大眾運輸暫時無法讀取";
+    return "暫時無法取得大眾運輸時間";
   }
 
   const mins = travelMinutesForMode(leg, transportLabel);

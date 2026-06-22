@@ -63,6 +63,8 @@ const searchSchema = z.object({
   placeId: z.string().optional(),
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
+  /** 返回來源：chat 從聊聊回來；map 從探索回來 */
+  returnTo: z.enum(["chat", "map", "home"]).optional(),
 });
 
 export const Route = createFileRoute("/_app/place")({
@@ -322,12 +324,24 @@ function PlaceDetailPage() {
   }, [place, userLocation]);
 
   const handleBack = useCallback(() => {
+    if (search.returnTo === "chat") {
+      navigate({ to: "/chat" });
+      return;
+    }
+    if (search.returnTo === "map") {
+      navigate({ to: "/map" });
+      return;
+    }
+    if (search.returnTo === "home") {
+      navigate({ to: "/" });
+      return;
+    }
     if (typeof window !== "undefined" && window.history.length > 1) {
       window.history.back();
       return;
     }
     navigate({ to: "/" });
-  }, [navigate]);
+  }, [navigate, search.returnTo]);
 
   const handleToggleSave = async () => {
     if (!place) return;

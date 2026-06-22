@@ -1,5 +1,24 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
+import {
+  isDestinationAdviceActive,
+  isDestinationAdviceText,
+  isDestinationSelectionText,
+} from "@/lib/ai/trip-planning-context";
+import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
+
+function isTripAddPlaceChat(session: ChatPlanningSession): boolean {
+  return Boolean(session.fromTripAddPlace && session.tripAddPlaceContext);
+}
+
+function isTripMealRequest(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  return /(三餐|早餐|午餐|晚餐|宵夜|早午餐|吃飯|用餐|找餐廳|找美食|想吃|安排.{0,4}餐|餐廳|美食|吃什麼)/.test(
+    t,
+  );
+}
 
 function userExplicitlyWantsPlaces(text: string): boolean {
   const t = text.trim();
@@ -15,10 +34,12 @@ export type ChatIntent =
   | "cafe"
   | "attraction"
   | "trip_planning"
+  | "destination_advice"
   | "mood_chat"
   | "weather"
   | "outfit"
   | "transit"
+  | "refine_recommendations"
   | "general";
 
 export type NearbyPlaceIntent = Extract<ChatIntent, "restaurant" | "cafe" | "attraction">;
@@ -27,11 +48,18 @@ export function detectChatIntent(text: string): ChatIntent {
   const t = text.trim();
   if (!t) return "general";
 
+  if (isTripMealRequest(t)) return "restaurant";
+
+  if (isDestinationAdviceText(t)) return "destination_advice";
+  if (isDestinationSelectionText(t)) return "destination_advice";
+  if (isBudgetRefinementText(t)) return "refine_recommendations";
+
   if (
     /(幫我規劃|規劃.*行程|安排.*行程|行程規劃|兩天一夜|三天兩夜|四天三夜)/.test(t) ||
     /\d+\s*天\s*\d*\s*夜/.test(t) ||
     /(?:我想?去|要去|想去).*\d+\s*天/.test(t) ||
-    /\d+\s*天.*(?:去|玩|逛)/.test(t) ||
+    /\d+\s*天.*(?:去|玩|逛|排|規劃|规划)/.test(t) ||
+    /[\u4e00-\u9fff]{2,8}\s*\d+\s*天.*(怎麼排|行程|規劃|规划|安排)/.test(t) ||
     (/(?:我想?去|要去|想去)/.test(t) && /[\u4e00-\u9fff]{2,8}/.test(t) && /\d+\s*天/.test(t)) ||
     (/\d+\s*月/.test(t) && /(?:去|玩|旅行|旅遊)/.test(t))
   ) {
@@ -83,7 +111,8 @@ export function detectChatIntent(text: string): ChatIntent {
 
   if (
     /(累|疲|心情|感覺|有點|放空|難過|開心|無聊|壓力)/.test(t) &&
-    !/(推薦|餐廳|咖啡|景點|去哪)/.test(t)
+    !/(推薦|餐廳|咖啡|景點|去哪)/.test(t) &&
+    !isBudgetRefinementText(t)
   ) {
     return "mood_chat";
   }
@@ -106,6 +135,8 @@ export function chatResponseModeForIntent(intent: ChatIntent): string {
   if (intent === "cafe") return "cafe_recommendation";
   if (intent === "attraction") return "attraction_recommendation";
   if (intent === "trip_planning") return "trip_planning";
+  if (intent === "destination_advice") return "destination_advice";
+  if (intent === "refine_recommendations") return "refine_recommendations";
   if (intent === "weather") return "weather";
   if (intent === "outfit") return "outfit";
   if (intent === "mood_chat") return "mood_chat";
@@ -146,6 +177,17 @@ export function inferNearbyIntentFromContext(
   text: string,
   session: ChatPlanningSession,
 ): NearbyPlaceIntent | null {
+  if (isDestinationAdviceActive(session, ctx)) return null;
+  if (isDestinationAdviceText(text)) return null;
+  if (isPlaceDetailChatActive(session)) return null;
+
+  if (isTripAddPlaceChat(session)) {
+    if (isTripMealRequest(text)) return "restaurant";
+    if (/(咖啡廳|咖啡店|咖啡|café|cafe)/i.test(text)) return "cafe";
+    if (/(散步|景點|走走|逛逛|參觀|景觀|下午茶)/.test(text)) return "attraction";
+    return null;
+  }
+
   if (session.activeChatIntent && isNearbyPlaceIntent(session.activeChatIntent)) {
     return session.activeChatIntent;
   }

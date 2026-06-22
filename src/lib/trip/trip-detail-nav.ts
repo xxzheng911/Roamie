@@ -13,9 +13,13 @@ export function logTripNav(source: string, tripId: string): void {
   console.info(`[TRIP_NAV] source=${normalized} tripId=${tripId}`);
 }
 
-export function tripDetailNavigateOptions(tripId: string): NavigateOptions {
+export function tripDetailNavigateOptions(
+  tripId: string,
+  opts?: { day?: number },
+): NavigateOptions {
   return {
     to: TRIP_DETAIL_ROUTE,
     params: { tripId },
+    search: opts?.day != null ? { day: opts.day } : undefined,
   };
 }

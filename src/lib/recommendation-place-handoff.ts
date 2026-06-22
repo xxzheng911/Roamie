@@ -2,6 +2,11 @@ import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { setMapExploreHandoff } from "@/lib/map-explore-handoff";
+import {
+  pickToPlaceDetailHandoff,
+  setPlaceDetailHandoff,
+  type PlaceDetailHandoff,
+} from "@/lib/place-detail-handoff";
 
 /** 依推薦類型對應探索地圖分類 tab */
 function inferExploreCategoryId(type: string): string {
@@ -46,6 +51,7 @@ export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): Ho
   };
 }
 
+/** 探索地圖：寫入 map handoff 並由呼叫端 navigate 至 /map */
 export function openRecommendationOnMap(rec: RoamieRecommendationItem): HomeNearbyPick {
   const snapshot = recommendationToPlaceSnapshot(rec);
   setMapExploreHandoff({
@@ -54,4 +60,13 @@ export function openRecommendationOnMap(rec: RoamieRecommendationItem): HomeNear
     placeSnapshot: snapshot,
   });
   return snapshot;
+}
+
+/** 聊聊／推薦卡：寫入 place detail handoff（不觸發探索地圖 selectedPlace） */
+export function openRecommendationPlaceDetail(
+  rec: RoamieRecommendationItem,
+): PlaceDetailHandoff {
+  const handoff = pickToPlaceDetailHandoff(recommendationToPlaceSnapshot(rec));
+  setPlaceDetailHandoff(handoff);
+  return handoff;
 }

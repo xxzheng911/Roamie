@@ -10,7 +10,14 @@ import {
 } from "@/lib/ai/chat-intent";
 import {
   buildDestinationPlanningClarify,
+  isDestinationAdviceActive,
 } from "@/lib/ai/trip-planning-context";
+import { parseDestinationAdvicePurpose, resolveDestinationAdvice } from "@/lib/ai/destination-advice";
+import type { PendingQuestion } from "@/lib/ai/destination-pending-question";
+import {
+  isTripAddPlaceSession,
+  parseTripAddPlaceFollowUpIntent,
+} from "@/lib/trip/trip-add-place-session";
 import {
   type CanonicalTravelContext,
   isReadyForRecommendation,
@@ -18,13 +25,14 @@ import {
   missingContextKeys,
 } from "@/lib/ai/travel-context";
 
-export type AiChatRouteMode = "clarify" | "recommend" | "itinerary";
+export type AiChatRouteMode = "clarify" | "recommend" | "itinerary" | "advice";
 
 export type AiChatRoute = {
   mode: AiChatRouteMode;
   chatPhase: ChatPhase;
   missingKey?: TripIntentMissingKey;
   question?: string;
+  pendingQuestion?: PendingQuestion;
 };
 
 const CLARIFY_ZH: Record<TripIntentMissingKey, (ctx: CanonicalTravelContext) => string> = {
@@ -98,6 +106,38 @@ export function resolveChatRoute(
   if (isUserConfirmingItinerary(userText)) {
     console.info("[AI_ROUTE] itinerary_mode", logTravelContext(ctx));
     return { mode: "itinerary", chatPhase: "handoff" };
+  }
+
+  if (isTripAddPlaceSession(session)) {
+    const followUp = parseTripAddPlaceFollowUpIntent(userText);
+    if (followUp || isNearbyPlaceIntent(intent)) {
+      console.info("[AI_ROUTE] trip_add_place_recommend", logTravelContext(ctx), `intent=${intent}`);
+      return { mode: "recommend", chatPhase: "recommend" };
+    }
+    console.info("[AI_ROUTE] trip_add_place_followup", logTravelContext(ctx));
+    return { mode: "recommend", chatPhase: "followup" };
+  }
+
+  const advicePurpose = parseDestinationAdvicePurpose(userText);
+  const shouldTryAdvice =
+    intent === "destination_advice" ||
+    isDestinationAdviceActive(session, ctx) ||
+    advicePurpose === "destination_selection" ||
+    advicePurpose === "best_time_to_visit" ||
+    advicePurpose === "region_selected" ||
+    advicePurpose === "seasonal_destination";
+
+  if (shouldTryAdvice) {
+    const advice = resolveDestinationAdvice(ctx, session, userText);
+    if (advice.reply) {
+      console.info("[AI_ROUTE] destination_advice_mode", logTravelContext(ctx));
+      return {
+        mode: "advice",
+        chatPhase: "discover",
+        question: advice.reply,
+        pendingQuestion: advice.pendingQuestion,
+      };
+    }
   }
 
   if (isReadyForRecommendation(ctx, session, intent)) {

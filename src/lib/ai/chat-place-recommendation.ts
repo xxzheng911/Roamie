@@ -10,6 +10,17 @@ import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import { distanceMeters } from "@/lib/map-explore";
 import {
+  budgetPenaltyForPlace,
+  buildBudgetRefinementSummary,
+  lowBudgetSearchQuery,
+  refinePlaceResultsForBudget,
+} from "@/lib/ai/budget-refinement";
+import {
+  buildExclusionAcknowledgment,
+  buildExclusionInsufficientSummary,
+  filterPlacesByExclusion,
+} from "@/lib/ai/recommendation-exclusion";
+import {
   beginPlacesFlow,
   endPlacesFlow,
   placesStatsPayload,
@@ -38,6 +49,10 @@ function searchConfigForIntent(
   includedTypes?: string[];
 } {
   const moodBlob = `${context?.mood ?? ""} ${context?.setting ?? ""} ${context?.tripPurpose ?? ""}`;
+
+  if (context?.budgetPreference === "low" || context?.tripPurpose === "refine_recommendations") {
+    return lowBudgetSearchQuery(intent, moodBlob);
+  }
 
   if (intent === "restaurant") {
     const cuisineQuery =
@@ -81,14 +96,26 @@ function searchConfigForIntent(
   };
 }
 
-function rankPlaces(places: PlaceResult[], lat: number, lng: number): PlaceResult[] {
+function rankPlaces(
+  places: PlaceResult[],
+  lat: number,
+  lng: number,
+  context?: CanonicalTravelContext,
+): PlaceResult[] {
+  const preference = context?.budgetPreference;
   return [...places].sort((a, b) => {
     const distA =
       a.lat != null && a.lng != null ? distanceMeters(lat, lng, a.lat, a.lng) : Number.MAX_SAFE_INTEGER;
     const distB =
       b.lat != null && b.lng != null ? distanceMeters(lat, lng, b.lat, b.lng) : Number.MAX_SAFE_INTEGER;
-    const scoreA = (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10) - distA / 50_000;
-    const scoreB = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10) - distB / 50_000;
+    const scoreA =
+      (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10) -
+      distA / 50_000 +
+      budgetPenaltyForPlace(a, preference) * -0.5;
+    const scoreB =
+      (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10) -
+      distB / 50_000 +
+      budgetPenaltyForPlace(b, preference) * -0.5;
     return scoreB - scoreA;
   });
 }
@@ -111,13 +138,20 @@ function buildSummary(
   intent: NearbyPlaceIntent,
   picks: PlaceResult[],
   ctx: CanonicalTravelContext,
+  excludedCategories?: string[],
 ): string {
+  if (ctx.budgetPreference === "low" || ctx.tripPurpose === "refine_recommendations") {
+    return buildBudgetRefinementSummary(ctx, picks);
+  }
+
   const list = formatPlaceList(picks);
   const weather = weatherLead(ctx);
+  const exclusionAck = buildExclusionAcknowledgment(excludedCategories);
 
   if (intent === "cafe") {
+    const lead = exclusionAck ?? "看起來你想找個地方放鬆一下 ☕";
     return [
-      "看起來你想找個地方放鬆一下 ☕",
+      lead,
       "",
       "附近有幾間我覺得不錯的選擇：",
       "",
@@ -134,8 +168,10 @@ function buildSummary(
   }
 
   if (intent === "restaurant") {
+    const lead =
+      exclusionAck ?? "依你現在的需求，附近這幾間餐廳值得先看看：";
     return [
-      "依你現在的需求，附近這幾間餐廳值得先看看：",
+      lead,
       "",
       list,
       "",
@@ -244,6 +280,7 @@ export async function fetchNearbyPlacesForIntent(
   foodPreference?: string,
   context?: CanonicalTravelContext,
 ): Promise<PlaceResult[]> {
+  const excluded = context?.excludedCategories ?? [];
   const attempts: SearchAttempt[] =
     intent === "restaurant"
       ? restaurantSearchFallbackQueries(foodPreference)
@@ -252,11 +289,16 @@ export async function fetchNearbyPlacesForIntent(
   let ranked: PlaceResult[] = [];
   for (const attempt of attempts) {
     const places = await runPlaceSearch(searchPlaces, lat, lng, locale, attempt);
-    ranked = rankPlaces(places, lat, lng);
+    ranked = rankPlaces(places, lat, lng, context);
+    ranked = filterPlacesByExclusion(ranked, excluded);
     if (ranked.length > 0) break;
   }
 
-  console.info(`[CHAT_PLACES_SUCCESS] count=${ranked.length}`);
+  if (context?.budgetPreference === "low") {
+    ranked = refinePlaceResultsForBudget(ranked, "low");
+  }
+
+  console.info(`[CHAT_PLACES_SUCCESS] count=${ranked.length} excluded=${excluded.length}`);
   return ranked;
 }
 
@@ -268,10 +310,20 @@ export async function buildNearbyPlaceRecommendation(params: {
   context: CanonicalTravelContext;
   searchPlaces: PlaceSearchFn;
   foodPreference?: string;
+  excludedCategories?: string[];
 }): Promise<{ summary: string; payload: RoamiePayloadV2; recommendations: RoamieRecommendationItem[] }> {
   const flow = beginPlacesFlow("chat_once");
   try {
-    const { intent, lat, lng, locale, context, searchPlaces, foodPreference } = params;
+    const { intent, lat, lng, locale, context, searchPlaces, foodPreference, excludedCategories } =
+      params;
+    const excluded =
+      excludedCategories ??
+      context.excludedCategories ??
+      [];
+    const contextWithExclusion: CanonicalTravelContext = {
+      ...context,
+      excludedCategories: excluded,
+    };
     const places = await fetchNearbyPlacesForIntent(
       intent,
       lat,
@@ -279,11 +331,26 @@ export async function buildNearbyPlaceRecommendation(params: {
       locale,
       searchPlaces,
       foodPreference,
-      context,
+      contextWithExclusion,
     );
     const picks = places.slice(0, RECOMMENDATION_COUNT);
 
     if (!picks.length) {
+      if (excluded.length) {
+        const summary = buildExclusionInsufficientSummary(
+          excluded,
+          intent === "cafe" ? "cafe" : intent === "restaurant" ? "restaurant" : "attraction",
+        );
+        return { summary, payload: {
+          version: 2,
+          title: "Roamie 推薦",
+          summary,
+          moodTag: context.mood ?? "",
+          recommendations: [],
+          itinerary: [],
+          generatedAt: new Date().toISOString(),
+        }, recommendations: [] };
+      }
       throw new Error("places_empty");
     }
 
@@ -297,7 +364,7 @@ export async function buildNearbyPlaceRecommendation(params: {
       });
     });
 
-    const summary = buildSummary(intent, picks, context);
+    const summary = buildSummary(intent, picks, context, excluded);
     const mode = chatResponseModeForIntent(intent);
     console.info(`[CHAT_RESPONSE] mode=${mode}`);
 

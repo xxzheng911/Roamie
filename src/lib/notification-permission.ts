@@ -1,4 +1,5 @@
-import { isCapacitorNativeShell } from "@/lib/chat-keyboard-layout";
+import { getCapacitorLocalNotifications } from "@/lib/capacitor-local-notifications";
+import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 
 export type NotificationPermissionState = "granted" | "denied" | "default" | "unsupported";
 
@@ -9,8 +10,9 @@ export function isNotificationApiAvailable(): boolean {
 
 async function readCapacitorNotificationPermission(): Promise<NotificationPermissionState> {
   try {
-    const { LocalNotifications } = await import("@capacitor/local-notifications");
-    const result = await LocalNotifications.checkPermissions();
+    const plugin = getCapacitorLocalNotifications();
+    if (!plugin) return "unsupported";
+    const result = await plugin.checkPermissions();
     if (result.display === "granted") return "granted";
     if (result.display === "denied") return "denied";
     return "default";
@@ -49,11 +51,12 @@ export function isNotificationGranted(): boolean {
 export async function requestNotificationPermission(): Promise<NotificationPermissionState> {
   if (isCapacitorNativeShell()) {
     try {
-      const { LocalNotifications } = await import("@capacitor/local-notifications");
-      const current = await LocalNotifications.checkPermissions();
+      const plugin = getCapacitorLocalNotifications();
+      if (!plugin) return "unsupported";
+      const current = await plugin.checkPermissions();
       if (current.display === "granted") return "granted";
       if (current.display === "denied") return "denied";
-      const result = await LocalNotifications.requestPermissions();
+      const result = await plugin.requestPermissions();
       if (result.display === "granted") return "granted";
       if (result.display === "denied") return "denied";
       return "default";

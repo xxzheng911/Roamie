@@ -51,11 +51,13 @@ export function PlaceNavButtons({
     : "inline-flex flex-1 items-center justify-center gap-1.5 rounded-full border border-border bg-card py-2 text-xs";
 
   if (routeOnly && navUrl) {
+    const routeWrapClass = compact ? className : `w-full ${className}`;
+    const routeBtnClass = compact ? btnClass : `${btnClass} w-full justify-center`;
     return (
-      <div className={`w-full ${className}`}>
+      <div className={routeWrapClass}>
         <button
           type="button"
-          className={`${btnClass} w-full justify-center`}
+          className={routeBtnClass}
           onClick={() => {
             onAction?.();
             openExternal(navUrl);
