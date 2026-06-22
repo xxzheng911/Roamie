@@ -6,6 +6,18 @@ import { executeExploreSearch } from "@/lib/places.functions";
 import type { PlaceResult } from "@/lib/place-result";
 import { getCategoryDef, pickCategoriesForContext } from "@/lib/recommendation/categories";
 import { placeResultToCandidate } from "@/lib/recommendation/place-mapping";
+import {
+  AI_MIN_CANDIDATES_TARGET,
+  AI_PRIMARY_CATEGORY_COUNT,
+  buildAiCategoryCacheKey,
+  countCategorySearchHttpCalls,
+  getAiCategoryCache,
+  logAiPlaceCacheHit,
+  logAiPlaceCacheMiss,
+  logAiPlaceSearch,
+  setAiCategoryCache,
+} from "@/lib/recommendation/ai-places-cache";
+import { placesStatsPayload } from "@/lib/places-api-stats";
 import type {
   RecommendationCategoryId,
   RecommendationContext,
@@ -26,12 +38,55 @@ function mergeByPlaceId(places: PlaceResult[]): PlaceResult[] {
   return out;
 }
 
+function filterExcluded(
+  items: VerifiedPlaceCandidate[],
+  excludeNames: Set<string>,
+): VerifiedPlaceCandidate[] {
+  return items.filter((c) => !excludeNames.has(c.name.trim().toLowerCase()));
+}
+
+function mergeCandidates(
+  target: Map<string, VerifiedPlaceCandidate>,
+  items: VerifiedPlaceCandidate[],
+): void {
+  for (const c of items) {
+    if (!target.has(c.googlePlaceId)) target.set(c.googlePlaceId, c);
+  }
+}
+
 async function searchCategory(
   categoryId: RecommendationCategoryId,
   ctx: RecommendationContext,
+  phase: "primary" | "fallback",
 ): Promise<VerifiedPlaceCandidate[]> {
   const def = getCategoryDef(categoryId);
   if (!def) return [];
+
+  const cacheKey = buildAiCategoryCacheKey({
+    city: ctx.location.city,
+    lat: ctx.location.lat,
+    lng: ctx.location.lng,
+    categoryId,
+    weather: ctx.weather,
+    time: ctx.time,
+  });
+
+  const cached = getAiCategoryCache(cacheKey);
+  if (cached) {
+    logAiPlaceCacheHit(cacheKey);
+    return cached;
+  }
+
+  logAiPlaceCacheMiss(cacheKey);
+
+  const httpCalls = countCategorySearchHttpCalls(def);
+  logAiPlaceSearch({
+    categoryId,
+    mode: def.mode,
+    nearby: httpCalls.nearby,
+    text: httpCalls.text,
+    phase,
+  });
 
   const { places, error } = await executeExploreSearch({
     lat: ctx.location.lat,
@@ -41,14 +96,21 @@ async function searchCategory(
     includedTypes: def.includedTypes,
     nearbyGroups: def.nearbyGroups,
     locale: ctx.locale,
+    categoryId,
+    ...placesStatsPayload({
+      placesCaller: "fetchVerifiedCandidates.searchCategory",
+      placesScreen: "ai_recommend",
+      categoryId,
+    }),
   });
 
   if (error) {
     console.warn("[Roamie Rec] category search failed", categoryId, error);
+    setAiCategoryCache(cacheKey, []);
     return [];
   }
 
-  return mergeByPlaceId(places)
+  const candidates = mergeByPlaceId(places)
     .filter((p) =>
       isRecommendablePlace(
         placeResultToRecommendableInput(p, { categoryId }),
@@ -58,6 +120,23 @@ async function searchCategory(
     .slice(0, PER_CATEGORY_LIMIT)
     .map((p) => placeResultToCandidate(p, categoryId))
     .filter((c): c is VerifiedPlaceCandidate => c != null);
+
+  setAiCategoryCache(cacheKey, candidates);
+  return candidates;
+}
+
+async function searchCategoriesSequential(
+  categoryIds: RecommendationCategoryId[],
+  ctx: RecommendationContext,
+  excludeNames: Set<string>,
+  phase: "primary" | "fallback",
+): Promise<VerifiedPlaceCandidate[]> {
+  const out: VerifiedPlaceCandidate[] = [];
+  for (const categoryId of categoryIds) {
+    const items = filterExcluded(await searchCategory(categoryId, ctx, phase), excludeNames);
+    out.push(...items);
+  }
+  return out;
 }
 
 /**
@@ -66,12 +145,19 @@ async function searchCategory(
 export async function fetchVerifiedCandidates(
   ctx: RecommendationContext,
 ): Promise<VerifiedPlaceCandidate[]> {
-  const categories = pickCategoriesForContext({
+  const allCategories = pickCategoriesForContext({
     weather: ctx.weather,
     mood: ctx.mood,
     max: 6,
     constraints: ctx.constraints,
   });
+
+  const primaryIds = allCategories
+    .slice(0, AI_PRIMARY_CATEGORY_COUNT)
+    .map((c) => c.id as RecommendationCategoryId);
+  const fallbackIds = allCategories
+    .slice(AI_PRIMARY_CATEGORY_COUNT)
+    .map((c) => c.id as RecommendationCategoryId);
 
   const excludeNames = new Set(
     [
@@ -81,17 +167,19 @@ export async function fetchVerifiedCandidates(
     ].map((n) => n.trim().toLowerCase()),
   );
 
-  const settled = await Promise.all(
-    categories.map(async (cat) => {
-      const items = await searchCategory(cat.id as RecommendationCategoryId, ctx);
-      return items.filter((c) => !excludeNames.has(c.name.trim().toLowerCase()));
-    }),
-  );
-
   const merged = new Map<string, VerifiedPlaceCandidate>();
-  for (const group of settled) {
-    for (const c of group) {
-      if (!merged.has(c.googlePlaceId)) merged.set(c.googlePlaceId, c);
+
+  const primaryItems = await searchCategoriesSequential(primaryIds, ctx, excludeNames, "primary");
+  mergeCandidates(merged, primaryItems);
+
+  if (merged.size < AI_MIN_CANDIDATES_TARGET && fallbackIds.length > 0) {
+    for (const categoryId of fallbackIds) {
+      if (merged.size >= AI_MIN_CANDIDATES_TARGET) break;
+      const items = filterExcluded(
+        await searchCategory(categoryId, ctx, "fallback"),
+        excludeNames,
+      );
+      mergeCandidates(merged, items);
     }
   }
 

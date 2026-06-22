@@ -25,25 +25,39 @@ function pathIsWelcome(): boolean {
   return path === "/welcome" || path === "/onboarding";
 }
 
+import { readHydratedAuthSessionRaw } from "@/lib/supabase-auth-storage";
+
 const SUPABASE_AUTH_STORAGE_KEY = "roamie-auth";
 
-/** 本機是否可能有有效 Supabase session（不發網路；須含 user + 未過期 token） */
-export function hasLikelyPersistedSession(): boolean {
-  if (typeof window === "undefined") return false;
+function parseSessionRaw(raw: string | null): boolean {
+  if (!raw) return false;
   try {
-    const raw = localStorage.getItem(SUPABASE_AUTH_STORAGE_KEY);
-    if (!raw) return false;
     const parsed = JSON.parse(raw) as {
       access_token?: string;
+      refresh_token?: string;
       expires_at?: number;
       user?: { id?: string };
     };
-    if (!parsed?.access_token || !parsed?.user?.id) return false;
+    if (!parsed?.user?.id) return false;
+    if (parsed.refresh_token) return true;
+    if (!parsed?.access_token) return false;
     if (typeof parsed.expires_at === "number") {
       const expiresMs = parsed.expires_at * 1000;
       if (expiresMs < Date.now() - 60_000) return false;
     }
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 本機是否可能有有效 Supabase session（不發網路；須含 user + 未過期 token） */
+export function hasLikelyPersistedSession(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const raw =
+      readHydratedAuthSessionRaw() ?? localStorage.getItem(SUPABASE_AUTH_STORAGE_KEY);
+    return parseSessionRaw(raw);
   } catch {
     return false;
   }
@@ -71,7 +85,8 @@ export function resolveStartupPathFast(): StartupPath {
   }
   const isFirstLaunch = !onboardingCompleted;
   const hasSession = hasLikelyPersistedSession();
-  const rawNext: StartupPath = !onboardingCompleted ? "/welcome" : !hasSession ? "/login" : "/";
+  // 冷啟動不在此階段導向 /login；session 還原與登入判斷交給 warm + AuthProvider + route guard
+  const rawNext: StartupPath = !onboardingCompleted ? "/welcome" : "/";
   const next = guardStartupTarget(rawNext, "resolveStartupPathFast");
 
   if (

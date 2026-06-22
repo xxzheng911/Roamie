@@ -27,6 +27,7 @@ export type PlaceHoursData = {
     weekdayDescriptions?: string[];
   } | null;
   regularOpeningHours?: {
+    openNow?: boolean;
     weekdayDescriptions?: string[];
     periods?: Array<{
       open?: { day?: number; hour?: number; minute?: number };
@@ -212,7 +213,7 @@ function findNextOpenFromPeriods(data: PlaceHoursData, at: Date): Date | null {
   return best;
 }
 
-function getTodayHoursFromDescriptions(data: PlaceHoursData, at: Date): string {
+export function getTodayHoursFromDescriptions(data: PlaceHoursData, at: Date): string {
   const desc =
     data.regularOpeningHours?.weekdayDescriptions ??
     data.currentOpeningHours?.weekdayDescriptions;

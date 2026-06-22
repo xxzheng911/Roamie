@@ -12,7 +12,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useAvatar } from "@/hooks/use-avatar";
+import { useCover } from "@/hooks/use-cover";
 import { useI18n } from "@/hooks/use-i18n";
+import { ROAMIE_BUILD_DEBUG } from "@/lib/app-bundle-version";
 import { getClientAuthSession, isAuthSessionMissingError } from "@/lib/auth-session";
 import { ImageSourceSheet } from "@/components/ImageSourceSheet";
 import { ProfileCover } from "@/components/ProfileCover";
@@ -35,12 +37,20 @@ import {
   type UserProfile,
 } from "@/lib/profile-storage";
 import { buildCompanionSummary } from "@/lib/personality";
+import {
+  gatePlusPersonaFields,
+  sanitizeBioForTier,
+  shouldExposePlusPersona,
+} from "@/lib/profile-persona";
+import { logAuthRedirectLogin, logProfileLoad, logProfileLoadFail } from "@/lib/auth-boot-log";
+import { getDefaultBio } from "@/lib/i18n/default-profile";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useAccess } from "@/hooks/use-access";
 import { isDeveloperBuildEnabled } from "@/lib/access/developer";
 import { loadDraftTrip } from "@/lib/trip-draft-storage";
 import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
+import { readProfileSessionCache } from "@/lib/profile-session-cache";
 
 type ProfileSearch = { quiz?: string };
 
@@ -68,16 +78,22 @@ function validateImageFile(file: File): boolean {
 function Profile() {
   const search = Route.useSearch();
   const navigate = useNavigate();
-  const { user, loading: authLoading, signOut } = useAuth();
+  const { user, session, loading: authLoading, signOut } = useAuth();
   const userId = user?.id;
   const userEmail = user?.email;
   const { t, locale } = useI18n();
-  const { avatarSrc, refresh: refreshAvatar, setPreview: setAvatarPreview } = useAvatar();
+  const { avatarSrc, setPreview: setAvatarPreview, syncFromProfile: syncAvatarFromProfile } =
+    useAvatar();
+  const {
+    coverUrl,
+    coverSrc,
+    setPreview: setCoverPreview,
+    syncFromProfile: syncCoverFromProfile,
+  } = useCover();
   const { hasPlusAccess } = useAccess();
   const [hasDraft, setHasDraft] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
-  const [coverUrl, setCoverUrl] = useState<string | null>(null);
   /** Local blob preview after pick — never write unstable ?t= URLs into profile state */
   const [coverPreviewUrl, setCoverPreviewUrl] = useState<string | null>(null);
   const coverPreviewRef = useRef<string | null>(null);
@@ -89,18 +105,28 @@ function Profile() {
   const [avatarSourceOpen, setAvatarSourceOpen] = useState(false);
   const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null);
   const [avatarApplying, setAvatarApplying] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const initialCachedProfile = readProfileSessionCache(userId);
+  const [loading, setLoading] = useState(() => !initialCachedProfile);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const [displayName, setDisplayName] = useState("");
-  const [bio, setBio] = useState("");
-  const [travelStyle, setTravelStyle] = useState("");
-  const [personalityType, setPersonalityType] = useState("");
-  const [personalitySummary, setPersonalitySummary] = useState("");
-  const [personalityImpression, setPersonalityImpression] = useState("");
+  const [displayName, setDisplayName] = useState(() => initialCachedProfile?.displayName ?? "");
+  const [draftName, setDraftName] = useState("");
+  const [bio, setBio] = useState(() => initialCachedProfile?.bio ?? "");
+  const [draftBio, setDraftBio] = useState("");
+  const [travelStyle, setTravelStyle] = useState(() => initialCachedProfile?.travelStyle ?? "");
+  const [draftTravelStyle, setDraftTravelStyle] = useState("");
+  const [personalityType, setPersonalityType] = useState(
+    () => initialCachedProfile?.personalityType ?? "",
+  );
+  const [personalitySummary, setPersonalitySummary] = useState(
+    () => initialCachedProfile?.personalitySummary ?? "",
+  );
+  const [personalityImpression, setPersonalityImpression] = useState(
+    () => initialCachedProfile?.personalityImpression ?? "",
+  );
   const [companionSummary, setCompanionSummary] = useState("");
-  const [onboarded, setOnboarded] = useState(false);
+  const [onboarded, setOnboarded] = useState(() => !!initialCachedProfile?.prefs.onboarded);
   const [quizSyncing, setQuizSyncing] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [pace, setPace] = useState("");
@@ -109,11 +135,8 @@ function Profile() {
   const [avoidKey, setAvoidKey] = useState<string | null>(null);
   const [travelTags, setTravelTags] = useState<string[]>([]);
 
-  const profileRenderCount = useRef(0);
-  profileRenderCount.current += 1;
-  useEffect(() => {
-    console.info("[PROFILE_RERENDER]", `count=${profileRenderCount.current}`);
-  });
+  const quizDoneToastShown = useRef(false);
+  const profileSnapshotRef = useRef<UserProfile | null>(initialCachedProfile);
 
   const revokeCoverPreview = useCallback(() => {
     if (coverPreviewRef.current) {
@@ -139,6 +162,7 @@ function Profile() {
         coverPreviewRef.current = null;
       }
       setAvatarPreview(null);
+      setCoverPreview(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup on unmount only
   }, []);
@@ -152,40 +176,59 @@ function Profile() {
   }, []);
 
   useEffect(() => {
-    const onCover = (e: Event) => {
+    const onCover = () => {
       revokeCoverPreview();
-      const url = (e as CustomEvent<string | null>).detail ?? null;
-      setCoverUrl(url);
-      setCoverCropFile(null);
     };
     window.addEventListener(COVER_UPDATED_EVENT, onCover);
     return () => window.removeEventListener(COVER_UPDATED_EVENT, onCover);
   }, [revokeCoverPreview]);
 
-  const quizDoneToastShown = useRef(false);
-
-  const loadProfile = useCallback(async () => {
+  const loadProfile = useCallback(async (options?: { force?: boolean }) => {
     try {
-      return await getUserProfile();
+      const profile = await getUserProfile(undefined, { force: options?.force });
+      logProfileLoad({ userId });
+      return profile;
     } catch (firstErr) {
       if (!userId) throw firstErr;
+      logProfileLoadFail({
+        userId,
+        message: firstErr instanceof Error ? firstErr.message : String(firstErr),
+      });
       console.warn("[profile] fetch failed, ensuring profile row", firstErr);
       await ensureUserProfile();
-      return getUserProfile();
+      const profile = await getUserProfile(undefined, { force: true });
+      logProfileLoad({ userId, recovered: true });
+      return profile;
     }
   }, [userId]);
 
   const applyProfileToState = useCallback(
     (profile: UserProfile) => {
-      setDisplayName(profile.displayName);
-      setBio(profile.bio);
-      setCoverUrl(profile.coverImageUrl);
-      setTravelStyle(profile.travelStyle);
-      setPersonalityType(profile.personalityType);
-      setPersonalitySummary(profile.personalitySummary);
-      setPersonalityImpression(profile.personalityImpression);
-      setCompanionSummary(buildCompanionSummary(profile.prefs));
-      setOnboarded(!!profile.prefs.onboarded);
+      profileSnapshotRef.current = profile;
+      const showPlusPersona = shouldExposePlusPersona(hasPlusAccess, profile.prefs);
+      const gated = gatePlusPersonaFields(profile, hasPlusAccess);
+      const defaultBio = getDefaultBio(profile.language || locale);
+      const nextBio = sanitizeBioForTier(gated.bio, hasPlusAccess, profile.prefs, defaultBio);
+      const nextCompanion = showPlusPersona ? buildCompanionSummary(profile.prefs) : "";
+      setDisplayName((prev) => (prev === gated.displayName ? prev : gated.displayName));
+      setBio((prev) => (prev === nextBio ? prev : nextBio));
+      syncCoverFromProfile(gated.coverImageUrl);
+      syncAvatarFromProfile(gated.avatarUrl);
+      const nextTravelStyle = showPlusPersona ? gated.travelStyle : "";
+      setTravelStyle((prev) => (prev === nextTravelStyle ? prev : nextTravelStyle));
+      const nextPersonalityType = showPlusPersona ? gated.personalityType : "";
+      setPersonalityType((prev) => (prev === nextPersonalityType ? prev : nextPersonalityType));
+      const nextPersonalitySummary = showPlusPersona ? gated.personalitySummary : "";
+      setPersonalitySummary((prev) =>
+        prev === nextPersonalitySummary ? prev : nextPersonalitySummary,
+      );
+      const nextPersonalityImpression = showPlusPersona ? gated.personalityImpression : "";
+      setPersonalityImpression((prev) =>
+        prev === nextPersonalityImpression ? prev : nextPersonalityImpression,
+      );
+      setCompanionSummary((prev) => (prev === nextCompanion ? prev : nextCompanion));
+      const nextOnboarded = !!profile.prefs.onboarded;
+      setOnboarded((prev) => (prev === nextOnboarded ? prev : nextOnboarded));
       const paceMap = {
         slow: t("profile.paceSlow"),
         medium: t("profile.paceMedium"),
@@ -196,14 +239,16 @@ function Profile() {
         either: t("profile.vibeEither"),
         lively: t("profile.vibeLively"),
       } as const;
-      setPace(profile.prefs.pace ? paceMap[profile.prefs.pace] : t("common.dash"));
-      setVibe(profile.prefs.vibe ? vibeMap[profile.prefs.vibe] : t("common.dash"));
-      setBudgetLabel(
-        profile.prefs.onboarded
-          ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)]
-          : t("common.dash"),
-      );
-      setAvoidKey(profile.prefs.avoid?.[0] ?? null);
+      const nextPace = profile.prefs.pace ? paceMap[profile.prefs.pace] : t("common.dash");
+      setPace((prev) => (prev === nextPace ? prev : nextPace));
+      const nextVibe = profile.prefs.vibe ? vibeMap[profile.prefs.vibe] : t("common.dash");
+      setVibe((prev) => (prev === nextVibe ? prev : nextVibe));
+      const nextBudgetLabel = profile.prefs.onboarded
+        ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)]
+        : t("common.dash");
+      setBudgetLabel((prev) => (prev === nextBudgetLabel ? prev : nextBudgetLabel));
+      const nextAvoidKey = profile.prefs.avoid?.[0] ?? null;
+      setAvoidKey((prev) => (prev === nextAvoidKey ? prev : nextAvoidKey));
       const tags = Array.from(
         new Set(
           [
@@ -222,7 +267,9 @@ function Profile() {
           ].filter((v): v is string => Boolean(v)),
         ),
       ).slice(0, 5);
-      setTravelTags(tags);
+      setTravelTags((prev) =>
+        prev.length === tags.length && prev.every((tag, index) => tag === tags[index]) ? prev : tags,
+      );
       if (profile.prefs.onboarded) {
         console.info("[TRAVEL_PREF_RESULT] loaded", {
           travelStyle: profile.travelStyle || profile.personalityType || "未命名",
@@ -230,8 +277,23 @@ function Profile() {
         });
       }
     },
-    [t],
+    [t, hasPlusAccess, locale, syncCoverFromProfile, syncAvatarFromProfile],
   );
+
+  useEffect(() => {
+    const profile = profileSnapshotRef.current;
+    if (profile) {
+      applyProfileToState(profile);
+      return;
+    }
+    if (!hasPlusAccess) {
+      setTravelStyle("");
+      setPersonalityType("");
+      setPersonalitySummary("");
+      setPersonalityImpression("");
+      setCompanionSummary("");
+    }
+  }, [hasPlusAccess, applyProfileToState]);
 
   useEffect(() => {
     if (search.quiz !== "done" || quizDoneToastShown.current) return;
@@ -241,7 +303,7 @@ function Profile() {
     navigate({ to: "/profile", search: {}, replace: true });
     void (async () => {
       try {
-        const profile = await loadProfile();
+        const profile = await loadProfile({ force: true });
         applyProfileToState(profile);
       } catch (e) {
         console.error("[profile] quiz sync failed", e);
@@ -255,7 +317,7 @@ function Profile() {
     const onPrefs = () => {
       void (async () => {
         try {
-          const profile = await loadProfile();
+          const profile = await loadProfile({ force: true });
           applyProfileToState(profile);
         } catch (e) {
           console.error("[profile] prefs sync failed", e);
@@ -266,24 +328,20 @@ function Profile() {
     return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
   }, [loadProfile, applyProfileToState]);
 
-  useEffect(() => {
-    console.info("[TRAVEL_PREF_TEST] visible");
-  }, []);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    console.info("[profile] loading", { userId });
+  const refresh = useCallback(async (options?: { force?: boolean }) => {
+    const hadCache = Boolean(readProfileSessionCache(userId));
+    if (!hadCache) setLoading(true);
+    console.info("[profile] loading", { userId, force: options?.force ?? false });
     try {
       if (userId) await ensureUserProfile();
-      const profile = await loadProfile();
+      const profile = await loadProfile({ force: options?.force });
       applyProfileToState(profile);
-      if (profile.prefs.onboarded) {
+      if (profile.prefs.onboarded && hasPlusAccess) {
         void syncTravelPreferenceProfileFields({
           travelStyle: profile.travelStyle || profile.personalityType || "",
           prefs: profile.prefs,
         }).catch((e) => console.error("[profile] travel-pref sync failed", e));
       }
-      await refreshAvatar();
       console.info("[PROFILE] loaded");
     } catch (e) {
       if (e instanceof Error && isAuthSessionMissingError(e.message)) return;
@@ -308,16 +366,25 @@ function Profile() {
     } finally {
       setLoading(false);
     }
-  }, [userId, userEmail, locale, t, loadProfile, refreshAvatar, applyProfileToState]);
+  }, [userId, userEmail, locale, t, loadProfile, applyProfileToState, hasPlusAccess]);
 
   useEffect(() => {
     if (authLoading) return;
     if (!userId) {
-      navigate({ to: "/login", replace: true });
+      if (!session) {
+        logAuthRedirectLogin("profile:no-user-after-auth-ready");
+        navigate({ to: "/login", replace: true });
+      }
+      return;
+    }
+    const cached = readProfileSessionCache(userId);
+    if (cached) {
+      applyProfileToState(cached);
+      setLoading(false);
       return;
     }
     void refresh();
-  }, [authLoading, userId, locale, navigate, refresh]);
+  }, [authLoading, userId, session, navigate, refresh, applyProfileToState]);
 
   if (authLoading) {
     return (
@@ -328,11 +395,29 @@ function Profile() {
   }
 
   const devMode = isDeveloperBuildEnabled();
+  const showPlusPersona = hasPlusAccess && onboarded;
+  const displayBio = sanitizeBioForTier(bio, hasPlusAccess, { onboarded }, getDefaultBio(locale));
+  const displayTravelStyle = showPlusPersona ? travelStyle : "";
+  const displayCompanionSummary = showPlusPersona ? companionSummary : "";
 
   const handleSaveProfile = async () => {
+    const trimmedName = draftName.trim();
+    if (!trimmedName) {
+      toast.error(t("profile.nameRequired"));
+      return;
+    }
     setSaving(true);
     try {
-      await saveUserProfile({ displayName, bio, travelStyle });
+      await saveUserProfile({
+        displayName: trimmedName,
+        bio: draftBio,
+        ...(showPlusPersona ? { travelStyle: draftTravelStyle } : {}),
+      });
+      setDisplayName(trimmedName);
+      setBio(draftBio);
+      if (showPlusPersona) {
+        setTravelStyle(draftTravelStyle);
+      }
       setEditing(false);
       toast.success(t("profile.saved"));
     } catch (e) {
@@ -340,6 +425,20 @@ function Profile() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const beginProfileEditing = () => {
+    setDraftName(displayName);
+    setDraftBio(bio);
+    setDraftTravelStyle(travelStyle);
+    setEditing(true);
+  };
+
+  const cancelProfileEditing = () => {
+    setDraftName(displayName);
+    setDraftBio(bio);
+    setDraftTravelStyle(travelStyle);
+    setEditing(false);
   };
 
   const handleCoverPick = (file: File) => {
@@ -362,9 +461,9 @@ function Profile() {
     try {
       console.info("[IMAGE_UPLOAD]", "cover", `bytes=${blob.size}`);
       const finalUrl = await applyProfileCover(blob);
-      broadcastCoverUpdate(finalUrl);
+      const revision = Date.now();
+      broadcastCoverUpdate(finalUrl, revision);
       revokeCoverPreview();
-      setCoverUrl(finalUrl);
       setCoverCropFile(null);
       toast.success("封面已更新");
     } catch (e) {
@@ -381,7 +480,6 @@ function Profile() {
       await removeProfileCover();
       broadcastCoverUpdate(null);
       revokeCoverPreview();
-      setCoverUrl(null);
       setCoverCropFile(null);
       toast.success("已移除封面，可繼續選擇新圖片");
     } catch (e) {
@@ -420,7 +518,9 @@ function Profile() {
       });
       console.info("[IMAGE_UPLOAD]", "avatar", `bytes=${blob.size}`);
       const finalUrl = await applyProfileAvatar(blob);
-      broadcastAvatarUpdate(finalUrl);
+      const revision = Date.now();
+      broadcastAvatarUpdate(finalUrl, revision);
+      setAvatarPreview(null);
       setAvatarCropFile(null);
       toast.success("頭像已更新");
     } catch (e) {
@@ -457,7 +557,7 @@ function Profile() {
     <div className="profile-page flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-3 no-scrollbar">
       <div className="overflow-visible rounded-[2rem] border border-border bg-card shadow-soft">
         <ProfileCover
-          coverUrl={coverPreviewUrl ?? coverUrl}
+          coverUrl={coverPreviewUrl ?? coverSrc}
           busy={coverApplying || coverRemoving}
           onPress={() => {
             if (!coverApplying && !coverRemoving) {
@@ -545,37 +645,39 @@ function Profile() {
                 <label className="block">
                   <span className="text-[11px] text-muted-foreground">{t("profile.name")}</span>
                   <input
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
                     className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
                   />
                 </label>
                 <label className="block">
                   <span className="text-[11px] text-muted-foreground">{t("profile.bio")}</span>
                   <textarea
-                    value={bio}
-                    onChange={(e) => setBio(e.target.value)}
+                    value={draftBio}
+                    onChange={(e) => setDraftBio(e.target.value)}
                     rows={2}
                     className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
                     placeholder={t("profile.bioPlaceholder")}
                   />
                 </label>
-                <label className="block">
-                  <span className="text-[11px] text-muted-foreground">
-                    {t("profile.travelStyle")}
-                  </span>
-                  <textarea
-                    value={travelStyle}
-                    onChange={(e) => setTravelStyle(e.target.value)}
-                    rows={2}
-                    className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
-                    placeholder={t("profile.travelStylePlaceholder")}
-                  />
-                </label>
+                {hasPlusAccess && onboarded ? (
+                  <label className="block">
+                    <span className="text-[11px] text-muted-foreground">
+                      {t("profile.travelStyle")}
+                    </span>
+                    <textarea
+                      value={draftTravelStyle}
+                      onChange={(e) => setDraftTravelStyle(e.target.value)}
+                      rows={2}
+                      className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
+                      placeholder={t("profile.travelStylePlaceholder")}
+                    />
+                  </label>
+                ) : null}
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => setEditing(false)}
+                    onClick={cancelProfileEditing}
                     className="flex-1 rounded-full border border-border py-2.5 text-sm"
                   >
                     {cancelLabel}
@@ -605,21 +707,21 @@ function Profile() {
                         </span>
                       ) : null}
                     </div>
-                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{bio}</p>
-                    {hasPlusAccess && onboarded && companionSummary ? (
+                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{displayBio}</p>
+                    {displayCompanionSummary ? (
                       <p className="mt-2 text-sm leading-relaxed text-foreground/75">
-                        {companionSummary}
+                        {displayCompanionSummary}
                       </p>
                     ) : null}
-                    {travelStyle ? (
+                    {displayTravelStyle ? (
                       <p className="mt-2 text-sm leading-relaxed text-foreground/80">
-                        {travelStyle}
+                        {displayTravelStyle}
                       </p>
                     ) : null}
                   </div>
                   <button
                     type="button"
-                    onClick={() => setEditing(true)}
+                    onClick={beginProfileEditing}
                     className="rounded-full bg-secondary p-2 text-muted-foreground"
                     aria-label={t("profile.editProfile")}
                   >
@@ -685,10 +787,10 @@ function Profile() {
         )}
       </section>
 
-      {hasPlusAccess && quizCompleted ? (
+      {showPlusPersona ? (
         <section className="mt-4 rounded-3xl bg-secondary p-5">
           <p className="font-display text-[18px]">
-            {travelStyle || personalityType || "慢步放鬆型"}
+            {displayTravelStyle || personalityType || "慢步放鬆型"}
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
             標籤：{travelTags.length > 0 ? travelTags.join("、") : "安靜、散步、咖啡、自然、慢行"}
@@ -732,6 +834,9 @@ function Profile() {
 
       <p className="mt-8 text-center text-[11px] leading-relaxed text-muted-foreground">
         {t("profile.footer")}
+      </p>
+      <p className="mt-2 text-center font-mono text-[10px] text-muted-foreground/70">
+        {ROAMIE_BUILD_DEBUG}
       </p>
 
       {user ? (

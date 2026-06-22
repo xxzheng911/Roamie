@@ -1,26 +1,31 @@
 import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 import { distanceMeters } from "@/lib/geo-distance";
+import {
+  homeNearbyPeriodFromHour,
+  localHourInTimeZone,
+  matchesDayPreferredPlace,
+  matchesNightPreferredPlace,
+  openStatusSortRank,
+  type HomeNearbyPeriod,
+  type HomeNearbyPickPlace,
+} from "@/lib/home-nearby-eligibility";
 import { classifyWeatherScene } from "@/lib/weather-scene";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { weatherRankingBoost } from "@/lib/weather/weather-place-ranking";
 
-export type HomeTimePeriod = "day" | "evening" | "night";
+export type HomeTimePeriod = "day" | "late_night";
 
 const HOME_NEARBY_MIN_RATING = 4.0;
 
+/** @deprecated 使用 homeNearbyPeriodFromHour */
 export function homeTimePeriodFromHour(hour: number): HomeTimePeriod {
-  if (hour >= 22 || hour < 5) return "night";
-  if (hour >= 17) return "evening";
-  return "day";
+  return homeNearbyPeriodFromHour(hour);
 }
 
 export function localHour(at: Date, timeZone = "Asia/Taipei"): number {
-  return Number(
-    new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone }).format(at),
-  );
+  return localHourInTimeZone(at, timeZone);
 }
 
-/** 雨天：降雨機率、天氣狀態（Rain / Drizzle / Thunderstorm） */
 export function isRainyForHomeRecommendations(
   weather: WeatherSummary | null | undefined,
 ): boolean {
@@ -48,46 +53,22 @@ type RankablePlace = {
   categoryId?: string | null;
 };
 
-function placeText(place: RankablePlace): string {
-  const types = [...(place.types ?? []), place.primaryType ?? ""].filter(Boolean).join(" ");
-  return `${place.name ?? ""} ${types}`;
+function ratingTier(rating: number | null | undefined, reviews: number | null | undefined): number {
+  if ((rating ?? 0) <= 0 && (reviews ?? 0) <= 0) return 3;
+  if ((rating ?? 0) < 3.8) return 2;
+  if ((rating ?? 0) < 4.0) return 1;
+  return 0;
 }
 
-function openStatusRank(openStatus?: PlaceOpenStatus | null): number {
-  if (openStatus === "open" || openStatus === "closing_soon") return 0;
-  if (openStatus === "unknown" || openStatus == null) return 1;
-  return 2;
-}
-
-function ratingTier(rating: number | null | undefined): number {
-  return (rating ?? 0) >= HOME_NEARBY_MIN_RATING ? 0 : 1;
-}
-
-function timePeriodBoost(place: RankablePlace, period: HomeTimePeriod): number {
-  const text = placeText(place);
-
-  switch (period) {
-    case "day":
-      if (/咖啡|cafe|餐廳|餐館|小吃|景點|博物|美術|百貨|商場|商圈|展覽|department|museum/i.test(text)) {
-        return -2;
-      }
-      if (/酒吧|宵夜|居酒|深夜/i.test(text)) return 4;
-      return 0;
-    case "evening":
-      if (/景觀|夜景|展望|觀景|view|咖啡|cafe|商圈|百貨|商場|餐廳|晚餐|餐酒/i.test(text)) {
-        return -2;
-      }
-      return 0;
-    case "night":
-      if (/酒吧|居酒|宵夜|夜市|深夜|餐酒|night|pub|bar|izakaya/i.test(text)) return -3;
-      if (/博物|美術|公園|步道|早午餐|早餐|brunch/i.test(text)) return 5;
-      return 0;
+function periodBoost(place: RankablePlace, period: HomeTimePeriod): number {
+  const pick = place as HomeNearbyPickPlace;
+  if (period === "late_night") {
+    if (matchesNightPreferredPlace(pick)) return -4;
+    if (/博物|美術|公園|書店|hotel|lodging|library/i.test(place.name ?? "")) return 8;
+    return 0;
   }
-}
-
-function rainyNightBoost(place: RankablePlace): number {
-  const text = placeText(place);
-  if (/咖啡|cafe|宵夜|餐酒|居酒|百貨|商場|mall|展覽|博物|美術/i.test(text)) return -2;
+  if (matchesDayPreferredPlace(pick)) return -3;
+  if (/酒吧|宵夜|居酒|深夜|night|pub/i.test(place.name ?? "")) return 4;
   return 0;
 }
 
@@ -95,23 +76,20 @@ function weatherBoostWithRainOverride(
   place: RankablePlace,
   weather: WeatherSummary | null | undefined,
 ): number {
-  const text = placeText(place);
+  const text = `${place.name ?? ""} ${[...(place.types ?? []), place.primaryType ?? ""].join(" ")}`;
   let boost = weatherRankingBoost(weather, text);
 
   if (!isRainyForHomeRecommendations(weather)) return boost;
 
   const outdoor =
-    /海邊|海灘|沙灘|步道|登山|健行|露營|山區|峽谷|瀑布|camp|beach|hiking|trail|河岸|河濱/i.test(
-      text,
-    );
+    /海邊|海灘|沙灘|步道|登山|健行|露營|山區|camp|beach|hiking|trail|河濱/i.test(text);
   if (outdoor && (place.rating ?? 0) >= 4.7 && (place.userRatingCount ?? 0) >= 100) {
     boost = Math.min(boost, 3);
   }
-
   return boost;
 }
 
-/** 首頁附近地點：依 GPS 時段、天氣調整排序（openNow → 情境 → 評分 → 距離） */
+/** 首頁附近地點：openNow → 時段偏好 → 評分 → 距離 */
 export function sortHomeNearbyPlacesWithContext<T extends RankablePlace>(
   places: T[],
   origin: { lat: number; lng: number },
@@ -119,32 +97,25 @@ export function sortHomeNearbyPlacesWithContext<T extends RankablePlace>(
     weather?: WeatherSummary | null;
     at?: Date;
     timeZone?: string;
+    period?: HomeTimePeriod;
   },
 ): T[] {
   const at = options?.at ?? new Date();
   const tz = options?.timeZone ?? "Asia/Taipei";
-  const hour = localHour(at, tz);
-  const period = homeTimePeriodFromHour(hour);
-  const rainy = isRainyForHomeRecommendations(options?.weather ?? null);
-  const rainyNight = rainy && period === "night";
+  const period =
+    options?.period ?? homeNearbyPeriodFromHour(localHourInTimeZone(at, tz));
 
   return [...places].sort((a, b) => {
-    const openA = openStatusRank(a.openStatus);
-    const openB = openStatusRank(b.openStatus);
+    const openA = openStatusSortRank(a.openStatus);
+    const openB = openStatusSortRank(b.openStatus);
     if (openA !== openB) return openA - openB;
 
-    const contextA =
-      timePeriodBoost(a, period) +
-      weatherBoostWithRainOverride(a, options?.weather ?? null) +
-      (rainyNight ? rainyNightBoost(a) : 0);
-    const contextB =
-      timePeriodBoost(b, period) +
-      weatherBoostWithRainOverride(b, options?.weather ?? null) +
-      (rainyNight ? rainyNightBoost(b) : 0);
+    const contextA = periodBoost(a, period) + weatherBoostWithRainOverride(a, options?.weather ?? null);
+    const contextB = periodBoost(b, period) + weatherBoostWithRainOverride(b, options?.weather ?? null);
     if (contextA !== contextB) return contextA - contextB;
 
-    const ratingTierA = ratingTier(a.rating);
-    const ratingTierB = ratingTier(b.rating);
+    const ratingTierA = ratingTier(a.rating, a.userRatingCount);
+    const ratingTierB = ratingTier(b.rating, b.userRatingCount);
     if (ratingTierA !== ratingTierB) return ratingTierA - ratingTierB;
 
     const ratingA = a.rating ?? 0;
@@ -181,8 +152,8 @@ export function sortExploreCategoryPlaces<T extends RankablePlace>(
 ): T[] {
   if (categoryId === "food") {
     return [...places].sort((a, b) => {
-      const openA = openStatusRank(a.openStatus);
-      const openB = openStatusRank(b.openStatus);
+      const openA = openStatusSortRank(a.openStatus);
+      const openB = openStatusSortRank(b.openStatus);
       if (openA !== openB) return openA - openB;
 
       const ratingA = a.rating ?? 0;
@@ -207,8 +178,8 @@ export function sortExploreCategoryPlaces<T extends RankablePlace>(
 
   if (categoryId === "night") {
     return [...places].sort((a, b) => {
-      const openA = openStatusRank(a.openStatus);
-      const openB = openStatusRank(b.openStatus);
+      const openA = openStatusSortRank(a.openStatus);
+      const openB = openStatusSortRank(b.openStatus);
       if (openA !== openB) return openA - openB;
 
       const ratingA = a.rating ?? 0;

@@ -26,6 +26,10 @@ type Props = {
   onChangeMinutes: (minutes: number) => void;
   disabled?: boolean;
   className?: string;
+  /** 隱藏按鈕內「停留」前綴（外層已顯示時使用） */
+  hideLabel?: boolean;
+  /** 無邊框膠囊，與外層文字同一行 */
+  inline?: boolean;
 };
 
 /** 滾輪式停留時間（15 分鐘刻度） */
@@ -34,6 +38,8 @@ export function RoamieDurationPicker({
   onChangeMinutes,
   disabled,
   className,
+  hideLabel = false,
+  inline = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const split = splitDurationMinutes(valueMinutes);
@@ -58,11 +64,13 @@ export function RoamieDurationPicker({
         disabled={disabled}
         onClick={() => setOpen(true)}
         className={cn(
-          "inline-flex items-center gap-1 rounded-lg border border-border bg-secondary px-2 py-0.5 text-xs font-medium text-foreground transition active:scale-[0.98] disabled:opacity-50",
+          inline
+            ? "inline-flex items-center gap-0 border-0 bg-transparent p-0 text-sm font-medium text-foreground shadow-none transition active:opacity-70 disabled:opacity-50"
+            : "inline-flex items-center gap-1 rounded-lg border border-border bg-secondary px-2 py-0.5 text-xs font-medium text-foreground transition active:scale-[0.98] disabled:opacity-50",
           className,
         )}
       >
-        <span className="text-muted-foreground">停留</span>
+        {!hideLabel ? <span className="text-muted-foreground">停留</span> : null}
         <span>{formatDurationMinutes(valueMinutes)}</span>
       </button>
 

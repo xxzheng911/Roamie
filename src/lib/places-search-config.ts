@@ -15,8 +15,14 @@ export type ExploreCategory = {
   nearbyGroups?: string[][];
 };
 
-/** 探索地圖「全部」分頁：拆成實際子分類查詢，不用單一模糊 query */
-export const EXPLORE_ALL_SUBCATEGORY_IDS = ["coffee", "sight", "district", "food"] as const;
+/** 探索地圖「全部」分頁：聚合子分類結果 */
+export const EXPLORE_ALL_SUBCATEGORY_IDS = [
+  "coffee",
+  "sight",
+  "district",
+  "food",
+  "night",
+] as const;
 
 export function getExploreCategoryById(id: string): ExploreCategory | undefined {
   return EXPLORE_CATEGORIES.find((c) => c.id === id);
@@ -41,7 +47,7 @@ export const EXPLORE_CATEGORIES: ExploreCategory[] = [
     query: "咖啡廳 景觀咖啡 老宅咖啡 甜點",
     mode: "multi",
     nearbyGroups: [
-      ["cafe"],
+      ["cafe", "coffee_shop"],
       ["bakery", "dessert_shop", "ice_cream_shop"],
     ],
   },
@@ -56,6 +62,12 @@ export const EXPLORE_CATEGORIES: ExploreCategory[] = [
       "art_gallery",
       "historical_landmark",
       "monument",
+      "cultural_center",
+      "cultural_landmark",
+      "historical_place",
+      "hindu_temple",
+      "buddhist_temple",
+      "place_of_worship",
     ],
   },
   {
@@ -73,7 +85,7 @@ export const EXPLORE_CATEGORIES: ExploreCategory[] = [
     label: "美食",
     query: "餐廳 小吃 火鍋 燒肉 壽司 在地特色",
     mode: "nearby",
-    includedTypes: ["restaurant", "meal_takeaway", "food_store"],
+    includedTypes: ["restaurant", "meal_takeaway", "fast_food_restaurant", "food_store"],
   },
   {
     id: "night",
@@ -162,6 +174,16 @@ export function getExploreTextFallbackQueries(
   }
   if (categoryId === "night") {
     return inTaiwan ? NIGHT_TEXT_FALLBACK_QUERIES : NIGHT_FALLBACK_INTL;
+  }
+  if (categoryId === "food") {
+    return inTaiwan
+      ? ["美食", "餐廳", "小吃", "拉麵", "燒肉", "火鍋"]
+      : ["restaurant", "food", "local food"];
+  }
+  if (categoryId === "sight") {
+    return inTaiwan
+      ? ["景點", "博物館", "展覽", "文化景點", "地標"]
+      : ["tourist attraction", "museum", "landmark"];
   }
   return [];
 }

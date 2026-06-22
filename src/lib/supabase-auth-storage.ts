@@ -1,10 +1,18 @@
 import { Preferences } from "@capacitor/preferences";
 import type { SupportedStorage } from "@supabase/supabase-js";
 import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
+import { logAuthBoot } from "@/lib/auth-boot-log";
 import { detectPlatform } from "@/services/platform";
 
 const PREF_PREFIX = "roamie.supabase.auth.";
 const SUPABASE_STORAGE_KEY = "roamie-auth";
+
+/** 同步讀取已 hydrate 的 auth JSON（memory → localStorage） */
+export function readHydratedAuthSessionRaw(): string | null {
+  const cached = memoryCache.get(SUPABASE_STORAGE_KEY);
+  if (cached != null) return cached;
+  return readLocal(SUPABASE_STORAGE_KEY);
+}
 export const SUPABASE_PKCE_VERIFIER_KEY = `${SUPABASE_STORAGE_KEY}-code-verifier`;
 
 function isNativeCapacitor(): boolean {
@@ -129,7 +137,12 @@ function createCapacitorAuthStorage(): SupportedStorage {
     setItem: async (key: string, value: string) => {
       memoryCache.set(key, value);
       writeLocal(key, value);
-      schedulePreferencesPersist(key, value);
+      if (key === SUPABASE_STORAGE_KEY) {
+        await persistToPreferences(key, value);
+        logAuthStorageDebug("session.persisted", { key, bytes: value.length });
+      } else {
+        schedulePreferencesPersist(key, value);
+      }
     },
     removeItem: async (key: string) => {
       memoryCache.delete(key);
@@ -139,10 +152,39 @@ function createCapacitorAuthStorage(): SupportedStorage {
   };
 }
 
-/** Call after Capacitor bridge is up (app init / login mount). */
+async function hydrateSessionFromPreferences(key: string): Promise<boolean> {
+  if (readLocal(key) != null) return true;
+  const ready = await ensurePreferencesBridge();
+  if (!ready) return false;
+  try {
+    const { value } = await Preferences.get({ key: prefKey(key) });
+    if (value == null) return false;
+    memoryCache.set(key, value);
+    writeLocal(key, value);
+    logAuthStorageDebug("session.hydrated", { key, from: "preferences" });
+    return true;
+  } catch (e) {
+    console.warn("[auth-storage] session hydrate failed", key, e);
+    return false;
+  }
+}
+
+/** Call after Capacitor bridge is up (app init / login mount / cold-start routing). */
+let warmSupabaseAuthStorageDone = false;
+
+export function resetWarmSupabaseAuthStorage(): void {
+  warmSupabaseAuthStorageDone = false;
+}
+
 export async function warmSupabaseAuthStorage(): Promise<void> {
   if (!isNativeCapacitor()) return;
-  await ensurePreferencesBridge();
+  if (warmSupabaseAuthStorageDone) return;
+  warmSupabaseAuthStorageDone = true;
+  const hydrated = await hydrateSessionFromPreferences(SUPABASE_STORAGE_KEY);
+  if (hydrated) {
+    logAuthBoot("session-hydrated-from-preferences");
+  }
+  await restoreOAuthPkceVerifier();
 }
 
 /** 開啟 OAuth 瀏覽器前：把 PKCE verifier 寫入 localStorage + Preferences（避免 ASWeb 回來後 memory 被清） */

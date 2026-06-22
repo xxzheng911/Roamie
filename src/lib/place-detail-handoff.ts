@@ -1,5 +1,11 @@
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import type { NormalizedOpeningStatusValue } from "@/lib/normalized-opening-status";
+import {
+  cachePlaceImages,
+  cachePlaceOpeningFromResult,
+  readPlaceRuntimeCache,
+} from "@/lib/place-runtime-cache";
 
 const HANDOFF_KEY = "roamie:place-detail-handoff";
 
@@ -11,11 +17,17 @@ export type PlaceDetailHandoff = {
   lng: number | null;
   photoUrl?: string | null;
   photoName?: string | null;
+  generatedImageUrl?: string | null;
+  fallbackImageUrl?: string | null;
   rating?: number | null;
   userRatingCount?: number | null;
   category?: string | null;
   categoryId?: string;
   reason?: string;
+  openNow?: boolean | null;
+  normalizedOpeningStatus?: NormalizedOpeningStatusValue;
+  normalizedOpeningLabel?: string;
+  openStatusLabel?: string;
   snapshot?: HomeNearbyPick;
 };
 
@@ -35,9 +47,29 @@ export function pickToPlaceDetailHandoff(pick: HomeNearbyPick): PlaceDetailHando
     pick.id?.trim() ||
     (pick.lat != null && pick.lng != null ? latLngFallbackPlaceId(pick.lat, pick.lng) : "");
 
+  const cached = isGooglePlaceId(placeId) ? readPlaceRuntimeCache(placeId) : null;
+  const googlePhoto =
+    pick.photoName ? (buildPlacePhotoUrl(pick.photoName, 800) ?? null) : null;
+  const generatedImageUrl =
+    pick.generatedImageUrl ??
+    pick.fallbackImageUrl ??
+    cached?.generatedImageUrl ??
+    cached?.fallbackImageUrl ??
+    null;
   const photoUrl =
+    googlePhoto ??
     pick.coverImageUrl ??
-    (pick.photoName ? (buildPlacePhotoUrl(pick.photoName, 800) ?? null) : null);
+    cached?.coverImageUrl ??
+    generatedImageUrl;
+
+  if (isGooglePlaceId(placeId)) {
+    cachePlaceImages(placeId, {
+      coverImageUrl: photoUrl,
+      generatedImageUrl,
+      fallbackImageUrl: generatedImageUrl,
+    });
+    cachePlaceOpeningFromResult(pick);
+  }
 
   return {
     placeId,
@@ -47,11 +79,17 @@ export function pickToPlaceDetailHandoff(pick: HomeNearbyPick): PlaceDetailHando
     lng: pick.lng,
     photoUrl,
     photoName: pick.photoName,
+    generatedImageUrl,
+    fallbackImageUrl: generatedImageUrl,
     rating: pick.rating,
     userRatingCount: pick.userRatingCount,
     category: pick.displayCategory ?? pick.primaryType ?? null,
     categoryId: pick.categoryId,
     reason: pick.reason,
+    openNow: pick.openNow ?? null,
+    normalizedOpeningStatus: pick.normalizedOpeningStatus,
+    normalizedOpeningLabel: pick.normalizedOpeningLabel ?? pick.openStatusLabel,
+    openStatusLabel: pick.normalizedOpeningLabel ?? pick.openStatusLabel,
     snapshot: pick,
   };
 }

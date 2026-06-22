@@ -1,11 +1,10 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { ArrowRight, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, Crown, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
 import { useAccessOptional } from "@/hooks/use-access";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
-import { getClientAuthSession } from "@/lib/auth-session";
 import { forceFreeMode, forcePlusMode, applyMockSubscription } from "@/lib/access/dev-actions";
 import { markIntroCompleted } from "@/lib/plan-tier";
 import {
@@ -37,16 +36,8 @@ export const Route = createFileRoute("/welcome")({
     }
 
     logSkipOnboarding("welcome-beforeLoad");
-    const session = await getClientAuthSession();
-    const hasSession = Boolean(session?.user);
-    const next = guardStartupTarget(hasSession ? "/" : "/login", "welcome-beforeLoad");
-    const current = readBrowserPathname();
-    if (shouldSkipStartupNavigation(current, next)) {
-      logNavSkipSameRoute({ source: "welcome-beforeLoad", current, target: next });
-      return;
-    }
-    await logStartupNavigationContext("welcome-beforeLoad", next);
-    throw redirect({ to: next });
+    // 已完成 onboarding 時勿 throw redirect — 會在 router bootstrap 階段 reject YR()（REACT_UNCAUGHT）。
+    // 改由 OnboardingGate → AppBootRouteSync 在 router 就緒後 navigate(replace)。
   },
   component: Welcome,
 });
@@ -228,10 +219,23 @@ function Welcome() {
                     </button>
                   </div>
 
-                  <div className="rounded-3xl border border-dashed border-border bg-card/50 p-5">
-                    <p className="font-display text-lg">Roamie Plus</p>
-                    <p className="mt-1 text-xs text-muted-foreground">更懂你的 AI 旅伴</p>
-                    <ul className="mt-4 space-y-2 text-sm text-muted-foreground">
+                  <div className="relative overflow-hidden rounded-3xl border border-clay/25 bg-gradient-to-br from-[hsl(38_42%_97%)] via-card to-[hsl(34_32%_93%)] p-5 shadow-soft ring-1 ring-clay/15">
+                    <div
+                      aria-hidden
+                      className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-clay/10 blur-2xl"
+                    />
+                    <div
+                      aria-hidden
+                      className="pointer-events-none absolute inset-x-5 top-0 h-px bg-gradient-to-r from-transparent via-clay/25 to-transparent"
+                    />
+                    <div className="relative flex items-center gap-2.5">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-clay/12 ring-1 ring-clay/20">
+                        <Crown className="h-4 w-4 text-clay" strokeWidth={1.75} />
+                      </span>
+                      <p className="font-display text-lg leading-tight">Roamie Plus</p>
+                    </div>
+                    <p className="relative mt-1 text-xs text-muted-foreground">更懂你的 AI 旅伴</p>
+                    <ul className="relative mt-4 space-y-2 text-sm text-foreground/88">
                       <li>· AI 長期記住你的旅行偏好</li>
                       <li>· 更深度的個人化推薦</li>
                       <li>· 旅行人格與心情分析</li>
@@ -243,7 +247,7 @@ function Welcome() {
                       type="button"
                       disabled={finishing}
                       onClick={() => void completeSelection("plus")}
-                      className="relative z-10 mt-5 w-full touch-manipulation rounded-full border border-border bg-card py-3.5 text-sm font-medium text-foreground disabled:opacity-50"
+                      className="relative z-10 mt-5 w-full touch-manipulation rounded-full border border-clay/40 bg-card/95 py-3.5 text-sm font-semibold text-foreground shadow-soft ring-1 ring-clay/10 transition active:scale-[0.99] disabled:opacity-50"
                     >
                       {finishing ? (
                         <span className="inline-flex items-center gap-2">

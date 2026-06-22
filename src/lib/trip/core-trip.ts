@@ -175,23 +175,17 @@ export function attachCoreTripToPayload(payload: RoamiePayloadV2, coreTrip: Core
 export async function getCoreTripById(tripId: string): Promise<CoreTrip | null> {
   const row = await getItinerary(tripId);
   if (!row) return null;
-  const core = toCoreTrip(row);
-  console.info("[CORE_TRIP] loaded", core.id);
-  return core;
+  return toCoreTrip(row);
 }
 
 export async function getLatestCoreTrip(): Promise<CoreTrip | null> {
   const rows = await listItineraries();
   const row = rows[0];
   if (!row) return null;
-  const core = toCoreTrip(row);
-  console.info("[CORE_TRIP] loaded", core.id);
-  return core;
+  return toCoreTrip(row);
 }
 
 export async function listCoreTrips(): Promise<CoreTrip[]> {
   const rows = await listItineraries();
-  const cores = rows.map(toCoreTrip);
-  for (const trip of cores) console.info("[CORE_TRIP] loaded", trip.id);
-  return cores;
+  return rows.map(toCoreTrip);
 }

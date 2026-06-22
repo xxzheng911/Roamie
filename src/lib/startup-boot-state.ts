@@ -1,4 +1,5 @@
 import type { StartupPath } from "@/lib/post-auth-navigation";
+import { isOnboardingCompletedSync } from "@/lib/onboarding-storage";
 import { readBrowserPathname } from "@/lib/startup-path";
 
 let bootCompleted = false;
@@ -117,7 +118,10 @@ export function tryStartOnboardingGateBoot(): boolean {
 export function shouldRunFullStartupBoot(): boolean {
   if (bootCompleted || welcomeBootSettled) return false;
   const path = normalizeRoute(readBrowserPathname());
-  if (path === "/welcome" || path === "/onboarding") return false;
+  if (path === "/welcome" || path === "/onboarding") {
+    // 已完成 onboarding 卻停在 /welcome（常見：Preferences 有旗標但 inline 腳本讀不到）→ 須 AppBootRouteSync
+    return isOnboardingCompletedSync();
+  }
   return true;
 }
 

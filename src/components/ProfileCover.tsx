@@ -1,4 +1,5 @@
 import { Loader2 } from "lucide-react";
+import { memo } from "react";
 import defaultCover from "@/assets/roamie-default-cover.png";
 
 type Props = {
@@ -7,7 +8,7 @@ type Props = {
   onPress?: () => void;
 };
 
-export function ProfileCover({ coverUrl, busy = false, onPress }: Props) {
+export const ProfileCover = memo(function ProfileCover({ coverUrl, busy = false, onPress }: Props) {
   return (
     <button
       type="button"
@@ -46,4 +47,4 @@ export function ProfileCover({ coverUrl, busy = false, onPress }: Props) {
       </div>
     </button>
   );
-}
+});

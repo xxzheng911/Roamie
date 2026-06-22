@@ -9,6 +9,7 @@ import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { useI18n } from "@/hooks/use-i18n";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
+import { useAccess } from "@/hooks/use-access";
 import { usePlaceNavigation } from "@/hooks/use-place-navigation";
 import { useAvatar } from "@/hooks/use-avatar";
 import { consumePlaceDetailHandoff } from "@/lib/place-detail-handoff";
@@ -20,6 +21,7 @@ import {
   logPlaceDetailParamsReceived,
   logPlaceDetailScreenMounted,
 } from "@/lib/place-detail-log";
+import { placeOpeningStatusLabel } from "@/lib/normalized-opening-status";
 import {
   buildPlaceImageUrls,
   canFetchGooglePlaceDetails,
@@ -88,6 +90,7 @@ function PlaceDetailPage() {
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
   const { t, locale } = useI18n();
+  const { hasPlusAccess } = useAccess();
   const fetchPlaceDetailsFn = useServerFn(getPlaceDetails);
   const fetchPlaceIntroFn = useServerFn(getPlaceIntro);
   const fetchWeatherFn = useServerFn(getWeather);
@@ -97,7 +100,7 @@ function PlaceDetailPage() {
   const handoffRef = useRef(consumePlaceDetailHandoff());
   const [place, setPlace] = useState<PlaceDetailViewModel | null>(() => {
     const handoff = resolvePlaceDetailHandoff(search, handoffRef.current);
-    return handoff ? handoffToPlaceDetailData(handoff) : null;
+    return handoff ? handoffToPlaceDetailData(handoff, locale) : null;
   });
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -126,7 +129,7 @@ function PlaceDetailPage() {
       return;
     }
 
-    const base = handoffToPlaceDetailData(handoff);
+    const base = handoffToPlaceDetailData(handoff, locale);
     setPlace(base);
     setLoading(true);
     setFetchError(null);
@@ -143,7 +146,7 @@ function PlaceDetailPage() {
     let cancelled = false;
     const applyFetched = (fetched: PlaceDetailsScreenResult) => {
       logPlaceDetailFetchSuccess(handoff.placeId);
-      setPlace(mergeFetchedPlace(base, fetched));
+      setPlace(mergeFetchedPlace(base, fetched, locale));
       setFetchError(null);
       setUsedFallback(false);
     };
@@ -214,6 +217,7 @@ function PlaceDetailPage() {
             personalityType: profile?.personalityType,
             personalitySummary: profile?.personalitySummary,
             aiPreferences: profile?.aiPreferences,
+            hasPlusAccess,
           }),
         );
         setSavedNames(new Set(saved.map((s) => s.name)));
@@ -229,7 +233,7 @@ function PlaceDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [locale, place?.lat, place?.lng, userLocation.lat, userLocation.lng, fetchWeatherFn]);
+  }, [locale, place?.lat, place?.lng, userLocation.lat, userLocation.lng, fetchWeatherFn, hasPlusAccess]);
 
   useEffect(() => {
     if (!place?.id || !canFetchGooglePlaceDetails(place.id)) {
@@ -299,8 +303,17 @@ function PlaceDetailPage() {
           googleFieldsOnly: Boolean(google.googleFormattedAddress),
         },
       ) ??
-      (place.address ? sanitizeGooglePlaceAddress(place.address) : null);
-    return { ...place, ...introExtra, address };
+      (place.address ? sanitizeGooglePlaceAddress(place.address, locale) : null);
+    return {
+      ...place,
+      ...introExtra,
+      address,
+      openStatusLabel: placeOpeningStatusLabel(place) ?? place.openStatusLabel,
+      normalizedOpeningLabel:
+        place.normalizedOpeningLabel ??
+        placeOpeningStatusLabel(place) ??
+        place.openStatusLabel,
+    };
   }, [place, introExtra, locale]);
 
   const distanceLabel = useMemo(() => {

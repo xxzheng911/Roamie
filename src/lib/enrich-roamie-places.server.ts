@@ -103,11 +103,16 @@ async function enrichRecommendations(
   const hoursMap = await lookupPlacesHoursBatch(
     recs.map((r) => ({
       name: r.name,
+      placeId: r.googlePlaceId,
       address: r.address,
       lat: r.lat,
       lng: r.lng,
     })),
     center,
+    {
+      caller: "enrichRecommendations",
+      screen: "ai_recommend",
+    },
   );
 
   const normalized = recs.map((r) => normalizeRecommendationItem(r));
@@ -148,6 +153,9 @@ async function enrichItinerary(
   items: RoamieItineraryItem[],
   opts: EnrichRoamieOptions,
 ): Promise<RoamieItineraryItem[]> {
+  const { beginPlacesFlow, endPlacesFlow } = await import("@/lib/places-api-stats");
+  const flow = beginPlacesFlow("itinerary_once");
+  try {
   const center = { lat: opts.lat!, lng: opts.lng! };
   const names = [...new Set(items.map((i) => i.placeName).filter(Boolean))];
   if (!names.length) return items;
@@ -158,6 +166,10 @@ async function enrichItinerary(
       return { name, lat: item?.lat, lng: item?.lng };
     }),
     center,
+    {
+      caller: "enrichItinerary",
+      screen: "itinerary",
+    },
   );
 
   const kept: RoamieItineraryItem[] = [];
@@ -193,6 +205,9 @@ async function enrichItinerary(
   }
 
   return kept;
+  } finally {
+    endPlacesFlow(flow);
+  }
 }
 
 /** AI 回應後補齊營業時間、依時段排序，深夜套用 Roamie 風格空狀態文案 */
@@ -200,79 +215,87 @@ export async function enrichRoamieResponse(
   response: RoamieResponse,
   ctx: RoamieRequestContext,
 ): Promise<RoamieResponse> {
-  const opts = enrichOptsFromContext(ctx);
-  if (!opts?.lat || !opts.lng) return response;
+  const { endAiPlaceApiSession } = await import("@/lib/recommendation/ai-places-cache");
+  const { endTrackedPlacesFlow } = await import("@/lib/places-api-stats");
 
-  const { recommendations: enrichedRecs, lateNightMode, stats } =
-    await enrichRecommendations(response.recommendations ?? [], opts, ctx);
+  try {
+    const opts = enrichOptsFromContext(ctx);
+    if (!opts?.lat || !opts.lng) return response;
 
-  let finalRecs = enrichedRecs;
-  const selected = ctx.selectedPlaces ?? [];
-  if (selected.length) {
-    const filtered = filterAlreadyRecommendedPlaces(enrichedRecs, {
-      selected,
-      recommended: ctx.recommendedPlaces,
-      rejectedNames: ctx.rejectedPlaceNames,
-      recentNames: ctx.recentRecommendationNames,
-    });
-    finalRecs = mergeRecommendationsWithSelected(selected, filtered, {
-      maxNew: 4,
-      location: ctx.location ?? null,
-    });
-  } else if (enrichedRecs.length) {
-    finalRecs = filterAlreadyRecommendedPlaces(enrichedRecs, {
-      recommended: ctx.recommendedPlaces,
-      rejectedNames: ctx.rejectedPlaceNames,
-      recentNames: ctx.recentRecommendationNames,
-    });
+    const { recommendations: enrichedRecs, lateNightMode, stats } =
+      await enrichRecommendations(response.recommendations ?? [], opts, ctx);
+
+    let finalRecs = enrichedRecs;
+    const selected = ctx.selectedPlaces ?? [];
+    if (selected.length) {
+      const filtered = filterAlreadyRecommendedPlaces(enrichedRecs, {
+        selected,
+        recommended: ctx.recommendedPlaces,
+        rejectedNames: ctx.rejectedPlaceNames,
+        recentNames: ctx.recentRecommendationNames,
+      });
+      finalRecs = mergeRecommendationsWithSelected(selected, filtered, {
+        maxNew: 4,
+        location: ctx.location ?? null,
+      });
+    } else if (enrichedRecs.length) {
+      finalRecs = filterAlreadyRecommendedPlaces(enrichedRecs, {
+        recommended: ctx.recommendedPlaces,
+        rejectedNames: ctx.rejectedPlaceNames,
+        recentNames: ctx.recentRecommendationNames,
+      });
+    }
+
+    const itinerary =
+      response.itinerary?.length && opts.context === "scheduled"
+        ? await enrichItinerary(response.itinerary, opts)
+        : (response.itinerary ?? []);
+
+    const sceneFlow = shouldActivateLateNightSceneFlow(
+      ctx.mood ?? ctx.selectedMood,
+      resolveAt(ctx),
+    );
+    let summary = response.summary;
+    const aiRecCount = response.recommendations?.length ?? 0;
+    if (
+      sceneFlow &&
+      finalRecs.length > 0 &&
+      (aiRecCount < 2 || /要不要看看夜景|附近大部分店家慢慢休息|適合深夜待著/.test(summary))
+    ) {
+      summary = buildLateNightMoodSummary({
+        city: ctx.location?.city ?? ctx.weather?.city,
+        mood: ctx.mood ?? ctx.selectedMood,
+        placeCount: finalRecs.length,
+      });
+    } else if (lateNightMode && finalRecs.length === 0) {
+      summary = buildLateNightCompanionSummary({
+        mood: ctx.mood,
+        weather: ctx.weather,
+        city: ctx.location?.city ?? ctx.weather?.city,
+        stats,
+      });
+    } else if (
+      lateNightMode &&
+      finalRecs.length > 0 &&
+      stats.open + stats.closingSoon <= 1 &&
+      !/休息|深夜|慢慢/.test(summary)
+    ) {
+      summary = `${summary.trim()}\n\n${buildLateNightCompanionSummary({
+        mood: ctx.mood,
+        weather: ctx.weather,
+        city: ctx.location?.city,
+        stats,
+      })}`;
+    }
+
+    return {
+      ...response,
+      summary,
+      recommendations: finalRecs,
+      itinerary,
+    };
+  } finally {
+    endTrackedPlacesFlow("ai_recommend");
+    endAiPlaceApiSession();
   }
-
-  const itinerary =
-    response.itinerary?.length && opts.context === "scheduled"
-      ? await enrichItinerary(response.itinerary, opts)
-      : (response.itinerary ?? []);
-
-  const sceneFlow = shouldActivateLateNightSceneFlow(
-    ctx.mood ?? ctx.selectedMood,
-    resolveAt(ctx),
-  );
-  let summary = response.summary;
-  const aiRecCount = response.recommendations?.length ?? 0;
-  if (
-    sceneFlow &&
-    finalRecs.length > 0 &&
-    (aiRecCount < 2 || /要不要看看夜景|附近大部分店家慢慢休息|適合深夜待著/.test(summary))
-  ) {
-    summary = buildLateNightMoodSummary({
-      city: ctx.location?.city ?? ctx.weather?.city,
-      mood: ctx.mood ?? ctx.selectedMood,
-      placeCount: finalRecs.length,
-    });
-  } else if (lateNightMode && finalRecs.length === 0) {
-    summary = buildLateNightCompanionSummary({
-      mood: ctx.mood,
-      weather: ctx.weather,
-      city: ctx.location?.city ?? ctx.weather?.city,
-      stats,
-    });
-  } else if (
-    lateNightMode &&
-    finalRecs.length > 0 &&
-    stats.open + stats.closingSoon <= 1 &&
-    !/休息|深夜|慢慢/.test(summary)
-  ) {
-    summary = `${summary.trim()}\n\n${buildLateNightCompanionSummary({
-      mood: ctx.mood,
-      weather: ctx.weather,
-      city: ctx.location?.city,
-      stats,
-    })}`;
-  }
-
-  return {
-    ...response,
-    summary,
-    recommendations: finalRecs,
-    itinerary,
-  };
 }

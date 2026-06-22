@@ -27,7 +27,7 @@ const appBundleMetaPath = resolve(root, "src/generated/app-bundle-meta.ts");
 function readAppBundleMetaForInlineLog() {
   try {
     if (!existsSync(appBundleMetaPath)) {
-      return { commitHash: "unknown", commitShort: "unknown", branch: "unknown", buildTime: "unknown" };
+      return { commitHash: "unknown", commitShort: "unknown", branch: "unknown", buildTime: "unknown", buildDebug: "unknown" };
     }
     const text = readFileSync(appBundleMetaPath, "utf8");
     const pick = (name) => {
@@ -39,9 +39,10 @@ function readAppBundleMetaForInlineLog() {
       commitShort: pick("APP_BUILD_COMMIT_SHORT"),
       branch: pick("APP_BUILD_BRANCH"),
       buildTime: pick("APP_BUILD_TIME"),
+      buildDebug: pick("ROAMIE_BUILD_DEBUG"),
     };
   } catch {
-    return { commitHash: "unknown", commitShort: "unknown", branch: "unknown", buildTime: "unknown" };
+    return { commitHash: "unknown", commitShort: "unknown", branch: "unknown", buildTime: "unknown", buildDebug: "unknown" };
   }
 }
 
@@ -101,7 +102,9 @@ console.info("[APP_BUNDLE_VERSION]", {
   commitShort: ${JSON.stringify(appBundleMeta.commitShort)},
   branch: ${JSON.stringify(appBundleMeta.branch)},
   buildTime: ${JSON.stringify(appBundleMeta.buildTime)},
+  buildDebug: ${JSON.stringify(appBundleMeta.buildDebug)},
 });
+console.info("[ROAMIE_BUILD_DEBUG]", ${JSON.stringify(appBundleMeta.buildDebug)});
 try{
   if(window.Capacitor&&typeof window.Capacitor.getPlatform==="function"){
     console.log("[APP_BOOT] platform:",window.Capacitor.getPlatform());
@@ -327,7 +330,7 @@ const CAPACITOR_EARLY_ERROR_LOG = `<script>
  * 必須在 #root 外：createRoot 會清空 #root，router 初始化完成前會白屏。
  * 與 RoamieSplashScreen 共用 class；React 首屏後由 removeStaticBootPlaceholder() 移除。
  */
-const CAPACITOR_BOOT_SPLASH = `<div id="roamie-boot-splash" class="roamie-splash" role="status" aria-live="polite" aria-busy="true">
+const CAPACITOR_BOOT_SPLASH = `<div id="roamie-boot-splash" class="roamie-splash roamie-splash--boot-cream" role="status" aria-live="polite" aria-busy="true">
       <div class="roamie-splash__gradient" aria-hidden="true"></div>
       <div class="roamie-splash__viewport">
         <div class="roamie-splash__content roamie-splash__content--fade-in">
@@ -384,7 +387,16 @@ const CAPACITOR_PATH_NORMALIZE = `<script>
   }
   if(p==="/auth/callback"||location.search.indexOf("code=")>=0)return;
   if(p.startsWith("/auth/"))return;
-  if(p==="/welcome"||p==="/login"||p==="/trip"||p.indexOf("/login/")===0)return;
+  if(p==="/welcome"){
+    if(hasOnboardingCompleted()||hasSession()){
+      console.log("[ONBOARDING_GUARD] boot leave welcome (onboarding complete or session)");
+      history.replaceState(history.state,"","/"+q+h);
+      p="/";
+    }else{
+      return;
+    }
+  }
+  if(p==="/login"||p==="/trip"||p.indexOf("/login/")===0)return;
   if(!hasOnboardingCompleted()){
     if(p!=="/welcome"){
       console.log("[ONBOARDING_GUARD] boot redirect to onboarding (inline)");
@@ -392,13 +404,10 @@ const CAPACITOR_PATH_NORMALIZE = `<script>
     }
     return;
   }
-  var target="/";
-  if(!hasSession())target="/login";
-  if(p!==target){
-    if(target==="/"){
-      console.log("[ONBOARDING_GUARD] blocked home redirect (inline -> login)");
-    }
-    history.replaceState(history.state,"",target+q+h);
+  // Auth routing deferred to React boot — session may live in Capacitor Preferences
+  // when WKWebView localStorage is empty after restart.
+  if(p!=="/"){
+    history.replaceState(history.state,"","/"+q+h);
   }
 })();
 </script>`;
@@ -574,17 +583,25 @@ function patchClientBundleCreateRootReuse(entryRelPath) {
   let code = readFileSync(entryPath, "utf8");
   const mountRe = /(\w+)\.createRoot\(document\.getElementById\("root"\)\s*\?\?\s*document\.body\)\.render\(/;
   const reuseRe =
-    /\(function\(\)\{var _el=document\.getElementById\("root"\)\?\?document\.body;[^]*?\}\)\(\)\.render\(/;
-  const freshMount =
-    '(function(){var _el=document.getElementById("root")??document.body;try{delete _el._capRoot;}catch(_){}var _opts={onUncaughtError:function(err,info){try{var msg=err&&(err.message||String(err))||"(no message)";var boot=window.__ROAMIE_BOOT__||{};boot.error=msg;window.__ROAMIE_BOOT__=boot;console.error("[REACT_UNCAUGHT] "+msg+(info&&info.componentStack?" componentStack="+info.componentStack:""));}catch(_){}}};return $1.createRoot(_el,_opts);})().render(';
+    /\(function\(\)\{var _el=document\.getElementById\("root"\)\?\?document\.body;[\s\S]*?return (\w+)\.createRoot\(_el,_opts\);\}\)\(\)\.render\(/;
 
-  if (reuseRe.test(code)) {
-    code = code.replace(reuseRe, freshMount);
-  } else if (mountRe.test(code)) {
-    code = code.replace(mountRe, freshMount);
-  } else {
+  const makeFreshMount = (reactVar) =>
+    `(function(){var _el=document.getElementById("root")??document.body;try{delete _el._capRoot;}catch(_){}var _opts={onUncaughtError:function(err,info){try{var msg="(no message)";if(err!=null){if(typeof err==="string")msg=err;else if(err.message)msg=String(err.message);else msg=String(err);}var boot=window.__ROAMIE_BOOT__||{};boot.error=msg;window.__ROAMIE_BOOT__=boot;var extra="";if(err&&err.stack)extra+=" stack="+err.stack;if(info&&info.componentStack)extra+=" componentStack="+info.componentStack;if(err&&typeof err==="object"&&!("message" in err))try{extra+=" keys="+Object.keys(err).join(",");}catch(_){}console.error("[REACT_UNCAUGHT] "+msg+extra);}catch(_){}}};return ${reactVar}.createRoot(_el,_opts);})().render(`;
+
+  const reuseMatch = code.match(reuseRe);
+  const mountMatch = reuseMatch ? null : code.match(mountRe);
+  const reactVar = reuseMatch?.[1] ?? mountMatch?.[1];
+
+  if (!reactVar) {
     console.warn("[capacitor-prepare] createRoot boot patch skipped (pattern not found)");
     return;
+  }
+
+  const freshMount = makeFreshMount(reactVar);
+  if (reuseMatch) {
+    code = code.replace(reuseRe, freshMount);
+  } else {
+    code = code.replace(mountRe, freshMount);
   }
 
   writeFileSync(entryPath, code, "utf8");

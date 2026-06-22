@@ -4,6 +4,14 @@ import type { ChatPhase } from "@/lib/ai/context";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import {
+  detectChatIntent,
+  isNearbyPlaceIntent,
+  type ChatIntent,
+} from "@/lib/ai/chat-intent";
+import {
+  buildDestinationPlanningClarify,
+} from "@/lib/ai/trip-planning-context";
+import {
   type CanonicalTravelContext,
   isReadyForRecommendation,
   logTravelContext,
@@ -34,10 +42,21 @@ function buildClarifyQuestion(
   key: TripIntentMissingKey,
   ctx: CanonicalTravelContext,
   locale: Locale,
+  intent: ChatIntent,
+  session: ChatPlanningSession,
 ): string {
+  const isDestinationPlanning =
+    session.conversationMode === "destination_planning" ||
+    session.tripPlanningContext?.intent === "destination_planning" ||
+    intent === "trip_planning";
+
+  if (locale === "zh-TW" && isDestinationPlanning) {
+    return buildDestinationPlanningClarify(ctx, session, key);
+  }
+
   if (locale !== "zh-TW") {
     const en: Record<TripIntentMissingKey, string> = {
-      destination: "Which area would you like to start from?",
+      destination: "Which city are you in? I can find places nearby.",
       vibe: "More into relaxing, photos, or food?",
       setting: "Prefer indoors or outdoors?",
       companionship: "Solo or with friends/family?",
@@ -45,15 +64,23 @@ function buildClarifyQuestion(
     };
     return en[key];
   }
+
+  if (key === "destination" && isNearbyPlaceIntent(intent)) {
+    if (intent === "restaurant") return "你在哪個城市呢？我幫你找附近適合聚餐的餐廳。";
+    if (intent === "cafe") return "你在哪個城市呢？我幫你找附近的咖啡廳。";
+    return "你在哪個城市呢？我幫你找附近的景點。";
+  }
+
   return CLARIFY_ZH[key](ctx);
 }
 
 function nextUnaskedKey(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
+  intent: ChatIntent,
 ): TripIntentMissingKey | null {
   const asked = new Set(session.askedClarifyKeys ?? []);
-  for (const key of missingContextKeys(ctx, session)) {
+  for (const key of missingContextKeys(ctx, session, intent)) {
     if (!asked.has(key)) return key;
   }
   return null;
@@ -64,21 +91,24 @@ export function resolveChatRoute(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   locale: Locale = "zh-TW",
+  intent: ChatIntent = detectChatIntent(userText),
 ): AiChatRoute {
+  console.info(`[CHAT_INTENT] intent=${intent}`);
+
   if (isUserConfirmingItinerary(userText)) {
     console.info("[AI_ROUTE] itinerary_mode", logTravelContext(ctx));
     return { mode: "itinerary", chatPhase: "handoff" };
   }
 
-  if (isReadyForRecommendation(ctx, session)) {
-    console.info("[AI_ROUTE] recommendation_mode", logTravelContext(ctx));
+  if (isReadyForRecommendation(ctx, session, intent)) {
+    console.info("[AI_ROUTE] recommendation_mode", logTravelContext(ctx), `intent=${intent}`);
     return { mode: "recommend", chatPhase: "recommend" };
   }
 
-  const nextKey = nextUnaskedKey(ctx, session);
+  const nextKey = nextUnaskedKey(ctx, session, intent);
   if (nextKey) {
-    const question = buildClarifyQuestion(nextKey, ctx, locale);
-    console.info("[AI_ROUTE] next_question", nextKey, logTravelContext(ctx));
+    const question = buildClarifyQuestion(nextKey, ctx, locale, intent, session);
+    console.info("[AI_ROUTE] next_question", nextKey, logTravelContext(ctx), `intent=${intent}`);
     return { mode: "clarify", chatPhase: "discover", missingKey: nextKey, question };
   }
 

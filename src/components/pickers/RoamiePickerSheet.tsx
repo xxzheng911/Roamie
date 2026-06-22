@@ -1,5 +1,10 @@
 import type { ReactNode } from "react";
-import { Drawer, DrawerContent } from "@/components/ui/drawer";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerTitle,
+} from "@/components/ui/drawer";
 import { useI18n } from "@/hooks/use-i18n";
 import { cn } from "@/lib/utils";
 
@@ -7,6 +12,8 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title?: string;
+  /** 無障礙說明；未提供時以 title 或預設文案填入（螢幕閱讀器） */
+  description?: string;
   children: ReactNode;
   onConfirm: () => void;
   onCancel?: () => void;
@@ -22,6 +29,7 @@ export function RoamiePickerSheet({
   open,
   onOpenChange,
   title,
+  description,
   children,
   onConfirm,
   onCancel,
@@ -33,6 +41,8 @@ export function RoamiePickerSheet({
   const { t } = useI18n();
   const confirm = confirmLabel ?? t("picker.confirm");
   const cancel = cancelLabel ?? t("picker.cancel");
+  const a11yTitle = title?.trim() || "選擇";
+  const a11yDescription = description?.trim() || title?.trim() || "請選擇一項";
   const handleCancel = () => {
     onCancel?.();
     onOpenChange(false);
@@ -56,13 +66,15 @@ export function RoamiePickerSheet({
             className="mx-auto mt-3 h-1 w-10 shrink-0 rounded-full bg-border/80"
             aria-hidden
           />
-          {title ? (
-            <p className="mt-4 text-center font-display text-[17px] font-medium leading-[26px] text-foreground">
-              {title}
-            </p>
-          ) : (
-            <div className="mt-4 h-[26px] shrink-0" aria-hidden />
-          )}
+          <DrawerTitle
+            className={cn(
+              "mt-4 text-center font-display text-[17px] font-medium leading-[26px] text-foreground",
+              !title && "sr-only",
+            )}
+          >
+            {a11yTitle}
+          </DrawerTitle>
+          <DrawerDescription className="sr-only">{a11yDescription}</DrawerDescription>
           <div className="px-5 pb-2 pt-3">{children}</div>
           {!hideFooter ? (
             <div className="flex gap-3 border-t border-border/60 bg-card/50 px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">

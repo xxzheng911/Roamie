@@ -1,102 +1,118 @@
 import type { SearchPlacesInput } from "@/lib/explore-category-search";
-import type { PlaceResult } from "@/lib/place-result";
-import { normalizePlacesSearchResult } from "@/lib/places-search-normalize";
 
-const placesHomeDiagnostics = {
-  apiCallCount: 0,
-  apiResultCount: 0,
-  filterRunCount: 0,
-  homeRenderCount: 0,
-};
+let sessionApiCallCount = 0;
 
 const loggedSkipKeys = new Set<string>();
 const loggedLocationSkipKeys = new Set<string>();
 const loggedCacheHitKeys = new Set<string>();
+
+export function incrementPlacesSessionCallCount(): number {
+  sessionApiCallCount += 1;
+  return sessionApiCallCount;
+}
+
+export function getPlacesSessionCallCount(): number {
+  return sessionApiCallCount;
+}
+
+export function logPlacesCallCount(): void {
+  console.info(`[PLACES_CALL_COUNT] sessionTotal=${sessionApiCallCount}`);
+}
+
+export function logPlacesApiCall(
+  source: "server" | "client",
+  data: SearchPlacesInput,
+  extra?: { categoryId?: string },
+): void {
+  const total = incrementPlacesSessionCallCount();
+  const category = extra?.categoryId ?? data.categoryId ?? "";
+  const queryLabel =
+    data.query?.trim() ||
+    (data.mode === "multi" ? "multi_nearby" : data.mode === "nearby" ? "nearby" : "");
+  console.info("[PLACES_API_CALL]");
+  console.info(`source=${source}`);
+  console.info(`category=${category}`);
+  console.info(`query=${queryLabel}`);
+  console.info("cache=false");
+  console.info(`[PLACES_CALL_COUNT] sessionTotal=${total}`);
+}
+
+export function logPlacesCacheHitSimple(
+  source: "server" | "client" | "api",
+  data: Pick<SearchPlacesInput, "query" | "categoryId" | "mode">,
+): void {
+  const category = data.categoryId ?? "";
+  const query =
+    data.query?.trim() ||
+    (data.mode === "multi" ? "multi_nearby" : data.mode === "nearby" ? "nearby" : "");
+  console.info("[PLACES_CACHE_HIT]");
+  console.info(`source=${source}`);
+  console.info(`category=${category}`);
+  console.info(`query=${query}`);
+}
+
+/** @deprecated 使用 logPlacesApiCall */
+export function incrementPlacesApiCallCount(): void {
+  incrementPlacesSessionCallCount();
+}
+
+/** @deprecated */
+export function incrementPlacesApiResultCount(): void {}
+
+export function incrementFilterRunCount(): void {}
+
+export function incrementHomeRenderCount(): void {}
+
+export function logPlacesHomeDiagnosticCounts(context?: string): void {
+  console.info(`[PLACES_CALL_COUNT] sessionTotal=${getPlacesSessionCallCount()}`);
+  if (context) console.info("[PLACES_HOME_DIAGNOSTICS]", { context });
+}
+
+/** @deprecated 使用 logPlacesApiCall */
+export function logPlacesRequest(
+  source: "server" | "client",
+  data: SearchPlacesInput,
+  extra?: Record<string, unknown>,
+): void {
+  logPlacesApiCall(source, data, {
+    categoryId: typeof extra?.categoryId === "string" ? extra.categoryId : data.categoryId,
+  });
+}
+
+/** @deprecated */
+export function logPlacesResponse(
+  _source: "server" | "client" | "cache",
+  _data: SearchPlacesInput,
+  result: { places?: unknown[] | null; error?: string | null } | null | undefined,
+): void {
+  if (result && Array.isArray(result.places) && result.places.length === 0 && result.error) {
+    console.info(`[PLACES_API_EMPTY] error=${result.error}`);
+  }
+}
 
 function skipLogKey(reason: string, detail: Record<string, unknown>): string {
   const id = detail.key ?? detail.locationKey ?? detail.loadKey;
   return `${reason}:${String(id ?? "")}`;
 }
 
-export function incrementPlacesApiCallCount(): void {
-  placesHomeDiagnostics.apiCallCount += 1;
-}
-
-export function incrementPlacesApiResultCount(): void {
-  placesHomeDiagnostics.apiResultCount += 1;
-}
-
-export function incrementFilterRunCount(): void {
-  placesHomeDiagnostics.filterRunCount += 1;
-}
-
-export function incrementHomeRenderCount(): void {
-  placesHomeDiagnostics.homeRenderCount += 1;
-}
-
-/** 輸出首頁 Places 診斷計數（比對 API 是否重複呼叫 vs filter log 洗版） */
-export function logPlacesHomeDiagnosticCounts(context?: string): void {
-  console.info("[PLACES_API_CALL_COUNT]", placesHomeDiagnostics.apiCallCount);
-  console.info("[PLACES_API_RESULT_COUNT]", placesHomeDiagnostics.apiResultCount);
-  console.info("[HOME_RENDER_COUNT]", placesHomeDiagnostics.homeRenderCount);
-  console.info("[FILTER_RUN_COUNT]", placesHomeDiagnostics.filterRunCount);
-  if (context) {
-    console.info("[PLACES_HOME_DIAGNOSTICS]", { context, ...placesHomeDiagnostics });
-  }
-}
-
-export function logPlacesRequest(
-  source: "server" | "client",
-  data: SearchPlacesInput,
-  extra?: Record<string, unknown>,
-): void {
-  incrementPlacesApiCallCount();
-  console.info("[PLACES_API_CALL]", {
-    source,
-    lat: data.lat,
-    lng: data.lng,
-    radius: data.radius,
-    mode: data.mode,
-    query: data.query,
-    includedTypes: data.includedTypes ?? [],
-    locale: data.locale ?? null,
-    ...extra,
-  });
-}
-
-export function logPlacesResponse(
-  source: "server" | "client" | "cache",
-  data: SearchPlacesInput,
-  result: { places?: PlaceResult[] | null; error?: string | null } | null | undefined,
-  extra?: Record<string, unknown>,
-): void {
-  if (source === "cache") return;
-  const normalized = normalizePlacesSearchResult(result);
-  incrementPlacesApiResultCount();
-  console.info("[PLACES_API_RESULT]", {
-    source,
-    lat: data.lat,
-    lng: data.lng,
-    mode: data.mode,
-    query: data.query,
-    status: normalized.error ? "error" : "ok",
-    count: normalized.places.length,
-    error: normalized.error,
-    sample: normalized.places.slice(0, 2).map((p) => p.name),
-    ...extra,
-  });
-}
-
-/** API / 分類結果 cache 命中（每 key 只 log 一次） */
 export function logPlacesCacheHit(
   key: string,
-  count: number,
+  _count: number,
   layer: "api" | "map_category" | "category",
+  meta?: Pick<SearchPlacesInput, "query" | "categoryId" | "mode">,
 ): void {
+  if (layer === "map_category") return;
   const dedupeKey = `${layer}:${key}`;
   if (loggedCacheHitKeys.has(dedupeKey)) return;
   loggedCacheHitKeys.add(dedupeKey);
-  console.info("[PLACES_CACHE_HIT]", { layer, key, count });
+  if (meta) {
+    logPlacesCacheHitSimple(layer === "api" ? "api" : "client", meta);
+    return;
+  }
+  console.info("[PLACES_CACHE_HIT]");
+  console.info(`source=${layer}`);
+  console.info(`category=`);
+  console.info(`query=${key}`);
 }
 
 export function logPlacesApiSkipDuplicate(
@@ -106,10 +122,9 @@ export function logPlacesApiSkipDuplicate(
   const dedupeKey = skipLogKey(reason, detail);
   if (loggedSkipKeys.has(dedupeKey)) return;
   loggedSkipKeys.add(dedupeKey);
-  console.info("[PLACES_API_SKIP_DUPLICATE]", { reason, ...detail });
+  console.info("[PLACES_API_SKIP]", { reason, ...detail });
 }
 
-/** 相同 locationKey 的 GPS 微調 skip 只 log 一次 */
 export function logLocationUpdateSkipOnce(locationKey: string): void {
   if (loggedLocationSkipKeys.has(locationKey)) return;
   loggedLocationSkipKeys.add(locationKey);
@@ -125,9 +140,18 @@ export function logHomeNearbyDataReady(detail: {
   categories: string[];
   fromMock?: boolean;
   error?: string | null;
+  cacheKey?: string;
+  fromCache?: boolean;
 }): void {
+  if (detail.fromCache) return;
+  const dedupeKey = detail.cacheKey ?? `${detail.lat.toFixed(3)}:${detail.lng.toFixed(3)}:${detail.count}`;
+  if (loggedHomeNearbyReadyKeys.has(dedupeKey)) return;
+  loggedHomeNearbyReadyKeys.add(dedupeKey);
   console.info("[HOME_NEARBY_READY]", detail);
 }
+
+const loggedHomeNearbyLoadKeys = new Set<string>();
+const loggedHomeNearbyReadyKeys = new Set<string>();
 
 export function logHomeNearbyLoadOnce(detail: {
   locationKey: string;
@@ -135,6 +159,8 @@ export function logHomeNearbyLoadOnce(detail: {
   caller?: string;
   categories: string[];
 }): void {
+  if (loggedHomeNearbyLoadKeys.has(detail.loadKey)) return;
+  loggedHomeNearbyLoadKeys.add(detail.loadKey);
   console.info("[HOME_NEARBY_LOAD_ONCE]", detail);
 }
 
@@ -145,5 +171,6 @@ export function logMapNearbyReady(detail: {
   query: string;
   fromCache?: boolean;
 }): void {
+  if (detail.fromCache) return;
   console.info("[MAP_NEARBY_READY]", detail);
 }

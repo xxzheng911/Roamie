@@ -1,5 +1,7 @@
 import type { ChatPhase } from "@/lib/ai/context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { isNearbyPlaceIntent } from "@/lib/ai/chat-intent";
+import { isFoodPreferenceReply } from "@/lib/ai/chat-dining-flow";
 import type { TripIntent } from "@/lib/recommendation/trip-intent";
 import { userWantsMoreRecommendations, userWantsPlanningFinalize } from "@/lib/chat-planning-flow";
 import { isDiscoveryComplete, isUserConfirmingItinerary } from "@/lib/chat-session";
@@ -36,10 +38,17 @@ export function userExplicitlyWantsPlaces(text: string): boolean {
 }
 
 /** 偏情緒、狀態、猶豫，尚未明確要清單 */
-export function isEmotionalOrVagueTurn(text: string): boolean {
+export function isEmotionalOrVagueTurn(text: string, session?: ChatPlanningSession): boolean {
   const t = text.trim();
   if (!t) return false;
   if (userExplicitlyWantsPlaces(t)) return false;
+  if (
+    session?.activeChatIntent &&
+    isNearbyPlaceIntent(session.activeChatIntent) &&
+    isFoodPreferenceReply(t)
+  ) {
+    return false;
+  }
   return /(累|疲|倦|還好|有點|心情|感覺|不知道|不確定|隨便|都可以|放空|難過|開心|想一個人|想安靜|不想動|沒力|壓力|煩|無聊|還行|普通)/.test(
     t,
   );
@@ -51,6 +60,28 @@ export function resolveConversationStage(
   tripIntent?: TripIntent,
 ): ConversationStage {
   const t = userText.trim();
+
+  if (
+    session.activeChatIntent &&
+    isNearbyPlaceIntent(session.activeChatIntent) &&
+    (session.foodPreference || isFoodPreferenceReply(t))
+  ) {
+    return "recommend";
+  }
+
+  const hasGps =
+    session.location?.lat != null &&
+    session.location?.lng != null &&
+    (Math.abs(session.location.lat) > 0.001 || Math.abs(session.location.lng) > 0.001);
+  const moodSignal = Boolean(
+    session.mood ||
+      session.travelContext?.mood ||
+      session.travelContext?.vibe ||
+      session.fromMoodFlow ||
+      session.fromMoodCard ||
+      /(放鬆|走走|散步|累|下雨|咖啡|都可以)/.test(t),
+  );
+  if (hasGps && moodSignal) return "recommend";
 
   if (session.phase === "ready" || isUserConfirmingItinerary(t)) return "itinerary";
   if (userWantsPlanningFinalize(t) && session.selectedPlaces.length >= 1) return "itinerary";
@@ -69,12 +100,13 @@ export function resolveConversationStage(
   if (
     userExplicitlyWantsPlaces(t) ||
     userWantsMoreRecommendations(t) ||
+    /(餐廳|吃飯|聚餐|咖啡廳|咖啡|景點)/.test(t) ||
     (tripIntent?.readyForRecommendations && session.selectedPlaces.length === 0 && t.length > 0)
   ) {
     return "recommend";
   }
 
-  if (session.selectedPlaces.length >= 2 && !isEmotionalOrVagueTurn(t)) {
+  if (session.selectedPlaces.length >= 2 && !isEmotionalOrVagueTurn(t, session)) {
     return userWantsMoreRecommendations(t) ? "recommend" : "converge";
   }
 
@@ -82,7 +114,7 @@ export function resolveConversationStage(
     return "recommend";
   }
 
-  if (isEmotionalOrVagueTurn(t)) {
+  if (isEmotionalOrVagueTurn(t, session)) {
     const turns = session.lastUserIntent ? 1 : 0;
     if (turns === 0 || /(累|疲|心情|感覺|有點)/.test(t)) return "empathize";
     return "clarify";
@@ -135,7 +167,7 @@ export function mergeBoundsForStage(stage: ConversationStage): {
   minCount: number;
   maxCount: number;
 } {
-  if (stage === "recommend") return { minCount: 2, maxCount: 4 };
+  if (stage === "recommend") return { minCount: 2, maxCount: 5 };
   if (stage === "converge") return { minCount: 0, maxCount: 2 };
   return { minCount: 0, maxCount: 0 };
 }

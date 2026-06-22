@@ -39,7 +39,6 @@ export function AddToTripProvider({ children }: { children: ReactNode }) {
       target: "draft" | { tripId: string } | "new";
       newTitle?: string;
       date: string;
-      time: string;
       position: "start" | "end";
       afterPlaceName?: string;
     }) => {
@@ -60,7 +59,6 @@ export function AddToTripProvider({ children }: { children: ReactNode }) {
           place,
           {
             date: opts.date,
-            time: opts.time,
             position: opts.position,
             afterPlaceName: opts.afterPlaceName,
           },

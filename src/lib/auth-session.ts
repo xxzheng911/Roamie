@@ -1,5 +1,12 @@
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  logAuthSessionFound,
+  logAuthSessionMissing,
+} from "@/lib/auth-boot-log";
+import { hasLikelyPersistedSession } from "@/lib/startup-route";
+import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
+import { detectPlatform } from "@/services/platform";
 
 /** Supabase 在未登入時 getUser() 常回傳此訊息 — 不應當成頁面錯誤 toast */
 export function isAuthSessionMissingError(
@@ -19,11 +26,24 @@ function authSessionTimeoutMs(): number {
     }
   ).Capacitor;
   // WKWebView + localStorage 在冷啟動常較慢；過短會誤判未登入並刷 warn
-  return cap?.isNativePlatform?.() ? 10_000 : 4_000;
+  return cap?.isNativePlatform?.() ? 12_000 : 4_000;
 }
 
-/** 讀取本機持久化 session（不呼叫 Auth server，避免 Auth session missing） */
-export async function getClientAuthSession(): Promise<Session | null> {
+type GetClientAuthSessionOptions = {
+  timeoutMs?: number;
+  skipWarm?: boolean;
+};
+
+let cachedClientSession: Session | null | undefined;
+let cachedClientSessionAt = 0;
+const CLIENT_SESSION_CACHE_MS = 30_000;
+
+export function invalidateClientAuthSessionCache(): void {
+  cachedClientSession = undefined;
+  cachedClientSessionAt = 0;
+}
+
+async function readClientAuthSessionOnce(timeoutMs: number): Promise<Session | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   try {
@@ -44,12 +64,65 @@ export async function getClientAuthSession(): Promise<Session | null> {
             console.warn("[auth-session] getSession timed out — treating as signed out");
           }
           resolve(null);
-        }, authSessionTimeoutMs());
+        }, timeoutMs);
       }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/** 讀取本機持久化 session（不呼叫 Auth server，避免 Auth session missing） */
+export async function getClientAuthSession(
+  options?: GetClientAuthSessionOptions,
+): Promise<Session | null> {
+  const now = Date.now();
+  if (
+    !options?.skipWarm &&
+    cachedClientSession !== undefined &&
+    now - cachedClientSessionAt < CLIENT_SESSION_CACHE_MS
+  ) {
+    return cachedClientSession;
+  }
+
+  const timeoutMs = options?.timeoutMs ?? authSessionTimeoutMs();
+
+  if (typeof window !== "undefined" && detectPlatform().isCapacitor && !options?.skipWarm) {
+    await warmSupabaseAuthStorage();
+  }
+
+  const session = await readClientAuthSessionOnce(timeoutMs);
+  if (session?.user) {
+    logAuthSessionFound({
+      userId: session.user.id,
+      provider: session.user.app_metadata?.provider ?? null,
+    });
+    cachedClientSession = session;
+    cachedClientSessionAt = Date.now();
+    return session;
+  }
+
+  if (typeof window !== "undefined" && detectPlatform().isCapacitor && hasLikelyPersistedSession()) {
+    await warmSupabaseAuthStorage();
+    const retry = await readClientAuthSessionOnce(Math.max(timeoutMs, 12_000));
+    if (retry?.user) {
+      logAuthSessionFound({
+        userId: retry.user.id,
+        provider: retry.user.app_metadata?.provider ?? null,
+        retry: true,
+      });
+      cachedClientSession = retry;
+      cachedClientSessionAt = Date.now();
+      return retry;
+    }
+  }
+
+  logAuthSessionMissing({
+    hadPersistedHint: hasLikelyPersistedSession(),
+  });
+  cachedClientSession = null;
+  cachedClientSessionAt = Date.now();
+  return null;
 }
 
 /** 未登入時回傳 null */

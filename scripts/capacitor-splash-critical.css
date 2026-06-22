@@ -1,11 +1,12 @@
-/* Inlined into Capacitor bundled index.html — keep in sync with .roamie-splash in src/styles.css */
+/* Inlined into Capacitor bundled index.html — keep in sync with src/styles.css */
 #roamie-boot-splash {
   position: fixed;
   inset: 0;
   z-index: 2147483646;
   pointer-events: none;
 }
-.roamie-splash {
+.roamie-splash,
+.roamie-splash--boot-cream {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -45,7 +46,6 @@
   font-size: clamp(2rem, 8vw, 2.75rem);
   font-weight: 600;
   letter-spacing: -0.02em;
-  /* 奶油底啟動畫面：不跟隨系統深色模式改淺色 */
   color: #2a211c;
 }
 .roamie-splash__tagline {

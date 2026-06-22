@@ -14,6 +14,12 @@ type Props = {
   className?: string;
 };
 
+function isRedundantWeatherSummary(summary?: string, weatherSource?: TripWeatherSource): boolean {
+  if (!summary?.trim()) return true;
+  if (weatherSource === "fallback") return true;
+  return /依出發月份整理的穿著參考/.test(summary);
+}
+
 function weatherIcon(summary?: string, weatherSource?: TripWeatherSource) {
   if (weatherSource === "unavailable") {
     return <CloudSun className="h-3.5 w-3.5 text-clay" aria-hidden />;
@@ -42,6 +48,8 @@ export function TripOutfitCard({
 }: Props) {
   const dateLabel = formatTripDateRangeLabel(dateRange.start, dateRange.end);
   const unavailable = weatherSource === "unavailable";
+  const showWeatherSummary = !isRedundantWeatherSummary(weatherSummary, weatherSource);
+  const iconHint = showWeatherSummary ? weatherSummary : suggestion;
 
   return (
     <div
@@ -57,7 +65,7 @@ export function TripOutfitCard({
 
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="inline-flex items-center gap-1 rounded-full bg-card px-2.5 py-1 shadow-soft">
-          {weatherIcon(weatherSummary, weatherSource)}
+          {weatherIcon(iconHint, weatherSource)}
           <span>{destination}</span>
         </span>
         <span className="inline-flex items-center gap-1 rounded-full bg-card/80 px-2.5 py-1">
@@ -68,7 +76,7 @@ export function TripOutfitCard({
       {loading ? (
         <div className="mt-4 flex items-start gap-2 text-sm text-muted-foreground">
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-clay" />
-          <p className="leading-relaxed">正在幫你看看這趟旅程適合怎麼穿…</p>
+          <p className="leading-relaxed">正在依照目的地與天氣整理穿搭建議…</p>
         </div>
       ) : (
         <>
@@ -78,15 +86,26 @@ export function TripOutfitCard({
             </p>
           ) : null}
 
-          {weatherSummary ? (
+          {showWeatherSummary ? (
             <p className={cn("text-sm text-foreground/75", unavailable ? "mt-2" : "mt-3")}>
               {weatherSummary}
             </p>
           ) : null}
 
           {suggestion ? (
-            <p className="mt-3 text-sm leading-relaxed text-foreground/90">{suggestion}</p>
-          ) : null}
+            <p
+              className={cn(
+                "text-sm leading-relaxed text-foreground/90",
+                showWeatherSummary ? "mt-3" : "mt-4",
+              )}
+            >
+              {suggestion}
+            </p>
+          ) : (
+            <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
+              正在依照目的地與天氣整理穿搭建議…
+            </p>
+          )}
         </>
       )}
     </div>

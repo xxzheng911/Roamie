@@ -1,3 +1,5 @@
+import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
+
 export type LatLng = { lat: number; lng: number };
 
 export function buildPlaceMapsUrl(lat: number, lng: number, placeName?: string): string {
@@ -7,7 +9,11 @@ export function buildPlaceMapsUrl(lat: number, lng: number, placeName?: string):
 
 export function buildDirectionsUrl(
   destination: LatLng,
-  options?: { origin?: LatLng; waypoints?: LatLng[]; travelMode?: "driving" | "walking" | "transit" | "bicycling" },
+  options?: {
+    origin?: LatLng;
+    waypoints?: LatLng[];
+    travelMode?: "driving" | "walking" | "transit" | "bicycling";
+  },
 ): string {
   const params = new URLSearchParams({ api: "1", destination: `${destination.lat},${destination.lng}` });
   if (options?.origin) params.set("origin", `${options.origin.lat},${options.origin.lng}`);
@@ -24,6 +30,22 @@ export function buildDirectionsUrlFromQuery(query: string, origin?: LatLng): str
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
-export function openExternal(url: string): void {
-  if (typeof window !== "undefined") window.open(url, "_blank", "noopener,noreferrer");
+/** Capacitor：Browser.open 開 Safari / Google Maps；Web 才用 window.open */
+export async function openExternal(url: string): Promise<void> {
+  const trimmed = url.trim();
+  if (!trimmed) return;
+
+  if (isCapacitorNativeShell()) {
+    try {
+      const { Browser } = await import("@capacitor/browser");
+      await Browser.open({ url: trimmed, presentationStyle: "fullscreen" });
+      return;
+    } catch (e) {
+      console.warn("[maps-navigation] Capacitor Browser.open failed", e);
+    }
+  }
+
+  if (typeof window !== "undefined") {
+    window.open(trimmed, "_blank", "noopener,noreferrer");
+  }
 }

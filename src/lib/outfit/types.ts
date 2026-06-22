@@ -59,7 +59,7 @@ export type OutfitAdvicePayload = {
 };
 
 /** 整趟行程穿搭建議 — 存入 RoamiePayloadV2 */
-export type TripWeatherSource = "openweather" | "unavailable";
+export type TripWeatherSource = "openweather" | "unavailable" | "fallback";
 
 export type TripOutfitSuggestionFields = {
   /** 2–4 句穿搭建議正文 */

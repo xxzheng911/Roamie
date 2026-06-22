@@ -5,7 +5,7 @@ export function mountImmediateBootShell(): void {
   if (!root || root.childElementCount > 0) return;
 
   root.setAttribute("data-roamie-boot-shell", "1");
-  root.innerHTML = `<div class="roamie-splash" role="status" aria-live="polite" aria-busy="true">
+  root.innerHTML = `<div class="roamie-splash roamie-splash--boot-cream" role="status" aria-live="polite" aria-busy="true">
   <div class="roamie-splash__gradient" aria-hidden="true"></div>
   <div class="roamie-splash__viewport">
     <div class="roamie-splash__content roamie-splash__content--fade-in">

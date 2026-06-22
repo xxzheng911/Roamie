@@ -11,6 +11,7 @@ import type { Locale } from "@/lib/i18n/types";
 import { PLACES_REGION } from "@/lib/places-search-config";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import type { PlaceResult } from "@/lib/place-result";
+import { resolvePlaceDisplayAddress } from "@/lib/place-display-address";
 import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
 
 const AUTOCOMPLETE_MASK =
@@ -156,7 +157,8 @@ export const resolveTripStop = createServerFn({ method: "POST" })
     const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
     const apiKey = requireGoogleMapsServerKey();
     const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
-    const requestUrl = placeDetailsUrl(normalizedPlaceId);
+    const languageCode = localeToGoogleLanguageCode(userLocale);
+    const requestUrl = placeDetailsUrl(normalizedPlaceId, languageCode);
     console.info("[PLACES_DETAILS] start placeId=", normalizedPlaceId);
     console.info("[PLACES_DETAILS] request url=", requestUrl);
     const res = await fetch(requestUrl, {
@@ -202,7 +204,10 @@ export const resolveTripStop = createServerFn({ method: "POST" })
     const place: PlaceResult = {
       id: effectivePlaceId,
       name,
-      address: raw.formattedAddress ?? null,
+      address: resolvePlaceDisplayAddress(
+        { formattedAddress: raw.formattedAddress },
+        { locale: userLocale },
+      ),
       lat,
       lng,
       rating: raw.rating ?? null,

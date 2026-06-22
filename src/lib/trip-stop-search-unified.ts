@@ -5,10 +5,14 @@ import {
   type ResolvedTripStop,
 } from "@/lib/trip-stop-search.functions";
 import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
-import { placesAutocompleteUrl } from "@/lib/google-maps-api";
+import { placesAutocompleteUrl, placeDetailsUrl, PLACE_DETAILS_FIELD_MASK } from "@/lib/google-maps-api";
 import type { Locale } from "@/lib/i18n/types";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
+import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
+import type { PlaceResult } from "@/lib/place-result";
+import { resolvePlaceDisplayAddress } from "@/lib/place-display-address";
+import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
 
 function normalizeGooglePlaceId(raw: string): string {
   return raw.replace(/^places\//, "").trim();
@@ -50,6 +54,14 @@ export async function unifiedSearchTripStops(
     input: query.trim(),
     languageCode: localeToGoogleLanguageCode(locale),
   };
+  if (center) {
+    body.locationBias = {
+      circle: {
+        center: { latitude: center.lat, longitude: center.lng },
+        radius: 50_000,
+      },
+    };
+  }
   if (sessionToken) body.sessionToken = sessionToken;
 
   try {
@@ -137,6 +149,77 @@ export async function unifiedResolveTripStop(
     console.warn("[TripStop] resolve failed", e);
   }
 
+  const key = getGoogleMapsBrowserKey();
+  if (key) {
+    try {
+      const languageCode = localeToGoogleLanguageCode(locale);
+      const res = await fetch(placeDetailsUrl(normalizedPlaceId, languageCode), {
+        method: "GET",
+        headers: {
+          "X-Goog-Api-Key": key,
+          "X-Goog-FieldMask": PLACE_DETAILS_FIELD_MASK,
+          "Accept-Language": languageCode,
+        },
+      });
+      if (res.ok) {
+        const raw = (await res.json()) as {
+          id?: string;
+          displayName?: { text?: string };
+          formattedAddress?: string;
+          location?: { latitude?: number; longitude?: number };
+          primaryType?: string;
+          types?: string[];
+          rating?: number;
+          photos?: Array<{ name: string }>;
+        };
+        const name = raw.displayName?.text?.trim() || fallback?.label || "地點";
+        const lat = raw.location?.latitude ?? null;
+        const lng = raw.location?.longitude ?? null;
+        const effectivePlaceId = normalizeGooglePlaceId(raw.id ?? normalizedPlaceId);
+        const resolvedAddress = resolvePlaceDisplayAddress(
+          { formattedAddress: raw.formattedAddress },
+          { locale },
+        );
+        const placeResult: PlaceResult = {
+          id: effectivePlaceId,
+          name,
+          address: resolvedAddress,
+          lat,
+          lng,
+          rating: raw.rating ?? null,
+          userRatingCount: null,
+          photoName: raw.photos?.[0]?.name ?? null,
+          primaryType: raw.primaryType ?? null,
+          types: raw.types ?? null,
+          businessStatus: null,
+          openStatus: "unknown",
+          openStatusLabel: "",
+          todayHoursLabel: "",
+          closingSoonNote: "",
+          nextOpenHint: "",
+        };
+        return {
+          place: {
+            name,
+            placeName: name,
+            title: name,
+            address: resolvedAddress ?? fallback?.secondary ?? name,
+            lat,
+            lng,
+            googlePlaceId: effectivePlaceId,
+            placeType: identityDisplayLabel(resolvePlaceIdentity(placeResult)),
+            googleMapsUrl: buildPlaceMapsUrl(name, lat, lng),
+            photoName: placeResult.photoName,
+            rating: placeResult.rating,
+          },
+          error: null,
+        };
+      }
+    } catch (e) {
+      console.warn("[TripStop] browser resolve failed", e);
+    }
+  }
+
   if (fallback) {
     return {
       place: {
@@ -151,9 +234,6 @@ export async function unifiedResolveTripStop(
       error: null,
     };
   }
-
-  const key = getGoogleMapsBrowserKey();
-  void key;
 
   return { place: null, error: "無法解析地點" };
 }

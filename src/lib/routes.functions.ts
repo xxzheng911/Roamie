@@ -16,12 +16,18 @@ export const routesComputeDuration = createServerFn({ method: "POST" })
         origin: LatLngSchema,
         destination: LatLngSchema,
         travelMode: TravelModeSchema,
+        departureTime: z.string().max(64).optional(),
       })
       .parse(input),
   )
   .handler(async ({ data }) => {
     const { getRouteDuration } = await import("@/lib/google-routes.server");
-    return getRouteDuration(data.origin, data.destination, data.travelMode);
+    return getRouteDuration(
+      data.origin,
+      data.destination,
+      data.travelMode,
+      data.departureTime,
+    );
   });
 
 export const routesComputeDistance = createServerFn({ method: "POST" })
@@ -51,6 +57,32 @@ export const routesComputeTripLegs = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { getTripLegsWithDurations } = await import("@/lib/google-routes.server");
     return getTripLegsWithDurations(data.places, data.travelMode);
+  });
+
+export const routesComputeLegEstimates = createServerFn({ method: "POST" })
+  .inputValidator((input) =>
+    z
+      .object({
+        origin: LatLngSchema,
+        destination: LatLngSchema,
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const { fetchLegDurationsFromRoutes } = await import("@/lib/google-routes.server");
+    const estimates = await fetchLegDurationsFromRoutes(data.origin, data.destination);
+    if (
+      estimates.walk == null &&
+      estimates.drive == null &&
+      estimates.transit == null
+    ) {
+      return {
+        ok: false as const,
+        statusCode: 0,
+        message: "all_modes_failed",
+      };
+    }
+    return { ok: true as const, data: estimates };
   });
 
 export const routesTestConnection = createServerFn({ method: "POST" }).handler(async () => {

@@ -53,7 +53,8 @@ const SCENIC_CATEGORIES: LateNightPlaceCategory[] = [
 export function isLateNightMood(mood?: string | null): boolean {
   if (!mood?.trim()) return false;
   const m = mood.trim();
-  return /深夜散步|夜晚探索|深夜模式|深夜|夜遊|夜景/.test(m);
+  if (m === "lateNight") return true;
+  return /深夜散步|夜晚探索|深夜模式|深夜|夜遊|夜景|Late-night walk|lateNight/i.test(m);
 }
 
 /** 深夜散步等心情，或深夜時段 + 放空／獨自 → 啟用場景推薦流程 */

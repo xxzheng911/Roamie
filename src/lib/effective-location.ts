@@ -17,6 +17,7 @@ import {
   writeHomeSessionUserLocation,
   type HomeSessionUserLocation,
 } from "@/lib/home-session-cache";
+import { normalizedLocationKey } from "@/lib/location-key";
 
 export type EffectiveLocationSource = "gps" | "remembered" | "last_search" | "default";
 
@@ -41,7 +42,7 @@ let snapshot: EffectiveLocationSnapshot | null = null;
 let bootstrapPromise: Promise<EffectiveLocationSnapshot> | null = null;
 const listeners = new Set<() => void>();
 
-export { normalizedLocationKey } from "@/lib/location-key";
+export { normalizedLocationKey };
 
 const loggedLocationSkipKeys = new Set<string>();
 

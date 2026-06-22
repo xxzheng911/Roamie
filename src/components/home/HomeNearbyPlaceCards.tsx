@@ -1,11 +1,13 @@
 import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceImage } from "@/components/media/PlaceImage";
 import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
+import { placeOpeningStatusLabel } from "@/lib/normalized-opening-status";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/hooks/use-i18n";
 
+/** 首頁附近地點卡 — 獨立於行程／探索／聊天推薦卡片 */
 type Props = {
   places: HomeNearbyPick[];
   loading?: boolean;
@@ -30,7 +32,7 @@ function distLabel(
 }
 
 function ratingLabel(place: HomeNearbyPick): string | null {
-  if (place.rating == null) return null;
+  if (place.rating == null || place.rating <= 0) return null;
   const count =
     place.userRatingCount != null && place.userRatingCount > 0
       ? ` · ${place.userRatingCount.toLocaleString()}`
@@ -38,11 +40,10 @@ function ratingLabel(place: HomeNearbyPick): string | null {
   return `${place.rating.toFixed(1)}${count}`;
 }
 
-function statusLabel(place: HomeNearbyPick): string | null {
-  if (place.openStatusLabel?.trim()) return place.openStatusLabel.trim();
-  if (place.openStatus === "open") return "營業中";
-  if (place.openStatus === "closed") return "休息中";
-  return null;
+import type { Locale } from "@/lib/i18n/types";
+
+function statusLabel(place: HomeNearbyPick, locale: Locale): string {
+  return placeOpeningStatusLabel(place, locale);
 }
 
 export function HomeNearbyPlaceCards({
@@ -58,7 +59,7 @@ export function HomeNearbyPlaceCards({
   onToggleSave,
   addToTripLabel = "加入行程",
 }: Props) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const anchor = userLocation ?? { lat: 0, lng: 0 };
   const canShowDistance = userLocation != null;
 
@@ -86,17 +87,17 @@ export function HomeNearbyPlaceCards({
     <div
       className={cn("home-nearby-cards", loading && "opacity-60")}
       role="list"
-      aria-label="附近推薦地點"
+      aria-label={t("place.nearbyListAria")}
     >
       {places.map((p, i) => {
-        const img = p.coverImageUrl;
+        const img = p.coverImageUrl ?? p.generatedImageUrl ?? p.fallbackImageUrl;
         const googlePhoto = img;
         const isLast = i === places.length - 1;
         const distance = canShowDistance ? distLabel(p, anchor) : "";
         const typeName = p.displayCategory ?? getExploreCategoryDisplayLabel(p);
         const rating = ratingLabel(p);
-        const hours = statusLabel(p);
-        const vibe = p.reason?.trim() || typeName || "適合現在去走走";
+        const hours = statusLabel(p, locale);
+        const vibe = p.reason?.trim() || typeName || t("place.goodForNow");
         const isSaved = savedNames.has(p.name) || Boolean(p.isSavedFavorite);
         const isBusy = busyId === p.id;
         const isNavigating = navigatingPlaceId === p.id;
@@ -136,6 +137,7 @@ export function HomeNearbyPlaceCards({
                   />
                 ) : (
                   <PlaceImage
+                    placeId={p.id}
                     name={p.name}
                     photoName={p.photoName}
                     primaryType={p.primaryType}

@@ -1,3 +1,4 @@
+import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import { normalizedLocationKey } from "@/lib/location-key";
 import { PLACES_RAW_POOL_TTL_MS } from "@/lib/places-api-guard";
@@ -16,8 +17,10 @@ export function buildExploreRawPoolKey(
   lat: number,
   lng: number,
   mode: ExploreRecommendMode,
+  locale: Locale = "zh-TW",
+  categoryId = "all",
 ): string {
-  return `${normalizedLocationKey(lat, lng)}:${mode}`;
+  return `${normalizedLocationKey(lat, lng)}:${mode}:${locale}:${categoryId}`;
 }
 
 export function writeExploreRawPool(key: string, places: PlaceResult[]): void {

@@ -7,6 +7,7 @@ import { clearAuthMemoryCache } from "@/lib/supabase-auth-storage";
 import { clearCompanionModeSelection } from "@/lib/companion-mode-storage";
 import { supabase } from "@/lib/supabase";
 import { detectPlatform } from "@/services/platform";
+import { clearProfileSessionCache } from "@/lib/profile-session-cache";
 
 const SUPABASE_AUTH_STORAGE_KEY = "roamie-auth";
 const PREF_PREFIX = "roamie.supabase.auth.";
@@ -21,6 +22,8 @@ const LOCAL_DEVICE_CACHE_KEYS = [
   "roamie:itineraries",
   "roamie:recommendations",
   "roamie:chat",
+  "roamie:locale",
+  "roamie:locale-preference",
 ] as const;
 
 const OAUTH_TRANSIENT_SESSION_KEYS = [
@@ -102,6 +105,7 @@ export function clearAuthStateSync(options: ClearAuthStateOptions = {}): void {
   resetPostLoginNavigation();
   resetPostAuthRedirect();
   clearAuthMemoryCache();
+  clearProfileSessionCache();
   clearWebStorageAuthKeys();
   clearLocalDeviceCaches();
   clearPendingCallbackPath();

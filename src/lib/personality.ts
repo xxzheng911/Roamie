@@ -18,6 +18,21 @@ export type PersonalityResult = {
   impression: string;
 };
 
+/** Plus 旅行偏好測驗結果名稱（Free 帳號不應顯示） */
+export const PERSONA_TYPE_LABELS = [
+  "巷弄漫遊者",
+  "慢步療癒者",
+  "城市探險家",
+  "悠閒生活家",
+  "深度觀察者",
+] as const;
+
+export function isPersonaTypeLabel(text: string | null | undefined): boolean {
+  const trimmed = text?.trim();
+  if (!trimmed) return false;
+  return (PERSONA_TYPE_LABELS as readonly string[]).includes(trimmed);
+}
+
 export function derivePersonality(prefs: TravelPreferences): PersonalityResult {
   const pace = prefs.pace ?? "medium";
   const vibe = prefs.vibe ?? "either";

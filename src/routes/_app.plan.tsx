@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useState } from "react";
+import { useFormKeyboardOpen } from "@/hooks/use-form-keyboard-open";
 import { useI18n } from "@/hooks/use-i18n";
 import {
   getPlanBudgetOptions,
@@ -20,7 +21,10 @@ import {
   tripLocationToPlaceRef,
 } from "@/lib/trip/trip-place-ref";
 import { preparePlanTripSession } from "@/lib/plan-trip-handoff";
-import { savePlanFormDraft, loadPlanFormDraft } from "@/lib/plan-form-draft-storage";
+import { buildPlanFormTripPayload } from "@/lib/plan-form-trip-payload";
+import { confirmSaveTrip } from "@/lib/itinerary-storage";
+import { logTripNav, tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
+import { savePlanFormDraft, loadPlanFormDraft, clearPlanFormDraft } from "@/lib/plan-form-draft-storage";
 import { normalizePlanTravelStyles } from "@/lib/plan-travel-style";
 import { saveChatSession, clearChatSession } from "@/lib/chat-session";
 import { clearChatHistory } from "@/lib/chat-history";
@@ -58,6 +62,7 @@ export const Route = createFileRoute("/_app/plan")({
 
 function PlanPage() {
   const { t, locale } = useI18n();
+  useFormKeyboardOpen("plan-keyboard-open");
   const search = Route.useSearch();
   const navigate = useNavigate();
   const fetchWeather = useServerFn(getWeather);
@@ -206,25 +211,84 @@ function PlanPage() {
     });
   };
 
-  const startPlanChat = async (planAiMode: boolean) => {
+  type ResolvedPlanForm = {
+    dest: TripLocation;
+    start: TripLocation;
+    tripDays: number;
+  };
+
+  const resolvePlanFormForSubmit = async (): Promise<ResolvedPlanForm | null> => {
     const [resolvedDestination, resolvedOrigin] = await Promise.all([
       ensureLocationHasCoords(destination, "destination"),
       ensureLocationHasCoords(origin, "start"),
     ]);
     if (resolvedDestination) setDestination(resolvedDestination);
     if (resolvedOrigin) setOrigin(resolvedOrigin);
-    if (!validateTripPlaces(resolvedDestination, resolvedOrigin)) return;
+    if (!validateTripPlaces(resolvedDestination, resolvedOrigin)) return null;
     if (!isValidTravelers(travelers)) {
       toast.error(t("plan.invalidTravelers"));
-      return;
+      return null;
     }
     if (startDate && endDate && endDate < startDate) {
       toast.error(t("plan.dateInvalid"));
-      return;
+      return null;
     }
     const tripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : 2;
-    const dest = resolvedDestination ?? destination;
-    const start = resolvedOrigin ?? origin;
+    return {
+      dest: resolvedDestination!,
+      start: resolvedOrigin!,
+      tripDays,
+    };
+  };
+
+  const handleCreateTripDirect = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const resolved = await resolvePlanFormForSubmit();
+    if (!resolved) return;
+
+    const { dest, start, tripDays } = resolved;
+    const budgetLabel = budgetOptions.find((b) => b.value === budgetMode)?.label ?? budgetMode;
+    const normalizedStyles = normalizePlanTravelStyles(styles, styleOptions);
+
+    setLoading(true);
+    try {
+      const payload = buildPlanFormTripPayload({
+        destination: dest,
+        origin: start,
+        days: tripDays,
+        mood,
+        styles,
+        normalizedStyles,
+        startDate,
+        endDate,
+        departureTime: "",
+        travelers,
+        transport: transport.trim(),
+        budgetMode,
+        budgetLabel,
+        selectedPlaces: selectedPlaces.length > 0 ? selectedPlaces : undefined,
+      });
+
+      const saved = await confirmSaveTrip(payload, "plan");
+      saveCurrentDraft(dest, start);
+      clearPlanFormDraft();
+      toast.success(t("plan.tripCreated"));
+      logTripNav("PlanDirectCreate", saved.id);
+      navigate(tripDetailNavigateOptions(saved.id));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : t("plan.tripCreateFailed");
+      console.error("[Plan] direct create failed", err);
+      toast.error(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const startPlanChat = async (planAiMode: boolean) => {
+    const resolved = await resolvePlanFormForSubmit();
+    if (!resolved) return;
+
+    const { dest, start, tripDays } = resolved;
 
     setLoading(true);
     try {
@@ -238,14 +302,14 @@ function PlanPage() {
       const mergedPlaces = selectedPlaces.length > 0 ? selectedPlaces : [];
       const normalizedStyles = normalizePlanTravelStyles(styles, styleOptions);
 
-      const destRef = tripLocationToPlaceRef(dest!);
-      const startRef = start ? tripLocationToPlaceRef(start) : null;
+      const destRef = tripLocationToPlaceRef(dest);
+      const startRef = tripLocationToPlaceRef(start);
       logTripPlace("destination", "saved", destRef);
-      if (startRef) logTripPlace("start", "saved", startRef);
+      logTripPlace("start", "saved", startRef);
       console.info("[Roamie AI] plan submit → chat", {
         destination: destRef.name,
         destinationPlaceId: destRef.placeId,
-        startPlaceId: startRef?.placeId,
+        startPlaceId: startRef.placeId,
         travelers,
         days: tripDays,
         places: mergedPlaces.length,
@@ -258,7 +322,7 @@ function PlanPage() {
       await clearChatHistory();
       const session = preparePlanTripSession(
         {
-          destination: dest!,
+          destination: dest,
           origin: start,
           days: tripDays,
           mood,
@@ -290,11 +354,6 @@ function PlanPage() {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await startPlanChat(false);
-  };
-
   const handleAiAssist = async () => {
     await startPlanChat(true);
   };
@@ -309,8 +368,8 @@ function PlanPage() {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain no-scrollbar">
-        <form onSubmit={handleSubmit} className="space-y-6 px-5 pt-5 pb-8">
+      <div className="plan-page-scroll min-h-0 flex-1 overflow-y-auto overscroll-y-contain no-scrollbar">
+        <form onSubmit={handleCreateTripDirect} className="space-y-6 px-5 pt-5 pb-[max(2rem,env(safe-area-inset-bottom))]">
           {sourceLoading ? (
             <div className="flex items-center gap-2 rounded-2xl bg-secondary/80 px-4 py-3 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -499,39 +558,41 @@ function PlanPage() {
             </div>
           </section>
 
-          <button
-            type="submit"
-            disabled={loading || sourceLoading}
-            aria-busy={loading}
-            className="flex w-full items-center justify-center rounded-full bg-primary py-4 text-[15px] font-medium text-primary-foreground shadow-lift transition disabled:opacity-60"
-          >
-            {loading ? (
-              <span
-                key="plan-submit-loading"
-                className="inline-flex items-center justify-center gap-2.5"
-              >
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
-                <span className="leading-none">{t("plan.submitting")}</span>
-              </span>
-            ) : (
-              <span
-                key="plan-submit-idle"
-                className="inline-flex items-center justify-center gap-2"
-              >
-                <Sparkles className="h-4 w-4 shrink-0" aria-hidden />
-                <span className="leading-none">{t("plan.submit")}</span>
-              </span>
-            )}
-          </button>
+          <div className="flex flex-col gap-3">
+            <button
+              type="submit"
+              disabled={loading || sourceLoading}
+              aria-busy={loading}
+              className="flex w-full items-center justify-center rounded-full bg-primary py-4 text-[15px] font-medium text-primary-foreground shadow-lift transition disabled:opacity-60"
+            >
+              {loading ? (
+                <span
+                  key="plan-submit-loading"
+                  className="inline-flex items-center justify-center gap-2.5"
+                >
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                  <span className="leading-none">{t("plan.submitting")}</span>
+                </span>
+              ) : (
+                <span
+                  key="plan-submit-idle"
+                  className="inline-flex items-center justify-center gap-2"
+                >
+                  <Sparkles className="h-4 w-4 shrink-0" aria-hidden />
+                  <span className="leading-none">{t("plan.submit")}</span>
+                </span>
+              )}
+            </button>
 
-          <button
-            type="button"
-            disabled={loading || sourceLoading}
-            onClick={() => void handleAiAssist()}
-            className="flex w-full items-center justify-center rounded-full border border-border bg-card py-4 text-[15px] font-medium text-foreground transition disabled:opacity-60"
-          >
-            {t("plan.aiAssist")}
-          </button>
+            <button
+              type="button"
+              disabled={loading || sourceLoading}
+              onClick={() => void handleAiAssist()}
+              className="flex w-full items-center justify-center rounded-full border border-border bg-card py-4 text-[15px] font-medium text-foreground transition disabled:opacity-60"
+            >
+              {t("plan.aiAssist")}
+            </button>
+          </div>
         </form>
       </div>
     </div>

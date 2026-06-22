@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { Sparkles, ChevronRight, Search, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
@@ -7,10 +7,10 @@ import { HomeTripCard } from "@/components/home/HomeTripCard";
 import { HomeNearbyPlaceCards } from "@/components/home/HomeNearbyPlaceCards";
 import { HomeWeatherCard } from "@/components/home/HomeWeatherCard";
 import { HomePersonalizationCard } from "@/components/home/HomePersonalizationCard";
-import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
-import { useAvatar } from "@/hooks/use-avatar";
+import { logHomeNearbyLoadOnce, logPlacesApiSkipDuplicate } from "@/lib/places-diagnostics";
 import { useHomeWeather } from "@/hooks/use-home-weather";
 import { useEffectiveLocation } from "@/hooks/use-effective-location";
+import type { EffectiveLocationSnapshot } from "@/lib/effective-location";
 import { getWeather } from "@/lib/weather.functions";
 import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { fetchRoamieAI } from "@/lib/ai/stream-client";
@@ -29,7 +29,11 @@ import { supabase } from "@/integrations/supabase/client";
 import { useI18n } from "@/hooks/use-i18n";
 import { searchPlaces } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
-import { loadHomeNearbyPicks, type HomeNearbyPick } from "@/lib/explore-category-search";
+import {
+  loadHomeNearbyPicks,
+  homeNearbyLoadPeriodKey,
+  type HomeNearbyPick,
+} from "@/lib/home-nearby-search";
 import {
   readHomeSessionNearbyLoadKey,
   readHomeSessionNearbyPicks,
@@ -37,25 +41,27 @@ import {
 } from "@/lib/home-session-cache";
 import {
   getHomeNearbyLoadInFlight,
-  homeNearbyCategoriesKey,
   homeNearbyLoadKey,
   markHomeNearbyLoad,
   markHomeNearbyLoadComplete,
-  registerHomeNearbyLoadInFlight,
+  readHomeNearbyResultsCache,
   shouldSkipHomeNearbyLoadWithData,
 } from "@/lib/home-nearby-picks-policy";
-import { logHomeNearbyLoadOnce, logPlacesApiSkipDuplicate } from "@/lib/places-diagnostics";
+import { useAvatar } from "@/hooks/use-avatar";
 import { sanitizeHomeNearbyPicksForDisplay } from "@/lib/home-nearby-display";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
+import { useAccess } from "@/hooks/use-access";
 import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
 import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
 import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
-import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
-import { pickCategoriesForHome } from "@/lib/recommendation/categories";
 import { buildDailyPrepAdvice } from "@/lib/recommendation/daily-prep-advice";
 import { HomeOutfitCard } from "@/components/home/HomeOutfitCard";
 import { pickToPlaceDetailHandoff, setPlaceDetailHandoff } from "@/lib/place-detail-handoff";
+import {
+  mergePlaceRuntimeCache,
+  PLACE_RUNTIME_CACHE_UPDATED,
+} from "@/lib/place-runtime-cache";
 import {
   logNearbyPlaceCardPressed,
   logNearbyPlaceId,
@@ -63,36 +69,26 @@ import {
   logNearbyPlaceNavigateToDetail,
 } from "@/lib/place-detail-log";
 import { openAppSettings } from "@/lib/open-app-settings";
-import { readHomeMood, writeHomeMood } from "@/lib/home-mood";
+import { clearHomeMoodUiSelection } from "@/lib/home-mood";
+import { beginHomeMoodShortcutSession } from "@/lib/home-mood-shortcut-session";
+import {
+  HOME_MOOD_EMOJI,
+  HOME_MOOD_IDS,
+  type HomeMoodId,
+} from "@/lib/home-mood-options";
 import { saveChatSession, loadChatSession } from "@/lib/chat-session";
 
 export const Route = createFileRoute("/_app/")({
   component: Home,
 });
 
-const HOME_MOODS = [
-  { label: "想放空", emoji: "🍃" },
-  { label: "一個人", emoji: "🚶" },
-  { label: "下雨天", emoji: "☔" },
-  { label: "深夜散步", emoji: "🌙" },
-  { label: "找咖啡", emoji: "☕" },
-  { label: "看海", emoji: "🌊" },
-] as const;
-
-const MOOD_CHAT_PROMPTS: Record<string, string> = {
-  深夜散步: "我想深夜散步，幫我看看附近適合去哪裡。",
-  下雨天: "今天下雨天，幫我推薦幾個適合放鬆的地方。",
-  找咖啡: "我想找咖啡廳坐坐，幫我挑幾個順路的選項。",
-  想放空: "我今天想放空，幫我安排一段輕鬆行程。",
-  一個人: "我想一個人慢慢走走，推薦適合獨處的地方。",
-  看海: "我想去看海放鬆一下，幫我規劃方向。",
-};
-
 function Home() {
   const { t, locale } = useI18n();
+  const { hasPlusAccess } = useAccess();
   const { openAddToTrip } = useAddToTrip();
   const { avatarSrc } = useAvatar();
   const navigate = useNavigate();
+  const router = useRouter();
   const fetchWeather = useServerFn(getWeather);
   const searchPlacesServerFn = useServerFn(searchPlaces);
   const searchPlacesFn = useMemo(
@@ -115,7 +111,17 @@ function Home() {
   const [nearbyLoading, setNearbyLoading] = useState(
     () => sanitizeHomeNearbyPicksForDisplay(readHomeSessionNearbyPicks(), { logDrop: false }).length === 0,
   );
-  const [selectedMood, setSelectedMood] = useState<string | null>(() => readHomeMood());
+  const [selectedMood, setSelectedMood] = useState<HomeMoodId | null>(null);
+  const homeMoods = useMemo(
+    () =>
+      HOME_MOOD_IDS.map((id) => ({
+        id,
+        label: t(`home.moods.${id}`),
+        emoji: HOME_MOOD_EMOJI[id],
+      })),
+    [t],
+  );
+  const selectedMoodLabel = selectedMood ? t(`home.moods.${selectedMood}`) : null;
   const [aiLoading, setAiLoading] = useState(false);
   const [latestTrip, setLatestTrip] = useState<CoreTrip | null>(null);
   const [prefs, setPrefs] = useState<Awaited<ReturnType<typeof getPreferences>> | null>(null);
@@ -123,6 +129,20 @@ function Home() {
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [saveBusyId, setSaveBusyId] = useState<string | null>(null);
   const [navigatingPlaceId, setNavigatingPlaceId] = useState<string | null>(null);
+
+  const dailyPrepAdvice = useMemo(
+    () => buildDailyPrepAdvice(weather, locale, weather?.city),
+    [
+      weather?.tempC,
+      weather?.precipProbability,
+      weather?.condition,
+      weather?.isDaytime,
+      weather?.available,
+      weather?.city,
+      weather?.source,
+      locale,
+    ],
+  );
 
   const weatherRef = useRef(weather);
   weatherRef.current = weather;
@@ -132,27 +152,57 @@ function Home() {
   userLocationRef.current = userLocation;
   const selectedMoodRef = useRef(selectedMood);
   selectedMoodRef.current = selectedMood;
+
+  const resetHomeMoodUi = useCallback(() => {
+    clearHomeMoodUiSelection();
+    setSelectedMood(null);
+  }, []);
+
+  useEffect(() => {
+    const syncHomeMoodUi = () => {
+      const path = (router.state.location.pathname || "/").replace(/\/+$/, "") || "/";
+      if (path === "/") resetHomeMoodUi();
+    };
+    syncHomeMoodUi();
+    const unsub = router.subscribe("onResolved", syncHomeMoodUi);
+    return () => unsub();
+  }, [router, resetHomeMoodUi]);
+
   const hasNearbyPicksRef = useRef(
     sanitizeHomeNearbyPicksForDisplay(readHomeSessionNearbyPicks(), { logDrop: false }).length > 0,
   );
-  const prevNearbyEffectDepsRef = useRef<{ loadKey: string | null }>({
+  const prevNearbyEffectDepsRef = useRef<{ loadKey: string | null; ready: boolean }>({
     loadKey: null,
+    ready: false,
   });
-  const loadNearbyPicksRef = useRef<(caller?: string) => Promise<void>>(async () => {});
-
-  const loadNearbyPicks = useCallback(async (caller?: string) => {
-    const eff = effectiveLocationRef.current;
-    const mood = selectedMoodRef.current;
+  const loadNearbyPicks = useCallback(async (
+    caller?: string,
+    locationOverride?: EffectiveLocationSnapshot | null,
+  ) => {
+    const eff = locationOverride ?? effectiveLocationRef.current;
+    console.info("[HOME_NEARBY_ENTER]", {
+      caller: caller ?? null,
+      ready: !!eff?.isReadyForPlaces,
+      locationKey: eff?.locationKey ?? null,
+    });
     if (!eff?.isReadyForPlaces) {
+      console.info("[HOME_NEARBY_ABORT]", { reason: "not_ready", caller: caller ?? null });
       return;
     }
 
     const loc = { lat: eff.lat, lng: eff.lng };
-    const categories = pickCategoriesForHome(weatherRef.current, mood);
-    const categoriesKey = homeNearbyCategoriesKey(categories.map((c) => c.id));
-    const loadKey = homeNearbyLoadKey(loc.lat, loc.lng, mood, categoriesKey);
+    const periodKey = homeNearbyLoadPeriodKey();
+    const loadKey = homeNearbyLoadKey(loc.lat, loc.lng, periodKey, locale);
     const sessionLoadKey = readHomeSessionNearbyLoadKey();
     const restoreCachedPicks = () => {
+      const moduleCached = readHomeNearbyResultsCache<HomeNearbyPick>(loadKey);
+      if (moduleCached) {
+        setNearbyPicks(moduleCached);
+        hasNearbyPicksRef.current = moduleCached.length > 0;
+        writeHomeSessionNearbyPicks(moduleCached, loadKey);
+        setNearbyLoading(false);
+        return;
+      }
       const cached = sanitizeHomeNearbyPicksForDisplay(readHomeSessionNearbyPicks(), {
         logDrop: false,
       });
@@ -168,6 +218,7 @@ function Home() {
     };
 
     if (shouldSkipHomeNearbyLoadWithData(loadKey, hasNearbyPicksRef.current, sessionLoadKey)) {
+      console.info("[HOME_NEARBY_SKIP]", { loadKey, caller: caller ?? null, reason: "policy_skip" });
       logPlacesApiSkipDuplicate("nearby_ttl", {
         key: loadKey,
         caller: caller ?? null,
@@ -190,13 +241,19 @@ function Home() {
     }
 
     const run = async () => {
+      console.info("[HOME_NEARBY_FETCH_START]", {
+        loadKey,
+        caller: caller ?? null,
+        locationKey: eff.locationKey,
+      });
       markHomeNearbyLoad(loadKey);
       logHomeNearbyLoadOnce({
         locationKey: eff.locationKey,
         loadKey,
         caller,
-        categories: categories.map((c) => c.id),
+        categories: [periodKey],
       });
+      let resultCount = 0;
       try {
         const [profile, prefs, saved] = await Promise.all([
           getUserProfile(locale).catch(() => null),
@@ -211,6 +268,7 @@ function Home() {
           personalityType: profile?.personalityType,
           personalitySummary: profile?.personalitySummary,
           aiPreferences: profile?.aiPreferences,
+          hasPlusAccess,
         });
         const picks = sanitizeHomeNearbyPicksForDisplay(
           await loadHomeNearbyPicks({
@@ -220,11 +278,11 @@ function Home() {
             reasonProfile,
             saved,
             searchPlacesFn,
-            categories,
             locationKey: eff.locationKey,
           }),
           { logDrop: false },
         );
+        resultCount = picks.length;
         setNearbyPicks(picks);
         writeHomeSessionNearbyPicks(picks, loadKey);
         hasNearbyPicksRef.current = picks.length > 0;
@@ -237,28 +295,24 @@ function Home() {
           setNearbyPicks([]);
         }
       } finally {
-        markHomeNearbyLoadComplete(loadKey);
+        markHomeNearbyLoadComplete(loadKey, resultCount);
         setNearbyLoading(false);
       }
     };
 
-    await registerHomeNearbyLoadInFlight(loadKey, run());
-  }, [locale, searchPlacesFn]);
+    await run();
+  }, [locale, searchPlacesFn, hasPlusAccess]);
 
-  loadNearbyPicksRef.current = loadNearbyPicks;
-
-  const handleMoodSelect = (label: string) => {
-    const next = selectedMood === label ? null : label;
+  const handleMoodSelect = (moodId: HomeMoodId) => {
+    const next = selectedMood === moodId ? null : moodId;
     setSelectedMood(next);
-    writeHomeMood(next);
-    const base = loadChatSession();
-    saveChatSession({
-      ...base,
-      mood: next ?? base.mood,
-      selectedMood: next ?? base.selectedMood,
-    });
-    if (!next) return;
-    const prompt = MOOD_CHAT_PROMPTS[next] ?? `我現在想要「${next}」的行程，請給我建議。`;
+    if (!next) {
+      resetHomeMoodUi();
+      return;
+    }
+    clearHomeMoodUiSelection();
+    const moodLabel = t(`home.moods.${next}`);
+    const prompt = t(`home.moodPrompts.${next}`);
     console.info("[MOOD_CHAT_START]", `mood=${next}`);
     console.info("[MOOD_CHAT_ROUTE]", "target=/chat");
     try {
@@ -270,53 +324,50 @@ function Home() {
           prompt,
         },
       });
-      saveChatSession({
-        ...loadChatSession(),
-        mood: next,
-        selectedMood: next,
-        fromMoodCard: true,
-        fromMoodFlow: true,
-      });
+      saveChatSession(
+        beginHomeMoodShortcutSession(loadChatSession(), moodLabel),
+      );
     } catch (error) {
       console.error(
         "[MOOD_CHAT_ERROR]",
         error instanceof Error ? error.message : String(error),
       );
-      toast.error("目前無法開啟聊聊，請稍後再試");
+      toast.error(t("home.moodChatOpenFailed"));
     }
   };
 
-  useLayoutEffect(() => {
-    console.info("[HOME_PAGE] mounted");
+  const [nearbyPeriodTick, setNearbyPeriodTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setNearbyPeriodTick((t) => t + 1), 60_000);
+    return () => window.clearInterval(id);
   }, []);
-
-  const homeCategories = useMemo(
-    () => pickCategoriesForHome(weather, selectedMood),
-    [weather, selectedMood],
-  );
-  const homeCategoriesKey = useMemo(
-    () => homeNearbyCategoriesKey(homeCategories.map((c) => c.id)),
-    [homeCategories],
+  const nearbyPeriodKey = useMemo(
+    () => homeNearbyLoadPeriodKey(),
+    [nearbyPeriodTick],
   );
 
   const nearbyLoadKey =
-    effectiveLocation?.isReadyForPlaces && weatherStatus !== "loading"
+    effectiveLocation?.isReadyForPlaces
       ? homeNearbyLoadKey(
           effectiveLocation.lat,
           effectiveLocation.lng,
-          selectedMood,
-          homeCategoriesKey,
+          nearbyPeriodKey,
+          locale,
         )
       : null;
 
   useLayoutEffect(() => {
     const prev = prevNearbyEffectDepsRef.current;
     const loadKeyChanged = prev.loadKey !== nearbyLoadKey;
-    prevNearbyEffectDepsRef.current = { loadKey: nearbyLoadKey };
+    const becameReady = !!effectiveLocation?.isReadyForPlaces && !prev.ready;
+    prevNearbyEffectDepsRef.current = {
+      loadKey: nearbyLoadKey,
+      ready: !!effectiveLocation?.isReadyForPlaces,
+    };
 
     if (!effectiveLocation?.isReadyForPlaces || !nearbyLoadKey) return;
 
-    if (!loadKeyChanged) {
+    if (!loadKeyChanged && !becameReady) {
       return;
     }
 
@@ -328,71 +379,31 @@ function Home() {
         sessionLoadKey,
       )
     ) {
-      logPlacesApiSkipDuplicate("nearby_ttl", {
-        key: nearbyLoadKey,
+      console.info("[HOME_NEARBY_SKIP]", {
+        loadKey: nearbyLoadKey,
         caller: "nearby_effect",
-        reason: "existing_or_completed",
+        reason: "policy_skip",
       });
+      const moduleCached = readHomeNearbyResultsCache<HomeNearbyPick>(nearbyLoadKey);
+      if (moduleCached?.length) {
+        setNearbyPicks(moduleCached);
+        hasNearbyPicksRef.current = true;
+      } else {
+        const cached = sanitizeHomeNearbyPicksForDisplay(readHomeSessionNearbyPicks(), {
+          logDrop: false,
+        });
+        if (cached.length > 0 && sessionLoadKey === nearbyLoadKey) {
+          setNearbyPicks(cached);
+          hasNearbyPicksRef.current = true;
+        }
+      }
       setNearbyLoading(false);
       return;
     }
 
-    void loadNearbyPicksRef.current("nearby_effect");
-  }, [nearbyLoadKey, effectiveLocation?.isReadyForPlaces, weatherStatus]);
-
-  useEffect(() => {
-    const onPrefs = () => {
-      if (weatherStatus === "loading") return;
-      const eff = effectiveLocationRef.current;
-      if (!eff?.isReadyForPlaces) return;
-      const categories = pickCategoriesForHome(weatherRef.current, selectedMoodRef.current);
-      const loadKey = homeNearbyLoadKey(
-        eff.lat,
-        eff.lng,
-        selectedMoodRef.current,
-        homeNearbyCategoriesKey(categories.map((c) => c.id)),
-      );
-      if (
-        shouldSkipHomeNearbyLoadWithData(
-          loadKey,
-          hasNearbyPicksRef.current,
-          readHomeSessionNearbyLoadKey(),
-        )
-      ) {
-        return;
-      }
-      void loadNearbyPicksRef.current("prefs_updated_event");
-    };
-    window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
-    return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
-  }, [weatherStatus]);
-
-  useEffect(() => {
-    const onAccess = () => {
-      if (weatherStatus === "loading") return;
-      const eff = effectiveLocationRef.current;
-      if (!eff?.isReadyForPlaces) return;
-      const categories = pickCategoriesForHome(weatherRef.current, selectedMoodRef.current);
-      const loadKey = homeNearbyLoadKey(
-        eff.lat,
-        eff.lng,
-        selectedMoodRef.current,
-        homeNearbyCategoriesKey(categories.map((c) => c.id)),
-      );
-      if (
-        shouldSkipHomeNearbyLoadWithData(
-          loadKey,
-          hasNearbyPicksRef.current,
-          readHomeSessionNearbyLoadKey(),
-        )
-      ) {
-        return;
-      }
-      void loadNearbyPicksRef.current("access_changed_event");
-    };
-    window.addEventListener(ACCESS_CHANGED_EVENT, onAccess);
-    return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onAccess);
-  }, [weatherStatus]);
+    console.info("[HOME_NEARBY_EFFECT_FETCH]", { loadKey: nearbyLoadKey, becameReady, loadKeyChanged });
+    void loadNearbyPicks("nearby_effect", effectiveLocation);
+  }, [nearbyLoadKey, effectiveLocation, effectiveLocation?.isReadyForPlaces, loadNearbyPicks]);
 
   const handleNearbyPick = (pick: HomeNearbyPick) => {
     logNearbyPlaceCardPressed(pick.id, pick.name);
@@ -454,24 +465,50 @@ function Home() {
     }
   };
 
+  const latestTripIdRef = useRef<string | null>(null);
+
   const refreshLatestTrip = useCallback(() => {
     void getLatestCoreTrip()
-      .then((view) => setLatestTrip(view))
-      .catch(() => setLatestTrip(null));
+      .then((view) => {
+        const nextId = view?.id ?? null;
+        if (nextId === latestTripIdRef.current) return;
+        latestTripIdRef.current = nextId;
+        setLatestTrip(view);
+      })
+      .catch(() => {
+        if (latestTripIdRef.current === null) return;
+        latestTripIdRef.current = null;
+        setLatestTrip(null);
+      });
   }, []);
 
   useEffect(() => {
     refreshLatestTrip();
     const onRefresh = () => refreshLatestTrip();
     window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
-    window.addEventListener("focus", onRefresh);
-    document.addEventListener("visibilitychange", onRefresh);
-    return () => {
-      window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
-      window.removeEventListener("focus", onRefresh);
-      document.removeEventListener("visibilitychange", onRefresh);
-    };
+    return () => window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
   }, [refreshLatestTrip]);
+
+  useEffect(() => {
+    const onRuntimeCache = (event: Event) => {
+      const placeId = (event as CustomEvent<{ placeId?: string }>).detail?.placeId;
+      if (!placeId) return;
+      setNearbyPicks((prev) => {
+        let changed = false;
+        const next = prev.map((pick) => {
+          if (pick.id !== placeId) return pick;
+          changed = true;
+          return mergePlaceRuntimeCache(placeId, pick) as HomeNearbyPick;
+        });
+        if (!changed) return prev;
+        const loadKey = readHomeSessionNearbyLoadKey();
+        if (loadKey) writeHomeSessionNearbyPicks(next, loadKey);
+        return next;
+      });
+    };
+    window.addEventListener(PLACE_RUNTIME_CACHE_UPDATED, onRuntimeCache);
+    return () => window.removeEventListener(PLACE_RUNTIME_CACHE_UPDATED, onRuntimeCache);
+  }, []);
 
   const handleRecommend = async () => {
     if (!selectedMood) {
@@ -493,9 +530,9 @@ function Home() {
       const at = new Date(bundle.time);
       const data = await fetchRoamieAI(
         toRoamieRequest("recommend", bundle, {
-          mood: selectedMood,
-          selectedCategory: selectedMood,
-          selectedMood,
+          mood: selectedMoodLabel,
+          selectedCategory: selectedMoodLabel,
+          selectedMood: selectedMoodLabel,
           locale,
           lateNightMode: shouldActivateLateNightSceneFlow(selectedMood, at),
           recentRecommendationNames: loadRecentRecommendationNames(),
@@ -505,7 +542,8 @@ function Home() {
       );
 
       recordRecommendationNames(data.recommendations.map((r) => r.name));
-      const saved = await saveRecommendation(data, { mood: selectedMood });
+      const saved = await saveRecommendation(data, { mood: selectedMoodLabel ?? undefined });
+      resetHomeMoodUi();
       navigate({ to: "/recommendations", search: { id: saved.id } });
     } catch (e) {
       console.error("[Roamie AI] home recommend failed", e);
@@ -519,14 +557,14 @@ function Home() {
     <div className="animate-rise w-full min-w-0 max-w-full overflow-x-hidden pb-6 pl-[max(1.25rem,var(--safe-area-left))] pr-[max(1.25rem,var(--safe-area-right))] pt-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <h1 className="text-2xl leading-tight">嘿，今天想去哪裡走走？</h1>
+          <h1 className="text-2xl leading-tight">{t("home.greeting")}</h1>
         </div>
         <Link
           to="/profile"
           className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-border bg-secondary"
-          aria-label="個人頁"
+          aria-label={t("home.profileLinkAria")}
         >
-          <img src={avatarSrc} alt="" className="h-full w-full object-cover" />
+          <img key={avatarSrc} src={avatarSrc} alt="" className="h-full w-full object-cover" />
         </Link>
       </div>
 
@@ -536,29 +574,30 @@ function Home() {
         className="mt-5 block rounded-3xl border border-border bg-card p-5 shadow-soft transition active:scale-[0.99]"
       >
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Sparkles className="h-3.5 w-3.5 text-clay" />和 Roamie 聊聊
+          <Sparkles className="h-3.5 w-3.5 text-clay" />
+          {t("home.chatCardBadge")}
         </div>
-        <p className="mt-3 font-display text-[19px] leading-snug">
-          「先說說心情，我幫你挑幾個地方，再一起把行程定下來。」
-        </p>
+        <p className="mt-3 font-display text-[19px] leading-snug">{t("home.chatCardQuote")}</p>
         <div className="mt-4 flex items-center gap-2 rounded-2xl bg-secondary/60 px-4 py-3 text-sm text-muted-foreground">
           <Search className="h-4 w-4" />
-          {selectedMood ? `帶著「${selectedMood}」開始對話` : "開始 AI 對話規劃"}
+          {selectedMoodLabel
+            ? t("home.chatSearchWithMood", { mood: selectedMoodLabel })
+            : t("home.chatSearchDefault")}
         </div>
       </Link>
 
       <div className="mt-6 min-w-0">
-        <SectionTitle title="現在的心情" />
+        <SectionTitle title={t("home.moodSectionTitle")} />
         <div className="app-h-scroll app-bleed-x mt-3">
           <div className="app-h-scroll-track">
-            {HOME_MOODS.map((m) => (
+            {homeMoods.map((m) => (
               <button
-                key={m.label}
+                key={m.id}
                 type="button"
-                onClick={() => handleMoodSelect(m.label)}
+                onClick={() => handleMoodSelect(m.id)}
                 disabled={aiLoading}
                 className={`flex shrink-0 items-center gap-1.5 rounded-full border px-4 py-2 text-sm shadow-soft transition ${
-                  selectedMood === m.label
+                  selectedMood === m.id
                     ? "border-foreground bg-foreground text-background"
                     : "border-border bg-card"
                 }`}
@@ -578,12 +617,14 @@ function Home() {
           {aiLoading ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
-              Roamie 正在幫你想…
+              {t("home.moodRecommendLoading")}
             </>
           ) : (
             <>
               <Sparkles className="h-4 w-4" />
-              {selectedMood ? `依「${selectedMood}」幫我想附近` : "選擇心情後，讓 Roamie 幫你想"}
+              {selectedMoodLabel
+                ? t("home.moodRecommendWith", { mood: selectedMoodLabel })
+                : t("home.moodRecommendDefault")}
             </>
           )}
         </button>
@@ -615,7 +656,7 @@ function Home() {
         to="/plan"
         className="mt-3 flex items-center justify-between rounded-2xl border border-dashed border-border bg-card/60 px-4 py-3 text-xs text-muted-foreground"
       >
-        <span>進階：我想手動規劃行程</span>
+        <span>{t("home.advancedPlan")}</span>
         <ChevronRight className="h-4 w-4" />
       </Link>
 
@@ -641,7 +682,7 @@ function Home() {
           placeholderTitle: t("home.weatherPlaceholderTitle"),
           placeholderHint:
             weatherStatus === "error" || weatherError
-              ? "暫時讀不到天氣，先用附近地點陪你走走"
+              ? t("home.weatherErrorPlaceholder")
               : t("home.weatherPlaceholderHint"),
           fallbackLocationHint: t("home.weatherFallbackLocation"),
           openLocationSettings: t("home.weatherOpenLocationSettings"),
@@ -651,7 +692,7 @@ function Home() {
       />
 
       <HomeOutfitCard
-        advice={buildDailyPrepAdvice(weather, locale, weather?.city)}
+        advice={dailyPrepAdvice}
         labels={{
           title: t("home.prepTitle"),
           empty: t("home.prepEmpty"),
@@ -664,7 +705,7 @@ function Home() {
         savedPlaces={savedPlaces}
         weather={weather}
         nearbyPicks={nearbyPicks}
-        selectedMood={selectedMood}
+        selectedMood={selectedMoodLabel}
         latestTripTitle={latestTrip?.displayTitle ?? null}
       />
     </div>

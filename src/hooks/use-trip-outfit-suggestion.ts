@@ -3,10 +3,9 @@ import { useServerFn } from "@tanstack/react-start";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
 import type { TripLocation } from "@/lib/location/types";
 import { generateTripOutfitSuggestion } from "@/lib/outfit/outfit.functions";
+import { buildLocalTripOutfitFallback } from "@/lib/outfit/local-trip-outfit-fallback";
 import { buildOutfitInputKey } from "@/lib/outfit/trip-outfit-context";
 import type { TripOutfitSuggestionFields } from "@/lib/outfit/types";
-
-const PENDING_OUTFIT_FIELDS = Object.freeze({}) as TripOutfitSuggestionFields;
 
 type Params = {
   initialFields: TripOutfitSuggestionFields;
@@ -20,7 +19,50 @@ type Params = {
   tripCenter?: { lat: number; lng: number };
   moodTag?: string;
   enabled?: boolean;
+  /** 僅在伺服器新生成穿搭建議時呼叫（不於 mount / cache hit / 本地 fallback 觸發） */
+  onGenerated?: (fields: TripOutfitSuggestionFields) => void;
 };
+
+function outfitFieldsFingerprint(fields: TripOutfitSuggestionFields): string {
+  return JSON.stringify({
+    outfitSuggestion: fields.outfitSuggestion ?? null,
+    outfitSuggestionUpdatedAt: fields.outfitSuggestionUpdatedAt ?? null,
+    weatherSummary: fields.weatherSummary ?? null,
+    weatherSource: fields.weatherSource ?? null,
+    outfitSuggestionInputKey: fields.outfitSuggestionInputKey ?? null,
+  });
+}
+
+function itemsOutfitSignature(items: RoamieItineraryItem[]): string {
+  return items
+    .map((item) =>
+      [
+        item.date ?? "",
+        item.placeType ?? "",
+        item.title,
+        item.placeName ?? "",
+      ].join("|"),
+    )
+    .join("\n");
+}
+
+function normalizeServerOutfitResult(
+  result: Awaited<ReturnType<typeof generateTripOutfitSuggestion>>,
+  inputKey: string,
+): TripOutfitSuggestionFields {
+  const raw = result as TripOutfitSuggestionFields & {
+    suggestion?: string;
+    generatedAt?: string;
+  };
+  return {
+    outfitSuggestion: raw.outfitSuggestion ?? raw.suggestion ?? "",
+    weatherSummary: raw.weatherSummary ?? "",
+    weatherSource: raw.weatherSource ?? "openweather",
+    outfitSuggestionUpdatedAt:
+      raw.outfitSuggestionUpdatedAt ?? raw.generatedAt ?? new Date().toISOString(),
+    outfitSuggestionInputKey: inputKey,
+  };
+}
 
 export function useTripOutfitSuggestion({
   initialFields,
@@ -34,9 +76,15 @@ export function useTripOutfitSuggestion({
   tripCenter,
   moodTag,
   enabled = true,
+  onGenerated,
 }: Params) {
   const fetchSuggestion = useServerFn(generateTripOutfitSuggestion);
   const generatingRef = useRef(false);
+  const onGeneratedRef = useRef(onGenerated);
+  onGeneratedRef.current = onGenerated;
+  const initialFieldsFpRef = useRef(outfitFieldsFingerprint(initialFields));
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
 
   const resolvedDestination =
     destination !== "尚未設定" ? destination : fallbackDestination ?? "";
@@ -51,6 +99,8 @@ export function useTripOutfitSuggestion({
       }),
     [resolvedDestination, dateRange.start, dateRange.end, dayCount],
   );
+
+  const itemsSignature = useMemo(() => itemsOutfitSignature(items), [items]);
 
   const [outfitFields, setOutfitFields] = useState<TripOutfitSuggestionFields>(() => ({
     outfitSuggestion: initialFields.outfitSuggestion,
@@ -68,12 +118,10 @@ export function useTripOutfitSuggestion({
 
   const pendingRegeneration =
     outfitFields.outfitSuggestionInputKey !== inputKey && Boolean(dateRange.start);
-  const showLoading = loading || pendingRegeneration;
-  const displayFields = useMemo(
-    () =>
-      outfitFields.outfitSuggestionInputKey === inputKey ? outfitFields : PENDING_OUTFIT_FIELDS,
-    [outfitFields, inputKey],
-  );
+
+  const displayFields = outfitFields;
+
+  const showLoading = loading || (pendingRegeneration && !displayFields.outfitSuggestion);
 
   useEffect(() => {
     if (!enabled || isCached || generatingRef.current) return;
@@ -88,7 +136,7 @@ export function useTripOutfitSuggestion({
         startDate: dateRange.start,
         endDate: dateRange.end || dateRange.start,
         dayCount,
-        items,
+        items: itemsRef.current,
         transport: settings.transport ?? null,
         lat: tripCenter?.lat ?? destinationLocation?.lat ?? null,
         lng: tripCenter?.lng ?? destinationLocation?.lng ?? null,
@@ -96,16 +144,39 @@ export function useTripOutfitSuggestion({
       },
     })
       .then((result) => {
-        setOutfitFields({
-          outfitSuggestion: result.outfitSuggestion,
-          weatherSummary: result.weatherSummary,
-          weatherSource: result.weatherSource,
-          outfitSuggestionUpdatedAt: result.outfitSuggestionUpdatedAt,
-          outfitSuggestionInputKey: inputKey,
-        });
+        const nextFields = normalizeServerOutfitResult(result, inputKey);
+        if (!nextFields.outfitSuggestion?.trim()) {
+          setOutfitFields(
+            buildLocalTripOutfitFallback({
+              destination: resolvedDestination,
+              startDate: dateRange.start,
+              endDate: dateRange.end || dateRange.start,
+              items: itemsRef.current,
+              transport: settings.transport,
+              inputKey,
+            }),
+          );
+          return;
+        }
+        setOutfitFields(nextFields);
+        const initialFp = initialFieldsFpRef.current;
+        const nextFp = outfitFieldsFingerprint(nextFields);
+        if (nextFp !== initialFp) {
+          onGeneratedRef.current?.(nextFields);
+        }
       })
       .catch((e) => {
         console.warn("[useTripOutfitSuggestion] generation failed", e);
+        setOutfitFields(
+          buildLocalTripOutfitFallback({
+            destination: resolvedDestination,
+            startDate: dateRange.start,
+            endDate: dateRange.end || dateRange.start,
+            items: itemsRef.current,
+            transport: settings.transport,
+            inputKey,
+          }),
+        );
       })
       .finally(() => {
         generatingRef.current = false;
@@ -119,9 +190,10 @@ export function useTripOutfitSuggestion({
     dateRange.end,
     dayCount,
     resolvedDestination,
-    items,
+    itemsSignature,
     settings.transport,
-    tripCenter,
+    tripCenter?.lat,
+    tripCenter?.lng,
     destinationLocation?.lat,
     destinationLocation?.lng,
     moodTag,

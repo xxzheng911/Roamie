@@ -1,4 +1,5 @@
 import { waitForCapacitorBridge } from "@/lib/capacitor-bridge-ready";
+import { hasExternalBootSplash, rootHasRealAppContent } from "@/lib/boot-splash";
 import { normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
 import { hideNativeSplashScreen } from "@/lib/native-splash";
 import { isAppReady } from "@/lib/startup-route";
@@ -45,9 +46,8 @@ let polishNativeChromeScheduled = false;
 
 function hasWebBootUi(): boolean {
   if (typeof document === "undefined") return false;
-  const root = document.getElementById("root");
-  if (root && root.childElementCount > 0) return true;
-  return document.getElementById("roamie-boot-splash") != null;
+  if (rootHasRealAppContent()) return true;
+  return hasExternalBootSplash();
 }
 
 /** 等 React 首屏或 HTML boot splash 出現後再關原生 splash，避免 bundle 載入期間露出白屏 */

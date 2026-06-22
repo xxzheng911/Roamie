@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { RoamieRoutePending } from "@/components/RoamieRoutePending";
+import { hasExternalBootSplash } from "@/lib/boot-splash";
 import { AppBootRouteSync } from "@/components/AppBootRouteSync";
 import { OnboardingRouteGuard } from "@/components/OnboardingRouteGuard";
 import { logAppBoot } from "@/lib/app-boot-log";
@@ -11,6 +12,8 @@ import {
   loadOnboardingState,
 } from "@/lib/onboarding-storage";
 import { resolveStartupPathFast } from "@/lib/startup-route";
+import { logAuthBoot } from "@/lib/auth-boot-log";
+import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import type { StartupPath } from "@/lib/post-auth-navigation";
 import {
   getBootGateState,
@@ -29,6 +32,7 @@ import {
   tryStartOnboardingGateBoot,
 } from "@/lib/startup-boot-state";
 import { readBrowserPathname } from "@/lib/startup-path";
+import { dismissBootSplashWhenAppReady } from "@/lib/boot-splash";
 
 type Props = { children: ReactNode };
 
@@ -104,7 +108,11 @@ export function OnboardingGate({ children }: Props) {
 
     let cancelled = false;
     void (async () => {
+      logAuthBoot("onboarding-gate");
       await loadOnboardingState();
+      if (platform.isCapacitor) {
+        await warmSupabaseAuthStorage();
+      }
       const completed = isOnboardingCompletedSync();
       const target = resolveStartupPathFast();
       const current = readBrowserPathname();
@@ -147,7 +155,13 @@ export function OnboardingGate({ children }: Props) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!hydrated || !routeSynced) return;
+    dismissBootSplashWhenAppReady();
+  }, [hydrated, routeSynced]);
+
   const needsRouteSync = hydrated && !routeSynced;
+  const showReactBootPending = (!hydrated || needsRouteSync) && !hasExternalBootSplash();
 
   if (!hydrated || needsRouteSync) {
     return (
@@ -155,7 +169,7 @@ export function OnboardingGate({ children }: Props) {
         {needsRouteSync ? (
           <AppBootRouteSync targetRoute={bootTarget} onApplied={() => setRouteSynced(true)} />
         ) : null}
-        <RoamieRoutePending />
+        {showReactBootPending ? <RoamieRoutePending /> : null}
       </>
     );
   }

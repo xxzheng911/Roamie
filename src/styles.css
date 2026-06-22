@@ -442,9 +442,30 @@
     var(--splash-pad-bottom);
 }
 
-.dark .roamie-splash {
-  background-color: oklch(0.19 0.012 60);
-  color: oklch(0.95 0.012 85);
+/* Boot / route-pending loading — 固定奶油底＋深色字，不跟隨深色模式 */
+.roamie-splash--boot-cream,
+#roamie-boot-splash {
+  background-color: #fdf5ea !important;
+  color: #2a2520 !important;
+}
+.roamie-splash--boot-cream .roamie-splash__gradient,
+#roamie-boot-splash .roamie-splash__gradient {
+  background:
+    radial-gradient(ellipse 80% 50% at 20% 18%, rgba(253, 232, 212, 0.65), transparent 55%),
+    radial-gradient(ellipse 70% 45% at 88% 82%, rgba(223, 232, 240, 0.4), transparent 50%),
+    linear-gradient(165deg, #fdf8f0 0%, #fdf5ea 48%, #f3ebe2 100%) !important;
+}
+.roamie-splash--boot-cream .roamie-splash__brand,
+#roamie-boot-splash .roamie-splash__brand {
+  color: #2a211c !important;
+}
+.roamie-splash--boot-cream .roamie-splash__tagline,
+#roamie-boot-splash .roamie-splash__tagline {
+  color: rgba(107, 99, 92, 0.88) !important;
+}
+.roamie-splash--boot-cream .roamie-splash__loader-dot,
+#roamie-boot-splash .roamie-splash__loader-dot {
+  background: rgba(107, 99, 92, 0.45) !important;
 }
 
 .roamie-splash__gradient {
@@ -455,13 +476,6 @@
     radial-gradient(ellipse 70% 45% at 88% 82%, rgba(223, 232, 240, 0.4), transparent 50%),
     linear-gradient(165deg, #fdf8f0 0%, #fdf5ea 48%, #f3ebe2 100%);
   pointer-events: none;
-}
-
-.dark .roamie-splash__gradient {
-  background:
-    radial-gradient(ellipse 80% 50% at 20% 18%, oklch(0.28 0.02 65 / 0.45), transparent 55%),
-    radial-gradient(ellipse 70% 45% at 88% 82%, oklch(0.24 0.015 240 / 0.35), transparent 50%),
-    linear-gradient(165deg, oklch(0.21 0.012 60) 0%, oklch(0.19 0.012 60) 48%, oklch(0.17 0.01 55) 100%);
 }
 
 .roamie-splash__glow {
@@ -477,18 +491,12 @@
   height: 30%;
   background: rgba(253, 232, 212, 0.5);
 }
-.dark .roamie-splash__glow--tl {
-  background: oklch(0.32 0.025 65 / 0.35);
-}
 .roamie-splash__glow--br {
   right: -12%;
   bottom: 14%;
   width: 48%;
   height: 28%;
   background: rgba(197, 212, 227, 0.35);
-}
-.dark .roamie-splash__glow--br {
-  background: oklch(0.26 0.02 240 / 0.28);
 }
 .roamie-splash__glow--center {
   top: 38%;
@@ -498,9 +506,6 @@
   transform: translateX(-50%);
   background: rgba(253, 232, 212, 0.55);
 }
-.dark .roamie-splash__glow--center {
-  background: oklch(0.3 0.022 65 / 0.4);
-}
 
 .roamie-splash__paths {
   position: absolute;
@@ -509,9 +514,6 @@
   height: 100%;
   color: rgba(107, 99, 92, 0.18);
   pointer-events: none;
-}
-.dark .roamie-splash__paths {
-  color: oklch(0.75 0.02 75 / 0.16);
 }
 
 .roamie-splash__path {
@@ -639,33 +641,12 @@
   color: #2a211c;
 }
 
-/* 靜態 boot splash 固定奶油底 — 字樣維持深色 */
-#roamie-boot-splash .roamie-splash__brand {
-  color: #2a211c;
-}
-
-.dark .roamie-splash__brand {
-  color: oklch(0.95 0.012 85);
-}
-
-@media (prefers-color-scheme: dark) {
-  html:not(.light) .roamie-splash__brand {
-    color: oklch(0.95 0.012 85);
-  }
-  html:not(.light) #roamie-boot-splash .roamie-splash__brand {
-    color: #2a211c;
-  }
-}
-
 .roamie-splash__tagline {
   margin: clamp(0.375rem, 1.2vw, 0.5rem) 0 0;
   font-size: clamp(0.875rem, 2.8vw, 0.9375rem);
   line-height: 1.55;
   letter-spacing: 0.02em;
   color: rgba(107, 99, 92, 0.88);
-}
-.dark .roamie-splash__tagline {
-  color: oklch(0.72 0.02 75 / 0.88);
 }
 
 .roamie-splash__loader {
@@ -682,9 +663,6 @@
   border-radius: 50%;
   background: rgba(107, 99, 92, 0.45);
   animation: roamie-splash-loader-dot 1.2s ease-in-out infinite;
-}
-.dark .roamie-splash__loader-dot {
-  background: oklch(0.72 0.02 75 / 0.5);
 }
 .roamie-splash__loader-dot:nth-child(2) {
   animation-delay: 0.2s;
@@ -733,13 +711,6 @@
   .roamie-splash__character {
     max-height: min(46vh, 380px);
     width: min(72vw, 300px);
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  html:not(.light) .roamie-splash {
-    background-color: oklch(0.19 0.012 60);
-    color: oklch(0.95 0.012 85);
   }
 }
 
@@ -1294,9 +1265,72 @@ html.legal-page-scroll .legal-page-body {
   -webkit-overflow-scrolling: touch;
 }
 
+/** 行程封面編輯：解除 body scroll lock，讓原生相簿與裁切 Sheet 可正常操作 */
+html.trip-cover-editing,
+html.trip-cover-editing body {
+  overflow: visible !important;
+  position: static !important;
+  width: auto !important;
+  height: auto !important;
+}
+
+/** 行程詳情：鎖 main，由 .trip-detail-route 單層捲動（同 place-detail / profile） */
+html.trip-detail-route-active main.app-scroll {
+  overflow: hidden !important;
+}
+
+html.trip-detail-route-active main.app-scroll > div {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.trip-detail-route {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+}
+
+/** 行程詳情：僅保留鍵盤展開時隱藏 Tab Bar（封面編輯見 .trip-cover-editing） */
+html.trip-detail-route-active.trip-keyboard-open .bottom-nav {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(100%);
+}
+
+.trip-detail-root {
+  width: 100%;
+}
+
+.trip-detail-cover {
+  width: 100%;
+}
+
 /** 探索地圖全屏時鎖住主滾動，避免與手勢衝突；_app 依路由同步 class */
 html.map-route-active main.app-scroll {
   overflow: hidden !important;
+}
+
+/** 探索地圖搜尋鍵盤：鎖定版面高度，隱藏 Tab Bar，不推起推薦 sheet */
+html.map-keyboard-open .mobile-frame-inner {
+  height: var(--map-layout-height, 100dvh) !important;
+  max-height: var(--map-layout-height, 100dvh) !important;
+}
+
+html.map-keyboard-open .map-page {
+  height: calc(var(--map-layout-height, 100dvh) + var(--safe-area-top)) !important;
+  min-height: calc(var(--map-layout-height, 100dvh) + var(--safe-area-top)) !important;
+  max-height: calc(var(--map-layout-height, 100dvh) + var(--safe-area-top)) !important;
+}
+
+html.map-keyboard-open .bottom-nav {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(100%);
 }
 
 /** 地點詳情：主層鎖住，內容區自行垂直捲動（避開 BottomNav） */
@@ -1361,6 +1395,22 @@ html.chat-keyboard-open .bottom-nav.chat-nav-keyboard-hide {
 
 html.chat-keyboard-open main.app-scroll {
   padding-bottom: 0 !important;
+}
+
+/** 規劃新行程：鍵盤展開時隱藏 Tab Bar，表單區自行捲動 */
+html.plan-keyboard-open .bottom-nav {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(100%);
+}
+
+html.plan-keyboard-open main.app-scroll {
+  padding-bottom: 0 !important;
+}
+
+html.plan-keyboard-open .plan-page-scroll {
+  scroll-padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
 }
 
 @media (prefers-reduced-motion: reduce) {

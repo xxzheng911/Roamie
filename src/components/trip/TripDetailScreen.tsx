@@ -103,7 +103,7 @@ export function TripDetailScreen({ tripId, navSource, onDeleted }: Props) {
   );
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div className="trip-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain no-scrollbar">
       <SavedTripItineraryEditor
         stored={stored}
         headerRight={deleteButton}

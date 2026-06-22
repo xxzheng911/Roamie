@@ -61,74 +61,36 @@ function buildSummary(ctx: CanonicalTravelContext, placeCount: number): string {
   ].join("\n");
 }
 
-function staticFallbackPlaces(ctx: CanonicalTravelContext): RoamieRecommendationItem[] {
-  const dest = ctx.destination ?? "附近";
-  if (/釜山|Busan/i.test(dest)) {
-    return [
-      {
-        name: "廣安里海邊",
-        type: "海邊散步",
-        address: "釜山廣安里",
-        reason: "11 月海風涼爽，適合情侶慢步看海。",
-        lat: 35.1532,
-        lng: 129.1186,
-      },
-      {
-        name: "The Bay 101",
-        type: "夜景",
-        address: "釜山海雲台",
-        reason: "夜景氛圍好，適合晚餐後散步。",
-        lat: 35.1631,
-        lng: 129.1638,
-      },
-      {
-        name: "海東龍宮寺",
-        type: "景點",
-        address: "釜山機張郡",
-        reason: "情侶拍照熱點，海景與建築都很上鏡。",
-        lat: 35.1885,
-        lng: 129.2234,
-      },
-    ];
-  }
-
-  return [
-    {
-      name: `${dest} 附近散步點`,
-      type: "散步",
-      address: dest,
-      reason: `適合「${ctx.mood ?? "放鬆"}」的節奏，可以先從這裡開始。`,
-    },
-    {
-      name: `${dest} 安靜咖啡`,
-      type: "咖啡廳",
-      address: dest,
-      reason: "適合坐下來發呆、整理思緒。",
-    },
-  ];
-}
-
 export function generateLocalRecommendationFallback(
   input: LocalFallbackInput,
 ): { summary: string; payload: RoamiePayloadV2; places: ChatPlaceItem[] } {
   const { context: ctx, session, locale = "zh-TW", places = [] } = input;
-  console.info("[AI_FALLBACK] used", logTravelContext(ctx));
+  console.info("[CHAT_FALLBACK_USED]", logTravelContext(ctx));
 
-  const candidates: ChatPlaceItem[] =
-    places.length > 0
-      ? places.slice(0, 4).map((p) =>
-          mapPlaceResultToChatItem(p, {
-            mood: ctx.mood,
-            weather: ctx.weather,
-            locale,
-            currentTime: new Date(),
-          }),
-        )
-      : staticFallbackPlaces(ctx).map((r) => ({
-          ...r,
-          placeName: r.name,
-          reasonSource: "template" as const,
-        }));
+  const candidates: ChatPlaceItem[] = places.slice(0, 5).map((p) =>
+    mapPlaceResultToChatItem(p, {
+      mood: ctx.mood,
+      weather: ctx.weather,
+      locale,
+      currentTime: new Date(),
+    }),
+  );
+
+  if (!candidates.length) {
+    const dest = ctx.destination ?? ctx.currentLocation ?? "附近";
+    const summary = `目前在${dest}暫時找不到符合的地點，可以換個描述或稍後再試。`;
+    return {
+      summary,
+      payload: {
+        title: "Roamie 推薦",
+        summary,
+        moodTag: ctx.mood ?? session.selectedMood ?? "",
+        recommendations: [],
+        itinerary: [],
+      },
+      places: [],
+    };
+  }
 
   const summary = buildSummary(ctx, candidates.length);
   const moodTag = ctx.mood ?? session.selectedMood ?? "";

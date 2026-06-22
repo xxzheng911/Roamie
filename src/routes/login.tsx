@@ -16,7 +16,6 @@ import { hasPendingOAuthCallback, readPendingCallbackPath } from "@/lib/auth-oau
 import { shouldSkipOAuthCallbackNavigation } from "@/lib/oauth-callback-guard";
 import { clearAuthState } from "@/lib/clear-auth-state";
 import { getClientAuthSession } from "@/lib/auth-session";
-import { hasLikelyPersistedSession } from "@/lib/startup-route";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { logGoogleOAuthMarker } from "@/lib/auth-debug";
 import { signInWithProvider, type OAuthProvider } from "@/lib/auth-oauth";
@@ -155,32 +154,16 @@ function Login() {
   }, [isLegalPage]);
 
   useEffect(() => {
-    if (isLegalPage || loading || user) return;
-    if (hasPendingOAuthCallback()) return;
-    if (!hasLikelyPersistedSession()) return;
-    void (async () => {
-      const session = await getClientAuthSession();
-      if (!session?.user) {
-        await clearAuthState({ reason: "login-stale-local-session" });
-      }
-    })();
-  }, [isLegalPage, loading, user]);
-
-  useEffect(() => {
     if (loading || redirectedRef.current) return;
     if (!user) return;
     if (isPostLoginNavigationCommitted()) {
       redirectedRef.current = true;
       return;
     }
-    if (isBootCompleted()) {
-      redirectedRef.current = true;
-      return;
-    }
     redirectedRef.current = true;
     void navigateOnceAfterLogin(
       (opts) => navigate({ to: opts.to, replace: opts.replace }),
-      "login-session-restore",
+      isBootCompleted() ? "login-session-restore-after-boot" : "login-session-restore",
     );
   }, [user, loading, navigate]);
 

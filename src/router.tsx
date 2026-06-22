@@ -7,12 +7,18 @@ scheduleAppInitHandlers();
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter, type AnyRouter } from "@tanstack/react-router";
 import { RoamieRoutePending } from "@/components/RoamieRoutePending";
+import { hasExternalBootSplash } from "@/lib/boot-splash";
 import { normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
 import { logAppError } from "@/lib/log-error";
 import { requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
 import { normalizeRouterSsrManifest } from "@/lib/ssr-manifest";
 import { logRouterCreate } from "@/lib/startup-boot-state";
 import { routeTree } from "./routeTree.gen";
+
+function BootAwareRoutePending() {
+  if (hasExternalBootSplash()) return null;
+  return <RoamieRoutePending />;
+}
 
 let sharedQueryClient: QueryClient | null = null;
 let sharedRouter: AnyRouter | null = null;
@@ -40,7 +46,7 @@ export const getRouter = () => {
     context: { queryClient: sharedQueryClient },
     scrollRestoration: true,
     defaultPreloadStaleTime: 0,
-    defaultPendingComponent: RoamieRoutePending,
+    defaultPendingComponent: BootAwareRoutePending,
     defaultPendingMinMs: 0,
   });
 

@@ -1,18 +1,31 @@
 import { supabase } from "@/lib/supabase";
 import { getPreferences, savePreferences, type TravelPreferences } from "@/lib/preferences-storage";
 import { derivePersonality } from "@/lib/personality";
+import {
+  gatePlusPersonaFields,
+  resolveProfileHasPlusAccess,
+  sanitizeBioForTier,
+  shouldExposePlusPersona,
+} from "@/lib/profile-persona";
 import { broadcastAvatarUpdate } from "@/lib/avatar-events";
 import { broadcastCoverUpdate } from "@/lib/cover-events";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { getDefaultBio, getDefaultDisplayName } from "@/lib/i18n/default-profile";
-import { normalizeLocale } from "@/lib/i18n/detect-locale";
-import type { Locale } from "@/lib/i18n/types";
+import { detectDeviceLocale } from "@/lib/i18n/detect-locale";
+import type { Locale, LocalePreference } from "@/lib/i18n/types";
 import {
   getAuthenticatedUserId,
   isDataUrl,
   isHttpUrl,
 } from "@/lib/auth-session";
 import type { AuthProviderKind } from "@/lib/auth-provider";
+import {
+  clearProfileSessionCache,
+  readInflightProfileFetch,
+  readProfileSessionCache,
+  trackInflightProfileFetch,
+  writeProfileSessionCache,
+} from "@/lib/profile-session-cache";
 
 const GUEST_PROFILE_KEY = "roamie:user-profile";
 const GUEST_SETTINGS_KEY = "roamie:profile-settings";
@@ -46,7 +59,7 @@ export type UserProfile = {
 };
 
 type GuestSettings = {
-  language?: Locale;
+  language?: Locale | "system";
   notificationsEnabled?: boolean;
 };
 
@@ -127,34 +140,39 @@ async function fetchProfileRow(userId: string) {
   return data;
 }
 
-function mapLocale(value: string | null | undefined, fallback: Locale): Locale {
-  return normalizeLocale(value) ?? fallback;
+export async function getProfileLocalePreference(): Promise<LocalePreference | null> {
+  return detectDeviceLocale();
 }
 
+/** @deprecated 使用 getProfileLocalePreference */
 export async function getProfileLanguage(): Promise<Locale | null> {
-  const userId = await getAuthenticatedUserId();
-  if (userId) {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("language")
-      .eq("id", userId)
-      .maybeSingle();
-    if (error) return null;
-    return normalizeLocale(data?.language);
-  }
-  return readGuestSettings().language ?? null;
+  const pref = await getProfileLocalePreference();
+  if (!pref || pref === "system") return null;
+  return pref;
 }
 
+export async function saveProfileLocalePreference(_preference: LocalePreference): Promise<void> {
+  /* App UI 語言跟隨裝置，不再寫入 profile / localStorage */
+}
+
+/** @deprecated 使用 saveProfileLocalePreference */
 export async function saveProfileLanguage(locale: Locale): Promise<void> {
-  writeGuestSettings({ language: locale });
+  return saveProfileLocalePreference(locale);
+}
+
+export async function getProfileNotificationsEnabled(): Promise<boolean> {
+  const guest = readGuestSettings().notificationsEnabled;
+  if (guest !== undefined) return guest;
+
   const userId = await getAuthenticatedUserId();
-  if (!userId) return;
-  await ensureUserProfile(userId);
-  const { error } = await supabase
+  if (!userId) return false;
+  const { data, error } = await supabase
     .from("profiles")
-    .update({ language: locale })
-    .eq("id", userId);
-  if (error) throw new Error(error.message);
+    .select("notifications_enabled")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error) return false;
+  return data?.notifications_enabled ?? false;
 }
 
 export async function saveProfileNotifications(enabled: boolean): Promise<void> {
@@ -169,17 +187,34 @@ export async function saveProfileNotifications(enabled: boolean): Promise<void> 
   if (error) throw new Error(error.message);
 }
 
-export async function getUserProfile(localeOverride?: Locale): Promise<UserProfile> {
+export type GetUserProfileOptions = {
+  /** 略過 session 快取，強制從後端重新讀取 */
+  force?: boolean;
+};
+
+export async function getUserProfile(
+  localeOverride?: Locale,
+  options?: GetUserProfileOptions,
+): Promise<UserProfile> {
   const userId = await getAuthenticatedUserId();
   if (!userId) {
     throw new Error("請先登入");
   }
 
+  if (!options?.force) {
+    const cached = readProfileSessionCache(userId);
+    if (cached) return cached;
+    const inflight = readInflightProfileFetch(userId);
+    if (inflight) return inflight;
+  }
+
+  const fetchPromise = (async () => {
   const guestSettings = readGuestSettings();
-  const guestLocale = guestSettings.language ?? localeOverride ?? "zh-TW";
 
   const prefs = await getPreferences();
-  const personality = derivePersonality(prefs);
+  const hasPlusAccess = await resolveProfileHasPlusAccess();
+  const showPersona = shouldExposePlusPersona(hasPlusAccess, prefs);
+  const personality = showPersona ? derivePersonality(prefs) : { type: "", summary: "", impression: "" };
 
   let data = await fetchProfileRow(userId);
   if (!data) {
@@ -187,7 +222,8 @@ export async function getUserProfile(localeOverride?: Locale): Promise<UserProfi
     data = await fetchProfileRow(userId);
   }
 
-  const locale = mapLocale(data?.language, guestLocale);
+  const localePref = localeOverride ?? detectDeviceLocale();
+  const locale = localePref;
   const extras = (data?.ai_preferences ?? {}) as ProfileExtras;
 
   let avatarUrl = sanitizeAvatarUrl(data?.avatar_url ?? null);
@@ -197,24 +233,42 @@ export async function getUserProfile(localeOverride?: Locale): Promise<UserProfi
 
   const storedName = data?.display_name?.trim();
   const storedBio = data?.bio?.trim();
+  const defaultBio = getDefaultBio(locale);
+  const resolvedBio = storedBio || defaultBio;
 
-  return {
+  const raw: UserProfile = {
     displayName: storedName || getDefaultDisplayName(locale),
     avatarUrl,
     coverImageUrl,
-    bio: storedBio || getDefaultBio(locale),
-    travelStyle: extras.travelStyle ?? "",
+    bio: sanitizeBioForTier(resolvedBio, hasPlusAccess, prefs, defaultBio),
+    travelStyle: showPersona ? (extras.travelStyle ?? "") : "",
     language: locale,
-    notificationsEnabled: data?.notifications_enabled ?? false,
+    notificationsEnabled:
+      guestSettings.notificationsEnabled ?? data?.notifications_enabled ?? false,
     authProvider: (data?.auth_provider as AuthProviderKind) ?? null,
     prefs,
-    personalityType: prefs.personalityType ?? extras.personalityType ?? personality.type,
-    personalitySummary:
-      prefs.personalitySummary ?? extras.personalitySummary ?? personality.summary,
-    personalityImpression: personality.impression,
+    personalityType: showPersona
+      ? (prefs.personalityType ?? extras.personalityType ?? personality.type)
+      : "",
+    personalitySummary: showPersona
+      ? (prefs.personalitySummary ?? extras.personalitySummary ?? personality.summary)
+      : "",
+    personalityImpression: showPersona ? personality.impression : "",
     aiPreferences: extras,
   };
+
+  const profile = gatePlusPersonaFields(raw, hasPlusAccess);
+  writeProfileSessionCache(profile, userId);
+  return profile;
+  })();
+
+  if (!options?.force) {
+    return trackInflightProfileFetch(userId, fetchPromise);
+  }
+  return fetchPromise;
 }
+
+export { clearProfileSessionCache };
 
 export async function saveUserProfile(input: {
   displayName?: string;
@@ -225,6 +279,8 @@ export async function saveUserProfile(input: {
 }): Promise<UserProfile> {
   const userId = await getAuthenticatedUserId();
   const current = await getUserProfile();
+  const hasPlusAccess = await resolveProfileHasPlusAccess();
+  const showPersona = shouldExposePlusPersona(hasPlusAccess, current.prefs);
 
   const next = {
     displayName: input.displayName?.trim() ?? current.displayName,
@@ -232,7 +288,12 @@ export async function saveUserProfile(input: {
     coverImageUrl:
       input.coverImageUrl !== undefined ? input.coverImageUrl : current.coverImageUrl,
     bio: input.bio !== undefined ? input.bio.trim() : current.bio,
-    travelStyle: input.travelStyle !== undefined ? input.travelStyle.trim() : current.travelStyle,
+    travelStyle:
+      showPersona && input.travelStyle !== undefined
+        ? input.travelStyle.trim()
+        : showPersona
+          ? current.travelStyle
+          : "",
   };
 
   if (userId) {
@@ -241,11 +302,17 @@ export async function saveUserProfile(input: {
     const avatarUrl = assertPersistableMediaUrl(next.avatarUrl, "頭像");
     const coverImageUrl = assertPersistableMediaUrl(next.coverImageUrl, "封面");
 
-    const extras: ProfileExtras = {
-      travelStyle: next.travelStyle,
-      personalityType: current.personalityType,
-      personalitySummary: current.personalitySummary,
-    };
+    const extras: ProfileExtras = showPersona
+      ? {
+          travelStyle: next.travelStyle,
+          personalityType: current.personalityType,
+          personalitySummary: current.personalitySummary,
+        }
+      : {
+          travelStyle: "",
+          personalityType: "",
+          personalitySummary: "",
+        };
 
     const patch = {
       display_name: next.displayName,
@@ -279,7 +346,7 @@ export async function saveUserProfile(input: {
     broadcastCoverUpdate(next.coverImageUrl);
   }
 
-  return getUserProfile(current.language);
+  return getUserProfile(current.language, { force: true });
 }
 
 export async function savePersonalityToProfile(prefs: TravelPreferences): Promise<void> {

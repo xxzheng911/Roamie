@@ -1,9 +1,9 @@
 import type { KeyboardEvent, MouseEvent } from "react";
-import { MapPin, Clock, Sparkles, Heart, Loader2, Star, Plus } from "lucide-react";
+import { MapPin, Sparkles, Heart, Loader2, Star, Plus } from "lucide-react";
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { OutfitAdvicePayload } from "@/lib/outfit/types";
-import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
+import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
@@ -114,8 +114,13 @@ type Props = {
   addToTripLabel?: string;
   discussPlaceLabel?: string;
   viewMapLabel?: string;
+  /** 聊天頁已過濾推薦清單時設為 true，避免二次過濾導致張數與摘要不一致 */
+  recommendationsPreFiltered?: boolean;
+  /** 使用者與推薦卡互動（收藏、路線、加入行程等） */
+  onRecommendationEngage?: () => void;
 };
 
+/** AI 聊天推薦地點卡 — 獨立於行程／探索／首頁附近卡片 */
 export function RoamieResponseView({
   data,
   compact,
@@ -136,9 +141,13 @@ export function RoamieResponseView({
   addToTripLabel = "加入行程",
   discussPlaceLabel = "跟 Roamie 聊這裡",
   viewMapLabel = "查看地圖",
+  recommendationsPreFiltered = false,
+  onRecommendationEngage,
 }: Props) {
   const summary = data.summary?.trim();
-  const recs = filterRecommendationItemsForDisplay(data.recommendations ?? []);
+  const recs = recommendationsPreFiltered
+    ? (data.recommendations ?? [])
+    : filterRecommendationItemsForDisplay(data.recommendations ?? []);
   const itinerary = data.itinerary ?? [];
 
   return (
@@ -149,7 +158,13 @@ export function RoamieResponseView({
         </span>
       )}
       {summary && (
-        <p className={`leading-relaxed ${compact ? "text-[15px]" : "text-sm"}`}>{summary}</p>
+        <p
+          className={`whitespace-pre-wrap text-left leading-relaxed ${
+            compact ? "text-[15px]" : "text-sm"
+          }`}
+        >
+          {summary}
+        </p>
       )}
       {!summary && (
         <span className="inline-flex gap-1">
@@ -237,14 +252,12 @@ export function RoamieResponseView({
                         {ext.rating.toFixed(1)}
                       </span>
                     )}
-                    <span className="rounded-full bg-card px-2 py-0.5 text-[10px] text-muted-foreground">
-                      {r.type}
-                    </span>
                     {onSavePlace && (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
+                          onRecommendationEngage?.();
                           onSavePlace(r);
                         }}
                         disabled={savingPlaceName === r.name}
@@ -265,71 +278,67 @@ export function RoamieResponseView({
                   </div>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{r.description}</p>
-              <p className="mt-1.5 text-xs text-foreground/75">{r.reason}</p>
-              <PlaceHoursBadge
-                className="mt-1.5"
-                statusLabel={r.openStatusLabel}
-                todayHoursLabel={r.todayHoursLabel}
-                closingSoonNote={r.closingSoonNote}
-                nextOpenHint={r.nextOpenHint}
-              />
-              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                  <span className="inline-flex items-center gap-0.5">
-                    <Clock className="h-3 w-3" /> {r.estimatedTime}
-                  </span>
-                  {r.address && (
-                    <span className="inline-flex items-center gap-0.5">
-                      <MapPin className="h-3 w-3" /> {r.address}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2" onClick={stopBubble} onKeyDown={stopBubble}>
-                  {onAddToTrip && (
-                    <button
-                      type="button"
-                      onClick={() => onAddToTrip(r)}
-                      className="inline-flex items-center gap-1 rounded-full bg-foreground px-3 py-1.5 text-[11px] font-medium text-background"
-                    >
-                      <Plus className="h-3 w-3" />
-                      {addToTripLabel}
-                    </button>
-                  )}
-                  {onSelectPlace && !pickMode && !onAddToTrip && (
-                    <button
-                      type="button"
-                      onClick={() => onSelectPlace(r)}
-                      className="inline-flex items-center gap-1 rounded-full bg-foreground px-3 py-1.5 text-[11px] font-medium text-background"
-                    >
-                      <Plus className="h-3 w-3" />
-                      {addToTripLabel}
-                    </button>
-                  )}
-                  {onOpenPlaceDetail && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenPlaceDetail(r)}
-                      className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-medium"
-                    >
-                      <MapPin className="h-3 w-3" />
-                      {viewMapLabel}
-                    </button>
-                  )}
+                <p className="mt-1.5 text-xs text-foreground/75">{r.reason}</p>
+                <PlaceHoursBadge
+                  className="mt-1.5"
+                  statusLabel={r.openStatusLabel}
+                  todayHoursLabel={r.todayHoursLabel}
+                  closingSoonNote={r.closingSoonNote}
+                  nextOpenHint={r.nextOpenHint}
+                />
+                {r.address && (
+                  <p className="mt-2 flex items-start gap-1 text-[11px] text-muted-foreground">
+                    <MapPin className="mt-0.5 h-3 w-3 shrink-0" />
+                    <span className="text-left">{r.address}</span>
+                  </p>
+                )}
+                <div className="mt-3 flex flex-col gap-2" onClick={stopBubble} onKeyDown={stopBubble}>
+                  <div className="flex gap-2">
+                    {onAddToTrip && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onRecommendationEngage?.();
+                          onAddToTrip(r);
+                        }}
+                        className="inline-flex flex-1 items-center justify-center gap-1 rounded-full bg-foreground px-3 py-2 text-[11px] font-medium text-background"
+                      >
+                        <Plus className="h-3 w-3" />
+                        {addToTripLabel}
+                      </button>
+                    )}
+                    {onSelectPlace && !pickMode && !onAddToTrip && (
+                      <button
+                        type="button"
+                        onClick={() => onSelectPlace(r)}
+                        className="inline-flex flex-1 items-center justify-center gap-1 rounded-full bg-foreground px-3 py-2 text-[11px] font-medium text-background"
+                      >
+                        <Plus className="h-3 w-3" />
+                        {addToTripLabel}
+                      </button>
+                    )}
+                    <PlaceNavButtons
+                      lat={r.lat}
+                      lng={r.lng}
+                      address={r.address}
+                      placeName={r.placeName ?? r.name}
+                      routeOnly
+                      className="flex-1"
+                      onAction={onRecommendationEngage}
+                    />
+                  </div>
                   {onDiscussPlace && !pickMode && (
                     <button
                       type="button"
-                      onClick={() => onDiscussPlace(r)}
-                      className="inline-flex items-center gap-1 rounded-full border border-border bg-card px-3 py-1.5 text-[11px] font-medium"
+                      onClick={() => {
+                        onRecommendationEngage?.();
+                        onDiscussPlace(r);
+                      }}
+                      className="inline-flex w-full items-center justify-center rounded-full border border-border bg-card px-3 py-2 text-[11px] font-medium"
                     >
                       {discussPlaceLabel}
                     </button>
                   )}
-                  <PlaceNavButtons
-                    lat={r.lat}
-                    lng={r.lng}
-                    address={r.address}
-                    placeName={r.placeName ?? r.name}
-                    compact
-                  />
                 </div>
               </article>
             );

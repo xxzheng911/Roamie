@@ -1,150 +1,56 @@
 import { requireGoogleMapsServerKey } from "@/lib/google-maps-key-resolve.server";
 import { API_CACHE_TTL_MS } from "@/lib/api/constants";
 import { createServerRequestCache } from "@/lib/server-request-cache";
+import {
+  fetchGoogleRoute,
+  ROUTES_REQUEST_DENIED_HINT,
+  type LatLng,
+  type RouteApiResult,
+  type RoutesApiError,
+  type RoutesApiSuccess,
+} from "@/lib/google-routes-fetch";
 import type { LegDurationEstimate, RouteResult, RoutesTravelMode } from "@/lib/routes/types";
 
-export type LatLng = { lat: number; lng: number };
-
-export type RoutesApiError = {
-  ok: false;
-  statusCode: number;
-  message: string;
-  hint?: string;
-};
-
-export type RoutesApiSuccess<T> = { ok: true; data: T };
-
-export type RouteApiResult = RoutesApiSuccess<RouteResult> | RoutesApiError;
-
-const ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
-const FETCH_TIMEOUT_MS = 15_000;
-
-const REQUEST_DENIED_HINT = [
-  "可能原因：",
-  "· Routes API 尚未在 Google Cloud Console 啟用",
-  "· Places API 尚未啟用",
-  "· API key 的「API 限制」未包含 Routes API / Places API",
-  "· API restriction 未允許此 app、bundle ID 或 referrer",
-  "· 專案尚未開啟計費（Billing）",
-  "· App 未正確讀取 EXPO_PUBLIC_GOOGLE_MAPS_API_KEY（請 sync:env 並重啟 dev）",
-].join("\n");
+export type { LatLng, RoutesApiError, RoutesApiSuccess, RouteApiResult };
 
 const routeServerCache = createServerRequestCache(API_CACHE_TTL_MS.routes);
 
-function requireRoutesApiKey(): string {
-  return requireGoogleMapsServerKey();
-}
-
-function parseDurationSeconds(duration: string | undefined): number | null {
-  if (!duration) return null;
-  const m = /^(\d+(?:\.\d+)?)s$/.exec(duration.trim());
-  if (!m) return null;
-  return Math.round(Number(m[1]));
-}
-
-function routesDeniedHint(bodyText: string): string | undefined {
-  if (/REQUEST_DENIED|PERMISSION_DENIED|API key not valid/i.test(bodyText)) {
-    return REQUEST_DENIED_HINT;
-  }
-  return undefined;
-}
-
-function routeCacheKey(origin: LatLng, destination: LatLng, travelMode: RoutesTravelMode): string {
-  return `${origin.lat.toFixed(4)}:${origin.lng.toFixed(4)}:${destination.lat.toFixed(4)}:${destination.lng.toFixed(4)}:${travelMode}`;
+function routeCacheKey(
+  origin: LatLng,
+  destination: LatLng,
+  travelMode: RoutesTravelMode,
+  departureTime?: string,
+): string {
+  const dep =
+    travelMode === "TRANSIT" && departureTime
+      ? departureTime.slice(0, 19)
+      : "";
+  return `${origin.lat.toFixed(4)}:${origin.lng.toFixed(4)}:${destination.lat.toFixed(4)}:${destination.lng.toFixed(4)}:${travelMode}:${dep}`;
 }
 
 async function computeRouteRaw(
   origin: LatLng,
   destination: LatLng,
   travelMode: RoutesTravelMode,
-): Promise<RoutesApiSuccess<RouteResult> | RoutesApiError> {
+  departureTime?: string,
+): Promise<RouteApiResult> {
   return routeServerCache.getOrFetch(
-    routeCacheKey(origin, destination, travelMode),
-    () => computeRouteRawUncached(origin, destination, travelMode),
+    routeCacheKey(origin, destination, travelMode, departureTime),
+    () => {
+      const apiKey = requireGoogleMapsServerKey();
+      return fetchGoogleRoute(apiKey, origin, destination, travelMode, departureTime);
+    },
     (result) => result.ok,
   );
-}
-
-async function computeRouteRawUncached(
-  origin: LatLng,
-  destination: LatLng,
-  travelMode: RoutesTravelMode,
-): Promise<RoutesApiSuccess<RouteResult> | RoutesApiError> {
-  const apiKey = requireRoutesApiKey();
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-
-  try {
-    const res = await fetch(ROUTES_URL, {
-      method: "POST",
-      signal: ctrl.signal,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.legs.staticDuration",
-      },
-      body: JSON.stringify({
-        origin: { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
-        destination: {
-          location: { latLng: { latitude: destination.lat, longitude: destination.lng } },
-        },
-        travelMode,
-        languageCode: "zh-TW",
-        units: "METRIC",
-      }),
-    });
-
-    const text = await res.text();
-    if (!res.ok) {
-      return {
-        ok: false,
-        statusCode: res.status,
-        message: text.slice(0, 300) || res.statusText,
-        hint: routesDeniedHint(text),
-      };
-    }
-
-    const json = JSON.parse(text) as {
-      routes?: Array<{
-        duration?: string;
-        distanceMeters?: number;
-        legs?: Array<{ staticDuration?: string }>;
-      }>;
-    };
-
-    const route = json.routes?.[0];
-    if (!route) {
-      return { ok: false, statusCode: res.status, message: "Routes API 沒有回傳路線" };
-    }
-
-    const durationSeconds =
-      parseDurationSeconds(route.duration) ??
-      parseDurationSeconds(route.legs?.[0]?.staticDuration) ??
-      0;
-
-    return {
-      ok: true,
-      data: {
-        durationSeconds,
-        durationMinutes: Math.max(1, Math.round(durationSeconds / 60)),
-        distanceMeters: route.distanceMeters ?? 0,
-        travelMode,
-      },
-    };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, statusCode: 0, message: msg };
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 export async function getRouteDuration(
   origin: LatLng,
   destination: LatLng,
   travelMode: RoutesTravelMode,
+  departureTime?: string,
 ): Promise<RoutesApiSuccess<RouteResult> | RoutesApiError> {
-  return computeRouteRaw(origin, destination, travelMode);
+  return computeRouteRaw(origin, destination, travelMode, departureTime);
 }
 
 export async function getRouteDistance(
@@ -191,9 +97,7 @@ export async function getTripLegsWithDurations(
 }
 
 /** 高雄車站 → 駁二藝術特區（步行）連線測試 */
-export async function testRoutesApiConnection(): Promise<
-  RoutesApiSuccess<RouteResult> | RoutesApiError
-> {
+export async function testRoutesApiConnection(): Promise<RouteApiResult> {
   const origin = { lat: 22.687, lng: 120.3075 };
   const destination = { lat: 22.6194, lng: 120.2826 };
   return computeRouteRaw(origin, destination, "WALK");
@@ -229,7 +133,6 @@ export async function fetchLegDurationsFromRoutes(
     modes.map(async ([matrixMode, routesMode]) => {
       const result = await computeRouteRaw(origin, destination, routesMode);
       if (!result.ok) {
-        console.warn("[Routes API] leg mode failed", routesMode, result.message);
         return;
       }
       const minutes = result.data.durationMinutes;
@@ -257,3 +160,5 @@ function haversineMeters(a: LatLng, b: LatLng): number {
     Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
   return Math.round(2 * R * Math.asin(Math.sqrt(x)));
 }
+
+export { ROUTES_REQUEST_DENIED_HINT };

@@ -53,6 +53,25 @@ export function formatDateRangeLabel(
   return one ? formatDateShort(one, options) : "";
 }
 
+/** 2026/12/14 */
+export function formatDateSlash(iso: string): string {
+  const d = parseISODate(iso);
+  if (!d) return iso;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}/${m}/${day}`;
+}
+
+/** 2026/12/14 - 2026/12/19 */
+export function formatDateRangeSlash(start: string, end: string): string {
+  if (!start && !end) return "";
+  if (start && end && start !== end) {
+    return `${formatDateSlash(start)} - ${formatDateSlash(end)}`;
+  }
+  return formatDateSlash(start || end);
+}
+
 export function isSameISO(a: string, b: string): boolean {
   return a === b;
 }

@@ -93,7 +93,16 @@ export const MapExploreSheet = forwardRef<MapExploreSheetHandle, Props>(function
   const measurePage = useCallback(() => {
     const page = sheetRef.current?.closest(".map-page");
     if (!page) return;
-    const h = page.clientHeight;
+    let h = page.clientHeight;
+    if (document.documentElement.classList.contains("map-keyboard-open")) {
+      const pinned = Number.parseInt(
+        getComputedStyle(document.documentElement).getPropertyValue("--map-layout-height"),
+        10,
+      );
+      if (pinned > 0) {
+        h = pinned + parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--safe-area-top") || "0");
+      }
+    }
     if (h > 0) setPageH(h);
   }, []);
 

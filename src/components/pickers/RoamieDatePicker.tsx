@@ -3,6 +3,7 @@ import { Calendar } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   formatDateRangeLabel,
+  formatDateRangeSlash,
   formatDateShort,
   formatDateWithWeekday,
   type DateRangeValue,
@@ -20,6 +21,7 @@ type SingleProps = {
   disabled?: boolean;
   className?: string;
   variant?: "field" | "inline";
+  onOpenChange?: (open: boolean) => void;
 };
 
 type RangeProps = {
@@ -31,9 +33,12 @@ type RangeProps = {
   title?: string;
   /** 欄位顯示含年份，例如 2026年5月9日 – 2026年5月12日 */
   displayWithYear?: boolean;
+  /** range 顯示格式：label=5月9日，slash=2026/05/09 */
+  rangeDisplay?: "label" | "slash";
   disabled?: boolean;
   className?: string;
   variant?: "field" | "inline";
+  onOpenChange?: (open: boolean) => void;
 };
 
 export type RoamieDatePickerProps = SingleProps | RangeProps;
@@ -41,6 +46,9 @@ export type RoamieDatePickerProps = SingleProps | RangeProps;
 function displayLabel(props: RoamieDatePickerProps): string {
   if (props.mode === "single") {
     return props.value ? formatDateShort(props.value) : "";
+  }
+  if (props.rangeDisplay === "slash") {
+    return formatDateRangeSlash(props.value.start, props.value.end);
   }
   return formatDateRangeLabel(props.value.start, props.value.end, {
     withYear: props.displayWithYear,
@@ -56,6 +64,7 @@ export function RoamieDatePicker(props: RoamieDatePickerProps) {
     disabled,
     className,
     variant = "field",
+    onOpenChange,
   } = props;
 
   const [open, setOpen] = useState(false);
@@ -94,7 +103,10 @@ export function RoamieDatePicker(props: RoamieDatePickerProps) {
         <button
           type="button"
           disabled={disabled}
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            setOpen(true);
+            onOpenChange?.(true);
+          }}
           className={cn(
             "font-display text-lg font-medium text-foreground underline decoration-border decoration-dashed underline-offset-4 transition active:opacity-70 disabled:opacity-50",
             className,
@@ -106,7 +118,10 @@ export function RoamieDatePicker(props: RoamieDatePickerProps) {
         <button
           type="button"
           disabled={disabled}
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            setOpen(true);
+            onOpenChange?.(true);
+          }}
           className={cn(
             "flex w-full items-center justify-between gap-2 rounded-2xl border border-border bg-card px-4 py-3 text-left transition active:scale-[0.99] disabled:opacity-50",
             className,
@@ -131,7 +146,10 @@ export function RoamieDatePicker(props: RoamieDatePickerProps) {
 
       <RoamiePickerSheet
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(next) => {
+          setOpen(next);
+          onOpenChange?.(next);
+        }}
         title={sheetTitle}
         onConfirm={handleConfirm}
         onCancel={() =>

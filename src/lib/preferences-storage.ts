@@ -4,6 +4,9 @@ import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { broadcastPreferencesUpdate } from "@/lib/preference-events";
 
 const GUEST_KEY = "roamie:preferences";
+const PREFS_CACHE_TTL_MS = 60_000;
+
+let prefsCache: { userId: string; prefs: TravelPreferences; at: number } | null = null;
 
 /** 小資 / 一般 / 品質感 / 奢華 */
 export type BudgetMode = "budget" | "standard" | "quality" | "luxury";
@@ -60,13 +63,24 @@ export async function getPreferences(): Promise<TravelPreferences> {
   const userId = await getAuthenticatedUserId();
   if (!userId) return {};
 
+  const now = Date.now();
+  if (
+    prefsCache &&
+    prefsCache.userId === userId &&
+    now - prefsCache.at < PREFS_CACHE_TTL_MS
+  ) {
+    return prefsCache.prefs;
+  }
+
   const { data, error } = await supabase
     .from("profiles")
     .select("travel_personality")
     .eq("id", userId)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  return (data?.travel_personality ?? {}) as TravelPreferences;
+  const prefs = (data?.travel_personality ?? {}) as TravelPreferences;
+  prefsCache = { userId, prefs, at: now };
+  return prefs;
 }
 
 export async function savePreferences(prefs: TravelPreferences): Promise<TravelPreferences> {
@@ -91,6 +105,7 @@ export async function savePreferences(prefs: TravelPreferences): Promise<TravelP
     throw new Error(error.message);
   }
   broadcastPreferencesUpdate(merged);
+  prefsCache = { userId, prefs: merged, at: Date.now() };
   return merged;
 }
 

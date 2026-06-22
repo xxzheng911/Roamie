@@ -4,7 +4,10 @@ import {
   APP_BUILD_COMMIT,
   APP_BUILD_COMMIT_SHORT,
   APP_BUILD_TIME,
+  ROAMIE_BUILD_DEBUG,
 } from "@/generated/app-bundle-meta";
+
+export { ROAMIE_BUILD_DEBUG };
 
 function resolveRuntimeBundleEntry(): string | null {
   if (typeof document === "undefined") return null;
@@ -29,7 +32,9 @@ export function logAppBundleVersion(caller = "boot"): void {
     commitShort: APP_BUILD_COMMIT_SHORT,
     branch: APP_BUILD_BRANCH,
     buildTime: APP_BUILD_TIME,
+    buildDebug: ROAMIE_BUILD_DEBUG,
     bundleEntry,
     href: typeof location !== "undefined" ? location.href : null,
   });
+  console.info(`[ROAMIE_BUILD_DEBUG] ${ROAMIE_BUILD_DEBUG}`);
 }

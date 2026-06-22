@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Car,
   CarTaxiFront,
@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { PlaceActionRow } from "@/components/PlaceActionRow";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
-import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
+import { resolvePlaceOpeningDisplay } from "@/lib/normalized-opening-status";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import {
   TRANSIT_MVP_NOTICE,
@@ -25,6 +25,8 @@ import {
 } from "@/lib/estimate-travel-mode";
 import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
+import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
+import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
 
 function TransportModeIcon({ mode }: { mode: TravelModeId }) {
   const cls = "h-4 w-4 shrink-0 text-muted-foreground";
@@ -70,6 +72,7 @@ type Props = {
   onOpenChat: () => void;
   saveLabel?: string;
   addToTripLabel?: string;
+  ticketOffers?: AffiliateLinkOffer[];
 };
 
 export function PlaceDetailSheet({
@@ -89,11 +92,37 @@ export function PlaceDetailSheet({
   onOpenChat,
   saveLabel = "收藏",
   addToTripLabel = "加入行程",
+  ticketOffers,
 }: Props) {
   const [photoIdx, setPhotoIdx] = useState(0);
+  const touchStartX = useRef<number | null>(null);
   const photos = imageUrls.length > 0 ? imageUrls : [];
+  const hasMultiplePhotos = photos.length > 1;
+  const photosKey = photos.join("\0");
+
+  useEffect(() => {
+    setPhotoIdx(0);
+  }, [photosKey]);
+
+  useEffect(() => {
+    if (photoIdx >= photos.length) {
+      setPhotoIdx(Math.max(0, photos.length - 1));
+    }
+  }, [photoIdx, photos.length]);
+
+  const goPrevPhoto = () => {
+    if (!hasMultiplePhotos) return;
+    setPhotoIdx((i) => (i - 1 + photos.length) % photos.length);
+  };
+
+  const goNextPhoto = () => {
+    if (!hasMultiplePhotos) return;
+    setPhotoIdx((i) => (i + 1) % photos.length);
+  };
+
   const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place), place);
   const navButtonLabel = `導航・${TRAVEL_MODE_LABEL[selectedTransportMode]}`;
+  const opening = resolvePlaceOpeningDisplay(place);
 
   return (
     <div className="flex flex-col" data-no-sheet-drag>
@@ -101,32 +130,48 @@ export function PlaceDetailSheet({
         {photos.length > 0 ? (
           <>
             <img
+              key={photos[photoIdx]}
               src={photos[photoIdx]}
               alt={place.name}
-              className="h-full w-full object-cover"
+              className="h-full w-full object-cover touch-pan-y"
+              draggable={false}
+              onTouchStart={(e) => {
+                touchStartX.current = e.touches[0]?.clientX ?? null;
+              }}
+              onTouchEnd={(e) => {
+                if (touchStartX.current == null || !hasMultiplePhotos) return;
+                const endX = e.changedTouches[0]?.clientX;
+                if (endX == null) return;
+                const delta = endX - touchStartX.current;
+                if (Math.abs(delta) >= 40) {
+                  if (delta < 0) goNextPhoto();
+                  else goPrevPhoto();
+                }
+                touchStartX.current = null;
+              }}
             />
-            {photos.length > 1 && (
+            {hasMultiplePhotos && (
               <>
                 <button
                   type="button"
-                  onClick={() => setPhotoIdx((i) => (i - 1 + photos.length) % photos.length)}
-                  className="absolute left-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-card/90 shadow-soft"
+                  onClick={goPrevPhoto}
+                  className="absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-card/90 shadow-soft"
                   aria-label="上一張"
                 >
                   <ChevronLeft className="h-4 w-4" />
                 </button>
                 <button
                   type="button"
-                  onClick={() => setPhotoIdx((i) => (i + 1) % photos.length)}
-                  className="absolute right-12 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-card/90 shadow-soft"
+                  onClick={goNextPhoto}
+                  className="absolute right-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-card/90 shadow-soft"
                   aria-label="下一張"
                 >
                   <ChevronRight className="h-4 w-4" />
                 </button>
-                <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-1">
-                  {photos.map((_, i) => (
+                <div className="absolute bottom-2 left-1/2 z-10 flex -translate-x-1/2 gap-1">
+                  {photos.map((url, i) => (
                     <span
-                      key={i}
+                      key={url}
                       className={cn(
                         "h-1.5 w-1.5 rounded-full",
                         i === photoIdx ? "bg-card" : "bg-card/50",
@@ -146,7 +191,7 @@ export function PlaceDetailSheet({
           type="button"
           onClick={onToggleSave}
           disabled={isBusy}
-          className="absolute right-3 top-3 flex h-10 w-10 items-center justify-center rounded-full bg-card/95 shadow-soft disabled:opacity-60"
+          className="absolute right-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-card/95 shadow-soft disabled:opacity-60"
           aria-label={isSaved ? "移除收藏" : "收藏"}
         >
           {isBusy ? (
@@ -175,13 +220,18 @@ export function PlaceDetailSheet({
           {distanceLabel && <span>{distanceLabel}</span>}
         </div>
 
-        <PlaceHoursBadge
-          className="mt-2"
-          statusLabel={place.openStatusLabel}
-          todayHoursLabel={place.todayHoursLabel}
-          closingSoonNote={place.closingSoonNote}
-          nextOpenHint={place.nextOpenHint}
-        />
+        <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+          <p>
+            <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-foreground/85">
+              {opening.label}
+            </span>
+          </p>
+          {opening.hoursLine ? <p>{opening.hoursLine}</p> : null}
+          {opening.closingSoonNote ? (
+            <p className="text-clay/90">{opening.closingSoonNote}</p>
+          ) : null}
+          {opening.nextOpenHint ? <p>{opening.nextOpenHint}</p> : null}
+        </div>
 
         {place.address && (
           <p className="mt-2 flex items-start gap-1.5 text-sm text-muted-foreground">
@@ -298,6 +348,10 @@ export function PlaceDetailSheet({
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{TRANSIT_MVP_NOTICE}</p>
           )}
         </div>
+
+        {ticketOffers && ticketOffers.length > 0 ? (
+          <TripAffiliateSection kind="ticket" offers={ticketOffers} className="mt-4" />
+        ) : null}
 
         <PlaceActionRow
           className="mt-4"

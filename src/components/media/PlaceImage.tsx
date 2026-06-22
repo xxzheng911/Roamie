@@ -1,5 +1,7 @@
 import type { PlaceImageInput } from "@/services/placeImageService";
+import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { usePlaceImage } from "@/hooks/use-place-image";
+import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { FadeInImage } from "@/components/media/FadeInImage";
 import { cn } from "@/lib/utils";
 
@@ -19,10 +21,13 @@ export function PlaceImage({
   ...input
 }: Props) {
   const { url, loading } = usePlaceImage({ ...input, initialUrl });
+  const safeUrl = preferJpegPngImageUrl(url);
+  const fallbackSrc = getRoamieDefaultImage(input.categoryId ?? input.category);
 
   return (
     <FadeInImage
-      src={url}
+      src={safeUrl}
+      fallbackSrc={fallbackSrc}
       alt={alt}
       loading={loading}
       className={cn("h-full w-full", className)}

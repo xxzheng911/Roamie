@@ -20,6 +20,7 @@ export const RoamieRecommendationItemSchema = z.object({
   photoName: z.string().nullable().optional(),
   rating: z.number().nullable().optional(),
   userRatingCount: z.number().nullable().optional(),
+  businessStatus: z.string().nullable().optional(),
   openStatusLabel: z.string().optional(),
   todayHoursLabel: z.string().optional(),
   closingSoonNote: z.string().optional(),
@@ -60,13 +61,21 @@ export type TripPlanSettings = {
   tripStartDate?: string;
   tripEndDate?: string;
   transport?: TripTransportMode;
+  /** 整趟預設交通方式顯示標籤（步行、大眾運輸等） */
+  defaultTransportLabel?: string;
   /** 各站點停留時間（分） */
   legMinutes?: Record<string, number>;
-  /** 各站點交通方式標籤（可自訂，如捷運、Uber） */
+  /** 各站點交通方式標籤（可自訂，如捷運、Uber）— single-leg override */
   legTransport?: Record<string, string>;
+  /** 各天預設交通方式標籤（key = dateKey） */
+  dayTransportLabels?: Record<string, string>;
   /** 點對點智慧交通建議，key: `A→B` */
   transitLegs?: Record<string, TransitLegAdvice>;
   transportTips?: string;
+  /** 自訂封面裁切構圖（僅 upload 封面） */
+  coverImageScale?: number;
+  coverImagePositionX?: number;
+  coverImagePositionY?: number;
 };
 
 /** New-format payload stored in saved_trips.payload */

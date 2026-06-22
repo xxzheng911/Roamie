@@ -3,7 +3,7 @@ import { RoamieMascotFigure } from "@/components/onboarding/RoamieMascotFigure";
 /** In-app brand splash — cutout mascot on cream UI background */
 export function RoamieSplashScreen() {
   return (
-    <div className="roamie-splash" role="status" aria-live="polite" aria-busy="true">
+    <div className="roamie-splash roamie-splash--boot-cream" role="status" aria-live="polite" aria-busy="true">
       <div className="roamie-splash__gradient" aria-hidden />
       <div className="roamie-splash__glow roamie-splash__glow--tl" aria-hidden />
       <div className="roamie-splash__glow roamie-splash__glow--br" aria-hidden />

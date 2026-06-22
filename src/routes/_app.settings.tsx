@@ -20,13 +20,21 @@ import type { AuthProviderKind } from "@/lib/auth-provider";
 import { LOCALE_LABELS } from "@/lib/i18n/types";
 import {
   isNotificationApiAvailable,
-  isNotificationGranted,
+  isNotificationGrantedAsync,
   requestNotificationPermission,
 } from "@/lib/notification-permission";
-import { getUserProfile, saveProfileNotifications } from "@/lib/profile-storage";
+import {
+  getProfileNotificationsEnabled,
+  getUserProfile,
+  saveProfileNotifications,
+} from "@/lib/profile-storage";
 import { isDeveloperBuildEnabled, unlockDeveloperMode } from "@/lib/access/developer";
 import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
-import { openAppSettings } from "@/lib/open-app-settings";
+import {
+  cancelAllTripReminders,
+  scheduleTripReminders,
+  syncTripReminderNotifications,
+} from "@/lib/trip-reminder-notifications";
 
 export const Route = createFileRoute("/_app/settings")({
   component: SettingsPage,
@@ -49,8 +57,6 @@ function SettingsPage() {
   const [signingOut, setSigningOut] = useState(false);
   const {
     effectiveTier,
-    subscriptionState,
-    hasPlusAccess,
     canShowDeveloperTools,
     refresh: refreshAccess,
   } = useAccess();
@@ -59,28 +65,23 @@ function SettingsPage() {
   const [authProvider, setAuthProvider] = useState<AuthProviderKind | null>(null);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [savingNotif, setSavingNotif] = useState(false);
-  const [languageDialogOpen, setLanguageDialogOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
   const devMode = isDeveloperBuildEnabled();
 
-  const syncNotificationsFromDevice = useCallback(async () => {
-    const granted = isNotificationGranted();
-    setNotificationsEnabled(granted);
-    try {
-      await saveProfileNotifications(granted);
-    } catch (e) {
-      console.warn("[Roamie settings] sync notifications preference failed", e);
-    }
-  }, []);
+  const loadSettings = useCallback(async () => {
+    const [profile, notifPref] = await Promise.all([
+      getUserProfile(locale),
+      getProfileNotificationsEnabled(),
+    ]);
+    setAuthProvider(profile.authProvider);
+    setNotificationsEnabled(notifPref);
+  }, [locale]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const profile = await getUserProfile(locale);
-        if (cancelled) return;
-        setAuthProvider(profile.authProvider);
-        await syncNotificationsFromDevice();
+        await loadSettings();
       } catch (e) {
         if (!cancelled) {
           toast.error(e instanceof Error ? e.message : t("settings.saveFailed"));
@@ -92,11 +93,13 @@ function SettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [locale, t, syncNotificationsFromDevice]);
+  }, [loadSettings, t]);
 
   useEffect(() => {
     const refresh = () => {
-      if (document.visibilityState === "visible") void syncNotificationsFromDevice();
+      if (document.visibilityState === "visible") {
+        void loadSettings().then(() => syncTripReminderNotifications(locale));
+      }
     };
     document.addEventListener("visibilitychange", refresh);
     window.addEventListener("focus", refresh);
@@ -106,50 +109,70 @@ function SettingsPage() {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("pageshow", refresh);
     };
-  }, [syncNotificationsFromDevice]);
+  }, [loadSettings, locale]);
 
   const handleNotifications = async (checked: boolean) => {
     if (savingNotif || loading) return;
-    if (checked) {
-      if (!isNotificationApiAvailable()) {
-        setSavingNotif(true);
-        try {
-          await syncNotificationsFromDevice();
-        } finally {
-          setSavingNotif(false);
-        }
-        return;
+
+    if (!checked) {
+      setSavingNotif(true);
+      try {
+        setNotificationsEnabled(false);
+        await saveProfileNotifications(false);
+        await cancelAllTripReminders();
+        toast.success(t("settings.saved"));
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : t("settings.saveFailed"));
+      } finally {
+        setSavingNotif(false);
       }
-      if (isNotificationGranted()) {
-        setSavingNotif(true);
-        try {
-          setNotificationsEnabled(true);
-          await saveProfileNotifications(true);
-          toast.success(t("settings.saved"));
-        } catch (e) {
-          toast.error(e instanceof Error ? e.message : t("settings.saveFailed"));
-        } finally {
-          setSavingNotif(false);
-        }
-        return;
-      }
-      setNotifDialogOpen(true);
       return;
     }
-    await syncNotificationsFromDevice();
+
+    if (!isNotificationApiAvailable()) {
+      toast.error(t("settings.notificationPermissionDenied"));
+      return;
+    }
+
+    if (await isNotificationGrantedAsync()) {
+      setSavingNotif(true);
+      try {
+        setNotificationsEnabled(true);
+        await saveProfileNotifications(true);
+        await scheduleTripReminders(locale);
+        toast.success(t("settings.saved"));
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : t("settings.saveFailed"));
+      } finally {
+        setSavingNotif(false);
+      }
+      return;
+    }
+
+    setNotifDialogOpen(true);
   };
 
   const confirmNotificationPermission = async () => {
     setNotifDialogOpen(false);
     setSavingNotif(true);
     try {
-      await requestNotificationPermission();
-      const granted = isNotificationGranted();
-      setNotificationsEnabled(granted);
-      await saveProfileNotifications(granted);
-      if (granted) toast.success(t("settings.saved"));
+      const result = await requestNotificationPermission();
+      const granted = result === "granted";
+      if (!granted) {
+        setNotificationsEnabled(false);
+        await saveProfileNotifications(false);
+        await cancelAllTripReminders();
+        toast.error(t("settings.notificationPermissionDenied"));
+        return;
+      }
+      setNotificationsEnabled(true);
+      await saveProfileNotifications(true);
+      await scheduleTripReminders(locale);
+      toast.success(t("settings.saved"));
     } catch (e) {
-      await syncNotificationsFromDevice();
+      setNotificationsEnabled(false);
+      await saveProfileNotifications(false).catch(() => {});
+      await cancelAllTripReminders();
       toast.error(e instanceof Error ? e.message : t("settings.saveFailed"));
     } finally {
       setSavingNotif(false);
@@ -173,11 +196,6 @@ function SettingsPage() {
   const notifLabel = notificationsEnabled
     ? t("settings.notificationsOn")
     : t("settings.notificationsOff");
-
-  const handleLanguageContinue = () => {
-    setLanguageDialogOpen(false);
-    void openAppSettings();
-  };
 
   if (authLoading) {
     return (
@@ -224,7 +242,7 @@ function SettingsPage() {
           <Switch
             checked={notificationsEnabled}
             disabled={savingNotif || loading}
-            onCheckedChange={handleNotifications}
+            onCheckedChange={(checked) => void handleNotifications(checked)}
             aria-label={t("settings.notificationsLabel")}
           />
         </div>
@@ -233,38 +251,13 @@ function SettingsPage() {
       <section className="mt-5 overflow-hidden rounded-3xl border border-border bg-card">
         <button
           type="button"
-          onClick={() => setLanguageDialogOpen(true)}
+          onClick={() => toast.message(t("settings.languageDeviceHint"))}
           className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left"
         >
           <p className="text-[15px]">{t("settings.languageLabel")}</p>
           <p className="text-sm text-muted-foreground">{LOCALE_LABELS[locale]}</p>
         </button>
       </section>
-
-      <AlertDialog open={languageDialogOpen} onOpenChange={setLanguageDialogOpen}>
-        <AlertDialogContent className="mx-auto max-w-[calc(100%-2rem)] rounded-2xl sm:max-w-md">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("settings.language")}</AlertDialogTitle>
-            <AlertDialogDescription className="text-left leading-relaxed">
-              {t("settings.languageHintBody")}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter className="flex-row gap-2 sm:justify-end">
-            <AlertDialogCancel className="mt-0 flex-1 sm:flex-none">
-              {t("settings.languageHintCancel")}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              className="flex-1 sm:flex-none"
-              onClick={(e) => {
-                e.preventDefault();
-                handleLanguageContinue();
-              }}
-            >
-              {t("settings.languageHintOk")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       <AlertDialog open={notifDialogOpen} onOpenChange={setNotifDialogOpen}>
         <AlertDialogContent className="mx-auto max-w-[calc(100%-2rem)] rounded-2xl sm:max-w-md">

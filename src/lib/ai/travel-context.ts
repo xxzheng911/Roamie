@@ -1,6 +1,12 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { WeatherSummary } from "@/lib/weather-types";
-import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
+import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+import { isNearbyPlaceIntent, type ChatIntent } from "@/lib/ai/chat-intent";
+import {
+  hasRemoteDestination,
+  missingDestinationPlanningKeys,
+  type ChatConversationMode,
+} from "@/lib/ai/trip-planning-context";
 
 /** Canonical travel context — merged on every user turn */
 export type CanonicalTravelContext = {
@@ -47,16 +53,7 @@ function uniqStrings(values: Array<string | undefined | null>): string[] {
 }
 
 function parseDestination(text: string): string | undefined {
-  const t = text.trim();
-  const direct = t.match(/去([\u4e00-\u9fffA-Za-z]{2,8})(?:\s*\d|\s*天|，|。|$)/);
-  if (direct?.[1] && (KNOWN_CITIES.test(direct[1]) || direct[1].length >= 2)) {
-    return direct[1].replace(/(市|縣|都|府)$/, "");
-  }
-  const abroad = t.match(/(?:去|到|玩|旅行|旅遊|想去)[^\u4e00-\u9fff]{0,4}?([\u4e00-\u9fff]{2,8})/);
-  if (abroad?.[1] && KNOWN_CITIES.test(abroad[1])) return abroad[1];
-  const bare = t.match(KNOWN_CITIES);
-  if (bare) return `${bare[1]}${bare[2] ?? ""}`;
-  return undefined;
+  return parseDestinationFromText(text);
 }
 
 function parseCompanion(text: string): string | undefined {
@@ -70,9 +67,7 @@ function parseCompanion(text: string): string | undefined {
 }
 
 function parseDays(text: string): number | undefined {
-  const m = text.match(/(\d+)\s*天/);
-  if (!m) return undefined;
-  return Math.min(30, Math.max(1, Number.parseInt(m[1], 10)));
+  return parseDayCountFromText(text);
 }
 
 function parseMonth(text: string): string | undefined {
@@ -109,11 +104,22 @@ function parseBudget(text: string): string | undefined {
   return undefined;
 }
 
-function parseVibe(text: string, mood?: string): string | undefined {
+function parseVibe(text: string, mood?: string, opts?: { skipFlexibleVibe?: boolean }): string | undefined {
+  if (/^1[\.、)]?$/.test(text.trim()) || /(經典|地標)/.test(text)) return "經典景點";
+  if (/^2[\.、)]?$/.test(text.trim()) || /(美食|咖啡)/.test(text)) return "美食咖啡";
+  if (/^3[\.、)]?$/.test(text.trim()) || /(動漫|購物)/.test(text)) return "動漫購物";
+  if (/^4[\.、)]?$/.test(text.trim()) || /(慢步|散策)/.test(text)) return "慢步調散策";
+  if (/(經典|地標|必去景點)/.test(text)) return "經典景點";
+  if (/(美食|咖啡|吃貨|小吃)/.test(text)) return "美食咖啡";
+  if (/(動漫|購物|逛街|血拼)/.test(text)) return "動漫購物";
+  if (/(慢步|散策|慢慢走|慢旅行)/.test(text)) return "慢步調散策";
   if (/(放鬆|放空)/.test(text)) return "放鬆";
   if (/(探索|走走看看)/.test(text)) return "探索";
   if (/(拍照|打卡)/.test(text)) return "拍照";
-  if (/(都有|都可以|都行)/.test(text)) return "混合";
+  if (/(都有|都可以|都行)/.test(text)) {
+    if (opts?.skipFlexibleVibe) return undefined;
+    return "混合";
+  }
   if (mood && MOOD_PRESETS[mood]?.vibe) return MOOD_PRESETS[mood].vibe;
   if (mood) return mood;
   return undefined;
@@ -134,6 +140,19 @@ export function parseTravelContextFromText(
   if (!t) return {};
   const moodHint = session.selectedMood ?? session.mood;
   const preset = moodHint ? MOOD_PRESETS[moodHint] : undefined;
+  const skipFlexibleVibe =
+    session.activeChatIntent === "restaurant" ||
+    session.activeChatIntent === "cafe" ||
+    /^(都可以|都行|不限|沒特別|隨意|你推)$/.test(t);
+
+  if (/^(都可以|都行|不限|沒特別|沒有特別|隨意|你推|都行吧|隨便)$/.test(t)) {
+    const prev = session.travelContext;
+    return {
+      vibe: prev?.vibe ?? session.discovery?.vibe ?? preset?.vibe ?? "放鬆",
+      setting: prev?.setting ?? session.discovery?.setting ?? preset?.setting ?? "either",
+      mood: prev?.mood ?? preset?.mood ?? moodHint,
+    };
+  }
 
   return {
     destination:
@@ -154,7 +173,7 @@ export function parseTravelContextFromText(
     travelStyle: session.tripStyles ?? session.pace,
     weather: session.weather ?? null,
     tripPurpose: preset?.tripPurpose,
-    vibe: parseVibe(t, moodHint) ?? session.discovery?.vibe,
+    vibe: parseVibe(t, moodHint, { skipFlexibleVibe }) ?? session.discovery?.vibe,
     setting: parseSetting(t, moodHint) ?? session.discovery?.setting,
   };
 }
@@ -241,13 +260,40 @@ export function logTravelContext(ctx: CanonicalTravelContext): string {
 export function missingContextKeys(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
+  intent: ChatIntent = "general",
 ): TripIntentMissingKey[] {
-  const missing: TripIntentMissingKey[] = [];
   const hasGps =
     session.location?.lat != null &&
     session.location?.lng != null &&
     (Math.abs(session.location.lat) > 0.001 || Math.abs(session.location.lng) > 0.001);
   const hasDestination = Boolean(ctx.destination?.trim() || session.tripDestination);
+  const hasMoodContext = Boolean(
+    ctx.mood?.trim() ||
+      ctx.vibe?.trim() ||
+      ctx.interests.length > 0 ||
+      session.mood?.trim() ||
+      session.fromMoodFlow ||
+      session.fromMoodCard,
+  );
+
+  if (hasGps && hasMoodContext && intent !== "trip_planning" && !hasRemoteDestination(ctx, session)) {
+    return [];
+  }
+
+  if (
+    session.conversationMode === "destination_planning" ||
+    session.tripPlanningContext?.intent === "destination_planning" ||
+    intent === "trip_planning"
+  ) {
+    return missingDestinationPlanningKeys(ctx, session);
+  }
+
+  if (isNearbyPlaceIntent(intent)) {
+    if (hasGps || hasDestination) return [];
+    return ["destination"];
+  }
+
+  const missing: TripIntentMissingKey[] = [];
   const hasMoodFlow = session.fromMoodCard || session.fromMoodFlow || Boolean(ctx.mood);
 
   if (!hasDestination && !hasGps && !session.fromPlanForm && !session.fromPlanAi) missing.push("destination");
@@ -269,12 +315,42 @@ export function missingContextKeys(
 export function isReadyForRecommendation(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
+  intent: ChatIntent = "general",
 ): boolean {
   if (session.selectedPlaces.length > 0) return true;
   if (session.fromPlanForm || session.fromPlanAi) return true;
   if (session.fromMoodFlow || session.fromMoodCard) return true;
+  if (session.conversationMode === "destination_planning") {
+    return missingContextKeys(ctx, session, "trip_planning").length === 0;
+  }
 
-  const missing = missingContextKeys(ctx, session);
+  if (isNearbyPlaceIntent(intent)) {
+    const hasGps =
+      session.location?.lat != null &&
+      session.location?.lng != null &&
+      (Math.abs(session.location.lat) > 0.001 || Math.abs(session.location.lng) > 0.001);
+    return hasGps || Boolean(ctx.destination?.trim() || session.tripDestination);
+  }
+
+  if (intent === "trip_planning") {
+    return missingContextKeys(ctx, session, intent).length === 0;
+  }
+
+  const hasGps =
+    session.location?.lat != null &&
+    session.location?.lng != null &&
+    (Math.abs(session.location.lat) > 0.001 || Math.abs(session.location.lng) > 0.001);
+  const hasMoodContext = Boolean(
+    ctx.mood?.trim() ||
+      ctx.vibe?.trim() ||
+      ctx.interests.length > 0 ||
+      session.mood?.trim() ||
+      session.fromMoodFlow ||
+      session.fromMoodCard,
+  );
+  if (hasGps && hasMoodContext) return true;
+
+  const missing = missingContextKeys(ctx, session, intent);
   const hasTripPlan = Boolean(
     ctx.destination &&
       (ctx.mood || ctx.vibe) &&

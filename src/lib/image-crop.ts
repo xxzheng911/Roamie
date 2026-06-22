@@ -61,6 +61,9 @@ export type CenteredCropRect = {
   cropTop: number;
 };
 
+/** 封面編輯初始縮放略大於最小 cover，讓 X/Y 軸都有拖曳空間 */
+export const COVER_CROP_INITIAL_HEADROOM = 1.05;
+
 /** 視窗內置中、符合比例的裁切框（大頭照／封面 overlay 與 export 共用） */
 export type CropOrientation = "portrait" | "landscape" | "square";
 
@@ -113,18 +116,20 @@ export function computeInitialCropScale(
   if (options.fit === "cover-line") {
     const coverScale = Math.max(wScale, hScale);
     const orientation = getImageOrientation(imgW, imgH);
+    let scale: number;
     if (orientation === "portrait") {
       /** 直式：寬度對齊裁切框寬，上下可拖曳（LINE 封面） */
       const widthFit = wScale * (options.padding ?? 0.96);
-      // 仍需覆蓋裁切框高度，避免黑邊
-      return Math.max(coverScale, widthFit);
-    }
-    if (orientation === "landscape") {
+      scale = Math.max(coverScale, widthFit);
+    } else if (orientation === "landscape") {
       /** 橫式：以 cover scale 為下限，略偏向「看更多」但不可露黑邊 */
-      return coverScale * (options.padding ?? 1);
+      scale = coverScale * (options.padding ?? 1);
+    } else {
+      /** 方形：置中顯示，但仍必須覆蓋裁切框 */
+      scale = coverScale * (options.padding ?? 1);
     }
-    /** 方形：置中顯示，但仍必須覆蓋裁切框 */
-    return coverScale * (options.padding ?? 1);
+    /** 略大於最小 cover，避免寬/高剛好貼齊時單軸無法拖曳 */
+    return Math.max(scale, coverScale) * COVER_CROP_INITIAL_HEADROOM;
   }
 
   const base =
@@ -169,7 +174,20 @@ export function getCenteredCropRect(
   };
 }
 
-/** 依預覽視窗的平移／縮放輸出裁切結果 */
+export function resolveCropRect(
+  viewportW: number,
+  viewportH: number,
+  aspectWidth: number,
+  aspectHeight: number,
+  cropFrame?: CenteredCropRect | null,
+): CenteredCropRect {
+  if (cropFrame && cropFrame.cropW >= 8 && cropFrame.cropH >= 8) {
+    return cropFrame;
+  }
+  return getCenteredCropRect(viewportW, viewportH, aspectWidth, aspectHeight);
+}
+
+/** 依預覽視窗的平移／縮放輸出裁切結果（以原圖裁切區解析度為準，上限 maxWidth） */
 export async function exportCropFromTransform(
   img: HTMLImageElement,
   viewportW: number,
@@ -178,16 +196,41 @@ export async function exportCropFromTransform(
   aspectWidth: number,
   aspectHeight: number,
   maxWidth = 1200,
+  cropFrame?: CenteredCropRect | null,
+  quality = 0.82,
 ): Promise<Blob> {
-  const { cropW, cropH, cropLeft, cropTop } = getCenteredCropRect(
+  const { cropW, cropH, cropLeft, cropTop } = resolveCropRect(
     viewportW,
     viewportH,
     aspectWidth,
     aspectHeight,
+    cropFrame,
   );
 
   const aspect = aspectWidth / aspectHeight;
-  const outW = Math.max(1, Math.min(maxWidth, Math.round(cropW)));
+  const { scale, offsetX, offsetY } = transform;
+  const imgW = img.naturalWidth * scale;
+  const imgH = img.naturalHeight * scale;
+  const imgLeft = (viewportW - imgW) / 2 + offsetX;
+  const imgTop = (viewportH - imgH) / 2 + offsetY;
+
+  let sx = (cropLeft - imgLeft) / scale;
+  let sy = (cropTop - imgTop) / scale;
+  let sw = cropW / scale;
+  let sh = cropH / scale;
+
+  if (sx < 0) {
+    sw += sx;
+    sx = 0;
+  }
+  if (sy < 0) {
+    sh += sy;
+    sy = 0;
+  }
+  if (sx + sw > img.naturalWidth) sw = Math.max(1, img.naturalWidth - sx);
+  if (sy + sh > img.naturalHeight) sh = Math.max(1, img.naturalHeight - sy);
+
+  const outW = Math.max(1, Math.min(maxWidth, Math.round(sw)));
   const outH = Math.max(1, Math.round(outW / aspect));
 
   const canvas = document.createElement("canvas");
@@ -196,33 +239,9 @@ export async function exportCropFromTransform(
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("無法處理圖片");
 
-  const { scale, offsetX, offsetY } = transform;
-  const imgW = img.naturalWidth * scale;
-  const imgH = img.naturalHeight * scale;
-  const imgLeft = (viewportW - imgW) / 2 + offsetX;
-  const imgTop = (viewportH - imgH) / 2 + offsetY;
-
-  const rawSx = ((cropLeft - imgLeft) / scale) * (outW / cropW);
-  const rawSy = ((cropTop - imgTop) / scale) * (outH / cropH);
-  const sWidth = (cropW / scale) * (outW / cropW);
-  const sHeight = (cropH / scale) * (outH / cropH);
-
-  // Clamp crop area to image bounds (avoid black edges even if UI clamp misses)
-  const maxSx = Math.max(0, img.naturalWidth - sWidth);
-  const maxSy = Math.max(0, img.naturalHeight - sHeight);
-  const sx = Math.min(maxSx, Math.max(0, rawSx));
-  const sy = Math.min(maxSy, Math.max(0, rawSy));
-  if (sx !== rawSx || sy !== rawSy) {
-    console.info("[Cover Crop Clamped]", {
-      raw: { sx: rawSx, sy: rawSy, sWidth, sHeight },
-      clamped: { sx, sy },
-      img: { w: img.naturalWidth, h: img.naturalHeight },
-    });
-  }
-
-  ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, outW, outH);
-  console.info("[Cover Crop Output Size]", { outW, outH });
-  return canvasToJpegBlob(canvas, 0.82);
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+  console.info("[Cover Crop Output Size]", { outW, outH, quality, sourceCropW: Math.round(sw) });
+  return canvasToJpegBlob(canvas, quality);
 }
 
 function loadImageSource(file: File): Promise<HTMLImageElement> {
@@ -244,10 +263,155 @@ function loadImageSource(file: File): Promise<HTMLImageElement> {
 export function loadImageFromUrl(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve(img);
+    img.onload = () => {
+      const finish = () => {
+        if (img.naturalWidth < 1 || img.naturalHeight < 1) {
+          reject(new Error("圖片尺寸無效"));
+          return;
+        }
+        resolve(img);
+      };
+      if (typeof img.decode === "function") {
+        void img.decode().then(finish).catch(finish);
+        return;
+      }
+      finish();
+    };
     img.onerror = () => reject(new Error("圖片載入失敗"));
     img.src = url;
   });
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("讀取圖片失敗"));
+    reader.readAsDataURL(file);
+  });
+}
+
+type DecodedDrawable = {
+  source: CanvasImageSource;
+  width: number;
+  height: number;
+  release: () => void;
+};
+
+/**
+ * iOS 相簿常見 HEIC / HDR JPEG（HJPG）；WebKit 用 <img> 直接 decode 會失敗 (err=-39)。
+ * 依序嘗試 createImageBitmap → blob URL → data URL，再經 canvas 轉成標準 JPEG。
+ */
+async function decodeDrawableFromFile(file: File, logPrefix?: string): Promise<DecodedDrawable> {
+  const log = (message: string, extra?: unknown) => {
+    const tag = logPrefix ?? "[image-decode]";
+    if (extra !== undefined) console.info(tag, message, extra);
+    else console.info(tag, message);
+  };
+
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+      if (bitmap.width > 0 && bitmap.height > 0) {
+        log("decode createImageBitmap ok", { w: bitmap.width, h: bitmap.height });
+        return {
+          source: bitmap,
+          width: bitmap.width,
+          height: bitmap.height,
+          release: () => bitmap.close(),
+        };
+      }
+      bitmap.close();
+    } catch (error) {
+      log("decode createImageBitmap failed", error);
+    }
+  }
+
+  const blobUrl = URL.createObjectURL(file);
+  try {
+    const img = await loadImageFromUrl(blobUrl);
+    log("decode blob url ok", { w: img.naturalWidth, h: img.naturalHeight });
+    return {
+      source: img,
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+      release: () => URL.revokeObjectURL(blobUrl),
+    };
+  } catch (error) {
+    URL.revokeObjectURL(blobUrl);
+    log("decode blob url failed", error);
+  }
+
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    const img = await loadImageFromUrl(dataUrl);
+    log("decode data url ok", { w: img.naturalWidth, h: img.naturalHeight });
+    return {
+      source: img,
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+      release: () => {},
+    };
+  } catch (error) {
+    log("decode data url failed", error);
+    throw new Error("這張圖片格式目前不支援，請改選一般照片（JPG/PNG）");
+  }
+}
+
+async function encodeDrawableToJpegFile(
+  file: File,
+  drawable: DecodedDrawable,
+  options?: { maxSide?: number; quality?: number },
+): Promise<File> {
+  const maxSide = options?.maxSide ?? 2048;
+  const quality = options?.quality ?? 0.86;
+  const ratio = Math.min(1, maxSide / Math.max(drawable.width, drawable.height));
+  const outW = Math.max(1, Math.round(drawable.width * ratio));
+  const outH = Math.max(1, Math.round(drawable.height * ratio));
+  const canvas = document.createElement("canvas");
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("無法建立圖片處理畫布");
+  ctx.drawImage(drawable.source, 0, 0, outW, outH);
+  const blob = await canvasToJpegBlob(canvas, quality);
+  if (!blob.size) throw new Error("圖片轉換失敗");
+  return new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), {
+    type: "image/jpeg",
+    lastModified: Date.now(),
+  });
+}
+
+/** 裁切編輯器用：解碼並轉成 WebKit 可穩定顯示的 JPEG */
+export async function prepareImageForCropEditor(
+  file: File,
+  options?: { maxSide?: number; quality?: number; logPrefix?: string },
+): Promise<{ file: File; objectUrl: string; width: number; height: number }> {
+  const drawable = await decodeDrawableFromFile(file, options?.logPrefix);
+  try {
+    const outFile = await encodeDrawableToJpegFile(file, drawable, {
+      maxSide: options?.maxSide ?? 4096,
+      quality: options?.quality ?? 0.92,
+    });
+    const objectUrl = URL.createObjectURL(outFile);
+    const img = await loadImageFromUrl(objectUrl);
+    if (options?.logPrefix) {
+      console.info(
+        `${options.logPrefix} decode ready`,
+        `w=${img.naturalWidth}`,
+        `h=${img.naturalHeight}`,
+        `bytes=${outFile.size}`,
+      );
+    }
+    return {
+      file: outFile,
+      objectUrl,
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+    };
+  } finally {
+    drawable.release();
+  }
 }
 
 function canvasToJpegBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
@@ -273,38 +437,44 @@ export function fileToObjectUrl(file: File): string {
   return URL.createObjectURL(file);
 }
 
+export async function readFileImageSize(file: File): Promise<{ width: number; height: number }> {
+  const url = fileToObjectUrl(file);
+  try {
+    const img = await loadImageFromUrl(url);
+    return { width: img.naturalWidth, height: img.naturalHeight };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+export async function readBlobImageSize(blob: Blob): Promise<{ width: number; height: number }> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await loadImageFromUrl(url);
+    return { width: img.naturalWidth, height: img.naturalHeight };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** iOS 相簿有時 type 為空，用副檔名補判斷 */
+export function isImagePickFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  return /\.(jpe?g|png|heic|heif|webp|gif|bmp)$/i.test(file.name);
+}
+
 /**
  * iOS 實機可能拿到 HEIC/HDR/HJPG；先轉成標準 JPEG，避免 WebKit decode / HJPG err=-39。
  * 透過 canvas 重新編碼可移除大部分 HDR / metadata。
  */
 export async function normalizeImageFileForUpload(
   file: File,
-  options?: { maxSide?: number; quality?: number },
+  options?: { maxSide?: number; quality?: number; logPrefix?: string },
 ): Promise<File> {
-  const maxSide = options?.maxSide ?? 2048;
-  const quality = options?.quality ?? 0.86;
-  const objectUrl = URL.createObjectURL(file);
+  const drawable = await decodeDrawableFromFile(file, options?.logPrefix);
   try {
-    const img = await loadImageFromUrl(objectUrl);
-    const srcW = Math.max(1, img.naturalWidth);
-    const srcH = Math.max(1, img.naturalHeight);
-    const ratio = Math.min(1, maxSide / Math.max(srcW, srcH));
-    const outW = Math.max(1, Math.round(srcW * ratio));
-    const outH = Math.max(1, Math.round(srcH * ratio));
-    const canvas = document.createElement("canvas");
-    canvas.width = outW;
-    canvas.height = outH;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("無法建立圖片處理畫布");
-    ctx.drawImage(img, 0, 0, outW, outH);
-    const blob = await canvasToJpegBlob(canvas, quality);
-    return new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), {
-      type: "image/jpeg",
-      lastModified: Date.now(),
-    });
-  } catch {
-    throw new Error("這張圖片格式目前不支援，請改選一般照片（JPG/PNG）");
+    return await encodeDrawableToJpegFile(file, drawable, options);
   } finally {
-    URL.revokeObjectURL(objectUrl);
+    drawable.release();
   }
 }

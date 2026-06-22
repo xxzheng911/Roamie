@@ -1,4 +1,5 @@
 import { cacheKey, getCachedImage, setCachedImage } from "@/services/image-cache";
+import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 
 const UNSPLASH_SEARCH = "https://api.unsplash.com/search/photos";
 
@@ -50,7 +51,8 @@ export async function searchUnsplashImage(query: string): Promise<UnsplashSearch
     };
 
     const hit = data.results?.find((r) => r.urls?.regular || r.urls?.small);
-    const url = hit?.urls?.regular ?? hit?.urls?.small;
+    const rawUrl = hit?.urls?.regular ?? hit?.urls?.small;
+    const url = rawUrl ? preferJpegPngImageUrl(rawUrl) : null;
     if (!url) return null;
 
     setCachedImage(key, url);

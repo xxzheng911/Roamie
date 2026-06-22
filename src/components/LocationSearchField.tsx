@@ -266,6 +266,9 @@ export function LocationSearchField({
           onFocus={() => {
             if (blurCloseRef.current) clearTimeout(blurCloseRef.current);
             setFocused(true);
+            requestAnimationFrame(() => {
+              inputRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+            });
           }}
           onBlur={() => {
             blurCloseRef.current = setTimeout(() => setFocused(false), 200);

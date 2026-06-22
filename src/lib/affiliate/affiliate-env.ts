@@ -1,4 +1,5 @@
 export type AffiliateEnvConfig = {
+  tripAffiliateUrl: string;
   tripAccountId: string;
   tripWebsiteId: string;
   klookAid: string;
@@ -28,8 +29,33 @@ function trimEnv(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function envKeyPresent(key: string): boolean {
+  const raw = import.meta.env[key as keyof ImportMetaEnv];
+  return typeof raw === "string" && raw.trim().length > 0;
+}
+
+/**
+ * Trip.com 聯盟基底 URL：
+ * 1. VITE_TRIP_AFFILIATE_URL（完整 tracking link）
+ * 2. fallback：VITE_TRIP_ACCOUNT_ID + VITE_TRIP_WEBSITE_ID → tw.trip.com?Allianceid&SID
+ */
+export function resolveTripAffiliateBaseUrl(env: AffiliateEnvConfig): string {
+  const direct = env.tripAffiliateUrl.trim();
+  if (direct) return direct;
+
+  const accountId = env.tripAccountId.trim();
+  const websiteId = env.tripWebsiteId.trim();
+  if (!accountId || !websiteId) return "";
+
+  const url = new URL("https://tw.trip.com/");
+  url.searchParams.set("Allianceid", accountId);
+  url.searchParams.set("SID", websiteId);
+  return url.toString();
+}
+
 /** Vite only inlines static import.meta.env.VITE_* keys at build time. */
 const AFFILIATE_ENV: AffiliateEnvConfig = {
+  tripAffiliateUrl: trimEnv(import.meta.env.VITE_TRIP_AFFILIATE_URL),
   tripAccountId: trimEnv(import.meta.env.VITE_TRIP_ACCOUNT_ID),
   tripWebsiteId: trimEnv(import.meta.env.VITE_TRIP_WEBSITE_ID),
   klookAid: trimEnv(import.meta.env.VITE_KLOOK_AID),
@@ -38,6 +64,30 @@ const AFFILIATE_ENV: AffiliateEnvConfig = {
   bookingAid: trimEnv(import.meta.env.VITE_AFFILIATE_BOOKING_AID),
 };
 
+function logAffiliateEnvInit(env: AffiliateEnvConfig): void {
+  const resolvedTripUrl = resolveTripAffiliateBaseUrl(env);
+  const rawAffiliateUrlLen =
+    typeof import.meta.env.VITE_TRIP_AFFILIATE_URL === "string"
+      ? import.meta.env.VITE_TRIP_AFFILIATE_URL.trim().length
+      : 0;
+
+  console.info(
+    [
+      "[Affiliate] init",
+      `hasTripAffiliateUrl=${Boolean(resolvedTripUrl)}`,
+      `tripUrlLength=${resolvedTripUrl.length}`,
+      `tripAffiliateUrlKeyPresent=${envKeyPresent("VITE_TRIP_AFFILIATE_URL")}`,
+      `tripAffiliateUrlRawLength=${rawAffiliateUrlLen}`,
+      `hasTripAccountId=${Boolean(env.tripAccountId)}`,
+      `hasTripWebsiteId=${Boolean(env.tripWebsiteId)}`,
+      `tripUrlSource=${env.tripAffiliateUrl ? "VITE_TRIP_AFFILIATE_URL" : resolvedTripUrl ? "account_website_fallback" : "none"}`,
+      `hasAgodaUrl=${Boolean(env.agodaAffiliateUrl)}`,
+      `hasKlookAid=${Boolean(env.klookAid)}`,
+      `hasKkdayCid=${Boolean(env.kkdayCid)}`,
+    ].join(" "),
+  );
+}
+
 function warnMissingEnvOnce(env: AffiliateEnvConfig): void {
   if (!env.agodaAffiliateUrl) {
     warnAffiliateOnce(
@@ -45,14 +95,10 @@ function warnMissingEnvOnce(env: AffiliateEnvConfig): void {
       "[Affiliate] Agoda link disabled: missing VITE_AGODA_AFFILIATE_URL",
     );
   }
-  if (!env.tripAccountId || !env.tripWebsiteId) {
+  if (!resolveTripAffiliateBaseUrl(env)) {
     warnAffiliateOnce(
-      "trip_hotel_missing_env",
-      "[Affiliate] Trip.com hotel link disabled: missing VITE_TRIP_ACCOUNT_ID or VITE_TRIP_WEBSITE_ID",
-    );
-    warnAffiliateOnce(
-      "trip_flight_missing_env",
-      "[Affiliate] Trip.com flight link disabled: missing VITE_TRIP_ACCOUNT_ID or VITE_TRIP_WEBSITE_ID",
+      "trip_affiliate_missing_env",
+      "[Affiliate] Trip.com link disabled: set VITE_TRIP_AFFILIATE_URL or both VITE_TRIP_ACCOUNT_ID + VITE_TRIP_WEBSITE_ID, then npm run build && npx cap sync ios",
     );
   }
   if (!env.klookAid) {
@@ -69,7 +115,7 @@ function warnMissingEnvOnce(env: AffiliateEnvConfig): void {
   }
 }
 
-// Warn once at module init — never from render / getAffiliateEnv().
+logAffiliateEnvInit(AFFILIATE_ENV);
 warnMissingEnvOnce(AFFILIATE_ENV);
 
 /** Cached affiliate env — read once at module init (Vite inlines import.meta.env at build). */

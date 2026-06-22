@@ -9,6 +9,7 @@ import {
 import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceImage } from "@/components/media/PlaceImage";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
+import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { cn } from "@/lib/utils";
@@ -21,7 +22,35 @@ export type MapPlaceCard = PlaceResult & {
   displayCategory?: string;
   coverImageUrl?: string;
   distanceLabel?: string;
+  isPrimaryExplorePlace?: boolean;
+  isSelectedExplorePin?: boolean;
 };
+
+const SELECTED_LOCATION_DISTANCE_LABELS = new Set([
+  "目前選取地點",
+  "Selected location",
+  "選択中の場所",
+  "선택한 장소",
+]);
+
+function cardDistanceLabel(
+  place: MapPlaceCard,
+  computed: string,
+  formatDistance: (meters: number) => string,
+  distFn: (from: { lat: number; lng: number }, to: { lat: number; lng: number }) => number,
+  userLocation: { lat: number; lng: number },
+): string {
+  if (place.isPrimaryExplorePlace || place.isSelectedExplorePin) {
+    return place.lat != null && place.lng != null
+      ? formatDistance(distFn(userLocation, { lat: place.lat, lng: place.lng }))
+      : "";
+  }
+  const custom = place.distanceLabel?.trim();
+  if (custom && !SELECTED_LOCATION_DISTANCE_LABELS.has(custom)) {
+    return custom;
+  }
+  return computed;
+}
 
 export type MapExploreCardsHandle = {
   scrollToIndex: (index: number) => void;
@@ -50,7 +79,7 @@ type Props = {
 
 const DRAG_SCROLL_THRESHOLD_PX = 10;
 
-/** Google 圖（含 WebP）載入失敗時只 fallback 一次到 Roamie 預設圖 */
+/** Google 圖載入失敗時 fallback 到 Roamie 預設圖；WebP 在載入前即排除 */
 function PlaceCardCoverImage({
   src,
   alt,
@@ -60,13 +89,16 @@ function PlaceCardCoverImage({
   alt: string;
   categoryKey: string;
 }) {
-  const [displaySrc, setDisplaySrc] = useState(src);
-  const [usedFallback, setUsedFallback] = useState(false);
+  const safeSrc = preferJpegPngImageUrl(src);
+  const placeholder = getRoamieDefaultImage(categoryKey);
+  const [displaySrc, setDisplaySrc] = useState(safeSrc ?? placeholder);
+  const [usedFallback, setUsedFallback] = useState(!safeSrc);
 
   useEffect(() => {
-    setDisplaySrc(src);
-    setUsedFallback(false);
-  }, [src]);
+    const next = preferJpegPngImageUrl(src);
+    setDisplaySrc(next ?? placeholder);
+    setUsedFallback(!next);
+  }, [src, placeholder]);
 
   return (
     <img
@@ -78,13 +110,14 @@ function PlaceCardCoverImage({
       onError={() => {
         if (usedFallback) return;
         setUsedFallback(true);
-        setDisplaySrc(getRoamieDefaultImage(categoryKey));
+        setDisplaySrc(placeholder);
       }}
     />
   );
 }
 
 export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
+  /** 探索地圖地點卡 — 獨立於行程／首頁／聊天推薦卡片 */
   function MapExplorePlaceCards(
     {
       places,
@@ -192,11 +225,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
           </div>
         )}
         {showEmpty ? (
-          <div className="px-6 py-10 text-center">
-            <p className="text-sm text-muted-foreground">
-              {emptyMessage ?? "附近暫時沒有適合的推薦"}
-            </p>
-          </div>
+          <div className="px-6 py-10" aria-hidden />
         ) : (
           <div
             ref={scrollRef}
@@ -213,14 +242,20 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
             {places.map((p, i) => {
               const isSaved = savedNames.has(p.name);
               const isBusy = busyId === p.id;
-              const googleImg =
-                p.coverImageUrl ??
-                imageUrl(p.photoName);
-              const distLabel =
-                p.distanceLabel ??
-                (p.lat != null && p.lng != null
+              const googleImg = preferJpegPngImageUrl(
+                p.coverImageUrl ?? imageUrl(p.photoName) ?? null,
+              );
+              const computedDist =
+                p.lat != null && p.lng != null
                   ? formatDistance(distFn(userLocation, { lat: p.lat, lng: p.lng }))
-                  : "");
+                  : "";
+              const distLabel = cardDistanceLabel(
+                p,
+                computedDist,
+                formatDistance,
+                distFn,
+                userLocation,
+              );
               const typeLabel =
                 p.displayCategory ?? identityDisplayLabel(resolvePlaceIdentity(p), p);
               const isLast = i === places.length - 1;

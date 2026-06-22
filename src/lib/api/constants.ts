@@ -15,6 +15,7 @@ export const ROAMIE_API_FALLBACK = {
     "暫時讀不到這趟旅程的天氣預報，出發前記得再看一眼當地預報，我們再一起調整穿搭與攜帶物。",
   routes: "路程時間暫時讀取中",
   routesLoading: "路程時間暫時讀取中。",
+  routesUnavailable: "暫時無法讀取路程時間",
   image: "先用 Roamie 預設封面陪你出發。",
 } as const;
 

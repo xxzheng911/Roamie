@@ -1,5 +1,6 @@
 import { isRedirect, redirect } from "@tanstack/react-router";
 import { getClientAuthSession } from "@/lib/auth-session";
+import { logAuthRedirectLogin } from "@/lib/auth-boot-log";
 import { logAuthFlowMarker } from "@/lib/clear-auth-state";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { logAppError } from "@/lib/log-error";
@@ -13,10 +14,15 @@ import {
   shouldSkipStartupNavigation,
 } from "@/lib/startup-boot-state";
 import { readBrowserPathname } from "@/lib/startup-path";
+import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
+import { hasLikelyPersistedSession } from "@/lib/startup-route";
+import { detectPlatform } from "@/services/platform";
 
 const AUTH_ROUTE_TIMEOUT_MS = 4_000;
+const NATIVE_SHELL_GATE_TIMEOUT_MS = 12_000;
 
 function blockGuestAccess(reason: string, target: StartupPath = "/login"): never {
+  logAuthRedirectLogin(reason, { target });
   logAuthFlowMarker("[Auth Guard Blocked Guest Access]", { reason, target });
   throw redirect({ to: target });
 }
@@ -64,7 +70,9 @@ function redirectToStartupTarget(next: StartupPath): never {
  * 主 App 殼層：須有有效 Supabase session；未登入一律 /login。
  * 不以 localStorage 快取或 companion 本機旗標代替登入。
  */
-const SHELL_GATE_TIMEOUT_MS = 5_000;
+function shellGateTimeoutMs(): number {
+  return detectPlatform().isCapacitor ? NATIVE_SHELL_GATE_TIMEOUT_MS : 5_000;
+}
 
 export async function requireAppShellAccess(): Promise<void> {
   if (typeof window === "undefined") return;
@@ -75,6 +83,9 @@ export async function requireAppShellAccess(): Promise<void> {
   }
 
   try {
+    if (detectPlatform().isCapacitor) {
+      await warmSupabaseAuthStorage();
+    }
     await loadOnboardingState();
 
     if (!isOnboardingCompletedSync()) {
@@ -117,12 +128,18 @@ export async function requireAppShellAccess(): Promise<void> {
       return;
     }
 
-    const session = await Promise.race([
-      getClientAuthSession(),
+    const gateTimeout = shellGateTimeoutMs();
+    let session = await Promise.race([
+      getClientAuthSession({ timeoutMs: gateTimeout }),
       new Promise<null>((resolve) => {
-        window.setTimeout(() => resolve(null), SHELL_GATE_TIMEOUT_MS);
+        window.setTimeout(() => resolve(null), gateTimeout);
       }),
     ]);
+
+    if (!session?.user && hasLikelyPersistedSession()) {
+      await warmSupabaseAuthStorage();
+      session = await getClientAuthSession({ timeoutMs: gateTimeout });
+    }
 
     if (!session?.user) {
       try {
@@ -133,22 +150,18 @@ export async function requireAppShellAccess(): Promise<void> {
       blockGuestAccess("requireAppShellAccess:no-session");
     }
 
-    const next = await Promise.race([
-      resolveStartupPath({ hasSession: true, source: "requireAppShellAccess" }),
-      new Promise<StartupPath>((resolve) => {
-        window.setTimeout(() => resolve("/login"), SHELL_GATE_TIMEOUT_MS);
-      }),
-    ]);
+    const next = guardStartupTarget(
+      await resolveStartupPath({ hasSession: true, source: "requireAppShellAccess" }),
+      "requireAppShellAccess",
+    );
 
-    const guarded = guardStartupTarget(next, "requireAppShellAccess");
-
-    if (guarded !== "/") {
+    if (next !== "/") {
       try {
-        markBootPhase(`gate:requireAppShellAccess:redirect:${guarded}`);
+        markBootPhase(`gate:requireAppShellAccess:redirect:${next}`);
       } catch {
         // ignore
       }
-      redirectToStartupTarget(guarded);
+      redirectToStartupTarget(next);
     }
   } catch (e) {
     if (isRedirect(e)) throw e;

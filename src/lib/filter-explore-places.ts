@@ -211,12 +211,17 @@ type RecommendablePlaceLike = PlaceLike &
 
 export function filterExplorePlaces<T extends RecommendablePlaceLike>(
   places: T[] | null | undefined,
-  options?: { logDrop?: boolean },
+  options?: {
+    logDrop?: boolean;
+    context?: "explore_map" | "explore_map_city";
+    exploreMapTier?: "strict" | "display" | "fallback";
+  },
 ): T[] {
   if (!Array.isArray(places)) {
     console.warn("[explore] filterExplorePlaces: expected array, got", places);
     return [];
   }
+  const context = options?.context ?? "explore_map";
   return places.filter((place) => {
     const input = placeResultToRecommendableInput({
       id: place.id ?? "",
@@ -228,8 +233,9 @@ export function filterExplorePlaces<T extends RecommendablePlaceLike>(
       primaryType: place.primaryType ?? null,
       types: place.types ?? null,
     });
-    return isRecommendablePlace(input, "explore_map", {
+    return isRecommendablePlace(input, context, {
       logDrop: options?.logDrop ?? true,
+      exploreMapTier: options?.exploreMapTier ?? "strict",
     }).ok;
   });
 }

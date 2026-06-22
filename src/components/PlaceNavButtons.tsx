@@ -13,9 +13,21 @@ type Props = {
   placeName?: string;
   className?: string;
   compact?: boolean;
+  /** 僅顯示「查看路線」（開啟 Google Maps 導航） */
+  routeOnly?: boolean;
+  onAction?: () => void;
 };
 
-export function PlaceNavButtons({ lat, lng, address, placeName, className = "", compact }: Props) {
+export function PlaceNavButtons({
+  lat,
+  lng,
+  address,
+  placeName,
+  className = "",
+  compact,
+  routeOnly = false,
+  onAction,
+}: Props) {
   const hasCoords = lat != null && lng != null && !Number.isNaN(lat) && !Number.isNaN(lng);
   const label = placeName ?? address ?? "目的地";
   const mapsUrl = hasCoords
@@ -37,6 +49,24 @@ export function PlaceNavButtons({ lat, lng, address, placeName, className = "", 
   const btnClass = compact
     ? "inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[10px]"
     : "inline-flex flex-1 items-center justify-center gap-1.5 rounded-full border border-border bg-card py-2 text-xs";
+
+  if (routeOnly && navUrl) {
+    return (
+      <div className={`w-full ${className}`}>
+        <button
+          type="button"
+          className={`${btnClass} w-full justify-center`}
+          onClick={() => {
+            onAction?.();
+            openExternal(navUrl);
+          }}
+        >
+          <Route className="h-3.5 w-3.5" />
+          查看路線
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className={`flex flex-wrap gap-2 ${className}`}>

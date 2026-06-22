@@ -49,7 +49,7 @@ export function writeHomeSessionNearbyPicks(
 ): void {
   const sanitized = sanitizeHomeNearbyPicksForDisplay(picks, { logDrop: false });
   snapshot.nearbyPicks = sanitized;
-  snapshot.nearbyLoadKey = sanitized.length > 0 ? loadKey : null;
+  snapshot.nearbyLoadKey = loadKey;
 }
 
 export function readHomeSessionNearbyLoadKey(): string | null {

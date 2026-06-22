@@ -12,6 +12,8 @@ import {
   type StartupNavigationSource,
 } from "@/lib/startup-navigation";
 import { isBootCompleted } from "@/lib/startup-boot-state";
+import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
+import { detectPlatform } from "@/services/platform";
 
 export type StartupPath = "/login" | "/welcome" | "/";
 
@@ -83,6 +85,10 @@ export async function resolveStartupPath(options?: StartupOptions): Promise<Star
   let hasSession = options?.hasSession;
 
   await loadOnboardingState();
+
+  if (detectPlatform().isCapacitor) {
+    await warmSupabaseAuthStorage();
+  }
 
   const onboardingCompleted = isOnboardingCompletedSync();
 

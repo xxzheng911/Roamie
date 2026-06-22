@@ -23,6 +23,7 @@ const commitHash = gitValue("rev-parse HEAD") || "unknown";
 const commitShort = gitValue("rev-parse --short HEAD") || "unknown";
 const branch = gitValue("rev-parse --abbrev-ref HEAD") || "unknown";
 const buildTime = new Date().toISOString();
+const buildDebugTag = `explore-fix-${buildTime.slice(0, 10).replace(/-/g, "")}-${buildTime.slice(11, 16).replace(":", "")}`;
 
 mkdirSync(outDir, { recursive: true });
 
@@ -31,6 +32,7 @@ export const APP_BUILD_COMMIT = ${JSON.stringify(commitHash)};
 export const APP_BUILD_COMMIT_SHORT = ${JSON.stringify(commitShort)};
 export const APP_BUILD_BRANCH = ${JSON.stringify(branch)};
 export const APP_BUILD_TIME = ${JSON.stringify(buildTime)};
+export const ROAMIE_BUILD_DEBUG = ${JSON.stringify(buildDebugTag)};
 `;
 
 writeFileSync(outPath, contents, "utf8");
@@ -38,5 +40,6 @@ console.info("[sync-app-bundle-meta]", {
   commitShort,
   branch,
   buildTime,
+  buildDebugTag,
   outPath: "src/generated/app-bundle-meta.ts",
 });

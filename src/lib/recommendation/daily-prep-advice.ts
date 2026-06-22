@@ -138,6 +138,14 @@ function pickKey(weather: WeatherSummary): keyof (typeof COPY)["zh-TW"] {
   return "fair";
 }
 
+let lastOutfitLogKey: string | null = null;
+
+function logOutfitSourceOnce(key: string, payload: Record<string, unknown>): void {
+  if (lastOutfitLogKey === key) return;
+  lastOutfitLogKey = key;
+  console.info("[OUTFIT_SOURCE]", payload);
+}
+
 function defaultPrepAdvice(locale: Locale, city?: string): DailyPrepAdvice {
   const loc = locale in COPY ? locale : "en";
   const block = COPY[loc].fair;
@@ -156,7 +164,7 @@ export function buildDailyPrepAdvice(
   city?: string,
 ): DailyPrepAdvice | null {
   if (!weather) {
-    console.info("[OUTFIT_SOURCE]", {
+    logOutfitSourceOnce(`null:${locale}:${city ?? ""}`, {
       source: "rules-fallback",
       reason: "weather_null",
       city: city ?? null,
@@ -165,12 +173,15 @@ export function buildDailyPrepAdvice(
   }
 
   if (weather.available === false) {
-    console.info("[OUTFIT_SOURCE]", {
-      source: "rules-fallback",
-      reason: "weather_unavailable",
-      city: city ?? weather.city ?? null,
-      weatherSource: weather.source,
-    });
+    logOutfitSourceOnce(
+      `unavail:${locale}:${city ?? weather.city ?? ""}:${weather.source ?? ""}`,
+      {
+        source: "rules-fallback",
+        reason: "weather_unavailable",
+        city: city ?? weather.city ?? null,
+        weatherSource: weather.source,
+      },
+    );
     return defaultPrepAdvice(locale, city ?? weather.city);
   }
 
@@ -178,13 +189,16 @@ export function buildDailyPrepAdvice(
   const key = pickKey(weather);
   const block = COPY[loc][key] ?? COPY[loc].fair;
   const cityPrefix = city || weather.city;
-  console.info("[OUTFIT_SOURCE]", {
-    source: "weather-rules",
-    sceneKey: key,
-    city: cityPrefix,
-    tempC: weather.tempC,
-    available: weather.available,
-  });
+  logOutfitSourceOnce(
+    `${key}:${locale}:${cityPrefix ?? ""}:${weather.tempC ?? ""}:${weather.precipProbability ?? ""}:${weather.condition ?? ""}:${weather.isDaytime ?? ""}`,
+    {
+      source: "weather-rules",
+      sceneKey: key,
+      city: cityPrefix,
+      tempC: weather.tempC,
+      available: weather.available,
+    },
+  );
   return {
     headline: cityPrefix ? `${cityPrefix} · ${block.headline}` : block.headline,
     bullets: block.bullets,

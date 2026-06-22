@@ -17,8 +17,10 @@ export function placesAutocompleteUrl(): string {
   return `${PLACES_API}/places:autocomplete`;
 }
 
-export function placeDetailsUrl(placeId: string): string {
-  return `${PLACES_API}/places/${encodeURIComponent(placeId)}`;
+export function placeDetailsUrl(placeId: string, languageCode = "zh-TW"): string {
+  const params = new URLSearchParams();
+  params.set("languageCode", languageCode.trim() || "zh-TW");
+  return `${PLACES_API}/places/${encodeURIComponent(placeId)}?${params.toString()}`;
 }
 
 export const PLACE_DETAILS_FIELD_MASK =

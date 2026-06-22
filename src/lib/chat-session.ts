@@ -163,6 +163,20 @@ export type ChatPlanningSession = {
   tripStyles?: string;
   /** 規劃表單旅伴人數 */
   tripCompanionCount?: number;
+  /** 進行中的聊聊地點意圖（餐廳 / 咖啡 / 景點） */
+  activeChatIntent?: import("@/lib/ai/chat-intent").ChatIntent;
+  /** 餐飲偏好：any / japanese / hotpot … */
+  foodPreference?: string;
+  /** 用餐時間提示：tomorrow_noon … */
+  diningTimeHint?: string;
+  /** 首頁心情 chip 直入聊聊（未經推薦頁） */
+  homeMoodShortcutEntry?: boolean;
+  /** 使用者已與該次首頁心情快捷對話互動 */
+  homeMoodShortcutEngaged?: boolean;
+  /** 目的地行程規劃上下文（每輪合併更新） */
+  tripPlanningContext?: import("@/lib/ai/trip-planning-context").TripPlanningContext;
+  /** 聊聊對話模式分流 */
+  conversationMode?: import("@/lib/ai/trip-planning-context").ChatConversationMode;
   updatedAt: string;
 };
 
@@ -286,7 +300,13 @@ export function extractDiscoveryFromText(
     discovery.vibe = "探索";
   } else if (!discovery.vibe && /(拍照|攝影|打卡|取景|網美|拍美照)/.test(t)) {
     discovery.vibe = "拍照";
-  } else if (!discovery.vibe && /(都有|都可以|都行|混合|都想要)/.test(t)) {
+  } else if (
+    !discovery.vibe &&
+    /(都有|都可以|都行|混合|都想要)/.test(t) &&
+    session.activeChatIntent !== "restaurant" &&
+    session.activeChatIntent !== "cafe" &&
+    !/(餐廳|吃飯|聚餐|咖啡|日式|燒肉|火鍋|義式)/.test(t)
+  ) {
     discovery.vibe = "混合";
   }
 
@@ -307,7 +327,12 @@ export function extractDiscoveryFromText(
     discovery.setting = "室內";
   } else if (!discovery.setting && /(室外|戶外|外面|曬太陽|海邊|公園|散步)/.test(t)) {
     discovery.setting = "室外";
-  } else if (!discovery.setting && /(都可以|都行|都有|看情況)/.test(t)) {
+  } else if (
+    !discovery.setting &&
+    /(都可以|都行|都有|看情況)/.test(t) &&
+    session.activeChatIntent !== "restaurant" &&
+    session.activeChatIntent !== "cafe"
+  ) {
     discovery.setting = "都可以";
   }
 
@@ -412,6 +437,11 @@ export function mapPlaceResultToChatItem(
     lat: lat ?? null,
     lng: lng ?? null,
     googleMapsUrl: googleMapsUrl ?? "",
+    googlePlaceId: p.id,
+    photoName: p.photoName,
+    rating: p.rating,
+    userRatingCount: p.userRatingCount,
+    businessStatus: p.businessStatus,
     openStatusLabel: p.openStatusLabel || undefined,
     todayHoursLabel: p.todayHoursLabel || undefined,
     closingSoonNote: p.closingSoonNote || undefined,

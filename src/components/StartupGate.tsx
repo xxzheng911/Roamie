@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { RoamieRoutePending } from "@/components/RoamieRoutePending";
+import { hasExternalBootSplash } from "@/lib/boot-splash";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
 
@@ -58,7 +59,7 @@ export function StartupGate({ children }: Props) {
 
   return (
     <>
-      {slow && !hasUi ? (
+      {slow && !hasUi && !hasExternalBootSplash() ? (
         <div className="fixed inset-0 z-[2147483645]">
           <RoamieRoutePending />
         </div>

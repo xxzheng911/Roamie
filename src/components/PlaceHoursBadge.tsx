@@ -6,6 +6,7 @@ type Props = {
   className?: string;
   /** 地圖卡片：合併為 1 行 */
   compact?: boolean;
+  openLabel?: string;
 };
 
 /** 推薦卡片共用：營業狀態 + 今日營業時間 */
@@ -16,17 +17,20 @@ export function PlaceHoursBadge({
   nextOpenHint,
   className = "",
   compact = false,
+  openLabel = "營業中",
 }: Props) {
   const hasStatus = !!statusLabel?.trim();
   const hasHours = !!todayHoursLabel?.trim();
   if (!hasStatus && !hasHours && !closingSoonNote && !nextOpenHint) return null;
 
   if (compact) {
+    const showHours =
+      hasHours && todayHoursLabel!.trim() !== (statusLabel ?? "").trim();
     const parts = [
       hasStatus ? statusLabel : null,
-      hasHours ? todayHoursLabel : null,
+      showHours ? todayHoursLabel : null,
       closingSoonNote || null,
-      nextOpenHint && statusLabel !== "營業中" ? nextOpenHint : null,
+      nextOpenHint && statusLabel !== openLabel ? nextOpenHint : null,
     ].filter(Boolean);
     return (
       <p className={`line-clamp-1 text-[10px] leading-snug text-muted-foreground ${className}`}>
@@ -44,7 +48,7 @@ export function PlaceHoursBadge({
       )}
       {hasHours && <p>{todayHoursLabel}</p>}
       {closingSoonNote && <p className="text-clay/90">{closingSoonNote}</p>}
-      {nextOpenHint && statusLabel !== "營業中" && <p>{nextOpenHint}</p>}
+      {nextOpenHint && statusLabel !== openLabel && <p>{nextOpenHint}</p>}
     </div>
   );
 }

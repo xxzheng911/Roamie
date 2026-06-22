@@ -27,6 +27,8 @@ type Props = {
   className?: string;
   /** 緊湊觸發（用於行程卡內） */
   compact?: boolean;
+  /** 無邊框，與外層文字同一行 */
+  inline?: boolean;
 };
 
 /** 滾輪式 24 小時制時間選擇 */
@@ -39,6 +41,7 @@ export function RoamieTimePicker({
   disabled,
   className,
   compact,
+  inline,
 }: Props) {
   const [open, setOpen] = useState(false);
   const normalized = normalizeTime(value || "10:00");
@@ -66,7 +69,9 @@ export function RoamieTimePicker({
           disabled={disabled}
           onClick={() => setOpen(true)}
           className={cn(
-            "rounded-lg border border-border bg-secondary px-2.5 py-0.5 text-xs font-medium text-foreground transition active:scale-[0.98] disabled:opacity-50",
+            inline
+              ? "border-0 bg-transparent p-0 text-sm font-medium text-foreground shadow-none transition active:opacity-70 disabled:opacity-50"
+              : "rounded-lg border border-border bg-secondary px-2.5 py-0.5 text-xs font-medium text-foreground transition active:scale-[0.98] disabled:opacity-50",
             className,
           )}
         >

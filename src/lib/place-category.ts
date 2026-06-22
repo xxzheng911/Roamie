@@ -195,6 +195,12 @@ const ATTRACTION_TYPES = [
   "zoo",
   "aquarium",
   "cultural_center",
+  "cultural_landmark",
+  "historical_place",
+  "hindu_temple",
+  "buddhist_temple",
+  "church",
+  "place_of_worship",
 ] as const;
 
 const ATTRACTION_DENY_TYPES = [
@@ -284,14 +290,51 @@ function isGloballyDenied(place: PlaceLike): boolean {
   return hasBlockedType(collectPlaceTypes(place), GLOBAL_DENY_TYPES);
 }
 
+const ALL_EXPLORE_TYPES = [
+  "cafe",
+  "coffee_shop",
+  "bakery",
+  "restaurant",
+  "food",
+  "meal_takeaway",
+  "meal_delivery",
+  "food_store",
+  "fast_food_restaurant",
+  "ice_cream_shop",
+  "dessert_shop",
+  "tourist_attraction",
+  "museum",
+  "art_gallery",
+  "cultural_center",
+  "historical_landmark",
+  "monument",
+  "shopping_mall",
+  "department_store",
+  "book_store",
+  "bookstore",
+  "bar",
+  "wine_bar",
+  "pub",
+  "night_club",
+  "market",
+  "flea_market",
+  "plaza",
+  "town_square",
+  "performing_arts_theater",
+  "movie_theater",
+] as const;
+
 export function matchesAllExplore(place: PlaceLike): boolean {
   if (isGloballyDenied(place)) return false;
+  if (matchesParkStrict(place)) return false;
   return (
     matchesFoodStrict(place) ||
     matchesCafeStrict(place) ||
     matchesNightStrict(place) ||
+    matchesNightExplore(place) ||
     matchesAttractionStrict(place) ||
-    matchesDistrictStrict(place)
+    matchesDistrictStrict(place) ||
+    hasAnyType(collectPlaceTypes(place), ALL_EXPLORE_TYPES)
   );
 }
 
@@ -410,8 +453,13 @@ function matchesAttractionStrict(place: PlaceLike): boolean {
   if (isGloballyDenied(place)) return false;
   if (hasBlockedType(types, ATTRACTION_DENY_TYPES)) return false;
   if (hasAnyType(types, ["book_store", "bookstore", "library"])) return false;
+  if (hasAnyType(types, ["park", "national_park", "botanical_garden"])) {
+    return /國家公園|國家風景區|森林遊樂區|風景區|地質|湿地|溼地|生态|生態|寿山|壽山|澄清湖|蓮池潭|爱河|愛河|驳二|駁二|西子灣|旗津|地標|landmark/i.test(
+      name,
+    );
+  }
   if (hasAnyType(types, ATTRACTION_TYPES)) return true;
-  if (/展望|觀景|地標|瞭望|viewpoint|observatory|landmark/i.test(name)) {
+  if (/寺|廟|神社|shrine|temple|展望|觀景|地標|瞭望|viewpoint|observatory|landmark/i.test(name)) {
     return !hasBlockedType(types, ATTRACTION_DENY_TYPES);
   }
   return false;
@@ -653,8 +701,27 @@ const STRICT_LABEL_MATCHERS: Record<string, (place: PlaceLike) => boolean> = {
   夜晚: matchesNightExplore,
 };
 
+const STRICT_ID_MATCHERS: Record<string, (place: PlaceLike) => boolean> = {
+  all: matchesAllExplore,
+  coffee: matchesCafeStrict,
+  sight: matchesAttractionStrict,
+  district: matchesDistrictStrict,
+  food: matchesFoodStrict,
+  park: matchesParkStrict,
+  night: matchesNightExplore,
+};
+
 function getCategoryLabel(selected: ExploreCategory | string): string {
   return typeof selected === "string" ? selected : selected.label;
+}
+
+function resolveCategoryMatcher(
+  selected: ExploreCategory | string,
+): ((place: PlaceLike) => boolean) | null {
+  if (typeof selected === "string") {
+    return STRICT_ID_MATCHERS[selected] ?? STRICT_LABEL_MATCHERS[selected] ?? null;
+  }
+  return STRICT_ID_MATCHERS[selected.id] ?? STRICT_LABEL_MATCHERS[selected.label] ?? null;
 }
 
 /**
@@ -663,8 +730,10 @@ function getCategoryLabel(selected: ExploreCategory | string): string {
  */
 export function matchesCategory(place: PlaceLike, selected: ExploreCategory | string): boolean {
   const label = getCategoryLabel(selected);
-  if (label === "全部") return matchesAllExplore(place);
-  const matcher = STRICT_LABEL_MATCHERS[label];
+  if (label === "全部" || (typeof selected !== "string" && selected.id === "all")) {
+    return matchesAllExplore(place);
+  }
+  const matcher = resolveCategoryMatcher(selected);
   if (!matcher) return false;
   return matcher(place);
 }

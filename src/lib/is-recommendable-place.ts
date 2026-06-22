@@ -3,6 +3,7 @@ import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 export type RecommendablePlaceContext =
   | "home_nearby"
   | "explore_map"
+  | "explore_map_city"
   | "ai_recommend"
   | "plan_trip";
 
@@ -137,6 +138,11 @@ const FOOD_MIN_RATING = 4.5;
 const GENERAL_MIN_REVIEWS = 30;
 const FOOD_MIN_REVIEWS = 80;
 const NIGHT_MARKET_MIN_REVIEWS = 50;
+const CITY_GENERAL_MIN_RATING = 3.8;
+const CITY_FOOD_MIN_RATING = 4.0;
+const CITY_GENERAL_MIN_REVIEWS = 10;
+const CITY_FOOD_MIN_REVIEWS = 20;
+const CITY_LANDMARK_MIN_REVIEWS = 5;
 
 function normalizeType(type: string | null | undefined): string {
   return (type ?? "").trim().toLowerCase();
@@ -200,6 +206,14 @@ function isAddressLikeMarker(name: string): boolean {
   return false;
 }
 
+function isCityPopularCandidate(place: RecommendablePlaceInput): boolean {
+  const name = (place.name ?? "").trim();
+  const reviewCount = place.userRatingCount ?? 0;
+  if (reviewCount >= CITY_LANDMARK_MIN_REVIEWS) return true;
+  if (TRAVEL_FRIENDLY_NAME_RE.test(name) || isNightMarketStyle(place)) return true;
+  return allTypes(place).some((t) => TRAVEL_FRIENDLY_TYPES.has(t));
+}
+
 function isPureGeographicMarker(place: RecommendablePlaceInput): boolean {
   const types = allTypes(place);
   if (types.length === 0) return false;
@@ -239,13 +253,29 @@ function passesTravelFriendlyGate(place: RecommendablePlaceInput): boolean {
 }
 
 function minRatingFor(place: RecommendablePlaceInput, context: RecommendablePlaceContext): number {
+  if (context === "explore_map_city") {
+    return isFoodPlace(place) ? CITY_FOOD_MIN_RATING : CITY_GENERAL_MIN_RATING;
+  }
   if (context === "home_nearby") {
     return isFoodPlace(place) ? FOOD_MIN_RATING : HOME_GENERAL_MIN_RATING;
   }
   return isFoodPlace(place) ? FOOD_MIN_RATING : GENERAL_MIN_RATING;
 }
 
-function minReviewsFor(place: RecommendablePlaceInput): number {
+function minReviewsFor(place: RecommendablePlaceInput, context: RecommendablePlaceContext): number {
+  if (context === "explore_map_city") {
+    if (isFoodPlace(place)) return CITY_FOOD_MIN_REVIEWS;
+    const types = allTypes(place);
+    if (
+      types.some((t) =>
+        ["tourist_attraction", "museum", "park", "historical_landmark", "monument"].includes(t),
+      )
+    ) {
+      return CITY_LANDMARK_MIN_REVIEWS;
+    }
+    if (isNightMarketStyle(place)) return CITY_LANDMARK_MIN_REVIEWS;
+    return CITY_GENERAL_MIN_REVIEWS;
+  }
   if (isFoodPlace(place)) return FOOD_MIN_REVIEWS;
   if (isNightMarketStyle(place)) return NIGHT_MARKET_MIN_REVIEWS;
   return GENERAL_MIN_REVIEWS;
@@ -272,12 +302,22 @@ export function logPlaceRecommendFilterDrop(
     dropReason,
     context: context ?? null,
   });
+  if (context === "explore_map" || context === "explore_map_city") {
+    console.info(`[EXPLORE_FILTER_DROP] name=${place.name ?? ""} reason=${dropReason}`);
+  }
 }
 
 export function isRecommendablePlace(
   place: RecommendablePlaceInput,
   context: RecommendablePlaceContext = "explore_map",
-  options?: { logDrop?: boolean; homeOpenTier?: "open_confirmed" | "unknown_fallback" },
+  options?: {
+    logDrop?: boolean;
+    homeOpenTier?: "open_confirmed" | "unknown_fallback";
+    /** 首頁 relaxed：僅要求 OPERATIONAL 真實地點，不要求評分／評論 */
+    homeNearbyTier?: "operational_only";
+    /** 探索地圖：display 不要求評分／營業狀態未知；fallback 更寬鬆 */
+    exploreMapTier?: "strict" | "display" | "fallback";
+  },
 ): RecommendablePlaceResult {
   const name = (place.name ?? "").trim();
   const placeId = resolvePlaceId(place);
@@ -301,16 +341,33 @@ export function isRecommendablePlace(
   if (!placeId || placeId === "Unknown") return fail("missing_place_id");
   if (!name || name === "Unknown") return fail("missing_name");
   if (CLOSED_NAME_RE.test(name)) return fail("closed_name");
-  if (isPureGeographicMarker(place)) return fail("geographic_marker");
-  if (isAddressLikeMarker(name) && !isNightMarketStyle(place)) return fail("address_like_marker");
 
-  if (biz !== "OPERATIONAL") {
-    if (biz === "CLOSED_PERMANENTLY") return fail("closed_permanently");
-    if (biz === "CLOSED_TEMPORARILY") return fail("closed_temporarily");
-    return fail("non_operational");
+  const cityMode = context === "explore_map_city";
+  const exploreRelaxed =
+    (context === "explore_map" || context === "explore_map_city") &&
+    (options?.exploreMapTier === "display" || options?.exploreMapTier === "fallback");
+
+  if (isPureGeographicMarker(place)) {
+    if (exploreRelaxed && passesTravelFriendlyGate(place)) {
+      /* allow landmarks with travel-friendly signals */
+    } else if (!cityMode || !isCityPopularCandidate(place)) {
+      return fail("geographic_marker");
+    }
+  }
+  if (
+    isAddressLikeMarker(name) &&
+    !isNightMarketStyle(place) &&
+    !cityMode &&
+    !exploreRelaxed
+  ) {
+    return fail("address_like_marker");
   }
 
-  if (!hasExplicitCategory(place)) return fail("missing_category");
+  if (biz === "CLOSED_PERMANENTLY") return fail("closed_permanently");
+  if (biz === "CLOSED_TEMPORARILY") return fail("closed_temporarily");
+  if (biz && biz !== "OPERATIONAL") return fail("non_operational");
+
+  if (!hasExplicitCategory(place) && !cityMode && !exploreRelaxed) return fail("missing_category");
 
   for (const t of allTypes(place)) {
     if (NON_RECOMMENDABLE_TYPES.has(t)) return fail(`excluded_type:${t}`);
@@ -319,10 +376,22 @@ export function isRecommendablePlace(
     }
   }
 
-  if (!passesTravelFriendlyGate(place)) return fail("not_travel_friendly");
+  if (!passesTravelFriendlyGate(place) && !cityMode && !exploreRelaxed) {
+    return fail("not_travel_friendly");
+  }
+
+  if (context === "home_nearby" && options?.homeNearbyTier === "operational_only") {
+    if (openNow === false) return fail("closed_now");
+    return { ok: true };
+  }
+
+  if (exploreRelaxed) {
+    if (openNow === false) return fail("closed_now");
+    return { ok: true };
+  }
 
   const minRating = minRatingFor(place, context);
-  const minReviews = minReviewsFor(place);
+  const minReviews = minReviewsFor(place, context);
   const rating = place.rating;
   const reviewCount = place.userRatingCount ?? 0;
 
@@ -344,10 +413,11 @@ export function isRecommendablePlace(
 
   if (openNow == null) {
     const allowUnknownOpen =
-      isNightMarketStyle(place) &&
-      (context === "home_nearby" || context === "explore_map");
+      cityMode ||
+      (isNightMarketStyle(place) &&
+        (context === "home_nearby" || context === "explore_map"));
     if (!allowUnknownOpen) return fail("open_unknown");
-    if (reviewCount < NIGHT_MARKET_MIN_REVIEWS) return fail("night_market_low_reviews");
+    if (!cityMode && reviewCount < NIGHT_MARKET_MIN_REVIEWS) return fail("night_market_low_reviews");
   }
 
   return { ok: true };
@@ -400,6 +470,7 @@ export function recommendationToRecommendableInput(
     googlePlaceId?: string;
     rating?: number | null;
     userRatingCount?: number | null;
+    businessStatus?: string | null;
     openStatusLabel?: string;
   },
   availability?: {
@@ -415,7 +486,7 @@ export function recommendationToRecommendableInput(
     id: rec.googlePlaceId,
     placeId: rec.googlePlaceId,
     name: rec.name,
-    businessStatus: availability?.businessStatus ?? null,
+    businessStatus: availability?.businessStatus ?? rec.businessStatus ?? null,
     openStatus,
     rating: rec.rating ?? null,
     userRatingCount: rec.userRatingCount ?? null,

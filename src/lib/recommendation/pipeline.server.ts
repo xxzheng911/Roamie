@@ -1,5 +1,7 @@
 import type { RoamieRequestContext } from "@/lib/ai/context";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
+import { beginAiPlaceApiSession } from "@/lib/recommendation/ai-places-cache";
+import { beginTrackedPlacesFlow } from "@/lib/places-api-stats";
 import { fetchFestivalContext, formatFestivalBlock } from "@/lib/recommendation/festival-context";
 import {
   candidatesToAiList,
@@ -64,6 +66,9 @@ export async function preparePlacesFirstContext(
     selectedPlaceNames: ctx.selectedPlaceNames,
     constraints: tripIntent.constraints,
   };
+
+  beginAiPlaceApiSession();
+  beginTrackedPlacesFlow("ai_recommend");
 
   const [candidates, festival] = await Promise.all([
     fetchVerifiedCandidates(recCtx).catch((e) => {

@@ -21,7 +21,6 @@ import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
 import { RoamieAppErrorFallback } from "@/components/RoamieAppErrorFallback";
 import { StartupGate } from "@/components/StartupGate";
 import { OAuthRouterBridge } from "@/components/OAuthRouterBridge";
-import { scheduleRemoveStaticBootPlaceholder } from "@/main";
 import { bootstrapNativeShell } from "@/services/platform";
 import { markAppReady } from "@/lib/startup-route";
 import { toCapacitorBundledAssetHref } from "@/lib/capacitor-asset-href";
@@ -32,6 +31,7 @@ import { useServerFn } from "@tanstack/react-start";
 import {
   routesComputeDistance,
   routesComputeDuration,
+  routesComputeLegEstimates,
   routesComputeTripLegs,
   routesTestConnection,
 } from "@/lib/routes.functions";
@@ -191,6 +191,7 @@ function RootComponent() {
   const routesDuration = useServerFn(routesComputeDuration);
   const routesDistance = useServerFn(routesComputeDistance);
   const routesTripLegs = useServerFn(routesComputeTripLegs);
+  const routesLegEstimates = useServerFn(routesComputeLegEstimates);
   const routesTest = useServerFn(routesTestConnection);
   const fetchWeather = useServerFn(getWeather);
   const fetchForecast = useServerFn(getWeatherForecast);
@@ -207,11 +208,11 @@ function RootComponent() {
         computeDuration: (args) => routesDuration(args),
         computeDistance: (args) => routesDistance(args),
         computeTripLegs: (args) => routesTripLegs(args),
+        computeLegEstimates: (args) => routesLegEstimates(args),
         testConnection: () => routesTest(),
       },
     });
     markBootPhase("root:layoutEffect");
-    scheduleRemoveStaticBootPlaceholder();
     markAppReady();
     const platform = detectPlatform();
     if (!(platform.isCapacitor && platform.isIOS)) {

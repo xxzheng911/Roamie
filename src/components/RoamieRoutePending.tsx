@@ -1,7 +1,12 @@
 /** Router pending UI — keep free of mascot / sheet imports so login cold start stays lean */
 export function RoamieRoutePending() {
   return (
-    <div className="roamie-splash" role="status" aria-live="polite" aria-busy="true">
+    <div
+      className="roamie-splash roamie-splash--boot-cream"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+    >
       <div className="roamie-splash__gradient" aria-hidden />
       <div className="roamie-splash__viewport">
         <div className="roamie-splash__content roamie-splash__content--fade-in">

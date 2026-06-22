@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { AvatarProvider } from "@/hooks/use-avatar";
+import { CoverProvider } from "@/hooks/use-cover";
 import { I18nProvider } from "@/hooks/use-i18n";
 import { AnalyticsProvider } from "@/providers/AnalyticsProvider";
 import { PlatformProvider } from "@/providers/PlatformProvider";
@@ -70,7 +71,9 @@ export function AppProviders({ children }: Props) {
         <AuthProvider>
           <I18nProvider>
             <ProviderGate>
-              <AvatarProvider>{children}</AvatarProvider>
+              <AvatarProvider>
+                <CoverProvider>{children}</CoverProvider>
+              </AvatarProvider>
             </ProviderGate>
           </I18nProvider>
         </AuthProvider>

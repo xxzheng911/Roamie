@@ -1,10 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-type GenerateOutfitSuggestionResult = {
-  suggestion: string;
-  source: "ai" | "fallback";
-  generatedAt: string;
-};
+import type { GenerateOutfitSuggestionResult } from "@/lib/outfit/generate-trip-outfit.server";
 
 const ItemSchema = z.object({
   date: z.string(),

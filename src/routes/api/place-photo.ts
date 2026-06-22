@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { requireGoogleMapsServerKey } from "@/lib/google-maps.server";
+import { recordPlacesHttpCall } from "@/lib/places-api-stats";
 
 /** Proxy Google Place photos when VITE_GOOGLE_MAPS_API_KEY is absent in native bundle. */
 export const Route = createFileRoute("/api/place-photo")({
@@ -17,17 +18,26 @@ export const Route = createFileRoute("/api/place-photo")({
         try {
           const key = requireGoogleMapsServerKey();
           const mediaUrl = `https://places.googleapis.com/v1/${photo}/media?maxWidthPx=${maxW}&key=${key}`;
+          recordPlacesHttpCall("photo", {
+            functionName: "place-photo.proxy",
+            requestKey: photo,
+            caller: "place-photo.proxy",
+            screen: "unknown",
+          });
           const res = await fetch(mediaUrl, { redirect: "follow" });
           if (!res.ok) {
             console.warn("[place-photo] upstream failed", res.status, photo);
             return new Response(null, { status: 502 });
           }
           const contentType = res.headers.get("content-type") ?? "image/jpeg";
+          if (contentType.includes("webp")) {
+            return new Response(null, { status: 415 });
+          }
           const body = await res.arrayBuffer();
           return new Response(body, {
             status: 200,
             headers: {
-              "content-type": contentType,
+              "content-type": contentType.includes("png") ? contentType : "image/jpeg",
               "cache-control": "public, max-age=86400",
             },
           });

@@ -1,57 +1,48 @@
-import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import {
-  isRecommendablePlace,
-  placeResultToRecommendableInput,
-} from "@/lib/is-recommendable-place";
+  hasZeroRatingAndReviews,
+  passesHomeNearbyHardExclusions,
+  type HomeNearbyPickPlace,
+} from "@/lib/home-nearby-eligibility";
+import type { HomeNearbyPick } from "@/lib/home-nearby-search";
 
-/** 首頁只接受真實 Google place_id，排除 mock / saved 假 id */
-export function isVerifiedGooglePlaceId(id: string | null | undefined): boolean {
-  const value = (id ?? "").trim();
-  if (!value || value === "Unknown") return false;
-  if (value.startsWith("mock-") || value.startsWith("saved-")) return false;
-  return true;
-}
+export { isVerifiedGooglePlaceId } from "@/lib/home-nearby-eligibility";
 
+/** 首頁顯示：永久排除 + 無評分信號排除（session cache 二次過濾） */
 export function isHomeNearbyDisplayPlace(
   place: Pick<
     HomeNearbyPick,
     | "id"
     | "name"
     | "businessStatus"
-    | "openStatus"
     | "rating"
     | "userRatingCount"
+    | "openStatus"
     | "primaryType"
     | "types"
-  > & { categoryId?: string; isSavedFavorite?: boolean },
+  >,
   options?: { logDrop?: boolean },
 ): boolean {
-  if (!isVerifiedGooglePlaceId(place.id)) {
+  if (!passesHomeNearbyHardExclusions(place as HomeNearbyPickPlace)) {
     if (options?.logDrop !== false) {
       console.info("[HOME_NEARBY_DISPLAY_DROP]", {
         name: place.name,
         placeId: place.id,
-        dropReason: "invalid_place_id",
+        dropReason: "home_nearby_rules",
       });
     }
     return false;
   }
-
-  const input = placeResultToRecommendableInput(
-    {
-      id: place.id,
-      name: place.name,
-      businessStatus: place.businessStatus,
-      openStatus: place.openStatus ?? "unknown",
-      rating: place.rating,
-      userRatingCount: place.userRatingCount,
-      primaryType: place.primaryType,
-      types: place.types,
-    },
-    { categoryId: place.categoryId, isSavedFavorite: false },
-  );
-
-  return isRecommendablePlace(input, "home_nearby", options).ok;
+  if (hasZeroRatingAndReviews(place as HomeNearbyPickPlace)) {
+    if (options?.logDrop !== false) {
+      console.info("[HOME_NEARBY_DISPLAY_DROP]", {
+        name: place.name,
+        placeId: place.id,
+        dropReason: "zero_rating_reviews",
+      });
+    }
+    return false;
+  }
+  return true;
 }
 
 /** 過濾 session / cache 中不合格或 mock 的首頁卡片 */

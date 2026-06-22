@@ -3,10 +3,12 @@ import roamieDefaultCover from "@/assets/roamie-default-cover.png";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import { ROAMIE_API_FALLBACK, API_CACHE_TTL_MS } from "@/lib/api/constants";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import type { PlaceResult } from "@/lib/place-result";
 import { createRequestCache } from "@/services/requestCache";
 import { searchUnsplashImage, searchUnsplashWithQueries } from "@/services/unsplashService";
+import { cachePlaceImages } from "@/lib/place-runtime-cache";
 
 export type ImageSource = "google" | "unsplash" | "upload" | "default" | "roamie";
 
@@ -21,6 +23,7 @@ const placeImageRequestCache = createRequestCache({
 
 function placeImageCacheKey(input: PlaceImageInput): string {
   return [
+    input.placeId ?? "",
     input.name,
     input.photoName ?? "",
     input.categoryId ?? "",
@@ -48,6 +51,7 @@ function tripCoverCacheKey(trip: TripCoverInput): string {
 }
 
 export type PlaceImageInput = {
+  placeId?: string | null;
   name: string;
   photoName?: string | null;
   primaryType?: string | null;
@@ -201,7 +205,7 @@ export function resolveGooglePlacePhoto(
   width = 600,
 ): string | null {
   if (!photoName) return null;
-  return buildPlacePhotoUrl(photoName, width);
+  return preferJpegPngImageUrl(buildPlacePhotoUrl(photoName, width));
 }
 
 /** 同步 fallback（Google 或 Roamie 情境圖，不含 Unsplash） */
@@ -224,14 +228,28 @@ export async function getPlaceImage(
   return placeImageRequestCache.getOrFetch(key, async () => {
     const width = input.photoWidth ?? 600;
     const fromGoogle = resolveGooglePlacePhoto(input.photoName, width);
-    if (fromGoogle) return { url: fromGoogle, source: "google" as const };
+    if (fromGoogle) {
+      if (input.placeId?.trim()) {
+        cachePlaceImages(input.placeId, { coverImageUrl: fromGoogle });
+      }
+      return { url: fromGoogle, source: "google" as const };
+    }
 
     const queries = buildPlaceUnsplashQueries(input);
     const unsplash = await searchUnsplashWithQueries(queries);
-    if (unsplash) return { url: unsplash.url, source: "unsplash" as const };
+    if (unsplash) {
+      if (input.placeId?.trim()) {
+        cachePlaceImages(input.placeId, {
+          generatedImageUrl: unsplash.url,
+          fallbackImageUrl: unsplash.url,
+          coverImageUrl: unsplash.url,
+        });
+      }
+      return { url: unsplash.url, source: "unsplash" as const };
+    }
 
     const cat = normalizeCategory(input);
-    return {
+    const result = {
       url: pickPlaceSceneFallback(input.name, {
         primaryType: input.primaryType,
         types: input.types,
@@ -239,6 +257,14 @@ export async function getPlaceImage(
       }),
       source: "roamie" as const,
     };
+    if (input.placeId?.trim()) {
+      cachePlaceImages(input.placeId, {
+        generatedImageUrl: result.url,
+        fallbackImageUrl: result.url,
+        coverImageUrl: result.url,
+      });
+    }
+    return result;
   });
 }
 

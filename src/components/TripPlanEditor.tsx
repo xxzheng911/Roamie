@@ -159,14 +159,16 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
 
     setTransitLoading(true);
     try {
-      const transitLegs = await syncTripLegsFromGoogleRoutes(items, settings);
+      const transitLegs = await syncTripLegsFromGoogleRoutes(items, settings, {
+        tripId: "trip-plan-draft",
+      });
       setSettings((s) => ({ ...s, transitLegs }));
     } catch (e) {
       console.warn("[TripPlanEditor] Google Routes leg sync failed", e);
     } finally {
       setTransitLoading(false);
     }
-  }, [items, settings]);
+  }, [items, settings.transport, settings.defaultTransportLabel, settings.legTransport]);
 
   useEffect(() => {
     if (skipInitialTransitFetch.current) {

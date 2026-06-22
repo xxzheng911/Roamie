@@ -8,6 +8,7 @@ import {
 import { daysBetweenDates } from "@/lib/fetch-context";
 import { groupItineraryByDate, listTripDates } from "@/lib/outfit/group-by-date";
 import { formatDateRangeLabel, formatDateWithWeekday } from "@/lib/picker-utils";
+import { scheduledDateKeysFromSettings } from "@/lib/saved-trip/apply-trip-date-range";
 import { buildLegKey } from "@/lib/transit/types";
 import type { StoredItinerary } from "@/lib/itinerary-storage";
 import {
@@ -116,13 +117,17 @@ function daysFromV2(payload: RoamiePayloadV2): SavedTripDay[] {
   const items = [...(payload.itinerary ?? [])];
   if (items.length === 0) return [];
 
+  const settingsKeys = scheduledDateKeysFromSettings(payload.tripSettings);
   const start =
     payload.tripSettings?.tripStartDate?.trim() ||
     items.map((i) => i.date?.trim()).find((d) => d && /^\d{4}-\d{2}-\d{2}$/.test(d)) ||
     new Date().toISOString().slice(0, 10);
   const dayCount =
-    payload.days ?? daysBetweenDates(start, payload.tripSettings?.tripEndDate || start);
-  const orderedDates = listTripDates(items, start, dayCount);
+    settingsKeys.length ||
+    payload.days ||
+    daysBetweenDates(start, payload.tripSettings?.tripEndDate || start);
+  const orderedDates =
+    settingsKeys.length > 0 ? settingsKeys : listTripDates(items, start, dayCount);
   const groups = groupItineraryByDate(items);
 
   return orderedDates.map((iso, idx) => {

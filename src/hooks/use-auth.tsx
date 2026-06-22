@@ -12,8 +12,11 @@ import { logAppError } from "@/lib/log-error";
 import { supabase } from "@/lib/supabase";
 import { hasOAuthCallbackParams } from "@/lib/auth-oauth";
 import { logAuthDebug } from "@/lib/auth-debug";
+import { logAuthBoot } from "@/lib/auth-boot-log";
 import { clearAuthState } from "@/lib/clear-auth-state";
 import { getClientAuthSession } from "@/lib/auth-session";
+import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
+import { detectPlatform } from "@/services/platform";
 import { isLoginColdStartPath, readBrowserPathname } from "@/lib/startup-path";
 import { isOnboardingCompletedSync, isOnboardingHydrated } from "@/lib/onboarding-storage";
 
@@ -77,9 +80,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     const init = async () => {
-      if (hasOAuthCallbackParams()) return;
+      if (hasOAuthCallbackParams()) {
+        finishLoading();
+        return;
+      }
 
+      logAuthBoot("init");
       try {
+        if (detectPlatform().isCapacitor) {
+          await warmSupabaseAuthStorage();
+        }
         const s = await getClientAuthSession();
         if (!cancelled) applySession(s);
       } catch (e) {
@@ -89,7 +99,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     if (shouldDeferAuthLoading()) {
-      finishLoading();
       let idleHandle: number | ReturnType<typeof setTimeout>;
       if (typeof requestIdleCallback === "function") {
         idleHandle = requestIdleCallback(() => {
@@ -125,6 +134,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     setSession(null);
+    const { invalidateClientAuthSessionCache } = await import("@/lib/auth-session");
+    const { resetWarmSupabaseAuthStorage } = await import("@/lib/supabase-auth-storage");
+    invalidateClientAuthSessionCache();
+    resetWarmSupabaseAuthStorage();
     await clearAuthState({ reason: "user-sign-out" });
   }, []);
 

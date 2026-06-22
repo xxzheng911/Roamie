@@ -3,17 +3,24 @@ import { ImageCropErrorFallback } from "@/components/ImageCropErrorFallback";
 import {
   blobToDataUrl,
   exportCropFromTransform,
+  prepareImageForCropEditor,
+  loadImageFromUrl,
   fileToObjectUrl,
   computeCoverMinimumCropScale,
   computeInitialCropScale,
-  getCenteredCropRect,
-  loadImageFromUrl,
+  resolveCropRect,
+  type CenteredCropRect,
   type CropInitialFit,
   type CropTransform,
 } from "@/lib/image-crop";
 
 export type InlineImageCropHandle = {
-  exportCrop: () => Promise<{ blob: Blob; previewUrl: string } | null>;
+  exportCrop: () => Promise<{
+    blob: Blob;
+    previewUrl: string;
+    transform: CropTransform;
+  } | null>;
+  getTransform: () => CropTransform;
   isReady: () => boolean;
 };
 
@@ -26,9 +33,18 @@ type Props = {
   /** 初始縮放留白（contain 預設 0.95、cover 預設 1.0） */
   fitPadding?: number;
   exportMaxWidth?: number;
+  exportQuality?: number;
   showCropGuide?: boolean;
   className?: string;
   onReadyChange?: (ready: boolean) => void;
+  /** 還原先前儲存的裁切構圖 */
+  initialTransform?: CropTransform | null;
+  /** 與 SharedImageCropEditor 遮罩對齊的裁切框（螢幕座標相對 viewport） */
+  cropFrame?: CenteredCropRect | null;
+  /** 為 true 時須等 cropFrame 量測完成再套用初始構圖 */
+  measureCropFrame?: boolean;
+  /** 例如 [TRIP_COVER_EDITOR]，輸出手勢 debug log */
+  gestureLogPrefix?: string;
 };
 
 const DEFAULT_MIN_SCALE = 0.2;
@@ -45,12 +61,25 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
       initialFit = "contain",
       fitPadding,
       exportMaxWidth = 1200,
+      exportQuality = 0.82,
       showCropGuide = true,
       className = "",
       onReadyChange,
+      initialTransform = null,
+      cropFrame = null,
+      measureCropFrame = false,
+      gestureLogPrefix,
     },
     ref,
   ) {
+    const initialTransformRef = useRef(initialTransform);
+    initialTransformRef.current = initialTransform;
+    const cropFrameRef = useRef(cropFrame);
+    cropFrameRef.current = cropFrame;
+    const measureCropFrameRef = useRef(measureCropFrame);
+    measureCropFrameRef.current = measureCropFrame;
+    const gestureLogPrefixRef = useRef(gestureLogPrefix);
+    gestureLogPrefixRef.current = gestureLogPrefix;
     const viewportRef = useRef<HTMLDivElement>(null);
     const imgRef = useRef<HTMLImageElement | null>(null);
     const userAdjustedRef = useRef(false);
@@ -65,12 +94,14 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
     const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
     const touchDragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
     const touchPinchRef = useRef<{ dist: number; scale: number } | null>(null);
+    const pointerGestureRef = useRef(false);
     const onReadyChangeRef = useRef(onReadyChange);
     onReadyChangeRef.current = onReadyChange;
 
     const [previewUrl, setPreviewUrl] = useState<string | null>(null);
     const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
     const [loadError, setLoadError] = useState<string | null>(null);
+    const [preparing, setPreparing] = useState(true);
     const [ready, setReady] = useState(false);
     const [transform, setTransform] = useState<CropTransform>({
       scale: 1,
@@ -80,6 +111,12 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
 
     const clampScale = (s: number) => Math.min(MAX_SCALE, Math.max(minScaleRef.current, s));
 
+    const getActiveCropRect = useCallback(
+      (vpW: number, vpH: number): CenteredCropRect =>
+        resolveCropRect(vpW, vpH, aspectWidth, aspectHeight, cropFrameRef.current),
+      [aspectWidth, aspectHeight],
+    );
+
     const clampTransformToBounds = useCallback(
       (next: CropTransform): CropTransform => {
         if (initialFit !== "cover-line") return next;
@@ -87,12 +124,7 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
         const imgNat = imgNatSizeRef.current;
         if (!vp || !imgNat) return next;
 
-        const { cropW, cropH, cropLeft, cropTop } = getCenteredCropRect(
-          vp.w,
-          vp.h,
-          aspectWidth,
-          aspectHeight,
-        );
+        const { cropW, cropH, cropLeft, cropTop } = getActiveCropRect(vp.w, vp.h);
 
         const scale = clampScale(next.scale);
         const imgW = imgNat.w * scale;
@@ -122,21 +154,36 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
 
         return { scale, offsetX: clampedX, offsetY: clampedY };
       },
-      [initialFit, aspectWidth, aspectHeight, clampScale],
+      [initialFit, getActiveCropRect, clampScale],
     );
 
     const commitTransform = useCallback(
-      (next: CropTransform) => {
+      (next: CropTransform, gesture?: "pan" | "pinch" | "wheel") => {
+        const prev = transformRef.current;
         const clamped = clampTransformToBounds(next);
         transformRef.current = clamped;
         setTransform(clamped);
+        const prefix = gestureLogPrefixRef.current;
+        if (!prefix || !gesture) return;
+        if (
+          gesture === "pan" &&
+          (clamped.offsetX !== prev.offsetX || clamped.offsetY !== prev.offsetY)
+        ) {
+          console.info(`${prefix} pan x=${clamped.offsetX} y=${clamped.offsetY}`);
+        }
+        if (gesture === "pinch" && clamped.scale !== prev.scale) {
+          console.info(`${prefix} scale=${clamped.scale}`);
+        }
+        if (gesture === "wheel" && clamped.scale !== prev.scale) {
+          console.info(`${prefix} scale=${clamped.scale}`);
+        }
       },
       [clampTransformToBounds],
     );
 
     const computeInitialScale = useCallback(
       (img: HTMLImageElement, vpW: number, vpH: number) => {
-        const { cropW, cropH } = getCenteredCropRect(vpW, vpH, aspectWidth, aspectHeight);
+        const { cropW, cropH } = getActiveCropRect(vpW, vpH);
         const imgW = img.naturalWidth;
         const imgH = img.naturalHeight;
         const scale = computeInitialCropScale(imgW, imgH, cropW, cropH, {
@@ -157,7 +204,7 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
         }
         return clampScale(scale);
       },
-      [initialFit, fitPadding, aspectWidth, aspectHeight],
+      [initialFit, fitPadding, getActiveCropRect, clampScale],
     );
 
     const applyFitTransform = useCallback(
@@ -171,6 +218,9 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
         readyRef.current = true;
         setReady(true);
         onReadyChangeRef.current?.(true);
+        if (gestureLogPrefixRef.current) {
+          console.info(`${gestureLogPrefixRef.current} viewport ready scale=${next.scale}`);
+        }
       },
       [computeInitialScale, commitTransform],
     );
@@ -190,7 +240,16 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
       lastViewportKeyRef.current = key;
 
       if (!userAdjustedRef.current && (sizeChanged || !readyRef.current)) {
-        applyFitTransform(img, w, h);
+        const saved = initialTransformRef.current;
+        if (saved && !readyRef.current) {
+          userAdjustedRef.current = true;
+          commitTransform(saved);
+          readyRef.current = true;
+          setReady(true);
+          onReadyChangeRef.current?.(true);
+        } else {
+          applyFitTransform(img, w, h);
+        }
       }
     }, [applyFitTransform]);
 
@@ -207,23 +266,54 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
       pinchRef.current = null;
       touchDragRef.current = null;
       touchPinchRef.current = null;
+      pointerGestureRef.current = false;
+      setPreparing(true);
       setReady(false);
       setLoadError(null);
       setImgSize(null);
+      setPreviewUrl(null);
       onReadyChangeRef.current?.(false);
-
-      const url = fileToObjectUrl(file);
-      setPreviewUrl(url);
 
       let resizeObserver: ResizeObserver | undefined;
       let cancelled = false;
+      let previewObjectUrl: string | null = null;
 
-      loadImageFromUrl(url)
-        .then((img) => {
+      const loadPrepared = async () => {
+        const prefix = gestureLogPrefixRef.current;
+        if (file.type === "image/jpeg" && file.size > 0) {
+          const url = fileToObjectUrl(file);
+          try {
+            const img = await loadImageFromUrl(url);
+            return {
+              file,
+              objectUrl: url,
+              width: img.naturalWidth,
+              height: img.naturalHeight,
+            };
+          } catch {
+            URL.revokeObjectURL(url);
+          }
+        }
+        return { ...(await prepareImageForCropEditor(file, { logPrefix: prefix })) };
+      };
+
+      void loadPrepared()
+        .then(async (prepared) => {
+          if (cancelled) {
+            URL.revokeObjectURL(prepared.objectUrl);
+            return;
+          }
+          previewObjectUrl = prepared.objectUrl;
+          setPreviewUrl(prepared.objectUrl);
+          const img = await loadImageFromUrl(prepared.objectUrl);
           if (cancelled) return;
           imgRef.current = img;
-          imgNatSizeRef.current = { w: img.naturalWidth, h: img.naturalHeight };
-          setImgSize({ w: img.naturalWidth, h: img.naturalHeight });
+          imgNatSizeRef.current = { w: prepared.width, h: prepared.height };
+          setImgSize({ w: prepared.width, h: prepared.height });
+          setPreparing(false);
+          if (gestureLogPrefixRef.current) {
+            console.info(`${gestureLogPrefixRef.current} ready w=${prepared.width} h=${prepared.height}`);
+          }
 
           requestAnimationFrame(() => {
             requestAnimationFrame(() => syncViewportRef.current());
@@ -238,7 +328,11 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
         .catch((e) => {
           if (cancelled) return;
           const msg = e instanceof Error ? e.message : "圖片載入失敗";
+          if (gestureLogPrefixRef.current) {
+            console.info(`${gestureLogPrefixRef.current} decode failed`, msg);
+          }
           setLoadError(msg);
+          setPreparing(false);
           readyRef.current = false;
           setReady(false);
           onReadyChangeRef.current?.(false);
@@ -247,11 +341,44 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
       return () => {
         cancelled = true;
         resizeObserver?.disconnect();
-        URL.revokeObjectURL(url);
+        if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
         imgRef.current = null;
         imgNatSizeRef.current = null;
       };
     }, [file]);
+
+    useEffect(() => {
+      const vp = viewportRef.current;
+      const img = imgRef.current;
+      if (!vp || !img) return;
+      const w = vp.clientWidth;
+      const h = vp.clientHeight;
+      if (w < 8 || h < 8) return;
+      viewportSizeRef.current = { w, h };
+
+      if (userAdjustedRef.current) {
+        commitTransform(transformRef.current, undefined);
+        return;
+      }
+
+      if (!readyRef.current) {
+        const saved = initialTransformRef.current;
+        if (saved) {
+          userAdjustedRef.current = true;
+          commitTransform(saved, undefined);
+          readyRef.current = true;
+          setReady(true);
+          onReadyChangeRef.current?.(true);
+          return;
+        }
+        applyFitTransform(img, w, h);
+        return;
+      }
+
+      if (cropFrame) {
+        commitTransform(transformRef.current, undefined);
+      }
+    }, [cropFrame, imgSize, applyFitTransform, commitTransform]);
 
     useEffect(() => {
       const el = viewportRef.current;
@@ -280,6 +407,7 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
     const onPointerDown = (e: React.PointerEvent) => {
       if (!readyRef.current || loadError) return;
       e.preventDefault();
+      pointerGestureRef.current = true;
       markUserAdjusted();
 
       const el = e.currentTarget as HTMLElement;
@@ -315,10 +443,13 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
         const dist = pointerDistance(pointersRef.current);
         if (dist < 1) return;
         const ratio = dist / pinchRef.current.dist;
-        commitTransform({
-          ...transformRef.current,
-          scale: clampScale(pinchRef.current.scale * ratio),
-        });
+        commitTransform(
+          {
+            ...transformRef.current,
+            scale: clampScale(pinchRef.current.scale * ratio),
+          },
+          "pinch",
+        );
         return;
       }
 
@@ -326,15 +457,22 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
       if (!drag || pointersRef.current.size !== 1) return;
 
       e.preventDefault();
-      commitTransform({
-        ...transformRef.current,
-        offsetX: drag.ox + (e.clientX - drag.x),
-        offsetY: drag.oy + (e.clientY - drag.y),
-      });
+      commitTransform(
+        {
+          ...transformRef.current,
+          offsetX: drag.ox + (e.clientX - drag.x),
+          offsetY: drag.oy + (e.clientY - drag.y),
+        },
+        "pan",
+      );
     };
 
     const onPointerUp = (e: React.PointerEvent) => {
       pointersRef.current.delete(e.pointerId);
+
+      if (pointersRef.current.size === 0) {
+        pointerGestureRef.current = false;
+      }
 
       if (pointersRef.current.size === 1) {
         const point = [...pointersRef.current.values()][0];
@@ -357,16 +495,23 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
       e.preventDefault();
       markUserAdjusted();
       const delta = e.deltaY > 0 ? -0.08 : 0.08;
-      commitTransform({
-        ...transformRef.current,
-        scale: clampScale(transformRef.current.scale * (1 + delta)),
-      });
+      commitTransform(
+        {
+          ...transformRef.current,
+          scale: clampScale(transformRef.current.scale * (1 + delta)),
+        },
+        "wheel",
+      );
     };
 
     const touchDistance = (a: Touch, b: Touch) =>
       Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
 
+    const supportsPointerEvents =
+      typeof window !== "undefined" && "PointerEvent" in window;
+
     const onTouchStart = (e: React.TouchEvent) => {
+      if (supportsPointerEvents && pointerGestureRef.current) return;
       if (!readyRef.current || loadError) return;
       if (e.touches.length === 1) {
         markUserAdjusted();
@@ -391,31 +536,39 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
     };
 
     const onTouchMove = (e: React.TouchEvent) => {
+      if (supportsPointerEvents && pointerGestureRef.current) return;
       if (!readyRef.current || loadError) return;
       if (e.touches.length >= 2 && touchPinchRef.current) {
         e.preventDefault();
         const dist = touchDistance(e.touches[0], e.touches[1]);
         if (dist < 1) return;
         const ratio = dist / touchPinchRef.current.dist;
-        commitTransform({
-          ...transformRef.current,
-          scale: clampScale(touchPinchRef.current.scale * ratio),
-        });
+        commitTransform(
+          {
+            ...transformRef.current,
+            scale: clampScale(touchPinchRef.current.scale * ratio),
+          },
+          "pinch",
+        );
         return;
       }
       if (e.touches.length === 1 && touchDragRef.current) {
         e.preventDefault();
         const t = e.touches[0];
         const drag = touchDragRef.current;
-        commitTransform({
-          ...transformRef.current,
-          offsetX: drag.ox + (t.clientX - drag.x),
-          offsetY: drag.oy + (t.clientY - drag.y),
-        });
+        commitTransform(
+          {
+            ...transformRef.current,
+            offsetX: drag.ox + (t.clientX - drag.x),
+            offsetY: drag.oy + (t.clientY - drag.y),
+          },
+          "pan",
+        );
       }
     };
 
     const onTouchEnd = (e: React.TouchEvent) => {
+      if (supportsPointerEvents && pointerGestureRef.current) return;
       if (e.touches.length === 1) {
         const t = e.touches[0];
         touchPinchRef.current = null;
@@ -461,6 +614,8 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
           aspectWidth,
           aspectHeight,
           exportMaxWidth,
+          cropFrameRef.current,
+          exportQuality,
         );
         if (!blob.size) {
           console.warn("[Avatar Crop] export produced empty blob");
@@ -472,15 +627,16 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
         } catch (e) {
           console.warn("[Avatar Crop] preview data url failed (non-fatal)", e);
         }
-        return { blob, previewUrl: preview };
+        return { blob, previewUrl: preview, transform: { ...transformRef.current } };
       } catch (e) {
         console.error("[Avatar Crop] export failed", e);
         return null;
       }
-    }, [aspectWidth, aspectHeight, exportMaxWidth, loadError]);
+    }, [aspectWidth, aspectHeight, exportMaxWidth, exportQuality, loadError]);
 
     useImperativeHandle(ref, () => ({
       exportCrop,
+      getTransform: () => ({ ...transformRef.current }),
       isReady: () => readyRef.current && !loadError,
     }));
 
@@ -521,8 +677,11 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
         ) : null}
 
         {!ready && !loadError ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2">
             <span className="h-5 w-5 animate-pulse rounded-full bg-muted-foreground/30" />
+            {preparing ? (
+              <span className="text-xs text-muted-foreground/80">準備圖片中…</span>
+            ) : null}
           </div>
         ) : null}
 

@@ -27,6 +27,7 @@ const AutocompleteInput = z.object({
 
 const ResolveInput = z.object({
   placeId: z.string().min(1).max(200),
+  locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
 });
 
 const GeocodeTextInput = z.object({
@@ -398,11 +399,14 @@ export const resolveTripLocation = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ location: TripLocation | null; error: string | null }> => {
     const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
     const apiKey = requireGoogleMapsServerKey();
-    const res = await fetch(placeDetailsUrl(data.placeId), {
+    const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
+    const languageCode = localeToGoogleLanguageCode(userLocale);
+    const res = await fetch(placeDetailsUrl(data.placeId, languageCode), {
       method: "GET",
       headers: {
         "X-Goog-Api-Key": apiKey,
         "X-Goog-FieldMask": TRIP_PLACE_DETAILS_FIELD_MASK,
+        "Accept-Language": languageCode,
       },
     });
 

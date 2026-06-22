@@ -1,6 +1,8 @@
 import type { RoamieRequestContext } from "@/lib/ai/context";
 import { isDiscoveryComplete, type ChatPlanningSession } from "@/lib/chat-session";
 import type { TravelPreferences } from "@/lib/preferences-storage";
+import { tripLocationFromCity } from "@/lib/ai/trip-planning-context";
+import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 
 /** 從對話解析出的結構化旅行意圖 */
 export type TripIntent = {
@@ -117,9 +119,7 @@ function parseTravelers(text: string): number | undefined {
 }
 
 function parseTripDays(text: string): number | undefined {
-  const m = text.match(/(\d+)\s*天/);
-  if (!m) return undefined;
-  return Math.min(30, Math.max(1, parseInt(m[1], 10)));
+  return parseDayCountFromText(text);
 }
 
 function parseMonthHint(text: string): string | undefined {
@@ -433,6 +433,10 @@ export function applyTripIntentToSession(
       ...discovery,
       mustVisit: intent.mustVisitPlaces[0] || session.discovery?.mustVisit,
     },
+    lastUserIntent: text.trim() || session.lastUserIntent,
+    ...(destCity && !session.tripDestination?.city
+      ? { tripDestination: tripLocationFromCity(destCity) }
+      : {}),
   };
 
   if (isDiscoveryComplete(nextSession) && nextSession.phase === "discover") {

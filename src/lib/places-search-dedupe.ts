@@ -18,6 +18,8 @@ const cacheMap = new Map<string, CacheEntry>();
 const inFlightMap = new Map<string, Promise<PlacesSearchResult>>();
 const failedKeyUntil = new Map<string, number>();
 const clientFallbackAttempted = new Set<string>();
+const skipLogAt = new Map<string, number>();
+const SKIP_LOG_THROTTLE_MS = 30_000;
 
 function nearbyGroupsKey(groups?: string[][]): string {
   if (!groups?.length) return "";
@@ -63,21 +65,35 @@ export function markPlacesClientFallbackAttempted(key: string): void {
   clientFallbackAttempted.add(key);
 }
 
+function logPlacesApiSkipOnce(
+  reason: Parameters<typeof logPlacesApiSkipDuplicate>[0],
+  detail: Parameters<typeof logPlacesApiSkipDuplicate>[1],
+  now = Date.now(),
+): void {
+  const logKey = `${reason}:${detail.key ?? ""}`;
+  const last = skipLogAt.get(logKey) ?? 0;
+  if (now - last < SKIP_LOG_THROTTLE_MS) return;
+  skipLogAt.set(logKey, now);
+  logPlacesApiSkipDuplicate(reason, detail);
+}
+
 export function getPlacesSearchCachedOrRun(
   key: string,
   runner: () => Promise<PlacesSearchResult>,
-  logMeta?: Pick<import("@/lib/explore-category-search").SearchPlacesInput, "query" | "categoryId" | "mode">,
 ): Promise<PlacesSearchResult> {
   const now = Date.now();
 
   if (isFailedKey(key, now)) {
     const cached = readCached(key, now);
-    logPlacesApiSkipDuplicate("failed_ttl", { key, cached: Boolean(cached) });
-    return Promise.resolve(cached ?? { places: [], error: "places_search_cached_failure" });
+    if (cached && cached.places.length > 0) {
+      return Promise.resolve(cached);
+    }
+    logPlacesApiSkipOnce("failed_ttl", { key, cached: Boolean(cached) });
+    return Promise.resolve({ places: [], error: "places_search_cached_failure" });
   }
 
   const cached = readCached(key, now);
-  if (cached) {
+  if (cached && cached.places.length > 0) {
     logPlacesCacheHit(key);
     return Promise.resolve(cached);
   }
@@ -93,22 +109,19 @@ export function getPlacesSearchCachedOrRun(
   const promise = runner()
     .then((result) => {
       const normalized = normalizePlacesSearchResult(result);
-      const ttl =
-        normalized.places.length > 0 ? PLACES_SEARCH_CACHE_TTL_MS : PLACES_FAILED_CACHE_TTL_MS;
-      writeCached(key, normalized, ttl);
-      if (normalized.places.length === 0) {
-        markPlacesSearchFailed(key);
+      if (normalized.places.length > 0) {
+        writeCached(key, normalized, PLACES_SEARCH_CACHE_TTL_MS);
+        return normalized;
       }
+      markPlacesSearchFailed(key);
       return normalized;
     })
     .catch((e) => {
       markPlacesSearchFailed(key);
-      const empty: PlacesSearchResult = {
+      return {
         places: [],
         error: e instanceof Error ? e.message : String(e),
       };
-      writeCached(key, empty, PLACES_FAILED_CACHE_TTL_MS);
-      return empty;
     })
     .finally(() => {
       inFlightMap.delete(key);

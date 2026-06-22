@@ -20,6 +20,7 @@ import {
   isPlaceAvailableNow,
   type PlaceHoursData,
 } from "@/lib/filter-available-places";
+import { applyNormalizedOpeningToPlaceResult } from "@/lib/normalized-opening-status";
 import { filterExplorePlaces } from "@/lib/filter-explore-places";
 import {
   isRecommendablePlace,
@@ -33,6 +34,14 @@ import {
   logPlacesCacheMiss,
   runPlacesApiDeduped,
 } from "@/lib/places-api-guard";
+import {
+  pushPlacesCallContext,
+  popPlacesCallContext,
+  recordPlacesHttpCall,
+  getPlacesCallContext,
+  type PlacesScreen,
+} from "@/lib/places-api-stats";
+import { sanitizeNearbyGroups, sanitizeNearbyTypes } from "@/lib/places-nearby-types";
 
 export type { PlaceResult } from "@/lib/place-result";
 
@@ -61,6 +70,19 @@ const ExploreSearchInput = z.object({
   /** 使用者 App 語言（非所在地） */
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   categoryId: z.string().max(32).optional(),
+  placesCaller: z.string().max(80).optional(),
+  placesScreen: z
+    .enum([
+      "home",
+      "explore",
+      "chat",
+      "ai_recommend",
+      "itinerary",
+      "plan",
+      "place_detail",
+      "unknown",
+    ])
+    .optional(),
 });
 
 type RawPlace = RawPlaceHours;
@@ -74,47 +96,60 @@ export function rawPlaceToHoursData(p: RawPlace): PlaceHoursData {
   };
 }
 
-function mapRawPlaces(raw: RawPlace[]): PlaceResult[] {
+function mapRawPlaces(
+  raw: RawPlace[],
+  options?: { screen?: PlacesScreen; locale?: Locale },
+): PlaceResult[] {
+  const isHome = options?.screen === "home";
+  const locale = options?.locale ?? "zh-TW";
   return raw
     .map((p) => {
       const hours = rawPlaceToHoursData(p);
       const name = p.displayName?.text ?? "Unknown";
       const type = p.primaryType ?? p.types?.[0] ?? "";
-      if (!isPlaceAvailableNow(hours, { name, type }, { context: "now" })) return null;
+      if (!isHome && !isPlaceAvailableNow(hours, { name, type }, { context: "now" })) {
+        return null;
+      }
       const availability = derivePlaceAvailability(hours, { context: "now" });
-      const fields = applyAvailabilityFields({}, availability);
-      return {
-        place: {
-          id: p.id,
-          name,
-          address: resolvePlaceDisplayAddress({
+      const basePlace: PlaceResult = {
+        id: p.id,
+        name,
+        address: resolvePlaceDisplayAddress(
+          {
             formattedAddress: p.formattedAddress,
             shortFormattedAddress: p.shortFormattedAddress,
             vicinity: p.vicinity,
-          }),
-          lat: p.location?.latitude ?? null,
-          lng: p.location?.longitude ?? null,
-          rating: p.rating ?? null,
-          userRatingCount: p.userRatingCount ?? null,
-          photoName: p.photos?.[0]?.name ?? null,
-          primaryType: p.primaryType ?? null,
-          types: p.types ?? null,
-          businessStatus: availability.businessStatus,
-          openStatus: availability.openStatus,
-          openStatusLabel: fields.openStatusLabel,
-          todayHoursLabel: fields.todayHoursLabel,
-          closingSoonNote: fields.closingSoonNote,
-          nextOpenHint: fields.nextOpenHint,
-        } satisfies PlaceResult,
-        sortWeight: availability.sortWeight,
+          },
+          { locale },
+        ),
+        lat: p.location?.latitude ?? null,
+        lng: p.location?.longitude ?? null,
+        rating: p.rating ?? null,
+        userRatingCount: p.userRatingCount ?? null,
+        photoName: p.photos?.[0]?.name ?? null,
+        primaryType: p.primaryType ?? null,
+        types: p.types ?? null,
+        businessStatus: availability.businessStatus,
+        openStatus: "unknown",
+        openStatusLabel: "",
+        todayHoursLabel: "",
+        closingSoonNote: "",
+        nextOpenHint: "",
+      };
+      const place = applyNormalizedOpeningToPlaceResult(basePlace, hours);
+      return {
+        place,
+        sortWeight: isHome ? 0 : availability.sortWeight,
       };
     })
     .filter((x): x is NonNullable<typeof x> => x != null)
     .sort((a, b) => a.sortWeight - b.sortWeight)
     .map(({ place }) => place)
-    .filter((place) =>
-      isRecommendablePlace(placeResultToRecommendableInput(place), "explore_map").ok,
-    );
+    .filter((place) => {
+      if (isHome) return true;
+      if (options?.screen === "explore") return true;
+      return isRecommendablePlace(placeResultToRecommendableInput(place), "explore_map").ok;
+    });
 }
 
 function parseGoogleError(text: string): string {
@@ -157,6 +192,11 @@ async function postPlaces(
   body: Record<string, unknown>,
   apiKey: string,
   callType: "nearby" | "text",
+  stats?: {
+    caller: string;
+    screen: PlacesScreen;
+    category?: string;
+  },
 ): Promise<{ places: RawPlace[]; error: string | null }> {
   const circle =
     (body.locationRestriction as { circle?: { center?: { latitude?: number; longitude?: number } } })
@@ -172,6 +212,14 @@ async function postPlaces(
   });
 
   const guarded = await runPlacesApiDeduped(httpKey, callType, async () => {
+    recordPlacesHttpCall(callType, {
+      functionName: "postPlaces",
+      requestKey: httpKey,
+      caller: stats?.caller,
+      screen: stats?.screen,
+      category: stats?.category,
+    });
+
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -207,6 +255,22 @@ function exploreLocale(lat: number, lng: number, userLocale?: Locale) {
   };
 }
 
+type PlacesSearchStats = {
+  caller: string;
+  screen: PlacesScreen;
+  category?: string;
+};
+
+function buildSearchStats(
+  data: z.infer<typeof ExploreSearchInput>,
+): PlacesSearchStats {
+  return {
+    caller: data.placesCaller ?? "executeExploreSearch",
+    screen: data.placesScreen ?? "unknown",
+    category: data.categoryId,
+  };
+}
+
 async function searchText(
   apiKey: string,
   query: string,
@@ -215,6 +279,7 @@ async function searchText(
   radius: number,
   pageSize = 20,
   userLocale?: Locale,
+  stats?: PlacesSearchStats,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
@@ -225,9 +290,15 @@ async function searchText(
   };
   if (regionCode) body.regionCode = regionCode;
 
-  const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey, "text");
+  const { places: raw, error } = await postPlaces(
+    placesSearchTextUrl(),
+    body,
+    apiKey,
+    "text",
+    stats,
+  );
   if (error) return { places: [], error };
-  return { places: mapRawPlaces(raw), error: null };
+  return { places: mapRawPlaces(raw, { screen: stats?.screen, locale: userLocale }), error: null };
 }
 
 async function searchNearby(
@@ -238,6 +309,7 @@ async function searchNearby(
   includedTypes: string[],
   maxResultCount = 12,
   userLocale?: Locale,
+  stats?: PlacesSearchStats,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
@@ -249,9 +321,15 @@ async function searchNearby(
   };
   if (regionCode) body.regionCode = regionCode;
 
-  const { places: raw, error } = await postPlaces(placesSearchNearbyUrl(), body, apiKey, "nearby");
+  const { places: raw, error } = await postPlaces(
+    placesSearchNearbyUrl(),
+    body,
+    apiKey,
+    "nearby",
+    stats,
+  );
   if (error) return { places: [], error };
-  return { places: mapRawPlaces(raw), error: null };
+  return { places: mapRawPlaces(raw, { screen: stats?.screen, locale: userLocale }), error: null };
 }
 
 async function searchMultiNearby(
@@ -261,9 +339,12 @@ async function searchMultiNearby(
   radius: number,
   groups: string[][],
   userLocale?: Locale,
+  stats?: PlacesSearchStats,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const settled = await Promise.all(
-    groups.map((types) => searchNearby(apiKey, lat, lng, radius, types, 6, userLocale)),
+    groups.map((types) =>
+      searchNearby(apiKey, lat, lng, radius, types, 6, userLocale, stats),
+    ),
   );
 
   const errors = settled.map((r) => r.error).filter(Boolean);
@@ -284,12 +365,15 @@ async function searchMultiNearby(
   return { places: merged.slice(0, 24), error: null };
 }
 
+type PlaceHoursLookupResult = { hours: PlaceHoursData; placeId: string | null };
+
 async function lookupPlaceHoursFromRaw(
   name: string,
   lat: number,
   lng: number,
   address?: string | null,
-): Promise<PlaceHoursData | null> {
+  stats?: PlacesSearchStats,
+): Promise<PlaceHoursLookupResult | null> {
   const apiKey = await getServerMapsKey();
   const query = [name, address].filter(Boolean).join(" ").trim() || name;
   const { languageCode, regionCode } = exploreLocale(lat, lng);
@@ -300,33 +384,113 @@ async function lookupPlaceHoursFromRaw(
     pageSize: 3,
   };
   if (regionCode) body.regionCode = regionCode;
-  const { places: raw, error } = await postPlaces(placesSearchTextUrl(), body, apiKey, "text");
+  const { places: raw, error } = await postPlaces(
+    placesSearchTextUrl(),
+    body,
+    apiKey,
+    "text",
+    stats
+      ? {
+          caller: stats.caller,
+          screen: stats.screen,
+          category: stats.category,
+        }
+      : {
+          caller: "lookupPlaceHoursFromRaw",
+          screen: "unknown",
+        },
+  );
   if (error || !raw.length) return null;
   const best =
     raw.find((p) => (p.displayName?.text ?? "") === name) ??
     raw.find((p) => (p.displayName?.text ?? "").includes(name)) ??
     raw[0];
-  return rawPlaceToHoursData(best);
+  return {
+    hours: rawPlaceToHoursData(best),
+    placeId: best.id?.trim() || null,
+  };
+}
+
+function buildHoursLookupRequestKey(input: {
+  name: string;
+  placeId?: string | null;
+  lat: number;
+  lng: number;
+}): string {
+  const placeId = input.placeId?.trim();
+  if (placeId) return `pid:${placeId}`;
+  return `name:${input.name.trim().toLowerCase()}:${input.lat.toFixed(3)}:${input.lng.toFixed(3)}`;
 }
 
 export async function lookupPlacesHoursBatch(
-  items: Array<{ name: string; address?: string | null; lat?: number | null; lng?: number | null }>,
+  items: Array<{
+    name: string;
+    placeId?: string | null;
+    address?: string | null;
+    lat?: number | null;
+    lng?: number | null;
+  }>,
   center: { lat: number; lng: number },
+  stats?: PlacesSearchStats,
 ): Promise<Map<string, PlaceHoursData>> {
+  const {
+    getAiHoursCacheByPlaceId,
+    logAiPlaceBatchLookup,
+    logAiPlaceCacheHit,
+    runAiHoursLookupDeduped,
+    setAiHoursCacheByPlaceId,
+  } = await import("@/lib/recommendation/ai-places-cache");
+
+  const lookupStats: PlacesSearchStats = stats ?? {
+    caller: "lookupPlacesHoursBatch",
+    screen: "unknown",
+  };
+
   const map = new Map<string, PlaceHoursData>();
   const unique = [...new Map(items.map((i) => [i.name, i])).values()];
   const concurrency = 4;
 
+  async function resolveItemHours(item: (typeof unique)[number]): Promise<{
+    name: string;
+    hours: PlaceHoursData | null;
+  }> {
+    const lat = item.lat ?? center.lat;
+    const lng = item.lng ?? center.lng;
+    const placeId = item.placeId?.trim() || null;
+
+    if (placeId) {
+      const cached = getAiHoursCacheByPlaceId(placeId);
+      if (cached) {
+        logAiPlaceCacheHit(`hours:${placeId}`);
+        logAiPlaceBatchLookup({ name: item.name, placeId, cacheHit: true });
+        return { name: item.name, hours: cached };
+      }
+    }
+
+    const requestKey = buildHoursLookupRequestKey({ name: item.name, placeId, lat, lng });
+
+    const hours = await runAiHoursLookupDeduped(requestKey, async () => {
+      logAiPlaceBatchLookup({ name: item.name, placeId, cacheHit: false });
+      const result = await lookupPlaceHoursFromRaw(
+        item.name,
+        lat,
+        lng,
+        item.address,
+        lookupStats,
+      );
+      if (!result) return null;
+      if (result.placeId) {
+        setAiHoursCacheByPlaceId(result.placeId, result.hours);
+      }
+      return result.hours;
+    });
+
+    return { name: item.name, hours };
+  }
+
   for (let i = 0; i < unique.length; i += concurrency) {
     const chunk = unique.slice(i, i + concurrency);
-    const results = await Promise.all(
-      chunk.map(async (item) => {
-        const lat = item.lat ?? center.lat;
-        const lng = item.lng ?? center.lng;
-        const hours = await lookupPlaceHoursFromRaw(item.name, lat, lng, item.address);
-        return { name: item.name, hours };
-      }),
-    );
+    const results = await Promise.all(chunk.map((item) => resolveItemHours(item)));
     for (const { name, hours } of results) {
       if (hours) map.set(name, hours);
     }
@@ -342,28 +506,31 @@ async function runExploreSearch(
   const center = { lat: data.lat, lng: data.lng };
   const radius = data.radius ?? DEFAULT_SEARCH_RADIUS_M;
   const userLocale = data.locale ? coerceLocale(data.locale) : undefined;
+  const stats = buildSearchStats(data);
 
   let result: { places: PlaceResult[]; error: string | null };
 
   if (data.mode === "multi" && data.nearbyGroups?.length) {
-    result = await searchMultiNearby(
-      apiKey,
-      data.lat,
-      data.lng,
-      radius,
-      data.nearbyGroups,
-      userLocale,
-    );
+    const groups = sanitizeNearbyGroups(data.nearbyGroups);
+    result =
+      groups.length > 0
+        ? await searchMultiNearby(apiKey, data.lat, data.lng, radius, groups, userLocale, stats)
+        : { places: [], error: null };
   } else if (data.mode === "nearby" && data.includedTypes?.length) {
-    result = await searchNearby(
-      apiKey,
-      data.lat,
-      data.lng,
-      radius,
-      data.includedTypes,
-      20,
-      userLocale,
-    );
+    const includedTypes = sanitizeNearbyTypes(data.includedTypes);
+    result =
+      includedTypes.length > 0
+        ? await searchNearby(
+            apiKey,
+            data.lat,
+            data.lng,
+            radius,
+            includedTypes,
+            20,
+            userLocale,
+            stats,
+          )
+        : { places: [], error: null };
   } else if (data.query.trim()) {
     result = await searchText(
       apiKey,
@@ -373,6 +540,7 @@ async function runExploreSearch(
       radius,
       20,
       userLocale,
+      stats,
     );
   } else {
     result = { places: [], error: null };
@@ -380,12 +548,23 @@ async function runExploreSearch(
 
   if (result.error) return result;
 
-  const nearby = filterExplorePlaces(
-    filterWithinDistance(result.places, center, MAX_PLACE_DISTANCE_M),
-  );
+  const distanceFiltered = filterWithinDistance(result.places, center, MAX_PLACE_DISTANCE_M);
+
+  if (data.placesScreen === "home") {
+    return {
+      places: distanceFiltered,
+      error: distanceFiltered.length === 0 ? result.error : null,
+    };
+  }
+
+  const nearby = filterExplorePlaces(distanceFiltered, { exploreMapTier: "strict" });
 
   if (nearby.length > 0) {
     return { places: nearby, error: null };
+  }
+
+  if (data.placesScreen === "explore") {
+    return { places: distanceFiltered, error: null };
   }
 
   return {
@@ -398,6 +577,8 @@ export async function executeExploreSearch(
   data: z.infer<typeof ExploreSearchInput>,
   options?: { apiKey?: string },
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
+  const stats = buildSearchStats(data);
+  pushPlacesCallContext(stats);
   try {
     const apiKey = options?.apiKey?.trim() || (await getServerMapsKey());
     return await runExploreSearch(data, apiKey);
@@ -405,6 +586,8 @@ export async function executeExploreSearch(
     const msg = e instanceof Error ? e.message : "request failed";
     console.error("[Roamie Places] search threw", msg);
     return { places: [], error: msg };
+  } finally {
+    popPlacesCallContext();
   }
 }
 
@@ -430,7 +613,14 @@ export async function fetchPlaceDetailsForIntro(
   try {
     const apiKey = await getServerMapsKey();
     const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
-    const res = await fetch(placeDetailsUrl(placeId), {
+    const httpKey = buildPlacesHttpKey("details", { placeId, locale: locale ?? "zh-TW" });
+    recordPlacesHttpCall("details", {
+      functionName: "fetchPlaceDetailsForIntro",
+      requestKey: httpKey,
+      caller: getPlacesCallContext().caller,
+      screen: getPlacesCallContext().screen,
+    });
+    const res = await fetch(placeDetailsUrl(placeId, languageCode), {
       headers: {
         "X-Goog-Api-Key": apiKey,
         "X-Goog-FieldMask": PLACE_DETAILS_FIELD_MASK,
@@ -445,11 +635,14 @@ export async function fetchPlaceDetailsForIntro(
     const place: PlaceResult = {
       id: p.id,
       name: p.displayName?.text ?? "Unknown",
-      address: resolvePlaceDisplayAddress({
-        formattedAddress: p.formattedAddress,
-        shortFormattedAddress: p.shortFormattedAddress,
-        vicinity: p.vicinity,
-      }),
+      address: resolvePlaceDisplayAddress(
+        {
+          formattedAddress: p.formattedAddress,
+          shortFormattedAddress: p.shortFormattedAddress,
+          vicinity: p.vicinity,
+        },
+        { locale },
+      ),
       lat: p.location?.latitude ?? null,
       lng: p.location?.longitude ?? null,
       rating: p.rating ?? null,
@@ -482,6 +675,7 @@ export type PlaceDetailsScreenResult = PlaceResult & {
   website: string | null;
   phone: string | null;
   coverImageUrl?: string | null;
+  photoNames?: string[];
   googleFormattedAddress?: string | null;
   googleShortFormattedAddress?: string | null;
   googleVicinity?: string | null;
@@ -498,15 +692,13 @@ function mapPlaceDetailsScreenRaw(
   locale?: Locale,
 ): PlaceDetailsScreenResult {
   const hours = rawPlaceToHoursData(p);
-  const availability = derivePlaceAvailability(hours, { context: "now" });
-  const fields = applyAvailabilityFields({}, availability);
   const hasCoords = p.location?.latitude != null && p.location?.longitude != null;
   const googleFields = {
     formattedAddress: p.formattedAddress,
     shortFormattedAddress: p.shortFormattedAddress,
     vicinity: p.vicinity,
   };
-  return {
+  const basePlace: PlaceResult = {
     id: p.id,
     name: p.displayName?.text ?? "Unknown",
     address: resolvePlaceDisplayAddress(googleFields, {
@@ -514,9 +706,6 @@ function mapPlaceDetailsScreenRaw(
       locale,
       googleFieldsOnly: true,
     }),
-    googleFormattedAddress: p.formattedAddress ?? null,
-    googleShortFormattedAddress: p.shortFormattedAddress ?? null,
-    googleVicinity: p.vicinity ?? null,
     lat: p.location?.latitude ?? null,
     lng: p.location?.longitude ?? null,
     rating: p.rating ?? null,
@@ -524,12 +713,23 @@ function mapPlaceDetailsScreenRaw(
     photoName: p.photos?.[0]?.name ?? null,
     primaryType: p.primaryType ?? null,
     types: p.types ?? null,
-    businessStatus: availability.businessStatus,
-    openStatus: availability.openStatus,
-    openStatusLabel: fields.openStatusLabel,
-    todayHoursLabel: fields.todayHoursLabel,
-    closingSoonNote: fields.closingSoonNote,
-    nextOpenHint: fields.nextOpenHint,
+    businessStatus: p.businessStatus ?? null,
+    openStatus: "unknown",
+    openStatusLabel: "",
+    todayHoursLabel: "",
+    closingSoonNote: "",
+    nextOpenHint: "",
+  };
+  const place = applyNormalizedOpeningToPlaceResult(basePlace, hours);
+  return {
+    ...place,
+    googleFormattedAddress: p.formattedAddress ?? null,
+    googleShortFormattedAddress: p.shortFormattedAddress ?? null,
+    googleVicinity: p.vicinity ?? null,
+    photoNames: (p.photos ?? [])
+      .map((ph) => ph.name?.trim())
+      .filter((name): name is string => Boolean(name))
+      .slice(0, 10),
     website: p.websiteUri?.trim() || null,
     phone: p.nationalPhoneNumber?.trim() || p.internationalPhoneNumber?.trim() || null,
   };
@@ -558,9 +758,16 @@ export async function fetchPlaceDetailsForScreenWithKey(
 
   const httpKey = buildPlacesHttpKey("details", { placeId, locale: locale ?? "zh-TW" });
   const guarded = await runPlacesApiDeduped(httpKey, "details", async () => {
+    recordPlacesHttpCall("details", {
+      functionName: "fetchPlaceDetailsForScreenWithKey",
+      requestKey: httpKey,
+      caller: getPlacesCallContext().caller,
+      screen: getPlacesCallContext().screen,
+    });
+
     try {
       const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
-      const res = await fetch(placeDetailsUrl(placeId), {
+      const res = await fetch(placeDetailsUrl(placeId, languageCode), {
         headers: {
           "X-Goog-Api-Key": apiKey,
           "X-Goog-FieldMask": PLACE_DETAILS_SCREEN_FIELD_MASK,

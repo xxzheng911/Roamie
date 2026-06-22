@@ -14,6 +14,9 @@ export type TransitMode =
 
 export type TransitComplexity = "low" | "medium" | "high";
 
+/** 未來可擴充 ekispert | navitime | jorudan */
+export type TransitUnavailableProvider = "google_maps_deeplink" | null;
+
 export type TransitLegAdvice = {
   /** `${fromPlace}→${toPlace}` */
   legKey: string;
@@ -34,6 +37,19 @@ export type TransitLegAdvice = {
     durationMinutes: number;
   }>;
   source: "rules" | "ai";
+  /** 使用者選擇的交通模式（Routes API） */
+  transportMode?: import("@/lib/routes/types").RoutesTravelMode;
+  transportStatus?: "ok" | "transit_unavailable" | "failed" | "pending";
+  transportFallbackMode?: "walk" | "drive" | null;
+  transportDurationMinutes?: number;
+  transportDisplayText?: string;
+  /** 對應 buildLegRouteFingerprint，用於 leg_already_covered 判斷 */
+  routeCacheFingerprint?: string;
+  /**
+   * transit 無 API 結果時的替代方案。
+   * google_maps_deeplink：日本行程，改開 Google Maps 查路線。
+   */
+  transitUnavailableProvider?: TransitUnavailableProvider;
 };
 
 export type TransitPreferences = {

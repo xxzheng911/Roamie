@@ -16,13 +16,17 @@ export const Route = createFileRoute("/_app")({
   component: AppLayout,
 });
 
+function normalizeAppPath(pathname: string): string {
+  return pathname.replace(/\/+$/, "") || "/";
+}
+
 function isMainScrollLockedPath(pathname: string): boolean {
-  return (
-    pathname === "/chat" ||
-    pathname === "/map" ||
-    pathname === "/plan" ||
-    /^\/saved\/[^/]+$/.test(pathname)
-  );
+  const path = normalizeAppPath(pathname);
+  return path === "/chat" || path === "/map" || path === "/plan";
+}
+
+function isTripDetailPath(pathname: string): boolean {
+  return /^\/saved\/[^/]+$/.test(normalizeAppPath(pathname));
 }
 
 function stopLocationWatch(reason: string): void {
@@ -94,6 +98,7 @@ function AppLayout() {
   useLayoutEffect(() => {
     document.documentElement.classList.toggle("map-route-active", pathname === "/map");
     document.documentElement.classList.toggle("chat-route-active", pathname === "/chat");
+    document.documentElement.classList.toggle("trip-detail-route-active", isTripDetailPath(pathname));
 
     const main = document.querySelector("main.app-scroll");
     if (!(main instanceof HTMLElement)) return;
@@ -102,6 +107,14 @@ function AppLayout() {
       main.style.removeProperty("overflow");
       main.style.removeProperty("overflow-y");
       main.style.removeProperty("overflow-x");
+      main.style.removeProperty("height");
+      main.style.removeProperty("min-height");
+    } else {
+      main.style.overflow = "hidden";
+      main.style.overflowY = "hidden";
+      main.style.overflowX = "hidden";
+      main.style.minHeight = "0";
+      main.style.removeProperty("height");
     }
   }, [pathname, mainScrollLocked]);
 
@@ -114,11 +127,16 @@ function AppLayout() {
             pathname === "/chat"
               ? "pb-0"
               : "pb-[var(--app-nav-total-height)]",
-            mainScrollLocked ? "overflow-hidden" : "overflow-x-hidden overflow-y-auto",
+            mainScrollLocked ? "min-h-0 flex-1 overflow-hidden" : "overflow-x-hidden overflow-y-auto",
           )}
         >
           <AppErrorBoundary>
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div
+              className={cn(
+                "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+                mainScrollLocked && "min-h-0",
+              )}
+            >
               <Outlet />
             </div>
           </AppErrorBoundary>

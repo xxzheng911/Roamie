@@ -217,6 +217,8 @@ function weatherSupplement(weather?: WeatherSummary | null, identity?: PlaceIden
 }
 
 function hoursSupplement(place: PlaceResult): string | null {
+  const statusLabel = (place.openStatusLabel ?? place.normalizedOpeningLabel ?? "").trim();
+  if (/待確認|休息中|未營業/.test(statusLabel)) return null;
   if (place.openStatus === "closed") return "目前未營業，出發前建議先確認時間";
   if (place.closingSoonNote) return place.closingSoonNote;
   if (place.openStatus === "open" && place.todayHoursLabel && !place.todayHoursLabel.includes("待確認")) {
@@ -320,6 +322,8 @@ function weatherSupplementIntl(
 }
 
 function hoursSupplementIntl(locale: Locale, place: PlaceResult): string | null {
+  const statusLabel = (place.openStatusLabel ?? place.normalizedOpeningLabel ?? "").trim();
+  if (/待確認|休息中|未營業|unconfirmed|closed/i.test(statusLabel)) return null;
   const copy = getPlaceReasonCopy(locale);
   if (place.openStatus === "closed") return copy.closedNow;
   if (place.closingSoonNote) return copy.closingSoon(place.closingSoonNote);
@@ -550,19 +554,25 @@ export function userProfileForReasonFrom(
     personalitySummary?: string;
     mood?: string;
     aiPreferences?: Record<string, unknown>;
+    hasPlusAccess?: boolean;
   },
 ): UserProfileForReason {
   const safe = prefs ?? {};
+  const plusPersonalized = extras?.hasPlusAccess === true && Boolean(safe.onboarded);
   return {
-    onboarded: safe.onboarded ?? false,
-    pace: safe.pace,
-    vibe: safe.vibe,
-    budgetMode: resolveBudgetMode(safe),
-    interests: safe.interests,
-    travelStyle: extras?.travelStyle,
-    personalityType: extras?.personalityType ?? safe.personalityType,
-    personalitySummary: extras?.personalitySummary ?? safe.personalitySummary,
+    onboarded: plusPersonalized,
+    pace: plusPersonalized ? safe.pace : undefined,
+    vibe: plusPersonalized ? safe.vibe : undefined,
+    budgetMode: plusPersonalized ? resolveBudgetMode(safe) : undefined,
+    interests: plusPersonalized ? safe.interests : undefined,
+    travelStyle: plusPersonalized ? extras?.travelStyle : undefined,
+    personalityType: plusPersonalized
+      ? (extras?.personalityType ?? safe.personalityType)
+      : undefined,
+    personalitySummary: plusPersonalized
+      ? (extras?.personalitySummary ?? safe.personalitySummary)
+      : undefined,
     mood: extras?.mood,
-    aiPreferences: extras?.aiPreferences,
+    aiPreferences: plusPersonalized ? extras?.aiPreferences : undefined,
   };
 }
