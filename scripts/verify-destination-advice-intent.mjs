@@ -7,6 +7,8 @@ import {
   parseDestinationFromText,
 } from "../src/lib/ai/trip-planning-context.ts";
 import { inferPendingQuestionFromAdviceReply } from "../src/lib/ai/destination-pending-question.ts";
+import { parseMustVisitPlacesIntent } from "../src/lib/ai/must-visit-places.ts";
+import { parseTripPreferences } from "../src/lib/ai/trip-preference.ts";
 import { createEmptySession } from "../src/lib/chat-session.ts";
 
 let failed = 0;
@@ -198,8 +200,278 @@ assert(routeThaiGo.mode === "advice", "want-go Thailand route is advice");
 assert(routeThaiGo.question?.includes("曼谷"), "Thailand selection mentions Bangkok");
 assert(routeThaiGo.question?.includes("清邁"), "Thailand selection mentions Chiang Mai");
 assert(
+  routeThaiGo.question?.includes("城市、美食按摩，還是海島放鬆"),
+  "Thailand selection asks trip style",
+);
+assert(
+  routeThaiGo.pendingQuestion?.type === "trip_style_choice",
+  "Thailand selection stores pending trip style options",
+);
+assert(
+  JSON.stringify(routeThaiGo.pendingQuestion?.options) ===
+    JSON.stringify(["城市", "美食按摩", "海島放鬆"]),
+  "Thailand pending options are city/food/island",
+);
+assert(
   !routeThaiGo.question?.includes("我先用目前掌握的需求"),
   "Thailand selection is not generic fallback",
+);
+
+const afterThaiStylePrompt = {
+  ...mergedThaiGo.session,
+  activeChatIntent: "destination_advice",
+  travelContext: mergedThaiGo.context,
+  pendingQuestion:
+    routeThaiGo.pendingQuestion ??
+    inferPendingQuestionFromAdviceReply(
+      routeThaiGo.question ?? "",
+      mergedThaiGo.context,
+      mergedThaiGo.session,
+    ),
+};
+
+const cityTurn = mergeTravelContext(afterThaiStylePrompt, "城市");
+assert(cityTurn.context.destination === "曼谷", "city selection updates destination to Bangkok");
+assert(cityTurn.context.destinationCountry === "泰國", "city selection keeps Thailand country");
+assert(
+  JSON.stringify(cityTurn.context.destinationCities) === JSON.stringify(["曼谷"]),
+  "city selection sets Bangkok as suggested city",
+);
+assert(cityTurn.context.selectedTripStyle === "城市", "city selection sets trip style");
+assert(cityTurn.context.tripPurpose === "trip_style_selected", "city selection sets trip purpose");
+assert(cityTurn.session.adviceSelectionThisTurn === "城市", "city marks selection this turn");
+assert(!cityTurn.session.pendingQuestion, "pending question cleared after city selection");
+
+const routeCity = resolveChatRoute(
+  "城市",
+  cityTurn.context,
+  cityTurn.session,
+  "zh-TW",
+  "destination_advice",
+);
+assert(routeCity.mode === "advice", "city follow-up stays advice");
+assert(routeCity.question?.includes("曼谷"), "city follow-up recommends Bangkok");
+assert(routeCity.question?.includes("幾天"), "city follow-up asks about duration");
+assert(
+  !routeCity.question?.includes("好，泰國很適合想放鬆又有城市探索的人"),
+  "city follow-up does not repeat Thailand country intro",
+);
+assert(
+  !routeCity.question?.includes("城市、美食按摩，還是海島放鬆"),
+  "city follow-up does not repeat style question",
+);
+
+const islandTurn = mergeTravelContext(afterThaiStylePrompt, "海島");
+assert(islandTurn.context.destination === "普吉島", "island selection updates destination");
+assert(islandTurn.context.selectedTripStyle === "海島放鬆", "island normalizes to 海島放鬆");
+const routeIsland = resolveChatRoute(
+  "海島",
+  islandTurn.context,
+  islandTurn.session,
+  "zh-TW",
+  "destination_advice",
+);
+assert(routeIsland.mode === "advice", "island follow-up stays advice");
+assert(routeIsland.question?.includes("普吉"), "island follow-up mentions Phuket");
+assert(
+  !routeIsland.question?.includes("好，泰國很適合想放鬆又有城市探索的人"),
+  "island follow-up does not repeat Thailand intro",
+);
+
+const foodTurn = mergeTravelContext(afterThaiStylePrompt, "美食按摩");
+assert(foodTurn.context.destination === "曼谷", "food/massage selection keeps Bangkok");
+const routeFood = resolveChatRoute(
+  "美食按摩",
+  foodTurn.context,
+  foodTurn.session,
+  "zh-TW",
+  "destination_advice",
+);
+assert(routeFood.mode === "advice", "food/massage follow-up stays advice");
+assert(routeFood.question?.includes("美食"), "food/massage follow-up mentions food");
+assert(
+  !routeFood.question?.includes("好，泰國很適合想放鬆又有城市探索的人"),
+  "food/massage follow-up does not repeat Thailand intro",
+);
+
+const bangkokSession = {
+  ...createEmptySession(),
+  activeChatIntent: "destination_advice",
+  travelContext: {
+    interests: [],
+    destination: "曼谷",
+    destinationCountry: "泰國",
+    days: 5,
+    tripPurpose: "duration_selected",
+  },
+};
+
+assert(parseMustVisitPlacesIntent("必去點有哪些"), "parses must visit places intent");
+assert(parseMustVisitPlacesIntent("推薦景點"), "parses recommend attractions intent");
+assert(parseMustVisitPlacesIntent("先列必去點"), "parses list must visit intent");
+assert(!parseMustVisitPlacesIntent("5天"), "day count is not must visit intent");
+
+const afterBangkokDays = {
+  ...bangkokSession,
+  pendingQuestion: {
+    type: "activity_choice",
+    options: ["must_visit_places", "daily_rhythm"],
+    baseDestination: "曼谷",
+    destinationCountry: "泰國",
+  },
+};
+
+const mustVisitTurn = mergeTravelContext(afterBangkokDays, "必去點有哪些");
+assert(mustVisitTurn.context.tripPurpose === "must_visit_places", "must visit sets trip purpose");
+assert(mustVisitTurn.session.adviceSelectionThisTurn === "must_visit_places", "must visit marks selection");
+assert(!mustVisitTurn.session.pendingQuestion, "must visit clears pending question");
+
+const routeMustVisit = resolveChatRoute(
+  "必去點有哪些",
+  mustVisitTurn.context,
+  mustVisitTurn.session,
+  "zh-TW",
+  "destination_advice",
+);
+assert(routeMustVisit.mode === "advice", "must visit follow-up stays advice");
+assert(routeMustVisit.question?.includes("大皇宮"), "must visit lists Grand Palace");
+assert(routeMustVisit.question?.includes("鄭王廟"), "must visit lists Wat Arun");
+assert(routeMustVisit.question?.includes("5 天"), "must visit reply considers 5 days");
+assert(
+  !routeMustVisit.question?.includes("我先用目前掌握的需求"),
+  "must visit does not use generic fallback",
+);
+assert(
+  !routeMustVisit.question?.includes("先定總天數節奏，還是先列出必去點"),
+  "must visit does not repeat planning question",
+);
+
+const mustVisitWithoutPending = resolveChatRoute(
+  "必去點有哪些",
+  bangkokSession.travelContext,
+  bangkokSession,
+  "zh-TW",
+  "destination_advice",
+);
+assert(mustVisitWithoutPending.mode === "advice", "must visit without pending still advice");
+assert(mustVisitWithoutPending.question?.includes("曼谷"), "must visit without pending uses Bangkok");
+
+const daysPromptSession = {
+  ...createEmptySession(),
+  activeChatIntent: "destination_advice",
+  travelContext: {
+    interests: [],
+    destination: "曼谷",
+    destinationCountry: "泰國",
+    tripPurpose: "trip_style_selected",
+  },
+  pendingQuestion: {
+    type: "duration_choice",
+    options: ["4 天", "5 天", "6 天"],
+    baseDestination: "曼谷",
+    destinationCountry: "泰國",
+  },
+};
+
+const fiveDayTurn = mergeTravelContext(daysPromptSession, "5天");
+assert(fiveDayTurn.context.days === 5, "parses 5 days from reply");
+const routeFiveDays = resolveChatRoute(
+  "5天",
+  fiveDayTurn.context,
+  fiveDayTurn.session,
+  "zh-TW",
+  "destination_advice",
+);
+assert(routeFiveDays.mode === "advice", "5-day follow-up stays advice");
+assert(
+  routeFiveDays.question?.includes("先定總天數節奏，還是先列出必去點"),
+  "5-day follow-up asks rhythm or must visit",
+);
+assert(
+  routeFiveDays.pendingQuestion?.type === "activity_choice",
+  "5-day follow-up stores planning pending question",
+);
+
+const bangkokMustVisitSession = {
+  ...createEmptySession(),
+  activeChatIntent: "destination_advice",
+  travelContext: {
+    interests: [],
+    destination: "曼谷",
+    destinationCountry: "泰國",
+    days: 5,
+    mustVisitGenerated: true,
+    tripPurpose: "must_visit_places",
+  },
+  pendingQuestion: {
+    type: "preference_choice",
+    options: ["attractions", "shopping", "food", "night_market"],
+    baseDestination: "曼谷",
+    destinationCountry: "泰國",
+  },
+};
+
+assert(
+  JSON.stringify(parseTripPreferences("景點跟購物")) === JSON.stringify(["attractions", "shopping"]),
+  "parses attractions + shopping preferences",
+);
+assert(
+  JSON.stringify(parseTripPreferences("景點+購物")) === JSON.stringify(["attractions", "shopping"]),
+  "parses attractions + shopping with plus sign",
+);
+assert(
+  JSON.stringify(parseTripPreferences("文化景點跟購物")) === JSON.stringify(["attractions", "shopping"]),
+  "parses culture attractions + shopping",
+);
+assert(
+  JSON.stringify(parseTripPreferences("景點+購物+美食")) ===
+    JSON.stringify(["attractions", "shopping", "food"]),
+  "parses triple preference selection",
+);
+
+const preferenceTurn = mergeTravelContext(bangkokMustVisitSession, "景點跟購物");
+assert(
+  JSON.stringify(preferenceTurn.context.selectedInterests) ===
+    JSON.stringify(["attractions", "shopping"]),
+  "preference turn stores selected interests",
+);
+assert(
+  preferenceTurn.context.conversationState === "ready_for_itinerary",
+  "preference turn switches to ready_for_itinerary",
+);
+assert(
+  preferenceTurn.context.tripPurpose === "ready_for_itinerary",
+  "preference turn sets ready_for_itinerary purpose",
+);
+assert(!preferenceTurn.session.pendingQuestion, "preference turn clears pending question");
+
+const routePreference = resolveChatRoute(
+  "景點跟購物",
+  preferenceTurn.context,
+  preferenceTurn.session,
+  "zh-TW",
+  "destination_advice",
+);
+assert(routePreference.mode === "advice", "preference follow-up stays advice");
+assert(routePreference.question?.includes("曼谷 5 天"), "preference reply uses Bangkok 5 days");
+assert(routePreference.question?.includes("Day1"), "preference reply includes day plan");
+assert(routePreference.question?.includes("大皇宮"), "preference reply includes Grand Palace");
+assert(routePreference.question?.includes("ICONSIAM"), "preference reply includes shopping");
+assert(
+  !routePreference.question?.includes("我先用目前掌握的需求"),
+  "preference reply does not fallback",
+);
+assert(
+  !routePreference.question?.includes("我會先抓這些必去點"),
+  "preference reply does not repeat must visit list",
+);
+assert(
+  !routePreference.question?.includes("城市、美食按摩，還是海島放鬆"),
+  "preference reply does not repeat Thailand style question",
+);
+assert(
+  routePreference.contextPatch?.conversationState === "ready_for_itinerary",
+  "preference route marks ready_for_itinerary",
 );
 
 const japanSeasonQ = "日本幾月去比較好";

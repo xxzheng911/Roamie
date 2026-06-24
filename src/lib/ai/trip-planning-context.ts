@@ -8,6 +8,7 @@ import {
   isTripAddPlaceSession,
   reinforceTripAddPlaceSession,
 } from "@/lib/trip/trip-add-place-session";
+import { buildDestinationStyleChoiceQuestion } from "@/lib/ai/destination-style-guide";
 
 /** A 附近探索 | B 目的地規劃 | C 特定地點 | D 心情推薦 */
 export type ChatConversationMode =
@@ -73,7 +74,7 @@ export function isKnownDestinationLabel(name: string): boolean {
 }
 
 export const KNOWN_COUNTRIES =
-  /^(泰國|泰国|日本|韓國|韩国|中國|中国|台灣|台湾|馬來西亞|马来西亚|越南|印尼|印度尼西亞|菲律宾|菲律賓|新加坡|柬埔寨|寮國|老挝|緬甸|缅甸|美國|美国|加拿大|英國|英国|法國|法国|德國|德国|義大利|意大利|澳洲|澳大利亚|紐西蘭|新西兰)(國|国)?$/i;
+  /^(泰國|泰国|日本|韓國|韩国|中國|中国|台灣|台湾|馬來西亞|马来西亚|越南|印尼|印度尼西亞|菲律宾|菲律賓|新加坡|柬埔寨|寮國|老挝|緬甸|缅甸|蒙古|美國|美国|加拿大|英國|英国|法國|法国|德國|德国|義大利|意大利|澳洲|澳大利亚|紐西蘭|新西兰)(國|国)?$/i;
 
 export function isKnownCountryLabel(name: string): boolean {
   const n = normalizeCityLabel(name);
@@ -117,6 +118,7 @@ const KNOWN_COUNTRY_NAMES = [
   "台湾",
   "台灣",
   "日本",
+  "蒙古",
 ] as const;
 
 function matchLeadingKnownDestination(text: string): string | undefined {
@@ -624,16 +626,7 @@ export function buildDestinationPlanningClarify(
     case "destination":
       return "你想去哪個城市或地區呢？跟我說目的地，我幫你往下規劃。";
     case "vibe":
-      return [
-        `好，我先幫你抓${dest}${daysLabel}${month ? `（${month}）` : ""}的方向。`,
-        "你想要偏向：",
-        "1. 經典景點",
-        "2. 美食咖啡",
-        "3. 動漫購物",
-        "4. 慢步調散策",
-        "",
-        "也可以直接跟我說偏好，或回「都可以」讓我依熱門路線推薦。",
-      ].join("\n");
+      return buildDestinationStyleChoiceQuestion(dest, { days, month });
     case "date":
       if (days && !ctx.startDate && !month) {
         return `好的，${dest}${daysLabel}。大概什麼時候出發呢？有月份或日期都可以跟我說。`;

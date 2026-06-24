@@ -4,6 +4,7 @@ import { isNearbyPlaceIntent } from "@/lib/ai/chat-intent";
 import { isFoodPreferenceReply } from "@/lib/ai/chat-dining-flow";
 import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
 import { isFlexiblePreferenceReply } from "@/lib/ai/destination-advice";
+import { isPlanningTurnActive } from "@/lib/ai/chat-turn-engine";
 import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
 import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import type { TripIntent } from "@/lib/recommendation/trip-intent";
@@ -68,6 +69,10 @@ export function resolveConversationStage(
 ): ConversationStage {
   const t = userText.trim();
 
+  if (isPlanningTurnActive(session, session.travelContext)) {
+    return session.pendingQuestion ? "clarify" : "infer";
+  }
+
   if (isBudgetRefinementText(t)) return "recommend";
 
   if (
@@ -116,6 +121,9 @@ export function resolveConversationStage(
     /(餐廳|吃飯|聚餐|咖啡廳|咖啡|景點)/.test(t) ||
     (tripIntent?.readyForRecommendations && session.selectedPlaces.length === 0 && t.length > 0)
   ) {
+    if (isDestinationAdviceActive(session) || session.pendingQuestion) {
+      return "clarify";
+    }
     return "recommend";
   }
 

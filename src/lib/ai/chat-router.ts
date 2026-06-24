@@ -6,14 +6,26 @@ import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import {
   detectChatIntent,
   isNearbyPlaceIntent,
+  sessionHasLocation,
   type ChatIntent,
 } from "@/lib/ai/chat-intent";
+import {
+  buildCampingIntroReply,
+  isCampingRequestText,
+} from "@/lib/ai/activity-camping";
 import {
   buildDestinationPlanningClarify,
   isDestinationAdviceActive,
 } from "@/lib/ai/trip-planning-context";
 import { parseDestinationAdvicePurpose, resolveDestinationAdvice } from "@/lib/ai/destination-advice";
+import { processAdviceTurn, isPlanningTurnActive } from "@/lib/ai/chat-state-machine";
 import type { PendingQuestion } from "@/lib/ai/destination-pending-question";
+import {
+  isFlexiblePreferenceReply,
+  pendingQuestionForDestinationStyleChoice,
+  parseItineraryNextStepSelection,
+} from "@/lib/ai/destination-pending-question";
+import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
 import {
   isTripAddPlaceSession,
   parseTripAddPlaceFollowUpIntent,
@@ -33,6 +45,7 @@ export type AiChatRoute = {
   missingKey?: TripIntentMissingKey;
   question?: string;
   pendingQuestion?: PendingQuestion;
+  contextPatch?: Partial<CanonicalTravelContext>;
 };
 
 const CLARIFY_ZH: Record<TripIntentMissingKey, (ctx: CanonicalTravelContext) => string> = {
@@ -76,6 +89,7 @@ function buildClarifyQuestion(
   if (key === "destination" && isNearbyPlaceIntent(intent)) {
     if (intent === "restaurant") return "你在哪個城市呢？我幫你找附近適合聚餐的餐廳。";
     if (intent === "cafe") return "你在哪個城市呢？我幫你找附近的咖啡廳。";
+    if (intent === "camping") return buildCampingIntroReply(ctx, session);
     return "你在哪個城市呢？我幫你找附近的景點。";
   }
 
@@ -119,25 +133,55 @@ export function resolveChatRoute(
   }
 
   const advicePurpose = parseDestinationAdvicePurpose(userText);
+  const planningDestination =
+    ctx.destination ??
+    session.tripPlanningContext?.destination ??
+    session.tripDestination?.city;
+  const isDestinationPlanning =
+    session.conversationMode === "destination_planning" ||
+    session.tripPlanningContext?.intent === "destination_planning" ||
+    intent === "trip_planning";
+  const planningActive = isPlanningTurnActive(session, ctx);
   const shouldTryAdvice =
+    planningActive ||
     intent === "destination_advice" ||
-    isDestinationAdviceActive(session, ctx) ||
+    (isFlexiblePreferenceReply(userText) &&
+      isDestinationPlanning &&
+      Boolean(planningDestination?.trim())) ||
+    (Boolean(parseItineraryPlanModeIntent(userText) || parseItineraryNextStepSelection(userText)) &&
+      Boolean(ctx.destination?.trim() || planningDestination?.trim()) &&
+      Boolean(ctx.days)) ||
     advicePurpose === "destination_selection" ||
     advicePurpose === "best_time_to_visit" ||
     advicePurpose === "region_selected" ||
     advicePurpose === "seasonal_destination";
 
   if (shouldTryAdvice) {
-    const advice = resolveDestinationAdvice(ctx, session, userText);
-    if (advice.reply) {
+    const turn = processAdviceTurn(userText, session, ctx);
+    if (turn.advice.reply) {
       console.info("[AI_ROUTE] destination_advice_mode", logTravelContext(ctx));
-      return {
-        mode: "advice",
-        chatPhase: "discover",
-        question: advice.reply,
-        pendingQuestion: advice.pendingQuestion,
-      };
+      return turn.route!;
     }
+  }
+
+  const campingActive =
+    intent === "camping" ||
+    session.activeChatIntent === "camping" ||
+    ctx.activity === "camping" ||
+    isCampingRequestText(userText);
+
+  if (campingActive && !sessionHasLocation(session) && !ctx.destination?.trim()) {
+    console.info("[AI_ROUTE] camping_intro_mode", logTravelContext(ctx));
+    return {
+      mode: "advice",
+      chatPhase: "discover",
+      question: buildCampingIntroReply(ctx, session),
+      contextPatch: {
+        activity: "camping",
+        tripPurpose: "recommend_places",
+        interests: [...new Set([...ctx.interests, "露營"])],
+      },
+    };
   }
 
   if (isReadyForRecommendation(ctx, session, intent)) {
@@ -148,8 +192,26 @@ export function resolveChatRoute(
   const nextKey = nextUnaskedKey(ctx, session, intent);
   if (nextKey) {
     const question = buildClarifyQuestion(nextKey, ctx, locale, intent, session);
+    const dest =
+      ctx.destination ??
+      session.tripPlanningContext?.destination ??
+      session.tripDestination?.city ??
+      "這趟";
+    const pendingQuestion: PendingQuestion | undefined =
+      nextKey === "vibe" && isDestinationPlanning
+        ? pendingQuestionForDestinationStyleChoice(
+            dest,
+            ctx.destinationCountry ?? session.travelContext?.destinationCountry,
+          )
+        : undefined;
     console.info("[AI_ROUTE] next_question", nextKey, logTravelContext(ctx), `intent=${intent}`);
-    return { mode: "clarify", chatPhase: "discover", missingKey: nextKey, question };
+    return {
+      mode: "clarify",
+      chatPhase: "discover",
+      missingKey: nextKey,
+      question,
+      pendingQuestion,
+    };
   }
 
   console.info("[AI_ROUTE] recommendation_mode", "fallback-ready", logTravelContext(ctx));

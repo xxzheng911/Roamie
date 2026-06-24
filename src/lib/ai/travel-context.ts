@@ -25,6 +25,7 @@ import {
   parseBudgetPreferenceFromText,
 } from "@/lib/ai/budget-refinement";
 import { applyDestinationPendingSelection } from "@/lib/ai/destination-pending-question";
+import { prepareSessionForUserTurn, logConversationStateUpdate } from "@/lib/ai/chat-conversation-state";
 
 /** Canonical travel context — merged on every user turn */
 export type CanonicalTravelContext = {
@@ -56,6 +57,18 @@ export type CanonicalTravelContext = {
   /** low = 省預算／平價／免費偏好 */
   budgetPreference?: "low" | "medium" | "high";
   priceSensitivity?: boolean;
+  /** 結構化行程偏好（attractions / shopping / food …） */
+  selectedInterests?: string[];
+  /** 已列出必去點清單 */
+  mustVisitGenerated?: boolean;
+  /** 對話階段：準備進入行程規劃 */
+  conversationState?: import("@/lib/ai/itinerary-planning").ConversationState;
+  /** 活動型推薦（camping 等） */
+  activity?: string;
+  /** 使用者回「都可以」時採熱門路線預設 */
+  useDefaultRecommendation?: boolean;
+  /** 行程產生模式：完整行程 / 逐日推薦 */
+  selectedPlanMode?: import("@/lib/ai/itinerary-planning").ItineraryPlanMode;
 };
 
 export const EMPTY_TRAVEL_CONTEXT: CanonicalTravelContext = {
@@ -218,6 +231,25 @@ export function parseTravelContextFromText(
 ): Partial<CanonicalTravelContext> {
   const t = text.trim();
   if (!t) return {};
+  if (session.pendingQuestion) {
+    const prev = session.travelContext ?? EMPTY_TRAVEL_CONTEXT;
+    const pq = session.pendingQuestion;
+    return {
+      destination: prev.destination ?? pq.baseDestination,
+      destinationCountry: prev.destinationCountry ?? pq.destinationCountry,
+      days: parseDays(t) ?? prev.days ?? session.tripDays,
+      travelMonth: prev.travelMonth,
+      tripPurpose: prev.tripPurpose,
+      vibe: prev.vibe,
+      mood: prev.mood,
+      selectedInterests: prev.selectedInterests,
+      conversationState: prev.conversationState,
+      selectedPlanMode: prev.selectedPlanMode,
+      destinationCities: prev.destinationCities,
+      selectedTripStyle: prev.selectedTripStyle,
+      useDefaultRecommendation: prev.useDefaultRecommendation,
+    };
+  }
   if (session.adviceSelectionThisTurn) {
     const prev = session.travelContext;
     return {
@@ -298,6 +330,7 @@ export function parseTravelContextFromText(
 export function mergeTravelContext(
   session: ChatPlanningSession,
   userText: string,
+  lastAssistantReply?: string,
 ): { context: CanonicalTravelContext; session: ChatPlanningSession } {
   try {
     if (session.fromTripAddPlace && session.tripAddPlaceContext) {
@@ -350,9 +383,16 @@ export function mergeTravelContext(
       return { context: merged, session: nextSession };
     }
 
-    const prev = session.travelContext ?? EMPTY_TRAVEL_CONTEXT;
-    const pendingSelection = applyDestinationPendingSelection(userText, session);
+    const prepared = prepareSessionForUserTurn(session, lastAssistantReply);
+    const prev = prepared.travelContext ?? EMPTY_TRAVEL_CONTEXT;
+    const pendingSelection = applyDestinationPendingSelection(userText, prepared);
     const workingSession = pendingSelection.session;
+    if (pendingSelection.selectedOption) {
+      logConversationStateUpdate(
+        { ...prev, ...pendingSelection.contextPatch, interests: prev.interests },
+        undefined,
+      );
+    }
 
     const parsed = parseTravelContextFromText(userText, workingSession);
     const moodKey = workingSession.selectedMood ?? workingSession.mood;
@@ -418,6 +458,14 @@ export function mergeTravelContext(
       destinationCities: pendingSelection.contextPatch.destinationCities ?? prev.destinationCities,
       selectedTripStyle:
         pendingSelection.contextPatch.selectedTripStyle ?? prev.selectedTripStyle,
+      selectedInterests:
+        pendingSelection.contextPatch.selectedInterests ?? prev.selectedInterests,
+      mustVisitGenerated:
+        pendingSelection.contextPatch.mustVisitGenerated ?? prev.mustVisitGenerated,
+      conversationState:
+        pendingSelection.contextPatch.conversationState ?? prev.conversationState,
+      selectedPlanMode:
+        pendingSelection.contextPatch.selectedPlanMode ?? prev.selectedPlanMode,
       excludedCategories:
         workingSession.excludedCategories ?? prev.excludedCategories,
     };
@@ -613,6 +661,11 @@ export function formatTravelContextForAi(ctx: CanonicalTravelContext): string {
   if (ctx.budgetLevel) lines.push(`budgetLevel: ${ctx.budgetLevel}`);
   if (ctx.travelStyle) lines.push(`travelStyle: ${ctx.travelStyle}`);
   if (ctx.tripPurpose) lines.push(`tripPurpose: ${ctx.tripPurpose}`);
+  if (ctx.selectedInterests?.length) {
+    lines.push(`selectedInterests: ${ctx.selectedInterests.join("、")}`);
+  }
+  if (ctx.mustVisitGenerated) lines.push("mustVisitGenerated: true");
+  if (ctx.conversationState) lines.push(`conversationState: ${ctx.conversationState}`);
   if (ctx.budgetPreference) lines.push(`budgetPreference: ${ctx.budgetPreference}`);
   if (ctx.priceSensitivity) lines.push(`priceSensitivity: true`);
   if (ctx.weather) {

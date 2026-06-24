@@ -1,4 +1,5 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { isDestinationPlanningSession } from "@/lib/ai/chat-conversation-state";
 import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
 import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
 import { isFlexiblePreferenceReply } from "@/lib/ai/destination-advice";
@@ -7,6 +8,11 @@ import {
   isTripMealRequestText,
   parseTripAddPlaceFollowUpIntent,
 } from "@/lib/trip/trip-add-place-session";
+import {
+  applyCampingContextFromText,
+  isCampingRequestText,
+  parseCampingRegionHint,
+} from "@/lib/ai/activity-camping";
 import {
   applyExclusionToSession,
   isExclusionLiftReply,
@@ -67,6 +73,14 @@ export function parseDiningTimeHint(text: string): string | undefined {
 }
 
 export function resolveChatIntent(text: string, session: ChatPlanningSession): ChatIntent {
+  if (session.pendingQuestion || session.adviceSelectionThisTurn) {
+    return "destination_advice";
+  }
+
+  if (isDestinationPlanningSession(session, session.travelContext)) {
+    return "destination_advice";
+  }
+
   if (isTripAddPlaceSession(session)) {
     const followUp = parseTripAddPlaceFollowUpIntent(text);
     if (followUp) return followUp;
@@ -101,6 +115,10 @@ export function resolveChatIntent(text: string, session: ChatPlanningSession): C
 
   if (active === "restaurant" || active === "cafe") {
     if (isFoodPreferenceReply(text)) return active;
+  }
+
+  if (active === "camping") {
+    if (parseCampingRegionHint(text) || isCampingRequestText(text)) return "camping";
   }
 
   return detected;
@@ -155,6 +173,7 @@ export function applyDiningContextFromText(
   session: ChatPlanningSession,
 ): ChatPlanningSession {
   let next: ChatPlanningSession = applyExclusionToSession(text, session);
+  next = applyCampingContextFromText(text, next);
   const intent = detectChatIntent(text);
 
   if (isNearbyPlaceIntent(intent)) {

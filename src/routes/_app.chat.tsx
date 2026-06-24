@@ -175,6 +175,11 @@ import {
   sessionHasLocation,
 } from "@/lib/ai/chat-intent";
 import {
+  buildCampingIntroReply,
+  campingSearchAttempts,
+  filterCampingPlaces,
+} from "@/lib/ai/activity-camping";
+import {
   applyDiningContextFromText,
   isFoodPreferenceReply,
   parseFoodPreference,
@@ -190,7 +195,19 @@ import {
   markAskedClarifyKey,
   resolveChatRoute,
 } from "@/lib/ai/chat-router";
-import { resolveDestinationAdvice } from "@/lib/ai/destination-advice";
+import { applyAdviceResultToSession, resolveDestinationAdvice } from "@/lib/ai/destination-advice";
+import {
+  isPlanningTurnActive,
+  processAdviceTurn,
+  resolvePlanningFallbackTurn,
+  type ChatTurnResult,
+} from "@/lib/ai/chat-state-machine";
+import { buildPlanningOfflineReply } from "@/lib/ai/chat-turn-engine";
+import {
+  isDestinationPlanningSession,
+  isGenericFallbackReply,
+  prepareSessionForUserTurn,
+} from "@/lib/ai/chat-conversation-state";
 import {
   applyBudgetRefinementToSession,
   buildBudgetRefinementSummary,
@@ -324,6 +341,28 @@ function Chat() {
       homeMoodShortcutEngagedRef.current = true;
     }
   }, []);
+
+  const persistPlanningAdviceTurn = useCallback(
+    (turn: ChatTurnResult, baseSession: ChatPlanningSession) => {
+      const nextSession = applyAdviceResultToSession(
+        {
+          ...turn.session,
+          pendingQuestion: turn.route?.pendingQuestion,
+          lastResolvedPendingQuestion: undefined,
+          adviceSelectionThisTurn: undefined,
+          lastAssistantReply: turn.advice.reply ?? baseSession.lastAssistantReply,
+          phase:
+            turn.advice.contextPatch?.conversationState === "ready_for_itinerary"
+              ? "ready"
+              : turn.session.phase,
+        },
+        turn.advice,
+      );
+      persistSession(nextSession);
+      return nextSession;
+    },
+    [persistSession],
+  );
 
   const markShortcutEngaged = useCallback(() => {
     homeMoodShortcutEngagedRef.current = true;
@@ -1363,6 +1402,42 @@ function Chat() {
       }
 
       const mergedForAdvice = mergeTravelContext(activeSession, activeUserText);
+      const planningTurn = resolvePlanningFallbackTurn(
+        activeUserText,
+        activeSession,
+        activeSession.travelContext ?? { interests: [] },
+      );
+      if (planningTurn.advice.reply) {
+        setMsgs((prev) => {
+          const trimmedPrev = prev.filter(
+            (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+          );
+          return [...trimmedPrev, { role: "assistant", content: planningTurn.advice.reply! }];
+        });
+        persistPlanningAdviceTurn(planningTurn, planningTurn.session);
+        setPartial({});
+        return true;
+      }
+
+      if (isPlanningTurnActive(mergedForAdvice.session, mergedForAdvice.context)) {
+        const offline = buildPlanningOfflineReply(
+          mergedForAdvice.context,
+          mergedForAdvice.session,
+        );
+        if (offline) {
+          setMsgs((prev) => {
+            const trimmedPrev = prev.filter(
+              (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+            );
+            return [...trimmedPrev, { role: "assistant", content: offline }];
+          });
+          persistSession(mergedForAdvice.session);
+          setPartial({});
+          return true;
+        }
+        return true;
+      }
+
       const advice = resolveDestinationAdvice(
         mergedForAdvice.context,
         mergedForAdvice.session,
@@ -1375,12 +1450,21 @@ function Chat() {
           );
           return [...trimmedPrev, { role: "assistant", content: advice.reply! }];
         });
-        persistSession({
-          ...mergedForAdvice.session,
-          pendingQuestion: advice.pendingQuestion,
-          lastResolvedPendingQuestion: undefined,
-          adviceSelectionThisTurn: undefined,
-        });
+        persistSession(
+          applyAdviceResultToSession(
+            {
+              ...mergedForAdvice.session,
+              pendingQuestion: advice.pendingQuestion,
+              lastResolvedPendingQuestion: undefined,
+              adviceSelectionThisTurn: undefined,
+              phase:
+                advice.contextPatch?.conversationState === "ready_for_itinerary"
+                  ? "ready"
+                  : mergedForAdvice.session.phase,
+            },
+            advice,
+          ),
+        );
         setPartial({});
         return true;
       }
@@ -1417,14 +1501,20 @@ function Chat() {
       let placeResults: Awaited<ReturnType<typeof searchNearbyPlaces>>["places"] = [];
       const lat = activeSession.location?.lat;
       const lng = activeSession.location?.lng;
+      const resolvedIntent = resolveChatIntent(activeUserText, activeSession);
       const isRestaurantFlow =
-        activeSession.activeChatIntent === "restaurant" ||
-        resolveChatIntent(activeUserText, activeSession) === "restaurant";
+        activeSession.activeChatIntent === "restaurant" || resolvedIntent === "restaurant";
+      const isCampingFlow =
+        activeSession.activeChatIntent === "camping" ||
+        resolvedIntent === "camping" ||
+        context.activity === "camping";
 
       if (lat != null && lng != null) {
         const attempts = isRestaurantFlow
           ? restaurantSearchFallbackQueries(activeSession.foodPreference)
-          : [{ query: fallbackSearchQuery(context), mode: "text" as const }];
+          : isCampingFlow
+            ? campingSearchAttempts()
+            : [{ query: fallbackSearchQuery(context), mode: "text" as const }];
         for (const attempt of attempts) {
           try {
             console.info(
@@ -1445,12 +1535,37 @@ function Chat() {
               },
             });
             placeResults = fallback.places ?? [];
+            if (isCampingFlow) {
+              placeResults = filterCampingPlaces(placeResults);
+            }
             console.info(`[CHAT_PLACES_SUCCESS] count=${placeResults.length}`);
             if (placeResults.length > 0) break;
           } catch (fallbackErr) {
             console.warn("[CHAT_PLACES_REQUEST] failed", fallbackErr);
           }
         }
+      }
+
+      if (isCampingFlow && !placeResults.length) {
+        const intro = buildCampingIntroReply(context, activeSession);
+        setMsgs((prev) => {
+          const trimmedPrev = prev.filter(
+            (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+          );
+          return [...trimmedPrev, { role: "assistant", content: intro }];
+        });
+        persistSession({
+          ...activeSession,
+          activeChatIntent: "camping",
+          phase: "discover",
+          travelContext: {
+            ...context,
+            activity: "camping",
+            tripPurpose: "recommend_places",
+          },
+        });
+        setPartial({});
+        return true;
       }
 
       if (isRestaurantFlow && !placeResults.length) {
@@ -1486,7 +1601,9 @@ function Chat() {
       });
       const sessionForDisplay: ChatPlanningSession = {
         ...activeSession,
-        activeChatIntent: activeSession.activeChatIntent ?? "restaurant",
+        activeChatIntent: isCampingFlow
+          ? "camping"
+          : (activeSession.activeChatIntent ?? "restaurant"),
         phase: "recommend",
         travelContext: context,
       };
@@ -1525,7 +1642,7 @@ function Chat() {
       setPartial({});
       return filteredRecs.length > 0;
     },
-    [locale, persistSession, searchNearbyPlaces, pushNearbyPlaceRecommendation],
+    [locale, persistSession, searchNearbyPlaces, pushNearbyPlaceRecommendation, persistPlanningAdviceTurn],
   );
 
   const streamChat = useCallback(
@@ -1588,12 +1705,19 @@ function Chat() {
           { token, signal: controller.signal },
         );
 
-        if (!full) throw new Error("AI 沒有回應，請再試一次。");
+        if (!full) {
+          console.error("[AI_REPLY_RESPONSE] stream_returned_null");
+          throw new Error("AI 沒有回應，請再試一次。");
+        }
         console.info("[AI_REPLY_SUCCESS]", `recommendations=${full.recommendations?.length ?? 0}`);
 
         const userText = opts?.userText ?? "";
         const intentForGuard = parseTripIntentFromText(userText, sessionOverride ?? session);
         const summary = full.summary?.trim() ?? "";
+        if (isGenericFallbackReply(summary)) {
+          console.warn("[CHAT_FALLBACK_BLOCKED] generic_ai_reply");
+          throw new Error("AI 沒有回應，請再試一次。");
+        }
         const looksRepeatedClarify =
           /這趟比較想放鬆、拍照，還是吃美食/.test(summary) &&
           /(都有|都可以|都行)/.test(userText);
@@ -1741,6 +1865,39 @@ function Chat() {
         );
         if (!applied) {
           const fallbackMerged = mergeTravelContext(activeForFallback, activeUserText);
+          const planningTurn = resolvePlanningFallbackTurn(
+            activeUserText,
+            activeForFallback,
+            fallbackMerged.context,
+          );
+          if (planningTurn.advice.reply) {
+            setMsgs((prev) => {
+              const trimmedPrev = prev.filter(
+                (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+              );
+              return [...trimmedPrev, { role: "assistant", content: planningTurn.advice.reply! }];
+            });
+            persistPlanningAdviceTurn(planningTurn, planningTurn.session);
+            setPartial({});
+            return;
+          }
+          if (isPlanningTurnActive(fallbackMerged.session, fallbackMerged.context)) {
+            const offline = buildPlanningOfflineReply(
+              fallbackMerged.context,
+              fallbackMerged.session,
+            );
+            if (offline) {
+              setMsgs((prev) => {
+                const trimmedPrev = prev.filter(
+                  (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+                );
+                return [...trimmedPrev, { role: "assistant", content: offline }];
+              });
+              persistSession(fallbackMerged.session);
+              setPartial({});
+              return;
+            }
+          }
           const advice = resolveDestinationAdvice(
             fallbackMerged.context,
             fallbackMerged.session,
@@ -1753,25 +1910,31 @@ function Chat() {
               );
               return [...trimmedPrev, { role: "assistant", content: advice.reply! }];
             });
-            persistSession({
-              ...fallbackMerged.session,
-              pendingQuestion: advice.pendingQuestion,
-              lastResolvedPendingQuestion: undefined,
-              adviceSelectionThisTurn: undefined,
-            });
+            persistSession(
+              applyAdviceResultToSession(
+                {
+                  ...fallbackMerged.session,
+                  pendingQuestion: advice.pendingQuestion,
+                  lastResolvedPendingQuestion: undefined,
+                  adviceSelectionThisTurn: undefined,
+                  phase:
+                    advice.contextPatch?.conversationState === "ready_for_itinerary"
+                      ? "ready"
+                      : fallbackMerged.session.phase,
+                },
+                advice,
+              ),
+            );
             setPartial({});
             return;
           }
           const hint: ChatMsg = {
             role: "assistant",
-            content: "我先用目前掌握的需求幫你整理方向，你可以再跟我說想調整什麼。",
-            roamie: {
-              title: "",
-              summary: "我先用目前掌握的需求幫你整理方向，你可以再跟我說想調整什麼。",
-              moodTag: activeForFallback.mood ?? "",
-              recommendations: [],
-              itinerary: [],
-            },
+            content:
+              buildPlanningOfflineReply(
+                fallbackMerged.context,
+                fallbackMerged.session,
+              ) ?? "我這邊連線有點不穩，但我還記得你的行程需求，可以再說一次想調整什麼。",
           };
           setMsgs((prev) => {
             const trimmedPrev = prev.filter(
@@ -1993,9 +2156,12 @@ function Chat() {
     nextSession = applyQuickChipContext(trimmed, nextSession);
     nextSession = applyDiningContextFromText(trimmed, nextSession);
 
-    const intent = resolveChatIntent(trimmed, nextSession);
+    const lastAssistantReply = [...msgs]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.content?.trim())?.content;
+    nextSession = prepareSessionForUserTurn(nextSession, lastAssistantReply);
 
-    const merged = mergeTravelContext(nextSession, trimmed);
+    const merged = mergeTravelContext(nextSession, trimmed, lastAssistantReply);
     nextSession = merged.session;
     if (isBudgetRefinementText(trimmed)) {
       nextSession = applyBudgetRefinementToSession(trimmed, {
@@ -2018,6 +2184,23 @@ function Chat() {
     nextSession = extractPlanningHintsFromText(trimmed, nextSession);
     nextSession = extractDiscoveryFromText(trimmed, nextSession);
     nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
+
+    if (
+      isPlanningTurnActive(nextSession, merged.context) ||
+      isDestinationPlanningSession(nextSession, merged.context)
+    ) {
+      const earlyPlanningTurn = processAdviceTurn(trimmed, nextSession, merged.context);
+      if (earlyPlanningTurn.advice.reply) {
+        const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+        setMsgs(next);
+        setText("");
+        persistPlanningAdviceTurn(earlyPlanningTurn, nextSession);
+        setMsgs([...next, { role: "assistant", content: earlyPlanningTurn.advice.reply }]);
+        return;
+      }
+    }
+
+    const intent = resolveChatIntent(trimmed, nextSession);
 
     if (isFoodPreferenceReply(trimmed) && nextSession.activeChatIntent === "restaurant") {
       const food = parseFoodPreference(trimmed);
@@ -2056,7 +2239,8 @@ function Chat() {
         nextSession.activeChatIntent === "restaurant" ||
         inferredNearbyIntent) &&
       intent !== "destination_advice" &&
-      route.mode !== "advice"
+      route.mode !== "advice" &&
+      !isDestinationPlanningSession(nextSession, merged.context)
     ) {
       nextSession = { ...nextSession, phase: "recommend" };
     }
@@ -2119,14 +2303,12 @@ function Chat() {
     }
 
     if (route.mode === "advice" && route.question) {
-      persistSession({
-        ...nextSession,
-        pendingQuestion: route.pendingQuestion,
-        lastResolvedPendingQuestion: undefined,
-        adviceSelectionThisTurn: undefined,
-      });
-      setMsgs([...next, { role: "assistant", content: route.question }]);
-      return;
+      const turn = processAdviceTurn(trimmed, nextSession, merged.context);
+      if (turn.advice.reply) {
+        persistPlanningAdviceTurn(turn, nextSession);
+        setMsgs([...next, { role: "assistant", content: turn.advice.reply }]);
+        return;
+      }
     }
 
     if (route.mode === "clarify" && route.question && route.missingKey) {
@@ -2141,7 +2323,10 @@ function Chat() {
         if (applied) return;
       }
       nextSession = markAskedClarifyKey(nextSession, route.missingKey);
-      persistSession(nextSession);
+      persistSession({
+        ...nextSession,
+        pendingQuestion: route.pendingQuestion,
+      });
       setMsgs([...next, { role: "assistant", content: route.question }]);
       return;
     }
@@ -2160,6 +2345,21 @@ function Chat() {
       if (applied) return;
       if (nearbyIntent === "restaurant") {
         toast.message("暫時找不到附近餐廳，請稍後再試。");
+        return;
+      }
+      if (nearbyIntent === "camping") {
+        const intro = buildCampingIntroReply(merged.context, nextSession);
+        persistSession({
+          ...nextSession,
+          activeChatIntent: "camping",
+          phase: "discover",
+          travelContext: {
+            ...merged.context,
+            activity: "camping",
+            tripPurpose: "recommend_places",
+          },
+        });
+        setMsgs([...next, { role: "assistant", content: intro }]);
         return;
       }
     }
@@ -2234,6 +2434,24 @@ function Chat() {
         ]);
         return;
       }
+    }
+
+    if (isPlanningTurnActive(nextSession, merged.context)) {
+      const planningTurn = processAdviceTurn(trimmed, nextSession, merged.context);
+      if (planningTurn.advice.reply) {
+        persistPlanningAdviceTurn(planningTurn, nextSession);
+        setMsgs([...next, { role: "assistant", content: planningTurn.advice.reply }]);
+        return;
+      }
+      const applied = await applyLocalFallback(nextSession, trimmed, next, "planning_no_reply");
+      if (applied) return;
+      const offline = buildPlanningOfflineReply(merged.context, nextSession);
+      if (offline) {
+        persistSession(nextSession);
+        setMsgs([...next, { role: "assistant", content: offline }]);
+        return;
+      }
+      return;
     }
 
     await streamChat(next, { phase: route.chatPhase, userText: trimmed }, nextSession);

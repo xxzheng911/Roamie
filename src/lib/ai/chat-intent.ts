@@ -33,6 +33,7 @@ export type ChatIntent =
   | "restaurant"
   | "cafe"
   | "attraction"
+  | "camping"
   | "trip_planning"
   | "destination_advice"
   | "mood_chat"
@@ -42,7 +43,7 @@ export type ChatIntent =
   | "refine_recommendations"
   | "general";
 
-export type NearbyPlaceIntent = Extract<ChatIntent, "restaurant" | "cafe" | "attraction">;
+export type NearbyPlaceIntent = Extract<ChatIntent, "restaurant" | "cafe" | "attraction" | "camping">;
 
 export function detectChatIntent(text: string): ChatIntent {
   const t = text.trim();
@@ -53,6 +54,10 @@ export function detectChatIntent(text: string): ChatIntent {
   if (isDestinationAdviceText(t)) return "destination_advice";
   if (isDestinationSelectionText(t)) return "destination_advice";
   if (isBudgetRefinementText(t)) return "refine_recommendations";
+
+  if (/(露營|營區|營地|campground|campsite|camping|glamping|豪華露營|野營|車宿)/i.test(t)) {
+    return "camping";
+  }
 
   if (
     /(幫我規劃|規劃.*行程|安排.*行程|行程規劃|兩天一夜|三天兩夜|四天三夜)/.test(t) ||
@@ -121,18 +126,20 @@ export function detectChatIntent(text: string): ChatIntent {
 }
 
 export function isNearbyPlaceIntent(intent: ChatIntent): intent is NearbyPlaceIntent {
-  return intent === "restaurant" || intent === "cafe" || intent === "attraction";
+  return intent === "restaurant" || intent === "cafe" || intent === "attraction" || intent === "camping";
 }
 
 export function placeSearchTypeForIntent(intent: NearbyPlaceIntent): string {
   if (intent === "restaurant") return "restaurant";
   if (intent === "cafe") return "cafe";
+  if (intent === "camping") return "campground";
   return "tourist_attraction";
 }
 
 export function chatResponseModeForIntent(intent: ChatIntent): string {
   if (intent === "restaurant") return "restaurant_recommendation";
   if (intent === "cafe") return "cafe_recommendation";
+  if (intent === "camping") return "activity_recommendation";
   if (intent === "attraction") return "attraction_recommendation";
   if (intent === "trip_planning") return "trip_planning";
   if (intent === "destination_advice") return "destination_advice";
@@ -201,10 +208,14 @@ export function inferNearbyIntentFromContext(
 
   if (/(咖啡|café|cafe|甜點)/i.test(blob)) return "cafe";
   if (/(餐廳|吃飯|聚餐|美食|燒肉|火鍋)/.test(blob)) return "restaurant";
+  if (/(露營|營區|營地|camping|campground|glamping)/i.test(blob)) return "camping";
   if (/(下雨|雨天|室內)/.test(blob)) return "cafe";
   if (/(累|疲|放鬆|放空|走走|散步|探索|拍照)/.test(blob)) return "attraction";
-  if (userExplicitlyWantsPlaces(t)) return "attraction";
-  if (mood || ctx.vibe || ctx.interests.length > 0) return "attraction";
+  if (userExplicitlyWantsPlaces(t) && !/(露營|營區|營地)/.test(t)) return "attraction";
+  if (mood || ctx.vibe || ctx.interests.length > 0) {
+    if (ctx.activity === "camping" || ctx.interests.includes("露營")) return "camping";
+    return "attraction";
+  }
 
   return null;
 }

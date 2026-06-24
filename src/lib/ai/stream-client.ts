@@ -10,8 +10,20 @@ async function withResolvedPlanTier(ctx: RoamieRequestContext): Promise<RoamieRe
 
 function validateAssembledJson(raw: string): RoamieResponseType {
   const trimmed = raw.trim();
-  if (!trimmed) throw new Error("AI 沒有回應，請再試一次。");
-  return normalizeRoamieResponse(JSON.parse(trimmed) as Record<string, unknown>);
+  if (!trimmed) {
+    console.error("[AI_REPLY_RESPONSE] empty_body");
+    throw new Error("AI 沒有回應，請再試一次。");
+  }
+  try {
+    return normalizeRoamieResponse(JSON.parse(trimmed) as Record<string, unknown>);
+  } catch (e) {
+    console.error(
+      "[AI_REPLY_RESPONSE] parse_error",
+      e instanceof Error ? e.message : String(e),
+      `length=${trimmed.length}`,
+    );
+    throw new Error("AI 回應格式錯誤");
+  }
 }
 
 export type StreamRoamieHandlers = {

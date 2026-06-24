@@ -1,10 +1,15 @@
-import type { RoamieRecommendationItem, RoamiePayloadV2 } from "@/lib/ai/types";
+import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import {
   chatResponseModeForIntent,
   type NearbyPlaceIntent,
 } from "@/lib/ai/chat-intent";
 import { foodPreferenceSearchQuery } from "@/lib/ai/chat-dining-flow";
+import {
+  buildCampingRecommendationSummary,
+  campingSearchAttempts,
+  filterCampingPlaces,
+} from "@/lib/ai/activity-camping";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
@@ -73,6 +78,13 @@ function searchConfigForIntent(
       query: /下雨|雨天|室內/.test(moodBlob) ? "室內 咖啡廳" : "咖啡廳",
       mode: "nearby",
       includedTypes: ["cafe", "coffee_shop"],
+    };
+  }
+  if (intent === "camping") {
+    return {
+      query: "露營區 campground glamping",
+      mode: "text",
+      includedTypes: ["campground", "rv_park", "lodging"],
     };
   }
   if (/(下雨|雨天|室內)/.test(moodBlob)) {
@@ -179,7 +191,20 @@ function buildSummary(
     ].join("\n");
   }
 
-  const mood = ctx.mood ?? "今天";
+  if (intent === "camping") {
+    return buildCampingRecommendationSummary(picks, ctx);
+  }
+
+  const mood = ctx.mood;
+  if (!mood) {
+    return [
+      "附近這幾個地方可以先看看：",
+      "",
+      list,
+      "",
+      "選一個最有感覺的，或跟我說想調整什麼。",
+    ].join("\n");
+  }
   if (/(下雨|雨天)/.test(mood) || ctx.setting === "室內") {
     return [
       "下雨天也想出門走走對吧？",
@@ -284,13 +309,18 @@ export async function fetchNearbyPlacesForIntent(
   const attempts: SearchAttempt[] =
     intent === "restaurant"
       ? restaurantSearchFallbackQueries(foodPreference)
-      : [searchConfigForIntent(intent, foodPreference, context)];
+      : intent === "camping"
+        ? campingSearchAttempts()
+        : [searchConfigForIntent(intent, foodPreference, context)];
 
   let ranked: PlaceResult[] = [];
   for (const attempt of attempts) {
     const places = await runPlaceSearch(searchPlaces, lat, lng, locale, attempt);
     ranked = rankPlaces(places, lat, lng, context);
     ranked = filterPlacesByExclusion(ranked, excluded);
+    if (intent === "camping") {
+      ranked = filterCampingPlaces(ranked);
+    }
     if (ranked.length > 0) break;
   }
 
@@ -339,7 +369,13 @@ export async function buildNearbyPlaceRecommendation(params: {
       if (excluded.length) {
         const summary = buildExclusionInsufficientSummary(
           excluded,
-          intent === "cafe" ? "cafe" : intent === "restaurant" ? "restaurant" : "attraction",
+          intent === "cafe"
+            ? "cafe"
+            : intent === "restaurant"
+              ? "restaurant"
+              : intent === "camping"
+                ? "attraction"
+                : "attraction",
         );
         return { summary, payload: {
           version: 2,

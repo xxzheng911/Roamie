@@ -3,6 +3,11 @@ import type { ChatPlanningSession, ChatPlaceItem } from "@/lib/chat-session";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import { lowBudgetSearchQuery, buildBudgetRefinementSummary } from "@/lib/ai/budget-refinement";
+import {
+  buildCampingIntroReply,
+  buildCampingRecommendationSummary,
+  filterCampingPlaces,
+} from "@/lib/ai/activity-camping";
 import { logTravelContext } from "@/lib/ai/travel-context";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
@@ -31,7 +36,14 @@ function buildSummary(ctx: CanonicalTravelContext, placeCount: number, places: P
     return buildBudgetRefinementSummary(ctx, places.slice(0, placeCount));
   }
 
-  const mood = ctx.mood ?? "今天";
+  if (ctx.activity === "camping" || ctx.interests.includes("露營")) {
+    if (places.length > 0) {
+      return buildCampingRecommendationSummary(places.slice(0, placeCount), ctx);
+    }
+    return buildCampingIntroReply(ctx);
+  }
+
+  const mood = ctx.mood;
   const dest = ctx.destination ?? ctx.currentLocation ?? "附近";
   const month = ctx.travelMonth ? `${ctx.travelMonth}的` : "";
   const companion = ctx.companion ? `跟${ctx.companion}` : "你";
@@ -49,17 +61,24 @@ function buildSummary(ctx: CanonicalTravelContext, placeCount: number, places: P
     ].join("\n");
   }
 
-  if (/深夜散步|夜景/.test(mood)) {
+  if (mood && /深夜散步|夜景/.test(mood)) {
     return [
       `如果今天想${mood}，我幫你找了${placeCount > 0 ? `${placeCount} 個` : "幾個"}現在還適合慢慢走的地方。`,
       "挑一個最有感覺的，我再幫你往下串。",
     ].join("\n");
   }
 
-  if (/下雨|雨/.test(mood)) {
+  if (/下雨|雨/.test(mood ?? "")) {
     return [
       "今天可能會下雨，我先幫你找幾個適合待在室內、還是有氛圍的地方。",
       placeCount > 0 ? "下面這幾個你可以先看看。" : "跟我說想咖啡、書店還是展覽，我再幫你挑。",
+    ].join("\n");
+  }
+
+  if (!mood) {
+    return [
+      `我在${dest}幫你找了${placeCount > 0 ? `${placeCount} 個` : "幾個"}適合的地點。`,
+      "選一個後我可以幫你安排路線。",
     ].join("\n");
   }
 
@@ -75,7 +94,13 @@ export function generateLocalRecommendationFallback(
   const { context: ctx, session, locale = "zh-TW", places = [] } = input;
   console.info("[CHAT_FALLBACK_USED]", logTravelContext(ctx));
 
-  const candidates: ChatPlaceItem[] = places.slice(0, 5).map((p) =>
+  const candidates: ChatPlaceItem[] = (
+    ctx.activity === "camping" || ctx.interests.includes("露營")
+      ? filterCampingPlaces(places)
+      : places
+  )
+    .slice(0, 5)
+    .map((p) =>
     mapPlaceResultToChatItem(p, {
       mood: ctx.mood,
       weather: ctx.weather,
@@ -117,6 +142,9 @@ export function generateLocalRecommendationFallback(
 }
 
 export function fallbackSearchQuery(ctx: CanonicalTravelContext): string {
+  if (ctx.activity === "camping" || ctx.interests.includes("露營")) {
+    return "露營區 campground campsite glamping 豪華露營";
+  }
   const mood = ctx.mood ?? "";
   if (mood) return moodSearchQuery(mood, ctx);
   if (ctx.interests.includes("咖啡")) return "cafe coffee";
