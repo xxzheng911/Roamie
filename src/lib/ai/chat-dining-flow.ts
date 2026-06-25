@@ -26,6 +26,15 @@ import {
   type ChatIntent,
   type NearbyPlaceIntent,
 } from "@/lib/ai/chat-intent";
+import {
+  isDateInquiryText,
+  isTravelPlanningText,
+  shouldBlockNearbyRecommendation,
+} from "@/lib/ai/chat-intent-router";
+import {
+  isDestinationAdviceText,
+  isDestinationSelectionText,
+} from "@/lib/ai/trip-planning-context";
 
 /** 使用者回覆餐廳菜系 / 不限 */
 export function isFoodPreferenceReply(text: string): boolean {
@@ -103,11 +112,26 @@ export function resolveChatIntent(text: string, session: ChatPlanningSession): C
   }
 
   const detected = detectChatIntent(text);
+  if (detected === "destination_advice" || detected === "trip_planning") return detected;
+
+  if (isTravelPlanningText(text) || isDateInquiryText(text)) {
+    return isDestinationAdviceText(text) ||
+      isDestinationSelectionText(text) ||
+      isDateInquiryText(text)
+      ? "destination_advice"
+      : "trip_planning";
+  }
+
   if (isNearbyPlaceIntent(detected)) return detected;
 
   const active = session.activeChatIntent;
   if (active && isNearbyPlaceIntent(active)) {
     if (isExclusionReply(text) || isExclusionLiftReply(text)) return active;
+    if (
+      /(還有嗎|還有沒有|再推薦|換其他|換一批|提供其他|其他推薦|不要這些)/.test(text.trim())
+    ) {
+      return active;
+    }
     if (isFoodPreferenceReply(text) || isRestaurantFollowUp(text, active)) {
       return active;
     }
@@ -145,6 +169,13 @@ export function shouldFetchNearbyPlaces(
   if (intent === "refine_recommendations" || isBudgetRefinementText(text)) {
     return sessionHasLocation(session);
   }
+  if (
+    /(還有嗎|還有沒有|再推薦|換其他|換一批|提供其他|其他推薦|不要這些)/.test(text.trim()) &&
+    session.recommendedPlaces.length > 0
+  ) {
+    return sessionHasLocation(session);
+  }
+  if (shouldBlockNearbyRecommendation(text, session)) return false;
   if (intent === "restaurant") {
     return (
       Boolean(session.foodPreference) ||
@@ -176,7 +207,12 @@ export function applyDiningContextFromText(
   next = applyCampingContextFromText(text, next);
   const intent = detectChatIntent(text);
 
-  if (isNearbyPlaceIntent(intent)) {
+  if (shouldBlockNearbyRecommendation(text, session)) {
+    if (intent === "destination_advice" || intent === "trip_planning") {
+      next.activeChatIntent = "destination_advice";
+      next.conversationMode = "destination_planning";
+    }
+  } else if (isNearbyPlaceIntent(intent)) {
     next.activeChatIntent = intent;
   } else if (
     session.activeChatIntent &&

@@ -200,12 +200,15 @@ function PlaceDetailPage() {
 
   useEffect(() => {
     let cancelled = false;
-    void requestDeviceLocation()
-      .then((loc) => {
-        if (cancelled || !loc) return;
-        setUserLocation({ lat: loc.lat, lng: loc.lng });
-      })
-      .catch(() => {});
+    void import("@/lib/location-app-gate").then(({ waitForAppActiveForLocation }) =>
+      waitForAppActiveForLocation().then((active) => {
+        if (!active || cancelled) return;
+        return requestDeviceLocation().then((loc) => {
+          if (cancelled || !loc) return;
+          setUserLocation({ lat: loc.lat, lng: loc.lng });
+        });
+      }),
+    ).catch(() => {});
     void Promise.all([
       getUserProfile(locale).catch(() => null),
       getPreferences().catch(() => ({} as Awaited<ReturnType<typeof getPreferences>>)),

@@ -13,6 +13,7 @@ import type { LocationSuggestion, TripLocation } from "@/lib/location/types";
 import { localeToGeocodeRegion, localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
+import { buildDestinationGeocodeQueries } from "@/lib/ai/destination-geocode";
 
 const TRIP_PLACE_DETAILS_FIELD_MASK =
   "id,displayName,formattedAddress,location,addressComponents,utcOffsetMinutes,types,primaryType";
@@ -366,10 +367,12 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
     const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
     const language = localeToGoogleLanguageCode(userLocale);
     const region = localeToGeocodeRegion(userLocale);
-    const queries = [data.query.trim(), data.query.trim().replace(/[·・,，/\s]+/g, "")].filter(
-      Boolean,
-    );
-    const uniqueQueries = [...new Set(queries)];
+    const queries = buildDestinationGeocodeQueries(data.query.trim(), userLocale);
+    const compact = data.query.trim().replace(/[·・,，/\s]+/g, "");
+    if (compact && !queries.includes(compact)) {
+      queries.push(compact);
+    }
+    const uniqueQueries = [...new Set(queries.filter(Boolean))];
 
     for (const q of uniqueQueries) {
       const res = await fetch(geocodeForwardUrl(q, apiKey, { language, region }));

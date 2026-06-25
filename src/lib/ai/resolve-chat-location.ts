@@ -1,8 +1,9 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { getEffectiveLocationSnapshot } from "@/lib/effective-location";
 import { requestDeviceLocation } from "@/lib/device-location";
+import { isAppActiveForLocation } from "@/lib/location-app-gate";
 
-/** 聊聊推薦用定位：session → effective-location → device GPS */
+/** 聊聊推薦用定位：session → effective-location → device GPS（僅前景、非必須） */
 export async function resolveChatLocation(
   session: ChatPlanningSession,
 ): Promise<ChatPlanningSession> {
@@ -18,9 +19,9 @@ export async function resolveChatLocation(
   }
 
   const effective = getEffectiveLocationSnapshot();
-  if (effective?.lat != null && effective?.lng != null && effective.isReadyForPlaces) {
+  if (effective?.lat != null && effective?.lng != null) {
     console.info(
-      `[CHAT_LOCATION] lat=${effective.lat} lng=${effective.lng} source=${effective.source}`,
+      `[CHAT_LOCATION] lat=${effective.lat} lng=${effective.lng} source=${effective.source} fallback=${effective.isFallback}`,
     );
     return {
       ...session,
@@ -32,10 +33,17 @@ export async function resolveChatLocation(
     };
   }
 
+  if (!isAppActiveForLocation()) {
+    console.info("[CHAT_LOCATION] skipped reason=app_inactive");
+    return session;
+  }
+
   try {
     const device = await requestDeviceLocation();
     if (device.lat != null && device.lng != null) {
-      console.info(`[CHAT_LOCATION] lat=${device.lat} lng=${device.lng} source=device`);
+      console.info(
+        `[CHAT_LOCATION] lat=${device.lat} lng=${device.lng} source=device fallback=${device.usedFallback}`,
+      );
       return {
         ...session,
         location: {

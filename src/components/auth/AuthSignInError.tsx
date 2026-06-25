@@ -6,6 +6,8 @@ type Props = {
   hint?: string;
   onRetry?: () => void;
   retryLabel?: string;
+  onDismiss?: () => void;
+  dismissLabel?: string;
   /** system：一般提示樣式（登入頁）；brand：保留品牌插畫（callback 等） */
   variant?: "system" | "brand";
 };
@@ -17,6 +19,8 @@ export function AuthSignInError({
   hint,
   onRetry,
   retryLabel = "再試一次",
+  onDismiss,
+  dismissLabel = "關閉",
   variant = "brand",
 }: Props) {
   if (variant === "system") {
@@ -29,14 +33,27 @@ export function AuthSignInError({
         <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
           {message}
         </p>
-        {onRetry ? (
-          <button
-            type="button"
-            onClick={onRetry}
-            className="mt-3 text-sm font-medium text-foreground underline-offset-2 hover:underline"
-          >
-            {retryLabel}
-          </button>
+        {onRetry || onDismiss ? (
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+            {onRetry ? (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="text-sm font-medium text-foreground underline-offset-2 hover:underline"
+              >
+                {retryLabel}
+              </button>
+            ) : null}
+            {onDismiss ? (
+              <button
+                type="button"
+                onClick={onDismiss}
+                className="text-sm text-muted-foreground underline-offset-2 hover:underline"
+              >
+                {dismissLabel}
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </div>
     );

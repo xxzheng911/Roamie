@@ -1,8 +1,8 @@
 /* Localized permission descriptions — Roamie */
 
 /* Location (weather + nearby recommendations) */
-"NSLocationWhenInUseUsageDescription" = "Roamie 需要你的位置資訊，才能推薦附近適合你的地點與行程。";
-"NSLocationAlwaysAndWhenInUseUsageDescription" = "Roamie 需要你的位置資訊，才能推薦附近適合你的地點與行程。";
+"NSLocationWhenInUseUsageDescription" = "Roamie 需要定位權限，才能依你所在位置推薦附近景點、餐廳與行程。";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "Roamie 需要定位權限，才能依你所在位置推薦附近景點、餐廳與行程。";
 
 /* Camera & photo library (avatar / cover) */
 "NSCameraUsageDescription" = "Roamie 需要使用相機，方便拍攝旅程照片與更新頭像。";

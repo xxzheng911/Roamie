@@ -11,6 +11,10 @@ import { filterRecommendationsByExclusion } from "@/lib/ai/recommendation-exclus
 import { parseTripIntentFromSession } from "@/lib/recommendation/trip-intent";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { isPlaceDetailChatActive, parsePlaceDetailFollowUp } from "@/lib/ai/place-detail-chat";
+import {
+  detectMustVisitIntent,
+  detectPlaceRecommendationIntent,
+} from "@/lib/ai/must-visit-places";
 
 /** 將摘要中的地點數量改為與實際渲染張數一致 */
 export function alignChatRecommendationCount(summary: string, count: number): string {
@@ -59,6 +63,18 @@ export function recommendationsForChatDisplay(
     if (followUp !== "nearby_cafe" && followUp !== "nearby_late_snack") {
       return [];
     }
+  }
+
+  const mustVisitFlow =
+    session.travelContext?.tripPurpose === "must_visit_places" ||
+    session.travelContext?.mustVisitGenerated ||
+    detectMustVisitIntent(userText) ||
+    detectPlaceRecommendationIntent(userText);
+
+  if (mustVisitFlow) {
+    const cards = list.slice(0, 6);
+    console.info(`[CHAT_PLACE_CARD_RENDER] count=${cards.length} must_visit=true`);
+    return cards;
   }
 
   if (session.activeChatIntent && isNearbyPlaceIntent(session.activeChatIntent)) {

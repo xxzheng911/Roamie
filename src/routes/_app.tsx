@@ -50,8 +50,13 @@ function AppLayout() {
       enterHomeLocationMode();
       stopLocationWatch("home_route_active");
     }
-    void import("@/lib/effective-location").then(({ ensureEffectiveLocationBootstrap }) => {
-      ensureEffectiveLocationBootstrap();
+    void import("@/lib/location-app-gate").then(({ registerLocationAppGate, waitForAppActiveForLocation }) => {
+      registerLocationAppGate();
+      void waitForAppActiveForLocation().then(() => {
+        void import("@/lib/effective-location").then(({ ensureEffectiveLocationBootstrap }) => {
+          ensureEffectiveLocationBootstrap();
+        });
+      });
     });
   }, [router]);
 

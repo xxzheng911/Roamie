@@ -10,6 +10,7 @@ import {
   normalizeDestinationLabel,
   parseDestinationFromText,
   parseDestinationSelectionFromText,
+  resolveDestinationFromText,
   isMoodRecommendationSession,
   type ChatConversationMode,
 } from "@/lib/ai/trip-planning-context";
@@ -61,6 +62,8 @@ export type CanonicalTravelContext = {
   selectedInterests?: string[];
   /** 已列出必去點清單 */
   mustVisitGenerated?: boolean;
+  /** 規劃推薦流程階段 */
+  planningStage?: import("@/lib/ai/chat-planning-stage").PlanningRecommendationStage;
   /** 對話階段：準備進入行程規劃 */
   conversationState?: import("@/lib/ai/itinerary-planning").ConversationState;
   /** 活動型推薦（camping 等） */
@@ -74,6 +77,35 @@ export type CanonicalTravelContext = {
 export const EMPTY_TRAVEL_CONTEXT: CanonicalTravelContext = {
   interests: [],
 };
+
+/** Reject placeholders and empty values — must not overwrite existing context. */
+export function isValidContextValue(v: unknown): boolean {
+  if (v == null) return false;
+  if (typeof v === "string") {
+    const t = v.trim();
+    return t.length > 0 && t !== "--" && t !== "—";
+  }
+  if (typeof v === "number") return !Number.isNaN(v);
+  return true;
+}
+
+function pickValidContextValue<T>(next: T | undefined | null, prev: T | undefined): T | undefined {
+  return isValidContextValue(next) ? (next as T) : prev;
+}
+
+function resolveSessionDestination(session: ChatPlanningSession): string | undefined {
+  const candidates = [
+    session.travelContext?.destination,
+    session.tripPlanningContext?.destination,
+    session.tripDestination?.city,
+    session.tripDestination?.displayLabel,
+    session.preferredArea,
+  ];
+  for (const c of candidates) {
+    if (isValidContextValue(c)) return normalizeDestinationLabel(String(c));
+  }
+  return undefined;
+}
 
 const MOOD_PRESETS: Record<
   string,
@@ -118,6 +150,15 @@ function parseDays(text: string): number | undefined {
 }
 
 function parseMonth(text: string): string | undefined {
+  if (/下個月|下个月|下月/.test(text)) {
+    const next = new Date();
+    next.setMonth(next.getMonth() + 1);
+    return `${next.getMonth() + 1}月`;
+  }
+  if (/這個月|这个月|本月/.test(text)) {
+    const now = new Date();
+    return `${now.getMonth() + 1}月`;
+  }
   const m = text.match(/(\d{1,2})\s*月/);
   if (!m) return undefined;
   return `${Number.parseInt(m[1], 10)}月`;
@@ -180,15 +221,59 @@ function parseSetting(text: string, mood?: string): string | undefined {
   return undefined;
 }
 
+function parseTravelDateFromText(text: string): string | undefined {
+  const now = new Date();
+  if (/明天|明日/.test(text)) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().slice(0, 10);
+  }
+  if (/後天|后天/.test(text)) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 2);
+    return d.toISOString().slice(0, 10);
+  }
+  if (/今天|今日/.test(text)) {
+    return now.toISOString().slice(0, 10);
+  }
+  const iso = text.match(/\d{4}-\d{2}-\d{2}/);
+  if (iso) return iso[0];
+  return undefined;
+}
+
+function parseTravelConstraints(text: string): Partial<CanonicalTravelContext> {
+  const patch: Partial<CanonicalTravelContext> = {};
+  const excluded: string[] = [];
+
+  if (/(不要太熱|怕熱|避開高溫|不要曬|不想曬|避免中午|太熱)/.test(text)) {
+    excluded.push("戶外曝曬", "中午戶外");
+    patch.setting = "室內";
+    patch.vibe = patch.vibe ?? "避暑";
+  }
+  if (/(不要太冷|怕冷|避寒|太冷)/.test(text)) {
+    excluded.push("戶外長時間");
+    patch.setting = patch.setting ?? "室內";
+  }
+  if (/(不要下雨|怕雨|下雨天|避雨)/.test(text)) {
+    patch.setting = "室內";
+    excluded.push("戶外");
+  }
+  if (/(少走路|不想走太多|不要走太多)/.test(text)) {
+    excluded.push("長距離步行");
+  }
+
+  if (excluded.length) {
+    patch.excludedCategories = excluded;
+  }
+  return patch;
+}
+
 function parseDestinationFromTurn(
   text: string,
   skipDestParse: boolean,
 ): string | undefined {
   if (skipDestParse) return undefined;
-  return (
-    parseDestinationFromText(text) ??
-    parseDestinationSelectionFromText(text)
-  );
+  return resolveDestinationFromText(text);
 }
 
 function mergeDestinationFields(
@@ -239,6 +324,7 @@ export function parseTravelContextFromText(
       destinationCountry: prev.destinationCountry ?? pq.destinationCountry,
       days: parseDays(t) ?? prev.days ?? session.tripDays,
       travelMonth: prev.travelMonth,
+      startDate: parseTravelDateFromText(t) ?? prev.startDate ?? session.tripStartDate,
       tripPurpose: prev.tripPurpose,
       vibe: prev.vibe,
       mood: prev.mood,
@@ -248,6 +334,7 @@ export function parseTravelContextFromText(
       destinationCities: prev.destinationCities,
       selectedTripStyle: prev.selectedTripStyle,
       useDefaultRecommendation: prev.useDefaultRecommendation,
+      ...parseTravelConstraints(t),
     };
   }
   if (session.adviceSelectionThisTurn) {
@@ -299,7 +386,7 @@ export function parseTravelContextFromText(
   const base: Partial<CanonicalTravelContext> = {
     currentLocation: session.location?.city,
     travelMonth: parseMonth(t),
-    startDate: session.tripStartDate ?? session.travelDate,
+    startDate: parseTravelDateFromText(t) ?? session.tripStartDate ?? session.travelDate,
     endDate: session.tripEndDate,
     days: parseDays(t) ?? session.tripDays,
     mood: preset?.mood ?? moodHint ?? parseVibe(t),
@@ -312,6 +399,7 @@ export function parseTravelContextFromText(
     tripPurpose: tripPurpose ?? preset?.tripPurpose,
     vibe: parseVibe(t, moodHint, { skipFlexibleVibe }) ?? session.discovery?.vibe,
     setting: parseSetting(t, moodHint) ?? session.discovery?.setting,
+    ...parseTravelConstraints(t),
     ...budgetRefinement,
   };
 
@@ -400,23 +488,30 @@ export function mergeTravelContext(
     const skipDestParse =
       isMoodRecommendationSession(workingSession) || Boolean(pendingSelection.selectedOption);
 
+    const parsedDest = isValidContextValue(parsed.destination) ? parsed.destination : undefined;
+    const prevDest = isValidContextValue(prev.destination) ? prev.destination : undefined;
+    const sessionDest = resolveSessionDestination(workingSession);
+
     const destMerge = pendingSelection.selectedOption
       ? {
-          destination: pendingSelection.contextPatch.destination ?? prev.destination,
-          destinationCountry:
-            pendingSelection.contextPatch.destinationCountry ?? prev.destinationCountry,
+          destination: pickValidContextValue(
+            pendingSelection.contextPatch.destination,
+            prevDest ?? sessionDest,
+          ),
+          destinationCountry: pickValidContextValue(
+            pendingSelection.contextPatch.destinationCountry,
+            prev.destinationCountry,
+          ),
         }
-      : parsed.destination
+      : parsedDest
         ? {
-            destination: parsed.destination,
-            destinationCountry: parsed.destinationCountry,
+            destination: parsedDest,
+            destinationCountry:
+              pickValidContextValue(parsed.destinationCountry, prev.destinationCountry) ??
+              prev.destinationCountry,
           }
         : {
-            destination: skipDestParse
-              ? prev.destination ??
-                workingSession.tripDestination?.city ??
-                workingSession.tripDestination?.displayLabel
-              : prev.destination,
+            destination: prevDest ?? sessionDest,
             destinationCountry: prev.destinationCountry,
           };
 
@@ -425,7 +520,8 @@ export function mergeTravelContext(
       ...pendingSelection.contextPatch,
       ...Object.fromEntries(
         Object.entries(parsed).filter(
-          ([key, v]) => v != null && v !== "" && key !== "destination" && key !== "destinationCountry",
+          ([key, v]) =>
+            isValidContextValue(v) && key !== "destination" && key !== "destinationCountry",
         ),
       ),
       ...destMerge,
@@ -437,8 +533,8 @@ export function mergeTravelContext(
         parsed.companion ??
         prev.companion ??
         workingSession.discovery?.companionship,
-      days: parsed.days ?? prev.days ?? workingSession.tripDays,
-      travelMonth: parsed.travelMonth ?? prev.travelMonth,
+      days: pickValidContextValue(parsed.days, prev.days) ?? workingSession.tripDays,
+      travelMonth: pickValidContextValue(parsed.travelMonth, prev.travelMonth),
       startDate: parsed.startDate ?? prev.startDate ?? workingSession.tripStartDate,
       endDate: parsed.endDate ?? prev.endDate ?? workingSession.tripEndDate,
       transportMode: parsed.transportMode ?? prev.transportMode ?? workingSession.transportation,
@@ -466,8 +562,11 @@ export function mergeTravelContext(
         pendingSelection.contextPatch.conversationState ?? prev.conversationState,
       selectedPlanMode:
         pendingSelection.contextPatch.selectedPlanMode ?? prev.selectedPlanMode,
-      excludedCategories:
-        workingSession.excludedCategories ?? prev.excludedCategories,
+      excludedCategories: uniqStrings([
+        ...(workingSession.excludedCategories ?? []),
+        ...(prev.excludedCategories ?? []),
+        ...(parsed.excludedCategories ?? []),
+      ]),
     };
 
     console.info("[AI_CONTEXT] parsed", logTravelContext(merged));

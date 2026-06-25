@@ -37,6 +37,7 @@ import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import type { SavedPlace } from "@/lib/places-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
+import { prioritizeWeatherAwareHomeWaves } from "@/lib/ai/weather-place-search";
 
 export type SearchPlacesInput = {
   lat: number;
@@ -130,8 +131,12 @@ const DAY_WAVES: HomeSearchWave[] = [
   },
 ];
 
-function wavesForPeriod(period: HomeNearbyPeriod): HomeSearchWave[] {
-  return period === "late_night" ? LATE_NIGHT_WAVES : DAY_WAVES;
+function wavesForPeriod(
+  period: HomeNearbyPeriod,
+  weather?: WeatherSummary | null,
+): HomeSearchWave[] {
+  const base = period === "late_night" ? LATE_NIGHT_WAVES : DAY_WAVES;
+  return prioritizeWeatherAwareHomeWaves(base, weather);
 }
 
 function mergePlacesById(base: PlaceResult[], extra: PlaceResult[]): PlaceResult[] {
@@ -385,7 +390,7 @@ async function loadHomeNearbyPicksInner(
   at: Date,
   timeZone: string,
 ): Promise<HomeNearbyPick[]> {
-  const waves = wavesForPeriod(period);
+  const waves = wavesForPeriod(period, ctx.weather);
   const pickOptions = {
     origin: ctx.userLocation,
     minResults: HOME_NEARBY_MIN_DISPLAY,

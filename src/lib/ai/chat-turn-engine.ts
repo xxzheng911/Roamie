@@ -1,12 +1,16 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { buildWeatherAwarePlanningReply, buildWeatherConstraintAcknowledgement } from "@/lib/ai/weather-planning-reply";
 import {
   applyDestinationPendingSelection,
   buildNextStepAfterAdviceSelection,
   type PendingQuestion,
 } from "@/lib/ai/destination-pending-question";
 import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
+import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+
+export { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 
 export type PlanningSlot =
   | "destination"
@@ -50,19 +54,6 @@ export function isPlanningTurnActive(
       session.tripPlanningContext?.intent === "destination_planning" ||
       isDestinationAdviceActive(session, ctx),
   );
-}
-
-export function logChatContextUpdate(fields: Record<string, string | number | undefined>): void {
-  const parts = Object.entries(fields)
-    .filter(([, value]) => value != null && value !== "")
-    .map(([key, value]) => `${key}=${value}`);
-  if (parts.length > 0) {
-    console.info("[CHAT_CONTEXT_UPDATE]", parts.join(" "));
-  }
-}
-
-export function logChatNextStep(step: string): void {
-  console.info("[CHAT_NEXT_STEP]", step);
 }
 
 export function logChatPendingParseFailed(
@@ -170,29 +161,36 @@ export function buildPlanningOfflineReply(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
 ): string | null {
-  const dest = ctx.destination ?? session.travelContext?.destination;
-  if (!dest) return null;
+  const dest =
+    ctx.destination ??
+    session.tripPlanningContext?.destination ??
+    session.tripDestination?.city ??
+    session.tripDestination?.displayLabel ??
+    session.preferredArea ??
+    session.travelContext?.destination;
+  if (!dest?.trim()) return null;
 
   const summary = buildPlanningContextSummary(ctx);
   if (session.pendingQuestion?.type === "ask_days" || (!ctx.days && !session.pendingQuestion)) {
     return [`好，我先記下：`, summary, "", `你這趟大概幾天？`].filter(Boolean).join("\n");
   }
+  const constraintAck = buildWeatherConstraintAcknowledgement(ctx, ctx.weather);
+  if (constraintAck && ctx.excludedCategories?.some((c) => /曝曬|中午|高溫|戶外/.test(c))) {
+    return constraintAck;
+  }
+
   if (
     session.pendingQuestion?.type === "ask_preference" ||
     (ctx.days && !ctx.vibe && !ctx.selectedInterests?.length)
   ) {
-    return [
-      `好，我先記下：`,
-      summary,
-      "",
-      `${dest} ${ctx.days ?? ""} 天其實很舒服。你比較偏：`,
-      "A. 經典景點",
-      "B. 美食咖啡",
-      "C. 海灘放鬆",
-      "D. 都可以",
-    ]
-      .filter(Boolean)
-      .join("\n");
+    const planned = buildWeatherAwarePlanningReply({
+      destination: dest,
+      days: ctx.days ?? 1,
+      weather: ctx.weather,
+      context: ctx,
+      preferNextStepQuestion: true,
+    });
+    return planned.reply;
   }
 
   return [

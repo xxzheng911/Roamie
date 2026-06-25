@@ -14,14 +14,47 @@ export type PlaceLike = {
   lng?: number | null;
 };
 
-/** 正規化名稱：去空白、全半形、常見尾綴 */
-export function normalizePlaceName(name: string): string {
-  return name
-    .trim()
+/** 核心地點正規化 — 同一景點不同附屬名稱視為相同 */
+export function normalizeCorePlaceName(name: string): string {
+  const raw = name.trim();
+  if (!raw) return "";
+
+  const compact = raw
     .toLowerCase()
     .replace(/\s+/g, "")
-    .replace(/[（(].*[)）]/g, "")
-    .replace(/店$|館$|廳$/, "");
+    .replace(/[（(].*[)）]/g, "");
+
+  const KNOWN_CORE_LANDMARKS: { core: string; patterns: RegExp[] }[] = [
+    { core: "台北101", patterns: [/台北\s*101/i, /^101/i] },
+    { core: "阿里山", patterns: [/阿里山/i] },
+    { core: "富士山", patterns: [/富士山/i] },
+    { core: "象山", patterns: [/象山/i] },
+    { core: "愛河", patterns: [/愛河/i] },
+    { core: "清水寺", patterns: [/清水寺/i] },
+    { core: "淺草寺", patterns: [/淺草寺/i] },
+  ];
+
+  for (const { core, patterns } of KNOWN_CORE_LANDMARKS) {
+    if (patterns.some((re) => re.test(raw) || re.test(compact))) {
+      return core.toLowerCase().replace(/\s+/g, "");
+    }
+  }
+
+  const stripped = compact
+    .replace(/觀景台|觀景平台|展望台|觀景/g, "")
+    .replace(/親水公園|親水平台|景觀親水平台|親水/g, "")
+    .replace(/國家森林遊樂區|國家風景區|森林遊樂區|風景區/g, "")
+    .replace(/五合目|四合目|三合目|二合目|一合目/g, "")
+    .replace(/火車站|火车站|車站|火车站|遊客中心|游客中心/g, "")
+    .replace(/廣場|步道|停車場|停车场/g, "")
+    .replace(/公園/g, "");
+
+  return stripped || compact;
+}
+
+/** 正規化名稱 — 同 normalizeCorePlaceName */
+export function normalizePlaceName(name: string): string {
+  return normalizeCorePlaceName(name);
 }
 
 function normalizeAddress(address?: string): string {
@@ -37,7 +70,13 @@ export function placeIdentityKey(p: PlaceLike): string {
   return addr ? `na:${name}@${addr}` : `n:${name}`;
 }
 
-/** 名稱高度相似（子字串或編輯距離簡化） */
+export function isSameCorePlace(a: PlaceLike, b: PlaceLike): boolean {
+  const ca = normalizePlaceName(a.placeName ?? a.name);
+  const cb = normalizePlaceName(b.placeName ?? b.name);
+  return Boolean(ca && cb && ca === cb);
+}
+
+/** 名稱高度相似（子字串或核心地點相同） */
 export function isSimilarPlaceName(a: string, b: string): boolean {
   const na = normalizePlaceName(a);
   const nb = normalizePlaceName(b);
@@ -49,6 +88,7 @@ export function isSimilarPlaceName(a: string, b: string): boolean {
 
 export function isDuplicatePlace(a: PlaceLike, b: PlaceLike): boolean {
   if (placeIdentityKey(a) === placeIdentityKey(b)) return true;
+  if (isSameCorePlace(a, b)) return true;
   const nameA = placeDisplayName(a as RoamieRecommendationItem);
   const nameB = placeDisplayName(b as RoamieRecommendationItem);
   if (isSimilarPlaceName(nameA, nameB)) return true;
@@ -88,9 +128,13 @@ export function filterAlreadyRecommendedPlaces<T extends PlaceLike>(
     recommended?: PlaceLike[];
     rejectedNames?: string[];
     recentNames?: string[];
+    blockedCoreNames?: string[];
   },
 ): T[] {
   let list = dedupePlaces(candidates);
+  const blockedCores = new Set(
+    (opts.blockedCoreNames ?? []).map((n) => normalizePlaceName(n)).filter(Boolean),
+  );
   const block: PlaceLike[] = [
     ...(opts.selected ?? []),
     ...(opts.recommended ?? []),
@@ -98,7 +142,11 @@ export function filterAlreadyRecommendedPlaces<T extends PlaceLike>(
     ...(opts.recentNames ?? []).map((name) => ({ name })),
   ];
   if (block.length) list = filterAlreadySelectedPlaces(list, block);
-  return list;
+  if (!blockedCores.size) return list;
+  return list.filter((c) => {
+    const core = normalizePlaceName(c.placeName ?? c.name);
+    return !core || !blockedCores.has(core);
+  });
 }
 
 /** 依與已選地點的距離排序（近的先） */
@@ -133,6 +181,55 @@ export function mergePlannedStops(
   return dedupePlaces([...selected, ...additional]) as ChatPlaceItem[];
 }
 
+export function filterExcludedPlaceIds<T extends PlaceLike>(
+  candidates: T[],
+  excludeIds: string[],
+): T[] {
+  if (!excludeIds.length) return candidates;
+  const block = new Set(excludeIds);
+  return candidates.filter((p) => !block.has(placeIdentityKey(p)));
+}
+
+export function collectRecommendedNormalizedNames(
+  session: ChatPlanningSession,
+): string[] {
+  const names = new Set<string>();
+  for (const p of session.recommendedPlaces) {
+    const core = normalizePlaceName(p.name);
+    if (core) names.add(core);
+  }
+  for (const n of session.recommendedNormalizedNames ?? []) {
+    if (n) names.add(n);
+  }
+  for (const n of session.rejectedPlaceNames ?? []) {
+    const core = normalizePlaceName(n);
+    if (core) names.add(core);
+  }
+  return [...names];
+}
+
+export function appendRecommendedNormalizedNames(
+  session: ChatPlanningSession,
+  newPlaces: PlaceLike[],
+): string[] {
+  const prev = new Set(collectRecommendedNormalizedNames(session));
+  for (const p of newPlaces) {
+    const core = normalizePlaceName(p.placeName ?? p.name);
+    if (core) prev.add(core);
+  }
+  return [...prev];
+}
+
+export function appendRecommendedPlaceIds(
+  session: ChatPlanningSession,
+  newPlaces: PlaceLike[],
+): string[] {
+  const prev = new Set(session.recommendedPlaceIds ?? []);
+  for (const p of session.recommendedPlaces) prev.add(placeIdentityKey(p));
+  for (const p of newPlaces) prev.add(placeIdentityKey(p));
+  return [...prev];
+}
+
 export function extractPlaceIds(places: PlaceLike[]): string[] {
   return dedupePlaces(places).map((p) => placeIdentityKey(p));
 }
@@ -149,12 +246,16 @@ export function syncSessionPlaceMemory(session: ChatPlanningSession): ChatPlanni
     selected,
     filterAlreadySelectedPlaces(recommended, selected) as ChatPlaceItem[],
   );
+  const recommendedPlaceIds = appendRecommendedPlaceIds(session, recommended);
+  const recommendedNormalizedNames = appendRecommendedNormalizedNames(session, recommended);
   return {
     ...session,
     selectedPlaces: selected,
     selectedPlaceIds: extractPlaceIds(selected),
     selectedPlaceNames: extractPlaceNames(selected),
     plannedStops,
+    recommendedPlaceIds,
+    recommendedNormalizedNames,
   };
 }
 
@@ -202,6 +303,8 @@ export function buildPlanningMemoryContext(session: ChatPlanningSession): string
     `selectedMood：${synced.selectedMood ?? synced.mood ?? "（未指定）"}`,
     `selectedPlaceNames：${synced.selectedPlaceNames?.join("、") || "（無）"}`,
     `selectedPlaceIds：${synced.selectedPlaceIds?.join(" | ") || "（無）"}`,
+    `recommendedPlaceIds：${synced.recommendedPlaceIds?.join(" | ") || "（無）"}`,
+    `recommendedNormalizedNames：${synced.recommendedNormalizedNames?.join("、") || "（無）"}`,
     `plannedStops（已選+已加入）：${extractPlaceNames(synced.plannedStops ?? []).join("、") || "（無）"}`,
     `禁止重複推薦：${buildExcludePlacesBlock(synced)}`,
     synced.rejectedPlaceNames?.length

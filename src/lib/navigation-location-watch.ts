@@ -39,11 +39,16 @@ export function subscribeNavigationLocationWatch(
   }
 
   listeners.add(onUpdate);
-  void import("@/lib/device-location").then(({ requestDeviceLocation }) =>
-    requestDeviceLocation({ force: true }).then((loc) => {
-      if (!loc.usedFallback && isNavigationLocationMode()) {
-        notifyListeners(loc);
-      }
+  void import("@/lib/location-app-gate").then(({ isAppActiveForLocation, waitForAppActiveForLocation }) =>
+    waitForAppActiveForLocation().then((active) => {
+      if (!active || !isAppActiveForLocation()) return;
+      return import("@/lib/device-location").then(({ requestDeviceLocation }) =>
+        requestDeviceLocation({ force: true }).then((loc) => {
+          if (!loc.usedFallback && isNavigationLocationMode()) {
+            notifyListeners(loc);
+          }
+        }),
+      );
     }),
   );
 

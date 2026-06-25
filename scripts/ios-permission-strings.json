@@ -1,14 +1,14 @@
 {
   "en": {
-    "NSLocationWhenInUseUsageDescription": "Roamie uses your location to recommend nearby places and personalized trips.",
-    "NSLocationAlwaysAndWhenInUseUsageDescription": "Roamie uses your location to recommend nearby places and personalized trips.",
+    "NSLocationWhenInUseUsageDescription": "Roamie uses your location to recommend nearby attractions, restaurants, and trips.",
+    "NSLocationAlwaysAndWhenInUseUsageDescription": "Roamie uses your location to recommend nearby attractions, restaurants, and trips.",
     "NSCameraUsageDescription": "Roamie uses the camera so you can take trip photos and update your profile picture.",
     "NSPhotoLibraryUsageDescription": "Roamie needs access to your photos so you can upload trip photos and your profile picture.",
     "NSPhotoLibraryAddUsageDescription": "Roamie can save photos you choose to your library when you update your profile."
   },
   "zh-Hant": {
-    "NSLocationWhenInUseUsageDescription": "Roamie 需要你的位置資訊，才能推薦附近適合你的地點與行程。",
-    "NSLocationAlwaysAndWhenInUseUsageDescription": "Roamie 需要你的位置資訊，才能推薦附近適合你的地點與行程。",
+    "NSLocationWhenInUseUsageDescription": "Roamie 需要定位權限，才能依你所在位置推薦附近景點、餐廳與行程。",
+    "NSLocationAlwaysAndWhenInUseUsageDescription": "Roamie 需要定位權限，才能依你所在位置推薦附近景點、餐廳與行程。",
     "NSCameraUsageDescription": "Roamie 需要使用相機，方便拍攝旅程照片與更新頭像。",
     "NSPhotoLibraryUsageDescription": "Roamie 需要存取照片，方便你上傳旅程照片與個人頭像。",
     "NSPhotoLibraryAddUsageDescription": "Roamie 可在你更新個人資料時，將選取的照片儲存到相簿。"

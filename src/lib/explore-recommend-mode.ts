@@ -1,5 +1,7 @@
 import { isTaiwanCoordinates } from "@/lib/geo-region";
 import { shouldLogExploreEvent } from "@/lib/explore-request-guard";
+import type { WeatherSummary } from "@/lib/weather-types";
+import { buildWeatherAwareCityCategoryQueries } from "@/lib/ai/weather-place-search";
 
 /** 探索地圖：城市 / 區域搜尋後的推薦模式（非「附近小店」） */
 
@@ -89,7 +91,14 @@ export function cityRecommendMaxDistanceMeters(): number {
 }
 
 /** 城市 + 分類：依序 text 搜尋，補 nearby 不足 */
-export function cityCategoryTextQueries(categoryId: string, cityLabel: string): string[] {
+export function cityCategoryTextQueries(
+  categoryId: string,
+  cityLabel: string,
+  weather?: WeatherSummary | null,
+): string[] {
+  const weatherQueries = buildWeatherAwareCityCategoryQueries(categoryId, cityLabel, weather);
+  if (weatherQueries.length) return weatherQueries;
+
   const city = cityLabel.trim();
   if (!city) return [];
 
@@ -147,9 +156,10 @@ export function exploreCategoryTextQueries(
   categoryId: string,
   userLocation: { lat: number; lng: number },
   cityHint?: string | null,
+  weather?: WeatherSummary | null,
 ): string[] {
   const city = inferExploreCityLabel(userLocation.lat, userLocation.lng, cityHint);
-  return cityCategoryTextQueries(categoryId, city);
+  return cityCategoryTextQueries(categoryId, city, weather);
 }
 
 export function logExploreRecommendMode(

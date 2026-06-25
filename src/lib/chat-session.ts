@@ -94,6 +94,10 @@ export type ChatPlanningSession = {
   location?: RoamieLocation;
   weather?: WeatherSummary | null;
   recommendedPlaces: ChatPlaceItem[];
+  /** 本段聊天已推薦過的地點 id（placeId 或 name key），用於排除重複 */
+  recommendedPlaceIds?: string[];
+  /** 已推薦過的核心地點名稱（normalizePlaceName） */
+  recommendedNormalizedNames?: string[];
   selectedPlaces: ChatPlaceItem[];
   selectedPlaceIds?: string[];
   selectedPlaceNames?: string[];

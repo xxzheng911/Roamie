@@ -66,7 +66,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
     },
     map: {
       searchPlaceholder: "想去哪裡走走？",
-      locationFallbackHint: "無法取得即時定位，已使用預設位置",
+      locationFallbackHint: "暫時讀不到定位，先用附近城市推薦",
       mapLoadFallback: "地圖暫時無法載入，仍可依下方列表探索",
       searchFailed: "搜尋失敗",
       demoPlacesNote: "（目前顯示示範地點）",
@@ -220,7 +220,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       weatherRetry: "重試",
       weatherPlaceholderTitle: "先看看附近，天氣稍後再更新",
       weatherPlaceholderHint: "選好心情後，Roamie 仍會依位置與時段幫你推薦適合的地方。",
-      weatherFallbackLocation: "無法取得定位，暫以台北為中心",
+      weatherFallbackLocation: "暫時讀不到定位，先用附近城市推薦",
       weatherOpenLocationSettings: "開啟定位權限",
       weatherMoodHint: "選好心情後，點上方按鈕讓 Roamie 依天氣與位置推薦。",
       nearbySection: "看看附近有哪些角落",

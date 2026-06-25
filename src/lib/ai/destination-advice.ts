@@ -1,14 +1,19 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import type { ChatMsg } from "@/lib/chat-history";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import {
   isDestinationAdviceText,
   isDestinationSelectionText,
   isKnownCountryLabel,
+  isKnownDestinationLabel,
+  isKnownScenicLabel,
   isKnownTouristCityLabel,
   normalizeDestinationLabel,
   parseDestinationFromText,
   parseDestinationSelectionFromText,
+  resolveDestinationFromText,
 } from "@/lib/ai/trip-planning-context";
 import { isTripAddPlaceSession } from "@/lib/trip/trip-add-place-session";
 import {
@@ -20,32 +25,40 @@ import {
   pendingQuestionForTripPreference,
   pendingQuestionForDestinationStyleChoice,
   pendingQuestionForItineraryAction,
+  pendingQuestionForPlanningNextStep,
   USE_DEFAULT_ROUTES,
   isItineraryNextStepPending,
   type PendingQuestion,
 } from "@/lib/ai/destination-pending-question";
-import {
-  advanceAfterPendingSelection,
-  logChatContextUpdate,
-  logChatNextStep,
-} from "@/lib/ai/chat-turn-engine";
+import { advanceAfterPendingSelection } from "@/lib/ai/chat-turn-engine";
+import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 import {
   contextPatchForPreferenceSelection,
   shouldSkipAskingDays,
 } from "@/lib/ai/chat-conversation-state";
 import { buildCityDaysConfirmedReply } from "@/lib/ai/city-days-planning";
+import { buildWeatherConstraintAcknowledgement } from "@/lib/ai/weather-planning-reply";
+import { buildScenicMonthPlanningReply } from "@/lib/ai/scenic-month-reply";
+import {
+  hasUserSpecifiedTravelMonth,
+  isBestSeasonQuestion,
+} from "@/lib/ai/season-response-guardrail";
 import {
   buildDailyRhythmReply,
   buildMustVisitPlacesReply,
+  detectMustVisitIntent,
+  detectPlaceRecommendationIntent,
   parseMustVisitPlacesIntent,
   parsePlanningFollowUpIntent,
+  resolveMustVisitAdvice,
+  resolveMustVisitDestination,
 } from "@/lib/ai/must-visit-places";
 import {
   buildItineraryPlanningReply,
   buildDailyRecommendationsReply,
-  buildFullItineraryDraftReply,
   isReadyForItineraryPlanning,
   parseItineraryPlanModeIntent,
+  itineraryGenerationStatusReply,
 } from "@/lib/ai/itinerary-planning";
 import { parseTripPreferences, type TripInterest } from "@/lib/ai/trip-preference";
 
@@ -68,7 +81,29 @@ export type DestinationAdviceResult = {
   reply: string | null;
   pendingQuestion?: PendingQuestion;
   contextPatch?: Partial<CanonicalTravelContext>;
+  recommendations?: RoamieRecommendationItem[];
+  recommendationsTitle?: string;
+  /** 觸發 Places API + generateItinerary，不可只回文字草稿 */
+  triggerItineraryGeneration?: boolean;
 };
+
+export function adviceToAssistantChatMsg(advice: DestinationAdviceResult): ChatMsg {
+  const content = advice.reply ?? "";
+  if (!advice.recommendations?.length) {
+    return { role: "assistant", content };
+  }
+  return {
+    role: "assistant",
+    content,
+    roamie: {
+      title: advice.recommendationsTitle ?? "必去推薦",
+      summary: content,
+      moodTag: "",
+      recommendations: advice.recommendations,
+      itinerary: [],
+    },
+  };
+}
 
 export function applyAdviceResultToSession(
   session: ChatPlanningSession,
@@ -85,6 +120,27 @@ export function applyAdviceResultToSession(
 }
 
 export { isFlexiblePreferenceReply } from "@/lib/ai/destination-pending-question";
+
+function buildItineraryGenerationAdvice(
+  ctx: CanonicalTravelContext,
+  extra?: Partial<CanonicalTravelContext>,
+): DestinationAdviceResult | null {
+  const reply = itineraryGenerationStatusReply(ctx);
+  if (!reply) return null;
+  const label = ctx.destination ? normalizeDestinationLabel(ctx.destination) : undefined;
+  return {
+    reply,
+    triggerItineraryGeneration: true,
+    contextPatch: {
+      destination: label ?? ctx.destination,
+      days: ctx.days,
+      selectedPlanMode: "full_itinerary",
+      conversationState: "ready_for_itinerary",
+      tripPurpose: "direct_itinerary_generation",
+      ...extra,
+    },
+  };
+}
 
 type CountryAdvice = {
   bestTime: string[];
@@ -229,7 +285,19 @@ export function parseDestinationAdvicePurpose(text: string): DestinationAdvicePu
     return "seasonal_destination";
   }
 
-  if (/(幾月|哪個月|什麼時候|何时|何時|最佳.{0,4}季)/.test(t)) {
+  if (
+    /(幾月|几月|哪個月|什么時候|什麼時候|何时|何時|幾號|几号|哪一天|哪天|哪日|下個月|下个月|這個月|这个月|花季|最佳.{0,4}季|最佳.{0,4}(?:時間|时间|日期))/.test(
+      t,
+    )
+  ) {
+    if (isBestSeasonQuestion(t)) return "best_time_to_visit";
+    if (
+      resolveDestinationFromText(t) &&
+      /(?:想)?去/.test(t) &&
+      !/(比較好|比较好|你覺得|觉得)/.test(t)
+    ) {
+      return "region_selected";
+    }
     return "best_time_to_visit";
   }
 
@@ -381,6 +449,65 @@ function buildCountrySelectionReply(country: string): string | null {
   return [...advice.selection, styleQuestion].join("\n");
 }
 
+function buildScenicAdviceReply(
+  spot: string,
+  userText: string,
+  ctx?: CanonicalTravelContext,
+  weather?: CanonicalTravelContext["weather"],
+): string | null {
+  if (detectMustVisitIntent(userText) || detectPlaceRecommendationIntent(userText)) {
+    return null;
+  }
+
+  const label = normalizeDestinationLabel(spot);
+
+  if (
+    ctx &&
+    hasUserSpecifiedTravelMonth(ctx, userText) &&
+    !isBestSeasonQuestion(userText)
+  ) {
+    return buildScenicMonthPlanningReply({
+      destination: label,
+      context: { ...ctx, destination: label },
+      userText,
+      weather: weather ?? ctx.weather ?? null,
+    });
+  }
+
+  if (label === "阿里山") {
+    const lines = [
+      "阿里山以日出、雲海、森林鐵道與神木步道聞名，海拔高、早晚溫差大。",
+      "3～4 月櫻花季、10～11 月楓紅期是熱門時段；若想看日出，建議前一晚住阿里山或搭下午上山火車，避開週末與連假人潮。",
+      "你預計去幾天？會開車還是搭大眾運輸？比較想看日出、森林步道，還是順便排奋起湖？",
+    ];
+    return lines.join("\n");
+  }
+
+  if (label === "日月潭") {
+    return [
+      "日月潭全年皆可，9～12 月秋景與騎行較舒適；春節與連假人潮較多。",
+      "建議避開週六中午入湖時段，平日或住一晚看晨霧更愜意。",
+      "你預計去幾天？會環湖騎車還是以纜車＋步道為主？",
+    ].join("\n");
+  }
+
+  if (label === "太魯閣") {
+    return [
+      "太魯閣 10～4 月較乾爽適合步道；梅雨季（5～6 月）需注意落石與部分步道管制。",
+      "平日較少人潮，建議一早入山。你預計停留幾天？會自駕還是搭公車？",
+    ].join("\n");
+  }
+
+  if (label === "富士山") {
+    return [
+      "富士山登山季約 7～9 月；若只是河口湖周邊，4～5 月與 10～11 月天氣與景色都很穩。",
+      "週末與日本連假人潮多，平日較從容。你想登山還是湖區散策？",
+    ].join("\n");
+  }
+
+  return null;
+}
+
 function buildCityAdviceReply(city: string, country?: string): string | null {
   const label = normalizeDestinationLabel(city);
 
@@ -409,24 +536,22 @@ function resolvePlanningFollowUpReply(
   const followUp = parsePlanningFollowUpIntent(userText);
   if (!followUp) return null;
 
-  const destination =
-    ctx.destination ??
-    (ctx.destinationCities?.length ? ctx.destinationCities[0] : undefined);
+  const destination = resolveMustVisitDestination(ctx, userText);
   if (!destination) return null;
 
+  if (followUp === "full_itinerary") {
+    const gen = buildItineraryGenerationAdvice({ ...ctx, destination });
+    if (gen) return gen;
+  }
+
   if (followUp === "must_visit_places") {
-    const reply = buildMustVisitPlacesReply({ ...ctx, destination });
-    if (!reply) return null;
+    const mustVisit = resolveMustVisitAdvice({ ...ctx, destination }, userText);
+    if (!mustVisit) return null;
     return {
-      reply,
-      pendingQuestion: pendingQuestionForTripPreference(
-        destination,
-        ctx.destinationCountry,
-      ),
-      contextPatch: {
-        mustVisitGenerated: true,
-        tripPurpose: "must_visit_places",
-      },
+      reply: mustVisit.reply,
+      recommendations: mustVisit.recommendations,
+      recommendationsTitle: `${normalizeDestinationLabel(destination)}必去推薦`,
+      contextPatch: mustVisit.contextPatch,
     };
   }
 
@@ -484,15 +609,70 @@ export function resolveDestinationAdvice(
 ): DestinationAdviceResult {
   if (isTripAddPlaceSession(session)) return { reply: null };
 
+  if (
+    ctx.destination?.trim() &&
+    /(不要太熱|怕熱|不要曬|不想曬|太熱|不要太冷|怕雨|不要下雨)/.test(userText.trim())
+  ) {
+    const ack = buildWeatherConstraintAcknowledgement(
+      ctx,
+      ctx.weather ?? session.weather ?? null,
+    );
+    if (ack) {
+      return {
+        reply: ack,
+        pendingQuestion: pendingQuestionForPlanningNextStep(
+          ctx.destination,
+          ctx.destinationCountry,
+        ),
+        contextPatch: {
+          tripPurpose: "ready_for_itinerary",
+          conversationState: "ready_for_itinerary",
+        },
+      };
+    }
+  }
+
+  if (detectMustVisitIntent(userText) || detectPlaceRecommendationIntent(userText)) {
+    const mustVisit = resolveMustVisitAdvice(ctx, userText);
+    if (mustVisit) {
+      const dest = resolveMustVisitDestination(ctx, userText) ?? ctx.destination;
+      return {
+        reply: mustVisit.reply,
+        recommendations: mustVisit.recommendations,
+        recommendationsTitle: dest ? `${normalizeDestinationLabel(dest)}必去推薦` : "必去推薦",
+        contextPatch: mustVisit.contextPatch,
+      };
+    }
+  }
+
   if (session.adviceSelectionThisTurn && session.lastResolvedPendingQuestion) {
+    if (session.adviceSelectionThisTurn === "full_itinerary") {
+      const gen = buildItineraryGenerationAdvice(ctx, {
+        destination:
+          session.lastResolvedPendingQuestion.baseDestination ?? ctx.destination,
+        destinationCountry:
+          session.lastResolvedPendingQuestion.destinationCountry ?? ctx.destinationCountry,
+        days: ctx.days ?? parseDayCountFromText(userText),
+      });
+      if (gen) return gen;
+    }
+
     const next = advanceAfterPendingSelection(
       session.adviceSelectionThisTurn,
       session.lastResolvedPendingQuestion,
       ctx,
     );
+    const dest =
+      session.lastResolvedPendingQuestion.baseDestination ?? ctx.destination;
+    const mustVisit =
+      session.adviceSelectionThisTurn === "must_visit_places" && dest
+        ? resolveMustVisitAdvice({ ...ctx, destination: dest }, userText)
+        : null;
     return {
       reply: next.reply,
       pendingQuestion: next.pendingQuestion,
+      recommendations: mustVisit?.recommendations,
+      recommendationsTitle: mustVisit && dest ? `${normalizeDestinationLabel(dest)}必去推薦` : undefined,
       contextPatch:
         session.lastResolvedPendingQuestion.type === "preference_choice"
           ? {
@@ -505,6 +685,7 @@ export function resolveDestinationAdvice(
             ? {
                 mustVisitGenerated: true,
                 tripPurpose: "must_visit_places",
+                planningStage: "recommendations_generated",
               }
             : session.adviceSelectionThisTurn === "full_itinerary"
               ? {
@@ -554,6 +735,46 @@ export function resolveDestinationAdvice(
   if (pending) {
     const selected = parsePendingOptionSelection(userText, pending);
     if (selected) {
+      if (selected === "full_itinerary") {
+        const gen = buildItineraryGenerationAdvice(
+          {
+            ...ctx,
+            destination: pending.baseDestination ?? ctx.destination,
+            days: ctx.days ?? parseDayCountFromText(userText),
+          },
+          {
+            destination: pending.baseDestination ?? ctx.destination,
+            destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
+          },
+        );
+        if (gen) return gen;
+      }
+
+      if (
+        selected === "must_visit_places" ||
+        parsePlanningFollowUpIntent(userText) === "must_visit_places"
+      ) {
+        const dest = pending.baseDestination ?? ctx.destination;
+        const mustVisit = resolveMustVisitAdvice({ ...ctx, destination: dest }, userText);
+        if (mustVisit) {
+          return {
+            reply: mustVisit.reply,
+            recommendations: mustVisit.recommendations,
+            recommendationsTitle: dest ? `${normalizeDestinationLabel(dest)}必去推薦` : "必去推薦",
+            contextPatch: {
+              ...mustVisit.contextPatch,
+              ...(pending.type === "preference_choice"
+                ? {
+                    selectedInterests: selected.split(",") as TripInterest[],
+                    conversationState: "ready_for_itinerary" as const,
+                    tripPurpose: "ready_for_itinerary",
+                  }
+                : {}),
+            },
+          };
+        }
+      }
+
       const next = advanceAfterPendingSelection(selected, pending, ctx);
       return {
         reply: next.reply,
@@ -578,6 +799,7 @@ export function resolveDestinationAdvice(
               ? {
                   mustVisitGenerated: true,
                   tripPurpose: "must_visit_places",
+                  planningStage: "recommendations_generated",
                 }
               : pending.type === "destination_style_choice"
                 ? {
@@ -662,17 +884,8 @@ export function resolveDestinationAdvice(
     ctx.days &&
     !session.pendingQuestion
   ) {
-    const reply = buildFullItineraryDraftReply(ctx, ctx.selectedInterests as TripInterest[] | undefined);
-    if (reply) {
-      return {
-        reply,
-        contextPatch: {
-          selectedPlanMode: "full_itinerary",
-          conversationState: "itinerary_draft",
-          tripPurpose: "itinerary_draft",
-        },
-      };
-    }
+    const gen = buildItineraryGenerationAdvice(ctx);
+    if (gen) return gen;
   }
   if (
     planMode === "daily_recommendations" &&
@@ -737,16 +950,53 @@ export function resolveDestinationAdvice(
     return preferenceReply;
   }
 
+  const scenicDest =
+    ctx.destination ??
+    resolveDestinationFromText(userText) ??
+    session.tripPlanningContext?.destination ??
+    session.tripDestination?.city;
+  const scenicLabel = scenicDest ? normalizeDestinationLabel(scenicDest) : undefined;
+
+  if (
+    scenicLabel &&
+    isKnownDestinationLabel(scenicLabel) &&
+    hasUserSpecifiedTravelMonth(ctx, userText) &&
+    !isBestSeasonQuestion(userText) &&
+    !session.adviceSelectionThisTurn &&
+    ctx.tripPurpose !== "route_combination_selected" &&
+    ctx.tripPurpose !== "duration_selected"
+  ) {
+    const monthReply = buildScenicMonthPlanningReply({
+      destination: scenicLabel,
+      context: { ...ctx, destination: scenicLabel },
+      userText,
+      weather: ctx.weather ?? session.weather ?? null,
+    });
+    return {
+      reply: monthReply,
+      pendingQuestion: pendingQuestionForPlanningNextStep(
+        scenicLabel,
+        ctx.destinationCountry ?? session.travelContext?.destinationCountry,
+      ),
+      contextPatch: {
+        destination: scenicLabel,
+        tripPurpose: "region_selected",
+        conversationState: "ready_for_itinerary",
+      },
+    };
+  }
+
   const reply = buildDestinationAdviceReplyBody(ctx, session, userText);
   if (!reply) return { reply: null };
 
   return {
     reply,
     pendingQuestion: inferPendingQuestionFromAdviceReply(reply, ctx, session),
-    contextPatch: reply.includes("我會先抓這些必去點")
+    contextPatch: reply.includes("我幫你整理幾個") || reply.includes("我會先抓這些必去點")
       ? {
           mustVisitGenerated: true,
           tripPurpose: "must_visit_places",
+          planningStage: "recommendations_generated",
         }
       : undefined,
   };
@@ -775,8 +1025,8 @@ function buildDestinationAdviceReplyBody(
   }
 
   if (parseMustVisitPlacesIntent(userText)) {
-    const mustVisitReply = resolvePlanningFollowUpReply(ctx, userText);
-    if (mustVisitReply?.reply) return mustVisitReply.reply;
+    const mustVisit = resolveMustVisitAdvice(ctx, userText);
+    if (mustVisit) return mustVisit.reply;
   }
 
   const dest =
@@ -828,6 +1078,24 @@ function buildDestinationAdviceReplyBody(
   const month = ctx.travelMonth;
   const days = ctx.days ?? session.tripDays ?? parseDayCountFromText(userText);
 
+  // 景點／風景區（阿里山、日月潭等）
+  if (
+    destLabel &&
+    isKnownScenicLabel(destLabel) &&
+    ctx.tripPurpose !== "route_combination_selected" &&
+    ctx.tripPurpose !== "trip_style_selected" &&
+    ctx.tripPurpose !== "duration_selected" &&
+    !session.adviceSelectionThisTurn
+  ) {
+    const scenicReply = buildScenicAdviceReply(
+      destLabel,
+      userText,
+      ctx,
+      ctx.weather ?? session.weather ?? null,
+    );
+    if (scenicReply) return scenicReply;
+  }
+
   // 城市層級回覆（優先於國家通用模板）
   // 若使用者已選定路線組合或行程風格，不再重複城市開場模板
   if (
@@ -847,7 +1115,10 @@ function buildDestinationAdviceReplyBody(
       if (resolvedDays && shouldSkipAskingDays({ ...ctx, days: resolvedDays })) {
         logChatContextUpdate({ destination: destLabel, days: resolvedDays });
         logChatNextStep("ask_preference");
-        return buildCityDaysConfirmedReply(destLabel, resolvedDays, country).reply;
+        return buildCityDaysConfirmedReply(destLabel, resolvedDays, country, {
+          weather: ctx.weather,
+          context: ctx,
+        }).reply;
       }
       if (!resolvedDays) {
         return [

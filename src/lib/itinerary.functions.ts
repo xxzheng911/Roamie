@@ -3,11 +3,23 @@ import { z } from "zod";
 import type {
   RoamiePayloadV2,
   RoamieRecommendationItem,
+  RoamieItineraryItem,
   RoamieResponse,
   TripTransportMode,
 } from "@/lib/ai/types";
 import { buildOutfitAdviceForTrip } from "@/lib/outfit/build-advice";
 import { normalizeTime } from "@/lib/picker-utils";
+import {
+  INSUFFICIENT_ITINERARY_PLACES_MESSAGE,
+  isGenericPlaceLabel,
+  isValidItineraryStopPlace,
+} from "@/lib/ai/generic-place-label";
+import {
+  buildFallbackItineraryFromPlaces,
+  coalesceItineraryItems,
+  groupItineraryItemsByDay,
+  type GenerateItineraryResult,
+} from "@/lib/trip/itinerary-guards";
 
 const PlaceSchema = z
   .object({
@@ -21,6 +33,7 @@ const PlaceSchema = z
     lng: z.number().nullable().optional(),
     googleMapsUrl: z.string().optional(),
     placeName: z.string().optional(),
+    googlePlaceId: z.string().optional(),
     reasonSource: z.enum(["template", "ai"]).optional(),
   })
   .transform((raw) => ({
@@ -34,6 +47,7 @@ const PlaceSchema = z
     lng: raw.lng ?? null,
     googleMapsUrl: raw.googleMapsUrl ?? "",
     placeName: raw.placeName ?? raw.name,
+    googlePlaceId: raw.googlePlaceId,
     reasonSource: raw.reasonSource ?? "template",
   }));
 
@@ -60,8 +74,6 @@ const InputSchema = z.object({
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
 });
 
-export type ItineraryInput = z.infer<typeof InputSchema>;
-
 function inferTripTransport(transport?: string): TripTransportMode {
   const t = (transport ?? "").toLowerCase();
   if (/機車|scooter|摩托/.test(t)) return "scooter";
@@ -69,6 +81,112 @@ function inferTripTransport(transport?: string): TripTransportMode {
   if (/捷運|地鐵|地铁|大眾|公車|公交|transit|mrt|metro/.test(t)) return "transit";
   return "walk";
 }
+
+function filterValidSelectedPlaces(
+  places: RoamieRecommendationItem[],
+  destination: string,
+): RoamieRecommendationItem[] {
+  return places.filter((p) =>
+    isValidItineraryStopPlace(
+      {
+        name: p.name,
+        placeName: p.placeName,
+        placeId: p.googlePlaceId,
+        googlePlaceId: p.googlePlaceId,
+        address: p.address,
+        lat: p.lat,
+        lng: p.lng,
+      },
+      destination,
+    ),
+  );
+}
+
+function enrichItineraryFromSelectedPlaces(
+  items: RoamieItineraryItem[],
+  selectedPlaces: RoamieRecommendationItem[],
+  destination: string,
+): RoamieItineraryItem[] {
+  const byId = new Map(
+    selectedPlaces
+      .filter((p) => p.googlePlaceId?.trim())
+      .map((p) => [p.googlePlaceId!.trim(), p]),
+  );
+  const byName = new Map(
+    selectedPlaces.map((p) => [(p.placeName ?? p.name).trim(), p]),
+  );
+
+  return items
+    .map((item) => {
+      const name = (item.placeName ?? item.title).trim();
+      if (!name || isGenericPlaceLabel(name, destination)) return null;
+
+      const match =
+        (item.googlePlaceId?.trim() && byId.get(item.googlePlaceId.trim())) ||
+        byName.get(name) ||
+        byName.get(item.title.trim());
+
+      const enriched: RoamieItineraryItem = match
+        ? {
+            ...item,
+            placeName: match.placeName ?? match.name,
+            title: item.title?.trim() ? item.title : match.name,
+            googlePlaceId: match.googlePlaceId,
+            lat: match.lat,
+            lng: match.lng,
+            address: item.address?.trim() ? item.address : match.address,
+          }
+        : item;
+
+      if (
+        !isValidItineraryStopPlace(
+          {
+            placeName: enriched.placeName,
+            name: enriched.title,
+            placeId: enriched.googlePlaceId,
+            googlePlaceId: enriched.googlePlaceId,
+            address: enriched.address,
+            lat: enriched.lat,
+            lng: enriched.lng,
+          },
+          destination,
+        )
+      ) {
+        return null;
+      }
+      return enriched;
+    })
+    .filter((item): item is RoamieItineraryItem => item != null);
+}
+
+function buildItineraryFromSelectedPlaces(
+  selectedPlaces: RoamieRecommendationItem[],
+  days: number,
+  startDate: string,
+): RoamieItineraryItem[] {
+  return buildFallbackItineraryFromPlaces(selectedPlaces, days, startDate);
+}
+
+function buildFallbackTripPayload(
+  data: ItineraryInput,
+  items: RoamieItineraryItem[],
+  selectedPlaces: RoamieRecommendationItem[],
+): RoamiePayloadV2 {
+  const placeNames = selectedPlaces.map((p) => p.placeName ?? p.name).join("、");
+  return {
+    version: 2,
+    title: `${data.destination} ${data.days} 天`,
+    summary: `依你選的地點排成 ${data.days} 天節奏：${placeNames}`,
+    moodTag: data.mood ?? "",
+    recommendations: selectedPlaces,
+    itinerary: items,
+    destination: data.destination,
+    days: data.days,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+export type ItineraryInput = z.infer<typeof InputSchema>;
 
 /** @deprecated Legacy format — kept for backward-compatible trip display */
 export type ItineraryBlock = {
@@ -104,47 +222,86 @@ export type Itinerary = {
 
 export const generateItinerary = createServerFn({ method: "POST" })
   .inputValidator((input) => InputSchema.parse(input))
-  .handler(async ({ data }): Promise<{ itinerary: RoamiePayloadV2 }> => {
+  .handler(async ({ data }): Promise<GenerateItineraryResult> => {
     const [{ callRoamieAI }, { buildTransitLegsForItinerary }, { openWeatherGetForecast }] =
       await Promise.all([
         import("@/lib/ai/service.server"),
         import("@/lib/transit/build-legs.server"),
         import("@/lib/weather/openweather.server"),
       ]);
-    const selectedPlaces = (data.selectedPlaces ?? []) as RoamieRecommendationItem[];
+    const selectedPlaces = filterValidSelectedPlaces(
+      (data.selectedPlaces ?? []) as RoamieRecommendationItem[],
+      data.destination,
+    );
+
+    if (selectedPlaces.length < 1) {
+      return {
+        success: false,
+        errorCode: "insufficient_places",
+        message: INSUFFICIENT_ITINERARY_PLACES_MESSAGE,
+      };
+    }
 
     const interestsText = [data.interests, data.conversationSummary].filter(Boolean).join("\n\n");
-
-    const ai: RoamieResponse = await callRoamieAI({
-      mode: "itinerary",
-      locale: data.locale,
-      mood: data.mood,
-      preferences: data.preferences as never,
-      location: data.location,
-      weather: data.weather as never,
-      time: data.time,
-      planningHints: {
-        transportation: data.transport,
-        budget: data.budget === "low" ? "省錢" : data.budget === "high" ? "舒適" : "適中",
-        conversationSummary: data.conversationSummary,
-      },
-      itineraryRequest: {
-        destination: data.destination,
-        days: data.days,
-        budget: data.budget,
-        style: data.style,
-        mood: data.mood,
-        interests: interestsText,
-        startDate: data.startDate,
-        endDate: data.endDate,
-        origin: data.origin,
-        travelers: data.travelers,
-        transport: data.transport,
-        selectedPlaces,
-      },
-    });
-
     const startDate = data.startDate?.trim() || new Date().toISOString().slice(0, 10);
+
+    let ai: RoamiePayloadV2 | null = null;
+
+    try {
+      const aiResponse: RoamieResponse = await callRoamieAI({
+        mode: "itinerary",
+        locale: data.locale,
+        mood: data.mood,
+        preferences: data.preferences as never,
+        location: data.location,
+        weather: data.weather as never,
+        time: data.time,
+        planningHints: {
+          transportation: data.transport,
+          budget: data.budget === "low" ? "省錢" : data.budget === "high" ? "舒適" : "適中",
+          conversationSummary: data.conversationSummary,
+        },
+        itineraryRequest: {
+          destination: data.destination,
+          days: data.days,
+          budget: data.budget,
+          style: data.style,
+          mood: data.mood,
+          interests: interestsText,
+          startDate: data.startDate,
+          endDate: data.endDate,
+          origin: data.origin,
+          travelers: data.travelers,
+          transport: data.transport,
+          selectedPlaces,
+        },
+      });
+
+      let rawItinerary = coalesceItineraryItems(aiResponse.itinerary);
+      if (rawItinerary.length > 0) {
+        const enrichedItinerary = enrichItineraryFromSelectedPlaces(
+          rawItinerary,
+          selectedPlaces,
+          data.destination,
+        );
+        if (enrichedItinerary.length > 0) {
+          ai = { ...aiResponse, itinerary: enrichedItinerary };
+        }
+      }
+    } catch (e) {
+      console.warn("[Roamie] AI itinerary generation failed — using fallback", e);
+    }
+
+    if (!ai || coalesceItineraryItems(ai.itinerary).length < 1) {
+      console.warn("[Roamie] building fallback itinerary from selectedPlaces");
+      const fallbackItems = buildFallbackItineraryFromPlaces(
+        selectedPlaces,
+        data.days,
+        startDate,
+      );
+      ai = buildFallbackTripPayload(data, fallbackItems, selectedPlaces);
+    }
+
     const lat = data.location?.lat;
     const lng = data.location?.lng;
 
@@ -208,7 +365,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       tripSettings = {
         startTime: data.time
           ? normalizeTime(data.time)
-          : (ai.itinerary[0]?.time?.slice(0, 5) ?? "10:00"),
+          : (coalesceItineraryItems(ai.itinerary)[0]?.time?.slice(0, 5) ?? "09:30"),
         tripStartDate: data.startDate?.trim() || startDate,
         tripEndDate: data.endDate?.trim() || data.startDate?.trim() || startDate,
         transport: inferTripTransport(data.transport),
@@ -220,7 +377,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
       console.warn("[Roamie] transit legs skipped on generate", e);
     }
 
-    const itinerary: RoamiePayloadV2 = {
+    const itineraryItems = coalesceItineraryItems(ai.itinerary);
+    const payload: RoamiePayloadV2 = {
       ...ai,
       version: 2,
       destination: data.destination,
@@ -228,7 +386,18 @@ export const generateItinerary = createServerFn({ method: "POST" })
       generatedAt: new Date().toISOString(),
       outfitAdvice,
       tripSettings,
+      itinerary: itineraryItems,
     };
 
-    return { itinerary };
+    return {
+      success: true,
+      trip: {
+        id: `trip-${Date.now()}`,
+        title: payload.title || `${data.destination} ${data.days} 天`,
+        destination: data.destination,
+        days: data.days,
+        itinerary: groupItineraryItemsByDay(itineraryItems, startDate),
+        payload,
+      },
+    };
   });

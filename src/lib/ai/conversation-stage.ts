@@ -10,6 +10,10 @@ import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import type { TripIntent } from "@/lib/recommendation/trip-intent";
 import { userWantsMoreRecommendations, userWantsPlanningFinalize } from "@/lib/chat-planning-flow";
 import { isDiscoveryComplete, isUserConfirmingItinerary } from "@/lib/chat-session";
+import {
+  detectMustVisitIntent,
+  detectPlaceRecommendationIntent,
+} from "@/lib/ai/must-visit-places";
 
 /** Roamie 六段對話：理解 → 推測 → 確認 → 收斂 → 推薦 → 行程 */
 export type ConversationStage =
@@ -68,6 +72,10 @@ export function resolveConversationStage(
   tripIntent?: TripIntent,
 ): ConversationStage {
   const t = userText.trim();
+
+  if (detectMustVisitIntent(t) || detectPlaceRecommendationIntent(t)) {
+    return "recommend";
+  }
 
   if (isPlanningTurnActive(session, session.travelContext)) {
     return session.pendingQuestion ? "clarify" : "infer";

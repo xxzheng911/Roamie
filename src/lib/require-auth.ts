@@ -1,3 +1,4 @@
+import type { Session } from "@supabase/supabase-js";
 import { isRedirect, redirect } from "@tanstack/react-router";
 import { getClientAuthSession } from "@/lib/auth-session";
 import { logAuthRedirectLogin } from "@/lib/auth-boot-log";
@@ -27,6 +28,34 @@ function blockGuestAccess(reason: string, target: StartupPath = "/login"): never
   throw redirect({ to: target });
 }
 
+async function raceSessionRead(timeoutMs: number): Promise<Session | null> {
+  return Promise.race([
+    getClientAuthSession({ timeoutMs }),
+    new Promise<null>((resolve) => {
+      window.setTimeout(() => resolve(null), timeoutMs);
+    }),
+  ]);
+}
+
+/** 讀取 session；本機有 token 時重試，避免 timeout 誤判未登入 */
+async function resolveAppShellSession(timeoutMs: number): Promise<Session | null> {
+  let session = await raceSessionRead(timeoutMs);
+  if (session?.user) return session;
+
+  if (!hasLikelyPersistedSession()) return null;
+
+  if (detectPlatform().isCapacitor) {
+    await warmSupabaseAuthStorage();
+  }
+  const retryTimeout = Math.max(timeoutMs, NATIVE_SHELL_GATE_TIMEOUT_MS);
+  session = await raceSessionRead(retryTimeout);
+  return session?.user ? session : null;
+}
+
+function shouldDeferLoginRedirect(): boolean {
+  return hasLikelyPersistedSession();
+}
+
 /** 僅限已登入 Supabase */
 export async function requireAuthenticatedRoute(): Promise<void> {
   if (typeof window === "undefined") return;
@@ -35,13 +64,12 @@ export async function requireAuthenticatedRoute(): Promise<void> {
   } catch {
     // ignore
   }
-  const session = await Promise.race([
-    getClientAuthSession(),
-    new Promise<null>((resolve) => {
-      window.setTimeout(() => resolve(null), AUTH_ROUTE_TIMEOUT_MS);
-    }),
-  ]);
+  const session = await resolveAppShellSession(AUTH_ROUTE_TIMEOUT_MS);
   if (!session?.user) {
+    if (shouldDeferLoginRedirect()) {
+      console.warn("[requireAuthenticatedRoute] session read pending — defer login redirect");
+      return;
+    }
     try {
       markBootPhase("gate:requireAuthenticatedRoute:redirect:/login");
     } catch {
@@ -105,15 +133,37 @@ export async function requireAppShellAccess(): Promise<void> {
       throw redirect({ to: "/welcome" });
     }
 
+    const gateTimeout = shellGateTimeoutMs();
+    const session = await resolveAppShellSession(gateTimeout);
+    const bootCompleted = isBootCompleted();
+
+    // 冷啟動已完成：App 內導覽（首頁 → 聊天／心情）不再跑 startup redirect
+    if (bootCompleted) {
+      if (session?.user) {
+        try {
+          markBootPhase("gate:requireAppShellAccess:skip:in-app-nav");
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      if (shouldDeferLoginRedirect()) {
+        console.warn(
+          "[requireAppShellAccess] boot-completed: persisted session — allow in-app navigation",
+        );
+        return;
+      }
+      try {
+        markBootPhase("gate:requireAppShellAccess:redirect:/login");
+      } catch {
+        // ignore
+      }
+      blockGuestAccess("requireAppShellAccess:boot-completed-signed-out");
+    }
+
     const currentPath = readBrowserPathname();
     if (shouldSkipStartupNavigation(currentPath, "/")) {
-      const quickSession = await Promise.race([
-        getClientAuthSession(),
-        new Promise<null>((resolve) => {
-          window.setTimeout(() => resolve(null), AUTH_ROUTE_TIMEOUT_MS);
-        }),
-      ]);
-      if (quickSession?.user) {
+      if (session?.user) {
         markStartupResolved("/");
         try {
           markBootPhase("gate:requireAppShellAccess:skip:already-home");
@@ -124,24 +174,14 @@ export async function requireAppShellAccess(): Promise<void> {
       }
     }
 
-    if (isBootCompleted() && shouldSkipStartupNavigation(currentPath, "/")) {
-      return;
-    }
-
-    const gateTimeout = shellGateTimeoutMs();
-    let session = await Promise.race([
-      getClientAuthSession({ timeoutMs: gateTimeout }),
-      new Promise<null>((resolve) => {
-        window.setTimeout(() => resolve(null), gateTimeout);
-      }),
-    ]);
-
-    if (!session?.user && hasLikelyPersistedSession()) {
-      await warmSupabaseAuthStorage();
-      session = await getClientAuthSession({ timeoutMs: gateTimeout });
-    }
-
     if (!session?.user) {
+      if (shouldDeferLoginRedirect()) {
+        console.warn(
+          "[requireAppShellAccess] cold-start: session initializing — defer login redirect",
+        );
+        markStartupResolved("/");
+        return;
+      }
       try {
         markBootPhase("gate:requireAppShellAccess:redirect:/login");
       } catch {
@@ -163,9 +203,15 @@ export async function requireAppShellAccess(): Promise<void> {
       }
       redirectToStartupTarget(next);
     }
+
+    markStartupResolved("/");
   } catch (e) {
     if (isRedirect(e)) throw e;
     logAppError("[requireAppShellAccess] gate failed", e);
+    if (isBootCompleted() && shouldDeferLoginRedirect()) {
+      console.warn("[requireAppShellAccess] gate error with persisted session — allow navigation");
+      return;
+    }
     try {
       markBootPhase("gate:requireAppShellAccess:error->/login");
     } catch {

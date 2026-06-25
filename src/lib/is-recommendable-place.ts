@@ -5,7 +5,9 @@ export type RecommendablePlaceContext =
   | "explore_map"
   | "explore_map_city"
   | "ai_recommend"
-  | "plan_trip";
+  | "plan_trip"
+  | "chat_destination_recommend"
+  | "nearby_home";
 
 export type RecommendablePlaceInput = {
   id?: string | null;
@@ -75,6 +77,16 @@ const TRAVEL_FRIENDLY_TYPES = new Set([
   "bookstore",
   "plaza",
   "town_square",
+]);
+
+const SCHOOL_OFFICE_TYPES = new Set([
+  "school",
+  "secondary_school",
+  "primary_school",
+  "university",
+  "preschool",
+  "corporate_office",
+  "office",
 ]);
 
 const NON_RECOMMENDABLE_TYPES = new Set([
@@ -186,6 +198,13 @@ export function resolveOpenNow(place: RecommendablePlaceInput): boolean | null {
 function isFoodPlace(place: RecommendablePlaceInput): boolean {
   if (place.categoryId === "food") return true;
   return allTypes(place).some((t) => FOOD_TYPE_RE.test(t));
+}
+
+function isSchoolOrOfficeType(place: RecommendablePlaceInput): boolean {
+  const types = allTypes(place);
+  if (types.some((t) => SCHOOL_OFFICE_TYPES.has(t))) return true;
+  const name = (place.name ?? "").trim();
+  return /(小學|國中|高中|職校|補習|幼兒園|大學|学院|學院|公司|企業|工廠)/.test(name);
 }
 
 function isNightMarketStyle(place: RecommendablePlaceInput): boolean {
@@ -317,6 +336,8 @@ export function isRecommendablePlace(
     homeNearbyTier?: "operational_only";
     /** 探索地圖：display 不要求評分／營業狀態未知；fallback 更寬鬆 */
     exploreMapTier?: "strict" | "display" | "fallback";
+    /** Chat 目的地推薦：僅在使用者要求「現在能去」時排除 closed_now */
+    requireOpenNow?: boolean;
   },
 ): RecommendablePlaceResult {
   const name = (place.name ?? "").trim();
@@ -382,6 +403,12 @@ export function isRecommendablePlace(
 
   if (context === "home_nearby" && options?.homeNearbyTier === "operational_only") {
     if (openNow === false) return fail("closed_now");
+    return { ok: true };
+  }
+
+  if (context === "chat_destination_recommend") {
+    if (isSchoolOrOfficeType(place)) return fail("school_or_office");
+    if (openNow === false && options?.requireOpenNow) return fail("closed_now");
     return { ok: true };
   }
 

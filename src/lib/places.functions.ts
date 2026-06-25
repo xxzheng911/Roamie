@@ -101,13 +101,18 @@ function mapRawPlaces(
   options?: { screen?: PlacesScreen; locale?: Locale },
 ): PlaceResult[] {
   const isHome = options?.screen === "home";
+  const isChat = options?.screen === "chat";
   const locale = options?.locale ?? "zh-TW";
   return raw
     .map((p) => {
       const hours = rawPlaceToHoursData(p);
       const name = p.displayName?.text ?? "Unknown";
       const type = p.primaryType ?? p.types?.[0] ?? "";
-      if (!isHome && !isPlaceAvailableNow(hours, { name, type }, { context: "now" })) {
+      if (
+        !isHome &&
+        !isChat &&
+        !isPlaceAvailableNow(hours, { name, type }, { context: "now" })
+      ) {
         return null;
       }
       const availability = derivePlaceAvailability(hours, { context: "now" });
@@ -148,6 +153,12 @@ function mapRawPlaces(
     .filter((place) => {
       if (isHome) return true;
       if (options?.screen === "explore") return true;
+      if (isChat) {
+        return isRecommendablePlace(
+          placeResultToRecommendableInput(place),
+          "chat_destination_recommend",
+        ).ok;
+      }
       return isRecommendablePlace(placeResultToRecommendableInput(place), "explore_map").ok;
     });
 }
@@ -548,9 +559,19 @@ async function runExploreSearch(
 
   if (result.error) return result;
 
-  const distanceFiltered = filterWithinDistance(result.places, center, MAX_PLACE_DISTANCE_M);
+  const chatDestinationText =
+    data.placesScreen === "chat" && data.mode === "text" && data.query.trim().length > 0;
+  const maxDistance = chatDestinationText ? 150_000 : MAX_PLACE_DISTANCE_M;
+  const distanceFiltered = filterWithinDistance(result.places, center, maxDistance);
 
   if (data.placesScreen === "home") {
+    return {
+      places: distanceFiltered,
+      error: distanceFiltered.length === 0 ? result.error : null,
+    };
+  }
+
+  if (data.placesScreen === "chat") {
     return {
       places: distanceFiltered,
       error: distanceFiltered.length === 0 ? result.error : null,

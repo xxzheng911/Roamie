@@ -581,23 +581,40 @@ function patchClientRouterSuspense(entryRelPath) {
 function patchClientBundleCreateRootReuse(entryRelPath) {
   const entryPath = resolve(clientDir, entryRelPath);
   let code = readFileSync(entryPath, "utf8");
-  const mountRe = /(\w+)\.createRoot\(document\.getElementById\("root"\)\s*\?\?\s*document\.body\)\.render\(/;
-  const reuseRe =
-    /\(function\(\)\{var _el=document\.getElementById\("root"\)\?\?document\.body;[\s\S]*?return (\w+)\.createRoot\(_el,_opts\);\}\)\(\)\.render\(/;
+  /** Vite 常把 react-dom/client 縮成 $h；\\w+ 會誤抓成 h 並留下孤立的 $ */
+  const reactVar = String.raw`\$?\w+`;
+  const mountRe = new RegExp(
+    `(${reactVar})\\.createRoot\\(document\\.getElementById\\("root"\\)\\s*\\?\\?\\s*document\\.body\\)\\.render\\(`,
+  );
+  const reuseRe = new RegExp(
+    String.raw`\(function\(\)\{var _el=document\.getElementById\("root"\)\?\?document\.body;[\s\S]*?return (${reactVar})\.createRoot\(_el,_opts\);\}\)\(\)\.render\(`,
+  );
+  /** 修復舊版 patch：$(function(){...return h.createRoot → 應為 $h.createRoot */
+  const brokenReuseRe =
+    /\$\(function\(\)\{var _el=document\.getElementById\("root"\)\?\?document\.body;[\s\S]*?return (\w+)\.createRoot\(_el,_opts\);\}\)\(\)\.render\(/;
 
-  const makeFreshMount = (reactVar) =>
-    `(function(){var _el=document.getElementById("root")??document.body;try{delete _el._capRoot;}catch(_){}var _opts={onUncaughtError:function(err,info){try{var msg="(no message)";if(err!=null){if(typeof err==="string")msg=err;else if(err.message)msg=String(err.message);else msg=String(err);}var boot=window.__ROAMIE_BOOT__||{};boot.error=msg;window.__ROAMIE_BOOT__=boot;var extra="";if(err&&err.stack)extra+=" stack="+err.stack;if(info&&info.componentStack)extra+=" componentStack="+info.componentStack;if(err&&typeof err==="object"&&!("message" in err))try{extra+=" keys="+Object.keys(err).join(",");}catch(_){}console.error("[REACT_UNCAUGHT] "+msg+extra);}catch(_){}}};return ${reactVar}.createRoot(_el,_opts);})().render(`;
+  const makeFreshMount = (reactVarName) =>
+    `(function(){var _el=document.getElementById("root")??document.body;try{delete _el._capRoot;}catch(_){}var _opts={onUncaughtError:function(err,info){try{var msg="(no message)";if(err!=null){if(typeof err==="string")msg=err;else if(err.message)msg=String(err.message);else msg=String(err);}var boot=window.__ROAMIE_BOOT__||{};boot.error=msg;window.__ROAMIE_BOOT__=boot;var extra="";if(err&&err.stack)extra+=" stack="+err.stack;if(info&&info.componentStack)extra+=" componentStack="+info.componentStack;if(err&&typeof err==="object"&&!("message" in err))try{extra+=" keys="+Object.keys(err).join(",");}catch(_){}console.error("[REACT_UNCAUGHT] "+msg+extra);}catch(_){}}};return ${reactVarName}.createRoot(_el,_opts);})().render(`;
+
+  const brokenMatch = code.match(brokenReuseRe);
+  if (brokenMatch) {
+    const fixedVar = brokenMatch[1].startsWith("$") ? brokenMatch[1] : `$${brokenMatch[1]}`;
+    code = code.replace(brokenReuseRe, makeFreshMount(fixedVar));
+    writeFileSync(entryPath, code, "utf8");
+    console.info("[capacitor-prepare] Repaired broken createRoot patch ($h alias)");
+    return;
+  }
 
   const reuseMatch = code.match(reuseRe);
   const mountMatch = reuseMatch ? null : code.match(mountRe);
-  const reactVar = reuseMatch?.[1] ?? mountMatch?.[1];
+  const reactVarName = reuseMatch?.[1] ?? mountMatch?.[1];
 
-  if (!reactVar) {
+  if (!reactVarName) {
     console.warn("[capacitor-prepare] createRoot boot patch skipped (pattern not found)");
     return;
   }
 
-  const freshMount = makeFreshMount(reactVar);
+  const freshMount = makeFreshMount(reactVarName);
   if (reuseMatch) {
     code = code.replace(reuseRe, freshMount);
   } else {

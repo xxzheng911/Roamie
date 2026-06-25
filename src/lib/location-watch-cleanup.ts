@@ -2,6 +2,7 @@ import { registerAppStateChangeListener } from "@/lib/capacitor-app-listener";
 import { getCapacitorGeolocation } from "@/lib/capacitor-geolocation";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import { leaveNavigationLocationMode } from "@/lib/location-coordinator";
+import { registerLocationAppGate } from "@/lib/location-app-gate";
 
 const LEGACY_WATCH_IDS_KEY = "roamie:navigation-geo-watch-id";
 const LEGACY_WATCH_IDS_LIST_KEY = "roamie:geo-watch-ids";
@@ -130,6 +131,7 @@ function ensureAppStateListener(): void {
 
 /** App boot only: legacy clearWatch + native purgeAllWatches (once per session). */
 export async function purgeStaleLocationWatch(reason = "app_boot"): Promise<void> {
+  registerLocationAppGate();
   ensureAppStateListener();
   await clearLegacyWatchIdsByStorage(reason);
   await purgeOrphanedNativeWatchesOnce(reason);

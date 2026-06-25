@@ -1,4 +1,9 @@
-import { isDefaultTaipeiCenter, normalizeDeviceLocation, TAIPEI_CENTER } from "@/lib/geo";
+import {
+  DEFAULT_APP_FALLBACK_CENTER,
+  isDefaultFallbackCenter,
+  isDefaultTaipeiCenter,
+  normalizeDeviceLocation,
+} from "@/lib/geo";
 import { isTaiwanCoordinates } from "@/lib/geo-region";
 
 /** Xcode / iOS Simulator 內建美國西岸預設點 */
@@ -124,20 +129,20 @@ function resolveDevSimulatorSubstitute(ctx: {
   };
 }
 
-/** GPS 完全失敗時：上次有效座標 → 最近搜尋城市 → 台北預設 */
+/** GPS 完全失敗時：上次有效座標 → 最近搜尋城市 → 高雄預設 */
 export function pickFallbackCoordinates(
   lastGood: { lat: number; lng: number } | null,
   lastSearch?: { lat: number; lng: number } | null,
 ): FallbackPick {
-  if (lastGood && !isDefaultTaipeiCenter(lastGood.lat, lastGood.lng)) {
+  if (lastGood && !isDefaultFallbackCenter(lastGood.lat, lastGood.lng)) {
     return { lat: lastGood.lat, lng: lastGood.lng, usedDefaultTaipei: false };
   }
-  if (lastSearch && !isDefaultTaipeiCenter(lastSearch.lat, lastSearch.lng)) {
+  if (lastSearch && !isDefaultFallbackCenter(lastSearch.lat, lastSearch.lng)) {
     return { lat: lastSearch.lat, lng: lastSearch.lng, usedDefaultTaipei: false };
   }
   return {
-    lat: TAIPEI_CENTER.lat,
-    lng: TAIPEI_CENTER.lng,
+    lat: DEFAULT_APP_FALLBACK_CENTER.lat,
+    lng: DEFAULT_APP_FALLBACK_CENTER.lng,
     usedDefaultTaipei: true,
   };
 }
@@ -146,7 +151,7 @@ export function pickFallbackCoordinates(
 export function shouldRememberCoords(lat: number, lng: number): boolean {
   const normalized = normalizeDeviceLocation(lat, lng);
   if (!normalized) return false;
-  if (isDefaultTaipeiCenter(normalized.lat, normalized.lng)) return false;
+  if (isDefaultFallbackCenter(normalized.lat, normalized.lng)) return false;
   if (isIosSimulatorPresetLocation(normalized.lat, normalized.lng)) return false;
   return true;
 }

@@ -19,6 +19,7 @@ import {
 import { clearDraftTrip, loadDraftTrip } from "@/lib/trip-draft-storage";
 import type { Itinerary } from "@/lib/itinerary.functions";
 import { generateItinerary } from "@/lib/itinerary.functions";
+import { coalesceItineraryItems, formatItineraryUserError, unwrapGeneratedTripPayload } from "@/lib/trip/itinerary-guards";
 import {
   isRoamiePayloadV2,
   type RoamieItineraryItem,
@@ -234,7 +235,7 @@ function Trip() {
         .map(([name, min]) => `${name}停留${min}分鐘`)
         .join("、");
 
-      const { itinerary } = await generate({
+      const generateResult = await generate({
         data: {
           destination: payload.destination ?? bundle.location.city ?? "目前位置",
           days: payload.days ?? 1,
@@ -263,11 +264,17 @@ function Trip() {
         },
       });
 
+      const itinerary = unwrapGeneratedTripPayload(generateResult);
+      if (!itinerary) {
+        throw new Error("行程建立失敗，我再幫你重新整理一次。");
+      }
+      const itineraryStops = coalesceItineraryItems(itinerary.itinerary);
+
       const nextPayload: RoamiePayloadV2 = {
         ...payload,
         ...itinerary,
         recommendations: [],
-        itinerary: itinerary.itinerary,
+        itinerary: itineraryStops,
         outfitAdvice: itinerary.outfitAdvice ?? payload.outfitAdvice,
         tripSettings: settings,
         version: 2,
@@ -278,7 +285,7 @@ function Trip() {
         toast.success("路線已重新規劃");
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "重新規劃失敗");
+      toast.error(formatItineraryUserError(e));
     }
   };
 
@@ -346,6 +353,7 @@ function Trip() {
 
   const payload = trip.payload;
   const isV2 = isRoamiePayloadV2(payload);
+  const itineraryStops = isV2 ? coalesceItineraryItems(payload.itinerary) : [];
 
   return (
     <MobileFrame>
@@ -366,7 +374,7 @@ function Trip() {
           <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">旅行計劃</p>
           <h1 className="mt-2 font-display text-[26px] leading-snug">{trip.title}</h1>
 
-          {isV2 && payload.itinerary.length > 0 ? (
+          {isV2 && itineraryStops.length > 0 ? (
             <>
               <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
                 {payload.destination && (
@@ -389,7 +397,7 @@ function Trip() {
               </div>
               <div className="mt-6">
                 <TripPlanEditor
-                  payload={{ ...payload, recommendations: [] }}
+                  payload={{ ...payload, recommendations: [], itinerary: itineraryStops }}
                   onSave={handleSavePayload}
                   onReplan={handleReplan}
                 />

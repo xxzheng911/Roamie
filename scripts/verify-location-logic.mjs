@@ -15,6 +15,7 @@ import {
 const SF = { lat: 37.785834, lng: -122.406417 };
 const TAIPEI_REAL = { lat: 25.078, lng: 121.576 };
 const TAIPEI_CENTER = { lat: 25.0478, lng: 121.5319 };
+const KAOHSIUNG_CENTER = { lat: 22.6273, lng: 120.3014 };
 const LAST_GOOD_TW = { lat: 24.15, lng: 120.67 };
 
 function test(name, fn) {
@@ -116,10 +117,11 @@ test("GPS 失敗 fallback：優先上次有效座標", () => {
   assert.equal(fb.lat, LAST_GOOD_TW.lat);
 });
 
-test("GPS 失敗 fallback：無上次座標才用台北預設", () => {
+test("GPS 失敗 fallback：無上次座標才用高雄預設", () => {
   const fb = pickFallbackCoordinates(null);
   assert.equal(fb.usedDefaultTaipei, true);
-  assert.equal(fb.lat, TAIPEI_CENTER.lat);
+  assert.equal(fb.lat, KAOHSIUNG_CENTER.lat);
+  assert.equal(fb.lng, KAOHSIUNG_CENTER.lng);
 });
 
 test("不記住 Simulator 美國預設與台北 fallback", () => {
@@ -132,5 +134,5 @@ console.info(
   "\n[verify:location] 全部通過。\n" +
     "  正式版 (PROD)：真實 GPS，不替換地區。\n" +
     "  開發版 (DEV)：僅 iOS Simulator 美國預設點會改為台灣測試座標。\n" +
-    "  Fallback：僅在 GPS 完全失敗時，先上次有效座標、最後才台北預設。\n",
+    "  Fallback：僅在 GPS 完全失敗時，先上次有效座標、最後才高雄預設。\n",
 );

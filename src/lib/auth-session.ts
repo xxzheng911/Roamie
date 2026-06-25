@@ -43,6 +43,16 @@ export function invalidateClientAuthSessionCache(): void {
   cachedClientSessionAt = 0;
 }
 
+/** AuthProvider / sign-in 成功後同步快取，避免 gate 讀到過期的 null */
+export function updateClientAuthSessionCache(session: Session | null): void {
+  if (session?.user) {
+    cachedClientSession = session;
+    cachedClientSessionAt = Date.now();
+    return;
+  }
+  invalidateClientAuthSessionCache();
+}
+
 async function readClientAuthSessionOnce(timeoutMs: number): Promise<Session | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -117,11 +127,17 @@ export async function getClientAuthSession(
     }
   }
 
+  const hadPersistedHint = hasLikelyPersistedSession();
   logAuthSessionMissing({
-    hadPersistedHint: hasLikelyPersistedSession(),
+    hadPersistedHint,
   });
-  cachedClientSession = null;
-  cachedClientSessionAt = Date.now();
+  // 勿快取 timeout 造成的 false negative；本機仍有 token 時下次應重試
+  if (!hadPersistedHint) {
+    cachedClientSession = null;
+    cachedClientSessionAt = Date.now();
+  } else {
+    cachedClientSession = undefined;
+  }
   return null;
 }
 

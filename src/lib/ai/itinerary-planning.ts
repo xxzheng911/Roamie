@@ -41,7 +41,7 @@ export function parseItineraryPlanModeIntent(text: string): ItineraryPlanMode | 
     return "daily_recommendations";
   }
   if (
-    /(幫我排完整|你幫我排|排完整\s*\d*\s*天|完整\s*\d+\s*天|直接排|完整行程|直接幫你排|排完整行程|排完整5天|排完整五天)/.test(
+    /(幫我排完整|你幫我排|排完整\s*\d*\s*天|完整\s*\d+\s*天|直接排|直接安排|完整行程|直接幫你排|排完整行程|排完整5天|排完整五天|生成行程|幫我排完整行程)/.test(
       t,
     )
   ) {
@@ -156,6 +156,15 @@ function buildGenericFullItineraryDraft(
   return plans.slice(0, days);
 }
 
+export function itineraryGenerationStatusReply(ctx: CanonicalTravelContext): string | null {
+  const destination = ctx.destination?.trim();
+  const days = ctx.days;
+  if (!destination || !days) return null;
+  const label = normalizeDestinationLabel(destination);
+  return `好，我來幫你找${label}的實際景點，並排成 ${days} 天行程，稍等我一下。`;
+}
+
+/** @deprecated 僅供離線 fallback；實機流程應走 triggerItineraryGeneration */
 export function buildFullItineraryDraftReply(
   ctx: CanonicalTravelContext,
   interests: TripInterest[] = (ctx.selectedInterests as TripInterest[] | undefined) ?? [],

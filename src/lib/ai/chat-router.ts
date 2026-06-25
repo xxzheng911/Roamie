@@ -27,6 +27,10 @@ import {
 } from "@/lib/ai/destination-pending-question";
 import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
 import {
+  detectPlaceRecommendationIntent,
+  shouldFetchDestinationPlaces,
+} from "@/lib/ai/must-visit-places";
+import {
   isTripAddPlaceSession,
   parseTripAddPlaceFollowUpIntent,
 } from "@/lib/trip/trip-add-place-session";
@@ -145,6 +149,7 @@ export function resolveChatRoute(
   const shouldTryAdvice =
     planningActive ||
     intent === "destination_advice" ||
+    intent === "trip_planning" ||
     (isFlexiblePreferenceReply(userText) &&
       isDestinationPlanning &&
       Boolean(planningDestination?.trim())) ||
@@ -186,6 +191,14 @@ export function resolveChatRoute(
 
   if (isReadyForRecommendation(ctx, session, intent)) {
     console.info("[AI_ROUTE] recommendation_mode", logTravelContext(ctx), `intent=${intent}`);
+    return { mode: "recommend", chatPhase: "recommend" };
+  }
+
+  if (
+    shouldFetchDestinationPlaces(userText, ctx) ||
+    (detectPlaceRecommendationIntent(userText) && ctx.destination?.trim())
+  ) {
+    console.info("[AI_ROUTE] destination_place_recommend", logTravelContext(ctx));
     return { mode: "recommend", chatPhase: "recommend" };
   }
 

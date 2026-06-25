@@ -55,7 +55,7 @@ export type EnrichedPendingQuestion = PendingQuestion & {
 };
 
 const AFFIRMATIVE_REPLY_RE =
-  /^(好|好的|好啊|可以|行|ok|yes|沒問題|沒問題的|幫我排|直接排|就這樣|就這樣排|開始排)$/i;
+  /^(好|好的|好啊|可以|行|ok|yes|嗯|對|對啊|沒問題|沒問題的|幫我排|直接排|就這樣|就這樣排|開始排)$/i;
 
 const PREFERENCE_CANONICAL: Record<
   string,

@@ -3,6 +3,11 @@ import { APP_BUNDLE_ID } from "@/constants/app";
 import { createAppleSignInNonce } from "@/lib/auth-nonce";
 import { assertSupabaseConfiguredForAuth } from "@/lib/supabase-project-url";
 import { logAuthDebug, logAuthError, logAuthSessionResult } from "@/lib/auth-debug";
+import {
+  DEFAULT_SIGN_IN_MESSAGE,
+  extractAuthErrorDebugInfo,
+  sanitizeAuthErrorForUser,
+} from "@/lib/auth-user-message";
 import { supabase } from "@/lib/supabase";
 import { detectPlatform } from "@/services/platform";
 
@@ -21,8 +26,12 @@ export function canUseNativeAppleSignIn(): boolean {
 function isUserCancelled(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   const code = (error as { code?: string })?.code;
+  const debug = extractAuthErrorDebugInfo(error);
+  if (code === "1001" || debug.code === "1001") {
+    logAuthDebug("apple.native.cancelled_code_1001", debug);
+    return true;
+  }
   return (
-    code === "1001" ||
     /cancel/i.test(msg) ||
     /user canceled/i.test(msg) ||
     /authorization failed/i.test(msg)
@@ -103,19 +112,11 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
       logAuthError("apple.signInWithIdToken", error);
       const detail = error.message?.trim() || "Supabase 拒絕 Apple token";
       if (/apple_supabase_sign_in_timeout/i.test(detail)) {
-        return { ok: false, message: "連線登入服務逾時，請確認網路後再試。" };
-      }
-      const nonceMismatch = /nonces?\s*mismatch/i.test(detail);
-      if (nonceMismatch) {
-        return {
-          ok: false,
-          message:
-            "Apple 登入失敗：nonce 驗證不一致。請確認 Supabase Dashboard → Authentication → Apple 已啟用，且 Client IDs 含 App bundle ID；若仍失敗可暫開 skip nonce check（見專案 supabase/config.toml 註解）。",
-        };
+        return { ok: false, message: "連線登入服務逾時，請確認網路後再試一次。" };
       }
       return {
         ok: false,
-        message: `Apple 登入失敗：${detail}`,
+        message: sanitizeAuthErrorForUser(error, DEFAULT_SIGN_IN_MESSAGE),
       };
     }
 
@@ -139,7 +140,9 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
       return { ok: false, message: "已取消登入", cancelled: true };
     }
     logAuthError("apple.native.failed", e);
-    const msg = e instanceof Error ? e.message : "Apple 登入失敗";
-    return { ok: false, message: msg };
+    return {
+      ok: false,
+      message: sanitizeAuthErrorForUser(e, DEFAULT_SIGN_IN_MESSAGE),
+    };
   }
 }

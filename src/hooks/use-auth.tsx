@@ -14,7 +14,7 @@ import { hasOAuthCallbackParams } from "@/lib/auth-oauth";
 import { logAuthDebug } from "@/lib/auth-debug";
 import { logAuthBoot } from "@/lib/auth-boot-log";
 import { clearAuthState } from "@/lib/clear-auth-state";
-import { getClientAuthSession } from "@/lib/auth-session";
+import { getClientAuthSession, updateClientAuthSessionCache } from "@/lib/auth-session";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { detectPlatform } from "@/services/platform";
 import { isLoginColdStartPath, readBrowserPathname } from "@/lib/startup-path";
@@ -53,6 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const applySession = (s: Session | null) => {
       if (cancelled) return;
+      updateClientAuthSessionCache(s);
       setSession((prev) => {
         const sameUser = prev?.user?.id === s?.user?.id;
         const sameToken = prev?.access_token === s?.access_token;

@@ -1,14 +1,16 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { TripLocation } from "@/lib/location/types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
-import { detectChatIntent, isNearbyPlaceIntent } from "@/lib/ai/chat-intent";
-import { parseDestinationAdvicePurpose } from "@/lib/ai/destination-advice";
+import { isTravelPlanningText } from "@/lib/ai/chat-intent-router";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import {
   isTripAddPlaceSession,
   reinforceTripAddPlaceSession,
 } from "@/lib/trip/trip-add-place-session";
 import { buildDestinationStyleChoiceQuestion } from "@/lib/ai/destination-style-guide";
+import {
+  isBestSeasonQuestion,
+} from "@/lib/ai/season-response-guardrail";
 
 /** A 附近探索 | B 目的地規劃 | C 特定地點 | D 心情推薦 */
 export type ChatConversationMode =
@@ -40,11 +42,15 @@ export const EMPTY_TRIP_PLANNING_CONTEXT: TripPlanningContext = {
 };
 
 const KNOWN_CITIES =
-  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
+  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|苗栗|南投|彰化|雲林|屏東|屏东|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|連江|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
 
 /** 熱門旅遊城市（含泰國海島等） */
 const KNOWN_TOURIST_CITIES =
   /^(芭達雅|帕塔雅|普吉島|普吉|蘇梅島|蘇梅|清邁|清迈|河內|胡志明|峴港|金邊|吳哥窟|吉隆坡|檳城|槟城|峇里島|巴厘岛|宿霧|長灘島|長灘|札幌|北海道|沖繩|冲绳|廣島|奈良|神戶|箱根|鎌倉|濟州|濟州島)(市|府|島|县)?$/i;
+
+/** 知名景點／山岳／風景區（非城市但為明確旅遊目的地） */
+const KNOWN_SCENIC_SPOTS =
+  /^(阿里山|日月潭|太魯閣|清境|墾丁|九份|玉山|武陵|合歡山|溪頭|杉林溪|野柳|十分|平溪|貓空|陽明山|象山|龜山島|蘭嶼|綠島|七股|北投|淡水|礁溪|知本|池上|高美濕地|福壽山|奧萬大|雪霸|富士山|河口湖|輕井澤|白川鄉|合掌村|吴哥窟|吳哥窟)(?:國家(?:風景|风景)區|風景(?:區|区)|森林(?:遊樂|游乐)區|國家公園|国家公园)?$/i;
 
 const DESTINATION_ALIASES: Record<string, string> = {
   帕塔雅: "芭達雅",
@@ -69,8 +75,13 @@ export function isKnownTouristCityLabel(name: string): boolean {
   return KNOWN_CITIES.test(n) || KNOWN_TOURIST_CITIES.test(n);
 }
 
+export function isKnownScenicLabel(name: string): boolean {
+  const n = normalizeDestinationLabel(name);
+  return KNOWN_SCENIC_SPOTS.test(n);
+}
+
 export function isKnownDestinationLabel(name: string): boolean {
-  return isKnownTouristCityLabel(name) || isKnownCountryLabel(name);
+  return isKnownTouristCityLabel(name) || isKnownCountryLabel(name) || isKnownScenicLabel(name);
 }
 
 export const KNOWN_COUNTRIES =
@@ -178,15 +189,31 @@ export function parseLeadingDestinationLabel(text: string): string | undefined {
   return undefined;
 }
 
-/** 「幾月去比較好」「11月適合去哪」「東京五天怎麼排」等 — 非附近推薦 */
+/** 「幾月去比較好」「11月適合去哪」「下個月阿里山幾號好」等 — 非附近推薦 */
 export function isDestinationAdviceText(text: string): boolean {
   const t = text.trim();
   if (!t || isNearbyExploreText(text)) return false;
 
+  // 已指定目的地 + 出發月份，且非追問最佳季節 → 走旅遊規劃，不是季節諮詢
   if (
-    /(幾月|哪個月|什麼時候|何时|何時|最佳.{0,4}季)/.test(t) &&
-    /(比較好|比较好|適合|适合|去|旅遊|旅游|好玩)/.test(t)
+    resolveDestinationFromText(t) &&
+    /(?:下個月|下个月|下月|這個月|这个月|本月|\d{1,2}\s*月)/.test(t) &&
+    /(?:想|要)?去/.test(t) &&
+    !isBestSeasonQuestion(t)
   ) {
+    return false;
+  }
+
+  if (
+    /(幾月|几月|哪個月|什么時候|什麼時候|何时|何時|幾號|几号|哪一天|哪天|哪日|下個月|下个月|這個月|这个月|下月|本月|花季|最佳.{0,4}季|最佳.{0,4}(?:時間|时间|日期))/.test(
+      t,
+    ) &&
+    /(比較好|比较好|適合|适合|去|旅遊|旅游|好玩|好|你覺得|觉得|走走|逛逛)/.test(t)
+  ) {
+    return true;
+  }
+
+  if (/(幾號|几号|哪一天|哪天|你覺得.{0,8}好)/.test(t) && parseDestinationFromText(t)) {
     return true;
   }
 
@@ -285,12 +312,149 @@ export function isValidParsedDestinationLabel(name: string): boolean {
   return true;
 }
 
+function stripTrailingMotionVerb(name: string): string {
+  return name.replace(/(?:走走|逛逛|玩玩|玩)$/, "").trim();
+}
+
 function acceptParsedDestination(candidate: string | undefined): string | undefined {
   if (!candidate) return undefined;
-  const normalized = normalizeDestinationLabel(candidate);
+  const normalized = normalizeDestinationLabel(stripTrailingMotionVerb(candidate));
   if (!isValidParsedDestinationLabel(normalized)) return undefined;
   if (!isKnownDestinationLabel(normalized)) return undefined;
   return normalized;
+}
+
+/** 從長句中擷取已知目的地（如「明天要去台北有推薦景點嗎」→ 台北） */
+const EMBEDDED_DESTINATION_LABELS = [
+  "阿里山",
+  "日月潭",
+  "太魯閣",
+  "清境",
+  "墾丁",
+  "九份",
+  "玉山",
+  "武陵",
+  "合歡山",
+  "溪頭",
+  "杉林溪",
+  "野柳",
+  "十分",
+  "平溪",
+  "貓空",
+  "陽明山",
+  "象山",
+  "龜山島",
+  "蘭嶼",
+  "綠島",
+  "北投",
+  "淡水",
+  "礁溪",
+  "知本",
+  "池上",
+  "高美濕地",
+  "福壽山",
+  "富士山",
+  "河口湖",
+  "箱根",
+  "鎌倉",
+  "輕井澤",
+  "白川鄉",
+  "芭達雅",
+  "帕塔雅",
+  "普吉島",
+  "普吉",
+  "蘇梅島",
+  "蘇梅",
+  "清邁",
+  "河內",
+  "胡志明",
+  "峴港",
+  "吉隆坡",
+  "檳城",
+  "峇里島",
+  "宿霧",
+  "長灘島",
+  "札幌",
+  "北海道",
+  "沖繩",
+  "廣島",
+  "奈良",
+  "神戶",
+  "濟州島",
+  "濟州",
+  "台北",
+  "臺北",
+  "新北",
+  "桃園",
+  "台中",
+  "臺中",
+  "台南",
+  "臺南",
+  "高雄",
+  "基隆",
+  "新竹",
+  "嘉義",
+  "花蓮",
+  "台東",
+  "臺東",
+  "宜蘭",
+  "澎湖",
+  "金門",
+  "馬祖",
+  "京都",
+  "大阪",
+  "東京",
+  "橫濱",
+  "名古屋",
+  "福岡",
+  "首爾",
+  "釜山",
+  "香港",
+  "澳門",
+  "新加坡",
+  "曼谷",
+  "巴黎",
+  "倫敦",
+  "紐約",
+  "洛杉磯",
+  "舊金山",
+  "雪梨",
+  "墨爾本",
+  "泰國",
+  "日本",
+  "韓國",
+  "越南",
+  "蒙古",
+].sort((a, b) => b.length - a.length);
+
+export function extractEmbeddedDestinationFromText(text: string): string | undefined {
+  const t = text.trim();
+  if (!t) return undefined;
+
+  const afterTravel = t.match(
+    /(?:我)?(?:明天|後天|后天|今天|今日|下週|下星期|下個月|下个月)?(?:要)?(?:想)?去([\u4e00-\u9fffA-Za-z]{2,10})(?=有|推薦|推荐|景點|景点|地點|地点|地方|嗎|吗|嘛|呢|吧|，|。|？|\?|！|!|\s|$)/,
+  );
+  if (afterTravel?.[1]) {
+    const accepted = acceptParsedDestination(afterTravel[1]);
+    if (accepted) return accepted;
+  }
+
+  for (const label of EMBEDDED_DESTINATION_LABELS) {
+    if (!t.includes(label)) continue;
+    const accepted = acceptParsedDestination(label);
+    if (accepted) return accepted;
+  }
+
+  return undefined;
+}
+
+/** 統一解析目的地：regex → 選擇句 → 長句嵌入 */
+export function resolveDestinationFromText(text: string): string | undefined {
+  return (
+    parseDestinationFromText(text) ??
+    parseDestinationSelectionFromText(text) ??
+    extractEmbeddedDestinationFromText(text)
+  );
 }
 
 /** 使用者回覆區域選擇（如「芭達雅」「我想去芭達雅」） */
@@ -298,7 +462,9 @@ export function parseDestinationSelectionFromText(text: string): string | undefi
   const t = text.trim();
   if (!t) return undefined;
 
-  const fromWantGo = t.match(/(?:我)?(?:想)?去([\u4e00-\u9fffA-Za-z]{2,10})(?:[啊呀呢吧]|$|，|。|\s)/);
+  const fromWantGo = t.match(
+    /(?:我)?(?:想)?去([\u4e00-\u9fffA-Za-z]{2,10})(?=[有推薦推荐景點景点地點地点地方嗎吗嘛呢吧啊呀，。\s]|$)/,
+  );
   if (fromWantGo?.[1]) {
     const accepted = acceptParsedDestination(fromWantGo[1]);
     if (accepted) return accepted;
@@ -329,6 +495,18 @@ export function parseDestinationFromText(text: string): string | undefined {
     const leading = parseLeadingDestinationLabel(t);
     if (leading) return leading;
 
+    const nextMonthGo = t.match(/(?:下個月|下个月|下月)(?:想|要)?去([\u4e00-\u9fff]{2,10})/);
+    if (nextMonthGo?.[1]) {
+      const accepted = acceptParsedDestination(nextMonthGo[1]);
+      if (accepted) return accepted;
+    }
+
+    const thisMonthGo = t.match(/(?:這個月|这个月|本月)(?:想|要)?去([\u4e00-\u9fff]{2,10})/);
+    if (thisMonthGo?.[1]) {
+      const accepted = acceptParsedDestination(thisMonthGo[1]);
+      if (accepted) return accepted;
+    }
+
     const withDays = t.match(/我想?去([\u4e00-\u9fff]{2,8})(?:\d+|[一二三四五六七八九十百千兩两]+)\s*天/);
     if (withDays?.[1]) return acceptParsedDestination(withDays[1]);
 
@@ -355,16 +533,18 @@ export function parseDestinationFromText(text: string): string | undefined {
     }
 
     const patterns = [
-      /(?:我想?去|要去|想去|幫我規劃|規劃|安排)([\u4e00-\u9fffA-Za-z]{2,10})(?:走走|逛逛|玩|旅行|旅遊|，|。|$)/,
-      /去([\u4e00-\u9fffA-Za-z]{2,10})(?:走走|逛逛|玩|，|。|$)/,
+      /(?:我想?去|要去|想去|幫我規劃|規劃|安排)([\u4e00-\u9fffA-Za-z]{2,10})(?:走走|逛逛|玩|旅行|旅遊|有|推薦|推荐|景點|景点|地點|地点|，|。|嗎|吗|？|\?|$)/,
+      /去([\u4e00-\u9fffA-Za-z]{2,10})(?:走走|逛逛|玩|有|推薦|推荐|景點|景点|，|。|嗎|吗|？|\?|$)/,
     ];
 
     for (const re of patterns) {
       const m = t.match(re);
       const city = m?.[1];
-      if (city && isKnownDestinationLabel(city)) {
-        const accepted = acceptParsedDestination(city);
-        if (accepted) return accepted;
+      if (!city) continue;
+      const accepted = acceptParsedDestination(city);
+      if (accepted) return accepted;
+      if (isKnownScenicLabel(normalizeDestinationLabel(city))) {
+        return normalizeDestinationLabel(city);
       }
     }
 
@@ -377,8 +557,14 @@ export function parseDestinationFromText(text: string): string | undefined {
     const touristBare = t.match(KNOWN_TOURIST_CITIES);
     if (touristBare) return acceptParsedDestination(touristBare[1]);
 
+    const scenicBare = t.match(KNOWN_SCENIC_SPOTS);
+    if (scenicBare) return acceptParsedDestination(scenicBare[1]);
+
     const countryBare = t.match(KNOWN_COUNTRIES);
     if (countryBare) return acceptParsedDestination(countryBare[1]);
+
+    const embedded = extractEmbeddedDestinationFromText(t);
+    if (embedded) return embedded;
 
     return undefined;
   } catch (e) {
@@ -398,16 +584,21 @@ export function isDestinationPlanningText(text: string, session: ChatPlanningSes
   const t = text.trim();
   if (!t) return false;
   if (isDestinationAdviceText(t)) return true;
-  if (detectChatIntent(t) === "trip_planning") return true;
-  if (detectChatIntent(t) === "destination_advice") return true;
+  if (isTravelPlanningText(t)) return true;
   if (/(我想?去|要去|想去|幫我規劃|規劃.*行程|安排.*行程)/.test(t) && parseDestinationFromText(t)) {
     return true;
   }
   if (/\d+\s*天/.test(t) && parseDestinationFromText(t)) return true;
-  if (/\d+\s*月/.test(t) && (parseDestinationFromText(t) || session.travelContext?.destination)) {
+  if (
+    /(?:下個月|下个月|這個月|这个月|\d+\s*月)/.test(t) &&
+    (parseDestinationFromText(t) || session.travelContext?.destination)
+  ) {
     return true;
   }
   if (/(走走|逛逛|玩)/.test(t) && parseDestinationFromText(t) && !isNearbyExploreText(t)) {
+    return true;
+  }
+  if (/(幾號|几号|哪一天|花季|什麼時候|什么时候)/.test(t) && parseDestinationFromText(t)) {
     return true;
   }
   return false;
@@ -426,6 +617,19 @@ export function isUserAtDestination(
   return normalizeCityLabel(current) === normalizeCityLabel(destination);
 }
 
+function isExplicitNearbyCategoryText(text: string): boolean {
+  const t = text.trim();
+  if (!t || isTravelPlanningText(t) || isDestinationAdviceText(t)) return false;
+  if (isNearbyExploreText(t)) return true;
+  if (
+    /(餐廳|咖啡廳|咖啡店|咖啡|cafe|露營|景點)/i.test(t) &&
+    /(附近|推薦|推荐|找|有沒有|有没有)/.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function resolveConversationMode(
   text: string,
   session: ChatPlanningSession,
@@ -434,9 +638,15 @@ export function resolveConversationMode(
     return "trip_add_place";
   }
   if (session.homeMoodShortcutEntry && !session.homeMoodShortcutEngaged) {
+    if (isDestinationPlanningText(text, session) || isDestinationAdviceText(text)) {
+      return "destination_planning";
+    }
     return "mood_recommend";
   }
   if (session.fromMoodFlow || session.fromMoodCard) {
+    if (isDestinationPlanningText(text, session) || isDestinationAdviceText(text)) {
+      return "destination_planning";
+    }
     return "mood_recommend";
   }
   if (
@@ -471,7 +681,7 @@ export function resolveConversationMode(
     return "destination_planning";
   }
 
-  if (isNearbyPlaceIntent(detectChatIntent(text))) {
+  if (isExplicitNearbyCategoryText(text)) {
     return "nearby_explore";
   }
 
@@ -512,7 +722,10 @@ export function mergeTripPlanningContext(
 
     const mode = resolveConversationMode(text, session);
     const prev = session.tripPlanningContext ?? EMPTY_TRIP_PLANNING_CONTEXT;
-    const skipDestParse = mode === "mood_recommend" || isMoodRecommendationSession(session);
+    const skipDestParse =
+      (mode === "mood_recommend" || isMoodRecommendationSession(session)) &&
+      !isDestinationPlanningText(text, session) &&
+      !isDestinationAdviceText(text);
     const parsedDest = skipDestParse ? undefined : parseDestinationFromText(text);
 
     const destination =

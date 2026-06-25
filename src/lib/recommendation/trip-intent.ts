@@ -61,7 +61,7 @@ function uniqPush(arr: string[], value: string): string[] {
 }
 
 const KNOWN_DESTINATION_RE =
-  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
+  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|苗栗|南投|彰化|雲林|屏東|屏东|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|連江|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
 
 function acceptCity(candidate: string | undefined): string | undefined {
   if (!candidate) return undefined;

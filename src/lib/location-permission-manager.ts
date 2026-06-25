@@ -112,6 +112,7 @@ export async function ensureLocationPermission(options?: {
   inflight = resolvePermission(shouldRequest)
     .then((state) => {
       memoryCache = state;
+      console.info("[LOCATION_PERMISSION_STATUS]", `status=${state}`);
       return state;
     })
     .finally(() => {

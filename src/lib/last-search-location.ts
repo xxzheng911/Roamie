@@ -1,4 +1,4 @@
-import { isDefaultTaipeiCenter } from "@/lib/geo";
+import { isDefaultFallbackCenter } from "@/lib/geo";
 
 const LAST_SEARCH_KEY = "roamie:last-search-location";
 
@@ -45,7 +45,7 @@ export function rememberLastSearchLocation(input: {
   label?: string;
 }): void {
   if (!isValidCoords(input.lat, input.lng)) return;
-  if (isDefaultTaipeiCenter(input.lat, input.lng)) return;
+  if (isDefaultFallbackCenter(input.lat, input.lng)) return;
   if (typeof sessionStorage === "undefined") return;
   const payload: LastSearchLocation = {
     lat: input.lat,

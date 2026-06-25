@@ -4,11 +4,13 @@ import {
   buildDailyRhythmReply,
   buildMustVisitPlacesReply,
   parsePlanningFollowUpIntent,
+  resolveMustVisitAdvice,
 } from "@/lib/ai/must-visit-places";
 import {
   buildItineraryPlanningReply,
   buildDailyRecommendationsReply,
-  buildFullItineraryDraftReply,
+  itineraryGenerationStatusReply,
+  parseItineraryPlanModeIntent,
 } from "@/lib/ai/itinerary-planning";
 import {
   parseTripPreferences,
@@ -32,6 +34,7 @@ import {
   buildDefaultRoutesReply,
   getDestinationStyleGuide,
 } from "@/lib/ai/destination-style-guide";
+import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 
 const FLEXIBLE_REPLY_RE =
   /^(都可以|都行|不限|沒特別|沒有特別|隨意|你推|都行吧|隨便|任何|沒有偏好|沒偏好)$/;
@@ -267,6 +270,10 @@ export function parsePendingOptionSelection(
   }
 
   if (pending.type === "activity_choice") {
+    const planMode = parseItineraryPlanModeIntent(t);
+    if (planMode === "full_itinerary" && pending.options.includes("full_itinerary")) {
+      return "full_itinerary";
+    }
     if (isAffirmativeReply(t)) {
       if (pending.options.includes("full_itinerary")) return "full_itinerary";
       if (pending.options.includes("must_visit_places")) return "must_visit_places";
@@ -486,8 +493,8 @@ function buildContextPatchForSelection(
       destination: pending.baseDestination ?? base.destination,
       destinationCountry: country,
       selectedPlanMode: "full_itinerary",
-      conversationState: "itinerary_draft",
-      tripPurpose: "itinerary_draft",
+      conversationState: "ready_for_itinerary",
+      tripPurpose: "direct_itinerary_generation",
     };
   }
 
@@ -575,6 +582,7 @@ export function buildNextStepAfterAdviceSelection(
       dest,
       days,
       pending.destinationCountry ?? ctx.destinationCountry,
+      { weather: ctx.weather, context: ctx },
     );
   }
 
@@ -798,19 +806,23 @@ export function buildNextStepAfterAdviceSelection(
   }
 
   if (selected === "must_visit_places") {
+    const dest = pending.baseDestination ?? ctx.destination;
+    const mustVisit = resolveMustVisitAdvice(
+      { ...ctx, destination: dest, days: ctx.days },
+      "必去點",
+    );
+    if (mustVisit) {
+      return {
+        reply: mustVisit.reply,
+      };
+    }
     const reply = buildMustVisitPlacesReply({
       ...ctx,
-      destination: pending.baseDestination ?? ctx.destination,
+      destination: dest,
       days: ctx.days,
     });
     if (reply) {
-      return {
-        reply,
-        pendingQuestion: pendingQuestionForTripPreference(
-          pending.baseDestination ?? ctx.destination ?? "曼谷",
-          pending.destinationCountry ?? ctx.destinationCountry,
-        ),
-      };
+      return { reply };
     }
   }
 
@@ -847,11 +859,7 @@ export function buildNextStepAfterAdviceSelection(
   if (selected === "full_itinerary") {
     const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
     const days = ctx.days ?? parseDayCountFromText(selected);
-    const interests = (ctx.selectedInterests ?? []) as TripInterest[];
-    const reply = buildFullItineraryDraftReply(
-      { ...ctx, destination: dest, days: days ?? ctx.days },
-      interests,
-    );
+    const reply = itineraryGenerationStatusReply({ ...ctx, destination: dest, days: days ?? ctx.days });
     if (reply) return { reply };
   }
 
@@ -960,7 +968,7 @@ export function pendingQuestionForPlanningNextStep(
 ): PendingQuestion {
   return enrichPendingQuestion({
     type: "activity_choice",
-    options: ["must_visit_places", "daily_rhythm"],
+    options: ["must_visit_places", "full_itinerary"],
     baseDestination,
     destinationCountry,
   });
@@ -1049,6 +1057,19 @@ export function inferPendingQuestionFromAdviceReply(
       ctx.destination ?? session.travelContext?.destination ?? "這趟",
       ctx.destinationCountry ?? session.travelContext?.destinationCountry,
     );
+  }
+
+  if (reply.includes("先推薦必去景點，還是直接幫你排")) {
+    const dest =
+      ctx.destination ??
+      session.travelContext?.destination ??
+      session.tripPlanningContext?.destination;
+    if (dest) {
+      return pendingQuestionForPlanningNextStep(
+        dest,
+        ctx.destinationCountry ?? session.travelContext?.destinationCountry,
+      );
+    }
   }
 
   if (reply.includes("文化景點、購物美食，還是夜市")) {

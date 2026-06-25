@@ -1,8 +1,8 @@
 /* Localized permission descriptions — Roamie */
 
 /* Location (weather + nearby recommendations) */
-"NSLocationWhenInUseUsageDescription" = "Roamie uses your location to recommend nearby places and personalized trips.";
-"NSLocationAlwaysAndWhenInUseUsageDescription" = "Roamie uses your location to recommend nearby places and personalized trips.";
+"NSLocationWhenInUseUsageDescription" = "Roamie uses your location to recommend nearby attractions, restaurants, and trips.";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "Roamie uses your location to recommend nearby attractions, restaurants, and trips.";
 
 /* Camera & photo library (avatar / cover) */
 "NSCameraUsageDescription" = "Roamie uses the camera so you can take trip photos and update your profile picture.";

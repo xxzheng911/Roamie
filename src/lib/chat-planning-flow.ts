@@ -18,7 +18,7 @@ import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
 export function userWantsMoreRecommendations(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-  return /(怎麼安排|還能|還可以|推薦|想去|想找|有沒有|附近|這一帶|晚上|散步|咖啡|餐廳|酒吧|宵夜|安靜|熱鬧|人少|換一個|別的|再幫我|幫我找|走走|坐坐|續攤|夜景)/.test(
+  return /(怎麼安排|還能|還可以|還有嗎|還有沒有|還有其他|再推薦|提供其他|其他推薦|換一批|換其他|推薦|想去|想找|有沒有|附近|這一帶|晚上|散步|咖啡|餐廳|酒吧|宵夜|安靜|熱鬧|人少|換一個|別的|再幫我|幫我找|走走|坐坐|續攤|夜景)/.test(
     t,
   );
 }
@@ -49,7 +49,26 @@ export function extractChatPlanningContextFromText(
   if (/(不想走太多|少走路|不想走太多|不要走太多|怕走路)/.test(t)) avoidTypes.add("長距離步行");
   if (/(太貴|高價|奢侈)/.test(t) || isBudgetRefinementText(t)) avoidTypes.add("高價位");
   if (/(戶外|曬|太陽)/.test(t) && /(不要|不想|怕)/.test(t)) avoidTypes.add("長時間戶外曝曬");
-  if (/(室內|冷氣)/.test(t) && /(想|要|偏好)/.test(t)) next.discovery = { ...next.discovery, setting: "室內" };
+  if (/(室內|冷氣)/.test(t) && /(想|要|偏好)/.test(t)) {
+    next.discovery = { ...next.discovery, setting: "室內" };
+    next = {
+      ...next,
+      travelContext: {
+        ...(next.travelContext ?? { interests: [] }),
+        setting: "室內",
+      },
+    };
+  }
+  if (/(戶外|室外)/.test(t) && /(想|要|偏好)/.test(t)) {
+    next.discovery = { ...next.discovery, setting: "室外" };
+    next = {
+      ...next,
+      travelContext: {
+        ...(next.travelContext ?? { interests: [] }),
+        setting: "室外",
+      },
+    };
+  }
 
   if (/(安靜|靜|人少|幽靜)/.test(t)) {
     avoidTypes.add("熱鬧喧嘩");

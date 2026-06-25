@@ -18,8 +18,8 @@ import { clearAuthState } from "@/lib/clear-auth-state";
 import { getClientAuthSession } from "@/lib/auth-session";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { logGoogleOAuthMarker } from "@/lib/auth-debug";
+import { DEFAULT_SIGN_IN_MESSAGE, sanitizeAuthErrorForUser } from "@/lib/auth-user-message";
 import { signInWithProvider, type OAuthProvider } from "@/lib/auth-oauth";
-import { formatSupabaseRedirectAllowListHint } from "@/lib/auth-redirect";
 import {
   ensureIosLoginLiveInteraction,
   notifyIosOAuthOpen,
@@ -104,6 +104,7 @@ function Login() {
   const { user, loading } = useAuth();
   const [busy, setBusy] = useState<OAuthProvider | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [failedProvider, setFailedProvider] = useState<OAuthProvider | null>(null);
   const [legalOpen, setLegalOpen] = useState<"terms" | "privacy" | null>(null);
   const redirectedRef = useRef(false);
   const oauthBusyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -254,6 +255,7 @@ function Login() {
       logGoogleOAuthMarker("clicked");
     }
     setAuthError(null);
+    setFailedProvider(null);
     clearOAuthBusyTimer();
 
     const platform = detectPlatform();
@@ -303,11 +305,16 @@ function Login() {
           logGoogleOAuthMarker("failed", { message: result.message });
           await clearAuthState({ reason: "google-sign-in-failed" });
         }
-        let msg = result.message || "登入沒成功，待會再試一次。";
-        if (/requested path is invalid|redirect url|nonces?\s*mismatch|pkce/i.test(msg)) {
-          msg = `${msg}\n\n請確認 Supabase Redirect URLs 已加入：\n${formatSupabaseRedirectAllowListHint()}`;
+        let msg = sanitizeAuthErrorForUser(
+          { message: result.message || "" },
+          DEFAULT_SIGN_IN_MESSAGE,
+        );
+        if (/requested path is invalid|redirect url|nonces?\s*mismatch|pkce/i.test(result.message ?? "")) {
+          console.info("[AUTH_SIGN_IN_ERROR]", { provider, message: result.message });
+          msg = DEFAULT_SIGN_IN_MESSAGE;
         }
         setAuthError(msg);
+        setFailedProvider(provider);
         console.error("[auth] sign-in failed", { provider, message: msg });
         return;
       }
@@ -342,7 +349,8 @@ function Login() {
         });
         await clearAuthState({ reason: "google-sign-in-threw" });
       }
-      setAuthError(e instanceof Error ? e.message : "登入沒成功，待會再試一次。");
+      setAuthError(sanitizeAuthErrorForUser(e, DEFAULT_SIGN_IN_MESSAGE));
+      setFailedProvider(provider);
     }
   };
 
@@ -379,10 +387,19 @@ function Login() {
           {authError ? (
             <AuthSignInError
               variant="system"
-              title="登入暫時沒有成功"
+              title="登入失敗"
               message={authError}
-              onRetry={() => setAuthError(null)}
-              retryLabel="關閉"
+              onRetry={() => {
+                setAuthError(null);
+                const provider = failedProvider ?? "apple";
+                void signIn(provider);
+              }}
+              retryLabel="重新登入"
+              onDismiss={() => {
+                setAuthError(null);
+                setFailedProvider(null);
+              }}
+              dismissLabel="關閉"
             />
           ) : null}
 

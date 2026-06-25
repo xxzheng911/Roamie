@@ -25,6 +25,7 @@ import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings } from "@/l
 import {
   normalizeStoredTrip,
 } from "@/lib/saved-trip/normalize";
+import { coalesceItineraryItems } from "@/lib/trip/itinerary-guards";
 import { RoamieDatePicker } from "@/components/pickers";
 import {
   applyTripDateRange,
@@ -268,13 +269,15 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const [settings, setSettings] = useState<TripPlanSettings>(
     () =>
       initial.tripSettings ?? {
-        startTime: initial.itinerary[0]?.time?.slice(0, 5) ?? "10:00",
+        startTime: coalesceItineraryItems(initial.itinerary)[0]?.time?.slice(0, 5) ?? "10:00",
         transport: "walk",
         legMinutes: {},
         legTransport: {},
       },
   );
-  const [items, setItems] = useState<RoamieItineraryItem[]>(() => [...initial.itinerary]);
+  const [items, setItems] = useState<RoamieItineraryItem[]>(() => [
+    ...coalesceItineraryItems(initial.itinerary),
+  ]);
   const [activeDayIndex, setActiveDayIndex] = useState(() =>
     initialDay != null && initialDay > 0 ? initialDay - 1 : 0,
   );

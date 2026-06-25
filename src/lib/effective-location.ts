@@ -18,6 +18,7 @@ import {
   type HomeSessionUserLocation,
 } from "@/lib/home-session-cache";
 import { normalizedLocationKey } from "@/lib/location-key";
+import { onAppForegroundForLocation, registerLocationAppGate } from "@/lib/location-app-gate";
 
 export type EffectiveLocationSource = "gps" | "remembered" | "last_search" | "default";
 
@@ -220,6 +221,7 @@ function publish(next: EffectiveLocationSnapshot, reason: string): boolean {
 }
 
 async function bootstrapEffectiveLocation(): Promise<EffectiveLocationSnapshot> {
+  registerLocationAppGate();
   console.info("[LOCATION_INIT]", { via: "effective_location_bootstrap" });
 
   const cachedSession = getSessionDeviceLocation();
@@ -245,8 +247,28 @@ async function bootstrapEffectiveLocation(): Promise<EffectiveLocationSnapshot> 
   return snapshot ?? ready;
 }
 
+function retryEffectiveLocationAfterForeground(): void {
+  if (!snapshot || snapshot.status !== "pending_gps") return;
+  if (bootstrapPromise) return;
+  bootstrapPromise = bootstrapEffectiveLocation().finally(() => {
+    bootstrapPromise = null;
+  });
+}
+
+let foregroundRetryRegistered = false;
+function ensureForegroundLocationRetry(): void {
+  if (foregroundRetryRegistered) return;
+  foregroundRetryRegistered = true;
+  onAppForegroundForLocation(() => {
+    retryEffectiveLocationAfterForeground();
+  });
+}
+
 /** App 啟動後解析有效定位；Places / 地圖共用。 */
 export function ensureEffectiveLocationBootstrap(): Promise<EffectiveLocationSnapshot> {
+  registerLocationAppGate();
+  ensureForegroundLocationRetry();
+
   if (snapshot?.isReadyForPlaces) {
     console.info("[LOCATION_CACHE_HIT]", {
       locationKey: snapshot.locationKey,

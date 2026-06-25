@@ -5,7 +5,17 @@ import { parseTripPreferences } from "../src/lib/ai/trip-preference.ts";
 import { detectChatIntent } from "../src/lib/ai/chat-intent.ts";
 import { parseDestinationFromText } from "../src/lib/ai/trip-planning-context.ts";
 import { createEmptySession } from "../src/lib/chat-session.ts";
+import { resolveDestinationAdvice } from "../src/lib/ai/destination-advice.ts";
 import { isFlexiblePreferenceReply } from "../src/lib/ai/destination-pending-question.ts";
+import {
+  shouldFetchDestinationPlaces,
+  mergeContextForPlaceFetch,
+  isGenericTemplatePlaceName,
+  buildNamedFallbackRecommendations,
+} from "../src/lib/ai/must-visit-places.ts";
+import { buildDestinationGeocodeQueries } from "../src/lib/ai/destination-geocode.ts";
+import { resolveConversationStage } from "../src/lib/ai/conversation-stage.ts";
+import { recommendationsForChatDisplay } from "../src/lib/chat-display-recommendations.ts";
 
 let failed = 0;
 
@@ -122,6 +132,101 @@ assert(
   JSON.stringify(parseTripPreferences("景點+購物+美食")) ===
     JSON.stringify(["attractions", "shopping", "food"]),
   "multi preference parse",
+);
+
+// 6. 阿里山必去點 — 直接列出實際地點
+const alishanCtx = mergeTravelContext(createEmptySession(), "阿里山必去點");
+const alishanAdvice = resolveDestinationAdvice(
+  alishanCtx.context,
+  { ...alishanCtx.session, activeChatIntent: "destination_advice" },
+  "阿里山必去點",
+);
+assert(alishanAdvice.reply?.includes("祝山觀日平台"), "case6 alishan lists zhushan");
+assert(alishanAdvice.reply?.includes("姊妹潭"), "case6 alishan lists sister pond");
+assert(
+  !alishanAdvice.reply?.includes("你比較想"),
+  "case6 alishan does not re-ask preference",
+);
+assert(
+  (alishanAdvice.recommendations?.length ?? 0) >= 3,
+  "case6 alishan has recommendation cards",
+);
+
+// 7. 下個月阿里山必去景點 — 不可再追問
+const alishanMonthCtx = mergeTravelContext(
+  createEmptySession(),
+  "下個月想去阿里山，有哪些必去景點",
+);
+const alishanMonthAdvice = resolveDestinationAdvice(
+  alishanMonthCtx.context,
+  { ...alishanMonthCtx.session, activeChatIntent: "destination_advice" },
+  "下個月想去阿里山，有哪些必去景點",
+);
+assert(alishanMonthAdvice.reply?.includes("阿里山森林遊樂區"), "case7 month query lists places");
+assert(
+  !alishanMonthAdvice.pendingQuestion,
+  "case7 month query no pending re-ask",
+);
+assert(
+  alishanMonthAdvice.contextPatch?.planningStage === "recommendations_generated",
+  "case7 reaches recommendations_generated",
+);
+
+// 8. must-visit 應觸發 Places fetch gate
+assert(
+  shouldFetchDestinationPlaces("阿里山必去點", { interests: [] }),
+  "case8 alishan must visit triggers place fetch",
+);
+assert(
+  shouldFetchDestinationPlaces("下個月想去阿里山，有哪些必去景點", { interests: [] }),
+  "case8b month must visit triggers place fetch",
+);
+
+// 9. 合併 session context 後仍能解析目的地
+const mergedPlaceCtx = mergeContextForPlaceFetch(
+  { interests: [], destination: "阿里山" },
+  createEmptySession(),
+);
+assert(
+  shouldFetchDestinationPlaces("有哪些必去景點", mergedPlaceCtx),
+  "case9 context destination enables place fetch",
+);
+
+// 10. must-visit 對話階段允許顯示卡片
+const mustVisitStage = resolveConversationStage(
+  { ...createEmptySession(), phase: "discover" },
+  "阿里山必去點",
+);
+assert(mustVisitStage === "recommend", "case10 must visit stage is recommend");
+const mustVisitCards = recommendationsForChatDisplay(
+  {
+    ...createEmptySession(),
+    travelContext: { interests: [], tripPurpose: "must_visit_places" },
+  },
+  "阿里山必去點",
+  [{ name: "祝山觀日平台", placeName: "祝山觀日平台", type: "景點" }],
+);
+assert(mustVisitCards.length === 1, "case10 must visit cards not filtered");
+
+// 11. 嘉義 geocode 查詢正規化
+const chiayiQueries = buildDestinationGeocodeQueries("嘉義", "zh-TW");
+assert(chiayiQueries.includes("嘉義市, 台灣"), "case11 chiayi city query");
+assert(chiayiQueries.includes("Chiayi City, Taiwan"), "case11 chiayi english query");
+
+// 12. 不可 render 泛用模板名稱
+assert(isGenericTemplatePlaceName("嘉義經典地標", "嘉義"), "case12 generic template detected");
+assert(!isGenericTemplatePlaceName("檜意森活村", "嘉義"), "case12 real place not generic");
+
+// 13. 嘉義 named fallback 有真實地點
+const chiayiFallback = buildNamedFallbackRecommendations("嘉義");
+assert(chiayiFallback.length >= 3, "case13 chiayi named fallback");
+assert(
+  chiayiFallback.some((r) => r.name.includes("檜意森活村")),
+  "case13 chiayi has hinoki village",
+);
+assert(
+  chiayiFallback.every((r) => r.reasonSource === "fallback"),
+  "case13 fallback source marked",
 );
 
 if (failed > 0) process.exit(1);

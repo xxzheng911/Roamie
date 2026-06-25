@@ -1,4 +1,4 @@
-import { isDefaultTaipeiCenter, normalizeDeviceLocation, TAIPEI_CENTER } from "@/lib/geo";
+import { isDefaultFallbackCenter, normalizeDeviceLocation, DEFAULT_APP_FALLBACK_CENTER } from "@/lib/geo";
 import {
   isIosSimulatorPresetLocation,
   pickFallbackCoordinates,
@@ -17,13 +17,18 @@ import {
   isHomeLocationMode,
   markHomeLocationBootstrapped,
 } from "@/lib/location-coordinator";
+import {
+  isAppActiveForLocation,
+  registerLocationAppGate,
+  waitForAppActiveForLocation,
+} from "@/lib/location-app-gate";
 
 export { isIosSimulatorPresetLocation } from "@/lib/device-location-resolve";
 
 export const DEFAULT_FALLBACK_LOCATION = {
-  lat: TAIPEI_CENTER.lat,
-  lng: TAIPEI_CENTER.lng,
-  city: "台北",
+  lat: DEFAULT_APP_FALLBACK_CENTER.lat,
+  lng: DEFAULT_APP_FALLBACK_CENTER.lng,
+  city: "高雄市",
 } as const;
 
 const LAST_GOOD_COORDS_KEY = "roamie:last-device-coords";
@@ -97,7 +102,7 @@ function readLastGoodCoords(): { lat: number; lng: number } | null {
     const parsed = JSON.parse(raw) as { lat?: number; lng?: number };
     if (typeof parsed.lat !== "number" || typeof parsed.lng !== "number") return null;
     const normalized = normalizeDeviceLocation(parsed.lat, parsed.lng);
-    if (!normalized || isDefaultTaipeiCenter(normalized.lat, normalized.lng)) return null;
+    if (!normalized || isDefaultFallbackCenter(normalized.lat, normalized.lng)) return null;
     return normalized;
   } catch {
     return null;
@@ -129,7 +134,7 @@ function markPublishedCoords(lat: number, lng: number): void {
 }
 
 function logLocationSuccess(result: DeviceLocationResult, via: string): void {
-  console.info("[LOCATION_SUCCESS]", {
+  console.info("[LOCATION_REQUEST_SUCCESS]", {
     lat: result.lat,
     lng: result.lng,
     source: result.source,
@@ -190,20 +195,37 @@ async function readCapacitorPosition(): Promise<{
 }> {
   if (!isNativeShell()) return { result: null, permission: "unknown" };
 
+  registerLocationAppGate();
+
+  if (!isAppActiveForLocation()) {
+    const ready = await waitForAppActiveForLocation(8_000);
+    if (!ready) {
+      console.info("[LOCATION_REQUEST_FAILED]", "reason=app_inactive");
+      return { result: null, permission: "unavailable" };
+    }
+  }
+
   try {
     const Geolocation = getCapacitorGeolocation();
     const permission = await ensureLocationPermission({ request: true });
+    console.info("[LOCATION_PERMISSION_STATUS]", `status=${permission}`);
     if (permission !== "granted") {
       return { result: null, permission };
     }
 
+    console.info("[LOCATION_REQUEST_START]", "platform=capacitor");
+
     const attempts: Parameters<CapGeolocation["getCurrentPosition"]>[0][] = [
-      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 60_000 },
-      { enableHighAccuracy: false, timeout: 15_000, maximumAge: 120_000 },
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
+      { enableHighAccuracy: false, timeout: 8_000, maximumAge: 120_000 },
     ];
 
     for (const options of attempts) {
       try {
+        if (!isAppActiveForLocation()) {
+          console.info("[LOCATION_REQUEST_FAILED]", "reason=app_backgrounded_mid_request");
+          return { result: null, permission: "unavailable" };
+        }
         const pos = await Geolocation.getCurrentPosition(options);
         const parsed = parseGpsPosition(
           pos.coords.latitude,
@@ -214,14 +236,14 @@ async function readCapacitorPosition(): Promise<{
         if (parsed) return { result: parsed, permission: "granted" };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn("[Location] capacitor getCurrentPosition failed", msg);
+        console.warn("[LOCATION_REQUEST_FAILED]", msg);
       }
     }
 
-    return { result: null, permission };
+    return { result: null, permission: "unavailable" };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.warn("[Location] capacitor geolocation unavailable", msg);
+    console.warn("[LOCATION_REQUEST_FAILED]", "reason=capacitor_unavailable", msg);
     return { result: null, permission: "unavailable" };
   }
 }
@@ -278,16 +300,25 @@ async function probePermissionState(): Promise<LocationPermissionState | null> {
 }
 
 function fallbackResult(permission: LocationPermissionState, reason: string): DeviceLocationResult {
+  const lastGood = readLastGoodCoords();
   const lastSearch = readLastSearchLocation();
-  const picked = pickFallbackCoordinates(readLastGoodCoords(), lastSearch);
+  const picked = pickFallbackCoordinates(lastGood, lastSearch);
 
-  console.warn("[Location] GPS unavailable, using fallback", {
-    reason,
-    permission,
-    coords: picked,
-    lastSearchCity: lastSearch?.city ?? null,
-    build: import.meta.env.PROD ? "production" : "development",
-  });
+  if (lastGood && picked.lat === lastGood.lat && picked.lng === lastGood.lng) {
+    console.info("[LOCATION_LAST_KNOWN_USED]", {
+      lat: picked.lat,
+      lng: picked.lng,
+      reason,
+    });
+  } else {
+    console.info("[LOCATION_FALLBACK_USED]", {
+      reason,
+      permission,
+      coords: picked,
+      lastSearchCity: lastSearch?.city ?? null,
+      usedDefaultCenter: picked.usedDefaultTaipei,
+    });
+  }
 
   const fallbackCity =
     lastSearch?.city?.trim() ||
@@ -304,7 +335,16 @@ function fallbackResult(permission: LocationPermissionState, reason: string): De
 }
 
 async function requestDeviceLocationInternal(): Promise<DeviceLocationResult> {
+  registerLocationAppGate();
+
   const native = isNativeShell();
+
+  if (native && !isAppActiveForLocation()) {
+    const ready = await waitForAppActiveForLocation(8_000);
+    if (!ready) {
+      return fallbackResult("unavailable", "app_inactive_before_request");
+    }
+  }
 
   if (native) {
     const { result: cap, permission: capPerm } = await readCapacitorPosition();
@@ -332,8 +372,9 @@ export function shouldUseRememberedLocationFallback(loc: DeviceLocationResult): 
   return loc.permission === "denied" || loc.permission === "unavailable";
 }
 
-/** 仍在等真實 GPS 時，不應以台北 fallback 打 weather / nearby。 */
+/** 仍在等真實 GPS 時，不應以 fallback 打 weather / nearby（Native 失敗時直接 fallback）。 */
 export function shouldDeferUntilGpsFix(loc: DeviceLocationResult): boolean {
+  if (isNativeShell() && loc.usedFallback) return false;
   return loc.usedFallback && !shouldUseRememberedLocationFallback(loc);
 }
 

@@ -219,23 +219,15 @@ function Welcome() {
                     </button>
                   </div>
 
-                  <div className="relative overflow-hidden rounded-3xl border border-clay/25 bg-gradient-to-br from-[hsl(38_42%_97%)] via-card to-[hsl(34_32%_93%)] p-5 shadow-soft ring-1 ring-clay/15">
-                    <div
-                      aria-hidden
-                      className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-clay/10 blur-2xl"
-                    />
-                    <div
-                      aria-hidden
-                      className="pointer-events-none absolute inset-x-5 top-0 h-px bg-gradient-to-r from-transparent via-clay/25 to-transparent"
-                    />
-                    <div className="relative flex items-center gap-2.5">
+                  <div className="overflow-hidden rounded-3xl border border-clay/25 bg-gradient-to-br from-accent/50 via-card to-secondary/40 p-5 shadow-soft">
+                    <div className="flex items-center gap-2">
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-clay/12 ring-1 ring-clay/20">
                         <Crown className="h-4 w-4 text-clay" strokeWidth={1.75} />
                       </span>
                       <p className="font-display text-lg leading-tight">Roamie Plus</p>
                     </div>
-                    <p className="relative mt-1 text-xs text-muted-foreground">更懂你的 AI 旅伴</p>
-                    <ul className="relative mt-4 space-y-2 text-sm text-foreground/88">
+                    <p className="mt-1 text-xs text-muted-foreground">更懂你的 AI 旅伴</p>
+                    <ul className="mt-4 space-y-2 text-sm text-foreground/90">
                       <li>· AI 長期記住你的旅行偏好</li>
                       <li>· 更深度的個人化推薦</li>
                       <li>· 旅行人格與心情分析</li>

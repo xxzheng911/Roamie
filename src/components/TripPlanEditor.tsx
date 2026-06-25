@@ -19,6 +19,7 @@ import type {
 import { TripStopSearchField } from "@/components/TripStopSearchField";
 import { tripPlaceToItineraryItem } from "@/lib/trip/trip-place-input";
 import { insertStopOnDate, moveStopInDay, removeStopAt } from "@/lib/trip/trip-stop-mutations";
+import { coalesceItineraryItems } from "@/lib/trip/itinerary-guards";
 import { useI18n } from "@/hooks/use-i18n";
 
 const TRANSPORT_OPTIONS: { value: TripTransportMode; label: string }[] = [
@@ -96,16 +97,17 @@ type Props = {
 };
 
 export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
+  const itineraryItems = coalesceItineraryItems(payload.itinerary);
   const { t } = useI18n();
   const [settings, setSettings] = useState<TripPlanSettings>(
     () =>
       payload.tripSettings ?? {
-        startTime: payload.itinerary[0]?.time?.slice(0, 5) ?? "10:00",
+        startTime: itineraryItems[0]?.time?.slice(0, 5) ?? "10:00",
         transport: "walk",
         legMinutes: {},
       },
   );
-  const [items, setItems] = useState<RoamieItineraryItem[]>(() => [...payload.itinerary]);
+  const [items, setItems] = useState<RoamieItineraryItem[]>(() => [...itineraryItems]);
   const [saving, setSaving] = useState(false);
   const [replanning, setReplanning] = useState(false);
   const [transitLoading, setTransitLoading] = useState(false);

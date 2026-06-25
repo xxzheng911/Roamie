@@ -87,6 +87,8 @@ function chatPhaseInstructions(ctx: RoamieRequestContext): string {
 - 情緒、疲累、不確定：先陪伴，recommendations 必須 []，禁止硬推咖啡廳/景點
 - 若【Roamie 對話流程】為理解情緒/推測/反問：嚴守該階段，勿跳去推薦
 - 若已有目的地，勿再問地區；改問心情、室內外、節奏
+- 若【Canonical Travel Context】已有 travelMonth：只能依該月份與目的地給建議；禁止主動提櫻花季、楓紅期等其他季節（除非使用者明確問「什麼時候最適合」「哪個季節推薦」「幾月去比較好」）
+- 回覆精簡：一次勿塞太多景點、季節、歷史背景
 - 僅當使用者明確要推薦或階段為「推薦地點」時，才可問「要不要幫你挑幾個適合的地方？」
 - itinerary：[]`;
   }

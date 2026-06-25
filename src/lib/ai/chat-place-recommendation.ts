@@ -25,11 +25,31 @@ import {
   buildExclusionInsufficientSummary,
   filterPlacesByExclusion,
 } from "@/lib/ai/recommendation-exclusion";
+import { buildRefreshRecommendationSummary } from "@/lib/ai/chat-recommendation-refresh";
+import {
+  attractionTypeRankScore,
+  buildAttractionRefreshSearchAttempts,
+  filterPlacesForAttractionRecommendation,
+  userWantsParkRecommendations,
+} from "@/lib/ai/place-recommendation-rules";
+import { classifyDestinationForPlaceSearch } from "@/lib/ai/landmark-place-strategy";
+import {
+  filterAlreadyRecommendedPlaces,
+  filterExcludedPlaceIds,
+  normalizePlaceName,
+  type PlaceLike,
+} from "@/lib/place-planning-memory";
 import {
   beginPlacesFlow,
   endPlacesFlow,
   placesStatsPayload,
 } from "@/lib/places-api-stats";
+import {
+  logChatPlacesRequest,
+  logChatPlacesResponse,
+  logChatPlacesError,
+  logChatTextSearchRequest,
+} from "@/lib/ai/chat-place-flow-log";
 
 export type PlaceSearchFn = (args: {
   data: {
@@ -54,6 +74,7 @@ function searchConfigForIntent(
   includedTypes?: string[];
 } {
   const moodBlob = `${context?.mood ?? ""} ${context?.setting ?? ""} ${context?.tripPurpose ?? ""}`;
+  const allowParks = userWantsParkRecommendations("", context);
 
   if (context?.budgetPreference === "low" || context?.tripPurpose === "refine_recommendations") {
     return lowBudgetSearchQuery(intent, moodBlob);
@@ -94,7 +115,7 @@ function searchConfigForIntent(
       includedTypes: ["museum", "shopping_mall", "cafe", "book_store", "tourist_attraction"],
     };
   }
-  if (/(累|疲|放鬆|放空)/.test(moodBlob)) {
+  if (/(累|疲|放鬆|放空)/.test(moodBlob) && allowParks) {
     return {
       query: "公園 散步",
       mode: "nearby",
@@ -104,7 +125,7 @@ function searchConfigForIntent(
   return {
     query: "景點",
     mode: "nearby",
-    includedTypes: ["tourist_attraction", "park", "museum"],
+    includedTypes: ["tourist_attraction", "museum", "art_gallery", "shopping_mall"],
   };
 }
 
@@ -123,11 +144,13 @@ function rankPlaces(
     const scoreA =
       (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10) -
       distA / 50_000 +
-      budgetPenaltyForPlace(a, preference) * -0.5;
+      budgetPenaltyForPlace(a, preference) * -0.5 +
+      attractionTypeRankScore(a) * 2;
     const scoreB =
       (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10) -
       distB / 50_000 +
-      budgetPenaltyForPlace(b, preference) * -0.5;
+      budgetPenaltyForPlace(b, preference) * -0.5 +
+      attractionTypeRankScore(b) * 2;
     return scoreB - scoreA;
   });
 }
@@ -152,6 +175,9 @@ function buildSummary(
   ctx: CanonicalTravelContext,
   excludedCategories?: string[],
 ): string {
+  if (ctx.tripPurpose === "refresh_recommendations") {
+    return buildRefreshRecommendationSummary(picks, intent);
+  }
   if (ctx.budgetPreference === "low" || ctx.tripPurpose === "refine_recommendations") {
     return buildBudgetRefinementSummary(ctx, picks);
   }
@@ -242,7 +268,7 @@ function buildSummary(
   ].join("\n");
 }
 
-type SearchAttempt = {
+export type SearchAttempt = {
   query: string;
   mode: "nearby" | "text";
   includedTypes?: string[];
@@ -275,6 +301,7 @@ async function runPlaceSearch(
   lng: number,
   locale: Locale,
   attempt: SearchAttempt,
+  caller = "chat.runPlaceSearch",
 ): Promise<PlaceResult[]> {
   console.info(
     `[CHAT_PLACES_REQUEST] mode=${attempt.mode} query=${attempt.query || "(nearby)"}`,
@@ -288,12 +315,92 @@ async function runPlaceSearch(
       includedTypes: attempt.includedTypes,
       locale,
       ...placesStatsPayload({
-        placesCaller: "chat.runPlaceSearch",
+        placesCaller: caller,
         placesScreen: "chat",
       }),
     },
   });
   return result.places ?? [];
+}
+
+/** 依序嘗試多組 query，回傳第一組有結果的 places */
+export async function fetchPlacesWithSearchAttempts(
+  searchPlaces: PlaceSearchFn,
+  lat: number,
+  lng: number,
+  locale: Locale,
+  attempts: SearchAttempt[],
+  caller = "chat.fetchPlacesWithSearchAttempts",
+): Promise<PlaceResult[]> {
+  for (const attempt of attempts) {
+    if (attempt.mode === "text") {
+      logChatTextSearchRequest(attempt.query);
+    }
+    logChatPlacesRequest({
+      mode: attempt.mode,
+      query: attempt.query,
+      lat: lat.toFixed(4),
+      lng: lng.toFixed(4),
+      caller,
+    });
+    try {
+      const places = await runPlaceSearch(searchPlaces, lat, lng, locale, attempt, caller);
+      if (places.length > 0) {
+        logChatPlacesResponse(places.length, attempt.query);
+        return places;
+      }
+    } catch (error) {
+      logChatPlacesError(error, `query=${attempt.query}`);
+    }
+  }
+  return [];
+}
+
+/** 合併多組 query 結果，去重 placeId，供目的地推薦使用 */
+export async function fetchPlacesWithSearchAttemptsMerged(
+  searchPlaces: PlaceSearchFn,
+  lat: number,
+  lng: number,
+  locale: Locale,
+  attempts: SearchAttempt[],
+  caller = "chat.fetchPlacesWithSearchAttemptsMerged",
+  opts?: { minResults?: number; maxResults?: number },
+): Promise<PlaceResult[]> {
+  const minResults = opts?.minResults ?? 3;
+  const maxResults = opts?.maxResults ?? 24;
+  const seen = new Set<string>();
+  const merged: PlaceResult[] = [];
+
+  for (const attempt of attempts) {
+    if (attempt.mode === "text") {
+      logChatTextSearchRequest(attempt.query);
+    }
+    logChatPlacesRequest({
+      mode: attempt.mode,
+      query: attempt.query,
+      lat: lat.toFixed(4),
+      lng: lng.toFixed(4),
+      caller,
+    });
+    try {
+      const places = await runPlaceSearch(searchPlaces, lat, lng, locale, attempt, caller);
+      for (const place of places) {
+        const id = (place.id ?? place.name ?? "").trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        merged.push(place);
+      }
+      if (merged.length >= maxResults) break;
+      if (merged.length >= minResults && attempt === attempts[attempts.length - 1]) break;
+    } catch (error) {
+      logChatPlacesError(error, `query=${attempt.query}`);
+    }
+  }
+
+  if (merged.length > 0) {
+    logChatPlacesResponse(merged.length, "merged");
+  }
+  return merged.slice(0, maxResults);
 }
 
 export async function fetchNearbyPlacesForIntent(
@@ -304,31 +411,57 @@ export async function fetchNearbyPlacesForIntent(
   searchPlaces: PlaceSearchFn,
   foodPreference?: string,
   context?: CanonicalTravelContext,
+  excludePlaceIds: string[] = [],
+  opts?: {
+    blockedCoreNames?: string[];
+    cityLabel?: string;
+    userText?: string;
+  },
 ): Promise<PlaceResult[]> {
   const excluded = context?.excludedCategories ?? [];
+  const allowParks = userWantsParkRecommendations(opts?.userText ?? "", context);
+  const isRefresh =
+    context?.tripPurpose === "refresh_recommendations" ||
+    context?.tripPurpose === "refine_recommendations";
+  const destinationProfile = opts?.cityLabel
+    ? classifyDestinationForPlaceSearch(opts.cityLabel)
+    : undefined;
+
   const attempts: SearchAttempt[] =
     intent === "restaurant"
       ? restaurantSearchFallbackQueries(foodPreference)
       : intent === "camping"
         ? campingSearchAttempts()
-        : [searchConfigForIntent(intent, foodPreference, context)];
+        : isRefresh
+          ? buildAttractionRefreshSearchAttempts(opts?.cityLabel, destinationProfile)
+          : [searchConfigForIntent(intent, foodPreference, context)];
 
   let ranked: PlaceResult[] = [];
   for (const attempt of attempts) {
     const places = await runPlaceSearch(searchPlaces, lat, lng, locale, attempt);
     ranked = rankPlaces(places, lat, lng, context);
     ranked = filterPlacesByExclusion(ranked, excluded);
+    ranked = filterExcludedPlaceIds(ranked, excludePlaceIds);
+    ranked = filterPlacesForAttractionRecommendation(ranked, {
+      allowParks,
+      blockedCoreNames: opts?.blockedCoreNames,
+      blockedPlaceIds: excludePlaceIds,
+      profile: destinationProfile,
+      parentLandmark: destinationProfile?.parentLandmark,
+    });
     if (intent === "camping") {
       ranked = filterCampingPlaces(ranked);
     }
-    if (ranked.length > 0) break;
+    if (ranked.length >= RECOMMENDATION_COUNT) break;
   }
 
   if (context?.budgetPreference === "low") {
     ranked = refinePlaceResultsForBudget(ranked, "low");
   }
 
-  console.info(`[CHAT_PLACES_SUCCESS] count=${ranked.length} excluded=${excluded.length}`);
+  console.info(
+    `[CHAT_PLACES_SUCCESS] count=${ranked.length} excluded=${excluded.length} deduped=${excludePlaceIds.length}`,
+  );
   return ranked;
 }
 
@@ -341,11 +474,31 @@ export async function buildNearbyPlaceRecommendation(params: {
   searchPlaces: PlaceSearchFn;
   foodPreference?: string;
   excludedCategories?: string[];
+  excludePlaceIds?: string[];
+  rejectedPlaceNames?: string[];
+  priorRecommended?: PlaceLike[];
+  blockedCoreNames?: string[];
+  userText?: string;
+  cityLabel?: string;
 }): Promise<{ summary: string; payload: RoamiePayloadV2; recommendations: RoamieRecommendationItem[] }> {
   const flow = beginPlacesFlow("chat_once");
   try {
-    const { intent, lat, lng, locale, context, searchPlaces, foodPreference, excludedCategories } =
-      params;
+    const {
+      intent,
+      lat,
+      lng,
+      locale,
+      context,
+      searchPlaces,
+      foodPreference,
+      excludedCategories,
+      excludePlaceIds = [],
+      rejectedPlaceNames = [],
+      priorRecommended = [],
+      blockedCoreNames = [],
+      userText = "",
+      cityLabel,
+    } = params;
     const excluded =
       excludedCategories ??
       context.excludedCategories ??
@@ -354,7 +507,11 @@ export async function buildNearbyPlaceRecommendation(params: {
       ...context,
       excludedCategories: excluded,
     };
-    const places = await fetchNearbyPlacesForIntent(
+    const coreBlock = [
+      ...blockedCoreNames,
+      ...priorRecommended.map((p) => normalizePlaceName(p.placeName ?? p.name)).filter(Boolean),
+    ];
+    let places = await fetchNearbyPlacesForIntent(
       intent,
       lat,
       lng,
@@ -362,7 +519,18 @@ export async function buildNearbyPlaceRecommendation(params: {
       searchPlaces,
       foodPreference,
       contextWithExclusion,
+      excludePlaceIds,
+      {
+        blockedCoreNames: coreBlock,
+        cityLabel: cityLabel ?? context.destination,
+        userText,
+      },
     );
+    places = filterAlreadyRecommendedPlaces(places, {
+      recommended: priorRecommended,
+      rejectedNames: rejectedPlaceNames,
+      blockedCoreNames: coreBlock,
+    });
     const picks = places.slice(0, RECOMMENDATION_COUNT);
 
     if (!picks.length) {

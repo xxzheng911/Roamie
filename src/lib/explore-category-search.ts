@@ -789,8 +789,8 @@ async function searchExploreCategoryPlacesInner(
     await runTextFallbackQueries(HOME_TEXT_FALLBACK_QUERIES[cat.id] ?? []);
   } else if (!forHome && !requestThrottled && filtered.length < EXPLORE_MAP_MIN_DISPLAY) {
     const cityQueries = cityMode
-      ? cityCategoryTextQueries(cat.id, cityLabel)
-      : exploreCategoryTextQueries(cat.id, userLocation, cityLabel);
+      ? cityCategoryTextQueries(cat.id, cityLabel, weather)
+      : exploreCategoryTextQueries(cat.id, userLocation, cityLabel, weather);
     const queries =
       cat.id === "coffee" && !cityMode
         ? [...COFFEE_NEARBY_TEXT_QUERIES, ...cityQueries]
