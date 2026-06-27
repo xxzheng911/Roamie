@@ -1,4 +1,8 @@
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { resolveDestinationForCategorySearch } from "@/lib/ai/chat-category-destination";
+import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { resolveDestinationFromText } from "@/lib/ai/trip-planning-context";
 
 /** Intent Router 優先序：行程規劃 > 日期詢問 > 地點詢問 > 心情推薦 > 附近推薦 */
 export type IntentRouteCategory =
@@ -31,11 +35,17 @@ const NAMED_DESTINATION_IN_TEXT =
 const REMOTE_DESTINATION_GO =
   /(?:我)?(?:想)?去([\u4e00-\u9fffA-Za-z]{2,12})(?:走走|逛逛|玩|旅行|旅遊|，|。|$|\s)/;
 
+const GENERIC_DESTINATION_PREFIX =
+  /^([\u4e00-\u9fff]{2,8}?|[A-Za-z]{2,12})(?:的)?(?:(?:什麼|什么)時候|(?:何时|何時)|(?:幾|几)月|適合|适合|最好|比較好|花季|雨季|旺季|淡季)/;
+
 export function hasNamedDestinationInText(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   if (NAMED_DESTINATION_IN_TEXT.test(t)) return true;
-  return REMOTE_DESTINATION_GO.test(t);
+  if (REMOTE_DESTINATION_GO.test(t)) return true;
+  if (GENERIC_DESTINATION_PREFIX.test(t)) return true;
+  if (resolveDestinationFromText(t)) return true;
+  return false;
 }
 
 export function isDateInquiryText(text: string): boolean {
@@ -78,6 +88,8 @@ export function isTravelPlanningText(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
 
+  if (isBestTravelTimeIntent(t)) return false;
+
   if (isTravelPlanningAdviceText(t)) return true;
   if (isDateInquiryText(t)) return true;
   if (isDestinationInquiryText(t)) return true;
@@ -116,6 +128,8 @@ export function shouldBlockNearbyRecommendation(text: string, session?: ChatPlan
   const t = text.trim();
   if (!t) return false;
 
+  if (isBestTravelTimeIntent(t)) return false;
+
   if (isTravelPlanningText(t)) return true;
   if (isDateInquiryText(t)) return true;
   if (isDestinationInquiryText(t)) return true;
@@ -125,6 +139,14 @@ export function shouldBlockNearbyRecommendation(text: string, session?: ChatPlan
   }
 
   if (session) {
+    const destination = resolveDestinationForCategorySearch(
+      session.travelContext ?? { interests: [] },
+      session,
+      t,
+    );
+    if (destination && hasCategoryPlaceQuery(t)) {
+      return false;
+    }
     if (
       session.conversationMode === "destination_planning" ||
       session.tripPlanningContext?.intent === "destination_planning"

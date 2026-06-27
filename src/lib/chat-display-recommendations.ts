@@ -15,6 +15,23 @@ import {
   detectMustVisitIntent,
   detectPlaceRecommendationIntent,
 } from "@/lib/ai/must-visit-places";
+import { filterRecommendationsByDestinationRenderGuard } from "@/lib/ai/chat-place-search-context";
+import { filterRecommendationsForCategoryRender } from "@/lib/ai/chat-category-place-guard";
+import {
+  hasCategoryPlaceQuery,
+  type ChatPlaceCategoryIntent,
+} from "@/lib/ai/chat-place-category-types";
+import { parseChatPlaceIntents } from "@/lib/ai/chat-place-intent";
+import { resolveDestinationFromText } from "@/lib/ai/trip-planning-context";
+import {
+  logChatCardsOverwriteBlocked,
+  logChatCardsPreserved,
+  logChatFinalCardsCount,
+  logChatFinalMessageBeforeRender,
+  logChatNoResultAllowed,
+  logChatPlaceCardRender,
+  logChatRenderModeLocked,
+} from "@/lib/ai/chat-place-flow-log";
 
 /** 將摘要中的地點數量改為與實際渲染張數一致 */
 export function alignChatRecommendationCount(summary: string, count: number): string {
@@ -33,19 +50,89 @@ export function alignChatRecommendationCount(summary: string, count: number): st
   return result;
 }
 
+function isDestinationCategoryPlaceDisplay(
+  session: ChatPlanningSession,
+  userText: string,
+): boolean {
+  if (!hasCategoryPlaceQuery(userText)) return false;
+  const dest =
+    session.travelContext?.destination?.trim() ||
+    resolveDestinationFromText(userText);
+  return Boolean(dest);
+}
+
+function resolveCategoryDisplayIntent(
+  session: ChatPlanningSession,
+  userText: string,
+): ChatPlaceCategoryIntent | null {
+  const intents = parseChatPlaceIntents(userText);
+  if (intents.length === 1) return intents[0]!;
+  if (session.activeChatIntent === "cafe") return "cafe";
+  if (session.activeChatIntent === "restaurant") return "restaurant";
+  if (session.activeChatIntent === "attraction") return "attraction";
+  return intents[0] ?? null;
+}
+
+/** 目的地類別推薦 — 跳過營業時間／stage 二次過濾，保留已驗證 place cards */
+function recommendationsForCategoryPlaceDisplay(
+  session: ChatPlanningSession,
+  userText: string,
+  items: RoamieRecommendationItem[],
+): RoamieRecommendationItem[] {
+  const intent = resolveCategoryDisplayIntent(session, userText);
+  if (!intent) return [];
+
+  logChatRenderModeLocked("PLACE_CARDS_ONLY");
+  const working = filterRecommendationsForCategoryRender(items, intent);
+  const cards = working.slice(0, 6);
+  logChatPlaceCardRender(cards.length, intent);
+  logChatCardsPreserved(cards.length, "category_place_display");
+  return cards;
+}
+
 export function finalizeChatRecommendationDisplay(
   session: ChatPlanningSession,
   userText: string,
   summary: string,
   items: RoamieRecommendationItem[] | undefined,
 ): { summary: string; recommendations: RoamieRecommendationItem[] } {
-  const recommendations = recommendationsForChatDisplay(session, userText, items);
-  const alignedSummary = alignChatRecommendationCount(summary, recommendations.length);
-  if (alignedSummary !== summary) {
+  const originalItems = items ?? [];
+  const originalCount = originalItems.length;
+
+  let recommendations = recommendationsForChatDisplay(session, userText, items);
+
+  if (
+    recommendations.length === 0 &&
+    originalCount > 0 &&
+    isDestinationCategoryPlaceDisplay(session, userText)
+  ) {
+    recommendations = recommendationsForCategoryPlaceDisplay(session, userText, originalItems);
+    if (recommendations.length > 0) {
+      logChatCardsOverwriteBlocked(`preserved=${recommendations.length}`);
+    }
+  }
+
+  const finalCount = recommendations.length;
+  logChatFinalMessageBeforeRender(finalCount, summary.slice(0, 60));
+  logChatFinalCardsCount(finalCount);
+
+  if (finalCount === 0 && originalCount > 0) {
+    logChatNoResultAllowed(false, "had_cards_filtered_to_zero");
+  } else if (finalCount > 0) {
+    logChatNoResultAllowed(false, "cards_present");
+  }
+
+  const alignedSummary =
+    finalCount > 0
+      ? alignChatRecommendationCount(summary, finalCount)
+      : summary;
+
+  if (alignedSummary !== summary && finalCount > 0) {
     console.info(
-      `[CHAT_REC_COUNT_SYNC] cards=${recommendations.length} summary_adjusted=true`,
+      `[CHAT_REC_COUNT_SYNC] cards=${finalCount} summary_adjusted=true`,
     );
   }
+
   return { summary: alignedSummary, recommendations };
 }
 
@@ -58,6 +145,10 @@ export function recommendationsForChatDisplay(
   const list = items ?? [];
   if (!list.length) return [];
 
+  if (isDestinationCategoryPlaceDisplay(session, userText)) {
+    return recommendationsForCategoryPlaceDisplay(session, userText, list);
+  }
+
   if (isPlaceDetailChatActive(session)) {
     const followUp = parsePlaceDetailFollowUp(userText);
     if (followUp !== "nearby_cafe" && followUp !== "nearby_late_snack") {
@@ -66,10 +157,11 @@ export function recommendationsForChatDisplay(
   }
 
   const mustVisitFlow =
-    session.travelContext?.tripPurpose === "must_visit_places" ||
-    session.travelContext?.mustVisitGenerated ||
-    detectMustVisitIntent(userText) ||
-    detectPlaceRecommendationIntent(userText);
+    !hasCategoryPlaceQuery(userText) &&
+    (session.travelContext?.tripPurpose === "must_visit_places" ||
+      session.travelContext?.mustVisitGenerated ||
+      detectMustVisitIntent(userText) ||
+      detectPlaceRecommendationIntent(userText));
 
   if (mustVisitFlow) {
     const cards = list.slice(0, 6);
@@ -88,10 +180,26 @@ export function recommendationsForChatDisplay(
     const excluded =
       session.excludedCategories ?? session.travelContext?.excludedCategories ?? [];
     working = filterRecommendationsByExclusion(working, excluded);
+    const categoryIntents = parseChatPlaceIntents(userText);
+    if (categoryIntents.length === 1) {
+      working = filterRecommendationsForCategoryRender(working, categoryIntents[0]!);
+      logChatRenderModeLocked("PLACE_CARDS_ONLY");
+      return working.slice(0, 6);
+    }
+    if (session.activeChatIntent === "cafe") {
+      working = filterRecommendationsForCategoryRender(working, "cafe");
+      logChatRenderModeLocked("PLACE_CARDS_ONLY");
+      return working.slice(0, 6);
+    }
     const filtered = filterRecommendationItemsForDisplay(working);
-    const count = Math.min(filtered.length, 5);
+    let nearbyFiltered = filtered;
+    const destination = session.travelContext?.destination?.trim();
+    if (destination) {
+      nearbyFiltered = filterRecommendationsByDestinationRenderGuard(filtered, destination);
+    }
+    const count = Math.min(nearbyFiltered.length, 5);
     console.info(`[CHAT_PLACE_CARD_RENDER] count=${count}`);
-    return filtered.slice(0, 5);
+    return nearbyFiltered.slice(0, 5);
   }
 
   const stage = resolveConversationStage(
@@ -110,7 +218,60 @@ export function recommendationsForChatDisplay(
   }
 
   const { maxCount } = mergeBoundsForStage(stage);
-  const filtered = filterRecommendationItemsForDisplay(working).slice(0, maxCount);
+  let filtered = filterRecommendationItemsForDisplay(working).slice(0, maxCount);
+  const destination = session.travelContext?.destination?.trim();
+  const categoryIntents = parseChatPlaceIntents(userText);
+  if (categoryIntents.length === 1) {
+    filtered = filterRecommendationsForCategoryRender(filtered, categoryIntents[0]!);
+    logChatRenderModeLocked("PLACE_CARDS_ONLY");
+  } else if (destination) {
+    filtered = filterRecommendationsByDestinationRenderGuard(filtered, destination);
+  }
   console.info(`[CHAT_PLACE_CARD_RENDER] count=${filtered.length}`);
   return filtered;
+}
+
+/** 合併 assistant 訊息時保留既有 cards，禁止空陣列覆蓋 */
+export function mergeAssistantRecommendationMessage(params: {
+  content: string;
+  roamie?: {
+    summary?: string;
+    recommendations?: RoamieRecommendationItem[];
+    [key: string]: unknown;
+  };
+  existingRecommendations?: RoamieRecommendationItem[];
+}): {
+  content: string;
+  roamie: {
+    summary: string;
+    recommendations: RoamieRecommendationItem[];
+    [key: string]: unknown;
+  };
+} {
+  const { content, roamie, existingRecommendations = [] } = params;
+  const incoming = roamie?.recommendations ?? [];
+  const preserved =
+    incoming.length > 0
+      ? incoming
+      : existingRecommendations.length > 0
+        ? existingRecommendations
+        : incoming;
+
+  if (existingRecommendations.length > 0 && incoming.length === 0) {
+    logChatCardsOverwriteBlocked(`kept=${existingRecommendations.length}`);
+    logChatCardsPreserved(existingRecommendations.length, "merge_message");
+  }
+
+  logChatFinalCardsCount(preserved.length);
+
+  return {
+    content,
+    roamie: {
+      title: "Roamie 推薦",
+      itinerary: [],
+      ...roamie,
+      summary: roamie?.summary ?? content,
+      recommendations: preserved,
+    },
+  };
 }

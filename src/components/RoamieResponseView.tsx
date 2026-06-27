@@ -8,6 +8,10 @@ import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { filterRecommendationItemsForDisplay } from "@/lib/recommend-place-ranking";
+import {
+  logChatUiReceivedCards,
+  logChatUiRenderedCards,
+} from "@/lib/ai/chat-place-flow-log";
 
 function ItineraryByDate({
   items,
@@ -148,6 +152,8 @@ export function RoamieResponseView({
   const recs = recommendationsPreFiltered
     ? (data.recommendations ?? [])
     : filterRecommendationItemsForDisplay(data.recommendations ?? []);
+  logChatUiReceivedCards(data.recommendations?.length ?? 0);
+  logChatUiRenderedCards(recs.length);
   const itinerary = data.itinerary ?? [];
 
   return (
@@ -278,7 +284,9 @@ export function RoamieResponseView({
                   </div>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{r.description}</p>
-                <p className="mt-1.5 text-xs text-foreground/75">{r.reason}</p>
+                {r.reason?.trim() && r.reason.trim() !== r.description?.trim() && (
+                  <p className="mt-1.5 text-xs text-foreground/75">{r.reason}</p>
+                )}
                 <PlaceHoursBadge
                   className="mt-1.5"
                   statusLabel={r.openStatusLabel}

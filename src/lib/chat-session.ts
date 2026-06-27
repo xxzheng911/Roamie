@@ -146,6 +146,8 @@ export type ChatPlanningSession = {
   rejectedPlaceNames?: string[];
   /** 最後一則使用者訊息（規劃用） */
   lastUserIntent?: string;
+  /** AI 直接排行程狀態機（COLLECTING → … → SUCCESS | FAILED） */
+  aiItineraryState?: import("@/lib/ai/ai-itinerary-state-machine").AiItineraryState;
   /** 從推薦頁進入後需產生情境開場 */
   pendingHandoff?: boolean;
   /** AI 產生的行程草稿（未寫入收藏） */

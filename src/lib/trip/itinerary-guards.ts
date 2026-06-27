@@ -11,7 +11,7 @@ export const ITINERARY_GENERATION_FAILED_MESSAGE =
   "行程建立失敗，我再幫你重新整理一次。";
 
 export const ITINERARY_PARTIAL_FAILURE_MESSAGE =
-  "我先幫你整理到幾個地點，但行程建立還沒完成，要不要我改成先列必去景點？";
+  "行程建立失敗，是否改成列出必去景點？";
 
 export type ItineraryDayPlan = {
   day: number;

@@ -50,17 +50,31 @@ import {
   logChatPlacesError,
   logChatTextSearchRequest,
 } from "@/lib/ai/chat-place-flow-log";
+import type { ChatPlaceSearchContext } from "@/lib/ai/chat-place-search-context";
+import { placesSearchContextPayload } from "@/lib/ai/chat-place-search-context";
+import { filterPlacesByDestinationGuard } from "@/lib/ai/chat-place-search-context";
 
-export type PlaceSearchFn = (args: {
-  data: {
-    query: string;
-    lat: number;
-    lng: number;
-    mode: "nearby" | "text" | "multi";
-    includedTypes?: string[];
-    locale?: Locale;
-  };
-}) => Promise<{ places?: PlaceResult[] }>;
+export type PlaceSearchData = {
+  query: string;
+  lat: number;
+  lng: number;
+  mode: "nearby" | "text" | "multi";
+  includedTypes?: string[];
+  locale?: Locale;
+  placesCaller?: string;
+  placesScreen?: "chat" | "home" | "explore" | "ai_recommend" | "itinerary" | "plan" | "place_detail" | "unknown";
+  destinationName?: string;
+  searchMode?: "destination" | "nearby";
+  skipLocationBias?: boolean;
+  intentCategory?: string;
+};
+
+export type PlaceSearchFn = (args: { data: PlaceSearchData }) => Promise<{ places?: PlaceResult[] }>;
+
+export type PlaceSearchExtras = {
+  searchContext?: ChatPlaceSearchContext;
+  intentCategory?: string;
+};
 
 const RECOMMENDATION_COUNT = 5;
 
@@ -302,7 +316,11 @@ async function runPlaceSearch(
   locale: Locale,
   attempt: SearchAttempt,
   caller = "chat.runPlaceSearch",
+  extras?: PlaceSearchExtras,
 ): Promise<PlaceResult[]> {
+  const ctxPayload = extras?.searchContext
+    ? placesSearchContextPayload(extras.searchContext, extras.intentCategory)
+    : {};
   console.info(
     `[CHAT_PLACES_REQUEST] mode=${attempt.mode} query=${attempt.query || "(nearby)"}`,
   );
@@ -318,6 +336,7 @@ async function runPlaceSearch(
         placesCaller: caller,
         placesScreen: "chat",
       }),
+      ...ctxPayload,
     },
   });
   return result.places ?? [];
@@ -331,6 +350,7 @@ export async function fetchPlacesWithSearchAttempts(
   locale: Locale,
   attempts: SearchAttempt[],
   caller = "chat.fetchPlacesWithSearchAttempts",
+  extras?: PlaceSearchExtras,
 ): Promise<PlaceResult[]> {
   for (const attempt of attempts) {
     if (attempt.mode === "text") {
@@ -342,9 +362,19 @@ export async function fetchPlacesWithSearchAttempts(
       lat: lat.toFixed(4),
       lng: lng.toFixed(4),
       caller,
+      searchMode: extras?.searchContext?.searchMode,
+      destinationName: extras?.searchContext?.destinationName,
     });
     try {
-      const places = await runPlaceSearch(searchPlaces, lat, lng, locale, attempt, caller);
+      const places = await runPlaceSearch(
+        searchPlaces,
+        lat,
+        lng,
+        locale,
+        attempt,
+        caller,
+        extras,
+      );
       if (places.length > 0) {
         logChatPlacesResponse(places.length, attempt.query);
         return places;
@@ -364,10 +394,11 @@ export async function fetchPlacesWithSearchAttemptsMerged(
   locale: Locale,
   attempts: SearchAttempt[],
   caller = "chat.fetchPlacesWithSearchAttemptsMerged",
-  opts?: { minResults?: number; maxResults?: number },
+  opts?: { minResults?: number; maxResults?: number; extras?: PlaceSearchExtras },
 ): Promise<PlaceResult[]> {
   const minResults = opts?.minResults ?? 3;
   const maxResults = opts?.maxResults ?? 24;
+  const extras = opts?.extras;
   const seen = new Set<string>();
   const merged: PlaceResult[] = [];
 
@@ -381,9 +412,19 @@ export async function fetchPlacesWithSearchAttemptsMerged(
       lat: lat.toFixed(4),
       lng: lng.toFixed(4),
       caller,
+      searchMode: extras?.searchContext?.searchMode,
+      destinationName: extras?.searchContext?.destinationName,
     });
     try {
-      const places = await runPlaceSearch(searchPlaces, lat, lng, locale, attempt, caller);
+      const places = await runPlaceSearch(
+        searchPlaces,
+        lat,
+        lng,
+        locale,
+        attempt,
+        caller,
+        extras,
+      );
       for (const place of places) {
         const id = (place.id ?? place.name ?? "").trim();
         if (!id || seen.has(id)) continue;
@@ -416,6 +457,7 @@ export async function fetchNearbyPlacesForIntent(
     blockedCoreNames?: string[];
     cityLabel?: string;
     userText?: string;
+    searchContext?: ChatPlaceSearchContext;
   },
 ): Promise<PlaceResult[]> {
   const excluded = context?.excludedCategories ?? [];
@@ -425,6 +467,9 @@ export async function fetchNearbyPlacesForIntent(
     context?.tripPurpose === "refine_recommendations";
   const destinationProfile = opts?.cityLabel
     ? classifyDestinationForPlaceSearch(opts.cityLabel)
+    : undefined;
+  const searchExtras: PlaceSearchExtras | undefined = opts?.searchContext
+    ? { searchContext: opts.searchContext, intentCategory: intent }
     : undefined;
 
   const attempts: SearchAttempt[] =
@@ -438,8 +483,23 @@ export async function fetchNearbyPlacesForIntent(
 
   let ranked: PlaceResult[] = [];
   for (const attempt of attempts) {
-    const places = await runPlaceSearch(searchPlaces, lat, lng, locale, attempt);
+    const places = await runPlaceSearch(
+      searchPlaces,
+      lat,
+      lng,
+      locale,
+      attempt,
+      "chat.fetchNearbyPlacesForIntent",
+      searchExtras,
+    );
     ranked = rankPlaces(places, lat, lng, context);
+    if (opts?.searchContext?.searchMode === "destination" && opts.searchContext.destinationName) {
+      ranked = filterPlacesByDestinationGuard(
+        ranked,
+        opts.searchContext.destinationName,
+        opts.userText,
+      );
+    }
     ranked = filterPlacesByExclusion(ranked, excluded);
     ranked = filterExcludedPlaceIds(ranked, excludePlaceIds);
     ranked = filterPlacesForAttractionRecommendation(ranked, {
@@ -480,6 +540,7 @@ export async function buildNearbyPlaceRecommendation(params: {
   blockedCoreNames?: string[];
   userText?: string;
   cityLabel?: string;
+  searchContext?: ChatPlaceSearchContext;
 }): Promise<{ summary: string; payload: RoamiePayloadV2; recommendations: RoamieRecommendationItem[] }> {
   const flow = beginPlacesFlow("chat_once");
   try {
@@ -498,6 +559,7 @@ export async function buildNearbyPlaceRecommendation(params: {
       blockedCoreNames = [],
       userText = "",
       cityLabel,
+      searchContext,
     } = params;
     const excluded =
       excludedCategories ??
@@ -524,6 +586,7 @@ export async function buildNearbyPlaceRecommendation(params: {
         blockedCoreNames: coreBlock,
         cityLabel: cityLabel ?? context.destination,
         userText,
+        searchContext,
       },
     );
     places = filterAlreadyRecommendedPlaces(places, {

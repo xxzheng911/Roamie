@@ -16,7 +16,17 @@ import {
   isTravelPlanningText,
   shouldBlockNearbyRecommendation,
 } from "@/lib/ai/chat-intent-router";
+import { isComboItineraryQuery } from "@/lib/ai/chat-category-place-guard";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import {
+  hasChatPlaceCategoryQuery,
+  mapCategoryIntentToNearbyIntent,
+  parseChatPlaceIntents,
+  resolveDestinationForCategorySearch,
+} from "@/lib/ai/chat-place-intent";
 import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
+import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
+import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 
 function isTripAddPlaceChat(session: ChatPlanningSession): boolean {
   return Boolean(session.fromTripAddPlace && session.tripAddPlaceContext);
@@ -42,6 +52,8 @@ export type ChatIntent =
   | "cafe"
   | "attraction"
   | "camping"
+  | "create_itinerary"
+  | "best_travel_time"
   | "trip_planning"
   | "destination_advice"
   | "mood_chat"
@@ -55,25 +67,42 @@ export type NearbyPlaceIntent = Extract<ChatIntent, "restaurant" | "cafe" | "att
 
 /**
  * Intent Router — 優先序：
- * 1. 行程規劃 / 日期詢問 / 地點詢問
- * 2. 明確附近探索
- * 3. 餐飲 / 露營等具體類別
- * 4. 心情推薦
- * 5. 一般
+ * 1. 最佳旅行時間（BEST_TRAVEL_TIME_INTENT）
+ * 2. 行程規劃 / 日期詢問 / 地點詢問
+ * 3. 明確附近探索
+ * 4. 餐飲 / 露營等具體類別
+ * 5. 心情推薦
+ * 6. 一般
  */
 export function detectChatIntent(text: string): ChatIntent {
   const t = text.trim();
   if (!t) return "general";
 
+  if (isCreateItineraryIntent(t)) return "create_itinerary";
+  if (isBestTravelTimeIntent(t)) return "best_travel_time";
+
+  // PLACE_RECOMMENDATION 優先：目的地 + 類別 → 直接搜尋地點卡片
+  const categoryIntents = parseChatPlaceIntents(t);
+  if (categoryIntents.length > 0 && hasCategoryPlaceQuery(t)) {
+    const dest = resolveDestinationFromText(t);
+    const isItineraryCombo =
+      isComboItineraryQuery(t) ||
+      (/\d+\s*天/.test(t) && /(?:安排|規劃|规划|行程|幫我排|帮我排|怎麼排|怎麼玩)/.test(t));
+    if (dest && !isItineraryCombo) {
+      return mapCategoryIntentToNearbyIntent(categoryIntents[0]!);
+    }
+  }
+
   if (isTripMealRequest(t) && (isNearbyExploreText(t) || !resolveDestinationFromText(t))) {
     return "restaurant";
   }
 
-  // 景點推薦 + 已含目的地 → 直接推薦，不走多日規劃澄清
+  // 必去景點 + 已含目的地 → 走 must-visit 推薦（非類別鎖定時）
   if (
     detectPlaceRecommendationIntent(t) &&
     resolveDestinationFromText(t) &&
-    !/\d+\s*天/.test(t)
+    !/\d+\s*天/.test(t) &&
+    !hasCategoryPlaceQuery(t)
   ) {
     return "destination_advice";
   }
@@ -198,6 +227,8 @@ export function chatResponseModeForIntent(intent: ChatIntent): string {
   if (intent === "cafe") return "cafe_recommendation";
   if (intent === "camping") return "activity_recommendation";
   if (intent === "attraction") return "attraction_recommendation";
+  if (intent === "create_itinerary") return "trip_planning";
+  if (intent === "best_travel_time") return "destination_advice";
   if (intent === "trip_planning") return "trip_planning";
   if (intent === "destination_advice") return "destination_advice";
   if (intent === "refine_recommendations") return "refine_recommendations";
@@ -241,8 +272,14 @@ export function inferNearbyIntentFromContext(
   text: string,
   session: ChatPlanningSession,
 ): NearbyPlaceIntent | null {
+  const destination = resolveDestinationForCategorySearch(ctx, session, text);
+  const categoryIntents = parseChatPlaceIntents(text);
+  if (destination && categoryIntents.length > 0) {
+    return mapCategoryIntentToNearbyIntent(categoryIntents[0]!);
+  }
+
   if (shouldBlockNearbyRecommendation(text, session)) return null;
-  if (isDestinationAdviceActive(session, ctx)) return null;
+  if (isDestinationAdviceActive(session, ctx) && !destination) return null;
   if (isDestinationAdviceText(text)) return null;
   if (isPlaceDetailChatActive(session)) return null;
 

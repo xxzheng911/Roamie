@@ -20,6 +20,18 @@ import {
   parseDestinationAdvicePurpose,
 } from "@/lib/ai/destination-advice";
 import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import {
+  logChatContextBefore,
+  logChatContextMerge,
+  logChatContextResolved,
+  logChatIntentCurrent,
+  logChatIntentPrevious,
+  parseActivityPreferencesFromText,
+  resolveChatContextIntent,
+  resolveTripPurposeFromText,
+  chatContextIntentToTripPurpose,
+} from "@/lib/ai/chat-context-intent";
 import {
   applyBudgetRefinementToContext,
   isBudgetRefinementText,
@@ -72,6 +84,8 @@ export type CanonicalTravelContext = {
   useDefaultRecommendation?: boolean;
   /** 行程產生模式：完整行程 / 逐日推薦 */
   selectedPlanMode?: import("@/lib/ai/itinerary-planning").ItineraryPlanMode;
+  /** 上一輪解析到的 chat intent（供下一輪 merge 參考，不鎖死回覆） */
+  lastIntent?: string;
 };
 
 export const EMPTY_TRAVEL_CONTEXT: CanonicalTravelContext = {
@@ -93,7 +107,7 @@ function pickValidContextValue<T>(next: T | undefined | null, prev: T | undefine
   return isValidContextValue(next) ? (next as T) : prev;
 }
 
-function resolveSessionDestination(session: ChatPlanningSession): string | undefined {
+export function resolveSessionDestination(session: ChatPlanningSession): string | undefined {
   const candidates = [
     session.travelContext?.destination,
     session.tripPlanningContext?.destination,
@@ -165,7 +179,7 @@ function parseMonth(text: string): string | undefined {
 }
 
 function parseInterests(text: string, mood?: string): string[] {
-  const tags: string[] = [];
+  const tags: string[] = [...parseActivityPreferencesFromText(text)];
   if (/(放鬆|放空|療癒)/.test(text)) tags.push("放鬆");
   if (/(拍照|打卡|攝影)/.test(text)) tags.push("拍照");
   if (/(美食|吃|小吃|餐廳)/.test(text)) tags.push("美食");
@@ -350,7 +364,7 @@ export function parseTravelContextFromText(
   }
   const moodHint = session.selectedMood ?? session.mood;
   const preset = moodHint ? MOOD_PRESETS[moodHint] : undefined;
-  const skipDestParse = isMoodRecommendationSession(session);
+  const skipDestParse = isMoodRecommendationSession(session) && !hasCategoryPlaceQuery(t);
   const adviceActive = isDestinationAdviceActive(session);
   const skipFlexibleVibe =
     adviceActive ||
@@ -375,7 +389,8 @@ export function parseTravelContextFromText(
 
   const tripPurpose = isBudgetRefinementText(t)
     ? "refine_recommendations"
-    : parseDestinationAdvicePurpose(t) ?? session.travelContext?.tripPurpose;
+    : resolveTripPurposeFromText(t, session.travelContext?.tripPurpose) ??
+      parseDestinationAdvicePurpose(t);
 
   const budgetRefinement = isBudgetRefinementText(t)
     ? applyBudgetRefinementToContext(t, session.travelContext ?? { interests: [] })
@@ -473,6 +488,21 @@ export function mergeTravelContext(
 
     const prepared = prepareSessionForUserTurn(session, lastAssistantReply);
     const prev = prepared.travelContext ?? EMPTY_TRAVEL_CONTEXT;
+
+    logChatContextBefore({
+      destination: prev.destination,
+      travelDate: prev.startDate ?? prev.travelMonth,
+      tripDays: prev.days,
+      preferences: prev.interests,
+      interests: prev.interests,
+      lastIntent: prev.lastIntent ?? prev.tripPurpose,
+      pendingQuestion: prepared.pendingQuestion?.type,
+    });
+    logChatIntentPrevious(prev.lastIntent ?? prev.tripPurpose);
+
+    const currentIntent = resolveChatContextIntent(userText, prev.lastIntent ?? prev.tripPurpose);
+    logChatIntentCurrent(currentIntent);
+
     const pendingSelection = applyDestinationPendingSelection(userText, prepared);
     const workingSession = pendingSelection.session;
     if (pendingSelection.selectedOption) {
@@ -486,7 +516,8 @@ export function mergeTravelContext(
     const moodKey = workingSession.selectedMood ?? workingSession.mood;
     const preset = moodKey ? MOOD_PRESETS[moodKey] : undefined;
     const skipDestParse =
-      isMoodRecommendationSession(workingSession) || Boolean(pendingSelection.selectedOption);
+      (isMoodRecommendationSession(workingSession) || Boolean(pendingSelection.selectedOption)) &&
+      !hasCategoryPlaceQuery(userText);
 
     const parsedDest = isValidContextValue(parsed.destination) ? parsed.destination : undefined;
     const prevDest = isValidContextValue(prev.destination) ? prev.destination : undefined;
@@ -549,8 +580,10 @@ export function mergeTravelContext(
       tripPurpose:
         pendingSelection.contextPatch.tripPurpose ??
         parsed.tripPurpose ??
+        chatContextIntentToTripPurpose(currentIntent) ??
         preset?.tripPurpose ??
-        prev.tripPurpose,
+        (currentIntent === "general_chat" ? prev.tripPurpose : undefined),
+      lastIntent: currentIntent,
       destinationCities: pendingSelection.contextPatch.destinationCities ?? prev.destinationCities,
       selectedTripStyle:
         pendingSelection.contextPatch.selectedTripStyle ?? prev.selectedTripStyle,
@@ -601,6 +634,23 @@ export function mergeTravelContext(
         ? workingSession.preferredArea
         : merged.destination ?? workingSession.preferredArea,
     };
+
+    logChatContextMerge({
+      destination: merged.destination,
+      tripDays: merged.days,
+      travelDate: merged.startDate ?? merged.travelMonth,
+      preferences: merged.interests,
+      tripPurpose: merged.tripPurpose,
+      lastIntent: merged.lastIntent,
+    });
+    logChatContextResolved({
+      destination: merged.destination,
+      tripDays: merged.days,
+      travelDate: merged.startDate ?? merged.travelMonth,
+      preferences: merged.interests,
+      lastIntent: merged.lastIntent,
+      tripPurpose: merged.tripPurpose,
+    });
 
     console.info("[AI_CONTEXT] updated", logTravelContext(merged));
     return { context: merged, session: nextSession };

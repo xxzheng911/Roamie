@@ -113,7 +113,7 @@ export function placesToChatItems(
 
 export type FetchItineraryPlacesResult =
   | { ok: true; places: ChatPlaceItem[]; rawCount: number }
-  | { ok: false; reason: "insufficient" | "geocode_failed"; message: string };
+  | { ok: false; reason: "insufficient"; message: string };
 
 export async function fetchItineraryPlaces(params: {
   destination: string;
@@ -278,22 +278,45 @@ export async function prepareDirectItinerarySession(params: {
   }
 
   const label = normalizeDestinationLabel(destination);
-  const fetchResult = await fetchItineraryPlaces({
-    destination: label,
-    days,
-    context,
-    locale,
-    searchPlaces,
-    geocodeFn,
-    fetchWeatherFn,
-    excludePlaceIds,
-  });
+  const minRequired = Math.max(3, Math.min(days, 8));
 
-  if (!fetchResult.ok) {
-    return { ok: false, message: fetchResult.message };
+  const existingFromSession =
+    session.selectedPlaces.length > 0
+      ? session.selectedPlaces
+      : (session.plannedStops ?? []);
+
+  let places: ChatPlaceItem[];
+
+  if (existingFromSession.length >= minRequired) {
+    places = existingFromSession.slice(0, Math.max(minRequired, days + 2));
+    console.info(
+      "[ITINERARY_PLACES_FETCH]",
+      `destination=${label}`,
+      `source=session`,
+      `selected=${places.length}`,
+    );
+  } else {
+    const fetchResult = await fetchItineraryPlaces({
+      destination: label,
+      days,
+      context,
+      locale,
+      searchPlaces,
+      geocodeFn,
+      fetchWeatherFn,
+      excludePlaceIds,
+    });
+
+    if (!fetchResult.ok) {
+      return { ok: false, message: fetchResult.message };
+    }
+    places = fetchResult.places;
   }
 
-  const places = fetchResult.places;
+  if (!places.length) {
+    return { ok: false, message: INSUFFICIENT_ITINERARY_PLACES_MESSAGE };
+  }
+
   const today = new Date().toISOString().slice(0, 10);
   const startDate = session.tripStartDate || today;
   const end = new Date(startDate);

@@ -11,6 +11,7 @@ import { buildDestinationStyleChoiceQuestion } from "@/lib/ai/destination-style-
 import {
   isBestSeasonQuestion,
 } from "@/lib/ai/season-response-guardrail";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 
 /** A 附近探索 | B 目的地規劃 | C 特定地點 | D 心情推薦 */
 export type ChatConversationMode =
@@ -133,6 +134,9 @@ const KNOWN_COUNTRY_NAMES = [
 ] as const;
 
 function matchLeadingKnownDestination(text: string): string | undefined {
+  const generic = matchGenericLeadingDestination(text);
+  if (generic) return generic;
+
   const sorted = [...KNOWN_COUNTRY_NAMES].sort((a, b) => b.length - a.length);
   for (const name of sorted) {
     if (text.startsWith(name)) {
@@ -167,10 +171,7 @@ export function parseLeadingDestinationLabel(text: string): string | undefined {
     t.match(/^([\u4e00-\u9fff]{2,8})(\d{1,2})\s*月/);
   if (countryMonth?.[1]) {
     const label = normalizeCityLabel(countryMonth[1]);
-    if (
-      isValidParsedDestinationLabel(label) &&
-      (isKnownCountryLabel(label) || KNOWN_CITIES.test(label))
-    ) {
+    if (isValidParsedDestinationLabel(label)) {
       return label;
     }
   }
@@ -178,10 +179,7 @@ export function parseLeadingDestinationLabel(text: string): string | undefined {
   const cityDays = t.match(/^([\u4e00-\u9fff]{2,8})\s*(?:\d+|[一二三四五六七八九十百千兩两]+)\s*天/);
   if (cityDays?.[1]) {
     const label = normalizeCityLabel(cityDays[1]);
-    if (
-      isValidParsedDestinationLabel(label) &&
-      (KNOWN_CITIES.test(label) || isKnownCountryLabel(label))
-    ) {
+    if (isValidParsedDestinationLabel(label)) {
       return label;
     }
   }
@@ -320,8 +318,21 @@ function acceptParsedDestination(candidate: string | undefined): string | undefi
   if (!candidate) return undefined;
   const normalized = normalizeDestinationLabel(stripTrailingMotionVerb(candidate));
   if (!isValidParsedDestinationLabel(normalized)) return undefined;
-  if (!isKnownDestinationLabel(normalized)) return undefined;
   return normalized;
+}
+
+function matchGenericLeadingDestination(text: string): string | undefined {
+  const patterns = [
+    /^([\u4e00-\u9fff]{2,8}?|[A-Za-z]{2,12})(?:的)?(?:(?:什麼|什么)時候|(?:何时|何時)|(?:幾|几)月|哪個月|哪个月|適合|适合|最好|比較好|比较好)(?:去|$)/,
+    /^([\u4e00-\u9fff]{2,8}?|[A-Za-z]{2,12})(?:的)?(?:最佳|花季|雨季|旺季|淡季|極光|极光|雪季)/,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m?.[1]) continue;
+    const candidate = normalizeDestinationLabel(m[1]);
+    if (isValidParsedDestinationLabel(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 /** 從長句中擷取已知目的地（如「明天要去台北有推薦景點嗎」→ 台北） */
@@ -724,6 +735,7 @@ export function mergeTripPlanningContext(
     const prev = session.tripPlanningContext ?? EMPTY_TRIP_PLANNING_CONTEXT;
     const skipDestParse =
       (mode === "mood_recommend" || isMoodRecommendationSession(session)) &&
+      !hasCategoryPlaceQuery(text) &&
       !isDestinationPlanningText(text, session) &&
       !isDestinationAdviceText(text);
     const parsedDest = skipDestParse ? undefined : parseDestinationFromText(text);

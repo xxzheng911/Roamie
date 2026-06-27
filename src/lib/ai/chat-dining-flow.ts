@@ -27,6 +27,13 @@ import {
   type NearbyPlaceIntent,
 } from "@/lib/ai/chat-intent";
 import {
+  mapCategoryIntentToNearbyIntent,
+  parseChatPlaceIntents,
+  resolveDestinationForCategorySearch,
+} from "@/lib/ai/chat-place-intent";
+import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
+import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
+import {
   isDateInquiryText,
   isTravelPlanningText,
   shouldBlockNearbyRecommendation,
@@ -82,11 +89,25 @@ export function parseDiningTimeHint(text: string): string | undefined {
 }
 
 export function resolveChatIntent(text: string, session: ChatPlanningSession): ChatIntent {
+  const categoryIntents = parseChatPlaceIntents(text);
+  const travelCtx = session.travelContext ?? { interests: [] };
+  if (
+    categoryIntents.length > 0 &&
+    resolveDestinationForCategorySearch(travelCtx, session, text)
+  ) {
+    return mapCategoryIntentToNearbyIntent(categoryIntents[0]!);
+  }
+
+  if (isCreateItineraryIntent(text)) return "create_itinerary";
+
   if (session.pendingQuestion || session.adviceSelectionThisTurn) {
+    if (isCreateItineraryIntent(text)) return "create_itinerary";
     return "destination_advice";
   }
 
   if (isDestinationPlanningSession(session, session.travelContext)) {
+    if (isCreateItineraryIntent(text)) return "create_itinerary";
+    if (isBestTravelTimeIntent(text)) return "best_travel_time";
     return "destination_advice";
   }
 
@@ -112,9 +133,13 @@ export function resolveChatIntent(text: string, session: ChatPlanningSession): C
   }
 
   const detected = detectChatIntent(text);
+  if (detected === "create_itinerary") return "create_itinerary";
+  if (detected === "best_travel_time") return "best_travel_time";
   if (detected === "destination_advice" || detected === "trip_planning") return detected;
 
   if (isTravelPlanningText(text) || isDateInquiryText(text)) {
+    if (isCreateItineraryIntent(text)) return "create_itinerary";
+    if (isBestTravelTimeIntent(text)) return "best_travel_time";
     return isDestinationAdviceText(text) ||
       isDestinationSelectionText(text) ||
       isDateInquiryText(text)
@@ -153,8 +178,18 @@ function isRestaurantFollowUp(text: string, active: NearbyPlaceIntent): boolean 
   return isFoodPreferenceReply(text) || isExclusionReply(text) || isExclusionLiftReply(text);
 }
 
-export function shouldAskRestaurantCuisine(session: ChatPlanningSession): boolean {
+export function shouldAskRestaurantCuisine(
+  session: ChatPlanningSession,
+  userText?: string,
+): boolean {
   if (isTripAddPlaceSession(session)) return false;
+  if (userText?.trim() && resolveDestinationForCategorySearch(
+    session.travelContext ?? { interests: [] },
+    session,
+    userText,
+  )) {
+    return false;
+  }
   return session.activeChatIntent === "restaurant" && !session.foodPreference;
 }
 
@@ -177,6 +212,9 @@ export function shouldFetchNearbyPlaces(
   }
   if (shouldBlockNearbyRecommendation(text, session)) return false;
   if (intent === "restaurant") {
+    if (resolveDestinationForCategorySearch(session.travelContext ?? { interests: [] }, session, text)) {
+      return true;
+    }
     return (
       Boolean(session.foodPreference) ||
       isFoodPreferenceReply(text) ||

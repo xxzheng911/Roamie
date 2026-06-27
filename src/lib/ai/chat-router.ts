@@ -30,6 +30,7 @@ import {
   detectPlaceRecommendationIntent,
   shouldFetchDestinationPlaces,
 } from "@/lib/ai/must-visit-places";
+import { shouldFetchDestinationCategoryPlaces } from "@/lib/ai/chat-place-intent";
 import {
   isTripAddPlaceSession,
   parseTripAddPlaceFollowUpIntent,
@@ -144,11 +145,15 @@ export function resolveChatRoute(
   const isDestinationPlanning =
     session.conversationMode === "destination_planning" ||
     session.tripPlanningContext?.intent === "destination_planning" ||
-    intent === "trip_planning";
+    intent === "trip_planning" ||
+    intent === "create_itinerary" ||
+    intent === "best_travel_time";
   const planningActive = isPlanningTurnActive(session, ctx);
   const shouldTryAdvice =
     planningActive ||
     intent === "destination_advice" ||
+    intent === "create_itinerary" ||
+    intent === "best_travel_time" ||
     intent === "trip_planning" ||
     (isFlexiblePreferenceReply(userText) &&
       isDestinationPlanning &&
@@ -161,7 +166,7 @@ export function resolveChatRoute(
     advicePurpose === "region_selected" ||
     advicePurpose === "seasonal_destination";
 
-  if (shouldTryAdvice) {
+  if (shouldTryAdvice && !shouldFetchDestinationCategoryPlaces(userText, ctx, session)) {
     const turn = processAdviceTurn(userText, session, ctx);
     if (turn.advice.reply) {
       console.info("[AI_ROUTE] destination_advice_mode", logTravelContext(ctx));
@@ -196,6 +201,7 @@ export function resolveChatRoute(
 
   if (
     shouldFetchDestinationPlaces(userText, ctx) ||
+    shouldFetchDestinationCategoryPlaces(userText, ctx, session) ||
     (detectPlaceRecommendationIntent(userText) && ctx.destination?.trim())
   ) {
     console.info("[AI_ROUTE] destination_place_recommend", logTravelContext(ctx));

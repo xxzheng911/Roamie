@@ -12,6 +12,8 @@ import {
   logChatPlacesFinalCount,
   logChatPlacesRawCount,
 } from "@/lib/ai/chat-place-flow-log";
+import type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
+import { filterPlacesByCafeGuard, isCafePlace } from "@/lib/ai/chat-category-place-guard";
 
 export const CHAT_DESTINATION_MIN_COUNT = 3;
 export const CHAT_DESTINATION_TARGET_COUNT = 6;
@@ -254,6 +256,50 @@ export function filterChatDestinationPlaces(
     );
     logChatPlacesFilterFallbackCount(fallback.length);
     picked = [...picked, ...fallback];
+  }
+
+  const final = picked
+    .sort((a, b) => rankChatDestinationPlace(b) - rankChatDestinationPlace(a))
+    .slice(0, CHAT_DESTINATION_TARGET_COUNT);
+
+  logChatPlacesFinalCount(final.length);
+  return final;
+}
+
+/** 類別推薦（咖啡廳／餐廳等）：不做 strict 評分門檻，避免過度刪除後 fallback 錯誤卡片 */
+export function filterChatCategoryPlaces(
+  places: PlaceResult[],
+  opts: {
+    intent: ChatPlaceCategoryIntent;
+    destination: string;
+    profile?: DestinationPlaceSearchProfile;
+    requireOpenNow?: boolean;
+    userText?: string;
+  },
+): PlaceResult[] {
+  const requireOpenNow = opts.requireOpenNow ?? userRequiresOpenNow(opts.userText);
+  const raw = dedupeByPlaceId(places);
+  logChatPlacesRawCount(raw.length);
+
+  let eligible = raw.filter((place) => {
+    if (!place.name?.trim() || !place.id?.trim()) return false;
+    if (isSubPlaceOfDestination(place, opts.destination, opts.profile)) return false;
+    if (shouldDropForOpenStatus(place, requireOpenNow)) return false;
+    if (isSchoolOrOffice(place)) return false;
+    if (isPermanentlyClosed(place)) return false;
+    return true;
+  });
+
+  if (opts.intent === "cafe") {
+    eligible = filterPlacesByCafeGuard(eligible);
+  }
+
+  const relaxed = eligible.filter(passesRelaxedTier);
+  logChatPlacesFilterRelaxedCount(relaxed.length);
+
+  let picked = relaxed.length > 0 ? relaxed : eligible.filter(passesFallbackTier);
+  if (opts.intent === "cafe") {
+    picked = picked.filter(isCafePlace);
   }
 
   const final = picked

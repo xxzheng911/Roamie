@@ -289,17 +289,20 @@ export const generateItinerary = createServerFn({ method: "POST" })
         }
       }
     } catch (e) {
-      console.warn("[Roamie] AI itinerary generation failed — using fallback", e);
+      console.warn("[Roamie] AI itinerary generation failed", e);
     }
 
     if (!ai || coalesceItineraryItems(ai.itinerary).length < 1) {
-      console.warn("[Roamie] building fallback itinerary from selectedPlaces");
-      const fallbackItems = buildFallbackItineraryFromPlaces(
+      console.info("[AI_ITINERARY_BUILD] building from selectedPlaces", {
+        count: selectedPlaces.length,
+        days: data.days,
+      });
+      const builtItems = buildItineraryFromSelectedPlaces(
         selectedPlaces,
         data.days,
         startDate,
       );
-      ai = buildFallbackTripPayload(data, fallbackItems, selectedPlaces);
+      ai = buildFallbackTripPayload(data, builtItems, selectedPlaces);
     }
 
     const lat = data.location?.lat;

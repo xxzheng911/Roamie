@@ -14,6 +14,7 @@ import {
   detectMustVisitIntent,
   detectPlaceRecommendationIntent,
 } from "@/lib/ai/must-visit-places";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 
 /** Roamie 六段對話：理解 → 推測 → 確認 → 收斂 → 推薦 → 行程 */
 export type ConversationStage =
@@ -74,6 +75,10 @@ export function resolveConversationStage(
   const t = userText.trim();
 
   if (detectMustVisitIntent(t) || detectPlaceRecommendationIntent(t)) {
+    return "recommend";
+  }
+
+  if (hasCategoryPlaceQuery(t)) {
     return "recommend";
   }
 

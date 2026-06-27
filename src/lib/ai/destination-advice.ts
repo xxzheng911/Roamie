@@ -43,6 +43,14 @@ import {
   hasUserSpecifiedTravelMonth,
   isBestSeasonQuestion,
 } from "@/lib/ai/season-response-guardrail";
+import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
+import { buildBestTravelTimeReply } from "@/lib/ai/destination-season-reply";
+import {
+  buildCreateItineraryAckReply,
+  isCreateItineraryIntent,
+  logChatCreateItineraryTriggered,
+  parseActivityPreferencesFromText,
+} from "@/lib/ai/chat-context-intent";
 import {
   buildDailyRhythmReply,
   buildMustVisitPlacesReply,
@@ -53,6 +61,8 @@ import {
   resolveMustVisitAdvice,
   resolveMustVisitDestination,
 } from "@/lib/ai/must-visit-places";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { logChatWrongFallbackBlocked } from "@/lib/ai/chat-place-flow-log";
 import {
   buildItineraryPlanningReply,
   buildDailyRecommendationsReply,
@@ -63,6 +73,7 @@ import {
 import { parseTripPreferences, type TripInterest } from "@/lib/ai/trip-preference";
 
 export type DestinationAdvicePurpose =
+  | "create_itinerary"
   | "best_time_to_visit"
   | "seasonal_destination"
   | "itinerary_planning"
@@ -273,6 +284,10 @@ export function parseDestinationAdvicePurpose(text: string): DestinationAdvicePu
   const t = text.trim();
   if (!t) return undefined;
 
+  if (isCreateItineraryIntent(t)) return "create_itinerary";
+
+  if (isBestTravelTimeIntent(t)) return "best_time_to_visit";
+
   if (
     /[\u4e00-\u9fff]{2,8}\s*(?:\d+|[一二三四五六七八九十百千兩两]+)\s*天.*(怎麼排|行程|規劃|规划|安排)/.test(
       t,
@@ -406,7 +421,8 @@ function buildKoreaCityReply(city: string): string | null {
   return null;
 }
 
-function buildJapanCityReply(city: string): string | null {
+function buildJapanCityReply(city: string, userText?: string): string | null {
+  if (userText?.trim() && hasCategoryPlaceQuery(userText)) return null;
   const label = normalizeDestinationLabel(city);
 
   if (label === "東京") {
@@ -508,8 +524,10 @@ function buildScenicAdviceReply(
   return null;
 }
 
-function buildCityAdviceReply(city: string, country?: string): string | null {
+function buildCityAdviceReply(city: string, country?: string, userText?: string): string | null {
   const label = normalizeDestinationLabel(city);
+
+  if (userText?.trim() && hasCategoryPlaceQuery(userText)) return null;
 
   if (country === "泰國" || (!country && buildThailandCityReply(label))) {
     const thai = buildThailandCityReply(label);
@@ -521,8 +539,8 @@ function buildCityAdviceReply(city: string, country?: string): string | null {
     if (korea) return korea;
   }
 
-  if (country === "日本" || (!country && buildJapanCityReply(label))) {
-    const japan = buildJapanCityReply(label);
+  if (country === "日本" || (!country && buildJapanCityReply(label, userText))) {
+    const japan = buildJapanCityReply(label, userText);
     if (japan) return japan;
   }
 
@@ -608,6 +626,11 @@ export function resolveDestinationAdvice(
   userText: string,
 ): DestinationAdviceResult {
   if (isTripAddPlaceSession(session)) return { reply: null };
+
+  if (hasCategoryPlaceQuery(userText) && resolveDestinationFromText(userText)) {
+    logChatWrongFallbackBlocked("category_place_advice_blocked");
+    return { reply: null };
+  }
 
   if (
     ctx.destination?.trim() &&
@@ -879,6 +902,41 @@ export function resolveDestinationAdvice(
 
   const planMode = parseItineraryPlanModeIntent(userText);
   if (
+    (isCreateItineraryIntent(userText) || planMode === "full_itinerary") &&
+    !session.pendingQuestion
+  ) {
+    const dest =
+      ctx.destination?.trim() ??
+      session.tripPlanningContext?.destination?.trim() ??
+      session.tripDestination?.city?.trim() ??
+      resolveDestinationFromText(userText);
+    const days = ctx.days ?? session.tripDays ?? parseDayCountFromText(userText);
+    if (dest && days) {
+      const prefs = parseActivityPreferencesFromText(userText);
+      const label = normalizeDestinationLabel(dest);
+      logChatCreateItineraryTriggered(label, days);
+      const reply = buildCreateItineraryAckReply({
+        destination: label,
+        days,
+        preferences: prefs.length ? prefs : ctx.interests,
+      });
+      return {
+        reply,
+        triggerItineraryGeneration: true,
+        contextPatch: {
+          destination: label,
+          days,
+          interests: [...new Set([...ctx.interests, ...prefs])],
+          selectedPlanMode: "full_itinerary",
+          conversationState: "ready_for_itinerary",
+          tripPurpose: "create_itinerary",
+          lastIntent: "create_itinerary",
+        },
+      };
+    }
+  }
+
+  if (
     planMode === "full_itinerary" &&
     ctx.destination?.trim() &&
     ctx.days &&
@@ -1017,6 +1075,11 @@ function buildDestinationAdviceReplyBody(
 ): string | null {
   if (isTripAddPlaceSession(session)) return null;
 
+  if (hasCategoryPlaceQuery(userText) && resolveDestinationFromText(userText)) {
+    logChatWrongFallbackBlocked("category_place_advice_body_blocked");
+    return null;
+  }
+
   if (
     ctx.conversationState === "ready_for_itinerary" ||
     ctx.tripPurpose === "ready_for_itinerary"
@@ -1040,12 +1103,20 @@ function buildDestinationAdviceReplyBody(
     : undefined;
 
   const purpose =
-    (isDestinationUpdateText(userText, session)
-      ? "region_selected"
-      : undefined) ??
-    (ctx.tripPurpose as DestinationAdvicePurpose | undefined) ??
+    (isCreateItineraryIntent(userText) ? "create_itinerary" : undefined) ??
+    (isDestinationUpdateText(userText, session) ? "region_selected" : undefined) ??
     parseDestinationAdvicePurpose(userText) ??
+    (ctx.tripPurpose as DestinationAdvicePurpose | undefined) ??
     (session.travelContext?.tripPurpose as DestinationAdvicePurpose | undefined);
+
+  const resolvedDest =
+    destLabel ??
+    resolveDestinationFromText(userText) ??
+    parseDestinationFromText(userText);
+
+  if (purpose === "best_time_to_visit" && resolvedDest && !isCreateItineraryIntent(userText)) {
+    return buildBestTravelTimeReply(resolvedDest);
+  }
 
   if (isFlexiblePreferenceReply(userText) && isDestinationAdviceActive(session, ctx) && dest) {
     if (session.pendingQuestion) return null;
@@ -1107,7 +1178,7 @@ function buildDestinationAdviceReplyBody(
     ctx.tripPurpose !== "city_style_selected" &&
     !session.adviceSelectionThisTurn
   ) {
-    const cityReply = buildCityAdviceReply(destLabel, country);
+    const cityReply = buildCityAdviceReply(destLabel, country, userText);
     if (cityReply) return cityReply;
 
     if (purpose === "destination_selection" || purpose === "region_selected") {
@@ -1129,7 +1200,7 @@ function buildDestinationAdviceReplyBody(
     }
   }
 
-  // 國家層級：最佳月份
+  // 國家層級：最佳月份（legacy — 已由通用 entity 回覆覆蓋，保留為後備）
   if (
     destLabel &&
     isKnownCountryLabel(destLabel) &&
@@ -1189,7 +1260,7 @@ function buildDestinationAdviceReplyBody(
     ) {
       return null;
     }
-    const cityReply = buildCityAdviceReply(destLabel, country);
+    const cityReply = buildCityAdviceReply(destLabel, country, userText);
     if (cityReply) return cityReply;
     return [
       `好的，我們以 ${destLabel} 為主。`,

@@ -51,6 +51,7 @@ import {
 } from "@/lib/ai/place-recommendation-rules";
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import {
   filterAlreadyRecommendedPlaces,
   filterExcludedPlaceIds,
@@ -61,6 +62,11 @@ import {
   CHAT_DESTINATION_TARGET_COUNT,
   filterChatDestinationPlaces,
 } from "@/lib/ai/chat-destination-place-filter";
+import {
+  buildDestinationEnglishFallbackQueries,
+  filterPlacesByDestinationGuard,
+  type ChatPlaceSearchContext,
+} from "@/lib/ai/chat-place-search-context";
 
 export type { GeocodeDestinationFn };
 
@@ -139,6 +145,7 @@ async function searchDestinationPlaces(params: {
   excludePlaceIds?: string[];
   userText?: string;
   profile?: ReturnType<typeof classifyDestinationForPlaceSearch>;
+  searchContext?: ChatPlaceSearchContext;
 }): Promise<PlaceResult[]> {
   const {
     label,
@@ -153,7 +160,12 @@ async function searchDestinationPlaces(params: {
     excludePlaceIds = [],
     userText,
     profile,
+    searchContext,
   } = params;
+
+  const searchExtras = searchContext
+    ? { searchContext, intentCategory: "destination_attraction" }
+    : undefined;
 
   const mergeAndFilter = async (searchAttempts: SearchAttempt[]): Promise<PlaceResult[]> => {
     let places = await fetchPlacesWithSearchAttemptsMerged(
@@ -163,8 +175,9 @@ async function searchDestinationPlaces(params: {
       locale,
       searchAttempts,
       caller,
-      { minResults: CHAT_DESTINATION_MIN_COUNT, maxResults: 24 },
+      { minResults: CHAT_DESTINATION_MIN_COUNT, maxResults: 24, extras: searchExtras },
     );
+    places = filterPlacesByDestinationGuard(places, label, userText);
     places = filterExcludedPlaceIds(places, excludePlaceIds);
     const allowParks = userWantsParkRecommendations(userText ?? "", context);
     places = filterPlacesForAttractionRecommendation(places, {
@@ -199,29 +212,17 @@ async function searchDestinationPlaces(params: {
     }
   }
 
-  if (!filtered.length) {
-    const nearby = await fetchPlacesWithSearchAttemptsMerged(
-      searchPlaces,
-      lat,
-      lng,
-      locale,
-      [
-        {
-          query: `${label} 景點`,
-          mode: "nearby",
-          includedTypes: ["tourist_attraction", "museum", "art_gallery"],
-        },
-      ],
-      `${caller}.nearby`,
-      { minResults: CHAT_DESTINATION_MIN_COUNT, maxResults: 12 },
-    );
-    let nearbyFiltered = filterExcludedPlaceIds(nearby, excludePlaceIds);
-    nearbyFiltered = filterChatDestinationPlaces(nearbyFiltered, {
-      destination: label,
-      profile,
-      userText,
-    });
-    filtered = nearbyFiltered;
+  if (filtered.length < CHAT_DESTINATION_MIN_COUNT) {
+    const englishFallback = buildDestinationEnglishFallbackQueries(label);
+    const more = await mergeAndFilter(englishFallback);
+    const seen = new Set(filtered.map((p) => p.id));
+    for (const place of more) {
+      if (!seen.has(place.id)) {
+        seen.add(place.id);
+        filtered.push(place);
+      }
+    }
+    filtered = filtered.slice(0, CHAT_DESTINATION_TARGET_COUNT);
   }
 
   if (!filtered.length && weather) {
@@ -331,6 +332,7 @@ export async function buildAlternativeDestinationRecommendations(params: {
 
     let lat: number;
     let lng: number;
+    let textOnlyDestinationSearch = false;
     if (geocoded?.lat != null && geocoded?.lng != null) {
       lat = geocoded.lat;
       lng = geocoded.lng;
@@ -338,10 +340,26 @@ export async function buildAlternativeDestinationRecommendations(params: {
     } else {
       logChatPlacesError("geocode_empty", "geocode");
       const approx = resolveDestinationApproxCenter(label);
-      lat = approx.lat;
-      lng = approx.lng;
-      logChatDestinationResolved(label, lat, lng, "approx_center");
+      if (approx) {
+        lat = approx.lat;
+        lng = approx.lng;
+        logChatDestinationResolved(label, lat, lng, "approx_center");
+      } else {
+        lat = 0;
+        lng = 0;
+        textOnlyDestinationSearch = true;
+      }
     }
+
+    const altEntity = resolveDestinationEntity(label);
+    const searchContext: ChatPlaceSearchContext = {
+      searchMode: "destination",
+      destinationName: label,
+      destinationLatLng: textOnlyDestinationSearch ? null : { lat, lng },
+      textOnlyDestinationSearch,
+      destinationCountry: altEntity.country,
+      destinationCity: altEntity.type === "city" ? label : undefined,
+    };
 
     const searchProfile = classifyDestinationForPlaceSearch(label, geocoded);
     const attempts = buildAlternativeSearchAttempts(label);
@@ -358,6 +376,7 @@ export async function buildAlternativeDestinationRecommendations(params: {
       excludePlaceIds,
       userText,
       profile: searchProfile,
+      searchContext,
     });
 
     places = filterAlreadyRecommendedPlaces(places, {
@@ -441,6 +460,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
     let lat: number;
     let lng: number;
     let geocodeSucceeded = false;
+    let textOnlyDestinationSearch = false;
 
     if (geocoded?.lat != null && geocoded?.lng != null) {
       lat = geocoded.lat;
@@ -451,11 +471,29 @@ export async function buildDestinationMustVisitRecommendation(params: {
     } else {
       logChatPlacesError("geocode_empty", "geocode");
       const approx = resolveDestinationApproxCenter(label);
-      lat = approx.lat;
-      lng = approx.lng;
-      logChatDestinationResolved(label, lat, lng, "approx_center");
-      logChatDestinationExtracted(`${label}@${lat.toFixed(4)},${lng.toFixed(4)}`, "approx_center");
+      if (approx) {
+        lat = approx.lat;
+        lng = approx.lng;
+        logChatDestinationResolved(label, lat, lng, "approx_center");
+        logChatDestinationExtracted(`${label}@${lat.toFixed(4)},${lng.toFixed(4)}`, "approx_center");
+      } else {
+        lat = 0;
+        lng = 0;
+        textOnlyDestinationSearch = true;
+        logChatDestinationResolved(label, lat, lng, "approx_center");
+        logChatDestinationExtracted(`${label}@text_only`, "text_only");
+      }
     }
+
+    const entity = resolveDestinationEntity(label);
+    const searchContext: ChatPlaceSearchContext = {
+      searchMode: "destination",
+      destinationName: label,
+      destinationLatLng: textOnlyDestinationSearch ? null : { lat, lng },
+      textOnlyDestinationSearch,
+      destinationCountry: entity.country,
+      destinationCity: entity.type === "city" ? label : undefined,
+    };
 
     let weather: WeatherSummary | null = null;
     if (geocodeSucceeded) {
@@ -501,6 +539,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
       excludePlaceIds,
       userText,
       profile: searchProfile,
+      searchContext,
     });
 
     places = rankLandmarkCompanionPlaces(places, searchProfile);

@@ -41,7 +41,7 @@ export function parseItineraryPlanModeIntent(text: string): ItineraryPlanMode | 
     return "daily_recommendations";
   }
   if (
-    /(幫我排完整|你幫我排|排完整\s*\d*\s*天|完整\s*\d+\s*天|直接排|直接安排|完整行程|直接幫你排|排完整行程|排完整5天|排完整五天|生成行程|幫我排完整行程)/.test(
+    /(幫我排完整|你幫我排|排完整\s*\d*\s*天|完整\s*\d+\s*天|直接排|直接安排|完整行程|直接幫你排|排完整行程|排完整5天|排完整五天|生成行程|幫我安排|帮我安排|幫我規劃|帮我规划|排行程|安排.{0,8}行程)/.test(
       t,
     )
   ) {

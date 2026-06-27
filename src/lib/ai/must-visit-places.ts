@@ -17,6 +17,7 @@ import {
   planningStageAfterRecommendations,
 } from "@/lib/ai/chat-planning-stage";
 import { isAffirmativeReply } from "@/lib/ai/chat-conversation-state";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 
 export type PlanningFollowUpIntent = "must_visit_places" | "daily_rhythm" | "full_itinerary";
 
@@ -351,6 +352,7 @@ export function resolveMustVisitAdvice(
 ): MustVisitAdviceResult | null {
   try {
   const text = userText?.trim() ?? "";
+  if (text && hasCategoryPlaceQuery(text)) return null;
   if (!text && !ctx.mustVisitGenerated) return null;
   if (text && !detectMustVisitIntent(text) && !detectPlaceRecommendationIntent(text)) {
     if (!ctx.mustVisitGenerated) return null;
@@ -402,6 +404,7 @@ export function shouldFetchDestinationPlaces(
   userText: string,
   ctx: CanonicalTravelContext = { interests: [] },
 ): boolean {
+  if (hasCategoryPlaceQuery(userText)) return false;
   if (!detectMustVisitIntent(userText) && !detectPlaceRecommendationIntent(userText)) {
     return false;
   }

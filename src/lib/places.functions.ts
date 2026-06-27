@@ -83,6 +83,10 @@ const ExploreSearchInput = z.object({
       "unknown",
     ])
     .optional(),
+  destinationName: z.string().max(80).optional(),
+  searchMode: z.enum(["destination", "nearby"]).optional(),
+  skipLocationBias: z.boolean().optional(),
+  intentCategory: z.string().max(32).optional(),
 });
 
 type RawPlace = RawPlaceHours;
@@ -207,6 +211,9 @@ async function postPlaces(
     caller: string;
     screen: PlacesScreen;
     category?: string;
+    destinationName?: string;
+    searchMode?: string;
+    intentCategory?: string;
   },
 ): Promise<{ places: RawPlace[]; error: string | null }> {
   const circle =
@@ -220,6 +227,10 @@ async function postPlaces(
     query: typeof body.textQuery === "string" ? body.textQuery : "",
     types: Array.isArray(body.includedTypes) ? body.includedTypes.join(",") : "",
     radius: (circle as { radius?: number } | undefined)?.radius,
+    destinationName: stats?.destinationName,
+    searchMode: stats?.searchMode,
+    intentCategory: stats?.intentCategory,
+    skipBias: body.skipLocationBias === true ? "1" : undefined,
   });
 
   const guarded = await runPlacesApiDeduped(httpKey, callType, async () => {
@@ -270,6 +281,9 @@ type PlacesSearchStats = {
   caller: string;
   screen: PlacesScreen;
   category?: string;
+  destinationName?: string;
+  searchMode?: string;
+  intentCategory?: string;
 };
 
 function buildSearchStats(
@@ -279,6 +293,9 @@ function buildSearchStats(
     caller: data.placesCaller ?? "executeExploreSearch",
     screen: data.placesScreen ?? "unknown",
     category: data.categoryId,
+    destinationName: data.destinationName,
+    searchMode: data.searchMode,
+    intentCategory: data.intentCategory,
   };
 }
 
@@ -291,14 +308,17 @@ async function searchText(
   pageSize = 20,
   userLocale?: Locale,
   stats?: PlacesSearchStats,
+  skipLocationBias = false,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
   const body: Record<string, unknown> = {
     textQuery: query,
     languageCode,
-    locationBias: locationCircle(lat, lng, radius),
     pageSize,
   };
+  if (!skipLocationBias) {
+    body.locationBias = locationCircle(lat, lng, radius);
+  }
   if (regionCode) body.regionCode = regionCode;
 
   const { places: raw, error } = await postPlaces(
@@ -552,6 +572,7 @@ async function runExploreSearch(
       20,
       userLocale,
       stats,
+      data.skipLocationBias === true,
     );
   } else {
     result = { places: [], error: null };
@@ -561,8 +582,11 @@ async function runExploreSearch(
 
   const chatDestinationText =
     data.placesScreen === "chat" && data.mode === "text" && data.query.trim().length > 0;
+  const skipDistanceFilter = data.skipLocationBias === true && data.searchMode === "destination";
   const maxDistance = chatDestinationText ? 150_000 : MAX_PLACE_DISTANCE_M;
-  const distanceFiltered = filterWithinDistance(result.places, center, maxDistance);
+  const distanceFiltered = skipDistanceFilter
+    ? result.places
+    : filterWithinDistance(result.places, center, maxDistance);
 
   if (data.placesScreen === "home") {
     return {
