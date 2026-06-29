@@ -1,6 +1,11 @@
 import { distanceMeters } from "@/lib/map-explore";
 import type { RoamieLocation } from "@/lib/ai/context";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
+import type { ChatMsg } from "@/lib/chat-history";
+import { extractRecommendedFromMsgs } from "@/lib/ai/chat-recommendation-refresh";
+import { resolveDestinationApproxCenter } from "@/lib/ai/destination-geocode";
+import { isGenericPlaceLabel, isValidItineraryStopPlace } from "@/lib/ai/generic-place-label";
+import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import type { ChatPlaceItem, ChatPlanningSession } from "@/lib/chat-session";
 import { placeDisplayName, roamieRecToChatItem } from "@/lib/chat-session";
 
@@ -280,9 +285,105 @@ export function mergeRecommendationsWithSelected(
 
 /** 行程生成用：已選優先，含聊天中新增的 plannedStops */
 export function buildTripFromSelectedPlaces(session: ChatPlanningSession): ChatPlaceItem[] {
+  return resolveItineraryPlaceSources(session).places;
+}
+
+export type ItineraryPlaceSource =
+  | "selectedPlaces"
+  | "recommendedPlaces"
+  | "plannedStops"
+  | "renderedCards"
+  | "fetch";
+
+/** CREATE_ITINERARY 地點來源優先順序 */
+export function resolveItineraryPlaceSources(
+  session: ChatPlanningSession,
+  msgs?: ChatMsg[],
+): { places: ChatPlaceItem[]; source: ItineraryPlaceSource } {
   const synced = syncSessionPlaceMemory(session);
-  if (synced.plannedStops?.length) return synced.plannedStops;
-  return synced.selectedPlaces;
+
+  if (synced.selectedPlaces.length > 0) {
+    return { places: synced.selectedPlaces, source: "selectedPlaces" };
+  }
+  if (synced.recommendedPlaces.length > 0) {
+    return { places: synced.recommendedPlaces, source: "recommendedPlaces" };
+  }
+  if (synced.plannedStops?.length) {
+    return { places: synced.plannedStops, source: "plannedStops" };
+  }
+  if (msgs?.length) {
+    const fromMsgs = extractRecommendedFromMsgs(msgs);
+    if (fromMsgs.length) {
+      return { places: fromMsgs, source: "renderedCards" };
+    }
+  }
+  return { places: [], source: "fetch" };
+}
+
+/** 補齊 placeId / 座標，讓已推薦卡片能進 itinerary */
+export function normalizePlaceForItineraryBuild(
+  place: ChatPlaceItem | RoamieRecommendationItem,
+  destination?: string,
+): ChatPlaceItem {
+  const label = destination ? normalizeDestinationLabel(destination) : "";
+  const name = (place.placeName ?? place.name ?? "").trim();
+  const placeId =
+    place.placeId?.trim() ||
+    place.googlePlaceId?.trim() ||
+    (place as RoamieRecommendationItem & { id?: string }).id?.trim();
+  let lat = place.lat ?? undefined;
+  let lng = place.lng ?? undefined;
+  if ((placeId == null || !placeId) && (lat == null || lng == null || (Math.abs(lat) <= 0.001 && Math.abs(lng) <= 0.001))) {
+    const approx = label ? resolveDestinationApproxCenter(label) : null;
+    if (approx) {
+      lat = approx.lat;
+      lng = approx.lng;
+    }
+  }
+  return {
+    ...(place as ChatPlaceItem),
+    name,
+    placeName: place.placeName ?? name,
+    placeId: placeId || undefined,
+    googlePlaceId: place.googlePlaceId ?? placeId,
+    lat,
+    lng,
+    address: place.address?.trim() || name,
+  };
+}
+
+export function preparePlacesForItineraryBuild(
+  places: ChatPlaceItem[],
+  destination: string,
+): ChatPlaceItem[] {
+  const label = normalizeDestinationLabel(destination);
+  const seen = new Set<string>();
+  const out: ChatPlaceItem[] = [];
+  for (const raw of places) {
+    const normalized = normalizePlaceForItineraryBuild(raw, label);
+    const name = (normalized.placeName ?? normalized.name).trim();
+    if (!name || isGenericPlaceLabel(name, label)) continue;
+    const ready: ChatPlaceItem = {
+      ...normalized,
+      placeId: normalized.placeId ?? normalized.googlePlaceId ?? `session:${name}`,
+      googlePlaceId: normalized.googlePlaceId ?? normalized.placeId ?? `session:${name}`,
+    };
+    if (!isValidItineraryStopPlace(ready, label)) continue;
+    const key = ready.placeId?.trim() || `${name}@${ready.address ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(ready);
+  }
+  return out;
+}
+
+export function canBuildItineraryFromPlaceCount(count: number): boolean {
+  return count >= 1;
+}
+
+/** fetch 目標數量（依天數估算，供混合排程使用） */
+export function computeItineraryFetchTarget(days: number): number {
+  return Math.min(Math.max(days * 3, 9), 30);
 }
 
 export function buildExcludePlacesBlock(session: ChatPlanningSession): string {

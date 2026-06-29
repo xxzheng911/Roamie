@@ -36,6 +36,8 @@ type Props = {
   required?: boolean;
   fieldRole: TripPlaceFieldRole;
   searchMode?: LocationSearchMode;
+  /** overlay 鍵盤模式：focus 時捲動 input 至鍵盤上方 */
+  onFocusInput?: (element: HTMLInputElement) => void;
 };
 
 export function LocationSearchField({
@@ -47,6 +49,7 @@ export function LocationSearchField({
   required,
   fieldRole,
   searchMode = "geographic",
+  onFocusInput,
 }: Props) {
   const { t, locale } = useI18n();
   const [query, setQuery] = useState("");
@@ -266,9 +269,13 @@ export function LocationSearchField({
           onFocus={() => {
             if (blurCloseRef.current) clearTimeout(blurCloseRef.current);
             setFocused(true);
-            requestAnimationFrame(() => {
-              inputRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-            });
+            if (onFocusInput && inputRef.current) {
+              onFocusInput(inputRef.current);
+            } else {
+              requestAnimationFrame(() => {
+                inputRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+              });
+            }
           }}
           onBlur={() => {
             blurCloseRef.current = setTimeout(() => setFocused(false), 200);

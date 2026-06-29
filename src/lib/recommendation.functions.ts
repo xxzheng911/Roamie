@@ -5,12 +5,22 @@ import { buildPlaceIntroFromFacts } from "@/lib/recommendation/place-intro";
 import type { PlaceIntroPayload } from "@/lib/recommendation/types";
 import { fetchPlaceDetailsForIntro } from "@/lib/places.functions";
 
+const WeatherInput = z
+  .object({
+    tempC: z.number(),
+    precipProbability: z.number(),
+    condition: z.string(),
+    isDaytime: z.boolean(),
+  })
+  .optional();
+
 const Input = z.object({
   placeId: z.string().min(1),
   reason: z.string().max(500).optional(),
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   lat: z.number().optional(),
   lng: z.number().optional(),
+  weather: WeatherInput,
 });
 
 export const getPlaceIntro = createServerFn({ method: "POST" })
@@ -25,6 +35,7 @@ export const getPlaceIntro = createServerFn({ method: "POST" })
       const intro = buildPlaceIntroFromFacts({
         place: details.place,
         reason: data.reason,
+        weather: data.weather ?? null,
         locale,
         editorialSummary: details.editorialSummary,
         reviewSnippets: details.reviewSnippets,

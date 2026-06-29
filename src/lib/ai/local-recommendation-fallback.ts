@@ -1,3 +1,4 @@
+import { filterNonLodgingPlaces } from "@/lib/lodging-place-filter";
 import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { ChatPlanningSession, ChatPlaceItem } from "@/lib/chat-session";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
@@ -27,8 +28,8 @@ function moodSearchQuery(mood: string, ctx?: CanonicalTravelContext): string {
   if (/找咖啡|咖啡/.test(mood)) return "cafe coffee quiet";
   if (/下雨天|雨/.test(mood)) return "indoor museum cafe bookstore";
   if (/想放空|放鬆/.test(mood)) return "park quiet cafe scenic";
-  if (/看海/.test(mood)) return "coastal seaside walk";
-  return `${mood} nearby places`;
+  if (/看海/.test(mood)) return "coastal seaside walk scenic park cafe";
+  return "tourist attraction cafe restaurant park museum";
 }
 
 function buildSummary(ctx: CanonicalTravelContext, placeCount: number, places: PlaceResult[] = []): string {
@@ -94,11 +95,12 @@ export function generateLocalRecommendationFallback(
   const { context: ctx, session, locale = "zh-TW", places = [] } = input;
   console.info("[CHAT_FALLBACK_USED]", logTravelContext(ctx));
 
-  const candidates: ChatPlaceItem[] = (
+  const filteredPlaces =
     ctx.activity === "camping" || ctx.interests.includes("露營")
       ? filterCampingPlaces(places)
-      : places
-  )
+      : filterNonLodgingPlaces(places);
+
+  const candidates: ChatPlaceItem[] = filteredPlaces
     .slice(0, 5)
     .map((p) =>
     mapPlaceResultToChatItem(p, {
@@ -149,5 +151,5 @@ export function fallbackSearchQuery(ctx: CanonicalTravelContext): string {
   if (mood) return moodSearchQuery(mood, ctx);
   if (ctx.interests.includes("咖啡")) return "cafe coffee";
   if (ctx.interests.includes("美食")) return "restaurant local food";
-  return "nearby places";
+  return "tourist attraction cafe restaurant park";
 }

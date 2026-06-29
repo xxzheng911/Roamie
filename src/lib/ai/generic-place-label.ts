@@ -1,4 +1,5 @@
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
 
 /** 分類／方向用語 — 不可作為 itinerary stop 或地點卡名稱 */
 const GENERIC_PLACE_LABEL_RE =
@@ -45,11 +46,14 @@ export function isValidItineraryStopPlace(
     lat?: number | null;
     lng?: number | null;
     id?: string;
+    primaryType?: string | null;
+    types?: string[] | null;
   },
   destination?: string,
 ): boolean {
   const name = (place.placeName ?? place.name ?? "").trim();
   if (!name || isGenericPlaceLabel(name, destination)) return false;
+  if (isBurialOrFuneralPlace(place)) return false;
 
   const placeId = (place.placeId ?? place.googlePlaceId ?? place.id ?? "").trim();
   const lat = place.lat;

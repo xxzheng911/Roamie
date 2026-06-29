@@ -40,7 +40,7 @@ export type TransitLegAdvice = {
   /** 使用者選擇的交通模式（Routes API） */
   transportMode?: import("@/lib/routes/types").RoutesTravelMode;
   transportStatus?: "ok" | "transit_unavailable" | "failed" | "pending";
-  transportFallbackMode?: "walk" | "drive" | null;
+  transportFallbackMode?: "walk" | "drive" | "transit" | null;
   transportDurationMinutes?: number;
   transportDisplayText?: string;
   /** 對應 buildLegRouteFingerprint，用於 leg_already_covered 判斷 */

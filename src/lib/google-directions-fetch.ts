@@ -25,7 +25,7 @@ type DirectionsResponse = {
   routes?: Array<{ legs?: DirectionsLeg[] }>;
 };
 
-export type DirectionsTravelMode = "transit" | "walking" | "driving";
+export type DirectionsTravelMode = "transit" | "walking" | "driving" | "bicycling";
 
 export type DirectionsQueryOptions = {
   region?: string;
@@ -38,7 +38,8 @@ export type DirectionsQueryOptions = {
 
 function directionsModeForRoutesMode(mode: RoutesTravelMode): DirectionsTravelMode | null {
   if (mode === "TRANSIT") return "transit";
-  if (mode === "WALK" || mode === "BICYCLE") return "walking";
+  if (mode === "WALK") return "walking";
+  if (mode === "BICYCLE") return "bicycling";
   if (mode === "DRIVE" || mode === "TWO_WHEELER") return "driving";
   return null;
 }
@@ -196,7 +197,13 @@ export async function fetchGoogleDirectionsRoute(
     const { durationSeconds, durationText, distanceMeters } = sumLegDurations(legs);
     const durationMinutes = Math.max(1, Math.round(durationSeconds / 60));
     const routesMode: RoutesTravelMode =
-      mode === "transit" ? "TRANSIT" : mode === "driving" ? "DRIVE" : "WALK";
+      mode === "transit"
+        ? "TRANSIT"
+        : mode === "driving"
+          ? "DRIVE"
+          : mode === "bicycling"
+            ? "BICYCLE"
+            : "WALK";
 
     if (mode === "transit") {
       console.info(

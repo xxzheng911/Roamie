@@ -32,6 +32,7 @@ export function beginHomeMoodShortcutSession(
     selectedMood: moodLabel,
     fromMoodCard: true,
     fromMoodFlow: true,
+    activeChatIntent: "attraction",
     homeMoodShortcutEntry: true,
     homeMoodShortcutEngaged: false,
   };

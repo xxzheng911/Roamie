@@ -1,7 +1,12 @@
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
 import { daysBetweenDates } from "@/lib/fetch-context";
 import { listTripDates } from "@/lib/outfit/group-by-date";
-import { groupStopsByDate, flattenStopGroups } from "@/lib/trip/trip-stop-mutations";
+import { buildLegKey } from "@/lib/transit/types";
+import {
+  groupStopsByDate,
+  flattenStopGroups,
+  legKeyForItem,
+} from "@/lib/trip/trip-stop-mutations";
 
 /** 縮短行程天數時，超出地點移入此日期 key */
 export const TRIP_UNASSIGNED_DATE = "未安排";
@@ -184,6 +189,124 @@ export function syncSettingsAfterRemoveDay(
   if (!start) return { tripEndDate: settings.tripEndDate };
   const newDayCount = Math.max(1, scheduledDayCount - 1);
   return { tripEndDate: addDaysIso(start, newDayCount - 1) };
+}
+
+function collectLegKeys(items: RoamieItineraryItem[]): Set<string> {
+  const keys = new Set<string>();
+  for (const [, dayItems] of groupStopsByDate(items)) {
+    for (let i = 1; i < dayItems.length; i++) {
+      const prev = dayItems[i - 1]!;
+      const curr = dayItems[i]!;
+      keys.add(buildLegKey(prev.placeName || prev.title, curr.placeName || curr.title));
+    }
+  }
+  return keys;
+}
+
+function pruneRecordByKeys<T>(
+  record: Record<string, T> | undefined,
+  validKeys: Set<string>,
+): Record<string, T> | undefined {
+  if (!record) return undefined;
+  const next: Record<string, T> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (validKeys.has(key)) next[key] = value;
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function remapDayTransportLabels(
+  labels: Record<string, string> | undefined,
+  oldDateKeys: string[],
+  removedIndex: number,
+  newDateKeys: string[],
+): Record<string, string> | undefined {
+  if (!labels) return undefined;
+  const next: Record<string, string> = {};
+  oldDateKeys.forEach((oldKey, idx) => {
+    if (idx === removedIndex) return;
+    const newIdx = idx < removedIndex ? idx : idx - 1;
+    const newKey = newDateKeys[newIdx];
+    const label = labels[oldKey]?.trim();
+    if (newKey && label) next[newKey] = label;
+  });
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+export type ApplyRemoveScheduledDayResult = {
+  items: RoamieItineraryItem[];
+  settings: TripPlanSettings;
+  removedStopCount: number;
+  removedDayIndex: number;
+};
+
+/**
+ * 刪除指定行程日：移除該日所有 stop、後續日期遞補重排，並清理交通 / cache 相關 settings。
+ */
+export function applyRemoveScheduledDay(
+  items: RoamieItineraryItem[],
+  settings: TripPlanSettings,
+  removeDateKey: string,
+): ApplyRemoveScheduledDayResult {
+  const oldDateKeys = orderedScheduledDayKeys(items, settings);
+  const removedDayIndex = oldDateKeys.indexOf(removeDateKey);
+
+  if (removedDayIndex < 0 || oldDateKeys.length <= 1) {
+    return { items, settings, removedStopCount: 0, removedDayIndex: -1 };
+  }
+
+  const start = settings.tripStartDate?.trim() || oldDateKeys[0]!;
+  const newDayCount = oldDateKeys.length - 1;
+  const newDateKeys = listTripDates([], start, newDayCount);
+  const groups = groupStopsByDate(items);
+  const removedStopCount = (groups.get(removeDateKey) ?? []).length;
+  const nextItems: RoamieItineraryItem[] = [];
+
+  oldDateKeys.forEach((oldKey, idx) => {
+    if (idx === removedDayIndex) return;
+    const newIdx = idx < removedDayIndex ? idx : idx - 1;
+    const targetDate = newDateKeys[newIdx]!;
+    for (const item of groups.get(oldKey) ?? []) {
+      nextItems.push({ ...item, date: targetDate });
+    }
+  });
+
+  for (const item of groups.get(TRIP_UNASSIGNED_DATE) ?? []) {
+    nextItems.push(item);
+  }
+
+  const handledKeys = new Set([...oldDateKeys, TRIP_UNASSIGNED_DATE]);
+  for (const [key, dayItems] of groups) {
+    if (handledKeys.has(key)) continue;
+    for (const item of dayItems) {
+      nextItems.push({ ...item, date: TRIP_UNASSIGNED_DATE });
+    }
+  }
+
+  const validLegKeys = collectLegKeys(nextItems);
+  const validDestKeys = new Set(nextItems.map((item) => legKeyForItem(item)));
+
+  const nextSettings: TripPlanSettings = {
+    ...settings,
+    tripStartDate: start,
+    tripEndDate: newDateKeys[newDateKeys.length - 1]!,
+    dayTransportLabels: remapDayTransportLabels(
+      settings.dayTransportLabels,
+      oldDateKeys,
+      removedDayIndex,
+      newDateKeys,
+    ),
+    transitLegs: pruneRecordByKeys(settings.transitLegs, validLegKeys),
+    legTransport: pruneRecordByKeys(settings.legTransport, validDestKeys),
+    legMinutes: pruneRecordByKeys(settings.legMinutes, validDestKeys),
+  };
+
+  return {
+    items: nextItems,
+    settings: nextSettings,
+    removedStopCount,
+    removedDayIndex,
+  };
 }
 
 /** Change one day's date; shifting Day 1 re-aligns all consecutive days. */

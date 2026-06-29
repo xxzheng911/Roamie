@@ -145,6 +145,23 @@ export function recommendationsForChatDisplay(
   const list = items ?? [];
   if (!list.length) return [];
 
+  if (session.fromMoodFlow || session.fromMoodCard || session.homeMoodShortcutEntry) {
+    let working = list;
+    if (
+      session.travelContext?.budgetPreference === "low" ||
+      session.travelContext?.tripPurpose === "refine_recommendations"
+    ) {
+      working = refineRecommendationItemsForBudget(working, "low");
+    }
+    const excluded =
+      session.excludedCategories ?? session.travelContext?.excludedCategories ?? [];
+    working = filterRecommendationsByExclusion(working, excluded);
+    const filtered = filterRecommendationItemsForDisplay(working);
+    const count = Math.min(filtered.length, 5);
+    logChatPlaceCardRender(count, session.activeChatIntent ?? "mood");
+    return filtered.slice(0, 5);
+  }
+
   if (isDestinationCategoryPlaceDisplay(session, userText)) {
     return recommendationsForCategoryPlaceDisplay(session, userText, list);
   }
@@ -159,6 +176,8 @@ export function recommendationsForChatDisplay(
   const mustVisitFlow =
     !hasCategoryPlaceQuery(userText) &&
     (session.travelContext?.tripPurpose === "must_visit_places" ||
+      session.travelContext?.tripPurpose === "more_place_recommendations" ||
+      session.travelContext?.tripPurpose === "refresh_recommendations" ||
       session.travelContext?.mustVisitGenerated ||
       detectMustVisitIntent(userText) ||
       detectPlaceRecommendationIntent(userText));
@@ -166,6 +185,12 @@ export function recommendationsForChatDisplay(
   if (mustVisitFlow) {
     const cards = list.slice(0, 6);
     console.info(`[CHAT_PLACE_CARD_RENDER] count=${cards.length} must_visit=true`);
+    if (
+      session.travelContext?.tripPurpose === "more_place_recommendations" ||
+      session.travelContext?.tripPurpose === "refresh_recommendations"
+    ) {
+      console.info(`[CHAT_MORE_PLACES_RENDERED] count=${cards.length}`);
+    }
     return cards;
   }
 

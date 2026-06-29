@@ -1,3 +1,4 @@
+import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { isTaiwanCoordinates } from "@/lib/geo-region";
 import { shouldLogExploreEvent } from "@/lib/explore-request-guard";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -55,6 +56,15 @@ export function inferExploreCityLabel(
     return "台灣";
   }
 
+  if (lat >= 35.4 && lat <= 35.85 && lng >= 139.4 && lng <= 139.95) return "東京";
+  if (lat >= 34.6 && lat <= 34.75 && lng >= 135.4 && lng <= 135.55) return "大阪";
+  if (lat >= 34.95 && lat <= 35.15 && lng >= 135.65 && lng <= 135.85) return "京都";
+  if (lat >= 37.45 && lat <= 37.65 && lng >= 126.85 && lng <= 127.05) return "首爾";
+  if (lat >= 13.6 && lat <= 13.9 && lng >= 100.4 && lng <= 100.7) return "曼谷";
+  if (lat >= 48.8 && lat <= 48.92 && lng >= 2.25 && lng <= 2.42) return "巴黎";
+  if (lat >= -38.0 && lat <= -37.65 && lng >= 144.75 && lng <= 145.1) return "墨爾本";
+  if (lat >= 40.65 && lat <= 40.88 && lng >= -74.05 && lng <= -73.85) return "紐約";
+
   return fromHint || "這裡";
 }
 
@@ -86,8 +96,10 @@ export function cityRecommendSearchRadiusMeters(): number {
   return 12_000;
 }
 
-export function cityRecommendMaxDistanceMeters(): number {
-  return 15_000;
+export function cityRecommendMaxDistanceMeters(cityLabel?: string): number {
+  const label = cityLabel?.trim() ? normalizeDestinationLabel(cityLabel) : "";
+  const mega = new Set(["東京", "大阪", "京都", "首爾", "曼谷", "台北", "高雄", "倫敦", "紐約", "巴黎", "墨爾本", "雪梨"]);
+  return mega.has(label) ? 30_000 : 15_000;
 }
 
 /** 城市 + 分類：依序 text 搜尋，補 nearby 不足 */
@@ -105,10 +117,11 @@ export function cityCategoryTextQueries(
   switch (categoryId) {
     case "sight":
       return [
+        `${city} tourist attractions`,
+        `${city} famous landmarks`,
+        `${city} things to do`,
         `${city} 景點`,
         `${city} 博物館`,
-        `${city} 展覽`,
-        `${city} 文化景點`,
         `${city} 地標`,
         `${city} 觀光景點`,
         `${city} tourist attraction`,
@@ -117,35 +130,60 @@ export function cityCategoryTextQueries(
       ];
     case "district":
       return [
+        `${city} shopping district`,
+        `${city} famous shopping area`,
+        `${city} downtown shopping`,
+        `${city} shopping mall`,
+        `${city} department store`,
+        `${city} shopping street`,
+        `${city} market`,
         `${city} 商圈`,
         `${city} 百貨`,
         `${city} 市場`,
-        `${city} 夜市`,
-        `${city} shopping mall`,
-        `${city} department store`,
+        `${city} 購物街`,
       ];
     case "food":
       return [
+        `${city} レストラン`,
+        `${city} グルメ`,
+        `${city} 居酒屋`,
+        `${city} ラーメン`,
+        `${city} 寿司`,
+        `${city} 焼肉`,
+        `${city} best restaurants`,
+        `${city} famous restaurant`,
+        `${city} local food`,
+        `${city} restaurant`,
+        `${city} food`,
         `${city} 美食`,
         `${city} 餐廳`,
         `${city} 小吃`,
         `${city} 拉麵`,
-        `${city} 燒肉`,
-        `${city} 火鍋`,
+        `${city} izakaya`,
+        `${city} ramen`,
       ];
     case "coffee":
       return [
-        `${city} 咖啡廳`,
-        `${city} cafe`,
+        `${city} specialty coffee`,
         `${city} coffee`,
+        `${city} cafe`,
+        `${city} coffee shop`,
+        `${city} 咖啡廳`,
+        `${city} 咖啡`,
         `${city} 甜點`,
+        `${city} カフェ`,
       ];
     case "night":
       return [
+        `${city} nightlife`,
+        `${city} night view`,
+        `${city} night market`,
+        `${city} bar`,
+        `${city} izakaya`,
         `${city} 酒吧`,
         `${city} 居酒屋`,
+        `${city} 夜景`,
         `${city} 宵夜`,
-        `${city} 夜市`,
       ];
     default:
       return [`${city} 觀光景點`, `${city} restaurant`, `${city} cafe`];

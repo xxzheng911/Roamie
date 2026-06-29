@@ -54,7 +54,8 @@ export function resolveDirectionsRegion(countryOrContext?: string | null): strin
 
 export function routesModeToDirectionsModeLabel(mode: RoutesTravelMode): string {
   if (mode === "TRANSIT") return "transit";
-  if (mode === "WALK" || mode === "BICYCLE") return "walking";
+  if (mode === "WALK") return "walking";
+  if (mode === "BICYCLE") return "bicycling";
   if (mode === "DRIVE" || mode === "TWO_WHEELER") return "driving";
   return "walking";
 }

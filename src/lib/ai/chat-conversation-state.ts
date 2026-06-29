@@ -1,3 +1,4 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { PendingQuestion, PendingQuestionType } from "@/lib/ai/destination-pending-question";
@@ -259,10 +260,10 @@ export function logConversationStateUpdate(
     .filter(([, value]) => value != null && value !== "")
     .map(([key, value]) => `${key}=${value}`);
   if (parts.length > 0) {
-    console.info("[CHAT_CONTEXT_UPDATE]", parts.join(" "));
+    devVerboseInfo("[CHAT_CONTEXT_UPDATE]", parts.join(" "));
   }
   if (pending) {
-    console.info(
+    devVerboseInfo(
       "[CHAT_NEXT_STEP]",
       PENDING_TYPE_TO_CONVERSATION_STATE[pending.type] ?? pending.type,
     );

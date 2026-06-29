@@ -1,10 +1,13 @@
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
-import { normalizedLocationKey } from "@/lib/location-key";
-import { PLACES_RAW_POOL_TTL_MS } from "@/lib/places-api-guard";
 import type { ExploreRecommendMode } from "@/lib/explore-recommend-mode";
-
-const TTL_MS = PLACES_RAW_POOL_TTL_MS;
+import {
+  buildExploreMapCacheScopeFromParts,
+  buildExploreMapCacheScopeKey,
+  exploreMapCacheTtlMs,
+  readExploreMapPersistedCache,
+  writeExploreMapPersistedCache,
+} from "@/lib/explore-map-persistent-cache";
 
 type RawPoolEntry = {
   places: PlaceResult[];
@@ -19,23 +22,59 @@ export function buildExploreRawPoolKey(
   mode: ExploreRecommendMode,
   locale: Locale = "zh-TW",
   categoryId = "all",
+  cityPlaceId?: string | null,
+  cityLabel?: string | null,
 ): string {
-  return `${normalizedLocationKey(lat, lng)}:${mode}:${locale}:${categoryId}`;
+  return `raw:${buildExploreMapCacheScopeKey(
+    buildExploreMapCacheScopeFromParts({
+      lat,
+      lng,
+      categoryId,
+      locale,
+      mode: mode === "city" ? "city" : "nearby",
+      cityPlaceId,
+      cityLabel,
+    }),
+  )}`;
+}
+
+function rawPoolMode(key: string): "city" | "nearby" {
+  return key.includes(":city:") ? "city" : "nearby";
+}
+
+function rawPoolScopeKey(key: string): string {
+  return key.startsWith("raw:") ? key.slice(4) : key;
 }
 
 export function writeExploreRawPool(key: string, places: PlaceResult[]): void {
   if (!places.length) return;
   pool.set(key, { places: [...places], at: Date.now() });
+  writeExploreMapPersistedCache(rawPoolScopeKey(key), places, null);
 }
 
-export function readExploreRawPool(key: string): PlaceResult[] | null {
-  const hit = pool.get(key);
-  if (!hit) return null;
-  if (Date.now() - hit.at > TTL_MS) {
+export function readExploreRawPool(
+  key: string,
+  options?: { ignoreCache?: boolean },
+): PlaceResult[] | null {
+  if (options?.ignoreCache) {
     pool.delete(key);
     return null;
   }
-  return hit.places;
+
+  const hit = pool.get(key);
+  if (hit && Date.now() - hit.at <= exploreMapCacheTtlMs(rawPoolMode(key))) {
+    return hit.places;
+  }
+  if (hit) pool.delete(key);
+
+  const persisted = readExploreMapPersistedCache<PlaceResult>(
+    rawPoolScopeKey(key),
+    rawPoolMode(key),
+  );
+  if (!persisted) return null;
+
+  pool.set(key, { places: persisted.places, at: persisted.at });
+  return persisted.places;
 }
 
 export function mergeIntoExploreRawPool(key: string, extra: PlaceResult[]): PlaceResult[] {

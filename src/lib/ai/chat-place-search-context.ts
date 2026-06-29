@@ -12,6 +12,7 @@ import {
 } from "@/lib/ai/destination-geocode";
 import { EN_CITY_NAMES } from "@/lib/ai/destination-geocode";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import { sanitizeDestinationForGeocode } from "@/lib/ai/itinerary-entity-extraction";
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import {
   logChatDestinationCoords,
@@ -91,8 +92,9 @@ export function resolveDestinationNameForSearch(
   session: ChatPlanningSession,
 ): string | undefined {
   const fromCtx = context.destination?.trim();
-  if (fromCtx) return fromCtx;
-  return resolveSessionDestination(session);
+  if (fromCtx) return sanitizeDestinationForGeocode(fromCtx);
+  const sessionDest = resolveSessionDestination(session);
+  return sessionDest ? sanitizeDestinationForGeocode(sessionDest) : undefined;
 }
 
 export function resolveChatPlaceSearchMode(
@@ -378,11 +380,17 @@ export function placesSearchContextPayload(
   searchMode?: ChatPlaceSearchMode;
   skipLocationBias?: boolean;
   intentCategory?: string;
+  cacheDestination?: string;
+  cacheCity?: string;
+  cacheCountry?: string;
 } {
   return {
     destinationName: searchContext.destinationName,
     searchMode: searchContext.searchMode,
     skipLocationBias: searchContext.textOnlyDestinationSearch === true,
     intentCategory,
+    cacheDestination: searchContext.destinationName,
+    cacheCity: searchContext.destinationCity ?? searchContext.destinationName,
+    cacheCountry: searchContext.destinationCountry,
   };
 }

@@ -12,6 +12,7 @@ import {
   isBestSeasonQuestion,
 } from "@/lib/ai/season-response-guardrail";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { extractItineraryDestinationFromText } from "@/lib/ai/itinerary-entity-extraction";
 
 /** A 附近探索 | B 目的地規劃 | C 特定地點 | D 心情推薦 */
 export type ChatConversationMode =
@@ -161,7 +162,7 @@ export function parseLeadingDestinationLabel(text: string): string | undefined {
   const t = text.trim();
   if (!t) return undefined;
 
-  if (/(幾月|哪個月|什麼時候|何时|何時|最佳|好玩)/.test(t)) {
+  if (/(幾月|哪個月|什麼時候|什麼去|什么去|何时|何時|最佳|好玩|比較好|比较好)/.test(t)) {
     const prefix = matchLeadingKnownDestination(t);
     if (prefix && isValidParsedDestinationLabel(prefix)) return prefix;
   }
@@ -179,7 +180,10 @@ export function parseLeadingDestinationLabel(text: string): string | undefined {
   const cityDays = t.match(/^([\u4e00-\u9fff]{2,8})\s*(?:\d+|[一二三四五六七八九十百千兩两]+)\s*天/);
   if (cityDays?.[1]) {
     const label = normalizeCityLabel(cityDays[1]);
-    if (isValidParsedDestinationLabel(label)) {
+    if (
+      isValidParsedDestinationLabel(label) &&
+      (isKnownTouristCityLabel(label) || isKnownCountryLabel(label) || isKnownScenicLabel(label))
+    ) {
       return label;
     }
   }
@@ -203,7 +207,7 @@ export function isDestinationAdviceText(text: string): boolean {
   }
 
   if (
-    /(幾月|几月|哪個月|什么時候|什麼時候|何时|何時|幾號|几号|哪一天|哪天|哪日|下個月|下个月|這個月|这个月|下月|本月|花季|最佳.{0,4}季|最佳.{0,4}(?:時間|时间|日期))/.test(
+    /(幾月|几月|哪個月|什么時候|什麼時候|什麼去|什么去|何时|何時|幾號|几号|哪一天|哪天|哪日|下個月|下个月|這個月|这个月|下月|本月|花季|最佳.{0,4}季|最佳.{0,4}(?:時間|时间|日期))/.test(
       t,
     ) &&
     /(比較好|比较好|適合|适合|去|旅遊|旅游|好玩|好|你覺得|觉得|走走|逛逛)/.test(t)
@@ -307,6 +311,17 @@ export function isValidParsedDestinationLabel(name: string): boolean {
     return false;
   }
   if (/哪裡|哪里|什麼地方|什么地方|去哪|適合|适合|推薦|推荐/.test(n)) return false;
+  if (/(?:下個月|下个月|下月|這個月|这个月|想去|想要|幫我|帮我|安排|規劃|规划|你可以|可以|幾天|天數|天数)/.test(n)) {
+    return false;
+  }
+  if (
+    n.length > 4 &&
+    !isKnownTouristCityLabel(n) &&
+    !isKnownCountryLabel(n) &&
+    !isKnownScenicLabel(n)
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -502,6 +517,9 @@ export function parseDestinationFromText(text: string): string | undefined {
   try {
     const t = text.trim();
     if (!t) return undefined;
+
+    const itineraryDest = extractItineraryDestinationFromText(t);
+    if (itineraryDest) return itineraryDest;
 
     const leading = parseLeadingDestinationLabel(t);
     if (leading) return leading;

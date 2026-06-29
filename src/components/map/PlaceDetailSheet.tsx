@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { PlaceActionRow } from "@/components/PlaceActionRow";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
-import { resolvePlaceOpeningDisplay } from "@/lib/normalized-opening-status";
+import { resolvePlaceDetailOpeningLine } from "@/lib/normalized-opening-status";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import {
   TRANSIT_MVP_NOTICE,
@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
 import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
+import { TabelogExternalLink } from "@/components/TabelogExternalLink";
 
 function TransportModeIcon({ mode }: { mode: TravelModeId }) {
   const cls = "h-4 w-4 shrink-0 text-muted-foreground";
@@ -46,11 +47,6 @@ function TransportModeIcon({ mode }: { mode: TravelModeId }) {
 
 export type PlaceDetailData = PlaceResult & {
   reason: string;
-  intro?: string;
-  suitableFor?: string;
-  weatherFit?: string;
-  goNowAdvice?: string;
-  introLoading?: boolean;
   website?: string | null;
   phone?: string | null;
 };
@@ -73,6 +69,8 @@ type Props = {
   saveLabel?: string;
   addToTripLabel?: string;
   ticketOffers?: AffiliateLinkOffer[];
+  tabelogExternalUrl?: string | null;
+  tabelogLinkLabel?: string;
 };
 
 export function PlaceDetailSheet({
@@ -93,6 +91,8 @@ export function PlaceDetailSheet({
   saveLabel = "收藏",
   addToTripLabel = "加入行程",
   ticketOffers,
+  tabelogExternalUrl,
+  tabelogLinkLabel = "在 Tabelog 查看",
 }: Props) {
   const [photoIdx, setPhotoIdx] = useState(0);
   const touchStartX = useRef<number | null>(null);
@@ -122,7 +122,7 @@ export function PlaceDetailSheet({
 
   const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place), place);
   const navButtonLabel = `導航・${TRAVEL_MODE_LABEL[selectedTransportMode]}`;
-  const opening = resolvePlaceOpeningDisplay(place);
+  const openingLine = resolvePlaceDetailOpeningLine(place);
 
   return (
     <div className="flex flex-col" data-no-sheet-drag>
@@ -220,18 +220,11 @@ export function PlaceDetailSheet({
           {distanceLabel && <span>{distanceLabel}</span>}
         </div>
 
-        <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
-          <p>
-            <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-foreground/85">
-              {opening.label}
-            </span>
-          </p>
-          {opening.hoursLine ? <p>{opening.hoursLine}</p> : null}
-          {opening.closingSoonNote ? (
-            <p className="text-clay/90">{opening.closingSoonNote}</p>
-          ) : null}
-          {opening.nextOpenHint ? <p>{opening.nextOpenHint}</p> : null}
-        </div>
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-foreground/85">
+            {openingLine}
+          </span>
+        </p>
 
         {place.address && (
           <p className="mt-2 flex items-start gap-1.5 text-sm text-muted-foreground">
@@ -240,7 +233,7 @@ export function PlaceDetailSheet({
           </p>
         )}
 
-        {(place.phone || place.website) && (
+        {(place.phone || place.website || tabelogExternalUrl) && (
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             {place.phone ? (
               <a
@@ -260,6 +253,9 @@ export function PlaceDetailSheet({
                 官網
               </a>
             ) : null}
+            {tabelogExternalUrl ? (
+              <TabelogExternalLink href={tabelogExternalUrl} label={tabelogLinkLabel} />
+            ) : null}
           </div>
         )}
 
@@ -267,26 +263,6 @@ export function PlaceDetailSheet({
           <p className="text-xs font-medium text-muted-foreground">Roamie 推薦理由</p>
           <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">{place.reason}</p>
         </div>
-
-        {(place.intro || place.introLoading) && (
-          <div className="mt-3 rounded-2xl border border-border/80 bg-secondary/40 px-4 py-3">
-            <p className="text-xs font-medium text-muted-foreground">Roamie 簡介</p>
-            {place.introLoading ? (
-              <p className="mt-1.5 text-sm text-muted-foreground">整理中…</p>
-            ) : (
-              <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">{place.intro}</p>
-            )}
-            {place.suitableFor && (
-              <p className="mt-2 text-xs text-muted-foreground">適合：{place.suitableFor}</p>
-            )}
-            {place.weatherFit && (
-              <p className="mt-1 text-xs text-muted-foreground">天氣：{place.weatherFit}</p>
-            )}
-            {place.goNowAdvice && (
-              <p className="mt-1 text-xs text-muted-foreground">{place.goNowAdvice}</p>
-            )}
-          </div>
-        )}
 
         <div className="mt-4">
           <p className="text-xs font-medium text-muted-foreground">交通方式</p>

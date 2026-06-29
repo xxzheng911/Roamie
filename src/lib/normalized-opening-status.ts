@@ -181,6 +181,78 @@ export type PlaceOpeningDisplay = {
   nextOpenHint: string | null;
 };
 
+function extractCloseTimeFromTodayHoursLabel(label: string): string | null {
+  const trimmed = label.replace(/^今日\s*/, "").trim();
+  const range = trimmed.match(/(\d{1,2}:\d{2})\s*[–\-~～至]\s*(\d{1,2}:\d{2})/);
+  if (range) return range[2] ?? null;
+  return null;
+}
+
+function parseNextOpenHint(hint: string): { day: "today" | "tomorrow" | "other"; time: string } {
+  const timeMatch = hint.match(/(\d{1,2}:\d{2})/);
+  const time = timeMatch?.[1] ?? "";
+  if (hint.startsWith("今天")) return { day: "today", time };
+  if (hint.startsWith("明天")) return { day: "tomorrow", time };
+  return { day: "other", time };
+}
+
+/** 詳情頁：單一營業狀態文案（Google openNow / nextOpenTime / nextCloseTime） */
+export function resolvePlaceDetailOpeningLine(
+  place: Pick<
+    PlaceResult,
+    | "openNow"
+    | "nextOpenHint"
+    | "todayHoursLabel"
+    | "openUntilTime"
+    | "businessStatus"
+  >,
+): string {
+  const biz = (place.businessStatus ?? "").trim().toUpperCase();
+  if (biz === "CLOSED_PERMANENTLY" || biz === "CLOSED_TEMPORARILY") {
+    return "營業資訊暫缺";
+  }
+
+  const openNow = place.openNow ?? null;
+  const hasGoogleHours =
+    openNow !== null ||
+    !!(place.nextOpenHint?.trim()) ||
+    !!(place.openUntilTime?.trim()) ||
+    !!(place.todayHoursLabel?.trim() &&
+      place.todayHoursLabel.trim() !== "營業時間待確認");
+
+  if (!hasGoogleHours) return "營業資訊暫缺";
+
+  if (openNow === true) {
+    const closeTime =
+      place.openUntilTime?.trim() ||
+      extractCloseTimeFromTodayHoursLabel(place.todayHoursLabel ?? "");
+    if (closeTime) return `營業中 · 今日營業至 ${closeTime}`;
+    return "營業中";
+  }
+
+  if (openNow === false) {
+    const hint = place.nextOpenHint?.trim();
+    if (hint) {
+      const parsed = parseNextOpenHint(hint);
+      if (parsed.day === "today" && parsed.time) {
+        return `休息中 · 今日 ${parsed.time} 開始營業`;
+      }
+      if (parsed.day === "tomorrow" && parsed.time) {
+        return `已打烊 · 明日 ${parsed.time} 開始營業`;
+      }
+      const normalized = hint.replace(/^今天/, "今日").replace(/^明天/, "明日");
+      return parsed.time ? `休息中 · ${normalized}` : `休息中 · ${normalized}`;
+    }
+    const todayRaw = (place.todayHoursLabel ?? "").trim();
+    if (todayRaw && /休息|閉店|closed|定休|不營業/i.test(todayRaw)) {
+      return "已打烊";
+    }
+    return "休息中";
+  }
+
+  return "營業資訊暫缺";
+}
+
 /** 詳情頁單一營業資訊區塊（避免 status badge 與 hours 矛盾） */
 export function resolvePlaceOpeningDisplay(
   place: Pick<
@@ -249,6 +321,7 @@ export function applyNormalizedOpeningToPlaceResult(
     todayHoursLabel,
     closingSoonNote: norm.openNow === true ? availability.closingSoonNote : "",
     nextOpenHint: norm.openNow === false ? availability.nextOpenHint : "",
+    openUntilTime: norm.openNow === true ? availability.openUntilTime : "",
     businessStatus: availability.businessStatus ?? place.businessStatus,
   };
 }

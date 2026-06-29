@@ -1,4 +1,5 @@
 import type { SearchPlacesInput } from "@/lib/explore-category-search";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 
 let sessionApiCallCount = 0;
 
@@ -16,7 +17,7 @@ export function getPlacesSessionCallCount(): number {
 }
 
 export function logPlacesCallCount(): void {
-  console.info(`[PLACES_CALL_COUNT] sessionTotal=${sessionApiCallCount}`);
+  devVerboseInfo(`[PLACES_CALL_COUNT] sessionTotal=${sessionApiCallCount}`);
 }
 
 export function logPlacesApiCall(
@@ -29,12 +30,12 @@ export function logPlacesApiCall(
   const queryLabel =
     data.query?.trim() ||
     (data.mode === "multi" ? "multi_nearby" : data.mode === "nearby" ? "nearby" : "");
-  console.info("[PLACES_API_CALL]");
-  console.info(`source=${source}`);
-  console.info(`category=${category}`);
-  console.info(`query=${queryLabel}`);
-  console.info("cache=false");
-  console.info(`[PLACES_CALL_COUNT] sessionTotal=${total}`);
+  devVerboseInfo("[PLACES_API_CALL]");
+  devVerboseInfo(`source=${source}`);
+  devVerboseInfo(`category=${category}`);
+  devVerboseInfo(`query=${queryLabel}`);
+  devVerboseInfo("cache=false");
+  devVerboseInfo(`[PLACES_CALL_COUNT] sessionTotal=${total}`);
 }
 
 export function logPlacesCacheHitSimple(
@@ -45,10 +46,10 @@ export function logPlacesCacheHitSimple(
   const query =
     data.query?.trim() ||
     (data.mode === "multi" ? "multi_nearby" : data.mode === "nearby" ? "nearby" : "");
-  console.info("[PLACES_CACHE_HIT]");
-  console.info(`source=${source}`);
-  console.info(`category=${category}`);
-  console.info(`query=${query}`);
+  devVerboseInfo("[PLACES_CACHE_HIT]");
+  devVerboseInfo(`source=${source}`);
+  devVerboseInfo(`category=${category}`);
+  devVerboseInfo(`query=${query}`);
 }
 
 /** @deprecated 使用 logPlacesApiCall */
@@ -64,7 +65,7 @@ export function incrementFilterRunCount(): void {}
 export function incrementHomeRenderCount(): void {}
 
 export function logPlacesHomeDiagnosticCounts(context?: string): void {
-  console.info(`[PLACES_CALL_COUNT] sessionTotal=${getPlacesSessionCallCount()}`);
+  devVerboseInfo(`[PLACES_CALL_COUNT] sessionTotal=${getPlacesSessionCallCount()}`);
   if (context) console.info("[PLACES_HOME_DIAGNOSTICS]", { context });
 }
 
@@ -86,7 +87,7 @@ export function logPlacesResponse(
   result: { places?: unknown[] | null; error?: string | null } | null | undefined,
 ): void {
   if (result && Array.isArray(result.places) && result.places.length === 0 && result.error) {
-    console.info(`[PLACES_API_EMPTY] error=${result.error}`);
+    devVerboseInfo(`[PLACES_API_EMPTY] error=${result.error}`);
   }
 }
 
@@ -109,10 +110,10 @@ export function logPlacesCacheHit(
     logPlacesCacheHitSimple(layer === "api" ? "api" : "client", meta);
     return;
   }
-  console.info("[PLACES_CACHE_HIT]");
-  console.info(`source=${layer}`);
-  console.info(`category=`);
-  console.info(`query=${key}`);
+  devVerboseInfo("[PLACES_CACHE_HIT]");
+  devVerboseInfo(`source=${layer}`);
+  devVerboseInfo(`category=`);
+  devVerboseInfo(`query=${key}`);
 }
 
 export function logPlacesApiSkipDuplicate(
@@ -122,13 +123,13 @@ export function logPlacesApiSkipDuplicate(
   const dedupeKey = skipLogKey(reason, detail);
   if (loggedSkipKeys.has(dedupeKey)) return;
   loggedSkipKeys.add(dedupeKey);
-  console.info("[PLACES_API_SKIP]", { reason, ...detail });
+  devVerboseInfo("[PLACES_API_SKIP]", { reason, ...detail });
 }
 
 export function logLocationUpdateSkipOnce(locationKey: string): void {
   if (loggedLocationSkipKeys.has(locationKey)) return;
   loggedLocationSkipKeys.add(locationKey);
-  console.info("[LOCATION_UPDATE_SKIP_SAME_BUCKET]", { locationKey });
+  devVerboseInfo("[LOCATION_UPDATE_SKIP_SAME_BUCKET]", { locationKey });
 }
 
 export function logHomeNearbyDataReady(detail: {
@@ -147,7 +148,7 @@ export function logHomeNearbyDataReady(detail: {
   const dedupeKey = detail.cacheKey ?? `${detail.lat.toFixed(3)}:${detail.lng.toFixed(3)}:${detail.count}`;
   if (loggedHomeNearbyReadyKeys.has(dedupeKey)) return;
   loggedHomeNearbyReadyKeys.add(dedupeKey);
-  console.info("[HOME_NEARBY_READY]", detail);
+  devVerboseInfo("[HOME_NEARBY_READY]", detail);
 }
 
 const loggedHomeNearbyLoadKeys = new Set<string>();
@@ -161,7 +162,7 @@ export function logHomeNearbyLoadOnce(detail: {
 }): void {
   if (loggedHomeNearbyLoadKeys.has(detail.loadKey)) return;
   loggedHomeNearbyLoadKeys.add(detail.loadKey);
-  console.info("[HOME_NEARBY_LOAD_ONCE]", detail);
+  devVerboseInfo("[HOME_NEARBY_LOAD_ONCE]", detail);
 }
 
 export function logMapNearbyReady(detail: {
@@ -172,5 +173,5 @@ export function logMapNearbyReady(detail: {
   fromCache?: boolean;
 }): void {
   if (detail.fromCache) return;
-  console.info("[MAP_NEARBY_READY]", detail);
+  devVerboseInfo("[MAP_NEARBY_READY]", detail);
 }

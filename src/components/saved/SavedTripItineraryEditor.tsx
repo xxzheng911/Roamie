@@ -29,11 +29,11 @@ import { coalesceItineraryItems } from "@/lib/trip/itinerary-guards";
 import { RoamieDatePicker } from "@/components/pickers";
 import {
   applyTripDateRange,
+  applyRemoveScheduledDay,
   countTripDateRangeOverflow,
   inferTripDatesForRange,
   resolveTripDateRangeChange,
   scheduledDateKeysFromSettings,
-  syncSettingsAfterRemoveDay,
   TRIP_UNASSIGNED_DATE,
   updateSingleDayDate,
 } from "@/lib/saved-trip/apply-trip-date-range";
@@ -80,7 +80,6 @@ import {
   listTripDateKeys,
   moveStopInDay,
   nextDayIsoAfter,
-  removeDay,
   removeStopAt,
   sortStopsInDayByTime,
   updateStop,
@@ -99,6 +98,7 @@ import {
 } from "@/lib/affiliate/affiliate-links";
 import { buildTripAffiliateContext, parseTripTravelers, type AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { resolveAffiliatePlanDates } from "@/lib/affiliate/trip-affiliate-dates";
+import { TripRemoveDayConfirmDialog } from "@/components/saved/TripRemoveDayConfirmDialog";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
 import { useI18n } from "@/hooks/use-i18n";
 import { geocodeTripLocationFromText } from "@/lib/location.functions";
@@ -108,6 +108,8 @@ import {
   buildTripAddPlaceContext,
   writeTripAddPlaceHandoff,
 } from "@/lib/trip/trip-add-place-handoff";
+import { consumeTripDetailViewState } from "@/lib/trip/trip-detail-view-state";
+import { openTripItineraryPlaceDetail } from "@/lib/trip/trip-itinerary-place-handoff";
 
 function inferTripDates(
   items: RoamieItineraryItem[],
@@ -251,7 +253,11 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const resolveTripStopFn = useServerFn(resolveTripStop);
   const initial = stored.payload as RoamiePayloadV2;
   const initialView = useMemo(() => normalizeStoredTrip(stored), [stored]);
-  const [tripTitle, setTripTitle] = useState(() => initialView.displayTitle);
+  const restoredViewRef = useRef(consumeTripDetailViewState(stored.id));
+  const restoredView = restoredViewRef.current;
+  const [tripTitle, setTripTitle] = useState(
+    () => restoredView?.tripTitle ?? initialView.displayTitle,
+  );
   const [isTitleCustomized, setIsTitleCustomized] = useState(initialView.isTitleCustomized);
   const [customCoverImageUrl, setCustomCoverImageUrl] = useState<string | null>(
     initialView.customCoverImageUrl,
@@ -268,6 +274,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const [coverBusy, setCoverBusy] = useState(false);
   const [settings, setSettings] = useState<TripPlanSettings>(
     () =>
+      restoredView?.settings ??
       initial.tripSettings ?? {
         startTime: coalesceItineraryItems(initial.itinerary)[0]?.time?.slice(0, 5) ?? "10:00",
         transport: "walk",
@@ -276,24 +283,47 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       },
   );
   const [items, setItems] = useState<RoamieItineraryItem[]>(() => [
-    ...coalesceItineraryItems(initial.itinerary),
+    ...(restoredView?.items ?? coalesceItineraryItems(initial.itinerary)),
   ]);
-  const [activeDayIndex, setActiveDayIndex] = useState(() =>
-    initialDay != null && initialDay > 0 ? initialDay - 1 : 0,
-  );
+  const [activeDayIndex, setActiveDayIndex] = useState(() => {
+    if (restoredView != null) return restoredView.activeDayIndex;
+    return initialDay != null && initialDay > 0 ? initialDay - 1 : 0;
+  });
   const [savedPlacesOpen, setSavedPlacesOpen] = useState(false);
-  const [addMenuDayIndex, setAddMenuDayIndex] = useState<number | null>(null);
+  const [addMenuDayIndex, setAddMenuDayIndex] = useState<number | null>(
+    () => restoredView?.addMenuDayIndex ?? null,
+  );
   const [transitLoading, setTransitLoading] = useState(false);
   const [transitSettled, setTransitSettled] = useState(false);
+  const [removeDayConfirm, setRemoveDayConfirm] = useState<{
+    dateKey: string;
+    dayNumber: number;
+    stopCount: number;
+    dayIndex: number;
+  } | null>(null);
   const itemsRef = useRef(items);
   const settingsRef = useRef(settings);
   const tripDetailRootRef = useRef<HTMLDivElement>(null);
   const tripCoverRef = useRef<HTMLDivElement>(null);
   const routeSyncInFlightRef = useRef(false);
   const lastRouteSyncSignatureRef = useRef("");
+  const routeSyncGenerationRef = useRef(0);
   const routeSyncMountedRef = useRef(true);
+  const refreshTransitRef = useRef<
+    (force?: boolean, override?: RouteRefreshOverride) => Promise<void>
+  >(async () => {});
   itemsRef.current = items;
   settingsRef.current = settings;
+
+  useLayoutEffect(() => {
+    const scrollTop = restoredViewRef.current?.scrollTop;
+    if (scrollTop == null || scrollTop <= 0) return;
+    const scrollEl = document.querySelector(".trip-detail-route");
+    if (scrollEl instanceof HTMLElement) {
+      scrollEl.scrollTop = scrollTop;
+    }
+    restoredViewRef.current = null;
+  }, [stored.id]);
 
   const [savedOutfitFields, setSavedOutfitFields] = useState<TripOutfitSuggestionFields>(() =>
     initialOutfitFields(initial),
@@ -523,6 +553,27 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     setActiveDayIndex(index);
   };
 
+  const openItineraryPlaceDetail = useCallback(
+    (item: RoamieItineraryItem) => {
+      const scrollEl = document.querySelector(".trip-detail-route");
+      const { navigateOptions } = openTripItineraryPlaceDetail(
+        item,
+        {
+          tripId: stored.id,
+          scrollTop: scrollEl instanceof HTMLElement ? scrollEl.scrollTop : 0,
+          activeDayIndex: safeDayIndex,
+          addMenuDayIndex,
+          items: itemsRef.current,
+          settings: settingsRef.current,
+          tripTitle,
+        },
+        locale,
+      );
+      void navigate(navigateOptions);
+    },
+    [addMenuDayIndex, navigate, safeDayIndex, stored.id, tripTitle],
+  );
+
   const applyDayArrivalRecalc = useCallback(
     (
       nextItems: RoamieItineraryItem[],
@@ -600,32 +651,74 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     toast.message(`已新增第 ${scheduledDayCount + 1} 天`);
   };
 
+  const executeRemoveDay = useCallback(
+    (dateKey: string, dayNumber: number, removedDayIndex: number) => {
+      routeSyncGenerationRef.current += 1;
+      const applied = applyRemoveScheduledDay(itemsRef.current, settingsRef.current, dateKey);
+      if (applied.removedDayIndex < 0) return;
+
+      const itemsWithTimes = recalculateAllArrivalTimes(applied.items, applied.settings);
+
+      commitTripSchedule(itemsWithTimes, applied.settings, {
+        logDateChange: true,
+        oldStartDate: settingsRef.current.tripStartDate,
+        newStartDate: applied.settings.tripStartDate,
+      });
+
+      const scheduledDayCount = dayGroups.filter((d) => !d.isUnassigned).length - 1;
+      const nextActiveIndex =
+        removedDayIndex <= safeDayIndex
+          ? Math.max(0, safeDayIndex - 1)
+          : safeDayIndex;
+      setActiveDayIndex(Math.min(nextActiveIndex, Math.max(0, scheduledDayCount - 1)));
+
+      clearRouteDurationCache();
+      clearScopedRouteCache();
+      lastRouteSyncSignatureRef.current = "";
+      setTransitSettled(false);
+
+      void refreshTransitRef.current(true, {
+        items: itemsWithTimes,
+        settings: applied.settings,
+      });
+
+      console.info(
+        `[TRIP_DAY_REMOVE] dateKey=${dateKey} dayNumber=${dayNumber} removedStops=${applied.removedStopCount} remainingDays=${scheduledDayCount}`,
+      );
+      toast.message(`已刪除第 ${dayNumber} 天`);
+    },
+    [commitTripSchedule, dayGroups, safeDayIndex],
+  );
+
   const handleRemoveDay = (dateKey: string, dayNumber: number) => {
     const group = dayGroups.find((d) => d.dateKey === dateKey);
     const hasStops = (group?.items.length ?? 0) > 0;
     const scheduledDayCount = dayGroups.filter((d) => !d.isUnassigned).length;
+    const removedDayIndex = dayGroups.findIndex((d) => d.dateKey === dateKey);
+
     if (scheduledDayCount <= 1) {
-      toast.message("至少需要保留一天");
+      toast.message("行程至少需保留一天");
       return;
     }
+
     if (hasStops) {
-      const ok = confirm(
-        `第 ${dayNumber} 天還有 ${group!.items.length} 個地點，確定要刪除這一天嗎？`,
-      );
-      if (!ok) return;
+      setRemoveDayConfirm({
+        dateKey,
+        dayNumber,
+        stopCount: group!.items.length,
+        dayIndex: removedDayIndex,
+      });
+      return;
     }
-    const nextItems = removeDay(items, dateKey);
-    const nextSettings: TripPlanSettings = {
-      ...settings,
-      ...syncSettingsAfterRemoveDay(settings, scheduledDayCount),
-    };
-    commitTripSchedule(nextItems, nextSettings, {
-      logDateChange: true,
-      oldStartDate: settings.tripStartDate,
-      newStartDate: nextSettings.tripStartDate,
-    });
-    scrollToDay(Math.max(0, safeDayIndex - 1));
-    toast.message(`已刪除第 ${dayNumber} 天`);
+
+    executeRemoveDay(dateKey, dayNumber, removedDayIndex);
+  };
+
+  const handleConfirmRemoveDay = () => {
+    if (!removeDayConfirm) return;
+    const { dateKey, dayNumber, dayIndex } = removeDayConfirm;
+    setRemoveDayConfirm(null);
+    executeRemoveDay(dateKey, dayNumber, dayIndex);
   };
 
   const handleAddStop = (
@@ -691,6 +784,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     async (force = false, override?: RouteRefreshOverride) => {
       if (!routeSyncMountedRef.current) return;
 
+      const syncGeneration = routeSyncGenerationRef.current;
       const currentItems = override?.items ?? itemsRef.current;
       const currentSettings = override?.settings ?? settingsRef.current;
       if (currentItems.length < 2) {
@@ -745,6 +839,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         });
 
         if (!routeSyncMountedRef.current) return;
+        if (syncGeneration !== routeSyncGenerationRef.current) return;
 
         let nextItems = currentItems;
         if (resolvedCoords.size > 0) {
@@ -778,6 +873,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     },
     [resolveStopCoords, directionsLocationContext, directionsRegion, stored.id],
   );
+  refreshTransitRef.current = refreshTransit;
 
   const refreshSingleLeg = useCallback(
     async (legKey: string, override?: RouteRefreshOverride) => {
@@ -1226,6 +1322,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/25 via-transparent to-transparent" />
           <div className="pointer-events-auto absolute left-3 top-3">
             <BackButton
+              preferFallback
               fallback={{ to: "/saved", search: { tab: "trips" } }}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-background/80 backdrop-blur"
             />
@@ -1461,6 +1558,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                         indexInDay={i}
                         dayCount={activeDay.items.length}
                         settings={settings}
+                        onOpenPlaceDetail={() => openItineraryPlaceDetail(item)}
                         onSetArrivalTime={(t) => {
                           persistItems(
                             applyDayArrivalRecalc(
@@ -1605,6 +1703,16 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           const dk = activeDay?.dateKey;
           if (dk) handleAddStop(dk, place);
         }}
+      />
+
+      <TripRemoveDayConfirmDialog
+        open={removeDayConfirm != null}
+        dayNumber={removeDayConfirm?.dayNumber ?? 0}
+        stopCount={removeDayConfirm?.stopCount ?? 0}
+        onOpenChange={(open) => {
+          if (!open) setRemoveDayConfirm(null);
+        }}
+        onConfirm={handleConfirmRemoveDay}
       />
 
       <ImageSourceSheet

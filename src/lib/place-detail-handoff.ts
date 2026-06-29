@@ -11,6 +11,8 @@ const HANDOFF_KEY = "roamie:place-detail-handoff";
 
 export type PlaceDetailHandoff = {
   placeId: string;
+  /** 真實 Google place id（行程 stop 可能另存） */
+  googlePlaceId?: string;
   name: string;
   address: string | null;
   lat: number | null;
@@ -35,10 +37,12 @@ export function latLngFallbackPlaceId(lat: number, lng: number): string {
   return `latlng:${lat.toFixed(6)},${lng.toFixed(6)}`;
 }
 
+const SYNTHETIC_PLACE_ID_PREFIXES = ["latlng:", "saved-", "trip-", "mock-", "rec-"] as const;
+
 export function isGooglePlaceId(placeId: string): boolean {
-  if (!placeId.trim()) return false;
-  if (placeId.startsWith("latlng:")) return false;
-  if (placeId.startsWith("saved-")) return false;
+  const id = placeId.trim();
+  if (!id) return false;
+  if (SYNTHETIC_PLACE_ID_PREFIXES.some((prefix) => id.startsWith(prefix))) return false;
   return true;
 }
 

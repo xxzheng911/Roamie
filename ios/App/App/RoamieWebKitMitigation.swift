@@ -1117,7 +1117,7 @@ enum RoamieCompositorFallback {
         if let existing = lastMirrorImage() {
             let oldScore = imageContentScore(existing)
             if newScore < max(8, Int(Double(oldScore) * 0.55)) {
-                RoamieNativeLog.critical(
+                RoamieNativeLog.debug(
                     "⚡️ [Roamie] MIRROR keep previous reason=\(reason) newScore=\(newScore) oldScore=\(oldScore)"
                 )
                 return
@@ -1129,7 +1129,7 @@ enum RoamieCompositorFallback {
         hideBootPlaceholder()
         cancelPendingEvaluations()
         presentWindowMirror(snapshot)
-        RoamieNativeLog.critical(
+        RoamieNativeLog.debug(
             "⚡️ [Roamie] MIRROR updated reason=\(reason) size=\(Int(snapshot.size.width))x\(Int(snapshot.size.height)) score=\(newScore)"
         )
         logOnce("mirror_on", "⚡️ [Roamie] COMPOSITOR mode=mirror (\(reason)) — snapshot renderer, no auto-live")

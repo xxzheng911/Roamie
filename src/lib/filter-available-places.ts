@@ -43,6 +43,8 @@ export type PlaceAvailability = {
   /** 卡片顯示：營業中 / 目前未營業 / 即將打烊；已停業則不推薦故無 label */
   displayStatus: string;
   todayHoursLabel: string;
+  /** Google currentOpeningHours.nextCloseTime → HH:mm（詳情頁用） */
+  openUntilTime: string;
   closingSoonNote: string;
   nextOpenHint: string;
   sortWeight: number;
@@ -164,6 +166,14 @@ function formatTimeHm(hour: number, minute: number): string {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
+export function formatOpenUntilTimeFromNextClose(
+  nextCloseTime: string,
+  utcOffsetMinutes?: number | null,
+): string {
+  const closeAt = localInstant(new Date(nextCloseTime), utcOffsetMinutes);
+  return formatTimeHm(closeAt.getHours(), closeAt.getMinutes());
+}
+
 function formatNextOpenLabel(nextOpen: Date, now: Date): string {
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
@@ -272,6 +282,7 @@ export function derivePlaceAvailability(
       openStatus: "permanently_closed",
       displayStatus: "",
       todayHoursLabel: "",
+      openUntilTime: "",
       closingSoonNote: "",
       nextOpenHint: "",
       sortWeight: 99,
@@ -285,6 +296,7 @@ export function derivePlaceAvailability(
       openStatus: "temporarily_closed",
       displayStatus: "",
       todayHoursLabel: "",
+      openUntilTime: "",
       closingSoonNote: "",
       nextOpenHint: "",
       sortWeight: 98,
@@ -312,6 +324,7 @@ export function derivePlaceAvailability(
         openStatus: "closed_now",
         displayStatus: "目前未營業",
         todayHoursLabel,
+        openUntilTime: "",
         closingSoonNote: "",
         nextOpenHint: "",
         sortWeight: 10,
@@ -324,6 +337,7 @@ export function derivePlaceAvailability(
         openStatus: "open",
         displayStatus: "營業中",
         todayHoursLabel,
+        openUntilTime: "",
         closingSoonNote: "",
         nextOpenHint: "",
         sortWeight: 0,
@@ -340,6 +354,7 @@ export function derivePlaceAvailability(
       openStatus: "unknown",
       displayStatus: "",
       todayHoursLabel,
+      openUntilTime: "",
       closingSoonNote: "",
       nextOpenHint: "",
       sortWeight: lateNight ? 6 : 4,
@@ -362,6 +377,7 @@ export function derivePlaceAvailability(
       openStatus: "closed_now",
       displayStatus: "目前未營業",
       todayHoursLabel,
+      openUntilTime: "",
       closingSoonNote: "",
       nextOpenHint,
       sortWeight: nextOpenHint ? 5 : 12,
@@ -370,7 +386,9 @@ export function derivePlaceAvailability(
   }
 
   let closingSoonNote = "";
+  let openUntilTime = "";
   if (hours.nextCloseTime) {
+    openUntilTime = formatOpenUntilTimeFromNextClose(hours.nextCloseTime, data.utcOffsetMinutes);
     const closeAt = new Date(hours.nextCloseTime).getTime();
     const diff = closeAt - at.getTime();
     if (diff > 0 && diff <= CLOSING_SOON_MS) {
@@ -383,6 +401,7 @@ export function derivePlaceAvailability(
     openStatus: closingSoonNote ? "closing_soon" : "open",
     displayStatus: closingSoonNote ? "即將打烊" : "營業中",
     todayHoursLabel,
+    openUntilTime,
     closingSoonNote,
     nextOpenHint: "",
     sortWeight: closingSoonNote ? 1 : 0,

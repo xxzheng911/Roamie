@@ -41,10 +41,13 @@ export function parseItineraryPlanModeIntent(text: string): ItineraryPlanMode | 
     return "daily_recommendations";
   }
   if (
-    /(幫我排完整|你幫我排|排完整\s*\d*\s*天|完整\s*\d+\s*天|直接排|直接安排|完整行程|直接幫你排|排完整行程|排完整5天|排完整五天|生成行程|幫我安排|帮我安排|幫我規劃|帮我规划|排行程|安排.{0,8}行程)/.test(
+    /(幫我排完整|你幫我排|排完整\s*\d*\s*天|完整\s*\d+\s*天|直接排|直接安排|完整行程|直接幫你排|排完整行程|排完整5天|排完整五天|生成行程|幫我安排|帮我安排|幫我規劃|帮我规划|幫我生成|帮我生成|幫我建立|帮我建立|直接生成|生成.{0,6}天.{0,6}行程|排行程|安排.{0,8}行程)/.test(
       t,
     )
   ) {
+    return "full_itinerary";
+  }
+  if (/(都不錯|都可以|就這些).{0,20}(幫我生成|生成|排成|建立)/.test(t) && (/\d+\s*天/.test(t) || /行程/.test(t))) {
     return "full_itinerary";
   }
   return null;

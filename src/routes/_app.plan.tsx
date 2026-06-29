@@ -62,7 +62,7 @@ export const Route = createFileRoute("/_app/plan")({
 
 function PlanPage() {
   const { t, locale } = useI18n();
-  useFormKeyboardOpen("plan-keyboard-open");
+  const { scrollInputAboveKeyboard } = useFormKeyboardOpen("plan-keyboard-open");
   const search = Route.useSearch();
   const navigate = useNavigate();
   const fetchWeather = useServerFn(getWeather);
@@ -402,6 +402,7 @@ function PlanPage() {
             onChange={setDestination}
             placeholder={t("plan.destinationPlaceholder")}
             disabled={loading}
+            onFocusInput={scrollInputAboveKeyboard}
           />
 
           <LocationSearchField
@@ -413,6 +414,7 @@ function PlanPage() {
             onChange={setOrigin}
             placeholder={t("plan.originPlaceholder")}
             disabled={loading}
+            onFocusInput={scrollInputAboveKeyboard}
           />
 
           <section>

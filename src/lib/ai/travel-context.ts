@@ -1,4 +1,5 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { isNearbyPlaceIntent, type ChatIntent } from "@/lib/ai/chat-intent";
@@ -32,6 +33,10 @@ import {
   resolveTripPurposeFromText,
   chatContextIntentToTripPurpose,
 } from "@/lib/ai/chat-context-intent";
+import {
+  extractItineraryEntitiesFromText,
+  sanitizeDestinationForGeocode,
+} from "@/lib/ai/itinerary-entity-extraction";
 import {
   applyBudgetRefinementToContext,
   isBudgetRefinementText,
@@ -523,7 +528,12 @@ export function mergeTravelContext(
     const prevDest = isValidContextValue(prev.destination) ? prev.destination : undefined;
     const sessionDest = resolveSessionDestination(workingSession);
 
-    const destMerge = pendingSelection.selectedOption
+    let itineraryExtracted =
+      currentIntent === "create_itinerary"
+        ? extractItineraryEntitiesFromText(userText)
+        : undefined;
+
+    let destMerge = pendingSelection.selectedOption
       ? {
           destination: pickValidContextValue(
             pendingSelection.contextPatch.destination,
@@ -546,6 +556,26 @@ export function mergeTravelContext(
             destinationCountry: prev.destinationCountry,
           };
 
+    if (itineraryExtracted?.destination) {
+      const clean = normalizeDestinationLabel(itineraryExtracted.destination);
+      const fields = mergeDestinationFields(prev, clean);
+      destMerge = {
+        destination: clean,
+        destinationCountry: fields.destinationCountry,
+      };
+    }
+
+    if (destMerge.destination) {
+      const sanitized = sanitizeDestinationForGeocode(destMerge.destination);
+      if (sanitized !== destMerge.destination) {
+        const fields = mergeDestinationFields(prev, sanitized);
+        destMerge = {
+          destination: sanitized,
+          destinationCountry: fields.destinationCountry ?? destMerge.destinationCountry,
+        };
+      }
+    }
+
     const merged: CanonicalTravelContext = {
       ...prev,
       ...pendingSelection.contextPatch,
@@ -564,7 +594,10 @@ export function mergeTravelContext(
         parsed.companion ??
         prev.companion ??
         workingSession.discovery?.companionship,
-      days: pickValidContextValue(parsed.days, prev.days) ?? workingSession.tripDays,
+      days:
+        itineraryExtracted?.days ??
+        pickValidContextValue(parsed.days, prev.days) ??
+        workingSession.tripDays,
       travelMonth: pickValidContextValue(parsed.travelMonth, prev.travelMonth),
       startDate: parsed.startDate ?? prev.startDate ?? workingSession.tripStartDate,
       endDate: parsed.endDate ?? prev.endDate ?? workingSession.tripEndDate,
@@ -602,7 +635,7 @@ export function mergeTravelContext(
       ]),
     };
 
-    console.info("[AI_CONTEXT] parsed", logTravelContext(merged));
+    devVerboseInfo("[AI_CONTEXT] parsed", logTravelContext(merged));
 
     const discovery = { ...workingSession.discovery };
     if (merged.vibe && !discovery.vibe) discovery.vibe = merged.vibe;
@@ -652,7 +685,7 @@ export function mergeTravelContext(
       tripPurpose: merged.tripPurpose,
     });
 
-    console.info("[AI_CONTEXT] updated", logTravelContext(merged));
+    devVerboseInfo("[AI_CONTEXT] updated", logTravelContext(merged));
     return { context: merged, session: nextSession };
   } catch (e) {
     console.warn("[AI_CONTEXT] mergeTravelContext failed", e);

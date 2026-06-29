@@ -325,6 +325,7 @@ export function buildPlaceTicketOffers(
     placeType: item.placeType,
     category: item.category,
     types: item.googleTypes ?? undefined,
+    primaryType: item.googleTypes?.[0] ?? item.placeType ?? undefined,
   };
   const decision = shouldShowTicketAffiliate(place, {
     destinationLabel: ctx?.destinationLabel,

@@ -21,7 +21,7 @@ const placeImageRequestCache = createRequestCache({
   persist: true,
 });
 
-function placeImageCacheKey(input: PlaceImageInput): string {
+function placeImageCacheKey(input: PlaceImageInput, skipGoogle = false): string {
   return [
     input.placeId ?? "",
     input.name,
@@ -30,6 +30,7 @@ function placeImageCacheKey(input: PlaceImageInput): string {
     input.category ?? "",
     input.city ?? "",
     input.primaryType ?? "",
+    skipGoogle ? "skip-google" : "",
   ]
     .join("|")
     .trim()
@@ -223,16 +224,19 @@ export function resolvePlaceCoverImageSync(
 /** 完整地點圖片解析：Google → Unsplash → Roamie 預設（含 cache + dedup） */
 export async function getPlaceImage(
   input: PlaceImageInput,
+  options?: { skipGoogle?: boolean },
 ): Promise<{ url: string; source: ImageSource }> {
-  const key = placeImageCacheKey(input);
+  const key = placeImageCacheKey(input, options?.skipGoogle === true);
   return placeImageRequestCache.getOrFetch(key, async () => {
     const width = input.photoWidth ?? 600;
-    const fromGoogle = resolveGooglePlacePhoto(input.photoName, width);
-    if (fromGoogle) {
-      if (input.placeId?.trim()) {
-        cachePlaceImages(input.placeId, { coverImageUrl: fromGoogle });
+    if (!options?.skipGoogle) {
+      const fromGoogle = resolveGooglePlacePhoto(input.photoName, width);
+      if (fromGoogle) {
+        if (input.placeId?.trim()) {
+          cachePlaceImages(input.placeId, { coverImageUrl: fromGoogle });
+        }
+        return { url: fromGoogle, source: "google" as const };
       }
-      return { url: fromGoogle, source: "google" as const };
     }
 
     const queries = buildPlaceUnsplashQueries(input);

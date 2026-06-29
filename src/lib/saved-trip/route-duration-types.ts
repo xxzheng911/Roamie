@@ -15,6 +15,10 @@ export type RouteLegDurationResult = {
   distanceMeters: number;
   mode: RoutesTravelMode;
   usedWalkFallback: boolean;
+  /** 單車等模式改以 driving/walking 估算 */
+  usedEstimatedFallback?: boolean;
+  /** fallback 實際採用的 Routes mode */
+  fallbackEstimateMode?: RoutesTravelMode;
   transitUnavailable: boolean;
   transitUnavailableProvider?: TransitUnavailableProvider;
   estimates: {

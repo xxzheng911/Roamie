@@ -1,3 +1,5 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
+
 /** Places API 快取 TTL 與節流常數（全 app 共用） */
 export const PLACES_SEARCH_CACHE_TTL_MS = 20 * 60 * 1000;
 export const PLACES_NEARBY_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -19,11 +21,11 @@ const loggedKeys = new Set<string>();
 function logOnce(key: string, line: string): void {
   if (loggedKeys.has(key)) return;
   loggedKeys.add(key);
-  console.info(line);
+  devVerboseInfo(line);
 }
 
 export function logPlacesApiCall(type: string, key: string): void {
-  console.info(`[PLACES_API_CALL] type=${type} key=${key}`);
+  devVerboseInfo(`[PLACES_API_CALL] type=${type} key=${key}`);
 }
 
 export function logPlacesCacheHit(key: string): void {
@@ -39,7 +41,7 @@ export function logPlacesDedupePending(key: string): void {
 }
 
 export function logPlacesRateLimitBlocked(key: string): void {
-  console.info(`[PLACES_RATE_LIMIT_BLOCKED] key=${key}`);
+  devVerboseInfo(`[PLACES_RATE_LIMIT_BLOCKED] key=${key}`);
 }
 
 export function logPlacesSkipSmallLocationChange(distanceM: number): void {

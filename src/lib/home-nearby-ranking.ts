@@ -1,6 +1,11 @@
 import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 import { distanceMeters } from "@/lib/geo-distance";
 import {
+  isExploreJapanFoodContext,
+  sortJapanFoodPlaces,
+  type TabelogRankingCache,
+} from "@/lib/tabelog-reference";
+import {
   homeNearbyPeriodFromHour,
   localHourInTimeZone,
   matchesDayPreferredPlace,
@@ -145,11 +150,29 @@ export function sortHomeNearbyPlacesWithContext<T extends RankablePlace>(
 }
 
 /** 探索地圖：依分類調整排序（美食重評價、夜晚重 openNow） */
+export type ExploreCategorySortOptions = {
+  country?: string | null;
+  cityLabel?: string | null;
+  tabelogCache?: TabelogRankingCache | null;
+};
+
 export function sortExploreCategoryPlaces<T extends RankablePlace>(
   places: T[],
   origin: { lat: number; lng: number },
   categoryId: string,
+  sortOptions?: ExploreCategorySortOptions,
 ): T[] {
+  if (
+    categoryId === "food" &&
+    isExploreJapanFoodContext({
+      country: sortOptions?.country,
+      cityLabel: sortOptions?.cityLabel,
+      categoryId: "food",
+    })
+  ) {
+    return sortJapanFoodPlaces(places, origin, sortOptions?.tabelogCache ?? null);
+  }
+
   if (categoryId === "food") {
     return [...places].sort((a, b) => {
       const openA = openStatusSortRank(a.openStatus);

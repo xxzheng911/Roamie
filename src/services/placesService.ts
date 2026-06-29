@@ -1,6 +1,12 @@
 import type { Locale } from "@/lib/i18n/types";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
 import { logPlacesCacheHit } from "@/lib/places-api-guard";
+import {
+  buildUnifiedPlaceDetailsCacheKey,
+  readUnifiedPlaceDetailsCache,
+  writeUnifiedPlaceDetailsCache,
+  isPlaceDetailsMinimallyCacheable,
+} from "@/lib/unified-place-cache";
 import { createRequestCache } from "@/services/requestCache";
 import { unifiedResolveTripStop, unifiedSearchTripStops } from "@/lib/trip-stop-search-unified";
 import { resolveTripStop, searchTripStops, type TripStopSuggestion } from "@/lib/trip-stop-search.functions";
@@ -26,12 +32,6 @@ function normalizeGooglePlaceId(raw: string): string {
 const autocompleteCache = createRequestCache({
   prefix: "places-autocomplete",
   ttlMs: 5 * 60 * 1000,
-});
-
-const placeDetailsCache = createRequestCache({
-  prefix: "places-details",
-  ttlMs: 24 * 60 * 60 * 1000,
-  persist: true,
 });
 
 function searchKey(query: string, locale: Locale, center?: { lat: number; lng: number }): string {
@@ -80,53 +80,94 @@ export async function getPlaceDetails(
     locale?: Locale;
     resolveFn?: ResolvePlaceFn;
     fallback?: TripStopSuggestion;
+    cacheCity?: string;
+    cacheCountry?: string;
   },
 ): Promise<{ place: PlaceLite | null; error: string | null }> {
   const locale = options?.locale ?? "zh-TW";
   const normalizedPlaceId = normalizeGooglePlaceId(placeId);
-  const key = `${locale}:${normalizedPlaceId}`;
+  const cacheKey = buildUnifiedPlaceDetailsCacheKey(normalizedPlaceId, locale, {
+    cityLabel: options?.cacheCity,
+    country: options?.cacheCountry,
+  });
   const resolveFn = options?.resolveFn ?? resolveTripStop;
 
-  const cached = placeDetailsCache.getCached<{ place: PlaceLite | null; error: string | null }>(key);
-  if (cached !== null) {
-    logPlacesCacheHit(key);
-    return cached;
+  const cachedDetails = readUnifiedPlaceDetailsCache(cacheKey);
+  if (cachedDetails?.place) {
+    logPlacesCacheHit(cacheKey);
+    return {
+      place: normalizePlace({
+        placeId: cachedDetails.place.id,
+        name: cachedDetails.place.name,
+        address: cachedDetails.place.address ?? "",
+        lat: cachedDetails.place.lat,
+        lng: cachedDetails.place.lng,
+        photoName: cachedDetails.place.photoName,
+        rating: cachedDetails.place.rating,
+        placeType: cachedDetails.place.primaryType ?? undefined,
+      }),
+      error: null,
+    };
   }
 
   try {
-    return await placeDetailsCache.getOrFetch(key, async () => {
-      const resolved = await unifiedResolveTripStop(
-        resolveFn,
-        normalizedPlaceId,
-        locale,
-        options?.fallback,
+    const resolved = await unifiedResolveTripStop(
+      resolveFn,
+      normalizedPlaceId,
+      locale,
+      options?.fallback,
+    );
+    const normalized = resolved.place ? normalizePlace(resolved.place) : null;
+    if (!normalized) {
+      const errorMsg = resolved.error ?? "place_not_found";
+      console.error("[PLACES_DETAILS] error=", errorMsg);
+      return { place: null, error: errorMsg };
+    }
+    if (
+      !normalized.placeId ||
+      !normalized.name ||
+      normalized.lat == null ||
+      normalized.lng == null
+    ) {
+      const fallback = options?.fallback;
+      const fallbackPlace: PlaceLite | null = fallback
+        ? {
+            placeId: normalizeGooglePlaceId(fallback.placeId),
+            name: fallback.label?.trim() || fallback.secondary?.trim() || "地點",
+            address: fallback.secondary?.trim() || fallback.label?.trim() || "地點",
+            lat: null,
+            lng: null,
+          }
+        : null;
+      return { place: fallbackPlace, error: resolved.error };
+    }
+    if (isPlaceDetailsMinimallyCacheable(normalized)) {
+      writeUnifiedPlaceDetailsCache(
+        cacheKey,
+        {
+          id: normalized.placeId,
+          name: normalized.name,
+          address: normalized.address,
+          lat: normalized.lat,
+          lng: normalized.lng,
+          rating: normalized.rating ?? null,
+          userRatingCount: null,
+          photoName: normalized.photoName ?? null,
+          primaryType: normalized.placeType ?? null,
+          types: normalized.placeType ? [normalized.placeType] : null,
+          businessStatus: null,
+          openStatus: "unknown",
+          openStatusLabel: "",
+          todayHoursLabel: "",
+          closingSoonNote: "",
+          nextOpenHint: "",
+          website: null,
+          phone: null,
+        },
+        null,
       );
-      const normalized = resolved.place ? normalizePlace(resolved.place) : null;
-      if (!normalized) {
-        const errorMsg = resolved.error ?? "place_not_found";
-        console.error("[PLACES_DETAILS] error=", errorMsg);
-        return { place: null, error: errorMsg };
-      }
-      if (
-        !normalized.placeId ||
-        !normalized.name ||
-        normalized.lat == null ||
-        normalized.lng == null
-      ) {
-        const fallback = options?.fallback;
-        const fallbackPlace: PlaceLite | null = fallback
-          ? {
-              placeId: normalizeGooglePlaceId(fallback.placeId),
-              name: fallback.label?.trim() || fallback.secondary?.trim() || "地點",
-              address: fallback.secondary?.trim() || fallback.label?.trim() || "地點",
-              lat: null,
-              lng: null,
-            }
-          : null;
-        return { place: fallbackPlace, error: resolved.error };
-      }
-      return { place: normalized, error: resolved.error };
-    });
+    }
+    return { place: normalized, error: resolved.error };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error("[PLACES_DETAILS] error=", msg);

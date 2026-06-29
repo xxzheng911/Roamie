@@ -1,7 +1,12 @@
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { Locale } from "@/lib/i18n/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
-import { buildTripFromSelectedPlaces } from "@/lib/place-planning-memory";
+import type { ChatMsg } from "@/lib/chat-history";
+import {
+  canBuildItineraryFromPlaceCount,
+  preparePlacesForItineraryBuild,
+  resolveItineraryPlaceSources,
+} from "@/lib/place-planning-memory";
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import type { PlaceSearchFn } from "@/lib/ai/chat-place-recommendation";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -10,6 +15,7 @@ import {
   buildFallbackItineraryFromPlaces,
   hasValidItineraryStops,
   isGenerateItineraryFailure,
+  ITINERARY_GENERATION_FAILED_MESSAGE,
   unwrapGeneratedTripPayload,
   type GenerateItineraryResult,
 } from "@/lib/trip/itinerary-guards";
@@ -17,6 +23,16 @@ import { INSUFFICIENT_ITINERARY_PLACES_MESSAGE } from "@/lib/ai/generic-place-la
 import type { ItineraryInput } from "@/lib/itinerary.functions";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import {
+  logItineraryBuildSource,
+  logItineraryDaysBuilt,
+  logItineraryFailureReason,
+  logItineraryObjectBuilt,
+  logItinerarySaveFailed,
+  logItineraryUsedRecommendedPlaces,
+  logItineraryValidationResult,
+  sanitizeDestinationForGeocode,
+} from "@/lib/ai/itinerary-entity-extraction";
 
 export type AiItineraryState =
   | "COLLECTING"
@@ -29,6 +45,9 @@ export type AiItineraryState =
 
 export const AI_ITINERARY_FAILED_OFFER_MESSAGE =
   "行程建立失敗，是否改成列出必去景點？";
+
+export const AI_ITINERARY_SUCCESS_REDIRECT_MESSAGE =
+  "行程已建立，正在帶你前往";
 
 export function logAiState(state: AiItineraryState, detail?: string): void {
   console.info("[AI_STATE]", `state=${state}`, detail ? `detail=${detail}` : "");
@@ -56,7 +75,13 @@ export function logAiItineraryFailed(reason: string): void {
 
 export type DirectItineraryPrepareResult =
   | { ok: true; session: ChatPlanningSession; placeCount: number }
-  | { ok: false; state: "FAILED"; message: string; session: ChatPlanningSession };
+  | {
+      ok: false;
+      state: "FAILED";
+      message: string;
+      session: ChatPlanningSession;
+      offerMustVisit?: boolean;
+    };
 
 /** COLLECTING → SEARCHING_PLACES → RANKING — 準備 selectedPlaces（不依 geocode 成功） */
 export async function prepareDirectItineraryFlow(params: {
@@ -69,18 +94,23 @@ export async function prepareDirectItineraryFlow(params: {
     data: { lat: number; lng: number; locale?: Locale };
   }) => Promise<WeatherSummary>;
   excludePlaceIds?: string[];
+  msgs?: ChatMsg[];
 }): Promise<DirectItineraryPrepareResult> {
-  const { session, context } = params;
+  const { session, context, msgs } = params;
   logAiState("COLLECTING");
 
-  const destination =
+  const rawDestination =
     context.destination?.trim() ||
     session.tripDestination?.displayLabel?.trim() ||
     session.tripDestination?.city?.trim();
+  const destination = rawDestination
+    ? sanitizeDestinationForGeocode(rawDestination)
+    : undefined;
   const days = context.days ?? session.tripDays;
 
   if (!destination || !days) {
     logAiItineraryFailed("missing_destination_or_days");
+    console.info("[ITINERARY_SAVE_FAILED_REASON]", "no destination");
     logAiState("FAILED", "missing_destination_or_days");
     return {
       ok: false,
@@ -94,36 +124,38 @@ export async function prepareDirectItineraryFlow(params: {
     };
   }
 
-  const existing = buildTripFromSelectedPlaces(session);
-  const minRequired = Math.max(3, Math.min(days, 8));
+  const label = normalizeDestinationLabel(destination);
+  const { places: rawSessionPlaces, source } = resolveItineraryPlaceSources(session, msgs);
+  const sessionPlaces = preparePlacesForItineraryBuild(rawSessionPlaces, label);
 
-  if (existing.length >= minRequired) {
-    logAiState("SEARCHING_PLACES", "reuse_session_places");
-    logAiState("RANKING", `selected=${existing.length}`);
-    const prepared = await prepareDirectItinerarySession({
-      ...params,
-      session: {
-        ...session,
-        selectedPlaces: existing,
-        plannedStops: existing,
-      },
-    });
-    if (prepared.ok) {
-      return {
-        ok: true,
-        session: { ...prepared.session, aiItineraryState: "RANKING" },
-        placeCount: existing.length,
-      };
-    }
+  logItineraryBuildSource(source, sessionPlaces.length);
+  if (
+    source === "recommendedPlaces" ||
+    source === "plannedStops" ||
+    source === "renderedCards"
+  ) {
+    logItineraryUsedRecommendedPlaces(sessionPlaces.length);
   }
 
-  logAiState("SEARCHING_PLACES", normalizeDestinationLabel(destination));
-  logAiState("RANKING");
+  if (canBuildItineraryFromPlaceCount(sessionPlaces.length)) {
+    logAiState("SEARCHING_PLACES", `reuse_${source}`);
+    console.info("[ITINERARY_BUILD_FROM_SUGGESTIONS]", `places=${sessionPlaces.length}`);
+    logAiState("RANKING", `selected=${sessionPlaces.length}`);
+  } else {
+    logAiState("SEARCHING_PLACES", normalizeDestinationLabel(destination));
+    logAiState("RANKING");
+  }
 
-  const prepared = await prepareDirectItinerarySession(params);
+  const prepared = await prepareDirectItinerarySession({ ...params, msgs });
   if (!prepared.ok) {
-    logAiItineraryFailed("insufficient_places");
-    logAiState("FAILED", "insufficient_places");
+    if (!canBuildItineraryFromPlaceCount(sessionPlaces.length)) {
+      logAiItineraryFailed(prepared.apiEmpty ? "places_api_empty" : "insufficient_places");
+      console.info(
+        "[ITINERARY_SAVE_FAILED_REASON]",
+        prepared.apiEmpty ? "api_empty" : "no places",
+      );
+    }
+    logAiState("FAILED", prepared.apiEmpty ? "places_api_empty" : "insufficient_places");
     return {
       ok: false,
       state: "FAILED",
@@ -131,8 +163,15 @@ export async function prepareDirectItineraryFlow(params: {
       session: {
         ...session,
         aiItineraryState: "FAILED",
-        pendingQuestion: undefined,
+        pendingQuestion: prepared.apiEmpty
+          ? {
+              type: "activity_choice",
+              options: ["must_visit_places", "daily_recommendations"],
+              baseDestination: label,
+            }
+          : undefined,
       },
+      offerMustVisit: prepared.apiEmpty === true,
     };
   }
 
@@ -161,6 +200,39 @@ export type DirectItineraryCreateResult =
       offerMustVisit: boolean;
     };
 
+/** selectedPlaces > 0 時用本地排程 fallback（API 失敗也不應顯示建立失敗） */
+function buildLocalItineraryPayload(
+  generateInput: ItineraryInput,
+  selectedPlaces: NonNullable<ItineraryInput["selectedPlaces"]>,
+): RoamiePayloadV2 | null {
+  const startDate =
+    generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
+  const builtStops = buildFallbackItineraryFromPlaces(
+    selectedPlaces,
+    generateInput.days,
+    startDate,
+    generateInput.destination,
+  );
+  logItineraryObjectBuilt(builtStops.length, generateInput.days);
+  logItineraryDaysBuilt(generateInput.days, builtStops.length);
+  logAiItineraryBuild(builtStops.length, generateInput.days);
+  const localPayload: RoamiePayloadV2 = {
+    version: 2,
+    title: `${generateInput.destination} ${generateInput.days} 天`,
+    summary: `依你選的 ${selectedPlaces.length} 個地點排成 ${generateInput.days} 天行程。`,
+    moodTag: generateInput.mood ?? "",
+    recommendations: selectedPlaces,
+    itinerary: builtStops,
+    destination: generateInput.destination,
+    days: generateInput.days,
+    generatedAt: new Date().toISOString(),
+  };
+  const valid = hasValidItineraryStops(localPayload, 1);
+  logItineraryValidationResult(valid, valid ? undefined : "local_payload_invalid");
+  if (!valid) return null;
+  return localPayload;
+}
+
 /** BUILDING_ITINERARY → CREATING_TRIP — selectedPlaces > 0 時必須產出行程 */
 export async function createItineraryFromSession(params: {
   session: ChatPlanningSession;
@@ -172,6 +244,7 @@ export async function createItineraryFromSession(params: {
 
   if (selectedPlaces.length < 1) {
     logAiItineraryFailed("no_selected_places");
+    console.info("[ITINERARY_SAVE_FAILED_REASON]", "no places");
     logAiState("FAILED", "no_selected_places");
     return {
       ok: false,
@@ -190,78 +263,68 @@ export async function createItineraryFromSession(params: {
     const generateResult = await generateItineraryFn({ data: generateInput });
 
     if (isGenerateItineraryFailure(generateResult)) {
+      const localPayload = buildLocalItineraryPayload(generateInput, selectedPlaces);
+      if (localPayload) {
+        logAiItinerarySuccess();
+        logAiState("SUCCESS", "local_build_after_api_fail");
+        return {
+          ok: true,
+          state: "SUCCESS",
+          session: { ...session, aiItineraryState: "SUCCESS", phase: "generating" },
+          payload: localPayload,
+          generateResult,
+        };
+      }
+      logItineraryFailureReason(`generate_api_failed:${generateResult.errorCode}`);
       logAiItineraryFailed(generateResult.errorCode);
+      console.info("[ITINERARY_SAVE_FAILED_REASON]", "itinerary validation failed");
       logAiState("FAILED", generateResult.errorCode);
       return {
         ok: false,
         state: "FAILED",
-        message: AI_ITINERARY_FAILED_OFFER_MESSAGE,
+        message: ITINERARY_GENERATION_FAILED_MESSAGE,
         session: {
           ...session,
           aiItineraryState: "FAILED",
           phase: "ready",
-          pendingQuestion: {
-            type: "activity_choice",
-            options: ["must_visit_places", "daily_recommendations"],
-            baseDestination: generateInput.destination,
-          },
         },
-        offerMustVisit: true,
+        offerMustVisit: false,
       };
     }
 
     const payload = unwrapGeneratedTripPayload(generateResult);
     if (!payload || !hasValidItineraryStops(payload, 1)) {
-      const startDate =
-        generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
-      const builtStops = buildFallbackItineraryFromPlaces(
-        selectedPlaces,
-        generateInput.days,
-        startDate,
-      );
-      logAiItineraryBuild(builtStops.length, generateInput.days);
-      const localPayload: RoamiePayloadV2 = {
-        version: 2,
-        title: `${generateInput.destination} ${generateInput.days} 天`,
-        summary: `依你選的 ${selectedPlaces.length} 個地點排成 ${generateInput.days} 天行程。`,
-        moodTag: generateInput.mood ?? "",
-        recommendations: selectedPlaces,
-        itinerary: builtStops,
-        destination: generateInput.destination,
-        days: generateInput.days,
-        generatedAt: new Date().toISOString(),
-      };
-      if (!hasValidItineraryStops(localPayload, 1)) {
-        logAiItineraryFailed("invalid_stops");
-        logAiState("FAILED", "invalid_stops");
+      const localPayload = buildLocalItineraryPayload(generateInput, selectedPlaces);
+      if (localPayload) {
+        logAiItinerarySuccess();
+        logAiState("SUCCESS", "local_build");
         return {
-          ok: false,
-          state: "FAILED",
-          message: AI_ITINERARY_FAILED_OFFER_MESSAGE,
-          session: {
-            ...session,
-            aiItineraryState: "FAILED",
-            phase: "ready",
-            pendingQuestion: {
-              type: "activity_choice",
-              options: ["must_visit_places", "daily_recommendations"],
-              baseDestination: generateInput.destination,
-            },
-          },
-          offerMustVisit: true,
+          ok: true,
+          state: "SUCCESS",
+          session: { ...session, aiItineraryState: "SUCCESS", phase: "generating" },
+          payload: localPayload,
+          generateResult,
         };
       }
-      logAiItinerarySuccess();
-      logAiState("SUCCESS", "local_build");
+      logItineraryFailureReason("invalid_stops_after_unwrap");
+      logAiItineraryFailed("invalid_stops");
+      console.info("[ITINERARY_SAVE_FAILED_REASON]", "itinerary validation failed");
+      logAiState("FAILED", "invalid_stops");
       return {
-        ok: true,
-        state: "SUCCESS",
-        session: { ...session, aiItineraryState: "SUCCESS", phase: "generating" },
-        payload: localPayload,
-        generateResult,
+        ok: false,
+        state: "FAILED",
+        message: ITINERARY_GENERATION_FAILED_MESSAGE,
+        session: {
+          ...session,
+          aiItineraryState: "FAILED",
+          phase: "ready",
+        },
+        offerMustVisit: false,
       };
     }
 
+    logItineraryDaysBuilt(generateInput.days, coalesceStops(payload).length);
+    logItineraryValidationResult(true);
     logAiItinerarySuccess();
     logAiState("SUCCESS");
     return {
@@ -273,25 +336,43 @@ export async function createItineraryFromSession(params: {
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    const localPayload = buildLocalItineraryPayload(generateInput, selectedPlaces);
+    if (localPayload) {
+      logAiItinerarySuccess();
+      logAiState("SUCCESS", "local_build_after_exception");
+      return {
+        ok: true,
+        state: "SUCCESS",
+        session: { ...session, aiItineraryState: "SUCCESS", phase: "generating" },
+        payload: localPayload,
+        generateResult: {
+          success: false,
+          errorCode: "exception",
+          message: reason,
+        },
+      };
+    }
+    logItinerarySaveFailed(reason);
+    logItineraryFailureReason(`exception:${reason}`);
     logAiItineraryFailed(reason);
+    console.info("[ITINERARY_SAVE_FAILED_REASON]", reason);
     logAiState("FAILED", reason);
     return {
       ok: false,
       state: "FAILED",
-      message: AI_ITINERARY_FAILED_OFFER_MESSAGE,
+      message: ITINERARY_GENERATION_FAILED_MESSAGE,
       session: {
         ...session,
         aiItineraryState: "FAILED",
         phase: "ready",
-        pendingQuestion: {
-          type: "activity_choice",
-          options: ["must_visit_places", "daily_recommendations"],
-          baseDestination: generateInput.destination,
-        },
       },
-      offerMustVisit: true,
+      offerMustVisit: false,
     };
   }
+}
+
+function coalesceStops(payload: RoamiePayloadV2): unknown[] {
+  return Array.isArray(payload.itinerary) ? payload.itinerary : [];
 }
 
 export function sessionAfterItineraryFailure(

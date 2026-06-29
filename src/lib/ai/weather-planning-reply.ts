@@ -3,6 +3,11 @@ import type { WeatherSummary } from "@/lib/weather-types";
 import type { WeatherScene } from "@/lib/weather-scene";
 import { resolveWeatherScene } from "@/lib/ai/weather-place-search";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import { buildDestinationDayPlanSuggestions } from "@/lib/ai/must-visit-places";
+import {
+  buildDestinationCombinationSuggestionsReply,
+  hasDestinationCombinations,
+} from "@/lib/ai/destination-combination-suggestions";
 import type { PendingQuestion } from "@/lib/ai/destination-pending-question";
 import { pendingQuestionForPlanningNextStep } from "@/lib/ai/destination-pending-question";
 import { pendingQuestionForCityPreference } from "@/lib/ai/city-days-planning";
@@ -84,18 +89,17 @@ function buildScenePlanningBody(
   }
 
   if (scene === "sunny" || scene === "fair") {
+    const dayPlan = buildDestinationDayPlanSuggestions(label, days);
     return [
       weatherAvailable && tempLabel
         ? `這幾天${label}約 ${tempLabel}，很適合步行。`
         : `這幾天${label}天氣很適合散步。`,
       "",
       "可以安排：",
-      days <= 1 ? "• 市區經典景點" : "• 早上市區",
-      days >= 2 ? "• 下午象山或特色街區" : undefined,
-      "• 晚上夜市",
+      ...dayPlan,
       "",
       "你想直接排完整行程，還是先推薦必去景點？",
-    ].filter((line): line is string => line != null);
+    ];
   }
 
   return [
@@ -115,6 +119,30 @@ export function buildWeatherAwarePlanningReply(params: {
 }): { reply: string; pendingQuestion: PendingQuestion } {
   const label = normalizeDestinationLabel(params.destination);
   const days = params.days;
+  const pendingQuestion = params.preferNextStepQuestion
+    ? pendingQuestionForPlanningNextStep(label, params.destinationCountry)
+    : pendingQuestionForCityPreference(label, params.destinationCountry);
+
+  if (hasDestinationCombinations(label)) {
+    const scene = resolveWeatherScene(params.weather ?? null, label);
+    const temp = params.weather?.feelsLikeC ?? params.weather?.tempC;
+    const tempLabel = formatTempLabel(temp);
+    const weatherAvailable = params.weather?.available !== false;
+    const weatherLine =
+      scene === "sunny" || scene === "fair"
+        ? weatherAvailable && tempLabel
+          ? `這幾天${label}約 ${tempLabel}，很適合步行。`
+          : `這幾天${label}天氣很適合散步。`
+        : null;
+    const comboReply = buildDestinationCombinationSuggestionsReply(label, days, {
+      weatherLine,
+      startDate: params.context?.startDate,
+    });
+    if (comboReply) {
+      return { reply: comboReply, pendingQuestion };
+    }
+  }
+
   const scene = resolveWeatherScene(params.weather ?? null, label);
   const body = buildScenePlanningBody(label, days, scene, params.weather, params.context);
 
@@ -127,10 +155,6 @@ export function buildWeatherAwarePlanningReply(params: {
     "",
     ...body,
   ].join("\n");
-
-  const pendingQuestion = params.preferNextStepQuestion
-    ? pendingQuestionForPlanningNextStep(label, params.destinationCountry)
-    : pendingQuestionForCityPreference(label, params.destinationCountry);
 
   return { reply: summary, pendingQuestion };
 }

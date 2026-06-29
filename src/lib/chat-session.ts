@@ -609,7 +609,15 @@ export function extractPlanningHintsFromText(
 }
 
 export function canGenerateItinerary(session: ChatPlanningSession): boolean {
-  if (session.selectedPlaces.length < 1) return false;
+  const hasPlaces = session.selectedPlaces.length >= 1;
+  const hasDestinationPlan =
+    (session.tripDays ?? 0) > 0 &&
+    Boolean(
+      session.tripDestination?.city?.trim() ||
+        session.tripDestination?.displayLabel?.trim() ||
+        session.travelContext?.destination?.trim(),
+    );
+  if (!hasPlaces && !hasDestinationPlan) return false;
   if (session.phase === "generating" || session.phase === "done") return false;
   if (session.fromPlanAi || session.planAiMode) {
     return (

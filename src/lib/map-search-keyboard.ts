@@ -32,7 +32,7 @@ async function applyNativeKeyboardLayout(frozen: boolean): Promise<void> {
   try {
     const { Keyboard, KeyboardResize } = await import("@capacitor/keyboard");
     await Keyboard.setResizeMode({
-      mode: frozen ? KeyboardResize.None : KeyboardResize.Native,
+      mode: KeyboardResize.None,
     });
     await Keyboard.setScroll({ isDisabled: frozen });
   } catch (e) {

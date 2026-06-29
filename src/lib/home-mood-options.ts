@@ -1,6 +1,12 @@
-export const HOME_MOOD_IDS = ["relax", "solo", "rainy", "lateNight", "coffee", "sea"] as const;
+/** 首頁心情快捷按鍵（不含 solo／一個人，該選項仍可透過 URL／session 解析） */
+export const HOME_MOOD_SHORTCUT_IDS = ["relax", "rainy", "lateNight", "coffee", "sea"] as const;
 
-export type HomeMoodId = (typeof HOME_MOOD_IDS)[number];
+export type HomeMoodShortcutId = (typeof HOME_MOOD_SHORTCUT_IDS)[number];
+
+export type HomeMoodId = HomeMoodShortcutId | "solo";
+
+/** @deprecated 使用 HOME_MOOD_SHORTCUT_IDS（首頁 chip 列表） */
+export const HOME_MOOD_IDS = HOME_MOOD_SHORTCUT_IDS;
 
 export const HOME_MOOD_EMOJI: Record<HomeMoodId, string> = {
   relax: "🍃",
@@ -23,8 +29,9 @@ const LEGACY_MOOD_LABEL_TO_ID: Record<string, HomeMoodId> = {
 export function normalizeHomeMoodId(stored: string | null | undefined): HomeMoodId | null {
   if (!stored?.trim()) return null;
   const value = stored.trim();
-  if ((HOME_MOOD_IDS as readonly string[]).includes(value)) {
-    return value as HomeMoodId;
+  if (value === "solo") return "solo";
+  if ((HOME_MOOD_SHORTCUT_IDS as readonly string[]).includes(value)) {
+    return value as HomeMoodShortcutId;
   }
   return LEGACY_MOOD_LABEL_TO_ID[value] ?? null;
 }

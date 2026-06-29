@@ -72,6 +72,11 @@ export const REASON_BLACKLIST_TYPES = [
   "church",
   "funeral_home",
   "cemetery",
+  "crematorium",
+  "columbarium",
+  "graveyard",
+  "memorial_park",
+  "mortuary",
 ] as const;
 
 function normalizeType(type: string): string {

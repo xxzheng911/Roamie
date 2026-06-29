@@ -27,6 +27,7 @@ import {
 import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
+import { isMoodNearbyRelaxationRequest } from "@/lib/mood-nearby-intent";
 
 function isTripAddPlaceChat(session: ChatPlanningSession): boolean {
   return Boolean(session.fromTripAddPlace && session.tripAddPlaceContext);
@@ -78,6 +79,7 @@ export function detectChatIntent(text: string): ChatIntent {
   const t = text.trim();
   if (!t) return "general";
 
+  if (isMoodNearbyRelaxationRequest(t)) return "attraction";
   if (isCreateItineraryIntent(t)) return "create_itinerary";
   if (isBestTravelTimeIntent(t)) return "best_travel_time";
 
@@ -321,9 +323,13 @@ export function inferNearbyIntentFromContext(
   }
 
   if (mood || ctx.vibe || ctx.interests.length > 0) {
-    if (!userExplicitlyWantsNearbyPlaces(t) && !session.fromMoodFlow) return null;
+    if (!userExplicitlyWantsNearbyPlaces(t) && !session.fromMoodFlow && !session.fromMoodCard) {
+      return null;
+    }
     if (ctx.activity === "camping" || ctx.interests.includes("露營")) return "camping";
-    if (userExplicitlyWantsNearbyPlaces(t)) return "attraction";
+    if (/(咖啡|café|cafe|甜點)/i.test(blob)) return "cafe";
+    if (/(餐廳|吃飯|聚餐|美食|燒肉|火鍋)/.test(blob)) return "restaurant";
+    return "attraction";
   }
 
   return null;

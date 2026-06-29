@@ -73,7 +73,7 @@ import { clearHomeMoodUiSelection } from "@/lib/home-mood";
 import { beginHomeMoodShortcutSession } from "@/lib/home-mood-shortcut-session";
 import {
   HOME_MOOD_EMOJI,
-  HOME_MOOD_IDS,
+  HOME_MOOD_SHORTCUT_IDS,
   type HomeMoodId,
 } from "@/lib/home-mood-options";
 import { saveChatSession, loadChatSession } from "@/lib/chat-session";
@@ -114,7 +114,7 @@ function Home() {
   const [selectedMood, setSelectedMood] = useState<HomeMoodId | null>(null);
   const homeMoods = useMemo(
     () =>
-      HOME_MOOD_IDS.map((id) => ({
+      HOME_MOOD_SHORTCUT_IDS.map((id) => ({
         id,
         label: t(`home.moods.${id}`),
         emoji: HOME_MOOD_EMOJI[id],

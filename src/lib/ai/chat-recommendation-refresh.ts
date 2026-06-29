@@ -70,6 +70,43 @@ export function isRefreshRecommendationsRequest(text: string): boolean {
   return REFRESH_REQUEST_RE.test(t);
 }
 
+/** intent = MORE_PLACE_RECOMMENDATIONS */
+export function isMorePlaceRecommendationsIntent(text: string): boolean {
+  return isRefreshRecommendationsRequest(text);
+}
+
+export function logChatMorePlacesIntent(text: string): void {
+  console.info("[CHAT_MORE_PLACES_INTENT]", text.slice(0, 80));
+}
+
+export function logChatMorePlacesContext(context: {
+  destination?: string;
+  category?: string;
+  tripPurpose?: string;
+}): void {
+  console.info("[CHAT_MORE_PLACES_CONTEXT]", JSON.stringify(context));
+}
+
+export function logChatMorePlacesExcludeIds(count: number): void {
+  console.info("[CHAT_MORE_PLACES_EXCLUDE_IDS]", count);
+}
+
+export function logChatMorePlacesFetchCount(count: number): void {
+  console.info("[CHAT_MORE_PLACES_FETCH_COUNT]", count);
+}
+
+export function logChatMorePlacesNewCount(count: number): void {
+  console.info("[CHAT_MORE_PLACES_NEW_COUNT]", count);
+}
+
+export function logChatMorePlacesRendered(count: number): void {
+  console.info("[CHAT_MORE_PLACES_RENDERED]", count);
+}
+
+export function logChatMorePlacesNoResultAllowed(allowed: boolean): void {
+  console.info("[CHAT_MORE_PLACES_NO_RESULT_ALLOWED]", allowed);
+}
+
 export function isRejectCurrentBatch(text: string): boolean {
   return REJECT_CURRENT_BATCH_RE.test(text.trim());
 }
@@ -114,7 +151,8 @@ export function hasPriorPlaceRecommendations(
   return Boolean(
     session.travelContext?.mustVisitGenerated ||
       session.travelContext?.tripPurpose === "must_visit_places" ||
-      session.travelContext?.tripPurpose === "refresh_recommendations",
+      session.travelContext?.tripPurpose === "refresh_recommendations" ||
+      session.travelContext?.tripPurpose === "more_place_recommendations",
   );
 }
 
@@ -171,7 +209,7 @@ export function applyRefreshRecommendationSession(
 ): ChatPlanningSession {
   let next = session;
 
-  if (isRejectCurrentBatch(text) || isRefreshRecommendationsRequest(text)) {
+  if (isRejectCurrentBatch(text)) {
     const rejected = new Set(session.rejectedPlaceNames ?? []);
     for (const place of session.recommendedPlaces) {
       rejected.add(placeDisplayName(place));
@@ -181,7 +219,7 @@ export function applyRefreshRecommendationSession(
 
   const travelContext = {
     ...(next.travelContext ?? { interests: [] }),
-    tripPurpose: "refresh_recommendations" as const,
+    tripPurpose: "more_place_recommendations" as const,
     mustVisitGenerated: false,
   };
 
@@ -195,9 +233,10 @@ export function applyRefreshRecommendationSession(
 export function collectExcludePlaceIds(session: ChatPlanningSession, msgs?: ChatMsg[]): string[] {
   const fromSession = session.recommendedPlaceIds ?? [];
   const fromPlaces = extractPlaceIds(session.recommendedPlaces);
+  const fromSelected = extractPlaceIds(session.selectedPlaces ?? []);
   const fromMsgs = extractPlaceIds(extractRecommendedFromMsgs(msgs ?? []));
   const fromStops = extractPlaceIds(session.plannedStops ?? []);
-  return [...new Set([...fromSession, ...fromPlaces, ...fromMsgs, ...fromStops])];
+  return [...new Set([...fromSession, ...fromPlaces, ...fromSelected, ...fromMsgs, ...fromStops])];
 }
 
 export function collectBlockedCoreNames(

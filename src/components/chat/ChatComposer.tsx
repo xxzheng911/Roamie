@@ -1,8 +1,13 @@
 import { useEffect } from "react";
 import { Link } from "@tanstack/react-router";
-import { Loader2, Send, Sparkles } from "lucide-react";
+import { Loader2, Send } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { logChatComposerRender } from "@/lib/chat-keyboard-layout";
+import { isChatKeyboardDebugEnabled, logChatKeyboardDebug } from "@/lib/chat-keyboard-debug";
+import {
+  CHAT_SHORTCUT_PLAN_LABEL,
+  CHAT_SHORTCUT_SEND_CHIPS,
+} from "@/lib/chat-shortcut-chips";
 
 export type ChatComposerProps = {
   text: string;
@@ -14,52 +19,19 @@ export type ChatComposerProps = {
   showShortcutChips: boolean;
   keyboardOpen: boolean;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
-  showGenerateBtn: boolean;
-  generating: boolean;
   streaming: boolean;
-  showSaveTripBtn: boolean;
-  hasDraftTrip: boolean;
-  lastGeneratedTripId?: string;
-  chatChips: string[];
+  generating: boolean;
   onChipSend: (text: string) => void;
-  onGenerateClick: () => void;
-  onSaveTrip: () => void;
-  onViewDraft: () => void;
-  onViewSavedTrip: (tripId: string) => void;
-  generateBtnLabel?: string;
 };
 
 function ShortcutChips({
   keyboardOpen,
-  showGenerateBtn,
   generating,
   streaming,
-  showSaveTripBtn,
-  hasDraftTrip,
-  lastGeneratedTripId,
-  chatChips,
   onChipSend,
-  onGenerateClick,
-  onSaveTrip,
-  onViewDraft,
-  onViewSavedTrip,
-  generateBtnLabel = "開始安排行程",
 }: Pick<
   ChatComposerProps,
-  | "keyboardOpen"
-  | "showGenerateBtn"
-  | "generating"
-  | "streaming"
-  | "showSaveTripBtn"
-  | "hasDraftTrip"
-  | "lastGeneratedTripId"
-  | "chatChips"
-  | "onChipSend"
-  | "onGenerateClick"
-  | "onSaveTrip"
-  | "onViewDraft"
-  | "onViewSavedTrip"
-  | "generateBtnLabel"
+  "keyboardOpen" | "generating" | "streaming" | "onChipSend"
 >) {
   const chipClass = cn(
     "shrink-0 rounded-full border border-border bg-card text-foreground/80 disabled:opacity-50",
@@ -67,56 +39,7 @@ function ShortcutChips({
   );
 
   return (
-    <div
-      className={cn(
-        "flex gap-2 overflow-x-auto no-scrollbar",
-        keyboardOpen ? "mb-1" : "mb-2",
-      )}
-    >
-      {showGenerateBtn && (
-        <button
-          type="button"
-          onClick={onGenerateClick}
-          disabled={generating || streaming}
-          className={cn(
-            "shrink-0 rounded-full bg-primary font-medium text-primary-foreground disabled:opacity-50",
-            keyboardOpen ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-xs",
-          )}
-        >
-          {generating ? (
-            <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
-          ) : (
-            <Sparkles className="mr-1 inline h-3 w-3" />
-          )}
-          {generateBtnLabel}
-        </button>
-      )}
-      {showSaveTripBtn && (
-        <button
-          type="button"
-          onClick={onSaveTrip}
-          className={cn(
-            "shrink-0 rounded-full bg-primary font-medium text-primary-foreground",
-            keyboardOpen ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-xs",
-          )}
-        >
-          儲存這趟行程
-        </button>
-      )}
-      {hasDraftTrip && (
-        <button type="button" onClick={onViewDraft} className={chipClass}>
-          查看行程草稿
-        </button>
-      )}
-      {lastGeneratedTripId && (
-        <button
-          type="button"
-          onClick={() => onViewSavedTrip(lastGeneratedTripId)}
-          className={chipClass}
-        >
-          查看已儲存行程
-        </button>
-      )}
+    <div className={cn("mb-2 flex gap-2 overflow-x-auto no-scrollbar")}>
       <Link
         to="/plan"
         className={cn(
@@ -124,17 +47,17 @@ function ShortcutChips({
           keyboardOpen ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-xs",
         )}
       >
-        進階手動規劃
+        {CHAT_SHORTCUT_PLAN_LABEL}
       </Link>
-      {(keyboardOpen ? chatChips.slice(0, 3) : chatChips).map((s) => (
+      {CHAT_SHORTCUT_SEND_CHIPS.map((label) => (
         <button
-          key={s}
+          key={label}
           type="button"
-          onClick={() => onChipSend(s)}
+          onClick={() => onChipSend(label)}
           disabled={streaming || generating}
           className={chipClass}
         >
-          {s}
+          {label}
         </button>
       ))}
     </div>
@@ -164,7 +87,7 @@ function InputRow({
   | "inputRef"
 >) {
   return (
-    <div className="flex items-end gap-2 rounded-3xl border border-border bg-card p-2">
+    <div className="chat-input-row flex items-end gap-2 rounded-3xl border border-border bg-card p-2">
       <textarea
         ref={inputRef}
         value={text}
@@ -195,18 +118,25 @@ function InputRow({
 
 /** 快捷 chips + 輸入列，作為單一 composer 單元（勿在此層疊 keyboard margin） */
 export function ChatComposer(props: ChatComposerProps) {
-  const { showShortcutChips } = props;
+  const { showShortcutChips, keyboardOpen } = props;
 
   useEffect(() => {
+    if (!isChatKeyboardDebugEnabled()) return;
     logChatComposerRender();
   }, []);
 
   useEffect(() => {
-    console.info("[Shortcut Chips Visible]", showShortcutChips);
+    if (!isChatKeyboardDebugEnabled()) return;
+    logChatKeyboardDebug("[Shortcut Chips Visible]", showShortcutChips);
   }, [showShortcutChips]);
 
   return (
-    <div className="chat-composer border-t border-border bg-background/95 px-4 pt-2 backdrop-blur">
+    <div
+      className={cn(
+        "chat-composer border-t border-border bg-background/95 px-4 pt-2 backdrop-blur",
+        keyboardOpen && "pb-0",
+      )}
+    >
       {showShortcutChips ? <ShortcutChips {...props} /> : null}
       <InputRow {...props} />
     </div>

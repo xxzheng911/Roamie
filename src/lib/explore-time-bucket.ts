@@ -21,10 +21,11 @@ export function buildExploreSessionKey(parts: {
   timeBucket?: ExploreTimeBucket;
   freeTextQuery?: string | null;
 }): string {
-  const bucket = parts.timeBucket ?? exploreTimeBucket();
   const mode = parts.mode === "city" ? ":city" : "";
+  const bucket =
+    parts.mode === "city" ? "" : `:${parts.timeBucket ?? exploreTimeBucket()}`;
   if (parts.freeTextQuery?.trim()) {
-    return `${parts.locationKey}:search:${parts.freeTextQuery.trim().toLowerCase()}:${parts.locale}:${bucket}${mode}`;
+    return `${parts.locationKey}:search:${parts.freeTextQuery.trim().toLowerCase()}:${parts.locale}${bucket}${mode}`;
   }
-  return `${parts.locationKey}:${parts.categoryId}:${parts.locale}:${bucket}${mode}`;
+  return `${parts.locationKey}:${parts.categoryId}:${parts.locale}${bucket}${mode}`;
 }

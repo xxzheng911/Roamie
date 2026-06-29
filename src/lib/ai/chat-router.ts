@@ -120,6 +120,13 @@ export function resolveChatRoute(
   locale: Locale = "zh-TW",
   intent: ChatIntent = detectChatIntent(userText),
 ): AiChatRoute {
+  if (
+    (session.fromMoodFlow || session.fromMoodCard || session.homeMoodShortcutEntry) &&
+    (intent === "create_itinerary" || intent === "trip_planning")
+  ) {
+    intent = "attraction";
+  }
+
   console.info(`[CHAT_INTENT] intent=${intent}`);
 
   if (isUserConfirmingItinerary(userText)) {
@@ -152,7 +159,10 @@ export function resolveChatRoute(
   const shouldTryAdvice =
     planningActive ||
     intent === "destination_advice" ||
-    intent === "create_itinerary" ||
+    (intent === "create_itinerary" &&
+      !session.fromMoodFlow &&
+      !session.fromMoodCard &&
+      !session.homeMoodShortcutEntry) ||
     intent === "best_travel_time" ||
     intent === "trip_planning" ||
     (isFlexiblePreferenceReply(userText) &&

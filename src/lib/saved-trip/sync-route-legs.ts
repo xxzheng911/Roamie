@@ -15,7 +15,11 @@ import {
   type RouteLegDurationResult,
   type RouteLegScope,
 } from "@/lib/saved-trip/route-duration-service";
-import { isTransitRequested } from "@/lib/saved-trip/travel-time";
+import { isTransitRequested, travelMinutesForMode } from "@/lib/saved-trip/travel-time";
+import {
+  estimatedDisplaySuffix,
+  transportFallbackModeFromResult,
+} from "@/lib/saved-trip/route-duration-fallback";
 import { resolveLegTransportLabel } from "@/lib/saved-trip/transport-options";
 import { legKeyForItem } from "@/lib/trip/trip-stop-mutations";
 import { groupStopsByDate } from "@/lib/trip/trip-stop-mutations";
@@ -130,16 +134,35 @@ function buildTransportDisplayText(
     return "大眾運輸暫時無法讀取";
   }
 
-  if (!route.ok) return "暫時無法取得交通時間";
+  const transportFallbackMode = transportFallbackModeFromResult(route);
 
-  const mins =
-    route.estimates.walk ??
-    route.estimates.drive ??
-    route.estimates.transit ??
-    route.durationMinutes;
-  if (mins == null || mins <= 0) return "暫時無法取得交通時間";
+  const pseudoLeg: TransitLegAdvice = {
+    legKey: "",
+    fromName: "",
+    toName: "",
+    recommendedMode: "walk",
+    headline: transportLabel,
+    durationMinutes: route.durationMinutes,
+    distanceMeters: route.distanceMeters,
+    reason: "",
+    complexity: "low",
+    estimates: route.estimates,
+    source: "rules",
+    transportFallbackMode,
+  };
+
+  const mins = travelMinutesForMode(pseudoLeg, transportLabel);
+  if (mins == null) {
+    if (!route.ok) {
+      console.warn(
+        `[ROUTE_DURATION_ERROR] display_unavailable label=${transportLabel} mode=${route.mode}`,
+      );
+    }
+    return route.ok ? undefined : "暫時無法取得交通時間";
+  }
+
   const label = transportLabel.trim() || "移動";
-  return `${label} 約 ${mins} 分鐘`;
+  return `${label} 約 ${mins} 分鐘${estimatedDisplaySuffix(transportLabel, route)}`;
 }
 
 function recommendedModeFromLabel(transportLabel: string, route: RouteLegDurationResult): TransitMode {
@@ -172,6 +195,8 @@ function buildTransitLeg(
       : "failed";
 
   const transitMinutes = route.estimates.transit;
+  const transportFallbackMode = transportFallbackModeFromResult(route);
+
   const leg: TransitLegAdvice = {
     legKey,
     fromName,
@@ -183,18 +208,15 @@ function buildTransitLeg(
     reason: transitFailed ? "transit_unavailable" : "",
     complexity: "low",
     estimates: {
-      walk: requestedMode === "WALK" || requestedMode === "BICYCLE" ? route.estimates.walk : undefined,
-      drive:
-        requestedMode === "DRIVE" || requestedMode === "TWO_WHEELER"
-          ? route.estimates.drive
-          : undefined,
+      walk: route.estimates.walk,
+      drive: route.estimates.drive,
       transit: route.estimates.transit,
     },
     source: "rules",
     transportMode: requestedMode,
     transportStatus,
-    transportFallbackMode: null,
-    transportDurationMinutes: transitMinutes ?? undefined,
+    transportFallbackMode,
+    transportDurationMinutes: transitMinutes ?? (route.ok ? route.durationMinutes : undefined),
     transportDisplayText: buildTransportDisplayText(route, transportLabel),
     routeCacheFingerprint,
     transitUnavailableProvider: route.transitUnavailableProvider ?? null,
@@ -260,7 +282,8 @@ export function legRouteIsCovered(
     return (
       leg.durationMinutes > 0 ||
       leg.estimates.walk != null ||
-      leg.estimates.drive != null
+      leg.estimates.drive != null ||
+      leg.estimates.transit != null
     );
   }
 

@@ -67,7 +67,18 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
   const preferClientOnly = isCapacitorNativeShell();
 
   return async (args) => {
-    const key = buildPlacesSearchKey(args.data);
+    const key = buildPlacesSearchKey(args.data, {
+      country: args.data.cacheCountry,
+      city: args.data.cacheCity,
+      placeId: args.data.cachePlaceId,
+      destinationName: args.data.cacheDestination,
+      category: args.data.categoryId,
+      language: args.data.locale,
+      lat: args.data.lat,
+      lng: args.data.lng,
+      mode: args.data.mode,
+      query: args.data.query,
+    });
 
     return getPlacesSearchCachedOrRun(key, async () => {
       if (preferClientOnly) {
@@ -97,9 +108,16 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
 
       return runClientSearch(args, key);
     }, {
-      categoryId: args.data.categoryId,
-      query: args.data.query,
-      mode: args.data.mode,
+      scope: {
+        country: args.data.cacheCountry,
+        city: args.data.cacheCity,
+        placeId: args.data.cachePlaceId,
+        destinationName: args.data.cacheDestination,
+        category: args.data.categoryId,
+        language: args.data.locale,
+        lat: args.data.lat,
+        lng: args.data.lng,
+      },
     });
   };
 }

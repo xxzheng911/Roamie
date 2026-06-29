@@ -4,17 +4,27 @@ import {
   isGooglePlaceId,
   latLngFallbackPlaceId,
 } from "@/lib/place-detail-handoff";
+import { buildPlaceRecommendationReason } from "@/lib/build-place-recommendation-reason";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import type { Locale } from "@/lib/i18n/types";
 import {
   resolvePlaceOpeningDisplay,
 } from "@/lib/normalized-opening-status";
 import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
+import type { PlaceResult } from "@/lib/place-result";
 import {
   cachePlaceImages,
   cachePlaceOpeningFromResult,
   readPlaceRuntimeCache,
 } from "@/lib/place-runtime-cache";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
+import { searchPlaces } from "@/services/placesService";
+import {
+  buildUnifiedPlaceDetailsCacheKey,
+  readUnifiedPlaceDetailsCache,
+  writeUnifiedPlaceDetailsCache,
+  isPlaceDetailsCacheComplete,
+} from "@/lib/unified-place-cache";
 import {
   resolvePlaceDisplayAddress,
   sanitizeGooglePlaceAddress,
@@ -132,7 +142,15 @@ export function resolvePlaceDetailHandoff(
   consumed: PlaceDetailHandoff | null,
 ): PlaceDetailHandoff | null {
   if (consumed) {
+    const googleId = consumed.googlePlaceId?.trim();
+    const explicitGoogleId =
+      googleId && isGooglePlaceId(googleId)
+        ? googleId
+        : consumed.placeId?.trim() && isGooglePlaceId(consumed.placeId.trim())
+          ? consumed.placeId.trim()
+          : "";
     const placeId =
+      explicitGoogleId ||
       consumed.placeId?.trim() ||
       search.placeId?.trim() ||
       (consumed.lat != null && consumed.lng != null
@@ -140,7 +158,7 @@ export function resolvePlaceDetailHandoff(
         : search.lat != null && search.lng != null
           ? latLngFallbackPlaceId(search.lat, search.lng)
           : "");
-    return { ...consumed, placeId };
+    return { ...consumed, placeId, googlePlaceId: explicitGoogleId || consumed.googlePlaceId };
   }
 
   if (search.placeId?.trim()) {
@@ -179,6 +197,66 @@ function resolveHandoffAddress(
   );
 }
 
+const GENERIC_DETAIL_REASONS = new Set([
+  "適合現在去走走",
+  "Good for right now",
+  "今行くのに合いそう",
+  "지금 가기 좋아요",
+]);
+
+function handoffToPlaceResult(
+  handoff: PlaceDetailHandoff,
+  snap?: PlaceDetailHandoff["snapshot"],
+): PlaceResult {
+  if (snap) {
+    return {
+      ...snap,
+      id: snap.id || handoff.placeId,
+      name: snap.name || handoff.name,
+      address: snap.address ?? handoff.address,
+      lat: snap.lat ?? handoff.lat,
+      lng: snap.lng ?? handoff.lng,
+    };
+  }
+  return {
+    id: handoff.placeId,
+    name: handoff.name,
+    address: handoff.address,
+    lat: handoff.lat,
+    lng: handoff.lng,
+    rating: handoff.rating ?? null,
+    userRatingCount: handoff.userRatingCount ?? null,
+    photoName: handoff.photoName ?? null,
+    primaryType: handoff.category ?? null,
+    types: handoff.category ? [handoff.category] : null,
+    businessStatus: null,
+    openStatus: "unknown",
+    openStatusLabel: handoff.openStatusLabel ?? handoff.normalizedOpeningLabel ?? "",
+    todayHoursLabel: "",
+    closingSoonNote: "",
+    nextOpenHint: "",
+  };
+}
+
+export function resolvePlaceDetailReason(
+  handoff: PlaceDetailHandoff,
+  locale: Locale = "zh-TW",
+  snap?: PlaceDetailHandoff["snapshot"],
+): string {
+  const explicit = snap?.reason?.trim() || handoff.reason?.trim();
+  if (explicit && !GENERIC_DETAIL_REASONS.has(explicit)) {
+    return explicit;
+  }
+  return buildPlaceRecommendationReason(
+    handoffToPlaceResult(handoff, snap),
+    null,
+    null,
+    undefined,
+    undefined,
+    locale,
+  );
+}
+
 export function handoffToPlaceDetailData(
   handoff: PlaceDetailHandoff,
   locale: Locale = "zh-TW",
@@ -208,7 +286,7 @@ export function handoffToPlaceDetailData(
       openNow: snap.openNow ?? handoff.openNow ?? null,
       normalizedOpeningStatus:
         snap.normalizedOpeningStatus ?? handoff.normalizedOpeningStatus,
-      reason: snap.reason?.trim() || handoff.reason?.trim() || "適合現在去走走",
+      reason: resolvePlaceDetailReason(handoff, locale, snap),
       website: null,
       phone: null,
     };
@@ -232,7 +310,7 @@ export function handoffToPlaceDetailData(
       todayHoursLabel: "",
       closingSoonNote: "",
       nextOpenHint: "",
-      reason: handoff.reason?.trim() || "適合現在去走走",
+      reason: resolvePlaceDetailReason(handoff, locale),
       coverImageUrl:
         handoff.photoUrl ?? handoff.generatedImageUrl ?? handoff.fallbackImageUrl ?? undefined,
       generatedImageUrl: handoff.generatedImageUrl ?? handoff.fallbackImageUrl ?? null,
@@ -255,6 +333,99 @@ export function handoffToPlaceDetailData(
 
 export function canFetchGooglePlaceDetails(placeId: string): boolean {
   return isGooglePlaceId(placeId);
+}
+
+/** 無有效 placeId 時，以名稱 + 地址 (+ 座標 bias) 查 Autocomplete 補回 Google placeId */
+export async function resolveGooglePlaceIdForDetail(
+  handoff: PlaceDetailHandoff,
+  locale: Locale = "zh-TW",
+): Promise<string | null> {
+  const direct = handoff.googlePlaceId?.trim() || handoff.placeId?.trim() || "";
+  if (direct && isGooglePlaceId(direct)) return direct;
+
+  const name = handoff.name?.trim();
+  if (!name) return null;
+
+  const center =
+    handoff.lat != null && handoff.lng != null
+      ? { lat: handoff.lat, lng: handoff.lng }
+      : undefined;
+
+  const queries = [
+    handoff.address?.trim() ? `${name} ${handoff.address.trim()}` : null,
+    name,
+  ].filter((q): q is string => Boolean(q?.trim()));
+
+  for (const query of queries) {
+    try {
+      const { suggestions } = await searchPlaces(query, { locale, center });
+      if (!suggestions.length) continue;
+
+      const normalizedName = name.toLowerCase();
+      const scored = suggestions
+        .map((s) => {
+          const label = s.label.trim();
+          const labelLower = label.toLowerCase();
+          let score = 0;
+          if (labelLower === normalizedName) score += 100;
+          if (label.includes(name) || name.includes(label)) score += 40;
+          if (handoff.address?.trim() && s.secondary?.includes(handoff.address.trim())) {
+            score += 30;
+          }
+          return { suggestion: s, score };
+        })
+        .sort((a, b) => b.score - a.score);
+
+      for (const { suggestion } of scored) {
+        const placeId = suggestion.placeId?.trim();
+        if (!placeId || !isGooglePlaceId(placeId)) continue;
+        console.info("[PLACE_DETAIL] resolved placeId", placeId, "query=", query);
+        return placeId;
+      }
+    } catch (e) {
+      console.warn("[PLACE_DETAIL] resolve placeId failed", query, e);
+    }
+  }
+
+  return null;
+}
+
+export async function fetchGooglePlaceDetailsForHandoff(
+  placeId: string,
+  locale: Locale,
+  fetchPlaceDetailsFn: (args: {
+    data: { placeId: string; locale?: Locale };
+  }) => Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }>,
+  fetchClientDetails?: (
+    placeId: string,
+    locale: Locale,
+  ) => Promise<PlaceDetailsScreenResult | null>,
+  cacheScope?: { cityLabel?: string; country?: string; lat?: number; lng?: number },
+): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> {
+  const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, locale, cacheScope);
+  const cached = readUnifiedPlaceDetailsCache(cacheKey);
+  if (cached?.place) {
+    return { place: cached.place, error: null };
+  }
+
+  const server = await fetchPlaceDetailsFn({ data: { placeId, locale } });
+  if (server.place) {
+    if (isPlaceDetailsCacheComplete(server.place)) {
+      writeUnifiedPlaceDetailsCache(cacheKey, server.place, null);
+    }
+    return server;
+  }
+
+  if (fetchClientDetails) {
+    const clientPlace = await fetchClientDetails(placeId, locale);
+    if (clientPlace) {
+      console.info("[PLACE_DETAIL] client places details ok", placeId);
+      writeUnifiedPlaceDetailsCache(cacheKey, clientPlace, null);
+      return { place: clientPlace, error: null };
+    }
+  }
+
+  return server;
 }
 
 export function mergeFetchedPlace(

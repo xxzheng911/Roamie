@@ -4,6 +4,7 @@ import {
   isRecommendablePlace,
   recommendationToRecommendableInput,
 } from "@/lib/is-recommendable-place";
+import { isLodgingPlace } from "@/lib/lodging-place-filter";
 import {
   derivePlaceAvailability,
   isLateNightMode,
@@ -267,6 +268,9 @@ export function filterRecommendationItemsForDisplay<T extends RecommendationDisp
       { logDrop: false },
     );
     if (!recommendable.ok) return false;
+    if (isLodgingPlace({ name: item.name, primaryType: item.type, types: item.type ? [item.type] : null })) {
+      return false;
+    }
     if (item.openStatusLabel === "目前未營業" && !item.nextOpenHint?.trim()) {
       return false;
     }

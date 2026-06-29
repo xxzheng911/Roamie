@@ -11,12 +11,15 @@ import {
   INSUFFICIENT_ITINERARY_PLACES_MESSAGE,
 } from "@/lib/ai/generic-place-label";
 import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
+import { isCreateItineraryRequest } from "@/lib/ai/itinerary-entity-extraction";
 import { classifyDestinationForPlaceSearch } from "@/lib/ai/landmark-place-strategy";
 import {
   planningStageAfterMustVisitIntent,
   planningStageAfterRecommendations,
 } from "@/lib/ai/chat-planning-stage";
-import { isAffirmativeReply } from "@/lib/ai/chat-conversation-state";
+import {
+  isSuggestionInDestinationScope,
+} from "@/lib/ai/destination-combination-suggestions";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 
 export type PlanningFollowUpIntent = "must_visit_places" | "daily_rhythm" | "full_itinerary";
@@ -199,8 +202,9 @@ export function parseDailyRhythmIntent(text: string): boolean {
 export function parsePlanningFollowUpIntent(text: string): PlanningFollowUpIntent | null {
   const t = text.trim();
   if (!t) return null;
-  if (detectMustVisitIntent(t) || detectPlaceRecommendationIntent(t)) return "must_visit_places";
   if (parseItineraryPlanModeIntent(t) === "full_itinerary") return "full_itinerary";
+  if (isCreateItineraryRequest(t)) return "full_itinerary";
+  if (detectMustVisitIntent(t) || detectPlaceRecommendationIntent(t)) return "must_visit_places";
   if (parseDailyRhythmIntent(t)) return "daily_rhythm";
   return null;
 }
@@ -366,7 +370,9 @@ export function resolveMustVisitAdvice(
   const reply = buildMustVisitPlacesReply(mergedCtx);
   if (!reply) return null;
 
-  const recommendations = buildMustVisitRecommendations(destination);
+  const recommendations = buildMustVisitRecommendations(destination).filter((item) =>
+    isSuggestionInDestinationScope(item.name, destination),
+  );
   const stage = planningStageAfterRecommendations();
 
   return {
@@ -411,6 +417,27 @@ export function shouldFetchDestinationPlaces(
   return Boolean(resolveMustVisitDestination(ctx, userText));
 }
 
+export function buildDestinationDayPlanSuggestions(destination: string, days: number): string[] {
+  const label = normalizeDestinationLabel(destination);
+  const guide = resolveGuide(label);
+  const places = (guide?.places ?? getMustVisitPlacesForDestination(label)).slice(0, 5);
+
+  if (places.length >= 3) {
+    return [
+      days <= 1 ? `• ${places[0]!.name}` : `• 早上${places[0]!.name}`,
+      days >= 2 && places[1] ? `• 下午${places[1]!.name}` : undefined,
+      places[2]
+        ? `• 晚上${places[2]!.name}`
+        : `• 晚上${label}在地美食或商圈`,
+    ].filter((line): line is string => line != null);
+  }
+
+  return [
+    days <= 1 ? `• ${label}經典地標` : `• 早上${label}經典地標`,
+    days >= 2 ? `• 下午${label}特色商圈或文化景點` : undefined,
+    `• 晚上${label}在地美食或夜市`,
+  ].filter((line): line is string => line != null);
+}
 export function buildMustVisitContextPatch(
   ctx: CanonicalTravelContext,
   userText?: string,

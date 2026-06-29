@@ -9,6 +9,10 @@ import {
   logChatGeocodeResponse,
   logChatTextSearchResponse,
 } from "@/lib/ai/chat-place-flow-log";
+import {
+  logItineraryGeocodeQuery,
+  sanitizeDestinationForGeocode,
+} from "@/lib/ai/itinerary-entity-extraction";
 
 export type GeocodeDestinationFn = (args: {
   data: { query: string; locale?: Locale };
@@ -91,6 +95,7 @@ export const EN_CITY_NAMES: Record<string, string> = {
   福岡: "Fukuoka",
   名古屋: "Nagoya",
   橫濱: "Yokohama",
+  冰島: "Iceland",
 };
 
 const INTL_GEOCODE: Record<string, readonly string[]> = {
@@ -111,6 +116,7 @@ const INTL_GEOCODE: Record<string, readonly string[]> = {
   香港: ["Hong Kong", "香港"],
   澳門: ["Macau", "Macao", "澳門"],
   釜山: ["Busan, South Korea", "釜山, 韓國"],
+  冰島: ["Iceland", "冰島", "Reykjavik, Iceland", "雷克雅維克, 冰島"],
 };
 
 /** 無 geocode 時 text search 用的近似中心 */
@@ -149,6 +155,8 @@ const DESTINATION_APPROX_CENTER: Record<string, { lat: number; lng: number }> = 
   香港: { lat: 22.3193, lng: 114.1694 },
   澳門: { lat: 22.1987, lng: 113.5439 },
   釜山: { lat: 35.1796, lng: 129.0756 },
+  冰島: { lat: 64.1466, lng: -21.9426 },
+  雷克雅維克: { lat: 64.1466, lng: -21.9426 },
 };
 
 const DEFAULT_SEARCH_CENTER = { lat: 23.9739, lng: 120.9823 };
@@ -161,7 +169,7 @@ function isTaiwanDestination(label: string): boolean {
 }
 
 export function buildDestinationGeocodeQueries(destination: string, _locale?: Locale): string[] {
-  const label = normalizeDestinationLabel(destination);
+  const label = sanitizeDestinationForGeocode(destination);
   const queries: string[] = [];
   const entity = resolveDestinationEntity(label);
   const country = entity.country;
@@ -212,7 +220,7 @@ export function resolveDestinationApproxCenter(
 export function buildDestinationTextSearchAttempts(destination: string): SearchAttempt[] {
   const label = normalizeDestinationLabel(destination);
   const en = EN_CITY_NAMES[label] ?? label;
-  return [
+  const base = [
     { query: `${label} popular attractions`, mode: "text", includedTypes: ["tourist_attraction"] },
     { query: `${label} 景點`, mode: "text", includedTypes: ["tourist_attraction", "museum", "art_gallery"] },
     { query: `${label} 必去景點`, mode: "text", includedTypes: ["tourist_attraction"] },
@@ -221,10 +229,26 @@ export function buildDestinationTextSearchAttempts(destination: string): SearchA
     { query: `${label} 商圈`, mode: "text", includedTypes: ["shopping_mall", "tourist_attraction"] },
     { query: `${label} 夜市`, mode: "text", includedTypes: ["market", "tourist_attraction"] },
     { query: `${label} 美食`, mode: "text", includedTypes: ["restaurant"] },
+    { query: `${label} 咖啡`, mode: "text", includedTypes: ["cafe", "coffee_shop"] },
     { query: `${label} 著名景點`, mode: "text", includedTypes: ["tourist_attraction"] },
     { query: `${en} tourist attractions`, mode: "text", includedTypes: ["tourist_attraction"] },
     { query: `${en} attractions`, mode: "text", includedTypes: ["tourist_attraction"] },
-  ];
+  ] as SearchAttempt[];
+
+  if (label === "冰島" || en === "Iceland") {
+    base.push(
+      { query: "冰島 景點", mode: "text", includedTypes: ["tourist_attraction"] },
+      { query: "冰島 極光", mode: "text", includedTypes: ["tourist_attraction"] },
+      { query: "冰島 冰川", mode: "text", includedTypes: ["tourist_attraction"] },
+      { query: "冰島 溫泉", mode: "text", includedTypes: ["tourist_attraction", "spa"] },
+      { query: "Iceland attractions", mode: "text", includedTypes: ["tourist_attraction"] },
+      { query: "Iceland aurora", mode: "text", includedTypes: ["tourist_attraction"] },
+      { query: "Iceland glacier", mode: "text", includedTypes: ["tourist_attraction"] },
+      { query: "Iceland itinerary", mode: "text", includedTypes: ["tourist_attraction"] },
+    );
+  }
+
+  return base;
 }
 
 export async function geocodeDestinationWithFallback(params: {
@@ -237,6 +261,7 @@ export async function geocodeDestinationWithFallback(params: {
 
   for (const query of queries) {
     logChatGeocodeRequest(query);
+    logItineraryGeocodeQuery(query);
     try {
       const result = await geocodeFn({ data: { query, locale } });
       const loc = result.location;

@@ -20,6 +20,7 @@ import {
   groupItineraryItemsByDay,
   type GenerateItineraryResult,
 } from "@/lib/trip/itinerary-guards";
+import { preparePlacesForItineraryBuild } from "@/lib/place-planning-memory";
 
 const PlaceSchema = z
   .object({
@@ -86,19 +87,12 @@ function filterValidSelectedPlaces(
   places: RoamieRecommendationItem[],
   destination: string,
 ): RoamieRecommendationItem[] {
-  return places.filter((p) =>
-    isValidItineraryStopPlace(
-      {
-        name: p.name,
-        placeName: p.placeName,
-        placeId: p.googlePlaceId,
-        googlePlaceId: p.googlePlaceId,
-        address: p.address,
-        lat: p.lat,
-        lng: p.lng,
-      },
-      destination,
-    ),
+  return preparePlacesForItineraryBuild(
+    places.map((p) => ({
+      ...p,
+      placeId: p.googlePlaceId ?? (p as RoamieRecommendationItem & { placeId?: string }).placeId,
+    })),
+    destination,
   );
 }
 
@@ -163,8 +157,9 @@ function buildItineraryFromSelectedPlaces(
   selectedPlaces: RoamieRecommendationItem[],
   days: number,
   startDate: string,
+  destination?: string,
 ): RoamieItineraryItem[] {
-  return buildFallbackItineraryFromPlaces(selectedPlaces, days, startDate);
+  return buildFallbackItineraryFromPlaces(selectedPlaces, days, startDate, destination);
 }
 
 function buildFallbackTripPayload(
@@ -301,6 +296,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         selectedPlaces,
         data.days,
         startDate,
+        data.destination,
       );
       ai = buildFallbackTripPayload(data, builtItems, selectedPlaces);
     }

@@ -1,5 +1,6 @@
 import type { RoamieItineraryItem, RoamiePayloadV2 } from "@/lib/ai/types";
 import type { TripAffiliateContext } from "@/lib/affiliate/affiliate-types";
+import { PLACE_TYPE_CATEGORY_MAP } from "@/lib/affiliate/place-type-category-map";
 import { shouldShowTicketAffiliate } from "@/lib/affiliate/ticket-affiliate-eligibility";
 import { daysBetweenDates } from "@/lib/fetch-context";
 import type { TripLocation } from "@/lib/location/types";
@@ -12,26 +13,6 @@ export type AffiliatePlaceInput = Pick<
   category?: string | null;
   /** AI itinerary / recommendation tags */
   tags?: string[] | null;
-};
-
-const PLACE_TYPE_CATEGORY_MAP: Record<string, string> = {
-  景點: "tourist_attraction",
-  地標: "landmark",
-  展覽: "exhibition",
-  樂園: "theme_park",
-  博物館: "museum",
-  美術館: "art_gallery",
-  水族館: "aquarium",
-  動物園: "zoo",
-  觀景台: "observation_deck",
-  溫泉: "spa",
-  神社: "place_of_worship",
-  寺廟: "place_of_worship",
-  教堂: "church",
-  商圈: "district",
-  市集: "market",
-  體驗: "experience",
-  文化體驗: "cultural_center",
 };
 
 const COUNTRY_ALIASES: Record<string, string> = {

@@ -45,6 +45,10 @@ import {
   placesStatsPayload,
 } from "@/lib/places-api-stats";
 import {
+  filterNonLodgingPlaces,
+  isExplicitLodgingSearchIntent,
+} from "@/lib/lodging-place-filter";
+import {
   logChatPlacesRequest,
   logChatPlacesResponse,
   logChatPlacesError,
@@ -129,11 +133,19 @@ function searchConfigForIntent(
       includedTypes: ["museum", "shopping_mall", "cafe", "book_store", "tourist_attraction"],
     };
   }
-  if (/(累|疲|放鬆|放空)/.test(moodBlob) && allowParks) {
+  if (/(累|疲|放鬆|放空|輕鬆|療癒)/.test(moodBlob)) {
     return {
-      query: "公園 散步",
+      query: "公園 散步 咖啡 藝術中心 河岸",
       mode: "nearby",
-      includedTypes: ["park", "tourist_attraction", "cafe"],
+      includedTypes: [
+        "tourist_attraction",
+        "park",
+        "cafe",
+        "coffee_shop",
+        "shopping_mall",
+        "museum",
+        "art_gallery",
+      ],
     };
   }
   return {
@@ -472,6 +484,9 @@ export async function fetchNearbyPlacesForIntent(
     ? { searchContext: opts.searchContext, intentCategory: intent }
     : undefined;
 
+  const allowLodging =
+    intent === "camping" || isExplicitLodgingSearchIntent(opts?.userText ?? "");
+
   const attempts: SearchAttempt[] =
     intent === "restaurant"
       ? restaurantSearchFallbackQueries(foodPreference)
@@ -512,6 +527,7 @@ export async function fetchNearbyPlacesForIntent(
     if (intent === "camping") {
       ranked = filterCampingPlaces(ranked);
     }
+    ranked = filterNonLodgingPlaces(ranked, { allowLodging });
     if (ranked.length >= RECOMMENDATION_COUNT) break;
   }
 

@@ -1,6 +1,9 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import { isMoodNearbyRelaxationRequest } from "@/lib/mood-nearby-intent";
 import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
 import { hasChatPlaceCategoryQuery } from "@/lib/ai/chat-place-intent";
+import { isCreateItineraryRequest } from "@/lib/ai/itinerary-entity-extraction";
 
 export type ChatContextIntent =
   | "create_itinerary"
@@ -9,17 +12,24 @@ export type ChatContextIntent =
   | "general_chat";
 
 const CREATE_ITINERARY_SIGNALS =
-  /(?:幫我安排|帮我安排|幫我規劃|帮我规划|幫我排|帮我排|排行程|安排.{0,8}行程|規劃.{0,8}行程|规划.{0,8}行程|生成行程|建立行程|创建行程|完整.{0,4}行程|itinerary)/i;
+  /(?:幫我安排|帮我安排|幫我規劃|帮我规划|幫我排|帮我排|幫我生成|帮我生成|幫我建立|帮我建立|直接生成|排行程|安排.{0,8}行程|規劃.{0,8}行程|规划.{0,8}行程|生成.{0,6}天.{0,6}行程|生成行程|建立行程|创建行程|完整.{0,4}行程|itinerary|你可以幫我安排|可以幫我安排)/i;
 
 /** 使用者要求建立 / 安排完整行程 — 優先於 BEST_TRAVEL_TIME */
 export function isCreateItineraryIntent(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-
+  if (isMoodNearbyRelaxationRequest(t)) return false;
+  if (isCreateItineraryRequest(t)) return true;
   if (parseItineraryPlanModeIntent(t) === "full_itinerary") return true;
 
   if (CREATE_ITINERARY_SIGNALS.test(t) && /\d+\s*天/.test(t)) return true;
   if (CREATE_ITINERARY_SIGNALS.test(t) && /行程/.test(t)) return true;
+  if (/(幫我生成|帮我生成|幫我建立|直接生成)/.test(t) && (/\d+\s*天/.test(t) || /行程/.test(t))) {
+    return true;
+  }
+  if (/(都不錯|都可以|就這些|很好).{0,20}(生成|排成|建立|安排).{0,12}(行程|\d+\s*天)/.test(t)) {
+    return true;
+  }
   if (/\d+\s*天\s*\d*\s*夜/.test(t) && /(安排|規劃|规划|排|行程)/.test(t)) return true;
 
   if (
@@ -97,27 +107,27 @@ export function buildCreateItineraryAckReply(params: {
 }
 
 export function logChatContextBefore(context: Record<string, unknown>): void {
-  console.info("[CHAT_CONTEXT_BEFORE]", JSON.stringify(context));
+  devVerboseInfo("[CHAT_CONTEXT_BEFORE]", JSON.stringify(context));
 }
 
 export function logChatContextMerge(patch: Record<string, unknown>): void {
-  console.info("[CHAT_CONTEXT_MERGE]", JSON.stringify(patch));
+  devVerboseInfo("[CHAT_CONTEXT_MERGE]", JSON.stringify(patch));
 }
 
 export function logChatIntentPrevious(intent?: string): void {
-  console.info("[CHAT_INTENT_PREVIOUS]", intent ?? "—");
+  devVerboseInfo("[CHAT_INTENT_PREVIOUS]", intent ?? "—");
 }
 
 export function logChatIntentCurrent(intent: string): void {
-  console.info("[CHAT_INTENT_CURRENT]", intent);
+  devVerboseInfo("[CHAT_INTENT_CURRENT]", intent);
 }
 
 export function logChatContextResolved(context: Record<string, unknown>): void {
-  console.info("[CHAT_CONTEXT_RESOLVED]", JSON.stringify(context));
+  devVerboseInfo("[CHAT_CONTEXT_RESOLVED]", JSON.stringify(context));
 }
 
 export function logChatCreateItineraryTriggered(destination: string, days: number): void {
-  console.info(
+  devVerboseInfo(
     "[CHAT_CREATE_ITINERARY_TRIGGERED]",
     `destination=${destination}`,
     `days=${days}`,

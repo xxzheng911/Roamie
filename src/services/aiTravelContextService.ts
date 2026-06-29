@@ -1,5 +1,6 @@
 import type { RoamieRequestContext } from "@/lib/ai/context";
 import { buildContextBlock } from "@/lib/ai/context";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { createRequestCache } from "@/services/requestCache";
 import { parseTravelContextFromText, logTravelContext } from "@/lib/ai/travel-context";
 import { createEmptySession } from "@/lib/chat-session";
@@ -24,7 +25,7 @@ const tripDraftCache = createRequestCache({
 
 export function extractTravelIntent(message: string): TravelIntent {
   const parsed = parseTravelContextFromText(message, createEmptySession());
-  console.info("[AI_CONTEXT] parsed", logTravelContext({ interests: [], ...parsed }));
+  devVerboseInfo("[AI_CONTEXT] parsed", logTravelContext({ interests: [], ...parsed }));
   return {
     destination: parsed.destination,
     travelMonth: parsed.travelMonth,
@@ -80,7 +81,7 @@ export function buildTravelContext(
         baseContext.selectedMood,
     },
   } satisfies RoamieRequestContext;
-  console.info(
+  devVerboseInfo(
     "[AI_CONTEXT_BUILT]",
     `destination=${intent.destination ?? (tripDraft.destination as string | undefined) ?? "unknown"}`,
     `travelMonth=${intent.travelMonth ?? "unknown"}`,
@@ -97,13 +98,13 @@ export async function generateTravelReply(args: {
   userInput: string;
 }): Promise<string> {
   const key = `${args.conversationId}:reply:${args.userInput.trim().toLowerCase()}`;
-  console.info("[AI_REPLY_REQUEST]", `conversationId=${args.conversationId}`);
+  devVerboseInfo("[AI_REPLY_REQUEST]", `conversationId=${args.conversationId}`);
   try {
     const reply = await tripDraftCache.getOrFetch(
       key,
       async () => `已理解你的需求：${args.userInput}\n\n${args.context}`,
     );
-    console.info("[AI_REPLY_SUCCESS]", `conversationId=${args.conversationId}`);
+    devVerboseInfo("[AI_REPLY_SUCCESS]", `conversationId=${args.conversationId}`);
     return reply;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

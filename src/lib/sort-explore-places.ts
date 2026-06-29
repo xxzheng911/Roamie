@@ -3,6 +3,11 @@ import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 import { distanceMeters } from "@/lib/map-explore";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { weatherRankingBoost } from "@/lib/weather/weather-place-ranking";
+import {
+  isExploreJapanFoodContext,
+  sortJapanFoodPlaces,
+  type TabelogRankingCache,
+} from "@/lib/tabelog-reference";
 
 type SortablePlace = {
   name?: string;
@@ -14,6 +19,14 @@ type SortablePlace = {
   userRatingCount?: number | null;
   openStatus?: PlaceOpenStatus;
   isSavedFavorite?: boolean;
+  photoName?: string | null;
+  id?: string | null;
+};
+
+export type ExplorePlacesSortContext = {
+  country?: string | null;
+  cityLabel?: string | null;
+  tabelogCache?: TabelogRankingCache | null;
 };
 
 function placeTextForWeather(p: SortablePlace): string {
@@ -69,7 +82,19 @@ export function sortExplorePlaces<T extends SortablePlace>(
   profile?: UserProfileForReason | null,
   weather?: WeatherSummary | null,
   categoryId?: string,
+  sortContext?: ExplorePlacesSortContext,
 ): T[] {
+  if (
+    categoryId === "food" &&
+    isExploreJapanFoodContext({
+      country: sortContext?.country,
+      cityLabel: sortContext?.cityLabel,
+      categoryId: "food",
+    })
+  ) {
+    return sortJapanFoodPlaces(places, origin, sortContext?.tabelogCache ?? null);
+  }
+
   return [...places].sort((a, b) => {
     const openA = openStatusScore(a.openStatus);
     const openB = openStatusScore(b.openStatus);

@@ -1,4 +1,7 @@
 import type { PlaceOpenStatus } from "@/lib/filter-available-places";
+import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
+import { isLodgingPlace } from "@/lib/lodging-place-filter";
+import { isLowValueCityExplorePlace } from "@/lib/explore-city-tourist-filter";
 
 export type RecommendablePlaceContext =
   | "home_nearby"
@@ -338,6 +341,8 @@ export function isRecommendablePlace(
     exploreMapTier?: "strict" | "display" | "fallback";
     /** Chat 目的地推薦：僅在使用者要求「現在能去」時排除 closed_now */
     requireOpenNow?: boolean;
+    /** 住宿導購或使用者明確找住宿時允許飯店 */
+    allowLodging?: boolean;
   },
 ): RecommendablePlaceResult {
   const name = (place.name ?? "").trim();
@@ -352,6 +357,11 @@ export function isRecommendablePlace(
     return { ok: false, reason };
   };
 
+  const cityMode = context === "explore_map_city";
+  const exploreRelaxed =
+    (context === "explore_map" || context === "explore_map_city") &&
+    (options?.exploreMapTier === "display" || options?.exploreMapTier === "fallback");
+
   if (place.isSavedFavorite && context !== "home_nearby") {
     if (!name) return fail("missing_name");
     if (biz === "CLOSED_PERMANENTLY" || biz === "CLOSED_TEMPORARILY") return fail("closed_business");
@@ -361,12 +371,22 @@ export function isRecommendablePlace(
 
   if (!placeId || placeId === "Unknown") return fail("missing_place_id");
   if (!name || name === "Unknown") return fail("missing_name");
-  if (CLOSED_NAME_RE.test(name)) return fail("closed_name");
+  if (isBurialOrFuneralPlace(place)) return fail("burial_or_funeral");
+  if (!options?.allowLodging && isLodgingPlace(place)) return fail("lodging");
 
-  const cityMode = context === "explore_map_city";
-  const exploreRelaxed =
-    (context === "explore_map" || context === "explore_map_city") &&
-    (options?.exploreMapTier === "display" || options?.exploreMapTier === "fallback");
+  const moodRecommendContexts = new Set<RecommendablePlaceContext>([
+    "ai_recommend",
+    "chat_destination_recommend",
+    "nearby_home",
+  ]);
+  if (moodRecommendContexts.has(context) && !place.isSavedFavorite) {
+    const rating = place.rating ?? 0;
+    const reviews = place.userRatingCount ?? 0;
+    if (rating <= 0 || reviews < 10) return fail("insufficient_reviews");
+  }
+
+  if (cityMode && isLowValueCityExplorePlace(place)) return fail("low_value_city_marker");
+  if (CLOSED_NAME_RE.test(name)) return fail("closed_name");
 
   if (isPureGeographicMarker(place)) {
     if (exploreRelaxed && passesTravelFriendlyGate(place)) {

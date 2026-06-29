@@ -13,6 +13,7 @@ type Props = {
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDelete: () => void;
+  onOpenPlaceDetail?: () => void;
 };
 
 /** 行程內頁地點卡 — 獨立於聊天／探索／首頁推薦卡片，請勿共用其排版 */
@@ -26,6 +27,7 @@ export function TripPlaceCard({
   onMoveUp,
   onMoveDown,
   onDelete,
+  onOpenPlaceDetail,
 }: Props) {
   const legKey = legKeyForItem(item);
   const durationMins = settings.legMinutes?.[legKey] ?? 60;
@@ -34,9 +36,19 @@ export function TripPlaceCard({
   return (
     <article className="relative rounded-3xl border border-border bg-card p-4 shadow-soft">
       <div className="flex items-start justify-between gap-3">
-        <h3 className="min-w-0 flex-1 font-display text-lg font-bold leading-snug text-foreground">
-          {placeName}
-        </h3>
+        {onOpenPlaceDetail ? (
+          <button
+            type="button"
+            onClick={onOpenPlaceDetail}
+            className="min-w-0 flex-1 text-left font-display text-lg font-bold leading-snug text-foreground underline-offset-2 hover:underline"
+          >
+            {placeName}
+          </button>
+        ) : (
+          <h3 className="min-w-0 flex-1 font-display text-lg font-bold leading-snug text-foreground">
+            {placeName}
+          </h3>
+        )}
         <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"

@@ -126,8 +126,8 @@ const config: CapacitorConfig = {
       backgroundColor: "#f7f4ef",
     },
     Keyboard: {
-      /** native：由 JS 依 keyboardHeight 調整聊天輸入列（body resize 在 iOS 26 WKWebView 常失效） */
-      resize: "native",
+      /** overlay：鍵盤透明疊加，WebView 不 resize；composer 由 JS 貼齊鍵盤上緣 */
+      resize: "none",
       resizeOnFullScreen: true,
     },
   },

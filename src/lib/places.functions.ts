@@ -35,6 +35,12 @@ import {
   runPlacesApiDeduped,
 } from "@/lib/places-api-guard";
 import {
+  buildUnifiedPlaceDetailsCacheKey,
+  readUnifiedPlaceDetailsCache,
+  writeUnifiedPlaceDetailsCache,
+  isPlaceDetailsCacheComplete,
+} from "@/lib/unified-place-cache";
+import {
   pushPlacesCallContext,
   popPlacesCallContext,
   recordPlacesHttpCall,
@@ -106,6 +112,7 @@ function mapRawPlaces(
 ): PlaceResult[] {
   const isHome = options?.screen === "home";
   const isChat = options?.screen === "chat";
+  const isExplore = options?.screen === "explore";
   const locale = options?.locale ?? "zh-TW";
   return raw
     .map((p) => {
@@ -115,6 +122,7 @@ function mapRawPlaces(
       if (
         !isHome &&
         !isChat &&
+        !isExplore &&
         !isPlaceAvailableNow(hours, { name, type }, { context: "now" })
       ) {
         return null;
@@ -781,22 +789,17 @@ function mapPlaceDetailsScreenRaw(
 }
 
 /** 瀏覽器直連 Google Places Details（Capacitor bundle 無 server 時） */
-const detailsScreenCache = new Map<
-  string,
-  { at: number; data: PlaceDetailsScreenResult }
->();
-const DETAILS_SCREEN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-
 export async function fetchPlaceDetailsForScreenWithKey(
   placeId: string,
   apiKey: string,
   locale?: Locale,
+  cacheScope?: { cityLabel?: string; country?: string; lat?: number; lng?: number },
 ): Promise<PlaceDetailsScreenResult | null> {
-  const cacheKey = `${locale ?? "zh-TW"}:${placeId}`;
-  const cached = detailsScreenCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < DETAILS_SCREEN_CACHE_TTL_MS) {
+  const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, locale ?? "zh-TW", cacheScope);
+  const cached = readUnifiedPlaceDetailsCache(cacheKey);
+  if (cached?.place) {
     logPlacesCacheHit(cacheKey);
-    return cached.data;
+    return cached.place;
   }
 
   logPlacesCacheMiss(cacheKey);
@@ -832,8 +835,10 @@ export async function fetchPlaceDetailsForScreenWithKey(
     }
   });
 
-  if (guarded) {
-    detailsScreenCache.set(cacheKey, { at: Date.now(), data: guarded });
+  if (guarded && isPlaceDetailsCacheComplete(guarded)) {
+    writeUnifiedPlaceDetailsCache(cacheKey, guarded, null);
+  } else if (guarded) {
+    writeUnifiedPlaceDetailsCache(cacheKey, guarded, null);
   }
   return guarded;
 }

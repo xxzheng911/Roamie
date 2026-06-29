@@ -21,6 +21,8 @@ export type PlaceResult = {
   todayHoursLabel: string;
   closingSoonNote: string;
   nextOpenHint: string;
+  /** Google currentOpeningHours.nextCloseTime → HH:mm（詳情頁營業至） */
+  openUntilTime?: string;
   /** Google currentOpeningHours.openNow（列表／詳情共用） */
   openNow?: boolean | null;
   normalizedOpeningStatus?: NormalizedOpeningStatusValue;

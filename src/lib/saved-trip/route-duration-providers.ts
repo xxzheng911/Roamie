@@ -1,17 +1,20 @@
-import type { LatLng } from "@/lib/google-routes-fetch";
 import type { RoutesTravelMode } from "@/lib/routes/types";
-import { fetchRouteResult, type FetchRouteQueryOptions } from "@/services/routesService";
-import { extractGoogleRouteStatus } from "@/lib/google-routes-fetch";
 import { logRouteOnce } from "@/lib/route-duration-log";
+import {
+  fetchRouteWithDirectionFallbacks,
+  type RouteFetchContext,
+} from "@/lib/saved-trip/route-duration-fallback";
 import type { RouteLegDurationResult, RouteLegScope } from "@/lib/saved-trip/route-duration-types";
 import type { TransitUnavailableProvider } from "@/lib/transit/types";
+import { fetchRouteResult, type FetchRouteQueryOptions } from "@/services/routesService";
+import { extractGoogleRouteStatus } from "@/lib/google-routes-fetch";
 
 export type RouteDurationProviderId = "google_directions" | "japan_transit";
 
 export type RouteDurationProviderContext = {
   scope: RouteLegScope;
-  origin: LatLng;
-  destination: LatLng;
+  origin: import("@/lib/google-routes-fetch").LatLng;
+  destination: import("@/lib/google-routes-fetch").LatLng;
   preferredMode: RoutesTravelMode;
   query: FetchRouteQueryOptions;
   cacheKey: string;
@@ -50,6 +53,16 @@ function transitUnavailableResult(
     transitUnavailable: true,
     transitUnavailableProvider: provider,
     estimates: { distanceMeters: 0, transit: undefined },
+  };
+}
+
+function toFetchContext(ctx: RouteDurationProviderContext): RouteFetchContext {
+  return {
+    scope: ctx.scope,
+    origin: ctx.origin,
+    destination: ctx.destination,
+    query: ctx.query,
+    cacheKey: ctx.cacheKey,
   };
 }
 
@@ -98,40 +111,13 @@ export async function googleDirectionsProvider(
     const primaryStatus = googleStatusFromResult(primary);
     logRouteOnce(
       `transit_err|${cacheKey}|${primaryStatus}`,
-      `[ROUTE_TRANSIT_ERROR] leg=${scope.legKey} status=${primaryStatus} message=${primary.message ?? "route_failed"} region=${query.region ?? "auto"} provider=google_directions`,
+      `[ROUTE_TRANSIT_ERROR] leg=${scope.legKey} status=${primaryStatus} message=${primary.message ?? "route_failed"} available=${primary.availableTravelModes?.join(",") ?? "n/a"} region=${query.region ?? "auto"} provider=google_directions`,
     );
 
     return transitUnavailableResult(null);
   }
 
-  const primary = await fetchRouteResult(origin, destination, preferredMode, query);
-  if (primary.ok) {
-    return {
-      ok: true,
-      durationMinutes: primary.data.durationMinutes,
-      distanceMeters: primary.data.distanceMeters,
-      mode: preferredMode,
-      usedWalkFallback: false,
-      transitUnavailable: false,
-      transitUnavailableProvider: null,
-      estimates: estimatesForMode(
-        primary.data.durationMinutes,
-        preferredMode,
-        primary.data.distanceMeters,
-      ),
-    };
-  }
-
-  return {
-    ok: false,
-    durationMinutes: 0,
-    distanceMeters: 0,
-    mode: preferredMode,
-    usedWalkFallback: false,
-    transitUnavailable: false,
-    transitUnavailableProvider: null,
-    estimates: { distanceMeters: 0 },
-  };
+  return fetchRouteWithDirectionFallbacks(toFetchContext(ctx), preferredMode);
 }
 
 export function resolveRouteDurationProviderId(

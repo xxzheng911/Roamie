@@ -25,8 +25,10 @@ import { placeOpeningStatusLabel } from "@/lib/normalized-opening-status";
 import {
   buildPlaceImageUrls,
   canFetchGooglePlaceDetails,
+  fetchGooglePlaceDetailsForHandoff,
   handoffToPlaceDetailData,
   mergeFetchedPlace,
+  resolveGooglePlaceIdForDetail,
   resolvePlaceDetailHandoff,
   type PlaceDetailViewModel,
 } from "@/lib/place-detail-resolve";
@@ -37,7 +39,6 @@ import {
 } from "@/lib/places.functions";
 import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
 import { detectPlatform } from "@/services/platform";
-import { getPlaceIntro } from "@/lib/recommendation.functions";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
 import { requestDeviceLocation } from "@/lib/device-location";
 import { TAIPEI_CENTER } from "@/lib/geo";
@@ -49,7 +50,10 @@ import {
   mapPlaceResultToChatItem,
   saveChatSession,
 } from "@/lib/chat-session";
-import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
+import {
+  buildPlaceRecommendationReason,
+  userProfileForReasonFrom,
+} from "@/lib/build-place-recommendation-reason";
 import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
 import {
@@ -58,13 +62,19 @@ import {
 } from "@/lib/place-display-address";
 import { getWeather } from "@/lib/weather.functions";
 import type { WeatherSummary } from "@/lib/weather-types";
+import { inferExploreCityLabel } from "@/lib/explore-recommend-mode";
+import { requestExploreMapClearSelection } from "@/lib/explore-map-selection";
+import { resolveTabelogPlaceExternalUrl } from "@/lib/tabelog-reference";
+import { buildPlaceDetailTicketOffers } from "@/lib/affiliate/affiliate-links";
 
 const searchSchema = z.object({
   placeId: z.string().optional(),
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
-  /** 返回來源：chat 從聊聊回來；map 從探索回來 */
-  returnTo: z.enum(["chat", "map", "home"]).optional(),
+  /** 返回來源：chat 從聊聊回來；map 從探索回來；trip 從行程內頁回來 */
+  returnTo: z.enum(["chat", "map", "home", "trip"]).optional(),
+  tripId: z.string().optional(),
+  day: z.coerce.number().optional(),
 });
 
 export const Route = createFileRoute("/_app/place")({
@@ -94,7 +104,6 @@ function PlaceDetailPage() {
   const { t, locale } = useI18n();
   const { hasPlusAccess } = useAccess();
   const fetchPlaceDetailsFn = useServerFn(getPlaceDetails);
-  const fetchPlaceIntroFn = useServerFn(getPlaceIntro);
   const fetchWeatherFn = useServerFn(getWeather);
   const { openAddToTrip } = useAddToTrip();
   useAvatar();
@@ -112,13 +121,6 @@ function PlaceDetailPage() {
   const [reasonProfile, setReasonProfile] = useState(() => userProfileForReasonFrom({}));
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  const [introExtra, setIntroExtra] = useState<{
-    intro?: string;
-    suitableFor?: string;
-    weatherFit?: string;
-    goNowAdvice?: string;
-    introLoading?: boolean;
-  }>({});
 
   useEffect(() => {
     logPlaceDetailScreenMounted();
@@ -137,66 +139,78 @@ function PlaceDetailPage() {
     setFetchError(null);
     setUsedFallback(false);
 
-    if (!canFetchGooglePlaceDetails(handoff.placeId)) {
-      logPlaceDetailFallbackUsed("no_google_place_id");
-      setUsedFallback(true);
-      setLoading(false);
-      return;
-    }
-
-    logPlaceDetailFetchStarted(handoff.placeId);
     let cancelled = false;
-    const applyFetched = (fetched: PlaceDetailsScreenResult) => {
-      logPlaceDetailFetchSuccess(handoff.placeId);
+
+    const finishLoading = () => {
+      if (!cancelled) setLoading(false);
+    };
+
+    const applyFetched = (fetched: PlaceDetailsScreenResult, resolvedPlaceId: string) => {
+      logPlaceDetailFetchSuccess(resolvedPlaceId);
       setPlace(mergeFetchedPlace(base, fetched, locale));
       setFetchError(null);
       setUsedFallback(false);
     };
 
-    void fetchPlaceDetailsFn({ data: { placeId: handoff.placeId, locale } })
-      .then(async ({ place: fetched, error }) => {
+    void (async () => {
+      let placeId = handoff.placeId?.trim() || "";
+      if (!canFetchGooglePlaceDetails(placeId)) {
+        const resolved = await resolveGooglePlaceIdForDetail(handoff, locale);
+        if (cancelled) return;
+        if (resolved) placeId = resolved;
+      }
+
+      if (!canFetchGooglePlaceDetails(placeId)) {
+        logPlaceDetailFallbackUsed("no_google_place_id");
+        setUsedFallback(true);
+        finishLoading();
+        return;
+      }
+
+      if (placeId !== base.id) {
+        setPlace((prev) => (prev ? { ...prev, id: placeId } : prev));
+      }
+
+      logPlaceDetailFetchStarted(placeId);
+
+      try {
+        const { place: fetched, error } = await fetchGooglePlaceDetailsForHandoff(
+          placeId,
+          locale,
+          fetchPlaceDetailsFn,
+          detectPlatform().isCapacitor
+            ? async (id, loc) => {
+                const mapsKey = getGoogleMapsBrowserKey();
+                if (!mapsKey) return null;
+                return fetchPlaceDetailsForScreenWithKey(id, mapsKey, loc);
+              }
+            : undefined,
+        );
         if (cancelled) return;
         if (fetched) {
-          applyFetched(fetched);
+          applyFetched(fetched, placeId);
           return;
         }
-        if (detectPlatform().isCapacitor) {
-          const mapsKey = getGoogleMapsBrowserKey();
-          if (mapsKey) {
-            const clientPlace = await fetchPlaceDetailsForScreenWithKey(
-              handoff.placeId,
-              mapsKey,
-              locale,
-            );
-            if (cancelled) return;
-            if (clientPlace) {
-              console.info("[PLACE_DETAIL] client places details ok", handoff.placeId);
-              applyFetched(clientPlace);
-              return;
-            }
-          }
-        }
-        logPlaceDetailFetchFailed(handoff.placeId, error ?? "unknown");
+        logPlaceDetailFetchFailed(placeId, error ?? "unknown");
         logPlaceDetailFallbackUsed(error ?? "fetch_failed");
         setUsedFallback(true);
         setFetchError(error);
-      })
-      .catch((e) => {
+      } catch (e) {
         if (cancelled) return;
         const msg = e instanceof Error ? e.message : "fetch_failed";
-        logPlaceDetailFetchFailed(handoff.placeId, msg);
+        logPlaceDetailFetchFailed(placeId, msg);
         logPlaceDetailFallbackUsed(msg);
         setUsedFallback(true);
         setFetchError(msg);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      } finally {
+        finishLoading();
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [search.placeId, search.lat, search.lng, locale, fetchPlaceDetailsFn]);
+  }, [search.placeId, search.lat, search.lng, search.returnTo, locale, fetchPlaceDetailsFn]);
 
   useEffect(() => {
     let cancelled = false;
@@ -241,42 +255,19 @@ function PlaceDetailPage() {
   }, [locale, place?.lat, place?.lng, userLocation.lat, userLocation.lng, fetchWeatherFn, hasPlusAccess]);
 
   useEffect(() => {
-    if (!place?.id || !canFetchGooglePlaceDetails(place.id)) {
-      setIntroExtra({});
-      return;
-    }
-    let cancelled = false;
-    setIntroExtra({ introLoading: true });
-    void fetchPlaceIntroFn({
-      data: {
-        placeId: place.id,
-        reason: place.reason,
+    setPlace((prev) => {
+      if (!prev) return prev;
+      const nextReason = buildPlaceRecommendationReason(
+        prev,
+        reasonProfile,
+        weather,
+        undefined,
+        undefined,
         locale,
-        lat: place.lat ?? undefined,
-        lng: place.lng ?? undefined,
-      },
-    })
-      .then(({ intro }) => {
-        if (cancelled) return;
-        if (!intro) {
-          setIntroExtra({});
-          return;
-        }
-        setIntroExtra({
-          intro: intro.intro,
-          suitableFor: intro.suitableFor,
-          weatherFit: intro.weatherFit,
-          goNowAdvice: intro.goNowAdvice,
-          introLoading: false,
-        });
-      })
-      .catch(() => {
-        if (!cancelled) setIntroExtra({});
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [place?.id, place?.reason, locale, fetchPlaceIntroFn, place?.lat, place?.lng]);
+      );
+      return prev.reason !== nextReason ? { ...prev, reason: nextReason } : prev;
+    });
+  }, [place?.id, weather, reasonProfile, locale]);
 
   const destination =
     place?.lat != null && place.lng != null ? { lat: place.lat, lng: place.lng } : null;
@@ -311,7 +302,6 @@ function PlaceDetailPage() {
       (place.address ? sanitizeGooglePlaceAddress(place.address, locale) : null);
     return {
       ...place,
-      ...introExtra,
       address,
       openStatusLabel: placeOpeningStatusLabel(place) ?? place.openStatusLabel,
       normalizedOpeningLabel:
@@ -319,12 +309,43 @@ function PlaceDetailPage() {
         placeOpeningStatusLabel(place) ??
         place.openStatusLabel,
     };
-  }, [place, introExtra, locale]);
+  }, [place, locale]);
 
   const distanceLabel = useMemo(() => {
     if (!place || place.lat == null || place.lng == null) return null;
     return formatDistanceLabel(distanceMeters(userLocation, { lat: place.lat, lng: place.lng }));
   }, [place, userLocation]);
+
+  const placeTabelogUrl = useMemo(() => {
+    if (!place) return null;
+    const cityLabel =
+      place.lat != null && place.lng != null
+        ? inferExploreCityLabel(place.lat, place.lng, place.address)
+        : inferExploreCityLabel(userLocation.lat, userLocation.lng, place.address);
+    return resolveTabelogPlaceExternalUrl({
+      cityLabel,
+      address: place.address,
+      place,
+    });
+  }, [place, userLocation.lat, userLocation.lng]);
+
+  const placeTicketOffers = useMemo(() => {
+    if (!place) return [];
+    const cityLabel =
+      place.lat != null && place.lng != null
+        ? inferExploreCityLabel(place.lat, place.lng, place.address)
+        : inferExploreCityLabel(userLocation.lat, userLocation.lng, place.address);
+    return buildPlaceDetailTicketOffers(
+      {
+        name: place.name,
+        primaryType: place.primaryType,
+        types: place.types,
+        rating: place.rating,
+        userRatingCount: place.userRatingCount,
+      },
+      { destinationLabel: cityLabel, locale },
+    );
+  }, [place, userLocation.lat, userLocation.lng, locale]);
 
   const handleBack = useCallback(() => {
     if (search.returnTo === "chat") {
@@ -332,6 +353,7 @@ function PlaceDetailPage() {
       return;
     }
     if (search.returnTo === "map") {
+      requestExploreMapClearSelection();
       navigate({ to: "/map" });
       return;
     }
@@ -339,12 +361,24 @@ function PlaceDetailPage() {
       navigate({ to: "/" });
       return;
     }
+    if (search.returnTo === "trip" && search.tripId) {
+      if (typeof window !== "undefined" && window.history.length > 1) {
+        window.history.back();
+        return;
+      }
+      navigate({
+        to: "/saved/$tripId",
+        params: { tripId: search.tripId },
+        search: search.day != null && search.day > 0 ? { day: search.day } : undefined,
+      });
+      return;
+    }
     if (typeof window !== "undefined" && window.history.length > 1) {
       window.history.back();
       return;
     }
     navigate({ to: "/" });
-  }, [navigate, search.returnTo]);
+  }, [navigate, search.returnTo, search.tripId, search.day]);
 
   const handleToggleSave = async () => {
     if (!place) return;
@@ -459,6 +493,8 @@ function PlaceDetailPage() {
             addToTripLabel={t("chat.addToTrip")}
             saveLabel="收藏"
             onOpenChat={handleOpenChat}
+            tabelogExternalUrl={placeTabelogUrl}
+            ticketOffers={placeTicketOffers}
           />
         </>
       )}

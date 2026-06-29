@@ -2,6 +2,7 @@ import {
   isRecommendablePlace,
   placeResultToRecommendableInput,
 } from "@/lib/is-recommendable-place";
+import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
 import type { PlaceResult } from "@/lib/place-result";
 import { FOOD_MERCHANT_DENY_RE } from "@/lib/place-category";
 
@@ -223,6 +224,7 @@ export function filterExplorePlaces<T extends RecommendablePlaceLike>(
   }
   const context = options?.context ?? "explore_map";
   return places.filter((place) => {
+    if (isBurialOrFuneralPlace(place)) return false;
     const input = placeResultToRecommendableInput({
       id: place.id ?? "",
       name: place.name ?? "",

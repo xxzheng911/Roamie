@@ -1,4 +1,14 @@
-import { isKnownCountryLabel, normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import {
+  isKnownCountryLabel,
+  isKnownTouristCityLabel,
+  normalizeDestinationLabel,
+} from "@/lib/ai/trip-planning-context";
+import {
+  buildDestinationCombinationSuggestionsReply,
+  getDestinationCombinations,
+  hasDestinationCombinations,
+  isSuggestionInDestinationScope,
+} from "@/lib/ai/destination-combination-suggestions";
 
 export type DestinationStyleGuide = {
   styleOptions: string[];
@@ -51,10 +61,30 @@ const DEFAULT_GUIDE: DestinationStyleGuide = {
 
 export function getDestinationStyleGuide(destination: string): DestinationStyleGuide {
   const label = normalizeDestinationLabel(destination);
+
+  if (hasDestinationCombinations(label)) {
+    const combos = getDestinationCombinations(label);
+    return {
+      styleOptions: combos.map((c) => c.title),
+      hotRoutes: combos.flatMap((c) => c.places).filter((p) => isSuggestionInDestinationScope(p, label)),
+      themeDescription: `${label}文化、美食與經典景點`,
+      durationOptions: ["5 天", "7 天", "10 天"],
+    };
+  }
+
   if (GUIDES[label]) return GUIDES[label];
 
   if (ANIME_FRIENDLY.has(label)) {
     return GUIDES["日本"];
+  }
+
+  if (isKnownTouristCityLabel(label)) {
+    return {
+      styleOptions: ["經典景點", "美食文化", "商圈購物", "慢步調散策"],
+      hotRoutes: [`${label}經典地標`, `${label}特色商圈`, `${label}在地美食`],
+      themeDescription: `${label}文化、美食與經典景點`,
+      durationOptions: ["5 天", "7 天", "10 天"],
+    };
   }
 
   if (isKnownCountryLabel(label)) {
@@ -78,16 +108,24 @@ export function buildDestinationStyleChoiceQuestion(
   destination: string,
   opts?: { days?: number; month?: string },
 ): string {
-  const guide = getDestinationStyleGuide(destination);
+  const label = normalizeDestinationLabel(destination);
+  const guide = getDestinationStyleGuide(label);
   const daysLabel = opts?.days ? ` ${opts.days} 天` : "";
   const monthLabel = opts?.month ? `（${opts.month}）` : "";
 
+  if (hasDestinationCombinations(label) && opts?.days) {
+    const comboReply = buildDestinationCombinationSuggestionsReply(label, opts.days, {
+      weatherLine: `好，我先幫你抓${label}${daysLabel}${monthLabel}的方向。`,
+    });
+    if (comboReply) return comboReply;
+  }
+
   return [
-    `好，我先幫你抓${destination}${daysLabel}${monthLabel}的方向。`,
+    `好，我先幫你抓${label}${daysLabel}${monthLabel}的方向。`,
     "你想要偏向：",
     ...guide.styleOptions.map((option, index) => `${index + 1}. ${option}`),
     "",
-    "也可以直接跟我說偏好，或回「都可以」讓我依熱門路線推薦。",
+    "也可以直接跟我說偏好，或回「都可以」讓我依建議組合安排。",
   ].join("\n");
 }
 
@@ -95,13 +133,30 @@ export function buildDefaultRoutesReply(
   destination: string,
   country?: string,
 ): { reply: string; durationOptions: string[] } {
-  const guide = getDestinationStyleGuide(destination);
-  const routeList = guide.hotRoutes.map((route, index) => `${index + 1}. ${route}`).join("\n");
+  const label = normalizeDestinationLabel(destination);
+  const guide = getDestinationStyleGuide(label);
+
+  if (hasDestinationCombinations(label)) {
+    const days = 5;
+    const comboReply =
+      buildDestinationCombinationSuggestionsReply(label, days, {
+        weatherLine: `如果都可以，我會依${label}的建議組合幫你抓方向。`,
+      }) ?? "";
+    return {
+      reply: comboReply,
+      durationOptions: guide.durationOptions ?? DEFAULT_GUIDE.durationOptions!,
+    };
+  }
+
+  const routeList = guide.hotRoutes
+    .filter((route) => isSuggestionInDestinationScope(route, label))
+    .map((route, index) => `${index + 1}. ${route}`)
+    .join("\n");
 
   return {
     reply: [
-      `如果都可以，我會先用${destination}經典熱門路線幫你抓方向。`,
-      `${destination}比較適合走${guide.themeDescription}：`,
+      `如果都可以，我會先用${label}經典熱門路線幫你抓方向。`,
+      `${label}比較適合走${guide.themeDescription}：`,
       "",
       routeList,
       "",

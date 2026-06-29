@@ -26,24 +26,44 @@ export function travelMinutesForMode(leg: TransitLegAdvice, transportLabel: stri
   const t = transportLabel.trim();
   if (!t) return leg.durationMinutes > 0 ? leg.durationMinutes : null;
 
+  const fallbackMinutes = (): number | null => {
+    if (leg.transportFallbackMode === "transit") {
+      return leg.estimates.transit ?? null;
+    }
+    if (leg.transportFallbackMode === "drive") {
+      return leg.estimates.drive ?? null;
+    }
+    if (leg.transportFallbackMode === "walk") {
+      return leg.estimates.walk ?? null;
+    }
+    return null;
+  };
+
   if (/步行|走路|walk/i.test(t)) {
-    return leg.estimates.walk ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
+    return leg.estimates.walk ?? fallbackMinutes() ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
   }
   if (/開車|drive|自駕|租車/i.test(t)) {
-    return leg.estimates.drive ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
+    return leg.estimates.drive ?? fallbackMinutes() ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
   }
   if (/機車|scooter|摩托/i.test(t)) {
-    const drive = leg.estimates.drive ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
+    const drive =
+      leg.estimates.drive ?? fallbackMinutes() ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
     return drive != null ? Math.max(1, Math.round(drive * 0.85)) : null;
   }
   if (isTransitRequested(t)) {
     return leg.estimates.transit ?? null;
   }
   if (/單車|自行车|bike|bicycle/i.test(t)) {
-    return leg.estimates.walk ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
+    return (
+      leg.estimates.walk ??
+      leg.estimates.drive ??
+      leg.estimates.transit ??
+      fallbackMinutes() ??
+      (leg.durationMinutes > 0 ? leg.durationMinutes : null)
+    );
   }
   if (/計程車|共乘|taxi|uber/i.test(t)) {
-    return leg.estimates.drive ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
+    return leg.estimates.drive ?? fallbackMinutes() ?? (leg.durationMinutes > 0 ? leg.durationMinutes : null);
   }
   return leg.durationMinutes > 0 ? leg.durationMinutes : null;
 }
@@ -60,12 +80,22 @@ export function durationSourceForLeg(
     if (transitUnavailableWithWalkFallback(leg, t)) return "WALKING_FALLBACK_DISPLAY_ONLY";
     return "NONE";
   }
-  if (/步行|走路|walk/i.test(t)) return leg.estimates.walk != null ? "WALK" : "NONE";
+  if (/步行|走路|walk/i.test(t)) {
+    if (leg.estimates.walk != null) return "WALK";
+    if (leg.transportFallbackMode) return "ESTIMATE";
+    return "NONE";
+  }
   if (/開車|drive|自駕|租車|計程車|共乘|taxi/i.test(t)) {
-    return leg.estimates.drive != null ? "DRIVE" : "NONE";
+    if (leg.estimates.drive != null) return "DRIVE";
+    if (leg.transportFallbackMode) return "ESTIMATE";
+    return "NONE";
+  }
+  if (/單車|bike|bicycle/i.test(t)) {
+    const mins = travelMinutesForMode(leg, t);
+    return mins != null ? (leg.transportFallbackMode ? "ESTIMATE" : "WALK") : "NONE";
   }
   const mins = travelMinutesForMode(leg, t);
-  return mins != null ? "TRANSIT" : "NONE";
+  return mins != null ? "ESTIMATE" : "NONE";
 }
 
 /** 抵達時間推算用：絕不使用 WALKING_FALLBACK */
@@ -114,7 +144,8 @@ export function formatLegTravelTimeLabel(
   if (mins == null) return "暫時無法取得交通時間";
 
   const label = transportLabel.trim() || "移動";
-  return `${label} 約 ${mins} 分鐘`;
+  const estimatedSuffix = leg.transportFallbackMode ? "（估算）" : "";
+  return `${label} 約 ${mins} 分鐘${estimatedSuffix}`;
 }
 
 /** 不再顯示步行 fallback 提示 */

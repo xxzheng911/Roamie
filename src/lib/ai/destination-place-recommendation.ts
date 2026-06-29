@@ -11,6 +11,7 @@ import {
 } from "@/lib/ai/chat-place-recommendation";
 import {
   buildDestinationTextSearchAttempts,
+  EN_CITY_NAMES,
   geocodeDestinationWithFallback,
   logDestinationTextSearchResult,
   resolveDestinationApproxCenter,
@@ -56,7 +57,15 @@ import {
   filterAlreadyRecommendedPlaces,
   filterExcludedPlaceIds,
 } from "@/lib/place-planning-memory";
-import { buildRefreshRecommendationSummary, buildAlternativeRecommendationSummary } from "@/lib/ai/chat-recommendation-refresh";
+import {
+  buildRefreshRecommendationSummary,
+  buildAlternativeRecommendationSummary,
+  logChatMorePlacesContext,
+  logChatMorePlacesExcludeIds,
+  logChatMorePlacesFetchCount,
+  logChatMorePlacesIntent,
+  logChatMorePlacesNewCount,
+} from "@/lib/ai/chat-recommendation-refresh";
 import {
   CHAT_DESTINATION_MIN_COUNT,
   CHAT_DESTINATION_TARGET_COUNT,
@@ -116,7 +125,11 @@ function buildSummaryText(
   profile?: ReturnType<typeof classifyDestinationForPlaceSearch>,
 ): string {
   const label = normalizeDestinationLabel(destination);
-  if (context.tripPurpose === "refresh_recommendations" && recommendations.length > 0) {
+  if (
+    (context.tripPurpose === "refresh_recommendations" ||
+      context.tripPurpose === "more_place_recommendations") &&
+    recommendations.length > 0
+  ) {
     return buildRefreshRecommendationSummary(recommendations, "attraction");
   }
   if (!recommendations.length) {
@@ -610,6 +623,258 @@ function buildContextPatch(destination: string): Partial<CanonicalTravelContext>
     conversationState: "itinerary_draft",
     planningStage: "recommendations_generated",
   };
+}
+
+function resolveMorePlacesCategoryPreference(
+  context: CanonicalTravelContext,
+  activeChatIntent?: string | null,
+): string {
+  if (activeChatIntent === "cafe") return "cafe";
+  if (activeChatIntent === "restaurant") return "restaurant";
+  if (context.setting === "室內") return "indoor";
+  if (/咖啡/.test(context.mood ?? "") || context.interests?.includes("咖啡")) return "cafe";
+  if (/美食|餐廳|吃/.test(context.mood ?? "") || context.interests?.includes("美食")) {
+    return "restaurant";
+  }
+  return "attraction";
+}
+
+function buildMorePlacesPrimaryAttempts(destination: string, category: string): SearchAttempt[] {
+  const label = normalizeDestinationLabel(destination);
+  if (category === "cafe") {
+    return [{ query: `${label} 咖啡廳`, mode: "text", includedTypes: ["cafe", "coffee_shop"] }];
+  }
+  if (category === "restaurant") {
+    return [{ query: `${label} 美食`, mode: "text", includedTypes: ["restaurant"] }];
+  }
+  if (category === "indoor") {
+    return [
+      {
+        query: `${label} 室內景點`,
+        mode: "text",
+        includedTypes: ["museum", "shopping_mall", "art_gallery"],
+      },
+    ];
+  }
+  return [{ query: `${label} 必去景點`, mode: "text", includedTypes: ["tourist_attraction"] }];
+}
+
+function buildMorePlacesFallbackQueries(destination: string): SearchAttempt[] {
+  const label = normalizeDestinationLabel(destination);
+  const en = EN_CITY_NAMES[label] ?? label;
+  return [
+    { query: `${label} 景點`, mode: "text", includedTypes: ["tourist_attraction"] },
+    {
+      query: `${label} 室內景點`,
+      mode: "text",
+      includedTypes: ["museum", "shopping_mall", "art_gallery"],
+    },
+    { query: `${label} 美食`, mode: "text", includedTypes: ["restaurant"] },
+    { query: `${label} 咖啡廳`, mode: "text", includedTypes: ["cafe", "coffee_shop"] },
+    { query: `${en} attractions`, mode: "text", includedTypes: ["tourist_attraction"] },
+    { query: `${en} hidden gems`, mode: "text", includedTypes: ["tourist_attraction"] },
+  ];
+}
+
+export async function buildMoreDestinationRecommendations(params: {
+  destination: string;
+  userText: string;
+  context: CanonicalTravelContext;
+  locale: Locale;
+  searchPlaces: PlaceSearchFn;
+  geocodeFn: GeocodeDestinationFn;
+  fetchWeatherFn: FetchWeatherFn;
+  excludePlaceIds?: string[];
+  rejectedPlaceNames?: string[];
+  activeChatIntent?: string | null;
+}): Promise<{
+  summary: string;
+  recommendations: RoamieRecommendationItem[];
+  payload: RoamiePayloadV2;
+  contextPatch: Partial<CanonicalTravelContext>;
+  newCount: number;
+  fetchCount: number;
+}> {
+  const {
+    destination,
+    userText,
+    context,
+    locale,
+    searchPlaces,
+    geocodeFn,
+    fetchWeatherFn,
+    excludePlaceIds = [],
+    rejectedPlaceNames = [],
+    activeChatIntent,
+  } = params;
+  const label = normalizeDestinationLabel(destination);
+  const category = resolveMorePlacesCategoryPreference(context, activeChatIntent);
+
+  logChatMorePlacesIntent(userText);
+  logChatMorePlacesContext({
+    destination: label,
+    category,
+    tripPurpose: "more_place_recommendations",
+  });
+  logChatMorePlacesExcludeIds(excludePlaceIds.length);
+
+  const flow = beginPlacesFlow("chat_more_place_recommendations");
+  try {
+    const geocoded = await geocodeDestinationWithFallback({
+      destination: label,
+      locale,
+      geocodeFn,
+    });
+    const searchProfile = classifyDestinationForPlaceSearch(label, geocoded);
+
+    let lat: number;
+    let lng: number;
+    let geocodeSucceeded = false;
+    let textOnlyDestinationSearch = false;
+
+    if (geocoded?.lat != null && geocoded?.lng != null) {
+      lat = geocoded.lat;
+      lng = geocoded.lng;
+      geocodeSucceeded = true;
+      logChatDestinationResolved(label, lat, lng, "geocode");
+    } else {
+      logChatPlacesError("geocode_empty", "geocode");
+      const approx = resolveDestinationApproxCenter(label);
+      if (approx) {
+        lat = approx.lat;
+        lng = approx.lng;
+        logChatDestinationResolved(label, lat, lng, "approx_center");
+      } else {
+        lat = 0;
+        lng = 0;
+        textOnlyDestinationSearch = true;
+        logChatDestinationResolved(label, lat, lng, "text_only");
+      }
+    }
+
+    const entity = resolveDestinationEntity(label);
+    const searchContext: ChatPlaceSearchContext = {
+      searchMode: "destination",
+      destinationName: label,
+      destinationLatLng: textOnlyDestinationSearch ? null : { lat, lng },
+      textOnlyDestinationSearch,
+      destinationCountry: entity.country,
+      destinationCity: entity.type === "city" ? label : undefined,
+    };
+
+    let weather: WeatherSummary | null = null;
+    if (geocodeSucceeded) {
+      try {
+        const raw = await fetchWeatherFn({ data: { lat, lng, locale } });
+        weather = unwrapWeatherResult(raw);
+      } catch (error) {
+        logChatPlacesError(error, "weather");
+      }
+    }
+
+    const scene = resolveWeatherScene(weather, label);
+    const intro =
+      searchProfile.kind === "landmark"
+        ? buildLandmarkCompanionIntro(searchProfile, scene, weather?.available !== false)
+        : buildWeatherAwarePlaceIntro(label, scene, weather?.available !== false);
+
+    const caller = geocodeSucceeded
+      ? "chat.morePlaceRecommendations"
+      : "chat.morePlaceRecommendations.textOnly";
+
+    const searchParams = {
+      label,
+      lat,
+      lng,
+      locale,
+      searchPlaces,
+      weather,
+      context: { ...context, destination: label, tripPurpose: "more_place_recommendations" as const },
+      caller,
+      excludePlaceIds,
+      userText,
+      profile: searchProfile,
+      searchContext,
+    };
+
+    const primaryAttempts = buildMorePlacesPrimaryAttempts(label, category);
+    let places = await searchDestinationPlaces({ ...searchParams, attempts: primaryAttempts });
+    let filtered = filterAlreadyRecommendedPlaces(places, {
+      rejectedNames: rejectedPlaceNames,
+      blockedCoreNames: searchProfile.parentLandmark ? [searchProfile.parentLandmark] : undefined,
+    });
+    logChatMorePlacesFetchCount(places.length);
+
+    if (filtered.length < CHAT_DESTINATION_MIN_COUNT) {
+      const fallbackAttempts = buildMorePlacesFallbackQueries(label).filter(
+        (attempt) => !primaryAttempts.some((a) => a.query === attempt.query),
+      );
+      for (const attempt of fallbackAttempts) {
+        if (filtered.length >= CHAT_DESTINATION_MIN_COUNT) break;
+        const more = await searchDestinationPlaces({ ...searchParams, attempts: [attempt] });
+        const moreFiltered = filterAlreadyRecommendedPlaces(more, {
+          rejectedNames: rejectedPlaceNames,
+          blockedCoreNames: searchProfile.parentLandmark
+            ? [searchProfile.parentLandmark]
+            : undefined,
+        });
+        const seen = new Set(filtered.map((p) => p.id));
+        for (const place of moreFiltered) {
+          if (!seen.has(place.id)) {
+            seen.add(place.id);
+            filtered.push(place);
+          }
+        }
+      }
+    }
+
+    filtered = rankLandmarkCompanionPlaces(filtered, searchProfile).slice(0, RECOMMENDATION_COUNT);
+    logChatMorePlacesNewCount(filtered.length);
+
+    let recommendations: RoamieRecommendationItem[];
+    if (filtered.length > 0) {
+      recommendations = placesToRecommendations(filtered, lat, lng, context, locale);
+      logChatPlacesResponse(recommendations.length, "places_api");
+      logChatPlaceCardsRendered(recommendations.length);
+    } else {
+      recommendations = [];
+      logChatRenderBlocked("no_new_places");
+    }
+
+    const moreContext = {
+      ...context,
+      destination: label,
+      tripPurpose: "more_place_recommendations" as const,
+    };
+    const summary =
+      recommendations.length > 0
+        ? buildSummaryText(label, intro, recommendations, moreContext, searchProfile)
+        : intro;
+
+    return {
+      summary,
+      recommendations,
+      payload: {
+        version: 2,
+        title: "更多推薦",
+        summary,
+        moodTag: context.mood ?? "",
+        recommendations,
+        itinerary: [],
+        generatedAt: new Date().toISOString(),
+      },
+      contextPatch: {
+        destination: label,
+        tripPurpose: "more_place_recommendations",
+        conversationState: "itinerary_draft",
+        planningStage: "recommendations_generated",
+      },
+      newCount: recommendations.length,
+      fetchCount: places.length,
+    };
+  } finally {
+    endPlacesFlow(flow);
+  }
 }
 
 export function resolveDestinationForPlaceFetch(

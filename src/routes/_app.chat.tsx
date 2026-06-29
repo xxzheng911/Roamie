@@ -1,15 +1,9 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
-import { subscribeCapacitorKeyboard } from "@/lib/capacitor-keyboard-bridge";
-import {
-  isCapacitorNativeShell,
-  logChatKeyboardHide,
-  logChatKeyboardShow,
-  logComposerLayoutSnapshot,
-  measureVisualViewportKeyboardInset,
-  resolveComposerBottomInset,
-} from "@/lib/chat-keyboard-layout";
+import { useMessengerChatLayout } from "@/hooks/use-messenger-chat-layout";
 import { ChatComposer } from "@/components/chat/ChatComposer";
+import { ChatKeyboardDebugOverlay } from "@/components/chat/ChatKeyboardDebugOverlay";
+import { isChatKeyboardDebugEnabled } from "@/lib/chat-keyboard-visual-debug";
 import { useServerFn } from "@tanstack/react-start";
 import { Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { BackButton } from "@/components/BackButton";
@@ -57,7 +51,9 @@ import { confirmSaveTrip } from "@/lib/itinerary-storage";
 import { clearDraftTrip, loadDraftTrip, saveDraftTrip } from "@/lib/trip-draft-storage";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import {
+  coalesceItineraryItems,
   hasValidItineraryStops,
+  ITINERARY_GENERATION_FAILED_MESSAGE,
 } from "@/lib/trip/itinerary-guards";
 import { getRecommendation } from "@/lib/recommendation-storage";
 import { inferDestinationFromPlaces } from "@/lib/itinerary-source";
@@ -133,6 +129,8 @@ import { clearPlanFormDraft } from "@/lib/plan-form-draft-storage";
 import { buildContextBundleForTrip } from "@/lib/fetch-context";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import { useI18n } from "@/hooks/use-i18n";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import { resolveChatConnectionFallbackMessage } from "@/lib/user-facing-error";
 import { useAccess } from "@/hooks/use-access";
 import { usePreferenceQuizCompleted } from "@/hooks/use-preference-quiz-status";
 import {
@@ -194,7 +192,7 @@ import {
   shouldFetchNearbyPlaces,
 } from "@/lib/ai/chat-dining-flow";
 import { buildNearbyPlaceRecommendation, restaurantSearchFallbackQueries } from "@/lib/ai/chat-place-recommendation";
-import { buildDestinationMustVisitRecommendation, buildAlternativeDestinationRecommendations } from "@/lib/ai/destination-place-recommendation";
+import { buildDestinationMustVisitRecommendation, buildAlternativeDestinationRecommendations, buildMoreDestinationRecommendations } from "@/lib/ai/destination-place-recommendation";
 import { buildDestinationCategoryRecommendations } from "@/lib/ai/chat-destination-category-recommendation";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import {
@@ -210,6 +208,10 @@ import {
   collectBlockedCoreNames,
   collectExcludePlaceIds,
   extractRecommendedFromMsgs,
+  isMorePlaceRecommendationsIntent,
+  logChatMorePlacesExcludeIds,
+  logChatMorePlacesIntent,
+  logChatMorePlacesNoResultAllowed,
   resolveRefreshNearbyIntent,
   shouldAcceptAlternativeRecommendations,
   shouldRefetchPlaces,
@@ -236,11 +238,22 @@ import {
   type ChatTurnResult,
 } from "@/lib/ai/chat-state-machine";
 import {
-  AI_ITINERARY_FAILED_OFFER_MESSAGE,
+  AI_ITINERARY_SUCCESS_REDIRECT_MESSAGE,
   createItineraryFromSession,
+  logAiItinerarySuccess,
   logAiState,
   prepareDirectItineraryFlow,
 } from "@/lib/ai/ai-itinerary-state-machine";
+import { prepareDirectItinerarySession } from "@/lib/ai/itinerary-place-fetch";
+import {
+  logItineraryFailureReason,
+  logItineraryItemsCoalesced,
+  logItinerarySaveFailed,
+  logItinerarySavePayloadReady,
+  logItinerarySaveStart,
+  logItinerarySaveSuccess,
+  sanitizeDestinationForGeocode,
+} from "@/lib/ai/itinerary-entity-extraction";
 import { prefetchDestinationWeather } from "@/lib/ai/destination-weather-prefetch";
 import { buildPlanningOfflineReply } from "@/lib/ai/chat-turn-engine";
 import {
@@ -296,7 +309,7 @@ export const Route = createFileRoute("/_app/chat")({
 });
 
 function Chat() {
-  const { t, tList, locale } = useI18n();
+  const { t, locale } = useI18n();
   const quizCompleted = usePreferenceQuizCompleted();
   const { hasPlusAccess } = useAccess();
   const { openAddToTrip } = useAddToTrip();
@@ -317,49 +330,65 @@ function Chat() {
   const [partial, setPartial] = useState<Partial<RoamieResponse>>({});
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [savingName, setSavingName] = useState<string | null>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const bottomAnchorRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const composerShellRef = useRef<HTMLDivElement>(null);
-  const keyboardOpenRef = useRef(false);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const prevStreamingRef = useRef(false);
+  const prevMsgsLengthRef = useRef(0);
+  const pendingScrollTopRef = useRef<number | null>(null);
+  const {
+    metrics: messengerLayout,
+    scrollToBottom,
+  } = useMessengerChatLayout({
+    headerRef,
+    composerRef,
+    messagesRef,
+    bottomAnchorRef,
+  });
+  const keyboardVisible = messengerLayout.keyboardOpen;
+  const showShortcutChips = true;
   const abortRef = useRef<AbortController | null>(null);
   const handoffStartedRef = useRef<string | null>(null);
   const planHandoffStartedRef = useRef(false);
   const tripAddPlaceHandoffStartedRef = useRef(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const [reportedKeyboardHeightPx, setReportedKeyboardHeightPx] = useState(0);
   const autoPromptHandledRef = useRef(false);
   const homeMoodShortcutEngagedRef = useRef(false);
-  const pendingScrollTopRef = useRef<number | null>(null);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
+
+  useEffect(() => {
+    if (hydrating || !streaming) return;
+    scrollToBottom("user_near_bottom");
+  }, [hydrating, streaming, partial, msgs, scrollToBottom]);
 
   useEffect(() => {
     msgsRef.current = msgs;
   }, [msgs]);
 
-  // 快捷列固定顯示，避免鍵盤開啟/輸入時整條消失。
-  const showShortcutChips = true;
-
-  const composerBottomInset = useMemo(
-    () =>
-      resolveComposerBottomInset({
-        keyboardVisible,
-        reportedKeyboardHeightPx,
-      }),
-    [keyboardVisible, reportedKeyboardHeightPx],
-  );
+  useEffect(() => {
+    if (hydrating) return;
+    if (pendingScrollTopRef.current != null) return;
+    if (msgs.length > prevMsgsLengthRef.current) {
+      const last = msgs[msgs.length - 1];
+      if (last?.role === "user") {
+        scrollToBottom("new_message");
+      } else {
+        scrollToBottom("user_near_bottom");
+      }
+    }
+    prevMsgsLengthRef.current = msgs.length;
+  }, [hydrating, msgs, msgs.length, scrollToBottom]);
 
   useEffect(() => {
-    const el = composerShellRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      const h = Math.round(el.getBoundingClientRect().height);
-      console.info("[Chat Composer Shell Height]", h);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [keyboardVisible, showShortcutChips]);
-  const [clearDialogOpen, setClearDialogOpen] = useState(false);
+    if (hydrating) return;
+    if (pendingScrollTopRef.current != null) return;
+    if (prevStreamingRef.current && !streaming) {
+      scrollToBottom("ai_reply_complete");
+    }
+    prevStreamingRef.current = streaming;
+  }, [hydrating, streaming, scrollToBottom]);
   const [clearing, setClearing] = useState(false);
   const fetchWeather = useServerFn(getWeather);
   const geocodeLocationFn = useServerFn(geocodeTripLocationFromText);
@@ -472,95 +501,6 @@ function Chat() {
     });
   }, [greetingMsg, hydrating, session.fromMoodFlow, session.fromMoodCard, session.fromPlusHome]);
 
-  const scrollMessagesToEnd = useCallback(() => {
-    const el = messagesRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, []);
-  const scrollMessagesToEndRef = useRef(scrollMessagesToEnd);
-  scrollMessagesToEndRef.current = scrollMessagesToEnd;
-
-  useEffect(() => {
-    document.documentElement.classList.toggle("chat-keyboard-open", keyboardVisible);
-    return () => {
-      document.documentElement.classList.remove("chat-keyboard-open");
-    };
-  }, [keyboardVisible]);
-
-  useEffect(() => {
-    let removeCapKeyboard: (() => void) | undefined;
-    const isNativeShell = isCapacitorNativeShell();
-
-    const applyKeyboard = (reportedHeight: number, open: boolean) => {
-      keyboardOpenRef.current = open;
-
-      if (open) {
-        logChatKeyboardShow(reportedHeight);
-      } else {
-        logChatKeyboardHide();
-      }
-
-      const headerHeightPx = headerRef.current
-        ? Math.round(headerRef.current.getBoundingClientRect().height)
-        : 0;
-
-      const inset = resolveComposerBottomInset({
-        keyboardVisible: open,
-        reportedKeyboardHeightPx: reportedHeight,
-      });
-
-      logComposerLayoutSnapshot({
-        keyboardVisible: open,
-        reportedKeyboardHeightPx: reportedHeight,
-        composerBottomInsetPx: inset,
-        headerHeightPx,
-      });
-
-      setKeyboardVisible(open);
-      setReportedKeyboardHeightPx(reportedHeight);
-
-      if (open) {
-        requestAnimationFrame(() => scrollMessagesToEndRef.current());
-      }
-    };
-
-    const vv = window.visualViewport;
-    const syncFromViewport = () => {
-      if (!vv) return;
-      const shrink = measureVisualViewportKeyboardInset();
-      const capped = Math.min(shrink, Math.round(window.innerHeight * 0.55));
-      if (capped > 50) {
-        applyKeyboard(capped, true);
-        return;
-      }
-      if (!isNativeShell && keyboardOpenRef.current) {
-        applyKeyboard(0, false);
-      }
-    };
-
-    syncFromViewport();
-    vv?.addEventListener("resize", syncFromViewport);
-    vv?.addEventListener("scroll", syncFromViewport);
-
-    if (isNativeShell) {
-      removeCapKeyboard = subscribeCapacitorKeyboard({
-        onShow: (height) => applyKeyboard(height, true),
-        onHide: () => applyKeyboard(0, false),
-      });
-    }
-
-    return () => {
-      vv?.removeEventListener("resize", syncFromViewport);
-      vv?.removeEventListener("scroll", syncFromViewport);
-      removeCapKeyboard?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!keyboardVisible) return;
-    scrollMessagesToEnd();
-  }, [keyboardVisible, msgs.length, scrollMessagesToEnd]);
-
   useEffect(() => {
     (async () => {
       try {
@@ -618,6 +558,8 @@ function Chat() {
             ...moodSession,
             location: bundle.location,
             weather: bundle.weather,
+            activeChatIntent: "attraction",
+            phase: "recommend",
           };
           const mergedMood = mergeTravelContext(moodSession, moodPrompt);
           session = mergedMood.session;
@@ -642,6 +584,8 @@ function Chat() {
               location: bundle.location,
               weather: bundle.weather,
               fromMoodFlow: true,
+              activeChatIntent: "attraction",
+              phase: "recommend",
             };
           }
           const mergedMood = mergeTravelContext(moodSession, moodPrompt);
@@ -855,9 +799,7 @@ function Chat() {
       requestAnimationFrame(() => {
         if (messagesRef.current) messagesRef.current.scrollTop = top;
       });
-      return;
     }
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [msgs, streaming, partial, generating, hydrating]);
 
   const buildRequest = useCallback(
@@ -1621,6 +1563,137 @@ function Chat() {
     [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, fetchWeather],
   );
 
+  const pushMorePlaceRecommendations = useCallback(
+    async (
+      activeSession: ChatPlanningSession,
+      userText: string,
+      conversation: ChatMsg[],
+      opts?: { excludePlaceIds?: string[]; rejectedPlaceNames?: string[] },
+    ): Promise<boolean> => {
+      const merged = mergeTravelContext(activeSession, userText);
+      const placeCtx = mergeContextForPlaceFetch(merged.context, activeSession);
+      const destination =
+        placeCtx.destination?.trim() ||
+        activeSession.tripPlanningContext?.destination?.trim() ||
+        activeSession.tripDestination?.city?.trim();
+      if (!destination) return false;
+
+      const excludePlaceIds =
+        opts?.excludePlaceIds ?? collectExcludePlaceIds(activeSession, conversation);
+      const rejectedPlaceNames =
+        opts?.rejectedPlaceNames ?? activeSession.rejectedPlaceNames;
+
+      if (isMorePlaceRecommendationsIntent(userText)) {
+        logChatMorePlacesIntent(userText);
+      }
+      logChatMorePlacesExcludeIds(excludePlaceIds.length);
+
+      const renderMorePlacesReply = (
+        summary: string,
+        recommendations: RoamieRecommendationItem[],
+        payload: RoamiePayloadV2,
+        contextPatch: Partial<CanonicalTravelContext>,
+      ) => {
+        const sessionWithRecs: ChatPlanningSession = {
+          ...merged.session,
+          activeChatIntent: activeSession.activeChatIntent ?? "destination_advice",
+          conversationMode: "destination_planning",
+          phase: "recommend",
+          travelContext: {
+            ...placeCtx,
+            ...contextPatch,
+            destination,
+            tripPurpose: "more_place_recommendations",
+          },
+        };
+
+        const { summary: displaySummary, recommendations: filteredRecs } =
+          finalizeChatRecommendationDisplay(
+            sessionWithRecs,
+            userText,
+            summary,
+            recommendations,
+          );
+
+        const recs = (filteredRecs.length ? filteredRecs : recommendations) as ChatPlaceItem[];
+        if (!recs.length) {
+          logChatMorePlacesNoResultAllowed(true);
+          return false;
+        }
+
+        logChatMorePlacesNoResultAllowed(false);
+
+        setMsgs((prev) => {
+          const trimmedPrev = prev.filter(
+            (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
+          );
+          const base = trimmedPrev.length === conversation.length ? conversation : trimmedPrev;
+          return [
+            ...base,
+            {
+              role: "assistant",
+              content: displaySummary,
+              roamie: {
+                ...payload,
+                summary: displaySummary,
+                recommendations: recs,
+              },
+            },
+          ];
+        });
+
+        const priorRecs = activeSession.recommendedPlaces ?? [];
+        const mergedRecs = [...priorRecs];
+        const seenIds = new Set(collectExcludePlaceIds(activeSession, conversation));
+        for (const rec of recs) {
+          const id = rec.googlePlaceId ?? rec.placeId;
+          if (id && seenIds.has(id)) continue;
+          if (id) seenIds.add(id);
+          mergedRecs.push(rec);
+        }
+
+        persistSession(
+          syncSessionPlaceMemory({
+            ...sessionWithRecs,
+            recommendedPlaces: mergedRecs,
+            pendingQuestion: undefined,
+          }),
+        );
+        setPartial({});
+        return true;
+      };
+
+      setStreaming(true);
+      try {
+        const { summary, recommendations, payload, contextPatch } =
+          await buildMoreDestinationRecommendations({
+            destination,
+            userText,
+            context: { ...placeCtx, destination, tripPurpose: "more_place_recommendations" },
+            locale,
+            searchPlaces: searchNearbyPlaces,
+            geocodeFn: geocodeLocationFn,
+            fetchWeatherFn: fetchWeather,
+            excludePlaceIds,
+            rejectedPlaceNames,
+            activeChatIntent: activeSession.activeChatIntent,
+          });
+
+        return renderMorePlacesReply(summary, recommendations, payload, contextPatch);
+      } catch (error) {
+        console.warn(
+          "[CHAT_PLACES_ERROR]",
+          error instanceof Error ? error.message : String(error),
+        );
+        logChatMorePlacesNoResultAllowed(true);
+        return false;
+      } finally {
+        setStreaming(false);
+      }
+    },
+    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, fetchWeather],
+  );
+
   const pushDestinationCategoryPlaceRecommendation = useCallback(
     async (
       activeSession: ChatPlanningSession,
@@ -1837,7 +1910,7 @@ function Chat() {
       conversation: ChatMsg[],
       reason: string,
     ): Promise<boolean> => {
-      console.info(`[CHAT_FALLBACK_USED] reason=${reason}`);
+      devVerboseInfo(`[CHAT_FALLBACK_USED] reason=${reason}`);
 
       if (isPlaceDetailChatActive(activeSession)) {
         return false;
@@ -1956,32 +2029,20 @@ function Chat() {
         }
       }
 
-      const advice = resolveDestinationAdvice(
-        mergedForAdvice.context,
-        mergedForAdvice.session,
+      const adviceTurn = processAdviceTurn(
         activeUserText,
+        mergedForAdvice.session,
+        mergedForAdvice.context,
       );
-      if (advice.reply) {
-        setMsgs((prev) => {
-          const trimmedPrev = prev.filter(
-            (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
-          );
-          return [...trimmedPrev, adviceToAssistantChatMsg(advice)];
-        });
-        persistSession(
-          applyAdviceResultToSession(
-            {
-              ...mergedForAdvice.session,
-              pendingQuestion: advice.pendingQuestion,
-              lastResolvedPendingQuestion: undefined,
-              adviceSelectionThisTurn: undefined,
-              phase:
-                advice.contextPatch?.conversationState === "ready_for_itinerary"
-                  ? "ready"
-                  : mergedForAdvice.session.phase,
-            },
-            advice,
-          ),
+      if (adviceTurn.advice.reply) {
+        const trimmedConversation = conversation.filter(
+          (m, i) => !(i === conversation.length - 1 && m.role === "assistant" && !m.content),
+        );
+        await completeAdviceTurn(
+          adviceTurn,
+          mergedForAdvice.session,
+          mergedForAdvice.context,
+          trimmedConversation,
         );
         setPartial({});
         return true;
@@ -2062,7 +2123,7 @@ function Chat() {
             : [{ query: fallbackSearchQuery(context), mode: "text" as const }];
         for (const attempt of attempts) {
           try {
-            console.info(
+            devVerboseInfo(
               `[CHAT_PLACES_REQUEST] type=fallback mode=${attempt.mode} query=${attempt.query || "(nearby)"}`,
             );
             const fallback = await searchNearbyPlaces({
@@ -2095,7 +2156,7 @@ function Chat() {
             if (isCampingFlow) {
               placeResults = filterCampingPlaces(placeResults);
             }
-            console.info(`[CHAT_PLACES_SUCCESS] count=${placeResults.length}`);
+            devVerboseInfo(`[CHAT_PLACES_SUCCESS] count=${placeResults.length}`);
             if (placeResults.length > 0) break;
           } catch (fallbackErr) {
             console.warn("[CHAT_PLACES_REQUEST] failed", fallbackErr);
@@ -2219,7 +2280,7 @@ function Chat() {
       setPartial({});
       return recs.length > 0;
     },
-    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, pushNearbyPlaceRecommendation, pushDestinationPlaceRecommendation, pushDestinationCategoryPlaceRecommendation, persistPlanningAdviceTurn, completeAdviceTurn],
+    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, pushNearbyPlaceRecommendation, pushDestinationPlaceRecommendation, pushMorePlaceRecommendations, pushDestinationCategoryPlaceRecommendation, persistPlanningAdviceTurn, completeAdviceTurn],
   );
 
   const streamChat = useCallback(
@@ -2255,7 +2316,7 @@ function Chat() {
           },
           sessionOverride,
         );
-        console.info("[AI_REPLY_REQUEST]", `phase=${req.chatPhase ?? "unknown"}`);
+        devVerboseInfo("[AI_REPLY_REQUEST]", `phase=${req.chatPhase ?? "unknown"}`);
 
         const full = await streamRoamieAI(
           req,
@@ -2286,7 +2347,7 @@ function Chat() {
           console.error("[AI_REPLY_RESPONSE] stream_returned_null");
           throw new Error("AI 沒有回應，請再試一次。");
         }
-        console.info("[AI_REPLY_SUCCESS]", `recommendations=${full.recommendations?.length ?? 0}`);
+        devVerboseInfo("[AI_REPLY_SUCCESS]", `recommendations=${full.recommendations?.length ?? 0}`);
 
         const userText = opts?.userText ?? "";
         const intentForGuard = parseTripIntentFromText(userText, sessionOverride ?? session);
@@ -2480,32 +2541,20 @@ function Chat() {
               return;
             }
           }
-          const advice = resolveDestinationAdvice(
-            fallbackMerged.context,
-            fallbackMerged.session,
+          const fallbackAdviceTurn = processAdviceTurn(
             activeUserText,
+            fallbackMerged.session,
+            fallbackMerged.context,
           );
-          if (advice.reply) {
-            setMsgs((prev) => {
-              const trimmedPrev = prev.filter(
-                (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
-              );
-              return [...trimmedPrev, adviceToAssistantChatMsg(advice)];
-            });
-            persistSession(
-              applyAdviceResultToSession(
-                {
-                  ...fallbackMerged.session,
-                  pendingQuestion: advice.pendingQuestion,
-                  lastResolvedPendingQuestion: undefined,
-                  adviceSelectionThisTurn: undefined,
-                  phase:
-                    advice.contextPatch?.conversationState === "ready_for_itinerary"
-                      ? "ready"
-                      : fallbackMerged.session.phase,
-                },
-                advice,
-              ),
+          if (fallbackAdviceTurn.advice.reply) {
+            const trimmedPrev = conversation.filter(
+              (m, i) => !(i === conversation.length - 1 && m.role === "assistant" && !m.content),
+            );
+            await completeAdviceTurn(
+              fallbackAdviceTurn,
+              fallbackMerged.session,
+              fallbackMerged.context,
+              trimmedPrev,
             );
             setPartial({});
             return;
@@ -2516,7 +2565,7 @@ function Chat() {
               buildPlanningOfflineReply(
                 fallbackMerged.context,
                 fallbackMerged.session,
-              ) ?? "我這邊連線有點不穩，但我還記得你的行程需求，可以再說一次想調整什麼。",
+              ) ?? resolveChatConnectionFallbackMessage(e),
           };
           setMsgs((prev) => {
             const trimmedPrev = prev.filter(
@@ -2533,7 +2582,7 @@ function Chat() {
         abortRef.current = null;
       }
     },
-    [buildRequest, session, persistSession, locale, applyLocalFallback],
+    [buildRequest, session, persistSession, locale, applyLocalFallback, completeAdviceTurn],
   );
 
   const handleOpenPlaceDetail = (rec: RoamieRecommendationItem) => {
@@ -2834,7 +2883,7 @@ function Chat() {
       }
       const refreshCtx = {
         ...(nextSession.travelContext ?? merged.context),
-        tripPurpose: "refresh_recommendations" as const,
+        tripPurpose: "more_place_recommendations" as const,
         excludedCategories:
           nextSession.excludedCategories ?? merged.context.excludedCategories,
         setting:
@@ -2858,7 +2907,7 @@ function Chat() {
       if (dest?.trim()) {
         setStreaming(true);
         try {
-          const applied = await pushDestinationPlaceRecommendation(
+          const applied = await pushMorePlaceRecommendations(
             { ...nextSession, travelContext: { ...refreshCtx, destination: dest } },
             trimmed,
             next,
@@ -2896,6 +2945,7 @@ function Chat() {
         }
       }
 
+      logChatMorePlacesNoResultAllowed(true);
       setMsgs([
         ...next,
         { role: "assistant", content: NO_MORE_RECOMMENDATIONS_MESSAGE },
@@ -3000,13 +3050,23 @@ function Chat() {
 
     const intent = resolveChatIntent(trimmed, nextSession);
 
-    if (intent === "destination_advice" || intent === "create_itinerary" || intent === "best_travel_time" || intent === "trip_planning") {
+    if (intent === "destination_advice" || intent === "best_travel_time" || intent === "trip_planning") {
       nextSession = {
         ...nextSession,
         activeChatIntent:
           intent === "destination_advice" || intent === "best_travel_time"
             ? "destination_advice"
             : nextSession.activeChatIntent,
+        conversationMode: "destination_planning",
+      };
+    } else if (
+      intent === "create_itinerary" &&
+      !nextSession.fromMoodFlow &&
+      !nextSession.fromMoodCard &&
+      !nextSession.homeMoodShortcutEntry
+    ) {
+      nextSession = {
+        ...nextSession,
         conversationMode: "destination_planning",
       };
     }
@@ -3027,12 +3087,15 @@ function Chat() {
 
     const inferredNearbyIntent = categoryPlaceQuery
       ? inferNearbyIntentFromContext(merged.context, trimmed, nextSession)
-      : effectiveConversationMode === "destination_planning" ||
-          effectiveConversationMode === "place_focus" ||
-          intent === "destination_advice" ||
-          intent === "create_itinerary" ||
-          intent === "best_travel_time" ||
-          intent === "trip_planning"
+      : (effectiveConversationMode === "destination_planning" ||
+            effectiveConversationMode === "place_focus" ||
+            intent === "destination_advice" ||
+            intent === "create_itinerary" ||
+            intent === "best_travel_time" ||
+            intent === "trip_planning") &&
+          !nextSession.fromMoodFlow &&
+          !nextSession.fromMoodCard &&
+          !nextSession.homeMoodShortcutEntry
         ? null
         : inferNearbyIntentFromContext(merged.context, trimmed, nextSession);
 
@@ -3101,6 +3164,19 @@ function Chat() {
     };
 
     if (route.mode === "itinerary" || isUserConfirmingItinerary(trimmed)) {
+      const itineraryDestination =
+        merged.context.destination?.trim() ||
+        nextSession.tripDestination?.displayLabel?.trim() ||
+        nextSession.tripDestination?.city?.trim();
+      const itineraryDays = merged.context.days ?? nextSession.tripDays;
+      if (itineraryDestination && itineraryDays) {
+        await runDirectItineraryRef.current(
+          { ...nextSession, phase: "ready" },
+          merged.context,
+          next,
+        );
+        return;
+      }
       if (nextSession.selectedPlaces.length < 1) {
         toast.message("你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線。");
         const hint: ChatMsg = {
@@ -3322,6 +3398,26 @@ function Chat() {
         error instanceof Error ? error.message : String(error),
       );
       setStreaming(false);
+
+      const errorConversation: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+      try {
+        const fallbackApplied = await applyLocalFallback(
+          session,
+          trimmed,
+          errorConversation,
+          "state_machine_error",
+        );
+        if (fallbackApplied) {
+          setText("");
+          return;
+        }
+      } catch (fallbackError) {
+        console.warn(
+          "[CHAT_STATE_MACHINE_FALLBACK_FAILED]",
+          fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        );
+      }
+
       setMsgs((prev) => {
         const hasUserTurn = prev.some(
           (m, i) => i === prev.length - 1 && m.role === "user" && m.content === trimmed,
@@ -3358,35 +3454,82 @@ function Chat() {
         interests: prefs.interests,
         style: activeSession.tripStyles || (activeSession.pace === "排滿" ? "緊湊" : "慢旅行"),
       });
-      const places = buildTripFromSelectedPlaces(activeSession);
-      const destination =
-        (activeSession.tripDestination
-          ? formatTripLocationLabel(activeSession.tripDestination)
+      let workingSession = activeSession;
+      let places = buildTripFromSelectedPlaces(workingSession);
+      const today = new Date().toISOString().slice(0, 10);
+      const tripDays = workingSession.tripDays ?? 1;
+      const rawDestination =
+        (workingSession.tripDestination
+          ? formatTripLocationLabel(workingSession.tripDestination)
           : null) ||
+        workingSession.travelContext?.destination?.trim() ||
         inferDestinationFromPlaces(places, bundle.location) ||
         bundle.location.city ||
         "目前位置";
-      const today = new Date().toISOString().slice(0, 10);
-      const startDate = activeSession.tripStartDate || today;
-      const endDate = activeSession.tripEndDate || activeSession.tripStartDate || today;
-      const tripDays = activeSession.tripDays ?? 1;
+      const destination = sanitizeDestinationForGeocode(rawDestination);
+
+      if (places.length < 1 && tripDays > 0 && destination !== "目前位置") {
+        const prepared = await prepareDirectItinerarySession({
+          session: workingSession,
+          context: {
+            ...(workingSession.travelContext ?? { interests: [] }),
+            destination,
+            days: tripDays,
+          },
+          locale,
+          searchPlaces: searchNearbyPlaces,
+          geocodeFn: geocodeLocationFn,
+          fetchWeatherFn: fetchWeather,
+          excludePlaceIds: collectExcludePlaceIds(workingSession),
+          msgs: activeMsgs,
+        });
+        if (!prepared.ok) {
+          logItineraryFailureReason(prepared.message);
+          setMsgs((prev) => [
+            ...prev,
+            { role: "assistant", content: prepared.message },
+          ]);
+          if (prepared.apiEmpty) {
+            toast.error(prepared.message);
+          }
+          persistSession({
+            ...workingSession,
+            phase: "ready",
+            aiItineraryState: "FAILED",
+            pendingQuestion: prepared.apiEmpty
+              ? {
+                  type: "activity_choice",
+                  options: ["must_visit_places", "daily_recommendations"],
+                  baseDestination: destination,
+                }
+              : undefined,
+          });
+          return;
+        }
+        workingSession = prepared.session;
+        places = buildTripFromSelectedPlaces(workingSession);
+        persistSession(workingSession);
+      }
+
+      const startDate = workingSession.tripStartDate || today;
+      const endDate = workingSession.tripEndDate || workingSession.tripStartDate || today;
       const budget = budgetModeToItineraryTier(resolveBudgetMode(prefs));
 
       const generateInput = {
         destination,
         days: tripDays,
         budget,
-        style: activeSession.tripStyles || (activeSession.pace === "排滿" ? "緊湊" : "慢旅行"),
-        mood: activeSession.mood ?? "",
-        interests: buildConversationSummary(activeSession, activeMsgs),
-        conversationSummary: buildConversationSummary(activeSession, activeMsgs),
+        style: workingSession.tripStyles || (workingSession.pace === "排滿" ? "緊湊" : "慢旅行"),
+        mood: workingSession.mood ?? "",
+        interests: buildConversationSummary(workingSession, activeMsgs),
+        conversationSummary: buildConversationSummary(workingSession, activeMsgs),
         startDate,
         endDate,
-        origin: activeSession.tripOrigin
-          ? formatTripLocationLabel(activeSession.tripOrigin)
+        origin: workingSession.tripOrigin
+          ? formatTripLocationLabel(workingSession.tripOrigin)
           : (bundle.location.city ?? ""),
-        travelers: activeSession.tripCompanionCount ?? 1,
-        transport: activeSession.transportation ?? "",
+        travelers: workingSession.tripCompanionCount ?? 1,
+        transport: workingSession.transportation ?? "",
         selectedPlaces: places.map((p) => ({
           ...p,
           googlePlaceId: p.googlePlaceId ?? p.placeId,
@@ -3394,24 +3537,27 @@ function Chat() {
         preferences: prefs,
         location: bundle.location,
         weather: bundle.weather,
-        time: activeSession.startTime || bundle.time,
+        time: workingSession.startTime || bundle.time,
         fashionStyle: fashionStyle ?? "",
         locale,
       };
 
       logAiState("BUILDING_ITINERARY", `places=${places.length}`);
       const createResult = await createItineraryFromSession({
-        session: activeSession,
+        session: workingSession,
         generateInput,
         generateItineraryFn: generate,
       });
 
       if (!createResult.ok) {
+        logItineraryFailureReason(createResult.message);
         setMsgs((prev) => [
           ...prev,
           { role: "assistant", content: createResult.message },
         ]);
-        toast.error(createResult.message);
+        if (createResult.offerMustVisit) {
+          toast.error(createResult.message);
+        }
         persistSession(createResult.session);
         return;
       }
@@ -3419,12 +3565,13 @@ function Chat() {
       const itinerary = createResult.payload;
 
       const itineraryStops = coalesceItineraryItems(itinerary.itinerary);
+      logItineraryItemsCoalesced(itineraryStops.length);
       const legPlaces = itineraryStops
         .filter((p) => p.lat != null && p.lng != null)
         .map((p) => ({ lat: p.lat as number, lng: p.lng as number }));
       const routeLegs = await getTripLegsWithDurations(
         legPlaces,
-        travelLabelToRoutesMode(activeSession.transportation ?? "步行"),
+        travelLabelToRoutesMode(workingSession.transportation ?? "步行"),
       );
       const weatherSummary = bundle.weather
         ? `${bundle.weather.city} ${bundle.weather.condition} ${bundle.weather.tempC ?? ""}C`
@@ -3434,14 +3581,14 @@ function Chat() {
           destinationPlace: { name: destination },
           startDate,
           endDate,
-          transportMode: activeSession.transportation ?? "walk",
+          transportMode: workingSession.transportation ?? "walk",
         },
         normalizeWeather(bundle.weather),
       );
       const cover = await getTripCoverImage({
         destination,
-        mood: activeSession.mood ?? "",
-        moodTag: activeSession.mood ?? "",
+        mood: workingSession.mood ?? "",
+        moodTag: workingSession.mood ?? "",
         title: itinerary.title,
       });
 
@@ -3456,11 +3603,11 @@ function Chat() {
           ...itinerary.tripSettings,
           tripStartDate: startDate,
           tripEndDate: endDate,
-          transport: activeSession.transportation === "開車"
+          transport: workingSession.transportation === "開車"
             ? "drive"
-            : activeSession.transportation === "大眾運輸"
+            : workingSession.transportation === "大眾運輸"
               ? "transit"
-              : activeSession.transportation === "機車"
+              : workingSession.transportation === "機車"
                 ? "scooter"
                 : "walk",
           transitLegs: Object.fromEntries(
@@ -3493,49 +3640,47 @@ function Chat() {
       });
       draftPayload = attachCoreTripToPayload(draftPayload, coreDraft);
       console.info("[CORE_TRIP] created", "draft");
-      saveDraftTrip(draftPayload);
-
-      const isPlanAi = activeSession.fromPlanAi || activeSession.planAiMode;
-
-      if (isPlanAi) {
-        const saved = await confirmSaveTrip(draftPayload, "chat");
-        clearDraftTrip();
-        clearPlanFormDraft();
-        persistSession({
-          ...activeSession,
-          phase: "done",
-          aiItineraryState: "SUCCESS",
-          draftTrip: undefined,
-          lastGeneratedTripId: saved.id,
-        });
-        toast.success("行程已建立");
-        logTripNav("PlanAiGenerated", saved.id);
-        navigate(tripDetailNavigateOptions(saved.id));
-        return;
+      logItinerarySavePayloadReady(destination, tripDays, itineraryStops.length);
+      logItinerarySaveStart();
+      try {
+        saveDraftTrip(draftPayload);
+        logItinerarySaveSuccess("draft");
+      } catch (saveError) {
+        const reason = saveError instanceof Error ? saveError.message : String(saveError);
+        logItinerarySaveFailed(reason);
+        console.info("[ITINERARY_SAVE_FAILED_REASON]", reason);
+        logItineraryFailureReason(`draft_save:${reason}`);
+        throw saveError;
       }
 
-      const doneSession: ChatPlanningSession = {
-        ...activeSession,
+      const saved = await confirmSaveTrip(draftPayload, "chat");
+      clearDraftTrip();
+      if (workingSession.fromPlanAi || workingSession.planAiMode) {
+        clearPlanFormDraft();
+      }
+      logItinerarySaveSuccess(saved.id);
+      logAiItinerarySuccess(saved.id);
+
+      persistSession({
+        ...workingSession,
         phase: "done",
         aiItineraryState: "SUCCESS",
-        draftTrip: draftPayload,
-        lastGeneratedTripId: undefined,
-      };
-      persistSession(doneSession);
+        draftTrip: undefined,
+        lastGeneratedTripId: saved.id,
+      });
 
-      const assistantMsg: ChatMsg = {
-        role: "assistant",
-        content: `${itinerary.summary}\n\n這是一趟行程草稿，還沒存進收藏。滿意的話可以按「儲存這趟行程」。`,
-        roamie: {
-          ...draftPayload,
-          itinerary: itineraryStops,
-          outfitAdvice: itinerary.outfitAdvice,
-        },
-      };
-      setMsgs((prev) => [...prev, assistantMsg]);
-      toast.message("行程草稿已產生，確認後可儲存到收藏");
+      setMsgs((prev) => [
+        ...prev,
+        { role: "assistant", content: AI_ITINERARY_SUCCESS_REDIRECT_MESSAGE },
+      ]);
+
+      logTripNav("ChatGeneratedItinerary", saved.id);
+      navigate(tripDetailNavigateOptions(saved.id));
     } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
       console.warn("[ITINERARY_GENERATE]", e);
+      logItinerarySaveFailed(reason);
+      logItineraryFailureReason(`generate_exception:${reason}`);
       persistSession({
         ...activeSession,
         phase: "ready",
@@ -3550,9 +3695,9 @@ function Chat() {
       });
       setMsgs((prev) => [
         ...prev,
-        { role: "assistant", content: AI_ITINERARY_FAILED_OFFER_MESSAGE },
+        { role: "assistant", content: ITINERARY_GENERATION_FAILED_MESSAGE },
       ]);
-      toast.error(AI_ITINERARY_FAILED_OFFER_MESSAGE);
+      toast.error(ITINERARY_GENERATION_FAILED_MESSAGE);
     } finally {
       setGenerating(false);
     }
@@ -3573,24 +3718,31 @@ function Chat() {
         geocodeFn: geocodeLocationFn,
         fetchWeatherFn: fetchWeather,
         excludePlaceIds: collectExcludePlaceIds(activeSession),
+        msgs: conversation,
       });
       if (!prepared.ok) {
+        logItineraryFailureReason(prepared.message);
         setMsgs([
           ...conversation,
           { role: "assistant", content: prepared.message },
         ]);
         persistSession(prepared.session);
+        if (prepared.offerMustVisit) {
+          toast.error(prepared.message);
+        }
         return;
       }
       persistSession(prepared.session);
       await handleGenerateItinerary(prepared.session, conversation);
     } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
       console.warn("[ITINERARY_DIRECT_GEN]", e);
+      logItineraryFailureReason(`direct_gen:${reason}`);
       setMsgs([
         ...conversation,
-        { role: "assistant", content: AI_ITINERARY_FAILED_OFFER_MESSAGE },
+        { role: "assistant", content: ITINERARY_GENERATION_FAILED_MESSAGE },
       ]);
-      toast.error(AI_ITINERARY_FAILED_OFFER_MESSAGE);
+      toast.error(ITINERARY_GENERATION_FAILED_MESSAGE);
       persistSession({
         ...activeSession,
         phase: "ready",
@@ -3655,56 +3807,14 @@ function Chat() {
     }
   };
 
-  const hasDraftTrip = Boolean(session.draftTrip ?? loadDraftTrip());
-  const isPlanAiMode = Boolean(session.fromPlanAi || session.planAiMode);
-  const showGenerateBtn =
-    (isPlanAiMode
-      ? canGenerateItinerary(session)
-      : session.phase === "ready" &&
-        session.selectedPlaces.length > 0) &&
-    !streaming &&
-    !generating &&
-    !hasDraftTrip;
-  const showSaveTripBtn = hasDraftTrip && !streaming && !generating;
-
-  const handleConfirmSaveTrip = async () => {
-    const draft = session.draftTrip ?? loadDraftTrip();
-    if (!draft) return;
-    try {
-      const saved = await confirmSaveTrip(draft, "chat");
-      clearDraftTrip();
-      persistSession({
-        ...session,
-        draftTrip: undefined,
-        lastGeneratedTripId: saved.id,
-      });
-      toast.success(t("chat.savedToast"));
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : t("chat.saveFailed"));
-    }
-  };
-
-  const discoverChips = useMemo(() => tList("chat.chipsDiscover"), [tList]);
-
-  const chatChips = useMemo(() => {
-    if (isPlanAiMode) return tList("chat.chipsPlan");
-    if (session.phase === "discover") return discoverChips;
-    if (session.phase === "collect" && session.selectedPlaces.length > 0) {
-      return tList("chat.chipsCollectReady");
-    }
-    return tList("chat.chipsCollectDefault");
-  }, [isPlanAiMode, session.phase, session.selectedPlaces.length, discoverChips, tList]);
-
   return (
     <div
-      className={cn(
-        "chat-page relative flex h-full min-h-0 flex-1 flex-col overflow-hidden",
-        !keyboardVisible && "pb-[var(--app-nav-total-height)]",
-      )}
+      ref={pageRef}
+      className="messenger-chat-root chat-page relative flex min-h-0 flex-1 flex-col overflow-hidden"
     >
       <header
         ref={headerRef}
-        className="relative z-20 flex shrink-0 items-center gap-2 border-b border-border bg-background/90 px-4 py-3 backdrop-blur"
+        className="messenger-chat-header relative z-20 flex shrink-0 items-center gap-2 border-b border-border bg-background/90 px-4 py-3 backdrop-blur"
       >
         <BackButton
           preferFallback
@@ -3783,10 +3893,18 @@ function Chat() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <div className="chat-keyboard-column flex min-h-0 flex-1 flex-col">
+      <div className="messenger-chat-body flex min-h-0 flex-1 flex-col overflow-hidden">
         <div
           ref={messagesRef}
-          className="chat-messages min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5"
+          data-keyboard-scroll-root
+          className="messenger-chat-messages chat-messages min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-5"
+          style={{
+            flex: "1 1 0%",
+            paddingBottom: `${Math.max(messengerLayout.messagesPaddingBottomPx, 0)}px`,
+            transition: messengerLayout.keyboardOpen
+              ? "padding-bottom 0.25s cubic-bezier(0.32, 0.72, 0, 1)"
+              : undefined,
+          }}
         >
           {hasPlusAccess && quizCompleted === false && (
             <PreferenceQuizCta origin="chat" variant="banner" className="animate-rise" />
@@ -3820,9 +3938,7 @@ function Chat() {
                       compact
                       recommendationsPreFiltered
                       onRecommendationEngage={markShortcutEngaged}
-                      showItinerary={
-                        session.phase === "done" && (m.roamie?.itinerary?.length ?? 0) > 0
-                      }
+                      showItinerary={false}
                       onSavePlace={handleSavePlace}
                       onAddToTrip={(rec) => {
                         void handleAddToTripFromChat(rec);
@@ -3862,57 +3978,53 @@ function Chat() {
               </button>
             </div>
           )}
-          <div ref={bottomRef} />
+          <div ref={bottomAnchorRef} aria-hidden className="h-px w-full shrink-0" />
         </div>
 
         <div
-          ref={composerShellRef}
-          className="chat-composer-shell shrink-0 transition-[padding-bottom] duration-200 ease-out"
+          ref={composerRef}
+          className={cn(
+            "messenger-chat-composer",
+            messengerLayout.keyboardOpen && "messenger-chat-composer--keyboard-open",
+          )}
           style={{
-            paddingBottom: `calc(max(6px, env(safe-area-inset-bottom, 0px)) + ${
-              keyboardVisible ? composerBottomInset : 0
-            }px)`,
+            position: "fixed",
+            left: 0,
+            right: 0,
+            marginInline: "auto",
+            maxWidth: "440px",
+            bottom: `${messengerLayout.composerBottomPx}px`,
+            zIndex: 45,
+            transition: messengerLayout.keyboardOpen
+              ? "bottom 0.25s cubic-bezier(0.32, 0.72, 0, 1)"
+              : undefined,
           }}
         >
-          <div className="chat-keyboard-follow-group">
-            <ChatComposer
-              text={text}
-              onTextChange={setText}
-              onSend={() => void send()}
-              onKeyDown={handleKey}
-              onFocus={() => {
-                requestAnimationFrame(scrollMessagesToEnd);
-              }}
-              disabled={streaming || generating}
-              showShortcutChips={showShortcutChips}
-              keyboardOpen={keyboardVisible}
-              inputRef={inputRef}
-              showGenerateBtn={showGenerateBtn}
-              generating={generating}
-              streaming={streaming}
-              showSaveTripBtn={showSaveTripBtn}
-              hasDraftTrip={hasDraftTrip}
-              lastGeneratedTripId={session.lastGeneratedTripId}
-              chatChips={chatChips}
-              generateBtnLabel={
-                isPlanAiMode ? t("chat.generateFullItinerary") : undefined
-              }
-              onChipSend={(s) => void send(s)}
-              onGenerateClick={() =>
-                void (isPlanAiMode
-                  ? handleGenerateItinerary()
-                  : send("就這樣吧，可以開始安排"))
-              }
-              onSaveTrip={() => void handleConfirmSaveTrip()}
-              onViewDraft={() => navigate({ to: "/trip", search: { draft: "1" } })}
-              onViewSavedTrip={(tripId) => {
-                logTripNav("ChatGeneratedTrip", tripId);
-                navigate(tripDetailNavigateOptions(tripId));
-              }}
-            />
-          </div>
+          <ChatComposer
+            text={text}
+            onTextChange={setText}
+            onSend={() => void send()}
+            onKeyDown={handleKey}
+            onFocus={() => {
+              scrollToBottom("keyboard_did_show");
+            }}
+            disabled={streaming || generating}
+            showShortcutChips={showShortcutChips}
+            keyboardOpen={keyboardVisible}
+            inputRef={inputRef}
+            generating={generating}
+            streaming={streaming}
+            onChipSend={(s) => void send(s)}
+          />
         </div>
       </div>
+      {isChatKeyboardDebugEnabled() ? (
+        <ChatKeyboardDebugOverlay
+          active={keyboardVisible}
+          composerShellRef={composerRef}
+          nativeKeyboardHeightPx={messengerLayout.nativeKeyboardHeightPx}
+        />
+      ) : null}
     </div>
   );
 }

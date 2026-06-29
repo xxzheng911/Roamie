@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 
 const BEST_TRAVEL_TIME_SIGNALS =
-  /(?:什麼時候去比較好|什么时候去比较好|何時去比較好|何时去比较好|什麼時候去最好|什么时候去最好|何時去最好|何时去最好|什麼時候去|什么时候去|何時去|何时去|幾月去比較好|几月去比较好|適合什麼季節|适合什么季节|最佳季節|花季|雨季|旺季|淡季|避開人潮|極光|鯨魚|雪季)/;
+  /(?:什麼時候去比較好|什么时候去比较好|何時去比較好|何时去比较好|什麼時候去最好|什么时候去最好|何時去最好|何时去最好|什麼去比較好|什么去比较好|什麼去最好|什么去最好|什麼時候去|什么时候去|何時去|何时去|幾月去比較好|几月去比较好|適合什麼季節|适合什么季节|最佳季節|推薦季節|推荐季节|花季|雨季|乾季|干季|旺季|淡季|避開人潮|極光|鯨魚|雪季)/;
+
+const DESTINATION_WHEN_TO_GO_RE =
+  /[\u4e00-\u9fffA-Za-z]{2,12}(?:什麼|什么|何时|何時).{0,6}去(?:比較|最)好/;
 
 function isBestTravelTimeIntent(text) {
   const t = text.trim();
   if (!t) return false;
   if (BEST_TRAVEL_TIME_SIGNALS.test(t)) return true;
-  if (/(?:幾月|几月|什麼時候|什么时候|何时|何時|季節|季节)/.test(t) && /(?:去|旅遊|旅游|旅行|玩)/.test(t)) {
+  if (DESTINATION_WHEN_TO_GO_RE.test(t)) return true;
+  if (/(?:幾月|几月|什麼時候|什么时候|何时|何時|什麼去|什么去|季節|季节)/.test(t) && /(?:去|旅遊|旅游|旅行|玩)/.test(t)) {
     return /(?:比較好|比较好|最好|適合|适合)/.test(t);
   }
   return false;
@@ -21,6 +25,7 @@ function parseLeadingDestination(text) {
 }
 
 assert.equal(isBestTravelTimeIntent("澳洲什麼時候去比較好"), true);
+assert.equal(isBestTravelTimeIntent("墨爾本什麼去比較好"), true);
 assert.equal(isBestTravelTimeIntent("冰島什麼時候去"), true);
 assert.equal(isBestTravelTimeIntent("土耳其幾月去比較好"), true);
 assert.equal(isBestTravelTimeIntent("塔斯馬尼亞什麼時候去"), true);

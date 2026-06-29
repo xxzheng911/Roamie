@@ -1,8 +1,12 @@
 import { distanceMeters } from "@/lib/map-explore";
 import {
+  EXPLORE_CITY_ALL_MAX_DISPLAY,
+  EXPLORE_CITY_ALL_MIN_DISPLAY,
   EXPLORE_MAP_MAX_DISPLAY,
+  EXPLORE_MAP_MIN_DISPLAY,
   exploreMapQualityScore,
 } from "@/lib/explore-places-eligibility";
+import { exploreCityTouristQualityScore } from "@/lib/explore-city-tourist-filter";
 import { openStatusSortRank } from "@/lib/home-nearby-eligibility";
 import { resolveOpenNow } from "@/lib/is-recommendable-place";
 import type { PlaceResult } from "@/lib/place-result";
@@ -57,8 +61,17 @@ function sortCategoryCards<T extends MergeablePlace>(
   cards: T[],
   origin: { lat: number; lng: number },
   categoryId: string,
+  cityMode = false,
 ): T[] {
+  const scoreFn = cityMode
+    ? (card: T) => exploreCityTouristQualityScore(card, origin)
+    : (card: T) => exploreMapQualityScore(card, origin, categoryId);
   return [...cards].sort((a, b) => {
+    if (cityMode) {
+      const scoreA = scoreFn(a);
+      const scoreB = scoreFn(b);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+    }
     const tierA = a.exploreQualityTier ?? (resolveOpenNow(a) === true ? 1 : 2);
     const tierB = b.exploreQualityTier ?? (resolveOpenNow(b) === true ? 1 : 2);
     if (tierA !== tierB) return tierA - tierB;
@@ -86,8 +99,15 @@ function sortCategoryCards<T extends MergeablePlace>(
 function sortMergedAllCards<T extends MergeablePlace>(
   cards: T[],
   origin: { lat: number; lng: number },
+  cityMode = false,
 ): T[] {
   return [...cards].sort((a, b) => {
+    if (cityMode) {
+      const scoreA = exploreCityTouristQualityScore(a, origin);
+      const scoreB = exploreCityTouristQualityScore(b, origin);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+    }
+
     const openA = resolveOpenNow(a) === true ? 0 : 1;
     const openB = resolveOpenNow(b) === true ? 0 : 1;
     if (openA !== openB) return openA - openB;
@@ -124,8 +144,12 @@ export function mergeExploreAllCategoryResults<T extends MergeablePlace>(
   options: {
     origin: { lat: number; lng: number };
     timeBucket: ExploreTimeBucket;
+    cityMode?: boolean;
   },
 ): T[] {
+  const cityMode = options.cityMode === true;
+  const maxDisplay = cityMode ? EXPLORE_CITY_ALL_MAX_DISPLAY : EXPLORE_MAP_MAX_DISPLAY;
+  const minTotal = cityMode ? EXPLORE_CITY_ALL_MIN_DISPLAY : EXPLORE_MAP_MIN_DISPLAY;
   const quotas = quotasForTimeBucket(options.timeBucket);
   const seen = new Set<string>();
   const picked: T[] = [];
@@ -134,7 +158,7 @@ export function mergeExploreAllCategoryResults<T extends MergeablePlace>(
   const sortedByCategory: Record<string, T[]> = {};
   for (const subId of EXPLORE_ALL_SUBCATEGORY_IDS) {
     const list = cardsByCategory[subId] ?? [];
-    sortedByCategory[subId] = sortCategoryCards(list, options.origin, subId);
+    sortedByCategory[subId] = sortCategoryCards(list, options.origin, subId, cityMode);
   }
 
   const tryAdd = (card: T, subId: string): boolean => {
@@ -174,7 +198,7 @@ export function mergeExploreAllCategoryResults<T extends MergeablePlace>(
   overflow.sort((a, b) => b.score - a.score);
 
   for (const item of overflow) {
-    if (picked.length >= EXPLORE_MAP_MAX_DISPLAY) break;
+    if (picked.length >= maxDisplay) break;
     tryAdd(item.card, item.subId);
   }
 
@@ -189,5 +213,16 @@ export function mergeExploreAllCategoryResults<T extends MergeablePlace>(
     }
   }
 
-  return sortMergedAllCards(picked, options.origin);
+  if (picked.length < minTotal) {
+    for (const subId of EXPLORE_ALL_SUBCATEGORY_IDS) {
+      if (picked.length >= maxDisplay) break;
+      const list = sortedByCategory[subId] ?? [];
+      for (const card of list) {
+        if (picked.length >= maxDisplay) break;
+        tryAdd(card, subId);
+      }
+    }
+  }
+
+  return sortMergedAllCards(picked, options.origin, cityMode);
 }

@@ -1,4 +1,4 @@
-import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import { normalizeDestinationLabel, isKnownTouristCityLabel, isKnownScenicLabel } from "@/lib/ai/trip-planning-context";
 
 export type DestinationEntityType =
   | "country"
@@ -344,6 +344,24 @@ const ENTITY_SEEDS: EntitySeed[] = [
       notes: ["乾季較不悶熱，適合城市與寺廟行程。"],
     },
   },
+  {
+    names: ["墨爾本", "Melbourne"],
+    type: "city",
+    country: "澳洲",
+    hemisphere: "south",
+    climateZone: "temperate_oceanic",
+    seasonality: {
+      bestMonthRanges: [
+        "3～5月（秋季）：天氣舒服，適合城市散步、咖啡廳、近郊大洋路",
+        "9～11月（春季）：氣溫宜人，適合戶外與近郊",
+      ],
+      events: [],
+      notes: [
+        "12～2月為夏季，適合海邊與戶外，但偶爾較熱。",
+        "6～8月偏冷且多雨，建議以室內、博物館、咖啡廳為主。",
+      ],
+    },
+  },
 ];
 
 const ENTITY_BY_NAME = new Map<string, DestinationEntity>();
@@ -393,6 +411,8 @@ const CONTINENTAL_REGIONS = new Set(["歐洲", "北美", "南美", "非洲", "�
 function inferType(name: string): DestinationEntityType {
   if (CONTINENTAL_REGIONS.has(name)) return "region";
   if (ENTITY_BY_NAME.get(name)?.type) return ENTITY_BY_NAME.get(name)!.type;
+  if (isKnownTouristCityLabel(name)) return "city";
+  if (isKnownScenicLabel(name)) return "attraction";
   if (/(山|湖|瀑布|國家公園|国家公园|寺|廟|庙)/.test(name)) return "attraction";
   if (/(島|岛)/.test(name)) return "island";
   if (/(省|州|道|縣|县)/.test(name)) return "state";

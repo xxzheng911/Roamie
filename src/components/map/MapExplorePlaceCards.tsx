@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -8,7 +9,7 @@ import {
 } from "react";
 import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceImage } from "@/components/media/PlaceImage";
-import { getRoamieDefaultImage } from "@/services/placeImageService";
+import { getPlaceImage, getRoamieDefaultImage } from "@/services/placeImageService";
 import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
@@ -79,26 +80,86 @@ type Props = {
 
 const DRAG_SCROLL_THRESHOLD_PX = 10;
 
-/** Google 圖載入失敗時 fallback 到 Roamie 預設圖；WebP 在載入前即排除 */
+/** Google 圖載入失敗時 fallback：Unsplash → Roamie 預設；WebP 在載入前即排除 */
 function PlaceCardCoverImage({
   src,
   alt,
   categoryKey,
+  placeId,
+  placeName,
+  photoName,
+  primaryType,
+  types,
 }: {
   src: string;
   alt: string;
   categoryKey: string;
+  placeId?: string;
+  placeName?: string;
+  photoName?: string | null;
+  primaryType?: string | null;
+  types?: string[] | null;
 }) {
   const safeSrc = preferJpegPngImageUrl(src);
   const placeholder = getRoamieDefaultImage(categoryKey);
   const [displaySrc, setDisplaySrc] = useState(safeSrc ?? placeholder);
-  const [usedFallback, setUsedFallback] = useState(!safeSrc);
+  const [stage, setStage] = useState<"google" | "unsplash" | "default">(safeSrc ? "google" : "default");
+  const fallbackAttemptRef = useRef(0);
 
   useEffect(() => {
     const next = preferJpegPngImageUrl(src);
     setDisplaySrc(next ?? placeholder);
-    setUsedFallback(!next);
+    setStage(next ? "google" : "default");
+    fallbackAttemptRef.current = 0;
   }, [src, placeholder]);
+
+  const handleImageError = useCallback(() => {
+    if (stage === "default") return;
+
+    if (stage === "google" && fallbackAttemptRef.current === 0) {
+      fallbackAttemptRef.current += 1;
+      void getPlaceImage(
+        {
+          placeId,
+          name: placeName ?? alt,
+          photoName,
+          primaryType,
+          types,
+          categoryId: categoryKey,
+        },
+        { skipGoogle: true },
+      )
+        .then(({ url }) => {
+          const unsplash = preferJpegPngImageUrl(url) ?? url;
+          if (unsplash && unsplash !== displaySrc) {
+            setDisplaySrc(unsplash);
+            setStage("unsplash");
+            return;
+          }
+          setDisplaySrc(placeholder);
+          setStage("default");
+        })
+        .catch(() => {
+          setDisplaySrc(placeholder);
+          setStage("default");
+        });
+      return;
+    }
+
+    setDisplaySrc(placeholder);
+    setStage("default");
+  }, [
+    alt,
+    categoryKey,
+    displaySrc,
+    photoName,
+    placeId,
+    placeName,
+    placeholder,
+    primaryType,
+    stage,
+    types,
+  ]);
 
   return (
     <img
@@ -107,11 +168,7 @@ function PlaceCardCoverImage({
       loading="lazy"
       draggable={false}
       className="pointer-events-none h-full w-full object-cover"
-      onError={() => {
-        if (usedFallback) return;
-        setUsedFallback(true);
-        setDisplaySrc(placeholder);
-      }}
+      onError={handleImageError}
     />
   );
 }
@@ -283,6 +340,11 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                         src={googleImg}
                         alt={p.name}
                         categoryKey={categoryKey}
+                        placeId={p.id}
+                        placeName={p.name}
+                        photoName={p.photoName}
+                        primaryType={p.primaryType}
+                        types={p.types}
                       />
                     ) : (
                       <PlaceImage
