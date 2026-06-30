@@ -8,6 +8,7 @@ import { RoamieResponseView } from "@/components/RoamieResponseView";
 import { getRecommendation, type StoredRecommendation } from "@/lib/recommendation-storage";
 import { isRoamiePayloadV2, type RoamieRecommendationItem } from "@/lib/ai/types";
 import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
+import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { buildClientContextBundle } from "@/lib/fetch-context";
 import { getWeather } from "@/lib/weather.functions";
 import { getPreferences } from "@/lib/preferences-storage";
@@ -151,17 +152,22 @@ function RecommendationsPage() {
   const handleSavePlace = async (rec: RoamieRecommendationItem) => {
     setSavingName(rec.name);
     try {
-      const { saved } = await toggleSavePlace({
-        name: rec.name,
-        category: rec.type,
-        address: rec.address || null,
-        city: null,
-        lat: rec.lat ?? null,
-        lng: rec.lng ?? null,
-        notes: rec.reason,
-        mood_tag: data.moodTag,
-        cover_image: null,
-      });
+      const { saved } = await toggleSavePlace(
+        buildNewSavedPlaceInput({
+          name: rec.name,
+          category: rec.type,
+          address: rec.address || null,
+          lat: rec.lat ?? null,
+          lng: rec.lng ?? null,
+          notes: rec.reason,
+          mood_tag: data.moodTag,
+          placeId: rec.googlePlaceId,
+          googlePlaceId: rec.googlePlaceId,
+          photoName: rec.photoName,
+          rating: rec.rating,
+          userRatingCount: rec.userRatingCount,
+        }),
+      );
       setSavedNames((prev) => {
         const next = new Set(prev);
         if (saved) next.add(rec.name);

@@ -3,6 +3,7 @@ import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/typ
 import { normalizeItineraryItem } from "@/lib/ai/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { SavedPlace } from "@/lib/places-storage";
+import { readSavedPlaceMetadata } from "@/lib/saved-place-utils";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 
 /** 可加入行程的地點（探索、聊天、收藏、手動搜尋） */
@@ -57,6 +58,7 @@ export function tripPlaceFromPlaceResult(place: PlaceResult): TripPlaceInput {
 }
 
 export function tripPlaceFromSavedPlace(place: SavedPlace): TripPlaceInput {
+  const meta = readSavedPlaceMetadata(place);
   return {
     name: place.name,
     placeName: place.name,
@@ -64,9 +66,12 @@ export function tripPlaceFromSavedPlace(place: SavedPlace): TripPlaceInput {
     address: place.address ?? "",
     lat: place.lat ?? null,
     lng: place.lng ?? null,
-    placeType: place.category,
+    googlePlaceId: meta.googlePlaceId ?? meta.placeId,
+    placeType: meta.primaryType ?? place.category ?? undefined,
     description: place.notes ?? "",
     googleMapsUrl: buildPlaceMapsUrl(place.name, place.lat ?? null, place.lng ?? null),
+    photoName: meta.photoName ?? null,
+    rating: meta.rating ?? null,
   };
 }
 

@@ -39,6 +39,7 @@ import {
 import { appendPlaceToTrip } from "@/lib/trip/append-place-to-trip";
 import type { RoamieResponse, RoamieRecommendationItem } from "@/lib/ai/types";
 import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
+import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import {
   loadRecentRecommendationNames,
   recordRecommendationNames,
@@ -763,17 +764,23 @@ function Chat() {
     markShortcutEngaged();
     setSavingName(rec.name);
     try {
-      const { saved } = await toggleSavePlace({
-        name: rec.name,
-        category: rec.type,
-        address: rec.address || null,
-        city: session.location?.city ?? null,
-        lat: rec.lat ?? null,
-        lng: rec.lng ?? null,
-        notes: rec.reason,
-        mood_tag: session.mood ?? partial.moodTag ?? null,
-        cover_image: null,
-      });
+      const { saved } = await toggleSavePlace(
+        buildNewSavedPlaceInput({
+          name: rec.name,
+          category: rec.type,
+          address: rec.address || null,
+          city: session.location?.city ?? null,
+          lat: rec.lat ?? null,
+          lng: rec.lng ?? null,
+          notes: rec.reason,
+          mood_tag: session.mood ?? partial.moodTag ?? null,
+          placeId: rec.googlePlaceId,
+          googlePlaceId: rec.googlePlaceId,
+          photoName: rec.photoName,
+          rating: rec.rating,
+          userRatingCount: rec.userRatingCount,
+        }),
+      );
       setSavedNames((prev) => {
         const next = new Set(prev);
         if (saved) next.add(rec.name);

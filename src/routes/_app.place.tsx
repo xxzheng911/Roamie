@@ -64,6 +64,7 @@ import { getWeather } from "@/lib/weather.functions";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { inferExploreCityLabel } from "@/lib/explore-recommend-mode";
 import { requestExploreMapClearSelection } from "@/lib/explore-map-selection";
+import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { resolveTabelogPlaceExternalUrl } from "@/lib/tabelog-reference";
 import { buildPlaceDetailTicketOffers } from "@/lib/affiliate/affiliate-links";
 
@@ -72,7 +73,7 @@ const searchSchema = z.object({
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
   /** 返回來源：chat 從聊聊回來；map 從探索回來；trip 從行程內頁回來 */
-  returnTo: z.enum(["chat", "map", "home", "trip"]).optional(),
+  returnTo: z.enum(["chat", "map", "home", "trip", "saved"]).optional(),
   tripId: z.string().optional(),
   day: z.coerce.number().optional(),
 });
@@ -361,6 +362,10 @@ function PlaceDetailPage() {
       navigate({ to: "/" });
       return;
     }
+    if (search.returnTo === "saved") {
+      navigate({ to: "/saved", search: { tab: "places" } });
+      return;
+    }
     if (search.returnTo === "trip" && search.tripId) {
       if (typeof window !== "undefined" && window.history.length > 1) {
         window.history.back();
@@ -384,17 +389,24 @@ function PlaceDetailPage() {
     if (!place) return;
     setBusy(true);
     try {
-      const { saved: didSave } = await toggleSavePlace({
-        name: place.name,
-        category: place.primaryType,
-        address: place.address,
-        city: null,
-        lat: place.lat,
-        lng: place.lng,
-        notes: place.reason,
-        mood_tag: null,
-        cover_image: imageUrls[0] ?? null,
-      });
+      const { saved: didSave } = await toggleSavePlace(
+        buildNewSavedPlaceInput({
+          name: place.name,
+          category: place.primaryType,
+          primaryType: place.primaryType,
+          types: place.types ?? undefined,
+          address: place.address,
+          lat: place.lat,
+          lng: place.lng,
+          notes: place.reason,
+          placeId: place.id,
+          googlePlaceId: place.id,
+          photoName: place.photoName,
+          rating: place.rating,
+          userRatingCount: place.userRatingCount,
+          coverImageUrl: imageUrls[0] ?? null,
+        }),
+      );
       toast.success(didSave ? "已加入收藏" : "已取消收藏");
       setSavedNames((prev) => {
         const next = new Set(prev);

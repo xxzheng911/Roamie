@@ -1,11 +1,13 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { Plus, Loader2, Trash2, MapPin, Heart, Route as RouteIcon } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { Plus, Loader2, Trash2, Heart, Route as RouteIcon } from "lucide-react";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromSavedPlace } from "@/lib/trip/trip-place-input";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useI18n } from "@/hooks/use-i18n";
 import { SavedTripCard } from "@/components/saved/SavedTripCard";
+import { SavedPlaceCoverThumb } from "@/components/saved/SavedPlaceCoverThumb";
+import { SavedPlaceRemoveConfirmDialog } from "@/components/saved/SavedPlaceRemoveConfirmDialog";
 import { SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
@@ -17,6 +19,11 @@ import {
   type SavedPlace,
 } from "@/lib/places-storage";
 import { isMissingTableError } from "@/lib/supabase-errors";
+import { setPlaceDetailHandoff } from "@/lib/place-detail-handoff";
+import {
+  resolveSavedPlaceGooglePlaceId,
+  savedPlaceToHandoff,
+} from "@/lib/saved-place-utils";
 
 type SavedSearch = { tab?: string };
 
@@ -77,6 +84,7 @@ function PlacesEmptyState() {
 function Saved() {
   const { t } = useI18n();
   const tt = t as unknown as (key: string, params?: Record<string, unknown>) => string;
+  const navigate = useNavigate();
   const { openAddToTrip } = useAddToTrip();
   const search = Route.useSearch();
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
@@ -85,6 +93,9 @@ function Saved() {
   const [loading, setLoading] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [removePlaceTarget, setRemovePlaceTarget] = useState<SavedPlace | null>(null);
+  const [removingPlace, setRemovingPlace] = useState(false);
+  const [openingPlaceId, setOpeningPlaceId] = useState<string | null>(null);
 
   const refresh = () => {
     setLoading(true);
@@ -149,16 +160,49 @@ function Saved() {
     }
   };
 
-  const handleDeletePlace = async (id: string, name: string) => {
-    if (!confirm(tt("saved.removePlaceConfirm", { name }))) return;
+  const handleConfirmRemovePlace = async () => {
+    if (!removePlaceTarget) return;
+    setRemovingPlace(true);
     try {
-      await deletePlace(id);
+      await deletePlace(removePlaceTarget.id, removePlaceTarget.name);
       toast.success(t("saved.removed"));
-      setPlaces((prev) => prev.filter((p) => p.id !== id));
+      setPlaces((prev) =>
+        prev.filter(
+          (p) => p.id !== removePlaceTarget.id && p.name !== removePlaceTarget.name,
+        ),
+      );
+      setRemovePlaceTarget(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("saved.deleteFailed"));
+    } finally {
+      setRemovingPlace(false);
     }
   };
+
+  const handleOpenSavedPlace = useCallback(
+    async (place: SavedPlace) => {
+      setOpeningPlaceId(place.id);
+      try {
+        const handoff = savedPlaceToHandoff(place);
+        setPlaceDetailHandoff(handoff);
+        const googlePlaceId = resolveSavedPlaceGooglePlaceId(place);
+        await navigate({
+          to: "/place",
+          search: {
+            placeId: googlePlaceId ?? handoff.placeId ?? undefined,
+            lat: place.lat ?? undefined,
+            lng: place.lng ?? undefined,
+            returnTo: "saved",
+          },
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : t("saved.loadFailed"));
+      } finally {
+        setOpeningPlaceId(null);
+      }
+    },
+    [navigate, t],
+  );
 
   const hasAny = trips.length > 0 || places.length > 0;
 
@@ -242,21 +286,24 @@ function Saved() {
               key={p.id}
               className="flex items-center gap-3 rounded-3xl border border-border bg-card p-3 shadow-soft"
             >
-              <div className="h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-secondary">
-                {p.cover_image ? (
-                  <img src={p.cover_image} alt={p.name} className="h-full w-full object-cover" />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center">
-                    <MapPin className="h-5 w-5 text-muted-foreground" />
-                  </div>
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[15px] font-medium">{p.name}</p>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {[p.category, p.city, p.address].filter(Boolean).join(" · ")}
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={() => void handleOpenSavedPlace(p)}
+                disabled={openingPlaceId === p.id}
+                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+              >
+                <SavedPlaceCoverThumb
+                  place={p}
+                  className="h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-secondary"
+                  alt={p.name}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[15px] font-medium">{p.name}</p>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {[p.category, p.city, p.address].filter(Boolean).join(" · ")}
+                  </p>
+                </div>
+              </button>
               <div className="flex shrink-0 flex-col gap-1">
                 <button
                   type="button"
@@ -268,7 +315,7 @@ function Saved() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleDeletePlace(p.id, p.name)}
+                  onClick={() => setRemovePlaceTarget(p)}
                   className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
                   aria-label={t("saved.removeAria")}
                 >
@@ -287,6 +334,16 @@ function Saved() {
         }}
         onConfirm={handleConfirmDeleteTrip}
         confirming={deleting}
+      />
+
+      <SavedPlaceRemoveConfirmDialog
+        open={removePlaceTarget != null}
+        placeName={removePlaceTarget?.name ?? ""}
+        onOpenChange={(open) => {
+          if (!open && !removingPlace) setRemovePlaceTarget(null);
+        }}
+        onConfirm={handleConfirmRemovePlace}
+        confirming={removingPlace}
       />
     </div>
   );

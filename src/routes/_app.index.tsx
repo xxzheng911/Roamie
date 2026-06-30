@@ -17,7 +17,7 @@ import { fetchRoamieAI } from "@/lib/ai/stream-client";
 import { shouldActivateLateNightSceneFlow } from "@/lib/late-night-scene-recommendations";
 import { saveRecommendation } from "@/lib/recommendation-storage";
 import { listPlaces, toggleSavePlace, SAVED_PLACES_CHANGED_EVENT } from "@/lib/places-storage";
-import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { isMissingTableError } from "@/lib/supabase-errors";
 import {
   loadRecentRecommendationNames,
@@ -443,19 +443,25 @@ function Home() {
   const handleToggleSaveNearby = async (pick: HomeNearbyPick) => {
     setSaveBusyId(pick.id);
     try {
-      const { saved: didSave } = await toggleSavePlace({
-        name: pick.name,
-        category: pick.displayCategory ?? pick.primaryType,
-        address: pick.address,
-        city: null,
-        lat: pick.lat,
-        lng: pick.lng,
-        notes: pick.reason,
-        mood_tag: selectedMood,
-        cover_image: pick.photoName
-          ? (buildPlacePhotoUrl(pick.photoName, 600) ?? null)
-          : pick.coverImageUrl,
-      });
+      const { saved: didSave } = await toggleSavePlace(
+        buildNewSavedPlaceInput({
+          name: pick.name,
+          category: pick.displayCategory ?? pick.primaryType,
+          primaryType: pick.primaryType,
+          types: pick.types ?? undefined,
+          address: pick.address,
+          lat: pick.lat,
+          lng: pick.lng,
+          notes: pick.reason,
+          mood_tag: selectedMood,
+          placeId: pick.id,
+          googlePlaceId: pick.id,
+          photoName: pick.photoName,
+          rating: pick.rating,
+          userRatingCount: pick.userRatingCount,
+          coverImageUrl: pick.coverImageUrl,
+        }),
+      );
       toast.success(didSave ? "已加入收藏" : "已取消收藏");
       await refreshSavedNames();
     } catch (e) {

@@ -98,11 +98,10 @@ async function listPlacesInternal(): Promise<SavedPlace[]> {
       return local;
     }
     const rows = (data ?? []) as SavedPlace[];
-    const merged = mergePlacesByIdOrName(rows, readLocalCache(userId), readLocalCache(null));
-    writeLocalCache(userId, merged);
-    writeLocalCache(null, merged);
-    console.info("[SAVED_PLACES] loaded count=", merged.length);
-    return merged;
+    writeLocalCache(userId, rows);
+    writeLocalCache(null, rows);
+    console.info("[SAVED_PLACES] loaded count=", rows.length);
+    return rows;
   }
   const local = readLocalCache(null);
   console.info("[SAVED_PLACES] loaded count=", local.length);
@@ -175,26 +174,38 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
   return place;
 }
 
-export async function deletePlace(id: string): Promise<void> {
+function removePlaceFromLocalCaches(id: string, name?: string): void {
+  const filter = (list: SavedPlace[]) =>
+    list.filter((p) => p.id !== id && (!name || p.name !== name));
+
+  writeLocalCache(null, filter(readLocalCache(null)));
+
+  void resolveStableUserId().then((userId) => {
+    if (!userId) return;
+    writeLocalCache(userId, filter(readLocalCache(userId)));
+  });
+}
+
+export async function deletePlace(id: string, name?: string): Promise<void> {
   const userId = await resolveStableUserId();
   if (userId) {
     const { error } = await supabase.from("saved_places").delete().eq("id", id);
-    if (error) {
-      if (isMissingTableError(error)) return;
+    if (error && !isMissingTableError(error)) {
       throw new Error(error.message);
     }
-    const local = mergePlacesByIdOrName(readLocalCache(userId), readLocalCache(null));
-    const filtered = local.filter((p) => p.id !== id);
-    writeLocalCache(userId, filtered);
-    writeLocalCache(null, filtered);
-    emitSavedPlacesChanged();
-    return;
+    if (name) {
+      const { error: byNameError } = await supabase
+        .from("saved_places")
+        .delete()
+        .eq("user_id", userId)
+        .eq("name", name);
+      if (byNameError && !isMissingTableError(byNameError)) {
+        console.warn("[SAVED_PLACES] delete by name failed", byNameError.message);
+      }
+    }
   }
-  const local = readLocalCache(null);
-  writeLocalCache(
-    null,
-    local.filter((p) => p.id !== id),
-  );
+
+  removePlaceFromLocalCaches(id, name);
   emitSavedPlacesChanged();
 }
 
@@ -204,9 +215,10 @@ export async function isPlaceSavedByName(name: string): Promise<string | null> {
 }
 
 export async function deletePlaceByName(name: string): Promise<boolean> {
-  const id = await isPlaceSavedByName(name);
-  if (!id) return false;
-  await deletePlace(id);
+  const list = await listPlaces();
+  const match = list.find((p) => p.name === name);
+  if (!match) return false;
+  await deletePlace(match.id, match.name);
   return true;
 }
 
@@ -216,7 +228,7 @@ export async function toggleSavePlace(
 ): Promise<{ saved: boolean; place: SavedPlace | null }> {
   const existingId = await isPlaceSavedByName(input.name);
   if (existingId) {
-    await deletePlace(existingId);
+    await deletePlace(existingId, input.name);
     return { saved: false, place: null };
   }
   const place = await savePlace(input);

@@ -50,6 +50,7 @@ import {
   placesStatsPayload,
 } from "@/lib/places-api-stats";
 import type { PlaceResult } from "@/lib/place-result";
+import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { buildPlaceImageUrls } from "@/lib/place-detail-resolve";
@@ -1521,17 +1522,24 @@ function MapView() {
   const handleToggleSave = async (p: MapPlaceCard) => {
     setBusy(p.id);
     try {
-      const { saved: didSave } = await toggleSavePlace({
-        name: p.name,
-        category: p.primaryType,
-        address: p.address,
-        city: locationLabel,
-        lat: p.lat,
-        lng: p.lng,
-        notes: p.reason,
-        mood_tag: null,
-        cover_image: p.photoName ? (buildPlacePhotoUrl(p.photoName, 600) ?? null) : null,
-      });
+      const { saved: didSave } = await toggleSavePlace(
+        buildNewSavedPlaceInput({
+          name: p.name,
+          category: p.primaryType,
+          primaryType: p.primaryType,
+          types: p.types ?? undefined,
+          address: p.address,
+          city: locationLabel,
+          lat: p.lat,
+          lng: p.lng,
+          notes: p.reason,
+          placeId: p.id,
+          googlePlaceId: p.id,
+          photoName: p.photoName,
+          rating: p.rating,
+          userRatingCount: p.userRatingCount,
+        }),
+      );
       toast.success(didSave ? t("map.saved") : t("map.unsaved"));
       refreshSaved();
     } catch (err) {
