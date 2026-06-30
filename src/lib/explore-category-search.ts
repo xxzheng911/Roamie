@@ -200,6 +200,35 @@ function resolveExploreFoodSortOptions(
   };
 }
 
+function mergeExplorePlusSortOptions(
+  categoryId: string,
+  userLocation: { lat: number; lng: number },
+  input: {
+    reasonProfile: UserProfileForReason | null;
+    saved: SavedPlace[];
+    weather: WeatherSummary | null;
+    cityLabel?: string | null;
+  },
+): ExploreCategorySortOptions {
+  const savedPlaces = input.saved.map((s) => ({ name: s.name, category: s.category }));
+  const plus = { reasonProfile: input.reasonProfile, savedPlaces };
+  return {
+    ...resolveExploreFoodSortOptions(categoryId, userLocation, input.cityLabel),
+    reasonProfile: input.reasonProfile,
+    savedPlaces,
+    weather: input.weather,
+    plus,
+  };
+}
+
+function homePlusSortOptions(input: {
+  reasonProfile: UserProfileForReason | null;
+  saved: SavedPlace[];
+}) {
+  const savedPlaces = input.saved.map((s) => ({ name: s.name, category: s.category }));
+  return { plus: { reasonProfile: input.reasonProfile, savedPlaces } };
+}
+
 function filterPlacesForExploreCategory(
   list: PlaceResult[],
   options: ExploreFilterOptions,
@@ -406,12 +435,20 @@ export function buildExploreCardsFromRawPlaces(
   ];
 
   return ctx.forHome
-    ? sortHomeNearbyPlacesWithContext(enriched, ctx.userLocation, { weather: ctx.weather })
+    ? sortHomeNearbyPlacesWithContext(enriched, ctx.userLocation, {
+        weather: ctx.weather,
+        ...homePlusSortOptions({ reasonProfile: ctx.reasonProfile, saved: ctx.saved }),
+      })
     : sortExploreCategoryPlaces(
         enriched,
         ctx.userLocation,
         cat.id,
-        resolveExploreFoodSortOptions(cat.id, ctx.userLocation, cityLabel),
+        mergeExplorePlusSortOptions(cat.id, ctx.userLocation, {
+          reasonProfile: ctx.reasonProfile,
+          saved: ctx.saved,
+          weather: ctx.weather,
+          cityLabel,
+        }),
       );
 }
 
@@ -744,7 +781,12 @@ function warmMapCategoryCache(
     exploreCards,
     ctx.userLocation,
     cat.id,
-    resolveExploreFoodSortOptions(cat.id, ctx.userLocation, ctx.cityLabel),
+    mergeExplorePlusSortOptions(cat.id, ctx.userLocation, {
+      reasonProfile: ctx.reasonProfile,
+      saved: ctx.saved,
+      weather: ctx.weather,
+      cityLabel: ctx.cityLabel,
+    }),
   );
   writeMapPlacesCache(mapKey, sorted, null);
 }
@@ -1158,12 +1200,20 @@ async function searchExploreCategoryPlacesInner(
       }),
     );
     return forHome
-      ? sortHomeNearbyPlacesWithContext(mocks, userLocation, { weather })
+      ? sortHomeNearbyPlacesWithContext(mocks, userLocation, {
+          weather,
+          ...homePlusSortOptions({ reasonProfile, saved }),
+        })
       : sortExploreCategoryPlaces(
           mocks,
           userLocation,
           cat.id,
-          resolveExploreFoodSortOptions(cat.id, userLocation, cityLabel),
+          mergeExplorePlusSortOptions(cat.id, userLocation, {
+            reasonProfile,
+            saved,
+            weather,
+            cityLabel,
+          }),
         );
   }
 
@@ -1182,7 +1232,10 @@ async function searchExploreCategoryPlacesInner(
 
   if (forHome) {
     warmMapCategoryCache(cat, { userLocation, weather, locale, reasonProfile, saved }, apiPlaces);
-    return sortHomeNearbyPlacesWithContext(filteredEnriched, userLocation, { weather });
+    return sortHomeNearbyPlacesWithContext(filteredEnriched, userLocation, {
+      weather,
+      ...homePlusSortOptions({ reasonProfile, saved }),
+    });
   }
 
   const mapKey = buildCategoryMapCacheKey(
@@ -1196,7 +1249,12 @@ async function searchExploreCategoryPlacesInner(
     filteredEnriched,
     userLocation,
     cat.id,
-    resolveExploreFoodSortOptions(cat.id, userLocation, cityLabel),
+    mergeExplorePlusSortOptions(cat.id, userLocation, {
+      reasonProfile,
+      saved,
+      weather,
+      cityLabel,
+    }),
   );
   writeMapPlacesCache(mapKey, sorted, null);
   return sorted;

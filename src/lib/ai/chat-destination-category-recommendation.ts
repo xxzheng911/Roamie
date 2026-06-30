@@ -69,12 +69,16 @@ function rankCategoryPlaces(
   return [...places].sort((a, b) => {
     const scoreA =
       (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10) -
-      (a.lat != null && a.lng != null ? distanceMeters(lat, lng, a.lat, a.lng) : Number.MAX_SAFE_INTEGER) /
-        50_000;
+      (a.lat != null && a.lng != null
+        ? distanceMeters({ lat, lng }, { lat: a.lat, lng: a.lng })
+        : Number.MAX_SAFE_INTEGER) /
+      50_000;
     const scoreB =
       (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10) -
-      (b.lat != null && b.lng != null ? distanceMeters(lat, lng, b.lat, b.lng) : Number.MAX_SAFE_INTEGER) /
-        50_000;
+      (b.lat != null && b.lng != null
+        ? distanceMeters({ lat, lng }, { lat: b.lat, lng: b.lng })
+        : Number.MAX_SAFE_INTEGER) /
+      50_000;
     return scoreB - scoreA;
   });
 }
@@ -185,7 +189,7 @@ function placesToRecommendations(
   return places.map((place) => {
     const distM =
       place.lat != null && place.lng != null
-        ? distanceMeters(lat, lng, place.lat, place.lng)
+        ? distanceMeters({ lat, lng }, { lat: place.lat, lng: place.lng })
         : undefined;
     return mapPlaceResultToChatItem(place, {
       mood: context.mood,

@@ -46,6 +46,8 @@ type Listener = () => void;
 const listeners = new Set<Listener>();
 
 let bootstrapped = false;
+let locationWatchStarted = false;
+let locationWatchCleanup: (() => void) | null = null;
 let locale: Locale = "zh-TW";
 let loadId = 0;
 let hasDisplayedWeather = Boolean(readHomeSessionWeather()?.available);
@@ -90,6 +92,14 @@ function notify(): void {
 }
 
 function patchState(patch: Partial<HomeWeatherBootstrapState>): void {
+  let changed = false;
+  for (const key of Object.keys(patch) as (keyof HomeWeatherBootstrapState)[]) {
+    if (patch[key] !== state[key]) {
+      changed = true;
+      break;
+    }
+  }
+  if (!changed) return;
   state = { ...state, ...patch };
   notify();
 }
@@ -304,10 +314,11 @@ async function loadWeather(options?: { force?: boolean; showLoading?: boolean })
 /** App shell / Home 共用；只初始化一次 */
 export function ensureHomeWeatherBootstrap(nextLocale: Locale, source: string): void {
   locale = nextLocale;
-  logHomeWeather("ensure", { source, bootstrapped });
-
-  if (bootstrapped) return;
+  if (bootstrapped) {
+    return;
+  }
   bootstrapped = true;
+  logHomeWeather("ensure", { source, bootstrapped: true });
 
   console.info("[WEATHER_SERVICE_VERSION] v-runtime-fallback-001");
   logHomeWeather("mounted", { source });
@@ -315,6 +326,20 @@ export function ensureHomeWeatherBootstrap(nextLocale: Locale, source: string): 
 
   const hasCachedWeather = Boolean(readHomeSessionWeather()?.available);
   void loadWeather({ showLoading: !hasCachedWeather });
+}
+
+/** 全 app 只註冊一次 effective-location → weather 訂閱 */
+export function ensureHomeWeatherLocationWatch(): () => void {
+  if (locationWatchStarted) {
+    return () => {};
+  }
+  locationWatchStarted = true;
+  locationWatchCleanup = subscribeHomeWeatherLocationWatch();
+  return () => {
+    locationWatchCleanup?.();
+    locationWatchCleanup = null;
+    locationWatchStarted = false;
+  };
 }
 
 /**

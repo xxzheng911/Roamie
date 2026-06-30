@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as TripRouteImport } from './routes/trip'
+import { Route as TravelPreferenceTestRouteImport } from './routes/travel-preference-test'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppRouteImport } from './routes/_app'
@@ -41,6 +42,11 @@ const WelcomeRoute = WelcomeRouteImport.update({
 const TripRoute = TripRouteImport.update({
   id: '/trip',
   path: '/trip',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TravelPreferenceTestRoute = TravelPreferenceTestRouteImport.update({
+  id: '/travel-preference-test',
+  path: '/travel-preference-test',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OnboardingRoute = OnboardingRouteImport.update({
@@ -152,6 +158,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/travel-preference-test': typeof TravelPreferenceTestRoute
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
@@ -175,6 +182,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/travel-preference-test': typeof TravelPreferenceTestRoute
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
   '/chat': typeof AppChatRoute
@@ -200,6 +208,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/travel-preference-test': typeof TravelPreferenceTestRoute
   '/trip': typeof TripRoute
   '/welcome': typeof WelcomeRoute
   '/_app/chat': typeof AppChatRoute
@@ -227,6 +236,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/onboarding'
+    | '/travel-preference-test'
     | '/trip'
     | '/welcome'
     | '/chat'
@@ -250,6 +260,7 @@ export interface FileRouteTypes {
   to:
     | '/login'
     | '/onboarding'
+    | '/travel-preference-test'
     | '/trip'
     | '/welcome'
     | '/chat'
@@ -274,6 +285,7 @@ export interface FileRouteTypes {
     | '/_app'
     | '/login'
     | '/onboarding'
+    | '/travel-preference-test'
     | '/trip'
     | '/welcome'
     | '/_app/chat'
@@ -300,6 +312,7 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRouteWithChildren
   OnboardingRoute: typeof OnboardingRoute
+  TravelPreferenceTestRoute: typeof TravelPreferenceTestRoute
   TripRoute: typeof TripRoute
   WelcomeRoute: typeof WelcomeRoute
   ApiChatRoute: typeof ApiChatRoute
@@ -323,6 +336,13 @@ declare module '@tanstack/react-router' {
       path: '/trip'
       fullPath: '/trip'
       preLoaderRoute: typeof TripRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/travel-preference-test': {
+      id: '/travel-preference-test'
+      path: '/travel-preference-test'
+      fullPath: '/travel-preference-test'
+      preLoaderRoute: typeof TravelPreferenceTestRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/onboarding': {
@@ -531,6 +551,7 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRouteWithChildren,
   OnboardingRoute: OnboardingRoute,
+  TravelPreferenceTestRoute: TravelPreferenceTestRoute,
   TripRoute: TripRoute,
   WelcomeRoute: WelcomeRoute,
   ApiChatRoute: ApiChatRoute,

@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { useAccess } from "@/hooks/use-access";
 import { useAuth } from "@/hooks/use-auth";
-import { canShowDeveloperTools, isDeveloperBuildEnabled } from "@/lib/access/developer";
+import { canBypassSubscriptionBilling } from "@/lib/access/subscription-dev-mode";
 
 export type PlusUpgradeResult = "upgraded" | "coming_soon";
 
@@ -11,14 +11,12 @@ export type PlusUpgradeResult = "upgraded" | "coming_soon";
  */
 export function usePlusUpgrade() {
   const { user } = useAuth();
-  const { enablePlusTestMode, testModeOverride } = useAccess();
+  const { enablePlusTestMode } = useAccess();
   const [comingSoonOpen, setComingSoonOpen] = useState(false);
 
-  const canInstantUpgrade =
-    import.meta.env.DEV ||
-    isDeveloperBuildEnabled() ||
-    canShowDeveloperTools(user?.email ?? null) ||
-    testModeOverride !== "none";
+  const shouldBypassBilling = canBypassSubscriptionBilling(user?.email ?? null);
+
+  const canInstantUpgrade = shouldBypassBilling;
 
   const upgradeToPlus = useCallback((): PlusUpgradeResult => {
     if (canInstantUpgrade) {

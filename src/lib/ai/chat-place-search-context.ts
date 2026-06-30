@@ -1,4 +1,5 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import { resolveSessionDestination } from "@/lib/ai/travel-context";
 import type { Locale } from "@/lib/i18n/types";
@@ -102,9 +103,11 @@ export function resolveChatPlaceSearchMode(
   session: ChatPlanningSession,
   userText: string,
 ): ChatPlaceSearchMode {
+  if (isExplicitNearbyQuery(userText) || isPlaceDetailChatActive(session)) {
+    return "nearby";
+  }
   const destination = resolveDestinationNameForSearch(context, session);
   if (destination) return "destination";
-  if (isExplicitNearbyQuery(userText)) return "nearby";
   return "nearby";
 }
 

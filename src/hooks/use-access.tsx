@@ -14,13 +14,16 @@ import {
   applyTestOverride,
   buildAccessSnapshot,
   clearTestModeOverride,
-  forceFreeMode,
-  forcePlusMode,
   type AccessSnapshot,
   type SubscriptionState,
   type TestModeOverride,
 } from "@/lib/access";
 import { getUserPlanProfile } from "@/lib/plan-tier/storage";
+import {
+  applyLocalMockPlanTier,
+  reconcileStaleTierLocks,
+  syncMockPlanTierToProfile,
+} from "@/lib/plan-tier/sync-mock-tier";
 
 type AccessCtx = AccessSnapshot & {
   refresh: () => void;
@@ -79,8 +82,23 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   }, [userId]);
 
   useEffect(() => {
+    reconcileStaleTierLocks();
+  }, []);
+
+  useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const onChange = () => {
+      if (!userId) return;
+      void getUserPlanProfile(userId)
+        .then((plan) => setProfilePlusActive(isProfileSubscriptionPlus(plan)))
+        .catch(() => setProfilePlusActive(false));
+    };
+    window.addEventListener(ACCESS_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onChange);
+  }, [userId]);
 
   useEffect(() => {
     const onChange = () => refresh();
@@ -104,18 +122,60 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const enablePlusTestMode = useCallback(() => {
-    applyMockSubscription("plus");
-    forcePlusMode();
-    console.info("[DEV_SUBSCRIPTION] switched_to_plus");
-    refresh();
-  }, [refresh]);
+    console.info("[SUBSCRIPTION_MODE] switch start free -> plus");
+    try {
+      setProfilePlusActive(true);
+      applyLocalMockPlanTier("plus");
+      refresh();
+      console.info("[SUBSCRIPTION_MODE] local update success");
+      console.info("[DEV_SUBSCRIPTION] switched_to_plus");
+      void syncMockPlanTierToProfile("plus")
+        .then(() => {
+          console.info("[SUBSCRIPTION_MODE] supabase update success");
+          if (!userId) return;
+          return getUserPlanProfile(userId).then((plan) =>
+            setProfilePlusActive(isProfileSubscriptionPlus(plan)),
+          );
+        })
+        .then(() => {
+          refresh();
+          console.info("[SUBSCRIPTION_MODE] switch success plus");
+        })
+        .catch((e) => {
+          console.error("[SUBSCRIPTION_MODE] switch error", e);
+        });
+    } catch (e) {
+      console.error("[SUBSCRIPTION_MODE] switch error", e);
+    }
+  }, [refresh, userId]);
 
   const disablePlusTestMode = useCallback(() => {
-    applyMockSubscription("free");
-    forceFreeMode();
-    console.info("[DEV_SUBSCRIPTION] switched_to_free");
-    refresh();
-  }, [refresh]);
+    console.info("[SUBSCRIPTION_MODE] switch start plus -> free");
+    try {
+      setProfilePlusActive(false);
+      applyLocalMockPlanTier("free");
+      refresh();
+      console.info("[SUBSCRIPTION_MODE] local update success");
+      console.info("[DEV_SUBSCRIPTION] switched_to_free");
+      void syncMockPlanTierToProfile("free")
+        .then(() => {
+          console.info("[SUBSCRIPTION_MODE] supabase update success");
+          if (!userId) return;
+          return getUserPlanProfile(userId).then((plan) =>
+            setProfilePlusActive(isProfileSubscriptionPlus(plan)),
+          );
+        })
+        .then(() => {
+          refresh();
+          console.info("[SUBSCRIPTION_MODE] switch success free");
+        })
+        .catch((e) => {
+          console.error("[SUBSCRIPTION_MODE] switch error", e);
+        });
+    } catch (e) {
+      console.error("[SUBSCRIPTION_MODE] switch error", e);
+    }
+  }, [refresh, userId]);
 
   const value = useMemo(
     () => ({

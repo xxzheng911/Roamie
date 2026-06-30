@@ -2,6 +2,43 @@ import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { sanitizeHomeNearbyPicksForDisplay } from "@/lib/home-nearby-display";
 import type { WeatherSummary } from "@/lib/weather-types";
 
+const HOME_PICKS_PERSIST_KEY = "roamie:home-nearby-picks-persisted";
+
+type PersistedHomePicks = {
+  picks: HomeNearbyPick[];
+  loadKey: string | null;
+  updatedAt: number;
+};
+
+function readPersistedHomePicks(): PersistedHomePicks | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(HOME_PICKS_PERSIST_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedHomePicks;
+    if (!parsed || !Array.isArray(parsed.picks)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedHomePicks(picks: HomeNearbyPick[], loadKey: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    const payload: PersistedHomePicks = {
+      picks: sanitizeHomeNearbyPicksForDisplay(picks, { logDrop: false }),
+      loadKey,
+      updatedAt: Date.now(),
+    };
+    localStorage.setItem(HOME_PICKS_PERSIST_KEY, JSON.stringify(payload));
+  } catch {
+    /* quota */
+  }
+}
+
+const persistedBoot = readPersistedHomePicks();
+
 export type HomeSessionUserLocation = {
   lat: number;
   lng: number;
@@ -19,8 +56,8 @@ type HomeSessionSnapshot = {
 const snapshot: HomeSessionSnapshot = {
   weather: null,
   userLocation: null,
-  nearbyPicks: [],
-  nearbyLoadKey: null,
+  nearbyPicks: persistedBoot?.picks ?? [],
+  nearbyLoadKey: persistedBoot?.loadKey ?? null,
 };
 
 export function readHomeSessionWeather(): WeatherSummary | null {
@@ -50,6 +87,9 @@ export function writeHomeSessionNearbyPicks(
   const sanitized = sanitizeHomeNearbyPicksForDisplay(picks, { logDrop: false });
   snapshot.nearbyPicks = sanitized;
   snapshot.nearbyLoadKey = loadKey;
+  if (sanitized.length > 0) {
+    writePersistedHomePicks(sanitized, loadKey);
+  }
 }
 
 export function readHomeSessionNearbyLoadKey(): string | null {

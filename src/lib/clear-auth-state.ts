@@ -8,6 +8,8 @@ import { clearCompanionModeSelection } from "@/lib/companion-mode-storage";
 import { supabase } from "@/lib/supabase";
 import { detectPlatform } from "@/services/platform";
 import { clearProfileSessionCache } from "@/lib/profile-session-cache";
+import { resetAppBootCachesForUserChange } from "@/lib/app-boot-cache";
+import { clearTravelPrefResultCache } from "@/lib/travel-pref-result-cache";
 
 const SUPABASE_AUTH_STORAGE_KEY = "roamie-auth";
 const PREF_PREFIX = "roamie.supabase.auth.";
@@ -18,6 +20,7 @@ const LOCAL_DEVICE_CACHE_KEYS = [
   "roamie:user-profile",
   "roamie:profile-settings",
   "roamie:preferences",
+  "roamie:travel-pref-result",
   "roamie:places",
   "roamie:itineraries",
   "roamie:recommendations",
@@ -54,7 +57,10 @@ function clearWebStorageAuthKeys(): void {
       const keys: string[] = [];
       for (let i = 0; i < storage.length; i++) {
         const key = storage.key(i);
-        if (key && shouldRemove(key)) keys.push(key);
+        if (!key) continue;
+        if (shouldRemove(key) || key.startsWith("roamie:preferences:") || key.startsWith("roamie:travel-pref-result:")) {
+          keys.push(key);
+        }
       }
       for (const key of keys) storage.removeItem(key);
     } catch {
@@ -106,6 +112,8 @@ export function clearAuthStateSync(options: ClearAuthStateOptions = {}): void {
   resetPostAuthRedirect();
   clearAuthMemoryCache();
   clearProfileSessionCache();
+  resetAppBootCachesForUserChange();
+  clearTravelPrefResultCache();
   clearWebStorageAuthKeys();
   clearLocalDeviceCaches();
   clearPendingCallbackPath();

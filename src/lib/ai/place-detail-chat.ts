@@ -1,6 +1,30 @@
 import type { ChatPlaceItem, ChatPlanningSession } from "@/lib/chat-session";
 import { placeDisplayName } from "@/lib/chat-session";
 import type { ChatConversationMode } from "@/lib/ai/trip-planning-context";
+import type { NearbyPlaceIntent } from "@/lib/ai/chat-intent";
+import {
+  mapCategoryIntentToNearbyIntent,
+  parseChatPlaceIntents,
+} from "@/lib/ai/chat-place-intent";
+import { isExplicitNearbyQuery } from "@/lib/ai/chat-place-search-context";
+import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
+import type { Locale } from "@/lib/i18n/types";
+import {
+  enrichChatPlaceItemFromDetails,
+  hasValidPlaceCoordinates,
+  logChatContextPlace,
+  parseCityCountryFromAddress,
+} from "@/lib/chat-place-context";
+
+export type FetchPlaceDetailsForFocusFn = (
+  placeId: string,
+) => Promise<{
+  lat: number;
+  lng: number;
+  name?: string;
+  address?: string;
+  placeId?: string;
+} | null>;
 
 export type PlaceDetailFollowUpIntent =
   | "add_to_trip"
@@ -29,10 +53,16 @@ export function enterPlaceDetailChat(
   place: ChatPlaceItem,
 ): ChatPlanningSession {
   const previousMode = inferPreviousConversationMode(session);
+  const focus = {
+    ...place,
+    displayName: place.displayName?.trim() || placeDisplayName(place),
+    placeName: place.placeName?.trim() || place.displayName?.trim() || place.name,
+  };
+  logChatContextPlace(focus);
   return {
     ...session,
-    placeDetailFocus: place,
-    selectedPlaceFromMood: place,
+    placeDetailFocus: focus,
+    selectedPlaceFromMood: focus,
     previousConversationMode: previousMode,
     conversationMode: "place_focus",
     phase: "followup",
@@ -114,24 +144,117 @@ export function parsePlaceDetailFollowUp(text: string): PlaceDetailFollowUpInten
   if (!t) return "continue_chat";
   if (/(加入行程|加進行程|放進行程|列入行程)/.test(t)) return "add_to_trip";
   if (/(查看路線|看路線|怎麼去|導航)/.test(t)) return "view_route";
-  if (/(附近.*咖啡|咖啡廳|咖啡店|找咖啡)/.test(t)) return "nearby_cafe";
-  if (/(宵夜|深夜食堂|夜市|附近.*吃)/.test(t)) return "nearby_late_snack";
+  if (/(附近|這附近|這一帶|周邊|周边).*(咖啡|咖啡廳|咖啡店)/.test(t)) return "nearby_cafe";
+  if (/(咖啡廳|咖啡店|找咖啡|想找咖啡)/.test(t)) return "nearby_cafe";
+  if (/(附近|這附近|這一帶).*(宵夜|深夜|小吃|美食|餐廳|吃)/.test(t)) return "nearby_late_snack";
+  if (/(宵夜|深夜食堂|夜市)/.test(t)) return "nearby_late_snack";
   return "continue_chat";
+}
+
+export function resolvePlaceDetailNearbyIntent(text: string): NearbyPlaceIntent | null {
+  const t = text.trim();
+  if (!t) return null;
+
+  const followUp = parsePlaceDetailFollowUp(t);
+  if (followUp === "nearby_cafe") return "cafe";
+  if (followUp === "nearby_late_snack") return "restaurant";
+
+  const explicitNearby =
+    isExplicitNearbyQuery(t) || /(這附近|附近|這一帶|周邊|周边)/.test(t);
+  if (!explicitNearby) return null;
+
+  const categories = parseChatPlaceIntents(t);
+  if (categories.includes("cafe")) return "cafe";
+  if (categories.includes("restaurant") || categories.includes("night_market")) {
+    return "restaurant";
+  }
+  if (categories.includes("bar")) return "restaurant";
+  if (categories.length === 1) {
+    return mapCategoryIntentToNearbyIntent(categories[0]!);
+  }
+  if (/(咖啡)/.test(t)) return "cafe";
+  if (/(美食|餐廳|宵夜|吃)/.test(t)) return "restaurant";
+  if (/(酒吧)/.test(t)) return "restaurant";
+  if (/(景點|逛逛|散步)/.test(t)) return "attraction";
+  return null;
+}
+
+export async function ensurePlaceDetailFocusCoordinates(
+  session: ChatPlanningSession,
+  geocodeFn: GeocodeDestinationFn,
+  locale: Locale,
+  fetchDetailsFn?: FetchPlaceDetailsForFocusFn,
+): Promise<ChatPlanningSession> {
+  const focus = session.placeDetailFocus;
+  if (!focus) return session;
+
+  if (hasValidPlaceCoordinates(focus)) {
+    logChatContextPlace(focus);
+    return session;
+  }
+
+  const placeId = (focus.placeId ?? focus.googlePlaceId ?? "").trim();
+  if (placeId && fetchDetailsFn) {
+    console.info("[CHAT_NEARBY_GEOCODE]", { place: placeDisplayName(focus), source: "place_details", placeId });
+    const details = await fetchDetailsFn(placeId);
+    if (details && hasValidPlaceCoordinates(details)) {
+      const updated = enrichChatPlaceItemFromDetails(focus, details);
+      logChatContextPlace(updated);
+      return {
+        ...session,
+        placeDetailFocus: updated,
+        selectedPlaceFromMood: updated,
+      };
+    }
+    console.warn("[CHAT_NEARBY_GEOCODE] place_details failed", { placeId });
+  }
+
+  const parsed = parseCityCountryFromAddress(focus.address);
+  const query = [placeDisplayName(focus), focus.address, parsed.country]
+    .filter(Boolean)
+    .join(", ");
+  if (!query.trim()) return session;
+
+  console.info("[CHAT_NEARBY_GEOCODE]", { place: placeDisplayName(focus), query, source: "geocode" });
+  const geocoded = await geocodeFn({ data: { query, locale } });
+  if (geocoded.location?.lat == null || geocoded.location?.lng == null) {
+    console.warn("[CHAT_NEARBY_GEOCODE] failed", { place: placeDisplayName(focus) });
+    return session;
+  }
+
+  const updated = enrichChatPlaceItemFromDetails(focus, {
+    lat: geocoded.location.lat,
+    lng: geocoded.location.lng,
+    name: placeDisplayName(focus),
+    address: focus.address || geocoded.location.address,
+    placeId: placeId || undefined,
+  });
+  console.info("[CHAT_NEARBY_GEOCODE] ok", {
+    place: placeDisplayName(updated),
+    lat: updated.lat,
+    lng: updated.lng,
+  });
+  return {
+    ...session,
+    placeDetailFocus: updated,
+    selectedPlaceFromMood: updated,
+  };
 }
 
 export function sessionWithPlaceDetailSearchCenter(
   session: ChatPlanningSession,
 ): ChatPlanningSession {
   const focus = session.placeDetailFocus;
-  if (focus?.lat == null || focus.lng == null) return session;
+  if (!hasValidPlaceCoordinates(focus)) return session;
+  const parsed = parseCityCountryFromAddress(focus?.address);
   return {
     ...session,
     location: {
-      lat: focus.lat,
-      lng: focus.lng,
-      city: session.location?.city ?? focus.address ?? undefined,
+      lat: focus!.lat!,
+      lng: focus!.lng!,
+      city: focus?.city?.trim() || parsed.city || session.location?.city,
     },
-    preferredArea: placeDisplayName(focus),
+    preferredArea: placeDisplayName(focus!),
   };
 }
 

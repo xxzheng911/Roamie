@@ -33,6 +33,7 @@ export {
   applyMockSubscription,
   applyTestOverride,
 } from "./dev-actions";
+export { canBypassSubscriptionBilling } from "./subscription-dev-mode";
 
 /** @deprecated Use access test override — kept for migration */
 export { readDebugAiMode, writeDebugAiMode } from "@/lib/plan-tier/debug-ai-mode";

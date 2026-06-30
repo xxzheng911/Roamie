@@ -107,7 +107,7 @@ function placesToRecommendations(
   return places.slice(0, RECOMMENDATION_COUNT).map((place) => {
     const distM =
       place.lat != null && place.lng != null
-        ? distanceMeters(lat, lng, place.lat, place.lng)
+        ? distanceMeters({ lat, lng }, { lat: place.lat, lng: place.lng })
         : undefined;
     return mapPlaceResultToChatItem(place, {
       mood: context.mood,

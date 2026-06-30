@@ -175,6 +175,26 @@ export function logAppError(tag: string, error: unknown, extra?: Record<string, 
   console.error(line);
 }
 
+export function logAppErrorDetail(
+  error: unknown,
+  detail: {
+    route?: string;
+    component?: string;
+    componentStack?: string;
+    propsSnapshot?: Record<string, unknown>;
+  },
+): void {
+  const s = serializeError(error);
+  console.error("[APP_ERROR_DETAIL]", {
+    route: detail.route ?? (typeof window !== "undefined" ? window.location.pathname : ""),
+    component: detail.component ?? "",
+    message: s.message,
+    stack: s.stack ?? s.raw ?? "",
+    componentStack: detail.componentStack ?? "",
+    propsSnapshot: detail.propsSnapshot ?? {},
+  });
+}
+
 /** 是否應顯示 Capacitor 全屏 fatal overlay（正式版僅 script 載入失敗） */
 export function shouldShowCapacitorFatalOverlay(
   error: unknown,

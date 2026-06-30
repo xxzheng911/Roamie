@@ -5,7 +5,10 @@ import {
   logAuthSessionMissing,
 } from "@/lib/auth-boot-log";
 import { hasLikelyPersistedSession } from "@/lib/startup-route";
-import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
+import {
+  readHydratedAuthSessionRaw,
+  warmSupabaseAuthStorage,
+} from "@/lib/supabase-auth-storage";
 import { detectPlatform } from "@/services/platform";
 
 /** Supabase 在未登入時 getUser() 常回傳此訊息 — 不應當成頁面錯誤 toast */
@@ -139,6 +142,21 @@ export async function getClientAuthSession(
     cachedClientSession = undefined;
   }
   return null;
+}
+
+/** 同步讀取本機已 hydrate 的 user id（不發網路、不 await auth bridge） */
+export function readCachedAuthenticatedUserIdSync(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw =
+      readHydratedAuthSessionRaw() ??
+      globalThis.localStorage?.getItem("roamie-auth");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { user?: { id?: string } };
+    return parsed?.user?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** 未登入時回傳 null */

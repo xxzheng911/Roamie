@@ -108,12 +108,19 @@ export function rawPlaceToHoursData(p: RawPlace): PlaceHoursData {
 
 function mapRawPlaces(
   raw: RawPlace[],
-  options?: { screen?: PlacesScreen; locale?: Locale },
+  options?: {
+    screen?: PlacesScreen;
+    locale?: Locale;
+    intentCategory?: string;
+    searchMode?: string;
+  },
 ): PlaceResult[] {
   const isHome = options?.screen === "home";
   const isChat = options?.screen === "chat";
   const isExplore = options?.screen === "explore";
   const locale = options?.locale ?? "zh-TW";
+  const chatNearbyRelaxed =
+    isChat && options?.searchMode === "nearby" && Boolean(options?.intentCategory);
   return raw
     .map((p) => {
       const hours = rawPlaceToHoursData(p);
@@ -166,9 +173,10 @@ function mapRawPlaces(
       if (isHome) return true;
       if (options?.screen === "explore") return true;
       if (isChat) {
+        const recContext = chatNearbyRelaxed ? "chat_nearby" : "chat_destination_recommend";
         return isRecommendablePlace(
           placeResultToRecommendableInput(place),
-          "chat_destination_recommend",
+          recContext,
         ).ok;
       }
       return isRecommendablePlace(placeResultToRecommendableInput(place), "explore_map").ok;
@@ -264,6 +272,12 @@ async function postPlaces(
       const text = await res.text();
       const detail = parseGoogleError(text);
       console.error("[Roamie Places] request failed", res.status, url, detail);
+      if (stats?.screen === "chat") {
+        console.warn("[CHAT_NEARBY_ERROR]", {
+          message: `Google Places API ${res.status}: ${detail}`,
+          rawResponse: text.slice(0, 500),
+        });
+      }
       return { places: [] as RawPlace[], error: `Google Places API ${res.status}: ${detail}` };
     }
 
@@ -272,6 +286,12 @@ async function postPlaces(
   });
 
   if (guarded === null) {
+    if (stats?.screen === "chat") {
+      console.warn("[CHAT_NEARBY_ERROR]", {
+        message: "places_rate_limited",
+        rawResponse: "",
+      });
+    }
     return { places: [], error: "places_rate_limited" };
   }
   return guarded;
@@ -337,7 +357,7 @@ async function searchText(
     stats,
   );
   if (error) return { places: [], error };
-  return { places: mapRawPlaces(raw, { screen: stats?.screen, locale: userLocale }), error: null };
+  return { places: mapRawPlaces(raw, { screen: stats?.screen, locale: userLocale, intentCategory: stats?.intentCategory, searchMode: stats?.searchMode }), error: null };
 }
 
 async function searchNearby(
@@ -368,7 +388,23 @@ async function searchNearby(
     stats,
   );
   if (error) return { places: [], error };
-  return { places: mapRawPlaces(raw, { screen: stats?.screen, locale: userLocale }), error: null };
+  const places = mapRawPlaces(raw, {
+    screen: stats?.screen,
+    locale: userLocale,
+    intentCategory: stats?.intentCategory,
+    searchMode: stats?.searchMode,
+  });
+  if (stats?.screen === "chat") {
+    console.info("[CHAT_NEARBY_API]", {
+      mode: "nearby",
+      types: includedTypes.join(","),
+      radius,
+      rawCount: raw.length,
+      mappedCount: places.length,
+      error: error ?? "",
+    });
+  }
+  return { places, error: null };
 }
 
 async function searchMultiNearby(

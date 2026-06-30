@@ -1,5 +1,5 @@
 import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
-import { useLayoutEffect, useEffect, useState } from "react";
+import { useLayoutEffect, useEffect, useRef, useState } from "react";
 import { useI18n } from "@/hooks/use-i18n";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { scheduleIosSnapshotRefreshBurst } from "@/lib/ios-snapshot-bridge";
@@ -10,6 +10,12 @@ import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { requireAppShellAccess } from "@/lib/require-auth";
 import { cn } from "@/lib/utils";
 import { enterHomeLocationMode, leaveHomeLocationMode } from "@/lib/location-coordinator";
+import { setHomeRouteVisible } from "@/lib/home-route-active";
+import { syncRouteKeyboardMode } from "@/lib/route-keyboard-mode";
+import {
+  logPerfRouteChange,
+  logPerfRouteDuration,
+} from "@/lib/app-perf";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: requireAppShellAccess,
@@ -29,10 +35,51 @@ function isTripDetailPath(pathname: string): boolean {
   return /^\/saved\/[^/]+$/.test(normalizeAppPath(pathname));
 }
 
+function applyRouteSideEffects(nextPath: string, prevPath: string): void {
+  const next = normalizeAppPath(nextPath);
+  const prev = normalizeAppPath(prevPath);
+  const onHome = next === "/";
+  const wasHome = prev === "/";
+
+  setHomeRouteVisible(onHome);
+  if (onHome && !wasHome) {
+    enterHomeLocationMode();
+    stopLocationWatch("home_route_active");
+  } else if (!onHome && wasHome) {
+    leaveHomeLocationMode();
+  }
+
+  syncRouteKeyboardMode(next);
+}
+
 function stopLocationWatch(reason: string): void {
   void import("@/lib/location-watch-cleanup").then(({ stopNavigationLocationWatch }) =>
     stopNavigationLocationWatch(reason),
   );
+}
+
+let appShellBootstrapped = false;
+
+function bootstrapAppShellOnce(locale: string): void {
+  if (appShellBootstrapped) return;
+  appShellBootstrapped = true;
+
+  void import("@/lib/location-app-gate").then(({ registerLocationAppGate, waitForAppActiveForLocation }) => {
+    registerLocationAppGate();
+    void waitForAppActiveForLocation().then(() => {
+      void import("@/lib/effective-location").then(({ ensureEffectiveLocationBootstrap }) => {
+        ensureEffectiveLocationBootstrap();
+      });
+    });
+  });
+
+  void import("@/lib/home-weather-bootstrap").then(({ ensureHomeWeatherBootstrap }) => {
+    ensureHomeWeatherBootstrap(locale, "app-shell-once");
+  });
+
+  void import("@/lib/capacitor-keyboard-bridge").then(({ bootstrapCapacitorKeyboardBridge }) => {
+    bootstrapCapacitorKeyboardBridge();
+  });
 }
 
 function AppLayout() {
@@ -43,46 +90,36 @@ function AppLayout() {
     () => router.state.location.pathname || readBrowserPathname(),
   );
 
+  const pathnameRef = useRef(pathname);
+  const normalizedPath = normalizeAppPath(pathname);
+
   useLayoutEffect(() => {
     scheduleIosSnapshotRefreshBurst("app-shell");
-    const path = (router.state.location.pathname || readBrowserPathname()).replace(/\/+$/, "") || "/";
-    if (path === "/") {
-      enterHomeLocationMode();
-      stopLocationWatch("home_route_active");
-    }
-    void import("@/lib/location-app-gate").then(({ registerLocationAppGate, waitForAppActiveForLocation }) => {
-      registerLocationAppGate();
-      void waitForAppActiveForLocation().then(() => {
-        void import("@/lib/effective-location").then(({ ensureEffectiveLocationBootstrap }) => {
-          ensureEffectiveLocationBootstrap();
-        });
-      });
-    });
-  }, [router]);
+    bootstrapAppShellOnce(locale);
+  }, [locale]);
 
   useLayoutEffect(() => {
-    const path = pathname.replace(/\/+$/, "") || "/";
-    if (path === "/") {
-      enterHomeLocationMode();
-      stopLocationWatch("home_route_active");
-    } else {
-      leaveHomeLocationMode();
-    }
-  }, [pathname]);
-
-  useLayoutEffect(() => {
-    const path = pathname.replace(/\/+$/, "") || "/";
-    if (path !== "/") return;
-    console.info("[HOME_SHELL] index route active");
-    void import("@/lib/home-weather-bootstrap").then(({ ensureHomeWeatherBootstrap }) => {
-      ensureHomeWeatherBootstrap(locale, "app-shell");
-    });
-  }, [pathname, locale]);
+    applyRouteSideEffects(normalizedPath, "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initial shell route only
+  }, []);
 
   useEffect(() => {
-    markBootPhase("route:_app:mounted", "path=" + pathname);
-    console.info("[ROUTE_MOUNT]", pathname);
-    const sync = () => setPathname(router.state.location.pathname);
+    markBootPhase("route:_app:mounted", "shell");
+    console.info("[ROUTE_MOUNT]", "_app");
+
+    const sync = () => {
+      const from = pathnameRef.current;
+      const next = router.state.location.pathname;
+      if (from === next) return;
+      applyRouteSideEffects(next, from);
+      logPerfRouteChange(from, next);
+      pathnameRef.current = next;
+      setPathname(next);
+      requestAnimationFrame(() => {
+        logPerfRouteDuration(from, next);
+      });
+    };
+
     const unsub = router.subscribe("onResolved", sync);
     window.addEventListener("popstate", sync);
     return () => {
@@ -92,11 +129,10 @@ function AppLayout() {
   }, [router]);
 
   useEffect(() => {
-    const path = pathname.replace(/\/+$/, "") || "/";
-    if (path !== "/map") {
+    if (normalizedPath !== "/map") {
       stopLocationWatch("left_map_route");
     }
-  }, [pathname]);
+  }, [normalizedPath]);
 
   const mainScrollLocked = isMainScrollLockedPath(pathname);
 
@@ -135,7 +171,7 @@ function AppLayout() {
             mainScrollLocked ? "min-h-0 flex-1 overflow-hidden" : "overflow-x-hidden overflow-y-auto",
           )}
         >
-          <AppErrorBoundary>
+          <AppErrorBoundary routeLabel="_app">
             <div
               className={cn(
                 "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { HeartHandshake, Sparkles } from "lucide-react";
 import { toast } from "sonner";
@@ -14,14 +14,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import { useAccess } from "@/hooks/use-access";
+import { useAuth } from "@/hooks/use-auth";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
-import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
-import { isDeveloperBuildEnabled } from "@/lib/access/developer";
+import { canBypassSubscriptionBilling } from "@/lib/access/subscription-dev-mode";
 import { buildHomePlusInsight } from "@/lib/home-personalization-insight";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
-import { preparePlusHomeChatSession } from "@/lib/plus-chat-handoff";
-import { loadChatSession, saveChatSession } from "@/lib/chat-session";
+import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { SavedPlace } from "@/lib/places-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -40,6 +39,7 @@ type Props = {
   nearbyPicks?: HomeNearbyPick[];
   selectedMood?: string | null;
   latestTripTitle?: string | null;
+  chatSession?: ChatPlanningSession | null;
   className?: string;
 };
 
@@ -50,37 +50,30 @@ export function HomePersonalizationCard({
   nearbyPicks = [],
   selectedMood,
   latestTripTitle,
+  chatSession = null,
   className,
 }: Props) {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const {
     hasPlusAccess,
     devPlusMode,
     devSubscriptionMode,
     testModeOverride,
     canShowDeveloperTools,
+    subscriptionPlusActive,
     disablePlusTestMode,
   } = useAccess();
   const { upgradeToPlus, comingSoonOpen, setComingSoonOpen } = usePlusUpgrade();
 
   const [manageSubOpen, setManageSubOpen] = useState(false);
-  const [accessTick, setAccessTick] = useState(0);
+
+  const isDevMode = canBypassSubscriptionBilling(user?.email ?? null);
 
   const isDevSubscriptionMode =
-    isDeveloperBuildEnabled() ||
+    isDevMode ||
     canShowDeveloperTools ||
     testModeOverride !== "none";
-
-  useEffect(() => {
-    const onAccess = () => setAccessTick((n) => n + 1);
-    window.addEventListener(ACCESS_CHANGED_EVENT, onAccess);
-    return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onAccess);
-  }, []);
-
-  const chatSession = useMemo(
-    () => loadChatSession(),
-    [accessTick, savedPlaces.length, selectedMood, latestTripTitle, prefs?.vibe, prefs?.pace],
-  );
 
   const plusInsight = useMemo(
     () =>
@@ -105,26 +98,9 @@ export function HomePersonalizationCard({
   };
 
   const handleStartPlusJourney = () => {
-    const session = preparePlusHomeChatSession({
-      mood: selectedMood,
-      prefs: prefs ?? undefined,
-      insightInput: {
-        savedPlaces,
-        prefs,
-        selectedMood,
-        weather,
-        nearbyPicks,
-        latestTripTitle,
-        chatSession: loadChatSession(),
-      },
-    });
-    saveChatSession(session);
-    navigate({
-      to: "/chat",
-      search: {
-        from: "plus-home",
-        mood: selectedMood ?? undefined,
-      },
+    void navigate({
+      to: "/plan",
+      search: selectedMood ? { mood: selectedMood } : {},
     });
   };
 
@@ -133,17 +109,21 @@ export function HomePersonalizationCard({
     toast.message("已切換回 Free 模式（收藏、偏好與行程仍保留）");
   };
 
-  const handleReturnFreeProd = () => {
-    if (isDevSubscriptionMode) {
-      console.info("[SUBSCRIPTION_MODAL] skipped_in_dev");
+  const handleReturnFree = () => {
+    console.info("[PLUS_HOME_CARD] return free press");
+    console.info("[PLUS_HOME_CARD] isDevMode=", isDevMode);
+    if (isDevMode || !subscriptionPlusActive) {
+      console.info("[PLUS_HOME_CARD] route=dev_switch_free");
+      setManageSubOpen(false);
       handleReturnFreeDev();
       return;
     }
+    console.info("[PLUS_HOME_CARD] route=manage_subscription");
     setManageSubOpen(true);
   };
 
   const handleOpenSubscriptionManagement = async () => {
-    if (isDevSubscriptionMode) {
+    if (isDevMode) {
       console.info("[SUBSCRIPTION_MODAL] skipped_in_dev");
       return;
     }
@@ -188,7 +168,7 @@ export function HomePersonalizationCard({
                 </button>
                 <button
                   type="button"
-                  onClick={isDevSubscriptionMode ? handleReturnFreeDev : handleReturnFreeProd}
+                  onClick={handleReturnFree}
                   className="rounded-full border border-border bg-card/80 px-5 py-2.5 text-sm font-medium text-muted-foreground transition hover:text-foreground"
                 >
                   返回 Free 模式

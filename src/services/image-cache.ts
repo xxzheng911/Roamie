@@ -1,4 +1,5 @@
 import { API_CACHE_TTL_MS } from "@/lib/api/constants";
+import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 
 const MEMORY = new Map<string, string>();
 const LS_KEY = "roamie:image-cache";
@@ -26,19 +27,23 @@ function writeLocal(data: Record<string, CacheEntry>): void {
 
 export function getCachedImage(key: string): string | null {
   const mem = MEMORY.get(key);
-  if (mem) return mem;
+  if (mem) return preferJpegPngImageUrl(mem);
 
   const local = readLocal()[key];
   if (!local) return null;
   if (Date.now() - local.at > TTL_MS) return null;
-  MEMORY.set(key, local.url);
-  return local.url;
+  const safe = preferJpegPngImageUrl(local.url);
+  if (!safe) return null;
+  MEMORY.set(key, safe);
+  return safe;
 }
 
 export function setCachedImage(key: string, url: string): void {
-  MEMORY.set(key, url);
+  const safe = preferJpegPngImageUrl(url);
+  if (!safe) return;
+  MEMORY.set(key, safe);
   const local = readLocal();
-  local[key] = { url, at: Date.now() };
+  local[key] = { url: safe, at: Date.now() };
   writeLocal(local);
 }
 

@@ -27,6 +27,7 @@ import {
   mergeRecommendationsWithSelected,
   syncSessionPlaceMemory,
 } from "@/lib/place-planning-memory";
+import { parseCityCountryFromAddress } from "@/lib/chat-place-context";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
@@ -65,6 +66,9 @@ export type ChatPlaceItem = RoamieRecommendationItem & {
   googleMapsUrl?: string;
   placeName?: string;
   placeId?: string;
+  displayName?: string;
+  city?: string;
+  country?: string;
   photoName?: string | null;
   rating?: number | null;
   reasonSource?: "template" | "ai";
@@ -454,7 +458,8 @@ export function mapPlaceResultToChatItem(
     },
     ctx.locale,
   );
-  return normalizeRecommendationItem({
+  const { city, country } = parseCityCountryFromAddress(p.address);
+  const base = normalizeRecommendationItem({
     name: p.name,
     placeName: p.name,
     type: p.primaryType ?? "地點",
@@ -476,6 +481,13 @@ export function mapPlaceResultToChatItem(
     closingSoonNote: p.closingSoonNote || undefined,
     nextOpenHint: p.nextOpenHint || undefined,
   });
+  return {
+    ...base,
+    placeId: p.id,
+    displayName: p.name,
+    city,
+    country,
+  };
 }
 
 export function roamieRecToChatItem(rec: RoamieRecommendationItem): ChatPlaceItem {
@@ -484,14 +496,25 @@ export function roamieRecToChatItem(rec: RoamieRecommendationItem): ChatPlaceIte
   const lng = normalized.lng;
   const ext = rec as RoamieRecommendationItem & {
     googlePlaceId?: string;
+    placeId?: string;
+    displayName?: string;
+    city?: string;
+    country?: string;
     photoName?: string | null;
     rating?: number | null;
   };
+  const displayName = ext.displayName?.trim() || normalized.placeName || normalized.name;
+  const { city, country } = parseCityCountryFromAddress(normalized.address);
+  const placeId = ext.googlePlaceId ?? ext.placeId;
   return {
     ...normalized,
+    placeName: displayName,
+    displayName,
+    city: ext.city?.trim() || city,
+    country: ext.country?.trim() || country,
     photoName: ext.photoName ?? undefined,
     rating: ext.rating ?? undefined,
-    placeId: ext.googlePlaceId,
+    placeId,
     googleMapsUrl:
       normalized.googleMapsUrl ||
       (lat != null && lng != null ? buildPlaceMapsUrl(lat, lng, normalized.name) : ""),

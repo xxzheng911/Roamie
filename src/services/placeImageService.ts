@@ -206,7 +206,7 @@ export function resolveGooglePlacePhoto(
   width = 600,
 ): string | null {
   if (!photoName) return null;
-  return preferJpegPngImageUrl(buildPlacePhotoUrl(photoName, width));
+  return preferJpegPngImageUrl(buildPlacePhotoUrl(photoName, width), { maxWidth: width });
 }
 
 /** 同步 fallback（Google 或 Roamie 情境圖，不含 Unsplash） */
@@ -242,14 +242,15 @@ export async function getPlaceImage(
     const queries = buildPlaceUnsplashQueries(input);
     const unsplash = await searchUnsplashWithQueries(queries);
     if (unsplash) {
+      const safeUrl = preferJpegPngImageUrl(unsplash.url) ?? getRoamieDefaultImage(normalizeCategory(input));
       if (input.placeId?.trim()) {
         cachePlaceImages(input.placeId, {
-          generatedImageUrl: unsplash.url,
-          fallbackImageUrl: unsplash.url,
-          coverImageUrl: unsplash.url,
+          generatedImageUrl: safeUrl,
+          fallbackImageUrl: safeUrl,
+          coverImageUrl: safeUrl,
         });
       }
-      return { url: unsplash.url, source: "unsplash" as const };
+      return { url: safeUrl, source: "unsplash" as const };
     }
 
     const cat = normalizeCategory(input);

@@ -1,8 +1,11 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { RoamieAppErrorFallback } from "@/components/RoamieAppErrorFallback";
-import { formatErrorDetail, logAppError } from "@/lib/log-error";
+import { formatErrorDetail, logAppError, logAppErrorDetail } from "@/lib/log-error";
 
-type Props = { children: ReactNode };
+type Props = {
+  children: ReactNode;
+  routeLabel?: string;
+};
 
 type State = { error: Error | null };
 
@@ -15,6 +18,20 @@ export class AppErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
+    const componentLine =
+      info.componentStack
+        ?.split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.length > 0) ?? "";
+
+    logAppErrorDetail(error, {
+      route: typeof window !== "undefined" ? window.location.pathname : "",
+      component: componentLine,
+      componentStack: info.componentStack ?? "",
+      propsSnapshot: {
+        routeLabel: this.props.routeLabel ?? "",
+      },
+    });
     logAppError("[Roamie] AppErrorBoundary", error, { componentStack: info.componentStack });
   }
 

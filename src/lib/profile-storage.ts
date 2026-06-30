@@ -1,5 +1,14 @@
 import { supabase } from "@/lib/supabase";
-import { getPreferences, savePreferences, type TravelPreferences } from "@/lib/preferences-storage";
+import {
+  BUDGET_MODE_LABELS,
+  getPreferences,
+  isPreferencesRemoteHydrated,
+  logPreferencesSyncFailure,
+  readCachedPreferencesSync,
+  resolveBudgetMode,
+  savePreferences,
+  type TravelPreferences,
+} from "@/lib/preferences-storage";
 import { derivePersonality } from "@/lib/personality";
 import {
   gatePlusPersonaFields,
@@ -21,11 +30,26 @@ import {
 import type { AuthProviderKind } from "@/lib/auth-provider";
 import {
   clearProfileSessionCache,
+  markProfileNetworkLoaded,
   readInflightProfileFetch,
   readProfileSessionCache,
   trackInflightProfileFetch,
   writeProfileSessionCache,
 } from "@/lib/profile-session-cache";
+import {
+  buildTravelPrefResultSnapshot,
+  getTravelPrefResultSnapshot,
+  readTravelPrefResultCache,
+  writeTravelPrefResultCache,
+  normalizeTravelPrefSnapshot,
+} from "@/lib/travel-pref-result-cache";
+import { mergeTravelPrefFields } from "@/lib/travel-pref-compact";
+import { sanitizeForJsonStorage } from "@/lib/travel-pref-cache-write";
+import {
+  upsertTravelPersonalityToSupabase,
+  TRAVEL_PREF_UPSERT_TIMEOUT_MS,
+} from "@/lib/travel-pref-supabase-upsert";
+import { markTravelPrefPendingSync } from "@/lib/travel-pref-sync-state";
 
 const GUEST_PROFILE_KEY = "roamie:user-profile";
 const GUEST_SETTINGS_KEY = "roamie:profile-settings";
@@ -40,6 +64,8 @@ export type ProfileExtras = {
   updatedAt?: string;
   personalityType?: string;
   personalitySummary?: string;
+  quizCompleted?: boolean;
+  plusQuizCompleted?: boolean;
 };
 
 export type UserProfile = {
@@ -114,6 +140,48 @@ function writeGuestSettings(partial: GuestSettings): void {
     GUEST_SETTINGS_KEY,
     JSON.stringify({ ...prev, ...partial }),
   );
+}
+
+function mergeProfileWithTravelPrefCache(
+  profile: UserProfile,
+  userId: string,
+): UserProfile {
+  const rawCached = getTravelPrefResultSnapshot(userId);
+  const cached = rawCached ? normalizeTravelPrefSnapshot(rawCached) : null;
+  if (!cached?.quizCompleted && !cached?.prefs.onboarded) return profile;
+
+  const prefs = mergeTravelPrefFields(cached.prefs, profile.prefs);
+  prefs.onboarded = true;
+  const personality = derivePersonality(prefs);
+  return {
+    ...profile,
+    prefs,
+    travelStyle:
+      profile.travelStyle ||
+      cached.travelStyleName ||
+      cached.travelStyle ||
+      prefs.personalityType ||
+      personality.type,
+    personalityType:
+      profile.personalityType ||
+      cached.travelStyleId ||
+      prefs.personalityType ||
+      personality.type,
+    personalitySummary:
+      profile.personalitySummary || prefs.personalitySummary || personality.summary,
+    personalityImpression: profile.personalityImpression || personality.impression,
+    aiPreferences: {
+      ...(profile.aiPreferences ?? {}),
+      travelStyle: cached.travelStyleName || cached.travelStyle,
+      travelPreferences: cached.tags,
+      pacePreference: cached.pace ?? prefs.pace ?? "",
+      vibePreference: cached.vibe ?? prefs.vibe ?? "",
+      budgetPreference: cached.budget ?? resolveBudgetMode(prefs),
+      quizCompleted: true,
+      plusQuizCompleted: true,
+      updatedAt: cached.updatedAt,
+    },
+  };
 }
 
 function assertPersistableMediaUrl(url: string | null, label: string): string | null {
@@ -211,7 +279,10 @@ export async function getUserProfile(
   const fetchPromise = (async () => {
   const guestSettings = readGuestSettings();
 
-  const prefs = await getPreferences();
+  const prefs =
+    !options?.force && isPreferencesRemoteHydrated(userId)
+      ? readCachedPreferencesSync()
+      : await getPreferences(options?.force ? { force: true } : undefined);
   const hasPlusAccess = await resolveProfileHasPlusAccess();
   const showPersona = shouldExposePlusPersona(hasPlusAccess, prefs);
   const personality = showPersona ? derivePersonality(prefs) : { type: "", summary: "", impression: "" };
@@ -258,8 +329,23 @@ export async function getUserProfile(
   };
 
   const profile = gatePlusPersonaFields(raw, hasPlusAccess);
-  writeProfileSessionCache(profile, userId);
-  return profile;
+  const hydrated = mergeProfileWithTravelPrefCache(profile, userId);
+  if (hydrated.prefs.onboarded) {
+    writeTravelPrefResultCache(
+      buildTravelPrefResultSnapshot(hydrated.prefs, {
+        travelStyle: hydrated.travelStyle || hydrated.personalityType,
+        userId,
+      }),
+      userId,
+    );
+    console.info("[TRAVEL_PREF_RESULT] restored to profile state", {
+      travelStyle: hydrated.travelStyle || hydrated.personalityType,
+      tagsCount: buildTravelPrefTags(hydrated.prefs).length,
+    });
+  }
+  writeProfileSessionCache(hydrated, userId);
+  markProfileNetworkLoaded(userId);
+  return hydrated;
   })();
 
   if (!options?.force) {
@@ -349,6 +435,142 @@ export async function saveUserProfile(input: {
   return getUserProfile(current.language, { force: true });
 }
 
+async function readProfileExtras(userId: string): Promise<ProfileExtras> {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("ai_preferences")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data?.ai_preferences || typeof data.ai_preferences !== "object") return {};
+  return data.ai_preferences as ProfileExtras;
+}
+
+function buildTravelPrefTags(prefs: TravelPreferences): string[] {
+  return Array.from(
+    new Set(
+      [
+        ...(prefs.interests ?? []),
+        prefs.pace === "slow" ? "慢行" : prefs.pace === "active" ? "探索" : null,
+        prefs.vibe === "quiet" ? "安靜" : prefs.vibe === "lively" ? "熱鬧" : "平衡",
+        BUDGET_MODE_LABELS[resolveBudgetMode(prefs)],
+      ].filter((v): v is string => Boolean(v)),
+    ),
+  ).slice(0, 5);
+}
+
+async function upsertProfileExtras(
+  userId: string,
+  patch: ProfileExtras,
+  options?: { background?: boolean },
+): Promise<void> {
+  await ensureUserProfile(userId);
+  const prev = await readProfileExtras(userId);
+  const merged: ProfileExtras = { ...prev, ...patch, updatedAt: new Date().toISOString() };
+  const { error } = await supabase
+    .from("profiles")
+    .upsert({ id: userId, ai_preferences: merged as never }, { onConflict: "id" });
+  if (error) {
+    const msg = error.message ?? "";
+    console.warn("[TRAVEL_PREF_TEST] profile extras sync error", {
+      message: error.message,
+      code: error.code,
+      details: error.details,
+      hint: error.hint,
+      patchKeys: Object.keys(patch),
+    });
+    if (/record\s+\"new\"\s+has\s+no\s+field\s+\"updated_at\"/i.test(msg)) {
+      console.warn("[profile] Supabase profile schema mismatch, skipped ai_preferences sync", msg);
+      return;
+    }
+    if (options?.background) {
+      logPreferencesSyncFailure("profile fields sync", error, { patchKeys: Object.keys(patch) });
+      return;
+    }
+    throw new Error(error.message);
+  }
+}
+
+const TRAVEL_QUIZ_REMOTE_TIMEOUT_MS = TRAVEL_PREF_UPSERT_TIMEOUT_MS;
+
+/** 第一次測驗新增、重新測驗覆蓋：upsert travel_personality + ai_preferences */
+export async function syncTravelQuizResultToSupabase(
+  input: {
+    travelStyle: string;
+    prefs: TravelPreferences;
+  },
+  options?: { background?: boolean; timeoutMs?: number },
+): Promise<void> {
+  const timeoutMs = options?.timeoutMs ?? TRAVEL_QUIZ_REMOTE_TIMEOUT_MS;
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    console.warn("[TRAVEL_QUIZ_SAVE_ERROR]", {
+      code: "NO_USER",
+      message: "no authenticated user",
+      details: "",
+      hint: "",
+    });
+    return;
+  }
+
+  markTravelPrefPendingSync(userId, input.travelStyle);
+
+  const prev = await readProfileExtras(userId).catch(() => ({} as ProfileExtras));
+  const tags = buildTravelPrefTags(input.prefs);
+  const aiPreferences: ProfileExtras = {
+    ...prev,
+    travelStyle: input.travelStyle.trim(),
+    travelPreferences: tags,
+    pacePreference: input.prefs.pace ?? "",
+    vibePreference: input.prefs.vibe ?? "",
+    budgetPreference: resolveBudgetMode(input.prefs),
+    personalityType: input.prefs.personalityType,
+    personalitySummary: input.prefs.personalitySummary,
+    quizCompleted: true,
+    plusQuizCompleted: true,
+    updatedAt: new Date().toISOString(),
+  };
+
+  try {
+    await upsertTravelPersonalityToSupabase(
+      {
+        userId,
+        prefs: input.prefs,
+        travelStyle: input.travelStyle,
+        aiPreferences: aiPreferences as Record<string, unknown>,
+        source: "travel-quiz-save",
+      },
+      { timeoutMs },
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/record\s+\"new\"\s+has\s+no\s+field\s+\"updated_at\"/i.test(msg)) {
+      console.warn("[profile] Supabase profile schema mismatch, skipped travel quiz upsert", msg);
+      return;
+    }
+    if (options?.background) {
+      logPreferencesSyncFailure("travel quiz upsert", error, { userId });
+      return;
+    }
+    throw error;
+  }
+
+  const sanitizedPrefs = sanitizeForJsonStorage(input.prefs);
+  if (!sanitizedPrefs) return;
+
+  writeTravelPrefResultCache(
+    buildTravelPrefResultSnapshot(sanitizedPrefs, {
+      travelStyle: input.travelStyle,
+      userId,
+    }),
+    userId,
+  );
+  console.info("[TRAVEL_QUIZ_SAVE_SUCCESS]", {
+    resultName: input.travelStyle,
+    phase: "remote",
+  });
+}
+
 export async function savePersonalityToProfile(prefs: TravelPreferences): Promise<void> {
   const p = derivePersonality(prefs);
   const merged: TravelPreferences = {
@@ -359,23 +581,21 @@ export async function savePersonalityToProfile(prefs: TravelPreferences): Promis
   await savePreferences(merged);
 
   const userId = await getAuthenticatedUserId();
-  if (userId) {
-    const extras: ProfileExtras = {
-      personalityType: p.type,
-      personalitySummary: p.summary,
-    };
-    const { error } = await supabase
-      .from("profiles")
-      .upsert({ id: userId, ai_preferences: extras as never }, { onConflict: "id" });
-    if (error) {
-      const msg = error.message ?? "";
-      if (/record\s+\"new\"\s+has\s+no\s+field\s+\"updated_at\"/i.test(msg)) {
-        console.warn("[profile] Supabase profile schema mismatch, skipped ai_preferences sync", msg);
-        return;
-      }
-      throw new Error(error.message);
-    }
-  }
+  if (!userId) return;
+  await upsertProfileExtras(userId, {
+    personalityType: p.type,
+    personalitySummary: p.summary,
+  });
+}
+
+export async function syncQuizCompletionToProfile(
+  input: {
+    travelStyle: string;
+    prefs: TravelPreferences;
+  },
+  options?: { background?: boolean; timeoutMs?: number },
+): Promise<void> {
+  await syncTravelQuizResultToSupabase(input, options);
 }
 
 export async function syncTravelPreferenceProfileFields(input: {
@@ -384,21 +604,19 @@ export async function syncTravelPreferenceProfileFields(input: {
 }): Promise<void> {
   const userId = await getAuthenticatedUserId();
   if (!userId) return;
-  const payload: ProfileExtras = {
+  const tags = buildTravelPrefTags(input.prefs);
+  await upsertProfileExtras(userId, {
     travelStyle: input.travelStyle?.trim() || "",
-    travelPreferences: input.prefs.interests ?? [],
+    travelPreferences: tags,
     pacePreference: input.prefs.pace ?? "",
     transportPreference:
       ((input.prefs as TravelPreferences & { transportPreference?: string }).transportPreference ??
         "") || "",
     vibePreference: input.prefs.vibe ?? "",
     budgetPreference: resolveBudgetMode(input.prefs),
-    updatedAt: new Date().toISOString(),
     personalityType: input.prefs.personalityType,
     personalitySummary: input.prefs.personalitySummary,
-  };
-  const { error } = await supabase
-    .from("profiles")
-    .upsert({ id: userId, ai_preferences: payload as never }, { onConflict: "id" });
-  if (error) throw new Error(error.message);
+    quizCompleted: Boolean(input.prefs.onboarded),
+    plusQuizCompleted: Boolean(input.prefs.onboarded),
+  });
 }

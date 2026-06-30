@@ -90,7 +90,7 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
 
     return (
       <Link
-        to="/onboarding"
+        to="/travel-preference-test"
         search={{ from: origin }}
         className={`block rounded-2xl border border-clay/25 bg-accent/50 px-4 py-3.5 transition active:scale-[0.99] ${className ?? ""}`}
       >
@@ -106,7 +106,7 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
           <QuizCtaContent badge={badge} title={title} desc={desc} button={button} />
           {hasPlusAccess ? (
             <Link
-              to="/onboarding"
+              to="/travel-preference-test"
               search={{ from: origin }}
               className="mt-4 block rounded-full bg-primary py-3 text-center text-sm text-primary-foreground"
             >
@@ -159,7 +159,7 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
 
   return (
     <Link
-      to="/onboarding"
+      to="/travel-preference-test"
       search={{ from: origin }}
       className={`block rounded-3xl border border-border bg-card p-5 shadow-soft transition active:scale-[0.99] ${className ?? ""}`}
     >

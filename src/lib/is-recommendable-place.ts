@@ -10,6 +10,7 @@ export type RecommendablePlaceContext =
   | "ai_recommend"
   | "plan_trip"
   | "chat_destination_recommend"
+  | "chat_nearby"
   | "nearby_home";
 
 export type RecommendablePlaceInput = {
@@ -429,6 +430,14 @@ export function isRecommendablePlace(
   if (context === "chat_destination_recommend") {
     if (isSchoolOrOfficeType(place)) return fail("school_or_office");
     if (openNow === false && options?.requireOpenNow) return fail("closed_now");
+    return { ok: true };
+  }
+
+  if (context === "chat_nearby") {
+    if (biz === "CLOSED_PERMANENTLY") return fail("closed_permanently");
+    if (!placeId || placeId === "Unknown") return fail("missing_place_id");
+    if (!name || name === "Unknown") return fail("missing_name");
+    if (isBurialOrFuneralPlace(place)) return fail("burial_or_funeral");
     return { ok: true };
   }
 

@@ -10,12 +10,15 @@ import { refineRecommendationItemsForBudget } from "@/lib/ai/budget-refinement";
 import { filterRecommendationsByExclusion } from "@/lib/ai/recommendation-exclusion";
 import { parseTripIntentFromSession } from "@/lib/recommendation/trip-intent";
 import type { ChatPlanningSession } from "@/lib/chat-session";
-import { isPlaceDetailChatActive, parsePlaceDetailFollowUp } from "@/lib/ai/place-detail-chat";
+import { isPlaceDetailChatActive, parsePlaceDetailFollowUp, resolvePlaceDetailNearbyIntent } from "@/lib/ai/place-detail-chat";
 import {
   detectMustVisitIntent,
   detectPlaceRecommendationIntent,
 } from "@/lib/ai/must-visit-places";
-import { filterRecommendationsByDestinationRenderGuard } from "@/lib/ai/chat-place-search-context";
+import {
+  filterRecommendationsByDestinationRenderGuard,
+  isExplicitNearbyQuery,
+} from "@/lib/ai/chat-place-search-context";
 import { filterRecommendationsForCategoryRender } from "@/lib/ai/chat-category-place-guard";
 import {
   hasCategoryPlaceQuery,
@@ -59,6 +62,30 @@ function isDestinationCategoryPlaceDisplay(
     session.travelContext?.destination?.trim() ||
     resolveDestinationFromText(userText);
   return Boolean(dest);
+}
+
+function shouldSkipDestinationRenderGuard(
+  session: ChatPlanningSession,
+  userText: string,
+): boolean {
+  return (
+    isExplicitNearbyQuery(userText) ||
+    isPlaceDetailChatActive(session) ||
+    Boolean(resolvePlaceDetailNearbyIntent(userText))
+  );
+}
+
+function nearbyCategoryRecommendations(
+  items: RoamieRecommendationItem[],
+  intent: ChatPlaceCategoryIntent,
+): RoamieRecommendationItem[] {
+  logChatRenderModeLocked("PLACE_CARDS_ONLY");
+  const working = filterRecommendationsForCategoryRender(items, intent);
+  const cards = working.slice(0, 6);
+  logChatPlaceCardRender(cards.length, intent);
+  console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: cards.length });
+  console.info("[CHAT_PLACE_CARD_LIMIT]", { limit: 6 });
+  return cards;
 }
 
 function resolveCategoryDisplayIntent(
@@ -156,21 +183,54 @@ export function recommendationsForChatDisplay(
     const excluded =
       session.excludedCategories ?? session.travelContext?.excludedCategories ?? [];
     working = filterRecommendationsByExclusion(working, excluded);
+
+    if (session.activeChatIntent === "cafe") {
+      return nearbyCategoryRecommendations(working, "cafe");
+    }
+    if (session.activeChatIntent === "restaurant") {
+      return nearbyCategoryRecommendations(working, "restaurant");
+    }
+
+    const categoryIntents = parseChatPlaceIntents(userText);
+    if (categoryIntents.length === 1) {
+      return nearbyCategoryRecommendations(working, categoryIntents[0]!);
+    }
+
     const filtered = filterRecommendationItemsForDisplay(working);
     const count = Math.min(filtered.length, 5);
     logChatPlaceCardRender(count, session.activeChatIntent ?? "mood");
+    console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count });
+    console.info("[CHAT_PLACE_CARD_LIMIT]", { limit: 5 });
     return filtered.slice(0, 5);
   }
 
-  if (isDestinationCategoryPlaceDisplay(session, userText)) {
-    return recommendationsForCategoryPlaceDisplay(session, userText, list);
-  }
-
   if (isPlaceDetailChatActive(session)) {
+    const nearbyIntent =
+      resolvePlaceDetailNearbyIntent(userText) ??
+      (session.activeChatIntent === "cafe"
+        ? "cafe"
+        : session.activeChatIntent === "restaurant"
+          ? "restaurant"
+          : session.activeChatIntent === "attraction"
+            ? "attraction"
+            : null);
+    if (nearbyIntent === "cafe") {
+      return nearbyCategoryRecommendations(list, "cafe");
+    }
+    if (nearbyIntent === "restaurant") {
+      return nearbyCategoryRecommendations(list, "restaurant");
+    }
+    if (nearbyIntent === "attraction") {
+      return list.slice(0, 6);
+    }
     const followUp = parsePlaceDetailFollowUp(userText);
     if (followUp !== "nearby_cafe" && followUp !== "nearby_late_snack") {
       return [];
     }
+  }
+
+  if (isDestinationCategoryPlaceDisplay(session, userText)) {
+    return recommendationsForCategoryPlaceDisplay(session, userText, list);
   }
 
   const mustVisitFlow =
@@ -207,23 +267,23 @@ export function recommendationsForChatDisplay(
     working = filterRecommendationsByExclusion(working, excluded);
     const categoryIntents = parseChatPlaceIntents(userText);
     if (categoryIntents.length === 1) {
-      working = filterRecommendationsForCategoryRender(working, categoryIntents[0]!);
-      logChatRenderModeLocked("PLACE_CARDS_ONLY");
-      return working.slice(0, 6);
+      return nearbyCategoryRecommendations(working, categoryIntents[0]!);
     }
     if (session.activeChatIntent === "cafe") {
-      working = filterRecommendationsForCategoryRender(working, "cafe");
-      logChatRenderModeLocked("PLACE_CARDS_ONLY");
-      return working.slice(0, 6);
+      return nearbyCategoryRecommendations(working, "cafe");
     }
     const filtered = filterRecommendationItemsForDisplay(working);
     let nearbyFiltered = filtered;
-    const destination = session.travelContext?.destination?.trim();
-    if (destination) {
-      nearbyFiltered = filterRecommendationsByDestinationRenderGuard(filtered, destination);
+    if (!shouldSkipDestinationRenderGuard(session, userText)) {
+      const destination = session.travelContext?.destination?.trim();
+      if (destination) {
+        nearbyFiltered = filterRecommendationsByDestinationRenderGuard(filtered, destination);
+      }
     }
     const count = Math.min(nearbyFiltered.length, 5);
     console.info(`[CHAT_PLACE_CARD_RENDER] count=${count}`);
+    console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count });
+    console.info("[CHAT_PLACE_CARD_LIMIT]", { limit: 5 });
     return nearbyFiltered.slice(0, 5);
   }
 
@@ -249,7 +309,10 @@ export function recommendationsForChatDisplay(
   if (categoryIntents.length === 1) {
     filtered = filterRecommendationsForCategoryRender(filtered, categoryIntents[0]!);
     logChatRenderModeLocked("PLACE_CARDS_ONLY");
-  } else if (destination) {
+  } else if (
+    destination &&
+    !shouldSkipDestinationRenderGuard(session, userText)
+  ) {
     filtered = filterRecommendationsByDestinationRenderGuard(filtered, destination);
   }
   console.info(`[CHAT_PLACE_CARD_RENDER] count=${filtered.length}`);

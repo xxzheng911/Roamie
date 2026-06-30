@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { recordPlacesPhotoUrlLoad } from "@/lib/places-api-stats";
+import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-cache";
+import { getLocalPlaceImageFallback, preferJpegPngImageUrl, resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { cn } from "@/lib/utils";
 
 const loadedSrcCache =
@@ -31,14 +33,28 @@ export function FadeInImage({
   useEffect(() => {
     if (!src) {
       setLoaded(false);
-      setDisplaySrc(null);
+      setDisplaySrc(fallbackSrc ? (resolvePlaceImageUrl(fallbackSrc) ?? getLocalPlaceImageFallback()) : null);
       setUsedFallback(false);
       return;
     }
-    setDisplaySrc(src);
+    const safeSrc = resolvePlaceImageUrl(src);
+    if (!safeSrc || isImageLoadFailed(safeSrc)) {
+      const safeFallback = resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback();
+      if (safeFallback && !isImageLoadFailed(safeFallback)) {
+        setDisplaySrc(safeFallback);
+        setUsedFallback(true);
+        setLoaded(loadedSrcCache.has(safeFallback));
+        return;
+      }
+      setDisplaySrc(null);
+      setUsedFallback(false);
+      setLoaded(true);
+      return;
+    }
+    setDisplaySrc(safeSrc);
     setUsedFallback(false);
-    setLoaded(loadedSrcCache.has(src));
-  }, [src]);
+    setLoaded(loadedSrcCache.has(safeSrc));
+  }, [src, fallbackSrc]);
 
   return (
     <div className={cn("relative overflow-hidden bg-secondary", className)}>
@@ -59,12 +75,19 @@ export function FadeInImage({
             setLoaded(true);
           }}
           onError={() => {
-            if (usedFallback || !fallbackSrc || displaySrc === fallbackSrc) {
+            markImageLoadFailed(displaySrc);
+            const safeFallback = resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback();
+            if (
+              usedFallback ||
+              !safeFallback ||
+              displaySrc === safeFallback ||
+              isImageLoadFailed(safeFallback)
+            ) {
               setLoaded(true);
               return;
             }
             setUsedFallback(true);
-            setDisplaySrc(fallbackSrc);
+            setDisplaySrc(safeFallback);
             setLoaded(false);
           }}
           className={cn(
@@ -75,7 +98,7 @@ export function FadeInImage({
         />
       ) : fallbackSrc ? (
         <img
-          src={fallbackSrc}
+          src={preferJpegPngImageUrl(fallbackSrc) ?? fallbackSrc}
           alt={alt}
           loading="lazy"
           draggable={false}

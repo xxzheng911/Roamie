@@ -264,19 +264,24 @@ function ensureForegroundLocationRetry(): void {
   });
 }
 
+const loggedEffectiveLocationCacheKeys = new Set<string>();
+
 /** App 啟動後解析有效定位；Places / 地圖共用。 */
 export function ensureEffectiveLocationBootstrap(): Promise<EffectiveLocationSnapshot> {
   registerLocationAppGate();
   ensureForegroundLocationRetry();
 
   if (snapshot?.isReadyForPlaces) {
-    console.info("[LOCATION_CACHE_HIT]", {
-      locationKey: snapshot.locationKey,
-      lat: snapshot.lat,
-      lng: snapshot.lng,
-      source: snapshot.source,
-      via: "effective_location_snapshot",
-    });
+    if (!loggedEffectiveLocationCacheKeys.has(snapshot.locationKey)) {
+      loggedEffectiveLocationCacheKeys.add(snapshot.locationKey);
+      console.info("[LOCATION_CACHE_HIT]", {
+        locationKey: snapshot.locationKey,
+        lat: snapshot.lat,
+        lng: snapshot.lng,
+        source: snapshot.source,
+        via: "effective_location_snapshot",
+      });
+    }
     return Promise.resolve(snapshot);
   }
   if (!bootstrapPromise) {

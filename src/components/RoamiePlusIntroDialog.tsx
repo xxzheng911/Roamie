@@ -115,7 +115,7 @@ export function RoamiePlusIntroDialog({
                     <p>已啟用 Roamie Plus：旅行偏好、收藏記憶與個人化推薦。</p>
                   )}
                   <Link
-                    to="/onboarding"
+                    to="/travel-preference-test"
                     search={{ from: "home" }}
                     onClick={() => onOpenChange(false)}
                     className="block w-full rounded-full bg-primary py-3 text-center text-sm font-medium text-primary-foreground"

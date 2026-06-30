@@ -16,7 +16,7 @@ import { enrichRoamieContext } from "@/lib/ai/enrich-context";
 import { resolveEffectivePlanTierWithProfile } from "@/lib/access/resolve";
 import { getWeather } from "@/lib/weather.functions";
 import { geocodeTripLocationFromText } from "@/lib/location.functions";
-import { searchPlaces } from "@/lib/places.functions";
+import { searchPlaces, getPlaceDetails } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { streamRoamieAI, fetchRoamieAI } from "@/lib/ai/stream-client";
 import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
@@ -60,15 +60,22 @@ import { getRecommendation } from "@/lib/recommendation-storage";
 import { inferDestinationFromPlaces } from "@/lib/itinerary-source";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import { finalizeChatRecommendationDisplay } from "@/lib/chat-display-recommendations";
+import {
+  enrichChatPlaceItemFromDetails,
+  hasValidPlaceCoordinates,
+} from "@/lib/chat-place-context";
 import { logChatUiReceivedCards } from "@/lib/ai/chat-place-flow-log";
 import { openRecommendationPlaceDetail } from "@/lib/recommendation-place-handoff";
 import {
   buildPlaceDetailFollowUpReply,
   buildPlaceDetailReply,
+  ensurePlaceDetailFocusCoordinates,
   enterPlaceDetailChat,
   isPlaceDetailChatActive,
   parsePlaceDetailFollowUp,
+  resolvePlaceDetailNearbyIntent,
   sessionWithPlaceDetailSearchCenter,
+  type FetchPlaceDetailsForFocusFn,
 } from "@/lib/ai/place-detail-chat";
 import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
 import {
@@ -133,7 +140,9 @@ import { useI18n } from "@/hooks/use-i18n";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { resolveChatConnectionFallbackMessage } from "@/lib/user-facing-error";
 import { useAccess } from "@/hooks/use-access";
-import { usePreferenceQuizCompleted } from "@/hooks/use-preference-quiz-status";
+import { useTravelPrefStatus } from "@/hooks/use-preference-quiz-status";
+import { mergePreferencesWithTravelPrefStatus } from "@/lib/travel-pref-status";
+import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -192,7 +201,12 @@ import {
   shouldAskRestaurantCuisine,
   shouldFetchNearbyPlaces,
 } from "@/lib/ai/chat-dining-flow";
-import { buildNearbyPlaceRecommendation, restaurantSearchFallbackQueries } from "@/lib/ai/chat-place-recommendation";
+import {
+  buildNearbyPlaceRecommendation,
+  buildSummaryForRecommendations,
+  restaurantSearchFallbackQueries,
+} from "@/lib/ai/chat-place-recommendation";
+import { resolveNearbySearchCenter } from "@/lib/ai/chat-nearby-search";
 import { buildDestinationMustVisitRecommendation, buildAlternativeDestinationRecommendations, buildMoreDestinationRecommendations } from "@/lib/ai/destination-place-recommendation";
 import { buildDestinationCategoryRecommendations } from "@/lib/ai/chat-destination-category-recommendation";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
@@ -309,9 +323,16 @@ export const Route = createFileRoute("/_app/chat")({
   component: Chat,
 });
 
+async function getAiPreferences() {
+  return mergePreferencesWithTravelPrefStatus(
+    await getPreferences(),
+    readCachedAuthenticatedUserIdSync(),
+  );
+}
+
 function Chat() {
   const { t, locale } = useI18n();
-  const quizCompleted = usePreferenceQuizCompleted();
+  const travelPrefStatus = useTravelPrefStatus();
   const { hasPlusAccess } = useAccess();
   const { openAddToTrip } = useAddToTrip();
   const search = Route.useSearch();
@@ -393,6 +414,22 @@ function Chat() {
   const [clearing, setClearing] = useState(false);
   const fetchWeather = useServerFn(getWeather);
   const geocodeLocationFn = useServerFn(geocodeTripLocationFromText);
+  const fetchPlaceDetailsFn = useServerFn(getPlaceDetails);
+  const fetchPlaceDetailsForFocus = useCallback<FetchPlaceDetailsForFocusFn>(
+    async (placeId) => {
+      const result = await fetchPlaceDetailsFn({ data: { placeId, locale } });
+      const place = result.place;
+      if (!place || place.lat == null || place.lng == null) return null;
+      return {
+        lat: place.lat,
+        lng: place.lng,
+        name: place.name,
+        address: place.address,
+        placeId: place.id,
+      };
+    },
+    [fetchPlaceDetailsFn, locale],
+  );
   const searchNearbyPlacesServerFn = useServerFn(searchPlaces);
   const searchNearbyPlaces = useMemo(
     () => createUnifiedSearchPlacesFn(searchNearbyPlacesServerFn),
@@ -594,7 +631,7 @@ function Chat() {
           clearHomeMoodUiSelection();
           persistSession(session);
         } else if (search.from === "plus-home" && hasPlusAccess && !session.fromPlusHome) {
-          const prefs = await getPreferences();
+          const prefs = await getAiPreferences();
           session = preparePlusHomeChatSession({
             mood: session.selectedMood,
             prefs,
@@ -613,7 +650,7 @@ function Chat() {
             record?.payload && isRoamiePayloadV2(record.payload) ? record.payload : null;
           if (record && payload?.recommendations?.length) {
             const bundle = await buildClientContextBundle(fetchWeather);
-            const prefs = await getPreferences();
+            const prefs = await getAiPreferences();
             const handoffDone = session.moodHandoffDone || isMoodHandoffDoneForRec(record.id);
             session = prepareMoodFlowSession({
               record,
@@ -825,7 +862,7 @@ function Chat() {
       const bundle = syncedForBundle.tripDestination
         ? await buildContextBundleForTrip(syncedForBundle.tripDestination, fetchWeather)
         : await buildClientContextBundle(fetchWeather);
-      const prefs = await getPreferences();
+      const prefs = await getAiPreferences();
       const apiMessages = buildApiMessagesFromConversation(
         conversation.filter((m) => m.content !== t("chat.greeting")),
       );
@@ -996,7 +1033,7 @@ function Chat() {
         const { data: authSession } = await supabase.auth.getSession();
         const token = authSession.session?.access_token;
         const bundle = await buildClientContextBundle(fetchWeather);
-        const prefs = await getPreferences();
+        const prefs = await getAiPreferences();
 
         const focused =
           handoffSession.selectedPlaceFromMood ??
@@ -1117,7 +1154,7 @@ function Chat() {
         }
 
         const bundle = await buildContextBundleForTrip(dest, fetchWeather);
-        const prefs = await getPreferences();
+        const prefs = await getAiPreferences();
         const syncedHandoff = syncSessionPlaceMemory({
           ...handoffSession,
           location: bundle.location,
@@ -1281,33 +1318,71 @@ function Chat() {
       },
     ): Promise<boolean> => {
       const merged = mergeTravelContext(activeSession, userText);
-      const deviceSession = await resolveChatLocation(activeSession);
-      const deviceLat = deviceSession.location?.lat;
-      const deviceLng = deviceSession.location?.lng;
+      let workingSession = merged.session;
+      const placeDetailActive = isPlaceDetailChatActive(workingSession);
+      if (placeDetailActive) {
+        workingSession = await ensurePlaceDetailFocusCoordinates(
+          workingSession,
+          geocodeLocationFn,
+          locale,
+          fetchPlaceDetailsForFocus,
+        );
+        workingSession = sessionWithPlaceDetailSearchCenter(workingSession);
+      }
 
-      const searchCtx = await resolveChatPlaceSearchContext({
-        context: merged.context,
-        session: deviceSession,
-        userText,
-        locale,
-        geocodeFn: geocodeLocationFn,
-        deviceLatLng:
-          deviceLat != null && deviceLng != null ? { lat: deviceLat, lng: deviceLng } : null,
-      });
-
+      let searchCtx: Awaited<ReturnType<typeof resolveChatPlaceSearchContext>>;
       let lat: number | undefined;
       let lng: number | undefined;
-      if (searchCtx.searchMode === "destination") {
-        if (searchCtx.destinationLatLng) {
-          lat = searchCtx.destinationLatLng.lat;
-          lng = searchCtx.destinationLatLng.lng;
-        } else if (searchCtx.textOnlyDestinationSearch) {
-          lat = 0;
-          lng = 0;
+      let nearbyCenterLabel: string | undefined;
+
+      if (placeDetailActive) {
+        const nearbyCenter = resolveNearbySearchCenter(workingSession, userText);
+        if (!nearbyCenter) {
+          console.warn("[CHAT_PLACES_REQUEST] skipped reason=place_detail_missing_coords");
+          return false;
         }
+        lat = nearbyCenter.lat;
+        lng = nearbyCenter.lng;
+        nearbyCenterLabel = nearbyCenter.basePlaceName;
+        searchCtx = {
+          searchMode: "nearby",
+          deviceLatLng: { lat, lng },
+        };
       } else {
-        lat = deviceLat;
-        lng = deviceLng;
+        const deviceSession = await resolveChatLocation(workingSession);
+        searchCtx = await resolveChatPlaceSearchContext({
+          context: merged.context,
+          session: deviceSession,
+          userText,
+          locale,
+          geocodeFn: geocodeLocationFn,
+          deviceLatLng:
+            deviceSession.location?.lat != null && deviceSession.location?.lng != null
+              ? { lat: deviceSession.location.lat, lng: deviceSession.location.lng }
+              : null,
+        });
+
+        const nearbyCenter = resolveNearbySearchCenter(deviceSession, userText);
+        if (nearbyCenter) {
+          lat = nearbyCenter.lat;
+          lng = nearbyCenter.lng;
+          nearbyCenterLabel = nearbyCenter.basePlaceName;
+          searchCtx.searchMode = "nearby";
+          delete searchCtx.destinationLatLng;
+          delete searchCtx.destinationName;
+          delete searchCtx.textOnlyDestinationSearch;
+        } else if (searchCtx.searchMode === "destination") {
+          if (searchCtx.destinationLatLng) {
+            lat = searchCtx.destinationLatLng.lat;
+            lng = searchCtx.destinationLatLng.lng;
+          } else if (searchCtx.textOnlyDestinationSearch) {
+            lat = 0;
+            lng = 0;
+          }
+        } else {
+          lat = deviceSession.location?.lat;
+          lng = deviceSession.location?.lng;
+        }
       }
 
       if (lat == null || lng == null) {
@@ -1315,11 +1390,11 @@ function Chat() {
         return false;
       }
 
-      let workingSession = merged.session;
+      let sessionForSave = merged.session;
       const excludePlaceIds =
-        opts?.excludePlaceIds ?? collectExcludePlaceIds(workingSession);
+        opts?.excludePlaceIds ?? collectExcludePlaceIds(sessionForSave);
       const blockedCoreNames =
-        opts?.blockedCoreNames ?? collectBlockedCoreNames(workingSession);
+        opts?.blockedCoreNames ?? collectBlockedCoreNames(sessionForSave);
 
       try {
         const { summary, payload } = await buildNearbyPlaceRecommendation({
@@ -1329,33 +1404,42 @@ function Chat() {
           locale,
           context: merged.context,
           searchPlaces: searchNearbyPlaces,
-          foodPreference: workingSession.foodPreference,
+          foodPreference: sessionForSave.foodPreference,
           excludedCategories:
-            workingSession.excludedCategories ?? merged.context.excludedCategories,
+            sessionForSave.excludedCategories ?? merged.context.excludedCategories,
           excludePlaceIds,
           rejectedPlaceNames:
-            opts?.rejectedPlaceNames ?? workingSession.rejectedPlaceNames,
+            opts?.rejectedPlaceNames ?? sessionForSave.rejectedPlaceNames,
           priorRecommended: [
-            ...workingSession.recommendedPlaces,
+            ...sessionForSave.recommendedPlaces,
             ...extractRecommendedFromMsgs(conversation),
           ],
           blockedCoreNames,
           userText: userText,
-          cityLabel:
-            opts?.cityLabel ??
-            (searchCtx.searchMode === "destination"
-              ? searchCtx.destinationName
-              : workingSession.location?.city ?? merged.context.destination),
+          cityLabel: placeDetailActive
+            ? workingSession.placeDetailFocus?.city ||
+              workingSession.placeDetailFocus?.country ||
+              undefined
+            : nearbyCenterLabel ??
+              opts?.cityLabel ??
+              (searchCtx.searchMode === "destination"
+                ? searchCtx.destinationName
+                : sessionForSave.location?.city ?? merged.context.destination),
           searchContext: searchCtx,
+          hasPlusAccess,
+          placeDetailNearby: placeDetailActive,
+          focusPlaceId:
+            workingSession.placeDetailFocus?.placeId ??
+            workingSession.placeDetailFocus?.googlePlaceId,
         });
         const sessionWithIntent: ChatPlanningSession = {
-          ...workingSession,
+          ...sessionForSave,
           activeChatIntent: intent,
           phase: "recommend",
           travelContext: {
             ...merged.context,
             excludedCategories:
-              workingSession.excludedCategories ?? merged.context.excludedCategories,
+              sessionForSave.excludedCategories ?? merged.context.excludedCategories,
           },
         };
         const { summary: displaySummary, recommendations: filteredRecs } =
@@ -1365,6 +1449,17 @@ function Chat() {
             summary,
             payload.recommendations ?? [],
           );
+        const syncedSummary =
+          filteredRecs.length > 0
+            ? buildSummaryForRecommendations(
+                intent,
+                filteredRecs,
+                merged.context,
+                sessionForSave.excludedCategories ?? merged.context.excludedCategories,
+              )
+            : displaySummary;
+        console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: filteredRecs.length });
+        console.info("[CHAT_PLACE_CARD_LIMIT]", { limit: intent === "cafe" ? 6 : 5 });
         if (!filteredRecs.length) {
           if ((payload.recommendations ?? []).length === 0 && summary.trim()) {
             setMsgs((prev) => {
@@ -1391,10 +1486,10 @@ function Chat() {
             ...base,
             {
               role: "assistant",
-              content: displaySummary,
+              content: syncedSummary,
               roamie: {
                 ...payload,
-                summary: displaySummary,
+                summary: syncedSummary,
                 recommendations: filteredRecs,
               },
             },
@@ -1423,7 +1518,7 @@ function Chat() {
         return false;
       }
     },
-    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn],
+    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, fetchPlaceDetailsForFocus, hasPlusAccess],
   );
 
   const pushDestinationPlaceRecommendation = useCallback(
@@ -2614,10 +2709,17 @@ function Chat() {
     });
   };
 
-  const handleDiscussPlace = (rec: RoamieRecommendationItem) => {
+  const handleDiscussPlace = async (rec: RoamieRecommendationItem) => {
     if (streaming || generating) return;
     markShortcutEngaged();
-    const item = roamieRecToChatItem(rec);
+    let item = roamieRecToChatItem(rec);
+    const placeId = (item.placeId ?? item.googlePlaceId ?? "").trim();
+    if (placeId && !hasValidPlaceCoordinates(item)) {
+      const details = await fetchPlaceDetailsForFocus(placeId);
+      if (details) {
+        item = enrichChatPlaceItemFromDetails(item, details);
+      }
+    }
     const nextSession = enterPlaceDetailChat(session, item);
     persistSession(nextSession);
 
@@ -2638,6 +2740,11 @@ function Chat() {
         },
       },
     ]);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollToBottom("new_message", { force: true });
+      });
+    });
   };
 
   const send = async (
@@ -2679,20 +2786,30 @@ function Chat() {
         return;
       }
 
-      if (followUp === "nearby_cafe" || followUp === "nearby_late_snack") {
-        const centered = sessionWithPlaceDetailSearchCenter(session);
-        const nearbyIntent = followUp === "nearby_cafe" ? "cafe" : "restaurant";
+      const nearbyIntent = resolvePlaceDetailNearbyIntent(trimmed);
+      if (nearbyIntent) {
+        let centered = await ensurePlaceDetailFocusCoordinates(
+          session,
+          geocodeLocationFn,
+          locale,
+          fetchPlaceDetailsForFocus,
+        );
+        centered = sessionWithPlaceDetailSearchCenter(centered);
         const nextSession = {
           ...centered,
           activeChatIntent: nearbyIntent,
           phase: "recommend" as const,
         };
         persistSession(nextSession);
-        const preface = buildPlaceDetailFollowUpReply(followUp, nextSession);
-        const conversationWithPreface = preface
-          ? [...baseConversation, { role: "assistant", content: preface }]
-          : baseConversation;
-        if (preface) setMsgs(conversationWithPreface);
+        const followUpKind = parsePlaceDetailFollowUp(trimmed);
+        const preface =
+          buildPlaceDetailFollowUpReply(followUpKind, nextSession) ??
+          `好，我以「${placeDisplayName(nextSession.placeDetailFocus!)}」為中心幫你找附近地點。`;
+        const conversationWithPreface = [
+          ...baseConversation,
+          { role: "assistant", content: preface },
+        ];
+        setMsgs(conversationWithPreface);
         setStreaming(true);
         try {
           const applied = await pushNearbyPlaceRecommendation(
@@ -3455,7 +3572,7 @@ function Chat() {
       const bundle = activeSession.tripDestination
         ? await buildContextBundleForTrip(activeSession.tripDestination, fetchWeather)
         : await buildClientContextBundle(fetchWeather);
-      const [prefs, profile] = await Promise.all([getPreferences(), getUserProfile()]);
+      const [prefs, profile] = await Promise.all([getAiPreferences(), getUserProfile()]);
       const fashionStyle = resolveFashionStyle({
         travelStyle: profile.travelStyle,
         interests: prefs.interests,
@@ -3913,7 +4030,9 @@ function Chat() {
               : undefined,
           }}
         >
-          {hasPlusAccess && quizCompleted === false && (
+          {hasPlusAccess &&
+            travelPrefStatus !== null &&
+            !travelPrefStatus.preferenceQuizCompleted && (
             <PreferenceQuizCta origin="chat" variant="banner" className="animate-rise" />
           )}
           {hydrating && (

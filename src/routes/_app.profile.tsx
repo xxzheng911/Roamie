@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronRight,
   LogOut,
@@ -22,7 +22,7 @@ import { AvatarCropSheet } from "@/components/profile/AvatarCropSheet";
 import { ProfileImageCropSheet } from "@/components/profile/ProfileImageCropSheet";
 import { COVER_UPDATED_EVENT, broadcastCoverUpdate } from "@/lib/cover-events";
 import { broadcastAvatarUpdate } from "@/lib/avatar-events";
-import { BUDGET_MODE_LABELS, resolveBudgetMode } from "@/lib/preferences-storage";
+import { BUDGET_MODE_LABELS, readCachedPreferencesSync, resolveBudgetMode } from "@/lib/preferences-storage";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { logAvatarFileReadSuccess } from "@/lib/avatar-upload-log";
 import {
@@ -39,18 +39,30 @@ import {
 import { buildCompanionSummary } from "@/lib/personality";
 import {
   gatePlusPersonaFields,
-  sanitizeBioForTier,
   shouldExposePlusPersona,
 } from "@/lib/profile-persona";
-import { logAuthRedirectLogin, logProfileLoad, logProfileLoadFail } from "@/lib/auth-boot-log";
-import { getDefaultBio } from "@/lib/i18n/default-profile";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useAccess } from "@/hooks/use-access";
 import { isDeveloperBuildEnabled } from "@/lib/access/developer";
 import { loadDraftTrip } from "@/lib/trip-draft-storage";
 import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
-import { readProfileSessionCache } from "@/lib/profile-session-cache";
+import {
+  readProfileSessionCache,
+  shouldSkipProfileNetworkLoad,
+} from "@/lib/profile-session-cache";
+import { readPersistedAvatarUrl, readPersistedCoverUrl } from "@/lib/profile-persisted-cache";
+import {
+  buildUserProfileFromTravelPrefCache,
+  buildTravelPrefResultSnapshot,
+  getTravelPrefResultSnapshot,
+} from "@/lib/travel-pref-result-cache";
+import { getTravelPrefStatusSync } from "@/lib/travel-pref-status";
+import { logAuthRedirectLogin, logProfileLoad, logProfileLoadFail } from "@/lib/auth-boot-log";
+import { shouldRefreshProfileOnMount, shouldHydrateProfileUi } from "@/lib/app-boot-cache";
+import { logPerfProfileLoadSkip } from "@/lib/app-perf";
+import { useTravelPrefStatus } from "@/hooks/use-preference-quiz-status";
+import { isPreferencesRemoteHydrated } from "@/lib/preferences-storage";
 
 type ProfileSearch = { quiz?: string };
 
@@ -62,6 +74,8 @@ export const Route = createFileRoute("/_app/profile")({
   }),
   component: Profile,
 });
+
+const profileRouteApi = getRouteApi("/_app/profile");
 
 function validateImageFile(file: File): boolean {
   if (!file.type.startsWith("image/")) {
@@ -76,7 +90,7 @@ function validateImageFile(file: File): boolean {
 }
 
 function Profile() {
-  const search = Route.useSearch();
+  const search = profileRouteApi.useSearch();
   const navigate = useNavigate();
   const { user, session, loading: authLoading, signOut } = useAuth();
   const userId = user?.id;
@@ -106,37 +120,43 @@ function Profile() {
   const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null);
   const [avatarApplying, setAvatarApplying] = useState(false);
   const initialCachedProfile = readProfileSessionCache(userId);
-  const [loading, setLoading] = useState(() => !initialCachedProfile);
+  const initialTravelPref = getTravelPrefResultSnapshot(userId);
+  const initialProfileFromTravelPref = initialTravelPref
+    ? buildUserProfileFromTravelPrefCache(initialTravelPref, locale)
+    : null;
+  const initialProfile = initialCachedProfile ?? initialProfileFromTravelPref;
+  const hasPersistedMedia = Boolean(
+    readPersistedAvatarUrl(userId) || readPersistedCoverUrl(userId),
+  );
+  const [loading, setLoading] = useState(() => !initialProfile && !hasPersistedMedia);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const [displayName, setDisplayName] = useState(() => initialCachedProfile?.displayName ?? "");
+  const [displayName, setDisplayName] = useState(() => initialProfile?.displayName ?? "");
   const [draftName, setDraftName] = useState("");
-  const [bio, setBio] = useState(() => initialCachedProfile?.bio ?? "");
-  const [draftBio, setDraftBio] = useState("");
-  const [travelStyle, setTravelStyle] = useState(() => initialCachedProfile?.travelStyle ?? "");
-  const [draftTravelStyle, setDraftTravelStyle] = useState("");
+  const [travelStyle, setTravelStyle] = useState(() => initialProfile?.travelStyle ?? "");
   const [personalityType, setPersonalityType] = useState(
-    () => initialCachedProfile?.personalityType ?? "",
+    () => initialProfile?.personalityType ?? "",
   );
   const [personalitySummary, setPersonalitySummary] = useState(
-    () => initialCachedProfile?.personalitySummary ?? "",
+    () => initialProfile?.personalitySummary ?? "",
   );
   const [personalityImpression, setPersonalityImpression] = useState(
-    () => initialCachedProfile?.personalityImpression ?? "",
+    () => initialProfile?.personalityImpression ?? "",
   );
   const [companionSummary, setCompanionSummary] = useState("");
-  const [onboarded, setOnboarded] = useState(() => !!initialCachedProfile?.prefs.onboarded);
+  const [onboarded, setOnboarded] = useState(() => !!initialProfile?.prefs.onboarded);
   const [quizSyncing, setQuizSyncing] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [pace, setPace] = useState("");
   const [vibe, setVibe] = useState("");
   const [budgetLabel, setBudgetLabel] = useState("—");
   const [avoidKey, setAvoidKey] = useState<string | null>(null);
-  const [travelTags, setTravelTags] = useState<string[]>([]);
+  const [travelTags, setTravelTags] = useState<string[]>(() => initialTravelPref?.tags ?? []);
 
   const quizDoneToastShown = useRef(false);
-  const profileSnapshotRef = useRef<UserProfile | null>(initialCachedProfile);
+  const profileSnapshotRef = useRef<UserProfile | null>(initialProfile);
+  const profileApplyFingerprintRef = useRef("");
 
   const revokeCoverPreview = useCallback(() => {
     if (coverPreviewRef.current) {
@@ -169,7 +189,15 @@ function Profile() {
 
   useAppMainScroll();
 
-  const quizCompleted = onboarded;
+  const travelPrefStatus = useTravelPrefStatus();
+  const quizCompleted =
+    travelPrefStatus?.preferenceQuizCompleted ?? onboarded;
+  const travelStyleLabel =
+    travelPrefStatus?.travelStyleName?.trim() ||
+    (quizCompleted && travelStyle.trim() ? travelStyle.trim() : "") ||
+    (hasPlusAccess ? t("profile.travelStyleEmpty") : "") ||
+    "";
+  const resolvedDisplayName = displayName.trim() || t("profile.defaultName");
 
   useEffect(() => {
     setHasDraft(Boolean(loadDraftTrip()));
@@ -184,9 +212,19 @@ function Profile() {
   }, [revokeCoverPreview]);
 
   const loadProfile = useCallback(async (options?: { force?: boolean }) => {
+    if (userId && !options?.force) {
+      const skip = shouldSkipProfileNetworkLoad(userId, false);
+      if (skip.skip) {
+        const cached = readProfileSessionCache(userId);
+        if (cached) return cached;
+      }
+    }
+    const hadCache = Boolean(userId && readProfileSessionCache(userId));
     try {
       const profile = await getUserProfile(undefined, { force: options?.force });
-      logProfileLoad({ userId });
+      if (!hadCache || options?.force) {
+        logProfileLoad({ userId });
+      }
       return profile;
     } catch (firstErr) {
       if (!userId) throw firstErr;
@@ -203,18 +241,56 @@ function Profile() {
   }, [userId]);
 
   const applyProfileToState = useCallback(
-    (profile: UserProfile) => {
-      profileSnapshotRef.current = profile;
-      const showPlusPersona = shouldExposePlusPersona(hasPlusAccess, profile.prefs);
-      const gated = gatePlusPersonaFields(profile, hasPlusAccess);
-      const defaultBio = getDefaultBio(profile.language || locale);
-      const nextBio = sanitizeBioForTier(gated.bio, hasPlusAccess, profile.prefs, defaultBio);
-      const nextCompanion = showPlusPersona ? buildCompanionSummary(profile.prefs) : "";
+    (profile: UserProfile, options?: { source?: string }) => {
+      const status = getTravelPrefStatusSync(userId);
+      const cachedTravelPref = status.snapshot ?? getTravelPrefResultSnapshot(userId);
+      const mergedPrefs = status.preferenceQuizCompleted
+        ? status.prefs
+        : profile.prefs;
+      const mergedProfile: UserProfile = {
+        ...profile,
+        prefs: mergedPrefs,
+        travelStyle:
+          status.travelStyleName ||
+          profile.travelStyle ||
+          cachedTravelPref?.travelStyle ||
+          mergedPrefs.personalityType ||
+          "",
+        personalityType:
+          status.travelStyleName ||
+          profile.personalityType ||
+          mergedPrefs.personalityType ||
+          "",
+        personalitySummary:
+          status.personalitySummary ||
+          profile.personalitySummary ||
+          mergedPrefs.personalitySummary ||
+          "",
+      };
+      const fingerprint = [
+        mergedProfile.displayName,
+        mergedProfile.travelStyle,
+        mergedProfile.personalityType,
+        status.preferenceQuizCompleted,
+        mergedProfile.prefs.pace,
+        mergedProfile.prefs.vibe,
+        mergedProfile.prefs.budgetMode,
+        mergedProfile.avatarUrl,
+        mergedProfile.coverImageUrl,
+      ].join("|");
+      if (fingerprint === profileApplyFingerprintRef.current) {
+        return;
+      }
+      profileApplyFingerprintRef.current = fingerprint;
+      profileSnapshotRef.current = mergedProfile;
+      const showPlusPersona = shouldExposePlusPersona(hasPlusAccess, mergedProfile.prefs);
+      const gated = gatePlusPersonaFields(mergedProfile, hasPlusAccess);
+      const nextCompanion = showPlusPersona ? buildCompanionSummary(mergedProfile.prefs) : "";
       setDisplayName((prev) => (prev === gated.displayName ? prev : gated.displayName));
-      setBio((prev) => (prev === nextBio ? prev : nextBio));
       syncCoverFromProfile(gated.coverImageUrl);
       syncAvatarFromProfile(gated.avatarUrl);
-      const nextTravelStyle = showPlusPersona ? gated.travelStyle : "";
+      const nextTravelStyle =
+        status.travelStyleName || (showPlusPersona ? gated.travelStyle : "");
       setTravelStyle((prev) => (prev === nextTravelStyle ? prev : nextTravelStyle));
       const nextPersonalityType = showPlusPersona ? gated.personalityType : "";
       setPersonalityType((prev) => (prev === nextPersonalityType ? prev : nextPersonalityType));
@@ -227,7 +303,7 @@ function Profile() {
         prev === nextPersonalityImpression ? prev : nextPersonalityImpression,
       );
       setCompanionSummary((prev) => (prev === nextCompanion ? prev : nextCompanion));
-      const nextOnboarded = !!profile.prefs.onboarded;
+      const nextOnboarded = status.preferenceQuizCompleted;
       setOnboarded((prev) => (prev === nextOnboarded ? prev : nextOnboarded));
       const paceMap = {
         slow: t("profile.paceSlow"),
@@ -239,51 +315,70 @@ function Profile() {
         either: t("profile.vibeEither"),
         lively: t("profile.vibeLively"),
       } as const;
-      const nextPace = profile.prefs.pace ? paceMap[profile.prefs.pace] : t("common.dash");
+      const resolvedPace = status.pace ?? mergedProfile.prefs.pace;
+      const resolvedVibe = status.vibe ?? mergedProfile.prefs.vibe;
+      const nextPace = resolvedPace ? paceMap[resolvedPace] : t("common.dash");
       setPace((prev) => (prev === nextPace ? prev : nextPace));
-      const nextVibe = profile.prefs.vibe ? vibeMap[profile.prefs.vibe] : t("common.dash");
+      const nextVibe = resolvedVibe ? vibeMap[resolvedVibe] : t("common.dash");
       setVibe((prev) => (prev === nextVibe ? prev : nextVibe));
-      const nextBudgetLabel = profile.prefs.onboarded
-        ? BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)]
+      const nextBudgetLabel = mergedProfile.prefs.onboarded
+        ? BUDGET_MODE_LABELS[resolveBudgetMode(mergedProfile.prefs)]
         : t("common.dash");
       setBudgetLabel((prev) => (prev === nextBudgetLabel ? prev : nextBudgetLabel));
-      const nextAvoidKey = profile.prefs.avoid?.[0] ?? null;
+      const nextAvoidKey = mergedProfile.prefs.avoid?.[0] ?? null;
       setAvoidKey((prev) => (prev === nextAvoidKey ? prev : nextAvoidKey));
-      const tags = Array.from(
+      const tags =
+        cachedTravelPref?.tags?.length && mergedProfile.prefs.onboarded
+          ? cachedTravelPref.tags
+          : Array.from(
         new Set(
           [
-            ...(profile.prefs.interests ?? []),
-            profile.prefs.pace === "slow"
+            ...(mergedProfile.prefs.interests ?? []),
+            mergedProfile.prefs.pace === "slow"
               ? "慢行"
-              : profile.prefs.pace === "active"
+              : mergedProfile.prefs.pace === "active"
                 ? "探索"
                 : null,
-            profile.prefs.vibe === "quiet"
+            mergedProfile.prefs.vibe === "quiet"
               ? "安靜"
-              : profile.prefs.vibe === "lively"
+              : mergedProfile.prefs.vibe === "lively"
                 ? "熱鬧"
                 : "平衡",
-            BUDGET_MODE_LABELS[resolveBudgetMode(profile.prefs)],
+            BUDGET_MODE_LABELS[resolveBudgetMode(mergedProfile.prefs)],
           ].filter((v): v is string => Boolean(v)),
         ),
       ).slice(0, 5);
       setTravelTags((prev) =>
         prev.length === tags.length && prev.every((tag, index) => tag === tags[index]) ? prev : tags,
       );
-      if (profile.prefs.onboarded) {
+      if (mergedProfile.prefs.onboarded && options?.source === "boot") {
         console.info("[TRAVEL_PREF_RESULT] loaded", {
-          travelStyle: profile.travelStyle || profile.personalityType || "未命名",
+          travelStyle: mergedProfile.travelStyle || mergedProfile.personalityType || "未命名",
           tagsCount: tags.length,
         });
       }
     },
-    [t, hasPlusAccess, locale, syncCoverFromProfile, syncAvatarFromProfile],
+    [t, hasPlusAccess, locale, syncCoverFromProfile, syncAvatarFromProfile, userId],
   );
 
   useEffect(() => {
     const profile = profileSnapshotRef.current;
-    if (profile) {
+    if (profile?.prefs.onboarded) {
       applyProfileToState(profile);
+      return;
+    }
+    const cachedTravelPref = getTravelPrefResultSnapshot(userId);
+    const localPrefs = readCachedPreferencesSync();
+    const travelPrefSnapshot =
+      cachedTravelPref ??
+      (localPrefs.onboarded
+        ? buildTravelPrefResultSnapshot(localPrefs, { userId: userId ?? undefined })
+        : null);
+    if (travelPrefSnapshot?.quizCompleted || localPrefs.onboarded) {
+      console.info("[TRAVEL_PREF_RESULT] skipped clearing because cache exists");
+      const restored = buildUserProfileFromTravelPrefCache(travelPrefSnapshot!, locale);
+      profileSnapshotRef.current = restored;
+      applyProfileToState(restored);
       return;
     }
     if (!hasPlusAccess) {
@@ -293,7 +388,7 @@ function Profile() {
       setPersonalityImpression("");
       setCompanionSummary("");
     }
-  }, [hasPlusAccess, applyProfileToState]);
+  }, [hasPlusAccess, applyProfileToState, userId, locale]);
 
   useEffect(() => {
     if (search.quiz !== "done" || quizDoneToastShown.current) return;
@@ -301,35 +396,57 @@ function Profile() {
     setQuizSyncing(true);
     toast.success(t("profile.quizDone"));
     navigate({ to: "/profile", search: {}, replace: true });
+
+    const cachedTravelPref = getTravelPrefResultSnapshot(userId);
+    if (cachedTravelPref?.quizCompleted) {
+      const restored = buildUserProfileFromTravelPrefCache(cachedTravelPref, locale);
+      profileSnapshotRef.current = restored;
+      applyProfileToState(restored);
+    }
+
     void (async () => {
       try {
         const profile = await loadProfile({ force: true });
         applyProfileToState(profile);
       } catch (e) {
-        console.error("[profile] quiz sync failed", e);
+        console.warn("[TRAVEL_PREF_TEST] profile background refresh after quiz failed", {
+          message: e instanceof Error ? e.message : String(e),
+          hasLocalCache: Boolean(cachedTravelPref?.quizCompleted),
+        });
       } finally {
         setQuizSyncing(false);
       }
     })();
-  }, [search.quiz, t, navigate, loadProfile, applyProfileToState]);
+  }, [search.quiz, t, navigate, loadProfile, applyProfileToState, userId, locale]);
 
   useEffect(() => {
     const onPrefs = () => {
-      void (async () => {
-        try {
-          const profile = await loadProfile({ force: true });
-          applyProfileToState(profile);
-        } catch (e) {
-          console.error("[profile] prefs sync failed", e);
-        }
-      })();
+      const travelPref = getTravelPrefResultSnapshot(userId);
+      if (travelPref?.quizCompleted) {
+        const restored = buildUserProfileFromTravelPrefCache(travelPref, locale);
+        profileSnapshotRef.current = restored;
+        applyProfileToState(restored);
+      }
     };
     window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
     return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
-  }, [loadProfile, applyProfileToState]);
+  }, [applyProfileToState, userId, locale]);
 
   const refresh = useCallback(async (options?: { force?: boolean }) => {
     const hadCache = Boolean(readProfileSessionCache(userId));
+    if (!options?.force && userId) {
+      const skip = shouldSkipProfileNetworkLoad(userId, false);
+      if (skip.skip && hadCache) {
+        applyProfileToState(readProfileSessionCache(userId)!);
+        setLoading(false);
+        return;
+      }
+      if (!options?.force && isPreferencesRemoteHydrated(userId) && hadCache) {
+        applyProfileToState(readProfileSessionCache(userId)!);
+        setLoading(false);
+        return;
+      }
+    }
     if (!hadCache) setLoading(true);
     console.info("[profile] loading", { userId, force: options?.force ?? false });
     try {
@@ -340,7 +457,11 @@ function Profile() {
         void syncTravelPreferenceProfileFields({
           travelStyle: profile.travelStyle || profile.personalityType || "",
           prefs: profile.prefs,
-        }).catch((e) => console.error("[profile] travel-pref sync failed", e));
+        }).catch((e) => {
+          console.warn("[TRAVEL_PREF_TEST] profile fields background sync failed", {
+            message: e instanceof Error ? e.message : String(e),
+          });
+        });
       }
       console.info("[PROFILE] loaded");
     } catch (e) {
@@ -348,6 +469,10 @@ function Profile() {
       console.error("[profile] refresh failed", e);
       const msg = e instanceof Error ? e.message : "";
       if (msg.includes("請先登入")) return;
+      if (getTravelPrefResultSnapshot(userId)?.quizCompleted) {
+        console.info("[TRAVEL_PREF_RESULT] skipped clearing because cache exists");
+        return;
+      }
       applyProfileToState({
         displayName: userEmail?.split("@")[0] || t("profile.defaultName"),
         bio: "",
@@ -377,14 +502,39 @@ function Profile() {
       }
       return;
     }
-    const cached = readProfileSessionCache(userId);
-    if (cached) {
-      applyProfileToState(cached);
+    if (!shouldHydrateProfileUi(userId)) {
+      logPerfProfileLoadSkip("same_user");
       setLoading(false);
       return;
     }
-    void refresh();
-  }, [authLoading, userId, session, navigate, refresh, applyProfileToState]);
+    const cached = readProfileSessionCache(userId);
+    const travelPref = getTravelPrefResultSnapshot(userId);
+    if (cached) {
+      applyProfileToState(cached, { source: "boot" });
+      setLoading(false);
+      if (shouldRefreshProfileOnMount(userId)) {
+        void refresh();
+      } else {
+        logPerfProfileLoadSkip("same_user");
+      }
+      return;
+    }
+    if (travelPref) {
+      const restored = buildUserProfileFromTravelPrefCache(travelPref, locale);
+      profileSnapshotRef.current = restored;
+      applyProfileToState(restored, { source: "boot" });
+      console.info("[TRAVEL_PREF_RESULT] restored to profile state");
+      setLoading(false);
+    }
+    if (readPersistedAvatarUrl(userId) || readPersistedCoverUrl(userId)) {
+      setLoading(false);
+    }
+    if (shouldRefreshProfileOnMount(userId)) {
+      void refresh();
+    } else {
+      logPerfProfileLoadSkip("same_user");
+    }
+  }, [authLoading, userId, session, navigate, refresh, applyProfileToState, locale]);
 
   if (authLoading) {
     return (
@@ -394,10 +544,16 @@ function Profile() {
     );
   }
 
+  if (userId && loading && !profileSnapshotRef.current) {
+    return (
+      <div className="flex flex-1 items-center justify-center px-5 py-16">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
   const devMode = isDeveloperBuildEnabled();
   const showPlusPersona = hasPlusAccess && onboarded;
-  const displayBio = sanitizeBioForTier(bio, hasPlusAccess, { onboarded }, getDefaultBio(locale));
-  const displayTravelStyle = showPlusPersona ? travelStyle : "";
   const displayCompanionSummary = showPlusPersona ? companionSummary : "";
 
   const handleSaveProfile = async () => {
@@ -410,14 +566,8 @@ function Profile() {
     try {
       await saveUserProfile({
         displayName: trimmedName,
-        bio: draftBio,
-        ...(showPlusPersona ? { travelStyle: draftTravelStyle } : {}),
       });
       setDisplayName(trimmedName);
-      setBio(draftBio);
-      if (showPlusPersona) {
-        setTravelStyle(draftTravelStyle);
-      }
       setEditing(false);
       toast.success(t("profile.saved"));
     } catch (e) {
@@ -428,16 +578,12 @@ function Profile() {
   };
 
   const beginProfileEditing = () => {
-    setDraftName(displayName);
-    setDraftBio(bio);
-    setDraftTravelStyle(travelStyle);
+    setDraftName(resolvedDisplayName);
     setEditing(true);
   };
 
   const cancelProfileEditing = () => {
-    setDraftName(displayName);
-    setDraftBio(bio);
-    setDraftTravelStyle(travelStyle);
+    setDraftName(resolvedDisplayName);
     setEditing(false);
   };
 
@@ -645,34 +791,20 @@ function Profile() {
                 <label className="block">
                   <span className="text-[11px] text-muted-foreground">{t("profile.name")}</span>
                   <input
-                    value={draftName}
+                    value={draftName ?? ""}
                     onChange={(e) => setDraftName(e.target.value)}
                     className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
                   />
                 </label>
-                <label className="block">
-                  <span className="text-[11px] text-muted-foreground">{t("profile.bio")}</span>
-                  <textarea
-                    value={draftBio}
-                    onChange={(e) => setDraftBio(e.target.value)}
-                    rows={2}
-                    className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
-                    placeholder={t("profile.bioPlaceholder")}
-                  />
-                </label>
-                {hasPlusAccess && onboarded ? (
-                  <label className="block">
+                {hasPlusAccess ? (
+                  <div className="block">
                     <span className="text-[11px] text-muted-foreground">
                       {t("profile.travelStyle")}
                     </span>
-                    <textarea
-                      value={draftTravelStyle}
-                      onChange={(e) => setDraftTravelStyle(e.target.value)}
-                      rows={2}
-                      className="mt-1 w-full rounded-xl border border-border bg-secondary px-3 py-2 text-sm"
-                      placeholder={t("profile.travelStylePlaceholder")}
-                    />
-                  </label>
+                    <p className="mt-1 rounded-xl border border-border bg-muted/40 px-3 py-2 text-sm text-foreground/80">
+                      {travelStyleLabel}
+                    </p>
+                  </div>
                 ) : null}
                 <div className="flex gap-2">
                   <button
@@ -697,7 +829,7 @@ function Profile() {
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-display text-xl leading-tight">{displayName}</p>
+                      <p className="font-display text-xl leading-tight">{resolvedDisplayName}</p>
                       <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                         {hasPlusAccess ? "Plus" : "Free"}
                       </span>
@@ -707,15 +839,15 @@ function Profile() {
                         </span>
                       ) : null}
                     </div>
-                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{displayBio}</p>
+                    {hasPlusAccess ? (
+                      <p className="mt-3 text-sm leading-relaxed">
+                        <span className="text-muted-foreground">{t("profile.travelStyle")}：</span>
+                        <span className="text-foreground/85">{travelStyleLabel}</span>
+                      </p>
+                    ) : null}
                     {displayCompanionSummary ? (
                       <p className="mt-2 text-sm leading-relaxed text-foreground/75">
                         {displayCompanionSummary}
-                      </p>
-                    ) : null}
-                    {displayTravelStyle ? (
-                      <p className="mt-2 text-sm leading-relaxed text-foreground/80">
-                        {displayTravelStyle}
                       </p>
                     ) : null}
                   </div>
@@ -767,7 +899,7 @@ function Profile() {
             type="button"
             onClick={() => {
               console.info("[TRAVEL_PREF_TEST] start");
-              void navigate({ to: "/onboarding", search: { from: "profile" } });
+              void navigate({ to: "/travel-preference-test", search: { from: "profile" } });
             }}
             className="mt-4 w-full rounded-full bg-primary py-3 text-sm text-primary-foreground"
           >
@@ -790,7 +922,7 @@ function Profile() {
       {showPlusPersona ? (
         <section className="mt-4 rounded-3xl bg-secondary p-5">
           <p className="font-display text-[18px]">
-            {displayTravelStyle || personalityType || "慢步放鬆型"}
+            {travelStyleLabel || personalityType || "慢步放鬆型"}
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
             標籤：{travelTags.length > 0 ? travelTags.join("、") : "安靜、散步、咖啡、自然、慢行"}

@@ -17,6 +17,12 @@ import {
   selectRecommendationsForNow,
   summarizeAvailabilityStats,
 } from "@/lib/recommend-place-ranking";
+import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
+import {
+  buildExplicitAvoidKeywords,
+  buildExplicitPreferKeywords,
+  buildPlusPreferenceRankingContext,
+} from "@/lib/plus-preference-ranking";
 import {
   isRecommendablePlace,
   itineraryToRecommendableInput,
@@ -124,7 +130,34 @@ async function enrichRecommendations(
   );
 
   const mood = ctx.mood ?? ctx.selectedMood;
-  const ranked = rankRecommendations(openOnly, hoursMap, at, mood, ctx.weather ?? null);
+  const plusCtx =
+    ctx.planTier === "plus"
+      ? buildPlusPreferenceRankingContext({
+          profile: userProfileForReasonFrom(ctx.preferences, {
+            hasPlusAccess: true,
+            travelStyle: ctx.longTermMemory?.travelStyle,
+            personalityType: ctx.longTermMemory?.personalityType,
+            personalitySummary: ctx.longTermMemory?.personalitySummary,
+            mood: mood ?? undefined,
+          }),
+          savedPlaces: (ctx.savedPlaceNames ?? []).map((name) => ({ name })),
+          explicitAvoidKeywords: buildExplicitAvoidKeywords(undefined, ctx.avoidTypes),
+          explicitPreferKeywords: buildExplicitPreferKeywords({
+            mood,
+            setting: ctx.planningHints?.setting,
+          }),
+          mood,
+          setting: ctx.planningHints?.setting,
+        })
+      : null;
+  const ranked = rankRecommendations(
+    openOnly,
+    hoursMap,
+    at,
+    mood,
+    ctx.weather ?? null,
+    plusCtx,
+  );
   const stats = summarizeAvailabilityStats(ranked);
   const lateNightMode = isLateNightMode(at) || sceneFlow;
 

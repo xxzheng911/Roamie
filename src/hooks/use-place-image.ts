@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { PlaceImageInput } from "@/services/placeImageService";
 import { getPlaceImage } from "@/services/placeImageService";
-import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
+import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 
 type Options = PlaceImageInput & {
   /** 若已有 Google 封面 URL，跳過 async 解析 */
@@ -21,7 +21,7 @@ export function usePlaceImage(options: Options): {
 
   useEffect(() => {
     if (initialUrl) {
-      setUrl(preferJpegPngImageUrl(initialUrl));
+      setUrl(resolvePlaceImageUrl(initialUrl) ?? null);
       setSource("google");
       setLoading(false);
       return;
@@ -32,7 +32,7 @@ export function usePlaceImage(options: Options): {
 
     void getPlaceImage(input).then((result) => {
       if (version !== versionRef.current) return;
-      setUrl(preferJpegPngImageUrl(result.url) ?? result.url);
+      setUrl(resolvePlaceImageUrl(result.url) ?? result.url);
       setSource(result.source);
       setLoading(false);
     });

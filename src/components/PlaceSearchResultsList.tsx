@@ -1,5 +1,7 @@
 import { Loader2, MapPin } from "lucide-react";
+import { SafeImage } from "@/components/media/SafeImage";
 import { useI18n } from "@/hooks/use-i18n";
+import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { cn } from "@/lib/utils";
 import type { PlaceSearchResultItem } from "@/components/PlaceSearchPanel";
 
@@ -50,8 +52,8 @@ export function PlaceSearchResultsList({
             className="flex w-full items-start gap-2 rounded-xl px-3 py-3 text-left transition hover:bg-secondary/80 active:bg-secondary disabled:opacity-60"
           >
             {s.photoUrl ? (
-              <img
-                src={s.photoUrl}
+              <SafeImage
+                src={resolvePlaceImageUrl(s.photoUrl, { maxWidth: 120 }) ?? undefined}
                 alt=""
                 className="mt-0.5 h-10 w-10 shrink-0 rounded-lg object-cover"
               />

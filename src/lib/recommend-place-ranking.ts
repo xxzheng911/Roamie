@@ -17,6 +17,8 @@ import {
   lateNightCategoryRankScore,
   shouldActivateLateNightSceneFlow,
 } from "@/lib/late-night-scene-recommendations";
+import type { PlusPreferenceRankingContext } from "@/lib/plus-preference-ranking";
+import { plusPreferenceRankPenalty } from "@/lib/plus-preference-ranking";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { weatherRankingBoost } from "@/lib/weather/weather-place-ranking";
 
@@ -60,6 +62,7 @@ export function rankRecommendationItem(
   at: Date,
   mood?: string | null,
   weather?: WeatherSummary | null,
+  plusCtx?: PlusPreferenceRankingContext | null,
 ): RankedRecommendation | null {
   const identity = { name: rec.name, type: rec.type };
   if (!isPlaceAvailableNow(hours, identity, { context: "now", at })) {
@@ -95,6 +98,10 @@ export function rankRecommendationItem(
   }
 
   rankScore += weatherRankingBoost(weather, `${rec.name} ${rec.type} ${rec.description}`);
+  rankScore += plusPreferenceRankPenalty(
+    { name: rec.name, primaryType: rec.type, types: rec.type ? [rec.type] : null },
+    plusCtx,
+  );
 
   return { rec, availability, rankScore };
 }
@@ -105,9 +112,10 @@ export function rankRecommendations(
   at: Date = new Date(),
   mood?: string | null,
   weather?: WeatherSummary | null,
+  plusCtx?: PlusPreferenceRankingContext | null,
 ): RankedRecommendation[] {
   return recs
-    .map((rec) => rankRecommendationItem(rec, hoursMap.get(rec.name) ?? {}, at, mood, weather))
+    .map((rec) => rankRecommendationItem(rec, hoursMap.get(rec.name) ?? {}, at, mood, weather, plusCtx))
     .filter((x): x is RankedRecommendation => x != null)
     .sort((a, b) => a.rankScore - b.rankScore);
 }

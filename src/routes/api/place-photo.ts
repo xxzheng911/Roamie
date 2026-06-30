@@ -29,11 +29,27 @@ export const Route = createFileRoute("/api/place-photo")({
             console.warn("[place-photo] upstream failed", res.status, photo);
             return new Response(null, { status: 502 });
           }
+          const body = await res.arrayBuffer();
           const contentType = res.headers.get("content-type") ?? "image/jpeg";
-          if (contentType.includes("webp")) {
+          const isWebpBody =
+            body.byteLength >= 12 &&
+            (() => {
+              const bytes = new Uint8Array(body, 0, 12);
+              return (
+                bytes[0] === 0x52 &&
+                bytes[1] === 0x49 &&
+                bytes[2] === 0x46 &&
+                bytes[3] === 0x46 &&
+                bytes[8] === 0x57 &&
+                bytes[9] === 0x45 &&
+                bytes[10] === 0x42 &&
+                bytes[11] === 0x50
+              );
+            })();
+          if (contentType.includes("webp") || isWebpBody) {
+            console.warn("[place-photo] rejected webp upstream", photo);
             return new Response(null, { status: 415 });
           }
-          const body = await res.arrayBuffer();
           return new Response(body, {
             status: 200,
             headers: {

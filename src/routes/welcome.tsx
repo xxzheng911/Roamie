@@ -5,8 +5,8 @@ import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
 import { useAccessOptional } from "@/hooks/use-access";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
-import { forceFreeMode, forcePlusMode, applyMockSubscription } from "@/lib/access/dev-actions";
 import { markIntroCompleted } from "@/lib/plan-tier";
+import { applyLocalMockPlanTier, syncMockPlanTierToProfile } from "@/lib/plan-tier/sync-mock-tier";
 import {
   loadOnboardingState,
   isOnboardingCompletedSync,
@@ -96,8 +96,8 @@ function Welcome() {
           if (access) {
             access.enablePlusTestMode();
           } else {
-            applyMockSubscription("plus");
-            forcePlusMode();
+            applyLocalMockPlanTier("plus");
+            void syncMockPlanTierToProfile("plus");
           }
         } else {
           void openSubscriptionManagement();
@@ -105,8 +105,8 @@ function Welcome() {
       } else if (access) {
         access.disablePlusTestMode();
       } else {
-        applyMockSubscription("free");
-        forceFreeMode();
+        applyLocalMockPlanTier("free");
+        void syncMockPlanTierToProfile("free");
       }
 
       await markIntroCompleted(tier);

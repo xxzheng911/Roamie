@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useEffect, useRef } from "react";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { AvatarProvider } from "@/hooks/use-avatar";
 import { CoverProvider } from "@/hooks/use-cover";
@@ -15,6 +16,7 @@ import {
   readBrowserPathname,
   shouldUseLightStartupShell,
 } from "@/lib/startup-path";
+import { hydrateAppBootCachesAsync, resetAppBootCachesForUserChange } from "@/lib/app-boot-cache";
 
 type Props = { children: ReactNode };
 
@@ -50,6 +52,23 @@ function ProviderGate({ children }: { children: ReactNode }) {
   return <AuthenticatedShellProviders>{children}</AuthenticatedShellProviders>;
 }
 
+function BootCacheHydrator() {
+  const { user, loading } = useAuth();
+  const lastUserIdRef = useRef<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (loading) return;
+    const userId = user?.id ?? null;
+    if (lastUserIdRef.current !== undefined && lastUserIdRef.current !== userId) {
+      resetAppBootCachesForUserChange();
+    }
+    lastUserIdRef.current = userId;
+    void hydrateAppBootCachesAsync(userId);
+  }, [loading, user?.id]);
+
+  return null;
+}
+
 /**
  * Root provider composition — single place to add global context.
  * Existing hooks (use-auth, use-i18n) remain; migrate gradually to /providers.
@@ -70,6 +89,7 @@ export function AppProviders({ children }: Props) {
       <AnalyticsProvider>
         <AuthProvider>
           <I18nProvider>
+            <BootCacheHydrator />
             <ProviderGate>
               <AvatarProvider>
                 <CoverProvider>{children}</CoverProvider>

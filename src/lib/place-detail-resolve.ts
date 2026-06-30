@@ -6,6 +6,7 @@ import {
 } from "@/lib/place-detail-handoff";
 import { buildPlaceRecommendationReason } from "@/lib/build-place-recommendation-reason";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { preferJpegPngImageUrl, sanitizePlaceImageUrl } from "@/lib/safe-image-url";
 import type { Locale } from "@/lib/i18n/types";
 import {
   resolvePlaceOpeningDisplay,
@@ -89,7 +90,7 @@ export function dedupePlaceImageUrls(urls: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of urls) {
-    const url = raw?.trim();
+    const url = preferJpegPngImageUrl(raw?.trim());
     if (!url) continue;
     const ref = extractGooglePhotoReference(url);
     const key = (ref ?? url.split("?")[0] ?? url).toLowerCase();
@@ -127,13 +128,15 @@ export function buildPlaceImageUrls(place: PlaceImageSources): string[] {
     return dedupePlaceImageUrls(fromNames);
   }
   if (cover) {
-    return dedupePlaceImageUrls([cover]);
+    return dedupePlaceImageUrls([sanitizePlaceImageUrl(cover, { maxWidth: 800 })]);
   }
   if (generated) {
-    return dedupePlaceImageUrls([generated]);
+    return dedupePlaceImageUrls([sanitizePlaceImageUrl(generated, { maxWidth: 800 })]);
   }
   return dedupePlaceImageUrls([
-    getRoamieDefaultImage(place.categoryId ?? place.primaryType ?? undefined),
+    sanitizePlaceImageUrl(
+      getRoamieDefaultImage(place.categoryId ?? place.primaryType ?? undefined),
+    ),
   ]);
 }
 

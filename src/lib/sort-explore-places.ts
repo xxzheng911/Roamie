@@ -1,4 +1,8 @@
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
+import {
+  buildPlusPreferenceRankingContext,
+  scorePlusPreferenceMatch,
+} from "@/lib/plus-preference-ranking";
 import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 import { distanceMeters } from "@/lib/map-explore";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -44,27 +48,8 @@ function interestBoost(
   place: SortablePlace,
   profile: UserProfileForReason | null | undefined,
 ): number {
-  if (!profile?.onboarded) return 0;
-  const blob = [
-    profile.travelStyle ?? "",
-    profile.personalityType ?? "",
-    profile.personalitySummary ?? "",
-    ...(profile.interests ?? []),
-  ]
-    .join(" ")
-    .toLowerCase();
-  let boost = 0;
-  if (/美食|吃/i.test(blob) && place.openStatus === "open") boost += 0.05;
-  if (/逛|購物/i.test(blob)) boost += 0.02;
-  if (place.isSavedFavorite) boost += 0.08;
-
-  if (profile.pace === "slow") boost += 0.04;
-  if (profile.pace === "active") boost += 0.02;
-  if (profile.vibe === "quiet") boost += 0.03;
-  if (profile.vibe === "lively") boost += 0.02;
-  if (profile.budgetMode === "budget") boost += 0.02;
-
-  return boost;
+  const ctx = buildPlusPreferenceRankingContext({ profile });
+  return scorePlusPreferenceMatch(place, ctx);
 }
 
 function distanceFromOrigin(place: SortablePlace, origin: { lat: number; lng: number }): number {
@@ -108,7 +93,18 @@ export function sortExplorePlaces<T extends SortablePlace>(
     if (categoryId === "food" || categoryId === "night") {
       if (ratingA !== ratingB) return ratingB - ratingA;
       if (countA !== countB) return countB - countA;
-      return distanceFromOrigin(a, origin) - distanceFromOrigin(b, origin);
+      const distFoodA = distanceFromOrigin(a, origin);
+      const distFoodB = distanceFromOrigin(b, origin);
+      if (distFoodA !== distFoodB) return distFoodA - distFoodB;
+
+      const plusFoodA = interestBoost(a, profile);
+      const plusFoodB = interestBoost(b, profile);
+      if (plusFoodA !== plusFoodB) return plusFoodB - plusFoodA;
+
+      const boostFoodA = weatherRankingBoost(weather, placeTextForWeather(a));
+      const boostFoodB = weatherRankingBoost(weather, placeTextForWeather(b));
+      if (boostFoodA !== boostFoodB) return boostFoodB - boostFoodA;
+      return 0;
     }
 
     const distA = distanceFromOrigin(a, origin);
@@ -118,8 +114,12 @@ export function sortExplorePlaces<T extends SortablePlace>(
     if (ratingA !== ratingB) return ratingB - ratingA;
     if (countA !== countB) return countB - countA;
 
-    const boostA = interestBoost(a, profile) + weatherRankingBoost(weather, placeTextForWeather(a));
-    const boostB = interestBoost(b, profile) + weatherRankingBoost(weather, placeTextForWeather(b));
+    const plusA = interestBoost(a, profile);
+    const plusB = interestBoost(b, profile);
+    if (plusA !== plusB) return plusB - plusA;
+
+    const boostA = weatherRankingBoost(weather, placeTextForWeather(a));
+    const boostB = weatherRankingBoost(weather, placeTextForWeather(b));
     if (boostA !== boostB) return boostB - boostA;
 
     return 0;

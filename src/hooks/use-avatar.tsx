@@ -12,6 +12,7 @@ import { getUserProfile } from "@/lib/profile-storage";
 import { AVATAR_UPDATED_EVENT, type AvatarUpdatedDetail } from "@/lib/avatar-events";
 import { isSameMediaUrl, withCacheBust } from "@/lib/media-display-url";
 import { readProfileSessionCache } from "@/lib/profile-session-cache";
+import { readPersistedAvatarUrl } from "@/lib/profile-persisted-cache";
 import { shouldUseLightStartupShell, readBrowserPathname } from "@/lib/startup-path";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -29,7 +30,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   const userId = user?.id;
   const [avatarUrl, setAvatarUrl] = useState<string | null>(
-    () => readProfileSessionCache(userId)?.avatarUrl ?? null,
+    () => readProfileSessionCache(userId)?.avatarUrl ?? readPersistedAvatarUrl(userId) ?? null,
   );
   const [avatarRevision, setAvatarRevision] = useState(0);
   const [preview, setPreviewState] = useState<string | null>(null);
@@ -66,8 +67,13 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!userId) return;
     const cached = readProfileSessionCache(userId);
-    if (cached) {
+    if (cached?.avatarUrl) {
       setAvatarUrl((prev) => (isSameMediaUrl(prev, cached.avatarUrl) ? prev : cached.avatarUrl));
+      return;
+    }
+    const persisted = readPersistedAvatarUrl(userId);
+    if (persisted) {
+      setAvatarUrl((prev) => (isSameMediaUrl(prev, persisted) ? prev : persisted));
     }
   }, [userId]);
 
@@ -94,7 +100,6 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (skipProfileFetch) return;
-    if (readProfileSessionCache(userId)) return;
     void refresh();
   }, [refresh, skipProfileFetch, userId]);
 

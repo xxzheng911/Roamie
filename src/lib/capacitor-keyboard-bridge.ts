@@ -1,5 +1,6 @@
 import { runWhenCapacitorBridgeReady } from "@/lib/capacitor-bridge-ready";
 import { isCapacitorNativeShell } from "@/lib/chat-keyboard-layout";
+import { logPerfKeyboardListener } from "@/lib/app-perf";
 
 export type CapacitorKeyboardHandlers = {
   onShow: (keyboardHeight: number) => void;
@@ -13,7 +14,7 @@ type Subscriber = {
 
 let nextSubscriberId = 1;
 const subscribers = new Map<number, Subscriber>();
-let removeNativeListeners: (() => void) | undefined;
+let nativeListenersInstalled = false;
 let installStarted = false;
 
 function dispatchShow(height: number): void {
@@ -28,19 +29,18 @@ function dispatchHide(): void {
   }
 }
 
-function teardownNativeListeners(): void {
-  removeNativeListeners?.();
-  removeNativeListeners = undefined;
-  installStarted = false;
+/** App 啟動時預先安裝 Capacitor Keyboard listener（避免切到聊聊頁才洗版 addListener） */
+export function bootstrapCapacitorKeyboardBridge(): void {
+  ensureNativeListeners();
 }
 
 function ensureNativeListeners(): void {
   if (!isCapacitorNativeShell()) return;
-  if (installStarted) return;
+  if (nativeListenersInstalled || installStarted) return;
   installStarted = true;
 
   void runWhenCapacitorBridgeReady("capacitor-keyboard-bridge", async () => {
-    if (subscribers.size === 0) {
+    if (nativeListenersInstalled) {
       installStarted = false;
       return;
     }
@@ -56,16 +56,17 @@ function ensureNativeListeners(): void {
     const hideWill = Keyboard.addListener("keyboardWillHide", onHide);
     const hideDid = Keyboard.addListener("keyboardDidHide", onHide);
 
-    removeNativeListeners = () => {
-      void showWill.then((s) => s.remove());
-      void showDid.then((s) => s.remove());
-      void hideWill.then((s) => s.remove());
-      void hideDid.then((s) => s.remove());
-    };
+    nativeListenersInstalled = true;
+    installStarted = false;
+    logPerfKeyboardListener("add", { count: 4, subscribers: subscribers.size });
+
+    void Promise.all([showWill, showDid, hideWill, hideDid]).catch((error) => {
+      console.warn("[capacitor-keyboard-bridge] listener install failed", error);
+    });
   });
 }
 
-/** 全 app 共用一組 Capacitor Keyboard listener；tab 切換只 subscribe / unsubscribe */
+/** 全 app 共用一組 Capacitor Keyboard listener；tab 切換只 subscribe / unsubscribe handler */
 export function subscribeCapacitorKeyboard(handlers: CapacitorKeyboardHandlers): () => void {
   const id = nextSubscriberId++;
   subscribers.set(id, { id, handlers });
@@ -73,8 +74,6 @@ export function subscribeCapacitorKeyboard(handlers: CapacitorKeyboardHandlers):
 
   return () => {
     subscribers.delete(id);
-    if (subscribers.size === 0) {
-      teardownNativeListeners();
-    }
+    logPerfKeyboardListener("remove", { count: subscribers.size });
   };
 }

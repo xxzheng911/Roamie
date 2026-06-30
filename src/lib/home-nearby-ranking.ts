@@ -1,8 +1,11 @@
 import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 import { distanceMeters } from "@/lib/geo-distance";
+import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import {
-  isExploreJapanFoodContext,
-  sortJapanFoodPlaces,
+  buildPlusPreferenceRankingContext,
+  scorePlusPreferenceMatch,
+} from "@/lib/plus-preference-ranking";
+import {
   type TabelogRankingCache,
 } from "@/lib/tabelog-reference";
 import {
@@ -17,6 +20,7 @@ import {
 import { classifyWeatherScene } from "@/lib/weather-scene";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { weatherRankingBoost } from "@/lib/weather/weather-place-ranking";
+import { sortExplorePlaces } from "@/lib/sort-explore-places";
 
 export type HomeTimePeriod = "day" | "late_night";
 
@@ -56,7 +60,33 @@ type RankablePlace = {
   lat?: number | null;
   lng?: number | null;
   categoryId?: string | null;
+  isSavedFavorite?: boolean;
 };
+
+export type PlusRankingSortOptions = {
+  reasonProfile?: UserProfileForReason | null;
+  savedPlaces?: Array<{ name: string; category?: string | null }>;
+  explicitAvoidKeywords?: string[];
+  explicitPreferKeywords?: string[];
+  mood?: string | null;
+  setting?: string | null;
+};
+
+function plusPreferenceBoost(
+  place: RankablePlace,
+  plus?: PlusRankingSortOptions | null,
+): number {
+  if (!plus?.reasonProfile) return 0;
+  const ctx = buildPlusPreferenceRankingContext({
+    profile: plus.reasonProfile,
+    savedPlaces: plus.savedPlaces,
+    explicitAvoidKeywords: plus.explicitAvoidKeywords,
+    explicitPreferKeywords: plus.explicitPreferKeywords,
+    mood: plus.mood,
+    setting: plus.setting,
+  });
+  return scorePlusPreferenceMatch(place, ctx);
+}
 
 function ratingTier(rating: number | null | undefined, reviews: number | null | undefined): number {
   if ((rating ?? 0) <= 0 && (reviews ?? 0) <= 0) return 3;
@@ -103,6 +133,7 @@ export function sortHomeNearbyPlacesWithContext<T extends RankablePlace>(
     at?: Date;
     timeZone?: string;
     period?: HomeTimePeriod;
+    plus?: PlusRankingSortOptions | null;
   },
 ): T[] {
   const at = options?.at ?? new Date();
@@ -141,6 +172,10 @@ export function sortHomeNearbyPlacesWithContext<T extends RankablePlace>(
         : Number.POSITIVE_INFINITY;
     if (distA !== distB) return distA - distB;
 
+    const plusA = plusPreferenceBoost(a, options?.plus);
+    const plusB = plusPreferenceBoost(b, options?.plus);
+    if (plusA !== plusB) return plusB - plusA;
+
     const photoA = a.photoName ? 1 : 0;
     const photoB = b.photoName ? 1 : 0;
     if (photoA !== photoB) return photoB - photoA;
@@ -154,6 +189,10 @@ export type ExploreCategorySortOptions = {
   country?: string | null;
   cityLabel?: string | null;
   tabelogCache?: TabelogRankingCache | null;
+  reasonProfile?: UserProfileForReason | null;
+  savedPlaces?: Array<{ name: string; category?: string | null }>;
+  weather?: WeatherSummary | null;
+  plus?: PlusRankingSortOptions | null;
 };
 
 export function sortExploreCategoryPlaces<T extends RankablePlace>(
@@ -162,68 +201,25 @@ export function sortExploreCategoryPlaces<T extends RankablePlace>(
   categoryId: string,
   sortOptions?: ExploreCategorySortOptions,
 ): T[] {
-  if (
-    categoryId === "food" &&
-    isExploreJapanFoodContext({
+  const plus: PlusRankingSortOptions | null =
+    sortOptions?.plus ??
+    (sortOptions?.reasonProfile
+      ? {
+          reasonProfile: sortOptions.reasonProfile,
+          savedPlaces: sortOptions.savedPlaces,
+        }
+      : null);
+
+  return sortExplorePlaces(
+    places,
+    origin,
+    sortOptions?.reasonProfile ?? plus?.reasonProfile,
+    sortOptions?.weather,
+    categoryId,
+    {
       country: sortOptions?.country,
       cityLabel: sortOptions?.cityLabel,
-      categoryId: "food",
-    })
-  ) {
-    return sortJapanFoodPlaces(places, origin, sortOptions?.tabelogCache ?? null);
-  }
-
-  if (categoryId === "food") {
-    return [...places].sort((a, b) => {
-      const openA = openStatusSortRank(a.openStatus);
-      const openB = openStatusSortRank(b.openStatus);
-      if (openA !== openB) return openA - openB;
-
-      const ratingA = a.rating ?? 0;
-      const ratingB = b.rating ?? 0;
-      if (ratingA !== ratingB) return ratingB - ratingA;
-
-      const countA = a.userRatingCount ?? 0;
-      const countB = b.userRatingCount ?? 0;
-      if (countA !== countB) return countB - countA;
-
-      const distA =
-        a.lat != null && a.lng != null
-          ? distanceMeters(origin, { lat: a.lat, lng: a.lng })
-          : Number.POSITIVE_INFINITY;
-      const distB =
-        b.lat != null && b.lng != null
-          ? distanceMeters(origin, { lat: b.lat, lng: b.lng })
-          : Number.POSITIVE_INFINITY;
-      return distA - distB;
-    });
-  }
-
-  if (categoryId === "night") {
-    return [...places].sort((a, b) => {
-      const openA = openStatusSortRank(a.openStatus);
-      const openB = openStatusSortRank(b.openStatus);
-      if (openA !== openB) return openA - openB;
-
-      const ratingA = a.rating ?? 0;
-      const ratingB = b.rating ?? 0;
-      if (ratingA !== ratingB) return ratingB - ratingA;
-
-      const countA = a.userRatingCount ?? 0;
-      const countB = b.userRatingCount ?? 0;
-      if (countA !== countB) return countB - countA;
-
-      const distA =
-        a.lat != null && a.lng != null
-          ? distanceMeters(origin, { lat: a.lat, lng: a.lng })
-          : Number.POSITIVE_INFINITY;
-      const distB =
-        b.lat != null && b.lng != null
-          ? distanceMeters(origin, { lat: b.lat, lng: b.lng })
-          : Number.POSITIVE_INFINITY;
-      return distA - distB;
-    });
-  }
-
-  return sortHomeNearbyPlacesWithContext(places, origin);
+      tabelogCache: sortOptions?.tabelogCache,
+    },
+  );
 }

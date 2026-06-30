@@ -7,6 +7,8 @@ import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { SafeImage } from "@/components/media/SafeImage";
+import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { filterRecommendationItemsForDisplay } from "@/lib/recommend-place-ranking";
 import {
   logChatUiReceivedCards,
@@ -210,6 +212,10 @@ export function RoamieResponseView({
               rating?: number | null;
             };
             const photoUrl = ext.photoName ? buildPlacePhotoUrl(ext.photoName, 400) : null;
+            const photoFallback = getRoamieDefaultImage(
+              (ext as { category?: string; primaryType?: string }).category ??
+                (ext as { primaryType?: string }).primaryType,
+            );
 
             return (
               <article
@@ -238,11 +244,17 @@ export function RoamieResponseView({
                     : ""
                 } ${clickable ? "cursor-pointer active:scale-[0.99]" : ""}`}
               >
-                {photoUrl && (
+                {photoUrl ? (
                   <div className="-mx-3 -mt-3 mb-3 aspect-[16/10] overflow-hidden bg-secondary">
-                    <img src={photoUrl} alt="" className="h-full w-full object-cover" loading="lazy" />
+                    <SafeImage
+                      src={photoUrl}
+                      fallbackSrc={photoFallback}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
                   </div>
-                )}
+                ) : null}
                 <div className="flex items-start justify-between gap-2">
                   <h4
                     className={`text-[15px] font-medium leading-snug ${

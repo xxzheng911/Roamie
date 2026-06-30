@@ -54,7 +54,11 @@ import { useAccess } from "@/hooks/use-access";
 import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
 import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
 import { getUserProfile } from "@/lib/profile-storage";
-import { getPreferences } from "@/lib/preferences-storage";
+import { getPreferences, readCachedPreferencesSync, isPreferencesRemoteHydrated } from "@/lib/preferences-storage";
+import { getTravelPrefStatusSync, mergePreferencesWithTravelPrefStatus } from "@/lib/travel-pref-status";
+import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
+import { isHomeRouteVisible } from "@/lib/home-route-active";
+import { logPerfEffectRun } from "@/lib/app-perf";
 import { buildDailyPrepAdvice } from "@/lib/recommendation/daily-prep-advice";
 import { HomeOutfitCard } from "@/components/home/HomeOutfitCard";
 import { pickToPlaceDetailHandoff, setPlaceDetailHandoff } from "@/lib/place-detail-handoff";
@@ -122,9 +126,15 @@ function Home() {
     [t],
   );
   const selectedMoodLabel = selectedMood ? t(`home.moods.${selectedMood}`) : null;
+  const homeChatSession = useMemo(() => loadChatSession(), []);
   const [aiLoading, setAiLoading] = useState(false);
   const [latestTrip, setLatestTrip] = useState<CoreTrip | null>(null);
-  const [prefs, setPrefs] = useState<Awaited<ReturnType<typeof getPreferences>> | null>(null);
+  const [prefs, setPrefs] = useState<Awaited<ReturnType<typeof getPreferences>> | null>(() => {
+    const status = mergePreferencesWithTravelPrefStatus(readCachedPreferencesSync());
+    if (status.onboarded) return status;
+    const cached = readCachedPreferencesSync();
+    return Object.keys(cached).length > 0 ? cached : null;
+  });
   const [savedPlaces, setSavedPlaces] = useState<Awaited<ReturnType<typeof listPlaces>>>([]);
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [saveBusyId, setSaveBusyId] = useState<string | null>(null);
@@ -158,10 +168,72 @@ function Home() {
     setSelectedMood(null);
   }, []);
 
+  const prefsHydratedRef = useRef(Boolean(prefs));
+
+  useEffect(() => {
+    if (prefsHydratedRef.current && prefs?.onboarded) {
+      return;
+    }
+    if (isPreferencesRemoteHydrated()) {
+      const cached = mergePreferencesWithTravelPrefStatus(readCachedPreferencesSync());
+      if (Object.keys(cached).length > 0) {
+        setPrefs((prev) => prev ?? cached);
+        prefsHydratedRef.current = true;
+      }
+      return;
+    }
+    const applyPrefs = (next: Awaited<ReturnType<typeof getPreferences>>) => {
+      const merged = mergePreferencesWithTravelPrefStatus(next);
+      setPrefs((prev) => {
+        if (
+          prev &&
+          prev.onboarded === merged.onboarded &&
+          prev.personalityType === merged.personalityType &&
+          prev.pace === merged.pace &&
+          prev.vibe === merged.vibe &&
+          prev.budgetMode === merged.budgetMode
+        ) {
+          return prev;
+        }
+        return merged;
+      });
+    };
+    const onPrefs = (event: Event) => {
+      const detail = (event as CustomEvent<Awaited<ReturnType<typeof getPreferences>>>).detail;
+      if (detail && typeof detail === "object") {
+        applyPrefs(detail);
+        return;
+      }
+      void getPreferences()
+        .then((p) => applyPrefs(p))
+        .catch(() => {});
+    };
+    void getPreferences()
+      .then((p) => {
+        applyPrefs(p);
+        prefsHydratedRef.current = true;
+      })
+      .catch(() => {});
+    window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
+    return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
+  }, []);
+
+  const applyNearbyPicksIfChanged = useCallback((next: HomeNearbyPick[]) => {
+    setNearbyPicks((prev) => {
+      if (
+        prev.length === next.length &&
+        prev.every((pick, index) => pick.id === next[index]?.id)
+      ) {
+        return prev;
+      }
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const syncHomeMoodUi = () => {
-      const path = (router.state.location.pathname || "/").replace(/\/+$/, "") || "/";
-      if (path === "/") resetHomeMoodUi();
+      if (!isHomeRouteVisible()) return;
+      resetHomeMoodUi();
     };
     syncHomeMoodUi();
     const unsub = router.subscribe("onResolved", syncHomeMoodUi);
@@ -210,8 +282,10 @@ function Home() {
       if (cached.length > 0 && cachedLoadKey === loadKey) {
         setNearbyPicks(cached);
         hasNearbyPicksRef.current = true;
+      } else if (cached.length > 0) {
+        setNearbyPicks(cached);
+        hasNearbyPicksRef.current = true;
       } else if (cached.length === 0 && cachedLoadKey && cachedLoadKey !== loadKey) {
-        setNearbyPicks([]);
         hasNearbyPicksRef.current = false;
       }
       setNearbyLoading(false);
@@ -263,10 +337,12 @@ function Home() {
             return [] as Awaited<ReturnType<typeof listPlaces>>;
           }),
         ]);
-        const reasonProfile = userProfileForReasonFrom(profile?.prefs ?? prefs, {
-          travelStyle: profile?.travelStyle,
-          personalityType: profile?.personalityType,
-          personalitySummary: profile?.personalitySummary,
+        const mergedPrefs = mergePreferencesWithTravelPrefStatus(prefs);
+        const travelPrefStatus = getTravelPrefStatusSync();
+        const reasonProfile = userProfileForReasonFrom(profile?.prefs ?? mergedPrefs, {
+          travelStyle: travelPrefStatus.travelStyleName || profile?.travelStyle,
+          personalityType: travelPrefStatus.travelStyleName || profile?.personalityType,
+          personalitySummary: travelPrefStatus.personalitySummary || profile?.personalitySummary,
           aiPreferences: profile?.aiPreferences,
           hasPlusAccess,
         });
@@ -286,7 +362,7 @@ function Home() {
         setNearbyPicks(picks);
         writeHomeSessionNearbyPicks(picks, loadKey);
         hasNearbyPicksRef.current = picks.length > 0;
-        setPrefs(prefs);
+        setPrefs(mergedPrefs);
         setSavedPlaces(saved);
         setSavedNames(new Set(saved.map((s) => s.name)));
       } catch (e) {
@@ -357,6 +433,8 @@ function Home() {
       : null;
 
   useLayoutEffect(() => {
+    if (!isHomeRouteVisible()) return;
+
     const prev = prevNearbyEffectDepsRef.current;
     const loadKeyChanged = prev.loadKey !== nearbyLoadKey;
     const becameReady = !!effectiveLocation?.isReadyForPlaces && !prev.ready;
@@ -370,6 +448,12 @@ function Home() {
     if (!loadKeyChanged && !becameReady) {
       return;
     }
+
+    logPerfEffectRun("homeNearbyEffect", {
+      route: "/",
+      reason: loadKeyChanged ? "load_key_changed" : "became_ready",
+      loadKey: nearbyLoadKey,
+    });
 
     const sessionLoadKey = readHomeSessionNearbyLoadKey();
     if (
@@ -386,14 +470,14 @@ function Home() {
       });
       const moduleCached = readHomeNearbyResultsCache<HomeNearbyPick>(nearbyLoadKey);
       if (moduleCached?.length) {
-        setNearbyPicks(moduleCached);
+        applyNearbyPicksIfChanged(moduleCached);
         hasNearbyPicksRef.current = true;
       } else {
         const cached = sanitizeHomeNearbyPicksForDisplay(readHomeSessionNearbyPicks(), {
           logDrop: false,
         });
         if (cached.length > 0 && sessionLoadKey === nearbyLoadKey) {
-          setNearbyPicks(cached);
+          applyNearbyPicksIfChanged(cached);
           hasNearbyPicksRef.current = true;
         }
       }
@@ -403,7 +487,7 @@ function Home() {
 
     console.info("[HOME_NEARBY_EFFECT_FETCH]", { loadKey: nearbyLoadKey, becameReady, loadKeyChanged });
     void loadNearbyPicks("nearby_effect", effectiveLocation);
-  }, [nearbyLoadKey, effectiveLocation, effectiveLocation?.isReadyForPlaces, loadNearbyPicks]);
+  }, [nearbyLoadKey, effectiveLocation, effectiveLocation?.isReadyForPlaces, loadNearbyPicks, applyNearbyPicksIfChanged]);
 
   const handleNearbyPick = (pick: HomeNearbyPick) => {
     logNearbyPlaceCardPressed(pick.id, pick.name);
@@ -713,6 +797,7 @@ function Home() {
         nearbyPicks={nearbyPicks}
         selectedMood={selectedMoodLabel}
         latestTripTitle={latestTrip?.displayTitle ?? null}
+        chatSession={homeChatSession}
       />
     </div>
   );

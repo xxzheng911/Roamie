@@ -18,6 +18,7 @@ export type UserProfileForReason = {
   onboarded?: boolean;
   pace?: TravelPreferences["pace"];
   vibe?: TravelPreferences["vibe"];
+  avoid?: string[];
   budgetMode?: BudgetMode;
   interests?: string[];
   travelStyle?: string;
@@ -563,6 +564,7 @@ export function userProfileForReasonFrom(
     onboarded: plusPersonalized,
     pace: plusPersonalized ? safe.pace : undefined,
     vibe: plusPersonalized ? safe.vibe : undefined,
+    avoid: plusPersonalized ? safe.avoid : undefined,
     budgetMode: plusPersonalized ? resolveBudgetMode(safe) : undefined,
     interests: plusPersonalized ? safe.interests : undefined,
     travelStyle: plusPersonalized ? extras?.travelStyle : undefined,

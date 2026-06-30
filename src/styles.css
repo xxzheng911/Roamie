@@ -984,6 +984,10 @@
   transform: scaleX(-1);
 }
 
+.roamie-mascot-figure--quiz {
+  pointer-events: none;
+}
+
 .quiz-mascot {
   display: flex;
   justify-content: center;
@@ -1358,6 +1362,32 @@ html.place-route-active main.app-scroll > div {
 
 .welcome-tier-scroll {
   -webkit-overflow-scrolling: touch;
+}
+
+.travel-pref-quiz-page {
+  touch-action: manipulation;
+}
+
+.travel-pref-quiz-footer {
+  pointer-events: auto;
+  touch-action: manipulation;
+  isolation: isolate;
+}
+
+.travel-pref-quiz-scroll {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  position: relative;
+  z-index: 1;
+}
+
+.travel-pref-quiz-chrome {
+  pointer-events: auto;
+}
+
+html.travel-pref-quiz-active .mobile-frame-inner {
+  isolation: isolate;
 }
 
 .chat-page {

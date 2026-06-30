@@ -136,6 +136,7 @@ export function useMessengerChatLayout(params: {
   const userNearBottomRef = useRef(true);
   const prevKeyboardOpenRef = useRef(false);
   const lastScrollLogRef = useRef("");
+  const lastLayoutLogRef = useRef("");
 
   const applyKeyboardDomState = useCallback((keyboardOpen: boolean) => {
     document.documentElement.classList.toggle(CHAT_KEYBOARD_OPEN_CLASS, keyboardOpen);
@@ -236,6 +237,13 @@ export function useMessengerChatLayout(params: {
     }, 80);
   }, [recomputeLayout]);
 
+  const setNativeKeyboardHeightRef = useRef(setNativeKeyboardHeight);
+  setNativeKeyboardHeightRef.current = setNativeKeyboardHeight;
+  const clearNativeKeyboardHeightRef = useRef(clearNativeKeyboardHeight);
+  clearNativeKeyboardHeightRef.current = clearNativeKeyboardHeight;
+  const recomputeLayoutRef = useRef(recomputeLayout);
+  recomputeLayoutRef.current = recomputeLayout;
+
   const scrollToBottom = useCallback(
     (reason: MessengerScrollReason, opts?: { force?: boolean }) => {
       const messagesEl = messagesRef.current;
@@ -276,7 +284,7 @@ export function useMessengerChatLayout(params: {
 
   useEffect(() => {
     const onLayoutChange = () => {
-      recomputeLayout();
+      recomputeLayoutRef.current();
     };
 
     const roTargets = [
@@ -299,11 +307,11 @@ export function useMessengerChatLayout(params: {
           "[MESSENGER_KEYBOARD_SHOW]",
           `nativeKeyboardHeight=${Math.round(keyboardHeight)}`,
         );
-        setNativeKeyboardHeight(keyboardHeight);
+        setNativeKeyboardHeightRef.current(keyboardHeight);
       },
       onHide: () => {
         console.info("[MESSENGER_KEYBOARD_HIDE]");
-        clearNativeKeyboardHeight();
+        clearNativeKeyboardHeightRef.current();
       },
     });
 
@@ -319,7 +327,9 @@ export function useMessengerChatLayout(params: {
       document.documentElement.classList.remove(CHAT_KEYBOARD_OPEN_CLASS);
       document.documentElement.classList.remove("app-keyboard-open");
     };
-  }, [composerRef, headerRef, recomputeLayout, setNativeKeyboardHeight, clearNativeKeyboardHeight]);
+    // Mount once; refs forward latest layout/keyboard handlers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const messagesEl = messagesRef.current;
@@ -348,21 +358,22 @@ export function useMessengerChatLayout(params: {
   }, [metrics.messagesPaddingBottomPx, metrics.composerBottomPx, metrics.keyboardOpen, scrollToBottom]);
 
   useEffect(() => {
-    console.info(
-      "[MESSENGER_CHAT_LAYOUT]",
-      JSON.stringify({
-        viewportHeight: metrics.viewportHeightPx,
-        header: metrics.headerHeightPx,
-        composer: metrics.composerHeightPx,
-        bottomNav: metrics.bottomNavHeightPx,
-        safeAreaBottom: metrics.safeAreaBottomPx,
-        nativeKeyboardHeight: metrics.nativeKeyboardHeightPx,
-        visualViewportInset: metrics.visualViewportInsetPx,
-        messagesPaddingBottom: metrics.messagesPaddingBottomPx,
-        keyboardOpen: metrics.keyboardOpen,
-        composerBottom: metrics.composerBottomPx,
-      }),
-    );
+    if (!document.documentElement.classList.contains("chat-route-active")) return;
+    const payload = JSON.stringify({
+      viewportHeight: metrics.viewportHeightPx,
+      header: metrics.headerHeightPx,
+      composer: metrics.composerHeightPx,
+      bottomNav: metrics.bottomNavHeightPx,
+      safeAreaBottom: metrics.safeAreaBottomPx,
+      nativeKeyboardHeight: metrics.nativeKeyboardHeightPx,
+      visualViewportInset: metrics.visualViewportInsetPx,
+      messagesPaddingBottom: metrics.messagesPaddingBottomPx,
+      keyboardOpen: metrics.keyboardOpen,
+      composerBottom: metrics.composerBottomPx,
+    });
+    if (lastLayoutLogRef.current === payload) return;
+    lastLayoutLogRef.current = payload;
+    console.info("[MESSENGER_CHAT_LAYOUT]", payload);
   }, [metrics]);
 
   return {

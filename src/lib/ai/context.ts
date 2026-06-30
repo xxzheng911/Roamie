@@ -18,6 +18,7 @@ import { formatEmotionSignalsForPrompt } from "@/lib/ai/emotion-inference";
 import { formatSessionMemoryForPrompt } from "@/lib/ai/memory/session-memory";
 import { formatLongTermMemoryForPrompt } from "@/lib/ai/memory/long-term-memory";
 import { conversationStageLabel } from "@/lib/ai/conversation-stage";
+import { formatPlusPreferenceForAiPrompt } from "@/lib/plus-preference-ranking";
 
 export type RoamieLocation = {
   lat: number;
@@ -150,11 +151,30 @@ const budgetLabel: Record<string, string> = {
   high: "舒適",
 };
 
-export function formatPreferences(prefs?: TravelPreferences): string {
+export function formatPreferences(
+  prefs?: TravelPreferences,
+  opts?: {
+    planTier?: PlanTier;
+    travelStyle?: string;
+    personalityType?: string;
+    personalitySummary?: string;
+  },
+): string {
   if (!prefs) return "（尚未設定旅行偏好）";
-  if (!prefs.onboarded) {
-    return "（尚未完成旅行偏好測驗；可先依位置與天氣提供通用推薦，若使用者想更個人化可輕柔引導至偏好測驗）";
+  const isPlus = opts?.planTier === "plus";
+  if (!isPlus) {
+    return "（Free 模式：依位置、天氣與對話內容推薦，不使用旅行偏好測驗結果）";
   }
+  if (!prefs.onboarded) {
+    return "（Plus 尚未完成旅行偏好測驗；可先依位置、天氣與對話內容提供一般 Plus 推薦）";
+  }
+  const plusBlock = formatPlusPreferenceForAiPrompt(prefs, {
+    hasPlusAccess: true,
+    travelStyle: opts?.travelStyle,
+    personalityType: opts?.personalityType ?? prefs.personalityType,
+    personalitySummary: opts?.personalitySummary ?? prefs.personalitySummary,
+  });
+  if (plusBlock) return plusBlock;
   const parts: string[] = [];
   if (prefs.personalityType) parts.push(`旅行人格：${prefs.personalityType}`);
   if (prefs.pace) parts.push(`步調：${paceLabel[prefs.pace] ?? prefs.pace}`);
@@ -255,7 +275,13 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
   const lines = [
     formatTemporalWeatherBlock(ctx.weather, ctx.time),
     `【心情】${ctx.mood?.trim() || "（未指定，請從對話推測）"}`,
-    `【旅行偏好】${formatPreferences(ctx.preferences)}`,
+    `【旅行偏好】${formatPreferences(ctx.preferences, {
+      planTier: ctx.planTier,
+      travelStyle: ctx.longTermMemory?.travelStyle,
+      personalityType: ctx.longTermMemory?.personalityType ?? ctx.preferences?.personalityType,
+      personalitySummary:
+        ctx.longTermMemory?.personalitySummary ?? ctx.preferences?.personalitySummary,
+    })}`,
     `【位置】${formatLocation(ctx.location)}`,
     `【天氣摘要】${formatWeather(ctx.weather)}`,
   ];

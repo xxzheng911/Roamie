@@ -131,3 +131,10 @@ export async function resolveEffectivePlanTier(): Promise<PlanTier> {
   }
   return "free";
 }
+
+export {
+  applyLocalMockPlanTier,
+  applyMockPlanTier,
+  reconcileStaleTierLocks,
+  syncMockPlanTierToProfile,
+} from "./sync-mock-tier";

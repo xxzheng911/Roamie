@@ -4,6 +4,8 @@ import {
   resolveSavedPlaceCoverImage,
   resolveSavedPlaceCoverImageSync,
 } from "@/lib/saved-place-utils";
+import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
+import { SafeImage } from "@/components/media/SafeImage";
 import type { SavedPlace } from "@/lib/places-storage";
 
 type Props = {
@@ -13,15 +15,16 @@ type Props = {
 };
 
 export function SavedPlaceCoverThumb({ place, className, alt }: Props) {
-  const [src, setSrc] = useState(() => resolveSavedPlaceCoverImageSync(place, { photoWidth: 256 }));
+  const syncFallback = resolveSavedPlaceCoverImageSync(place, { photoWidth: 256 });
+  const [src, setSrc] = useState(() => preferJpegPngImageUrl(syncFallback));
 
   useEffect(() => {
     let cancelled = false;
-    const sync = resolveSavedPlaceCoverImageSync(place, { photoWidth: 256 });
+    const sync = preferJpegPngImageUrl(resolveSavedPlaceCoverImageSync(place, { photoWidth: 256 }));
     setSrc(sync);
 
     void resolveSavedPlaceCoverImage(place, { photoWidth: 256 }).then((url) => {
-      if (!cancelled && url) setSrc(url);
+      if (!cancelled) setSrc(preferJpegPngImageUrl(url));
     });
 
     return () => {
@@ -41,15 +44,12 @@ export function SavedPlaceCoverThumb({ place, className, alt }: Props) {
 
   return (
     <div className={className}>
-      <img
+      <SafeImage
         src={src}
+        fallbackSrc={syncFallback}
         alt={alt ?? place.name}
         className="h-full w-full object-cover"
         loading="lazy"
-        onError={() => {
-          const fallback = resolveSavedPlaceCoverImageSync(place, { photoWidth: 256 });
-          setSrc((current) => (current === fallback ? "" : fallback));
-        }}
       />
     </div>
   );

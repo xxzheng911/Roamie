@@ -7,6 +7,7 @@ import {
   resolveBudgetMode,
 } from "@/lib/preferences-storage";
 import type { LongTermMemorySnapshot } from "@/lib/ai/memory/types";
+import { getTravelPrefStatusSync } from "@/lib/travel-pref-status";
 
 const PACE_LABEL: Record<string, string> = {
   slow: "慢旅、留白多",
@@ -60,20 +61,28 @@ export async function buildLongTermMemory(userId: string): Promise<LongTermMemor
     .slice(0, 5)
     .map(([d]) => d);
 
-  const bm = resolveBudgetMode(prefs);
-  const traits = inferTraitsFromPrefs(prefs, savedPlaceCategories);
-  if (profile?.personalityType) traits.push(`旅行人格：${profile.personalityType}`);
+  const status = getTravelPrefStatusSync();
+  const quizActive = status.preferenceQuizCompleted;
+  const bm = resolveBudgetMode(status.preferenceQuizCompleted ? status.prefs : prefs);
+  const traits = quizActive ? inferTraitsFromPrefs(prefs, savedPlaceCategories) : [];
+  if (quizActive && status.travelStyleName) {
+    traits.push(`旅行人格：${status.travelStyleName}`);
+  }
 
   return {
     displayName: profile?.displayName,
-    travelStyle: profile?.travelStyle,
-    personalityType: profile?.personalityType,
-    personalitySummary: profile?.personalitySummary,
-    pace: prefs.pace ? PACE_LABEL[prefs.pace] : undefined,
-    vibe: prefs.vibe ? VIBE_LABEL[prefs.vibe] : undefined,
-    budgetLabel: prefs.onboarded ? BUDGET_MODE_LABELS[bm] : undefined,
-    avoid: prefs.avoid,
-    interests: prefs.interests,
+    travelStyle: quizActive ? status.travelStyleName || profile?.travelStyle : undefined,
+    personalityType: quizActive
+      ? status.travelStyleName || profile?.personalityType
+      : undefined,
+    personalitySummary: quizActive
+      ? status.personalitySummary || profile?.personalitySummary
+      : undefined,
+    pace: quizActive && prefs.pace ? PACE_LABEL[prefs.pace] : undefined,
+    vibe: quizActive && prefs.vibe ? VIBE_LABEL[prefs.vibe] : undefined,
+    budgetLabel: quizActive ? BUDGET_MODE_LABELS[bm] : undefined,
+    avoid: quizActive ? prefs.avoid : undefined,
+    interests: quizActive ? prefs.interests : undefined,
     savedPlaceNames,
     savedPlaceCategories,
     recentTripDestinations,

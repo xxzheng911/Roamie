@@ -1,5 +1,4 @@
-import { Loader2 } from "lucide-react";
-import { PlaceImage } from "@/components/media/PlaceImage";
+import { Loader2, MapPin } from "lucide-react";
 import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
 
 export type MapExploreSearchResultItem = TripStopSuggestion & {
@@ -16,7 +15,7 @@ type Props = {
   emptyMessage?: string;
 };
 
-/** 探索地圖搜尋：Autocomplete 結果列表（貼在搜尋列下方） */
+/** 探索地圖搜尋：Autocomplete 結果列表（不載入遠端圖，避免 WebP / 大量 request） */
 export function MapExploreSearchResults({
   open,
   results,
@@ -48,13 +47,8 @@ export function MapExploreSearchResults({
               onClick={() => onSelect(s)}
               className="flex w-full items-start gap-2 rounded-xl px-3 py-3 text-left transition hover:bg-secondary/80 active:bg-secondary disabled:opacity-60"
             >
-              <div className="mt-0.5 h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-secondary">
-                <PlaceImage
-                  name={s.label}
-                  primaryType={s.typeLabel ?? s.types?.[0]}
-                  initialUrl={null}
-                  className="h-full w-full"
-                />
+              <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-secondary">
+                <MapPin className="h-4 w-4 text-clay" aria-hidden />
               </div>
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium leading-snug">{s.label}</span>

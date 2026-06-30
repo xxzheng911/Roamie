@@ -4,6 +4,7 @@ import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
 import { searchPlaces, getPlaceDetails, type PlaceLite } from "@/services/placesService";
 import { fetchPlaceDetailsForScreenWithKey, type PlaceDetailsScreenResult } from "@/lib/places.functions";
 import { getGoogleMapsBrowserKey, buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -158,7 +159,9 @@ function mapDetailsToSearchCard(
     googleMapsUrl: item.googleMapsUrl,
     distanceLabel: opts.distanceLabel,
     displayCategory: identityDisplayLabel(resolvePlaceIdentity(place), place),
-    coverImageUrl: place.photoName ? (buildPlacePhotoUrl(place.photoName, 600) ?? undefined) : undefined,
+    coverImageUrl: place.photoName
+      ? (preferJpegPngImageUrl(buildPlacePhotoUrl(place.photoName, 600) ?? null) ?? undefined)
+      : undefined,
     isSelectedExplorePin: true,
   };
 }
@@ -225,8 +228,10 @@ export async function resolveExploreSelectedPlacePin(
     distanceLabel,
     isSelectedExplorePin: true,
     coverImageUrl:
-      card.coverImageUrl ??
-      (card.photoName ? (buildPlacePhotoUrl(card.photoName, 600) ?? undefined) : undefined),
+      preferJpegPngImageUrl(card.coverImageUrl ?? null) ??
+      (card.photoName
+        ? (preferJpegPngImageUrl(buildPlacePhotoUrl(card.photoName, 600) ?? null) ?? undefined)
+        : undefined),
   };
 }
 

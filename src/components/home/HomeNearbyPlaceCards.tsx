@@ -1,5 +1,7 @@
 import { Heart, Loader2, Plus, Star } from "lucide-react";
+import { PlaceCoverImage } from "@/components/media/PlaceCoverImage";
 import { PlaceImage } from "@/components/media/PlaceImage";
+import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
 import { placeOpeningStatusLabel } from "@/lib/normalized-opening-status";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
@@ -91,7 +93,7 @@ export function HomeNearbyPlaceCards({
     >
       {places.map((p, i) => {
         const img = p.coverImageUrl ?? p.generatedImageUrl ?? p.fallbackImageUrl;
-        const googlePhoto = img;
+        const safeCover = img ? resolvePlaceImageUrl(img, { maxWidth: 600 }) : null;
         const isLast = i === places.length - 1;
         const distance = canShowDistance ? distLabel(p, anchor) : "";
         const typeName = p.displayCategory ?? getExploreCategoryDisplayLabel(p);
@@ -127,13 +129,18 @@ export function HomeNearbyPlaceCards({
                     <Loader2 className="h-6 w-6 animate-spin text-cream" aria-hidden />
                   </div>
                 ) : null}
-                {googlePhoto ? (
-                  <img
-                    src={googlePhoto}
+                {safeCover || p.photoName ? (
+                  <PlaceCoverImage
+                    url={safeCover}
+                    photoName={p.photoName}
+                    placeId={p.id}
+                    name={p.name}
+                    primaryType={p.primaryType}
+                    types={p.types}
+                    categoryId={p.categoryId}
+                    maxWidth={600}
                     alt=""
-                    loading="lazy"
-                    draggable={false}
-                    className="absolute inset-0 h-full w-full object-cover"
+                    className="absolute inset-0"
                   />
                 ) : (
                   <PlaceImage

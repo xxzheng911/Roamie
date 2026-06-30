@@ -4,6 +4,7 @@ import {
   logGoogleMapsKeyLoadedOnce,
   readGoogleMapsKeyFromClientEnv,
 } from "@/lib/google-maps-key-resolve";
+import { buildPlacePhotoProxyUrl } from "@/lib/safe-image-url";
 
 const INVALID_KEY_MSG =
   "Google 地圖 API 金鑰格式不正確。請使用 Maps JavaScript API 的瀏覽器金鑰（通常以 AIza 開頭）。";
@@ -28,10 +29,8 @@ export function requireGoogleMapsBrowserKey(): string {
 }
 
 export function buildPlacePhotoUrl(photoName: string, maxWidth = 600): string | null {
-  if (!photoName?.trim()) return null;
-  const key = getGoogleMapsBrowserKey();
-  if (key && isValidGoogleMapsApiKey(key)) {
-    return `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${maxWidth}&key=${key}`;
-  }
-  return `/api/place-photo?photo=${encodeURIComponent(photoName)}&w=${maxWidth}`;
+  const normalized = photoName?.trim();
+  if (!normalized) return null;
+  // 永不直連 Google media（常回 WebP）；一律走 proxy URL（img 直接載入，不經 CapacitorHttp）
+  return buildPlacePhotoProxyUrl(normalized, maxWidth);
 }

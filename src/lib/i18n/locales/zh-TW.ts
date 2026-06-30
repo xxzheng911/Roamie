@@ -16,7 +16,7 @@ export const zhTW = {
     name: "顯示名稱",
     bio: "旅人介紹",
     bioPlaceholder: "例如：喜歡散步、咖啡和安靜角落",
-    travelStyle: "旅行與穿搭風格",
+    travelStyle: "旅行風格",
     travelStylePlaceholder: "例如：文青慢旅、韓系極簡、喜歡巷弄不趕路",
     cancel: "取消",
     apply: "套用",

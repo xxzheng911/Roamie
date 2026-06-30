@@ -1,5 +1,6 @@
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { sanitizePlaceImageUrl } from "@/lib/safe-image-url";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { setMapExploreHandoff } from "@/lib/map-explore-handoff";
 import {
@@ -47,7 +48,9 @@ export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): Ho
     reason: rec.reason?.trim() || rec.description?.trim() || "",
     categoryId,
     displayCategory: rec.type,
-    coverImageUrl: photoName ? (buildPlacePhotoUrl(photoName, 600) ?? undefined) : undefined,
+    coverImageUrl: photoName
+      ? sanitizePlaceImageUrl(buildPlacePhotoUrl(photoName, 600) ?? null, { maxWidth: 600 })
+      : undefined,
   };
 }
 

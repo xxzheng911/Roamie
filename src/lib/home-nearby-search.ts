@@ -450,6 +450,10 @@ async function loadHomeNearbyPicksInner(
     at,
     timeZone,
     period,
+    plus: {
+      reasonProfile: ctx.reasonProfile,
+      savedPlaces: ctx.saved.map((s) => ({ name: s.name, category: s.category })),
+    },
   });
 
   writeHomeNearbyResultsCache(cacheKey, sorted);

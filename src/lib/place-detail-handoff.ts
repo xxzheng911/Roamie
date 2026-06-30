@@ -1,5 +1,6 @@
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
+import { sanitizePlaceImageUrl } from "@/lib/safe-image-url";
 import type { NormalizedOpeningStatusValue } from "@/lib/normalized-opening-status";
 import {
   cachePlaceImages,
@@ -52,19 +53,22 @@ export function pickToPlaceDetailHandoff(pick: HomeNearbyPick): PlaceDetailHando
     (pick.lat != null && pick.lng != null ? latLngFallbackPlaceId(pick.lat, pick.lng) : "");
 
   const cached = isGooglePlaceId(placeId) ? readPlaceRuntimeCache(placeId) : null;
-  const googlePhoto =
-    pick.photoName ? (buildPlacePhotoUrl(pick.photoName, 800) ?? null) : null;
+  const googlePhoto = pick.photoName
+    ? sanitizePlaceImageUrl(buildPlacePhotoUrl(pick.photoName, 800), { maxWidth: 800 })
+    : null;
   const generatedImageUrl =
     pick.generatedImageUrl ??
     pick.fallbackImageUrl ??
     cached?.generatedImageUrl ??
     cached?.fallbackImageUrl ??
     null;
-  const photoUrl =
+  const photoUrl = sanitizePlaceImageUrl(
     googlePhoto ??
-    pick.coverImageUrl ??
-    cached?.coverImageUrl ??
-    generatedImageUrl;
+      pick.coverImageUrl ??
+      cached?.coverImageUrl ??
+      generatedImageUrl,
+    { maxWidth: 800 },
+  );
 
   if (isGooglePlaceId(placeId)) {
     cachePlaceImages(placeId, {

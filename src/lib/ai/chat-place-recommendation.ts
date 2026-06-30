@@ -53,10 +53,39 @@ import {
   logChatPlacesResponse,
   logChatPlacesError,
   logChatTextSearchRequest,
+  logChatPlacesRawCount,
 } from "@/lib/ai/chat-place-flow-log";
+import {
+  CHAT_NEARBY_RADIUS_STEPS_M,
+  CHAT_PLACE_DETAIL_NEARBY_RADIUS_STEPS_M,
+  filterPlacesByNearbyDistance,
+  maxDistanceKmForIntent,
+} from "@/lib/ai/chat-nearby-search";
+import {
+  logChatNearbyRequest,
+  logChatNearbyResponse,
+  logChatNearbyError,
+  buildPlaceDetailNearbySearchKey,
+  runPlaceDetailNearbySingleFlight,
+} from "@/lib/chat-place-context";
+import { filterPlacesByCafeGuard } from "@/lib/ai/chat-category-place-guard";
 import type { ChatPlaceSearchContext } from "@/lib/ai/chat-place-search-context";
-import { placesSearchContextPayload } from "@/lib/ai/chat-place-search-context";
-import { filterPlacesByDestinationGuard } from "@/lib/ai/chat-place-search-context";
+import {
+  filterPlacesByDestinationGuard,
+  placesSearchContextPayload,
+} from "@/lib/ai/chat-place-search-context";
+import {
+  buildExplicitAvoidKeywords,
+  buildExplicitPreferKeywords,
+  buildPlusPreferenceRankingContext,
+  plusPreferenceRankPenalty,
+  type PlusPreferenceRankingContext,
+} from "@/lib/plus-preference-ranking";
+import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
+import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
+import { getPreferences } from "@/lib/preferences-storage";
+import { getUserProfile } from "@/lib/profile-storage";
+import { listPlaces } from "@/lib/places-storage";
 
 export type PlaceSearchData = {
   query: string;
@@ -64,6 +93,7 @@ export type PlaceSearchData = {
   lng: number;
   mode: "nearby" | "text" | "multi";
   includedTypes?: string[];
+  radius?: number;
   locale?: Locale;
   placesCaller?: string;
   placesScreen?: "chat" | "home" | "explore" | "ai_recommend" | "itinerary" | "plan" | "place_detail" | "unknown";
@@ -82,17 +112,25 @@ export type PlaceSearchExtras = {
 
 const RECOMMENDATION_COUNT = 5;
 
-function searchConfigForIntent(
+function nearbySearchAttemptForIntent(
   intent: NearbyPlaceIntent,
   foodPreference?: string,
   context?: CanonicalTravelContext,
-): {
-  query: string;
-  mode: "nearby" | "text";
-  includedTypes?: string[];
-} {
+  userText?: string,
+  opts?: { placeDetailNearby?: boolean },
+): SearchAttempt {
+  if (opts?.placeDetailNearby) {
+    return placeDetailNearbySearchAttempts(intent)[0]!;
+  }
+  if (/(酒吧|居酒屋|\bbar\b)/i.test(userText ?? "")) {
+    return {
+      query: "酒吧",
+      mode: "nearby",
+      includedTypes: ["bar"],
+    };
+  }
+
   const moodBlob = `${context?.mood ?? ""} ${context?.setting ?? ""} ${context?.tripPurpose ?? ""}`;
-  const allowParks = userWantsParkRecommendations("", context);
 
   if (context?.budgetPreference === "low" || context?.tripPurpose === "refine_recommendations") {
     return lowBudgetSearchQuery(intent, moodBlob);
@@ -116,7 +154,7 @@ function searchConfigForIntent(
     return {
       query: /下雨|雨天|室內/.test(moodBlob) ? "室內 咖啡廳" : "咖啡廳",
       mode: "nearby",
-      includedTypes: ["cafe", "coffee_shop"],
+      includedTypes: ["cafe", "coffee_shop", "bakery"],
     };
   }
   if (intent === "camping") {
@@ -155,29 +193,121 @@ function searchConfigForIntent(
   };
 }
 
+function searchConfigForIntent(
+  intent: NearbyPlaceIntent,
+  foodPreference?: string,
+  context?: CanonicalTravelContext,
+  userText?: string,
+): {
+  query: string;
+  mode: "nearby" | "text";
+  includedTypes?: string[];
+} {
+  return nearbySearchAttemptForIntent(intent, foodPreference, context, userText);
+}
+
 function rankPlaces(
   places: PlaceResult[],
   lat: number,
   lng: number,
   context?: CanonicalTravelContext,
+  plusCtx?: PlusPreferenceRankingContext | null,
 ): PlaceResult[] {
   const preference = context?.budgetPreference;
   return [...places].sort((a, b) => {
     const distA =
-      a.lat != null && a.lng != null ? distanceMeters(lat, lng, a.lat, a.lng) : Number.MAX_SAFE_INTEGER;
+      a.lat != null && a.lng != null
+        ? distanceMeters({ lat, lng }, { lat: a.lat, lng: a.lng })
+        : Number.MAX_SAFE_INTEGER;
     const distB =
-      b.lat != null && b.lng != null ? distanceMeters(lat, lng, b.lat, b.lng) : Number.MAX_SAFE_INTEGER;
+      b.lat != null && b.lng != null
+        ? distanceMeters({ lat, lng }, { lat: b.lat, lng: b.lng })
+        : Number.MAX_SAFE_INTEGER;
+    const plusA = plusCtx
+      ? -plusPreferenceRankPenalty(
+          {
+            name: a.name,
+            primaryType: a.primaryType,
+            types: a.types,
+            rating: a.rating,
+            userRatingCount: a.userRatingCount,
+          },
+          plusCtx,
+        )
+      : 0;
+    const plusB = plusCtx
+      ? -plusPreferenceRankPenalty(
+          {
+            name: b.name,
+            primaryType: b.primaryType,
+            types: b.types,
+            rating: b.rating,
+            userRatingCount: b.userRatingCount,
+          },
+          plusCtx,
+        )
+      : 0;
     const scoreA =
       (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10) -
       distA / 50_000 +
       budgetPenaltyForPlace(a, preference) * -0.5 +
-      attractionTypeRankScore(a) * 2;
+      attractionTypeRankScore(a) * 2 +
+      plusA / 10;
     const scoreB =
       (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10) -
       distB / 50_000 +
       budgetPenaltyForPlace(b, preference) * -0.5 +
-      attractionTypeRankScore(b) * 2;
+      attractionTypeRankScore(b) * 2 +
+      plusB / 10;
     return scoreB - scoreA;
+  });
+}
+
+async function resolveChatPlusRankingContext(
+  context: CanonicalTravelContext | undefined,
+  input?: {
+    reasonProfile?: UserProfileForReason | null;
+    savedPlaces?: Array<{ name: string; category?: string | null }>;
+    hasPlusAccess?: boolean;
+  },
+): Promise<PlusPreferenceRankingContext | null> {
+  let profile = input?.reasonProfile ?? null;
+  let savedPlaces = input?.savedPlaces;
+
+  if (!profile && input?.hasPlusAccess) {
+    try {
+      const [prefs, userProfile, saved] = await Promise.all([
+        getPreferences(),
+        getUserProfile().catch(() => null),
+        listPlaces().catch(() => []),
+      ]);
+      profile = userProfileForReasonFrom(prefs, {
+        travelStyle: userProfile?.travelStyle,
+        personalityType: userProfile?.personalityType,
+        personalitySummary: userProfile?.personalitySummary,
+        aiPreferences: userProfile?.aiPreferences,
+        hasPlusAccess: true,
+      });
+      savedPlaces = saved.map((p) => ({ name: p.name, category: p.category }));
+    } catch {
+      return null;
+    }
+  }
+
+  if (!profile) return null;
+
+  return buildPlusPreferenceRankingContext({
+    profile,
+    savedPlaces,
+    explicitAvoidKeywords: buildExplicitAvoidKeywords(context?.excludedCategories),
+    explicitPreferKeywords: buildExplicitPreferKeywords({
+      mood: context?.mood,
+      setting: context?.setting,
+      interests: context?.interests,
+      selectedInterests: context?.selectedInterests,
+    }),
+    mood: context?.mood,
+    setting: context?.setting,
   });
 }
 
@@ -296,9 +426,36 @@ function buildSummary(
 
 export type SearchAttempt = {
   query: string;
-  mode: "nearby" | "text";
+  mode: "nearby" | "text" | "multi";
   includedTypes?: string[];
+  nearbyGroups?: string[][];
 };
+
+function placeDetailNearbySearchAttempts(intent: NearbyPlaceIntent): SearchAttempt[] {
+  if (intent === "cafe") {
+    return [
+      { query: "", mode: "nearby", includedTypes: ["cafe"] },
+      { query: "", mode: "nearby", includedTypes: ["coffee_shop"] },
+      { query: "", mode: "nearby", includedTypes: ["bakery"] },
+    ];
+  }
+  if (intent === "restaurant") {
+    return [
+      {
+        query: "",
+        mode: "multi",
+        nearbyGroups: [["restaurant"], ["meal_takeaway"], ["fast_food_restaurant"]],
+      },
+      { query: "", mode: "nearby", includedTypes: ["restaurant"] },
+      { query: "", mode: "nearby", includedTypes: ["meal_takeaway"] },
+    ];
+  }
+  return [
+    { query: "", mode: "nearby", includedTypes: ["tourist_attraction"] },
+    { query: "", mode: "nearby", includedTypes: ["museum"] },
+    { query: "", mode: "nearby", includedTypes: ["park"] },
+  ];
+}
 
 /** 餐廳搜尋 fallback：菜系 text → 通用 text → nearby */
 export function restaurantSearchFallbackQueries(foodPreference?: string): SearchAttempt[] {
@@ -328,14 +485,20 @@ async function runPlaceSearch(
   locale: Locale,
   attempt: SearchAttempt,
   caller = "chat.runPlaceSearch",
-  extras?: PlaceSearchExtras,
-): Promise<PlaceResult[]> {
+  extras?: PlaceSearchExtras & { radius?: number },
+): Promise<{ places: PlaceResult[]; error: string | null }> {
   const ctxPayload = extras?.searchContext
     ? placesSearchContextPayload(extras.searchContext, extras.intentCategory)
     : {};
-  console.info(
-    `[CHAT_PLACES_REQUEST] mode=${attempt.mode} query=${attempt.query || "(nearby)"}`,
-  );
+  const radius = extras?.radius;
+  console.info("[CHAT_PLACES_REQUEST]", {
+    lat,
+    lng,
+    radius: radius ?? "",
+    types: attempt.includedTypes?.join(",") ?? "",
+    mode: attempt.mode,
+    query: attempt.query || "(nearby)",
+  });
   const result = await searchPlaces({
     data: {
       query: attempt.query,
@@ -343,15 +506,30 @@ async function runPlaceSearch(
       lng,
       mode: attempt.mode,
       includedTypes: attempt.includedTypes,
+      nearbyGroups: attempt.nearbyGroups,
+      radius,
       locale,
       ...placesStatsPayload({
         placesCaller: caller,
         placesScreen: "chat",
       }),
       ...ctxPayload,
+      intentCategory: extras?.intentCategory ?? ctxPayload.intentCategory,
+      searchMode: ctxPayload.searchMode ?? "nearby",
     },
   });
-  return result.places ?? [];
+  const places = result.places ?? [];
+  if (result.error) {
+    logChatNearbyError({ message: result.error });
+  }
+  console.info("[CHAT_PLACES_RAW_COUNT]", {
+    count: places.length,
+    error: result.error ?? "",
+    mode: attempt.mode,
+    types: attempt.includedTypes?.join(",") ?? attempt.nearbyGroups?.length ?? "",
+  });
+  logChatPlacesRawCount(places.length);
+  return { places, error: result.error ?? null };
 }
 
 /** 依序嘗試多組 query，回傳第一組有結果的 places */
@@ -378,7 +556,7 @@ export async function fetchPlacesWithSearchAttempts(
       destinationName: extras?.searchContext?.destinationName,
     });
     try {
-      const places = await runPlaceSearch(
+      const { places } = await runPlaceSearch(
         searchPlaces,
         lat,
         lng,
@@ -428,7 +606,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
       destinationName: extras?.searchContext?.destinationName,
     });
     try {
-      const places = await runPlaceSearch(
+      const { places } = await runPlaceSearch(
         searchPlaces,
         lat,
         lng,
@@ -456,6 +634,67 @@ export async function fetchPlacesWithSearchAttemptsMerged(
   return merged.slice(0, maxResults);
 }
 
+function applyNearbyPlaceFilters(
+  ranked: PlaceResult[],
+  params: {
+    intent: NearbyPlaceIntent;
+    lat: number;
+    lng: number;
+    excluded: string[];
+    excludePlaceIds: string[];
+    allowParks: boolean;
+    blockedCoreNames?: string[];
+    destinationProfile?: ReturnType<typeof classifyDestinationForPlaceSearch>;
+    allowLodging: boolean;
+    searchContext?: ChatPlaceSearchContext;
+    userText?: string;
+    maxDistanceKm: number;
+    strictCafeGuard: boolean;
+    placeDetailNearby?: boolean;
+  },
+): PlaceResult[] {
+  if (params.placeDetailNearby) {
+    let working = filterPlacesByExclusion(ranked, params.excluded);
+    working = filterExcludedPlaceIds(working, params.excludePlaceIds);
+    working = working.filter((place) => {
+      const biz = (place.businessStatus ?? "").trim().toUpperCase();
+      return biz !== "CLOSED_PERMANENTLY";
+    });
+    working = filterPlacesByNearbyDistance(working, params.lat, params.lng, params.maxDistanceKm);
+    return working;
+  }
+
+  let working = ranked;
+  if (params.searchContext?.searchMode === "destination" && params.searchContext.destinationName) {
+    working = filterPlacesByDestinationGuard(
+      working,
+      params.searchContext.destinationName,
+      params.userText,
+    );
+  }
+  working = filterPlacesByExclusion(working, params.excluded);
+  working = filterExcludedPlaceIds(working, params.excludePlaceIds);
+  working = filterPlacesForAttractionRecommendation(working, {
+    allowParks: params.allowParks,
+    blockedCoreNames: params.blockedCoreNames,
+    blockedPlaceIds: params.excludePlaceIds,
+    profile: params.searchContext?.searchMode === "nearby" ? undefined : params.destinationProfile,
+    parentLandmark:
+      params.searchContext?.searchMode === "nearby"
+        ? undefined
+        : params.destinationProfile?.parentLandmark,
+  });
+  if (params.intent === "camping") {
+    working = filterCampingPlaces(working);
+  }
+  working = filterNonLodgingPlaces(working, { allowLodging: params.allowLodging });
+  if (params.intent === "cafe" && params.strictCafeGuard) {
+    working = filterPlacesByCafeGuard(working);
+  }
+  working = filterPlacesByNearbyDistance(working, params.lat, params.lng, params.maxDistanceKm);
+  return working;
+}
+
 export async function fetchNearbyPlacesForIntent(
   intent: NearbyPlaceIntent,
   lat: number,
@@ -470,16 +709,64 @@ export async function fetchNearbyPlacesForIntent(
     cityLabel?: string;
     userText?: string;
     searchContext?: ChatPlaceSearchContext;
+    reasonProfile?: UserProfileForReason | null;
+    savedPlaces?: Array<{ name: string; category?: string | null }>;
+    hasPlusAccess?: boolean;
+    placeDetailNearby?: boolean;
+    focusPlaceId?: string;
+  },
+): Promise<PlaceResult[]> {
+  const run = async (): Promise<PlaceResult[]> =>
+    fetchNearbyPlacesForIntentInner(
+      intent,
+      lat,
+      lng,
+      locale,
+      searchPlaces,
+      foodPreference,
+      context,
+      excludePlaceIds,
+      opts,
+    );
+
+  if (opts?.placeDetailNearby) {
+    const key = buildPlaceDetailNearbySearchKey(lat, lng, intent, opts.focusPlaceId);
+    return runPlaceDetailNearbySingleFlight(key, run);
+  }
+  return run();
+}
+
+async function fetchNearbyPlacesForIntentInner(
+  intent: NearbyPlaceIntent,
+  lat: number,
+  lng: number,
+  locale: Locale,
+  searchPlaces: PlaceSearchFn,
+  foodPreference?: string,
+  context?: CanonicalTravelContext,
+  excludePlaceIds: string[] = [],
+  opts?: {
+    blockedCoreNames?: string[];
+    cityLabel?: string;
+    userText?: string;
+    searchContext?: ChatPlaceSearchContext;
+    reasonProfile?: UserProfileForReason | null;
+    savedPlaces?: Array<{ name: string; category?: string | null }>;
+    hasPlusAccess?: boolean;
+    placeDetailNearby?: boolean;
+    focusPlaceId?: string;
   },
 ): Promise<PlaceResult[]> {
   const excluded = context?.excludedCategories ?? [];
+  const plusCtx = await resolveChatPlusRankingContext(context, opts);
   const allowParks = userWantsParkRecommendations(opts?.userText ?? "", context);
   const isRefresh =
     context?.tripPurpose === "refresh_recommendations" ||
     context?.tripPurpose === "refine_recommendations";
-  const destinationProfile = opts?.cityLabel
-    ? classifyDestinationForPlaceSearch(opts.cityLabel)
-    : undefined;
+  const destinationProfile =
+    opts?.placeDetailNearby || !opts?.cityLabel
+      ? undefined
+      : classifyDestinationForPlaceSearch(opts.cityLabel);
   const searchExtras: PlaceSearchExtras | undefined = opts?.searchContext
     ? { searchContext: opts.searchContext, intentCategory: intent }
     : undefined;
@@ -487,58 +774,178 @@ export async function fetchNearbyPlacesForIntent(
   const allowLodging =
     intent === "camping" || isExplicitLodgingSearchIntent(opts?.userText ?? "");
 
-  const attempts: SearchAttempt[] =
+  const baseAttempt: SearchAttempt =
     intent === "restaurant"
-      ? restaurantSearchFallbackQueries(foodPreference)
+      ? restaurantSearchFallbackQueries(foodPreference)[0] ?? {
+          query: "餐廳 聚餐",
+          mode: "nearby",
+          includedTypes: ["restaurant"],
+        }
       : intent === "camping"
-        ? campingSearchAttempts()
+        ? campingSearchAttempts()[0] ?? { query: "露營", mode: "text" }
         : isRefresh
-          ? buildAttractionRefreshSearchAttempts(opts?.cityLabel, destinationProfile)
-          : [searchConfigForIntent(intent, foodPreference, context)];
+          ? buildAttractionRefreshSearchAttempts(opts?.cityLabel, destinationProfile)[0] ?? {
+              query: "景點",
+              mode: "nearby",
+            }
+          : nearbySearchAttemptForIntent(
+              intent,
+              foodPreference,
+              context,
+              opts?.userText,
+              { placeDetailNearby: opts?.placeDetailNearby },
+            );
 
-  let ranked: PlaceResult[] = [];
-  for (const attempt of attempts) {
-    const places = await runPlaceSearch(
-      searchPlaces,
+  const searchAttempts: SearchAttempt[] = opts?.placeDetailNearby
+    ? placeDetailNearbySearchAttempts(intent)
+    : intent === "restaurant"
+      ? restaurantSearchFallbackQueries(foodPreference)
+      : [baseAttempt];
+
+  const radiusSteps = opts?.placeDetailNearby
+    ? CHAT_PLACE_DETAIL_NEARBY_RADIUS_STEPS_M
+    : CHAT_NEARBY_RADIUS_STEPS_M;
+
+  console.info("[CHAT_NEARBY_SEARCH]", {
+    basePlace: opts?.searchContext?.destinationName ?? opts?.cityLabel ?? "",
+    category: intent,
+    lat,
+    lng,
+    placeDetailNearby: Boolean(opts?.placeDetailNearby),
+    attemptCount: searchAttempts.length,
+  });
+
+  let best: PlaceResult[] = [];
+  let lastError = "";
+  let lastRawCount = 0;
+
+  for (let stepIndex = 0; stepIndex < radiusSteps.length; stepIndex++) {
+    const radius = radiusSteps[stepIndex]!;
+    logChatNearbyRequest({ center: { lat, lng }, radius, category: intent });
+    const maxDistanceKm = maxDistanceKmForIntent(intent, stepIndex);
+    const strictCafeGuard = stepIndex === 0 && !opts?.placeDetailNearby;
+
+    const seen = new Set<string>();
+    let places: PlaceResult[] = [];
+    for (const attempt of searchAttempts) {
+      const { places: batch, error } = await runPlaceSearch(
+        searchPlaces,
+        lat,
+        lng,
+        locale,
+        attempt,
+        "chat.fetchNearbyPlacesForIntent",
+        {
+          ...searchExtras,
+          radius,
+          intentCategory: intent,
+        },
+      );
+      if (error) lastError = error;
+      lastRawCount = Math.max(lastRawCount, batch.length);
+      for (const place of batch) {
+        const id = (place.id ?? place.name ?? "").trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        places.push(place);
+      }
+      if (places.length >= RECOMMENDATION_COUNT) break;
+    }
+
+    let ranked = rankPlaces(places, lat, lng, context, plusCtx);
+    ranked = applyNearbyPlaceFilters(ranked, {
+      intent,
       lat,
       lng,
-      locale,
-      attempt,
-      "chat.fetchNearbyPlacesForIntent",
-      searchExtras,
-    );
-    ranked = rankPlaces(places, lat, lng, context);
-    if (opts?.searchContext?.searchMode === "destination" && opts.searchContext.destinationName) {
-      ranked = filterPlacesByDestinationGuard(
-        ranked,
-        opts.searchContext.destinationName,
-        opts.userText,
-      );
-    }
-    ranked = filterPlacesByExclusion(ranked, excluded);
-    ranked = filterExcludedPlaceIds(ranked, excludePlaceIds);
-    ranked = filterPlacesForAttractionRecommendation(ranked, {
+      excluded,
+      excludePlaceIds,
       allowParks,
       blockedCoreNames: opts?.blockedCoreNames,
-      blockedPlaceIds: excludePlaceIds,
-      profile: destinationProfile,
-      parentLandmark: destinationProfile?.parentLandmark,
+      destinationProfile,
+      allowLodging,
+      searchContext: opts?.searchContext,
+      userText: opts?.userText,
+      maxDistanceKm,
+      strictCafeGuard,
+      placeDetailNearby: opts?.placeDetailNearby,
     });
-    if (intent === "camping") {
-      ranked = filterCampingPlaces(ranked);
+
+    console.info("[CHAT_PLACES_FILTERED_COUNT]", {
+      count: ranked.length,
+      radius,
+      stepIndex,
+      rawCount: places.length,
+    });
+
+    if (ranked.length > best.length) {
+      best = ranked;
     }
-    ranked = filterNonLodgingPlaces(ranked, { allowLodging });
-    if (ranked.length >= RECOMMENDATION_COUNT) break;
+    if (best.length >= RECOMMENDATION_COUNT) break;
+    if (opts?.placeDetailNearby && places.length === 0 && stepIndex >= 1) break;
   }
 
-  if (context?.budgetPreference === "low") {
-    ranked = refinePlaceResultsForBudget(ranked, "low");
+  if (context?.budgetPreference === "low" && !opts?.placeDetailNearby) {
+    best = refinePlaceResultsForBudget(best, "low");
   }
 
   console.info(
-    `[CHAT_PLACES_SUCCESS] count=${ranked.length} excluded=${excluded.length} deduped=${excludePlaceIds.length}`,
+    `[CHAT_PLACES_SUCCESS] count=${best.length} excluded=${excluded.length} deduped=${excludePlaceIds.length}`,
   );
-  return ranked;
+  logChatNearbyResponse({
+    status: best.length > 0 ? "ok" : lastError ? "error" : "empty",
+    count: best.length,
+    firstResultName: best[0]?.name ?? "",
+    error: lastError,
+    rawCount: lastRawCount,
+    filteredCount: best.length,
+  });
+  return best;
+}
+
+export function buildSummaryForRecommendations(
+  intent: NearbyPlaceIntent,
+  recommendations: RoamieRecommendationItem[],
+  ctx: CanonicalTravelContext,
+  excludedCategories?: string[],
+): string {
+  const picks = recommendations.map((item) => ({
+    name: (item.placeName ?? item.name ?? "").trim(),
+  })).filter((p) => p.name);
+  const list = picks.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
+  const count = picks.length;
+  const exclusionAck = buildExclusionAcknowledgment(excludedCategories);
+
+  if (intent === "cafe") {
+    const lead = exclusionAck ?? "看起來你想找個地方放鬆一下 ☕";
+    return [
+      lead,
+      "",
+      `附近有 ${count} 間我覺得不錯的選擇：`,
+      "",
+      list,
+      "",
+      "如果你偏好：",
+      "- 安靜讀書",
+      "- 有插座",
+      "- 甜點好吃",
+      "- 適合久坐",
+      "",
+      "我可以再幫你縮小範圍。",
+    ].join("\n");
+  }
+
+  if (intent === "restaurant") {
+    const lead = exclusionAck ?? "依你現在的需求，附近這幾間餐廳值得先看看：";
+    return [lead, "", list, "", "如果想換個菜系或預算，跟我說一聲就好。"].join("\n");
+  }
+
+  return [
+    `附近找到 ${count} 個值得先看看的地方：`,
+    "",
+    list,
+    "",
+    "選一個最有感覺的，或跟我說想調整什麼。",
+  ].join("\n");
 }
 
 export async function buildNearbyPlaceRecommendation(params: {
@@ -557,6 +964,11 @@ export async function buildNearbyPlaceRecommendation(params: {
   userText?: string;
   cityLabel?: string;
   searchContext?: ChatPlaceSearchContext;
+  reasonProfile?: UserProfileForReason | null;
+  savedPlaces?: Array<{ name: string; category?: string | null }>;
+  hasPlusAccess?: boolean;
+  placeDetailNearby?: boolean;
+  focusPlaceId?: string;
 }): Promise<{ summary: string; payload: RoamiePayloadV2; recommendations: RoamieRecommendationItem[] }> {
   const flow = beginPlacesFlow("chat_once");
   try {
@@ -576,6 +988,9 @@ export async function buildNearbyPlaceRecommendation(params: {
       userText = "",
       cityLabel,
       searchContext,
+      reasonProfile,
+      savedPlaces,
+      hasPlusAccess,
     } = params;
     const excluded =
       excludedCategories ??
@@ -603,6 +1018,11 @@ export async function buildNearbyPlaceRecommendation(params: {
         cityLabel: cityLabel ?? context.destination,
         userText,
         searchContext,
+        reasonProfile,
+        savedPlaces,
+        hasPlusAccess,
+        placeDetailNearby: params.placeDetailNearby,
+        focusPlaceId: params.focusPlaceId,
       },
     );
     places = filterAlreadyRecommendedPlaces(places, {
@@ -639,7 +1059,9 @@ export async function buildNearbyPlaceRecommendation(params: {
 
     const recommendations: RoamieRecommendationItem[] = picks.map((p) => {
       const distM =
-        p.lat != null && p.lng != null ? distanceMeters(lat, lng, p.lat, p.lng) : undefined;
+        p.lat != null && p.lng != null
+          ? distanceMeters({ lat, lng }, { lat: p.lat, lng: p.lng })
+          : undefined;
       return mapPlaceResultToChatItem(p, {
         mood: context.mood,
         locale,

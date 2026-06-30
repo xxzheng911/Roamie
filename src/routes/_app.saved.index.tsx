@@ -15,10 +15,16 @@ import { listCoreTrips, type CoreTrip, resolveCoreTripTitle } from "@/lib/trip/c
 import {
   deletePlace,
   listPlaces,
+  readPlacesLocalCacheSync,
   SAVED_PLACES_CHANGED_EVENT,
   type SavedPlace,
 } from "@/lib/places-storage";
-import { isMissingTableError } from "@/lib/supabase-errors";
+import {
+  readSavedPlacesSnapshot,
+  readSavedTripsSnapshot,
+  writeSavedPlacesSnapshot,
+  writeSavedTripsSnapshot,
+} from "@/lib/saved-list-snapshot";
 import { setPlaceDetailHandoff } from "@/lib/place-detail-handoff";
 import {
   resolveSavedPlaceGooglePlaceId,
@@ -88,24 +94,33 @@ function Saved() {
   const { openAddToTrip } = useAddToTrip();
   const search = Route.useSearch();
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
-  const [trips, setTrips] = useState<CoreTrip[]>([]);
-  const [places, setPlaces] = useState<SavedPlace[]>([]);
-  const [loading, setLoading] = useState(true);
+  const initialTrips = readSavedTripsSnapshot();
+  const initialPlaces =
+    readSavedPlacesSnapshot().length > 0
+      ? readSavedPlacesSnapshot()
+      : readPlacesLocalCacheSync();
+  const [trips, setTrips] = useState<CoreTrip[]>(() => initialTrips);
+  const [places, setPlaces] = useState<SavedPlace[]>(() => initialPlaces);
+  const [loading, setLoading] = useState(
+    () => initialTrips.length === 0 && initialPlaces.length === 0,
+  );
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [removePlaceTarget, setRemovePlaceTarget] = useState<SavedPlace | null>(null);
   const [removingPlace, setRemovingPlace] = useState(false);
   const [openingPlaceId, setOpeningPlaceId] = useState<string | null>(null);
 
-  const refresh = () => {
-    setLoading(true);
+  const refresh = useCallback((opts?: { background?: boolean }) => {
+    if (!opts?.background) setLoading(true);
     Promise.allSettled([listCoreTrips(), listPlaces()])
       .then(([tripsResult, placesResult]) => {
         if (tripsResult.status === "fulfilled") {
           setTrips(tripsResult.value);
+          writeSavedTripsSnapshot(tripsResult.value);
         } else if (isMissingTableError(tripsResult.reason)) {
           setTrips([]);
-        } else {
+          writeSavedTripsSnapshot([]);
+        } else if (!opts?.background) {
           toast.error(
             tripsResult.reason instanceof Error ? tripsResult.reason.message : t("saved.loadFailed"),
           );
@@ -113,9 +128,11 @@ function Saved() {
 
         if (placesResult.status === "fulfilled") {
           setPlaces(placesResult.value);
+          writeSavedPlacesSnapshot(placesResult.value);
         } else if (isMissingTableError(placesResult.reason)) {
           setPlaces([]);
-        } else {
+          writeSavedPlacesSnapshot([]);
+        } else if (!opts?.background) {
           toast.error(
             placesResult.reason instanceof Error
               ? placesResult.reason.message
@@ -124,22 +141,19 @@ function Saved() {
         }
       })
       .finally(() => setLoading(false));
-  };
+  }, [t]);
 
   useEffect(() => {
-    refresh();
-    const onRefresh = () => refresh();
+    const hasCached = initialTrips.length > 0 || initialPlaces.length > 0;
+    refresh({ background: hasCached });
+    const onRefresh = () => refresh({ background: true });
     window.addEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
     window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
-    window.addEventListener("focus", onRefresh);
-    document.addEventListener("visibilitychange", onRefresh);
     return () => {
       window.removeEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
       window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
-      window.removeEventListener("focus", onRefresh);
-      document.removeEventListener("visibilitychange", onRefresh);
     };
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     if (search.tab === "places") setTab("places");
@@ -151,7 +165,11 @@ function Saved() {
     try {
       await deleteTrip(deleteTarget.id);
       toast.success(t("saved.deleted"));
-      setTrips((prev) => prev.filter((trip) => trip.id !== deleteTarget.id));
+      setTrips((prev) => {
+        const next = prev.filter((trip) => trip.id !== deleteTarget.id);
+        writeSavedTripsSnapshot(next);
+        return next;
+      });
       setDeleteTarget(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("saved.deleteFailed"));
@@ -166,11 +184,13 @@ function Saved() {
     try {
       await deletePlace(removePlaceTarget.id, removePlaceTarget.name);
       toast.success(t("saved.removed"));
-      setPlaces((prev) =>
-        prev.filter(
+      setPlaces((prev) => {
+        const next = prev.filter(
           (p) => p.id !== removePlaceTarget.id && p.name !== removePlaceTarget.name,
-        ),
-      );
+        );
+        writeSavedPlacesSnapshot(next);
+        return next;
+      });
       setRemovePlaceTarget(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t("saved.deleteFailed"));

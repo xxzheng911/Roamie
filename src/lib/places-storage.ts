@@ -51,6 +51,11 @@ function readLocalCache(userId: string | null): SavedPlace[] {
   }
 }
 
+/** 同步讀取本地收藏快取（啟動／返回收藏頁時先顯示） */
+export function readPlacesLocalCacheSync(): SavedPlace[] {
+  return mergePlacesByIdOrName(readLocalCache(null));
+}
+
 function writeLocalCache(userId: string | null, list: SavedPlace[]): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(localCacheKey(userId), JSON.stringify(list));

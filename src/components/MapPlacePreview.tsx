@@ -2,6 +2,8 @@ import { Heart, Loader2, MessageCircle, Star, X } from "lucide-react";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import type { PlaceResult } from "@/lib/place-result";
+import { SafeImage } from "@/components/media/SafeImage";
+import { getRoamieDefaultImage } from "@/services/placeImageService";
 
 type PlaceCard = PlaceResult & { reason: string };
 
@@ -29,7 +31,12 @@ export function MapPlacePreview({
       <article className="overflow-hidden rounded-3xl border border-border bg-card shadow-lift">
         <div className="relative aspect-[16/9] bg-secondary">
           {imageUrl ? (
-            <img src={imageUrl} alt={place.name} className="h-full w-full object-cover" />
+            <SafeImage
+              src={imageUrl}
+              fallbackSrc={getRoamieDefaultImage(place.categoryId ?? place.category)}
+              alt={place.name}
+              className="h-full w-full object-cover"
+            />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               無預覽圖

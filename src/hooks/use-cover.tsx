@@ -11,6 +11,7 @@ import { getUserProfile } from "@/lib/profile-storage";
 import { COVER_UPDATED_EVENT, type CoverUpdatedDetail } from "@/lib/cover-events";
 import { isSameMediaUrl, withCacheBust } from "@/lib/media-display-url";
 import { readProfileSessionCache } from "@/lib/profile-session-cache";
+import { readPersistedCoverUrl } from "@/lib/profile-persisted-cache";
 import { shouldUseLightStartupShell, readBrowserPathname } from "@/lib/startup-path";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -28,7 +29,10 @@ export function CoverProvider({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   const userId = user?.id;
   const [coverUrl, setCoverUrl] = useState<string | null>(
-    () => readProfileSessionCache(userId)?.coverImageUrl ?? null,
+    () =>
+      readProfileSessionCache(userId)?.coverImageUrl ??
+      readPersistedCoverUrl(userId) ??
+      null,
   );
   const [coverRevision, setCoverRevision] = useState(0);
   const [preview, setPreviewState] = useState<string | null>(null);
@@ -68,10 +72,15 @@ export function CoverProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!userId) return;
     const cached = readProfileSessionCache(userId);
-    if (cached) {
+    if (cached?.coverImageUrl) {
       setCoverUrl((prev) =>
         isSameMediaUrl(prev, cached.coverImageUrl) ? prev : cached.coverImageUrl,
       );
+      return;
+    }
+    const persisted = readPersistedCoverUrl(userId);
+    if (persisted) {
+      setCoverUrl((prev) => (isSameMediaUrl(prev, persisted) ? prev : persisted));
     }
   }, [userId]);
 
@@ -98,7 +107,6 @@ export function CoverProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (skipProfileFetch) return;
-    if (readProfileSessionCache(userId)) return;
     void refresh();
   }, [refresh, skipProfileFetch, userId]);
 

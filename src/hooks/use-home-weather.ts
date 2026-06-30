@@ -3,18 +3,22 @@ import { useServerFn } from "@tanstack/react-start";
 import type { Locale } from "@/lib/i18n/types";
 import {
   ensureHomeWeatherBootstrap,
+  ensureHomeWeatherLocationWatch,
   getHomeWeatherBootstrapState,
   reloadHomeWeatherBootstrap,
   subscribeHomeWeatherBootstrap,
-  subscribeHomeWeatherLocationWatch,
 } from "@/lib/home-weather-bootstrap";
 import { getWeather, getWeatherForecast } from "@/lib/weather.functions";
 import { bindWeatherServerFns } from "@/services/weatherService";
 import type { HomeSessionUserLocation } from "@/lib/home-session-cache";
+import { logPerfEffectRun } from "@/lib/app-perf";
 
 export type HomeWeatherStatus = "loading" | "ready" | "error";
 
 export type HomeUserLocation = HomeSessionUserLocation;
+
+let weatherFnsBound = false;
+let locationWatchRegistered = false;
 
 export function useHomeWeather(locale: Locale) {
   const fetchWeatherFn = useServerFn(getWeather);
@@ -25,23 +29,20 @@ export function useHomeWeather(locale: Locale) {
   fetchForecastRef.current = fetchForecastFn;
 
   useLayoutEffect(() => {
-    bindWeatherServerFns({
-      fetchWeather: (...args) => fetchWeatherRef.current(...args),
-      fetchForecast: (...args) => fetchForecastRef.current(...args),
-    });
-  }, [fetchWeatherFn, fetchForecastFn]);
-
-  useLayoutEffect(() => {
+    if (!weatherFnsBound) {
+      weatherFnsBound = true;
+      bindWeatherServerFns({
+        fetchWeather: (...args) => fetchWeatherRef.current(...args),
+        fetchForecast: (...args) => fetchForecastRef.current(...args),
+      });
+    }
     ensureHomeWeatherBootstrap(locale, "useHomeWeather");
+    if (!locationWatchRegistered) {
+      locationWatchRegistered = true;
+      logPerfEffectRun("homeWeatherLocationWatch", { route: "/", reason: "register_once" });
+      ensureHomeWeatherLocationWatch();
+    }
   }, [locale]);
-
-  useLayoutEffect(() => {
-    const stopLocationWatch = subscribeHomeWeatherLocationWatch();
-    return () => {
-      console.info("[Location] home effective-location listener unsubscribe");
-      stopLocationWatch();
-    };
-  }, []);
 
   const snapshot = useSyncExternalStore(
     subscribeHomeWeatherBootstrap,

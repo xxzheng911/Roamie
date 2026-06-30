@@ -52,7 +52,7 @@ import {
 import type { PlaceResult } from "@/lib/place-result";
 import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
-import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
+import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { buildPlaceImageUrls } from "@/lib/place-detail-resolve";
 import { getWeather } from "@/lib/weather.functions";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -135,8 +135,7 @@ import { useI18n } from "@/hooks/use-i18n";
 import type { Locale } from "@/lib/i18n/types";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
 import {
-  prepareMapPageKeyboard,
-  releaseMapPageKeyboard,
+  captureMapLayoutHeight,
   resetMapSearchKeyboardMode,
 } from "@/lib/map-search-keyboard";
 import { normalizedLocationKey } from "@/lib/location-key";
@@ -272,7 +271,9 @@ function exploreCardsToMapCards(
     const normalized = normalizeExploreMapCard(p, opts.locale);
     return {
       ...normalized,
-      coverImageUrl: cover ?? undefined,
+      coverImageUrl: cover
+        ? (resolvePlaceImageUrl(cover, { maxWidth: 600 }) ?? undefined)
+        : undefined,
       googleMapsUrl: item.googleMapsUrl,
     } satisfies MapPlaceCard;
   });
@@ -332,11 +333,10 @@ function MapView() {
 
   useEffect(() => {
     document.documentElement.classList.add("map-route-active");
-    void prepareMapPageKeyboard();
+    captureMapLayoutHeight();
     return () => {
       document.documentElement.classList.remove("map-route-active");
       resetMapSearchKeyboardMode();
-      void releaseMapPageKeyboard();
     };
   }, []);
 
@@ -1650,8 +1650,11 @@ function MapView() {
             locale,
           }).googleMapsUrl,
         coverImageUrl:
-          detailSource.coverImageUrl ??
-          (chosenPhoto ? (buildPlacePhotoUrl(chosenPhoto, 600) ?? undefined) : undefined),
+          resolvePlaceImageUrl(
+            detailSource.coverImageUrl ??
+              (chosenPhoto ? (buildPlacePhotoUrl(chosenPhoto, 600) ?? null) : null),
+            { maxWidth: 600 },
+          ) || undefined,
           ...(shouldHavePrimary
             ? {
                 isPrimaryExplorePlace: true,
@@ -1994,7 +1997,7 @@ function MapView() {
               distanceMeters={distanceMeters}
               imageUrl={(photoName) =>
                 photoName
-                  ? preferJpegPngImageUrl(buildPlacePhotoUrl(photoName, 600))
+                  ? resolvePlaceImageUrl(buildPlacePhotoUrl(photoName, 600), { maxWidth: 600 })
                   : null
               }
               onSelect={handlePlaceSelect}

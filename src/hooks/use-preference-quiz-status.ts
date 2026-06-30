@@ -1,25 +1,33 @@
 import { useEffect, useState } from "react";
-import { isPreferenceQuizCompleted } from "@/lib/preferences-storage";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
+import {
+  getTravelPrefStatusSync,
+  type TravelPrefStatus,
+} from "@/lib/travel-pref-status";
+import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
 
-/** `null` while loading; `true` when quiz completed (`onboarded`). */
-export function usePreferenceQuizCompleted(): boolean | null {
-  const [completed, setCompleted] = useState<boolean | null>(null);
+/** 全 app 共用 travel pref 狀態；不觸發 Supabase / getPreferences 網路請求 */
+export function useTravelPrefStatus(): TravelPrefStatus | null {
+  const [status, setStatus] = useState<TravelPrefStatus | null>(() => {
+    if (typeof window === "undefined") return null;
+    return getTravelPrefStatusSync(readCachedAuthenticatedUserIdSync());
+  });
 
   useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      const done = await isPreferenceQuizCompleted();
-      if (!cancelled) setCompleted(done);
+    const refresh = () => {
+      setStatus(getTravelPrefStatusSync(readCachedAuthenticatedUserIdSync()));
     };
-    void refresh();
-    const onUpdate = () => void refresh();
-    window.addEventListener(PREFS_UPDATED_EVENT, onUpdate);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(PREFS_UPDATED_EVENT, onUpdate);
-    };
+    refresh();
+    window.addEventListener(PREFS_UPDATED_EVENT, refresh);
+    return () => window.removeEventListener(PREFS_UPDATED_EVENT, refresh);
   }, []);
 
-  return completed;
+  return status;
+}
+
+/** @deprecated Prefer `useTravelPrefStatus` */
+export function usePreferenceQuizCompleted(): boolean | null {
+  const status = useTravelPrefStatus();
+  if (status === null) return null;
+  return status.preferenceQuizCompleted;
 }

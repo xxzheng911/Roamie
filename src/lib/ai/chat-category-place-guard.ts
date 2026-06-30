@@ -92,8 +92,13 @@ export function isComboItineraryRecommendation(item: RoamieRecommendationItem): 
   return false;
 }
 
+function placeCardId(item: RoamieRecommendationItem): string {
+  const ext = item as RoamieRecommendationItem & { placeId?: string };
+  return (item.googlePlaceId ?? ext.placeId ?? "").trim();
+}
+
 export function isRealPlaceCard(item: RoamieRecommendationItem): boolean {
-  return Boolean(item.googlePlaceId?.trim());
+  return Boolean(placeCardId(item));
 }
 
 export function passesCafeRenderGuard(item: RoamieRecommendationItem): boolean {
@@ -109,8 +114,15 @@ export function passesCafeRenderGuard(item: RoamieRecommendationItem): boolean {
     return false;
   }
 
+  const primary = (item.type ?? "").trim().toLowerCase();
+  if (primary === "restaurant" || primary === "tourist_attraction") {
+    logChatCafeResultGuard(item.name ?? "unknown", false, "wrong_category");
+    logChatWrongCategoryRejected(item.name ?? "unknown", "wrong_category");
+    return false;
+  }
+
   const blob = `${item.name ?? ""} ${item.placeName ?? ""} ${item.type ?? ""} ${item.address ?? ""} ${item.description ?? ""}`;
-  const ok = CAFE_NAME_RE.test(blob) || CAFE_TYPES.has((item.type ?? "").trim().toLowerCase());
+  const ok = CAFE_NAME_RE.test(blob) || CAFE_TYPES.has(primary) || Boolean(placeCardId(item));
   logChatCafeResultGuard(item.name ?? "unknown", ok, ok ? "ok" : "not_cafe");
   if (!ok) {
     logChatWrongCategoryRejected(item.name ?? "unknown", "not_cafe");

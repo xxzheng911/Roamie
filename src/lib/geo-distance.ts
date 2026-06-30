@@ -14,6 +14,27 @@ export function distanceMeters(
   return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(x));
 }
 
+/** Haversine 距離（公里）；座標無效時回傳 null */
+export function calculateDistanceKm(
+  centerLat: number,
+  centerLng: number,
+  placeLat: number | null | undefined,
+  placeLng: number | null | undefined,
+): number | null {
+  if (placeLat == null || placeLng == null) return null;
+  if (
+    !Number.isFinite(centerLat) ||
+    !Number.isFinite(centerLng) ||
+    !Number.isFinite(placeLat) ||
+    !Number.isFinite(placeLng)
+  ) {
+    return null;
+  }
+  const meters = distanceMeters({ lat: centerLat, lng: centerLng }, { lat: placeLat, lng: placeLng });
+  if (!Number.isFinite(meters)) return null;
+  return meters / 1000;
+}
+
 export function formatDistanceLabel(meters: number): string {
   if (!Number.isFinite(meters) || meters < 0) return "";
   if (meters < 1000) return `${Math.round(meters)} m`;
