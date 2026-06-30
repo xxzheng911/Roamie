@@ -1,5 +1,8 @@
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
-import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import {
+  coerceTravelDestination,
+  normalizeDestinationLabel,
+} from "@/lib/ai/trip-planning-context";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import {
   formatTripInterestMix,
@@ -28,9 +31,25 @@ export function planModeHumanLabel(mode: ItineraryPlanMode, days?: number): stri
   return "每天值得去的地點";
 }
 
+export function parseEmbeddedAbPlanMode(text: string): ItineraryPlanMode | null {
+  const t = text.trim();
+  if (!t) return null;
+  const choice = t.match(/(?:我(?:們|们)?)?(?:选|選|选择|選擇)\s*([AaBb])(?:\s*[项項])?/);
+  if (choice?.[1]) {
+    return choice[1].toLowerCase() === "a" ? "full_itinerary" : "daily_recommendations";
+  }
+  const letter = t.match(/(?:^|\s)([AaBb])(?:\s*[\.、)]|$)/);
+  if (letter?.[1]) {
+    return letter[1].toLowerCase() === "a" ? "full_itinerary" : "daily_recommendations";
+  }
+  return null;
+}
+
 export function parseItineraryPlanModeIntent(text: string): ItineraryPlanMode | null {
   const t = text.trim();
   if (!t) return null;
+  const embedded = parseEmbeddedAbPlanMode(t);
+  if (embedded) return embedded;
   if (/^b$/i.test(t)) return "daily_recommendations";
   if (/^a$/i.test(t)) return "full_itinerary";
   if (
@@ -291,7 +310,7 @@ export function isReadyForItineraryPlanning(
   options?: { preferencePending?: boolean },
 ): boolean {
   return Boolean(
-    ctx.destination?.trim() &&
+    coerceTravelDestination(ctx.destination) &&
       ctx.days &&
       (ctx.mustVisitGenerated ||
         ctx.tripPurpose === "must_visit_places" ||
@@ -304,10 +323,9 @@ export function buildItineraryPlanningReply(
   ctx: CanonicalTravelContext,
   interests: TripInterest[],
 ): string | null {
-  const destination = ctx.destination?.trim();
-  if (!destination || !ctx.days) return null;
+  const label = coerceTravelDestination(ctx.destination);
+  if (!label || !ctx.days) return null;
 
-  const label = normalizeDestinationLabel(destination);
   const days = ctx.days;
   const mix = formatTripInterestMix(interests);
 

@@ -12,6 +12,7 @@ import {
   isKnownScenicLabel,
   isKnownTouristCityLabel,
   isValidParsedDestinationLabel,
+  coerceTravelDestination,
   normalizeDestinationLabel,
   parseDestinationFromText,
   parseDestinationSelectionFromText,
@@ -30,6 +31,7 @@ import {
   pendingQuestionForPlanningNextStep,
   USE_DEFAULT_ROUTES,
   isItineraryNextStepPending,
+  parseItineraryNextStepSelection,
   type PendingQuestion,
 } from "@/lib/ai/destination-pending-question";
 import { advanceAfterPendingSelection } from "@/lib/ai/chat-turn-engine";
@@ -205,11 +207,82 @@ function resolveContextDestination(
   session: ChatPlanningSession,
 ): string | undefined {
   const raw =
-    ctx.destination?.trim() && isValidParsedDestinationLabel(normalizeDestinationLabel(ctx.destination))
-      ? normalizeDestinationLabel(ctx.destination)
-      : session.tripPlanningContext?.destination?.trim() ||
-        session.tripDestination?.city?.trim();
+    coerceTravelDestination(ctx.destination) ??
+    coerceTravelDestination(session.tripPlanningContext?.destination) ??
+    coerceTravelDestination(session.tripDestination?.city);
   return raw ? normalizeDestinationLabel(raw) : undefined;
+}
+
+function resolveItineraryAbSelectionAdvice(
+  selected: "full_itinerary" | "daily_recommendations",
+  ctx: CanonicalTravelContext,
+  userText: string,
+  pending: PendingQuestion,
+): DestinationAdviceResult | null {
+  const dest = coerceTravelDestination(pending.baseDestination ?? ctx.destination);
+
+  if (selected === "full_itinerary") {
+    if (!dest) {
+      return {
+        reply: null,
+        pendingQuestion: undefined,
+        contextPatch: {
+          selectedPlanMode: "full_itinerary",
+          destination: undefined,
+          tripPurpose: "create_itinerary",
+        },
+      };
+    }
+    const gen = buildItineraryGenerationAdvice(
+      {
+        ...ctx,
+        destination: dest,
+        days: ctx.days ?? parseDayCountFromText(userText),
+      },
+      {
+        destination: dest,
+        destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
+        days: ctx.days,
+      },
+    );
+    if (gen) {
+      return { ...gen, pendingQuestion: undefined };
+    }
+  }
+
+  if (selected === "daily_recommendations") {
+    if (!dest) {
+      return {
+        reply: null,
+        pendingQuestion: undefined,
+        contextPatch: {
+          selectedPlanMode: "daily_recommendations",
+          destination: undefined,
+          tripPurpose: "recommend_places",
+        },
+      };
+    }
+    const mustVisit = resolveMustVisitAdvice({ ...ctx, destination: dest }, userText);
+    if (mustVisit) {
+      return {
+        reply: mustVisit.reply,
+        recommendations: mustVisit.recommendations,
+        recommendationsTitle: `${normalizeDestinationLabel(dest)}推薦`,
+        pendingQuestion: undefined,
+        contextPatch: {
+          ...mustVisit.contextPatch,
+          selectedPlanMode: "daily_recommendations",
+          destination: dest,
+          conversationState: "itinerary_draft",
+          tripPurpose: "itinerary_draft",
+          mustVisitGenerated: true,
+          planningStage: "recommendations_generated",
+        },
+      };
+    }
+  }
+
+  return null;
 }
 
 function resolveContextDays(
@@ -829,9 +902,9 @@ function resolveTripPreferenceReply(
   if (preferences.length === 0) return null;
   if (!isReadyForItineraryPlanning(ctx, { preferencePending })) return null;
 
-  const destination =
-    ctx.destination ??
-    (ctx.destinationCities?.length ? ctx.destinationCities[0] : undefined);
+  const destination = coerceTravelDestination(
+    ctx.destination ?? (ctx.destinationCities?.length ? ctx.destinationCities[0] : undefined),
+  );
   if (!destination || !ctx.days) return null;
 
   const reply = buildItineraryPlanningReply(
@@ -917,7 +990,18 @@ export function resolveDestinationAdvice(
 ): DestinationAdviceResult {
   if (isTripAddPlaceSession(session)) return { reply: null };
 
-  if (hasCategoryPlaceQuery(userText) && resolveDestinationFromText(userText)) {
+  if (
+    hasCategoryPlaceQuery(userText) &&
+    !coerceTravelDestination(
+      ctx.destination ??
+        session.travelContext?.destination ??
+        session.tripPlanningContext?.destination,
+    )
+  ) {
+    return { reply: null };
+  }
+
+  if (hasCategoryPlaceQuery(userText) && coerceTravelDestination(resolveDestinationFromText(userText))) {
     logChatWrongFallbackBlocked("category_place_advice_blocked");
     return { reply: null };
   }
@@ -969,14 +1053,23 @@ export function resolveDestinationAdvice(
 
   if (session.adviceSelectionThisTurn && session.lastResolvedPendingQuestion) {
     if (session.adviceSelectionThisTurn === "full_itinerary") {
-      const gen = buildItineraryGenerationAdvice(ctx, {
-        destination:
-          session.lastResolvedPendingQuestion.baseDestination ?? ctx.destination,
-        destinationCountry:
-          session.lastResolvedPendingQuestion.destinationCountry ?? ctx.destinationCountry,
-        days: ctx.days ?? parseDayCountFromText(userText),
-      });
-      if (gen) return gen;
+      const abAdvice = resolveItineraryAbSelectionAdvice(
+        "full_itinerary",
+        ctx,
+        userText,
+        session.lastResolvedPendingQuestion,
+      );
+      if (abAdvice) return abAdvice;
+    }
+
+    if (session.adviceSelectionThisTurn === "daily_recommendations") {
+      const abAdvice = resolveItineraryAbSelectionAdvice(
+        "daily_recommendations",
+        ctx,
+        userText,
+        session.lastResolvedPendingQuestion,
+      );
+      if (abAdvice) return abAdvice;
     }
 
     const next = advanceAfterPendingSelection(
@@ -1057,19 +1150,14 @@ export function resolveDestinationAdvice(
   if (pending) {
     const selected = parsePendingOptionSelection(userText, pending);
     if (selected) {
-      if (selected === "full_itinerary") {
-        const gen = buildItineraryGenerationAdvice(
-          {
-            ...ctx,
-            destination: pending.baseDestination ?? ctx.destination,
-            days: ctx.days ?? parseDayCountFromText(userText),
-          },
-          {
-            destination: pending.baseDestination ?? ctx.destination,
-            destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
-          },
+      if (selected === "full_itinerary" || selected === "daily_recommendations") {
+        const abAdvice = resolveItineraryAbSelectionAdvice(
+          selected,
+          ctx,
+          userText,
+          pending,
         );
-        if (gen) return gen;
+        if (abAdvice) return abAdvice;
       }
 
       if (
@@ -1203,19 +1291,24 @@ export function resolveDestinationAdvice(
       };
     }
     if (isItineraryNextStepPending(pending)) {
+      const planMode =
+        parseItineraryNextStepSelection(userText) ??
+        parseItineraryPlanModeIntent(userText);
+      if (planMode === "full_itinerary" || planMode === "daily_recommendations") {
+        const abAdvice = resolveItineraryAbSelectionAdvice(planMode, ctx, userText, pending);
+        if (abAdvice) return abAdvice;
+      }
       return { reply: null };
     }
     const followUpReply = resolvePlanningFollowUpReply(ctx, userText);
     if (followUpReply?.reply) {
       return followUpReply;
     }
-    const preferenceReply = resolveTripPreferenceReply(
-      ctx,
-      userText,
-      pending.type === "preference_choice",
-    );
-    if (preferenceReply?.reply) {
-      return preferenceReply;
+    if (pending.type === "preference_choice") {
+      const preferenceReply = resolveTripPreferenceReply(ctx, userText, true);
+      if (preferenceReply?.reply) {
+        return preferenceReply;
+      }
     }
     return { reply: null };
   }

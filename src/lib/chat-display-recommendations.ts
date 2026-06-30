@@ -20,6 +20,7 @@ import {
   isExplicitNearbyQuery,
 } from "@/lib/ai/chat-place-search-context";
 import { filterRecommendationsForCategoryRender } from "@/lib/ai/chat-category-place-guard";
+import { isFoodIntentText } from "@/lib/ai/chat-food-filter";
 import {
   hasCategoryPlaceQuery,
   type ChatPlaceCategoryIntent,
@@ -78,9 +79,10 @@ function shouldSkipDestinationRenderGuard(
 function nearbyCategoryRecommendations(
   items: RoamieRecommendationItem[],
   intent: ChatPlaceCategoryIntent,
+  userText = "",
 ): RoamieRecommendationItem[] {
   logChatRenderModeLocked("PLACE_CARDS_ONLY");
-  const working = filterRecommendationsForCategoryRender(items, intent);
+  const working = filterRecommendationsForCategoryRender(items, intent, userText);
   const cards = working.slice(0, 6);
   logChatPlaceCardRender(cards.length, intent);
   console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: cards.length });
@@ -110,7 +112,7 @@ function recommendationsForCategoryPlaceDisplay(
   if (!intent) return [];
 
   logChatRenderModeLocked("PLACE_CARDS_ONLY");
-  const working = filterRecommendationsForCategoryRender(items, intent);
+  const working = filterRecommendationsForCategoryRender(items, intent, userText);
   const cards = working.slice(0, 6);
   logChatPlaceCardRender(cards.length, intent);
   logChatCardsPreserved(cards.length, "category_place_display");
@@ -185,15 +187,18 @@ export function recommendationsForChatDisplay(
     working = filterRecommendationsByExclusion(working, excluded);
 
     if (session.activeChatIntent === "cafe") {
-      return nearbyCategoryRecommendations(working, "cafe");
+      return nearbyCategoryRecommendations(working, "cafe", userText);
     }
-    if (session.activeChatIntent === "restaurant") {
-      return nearbyCategoryRecommendations(working, "restaurant");
+    if (session.activeChatIntent === "restaurant" || isFoodIntentText(userText)) {
+      return nearbyCategoryRecommendations(working, "restaurant", userText);
     }
 
     const categoryIntents = parseChatPlaceIntents(userText);
     if (categoryIntents.length === 1) {
-      return nearbyCategoryRecommendations(working, categoryIntents[0]!);
+      return nearbyCategoryRecommendations(working, categoryIntents[0]!, userText);
+    }
+    if (isFoodIntentText(userText)) {
+      return nearbyCategoryRecommendations(working, "restaurant", userText);
     }
 
     const filtered = filterRecommendationItemsForDisplay(working);
@@ -215,10 +220,10 @@ export function recommendationsForChatDisplay(
             ? "attraction"
             : null);
     if (nearbyIntent === "cafe") {
-      return nearbyCategoryRecommendations(list, "cafe");
+      return nearbyCategoryRecommendations(list, "cafe", userText);
     }
     if (nearbyIntent === "restaurant") {
-      return nearbyCategoryRecommendations(list, "restaurant");
+      return nearbyCategoryRecommendations(list, "restaurant", userText);
     }
     if (nearbyIntent === "attraction") {
       return list.slice(0, 6);
@@ -267,10 +272,13 @@ export function recommendationsForChatDisplay(
     working = filterRecommendationsByExclusion(working, excluded);
     const categoryIntents = parseChatPlaceIntents(userText);
     if (categoryIntents.length === 1) {
-      return nearbyCategoryRecommendations(working, categoryIntents[0]!);
+      return nearbyCategoryRecommendations(working, categoryIntents[0]!, userText);
     }
     if (session.activeChatIntent === "cafe") {
-      return nearbyCategoryRecommendations(working, "cafe");
+      return nearbyCategoryRecommendations(working, "cafe", userText);
+    }
+    if (session.activeChatIntent === "restaurant" || isFoodIntentText(userText)) {
+      return nearbyCategoryRecommendations(working, "restaurant", userText);
     }
     const filtered = filterRecommendationItemsForDisplay(working);
     let nearbyFiltered = filtered;

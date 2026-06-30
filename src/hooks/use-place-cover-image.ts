@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-cache";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
+import { logPerfImageLoad } from "@/lib/app-perf";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
 import type { PlaceImageInput } from "@/services/placeImageService";
 
@@ -46,6 +47,9 @@ export function usePlaceCoverImage(options: Options): {
     if (primaryUrl) {
       setSrc(primaryUrl);
       setLoading(false);
+      if (!failedRef.current) {
+        logPerfImageLoad("place-cover", 1, "google");
+      }
       return;
     }
     setSrc(fallback);

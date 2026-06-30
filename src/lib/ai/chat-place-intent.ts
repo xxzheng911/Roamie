@@ -44,7 +44,7 @@ const CATEGORY_ORDER: ChatPlaceCategoryIntent[] = [
 
 const CATEGORY_PATTERNS: Record<ChatPlaceCategoryIntent, RegExp> = {
   cafe: /(咖啡廳|咖啡店|咖啡|café|cafe)/i,
-  restaurant: /(餐廳|美食|吃飯|用餐|想找餐廳|推薦餐廳|找餐廳|找美食|有推薦的餐廳)/,
+  restaurant: /(餐廳|美食|吃飯|用餐|吃的地方|想吃|吃什麼|找吃的|想找餐廳|推薦餐廳|找餐廳|找美食|有推薦的餐廳|推薦.{0,6}吃)/,
   shopping: /(商圈|shopping|百貨|市集|購物|商場|mall|department\s*store)/i,
   attraction: /(景點|必去|必去景點|附近景點|去哪玩|推薦景點|好玩的|附近.*逛|美術館|博物館|museum|tourist)/i,
   night_market: /(夜市|market)/i,
@@ -132,24 +132,29 @@ export function buildChatPlaceSearchAttempts(
           {
             query: `${destination} restaurant`,
             mode: "text",
-            includedTypes: ["restaurant"],
+            includedTypes: ["restaurant", "food"],
           },
           {
             query: `${destination} 人氣餐廳`,
             mode: "text",
-            includedTypes: ["restaurant"],
+            includedTypes: ["restaurant", "food", "meal_takeaway"],
+          },
+          {
+            query: `${destination} 美食 小吃`,
+            mode: "text",
+            includedTypes: ["restaurant", "food", "cafe", "bakery"],
           },
         ],
         fallback: [
           {
             query: `${destination} food dining`,
             mode: "text",
-            includedTypes: ["restaurant"],
+            includedTypes: ["restaurant", "food", "cafe"],
           },
           {
             query: `${destination} local restaurants`,
             mode: "text",
-            includedTypes: ["restaurant"],
+            includedTypes: ["restaurant", "meal_takeaway", "bakery"],
           },
         ],
       };

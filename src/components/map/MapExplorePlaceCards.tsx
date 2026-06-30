@@ -5,6 +5,7 @@ import {
   useRef,
   type PointerEvent,
 } from "react";
+import { useScrollPerfMonitor } from "@/hooks/use-scroll-perf-monitor";
 import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceCoverImage } from "@/components/media/PlaceCoverImage";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
@@ -99,6 +100,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
     ref,
   ) {
     const scrollRef = useRef<HTMLDivElement>(null);
+    useScrollPerfMonitor("map-cards", scrollRef);
     const dragScrollRef = useRef<{
       active: boolean;
       moved: boolean;

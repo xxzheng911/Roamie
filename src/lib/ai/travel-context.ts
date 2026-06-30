@@ -9,6 +9,7 @@ import {
   isKnownTouristCityLabel,
   missingDestinationPlanningKeys,
   normalizeDestinationLabel,
+  coerceTravelDestination,
   parseDestinationFromText,
   parseDestinationSelectionFromText,
   resolveDestinationFromText,
@@ -44,6 +45,8 @@ import {
 } from "@/lib/ai/budget-refinement";
 import { applyDestinationPendingSelection } from "@/lib/ai/destination-pending-question";
 import { prepareSessionForUserTurn, logConversationStateUpdate } from "@/lib/ai/chat-conversation-state";
+import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
+import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
 
 /** Canonical travel context — merged on every user turn */
 export type CanonicalTravelContext = {
@@ -121,7 +124,8 @@ export function resolveSessionDestination(session: ChatPlanningSession): string 
     session.preferredArea,
   ];
   for (const c of candidates) {
-    if (isValidContextValue(c)) return normalizeDestinationLabel(String(c));
+    const coerced = coerceTravelDestination(isValidContextValue(c) ? String(c) : undefined);
+    if (coerced) return coerced;
   }
   return undefined;
 }
@@ -505,7 +509,20 @@ export function mergeTravelContext(
     });
     logChatIntentPrevious(prev.lastIntent ?? prev.tripPurpose);
 
-    const currentIntent = resolveChatContextIntent(userText, prev.lastIntent ?? prev.tripPurpose);
+    const hasPendingState = Boolean(prepared.pendingQuestion);
+    const explicitPendingTransition =
+      Boolean(parseItineraryPlanModeIntent(userText)) || isCreateItineraryIntent(userText);
+
+    const currentIntent =
+      hasPendingState && !explicitPendingTransition
+        ? prev.lastIntent === "create_itinerary"
+          ? "create_itinerary"
+          : prev.lastIntent === "best_travel_time"
+            ? "best_travel_time"
+            : prev.lastIntent === "place_recommendation"
+              ? "place_recommendation"
+              : "general_chat"
+        : resolveChatContextIntent(userText, prev.lastIntent ?? prev.tripPurpose);
     logChatIntentCurrent(currentIntent);
 
     const pendingSelection = applyDestinationPendingSelection(userText, prepared);
@@ -529,7 +546,7 @@ export function mergeTravelContext(
     const sessionDest = resolveSessionDestination(workingSession);
 
     let itineraryExtracted =
-      currentIntent === "create_itinerary"
+      currentIntent === "create_itinerary" && (!hasPendingState || explicitPendingTransition)
         ? extractItineraryEntitiesFromText(userText)
         : undefined;
 
@@ -566,12 +583,23 @@ export function mergeTravelContext(
     }
 
     if (destMerge.destination) {
-      const sanitized = sanitizeDestinationForGeocode(destMerge.destination);
-      if (sanitized !== destMerge.destination) {
-        const fields = mergeDestinationFields(prev, sanitized);
+      let label = coerceTravelDestination(destMerge.destination);
+      if (label) {
+        const sanitized = sanitizeDestinationForGeocode(label);
+        label = coerceTravelDestination(sanitized) ?? label;
+        if (sanitized !== label && label) {
+          const fields = mergeDestinationFields(prev, sanitized);
+          destMerge = {
+            destination: label,
+            destinationCountry: fields.destinationCountry ?? destMerge.destinationCountry,
+          };
+        } else {
+          destMerge = { ...destMerge, destination: label };
+        }
+      } else {
         destMerge = {
-          destination: sanitized,
-          destinationCountry: fields.destinationCountry ?? destMerge.destinationCountry,
+          destination: coerceTravelDestination(prevDest) ?? coerceTravelDestination(sessionDest),
+          destinationCountry: prev.destinationCountry,
         };
       }
     }

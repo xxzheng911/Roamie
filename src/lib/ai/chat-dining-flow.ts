@@ -31,6 +31,7 @@ import {
   parseChatPlaceIntents,
   resolveDestinationForCategorySearch,
 } from "@/lib/ai/chat-place-intent";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
 import {
@@ -38,9 +39,11 @@ import {
   isTravelPlanningText,
   shouldBlockNearbyRecommendation,
 } from "@/lib/ai/chat-intent-router";
+import { isFoodIntentText } from "@/lib/ai/chat-food-filter";
 import {
   isDestinationAdviceText,
   isDestinationSelectionText,
+  coerceTravelDestination,
 } from "@/lib/ai/trip-planning-context";
 
 /** 使用者回覆餐廳菜系 / 不限 */
@@ -91,10 +94,12 @@ export function parseDiningTimeHint(text: string): string | undefined {
 export function resolveChatIntent(text: string, session: ChatPlanningSession): ChatIntent {
   const categoryIntents = parseChatPlaceIntents(text);
   const travelCtx = session.travelContext ?? { interests: [] };
-  if (
-    categoryIntents.length > 0 &&
-    resolveDestinationForCategorySearch(travelCtx, session, text)
-  ) {
+
+  if (categoryIntents.length > 0 && hasCategoryPlaceQuery(text)) {
+    const categoryDest = resolveDestinationForCategorySearch(travelCtx, session, text);
+    if (coerceTravelDestination(categoryDest)) {
+      return mapCategoryIntentToNearbyIntent(categoryIntents[0]!);
+    }
     return mapCategoryIntentToNearbyIntent(categoryIntents[0]!);
   }
 
@@ -183,6 +188,9 @@ export function shouldAskRestaurantCuisine(
   userText?: string,
 ): boolean {
   if (isTripAddPlaceSession(session)) return false;
+  if (userText?.trim() && isFoodIntentText(userText) && !isFoodPreferenceReply(userText)) {
+    return false;
+  }
   if (userText?.trim() && resolveDestinationForCategorySearch(
     session.travelContext ?? { interests: [] },
     session,
@@ -216,6 +224,7 @@ export function shouldFetchNearbyPlaces(
       return true;
     }
     return (
+      isFoodIntentText(text) ||
       Boolean(session.foodPreference) ||
       isFoodPreferenceReply(text) ||
       isExclusionReply(text) ||
@@ -252,6 +261,8 @@ export function applyDiningContextFromText(
     }
   } else if (isNearbyPlaceIntent(intent)) {
     next.activeChatIntent = intent;
+  } else if (isFoodIntentText(text)) {
+    next.activeChatIntent = "restaurant";
   } else if (
     session.activeChatIntent &&
     isNearbyPlaceIntent(session.activeChatIntent) &&

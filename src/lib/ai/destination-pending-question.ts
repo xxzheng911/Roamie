@@ -11,6 +11,7 @@ import {
   buildDailyRecommendationsReply,
   itineraryGenerationStatusReply,
   parseItineraryPlanModeIntent,
+  parseEmbeddedAbPlanMode,
 } from "@/lib/ai/itinerary-planning";
 import {
   parseTripPreferences,
@@ -221,6 +222,8 @@ export function isItineraryNextStepPending(pending?: PendingQuestion): boolean {
 export function parseItineraryNextStepSelection(text: string): ItineraryNextStepOption | null {
   const t = text.trim();
   if (!t) return null;
+  const embedded = parseEmbeddedAbPlanMode(t);
+  if (embedded) return embedded;
   if (/^a$/i.test(t)) return "full_itinerary";
   if (/^b$/i.test(t)) return "daily_recommendations";
 
@@ -273,6 +276,9 @@ export function parsePendingOptionSelection(
     const planMode = parseItineraryPlanModeIntent(t);
     if (planMode === "full_itinerary" && pending.options.includes("full_itinerary")) {
       return "full_itinerary";
+    }
+    if (planMode === "daily_recommendations" && pending.options.includes("daily_recommendations")) {
+      return "daily_recommendations";
     }
     if (isAffirmativeReply(t)) {
       if (pending.options.includes("full_itinerary")) return "full_itinerary";

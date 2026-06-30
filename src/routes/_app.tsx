@@ -16,6 +16,7 @@ import {
   logPerfRouteChange,
   logPerfRouteDuration,
 } from "@/lib/app-perf";
+import { useScrollPerfMonitor } from "@/hooks/use-scroll-perf-monitor";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: requireAppShellAccess,
@@ -33,6 +34,17 @@ function isMainScrollLockedPath(pathname: string): boolean {
 
 function isTripDetailPath(pathname: string): boolean {
   return /^\/saved\/[^/]+$/.test(normalizeAppPath(pathname));
+}
+
+function scrollPerfPageName(pathname: string): string | null {
+  const path = normalizeAppPath(pathname);
+  if (path === "/") return "home";
+  if (path === "/chat") return null;
+  if (path === "/map") return "map";
+  if (path === "/saved") return "saved";
+  if (path === "/profile") return "profile";
+  if (isTripDetailPath(path)) return "trip-detail";
+  return path.replace(/^\//, "") || null;
 }
 
 function applyRouteSideEffects(nextPath: string, prevPath: string): void {
@@ -135,6 +147,8 @@ function AppLayout() {
   }, [normalizedPath]);
 
   const mainScrollLocked = isMainScrollLockedPath(pathname);
+  const scrollPerfPage = scrollPerfPageName(pathname);
+  useScrollPerfMonitor(scrollPerfPage ?? "");
 
   useLayoutEffect(() => {
     document.documentElement.classList.toggle("map-route-active", pathname === "/map");

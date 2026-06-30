@@ -69,6 +69,12 @@ import {
   runPlaceDetailNearbySingleFlight,
 } from "@/lib/chat-place-context";
 import { filterPlacesByCafeGuard } from "@/lib/ai/chat-category-place-guard";
+import {
+  buildFoodSearchAttempts,
+  filterPlacesForFoodIntent,
+  FOOD_DISTRICT_CARD_TYPE,
+  isFoodIntentText,
+} from "@/lib/ai/chat-food-filter";
 import type { ChatPlaceSearchContext } from "@/lib/ai/chat-place-search-context";
 import {
   filterPlacesByDestinationGuard,
@@ -142,12 +148,12 @@ function nearbySearchAttemptForIntent(
         ? foodPreferenceSearchQuery(foodPreference)
         : undefined;
     if (cuisineQuery) {
-      return { query: cuisineQuery, mode: "text" };
+      return { query: cuisineQuery, mode: "text", includedTypes: ["restaurant", "food"] };
     }
     return {
-      query: "餐廳 聚餐",
+      query: "餐廳 美食",
       mode: "nearby",
-      includedTypes: ["restaurant"],
+      includedTypes: ["restaurant", "food"],
     };
   }
   if (intent === "cafe") {
@@ -457,25 +463,12 @@ function placeDetailNearbySearchAttempts(intent: NearbyPlaceIntent): SearchAttem
   ];
 }
 
-/** 餐廳搜尋 fallback：菜系 text → 通用 text → nearby */
-export function restaurantSearchFallbackQueries(foodPreference?: string): SearchAttempt[] {
-  const attempts: SearchAttempt[] = [];
-  const cuisineQuery =
-    foodPreference && foodPreference !== "any"
-      ? foodPreferenceSearchQuery(foodPreference)
-      : undefined;
-
-  if (cuisineQuery) {
-    attempts.push({ query: cuisineQuery, mode: "text" });
-    if (foodPreference === "italian") {
-      attempts.push({ query: "Italian restaurant", mode: "text" });
-      attempts.push({ query: "義大利餐廳", mode: "text" });
-    }
-  }
-
-  attempts.push({ query: "餐廳", mode: "text" });
-  attempts.push({ query: "餐廳 聚餐", mode: "nearby", includedTypes: ["restaurant"] });
-  return attempts;
+/** 餐廳搜尋 fallback：僅 food 類型，不 fallback 到景點 */
+export function restaurantSearchFallbackQueries(
+  foodPreference?: string,
+  userText = "",
+): SearchAttempt[] {
+  return buildFoodSearchAttempts(foodPreference, userText);
 }
 
 async function runPlaceSearch(
@@ -674,22 +667,28 @@ function applyNearbyPlaceFilters(
   }
   working = filterPlacesByExclusion(working, params.excluded);
   working = filterExcludedPlaceIds(working, params.excludePlaceIds);
-  working = filterPlacesForAttractionRecommendation(working, {
-    allowParks: params.allowParks,
-    blockedCoreNames: params.blockedCoreNames,
-    blockedPlaceIds: params.excludePlaceIds,
-    profile: params.searchContext?.searchMode === "nearby" ? undefined : params.destinationProfile,
-    parentLandmark:
-      params.searchContext?.searchMode === "nearby"
-        ? undefined
-        : params.destinationProfile?.parentLandmark,
-  });
+  if (params.intent !== "restaurant" && !isFoodIntentText(params.userText ?? "")) {
+    working = filterPlacesForAttractionRecommendation(working, {
+      allowParks: params.allowParks,
+      blockedCoreNames: params.blockedCoreNames,
+      blockedPlaceIds: params.excludePlaceIds,
+      profile: params.searchContext?.searchMode === "nearby" ? undefined : params.destinationProfile,
+      parentLandmark:
+        params.searchContext?.searchMode === "nearby"
+          ? undefined
+          : params.destinationProfile?.parentLandmark,
+    });
+  }
   if (params.intent === "camping") {
     working = filterCampingPlaces(working);
   }
   working = filterNonLodgingPlaces(working, { allowLodging: params.allowLodging });
   if (params.intent === "cafe" && params.strictCafeGuard) {
     working = filterPlacesByCafeGuard(working);
+  }
+  if (params.intent === "restaurant" || isFoodIntentText(params.userText ?? "")) {
+    const { restaurants, districts } = filterPlacesForFoodIntent(working, params.userText ?? "");
+    working = [...restaurants, ...districts];
   }
   working = filterPlacesByNearbyDistance(working, params.lat, params.lng, params.maxDistanceKm);
   return working;
@@ -776,10 +775,10 @@ async function fetchNearbyPlacesForIntentInner(
 
   const baseAttempt: SearchAttempt =
     intent === "restaurant"
-      ? restaurantSearchFallbackQueries(foodPreference)[0] ?? {
-          query: "餐廳 聚餐",
+      ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "")[0] ?? {
+          query: "餐廳 美食",
           mode: "nearby",
-          includedTypes: ["restaurant"],
+          includedTypes: ["restaurant", "food"],
         }
       : intent === "camping"
         ? campingSearchAttempts()[0] ?? { query: "露營", mode: "text" }
@@ -799,7 +798,7 @@ async function fetchNearbyPlacesForIntentInner(
   const searchAttempts: SearchAttempt[] = opts?.placeDetailNearby
     ? placeDetailNearbySearchAttempts(intent)
     : intent === "restaurant"
-      ? restaurantSearchFallbackQueries(foodPreference)
+      ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "")
       : [baseAttempt];
 
   const radiusSteps = opts?.placeDetailNearby
@@ -1030,7 +1029,20 @@ export async function buildNearbyPlaceRecommendation(params: {
       rejectedNames: rejectedPlaceNames,
       blockedCoreNames: coreBlock,
     });
-    const picks = places.slice(0, RECOMMENDATION_COUNT);
+
+    let foodDistricts: PlaceResult[] = [];
+    if (intent === "restaurant" || isFoodIntentText(userText)) {
+      const split = filterPlacesForFoodIntent(places, userText);
+      places = split.restaurants;
+      foodDistricts = split.districts;
+    }
+
+    const restaurantPicks = places.slice(0, RECOMMENDATION_COUNT);
+    const districtPick =
+      foodDistricts.length > 0 && restaurantPicks.length < RECOMMENDATION_COUNT
+        ? foodDistricts.slice(0, 1)
+        : [];
+    const picks = [...restaurantPicks, ...districtPick];
 
     if (!picks.length) {
       if (excluded.length) {
@@ -1062,12 +1074,24 @@ export async function buildNearbyPlaceRecommendation(params: {
         p.lat != null && p.lng != null
           ? distanceMeters({ lat, lng }, { lat: p.lat, lng: p.lng })
           : undefined;
+      const isDistrict = districtPick.some((d) => d.id === p.id);
       return mapPlaceResultToChatItem(p, {
         mood: context.mood,
         locale,
         distanceMeters: distM,
+        categoryLabel: isDistrict ? FOOD_DISTRICT_CARD_TYPE : undefined,
       });
-    });
+    }).map((item) =>
+      districtPick.some((d) => d.id === item.googlePlaceId || d.id === item.placeId)
+        ? {
+            ...item,
+            type: FOOD_DISTRICT_CARD_TYPE,
+            description: item.description?.trim()
+              ? `${FOOD_DISTRICT_CARD_TYPE} · ${item.description}`
+              : FOOD_DISTRICT_CARD_TYPE,
+          }
+        : item,
+    );
 
     const summary = buildSummary(intent, picks, context, excluded);
     const mode = chatResponseModeForIntent(intent);

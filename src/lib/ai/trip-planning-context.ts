@@ -258,6 +258,35 @@ export function isDestinationAdviceActive(session: ChatPlanningSession): boolean
   );
 }
 
+/** 需求詞、類別詞、偏好詞 — 不可當目的地 */
+const CATEGORY_NON_DESTINATION_LABELS = new Set([
+  "吃的地方",
+  "玩的地方",
+  "去的地方",
+  "看的地方",
+  "美食",
+  "餐廳",
+  "餐厅",
+  "咖啡廳",
+  "咖啡店",
+  "咖啡",
+  "景點",
+  "景点",
+  "逛街",
+  "放鬆",
+  "放松",
+  "散步",
+  "shopping",
+  "food",
+  "cafe",
+  "café",
+  "夜市",
+  "商圈",
+  "酒吧",
+  "室內",
+  "室内",
+]);
+
 const NON_DESTINATION_LABELS = new Set([
   "哪裡",
   "哪里",
@@ -302,10 +331,35 @@ export function normalizeCityLabel(name: string): string {
   return name.trim().replace(/(市|縣|都|府)$/, "");
 }
 
+/** 需求／類別／偏好片語 — 不可當目的地 */
+export function isCategoryNonDestinationLabel(name: string): boolean {
+  const raw = name.trim();
+  if (!raw) return true;
+  const n = normalizeDestinationLabel(raw);
+  const lower = n.toLowerCase();
+  if (CATEGORY_NON_DESTINATION_LABELS.has(n)) return true;
+  if (CATEGORY_NON_DESTINATION_LABELS.has(lower)) return true;
+  if (/的地方$/.test(n) && n.length <= 8) return true;
+  if (/^(吃|喝|玩|逛|買|买|看|住)/.test(n) && /(地方|地点|地點|区域|區域)/.test(n)) {
+    return true;
+  }
+  return false;
+}
+
+/** 通過驗證才回傳正規化目的地，否則 undefined */
+export function coerceTravelDestination(name: string | undefined | null): string | undefined {
+  if (!name?.trim()) return undefined;
+  const label = normalizeDestinationLabel(name.trim());
+  if (isCategoryNonDestinationLabel(label)) return undefined;
+  if (!isValidParsedDestinationLabel(label)) return undefined;
+  return label;
+}
+
 /** 提問語、代詞、動詞片語 — 不可當目的地 */
 export function isValidParsedDestinationLabel(name: string): boolean {
   const n = name.trim();
   if (n.length < 2) return false;
+  if (isCategoryNonDestinationLabel(n)) return false;
   if (NON_DESTINATION_LABELS.has(n)) return false;
   if (/^(哪|什麼|什么|何人|何處|何处|附近|這|这|那|幾|何時|何时|怎麼|怎么|如何)/.test(n)) {
     return false;

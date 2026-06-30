@@ -6,7 +6,7 @@ import {
   buildNextStepAfterAdviceSelection,
   type PendingQuestion,
 } from "@/lib/ai/destination-pending-question";
-import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
+import { isDestinationAdviceActive, coerceTravelDestination } from "@/lib/ai/trip-planning-context";
 import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 
@@ -146,7 +146,8 @@ export function advanceAfterPendingSelection(
 
 export function buildPlanningContextSummary(ctx: CanonicalTravelContext): string {
   const parts: string[] = [];
-  if (ctx.destination) parts.push(`目的地：${ctx.destination}`);
+  const destination = coerceTravelDestination(ctx.destination);
+  if (destination) parts.push(`目的地：${destination}`);
   if (ctx.days) parts.push(`天數：${ctx.days}天`);
   if (ctx.vibe || ctx.travelStyle) parts.push(`偏好：${ctx.vibe ?? ctx.travelStyle}`);
   if (ctx.selectedInterests?.length) parts.push(`興趣：${ctx.selectedInterests.join("、")}`);
@@ -161,14 +162,15 @@ export function buildPlanningOfflineReply(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
 ): string | null {
-  const dest =
+  const dest = coerceTravelDestination(
     ctx.destination ??
-    session.tripPlanningContext?.destination ??
-    session.tripDestination?.city ??
-    session.tripDestination?.displayLabel ??
-    session.preferredArea ??
-    session.travelContext?.destination;
-  if (!dest?.trim()) return null;
+      session.tripPlanningContext?.destination ??
+      session.tripDestination?.city ??
+      session.tripDestination?.displayLabel ??
+      session.preferredArea ??
+      session.travelContext?.destination,
+  );
+  if (!dest) return null;
 
   const summary = buildPlanningContextSummary(ctx);
   if (session.pendingQuestion?.type === "ask_days" || (!ctx.days && !session.pendingQuestion)) {

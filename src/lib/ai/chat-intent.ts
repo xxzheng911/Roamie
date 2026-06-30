@@ -28,17 +28,14 @@ import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 import { isMoodNearbyRelaxationRequest } from "@/lib/mood-nearby-intent";
+import { isFoodIntentText } from "@/lib/ai/chat-food-filter";
 
 function isTripAddPlaceChat(session: ChatPlanningSession): boolean {
   return Boolean(session.fromTripAddPlace && session.tripAddPlaceContext);
 }
 
 function isTripMealRequest(text: string): boolean {
-  const t = text.trim();
-  if (!t) return false;
-  return /(三餐|早餐|午餐|晚餐|宵夜|早午餐|吃飯|用餐|找餐廳|找美食|想吃|安排.{0,4}餐|餐廳|美食|吃什麼)/.test(
-    t,
-  );
+  return isFoodIntentText(text);
 }
 
 function userExplicitlyWantsNearbyPlaces(text: string): boolean {
@@ -79,7 +76,7 @@ export function detectChatIntent(text: string): ChatIntent {
   const t = text.trim();
   if (!t) return "general";
 
-  if (isMoodNearbyRelaxationRequest(t)) return "attraction";
+  if (isMoodNearbyRelaxationRequest(t) && !isFoodIntentText(t)) return "attraction";
   if (isCreateItineraryIntent(t)) return "create_itinerary";
   if (isBestTravelTimeIntent(t)) return "best_travel_time";
 
@@ -189,7 +186,16 @@ export function detectChatIntent(text: string): ChatIntent {
     return "attraction";
   }
 
-  // ── 4. 心情推薦（無目的地／日期／規劃訊號）──
+  // ── 4. 美食優先於純心情（例：心情糟 + 推薦吃的地方）──
+  if (
+    isFoodIntentText(t) &&
+    /(推薦|有沒有|可以|去哪|找|想吃|幫我)/.test(t) &&
+    !resolveDestinationFromText(t)
+  ) {
+    return "restaurant";
+  }
+
+  // ── 5. 心情推薦（無目的地／日期／規劃訊號）──
   if (isMoodOnlyText(t)) return "mood_chat";
 
   if (
@@ -285,6 +291,8 @@ export function inferNearbyIntentFromContext(
   if (isDestinationAdviceText(text)) return null;
   if (isPlaceDetailChatActive(session)) return null;
 
+  if (isFoodIntentText(text)) return "restaurant";
+
   if (isTripAddPlaceChat(session)) {
     if (isTripMealRequest(text)) return "restaurant";
     if (/(咖啡廳|咖啡店|咖啡|café|cafe)/i.test(text)) return "cafe";
@@ -294,6 +302,9 @@ export function inferNearbyIntentFromContext(
 
   if (session.activeChatIntent && isNearbyPlaceIntent(session.activeChatIntent)) {
     if (shouldBlockNearbyRecommendation(text, session)) return null;
+    if (isFoodIntentText(text) && session.activeChatIntent !== "restaurant") {
+      return "restaurant";
+    }
     return session.activeChatIntent;
   }
 

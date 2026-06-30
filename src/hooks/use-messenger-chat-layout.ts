@@ -137,6 +137,7 @@ export function useMessengerChatLayout(params: {
   const prevKeyboardOpenRef = useRef(false);
   const lastScrollLogRef = useRef("");
   const lastLayoutLogRef = useRef("");
+  const scrollToBottomRafRef = useRef<number | null>(null);
 
   const applyKeyboardDomState = useCallback((keyboardOpen: boolean) => {
     document.documentElement.classList.toggle(CHAT_KEYBOARD_OPEN_CLASS, keyboardOpen);
@@ -271,7 +272,9 @@ export function useMessengerChatLayout(params: {
 
       if (!shouldScroll) return;
 
-      requestAnimationFrame(() => {
+      if (scrollToBottomRafRef.current != null) return;
+      scrollToBottomRafRef.current = requestAnimationFrame(() => {
+        scrollToBottomRafRef.current = null;
         anchorEl.scrollIntoView({ block: "end", behavior: "auto" });
       });
     },

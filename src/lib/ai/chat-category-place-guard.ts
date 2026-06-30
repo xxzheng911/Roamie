@@ -12,6 +12,11 @@ import {
   logChatPlaceCardRender,
   logChatWrongCategoryRejected,
 } from "@/lib/ai/chat-place-flow-log";
+import {
+  evaluateFoodPlace,
+  FOOD_DISTRICT_CARD_TYPE,
+  isFoodIntentText,
+} from "@/lib/ai/chat-food-filter";
 
 const CAFE_TYPES = new Set([
   "cafe",
@@ -130,9 +135,44 @@ export function passesCafeRenderGuard(item: RoamieRecommendationItem): boolean {
   return ok;
 }
 
+export function passesRestaurantRenderGuard(
+  item: RoamieRecommendationItem,
+  userText = "",
+): boolean {
+  if (isComboItineraryRecommendation(item)) {
+    logChatWrongCategoryRejected(item.name ?? "unknown", "combo_itinerary");
+    return false;
+  }
+  if (!isRealPlaceCard(item)) {
+    logChatWrongCategoryRejected(item.name ?? "unknown", "missing_place_id");
+    return false;
+  }
+
+  const verdict = evaluateFoodPlace(
+    {
+      name: item.placeName ?? item.name,
+      address: item.address,
+      primaryType: item.type,
+      types: item.type ? [item.type] : [],
+    },
+    userText,
+  );
+
+  if (verdict.isDistrict) {
+    return item.type === FOOD_DISTRICT_CARD_TYPE;
+  }
+
+  if (!verdict.allowed) {
+    logChatWrongCategoryRejected(item.name ?? "unknown", verdict.reason);
+    return false;
+  }
+  return true;
+}
+
 export function filterRecommendationsForCategoryRender(
   items: RoamieRecommendationItem[],
   intent: ChatPlaceCategoryIntent,
+  userText = "",
 ): RoamieRecommendationItem[] {
   logChatRenderMode("place_card_only");
   logChatRenderModeLocked("PLACE_CARDS_ONLY");
@@ -141,19 +181,21 @@ export function filterRecommendationsForCategoryRender(
   const filtered =
     intent === "cafe"
       ? items.filter(passesCafeRenderGuard)
-      : CATEGORY_ONLY_INTENTS.has(intent)
-        ? items.filter((item) => {
-            if (isComboItineraryRecommendation(item)) {
-              logChatWrongCategoryRejected(item.name ?? "unknown", "combo_itinerary");
-              return false;
-            }
-            if (!isRealPlaceCard(item)) {
-              logChatWrongCategoryRejected(item.name ?? "unknown", "missing_place_id");
-              return false;
-            }
-            return true;
-          })
-        : items.filter((item) => !isComboItineraryRecommendation(item) || isRealPlaceCard(item));
+      : intent === "restaurant" || isFoodIntentText(userText)
+        ? items.filter((item) => passesRestaurantRenderGuard(item, userText))
+        : CATEGORY_ONLY_INTENTS.has(intent)
+          ? items.filter((item) => {
+              if (isComboItineraryRecommendation(item)) {
+                logChatWrongCategoryRejected(item.name ?? "unknown", "combo_itinerary");
+                return false;
+              }
+              if (!isRealPlaceCard(item)) {
+                logChatWrongCategoryRejected(item.name ?? "unknown", "missing_place_id");
+                return false;
+              }
+              return true;
+            })
+          : items.filter((item) => !isComboItineraryRecommendation(item) || isRealPlaceCard(item));
 
   logChatPlaceCardRender(filtered.length, intent);
   return filtered;

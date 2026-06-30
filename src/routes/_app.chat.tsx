@@ -2,7 +2,9 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { useMessengerChatLayout } from "@/hooks/use-messenger-chat-layout";
 import { ChatComposer } from "@/components/chat/ChatComposer";
+import { ChatMessageList, RoamieAssistantAvatar } from "@/components/chat/ChatMessageList";
 import { ChatKeyboardDebugOverlay } from "@/components/chat/ChatKeyboardDebugOverlay";
+import { useScrollPerfMonitor } from "@/hooks/use-scroll-perf-monitor";
 import { isChatKeyboardDebugEnabled } from "@/lib/chat-keyboard-visual-debug";
 import { useServerFn } from "@tanstack/react-start";
 import { Loader2, RotateCcw, Trash2 } from "lucide-react";
@@ -19,8 +21,6 @@ import { geocodeTripLocationFromText } from "@/lib/location.functions";
 import { searchPlaces, getPlaceDetails } from "@/lib/places.functions";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { streamRoamieAI, fetchRoamieAI } from "@/lib/ai/stream-client";
-import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
-import { RoamieResponseView } from "@/components/RoamieResponseView";
 import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
@@ -206,10 +206,12 @@ import {
   buildSummaryForRecommendations,
   restaurantSearchFallbackQueries,
 } from "@/lib/ai/chat-place-recommendation";
+import { filterPlacesForFoodIntent, isFoodIntentText } from "@/lib/ai/chat-food-filter";
 import { resolveNearbySearchCenter } from "@/lib/ai/chat-nearby-search";
 import { buildDestinationMustVisitRecommendation, buildAlternativeDestinationRecommendations, buildMoreDestinationRecommendations } from "@/lib/ai/destination-place-recommendation";
 import { buildDestinationCategoryRecommendations } from "@/lib/ai/chat-destination-category-recommendation";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { coerceTravelDestination } from "@/lib/ai/trip-planning-context";
 import {
   mapCategoryIntentToNearbyIntent,
   parseChatPlaceIntents,
@@ -380,10 +382,14 @@ function Chat() {
   const homeMoodShortcutEngagedRef = useRef(false);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
 
+  const partialScrollKey = `${partial.summary?.length ?? 0}:${partial.recommendations?.length ?? 0}`;
+
+  useScrollPerfMonitor("chat", messagesRef);
+
   useEffect(() => {
     if (hydrating || !streaming) return;
     scrollToBottom("user_near_bottom");
-  }, [hydrating, streaming, partial, msgs, scrollToBottom]);
+  }, [hydrating, streaming, partialScrollKey, scrollToBottom]);
 
   useEffect(() => {
     msgsRef.current = msgs;
@@ -2210,7 +2216,9 @@ function Chat() {
 
       const resolvedIntent = resolveChatIntent(activeUserText, activeSession);
       const isRestaurantFlow =
-        activeSession.activeChatIntent === "restaurant" || resolvedIntent === "restaurant";
+        activeSession.activeChatIntent === "restaurant" ||
+        resolvedIntent === "restaurant" ||
+        isFoodIntentText(activeUserText);
       const isCampingFlow =
         activeSession.activeChatIntent === "camping" ||
         resolvedIntent === "camping" ||
@@ -2219,7 +2227,7 @@ function Chat() {
 
       if (lat != null && lng != null) {
         const attempts = isRestaurantFlow
-          ? restaurantSearchFallbackQueries(activeSession.foodPreference)
+          ? restaurantSearchFallbackQueries(activeSession.foodPreference, activeUserText)
           : isCampingFlow
             ? campingSearchAttempts()
             : [{ query: fallbackSearchQuery(context), mode: "text" as const }];
@@ -2257,6 +2265,10 @@ function Chat() {
             }
             if (isCampingFlow) {
               placeResults = filterCampingPlaces(placeResults);
+            }
+            if (isRestaurantFlow) {
+              const split = filterPlacesForFoodIntent(placeResults, activeUserText);
+              placeResults = [...split.restaurants, ...split.districts];
             }
             devVerboseInfo(`[CHAT_PLACES_SUCCESS] count=${placeResults.length}`);
             if (placeResults.length > 0) break;
@@ -3159,7 +3171,13 @@ function Chat() {
     if (
       (isPlanningTurnActive(nextSession, merged.context) ||
         isDestinationPlanningSession(nextSession, merged.context)) &&
-      !shouldFetchDestinationCategoryPlaces(trimmed, refreshedPlaceCtx, nextSession)
+      !shouldFetchDestinationCategoryPlaces(trimmed, refreshedPlaceCtx, nextSession) &&
+      !(
+        hasCategoryPlaceQuery(trimmed) &&
+        !coerceTravelDestination(
+          resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed),
+        )
+      )
     ) {
       const planningCtx = nextSession.travelContext ?? merged.context;
       const earlyPlanningTurn = processAdviceTurn(trimmed, nextSession, planningCtx);
@@ -4035,64 +4053,29 @@ function Chat() {
             !travelPrefStatus.preferenceQuizCompleted && (
             <PreferenceQuizCta origin="chat" variant="banner" className="animate-rise" />
           )}
-          {hydrating && (
-            <div className="flex justify-center pt-4">
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-            </div>
-          )}
-          {!hydrating &&
-            msgs.map((m, i) => (
-              <div
-                key={i}
-                className={`flex animate-rise ${m.role === "user" ? "justify-end" : "justify-start gap-2.5"}`}
-              >
-                {m.role === "assistant" ? (
-                  <RoamieAssistantAvatar className="h-8 w-8 self-end" />
-                ) : null}
-                <div
-                  className={`max-w-[88%] rounded-3xl px-4 py-3 ${
-                    m.role === "user"
-                      ? "rounded-br-md bg-primary text-primary-foreground"
-                      : "rounded-bl-md border border-border bg-card"
-                  }`}
-                >
-                  {m.role === "user" ? (
-                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
-                  ) : m.roamie || (streaming && i === msgs.length - 1 && partial.summary) ? (
-                    <RoamieResponseView
-                      data={m.roamie ?? partial}
-                      compact
-                      recommendationsPreFiltered
-                      onRecommendationEngage={markShortcutEngaged}
-                      showItinerary={false}
-                      onSavePlace={handleSavePlace}
-                      onAddToTrip={(rec) => {
-                        void handleAddToTripFromChat(rec);
-                      }}
-                      onOpenPlaceDetail={handleOpenPlaceDetail}
-                      onDiscussPlace={handleDiscussPlace}
-                      outfitAdvice={m.roamie?.outfitAdvice}
-                      selectedPlaceNames={selectedNames}
-                      savingPlaceName={savingName}
-                      savedPlaceNames={savedNames}
-                      addToTripLabel={t("chat.addToTrip")}
-                      discussPlaceLabel={t("trip.discussPlace")}
-                      viewMapLabel={t("chat.viewMap")}
-                    />
-                  ) : (
-                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
-                      {m.content || (
-                        <span className="inline-flex gap-1">
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:120ms]" />
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:240ms]" />
-                        </span>
-                      )}
-                    </p>
-                  )}
-                </div>
-              </div>
-            ))}
+          <ChatMessageList
+            msgs={msgs}
+            hydrating={hydrating}
+            streaming={streaming}
+            partial={partial}
+            selectedNames={selectedNames}
+            savedNames={savedNames}
+            savingName={savingName}
+            addToTripLabel={t("chat.addToTrip")}
+            discussPlaceLabel={t("trip.discussPlace")}
+            viewMapLabel={t("chat.viewMap")}
+            onRecommendationEngage={markShortcutEngaged}
+            onSavePlace={(rec) => {
+              void handleSavePlace(rec);
+            }}
+            onAddToTrip={(rec) => {
+              void handleAddToTripFromChat(rec);
+            }}
+            onOpenPlaceDetail={handleOpenPlaceDetail}
+            onDiscussPlace={(rec) => {
+              void handleDiscussPlace(rec);
+            }}
+          />
           {lastFailed && !streaming && (
             <div className="flex justify-center">
               <button

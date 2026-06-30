@@ -1,6 +1,7 @@
 import { Loader2 } from "lucide-react";
 import { memo } from "react";
 import defaultCover from "@/assets/roamie-default-cover.png";
+import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 
 type Props = {
   coverUrl: string | null;
@@ -9,6 +10,8 @@ type Props = {
 };
 
 export const ProfileCover = memo(function ProfileCover({ coverUrl, busy = false, onPress }: Props) {
+  const resolvedCover = coverUrl ? resolvePlaceImageUrl(coverUrl, { maxWidth: 900 }) : null;
+
   return (
     <button
       type="button"
@@ -18,16 +21,18 @@ export const ProfileCover = memo(function ProfileCover({ coverUrl, busy = false,
       aria-label={coverUrl ? "更換封面" : "設定封面"}
     >
       <div className="relative aspect-[3/2] w-full min-h-[11rem] max-h-[16rem] shrink-0 overflow-hidden bg-gradient-to-br from-[hsl(var(--accent))] via-secondary to-[hsl(38_42%_94%)]">
-        {coverUrl ? (
+        {resolvedCover ? (
           <img
-            src={coverUrl}
+            src={resolvedCover}
             alt=""
+            loading="lazy"
+            decoding="async"
             className={`absolute inset-0 h-full w-full object-cover object-center transition duration-300 ${
               busy ? "opacity-80" : ""
             }`}
           />
         ) : (
-          <img src={defaultCover} alt="" className="h-full w-full object-cover" />
+          <img src={defaultCover} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
         )}
 
         <div

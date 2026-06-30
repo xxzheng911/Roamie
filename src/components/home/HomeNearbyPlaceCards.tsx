@@ -139,6 +139,7 @@ export function HomeNearbyPlaceCards({
                     types={p.types}
                     categoryId={p.categoryId}
                     maxWidth={600}
+                    priority={i < 2}
                     alt=""
                     className="absolute inset-0"
                   />
@@ -150,6 +151,8 @@ export function HomeNearbyPlaceCards({
                     primaryType={p.primaryType}
                     types={p.types}
                     categoryId={p.categoryId}
+                    priority={i < 2}
+                    perfPage="home"
                     className="absolute inset-0"
                   />
                 )}

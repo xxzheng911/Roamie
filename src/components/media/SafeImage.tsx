@@ -43,6 +43,8 @@ export function SafeImage({ src, fallbackSrc, onError, className, maxWidth, ...r
     <img
       {...rest}
       src={displaySrc}
+      loading="lazy"
+      decoding="async"
       className={cn(className)}
       onError={(event) => {
         markImageLoadFailed(displaySrc);

@@ -1,6 +1,8 @@
 type PerfDetail = Record<string, unknown>;
 
 const routeChangeStartedAt = new Map<string, number>();
+const perfImageLoadCounts = new Map<string, { count: number; sources: Set<string> }>();
+let perfImageFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function logPerfRouteChange(from: string, to: string): void {
   if (from === to) return;
@@ -54,4 +56,32 @@ export function measurePerfRender(component: string, reason: string, run: () => 
   if (durationMs >= 8) {
     logPerfRender(component, { reason, durationMs });
   }
+}
+
+export function logPerfScroll(
+  page: string,
+  detail: PerfDetail & { fpsDrop?: number; longTaskMs?: number },
+): void {
+  console.info("[PERF_SCROLL]", { page, ...detail });
+}
+
+export function logPerfImageLoad(page: string, count: number, source: string): void {
+  const key = page || "unknown";
+  const bucket = perfImageLoadCounts.get(key) ?? { count: 0, sources: new Set<string>() };
+  bucket.count += count;
+  if (source) bucket.sources.add(source);
+  perfImageLoadCounts.set(key, bucket);
+
+  if (perfImageFlushTimer) clearTimeout(perfImageFlushTimer);
+  perfImageFlushTimer = setTimeout(() => {
+    perfImageFlushTimer = null;
+    for (const [p, stats] of perfImageLoadCounts) {
+      console.info("[PERF_IMAGE_LOAD]", {
+        page: p,
+        count: stats.count,
+        source: [...stats.sources].slice(0, 5).join(","),
+      });
+    }
+    perfImageLoadCounts.clear();
+  }, 800);
 }
