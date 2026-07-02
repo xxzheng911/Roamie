@@ -236,12 +236,84 @@ export type Database = {
         }
         Relationships: []
       }
+      trip_invites: {
+        Row: {
+          created_at: string
+          expires_at: string
+          id: string
+          invitee_email: string | null
+          invitee_user_id: string | null
+          inviter_id: string
+          status: string
+          token: string
+          trip_id: string
+        }
+        Insert: {
+          created_at?: string
+          expires_at?: string
+          id?: string
+          invitee_email?: string | null
+          invitee_user_id?: string | null
+          inviter_id: string
+          status?: string
+          token: string
+          trip_id: string
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string
+          id?: string
+          invitee_email?: string | null
+          invitee_user_id?: string | null
+          inviter_id?: string
+          status?: string
+          token?: string
+          trip_id?: string
+        }
+        Relationships: []
+      }
+      trip_members: {
+        Row: {
+          created_at: string
+          id: string
+          invited_by: string | null
+          is_owner: boolean
+          status: string
+          trip_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          invited_by?: string | null
+          is_owner?: boolean
+          status?: string
+          trip_id: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          invited_by?: string | null
+          is_owner?: boolean
+          status?: string
+          trip_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      accept_trip_invite: {
+        Args: { invite_token: string }
+        Returns: string
+      }
     }
     Enums: {
       [_ in never]: never

@@ -207,6 +207,8 @@ export type ChatPlanningSession = {
   fromTripAddPlace?: boolean;
   tripAddPlaceContext?: import("@/lib/trip/trip-add-place-handoff").TripAddPlaceContext;
   tripAddPlaceHandoffDone?: boolean;
+  /** 行程加點：候選池分頁推薦 session */
+  tripAddPlaceRecommendationSession?: import("@/lib/trip/trip-add-place-recommendation-session").TripAddPlaceRecommendationSession;
   updatedAt: string;
 };
 

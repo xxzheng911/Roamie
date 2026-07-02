@@ -4,11 +4,10 @@ import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/typ
 import type { OutfitAdvicePayload } from "@/lib/outfit/types";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
+import { PlaceCoverImage } from "@/components/media/PlaceCoverImage";
 import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
-import { SafeImage } from "@/components/media/SafeImage";
-import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { filterRecommendationItemsForDisplay } from "@/lib/recommend-place-ranking";
 import {
   logChatUiReceivedCards,
@@ -210,16 +209,18 @@ export function RoamieResponseView({
             const ext = r as RoamieRecommendationItem & {
               photoName?: string | null;
               rating?: number | null;
+              primaryType?: string | null;
+              category?: string | null;
             };
             const photoUrl = ext.photoName ? buildPlacePhotoUrl(ext.photoName, 400) : null;
-            const photoFallback = getRoamieDefaultImage(
+            const categoryId =
               (ext as { category?: string; primaryType?: string }).category ??
-                (ext as { primaryType?: string }).primaryType,
-            );
+              ext.primaryType ??
+              ext.type;
 
             return (
               <article
-                key={`${r.name}-${i}`}
+                key={`${r.googlePlaceId ?? r.name}-${i}`}
                 role={clickable ? "button" : undefined}
                 tabIndex={clickable ? 0 : undefined}
                 aria-pressed={clickable ? isPicked : undefined}
@@ -234,7 +235,7 @@ export function RoamieResponseView({
                       }
                     : undefined
                 }
-                className={`rounded-2xl border p-3 animate-rise transition overflow-hidden ${
+                className={`rounded-2xl border p-3 animate-rise transition overflow-hidden min-h-[12rem] ${
                   isPicked
                     ? "border-foreground bg-secondary shadow-soft"
                     : "border-border bg-secondary/40"
@@ -244,17 +245,19 @@ export function RoamieResponseView({
                     : ""
                 } ${clickable ? "cursor-pointer active:scale-[0.99]" : ""}`}
               >
-                {photoUrl ? (
-                  <div className="-mx-3 -mt-3 mb-3 aspect-[16/10] overflow-hidden bg-secondary">
-                    <SafeImage
-                      src={photoUrl}
-                      fallbackSrc={photoFallback}
-                      alt=""
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                    />
-                  </div>
-                ) : null}
+                <div className="-mx-3 -mt-3 mb-3 aspect-[16/10] min-h-[7.5rem] overflow-hidden bg-secondary">
+                  <PlaceCoverImage
+                    url={photoUrl}
+                    photoName={ext.photoName}
+                    name={r.placeName ?? r.name}
+                    category={categoryId}
+                    categoryId={categoryId}
+                    maxWidth={400}
+                    className="h-full w-full"
+                    imgClassName="h-full w-full object-cover"
+                    priority={i === 0}
+                  />
+                </div>
                 <div className="flex items-start justify-between gap-2">
                   <h4
                     className={`text-[15px] font-medium leading-snug ${

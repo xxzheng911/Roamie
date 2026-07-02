@@ -248,7 +248,7 @@ export function passesHomeNearbyHardExclusions(place: HomeNearbyPickPlace): bool
 
   const biz = (place.businessStatus ?? "").trim().toUpperCase();
   if (biz === "CLOSED_PERMANENTLY" || biz === "CLOSED_TEMPORARILY") return false;
-  if (biz && biz !== "OPERATIONAL") return false;
+  // 允許 businessStatus 空值 / unknown — 不因非 OPERATIONAL 字串排除
 
   if (isClosedNow(place)) return false;
   if (hasPermanentExcludedType(place)) return false;

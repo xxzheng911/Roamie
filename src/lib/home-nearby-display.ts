@@ -1,5 +1,4 @@
 import {
-  hasZeroRatingAndReviews,
   passesHomeNearbyHardExclusions,
   type HomeNearbyPickPlace,
 } from "@/lib/home-nearby-eligibility";
@@ -7,7 +6,7 @@ import type { HomeNearbyPick } from "@/lib/home-nearby-search";
 
 export { isVerifiedGooglePlaceId } from "@/lib/home-nearby-eligibility";
 
-/** 首頁顯示：永久排除 + 無評分信號排除（session cache 二次過濾） */
+/** 首頁顯示：永久排除（允許 unknown open / 無評分 / 無照片） */
 export function isHomeNearbyDisplayPlace(
   place: Pick<
     HomeNearbyPick,
@@ -28,16 +27,6 @@ export function isHomeNearbyDisplayPlace(
         name: place.name,
         placeId: place.id,
         dropReason: "home_nearby_rules",
-      });
-    }
-    return false;
-  }
-  if (hasZeroRatingAndReviews(place as HomeNearbyPickPlace)) {
-    if (options?.logDrop !== false) {
-      console.info("[HOME_NEARBY_DISPLAY_DROP]", {
-        name: place.name,
-        placeId: place.id,
-        dropReason: "zero_rating_reviews",
       });
     }
     return false;

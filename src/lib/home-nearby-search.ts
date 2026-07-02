@@ -9,8 +9,10 @@ import {
 import {
   HOME_NEARBY_MIN_DISPLAY,
   HOME_NEARBY_TARGET_COUNT,
+  HOME_NEARBY_ULTIMATE_MIN,
   selectHomeNearbyFallbackPicks,
   selectHomeNearbyPicks,
+  selectHomeNearbyUltimateFallback,
 } from "@/lib/home-nearby-places-filter";
 import { sortHomeNearbyPlacesWithContext } from "@/lib/home-nearby-ranking";
 import { mergePlaceRuntimeCache } from "@/lib/place-runtime-cache";
@@ -18,10 +20,18 @@ import { logHomeNearbyDataReady } from "@/lib/places-diagnostics";
 import {
   getHomeNearbyLoadInFlight,
   homeNearbyLoadKey,
-  readHomeNearbyResultsCache,
+  invalidateHomeNearbyLoadKey,
+  readHomeNearbyResultsCacheMeta,
   registerHomeNearbyLoadInFlight,
   writeHomeNearbyResultsCache,
 } from "@/lib/home-nearby-picks-policy";
+import {
+  logHomeNearbyCacheHit,
+  logHomeNearbyCacheMiss,
+  logHomeNearbyFilterDrop,
+  logHomeNearbyRequestError,
+  logHomeNearbyRequestSuccess,
+} from "@/lib/home-nearby-log";
 import {
   HOME_NEARBY_CATEGORY_TYPES,
   HOME_POPULAR_NEARBY_TYPES,
@@ -77,6 +87,14 @@ type HomeSearchWave = {
   nearbyGroups?: string[][];
 };
 
+const HOME_GENERIC_FALLBACK_TYPES = [
+  "tourist_attraction",
+  "cafe",
+  "restaurant",
+  "park",
+  "shopping_mall",
+] as const;
+
 const LATE_NIGHT_WAVES: HomeSearchWave[] = [
   {
     id: "night_bar",
@@ -131,12 +149,56 @@ const DAY_WAVES: HomeSearchWave[] = [
   },
 ];
 
+const HOME_INITIAL_WAVE_COUNT = 2;
+const HOME_MAX_WAVE_COUNT = 4;
+const HOME_GENERIC_FALLBACK_MAX_TYPES = 2;
+
 function wavesForPeriod(
   period: HomeNearbyPeriod,
   weather?: WeatherSummary | null,
 ): HomeSearchWave[] {
   const base = period === "late_night" ? LATE_NIGHT_WAVES : DAY_WAVES;
   return prioritizeWeatherAwareHomeWaves(base, weather);
+}
+
+async function fetchHomeNearbyWaves(
+  waves: HomeSearchWave[],
+  ctx: {
+    userLocation: { lat: number; lng: number };
+    locale: Locale;
+    searchPlacesFn: SearchPlacesFn;
+  },
+  pickOptions: Parameters<typeof selectHomeNearbyPicks>[1],
+): Promise<PlaceResult[]> {
+  let apiPlaces: PlaceResult[] = [];
+  let waveIndex = 0;
+  const maxWaves = Math.min(HOME_MAX_WAVE_COUNT, waves.length);
+
+  while (waveIndex < maxWaves) {
+    const batchSize = waveIndex === 0 ? HOME_INITIAL_WAVE_COUNT : 2;
+    const end = Math.min(waveIndex + batchSize, maxWaves);
+    const activeWaves = waves.slice(waveIndex, end);
+    waveIndex = end;
+
+    for (const wave of activeWaves) {
+      if (apiPlaces.length >= 40) return apiPlaces;
+      try {
+        const batch = await runHomeSearchWave(wave, ctx);
+        apiPlaces = mergePlacesById(apiPlaces, batch);
+      } catch {
+        /* 單波失敗不阻斷 */
+      }
+      if (selectHomeNearbyPicks(apiPlaces, pickOptions).length >= HOME_NEARBY_TARGET_COUNT) {
+        return apiPlaces;
+      }
+    }
+
+    if (selectHomeNearbyPicks(apiPlaces, pickOptions).length >= HOME_NEARBY_MIN_DISPLAY) {
+      return apiPlaces;
+    }
+  }
+
+  return apiPlaces;
 }
 
 function mergePlacesById(base: PlaceResult[], extra: PlaceResult[]): PlaceResult[] {
@@ -285,6 +347,55 @@ async function runHomePopularFallback(
   return text.places;
 }
 
+async function runHomeGenericTypeFallback(
+  ctx: {
+    userLocation: { lat: number; lng: number };
+    locale: Locale;
+    searchPlacesFn: SearchPlacesFn;
+  },
+): Promise<PlaceResult[]> {
+  const types = sanitizeNearbyTypes([...HOME_GENERIC_FALLBACK_TYPES]);
+  let merged: PlaceResult[] = [];
+  const typesToTry = types.slice(0, HOME_GENERIC_FALLBACK_MAX_TYPES);
+
+  for (const type of typesToTry) {
+    if (merged.length >= 24) break;
+    try {
+      const batch = await searchHomePlaces(ctx, {
+        lat: ctx.userLocation.lat,
+        lng: ctx.userLocation.lng,
+        radius: homeNearbySearchRadiusMeters(),
+        query: `附近 ${type}`,
+        mode: "nearby",
+        includedTypes: [type],
+        locale: ctx.locale,
+        categoryId: `home_generic_${type}`,
+        ...placesStatsPayload({
+          placesCaller: "loadHomeNearbyPicks",
+          placesScreen: "home",
+          categoryId: `home_generic_${type}`,
+        }),
+      });
+      merged = mergePlacesById(merged, batch.places);
+    } catch {
+      /* single type failure */
+    }
+  }
+
+  return merged;
+}
+
+function placeTypesLabel(place: PlaceResult): string {
+  const types = new Set<string>();
+  const primary = (place.primaryType ?? "").trim();
+  if (primary) types.add(primary);
+  for (const t of place.types ?? []) {
+    const n = (t ?? "").trim();
+    if (n) types.add(n);
+  }
+  return [...types].join("|") || "none";
+}
+
 function inferHomePickCategoryId(
   place: PlaceResult,
   period: HomeNearbyPeriod,
@@ -341,17 +452,20 @@ function buildHomeNearbyCards(
 }
 
 /** 首頁附近推薦：獨立搜尋／篩選／排序（與探索頁完全分離） */
-export async function loadHomeNearbyPicks(ctx: {
-  userLocation: { lat: number; lng: number };
-  weather: WeatherSummary | null;
-  locale: Locale;
-  reasonProfile: UserProfileForReason | null;
-  saved: SavedPlace[];
-  searchPlacesFn: SearchPlacesFn;
-  locationKey?: string;
-  at?: Date;
-  timeZone?: string;
-}): Promise<HomeNearbyPick[]> {
+export async function loadHomeNearbyPicks(
+  ctx: {
+    userLocation: { lat: number; lng: number };
+    weather: WeatherSummary | null;
+    locale: Locale;
+    reasonProfile: UserProfileForReason | null;
+    saved: SavedPlace[];
+    searchPlacesFn: SearchPlacesFn;
+    locationKey?: string;
+    at?: Date;
+    timeZone?: string;
+  },
+  options?: { forceRefresh?: boolean },
+): Promise<HomeNearbyPick[]> {
   const at = ctx.at ?? new Date();
   const timeZone = ctx.timeZone ?? "Asia/Taipei";
   const hour = localHourInTimeZone(at, timeZone);
@@ -363,10 +477,16 @@ export async function loadHomeNearbyPicks(ctx: {
     ctx.locale,
   );
 
-  const cached = readHomeNearbyResultsCache<HomeNearbyPick>(cacheKey);
-  if (cached && cached.length > 0) {
-    return cached;
+  if (options?.forceRefresh) {
+    invalidateHomeNearbyLoadKey(cacheKey);
+  } else {
+    const cachedMeta = readHomeNearbyResultsCacheMeta<HomeNearbyPick>(cacheKey);
+    if (cachedMeta && cachedMeta.picks.length > 0) {
+      logHomeNearbyCacheHit(cachedMeta.picks.length, cachedMeta.ageMs);
+      return cachedMeta.picks;
+    }
   }
+  logHomeNearbyCacheMiss(options?.forceRefresh ? "force_refresh" : "module_in_memory_miss");
 
   const inflight = getHomeNearbyLoadInFlight<HomeNearbyPick[]>(cacheKey);
   if (inflight) return inflight;
@@ -402,38 +522,47 @@ async function loadHomeNearbyPicksInner(
 
   const flow = beginPlacesFlow("home_cold");
   try {
-  let apiPlaces: PlaceResult[] = [];
-  for (const wave of waves) {
-    if (apiPlaces.length >= 40) break;
+  let apiPlaces = await fetchHomeNearbyWaves(waves, ctx, pickOptions);
+
+  if (apiPlaces.length === 0) {
     try {
-      const batch = await runHomeSearchWave(wave, ctx);
-      apiPlaces = mergePlacesById(apiPlaces, batch);
-    } catch {
-      /* 單波失敗不阻斷 */
-    }
-    if (selectHomeNearbyPicks(apiPlaces, pickOptions).length >= HOME_NEARBY_TARGET_COUNT) {
-      break;
+      apiPlaces = await runHomePopularFallback(ctx);
+    } catch (e) {
+      logHomeNearbyRequestError("popular_fallback_failed", e instanceof Error ? e.message : String(e));
     }
   }
 
   if (apiPlaces.length === 0) {
     try {
-      apiPlaces = await runHomePopularFallback(ctx);
-    } catch {
-      /* ignore */
+      apiPlaces = await runHomeGenericTypeFallback(ctx);
+    } catch (e) {
+      logHomeNearbyRequestError("generic_fallback_failed", e instanceof Error ? e.message : String(e));
     }
   }
+
+  const rawCount = apiPlaces.length;
 
   let selected = selectHomeNearbyPicks(apiPlaces, pickOptions).filter((p) =>
     isVerifiedGooglePlaceId(p.id),
   );
 
-  if (selected.length === 0 && apiPlaces.length > 0) {
+  if (selected.length < HOME_NEARBY_ULTIMATE_MIN && apiPlaces.length > 0) {
     selected = selectHomeNearbyFallbackPicks(apiPlaces, {
       origin: ctx.userLocation,
       period,
       at,
       timeZone,
+    }).filter((p) => isVerifiedGooglePlaceId(p.id));
+  }
+
+  if (selected.length < HOME_NEARBY_ULTIMATE_MIN && apiPlaces.length > 0) {
+    selected = selectHomeNearbyUltimateFallback(apiPlaces, {
+      origin: ctx.userLocation,
+      minResults: HOME_NEARBY_ULTIMATE_MIN,
+      maxResults: HOME_NEARBY_TARGET_COUNT,
+      onDrop: (place, reason) => {
+        logHomeNearbyFilterDrop(place.name ?? "unknown", placeTypesLabel(place), reason);
+      },
     }).filter((p) => isVerifiedGooglePlaceId(p.id));
   }
 
@@ -457,6 +586,7 @@ async function loadHomeNearbyPicksInner(
   });
 
   writeHomeNearbyResultsCache(cacheKey, sorted);
+  logHomeNearbyRequestSuccess(rawCount, sorted.length);
 
   if (sorted.length > 0) {
     logHomeNearbyDataReady({
@@ -483,7 +613,13 @@ async function loadHomeNearbyPicksInner(
     error: apiPlaces.length > 0 ? "filtered_empty" : "no_results",
     cacheKey,
   });
-  return [];
+  return sorted;
+  } catch (e) {
+    logHomeNearbyRequestError(
+      "load_failed",
+      e instanceof Error ? e.message : String(e),
+    );
+    throw e;
   } finally {
     endPlacesFlow(flow);
   }

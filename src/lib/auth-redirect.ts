@@ -43,7 +43,10 @@ export function getOAuthRedirectUrl(): string {
 export function isOAuthDeepLinkUrl(url: string): boolean {
   try {
     const u = new URL(url);
-    if (u.protocol === `${APP_SCHEME}:`) return true;
+    if (u.protocol === `${APP_SCHEME}:`) {
+      if (u.hostname === "trip-invite") return false;
+      return u.hostname === "auth" || u.pathname.includes("callback");
+    }
     if (u.href.startsWith(OAUTH_DEEP_LINK_REDIRECT)) return true;
 
     const project = readSupabaseProjectUrl();

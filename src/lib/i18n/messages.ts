@@ -227,6 +227,9 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       nearbyExploreDesc: "依現在的位置，探索適合走走的地方",
       nearbyInspiration: "靈感推薦",
       nearbyEmpty: "附近地點暫時讀不到，稍後再試試",
+      nearbySlowEmpty: "暫時找不到附近地點，稍後再試",
+      nearbyCached: "快取",
+      nearbyRetry: "再試一次",
       prepTitle: "今日穿搭／旅遊準備",
       prepEmpty: "天氣暫時無法取得，稍後再試。",
       moods: {
@@ -545,6 +548,9 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       nearbyExploreDesc: "Explore places that fit your moment, based on where you are",
       nearbyInspiration: "Inspiration",
       nearbyEmpty: "No good spots nearby right now",
+      nearbySlowEmpty: "Can't find nearby spots right now — try again in a bit",
+      nearbyCached: "Cached",
+      nearbyRetry: "Try again",
       prepTitle: "What to wear / pack today",
       prepEmpty: "Weather unavailable — check back in a bit.",
       moods: {
@@ -852,6 +858,9 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       nearbyExploreDesc: "今の位置から、散歩に合う場所を探す",
       nearbyInspiration: "インスピレーション",
       nearbyEmpty: "近くに適した場所が見つかりません",
+      nearbySlowEmpty: "近くの場所が見つかりません。しばらくしてからお試しください",
+      nearbyCached: "キャッシュ",
+      nearbyRetry: "再試行",
       prepTitle: "今日の服装・持ち物",
       prepEmpty: "天気を取得できません。しばらくしてからどうぞ。",
       moods: {
@@ -1154,6 +1163,9 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       nearbyExploreDesc: "지금 위치에서 걸으며 즐길 만한 곳을 탐색해요",
       nearbyInspiration: "영감 추천",
       nearbyEmpty: "근처에 적합한 장소가 없어요",
+      nearbySlowEmpty: "근처 장소를 찾지 못했어요. 잠시 후 다시 시도해 주세요",
+      nearbyCached: "캐시",
+      nearbyRetry: "다시 시도",
       prepTitle: "오늘의 옷차림 / 준비물",
       prepEmpty: "날씨를 가져올 수 없어요. 잠시 후 다시 시도해 주세요.",
       moods: {

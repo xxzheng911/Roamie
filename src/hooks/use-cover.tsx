@@ -7,16 +7,26 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import defaultCover from "@/assets/roamie-default-cover.png";
 import { getUserProfile } from "@/lib/profile-storage";
 import { COVER_UPDATED_EVENT, type CoverUpdatedDetail } from "@/lib/cover-events";
-import { isSameMediaUrl, withCacheBust } from "@/lib/media-display-url";
+import { isSameMediaUrl } from "@/lib/media-display-url";
 import { readProfileSessionCache } from "@/lib/profile-session-cache";
-import { readPersistedCoverUrl } from "@/lib/profile-persisted-cache";
+import {
+  hasProfileSessionCache,
+  readCachedCoverUrl,
+  resolveProfileMediaDisplay,
+} from "@/lib/profile-media-display";
 import { shouldUseLightStartupShell, readBrowserPathname } from "@/lib/startup-path";
 import { useAuth } from "@/hooks/use-auth";
 
 type CoverCtx = {
   coverUrl: string | null;
+  profileMediaLoaded: boolean;
+  coverDisplaySrc: string | null;
+  coverPending: boolean;
+  showCoverDefault: boolean;
+  /** Resolved src with cache-bust — custom only, null while pending */
   coverSrc: string | null;
   refresh: () => Promise<void>;
   syncFromProfile: (url: string | null) => void;
@@ -26,16 +36,14 @@ type CoverCtx = {
 const Ctx = createContext<CoverCtx | null>(null);
 
 export function CoverProvider({ children }: { children: ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const userId = user?.id;
-  const [coverUrl, setCoverUrl] = useState<string | null>(
-    () =>
-      readProfileSessionCache(userId)?.coverImageUrl ??
-      readPersistedCoverUrl(userId) ??
-      null,
-  );
+  const [coverUrl, setCoverUrl] = useState<string | null>(() => readCachedCoverUrl(userId));
   const [coverRevision, setCoverRevision] = useState(0);
   const [preview, setPreviewState] = useState<string | null>(null);
+  const [profileMediaLoaded, setProfileMediaLoaded] = useState(() =>
+    hasProfileSessionCache(userId),
+  );
 
   const setPreview = useCallback((url: string | null) => {
     setPreviewState((prev) => {
@@ -51,13 +59,16 @@ export function CoverProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const pathname = readBrowserPathname();
-  const skipProfileFetch = shouldUseLightStartupShell(pathname, Boolean(user), loading);
+  const skipProfileFetch = shouldUseLightStartupShell(pathname, Boolean(user), authLoading);
 
   const syncFromProfile = useCallback((url: string | null) => {
-    setCoverUrl((prev) => (isSameMediaUrl(prev, url) ? prev : url));
+    const next = url?.trim() || null;
+    if (!next) return;
+    setCoverUrl((prev) => (isSameMediaUrl(prev, next) ? prev : next));
   }, []);
 
   const refresh = useCallback(async () => {
+    if (!userId) return;
     try {
       const profile = await getUserProfile();
       setCoverUrl((prev) =>
@@ -65,23 +76,30 @@ export function CoverProvider({ children }: { children: ReactNode }) {
       );
       setPreview(null);
     } catch {
-      /* keep last */
+      /* keep cached url */
+    } finally {
+      setProfileMediaLoaded(true);
     }
-  }, [setPreview]);
+  }, [setPreview, userId]);
 
   useEffect(() => {
-    if (!userId) return;
-    const cached = readProfileSessionCache(userId);
-    if (cached?.coverImageUrl) {
-      setCoverUrl((prev) =>
-        isSameMediaUrl(prev, cached.coverImageUrl) ? prev : cached.coverImageUrl,
-      );
+    if (!userId) {
+      setProfileMediaLoaded(false);
       return;
     }
-    const persisted = readPersistedCoverUrl(userId);
-    if (persisted) {
-      setCoverUrl((prev) => (isSameMediaUrl(prev, persisted) ? prev : persisted));
+    const session = readProfileSessionCache(userId);
+    if (session) {
+      setCoverUrl((prev) =>
+        isSameMediaUrl(prev, session.coverImageUrl) ? prev : session.coverImageUrl,
+      );
+      setProfileMediaLoaded(true);
+      return;
     }
+    const cached = readCachedCoverUrl(userId);
+    if (cached) {
+      setCoverUrl((prev) => (isSameMediaUrl(prev, cached) ? prev : cached));
+    }
+    setProfileMediaLoaded(false);
   }, [userId]);
 
   useEffect(() => {
@@ -100,21 +118,48 @@ export function CoverProvider({ children }: { children: ReactNode }) {
       setCoverUrl(url);
       setCoverRevision(revision);
       setPreview(null);
+      setProfileMediaLoaded(true);
     };
     window.addEventListener(COVER_UPDATED_EVENT, onUpdate);
     return () => window.removeEventListener(COVER_UPDATED_EVENT, onUpdate);
   }, [setPreview]);
 
   useEffect(() => {
-    if (skipProfileFetch) return;
+    if (!userId || authLoading) return;
+    if (skipProfileFetch) {
+      if (hasProfileSessionCache(userId)) {
+        setProfileMediaLoaded(true);
+      }
+      return;
+    }
     void refresh();
-  }, [refresh, skipProfileFetch, userId]);
+  }, [refresh, skipProfileFetch, userId, authLoading]);
 
-  const coverSrc = preview ?? withCacheBust(coverUrl, coverRevision);
+  const media = useMemo(
+    () =>
+      resolveProfileMediaDisplay(
+        coverUrl,
+        preview,
+        profileMediaLoaded,
+        defaultCover,
+        coverRevision,
+      ),
+    [coverUrl, preview, profileMediaLoaded, coverRevision],
+  );
 
   const ctx = useMemo(
-    () => ({ coverUrl, coverSrc, refresh, syncFromProfile, setPreview }),
-    [coverUrl, coverSrc, refresh, syncFromProfile, setPreview],
+    () => ({
+      coverUrl,
+      profileMediaLoaded,
+      coverDisplaySrc: media.displaySrc,
+      coverPending: media.pending,
+      showCoverDefault: media.showDefault,
+      coverSrc: media.customSrc,
+      refresh,
+      syncFromProfile,
+      setPreview,
+    }),
+    [coverUrl, profileMediaLoaded, media, refresh, syncFromProfile, setPreview],
   );
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>;

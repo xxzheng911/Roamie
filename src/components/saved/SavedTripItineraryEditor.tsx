@@ -244,9 +244,11 @@ type Props = {
   onStoredChange?: (stored: StoredItinerary) => void;
   /** 1-based day number from route search */
   initialDay?: number;
+  /** 忽略遠端 Realtime 回寫的時間窗（本地儲存後） */
+  ignoreRealtimeUntilRef?: React.MutableRefObject<number>;
 };
 
-export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, initialDay }: Props) {
+export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, initialDay, ignoreRealtimeUntilRef }: Props) {
   const navigate = useNavigate();
   const { locale } = useI18n();
   const geocodeLocationFn = useServerFn(geocodeTripLocationFromText);
@@ -405,8 +407,42 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   );
 
   const { cancelPending, markSynced } = useDebouncedTripSave(stored.id, payload, true, {
-    onSaved: onStoredChange,
+    onSaved: (next) => {
+      if (ignoreRealtimeUntilRef) {
+        ignoreRealtimeUntilRef.current = Date.now() + 2500;
+      }
+      onStoredChange?.(next);
+    },
   });
+
+  const lastAppliedRemoteAtRef = useRef(stored.updated_at);
+  useEffect(() => {
+    if (stored.updated_at === lastAppliedRemoteAtRef.current) return;
+    if (ignoreRealtimeUntilRef && Date.now() < ignoreRealtimeUntilRef.current) {
+      lastAppliedRemoteAtRef.current = stored.updated_at;
+      return;
+    }
+    const remotePayload = stored.payload as RoamiePayloadV2;
+    const remoteView = normalizeStoredTrip(stored);
+    setTripTitle(remoteView.displayTitle);
+    setIsTitleCustomized(remoteView.isTitleCustomized);
+    setCustomCoverImageUrl(remoteView.customCoverImageUrl);
+    setAiCoverImageUrl(remoteView.aiGeneratedCoverImageUrl);
+    setIsCoverCustomized(remoteView.isCoverCustomized);
+    setCoverSource(stored.cover_source);
+    setSettings(
+      remotePayload.tripSettings ?? {
+        startTime: coalesceItineraryItems(remotePayload.itinerary)[0]?.time?.slice(0, 5) ?? "10:00",
+        transport: "walk",
+        legMinutes: {},
+        legTransport: {},
+      },
+    );
+    setItems([...coalesceItineraryItems(remotePayload.itinerary)]);
+    markSynced(remotePayload);
+    lastAppliedRemoteAtRef.current = stored.updated_at;
+    console.info("[TRIP_REALTIME] applied remote state", stored.id);
+  }, [stored, markSynced, ignoreRealtimeUntilRef]);
   const tripView = useMemo(() => {
     const autoTitle = resolveTripTitle(payload);
     const view = normalizeStoredTrip({

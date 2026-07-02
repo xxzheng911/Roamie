@@ -1,16 +1,34 @@
 import { Loader2 } from "lucide-react";
 import { memo } from "react";
-import defaultCover from "@/assets/roamie-default-cover.png";
 import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 
 type Props = {
-  coverUrl: string | null;
+  /** Final display src — custom URL or default asset path; null while pending */
+  displaySrc: string | null;
+  pending?: boolean;
   busy?: boolean;
   onPress?: () => void;
 };
 
-export const ProfileCover = memo(function ProfileCover({ coverUrl, busy = false, onPress }: Props) {
-  const resolvedCover = coverUrl ? resolvePlaceImageUrl(coverUrl, { maxWidth: 900 }) : null;
+function resolveCoverImageSrc(displaySrc: string): string {
+  if (
+    displaySrc.startsWith("http://") ||
+    displaySrc.startsWith("https://") ||
+    displaySrc.startsWith("blob:") ||
+    displaySrc.startsWith("capacitor://")
+  ) {
+    return resolvePlaceImageUrl(displaySrc, { maxWidth: 900 });
+  }
+  return displaySrc;
+}
+
+export const ProfileCover = memo(function ProfileCover({
+  displaySrc,
+  pending = false,
+  busy = false,
+  onPress,
+}: Props) {
+  const resolvedCover = displaySrc && !pending ? resolveCoverImageSrc(displaySrc) : null;
 
   return (
     <button
@@ -18,7 +36,7 @@ export const ProfileCover = memo(function ProfileCover({ coverUrl, busy = false,
       onClick={onPress}
       disabled={busy}
       className="group relative block w-full overflow-hidden rounded-t-[2rem] focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20 disabled:opacity-90"
-      aria-label={coverUrl ? "更換封面" : "設定封面"}
+      aria-label={displaySrc && !pending ? "更換封面" : "設定封面"}
     >
       <div className="relative aspect-[3/2] w-full min-h-[11rem] max-h-[16rem] shrink-0 overflow-hidden bg-gradient-to-br from-[hsl(var(--accent))] via-secondary to-[hsl(38_42%_94%)]">
         {resolvedCover ? (
@@ -32,7 +50,7 @@ export const ProfileCover = memo(function ProfileCover({ coverUrl, busy = false,
             }`}
           />
         ) : (
-          <img src={defaultCover} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
+          <div className="absolute inset-0 animate-pulse bg-gradient-to-br from-muted/80 via-secondary to-muted/60" />
         )}
 
         <div

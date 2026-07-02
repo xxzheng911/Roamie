@@ -10,14 +10,24 @@ import {
 import defaultAvatar from "@/assets/roamie-default-avatar.png";
 import { getUserProfile } from "@/lib/profile-storage";
 import { AVATAR_UPDATED_EVENT, type AvatarUpdatedDetail } from "@/lib/avatar-events";
-import { isSameMediaUrl, withCacheBust } from "@/lib/media-display-url";
+import { isSameMediaUrl } from "@/lib/media-display-url";
 import { readProfileSessionCache } from "@/lib/profile-session-cache";
-import { readPersistedAvatarUrl } from "@/lib/profile-persisted-cache";
+import {
+  hasProfileSessionCache,
+  readCachedAvatarUrl,
+  resolveProfileMediaDisplay,
+} from "@/lib/profile-media-display";
 import { shouldUseLightStartupShell, readBrowserPathname } from "@/lib/startup-path";
 import { useAuth } from "@/hooks/use-auth";
 
 type AvatarCtx = {
   avatarUrl: string | null;
+  profileMediaLoaded: boolean;
+  /** img src for UI — null means show skeleton (never default while loading) */
+  avatarDisplaySrc: string | null;
+  avatarPending: boolean;
+  showAvatarDefault: boolean;
+  /** @deprecated Prefer avatarDisplaySrc — only default after profileMediaLoaded */
   avatarSrc: string;
   refresh: () => Promise<void>;
   syncFromProfile: (url: string | null) => void;
@@ -27,13 +37,14 @@ type AvatarCtx = {
 const Ctx = createContext<AvatarCtx | null>(null);
 
 export function AvatarProvider({ children }: { children: ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const userId = user?.id;
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(
-    () => readProfileSessionCache(userId)?.avatarUrl ?? readPersistedAvatarUrl(userId) ?? null,
-  );
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(() => readCachedAvatarUrl(userId));
   const [avatarRevision, setAvatarRevision] = useState(0);
   const [preview, setPreviewState] = useState<string | null>(null);
+  const [profileMediaLoaded, setProfileMediaLoaded] = useState(() =>
+    hasProfileSessionCache(userId),
+  );
 
   const setPreview = useCallback((url: string | null) => {
     setPreviewState((prev) => {
@@ -48,33 +59,45 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     });
   }, []);
   const pathname = readBrowserPathname();
-  const skipProfileFetch = shouldUseLightStartupShell(pathname, Boolean(user), loading);
+  const skipProfileFetch = shouldUseLightStartupShell(pathname, Boolean(user), authLoading);
 
   const syncFromProfile = useCallback((url: string | null) => {
-    setAvatarUrl((prev) => (isSameMediaUrl(prev, url) ? prev : url));
+    const next = url?.trim() || null;
+    if (!next) return;
+    setAvatarUrl((prev) => (isSameMediaUrl(prev, next) ? prev : next));
   }, []);
 
   const refresh = useCallback(async () => {
+    if (!userId) return;
     try {
       const profile = await getUserProfile();
       setAvatarUrl((prev) => (isSameMediaUrl(prev, profile.avatarUrl) ? prev : profile.avatarUrl));
       setPreview(null);
     } catch {
-      /* keep last */
+      /* keep cached url */
+    } finally {
+      setProfileMediaLoaded(true);
     }
-  }, [setPreview]);
+  }, [setPreview, userId]);
 
   useEffect(() => {
-    if (!userId) return;
-    const cached = readProfileSessionCache(userId);
-    if (cached?.avatarUrl) {
-      setAvatarUrl((prev) => (isSameMediaUrl(prev, cached.avatarUrl) ? prev : cached.avatarUrl));
+    if (!userId) {
+      setProfileMediaLoaded(false);
       return;
     }
-    const persisted = readPersistedAvatarUrl(userId);
-    if (persisted) {
-      setAvatarUrl((prev) => (isSameMediaUrl(prev, persisted) ? prev : persisted));
+    const session = readProfileSessionCache(userId);
+    if (session) {
+      setAvatarUrl((prev) =>
+        isSameMediaUrl(prev, session.avatarUrl) ? prev : session.avatarUrl,
+      );
+      setProfileMediaLoaded(true);
+      return;
     }
+    const cached = readCachedAvatarUrl(userId);
+    if (cached) {
+      setAvatarUrl((prev) => (isSameMediaUrl(prev, cached) ? prev : cached));
+    }
+    setProfileMediaLoaded(false);
   }, [userId]);
 
   useEffect(() => {
@@ -93,22 +116,48 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
       setAvatarUrl(url);
       setAvatarRevision(revision);
       setPreview(null);
+      setProfileMediaLoaded(true);
     };
     window.addEventListener(AVATAR_UPDATED_EVENT, onUpdate);
     return () => window.removeEventListener(AVATAR_UPDATED_EVENT, onUpdate);
   }, [setPreview]);
 
   useEffect(() => {
-    if (skipProfileFetch) return;
+    if (!userId || authLoading) return;
+    if (skipProfileFetch) {
+      if (hasProfileSessionCache(userId)) {
+        setProfileMediaLoaded(true);
+      }
+      return;
+    }
     void refresh();
-  }, [refresh, skipProfileFetch, userId]);
+  }, [refresh, skipProfileFetch, userId, authLoading]);
 
-  const avatarSrc =
-    preview ?? withCacheBust(avatarUrl, avatarRevision) ?? defaultAvatar;
+  const media = useMemo(
+    () =>
+      resolveProfileMediaDisplay(
+        avatarUrl,
+        preview,
+        profileMediaLoaded,
+        defaultAvatar,
+        avatarRevision,
+      ),
+    [avatarUrl, preview, profileMediaLoaded, avatarRevision],
+  );
 
   const ctx = useMemo(
-    () => ({ avatarUrl, avatarSrc, refresh, syncFromProfile, setPreview }),
-    [avatarUrl, avatarSrc, refresh, syncFromProfile, setPreview],
+    () => ({
+      avatarUrl,
+      profileMediaLoaded,
+      avatarDisplaySrc: media.displaySrc,
+      avatarPending: media.pending,
+      showAvatarDefault: media.showDefault,
+      avatarSrc: media.displaySrc ?? defaultAvatar,
+      refresh,
+      syncFromProfile,
+      setPreview,
+    }),
+    [avatarUrl, profileMediaLoaded, media, refresh, syncFromProfile, setPreview],
   );
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>;

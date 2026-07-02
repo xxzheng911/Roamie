@@ -9,6 +9,8 @@ export type ChatMsg = {
   content: string;
   /** Parsed AI JSON for assistant messages when available */
   roamie?: Partial<RoamieResponse>;
+  /** 行程加點：結構化地點卡（與 roamie.recommendations 同步） */
+  structuredPlaces?: import("@/lib/trip/trip-add-place-render").TripAddPlaceStructuredPlace[];
 };
 
 function parseAssistantContent(content: string): { content: string; roamie?: Partial<RoamieResponse> } {

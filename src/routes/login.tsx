@@ -32,6 +32,7 @@ import {
   isPostLoginNavigationCommitted,
   navigateOnceAfterLogin,
 } from "@/lib/login-navigation";
+import { readStashedTripInviteToken } from "@/lib/trip/trip-collab";
 import { detectPlatform } from "@/services/platform";
 import { loadOnboardingState } from "@/lib/onboarding-storage";
 import { isOnboardingCompletedSync } from "@/lib/onboarding-storage";
@@ -162,6 +163,11 @@ function Login() {
       return;
     }
     redirectedRef.current = true;
+    const pendingInvite = readStashedTripInviteToken();
+    if (pendingInvite) {
+      navigate({ to: "/trip-invite/$token", params: { token: pendingInvite }, replace: true });
+      return;
+    }
     void navigateOnceAfterLogin(
       (opts) => navigate({ to: opts.to, replace: opts.replace }),
       isBootCompleted() ? "login-session-restore-after-boot" : "login-session-restore",
@@ -331,6 +337,11 @@ function Login() {
         const { toast } = await import("sonner");
         toast.success("登入成功");
         redirectedRef.current = true;
+        const pendingInvite = readStashedTripInviteToken();
+        if (pendingInvite) {
+          navigate({ to: tripInvitePathFromToken(pendingInvite), replace: true });
+          return;
+        }
         await navigateOnceAfterLogin(
           (opts) => navigate({ to: opts.to, replace: opts.replace }),
           "login-session-restore",

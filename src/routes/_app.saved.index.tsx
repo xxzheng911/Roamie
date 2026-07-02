@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Plus, Loader2, Trash2, Heart, Route as RouteIcon } from "lucide-react";
+import { Plus, Loader2, Trash2, Heart, Route as RouteIcon, Share2 } from "lucide-react";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromSavedPlace } from "@/lib/trip/trip-place-input";
 import { useCallback, useEffect, useState } from "react";
@@ -11,7 +11,9 @@ import { SavedPlaceRemoveConfirmDialog } from "@/components/saved/SavedPlaceRemo
 import { SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
+import { TripSharePanel } from "@/components/trip/TripSharePanel";
 import { listCoreTrips, type CoreTrip, resolveCoreTripTitle } from "@/lib/trip/core-trip";
+import { isMissingTableError } from "@/lib/supabase-errors";
 import {
   deletePlace,
   listPlaces,
@@ -105,6 +107,9 @@ function Saved() {
     () => initialTrips.length === 0 && initialPlaces.length === 0,
   );
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [shareTarget, setShareTarget] = useState<{ id: string; title: string; isOwner: boolean } | null>(
+    null,
+  );
   const [deleting, setDeleting] = useState(false);
   const [removePlaceTarget, setRemovePlaceTarget] = useState<SavedPlace | null>(null);
   const [removingPlace, setRemovingPlace] = useState(false);
@@ -278,19 +283,39 @@ function Saved() {
               <li key={trip.id}>
                 <SavedTripCard
                   trip={trip}
-                  deleteSlot={
+                  shareSlot={
                     <button
                       type="button"
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        setDeleteTarget({ id: trip.id, title: resolveCoreTripTitle(trip) });
+                        setShareTarget({
+                          id: trip.id,
+                          title: resolveCoreTripTitle(trip),
+                          isOwner: trip.isOwner ?? true,
+                        });
                       }}
                       className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
-                      aria-label={t("saved.deleteAria")}
+                      aria-label="分享行程"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Share2 className="h-4 w-4" />
                     </button>
+                  }
+                  deleteSlot={
+                    (trip.isOwner ?? true) ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDeleteTarget({ id: trip.id, title: resolveCoreTripTitle(trip) });
+                        }}
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
+                        aria-label={t("saved.deleteAria")}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    ) : null
                   }
                 />
               </li>
@@ -354,6 +379,16 @@ function Saved() {
         }}
         onConfirm={handleConfirmDeleteTrip}
         confirming={deleting}
+      />
+
+      <TripSharePanel
+        open={shareTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setShareTarget(null);
+        }}
+        tripId={shareTarget?.id ?? ""}
+        tripTitle={shareTarget?.title ?? ""}
+        isOwner={shareTarget?.isOwner ?? false}
       />
 
       <SavedPlaceRemoveConfirmDialog

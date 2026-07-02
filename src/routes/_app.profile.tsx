@@ -96,11 +96,16 @@ function Profile() {
   const userId = user?.id;
   const userEmail = user?.email;
   const { t, locale } = useI18n();
-  const { avatarSrc, setPreview: setAvatarPreview, syncFromProfile: syncAvatarFromProfile } =
-    useAvatar();
+  const {
+    avatarDisplaySrc,
+    avatarPending,
+    setPreview: setAvatarPreview,
+    syncFromProfile: syncAvatarFromProfile,
+  } = useAvatar();
   const {
     coverUrl,
-    coverSrc,
+    coverDisplaySrc,
+    coverPending,
     setPreview: setCoverPreview,
     syncFromProfile: syncCoverFromProfile,
   } = useCover();
@@ -703,7 +708,8 @@ function Profile() {
     <div className="profile-page flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain px-5 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-3 no-scrollbar">
       <div className="overflow-visible rounded-[2rem] border border-border bg-card shadow-soft">
         <ProfileCover
-          coverUrl={coverPreviewUrl ?? coverSrc}
+          displaySrc={coverPreviewUrl ?? coverDisplaySrc}
+          pending={coverPending && !coverPreviewUrl}
           busy={coverApplying || coverRemoving}
           onPress={() => {
             if (!coverApplying && !coverRemoving) {
@@ -743,11 +749,17 @@ function Profile() {
               className="group relative block h-full w-full shrink-0 overflow-hidden rounded-full border-[3px] border-card bg-secondary shadow-soft disabled:opacity-90"
               aria-label={t("profile.editAvatar")}
             >
-              <img
-                src={avatarSrc}
-                alt=""
-                className="absolute inset-0 h-full w-full object-cover object-center"
-              />
+              {avatarPending ? (
+                <div className="absolute inset-0 animate-pulse bg-muted" aria-hidden />
+              ) : avatarDisplaySrc ? (
+                <img
+                  src={avatarDisplaySrc}
+                  alt=""
+                  className="absolute inset-0 h-full w-full object-cover object-center"
+                />
+              ) : (
+                <div className="absolute inset-0 animate-pulse bg-muted" aria-hidden />
+              )}
               <div
                 className={`pointer-events-none absolute inset-0 rounded-full transition duration-200 ${
                   avatarApplying

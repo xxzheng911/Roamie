@@ -349,10 +349,10 @@ function MapView() {
   const [searchTrigger, setSearchTrigger] = useState(0);
 
   const navigate = useNavigate();
-  const { avatarSrc: rawAvatarSrc } = useAvatar();
+  const { avatarDisplaySrc, avatarPending } = useAvatar();
   const safeAvatarSrc = useMemo(
-    () => resolveUserMarkerAvatarSrc(rawAvatarSrc),
-    [rawAvatarSrc],
+    () => resolveUserMarkerAvatarSrc(avatarPending ? null : avatarDisplaySrc),
+    [avatarDisplaySrc, avatarPending],
   );
   const searchPlacesServerFn = useServerFn(searchPlaces);
   const searchPlacesFn = useMemo(

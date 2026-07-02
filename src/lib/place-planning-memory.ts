@@ -191,7 +191,14 @@ export function filterExcludedPlaceIds<T extends PlaceLike>(
   excludeIds: string[],
 ): T[] {
   if (!excludeIds.length) return candidates;
-  const block = new Set(excludeIds);
+  const block = new Set(
+    excludeIds.map((id) => {
+      const t = id.trim();
+      if (!t) return "";
+      if (t.startsWith("id:") || t.startsWith("na:") || t.startsWith("n:")) return t;
+      return `id:${t}`;
+    }).filter(Boolean),
+  );
   return candidates.filter((p) => !block.has(placeIdentityKey(p)));
 }
 

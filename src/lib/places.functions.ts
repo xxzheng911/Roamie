@@ -231,7 +231,7 @@ async function postPlaces(
     searchMode?: string;
     intentCategory?: string;
   },
-): Promise<{ places: RawPlace[]; error: string | null }> {
+): Promise<{ places: RawPlace[]; error: string | null; nextPageToken?: string }> {
   const circle =
     (body.locationRestriction as { circle?: { center?: { latitude?: number; longitude?: number } } })
       ?.circle ??
@@ -281,8 +281,12 @@ async function postPlaces(
       return { places: [] as RawPlace[], error: `Google Places API ${res.status}: ${detail}` };
     }
 
-    const json = (await res.json()) as { places?: RawPlace[] };
-    return { places: json.places ?? [], error: null as string | null };
+    const json = (await res.json()) as { places?: RawPlace[]; nextPageToken?: string };
+    return {
+      places: json.places ?? [],
+      error: null as string | null,
+      nextPageToken: json.nextPageToken,
+    };
   });
 
   if (guarded === null) {
@@ -369,26 +373,47 @@ async function searchNearby(
   maxResultCount = 12,
   userLocale?: Locale,
   stats?: PlacesSearchStats,
+  opts?: { maxPages?: number },
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
   const { languageCode, regionCode } = exploreLocale(lat, lng, userLocale);
-  const body: Record<string, unknown> = {
-    includedTypes,
-    languageCode,
-    locationRestriction: locationCircle(lat, lng, radius),
-    maxResultCount,
-    rankPreference: "DISTANCE",
-  };
-  if (regionCode) body.regionCode = regionCode;
+  const perPageMax = Math.min(maxResultCount, 20);
+  const maxPages = opts?.maxPages ?? 1;
+  const allRaw: RawPlace[] = [];
+  let pageToken: string | undefined;
+  let lastError: string | null = null;
 
-  const { places: raw, error } = await postPlaces(
-    placesSearchNearbyUrl(),
-    body,
-    apiKey,
-    "nearby",
-    stats,
-  );
-  if (error) return { places: [], error };
-  const places = mapRawPlaces(raw, {
+  for (let page = 0; page < maxPages; page++) {
+    const body: Record<string, unknown> = {
+      includedTypes,
+      languageCode,
+      locationRestriction: locationCircle(lat, lng, radius),
+      maxResultCount: perPageMax,
+      rankPreference: "DISTANCE",
+    };
+    if (regionCode) body.regionCode = regionCode;
+    if (pageToken) body.pageToken = pageToken;
+
+    const { places: raw, error, nextPageToken } = await postPlaces(
+      placesSearchNearbyUrl(),
+      body,
+      apiKey,
+      "nearby",
+      stats,
+    );
+    if (error) {
+      lastError = error;
+      if (allRaw.length === 0) return { places: [], error };
+      break;
+    }
+    allRaw.push(...raw);
+    if (!nextPageToken || raw.length === 0) break;
+    pageToken = nextPageToken;
+    if (page < maxPages - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+
+  const places = mapRawPlaces(allRaw, {
     screen: stats?.screen,
     locale: userLocale,
     intentCategory: stats?.intentCategory,
@@ -399,9 +424,10 @@ async function searchNearby(
       mode: "nearby",
       types: includedTypes.join(","),
       radius,
-      rawCount: raw.length,
+      rawCount: allRaw.length,
       mappedCount: places.length,
-      error: error ?? "",
+      pages: maxPages > 1 ? maxPages : 1,
+      error: lastError ?? "",
     });
   }
   return { places, error: null };
@@ -415,10 +441,24 @@ async function searchMultiNearby(
   groups: string[][],
   userLocale?: Locale,
   stats?: PlacesSearchStats,
+  opts?: { perGroupMax?: number; mergedMax?: number },
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
+  const perGroupMax = opts?.perGroupMax ?? 6;
+  const mergedMax = opts?.mergedMax ?? 24;
+  const paginate = stats?.caller.includes("trip_add_place") ?? false;
   const settled = await Promise.all(
     groups.map((types) =>
-      searchNearby(apiKey, lat, lng, radius, types, 6, userLocale, stats),
+      searchNearby(
+        apiKey,
+        lat,
+        lng,
+        radius,
+        types,
+        perGroupMax,
+        userLocale,
+        stats,
+        paginate ? { maxPages: 3 } : undefined,
+      ),
     ),
   );
 
@@ -437,7 +477,16 @@ async function searchMultiNearby(
     }
   }
 
-  return { places: merged.slice(0, 24), error: null };
+  if (stats?.screen === "chat" && stats.caller.includes("trip_add_place")) {
+    console.info("[TRIP_ADD_PLACE_RAW_MERGE]", {
+      groups: groups.length,
+      perGroupMax,
+      mergedCount: merged.length,
+      radius,
+    });
+  }
+
+  return { places: merged.slice(0, mergedMax), error: null };
 }
 
 type PlaceHoursLookupResult = { hours: PlaceHoursData; placeId: string | null };
@@ -587,9 +636,19 @@ async function runExploreSearch(
 
   if (data.mode === "multi" && data.nearbyGroups?.length) {
     const groups = sanitizeNearbyGroups(data.nearbyGroups);
+    const isTripAddPlace = data.placesCaller?.includes("trip_add_place") ?? false;
     result =
       groups.length > 0
-        ? await searchMultiNearby(apiKey, data.lat, data.lng, radius, groups, userLocale, stats)
+        ? await searchMultiNearby(
+            apiKey,
+            data.lat,
+            data.lng,
+            radius,
+            groups,
+            userLocale,
+            stats,
+            isTripAddPlace ? { perGroupMax: 20, mergedMax: 100 } : undefined,
+          )
         : { places: [], error: null };
   } else if (data.mode === "nearby" && data.includedTypes?.length) {
     const includedTypes = sanitizeNearbyTypes(data.includedTypes);

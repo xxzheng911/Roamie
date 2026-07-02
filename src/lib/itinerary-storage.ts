@@ -1,6 +1,7 @@
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { isMissingTableError } from "@/lib/supabase-errors";
+import { isValidUuid } from "@/lib/uuid";
 import type { Itinerary } from "./itinerary.functions";
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
 import { isSavedCollectionTrip, tagUserSavedTrip } from "@/lib/saved-collection";
@@ -216,6 +217,10 @@ export async function listItineraries(): Promise<StoredItinerary[]> {
 }
 
 export async function getItinerary(id: string): Promise<StoredItinerary | null> {
+  if (!isValidUuid(id)) {
+    console.warn("[ITINERARY_GET_SKIP] invalid trip id", id);
+    return null;
+  }
   const userId = await getAuthenticatedUserId();
   if (userId) {
     const { data, error } = await supabase
@@ -295,6 +300,10 @@ export async function updateItinerary(
   id: string,
   payload: Itinerary | RoamiePayloadV2,
 ): Promise<StoredItinerary | null> {
+  if (!isValidUuid(id)) {
+    console.warn("[ITINERARY_UPDATE_SKIP] invalid trip id", id);
+    return null;
+  }
   const userId = await getAuthenticatedUserId();
   if (!userId) throw new Error("請先登入");
 
@@ -331,6 +340,10 @@ export async function updateItinerary(
 }
 
 export async function deleteItinerary(id: string): Promise<void> {
+  if (!isValidUuid(id)) {
+    console.warn("[ITINERARY_DELETE_SKIP] invalid trip id", id);
+    return;
+  }
   const userId = await getAuthenticatedUserId();
   if (userId) {
     const { error } = await supabase

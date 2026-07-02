@@ -7,16 +7,18 @@ import { resolveCoreTripCoverImage, resolveCoreTripTitle } from "@/lib/trip/core
 
 type Props = {
   trip: CoreTrip;
+  shareSlot?: React.ReactNode;
   deleteSlot?: React.ReactNode;
 };
 
 /** 收藏列表：僅封面、自訂名稱、旅行天數 */
-export function SavedTripCard({ trip, deleteSlot }: Props) {
+export function SavedTripCard({ trip, shareSlot, deleteSlot }: Props) {
   const navigate = useNavigate();
 
   return (
     <div className="relative rounded-3xl border border-border bg-card shadow-soft transition active:scale-[0.99]">
-      {deleteSlot ? <div className="absolute right-3 top-3 z-10">{deleteSlot}</div> : null}
+      {shareSlot ? <div className="absolute right-3 top-3 z-10">{shareSlot}</div> : null}
+      {deleteSlot ? <div className="absolute right-3 bottom-3 z-10">{deleteSlot}</div> : null}
       <button
         type="button"
         onClick={() => {

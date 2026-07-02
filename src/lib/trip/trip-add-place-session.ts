@@ -2,6 +2,8 @@ import type { RoamieLocation } from "@/lib/ai/context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { TripLocation } from "@/lib/location/types";
 import type { WeatherSummary } from "@/lib/weather-types";
+import { normalizePlaceName } from "@/lib/place-planning-memory";
+import type { TripAddPlaceRecommendationSession } from "@/lib/trip/trip-add-place-recommendation-session";
 
 export type TripAddPlaceFollowUpIntent = "restaurant" | "cafe" | "attraction";
 
@@ -101,6 +103,23 @@ export function buildTripAddPlaceTravelContext(
   };
 }
 
+function refreshRecSessionTripPlaces(
+  rec: TripAddPlaceRecommendationSession,
+  ctx: TripAddPlaceContext,
+): TripAddPlaceRecommendationSession {
+  const seen = new Set(rec.currentTripPlaceIds ?? []);
+  const keys = [...(rec.currentTripPlaceIds ?? [])];
+  for (const name of [...ctx.existingPlaceNames, ...ctx.currentPlaces.map((p) => p.name)]) {
+    const n = normalizePlaceName(name);
+    if (!n) continue;
+    const key = `n:${n}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return { ...rec, currentTripPlaceIds: keys };
+}
+
 export function reinforceTripAddPlaceSession(
   session: ChatPlanningSession,
   userText?: string,
@@ -122,7 +141,7 @@ export function reinforceTripAddPlaceSession(
       }
     : session.location;
 
-  return {
+  const next: ChatPlanningSession = {
     ...session,
     fromTripAddPlace: true,
     tripAddPlaceContext: ctx,
@@ -133,6 +152,18 @@ export function reinforceTripAddPlaceSession(
     activeChatIntent: followUp ?? session.activeChatIntent,
     phase: session.phase === "discover" ? "followup" : session.phase,
   };
+
+  if (next.tripAddPlaceRecommendationSession) {
+    return {
+      ...next,
+      tripAddPlaceRecommendationSession: refreshRecSessionTripPlaces(
+        next.tripAddPlaceRecommendationSession,
+        ctx,
+      ),
+    };
+  }
+
+  return next;
 }
 
 export function buildTripAddPlaceMealSummary(

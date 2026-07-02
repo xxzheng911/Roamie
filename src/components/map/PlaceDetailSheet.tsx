@@ -29,6 +29,7 @@ import type { PlaceResult } from "@/lib/place-result";
 import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
 import { TabelogExternalLink } from "@/components/TabelogExternalLink";
+import { PlaceActionRow } from "@/components/PlaceActionRow";
 
 function TransportModeIcon({ mode }: { mode: TravelModeId }) {
   const cls = "h-4 w-4 shrink-0 text-muted-foreground";

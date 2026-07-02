@@ -4,6 +4,7 @@ import {
   type RoamiePayloadV2,
 } from "@/lib/ai/types";
 import { confirmSaveTrip, getItinerary, updateItinerary } from "@/lib/itinerary-storage";
+import { isValidUuid } from "@/lib/uuid";
 import { loadDraftTrip, saveDraftTrip } from "@/lib/trip-draft-storage";
 import { insertStopOnDate } from "@/lib/trip/trip-stop-mutations";
 import { tripPlaceToItineraryItem, type TripPlaceInput } from "@/lib/trip/trip-place-input";
@@ -81,6 +82,12 @@ export async function appendPlaceToTrip(
     });
     saveDraftTrip({ ...base, itinerary, recommendations: [] });
     return { tripId: "draft", isDraft: true };
+  }
+
+  if (target.kind === "trip") {
+    if (!isValidUuid(target.tripId)) {
+      throw new Error("行程 ID 無效");
+    }
   }
 
   const stored = await getItinerary(target.tripId);

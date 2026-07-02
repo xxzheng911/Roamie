@@ -220,19 +220,48 @@ function publish(next: EffectiveLocationSnapshot, reason: string): boolean {
   return true;
 }
 
+function seedLastKnownForPlaces(): void {
+  if (snapshot?.isReadyForPlaces) return;
+  const lastGood = getLastKnownDeviceCoords();
+  const lastSearch = readLastSearchLocation();
+  if (!lastGood && !lastSearch) return;
+  const picked = pickFallbackCoordinates(lastGood, lastSearch);
+  const city =
+    lastSearch?.city?.trim() ||
+    (picked.usedDefaultTaipei ? DEFAULT_FALLBACK_LOCATION.city : "");
+  publish(
+    toSnapshot(
+      {
+        lat: picked.lat,
+        lng: picked.lng,
+        city,
+        permission: "prompt",
+        usedFallback: true,
+        source: "fallback",
+        accuracy: null,
+      },
+      { readyForPlaces: true, status: "ready" },
+    ),
+    "last_known_seed",
+  );
+}
+
 async function bootstrapEffectiveLocation(): Promise<EffectiveLocationSnapshot> {
   registerLocationAppGate();
   console.info("[LOCATION_INIT]", { via: "effective_location_bootstrap" });
+  seedLastKnownForPlaces();
 
   const cachedSession = getSessionDeviceLocation();
   const loc = cachedSession ?? (await requestDeviceLocation());
 
   let finalLoc = loc;
   if (shouldDeferUntilGpsFix(loc)) {
-    publish(
-      toSnapshot(loc, { readyForPlaces: false, status: "pending_gps" }),
-      "pending_gps",
-    );
+    if (!snapshot?.isReadyForPlaces) {
+      publish(
+        toSnapshot(loc, { readyForPlaces: false, status: "pending_gps" }),
+        "pending_gps",
+      );
+    }
     finalLoc = resolvePlacesFallback(loc.permission);
   } else if (!loc.usedFallback && loc.source !== "fallback") {
     finalLoc = loc;
@@ -270,6 +299,7 @@ const loggedEffectiveLocationCacheKeys = new Set<string>();
 export function ensureEffectiveLocationBootstrap(): Promise<EffectiveLocationSnapshot> {
   registerLocationAppGate();
   ensureForegroundLocationRetry();
+  seedLastKnownForPlaces();
 
   if (snapshot?.isReadyForPlaces) {
     if (!loggedEffectiveLocationCacheKeys.has(snapshot.locationKey)) {

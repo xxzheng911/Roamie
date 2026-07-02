@@ -16,6 +16,7 @@ import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
+import { Route as TripInviteTokenRouteImport } from './routes/trip-invite.$token'
 import { Route as LoginLegalRouteImport } from './routes/login/legal'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
 import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
@@ -67,6 +68,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppRoute,
+} as any)
+const TripInviteTokenRoute = TripInviteTokenRouteImport.update({
+  id: '/trip-invite/$token',
+  path: '/trip-invite/$token',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const LoginLegalRoute = LoginLegalRouteImport.update({
   id: '/legal',
@@ -176,6 +182,7 @@ export interface FileRoutesByFullPath {
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
+  '/trip-invite/$token': typeof TripInviteTokenRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
   '/saved/': typeof AppSavedIndexRoute
 }
@@ -199,6 +206,7 @@ export interface FileRoutesByTo {
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
+  '/trip-invite/$token': typeof TripInviteTokenRoute
   '/': typeof AppIndexRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
   '/saved': typeof AppSavedIndexRoute
@@ -226,6 +234,7 @@ export interface FileRoutesById {
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
+  '/trip-invite/$token': typeof TripInviteTokenRoute
   '/_app/': typeof AppIndexRoute
   '/_app/saved/$tripId': typeof AppSavedTripIdRoute
   '/_app/saved/': typeof AppSavedIndexRoute
@@ -254,6 +263,7 @@ export interface FileRouteTypes {
     | '/api/roamie'
     | '/auth/callback'
     | '/login/legal'
+    | '/trip-invite/$token'
     | '/saved/$tripId'
     | '/saved/'
   fileRoutesByTo: FileRoutesByTo
@@ -277,6 +287,7 @@ export interface FileRouteTypes {
     | '/api/roamie'
     | '/auth/callback'
     | '/login/legal'
+    | '/trip-invite/$token'
     | '/'
     | '/saved/$tripId'
     | '/saved'
@@ -303,6 +314,7 @@ export interface FileRouteTypes {
     | '/api/roamie'
     | '/auth/callback'
     | '/login/legal'
+    | '/trip-invite/$token'
     | '/_app/'
     | '/_app/saved/$tripId'
     | '/_app/saved/'
@@ -320,6 +332,7 @@ export interface RootRouteChildren {
   ApiPlacePhotoRoute: typeof ApiPlacePhotoRoute
   ApiRoamieRoute: typeof ApiRoamieRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
+  TripInviteTokenRoute: typeof TripInviteTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -372,6 +385,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/trip-invite/$token': {
+      id: '/trip-invite/$token'
+      path: '/trip-invite/$token'
+      fullPath: '/trip-invite/$token'
+      preLoaderRoute: typeof TripInviteTokenRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/login/legal': {
       id: '/login/legal'
@@ -559,6 +579,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPlacePhotoRoute: ApiPlacePhotoRoute,
   ApiRoamieRoute: ApiRoamieRoute,
   AuthCallbackRoute: AuthCallbackRoute,
+  TripInviteTokenRoute: TripInviteTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

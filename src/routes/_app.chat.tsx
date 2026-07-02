@@ -25,17 +25,46 @@ import { PreferenceQuizCta } from "@/components/PreferenceQuizCta";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
 import { logTripNav, tripDetailNavigateOptions, TRIP_DETAIL_ROUTE } from "@/lib/trip/trip-detail-nav";
+import { isValidUuid } from "@/lib/uuid";
 import {
   consumeTripAddPlaceHandoff,
+  enrichTripAddPlaceRecommendationsFromSummary,
+  fetchTripAddPlaceCandidatePool,
   fetchTripAddPlaceFollowUpRecommendations,
   fetchTripAddPlaceRecommendations,
+  ensureHandoffRecommendationSession,
+  buildTripAddPlaceAssistantMessage,
   isTripAddPlaceSession,
   markTripAddPlaceHandoffComplete,
+  mergeTripAddPlaceHistoryWithRecommendations,
   parseTripAddPlaceFollowUpIntent,
   prepareTripAddPlaceSession,
   reinforceTripAddPlaceSession,
   tripAddPlaceRecommendationsToSession,
 } from "@/lib/trip/trip-add-place-handoff";
+import {
+  isTripAddPlaceMoreRecommendationsRequest,
+  markTripAddPlaceAdded,
+  rebuildTripAddPlaceRecommendationSession,
+  resolveTripAddPlaceChatSession,
+  resolveTripAddPlaceMoreTurn,
+  shouldHandleTripAddPlaceMoreTurn,
+} from "@/lib/trip/trip-add-place-recommendation-session";
+import {
+  logTripAddPlaceFailure,
+  processTripAddPlaceUserMessage,
+} from "@/lib/trip/trip-add-place-recommendation-engine";
+import {
+  logTripAddPlaceMode,
+  shouldShowTripAddPlacePlusUpsell,
+  TRIP_ADD_PLACE_EMPTY_HINT,
+} from "@/lib/trip/trip-add-place-mode";
+import {
+  buildTripAddPlaceChatMessage,
+  buildTripAddPlaceLoadingMessage,
+  buildTripAddPlaceRenderFallbackMessage,
+  logTripAddPlaceRenderEmpty,
+} from "@/lib/trip/trip-add-place-render";
 import { appendPlaceToTrip } from "@/lib/trip/append-place-to-trip";
 import type { RoamieResponse, RoamieRecommendationItem } from "@/lib/ai/types";
 import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
@@ -59,7 +88,7 @@ import {
 import { getRecommendation } from "@/lib/recommendation-storage";
 import { inferDestinationFromPlaces } from "@/lib/itinerary-source";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
-import { finalizeChatRecommendationDisplay } from "@/lib/chat-display-recommendations";
+import { finalizeChatRecommendationDisplay, mergeAssistantRecommendationMessage } from "@/lib/chat-display-recommendations";
 import {
   enrichChatPlaceItemFromDetails,
   hasValidPlaceCoordinates,
@@ -535,7 +564,15 @@ function Chat() {
   }, []);
 
   useEffect(() => {
-    if (hydrating || session.fromMoodFlow || session.fromMoodCard || session.fromPlusHome) return;
+    if (
+      hydrating ||
+      session.fromMoodFlow ||
+      session.fromMoodCard ||
+      session.fromPlusHome ||
+      session.fromTripAddPlace
+    ) {
+      return;
+    }
     setMsgs((prev) => {
       if (prev.length === 0) return [greetingMsg];
       if (prev.length === 1 && prev[0].role === "assistant" && !prev[0].roamie) {
@@ -543,9 +580,54 @@ function Chat() {
       }
       return prev;
     });
-  }, [greetingMsg, hydrating, session.fromMoodFlow, session.fromMoodCard, session.fromPlusHome]);
+  }, [greetingMsg, hydrating, session.fromMoodFlow, session.fromMoodCard, session.fromPlusHome, session.fromTripAddPlace]);
 
   useEffect(() => {
+    if (hydrating || streaming) return;
+    if (!session.fromTripAddPlace || !session.tripAddPlaceContext) return;
+    if (msgs.length > 0) return;
+
+    logTripAddPlaceRenderEmpty({
+      reason: "blank_after_ready",
+      messagesCount: 0,
+      candidatesCount: session.recommendedPlaces?.length ?? 0,
+      structuredPlacesCount: 0,
+      loading: false,
+    });
+
+    const recs = (session.recommendedPlaces ?? []) as RoamieRecommendationItem[];
+    if (recs.length) {
+      setMsgs([
+        buildTripAddPlaceAssistantMessage(
+          session.lastAssistantReply ?? "",
+          recs,
+          session.mood ?? undefined,
+          session,
+        ),
+      ]);
+      return;
+    }
+
+    setMsgs([
+      session.tripAddPlaceHandoffDone
+        ? { role: "assistant", content: TRIP_ADD_PLACE_EMPTY_HINT }
+        : buildTripAddPlaceRenderFallbackMessage(session),
+    ]);
+  }, [
+    hydrating,
+    streaming,
+    msgs.length,
+    session,
+    session.fromTripAddPlace,
+    session.tripAddPlaceContext,
+    session.tripAddPlaceHandoffDone,
+    session.recommendedPlaces,
+    session.lastAssistantReply,
+    session.mood,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const uiCache = consumeChatUiCache();
@@ -580,8 +662,18 @@ function Chat() {
             session = prepareTripAddPlaceSession(enrichedHandoff, bundle);
             await clearChatHistory();
             persistSession(session);
+            setSession(session);
             homeMoodShortcutEngagedRef.current = true;
           }
+        }
+
+        if (session.fromTripAddPlace && session.tripAddPlaceContext) {
+          session = reinforceTripAddPlaceSession(session);
+          setSession(session);
+          logTripAddPlaceMode(
+            session,
+            search.from === "trip_add_place" ? "trip_add_place" : "chat_restore",
+          );
         }
 
         const homeShortcutEntry = isHomeMoodShortcutSearch(search);
@@ -690,73 +782,148 @@ function Chat() {
           handoffStartedRef.current = handoffKey;
           setMsgs([]);
           await runRecommendationHandoff(current);
-        } else if (
-          search.from === "trip_add_place" &&
-          current.fromTripAddPlace &&
-          current.tripAddPlaceContext &&
-          current.pendingHandoff &&
-          !current.tripAddPlaceHandoffDone &&
-          !tripAddPlaceHandoffStartedRef.current
-        ) {
-          tripAddPlaceHandoffStartedRef.current = true;
-          setMsgs([]);
-          await runTripAddPlaceHandoff(current);
-        } else if (
-          (search.from === "plan" || search.from === "plan-ai") &&
-          current.fromPlanForm &&
-          current.pendingHandoff &&
-          !current.planHandoffDone &&
-          !planHandoffStartedRef.current
-        ) {
-          planHandoffStartedRef.current = true;
-          setMsgs([]);
-          await runPlanFormHandoff(current);
-        } else if (
-          current.fromPlusHome &&
-          current.pendingHandoff &&
-          !current.plusHomeHandoffDone &&
-          hasPlusAccess
-        ) {
-          const summary = buildPlusHomeHandoffOpening(current, current.plusHomeInsight);
-          const opener: ChatMsg = {
-            role: "assistant",
-            content: summary,
-            roamie: buildHandoffRoamiePayload(current, summary),
-          };
-          setMsgs([opener]);
-          persistSession(markPlusHomeHandoffComplete(current));
-        } else if (current.fromMoodFlow && current.moodHandoffDone) {
-          const history = await loadChatHistory();
-          if (history.length) {
-            setMsgs(history);
-          } else {
-            const summary = buildContextualMoodHandoffOpening(current);
+        } else {
+          const shouldRunTripAddPlaceHandoff =
+            current.fromTripAddPlace &&
+            current.tripAddPlaceContext &&
+            current.pendingHandoff &&
+            !current.tripAddPlaceHandoffDone;
+
+          if (shouldRunTripAddPlaceHandoff) {
+            tripAddPlaceHandoffStartedRef.current = true;
+            setMsgs([buildTripAddPlaceLoadingMessage()]);
+            setSession(reinforceTripAddPlaceSession(current));
+            try {
+              await runTripAddPlaceHandoff(current);
+            } catch (handoffError) {
+              console.error("[TRIP_ADD_PLACE_HANDOFF_FAILED]", handoffError);
+              if (!cancelled) {
+                const fallback = buildTripAddPlaceRenderFallbackMessage(current, {
+                  error: handoffError instanceof Error ? handoffError.message : String(handoffError),
+                });
+                setMsgs([fallback]);
+                persistSession(
+                  markTripAddPlaceHandoffComplete({
+                    ...current,
+                    lastAssistantReply: fallback.content,
+                  }),
+                );
+              }
+            }
+          } else if (
+            (search.from === "plan" || search.from === "plan-ai") &&
+            current.fromPlanForm &&
+            current.pendingHandoff &&
+            !current.planHandoffDone &&
+            !planHandoffStartedRef.current
+          ) {
+            planHandoffStartedRef.current = true;
+            setMsgs([]);
+            await runPlanFormHandoff(current);
+          } else if (
+            current.fromPlusHome &&
+            current.pendingHandoff &&
+            !current.plusHomeHandoffDone &&
+            hasPlusAccess
+          ) {
+            const summary = buildPlusHomeHandoffOpening(current, current.plusHomeInsight);
             const opener: ChatMsg = {
               role: "assistant",
               content: summary,
               roamie: buildHandoffRoamiePayload(current, summary),
             };
             setMsgs([opener]);
-          }
-        } else {
-          const history = await loadChatHistory();
-          if (history.length) setMsgs(history);
-          else if (
-            !current.fromMoodFlow &&
-            !current.fromMoodCard &&
-            !current.fromPlusHome &&
-            !current.homeMoodShortcutEntry &&
-            !current.fromTripAddPlace
-          ) {
-            setMsgs([greetingMsg]);
+            persistSession(markPlusHomeHandoffComplete(current));
+          } else if (current.fromMoodFlow && current.moodHandoffDone) {
+            const history = await loadChatHistory();
+            if (history.length) {
+              setMsgs(history);
+            } else {
+              const summary = buildContextualMoodHandoffOpening(current);
+              const opener: ChatMsg = {
+                role: "assistant",
+                content: summary,
+                roamie: buildHandoffRoamiePayload(current, summary),
+              };
+              setMsgs([opener]);
+            }
+          } else if (current.fromTripAddPlace && current.tripAddPlaceHandoffDone) {
+            const restored = reinforceTripAddPlaceSession(current);
+            persistSession(restored);
+            setSession(restored);
+            logTripAddPlaceMode(
+              restored,
+              search.from === "trip_add_place" ? "trip_add_place" : "chat_restore",
+            );
+            const history = await loadChatHistory();
+            const recs = (restored.recommendedPlaces ?? []) as RoamieRecommendationItem[];
+            if (history.length) {
+              setMsgs(mergeTripAddPlaceHistoryWithRecommendations(history, restored));
+            } else if (recs.length) {
+              const summary =
+                restored.lastAssistantReply?.trim() ||
+                recs.map((r, i) => `${i + 1}. ${r.name}`).join("\n");
+              setMsgs([
+                buildTripAddPlaceAssistantMessage(summary, recs, restored.mood ?? undefined, restored),
+              ]);
+            } else {
+              setMsgs([{ role: "assistant", content: TRIP_ADD_PLACE_EMPTY_HINT }]);
+            }
+          } else if (current.fromTripAddPlace && current.tripAddPlaceContext) {
+            const restored = reinforceTripAddPlaceSession(current);
+            persistSession(restored);
+            setSession(restored);
+            logTripAddPlaceMode(
+              restored,
+              search.from === "trip_add_place" ? "trip_add_place" : "chat_restore",
+            );
+            const history = await loadChatHistory();
+            if (history.length) {
+              setMsgs(mergeTripAddPlaceHistoryWithRecommendations(history, restored));
+            } else {
+              setMsgs([{ role: "assistant", content: TRIP_ADD_PLACE_EMPTY_HINT }]);
+            }
+          } else {
+            const history = await loadChatHistory();
+            if (history.length) setMsgs(history);
+            else if (
+              !current.fromMoodFlow &&
+              !current.fromMoodCard &&
+              !current.fromPlusHome &&
+              !current.homeMoodShortcutEntry &&
+              !current.fromTripAddPlace
+            ) {
+              setMsgs([greetingMsg]);
+            }
           }
         }
       } catch (e) {
         console.error(e);
+        const current = loadChatSession();
+        if (current.fromTripAddPlace && current.tripAddPlaceContext && !cancelled) {
+          logTripAddPlaceRenderEmpty({
+            reason: "hydrate_error",
+            messagesCount: 0,
+            candidatesCount: current.recommendedPlaces?.length ?? 0,
+            structuredPlacesCount: 0,
+            loading: false,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          setMsgs([
+            current.tripAddPlaceHandoffDone
+              ? { role: "assistant", content: TRIP_ADD_PLACE_EMPTY_HINT }
+              : buildTripAddPlaceRenderFallbackMessage(current, {
+                  error: e instanceof Error ? e.message : String(e),
+                }),
+          ]);
+        }
       } finally {
-        setHydrating(false);
+        if (!cancelled) setHydrating(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search.recommendationId, search.from, search.mood, search.tripId, hasPlusAccess, t]);
 
@@ -784,12 +951,18 @@ function Chat() {
       markShortcutEngaged();
       const ctx = session.tripAddPlaceContext;
       if (session.fromTripAddPlace && ctx) {
+        if (!isValidUuid(ctx.tripId)) {
+          toast.error("行程 ID 無效，請從行程頁重新進入");
+          navigate({ to: "/saved", search: { tab: "trips" } });
+          return;
+        }
         try {
           await appendPlaceToTrip(
             { kind: "trip", tripId: ctx.tripId },
             tripPlaceFromRecommendation(rec),
             { date: ctx.dateKey, position: "end" },
           );
+          persistSession(markTripAddPlaceAdded(session, rec));
           toast.success("已加入行程");
           logTripNav("ChatTripAddPlace", ctx.tripId);
           navigate(tripDetailNavigateOptions(ctx.tripId, { day: ctx.selectedDay }));
@@ -800,7 +973,7 @@ function Chat() {
       }
       openAddToTrip(tripPlaceFromRecommendation(rec));
     },
-    [session.fromTripAddPlace, session.tripAddPlaceContext, navigate, openAddToTrip],
+    [session.fromTripAddPlace, session.tripAddPlaceContext, navigate, openAddToTrip, persistSession],
   );
 
   const handleSavePlace = async (rec: RoamieRecommendationItem) => {
@@ -1275,38 +1448,199 @@ function Chat() {
       if (!ctx) return;
       setStreaming(true);
       try {
-        const { summary, recommendations } = await fetchTripAddPlaceRecommendations({
+        let { summary, recommendations, recommendationSession } =
+          await fetchTripAddPlaceRecommendations({
+            ctx,
+            searchPlaces: searchNearbyPlaces,
+            locale,
+          });
+        if (!recommendations.length) {
+          recommendations = await enrichTripAddPlaceRecommendationsFromSummary({
+            summary,
+            ctx,
+            searchPlaces: searchNearbyPlaces,
+            locale,
+          });
+        }
+        const sessionWithRecs = tripAddPlaceRecommendationsToSession(
+          handoffSession,
+          recommendations,
+          recommendationSession,
+        );
+        let { summary: displaySummary, recommendations: filteredRecs } =
+          finalizeChatRecommendationDisplay(sessionWithRecs, "", summary, recommendations);
+        if (!filteredRecs.length && recommendations.length) {
+          filteredRecs = recommendations.slice(0, 5);
+        }
+        if (!filteredRecs.length) {
+          filteredRecs = await enrichTripAddPlaceRecommendationsFromSummary({
+            summary: displaySummary,
+            ctx,
+            searchPlaces: searchNearbyPlaces,
+            locale,
+          });
+        }
+        recommendationSession = await ensureHandoffRecommendationSession({
           ctx,
+          recommendations: filteredRecs,
+          recommendationSession,
           searchPlaces: searchNearbyPlaces,
           locale,
         });
-        const sessionWithRecs = tripAddPlaceRecommendationsToSession(handoffSession, recommendations);
-        const { summary: displaySummary, recommendations: filteredRecs } =
-          finalizeChatRecommendationDisplay(sessionWithRecs, "", summary, recommendations);
-        const opener: ChatMsg = {
-          role: "assistant",
-          content: displaySummary,
-          roamie: {
-            title: "Roamie 推薦",
-            summary: displaySummary,
-            moodTag: handoffSession.mood ?? ctx.travelStyle ?? "",
-            recommendations: filteredRecs,
-            itinerary: [],
-          },
-        };
-        setMsgs([opener]);
+
+        const assistantMessage = buildTripAddPlaceChatMessage({
+          summary: displaySummary,
+          recommendations: filteredRecs,
+          moodTag: handoffSession.mood ?? ctx.travelStyle ?? "",
+          session: sessionWithRecs,
+        });
+
+        if (!assistantMessage.structuredPlaces?.length && filteredRecs.length) {
+          logTripAddPlaceRenderEmpty({
+            reason: "handoff_structured_empty",
+            messagesCount: 0,
+            candidatesCount: filteredRecs.length,
+            structuredPlacesCount: 0,
+            loading: false,
+          });
+        }
+
+        if (!assistantMessage.content.trim() && !assistantMessage.structuredPlaces?.length) {
+          const fallback = buildTripAddPlaceRenderFallbackMessage(sessionWithRecs, {
+            candidatesCount: recommendationSession?.allCandidates.length ?? filteredRecs.length,
+          });
+          setMsgs([fallback]);
+          persistSession(
+            markTripAddPlaceHandoffComplete({
+              ...sessionWithRecs,
+              lastAssistantReply: fallback.content,
+            }),
+          );
+          setSession(reinforceTripAddPlaceSession(loadChatSession()));
+          return;
+        }
+
+        setMsgs([assistantMessage]);
+        const nextSession = markTripAddPlaceHandoffComplete({
+          ...sessionWithRecs,
+          recommendedPlaces: (assistantMessage.roamie?.recommendations ?? filteredRecs) as ChatPlaceItem[],
+          tripAddPlaceRecommendationSession:
+            recommendationSession ?? sessionWithRecs.tripAddPlaceRecommendationSession,
+          lastAssistantReply: assistantMessage.content,
+        });
+        persistSession(nextSession);
+        setSession(reinforceTripAddPlaceSession(nextSession));
+        console.info(
+          "[Roamie] trip add place handoff ok",
+          ctx.tripId,
+          `day=${ctx.selectedDay}`,
+          `cards=${assistantMessage.structuredPlaces?.length ?? filteredRecs.length}`,
+          `pool=${recommendationSession?.allCandidates.length ?? 0}`,
+        );
+      } catch (error) {
+        console.error("[TRIP_ADD_PLACE_HANDOFF_FAILED]", error);
+        const fallback = buildTripAddPlaceRenderFallbackMessage(handoffSession, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        setMsgs([fallback]);
         persistSession(
           markTripAddPlaceHandoffComplete({
-            ...sessionWithRecs,
-            recommendedPlaces: filteredRecs as ChatPlaceItem[],
+            ...handoffSession,
+            lastAssistantReply: fallback.content,
           }),
         );
-        console.info("[Roamie] trip add place handoff ok", ctx.tripId, `day=${ctx.selectedDay}`);
+        setSession(reinforceTripAddPlaceSession(loadChatSession()));
+        throw error;
       } finally {
         setStreaming(false);
       }
     },
     [locale, persistSession, searchNearbyPlaces],
+  );
+
+  const commitTripAddPlaceLocalTurn = useCallback(
+    async (
+      tripSession: ChatPlanningSession,
+      userText: string,
+      baseConversation: ChatMsg[],
+    ): Promise<void> => {
+      const turn = await processTripAddPlaceUserMessage({
+        session: tripSession,
+        userText,
+        msgs: baseConversation,
+        searchPlaces: searchNearbyPlaces,
+        locale,
+      });
+      const { summary: displaySummary, recommendations: filteredRecs } =
+        finalizeChatRecommendationDisplay(
+          turn.nextSession,
+          userText,
+          turn.summary,
+          turn.recommendations,
+        );
+      const finalRecs = filteredRecs.length ? filteredRecs : turn.recommendations;
+      const nextSession = {
+        ...turn.nextSession,
+        fromTripAddPlace: true,
+        conversationMode: "trip_add_place" as const,
+        recommendedPlaces: finalRecs as ChatPlaceItem[],
+        lastAssistantReply: displaySummary,
+      };
+      persistSession(nextSession);
+      setSession(reinforceTripAddPlaceSession(nextSession));
+      const assistantMessage = buildTripAddPlaceChatMessage({
+        summary: displaySummary,
+        recommendations: finalRecs,
+        moodTag: turn.nextSession.mood ?? tripSession.tripAddPlaceContext?.travelStyle,
+        session: nextSession,
+      });
+      if (!assistantMessage.structuredPlaces?.length && finalRecs.length) {
+        logTripAddPlaceRenderEmpty({
+          reason: "local_turn_structured_empty",
+          messagesCount: baseConversation.length + 1,
+          candidatesCount: finalRecs.length,
+          structuredPlacesCount: 0,
+          loading: false,
+        });
+      }
+      setMsgs([...baseConversation, assistantMessage]);
+      setPartial({});
+    },
+    [locale, persistSession, searchNearbyPlaces],
+  );
+
+  const pushTripAddPlaceMoreRecommendations = useCallback(
+    async (
+      activeSession: ChatPlanningSession,
+      userText: string,
+      conversation: ChatMsg[],
+    ): Promise<boolean> => {
+      const tripSession = resolveTripAddPlaceChatSession(activeSession, loadChatSession());
+      if (!tripSession) return false;
+      if (
+        !shouldHandleTripAddPlaceMoreTurn(userText, tripSession) &&
+        !isTripAddPlaceMoreRecommendationsRequest(userText)
+      ) {
+        return false;
+      }
+      try {
+        await commitTripAddPlaceLocalTurn(tripSession, userText, conversation);
+        return true;
+      } catch (e) {
+        logTripAddPlaceFailure(e, tripSession, userText, "push_more");
+        try {
+          await commitTripAddPlaceLocalTurn(
+            tripSession,
+            isTripAddPlaceMoreRecommendationsRequest(userText) ? userText : "還有嗎",
+            conversation,
+          );
+        } catch (retryError) {
+          logTripAddPlaceFailure(retryError, tripSession, userText, "push_more_retry");
+        }
+        return true;
+      }
+    },
+    [commitTripAddPlaceLocalTurn],
   );
 
   const pushNearbyPlaceRecommendation = useCallback(
@@ -2024,47 +2358,26 @@ function Chat() {
         return false;
       }
 
-      if (isTripAddPlaceSession(activeSession) && activeSession.tripAddPlaceContext) {
-        const followUp = parseTripAddPlaceFollowUpIntent(activeUserText);
-        if (followUp) {
-          const reinforced = reinforceTripAddPlaceSession(activeSession, activeUserText);
-          const { summary, recommendations } = await fetchTripAddPlaceFollowUpRecommendations({
-            ctx: reinforced.tripAddPlaceContext!,
-            intent: followUp,
-            searchPlaces: searchNearbyPlaces,
-            locale,
-          });
-          const sessionWithRecs = tripAddPlaceRecommendationsToSession(reinforced, recommendations);
-          const { summary: displaySummary, recommendations: filteredRecs } =
-            finalizeChatRecommendationDisplay(sessionWithRecs, activeUserText, summary, recommendations);
-          setMsgs((prev) => {
-            const trimmedPrev = prev.filter(
-              (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
-            );
-            return [
-              ...trimmedPrev,
-              {
-                role: "assistant",
-                content: displaySummary,
-                roamie: {
-                  title: "Roamie 推薦",
-                  summary: displaySummary,
-                  moodTag: sessionWithRecs.mood ?? "",
-                  recommendations: filteredRecs,
-                  itinerary: [],
-                },
-              },
-            ];
-          });
-          persistSession({
-            ...sessionWithRecs,
-            recommendedPlaces: filteredRecs as ChatPlaceItem[],
-            activeChatIntent: followUp,
-          });
-          setPartial({});
-          return true;
-        }
-        return false;
+      const tripSession = resolveTripAddPlaceChatSession(activeSession, loadChatSession());
+      if (tripSession) {
+          try {
+            await commitTripAddPlaceLocalTurn(tripSession, activeUserText, conversation);
+            return true;
+          } catch (e) {
+            logTripAddPlaceFailure(e, tripSession, activeUserText, "local_fallback");
+            try {
+              await commitTripAddPlaceLocalTurn(
+                tripSession,
+                isTripAddPlaceMoreRecommendationsRequest(activeUserText)
+                  ? activeUserText
+                  : "還有嗎",
+                conversation,
+              );
+            } catch (retryError) {
+              logTripAddPlaceFailure(retryError, tripSession, activeUserText, "local_fallback_retry");
+            }
+            return true;
+          }
       }
 
       const mergedForAdvice = mergeTravelContext(activeSession, activeUserText);
@@ -2394,7 +2707,7 @@ function Chat() {
       setPartial({});
       return recs.length > 0;
     },
-    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, pushNearbyPlaceRecommendation, pushDestinationPlaceRecommendation, pushMorePlaceRecommendations, pushDestinationCategoryPlaceRecommendation, persistPlanningAdviceTurn, completeAdviceTurn],
+    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, pushNearbyPlaceRecommendation, pushDestinationPlaceRecommendation, pushMorePlaceRecommendations, pushDestinationCategoryPlaceRecommendation, pushTripAddPlaceMoreRecommendations, commitTripAddPlaceLocalTurn, persistPlanningAdviceTurn, completeAdviceTurn],
   );
 
   const streamChat = useCallback(
@@ -2407,6 +2720,29 @@ function Chat() {
       },
       sessionOverride?: ChatPlanningSession,
     ) => {
+      const activeSession = sessionOverride ?? session;
+      const tripSession = resolveTripAddPlaceChatSession(activeSession, loadChatSession());
+      if (tripSession) {
+        console.warn("[TRIP_ADD_PLACE] blocked streamChat — local recommendation only");
+        const userText = opts?.userText ?? "";
+        const baseConversation = conversation.filter((m) => m.content?.trim());
+        try {
+          await commitTripAddPlaceLocalTurn(tripSession, userText, baseConversation);
+        } catch (e) {
+          logTripAddPlaceFailure(e, tripSession, userText, "stream_chat_blocked");
+          try {
+            await commitTripAddPlaceLocalTurn(
+              tripSession,
+              isTripAddPlaceMoreRecommendationsRequest(userText) ? userText : "還有嗎",
+              baseConversation,
+            );
+          } catch (retryError) {
+            logTripAddPlaceFailure(retryError, tripSession, userText, "stream_chat_blocked_retry");
+          }
+        }
+        return;
+      }
+
       setStreaming(true);
       setLastFailed(null);
       setPartial({});
@@ -2696,7 +3032,7 @@ function Chat() {
         abortRef.current = null;
       }
     },
-    [buildRequest, session, persistSession, locale, applyLocalFallback, completeAdviceTurn],
+    [buildRequest, session, persistSession, locale, applyLocalFallback, completeAdviceTurn, commitTripAddPlaceLocalTurn],
   );
 
   const handleOpenPlaceDetail = (rec: RoamieRecommendationItem) => {
@@ -2765,6 +3101,33 @@ function Chat() {
   ) => {
     const trimmed = (overrideText ?? text).trim();
     if (!trimmed || streaming || generating) return;
+
+    const tripSession = resolveTripAddPlaceChatSession(session, loadChatSession());
+    if (tripSession && opts?.source !== "auto") {
+      markShortcutEngaged();
+      const userMsg: ChatMsg = { role: "user", content: trimmed };
+      const baseConversation = [...msgs, userMsg];
+      setMsgs(baseConversation);
+      setText("");
+      setStreaming(true);
+      try {
+        await commitTripAddPlaceLocalTurn(tripSession, trimmed, baseConversation);
+      } catch (e) {
+        logTripAddPlaceFailure(e, tripSession, trimmed, "send");
+        try {
+          await commitTripAddPlaceLocalTurn(
+            tripSession,
+            isTripAddPlaceMoreRecommendationsRequest(trimmed) ? trimmed : "還有嗎",
+            baseConversation,
+          );
+        } catch (retryError) {
+          logTripAddPlaceFailure(retryError, tripSession, trimmed, "send_retry");
+        }
+      } finally {
+        setStreaming(false);
+      }
+      return;
+    }
 
     if (isPlaceDetailChatActive(session)) {
       markShortcutEngaged();
@@ -2852,66 +3215,6 @@ function Chat() {
         },
         nextSession,
       );
-      return;
-    }
-
-    if (isTripAddPlaceSession(session) && session.tripAddPlaceContext) {
-      markShortcutEngaged();
-      const userMsg: ChatMsg = { role: "user", content: trimmed };
-      const baseConversation = [...msgs, userMsg];
-      setMsgs(baseConversation);
-      setText("");
-
-      let nextSession = reinforceTripAddPlaceSession(session, trimmed);
-      const followUp = parseTripAddPlaceFollowUpIntent(trimmed);
-      if (followUp) {
-        nextSession = { ...nextSession, activeChatIntent: followUp, phase: "recommend" };
-      }
-      persistSession(nextSession);
-
-      if (followUp) {
-        setStreaming(true);
-        try {
-          const { summary, recommendations } = await fetchTripAddPlaceFollowUpRecommendations({
-            ctx: nextSession.tripAddPlaceContext!,
-            intent: followUp,
-            searchPlaces: searchNearbyPlaces,
-            locale,
-          });
-          const sessionWithRecs = tripAddPlaceRecommendationsToSession(nextSession, recommendations);
-          const { summary: displaySummary, recommendations: filteredRecs } =
-            finalizeChatRecommendationDisplay(
-              sessionWithRecs,
-              trimmed,
-              summary,
-              recommendations,
-            );
-          persistSession({
-            ...sessionWithRecs,
-            recommendedPlaces: filteredRecs as ChatPlaceItem[],
-            activeChatIntent: followUp,
-          });
-          setMsgs([
-            ...baseConversation,
-            {
-              role: "assistant",
-              content: displaySummary,
-              roamie: {
-                title: "Roamie 推薦",
-                summary: displaySummary,
-                moodTag: sessionWithRecs.mood ?? "",
-                recommendations: filteredRecs,
-                itinerary: [],
-              },
-            },
-          ]);
-        } finally {
-          setStreaming(false);
-        }
-        return;
-      }
-
-      await streamChat(baseConversation, { phase: "followup", userText: trimmed }, nextSession);
       return;
     }
 
@@ -3961,12 +4264,12 @@ function Chat() {
         <BackButton
           preferFallback
           fallback={
-            session.fromTripAddPlace && session.tripAddPlaceContext
-              ? {
-                  to: TRIP_DETAIL_ROUTE,
-                  params: { tripId: session.tripAddPlaceContext.tripId },
-                  search: { day: session.tripAddPlaceContext.selectedDay },
-                }
+            session.fromTripAddPlace &&
+            session.tripAddPlaceContext &&
+            isValidUuid(session.tripAddPlaceContext.tripId)
+              ? tripDetailNavigateOptions(session.tripAddPlaceContext.tripId, {
+                  day: session.tripAddPlaceContext.selectedDay,
+                })
               : session.fromPlanForm || session.fromPlanAi
                 ? { to: "/plan" }
                 : { to: "/" }
@@ -4050,7 +4353,8 @@ function Chat() {
         >
           {hasPlusAccess &&
             travelPrefStatus !== null &&
-            !travelPrefStatus.preferenceQuizCompleted && (
+            !travelPrefStatus.preferenceQuizCompleted &&
+            shouldShowTripAddPlacePlusUpsell(session) && (
             <PreferenceQuizCta origin="chat" variant="banner" className="animate-rise" />
           )}
           <ChatMessageList
@@ -4061,7 +4365,9 @@ function Chat() {
             selectedNames={selectedNames}
             savedNames={savedNames}
             savingName={savingName}
-            addToTripLabel={t("chat.addToTrip")}
+            addToTripLabel={
+              session.fromTripAddPlace ? "加入此行程" : t("chat.addToTrip")
+            }
             discussPlaceLabel={t("trip.discussPlace")}
             viewMapLabel={t("chat.viewMap")}
             onRecommendationEngage={markShortcutEngaged}

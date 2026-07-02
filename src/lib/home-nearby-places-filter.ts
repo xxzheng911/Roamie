@@ -36,6 +36,45 @@ export const HOME_NEARBY_TARGET_COUNT = 6;
 export const HOME_NEARBY_MIN_DISPLAY = 4;
 export const HOME_NEARBY_FALLBACK_MIN = 3;
 export const HOME_NEARBY_FALLBACK_MAX = 8;
+export const HOME_NEARBY_ULTIMATE_MIN = 3;
+
+/** 最寬鬆 fallback：真實 Google place、非永久排除、距離內即可 */
+export function selectHomeNearbyUltimateFallback<T extends HomeNearbyFilterPlace>(
+  places: T[],
+  options?: {
+    origin?: { lat: number; lng: number };
+    maxDistanceM?: number;
+    minResults?: number;
+    maxResults?: number;
+    onDrop?: (place: T, reason: string) => void;
+  },
+): T[] {
+  const minResults = options?.minResults ?? HOME_NEARBY_ULTIMATE_MIN;
+  const maxResults = options?.maxResults ?? HOME_NEARBY_FALLBACK_MAX;
+  const pool = dedupeWithinDistance(places, options?.origin, options?.maxDistanceM);
+  const out: T[] = [];
+  const seen = new Set<string>();
+
+  for (const place of pool) {
+    if (out.length >= maxResults) break;
+    const id = (place.id ?? "").trim();
+    if (!id || seen.has(id)) continue;
+
+    const name = (place.name ?? "").trim();
+    if (!name || name === "Unknown") {
+      options?.onDrop?.(place, "missing_name");
+      continue;
+    }
+    if (!passesHomeNearbyHardExclusions(place)) {
+      options?.onDrop?.(place, "hard_exclusion");
+      continue;
+    }
+    seen.add(id);
+    out.push(place);
+  }
+
+  return out.slice(0, maxResults);
+}
 
 function withinHomeNearbyDistance(
   place: HomeNearbyFilterPlace,
@@ -181,7 +220,7 @@ export function selectHomeNearbyPicks<T extends HomeNearbyFilterPlace>(
   return selectByLevels(pool, period, {
     minResults,
     maxResults,
-    includeLastResort: false,
+    includeLastResort: true,
   });
 }
 

@@ -1,5 +1,6 @@
 import { PLACES_HOME_LOAD_TTL_MS } from "@/lib/places-api-guard";
 import { normalizedLocationKey } from "@/lib/location-key";
+import { readHomeSessionNearbyMeta } from "@/lib/home-session-cache";
 
 const HOME_NEARBY_LOAD_TTL_MS = PLACES_HOME_LOAD_TTL_MS;
 
@@ -34,14 +35,23 @@ export function homeNearbyLoadKey(
 }
 
 export function readHomeNearbyResultsCache<T = unknown>(key: string, now = Date.now()): T[] | null {
+  const meta = readHomeNearbyResultsCacheMeta<T>(key, now);
+  return meta?.picks ?? null;
+}
+
+export function readHomeNearbyResultsCacheMeta<T = unknown>(
+  key: string,
+  now = Date.now(),
+): { picks: T[]; ageMs: number } | null {
   const hit = homeNearbyResultsCache.get(key);
   if (!hit) return null;
-  if (now - hit.at > HOME_NEARBY_LOAD_TTL_MS) {
+  const ageMs = now - hit.at;
+  if (ageMs > HOME_NEARBY_LOAD_TTL_MS) {
     homeNearbyResultsCache.delete(key);
     return null;
   }
   if (hit.picks.length === 0) return null;
-  return hit.picks as T[];
+  return { picks: hit.picks as T[], ageMs };
 }
 
 export function writeHomeNearbyResultsCache<T = unknown>(
@@ -56,13 +66,26 @@ export function shouldSkipHomeNearbyLoad(key: string, now = Date.now()): boolean
   return lastLoadKey === key && now - lastLoadAt < HOME_NEARBY_LOAD_TTL_MS;
 }
 
+export function invalidateHomeNearbyLoadKey(key: string): void {
+  homeNearbyResultsCache.delete(key);
+  completedLoadKeys.delete(key);
+  inFlightHomeNearbyRequests.delete(key);
+  if (lastLoadKey === key) {
+    lastLoadKey = "";
+    lastLoadAt = 0;
+  }
+}
+
 /** 已有 nearby 卡片且 session key 一致，或該 loadKey 已完成（含空結果）時不再 load */
 export function shouldSkipHomeNearbyLoadWithData(
   key: string,
   hasExistingPicks: boolean,
   sessionLoadKey: string | null,
   now = Date.now(),
+  options?: { forceRefresh?: boolean },
 ): boolean {
+  if (options?.forceRefresh) return false;
+
   const cached = readHomeNearbyResultsCache(key, now);
   if (cached !== null && cached.length > 0) return true;
 
@@ -73,7 +96,11 @@ export function shouldSkipHomeNearbyLoadWithData(
       completedLoadKeys.delete(key);
     }
   }
-  if (hasExistingPicks && sessionLoadKey === key) return true;
+  if (hasExistingPicks && sessionLoadKey === key) {
+    const sessionMeta = readHomeSessionNearbyMeta(now);
+    if (sessionMeta.displayFresh) return true;
+    if (sessionMeta.apiFresh) return true;
+  }
   return false;
 }
 

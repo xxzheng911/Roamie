@@ -128,6 +128,8 @@ function installAppInitHandlersCore(): void {
         prefetchLocationPermissionStatus();
         void warmSupabaseAuthStorage();
         attachOAuthDeepLinkListener();
+        const { attachTripInviteDeepLinkListener } = await import("@/lib/trip/trip-invite-deep-link");
+        attachTripInviteDeepLinkListener();
         recoverPendingOAuthCallbackPath();
       });
     } else {

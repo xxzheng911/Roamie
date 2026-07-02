@@ -87,7 +87,10 @@ import {
   plusPreferenceRankPenalty,
   type PlusPreferenceRankingContext,
 } from "@/lib/plus-preference-ranking";
-import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
+import {
+  filterPlacesForTripAddPlaceRecommendation,
+  isTripAddPlaceHardReject,
+} from "@/lib/trip/trip-add-place-tourism-filter";
 import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
 import { getPreferences } from "@/lib/preferences-storage";
 import { getUserProfile } from "@/lib/profile-storage";
@@ -644,6 +647,7 @@ function applyNearbyPlaceFilters(
     maxDistanceKm: number;
     strictCafeGuard: boolean;
     placeDetailNearby?: boolean;
+    tripAddPlace?: boolean;
   },
 ): PlaceResult[] {
   if (params.placeDetailNearby) {
@@ -658,6 +662,9 @@ function applyNearbyPlaceFilters(
   }
 
   let working = ranked;
+  if (params.tripAddPlace) {
+    working = working.filter((place) => !isTripAddPlaceHardReject(place));
+  }
   if (params.searchContext?.searchMode === "destination" && params.searchContext.destinationName) {
     working = filterPlacesByDestinationGuard(
       working,
@@ -691,6 +698,9 @@ function applyNearbyPlaceFilters(
     working = [...restaurants, ...districts];
   }
   working = filterPlacesByNearbyDistance(working, params.lat, params.lng, params.maxDistanceKm);
+  if (params.tripAddPlace) {
+    working = filterPlacesForTripAddPlaceRecommendation(working, params.intent);
+  }
   return working;
 }
 
@@ -713,6 +723,11 @@ export async function fetchNearbyPlacesForIntent(
     hasPlusAccess?: boolean;
     placeDetailNearby?: boolean;
     focusPlaceId?: string;
+    maxResults?: number;
+    radiusSteps?: readonly number[];
+    maxDistanceKm?: number;
+    tripAddPlace?: boolean;
+    nearbyGroups?: string[][];
   },
 ): Promise<PlaceResult[]> {
   const run = async (): Promise<PlaceResult[]> =>
@@ -754,11 +769,18 @@ async function fetchNearbyPlacesForIntentInner(
     hasPlusAccess?: boolean;
     placeDetailNearby?: boolean;
     focusPlaceId?: string;
+    maxResults?: number;
+    radiusSteps?: readonly number[];
+    maxDistanceKm?: number;
+    tripAddPlace?: boolean;
+    nearbyGroups?: string[][];
   },
 ): Promise<PlaceResult[]> {
   const excluded = context?.excludedCategories ?? [];
   const plusCtx = await resolveChatPlusRankingContext(context, opts);
   const allowParks = userWantsParkRecommendations(opts?.userText ?? "", context);
+  const isTripAddPlace =
+    opts?.tripAddPlace ?? context?.tripPurpose === "trip_add_place";
   const isRefresh =
     context?.tripPurpose === "refresh_recommendations" ||
     context?.tripPurpose === "refine_recommendations";
@@ -773,8 +795,12 @@ async function fetchNearbyPlacesForIntentInner(
   const allowLodging =
     intent === "camping" || isExplicitLodgingSearchIntent(opts?.userText ?? "");
 
+  const targetCount = opts?.maxResults ?? RECOMMENDATION_COUNT;
+
   const baseAttempt: SearchAttempt =
-    intent === "restaurant"
+    isTripAddPlace && opts?.nearbyGroups?.length
+      ? { query: "", mode: "multi", nearbyGroups: opts.nearbyGroups }
+      : intent === "restaurant"
       ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "")[0] ?? {
           query: "餐廳 美食",
           mode: "nearby",
@@ -797,13 +823,17 @@ async function fetchNearbyPlacesForIntentInner(
 
   const searchAttempts: SearchAttempt[] = opts?.placeDetailNearby
     ? placeDetailNearbySearchAttempts(intent)
-    : intent === "restaurant"
-      ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "")
-      : [baseAttempt];
+    : isTripAddPlace && opts?.nearbyGroups?.length
+      ? [{ query: "", mode: "multi", nearbyGroups: opts.nearbyGroups }]
+      : intent === "restaurant"
+        ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "")
+        : [baseAttempt];
 
-  const radiusSteps = opts?.placeDetailNearby
-    ? CHAT_PLACE_DETAIL_NEARBY_RADIUS_STEPS_M
-    : CHAT_NEARBY_RADIUS_STEPS_M;
+  const radiusSteps =
+    opts?.radiusSteps ??
+    (opts?.placeDetailNearby
+      ? CHAT_PLACE_DETAIL_NEARBY_RADIUS_STEPS_M
+      : CHAT_NEARBY_RADIUS_STEPS_M);
 
   console.info("[CHAT_NEARBY_SEARCH]", {
     basePlace: opts?.searchContext?.destinationName ?? opts?.cityLabel ?? "",
@@ -821,7 +851,7 @@ async function fetchNearbyPlacesForIntentInner(
   for (let stepIndex = 0; stepIndex < radiusSteps.length; stepIndex++) {
     const radius = radiusSteps[stepIndex]!;
     logChatNearbyRequest({ center: { lat, lng }, radius, category: intent });
-    const maxDistanceKm = maxDistanceKmForIntent(intent, stepIndex);
+    const maxDistanceKm = opts?.maxDistanceKm ?? maxDistanceKmForIntent(intent, stepIndex);
     const strictCafeGuard = stepIndex === 0 && !opts?.placeDetailNearby;
 
     const seen = new Set<string>();
@@ -833,7 +863,9 @@ async function fetchNearbyPlacesForIntentInner(
         lng,
         locale,
         attempt,
-        "chat.fetchNearbyPlacesForIntent",
+        isTripAddPlace
+          ? "chat.fetchNearbyPlacesForIntent.trip_add_place"
+          : "chat.fetchNearbyPlacesForIntent",
         {
           ...searchExtras,
           radius,
@@ -848,7 +880,7 @@ async function fetchNearbyPlacesForIntentInner(
         seen.add(id);
         places.push(place);
       }
-      if (places.length >= RECOMMENDATION_COUNT) break;
+      if (places.length >= targetCount) break;
     }
 
     let ranked = rankPlaces(places, lat, lng, context, plusCtx);
@@ -867,6 +899,7 @@ async function fetchNearbyPlacesForIntentInner(
       maxDistanceKm,
       strictCafeGuard,
       placeDetailNearby: opts?.placeDetailNearby,
+      tripAddPlace: isTripAddPlace,
     });
 
     console.info("[CHAT_PLACES_FILTERED_COUNT]", {
@@ -879,12 +912,16 @@ async function fetchNearbyPlacesForIntentInner(
     if (ranked.length > best.length) {
       best = ranked;
     }
-    if (best.length >= RECOMMENDATION_COUNT) break;
+    if (best.length >= targetCount) break;
     if (opts?.placeDetailNearby && places.length === 0 && stepIndex >= 1) break;
   }
 
   if (context?.budgetPreference === "low" && !opts?.placeDetailNearby) {
     best = refinePlaceResultsForBudget(best, "low");
+  }
+
+  if (targetCount > RECOMMENDATION_COUNT) {
+    best = best.slice(0, targetCount);
   }
 
   console.info(
@@ -968,6 +1005,8 @@ export async function buildNearbyPlaceRecommendation(params: {
   hasPlusAccess?: boolean;
   placeDetailNearby?: boolean;
   focusPlaceId?: string;
+  /** 行程加點等需保留較多候選時使用（預設 5） */
+  maxResults?: number;
 }): Promise<{ summary: string; payload: RoamiePayloadV2; recommendations: RoamieRecommendationItem[] }> {
   const flow = beginPlacesFlow("chat_once");
   try {
@@ -991,6 +1030,7 @@ export async function buildNearbyPlaceRecommendation(params: {
       savedPlaces,
       hasPlusAccess,
     } = params;
+    const pickCount = params.maxResults ?? RECOMMENDATION_COUNT;
     const excluded =
       excludedCategories ??
       context.excludedCategories ??
@@ -1022,6 +1062,7 @@ export async function buildNearbyPlaceRecommendation(params: {
         hasPlusAccess,
         placeDetailNearby: params.placeDetailNearby,
         focusPlaceId: params.focusPlaceId,
+        maxResults: params.maxResults,
       },
     );
     places = filterAlreadyRecommendedPlaces(places, {
@@ -1037,9 +1078,9 @@ export async function buildNearbyPlaceRecommendation(params: {
       foodDistricts = split.districts;
     }
 
-    const restaurantPicks = places.slice(0, RECOMMENDATION_COUNT);
+    const restaurantPicks = places.slice(0, pickCount);
     const districtPick =
-      foodDistricts.length > 0 && restaurantPicks.length < RECOMMENDATION_COUNT
+      foodDistricts.length > 0 && restaurantPicks.length < pickCount
         ? foodDistricts.slice(0, 1)
         : [];
     const picks = [...restaurantPicks, ...districtPick];

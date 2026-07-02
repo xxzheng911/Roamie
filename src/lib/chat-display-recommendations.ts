@@ -36,6 +36,7 @@ import {
   logChatPlaceCardRender,
   logChatRenderModeLocked,
 } from "@/lib/ai/chat-place-flow-log";
+import { isTripAddPlaceSession } from "@/lib/trip/trip-add-place-session";
 
 /** 將摘要中的地點數量改為與實際渲染張數一致 */
 export function alignChatRecommendationCount(summary: string, count: number): string {
@@ -133,6 +134,16 @@ export function finalizeChatRecommendationDisplay(
   if (
     recommendations.length === 0 &&
     originalCount > 0 &&
+    isTripAddPlaceSession(session)
+  ) {
+    recommendations = originalItems.slice(0, 5);
+    logChatCardsOverwriteBlocked(`trip_add_place_preserved=${recommendations.length}`);
+    logChatCardsPreserved(recommendations.length, "trip_add_place_display");
+  }
+
+  if (
+    recommendations.length === 0 &&
+    originalCount > 0 &&
     isDestinationCategoryPlaceDisplay(session, userText)
   ) {
     recommendations = recommendationsForCategoryPlaceDisplay(session, userText, originalItems);
@@ -173,6 +184,15 @@ export function recommendationsForChatDisplay(
 ): RoamieRecommendationItem[] {
   const list = items ?? [];
   if (!list.length) return [];
+
+  if (isTripAddPlaceSession(session)) {
+    const cards = list.slice(0, 5);
+    logChatRenderModeLocked("PLACE_CARDS_ONLY");
+    logChatPlaceCardRender(cards.length, "trip_add_place");
+    logChatCardsPreserved(cards.length, "trip_add_place");
+    console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: cards.length, tripAddPlace: true });
+    return cards;
+  }
 
   if (session.fromMoodFlow || session.fromMoodCard || session.homeMoodShortcutEntry) {
     let working = list;

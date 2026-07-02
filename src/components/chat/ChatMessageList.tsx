@@ -2,8 +2,10 @@ import { memo, useMemo } from "react";
 import { Loader2 } from "lucide-react";
 import type { ChatMsg } from "@/lib/chat-history";
 import type { RoamieResponse, RoamieRecommendationItem } from "@/lib/ai/types";
+import { resolveTripAddPlaceMessageRecommendations } from "@/lib/trip/trip-add-place-render";
 import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
 import { RoamieResponseView } from "@/components/RoamieResponseView";
+import { cn } from "@/lib/utils";
 
 type RowProps = {
   message: ChatMsg;
@@ -43,17 +45,27 @@ const ChatMessageRow = memo(function ChatMessageRow({
   onDiscussPlace,
 }: RowProps) {
   const showStreamingPartial = streaming && isLast && partial.summary;
-  const roamieData = m.roamie ?? (showStreamingPartial ? partial : undefined);
+  const structuredRecs = resolveTripAddPlaceMessageRecommendations(m);
+  const roamieFromMsg =
+    m.roamie && structuredRecs.length
+      ? { ...m.roamie, recommendations: structuredRecs, summary: m.roamie.summary ?? m.content }
+      : m.roamie;
+  const roamieData = roamieFromMsg ?? (showStreamingPartial ? partial : undefined);
+  const hasPlaceCards =
+    (m.structuredPlaces?.length ?? 0) > 0 || (roamieData?.recommendations?.length ?? 0) > 0;
 
   return (
     <div className={`flex animate-rise ${m.role === "user" ? "justify-end" : "justify-start gap-2.5"}`}>
-      {m.role === "assistant" ? <RoamieAssistantAvatar className="h-8 w-8 self-end" /> : null}
+      {m.role === "assistant" ? <RoamieAssistantAvatar className="h-8 w-8 shrink-0 self-end" /> : null}
       <div
-        className={`max-w-[88%] rounded-3xl px-4 py-3 ${
+        className={cn(
+          "rounded-3xl px-4 py-3",
           m.role === "user"
-            ? "rounded-br-md bg-primary text-primary-foreground"
-            : "rounded-bl-md border border-border bg-card"
-        }`}
+            ? "max-w-[88%] rounded-br-md bg-primary text-primary-foreground"
+            : hasPlaceCards
+              ? "min-w-0 flex-1 max-w-[calc(100%-2.625rem)] rounded-bl-md border border-border bg-card"
+              : "max-w-[88%] rounded-bl-md border border-border bg-card",
+        )}
       >
         {m.role === "user" ? (
           <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</p>
@@ -106,7 +118,8 @@ export const ChatMessageList = memo(function ChatMessageList({
     () =>
       msgs.map((m, i) => {
         const head = m.content?.slice(0, 24) ?? "";
-        const recCount = m.roamie?.recommendations?.length ?? 0;
+        const recCount =
+          m.structuredPlaces?.length ?? m.roamie?.recommendations?.length ?? 0;
         return `${m.role}:${i}:${head}:${recCount}`;
       }),
     [msgs],

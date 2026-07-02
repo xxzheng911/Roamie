@@ -1,12 +1,16 @@
 import type { RoamieLocation } from "@/lib/ai/context";
 import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings } from "@/lib/ai/types";
-import { buildNearbyPlaceRecommendation, type PlaceSearchFn } from "@/lib/ai/chat-place-recommendation";
+import { fetchNearbyPlacesForIntent, type PlaceSearchFn } from "@/lib/ai/chat-place-recommendation";
+import type { NearbyPlaceIntent } from "@/lib/ai/chat-intent";
+import { withSearchTimeout } from "@/lib/search-timeout";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { ClientContextBundle } from "@/lib/fetch-context";
 import { formatDateRangeLabel } from "@/lib/picker-utils";
 import type { StoredItinerary } from "@/lib/itinerary-storage";
+import type { ChatMsg } from "@/lib/chat-history";
 import {
   createEmptySession,
+  mapPlaceResultToChatItem,
   roamieRecToChatItem,
   type ChatPlanningSession,
   type ChatPlaceItem,
@@ -17,13 +21,50 @@ import { syncSessionPlaceMemory } from "@/lib/place-planning-memory";
 import { resolveTripDestination } from "@/lib/outfit/trip-outfit-context";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { Locale } from "@/lib/i18n/types";
-import type { NearbyPlaceIntent } from "@/lib/ai/chat-intent";
+import { alignChatRecommendationCount } from "@/lib/chat-display-recommendations";
+import {
+  buildTripAddPlaceDedupRegistry,
+  createTripAddPlaceDedupRegistry,
+  dedupeTripAddPlaceCandidates,
+  isTripPlaceDuplicate,
+  registerTripPlaceFingerprint,
+} from "@/lib/trip/trip-add-place-dedup";
+import {
+  buildTripAddPlaceChatMessage,
+} from "@/lib/trip/trip-add-place-render";
+import {
+  filterTripAddPlaceRecommendations,
+} from "@/lib/trip/trip-add-place-tourism-filter";
 import {
   buildTripAddPlaceMealSummary,
   buildTripAddPlaceTravelContext,
   type TripAddPlaceContext,
   type TripAddPlaceFollowUpIntent,
 } from "@/lib/trip/trip-add-place-session";
+import { tripAddPlaceNearbyGroups } from "@/lib/trip/trip-add-place-search-attempts";
+import {
+  rankAndTrimTripAddPlaceCandidates,
+  resolveTripAddPlaceSearchCenter,
+  tripAddPlaceMaxDistanceKm,
+  tripAnchorFromContext,
+  TRIP_ADD_PLACE_CANDIDATE_KEEP,
+  TRIP_ADD_PLACE_RAW_FETCH_TARGET,
+  logTripAddPlaceSearch,
+  type TripAddPlaceSearchCenter,
+} from "@/lib/trip/trip-add-place-search";
+import {
+  TRIP_ADD_PLACE_BATCH_SIZE,
+  buildTripAddPlaceBatchSummary,
+  collectBlockedPlaceIdsForSearch,
+  createTripAddPlaceRecommendationSession,
+  dedupeCandidatesByPlaceId,
+  filterTripAddPlaceCandidates,
+  placeIdFromRecommendation,
+  slimRecommendationSession,
+  TRIP_ADD_PLACE_RADIUS_STEPS_M,
+  TRIP_ADD_PLACE_SEARCH_TIMEOUT_MS,
+  type TripAddPlaceRecommendationSession,
+} from "@/lib/trip/trip-add-place-recommendation-session";
 
 export { isTripAddPlaceSession } from "@/lib/trip/trip-add-place-session";
 export {
@@ -46,16 +87,12 @@ export type TripAddPlaceHandoffInput = {
   dayCount: number;
 };
 
-function normalizePlaceName(name: string): string {
-  return name.trim().toLowerCase();
-}
-
 function isDuplicatePlace(name: string, existing: string[]): boolean {
-  const n = normalizePlaceName(name);
-  return existing.some((e) => {
-    const x = normalizePlaceName(e);
-    return x === n || x.includes(n) || n.includes(x);
-  });
+  const registry = createTripAddPlaceDedupRegistry();
+  for (const n of existing) {
+    registerTripPlaceFingerprint(registry, { name: n, placeName: n });
+  }
+  return isTripPlaceDuplicate({ name, placeName: name }, registry);
 }
 
 export function buildTripAddPlaceContext(input: TripAddPlaceHandoffInput): TripAddPlaceContext {
@@ -248,24 +285,241 @@ export function markTripAddPlaceHandoffComplete(
 }
 
 function recommendationAnchor(ctx: TripAddPlaceContext): { lat: number; lng: number } | null {
-  const lat = ctx.lastPlace?.lat ?? ctx.destinationLocation?.lat;
-  const lng = ctx.lastPlace?.lng ?? ctx.destinationLocation?.lng;
-  if (lat == null || lng == null) return null;
-  if (Math.abs(lat) < 0.001 && Math.abs(lng) < 0.001) return null;
-  return { lat, lng };
+  const center = tripAnchorFromContext(ctx);
+  return center ? { lat: center.lat, lng: center.lng } : null;
 }
 
-export async function fetchTripAddPlaceRecommendations(params: {
+export function parseNumberedPlaceNamesFromText(text: string): string[] {
+  return [...text.matchAll(/^\d+\.\s*(.+)$/gm)]
+    .map((m) => m[1]?.trim())
+    .filter(Boolean) as string[];
+}
+
+function normalizePlaceLookupName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function pickPlaceByName(
+  places: import("@/lib/place-result").PlaceResult[],
+  targetName: string,
+): import("@/lib/place-result").PlaceResult | undefined {
+  const target = normalizePlaceLookupName(targetName);
+  return (
+    places.find((p) => normalizePlaceLookupName(p.name) === target) ??
+    places.find((p) => {
+      const n = normalizePlaceLookupName(p.name);
+      return n.includes(target) || target.includes(n);
+    }) ??
+    places[0]
+  );
+}
+
+/** 文字摘要有地點清單但 structured recommendations 為空時，依名稱查 Google Places 補齊卡片 */
+export async function enrichTripAddPlaceRecommendationsFromSummary(params: {
+  summary: string;
   ctx: TripAddPlaceContext;
   searchPlaces: PlaceSearchFn;
   locale: Locale;
-}): Promise<{ summary: string; recommendations: RoamieRecommendationItem[] }> {
-  const { ctx, searchPlaces, locale } = params;
-  const opening = buildTripAddPlaceOpening(ctx);
+  existing?: RoamieRecommendationItem[];
+}): Promise<RoamieRecommendationItem[]> {
+  const { summary, ctx, searchPlaces, locale, existing = [] } = params;
+  if (existing.length) return existing.slice(0, 5);
+
+  const names = parseNumberedPlaceNamesFromText(summary);
+  if (!names.length) return [];
+
   const anchor = recommendationAnchor(ctx);
-  if (!anchor) {
-    return { summary: opening, recommendations: [] };
+  if (!anchor) return [];
+
+  const seen = new Set(
+    existing
+      .map((r) => r.googlePlaceId ?? (r as RoamieRecommendationItem & { placeId?: string }).placeId)
+      .filter(Boolean) as string[],
+  );
+  const enriched: RoamieRecommendationItem[] = [];
+
+  for (const name of names.slice(0, 5)) {
+    if (isDuplicatePlace(name, ctx.existingPlaceNames)) continue;
+    try {
+      const { places } = await searchPlaces({
+        data: {
+          query: `${name} ${ctx.destination}`.trim(),
+          lat: anchor.lat,
+          lng: anchor.lng,
+          mode: "text",
+          locale,
+          placesCaller: "trip_add_place.enrichFromSummary",
+          placesScreen: "chat",
+        },
+      });
+      const pick = pickPlaceByName(places ?? [], name);
+      if (!pick?.id || seen.has(pick.id)) continue;
+      seen.add(pick.id);
+      enriched.push(mapPlaceResultToChatItem(pick, { locale }));
+    } catch {
+      /* skip failed lookup */
+    }
   }
+
+  return filterTripAddPlaceRecommendations(enriched, "attraction").slice(0, 5);
+}
+
+export async function ensureHandoffRecommendationSession(params: {
+  ctx: TripAddPlaceContext;
+  recommendations: RoamieRecommendationItem[];
+  recommendationSession: TripAddPlaceRecommendationSession | null;
+  searchPlaces: PlaceSearchFn;
+  locale: Locale;
+}): Promise<TripAddPlaceRecommendationSession | null> {
+  const { ctx, recommendations, searchPlaces, locale } = params;
+  if (params.recommendationSession?.allCandidates.length) {
+    return slimRecommendationSession(params.recommendationSession);
+  }
+  if (!recommendations.length) return null;
+
+  const pool = await fetchTripAddPlaceCandidatePool({
+    ctx,
+    intent: "attraction",
+    searchPlaces,
+    locale,
+  });
+
+  const seen = new Set<string>();
+  const merged: RoamieRecommendationItem[] = [];
+  for (const rec of [...recommendations, ...pool]) {
+    const id = placeIdFromRecommendation(rec);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(rec);
+  }
+
+  if (!merged.length) return null;
+
+  return slimRecommendationSession(
+    createTripAddPlaceRecommendationSession({
+      ctx,
+      candidates: merged,
+      intent: "attraction",
+      firstBatch: recommendations,
+    }),
+  );
+}
+
+export function buildTripAddPlaceAssistantMessage(
+  summary: string,
+  recommendations: RoamieRecommendationItem[],
+  moodTag?: string,
+  session?: ChatPlanningSession,
+): ChatMsg {
+  const baseSession =
+    session ??
+    ({
+      fromTripAddPlace: true,
+      conversationMode: "trip_add_place",
+    } as ChatPlanningSession);
+  return buildTripAddPlaceChatMessage({
+    summary,
+    recommendations,
+    moodTag,
+    session: baseSession,
+  });
+}
+
+/** 從 session 還原 assistant 訊息內的地點卡（避免返回後只剩文字） */
+export function mergeTripAddPlaceHistoryWithRecommendations(
+  history: ChatMsg[],
+  session: ChatPlanningSession,
+): ChatMsg[] {
+  const recs = (session.recommendedPlaces ?? []) as RoamieRecommendationItem[];
+  if (!recs.length) return history;
+
+  let lastAssistantIdx = -1;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i]?.role === "assistant") {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+
+  if (lastAssistantIdx < 0) {
+    const summary = session.lastAssistantReply?.trim() || recs.map((r, i) => `${i + 1}. ${r.name}`).join("\n");
+    return [...history, buildTripAddPlaceAssistantMessage(summary, recs, session.mood ?? undefined, session)];
+  }
+
+  const msg = history[lastAssistantIdx]!;
+  const existing = msg.roamie?.recommendations ?? [];
+  if (existing.length >= recs.length) return history;
+
+  const merged = [...history];
+  merged[lastAssistantIdx] = buildTripAddPlaceAssistantMessage(
+    msg.roamie?.summary ?? msg.content,
+    recs,
+    session.mood ?? undefined,
+    session,
+  );
+  return merged;
+}
+
+function nearbyIntentFromFollowUp(intent: TripAddPlaceFollowUpIntent): NearbyPlaceIntent {
+  return intent;
+}
+
+export async function fetchTripAddPlaceCandidatePool(params: {
+  ctx: TripAddPlaceContext;
+  intent: TripAddPlaceFollowUpIntent;
+  searchPlaces: PlaceSearchFn;
+  locale: Locale;
+  excludePlaceIds?: string[];
+  recSession?: TripAddPlaceRecommendationSession | null;
+  radiusSteps?: readonly number[];
+  radiusStep?: number;
+  expandConsent?: boolean;
+  searchCenter?: TripAddPlaceSearchCenter | null;
+  userText?: string;
+}): Promise<RoamieRecommendationItem[]> {
+  const {
+    ctx,
+    intent,
+    searchPlaces,
+    locale,
+    excludePlaceIds = [],
+    recSession,
+    radiusSteps,
+    radiusStep,
+    expandConsent,
+    searchCenter,
+    userText = "",
+  } = params;
+  const center = searchCenter ?? resolveTripAddPlaceSearchCenter(ctx, recSession);
+  if (!center) return [];
+
+  const step =
+    radiusStep ??
+    (radiusSteps?.length === 1
+      ? TRIP_ADD_PLACE_RADIUS_STEPS_M.indexOf(radiusSteps[0] as (typeof TRIP_ADD_PLACE_RADIUS_STEPS_M)[number])
+      : recSession?.searchRadiusStep ?? 0);
+  const safeStep = step >= 0 ? step : 0;
+  const radius =
+    radiusSteps?.[0] ??
+    TRIP_ADD_PLACE_RADIUS_STEPS_M[Math.min(safeStep, TRIP_ADD_PLACE_RADIUS_STEPS_M.length - 1)]!;
+  const maxDistanceKm = tripAddPlaceMaxDistanceKm({
+    radiusStep: safeStep,
+    expandConsent: expandConsent ?? recSession?.awaitingExpandConsent,
+    transportationMode: ctx.transportationMode,
+  });
+
+  logTripAddPlaceSearch({
+    label: "fetch_pool",
+    center,
+    radiusM: radius,
+    radiusStep: safeStep,
+    maxDistanceKm,
+  });
+
+  const blockedIds =
+    excludePlaceIds.length > 0
+      ? excludePlaceIds
+      : collectBlockedPlaceIdsForSearch(recSession, ctx);
 
   const travelCtx = buildTripAddPlaceTravelContext(
     { travelContext: { interests: [] } } as ChatPlanningSession,
@@ -274,36 +528,104 @@ export async function fetchTripAddPlaceRecommendations(params: {
   );
 
   try {
-    const { payload } = await buildNearbyPlaceRecommendation({
-      intent: "attraction",
-      lat: anchor.lat,
-      lng: anchor.lng,
-      locale,
-      context: travelCtx,
-      searchPlaces,
-    });
-    const filtered = (payload.recommendations ?? []).filter(
-      (rec) => !isDuplicatePlace(rec.name, ctx.existingPlaceNames),
+    const places = await withSearchTimeout(
+      fetchNearbyPlacesForIntent(
+        nearbyIntentFromFollowUp(intent),
+        center.lat,
+        center.lng,
+        locale,
+        searchPlaces,
+        undefined,
+        travelCtx,
+        blockedIds,
+        {
+          cityLabel: ctx.destination,
+          maxResults: TRIP_ADD_PLACE_RAW_FETCH_TARGET,
+          radiusSteps: [radius],
+          maxDistanceKm,
+          tripAddPlace: true,
+          nearbyGroups: tripAddPlaceNearbyGroups(intent, userText),
+          userText,
+        },
+      ),
+      TRIP_ADD_PLACE_SEARCH_TIMEOUT_MS,
     );
-    if (!filtered.length) {
-      return { summary: opening, recommendations: [] };
-    }
 
-    const list = filtered
-      .slice(0, 5)
-      .map((p, i) => `${i + 1}. ${p.name}`)
-      .join("\n");
-    const summary = [
-      opening,
-      "",
-      "如果現在要加一個點，這幾個順路又不會太趕：",
-      "",
-      list,
-    ].join("\n");
-    return { summary, recommendations: filtered.slice(0, 5) };
+    const recommendations = places.map((p) => mapPlaceResultToChatItem(p, { locale }));
+    const deduped = dedupeCandidatesByPlaceId(
+      recommendations.filter((rec) => !isDuplicatePlace(rec.name, ctx.existingPlaceNames)),
+    );
+    const filtered = filterTripAddPlaceRecommendations(deduped, intent);
+    const dedupedBlocked = filterTripAddPlaceCandidates(filtered, recSession ?? null, ctx);
+    return rankAndTrimTripAddPlaceCandidates(
+      dedupedBlocked,
+      center,
+      maxDistanceKm,
+      TRIP_ADD_PLACE_CANDIDATE_KEEP,
+    );
   } catch {
-    return { summary: opening, recommendations: [] };
+    return [];
   }
+}
+
+export type TripAddPlaceRecommendationsResult = {
+  summary: string;
+  recommendations: RoamieRecommendationItem[];
+  recommendationSession: TripAddPlaceRecommendationSession | null;
+  allCandidates: RoamieRecommendationItem[];
+};
+
+export async function fetchTripAddPlaceRecommendations(params: {
+  ctx: TripAddPlaceContext;
+  searchPlaces: PlaceSearchFn;
+  locale: Locale;
+}): Promise<TripAddPlaceRecommendationsResult> {
+  const { ctx, searchPlaces, locale } = params;
+  const opening = buildTripAddPlaceOpening(ctx);
+  const anchor = recommendationAnchor(ctx);
+  if (!anchor) {
+    return { summary: opening, recommendations: [], recommendationSession: null, allCandidates: [] };
+  }
+
+  const allCandidates = await fetchTripAddPlaceCandidatePool({
+    ctx,
+    intent: "attraction",
+    searchPlaces,
+    locale,
+    radiusStep: 0,
+    radiusSteps: [TRIP_ADD_PLACE_RADIUS_STEPS_M[0]!],
+  });
+
+  const uniquePool = dedupeTripAddPlaceCandidates(
+    allCandidates,
+    buildTripAddPlaceDedupRegistry(null, ctx),
+    "handoff_pool",
+  );
+  const cards = uniquePool.slice(0, TRIP_ADD_PLACE_BATCH_SIZE);
+  if (!cards.length) {
+    return { summary: opening, recommendations: [], recommendationSession: null, allCandidates: uniquePool };
+  }
+
+  const recommendationSession = createTripAddPlaceRecommendationSession({
+    ctx,
+    candidates: uniquePool,
+    intent: "attraction",
+    firstBatch: cards,
+  });
+
+  const summary = buildTripAddPlaceBatchSummary(ctx, cards, { intent: "attraction" });
+  const withOpening = [
+    opening,
+    "",
+    summary,
+  ].join("\n");
+
+  return {
+    summary: alignChatRecommendationCount(withOpening, cards.length),
+    recommendations: cards,
+    recommendationSession,
+    allCandidates: uniquePool,
+  };
 }
 
 function buildTripAddPlaceFollowUpSummary(
@@ -343,54 +665,61 @@ export async function fetchTripAddPlaceFollowUpRecommendations(params: {
   intent: TripAddPlaceFollowUpIntent;
   searchPlaces: PlaceSearchFn;
   locale: Locale;
-}): Promise<{ summary: string; recommendations: RoamieRecommendationItem[] }> {
-  const { ctx, intent, searchPlaces, locale } = params;
-  const anchor = recommendationAnchor(ctx);
-  if (!anchor) {
-    return {
-      summary: buildTripAddPlaceFollowUpSummary(ctx, intent, []),
-      recommendations: [],
-    };
-  }
+  excludePlaceIds?: string[];
+}): Promise<TripAddPlaceRecommendationsResult> {
+  const { ctx, intent, searchPlaces, locale, excludePlaceIds = [] } = params;
 
-  const travelCtx = buildTripAddPlaceTravelContext(
-    { travelContext: { interests: [] } } as ChatPlanningSession,
+  const allCandidates = await fetchTripAddPlaceCandidatePool({
     ctx,
-    { interests: [] },
-  );
+    intent,
+    searchPlaces,
+    locale,
+    excludePlaceIds,
+  });
 
-  try {
-    const { payload } = await buildNearbyPlaceRecommendation({
-      intent,
-      lat: anchor.lat,
-      lng: anchor.lng,
-      locale,
-      context: travelCtx,
-      searchPlaces,
-    });
-    const filtered = (payload.recommendations ?? []).filter(
-      (rec) => !isDuplicatePlace(rec.name, ctx.existingPlaceNames),
-    );
-    return {
-      summary: buildTripAddPlaceFollowUpSummary(ctx, intent, filtered),
-      recommendations: filtered.slice(0, 5),
-    };
-  } catch {
-    return {
-      summary: buildTripAddPlaceFollowUpSummary(ctx, intent, []),
-      recommendations: [],
-    };
+  const uniquePool = dedupeTripAddPlaceCandidates(
+    allCandidates,
+    buildTripAddPlaceDedupRegistry(null, ctx),
+    "followup_pool",
+  );
+  const cards = uniquePool.slice(0, TRIP_ADD_PLACE_BATCH_SIZE);
+  const summary = buildTripAddPlaceFollowUpSummary(ctx, intent, cards);
+
+  if (!cards.length) {
+    return { summary, recommendations: [], recommendationSession: null, allCandidates: uniquePool };
   }
+
+  const recommendationSession = createTripAddPlaceRecommendationSession({
+    ctx,
+    candidates: uniquePool,
+    intent,
+    firstBatch: cards,
+  });
+
+  return {
+    summary,
+    recommendations: cards,
+    recommendationSession,
+    allCandidates: uniquePool,
+  };
 }
 
 export function tripAddPlaceRecommendationsToSession(
   session: ChatPlanningSession,
   recommendations: RoamieRecommendationItem[],
+  recommendationSession?: TripAddPlaceRecommendationSession | null,
 ): ChatPlanningSession {
   const recs = recommendations.map(roamieRecToChatItem);
+  const shownIds = recommendationSession?.shownPlaceIds ??
+    recs.map((r) => placeIdFromRecommendation(r)).filter(Boolean);
+  const slimRec = recommendationSession
+    ? slimRecommendationSession(recommendationSession)
+    : session.tripAddPlaceRecommendationSession;
   return syncSessionPlaceMemory({
     ...session,
     recommendedPlaces: recs as ChatPlaceItem[],
+    recommendedPlaceIds: shownIds,
+    tripAddPlaceRecommendationSession: slimRec ?? undefined,
     phase: "followup",
   });
 }

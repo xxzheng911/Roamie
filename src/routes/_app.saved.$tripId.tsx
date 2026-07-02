@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { TripDetailScreen } from "@/components/trip/TripDetailScreen";
 import { logTripNav } from "@/lib/trip/trip-detail-nav";
+import { isValidUuid } from "@/lib/uuid";
 
 type TripDetailSearch = {
   day?: number;
@@ -27,6 +28,12 @@ function SavedTripDetailPage() {
   const { tripId } = Route.useParams();
   const { day } = Route.useSearch();
   const navigate = Route.useNavigate();
+
+  if (!isValidUuid(tripId)) {
+    console.warn("[TRIP_DETAIL_ROUTE] invalid tripId, redirecting", tripId);
+    void navigate({ to: "/saved", search: { tab: "trips" }, replace: true });
+    return null;
+  }
 
   return (
     <TripDetailScreen

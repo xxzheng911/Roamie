@@ -1,13 +1,14 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, type NavigateOptions } from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
 
 type BackTarget = {
   to: string;
-  search?: Record<string, string>;
+  params?: Record<string, string>;
+  search?: Record<string, unknown>;
 };
 
 type Props = {
-  fallback: BackTarget;
+  fallback: BackTarget | NavigateOptions;
   /** 為 true 時一律回到 fallback，不依赖瀏覽器 history */
   preferFallback?: boolean;
   className?: string;
@@ -24,7 +25,7 @@ export function BackButton({ fallback, preferFallback, className, label = "返�
       window.history.back();
       return;
     }
-    navigate({ to: fallback.to, search: fallback.search });
+    navigate(fallback as NavigateOptions);
   };
 
   return (

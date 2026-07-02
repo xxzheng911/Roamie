@@ -1,5 +1,6 @@
 import type { StoredItinerary } from "@/lib/itinerary-storage";
 import { getItinerary, listItineraries } from "@/lib/itinerary-storage";
+import { listOwnedTripIds } from "@/lib/trip/trip-collab";
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { buildLegKey } from "@/lib/transit/types";
@@ -36,6 +37,8 @@ export type CoreTrip = {
   outfitSuggestion: string;
   createdAt: string;
   updatedAt: string;
+  /** 是否為行程建立者（可刪除行程、管理成員） */
+  isOwner: boolean;
 };
 
 export function resolveCoreTripTitle(trip: CoreTrip): string {
@@ -67,7 +70,8 @@ function durationText(minutes?: number): string {
   return m ? `${h} 小時 ${m} 分鐘` : `${h} 小時`;
 }
 
-export function toCoreTrip(row: StoredItinerary): CoreTrip {
+export function toCoreTrip(row: StoredItinerary, opts?: { isOwner?: boolean }): CoreTrip {
+  const isOwner = opts?.isOwner ?? true;
   const payload = row.payload;
   if (isRoamiePayloadV2(payload)) {
     const itinerary = payload.itinerary ?? [];
@@ -116,6 +120,7 @@ export function toCoreTrip(row: StoredItinerary): CoreTrip {
       outfitSuggestion: payload.outfitSuggestion ?? "",
       createdAt: row.created_at,
       updatedAt: row.updated_at ?? row.created_at,
+      isOwner,
     };
   }
   return {
@@ -138,6 +143,7 @@ export function toCoreTrip(row: StoredItinerary): CoreTrip {
     outfitSuggestion: "",
     createdAt: row.created_at,
     updatedAt: row.updated_at ?? row.created_at,
+    isOwner,
   };
 }
 
@@ -186,6 +192,8 @@ export async function getLatestCoreTrip(): Promise<CoreTrip | null> {
 }
 
 export async function listCoreTrips(): Promise<CoreTrip[]> {
-  const rows = await listItineraries();
-  return rows.map(toCoreTrip);
+  const [rows, ownerMap] = await Promise.all([listItineraries(), listOwnedTripIds()]);
+  return rows.map((row) =>
+    toCoreTrip(row, { isOwner: ownerMap.has(row.id) ? Boolean(ownerMap.get(row.id)) : true }),
+  );
 }
