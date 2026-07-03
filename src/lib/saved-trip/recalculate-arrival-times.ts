@@ -1,18 +1,21 @@
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
 import { resolveLegTransportLabel } from "@/lib/saved-trip/transport-options";
 import {
+  isTransitRequested,
   travelMinutesForArrival,
 } from "@/lib/saved-trip/travel-time";
-import { buildLegKey } from "@/lib/transit/types";
+import { buildDayLegKey, resolveTransitLeg } from "@/lib/transit/types";
 import {
   flattenStopGroups,
   groupStopsByDate,
   legKeyForItem,
+  replaceDayItemsInItinerary,
 } from "@/lib/trip/trip-stop-mutations";
-import { logRouteOnce } from "@/lib/route-duration-log";
 
 const DEFAULT_STAY_MINUTES = 60;
 const DEFAULT_START_MINUTES = 10 * 60;
+/** 交通時間尚未回傳時的暫估分鐘數（非大眾運輸；或大眾運輸整日重算時的暫估鏈） */
+const PROVISIONAL_LEG_TRAVEL_MINUTES = 10;
 
 export function parseTimeMinutes(time: string | undefined): number | null {
   const m = (time ?? "").trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -35,35 +38,99 @@ function stayMinutes(settings: TripPlanSettings, item: RoamieItineraryItem): num
   return mins != null && mins > 0 ? mins : DEFAULT_STAY_MINUTES;
 }
 
+export function resolveDayStartTime(settings: TripPlanSettings): string {
+  return settings.startTime?.trim() || formatTimeMinutes(DEFAULT_START_MINUTES);
+}
+
 function routeTravel(
   settings: TripPlanSettings,
   prev: RoamieItineraryItem,
   curr: RoamieItineraryItem,
   dateKey: string,
 ): { minutes: number | null } {
-  const legKey = buildLegKey(prev.placeName || prev.title, curr.placeName || curr.title);
-  const leg = settings.transitLegs?.[legKey];
+  const legKey = buildDayLegKey(dateKey, prev.placeName || prev.title, curr.placeName || curr.title);
+  const leg =
+    settings.transitLegs?.[legKey] ??
+    resolveTransitLeg(settings.transitLegs, dateKey, prev.placeName || prev.title, curr.placeName || curr.title);
   const transport = resolveLegTransportLabel(settings, legKeyForItem(curr), dateKey);
   return travelMinutesForArrival(leg, transport);
 }
 
-function normalizeFirstStopTime(
-  dayItems: RoamieItineraryItem[],
+function existingArrivalTime(item: RoamieItineraryItem): string {
+  const t = item.time?.trim();
+  if (t && parseTimeMinutes(t) != null) return formatTimeMinutes(parseTimeMinutes(t)!);
+  return t || "";
+}
+
+type NextStopArrivalOpts = {
+  /** 大眾運輸整日重算：尚無 transit duration 時以暫估分鐘接鏈（API 回傳後再更新） */
+  transitProvisionalWhenMissing?: boolean;
+};
+
+function nextStopArrivalTime(
+  prev: RoamieItineraryItem,
+  curr: RoamieItineraryItem,
+  prevArrival: number | null,
   settings: TripPlanSettings,
-): RoamieItineraryItem[] {
-  if (dayItems.length === 0) return dayItems;
-  const first = dayItems[0]!;
-  const parsed = parseTimeMinutes(first.time);
-  const fallback = parseTimeMinutes(settings.startTime) ?? DEFAULT_START_MINUTES;
-  const minutes = parsed ?? fallback;
-  if (minutes === parsed) return dayItems;
-  return [{ ...first, time: formatTimeMinutes(minutes) }, ...dayItems.slice(1)];
+  dateKey: string,
+  opts?: NextStopArrivalOpts,
+): string {
+  const transport = resolveLegTransportLabel(settings, legKeyForItem(curr), dateKey);
+  const { minutes: travelRaw } = routeTravel(settings, prev, curr, dateKey);
+
+  if (isTransitRequested(transport)) {
+    if (prevArrival == null) return existingArrivalTime(curr);
+    const stay = stayMinutes(settings, prev);
+    if (travelRaw != null) {
+      return formatTimeMinutes(prevArrival + stay + travelRaw);
+    }
+    if (opts?.transitProvisionalWhenMissing) {
+      return formatTimeMinutes(prevArrival + stay + PROVISIONAL_LEG_TRAVEL_MINUTES);
+    }
+    return existingArrivalTime(curr);
+  }
+
+  if (prevArrival == null) return existingArrivalTime(curr);
+
+  const stay = stayMinutes(settings, prev);
+  const travel = travelRaw ?? PROVISIONAL_LEG_TRAVEL_MINUTES;
+  return formatTimeMinutes(prevArrival + stay + travel);
 }
 
 /**
- * 依序重算同一天內的抵達時間。
- * anchorIndex：保留 0..anchorIndex 的抵達時間不變，從 anchorIndex+1 開始推算。
+ * 依畫面順序重算單日抵達時間。
+ * 第 1 站 = dayStartTime；之後 = 前站抵達 + 停留 + 前段交通（依目前 from→to）。
  */
+export function recalculateArrivalTimes(
+  dayItems: RoamieItineraryItem[],
+  dayStartTime: string,
+  settings: TripPlanSettings,
+  dateKey: string,
+  opts?: NextStopArrivalOpts,
+): RoamieItineraryItem[] {
+  if (dayItems.length === 0) return dayItems;
+
+  const startMins = parseTimeMinutes(dayStartTime) ?? DEFAULT_START_MINUTES;
+  const result = dayItems.map((item) => ({ ...item }));
+  result[0] = { ...result[0]!, time: formatTimeMinutes(startMins) };
+
+  const legOpts: NextStopArrivalOpts = {
+    transitProvisionalWhenMissing: opts?.transitProvisionalWhenMissing ?? true,
+  };
+
+  for (let i = 1; i < result.length; i++) {
+    const prev = result[i - 1]!;
+    const curr = result[i]!;
+    const prevArrival = parseTimeMinutes(prev.time);
+    result[i] = {
+      ...curr,
+      time: nextStopArrivalTime(prev, curr, prevArrival, settings, dateKey, legOpts),
+    };
+  }
+
+  return result;
+}
+
 export function recalculateArrivalTimesForDay(
   dayItems: RoamieItineraryItem[],
   settings: TripPlanSettings,
@@ -72,33 +139,30 @@ export function recalculateArrivalTimesForDay(
 ): RoamieItineraryItem[] {
   if (dayItems.length === 0) return dayItems;
 
-  let result =
-    anchorIndex === 0 ? normalizeFirstStopTime(dayItems, settings) : dayItems.map((item) => ({ ...item }));
+  if (anchorIndex === 0) {
+    return recalculateArrivalTimes(
+      dayItems,
+      resolveDayStartTime(settings),
+      settings,
+      dateKey,
+      { transitProvisionalWhenMissing: true },
+    );
+  }
 
+  let result = dayItems.map((item) => ({ ...item }));
   const startIndex = Math.max(0, anchorIndex);
   if (startIndex >= result.length - 1) return result;
+
+  const legOpts: NextStopArrivalOpts = { transitProvisionalWhenMissing: false };
 
   for (let i = startIndex + 1; i < result.length; i++) {
     const prev = result[i - 1]!;
     const curr = result[i]!;
     const prevArrival = parseTimeMinutes(prev.time);
-    if (prevArrival == null) continue;
-
-    const transport = resolveLegTransportLabel(settings, legKeyForItem(curr), dateKey);
-    const { minutes: travel } = routeTravel(settings, prev, curr, dateKey);
-    const stay = stayMinutes(settings, prev);
-
-    if (travel == null) {
-      // 交通時間未取得：保留原本抵達時間，不觸發後續重算
-      logRouteOnce(
-        `recalc|${prev.placeName}|${curr.placeName}|skip`,
-        `[ITINERARY_TIME_RECALC_STEP] prevArrival=${prev.time ?? ""} durationMinutes=null kept=${curr.time ?? "unchanged"}`,
-      );
-      continue;
-    }
-
-    const nextArrival = prevArrival + stay + travel;
-    result[i] = { ...curr, time: formatTimeMinutes(nextArrival) };
+    result[i] = {
+      ...curr,
+      time: nextStopArrivalTime(prev, curr, prevArrival, settings, dateKey, legOpts),
+    };
   }
 
   return result;
@@ -109,12 +173,18 @@ export function recalculateDayArrivalTimesInItems(
   dateKey: string,
   settings: TripPlanSettings,
   anchorIndex = 0,
+  dayItemsInOrder?: RoamieItineraryItem[],
 ): RoamieItineraryItem[] {
-  const groups = groupStopsByDate(items);
-  const dayItems = groups.get(dateKey) ?? [];
+  const dayItems =
+    dayItemsInOrder ?? groupStopsByDate(items).get(dateKey) ?? [];
   if (dayItems.length === 0) return items;
-  groups.set(dateKey, recalculateArrivalTimesForDay(dayItems, settings, dateKey, anchorIndex));
-  return flattenStopGroups(groups);
+  const recalculated = recalculateArrivalTimesForDay(
+    dayItems,
+    settings,
+    dateKey,
+    anchorIndex,
+  );
+  return replaceDayItemsInItinerary(items, dateKey, recalculated);
 }
 
 /** 各天獨立重算，互不影響 */
@@ -123,8 +193,14 @@ export function recalculateAllArrivalTimes(
   settings: TripPlanSettings,
 ): RoamieItineraryItem[] {
   const groups = groupStopsByDate(items);
+  const dayStart = resolveDayStartTime(settings);
   for (const [dateKey, dayItems] of groups) {
-    groups.set(dateKey, recalculateArrivalTimesForDay(dayItems, settings, dateKey, 0));
+    groups.set(
+      dateKey,
+      recalculateArrivalTimes(dayItems, dayStart, settings, dateKey, {
+        transitProvisionalWhenMissing: true,
+      }),
+    );
   }
   return flattenStopGroups(groups);
 }

@@ -1,17 +1,22 @@
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, ImageIcon, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import {
+  pickImageWithCapacitorCamera,
+  shouldUseCapacitorImagePicker,
+  type ImagePickSource,
+} from "@/lib/capacitor-image-picker";
 import { isImagePickFile, normalizeImageFileForUpload } from "@/lib/image-crop";
-import { unlockDocumentScrollForNativePicker } from "@/lib/native-image-picker";
+import {
+  NATIVE_IMAGE_PICKER_DELAY_MS,
+  safeTriggerFileInput,
+} from "@/lib/native-image-picker";
 import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-
-type PickSource = "library" | "camera";
 
 type Props = {
   open: boolean;
@@ -32,7 +37,8 @@ type Props = {
 
 /**
  * 圖片來源選擇（相簿 / 拍照）。
- * iOS：file input 掛在 body、先關閉 Sheet 再開原生選擇器。
+ * iOS Capacitor：關閉 Sheet → 延遲 300ms → Camera.getPhoto。
+ * Web：關閉 Sheet → file input。
  */
 export function ImageSourceSheet({
   open,
@@ -52,7 +58,9 @@ export function ImageSourceSheet({
 }: Props) {
   const albumRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
-  const pendingSourceRef = useRef<PickSource | null>(null);
+  const pendingSourceRef = useRef<ImagePickSource | null>(null);
+  const preparingRef = useRef(false);
+  const pickerOpeningRef = useRef(false);
   const [preparing, setPreparing] = useState(false);
 
   useEffect(() => {
@@ -61,29 +69,106 @@ export function ImageSourceSheet({
     }
   }, [open, sheetLogPrefix]);
 
+  const deliverFile = useCallback(
+    async (file: File, source: ImagePickSource) => {
+      if (!isImagePickFile(file)) {
+        if (pickLogPrefix === "[TRIP_COVER_PICK]") {
+          console.info("[TRIP_COVER_PICK_ERROR]", "invalid file type");
+        }
+        toast.error("請選擇圖片檔案");
+        return;
+      }
+      if (preparingRef.current) return;
+
+      preparingRef.current = true;
+      setPreparing(true);
+      try {
+        const normalized = await normalizeImageFileForUpload(file, { logPrefix: pickLogPrefix });
+        if (!normalized?.size) {
+          throw new Error("圖片轉換失敗，請改選 JPG 或 PNG");
+        }
+        onPickFile(normalized);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "圖片格式不支援，請改選 JPG 或 PNG";
+        if (pickLogPrefix === "[TRIP_COVER_PICK]") {
+          console.info("[TRIP_COVER_PICK_ERROR]", msg);
+        }
+        toast.error(msg);
+      } finally {
+        preparingRef.current = false;
+        setPreparing(false);
+      }
+    },
+    [onPickFile, pickLogPrefix],
+  );
+
+  const openCapacitorPicker = useCallback(
+    async (source: ImagePickSource) => {
+      if (pickerOpeningRef.current) return;
+      pickerOpeningRef.current = true;
+      try {
+        const result = await pickImageWithCapacitorCamera(source, {
+          cameraFacing,
+          pickLogPrefix,
+        });
+        if (result.ok) {
+          await deliverFile(result.file, source);
+          return;
+        }
+        if (result.cancelled) return;
+        if (result.error) {
+          toast.error(result.error);
+        }
+      } finally {
+        pickerOpeningRef.current = false;
+      }
+    },
+    [cameraFacing, deliverFile, pickLogPrefix],
+  );
+
+  const openWebFileInput = useCallback(
+    (source: ImagePickSource) => {
+      const input = source === "library" ? albumRef.current : cameraRef.current;
+      if (!input) {
+        if (pickLogPrefix === "[TRIP_COVER_PICK]") {
+          console.info("[TRIP_COVER_PICK_ERROR]", "picker input missing");
+        }
+        toast.error("無法開啟圖片選擇器，請稍後再試");
+        return;
+      }
+      if (pickLogPrefix === "[TRIP_COVER_PICK]") {
+        console.info("[TRIP_COVER_PICKER_OPEN]");
+      }
+      safeTriggerFileInput(input, (error) => {
+        const msg = error instanceof Error ? error.message : "無法開啟圖片選擇器";
+        if (pickLogPrefix === "[TRIP_COVER_PICK]") {
+          console.info("[TRIP_COVER_PICK_ERROR]", msg);
+        }
+        toast.error("無法開啟相簿，請稍後再試");
+      });
+    },
+    [pickLogPrefix],
+  );
+
   useEffect(() => {
     if (open || !pendingSourceRef.current) return;
 
     const source = pendingSourceRef.current;
     pendingSourceRef.current = null;
-    const input = source === "library" ? albumRef.current : cameraRef.current;
 
     const timer = window.setTimeout(() => {
-      if (!input) {
-        if (pickLogPrefix) {
-          console.info(`${pickLogPrefix} input missing source=${source}`);
-        }
+      if (shouldUseCapacitorImagePicker()) {
+        void openCapacitorPicker(source);
         return;
       }
-      const restoreScroll = unlockDocumentScrollForNativePicker();
-      input.click();
-      window.setTimeout(restoreScroll, 2000);
-    }, 320);
+      openWebFileInput(source);
+    }, NATIVE_IMAGE_PICKER_DELAY_MS);
 
     return () => window.clearTimeout(timer);
-  }, [open, pickLogPrefix]);
+  }, [open, openCapacitorPicker, openWebFileInput]);
 
-  const queuePick = (source: PickSource) => {
+  const queuePick = (source: ImagePickSource) => {
+    if (preparingRef.current || pickerOpeningRef.current) return;
     if (pickLogPrefix) {
       console.info(`${pickLogPrefix} source=${source}`);
     }
@@ -91,76 +176,59 @@ export function ImageSourceSheet({
     onOpenChange(false);
   };
 
-  const handleFile = async (file: File | undefined, source: PickSource) => {
+  const handleWebFile = async (file: File | undefined, source: ImagePickSource) => {
     if (!file) {
-      if (pickLogPrefix) {
-        console.info(`${pickLogPrefix} cancelled source=${source}`);
+      if (pickLogPrefix === "[TRIP_COVER_PICK]") {
+        console.info("[TRIP_COVER_PICK_CANCELLED]");
       }
       return;
     }
-    if (!isImagePickFile(file)) {
-      toast.error("請選擇圖片檔案");
+    if (!file.name?.trim() && file.size <= 0) {
+      if (pickLogPrefix === "[TRIP_COVER_PICK]") {
+        console.info("[TRIP_COVER_PICK_ERROR]", "empty file");
+      }
       return;
     }
-    if (pickLogPrefix) {
-      console.info(
-        `${pickLogPrefix} selected source=${source}`,
-        `image=${file.name}`,
-        `bytes=${file.size}`,
-      );
+    if (pickLogPrefix === "[TRIP_COVER_PICK]") {
+      console.info("[TRIP_COVER_PICK_SUCCESS]");
     }
-    setPreparing(true);
-    try {
-      const normalized = await normalizeImageFileForUpload(file, { logPrefix: pickLogPrefix });
-      onPickFile(normalized);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "圖片格式不支援，請改選 JPG 或 PNG";
-      if (pickLogPrefix) {
-        console.info(`${pickLogPrefix} normalize failed`, msg);
-      }
-      toast.error(msg);
-    } finally {
-      setPreparing(false);
-    }
+    await deliverFile(file, source);
   };
-
-  const pickerInputs =
-    typeof document !== "undefined"
-      ? createPortal(
-          <>
-            <input
-              ref={albumRef}
-              type="file"
-              accept="image/*"
-              tabIndex={-1}
-              aria-hidden
-              className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
-              onChange={(e) => {
-                void handleFile(e.target.files?.[0], "library");
-                e.target.value = "";
-              }}
-            />
-            <input
-              ref={cameraRef}
-              type="file"
-              accept="image/*"
-              capture={cameraFacing}
-              tabIndex={-1}
-              aria-hidden
-              className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
-              onChange={(e) => {
-                void handleFile(e.target.files?.[0], "camera");
-                e.target.value = "";
-              }}
-            />
-          </>,
-          document.body,
-        )
-      : null;
 
   return (
     <>
-      {pickerInputs}
+      {!shouldUseCapacitorImagePicker() ? (
+        <>
+          <input
+            ref={albumRef}
+            type="file"
+            accept="image/jpeg,image/png,image/heic,image/heif,image/*"
+            tabIndex={-1}
+            aria-hidden
+            className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              void handleWebFile(file, "library");
+            }}
+          />
+          <input
+            ref={cameraRef}
+            type="file"
+            accept="image/jpeg,image/png,image/*"
+            capture={cameraFacing}
+            tabIndex={-1}
+            aria-hidden
+            className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              void handleWebFile(file, "camera");
+            }}
+          />
+        </>
+      ) : null}
+
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent
           side="bottom"

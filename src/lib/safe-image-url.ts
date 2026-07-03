@@ -83,7 +83,8 @@ export function resolvePlaceImageUrl(
   const trimmed = url.trim();
   const maxWidth = options?.maxWidth ?? 600;
 
-  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return null;
+  if (trimmed.startsWith("data:")) return null;
+  if (trimmed.startsWith("blob:")) return trimmed;
   if (isWebpImageUrl(trimmed)) return null;
 
   let candidate = trimmed;

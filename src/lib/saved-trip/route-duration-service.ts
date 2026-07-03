@@ -28,7 +28,7 @@ function coordPart(n: number): string {
   return n.toFixed(4);
 }
 
-/** dayIndex + legIndex + origin/dest lat,lng + mode + departureTime */
+/** dayIndex + legIndex + placeIds + origin/dest lat,lng + mode + departureTime */
 export function buildLegRouteFingerprint(
   dayIndex: number,
   legIndex: number,
@@ -36,11 +36,19 @@ export function buildLegRouteFingerprint(
   destination: LatLng,
   mode: RoutesTravelMode,
   departureTime?: string,
+  placeIds?: { originPlaceId?: string; destinationPlaceId?: string; tripDate?: string },
 ): string {
-  const dep = mode === "TRANSIT" && departureTime ? departureTime.slice(0, 19) : "";
+  const dep =
+    mode === "TRANSIT"
+      ? departureTime
+        ? departureTime.slice(0, 19)
+        : (placeIds?.tripDate?.trim() ?? "")
+      : "";
   const o = `${coordPart(origin.lat)},${coordPart(origin.lng)}`;
   const d = `${coordPart(destination.lat)},${coordPart(destination.lng)}`;
-  return `d${dayIndex}|l${legIndex}|${o}>${d}|${mode}|${dep}`;
+  const oPid = placeIds?.originPlaceId?.trim() ?? "";
+  const dPid = placeIds?.destinationPlaceId?.trim() ?? "";
+  return `d${dayIndex}|l${legIndex}|${oPid}|${o}|${dPid}|${d}|${mode}|${dep}`;
 }
 
 export function buildScopedRouteCacheKey(
@@ -51,10 +59,16 @@ export function buildScopedRouteCacheKey(
   query?: FetchRouteQueryOptions,
 ): string {
   const dep =
-    mode === "TRANSIT" && query?.departureTime
-      ? query.departureTime.slice(0, 19)
+    mode === "TRANSIT"
+      ? query?.departureTime
+        ? query.departureTime.slice(0, 19)
+        : query?.tripDate?.trim()
       : undefined;
-  return `${scope.tripId}|${buildLegRouteFingerprint(scope.dayIndex, scope.legIndex, origin, destination, mode, dep)}`;
+  return `${scope.tripId}|${scope.dateKey}|${buildLegRouteFingerprint(scope.dayIndex, scope.legIndex, origin, destination, mode, dep, {
+    originPlaceId: query?.originPlaceId,
+    destinationPlaceId: query?.destinationPlaceId,
+    tripDate: query?.tripDate,
+  })}`;
 }
 
 function cacheTtl(result: RouteLegDurationResult): number {
@@ -76,18 +90,14 @@ function writeScopedCache(key: string, result: RouteLegDurationResult): void {
   });
 }
 
-/** 清除單一 leg 的所有 scoped cache（交通方式切換） */
-export function invalidateScopedRouteCacheForLeg(tripId: string, legKey: string): void {
-  const prefix = `${tripId}|`;
+/** 清除單一 trip / 單日的 scoped cache */
+export function invalidateScopedRouteCacheForLeg(tripId: string, dateKey?: string): void {
+  const prefix = dateKey ? `${tripId}|${dateKey}|` : `${tripId}|`;
   for (const key of scopedCache.keys()) {
-    if (key.startsWith(prefix) && key.includes(`|${legKey}|`)) {
-      scopedCache.delete(key);
-    }
+    if (key.startsWith(prefix)) scopedCache.delete(key);
   }
   for (const key of scopedInflight.keys()) {
-    if (key.startsWith(prefix) && key.includes(`|${legKey}|`)) {
-      scopedInflight.delete(key);
-    }
+    if (key.startsWith(prefix)) scopedInflight.delete(key);
   }
 }
 

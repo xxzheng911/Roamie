@@ -1,4 +1,5 @@
-import type { RoamieItineraryItem } from "@/lib/ai/types";
+import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
+import { scheduledDateKeysFromSettings, TRIP_UNASSIGNED_DATE } from "@/lib/saved-trip/apply-trip-date-range";
 
 export function groupStopsByDate(items: RoamieItineraryItem[]): Map<string, RoamieItineraryItem[]> {
   const groups = new Map<string, RoamieItineraryItem[]>();
@@ -9,6 +10,28 @@ export function groupStopsByDate(items: RoamieItineraryItem[]): Map<string, Roam
     groups.set(key, list);
   }
   return groups;
+}
+
+/** 依行程日期順序列出各天（與編輯器 day tab 一致） */
+export function orderedTripDateKeys(
+  items: RoamieItineraryItem[],
+  settings?: TripPlanSettings,
+  fallbackStart?: string,
+): string[] {
+  const groups = groupStopsByDate(items);
+  const fromSettings = scheduledDateKeysFromSettings(settings);
+  if (fromSettings.length > 0) {
+    const keys = [...fromSettings];
+    if ((groups.get(TRIP_UNASSIGNED_DATE)?.length ?? 0) > 0) {
+      keys.push(TRIP_UNASSIGNED_DATE);
+    }
+    return keys;
+  }
+  const keys = listTripDateKeys(items, fallbackStart).filter((k) => k !== TRIP_UNASSIGNED_DATE);
+  if ((groups.get(TRIP_UNASSIGNED_DATE)?.length ?? 0) > 0) {
+    keys.push(TRIP_UNASSIGNED_DATE);
+  }
+  return keys;
 }
 
 export function flattenStopGroups(groups: Map<string, RoamieItineraryItem[]>): RoamieItineraryItem[] {
@@ -70,15 +93,10 @@ export function moveStopInDay(
   date: string,
   indexInDay: number,
   direction: -1 | 1,
+  dayIndex = 0,
 ): RoamieItineraryItem[] {
-  const groups = groupStopsByDate(items);
-  const dayList = [...(groups.get(date) ?? [])];
   const target = indexInDay + direction;
-  if (target < 0 || target >= dayList.length) return items;
-  const [removed] = dayList.splice(indexInDay, 1);
-  dayList.splice(target, 0, removed!);
-  groups.set(date, dayList);
-  return flattenStopGroups(groups);
+  return reorderStopInDay(items, date, indexInDay, target, dayIndex);
 }
 
 export function updateStop(
@@ -115,7 +133,11 @@ export function nextDayIsoAfter(items: RoamieItineraryItem[], fallbackStart?: st
   return d.toISOString().slice(0, 10);
 }
 
-export function sortStopsInDayByTime(items: RoamieItineraryItem[], date: string): RoamieItineraryItem[] {
+export function sortStopsInDayByTime(
+  items: RoamieItineraryItem[],
+  date: string,
+  dayIndex = 0,
+): RoamieItineraryItem[] {
   const groups = groupStopsByDate(items);
   const dayList = [...(groups.get(date) ?? [])];
   const parse = (t: string) => {
@@ -124,10 +146,95 @@ export function sortStopsInDayByTime(items: RoamieItineraryItem[], date: string)
     return Number.parseInt(m[1], 10) * 60 + Number.parseInt(m[2], 10);
   };
   dayList.sort((a, b) => parse(a.time ?? "") - parse(b.time ?? ""));
-  groups.set(date, dayList);
+  groups.set(date, normalizeDayStopOrder(dayList, dayIndex, date));
   return flattenStopGroups(groups);
 }
 
 export function legKeyForItem(item: RoamieItineraryItem): string {
   return item.placeName || item.title;
+}
+
+/** 依畫面順序寫入 dayIndex / sortIndex / order，並同步 date 避免 reorder 後分組錯亂 */
+export function normalizeDayStopOrder(
+  dayItems: RoamieItineraryItem[],
+  dayIndex: number,
+  dateKey?: string,
+): RoamieItineraryItem[] {
+  return dayItems.map((item, sortIndex) => ({
+    ...item,
+    ...(dateKey ? { date: dateKey } : {}),
+    dayIndex,
+    sortIndex,
+    order: sortIndex,
+  }));
+}
+
+export function replaceDayItemsInItinerary(
+  items: RoamieItineraryItem[],
+  dateKey: string,
+  dayItems: RoamieItineraryItem[],
+): RoamieItineraryItem[] {
+  const groups = groupStopsByDate(items);
+  groups.set(dateKey, dayItems);
+  return flattenStopGroups(groups);
+}
+
+export function reorderStopInDay(
+  items: RoamieItineraryItem[],
+  date: string,
+  fromIndex: number,
+  toIndex: number,
+  dayIndex = 0,
+): RoamieItineraryItem[] {
+  const groups = groupStopsByDate(items);
+  const dayList = [...(groups.get(date) ?? [])];
+  if (fromIndex < 0 || fromIndex >= dayList.length || toIndex < 0 || toIndex >= dayList.length) {
+    return items;
+  }
+  if (fromIndex === toIndex) return items;
+  const [removed] = dayList.splice(fromIndex, 1);
+  dayList.splice(toIndex, 0, removed!);
+  groups.set(date, normalizeDayStopOrder(dayList, dayIndex, date));
+  return flattenStopGroups(groups);
+}
+
+export type CrossDayMovePosition =
+  | { kind: "start" }
+  | { kind: "end" }
+  | { kind: "afterIndex"; afterIndex: number };
+
+/** 將地點從來源日移至目標日指定位置（非複製） */
+export function moveStopAcrossDays(
+  items: RoamieItineraryItem[],
+  sourceDate: string,
+  sourceIndexInDay: number,
+  targetDate: string,
+  position: CrossDayMovePosition,
+  sourceDayIndex: number,
+  targetDayIndex: number,
+): RoamieItineraryItem[] {
+  if (sourceDate === targetDate) return items;
+
+  const groups = groupStopsByDate(items);
+  const sourceList = [...(groups.get(sourceDate) ?? [])];
+  if (sourceIndexInDay < 0 || sourceIndexInDay >= sourceList.length) return items;
+
+  const [moved] = sourceList.splice(sourceIndexInDay, 1);
+  if (sourceList.length === 0) groups.delete(sourceDate);
+  else groups.set(sourceDate, normalizeDayStopOrder(sourceList, sourceDayIndex, sourceDate));
+
+  const targetList = [...(groups.get(targetDate) ?? [])];
+  const next: RoamieItineraryItem = { ...moved!, date: targetDate };
+
+  if (position.kind === "start") {
+    targetList.unshift(next);
+  } else if (position.kind === "end") {
+    targetList.push(next);
+  } else {
+    const insertAt = Math.min(Math.max(0, position.afterIndex + 1), targetList.length);
+    targetList.splice(insertAt, 0, next);
+  }
+  groups.set(targetDate, normalizeDayStopOrder(targetList, targetDayIndex, targetDate));
+
+  return flattenStopGroups(groups);
 }

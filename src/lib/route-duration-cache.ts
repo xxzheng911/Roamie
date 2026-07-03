@@ -28,12 +28,17 @@ export function routeDurationCacheKey(
   destination: LatLng,
   mode: RoutesTravelMode,
   departureTime?: string,
+  placeIds?: { originPlaceId?: string; destinationPlaceId?: string; tripDate?: string },
 ): string {
   const dep =
-    mode === "TRANSIT" && departureTime
-      ? departureTime.slice(0, 19)
+    mode === "TRANSIT"
+      ? departureTime
+        ? departureTime.slice(0, 19)
+        : (placeIds?.tripDate?.trim() ?? "")
       : "";
-  return `${coordPart(origin.lat)},${coordPart(origin.lng)}>${coordPart(destination.lat)},${coordPart(destination.lng)}|${mode}|${dep}`;
+  const oPid = placeIds?.originPlaceId?.trim() ?? "";
+  const dPid = placeIds?.destinationPlaceId?.trim() ?? "";
+  return `${oPid}|${coordPart(origin.lat)},${coordPart(origin.lng)}>${dPid}|${coordPart(destination.lat)},${coordPart(destination.lng)}|${mode}|${dep}`;
 }
 
 export function getCachedRouteDuration(key: string): RouteDurationCacheEntry | null {

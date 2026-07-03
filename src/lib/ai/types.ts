@@ -39,6 +39,11 @@ export const RoamieItineraryItemSchema = z.object({
   googlePlaceId: z.string().optional(),
   placeType: z.string().optional(),
   notes: z.string().optional(),
+  /** 0-based day index within trip */
+  dayIndex: z.number().optional(),
+  /** 0-based order within the day (display / persistence) */
+  sortIndex: z.number().optional(),
+  order: z.number().optional(),
 });
 
 export const RoamieResponseSchema = z.object({

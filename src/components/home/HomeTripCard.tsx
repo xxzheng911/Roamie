@@ -3,7 +3,7 @@ import { Calendar, ChevronRight } from "lucide-react";
 import { TripCoverImage } from "@/components/media/TripCoverImage";
 import { logTripNav, TRIP_DETAIL_ROUTE } from "@/lib/trip/trip-detail-nav";
 import type { CoreTrip } from "@/lib/trip/core-trip";
-import { resolveCoreTripCoverImage, resolveCoreTripTitle } from "@/lib/trip/core-trip";
+import { resolveCoreTripCoverDisplayUrl, resolveCoreTripTitle } from "@/lib/trip/core-trip";
 
 type Props = {
   trip: CoreTrip;
@@ -20,13 +20,14 @@ export function HomeTripCard({ trip }: Props) {
     >
       <div className="relative aspect-[16/10] overflow-hidden">
         <TripCoverImage
-          displayCoverImage={resolveCoreTripCoverImage(trip)}
+          key={`${trip.id}-cover-${trip.updatedAt}`}
+          displayCoverImage={resolveCoreTripCoverDisplayUrl(trip)}
           coverImageUrl={null}
           customCoverImageUrl={trip.customCoverImageUrl}
           aiGeneratedCoverImageUrl={trip.aiGeneratedCoverImageUrl}
           isCoverCustomized={Boolean(trip.customCoverImageUrl)}
           mood="roamie"
-          src={resolveCoreTripCoverImage(trip)}
+          src={resolveCoreTripCoverDisplayUrl(trip)}
           className="absolute inset-0"
         />
         <div className="absolute inset-0 bg-gradient-to-t from-ink/55 via-transparent" />

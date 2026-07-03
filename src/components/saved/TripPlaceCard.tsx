@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronUp, Trash2 } from "lucide-react";
+import { ArrowRightLeft, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 import { TripLocationCard } from "@/components/saved/TripLocationCard";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
 import { legKeyForItem } from "@/lib/trip/trip-stop-mutations";
@@ -12,6 +12,8 @@ type Props = {
   onSetDurationMinutes: (minutes: number) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  onCrossDayMove?: () => void;
+  crossDayMoveDisabled?: boolean;
   onDelete: () => void;
   onOpenPlaceDetail?: () => void;
 };
@@ -26,6 +28,8 @@ export function TripPlaceCard({
   onSetDurationMinutes,
   onMoveUp,
   onMoveDown,
+  onCrossDayMove,
+  crossDayMoveDisabled = false,
   onDelete,
   onOpenPlaceDetail,
 }: Props) {
@@ -68,6 +72,17 @@ export function TripPlaceCard({
           >
             <ChevronDown className="h-4 w-4" />
           </button>
+          {onCrossDayMove ? (
+            <button
+              type="button"
+              aria-label="跨天移動"
+              disabled={crossDayMoveDisabled}
+              onClick={onCrossDayMove}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 text-muted-foreground disabled:opacity-40"
+            >
+              <ArrowRightLeft className="h-4 w-4" />
+            </button>
+          ) : null}
           <button
             type="button"
             aria-label="刪除地點"

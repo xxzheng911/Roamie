@@ -41,3 +41,12 @@ export function readSavedTripsSnapshot(): CoreTrip[] {
 export function writeSavedTripsSnapshot(trips: CoreTrip[]): void {
   writeJson(TRIPS_KEY, trips);
 }
+
+export function patchSavedTripInSnapshot(tripId: string, patch: Partial<CoreTrip>): void {
+  const trips = readSavedTripsSnapshot();
+  const idx = trips.findIndex((trip) => trip.id === tripId);
+  if (idx < 0) return;
+  const next = [...trips];
+  next[idx] = { ...next[idx]!, ...patch };
+  writeSavedTripsSnapshot(next);
+}

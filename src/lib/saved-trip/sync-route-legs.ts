@@ -5,7 +5,12 @@ import {
   resolveLegTransitDeparture,
   resolveTransitDepartureTimeForQuery,
 } from "@/lib/saved-trip/leg-departure-time";
-import { buildLegKey } from "@/lib/transit/types";
+import {
+  buildDayLegKey,
+  buildLegKey,
+  parseDayLegKey,
+  resolveTransitLeg,
+} from "@/lib/transit/types";
 import type { TransitLegAdvice } from "@/lib/transit/types";
 import type { TransitMode } from "@/lib/transit/types";
 import type { RoutesTravelMode } from "@/lib/routes/types";
@@ -21,22 +26,97 @@ import {
   transportFallbackModeFromResult,
 } from "@/lib/saved-trip/route-duration-fallback";
 import { resolveLegTransportLabel } from "@/lib/saved-trip/transport-options";
-import { legKeyForItem } from "@/lib/trip/trip-stop-mutations";
-import { groupStopsByDate } from "@/lib/trip/trip-stop-mutations";
+import {
+  groupStopsByDate,
+  legKeyForItem,
+  orderedTripDateKeys,
+} from "@/lib/trip/trip-stop-mutations";
 import { travelLabelToRoutesMode, type FetchRouteQueryOptions } from "@/services/routesService";
 import { logDirectionsDebug } from "@/lib/directions-debug-log";
 import { resolveDirectionsRegion, routesModeToDirectionsModeLabel } from "@/lib/directions-endpoint";
 
-export function legKeysForItineraryItems(items: RoamieItineraryItem[]): string[] {
+export function legKeysForItineraryItems(
+  items: RoamieItineraryItem[],
+  settings?: TripPlanSettings,
+): string[] {
   const keys: string[] = [];
-  for (const [, dayItems] of groupStopsByDate(items)) {
+  const groups = groupStopsByDate(items);
+  for (const dateKey of orderedTripDateKeys(items, settings)) {
+    const dayItems = groups.get(dateKey) ?? [];
     for (let i = 1; i < dayItems.length; i++) {
       const prev = dayItems[i - 1]!;
       const curr = dayItems[i]!;
-      keys.push(buildLegKey(prev.placeName || prev.title, curr.placeName || curr.title));
+      keys.push(
+        buildDayLegKey(dateKey, prev.placeName || prev.title, curr.placeName || curr.title),
+      );
     }
   }
   return keys;
+}
+
+/** 只保留目前行程順序仍存在的 leg，避免 reorder 後沿用舊路段快取 */
+export function pruneTransitLegsToItinerary(
+  items: RoamieItineraryItem[],
+  transitLegs: Record<string, TransitLegAdvice> | undefined,
+  settings?: TripPlanSettings,
+): Record<string, TransitLegAdvice> {
+  const valid = new Set(legKeysForItineraryItems(items, settings));
+  const out: Record<string, TransitLegAdvice> = {};
+  for (const [key, leg] of Object.entries(transitLegs ?? {})) {
+    if (valid.has(key)) {
+      out[key] = leg;
+      continue;
+    }
+    const parsed = parseDayLegKey(key);
+    if (parsed && valid.has(buildDayLegKey(parsed.dateKey, parsed.from, parsed.to))) {
+      out[key] = leg;
+    }
+  }
+  return out;
+}
+
+export function dateKeyForLegKey(
+  items: RoamieItineraryItem[],
+  legKey: string,
+  settings?: TripPlanSettings,
+): string | null {
+  const parsed = parseDayLegKey(legKey);
+  if (parsed) return parsed.dateKey;
+
+  const groups = groupStopsByDate(items);
+  for (const dateKey of orderedTripDateKeys(items, settings)) {
+    const dayItems = groups.get(dateKey) ?? [];
+    for (let i = 1; i < dayItems.length; i++) {
+      const prev = dayItems[i - 1]!;
+      const curr = dayItems[i]!;
+      const key = buildDayLegKey(dateKey, prev.placeName || prev.title, curr.placeName || curr.title);
+      if (key === legKey || buildLegKey(prev.placeName || prev.title, curr.placeName || curr.title) === legKey) {
+        return dateKey;
+      }
+    }
+  }
+  return null;
+}
+
+/** Reorder 後清除該日所有地點間路段快取 */
+export function clearTransitLegsForDay(
+  _items: RoamieItineraryItem[],
+  dateKey: string,
+  transitLegs?: Record<string, TransitLegAdvice>,
+): Record<string, TransitLegAdvice> {
+  const out: Record<string, TransitLegAdvice> = { ...(transitLegs ?? {}) };
+  const prefix = `${dateKey}§`;
+  for (const key of Object.keys(out)) {
+    if (key.startsWith(prefix)) {
+      delete out[key];
+      continue;
+    }
+    const parsed = parseDayLegKey(key);
+    if (parsed?.dateKey === dateKey) {
+      delete out[key];
+    }
+  }
+  return out;
 }
 
 export type ResolveStopCoords = (
@@ -47,13 +127,11 @@ export type SyncRouteLegsOptions = {
   tripId: string;
   resolveCoords?: ResolveStopCoords;
   onCoordsResolved?: (item: RoamieItineraryItem, coords: { lat: number; lng: number }) => void;
-  /** 忽略已快取路段（交通方式變更時，僅限 onlyLegKey） */
   force?: boolean;
-  /** 只重算指定 leg（交通方式切換） */
+  /** 只重算指定 leg（含 dateKey 的 day leg key） */
   onlyLegKey?: string;
   locationContext?: string;
   directionsRegion?: string;
-  /** 只重算指定日期內的 legs */
   onlyDateKey?: string;
 };
 
@@ -68,6 +146,7 @@ export function transportLabelForLeg(
 function buildRouteQueryOptions(
   prev: RoamieItineraryItem,
   curr: RoamieItineraryItem,
+  dateKey: string,
   options: SyncRouteLegsOptions | undefined,
   departureTime?: string,
   legKey?: string,
@@ -81,6 +160,7 @@ function buildRouteQueryOptions(
     originPlaceId: prev.googlePlaceId,
     destinationPlaceId: curr.googlePlaceId,
     logLegKey: legKey,
+    tripDate: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : undefined,
   };
 }
 
@@ -290,51 +370,102 @@ export function legRouteIsCovered(
   return false;
 }
 
-/** 是否已有可顯示的相鄰路段耗時（用於避免不必要的重抓） */
+function legCoverageForSegment(
+  prev: RoamieItineraryItem,
+  curr: RoamieItineraryItem,
+  dateKey: string,
+  dayIndex: number,
+  legIndex: number,
+  settings: TripPlanSettings,
+  options?: { directionsRegion?: string },
+): boolean {
+  const transitLegs = settings.transitLegs;
+  if (!transitLegs) return false;
+
+  const fromName = prev.placeName || prev.title;
+  const toName = curr.placeName || curr.title;
+  const legKey = buildDayLegKey(dateKey, fromName, toName);
+  const transportLabel = transportLabelForLeg(settings, curr, dateKey);
+  const mode = travelLabelToRoutesMode(transportLabel);
+  const leg = transitLegs[legKey] ?? resolveTransitLeg(transitLegs, dateKey, fromName, toName);
+
+  const origin =
+    prev.lat != null && prev.lng != null ? { lat: prev.lat, lng: prev.lng } : null;
+  const destination =
+    curr.lat != null && curr.lng != null ? { lat: curr.lat, lng: curr.lng } : null;
+  if (!origin || !destination) return false;
+
+  const transitSchedule =
+    mode === "TRANSIT" ? buildLegTransitSchedule(prev, settings, dateKey) : undefined;
+  const isJapanTransit = mode === "TRANSIT" && options?.directionsRegion === "jp";
+  const departureTime =
+    mode === "TRANSIT" && !isJapanTransit
+      ? resolveTransitDepartureTimeForQuery(transitSchedule ?? defaultLegTransitSchedule())
+          .departureTime
+      : undefined;
+  const fingerprint = buildLegRouteFingerprint(
+    dayIndex,
+    legIndex,
+    origin,
+    destination,
+    mode,
+    departureTime,
+    {
+      originPlaceId: prev.googlePlaceId,
+      destinationPlaceId: curr.googlePlaceId,
+      tripDate: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : undefined,
+    },
+  );
+
+  return legRouteIsCovered(leg, mode, fingerprint);
+}
+
+/** 單日路段是否已有可顯示耗時 */
+export function transitLegsCoverDay(
+  items: RoamieItineraryItem[],
+  settings: TripPlanSettings,
+  dateKey: string,
+  dayIndex: number,
+  options?: { directionsRegion?: string },
+): boolean {
+  const dayItems = groupStopsByDate(items).get(dateKey) ?? [];
+  if (dayItems.length < 2) return true;
+
+  for (let i = 1; i < dayItems.length; i++) {
+    if (
+      !legCoverageForSegment(
+        dayItems[i - 1]!,
+        dayItems[i]!,
+        dateKey,
+        dayIndex,
+        i - 1,
+        settings,
+        options,
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** 是否已有可顯示的相鄰路段耗時（全行程） */
 export function transitLegsCoverCurrentItems(
   items: RoamieItineraryItem[],
   settings: TripPlanSettings,
   options?: { directionsRegion?: string },
 ): boolean {
-  const transitLegs = settings.transitLegs;
-  if (!transitLegs || Object.keys(transitLegs).length === 0) return false;
+  const groups = groupStopsByDate(items);
+  const dateKeys = orderedTripDateKeys(items, settings);
+  if (dateKeys.length === 0) return false;
 
-  let dayIndex = 0;
-  for (const [dateKey, dayItems] of groupStopsByDate(items)) {
-    for (let i = 1; i < dayItems.length; i++) {
-      const prev = dayItems[i - 1]!;
-      const curr = dayItems[i]!;
-      const legKey = buildLegKey(prev.placeName || prev.title, curr.placeName || curr.title);
-      const transportLabel = transportLabelForLeg(settings, curr, dateKey);
-      const mode = travelLabelToRoutesMode(transportLabel);
-      const leg = transitLegs[legKey];
-
-      const origin =
-        prev.lat != null && prev.lng != null ? { lat: prev.lat, lng: prev.lng } : null;
-      const destination =
-        curr.lat != null && curr.lng != null ? { lat: curr.lat, lng: curr.lng } : null;
-      if (!origin || !destination) return false;
-
-      const transitSchedule =
-        mode === "TRANSIT" ? buildLegTransitSchedule(prev, settings, dateKey) : undefined;
-      const isJapanTransit = mode === "TRANSIT" && options?.directionsRegion === "jp";
-      const departureTime =
-        mode === "TRANSIT" && !isJapanTransit
-          ? resolveTransitDepartureTimeForQuery(transitSchedule ?? defaultLegTransitSchedule())
-              .departureTime
-          : undefined;
-      const fingerprint = buildLegRouteFingerprint(
-        dayIndex,
-        i - 1,
-        origin,
-        destination,
-        mode,
-        departureTime,
-      );
-
-      if (!legRouteIsCovered(leg, mode, fingerprint)) return false;
+  for (let dayIndex = 0; dayIndex < dateKeys.length; dayIndex++) {
+    const dateKey = dateKeys[dayIndex]!;
+    const dayItems = groups.get(dateKey) ?? [];
+    if (dayItems.length < 2) continue;
+    if (!transitLegsCoverDay(items, settings, dateKey, dayIndex, options)) {
+      return false;
     }
-    dayIndex += 1;
   }
   return true;
 }
@@ -350,15 +481,18 @@ async function syncOneLeg(
 ): Promise<TransitLegAdvice> {
   const fromName = prev.placeName || prev.title;
   const toName = curr.placeName || curr.title;
-  const legKey = buildLegKey(fromName, toName);
+  const legKey = buildDayLegKey(dateKey, fromName, toName);
   const transportLabel = transportLabelForLeg(settings, curr, dateKey);
   const mode: RoutesTravelMode = travelLabelToRoutesMode(transportLabel);
   const modeLabel = routesModeToDirectionsModeLabel(mode);
-  const existing = settings.transitLegs?.[legKey];
+  const existing =
+    settings.transitLegs?.[legKey] ??
+    resolveTransitLeg(settings.transitLegs, dateKey, fromName, toName);
   const forceThisLeg = options.force && (!options.onlyLegKey || options.onlyLegKey === legKey);
 
   const scope: RouteLegScope = {
     tripId: options.tripId,
+    dateKey,
     dayIndex,
     legIndex,
     legKey,
@@ -376,7 +510,7 @@ async function syncOneLeg(
         }).departureTime
       : undefined;
 
-  const queryBase = buildRouteQueryOptions(prev, curr, options, departureTime, legKey);
+  const queryBase = buildRouteQueryOptions(prev, curr, dateKey, options, departureTime, legKey);
 
   const origin = await resolveItemCoords(prev, options);
   const destination = await resolveItemCoords(curr, options);
@@ -399,6 +533,11 @@ async function syncOneLeg(
     destination,
     mode,
     departureTime,
+    {
+      originPlaceId: prev.googlePlaceId,
+      destinationPlaceId: curr.googlePlaceId,
+      tripDate: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : undefined,
+    },
   );
 
   if (!forceThisLeg && legRouteIsCovered(existing, mode, routeCacheFingerprint)) {
@@ -407,7 +546,7 @@ async function syncOneLeg(
       mode: modeLabel,
       skippedReason: "leg_already_covered",
     });
-    return existing!;
+    return { ...existing!, legKey };
   }
 
   try {
@@ -462,19 +601,25 @@ export async function syncTripLegsFromGoogleRoutes(
   settings: TripPlanSettings,
   options: SyncRouteLegsOptions,
 ): Promise<Record<string, TransitLegAdvice>> {
-  const next: Record<string, TransitLegAdvice> = { ...(settings.transitLegs ?? {}) };
+  const pruned = pruneTransitLegsToItinerary(items, settings.transitLegs, settings);
+  const next: Record<string, TransitLegAdvice> = { ...pruned };
   const groups = groupStopsByDate(items);
-  let dayIndex = 0;
+  const dateKeys = orderedTripDateKeys(items, settings);
 
-  for (const [dateKey, dayItems] of groups) {
+  for (let dayIndex = 0; dayIndex < dateKeys.length; dayIndex++) {
+    const dateKey = dateKeys[dayIndex]!;
     if (options.onlyDateKey && options.onlyDateKey !== dateKey) {
-      dayIndex += 1;
       continue;
     }
+    const dayItems = groups.get(dateKey) ?? [];
     for (let i = 1; i < dayItems.length; i++) {
       const prev = dayItems[i - 1]!;
       const curr = dayItems[i]!;
-      const legKey = buildLegKey(prev.placeName || prev.title, curr.placeName || curr.title);
+      const legKey = buildDayLegKey(
+        dateKey,
+        prev.placeName || prev.title,
+        curr.placeName || curr.title,
+      );
 
       if (options.onlyLegKey && options.onlyLegKey !== legKey) {
         continue;
@@ -490,7 +635,6 @@ export async function syncTripLegsFromGoogleRoutes(
         options,
       );
     }
-    dayIndex += 1;
   }
 
   return next;

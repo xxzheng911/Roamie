@@ -1,6 +1,7 @@
 import type { TripPlanSettings, TripTransportMode } from "@/lib/ai/types";
 import { legKeyForItem } from "@/lib/trip/trip-stop-mutations";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
+import { isTransitRequested } from "@/lib/saved-trip/travel-time";
 
 /** 行程交通選項（整趟預設 / 地點間） */
 export const TRIP_TRANSPORT_OPTIONS = [
@@ -31,6 +32,11 @@ export function resolveDayTransportLabel(
   const dayLabel = settings.dayTransportLabels?.[dateKey]?.trim();
   if (dayLabel) return dayLabel;
   return resolveGlobalTransportLabel(settings);
+}
+
+/** 該日是否以大眾運輸為預設交通（含整趟預設） */
+export function isDayTransitTransport(settings: TripPlanSettings, dateKey: string): boolean {
+  return isTransitRequested(resolveDayTransportLabel(settings, dateKey));
 }
 
 export function resolveLegTransportLabel(

@@ -28,3 +28,10 @@ export function isImageLoadFailed(url: string | null | undefined): boolean {
   const trimmed = url.trim();
   return failedImageUrls.has(trimmed) || failedImageUrls.has(failureKey(trimmed));
 }
+
+export function clearImageLoadFailure(url: string | null | undefined): void {
+  if (!url?.trim()) return;
+  const trimmed = url.trim();
+  failedImageUrls.delete(trimmed);
+  failedImageUrls.delete(failureKey(trimmed));
+}

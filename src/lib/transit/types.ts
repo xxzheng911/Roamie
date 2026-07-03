@@ -85,3 +85,37 @@ export type TransitLegInput = {
 export function buildLegKey(from: string, to: string): string {
   return `${from}→${to}`;
 }
+
+const DAY_LEG_SEP = "§";
+
+/** 含日期範圍的路段 key，避免多天行程共用同一段 from→to 的 duration */
+export function buildDayLegKey(dateKey: string, from: string, to: string): string {
+  return `${dateKey}${DAY_LEG_SEP}${buildLegKey(from, to)}`;
+}
+
+export function parseDayLegKey(
+  key: string,
+): { dateKey: string; from: string; to: string } | null {
+  const sep = key.indexOf(DAY_LEG_SEP);
+  if (sep < 0) return null;
+  const legPart = key.slice(sep + DAY_LEG_SEP.length);
+  const arrow = legPart.indexOf("→");
+  if (arrow < 0) return null;
+  return {
+    dateKey: key.slice(0, sep),
+    from: legPart.slice(0, arrow),
+    to: legPart.slice(arrow + 1),
+  };
+}
+
+export function resolveTransitLeg(
+  transitLegs: Record<string, TransitLegAdvice> | undefined,
+  dateKey: string,
+  from: string,
+  to: string,
+): TransitLegAdvice | undefined {
+  if (!transitLegs) return undefined;
+  const scoped = buildDayLegKey(dateKey, from, to);
+  if (transitLegs[scoped]) return transitLegs[scoped];
+  return transitLegs[buildLegKey(from, to)];
+}

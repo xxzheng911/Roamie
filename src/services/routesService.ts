@@ -23,6 +23,8 @@ export type LatLng = { lat: number; lng: number };
 export type FetchRouteQueryOptions = DirectionsQueryOptions & {
   departureTime?: string;
   logLegKey?: string;
+  /** 大眾運輸 cache key：無 departureTime 時以行程日期區分 */
+  tripDate?: string;
 };
 
 export type RoutesTestResult =
@@ -296,10 +298,14 @@ async function fetchRouteDurationResult(
   queryOptions?: FetchRouteQueryOptions,
 ): Promise<RoutesFnResult> {
   const departureTime = queryOptions?.departureTime;
-  const cacheKey = routeDurationCacheKey(origin, destination, travelMode, departureTime);
+  const cacheKey = routeDurationCacheKey(origin, destination, travelMode, departureTime, {
+    originPlaceId: queryOptions?.originPlaceId,
+    destinationPlaceId: queryOptions?.destinationPlaceId,
+    tripDate: queryOptions?.tripDate,
+  });
 
   const cached = getCachedRouteDuration(cacheKey);
-  if (cached) {
+  if (cached && cached.travelMode === travelMode) {
     logRouteDurationOnce("ROUTE_DURATION_CACHE_HIT", cacheKey, `status=${cached.status}`);
     return cacheEntryToFnResult(cached);
   }

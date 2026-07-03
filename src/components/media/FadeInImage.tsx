@@ -1,12 +1,22 @@
 import { useEffect, useState } from "react";
 import { recordPlacesPhotoUrlLoad } from "@/lib/places-api-stats";
 import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-cache";
+import { stripMediaUrlQuery } from "@/lib/media-display-url";
 import { getLocalPlaceImageFallback, preferJpegPngImageUrl, resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { cn } from "@/lib/utils";
 
 const loadedSrcCache =
   (globalThis as { __roamieLoadedImages?: Set<string> }).__roamieLoadedImages ?? new Set<string>();
 (globalThis as { __roamieLoadedImages?: Set<string> }).__roamieLoadedImages = loadedSrcCache;
+
+/** 上傳新封面後清除同路徑舊圖的 loaded 快取 */
+export function invalidateLoadedImageCache(url: string | null | undefined): void {
+  if (!url?.trim()) return;
+  const base = stripMediaUrlQuery(url);
+  for (const key of [...loadedSrcCache]) {
+    if (stripMediaUrlQuery(key) === base) loadedSrcCache.delete(key);
+  }
+}
 
 type Props = {
   src: string | null | undefined;

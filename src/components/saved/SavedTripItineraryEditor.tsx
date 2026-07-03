@@ -12,15 +12,16 @@ import { toast } from "sonner";
 import { BackButton } from "@/components/BackButton";
 import { TripCoverImage } from "@/components/media/TripCoverImage";
 import { SavedPlacesPickSheet } from "@/components/saved/SavedPlacesPickSheet";
+import { CrossDayMoveSheet } from "@/components/saved/CrossDayMoveSheet";
 import { SavedTripEditableStopCard } from "@/components/saved/SavedTripEditableStopCard";
 import { TripLegTransportConnector } from "@/components/saved/TripLegTransportConnector";
 import { TripTransportPicker } from "@/components/saved/TripTransportPicker";
 import { TripOutfitCard } from "@/components/saved/TripOutfitCard";
 import { ImageSourceSheet } from "@/components/ImageSourceSheet";
 import { SharedImageCropEditor } from "@/components/media/SharedImageCropEditor";
-import { readBlobImageSize, readFileImageSize, type CropTransform } from "@/lib/image-crop";
-import { IMAGE_CROP_VARIANTS } from "@/lib/image-crop-variants";
-import { withCacheBust } from "@/lib/media-display-url";
+import { type CropTransform } from "@/lib/image-crop";
+import { applyTripCoverUpload, validateCoverUploadBlob } from "@/lib/trip-cover-upload";
+import { withCacheBust, stripMediaUrlQuery } from "@/lib/media-display-url";
 import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings } from "@/lib/ai/types";
 import {
   normalizeStoredTrip,
@@ -40,9 +41,10 @@ import {
 import { useDebouncedTripSave } from "@/lib/saved-trip/use-debounced-trip-save";
 import { cn } from "@/lib/utils";
 import type { StoredItinerary } from "@/lib/itinerary-storage";
-import type { TripOutfitSuggestionFields } from "@/lib/outfit/types";
-import { updateItinerary, updateTripMeta } from "@/lib/itinerary-storage";
+import { SAVED_TRIPS_CHANGED_EVENT, updateItinerary, updateTripMeta } from "@/lib/itinerary-storage";
 import { buildCustomCoverPatch, buildCustomTitlePatch } from "@/lib/saved-trip/display";
+import { applyTransitLegSyncToItems } from "@/lib/saved-trip/apply-transit-leg-sync";
+import type { TripOutfitSuggestionFields } from "@/lib/outfit/types";
 import { formatLegTravelTimeLabel, formatLegWalkFallbackHint } from "@/lib/saved-trip/travel-time";
 import {
   isJapanTransitMapsLeg,
@@ -50,6 +52,7 @@ import {
 } from "@/lib/saved-trip/japan-transit-maps";
 import {
   applyGlobalTransportLabel,
+  isDayTransitTransport,
   resolveDayTransportLabel,
   resolveLegTransportLabel,
   logLegEffectiveTransport,
@@ -60,6 +63,9 @@ import {
   syncTripLegsFromGoogleRoutes,
   syncSingleTripLegFromGoogleRoutes,
   transitLegsCoverCurrentItems,
+  transitLegsCoverDay,
+  clearTransitLegsForDay,
+  dateKeyForLegKey,
 } from "@/lib/saved-trip/sync-route-legs";
 import { invalidateScopedRouteCacheForLeg, clearScopedRouteCache } from "@/lib/saved-trip/route-duration-service";
 import { clearRouteDurationCache } from "@/lib/route-duration-cache";
@@ -70,17 +76,20 @@ import {
   recalculateAllArrivalTimes,
   recalculateDayArrivalTimesInItems,
 } from "@/lib/saved-trip/recalculate-arrival-times";
-import { buildLegKey } from "@/lib/transit/types";
-import { uploadTripCover } from "@/lib/trip-media-storage";
+import { buildDayLegKey } from "@/lib/transit/types";
 import {
   addEmptyDay,
   groupStopsByDate,
   insertStopOnDate,
   legKeyForItem,
   listTripDateKeys,
+  moveStopAcrossDays,
   moveStopInDay,
+  type CrossDayMovePosition,
   nextDayIsoAfter,
+  normalizeDayStopOrder,
   removeStopAt,
+  replaceDayItemsInItinerary,
   sortStopsInDayByTime,
   updateStop,
 } from "@/lib/trip/trip-stop-mutations";
@@ -138,8 +147,8 @@ function placeAffiliateKey(item: RoamieItineraryItem): string {
 function buildRouteSyncSignature(items: RoamieItineraryItem[], settings: TripPlanSettings): string {
   const placeKeys = items
     .map(
-      (i) =>
-        `${i.date ?? ""}|${i.placeName || i.title}|${i.googlePlaceId ?? ""}`,
+      (i, idx) =>
+        `${idx}:${i.date ?? ""}|${i.placeName || i.title}|${i.googlePlaceId ?? ""}`,
     )
     .join("|");
   return [
@@ -167,6 +176,13 @@ type RouteRefreshOverride = {
   items?: RoamieItineraryItem[];
   settings?: TripPlanSettings;
   onlyDateKey?: string;
+  /** 交通方式切換前快照：API 失敗時保留原抵達時間 */
+  itemsBeforeSync?: RoamieItineraryItem[];
+};
+
+type DayScheduleChangeOpts = {
+  refreshRoutes?: boolean;
+  dayIndex?: number;
 };
 
 type TripScheduleCommitMeta = {
@@ -274,6 +290,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const [coverCropFile, setCoverCropFile] = useState<File | null>(null);
   const [coverDisplayRevision, setCoverDisplayRevision] = useState(0);
   const [coverBusy, setCoverBusy] = useState(false);
+  const isUploadingCoverRef = useRef(false);
+  const coverFlowMountedRef = useRef(true);
   const [settings, setSettings] = useState<TripPlanSettings>(
     () =>
       restoredView?.settings ??
@@ -303,6 +321,13 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     stopCount: number;
     dayIndex: number;
   } | null>(null);
+  const [crossDayMove, setCrossDayMove] = useState<{
+    item: RoamieItineraryItem;
+    indexInDay: number;
+    sourceDateKey: string;
+    sourceDayIndex: number;
+    sourceDayNumber: number;
+  } | null>(null);
   const itemsRef = useRef(items);
   const settingsRef = useRef(settings);
   const tripDetailRootRef = useRef<HTMLDivElement>(null);
@@ -316,6 +341,13 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   >(async () => {});
   itemsRef.current = items;
   settingsRef.current = settings;
+
+  useEffect(() => {
+    coverFlowMountedRef.current = true;
+    return () => {
+      coverFlowMountedRef.current = false;
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const scrollTop = restoredViewRef.current?.scrollTop;
@@ -336,6 +368,17 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   }, []);
 
   const dayGroups = useMemo(() => buildDayGroups(items, settings), [items, settings]);
+  const scheduledDayCount = useMemo(
+    () => dayGroups.filter((d) => !d.isUnassigned).length,
+    [dayGroups],
+  );
+  const crossDayMoveDayOptions = useMemo(
+    () =>
+      dayGroups
+        .map((d, dayIndex) => ({ dayNumber: d.dayNumber, dateKey: d.dateKey, dayIndex, items: d.items }))
+        .filter((d) => d.dayNumber > 0),
+    [dayGroups],
+  );
   const tripDatesForOutfit = useMemo(() => inferTripDates(items, settings), [items, settings]);
   const outfitDestination = useMemo(
     () =>
@@ -626,6 +669,176 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     [],
   );
 
+  /** 地點順序 / 增刪後：正規化 order、清除該日路段快取、重算抵達時間、僅刷新該日 Directions */
+  const commitDayScheduleChange = useCallback(
+    (
+      nextItems: RoamieItineraryItem[],
+      dateKey: string,
+      opts?: DayScheduleChangeOpts,
+    ) => {
+      routeSyncGenerationRef.current += 1;
+
+      const prevSettings = settingsRef.current;
+      const dayIndex = opts?.dayIndex ?? 0;
+      const rawDayItems = groupStopsByDate(nextItems).get(dateKey) ?? [];
+      const normalized = normalizeDayStopOrder(rawDayItems, dayIndex, dateKey);
+      const itemsWithOrder = replaceDayItemsInItinerary(nextItems, dateKey, normalized);
+
+      const clearedTransitLegs = clearTransitLegsForDay(
+        itemsWithOrder,
+        dateKey,
+        prevSettings.transitLegs,
+      );
+      const nextSettings: TripPlanSettings = {
+        ...prevSettings,
+        transitLegs: clearedTransitLegs,
+      };
+
+      if (isDayTransitTransport(nextSettings, dateKey)) {
+        clearRouteDurationCache();
+      }
+      invalidateScopedRouteCacheForLeg(stored.id, dateKey);
+
+      const itemsWithTimes = recalculateDayArrivalTimesInItems(
+        itemsWithOrder,
+        dateKey,
+        nextSettings,
+        0,
+        normalized,
+      );
+
+      itemsRef.current = itemsWithTimes;
+      settingsRef.current = nextSettings;
+      setItems(itemsWithTimes);
+      setSettings(nextSettings);
+      lastRouteSyncSignatureRef.current = buildRouteSyncSignature(itemsWithTimes, nextSettings);
+
+      if (opts?.refreshRoutes !== false) {
+        setTransitSettled(false);
+        void refreshTransitRef.current(true, {
+          items: itemsWithTimes,
+          settings: nextSettings,
+          onlyDateKey: dateKey,
+        });
+      }
+    },
+    [stored.id],
+  );
+
+  /** 跨天移動：正規化來源／目標兩日、清除路段快取、重算抵達時間、刷新兩日 Directions */
+  const commitCrossDayScheduleChange = useCallback(
+    (
+      nextItems: RoamieItineraryItem[],
+      sourceDateKey: string,
+      sourceDayIndex: number,
+      targetDateKey: string,
+      targetDayIndex: number,
+    ) => {
+      routeSyncGenerationRef.current += 1;
+
+      const prevSettings = settingsRef.current;
+      let itemsWorking = nextItems;
+
+      for (const { dateKey, dayIndex } of [
+        { dateKey: sourceDateKey, dayIndex: sourceDayIndex },
+        { dateKey: targetDateKey, dayIndex: targetDayIndex },
+      ]) {
+        const rawDayItems = groupStopsByDate(itemsWorking).get(dateKey) ?? [];
+        const normalized = normalizeDayStopOrder(rawDayItems, dayIndex, dateKey);
+        itemsWorking = replaceDayItemsInItinerary(itemsWorking, dateKey, normalized);
+      }
+
+      let clearedTransitLegs = clearTransitLegsForDay(
+        itemsWorking,
+        sourceDateKey,
+        prevSettings.transitLegs,
+      );
+      clearedTransitLegs = clearTransitLegsForDay(itemsWorking, targetDateKey, clearedTransitLegs);
+      const nextSettings: TripPlanSettings = {
+        ...prevSettings,
+        transitLegs: clearedTransitLegs,
+      };
+
+      if (
+        isDayTransitTransport(nextSettings, sourceDateKey) ||
+        isDayTransitTransport(nextSettings, targetDateKey)
+      ) {
+        clearRouteDurationCache();
+      }
+      invalidateScopedRouteCacheForLeg(stored.id, sourceDateKey);
+      invalidateScopedRouteCacheForLeg(stored.id, targetDateKey);
+
+      let itemsWithTimes = itemsWorking;
+      for (const dateKey of [sourceDateKey, targetDateKey]) {
+        const dayItems = groupStopsByDate(itemsWithTimes).get(dateKey) ?? [];
+        if (dayItems.length > 0) {
+          itemsWithTimes = recalculateDayArrivalTimesInItems(
+            itemsWithTimes,
+            dateKey,
+            nextSettings,
+            0,
+            dayItems,
+          );
+        }
+      }
+
+      itemsRef.current = itemsWithTimes;
+      settingsRef.current = nextSettings;
+      setItems(itemsWithTimes);
+      setSettings(nextSettings);
+      lastRouteSyncSignatureRef.current = buildRouteSyncSignature(itemsWithTimes, nextSettings);
+      setTransitSettled(false);
+
+      void (async () => {
+        await refreshTransitRef.current(true, {
+          items: itemsWithTimes,
+          settings: nextSettings,
+          onlyDateKey: sourceDateKey,
+        });
+        if (sourceDateKey !== targetDateKey) {
+          await refreshTransitRef.current(true, {
+            onlyDateKey: targetDateKey,
+          });
+        }
+      })();
+    },
+    [stored.id],
+  );
+
+  const handleConfirmCrossDayMove = useCallback(
+    (opts: {
+      targetDateKey: string;
+      targetDayIndex: number;
+      targetDayNumber: number;
+      position: CrossDayMovePosition;
+    }) => {
+      if (!crossDayMove) return;
+      const { item, indexInDay, sourceDateKey, sourceDayIndex } = crossDayMove;
+      const nextItems = moveStopAcrossDays(
+        itemsRef.current,
+        sourceDateKey,
+        indexInDay,
+        opts.targetDateKey,
+        opts.position,
+        sourceDayIndex,
+        opts.targetDayIndex,
+      );
+      commitCrossDayScheduleChange(
+        nextItems,
+        sourceDateKey,
+        sourceDayIndex,
+        opts.targetDateKey,
+        opts.targetDayIndex,
+      );
+      setCrossDayMove(null);
+      if (opts.targetDateKey !== sourceDateKey) {
+        setActiveDayIndex(opts.targetDayIndex);
+      }
+      toast.success(`已將「${item.placeName || item.title}」移至第 ${opts.targetDayNumber} 天`);
+    },
+    [crossDayMove, commitCrossDayScheduleChange],
+  );
+
   const persistItems = useCallback((next: RoamieItineraryItem[]) => {
     setItems(next);
   }, []);
@@ -765,12 +978,11 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       date: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : inferTripDates(items, settings).start,
       time: settings.startTime ?? "10:00",
     });
-    persistItems(
-      applyDayArrivalRecalc(
-        insertStopOnDate(items, stop, { date: stop.date, position: "end" }),
-        stop.date,
-        0,
-      ),
+    const addDayIndex = dayGroups.findIndex((d) => d.dateKey === stop.date);
+    commitDayScheduleChange(
+      insertStopOnDate(items, stop, { date: stop.date, position: "end" }),
+      stop.date,
+      { dayIndex: addDayIndex >= 0 ? addDayIndex : 0 },
     );
     setAddMenuDayIndex(null);
     toast.success("已新增地點");
@@ -823,6 +1035,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       const syncGeneration = routeSyncGenerationRef.current;
       const currentItems = override?.items ?? itemsRef.current;
       const currentSettings = override?.settings ?? settingsRef.current;
+      const itemsBeforeSync = override?.itemsBeforeSync ?? currentItems;
       if (currentItems.length < 2) {
         logDirectionsDebug("skipped", {
           skippedReason: "fewer_than_two_stops",
@@ -877,20 +1090,25 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         if (!routeSyncMountedRef.current) return;
         if (syncGeneration !== routeSyncGenerationRef.current) return;
 
-        let nextItems = currentItems;
+        const latestItems = itemsRef.current;
+        const latestSettings = settingsRef.current;
+
+        let nextItems = latestItems;
         if (resolvedCoords.size > 0) {
-          nextItems = currentItems.map((i) => {
+          nextItems = latestItems.map((i) => {
             const coords = resolvedCoords.get(itemCoordKey(i));
             return coords ? { ...i, lat: coords.lat, lng: coords.lng } : i;
           });
         }
 
         const mergedTransitLegs = { ...transitLegs };
-        const mergedSettings: TripPlanSettings = {
-          ...currentSettings,
+        const { items: itemsWithTimes, settings: mergedSettings } = applyTransitLegSyncToItems({
+          itemsBefore: itemsBeforeSync,
+          itemsWithCoords: nextItems,
+          settings: latestSettings,
           transitLegs: mergedTransitLegs,
-        };
-        const itemsWithTimes = recalculateAllArrivalTimes(nextItems, mergedSettings);
+          onlyDateKey: override?.onlyDateKey,
+        });
 
         setItems(itemsWithTimes);
         setSettings(mergedSettings);
@@ -915,8 +1133,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     async (legKey: string, override?: RouteRefreshOverride) => {
       if (!routeSyncMountedRef.current) return;
 
+      const syncGeneration = routeSyncGenerationRef.current;
       const currentItems = override?.items ?? itemsRef.current;
       const currentSettings = override?.settings ?? settingsRef.current;
+      const itemsBeforeSync = override?.itemsBeforeSync ?? currentItems;
 
       routeSyncInFlightRef.current = true;
       setTransitLoading(true);
@@ -940,6 +1160,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         );
 
         if (!routeSyncMountedRef.current || !leg) return;
+        if (syncGeneration !== routeSyncGenerationRef.current) return;
 
         let nextItems = currentItems;
         if (resolvedCoords.size > 0) {
@@ -949,11 +1170,15 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           });
         }
 
-        const mergedSettings: TripPlanSettings = {
-          ...currentSettings,
-          transitLegs: { ...currentSettings.transitLegs, [legKey]: leg },
-        };
-        const itemsWithTimes = recalculateAllArrivalTimes(nextItems, mergedSettings);
+        const mergedTransitLegs = { ...currentSettings.transitLegs, [legKey]: leg };
+        const legDateKey = override?.onlyDateKey ?? dateKeyForLegKey(nextItems, legKey, currentSettings);
+        const { items: itemsWithTimes, settings: mergedSettings } = applyTransitLegSyncToItems({
+          itemsBefore: itemsBeforeSync,
+          itemsWithCoords: nextItems,
+          settings: currentSettings,
+          transitLegs: mergedTransitLegs,
+          onlyDateKey: legDateKey ?? undefined,
+        });
 
         setItems(itemsWithTimes);
         setSettings(mergedSettings);
@@ -1003,7 +1228,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         for (let i = 1; i < dayItems.length; i++) {
           const prev = dayItems[i - 1]!;
           const curr = dayItems[i]!;
-          delete nextTransitLegs[buildLegKey(prev.placeName || prev.title, curr.placeName || curr.title)];
+          delete nextTransitLegs[
+            buildDayLegKey(dateKey, prev.placeName || prev.title, curr.placeName || curr.title)
+          ];
         }
 
         const nextSettings: TripPlanSettings = {
@@ -1018,14 +1245,14 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         };
 
         clearRouteDurationCache();
-        clearScopedRouteCache();
+        invalidateScopedRouteCacheForLeg(stored.id, dateKey);
         lastRouteSyncSignatureRef.current = "";
+        routeSyncGenerationRef.current += 1;
 
-        const nextItems = recalculateDayArrivalTimesInItems(prevItems, dateKey, nextSettings, 0);
-        itemsRef.current = nextItems;
+        itemsRef.current = prevItems;
         settingsRef.current = nextSettings;
         setSettings(nextSettings);
-        setItems(nextItems);
+        setItems(prevItems);
         setTransitSettled(false);
         setTransitLoading(true);
 
@@ -1035,9 +1262,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         );
 
         void refreshTransit(true, {
-          items: nextItems,
+          items: prevItems,
           settings: nextSettings,
           onlyDateKey: dateKey,
+          itemsBeforeSync: prevItems,
         });
         return;
       }
@@ -1049,7 +1277,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       const dateKey = opts?.dateKey;
       if (!legDestKey || !transitSegKey || !dateKey) return;
 
-      invalidateScopedRouteCacheForLeg(stored.id, transitSegKey);
+      invalidateScopedRouteCacheForLeg(stored.id, dateKey);
+      clearRouteDurationCache();
+      routeSyncGenerationRef.current += 1;
 
       const nextTransitLegs = { ...(prevSettings.transitLegs ?? {}) };
       delete nextTransitLegs[transitSegKey];
@@ -1059,11 +1289,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         transitLegs: nextTransitLegs,
       };
 
-      const nextItems = recalculateDayArrivalTimesInItems(prevItems, dateKey, nextSettings, 0);
-      itemsRef.current = nextItems;
+      itemsRef.current = prevItems;
       settingsRef.current = nextSettings;
       setSettings(nextSettings);
-      setItems(nextItems);
+      setItems(prevItems);
       setTransitSettled(false);
       setTransitLoading(true);
 
@@ -1072,7 +1301,12 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       );
       logLegEffectiveTransport(dateKey, dayIndex, legIndex, nextSettings, legDestKey);
 
-      void refreshSingleLeg(transitSegKey, { items: nextItems, settings: nextSettings });
+      void refreshSingleLeg(transitSegKey, {
+        items: prevItems,
+        settings: nextSettings,
+        onlyDateKey: dateKey,
+        itemsBeforeSync: prevItems,
+      });
     },
     [refreshTransit, refreshSingleLeg, stored.id],
   );
@@ -1120,6 +1354,25 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     return () => window.clearTimeout(timer);
   }, [items.length, routeSyncSignature, refreshTransit, directionsRegion]);
 
+  /** 切換天數：若該日路段尚未載入，只刷新該日（避免僅第 1 天有 duration） */
+  useEffect(() => {
+    if (!activeDay?.dateKey || activeDay.items.length < 2) return;
+    const dateKey = activeDay.dateKey;
+    const currentItems = itemsRef.current;
+    const currentSettings = settingsRef.current;
+    if (transitLegsCoverDay(currentItems, currentSettings, dateKey, safeDayIndex, { directionsRegion })) {
+      return;
+    }
+    if (routeSyncInFlightRef.current) return;
+
+    setTransitSettled(false);
+    const timer = window.setTimeout(() => {
+      if (!routeSyncMountedRef.current || routeSyncInFlightRef.current) return;
+      void refreshTransitRef.current(false, { onlyDateKey: dateKey });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [activeDay?.dateKey, safeDayIndex, directionsRegion]);
+
   const commitTitle = useCallback(
     async (nextTitle: string) => {
       const trimmed = nextTitle.trim();
@@ -1151,88 +1404,134 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     setCoverCropFile(null);
   }, []);
 
-  const handleCoverPick = (file: File) => {
-    console.info(`[TRIP_COVER_EDITOR] open image=${file.name}`);
-    void readFileImageSize(file)
-      .then(({ width, height }) => {
-        console.info(`[TRIP_COVER_UPLOAD] originalWidth=${width}`);
-        console.info(`[TRIP_COVER_UPLOAD] originalHeight=${height}`);
-      })
-      .catch(() => {
-        console.info("[TRIP_COVER_UPLOAD] originalWidth=unknown");
-        console.info("[TRIP_COVER_UPLOAD] originalHeight=unknown");
-      });
-    openTripCoverEditor(file);
-  };
+  const safeCoverState = useCallback((fn: () => void) => {
+    if (coverFlowMountedRef.current) fn();
+  }, []);
 
-  const handleCoverCropApply = async (blob: Blob, transform?: CropTransform) => {
-    const exportQuality = IMAGE_CROP_VARIANTS.tripCover.exportQuality;
-    try {
-      const { width, height } = await readBlobImageSize(blob);
-      console.info(`[TRIP_COVER_UPLOAD] finalWidth=${width}`);
-      console.info(`[TRIP_COVER_UPLOAD] finalHeight=${height}`);
-    } catch {
-      console.info("[TRIP_COVER_UPLOAD] finalWidth=unknown");
-      console.info("[TRIP_COVER_UPLOAD] finalHeight=unknown");
-    }
-    console.info(`[TRIP_COVER_UPLOAD] quality=${exportQuality}`);
-    console.info(`[TRIP_COVER_UPLOAD] fileSize=${blob.size}`);
-    console.info("[TRIP_COVER_EDITOR] save");
-    setCoverBusy(true);
-    try {
-      const url = await uploadTripCover(stored.id, blob);
-      const nextSettings: TripPlanSettings = {
-        ...settings,
-        ...(transform
-          ? {
-              coverImageScale: transform.scale,
-              coverImagePositionX: transform.offsetX,
-              coverImagePositionY: transform.offsetY,
-            }
-          : {}),
-      };
-      if (transform) {
-        console.info(
-          `[TRIP_COVER_EDITOR] scale=${transform.scale} x=${transform.offsetX} y=${transform.offsetY}`,
-        );
+  const handleCoverPick = useCallback(
+    (file: File) => {
+      try {
+        if (!file?.size) {
+          console.info("[COVER_UPLOAD_ERROR]", "picked file empty");
+          toast.error("圖片無效，請重新選擇");
+          return;
+        }
+        openTripCoverEditor(file);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "無法開啟裁切編輯器";
+        console.info("[COVER_UPLOAD_ERROR]", msg);
+        toast.error(msg);
       }
-      setSettings(nextSettings);
-      setCustomCoverImageUrl(url);
-      setIsCoverCustomized(true);
-      setCoverSource("upload");
-      setCoverDisplayRevision(Date.now());
-      const updated = await updateTripMeta(
-        stored.id,
-        {
-          ...buildCustomCoverPatch(url),
-          cover_source: "upload",
-          cover_query: null,
-        },
-        {
-          ...payload,
-          tripSettings: nextSettings,
-        },
-      );
-      if (updated) onStoredChange?.(updated);
-      closeTripCoverEditor();
-      console.info("[TRIP_COVER_UPLOAD] success url=", url);
-      console.info("[TRIP_COVER_UPDATE] saved tripId=", stored.id);
-      toast.success("封面已更新");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "封面上傳失敗";
-      console.error("[TRIP_COVER_UPLOAD] error=", msg);
-      toast.error(`封面上傳失敗，請稍後再試（${msg}）`);
-    } finally {
-      setCoverBusy(false);
-    }
-  };
+    },
+    [openTripCoverEditor],
+  );
+
+  const handleCoverCropApply = useCallback(
+    async (blob: Blob, transform?: CropTransform) => {
+      if (isUploadingCoverRef.current) return;
+
+      const validationError = validateCoverUploadBlob(blob);
+      if (validationError) {
+        console.info("[COVER_UPLOAD_ERROR]", validationError);
+        toast.error(validationError);
+        return;
+      }
+
+      isUploadingCoverRef.current = true;
+      safeCoverState(() => setCoverBusy(true));
+
+      try {
+        const nextSettings: TripPlanSettings = {
+          ...settingsRef.current,
+          ...(transform
+            ? {
+                coverImageScale: transform.scale,
+                coverImagePositionX: transform.offsetX,
+                coverImagePositionY: transform.offsetY,
+              }
+            : {}),
+        };
+
+        if (ignoreRealtimeUntilRef) {
+          ignoreRealtimeUntilRef.current = Date.now() + 8000;
+        }
+
+        const uploadResult = await applyTripCoverUpload({
+          tripId: stored.id,
+          blob,
+          stored,
+        });
+
+        if (!uploadResult.ok) {
+          toast.error(`封面上傳失敗，請稍後再試（${uploadResult.error}）`);
+          return;
+        }
+
+        settingsRef.current = nextSettings;
+        safeCoverState(() => {
+          setSettings(nextSettings);
+          setCustomCoverImageUrl(uploadResult.url);
+          setIsCoverCustomized(true);
+          setCoverSource("upload");
+          setCoverDisplayRevision(uploadResult.revision);
+        });
+
+        onStoredChange?.(uploadResult.optimisticStored);
+        window.dispatchEvent(new Event(SAVED_TRIPS_CHANGED_EVENT));
+
+        const updated = await updateTripMeta(
+          stored.id,
+          {
+            ...buildCustomCoverPatch(uploadResult.url),
+            cover_source: "upload",
+            cover_query: null,
+          },
+          {
+            ...buildPayload(itemsRef.current, nextSettings),
+            tripSettings: nextSettings,
+          },
+        );
+
+        if (updated) {
+          if (ignoreRealtimeUntilRef) {
+            ignoreRealtimeUntilRef.current = Date.now() + 8000;
+          }
+          safeCoverState(() => {
+            setCoverDisplayRevision(Date.parse(updated.updated_at) || uploadResult.revision);
+          });
+          onStoredChange?.(updated);
+          window.dispatchEvent(new Event(SAVED_TRIPS_CHANGED_EVENT));
+        }
+
+        safeCoverState(() => closeTripCoverEditor());
+        toast.success("封面已更新");
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "封面上傳失敗";
+        console.info("[COVER_UPLOAD_ERROR]", msg);
+        toast.error(`封面上傳失敗，請稍後再試（${msg}）`);
+      } finally {
+        isUploadingCoverRef.current = false;
+        safeCoverState(() => setCoverBusy(false));
+      }
+    },
+    [
+      stored,
+      ignoreRealtimeUntilRef,
+      onStoredChange,
+      buildPayload,
+      closeTripCoverEditor,
+      safeCoverState,
+    ],
+  );
 
   const tripCoverDisplayUrl = useMemo(() => {
     const raw =
       customCoverImageUrl?.trim() ||
       tripView.customCoverImageUrl?.trim() ||
       (isCoverCustomized ? tripView.displayCoverImage : null);
-    return raw ? withCacheBust(raw, coverDisplayRevision) : null;
+    if (!raw) return null;
+    if (raw.startsWith("blob:")) return raw;
+    return withCacheBust(raw, coverDisplayRevision) ?? raw;
   }, [
     customCoverImageUrl,
     tripView.customCoverImageUrl,
@@ -1340,11 +1639,12 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       <div ref={tripCoverRef} className="trip-detail-cover">
         <div className="relative aspect-[3/2] w-full overflow-hidden">
           <TripCoverImage
-            key={tripCoverDisplayUrl ?? "trip-cover-default"}
-            displayCoverImage={
-              tripCoverDisplayUrl ??
-              tripView.displayCoverImage
+            key={
+              tripCoverDisplayUrl?.startsWith("blob:")
+                ? tripCoverDisplayUrl
+                : `${stripMediaUrlQuery(tripCoverDisplayUrl ?? "trip-cover-default")}-${coverDisplayRevision}`
             }
+            displayCoverImage={tripCoverDisplayUrl ?? undefined}
             coverImageUrl={tripView.coverImageUrl}
             customCoverImageUrl={customCoverImageUrl}
             aiGeneratedCoverImageUrl={aiCoverImageUrl}
@@ -1368,8 +1668,11 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           </div>
           <button
             type="button"
-            onClick={() => setCoverSheetOpen(true)}
-            disabled={coverBusy || !!coverCropFile}
+            onClick={() => {
+              if (coverBusy || isUploadingCoverRef.current) return;
+              setCoverSheetOpen(true);
+            }}
+            disabled={coverBusy || !!coverCropFile || isUploadingCoverRef.current}
             className="pointer-events-auto absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full bg-background/90 px-3 py-1.5 text-xs backdrop-blur transition active:scale-[0.98] disabled:opacity-60"
           >
             {coverBusy ? (
@@ -1546,7 +1849,11 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                   const transport = resolveLegTransportLabel(settings, legKey, activeDay.dateKey);
                   const transitKey =
                     prev != null
-                      ? buildLegKey(prev.placeName || prev.title, item.placeName || item.title)
+                      ? buildDayLegKey(
+                          activeDay.dateKey,
+                          prev.placeName || prev.title,
+                          item.placeName || item.title,
+                        )
                       : null;
                   const transit = transitKey ? settings.transitLegs?.[transitKey] : undefined;
                   const showJapanTransitMaps =
@@ -1565,8 +1872,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                           travelTimeLabel={formatLegTravelTimeLabel(transit, transport, {
                             loading:
                               transitLoading &&
-                              !transit?.transportStatus &&
-                              !showJapanTransitMaps,
+                              !showJapanTransitMaps &&
+                              (!transit ||
+                                transit.transportMode !== travelLabelToRoutesMode(transport)),
                           })}
                           walkFallbackHint={formatLegWalkFallbackHint(transit, transport)}
                           onOpenTransitMaps={
@@ -1606,30 +1914,46 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                         }}
                         onSetDurationMinutes={(m) => setLegMinutes(legKeyForItem(item), m)}
                         onMoveUp={() =>
-                          persistItems(
-                            applyDayArrivalRecalc(
-                              moveStopInDay(items, activeDay.dateKey, i, -1),
+                          commitDayScheduleChange(
+                            moveStopInDay(
+                              itemsRef.current,
                               activeDay.dateKey,
-                              0,
+                              i,
+                              -1,
+                              safeDayIndex,
                             ),
+                            activeDay.dateKey,
+                            { dayIndex: safeDayIndex },
                           )
                         }
                         onMoveDown={() =>
-                          persistItems(
-                            applyDayArrivalRecalc(
-                              moveStopInDay(items, activeDay.dateKey, i, 1),
+                          commitDayScheduleChange(
+                            moveStopInDay(
+                              itemsRef.current,
                               activeDay.dateKey,
-                              0,
+                              i,
+                              1,
+                              safeDayIndex,
                             ),
+                            activeDay.dateKey,
+                            { dayIndex: safeDayIndex },
                           )
                         }
+                        onCrossDayMove={() =>
+                          setCrossDayMove({
+                            item,
+                            indexInDay: i,
+                            sourceDateKey: activeDay.dateKey,
+                            sourceDayIndex: safeDayIndex,
+                            sourceDayNumber: activeDay.dayNumber,
+                          })
+                        }
+                        crossDayMoveDisabled={scheduledDayCount <= 1}
                         onDelete={() =>
-                          persistItems(
-                            applyDayArrivalRecalc(
-                              removeStopAt(items, activeDay.dateKey, i),
-                              activeDay.dateKey,
-                              0,
-                            ),
+                          commitDayScheduleChange(
+                            removeStopAt(itemsRef.current, activeDay.dateKey, i),
+                            activeDay.dateKey,
+                            { dayIndex: safeDayIndex },
                           )
                         }
                       />
@@ -1647,7 +1971,17 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
             {activeDay.items.length > 1 ? (
               <button
                 type="button"
-                onClick={() => persistItems(sortStopsInDayByTime(items, activeDay.dateKey))}
+                onClick={() =>
+                  commitDayScheduleChange(
+                    sortStopsInDayByTime(
+                      itemsRef.current,
+                      activeDay.dateKey,
+                      safeDayIndex,
+                    ),
+                    activeDay.dateKey,
+                    { dayIndex: safeDayIndex },
+                  )
+                }
                 className="mt-3 text-xs text-muted-foreground underline-offset-2 hover:underline"
               >
                 依時間重新排序
@@ -1741,6 +2075,18 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         }}
       />
 
+      <CrossDayMoveSheet
+        open={crossDayMove != null}
+        onOpenChange={(open) => {
+          if (!open) setCrossDayMove(null);
+        }}
+        placeName={crossDayMove?.item.placeName || crossDayMove?.item.title || ""}
+        sourceDayNumber={crossDayMove?.sourceDayNumber ?? 1}
+        sourceDateKey={crossDayMove?.sourceDateKey ?? ""}
+        dayOptions={crossDayMoveDayOptions}
+        onConfirm={handleConfirmCrossDayMove}
+      />
+
       <TripRemoveDayConfirmDialog
         open={removeDayConfirm != null}
         dayNumber={removeDayConfirm?.dayNumber ?? 0}
@@ -1771,7 +2117,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         variant="tripCover"
         gestureLogPrefix="[TRIP_COVER_EDITOR]"
         onOpenChange={(open) => {
-          if (!open && !coverBusy) closeTripCoverEditor();
+          if (!open && !coverBusy && !isUploadingCoverRef.current) closeTripCoverEditor();
         }}
         onConfirm={(blob, transform) => void handleCoverCropApply(blob, transform)}
         applying={coverBusy}

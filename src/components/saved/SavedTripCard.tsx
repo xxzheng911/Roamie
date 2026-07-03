@@ -3,7 +3,7 @@ import { Calendar } from "lucide-react";
 import { TripCoverImage } from "@/components/media/TripCoverImage";
 import { logTripNav, tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
 import type { CoreTrip } from "@/lib/trip/core-trip";
-import { resolveCoreTripCoverImage, resolveCoreTripTitle } from "@/lib/trip/core-trip";
+import { resolveCoreTripCoverDisplayUrl, resolveCoreTripTitle } from "@/lib/trip/core-trip";
 
 type Props = {
   trip: CoreTrip;
@@ -31,7 +31,8 @@ export function SavedTripCard({ trip, shareSlot, deleteSlot }: Props) {
         <div className="flex gap-3">
           <div className="h-[5.5rem] w-[5.5rem] shrink-0 overflow-hidden rounded-2xl">
             <TripCoverImage
-              displayCoverImage={resolveCoreTripCoverImage(trip)}
+              key={`${trip.id}-cover-${trip.updatedAt}`}
+              displayCoverImage={resolveCoreTripCoverDisplayUrl(trip)}
               coverImageUrl={null}
               customCoverImageUrl={trip.customCoverImageUrl}
               aiGeneratedCoverImageUrl={trip.aiGeneratedCoverImageUrl}

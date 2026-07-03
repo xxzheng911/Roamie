@@ -2,6 +2,7 @@ import type { StoredItinerary } from "@/lib/itinerary-storage";
 import { getItinerary, listItineraries } from "@/lib/itinerary-storage";
 import { listOwnedTripIds } from "@/lib/trip/trip-collab";
 import { isRoamiePayloadV2, type RoamiePayloadV2 } from "@/lib/ai/types";
+import { withCacheBust } from "@/lib/media-display-url";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { buildLegKey } from "@/lib/transit/types";
 
@@ -51,6 +52,15 @@ export function resolveCoreTripCoverImage(trip: CoreTrip): string {
     trip.aiGeneratedCoverImageUrl?.trim() ||
     getRoamieDefaultImage("roamie")
   );
+}
+
+/** 自訂封面帶 cache-bust，避免 Storage 同路徑 upsert 後瀏覽器仍顯示舊圖 */
+export function resolveCoreTripCoverDisplayUrl(trip: CoreTrip): string {
+  const raw = resolveCoreTripCoverImage(trip);
+  if (!trip.customCoverImageUrl?.trim()) return raw;
+  const parsed = Date.parse(trip.updatedAt);
+  const revision = Number.isFinite(parsed) && parsed > 0 ? parsed : Date.now();
+  return withCacheBust(raw, revision) ?? raw;
 }
 
 function transportLabel(mode?: string): string {

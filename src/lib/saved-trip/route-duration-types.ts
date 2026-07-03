@@ -4,6 +4,7 @@ import type { TransitUnavailableProvider } from "@/lib/transit/types";
 
 export type RouteLegScope = {
   tripId: string;
+  dateKey: string;
   dayIndex: number;
   legIndex: number;
   legKey: string;
