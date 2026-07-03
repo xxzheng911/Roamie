@@ -1,7 +1,8 @@
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { APP_SCHEME } from "@/constants/app";
-import { isMissingTableError } from "@/lib/supabase-errors";
+import { isMissingTableError, formatTripCollabError, TRIP_INVITE_CREATE_FAILED_MESSAGE } from "@/lib/supabase-errors";
+import { copyTextToClipboard, type CopyTextResult, COPY_MANUAL_HINT } from "@/lib/copy-to-clipboard";
 
 export type TripMemberRow = {
   id: string;
@@ -150,7 +151,9 @@ export async function createTripInvite(tripId: string): Promise<TripInviteRow> {
     .select("id, trip_id, inviter_id, token, status, expires_at, created_at")
     .single();
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    throw new Error(formatTripCollabError(error, TRIP_INVITE_CREATE_FAILED_MESSAGE));
+  }
   return data as TripInviteRow;
 }
 
@@ -163,7 +166,7 @@ export async function acceptTripInvite(token: string): Promise<string> {
     if (error.message.includes("invite_not_found")) throw new Error("邀請連結無效或已失效");
     if (error.message.includes("invite_expired")) throw new Error("邀請連結已過期");
     if (error.message.includes("not_authenticated")) throw new Error("請先登入");
-    throw new Error(error.message);
+    throw new Error(formatTripCollabError(error, TRIP_INVITE_CREATE_FAILED_MESSAGE));
   }
 
   return String(data);
@@ -203,13 +206,9 @@ export async function listOwnedTripIds(): Promise<Map<string, boolean>> {
   return map;
 }
 
-export async function copyInviteToClipboard(token: string): Promise<void> {
+export async function copyInviteToClipboard(token: string): Promise<CopyTextResult> {
   const url = buildTripInviteUrl(token);
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(url);
-    return;
-  }
-  throw new Error("無法複製連結");
+  return copyTextToClipboard(url);
 }
 
 export async function shareTripInvite(token: string, tripTitle: string): Promise<void> {
@@ -225,5 +224,8 @@ export async function shareTripInvite(token: string, tripTitle: string): Promise
     }
   }
 
-  await copyInviteToClipboard(token);
+  const result = await copyInviteToClipboard(token);
+  if (result === "manual") {
+    throw new Error(COPY_MANUAL_HINT);
+  }
 }

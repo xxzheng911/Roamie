@@ -314,6 +314,20 @@ export type Database = {
         Args: { invite_token: string }
         Returns: string
       }
+      get_trip_invite_by_token: {
+        Args: { invite_token: string }
+        Returns: {
+          created_at: string
+          expires_at: string | null
+          id: string
+          invitee_email: string | null
+          invitee_user_id: string | null
+          inviter_id: string
+          status: string
+          token: string
+          trip_id: string
+        }
+      }
     }
     Enums: {
       [_ in never]: never

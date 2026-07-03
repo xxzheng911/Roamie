@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { Copy, Loader2, Share2, UserMinus, Users } from "lucide-react";
+import { Copy, Loader2, Users } from "lucide-react";
 import { toast } from "sonner";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   copyInviteToClipboard,
   createTripInvite,
   listTripMembers,
-  removeTripMember,
-  shareTripInvite,
   type TripMemberRow,
 } from "@/lib/trip/trip-collab";
-import { getAuthenticatedUserId } from "@/lib/auth-session";
+import { COPY_MANUAL_HINT } from "@/lib/copy-to-clipboard";
+import { TRIP_INVITE_CREATE_FAILED_MESSAGE } from "@/lib/supabase-errors";
 
 type Props = {
   open: boolean;
@@ -20,28 +19,55 @@ type Props = {
   isOwner: boolean;
 };
 
-export function TripSharePanel({ open, onOpenChange, tripId, tripTitle, isOwner }: Props) {
-  const [loading, setLoading] = useState(false);
-  const [members, setMembers] = useState<TripMemberRow[]>([]);
+function memberDisplayName(member: TripMemberRow): string {
+  return member.profile?.display_name?.trim() || "旅伴";
+}
+
+function MemberAvatar({ member }: { member: TripMemberRow }) {
+  const name = memberDisplayName(member);
+  const avatarUrl = member.profile?.avatar_url?.trim();
+
+  if (avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt=""
+        className="h-9 w-9 shrink-0 rounded-full object-cover bg-secondary"
+      />
+    );
+  }
+
+  return (
+    <div
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-medium text-muted-foreground"
+      aria-hidden
+    >
+      {name.slice(0, 1).toUpperCase()}
+    </div>
+  );
+}
+
+export function TripSharePanel({ open, onOpenChange, tripId, isOwner }: Props) {
   const [inviteToken, setInviteToken] = useState<string | null>(null);
-  const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [copying, setCopying] = useState(false);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [collaborators, setCollaborators] = useState<TripMemberRow[]>([]);
 
   const refreshMembers = useCallback(async () => {
-    setLoading(true);
+    setLoadingMembers(true);
     try {
       const rows = await listTripMembers(tripId);
-      setMembers(rows);
+      setCollaborators(rows.filter((m) => !m.is_owner));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "無法載入成員");
+      setCollaborators([]);
     } finally {
-      setLoading(false);
+      setLoadingMembers(false);
     }
   }, [tripId]);
 
   useEffect(() => {
     if (!open) return;
-    void getAuthenticatedUserId().then(setCurrentUserId);
     void refreshMembers();
   }, [open, refreshMembers]);
 
@@ -53,41 +79,19 @@ export function TripSharePanel({ open, onOpenChange, tripId, tripTitle, isOwner 
   }, [inviteToken, tripId]);
 
   const handleCopyLink = async () => {
-    setBusyAction("copy");
+    setCopying(true);
     try {
       const token = await ensureInviteToken();
-      await copyInviteToClipboard(token);
-      toast.success("已複製邀請連結");
+      const result = await copyInviteToClipboard(token);
+      if (result === "copied") {
+        toast.success("邀請連結已複製");
+      } else {
+        toast.error(COPY_MANUAL_HINT);
+      }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "複製失敗");
+      toast.error(e instanceof Error ? e.message : TRIP_INVITE_CREATE_FAILED_MESSAGE);
     } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const handleSystemShare = async () => {
-    setBusyAction("share");
-    try {
-      const token = await ensureInviteToken();
-      await shareTripInvite(token, tripTitle);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "分享失敗");
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const handleRemoveMember = async (member: TripMemberRow) => {
-    if (!isOwner || member.is_owner) return;
-    setBusyAction(`remove:${member.user_id}`);
-    try {
-      await removeTripMember(tripId, member.user_id);
-      toast.success("已移除成員");
-      await refreshMembers();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "移除失敗");
-    } finally {
-      setBusyAction(null);
+      setCopying(false);
     }
   };
 
@@ -95,106 +99,51 @@ export function TripSharePanel({ open, onOpenChange, tripId, tripTitle, isOwner 
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="bottom"
-        className="max-h-[80dvh] rounded-t-[1.75rem] border-0 bg-background px-0 pb-8"
+        className="rounded-t-[1.75rem] border-0 bg-background px-0 pb-8"
       >
         <SheetTitle className="flex items-center gap-2 px-5 text-base font-medium">
-          <Users className="h-4 w-4" />
-          共同編輯行程
+          <Users className="h-4 w-4 shrink-0" />
+          邀請共編
         </SheetTitle>
 
-        <div className="mt-4 space-y-4 px-5">
-          <div>
-            <p className="text-xs font-medium text-muted-foreground">共同編輯成員</p>
-            <div className="mt-2 max-h-40 overflow-y-auto rounded-2xl border border-border bg-card">
-              {loading ? (
-                <div className="flex justify-center py-6">
-                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                </div>
-              ) : members.length === 0 ? (
-                <p className="px-4 py-6 text-center text-sm text-muted-foreground">尚無成員</p>
-              ) : (
-                <ul className="divide-y divide-border">
-                  {members.map((member) => {
-                    const name =
-                      member.profile?.display_name?.trim() ||
-                      (member.is_owner ? "建立者" : "旅伴");
-                    const canRemove =
-                      isOwner && !member.is_owner && member.user_id !== currentUserId;
-                    return (
-                      <li
-                        key={member.id}
-                        className="flex items-center justify-between gap-3 px-4 py-3"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium">{name}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {member.is_owner ? "建立者" : "共同編輯"}
-                          </p>
-                        </div>
-                        {canRemove ? (
-                          <button
-                            type="button"
-                            onClick={() => void handleRemoveMember(member)}
-                            disabled={busyAction === `remove:${member.user_id}`}
-                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary"
-                            aria-label={`移除 ${name}`}
-                          >
-                            {busyAction === `remove:${member.user_id}` ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <UserMinus className="h-4 w-4" />
-                            )}
-                          </button>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
+        <div className="mx-5 mt-4 overflow-hidden rounded-2xl border border-border bg-card">
+          {loadingMembers ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            {isOwner ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void handleCopyLink()}
-                  disabled={busyAction === "copy"}
-                  className="flex w-full items-center justify-center gap-2 rounded-full border border-border bg-card py-3 text-sm font-medium transition active:scale-[0.99] disabled:opacity-60"
-                >
-                  {busyAction === "copy" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Copy className="h-4 w-4" />
-                  )}
-                  複製邀請連結
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleSystemShare()}
-                  disabled={busyAction === "share"}
-                  className="flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3 text-sm font-medium text-primary-foreground transition active:scale-[0.99] disabled:opacity-60"
-                >
-                  {busyAction === "share" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Share2 className="h-4 w-4" />
-                  )}
-                  系統分享
-                </button>
-              </>
-            ) : (
-              <p className="rounded-2xl bg-secondary/60 px-4 py-3 text-center text-xs text-muted-foreground">
-                僅建立者可產生邀請連結與管理成員。
-              </p>
-            )}
-          </div>
-
-          <p className="text-center text-xs text-muted-foreground">
-            加入後即可共同編輯行程內容，無需權限分級。
-          </p>
+          ) : collaborators.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">尚未有人加入</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {collaborators.map((member) => (
+                <li key={member.id} className="flex items-center gap-3 px-4 py-3">
+                  <MemberAvatar member={member} />
+                  <span className="min-w-0 truncate text-sm font-medium">
+                    {memberDisplayName(member)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
+
+        {isOwner ? (
+          <div className="mt-4 px-5">
+            <button
+              type="button"
+              onClick={() => void handleCopyLink()}
+              disabled={copying}
+              className="flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground transition active:scale-[0.99] disabled:opacity-60"
+            >
+              {copying ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
+              複製邀請連結
+            </button>
+          </div>
+        ) : null}
       </SheetContent>
     </Sheet>
   );
