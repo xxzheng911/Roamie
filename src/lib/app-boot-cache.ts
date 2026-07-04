@@ -14,6 +14,8 @@ import {
   resetTravelPrefSyncMemory,
 } from "@/lib/travel-pref-sync-state";
 import { readCachedPreferencesSync } from "@/lib/preferences-storage";
+import { readCachedProfile } from "@/lib/profile-persisted-cache";
+import { preloadAvatarImage } from "@/lib/profile-avatar-preload";
 
 let bootHydrated = false;
 let bootHydratedUserId: string | null | undefined;
@@ -77,6 +79,15 @@ export async function hydrateAppBootCachesAsync(
   const snapshot = hydrateTravelPrefResultOnBoot(resolvedUserId, { allowRepeatLog: true });
 
   if (resolvedUserId) {
+    const cachedProfile = readCachedProfile(resolvedUserId);
+    if (cachedProfile?.avatarUrl) {
+      preloadAvatarImage(
+        resolvedUserId,
+        cachedProfile.avatarUrl,
+        cachedProfile.avatarUpdatedAt,
+      );
+    }
+
     if (snapshot?.quizCompleted) {
       const syncState = readTravelPrefSyncState(resolvedUserId);
       if (!syncState.syncedAt) {

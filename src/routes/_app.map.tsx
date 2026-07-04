@@ -351,8 +351,8 @@ function MapView() {
   const navigate = useNavigate();
   const { avatarDisplaySrc, avatarPending } = useAvatar();
   const safeAvatarSrc = useMemo(
-    () => resolveUserMarkerAvatarSrc(avatarPending ? null : avatarDisplaySrc),
-    [avatarDisplaySrc, avatarPending],
+    () => resolveUserMarkerAvatarSrc(avatarDisplaySrc ?? undefined),
+    [avatarDisplaySrc],
   );
   const searchPlacesServerFn = useServerFn(searchPlaces);
   const searchPlacesFn = useMemo(

@@ -1,25 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { HeartHandshake, Sparkles } from "lucide-react";
 import { toast } from "sonner";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import { useAccess } from "@/hooks/use-access";
-import { useAuth } from "@/hooks/use-auth";
+import { useI18n } from "@/hooks/use-i18n";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
-import { canBypassSubscriptionBilling } from "@/lib/access/subscription-dev-mode";
 import { buildHomePlusInsight } from "@/lib/home-personalization-insight";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
-import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { SavedPlace } from "@/lib/places-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
@@ -54,26 +42,21 @@ export function HomePersonalizationCard({
   className,
 }: Props) {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { locale } = useI18n();
   const {
     hasPlusAccess,
-    devPlusMode,
-    devSubscriptionMode,
-    testModeOverride,
-    canShowDeveloperTools,
-    subscriptionPlusActive,
+    subscriptionSource,
+    subscriptionHydrated,
     disablePlusTestMode,
   } = useAccess();
   const { upgradeToPlus, comingSoonOpen, setComingSoonOpen } = usePlusUpgrade();
 
-  const [manageSubOpen, setManageSubOpen] = useState(false);
-
-  const isDevMode = canBypassSubscriptionBilling(user?.email ?? null);
-
-  const isDevSubscriptionMode =
-    isDevMode ||
-    canShowDeveloperTools ||
-    testModeOverride !== "none";
+  useEffect(() => {
+    const status = hasPlusAccess ? "plus" : "free";
+    console.info(
+      `[SUBSCRIPTION_STATE_RENDER] component=HomePersonalizationCard status=${status} source=${subscriptionSource ?? "unknown"} hydrated=${subscriptionHydrated ?? false}`,
+    );
+  }, [hasPlusAccess, subscriptionSource, subscriptionHydrated]);
 
   const plusInsight = useMemo(
     () =>
@@ -85,8 +68,9 @@ export function HomePersonalizationCard({
         nearbyPicks,
         latestTripTitle,
         chatSession,
+        locale,
       }),
-    [savedPlaces, prefs, selectedMood, weather, nearbyPicks, latestTripTitle, chatSession],
+    [savedPlaces, prefs, selectedMood, weather, nearbyPicks, latestTripTitle, chatSession, locale],
   );
 
   const handleUpgradePlus = () => {
@@ -104,35 +88,20 @@ export function HomePersonalizationCard({
     });
   };
 
-  const handleReturnFreeDev = () => {
-    disablePlusTestMode();
-    toast.message("已切換回 Free 模式（收藏、偏好與行程仍保留）");
-  };
-
   const handleReturnFree = () => {
-    console.info("[PLUS_HOME_CARD] return free press");
-    console.info("[PLUS_HOME_CARD] isDevMode=", isDevMode);
-    if (isDevMode || !subscriptionPlusActive) {
-      console.info("[PLUS_HOME_CARD] route=dev_switch_free");
-      setManageSubOpen(false);
-      handleReturnFreeDev();
-      return;
-    }
-    console.info("[PLUS_HOME_CARD] route=manage_subscription");
-    setManageSubOpen(true);
+    disablePlusTestMode();
+    toast.message("已切換回 Free 模式");
   };
 
-  const handleOpenSubscriptionManagement = async () => {
-    if (isDevMode) {
-      console.info("[SUBSCRIPTION_MODAL] skipped_in_dev");
-      return;
-    }
-    const ok = await openSubscriptionManagement();
-    if (!ok) {
-      toast.message("請至 App Store 或 Google Play 的「訂閱」管理 Roamie Plus");
-    }
-    setManageSubOpen(false);
-  };
+  if (!subscriptionHydrated) {
+    return (
+      <section className={className}>
+        <div className="rounded-3xl border border-border bg-card/70 p-5 shadow-soft">
+          <div className="h-24 animate-pulse rounded-2xl bg-secondary/60" aria-hidden />
+        </div>
+      </section>
+    );
+  }
 
   if (hasPlusAccess) {
     return (
@@ -150,14 +119,6 @@ export function HomePersonalizationCard({
                 Roamie 正在記住你的旅行節奏
               </h3>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{plusInsight}</p>
-              {devPlusMode ? (
-                <p className="mt-2 text-xs font-medium text-clay">目前為 Plus 開發／測試模式</p>
-              ) : null}
-              {isDevSubscriptionMode ? (
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  開發訂閱狀態：{devSubscriptionMode === "plus" ? "Plus" : "Free"}
-                </p>
-              ) : null}
               <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                 <button
                   type="button"
@@ -177,27 +138,6 @@ export function HomePersonalizationCard({
             </div>
           </div>
         </div>
-
-        <AlertDialog open={manageSubOpen} onOpenChange={setManageSubOpen}>
-          <AlertDialogContent className="max-w-[min(100%,22rem)] rounded-3xl">
-            <AlertDialogHeader>
-              <AlertDialogTitle className="font-display text-lg">管理訂閱</AlertDialogTitle>
-              <AlertDialogDescription className="text-left text-sm leading-relaxed">
-                若取消訂閱，Plus 功能將於目前方案到期後恢復為 Free 模式。請至 App Store
-                或 Google Play 管理 Roamie Plus 訂閱。
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
-              <AlertDialogAction
-                className="w-full rounded-full"
-                onClick={() => void handleOpenSubscriptionManagement()}
-              >
-                前往管理訂閱
-              </AlertDialogAction>
-              <AlertDialogCancel className="mt-0 w-full rounded-full">關閉</AlertDialogCancel>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
       </section>
     );
   }

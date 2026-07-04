@@ -1,4 +1,5 @@
 import type { UserProfile } from "@/lib/profile-storage";
+import { preloadAvatarImage } from "@/lib/profile-avatar-preload";
 import { writePersistedProfileMedia } from "@/lib/profile-persisted-cache";
 import { logPerfProfileLoadSkip } from "@/lib/app-perf";
 
@@ -24,7 +25,11 @@ export function writeProfileSessionCache(profile: UserProfile, userId?: string |
     writePersistedProfileMedia(userId, {
       avatarUrl: profile.avatarUrl,
       coverImageUrl: profile.coverImageUrl,
+      displayName: profile.displayName,
+      avatarUpdatedAt: profile.profileUpdatedAt ?? null,
+      profileUpdatedAt: profile.profileUpdatedAt ?? null,
     });
+    preloadAvatarImage(userId, profile.avatarUrl, profile.profileUpdatedAt);
   }
 }
 
@@ -68,7 +73,21 @@ export function patchProfileSessionCache(
       avatarUrl: patch.avatarUrl !== undefined ? patch.avatarUrl : cachedProfile.avatarUrl,
       coverImageUrl:
         patch.coverImageUrl !== undefined ? patch.coverImageUrl : cachedProfile.coverImageUrl,
+      displayName: patch.displayName !== undefined ? patch.displayName : cachedProfile.displayName,
+      avatarUpdatedAt:
+        patch.profileUpdatedAt !== undefined
+          ? patch.profileUpdatedAt
+          : cachedProfile.profileUpdatedAt,
+      profileUpdatedAt:
+        patch.profileUpdatedAt !== undefined
+          ? patch.profileUpdatedAt
+          : cachedProfile.profileUpdatedAt,
     });
+    preloadAvatarImage(
+      uid,
+      patch.avatarUrl !== undefined ? patch.avatarUrl : cachedProfile.avatarUrl,
+      patch.profileUpdatedAt ?? cachedProfile.profileUpdatedAt,
+    );
   }
   return cachedProfile;
 }

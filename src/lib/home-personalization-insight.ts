@@ -4,6 +4,9 @@ import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
 import type { SavedPlace } from "@/lib/places-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
+import { t } from "@/lib/i18n/translate";
+import type { Locale } from "@/lib/i18n/types";
+import { formatTravelPaceLabel, formatTravelVibeLabel } from "@/lib/travel-pref-display";
 
 export type HomePersonalizationInsightInput = {
   savedPlaces: SavedPlace[];
@@ -13,6 +16,7 @@ export type HomePersonalizationInsightInput = {
   nearbyPicks?: HomeNearbyPick[];
   latestTripTitle?: string | null;
   chatSession?: ChatPlanningSession | null;
+  locale?: Locale;
 };
 
 function topSavedCategories(saved: SavedPlace[], limit = 2): string[] {
@@ -49,6 +53,7 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
     nearbyPicks = [],
     latestTripTitle,
     chatSession,
+    locale = "zh-TW",
   } = input;
 
   const savedCats = topSavedCategories(savedPlaces);
@@ -81,7 +86,11 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
   }
 
   if (prefs?.vibe && prefs.pace) {
-    return `你的旅行節奏偏${prefs.pace}、喜歡${prefs.vibe}——今天可以往這個方向找剛剛好的去處。`;
+    const paceLabel = formatTravelPaceLabel(locale, prefs.pace);
+    const vibeLabel = formatTravelVibeLabel(locale, prefs.vibe);
+    if (paceLabel && vibeLabel) {
+      return t(locale, "home.plusInsightPaceVibe", { pace: paceLabel, vibe: vibeLabel });
+    }
   }
 
   if (prefs?.personalitySummary?.trim()) {

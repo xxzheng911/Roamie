@@ -82,6 +82,7 @@ export type UserProfile = {
   personalitySummary: string;
   personalityImpression: string;
   aiPreferences?: Record<string, unknown>;
+  profileUpdatedAt?: string | null;
 };
 
 type GuestSettings = {
@@ -196,7 +197,7 @@ function assertPersistableMediaUrl(url: string | null, label: string): string | 
 }
 
 const PROFILE_SELECT =
-  "display_name, avatar_url, cover_image_url, bio, language, notifications_enabled, auth_provider, ai_preferences";
+  "display_name, avatar_url, cover_image_url, bio, language, notifications_enabled, auth_provider, ai_preferences, updated_at";
 
 async function fetchProfileRow(userId: string) {
   const { data, error } = await supabase
@@ -326,6 +327,7 @@ export async function getUserProfile(
       : "",
     personalityImpression: showPersona ? personality.impression : "",
     aiPreferences: extras,
+    profileUpdatedAt: data?.updated_at ?? null,
   };
 
   const profile = gatePlusPersonaFields(raw, hasPlusAccess);

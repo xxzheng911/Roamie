@@ -16,11 +16,20 @@ export {
 } from "./developer";
 export {
   buildAccessSnapshot,
+  buildAccessSnapshotFromCanonical,
   resolveClientEffectiveTier,
   resolveEffectivePlanTierWithProfile,
   setMockSubscriptionTier,
   setTestModeOverride,
 } from "./resolve";
+export {
+  applyOptimisticTier,
+  applySupabaseProfile,
+  createInitialCanonicalState,
+  resolveHasPlusAccess,
+  type CanonicalSubscriptionState,
+  type SubscriptionStateSource,
+} from "./subscription-canonical";
 export { applyTierToAiContext } from "./context";
 export {
   resetUserMemory,

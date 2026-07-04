@@ -76,17 +76,8 @@ function bootstrapAppShellOnce(locale: string): void {
   if (appShellBootstrapped) return;
   appShellBootstrapped = true;
 
-  void import("@/lib/location-app-gate").then(({ registerLocationAppGate, waitForAppActiveForLocation }) => {
-    registerLocationAppGate();
-    void waitForAppActiveForLocation().then(() => {
-      void import("@/lib/effective-location").then(({ ensureEffectiveLocationBootstrap }) => {
-        ensureEffectiveLocationBootstrap();
-      });
-    });
-  });
-
-  void import("@/lib/home-weather-bootstrap").then(({ ensureHomeWeatherBootstrap }) => {
-    ensureHomeWeatherBootstrap(locale, "app-shell-once");
+  void import("@/lib/home-startup").then(({ prefetchHomeData }) => {
+    prefetchHomeData(locale as import("@/lib/i18n/types").Locale);
   });
 
   void import("@/lib/capacitor-keyboard-bridge").then(({ bootstrapCapacitorKeyboardBridge }) => {

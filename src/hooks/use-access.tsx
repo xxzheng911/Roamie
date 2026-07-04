@@ -4,112 +4,114 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  ACCESS_CHANGED_EVENT,
   applyMockSubscription,
   applyTestOverride,
-  buildAccessSnapshot,
+  buildAccessSnapshotFromCanonical,
   clearTestModeOverride,
+  isDeveloperBuildEnabled,
+  readTestModeOverride,
+  setMockSubscriptionTier,
   type AccessSnapshot,
   type SubscriptionState,
   type TestModeOverride,
 } from "@/lib/access";
-import { getUserPlanProfile } from "@/lib/plan-tier/storage";
 import {
-  applyLocalMockPlanTier,
-  reconcileStaleTierLocks,
-  syncMockPlanTierToProfile,
-} from "@/lib/plan-tier/sync-mock-tier";
+  applyDevOverrideFromStorage,
+  applyOptimisticTier,
+  applySupabaseProfile,
+  createInitialCanonicalState,
+  isProfileSubscriptionPlus,
+  serializeCanonical,
+  type CanonicalSubscriptionState,
+} from "@/lib/access/subscription-canonical";
+import { getUserPlanProfile } from "@/lib/plan-tier/storage";
+import { reconcileStaleTierLocks, syncMockPlanTierToProfile } from "@/lib/plan-tier/sync-mock-tier";
 
 type AccessCtx = AccessSnapshot & {
   refresh: () => void;
   setSubscriptionState: (tier: SubscriptionState) => void;
   setTestOverride: (mode: TestModeOverride) => void;
   clearTestOverride: () => void;
-  /** 開啟 Plus 測試模式（模擬訂閱） */
   enablePlusTestMode: () => void;
-  /** 關閉 Plus 測試模式（模擬取消訂閱 → Free） */
   disablePlusTestMode: () => void;
 };
 
 const Ctx = createContext<AccessCtx | null>(null);
 
-function isProfileSubscriptionPlus(
-  plan: Awaited<ReturnType<typeof getUserPlanProfile>>,
-): boolean {
-  return (
-    plan.planTier === "plus" &&
-    (plan.subscriptionStatus === "active" || plan.subscriptionStatus === "trialing")
-  );
-}
-
 export function AccessProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const email = user?.email ?? null;
   const userId = user?.id ?? null;
-  const [profilePlusActive, setProfilePlusActive] = useState(false);
-  const [snapshot, setSnapshot] = useState<AccessSnapshot>(() =>
-    buildAccessSnapshot(email, { profilePlusActive: false }),
+
+  const [canonical, setCanonical] = useState<CanonicalSubscriptionState>(() =>
+    createInitialCanonicalState(),
+  );
+  const syncGenerationRef = useRef(0);
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+
+  const snapshot = useMemo(
+    () => buildAccessSnapshotFromCanonical(email, canonical),
+    [email, canonical],
   );
 
-  const refresh = useCallback(() => {
-    const next = buildAccessSnapshot(email, { profilePlusActive });
-    console.info("[DEV_SUBSCRIPTION] mode=", next.devSubscriptionMode);
-    setSnapshot(next);
-  }, [email, profilePlusActive]);
-
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!userId) {
-        setProfilePlusActive(false);
-        return;
+    const status = snapshot.hasPlusAccess ? "plus" : "free";
+    console.info(
+      `[SUBSCRIPTION_STATE_RENDER] status=${status} source=${snapshot.subscriptionSource ?? canonical.source} hydrated=${snapshot.subscriptionHydrated ?? canonical.hydrated} version=${canonical.version}`,
+    );
+  }, [snapshot.hasPlusAccess, snapshot.subscriptionSource, snapshot.subscriptionHydrated, canonical]);
+
+  const hydrateFromSupabase = useCallback(async (uid: string) => {
+    const generation = ++syncGenerationRef.current;
+    try {
+      const plan = await getUserPlanProfile(uid);
+      if (generation !== syncGenerationRef.current || userIdRef.current !== uid) return;
+
+      const plusActive = isProfileSubscriptionPlus(plan);
+      if (plusActive && readTestModeOverride() === "force-free") {
+        clearTestModeOverride();
       }
-      try {
-        const plan = await getUserPlanProfile(userId);
-        if (!cancelled) setProfilePlusActive(isProfileSubscriptionPlus(plan));
-      } catch {
-        if (!cancelled) setProfilePlusActive(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [userId]);
+
+      setCanonical((prev) => {
+        const syncVersion = generation;
+        return applySupabaseProfile(prev, plusActive, syncVersion);
+      });
+    } catch {
+      if (generation !== syncGenerationRef.current) return;
+      setCanonical((prev) =>
+        applySupabaseProfile(prev, false, generation),
+      );
+    }
+  }, []);
 
   useEffect(() => {
     reconcileStaleTierLocks();
   }, []);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (!userId) {
+      syncGenerationRef.current += 1;
+      setCanonical(createInitialCanonicalState());
+      return;
+    }
+    void hydrateFromSupabase(userId);
+  }, [userId, hydrateFromSupabase]);
 
-  useEffect(() => {
-    const onChange = () => {
-      if (!userId) return;
-      void getUserPlanProfile(userId)
-        .then((plan) => setProfilePlusActive(isProfileSubscriptionPlus(plan)))
-        .catch(() => setProfilePlusActive(false));
-    };
-    window.addEventListener(ACCESS_CHANGED_EVENT, onChange);
-    return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onChange);
-  }, [userId]);
-
-  useEffect(() => {
-    const onChange = () => refresh();
-    window.addEventListener(ACCESS_CHANGED_EVENT, onChange);
-    return () => window.removeEventListener(ACCESS_CHANGED_EVENT, onChange);
-  }, [refresh]);
+  const refresh = useCallback(() => {
+    setCanonical((prev) => applyDevOverrideFromStorage(prev));
+  }, []);
 
   const setSubscriptionState = useCallback((tier: SubscriptionState) => {
     applyMockSubscription(tier);
-    refresh();
-  }, [refresh]);
+    setCanonical((prev) => applyOptimisticTier(prev, tier));
+  }, []);
 
   const setTestOverride = useCallback((mode: TestModeOverride) => {
     applyTestOverride(mode);
@@ -122,60 +124,60 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const enablePlusTestMode = useCallback(() => {
-    console.info("[SUBSCRIPTION_MODE] switch start free -> plus");
-    try {
-      setProfilePlusActive(true);
-      applyLocalMockPlanTier("plus");
-      refresh();
-      console.info("[SUBSCRIPTION_MODE] local update success");
-      console.info("[DEV_SUBSCRIPTION] switched_to_plus");
-      void syncMockPlanTierToProfile("plus")
-        .then(() => {
-          console.info("[SUBSCRIPTION_MODE] supabase update success");
-          if (!userId) return;
-          return getUserPlanProfile(userId).then((plan) =>
-            setProfilePlusActive(isProfileSubscriptionPlus(plan)),
-          );
-        })
-        .then(() => {
-          refresh();
-          console.info("[SUBSCRIPTION_MODE] switch success plus");
-        })
-        .catch((e) => {
-          console.error("[SUBSCRIPTION_MODE] switch error", e);
-        });
-    } catch (e) {
-      console.error("[SUBSCRIPTION_MODE] switch error", e);
+    if (isDeveloperBuildEnabled()) {
+      applyTestOverride("force-plus");
+      setMockSubscriptionTier("plus");
     }
-  }, [refresh, userId]);
+
+    setCanonical((prev) => {
+      const next = applyOptimisticTier(prev, "plus");
+      console.info("[PLUS_UPGRADE_OPTIMISTIC_SET]", serializeCanonical(next));
+      return next;
+    });
+
+    const generation = ++syncGenerationRef.current;
+    console.info("[PLUS_UPGRADE_SUPABASE_START]", { generation });
+
+    void syncMockPlanTierToProfile("plus")
+      .then(async () => {
+        console.info("[PLUS_UPGRADE_SUPABASE_SUCCESS]", { generation });
+        const uid = userIdRef.current;
+        if (!uid || generation !== syncGenerationRef.current) return;
+        const plan = await getUserPlanProfile(uid);
+        if (generation !== syncGenerationRef.current) return;
+        setCanonical((prev) =>
+          applySupabaseProfile(prev, isProfileSubscriptionPlus(plan), generation),
+        );
+      })
+      .catch((e) => {
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`[PLUS_UPGRADE_SUPABASE_ERROR] error=${message}`);
+      });
+  }, []);
 
   const disablePlusTestMode = useCallback(() => {
-    console.info("[SUBSCRIPTION_MODE] switch start plus -> free");
-    try {
-      setProfilePlusActive(false);
-      applyLocalMockPlanTier("free");
-      refresh();
-      console.info("[SUBSCRIPTION_MODE] local update success");
-      console.info("[DEV_SUBSCRIPTION] switched_to_free");
-      void syncMockPlanTierToProfile("free")
-        .then(() => {
-          console.info("[SUBSCRIPTION_MODE] supabase update success");
-          if (!userId) return;
-          return getUserPlanProfile(userId).then((plan) =>
-            setProfilePlusActive(isProfileSubscriptionPlus(plan)),
-          );
-        })
-        .then(() => {
-          refresh();
-          console.info("[SUBSCRIPTION_MODE] switch success free");
-        })
-        .catch((e) => {
-          console.error("[SUBSCRIPTION_MODE] switch error", e);
-        });
-    } catch (e) {
-      console.error("[SUBSCRIPTION_MODE] switch error", e);
+    if (isDeveloperBuildEnabled()) {
+      clearTestModeOverride();
+      setMockSubscriptionTier("free");
     }
-  }, [refresh, userId]);
+
+    setCanonical((prev) => applyOptimisticTier(prev, "free"));
+
+    const generation = ++syncGenerationRef.current;
+    void syncMockPlanTierToProfile("free")
+      .then(async () => {
+        const uid = userIdRef.current;
+        if (!uid || generation !== syncGenerationRef.current) return;
+        const plan = await getUserPlanProfile(uid);
+        if (generation !== syncGenerationRef.current) return;
+        setCanonical((prev) =>
+          applySupabaseProfile(prev, isProfileSubscriptionPlus(plan), generation),
+        );
+      })
+      .catch((e) => {
+        console.error("[SUBSCRIPTION_MODE] disable plus sync error", e);
+      });
+  }, []);
 
   const value = useMemo(
     () => ({
@@ -207,7 +209,6 @@ export function useAccess() {
   return ctx;
 }
 
-/** Safe hook when provider may be absent (rare) */
 export function useAccessOptional(): AccessCtx | null {
   return useContext(Ctx);
 }

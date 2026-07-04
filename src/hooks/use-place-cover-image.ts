@@ -3,6 +3,7 @@ import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { logPerfImageLoad } from "@/lib/app-perf";
+import { cacheKey, getCachedImage, setCachedImage } from "@/services/image-cache";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
 import type { PlaceImageInput } from "@/services/placeImageService";
 
@@ -25,14 +26,20 @@ export function usePlaceCoverImage(options: Options): {
   const width = maxWidth ?? photoWidth ?? 600;
   const fallback = getRoamieDefaultImage(placeInput.categoryId ?? placeInput.category);
   const failedRef = useRef(false);
+  const persistedImageKey = placeInput.placeId?.trim()
+    ? cacheKey("home-place-cover", placeInput.placeId.trim())
+    : null;
 
   const primaryUrl = useMemo(() => {
     if (!enabled) return null;
     const raw =
       url?.trim() ||
       (photoName?.trim() ? (buildPlacePhotoUrl(photoName.trim(), width) ?? null) : null);
-    return resolvePlaceImageUrl(raw, { maxWidth: width });
-  }, [enabled, url, photoName, width]);
+    const resolved = resolvePlaceImageUrl(raw, { maxWidth: width });
+    if (resolved) return resolved;
+    if (persistedImageKey) return getCachedImage(persistedImageKey);
+    return null;
+  }, [enabled, url, photoName, width, persistedImageKey]);
 
   const [src, setSrc] = useState(() => primaryUrl ?? fallback);
   const [loading, setLoading] = useState(false);
@@ -45,6 +52,7 @@ export function usePlaceCoverImage(options: Options): {
       return;
     }
     if (primaryUrl) {
+      if (persistedImageKey) setCachedImage(persistedImageKey, primaryUrl);
       setSrc(primaryUrl);
       setLoading(false);
       if (!failedRef.current) {

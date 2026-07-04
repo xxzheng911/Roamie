@@ -43,7 +43,8 @@ import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
 import { requestDeviceLocation } from "@/lib/device-location";
 import { TAIPEI_CENTER } from "@/lib/geo";
 import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
-import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
+import { tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
+import { readTripDetailSelectedDay } from "@/lib/trip/trip-detail-selected-day";
 import {
   addSelectedPlace,
   loadChatSession,
@@ -127,6 +128,15 @@ function PlaceDetailPage() {
     logPlaceDetailScreenMounted();
     const handoff = resolvePlaceDetailHandoff(search, handoffRef.current);
     logPlaceDetailParamsReceived({ search, handoff });
+    if (search.returnTo === "trip" && search.tripId) {
+      const dayIndex =
+        search.day != null && search.day > 0
+          ? search.day - 1
+          : (readTripDetailSelectedDay(search.tripId) ?? 0);
+      console.info(
+        `[PLACE_DETAIL_OPEN_FROM_TRIP] tripId=${search.tripId} dayIndex=${dayIndex} placeId=${search.placeId ?? handoff?.placeId ?? ""}`,
+      );
+    }
     if (!handoff) {
       setPlace(null);
       setLoading(false);
@@ -367,15 +377,18 @@ function PlaceDetailPage() {
       return;
     }
     if (search.returnTo === "trip" && search.tripId) {
-      if (typeof window !== "undefined" && window.history.length > 1) {
-        window.history.back();
-        return;
-      }
-      navigate({
-        to: "/saved/$tripId",
-        params: { tripId: search.tripId },
-        search: search.day != null && search.day > 0 ? { day: search.day } : undefined,
-      });
+      const restoreDayIndex =
+        search.day != null && search.day > 0
+          ? search.day - 1
+          : (readTripDetailSelectedDay(search.tripId) ?? 0);
+      const restoreDay =
+        search.day != null && search.day > 0
+          ? search.day
+          : restoreDayIndex + 1;
+      console.info(
+        `[PLACE_DETAIL_BACK_TO_TRIP] tripId=${search.tripId} restoreDayIndex=${restoreDayIndex}`,
+      );
+      navigate(tripDetailNavigateOptions(search.tripId, { day: restoreDay }));
       return;
     }
     if (typeof window !== "undefined" && window.history.length > 1) {

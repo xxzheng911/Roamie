@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useAvatar } from "@/hooks/use-avatar";
+import { ProfileAvatar } from "@/components/profile/ProfileAvatar";
 import { useCover } from "@/hooks/use-cover";
 import { useI18n } from "@/hooks/use-i18n";
 import { ROAMIE_BUILD_DEBUG } from "@/lib/app-bundle-version";
@@ -97,8 +98,6 @@ function Profile() {
   const userEmail = user?.email;
   const { t, locale } = useI18n();
   const {
-    avatarDisplaySrc,
-    avatarPending,
     setPreview: setAvatarPreview,
     syncFromProfile: syncAvatarFromProfile,
   } = useAvatar();
@@ -749,17 +748,7 @@ function Profile() {
               className="group relative block h-full w-full shrink-0 overflow-hidden rounded-full border-[3px] border-card bg-secondary shadow-soft disabled:opacity-90"
               aria-label={t("profile.editAvatar")}
             >
-              {avatarPending ? (
-                <div className="absolute inset-0 animate-pulse bg-muted" aria-hidden />
-              ) : avatarDisplaySrc ? (
-                <img
-                  src={avatarDisplaySrc}
-                  alt=""
-                  className="absolute inset-0 h-full w-full object-cover object-center"
-                />
-              ) : (
-                <div className="absolute inset-0 animate-pulse bg-muted" aria-hidden />
-              )}
+              <ProfileAvatar self priority className="absolute inset-0 h-full w-full" />
               <div
                 className={`pointer-events-none absolute inset-0 rounded-full transition duration-200 ${
                   avatarApplying

@@ -7,6 +7,10 @@ import {
 } from "@/lib/device-location-resolve";
 import { readLastSearchLocation } from "@/lib/last-search-location";
 import {
+  readPersistedHomeLocation,
+  writePersistedHomeLocation,
+} from "@/lib/home-persistent-cache";
+import {
   ensureLocationPermission,
   type LocationPermissionState,
 } from "@/lib/location-permission-manager";
@@ -127,6 +131,12 @@ function rememberGoodCoords(lat: number, lng: number): void {
   } catch {
     /* ignore */
   }
+  writePersistedHomeLocation({
+    lat: normalized.lat,
+    lng: normalized.lng,
+    source: "capacitor",
+    usedFallback: false,
+  });
 }
 
 function markPublishedCoords(lat: number, lng: number): void {
@@ -412,6 +422,30 @@ export async function requestDeviceLocation(
       via: "session",
     });
     return sessionLocation;
+  }
+
+  if (!force && !sessionLocation) {
+    const persisted = readPersistedHomeLocation();
+    if (persisted) {
+      sessionLocation = {
+        lat: persisted.lat,
+        lng: persisted.lng,
+        city: persisted.city,
+        permission: "granted",
+        usedFallback: persisted.usedFallback,
+        source: persisted.source,
+        accuracy: null,
+      };
+      markHomeLocationBootstrapped();
+      console.info("[CACHE_LOCATION_HIT]", {
+        lat: persisted.lat,
+        lng: persisted.lng,
+        via: "persisted",
+        ageMs: Date.now() - persisted.fetchedAt,
+      });
+      return sessionLocation;
+    }
+    console.info("[CACHE_LOCATION_MISS]");
   }
 
   if (requestInFlight) {

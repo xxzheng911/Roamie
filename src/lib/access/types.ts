@@ -7,13 +7,13 @@ export type UserRole = "user" | "developer";
 export type TestModeOverride = "none" | "force-free" | "force-plus";
 
 export type AccessSnapshot = {
-  /** Stored mock / IAP tier (defaults free) */
+  /** Stored mock / IAP tier (defaults free) — dev/debug only */
   subscriptionState: SubscriptionState;
   userRole: UserRole;
   testModeOverride: TestModeOverride;
   /** Whether Plus personalization features are active */
   hasPlusAccess: boolean;
-  /** Same as hasPlusAccess — subscription plus or dev test override */
+  /** Same as hasPlusAccess */
   isPlusUser: boolean;
   /** TestFlight / 開發：force-plus 測試模式 */
   devPlusMode: boolean;
@@ -25,4 +25,8 @@ export type AccessSnapshot = {
   effectiveTier: SubscriptionState;
   developerUnlocked: boolean;
   canShowDeveloperTools: boolean;
+  /** canonical 狀態來源（除錯） */
+  subscriptionSource?: import("./subscription-canonical").SubscriptionStateSource;
+  /** 是否已完成 Supabase hydrate */
+  subscriptionHydrated?: boolean;
 };

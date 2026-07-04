@@ -17,6 +17,11 @@ import {
   readHomeSessionWeather,
   writeHomeSessionWeather,
 } from "@/lib/home-session-cache";
+import {
+  logHomeRefreshBackground,
+  logHomeRenderFromCache,
+  readPersistedHomeWeather,
+} from "@/lib/home-persistent-cache";
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { HomeSessionUserLocation } from "@/lib/home-session-cache";
@@ -50,12 +55,18 @@ let locationWatchStarted = false;
 let locationWatchCleanup: (() => void) | null = null;
 let locale: Locale = "zh-TW";
 let loadId = 0;
-let hasDisplayedWeather = Boolean(readHomeSessionWeather()?.available);
+const persistedWeatherBoot = readPersistedHomeWeather();
+let hasDisplayedWeather = Boolean(
+  persistedWeatherBoot?.weather?.available || readHomeSessionWeather()?.available,
+);
 let lastAppliedCoordKey = "";
 
 let state: HomeWeatherBootstrapState = {
-  weather: readHomeSessionWeather(),
-  status: readHomeSessionWeather() ? "ready" : "loading",
+  weather: persistedWeatherBoot?.weather ?? readHomeSessionWeather(),
+  status:
+    persistedWeatherBoot?.weather?.available || readHomeSessionWeather()?.available
+      ? "ready"
+      : "loading",
   error: null,
   userLocation: readHomeSessionUserLocation(),
   usedFallbackLocation: false,
@@ -249,7 +260,7 @@ async function fetchWeatherForCoords(
         city: result.weather.city || locMeta.city || "目前位置",
       };
       hasDisplayedWeather = true;
-      writeHomeSessionWeather(parsed);
+      writeHomeSessionWeather(parsed, { lat, lng });
       if (parsed.available) {
         rememberLastSearchLocation({ lat, lng, city: parsed.city });
       }
@@ -281,7 +292,7 @@ async function fetchWeatherForCoords(
       logWeatherFetch("bootstrap_error", { lat, lng, error: msg });
       const fallback = unavailableWeatherSummary(locMeta.city);
       hasDisplayedWeather = true;
-      writeHomeSessionWeather(fallback);
+      writeHomeSessionWeather(fallback, { lat, lng });
       patchState({
         weather: fallback,
         status: "ready",
@@ -293,11 +304,17 @@ async function fetchWeatherForCoords(
   await registerWeatherFetchInFlight(fetchKey, runFetch());
 }
 
-async function loadWeather(options?: { force?: boolean; showLoading?: boolean }): Promise<void> {
+async function loadWeather(options?: {
+  force?: boolean;
+  showLoading?: boolean;
+  background?: boolean;
+}): Promise<void> {
   const eff = await ensureEffectiveLocationBootstrap();
   if (!eff.isReadyForPlaces) return;
 
   applyEffectiveLocation(eff);
+  const background = options?.background === true;
+  const force = options?.force === true || (background && hasDisplayedWeather);
   await fetchWeatherForCoords(
     eff.lat,
     eff.lng,
@@ -307,7 +324,10 @@ async function loadWeather(options?: { force?: boolean; showLoading?: boolean })
       source: eff.source === "gps" ? "capacitor" : "fallback",
       permission: eff.permission,
     },
-    options,
+    {
+      force,
+      showLoading: background ? false : options?.showLoading,
+    },
   );
 }
 
@@ -324,8 +344,22 @@ export function ensureHomeWeatherBootstrap(nextLocale: Locale, source: string): 
   logHomeWeather("mounted", { source });
   logWeatherFetch("bootstrap_start", { source });
 
-  const hasCachedWeather = Boolean(readHomeSessionWeather()?.available);
-  void loadWeather({ showLoading: !hasCachedWeather });
+  const hasCachedWeather = hasDisplayedWeather;
+  if (hasCachedWeather) {
+    logHomeRenderFromCache("weather");
+  }
+  void loadWeather({
+    showLoading: !hasCachedWeather,
+    background: hasCachedWeather,
+    force: hasCachedWeather,
+  });
+}
+
+/** 啟動預載後背景更新天氣（不顯示 loading） */
+export function refreshHomeWeatherInBackground(nextLocale: Locale): void {
+  locale = nextLocale;
+  logHomeRefreshBackground("weather");
+  void loadWeather({ showLoading: false, background: true, force: true });
 }
 
 /** 全 app 只註冊一次 effective-location → weather 訂閱 */

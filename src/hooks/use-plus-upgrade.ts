@@ -7,26 +7,26 @@ import { canBypassSubscriptionBilling } from "@/lib/access/subscription-dev-mode
 export type PlusUpgradeResult = "upgraded" | "coming_soon";
 
 /**
- * Plus 升級入口：開發／測試模式直接啟用 Plus；正式版顯示即將推出對話框。
+ * Plus 升級入口：billing 略過環境直接寫入 canonical + Supabase；正式 IAP 顯示即將推出。
  */
 export function usePlusUpgrade() {
   const { user } = useAuth();
   const { enablePlusTestMode } = useAccess();
   const [comingSoonOpen, setComingSoonOpen] = useState(false);
 
-  const shouldBypassBilling = canBypassSubscriptionBilling(user?.email ?? null);
-
-  const canInstantUpgrade = shouldBypassBilling;
+  const canInstantUpgrade = canBypassSubscriptionBilling(user?.email ?? null);
 
   const upgradeToPlus = useCallback((): PlusUpgradeResult => {
-    if (canInstantUpgrade) {
-      enablePlusTestMode();
-      console.info("[DEV_SUBSCRIPTION] switched_to_plus");
-      toast.success("已啟用 Roamie Plus");
-      return "upgraded";
+    console.info("[PLUS_UPGRADE_TAP]", { canInstantUpgrade });
+
+    if (!canInstantUpgrade) {
+      setComingSoonOpen(true);
+      return "coming_soon";
     }
-    setComingSoonOpen(true);
-    return "coming_soon";
+
+    enablePlusTestMode();
+    toast.success("已啟用 Roamie Plus");
+    return "upgraded";
   }, [canInstantUpgrade, enablePlusTestMode]);
 
   return {

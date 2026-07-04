@@ -1,11 +1,10 @@
 import type { AffiliateEnvConfig } from "@/lib/affiliate/affiliate-env";
 import { resolveTripAffiliateBaseUrl } from "@/lib/affiliate/affiliate-env";
 
-export type TripComAffiliateKind = "hotel" | "flight" | "package";
+export type TripComAffiliateKind = "hotel" | "package";
 
 const TRIP_PATH: Record<TripComAffiliateKind, string> = {
   hotel: "/hotels/list",
-  flight: "/flights/showfarefirst",
   package: "/package-tours/",
 };
 

@@ -9,7 +9,8 @@ export type AvatarUpdatedDetail = {
 
 export function broadcastAvatarUpdate(url: string | null, revision?: number) {
   if (typeof window === "undefined") return;
-  patchProfileSessionCache({ avatarUrl: url });
+  const updatedIso = new Date(revision ?? Date.now()).toISOString();
+  patchProfileSessionCache({ avatarUrl: url, profileUpdatedAt: updatedIso });
   window.dispatchEvent(
     new CustomEvent<AvatarUpdatedDetail>(AVATAR_UPDATED_EVENT, {
       detail: { url, revision: revision ?? Date.now() },

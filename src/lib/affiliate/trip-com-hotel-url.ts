@@ -213,6 +213,8 @@ export function buildTripComHotelUrl(
     hasDates: Boolean(checkIn),
   });
 
+  console.info(`[AFFILIATE_URL_BUILT] type=hotel url=${finalUrl}`);
+
   return finalUrl;
 }
 

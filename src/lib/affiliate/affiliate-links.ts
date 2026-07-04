@@ -26,10 +26,15 @@ import {
   logAffiliateClick,
   logAffiliateRender,
 } from "@/lib/affiliate/affiliate-url-utils";
+import {
+  probeAffiliateRedirectUrl,
+  resolveAffiliatePlatform,
+} from "@/lib/affiliate/affiliate-open-url";
 import { buildAgodaAffiliateUrl, buildAgodaHotelUrl } from "@/lib/affiliate/agoda-affiliate-url";
 import { buildKlookAffiliateUrl } from "@/lib/affiliate/klook-affiliate-url";
 import {
   buildTripComFlightUrlFromTrip,
+  resolveTripComFlightOpenUrl,
 } from "@/lib/affiliate/trip-com-flight-url";
 import {
   buildTripComHotelUrl,
@@ -50,7 +55,10 @@ import {
   resolveTicketAffiliateTripContext,
   shouldShowTicketAffiliate,
 } from "@/lib/affiliate/ticket-affiliate-eligibility";
-import { resolveTripStayDates } from "@/lib/affiliate/trip-affiliate-dates";
+import {
+  resolveAgodaStayDates,
+  resolveTripStayDates,
+} from "@/lib/affiliate/trip-affiliate-dates";
 import type { TripLocation } from "@/lib/location/types";
 import type { Locale } from "@/lib/i18n/types";
 
@@ -65,7 +73,10 @@ export { buildAgodaAffiliateUrl, buildAgodaHotelUrl } from "@/lib/affiliate/agod
 export {
   buildTripComFlightUrl,
   buildTripComFlightUrlFromTrip,
+  buildTripComFlightHomeUrl,
+  isValidTripComFlightPageUrl,
   resolveFlightCityCode,
+  resolveTripComFlightOpenUrl,
 } from "@/lib/affiliate/trip-com-flight-url";
 export {
   shouldShowTicketAffiliate,
@@ -82,20 +93,6 @@ export type AffiliateClickContext = {
   checkOut?: string;
   adults?: number;
 };
-
-function buildTripHotelUrl(ctx: TripAffiliateContext, env: AffiliateEnvConfig): string | null {
-  const stay = resolveTripStayDates(ctx);
-  return buildTripComHotelUrl(
-    {
-      destination: ctx.destinationLabel,
-      startDate: stay.checkIn,
-      endDate: stay.checkOut,
-      adults: ctx.travelers,
-      locale: ctx.locale,
-    },
-    env,
-  );
-}
 
 function buildTripFlightUrl(ctx: TripAffiliateContext, env: AffiliateEnvConfig): string | null {
   return buildTripComFlightUrlFromTrip(ctx, env);
@@ -183,11 +180,22 @@ export function buildHotelAffiliateOffers(ctx: TripAffiliateContext): AffiliateL
   if (!hotelDecision.eligible) return [];
 
   const dest = ctx.destinationLabel;
-  const stay = resolveTripStayDates(ctx);
-  const checkIn = stay.checkIn ?? "";
-  const checkOut = stay.checkOut ?? "";
+  const agodaStay = resolveAgodaStayDates(ctx);
+  const tripStay = resolveTripStayDates(ctx);
+  const checkIn = agodaStay.checkIn ?? "";
+  const checkOut = agodaStay.checkOut ?? "";
   const adults = ctx.travelers ?? 2;
-  const tripHotelUrl = buildTripHotelUrl(ctx, env) ?? tripBaseUrl;
+  const tripHotelUrl =
+    buildTripComHotelUrl(
+      {
+        destination: ctx.destinationLabel,
+        startDate: tripStay.checkIn,
+        endDate: tripStay.checkOut,
+        adults: ctx.travelers,
+        locale: ctx.locale,
+      },
+      env,
+    ) ?? tripBaseUrl;
 
   const offers = [
     offer(
@@ -440,20 +448,38 @@ export async function openAffiliateUrl(
   url: string,
   ctx?: AffiliateClickContext,
 ): Promise<void> {
-  const trimmed = url?.trim();
+  let trimmed = url?.trim();
   if (!trimmed) return;
+
+  if (ctx?.type === "flight" && ctx.provider === "tripcom") {
+    trimmed = resolveTripComFlightOpenUrl(trimmed, getAffiliateEnv());
+    if (!trimmed) return;
+  }
+
+  const platform = resolveAffiliatePlatform(ctx?.provider, ctx?.type);
+  let openUrl = trimmed;
+  if (platform !== "other") {
+    try {
+      const probed = await probeAffiliateRedirectUrl(trimmed, platform);
+      openUrl = probed.finalUrl || trimmed;
+    } catch {
+      console.info(`[AFFILIATE_OPEN_INITIAL_URL] platform=${platform} url=${trimmed}`);
+    }
+  } else {
+    console.info(`[AFFILIATE_OPEN_INITIAL_URL] platform=other url=${trimmed}`);
+  }
 
   const now = Date.now();
   if (affiliateOpenInFlight) return;
   if (
-    trimmed === lastAffiliateOpenUrl &&
+    openUrl === lastAffiliateOpenUrl &&
     now - lastAffiliateOpenAt < AFFILIATE_OPEN_DEBOUNCE_MS
   ) {
     return;
   }
 
   affiliateOpenInFlight = true;
-  lastAffiliateOpenUrl = trimmed;
+  lastAffiliateOpenUrl = openUrl;
   lastAffiliateOpenAt = now;
 
   logAffiliateClick({
@@ -465,13 +491,13 @@ export async function openAffiliateUrl(
     checkIn: ctx?.checkIn,
     checkOut: ctx?.checkOut,
     adults: ctx?.adults,
-    finalUrl: trimmed,
+    finalUrl: openUrl,
   });
 
   try {
     if (isCapacitorNativeShell()) {
       const { Browser } = await import("@capacitor/browser");
-      await Browser.open({ url: trimmed, presentationStyle: "fullscreen" });
+      await Browser.open({ url: openUrl, presentationStyle: "fullscreen" });
       return;
     }
   } catch (e) {
@@ -487,7 +513,7 @@ export async function openAffiliateUrl(
   }
 
   if (typeof window !== "undefined") {
-    window.open(trimmed, "_blank", "noopener,noreferrer");
+    window.open(openUrl, "_blank", "noopener,noreferrer");
   }
 }
 

@@ -17,6 +17,7 @@ import {
   writeHomeSessionUserLocation,
   type HomeSessionUserLocation,
 } from "@/lib/home-session-cache";
+import { readPersistedHomeLocation, writePersistedHomeLocation } from "@/lib/home-persistent-cache";
 import { normalizedLocationKey } from "@/lib/location-key";
 import { onAppForegroundForLocation, registerLocationAppGate } from "@/lib/location-app-gate";
 
@@ -163,6 +164,13 @@ function syncHomeSession(next: EffectiveLocationSnapshot): void {
     source: next.source === "gps" ? "capacitor" : "fallback",
   };
   writeHomeSessionUserLocation(sessionLoc);
+  writePersistedHomeLocation({
+    lat: next.lat,
+    lng: next.lng,
+    city: next.city,
+    source: sessionLoc.source,
+    usedFallback: next.isFallback,
+  });
 }
 
 function shouldRejectPoorAccuracy(next: EffectiveLocationSnapshot): boolean {
@@ -222,6 +230,27 @@ function publish(next: EffectiveLocationSnapshot, reason: string): boolean {
 
 function seedLastKnownForPlaces(): void {
   if (snapshot?.isReadyForPlaces) return;
+
+  const persisted = readPersistedHomeLocation();
+  if (persisted) {
+    publish(
+      toSnapshot(
+        {
+          lat: persisted.lat,
+          lng: persisted.lng,
+          city: persisted.city,
+          permission: "granted",
+          usedFallback: persisted.usedFallback,
+          source: persisted.usedFallback ? "fallback" : "capacitor",
+          accuracy: null,
+        },
+        { readyForPlaces: true, status: "ready" },
+      ),
+      "persisted_location_cache",
+    );
+    return;
+  }
+
   const lastGood = getLastKnownDeviceCoords();
   const lastSearch = readLastSearchLocation();
   if (!lastGood && !lastSearch) return;
@@ -250,6 +279,11 @@ async function bootstrapEffectiveLocation(): Promise<EffectiveLocationSnapshot> 
   registerLocationAppGate();
   console.info("[LOCATION_INIT]", { via: "effective_location_bootstrap" });
   seedLastKnownForPlaces();
+
+  if (snapshot?.isReadyForPlaces) {
+    void requestDeviceLocation().catch(() => {});
+    return snapshot;
+  }
 
   const cachedSession = getSessionDeviceLocation();
   const loc = cachedSession ?? (await requestDeviceLocation());

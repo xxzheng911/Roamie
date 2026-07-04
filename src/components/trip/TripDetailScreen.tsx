@@ -13,6 +13,8 @@ import { TRIP_DETAIL_COMPONENT } from "@/lib/trip/trip-detail-nav";
 import { resolveCoreTripTitle, toCoreTrip } from "@/lib/trip/core-trip";
 import { isValidUuid } from "@/lib/uuid";
 
+const tripDetailMemoryCache = new Map<string, StoredItinerary>();
+
 type Props = {
   tripId: string;
   /** 導航來源（HomeTripCard / SavedTripCard / …） */
@@ -28,8 +30,9 @@ type Props = {
 export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: Props) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
-  const [stored, setStored] = useState<StoredItinerary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cachedTrip = tripDetailMemoryCache.get(tripId) ?? null;
+  const [stored, setStored] = useState<StoredItinerary | null>(cachedTrip);
+  const [loading, setLoading] = useState(!cachedTrip);
   const [error, setError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -42,7 +45,10 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
     console.info("[TRIP_DETAIL] route name=", pathname);
     console.info("[TRIP_DETAIL] using component=", TRIP_DETAIL_COMPONENT);
     console.info("[TRIP_DETAIL] navSource=", navSource);
-  }, [tripId, pathname, navSource]);
+    if (initialDay != null) {
+      console.info(`[TRIP_DETAIL_RESTORE_DAY] dayIndex=${initialDay - 1}`);
+    }
+  }, [tripId, pathname, navSource, initialDay]);
 
   useEffect(() => {
     if (!isValidUuid(tripId)) {
@@ -51,7 +57,10 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
       return;
     }
     let cancelled = false;
-    setLoading(true);
+    const hadCachedTrip = tripDetailMemoryCache.has(tripId);
+    if (!hadCachedTrip) {
+      setLoading(true);
+    }
     setError(null);
     Promise.all([getItinerary(tripId), getTripAccess(tripId)])
       .then(([row, access]) => {
@@ -59,9 +68,11 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
         if (!row) {
           setError("找不到這個行程");
           setStored(null);
+          tripDetailMemoryCache.delete(tripId);
           return;
         }
         console.info("[TRIP_DETAIL] StoredItinerary loaded tripId=", row.id);
+        tripDetailMemoryCache.set(tripId, row);
         setStored(row);
         setIsOwner(access.isOwner);
       })
@@ -79,6 +90,7 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
 
   const handleStoredChange = (next: StoredItinerary) => {
     ignoreRealtimeUntilRef.current = Date.now() + 2500;
+    tripDetailMemoryCache.set(tripId, next);
     setStored(next);
   };
 
@@ -86,6 +98,7 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
     tripId,
     enabled: Boolean(stored),
     onRemoteUpdate: (remote) => {
+      tripDetailMemoryCache.set(tripId, remote);
       setStored(remote);
     },
     isLocalWrite: () => Date.now() < ignoreRealtimeUntilRef.current,

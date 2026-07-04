@@ -9,17 +9,21 @@ import {
   writeTestModeOverride,
 } from "./storage";
 import { broadcastAccessChange } from "./events";
+import {
+  type CanonicalSubscriptionState,
+  resolveEffectiveTier as resolveTierFromCanonical,
+  resolveHasPlusAccess,
+} from "./subscription-canonical";
 
 function resolveEffectiveTier(
   subscriptionState: SubscriptionState,
-  isDeveloper: boolean,
+  _isDeveloper: boolean,
   testOverride: TestModeOverride,
   subscriptionPlusActive: boolean,
 ): SubscriptionState {
   if (testOverride === "force-free") return "free";
   if (testOverride === "force-plus") return "plus";
   if (subscriptionPlusActive) return "plus";
-  if (isDeveloper && testOverride === "none") return "plus";
   return subscriptionState;
 }
 
@@ -69,6 +73,43 @@ export function buildAccessSnapshot(
     effectiveTier,
     developerUnlocked,
     canShowDeveloperTools: canShowDeveloperTools(email),
+  };
+}
+
+/** 由 canonical subscription state 建立 AccessSnapshot（首頁／全 app 唯一入口） */
+export function buildAccessSnapshotFromCanonical(
+  email: string | null | undefined,
+  canonical: CanonicalSubscriptionState,
+): AccessSnapshot {
+  const subscriptionState = readMockSubscriptionTier();
+  const testModeOverride = canonical.devOverride;
+  const developerUnlocked = isDeveloperAccount(email);
+  const userRole: UserRole = developerUnlocked ? "developer" : "user";
+  const subscriptionPlusActive = canonical.profilePlusActive;
+  const devPlusMode = testModeOverride === "force-plus";
+  const hasPlusAccess = resolveHasPlusAccess(canonical);
+  const effectiveTier = resolveTierFromCanonical(canonical);
+  const devSubscriptionMode: SubscriptionState =
+    testModeOverride === "force-free"
+      ? "free"
+      : testModeOverride === "force-plus"
+        ? "plus"
+        : subscriptionState;
+
+  return {
+    subscriptionState,
+    userRole,
+    testModeOverride,
+    hasPlusAccess,
+    isPlusUser: hasPlusAccess,
+    devPlusMode,
+    devSubscriptionMode,
+    subscriptionPlusActive,
+    effectiveTier,
+    developerUnlocked,
+    canShowDeveloperTools: canShowDeveloperTools(email),
+    subscriptionSource: canonical.source,
+    subscriptionHydrated: canonical.hydrated,
   };
 }
 

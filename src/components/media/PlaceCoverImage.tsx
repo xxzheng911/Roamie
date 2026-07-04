@@ -62,7 +62,8 @@ export function PlaceCoverImage({
           <img
             src={src}
             alt={alt}
-            loading="lazy"
+            loading={priority ? "eager" : "lazy"}
+            fetchPriority={priority ? "high" : "auto"}
             decoding="async"
             draggable={false}
             onError={onError}

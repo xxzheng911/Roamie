@@ -208,6 +208,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       pickMood: "先選一個心情吧",
       recommendFailed: "推薦失敗，請稍後再試",
       moodChatOpenFailed: "目前無法開啟聊聊，請稍後再試",
+      plusInsightPaceVibe: "你的旅行節奏偏{pace}、喜歡{vibe}——今天可以往這個方向找剛剛好的去處。",
       getRecs: "讓 Roamie 推薦",
       gettingRecs: "Roamie 正在想…",
       planTrip: "規劃新行程",
@@ -529,6 +530,8 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       pickMood: "Pick a mood first",
       recommendFailed: "Couldn't get recommendations. Try again.",
       moodChatOpenFailed: "Couldn't open chat. Try again in a moment.",
+      plusInsightPaceVibe:
+        "Your travel rhythm leans {pace}, and you enjoy {vibe} vibes — let's find spots that fit today.",
       getRecs: "Get Roamie picks",
       gettingRecs: "Roamie is thinking…",
       planTrip: "Plan a new trip",
@@ -839,6 +842,8 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       weatherErrorPlaceholder: "天気は取得できませんが、近くの場所は見られます",
       pickMood: "まず気分を選んでね",
       recommendFailed: "おすすめを取得できませんでした",
+      plusInsightPaceVibe:
+        "あなたの旅のペースは{pace}、{vibe}な雰囲気が好き——今日はその方向でちょうどいい場所を探しましょう。",
       getRecs: "Roamie のおすすめ",
       gettingRecs: "Roamie が考え中…",
       planTrip: "旅程を計画",
@@ -1144,6 +1149,8 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       weatherErrorPlaceholder: "날씨는 불러올 수 없지만 근처 장소는 볼 수 있어요",
       pickMood: "먼저 기분을 골라줘",
       recommendFailed: "추천을 가져오지 못했습니다",
+      plusInsightPaceVibe:
+        "당신의 여행 리듬은 {pace}, {vibe} 분위기를 좋아해요——오늘은 그 방향으로 딱 맞는 곳을 찾아볼게요.",
       getRecs: "Roamie 추천",
       gettingRecs: "Roamie가 생각 중…",
       planTrip: "새 여정 계획",

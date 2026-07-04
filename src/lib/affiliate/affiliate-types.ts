@@ -8,6 +8,7 @@ import {
   resolveHotelAffiliateEligibility,
   resolveIsInternationalTrip,
 } from "@/lib/affiliate/affiliate-display-rules";
+import { getTripDateRange } from "@/lib/affiliate/get-trip-date-range";
 
 /** 聯盟導購平台（可擴充） */
 export type AffiliateProviderId = "trip" | "agoda" | "booking" | "klook" | "kkday";
@@ -42,6 +43,8 @@ export type TripAffiliateContext = {
   /** 使用者所在國家（缺 origin 時 fallback） */
   userCountryCode?: string | null;
   items: RoamieItineraryItem[];
+  payload?: RoamiePayloadV2;
+  itineraryDays?: Array<{ date?: string | null; dateKey?: string | null } | string>;
   startDate?: string;
   endDate?: string;
   travelers?: number;
@@ -62,14 +65,24 @@ export function buildTripAffiliateContext(input: {
   items: RoamieItineraryItem[];
   dayCount: number;
   destinationLabel: string;
-  startDate?: string;
-  endDate?: string;
+  itineraryDays?: Array<{ date?: string | null; dateKey?: string | null } | string>;
   travelers?: number;
   locale?: Locale;
 }): TripAffiliateContext {
   const destinationLocation = input.payload.destinationLocation ?? null;
   const originLocation = input.payload.originLocation ?? null;
-  const nights = computeTripNights(input.dayCount, input.startDate, input.endDate);
+  const dateRange = getTripDateRange({
+    tripId: input.tripId,
+    payload: input.payload,
+    items: input.items,
+    dayCount: input.dayCount,
+    days: input.payload.days,
+    tripSettings: input.payload.tripSettings,
+    itineraryDays: input.itineraryDays,
+  });
+  const startDate = dateRange?.startDate;
+  const endDate = dateRange?.endDate;
+  const nights = computeTripNights(input.dayCount, startDate, endDate);
   const isInternational = inferInternationalTripFlag(input.payload);
 
   return {
@@ -82,8 +95,10 @@ export function buildTripAffiliateContext(input: {
     isInternational,
     userCountryCode: originLocation?.country ?? null,
     items: input.items,
-    startDate: input.startDate,
-    endDate: input.endDate,
+    payload: input.payload,
+    itineraryDays: input.itineraryDays,
+    startDate,
+    endDate,
     travelers: input.travelers,
     locale: input.locale,
   };

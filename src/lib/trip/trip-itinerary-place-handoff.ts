@@ -15,6 +15,7 @@ import {
   saveTripDetailViewState,
   type TripDetailViewState,
 } from "@/lib/trip/trip-detail-view-state";
+import { persistTripDetailSelectedDay } from "@/lib/trip/trip-detail-selected-day";
 
 function inferExploreCategoryId(place: PlaceResult): string {
   const hay = [
@@ -112,8 +113,13 @@ export function openTripItineraryPlaceDetail(
   locale: Locale = "zh-TW",
 ): { handoff: PlaceDetailHandoff; navigateOptions: NavigateOptions } {
   saveTripDetailViewState(viewState);
+  persistTripDetailSelectedDay(viewState.tripId, viewState.activeDayIndex);
   const handoff = itineraryItemToPlaceHandoff(item, locale);
   setPlaceDetailHandoff(handoff);
+  const placeId = handoff.googlePlaceId || handoff.placeId || item.googlePlaceId || "";
+  console.info(
+    `[PLACE_DETAIL_OPEN_FROM_TRIP] tripId=${viewState.tripId} dayIndex=${viewState.activeDayIndex} placeId=${placeId}`,
+  );
 
   return {
     handoff,

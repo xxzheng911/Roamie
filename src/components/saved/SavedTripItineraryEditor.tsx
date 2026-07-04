@@ -106,7 +106,6 @@ import {
   logTripAffiliateRuleCheck,
 } from "@/lib/affiliate/affiliate-links";
 import { buildTripAffiliateContext, parseTripTravelers, type AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
-import { resolveAffiliatePlanDates } from "@/lib/affiliate/trip-affiliate-dates";
 import { TripRemoveDayConfirmDialog } from "@/components/saved/TripRemoveDayConfirmDialog";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
 import { useI18n } from "@/hooks/use-i18n";
@@ -117,7 +116,14 @@ import {
   buildTripAddPlaceContext,
   writeTripAddPlaceHandoff,
 } from "@/lib/trip/trip-add-place-handoff";
-import { consumeTripDetailViewState } from "@/lib/trip/trip-detail-view-state";
+import {
+  clearTripDetailViewState,
+  readTripDetailViewState,
+} from "@/lib/trip/trip-detail-view-state";
+import {
+  persistTripDetailSelectedDay,
+  readTripDetailSelectedDay,
+} from "@/lib/trip/trip-detail-selected-day";
 import { openTripItineraryPlaceDetail } from "@/lib/trip/trip-itinerary-place-handoff";
 
 function inferTripDates(
@@ -271,8 +277,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const resolveTripStopFn = useServerFn(resolveTripStop);
   const initial = stored.payload as RoamiePayloadV2;
   const initialView = useMemo(() => normalizeStoredTrip(stored), [stored]);
-  const restoredViewRef = useRef(consumeTripDetailViewState(stored.id));
+  const restoredViewRef = useRef(readTripDetailViewState(stored.id));
   const restoredView = restoredViewRef.current;
+  const dayResetBlockedLoggedRef = useRef(false);
+  const initialDayConsumedRef = useRef(false);
   const [tripTitle, setTripTitle] = useState(
     () => restoredView?.tripTitle ?? initialView.displayTitle,
   );
@@ -306,8 +314,15 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     ...(restoredView?.items ?? coalesceItineraryItems(initial.itinerary)),
   ]);
   const [activeDayIndex, setActiveDayIndex] = useState(() => {
-    if (restoredView != null) return restoredView.activeDayIndex;
-    return initialDay != null && initialDay > 0 ? initialDay - 1 : 0;
+    if (restoredView != null) {
+      console.info(`[TRIP_DETAIL_RESTORE_DAY] dayIndex=${restoredView.activeDayIndex}`);
+      return restoredView.activeDayIndex;
+    }
+    if (initialDay != null && initialDay > 0) {
+      initialDayConsumedRef.current = true;
+      return initialDay - 1;
+    }
+    return 0;
   });
   const [savedPlacesOpen, setSavedPlacesOpen] = useState(false);
   const [addMenuDayIndex, setAddMenuDayIndex] = useState<number | null>(
@@ -351,13 +366,43 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
 
   useLayoutEffect(() => {
     const scrollTop = restoredViewRef.current?.scrollTop;
-    if (scrollTop == null || scrollTop <= 0) return;
-    const scrollEl = document.querySelector(".trip-detail-route");
-    if (scrollEl instanceof HTMLElement) {
-      scrollEl.scrollTop = scrollTop;
+    if (scrollTop != null && scrollTop > 0) {
+      const scrollEl = document.querySelector(".trip-detail-route");
+      if (scrollEl instanceof HTMLElement) {
+        scrollEl.scrollTop = scrollTop;
+      }
     }
-    restoredViewRef.current = null;
+    if (restoredViewRef.current) {
+      clearTripDetailViewState();
+      restoredViewRef.current = null;
+    }
   }, [stored.id]);
+
+  useEffect(() => {
+    if (initialDay == null || initialDay <= 0) return;
+    if (restoredView != null) {
+      if (!dayResetBlockedLoggedRef.current) {
+        dayResetBlockedLoggedRef.current = true;
+        console.info("[TRIP_DETAIL_DAY_RESET_BLOCKED]");
+      }
+      return;
+    }
+    if (initialDayConsumedRef.current) {
+      if (!dayResetBlockedLoggedRef.current) {
+        dayResetBlockedLoggedRef.current = true;
+        console.info("[TRIP_DETAIL_DAY_RESET_BLOCKED]");
+      }
+      return;
+    }
+    initialDayConsumedRef.current = true;
+    const nextIndex = initialDay - 1;
+    setActiveDayIndex((prev) => {
+      if (prev === nextIndex) return prev;
+      console.info(`[TRIP_DETAIL_RESTORE_DAY] dayIndex=${nextIndex}`);
+      persistTripDetailSelectedDay(stored.id, nextIndex);
+      return nextIndex;
+    });
+  }, [initialDay, restoredView, stored.id]);
 
   const [savedOutfitFields, setSavedOutfitFields] = useState<TripOutfitSuggestionFields>(() =>
     initialOutfitFields(initial),
@@ -525,16 +570,13 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const affiliateDestinationLabel =
     payload.destination?.trim() ||
     (tripView.destination !== "尚未設定" ? tripView.destination : outfitDestination);
-  const affiliatePlanDates = resolveAffiliatePlanDates({
-    tripStartDate: settings.tripStartDate,
-    tripEndDate: settings.tripEndDate,
-    dayCount: affiliateDayCount,
-    itemDates: items.map((item) => item.date),
-    viewStartDate: tripView.dateRange.start,
-    viewEndDate: tripView.dateRange.end,
-  });
-  const affiliateStartDate = affiliatePlanDates.startDate;
-  const affiliateEndDate = affiliatePlanDates.endDate;
+  const affiliateItineraryDays = useMemo(
+    () =>
+      dayGroups
+        .filter((d) => !d.isUnassigned)
+        .map((d) => ({ dateKey: d.dateKey })),
+    [dayGroups],
+  );
   const affiliateTravelers = parseTripTravelers(payload);
   const affiliatePlacesSignature = useMemo(
     () => items.map((item) => placeAffiliateKey(item)).join("\n"),
@@ -549,8 +591,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         items,
         dayCount: affiliateDayCount,
         destinationLabel: affiliateDestinationLabel,
-        startDate: affiliateStartDate,
-        endDate: affiliateEndDate,
+        itineraryDays: affiliateItineraryDays,
         travelers: affiliateTravelers,
         locale,
       }),
@@ -560,8 +601,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       items,
       affiliateDayCount,
       affiliateDestinationLabel,
-      affiliateStartDate,
-      affiliateEndDate,
+      affiliateItineraryDays,
       affiliateTravelers,
       locale,
     ],
@@ -628,9 +668,20 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const safeDayIndex = Math.min(activeDayIndex, Math.max(0, dayGroups.length - 1));
   const activeDay = dayGroups[safeDayIndex];
 
-  const scrollToDay = (index: number) => {
-    setActiveDayIndex(index);
-  };
+  const scrollToDay = useCallback(
+    (index: number) => {
+      setActiveDayIndex(index);
+      persistTripDetailSelectedDay(stored.id, index);
+      console.info(`[TRIP_DETAIL_DAY_SELECTED] dayIndex=${index}`);
+      void navigate({
+        to: "/saved/$tripId",
+        params: { tripId: stored.id },
+        search: { day: index + 1 },
+        replace: true,
+      });
+    },
+    [navigate, stored.id],
+  );
 
   const openItineraryPlaceDetail = useCallback(
     (item: RoamieItineraryItem) => {

@@ -7,7 +7,8 @@ import { HomeTripCard } from "@/components/home/HomeTripCard";
 import { HomeNearbyPlaceCards } from "@/components/home/HomeNearbyPlaceCards";
 import { HomeWeatherCard } from "@/components/home/HomeWeatherCard";
 import { HomePersonalizationCard } from "@/components/home/HomePersonalizationCard";
-import { logHomeNearbyLoadOnce, logPlacesApiSkipDuplicate } from "@/lib/places-diagnostics";
+import { ProfileAvatar } from "@/components/profile/ProfileAvatar";
+import { sanitizeHomeNearbyPicksForDisplay } from "@/lib/home-nearby-display";
 import { useHomeWeather } from "@/hooks/use-home-weather";
 import { useEffectiveLocation } from "@/hooks/use-effective-location";
 import type { EffectiveLocationSnapshot } from "@/lib/effective-location";
@@ -39,6 +40,7 @@ import {
   readHomeSessionNearbyMeta,
   writeHomeSessionNearbyPicks,
 } from "@/lib/home-session-cache";
+import { logHomeRefreshBackground, logHomeRenderFromCache } from "@/lib/home-persistent-cache";
 import {
   getHomeNearbyLoadInFlight,
   homeNearbyLoadKey,
@@ -49,6 +51,7 @@ import {
   shouldSkipHomeNearbyLoadWithData,
   writeHomeNearbyResultsCache,
 } from "@/lib/home-nearby-picks-policy";
+import { logHomeNearbyLoadOnce, logPlacesApiSkipDuplicate } from "@/lib/places-diagnostics";
 import {
   logHomeNearbyCacheHit,
   logHomeNearbyCacheMiss,
@@ -57,8 +60,6 @@ import {
   logHomeNearbyRequestStart,
   type HomeNearbyRenderState,
 } from "@/lib/home-nearby-log";
-import { useAvatar } from "@/hooks/use-avatar";
-import { sanitizeHomeNearbyPicksForDisplay } from "@/lib/home-nearby-display";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { useAccess } from "@/hooks/use-access";
 import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
@@ -100,7 +101,6 @@ function Home() {
   const { t, locale } = useI18n();
   const { hasPlusAccess } = useAccess();
   const { openAddToTrip } = useAddToTrip();
-  const { avatarDisplaySrc, avatarPending } = useAvatar();
   const navigate = useNavigate();
   const router = useRouter();
   const fetchWeather = useServerFn(getWeather);
@@ -271,6 +271,7 @@ function Home() {
         writeHomeNearbyResultsCache(sessionNearbyBoot.loadKey, sessionNearbyBoot.picks);
       }
       logHomeNearbyCacheHit(sessionNearbyBoot.picks.length, sessionNearbyBoot.ageMs ?? 0);
+      logHomeRenderFromCache("places");
       logHomeNearbyRender("cached");
     } else {
       logHomeNearbyRender("loading");
@@ -287,28 +288,39 @@ function Home() {
     return () => window.clearTimeout(id);
   }, [nearbyPicks.length, nearbyRenderState]);
 
-  const nearbyLocationForCards = useMemo(
-    () =>
-      effectiveLocation?.isReadyForPlaces
-        ? { lat: effectiveLocation.lat, lng: effectiveLocation.lng }
-        : null,
-    [effectiveLocation?.isReadyForPlaces, effectiveLocation?.lat, effectiveLocation?.lng],
-  );
+  const nearbyLocationForCards = useMemo(() => {
+    if (effectiveLocation?.isReadyForPlaces) {
+      return { lat: effectiveLocation.lat, lng: effectiveLocation.lng };
+    }
+    if (sessionNearbyBoot.lat != null && sessionNearbyBoot.lng != null) {
+      return { lat: sessionNearbyBoot.lat, lng: sessionNearbyBoot.lng };
+    }
+    return null;
+  }, [
+    effectiveLocation?.isReadyForPlaces,
+    effectiveLocation?.lat,
+    effectiveLocation?.lng,
+    sessionNearbyBoot.lat,
+    sessionNearbyBoot.lng,
+  ]);
 
   const restoreNearbyFromCache = useCallback(
     (loadKey: string): boolean => {
+      const loc = effectiveLocationRef.current;
+      const coords =
+        loc?.isReadyForPlaces ? { lat: loc.lat, lng: loc.lng } : null;
       const moduleMeta = readHomeNearbyResultsCacheMeta<HomeNearbyPick>(loadKey);
       if (moduleMeta && moduleMeta.picks.length > 0) {
         applyNearbyPicksIfChanged(moduleMeta.picks);
         hasNearbyPicksRef.current = true;
-        writeHomeSessionNearbyPicks(moduleMeta.picks, loadKey);
+        writeHomeSessionNearbyPicks(moduleMeta.picks, loadKey, coords);
         setNearbyLoading(false);
         setNearbyRenderStateLogged("cached");
         logHomeNearbyCacheHit(moduleMeta.picks.length, moduleMeta.ageMs);
         return true;
       }
 
-      const sessionMeta = readHomeSessionNearbyMeta();
+      const sessionMeta = readHomeSessionNearbyMeta(undefined, coords);
       if (sessionMeta.picks.length > 0) {
         applyNearbyPicksIfChanged(sessionMeta.picks);
         hasNearbyPicksRef.current = true;
@@ -466,7 +478,7 @@ function Home() {
         resultCount = picks.length;
         if (picks.length > 0) {
           applyPicks(picks);
-          writeHomeSessionNearbyPicks(picks, loadKey);
+          writeHomeSessionNearbyPicks(picks, loadKey, loc);
         } else if (!hadPicksBeforeFetch && !background) {
           setNearbyRenderStateLogged("empty");
         }
@@ -494,6 +506,7 @@ function Home() {
     };
 
     if (background) {
+      logHomeRefreshBackground("places");
       const schedule =
         typeof requestIdleCallback !== "undefined"
           ? (fn: () => void) => requestIdleCallback(fn, { timeout: 2500 })
@@ -597,6 +610,7 @@ function Home() {
         reason: "policy_skip",
       });
       restoreNearbyFromCache(nearbyLoadKey);
+      void loadNearbyPicks("nearby_effect_bg", effectiveLocation, { background: true });
       return;
     }
 
@@ -709,7 +723,14 @@ function Home() {
         });
         if (!changed) return prev;
         const loadKey = readHomeSessionNearbyLoadKey();
-        if (loadKey) writeHomeSessionNearbyPicks(next, loadKey);
+        const loc = effectiveLocationRef.current;
+        if (loadKey) {
+          writeHomeSessionNearbyPicks(
+            next,
+            loadKey,
+            loc?.isReadyForPlaces ? { lat: loc.lat, lng: loc.lng } : null,
+          );
+        }
         return next;
       });
     };
@@ -771,18 +792,7 @@ function Home() {
           className="h-11 w-11 shrink-0 overflow-hidden rounded-full border border-border bg-secondary"
           aria-label={t("home.profileLinkAria")}
         >
-          {avatarPending ? (
-            <div className="h-full w-full animate-pulse bg-muted" aria-hidden />
-          ) : avatarDisplaySrc ? (
-            <img
-              key={avatarDisplaySrc}
-              src={avatarDisplaySrc}
-              alt=""
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <div className="h-full w-full animate-pulse bg-muted" aria-hidden />
-          )}
+          <ProfileAvatar self priority className="h-11 w-11" />
         </Link>
       </div>
 

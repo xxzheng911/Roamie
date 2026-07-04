@@ -314,6 +314,18 @@ export type Database = {
         Args: { invite_token: string }
         Returns: string
       }
+      get_trip_member_public_profiles: {
+        Args: { p_trip_id: string }
+        Returns: {
+          user_id: string
+          display_name: string | null
+          avatar_url: string | null
+          email: string | null
+          full_name: string | null
+          username: string | null
+          profile_updated_at: string | null
+        }[]
+      }
       get_trip_invite_by_token: {
         Args: { invite_token: string }
         Returns: {
