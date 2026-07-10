@@ -14,6 +14,9 @@
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "verify:location": "npx vite-node scripts/verify-location-logic.mjs",
+    "verify:itinerary-core": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-core.mjs",
+    "verify:itinerary-regression": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-regression.mjs",
+    "verify:itinerary-integration": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-integration.mjs",
     "verify:apply-location": "node scripts/verify-apply-location-dedup.mjs",
     "apple:client-secret": "node scripts/generate-apple-client-secret.mjs",
     "lint": "eslint .",
@@ -124,6 +127,7 @@
     "prettier": "^3.7.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vite-node": "^6.0.0"
   }
 }
