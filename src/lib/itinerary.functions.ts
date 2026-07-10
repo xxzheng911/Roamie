@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type {
   RoamiePayloadV2,
   RoamieRecommendationItem,
@@ -288,7 +289,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
     }
 
     if (!ai || coalesceItineraryItems(ai.itinerary).length < 1) {
-      console.info("[AI_ITINERARY_BUILD] building from selectedPlaces", {
+      devVerboseInfo("[AI_ITINERARY_BUILD] building from selectedPlaces", {
         count: selectedPlaces.length,
         days: data.days,
       });

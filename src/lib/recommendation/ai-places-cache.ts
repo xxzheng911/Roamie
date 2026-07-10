@@ -4,6 +4,7 @@ import { normalizedLocationKey } from "@/lib/location-key";
 import { classifyWeatherScene } from "@/lib/weather-scene";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { RecommendationCategoryId, VerifiedPlaceCandidate } from "@/lib/recommendation/types";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 
 export const AI_PLACE_CATEGORY_CACHE_TTL_MS = 30 * 60 * 1000;
 export const AI_PLACE_HOURS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -106,7 +107,7 @@ export function peekAiPlaceApiStats(): AiPlaceApiStats {
 export function endAiPlaceApiSession(): AiPlaceApiStats {
   const stats = peekAiPlaceApiStats();
   const total = stats.nearby + stats.text + stats.details + stats.photo;
-  console.info(
+  devVerboseInfo(
     `[AI_PLACE_SEARCH] summary nearby=${stats.nearby} text=${stats.text} details=${stats.details} photo=${stats.photo} total=${total}`,
   );
   activeStats = null;
@@ -120,21 +121,21 @@ export function logAiPlaceSearch(meta: {
   text: number;
   phase: "primary" | "fallback";
 }): void {
-  console.info(
+  devVerboseInfo(
     `[AI_PLACE_SEARCH] phase=${meta.phase} category=${meta.categoryId} mode=${meta.mode} nearby=${meta.nearby} text=${meta.text}`,
   );
 }
 
 export function logAiPlaceCacheHit(key: string): void {
-  console.info(`[AI_PLACE_CACHE_HIT] key=${key}`);
+  devVerboseInfo(`[AI_PLACE_CACHE_HIT] key=${key}`);
 }
 
 export function logAiPlaceCacheMiss(key: string): void {
-  console.info(`[AI_PLACE_CACHE_MISS] key=${key}`);
+  devVerboseInfo(`[AI_PLACE_CACHE_MISS] key=${key}`);
 }
 
 export function logAiPlaceDedupe(key: string): void {
-  console.info(`[AI_PLACE_DEDUPE] key=${key}`);
+  devVerboseInfo(`[AI_PLACE_DEDUPE] key=${key}`);
 }
 
 export function logAiPlaceBatchLookup(meta: {
@@ -144,7 +145,7 @@ export function logAiPlaceBatchLookup(meta: {
 }): void {
   const placeId = meta.placeId?.trim() || "-";
   const hit = meta.cacheHit ? "true" : "false";
-  console.info(
+  devVerboseInfo(
     `[AI_PLACE_BATCH_LOOKUP] name=${meta.name} placeId=${placeId} cacheHit=${hit}`,
   );
 }

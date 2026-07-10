@@ -2,6 +2,7 @@ import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { listTripDates } from "@/lib/outfit/group-by-date";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export type TripCreateDates = {
   startDate?: string;
@@ -13,7 +14,7 @@ export type TripCreateDates = {
 };
 
 export function logAiDateParseResult(result: TripCreateDates): void {
-  console.info(
+  logAiPipeline(
     "[AI_DATE_PARSE_RESULT]",
     `startDate=${result.startDate ?? "none"}`,
     `endDate=${result.endDate ?? "none"}`,
@@ -23,7 +24,7 @@ export function logAiDateParseResult(result: TripCreateDates): void {
 }
 
 export function logAiCreateTripDates(result: TripCreateDates): void {
-  console.info(
+  logAiPipeline(
     "[AI_CREATE_TRIP_DATES]",
     `startDate=${result.startDate ?? "none"}`,
     `endDate=${result.endDate ?? "none"}`,
@@ -32,7 +33,7 @@ export function logAiCreateTripDates(result: TripCreateDates): void {
 }
 
 export function logAiCreateItineraryDay(dayIndex: number, date: string | undefined, itemCount: number): void {
-  console.info(
+  logAiPipeline(
     "[AI_CREATE_ITINERARY_DAY]",
     `dayIndex=${dayIndex}`,
     `date=${date ?? "unset"}`,
@@ -46,7 +47,7 @@ export function logTripCardRenderDates(
   endDate: string | undefined,
   days: number,
 ): void {
-  console.info(
+  logAiPipeline(
     "[TRIP_CARD_RENDER_DATES]",
     `tripId=${tripId}`,
     `startDate=${startDate ?? "none"}`,

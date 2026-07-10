@@ -3,6 +3,7 @@ import { isUserConfirmingItinerary } from "@/lib/chat-session";
 import type { ChatPhase } from "@/lib/ai/context";
 import type { Locale } from "@/lib/i18n/types";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   detectChatIntent,
   isNearbyPlaceIntent,
@@ -127,20 +128,20 @@ export function resolveChatRoute(
     intent = "attraction";
   }
 
-  console.info(`[CHAT_INTENT] intent=${intent}`);
+  logAiPipeline(`[CHAT_INTENT] intent=${intent}`);
 
   if (isUserConfirmingItinerary(userText)) {
-    console.info("[AI_ROUTE] itinerary_mode", logTravelContext(ctx));
+    logAiPipeline("[AI_ROUTE] itinerary_mode", logTravelContext(ctx));
     return { mode: "itinerary", chatPhase: "handoff" };
   }
 
   if (isTripAddPlaceSession(session)) {
     const followUp = parseTripAddPlaceFollowUpIntent(userText);
     if (followUp || isNearbyPlaceIntent(intent)) {
-      console.info("[AI_ROUTE] trip_add_place_recommend", logTravelContext(ctx), `intent=${intent}`);
+      logAiPipeline("[AI_ROUTE] trip_add_place_recommend", logTravelContext(ctx), `intent=${intent}`);
       return { mode: "recommend", chatPhase: "recommend" };
     }
-    console.info("[AI_ROUTE] trip_add_place_followup", logTravelContext(ctx));
+    logAiPipeline("[AI_ROUTE] trip_add_place_followup", logTravelContext(ctx));
     return { mode: "recommend", chatPhase: "followup" };
   }
 
@@ -179,7 +180,7 @@ export function resolveChatRoute(
   if (shouldTryAdvice && !shouldFetchDestinationCategoryPlaces(userText, ctx, session)) {
     const turn = processAdviceTurn(userText, session, ctx);
     if (turn.advice.reply) {
-      console.info("[AI_ROUTE] destination_advice_mode", logTravelContext(ctx));
+      logAiPipeline("[AI_ROUTE] destination_advice_mode", logTravelContext(ctx));
       return turn.route!;
     }
   }
@@ -191,7 +192,7 @@ export function resolveChatRoute(
     isCampingRequestText(userText);
 
   if (campingActive && !sessionHasLocation(session) && !ctx.destination?.trim()) {
-    console.info("[AI_ROUTE] camping_intro_mode", logTravelContext(ctx));
+    logAiPipeline("[AI_ROUTE] camping_intro_mode", logTravelContext(ctx));
     return {
       mode: "advice",
       chatPhase: "discover",
@@ -205,7 +206,7 @@ export function resolveChatRoute(
   }
 
   if (isReadyForRecommendation(ctx, session, intent)) {
-    console.info("[AI_ROUTE] recommendation_mode", logTravelContext(ctx), `intent=${intent}`);
+    logAiPipeline("[AI_ROUTE] recommendation_mode", logTravelContext(ctx), `intent=${intent}`);
     return { mode: "recommend", chatPhase: "recommend" };
   }
 
@@ -214,7 +215,7 @@ export function resolveChatRoute(
     shouldFetchDestinationCategoryPlaces(userText, ctx, session) ||
     (detectPlaceRecommendationIntent(userText) && ctx.destination?.trim())
   ) {
-    console.info("[AI_ROUTE] destination_place_recommend", logTravelContext(ctx));
+    logAiPipeline("[AI_ROUTE] destination_place_recommend", logTravelContext(ctx));
     return { mode: "recommend", chatPhase: "recommend" };
   }
 
@@ -233,7 +234,7 @@ export function resolveChatRoute(
             ctx.destinationCountry ?? session.travelContext?.destinationCountry,
           )
         : undefined;
-    console.info("[AI_ROUTE] next_question", nextKey, logTravelContext(ctx), `intent=${intent}`);
+    logAiPipeline("[AI_ROUTE] next_question", nextKey, logTravelContext(ctx), `intent=${intent}`);
     return {
       mode: "clarify",
       chatPhase: "discover",
@@ -243,7 +244,7 @@ export function resolveChatRoute(
     };
   }
 
-  console.info("[AI_ROUTE] recommendation_mode", "fallback-ready", logTravelContext(ctx));
+  logAiPipeline("[AI_ROUTE] recommendation_mode", "fallback-ready", logTravelContext(ctx));
   return { mode: "recommend", chatPhase: "recommend" };
 }
 

@@ -4,6 +4,7 @@ import type { PlaceResult } from "@/lib/place-result";
 import type { ChatPlaceItem, ChatPlanningSession } from "@/lib/chat-session";
 import type { ChatMsg } from "@/lib/chat-history";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   syncSessionPlaceMemory,
   computeItineraryFetchTarget,
@@ -225,7 +226,7 @@ export async function fetchItineraryPlaces(params: {
   const label = sanitizeDestinationForGeocode(destination);
   const fetchTarget = computeItineraryFetchTarget(days);
 
-  console.info(
+  logAiPipeline(
     "[ITINERARY_PLACES_FETCH]",
     `destination=${label}`,
     `days=${days}`,
@@ -319,7 +320,7 @@ export async function fetchItineraryPlaces(params: {
   );
   const ranked = rankByQuality(valid).slice(0, Math.max(fetchTarget, days + 2));
 
-  console.info(
+  logAiPipeline(
     "[ITINERARY_PLACES_FETCH]",
     `raw=${raw.length}`,
     `valid=${valid.length}`,
@@ -425,7 +426,7 @@ export async function prepareDirectItinerarySession(params: {
   const days = context.days ?? session.tripDays;
 
   if (!destination || !days) {
-    console.info("[ITINERARY_SAVE_FAILED_REASON]", "no destination");
+    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "no destination");
     return {
       ok: false,
       message: "我還需要知道目的地和天數，才能幫你排完整行程。",
@@ -459,7 +460,7 @@ export async function prepareDirectItinerarySession(params: {
   });
 
   if (!merged.ok) {
-    console.info("[ITINERARY_SAVE_FAILED_REASON]", merged.apiEmpty ? "api_empty" : "no places");
+    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", merged.apiEmpty ? "api_empty" : "no places");
     return {
       ok: false,
       message: merged.message,
@@ -468,7 +469,7 @@ export async function prepareDirectItinerarySession(params: {
   }
 
   const places = merged.places;
-  console.info(
+  logAiPipeline(
     "[ITINERARY_PLACES_FETCH]",
     `destination=${label}`,
     `source=${source}`,
@@ -476,7 +477,7 @@ export async function prepareDirectItinerarySession(params: {
   );
 
   if (!places.length) {
-    console.info("[ITINERARY_SAVE_FAILED_REASON]", "no places");
+    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "no places");
     return { ok: false, message: INSUFFICIENT_ITINERARY_PLACES_MESSAGE, apiEmpty: false };
   }
 

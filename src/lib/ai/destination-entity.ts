@@ -1,4 +1,5 @@
 import { normalizeDestinationLabel, isKnownTouristCityLabel, isKnownScenicLabel } from "@/lib/ai/trip-planning-context";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export type DestinationEntityType =
   | "country"
@@ -364,14 +365,19 @@ const ENTITY_SEEDS: EntitySeed[] = [
   },
 ];
 
-const ENTITY_BY_NAME = new Map<string, DestinationEntity>();
+let entityByNameCache: Map<string, DestinationEntity> | null = null;
 
-for (const seed of ENTITY_SEEDS) {
-  const { names, ...rest } = seed;
-  for (const raw of names) {
-    const name = normalizeDestinationLabel(raw);
-    ENTITY_BY_NAME.set(name, { name, ...rest });
+function getEntityByNameMap(): Map<string, DestinationEntity> {
+  if (entityByNameCache) return entityByNameCache;
+  entityByNameCache = new Map();
+  for (const seed of ENTITY_SEEDS) {
+    const { names, ...rest } = seed;
+    for (const raw of names) {
+      const name = normalizeDestinationLabel(raw);
+      entityByNameCache.set(name, { name, ...rest });
+    }
   }
+  return entityByNameCache;
 }
 
 const PARENT_COUNTRY_HINTS: Record<string, string> = {
@@ -410,7 +416,8 @@ const CONTINENTAL_REGIONS = new Set(["歐洲", "北美", "南美", "非洲", "�
 
 function inferType(name: string): DestinationEntityType {
   if (CONTINENTAL_REGIONS.has(name)) return "region";
-  if (ENTITY_BY_NAME.get(name)?.type) return ENTITY_BY_NAME.get(name)!.type;
+  const registered = getEntityByNameMap().get(name);
+  if (registered?.type) return registered.type;
   if (isKnownTouristCityLabel(name)) return "city";
   if (isKnownScenicLabel(name)) return "attraction";
   if (/(山|湖|瀑布|國家公園|国家公园|寺|廟|庙)/.test(name)) return "attraction";
@@ -421,7 +428,7 @@ function inferType(name: string): DestinationEntityType {
 }
 
 function inferCountry(name: string, type: DestinationEntityType): string | undefined {
-  const registered = ENTITY_BY_NAME.get(name);
+  const registered = getEntityByNameMap().get(name);
   if (registered?.country) return registered.country;
   if (PARENT_COUNTRY_HINTS[name]) return PARENT_COUNTRY_HINTS[name];
   if (type === "country") return name;
@@ -429,7 +436,7 @@ function inferCountry(name: string, type: DestinationEntityType): string | undef
 }
 
 function inferHemisphere(name: string, country?: string): Hemisphere {
-  const registered = ENTITY_BY_NAME.get(name);
+  const registered = getEntityByNameMap().get(name);
   if (registered) return registered.hemisphere;
   if (country && SOUTHERN_COUNTRY_NAMES.has(country)) return "south";
   if (SOUTHERN_COUNTRY_NAMES.has(name)) return "south";
@@ -445,7 +452,7 @@ function inferClimateZone(
   type: DestinationEntityType,
   country?: string,
 ): ClimateZone {
-  const registered = ENTITY_BY_NAME.get(name);
+  const registered = getEntityByNameMap().get(name);
   if (registered) return registered.climateZone;
 
   if (/(冰島|Iceland|格陵蘭)/.test(name)) return "subpolar";
@@ -472,7 +479,7 @@ export function inferSeasonalityFromClimate(
   climateZone: ClimateZone,
   name: string,
 ): DestinationSeasonality {
-  const registered = ENTITY_BY_NAME.get(name);
+  const registered = getEntityByNameMap().get(name);
   if (registered) return registered.seasonality;
 
   if (hemisphere === "south") {
@@ -539,7 +546,7 @@ export function inferSeasonalityFromClimate(
 
 export function resolveDestinationEntity(rawName: string): DestinationEntity {
   const name = normalizeDestinationLabel(rawName.trim());
-  const registered = ENTITY_BY_NAME.get(name);
+  const registered = getEntityByNameMap().get(name);
   if (registered) {
     logDestinationEntityResolved(registered);
     return registered;
@@ -565,25 +572,25 @@ export function resolveDestinationEntity(rawName: string): DestinationEntity {
 }
 
 function logDestinationEntityResolved(entity: DestinationEntity): void {
-  console.info("[AI_DESTINATION_ENTITY]", `name=${entity.name}`, `type=${entity.type}`);
-  console.info("[AI_DESTINATION_TYPE]", entity.type);
+  logAiPipeline("[AI_DESTINATION_ENTITY]", `name=${entity.name}`, `type=${entity.type}`);
+  logAiPipeline("[AI_DESTINATION_TYPE]", entity.type);
   if (entity.country) {
-    console.info("[AI_REGION_RESOLVE]", `region=${entity.name}`, `country=${entity.country}`);
-    console.info("[AI_COUNTRY_RESOLVE]", entity.country);
+    logAiPipeline("[AI_REGION_RESOLVE]", `region=${entity.name}`, `country=${entity.country}`);
+    logAiPipeline("[AI_COUNTRY_RESOLVE]", entity.country);
   } else if (entity.type === "country") {
-    console.info("[AI_COUNTRY_RESOLVE]", entity.name);
+    logAiPipeline("[AI_COUNTRY_RESOLVE]", entity.name);
   }
-  console.info("[AI_HEMISPHERE]", entity.hemisphere);
-  console.info("[AI_CLIMATE_ZONE]", entity.climateZone);
+  logAiPipeline("[AI_HEMISPHERE]", entity.hemisphere);
+  logAiPipeline("[AI_CLIMATE_ZONE]", entity.climateZone);
 }
 
 export function logBestTravelMonth(ranges: string[]): void {
-  console.info("[AI_BEST_TRAVEL_MONTH]", ranges.join(" | "));
+  logAiPipeline("[AI_BEST_TRAVEL_MONTH]", ranges.join(" | "));
 }
 
 export function logSeasonEvents(events: SeasonEvent[]): void {
   if (!events.length) return;
-  console.info(
+  logAiPipeline(
     "[AI_SEASON_EVENT]",
     events.map((e) => e.label).join(", "),
   );

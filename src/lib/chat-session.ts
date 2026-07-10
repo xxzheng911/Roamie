@@ -102,11 +102,15 @@ export type ChatPlanningSession = {
   recommendedPlaceIds?: string[];
   /** 已推薦過的核心地點名稱（normalizePlaceName） */
   recommendedNormalizedNames?: string[];
+  /** 行程 follow-up：已使用過的 place id */
+  usedPlaceIds?: string[];
+  /** 行程 follow-up：已使用過的 normalized 名稱 */
+  usedPlaceNames?: string[];
+  /** 行程 follow-up：已推薦過的區域 key（旗津、駁二等） */
+  usedAreaKeys?: string[];
   selectedPlaces: ChatPlaceItem[];
   selectedPlaceIds?: string[];
   selectedPlaceNames?: string[];
-  /** 使用者拒絕的地點名稱 */
-  rejectedPlaceNames?: string[];
   /** 已選 + 聊天中新增，用於行程 */
   plannedStops?: ChatPlaceItem[];
   /** 從心情推薦頁勾選的主要地點 */
@@ -197,6 +201,14 @@ export type ChatPlanningSession = {
   adviceSelectionThisTurn?: string;
   /** 本輪選項回覆對應的 pending 問題（推進回覆後清除） */
   lastResolvedPendingQuestion?: import("@/lib/ai/destination-pending-question").PendingQuestion;
+  /** 本輪 AI 行程規劃 session id */
+  planningSessionId?: string;
+  /** 行程風格切換版本（每次重選 1~4 遞增） */
+  planVersion?: number;
+  /** 分天行程唯一資料源（文字 / 地點卡 / 建立行程共用） */
+  currentDayPlan?: import("@/lib/ai/ai-day-plan-source").AiDayPlan;
+  /** AI 行程規劃狀態機 */
+  chatPlanningState?: import("@/lib/ai/chat-planning-state").ChatPlanningState;
   /** 聊聊對話模式分流 */
   conversationMode?: import("@/lib/ai/trip-planning-context").ChatConversationMode;
   /** 「跟 Roamie 聊這裡」焦點地點 */

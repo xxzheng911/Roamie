@@ -2,6 +2,7 @@ import type { ChatPlaceItem, ChatPlanningSession } from "@/lib/chat-session";
 import { placeDisplayName } from "@/lib/chat-session";
 import type { ChatConversationMode } from "@/lib/ai/trip-planning-context";
 import type { NearbyPlaceIntent } from "@/lib/ai/chat-intent";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   mapCategoryIntentToNearbyIntent,
   parseChatPlaceIntents,
@@ -18,6 +19,7 @@ import {
 
 export type FetchPlaceDetailsForFocusFn = (
   placeId: string,
+  opts?: { placeName?: string; city?: string },
 ) => Promise<{
   lat: number;
   lng: number;
@@ -195,7 +197,7 @@ export async function ensurePlaceDetailFocusCoordinates(
 
   const placeId = (focus.placeId ?? focus.googlePlaceId ?? "").trim();
   if (placeId && fetchDetailsFn) {
-    console.info("[CHAT_NEARBY_GEOCODE]", { place: placeDisplayName(focus), source: "place_details", placeId });
+    logAiPipeline("[CHAT_NEARBY_GEOCODE]", { place: placeDisplayName(focus), source: "place_details", placeId });
     const details = await fetchDetailsFn(placeId);
     if (details && hasValidPlaceCoordinates(details)) {
       const updated = enrichChatPlaceItemFromDetails(focus, details);
@@ -215,7 +217,7 @@ export async function ensurePlaceDetailFocusCoordinates(
     .join(", ");
   if (!query.trim()) return session;
 
-  console.info("[CHAT_NEARBY_GEOCODE]", { place: placeDisplayName(focus), query, source: "geocode" });
+  logAiPipeline("[CHAT_NEARBY_GEOCODE]", { place: placeDisplayName(focus), query, source: "geocode" });
   const geocoded = await geocodeFn({ data: { query, locale } });
   if (geocoded.location?.lat == null || geocoded.location?.lng == null) {
     console.warn("[CHAT_NEARBY_GEOCODE] failed", { place: placeDisplayName(focus) });
@@ -229,7 +231,7 @@ export async function ensurePlaceDetailFocusCoordinates(
     address: focus.address || geocoded.location.address,
     placeId: placeId || undefined,
   });
-  console.info("[CHAT_NEARBY_GEOCODE] ok", {
+  logAiPipeline("[CHAT_NEARBY_GEOCODE] ok", {
     place: placeDisplayName(updated),
     lat: updated.lat,
     lng: updated.lng,

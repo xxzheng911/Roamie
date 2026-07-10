@@ -1,4 +1,4 @@
-import type { PlaceOpenStatus } from "@/lib/filter-available-places";
+import type { PlaceHoursData, PlaceOpenStatus } from "@/lib/filter-available-places";
 import type { NormalizedOpeningStatusValue } from "@/lib/normalized-opening-status";
 import type { NormalizedOpeningSource } from "@/lib/normalized-opening-status";
 
@@ -34,4 +34,7 @@ export type PlaceResult = {
   fallbackImageUrl?: string | null;
   /** 探索地圖分層品質（1=營業中, 2=待確認, 3=休息中） */
   exploreQualityTier?: 1 | 2 | 3 | null;
+  /** Google regularOpeningHours（行程排程營業時間驗證用） */
+  regularOpeningHours?: PlaceHoursData["regularOpeningHours"];
+  utcOffsetMinutes?: number | null;
 };

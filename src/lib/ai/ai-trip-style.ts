@@ -9,6 +9,7 @@ import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import { EN_CITY_NAMES } from "@/lib/ai/destination-geocode";
 import { buildLocalLifeSearchAttempts, buildLocalLifeSupplementAttempts } from "@/lib/ai/ai-local-life-rules";
 import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   resolveConversationDays,
   resolveConversationDestination,
@@ -38,8 +39,8 @@ export const TRIP_STYLE_OPTIONS: TripStyleOption[] = [
   },
   {
     key: "slow_nature",
-    label: "文化或自然景點遊（慢悠節奏氛圍最好）",
-    shortLabel: "慢遊療癒行程",
+    label: "慢步調散策（公園河岸、咖啡廳與文創）",
+    shortLabel: "慢步調散策",
   },
   {
     key: "mixed",
@@ -49,11 +50,11 @@ export const TRIP_STYLE_OPTIONS: TripStyleOption[] = [
 ];
 
 export function logAiTripStyleOptionsRender(): void {
-  console.info("[AI_TRIP_STYLE_OPTIONS_RENDER]");
+  logAiPipeline("[AI_TRIP_STYLE_OPTIONS_RENDER]");
 }
 
 export function logAiTripStyleSelected(option: TripStyleKey): void {
-  console.info("[AI_TRIP_STYLE_SELECTED]", `option=${option}`);
+  logAiPipeline("[AI_TRIP_STYLE_SELECTED]", `option=${option}`);
 }
 
 export function logAiPlaceSearchStart(
@@ -61,7 +62,7 @@ export function logAiPlaceSearchStart(
   style: TripStyleKey,
   days: number,
 ): void {
-  console.info(
+  logAiPipeline(
     "[AI_PLACE_SEARCH_START]",
     `destination=${destination}`,
     `style=${style}`,
@@ -70,20 +71,64 @@ export function logAiPlaceSearchStart(
 }
 
 export function logAiPlaceSearchResults(count: number): void {
-  console.info("[AI_PLACE_SEARCH_RESULTS]", `count=${count}`);
+  logAiPipeline("[AI_PLACE_SEARCH_RESULTS]", `count=${count}`);
 }
 
 export function logAiDayPlanGenerated(day: number, count: number): void {
-  console.info("[AI_DAY_PLAN_GENERATED]", `day=${day}`, `count=${count}`);
+  logAiPipeline("[AI_DAY_PLAN_GENERATED]", `day=${day}`, `count=${count}`);
+}
+
+export function logAiStylePlanGenerateStart(
+  destination: string,
+  style: TripStyleKey,
+  days: number,
+  sessionId?: string,
+): void {
+  logAiPipeline(
+    "[AI_STYLE_PLAN_GENERATE_START]",
+    `destination=${destination}`,
+    `style=${style}`,
+    `days=${days}`,
+    sessionId ? `sessionId=${sessionId}` : "",
+  );
+}
+
+export function logAiStyleSearchAttempts(destination: string, style: TripStyleKey, count: number): void {
+  logAiPipeline(
+    "[AI_STYLE_SEARCH_ATTEMPTS]",
+    `destination=${destination}`,
+    `style=${style}`,
+    `count=${count}`,
+  );
+}
+
+export function logAiStylePlacesResult(count: number, source?: string): void {
+  logAiPipeline(
+    "[AI_STYLE_PLACES_RESULT]",
+    `count=${count}`,
+    source ? `source=${source}` : "",
+  );
+}
+
+export function logAiStyleDayPlanResult(days: number, itemCount: number): void {
+  logAiPipeline("[AI_STYLE_DAY_PLAN_RESULT]", `days=${days}`, `items=${itemCount}`);
+}
+
+export function logAiStylePlanApplySession(sessionId: string): void {
+  logAiPipeline("[AI_STYLE_PLAN_APPLY_SESSION]", `sessionId=${sessionId}`);
+}
+
+export function logAiStylePlanRenderReady(places: number, dayPlanItems: number): void {
+  logAiPipeline("[AI_STYLE_PLAN_RENDER_READY]", `places=${places}`, `dayPlan=${dayPlanItems}`);
 }
 
 export function hasConfirmedTripDays(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
 ): boolean {
-  if (ctx.planningDaysConfirmed && ctx.days != null && ctx.days > 0) return true;
   if (session?.pendingQuestion?.type === "ask_days") return false;
-  return false;
+  if (ctx.planningDaysConfirmed === false) return false;
+  return ctx.days != null && ctx.days > 0;
 }
 
 export function resolveConfirmedDays(
@@ -241,6 +286,37 @@ export function buildAskTripStyleReply(
   ].join("\n");
 }
 
+export function buildTripStyleSelectionAdviceResult(
+  style: TripStyleKey,
+  ctx: CanonicalTravelContext,
+  session?: ChatPlanningSession,
+): {
+  reply: string;
+  triggerPlaceRecommendations: true;
+  contextPatch: Partial<CanonicalTravelContext>;
+} {
+  const destination = resolveConversationDestination(ctx, session) ?? ctx.destination ?? "這趟";
+  const label = normalizeDestinationLabel(destination);
+  const days = resolveConfirmedDays(ctx, session) ?? ctx.days;
+  logAiTripStyleSelected(style);
+  return {
+    reply: `好的，我會依「${tripStyleLabel(style)}」幫你安排 ${label}${days ? ` ${days} 天` : ""}行程。`,
+    triggerPlaceRecommendations: true,
+    contextPatch: {
+      destination: label,
+      days,
+      planningDaysConfirmed: true,
+      planningTripStyle: style,
+      selectedTripStyle: tripStyleLabel(style),
+      travelStyle: tripStyleLabel(style),
+      tripPurpose: "trip_style_selected",
+      conversationState: "preference_selected",
+      startDate: ctx.startDate ?? session?.tripStartDate,
+      endDate: ctx.endDate ?? session?.tripEndDate,
+    },
+  };
+}
+
 export function buildAskTripStyleAdviceResult(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
@@ -313,6 +389,17 @@ export function parseAskTripStyleSelection(text: string): TripStyleKey | null {
 
 export function tripStyleLabel(style: TripStyleKey): string {
   return TRIP_STYLE_OPTIONS.find((option) => option.key === style)?.shortLabel ?? style;
+}
+
+/** 推薦卡片標籤用（與行程風格選項對應） */
+export function tripStyleDisplayTag(style: TripStyleKey): string {
+  const tags: Record<TripStyleKey, string> = {
+    classic_landmarks: "經典地標",
+    local_life: "在地生活",
+    slow_nature: "慢步調散策",
+    mixed: "Roamie混搭",
+  };
+  return tags[style];
 }
 
 export function buildTripStyleSearchAttempts(

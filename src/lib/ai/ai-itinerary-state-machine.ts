@@ -2,6 +2,7 @@ import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { Locale } from "@/lib/i18n/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { ChatMsg } from "@/lib/chat-history";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   canBuildItineraryFromPlaceCount,
   preparePlacesForItineraryBuild,
@@ -50,15 +51,15 @@ export const AI_ITINERARY_SUCCESS_REDIRECT_MESSAGE =
   "行程已建立，正在帶你前往";
 
 export function logAiState(state: AiItineraryState, detail?: string): void {
-  console.info("[AI_STATE]", `state=${state}`, detail ? `detail=${detail}` : "");
+  logAiPipeline("[AI_STATE]", `state=${state}`, detail ? `detail=${detail}` : "");
 }
 
 export function logAiItineraryBuild(stops: number, days: number): void {
-  console.info("[AI_ITINERARY_BUILD]", `stops=${stops}`, `days=${days}`);
+  logAiPipeline("[AI_ITINERARY_BUILD]", `stops=${stops}`, `days=${days}`);
 }
 
 export function logAiItineraryCreate(destination: string, placeCount: number): void {
-  console.info(
+  logAiPipeline(
     "[AI_ITINERARY_CREATE]",
     `destination=${destination}`,
     `places=${placeCount}`,
@@ -66,7 +67,7 @@ export function logAiItineraryCreate(destination: string, placeCount: number): v
 }
 
 export function logAiItinerarySuccess(tripId?: string): void {
-  console.info("[AI_ITINERARY_SUCCESS]", tripId ? `tripId=${tripId}` : "draft");
+  logAiPipeline("[AI_ITINERARY_SUCCESS]", tripId ? `tripId=${tripId}` : "draft");
 }
 
 export function logAiItineraryFailed(reason: string): void {
@@ -110,7 +111,7 @@ export async function prepareDirectItineraryFlow(params: {
 
   if (!destination || !days) {
     logAiItineraryFailed("missing_destination_or_days");
-    console.info("[ITINERARY_SAVE_FAILED_REASON]", "no destination");
+    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "no destination");
     logAiState("FAILED", "missing_destination_or_days");
     return {
       ok: false,
@@ -139,7 +140,7 @@ export async function prepareDirectItineraryFlow(params: {
 
   if (canBuildItineraryFromPlaceCount(sessionPlaces.length)) {
     logAiState("SEARCHING_PLACES", `reuse_${source}`);
-    console.info("[ITINERARY_BUILD_FROM_SUGGESTIONS]", `places=${sessionPlaces.length}`);
+    logAiPipeline("[ITINERARY_BUILD_FROM_SUGGESTIONS]", `places=${sessionPlaces.length}`);
     logAiState("RANKING", `selected=${sessionPlaces.length}`);
   } else {
     logAiState("SEARCHING_PLACES", normalizeDestinationLabel(destination));
@@ -150,7 +151,7 @@ export async function prepareDirectItineraryFlow(params: {
   if (!prepared.ok) {
     if (!canBuildItineraryFromPlaceCount(sessionPlaces.length)) {
       logAiItineraryFailed(prepared.apiEmpty ? "places_api_empty" : "insufficient_places");
-      console.info(
+      logAiPipeline(
         "[ITINERARY_SAVE_FAILED_REASON]",
         prepared.apiEmpty ? "api_empty" : "no places",
       );
@@ -244,7 +245,7 @@ export async function createItineraryFromSession(params: {
 
   if (selectedPlaces.length < 1) {
     logAiItineraryFailed("no_selected_places");
-    console.info("[ITINERARY_SAVE_FAILED_REASON]", "no places");
+    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "no places");
     logAiState("FAILED", "no_selected_places");
     return {
       ok: false,
@@ -277,7 +278,7 @@ export async function createItineraryFromSession(params: {
       }
       logItineraryFailureReason(`generate_api_failed:${generateResult.errorCode}`);
       logAiItineraryFailed(generateResult.errorCode);
-      console.info("[ITINERARY_SAVE_FAILED_REASON]", "itinerary validation failed");
+      logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "itinerary validation failed");
       logAiState("FAILED", generateResult.errorCode);
       return {
         ok: false,
@@ -308,7 +309,7 @@ export async function createItineraryFromSession(params: {
       }
       logItineraryFailureReason("invalid_stops_after_unwrap");
       logAiItineraryFailed("invalid_stops");
-      console.info("[ITINERARY_SAVE_FAILED_REASON]", "itinerary validation failed");
+      logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "itinerary validation failed");
       logAiState("FAILED", "invalid_stops");
       return {
         ok: false,
@@ -355,7 +356,7 @@ export async function createItineraryFromSession(params: {
     logItinerarySaveFailed(reason);
     logItineraryFailureReason(`exception:${reason}`);
     logAiItineraryFailed(reason);
-    console.info("[ITINERARY_SAVE_FAILED_REASON]", reason);
+    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", reason);
     logAiState("FAILED", reason);
     return {
       ok: false,

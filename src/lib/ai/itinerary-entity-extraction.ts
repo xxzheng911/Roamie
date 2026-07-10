@@ -1,5 +1,6 @@
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { isMoodNearbyRelaxationRequest } from "@/lib/mood-nearby-intent";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   isKnownCountryLabel,
   isKnownScenicLabel,
@@ -163,7 +164,7 @@ export function extractItineraryEntitiesFromText(text: string): ItineraryEntityE
 }
 
 export function logItineraryIntentResolved(intent: string, text: string): void {
-  console.info("[ITINERARY_INTENT_RESOLVED]", `intent=${intent}`, `text=${text}`);
+  logAiPipeline("[ITINERARY_INTENT_RESOLVED]", `intent=${intent}`, `text=${text}`);
 }
 
 export function logItineraryEntityExtracted(entity: {
@@ -172,7 +173,7 @@ export function logItineraryEntityExtracted(entity: {
   nights?: number;
   travelMonth?: string;
 }): void {
-  console.info(
+  logAiPipeline(
     "[ITINERARY_ENTITY_EXTRACTED]",
     `destination=${entity.destination ?? "—"}`,
     entity.days != null ? `days=${entity.days}` : "",
@@ -182,15 +183,15 @@ export function logItineraryEntityExtracted(entity: {
 }
 
 export function logItineraryDestinationParsed(destination: string): void {
-  console.info("[ITINERARY_DESTINATION_PARSED]", `destination=${destination}`);
+  logAiPipeline("[ITINERARY_DESTINATION_PARSED]", `destination=${destination}`);
 }
 
 export function logItineraryDateParsed(value: string): void {
-  console.info("[ITINERARY_DATE_PARSED]", `value=${value}`);
+  logAiPipeline("[ITINERARY_DATE_PARSED]", `value=${value}`);
 }
 
 export function logItineraryDaysParsed(days: number, nights?: number): void {
-  console.info(
+  logAiPipeline(
     "[ITINERARY_DAYS_PARSED]",
     `days=${days}`,
     nights != null ? `nights=${nights}` : "",
@@ -198,23 +199,23 @@ export function logItineraryDaysParsed(days: number, nights?: number): void {
 }
 
 export function logItineraryGeocodeQuery(query: string): void {
-  console.info("[ITINERARY_GEOCODE_QUERY]", `query=${query}`);
+  logAiPipeline("[ITINERARY_GEOCODE_QUERY]", `query=${query}`);
 }
 
 export function logItineraryObjectBuilt(stops: number, days: number): void {
-  console.info("[ITINERARY_OBJECT_BUILT]", `stops=${stops}`, `days=${days}`);
+  logAiPipeline("[ITINERARY_OBJECT_BUILT]", `stops=${stops}`, `days=${days}`);
 }
 
 export function logItinerarySaveStart(): void {
-  console.info("[ITINERARY_SAVE_START]");
+  logAiPipeline("[ITINERARY_SAVE_START]");
 }
 
 export function logItinerarySaveSuccess(tripId?: string): void {
-  console.info("[ITINERARY_SAVE_SUCCESS]", tripId ? `tripId=${tripId}` : "");
+  logAiPipeline("[ITINERARY_SAVE_SUCCESS]", tripId ? `tripId=${tripId}` : "");
 }
 
 export function logItineraryItemsCoalesced(count: number): void {
-  console.info("[ITINERARY_ITEMS_COALESCED]", count);
+  logAiPipeline("[ITINERARY_ITEMS_COALESCED]", count);
 }
 
 export function logItinerarySavePayloadReady(
@@ -222,7 +223,7 @@ export function logItinerarySavePayloadReady(
   days: number,
   stops: number,
 ): void {
-  console.info(
+  logAiPipeline(
     "[ITINERARY_SAVE_PAYLOAD_READY]",
     `destination=${destination}`,
     `days=${days}`,
@@ -239,19 +240,19 @@ export function logItineraryFailureReason(reason: string): void {
 }
 
 export function logItineraryBuildSource(source: string, count: number): void {
-  console.info("[ITINERARY_BUILD_SOURCE]", `source=${source}`, `count=${count}`);
+  logAiPipeline("[ITINERARY_BUILD_SOURCE]", `source=${source}`, `count=${count}`);
 }
 
 export function logItineraryUsedRecommendedPlaces(count: number): void {
-  console.info("[ITINERARY_USED_RECOMMENDED_PLACES]", `count=${count}`);
+  logAiPipeline("[ITINERARY_USED_RECOMMENDED_PLACES]", `count=${count}`);
 }
 
 export function logItineraryDaysBuilt(days: number, stops: number): void {
-  console.info("[ITINERARY_DAYS_BUILT]", `days=${days}`, `stops=${stops}`);
+  logAiPipeline("[ITINERARY_DAYS_BUILT]", `days=${days}`, `stops=${stops}`);
 }
 
 export function logItineraryValidationResult(valid: boolean, detail?: string): void {
-  console.info(
+  logAiPipeline(
     "[ITINERARY_VALIDATION_RESULT]",
     valid ? "valid" : "invalid",
     detail ? `detail=${detail}` : "",

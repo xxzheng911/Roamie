@@ -1,15 +1,56 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { AiDayPlan } from "@/lib/ai/ai-day-plan-source";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
+import { logAiStyleReselectSessionReset } from "@/lib/ai/planning-style-reselect-log";
 
 let planningRenderInProgress = false;
+let planningRenderSessionId: string | undefined;
 
-export function setPlanningRenderInProgress(value: boolean): void {
-  planningRenderInProgress = value;
+/** 本輪已凍結的有效 dayPlan，避免空 Planner / stale async 覆寫 */
+let frozenDayPlanBySession = new Map<string, AiDayPlan>();
+
+export function freezePlanningDayPlan(sessionId: string, dayPlan: AiDayPlan): void {
+  const id = sessionId.trim();
+  if (!id || !dayPlan.items.length) return;
+  frozenDayPlanBySession.set(id, dayPlan);
+  logAiPipeline(
+    "[AI_PLANNING_DAY_PLAN_FROZEN]",
+    `sessionId=${id}`,
+    `items=${dayPlan.items.length}`,
+  );
 }
 
-export function isPlanningRenderInProgress(): boolean {
-  return planningRenderInProgress;
+export function getFrozenPlanningDayPlan(sessionId?: string): AiDayPlan | undefined {
+  const id = sessionId?.trim();
+  if (!id) return undefined;
+  return frozenDayPlanBySession.get(id);
+}
+
+export function clearFrozenPlanningDayPlan(sessionId?: string): void {
+  const id = sessionId?.trim();
+  if (!id) {
+    frozenDayPlanBySession.clear();
+    return;
+  }
+  frozenDayPlanBySession.delete(id);
+}
+
+export function setPlanningRenderInProgress(value: boolean, sessionId?: string): void {
+  planningRenderInProgress = value;
+  planningRenderSessionId = value ? sessionId?.trim() || planningRenderSessionId : undefined;
+}
+
+export function isPlanningRenderInProgress(forSessionId?: string): boolean {
+  if (!planningRenderInProgress) return false;
+  const expected = forSessionId?.trim() || planningRenderSessionId?.trim();
+  if (!expected || !planningRenderSessionId?.trim()) return true;
+  return planningRenderSessionId === expected;
+}
+
+export function getPlanningRenderSessionId(): string | undefined {
+  return planningRenderSessionId;
 }
 
 export function createPlanningSessionId(): string {
@@ -17,27 +58,27 @@ export function createPlanningSessionId(): string {
 }
 
 export function logAiPlanningSessionStart(sessionId: string): void {
-  console.info("[AI_PLANNING_SESSION_START]", `sessionId=${sessionId}`);
+  logAiPipeline("[AI_PLANNING_SESSION_START]", `sessionId=${sessionId}`);
 }
 
 export function logAiSessionCreate(reason: string, sessionId: string): void {
-  console.info("[AI_SESSION_CREATE]", `reason=${reason}`, `sessionId=${sessionId}`);
+  logAiPipeline("[AI_SESSION_CREATE]", `reason=${reason}`, `sessionId=${sessionId}`);
 }
 
 export function logAiSessionReuse(sessionId: string, state: string): void {
-  console.info("[AI_SESSION_REUSE]", `sessionId=${sessionId}`, `state=${state}`);
+  logAiPipeline("[AI_SESSION_REUSE]", `sessionId=${sessionId}`, `state=${state}`);
 }
 
 export function logAiSessionResetBlocked(reason: string): void {
-  console.info("[AI_SESSION_RESET_BLOCKED]", `reason=${reason}`);
+  logAiPipeline("[AI_SESSION_RESET_BLOCKED]", `reason=${reason}`);
 }
 
 export function logAiPushPlaceCardsSession(sessionId: string, current: string): void {
-  console.info("[AI_PUSH_PLACE_CARDS_SESSION]", `sessionId=${sessionId}`, `current=${current}`);
+  logAiPipeline("[AI_PUSH_PLACE_CARDS_SESSION]", `sessionId=${sessionId}`, `current=${current}`);
 }
 
 export function logAiPlanningSessionClear(sessionId: string | undefined, reason: string): void {
-  console.info(
+  logAiPipeline(
     "[AI_PLANNING_SESSION_CLEAR]",
     `sessionId=${sessionId ?? "none"}`,
     `reason=${reason}`,
@@ -45,7 +86,7 @@ export function logAiPlanningSessionClear(sessionId: string | undefined, reason:
 }
 
 export function logAiPlaceCardsSkipStale(oldSessionId: string, currentSessionId: string): void {
-  console.info(
+  logAiPipeline(
     "[AI_PLACE_CARDS_SKIP_STALE]",
     `oldSessionId=${oldSessionId}`,
     `currentSessionId=${currentSessionId}`,
@@ -53,11 +94,11 @@ export function logAiPlaceCardsSkipStale(oldSessionId: string, currentSessionId:
 }
 
 export function logAiCreateTripSessionValidate(sessionId: string | undefined): void {
-  console.info("[AI_CREATE_TRIP_SESSION_VALIDATE]", `sessionId=${sessionId ?? "none"}`);
+  logAiPipeline("[AI_CREATE_TRIP_SESSION_VALIDATE]", `sessionId=${sessionId ?? "none"}`);
 }
 
 export function logAiStaleRecommendationsBlocked(): void {
-  console.info("[AI_STALE_RECOMMENDATIONS_BLOCKED]");
+  logAiPipeline("[AI_STALE_RECOMMENDATIONS_BLOCKED]");
 }
 
 export type PlanningSessionHandle = {
@@ -98,6 +139,7 @@ export function clearPlanningSessionState(
   reason: string,
 ): ChatPlanningSession {
   logAiPlanningSessionClear(session.planningSessionId, reason);
+  clearFrozenPlanningDayPlan(session.planningSessionId);
   return {
     ...session,
     currentDayPlan: undefined,
@@ -116,6 +158,47 @@ export function clearPlanningSessionState(
         }
       : session.travelContext,
     chatPlanningState: "idle",
+  };
+}
+
+/** 切換行程風格：保留目的地／天數等上下文，清空上一版規劃與錯誤狀態 */
+export function resetPlanningSessionForStyleReselect(
+  session: ChatPlanningSession,
+  style: TripStyleKey,
+): ChatPlanningSession {
+  const planVersion = (session.planVersion ?? 0) + 1;
+  clearFrozenPlanningDayPlan(session.planningSessionId);
+  const planningSessionId = createPlanningSessionId();
+  logAiStyleReselectSessionReset(planVersion, planningSessionId);
+  logAiSessionCreate("style_reselect", planningSessionId);
+  logAiPlanningSessionStart(planningSessionId);
+
+  return {
+    ...session,
+    planningSessionId,
+    planVersion,
+    chatPlanningState: "generatingPlan",
+    currentDayPlan: undefined,
+    recommendedPlaces: [],
+    selectedPlaces: [],
+    recommendedPlaceIds: [],
+    recommendedNormalizedNames: [],
+    plannedStops: [],
+    draftTrip: undefined,
+    pendingQuestion: undefined,
+    adviceSelectionThisTurn: undefined,
+    lastResolvedPendingQuestion: undefined,
+    usedPlaceIds: undefined,
+    usedPlaceNames: undefined,
+    usedAreaKeys: undefined,
+    travelContext: session.travelContext
+      ? {
+          ...session.travelContext,
+          mustVisitGenerated: false,
+          planningStage: undefined,
+          planningTripStyle: style,
+        }
+      : session.travelContext,
   };
 }
 

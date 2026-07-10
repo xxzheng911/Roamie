@@ -25,6 +25,14 @@ import {
   pendingQuestionForCityPreference,
 } from "@/lib/ai/city-days-planning";
 import {
+  buildAskTripStyleAdviceResult,
+  parseAskTripStyleSelection,
+  tripStyleLabel,
+  type TripStyleKey,
+} from "@/lib/ai/ai-trip-style";
+import { hasDestinationCombinations } from "@/lib/ai/destination-combination-suggestions";
+import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import {
   contextPatchForPreferenceSelection,
   enrichPendingQuestion,
   isAffirmativeReply,
@@ -50,7 +58,8 @@ export type PendingQuestionType =
   | "destination_style_choice"
   | "itinerary_next_step"
   | "ask_days"
-  | "ask_preference";
+  | "ask_preference"
+  | "ask_trip_style";
 
 export type ItineraryNextStepOption = "full_itinerary" | "daily_recommendations";
 
@@ -253,6 +262,11 @@ export function parsePendingOptionSelection(
     if (days) return String(days);
   }
 
+  if (pending.type === "ask_trip_style") {
+    const style = parseAskTripStyleSelection(t);
+    if (style) return style;
+  }
+
   if (pending.type === "ask_preference") {
     if (/^a$/i.test(t)) return "經典景點";
     if (/^b$/i.test(t)) return "美食咖啡";
@@ -453,7 +467,24 @@ function buildContextPatchForSelection(
       destination: pending.baseDestination ?? base.destination,
       destinationCountry: country ?? pending.destinationCountry,
       days,
+      planningDaysConfirmed: true,
       tripPurpose: "duration_selected",
+      conversationState: "awaiting_preference",
+    };
+  }
+
+  if (pending.type === "ask_trip_style") {
+    const style = selected as TripStyleKey;
+    return {
+      ...base,
+      destination: pending.baseDestination ?? base.destination,
+      destinationCountry: country ?? pending.destinationCountry,
+      planningDaysConfirmed: true,
+      planningTripStyle: style,
+      selectedTripStyle: tripStyleLabel(style),
+      travelStyle: tripStyleLabel(style),
+      tripPurpose: "trip_style_selected",
+      conversationState: "preference_selected",
     };
   }
 
@@ -584,11 +615,24 @@ export function buildNextStepAfterAdviceSelection(
       };
     }
     logChatContextUpdate({ destination: dest, days });
-    return buildCityDaysConfirmedReply(
-      dest,
-      days,
-      pending.destinationCountry ?? ctx.destinationCountry,
-      { weather: ctx.weather, context: ctx },
+    const label = normalizeDestinationLabel(dest);
+    if (hasDestinationCombinations(label)) {
+      return buildCityDaysConfirmedReply(
+        dest,
+        days,
+        pending.destinationCountry ?? ctx.destinationCountry,
+        { weather: ctx.weather, context: { ...ctx, destination: label, days } },
+      );
+    }
+    return buildAskTripStyleAdviceResult(
+      {
+        ...ctx,
+        destination: label,
+        days,
+        planningDaysConfirmed: true,
+        tripPurpose: "duration_selected",
+      },
+      undefined,
     );
   }
 

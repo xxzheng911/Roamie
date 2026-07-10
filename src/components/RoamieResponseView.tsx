@@ -182,7 +182,7 @@ export function RoamieResponseView({
       )}
 
       {!hideRecommendations && recs.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-2" data-chat-place-cards>
           {!compact && (
             <p className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-muted-foreground">
               <Sparkles className="h-3 w-3 text-clay" /> 推薦

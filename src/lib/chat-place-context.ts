@@ -1,6 +1,7 @@
 import type { ChatPlaceItem } from "@/lib/chat-session";
 import { placeDisplayName } from "@/lib/chat-session";
 import { placesRegionCodeFromCoordinates } from "@/lib/geo-region";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 
 /** 「跟 Roamie 聊這裡」需完整保存的焦點地點上下文 */
 export type ChatPlaceContext = {
@@ -157,7 +158,7 @@ export function enrichChatPlaceItemFromDetails(
 
 export function logChatContextPlace(place: ChatPlaceItem): void {
   const ctx = buildChatPlaceContext(place);
-  console.info("[CHAT_CONTEXT_PLACE]", {
+  devVerboseInfo("[CHAT_CONTEXT_PLACE]", {
     name: ctx?.displayName ?? placeDisplayName(place),
     placeId: ctx?.placeId ?? place.placeId ?? place.googlePlaceId ?? "",
     lat: ctx?.latitude ?? place.lat ?? "",
@@ -172,7 +173,7 @@ export function logChatNearbyRequest(params: {
   radius: number;
   category: string;
 }): void {
-  console.info("[CHAT_NEARBY_REQUEST]", {
+  devVerboseInfo("[CHAT_NEARBY_REQUEST]", {
     center: `${params.center.lat},${params.center.lng}`,
     radius: params.radius,
     category: params.category,
@@ -187,7 +188,7 @@ export function logChatNearbyResponse(params: {
   rawCount?: number;
   filteredCount?: number;
 }): void {
-  console.info("[CHAT_NEARBY_RESPONSE]", {
+  devVerboseInfo("[CHAT_NEARBY_RESPONSE]", {
     status: params.status,
     count: params.count,
     firstResultName: params.firstResultName ?? "",
@@ -223,7 +224,7 @@ export async function runPlaceDetailNearbySingleFlight<T>(
 ): Promise<T> {
   const existing = placeDetailNearbyInflight.get(key);
   if (existing) {
-    console.info("[CHAT_NEARBY_SINGLE_FLIGHT] joined", { key });
+    devVerboseInfo("[CHAT_NEARBY_SINGLE_FLIGHT] joined", { key });
     return existing as Promise<T>;
   }
   const promise = runner().finally(() => {

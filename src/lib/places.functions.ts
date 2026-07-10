@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import {
   PLACES_FIELD_MASK,
   PLACE_DETAILS_FIELD_MASK,
@@ -21,6 +22,7 @@ import {
   type PlaceHoursData,
 } from "@/lib/filter-available-places";
 import { applyNormalizedOpeningToPlaceResult } from "@/lib/normalized-opening-status";
+import { isFallbackPlanningPlaceId } from "@/lib/ai/planning-place-id";
 import { filterExplorePlaces } from "@/lib/filter-explore-places";
 import {
   isRecommendablePlace,
@@ -420,7 +422,7 @@ async function searchNearby(
     searchMode: stats?.searchMode,
   });
   if (stats?.screen === "chat") {
-    console.info("[CHAT_NEARBY_API]", {
+    devVerboseInfo("[CHAT_NEARBY_API]", {
       mode: "nearby",
       types: includedTypes.join(","),
       radius,
@@ -478,7 +480,7 @@ async function searchMultiNearby(
   }
 
   if (stats?.screen === "chat" && stats.caller.includes("trip_add_place")) {
-    console.info("[TRIP_ADD_PLACE_RAW_MERGE]", {
+    devVerboseInfo("[TRIP_ADD_PLACE_RAW_MERGE]", {
       groups: groups.length,
       perGroupMax,
       mergedCount: merged.length,
@@ -960,7 +962,11 @@ export const getPlaceDetails = createServerFn({ method: "POST" })
   .inputValidator((input) => PlaceDetailsInput.parse(input))
   .handler(
     async ({ data }): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> => {
-      if (data.placeId.startsWith("latlng:") || data.placeId.startsWith("saved-")) {
+      if (
+        data.placeId.startsWith("latlng:") ||
+        data.placeId.startsWith("saved-") ||
+        isFallbackPlanningPlaceId(data.placeId)
+      ) {
         return { place: null, error: "synthetic_id" };
       }
       try {

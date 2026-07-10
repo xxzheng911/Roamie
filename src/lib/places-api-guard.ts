@@ -5,9 +5,9 @@ export const PLACES_SEARCH_CACHE_TTL_MS = 20 * 60 * 1000;
 export const PLACES_NEARBY_CACHE_TTL_MS = 30 * 60 * 1000;
 export const PLACES_FAILED_CACHE_TTL_MS = 10 * 60 * 1000;
 export const PLACES_RAW_POOL_TTL_MS = 30 * 60 * 1000;
-export const PLACES_HOME_LOAD_TTL_MS = 30 * 60 * 1000;
+export const PLACES_HOME_LOAD_TTL_MS = 10 * 60 * 1000;
 /** 首頁附近地點顯示快取 TTL（localStorage） */
-export const PLACES_HOME_DISPLAY_TTL_MS = 30 * 60 * 1000;
+export const PLACES_HOME_DISPLAY_TTL_MS = 10 * 60 * 1000;
 /** 同城市小位移內不強制重載（公尺） */
 export const PLACES_HOME_REFRESH_MOVE_M = 2000;
 export const PLACES_MIN_LOCATION_MOVE_M = 500;

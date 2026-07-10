@@ -1,21 +1,24 @@
 import type { PlaceResult } from "@/lib/place-result";
 import { normalizePlaceName } from "@/lib/place-planning-memory";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { filterExcludedRetailPlaces } from "@/lib/ai/ai-day-plan-slot-rules";
+import { resolveTripPlaceId } from "@/lib/ai/ai-trip-place-allocator";
 
 export function logAiNormalizedPlacesCount(count: number): void {
-  console.info("[AI_NORMALIZED_PLACES_COUNT]", `count=${count}`);
+  logAiPipeline("[AI_NORMALIZED_PLACES_COUNT]", `count=${count}`);
 }
 
 export function logAiResolvedPlacesCount(count: number): void {
-  console.info("[AI_RESOLVED_PLACES_COUNT]", `count=${count}`);
+  logAiPipeline("[AI_RESOLVED_PLACES_COUNT]", `count=${count}`);
 }
 
 export function logAiBuildDayPlanStart(days: number, places: number): void {
-  console.info("[AI_BUILD_DAY_PLAN_START]", `days=${days}`, `places=${places}`);
+  logAiPipeline("[AI_BUILD_DAY_PLAN_START]", `days=${days}`, `places=${places}`);
 }
 
 export function logAiDayPlanItemAdded(day: number, name: string, type: string): void {
   if (!import.meta.env.DEV) return;
-  console.info(
+  logAiPipeline(
     "[AI_DAY_PLAN_ITEM_ADDED]",
     `day=${day}`,
     `name=${name}`,
@@ -24,15 +27,15 @@ export function logAiDayPlanItemAdded(day: number, name: string, type: string): 
 }
 
 export function logAiDayPlanFinalSummary(days: number, totalItems: number): void {
-  console.info("[AI_DAY_PLAN_FINAL]", `days=${days}`, `totalItems=${totalItems}`);
+  logAiPipeline("[AI_DAY_PLAN_FINAL]", `days=${days}`, `totalItems=${totalItems}`);
 }
 
 export function logAiRenderItineraryStart(): void {
-  console.info("[AI_RENDER_ITINERARY_START]");
+  logAiPipeline("[AI_RENDER_ITINERARY_START]");
 }
 
 export function logAiRenderItinerarySuccess(itemCount: number): void {
-  console.info("[AI_RENDER_ITINERARY_SUCCESS]", `itemCount=${itemCount}`);
+  logAiPipeline("[AI_RENDER_ITINERARY_SUCCESS]", `itemCount=${itemCount}`);
 }
 
 export function logAiRenderBlocked(
@@ -49,6 +52,66 @@ export function logAiRenderBlocked(
     `dayPlan=${dayPlanItems}`,
     sessionId ? `sessionId=${sessionId}` : "",
     currentSessionId ? `current=${currentSessionId}` : "",
+  );
+}
+
+export function logPlannerStart(requestedDays: number, placesCount: number, filteredCount?: number): void {
+  console.warn(
+    "[PLANNER_START]",
+    `requestedDays=${requestedDays}`,
+    `placesCount=${placesCount}`,
+    filteredCount != null ? `filteredCount=${filteredCount}` : "",
+  );
+}
+
+export function logPlannerSplit(dayCounts: Record<number, number>): void {
+  const parts = Object.entries(dayCounts)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([day, count]) => `day${day}=${count}`);
+  console.warn("[PLANNER_SPLIT]", parts.join(" "));
+}
+
+export function logPlannerAssign(dayCounts: Record<number, number>): void {
+  for (const [day, count] of Object.entries(dayCounts).sort(([a], [b]) => Number(a) - Number(b))) {
+    console.warn("[PLANNER_ASSIGN]", `Day${day} places=${count}`);
+  }
+}
+
+export function logPlannerResult(daysLength: number, totalPlaces: number, renderable: boolean): void {
+  console.warn(
+    "[PLANNER_RESULT]",
+    `days.length=${daysLength}`,
+    `totalPlaces=${totalPlaces}`,
+    `renderable=${renderable}`,
+  );
+}
+
+export function logPlannerCleared(reason: string, dayCounts?: Record<number, number>): void {
+  console.warn(
+    "[PLANNER_CLEARED]",
+    `reason=${reason}`,
+    dayCounts ? `before=${JSON.stringify(dayCounts)}` : "",
+  );
+}
+
+export function logPlannerOverwriteBlocked(
+  reason: string,
+  keptPlaces: number,
+  incomingPlaces: number,
+): void {
+  console.warn(
+    "[PLANNER_OVERWRITE_BLOCKED]",
+    `reason=${reason}`,
+    `kept=${keptPlaces}`,
+    `incoming=${incomingPlaces}`,
+  );
+}
+
+export function logPlannerFrozen(sessionId: string | undefined, totalPlaces: number): void {
+  console.warn(
+    "[PLANNER_FROZEN]",
+    sessionId ? `sessionId=${sessionId}` : "",
+    `totalPlaces=${totalPlaces}`,
   );
 }
 
@@ -79,7 +142,7 @@ export function normalizePlanningPlaces(places: PlaceResult[]): PlaceResult[] {
       id = `synthetic:${nameKey || name}`;
     }
 
-    const dedupeKey = id.startsWith("synthetic:") ? nameKey || name : id;
+    const dedupeKey = resolveTripPlaceId({ ...place, id } as PlaceResult);
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
@@ -95,5 +158,5 @@ export function normalizePlanningPlaces(places: PlaceResult[]): PlaceResult[] {
   }
 
   logAiNormalizedPlacesCount(out.length);
-  return out;
+  return filterExcludedRetailPlaces(out);
 }

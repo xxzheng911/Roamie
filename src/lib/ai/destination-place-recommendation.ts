@@ -16,6 +16,8 @@ import {
   logDestinationTextSearchResult,
   resolveDestinationApproxCenter,
 } from "@/lib/ai/destination-geocode";
+import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
+import type { FetchPlaceDetailsForFocusFn } from "@/lib/ai/place-detail-chat";
 import {
   logChatDestinationExtracted,
   logChatDestinationResolved,
@@ -25,6 +27,7 @@ import {
   logChatPlacesResponse,
   logChatReadyToRecommend,
   logChatRenderBlocked,
+  logDestinationGeocodeFallback,
 } from "@/lib/ai/chat-place-flow-log";
 import {
   buildNamedFallbackRecommendations,
@@ -38,6 +41,8 @@ import {
   resolveWeatherScene,
 } from "@/lib/ai/weather-place-search";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
+import { shouldSkipPlanningPlacesApi } from "@/lib/ai/planning-candidate-pool";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { distanceMeters } from "@/lib/map-explore";
 import { beginPlacesFlow, endPlacesFlow } from "@/lib/places-api-stats";
 import {
@@ -50,13 +55,20 @@ import {
   filterPlacesForAttractionRecommendation,
   userWantsParkRecommendations,
 } from "@/lib/ai/place-recommendation-rules";
-import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import {
   filterAlreadyRecommendedPlaces,
   filterExcludedPlaceIds,
 } from "@/lib/place-planning-memory";
+import type { ChatPlanningSession } from "@/lib/chat-session";
+import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
+import {
+  excludeUsedPlacesFromFollowUp,
+  logAiFollowupNewResults,
+  type TripUsedPlaces,
+} from "@/lib/ai/trip-planning-follow-up";
+import { tripStyleDisplayTag } from "@/lib/ai/ai-trip-style";
 import {
   buildRefreshRecommendationSummary,
   buildAlternativeRecommendationSummary,
@@ -70,12 +82,59 @@ import {
   CHAT_DESTINATION_MIN_COUNT,
   CHAT_DESTINATION_TARGET_COUNT,
   filterChatDestinationPlaces,
+  filterChatPlanningPlaces,
 } from "@/lib/ai/chat-destination-place-filter";
 import {
   buildDestinationEnglishFallbackQueries,
   filterPlacesByDestinationGuard,
   type ChatPlaceSearchContext,
 } from "@/lib/ai/chat-place-search-context";
+import {
+  logAiPlaceSearchStart,
+  resolveTripStyleFromContext,
+  buildTripStyleSupplementAttempts,
+} from "@/lib/ai/ai-trip-style";
+import {
+  buildComposedDayPlanSummary,
+  dayPlanToRecommendations,
+  flattenComposedDayPlanPlaces,
+  isItineraryRenderable,
+  mergeEnrichedIntoDayPlan,
+  plannerTotalPlaces,
+  type AiDayPlan,
+  type ComposedDayPlan,
+} from "@/lib/ai/ai-day-plan-source";
+import { resolveDayPlanPlaceCards } from "@/lib/ai/ai-day-plan-place-cards";
+import { logItineraryRenderWithPartialDetails } from "@/lib/ai/planning-place-id";
+import {
+  buildPlanningDaySummary,
+  generateTripPlanFromStyle,
+  minRenderablePlaces,
+  resolvePlanningTripStyle,
+  shouldUseTripStylePlanning,
+  type DestinationPlaceSearchFn,
+} from "@/lib/ai/destination-trip-planning";
+import {
+  enrichContextForItineraryMode,
+  logChatItineraryMode,
+  logChatMode,
+  logChatPlaceListMode,
+  logChatPlannerFinish,
+  logChatPlannerStart,
+  logChatRenderItinerary,
+  logChatRenderPlaceList,
+  plannerDaysMatchRequested,
+  resolveItineraryDays,
+  shouldUseItineraryMode,
+} from "@/lib/ai/chat-itinerary-mode";
+import {
+  logAiRenderBlocked,
+  logAiRenderItineraryStart,
+  logAiRenderItinerarySuccess,
+} from "@/lib/ai/normalize-planning-places";
+import { logAiPushPlaceCards } from "@/lib/ai/ai-chat-conversation-state";
+import { getFrozenPlanningDayPlan } from "@/lib/ai/ai-planning-session";
+import type { DayPlanBucket } from "@/lib/ai/ai-trip-style";
 
 export type { GeocodeDestinationFn };
 
@@ -123,14 +182,28 @@ function buildSummaryText(
   recommendations: RoamieRecommendationItem[],
   context: CanonicalTravelContext,
   profile?: ReturnType<typeof classifyDestinationForPlaceSearch>,
+  dayBuckets?: DayPlanBucket[],
+  composedPlans?: ComposedDayPlan[],
+  opts?: { slowTravel?: boolean },
 ): string {
   const label = normalizeDestinationLabel(destination);
+  const days = context.days;
   if (
     (context.tripPurpose === "refresh_recommendations" ||
       context.tripPurpose === "more_place_recommendations") &&
     recommendations.length > 0
   ) {
     return buildRefreshRecommendationSummary(recommendations, "attraction");
+  }
+  if (days && days >= 1 && composedPlans?.length && isItineraryRenderable(composedPlans, days, context.planningTripStyle ?? "mixed")) {
+    return buildPlanningDaySummary(
+      label,
+      days,
+      context.planningTripStyle ?? "mixed",
+      dayBuckets ?? [],
+      composedPlans,
+      opts,
+    );
   }
   if (!recommendations.length) {
     const hint =
@@ -159,6 +232,10 @@ async function searchDestinationPlaces(params: {
   userText?: string;
   profile?: ReturnType<typeof classifyDestinationForPlaceSearch>;
   searchContext?: ChatPlaceSearchContext;
+  planningMode?: boolean;
+  planningTargetCount?: number;
+  classicLandmarkMode?: boolean;
+  radius?: number;
 }): Promise<PlaceResult[]> {
   const {
     label,
@@ -174,11 +251,21 @@ async function searchDestinationPlaces(params: {
     userText,
     profile,
     searchContext,
+    planningMode = false,
+    planningTargetCount,
+    classicLandmarkMode = false,
+    radius,
   } = params;
 
   const searchExtras = searchContext
-    ? { searchContext, intentCategory: "destination_attraction" }
-    : undefined;
+    ? { searchContext, intentCategory: "destination_attraction", radius }
+    : radius != null
+      ? { radius }
+      : undefined;
+
+  if (shouldSkipPlanningPlacesApi() && planningMode) {
+    return [];
+  }
 
   const mergeAndFilter = async (searchAttempts: SearchAttempt[]): Promise<PlaceResult[]> => {
     let places = await fetchPlacesWithSearchAttemptsMerged(
@@ -199,6 +286,14 @@ async function searchDestinationPlaces(params: {
       parentLandmark: profile?.parentLandmark,
       blockedPlaceIds: excludePlaceIds,
     });
+    if (planningMode) {
+      return filterChatPlanningPlaces(places, {
+        destination: label,
+        profile,
+        userText,
+        targetCount: planningTargetCount,
+      });
+    }
     return filterChatDestinationPlaces(places, {
       destination: label,
       profile,
@@ -208,7 +303,7 @@ async function searchDestinationPlaces(params: {
 
   let filtered = await mergeAndFilter(attempts);
 
-  if (filtered.length < CHAT_DESTINATION_MIN_COUNT) {
+  if (filtered.length < CHAT_DESTINATION_MIN_COUNT && !shouldSkipPlanningPlacesApi()) {
     const supplementAttempts = buildDestinationTextSearchAttempts(label).filter(
       (attempt) => !attempts.some((a) => a.query === attempt.query),
     );
@@ -225,7 +320,7 @@ async function searchDestinationPlaces(params: {
     }
   }
 
-  if (filtered.length < CHAT_DESTINATION_MIN_COUNT) {
+  if (filtered.length < CHAT_DESTINATION_MIN_COUNT && !shouldSkipPlanningPlacesApi()) {
     const englishFallback = buildDestinationEnglishFallbackQueries(label);
     const more = await mergeAndFilter(englishFallback);
     const seen = new Set(filtered.map((p) => p.id));
@@ -351,7 +446,7 @@ export async function buildAlternativeDestinationRecommendations(params: {
       lng = geocoded.lng;
       logChatDestinationResolved(label, lat, lng, "geocode");
     } else {
-      logChatPlacesError("geocode_empty", "geocode");
+      logDestinationGeocodeFallback(label, "approx_center");
       const approx = resolveDestinationApproxCenter(label);
       if (approx) {
         lat = approx.lat;
@@ -419,7 +514,7 @@ export async function buildAlternativeDestinationRecommendations(params: {
         version: 2,
         title: "美食咖啡室內推薦",
         summary,
-        moodTag: context.mood ?? "",
+        moodTag: resolvePayloadMoodTag(context),
         recommendations,
         itinerary: [],
         generatedAt: new Date().toISOString(),
@@ -445,23 +540,68 @@ export async function buildDestinationMustVisitRecommendation(params: {
   searchPlaces: PlaceSearchFn;
   geocodeFn: GeocodeDestinationFn;
   fetchWeatherFn: FetchWeatherFn;
+  fetchPlaceDetailsFn?: FetchPlaceDetailsForFocusFn;
   excludePlaceIds?: string[];
   rejectedPlaceNames?: string[];
+  planningSessionId?: string;
+  session?: ChatPlanningSession;
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
+  dayPlan?: AiDayPlan;
   payload: RoamiePayloadV2;
   contextPatch: Partial<CanonicalTravelContext>;
 }> {
-  const { destination, userText, context, locale, searchPlaces, geocodeFn, fetchWeatherFn, excludePlaceIds = [], rejectedPlaceNames = [] } =
-    params;
+  const {
+    destination,
+    userText,
+    context,
+    locale,
+    searchPlaces,
+    geocodeFn,
+    fetchWeatherFn,
+    fetchPlaceDetailsFn,
+    excludePlaceIds = [],
+    rejectedPlaceNames = [],
+    planningSessionId,
+    session,
+  } = params;
   const label = normalizeDestinationLabel(destination);
+  const useItineraryMode = shouldUseItineraryMode(userText, context, session);
+  const planningContext = useItineraryMode
+    ? enrichContextForItineraryMode(userText, context, session)
+    : context;
+  const useStylePlanning = shouldUseTripStylePlanning(planningContext, session);
+  const days = useItineraryMode
+    ? resolveItineraryDays(userText, planningContext, session)
+    : useStylePlanning
+      ? planningContext.days
+      : undefined;
+  const style = useItineraryMode || useStylePlanning
+    ? resolvePlanningTripStyle(planningContext, session)
+    : undefined;
 
+  if (useItineraryMode) {
+    logChatItineraryMode(
+      days ? `days=${days}` : "days_pending",
+    );
+    logChatMode("itinerary", "itinerary_signal");
+  } else {
+    logChatPlaceListMode("no_itinerary_signal");
+    logChatMode("place_list", "no_itinerary_signal");
+  }
+
+  if (useStylePlanning && days) {
+    logAiPlaceSearchStart(label, style!, days);
+  }
   logChatIntentDetected("must_visit_places", userText);
-  logChatDestinationExtracted(label, "must_visit_flow");
+  logChatDestinationExtracted(label, useStylePlanning ? "trip_style_planning" : "must_visit_flow");
   logChatReadyToRecommend(label, "ready_to_recommend");
 
-  const flow = beginPlacesFlow("chat_destination_must_visit");
+  const flow = beginPlacesFlow("chat_once");
+  const boundSearchDestinationPlaces: DestinationPlaceSearchFn = (searchParams) =>
+    searchDestinationPlaces(searchParams);
+
   try {
     const geocoded = await geocodeDestinationWithFallback({
       destination: label,
@@ -482,7 +622,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
       logChatDestinationResolved(label, lat, lng, "geocode");
       logChatDestinationExtracted(`${label}@${lat.toFixed(4)},${lng.toFixed(4)}`, "geocode");
     } else {
-      logChatPlacesError("geocode_empty", "geocode");
+      logDestinationGeocodeFallback(label, "approx_center");
       const approx = resolveDestinationApproxCenter(label);
       if (approx) {
         lat = approx.lat;
@@ -527,6 +667,155 @@ export async function buildDestinationMustVisitRecommendation(params: {
       searchProfile.kind === "landmark"
         ? buildLandmarkCompanionIntro(searchProfile, scene, weather?.available !== false)
         : buildWeatherAwarePlaceIntro(label, scene, weather?.available !== false);
+
+    if ((useItineraryMode || useStylePlanning) && days && style) {
+      logAiRenderItineraryStart();
+      logChatPlannerStart(label, days, style);
+
+      const sessionId =
+        planningSessionId ??
+        (() => {
+          throw new Error("[CHAT_PLACES] missing planningSessionId");
+        })();
+
+      const stylePlan = await generateTripPlanFromStyle({
+        label,
+        lat,
+        lng,
+        locale,
+        searchPlaces,
+        weather,
+        context: planningContext,
+        style,
+        days,
+        caller: geocodeSucceeded
+          ? "chat.destinationTripPlanning"
+          : "chat.destinationTripPlanning.textOnly",
+        excludePlaceIds,
+        userText,
+        profile: searchProfile,
+        searchContext,
+        geocodeSucceeded,
+        searchProfile,
+        weatherSearchLabel,
+        templateNameSearchAttempts,
+        searchDestinationPlaces: boundSearchDestinationPlaces,
+        planningSessionId: sessionId,
+        planVersion: session?.planVersion,
+        geocodeFn,
+        fetchPlaceDetailsFn,
+      }).catch((error) => {
+        logAiPipeline(
+          "[AI_TRIP_PLAN_ERROR]",
+          error instanceof Error ? error.message : String(error),
+          `style=${style}`,
+        );
+        return {
+          places: [] as PlaceResult[],
+          rankedPlaces: [] as PlaceResult[],
+          dayBuckets: [] as DayPlanBucket[],
+          composedPlans: [] as ComposedDayPlan[],
+          dayPlan: undefined,
+          recommendations: [] as RoamieRecommendationItem[],
+          slowTravel: false,
+        };
+      });
+
+      const filteredPlacesForPlan = filterAlreadyRecommendedPlaces(stylePlan.places, {
+        rejectedNames: rejectedPlaceNames,
+        blockedCoreNames: searchProfile.parentLandmark
+          ? [searchProfile.parentLandmark]
+          : undefined,
+      }) as PlaceResult[];
+
+      let recommendations = stylePlan.recommendations;
+      let dayPlan = stylePlan.dayPlan;
+      const dayBuckets = stylePlan.dayBuckets;
+      let composedPlans = stylePlan.composedPlans;
+      const slowTravel = stylePlan.slowTravel ?? false;
+      const poolExpansionExhausted = stylePlan.poolExpansionExhausted ?? false;
+
+      // 成功結果凍結後，不允許空 dayPlan / empty cards 覆蓋
+      if (!dayPlan?.items.length) {
+        const frozen = getFrozenPlanningDayPlan(sessionId);
+        if (frozen?.items.length) {
+          dayPlan = frozen;
+          recommendations = dayPlanToRecommendations(frozen);
+        }
+      }
+
+      if (dayPlan) {
+        const enrichedCards = await resolveDayPlanPlaceCards({
+          composedPlans,
+          placesPool: [
+            ...flattenComposedDayPlanPlaces(composedPlans),
+            ...filteredPlacesForPlan,
+          ],
+          destination: label,
+          lat,
+          lng,
+          locale,
+          context,
+          searchPlaces,
+        });
+        if (enrichedCards.length) {
+          dayPlan = mergeEnrichedIntoDayPlan(dayPlan, enrichedCards);
+        } else {
+          logItineraryRenderWithPartialDetails(dayPlan.items.length);
+        }
+        recommendations = dayPlanToRecommendations(dayPlan);
+      }
+
+      const plannerDayCount = composedPlans.filter((plan) => plan.entries.length > 0).length;
+      const itineraryRenderable = isItineraryRenderable(composedPlans, days, style);
+      logChatPlannerFinish(
+        label,
+        days,
+        dayPlan?.items.length ?? recommendations.length,
+        plannerDayCount,
+      );
+
+      const summary = buildPlanningDaySummary(
+        label,
+        days,
+        style,
+        dayBuckets ?? [],
+        composedPlans,
+        { slowTravel, expansionExhausted: poolExpansionExhausted },
+      );
+
+      if (itineraryRenderable && recommendations.length > 0 && dayPlan?.items.length) {
+        logAiPushPlaceCards(recommendations.length);
+        logChatPlaceCardsRendered(recommendations.length);
+        logAiRenderItinerarySuccess(recommendations.length);
+        logChatRenderItinerary(days, dayPlan.items.length);
+        if (!plannerDaysMatchRequested(plannerDayCount, days)) {
+          logChatRenderBlocked(`planner_days_mismatch:${plannerDayCount}/${days}`);
+        }
+      } else {
+        dayPlan = undefined;
+        recommendations = [];
+        logChatRenderBlocked(
+          filteredPlacesForPlan.length > 0 ? "itinerary_plan_incomplete" : "no_valid_geocoded_places",
+        );
+        logAiRenderBlocked(
+          filteredPlacesForPlan.length > 0 ? "itinerary_plan_incomplete" : "no_valid_geocoded_places",
+          filteredPlacesForPlan.length,
+          0,
+        );
+      }
+
+      return {
+        summary,
+        recommendations,
+        dayPlan,
+        payload: buildPayload(summary, recommendations, planningContext, session),
+        contextPatch: buildContextPatch(label),
+      };
+    }
+
+    logChatPlaceListMode("must_visit_place_list");
+    logChatRenderPlaceList(0, "must_visit_place_list");
 
     const attempts: SearchAttempt[] = buildDestinationPlaceSearchAttempts({
       profile: searchProfile,
@@ -581,9 +870,10 @@ export async function buildDestinationMustVisitRecommendation(params: {
       }
     }
 
-    const summary = buildSummaryText(label, intro, recommendations, context, searchProfile);
+    const summary = buildSummaryText(label, intro, recommendations, planningContext, searchProfile);
     if (recommendations.length > 0) {
       logChatPlaceCardsRendered(recommendations.length);
+      logChatRenderPlaceList(recommendations.length, "must_visit_place_list");
     } else {
       logChatRenderBlocked("no_real_places");
     }
@@ -591,7 +881,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
     return {
       summary,
       recommendations,
-      payload: buildPayload(summary, recommendations, context),
+      payload: buildPayload(summary, recommendations, context, session),
       contextPatch: buildContextPatch(label),
     };
   } finally {
@@ -599,16 +889,30 @@ export async function buildDestinationMustVisitRecommendation(params: {
   }
 }
 
+function resolvePayloadMoodTag(
+  context: CanonicalTravelContext,
+  session?: ChatPlanningSession,
+): string {
+  if (session) {
+    const tag = resolveRecommendationStyleTag(session, context);
+    if (tag) return tag;
+  }
+  const style = resolveTripStyleFromContext(context);
+  if (style) return tripStyleDisplayTag(style);
+  return context.mood ?? "";
+}
+
 function buildPayload(
   summary: string,
   recommendations: RoamieRecommendationItem[],
   context: CanonicalTravelContext,
+  session?: ChatPlanningSession,
 ): RoamiePayloadV2 {
   return {
     version: 2,
     title: "必去推薦",
     summary,
-    moodTag: context.mood ?? "",
+    moodTag: resolvePayloadMoodTag(context, session),
     recommendations,
     itinerary: [],
     generatedAt: new Date().toISOString(),
@@ -687,6 +991,8 @@ export async function buildMoreDestinationRecommendations(params: {
   excludePlaceIds?: string[];
   rejectedPlaceNames?: string[];
   activeChatIntent?: string | null;
+  session?: ChatPlanningSession;
+  usedPlaces?: TripUsedPlaces;
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -706,9 +1012,15 @@ export async function buildMoreDestinationRecommendations(params: {
     excludePlaceIds = [],
     rejectedPlaceNames = [],
     activeChatIntent,
+    session,
+    usedPlaces,
   } = params;
   const label = normalizeDestinationLabel(destination);
   const category = resolveMorePlacesCategoryPreference(context, activeChatIntent);
+  const tripStyle = resolveTripStyleFromContext(context, session);
+  const styleFollowUp = Boolean(
+    usedPlaces && tripStyle && (session?.usedPlaceIds?.length || context.mustVisitGenerated),
+  );
 
   logChatMorePlacesIntent(userText);
   logChatMorePlacesContext({
@@ -738,7 +1050,7 @@ export async function buildMoreDestinationRecommendations(params: {
       geocodeSucceeded = true;
       logChatDestinationResolved(label, lat, lng, "geocode");
     } else {
-      logChatPlacesError("geocode_empty", "geocode");
+      logDestinationGeocodeFallback(label, "approx_center");
       const approx = resolveDestinationApproxCenter(label);
       if (approx) {
         lat = approx.lat;
@@ -797,27 +1109,45 @@ export async function buildMoreDestinationRecommendations(params: {
       searchContext,
     };
 
-    const primaryAttempts = buildMorePlacesPrimaryAttempts(label, category);
+    const primaryAttempts = styleFollowUp && tripStyle
+      ? buildTripStyleSupplementAttempts(label, tripStyle, 0)
+      : buildMorePlacesPrimaryAttempts(label, category);
     let places = await searchDestinationPlaces({ ...searchParams, attempts: primaryAttempts });
+    places = filterExcludedPlaceIds(places, excludePlaceIds);
     let filtered = filterAlreadyRecommendedPlaces(places, {
       rejectedNames: rejectedPlaceNames,
-      blockedCoreNames: searchProfile.parentLandmark ? [searchProfile.parentLandmark] : undefined,
+      blockedCoreNames: [
+        ...(usedPlaces?.usedPlaceNames ?? []),
+        ...(searchProfile.parentLandmark ? [searchProfile.parentLandmark] : []),
+      ],
     });
+    if (usedPlaces) {
+      filtered = excludeUsedPlacesFromFollowUp(filtered, usedPlaces);
+    }
     logChatMorePlacesFetchCount(places.length);
 
     if (filtered.length < CHAT_DESTINATION_MIN_COUNT) {
-      const fallbackAttempts = buildMorePlacesFallbackQueries(label).filter(
-        (attempt) => !primaryAttempts.some((a) => a.query === attempt.query),
-      );
+      const fallbackAttempts = styleFollowUp && tripStyle
+        ? buildTripStyleSupplementAttempts(label, tripStyle, 1).filter(
+            (attempt) => !primaryAttempts.some((a) => a.query === attempt.query),
+          )
+        : buildMorePlacesFallbackQueries(label).filter(
+            (attempt) => !primaryAttempts.some((a) => a.query === attempt.query),
+          );
       for (const attempt of fallbackAttempts) {
         if (filtered.length >= CHAT_DESTINATION_MIN_COUNT) break;
         const more = await searchDestinationPlaces({ ...searchParams, attempts: [attempt] });
-        const moreFiltered = filterAlreadyRecommendedPlaces(more, {
+        let moreFiltered = filterExcludedPlaceIds(more, excludePlaceIds);
+        moreFiltered = filterAlreadyRecommendedPlaces(moreFiltered, {
           rejectedNames: rejectedPlaceNames,
-          blockedCoreNames: searchProfile.parentLandmark
-            ? [searchProfile.parentLandmark]
-            : undefined,
+          blockedCoreNames: [
+            ...(usedPlaces?.usedPlaceNames ?? []),
+            ...(searchProfile.parentLandmark ? [searchProfile.parentLandmark] : []),
+          ],
         });
+        if (usedPlaces) {
+          moreFiltered = excludeUsedPlacesFromFollowUp(moreFiltered, usedPlaces);
+        }
         const seen = new Set(filtered.map((p) => p.id));
         for (const place of moreFiltered) {
           if (!seen.has(place.id)) {
@@ -830,6 +1160,7 @@ export async function buildMoreDestinationRecommendations(params: {
 
     filtered = rankLandmarkCompanionPlaces(filtered, searchProfile).slice(0, RECOMMENDATION_COUNT);
     logChatMorePlacesNewCount(filtered.length);
+    logAiFollowupNewResults(filtered.length);
 
     let recommendations: RoamieRecommendationItem[];
     if (filtered.length > 0) {
@@ -858,7 +1189,7 @@ export async function buildMoreDestinationRecommendations(params: {
         version: 2,
         title: "更多推薦",
         summary,
-        moodTag: context.mood ?? "",
+        moodTag: resolvePayloadMoodTag(moreContext, session),
         recommendations,
         itinerary: [],
         generatedAt: new Date().toISOString(),

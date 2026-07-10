@@ -1,5 +1,10 @@
 import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import {
+  notePlacesSearchRateLimit,
+} from "@/lib/places-classic-landmark-cache";
+import { isPlacesRateLimited } from "@/lib/places-api-guard";
 import {
   chatResponseModeForIntent,
   type NearbyPlaceIntent,
@@ -33,6 +38,7 @@ import {
   userWantsParkRecommendations,
 } from "@/lib/ai/place-recommendation-rules";
 import { classifyDestinationForPlaceSearch } from "@/lib/ai/landmark-place-strategy";
+import { filterExcludedRetailPlaces } from "@/lib/ai/ai-day-plan-slot-rules";
 import {
   filterAlreadyRecommendedPlaces,
   filterExcludedPlaceIds,
@@ -75,6 +81,12 @@ import {
   FOOD_DISTRICT_CARD_TYPE,
   isFoodIntentText,
 } from "@/lib/ai/chat-food-filter";
+import {
+  buildMealRecommendationDescription,
+  filterPlacesForMealIntent,
+  parseMealIntentFromText,
+  sanitizeMealSummaryText,
+} from "@/lib/ai/meal-intent-parser";
 import type { ChatPlaceSearchContext } from "@/lib/ai/chat-place-search-context";
 import {
   filterPlacesByDestinationGuard,
@@ -470,8 +482,9 @@ function placeDetailNearbySearchAttempts(intent: NearbyPlaceIntent): SearchAttem
 export function restaurantSearchFallbackQueries(
   foodPreference?: string,
   userText = "",
+  cityLabel?: string,
 ): SearchAttempt[] {
-  return buildFoodSearchAttempts(foodPreference, userText);
+  return buildFoodSearchAttempts(foodPreference, userText, cityLabel);
 }
 
 async function runPlaceSearch(
@@ -487,7 +500,7 @@ async function runPlaceSearch(
     ? placesSearchContextPayload(extras.searchContext, extras.intentCategory)
     : {};
   const radius = extras?.radius;
-  console.info("[CHAT_PLACES_REQUEST]", {
+  logAiPipeline("[CHAT_PLACES_REQUEST]", {
     lat,
     lng,
     radius: radius ?? "",
@@ -514,11 +527,12 @@ async function runPlaceSearch(
       searchMode: ctxPayload.searchMode ?? "nearby",
     },
   });
-  const places = result.places ?? [];
+  const places = filterExcludedRetailPlaces(result.places ?? []);
   if (result.error) {
+    notePlacesSearchRateLimit(result.error);
     logChatNearbyError({ message: result.error });
   }
-  console.info("[CHAT_PLACES_RAW_COUNT]", {
+  logAiPipeline("[CHAT_PLACES_RAW_COUNT]", {
     count: places.length,
     error: result.error ?? "",
     mode: attempt.mode,
@@ -563,7 +577,7 @@ export async function fetchPlacesWithSearchAttempts(
       );
       if (places.length > 0) {
         logChatPlacesResponse(places.length, attempt.query);
-        return places;
+        return filterExcludedRetailPlaces(places);
       }
     } catch (error) {
       logChatPlacesError(error, `query=${attempt.query}`);
@@ -589,6 +603,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
   const merged: PlaceResult[] = [];
 
   for (const attempt of attempts) {
+    if (isPlacesRateLimited()) break;
     if (attempt.mode === "text") {
       logChatTextSearchRequest(attempt.query);
     }
@@ -602,7 +617,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
       destinationName: extras?.searchContext?.destinationName,
     });
     try {
-      const { places } = await runPlaceSearch(
+      const { places, error } = await runPlaceSearch(
         searchPlaces,
         lat,
         lng,
@@ -611,6 +626,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
         caller,
         extras,
       );
+      if (notePlacesSearchRateLimit(error)) break;
       for (const place of places) {
         const id = (place.id ?? place.name ?? "").trim();
         if (!id || seen.has(id)) continue;
@@ -627,7 +643,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
   if (merged.length > 0) {
     logChatPlacesResponse(merged.length, "merged");
   }
-  return merged.slice(0, maxResults);
+  return filterExcludedRetailPlaces(merged.slice(0, maxResults));
 }
 
 function applyNearbyPlaceFilters(
@@ -801,7 +817,7 @@ async function fetchNearbyPlacesForIntentInner(
     isTripAddPlace && opts?.nearbyGroups?.length
       ? { query: "", mode: "multi", nearbyGroups: opts.nearbyGroups }
       : intent === "restaurant"
-      ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "")[0] ?? {
+      ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "", opts?.cityLabel)[0] ?? {
           query: "餐廳 美食",
           mode: "nearby",
           includedTypes: ["restaurant", "food"],
@@ -826,7 +842,7 @@ async function fetchNearbyPlacesForIntentInner(
     : isTripAddPlace && opts?.nearbyGroups?.length
       ? [{ query: "", mode: "multi", nearbyGroups: opts.nearbyGroups }]
       : intent === "restaurant"
-        ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "")
+        ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "", opts?.cityLabel)
         : [baseAttempt];
 
   const radiusSteps =
@@ -835,7 +851,7 @@ async function fetchNearbyPlacesForIntentInner(
       ? CHAT_PLACE_DETAIL_NEARBY_RADIUS_STEPS_M
       : CHAT_NEARBY_RADIUS_STEPS_M);
 
-  console.info("[CHAT_NEARBY_SEARCH]", {
+  logAiPipeline("[CHAT_NEARBY_SEARCH]", {
     basePlace: opts?.searchContext?.destinationName ?? opts?.cityLabel ?? "",
     category: intent,
     lat,
@@ -902,7 +918,7 @@ async function fetchNearbyPlacesForIntentInner(
       tripAddPlace: isTripAddPlace,
     });
 
-    console.info("[CHAT_PLACES_FILTERED_COUNT]", {
+    logAiPipeline("[CHAT_PLACES_FILTERED_COUNT]", {
       count: ranked.length,
       radius,
       stepIndex,
@@ -924,7 +940,7 @@ async function fetchNearbyPlacesForIntentInner(
     best = best.slice(0, targetCount);
   }
 
-  console.info(
+  logAiPipeline(
     `[CHAT_PLACES_SUCCESS] count=${best.length} excluded=${excluded.length} deduped=${excludePlaceIds.length}`,
   );
   logChatNearbyResponse({
@@ -1072,10 +1088,14 @@ export async function buildNearbyPlaceRecommendation(params: {
     });
 
     let foodDistricts: PlaceResult[] = [];
+    const mealIntent = parseMealIntentFromText(userText);
     if (intent === "restaurant" || isFoodIntentText(userText)) {
       const split = filterPlacesForFoodIntent(places, userText);
       places = split.restaurants;
       foodDistricts = split.districts;
+      if (mealIntent) {
+        places = filterPlacesForMealIntent(places, mealIntent);
+      }
     }
 
     const restaurantPicks = places.slice(0, pickCount);
@@ -1116,12 +1136,17 @@ export async function buildNearbyPlaceRecommendation(params: {
           ? distanceMeters({ lat, lng }, { lat: p.lat, lng: p.lng })
           : undefined;
       const isDistrict = districtPick.some((d) => d.id === p.id);
-      return mapPlaceResultToChatItem(p, {
+      const item = mapPlaceResultToChatItem(p, {
         mood: context.mood,
         locale,
         distanceMeters: distM,
         categoryLabel: isDistrict ? FOOD_DISTRICT_CARD_TYPE : undefined,
       });
+      if (mealIntent && !isDistrict) {
+        const desc = buildMealRecommendationDescription(p, mealIntent);
+        return { ...item, reason: desc, description: desc };
+      }
+      return item;
     }).map((item) =>
       districtPick.some((d) => d.id === item.googlePlaceId || d.id === item.placeId)
         ? {
@@ -1134,9 +1159,11 @@ export async function buildNearbyPlaceRecommendation(params: {
         : item,
     );
 
-    const summary = buildSummary(intent, picks, context, excluded);
+    const summary = mealIntent
+      ? sanitizeMealSummaryText(buildSummary(intent, picks, context, excluded), mealIntent.slot)
+      : buildSummary(intent, picks, context, excluded);
     const mode = chatResponseModeForIntent(intent);
-    console.info(`[CHAT_RESPONSE] mode=${mode}`);
+    logAiPipeline(`[CHAT_RESPONSE] mode=${mode}`);
 
     const payload: RoamiePayloadV2 = {
       version: 2,

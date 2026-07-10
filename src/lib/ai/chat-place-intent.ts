@@ -2,6 +2,7 @@ import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import { buildCafeSearchAttempts } from "@/lib/ai/chat-cafe-search";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   hasCategoryPlaceQuery,
   type ChatPlaceCategoryIntent,
@@ -279,7 +280,7 @@ export function buildChatPlaceSearchAttempts(
 }
 
 export function logChatPlaceIntent(intents: ChatPlaceCategoryIntent[], userText: string): void {
-  console.info("[CHAT_PLACE_INTENT]", `intents=${intents.join(",")}`, `text=${userText.trim().slice(0, 80)}`);
+  logAiPipeline("[CHAT_PLACE_INTENT]", `intents=${intents.join(",")}`, `text=${userText.trim().slice(0, 80)}`);
 }
 
 export function logChatPlaceContext(ctx: {
@@ -288,7 +289,7 @@ export function logChatPlaceContext(ctx: {
   travelDate?: string;
   preferences?: string[];
 }): void {
-  console.info(
+  logAiPipeline(
     "[CHAT_PLACE_CONTEXT]",
     `destination=${ctx.destination}`,
     ctx.days != null ? `days=${ctx.days}` : "",
@@ -298,7 +299,7 @@ export function logChatPlaceContext(ctx: {
 }
 
 export function logChatPlaceQuery(intent: ChatPlaceCategoryIntent, query: string, fallback: boolean): void {
-  console.info(
+  logAiPipeline(
     "[CHAT_PLACE_QUERY]",
     `intent=${intent}`,
     `query=${query}`,
@@ -307,13 +308,13 @@ export function logChatPlaceQuery(intent: ChatPlaceCategoryIntent, query: string
 }
 
 export function logChatPlaceResults(intent: ChatPlaceCategoryIntent, count: number): void {
-  console.info("[CHAT_PLACE_RESULTS]", `intent=${intent}`, `count=${count}`);
+  logAiPipeline("[CHAT_PLACE_RESULTS]", `intent=${intent}`, `count=${count}`);
 }
 
 export function logChatPlaceFallback(intent: ChatPlaceCategoryIntent, query: string): void {
-  console.info("[CHAT_PLACE_FALLBACK]", `intent=${intent}`, `query=${query}`);
+  logAiPipeline("[CHAT_PLACE_FALLBACK]", `intent=${intent}`, `query=${query}`);
 }
 
 export function logChatPlaceCardsRendered(count: number, intents: ChatPlaceCategoryIntent[]): void {
-  console.info("[CHAT_PLACE_CARDS_RENDERED]", `count=${count}`, `intents=${intents.join(",")}`);
+  logAiPipeline("[CHAT_PLACE_CARDS_RENDERED]", `count=${count}`, `intents=${intents.join(",")}`);
 }

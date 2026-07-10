@@ -1,4 +1,4 @@
-/** 實際 Google Places HTTP 計數（client + server 共用模組） */
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 
 export type PlacesScreen =
   | "home"
@@ -183,7 +183,7 @@ export function recordPlacesHttpCall(
   bumpBucket(fnBucket, kind);
   fnBucket.total += 1;
 
-  console.info(
+  devVerboseInfo(
     `${logTagForKind(kind)} caller=${caller} screen=${screen} category=${category} requestKey=${requestKey} function=${functionName}`,
   );
 
@@ -259,7 +259,7 @@ export function endPlacesFlow(token: FlowToken): PlacesCountBucket {
   };
   const total = delta.nearby + delta.text + delta.details + delta.photo;
   flows[token.name] = { ...delta, total, at: new Date().toISOString() };
-  console.info(
+  devVerboseInfo(
     `[PLACES_FLOW] flow=${token.name} nearby=${delta.nearby} text=${delta.text} details=${delta.details} photo=${delta.photo} total=${total}`,
   );
   if (activeTrackedFlow === token) activeTrackedFlow = null;

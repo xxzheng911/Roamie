@@ -17,6 +17,7 @@ import { filterPlacesByCafeGuard, isCafePlace } from "@/lib/ai/chat-category-pla
 
 export const CHAT_DESTINATION_MIN_COUNT = 3;
 export const CHAT_DESTINATION_TARGET_COUNT = 6;
+export const CHAT_PLANNING_RECOMMENDATION_TARGET_COUNT = 24;
 
 const SCHOOL_OFFICE_TYPES = new Set([
   "school",
@@ -261,6 +262,43 @@ export function filterChatDestinationPlaces(
   const final = picked
     .sort((a, b) => rankChatDestinationPlace(b) - rankChatDestinationPlace(a))
     .slice(0, CHAT_DESTINATION_TARGET_COUNT);
+
+  logChatPlacesFinalCount(final.length);
+  return final;
+}
+
+/**
+ * 多日行程規劃：只要求 name；不要求 photo / details / rating / placeId（會先 normalize）。
+ */
+export function filterChatPlanningPlaces(
+  places: PlaceResult[],
+  opts: {
+    destination: string;
+    profile?: DestinationPlaceSearchProfile;
+    requireOpenNow?: boolean;
+    userText?: string;
+    targetCount?: number;
+  },
+): PlaceResult[] {
+  const requireOpenNow = opts.requireOpenNow ?? userRequiresOpenNow(opts.userText);
+  const raw = dedupeByPlaceId(places);
+  logChatPlacesRawCount(raw.length);
+
+  const eligible = raw.filter((place) => {
+    if (!place.name?.trim()) return false;
+    if (isSchoolOrOffice(place)) return false;
+    if (isPermanentlyClosed(place)) return false;
+    if (isSubPlaceOfDestination(place, opts.destination, opts.profile)) return false;
+    if (shouldDropForOpenStatus(place, requireOpenNow)) return false;
+    return true;
+  });
+
+  logChatPlacesFilterFallbackCount(eligible.length);
+
+  const target = opts.targetCount ?? Math.max(CHAT_PLANNING_RECOMMENDATION_TARGET_COUNT, 15);
+  const final = eligible
+    .sort((a, b) => rankChatDestinationPlace(b) - rankChatDestinationPlace(a))
+    .slice(0, target);
 
   logChatPlacesFinalCount(final.length);
   return final;

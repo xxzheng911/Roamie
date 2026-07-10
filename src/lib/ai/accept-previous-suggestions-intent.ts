@@ -2,6 +2,7 @@ import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { isFlexiblePreferenceReply } from "@/lib/ai/destination-pending-question";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   normalizeDestinationLabel,
   parseDestinationFromText,
@@ -71,7 +72,7 @@ export function logChatAcceptPreviousSuggestions(
   days: number,
   text: string,
 ): void {
-  console.info("[CHAT_ACCEPT_PREVIOUS_SUGGESTIONS]", {
+  logAiPipeline("[CHAT_ACCEPT_PREVIOUS_SUGGESTIONS]", {
     destination,
     days,
     text: text.slice(0, 60),
@@ -79,14 +80,14 @@ export function logChatAcceptPreviousSuggestions(
 }
 
 export function logChatPreviousSuggestionsUsed(placeCount: number, source: string): void {
-  console.info("[CHAT_PREVIOUS_SUGGESTIONS_USED]", `places=${placeCount}`, `source=${source}`);
+  logAiPipeline("[CHAT_PREVIOUS_SUGGESTIONS_USED]", `places=${placeCount}`, `source=${source}`);
 }
 
 export function logItineraryCreateFromAcceptedSuggestions(
   destination: string,
   days: number,
 ): void {
-  console.info("[ITINERARY_CREATE_FROM_ACCEPTED_SUGGESTIONS]", {
+  logAiPipeline("[ITINERARY_CREATE_FROM_ACCEPTED_SUGGESTIONS]", {
     destination,
     days,
   });

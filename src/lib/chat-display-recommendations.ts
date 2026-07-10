@@ -1,3 +1,4 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import {
   mergeBoundsForStage,
   resolveConversationStage,
@@ -86,8 +87,8 @@ function nearbyCategoryRecommendations(
   const working = filterRecommendationsForCategoryRender(items, intent, userText);
   const cards = working.slice(0, 6);
   logChatPlaceCardRender(cards.length, intent);
-  console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: cards.length });
-  console.info("[CHAT_PLACE_CARD_LIMIT]", { limit: 6 });
+  devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: cards.length });
+  devVerboseInfo("[CHAT_PLACE_CARD_LIMIT]", { limit: 6 });
   return cards;
 }
 
@@ -168,7 +169,7 @@ export function finalizeChatRecommendationDisplay(
       : summary;
 
   if (alignedSummary !== summary && finalCount > 0) {
-    console.info(
+    devVerboseInfo(
       `[CHAT_REC_COUNT_SYNC] cards=${finalCount} summary_adjusted=true`,
     );
   }
@@ -190,7 +191,7 @@ export function recommendationsForChatDisplay(
     logChatRenderModeLocked("PLACE_CARDS_ONLY");
     logChatPlaceCardRender(cards.length, "trip_add_place");
     logChatCardsPreserved(cards.length, "trip_add_place");
-    console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: cards.length, tripAddPlace: true });
+    devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: cards.length, tripAddPlace: true });
     return cards;
   }
 
@@ -224,8 +225,8 @@ export function recommendationsForChatDisplay(
     const filtered = filterRecommendationItemsForDisplay(working);
     const count = Math.min(filtered.length, 5);
     logChatPlaceCardRender(count, session.activeChatIntent ?? "mood");
-    console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count });
-    console.info("[CHAT_PLACE_CARD_LIMIT]", { limit: 5 });
+    devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count });
+    devVerboseInfo("[CHAT_PLACE_CARD_LIMIT]", { limit: 5 });
     return filtered.slice(0, 5);
   }
 
@@ -269,12 +270,12 @@ export function recommendationsForChatDisplay(
 
   if (mustVisitFlow) {
     const cards = list.slice(0, 6);
-    console.info(`[CHAT_PLACE_CARD_RENDER] count=${cards.length} must_visit=true`);
+    devVerboseInfo(`[CHAT_PLACE_CARD_RENDER] count=${cards.length} must_visit=true`);
     if (
       session.travelContext?.tripPurpose === "more_place_recommendations" ||
       session.travelContext?.tripPurpose === "refresh_recommendations"
     ) {
-      console.info(`[CHAT_MORE_PLACES_RENDERED] count=${cards.length}`);
+      devVerboseInfo(`[CHAT_MORE_PLACES_RENDERED] count=${cards.length}`);
     }
     return cards;
   }
@@ -309,9 +310,9 @@ export function recommendationsForChatDisplay(
       }
     }
     const count = Math.min(nearbyFiltered.length, 5);
-    console.info(`[CHAT_PLACE_CARD_RENDER] count=${count}`);
-    console.info("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count });
-    console.info("[CHAT_PLACE_CARD_LIMIT]", { limit: 5 });
+    devVerboseInfo(`[CHAT_PLACE_CARD_RENDER] count=${count}`);
+    devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count });
+    devVerboseInfo("[CHAT_PLACE_CARD_LIMIT]", { limit: 5 });
     return nearbyFiltered.slice(0, 5);
   }
 
@@ -343,7 +344,7 @@ export function recommendationsForChatDisplay(
   ) {
     filtered = filterRecommendationsByDestinationRenderGuard(filtered, destination);
   }
-  console.info(`[CHAT_PLACE_CARD_RENDER] count=${filtered.length}`);
+  devVerboseInfo(`[CHAT_PLACE_CARD_RENDER] count=${filtered.length}`);
   return filtered;
 }
 

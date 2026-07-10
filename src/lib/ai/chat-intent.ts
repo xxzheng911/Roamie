@@ -158,10 +158,10 @@ export function detectChatIntent(text: string): ChatIntent {
 
   // ── 3. 具體類別（無遠程目的地時）──
   if (
-    /(餐廳|吃飯|用餐|聚餐|午餐|晚餐|宵夜|吃什麼|美食推薦|推薦餐廳|燒肉|火鍋|義式|日式|牛排|拉麵|壽司)/.test(
+    /(餐廳|吃飯|用餐|聚餐|午餐|晚餐|宵夜|吃什麼|美食推薦|推薦餐廳|燒肉|火鍋|義式|日式|牛排|拉麵|壽司|中午|午飯|lunch)/i.test(
       t,
     ) &&
-    !resolveDestinationFromText(t)
+    (!resolveDestinationFromText(t) || /明天|今日|中午|午餐/.test(t))
   ) {
     return "restaurant";
   }

@@ -46,6 +46,42 @@ export function logChatGeocodeFallback(query: string, reason: string): void {
   devVerboseInfo("[CHAT_GEOCODE_FALLBACK]", `query=${query}`, `reason=${reason}`);
 }
 
+export function logChatGeocodeStart(placeName: string): void {
+  devVerboseInfo("[CHAT_GEOCODE_START]", `place=${placeName}`);
+}
+
+export function logChatGeocodeSuccess(placeName: string): void {
+  devVerboseInfo("[CHAT_GEOCODE_SUCCESS]", `place=${placeName}`);
+}
+
+export function logChatGeocodeRetry(placeName: string, strategy: string): void {
+  devVerboseInfo("[CHAT_GEOCODE_RETRY]", `place=${placeName}`, `strategy=${strategy}`);
+}
+
+export function logChatGeocodeSkip(placeName: string, reason = "geocode_empty"): void {
+  devVerboseInfo("[CHAT_GEOCODE_SKIP]", `place=${placeName}`, `reason=${reason}`);
+}
+
+export function logChatGeocodeReplaced(skippedName: string, replacementName: string): void {
+  devVerboseInfo("[CHAT_GEOCODE_REPLACED]", `skipped=${skippedName}`, `replacement=${replacementName}`);
+}
+
+export function logChatValidPlaceCount(count: number, required?: number): void {
+  devVerboseInfo(
+    "[CHAT_VALID_PLACE_COUNT]",
+    `count=${count}`,
+    required != null ? `required=${required}` : "",
+  );
+}
+
+export function logChatRenderStart(): void {
+  devVerboseInfo("[CHAT_RENDER_START]");
+}
+
+export function logDestinationGeocodeFallback(destination: string, source: string): void {
+  devVerboseInfo("[CHAT_DESTINATION_GEOCODE_FALLBACK]", `destination=${destination}`, `source=${source}`);
+}
+
 export function logChatTextSearchRequest(query: string): void {
   devVerboseInfo("[CHAT_TEXT_SEARCH_REQUEST]", `query=${query}`);
 }

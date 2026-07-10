@@ -1,4 +1,9 @@
 import type { PlaceResult } from "@/lib/place-result";
+import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
+import { normalizeItineraryItem, normalizeRecommendationItem } from "@/lib/ai/types";
+import type { ChatPlaceItem } from "@/lib/chat-session";
+import type { TripCreateDates } from "@/lib/ai/resolve-trip-create-dates";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   CHAT_DAY_PLAN_MAX_PER_DAY,
   CHAT_DAY_PLAN_MIN_PER_DAY,
@@ -12,19 +17,46 @@ import {
   logAiBuildDayPlanStart,
   logAiDayPlanFinalSummary,
   logAiDayPlanItemAdded,
+  logPlannerAssign,
+  logPlannerOverwriteBlocked,
+  logPlannerResult,
+  logPlannerSplit,
 } from "@/lib/ai/normalize-planning-places";
 import {
   buildStructuredDayPlans,
+  canPlaceFillSlotByCategory,
   filterExcludedRetailPlaces,
+  isBarBistroPlace,
   isCafePlace,
+  isCultureCreativeAreaPlace,
+  isDayMealsOnly,
+  isDiningPlace,
   isExcludedRetailPlace,
+  isExplicitCafePlace,
+  isFoodVenuePlace,
   isLargeMallPlace,
   isMarketPlace,
+  isMuseumCulturePlace,
+  isMealSlotEligiblePlace,
   isNightMarketPlace,
+  isNonMealActivitySlot,
   isProperRestaurantPlace,
+  logAiDayPlanRebuildReason,
+  logAiDayRebuildNonMeal,
+  logAiDayRebuildRetailExcluded,
+  logAiNonMealSlotMissing,
+  logAiStyleCompositionFail,
+  logAiCategoryLabelFix,
+  dedupeEntryTimes,
   repairDayPlanSlots,
+  resolvePlaceCategoryLabel,
+  scenicKindsForStyle,
   sortComposedDayPlans,
+  stripExcludedRetailFromDayPlans,
   validateItinerary,
+  validateNoExcludedRetailPlaces,
+  validatePlaceOpenAtTime,
+  validateCompleteItinerary,
 } from "@/lib/ai/ai-day-plan-slot-rules";
 import {
   buildClassicLandmarkDayPlans,
@@ -32,10 +64,42 @@ import {
 } from "@/lib/ai/ai-classic-landmark-scheduler";
 import {
   buildLocalLifeDayPlans,
+  rebuildLocalLifeDayPlan,
+  rebuildLocalLifeIncompleteDays,
   validateTripNoDuplicate,
 } from "@/lib/ai/ai-local-life-scheduler";
 import {
+  buildThemedMultiDayPlans,
+  canEvenlyMeetMinPerDay,
+  countDiningPoolPlaces,
+  countScenicPoolPlaces,
+  ensureDayPlansMeetMinimum,
+  ensureEveryDayPopulated,
+  finalizeMultiDayItinerary,
+  isPlannerPoolReady,
+  isPlannerPoolSufficient,
+  logMultiDayCandidatePool,
+  minCandidatePoolSize,
+  minRenderableItemsPerDay,
+  redistributePlacesEvenly,
+  resolveDayTheme,
+  tripDuplicateRate,
+  MAX_TRIP_DUPLICATE_RATE,
+} from "@/lib/ai/ai-multi-day-planner";
+import {
+  TripPlaceAllocator,
+  dedupePlaceCardsForRender,
+  seedTripAllocatorFromPlans,
+  validateTripPlaceUniqueness,
+  resolveTripPlaceId,
+  isGeocodeEmptyPlace,
+} from "@/lib/ai/ai-trip-place-allocator";
+import {
+  buildLocalLifeCityFallbackPlaces,
   filterPlacesForLocalLife,
+  isLocalLifeDistrictCandidate,
+  isLocalLifeExcludedPlace,
+  isLocalLifePlanningCandidate,
   LOCAL_LIFE_MIN_ITEMS_PER_DAY,
 } from "@/lib/ai/ai-local-life-rules";
 import {
@@ -50,9 +114,17 @@ import {
   sortClassicLandmarkPlaces,
   validateClassicLandmarkItinerary,
 } from "@/lib/ai/ai-classic-landmark-rules";
+import {
+  filterRealPlanningPlaces,
+  isAllowedItinerarySlotLabel,
+  isPlaceholderPlanningPlaceName,
+  isRealGooglePlanningPlace,
+  normalizeItineraryEntryLabel,
+  STANDARD_ITINERARY_DAY_SLOTS,
+} from "@/lib/ai/planning-real-place";
 
 /** 慢遊 fallback：每天至少 2 個地點 */
-export const CHAT_DAY_PLAN_SLOW_MIN_PER_DAY = 2;
+export const CHAT_DAY_PLAN_SLOW_MIN_PER_DAY = 3;
 
 export function destinationSearchVariants(destination: string): string[] {
   const zh = normalizeDestinationLabel(destination);
@@ -65,15 +137,15 @@ export function destinationSearchVariants(destination: string): string[] {
 }
 
 export function logAiPlaceSearchRetry(reason: string, query: string): void {
-  console.info("[AI_PLACE_SEARCH_RETRY]", `reason=${reason}`, `query=${query}`);
+  logAiPipeline("[AI_PLACE_SEARCH_RETRY]", `reason=${reason}`, `query=${query}`);
 }
 
 export function logAiPlaceSearchFallback(type: string): void {
-  console.info("[AI_PLACE_SEARCH_FALLBACK]", `type=${type}`);
+  logAiPipeline("[AI_PLACE_SEARCH_FALLBACK]", `type=${type}`);
 }
 
 export function logAiDayPlanRebuild(): void {
-  console.info("[AI_DAY_PLAN_REBUILD]");
+  logAiPipeline("[AI_DAY_PLAN_REBUILD]");
 }
 
 export function logAiDayPlanFinalValidate(
@@ -82,7 +154,7 @@ export function logAiDayPlanFinalValidate(
   minPerDay: number,
   sparseDays: number[],
 ): void {
-  console.info(
+  logAiPipeline(
     "[AI_DAY_PLAN_FINAL_VALIDATE]",
     `days=${days}`,
     `ok=${ok}`,
@@ -151,6 +223,8 @@ export type DayPlanEntry = {
 export type ComposedDayPlan = {
   day: number;
   entries: DayPlanEntry[];
+  /** 該日景點未達最低門檻時為 true（仍保留在輸出中） */
+  isIncomplete?: boolean;
 };
 
 export type DayPlanBucketWithEntries = {
@@ -164,122 +238,557 @@ export const TRIP_STYLE_COMPOSITION: Record<
   Partial<Record<PlanPlaceKind, number>>
 > = {
   classic_landmarks: {
-    attraction: 100,
-    culture: 40,
+    attraction: 70,
+    culture: 50,
     nature: 40,
+    restaurant: 20,
+    cafe: 10,
   },
   local_life: {
-    restaurant: 35,
-    shopping: 25,
-    market: 20,
-    cafe: 10,
-    attraction: 10,
+    shopping: 40,
+    culture: 30,
+    attraction: 15,
+    cafe: 15,
+    restaurant: 10,
   },
   slow_nature: {
     nature: 40,
-    culture: 30,
+    attraction: 40,
+    culture: 20,
     cafe: 20,
-    restaurant: 10,
+    restaurant: 20,
   },
   mixed: {
-    attraction: 30,
+    attraction: 40,
+    culture: 25,
+    shopping: 15,
     restaurant: 25,
-    shopping: 20,
-    culture: 15,
     cafe: 10,
+    night_market: 10,
   },
 };
 
-const STYLE_DAY_SLOT_TEMPLATES: Record<TripStyleKey, DayPlanSlot[][]> = {
-  classic_landmarks: [
-    [
-      { time: "09:00", kind: "attraction", label: "景點" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "14:00", kind: "attraction", label: "景點" },
-      { time: "16:00", kind: "cafe", label: "咖啡 / 甜點" },
-      { time: "18:00", kind: "restaurant", label: "晚餐" },
-    ],
-    [
-      { time: "09:00", kind: "attraction", label: "景點" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "14:00", kind: "attraction", label: "景點" },
-      { time: "16:00", kind: "cafe", label: "咖啡 / 甜點" },
-      { time: "18:00", kind: "restaurant", label: "晚餐" },
-    ],
-    [
-      { time: "09:00", kind: "attraction", label: "景點" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "14:00", kind: "attraction", label: "景點" },
-      { time: "16:00", kind: "cafe", label: "咖啡 / 甜點" },
-      { time: "18:00", kind: "restaurant", label: "晚餐" },
-    ],
-  ],
-  local_life: [
-    [
-      { time: "09:00", kind: "shopping", label: "街區" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "15:00", kind: "cafe", label: "咖啡或文創街區" },
-      { time: "18:00", kind: "restaurant", label: "晚餐或夜間商圈" },
-    ],
-    [
-      { time: "09:00", kind: "shopping", label: "街區" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "15:00", kind: "cafe", label: "咖啡或文創街區" },
-      { time: "18:00", kind: "restaurant", label: "晚餐或夜間商圈" },
-    ],
-    [
-      { time: "09:00", kind: "shopping", label: "街區" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "15:00", kind: "cafe", label: "咖啡或文創街區" },
-      { time: "18:00", kind: "restaurant", label: "晚餐或夜間商圈" },
-    ],
-  ],
-  slow_nature: [
-    [
-      { time: "09:00", kind: "nature", label: "自然" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "15:00", kind: "cafe", label: "咖啡" },
-      { time: "19:30", kind: "restaurant", label: "晚餐" },
-    ],
-    [
-      { time: "09:00", kind: "culture", label: "文化" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "15:00", kind: "nature", label: "自然" },
-      { time: "19:30", kind: "restaurant", label: "晚餐" },
-    ],
-  ],
-  mixed: [
-    [
-      { time: "09:00", kind: "attraction", label: "景點" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "15:00", kind: "cafe", label: "咖啡" },
-      { time: "18:00", kind: "shopping", label: "商圈" },
-      { time: "19:30", kind: "restaurant", label: "晚餐" },
-    ],
-    [
-      { time: "09:00", kind: "culture", label: "文化" },
-      { time: "12:00", kind: "restaurant", label: "午餐" },
-      { time: "15:00", kind: "attraction", label: "景點" },
-      { time: "19:30", kind: "restaurant", label: "晚餐" },
-      { time: "21:00", kind: "night_market", label: "夜市" },
-    ],
-  ],
+export const STYLE_ITEMS_PER_DAY: Record<TripStyleKey, { min: number; max: number }> = {
+  classic_landmarks: { min: 7, max: 8 },
+  local_life: { min: 7, max: 8 },
+  slow_nature: { min: 7, max: 8 },
+  mixed: { min: 7, max: 8 },
+};
+
+/** 依總天數決定每日最低行程點：完整日程 7 項（3 天以上） */
+export function minItemsPerDayForTrip(days: number): number {
+  return Math.max(1, days) >= 3 ? 7 : 5;
+}
+
+export function logAiDayCountValidate(
+  requestedDays: number,
+  plans: ComposedDayPlan[],
+): { ok: boolean; generatedDays: number; dayCounts: Record<number, number> } {
+  const normalized = ensureAllDayPlansExist(plans, requestedDays);
+  const dayCounts = Object.fromEntries(
+    normalized.map((plan) => [plan.day, plan.entries.length]),
+  ) as Record<number, number>;
+  const generatedDays = normalized.length;
+  const ok = requestedDays === generatedDays;
+  logAiPipeline("[AI_DAY_COUNT_VALIDATE]", {
+    requestedDays,
+    generatedDays,
+    dayCounts,
+  });
+  return { ok, generatedDays, dayCounts };
+}
+
+export type GeneratedDaysValidation = {
+  ok: boolean;
+  reasons: string[];
+  incompleteDays: number[];
+};
+
+const ITINERARY_PLACEHOLDER_RE = /行程生成中/;
+
+export function logAiIncompleteDayDetected(day: number, count: number, reason: string): void {
+  logAiPipeline("[AI_INCOMPLETE_DAY_DETECTED]", `day=${day}`, `count=${count}`, `reason=${reason}`);
+}
+
+export function logAiRebuildIncompleteDay(days: number[], reason: string): void {
+  logAiPipeline("[AI_REBUILD_INCOMPLETE_DAY]", `days=${days.join(",")}`, `reason=${reason}`);
+}
+
+export function logAiRenderBlockedIncompleteDay(
+  requestedDays: number,
+  reasons: string[],
+  dayCounts: Record<number, number>,
+): void {
+  logAiPipeline("[AI_RENDER_BLOCKED_INCOMPLETE_DAY]", {
+    requestedDays,
+    reasons,
+    dayCounts,
+  });
+}
+
+function parseEntryMinutes(time: string): number {
+  const m = time.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return 12 * 60;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+function localLifeDayHasRequiredComposition(entries: DayPlanEntry[]): boolean {
+  if (entries.length < LOCAL_LIFE_MIN_ITEMS_PER_DAY) return false;
+  const scenicLabels = entries.filter((e) => e.label === "景點").length;
+  if (scenicLabels < 2) return false;
+  const hasStreetOrCulture = entries.some((e) => {
+    const k = classifyPlanPlaceKind(e.place);
+    return (
+      k === "shopping" ||
+      k === "culture" ||
+      k === "attraction" ||
+      k === "market" ||
+      isLocalLifeDistrictCandidate(e.place) ||
+      e.label === "景點"
+    );
+  });
+  const hasCoffeeOrSnack = entries.some(
+    (e) =>
+      /咖啡/.test(e.label) ||
+      isExplicitCafePlace(e.place) ||
+      isCafePlace(e.place),
+  );
+  const hasBreakfast = entries.some((e) => /早餐/.test(e.label));
+  const hasLunch = entries.some((e) => /午餐/.test(e.label));
+  const hasDinner = entries.some((e) => /晚餐/.test(e.label));
+  return hasStreetOrCulture && hasCoffeeOrSnack && hasBreakfast && hasLunch && hasDinner;
+}
+
+function dedupePlanningPlaces(places: PlaceResult[]): PlaceResult[] {
+  const seen = new Set<string>();
+  const out: PlaceResult[] = [];
+  for (const place of places) {
+    const id = resolveTripPlaceId(place);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(place);
+  }
+  return out;
+}
+
+function ensureLocalLifePlanningPool(params: {
+  places: PlaceResult[];
+  destination: string;
+  days: number;
+  lat?: number;
+  lng?: number;
+}): PlaceResult[] {
+  const minPool = params.days * minItemsPerDayForTrip(params.days);
+  let safePlaces = filterPlacesForLocalLife(filterExcludedRetailPlaces(params.places));
+  if (safePlaces.length >= minPool) return safePlaces;
+
+  const existingNames = new Set(safePlaces.map((p) => (p.name ?? "").trim()).filter(Boolean));
+  if (params.lat != null && params.lng != null) {
+    const backup = buildLocalLifeCityFallbackPlaces({
+      destination: params.destination,
+      lat: params.lat,
+      lng: params.lng,
+      minCount: minPool - safePlaces.length,
+      existingNames,
+    });
+    safePlaces = dedupePlanningPlaces([...safePlaces, ...backup]);
+  }
+
+  if (safePlaces.length < minPool) {
+    const seen = new Set(safePlaces.map((p) => resolveTripPlaceId(p)));
+    for (const place of filterExcludedRetailPlaces(params.places)) {
+      const id = resolveTripPlaceId(place);
+      if (!id || seen.has(id) || isGeocodeEmptyPlace(place)) continue;
+      if (!isLocalLifePlanningCandidate(place)) continue;
+      safePlaces.push(place);
+      seen.add(id);
+      if (safePlaces.length >= minPool) break;
+    }
+  }
+
+  return safePlaces;
+}
+
+function dayCountsFromPlans(plans: ComposedDayPlan[]): Record<number, number> {
+  return Object.fromEntries(plans.map((plan) => [plan.day, plan.entries.length])) as Record<number, number>;
+}
+
+export function validateGeneratedDays(
+  dayPlans: ComposedDayPlan[],
+  requestedDays: number,
+  style?: TripStyleKey,
+): GeneratedDaysValidation {
+  const minItems = minItemsPerDayForTrip(requestedDays);
+  const normalized = ensureAllDayPlansExist(dayPlans, requestedDays);
+  const reasons: string[] = [];
+  const incompleteDays: number[] = [];
+
+  if (normalized.length !== requestedDays) {
+    reasons.push(`day_count_mismatch:${normalized.length}!=${requestedDays}`);
+  }
+
+  for (const plan of normalized) {
+    const count = plan.entries.length;
+    if (count === 0) {
+      reasons.push(`empty_day:${plan.day}`);
+      incompleteDays.push(plan.day);
+      logAiIncompleteDayDetected(plan.day, 0, "empty_day");
+    } else if (count === 1) {
+      reasons.push(`single_item_day:${plan.day}`);
+      incompleteDays.push(plan.day);
+      logAiIncompleteDayDetected(plan.day, 1, "single_item_day");
+    } else if (count < minItems) {
+      reasons.push(`sparse_day:${plan.day}:${count}<${minItems}`);
+      incompleteDays.push(plan.day);
+      logAiIncompleteDayDetected(plan.day, count, `sparse:${count}<${minItems}`);
+    }
+
+    const hasPlaceholder = plan.entries.some(
+      (e) => ITINERARY_PLACEHOLDER_RE.test(e.name) || isPlaceholderPlanningPlaceName(e.name),
+    );
+    if (hasPlaceholder) {
+      reasons.push(`placeholder_day:${plan.day}`);
+      incompleteDays.push(plan.day);
+      logAiIncompleteDayDetected(plan.day, count, "placeholder_text");
+    }
+
+    if (style === "local_life" && count >= minItems && !localLifeDayHasRequiredComposition(plan.entries)) {
+      reasons.push(`local_life_composition:day${plan.day}`);
+      incompleteDays.push(plan.day);
+      logAiIncompleteDayDetected(plan.day, count, "local_life_composition");
+    }
+  }
+
+  const dayCountCheck = logAiDayCountValidate(requestedDays, normalized);
+  if (!dayCountCheck.ok) {
+    reasons.push(`generated_days:${dayCountCheck.generatedDays}!=${requestedDays}`);
+  }
+
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    incompleteDays: [...new Set(incompleteDays)],
+  };
+}
+
+export function rebuildIncompleteDays(
+  plans: ComposedDayPlan[],
+  incompleteDays: number[],
+  places: PlaceResult[],
+  style: TripStyleKey,
+  destination?: string,
+  days?: number,
+): ComposedDayPlan[] {
+  if (!incompleteDays.length) return plans;
+  logAiRebuildIncompleteDay(incompleteDays, style);
+
+  if (style === "local_life" && destination && days) {
+    return rebuildLocalLifeIncompleteDays({
+      plans,
+      incompleteDays,
+      places,
+      destination,
+      days,
+    });
+  }
+
+  const failed = new Set(incompleteDays);
+  const allocator = new TripPlaceAllocator();
+  seedTripAllocatorFromPlans(allocator, plans, incompleteDays);
+
+  return plans.map((plan) => {
+    if (!failed.has(plan.day)) return plan;
+    const themed = buildThemedMultiDayPlans({
+      places: allocator.filterPool(places),
+      days: 1,
+      style,
+      startDay: plan.day,
+      tripDays: days,
+      seedAllocator: allocator,
+    });
+    const rebuilt = themed[0];
+    if (rebuilt?.entries.length) {
+      return { day: plan.day, entries: rebuilt.entries };
+    }
+    const structured = buildStructuredDayPlans({
+      places: allocator.filterPool(places),
+      days: 1,
+      style,
+      classifyKind: classifyPlanPlaceKind,
+      resolveLabel: resolveEntryLabel,
+    })[0];
+    return structured?.entries.length ? { day: plan.day, entries: structured.entries } : plan;
+  });
+}
+
+export function isItineraryRenderable(
+  dayPlans: ComposedDayPlan[],
+  requestedDays: number,
+  style?: TripStyleKey,
+  plannedDate?: string,
+): boolean {
+  return validateCompleteItinerary(
+    dayPlans,
+    requestedDays,
+    style,
+    plannedDate,
+    classifyPlanPlaceKind,
+  ).ok;
+}
+
+export function plannerTotalPlaces(plans: ComposedDayPlan[]): number {
+  return plans.reduce((n, plan) => n + plan.entries.length, 0);
+}
+
+export function plannerPopulatedDayCount(plans: ComposedDayPlan[], requestedDays: number): number {
+  return ensureAllDayPlansExist(plans, requestedDays).filter((plan) => plan.entries.length > 0).length;
+}
+
+export function isPlannerResultBetter(
+  candidate: ComposedDayPlan[],
+  current: ComposedDayPlan[],
+  requestedDays: number,
+): boolean {
+  const candPopulated = plannerPopulatedDayCount(candidate, requestedDays);
+  const currPopulated = plannerPopulatedDayCount(current, requestedDays);
+  if (candPopulated !== currPopulated) return candPopulated > currPopulated;
+  return plannerTotalPlaces(candidate) > plannerTotalPlaces(current);
+}
+
+/** 保留較完整的 Planner 結果，避免 rebuild / 空結果覆蓋較好的行程 */
+export function preferBetterComposedPlans(
+  candidate: ComposedDayPlan[],
+  current: ComposedDayPlan[],
+  requestedDays: number,
+): ComposedDayPlan[] {
+  const normalizedCandidate = ensureAllDayPlansExist(candidate, requestedDays);
+  const normalizedCurrent = ensureAllDayPlansExist(current, requestedDays);
+  const candTotal = plannerTotalPlaces(normalizedCandidate);
+  const currTotal = plannerTotalPlaces(normalizedCurrent);
+
+  // 空結果永遠不可覆蓋既有有效行程
+  if (currTotal > 0 && candTotal <= 0) return normalizedCurrent;
+  if (candTotal > 0 && currTotal <= 0) return normalizedCandidate;
+
+  const candRenderable = isItineraryRenderable(normalizedCandidate, requestedDays);
+  const currRenderable = isItineraryRenderable(normalizedCurrent, requestedDays);
+
+  // 已可 render 的結果鎖定，除非候選同樣可 render 且更完整
+  if (currRenderable && !candRenderable) return normalizedCurrent;
+  if (candRenderable && !currRenderable) return normalizedCandidate;
+
+  if (candRenderable && currRenderable) {
+    return isPlannerResultBetter(normalizedCandidate, normalizedCurrent, requestedDays)
+      ? normalizedCandidate
+      : normalizedCurrent;
+  }
+
+  return isPlannerResultBetter(normalizedCandidate, normalizedCurrent, requestedDays)
+    ? normalizedCandidate
+    : normalizedCurrent;
+}
+
+/** 完整 dayPlan 通過驗證後才凍結，避免低品質行程鎖定 */
+export function shouldFreezePlannerResult(
+  plans: ComposedDayPlan[],
+  requestedDays: number,
+  style?: TripStyleKey,
+  plannedDate?: string,
+): boolean {
+  return (
+    plannerTotalPlaces(plans) > 0 &&
+    validateCompleteItinerary(
+      plans,
+      requestedDays,
+      style,
+      plannedDate,
+      classifyPlanPlaceKind,
+    ).ok
+  );
+}
+
+const MIN_FILL_SLOT_TIMES = ["10:00", "14:00", "16:00", "11:30", "15:30"];
+
+function collectUsedTripPlaceIds(plans: ComposedDayPlan[]): Set<string> {
+  const used = new Set<string>();
+  for (const plan of plans) {
+    for (const entry of plan.entries) {
+      const id = resolveTripPlaceId(entry.place);
+      if (id) used.add(id);
+    }
+  }
+  return used;
+}
+
+/** 將未使用的候選地點補進空白天（每天至少 1 個） */
+export function fillEmptyDaysFromCandidatePool(params: {
+  composedPlans: ComposedDayPlan[];
+  places: PlaceResult[];
+  days: number;
+  style: TripStyleKey;
+  plannedDate?: string;
+}): ComposedDayPlan[] {
+  const normalized = ensureAllDayPlansExist(params.composedPlans, params.days);
+  const emptyDays = normalized.filter((plan) => plan.entries.length === 0);
+  if (!emptyDays.length) return normalized;
+
+  const usedIds = collectUsedTripPlaceIds(normalized);
+  const unused = params.places.filter((place) => {
+    const id = resolveTripPlaceId(place);
+    return id && !usedIds.has(id) && !isExcludedRetailPlace(place);
+  });
+
+  if (unused.length < emptyDays.length) {
+    return normalized;
+  }
+
+  const result = normalized.map((plan) => ({ ...plan, entries: [...plan.entries] }));
+  let poolIdx = 0;
+  for (const emptyPlan of emptyDays) {
+    const target = result.find((plan) => plan.day === emptyPlan.day);
+    if (!target) continue;
+    const place = unused[poolIdx++];
+    if (!place?.name?.trim()) continue;
+    const kind = classifyPlanPlaceKind(place);
+    const slot: DayPlanSlot = {
+      time: MIN_FILL_SLOT_TIMES[(emptyPlan.day - 1) % MIN_FILL_SLOT_TIMES.length] ?? "10:00",
+      kind,
+      label: kind === "restaurant" ? "午餐" : kind === "cafe" ? "咖啡" : "景點",
+    };
+    target.entries.push({
+      time: slot.time,
+      label: resolveEntryLabel(slot, place),
+      name: place.name.trim(),
+      place,
+    });
+  }
+
+  logAiPipeline(
+    "[AI_DAY_PLAN_EMPTY_DAYS_FILLED]",
+    `days=${emptyDays.map((p) => p.day).join(",")}`,
+    `filled=${result.filter((p) => p.entries.length > 0).length}`,
+  );
+  return result;
+}
+
+/** 部分天數空白時，平均重分配 / 補點，確保可 render */
+export function ensureRenderableComposedPlans(params: {
+  composedPlans: ComposedDayPlan[];
+  places: PlaceResult[];
+  days: number;
+  style: TripStyleKey;
+  destination?: string;
+  plannedDate?: string;
+}): ComposedDayPlan[] {
+  const { places, days, style, destination, plannedDate } = params;
+  let current = ensureAllDayPlansExist(params.composedPlans, days);
+  const mergedPool = dedupePlanningPlaces([
+    ...flattenComposedDayPlanPlaces(current),
+    ...places,
+  ]);
+
+  if (!isPlannerPoolSufficient(mergedPool.length, days)) {
+    logAiPipeline(
+      "[AI_PLANNER_POOL_INSUFFICIENT]",
+      `pool=${mergedPool.length}`,
+      `target=${minCandidatePoolSize(days)}`,
+      "action=ensure_renderable_partial",
+    );
+  }
+
+  if (mergedPool.length > 0 && plannerPopulatedDayCount(current, days) < days) {
+    return ensureEveryDayPopulated({
+      plans: current,
+      pool: mergedPool,
+      days,
+      style,
+      plannedDate,
+    });
+  }
+
+  if (isItineraryRenderable(current, days, style)) {
+    return current;
+  }
+
+  const validation = validateGeneratedDays(current, days, style);
+  if (validation.incompleteDays.length) {
+    const rebuilt = rebuildIncompleteDays(
+      current,
+      validation.incompleteDays,
+      mergedPool,
+      style,
+      destination,
+      days,
+    );
+    current = preferBetterComposedPlans(
+      ensureAllDayPlansExist(rebuilt, days),
+      current,
+      days,
+    );
+  }
+
+  if (!isItineraryRenderable(current, days, style) && mergedPool.length > 0) {
+    current = buildThemedMultiDayPlans({
+      places: mergedPool,
+      days,
+      style,
+      plannedDate,
+    });
+    current = finalizeMultiDayItinerary({
+      plans: current,
+      pool: mergedPool,
+      days,
+      style,
+      plannedDate,
+    });
+  }
+
+  return ensureAllDayPlansExist(current, days);
+}
+
+export function ensureAllDayPlansExist(
+  plans: ComposedDayPlan[],
+  days: number,
+): ComposedDayPlan[] {
+  const safeDays = Math.max(1, days);
+  const byDay = new Map(plans.map((plan) => [plan.day, plan]));
+  const result: ComposedDayPlan[] = [];
+  for (let day = 1; day <= safeDays; day += 1) {
+    const existing = byDay.get(day);
+    result.push(
+      existing ?? { day, entries: [], isIncomplete: true },
+    );
+  }
+  return result;
+}
+
+const STANDARD_DAY_SLOTS: DayPlanSlot[] = STANDARD_ITINERARY_DAY_SLOTS.map((slot) => ({
+  time: slot.time,
+  kind: slot.kind as PlanPlaceKind,
+  label: slot.label,
+}));
+
+export const STYLE_DAY_SLOT_TEMPLATES: Record<TripStyleKey, DayPlanSlot[][]> = {
+  classic_landmarks: [STANDARD_DAY_SLOTS],
+  local_life: [STANDARD_DAY_SLOTS],
+  slow_nature: [STANDARD_DAY_SLOTS],
+  mixed: [STANDARD_DAY_SLOTS],
 };
 
 export function logAiGenerateAttractions(count: number): void {
-  console.info("[AI_GENERATE_ATTRACTIONS]", `count=${count}`);
+  logAiPipeline("[AI_GENERATE_ATTRACTIONS]", `count=${count}`);
 }
 
 export function logAiGenerateRestaurants(count: number): void {
-  console.info("[AI_GENERATE_RESTAURANTS]", `count=${count}`);
+  logAiPipeline("[AI_GENERATE_RESTAURANTS]", `count=${count}`);
 }
 
 export function logAiGenerateCafes(count: number): void {
-  console.info("[AI_GENERATE_CAFES]", `count=${count}`);
+  logAiPipeline("[AI_GENERATE_CAFES]", `count=${count}`);
 }
 
 export function logAiBuildDayPlan(days: number): void {
-  console.info("[AI_BUILD_DAY_PLAN]", `days=${days}`);
+  logAiPipeline("[AI_BUILD_DAY_PLAN]", `days=${days}`);
 }
 
 export function logAiDayPlanSummary(summary: {
@@ -287,7 +796,7 @@ export function logAiDayPlanSummary(summary: {
   restaurants: number;
   cafes: number;
 }): void {
-  console.info(
+  logAiPipeline(
     "[AI_DAY_PLAN_SUMMARY]",
     `attractions=${summary.attractions}`,
     `restaurants=${summary.restaurants}`,
@@ -314,15 +823,27 @@ function placeBlob(place: PlaceResult): string {
 }
 
 export function classifyPlanPlaceKind(place: PlaceResult): PlanPlaceKind {
-  if (isExcludedRetailPlace(place)) return "shopping";
+  if (isExcludedRetailPlace(place)) return "attraction";
   const types = placeTypes(place);
   const blob = placeBlob(place);
   const tripCategory = classifyTripPlaceCategory(place);
 
-  if (/觀光夜市|黃昏市場|中央市場|肉品市場|公有市場|菜市場|肉市場/.test(blob)) return "night_market";
-  if (types.has("market") || (/市場/.test(blob) && !/文創園區|文創市集|鐵花村/.test(blob))) return "market";
-  if (types.has("cafe") || types.has("coffee_shop") || /咖啡/.test(blob)) return "cafe";
-  if (/夜市|night market/.test(blob) || tripCategory === "night_market") return "night_market";
+  if (isNightMarketPlace(place) || tripCategory === "night_market") return "night_market";
+  if (isMarketPlace(place)) return "market";
+  if (isCultureCreativeAreaPlace(place)) return "culture";
+  if (isExplicitCafePlace(place)) return "cafe";
+  if (isBarBistroPlace(place)) return "restaurant";
+  if (
+    types.has("restaurant") ||
+    types.has("food") ||
+    types.has("meal_takeaway") ||
+    types.has("bar") ||
+    tripCategory === "local_food" ||
+    tripCategory === "bar" ||
+    /餐|食|小吃|料理|bistro|dining|grill|diner|餐酒館|餐酒/.test(blob)
+  ) {
+    return "restaurant";
+  }
   if (
     types.has("shopping_mall") ||
     types.has("department_store") ||
@@ -336,7 +857,8 @@ export function classifyPlanPlaceKind(place: PlaceResult): PlanPlaceKind {
     types.has("library") ||
     tripCategory === "museum" ||
     tripCategory === "art_gallery" ||
-    tripCategory === "heritage"
+    tripCategory === "heritage" ||
+    isMuseumCulturePlace(place)
   ) {
     return "culture";
   }
@@ -351,18 +873,25 @@ export function classifyPlanPlaceKind(place: PlaceResult): PlanPlaceKind {
   ) {
     return "nature";
   }
-  if (
-    types.has("restaurant") ||
-    types.has("food") ||
-    types.has("meal_takeaway") ||
-    tripCategory === "local_food" ||
-    /餐|食|小吃|料理/.test(blob)
-  ) {
-    return "restaurant";
-  }
   return "attraction";
 }
 
+export function buildOpenHoursFallbackAttempts(
+  destination: string,
+  meal: "早餐" | "午餐" | "晚餐" | "咖啡",
+): SearchAttempt[] {
+  const label = normalizeDestinationLabel(destination);
+  const typeMap: Record<string, string[]> = {
+    早餐: ["cafe", "bakery", "restaurant"],
+    午餐: ["restaurant", "food"],
+    晚餐: ["restaurant", "food"],
+    咖啡: ["cafe", "coffee_shop", "bakery"],
+  };
+  return [
+    { query: `${label} ${meal} 營業中`, mode: "text", includedTypes: typeMap[meal] },
+    { query: `${label} ${meal}`, mode: "text", includedTypes: typeMap[meal] },
+  ];
+}
 export function buildCategorySearchAttempts(
   destination: string,
   kind: PlanPlaceKind,
@@ -440,6 +969,17 @@ export function buildCategorySearchAttempts(
   }
 }
 
+export function markItineraryDayCompleteness(
+  plans: ComposedDayPlan[],
+  days: number,
+): ComposedDayPlan[] {
+  const minPerDay = minItemsPerDayForTrip(days);
+  return ensureAllDayPlansExist(plans, days).map((plan) => ({
+    ...plan,
+    isIncomplete: plan.entries.length < minPerDay,
+  }));
+}
+
 export function kindsForStyle(style: TripStyleKey): PlanPlaceKind[] {
   const composition = TRIP_STYLE_COMPOSITION[style];
   return Object.entries(composition)
@@ -447,7 +987,7 @@ export function kindsForStyle(style: TripStyleKey): PlanPlaceKind[] {
     .map(([kind]) => kind as PlanPlaceKind);
 }
 
-const MEAL_SLOT_LABEL_RE = /早餐|午餐|晚餐|宵夜/;
+const MEAL_SLOT_LABEL_RE = /早餐|午餐|晚餐|宵夜|下午茶/;
 
 export function isMealSlotLabel(label: string): boolean {
   return MEAL_SLOT_LABEL_RE.test(label);
@@ -459,12 +999,20 @@ export function isRestaurantCapableKind(kind: PlanPlaceKind): boolean {
 
 export function canPlaceFillMealSlot(place: PlaceResult, slot: DayPlanSlot): boolean {
   if (!isMealSlotLabel(slot.label)) return true;
+  if (isCultureCreativeAreaPlace(place)) return false;
+  if (!isMealSlotEligiblePlace(place)) return false;
+  if (!canPlaceFillSlotByCategory(place, slot)) return false;
+  if (!validatePlaceOpenAtTime(place, undefined, slot.time)) return false;
   if (isExcludedRetailPlace(place)) return false;
+  if (/早餐/.test(slot.label)) {
+    return (isProperRestaurantPlace(place) || isCafePlace(place)) && !isBarBistroPlace(place);
+  }
   if (/午餐/.test(slot.label)) {
-    return isProperRestaurantPlace(place);
+    return isProperRestaurantPlace(place) && !isBarBistroPlace(place);
   }
   if (/晚餐|宵夜/.test(slot.label)) {
-    if (isProperRestaurantPlace(place)) return true;
+    if (isMuseumCulturePlace(place)) return false;
+    if (isProperRestaurantPlace(place) || isBarBistroPlace(place)) return true;
     if (isNightMarketPlace(place)) {
       const hour = Number(slot.time.split(":")[0] ?? "19");
       return hour >= 18;
@@ -476,46 +1024,53 @@ export function canPlaceFillMealSlot(place: PlaceResult, slot: DayPlanSlot): boo
   return isProperRestaurantPlace(place);
 }
 
-export function canPlaceFillSlot(place: PlaceResult, slot: DayPlanSlot): boolean {
+export function canPlaceFillSlot(place: PlaceResult, slot: DayPlanSlot, plannedDate?: string): boolean {
   if (isExcludedRetailPlace(place)) return false;
+  if (!canPlaceFillSlotByCategory(place, slot)) return false;
+  if (!validatePlaceOpenAtTime(place, plannedDate, slot.time)) return false;
+
   const kind = classifyPlanPlaceKind(place);
   if (isNightMarketPlace(place)) {
     const hour = Number(slot.time.split(":")[0] ?? "12");
     if (hour < 18) return false;
   }
+  if (isNonMealActivitySlot(slot)) {
+    if (isDiningPlace(place, classifyPlanPlaceKind)) return false;
+    if (kind === "restaurant" || kind === "night_market" || kind === "cafe") return false;
+  }
   if (isMealSlotLabel(slot.label)) {
-    if (kind === "market" || kind === "shopping" || kind === "attraction") return false;
+    if (kind === "market" || kind === "shopping" || kind === "attraction" || kind === "culture" || kind === "nature") {
+      return false;
+    }
     return canPlaceFillMealSlot(place, slot);
   }
   if ((kind === "cafe" || isCafePlace(place)) && slot.kind !== "cafe" && !/咖啡|下午茶/.test(slot.label)) {
     return false;
   }
+  if (isFoodVenuePlace(place) && slot.kind !== "restaurant" && slot.kind !== "cafe") {
+    return false;
+  }
+  if (isMuseumCulturePlace(place) && /晚餐|宵夜/.test(slot.label)) return false;
   return slotKindMatches(kind, slot.kind);
 }
 
-/** 市場不可標成午餐 / 晚餐；夜市僅能標在晚間時段 */
+/** 僅允許六類固定標題，依地點類型修正 */
 export function resolveEntryLabel(slot: DayPlanSlot, place: PlaceResult): string {
-  const kind = classifyPlanPlaceKind(place);
-  if (kind === "market" || isMarketPlace(place)) {
-    if (isMealSlotLabel(slot.label)) return "小吃探索";
-    return "市場走訪";
-  }
-  if (kind === "night_market" || isNightMarketPlace(place)) {
-    if (/午餐/.test(slot.label)) return "小吃探索";
-    if (/晚餐|宵夜/.test(slot.label)) return "晚餐";
-    return "夜市";
-  }
-  if (isMealSlotLabel(slot.label) && !canPlaceFillMealSlot(place, slot)) {
-    return "小吃探索";
-  }
-  return slot.label;
+  return normalizeItineraryEntryLabel(
+    { time: slot.time, kind: slot.kind, label: slot.label },
+    place,
+  );
 }
 
 function slotKindMatches(placeKind: PlanPlaceKind, slotKind: PlanPlaceKind): boolean {
   if (placeKind === slotKind) return true;
   if (slotKind === "attraction" && (placeKind === "culture" || placeKind === "nature")) return true;
+  if (slotKind === "culture" && (placeKind === "attraction" || placeKind === "shopping" || placeKind === "market")) {
+    return true;
+  }
   if (slotKind === "restaurant" && placeKind === "night_market") return true;
-  if (slotKind === "shopping" && placeKind === "market") return true;
+  if (slotKind === "shopping" && (placeKind === "market" || placeKind === "attraction")) return true;
+  if (slotKind === "nature" && placeKind === "attraction") return true;
   return false;
 }
 
@@ -538,23 +1093,27 @@ export type DayPlanValidation = {
   sparseDays: number[];
 };
 
-export function minItemsPerDayForStyle(style: TripStyleKey): number {
-  if (style === "classic_landmarks") return CLASSIC_LANDMARK_MIN_ITEMS_PER_DAY;
-  if (style === "local_life") return LOCAL_LIFE_MIN_ITEMS_PER_DAY;
-  return CHAT_DAY_PLAN_MIN_PER_DAY;
+export function minItemsPerDayForStyle(style: TripStyleKey, days?: number): number {
+  if (days != null) return minItemsPerDayForTrip(days);
+  return STYLE_ITEMS_PER_DAY[style].min;
+}
+
+export function maxItemsPerDayForStyle(style: TripStyleKey): number {
+  return STYLE_ITEMS_PER_DAY[style].max;
 }
 
 export function validateComposedDayPlans(
   plans: ComposedDayPlan[],
   days: number,
-  minPerDay = CHAT_DAY_PLAN_MIN_PER_DAY,
+  minPerDay = minItemsPerDayForTrip(days),
 ): DayPlanValidation {
   const safeDays = Math.max(1, days);
+  const normalized = ensureAllDayPlansExist(plans, safeDays);
   const missingDays: number[] = [];
   const sparseDays: number[] = [];
 
   for (let day = 1; day <= safeDays; day += 1) {
-    const plan = plans.find((p) => p.day === day);
+    const plan = normalized.find((p) => p.day === day);
     if (!plan) {
       missingDays.push(day);
       continue;
@@ -572,7 +1131,7 @@ export function validateComposedDayPlans(
 }
 
 export function logAiDayPlanValidation(result: DayPlanValidation, days: number): void {
-  console.info(
+  logAiPipeline(
     "[AI_DAY_PLAN_VALIDATION]",
     `days=${days}`,
     `ok=${result.ok}`,
@@ -598,7 +1157,7 @@ export function bucketPlacesByKind(
   const seen = new Set<string>();
   for (const place of places) {
     const id = place.id ?? place.name;
-    if (!id || seen.has(id) || !place.name?.trim() || isExcludedRetailPlace(place)) continue;
+    if (!id || seen.has(id) || !place.name?.trim() || isExcludedRetailPlace(place, { style })) continue;
     if (style === "classic_landmarks") {
       if (isClassicLandmarkScenicCandidate(place)) {
         seen.add(id);
@@ -621,6 +1180,134 @@ export function bucketPlacesByKind(
   return buckets;
 }
 
+function applyMultiDayTripPipeline(params: {
+  plans: ComposedDayPlan[];
+  places: PlaceResult[];
+  style: TripStyleKey;
+  days: number;
+  destination?: string;
+  plannedDate?: string;
+}): ComposedDayPlan[] {
+  const { places, style, days, plannedDate } = params;
+  let current = ensureAllDayPlansExist(params.plans, days);
+  logMultiDayCandidatePool(places.length, days);
+
+  const mergedPool = dedupePlanningPlaces([
+    ...flattenComposedDayPlanPlaces(current),
+    ...places,
+  ]);
+
+  if (!isPlannerPoolSufficient(mergedPool.length, days)) {
+    logAiPipeline(
+      "[AI_PLANNER_SKIPPED]",
+      `pool=${mergedPool.length}`,
+      `target=${minCandidatePoolSize(days)}`,
+      "action=refill_from_pool",
+    );
+    current = ensureDayPlansMeetMinimum({
+      plans: current,
+      pool: mergedPool,
+      days,
+      style,
+      plannedDate,
+    });
+    validateTripPlaceUniqueness(current, days);
+    logAiDayCountValidate(days, current);
+    return ensureAllDayPlansExist(current, days);
+  }
+
+  const minPerDay = minRenderableItemsPerDay(days);
+  const needsThemedPlan =
+    plannerPopulatedDayCount(current, days) < days ||
+    plannerTotalPlaces(current) < days * minPerDay;
+
+  if (needsThemedPlan) {
+    logAiPipeline(
+      "[AI_PLANNER_THEMED]",
+      `pool=${mergedPool.length}`,
+      `populated=${plannerPopulatedDayCount(current, days)}/${days}`,
+      `total=${plannerTotalPlaces(current)}`,
+    );
+    current = buildThemedMultiDayPlans({ places: mergedPool, days, style, plannedDate });
+  }
+
+  const duplicateRate = tripDuplicateRate(current);
+  if (
+    duplicateRate > MAX_TRIP_DUPLICATE_RATE ||
+    (!validateTripPlaceUniqueness(current, days).ok && plannerPopulatedDayCount(current, days) >= days)
+  ) {
+    logAiPipeline(
+      "[AI_MULTI_DAY_REBUILD]",
+      `reason=duplicate_detected`,
+      `rate=${duplicateRate.toFixed(2)}`,
+    );
+    const themed = buildThemedMultiDayPlans({ places: mergedPool, days, style, plannedDate });
+    current = preferBetterComposedPlans(
+      finalizeMultiDayItinerary({ plans: themed, pool: mergedPool, days, style, plannedDate }),
+      current,
+      days,
+    );
+  }
+
+  current = finalizeMultiDayItinerary({
+    plans: current,
+    pool: mergedPool,
+    days,
+    style,
+    plannedDate,
+  });
+
+  validateTripPlaceUniqueness(current, days);
+  logAiDayCountValidate(days, current);
+  return ensureAllDayPlansExist(current, days);
+}
+
+function safeBuildClassicLandmarkDayPlans(params: {
+  places: PlaceResult[];
+  days: number;
+  destination: string;
+  style: TripStyleKey;
+  plannedDate?: string;
+  dedupeRebuildAttempt?: number;
+}): ComposedDayPlan[] {
+  const filtered = filterPlacesForClassicLandmark(filterExcludedRetailPlaces(params.places));
+  const scenicCount = filtered.filter(isClassicLandmarkScenicCandidate).length;
+  const minScenic = params.days * CLASSIC_LANDMARK_MIN_ATTRACTIONS_PER_DAY;
+  if (filtered.length < params.days || scenicCount < Math.min(minScenic, params.days)) {
+    logAiPipeline(
+      "[AI_CLASSIC_LANDMARK_FALLBACK]",
+      `places=${filtered.length}`,
+      `scenic=${scenicCount}`,
+      `days=${params.days}`,
+    );
+    return buildThemedMultiDayPlans({
+      places: params.places,
+      days: params.days,
+      style: params.style,
+      plannedDate: params.plannedDate,
+    });
+  }
+  try {
+    return buildClassicLandmarkDayPlans({
+      places: filtered,
+      days: params.days,
+      destination: params.destination,
+      dedupeRebuildAttempt: params.dedupeRebuildAttempt,
+    });
+  } catch (error) {
+    logAiPipeline(
+      "[AI_CLASSIC_LANDMARK_ERROR]",
+      error instanceof Error ? error.message : String(error),
+    );
+    return buildThemedMultiDayPlans({
+      places: params.places,
+      days: params.days,
+      style: params.style,
+      plannedDate: params.plannedDate,
+    });
+  }
+}
+
 function rebuildFailedDays(
   plans: ComposedDayPlan[],
   failedDays: number[],
@@ -628,19 +1315,30 @@ function rebuildFailedDays(
   style: TripStyleKey,
   destination?: string,
   days?: number,
+  plannedDate?: string,
 ): ComposedDayPlan[] {
   if (!failedDays.length) return plans;
   if (style === "classic_landmarks" && destination && days) {
     logClassicDayRebuild(0, "trip_rebuild");
-    return buildClassicLandmarkDayPlans({
-      places: filterPlacesForClassicLandmark(filterExcludedRetailPlaces(places)),
+    return safeBuildClassicLandmarkDayPlans({
+      places,
       days,
       destination,
+      style,
+      plannedDate,
+      dedupeRebuildAttempt: MAX_CLASSIC_DEDUPE_REBUILD_ATTEMPTS,
     });
   }
   if (style === "local_life" && destination && days) {
+    for (const day of failedDays) {
+      const hasRetail = plans
+        .find((p) => p.day === day)
+        ?.entries.some((e) => isExcludedRetailPlace(e.place, { style }));
+      if (hasRetail) logAiDayRebuildRetailExcluded(day);
+      else logAiDayRebuildNonMeal(day, "style_composition");
+    }
     return buildLocalLifeDayPlans({
-      places: filterPlacesForLocalLife(filterExcludedRetailPlaces(places)),
+      places: filterPlacesForLocalLife(filterExcludedRetailPlaces(places, { style })),
       days,
       destination,
     });
@@ -662,30 +1360,40 @@ function rebuildFailedDays(
   });
 }
 
+const MAX_CLASSIC_DEDUPE_REBUILD_ATTEMPTS = 1;
+
 function finalizeComposedDayPlans(
   plans: ComposedDayPlan[],
   places: PlaceResult[],
   style: TripStyleKey,
   days: number,
   destination?: string,
+  plannedDate?: string,
 ): ComposedDayPlan[] {
-  let current = sortComposedDayPlans(plans);
-  let itineraryValidation = validateItinerary(current, classifyPlanPlaceKind);
+  let classicFullRebuildDone = false;
+  const initialPlans = ensureAllDayPlansExist(sortComposedDayPlans(plans), days);
+  const initialTotal = plannerTotalPlaces(initialPlans);
+  let current = initialPlans;
+  let itineraryValidation = validateItinerary(current, classifyPlanPlaceKind, style, plannedDate, days);
 
   if (!itineraryValidation.ok) {
+    logAiDayPlanRebuildReason(itineraryValidation.reasons.join(";") || "initial_validation_failed");
     current = repairDayPlanSlots(
       current,
       places,
       style,
       classifyPlanPlaceKind,
       resolveEntryLabel,
+      days,
+      plannedDate,
     );
-    current = sortComposedDayPlans(current);
-    itineraryValidation = validateItinerary(current, classifyPlanPlaceKind);
+    current = ensureAllDayPlansExist(sortComposedDayPlans(current), days);
+    itineraryValidation = validateItinerary(current, classifyPlanPlaceKind, style, plannedDate, days);
   }
 
   if (!itineraryValidation.ok && itineraryValidation.failedDays.length > 0) {
     logAiDayPlanRebuild();
+    logAiDayPlanRebuildReason(`failed_days:${itineraryValidation.failedDays.join(",")}`);
     current = rebuildFailedDays(
       current,
       itineraryValidation.failedDays,
@@ -693,33 +1401,42 @@ function finalizeComposedDayPlans(
       style,
       destination,
       days,
+      plannedDate,
     );
-    current = sortComposedDayPlans(current);
-    itineraryValidation = validateItinerary(current, classifyPlanPlaceKind);
+    current = ensureAllDayPlansExist(sortComposedDayPlans(current), days);
+    itineraryValidation = validateItinerary(current, classifyPlanPlaceKind, style, plannedDate, days);
   }
 
   if (!itineraryValidation.ok) {
     logAiDayPlanRebuild();
+    logAiDayPlanRebuildReason(itineraryValidation.reasons.join(";") || "full_rebuild");
     if (style === "local_life" && destination) {
-      current = sortComposedDayPlans(
-        buildLocalLifeDayPlans({
-          places: filterPlacesForLocalLife(filterExcludedRetailPlaces(places)),
-          days,
-          destination,
-        }),
+      current = ensureAllDayPlansExist(
+        sortComposedDayPlans(
+          buildLocalLifeDayPlans({
+            places: filterPlacesForLocalLife(filterExcludedRetailPlaces(places)),
+            days,
+            destination,
+          }),
+        ),
+        days,
       );
     } else {
-      current = sortComposedDayPlans(
-        buildStructuredDayPlans({
-          places,
-          days,
-          style,
-          classifyKind: classifyPlanPlaceKind,
-          resolveLabel: resolveEntryLabel,
-        }),
+      current = ensureAllDayPlansExist(
+        sortComposedDayPlans(
+          buildStructuredDayPlans({
+            places,
+            days,
+            style,
+            classifyKind: classifyPlanPlaceKind,
+            resolveLabel: resolveEntryLabel,
+            plannedDate,
+          }),
+        ),
+        days,
       );
     }
-    validateItinerary(current, classifyPlanPlaceKind);
+    validateItinerary(current, classifyPlanPlaceKind, style, plannedDate, days);
   }
 
   if (style === "classic_landmarks") {
@@ -745,26 +1462,33 @@ function finalizeComposedDayPlans(
         style,
         destination,
         days,
+        plannedDate,
       );
       current = sortComposedDayPlans(current);
       classicValidation = validateClassicLandmarkItinerary(current, classifyPlanPlaceKind);
     }
-    if (!classicValidation.ok && destination) {
+    if (!classicValidation.ok && destination && !classicFullRebuildDone) {
+      classicFullRebuildDone = true;
       logAiDayPlanRebuild();
       current = sortComposedDayPlans(
-        buildClassicLandmarkDayPlans({
-          places: filterPlacesForClassicLandmark(filterExcludedRetailPlaces(places)),
+        safeBuildClassicLandmarkDayPlans({
+          places,
           days,
           destination,
+          style,
+          plannedDate,
+          dedupeRebuildAttempt: MAX_CLASSIC_DEDUPE_REBUILD_ATTEMPTS,
         }),
       );
       validateClassicLandmarkItinerary(current, classifyPlanPlaceKind);
       validateClassicLandmarkTrip(current, destination);
+    } else if (!classicValidation.ok && destination) {
+      logAiPipeline("[AI_DAY_REBUILD_ABORT]", "reason=classic_full_rebuild_skipped");
     }
   }
 
   if (style === "local_life" && destination) {
-    const dedup = validateTripNoDuplicate(current, destination);
+    const dedup = validateTripNoDuplicate(current, destination, days);
     if (!dedup.ok) {
       logAiDayPlanRebuild();
       current = sortComposedDayPlans(
@@ -774,17 +1498,139 @@ function finalizeComposedDayPlans(
           destination,
         }),
       );
-      validateTripNoDuplicate(current, destination);
+      validateTripNoDuplicate(current, destination, days);
     }
+    validateTripPlaceUniqueness(current, days);
   }
 
   const countValidation = validateComposedDayPlans(
     current,
     days,
-    minItemsPerDayForStyle(style),
+    minItemsPerDayForTrip(days),
   );
   logAiDayPlanValidation(countValidation, days);
-  return current;
+  logAiDayPlanFinalValidate(days, countValidation.ok, minItemsPerDayForTrip(days), countValidation.sparseDays);
+
+  const dayCountCheck = logAiDayCountValidate(days, current);
+  if (!dayCountCheck.ok || !countValidation.ok) {
+    logAiDayPlanRebuild();
+    logAiDayPlanRebuildReason(
+      !dayCountCheck.ok
+        ? `day_count_mismatch:${days}!=${dayCountCheck.generatedDays}`
+        : `sparse_days:${countValidation.sparseDays.join(",")}`,
+    );
+    current = ensureAllDayPlansExist(
+      sortComposedDayPlans(
+        repairDayPlanSlots(
+          current,
+          places,
+          style,
+          classifyPlanPlaceKind,
+          resolveEntryLabel,
+          days,
+          plannedDate,
+        ),
+      ),
+      days,
+    );
+    logAiDayCountValidate(days, current);
+  }
+
+  for (const plan of current) {
+    if (isDayMealsOnly(plan.entries, classifyPlanPlaceKind)) {
+      logAiStyleCompositionFail("meals_only_day", plan.day);
+      logAiNonMealSlotMissing(plan.day);
+      if (style === "local_life" && destination) {
+        logAiDayRebuildNonMeal(plan.day, "meals_only_before_render");
+        const replacement = rebuildLocalLifeDayPlan({
+          day: plan.day,
+          currentPlans: current,
+          places: filterPlacesForLocalLife(filterExcludedRetailPlaces(places, { style })),
+          destination,
+          days,
+        });
+        if (replacement && !isDayMealsOnly(replacement.entries, classifyPlanPlaceKind)) {
+          plan.entries = replacement.entries;
+        }
+      }
+    }
+  }
+
+  const retailValidation = validateNoExcludedRetailPlaces(current, style);
+  if (!retailValidation.ok && retailValidation.failedDays.length > 0) {
+    logAiDayPlanRebuild();
+    logAiDayPlanRebuildReason(`excluded_retail:${retailValidation.failedDays.join(",")}`);
+    current = stripExcludedRetailFromDayPlans(current, style);
+    const safePlaces = filterExcludedRetailPlaces(places, { style });
+    for (const day of retailValidation.failedDays) {
+      logAiDayRebuildRetailExcluded(day);
+      if (style === "local_life" && destination) {
+        const replacement = rebuildLocalLifeDayPlan({
+          day,
+          currentPlans: current,
+          places: filterPlacesForLocalLife(safePlaces),
+          destination,
+          days,
+        });
+        if (replacement?.entries.length) {
+          const byDay = new Map(current.map((p) => [p.day, p]));
+          byDay.set(day, replacement);
+          current = [...byDay.values()].sort((a, b) => a.day - b.day);
+        }
+      } else {
+        const rebuilt = buildStructuredDayPlans({
+          places: safePlaces,
+          days: 1,
+          style,
+          classifyKind: classifyPlanPlaceKind,
+          resolveLabel: resolveEntryLabel,
+          plannedDate,
+        })[0];
+        if (rebuilt?.entries.length) {
+          const byDay = new Map(current.map((p) => [p.day, p]));
+          byDay.set(day, { day, entries: rebuilt.entries });
+          current = [...byDay.values()].sort((a, b) => a.day - b.day);
+        }
+      }
+    }
+    current = ensureAllDayPlansExist(sortComposedDayPlans(current), days);
+    validateNoExcludedRetailPlaces(current, style);
+  }
+
+  let generatedValidation = validateGeneratedDays(current, days, style);
+  if (!generatedValidation.ok) {
+    current = rebuildIncompleteDays(
+      current,
+      generatedValidation.incompleteDays,
+      places,
+      style,
+      destination,
+      days,
+    );
+    current = ensureAllDayPlansExist(sortComposedDayPlans(current), days);
+    generatedValidation = validateGeneratedDays(current, days, style);
+  }
+
+  const finalized = markItineraryDayCompleteness(
+    sortComposedDayPlans(current).map((plan) => ({
+      ...plan,
+      entries: dedupeEntryTimes(plan.entries),
+    })),
+    days,
+  );
+  const finalTotal = plannerTotalPlaces(finalized);
+  if (finalTotal <= 0 && initialTotal > 0) {
+    logPlannerOverwriteBlocked("finalize_cleared_plan", initialTotal, finalTotal);
+    return markItineraryDayCompleteness(initialPlans, days);
+  }
+  const chosen = preferBetterComposedPlans(finalized, initialPlans, days);
+  return markItineraryDayCompleteness(
+    chosen.map((plan) => ({
+      ...plan,
+      entries: dedupeEntryTimes(plan.entries),
+    })),
+    days,
+  );
 }
 
 export function buildComposedDayPlans(params: {
@@ -792,46 +1638,108 @@ export function buildComposedDayPlans(params: {
   days: number;
   style: TripStyleKey;
   destination?: string;
+  plannedDate?: string;
+  lat?: number;
+  lng?: number;
 }): ComposedDayPlan[] {
-  const { places, days, style, destination } = params;
+  const { days, style, destination, plannedDate, lat, lng } = params;
+  const places = filterRealPlanningPlaces(params.places);
   const safeDays = Math.max(1, days);
+  const pool = dedupePlanningPlaces(places);
+
+  if (!isPlannerPoolReady(pool, safeDays)) {
+    logAiPipeline(
+      "[AI_PLANNER_POOL_GATE]",
+      `pool=${pool.length}`,
+      `target=${minCandidatePoolSize(safeDays)}`,
+      `dining=${countDiningPoolPlaces(pool)}`,
+      `scenic=${countScenicPoolPlaces(pool)}`,
+      "action=skip_await_expansion",
+    );
+    logPlannerOverwriteBlocked("insufficient_pool_skip", 0, 0);
+    return ensureAllDayPlansExist([], safeDays);
+  }
 
   if (style === "classic_landmarks" && destination) {
     const safePlaces = filterPlacesForClassicLandmark(filterExcludedRetailPlaces(places));
     logAiBuildDayPlanStart(safeDays, safePlaces.length);
-    const plans = buildClassicLandmarkDayPlans({
-      places: safePlaces,
+    const plans = safeBuildClassicLandmarkDayPlans({
+      places,
       days: safeDays,
       destination,
+      style,
+      plannedDate,
     });
-    const finalized = finalizeComposedDayPlans(plans, safePlaces, style, safeDays, destination);
-    for (const plan of finalized) {
+    logPlannerSplit(dayCountsFromPlans(plans));
+    const finalized = finalizeComposedDayPlans(plans, safePlaces, style, safeDays, destination, plannedDate);
+    const piped = ensureDayPlansMeetMinimum({
+      plans: applyMultiDayTripPipeline({
+        plans: finalized,
+        places,
+        style,
+        days: safeDays,
+        destination,
+        plannedDate,
+      }),
+      pool: places,
+      days: safeDays,
+      style,
+      plannedDate,
+    });
+    logPlannerAssign(dayCountsFromPlans(piped));
+    for (const plan of piped) {
       for (const entry of plan.entries) {
         logAiDayPlanItemAdded(plan.day, entry.name, classifyPlanPlaceKind(entry.place));
       }
     }
-    const totalItems = finalized.reduce((n, p) => n + p.entries.length, 0);
+    const totalItems = piped.reduce((n, p) => n + p.entries.length, 0);
     logAiDayPlanFinalSummary(safeDays, totalItems);
-    return finalized;
+    logPlannerResult(piped.length, totalItems, isItineraryRenderable(piped, safeDays, style));
+    return piped;
   }
 
   if (style === "local_life" && destination) {
-    const safePlaces = filterPlacesForLocalLife(filterExcludedRetailPlaces(places));
+    const safePlaces = ensureLocalLifePlanningPool({
+      places,
+      destination,
+      days: safeDays,
+      lat,
+      lng,
+    });
     logAiBuildDayPlanStart(safeDays, safePlaces.length);
     const plans = buildLocalLifeDayPlans({
       places: safePlaces,
       days: safeDays,
       destination,
+      lat,
+      lng,
     });
-    const finalized = finalizeComposedDayPlans(plans, safePlaces, style, safeDays, destination);
-    for (const plan of finalized) {
+    logPlannerSplit(dayCountsFromPlans(plans));
+    const finalized = finalizeComposedDayPlans(plans, safePlaces, style, safeDays, destination, plannedDate);
+    const piped = ensureDayPlansMeetMinimum({
+      plans: applyMultiDayTripPipeline({
+        plans: finalized,
+        places: safePlaces,
+        style,
+        days: safeDays,
+        destination,
+        plannedDate,
+      }),
+      pool: safePlaces,
+      days: safeDays,
+      style,
+      plannedDate,
+    });
+    logPlannerAssign(dayCountsFromPlans(piped));
+    for (const plan of piped) {
       for (const entry of plan.entries) {
         logAiDayPlanItemAdded(plan.day, entry.name, classifyPlanPlaceKind(entry.place));
       }
     }
-    const totalItems = finalized.reduce((n, p) => n + p.entries.length, 0);
+    const totalItems = piped.reduce((n, p) => n + p.entries.length, 0);
     logAiDayPlanFinalSummary(safeDays, totalItems);
-    return finalized;
+    logPlannerResult(piped.length, totalItems, isItineraryRenderable(piped, safeDays, style));
+    return piped;
   }
 
   const safePlaces =
@@ -871,8 +1779,8 @@ export function buildComposedDayPlans(params: {
 
     for (const source of [primary, ...fallbackKinds.map((k) => byKind[k] ?? [])]) {
       for (const place of orderSources(source)) {
-        const id = place.id ?? place.name;
-        if (!id || used.has(id)) continue;
+        const id = resolveTripPlaceId(place);
+        if (!id || used.has(id) || isGeocodeEmptyPlace(place)) continue;
         if (filter && !filter(place)) continue;
         used.add(id);
         return place;
@@ -922,14 +1830,19 @@ export function buildComposedDayPlans(params: {
     }
 
     if (/午餐/.test(slot.label)) {
-      const place = pickFromKind("restaurant", isProperRestaurantPlace);
-      return place && canPlaceFillMealSlot(place, slot) ? place : undefined;
+      const place = pickFromKind(
+        "restaurant",
+        (p) => isProperRestaurantPlace(p) && !isBarBistroPlace(p) && canPlaceFillSlot(p, slot, plannedDate),
+      );
+      return place;
     }
     if (/晚餐|宵夜/.test(slot.label)) {
       for (const kind of ["restaurant", "night_market"] as PlanPlaceKind[]) {
         const place = pickFromKind(
           kind,
-          kind === "restaurant" ? isProperRestaurantPlace : (p) => isNightMarketPlace(p),
+          kind === "restaurant"
+            ? (p) => (isProperRestaurantPlace(p) || isBarBistroPlace(p)) && canPlaceFillSlot(p, slot, plannedDate)
+            : (p) => isNightMarketPlace(p) && canPlaceFillSlot(p, slot, plannedDate),
         );
         if (place && canPlaceFillMealSlot(place, slot)) return place;
         if (place) {
@@ -941,7 +1854,7 @@ export function buildComposedDayPlans(params: {
     }
     if (slot.kind === "cafe" || /咖啡|下午茶/.test(slot.label)) {
       if (dayState.cafeCount >= 1) return undefined;
-      const place = pickFromKind("cafe", (p) => isCafePlace(p));
+      const place = pickFromKind("cafe", (p) => isCafePlace(p) && canPlaceFillSlot(p, slot, plannedDate));
       if (place) dayState.cafeCount += 1;
       return place;
     }
@@ -955,20 +1868,16 @@ export function buildComposedDayPlans(params: {
 
     let place = pickFromKind(slot.kind, (p) => {
       if (dayState.mallCount >= 1 && isLargeMallPlace(p)) return false;
-      return true;
+      return canPlaceFillSlot(p, slot, plannedDate);
     });
     if (!place) {
-      for (const kind of kindsForStyle(style)) {
-        place = pickFromKind(kind);
-        if (place && canPlaceFillSlot(place, slot)) break;
-        if (place && !canPlaceFillSlot(place, slot)) {
-          const id = place.id ?? place.name;
-          if (id) used.delete(id);
-          place = undefined;
-        }
+      for (const kind of scenicKindsForStyle(style)) {
+        place = pickFromKind(kind, (p) => canPlaceFillSlot(p, slot, plannedDate));
+        if (place) break;
+        place = undefined;
       }
     }
-    if (place && !canPlaceFillSlot(place, slot)) {
+    if (place && !canPlaceFillSlot(place, slot, plannedDate)) {
       const id = place.id ?? place.name;
       if (id) used.delete(id);
       return undefined;
@@ -1001,18 +1910,27 @@ export function buildComposedDayPlans(params: {
       });
     }
 
-    const minPerDay = minItemsPerDayForStyle(style);
+    const minPerDay = minItemsPerDayForTrip(safeDays);
     if (entries.length < minPerDay) {
-      for (const kind of kindsForStyle(style)) {
+      for (const kind of scenicKindsForStyle(style)) {
         if (entries.length >= minPerDay) break;
-        const place = pickFromKind(kind, (p) => !isExcludedRetailPlace(p));
+        const place = pickFromKind(kind, (p) => !isExcludedRetailPlace(p) && !isDiningPlace(p, classifyPlanPlaceKind));
         if (!place?.name) continue;
+        const fillerTimes = ["09:00", "11:00", "14:30", "16:00", "17:30"];
+        const fillerTime = fillerTimes[Math.min(entries.length, fillerTimes.length - 1)] ?? "16:00";
         const fillerSlot: DayPlanSlot = {
-          time: entries.length === 0 ? "09:00" : entries.length === 1 ? "12:00" : "15:00",
+          time: fillerTime,
           kind,
-          label: kind === "restaurant" ? "午餐" : kind === "cafe" ? "咖啡" : kind === "market" ? "市場" : "景點",
+          label:
+            kind === "shopping" || kind === "market"
+              ? "街區"
+              : kind === "culture"
+                ? "文創"
+                : kind === "nature"
+                  ? "自然"
+                  : "景點",
         };
-        if (!canPlaceFillSlot(place, fillerSlot)) {
+        if (!canPlaceFillSlot(place, fillerSlot, plannedDate)) {
           const id = place.id ?? place.name;
           if (id) used.delete(id);
           continue;
@@ -1036,7 +1954,7 @@ export function buildComposedDayPlans(params: {
   }
 
   logAiBuildDayPlan(safeDays);
-  const finalized = finalizeComposedDayPlans(plans, safePlaces, style, safeDays, destination);
+  const finalized = finalizeComposedDayPlans(plans, safePlaces, style, safeDays, destination, plannedDate);
   const summary = {
     attractions: finalized.flatMap((p) => p.entries).filter((e) => classifyPlanPlaceKind(e.place) === "attraction").length,
     restaurants: finalized.flatMap((p) => p.entries).filter((e) => {
@@ -1048,28 +1966,50 @@ export function buildComposedDayPlans(params: {
   logAiDayPlanSummary(summary);
 
   if (
-    !validateComposedDayPlans(finalized, safeDays, minItemsPerDayForStyle(style)).ok &&
-    safePlaces.length >= safeDays * CHAT_DAY_PLAN_SLOW_MIN_PER_DAY &&
-    style !== "classic_landmarks"
+    style === "slow_nature" &&
+    !validateComposedDayPlans(finalized, safeDays, minItemsPerDayForTrip(safeDays)).ok &&
+    safePlaces.length >= safeDays * CHAT_DAY_PLAN_SLOW_MIN_PER_DAY
   ) {
     logAiDayPlanRebuild();
-    const balanced = buildBalancedSlowDayPlans({ places: safePlaces, days: safeDays, style });
-    if (balanced.some((p) => p.entries.length > 0)) {
+    logAiDayPlanRebuildReason("slow_nature_sparse_fallback");
+    const balanced = buildBalancedSlowDayPlans({ places: safePlaces, days: safeDays, style, plannedDate });
+    const balancedCheck = validateComposedDayPlans(balanced, safeDays, minItemsPerDayForTrip(safeDays));
+    if (balancedCheck.ok || balanced.length >= safeDays) {
+      logAiDayCountValidate(safeDays, balanced);
       const totalItems = balanced.reduce((n, p) => n + p.entries.length, 0);
       logAiDayPlanFinalSummary(safeDays, totalItems);
-      return balanced;
+      return markItineraryDayCompleteness(ensureAllDayPlansExist(balanced, safeDays), safeDays);
     }
   }
 
-  for (const plan of finalized) {
+  logAiDayCountValidate(safeDays, finalized);
+
+  const piped = ensureDayPlansMeetMinimum({
+    plans: applyMultiDayTripPipeline({
+      plans: finalized,
+      places: safePlaces,
+      style,
+      days: safeDays,
+      destination,
+      plannedDate,
+    }),
+    pool: safePlaces,
+    days: safeDays,
+    style,
+    plannedDate,
+  });
+  logPlannerSplit(dayCountsFromPlans(finalized));
+  logPlannerAssign(dayCountsFromPlans(piped));
+
+  for (const plan of piped) {
     for (const entry of plan.entries) {
       logAiDayPlanItemAdded(plan.day, entry.name, classifyPlanPlaceKind(entry.place));
     }
   }
-  const totalItems = finalized.reduce((n, p) => n + p.entries.length, 0);
+  const totalItems = piped.reduce((n, p) => n + p.entries.length, 0);
   logAiDayPlanFinalSummary(safeDays, totalItems);
 
-  return finalized;
+  return markItineraryDayCompleteness(ensureAllDayPlansExist(piped, safeDays), safeDays);
 }
 
 export function composedDayPlansToBuckets(plans: ComposedDayPlan[]): DayPlanBucketWithEntries[] {
@@ -1084,8 +2024,9 @@ export function buildBalancedSlowDayPlans(params: {
   places: PlaceResult[];
   days: number;
   style: TripStyleKey;
+  plannedDate?: string;
 }): ComposedDayPlan[] {
-  const { places, days, style } = params;
+  const { places, days, style, plannedDate } = params;
   const safeDays = Math.max(1, days);
   const pool =
     style === "classic_landmarks"
@@ -1097,18 +2038,20 @@ export function buildBalancedSlowDayPlans(params: {
     style,
     classifyKind: classifyPlanPlaceKind,
     resolveLabel: resolveEntryLabel,
+    plannedDate,
   });
 
   const finalized = sortComposedDayPlans(plans);
-  validateItinerary(finalized, classifyPlanPlaceKind);
+  validateItinerary(finalized, classifyPlanPlaceKind, style, plannedDate, safeDays);
 
   logAiBuildDayPlan(safeDays);
   const validation = validateComposedDayPlans(
     finalized,
     safeDays,
-    minItemsPerDayForStyle(style),
+    minItemsPerDayForTrip(safeDays),
   );
   logAiDayPlanValidation(validation, safeDays);
+  logAiDayCountValidate(safeDays, finalized);
   const summary = {
     attractions: finalized.flatMap((p) => p.entries).filter((e) => classifyPlanPlaceKind(e.place) === "attraction").length,
     restaurants: finalized.flatMap((p) => p.entries).filter((e) => {
@@ -1126,7 +2069,7 @@ export function buildBalancedSlowDayPlans(params: {
   }
   const totalItems = finalized.reduce((n, p) => n + p.entries.length, 0);
   logAiDayPlanFinalSummary(safeDays, totalItems);
-  return finalized;
+  return markItineraryDayCompleteness(ensureAllDayPlansExist(finalized, safeDays), safeDays);
 }
 
 export function buildComposedDayPlanSummary(
@@ -1137,26 +2080,38 @@ export function buildComposedDayPlanSummary(
   opts?: { slowTravel?: boolean },
 ): string {
   const label = normalizeDestinationLabel(destination);
+  const normalized = ensureAllDayPlansExist(plans, days);
+
+  if (!isItineraryRenderable(normalized, days, style)) {
+    const validation = validateGeneratedDays(normalized, days, style);
+    logAiRenderBlockedIncompleteDay(
+      days,
+      validation.reasons,
+      Object.fromEntries(normalized.map((p) => [p.day, p.entries.length])),
+    );
+    return `${label} ${days} 天推薦：\n\n（行程生成中）`;
+  }
+
   const styleLabels: Record<TripStyleKey, string> = {
     classic_landmarks: "經典地標",
     local_life: "在地生活體驗",
-    slow_nature: "慢遊療癒行程",
+    slow_nature: "慢步調散策",
     mixed: "Roamie 混搭推薦",
   };
   const lines: string[] = opts?.slowTravel && style === "slow_nature"
     ? ["我先幫你排一版慢遊行程 🌿", "", `${label} ${days} 天推薦（${styleLabels[style]}）：`, ""]
     : [`${label} ${days} 天推薦（${styleLabels[style]}）：`, ""];
 
-  for (const plan of plans) {
-    if (!plan.entries.length) continue;
-    lines.push(`Day${plan.day}：`);
+  for (const plan of normalized) {
+    if (isDayMealsOnly(plan.entries, classifyPlanPlaceKind)) {
+      logAiStyleCompositionFail("meals_only_day", plan.day);
+      logAiNonMealSlotMissing(plan.day);
+    }
+    lines.push(`Day${plan.day}`);
     const sortedEntries = sortComposedDayPlans([plan])[0]?.entries ?? plan.entries;
     for (const entry of sortedEntries) {
-      if (/午餐|晚餐|早餐|下午茶|宵夜|咖啡|小吃探索|市場走訪|商圈市集/.test(entry.label)) {
-        lines.push(`- ${entry.time} ${entry.label}：${entry.name}`);
-      } else {
-        lines.push(`- ${entry.time} ${entry.label} — ${entry.name}`);
-      }
+      if (!isAllowedItinerarySlotLabel(entry.label)) continue;
+      lines.push(`- ${entry.time} ${entry.label}：${entry.name}`);
     }
     if (plan.day < days) lines.push("");
   }
@@ -1177,4 +2132,268 @@ export function flattenComposedDayPlanPlaces(plans: ComposedDayPlan[]): PlaceRes
     }
   }
   return ordered;
+}
+
+export type AiDayPlanItem = {
+  dayIndex: number;
+  orderIndex: number;
+  time: string;
+  slotType: string;
+  placeId: string;
+  name: string;
+  address: string;
+  lat: number | null;
+  lng: number | null;
+  type: string;
+  photo?: string | null;
+  rating?: number | null;
+};
+
+export type AiDayPlan = {
+  planningSessionId: string;
+  destination: string;
+  days: number;
+  items: AiDayPlanItem[];
+};
+
+export type ItineraryDayPayload = {
+  dayIndex: number;
+  date?: string;
+  items: RoamieItineraryItem[];
+};
+
+function sortDayPlanEntriesByTime(entries: DayPlanEntry[]): DayPlanEntry[] {
+  return [...entries].sort((a, b) => {
+    const parseTime = (time: string): number => {
+      const m = time.trim().match(/^(\d{1,2}):(\d{2})$/);
+      if (!m) return 12 * 60;
+      return Number(m[1]) * 60 + Number(m[2]);
+    };
+    return parseTime(a.time) - parseTime(b.time);
+  });
+}
+
+export function logAiDayPlanFinal(item: AiDayPlanItem): void {
+  logAiPipeline(
+    "[AI_DAY_PLAN_FINAL]",
+    `dayIndex=${item.dayIndex}`,
+    `orderIndex=${item.orderIndex}`,
+    `time=${item.time}`,
+    `name=${item.name}`,
+  );
+}
+
+export function logAiCreateTripFromDayPlanStart(): void {
+  logAiPipeline("[AI_CREATE_TRIP_FROM_DAY_PLAN_START]");
+}
+
+export function logAiCreateTripItem(item: AiDayPlanItem, date?: string): void {
+  logAiPipeline(
+    "[AI_CREATE_TRIP_ITEM]",
+    `dayIndex=${item.dayIndex}`,
+    `orderIndex=${item.orderIndex}`,
+    `time=${item.time}`,
+    `name=${item.name}`,
+    date ? `date=${date}` : "",
+  );
+}
+
+export function logTripDetailItemsRender(item: AiDayPlanItem, date?: string): void {
+  logAiPipeline(
+    "[TRIP_DETAIL_ITEMS_RENDER]",
+    `dayIndex=${item.dayIndex}`,
+    `orderIndex=${item.orderIndex}`,
+    `time=${item.time}`,
+    `name=${item.name}`,
+    date ? `date=${date}` : "",
+  );
+}
+
+export function logAiDayPlanOrderMismatch(expected: string, actual: string): void {
+  console.warn("[AI_DAY_PLAN_ORDER_MISMATCH]", `expected=${expected}`, `actual=${actual}`);
+}
+
+export function composedPlansToAiDayPlan(params: {
+  composedPlans: ComposedDayPlan[];
+  destination: string;
+  days: number;
+  planningSessionId: string;
+}): AiDayPlan {
+  const items: AiDayPlanItem[] = [];
+  const seenPlaceKeys = new Set<string>();
+  for (const plan of params.composedPlans) {
+    const sortedEntries = sortDayPlanEntriesByTime(plan.entries);
+    let orderIndex = 0;
+    for (const entry of sortedEntries) {
+      const place = entry.place;
+      if (!isRealGooglePlanningPlace(place)) continue;
+      const dedupeKey = resolveTripPlaceId(place) || `${entry.name}:${place.address ?? ""}`;
+      if (dedupeKey && seenPlaceKeys.has(dedupeKey)) continue;
+      if (dedupeKey) seenPlaceKeys.add(dedupeKey);
+      const item: AiDayPlanItem = {
+        dayIndex: plan.day,
+        orderIndex,
+        time: entry.time,
+        slotType: entry.label,
+        placeId: (place.id ?? "").trim(),
+        name: entry.name,
+        address: place.address?.trim() ?? "",
+        lat: place.lat ?? null,
+        lng: place.lng ?? null,
+        type: place.primaryType?.trim() || entry.label,
+        photo: place.photoName ?? null,
+        rating: place.rating ?? null,
+      };
+      items.push(item);
+      logAiDayPlanFinal(item);
+      orderIndex += 1;
+    }
+  }
+  return {
+    planningSessionId: params.planningSessionId,
+    destination: params.destination,
+    days: params.days,
+    items,
+  };
+}
+
+export function sortDayPlanItems(items: AiDayPlanItem[]): AiDayPlanItem[] {
+  const parseTime = (time: string): number => {
+    const m = time.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return 12 * 60;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
+  return [...items].sort((a, b) => {
+    if (a.dayIndex !== b.dayIndex) return a.dayIndex - b.dayIndex;
+    const timeCmp = parseTime(a.time) - parseTime(b.time);
+    if (timeCmp !== 0) return timeCmp;
+    return a.orderIndex - b.orderIndex;
+  });
+}
+
+export function dayPlanItemToRecommendation(item: AiDayPlanItem): RoamieRecommendationItem {
+  return normalizeRecommendationItem({
+    name: item.name,
+    placeName: item.name,
+    type: item.type,
+    description: item.address || item.name,
+    reason: "",
+    estimatedTime: "1-2 小時",
+    address: item.address || item.name,
+    lat: item.lat,
+    lng: item.lng,
+    googleMapsUrl: "",
+    reasonSource: "template",
+    googlePlaceId: item.placeId || undefined,
+    photoName: item.photo ?? null,
+    rating: item.rating ?? null,
+  });
+}
+
+export function dayPlanToRecommendations(plan: AiDayPlan): RoamieRecommendationItem[] {
+  return dedupePlaceCardsForRender(
+    sortDayPlanItems(plan.items).map(dayPlanItemToRecommendation),
+  );
+}
+
+export function dayPlanToChatPlaces(plan: AiDayPlan): ChatPlaceItem[] {
+  return dayPlanToRecommendations(plan) as ChatPlaceItem[];
+}
+
+export function mergeEnrichedIntoDayPlan(
+  plan: AiDayPlan,
+  enriched: RoamieRecommendationItem[],
+): AiDayPlan {
+  const byKey = new Map<string, RoamieRecommendationItem>();
+  for (const rec of enriched) {
+    const pid = (rec.googlePlaceId ?? (rec as RoamieRecommendationItem & { placeId?: string }).placeId ?? "").trim();
+    if (pid) byKey.set(`id:${pid}`, rec);
+    byKey.set(`name:${rec.name}`, rec);
+  }
+
+  const items = sortDayPlanItems(plan.items).map((item) => {
+    const rec =
+      (item.placeId ? byKey.get(`id:${item.placeId}`) : undefined) ??
+      byKey.get(`name:${item.name}`);
+    if (!rec) return item;
+    return {
+      ...item,
+      placeId: rec.googlePlaceId ?? item.placeId,
+      name: rec.name || item.name,
+      address: rec.address?.trim() || item.address,
+      lat: rec.lat ?? item.lat,
+      lng: rec.lng ?? item.lng,
+      type: rec.type || item.type,
+      photo: rec.photoName ?? item.photo,
+      rating: rec.rating ?? item.rating,
+    };
+  });
+
+  return { ...plan, items };
+}
+
+export function buildItineraryFromDayPlan(
+  plan: AiDayPlan,
+  dates: TripCreateDates,
+): RoamieItineraryItem[] {
+  logAiCreateTripFromDayPlanStart();
+  const sorted = sortDayPlanItems(plan.items);
+  return sorted.map((item) => {
+    const date = dates.dayDates[item.dayIndex - 1] ?? "";
+    logAiCreateTripItem(item, date || undefined);
+    logTripDetailItemsRender(item, date || undefined);
+    return normalizeItineraryItem({
+      date,
+      time: item.time,
+      title: item.name,
+      placeName: item.name,
+      description: item.address || item.name,
+      lat: item.lat,
+      lng: item.lng,
+      address: item.address || item.name,
+      googlePlaceId: item.placeId || undefined,
+      placeType: item.slotType || item.type,
+      dayIndex: item.dayIndex - 1,
+      sortIndex: item.orderIndex,
+      order: item.orderIndex,
+    });
+  });
+}
+
+export function buildItineraryDaysFromDayPlan(
+  plan: AiDayPlan,
+  dates: TripCreateDates,
+  itineraryItems: RoamieItineraryItem[],
+): ItineraryDayPayload[] {
+  const days: ItineraryDayPayload[] = [];
+  for (let day = 1; day <= plan.days; day += 1) {
+    const date = dates.dayDates[day - 1];
+    const items = itineraryItems.filter((item) => (item.dayIndex ?? 0) + 1 === day);
+    days.push({ dayIndex: day, date, items });
+  }
+  return days;
+}
+
+export function dayPlanOrderSignature(plan: AiDayPlan): string {
+  return sortDayPlanItems(plan.items)
+    .map((item) => `D${item.dayIndex}@${item.orderIndex}:${item.time}:${item.name}`)
+    .join("|");
+}
+
+export function itineraryOrderSignature(items: RoamieItineraryItem[]): string {
+  return items
+    .map((item, index) => {
+      const dayIndex = (item.dayIndex ?? 0) + 1;
+      const orderIndex = item.sortIndex ?? item.order ?? index;
+      return `D${dayIndex}@${orderIndex}:${item.time}:${item.placeName}`;
+    })
+    .join("|");
+}
+
+export function verifyDayPlanItineraryOrder(plan: AiDayPlan, items: RoamieItineraryItem[]): void {
+  const expected = dayPlanOrderSignature(plan);
+  const actual = itineraryOrderSignature(items);
+  if (expected !== actual) {
+    logAiDayPlanOrderMismatch(expected, actual);
+  }
 }

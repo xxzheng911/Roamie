@@ -4,6 +4,7 @@ import type { ChatPlanningSession, ChatPlaceItem } from "@/lib/chat-session";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import { lowBudgetSearchQuery, buildBudgetRefinementSummary } from "@/lib/ai/budget-refinement";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   buildCampingIntroReply,
   buildCampingRecommendationSummary,
@@ -93,7 +94,7 @@ export function generateLocalRecommendationFallback(
   input: LocalFallbackInput,
 ): { summary: string; payload: RoamiePayloadV2; places: ChatPlaceItem[] } {
   const { context: ctx, session, locale = "zh-TW", places = [] } = input;
-  console.info("[CHAT_FALLBACK_USED]", logTravelContext(ctx));
+  logAiPipeline("[CHAT_FALLBACK_USED]", logTravelContext(ctx));
 
   const filteredPlaces =
     ctx.activity === "camping" || ctx.interests.includes("露營")
@@ -138,7 +139,7 @@ export function generateLocalRecommendationFallback(
     itinerary: [],
   };
 
-  console.info("[AI_RECOMMENDATION] generated", `count=${candidates.length}`, logTravelContext(ctx));
+  logAiPipeline("[AI_RECOMMENDATION] generated", `count=${candidates.length}`, logTravelContext(ctx));
 
   return { summary, payload, places: candidates };
 }

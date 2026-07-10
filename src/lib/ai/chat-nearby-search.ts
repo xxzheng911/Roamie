@@ -5,6 +5,7 @@ import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import { calculateDistanceKm } from "@/lib/geo-distance";
 import type { PlaceResult } from "@/lib/place-result";
 import { hasValidPlaceCoordinates, logChatContextPlace } from "@/lib/chat-place-context";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export type NearbySearchCenter = {
   mode: "basePlace" | "userLocation";
@@ -34,7 +35,7 @@ export function logChatNearbyContext(params: {
   userLat?: number;
   userLng?: number;
 }): void {
-  console.info("[CHAT_NEARBY_CONTEXT]", {
+  logAiPipeline("[CHAT_NEARBY_CONTEXT]", {
     mode: params.mode,
     basePlaceName: params.basePlaceName ?? "",
     baseLat: params.baseLat ?? "",
@@ -99,7 +100,7 @@ export function filterPlacesByNearbyDistance(
     const distanceKm = calculateDistanceKm(centerLat, centerLng, place.lat, place.lng);
 
     if (distanceKm == null) {
-      console.info("[CHAT_FILTER_DROP]", {
+      logAiPipeline("[CHAT_FILTER_DROP]", {
         reason: "missing_location",
         place: place.name ?? "",
       });
@@ -107,13 +108,13 @@ export function filterPlacesByNearbyDistance(
     }
 
     const roundedKm = Number(distanceKm.toFixed(2));
-    console.info("[CHAT_DISTANCE_CALCULATED]", {
+    logAiPipeline("[CHAT_DISTANCE_CALCULATED]", {
       placeName: place.name ?? "",
       distanceKm: roundedKm,
     });
 
     const allowed = distanceKm <= maxKm;
-    console.info("[CHAT_NEARBY_DISTANCE_CHECK]", {
+    logAiPipeline("[CHAT_NEARBY_DISTANCE_CHECK]", {
       placeName: place.name ?? "",
       distanceKm: roundedKm,
       radiusKm: maxKm,
@@ -121,7 +122,7 @@ export function filterPlacesByNearbyDistance(
     });
 
     if (!allowed) {
-      console.info("[CHAT_FILTER_DROP]", {
+      logAiPipeline("[CHAT_FILTER_DROP]", {
         reason: "distance_too_far",
         place: place.name ?? "",
         distanceKm: roundedKm,

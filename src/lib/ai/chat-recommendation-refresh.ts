@@ -1,4 +1,5 @@
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   isNearbyPlaceIntent,
   type ChatIntent,
@@ -8,14 +9,16 @@ import { isExclusionReply } from "@/lib/ai/recommendation-exclusion";
 import {
   placeDisplayName,
   roamieRecToChatItem,
-  type ChatMsg,
   type ChatPlanningSession,
 } from "@/lib/chat-session";
+import type { ChatMsg } from "@/lib/chat-history";
 import {
   collectRecommendedNormalizedNames,
   extractPlaceIds,
   normalizePlaceName,
 } from "@/lib/place-planning-memory";
+import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
+import { extractAllRecommendedFromMsgs } from "@/lib/ai/trip-planning-follow-up";
 import { isAffirmativeReply } from "@/lib/ai/chat-conversation-state";
 import { NO_MORE_RECOMMENDATIONS_MESSAGE } from "@/lib/ai/place-recommendation-rules";
 
@@ -76,7 +79,7 @@ export function isMorePlaceRecommendationsIntent(text: string): boolean {
 }
 
 export function logChatMorePlacesIntent(text: string): void {
-  console.info("[CHAT_MORE_PLACES_INTENT]", text.slice(0, 80));
+  logAiPipeline("[CHAT_MORE_PLACES_INTENT]", text.slice(0, 80));
 }
 
 export function logChatMorePlacesContext(context: {
@@ -84,27 +87,27 @@ export function logChatMorePlacesContext(context: {
   category?: string;
   tripPurpose?: string;
 }): void {
-  console.info("[CHAT_MORE_PLACES_CONTEXT]", JSON.stringify(context));
+  logAiPipeline("[CHAT_MORE_PLACES_CONTEXT]", JSON.stringify(context));
 }
 
 export function logChatMorePlacesExcludeIds(count: number): void {
-  console.info("[CHAT_MORE_PLACES_EXCLUDE_IDS]", count);
+  logAiPipeline("[CHAT_MORE_PLACES_EXCLUDE_IDS]", count);
 }
 
 export function logChatMorePlacesFetchCount(count: number): void {
-  console.info("[CHAT_MORE_PLACES_FETCH_COUNT]", count);
+  logAiPipeline("[CHAT_MORE_PLACES_FETCH_COUNT]", count);
 }
 
 export function logChatMorePlacesNewCount(count: number): void {
-  console.info("[CHAT_MORE_PLACES_NEW_COUNT]", count);
+  logAiPipeline("[CHAT_MORE_PLACES_NEW_COUNT]", count);
 }
 
 export function logChatMorePlacesRendered(count: number): void {
-  console.info("[CHAT_MORE_PLACES_RENDERED]", count);
+  logAiPipeline("[CHAT_MORE_PLACES_RENDERED]", count);
 }
 
 export function logChatMorePlacesNoResultAllowed(allowed: boolean): void {
-  console.info("[CHAT_MORE_PLACES_NO_RESULT_ALLOWED]", allowed);
+  logAiPipeline("[CHAT_MORE_PLACES_NO_RESULT_ALLOWED]", allowed);
 }
 
 export function isRejectCurrentBatch(text: string): boolean {
@@ -125,7 +128,9 @@ export function shouldRefetchOnPreferenceChange(
 }
 
 export function extractRecommendedFromMsgs(msgs: ChatMsg[]): ReturnType<typeof roamieRecToChatItem>[] {
-  for (let i = msgs.length - 1; i >= 0; i--) {
+  const all = extractAllRecommendedFromMsgs(msgs);
+  if (all.length) return all;
+  for (let i = msgs.length - 1; i >= 0; i -= 1) {
     const m = msgs[i];
     if (m.role === "assistant" && m.roamie?.recommendations?.length) {
       return m.roamie.recommendations.map((rec) => roamieRecToChatItem(rec));
@@ -231,12 +236,20 @@ export function applyRefreshRecommendationSession(
 }
 
 export function collectExcludePlaceIds(session: ChatPlanningSession, msgs?: ChatMsg[]): string[] {
-  const fromSession = session.recommendedPlaceIds ?? [];
+  const fromSession = session.recommendedPlaceIds ?? session.usedPlaceIds ?? [];
   const fromPlaces = extractPlaceIds(session.recommendedPlaces);
   const fromSelected = extractPlaceIds(session.selectedPlaces ?? []);
-  const fromMsgs = extractPlaceIds(extractRecommendedFromMsgs(msgs ?? []));
+  const fromMsgs = extractPlaceIds(extractAllRecommendedFromMsgs(msgs ?? []));
   const fromStops = extractPlaceIds(session.plannedStops ?? []);
   return [...new Set([...fromSession, ...fromPlaces, ...fromSelected, ...fromMsgs, ...fromStops])];
+}
+
+/** 切換行程風格時：只排除相同 Google place_id，不因名稱或 fallback id 擋住新風格 */
+export function collectHardDuplicatePlaceIds(
+  session: ChatPlanningSession,
+  msgs?: ChatMsg[],
+): string[] {
+  return collectExcludePlaceIds(session, msgs).filter(isHardGooglePlaceId);
 }
 
 export function collectBlockedCoreNames(
@@ -244,13 +257,16 @@ export function collectBlockedCoreNames(
   msgs?: ChatMsg[],
 ): string[] {
   const names = new Set(collectRecommendedNormalizedNames(session));
-  for (const place of extractRecommendedFromMsgs(msgs ?? [])) {
+  for (const place of extractAllRecommendedFromMsgs(msgs ?? [])) {
     const core = normalizePlaceName(place.name);
     if (core) names.add(core);
   }
   for (const place of session.recommendedPlaces) {
     const core = normalizePlaceName(place.name);
     if (core) names.add(core);
+  }
+  for (const name of session.usedPlaceNames ?? []) {
+    if (name) names.add(name);
   }
   return [...names];
 }

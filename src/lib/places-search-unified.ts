@@ -13,6 +13,7 @@ import {
   logPlacesApiSkipDuplicate,
   logPlacesApiCall,
 } from "@/lib/places-diagnostics";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { isPlacesRateLimited } from "@/lib/places-api-guard";
 import { normalizePlacesSearchResult } from "@/lib/places-search-normalize";
 
@@ -96,7 +97,7 @@ export function createUnifiedSearchPlacesFn(serverFn: SearchPlacesFn): SearchPla
         const msg = e instanceof Error ? e.message : String(e);
         serverResult = { places: [], error: msg };
         if (serverResult.places.length === 0 && serverResult.error) {
-          console.info(`[PLACES_API_EMPTY] error=${serverResult.error}`);
+          devVerboseInfo(`[PLACES_API_EMPTY] error=${serverResult.error}`);
         }
       }
 

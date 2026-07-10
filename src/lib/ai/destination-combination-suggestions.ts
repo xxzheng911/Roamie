@@ -1,5 +1,6 @@
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeRecommendationItem } from "@/lib/ai/types";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   isKnownTouristCityLabel,
   normalizeDestinationLabel,
@@ -108,7 +109,7 @@ export function hasDestinationCombinations(destination: string): boolean {
 }
 
 export function logChatDestinationScopeLock(destination: string): void {
-  console.info("[CHAT_DESTINATION_SCOPE_LOCK]", `destination=${normalizeDestinationLabel(destination)}`);
+  logAiPipeline("[CHAT_DESTINATION_SCOPE_LOCK]", `destination=${normalizeDestinationLabel(destination)}`);
 }
 
 export function isSuggestionInDestinationScope(
@@ -122,7 +123,7 @@ export function isSuggestionInDestinationScope(
   const rejected = REJECTED_SCOPE_MARKERS[label] ?? [];
   for (const marker of rejected) {
     if (text.includes(marker)) {
-      console.info(
+      logAiPipeline(
         "[CHAT_WRONG_CITY_SUGGESTION_REJECTED]",
         `destination=${label}`,
         `suggestion=${text.slice(0, 40)}`,
@@ -133,7 +134,7 @@ export function isSuggestionInDestinationScope(
   }
 
   if (isKnownTouristCityLabel(label) && GLOBAL_CITY_LIST_RE.test(text)) {
-    console.info(
+    logAiPipeline(
       "[CHAT_WRONG_CITY_SUGGESTION_REJECTED]",
       `destination=${label}`,
       `reason=global_city_list`,

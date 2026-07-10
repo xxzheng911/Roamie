@@ -94,6 +94,10 @@ export type CanonicalTravelContext = {
   selectedPlanMode?: import("@/lib/ai/itinerary-planning").ItineraryPlanMode;
   /** 上一輪解析到的 chat intent（供下一輪 merge 參考，不鎖死回覆） */
   lastIntent?: string;
+  /** 使用者已確認天數（awaiting_trip_duration 流程） */
+  planningDaysConfirmed?: boolean;
+  /** 行程風格選項（classic_landmarks / local_life / slow_nature / mixed） */
+  planningTripStyle?: import("@/lib/ai/ai-trip-style").TripStyleKey;
 };
 
 export const EMPTY_TRAVEL_CONTEXT: CanonicalTravelContext = {

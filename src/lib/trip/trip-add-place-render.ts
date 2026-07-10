@@ -2,6 +2,7 @@ import type { ChatMsg } from "@/lib/chat-history";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { isTripAddPlaceMode } from "@/lib/trip/trip-add-place-mode";
+import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
 import {
   createTripAddPlaceDedupRegistry,
   dedupeTripAddPlaceCandidates,
@@ -130,6 +131,8 @@ export function buildTripAddPlaceChatMessage(params: {
   session: ChatPlanningSession;
 }): ChatMsg {
   const { summary, recommendations, moodTag, session } = params;
+  const resolvedTag =
+    resolveRecommendationStyleTag(session, session.travelContext) || moodTag?.trim() || "";
   // 僅在本批訊息內去重；不可對 session shown 狀態再濾，否則 handoff 會把剛選中的卡全刪光
   const deduped = dedupeTripAddPlaceCandidates(
     recommendations,
@@ -151,7 +154,7 @@ export function buildTripAddPlaceChatMessage(params: {
     roamie: {
       title: "Roamie 推薦",
       summary: text,
-      moodTag: moodTag ?? "",
+      moodTag: resolvedTag,
       recommendations: finalRecs,
       itinerary: [],
     },
@@ -191,7 +194,7 @@ export function buildTripAddPlaceRenderFallbackMessage(
     roamie: {
       title: "Roamie 推薦",
       summary: TRIP_ADD_PLACE_RENDER_FAILED_MESSAGE,
-      moodTag: session.mood ?? "",
+      moodTag: resolveRecommendationStyleTag(session, session.travelContext) || session.mood || "",
       recommendations: [],
       itinerary: [],
     },

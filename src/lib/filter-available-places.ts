@@ -239,7 +239,7 @@ export function getTodayHoursFromDescriptions(data: PlaceHoursData, at: Date): s
   return hoursPart || line;
 }
 
-function isOpenAtScheduled(data: PlaceHoursData, at: Date, atTime?: string): boolean | null {
+export function isOpenAtScheduled(data: PlaceHoursData, at: Date, atTime?: string): boolean | null {
   const periods = data.regularOpeningHours?.periods;
   if (!periods?.length) return null;
 

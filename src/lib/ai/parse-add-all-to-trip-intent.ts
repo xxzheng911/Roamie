@@ -1,3 +1,4 @@
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 const ADD_ALL_TO_TRIP_RE =
   /^(加入全部|全部加入|都加入|幫我加入|建立行程|生成行程|加進全部|全部加進|都加進|幫我加進|加進行程|全部加進行程)$/;
 
@@ -15,5 +16,5 @@ export function isAddAllToTripIntent(text: string): boolean {
 }
 
 export function logAddAllToTripIntentDetected(): void {
-  console.info("[AI_INTENT_DETECTED]", "intent=ADD_ALL_TO_TRIP");
+  logAiPipeline("[AI_INTENT_DETECTED]", "intent=ADD_ALL_TO_TRIP");
 }

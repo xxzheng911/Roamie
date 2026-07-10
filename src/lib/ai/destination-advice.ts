@@ -4,6 +4,7 @@ import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeRecommendationItem } from "@/lib/ai/types";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   isDestinationAdviceText,
   isDestinationSelectionText,
@@ -108,6 +109,16 @@ import {
   logChatPreviousSuggestionsUsed,
   logItineraryCreateFromAcceptedSuggestions,
 } from "@/lib/ai/accept-previous-suggestions-intent";
+import {
+  shouldAskTripDuration,
+  shouldAskTripStyle,
+  buildAskTripDurationAdviceResult,
+  buildAskTripStyleAdviceResult,
+  buildTripStyleSelectionAdviceResult,
+  mergeDateRangeIntoContext,
+  parseAskTripStyleSelection,
+  parseTripStyleKey,
+} from "@/lib/ai/ai-trip-style";
 
 export type DestinationAdvicePurpose =
   | "create_itinerary"
@@ -135,6 +146,8 @@ export type DestinationAdviceResult = {
   recommendationsTitle?: string;
   /** 觸發 Places API + generateItinerary，不可只回文字草稿 */
   triggerItineraryGeneration?: boolean;
+  /** 觸發依行程風格生成地點卡／分天推薦 */
+  triggerPlaceRecommendations?: boolean;
 };
 
 export function adviceToAssistantChatMsg(advice: DestinationAdviceResult): ChatMsg {
@@ -447,12 +460,12 @@ function resolveCreateItineraryAdvice(
   const contextDays = ctx.days ?? session.tripDays ?? parseDayCountFromText(userText);
   if (!contextDestination || !contextDays) return null;
 
-  console.info("[ITINERARY_CREATE_TRIGGERED_FROM_CHAT]", {
+  logAiPipeline("[ITINERARY_CREATE_TRIGGERED_FROM_CHAT]", {
     destination: contextDestination,
     days: contextDays,
     text: userText.slice(0, 80),
   });
-  console.info("[ITINERARY_CONTEXT_PLACES]", {
+  logAiPipeline("[ITINERARY_CONTEXT_PLACES]", {
     selectedPlaces: session.selectedPlaces.length,
     recommendedPlaces: session.recommendedPlaces?.length ?? 0,
     plannedStops: session.plannedStops?.length ?? 0,
@@ -1015,6 +1028,26 @@ export function resolveDestinationAdvice(
   const acceptAdvice = resolveAcceptPreviousSuggestionsAdvice(ctx, session, userText);
   if (acceptAdvice) return acceptAdvice;
 
+  const datePatch = mergeDateRangeIntoContext(userText, ctx);
+  const workingCtx: CanonicalTravelContext = {
+    ...ctx,
+    ...datePatch,
+    interests: ctx.interests ?? [],
+  };
+
+  if (
+    !session.pendingQuestion &&
+    !session.adviceSelectionThisTurn &&
+    !session.lastResolvedPendingQuestion
+  ) {
+    if (shouldAskTripDuration(workingCtx, session)) {
+      return buildAskTripDurationAdviceResult(workingCtx, session);
+    }
+    if (shouldAskTripStyle(workingCtx, session, userText)) {
+      return buildAskTripStyleAdviceResult(workingCtx, session);
+    }
+  }
+
   if (
     ctx.destination?.trim() &&
     /(不要太熱|怕熱|不要曬|不想曬|太熱|不要太冷|怕雨|不要下雨)/.test(userText.trim())
@@ -1072,10 +1105,17 @@ export function resolveDestinationAdvice(
       if (abAdvice) return abAdvice;
     }
 
+    if (session.lastResolvedPendingQuestion.type === "ask_trip_style") {
+      const style = parseTripStyleKey(session.adviceSelectionThisTurn);
+      if (style) {
+        return buildTripStyleSelectionAdviceResult(style, workingCtx, session);
+      }
+    }
+
     const next = advanceAfterPendingSelection(
       session.adviceSelectionThisTurn,
       session.lastResolvedPendingQuestion,
-      ctx,
+      workingCtx,
     );
     const dest =
       session.lastResolvedPendingQuestion.baseDestination ?? ctx.destination;
@@ -1083,6 +1123,36 @@ export function resolveDestinationAdvice(
       session.adviceSelectionThisTurn === "must_visit_places" && dest
         ? resolveMustVisitAdvice({ ...ctx, destination: dest }, userText)
         : null;
+
+    if (session.lastResolvedPendingQuestion.type === "ask_days") {
+      const parsedDays =
+        Number(session.adviceSelectionThisTurn) ||
+        parseDayCountFromText(session.adviceSelectionThisTurn);
+      return {
+        reply: next.reply,
+        pendingQuestion: next.pendingQuestion,
+        recommendations: mustVisit?.recommendations,
+        recommendationsTitle: mustVisit && dest ? `${normalizeDestinationLabel(dest)}必去推薦` : undefined,
+        contextPatch: {
+          ...datePatch,
+          days: parsedDays,
+          destination: dest,
+          destinationCountry:
+            session.lastResolvedPendingQuestion.destinationCountry ??
+            workingCtx.destinationCountry,
+          planningDaysConfirmed: true,
+          tripPurpose:
+            next.pendingQuestion?.type === "ask_trip_style"
+              ? "awaiting_trip_style"
+              : "duration_selected",
+          conversationState:
+            next.pendingQuestion?.type === "ask_trip_style"
+              ? "awaiting_preference"
+              : workingCtx.conversationState,
+        },
+      };
+    }
+
     return {
       reply: next.reply,
       pendingQuestion: next.pendingQuestion,
@@ -1119,19 +1189,7 @@ export function resolveDestinationAdvice(
                   session.adviceSelectionThisTurn,
                   session.lastResolvedPendingQuestion,
                 )
-            : session.lastResolvedPendingQuestion.type === "ask_days"
-              ? {
-                  days:
-                    Number(session.adviceSelectionThisTurn) ||
-                    parseDayCountFromText(session.adviceSelectionThisTurn),
-                  destination:
-                    session.lastResolvedPendingQuestion.baseDestination ?? ctx.destination,
-                  destinationCountry:
-                    session.lastResolvedPendingQuestion.destinationCountry ??
-                    ctx.destinationCountry,
-                  tripPurpose: "duration_selected",
-                }
-              : session.adviceSelectionThisTurn === "daily_recommendations"
+            : session.adviceSelectionThisTurn === "daily_recommendations"
                 ? {
                     selectedPlanMode: "daily_recommendations",
                     conversationState: "itinerary_draft",
@@ -1185,7 +1243,22 @@ export function resolveDestinationAdvice(
         }
       }
 
-      const next = advanceAfterPendingSelection(selected, pending, ctx);
+      if (pending.type === "ask_trip_style") {
+        const style =
+          parseAskTripStyleSelection(userText) ?? parseTripStyleKey(selected);
+        if (style) {
+          return buildTripStyleSelectionAdviceResult(
+            style,
+            {
+              ...workingCtx,
+              destination: pending.baseDestination ?? workingCtx.destination,
+            },
+            session,
+          );
+        }
+      }
+
+      const next = advanceAfterPendingSelection(selected, pending, workingCtx);
       return {
         reply: next.reply,
         pendingQuestion: next.pendingQuestion,
@@ -1235,7 +1308,9 @@ export function resolveDestinationAdvice(
                     days: Number(selected) || parseDayCountFromText(selected),
                     destination: pending.baseDestination ?? ctx.destination,
                     destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
+                    planningDaysConfirmed: true,
                     tripPurpose: "duration_selected",
+                    conversationState: "awaiting_preference",
                   }
                 : selected === "daily_recommendations"
                     ? {
@@ -1254,11 +1329,15 @@ export function resolveDestinationAdvice(
         const destLabel = normalizeDestinationLabel(
           pending.baseDestination ?? ctx.destination ?? "",
         );
-        const next = advanceAfterPendingSelection(String(parsedDays), pending, ctx);
+        const next = advanceAfterPendingSelection(
+          String(parsedDays),
+          pending,
+          { ...workingCtx, destination: destLabel, days: parsedDays },
+        );
         const comboAdvice =
           destLabel && hasDestinationCombinations(destLabel)
             ? resolveDestinationCombinationsAdvice(
-                { ...ctx, destination: destLabel, days: parsedDays },
+                { ...workingCtx, destination: destLabel, days: parsedDays },
                 session,
               )
             : null;
@@ -1268,9 +1347,11 @@ export function resolveDestinationAdvice(
           recommendations: comboAdvice?.recommendations,
           recommendationsTitle: comboAdvice?.recommendationsTitle,
           contextPatch: {
+            ...datePatch,
             days: parsedDays,
             destination: destLabel || pending.baseDestination || ctx.destination,
             destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
+            planningDaysConfirmed: true,
             tripPurpose: comboAdvice
               ? "combination_suggestions_offered"
               : "duration_selected",
@@ -1280,7 +1361,9 @@ export function resolveDestinationAdvice(
                   planningStage: "recommendations_generated" as const,
                   mustVisitGenerated: true,
                 }
-              : {}),
+              : {
+                  conversationState: "awaiting_preference" as const,
+                }),
           },
         };
       }
@@ -1693,10 +1776,16 @@ function buildDestinationAdviceReplyBody(
         }).reply;
       }
       if (!resolvedDays) {
-        return [
-          `好，${destLabel}是很好的選擇。`,
-          "你這趟大概幾天？比較想經典地標、美食，還是慢步調散策？",
-        ].join("\n");
+        return buildAskTripDurationAdviceResult(
+          { ...workingCtx, destination: destLabel },
+          session,
+        );
+      }
+      if (shouldAskTripStyle({ ...workingCtx, destination: destLabel, days: resolvedDays }, session, userText)) {
+        return buildAskTripStyleAdviceResult(
+          { ...workingCtx, destination: destLabel, days: resolvedDays, planningDaysConfirmed: true },
+          session,
+        );
       }
     }
   }

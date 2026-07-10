@@ -8,6 +8,7 @@ import { mergeAiWithVerifiedCandidates } from "@/lib/recommendation/merge-verifi
 import { preparePlacesFirstContext } from "@/lib/recommendation/pipeline.server";
 import { buildRuleBasedRecommendSummary } from "@/lib/recommendation/fallback-summary";
 import { ROAMIE_JSON_SCHEMA, normalizeRoamieResponse, type RoamieResponse } from "./types";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   mergeBoundsForStage,
   stageAllowsPlacesFirst,
@@ -174,7 +175,7 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
   const prep = await withPlacesFirstPrep(ctx);
   ctx = prep.ctx;
   const apiKey = getOpenAIKey();
-  console.info("[Roamie AI] call", { mode: ctx.mode, hasKey: !!apiKey, keyPrefix: apiKey.slice(0, 7) });
+  logAiPipeline("[Roamie AI] call", { mode: ctx.mode, hasKey: !!apiKey, keyPrefix: apiKey.slice(0, 7) });
   const system = buildSystemPrompt(ctx);
   const user = buildUserMessage(ctx);
   const lateNightRecommend =

@@ -1,6 +1,7 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import { buildWeatherAwarePlanningReply, buildWeatherConstraintAcknowledgement } from "@/lib/ai/weather-planning-reply";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   applyDestinationPendingSelection,
   buildNextStepAfterAdviceSelection,
@@ -28,6 +29,7 @@ const PENDING_SLOT_MAP: Record<PendingQuestion["type"], PlanningSlot> = {
   duration_choice: "days",
   ask_preference: "preference",
   preference_choice: "preference",
+  ask_trip_style: "trip_style",
   trip_style_choice: "trip_style",
   region_choice: "region",
   city_style_choice: "flexible_style",
@@ -60,7 +62,7 @@ export function logChatPendingParseFailed(
   pending: PendingQuestion,
   userText: string,
 ): void {
-  console.info(
+  logAiPipeline(
     "[CHAT_PENDING_PARSE_FAILED]",
     `slot=${pendingSlot(pending) ?? pending.type}`,
     `type=${pending.type}`,

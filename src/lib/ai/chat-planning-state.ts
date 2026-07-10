@@ -1,6 +1,7 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { ChatMsg } from "@/lib/chat-history";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   hasConfirmedTripDays,
   parseAskTripStyleSelection,
@@ -9,7 +10,11 @@ import {
   type TripStyleKey,
 } from "@/lib/ai/ai-trip-style";
 import { resolveConversationDestination } from "@/lib/ai/ai-chat-conversation-state";
-import { isPlanningRenderInProgress } from "@/lib/ai/ai-planning-session";
+import {
+  isPlanningRenderInProgress,
+  resetPlanningSessionForStyleReselect,
+} from "@/lib/ai/ai-planning-session";
+import { logAiStyleReselectDetected } from "@/lib/ai/planning-style-reselect-log";
 
 export type ChatPlanningState =
   | "idle"
@@ -23,11 +28,11 @@ const REPLAN_INTENT_RE =
   /重排|重新規劃|換一種風格|換個風格|新行程|重新安排|重做行程|換風格|重來/;
 
 export function logChatPlanningState(state: ChatPlanningState, reason?: string): void {
-  console.info("[CHAT_PLANNING_STATE]", `state=${state}`, reason ? `reason=${reason}` : "");
+  logAiPipeline("[CHAT_PLANNING_STATE]", `state=${state}`, reason ? `reason=${reason}` : "");
 }
 
 export function logChatStyleReselected(style: TripStyleKey, previous?: TripStyleKey): void {
-  console.info(
+  logAiPipeline(
     "[CHAT_STYLE_RESELECTED]",
     `style=${style}`,
     previous ? `previous=${previous}` : "",
@@ -35,7 +40,7 @@ export function logChatStyleReselected(style: TripStyleKey, previous?: TripStyle
 }
 
 export function logChatPreviousPlacesCleared(): void {
-  console.info("[CHAT_PREVIOUS_PLACES_CLEARED]");
+  logAiPipeline("[CHAT_PREVIOUS_PLACES_CLEARED]");
 }
 
 export function logChatRegeneratePlaceCardsStart(
@@ -43,7 +48,7 @@ export function logChatRegeneratePlaceCardsStart(
   style: TripStyleKey,
   days?: number,
 ): void {
-  console.info(
+  logAiPipeline(
     "[CHAT_REGENERATE_PLACE_CARDS_START]",
     `destination=${destination}`,
     `style=${style}`,
@@ -52,7 +57,7 @@ export function logChatRegeneratePlaceCardsStart(
 }
 
 export function logChatRegeneratePlaceCardsDone(count: number): void {
-  console.info("[CHAT_REGENERATE_PLACE_CARDS_DONE]", `count=${count}`);
+  logAiPipeline("[CHAT_REGENERATE_PLACE_CARDS_DONE]", `count=${count}`);
 }
 
 export function isReplanIntent(text: string): boolean {
@@ -62,6 +67,34 @@ export function isReplanIntent(text: string): boolean {
 /** 使用者輸入 1~4 或選項名稱 */
 export function isStyleOptionMessage(text: string): boolean {
   return parseAskTripStyleSelection(text) != null;
+}
+
+/** 風格選項已選（含首次選 1~4），應觸發行程地點生成 */
+export function shouldTriggerTripStylePlanning(
+  userText: string,
+  session: ChatPlanningSession,
+  ctx?: CanonicalTravelContext,
+): boolean {
+  const travel = ctx ?? session.travelContext ?? { interests: [] };
+  const style = parseAskTripStyleSelection(userText);
+  if (!style && !resolveTripStyleFromContext(travel, session)) return false;
+  if (!resolveConversationDestination(travel, session)) return false;
+  if (!hasConfirmedTripDays(travel, session)) return false;
+
+  if (session.pendingQuestion?.type === "ask_trip_style" && style) return true;
+  if (session.chatPlanningState === "waitingStyleSelection" && style) return true;
+  if (session.lastResolvedPendingQuestion?.type === "ask_trip_style" && style) return true;
+  if (isStyleReselectTurn(userText, session, travel)) return true;
+
+  if (isPlanGenerated(session, travel)) return false;
+
+  return Boolean(
+    style &&
+      resolveTripStyleFromContext(
+        { ...travel, planningTripStyle: style },
+        session,
+      ),
+  );
 }
 
 export function parseStyleReselectMessage(text: string): TripStyleKey | null {
@@ -91,7 +124,7 @@ export function isStyleReselectTurn(
 ): TripStyleKey | null {
   const style = parseStyleReselectMessage(userText);
   if (!style) return null;
-  if (!hasActiveTripPlanningSession(session, ctx)) return null;
+  if (!isPlanGenerated(session, ctx) && !hasActiveTripPlanningSession(session, ctx)) return null;
   return style;
 }
 
@@ -186,17 +219,20 @@ export function applyStyleReselectToSession(
   style: TripStyleKey,
 ): ChatPlanningSession {
   const previous = resolveTripStyleFromContext(ctx, session);
+  logAiStyleReselectDetected(previous ?? "unknown", style);
   logChatStyleReselected(style, previous);
   const cleared = clearPreviousGeneratedPlaces(session, ctx);
   const destination =
     resolveConversationDestination(ctx, session) ?? ctx.destination ?? cleared.travelContext?.destination;
-  return withChatPlanningState(
+  const reset = resetPlanningSessionForStyleReselect(
     {
       ...cleared,
       travelContext: {
         ...(cleared.travelContext ?? { interests: [] }),
         destination,
         days: ctx.days ?? cleared.travelContext?.days ?? session.tripDays,
+        startDate: ctx.startDate ?? cleared.travelContext?.startDate ?? session.tripStartDate,
+        endDate: ctx.endDate ?? cleared.travelContext?.endDate ?? session.tripEndDate,
         planningDaysConfirmed: true,
         planningTripStyle: style,
         selectedTripStyle: tripStyleLabel(style),
@@ -204,11 +240,12 @@ export function applyStyleReselectToSession(
         tripPurpose: "trip_style_selected",
         mustVisitGenerated: false,
         conversationState: "preference_selected",
+        planningStage: undefined,
       },
     },
-    "generatingPlan",
-    "style_reselect",
+    style,
   );
+  return withChatPlanningState(reset, "generatingPlan", "style_reselect");
 }
 
 export function resetChatPlanningForReplan(

@@ -3,6 +3,11 @@ import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { EXPLICIT_FOOD_NAME_RE } from "@/lib/place-category";
 import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import { foodPreferenceSearchQuery } from "@/lib/ai/chat-dining-flow";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import {
+  buildMealSearchAttempts,
+  parseMealIntentFromText,
+} from "@/lib/ai/meal-intent-parser";
 
 /** Google types allowed for food / restaurant chat recommendations */
 export const FOOD_ALLOWED_TYPES = [
@@ -56,7 +61,7 @@ const FOOD_ALLOWED_SET = new Set<string>(FOOD_ALLOWED_TYPES);
 const FOOD_BLOCKED_SET = new Set<string>(FOOD_BLOCKED_TYPES);
 
 const FOOD_INTENT_RE =
-  /(?:吃的地方|想吃|吃什麼|找吃的|推薦.{0,8}吃|吃.{0,8}推薦|有推薦的(?:餐廳|店|地方|美食)|美食|餐廳|吃飯|用餐|聚餐|小吃|甜點|下午茶|宵夜|夜食|消夜)/;
+  /(?:吃的地方|想吃|吃什麼|找吃的|推薦.{0,8}吃|吃.{0,8}推薦|有推薦的(?:餐廳|店|地方|美食)|美食|餐廳|吃飯|用餐|聚餐|小吃|甜點|下午茶|宵夜|夜食|消夜|中午|午餐|午飯|lunch)/i;
 
 const SUPPER_INTENT_RE = /(?:宵夜|夜食|消夜|supper|late\s*night\s*food)/i;
 
@@ -251,7 +256,7 @@ export function logChatFoodFilter(
   allowed: boolean,
   reason: string,
 ): void {
-  console.info(
+  logAiPipeline(
     `[CHAT_FOOD_FILTER] placeName=${placeName} types=${types} allowed=${allowed} reason=${reason}`,
   );
 }
@@ -261,7 +266,7 @@ export function logChatFoodResults(
   filteredFoodCount: number,
   districtCount = 0,
 ): void {
-  console.info(
+  logAiPipeline(
     `[CHAT_FOOD_RESULTS] rawCount=${rawCount} filteredFoodCount=${filteredFoodCount} districtCount=${districtCount}`,
   );
 }
@@ -270,7 +275,13 @@ export function logChatFoodResults(
 export function buildFoodSearchAttempts(
   foodPreference?: string,
   userText = "",
+  cityLabel?: string,
 ): SearchAttempt[] {
+  const mealIntent = parseMealIntentFromText(userText);
+  if (mealIntent && cityLabel?.trim()) {
+    return buildMealSearchAttempts(cityLabel, mealIntent.slot);
+  }
+
   const attempts: SearchAttempt[] = [];
   const cuisineQuery =
     foodPreference && foodPreference !== "any"

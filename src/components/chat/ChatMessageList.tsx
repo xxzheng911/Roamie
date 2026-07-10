@@ -55,7 +55,12 @@ const ChatMessageRow = memo(function ChatMessageRow({
     (m.structuredPlaces?.length ?? 0) > 0 || (roamieData?.recommendations?.length ?? 0) > 0;
 
   return (
-    <div className={`flex animate-rise ${m.role === "user" ? "justify-end" : "justify-start gap-2.5"}`}>
+    <div
+      data-chat-message-id={m.id ?? `chat-${m.role}-${i}`}
+      data-chat-message-index={i}
+      data-chat-message-role={m.role}
+      className={`flex animate-rise ${m.role === "user" ? "justify-end" : "justify-start gap-2.5"}`}
+    >
       {m.role === "assistant" ? <RoamieAssistantAvatar className="h-8 w-8 shrink-0 self-end" /> : null}
       <div
         className={cn(

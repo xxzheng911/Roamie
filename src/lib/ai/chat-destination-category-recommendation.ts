@@ -16,6 +16,7 @@ import {
 import {
   fetchPlacesWithSearchAttemptsMerged,
   type PlaceSearchFn,
+  type SearchAttempt,
 } from "@/lib/ai/chat-place-recommendation";
 import {
   geocodeDestinationWithFallback,
@@ -57,6 +58,17 @@ import {
   filterPlacesByDestinationGuard,
   type ChatPlaceSearchContext,
 } from "@/lib/ai/chat-place-search-context";
+import type { ChatPlanningSession } from "@/lib/chat-session";
+import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
+import {
+  buildMealRecommendationDescription,
+  buildMealSearchAttempts,
+  filterPlacesForMealIntent,
+  parseMealIntentFromText,
+  sanitizeMealSummaryText,
+  sanitizeMealReasonText,
+  type ParsedMealIntent,
+} from "@/lib/ai/meal-intent-parser";
 
 const PER_GROUP_TARGET = 3;
 const SINGLE_INTENT_MAX = 6;
@@ -95,6 +107,7 @@ async function searchCategoryPlaces(params: {
   excludePlaceIds: string[];
   profile?: ReturnType<typeof classifyDestinationForPlaceSearch>;
   searchContext?: ChatPlaceSearchContext;
+  mealIntent?: ParsedMealIntent | null;
 }): Promise<PlaceResult[]> {
   const {
     intent,
@@ -108,9 +121,16 @@ async function searchCategoryPlaces(params: {
     excludePlaceIds,
     profile,
     searchContext,
+    mealIntent,
   } = params;
 
-  const { primary, fallback } = buildChatPlaceSearchAttempts(intent, destination);
+  const mealAttempts =
+    mealIntent && intent === "restaurant"
+      ? buildMealSearchAttempts(mealIntent.city ?? destination, mealIntent.slot)
+      : null;
+  const { primary, fallback } = mealAttempts
+    ? { primary: mealAttempts, fallback: [] as SearchAttempt[] }
+    : buildChatPlaceSearchAttempts(intent, destination);
   const minResults = CHAT_DESTINATION_MIN_COUNT;
   const searchExtras = searchContext
     ? { searchContext, intentCategory: intent }
@@ -146,6 +166,9 @@ async function searchCategoryPlaces(params: {
       userText,
     });
     places = rankCategoryPlaces(places, lat, lng);
+    if (mealIntent && intent === "restaurant") {
+      places = filterPlacesForMealIntent(places, mealIntent);
+    }
     return places;
   };
 
@@ -185,24 +208,34 @@ function placesToRecommendations(
   context: CanonicalTravelContext,
   locale: Locale,
   categoryLabel: string,
+  mealIntent?: ParsedMealIntent | null,
 ): RoamieRecommendationItem[] {
   return places.map((place) => {
     const distM =
       place.lat != null && place.lng != null
         ? distanceMeters({ lat, lng }, { lat: place.lat, lng: place.lng })
         : undefined;
-    return mapPlaceResultToChatItem(place, {
+    const item = mapPlaceResultToChatItem(place, {
       mood: context.mood,
       locale,
       distanceMeters: distM,
       categoryLabel,
     });
+    if (mealIntent) {
+      return {
+        ...item,
+        reason: buildMealRecommendationDescription(place, mealIntent),
+        description: buildMealRecommendationDescription(place, mealIntent),
+      };
+    }
+    return item;
   }).map(dedupeRecommendationCopy);
 }
 
 function buildGroupedSummary(
   destination: string,
   groups: Array<{ intent: ChatPlaceCategoryIntent; recommendations: RoamieRecommendationItem[] }>,
+  mealIntent?: ParsedMealIntent | null,
 ): string {
   const label = normalizeDestinationLabel(destination);
   const sections: string[] = [`在${label}，這些地方值得先看看：`];
@@ -210,10 +243,13 @@ function buildGroupedSummary(
   for (const group of groups) {
     if (!group.recommendations.length) continue;
     const heading = `${CHAT_PLACE_CATEGORY_LABELS[group.intent]}推薦：`;
-    const lines = group.recommendations.map(
-      (rec, index) =>
-        `${index + 1}. ${rec.name}${rec.rating != null ? `（${rec.rating}★）` : ""}${rec.reason ? ` — ${rec.reason}` : ""}`,
-    );
+    const lines = group.recommendations.map((rec, index) => {
+      let reason = rec.reason ?? "";
+      if (mealIntent) {
+        reason = sanitizeMealReasonText(reason, mealIntent.slot);
+      }
+      return `${index + 1}. ${rec.name}${rec.rating != null ? `（${rec.rating}★）` : ""}${reason ? ` — ${reason}` : ""}`;
+    });
     sections.push("", heading, ...lines);
   }
 
@@ -231,6 +267,7 @@ export async function buildDestinationCategoryRecommendations(params: {
   geocodeFn: GeocodeDestinationFn;
   excludePlaceIds?: string[];
   rejectedPlaceNames?: string[];
+  session?: ChatPlanningSession;
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -247,8 +284,10 @@ export async function buildDestinationCategoryRecommendations(params: {
     geocodeFn,
     excludePlaceIds = [],
     rejectedPlaceNames = [],
+    session,
   } = params;
   const label = normalizeDestinationLabel(destination);
+  const mealIntent = parseMealIntentFromText(userText);
 
   logChatPlaceIntent(intents, userText);
   const lockedIntent = resolveCategorySearchIntent(userText, intents);
@@ -320,6 +359,7 @@ export async function buildDestinationCategoryRecommendations(params: {
         excludePlaceIds: [...excludePlaceIds, ...seenIds],
         profile,
         searchContext,
+        mealIntent,
       });
 
       places = filterAlreadyRecommendedPlaces(places, {
@@ -336,7 +376,7 @@ export async function buildDestinationCategoryRecommendations(params: {
       const categoryLabel = CHAT_PLACE_CATEGORY_LABELS[intent];
       let recommendations =
         places.length > 0
-          ? placesToRecommendations(places, lat, lng, context, locale, categoryLabel)
+          ? placesToRecommendations(places, lat, lng, context, locale, categoryLabel, mealIntent)
           : [];
       recommendations = filterRecommendationsForCategoryRender(recommendations, intent);
 
@@ -363,12 +403,15 @@ export async function buildDestinationCategoryRecommendations(params: {
       }
     }
 
-    const summary =
+    let summary =
       allRecommendations.length > 0
-        ? buildGroupedSummary(label, groups)
+        ? buildGroupedSummary(label, groups, mealIntent)
         : primaryIntent === "cafe"
           ? `目前在${label}暫時找不到符合的咖啡廳，可以換個描述或稍後再試。`
           : `目前在${label}暫時找不到符合的地點，可以換個描述或稍後再試。`;
+    if (mealIntent) {
+      summary = sanitizeMealSummaryText(summary, mealIntent.slot);
+    }
     if (allRecommendations.length > 0) {
       logChatPlaceCardsRendered(allRecommendations.length, intents);
     } else {
@@ -379,7 +422,7 @@ export async function buildDestinationCategoryRecommendations(params: {
       version: 2,
       title: "Roamie 推薦",
       summary,
-      moodTag: context.mood ?? "",
+      moodTag: session ? resolveRecommendationStyleTag(session, context) : (context.mood ?? ""),
       recommendations: allRecommendations,
       itinerary: [],
       generatedAt: new Date().toISOString(),

@@ -323,6 +323,8 @@ export function applyNormalizedOpeningToPlaceResult(
     nextOpenHint: norm.openNow === false ? availability.nextOpenHint : "",
     openUntilTime: norm.openNow === true ? availability.openUntilTime : "",
     businessStatus: availability.businessStatus ?? place.businessStatus,
+    regularOpeningHours: hours.regularOpeningHours ?? place.regularOpeningHours,
+    utcOffsetMinutes: hours.utcOffsetMinutes ?? place.utcOffsetMinutes,
   };
 }
 

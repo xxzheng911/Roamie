@@ -3,6 +3,7 @@ import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { PendingQuestion, PendingQuestionType } from "@/lib/ai/destination-pending-question";
 import type { TripInterest } from "@/lib/ai/trip-preference";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 /** What the system expects the user to answer next. */
 export type ExpectedAnswerType =
@@ -33,6 +34,7 @@ const PENDING_TYPE_TO_EXPECTED: Record<PendingQuestionType, ExpectedAnswerType> 
   duration_choice: "days",
   ask_preference: "preference",
   preference_choice: "preference",
+  ask_trip_style: "travel_style",
   trip_style_choice: "travel_style",
   region_choice: "region",
   city_style_choice: "travel_style",
@@ -46,6 +48,7 @@ const PENDING_TYPE_TO_CONVERSATION_STATE: Partial<Record<PendingQuestionType, Co
   duration_choice: "awaiting_days",
   ask_preference: "awaiting_preference",
   preference_choice: "awaiting_preference",
+  ask_trip_style: "awaiting_preference",
   activity_choice: "awaiting_planning_action",
   itinerary_next_step: "awaiting_itinerary_action",
 };
@@ -229,7 +232,7 @@ export function ensureSessionPendingQuestion(
   const ctx = session.travelContext ?? { interests: [] };
   const recovered = recoverPendingFromAssistantReply(lastAssistantReply, ctx);
   if (!recovered) return session;
-  console.info(
+  logAiPipeline(
     "[CHAT_PENDING_RECOVERED]",
     `type=${recovered.type}`,
     `expected=${PENDING_TYPE_TO_EXPECTED[recovered.type]}`,

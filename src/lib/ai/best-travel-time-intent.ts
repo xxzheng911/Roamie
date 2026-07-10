@@ -1,3 +1,4 @@
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 /** BEST_TRAVEL_TIME_INTENT — 優先於 TRIP_PLANNING_INTENT */
 
 export const BEST_TRAVEL_TIME_INTENT = "best_travel_time" as const;
@@ -41,23 +42,23 @@ export function isBestTravelTimeIntent(text: string): boolean {
 }
 
 export function logChatTimeIntent(text: string): void {
-  console.info("[CHAT_TIME_INTENT]", text.slice(0, 80));
+  logAiPipeline("[CHAT_TIME_INTENT]", text.slice(0, 80));
 }
 
 export function logChatBestTravelTimeTriggered(destination: string): void {
-  console.info("[CHAT_BEST_TRAVEL_TIME_TRIGGERED]", destination);
+  logAiPipeline("[CHAT_BEST_TRAVEL_TIME_TRIGGERED]", destination);
 }
 
 export function logChatIntentPriority(intent: string, over?: string): void {
-  console.info("[CHAT_INTENT_PRIORITY]", over ? `${intent}>${over}` : intent);
+  logAiPipeline("[CHAT_INTENT_PRIORITY]", over ? `${intent}>${over}` : intent);
 }
 
 export function logChatDestinationContext(destination?: string): void {
-  console.info("[CHAT_DESTINATION_CONTEXT]", destination?.trim() || "none");
+  logAiPipeline("[CHAT_DESTINATION_CONTEXT]", destination?.trim() || "none");
 }
 
 export function logChatTravelDateExists(exists: boolean): void {
-  console.info("[CHAT_TRAVEL_DATE_EXISTS]", exists);
+  logAiPipeline("[CHAT_TRAVEL_DATE_EXISTS]", exists);
 }
 
 export function isBestTravelTimePurpose(purpose?: string): boolean {

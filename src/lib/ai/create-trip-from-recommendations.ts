@@ -1,6 +1,7 @@
 import type { ChatPlanningSession, ChatPlaceItem } from "@/lib/chat-session";
 import type { ChatMsg } from "@/lib/chat-history";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   dayPlanToChatPlaces,
   logAiCreateTripFromDayPlanStart,
@@ -17,11 +18,11 @@ import {
 } from "@/lib/ai/resolve-trip-create-dates";
 
 export function logAiCreateTripStart(): void {
-  console.info("[AI_CREATE_TRIP_START]");
+  logAiPipeline("[AI_CREATE_TRIP_START]");
 }
 
 export function logAiCreateTripPayload(placeCount: number, destination: string, days: number): void {
-  console.info(
+  logAiPipeline(
     "[AI_CREATE_TRIP_PAYLOAD]",
     `places=${placeCount}`,
     `destination=${destination}`,
@@ -30,7 +31,7 @@ export function logAiCreateTripPayload(placeCount: number, destination: string, 
 }
 
 export function logAiCreateTripSuccess(tripId?: string): void {
-  console.info("[AI_CREATE_TRIP_SUCCESS]", tripId ? `tripId=${tripId}` : "pending");
+  logAiPipeline("[AI_CREATE_TRIP_SUCCESS]", tripId ? `tripId=${tripId}` : "pending");
 }
 
 export function logAiCreateTripError(reason: string): void {

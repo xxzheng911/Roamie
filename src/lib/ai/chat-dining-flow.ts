@@ -3,6 +3,7 @@ import { isDestinationPlanningSession } from "@/lib/ai/chat-conversation-state";
 import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
 import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
 import { isFlexiblePreferenceReply } from "@/lib/ai/destination-advice";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   isTripAddPlaceSession,
   isTripMealRequestText,
@@ -290,8 +291,8 @@ export function applyDiningContextFromText(
         : next.activeChatIntent === "cafe"
           ? "cafe_recommendation"
           : "attraction_recommendation";
-    console.info(`[CHAT_INTENT] ${mode}`);
-    console.info(
+    logAiPipeline(`[CHAT_INTENT] ${mode}`);
+    logAiPipeline(
       `[CHAT_PARSE] foodPreference=${next.foodPreference ?? "pending"} excluded=${next.excludedCategories?.join("|") ?? "none"} companion=${next.discovery?.companionship ?? session.discovery?.companionship ?? "pending"} time=${next.diningTimeHint ?? "pending"}`,
     );
   }

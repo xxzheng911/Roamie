@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { subscribeCapacitorKeyboard } from "@/lib/capacitor-keyboard-bridge";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import {
   isCapacitorNativeShell,
   measureVisualViewportKeyboardInset,
@@ -11,6 +12,40 @@ const NEAR_BOTTOM_THRESHOLD_PX = 96;
 const KEYBOARD_OPEN_THRESHOLD_PX = 50;
 const COMPOSER_HEIGHT_FALLBACK_PX = 120;
 const CHAT_KEYBOARD_OPEN_CLASS = "chat-keyboard-open";
+
+export type MessengerScrollTarget = {
+  index?: number;
+  id?: string;
+  position?: "start" | "end";
+  /** Scroll to place-cards block inside a message */
+  placeCards?: boolean;
+};
+
+function queryChatScrollElement(
+  messagesEl: HTMLElement,
+  target: MessengerScrollTarget,
+): HTMLElement | null {
+  if (target.placeCards) {
+    if (target.id) {
+      return messagesEl.querySelector(
+        `[data-chat-message-id="${target.id}"] [data-chat-place-cards]`,
+      );
+    }
+    if (target.index != null) {
+      return messagesEl.querySelector(
+        `[data-chat-message-index="${target.index}"] [data-chat-place-cards]`,
+      );
+    }
+    return null;
+  }
+  if (target.id) {
+    return messagesEl.querySelector(`[data-chat-message-id="${target.id}"]`);
+  }
+  if (target.index != null) {
+    return messagesEl.querySelector(`[data-chat-message-index="${target.index}"]`);
+  }
+  return null;
+}
 
 export type MessengerScrollReason =
   | "new_message"
@@ -245,6 +280,67 @@ export function useMessengerChatLayout(params: {
   const recomputeLayoutRef = useRef(recomputeLayout);
   recomputeLayoutRef.current = recomputeLayout;
 
+  const scrollToMessage = useCallback(
+    (target: MessengerScrollTarget): boolean => {
+      const messagesEl = messagesRef.current;
+      if (!messagesEl) {
+        devVerboseInfo("[CHAT_SCROLL_FAILED]", "reason=no_messages_el");
+        return false;
+      }
+
+      const performScroll = () => {
+        const el = queryChatScrollElement(messagesEl, target);
+        if (!el) {
+          devVerboseInfo(
+            "[CHAT_SCROLL_FAILED]",
+            `reason=element_not_found index=${target.index ?? "none"} id=${target.id ?? "none"} placeCards=${target.placeCards ?? false}`,
+          );
+          return false;
+        }
+        el.scrollIntoView({ block: target.position ?? "start", behavior: "auto" });
+        return true;
+      };
+
+      if (scrollToBottomRafRef.current != null) {
+        cancelAnimationFrame(scrollToBottomRafRef.current);
+        scrollToBottomRafRef.current = null;
+      }
+      scrollToBottomRafRef.current = requestAnimationFrame(() => {
+        scrollToBottomRafRef.current = null;
+        performScroll();
+        window.setTimeout(() => {
+          performScroll();
+        }, 75);
+      });
+      return true;
+    },
+    [messagesRef],
+  );
+
+  const scrollToUserMessage = useCallback(
+    (index: number, id?: string) => {
+      devVerboseInfo("[CHAT_SCROLL_TO_USER_MESSAGE]", `index=${index}`);
+      return scrollToMessage({ index, id, position: "start" });
+    },
+    [scrollToMessage],
+  );
+
+  const scrollToAiMessageStart = useCallback(
+    (index: number, id?: string) => {
+      devVerboseInfo("[CHAT_SCROLL_TO_AI_MESSAGE_START]", `index=${index}`);
+      return scrollToMessage({ index, id, position: "start" });
+    },
+    [scrollToMessage],
+  );
+
+  const scrollToPlaceCardsStart = useCallback(
+    (index: number, id?: string) => {
+      devVerboseInfo("[CHAT_SCROLL_TO_PLACE_CARDS_START]", `index=${index}`);
+      return scrollToMessage({ index, id, position: "start", placeCards: true });
+    },
+    [scrollToMessage],
+  );
+
   const scrollToBottom = useCallback(
     (reason: MessengerScrollReason, opts?: { force?: boolean }) => {
       const messagesEl = messagesRef.current;
@@ -266,8 +362,8 @@ export function useMessengerChatLayout(params: {
       const logKey = `${reason}:${nearBottom}:${shouldScroll}`;
       if (lastScrollLogRef.current !== logKey) {
         lastScrollLogRef.current = logKey;
-        console.info("[CHAT_AUTO_SCROLL_REASON]", reason);
-        console.info("[CHAT_USER_IS_NEAR_BOTTOM]", nearBottom);
+        devVerboseInfo("[CHAT_AUTO_SCROLL_REASON]", reason);
+        devVerboseInfo("[CHAT_USER_IS_NEAR_BOTTOM]", nearBottom);
       }
 
       if (!shouldScroll) return;
@@ -306,14 +402,14 @@ export function useMessengerChatLayout(params: {
 
     const removeCap = subscribeCapacitorKeyboard({
       onShow: (keyboardHeight) => {
-        console.info(
+        devVerboseInfo(
           "[MESSENGER_KEYBOARD_SHOW]",
           `nativeKeyboardHeight=${Math.round(keyboardHeight)}`,
         );
         setNativeKeyboardHeightRef.current(keyboardHeight);
       },
       onHide: () => {
-        console.info("[MESSENGER_KEYBOARD_HIDE]");
+        devVerboseInfo("[MESSENGER_KEYBOARD_HIDE]");
         clearNativeKeyboardHeightRef.current();
       },
     });
@@ -376,12 +472,16 @@ export function useMessengerChatLayout(params: {
     });
     if (lastLayoutLogRef.current === payload) return;
     lastLayoutLogRef.current = payload;
-    console.info("[MESSENGER_CHAT_LAYOUT]", payload);
+    devVerboseInfo("[MESSENGER_CHAT_LAYOUT]", payload);
   }, [metrics]);
 
   return {
     metrics,
     scrollToBottom,
+    scrollToMessage,
+    scrollToUserMessage,
+    scrollToAiMessageStart,
+    scrollToPlaceCardsStart,
     userNearBottomRef,
     recomputeLayout,
   };
