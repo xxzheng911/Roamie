@@ -31,6 +31,7 @@ import {
   applyProfileCover,
   removeProfileCover,
 } from "@/lib/profile-media-storage";
+import { applyLocalUserMediaBlob } from "@/lib/user-media/user-media-store";
 import {
   getUserProfile,
   saveUserProfile,
@@ -612,6 +613,16 @@ function Profile() {
       console.info("[IMAGE_UPLOAD]", "cover", `bytes=${blob.size}`);
       const finalUrl = await applyProfileCover(blob);
       const revision = Date.now();
+      const session = await getClientAuthSession();
+      if (session?.user?.id) {
+        await applyLocalUserMediaBlob({
+          userId: session.user.id,
+          kind: "cover",
+          blob,
+          remoteUrl: finalUrl,
+          version: String(revision),
+        });
+      }
       broadcastCoverUpdate(finalUrl, revision);
       revokeCoverPreview();
       setCoverCropFile(null);
@@ -669,6 +680,13 @@ function Profile() {
       console.info("[IMAGE_UPLOAD]", "avatar", `bytes=${blob.size}`);
       const finalUrl = await applyProfileAvatar(blob);
       const revision = Date.now();
+      await applyLocalUserMediaBlob({
+        userId: session.user.id,
+        kind: "avatar",
+        blob,
+        remoteUrl: finalUrl,
+        version: String(revision),
+      });
       broadcastAvatarUpdate(finalUrl, revision);
       setAvatarPreview(null);
       setAvatarCropFile(null);

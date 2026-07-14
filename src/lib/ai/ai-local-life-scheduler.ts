@@ -10,6 +10,7 @@ import {
   isNightMarketPlace,
   isProperRestaurantPlace,
   dedupeEntryTimes,
+  validatePlaceOpenAtTime,
 } from "@/lib/ai/ai-day-plan-slot-rules";
 import {
   buildLocalLifeCityFallbackPlaces,
@@ -62,6 +63,8 @@ function isLocalLifeCoffeeSlot(slot: DayPlanSlot): boolean {
 function matchesLocalLifeSlot(slot: DayPlanSlot, place: PlaceResult): boolean {
   const kind = classifyPlanPlaceKind(place);
 
+  if (slot.label === "景點" && isNightMarketPlace(place)) return false;
+
   if (/早餐/.test(slot.label)) {
     return isProperRestaurantPlace(place) && !isBarBistroPlace(place) && !isNightMarketPlace(place);
   }
@@ -69,13 +72,14 @@ function matchesLocalLifeSlot(slot: DayPlanSlot, place: PlaceResult): boolean {
     return isProperRestaurantPlace(place) && !isBarBistroPlace(place);
   }
   if (/咖啡/.test(slot.label)) {
-    return (isExplicitCafePlace(place) || isCafePlace(place)) && !isCultureCreativeAreaPlace(place);
+    return (
+      (isExplicitCafePlace(place) || isCafePlace(place)) &&
+      !isBarBistroPlace(place) &&
+      !isCultureCreativeAreaPlace(place)
+    );
   }
   if (/晚餐/.test(slot.label)) {
-    return (
-      (isProperRestaurantPlace(place) || isNightMarketPlace(place)) &&
-      !isBarBistroPlace(place)
-    );
+    return isProperRestaurantPlace(place) && !isBarBistroPlace(place) && !isNightMarketPlace(place);
   }
   if (/酒吧/.test(slot.label)) {
     return isBarBistroPlace(place);
@@ -95,8 +99,12 @@ function matchesLocalLifeSlot(slot: DayPlanSlot, place: PlaceResult): boolean {
 
 function relaxedLocalLifeSlotMatch(slot: DayPlanSlot, place: PlaceResult): boolean {
   if (matchesLocalLifeSlot(slot, place)) return true;
+  if (slot.label === "景點" && isNightMarketPlace(place)) return false;
   if (/早餐|午餐|晚餐/.test(slot.label)) {
-    return isProperRestaurantPlace(place) || isCafePlace(place) || isNightMarketPlace(place);
+    return (
+      (isProperRestaurantPlace(place) || isCafePlace(place)) &&
+      !isNightMarketPlace(place)
+    );
   }
   if (/咖啡/.test(slot.label)) return isCafePlace(place);
   if (/酒吧/.test(slot.label)) {
@@ -211,12 +219,23 @@ function pickBestPlace(
   destination: string,
   day: number,
   preferAreas: string[],
+  slot: DayPlanSlot,
+  plannedDate?: string,
   opts?: { meal?: boolean; near?: PlaceResult | null; district?: boolean },
 ): PlaceResult | undefined {
+  const dayDate = plannedDate
+    ? (() => {
+        const m = plannedDate.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!m) return undefined;
+        const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + (day - 1));
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      })()
+    : undefined;
   const candidates = pool
     .filter((p) => {
       if (!p.name?.trim()) return false;
       if (!filter(p)) return false;
+      if (dayDate && !validatePlaceOpenAtTime(p, dayDate, slot.time)) return false;
       const id = resolveTripPlaceId(p);
       if (!id) return false;
       if (allocator.usedPlaceIds.has(id)) {
@@ -296,8 +315,9 @@ function fillLocalLifeDayGaps(params: {
   allocator: LocalLifeTripAllocator;
   lat?: number;
   lng?: number;
+  plannedDate?: string;
 }): DayPlanEntry[] {
-  const { day, dayIndex, destination, allocator, pools } = params;
+  const { day, dayIndex, destination, allocator, pools, plannedDate } = params;
   let pool = allocator.filterPool(params.pool);
   let result = dedupeEntryTimes([...params.entries]);
   const preferAreas = preferredAreaKeysForDay(destination, dayIndex);
@@ -308,14 +328,34 @@ function fillLocalLifeDayGaps(params: {
 
     const slotPool = poolForSlot(pools, slot);
     let picked =
-      pickBestPlace(slotPool, (p) => matchesLocalLifeSlot(slot, p), allocator, destination, day, preferAreas, {
-        meal: isLocalLifeMealSlot(slot),
-        district: slot.label === "景點" || isLocalLifeCoffeeSlot(slot),
-      }) ??
-      pickBestPlace(pool, (p) => relaxedLocalLifeSlotMatch(slot, p), allocator, destination, day, preferAreas, {
-        meal: isLocalLifeMealSlot(slot),
-        district: slot.label === "景點" || isLocalLifeCoffeeSlot(slot),
-      });
+      pickBestPlace(
+        slotPool,
+        (p) => matchesLocalLifeSlot(slot, p),
+        allocator,
+        destination,
+        day,
+        preferAreas,
+        slot,
+        plannedDate,
+        {
+          meal: isLocalLifeMealSlot(slot),
+          district: slot.label === "景點" || isLocalLifeCoffeeSlot(slot),
+        },
+      ) ??
+      pickBestPlace(
+        pool,
+        (p) => relaxedLocalLifeSlotMatch(slot, p),
+        allocator,
+        destination,
+        day,
+        preferAreas,
+        slot,
+        plannedDate,
+        {
+          meal: isLocalLifeMealSlot(slot),
+          district: slot.label === "景點" || isLocalLifeCoffeeSlot(slot),
+        },
+      );
 
     if (!picked && params.lat != null && params.lng != null) {
       pool = appendCityBackupPlaces({
@@ -328,10 +368,20 @@ function fillLocalLifeDayGaps(params: {
       });
       pool = allocator.filterPool(pool);
       picked =
-        pickBestPlace(pool, (p) => relaxedLocalLifeSlotMatch(slot, p), allocator, destination, day, preferAreas, {
-          meal: isLocalLifeMealSlot(slot),
-          district: slot.label === "景點" || isLocalLifeCoffeeSlot(slot),
-        }) ?? undefined;
+        pickBestPlace(
+          pool,
+          (p) => relaxedLocalLifeSlotMatch(slot, p),
+          allocator,
+          destination,
+          day,
+          preferAreas,
+          slot,
+          plannedDate,
+          {
+            meal: isLocalLifeMealSlot(slot),
+            district: slot.label === "景點" || isLocalLifeCoffeeSlot(slot),
+          },
+        ) ?? undefined;
     }
 
     if (!picked?.name) continue;
@@ -363,8 +413,9 @@ function buildSingleLocalLifeDay(params: {
   allocator: LocalLifeTripAllocator;
   lat?: number;
   lng?: number;
+  plannedDate?: string;
 }): ComposedDayPlan {
-  const { day, dayIndex, destination, allocator, pools } = params;
+  const { day, dayIndex, destination, allocator, pools, plannedDate } = params;
   const preferAreas = preferredAreaKeysForDay(destination, dayIndex);
   const pool = allocator.filterPool(params.pool);
   const entries: DayPlanEntry[] = [];
@@ -375,14 +426,34 @@ function buildSingleLocalLifeDay(params: {
     const isDistrict = slot.label === "景點" || isLocalLifeCoffeeSlot(slot);
 
     let place =
-      pickBestPlace(slotPool, (p) => matchesLocalLifeSlot(slot, p), allocator, destination, day, preferAreas, {
-        meal: isMeal,
-        district: isDistrict,
-      }) ??
-      pickBestPlace(pool, (p) => relaxedLocalLifeSlotMatch(slot, p), allocator, destination, day, preferAreas, {
-        meal: isMeal,
-        district: isDistrict,
-      });
+      pickBestPlace(
+        slotPool,
+        (p) => matchesLocalLifeSlot(slot, p),
+        allocator,
+        destination,
+        day,
+        preferAreas,
+        slot,
+        plannedDate,
+        {
+          meal: isMeal,
+          district: isDistrict,
+        },
+      ) ??
+      pickBestPlace(
+        pool,
+        (p) => relaxedLocalLifeSlotMatch(slot, p),
+        allocator,
+        destination,
+        day,
+        preferAreas,
+        slot,
+        plannedDate,
+        {
+          meal: isMeal,
+          district: isDistrict,
+        },
+      );
 
     if (!place?.name) continue;
 
@@ -407,6 +478,7 @@ function buildSingleLocalLifeDay(params: {
     allocator,
     lat: params.lat,
     lng: params.lng,
+    plannedDate,
   });
 
   return { day, entries: dedupeEntryTimes(filled) };
@@ -418,10 +490,11 @@ export function buildLocalLifeDayPlans(params: {
   destination: string;
   lat?: number;
   lng?: number;
+  plannedDate?: string;
   seedPlans?: ComposedDayPlan[];
   excludeSeedDays?: number[];
 }): ComposedDayPlan[] {
-  const { places, days, destination, lat, lng, seedPlans, excludeSeedDays } = params;
+  const { places, days, destination, lat, lng, plannedDate, seedPlans, excludeSeedDays } = params;
   const safeDays = Math.max(1, days);
   logAiTripDedupStart();
 
@@ -445,6 +518,7 @@ export function buildLocalLifeDayPlans(params: {
           allocator,
           lat,
           lng,
+          plannedDate,
         }),
       );
     }
@@ -485,8 +559,9 @@ export function rebuildLocalLifeDayPlan(params: {
   days: number;
   lat?: number;
   lng?: number;
+  plannedDate?: string;
 }): ComposedDayPlan {
-  const { day, currentPlans, places, destination, lat, lng } = params;
+  const { day, currentPlans, places, destination, lat, lng, plannedDate } = params;
   const pool = filterPlacesForLocalLife(places);
   const pools = buildLocalLifeCandidatePools(places);
   const allocator = new LocalLifeTripAllocator();
@@ -501,6 +576,7 @@ export function rebuildLocalLifeDayPlan(params: {
     allocator,
     lat,
     lng,
+    plannedDate,
   });
 }
 

@@ -357,6 +357,7 @@ function supplementDayPlanEntries(params: {
     plannedDate,
   } = params;
   const minPerDay = minEntriesPerDayForTripDays(totalDays);
+  const maxPerDay = minPerDay;
   const result = [...entries];
   const scenicKinds: PlanPlaceKind[] =
     style === "slow_nature"
@@ -387,13 +388,7 @@ function supplementDayPlanEntries(params: {
           label:
             placeKind === "cafe"
               ? "咖啡"
-              : placeKind === "nature"
-                ? "自然"
-                : placeKind === "culture"
-                  ? "文化"
-                  : placeKind === "shopping" || placeKind === "market"
-                    ? "商圈市集"
-                    : "景點",
+              : "景點",
         };
         if (!canFillStructuredSlot(place, fillerSlot, { cafeCount: 0 }, classifyKind, plannedDate)) {
           continue;
@@ -406,23 +401,14 @@ function supplementDayPlanEntries(params: {
   };
 
   for (const pass of SUPPLEMENT_KIND_PASSES) {
-    while (result.length < minPerDay) {
+    while (result.length < minPerDay && result.length < maxPerDay) {
       const place = tryPick(pass);
       if (!place) break;
       const kind = classifyKind(place);
       const fillerSlot: DayPlanSlot = {
         time: scenicFillerTimes(result.length),
         kind,
-        label:
-          kind === "cafe"
-            ? "咖啡"
-            : kind === "nature"
-              ? "自然"
-              : kind === "culture"
-                ? "文化"
-                : kind === "shopping" || kind === "market"
-                  ? "商圈市集"
-                  : "景點",
+        label: kind === "cafe" ? "咖啡" : "景點",
       };
       result.push({
         time: fillerSlot.time,
@@ -434,7 +420,7 @@ function supplementDayPlanEntries(params: {
     if (result.length >= minPerDay) break;
   }
 
-  while (result.length < minPerDay) {
+  while (result.length < minPerDay && result.length < maxPerDay) {
     const place = tryPick(scenicKinds);
     if (!place) break;
     const kind = classifyKind(place);
@@ -933,7 +919,7 @@ export function validateDayPlanSlots(
         logAiSlotValidateFail("excluded_retail", name, plan.day);
       }
 
-      if (kind === "cafe" || isCafePlace(entry.place)) {
+      if (/咖啡/.test(entry.label) && (kind === "cafe" || isCafePlace(entry.place))) {
         cafeCount += 1;
         if (cafeCount > 1) {
           reasons.push(`duplicate_cafe:day${plan.day}`);
@@ -1521,17 +1507,33 @@ export function validatePlaceOpenAtTime(
     logAiOpenHoursDrop(name, plannedTime, "permanently_closed");
     return false;
   }
-  if (place.normalizedOpeningStatus === "closed" || place.openStatus === "closed_now") {
+
+  // closed_now reflects current status only — ignore when scheduling a future trip day.
+  const planningFutureDay = Boolean(date?.trim());
+  if (
+    !planningFutureDay &&
+    (place.normalizedOpeningStatus === "closed" || place.openStatus === "closed_now")
+  ) {
     logAiOpenHoursDrop(name, plannedTime, "closed_now");
     return false;
   }
 
   const at = date ? new Date(`${date}T12:00:00`) : new Date();
   const hours = placeHoursDataFromPlace(place);
-  const scheduled = isOpenAtScheduled(hours, at, plannedTime);
+  const hasHours = hasOpeningHoursData(place);
+  const scheduled = hasHours ? isOpenAtScheduled(hours, at, plannedTime) : null;
+
   if (scheduled === false) {
-    logAiOpenHoursDrop(name, plannedTime, "not_open_at_scheduled");
-    return false;
+    // Tier A: known hours and closed at slot — reject meal/bar; scenic may still pass conservative rules.
+    if (requiresOpeningHours(place) || isBarBistroPlace(place)) {
+      logAiOpenHoursDrop(name, plannedTime, "not_open_at_scheduled");
+      return false;
+    }
+    if (isMuseumCulturePlace(place) || isNightMarketPlace(place)) {
+      logAiOpenHoursDrop(name, plannedTime, "not_open_at_scheduled");
+      return false;
+    }
+    // Parks / landmarks with hours showing closed: still allow conservative morning/afternoon slots.
   }
   if (scheduled === true) {
     logAiOpenHoursValidate(name, plannedTime, true);
@@ -1540,15 +1542,19 @@ export function validatePlaceOpenAtTime(
 
   const fromLabel = isOpenFromTodayHoursLabel(place, plannedTime);
   if (fromLabel === false) {
-    logAiOpenHoursDrop(name, plannedTime, "hours_label_closed");
-    return false;
+    if (requiresOpeningHours(place) || isBarBistroPlace(place)) {
+      logAiOpenHoursDrop(name, plannedTime, "hours_label_closed");
+      return false;
+    }
   }
   if (fromLabel === true) {
     logAiOpenHoursValidate(name, plannedTime, true);
     return true;
   }
 
-  if (requiresOpeningHours(place)) {
+  // Tier B/C: no reliable opening hours — scenic uses conservative times; meals allowed for scheduling
+  // (slot refill / details enrichment may replace if still unsuitable).
+  if (!hasHours && (requiresOpeningHours(place) || isBarBistroPlace(place))) {
     logAiOpenHoursValidate(name, plannedTime, true);
     return true;
   }
@@ -1702,15 +1708,18 @@ export function validateCompleteItinerary(
   }
 
   const minPerDay = minEntriesPerDayForTripDays(requestedDays);
+  const maxPerDay = minPerDay;
   for (const plan of normalized) {
     if (plan.entries.length < minPerDay) {
       reasons.push(`incomplete_day:${plan.day}:${plan.entries.length}<${minPerDay}`);
+      failedDays.add(plan.day);
+    } else if (plan.entries.length > maxPerDay) {
+      reasons.push(`overflow_day:${plan.day}:${plan.entries.length}>${maxPerDay}`);
       failedDays.add(plan.day);
     }
   }
 
   for (const check of [
-    (p: ComposedDayPlan[]) => validateDailyScenicComposition(p, classifyKind),
     validateParentLandmarkDuplicates,
     validateRealPlanningEntries,
     (p: ComposedDayPlan[]) => validateItinerary(p, classifyKind, style, plannedDate, requestedDays),
@@ -1720,6 +1729,14 @@ export function validateCompleteItinerary(
       reasons.push(...result.reasons);
       result.failedDays.forEach((day) => failedDays.add(day));
     }
+  }
+
+  const scenicResult = validateDailyScenicComposition(normalized, classifyKind);
+  if (!scenicResult.ok) {
+    logAiPipeline(
+      "[AI_SCENIC_COMPOSITION_ADVISORY]",
+      scenicResult.reasons.slice(0, 4).join(";") || "scenic_mismatch",
+    );
   }
 
   const validation = { ok: reasons.length === 0, reasons, failedDays: [...failedDays] };
@@ -1795,42 +1812,7 @@ export function validateStyleComposition(
     }
 
     if (style === "local_life") {
-      const diningCount = plan.entries.filter((e) => {
-        if (/咖啡/.test(e.label)) return false;
-        return isDiningPlace(e.place, classifyKind);
-      }).length;
-      const nonMealCount = total - diningCount;
-      const streetOrCultureCount = plan.entries.filter((e) => {
-        const k = classifyKind(e.place);
-        return (
-          k === "shopping" ||
-          k === "market" ||
-          k === "culture" ||
-          e.label === "景點" ||
-          /街區|商圈|文創|老街|散步/.test(e.label)
-        );
-      }).length;
-
-      if (diningCount / total > 0.65) {
-        reasons.push(`local_life_too_many_meals:day${plan.day}`);
-        logAiStyleCompositionFail("too_many_meals", plan.day);
-        logAiRestaurantRatioExceeded(diningCount / total, 0.5);
-        failedDays.add(plan.day);
-      }
-      if (nonMealCount < 2) {
-        reasons.push(`local_life_too_few_non_meal:day${plan.day}`);
-        logAiNonMealSlotMissing(plan.day);
-        failedDays.add(plan.day);
-      }
-      if (streetOrCultureCount < 1) {
-        reasons.push(`local_life_missing_street_culture:day${plan.day}`);
-        failedDays.add(plan.day);
-      }
-      if (isDayMealsOnly(plan.entries, classifyKind)) {
-        reasons.push(`local_life_meals_only:day${plan.day}`);
-        logAiStyleCompositionFail("meals_only_day", plan.day);
-        failedDays.add(plan.day);
-      }
+      // local_life 僅影響候選排序，不作額外 composition 硬性驗證
     }
 
     const ok = !failedDays.has(plan.day);
@@ -1918,12 +1900,21 @@ export function validateItinerary(
     (p: ComposedDayPlan[]) => validateOpenHours(p, plannedDate),
     validatePlaceCategoryLabels,
     (p: ComposedDayPlan[]) => validateNoExcludedRetailPlaces(p, style),
-    (p: ComposedDayPlan[]) => (style ? validateStyleComposition(p, style, classifyKind) : { ok: true, reasons: [], failedDays: [] }),
   ]) {
     const result = check(plans);
     if (!result.ok) {
       reasons.push(...result.reasons);
       result.failedDays.forEach((day) => failedDays.add(day));
+    }
+  }
+
+  if (style) {
+    const styleResult = validateStyleComposition(plans, style, classifyKind);
+    if (!styleResult.ok) {
+      logAiPipeline(
+        "[AI_STYLE_COMPOSITION_ADVISORY]",
+        styleResult.reasons.slice(0, 4).join(";") || "style_mismatch",
+      );
     }
   }
 

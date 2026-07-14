@@ -132,6 +132,11 @@ export async function listPlaces(): Promise<SavedPlace[]> {
   return listPlacesInflight;
 }
 
+/** 同步讀取記憶體中的收藏列表（首頁附近可先用，不阻塞 Places） */
+export function peekListPlacesCache(): SavedPlace[] {
+  return listPlacesCache?.data ?? [];
+}
+
 export async function savePlace(input: NewPlace): Promise<SavedPlace> {
   const userId = await resolveStableUserId();
   if (userId) {

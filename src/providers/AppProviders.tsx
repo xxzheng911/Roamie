@@ -42,13 +42,22 @@ function AuthenticatedShellProviders({ children }: { children: ReactNode }) {
 function ProviderGate({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   const pathname = readBrowserPathname();
+  const light = shouldUseLightStartupShell(pathname, Boolean(user), loading);
+  const phase = light ? "providers:light" : "providers:authed-shell";
+  const detail = `u=${Boolean(user)} l=${loading ? 1 : 0}`;
+  const lastPhaseRef = useRef<string>("");
 
-  if (shouldUseLightStartupShell(pathname, Boolean(user), loading)) {
-    bootPhase("providers:light", `u=${Boolean(user)} l=${loading ? 1 : 0}`);
+  useEffect(() => {
+    const key = `${phase}|${detail}`;
+    if (lastPhaseRef.current === key) return;
+    lastPhaseRef.current = key;
+    bootPhase(phase, detail);
+  }, [phase, detail]);
+
+  if (light) {
     return <>{children}</>;
   }
 
-  bootPhase("providers:authed-shell", `u=${Boolean(user)} l=${loading ? 1 : 0}`);
   return <AuthenticatedShellProviders>{children}</AuthenticatedShellProviders>;
 }
 
@@ -59,8 +68,13 @@ function BootCacheHydrator() {
   useEffect(() => {
     if (loading) return;
     const userId = user?.id ?? null;
-    if (lastUserIdRef.current !== undefined && lastUserIdRef.current !== userId) {
-      resetAppBootCachesForUserChange();
+    const prev = lastUserIdRef.current;
+    if (prev !== undefined && prev !== userId) {
+      // Only wipe media when switching between two real users, or on logout.
+      // Never wipe on null→user (first session resolve) — that retriggers seed loops.
+      if ((prev && userId && prev !== userId) || (prev && !userId)) {
+        resetAppBootCachesForUserChange();
+      }
     }
     lastUserIdRef.current = userId;
     void hydrateAppBootCachesAsync(userId);
@@ -74,7 +88,10 @@ function BootCacheHydrator() {
  * Existing hooks (use-auth, use-i18n) remain; migrate gradually to /providers.
  */
 export function AppProviders({ children }: Props) {
-  if (typeof window !== "undefined") {
+  const bootLogged = useRef(false);
+  useEffect(() => {
+    if (bootLogged.current) return;
+    bootLogged.current = true;
     assertClientEnv();
     if (!isSupabaseConfigured()) {
       console.warn(
@@ -82,7 +99,7 @@ export function AppProviders({ children }: Props) {
       );
     }
     bootPhase("providers:render");
-  }
+  }, []);
 
   return (
     <PlatformProvider>

@@ -3,6 +3,39 @@ import { normalizePlaceName } from "@/lib/place-planning-memory";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { filterExcludedRetailPlaces } from "@/lib/ai/ai-day-plan-slot-rules";
 import { resolveTripPlaceId } from "@/lib/ai/ai-trip-place-allocator";
+import { normalizeGooglePlace, normalizeGooglePlaceId } from "@/lib/ai/normalize-google-place";
+import {
+  filterRealPlanningPlacesWithDiagnostics,
+  logItineraryPostprocessSummary,
+  emptyPostprocessCounters,
+} from "@/lib/ai/itinerary-postprocess-diagnostics";
+
+const NORMALIZE_CACHE_MAX = 48;
+const normalizeCache = new Map<string, PlaceResult[]>();
+
+function planningPlacesFingerprint(places: PlaceResult[]): string {
+  return places
+    .map((place) => resolveTripPlaceId(place) || (place.name ?? "").trim())
+    .filter(Boolean)
+    .sort()
+    .join("|");
+}
+
+function readNormalizeCache(fingerprint: string): PlaceResult[] | undefined {
+  return normalizeCache.get(fingerprint);
+}
+
+function writeNormalizeCache(fingerprint: string, result: PlaceResult[]): void {
+  if (normalizeCache.size >= NORMALIZE_CACHE_MAX) {
+    const oldest = normalizeCache.keys().next().value;
+    if (oldest) normalizeCache.delete(oldest);
+  }
+  normalizeCache.set(fingerprint, result);
+}
+
+export function clearNormalizePlanningCache(): void {
+  normalizeCache.clear();
+}
 
 export function logAiNormalizedPlacesCount(count: number): void {
   logAiPipeline("[AI_NORMALIZED_PLACES_COUNT]", `count=${count}`);
@@ -34,7 +67,20 @@ export function logAiRenderItineraryStart(): void {
   logAiPipeline("[AI_RENDER_ITINERARY_START]");
 }
 
-export function logAiRenderItinerarySuccess(itemCount: number): void {
+export function logAiRenderItinerarySuccess(itemCount: number, days?: number, requestedDays?: number): void {
+  if (itemCount <= 0) {
+    console.warn("[AI_RENDER_ITINERARY_BLOCKED]", "reason=empty_item_count", `itemCount=${itemCount}`);
+    return;
+  }
+  if (requestedDays != null && days != null && days !== requestedDays) {
+    console.warn(
+      "[AI_RENDER_ITINERARY_BLOCKED]",
+      `reason=days_mismatch`,
+      `days=${days}`,
+      `requested=${requestedDays}`,
+    );
+    return;
+  }
   logAiPipeline("[AI_RENDER_ITINERARY_SUCCESS]", `itemCount=${itemCount}`);
 }
 
@@ -128,35 +174,68 @@ function inferBasicType(name: string, types?: string[]): string {
 }
 
 /** 規劃用地點：name + type 即可；缺 id / photo / rating 不丟棄 */
-export function normalizePlanningPlaces(places: PlaceResult[]): PlaceResult[] {
+export function normalizePlanningPlaces(
+  places: PlaceResult[],
+  options?: { logSummary?: boolean },
+): PlaceResult[] {
+  const fingerprint = planningPlacesFingerprint(places);
+  const cached = readNormalizeCache(fingerprint);
+  if (cached) {
+    if (options?.logSummary !== false) {
+      logItineraryPostprocessSummary("normalize_planning", {
+        inputCount: places.length,
+        outputCount: cached.length,
+        droppedInvalidName: 0,
+        droppedDuplicate: 0,
+      });
+    }
+    return cached;
+  }
+
+  const counters = emptyPostprocessCounters(places.length);
   const seen = new Set<string>();
   const out: PlaceResult[] = [];
 
   for (const place of places) {
-    const name = place.name?.trim();
-    if (!name) continue;
+    const normalized = normalizeGooglePlace(place, { existing: place });
+    if (!normalized?.name?.trim()) {
+      counters.droppedInvalidName += 1;
+      continue;
+    }
 
+    const name = normalized.name.trim();
     const nameKey = normalizePlaceName(name);
-    let id = (place.id ?? (place as PlaceResult & { placeId?: string }).placeId ?? "").trim();
+    let id = normalizeGooglePlaceId(normalized.id);
     if (!id) {
       id = `synthetic:${nameKey || name}`;
     }
 
-    const dedupeKey = resolveTripPlaceId({ ...place, id } as PlaceResult);
-    if (seen.has(dedupeKey)) continue;
+    const dedupeKey = resolveTripPlaceId({ ...normalized, id } as PlaceResult);
+    if (seen.has(dedupeKey)) {
+      counters.droppedDuplicate += 1;
+      continue;
+    }
     seen.add(dedupeKey);
 
-    const primaryType = place.primaryType?.trim() || inferBasicType(name, place.types);
+    const primaryType =
+      normalized.primaryType?.trim() ||
+      inferBasicType(name, normalized.types ?? undefined);
 
     out.push({
-      ...place,
+      ...normalized,
       id,
       name,
       primaryType,
-      types: place.types?.length ? place.types : [primaryType],
+      types: normalized.types?.length ? normalized.types : [primaryType],
     });
   }
 
+  counters.outputCount = out.length;
+  if (options?.logSummary !== false) {
+    logItineraryPostprocessSummary("normalize_planning", counters);
+  }
   logAiNormalizedPlacesCount(out.length);
-  return filterExcludedRetailPlaces(out);
+  const filtered = filterExcludedRetailPlaces(out);
+  writeNormalizeCache(fingerprint, filtered);
+  return filtered;
 }

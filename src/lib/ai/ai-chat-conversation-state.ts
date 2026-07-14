@@ -13,6 +13,7 @@ import {
   buildDayPlanSummaryFromBuckets,
   distributeRecommendationsAcrossDays,
   hasCompleteTripPlanningContext,
+  resolveInferredTripDays,
   resolveTripStyleFromContext,
   shouldAskTripStyle,
   type TripStyleKey,
@@ -75,8 +76,9 @@ export function resolveConversationDestination(
 export function resolveConversationDays(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
+  userText?: string,
 ): number | undefined {
-  return ctx.days ?? session?.tripDays ?? session?.tripPlanningContext?.days;
+  return resolveInferredTripDays(ctx, session, userText);
 }
 
 export function hasMinimumPlanningContext(
@@ -107,6 +109,11 @@ export function resolveAiConversationState(
 
   if (shouldAskTripStyle(ctx, session)) {
     return "ASK_TRIP_STYLE";
+  }
+
+  // New Trip Conversation: destination + days ready → combinations (not legacy style).
+  if (hasCompleteTripPlanningContext(ctx, session) && !ctx.mustVisitGenerated) {
+    return "GENERATE_PLACE_RECOMMENDATIONS";
   }
 
   if (resolveTripStyleFromContext(ctx, session) && !ctx.mustVisitGenerated) {

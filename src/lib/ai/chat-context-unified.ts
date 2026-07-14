@@ -73,7 +73,7 @@ function splitDestination(
   }
 
   const label = normalizeDestinationLabel(destination);
-  if (isKnownCountryLabel(label)) {
+  if (isKnownCountryLabel(label) && !isKnownTouristCityLabel(label)) {
     return { destinationCountry: label };
   }
 
@@ -90,6 +90,12 @@ function splitDestination(
       destinationCity: label.split(/[＋+]/)[0]?.trim(),
       destinationCountry,
     };
+  }
+
+  // Unknown short labels: prefer region/city only if not a known country.
+  // Avoid defaulting countries (or country-like) into destinationCity.
+  if (isKnownCountryLabel(label)) {
+    return { destinationCountry: label };
   }
 
   return {

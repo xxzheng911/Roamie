@@ -4,6 +4,7 @@ import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
 import { logAiStyleReselectSessionReset } from "@/lib/ai/planning-style-reselect-log";
+import { resetPlannerSession } from "@/lib/ai/planner-session-guard";
 
 let planningRenderInProgress = false;
 let planningRenderSessionId: string | undefined;
@@ -140,6 +141,7 @@ export function clearPlanningSessionState(
 ): ChatPlanningSession {
   logAiPlanningSessionClear(session.planningSessionId, reason);
   clearFrozenPlanningDayPlan(session.planningSessionId);
+  resetPlannerSession(session.planningSessionId);
   return {
     ...session,
     currentDayPlan: undefined,
@@ -168,6 +170,7 @@ export function resetPlanningSessionForStyleReselect(
 ): ChatPlanningSession {
   const planVersion = (session.planVersion ?? 0) + 1;
   clearFrozenPlanningDayPlan(session.planningSessionId);
+  resetPlannerSession(session.planningSessionId);
   const planningSessionId = createPlanningSessionId();
   logAiStyleReselectSessionReset(planVersion, planningSessionId);
   logAiSessionCreate("style_reselect", planningSessionId);

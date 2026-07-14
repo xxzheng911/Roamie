@@ -10,6 +10,9 @@ export type CachedProfile = {
   coverImageUrl: string | null;
   avatarUpdatedAt: string | null;
   profileUpdatedAt: string | null;
+  /** Persisted custom-avatar presence — survives URL absence during cold boot. */
+  hasCustomAvatar?: boolean | null;
+  hasCustomCover?: boolean | null;
   cachedAt: number;
 };
 
@@ -38,6 +41,8 @@ function readRaw(): CachedProfile | null {
       coverImageUrl: legacy.coverImageUrl ?? null,
       avatarUpdatedAt: legacy.updatedAt ? new Date(legacy.updatedAt).toISOString() : null,
       profileUpdatedAt: legacy.updatedAt ? new Date(legacy.updatedAt).toISOString() : null,
+      hasCustomAvatar: Boolean(legacy.avatarUrl),
+      hasCustomCover: Boolean(legacy.coverImageUrl),
       cachedAt: legacy.updatedAt ?? Date.now(),
     };
   } catch {
@@ -64,18 +69,15 @@ export function readLastCachedProfileUserId(): string | null {
   }
 }
 
-export function readCachedProfile(userId?: string | null): CachedProfile | null {
+export function readCachedProfile(
+  userId?: string | null,
+  _opts?: { quiet?: boolean },
+): CachedProfile | null {
+  // Never console here — Cap bridge floods / IPC-throttles when called during render.
   const row = readRaw();
-  if (!row) {
-    console.info("[PROFILE_CACHE_MISS]");
-    return null;
-  }
+  if (!row) return null;
   const resolvedUserId = userId ?? readLastCachedProfileUserId();
-  if (resolvedUserId && row.userId !== resolvedUserId) {
-    console.info("[PROFILE_CACHE_MISS]");
-    return null;
-  }
-  console.info("[PROFILE_CACHE_HIT]", { userId: row.userId });
+  if (resolvedUserId && row.userId !== resolvedUserId) return null;
   return row;
 }
 
@@ -83,18 +85,33 @@ export function writeCachedProfile(
   patch: Partial<CachedProfile> & { userId: string },
 ): CachedProfile {
   const prev = readRaw();
+  const nextAvatarUrl =
+    patch.avatarUrl !== undefined ? patch.avatarUrl : (prev?.avatarUrl ?? null);
+  const nextCoverUrl =
+    patch.coverImageUrl !== undefined ? patch.coverImageUrl : (prev?.coverImageUrl ?? null);
   const next: CachedProfile = {
     userId: patch.userId,
     displayName: patch.displayName ?? prev?.displayName ?? "",
-    avatarUrl: patch.avatarUrl !== undefined ? patch.avatarUrl : (prev?.avatarUrl ?? null),
-    coverImageUrl:
-      patch.coverImageUrl !== undefined ? patch.coverImageUrl : (prev?.coverImageUrl ?? null),
+    avatarUrl: nextAvatarUrl,
+    coverImageUrl: nextCoverUrl,
     avatarUpdatedAt:
       patch.avatarUpdatedAt !== undefined ? patch.avatarUpdatedAt : (prev?.avatarUpdatedAt ?? null),
     profileUpdatedAt:
       patch.profileUpdatedAt !== undefined
         ? patch.profileUpdatedAt
         : (prev?.profileUpdatedAt ?? null),
+    hasCustomAvatar:
+      patch.hasCustomAvatar !== undefined
+        ? patch.hasCustomAvatar
+        : nextAvatarUrl
+          ? true
+          : (prev?.hasCustomAvatar ?? (prev?.avatarUrl ? true : null)),
+    hasCustomCover:
+      patch.hasCustomCover !== undefined
+        ? patch.hasCustomCover
+        : nextCoverUrl
+          ? true
+          : (prev?.hasCustomCover ?? (prev?.coverImageUrl ? true : null)),
     cachedAt: Date.now(),
   };
   writeRaw(next);
@@ -102,15 +119,15 @@ export function writeCachedProfile(
 }
 
 export function readPersistedAvatarUrl(userId?: string | null): string | null {
-  return readCachedProfile(userId)?.avatarUrl ?? null;
+  return readCachedProfile(userId, { quiet: true })?.avatarUrl ?? null;
 }
 
 export function readPersistedCoverUrl(userId?: string | null): string | null {
-  return readCachedProfile(userId)?.coverImageUrl ?? null;
+  return readCachedProfile(userId, { quiet: true })?.coverImageUrl ?? null;
 }
 
 export function readPersistedDisplayName(userId?: string | null): string | null {
-  const name = readCachedProfile(userId)?.displayName?.trim();
+  const name = readCachedProfile(userId, { quiet: true })?.displayName?.trim();
   return name || null;
 }
 

@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -10,15 +11,21 @@ import {
 import defaultCover from "@/assets/roamie-default-cover.png";
 import { getUserProfile } from "@/lib/profile-storage";
 import { COVER_UPDATED_EVENT, type CoverUpdatedDetail } from "@/lib/cover-events";
-import { isSameMediaUrl } from "@/lib/media-display-url";
 import { readProfileSessionCache } from "@/lib/profile-session-cache";
 import {
   hasProfileSessionCache,
   readCachedCoverUrl,
-  resolveProfileMediaDisplay,
 } from "@/lib/profile-media-display";
+import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
+import { readCachedProfile, writeCachedProfile } from "@/lib/profile-persisted-cache";
 import { shouldUseLightStartupShell, readBrowserPathname } from "@/lib/startup-path";
 import { useAuth } from "@/hooks/use-auth";
+import { useUserMediaStore } from "@/hooks/use-user-media-store";
+import {
+  hydrateUserMediaFromCache,
+  seedUserMediaFromPersistedSync,
+  validateUserMediaRemote,
+} from "@/lib/user-media/user-media-store";
 
 type CoverCtx = {
   coverUrl: string | null;
@@ -26,7 +33,7 @@ type CoverCtx = {
   coverDisplaySrc: string | null;
   coverPending: boolean;
   showCoverDefault: boolean;
-  /** Resolved src with cache-bust — custom only, null while pending */
+  /** Resolved src with local blob preferred — custom only, null while pending */
   coverSrc: string | null;
   refresh: () => Promise<void>;
   syncFromProfile: (url: string | null) => void;
@@ -38,11 +45,19 @@ const Ctx = createContext<CoverCtx | null>(null);
 export function CoverProvider({ children }: { children: ReactNode }) {
   const { user, loading: authLoading } = useAuth();
   const userId = user?.id;
-  const [coverUrl, setCoverUrl] = useState<string | null>(() => readCachedCoverUrl(userId));
-  const [coverRevision, setCoverRevision] = useState(0);
+  const bootUserId = userId ?? readCachedAuthenticatedUserIdSync();
+  const media = useUserMediaStore();
+  const bootCover =
+    readCachedCoverUrl(bootUserId) ??
+    readCachedProfile(bootUserId, { quiet: true })?.coverImageUrl ??
+    null;
+
   const [preview, setPreviewState] = useState<string | null>(null);
-  const [profileMediaLoaded, setProfileMediaLoaded] = useState(() =>
-    hasProfileSessionCache(userId),
+  const [metadataLoaded, setMetadataLoaded] = useState(
+    () =>
+      Boolean(bootCover) ||
+      hasProfileSessionCache(bootUserId) ||
+      Boolean(readCachedProfile(bootUserId, { quiet: true })),
   );
 
   const setPreview = useCallback((url: string | null) => {
@@ -61,45 +76,63 @@ export function CoverProvider({ children }: { children: ReactNode }) {
   const pathname = readBrowserPathname();
   const skipProfileFetch = shouldUseLightStartupShell(pathname, Boolean(user), authLoading);
 
-  const syncFromProfile = useCallback((url: string | null) => {
-    const next = url?.trim() || null;
-    if (!next) return;
-    setCoverUrl((prev) => (isSameMediaUrl(prev, next) ? prev : next));
-  }, []);
+  useLayoutEffect(() => {
+    seedUserMediaFromPersistedSync(bootUserId);
+    void hydrateUserMediaFromCache(bootUserId);
+  }, [bootUserId]);
+
+  const syncFromProfile = useCallback(
+    (url: string | null) => {
+      const next = url?.trim() || null;
+      if (!userId) return;
+      void validateUserMediaRemote({
+        userId,
+        avatarUrl: media.avatarUrl,
+        coverUrl: next,
+        avatarUpdatedAt: media.avatarVersion
+          ? new Date(Number(media.avatarVersion) || Date.now()).toISOString()
+          : null,
+        profileUpdatedAt: new Date().toISOString(),
+      });
+    },
+    [media.avatarUrl, media.avatarVersion, userId],
+  );
 
   const refresh = useCallback(async () => {
     if (!userId) return;
     try {
       const profile = await getUserProfile();
-      setCoverUrl((prev) =>
-        isSameMediaUrl(prev, profile.coverImageUrl) ? prev : profile.coverImageUrl,
-      );
       setPreview(null);
+      await validateUserMediaRemote({
+        userId,
+        avatarUrl: profile.avatarUrl,
+        coverUrl: profile.coverImageUrl,
+        avatarUpdatedAt: profile.profileUpdatedAt,
+        profileUpdatedAt: profile.profileUpdatedAt,
+      });
     } catch {
-      /* keep cached url */
+      /* keep cached image — never clear to default */
     } finally {
-      setProfileMediaLoaded(true);
+      setMetadataLoaded(true);
     }
   }, [setPreview, userId]);
 
   useEffect(() => {
-    if (!userId) {
-      setProfileMediaLoaded(false);
-      return;
-    }
+    if (!userId) return;
     const session = readProfileSessionCache(userId);
     if (session) {
-      setCoverUrl((prev) =>
-        isSameMediaUrl(prev, session.coverImageUrl) ? prev : session.coverImageUrl,
-      );
-      setProfileMediaLoaded(true);
+      setMetadataLoaded(true);
+      void validateUserMediaRemote({
+        userId,
+        avatarUrl: session.avatarUrl,
+        coverUrl: session.coverImageUrl,
+        avatarUpdatedAt: session.profileUpdatedAt,
+        profileUpdatedAt: session.profileUpdatedAt,
+      });
       return;
     }
-    const cached = readCachedCoverUrl(userId);
-    if (cached) {
-      setCoverUrl((prev) => (isSameMediaUrl(prev, cached) ? prev : cached));
-    }
-    setProfileMediaLoaded(false);
+    const cached = readCachedProfile(userId);
+    if (cached) setMetadataLoaded(true);
   }, [userId]);
 
   useEffect(() => {
@@ -115,51 +148,78 @@ export function CoverProvider({ children }: { children: ReactNode }) {
         detail && typeof detail === "object" && "revision" in detail && detail.revision
           ? detail.revision
           : Date.now();
-      setCoverUrl(url);
-      setCoverRevision(revision);
+      const updatedIso = new Date(revision).toISOString();
       setPreview(null);
-      setProfileMediaLoaded(true);
+      setMetadataLoaded(true);
+      if (userId) {
+        writeCachedProfile({
+          userId,
+          coverImageUrl: url,
+          profileUpdatedAt: updatedIso,
+        });
+        void validateUserMediaRemote({
+          userId,
+          avatarUrl: media.avatarUrl,
+          coverUrl: url,
+          avatarUpdatedAt: media.avatarVersion
+            ? new Date(Number(media.avatarVersion) || Date.now()).toISOString()
+            : updatedIso,
+          profileUpdatedAt: updatedIso,
+        });
+      }
     };
     window.addEventListener(COVER_UPDATED_EVENT, onUpdate);
     return () => window.removeEventListener(COVER_UPDATED_EVENT, onUpdate);
-  }, [setPreview]);
+  }, [media.avatarUrl, media.avatarVersion, setPreview, userId]);
 
   useEffect(() => {
     if (!userId || authLoading) return;
     if (skipProfileFetch) {
-      if (hasProfileSessionCache(userId)) {
-        setProfileMediaLoaded(true);
+      if (hasProfileSessionCache(userId) || readCachedProfile(userId)) {
+        setMetadataLoaded(true);
       }
       return;
     }
     void refresh();
   }, [refresh, skipProfileFetch, userId, authLoading]);
 
-  const media = useMemo(
-    () =>
-      resolveProfileMediaDisplay(
-        coverUrl,
-        preview,
-        profileMediaLoaded,
-        defaultCover,
-        coverRevision,
-      ),
-    [coverUrl, preview, profileMediaLoaded, coverRevision],
-  );
+  const coverDisplaySrc =
+    preview ??
+    media.coverLocalUri ??
+    (media.hasCustomCover || media.coverUrl ? media.coverUrl : null);
+
+  const coverPending =
+    !preview &&
+    (media.hasCustomCover || Boolean(media.coverUrl)) &&
+    !coverDisplaySrc &&
+    !media.isCoverReady;
+
+  const showCoverDefault =
+    media.isCoverReady && !media.hasCustomCover && !preview && !media.coverUrl;
 
   const ctx = useMemo(
     () => ({
-      coverUrl,
-      profileMediaLoaded,
-      coverDisplaySrc: media.displaySrc,
-      coverPending: media.pending,
-      showCoverDefault: media.showDefault,
-      coverSrc: media.customSrc,
+      coverUrl: media.coverUrl,
+      profileMediaLoaded: metadataLoaded || media.isCoverReady,
+      coverDisplaySrc: coverDisplaySrc ?? (showCoverDefault ? defaultCover : null),
+      coverPending,
+      showCoverDefault,
+      coverSrc: coverDisplaySrc,
       refresh,
       syncFromProfile,
       setPreview,
     }),
-    [coverUrl, profileMediaLoaded, media, refresh, syncFromProfile, setPreview],
+    [
+      coverDisplaySrc,
+      coverPending,
+      media.coverUrl,
+      media.isCoverReady,
+      metadataLoaded,
+      refresh,
+      setPreview,
+      showCoverDefault,
+      syncFromProfile,
+    ],
   );
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>;

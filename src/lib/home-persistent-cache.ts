@@ -45,7 +45,14 @@ function writeJson(key: string, value: unknown): void {
   }
 }
 
-export function readPersistedHomeLocation(now = Date.now()): PersistedHomeLocation | null {
+/**
+ * 讀取本機最近位置。
+ * allowStale：過期仍回傳（供 Places 先用，背景再刷 GPS），避免首屏空等高精度定位。
+ */
+export function readPersistedHomeLocation(
+  now = Date.now(),
+  options?: { allowStale?: boolean },
+): PersistedHomeLocation | null {
   const row = readJson<PersistedHomeLocation>(HOME_LOCATION_KEY);
   if (!row) {
     console.info("[CACHE_LOCATION_MISS]");
@@ -59,14 +66,23 @@ export function readPersistedHomeLocation(now = Date.now()): PersistedHomeLocati
     console.info("[CACHE_LOCATION_MISS]");
     return null;
   }
-  if (now - row.fetchedAt > HOME_LOCATION_CACHE_TTL_MS) {
-    console.info("[CACHE_LOCATION_MISS]");
-    return null;
+  const ageMs = now - row.fetchedAt;
+  if (ageMs > HOME_LOCATION_CACHE_TTL_MS) {
+    if (!options?.allowStale) {
+      console.info("[CACHE_LOCATION_MISS]");
+      return null;
+    }
+    console.info("[CACHE_LOCATION_STALE_HIT]", {
+      lat: row.lat,
+      lng: row.lng,
+      ageMs,
+    });
+    return row;
   }
   console.info("[CACHE_LOCATION_HIT]", {
     lat: row.lat,
     lng: row.lng,
-    ageMs: now - row.fetchedAt,
+    ageMs,
   });
   return row;
 }

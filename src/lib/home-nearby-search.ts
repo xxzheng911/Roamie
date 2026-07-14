@@ -48,6 +48,7 @@ import type { UserProfileForReason } from "@/lib/build-place-recommendation-reas
 import type { SavedPlace } from "@/lib/places-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { prioritizeWeatherAwareHomeWaves } from "@/lib/ai/weather-place-search";
+import { noteHomeNearbyPlacesSearchCall } from "@/lib/home-nearby-perf";
 
 export type SearchPlacesInput = {
   lat: number;
@@ -152,6 +153,16 @@ const DAY_WAVES: HomeSearchWave[] = [
 const HOME_INITIAL_WAVE_COUNT = 2;
 const HOME_MAX_WAVE_COUNT = 4;
 const HOME_GENERIC_FALLBACK_MAX_TYPES = 2;
+/** 第一批卡片：有幾筆就可先上畫面，不必等全部 waves */
+const HOME_FIRST_BATCH_MIN = 3;
+
+export type HomeNearbyPartialPhase = "first_batch" | "enriched";
+
+export type LoadHomeNearbyPicksOptions = {
+  forceRefresh?: boolean;
+  /** 第一批有效地點就緒時先回報，供漸進式渲染 */
+  onPartialPicks?: (picks: HomeNearbyPick[], phase: HomeNearbyPartialPhase) => void;
+};
 
 function wavesForPeriod(
   period: HomeNearbyPeriod,
@@ -169,10 +180,14 @@ async function fetchHomeNearbyWaves(
     searchPlacesFn: SearchPlacesFn;
   },
   pickOptions: Parameters<typeof selectHomeNearbyPicks>[1],
+  options?: {
+    onFirstBatch?: (places: PlaceResult[]) => void;
+  },
 ): Promise<PlaceResult[]> {
   let apiPlaces: PlaceResult[] = [];
   let waveIndex = 0;
   const maxWaves = Math.min(HOME_MAX_WAVE_COUNT, waves.length);
+  let firstBatchNotified = false;
 
   while (waveIndex < maxWaves) {
     const batchSize = waveIndex === 0 ? HOME_INITIAL_WAVE_COUNT : 2;
@@ -180,17 +195,36 @@ async function fetchHomeNearbyWaves(
     const activeWaves = waves.slice(waveIndex, end);
     waveIndex = end;
 
-    for (const wave of activeWaves) {
-      if (apiPlaces.length >= 40) return apiPlaces;
-      try {
-        const batch = await runHomeSearchWave(wave, ctx);
-        apiPlaces = mergePlacesById(apiPlaces, batch);
-      } catch {
-        /* 單波失敗不阻斷 */
+    // 同批並行，縮短第一批卡片等待時間
+    const settled = await Promise.allSettled(
+      activeWaves.map((wave) => runHomeSearchWave(wave, ctx)),
+    );
+    for (const result of settled) {
+      if (result.status !== "fulfilled") continue;
+      apiPlaces = mergePlacesById(apiPlaces, result.value);
+    }
+
+    if (!firstBatchNotified && apiPlaces.length > 0) {
+      const early = selectHomeNearbyPicks(apiPlaces, {
+        ...pickOptions,
+        minResults: HOME_FIRST_BATCH_MIN,
+        maxResults: HOME_NEARBY_TARGET_COUNT,
+      });
+      if (early.length >= HOME_FIRST_BATCH_MIN) {
+        firstBatchNotified = true;
+        options?.onFirstBatch?.(apiPlaces);
       }
-      if (selectHomeNearbyPicks(apiPlaces, pickOptions).length >= HOME_NEARBY_TARGET_COUNT) {
-        return apiPlaces;
-      }
+    }
+
+    if (selectHomeNearbyPicks(apiPlaces, pickOptions).length >= HOME_NEARBY_TARGET_COUNT) {
+      return apiPlaces;
+    }
+
+    if (
+      firstBatchNotified &&
+      selectHomeNearbyPicks(apiPlaces, pickOptions).length >= HOME_NEARBY_MIN_DISPLAY
+    ) {
+      return apiPlaces;
     }
 
     if (selectHomeNearbyPicks(apiPlaces, pickOptions).length >= HOME_NEARBY_MIN_DISPLAY) {
@@ -253,6 +287,7 @@ async function searchHomePlaces(
   },
   payload: SearchPlacesInput,
 ): Promise<{ places: PlaceResult[]; error: string | null }> {
+  noteHomeNearbyPlacesSearchCall();
   const result = await withSearchTimeout(ctx.searchPlacesFn({ data: payload }));
   return {
     places: Array.isArray(result.places) ? result.places : [],
@@ -451,97 +486,27 @@ function buildHomeNearbyCards(
   });
 }
 
-/** 首頁附近推薦：獨立搜尋／篩選／排序（與探索頁完全分離） */
-export async function loadHomeNearbyPicks(
+function finalizeHomeNearbyPicks(
+  apiPlaces: PlaceResult[],
   ctx: {
     userLocation: { lat: number; lng: number };
     weather: WeatherSummary | null;
     locale: Locale;
     reasonProfile: UserProfileForReason | null;
     saved: SavedPlace[];
-    searchPlacesFn: SearchPlacesFn;
-    locationKey?: string;
-    at?: Date;
-    timeZone?: string;
-  },
-  options?: { forceRefresh?: boolean },
-): Promise<HomeNearbyPick[]> {
-  const at = ctx.at ?? new Date();
-  const timeZone = ctx.timeZone ?? "Asia/Taipei";
-  const hour = localHourInTimeZone(at, timeZone);
-  const period = homeNearbyPeriodFromHour(hour);
-  const cacheKey = homeNearbyLoadKey(
-    ctx.userLocation.lat,
-    ctx.userLocation.lng,
-    period,
-    ctx.locale,
-  );
-
-  if (options?.forceRefresh) {
-    invalidateHomeNearbyLoadKey(cacheKey);
-  } else {
-    const cachedMeta = readHomeNearbyResultsCacheMeta<HomeNearbyPick>(cacheKey);
-    if (cachedMeta && cachedMeta.picks.length > 0) {
-      logHomeNearbyCacheHit(cachedMeta.picks.length, cachedMeta.ageMs);
-      return cachedMeta.picks;
-    }
-  }
-  logHomeNearbyCacheMiss(options?.forceRefresh ? "force_refresh" : "module_in_memory_miss");
-
-  const inflight = getHomeNearbyLoadInFlight<HomeNearbyPick[]>(cacheKey);
-  if (inflight) return inflight;
-
-  const promise = loadHomeNearbyPicksInner(ctx, period, cacheKey, at, timeZone);
-  return registerHomeNearbyLoadInFlight(cacheKey, promise);
-}
-
-async function loadHomeNearbyPicksInner(
-  ctx: {
-    userLocation: { lat: number; lng: number };
-    weather: WeatherSummary | null;
-    locale: Locale;
-    reasonProfile: UserProfileForReason | null;
-    saved: SavedPlace[];
-    searchPlacesFn: SearchPlacesFn;
-    locationKey?: string;
   },
   period: HomeNearbyPeriod,
-  cacheKey: string,
   at: Date,
   timeZone: string,
-): Promise<HomeNearbyPick[]> {
-  const waves = wavesForPeriod(period, ctx.weather);
-  const pickOptions = {
-    origin: ctx.userLocation,
-    minResults: HOME_NEARBY_MIN_DISPLAY,
-    maxResults: HOME_NEARBY_TARGET_COUNT,
-    period,
-    at,
-    timeZone,
-  };
-
-  const flow = beginPlacesFlow("home_cold");
-  try {
-  let apiPlaces = await fetchHomeNearbyWaves(waves, ctx, pickOptions);
-
-  if (apiPlaces.length === 0) {
-    try {
-      apiPlaces = await runHomePopularFallback(ctx);
-    } catch (e) {
-      logHomeNearbyRequestError("popular_fallback_failed", e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  if (apiPlaces.length === 0) {
-    try {
-      apiPlaces = await runHomeGenericTypeFallback(ctx);
-    } catch (e) {
-      logHomeNearbyRequestError("generic_fallback_failed", e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  const rawCount = apiPlaces.length;
-
+  pickOptions: {
+    origin: { lat: number; lng: number };
+    minResults: number;
+    maxResults: number;
+    period: HomeNearbyPeriod;
+    at: Date;
+    timeZone: string;
+  },
+): HomeNearbyPick[] {
   let selected = selectHomeNearbyPicks(apiPlaces, pickOptions).filter((p) =>
     isVerifiedGooglePlaceId(p.id),
   );
@@ -574,7 +539,7 @@ async function loadHomeNearbyPicksInner(
     period,
   });
 
-  const sorted = sortHomeNearbyPlacesWithContext(cards, ctx.userLocation, {
+  return sortHomeNearbyPlacesWithContext(cards, ctx.userLocation, {
     weather: ctx.weather,
     at,
     timeZone,
@@ -584,11 +549,129 @@ async function loadHomeNearbyPicksInner(
       savedPlaces: ctx.saved.map((s) => ({ name: s.name, category: s.category })),
     },
   });
+}
+
+/** 首頁附近推薦：獨立搜尋／篩選／排序（與探索頁共用 repository 快取層） */
+export async function loadHomeNearbyPicks(
+  ctx: {
+    userLocation: { lat: number; lng: number };
+    weather: WeatherSummary | null;
+    locale: Locale;
+    reasonProfile: UserProfileForReason | null;
+    saved: SavedPlace[];
+    searchPlacesFn: SearchPlacesFn;
+    locationKey?: string;
+    at?: Date;
+    timeZone?: string;
+  },
+  options?: LoadHomeNearbyPicksOptions,
+): Promise<HomeNearbyPick[]> {
+  const at = ctx.at ?? new Date();
+  const timeZone = ctx.timeZone ?? "Asia/Taipei";
+  const hour = localHourInTimeZone(at, timeZone);
+  const period = homeNearbyPeriodFromHour(hour);
+  const cacheKey = homeNearbyLoadKey(
+    ctx.userLocation.lat,
+    ctx.userLocation.lng,
+    period,
+    ctx.locale,
+  );
+
+  if (options?.forceRefresh) {
+    invalidateHomeNearbyLoadKey(cacheKey);
+  } else {
+    const cachedMeta = readHomeNearbyResultsCacheMeta<HomeNearbyPick>(cacheKey);
+    if (cachedMeta && cachedMeta.picks.length > 0) {
+      logHomeNearbyCacheHit(cachedMeta.picks.length, cachedMeta.ageMs);
+      options?.onPartialPicks?.(cachedMeta.picks, "first_batch");
+      return cachedMeta.picks;
+    }
+  }
+  logHomeNearbyCacheMiss(options?.forceRefresh ? "force_refresh" : "module_in_memory_miss");
+
+  const inflight = getHomeNearbyLoadInFlight<HomeNearbyPick[]>(cacheKey);
+  if (inflight) return inflight;
+
+  const promise = loadHomeNearbyPicksInner(ctx, period, cacheKey, at, timeZone, options);
+  return registerHomeNearbyLoadInFlight(cacheKey, promise);
+}
+
+async function loadHomeNearbyPicksInner(
+  ctx: {
+    userLocation: { lat: number; lng: number };
+    weather: WeatherSummary | null;
+    locale: Locale;
+    reasonProfile: UserProfileForReason | null;
+    saved: SavedPlace[];
+    searchPlacesFn: SearchPlacesFn;
+    locationKey?: string;
+  },
+  period: HomeNearbyPeriod,
+  cacheKey: string,
+  at: Date,
+  timeZone: string,
+  options?: LoadHomeNearbyPicksOptions,
+): Promise<HomeNearbyPick[]> {
+  const waves = wavesForPeriod(period, ctx.weather);
+  const pickOptions = {
+    origin: ctx.userLocation,
+    minResults: HOME_NEARBY_MIN_DISPLAY,
+    maxResults: HOME_NEARBY_TARGET_COUNT,
+    period,
+    at,
+    timeZone,
+  };
+
+  const flow = beginPlacesFlow("home_cold");
+  try {
+  let partialEmitted = false;
+  const emitPartialFromApiPlaces = (places: PlaceResult[]) => {
+    if (partialEmitted || !options?.onPartialPicks) return;
+    const early = finalizeHomeNearbyPicks(
+      places,
+      ctx,
+      period,
+      at,
+      timeZone,
+      {
+        ...pickOptions,
+        minResults: HOME_FIRST_BATCH_MIN,
+      },
+    );
+    if (early.length < HOME_FIRST_BATCH_MIN) return;
+    partialEmitted = true;
+    options.onPartialPicks(early, "first_batch");
+  };
+
+  let apiPlaces = await fetchHomeNearbyWaves(waves, ctx, pickOptions, {
+    onFirstBatch: emitPartialFromApiPlaces,
+  });
+
+  if (apiPlaces.length === 0) {
+    try {
+      apiPlaces = await runHomePopularFallback(ctx);
+    } catch (e) {
+      logHomeNearbyRequestError("popular_fallback_failed", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  if (apiPlaces.length === 0) {
+    try {
+      apiPlaces = await runHomeGenericTypeFallback(ctx);
+    } catch (e) {
+      logHomeNearbyRequestError("generic_fallback_failed", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const rawCount = apiPlaces.length;
+
+  const sorted = finalizeHomeNearbyPicks(apiPlaces, ctx, period, at, timeZone, pickOptions);
 
   writeHomeNearbyResultsCache(cacheKey, sorted);
   logHomeNearbyRequestSuccess(rawCount, sorted.length);
 
   if (sorted.length > 0) {
+    options?.onPartialPicks?.(sorted, "enriched");
     logHomeNearbyDataReady({
       count: sorted.length,
       lat: ctx.userLocation.lat,

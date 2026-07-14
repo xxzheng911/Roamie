@@ -60,6 +60,46 @@ export async function applyTripCoverUpload({
   invalidateLoadedImageCache(previousUrl);
 
   const revision = Date.now();
+  try {
+    const { ensureTripCoverCached } = await import("@/lib/user-media/user-media-store");
+    const { requireAuthenticatedUser } = await import("@/lib/auth-session");
+    const { id: userId } = await requireAuthenticatedUser();
+    // Persist display-sized blob so trip cards reuse without CDN wait.
+    const { downscaleImageBlob, displayMaxEdgeForKind } = await import(
+      "@/lib/user-media/user-media-resize"
+    );
+    const {
+      buildUserMediaCacheKey,
+      writeUserMediaDisk,
+      stableMediaUrl,
+    } = await import("@/lib/user-media/user-media-disk");
+    const display = await downscaleImageBlob(blob, displayMaxEdgeForKind("trip-cover"));
+    const version = String(revision);
+    const cacheKey = buildUserMediaCacheKey({
+      userId,
+      kind: "trip-cover",
+      pathOrId: tripId,
+      version,
+    });
+    await writeUserMediaDisk({
+      cacheKey,
+      userId,
+      kind: "trip-cover",
+      remoteUrl: stableMediaUrl(upload.url) ?? upload.url,
+      version,
+      mimeType: display.type || "image/jpeg",
+      blob: display,
+    });
+    void ensureTripCoverCached({
+      userId,
+      tripId,
+      remoteUrl: upload.url,
+      version,
+    });
+  } catch {
+    /* non-fatal — remote URL still works */
+  }
+
   const optimisticUpdatedAt = new Date(revision).toISOString();
   const coverPatch = buildCustomCoverPatch(upload.url);
   const optimisticStored: StoredItinerary = {

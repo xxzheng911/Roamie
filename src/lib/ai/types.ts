@@ -25,6 +25,10 @@ export const RoamieRecommendationItemSchema = z.object({
   todayHoursLabel: z.string().optional(),
   closingSoonNote: z.string().optional(),
   nextOpenHint: z.string().optional(),
+  /** 1-based combination id this place was sourced from */
+  sourceCombinationId: z.number().optional(),
+  matchedCombinationIds: z.array(z.number()).optional(),
+  matchedSelectedCombinationIds: z.array(z.number()).optional(),
 });
 
 export const RoamieItineraryItemSchema = z.object({
@@ -44,6 +48,10 @@ export const RoamieItineraryItemSchema = z.object({
   /** 0-based order within the day (display / persistence) */
   sortIndex: z.number().optional(),
   order: z.number().optional(),
+  /** Combination provenance (multi-select itinerary integrity) */
+  sourceCombinationId: z.number().optional(),
+  matchedCombinationIds: z.array(z.number()).optional(),
+  matchedSelectedCombinationIds: z.array(z.number()).optional(),
 });
 
 export const RoamieResponseSchema = z.object({
@@ -128,6 +136,12 @@ export function normalizeItineraryItem(
     googlePlaceId: raw.googlePlaceId,
     placeType: raw.placeType,
     notes: raw.notes,
+    dayIndex: raw.dayIndex,
+    sortIndex: raw.sortIndex,
+    order: raw.order,
+    sourceCombinationId: raw.sourceCombinationId,
+    matchedCombinationIds: raw.matchedCombinationIds,
+    matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
   };
 }
 
@@ -174,6 +188,9 @@ export function normalizeRecommendationItem(
     todayHoursLabel: raw.todayHoursLabel,
     closingSoonNote: raw.closingSoonNote,
     nextOpenHint: raw.nextOpenHint,
+    sourceCombinationId: raw.sourceCombinationId,
+    matchedCombinationIds: raw.matchedCombinationIds,
+    matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
   };
 }
 

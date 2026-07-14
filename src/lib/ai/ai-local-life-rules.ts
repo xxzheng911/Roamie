@@ -164,10 +164,21 @@ export function isLocalLifeMealCandidate(place: PlaceResult): boolean {
 export function isLocalLifePlanningCandidate(place: PlaceResult): boolean {
   if (isGeocodeEmptyPlace(place)) return false;
   if (isLocalLifeExcludedPlace(place)) return false;
-  if (isLocalLifeDistrictCandidate(place) || isLocalLifeMealCandidate(place)) return true;
 
-  const blob = placeBlob(place);
+  // Weighted ranking handles priority; do not hard-reject general restaurants or attractions.
   const category = classifyTripPlaceCategory(place);
+  const primary = (place.primaryType ?? "").toLowerCase();
+  const types = (place.types ?? []).join(" ").toLowerCase();
+  const typeBlob = `${primary} ${types}`;
+
+  if (
+    /restaurant|food|cafe|coffee_shop|bakery|bar|night_club|tourist_attraction|shopping_mall|market|museum|art_gallery|park|point_of_interest|neighborhood|plaza|cultural|landmark/.test(
+      typeBlob,
+    )
+  ) {
+    return !isLargeMallPlace(place);
+  }
+
   if (
     category === "popular_attraction" ||
     category === "city_landmark" ||
@@ -178,23 +189,37 @@ export function isLocalLifePlanningCandidate(place: PlaceResult): boolean {
     category === "alley" ||
     category === "local_food" ||
     category === "night_market" ||
-    category === "coffee"
+    category === "coffee" ||
+    category === "park"
   ) {
     return true;
   }
 
-  const primary = (place.primaryType ?? "").toLowerCase();
-  const types = (place.types ?? []).join(" ").toLowerCase();
-  const typeBlob = `${primary} ${types}`;
-  if (
-    /tourist_attraction|shopping_mall|market|restaurant|food|cafe|coffee_shop|bar|museum|art_gallery|park|point_of_interest/.test(
-      typeBlob,
-    )
-  ) {
-    return !isLargeMallPlace(place);
-  }
+  return isLocalLifeDistrictCandidate(place) || isLocalLifeMealCandidate(place);
+}
 
-  return LOCAL_LIFE_POSITIVE_RE.test(blob);
+/** Higher score = stronger local-life fit; used for sorting, not exclusion. */
+export function scoreLocalLifeCandidate(place: PlaceResult): number {
+  if (!isLocalLifePlanningCandidate(place)) return -1;
+
+  let score = 10;
+  const blob = placeBlob(place);
+  const category = classifyTripPlaceCategory(place);
+
+  if (isLocalLifeDistrictCandidate(place)) score += 80;
+  if (isLocalLifeMealCandidate(place)) score += 40;
+  if (LOCAL_LIFE_POSITIVE_RE.test(blob)) score += 50;
+
+  const typeBlob = `${place.primaryType ?? ""} ${(place.types ?? []).join(" ")}`.toLowerCase();
+  if (/market|shopping|restaurant|breakfast|cafe|bakery|night_market|neighborhood|pedestrian|plaza/.test(typeBlob)) {
+    score += 30;
+  }
+  if (category === "shopping_district" || category === "night_market" || category === "local_food") {
+    score += 25;
+  }
+  if ((place.rating ?? 0) >= 4.0) score += 10;
+
+  return score;
 }
 
 export type LocalLifeCandidatePools = {
@@ -208,12 +233,15 @@ export type LocalLifeCandidatePools = {
 };
 
 export function buildLocalLifeCandidatePools(places: PlaceResult[]): LocalLifeCandidatePools {
+  const ranked = [...places]
+    .filter((p) => isLocalLifePlanningCandidate(p))
+    .sort((a, b) => scoreLocalLifeCandidate(b) - scoreLocalLifeCandidate(a));
+
   const all: PlaceResult[] = [];
   const seen = new Set<string>();
-  for (const place of places) {
+  for (const place of ranked) {
     const id = place.id ?? place.name;
     if (!id || seen.has(id)) continue;
-    if (!isLocalLifePlanningCandidate(place)) continue;
     seen.add(id);
     all.push(place);
   }

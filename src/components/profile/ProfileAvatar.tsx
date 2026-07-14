@@ -1,9 +1,12 @@
+import { useLayoutEffect, useRef } from "react";
 import defaultAvatar from "@/assets/roamie-default-avatar.png";
 import { useAvatar } from "@/hooks/use-avatar";
+import { useUserMediaStore } from "@/hooks/use-user-media-store";
 import {
   avatarRevisionFromUpdatedAt,
   resolveAvatarDisplayUrl,
 } from "@/lib/profile-persisted-cache";
+import { logUserMedia } from "@/lib/user-media/user-media-log";
 import { cn } from "@/lib/utils";
 
 type CommonProps = {
@@ -36,18 +39,19 @@ function AvatarImageNode({
   priority,
   className,
   imgClassName,
-  cacheKeySuffix,
+  /** Stable identity — prefer cache key so signed/?v= URL changes don't remount */
+  stableKey,
 }: {
   src: string;
   alt: string;
   priority: boolean;
   className?: string;
   imgClassName?: string;
-  cacheKeySuffix?: string;
+  stableKey?: string;
 }) {
   return (
     <img
-      key={cacheKeySuffix ? `${src}-${cacheKeySuffix}` : src}
+      key={stableKey ?? "avatar"}
       src={src}
       alt={alt}
       loading={priority ? "eager" : "lazy"}
@@ -59,8 +63,68 @@ function AvatarImageNode({
   );
 }
 
+function NeutralAvatarPlaceholder({
+  className,
+  alt,
+}: {
+  className?: string;
+  alt?: string;
+}) {
+  return (
+    <div
+      className={cn("h-full w-full bg-secondary", className)}
+      aria-busy="true"
+      aria-hidden={!alt}
+    />
+  );
+}
+
 function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false }: SelfProps) {
   const { avatarDisplaySrc, avatarPending, showAvatarDefault } = useAvatar();
+  const media = useUserMediaStore();
+  const stableKey = media.avatarCacheKey ?? "self-avatar";
+  const loggedFirstRender = useRef(false);
+
+  useLayoutEffect(() => {
+    if (loggedFirstRender.current) return;
+    loggedFirstRender.current = true;
+    const elapsedMs =
+      media.hydratedAt != null ? Math.round(performance.now() - media.hydratedAt) : null;
+    let source: "memory" | "disk" | "neutral" | "default" | "remote";
+    if (media.avatarLocalUri && avatarDisplaySrc === media.avatarLocalUri) {
+      source = "disk";
+    } else if (avatarDisplaySrc && media.avatarUrl && avatarDisplaySrc === media.avatarUrl) {
+      source = "remote";
+    } else if (showAvatarDefault) {
+      source = "default";
+    } else {
+      source = "neutral";
+    }
+    logUserMedia("HOME_AVATAR_FIRST_RENDER", {
+      source,
+      elapsedMs,
+      avatarStatus: media.avatarStatus,
+      hasCustomAvatar: media.hasCustomAvatar,
+    });
+    if (source === "default" && media.avatarStatus !== "none") {
+      logUserMedia("HOME_AVATAR_DEFAULT_BLOCKED", {
+        reason: "custom_avatar_status_unknown",
+        avatarStatus: media.avatarStatus,
+      });
+    } else if (!avatarDisplaySrc && media.avatarStatus === "unknown") {
+      logUserMedia("HOME_AVATAR_DEFAULT_BLOCKED", {
+        reason: "custom_avatar_status_unknown",
+      });
+    }
+  }, [
+    avatarDisplaySrc,
+    media.avatarLocalUri,
+    media.avatarStatus,
+    media.avatarUrl,
+    media.hasCustomAvatar,
+    media.hydratedAt,
+    showAvatarDefault,
+  ]);
 
   if (avatarDisplaySrc) {
     return (
@@ -70,11 +134,22 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
         priority={priority}
         className={className}
         imgClassName={imgClassName}
+        stableKey={stableKey}
       />
     );
   }
 
-  if (showAvatarDefault && !avatarPending) {
+  // unknown / custom without bytes → neutral placeholder (never default).
+  if (
+    avatarPending ||
+    media.avatarStatus === "unknown" ||
+    media.avatarStatus === "custom" ||
+    (media.hasCustomAvatar !== false && !showAvatarDefault)
+  ) {
+    return <NeutralAvatarPlaceholder className={className} alt={alt} />;
+  }
+
+  if (showAvatarDefault) {
     return (
       <AvatarImageNode
         src={defaultAvatar}
@@ -82,29 +157,12 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
         priority={priority}
         className={className}
         imgClassName={imgClassName}
+        stableKey="default-avatar"
       />
     );
   }
 
-  if (avatarPending) {
-    return (
-      <div
-        className={cn("h-full w-full bg-secondary", className)}
-        aria-busy="true"
-        aria-hidden={!alt}
-      />
-    );
-  }
-
-  return (
-    <AvatarImageNode
-      src={defaultAvatar}
-      alt={alt}
-      priority={priority}
-      className={className}
-      imgClassName={imgClassName}
-    />
-  );
+  return <NeutralAvatarPlaceholder className={className} alt={alt} />;
 }
 
 function ProfileAvatarExternal({
@@ -130,7 +188,7 @@ function ProfileAvatarExternal({
         priority={priority}
         className={className}
         imgClassName={imgClassName}
-        cacheKeySuffix={String(avatarRevisionFromUpdatedAt(avatarUpdatedAt))}
+        stableKey={`ext-${String(avatarRevisionFromUpdatedAt(avatarUpdatedAt))}`}
       />
     );
   }
@@ -162,24 +220,11 @@ function ProfileAvatarExternal({
   }
 
   if (pending) {
-    return (
-      <div
-        className={cn("h-full w-full bg-secondary", className)}
-        aria-busy="true"
-        aria-hidden={!alt}
-      />
-    );
+    return <NeutralAvatarPlaceholder className={className} alt={alt} />;
   }
 
-  return (
-    <AvatarImageNode
-      src={defaultAvatar}
-      alt={alt}
-      priority={priority}
-      className={className}
-      imgClassName={imgClassName}
-    />
-  );
+  // External without URL and without showDefault → neutral, not bundled default flash.
+  return <NeutralAvatarPlaceholder className={className} alt={alt} />;
 }
 
 export function ProfileAvatar(props: ProfileAvatarProps) {

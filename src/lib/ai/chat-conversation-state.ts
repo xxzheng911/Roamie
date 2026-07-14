@@ -4,6 +4,7 @@ import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { PendingQuestion, PendingQuestionType } from "@/lib/ai/destination-pending-question";
 import type { TripInterest } from "@/lib/ai/trip-preference";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { resolveInferredTripDays } from "@/lib/ai/ai-trip-style";
 
 /** What the system expects the user to answer next. */
 export type ExpectedAnswerType =
@@ -39,6 +40,7 @@ const PENDING_TYPE_TO_EXPECTED: Record<PendingQuestionType, ExpectedAnswerType> 
   region_choice: "region",
   city_style_choice: "travel_style",
   destination_style_choice: "travel_style",
+  combination_choice: "preference",
   activity_choice: "planning_action",
   itinerary_next_step: "itinerary_action",
 };
@@ -49,6 +51,7 @@ const PENDING_TYPE_TO_CONVERSATION_STATE: Partial<Record<PendingQuestionType, Co
   ask_preference: "awaiting_preference",
   preference_choice: "awaiting_preference",
   ask_trip_style: "awaiting_preference",
+  combination_choice: "awaiting_preference",
   activity_choice: "awaiting_planning_action",
   itinerary_next_step: "awaiting_itinerary_action",
 };
@@ -160,8 +163,12 @@ export function planningFactSnapshot(ctx: CanonicalTravelContext): Record<string
   return facts;
 }
 
-export function shouldSkipAskingDays(ctx: CanonicalTravelContext): boolean {
-  return Boolean(ctx.days);
+export function shouldSkipAskingDays(
+  ctx: CanonicalTravelContext,
+  session?: ChatPlanningSession,
+  userText?: string,
+): boolean {
+  return resolveInferredTripDays(ctx, session, userText) != null;
 }
 
 export function shouldSkipAskingPreference(ctx: CanonicalTravelContext): boolean {
@@ -188,7 +195,7 @@ export function recoverPendingFromAssistantReply(
     });
   }
 
-  if (reply.includes("你這趟大概幾天") && ctx.destination && !ctx.days) {
+  if (reply.includes("你這趟大概幾天") && ctx.destination && !resolveInferredTripDays(ctx)) {
     return enrichPendingQuestion({
       type: "ask_days",
       options: [],

@@ -47,16 +47,31 @@ import { applyDestinationPendingSelection } from "@/lib/ai/destination-pending-q
 import { prepareSessionForUserTurn, logConversationStateUpdate } from "@/lib/ai/chat-conversation-state";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
+import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
+import { enrichTripDatesInContext } from "@/lib/ai/ai-trip-style";
+import {
+  resolveDestinationScopeFields,
+  logDestinationCitySelected,
+  logDestinationSearchScopeUpdated,
+} from "@/lib/ai/destination-scope";
 
 /** Canonical travel context — merged on every user turn */
 export type CanonicalTravelContext = {
   destination?: string;
   /** 國家層級目的地（城市選定後保留） */
   destinationCountry?: string;
+  /** Entity resolver type: country / city / region / … */
+  destinationType?: import("@/lib/ai/destination-entity").DestinationEntityType;
+  /** City when destination is city-level (or selected under a country) */
+  destinationCity?: string;
+  /** Region / island / state when applicable */
+  destinationRegion?: string;
   currentLocation?: string;
   travelMonth?: string;
   startDate?: string;
   endDate?: string;
+  /** AI-suggested start (e.g. mid-month) when user has not locked exact dates yet */
+  suggestedStartDate?: string;
   days?: number;
   mood?: string;
   companion?: string;
@@ -73,6 +88,53 @@ export type CanonicalTravelContext = {
   destinationCities?: string[];
   /** 使用者選定的行程風格／路線組合 */
   selectedTripStyle?: string;
+  /** 1-based combination ids locked for this generation (e.g. [1,2,4]) */
+  selectedCombinationIds?: number[];
+  /** Place names allowed from selected combinations */
+  selectedCombinationPlaceNames?: string[];
+  /** Places exclusive to unselected combinations — must never enter the itinerary */
+  excludedCombinationPlaceNames?: string[];
+  /** How combination selection was resolved for this generation */
+  selectionSource?: "user_indexed" | "user_title" | "user_all_or_auto" | "all_selected_by_user";
+  /**
+   * Structured combination options shown to the user (not just assistant message text).
+   * Generator reads these instead of re-parsing chat bubbles.
+   */
+  offeredCombinations?: Array<{
+    id: number;
+    title: string;
+    places: Array<{
+      name: string;
+      searchQuery: string;
+      sourceCombinationId: number;
+      googlePlaceId?: string;
+      latitude?: number;
+      longitude?: number;
+      resolutionStatus: "named" | "resolved" | "unresolved";
+    }>;
+  }>;
+  /** Stable id for one Places mapping / itinerary generation attempt */
+  generationRequestId?: string;
+  /** Last itinerary Places failure root cause (tech, not user copy) */
+  lastItineraryFailure?: {
+    code: string;
+    stage: string;
+    attemptedCandidates?: number;
+    resolvedCandidates?: number;
+    retryCount?: number;
+    searchRetryCount?: number;
+    candidateRegenerationCount?: number;
+    detailRetryCount?: number;
+    fallbackCandidateCount?: number;
+    generationRequestId?: string;
+  };
+  /**
+   * Places successfully mapped in a previous failed generation.
+   * Regenerate reuses these instead of re-querying all candidates.
+   */
+  partiallyResolvedPlaces?: import("@/lib/chat-session").ChatPlaceItem[];
+  /** Failed combination ids from last mapping attempt */  
+  failedCombinationIds?: number[];
   /** 排除菜系／類型關鍵字（含同義詞） */
   excludedCategories?: string[];
   /** low = 省預算／平價／免費偏好 */
@@ -250,18 +312,20 @@ function parseSetting(text: string, mood?: string): string | undefined {
 
 function parseTravelDateFromText(text: string): string | undefined {
   const now = new Date();
+  const toLocalIso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   if (/明天|明日/.test(text)) {
     const d = new Date(now);
     d.setDate(d.getDate() + 1);
-    return d.toISOString().slice(0, 10);
+    return toLocalIso(d);
   }
   if (/後天|后天/.test(text)) {
     const d = new Date(now);
     d.setDate(d.getDate() + 2);
-    return d.toISOString().slice(0, 10);
+    return toLocalIso(d);
   }
   if (/今天|今日/.test(text)) {
-    return now.toISOString().slice(0, 10);
+    return toLocalIso(now);
   }
   const iso = text.match(/\d{4}-\d{2}-\d{2}/);
   if (iso) return iso[0];
@@ -306,18 +370,39 @@ function parseDestinationFromTurn(
 function mergeDestinationFields(
   prev: CanonicalTravelContext,
   newlyParsed?: string,
-): Pick<CanonicalTravelContext, "destination" | "destinationCountry"> {
+): Pick<
+  CanonicalTravelContext,
+  | "destination"
+  | "destinationCountry"
+  | "destinationType"
+  | "destinationCity"
+  | "destinationRegion"
+> {
   if (!newlyParsed) {
     return {
       destination: prev.destination,
       destinationCountry: prev.destinationCountry,
+      destinationType: prev.destinationType,
+      destinationCity: prev.destinationCity,
+      destinationRegion: prev.destinationRegion,
     };
   }
 
   const label = normalizeDestinationLabel(newlyParsed);
+  const prevWasCountry =
+    Boolean(prev.destination) &&
+    isKnownCountryLabel(prev.destination!) &&
+    !isKnownTouristCityLabel(prev.destination!);
 
   if (isKnownCountryLabel(label) && !isKnownTouristCityLabel(label)) {
-    return { destination: label, destinationCountry: label };
+    const scope = resolveDestinationScopeFields(label);
+    return {
+      destination: scope.destinationName,
+      destinationCountry: scope.destinationCountry,
+      destinationType: scope.destinationType,
+      destinationCity: undefined,
+      destinationRegion: undefined,
+    };
   }
 
   if (isKnownTouristCityLabel(label)) {
@@ -325,15 +410,31 @@ function mergeDestinationFields(
       prev.destination && isKnownCountryLabel(prev.destination)
         ? normalizeDestinationLabel(prev.destination)
         : prev.destinationCountry;
+    const scope = resolveDestinationScopeFields(label, country);
+    if (prevWasCountry || (country && country !== label)) {
+      logDestinationCitySelected({ country: scope.destinationCountry ?? country, city: label });
+      logDestinationSearchScopeUpdated({
+        from: prevWasCountry ? "country" : (prev.destinationType ?? "unknown"),
+        to: scope.destinationType,
+        city: label,
+      });
+    }
     return {
-      destination: label,
-      destinationCountry: country,
+      destination: scope.destinationName,
+      destinationCountry: scope.destinationCountry ?? country,
+      destinationType: scope.destinationType,
+      destinationCity: scope.destinationCity,
+      destinationRegion: scope.destinationRegion,
     };
   }
 
+  const scope = resolveDestinationScopeFields(label, prev.destinationCountry);
   return {
-    destination: label,
-    destinationCountry: prev.destinationCountry,
+    destination: scope.destinationName,
+    destinationCountry: scope.destinationCountry ?? prev.destinationCountry,
+    destinationType: scope.destinationType,
+    destinationCity: scope.destinationCity,
+    destinationRegion: scope.destinationRegion,
   };
 }
 
@@ -410,13 +511,18 @@ export function parseTravelContextFromText(
     : {};
 
   const newlyParsedDest = parseDestinationFromTurn(t, skipDestParse);
+  const dateRange = parseTravelDateRangeFromText(t);
 
   const base: Partial<CanonicalTravelContext> = {
     currentLocation: session.location?.city,
     travelMonth: parseMonth(t),
-    startDate: parseTravelDateFromText(t) ?? session.tripStartDate ?? session.travelDate,
-    endDate: session.tripEndDate,
-    days: parseDays(t) ?? session.tripDays,
+    startDate:
+      dateRange.startDate ??
+      parseTravelDateFromText(t) ??
+      session.tripStartDate ??
+      session.travelDate,
+    endDate: dateRange.endDate ?? session.tripEndDate,
+    days: dateRange.days ?? parseDays(t) ?? session.tripDays,
     mood: preset?.mood ?? moodHint ?? parseVibe(t),
     companion: parseCompanion(t) ?? session.discovery?.companionship,
     interests: parseInterests(t, moodHint),
@@ -429,6 +535,9 @@ export function parseTravelContextFromText(
     setting: parseSetting(t, moodHint) ?? session.discovery?.setting,
     ...parseTravelConstraints(t),
     ...budgetRefinement,
+    ...(dateRange.days && dateRange.startDate && dateRange.endDate
+      ? { planningDaysConfirmed: true }
+      : {}),
   };
 
   if (newlyParsedDest) {
@@ -517,7 +626,7 @@ export function mergeTravelContext(
     const explicitPendingTransition =
       Boolean(parseItineraryPlanModeIntent(userText)) || isCreateItineraryIntent(userText);
 
-    const currentIntent =
+    const currentIntentRaw =
       hasPendingState && !explicitPendingTransition
         ? prev.lastIntent === "create_itinerary"
           ? "create_itinerary"
@@ -525,8 +634,21 @@ export function mergeTravelContext(
             ? "best_travel_time"
             : prev.lastIntent === "place_recommendation"
               ? "place_recommendation"
-              : "general_chat"
+              : prev.lastIntent === "trip_planning"
+                ? "trip_planning"
+                : "general_chat"
         : resolveChatContextIntent(userText, prev.lastIntent ?? prev.tripPurpose);
+    // Structured travel data wins over a stale general_chat classifier result.
+    const currentIntent =
+      currentIntentRaw === "general_chat" &&
+      (Boolean(prev.destination) ||
+        /要去|想去|旅行|旅遊|旅游|[\u4e00-\u9fff]{2,8}/.test(userText)) &&
+      (Boolean(prev.days) ||
+        Boolean(prev.startDate) ||
+        /\d{1,2}\s*[\/\-月]\s*\d{1,2}/.test(userText) ||
+        /(?:\d+|[一二三四五六七八九十兩两]+)\s*天/.test(userText))
+        ? "trip_planning"
+        : currentIntentRaw;
     logChatIntentCurrent(currentIntent);
 
     const pendingSelection = applyDestinationPendingSelection(userText, prepared);
@@ -652,6 +774,24 @@ export function mergeTravelContext(
       destinationCities: pendingSelection.contextPatch.destinationCities ?? prev.destinationCities,
       selectedTripStyle:
         pendingSelection.contextPatch.selectedTripStyle ?? prev.selectedTripStyle,
+      selectedCombinationIds:
+        pendingSelection.contextPatch.selectedCombinationIds ?? prev.selectedCombinationIds,
+      selectedCombinationPlaceNames:
+        pendingSelection.contextPatch.selectedCombinationPlaceNames ??
+        prev.selectedCombinationPlaceNames,
+      excludedCombinationPlaceNames:
+        pendingSelection.contextPatch.excludedCombinationPlaceNames ??
+        prev.excludedCombinationPlaceNames,
+      selectionSource:
+        pendingSelection.contextPatch.selectionSource ?? prev.selectionSource,
+      generationRequestId:
+        pendingSelection.contextPatch.generationRequestId ?? prev.generationRequestId,
+      lastItineraryFailure:
+        pendingSelection.contextPatch.lastItineraryFailure ?? prev.lastItineraryFailure,
+      partiallyResolvedPlaces:
+        pendingSelection.contextPatch.partiallyResolvedPlaces ?? prev.partiallyResolvedPlaces,
+      failedCombinationIds:
+        pendingSelection.contextPatch.failedCombinationIds ?? prev.failedCombinationIds,
       selectedInterests:
         pendingSelection.contextPatch.selectedInterests ?? prev.selectedInterests,
       mustVisitGenerated:
@@ -684,41 +824,51 @@ export function mergeTravelContext(
       if (!discovery.companionship) discovery.companionship = "情侶";
     }
 
+    const datePatch = enrichTripDatesInContext(userText, merged, workingSession);
+    const mergedWithDates: CanonicalTravelContext = {
+      ...merged,
+      ...datePatch,
+    };
+
     const nextSession: ChatPlanningSession = {
       ...workingSession,
-      travelContext: merged,
+      travelContext: mergedWithDates,
       discovery,
-      mood: merged.mood ?? workingSession.mood,
-      tripDays: merged.days ?? workingSession.tripDays,
-      travelDate: merged.startDate ?? workingSession.travelDate,
-      tripStartDate: merged.startDate ?? workingSession.tripStartDate,
-      tripEndDate: merged.endDate ?? workingSession.tripEndDate,
+      mood: mergedWithDates.mood ?? workingSession.mood,
+      tripDays: mergedWithDates.days ?? workingSession.tripDays,
+      travelDate: mergedWithDates.startDate ?? workingSession.travelDate,
+      tripStartDate: mergedWithDates.startDate ?? workingSession.tripStartDate,
+      tripEndDate: mergedWithDates.endDate ?? workingSession.tripEndDate,
       transportation: merged.transportMode ?? workingSession.transportation,
       budget: merged.budgetLevel ?? workingSession.budget,
       preferredArea: skipDestParse
         ? workingSession.preferredArea
-        : merged.destination ?? workingSession.preferredArea,
+        : mergedWithDates.destination ?? workingSession.preferredArea,
     };
 
     logChatContextMerge({
-      destination: merged.destination,
-      tripDays: merged.days,
-      travelDate: merged.startDate ?? merged.travelMonth,
-      preferences: merged.interests,
-      tripPurpose: merged.tripPurpose,
-      lastIntent: merged.lastIntent,
+      destination: mergedWithDates.destination,
+      tripDays: mergedWithDates.days,
+      startDate: mergedWithDates.startDate,
+      endDate: mergedWithDates.endDate,
+      travelDate: mergedWithDates.startDate ?? mergedWithDates.travelMonth,
+      preferences: mergedWithDates.interests,
+      tripPurpose: mergedWithDates.tripPurpose,
+      lastIntent: mergedWithDates.lastIntent,
     });
     logChatContextResolved({
-      destination: merged.destination,
-      tripDays: merged.days,
-      travelDate: merged.startDate ?? merged.travelMonth,
-      preferences: merged.interests,
-      lastIntent: merged.lastIntent,
-      tripPurpose: merged.tripPurpose,
+      destination: mergedWithDates.destination,
+      tripDays: mergedWithDates.days,
+      startDate: mergedWithDates.startDate,
+      endDate: mergedWithDates.endDate,
+      travelDate: mergedWithDates.startDate ?? mergedWithDates.travelMonth,
+      preferences: mergedWithDates.interests,
+      lastIntent: mergedWithDates.lastIntent,
+      tripPurpose: mergedWithDates.tripPurpose,
     });
 
-    devVerboseInfo("[AI_CONTEXT] updated", logTravelContext(merged));
-    return { context: merged, session: nextSession };
+    devVerboseInfo("[AI_CONTEXT] updated", logTravelContext(mergedWithDates));
+    return { context: mergedWithDates, session: nextSession };
   } catch (e) {
     console.warn("[AI_CONTEXT] mergeTravelContext failed", e);
     return {

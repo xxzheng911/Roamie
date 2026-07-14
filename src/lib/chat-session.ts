@@ -462,7 +462,14 @@ export function mapPlaceResultToChatItem(
   const reason = buildPlaceRecommendationReason(
     p,
     ctx.userProfile ?? null,
-    ctx.weather,
+    // Incomplete weather objects (e.g. far-future trips) must not crash reason builders.
+    ctx.weather
+      ? {
+          ...ctx.weather,
+          condition:
+            typeof ctx.weather.condition === "string" ? ctx.weather.condition : "",
+        }
+      : null,
     ctx.currentTime,
     {
       mood: ctx.mood,

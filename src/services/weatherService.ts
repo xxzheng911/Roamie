@@ -412,8 +412,7 @@ export async function getWeatherByLatLng(
 export const getCurrentWeather = getWeatherByLatLng;
 
 export function normalizeWeather(weather: WeatherSummary | null | undefined): WeatherSummary {
-  if (weather) return weather;
-  return {
+  const fallback: WeatherSummary = {
     city: "目的地",
     tempC: null,
     feelsLikeC: null,
@@ -432,6 +431,23 @@ export function normalizeWeather(weather: WeatherSummary | null | undefined): We
     source: "unavailable",
     fetchedAt: new Date().toISOString(),
     available: false,
+  };
+  if (!weather) return fallback;
+  // Future / incomplete forecasts may omit condition — never leave callers with undefined.
+  return {
+    ...fallback,
+    ...weather,
+    city: typeof weather.city === "string" && weather.city.trim() ? weather.city : fallback.city,
+    condition:
+      typeof weather.condition === "string" ? weather.condition : fallback.condition,
+    iconType: typeof weather.iconType === "string" ? weather.iconType : fallback.iconType,
+    recommendationText:
+      typeof weather.recommendationText === "string" && weather.recommendationText.trim()
+        ? weather.recommendationText
+        : fallback.recommendationText,
+    source: weather.source ?? fallback.source,
+    fetchedAt: weather.fetchedAt ?? fallback.fetchedAt,
+    available: weather.available === true,
   };
 }
 

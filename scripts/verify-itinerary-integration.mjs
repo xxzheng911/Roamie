@@ -29,6 +29,7 @@ import {
   isRealGooglePlanningPlace,
 } from "../src/lib/ai/planning-real-place.ts";
 import { validateItinerary } from "../src/lib/ai/ai-day-plan-slot-rules.ts";
+import { normalizeGooglePlaces } from "../src/lib/ai/normalize-google-place.ts";
 import {
   assertAllowedLabels,
   assertNoPlaceholderNames,
@@ -98,7 +99,7 @@ for (const city of INTEGRATION_CITIES) {
   for (const { key: style, label: styleLabel, option } of STYLE_OPTIONS) {
     const testId = `${city.name} 4天 選項${option} ${styleLabel}`;
     try {
-      const pool = buildRealCityPool(city, DAYS);
+      const pool = normalizeGooglePlaces(buildRealCityPool(city, DAYS));
       assert.equal(filterRealPlanningPlaces(pool).length, pool.length, `${testId}: non-ChIJ in pool`);
 
       const ranked = rankPlacesForTripPlanning({

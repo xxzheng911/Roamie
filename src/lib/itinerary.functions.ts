@@ -37,6 +37,9 @@ const PlaceSchema = z
     placeName: z.string().optional(),
     googlePlaceId: z.string().optional(),
     reasonSource: z.enum(["template", "ai"]).optional(),
+    sourceCombinationId: z.number().optional(),
+    matchedCombinationIds: z.array(z.number()).optional(),
+    matchedSelectedCombinationIds: z.array(z.number()).optional(),
   })
   .transform((raw) => ({
     name: raw.name,
@@ -51,6 +54,9 @@ const PlaceSchema = z
     placeName: raw.placeName ?? raw.name,
     googlePlaceId: raw.googlePlaceId,
     reasonSource: raw.reasonSource ?? "template",
+    sourceCombinationId: raw.sourceCombinationId,
+    matchedCombinationIds: raw.matchedCombinationIds,
+    matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
   }));
 
 const InputSchema = z.object({
@@ -67,6 +73,7 @@ const InputSchema = z.object({
   travelers: z.number().int().min(1).max(20).optional(),
   transport: z.string().max(120).optional().default(""),
   selectedPlaces: z.array(PlaceSchema).max(20).optional().default([]),
+  selectedCombinationIds: z.array(z.number().int().positive()).max(10).optional().default([]),
   preferences: z.record(z.unknown()).optional(),
   location: z.object({ lat: z.number(), lng: z.number(), city: z.string().optional() }).optional(),
   weather: z.record(z.unknown()).nullable().optional(),
@@ -159,8 +166,11 @@ function buildItineraryFromSelectedPlaces(
   days: number,
   startDate: string,
   destination?: string,
+  selectedCombinationIds?: number[],
 ): RoamieItineraryItem[] {
-  return buildFallbackItineraryFromPlaces(selectedPlaces, days, startDate, destination);
+  return buildFallbackItineraryFromPlaces(selectedPlaces, days, startDate, destination, {
+    selectedCombinationIds,
+  });
 }
 
 function buildFallbackTripPayload(
@@ -298,6 +308,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         data.days,
         startDate,
         data.destination,
+        data.selectedCombinationIds,
       );
       ai = buildFallbackTripPayload(data, builtItems, selectedPlaces);
     }

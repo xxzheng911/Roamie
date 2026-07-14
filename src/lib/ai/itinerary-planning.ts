@@ -9,7 +9,13 @@ import {
   type TripInterest,
 } from "@/lib/ai/trip-preference";
 
-export type ConversationState = "discover" | "ready_for_itinerary" | "itinerary_draft";
+export type ConversationState =
+  | "discover"
+  | "awaiting_days"
+  | "awaiting_preference"
+  | "preference_selected"
+  | "ready_for_itinerary"
+  | "itinerary_draft";
 
 export type ItineraryPlanMode = "full_itinerary" | "daily_recommendations";
 

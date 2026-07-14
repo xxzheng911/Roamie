@@ -1,9 +1,30 @@
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+
+/** Category suffixes wrongly concatenated with destination names (not Places). */
+export const GENERIC_DESTINATION_CATEGORY_SUFFIXES = [
+  "人氣景點",
+  "必去地標",
+  "特色商圈",
+  "夜市或市集",
+  "公園綠地",
+  "博物館",
+  "在地美食",
+  "文創景點",
+  "經典景點",
+  "經典地標",
+  "熱門景點",
+  "觀光景點",
+  "在地市集或商圈",
+  "夜景或特色街區",
+  "近郊半日遊",
+  "文化或自然景點",
+] as const;
 
 /** 分類／方向用語 — 不可作為 itinerary stop 或地點卡名稱 */
 const GENERIC_PLACE_LABEL_RE =
-  /(經典地標|在地市集|商圈|美食街|熱門景點|特色街區|文化景點|室內景點|夜景地點|經典區|市區散策|在地小吃|近郊一日遊|自由安排|輕鬆收尾|夜景或按摩|市集或商圈|文化或自然)/;
+  /(經典地標|在地市集|商圈|美食街|熱門景點|特色街區|文化景點|室內景點|夜景地點|經典區|市區散策|在地小吃|近郊一日遊|自由安排|輕鬆收尾|夜景或按摩|市集或商圈|文化或自然|人氣景點|必去地標|特色商圈|夜市或市集|公園綠地|文創景點|經典景點)/;
 
 const GENERIC_PLACE_EXACT = new Set([
   "在地小吃",
@@ -15,6 +36,33 @@ const GENERIC_PLACE_EXACT = new Set([
   "市集或商圈",
 ]);
 
+/**
+ * True when name is destination + a generic category word
+ * (e.g. 「新竹人氣景點」) — never a searchable Place.
+ */
+export function isGenericDestinationPlaceholder(
+  name: string,
+  destination: string,
+): boolean {
+  const n = name.trim().replace(/\s+/g, "");
+  const label = normalizeDestinationLabel(destination).replace(/\s+/g, "");
+  if (!n || !label) return false;
+
+  for (const suffix of GENERIC_DESTINATION_CATEGORY_SUFFIXES) {
+    if (n === `${label}${suffix}` || n === `${label}的${suffix}`) {
+      logAiPipeline("[GENERIC_PLACEHOLDER_BLOCKED]", `name=${name}`);
+      return true;
+    }
+  }
+
+  if (n.startsWith(label) && GENERIC_PLACE_LABEL_RE.test(n.slice(label.length))) {
+    logAiPipeline("[GENERIC_PLACEHOLDER_BLOCKED]", `name=${name}`);
+    return true;
+  }
+
+  return false;
+}
+
 export function isGenericPlaceLabel(name: string, destination?: string): boolean {
   const n = name.trim();
   if (!n || n.length < 2) return true;
@@ -22,18 +70,17 @@ export function isGenericPlaceLabel(name: string, destination?: string): boolean
   if (GENERIC_PLACE_LABEL_RE.test(n)) return true;
 
   const label = destination ? normalizeDestinationLabel(destination) : "";
+  if (label && isGenericDestinationPlaceholder(n, label)) return true;
+
   if (label) {
     if (n === `${label}地標` || n === `${label}經典區`) return true;
     if (/經典地標$/.test(n) && n.startsWith(label)) return true;
-    if (n === `${label}經典地標`) return true;
-    if (n === `${label}在地市集或商圈`) return true;
-    if (n === `${label}夜景或特色街區`) return true;
-    if (n === `${label}近郊半日遊`) return true;
-    if (n === `${label}文化或自然景點`) return true;
     if (/在地市集/.test(n) && n.includes(label)) return true;
   }
 
-  return /經典地標$|熱門景點$|特色街區$|美食街$|文化景點$|室內景點$|夜景地點$/.test(n);
+  return /經典地標$|熱門景點$|特色街區$|美食街$|文化景點$|室內景點$|夜景地點$|人氣景點$|必去地標$|特色商圈$|公園綠地$|文創景點$|經典景點$/.test(
+    n,
+  );
 }
 
 export function isValidItineraryStopPlace(

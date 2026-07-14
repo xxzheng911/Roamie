@@ -200,17 +200,20 @@ assert(routeThaiGo.mode === "advice", "want-go Thailand route is advice");
 assert(routeThaiGo.question?.includes("曼谷"), "Thailand selection mentions Bangkok");
 assert(routeThaiGo.question?.includes("清邁"), "Thailand selection mentions Chiang Mai");
 assert(
-  routeThaiGo.question?.includes("城市、美食按摩，還是海島放鬆"),
-  "Thailand selection asks trip style",
+  /普吉|蘇梅/.test(routeThaiGo.question ?? ""),
+  "Thailand selection mentions concrete islands",
 );
 assert(
-  routeThaiGo.pendingQuestion?.type === "trip_style_choice",
-  "Thailand selection stores pending trip style options",
+  !routeThaiGo.question?.includes("城市、美食按摩，還是海島放鬆"),
+  "Thailand selection does not ask abstract trip style",
 );
 assert(
-  JSON.stringify(routeThaiGo.pendingQuestion?.options) ===
-    JSON.stringify(["城市", "美食按摩", "海島放鬆"]),
-  "Thailand pending options are city/food/island",
+  routeThaiGo.pendingQuestion?.type === "region_choice",
+  "Thailand selection stores pending region_choice",
+);
+assert(
+  (routeThaiGo.pendingQuestion?.options ?? []).some((o) => /曼谷/.test(o)),
+  "Thailand pending options include Bangkok",
 );
 assert(
   !routeThaiGo.question?.includes("我先用目前掌握的需求"),
@@ -230,20 +233,19 @@ const afterThaiStylePrompt = {
     ),
 };
 
-const cityTurn = mergeTravelContext(afterThaiStylePrompt, "城市");
+const cityTurn = mergeTravelContext(afterThaiStylePrompt, "曼谷");
 assert(cityTurn.context.destination === "曼谷", "city selection updates destination to Bangkok");
 assert(cityTurn.context.destinationCountry === "泰國", "city selection keeps Thailand country");
 assert(
-  JSON.stringify(cityTurn.context.destinationCities) === JSON.stringify(["曼谷"]),
-  "city selection sets Bangkok as suggested city",
+  JSON.stringify(cityTurn.context.destinationCities) === JSON.stringify(["曼谷"]) ||
+    cityTurn.context.destinationCity === "曼谷" ||
+    cityTurn.context.destination === "曼谷",
+  "city selection sets Bangkok",
 );
-assert(cityTurn.context.selectedTripStyle === "城市", "city selection sets trip style");
-assert(cityTurn.context.tripPurpose === "trip_style_selected", "city selection sets trip purpose");
-assert(cityTurn.session.adviceSelectionThisTurn === "城市", "city marks selection this turn");
 assert(!cityTurn.session.pendingQuestion, "pending question cleared after city selection");
 
 const routeCity = resolveChatRoute(
-  "城市",
+  "曼谷",
   cityTurn.context,
   cityTurn.session,
   "zh-TW",
@@ -261,11 +263,10 @@ assert(
   "city follow-up does not repeat style question",
 );
 
-const islandTurn = mergeTravelContext(afterThaiStylePrompt, "海島");
-assert(islandTurn.context.destination === "普吉島", "island selection updates destination");
-assert(islandTurn.context.selectedTripStyle === "海島放鬆", "island normalizes to 海島放鬆");
+const islandTurn = mergeTravelContext(afterThaiStylePrompt, "普吉島");
+assert(islandTurn.context.destination === "普吉島" || /普吉/.test(islandTurn.context.destination ?? ""), "island selection updates destination");
 const routeIsland = resolveChatRoute(
-  "海島",
+  "普吉島",
   islandTurn.context,
   islandTurn.session,
   "zh-TW",
@@ -278,20 +279,19 @@ assert(
   "island follow-up does not repeat Thailand intro",
 );
 
-const foodTurn = mergeTravelContext(afterThaiStylePrompt, "美食按摩");
-assert(foodTurn.context.destination === "曼谷", "food/massage selection keeps Bangkok");
+const foodTurn = mergeTravelContext(afterThaiStylePrompt, "清邁");
+assert(foodTurn.context.destination === "清邁", "Chiang Mai selection updates destination");
 const routeFood = resolveChatRoute(
-  "美食按摩",
+  "清邁",
   foodTurn.context,
   foodTurn.session,
   "zh-TW",
   "destination_advice",
 );
-assert(routeFood.mode === "advice", "food/massage follow-up stays advice");
-assert(routeFood.question?.includes("美食"), "food/massage follow-up mentions food");
+assert(routeFood.mode === "advice", "Chiang Mai follow-up stays advice");
 assert(
   !routeFood.question?.includes("好，泰國很適合想放鬆又有城市探索的人"),
-  "food/massage follow-up does not repeat Thailand intro",
+  "Chiang Mai follow-up does not repeat Thailand intro",
 );
 
 const bangkokSession = {

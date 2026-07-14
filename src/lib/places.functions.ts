@@ -23,6 +23,7 @@ import {
 } from "@/lib/filter-available-places";
 import { applyNormalizedOpeningToPlaceResult } from "@/lib/normalized-opening-status";
 import { isFallbackPlanningPlaceId } from "@/lib/ai/planning-place-id";
+import { normalizeGooglePlace } from "@/lib/ai/normalize-google-place";
 import { filterExplorePlaces } from "@/lib/filter-explore-places";
 import {
   isRecommendablePlace,
@@ -137,32 +138,20 @@ function mapRawPlaces(
         return null;
       }
       const availability = derivePlaceAvailability(hours, { context: "now" });
-      const basePlace: PlaceResult = {
-        id: p.id,
-        name,
-        address: resolvePlaceDisplayAddress(
-          {
-            formattedAddress: p.formattedAddress,
-            shortFormattedAddress: p.shortFormattedAddress,
-            vicinity: p.vicinity,
-          },
-          { locale },
-        ),
-        lat: p.location?.latitude ?? null,
-        lng: p.location?.longitude ?? null,
-        rating: p.rating ?? null,
-        userRatingCount: p.userRatingCount ?? null,
-        photoName: p.photos?.[0]?.name ?? null,
-        primaryType: p.primaryType ?? null,
-        types: p.types ?? null,
-        businessStatus: availability.businessStatus,
-        openStatus: "unknown",
-        openStatusLabel: "",
-        todayHoursLabel: "",
-        closingSoonNote: "",
-        nextOpenHint: "",
-      };
-      const place = applyNormalizedOpeningToPlaceResult(basePlace, hours);
+      const normalized = normalizeGooglePlace(p, { locale });
+      if (!normalized) return null;
+      const place = applyNormalizedOpeningToPlaceResult(
+        {
+          ...normalized,
+          businessStatus: availability.businessStatus,
+          openStatus: "unknown",
+          openStatusLabel: "",
+          todayHoursLabel: "",
+          closingSoonNote: "",
+          nextOpenHint: "",
+        },
+        hours,
+      );
       return {
         place,
         sortWeight: isHome ? 0 : availability.sortWeight,
@@ -274,6 +263,10 @@ async function postPlaces(
       const text = await res.text();
       const detail = parseGoogleError(text);
       console.error("[Roamie Places] request failed", res.status, url, detail);
+      if (res.status === 429 || res.status === 503) {
+        // Let the shared Places queue retry with exponential backoff.
+        throw new Error(`places_http_${res.status}:${detail}`);
+      }
       if (stats?.screen === "chat") {
         console.warn("[CHAT_NEARBY_ERROR]", {
           message: `Google Places API ${res.status}: ${detail}`,
@@ -922,6 +915,9 @@ export async function fetchPlaceDetailsForScreenWithKey(
       if (!res.ok) {
         const detail = await res.text().catch(() => "");
         console.warn("[Roamie Places] place details client HTTP", res.status, detail.slice(0, 200));
+        if (res.status === 429 || res.status === 503) {
+          throw new Error(`places_details_http_${res.status}`);
+        }
         return null;
       }
       const p = (await res.json()) as PlaceDetailsScreenRaw;
@@ -965,7 +961,12 @@ export const getPlaceDetails = createServerFn({ method: "POST" })
       if (
         data.placeId.startsWith("latlng:") ||
         data.placeId.startsWith("saved-") ||
-        isFallbackPlanningPlaceId(data.placeId)
+        data.placeId.startsWith("session:") ||
+        data.placeId.startsWith("trip:") ||
+        data.placeId.startsWith("memory:") ||
+        data.placeId.startsWith("synthetic:") ||
+        isFallbackPlanningPlaceId(data.placeId) ||
+        !/^ChIJ[\w-]+$/i.test(data.placeId.replace(/^places\//i, ""))
       ) {
         return { place: null, error: "synthetic_id" };
       }

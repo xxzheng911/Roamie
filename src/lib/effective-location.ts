@@ -231,7 +231,8 @@ function publish(next: EffectiveLocationSnapshot, reason: string): boolean {
 function seedLastKnownForPlaces(): void {
   if (snapshot?.isReadyForPlaces) return;
 
-  const persisted = readPersistedHomeLocation();
+  // 過期位置仍可先啟動 Places；背景會再取最新 GPS
+  const persisted = readPersistedHomeLocation(Date.now(), { allowStale: true });
   if (persisted) {
     publish(
       toSnapshot(

@@ -80,8 +80,8 @@ assert(
 // Test 4: Thailand → city → combo
 session = createEmptySession();
 t1 = planningTurn("我想去泰國", session);
-assert(t1.session.pendingQuestion?.type === "trip_style_choice", "test4 thailand style pending");
-t2 = planningTurn("城市", t1.session);
+assert(t1.session.pendingQuestion?.type === "region_choice", "test4 thailand region pending");
+t2 = planningTurn("曼谷", t1.session);
 assert(t2.merged.context.destination === "曼谷", "test4 city -> bangkok");
 const pattayaSession = {
   ...t2.session,
@@ -98,6 +98,19 @@ assert(
     comboTurn.merged.context.destinationCities?.some((city) => city.includes("芭達雅")),
   "test4 combo route",
 );
+
+if (failed > 0) {
+  console.error(`\n${failed} assertion(s) failed`);
+  process.exit(1);
+}
+
+// Test 5: date range → skip ask_days, ask trip style
+session = createEmptySession();
+const dateRangeTurn = planningTurn("我 9/1～9/4 要去台北", session);
+assert(dateRangeTurn.turn.advice.reply?.includes("想怎麼安排"), "test5 asks trip style");
+assert(dateRangeTurn.session.pendingQuestion?.type === "ask_trip_style", "test5 pending ask_trip_style");
+assert(!dateRangeTurn.turn.advice.reply?.includes("玩幾天"), "test5 no ask days");
+assert(dateRangeTurn.merged.context.days === 4, "test5 merged days=4");
 
 if (failed > 0) {
   console.error(`\n${failed} assertion(s) failed`);

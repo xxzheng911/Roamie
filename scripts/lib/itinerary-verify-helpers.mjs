@@ -8,8 +8,11 @@ export const STYLE_OPTIONS = [
 ];
 
 export const INTEGRATION_CITIES = [
+  { name: "台北", lat: 25.033, lng: 121.565, code: "TP" },
   { name: "台中", lat: 24.147, lng: 120.673, code: "TC" },
   { name: "台南", lat: 22.999, lng: 120.227, code: "TN" },
+  { name: "花蓮", lat: 23.987, lng: 121.601, code: "HL" },
+  { name: "台東", lat: 22.758, lng: 121.144, code: "TT" },
   { name: "東京", lat: 35.676, lng: 139.65, code: "TK" },
 ];
 
@@ -144,19 +147,25 @@ export function chijPlaceId(cityCode, kind, index) {
 
 export function mockRealPlace({ name, city, lat, lng, kind, index, cityCode }) {
   const meta = KIND_META[kind] ?? KIND_META.attraction;
+  const bareId = chijPlaceId(cityCode, kind, index);
   return {
-    id: chijPlaceId(cityCode, kind, index),
-    name,
-    address: `${city}${name}路1號`,
-    lat: lat + index * 0.001,
-    lng: lng + index * 0.001,
+    id: `places/${bareId}`,
+    placeId: bareId,
+    displayName: { text: name },
+    formattedAddress: `${city}${name}路1號`,
+    location: { latitude: lat + index * 0.001, longitude: lng + index * 0.001 },
     rating: 4.2 + (index % 5) * 0.1,
     userRatingCount: 100 + index * 17,
     primaryType: meta.primaryType,
     types: [...meta.types],
-    openingHours: {
-      weekdayDescriptions: ["星期一: 09:00 – 21:00", "星期二: 09:00 – 21:00"],
+    regularOpeningHours: {
+      periods: [0, 1, 2, 3, 4, 5, 6].map((day) => ({
+        open: { day, hour: 7, minute: 0 },
+        close: { day, hour: 22, minute: 0 },
+      })),
+      weekdayDescriptions: ["星期一: 07:00 – 22:00", "星期二: 07:00 – 22:00"],
     },
+    businessStatus: "OPERATIONAL",
   };
 }
 

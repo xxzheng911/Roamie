@@ -9,6 +9,12 @@ import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { INSUFFICIENT_ITINERARY_PLACES_MESSAGE } from "@/lib/ai/generic-place-label";
 import { listTripDates } from "@/lib/outfit/group-by-date";
 import { buildMixedItineraryFromPlaces } from "@/lib/trip/mixed-itinerary-schedule";
+import {
+  groupStopsByTripDays,
+  redistributeToFillEmptyDays,
+  validateGeneratedItinerary,
+} from "@/lib/ai/combination-itinerary-integrity";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export const ITINERARY_GENERATION_FAILED_MESSAGE =
   "行程建立失敗，我再幫你重新整理一次。";
@@ -77,6 +83,9 @@ function makePlaceItineraryStop(
     lng: place.lng,
     address: place.address?.trim() || place.name,
     googlePlaceId: placeId || undefined,
+    sourceCombinationId: place.sourceCombinationId,
+    matchedCombinationIds: place.matchedCombinationIds,
+    matchedSelectedCombinationIds: place.matchedSelectedCombinationIds,
   });
 }
 
@@ -145,27 +154,121 @@ export function groupItineraryItemsByDay(
   }));
 }
 
-/** 從已選地點建立保底行程 — 混合類型分配到每天 */
+/** 從已選地點建立保底行程 — 混合類型分配到每天；禁止空白日 */
 export function buildFallbackItineraryFromPlaces(
   selectedPlaces: RoamieRecommendationItem[],
   days: number,
   startDate: string,
   destination?: string,
+  opts?: { selectedCombinationIds?: number[] },
 ): RoamieItineraryItem[] {
-  const mixed = buildMixedItineraryFromPlaces(selectedPlaces, days, startDate, destination);
-  if (mixed.length > 0) return mixed;
-
   const dayCount = Math.max(days, 1);
+  const selectedCombinationIds =
+    opts?.selectedCombinationIds ??
+    [
+      ...new Set(
+        selectedPlaces
+          .flatMap((p) => p.matchedSelectedCombinationIds ?? (p.sourceCombinationId != null ? [p.sourceCombinationId] : []))
+          .filter((id): id is number => typeof id === "number" && id > 0),
+      ),
+    ].sort((a, b) => a - b);
+
+  const mixed = buildMixedItineraryFromPlaces(
+    selectedPlaces,
+    days,
+    startDate,
+    destination,
+    { selectedCombinationIds },
+  );
+
+  const filled = redistributeToFillEmptyDays({
+    stops: mixed,
+    days: dayCount,
+    startDate,
+    sparePlaces: selectedPlaces,
+    makeStop: (place, date, time) => makePlaceItineraryStop(place, date, time),
+  });
+
   const dates = listTripDates([], startDate, dayCount);
   const destLabel = destination?.trim() ? normalizeDestinationLabel(destination) : "";
-  const stops: RoamieItineraryItem[] = [];
+  const stops = [...filled];
+  const occupied = new Set(
+    stops.map((s) => s.date?.trim()).filter(Boolean),
+  );
+
+  // When unique places < days, filler prevents blank calendar days after redistribute.
+  let fillerIdx = 0;
+  for (const date of dates) {
+    if (occupied.has(date)) continue;
+    const usedKeys = new Set(
+      stops.map(
+        (s) =>
+          s.googlePlaceId?.trim() ||
+          `${(s.placeName ?? s.title).replace(/\s+/g, "").toLowerCase()}`,
+      ),
+    );
+    const spare = selectedPlaces.find((p) => {
+      const key =
+        p.googlePlaceId?.trim() ||
+        `${(p.placeName ?? p.name).replace(/\s+/g, "").toLowerCase()}`;
+      return key && !usedKeys.has(key);
+    });
+    if (spare) {
+      stops.push(makePlaceItineraryStop(spare, date, "14:00"));
+      occupied.add(date);
+      continue;
+    }
+    const template = DAY_FILLER_TEMPLATES[fillerIdx % DAY_FILLER_TEMPLATES.length]!;
+    fillerIdx += 1;
+    stops.push(
+      destLabel
+        ? makeFillerItineraryStop(destLabel, date, template)
+        : normalizeItineraryItem({
+            date,
+            time: template.time,
+            title: template.title,
+            placeName: template.title,
+            description: template.description,
+          }),
+    );
+    occupied.add(date);
+  }
+
+  const grouped = groupStopsByTripDays(stops, dayCount, startDate);
+  const validation = validateGeneratedItinerary({
+    tripDays: dayCount,
+    startDate,
+    selectedCombinationIds,
+    days: grouped,
+    resolvedPlaces: selectedPlaces,
+  });
+  if (!validation.ok) {
+    logAiPipeline(
+      "[ITINERARY_INTEGRITY_WARN]",
+      `reasons=${validation.reasons.join("|")}`,
+    );
+  }
+
+  if (stops.length > 0) {
+    return stops.sort((a, b) => {
+      const dateCmp = (a.date ?? "").localeCompare(b.date ?? "");
+      if (dateCmp !== 0) return dateCmp;
+      return (a.time ?? "").localeCompare(b.time ?? "");
+    });
+  }
+
+  const legacyStops: RoamieItineraryItem[] = [];
   const dayOccupied = new Array<boolean>(dayCount).fill(false);
 
   selectedPlaces.forEach((place, idx) => {
-    const dayIdx = dayIndexForPlace(idx, selectedPlaces.length, dayCount);
+    // Spread across days instead of dumping overflow on the last day.
+    const dayIdx =
+      selectedPlaces.length >= dayCount
+        ? idx % dayCount
+        : dayIndexForPlace(idx, selectedPlaces.length, dayCount);
     const date = dates[dayIdx] ?? startDate;
     dayOccupied[dayIdx] = true;
-    stops.push(
+    legacyStops.push(
       makePlaceItineraryStop(
         place,
         date,
@@ -174,13 +277,11 @@ export function buildFallbackItineraryFromPlaces(
     );
   });
 
-  let fillerIdx = 0;
   for (let d = 0; d < dayCount; d += 1) {
     if (dayOccupied[d]) continue;
-    const template = DAY_FILLER_TEMPLATES[fillerIdx % DAY_FILLER_TEMPLATES.length]!;
-    fillerIdx += 1;
+    const template = DAY_FILLER_TEMPLATES[d % DAY_FILLER_TEMPLATES.length]!;
     const date = dates[d] ?? startDate;
-    stops.push(
+    legacyStops.push(
       destLabel
         ? makeFillerItineraryStop(destLabel, date, template)
         : normalizeItineraryItem({
@@ -193,12 +294,14 @@ export function buildFallbackItineraryFromPlaces(
     );
   }
 
-  return stops.sort((a, b) => {
+  return legacyStops.sort((a, b) => {
     const dateCmp = (a.date ?? "").localeCompare(b.date ?? "");
     if (dateCmp !== 0) return dateCmp;
     return (a.time ?? "").localeCompare(b.time ?? "");
   });
 }
+
+export { validateGeneratedItinerary };
 
 /** 安全讀取 itinerary — 禁止直接存取可能為 undefined 的 .itinerary */
 export function coalesceItineraryItems(value: unknown): RoamieItineraryItem[] {
@@ -210,14 +313,13 @@ export function normalizeTripPayload(
 ): RoamiePayloadV2 {
   const itinerary = coalesceItineraryItems(payload.itinerary);
   return {
+    ...payload,
     title: typeof payload.title === "string" ? payload.title : "",
     summary: typeof payload.summary === "string" ? payload.summary : "",
     moodTag: typeof payload.moodTag === "string" ? payload.moodTag : "",
     recommendations: Array.isArray(payload.recommendations) ? payload.recommendations : [],
     itinerary,
     version: 2,
-    ...payload,
-    itinerary,
   } as RoamiePayloadV2;
 }
 

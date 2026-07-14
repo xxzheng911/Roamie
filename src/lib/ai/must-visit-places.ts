@@ -253,15 +253,9 @@ function resolveGuide(destination: string): DestinationMustVisitGuide | null {
 export function getMustVisitPlacesForDestination(destination: string): MustVisitPlace[] {
   const guide = resolveGuide(destination);
   if (guide) return guide.places.slice(0, 5);
-
-  const label = normalizeDestinationLabel(destination);
-  return [
-    { name: `${label}經典地標`, reason: "第一次來通常會先排的代表性景點" },
-    { name: `${label}在地市集或商圈`, reason: "感受在地生活與小吃" },
-    { name: `${label}夜景或特色街區`, reason: "傍晚後氛圍最好" },
-    { name: `${label}近郊半日遊`, reason: "若想拉開節奏可留半天" },
-    { name: `${label}文化或自然景點`, reason: "依你的興趣再細排" },
-  ];
+  // Unknown destination: never invent category-template place names.
+  // Combination / itinerary pipelines must discover real Places instead.
+  return [];
 }
 
 export function isGenericTemplatePlaceName(name: string, destination: string): boolean {

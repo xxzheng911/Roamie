@@ -253,11 +253,14 @@ export function HomeNearbyPlaceCards({
   const anchor = userLocation ?? { lat: 0, lng: 0 };
   const canShowDistance = userLocation != null;
   const goodForNow = t("place.goodForNow");
-  const showSkeleton = places.length === 0 && (loading || renderState === "loading");
+  const showSkeleton =
+    places.length === 0 &&
+    !showSlowEmpty &&
+    (loading || renderState === "loading");
   const showEmpty =
     places.length === 0 &&
     !showSkeleton &&
-    (renderState === "empty" || renderState === "error" || showSlowEmpty);
+    (renderState === "empty" || renderState === "error" || Boolean(showSlowEmpty));
 
   const cardDisplays = useMemo(() => {
     return places.map((place, index) =>
@@ -271,37 +274,19 @@ export function HomeNearbyPlaceCards({
         savedNames,
         goodForNow,
         busyId,
-        navigatingPlaceId,
+        navigatingPlaceId ?? null,
       ),
     );
   }, [places, anchor, canShowDistance, locale, savedNames, goodForNow, busyId, navigatingPlaceId]);
 
   if (showSkeleton) {
     return (
-      <div className="space-y-3">
-        <div className="home-nearby-cards home-nearby-cards--loading" aria-hidden>
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="home-nearby-card-item">
-              <div className="home-nearby-card-square animate-pulse bg-secondary/80" />
-            </div>
-          ))}
-        </div>
-        {showSlowEmpty ? (
-          <div className="space-y-2 text-center">
-            <p className="text-sm text-muted-foreground">
-              {slowEmptyMessage ?? t("home.nearbySlowEmpty")}
-            </p>
-            {onRetry ? (
-              <button
-                type="button"
-                onClick={onRetry}
-                className="text-sm font-medium text-primary underline-offset-2 hover:underline"
-              >
-                {retryLabel ?? t("home.nearbyRetry")}
-              </button>
-            ) : null}
+      <div className="home-nearby-cards home-nearby-cards--loading" aria-hidden>
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="home-nearby-card-item">
+            <div className="home-nearby-card-square animate-pulse bg-secondary/80" />
           </div>
-        ) : null}
+        ))}
       </div>
     );
   }
@@ -310,7 +295,9 @@ export function HomeNearbyPlaceCards({
     return (
       <div className="space-y-2 text-center">
         <p className="rounded-2xl border border-dashed border-border bg-card/60 px-4 py-8 text-sm text-muted-foreground">
-          {emptyMessage ?? t("home.nearbyEmpty")}
+          {showSlowEmpty
+            ? (slowEmptyMessage ?? t("home.nearbySlowEmpty"))
+            : (emptyMessage ?? t("home.nearbyEmpty"))}
         </p>
         {onRetry ? (
           <button

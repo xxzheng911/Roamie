@@ -13,8 +13,6 @@ import type { LocationSuggestion, TripLocation } from "@/lib/location/types";
 import { localeToGeocodeRegion, localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
-import { buildDestinationGeocodeQueries } from "@/lib/ai/destination-geocode";
-
 const TRIP_PLACE_DETAILS_FIELD_MASK =
   "id,displayName,formattedAddress,location,addressComponents,utcOffsetMinutes,types,primaryType";
 
@@ -358,7 +356,42 @@ export const searchTripLocations = createServerFn({ method: "POST" })
     },
   );
 
-/** 文字查詢地點（無 autocomplete 結果時：日本大阪、韓國首爾等） */
+export type GeocodeFailureCode =
+  | "geocode_zero_results"
+  | "geocode_rate_limited"
+  | "geocode_auth_error"
+  | "geocode_invalid_request"
+  | "geocode_network_error"
+  | "geocode_response_parse_error"
+  | "geocode_empty_response"
+  | "geocode_filtered_non_geographic";
+
+function mapGeocodeApiStatus(status: string | undefined): GeocodeFailureCode | null {
+  switch (status) {
+    case "OK":
+      return null;
+    case "ZERO_RESULTS":
+      return "geocode_zero_results";
+    case "OVER_QUERY_LIMIT":
+    case "RESOURCE_EXHAUSTED":
+      return "geocode_rate_limited";
+    case "REQUEST_DENIED":
+      return "geocode_auth_error";
+    case "INVALID_REQUEST":
+      return "geocode_invalid_request";
+    case undefined:
+    case "":
+      return "geocode_empty_response";
+    default:
+      return "geocode_response_parse_error";
+  }
+}
+
+/**
+ * Geocode a single query string.
+ * Callers that need fallback queries must expand them (e.g. geocodeDestinationWithFallback).
+ * Do NOT re-expand with buildDestinationGeocodeQueries here — that nested the same query set.
+ */
 export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
   .inputValidator((input) => GeocodeTextInput.parse(input))
   .handler(async ({ data }): Promise<{ location: TripLocation | null; error: string | null }> => {
@@ -367,34 +400,101 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
     const userLocale: Locale = data.locale ? coerceLocale(data.locale) : "zh-TW";
     const language = localeToGoogleLanguageCode(userLocale);
     const region = localeToGeocodeRegion(userLocale);
-    const queries = buildDestinationGeocodeQueries(data.query.trim(), userLocale);
-    const compact = data.query.trim().replace(/[·・,，/\s]+/g, "");
-    if (compact && !queries.includes(compact)) {
-      queries.push(compact);
-    }
-    const uniqueQueries = [...new Set(queries.filter(Boolean))];
-
-    for (const q of uniqueQueries) {
-      const res = await fetch(geocodeForwardUrl(q, apiKey, { language, region }));
-
-      if (!res.ok) continue;
-
-      const json = (await res.json()) as {
-        status?: string;
-        error_message?: string;
-        results?: LegacyGeocodeResult[];
-      };
-
-      if (json.status !== "OK" && json.status !== "ZERO_RESULTS") continue;
-
-      const picked = pickBestGeocodeResult(json.results ?? []);
-      if (!picked) continue;
-
-      const location = legacyGeocodeToTripLocation(picked);
-      if (location) return { location, error: null };
+    const query = data.query.trim();
+    if (!query) {
+      return { location: null, error: "geocode_invalid_request" };
     }
 
-    return { location: null, error: "暫時找不到這個地點，請換個關鍵字試試。" };
+    let res: Response;
+    try {
+      res = await fetch(geocodeForwardUrl(query, apiKey, { language, region }));
+    } catch (error) {
+      console.warn(
+        "[GEOCODE_FAILURE_DETAIL]",
+        `code=geocode_network_error`,
+        `query=${query}`,
+        `message=${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { location: null, error: "geocode_network_error" };
+    }
+
+    if (!res.ok) {
+      const code: GeocodeFailureCode =
+        res.status === 429 || res.status === 503
+          ? "geocode_rate_limited"
+          : res.status === 401 || res.status === 403
+            ? "geocode_auth_error"
+            : "geocode_network_error";
+      console.warn(
+        "[GEOCODE_FAILURE_DETAIL]",
+        `code=${code}`,
+        `httpStatus=${res.status}`,
+        `query=${query}`,
+      );
+      return { location: null, error: code };
+    }
+
+    let json: {
+      status?: string;
+      error_message?: string;
+      results?: LegacyGeocodeResult[];
+    };
+    try {
+      json = (await res.json()) as typeof json;
+    } catch {
+      console.warn(
+        "[GEOCODE_FAILURE_DETAIL]",
+        "code=geocode_response_parse_error",
+        `httpStatus=${res.status}`,
+        `query=${query}`,
+      );
+      return { location: null, error: "geocode_response_parse_error" };
+    }
+
+    const statusCode = mapGeocodeApiStatus(json.status);
+    if (statusCode) {
+      console.warn(
+        "[GEOCODE_FAILURE_DETAIL]",
+        `code=${statusCode}`,
+        `httpStatus=${res.status}`,
+        `rawStatus=${json.status ?? ""}`,
+        `query=${query}`,
+        json.error_message ? `error_message=${json.error_message}` : "",
+      );
+      return { location: null, error: statusCode };
+    }
+
+    const results = json.results ?? [];
+    if (!results.length) {
+      console.warn(
+        "[GEOCODE_FAILURE_DETAIL]",
+        "code=geocode_zero_results",
+        `httpStatus=${res.status}`,
+        `rawStatus=${json.status ?? "OK"}`,
+        `query=${query}`,
+      );
+      return { location: null, error: "geocode_zero_results" };
+    }
+
+    const picked = pickBestGeocodeResult(results);
+    if (!picked) {
+      return { location: null, error: "geocode_filtered_non_geographic" };
+    }
+
+    const location = legacyGeocodeToTripLocation(picked);
+    if (!location) {
+      console.warn(
+        "[GEOCODE_FAILURE_DETAIL]",
+        "code=geocode_filtered_non_geographic",
+        `httpStatus=${res.status}`,
+        `rawStatus=${json.status ?? "OK"}`,
+        `types=${(picked.types ?? []).join("|")}`,
+        `query=${query}`,
+      );
+      return { location: null, error: "geocode_filtered_non_geographic" };
+    }
+
+    return { location, error: null };
   });
 
 export const resolveTripLocation = createServerFn({ method: "POST" })

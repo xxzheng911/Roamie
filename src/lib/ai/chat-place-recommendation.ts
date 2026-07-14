@@ -124,7 +124,9 @@ export type PlaceSearchData = {
   intentCategory?: string;
 };
 
-export type PlaceSearchFn = (args: { data: PlaceSearchData }) => Promise<{ places?: PlaceResult[] }>;
+export type PlaceSearchFn = (args: {
+  data: PlaceSearchData;
+}) => Promise<{ places?: PlaceResult[]; error?: string | null }>;
 
 export type PlaceSearchExtras = {
   searchContext?: ChatPlaceSearchContext;

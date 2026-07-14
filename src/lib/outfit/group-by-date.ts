@@ -20,12 +20,27 @@ export function listTripDates(
   if (fromItems.length >= days) {
     return fromItems.sort().slice(0, days);
   }
-  const base = startDate || new Date().toISOString().slice(0, 10);
+  const base = startDate.trim() || localIsoToday();
   const out: string[] = [];
   for (let i = 0; i < days; i++) {
-    const d = new Date(base);
-    d.setDate(d.getDate() + i);
-    out.push(d.toISOString().slice(0, 10));
+    out.push(addCalendarDaysIso(base, i));
   }
   return out;
+}
+
+function localIsoToday(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+}
+
+/** Date-only add — avoid UTC toISOString shift on YYYY-MM-DD strings. */
+function addCalendarDaysIso(iso: string, offset: number): string {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) {
+    const d = new Date(`${iso}T12:00:00`);
+    d.setDate(d.getDate() + offset);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }

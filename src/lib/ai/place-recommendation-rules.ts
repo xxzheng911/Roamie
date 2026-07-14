@@ -10,6 +10,7 @@ import {
   isInternalSubPlaceOfLandmark,
   type DestinationPlaceSearchProfile,
 } from "@/lib/ai/landmark-place-strategy";
+import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 
 type PlaceLike = {
   name: string;
@@ -32,10 +33,6 @@ const DEPRIORITIZED_TYPES = new Set([
   "parking_lot",
   "plaza",
   "town_square",
-  "transit_station",
-  "train_station",
-  "subway_station",
-  "bus_station",
   "administrative_area",
   "administrative_area_level_1",
   "administrative_area_level_2",
@@ -199,6 +196,7 @@ export function filterPlacesForAttractionRecommendation<T extends PlaceLike>(
 
     const name = (place.placeName ?? place.name ?? "").trim();
     if (name && isExcludedInternalFacilityType(place)) return false;
+    if (isForbiddenTransitAttraction(place)) return false;
     if (parent && isInternalSubPlaceOfLandmark(name, parent)) return false;
 
     const core = normalizePlaceName(name);

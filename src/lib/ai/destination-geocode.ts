@@ -13,10 +13,65 @@ import {
   logItineraryGeocodeQuery,
   sanitizeDestinationForGeocode,
 } from "@/lib/ai/itinerary-entity-extraction";
+import {
+  getResolvedDestinationScope,
+  lockDestinationCoordinatesFromGeocode,
+  setResolvedDestinationScope,
+} from "@/lib/ai/resolved-destination-scope";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 
 export type GeocodeDestinationFn = (args: {
   data: { query: string; locale?: Locale };
 }) => Promise<{ location: TripLocation | null; error: string | null }>;
+
+type GeocodeCacheEntry = {
+  location: TripLocation | null;
+  error: string | null;
+  at: number;
+};
+
+const GEOCODE_FAIL_TTL_MS = 30_000;
+const GEOCODE_OK_TTL_MS = 30 * 60 * 1000;
+
+const destinationCoordinateCache = new Map<string, GeocodeCacheEntry>();
+const inFlightGeocodeMap = new Map<string, Promise<TripLocation | null>>();
+
+function geocodeCacheKey(destination: string, countryCode?: string): string {
+  const label = normalizeDestinationLabel(destination);
+  const cc = (countryCode ?? "").trim().toUpperCase();
+  return cc ? `${label}|${cc}` : label;
+}
+
+function readGeocodeCache(key: string, now = Date.now()): GeocodeCacheEntry | null {
+  const entry = destinationCoordinateCache.get(key);
+  if (!entry) return null;
+  const ttl = entry.location ? GEOCODE_OK_TTL_MS : GEOCODE_FAIL_TTL_MS;
+  if (now - entry.at > ttl) {
+    destinationCoordinateCache.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+export function clearDestinationGeocodeCache(destination?: string): void {
+  if (!destination) {
+    destinationCoordinateCache.clear();
+    inFlightGeocodeMap.clear();
+    return;
+  }
+  const label = normalizeDestinationLabel(destination);
+  for (const key of [...destinationCoordinateCache.keys()]) {
+    if (key === label || key.startsWith(`${label}|`)) {
+      destinationCoordinateCache.delete(key);
+    }
+  }
+  for (const key of [...inFlightGeocodeMap.keys()]) {
+    if (key === label || key.startsWith(`${label}|`)) {
+      inFlightGeocodeMap.delete(key);
+    }
+  }
+}
 
 /** 景區／國家森林遊樂區 — geocode 需用完整正式名稱 */
 const SCENIC_GEOCODE: Record<string, readonly string[]> = {
@@ -96,6 +151,12 @@ export const EN_CITY_NAMES: Record<string, string> = {
   名古屋: "Nagoya",
   橫濱: "Yokohama",
   冰島: "Iceland",
+  濟州: "Jeju",
+  沖繩: "Okinawa",
+  北海道: "Hokkaido",
+  九州: "Kyushu",
+  峇里島: "Bali",
+  長灘島: "Boracay",
 };
 
 const INTL_GEOCODE: Record<string, readonly string[]> = {
@@ -117,6 +178,21 @@ const INTL_GEOCODE: Record<string, readonly string[]> = {
   澳門: ["Macau", "Macao", "澳門"],
   釜山: ["Busan, South Korea", "釜山, 韓國"],
   冰島: ["Iceland", "冰島", "Reykjavik, Iceland", "雷克雅維克, 冰島"],
+  濟州: [
+    "濟州島, 韓國",
+    "Jeju Island, South Korea",
+    "Jeju-do, South Korea",
+    "Jeju-si, South Korea",
+    "Jeju, South Korea",
+    "제주도",
+    "제주",
+    "濟州, 韓國",
+  ],
+  沖繩: ["Okinawa, Japan", "沖繩縣, 日本", "Okinawa Island, Japan"],
+  北海道: ["Hokkaido, Japan", "北海道, 日本", "Sapporo, Hokkaido, Japan"],
+  九州: ["Kyushu, Japan", "九州, 日本", "Fukuoka, Japan"],
+  峇里島: ["Bali, Indonesia", "峇里島, 印尼", "Denpasar, Bali"],
+  長灘島: ["Boracay, Philippines", "長灘島, 菲律賓"],
 };
 
 /** 無 geocode 時 text search 用的近似中心 */
@@ -155,6 +231,12 @@ const DESTINATION_APPROX_CENTER: Record<string, { lat: number; lng: number }> = 
   香港: { lat: 22.3193, lng: 114.1694 },
   澳門: { lat: 22.1987, lng: 113.5439 },
   釜山: { lat: 35.1796, lng: 129.0756 },
+  濟州: { lat: 33.4996, lng: 126.5312 },
+  沖繩: { lat: 26.2124, lng: 127.6809 },
+  北海道: { lat: 43.0618, lng: 141.3545 },
+  九州: { lat: 33.5904, lng: 130.4017 },
+  峇里島: { lat: -8.4095, lng: 115.1889 },
+  長灘島: { lat: 11.9674, lng: 121.9248 },
   冰島: { lat: 64.1466, lng: -21.9426 },
   雷克雅維克: { lat: 64.1466, lng: -21.9426 },
 };
@@ -173,6 +255,7 @@ export function buildDestinationGeocodeQueries(destination: string, _locale?: Lo
   const queries: string[] = [];
   const entity = resolveDestinationEntity(label);
   const country = entity.country;
+  const en = EN_CITY_NAMES[label];
 
   const scenic = SCENIC_GEOCODE[label];
   if (scenic) queries.push(...scenic);
@@ -183,7 +266,27 @@ export function buildDestinationGeocodeQueries(destination: string, _locale?: Lo
   const preset = TW_AMBIGUOUS_GEOCODE[label];
   if (preset) queries.push(...preset);
 
-  const en = EN_CITY_NAMES[label];
+  // Region / island query expansion — never rely on a single short label.
+  if (
+    entity.type === "island" ||
+    entity.type === "region" ||
+    entity.type === "state" ||
+    /(島|岛)$/.test(label)
+  ) {
+    queries.push(label);
+    if (!label.endsWith("島") && !label.endsWith("岛")) {
+      queries.push(`${label}島`, `${label}岛`);
+    }
+    if (en) {
+      queries.push(en, `${en} Island`, `${en}-do`, `${en}-si`, `${en} Island, South Korea`);
+    }
+    if (country) {
+      const countryEn = COUNTRY_EN[country] ?? country;
+      queries.push(`${label}, ${country}`, `${label}, ${countryEn}`);
+      if (en) queries.push(`${en}, ${countryEn}`, `${en} Island, ${countryEn}`);
+    }
+  }
+
   if (country && country !== "台灣" && country !== "台湾") {
     const countryEn = COUNTRY_EN[country] ?? country;
     if (en) {
@@ -255,31 +358,184 @@ export async function geocodeDestinationWithFallback(params: {
   destination: string;
   locale: Locale;
   geocodeFn: GeocodeDestinationFn;
+  /** When true (default), reuse locked / approx center and skip live geocode spam. */
+  preferCachedCoordinates?: boolean;
 }): Promise<TripLocation | null> {
   const { destination, locale, geocodeFn } = params;
-  const queries = buildDestinationGeocodeQueries(destination, locale);
+  const label = normalizeDestinationLabel(destination);
+  const cacheKey = geocodeCacheKey(label);
+  const preferCached = params.preferCachedCoordinates !== false;
 
-  for (const query of queries) {
-    logChatGeocodeRequest(query);
-    logItineraryGeocodeQuery(query);
-    try {
-      const result = await geocodeFn({ data: { query, locale } });
-      const loc = result.location;
-      if (loc?.lat != null && loc?.lng != null) {
-        logChatGeocodeResponse("ok", `${loc.lat.toFixed(4)},${loc.lng.toFixed(4)}`);
-        return loc;
-      }
-      logChatGeocodeFallback(query, result.error ?? "empty");
-    } catch (error) {
-      logChatGeocodeFallback(
-        query,
-        error instanceof Error ? error.message : String(error),
+  if (preferCached) {
+    const locked = getResolvedDestinationScope(label);
+    if (locked) {
+      logAiPipeline(
+        "[DESTINATION_RESOLUTION_REUSED]",
+        "source=scope_lock",
+        `destination=${label}`,
+        `lat=${locked.latitude}`,
+        `lng=${locked.longitude}`,
       );
+      return {
+        placeId: `scope:${label}`,
+        country: "台灣",
+        city: label,
+        lat: locked.latitude,
+        lng: locked.longitude,
+        formattedName: label,
+        displayLabel: label,
+        address: label,
+        timezone: undefined,
+        utcOffsetMinutes: null,
+      };
+    }
+    const approx = resolveDestinationApproxCenter(label);
+    if (approx) {
+      setResolvedDestinationScope({
+        displayName: label,
+        normalizedName: label,
+        latitude: approx.lat,
+        longitude: approx.lng,
+        source: "approx_center",
+        resolvedAt: Date.now(),
+      });
+      logAiPipeline(
+        "[DESTINATION_RESOLUTION_REUSED]",
+        "source=approx_center",
+        `destination=${label}`,
+        `lat=${approx.lat}`,
+        `lng=${approx.lng}`,
+      );
+      return {
+        placeId: `approx:${label}`,
+        country: "台灣",
+        city: label,
+        lat: approx.lat,
+        lng: approx.lng,
+        formattedName: label,
+        displayLabel: label,
+        address: label,
+        timezone: undefined,
+        utcOffsetMinutes: null,
+      };
     }
   }
 
-  logChatGeocodeResponse("empty", "all_queries_failed");
-  return null;
+  const cached = readGeocodeCache(cacheKey);
+  if (cached?.location) {
+    logAiPipeline("[GEOCODE_REQUEST_DEDUPED]", `key=${cacheKey}`, "source=cache_hit");
+    return cached.location;
+  }
+  if (cached && !cached.location) {
+    logAiPipeline(
+      "[GEOCODE_REQUEST_DEDUPED]",
+      `key=${cacheKey}`,
+      `source=cache_fail`,
+      `error=${cached.error ?? "unknown"}`,
+    );
+    return null;
+  }
+
+  const inflight = inFlightGeocodeMap.get(cacheKey);
+  if (inflight) {
+    logAiPipeline("[GEOCODE_REQUEST_DEDUPED]", `key=${cacheKey}`, "source=in_flight");
+    return inflight;
+  }
+
+  const task = (async (): Promise<TripLocation | null> => {
+    const queries = buildDestinationGeocodeQueries(destination, locale);
+    let lastError: string | null = null;
+
+    for (let qi = 0; qi < queries.length; qi += 1) {
+      const query = queries[qi]!;
+      if (qi > 0) {
+        logAiPipeline("[GEOCODE_QUERY_RETRY]", `query=${query}`, `attempt=${qi + 1}`);
+      }
+      logChatGeocodeRequest(query);
+      // Only log itinerary geocode once per outer destination to cut duplicate noise.
+      if (query === queries[0]) {
+        logItineraryGeocodeQuery(query);
+      }
+      try {
+        const result = await geocodeFn({ data: { query, locale } });
+        const loc = result.location;
+        if (loc?.lat != null && loc?.lng != null) {
+          logChatGeocodeResponse("ok", `${loc.lat.toFixed(4)},${loc.lng.toFixed(4)}`);
+          lockDestinationCoordinatesFromGeocode({
+            destination: label,
+            lat: loc.lat,
+            lng: loc.lng,
+          });
+          destinationCoordinateCache.set(cacheKey, {
+            location: loc,
+            error: null,
+            at: Date.now(),
+          });
+          return loc;
+        }
+        lastError = result.error ?? "geocode_empty_response";
+        logChatGeocodeFallback(query, lastError);
+        devVerboseInfo(
+          "[GEOCODE_FAILURE_DETAIL]",
+          `code=${lastError}`,
+          `query=${query}`,
+        );
+        // Auth / rate-limit: stop burning queries in this round.
+        if (
+          lastError === "geocode_auth_error" ||
+          lastError === "geocode_rate_limited" ||
+          lastError === "geocode_network_error"
+        ) {
+          break;
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        logChatGeocodeFallback(query, lastError);
+      }
+    }
+
+    // Known admin centers remain usable even when Geocoding API fails.
+    const approx = resolveDestinationApproxCenter(label);
+    if (approx) {
+      logChatGeocodeResponse("approx_fallback", `${approx.lat},${approx.lng}`);
+      const loc: TripLocation = {
+        placeId: `approx:${label}`,
+        country: "台灣",
+        city: label,
+        lat: approx.lat,
+        lng: approx.lng,
+        formattedName: label,
+        displayLabel: label,
+        address: label,
+        timezone: undefined,
+        utcOffsetMinutes: null,
+      };
+      lockDestinationCoordinatesFromGeocode({
+        destination: label,
+        lat: approx.lat,
+        lng: approx.lng,
+      });
+      destinationCoordinateCache.set(cacheKey, {
+        location: loc,
+        error: null,
+        at: Date.now(),
+      });
+      return loc;
+    }
+
+    logChatGeocodeResponse("empty", lastError ?? "all_queries_failed");
+    destinationCoordinateCache.set(cacheKey, {
+      location: null,
+      error: lastError ?? "geocode_empty_response",
+      at: Date.now(),
+    });
+    return null;
+  })().finally(() => {
+    inFlightGeocodeMap.delete(cacheKey);
+  });
+
+  inFlightGeocodeMap.set(cacheKey, task);
+  return task;
 }
 
 export function logDestinationTextSearchResult(count: number): void {

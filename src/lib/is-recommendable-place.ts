@@ -246,6 +246,11 @@ function isPureGeographicMarker(place: RecommendablePlaceInput): boolean {
   );
   if (hasBusinessType) return false;
 
+  // Bare point_of_interest / establishment (common Places payloads) are NOT
+  // geographic markers — require at least one pure geo admin type.
+  const hasPureGeo = types.some((t) => PURE_GEOGRAPHIC_TYPES.has(t));
+  if (!hasPureGeo) return false;
+
   const onlyGeographic = types.every(
     (t) =>
       PURE_GEOGRAPHIC_TYPES.has(t) ||

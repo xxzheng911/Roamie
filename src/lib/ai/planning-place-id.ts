@@ -14,7 +14,7 @@ export function isFallbackPlanningPlaceId(placeId: string | undefined | null): b
 }
 
 export function isHardGooglePlaceId(placeId: string | undefined | null): boolean {
-  const id = (placeId ?? "").trim();
+  const id = (placeId ?? "").trim().replace(/^places\//i, "");
   if (!id || isFallbackPlanningPlaceId(id)) return false;
   if (
     id.startsWith("synthetic:") ||
@@ -23,11 +23,16 @@ export function isHardGooglePlaceId(placeId: string | undefined | null): boolean
     id.startsWith("name:") ||
     id.startsWith("dayplan:") ||
     id.startsWith("latlng:") ||
-    id.startsWith("saved-")
+    id.startsWith("saved-") ||
+    id.startsWith("session:") ||
+    id.startsWith("trip:") ||
+    id.startsWith("memory:") ||
+    id.startsWith("mock-") ||
+    id.startsWith("rec-")
   ) {
     return false;
   }
-  return true;
+  return /^ChIJ[\w-]+$/i.test(id);
 }
 
 export function logPlaceDetailsSkipFallbackId(placeId: string): void {

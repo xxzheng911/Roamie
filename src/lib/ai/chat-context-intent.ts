@@ -9,10 +9,14 @@ export type ChatContextIntent =
   | "create_itinerary"
   | "place_recommendation"
   | "best_travel_time"
+  | "trip_planning"
   | "general_chat";
 
 const CREATE_ITINERARY_SIGNALS =
   /(?:幫我安排|帮我安排|幫我規劃|帮我规划|幫我排|帮我排|幫我生成|帮我生成|幫我建立|帮我建立|直接生成|排行程|安排.{0,8}行程|規劃.{0,8}行程|规划.{0,8}行程|生成.{0,6}天.{0,6}行程|生成行程|建立行程|创建行程|完整.{0,4}行程|itinerary|你可以幫我安排|可以幫我安排)/i;
+
+const TRIP_PLANNING_DESTINATION_DATE =
+  /(?:\d{1,2}\s*[\/\-月]\s*\d{1,2}).{0,12}(?:~|～|至|到|\-|—|–).{0,12}(?:\d{1,2}\s*[\/\-月]\s*\d{1,2})|要去|想去|去[\u4e00-\u9fff]{2,8}|旅行|旅遊|旅游/;
 
 /** 使用者要求建立 / 安排完整行程 — 優先於 BEST_TRAVEL_TIME */
 export function isCreateItineraryIntent(text: string): boolean {
@@ -48,7 +52,7 @@ export function isPlaceRecommendationIntent(text: string): boolean {
 
 /**
  * Intent 優先級：
- * CREATE_ITINERARY > PLACE_RECOMMENDATION > BEST_TRAVEL_TIME > GENERAL_CHAT
+ * CREATE_ITINERARY > PLACE_RECOMMENDATION > BEST_TRAVEL_TIME > TRIP_PLANNING > GENERAL_CHAT
  */
 export function resolveChatContextIntent(
   text: string,
@@ -62,6 +66,23 @@ export function resolveChatContextIntent(
   if (isPlaceRecommendationIntent(t)) return "place_recommendation";
   if (isBestTravelTimeIntent(t)) return "best_travel_time";
 
+  // Deterministic: destination + date/days must not collapse to general_chat.
+  if (
+    /\d{1,2}\s*[\/\-月]\s*\d{1,2}/.test(t) &&
+    /要去|想去|去|旅行|旅遊|旅游/.test(t)
+  ) {
+    return "trip_planning";
+  }
+  if (
+    /(?:\d+|[一二三四五六七八九十兩两]+)\s*天/.test(t) &&
+    /[\u4e00-\u9fff]{2,12}/.test(t)
+  ) {
+    return "trip_planning";
+  }
+  if (TRIP_PLANNING_DESTINATION_DATE.test(t)) {
+    return "trip_planning";
+  }
+
   return "general_chat";
 }
 
@@ -73,6 +94,8 @@ export function chatContextIntentToTripPurpose(intent: ChatContextIntent): strin
       return "best_time_to_visit";
     case "place_recommendation":
       return "recommend_places";
+    case "trip_planning":
+      return "region_selected";
     default:
       return undefined;
   }

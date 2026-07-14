@@ -38,13 +38,31 @@ export function latLngFallbackPlaceId(lat: number, lng: number): string {
   return `latlng:${lat.toFixed(6)},${lng.toFixed(6)}`;
 }
 
-const SYNTHETIC_PLACE_ID_PREFIXES = ["latlng:", "saved-", "trip-", "mock-", "rec-"] as const;
+const SYNTHETIC_PLACE_ID_PREFIXES = [
+  "latlng:",
+  "saved-",
+  "trip-",
+  "mock-",
+  "rec-",
+  "session:",
+  "memory:",
+  "synthetic:",
+  "name:",
+  "dayplan:",
+  "core:",
+  "landmark-cache:",
+] as const;
 
+/**
+ * Only accept real Google Place IDs (ChIJ…) or Places API resource names.
+ * Custom ids like session:/trip:/memory: must never hit Place Details.
+ */
 export function isGooglePlaceId(placeId: string): boolean {
-  const id = placeId.trim();
+  const id = placeId.trim().replace(/^places\//i, "");
   if (!id) return false;
   if (SYNTHETIC_PLACE_ID_PREFIXES.some((prefix) => id.startsWith(prefix))) return false;
-  return true;
+  if (/^(session:|trip:|memory:)/i.test(id)) return false;
+  return /^ChIJ[\w-]+$/i.test(id);
 }
 
 export function pickToPlaceDetailHandoff(pick: HomeNearbyPick): PlaceDetailHandoff {

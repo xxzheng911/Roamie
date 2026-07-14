@@ -28,6 +28,7 @@ import {
   logChatReadyToRecommend,
   logChatRenderBlocked,
   logDestinationGeocodeFallback,
+  safeChatLog,
 } from "@/lib/ai/chat-place-flow-log";
 import {
   buildNamedFallbackRecommendations,
@@ -96,7 +97,10 @@ import {
 } from "@/lib/ai/ai-trip-style";
 import {
   buildComposedDayPlanSummary,
+  composedPlansToAiDayPlan,
   dayPlanToRecommendations,
+  ensureAllDayPlansExist,
+  enforceStandardDaySlotPlans,
   flattenComposedDayPlanPlaces,
   isItineraryRenderable,
   mergeEnrichedIntoDayPlan,
@@ -104,6 +108,7 @@ import {
   type AiDayPlan,
   type ComposedDayPlan,
 } from "@/lib/ai/ai-day-plan-source";
+import { refillMissingDaySlots } from "@/lib/ai/ai-multi-day-planner";
 import { resolveDayPlanPlaceCards } from "@/lib/ai/ai-day-plan-place-cards";
 import { logItineraryRenderWithPartialDetails } from "@/lib/ai/planning-place-id";
 import {
@@ -133,7 +138,7 @@ import {
   logAiRenderItinerarySuccess,
 } from "@/lib/ai/normalize-planning-places";
 import { logAiPushPlaceCards } from "@/lib/ai/ai-chat-conversation-state";
-import { getFrozenPlanningDayPlan } from "@/lib/ai/ai-planning-session";
+import { alignDayPlanToSession, getFrozenPlanningDayPlan } from "@/lib/ai/ai-planning-session";
 import type { DayPlanBucket } from "@/lib/ai/ai-trip-style";
 
 export type { GeocodeDestinationFn };
@@ -499,7 +504,7 @@ export async function buildAlternativeDestinationRecommendations(params: {
     } else {
       logChatPlacesError("places_empty", "alternative_all_attempts");
       recommendations = [];
-      logChatRenderBlocked("no_real_places");
+      safeChatLog(logChatRenderBlocked,"no_real_places");
     }
 
     const summary = buildAlternativeRecommendationSummary(recommendations);
@@ -767,7 +772,36 @@ export async function buildDestinationMustVisitRecommendation(params: {
       }
 
       const plannerDayCount = composedPlans.filter((plan) => plan.entries.length > 0).length;
-      const itineraryRenderable = isItineraryRenderable(composedPlans, days, style);
+      let itineraryRenderable = isItineraryRenderable(composedPlans, days, style);
+      if (!itineraryRenderable && plannerTotalPlaces(composedPlans) > 0) {
+        composedPlans = enforceStandardDaySlotPlans(
+          ensureAllDayPlansExist(
+            refillMissingDaySlots({
+              plans: composedPlans,
+              pool: filteredPlacesForPlan,
+              days,
+              style,
+              plannedDate: planningContext.startDate,
+            }),
+            days,
+          ),
+          days,
+        );
+        itineraryRenderable = isItineraryRenderable(composedPlans, days, style);
+        if (itineraryRenderable) {
+          dayPlan = alignDayPlanToSession(
+            composedPlansToAiDayPlan({
+              composedPlans,
+              destination: label,
+              days,
+              planningSessionId: sessionId,
+            }),
+            sessionId,
+          );
+          recommendations = dayPlanToRecommendations(dayPlan);
+        }
+      }
+
       logChatPlannerFinish(
         label,
         days,
@@ -787,15 +821,34 @@ export async function buildDestinationMustVisitRecommendation(params: {
       if (itineraryRenderable && recommendations.length > 0 && dayPlan?.items.length) {
         logAiPushPlaceCards(recommendations.length);
         logChatPlaceCardsRendered(recommendations.length);
-        logAiRenderItinerarySuccess(recommendations.length);
+        logAiRenderItinerarySuccess(recommendations.length, dayPlan?.days, days);
         logChatRenderItinerary(days, dayPlan.items.length);
         if (!plannerDaysMatchRequested(plannerDayCount, days)) {
-          logChatRenderBlocked(`planner_days_mismatch:${plannerDayCount}/${days}`);
+          safeChatLog(logChatRenderBlocked,`planner_days_mismatch:${plannerDayCount}/${days}`);
         }
+      } else if (plannerTotalPlaces(composedPlans) > 0) {
+        dayPlan = alignDayPlanToSession(
+          composedPlansToAiDayPlan({
+            composedPlans,
+            destination: label,
+            days,
+            planningSessionId: sessionId,
+          }),
+          sessionId,
+        );
+        recommendations = dayPlanToRecommendations(dayPlan);
+        safeChatLog(logChatRenderBlocked,
+          "itinerary_plan_incomplete_partial_kept",
+        );
+        logAiRenderBlocked(
+          "itinerary_plan_incomplete_partial_kept",
+          filteredPlacesForPlan.length,
+          dayPlan.items.length,
+        );
       } else {
         dayPlan = undefined;
         recommendations = [];
-        logChatRenderBlocked(
+        safeChatLog(logChatRenderBlocked,
           filteredPlacesForPlan.length > 0 ? "itinerary_plan_incomplete" : "no_valid_geocoded_places",
         );
         logAiRenderBlocked(
@@ -866,7 +919,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
       if (recommendations.length > 0) {
         logChatPlacesResponse(recommendations.length, "named_fallback");
       } else {
-        logChatRenderBlocked("no_real_places");
+        safeChatLog(logChatRenderBlocked,"no_real_places");
       }
     }
 
@@ -875,7 +928,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
       logChatPlaceCardsRendered(recommendations.length);
       logChatRenderPlaceList(recommendations.length, "must_visit_place_list");
     } else {
-      logChatRenderBlocked("no_real_places");
+      safeChatLog(logChatRenderBlocked,"no_real_places");
     }
 
     return {
@@ -1169,7 +1222,7 @@ export async function buildMoreDestinationRecommendations(params: {
       logChatPlaceCardsRendered(recommendations.length);
     } else {
       recommendations = [];
-      logChatRenderBlocked("no_new_places");
+      safeChatLog(logChatRenderBlocked,"no_new_places");
     }
 
     const moreContext = {

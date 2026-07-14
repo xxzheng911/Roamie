@@ -90,6 +90,9 @@ export function resolveTripPlaceId(place: PlaceResult): string {
   if (rawId && !isFallbackPlanningId(rawId)) return rawId;
 
   const core = normalizeCorePlaceName(place.name ?? "");
+  const address = normalizePlaceName(place.address ?? "");
+  if (core && address) return `na:${core}|${address}`;
+
   if (core) return `core:${core}`;
 
   const norm = normalizePlaceName(place.name ?? "");

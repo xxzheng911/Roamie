@@ -1,10 +1,17 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
-import { shouldBlockStyleSelection } from "@/lib/ai/chat-planning-state";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { PendingQuestion } from "@/lib/ai/destination-pending-question";
 import { enrichPendingQuestion } from "@/lib/ai/chat-conversation-state";
-import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import {
+  buildDestinationCombinationSuggestionsReply,
+  pendingOptionTitlesForCombinations,
+} from "@/lib/ai/destination-combination-suggestions";
+import {
+  normalizeDestinationLabel,
+  isKnownCountryLabel,
+  isKnownTouristCityLabel,
+} from "@/lib/ai/trip-planning-context";
 import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import { EN_CITY_NAMES } from "@/lib/ai/destination-geocode";
 import { buildLocalLifeSearchAttempts, buildLocalLifeSupplementAttempts } from "@/lib/ai/ai-local-life-rules";
@@ -127,16 +134,24 @@ export function hasConfirmedTripDays(
   session?: ChatPlanningSession,
 ): boolean {
   if (session?.pendingQuestion?.type === "ask_days") return false;
-  if (ctx.planningDaysConfirmed === false) return false;
-  return ctx.days != null && ctx.days > 0;
+
+  const days = resolveInferredTripDays(ctx, session);
+  if (!days || days <= 0) return false;
+
+  if (ctx.planningDaysConfirmed === false && !hasTripDateRange(ctx, session)) {
+    return false;
+  }
+
+  return true;
 }
 
 export function resolveConfirmedDays(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
+  userText?: string,
 ): number | undefined {
   if (!hasConfirmedTripDays(ctx, session)) return undefined;
-  return ctx.days;
+  return resolveInferredTripDays(ctx, session, userText);
 }
 
 export function resolveTripStyleFromContext(
@@ -150,19 +165,106 @@ export function resolveTripStyleFromContext(
   return raw;
 }
 
+export function resolveTripStartDate(
+  ctx: CanonicalTravelContext,
+  session?: ChatPlanningSession,
+): string | undefined {
+  return (
+    ctx.startDate?.trim() ||
+    session?.tripStartDate?.trim() ||
+    session?.travelContext?.startDate?.trim() ||
+    session?.tripPlanningContext?.startDate?.trim() ||
+    undefined
+  );
+}
+
+export function resolveTripEndDate(
+  ctx: CanonicalTravelContext,
+  session?: ChatPlanningSession,
+): string | undefined {
+  return (
+    ctx.endDate?.trim() ||
+    session?.tripEndDate?.trim() ||
+    session?.travelContext?.endDate?.trim() ||
+    session?.tripPlanningContext?.endDate?.trim() ||
+    undefined
+  );
+}
+
 export function hasTripDateRange(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
 ): boolean {
-  const start =
-    ctx.startDate?.trim() ??
-    session?.tripStartDate?.trim() ??
-    session?.travelContext?.startDate?.trim();
-  const end =
-    ctx.endDate?.trim() ??
-    session?.tripEndDate?.trim() ??
-    session?.travelContext?.endDate?.trim();
-  return Boolean(start && end);
+  return Boolean(resolveTripStartDate(ctx, session) && resolveTripEndDate(ctx, session));
+}
+
+export function inferDaysFromDateRange(
+  startDate?: string | null,
+  endDate?: string | null,
+): number | undefined {
+  const start = startDate?.trim();
+  const end = endDate?.trim();
+  if (!start || !end) return undefined;
+
+  const startMs = Date.parse(`${start}T00:00:00`);
+  const endMs = Date.parse(`${end}T00:00:00`);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs < startMs) return undefined;
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  return Math.min(30, Math.max(1, Math.round((endMs - startMs) / dayMs) + 1));
+}
+
+/** Resolve trip days from explicit count or a complete start/end date range. */
+export function resolveInferredTripDays(
+  ctx: CanonicalTravelContext,
+  session?: ChatPlanningSession,
+  userText?: string,
+): number | undefined {
+  if (ctx.days != null && ctx.days > 0) return ctx.days;
+
+  const fromDates = inferDaysFromDateRange(
+    resolveTripStartDate(ctx, session),
+    resolveTripEndDate(ctx, session),
+  );
+  if (fromDates) return fromDates;
+
+  const sessionDays = session?.tripDays ?? session?.tripPlanningContext?.days;
+  if (sessionDays != null && sessionDays > 0) return sessionDays;
+
+  if (userText?.trim()) {
+    const range = parseTravelDateRangeFromText(userText);
+    if (range.days && range.days > 0) return range.days;
+  }
+
+  return undefined;
+}
+
+export function enrichTripDatesInContext(
+  text: string,
+  ctx: CanonicalTravelContext,
+  session?: ChatPlanningSession,
+): Partial<CanonicalTravelContext> {
+  const fromText = text.trim() ? parseTravelDateRangeFromText(text) : {};
+  const startDate =
+    fromText.startDate ??
+    resolveTripStartDate(ctx, session);
+  const endDate =
+    fromText.endDate ??
+    resolveTripEndDate(ctx, session);
+  const days =
+    fromText.days ??
+    resolveInferredTripDays(ctx, session);
+
+  const patch: Partial<CanonicalTravelContext> = {};
+  if (startDate) patch.startDate = startDate;
+  if (endDate) patch.endDate = endDate;
+  if (days && days > 0) {
+    patch.days = days;
+    if (startDate && endDate) {
+      patch.planningDaysConfirmed = true;
+    }
+  }
+  return patch;
 }
 
 export function hasCompleteTripPlanningContext(
@@ -177,23 +279,37 @@ export function hasCompleteTripPlanningContext(
 export function shouldAskTripDuration(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
+  userText?: string,
 ): boolean {
   if (!resolveConversationDestination(ctx, session)) return false;
   if (hasConfirmedTripDays(ctx, session)) return false;
+  if (resolveInferredTripDays(ctx, session, userText)) return false;
   if (ctx.mustVisitGenerated) return false;
+
+  const dest = resolveConversationDestination(ctx, session);
+  if (dest) {
+    const label = normalizeDestinationLabel(dest);
+    if (
+      isKnownCountryLabel(label) &&
+      !isKnownTouristCityLabel(label) &&
+      !hasTripDateRange(ctx, session)
+    ) {
+      return false;
+    }
+  }
+
   return true;
 }
 
 export function shouldAskTripStyle(
-  ctx: CanonicalTravelContext,
-  session?: ChatPlanningSession,
-  userText?: string,
+  _ctx: CanonicalTravelContext,
+  _session?: ChatPlanningSession,
+  _userText?: string,
 ): boolean {
-  if (session && shouldBlockStyleSelection(session, ctx, userText)) return false;
-  if (!hasCompleteTripPlanningContext(ctx, session)) return false;
-  if (ctx.mustVisitGenerated) return false;
-  if (resolveTripStyleFromContext(ctx, session)) return false;
-  return true;
+  // Legacy Trip Conversation (classic_landmarks / local_life / slow_nature / mixed)
+  // has been retired. Destination planning always uses New Trip Conversation
+  // (dynamic destination combinations) instead.
+  return false;
 }
 
 export function pendingQuestionForAskTripDuration(
@@ -263,26 +379,18 @@ export function pendingQuestionForAskTripStyle(
 export function buildAskTripStyleReply(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
+  userText?: string,
 ): string {
+  // Legacy 1~4 style options removed — redirect callers toward combination copy.
   const destination = resolveConversationDestination(ctx, session) ?? "這趟";
-  const days = resolveConfirmedDays(ctx, session);
+  const days = resolveConfirmedDays(ctx, session, userText);
   const label = normalizeDestinationLabel(destination);
   if (!days) {
     return buildAskTripDurationReply(ctx, session);
   }
-  const nights = Math.max(0, days - 1);
-  const nightLabel = nights > 0 ? `${days} 天 ${nights} 夜` : `${days} 天`;
-
-  logAiTripStyleOptionsRender();
-
   return [
-    `${label} ${nightLabel}，想怎麼安排比較好？`,
-    "",
-    ...TRIP_STYLE_OPTIONS.map(
-      (option, index) => `${index + 1}. ${option.label}`,
-    ),
-    "",
-    "回覆 1～4 或選項名稱即可。",
+    `好，我先記下 ${label} ${days} 天行程方向。`,
+    "接下來我會依目的地給你幾組動態行程組合，回覆你比較有興趣的組合即可。",
   ].join("\n");
 }
 
@@ -320,27 +428,47 @@ export function buildTripStyleSelectionAdviceResult(
 export function buildAskTripStyleAdviceResult(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
+  userText?: string,
 ): {
   reply: string;
   pendingQuestion: PendingQuestion;
   contextPatch: Partial<CanonicalTravelContext>;
 } {
+  // Legacy style selection retired — upgrade to New Trip Conversation combinations.
   const destination = resolveConversationDestination(ctx, session)!;
-  const days = resolveConfirmedDays(ctx, session);
+  const days = resolveConfirmedDays(ctx, session, userText) ?? ctx.days ?? 3;
+  const label = normalizeDestinationLabel(destination);
+  const hasExactDate =
+    Boolean(ctx.startDate) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(ctx.startDate!.trim()) &&
+    Boolean(ctx.endDate) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(ctx.endDate!.trim());
+  const reply =
+    buildDestinationCombinationSuggestionsReply(label, days, {
+      startDate: hasExactDate ? ctx.startDate : undefined,
+      endDate: hasExactDate ? ctx.endDate : undefined,
+      weatherLine: `好，我先記下 ${label} ${days} 天行程方向。`,
+    }) ?? buildAskTripStyleReply(ctx, session, userText);
+
+  const comboOptions = pendingOptionTitlesForCombinations(label);
   return {
-    reply: buildAskTripStyleReply(ctx, session),
-    pendingQuestion: pendingQuestionForAskTripStyle(
-      destination,
-      ctx.destinationCountry ?? session?.travelContext?.destinationCountry,
-    ),
+    reply,
+    pendingQuestion: enrichPendingQuestion({
+      type: "combination_choice",
+      options: comboOptions.length ? comboOptions : ["都可以"],
+      baseDestination: label,
+      destinationCountry: ctx.destinationCountry ?? session?.travelContext?.destinationCountry,
+    }),
     contextPatch: {
-      destination,
+      destination: label,
       days,
       planningDaysConfirmed: true,
-      startDate: ctx.startDate ?? session?.tripStartDate,
-      endDate: ctx.endDate ?? session?.tripEndDate,
-      tripPurpose: "awaiting_trip_style",
+      startDate: resolveTripStartDate(ctx, session),
+      endDate: resolveTripEndDate(ctx, session),
+      tripPurpose: "combination_suggestions_offered",
       conversationState: "awaiting_preference",
+      mustVisitGenerated: true,
+      planningStage: "recommendations_generated",
     },
   };
 }
@@ -549,12 +677,7 @@ export function buildDayPlanSummaryFromBuckets(
 export function mergeDateRangeIntoContext(
   text: string,
   ctx: CanonicalTravelContext,
+  session?: ChatPlanningSession,
 ): Partial<CanonicalTravelContext> {
-  const range = parseTravelDateRangeFromText(text);
-  if (!range.startDate && !range.endDate && !range.days) return {};
-  return {
-    ...(range.startDate ? { startDate: range.startDate } : {}),
-    ...(range.endDate ? { endDate: range.endDate } : {}),
-    ...(range.days ? { days: range.days } : {}),
-  };
+  return enrichTripDatesInContext(text, ctx, session);
 }

@@ -372,11 +372,20 @@ export function preparePlacesForItineraryBuild(
     if (!name || isGenericPlaceLabel(name, label)) continue;
     const ready: ChatPlaceItem = {
       ...normalized,
-      placeId: normalized.placeId ?? normalized.googlePlaceId ?? `session:${name}`,
-      googlePlaceId: normalized.googlePlaceId ?? normalized.placeId ?? `session:${name}`,
+      // Never invent session:/trip:/memory: ids — Place Detail only accepts real Google Place IDs.
+      placeId: normalized.placeId || normalized.googlePlaceId || undefined,
+      googlePlaceId: normalized.googlePlaceId || normalized.placeId || undefined,
     };
+    if (!ready.placeId && !ready.googlePlaceId) {
+      // Keep name for later Places Search mapping; do not fabricate ids.
+      ready.placeId = undefined;
+      ready.googlePlaceId = undefined;
+    }
     if (!isValidItineraryStopPlace(ready, label)) continue;
-    const key = ready.placeId?.trim() || `${name}@${ready.address ?? ""}`;
+    const key =
+      ready.placeId?.trim() ||
+      ready.googlePlaceId?.trim() ||
+      `${name}@${ready.address ?? ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(ready);

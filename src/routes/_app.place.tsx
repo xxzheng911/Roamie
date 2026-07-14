@@ -77,6 +77,9 @@ const searchSchema = z.object({
   returnTo: z.enum(["chat", "map", "home", "trip", "saved"]).optional(),
   tripId: z.string().optional(),
   day: z.coerce.number().optional(),
+  /** Trip planning mode: previous stop / day origin (not device GPS) */
+  originLat: z.coerce.number().optional(),
+  originLng: z.coerce.number().optional(),
 });
 
 export const Route = createFileRoute("/_app/place")({
@@ -119,6 +122,19 @@ function PlaceDetailPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [usedFallback, setUsedFallback] = useState(false);
   const [userLocation, setUserLocation] = useState(TAIPEI_CENTER);
+  const tripPlanningOrigin = useMemo(() => {
+    if (
+      search.returnTo === "trip" &&
+      search.originLat != null &&
+      search.originLng != null &&
+      Number.isFinite(search.originLat) &&
+      Number.isFinite(search.originLng)
+    ) {
+      return { lat: search.originLat, lng: search.originLng };
+    }
+    return null;
+  }, [search.returnTo, search.originLat, search.originLng]);
+  const navigationOrigin = tripPlanningOrigin ?? userLocation;
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [reasonProfile, setReasonProfile] = useState(() => userProfileForReasonFrom({}));
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
@@ -225,15 +241,19 @@ function PlaceDetailPage() {
 
   useEffect(() => {
     let cancelled = false;
-    void import("@/lib/location-app-gate").then(({ waitForAppActiveForLocation }) =>
-      waitForAppActiveForLocation().then((active) => {
-        if (!active || cancelled) return;
-        return requestDeviceLocation().then((loc) => {
-          if (cancelled || !loc) return;
-          setUserLocation({ lat: loc.lat, lng: loc.lng });
-        });
-      }),
-    ).catch(() => {});
+    if (tripPlanningOrigin) {
+      setUserLocation(tripPlanningOrigin);
+    } else {
+      void import("@/lib/location-app-gate").then(({ waitForAppActiveForLocation }) =>
+        waitForAppActiveForLocation().then((active) => {
+          if (!active || cancelled) return;
+          return requestDeviceLocation().then((loc) => {
+            if (cancelled || !loc) return;
+            setUserLocation({ lat: loc.lat, lng: loc.lng });
+          });
+        }),
+      ).catch(() => {});
+    }
     void Promise.all([
       getUserProfile(locale).catch(() => null),
       getPreferences().catch(() => ({} as Awaited<ReturnType<typeof getPreferences>>)),
@@ -251,8 +271,8 @@ function PlaceDetailPage() {
           }),
         );
         setSavedNames(new Set(saved.map((s) => s.name)));
-        const lat = place?.lat ?? userLocation.lat;
-        const lng = place?.lng ?? userLocation.lng;
+        const lat = place?.lat ?? navigationOrigin.lat;
+        const lng = place?.lng ?? navigationOrigin.lng;
         return fetchWeatherFn({ data: { lat, lng, locale } });
       })
       .then((w) => {
@@ -263,28 +283,48 @@ function PlaceDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [locale, place?.lat, place?.lng, userLocation.lat, userLocation.lng, fetchWeatherFn, hasPlusAccess]);
+  }, [
+    locale,
+    place?.lat,
+    place?.lng,
+    navigationOrigin.lat,
+    navigationOrigin.lng,
+    tripPlanningOrigin,
+    fetchWeatherFn,
+    hasPlusAccess,
+  ]);
 
   useEffect(() => {
     setPlace((prev) => {
       if (!prev) return prev;
+      const distM =
+        prev.lat != null && prev.lng != null
+          ? distanceMeters(navigationOrigin, { lat: prev.lat, lng: prev.lng })
+          : undefined;
       const nextReason = buildPlaceRecommendationReason(
         prev,
         reasonProfile,
         weather,
         undefined,
-        undefined,
+        { distanceMeters: distM },
         locale,
       );
       return prev.reason !== nextReason ? { ...prev, reason: nextReason } : prev;
     });
-  }, [place?.id, weather, reasonProfile, locale]);
+  }, [
+    place?.id,
+    weather,
+    reasonProfile,
+    locale,
+    navigationOrigin.lat,
+    navigationOrigin.lng,
+  ]);
 
   const destination =
     place?.lat != null && place.lng != null ? { lat: place.lat, lng: place.lng } : null;
 
   const navigation = usePlaceNavigation({
-    origin: userLocation,
+    origin: navigationOrigin,
     destination,
     weather,
     profile: reasonProfile,
@@ -324,8 +364,8 @@ function PlaceDetailPage() {
 
   const distanceLabel = useMemo(() => {
     if (!place || place.lat == null || place.lng == null) return null;
-    return formatDistanceLabel(distanceMeters(userLocation, { lat: place.lat, lng: place.lng }));
-  }, [place, userLocation]);
+    return formatDistanceLabel(distanceMeters(navigationOrigin, { lat: place.lat, lng: place.lng }));
+  }, [place, navigationOrigin]);
 
   const placeTabelogUrl = useMemo(() => {
     if (!place) return null;
@@ -438,7 +478,7 @@ function PlaceDetailPage() {
     if (!place) return;
     const distM =
       place.lat != null && place.lng != null
-        ? distanceMeters(userLocation, { lat: place.lat, lng: place.lng })
+        ? distanceMeters(navigationOrigin, { lat: place.lat, lng: place.lng })
         : undefined;
     const item = mapPlaceResultToChatItem(place, {
       weather,

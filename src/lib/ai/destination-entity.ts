@@ -1,4 +1,9 @@
-import { normalizeDestinationLabel, isKnownTouristCityLabel, isKnownScenicLabel } from "@/lib/ai/trip-planning-context";
+import {
+  normalizeDestinationLabel,
+  isKnownTouristCityLabel,
+  isKnownScenicLabel,
+  isKnownCountryLabel,
+} from "@/lib/ai/trip-planning-context";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export type DestinationEntityType =
@@ -136,6 +141,69 @@ const ENTITY_SEEDS: EntitySeed[] = [
         { label: "雪祭（札幌）", months: [2] },
       ],
       notes: ["夏季涼爽適合自然風光；冬季雪景與滑雪很熱門。"],
+    },
+  },
+  {
+    names: ["濟州", "濟州島", "济州", "济州岛"],
+    type: "island",
+    country: "韓國",
+    hemisphere: "north",
+    climateZone: "subtropical",
+    seasonality: {
+      bestMonthRanges: ["4~6月", "9~11月"],
+      events: [
+        { label: "油菜花季", months: [3, 4] },
+        { label: "楓葉與晚秋", months: [10, 11] },
+      ],
+      notes: ["適合自然風光、海邊散步與自駕；春秋體感最舒服。"],
+    },
+  },
+  {
+    names: ["沖繩", "冲绳"],
+    type: "island",
+    country: "日本",
+    hemisphere: "north",
+    climateZone: "subtropical",
+    seasonality: {
+      bestMonthRanges: ["3~5月", "10~11月"],
+      events: [],
+      notes: ["海島放鬆與潛水熱門；夏季多雨炎熱。"],
+    },
+  },
+  {
+    names: ["九州"],
+    type: "region",
+    country: "日本",
+    hemisphere: "north",
+    climateZone: "subtropical",
+    seasonality: {
+      bestMonthRanges: ["3~5月", "10~11月"],
+      events: [{ label: "櫻花季", months: [3, 4] }],
+      notes: ["溫泉、自然與城市混搭；春秋最舒服。"],
+    },
+  },
+  {
+    names: ["峇里島", "巴厘岛", "Bali"],
+    type: "island",
+    country: "印尼",
+    hemisphere: "equatorial",
+    climateZone: "tropical",
+    seasonality: {
+      bestMonthRanges: ["4~10月"],
+      events: [],
+      notes: ["乾季通常較適合旅行；雨季午後易有雷雨。"],
+    },
+  },
+  {
+    names: ["長灘島", "长滩岛"],
+    type: "island",
+    country: "菲律賓",
+    hemisphere: "equatorial",
+    climateZone: "tropical",
+    seasonality: {
+      bestMonthRanges: ["11~5月"],
+      events: [],
+      notes: ["乾季較適合海邊活動。"],
     },
   },
   {
@@ -418,11 +486,20 @@ function inferType(name: string): DestinationEntityType {
   if (CONTINENTAL_REGIONS.has(name)) return "region";
   const registered = getEntityByNameMap().get(name);
   if (registered?.type) return registered.type;
+  // Country labels must win over short-name → city heuristics
+  // (e.g. 日本 / 法國 / 荷蘭 without a trailing 國 character).
+  if (isKnownCountryLabel(name) && !isKnownTouristCityLabel(name)) return "country";
+  // Island / region tokens before tourist-city default (濟州, 沖繩, …).
+  if (/(島|岛)$/.test(name) || /^(濟州|冲绳|沖繩|北海道|九州|四國|本州)$/.test(name)) {
+    if (/(島|岛)$/.test(name) || /^(濟州|冲绳|沖繩)$/.test(name)) return "island";
+    return "region";
+  }
   if (isKnownTouristCityLabel(name)) return "city";
   if (isKnownScenicLabel(name)) return "attraction";
   if (/(山|湖|瀑布|國家公園|国家公园|寺|廟|庙)/.test(name)) return "attraction";
   if (/(島|岛)/.test(name)) return "island";
   if (/(省|州|道|縣|县)/.test(name)) return "state";
+  if (/(國|国)$/.test(name)) return "country";
   if (name.length <= 4 && !/(國|国)/.test(name)) return "city";
   return "country";
 }
@@ -572,6 +649,7 @@ export function resolveDestinationEntity(rawName: string): DestinationEntity {
 }
 
 function logDestinationEntityResolved(entity: DestinationEntity): void {
+  logAiPipeline("[DESTINATION_ENTITY_RESOLVED]", `name=${entity.name}`, `type=${entity.type}`);
   logAiPipeline("[AI_DESTINATION_ENTITY]", `name=${entity.name}`, `type=${entity.type}`);
   logAiPipeline("[AI_DESTINATION_TYPE]", entity.type);
   if (entity.country) {

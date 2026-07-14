@@ -17,7 +17,7 @@ import { buildClientContextBundle, toRoamieRequest } from "@/lib/fetch-context";
 import { fetchRoamieAI } from "@/lib/ai/stream-client";
 import { shouldActivateLateNightSceneFlow } from "@/lib/late-night-scene-recommendations";
 import { saveRecommendation } from "@/lib/recommendation-storage";
-import { listPlaces, toggleSavePlace, SAVED_PLACES_CHANGED_EVENT } from "@/lib/places-storage";
+import { listPlaces, peekListPlacesCache, toggleSavePlace, SAVED_PLACES_CHANGED_EVENT } from "@/lib/places-storage";
 import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { isMissingTableError } from "@/lib/supabase-errors";
 import {
@@ -51,6 +51,27 @@ import {
   shouldSkipHomeNearbyLoadWithData,
   writeHomeNearbyResultsCache,
 } from "@/lib/home-nearby-picks-policy";
+import {
+  beginHomeNearbyPerfLoad,
+  logHomeNearbyAllEnriched,
+  logHomeNearbyCacheRendered,
+  logHomeNearbyFirstCardRendered,
+  logHomeNearbyLocationReady,
+  logHomeNearbyRefreshFailed,
+  logHomeNearbyRequestSkipped,
+  logHomeNearbySearchReady,
+  type HomeNearbyLocationSource,
+} from "@/lib/home-nearby-perf";
+import {
+  markHomeNearbyEmpty,
+  markHomeNearbyLoadingInitial,
+  markHomeNearbyRefreshDone,
+  markHomeNearbyRefreshFailed,
+  markHomeNearbyRefreshing,
+  publishHomeNearbyCache,
+  publishHomeNearbyFresh,
+} from "@/lib/home-nearby-repository";
+import { prefetchPlaceCoverUrls } from "@/services/image-cache";
 import { logHomeNearbyLoadOnce, logPlacesApiSkipDuplicate } from "@/lib/places-diagnostics";
 import {
   logHomeNearbyCacheHit,
@@ -270,13 +291,24 @@ function Home() {
       if (sessionNearbyBoot.loadKey) {
         writeHomeNearbyResultsCache(sessionNearbyBoot.loadKey, sessionNearbyBoot.picks);
       }
+      publishHomeNearbyCache(
+        sessionNearbyBoot.picks,
+        sessionNearbyBoot.loadKey,
+        sessionNearbyBoot.lat != null && sessionNearbyBoot.lng != null
+          ? { lat: sessionNearbyBoot.lat, lng: sessionNearbyBoot.lng }
+          : null,
+      );
+      beginHomeNearbyPerfLoad({ hasCache: true, locationSource: "disk" });
       logHomeNearbyCacheHit(sessionNearbyBoot.picks.length, sessionNearbyBoot.ageMs ?? 0);
+      logHomeNearbyCacheRendered(sessionNearbyBoot.picks.length);
+      logHomeNearbyFirstCardRendered(sessionNearbyBoot.picks.length);
       logHomeRenderFromCache("places");
       logHomeNearbyRender("cached");
     } else {
+      beginHomeNearbyPerfLoad({ hasCache: false, locationSource: "unknown" });
       logHomeNearbyRender("loading");
     }
-  }, [sessionNearbyBoot.ageMs, sessionNearbyBoot.loadKey, sessionNearbyBoot.picks]);
+  }, [sessionNearbyBoot.ageMs, sessionNearbyBoot.loadKey, sessionNearbyBoot.picks, sessionNearbyBoot.lat, sessionNearbyBoot.lng]);
 
   useEffect(() => {
     if (nearbyPicks.length > 0 || nearbyRenderState === "empty" || nearbyRenderState === "error") {
@@ -304,6 +336,20 @@ function Home() {
     sessionNearbyBoot.lng,
   ]);
 
+  const nearbyRetryInflightRef = useRef(false);
+  const firstCardLoggedRef = useRef(false);
+
+  const locationSourceForPerf = useCallback(
+    (eff: EffectiveLocationSnapshot | null | undefined): HomeNearbyLocationSource => {
+      if (!eff) return "unknown";
+      if (eff.source === "gps") return "fresh";
+      if (eff.source === "remembered") return "memory";
+      if (eff.source === "last_search") return "disk";
+      return "native";
+    },
+    [],
+  );
+
   const restoreNearbyFromCache = useCallback(
     (loadKey: string): boolean => {
       const loc = effectiveLocationRef.current;
@@ -313,20 +359,26 @@ function Home() {
       if (moduleMeta && moduleMeta.picks.length > 0) {
         applyNearbyPicksIfChanged(moduleMeta.picks);
         hasNearbyPicksRef.current = true;
-        writeHomeSessionNearbyPicks(moduleMeta.picks, loadKey, coords);
+        publishHomeNearbyCache(moduleMeta.picks, loadKey, coords);
         setNearbyLoading(false);
         setNearbyRenderStateLogged("cached");
         logHomeNearbyCacheHit(moduleMeta.picks.length, moduleMeta.ageMs);
+        logHomeNearbyCacheRendered(moduleMeta.picks.length);
+        logHomeNearbyFirstCardRendered(moduleMeta.picks.length);
         return true;
       }
 
+      // 過期仍顯示上一批（SWR）；背景再刷新
       const sessionMeta = readHomeSessionNearbyMeta(undefined, coords);
       if (sessionMeta.picks.length > 0) {
         applyNearbyPicksIfChanged(sessionMeta.picks);
         hasNearbyPicksRef.current = true;
+        publishHomeNearbyCache(sessionMeta.picks, sessionMeta.loadKey ?? loadKey, coords);
         setNearbyLoading(false);
         setNearbyRenderStateLogged("cached");
         logHomeNearbyCacheHit(sessionMeta.picks.length, sessionMeta.ageMs ?? 0);
+        logHomeNearbyCacheRendered(sessionMeta.picks.length);
+        logHomeNearbyFirstCardRendered(sessionMeta.picks.length);
         return true;
       }
 
@@ -335,6 +387,7 @@ function Home() {
     },
     [applyNearbyPicksIfChanged, setNearbyRenderStateLogged],
   );
+
   const loadNearbyPicks = useCallback(async (
     caller?: string,
     locationOverride?: EffectiveLocationSnapshot | null,
@@ -357,11 +410,22 @@ function Home() {
       return;
     }
 
+    if (forceRefresh && nearbyRetryInflightRef.current) {
+      logHomeNearbyRequestSkipped("in_flight");
+      return;
+    }
+
     const loc = { lat: eff.lat, lng: eff.lng };
     const periodKey = homeNearbyLoadPeriodKey();
     const loadKey = homeNearbyLoadKey(loc.lat, loc.lng, periodKey, locale);
     const sessionLoadKey = readHomeSessionNearbyLoadKey();
     const hadPicksBeforeFetch = hasNearbyPicksRef.current;
+
+    beginHomeNearbyPerfLoad({
+      hasCache: hadPicksBeforeFetch,
+      locationSource: locationSourceForPerf(eff),
+    });
+    logHomeNearbyLocationReady();
 
     if (forceRefresh) {
       invalidateHomeNearbyLoadKey(loadKey);
@@ -377,6 +441,7 @@ function Home() {
         caller: caller ?? null,
         reason: "existing_or_completed",
       });
+      logHomeNearbyRequestSkipped("fresh_cache");
       restoreNearbyFromCache(loadKey);
       return;
     }
@@ -385,20 +450,28 @@ function Home() {
       const inflight = getHomeNearbyLoadInFlight<HomeNearbyPick[]>(loadKey);
       if (inflight) {
         logPlacesApiSkipDuplicate("nearby_in_flight", { key: loadKey, caller: caller ?? null });
+        logHomeNearbyRequestSkipped("in_flight");
         try {
           const inflightPicks = sanitizeHomeNearbyPicksForDisplay(await inflight, { logDrop: false });
           if (inflightPicks.length > 0) {
-            setNearbyPicks(inflightPicks);
+            applyNearbyPicksIfChanged(inflightPicks);
             hasNearbyPicksRef.current = true;
+            publishHomeNearbyFresh(inflightPicks, loadKey, loc);
             setNearbyRenderStateLogged(hadPicksBeforeFetch ? "cached" : "fresh");
+            logHomeNearbyFirstCardRendered(inflightPicks.length);
           }
         } catch (e) {
           logHomeNearbyRequestError(
             "inflight_failed",
             e instanceof Error ? e.message : String(e),
           );
+          logHomeNearbyRefreshFailed(
+            e instanceof Error ? e.message : String(e),
+            hasNearbyPicksRef.current,
+          );
         } finally {
           setNearbyLoading(false);
+          markHomeNearbyRefreshDone();
         }
         return;
       }
@@ -407,19 +480,57 @@ function Home() {
     if (!hadPicksBeforeFetch && !background) {
       setNearbyLoading(true);
       setNearbyRenderStateLogged("loading");
+      markHomeNearbyLoadingInitial();
+    } else {
+      markHomeNearbyRefreshing();
     }
 
-    const applyPicks = (picks: HomeNearbyPick[]) => {
+    const applyPicks = (
+      picks: HomeNearbyPick[],
+      phase: "first_batch" | "enriched" | "final",
+    ) => {
       const apply = () => {
+        if (picks.length === 0) {
+          if (!hasNearbyPicksRef.current && !background) {
+            setNearbyRenderStateLogged("empty");
+            markHomeNearbyEmpty();
+          }
+          return;
+        }
+        // 無感替換：有舊卡時用 transition；首批立即上畫面
         setNearbyPicks(picks);
-        hasNearbyPicksRef.current = picks.length > 0;
-        if (picks.length > 0) {
-          setNearbyRenderStateLogged(background ? "fresh" : "fresh");
-        } else if (!hadPicksBeforeFetch) {
-          setNearbyRenderStateLogged("empty");
+        hasNearbyPicksRef.current = true;
+        setNearbyLoading(false);
+        setNearbyRenderStateLogged(phase === "first_batch" && hadPicksBeforeFetch ? "cached" : "fresh");
+        if (phase === "first_batch") {
+          publishHomeNearbyCache(picks, loadKey, loc);
+          logHomeNearbySearchReady(picks.length);
+          logHomeNearbyFirstCardRendered(picks.length);
+          firstCardLoggedRef.current = true;
+          prefetchPlaceCoverUrls(
+            picks.slice(0, 5).map((p) => ({
+              placeId: p.id,
+              url: p.coverImageUrl,
+              photoName: p.photoName,
+            })),
+          );
+        } else {
+          publishHomeNearbyFresh(picks, loadKey, loc);
+          logHomeNearbyAllEnriched(picks.length);
+          if (!firstCardLoggedRef.current) {
+            logHomeNearbyFirstCardRendered(picks.length);
+            firstCardLoggedRef.current = true;
+          }
+          prefetchPlaceCoverUrls(
+            picks.slice(0, 5).map((p) => ({
+              placeId: p.id,
+              url: p.coverImageUrl,
+              photoName: p.photoName,
+            })),
+          );
         }
       };
-      if (background) {
+      if (background && phase !== "first_batch") {
         startTransition(apply);
       } else {
         apply();
@@ -427,6 +538,8 @@ function Home() {
     };
 
     const runFetch = async () => {
+      if (forceRefresh) nearbyRetryInflightRef.current = true;
+      firstCardLoggedRef.current = false;
       logHomeNearbyRequestStart({
         location: eff.locationKey,
         bucket: periodKey,
@@ -443,23 +556,33 @@ function Home() {
 
       let resultCount = 0;
       try {
-        const [profile, prefs, saved] = await Promise.all([
+        // 同步快取先開搜尋，不要等 profile / prefs / listPlaces
+        const cachedPrefs = mergePreferencesWithTravelPrefStatus(readCachedPreferencesSync());
+        const travelPrefStatus = getTravelPrefStatusSync();
+        const savedSync = peekListPlacesCache();
+        const reasonProfile = userProfileForReasonFrom(cachedPrefs, {
+          travelStyle: travelPrefStatus.travelStyleName || undefined,
+          personalityType: travelPrefStatus.travelStyleName || undefined,
+          personalitySummary: travelPrefStatus.personalitySummary || undefined,
+          hasPlusAccess,
+        });
+
+        // 背景補齊 prefs／收藏／profile，不阻擋第一批卡片
+        void Promise.all([
           getUserProfile(locale).catch(() => null),
           getPreferences(),
           listPlaces().catch((e) => {
             console.warn("[Roamie Home] listPlaces failed, using empty", e);
             return [] as Awaited<ReturnType<typeof listPlaces>>;
           }),
-        ]);
-        const mergedPrefs = mergePreferencesWithTravelPrefStatus(prefs);
-        const travelPrefStatus = getTravelPrefStatusSync();
-        const reasonProfile = userProfileForReasonFrom(profile?.prefs ?? mergedPrefs, {
-          travelStyle: travelPrefStatus.travelStyleName || profile?.travelStyle,
-          personalityType: travelPrefStatus.travelStyleName || profile?.personalityType,
-          personalitySummary: travelPrefStatus.personalitySummary || profile?.personalitySummary,
-          aiPreferences: profile?.aiPreferences,
-          hasPlusAccess,
+        ]).then(([, prefs, saved]) => {
+          if (background) return;
+          const mergedPrefs = mergePreferencesWithTravelPrefStatus(prefs);
+          setPrefs(mergedPrefs);
+          setSavedPlaces(saved);
+          setSavedNames(new Set(saved.map((s) => s.name)));
         });
+
         const picks = sanitizeHomeNearbyPicksForDisplay(
           await loadHomeNearbyPicks(
             {
@@ -467,39 +590,47 @@ function Home() {
               weather: weatherRef.current,
               locale,
               reasonProfile,
-              saved,
+              saved: savedSync,
               searchPlacesFn,
               locationKey: eff.locationKey,
             },
-            { forceRefresh },
+            {
+              forceRefresh,
+              onPartialPicks: (partial, phase) => {
+                const clean = sanitizeHomeNearbyPicksForDisplay(partial, { logDrop: false });
+                if (clean.length === 0) return;
+                applyPicks(clean, phase);
+              },
+            },
           ),
           { logDrop: false },
         );
         resultCount = picks.length;
         if (picks.length > 0) {
-          applyPicks(picks);
-          writeHomeSessionNearbyPicks(picks, loadKey, loc);
-        } else if (!hadPicksBeforeFetch && !background) {
+          applyPicks(picks, "final");
+        } else if (!hasNearbyPicksRef.current && !background) {
           setNearbyRenderStateLogged("empty");
-        }
-        if (!background) {
-          setPrefs(mergedPrefs);
-          setSavedPlaces(saved);
-          setSavedNames(new Set(saved.map((s) => s.name)));
+          markHomeNearbyEmpty();
+        } else if (picks.length === 0 && hasNearbyPicksRef.current) {
+          // 刷新得到空／rate limit：保留舊卡
+          logHomeNearbyRefreshFailed("empty_or_rate_limited", true);
+          markHomeNearbyRefreshFailed();
         }
       } catch (e) {
         console.warn("[Roamie Home] nearby picks failed", e);
-        logHomeNearbyRequestError(
-          "home_load_failed",
-          e instanceof Error ? e.message : String(e),
-        );
+        const reason = e instanceof Error ? e.message : String(e);
+        logHomeNearbyRequestError("home_load_failed", reason);
+        logHomeNearbyRefreshFailed(reason, hasNearbyPicksRef.current);
+        markHomeNearbyRefreshFailed();
+        // 有舊資料絕不清空；僅從未成功過才進 error
         if (!hasNearbyPicksRef.current && !background) {
-          setNearbyPicks([]);
           setNearbyRenderStateLogged("error");
         }
       } finally {
         markHomeNearbyLoadComplete(loadKey, resultCount);
-        if (!background) {
+        markHomeNearbyRefreshDone();
+        nearbyRetryInflightRef.current = false;
+        if (!background || hasNearbyPicksRef.current) {
           setNearbyLoading(false);
         }
       }
@@ -518,7 +649,15 @@ function Home() {
     }
 
     await runFetch();
-  }, [locale, searchPlacesFn, hasPlusAccess, restoreNearbyFromCache, setNearbyRenderStateLogged]);
+  }, [
+    locale,
+    searchPlacesFn,
+    hasPlusAccess,
+    restoreNearbyFromCache,
+    setNearbyRenderStateLogged,
+    applyNearbyPicksIfChanged,
+    locationSourceForPerf,
+  ]);
 
   const handleMoodSelect = (moodId: HomeMoodId) => {
     const next = selectedMood === moodId ? null : moodId;
@@ -609,6 +748,7 @@ function Home() {
         caller: "nearby_effect",
         reason: "policy_skip",
       });
+      logHomeNearbyRequestSkipped("same_key");
       restoreNearbyFromCache(nearbyLoadKey);
       void loadNearbyPicks("nearby_effect_bg", effectiveLocation, { background: true });
       return;
@@ -618,7 +758,13 @@ function Home() {
     void loadNearbyPicks("nearby_effect", effectiveLocation, {
       background: hasNearbyPicksRef.current,
     });
-  }, [nearbyLoadKey, effectiveLocation, effectiveLocation?.isReadyForPlaces, loadNearbyPicks, restoreNearbyFromCache]);
+  }, [
+    nearbyLoadKey,
+    effectiveLocation?.isReadyForPlaces,
+    effectiveLocation?.locationKey,
+    loadNearbyPicks,
+    restoreNearbyFromCache,
+  ]);
 
   const handleNearbyPick = (pick: HomeNearbyPick) => {
     logNearbyPlaceCardPressed(pick.id, pick.name);

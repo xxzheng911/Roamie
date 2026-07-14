@@ -39,9 +39,10 @@ function normalizeTypeKey(primaryType?: string | null, label?: string): string {
 
 function weatherHint(weather?: WeatherSummary | null): string | null {
   if (!weather) return null;
-  const cond = weather.condition.toLowerCase();
+  const cond =
+    typeof weather.condition === "string" ? weather.condition.trim().toLowerCase() : "";
   const precip = weather.precipProbability ?? 0;
-  if (precip >= 40 || cond.includes("雨")) return "下雨天也還算適合";
+  if (precip >= 40 || (cond && cond.includes("雨"))) return "下雨天也還算適合";
   if (weather.tempC !== null && weather.tempC >= 32) return "天氣偏熱，適合有冷氣的地方";
   if (weather.tempC !== null && weather.tempC <= 14) return "外面有點冷，適合室內待久一點";
   return "今天天氣還算適合出門";

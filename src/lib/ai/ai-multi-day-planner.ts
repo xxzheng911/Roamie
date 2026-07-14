@@ -19,6 +19,7 @@ import {
 } from "@/lib/ai/ai-day-plan-source";
 import {
   filterExcludedRetailPlaces,
+  dedupeEntryTimes,
   isCafePlace,
   isDiningPlace,
   isExcludedRetailPlace,
@@ -26,6 +27,11 @@ import {
   isNightMarketPlace,
   isProperRestaurantPlace,
 } from "@/lib/ai/ai-day-plan-slot-rules";
+import {
+  computeSlotDeficitFromPools,
+  hasSlotDeficit,
+  type CategoryPoolCounts,
+} from "@/lib/ai/itinerary-postprocess-diagnostics";
 import {
   TripPlaceAllocator,
   isGeocodeEmptyPlace,
@@ -122,10 +128,9 @@ export function isPlannerPoolReady(places: PlaceResult[], days: number): boolean
 
 export function resolveAdaptiveMinPerDay(poolSize: number, days: number): number {
   const ideal = minItemsPerDayForTrip(days);
-  if (poolSize <= 0) return minRenderableItemsPerDay(days);
-  if (poolSize >= days * ideal) return ideal;
-  if (!isPlannerPoolSufficient(poolSize, days)) return minRenderableItemsPerDay(days);
-  return Math.max(minRenderableItemsPerDay(days), Math.floor(poolSize / days));
+  if (poolSize <= 0) return ideal;
+  // 候選池再大也只輸出固定 slot 數，不可依 pool 大小提高每日項目數
+  return ideal;
 }
 
 export function canEvenlyMeetMinPerDay(poolSize: number, days: number): boolean {
@@ -176,7 +181,7 @@ function entryFromPlace(
   };
 }
 
-/** 候選不足時：將 Place Pool 平均分散至所有天（8 places / 5 days → 2,2,2,1,1） */
+/** 候選不足時：將 Place Pool 平均分散至所有天，但每天最多 7 slot（不可把整個 pool 塞進 dayPlan） */
 export function redistributePlacesEvenly(params: {
   places: PlaceResult[];
   days: number;
@@ -184,16 +189,21 @@ export function redistributePlacesEvenly(params: {
   plannedDate?: string;
 }): ComposedDayPlan[] {
   const safeDays = Math.max(1, params.days);
+  const slotsPerDay = minItemsPerDayForTrip(safeDays);
+  const maxTotal = safeDays * slotsPerDay;
   const pool = dedupeCandidatePlaces(
     filterExcludedRetailPlaces(params.places).filter((p) => p.name?.trim()),
-  );
+  ).slice(0, maxTotal);
   if (!pool.length) {
     return ensureAllDayPlansExist([], safeDays);
   }
 
-  const base = Math.floor(pool.length / safeDays);
-  const extra = pool.length % safeDays;
-  const perDayCounts = Array.from({ length: safeDays }, (_, i) => base + (i < extra ? 1 : 0));
+  const base = Math.min(slotsPerDay, Math.floor(pool.length / safeDays));
+  const extra = Math.min(slotsPerDay * safeDays - base * safeDays, pool.length % safeDays);
+  const perDayCounts = Array.from(
+    { length: safeDays },
+    (_, i) => Math.min(slotsPerDay, base + (i < extra ? 1 : 0)),
+  );
 
   logAiPipeline(
     "[AI_PLANNER_REDISTRIBUTE]",
@@ -235,6 +245,24 @@ export function ensureEveryDayPopulated(params: {
   ]);
   if (!mergedPool.length) return normalized;
 
+  const slotsPerDay = minItemsPerDayForTrip(params.days);
+  const slotCap = params.days * slotsPerDay;
+
+  if (mergedPool.length > slotCap) {
+    logAiPipeline(
+      "[AI_PLANNER_ENSURE_DAYS]",
+      `empty=${emptyDays.map((p) => p.day).join(",")}`,
+      `pool=${mergedPool.length}`,
+      "strategy=slot_pick_not_redistribute",
+    );
+    return buildThemedMultiDayPlans({
+      places: mergedPool,
+      days: params.days,
+      style: params.style,
+      plannedDate: params.plannedDate,
+    });
+  }
+
   if (!isPlannerPoolSufficient(mergedPool.length, params.days)) {
     logAiPipeline(
       "[AI_PLANNER_POOL_INSUFFICIENT]",
@@ -248,7 +276,7 @@ export function ensureEveryDayPopulated(params: {
     "[AI_PLANNER_ENSURE_DAYS]",
     `empty=${emptyDays.map((p) => p.day).join(",")}`,
     `pool=${mergedPool.length}`,
-    "strategy=redistribute",
+    "strategy=redistribute_capped",
   );
   return redistributePlacesEvenly({
     places: mergedPool,
@@ -294,13 +322,198 @@ export function countScenicPoolPlaces(places: PlaceResult[]): number {
 }
 
 export function isPlannerPoolCompositionSufficient(places: PlaceResult[], days: number): boolean {
-  const safeDays = Math.max(1, days);
+  return evaluatePlannerPoolGate(places, days).decision !== "block";
+}
+
+export type ItinerarySlotPools = CategoryPoolCounts & {
+  all: PlaceResult[];
+  breakfastPool: PlaceResult[];
+  attractionPool: PlaceResult[];
+  lunchPool: PlaceResult[];
+  cafePool: PlaceResult[];
+  dinnerPool: PlaceResult[];
+  eveningPool: PlaceResult[];
+};
+
+const SLOT_POOL_KEYS = [
+  "breakfast",
+  "attraction_1",
+  "lunch",
+  "attraction_2",
+  "cafe",
+  "dinner",
+  "evening",
+] as const;
+
+export type PlannerPoolGateDecision = "continue" | "refill" | "block";
+
+export function buildItinerarySlotPools(places: PlaceResult[]): ItinerarySlotPools {
   const pool = dedupeCandidatePlaces(filterRealPlanningPlaces(places));
-  if (pool.length < minCandidatePoolSize(safeDays)) return false;
-  return (
-    countDiningPoolPlaces(pool) >= minDiningPoolSize(safeDays) &&
-    countScenicPoolPlaces(pool) >= minScenicPoolSize(safeDays)
+  const breakfastPool: PlaceResult[] = [];
+  const attractionPool: PlaceResult[] = [];
+  const lunchPool: PlaceResult[] = [];
+  const cafePool: PlaceResult[] = [];
+  const dinnerPool: PlaceResult[] = [];
+  const eveningPool: PlaceResult[] = [];
+
+  for (const place of pool) {
+    const blob = [place.name, place.address, ...(place.types ?? []), place.primaryType]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    const kind = classifyPlanPlaceKind(place);
+
+    if (isProperRestaurantPlace(place) || isCafePlace(place)) {
+      if (!isNightMarketPlace(place)) breakfastPool.push(place);
+    }
+    if (isProperRestaurantPlace(place) && !isNightMarketPlace(place)) {
+      lunchPool.push(place);
+    }
+    if (isProperRestaurantPlace(place) || isNightMarketPlace(place)) {
+      dinnerPool.push(place);
+    }
+    if (isCafePlace(place)) cafePool.push(place);
+    if (/bar|night_club|bistro|pub|酒吧|居酒/i.test(blob) || isNightMarketPlace(place)) {
+      eveningPool.push(place);
+    }
+    if (
+      kind === "attraction" ||
+      kind === "culture" ||
+      kind === "nature" ||
+      kind === "shopping" ||
+      kind === "market"
+    ) {
+      if (!isProperRestaurantPlace(place) && !isCafePlace(place)) {
+        attractionPool.push(place);
+      }
+    }
+  }
+
+  return {
+    breakfast: breakfastPool.length,
+    attraction: attractionPool.length,
+    lunch: lunchPool.length,
+    cafe: cafePool.length,
+    dinner: dinnerPool.length,
+    evening: eveningPool.length,
+    total: pool.length,
+    all: pool,
+    breakfastPool,
+    attractionPool,
+    lunchPool,
+    cafePool,
+    dinnerPool,
+    eveningPool,
+  };
+}
+
+export function evaluatePlannerPoolGate(
+  places: PlaceResult[],
+  days: number,
+): {
+  decision: PlannerPoolGateDecision;
+  candidateTotal: number;
+  pools: ItinerarySlotPools;
+  missingSlots: string[];
+} {
+  const pools = buildItinerarySlotPools(places);
+  const candidateTotal = pools.total;
+  const deficit = computeSlotDeficitFromPools(days, pools);
+  const missingSlots: string[] = [];
+  if (deficit.breakfastNeeded > 0) missingSlots.push("breakfast");
+  if (deficit.attractionNeeded > 0) missingSlots.push("attraction");
+  if (deficit.lunchNeeded > 0) missingSlots.push("lunch");
+  if (deficit.cafeNeeded > 0) missingSlots.push("cafe");
+  if (deficit.dinnerNeeded > 0) missingSlots.push("dinner");
+  if (deficit.eveningNeeded > 0) missingSlots.push("evening");
+
+  let decision: PlannerPoolGateDecision;
+  if (candidateTotal < minCandidatePoolSize(days)) {
+    decision = "block";
+  } else if (hasSlotDeficit(deficit)) {
+    decision = "refill";
+  } else {
+    decision = "continue";
+  }
+
+  console.warn(
+    "[PLANNER_POOL_GATE]",
+    `candidateTotal=${candidateTotal}`,
+    `breakfast=${pools.breakfast}`,
+    `attraction=${pools.attraction}`,
+    `lunch=${pools.lunch}`,
+    `cafe=${pools.cafe}`,
+    `dinner=${pools.dinner}`,
+    `evening=${pools.evening}`,
+    `missingSlots=${missingSlots.join(",") || "none"}`,
+    `decision=${decision}`,
   );
+
+  return { decision, candidateTotal, pools, missingSlots };
+}
+
+export function logUsedPlaceSummary(params: {
+  totalCandidates: number;
+  pool: PlaceResult[];
+  plans: ComposedDayPlan[];
+}): void {
+  const seen = new Set<string>();
+  let duplicateDropped = 0;
+  for (const place of params.pool) {
+    const id = resolveTripPlaceId(place);
+    if (!id) continue;
+    if (seen.has(id)) duplicateDropped += 1;
+    else seen.add(id);
+  }
+  const used = collectGlobalUsedPlaceIds(params.plans);
+  const slotPools = buildItinerarySlotPools(
+    params.pool.filter((place) => {
+      const id = resolveTripPlaceId(place);
+      return id && !used.has(id);
+    }),
+  );
+  console.warn(
+    "[USED_PLACE_SUMMARY]",
+    `totalCandidates=${params.totalCandidates}`,
+    `used=${used.size}`,
+    `duplicateDropped=${duplicateDropped}`,
+    `parentChildDropped=0`,
+    `remainingBySlot=breakfast:${slotPools.breakfast},attraction:${slotPools.attraction},lunch:${slotPools.lunch},cafe:${slotPools.cafe},dinner:${slotPools.dinner},evening:${slotPools.evening}`,
+  );
+}
+
+function collectGlobalUsedPlaceIds(plans: ComposedDayPlan[]): Set<string> {
+  const used = new Set<string>();
+  for (const plan of plans) {
+    for (const entry of plan.entries) {
+      const id = resolveTripPlaceId(entry.place);
+      if (id) used.add(id);
+    }
+  }
+  return used;
+}
+
+function poolForSlotKey(
+  key: (typeof SLOT_POOL_KEYS)[number],
+  pools: ItinerarySlotPools,
+  fallback: PlaceResult[],
+): PlaceResult[] {
+  switch (key) {
+    case "breakfast":
+      return pools.breakfastPool.length ? pools.breakfastPool : [...pools.lunchPool, ...pools.cafePool, ...fallback];
+    case "lunch":
+      return pools.lunchPool.length ? pools.lunchPool : [...pools.breakfastPool, ...pools.dinnerPool, ...fallback];
+    case "cafe":
+      return pools.cafePool.length ? pools.cafePool : fallback;
+    case "dinner":
+      return pools.dinnerPool.length ? pools.dinnerPool : [...pools.lunchPool, ...pools.eveningPool, ...fallback];
+    case "evening":
+      return pools.eveningPool.length ? pools.eveningPool : [...pools.dinnerPool, ...pools.attractionPool, ...fallback];
+    case "attraction_1":
+    case "attraction_2":
+    default:
+      return pools.attractionPool.length ? pools.attractionPool : fallback;
+  }
 }
 
 export function dedupeCandidatePlaces(places: PlaceResult[]): PlaceResult[] {
@@ -361,8 +574,9 @@ function pickPlaceForSlot(params: {
   budget: DaySlotBudget;
   plannedDate?: string;
   allowRepeat?: boolean;
+  relaxConstraints?: boolean;
 }): PlaceResult | undefined {
-  const { pool, slot, theme, allocator, day, budget, plannedDate, allowRepeat } = params;
+  const { pool, slot, theme, allocator, day, budget, plannedDate, allowRepeat, relaxConstraints } = params;
   const candidates = pool
     .filter((place) => {
       if (!place.name?.trim()) return false;
@@ -370,7 +584,17 @@ function pickPlaceForSlot(params: {
       if (isExcludedRetailPlace(place)) return false;
       if (!allowRepeat && allocator.isUsed(place)) return false;
       if (exceedsDaySlotBudget(place, budget)) return false;
-      if (!canPlaceFillSlot(place, slot, plannedDate)) return false;
+      if (!relaxConstraints && !canPlaceFillSlot(place, slot, plannedDate)) return false;
+      if (relaxConstraints) {
+        const kind = classifyPlanPlaceKind(place);
+        if (/早餐|午餐|晚餐|宵夜/.test(slot.label)) {
+          if (!isDiningPlace(place, classifyPlanPlaceKind) && kind !== "night_market") return false;
+        } else if (slot.kind === "cafe" || /咖啡/.test(slot.label)) {
+          if (!isCafePlace(place) && kind !== "cafe") return false;
+        } else if (isDiningPlace(place, classifyPlanPlaceKind) && !/咖啡/.test(slot.label)) {
+          return false;
+        }
+      }
       if (/早餐/.test(slot.label) && !isProperRestaurantPlace(place) && !isCafePlace(place)) {
         return false;
       }
@@ -399,11 +623,7 @@ function fillerSlotForKind(kind: PlanPlaceKind, index: number): DayPlanSlot {
         ? "午餐"
         : kind === "cafe"
           ? "咖啡"
-          : kind === "market"
-            ? "市場"
-            : kind === "shopping"
-              ? "街區"
-              : "景點",
+          : "景點",
   };
 }
 
@@ -635,6 +855,14 @@ export function ensureDayPlansMeetMinimum(params: {
     plannedDate: params.plannedDate,
   });
 
+  current = refillMissingDaySlots({
+    plans: current,
+    pool,
+    days: params.days,
+    style: params.style,
+    plannedDate: params.plannedDate,
+  });
+
   const total = plannerTotalPlaces(current);
   if (total < params.days * minPerDay && pool.length > 0) {
     logAiPipeline(
@@ -649,8 +877,15 @@ export function ensureDayPlansMeetMinimum(params: {
       style: params.style,
       plannedDate: params.plannedDate,
     });
-    current = preferBetterComposedPlans(themed, current, params.days);
+    current = preferBetterComposedPlans(themed, current, params.days, params.style);
     current = fillSparseDaysWithControlledRepeats({
+      plans: current,
+      pool,
+      days: params.days,
+      style: params.style,
+      plannedDate: params.plannedDate,
+    });
+    current = refillMissingDaySlots({
       plans: current,
       pool,
       days: params.days,
@@ -659,7 +894,164 @@ export function ensureDayPlansMeetMinimum(params: {
     });
   }
 
+  current = repairTripDuplicatePlaces({
+    plans: current,
+    pool,
+    days: params.days,
+    style: params.style,
+    plannedDate: params.plannedDate,
+  });
+
   return ensureAllDayPlansExist(current, params.days);
+}
+
+/** 逐日依 slot key 補齊缺少的固定 7-slot 結構 */
+export function refillMissingDaySlots(params: {
+  plans: ComposedDayPlan[];
+  pool: PlaceResult[];
+  days: number;
+  style: TripStyleKey;
+  plannedDate?: string;
+}): ComposedDayPlan[] {
+  const pool = dedupeCandidatePlaces(filterExcludedRetailPlaces(filterRealPlanningPlaces(params.pool)));
+  const slotPools = buildItinerarySlotPools(pool);
+  const template =
+    STYLE_DAY_SLOT_TEMPLATES[params.style][0] ??
+    STYLE_DAY_SLOT_TEMPLATES.mixed[0]!;
+  const allocator = new TripPlaceAllocator();
+  seedTripAllocatorFromPlans(allocator, params.plans);
+
+  logUsedPlaceSummary({
+    totalCandidates: pool.length,
+    pool,
+    plans: params.plans,
+  });
+
+  const globalUsed = new Set<string>();
+
+  return ensureAllDayPlansExist(params.plans, params.days).map((plan) => {
+    const minPerDay = minItemsPerDayForTrip(params.days);
+    const hasAllSlotTimes = template.every((slot) =>
+      plan.entries.some((entry) => entry.time === slot.time),
+    );
+    if (plan.entries.length >= minPerDay && hasAllSlotTimes) {
+      return plan;
+    }
+
+    const before = plan.entries.length;
+    const byTime = new Map(plan.entries.map((entry) => [entry.time, entry]));
+    const byLabel = new Map<string, DayPlanEntry[]>();
+    for (const entry of plan.entries) {
+      const list = byLabel.get(entry.label) ?? [];
+      list.push(entry);
+      byLabel.set(entry.label, list);
+    }
+
+    const entries: DayPlanEntry[] = [];
+    const missingKeys: string[] = [];
+    const budget = emptyDayBudget();
+    const theme = resolveDayTheme(params.style, plan.day - 1);
+
+    template.forEach((slot, index) => {
+      let entry = byTime.get(slot.time);
+      if (!entry) {
+        const labelMatches = byLabel.get(slot.label) ?? [];
+        entry = labelMatches.find((candidate) => {
+          const id = resolveTripPlaceId(candidate.place);
+          return id && !globalUsed.has(id);
+        });
+      }
+      if (entry?.name) {
+        const id = resolveTripPlaceId(entry.place);
+        if (id && !globalUsed.has(id)) {
+          globalUsed.add(id);
+          markDaySlotBudget(entry.place, budget);
+          allocator.markUsed(entry.place, plan.day);
+          entries.push({
+            time: slot.time,
+            label: resolveEntryLabel(slot, entry.place),
+            name: entry.name,
+            place: entry.place,
+          });
+          return;
+        }
+      }
+
+      const key = SLOT_POOL_KEYS[index] ?? `slot_${index}`;
+      missingKeys.push(key);
+      const slotPool = poolForSlotKey(key as (typeof SLOT_POOL_KEYS)[number], slotPools, pool);
+      const unusedForSlot = slotPool.filter((candidate) => !allocator.isUsed(candidate));
+      const allowRepeat = unusedForSlot.length === 0 && pool.filter((candidate) => !allocator.isUsed(candidate)).length === 0;
+      const place =
+        pickPlaceForSlot({
+          pool: unusedForSlot.length ? unusedForSlot : slotPool,
+          slot,
+          theme,
+          allocator,
+          day: plan.day,
+          budget,
+          plannedDate: params.plannedDate,
+        }) ??
+        pickPlaceForSlot({
+          pool: unusedForSlot.length ? unusedForSlot : slotPool,
+          slot,
+          theme,
+          allocator,
+          day: plan.day,
+          budget,
+          plannedDate: params.plannedDate,
+          relaxConstraints: true,
+        }) ??
+        pickPlaceForSlot({
+          pool: pool.filter((candidate) => !allocator.isUsed(candidate)),
+          slot,
+          theme,
+          allocator,
+          day: plan.day,
+          budget,
+          plannedDate: params.plannedDate,
+          relaxConstraints: true,
+        }) ??
+        (allowRepeat
+          ? pickPlaceForSlot({
+              pool,
+              slot,
+              theme,
+              allocator,
+              day: plan.day,
+              budget,
+              plannedDate: params.plannedDate,
+              allowRepeat: true,
+              relaxConstraints: true,
+            })
+          : undefined);
+
+      if (!place?.name) return;
+      entries.push({
+        time: slot.time,
+        label: resolveEntryLabel(slot, place),
+        name: place.name,
+        place,
+      });
+    });
+
+    const sorted = dedupeEntryTimes(entries);
+    const after = sorted.length;
+    if (after < before && before >= minPerDay) {
+      return plan;
+    }
+    if (missingKeys.length) {
+      console.warn(
+        "[DAY_SLOT_REFILL]",
+        `day=${plan.day}`,
+        `before=${before}`,
+        `missing=${missingKeys.join(",")}`,
+        `added=${Math.max(0, after - before)}`,
+        `after=${after}`,
+      );
+    }
+    return { day: plan.day, entries: sorted };
+  });
 }
 
 /** Step4：候選不足時，允許少量重複（≤20%）補滿空白天 */
@@ -690,7 +1082,7 @@ export function fillSparseDaysWithControlledRepeats(params: {
     const entries = [...plan.entries];
 
     for (const slot of template) {
-      if (entries.length >= minPerDay) break;
+      if (entries.length >= minPerDay || entries.length >= template.length) break;
       const place = pickPlaceForSlot({
         pool,
         slot,

@@ -5,6 +5,7 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   hasConfirmedTripDays,
   parseAskTripStyleSelection,
+  resolveInferredTripDays,
   resolveTripStyleFromContext,
   tripStyleLabel,
   type TripStyleKey,
@@ -22,7 +23,8 @@ export type ChatPlanningState =
   | "waitingTripDays"
   | "waitingStyleSelection"
   | "generatingPlan"
-  | "planGenerated";
+  | "planGenerated"
+  | "generationFailed";
 
 const REPLAN_INTENT_RE =
   /重排|重新規劃|換一種風格|換個風格|新行程|重新安排|重做行程|換風格|重來/;
@@ -224,13 +226,19 @@ export function applyStyleReselectToSession(
   const cleared = clearPreviousGeneratedPlaces(session, ctx);
   const destination =
     resolveConversationDestination(ctx, session) ?? ctx.destination ?? cleared.travelContext?.destination;
+  const resolvedDays =
+    resolveInferredTripDays(ctx, session) ??
+    ctx.days ??
+    cleared.travelContext?.days ??
+    session.tripDays;
   const reset = resetPlanningSessionForStyleReselect(
     {
       ...cleared,
+      tripDays: resolvedDays,
       travelContext: {
         ...(cleared.travelContext ?? { interests: [] }),
         destination,
-        days: ctx.days ?? cleared.travelContext?.days ?? session.tripDays,
+        days: resolvedDays,
         startDate: ctx.startDate ?? cleared.travelContext?.startDate ?? session.tripStartDate,
         endDate: ctx.endDate ?? cleared.travelContext?.endDate ?? session.tripEndDate,
         planningDaysConfirmed: true,

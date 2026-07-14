@@ -13,6 +13,7 @@ import {
 } from "@/lib/ai/season-response-guardrail";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { extractItineraryDestinationFromText } from "@/lib/ai/itinerary-entity-extraction";
+import { enrichTripDatesInContext } from "@/lib/ai/ai-trip-style";
 
 /** A 附近探索 | B 目的地規劃 | C 特定地點 | D 心情推薦 */
 export type ChatConversationMode =
@@ -87,7 +88,7 @@ export function isKnownDestinationLabel(name: string): boolean {
 }
 
 export const KNOWN_COUNTRIES =
-  /^(泰國|泰国|日本|韓國|韩国|中國|中国|台灣|台湾|馬來西亞|马来西亚|越南|印尼|印度尼西亞|菲律宾|菲律賓|新加坡|柬埔寨|寮國|老挝|緬甸|缅甸|蒙古|美國|美国|加拿大|英國|英国|法國|法国|德國|德国|義大利|意大利|澳洲|澳大利亚|紐西蘭|新西兰)(國|国)?$/i;
+  /^(泰國|泰国|日本|韓國|韩国|中國|中国|台灣|台湾|馬來西亞|马来西亚|越南|印尼|印度尼西亞|菲律宾|菲律賓|新加坡|柬埔寨|寮國|老挝|緬甸|缅甸|蒙古|美國|美国|加拿大|英國|英国|法國|法国|德國|德国|義大利|意大利|澳洲|澳大利亚|紐西蘭|新西兰|荷蘭|荷兰|西班牙|葡萄牙|希臘|希腊|瑞士|比利時|比利时|奧地利|奥地利|瑞典|挪威|丹麥|丹麦|芬蘭|芬兰|波蘭|波兰|捷克|匈牙利|愛爾蘭|爱尔兰|冰島|冰岛|土耳其|印度|南非|巴西|阿根廷|智利|墨西哥|埃及|摩洛哥)(國|国)?$/i;
 
 export function isKnownCountryLabel(name: string): boolean {
   const n = normalizeCityLabel(name);
@@ -328,7 +329,12 @@ const NON_DESTINATION_LABELS = new Set([
 ]);
 
 export function normalizeCityLabel(name: string): string {
-  return name.trim().replace(/(市|縣|都|府)$/, "");
+  const t = name.trim();
+  // 京都 ends with 都 but is the full city name — do not strip.
+  if (t === "京都") return "京都";
+  // 東京都 → 東京 (administrative suffix)
+  if (t === "東京都" || t === "东京都") return "東京";
+  return t.replace(/(市|縣|都|府)$/, "");
 }
 
 /** 需求／類別／偏好片語 — 不可當目的地 */
@@ -819,7 +825,13 @@ export function mergeTripPlanningContext(
       session.tripDestination?.city ??
       (skipDestParse ? undefined : session.preferredArea);
 
-    const days = travelCtx.days ?? session.tripDays ?? prev.days;
+    const days =
+      travelCtx.days ??
+      session.tripDays ??
+      prev.days ??
+      (travelCtx.startDate && travelCtx.endDate
+        ? enrichTripDatesInContext("", travelCtx, session).days
+        : undefined);
     const travelMonth = travelCtx.travelMonth ?? prev.travelMonth;
     const travelStyle =
       travelCtx.travelStyle ??

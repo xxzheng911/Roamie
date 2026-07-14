@@ -50,6 +50,7 @@ export function TripCoverImage({
       src={resolved}
       alt={alt}
       loading={loading}
+      priority
       className={cn("h-full w-full", className)}
       imgClassName={imgClassName}
     />

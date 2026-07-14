@@ -75,6 +75,7 @@ import {
   countScenicPoolPlaces,
   ensureDayPlansMeetMinimum,
   ensureEveryDayPopulated,
+  evaluatePlannerPoolGate,
   finalizeMultiDayItinerary,
   isPlannerPoolReady,
   isPlannerPoolSufficient,
@@ -332,31 +333,9 @@ function parseEntryMinutes(time: string): number {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
-function localLifeDayHasRequiredComposition(entries: DayPlanEntry[]): boolean {
-  if (entries.length < LOCAL_LIFE_MIN_ITEMS_PER_DAY) return false;
-  const scenicLabels = entries.filter((e) => e.label === "景點").length;
-  if (scenicLabels < 2) return false;
-  const hasStreetOrCulture = entries.some((e) => {
-    const k = classifyPlanPlaceKind(e.place);
-    return (
-      k === "shopping" ||
-      k === "culture" ||
-      k === "attraction" ||
-      k === "market" ||
-      isLocalLifeDistrictCandidate(e.place) ||
-      e.label === "景點"
-    );
-  });
-  const hasCoffeeOrSnack = entries.some(
-    (e) =>
-      /咖啡/.test(e.label) ||
-      isExplicitCafePlace(e.place) ||
-      isCafePlace(e.place),
-  );
-  const hasBreakfast = entries.some((e) => /早餐/.test(e.label));
-  const hasLunch = entries.some((e) => /午餐/.test(e.label));
-  const hasDinner = entries.some((e) => /晚餐/.test(e.label));
-  return hasStreetOrCulture && hasCoffeeOrSnack && hasBreakfast && hasLunch && hasDinner;
+function localLifeDayHasRequiredComposition(_entries: DayPlanEntry[]): boolean {
+  // local_life 僅影響候選排序權重，不作額外 composition 驗證
+  return true;
 }
 
 function dedupePlanningPlaces(places: PlaceResult[]): PlaceResult[] {
@@ -427,8 +406,12 @@ export function validateGeneratedDays(
     reasons.push(`day_count_mismatch:${normalized.length}!=${requestedDays}`);
   }
 
+  const maxPerDay = minItemsPerDayForTrip(requestedDays);
+
   for (const plan of normalized) {
     const count = plan.entries.length;
+    logDaySlotValidation(plan.day, plan.entries);
+
     if (count === 0) {
       reasons.push(`empty_day:${plan.day}`);
       incompleteDays.push(plan.day);
@@ -441,6 +424,10 @@ export function validateGeneratedDays(
       reasons.push(`sparse_day:${plan.day}:${count}<${minItems}`);
       incompleteDays.push(plan.day);
       logAiIncompleteDayDetected(plan.day, count, `sparse:${count}<${minItems}`);
+    } else if (count > maxPerDay) {
+      reasons.push(`overflow_day:${plan.day}:${count}>${maxPerDay}`);
+      incompleteDays.push(plan.day);
+      logAiIncompleteDayDetected(plan.day, count, `overflow:${count}>${maxPerDay}`);
     }
 
     const hasPlaceholder = plan.entries.some(
@@ -527,13 +514,33 @@ export function isItineraryRenderable(
   style?: TripStyleKey,
   plannedDate?: string,
 ): boolean {
-  return validateCompleteItinerary(
+  const validation = validateCompleteItinerary(
     dayPlans,
     requestedDays,
     style,
     plannedDate,
     classifyPlanPlaceKind,
-  ).ok;
+  );
+  if (validation.ok) return true;
+
+  const normalized = ensureAllDayPlansExist(dayPlans, requestedDays);
+  const total = plannerTotalPlaces(normalized);
+  const expected = expectedItineraryItemCount(requestedDays);
+  if (!isExactSlotDayPlans(normalized, requestedDays) || total !== expected) {
+    return false;
+  }
+
+  const hardBlock = validation.reasons.some((reason) =>
+    /^(empty_day|overflow_day|duplicate_place_id|day_count_mismatch|incomplete_day:)/.test(reason),
+  );
+  if (hardBlock) return false;
+
+  logAiPipeline("[AI_RENDER_SOFT_VALIDATE]", {
+    requestedDays,
+    total,
+    reasons: validation.reasons.slice(0, 6),
+  });
+  return true;
 }
 
 export function plannerTotalPlaces(plans: ComposedDayPlan[]): number {
@@ -548,21 +555,37 @@ export function isPlannerResultBetter(
   candidate: ComposedDayPlan[],
   current: ComposedDayPlan[],
   requestedDays: number,
+  style?: TripStyleKey,
 ): boolean {
-  const candPopulated = plannerPopulatedDayCount(candidate, requestedDays);
-  const currPopulated = plannerPopulatedDayCount(current, requestedDays);
-  if (candPopulated !== currPopulated) return candPopulated > currPopulated;
-  return plannerTotalPlaces(candidate) > plannerTotalPlaces(current);
+  return plannerQualityScore(candidate, requestedDays, style) > plannerQualityScore(current, requestedDays, style);
 }
 
 /** 保留較完整的 Planner 結果，避免 rebuild / 空結果覆蓋較好的行程 */
+function maybeTrimOverflowDayPlans(plans: ComposedDayPlan[], requestedDays: number): ComposedDayPlan[] {
+  const normalized = ensureAllDayPlansExist(plans, requestedDays);
+  const maxPerDay = minItemsPerDayForTrip(requestedDays);
+  if (!normalized.some((plan) => plan.entries.length > maxPerDay)) {
+    return normalized;
+  }
+  return enforceStandardDaySlotPlans(normalized, requestedDays);
+}
+
+function finalizePlannerOutput(
+  plans: ComposedDayPlan[],
+  days: number,
+  style: TripStyleKey,
+): ComposedDayPlan[] {
+  return markItineraryDayCompleteness(maybeTrimOverflowDayPlans(plans, days), days);
+}
+
 export function preferBetterComposedPlans(
   candidate: ComposedDayPlan[],
   current: ComposedDayPlan[],
   requestedDays: number,
+  style?: TripStyleKey,
 ): ComposedDayPlan[] {
-  const normalizedCandidate = ensureAllDayPlansExist(candidate, requestedDays);
-  const normalizedCurrent = ensureAllDayPlansExist(current, requestedDays);
+  const normalizedCandidate = maybeTrimOverflowDayPlans(candidate, requestedDays);
+  const normalizedCurrent = maybeTrimOverflowDayPlans(current, requestedDays);
   const candTotal = plannerTotalPlaces(normalizedCandidate);
   const currTotal = plannerTotalPlaces(normalizedCurrent);
 
@@ -570,20 +593,20 @@ export function preferBetterComposedPlans(
   if (currTotal > 0 && candTotal <= 0) return normalizedCurrent;
   if (candTotal > 0 && currTotal <= 0) return normalizedCandidate;
 
-  const candRenderable = isItineraryRenderable(normalizedCandidate, requestedDays);
-  const currRenderable = isItineraryRenderable(normalizedCurrent, requestedDays);
+  const candRenderable = isItineraryRenderable(normalizedCandidate, requestedDays, style);
+  const currRenderable = isItineraryRenderable(normalizedCurrent, requestedDays, style);
 
   // 已可 render 的結果鎖定，除非候選同樣可 render 且更完整
   if (currRenderable && !candRenderable) return normalizedCurrent;
   if (candRenderable && !currRenderable) return normalizedCandidate;
 
   if (candRenderable && currRenderable) {
-    return isPlannerResultBetter(normalizedCandidate, normalizedCurrent, requestedDays)
+    return isPlannerResultBetter(normalizedCandidate, normalizedCurrent, requestedDays, style)
       ? normalizedCandidate
       : normalizedCurrent;
   }
 
-  return isPlannerResultBetter(normalizedCandidate, normalizedCurrent, requestedDays)
+  return isPlannerResultBetter(normalizedCandidate, normalizedCurrent, requestedDays, style)
     ? normalizedCandidate
     : normalizedCurrent;
 }
@@ -767,6 +790,106 @@ const STANDARD_DAY_SLOTS: DayPlanSlot[] = STANDARD_ITINERARY_DAY_SLOTS.map((slot
   kind: slot.kind as PlanPlaceKind,
   label: slot.label,
 }));
+
+export const EXPECTED_SLOTS_PER_DAY = 7;
+
+export function expectedItineraryItemCount(days: number): number {
+  return Math.max(1, days) * minItemsPerDayForTrip(days);
+}
+
+export function isExactSlotDayPlans(plans: ComposedDayPlan[], days: number): boolean {
+  const expectedPerDay = minItemsPerDayForTrip(days);
+  return ensureAllDayPlansExist(plans, days).every((plan) => plan.entries.length === expectedPerDay);
+}
+
+function plannerQualityScore(
+  plans: ComposedDayPlan[],
+  requestedDays: number,
+  style?: TripStyleKey,
+): number {
+  const normalized = ensureAllDayPlansExist(plans, requestedDays);
+  const total = plannerTotalPlaces(normalized);
+  const expected = expectedItineraryItemCount(requestedDays);
+  const renderable = isItineraryRenderable(normalized, requestedDays, style);
+  const exactSlots = isExactSlotDayPlans(normalized, requestedDays);
+  const populated = plannerPopulatedDayCount(normalized, requestedDays);
+
+  let score = 0;
+  if (renderable) score += 10_000;
+  if (exactSlots) score += 5_000;
+  score += populated * 100;
+  score -= Math.abs(total - expected) * 50;
+  if (total > expected) score -= (total - expected) * 500;
+  return score;
+}
+
+export function logDaySlotValidation(day: number, entries: DayPlanEntry[]): void {
+  const template = STANDARD_DAY_SLOTS;
+  const expected = template.map((s) => s.label).join(",");
+  const actual = entries.map((e) => `${e.time}:${e.label}`).join(",");
+  const expectedLabels = template.map((s) => s.label);
+  const actualLabels = entries.map((e) => e.label);
+  const missing = expectedLabels.filter((label) => !actualLabels.includes(label));
+  const extra = actualLabels.filter((label) => !expectedLabels.includes(label));
+  const duplicateType = expectedLabels.filter(
+    (label, idx, arr) => arr.indexOf(label) !== idx || actualLabels.filter((l) => l === label).length > 1,
+  );
+
+  if (entries.length !== template.length || missing.length > 0 || extra.length > 0) {
+    logAiPipeline("[DAY_SLOT_VALIDATION]", {
+      day,
+      expected,
+      actual,
+      missing: missing.join(",") || "none",
+      extra: extra.join(",") || "none",
+      duplicateType: [...new Set(duplicateType)].join(",") || "none",
+    });
+  }
+}
+
+/** 將 dayPlan 修剪為標準 7-slot，候選池與最終行程分離 */
+export function enforceStandardDaySlotPlans(
+  plans: ComposedDayPlan[],
+  days: number,
+): ComposedDayPlan[] {
+  const template = STANDARD_DAY_SLOTS;
+  return ensureAllDayPlansExist(plans, days).map((plan) => {
+    const usedIds = new Set<string>();
+    const byTime = new Map(plan.entries.map((entry) => [entry.time, entry]));
+    const byLabel = new Map<string, DayPlanEntry[]>();
+    for (const entry of plan.entries) {
+      const list = byLabel.get(entry.label) ?? [];
+      list.push(entry);
+      byLabel.set(entry.label, list);
+    }
+
+    const entries: DayPlanEntry[] = [];
+    for (const slot of template) {
+      let entry = byTime.get(slot.time);
+      if (!entry) {
+        const labelMatches = byLabel.get(slot.label) ?? [];
+        entry = labelMatches.find((candidate) => {
+          const id = resolveTripPlaceId(candidate.place);
+          return id && !usedIds.has(id);
+        });
+      }
+      if (!entry?.name) continue;
+      const id = resolveTripPlaceId(entry.place);
+      if (id && usedIds.has(id)) continue;
+      if (id) usedIds.add(id);
+      entries.push({
+        time: slot.time,
+        label: resolveEntryLabel(slot, entry.place),
+        name: entry.name,
+        place: entry.place,
+      });
+    }
+
+    logDaySlotValidation(plan.day, entries);
+    return { day: plan.day, entries: dedupeEntryTimes(entries) };
+  });
+}
+
 
 export const STYLE_DAY_SLOT_TEMPLATES: Record<TripStyleKey, DayPlanSlot[][]> = {
   classic_landmarks: [STANDARD_DAY_SLOTS],
@@ -1156,7 +1279,7 @@ export function bucketPlacesByKind(
   };
   const seen = new Set<string>();
   for (const place of places) {
-    const id = place.id ?? place.name;
+    const id = resolveTripPlaceId(place);
     if (!id || seen.has(id) || !place.name?.trim() || isExcludedRetailPlace(place, { style })) continue;
     if (style === "classic_landmarks") {
       if (isClassicLandmarkScenicCandidate(place)) {
@@ -1189,7 +1312,17 @@ function applyMultiDayTripPipeline(params: {
   plannedDate?: string;
 }): ComposedDayPlan[] {
   const { places, style, days, plannedDate } = params;
-  let current = ensureAllDayPlansExist(params.plans, days);
+  let current = enforceStandardDaySlotPlans(
+    ensureAllDayPlansExist(params.plans, days),
+    days,
+  );
+
+  if (isExactSlotDayPlans(current, days) && isItineraryRenderable(current, days, style)) {
+    logAiPipeline("[AI_MULTI_DAY_PIPELINE_SKIP]", "reason=exact_slot_plan_ready");
+    logAiDayCountValidate(days, current);
+    return current;
+  }
+
   logMultiDayCandidatePool(places.length, days);
 
   const mergedPool = dedupePlanningPlaces([
@@ -1259,7 +1392,7 @@ function applyMultiDayTripPipeline(params: {
 
   validateTripPlaceUniqueness(current, days);
   logAiDayCountValidate(days, current);
-  return ensureAllDayPlansExist(current, days);
+  return enforceStandardDaySlotPlans(ensureAllDayPlansExist(current, days), days);
 }
 
 function safeBuildClassicLandmarkDayPlans(params: {
@@ -1623,14 +1756,8 @@ function finalizeComposedDayPlans(
     logPlannerOverwriteBlocked("finalize_cleared_plan", initialTotal, finalTotal);
     return markItineraryDayCompleteness(initialPlans, days);
   }
-  const chosen = preferBetterComposedPlans(finalized, initialPlans, days);
-  return markItineraryDayCompleteness(
-    chosen.map((plan) => ({
-      ...plan,
-      entries: dedupeEntryTimes(plan.entries),
-    })),
-    days,
-  );
+  const chosen = preferBetterComposedPlans(finalized, initialPlans, days, style);
+  return finalizePlannerOutput(chosen, days, style);
 }
 
 export function buildComposedDayPlans(params: {
@@ -1648,16 +1775,25 @@ export function buildComposedDayPlans(params: {
   const pool = dedupePlanningPlaces(places);
 
   if (!isPlannerPoolReady(pool, safeDays)) {
+    const gate = evaluatePlannerPoolGate(pool, safeDays);
+    if (gate.decision === "block") {
+      logAiPipeline(
+        "[AI_PLANNER_POOL_GATE]",
+        `pool=${pool.length}`,
+        `target=${minCandidatePoolSize(safeDays)}`,
+        `dining=${countDiningPoolPlaces(pool)}`,
+        `scenic=${countScenicPoolPlaces(pool)}`,
+        "action=skip_await_expansion",
+      );
+      logPlannerOverwriteBlocked("insufficient_pool_skip", 0, 0);
+      return ensureAllDayPlansExist([], safeDays);
+    }
     logAiPipeline(
       "[AI_PLANNER_POOL_GATE]",
       `pool=${pool.length}`,
-      `target=${minCandidatePoolSize(safeDays)}`,
-      `dining=${countDiningPoolPlaces(pool)}`,
-      `scenic=${countScenicPoolPlaces(pool)}`,
-      "action=skip_await_expansion",
+      `decision=${gate.decision}`,
+      "action=continue_with_refill",
     );
-    logPlannerOverwriteBlocked("insufficient_pool_skip", 0, 0);
-    return ensureAllDayPlansExist([], safeDays);
   }
 
   if (style === "classic_landmarks" && destination) {
@@ -1695,7 +1831,7 @@ export function buildComposedDayPlans(params: {
     const totalItems = piped.reduce((n, p) => n + p.entries.length, 0);
     logAiDayPlanFinalSummary(safeDays, totalItems);
     logPlannerResult(piped.length, totalItems, isItineraryRenderable(piped, safeDays, style));
-    return piped;
+    return finalizePlannerOutput(piped, safeDays, style);
   }
 
   if (style === "local_life" && destination) {
@@ -1739,7 +1875,7 @@ export function buildComposedDayPlans(params: {
     const totalItems = piped.reduce((n, p) => n + p.entries.length, 0);
     logAiDayPlanFinalSummary(safeDays, totalItems);
     logPlannerResult(piped.length, totalItems, isItineraryRenderable(piped, safeDays, style));
-    return piped;
+    return finalizePlannerOutput(piped, safeDays, style);
   }
 
   const safePlaces =
@@ -1846,7 +1982,7 @@ export function buildComposedDayPlans(params: {
         );
         if (place && canPlaceFillMealSlot(place, slot)) return place;
         if (place) {
-          const id = place.id ?? place.name;
+          const id = resolveTripPlaceId(place);
           if (id) used.delete(id);
         }
       }
@@ -1878,7 +2014,7 @@ export function buildComposedDayPlans(params: {
       }
     }
     if (place && !canPlaceFillSlot(place, slot, plannedDate)) {
-      const id = place.id ?? place.name;
+      const id = resolveTripPlaceId(place);
       if (id) used.delete(id);
       return undefined;
     }
@@ -1921,22 +2057,15 @@ export function buildComposedDayPlans(params: {
         const fillerSlot: DayPlanSlot = {
           time: fillerTime,
           kind,
-          label:
-            kind === "shopping" || kind === "market"
-              ? "街區"
-              : kind === "culture"
-                ? "文創"
-                : kind === "nature"
-                  ? "自然"
-                  : "景點",
+          label: "景點",
         };
         if (!canPlaceFillSlot(place, fillerSlot, plannedDate)) {
-          const id = place.id ?? place.name;
+          const id = resolveTripPlaceId(place);
           if (id) used.delete(id);
           continue;
         }
         if (fillerSlot.kind === "cafe" && dayState.cafeCount >= 1) {
-          const id = place.id ?? place.name;
+          const id = resolveTripPlaceId(place);
           if (id) used.delete(id);
           continue;
         }
@@ -2009,7 +2138,7 @@ export function buildComposedDayPlans(params: {
   const totalItems = piped.reduce((n, p) => n + p.entries.length, 0);
   logAiDayPlanFinalSummary(safeDays, totalItems);
 
-  return markItineraryDayCompleteness(ensureAllDayPlansExist(piped, safeDays), safeDays);
+  return finalizePlannerOutput(piped, safeDays, style);
 }
 
 export function composedDayPlansToBuckets(plans: ComposedDayPlan[]): DayPlanBucketWithEntries[] {

@@ -103,6 +103,9 @@ import {
   type ExplorePlaceCard,
   type HomeNearbyPick,
 } from "@/lib/explore-category-search";
+import { homeNearbyLoadPeriodKey } from "@/lib/home-nearby-search";
+import { homeNearbyLoadKey } from "@/lib/home-nearby-picks-policy";
+import { readSharedNearbyPlaces } from "@/lib/home-nearby-repository";
 import {
   buildExploreRawPoolKey,
   readExploreRawPool,
@@ -771,6 +774,29 @@ function MapView() {
             }), null);
             return;
           }
+        }
+      } else if (!skipCacheForPrimarySearch && !forceRefresh && cityRecommendMode !== "city") {
+        // 與首頁共用附近快取，避免同定位再刷一輪 Places
+        const shared = readSharedNearbyPlaces({
+          loadKey: homeNearbyLoadKey(
+            center.lat,
+            center.lng,
+            homeNearbyLoadPeriodKey(),
+            locale,
+          ),
+        });
+        if (shared && shared.length > 0) {
+          lastMapSearchSessionRef.current = sessionKey;
+          applyCachedResults(
+            exploreCardsToMapCards(shared as ExplorePlaceCard[], {
+              weather: weatherRef.current,
+              reasonProfile: reasonProfileRef.current,
+              locale,
+            }),
+            null,
+          );
+          console.info("[EXPLORE_SHARED_NEARBY_HIT]", { count: shared.length });
+          return;
         }
       }
     }

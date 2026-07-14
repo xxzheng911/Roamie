@@ -21,7 +21,9 @@ import {
 import {
   filterRealPlanningPlaces,
   isRealGooglePlanningPlace,
+  resolvePlanningPlaceId,
 } from "../src/lib/ai/planning-real-place.ts";
+import { normalizeGooglePlace, normalizeGooglePlaces } from "../src/lib/ai/normalize-google-place.ts";
 import {
   buildRealCityPool,
   chijPlaceId,
@@ -58,27 +60,32 @@ check("minCandidatePoolSize(4)=24", () => {
   assert.equal(minScenicPoolSize(4), 12);
 });
 
-check("real place filter rejects synthetic ids", () => {
-  assert.equal(isRealGooglePlanningPlace({ id: "landmark-cache:x", name: "赤崁樓", lat: 23, lng: 120 }), false);
-  assert.equal(isRealGooglePlanningPlace({ id: "ChIJabc123", name: "台中在地午餐2", lat: 23, lng: 120 }), false);
-  assert.equal(
-    isRealGooglePlanningPlace({ id: "ChIJabc123def456ghi789", name: "赤崁樓", lat: 23, lng: 120 }),
-    true,
-  );
+check("real place filter accepts places/ prefix ids", () => {
+  const normalized = normalizeGooglePlace({
+    id: "places/ChIJabc123def456ghi789",
+    displayName: { text: "赤崁樓" },
+    location: { latitude: 23, longitude: 120 },
+    types: ["tourist_attraction"],
+  });
+  assert.ok(normalized);
+  assert.equal(isRealGooglePlanningPlace(normalized), true);
+  assert.equal(normalized.id, "ChIJabc123def456ghi789");
 });
 
 check("pool=8 for 4d is not ready", () => {
   const city = INTEGRATION_CITIES[0];
-  const tiny = Array.from({ length: 8 }, (_, i) =>
-    mockRealPlace({
-      name: `台中景點${i + 1}`,
-      city: city.name,
-      lat: city.lat,
-      lng: city.lng,
-      kind: "attraction",
-      index: i,
-      cityCode: city.code,
-    }),
+  const tiny = normalizeGooglePlaces(
+    Array.from({ length: 8 }, (_, i) =>
+      mockRealPlace({
+        name: `台中景點${i + 1}`,
+        city: city.name,
+        lat: city.lat,
+        lng: city.lng,
+        kind: "attraction",
+        index: i,
+        cityCode: city.code,
+      }),
+    ),
   );
   assert.equal(filterRealPlanningPlaces(tiny).length, 8);
   assert.equal(isPlannerPoolReady(tiny, 4), false);
@@ -86,7 +93,7 @@ check("pool=8 for 4d is not ready", () => {
 
 check("pool=24 composition ready for 4d", () => {
   const city = INTEGRATION_CITIES[0];
-  const pool = buildRealCityPool(city, 4);
+  const pool = normalizeGooglePlaces(buildRealCityPool(city, 4));
   assert.ok(pool.length >= 24);
   assert.equal(isPlannerPoolReady(pool, 4), true);
   assert.ok(countDiningPoolPlaces(pool) >= 12);
@@ -95,16 +102,18 @@ check("pool=24 composition ready for 4d", () => {
 
 check("12/4 redistribute is not renderable", () => {
   const city = INTEGRATION_CITIES[1];
-  const pool = Array.from({ length: 12 }, (_, i) =>
-    mockRealPlace({
-      name: `台南景點${i + 1}`,
-      city: city.name,
-      lat: city.lat,
-      lng: city.lng,
-      kind: "attraction",
-      index: i,
-      cityCode: city.code,
-    }),
+  const pool = normalizeGooglePlaces(
+    Array.from({ length: 12 }, (_, i) =>
+      mockRealPlace({
+        name: `台南景點${i + 1}`,
+        city: city.name,
+        lat: city.lat,
+        lng: city.lng,
+        kind: "attraction",
+        index: i,
+        cityCode: city.code,
+      }),
+    ),
   );
   const distributed = redistributePlacesEvenly({ places: pool, days: 4, style: "classic_landmarks" });
   assert.equal(plannerTotalPlaces(distributed), 12);
@@ -133,9 +142,9 @@ check("minRenderableItemsPerDay thresholds", () => {
 
 for (const city of INTEGRATION_CITIES) {
   check(`${city.name} 4d pool expansion target`, () => {
-    const pool = buildRealCityPool(city, 4);
+    const pool = normalizeGooglePlaces(buildRealCityPool(city, 4));
     assert.equal(isPlannerPoolReady(pool, 4), true);
-    assert.ok(pool.every((p) => /^ChIJ/i.test(p.id)));
+    assert.ok(pool.every((p) => /^ChIJ/i.test(resolvePlanningPlaceId(p))));
   });
 }
 

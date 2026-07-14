@@ -1,5 +1,6 @@
 import { Loader2 } from "lucide-react";
 import { memo } from "react";
+import { useUserMediaStore } from "@/hooks/use-user-media-store";
 import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 
 type Props = {
@@ -8,16 +9,20 @@ type Props = {
   pending?: boolean;
   busy?: boolean;
   onPress?: () => void;
+  /** When true, fetch eagerly (profile page hero). */
+  priority?: boolean;
 };
 
 function resolveCoverImageSrc(displaySrc: string): string {
   if (
-    displaySrc.startsWith("http://") ||
-    displaySrc.startsWith("https://") ||
     displaySrc.startsWith("blob:") ||
+    displaySrc.startsWith("data:") ||
     displaySrc.startsWith("capacitor://")
   ) {
-    return resolvePlaceImageUrl(displaySrc, { maxWidth: 900 });
+    return displaySrc;
+  }
+  if (displaySrc.startsWith("http://") || displaySrc.startsWith("https://")) {
+    return resolvePlaceImageUrl(displaySrc, { maxWidth: 900 }) ?? displaySrc;
   }
   return displaySrc;
 }
@@ -27,8 +32,15 @@ export const ProfileCover = memo(function ProfileCover({
   pending = false,
   busy = false,
   onPress,
+  priority = true,
 }: Props) {
-  const resolvedCover = displaySrc && !pending ? resolveCoverImageSrc(displaySrc) : null;
+  const media = useUserMediaStore();
+  // Prefer shared local blob over remote URL to avoid CDN round-trip.
+  const preferred =
+    (!pending && media.coverLocalUri) ||
+    (displaySrc && !pending ? displaySrc : null);
+  const resolvedCover = preferred ? resolveCoverImageSrc(preferred) : null;
+  const stableKey = media.coverCacheKey ?? "profile-cover";
 
   return (
     <button
@@ -41,9 +53,11 @@ export const ProfileCover = memo(function ProfileCover({
       <div className="relative aspect-[3/2] w-full min-h-[11rem] max-h-[16rem] shrink-0 overflow-hidden bg-gradient-to-br from-[hsl(var(--accent))] via-secondary to-[hsl(38_42%_94%)]">
         {resolvedCover ? (
           <img
+            key={stableKey}
             src={resolvedCover}
             alt=""
-            loading="lazy"
+            loading={priority ? "eager" : "lazy"}
+            fetchPriority={priority ? "high" : "auto"}
             decoding="async"
             className={`absolute inset-0 h-full w-full object-cover object-center transition duration-300 ${
               busy ? "opacity-80" : ""

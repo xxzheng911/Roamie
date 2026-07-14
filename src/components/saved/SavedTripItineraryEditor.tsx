@@ -686,6 +686,15 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const openItineraryPlaceDetail = useCallback(
     (item: RoamieItineraryItem) => {
       const scrollEl = document.querySelector(".trip-detail-route");
+      const dayItems = (itemsRef.current ?? [])
+        .filter((entry) => (entry.dayIndex ?? 0) === safeDayIndex)
+        .sort((a, b) => (a.sortIndex ?? a.order ?? 0) - (b.sortIndex ?? b.order ?? 0));
+      const indexInDay = dayItems.findIndex(
+        (entry) =>
+          (entry.googlePlaceId && entry.googlePlaceId === item.googlePlaceId) ||
+          (entry.placeName === item.placeName && entry.time === item.time),
+      );
+      const previousItem = indexInDay > 0 ? dayItems[indexInDay - 1] : null;
       const { navigateOptions } = openTripItineraryPlaceDetail(
         item,
         {
@@ -698,6 +707,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           tripTitle,
         },
         locale,
+        { previousItem },
       );
       void navigate(navigateOptions);
     },

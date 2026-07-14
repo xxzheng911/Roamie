@@ -72,5 +72,6 @@ function toIsoDate(year: number, month: number, day: number): string | undefined
   ) {
     return undefined;
   }
-  return d.toISOString().slice(0, 10);
+  // Local calendar date — avoid toISOString() UTC shift (e.g. Asia/Taipei → previous day).
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }

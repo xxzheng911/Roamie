@@ -2,6 +2,18 @@ import { devVerboseInfo } from "@/lib/dev-verbose-log";
 
 /** 聊聊地點推薦流程 — 統一 console log（development only） */
 
+/** Non-blocking logger wrapper — failures must never interrupt planner/render. */
+export function safeChatLog(fn: (...args: never[]) => void, ...args: unknown[]): void {
+  try {
+    fn(...(args as never[]));
+  } catch (error) {
+    console.warn(
+      "[CHAT_LOG_SAFE_FAIL]",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 export function logChatIntentDetected(intent: string, userText: string): void {
   devVerboseInfo("[CHAT_INTENT_DETECTED]", `intent=${intent}`, `text=${userText.trim().slice(0, 80)}`);
 }

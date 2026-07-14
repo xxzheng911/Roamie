@@ -18,6 +18,7 @@ import {
   isGenerateItineraryFailure,
   ITINERARY_GENERATION_FAILED_MESSAGE,
   unwrapGeneratedTripPayload,
+  validateGeneratedItinerary,
   type GenerateItineraryResult,
 } from "@/lib/trip/itinerary-guards";
 import { INSUFFICIENT_ITINERARY_PLACES_MESSAGE } from "@/lib/ai/generic-place-label";
@@ -34,6 +35,13 @@ import {
   logItineraryValidationResult,
   sanitizeDestinationForGeocode,
 } from "@/lib/ai/itinerary-entity-extraction";
+import { groupStopsByTripDays } from "@/lib/ai/combination-itinerary-integrity";
+import {
+  contextRequiresCombinationSelection,
+  logDirectItineraryGenInput,
+  logDirectItineraryGenOutput,
+  validateDirectItineraryInput,
+} from "@/lib/ai/validate-direct-itinerary-input";
 
 export type AiItineraryState =
   | "COLLECTING"
@@ -96,6 +104,7 @@ export async function prepareDirectItineraryFlow(params: {
   }) => Promise<WeatherSummary>;
   excludePlaceIds?: string[];
   msgs?: ChatMsg[];
+  fetchPlaceDetails?: (placeId: string) => Promise<import("@/lib/place-result").PlaceResult | null>;
 }): Promise<DirectItineraryPrepareResult> {
   const { session, context, msgs } = params;
   logAiState("COLLECTING");
@@ -138,6 +147,33 @@ export async function prepareDirectItineraryFlow(params: {
     logItineraryUsedRecommendedPlaces(sessionPlaces.length);
   }
 
+  const requireCombos = contextRequiresCombinationSelection(params.context);
+  if (requireCombos && !(params.context.selectedCombinationIds?.length)) {
+    logAiPipeline(
+      "[ITINERARY_INPUT_VALIDATION_FAILED]",
+      "field=selectedCombinationIds",
+      "value=[]",
+      `generationRequestId=${params.context.generationRequestId ?? "unknown"}`,
+    );
+    logAiState("FAILED", "missing_combination_selection");
+    return {
+      ok: false,
+      state: "FAILED",
+      message:
+        "我還需要你確認想用哪些組合，才能幫你生成行程。回覆組合編號，或回「都不錯」全選。",
+      session: {
+        ...session,
+        aiItineraryState: "FAILED",
+        chatPlanningState: "generationFailed",
+        pendingQuestion: {
+          type: "activity_choice",
+          options: ["重新生成", "都不錯", "幫我生成"],
+          baseDestination: label,
+        },
+      },
+    };
+  }
+
   if (canBuildItineraryFromPlaceCount(sessionPlaces.length)) {
     logAiState("SEARCHING_PLACES", `reuse_${source}`);
     logAiPipeline("[ITINERARY_BUILD_FROM_SUGGESTIONS]", `places=${sessionPlaces.length}`);
@@ -149,14 +185,20 @@ export async function prepareDirectItineraryFlow(params: {
 
   const prepared = await prepareDirectItinerarySession({ ...params, msgs });
   if (!prepared.ok) {
+    const failCode =
+      prepared.failure?.code ??
+      (prepared.apiEmpty ? "places_api_empty" : "insufficient_places");
     if (!canBuildItineraryFromPlaceCount(sessionPlaces.length)) {
-      logAiItineraryFailed(prepared.apiEmpty ? "places_api_empty" : "insufficient_places");
-      logAiPipeline(
-        "[ITINERARY_SAVE_FAILED_REASON]",
-        prepared.apiEmpty ? "api_empty" : "no places",
-      );
+      logAiItineraryFailed(failCode);
+      logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", failCode);
     }
-    logAiState("FAILED", prepared.apiEmpty ? "places_api_empty" : "insufficient_places");
+    logAiState("FAILED", failCode);
+    const partial =
+      prepared.failure &&
+      "partialResolvedPlaces" in prepared.failure
+        ? (prepared.failure as { partialResolvedPlaces?: typeof session.selectedPlaces })
+            .partialResolvedPlaces
+        : undefined;
     return {
       ok: false,
       state: "FAILED",
@@ -164,19 +206,96 @@ export async function prepareDirectItineraryFlow(params: {
       session: {
         ...session,
         aiItineraryState: "FAILED",
-        pendingQuestion: prepared.apiEmpty
-          ? {
-              type: "activity_choice",
-              options: ["must_visit_places", "daily_recommendations"],
-              baseDestination: label,
-            }
-          : undefined,
+        chatPlanningState: "generationFailed",
+        // Keep any successfully mapped places so regenerate can resume.
+        selectedPlaces: partial?.length
+          ? partial
+          : session.selectedPlaces,
+        pendingQuestion: {
+          type: "activity_choice",
+          options: ["重新生成", "must_visit_places", "daily_recommendations"],
+          baseDestination: label,
+        },
+        travelContext: {
+          ...(session.travelContext ?? { interests: [] }),
+          ...params.context,
+          lastItineraryFailure: prepared.failure
+            ? {
+                code: prepared.failure.code,
+                stage: prepared.failure.stage,
+                attemptedCandidates: prepared.failure.attemptedCandidates,
+                resolvedCandidates: prepared.failure.resolvedCandidates,
+                retryCount: prepared.failure.retryCount,
+                searchRetryCount: prepared.failure.searchRetryCount,
+                candidateRegenerationCount:
+                  prepared.failure.candidateRegenerationCount,
+                detailRetryCount: prepared.failure.detailRetryCount,
+                fallbackCandidateCount: prepared.failure.fallbackCandidateCount,
+                generationRequestId: prepared.failure.generationRequestId,
+              }
+            : params.context.lastItineraryFailure,
+          partiallyResolvedPlaces: partial?.length
+            ? partial
+            : params.context.partiallyResolvedPlaces,
+          generationRequestId:
+            prepared.failure?.generationRequestId ??
+            params.context.generationRequestId,
+        },
       },
-      offerMustVisit: prepared.apiEmpty === true,
+      offerMustVisit: false,
     };
   }
 
   const placeCount = prepared.session.selectedPlaces.length;
+  const inputCheck = validateDirectItineraryInput({
+    destination: label,
+    startDate: params.context.startDate,
+    endDate: params.context.endDate,
+    tripDays: days,
+    selectedCombinationIds: params.context.selectedCombinationIds,
+    candidatePlaces: prepared.session.selectedPlaces,
+    destinationScope: label,
+    generationRequestId: params.context.generationRequestId,
+    requireCombinations: requireCombos,
+  });
+  if (!inputCheck.ok) {
+    logAiState("FAILED", inputCheck.code ?? "invalid_itinerary_input");
+    return {
+      ok: false,
+      state: "FAILED",
+      message:
+        inputCheck.code === "no_candidate_places"
+          ? "目前暫時找不到足夠的真實景點候選，請點「重新生成」再試一次。"
+          : "行程資料還不完整，請確認目的地、天數與組合選擇後再試。",
+      session: {
+        ...prepared.session,
+        aiItineraryState: "FAILED",
+        chatPlanningState: "generationFailed",
+        pendingQuestion: {
+          type: "activity_choice",
+          options: ["重新生成", "must_visit_places", "daily_recommendations"],
+          baseDestination: label,
+        },
+      },
+    };
+  }
+
+  logDirectItineraryGenInput({
+    destination: label,
+    tripDays: days,
+    candidateCount: placeCount,
+    selectedCombinationIds: params.context.selectedCombinationIds ?? [],
+    weatherCondition:
+      typeof params.context.weather?.condition === "string"
+        ? params.context.weather.condition
+        : null,
+  });
+  logDirectItineraryGenOutput({
+    dayCount: days,
+    totalPlaceCount: placeCount,
+    isValid: placeCount > 0,
+  });
+
   logAiState("RANKING", `selected=${placeCount}`);
   return {
     ok: true,
@@ -205,18 +324,66 @@ export type DirectItineraryCreateResult =
 function buildLocalItineraryPayload(
   generateInput: ItineraryInput,
   selectedPlaces: NonNullable<ItineraryInput["selectedPlaces"]>,
+  selectedCombinationIds: number[] = [],
 ): RoamiePayloadV2 | null {
   const startDate =
     generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
+  const comboIds =
+    selectedCombinationIds.length > 0
+      ? selectedCombinationIds
+      : [
+          ...new Set(
+            selectedPlaces
+              .flatMap((p) => {
+                const item = p as typeof p & {
+                  matchedSelectedCombinationIds?: number[];
+                  sourceCombinationId?: number;
+                };
+                return (
+                  item.matchedSelectedCombinationIds ??
+                  (item.sourceCombinationId != null ? [item.sourceCombinationId] : [])
+                );
+              })
+              .filter((id): id is number => typeof id === "number" && id > 0),
+          ),
+        ].sort((a, b) => a - b);
   const builtStops = buildFallbackItineraryFromPlaces(
     selectedPlaces,
     generateInput.days,
     startDate,
     generateInput.destination,
+    { selectedCombinationIds: comboIds },
   );
   logItineraryObjectBuilt(builtStops.length, generateInput.days);
   logItineraryDaysBuilt(generateInput.days, builtStops.length);
   logAiItineraryBuild(builtStops.length, generateInput.days);
+
+  const grouped = groupStopsByTripDays(builtStops, generateInput.days, startDate);
+  const integrity = validateGeneratedItinerary({
+    tripDays: generateInput.days,
+    startDate,
+    selectedCombinationIds: comboIds,
+    days: grouped,
+    resolvedPlaces: selectedPlaces,
+  });
+  if (!integrity.ok) {
+    logAiPipeline(
+      "[ITINERARY_INTEGRITY_FAILED]",
+      `reasons=${integrity.reasons.join("|")}`,
+    );
+    logItineraryValidationResult(false, integrity.reasons.join("|"));
+    // Still reject blank days even for local fallback — do not navigate with partial trip.
+    if (integrity.reasons.some((r) => r.startsWith("empty_day") || r.startsWith("day_count"))) {
+      return null;
+    }
+    if (
+      comboIds.length > 0 &&
+      integrity.reasons.some((r) => r.startsWith("missing_combination"))
+    ) {
+      return null;
+    }
+  }
+
   const localPayload: RoamiePayloadV2 = {
     version: 2,
     title: `${generateInput.destination} ${generateInput.days} 天`,
@@ -228,7 +395,7 @@ function buildLocalItineraryPayload(
     days: generateInput.days,
     generatedAt: new Date().toISOString(),
   };
-  const valid = hasValidItineraryStops(localPayload, 1);
+  const valid = hasValidItineraryStops(localPayload, generateInput.days);
   logItineraryValidationResult(valid, valid ? undefined : "local_payload_invalid");
   if (!valid) return null;
   return localPayload;
@@ -242,6 +409,8 @@ export async function createItineraryFromSession(params: {
 }): Promise<DirectItineraryCreateResult> {
   const { session, generateInput, generateItineraryFn } = params;
   const selectedPlaces = generateInput.selectedPlaces ?? [];
+  const selectedCombinationIds =
+    session.travelContext?.selectedCombinationIds ?? [];
 
   if (selectedPlaces.length < 1) {
     logAiItineraryFailed("no_selected_places");
@@ -264,7 +433,11 @@ export async function createItineraryFromSession(params: {
     const generateResult = await generateItineraryFn({ data: generateInput });
 
     if (isGenerateItineraryFailure(generateResult)) {
-      const localPayload = buildLocalItineraryPayload(generateInput, selectedPlaces);
+      const localPayload = buildLocalItineraryPayload(
+        generateInput,
+        selectedPlaces,
+        selectedCombinationIds,
+      );
       if (localPayload) {
         logAiItinerarySuccess();
         logAiState("SUCCESS", "local_build_after_api_fail");
@@ -295,7 +468,11 @@ export async function createItineraryFromSession(params: {
 
     const payload = unwrapGeneratedTripPayload(generateResult);
     if (!payload || !hasValidItineraryStops(payload, 1)) {
-      const localPayload = buildLocalItineraryPayload(generateInput, selectedPlaces);
+      const localPayload = buildLocalItineraryPayload(
+        generateInput,
+        selectedPlaces,
+        selectedCombinationIds,
+      );
       if (localPayload) {
         logAiItinerarySuccess();
         logAiState("SUCCESS", "local_build");
@@ -337,7 +514,11 @@ export async function createItineraryFromSession(params: {
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    const localPayload = buildLocalItineraryPayload(generateInput, selectedPlaces);
+    const localPayload = buildLocalItineraryPayload(
+      generateInput,
+      selectedPlaces,
+      selectedCombinationIds,
+    );
     if (localPayload) {
       logAiItinerarySuccess();
       logAiState("SUCCESS", "local_build_after_exception");

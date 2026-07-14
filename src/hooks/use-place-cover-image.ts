@@ -3,7 +3,7 @@ import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { logPerfImageLoad } from "@/lib/app-perf";
-import { cacheKey, getCachedImage, setCachedImage } from "@/services/image-cache";
+import { cacheKey, getCachedImage, getRememberedPhotoUrl, rememberPhotoUrl, setCachedImage } from "@/services/image-cache";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
 import type { PlaceImageInput } from "@/services/placeImageService";
 
@@ -32,11 +32,22 @@ export function usePlaceCoverImage(options: Options): {
 
   const primaryUrl = useMemo(() => {
     if (!enabled) return null;
-    const raw =
-      url?.trim() ||
-      (photoName?.trim() ? (buildPlacePhotoUrl(photoName.trim(), width) ?? null) : null);
-    const resolved = resolvePlaceImageUrl(raw, { maxWidth: width });
-    if (resolved) return resolved;
+    const rawFromProps = url?.trim() || null;
+    if (rawFromProps) {
+      const resolved = resolvePlaceImageUrl(rawFromProps, { maxWidth: width });
+      if (resolved) return resolved;
+    }
+    const photo = photoName?.trim();
+    if (photo) {
+      const remembered = getRememberedPhotoUrl(photo, width);
+      if (remembered) return remembered;
+      const built = buildPlacePhotoUrl(photo, width);
+      const resolved = resolvePlaceImageUrl(built, { maxWidth: width });
+      if (resolved) {
+        rememberPhotoUrl(photo, width, resolved);
+        return resolved;
+      }
+    }
     if (persistedImageKey) return getCachedImage(persistedImageKey);
     return null;
   }, [enabled, url, photoName, width, persistedImageKey]);
@@ -62,7 +73,7 @@ export function usePlaceCoverImage(options: Options): {
     }
     setSrc(fallback);
     setLoading(false);
-  }, [enabled, fallback, primaryUrl]);
+  }, [enabled, fallback, primaryUrl, persistedImageKey]);
 
   const onError = useCallback(() => {
     if (failedRef.current) return;

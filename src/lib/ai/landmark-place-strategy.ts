@@ -6,8 +6,10 @@ import {
   isKnownTouristCityLabel,
   normalizeDestinationLabel,
 } from "@/lib/ai/trip-planning-context";
+import { isCountryLevelDestination } from "@/lib/ai/destination-scope";
 import { normalizePlaceName, type PlaceLike } from "@/lib/place-planning-memory";
 import type { WeatherScene } from "@/lib/weather-scene";
+import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 
 export type DestinationPlaceSearchKind = "city" | "landmark";
 
@@ -207,6 +209,16 @@ export function classifyDestinationForPlaceSearch(
     };
   }
 
+  // Do not treat countries as cities for Places radius search.
+  if (isCountryLevelDestination(label)) {
+    return {
+      kind: "city",
+      label,
+      nearestCity: undefined,
+      nearestRegion: label,
+    };
+  }
+
   return {
     kind: "city",
     label,
@@ -367,6 +379,7 @@ export function filterPlacesForLandmarkCompanionRecommendation<T extends PlaceLi
 
     if (parent && isInternalSubPlaceOfLandmark(name, parent)) continue;
     if (isExcludedInternalFacilityType(place)) continue;
+    if (isForbiddenTransitAttraction(place)) continue;
 
     const core = normalizePlaceName(name);
     if (core && blockedCores.has(core)) continue;

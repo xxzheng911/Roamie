@@ -24,6 +24,7 @@ import {
   logChatPlaceResultGuard,
   logChatSearchMode,
 } from "@/lib/ai/chat-place-flow-log";
+import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 
 export type ChatPlaceSearchMode = "destination" | "nearby";
 
@@ -67,14 +68,6 @@ const LOCALITY_ONLY_TYPES = new Set([
   "sublocality_level_1",
   "political",
   "country",
-]);
-
-const TRANSPORT_TYPES = new Set([
-  "train_station",
-  "transit_station",
-  "subway_station",
-  "bus_station",
-  "light_rail_station",
 ]);
 
 export type DestinationGuardProfile = {
@@ -163,12 +156,7 @@ function isLocalityOnlyPlace(place: PlaceResult): boolean {
 }
 
 function isTransportPlace(place: PlaceResult, userText?: string): boolean {
-  const primary = (place.primaryType ?? "").trim().toLowerCase();
-  if (primary && TRANSPORT_TYPES.has(primary)) return true;
-  if ((place.types ?? []).some((t) => TRANSPORT_TYPES.has(t.trim().toLowerCase()))) return true;
-  if (/(交通|捷運|地鐵|車站|train|transport|station)/i.test(userText ?? "")) return false;
-  const name = (place.name ?? "").trim();
-  return /(車站|站$|Station|Terminal)/i.test(name);
+  return isForbiddenTransitAttraction(place, userText);
 }
 
 export function passesDestinationPlaceGuard(

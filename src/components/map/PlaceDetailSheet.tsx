@@ -14,7 +14,6 @@ import {
   TrainFront,
 } from "lucide-react";
 import { SafeImage } from "@/components/media/SafeImage";
-import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
 import { resolvePlaceDetailOpeningLine } from "@/lib/normalized-opening-status";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
@@ -129,12 +128,12 @@ export function PlaceDetailSheet({
   return (
     <div className="flex flex-col" data-no-sheet-drag>
       <div className="relative mx-5 mt-1 aspect-[16/10] overflow-hidden rounded-3xl bg-secondary shadow-soft">
-        {photos.length > 0 ? (
+                            {photos.length > 0 ? (
           <>
             <SafeImage
               key={photos[photoIdx]}
               src={photos[photoIdx]}
-              fallbackSrc={getRoamieDefaultImage(place.categoryId ?? place.category)}
+              fallbackSrc={undefined}
               alt={place.name}
               className="h-full w-full object-cover touch-pan-y"
               draggable={false}

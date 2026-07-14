@@ -38,6 +38,7 @@ import {
   logChatRenderModeLocked,
 } from "@/lib/ai/chat-place-flow-log";
 import { isTripAddPlaceSession } from "@/lib/trip/trip-add-place-session";
+import { shouldSuppressChatPlaceCards } from "@/lib/ai/chat-suppress-place-cards";
 
 /** 將摘要中的地點數量改為與實際渲染張數一致 */
 export function alignChatRecommendationCount(summary: string, count: number): string {
@@ -193,6 +194,12 @@ export function recommendationsForChatDisplay(
     logChatCardsPreserved(cards.length, "trip_add_place");
     devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: cards.length, tripAddPlace: true });
     return cards;
+  }
+
+  // Destination itinerary pipeline: combination → generate → redirect. No place cards.
+  if (shouldSuppressChatPlaceCards(session)) {
+    logChatRenderModeLocked("TEXT_ONLY_ITINERARY_PLANNING");
+    return [];
   }
 
   if (session.fromMoodFlow || session.fromMoodCard || session.homeMoodShortcutEntry) {

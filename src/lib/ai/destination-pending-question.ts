@@ -19,6 +19,7 @@ import {
   type TripInterest,
 } from "@/lib/ai/trip-preference";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
 import {
   buildCityDaysConfirmedReply,
   pendingQuestionForAskDays,
@@ -30,8 +31,19 @@ import {
   tripStyleLabel,
   type TripStyleKey,
 } from "@/lib/ai/ai-trip-style";
-import { hasDestinationCombinations } from "@/lib/ai/destination-combination-suggestions";
+import {
+  buildCombinationAllowlistFromTitles,
+  buildCombinationSelectionAllowlist,
+  getDestinationCombinations,
+  pendingOptionTitlesForCombinations,
+  resolveSelectedCombinations,
+} from "@/lib/ai/destination-combination-suggestions";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import {
+  logDestinationCitySelected,
+  logDestinationSearchScopeUpdated,
+  logConversationStageTransition,
+} from "@/lib/ai/destination-scope";
 import {
   contextPatchForPreferenceSelection,
   enrichPendingQuestion,
@@ -56,6 +68,7 @@ export type PendingQuestionType =
   | "preference_choice"
   | "city_style_choice"
   | "destination_style_choice"
+  | "combination_choice"
   | "itinerary_next_step"
   | "ask_days"
   | "ask_preference"
@@ -80,7 +93,7 @@ const AFFIRMATIVE_TAIL_RE =
 const OPTION_ALIASES: Record<string, string[]> = {
   城市: ["城市", "城市探索", "城市散策", "市區"],
   美食按摩: ["美食按摩", "美食", "按摩", "夜市", "美食跟按摩"],
-  海灘放鬆: ["海灘放鬆", "海灘", "海邊放鬆", "海邊", "看海", "沙灘"],
+  海灘放鬆: ["海灘放鬆", "海灘", "海邊放鬆", "海邊", "看海", "沙灘", "放鬆", "C"],
   跳島: ["跳島", "離島", "島嶼"],
   水上市場: ["水上市場", "水上市集", "丹嫩莎多", "floating market"],
   "曼谷＋芭達雅": [
@@ -102,7 +115,6 @@ const OPTION_ALIASES: Record<string, string[]> = {
   經典地標: ["經典地標", "地標", "必去景點"],
   經典景點: ["經典景點", "經典地標", "地標", "景點", "必去景點", "必去", "A"],
   美食咖啡: ["美食咖啡", "美食", "咖啡", "吃的", "B"],
-  海灘放鬆: ["海灘放鬆", "海邊放鬆", "海灘", "海邊", "放鬆", "C"],
   慢步調散策: ["慢步調", "散策", "慢慢走", "慢旅行"],
   must_visit_places: [
     "必去點",
@@ -117,6 +129,7 @@ const OPTION_ALIASES: Record<string, string[]> = {
     "景點有哪些",
     "列景點",
   ],
+  重新生成: ["重新生成", "再生成一次", "再試一次", "重試", "再生一次"],
   daily_rhythm: [
     "總天數節奏",
     "天數節奏",
@@ -176,6 +189,9 @@ export function resolveFlexiblePendingDefault(pending: PendingQuestion): string 
   }
   if (pending.type === "destination_style_choice") {
     return USE_DEFAULT_ROUTES;
+  }
+  if (pending.type === "combination_choice") {
+    return pending.options.join("|");
   }
   return pending.options[0] ?? "";
 }
@@ -243,10 +259,12 @@ export function parseItineraryNextStepSelection(text: string): ItineraryNextStep
 }
 
 export function isAskDaysPending(pending?: PendingQuestion): boolean {
-  return pending?.type === "ask_days";
+  return pending?.type === "ask_days" || pending?.type === "duration_choice";
 }
 
 export function parseAskDaysFromText(text: string): number | undefined {
+  const range = parseTravelDateRangeFromText(text.trim());
+  if (range.days && range.days > 0) return range.days;
   return parseDayCountFromText(text.trim());
 }
 
@@ -257,7 +275,7 @@ export function parsePendingOptionSelection(
   const t = text.trim();
   if (!t) return null;
 
-  if (pending.type === "ask_days") {
+  if (pending.type === "ask_days" || pending.type === "duration_choice") {
     const days = parseAskDaysFromText(t);
     if (days) return String(days);
   }
@@ -265,6 +283,17 @@ export function parsePendingOptionSelection(
   if (pending.type === "ask_trip_style") {
     const style = parseAskTripStyleSelection(t);
     if (style) return style;
+  }
+
+  if (pending.type === "combination_choice") {
+    const dest = pending.baseDestination ?? "";
+    const resolved = resolveSelectedCombinations(dest, t);
+    if (resolved?.titles.length) {
+      return resolved.titles.join("|");
+    }
+    // Do NOT silently fall through to "all combinations" via affirmative fluff.
+    // Ambiguous text must return null so the UI re-asks.
+    return null;
   }
 
   if (pending.type === "ask_preference") {
@@ -455,21 +484,57 @@ function buildContextPatchForSelection(
     const days = parseDayCountFromText(selected) ?? parseDayCountFromText(selected.replace(/\s/g, ""));
     return {
       ...base,
-      days,
-      tripPurpose: "duration_selected",
-    };
-  }
-
-  if (pending.type === "ask_days") {
-    const days = Number(selected) || parseDayCountFromText(selected);
-    return {
-      ...base,
       destination: pending.baseDestination ?? base.destination,
       destinationCountry: country ?? pending.destinationCountry,
       days,
       planningDaysConfirmed: true,
       tripPurpose: "duration_selected",
       conversationState: "awaiting_preference",
+    };
+  }
+
+  if (pending.type === "ask_days") {
+    const range = parseTravelDateRangeFromText(selected);
+    const days = range.days ?? (Number(selected) || parseDayCountFromText(selected));
+    return {
+      ...base,
+      destination: pending.baseDestination ?? base.destination,
+      destinationCountry: country ?? pending.destinationCountry,
+      days,
+      ...(range.startDate && /^\d{4}-\d{2}-\d{2}$/.test(range.startDate)
+        ? { startDate: range.startDate }
+        : {}),
+      ...(range.endDate && /^\d{4}-\d{2}-\d{2}$/.test(range.endDate)
+        ? { endDate: range.endDate }
+        : {}),
+      planningDaysConfirmed: true,
+      tripPurpose: "duration_selected",
+      conversationState: "awaiting_preference",
+    };
+  }
+
+  if (pending.type === "combination_choice") {
+    const titles = selected
+      .split("|")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const dest = pending.baseDestination ?? base.destination;
+    const allowlist = dest
+      ? buildCombinationAllowlistFromTitles(dest, titles) ??
+        buildCombinationSelectionAllowlist(dest, titles.join("、"))
+      : null;
+    return {
+      ...base,
+      destination: pending.baseDestination ?? base.destination,
+      destinationCountry: country ?? pending.destinationCountry,
+      selectedTripStyle: titles.join("、"),
+      travelStyle: titles.join("、"),
+      selectedCombinationIds: allowlist?.selectedCombinationIds,
+      selectedCombinationPlaceNames: allowlist?.allowedPlaceNames,
+      excludedCombinationPlaceNames: allowlist?.exclusiveExcludedPlaceNames,
+      selectionSource: allowlist?.selectionSource,
+      tripPurpose: "route_combination_selected",
+      conversationState: "ready_for_itinerary",
     };
   }
 
@@ -581,10 +646,25 @@ function buildContextPatchForSelection(
 
   if (pending.type === "region_choice") {
     const city = selected === "__flexible_city_mix__" ? pending.options[0] : selected;
+    const countryLabel = country ?? pending.destinationCountry;
+    if (city) {
+      logDestinationCitySelected({ country: countryLabel, city });
+      logDestinationSearchScopeUpdated({
+        from: "country",
+        to: "city",
+        city,
+      });
+      logConversationStageTransition(
+        "COLLECTING_DESTINATION_CITY",
+        "COLLECTING_DATE_AND_DURATION",
+      );
+    }
     return {
       ...base,
       destination: city,
-      destinationCountry: country ?? pending.destinationCountry,
+      destinationCountry: countryLabel,
+      destinationType: "city",
+      destinationCity: city,
       tripPurpose: "region_selected",
     };
   }
@@ -616,37 +696,50 @@ export function buildNextStepAfterAdviceSelection(
     }
     logChatContextUpdate({ destination: dest, days });
     const label = normalizeDestinationLabel(dest);
-    if (hasDestinationCombinations(label)) {
-      return buildCityDaysConfirmedReply(
-        dest,
-        days,
-        pending.destinationCountry ?? ctx.destinationCountry,
-        { weather: ctx.weather, context: { ...ctx, destination: label, days } },
-      );
-    }
-    return buildAskTripStyleAdviceResult(
-      {
-        ...ctx,
-        destination: label,
-        days,
-        planningDaysConfirmed: true,
-        tripPurpose: "duration_selected",
-      },
-      undefined,
+    // Always New Trip Conversation: destination combinations (never legacy trip style).
+    return buildCityDaysConfirmedReply(
+      dest,
+      days,
+      pending.destinationCountry ?? ctx.destinationCountry,
+      { weather: ctx.weather, context: { ...ctx, destination: label, days } },
     );
+  }
+
+  if (pending.type === "combination_choice") {
+    const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
+    const titles = selected
+      .split("|")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const labelList = titles.length ? titles.join("、") : "建議組合";
+    return {
+      reply: [
+        `好，我會以${labelList}為主，幫你安排${dest}${ctx.days ? ` ${ctx.days} 天` : ""}行程。`,
+        "我正在確認實際地點、營業時間與順路動線。",
+      ].join("\n"),
+      pendingQuestion: undefined,
+    };
   }
 
   if (pending.type === "ask_preference") {
     const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
     const days = ctx.days;
     const style = selected === "都可以" ? "混合" : selected;
+    if (!days) {
+      return {
+        reply: `好，那我會把${dest}排成${style}方向。你這趟大概幾天？`,
+        pendingQuestion: pendingQuestionForAskDays(
+          dest,
+          pending.destinationCountry ?? ctx.destinationCountry,
+        ),
+      };
+    }
     return {
       reply: [
-        `好，那我會把${dest}${days ? ` ${days} 天` : ""}排成${style}方向。`,
-        "接下來我可以幫你抓必去點，或直接排完整行程。",
-        "你比較想先列必去點，還是直接排完整行程？",
+        `好，那我會把${dest} ${days} 天排成${style}方向。`,
+        "接下來我會先給你幾組行程組合，回覆有興趣的組合，我再幫你生成行程。",
       ].join("\n"),
-      pendingQuestion: pendingQuestionForPlanningNextStep(
+      pendingQuestion: pendingQuestionForCombinationChoice(
         dest,
         pending.destinationCountry ?? ctx.destinationCountry,
       ),
@@ -705,12 +798,10 @@ export function buildNextStepAfterAdviceSelection(
     }
     return {
       reply: `好，我們以${city}為主往下規劃。你這趟大概想排幾天？`,
-      pendingQuestion: {
-        type: "duration_choice",
-        options: ["3 天", "4 天", "5 天"],
-        baseDestination: city,
-        destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
-      },
+      pendingQuestion: pendingQuestionForAskDays(
+        city,
+        pending.destinationCountry ?? ctx.destinationCountry,
+      ),
     };
   }
 
@@ -730,12 +821,10 @@ export function buildNextStepAfterAdviceSelection(
         busanTip,
         "你這趟大概想排幾天？",
       ].join("\n"),
-      pendingQuestion: {
-        type: "duration_choice",
-        options: ["3 天", "4 天", "5 天"],
-        baseDestination: dest,
-        destinationCountry: pending.destinationCountry ?? ctx.destinationCountry,
-      },
+      pendingQuestion: pendingQuestionForAskDays(
+        dest,
+        pending.destinationCountry ?? ctx.destinationCountry,
+      ),
     };
   }
 
@@ -926,17 +1015,22 @@ export function buildNextStepAfterAdviceSelection(
   if (pending.type === "duration_choice") {
     const days = parseDayCountFromText(selected) ?? ctx.days;
     const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
-    return {
-      reply: [
-        `好，${dest}${days ? ` ${days} 天` : ""}的方向我記下來了。`,
-        "接下來我可以幫你抓一版前後段節奏，或先從必去景點開始排。",
-        "你比較想先定總天數節奏，還是先列出必去點？",
-      ].join("\n"),
-      pendingQuestion: pendingQuestionForPlanningNextStep(
-        dest,
-        pending.destinationCountry ?? ctx.destinationCountry,
-      ),
-    };
+    if (!days) {
+      return {
+        reply: `好，${dest}是很好的選擇。你這趟大概幾天？`,
+        pendingQuestion: pendingQuestionForAskDays(
+          dest,
+          pending.destinationCountry ?? ctx.destinationCountry,
+        ),
+      };
+    }
+    // Same as ask_days: city + days → combination selection.
+    return buildCityDaysConfirmedReply(
+      dest,
+      days,
+      pending.destinationCountry ?? ctx.destinationCountry,
+      { weather: ctx.weather, context: { ...ctx, destination: normalizeDestinationLabel(dest), days } },
+    );
   }
 
   const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
@@ -993,10 +1087,49 @@ export function pendingQuestionForCityStyleChoice(
 export function pendingQuestionForKoreaRegionChoice(
   destinationCountry = "韓國",
 ): PendingQuestion {
+  return pendingQuestionForCountryRegionChoice(destinationCountry, ["首爾", "釜山", "濟州"]);
+}
+
+/** Generic country → city/region pending (options from country advice or caller). */
+export function pendingQuestionForCountryRegionChoice(
+  destinationCountry: string,
+  options?: string[],
+): PendingQuestion {
+  const country = normalizeDestinationLabel(destinationCountry);
+  const fallbackByCountry: Record<string, string[]> = {
+    韓國: ["首爾", "釜山", "濟州"],
+    日本: ["東京", "大阪", "京都", "北海道"],
+    泰國: ["曼谷", "清邁", "普吉島", "蘇梅島"],
+    法國: ["巴黎", "普羅旺斯", "蔚藍海岸"],
+    越南: ["河內", "峴港", "胡志明"],
+    義大利: ["羅馬", "佛羅倫斯", "米蘭", "威尼斯"],
+    台灣: ["台北", "台中", "花蓮"],
+    美國: ["紐約", "洛杉磯", "舊金山", "拉斯維加斯"],
+    英國: ["倫敦", "愛丁堡", "曼徹斯特", "湖區"],
+    荷蘭: ["阿姆斯特丹", "鹿特丹", "海牙", "烏得勒支"],
+    德國: ["柏林", "慕尼黑", "漢堡", "科隆"],
+    西班牙: ["巴塞隆納", "馬德里", "塞維亞", "瓦倫西亞"],
+    澳洲: ["雪梨", "墨爾本", "布里斯本", "黃金海岸"],
+    加拿大: ["溫哥華", "多倫多", "蒙特婁", "班夫"],
+    蒙古: ["烏蘭巴托", "特勒吉", "戈壁"],
+    新加坡: ["濱海灣", "牛車水", "聖淘沙"],
+  };
+  const cleanOptions = (options?.length ? options : fallbackByCountry[country] ?? [])
+    .map((o) => {
+      const t = o.trim();
+      if (/濟州/.test(t)) return "濟州";
+      if (/佛羅倫斯|佛罗伦萨/.test(t)) return "佛羅倫斯";
+      if (/胡志明/.test(t)) return "胡志明";
+      return normalizeDestinationLabel(t);
+    })
+    .filter(Boolean);
+
   return enrichPendingQuestion({
     type: "region_choice",
-    options: ["首爾", "釜山", "濟州"],
-    destinationCountry,
+    options: cleanOptions.length
+      ? cleanOptions
+      : fallbackByCountry[country] ?? [],
+    destinationCountry: country,
   });
 }
 
@@ -1020,6 +1153,20 @@ export function pendingQuestionForPlanningNextStep(
     type: "activity_choice",
     options: ["must_visit_places", "full_itinerary"],
     baseDestination,
+    destinationCountry,
+  });
+}
+
+export function pendingQuestionForCombinationChoice(
+  baseDestination: string,
+  destinationCountry?: string,
+): PendingQuestion {
+  const label = normalizeDestinationLabel(baseDestination);
+  const options = pendingOptionTitlesForCombinations(label);
+  return enrichPendingQuestion({
+    type: "combination_choice",
+    options: options.length ? options : ["都可以"],
+    baseDestination: label,
     destinationCountry,
   });
 }
@@ -1085,8 +1232,15 @@ export function inferPendingQuestionFromAdviceReply(
     );
   }
 
-  if (reply.includes("城市、美食按摩，還是海島放鬆")) {
-    return pendingQuestionForThailandTripStyleChoice(ctx.destinationCountry ?? "泰國");
+  if (
+    (reply.includes("曼谷") && reply.includes("清邁") && (reply.includes("普吉") || reply.includes("蘇梅"))) ||
+    reply.includes("城市、美食按摩，還是海島放鬆")
+  ) {
+    // Country-level Thailand always asks concrete cities (legacy style text → still region_choice).
+    return pendingQuestionForCountryRegionChoice(
+      ctx.destinationCountry ?? session.travelContext?.destinationCountry ?? "泰國",
+      ["曼谷", "清邁", "普吉島", "蘇梅島"],
+    );
   }
 
   if (reply.includes("海灘放鬆、跳島、水上市場，還是曼谷＋芭達雅")) {

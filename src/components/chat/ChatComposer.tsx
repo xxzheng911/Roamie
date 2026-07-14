@@ -22,6 +22,8 @@ export type ChatComposerProps = {
   streaming: boolean;
   generating: boolean;
   onChipSend: (text: string) => void;
+  /** Primary action chips shown ahead of default mood shortcuts (e.g. 重新生成). */
+  actionChips?: string[];
 };
 
 function ShortcutChips({
@@ -29,9 +31,10 @@ function ShortcutChips({
   generating,
   streaming,
   onChipSend,
+  actionChips = [],
 }: Pick<
   ChatComposerProps,
-  "keyboardOpen" | "generating" | "streaming" | "onChipSend"
+  "keyboardOpen" | "generating" | "streaming" | "onChipSend" | "actionChips"
 >) {
   const chipClass = cn(
     "shrink-0 rounded-full border border-border bg-card text-foreground/80 disabled:opacity-50",
@@ -40,6 +43,20 @@ function ShortcutChips({
 
   return (
     <div className={cn("mb-2 flex gap-2 overflow-x-auto no-scrollbar")}>
+      {actionChips.map((label) => (
+        <button
+          key={`action:${label}`}
+          type="button"
+          onClick={() => onChipSend(label)}
+          disabled={streaming || generating}
+          className={cn(
+            chipClass,
+            "border-primary/40 bg-primary/10 font-medium text-primary",
+          )}
+        >
+          {label}
+        </button>
+      ))}
       <Link
         to="/plan"
         className={cn(

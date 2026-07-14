@@ -1,5 +1,5 @@
 import type { PlaceResult } from "@/lib/place-result";
-import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { normalizeGooglePlaceId } from "@/lib/ai/normalize-google-place";
 import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
 
 export const ALLOWED_ITINERARY_SLOT_LABELS = [
@@ -29,6 +29,9 @@ const SYNTHETIC_PLACE_ID_PREFIXES = [
   "slow-nature-fallback:",
   "classic-fallback:",
   "mixed-fallback:",
+  "session:",
+  "trip:",
+  "memory:",
 ] as const;
 
 export const PLANNING_PLACEHOLDER_NAME_RE =
@@ -116,12 +119,12 @@ function parseTimeMinutes(time: string): number {
 }
 
 export function resolvePlanningPlaceId(place: PlaceResult): string {
-  return (
+  const raw =
     place.id ??
     (place as PlaceResult & { placeId?: string }).placeId ??
     (place as PlaceResult & { googlePlaceId?: string }).googlePlaceId ??
-    ""
-  ).trim();
+    "";
+  return normalizeGooglePlaceId(raw);
 }
 
 export function isSyntheticPlanningPlaceId(placeId: string): boolean {
@@ -139,7 +142,7 @@ export function isPlaceholderPlanningPlaceName(name: string): boolean {
 }
 
 export function isRealGooglePlanningPlace(place: PlaceResult): boolean {
-  const id = resolvePlanningPlaceId(place);
+  const id = normalizeGooglePlaceId(resolvePlanningPlaceId(place));
   if (!isHardGooglePlaceId(id) || isSyntheticPlanningPlaceId(id)) return false;
   if (!/^ChIJ[\w-]+$/i.test(id)) return false;
   const name = (place.name ?? "").trim();
@@ -148,18 +151,79 @@ export function isRealGooglePlanningPlace(place: PlaceResult): boolean {
   return true;
 }
 
+/**
+ * Core place required to enter an itinerary:
+ * real Google Place ID + name + coords + address (+ destinationMatch !== false).
+ * Photo / hours / rating are optional enrichment.
+ */
+export function isResolvedCorePlace(
+  place: Partial<PlaceResult> & {
+    googlePlaceId?: string | null;
+    destinationMatch?: boolean;
+    formattedAddress?: string | null;
+  },
+): boolean {
+  const googlePlaceId = normalizeGooglePlaceId(
+    place.googlePlaceId ?? resolvePlanningPlaceId(place as PlaceResult),
+  );
+  if (
+    typeof googlePlaceId !== "string" ||
+    !googlePlaceId ||
+    googlePlaceId.startsWith("session:") ||
+    googlePlaceId.startsWith("trip:") ||
+    googlePlaceId.startsWith("memory:") ||
+    isSyntheticPlanningPlaceId(googlePlaceId) ||
+    !/^ChIJ[\w-]+$/i.test(googlePlaceId)
+  ) {
+    return false;
+  }
+  if (place.lat == null || place.lng == null) return false;
+  const name = (place.name ?? "").trim();
+  if (!name || isPlaceholderPlanningPlaceName(name)) return false;
+  if (place.destinationMatch === false) return false;
+  const address = (place.address ?? place.formattedAddress ?? "").trim();
+  if (!address) return false;
+  return true;
+}
+
+/**
+ * Required before writing a TripPlace.
+ * Rejects session:/trip:/memory: ids, missing coords, and placeholder names.
+ * Prefer {@link isResolvedCorePlace} when address is available.
+ */
+export function isResolvedGooglePlace(
+  place: Partial<PlaceResult> & {
+    googlePlaceId?: string | null;
+    destinationMatch?: boolean;
+  },
+): boolean {
+  const googlePlaceId = normalizeGooglePlaceId(
+    place.googlePlaceId ?? resolvePlanningPlaceId(place as PlaceResult),
+  );
+  if (
+    typeof googlePlaceId !== "string" ||
+    !googlePlaceId ||
+    googlePlaceId.startsWith("session:") ||
+    googlePlaceId.startsWith("trip:") ||
+    googlePlaceId.startsWith("memory:") ||
+    isSyntheticPlanningPlaceId(googlePlaceId) ||
+    !/^ChIJ[\w-]+$/i.test(googlePlaceId)
+  ) {
+    return false;
+  }
+  if (place.lat == null || place.lng == null) return false;
+  const name = (place.name ?? "").trim();
+  if (!name || isPlaceholderPlanningPlaceName(name)) return false;
+  if (place.destinationMatch === false) return false;
+  return true;
+}
+
 export function filterRealPlanningPlaces(places: PlaceResult[]): PlaceResult[] {
   const out: PlaceResult[] = [];
   for (const place of places) {
-    if (!isRealGooglePlanningPlace(place)) {
-      logAiPipeline(
-        "[AI_PLACE_REJECT_SYNTHETIC]",
-        `name=${place.name ?? ""}`,
-        `id=${resolvePlanningPlaceId(place)}`,
-      );
-      continue;
-    }
-    out.push(place);
+    if (!isRealGooglePlanningPlace(place)) continue;
+    const id = normalizeGooglePlaceId(resolvePlanningPlaceId(place));
+    out.push(id && id !== place.id ? { ...place, id } : place);
   }
   return out;
 }

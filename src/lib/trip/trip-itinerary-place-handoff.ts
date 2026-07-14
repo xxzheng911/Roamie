@@ -1,3 +1,4 @@
+import { distanceMeters } from "@/lib/map-explore";
 import type { NavigateOptions } from "@tanstack/react-router";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
 import { buildPlaceRecommendationReason } from "@/lib/build-place-recommendation-reason";
@@ -111,10 +112,40 @@ export function openTripItineraryPlaceDetail(
   item: RoamieItineraryItem,
   viewState: TripDetailViewState,
   locale: Locale = "zh-TW",
+  opts?: {
+    /** Previous stop on the same day — used for distance/transport (not device GPS). */
+    previousItem?: RoamieItineraryItem | null;
+  },
 ): { handoff: PlaceDetailHandoff; navigateOptions: NavigateOptions } {
   saveTripDetailViewState(viewState);
   persistTripDetailSelectedDay(viewState.tripId, viewState.activeDayIndex);
   const handoff = itineraryItemToPlaceHandoff(item, locale);
+  const previous = opts?.previousItem;
+  const originLat = previous?.lat ?? item.lat ?? undefined;
+  const originLng = previous?.lng ?? item.lng ?? undefined;
+  if (
+    previous?.lat != null &&
+    previous?.lng != null &&
+    item.lat != null &&
+    item.lng != null
+  ) {
+    const place = itineraryItemToPlaceResult(
+      item,
+      handoff.googlePlaceId?.trim() || "",
+    );
+    const distM = distanceMeters(
+      { lat: previous.lat, lng: previous.lng },
+      { lat: item.lat, lng: item.lng },
+    );
+    handoff.reason = buildPlaceRecommendationReason(
+      place,
+      null,
+      null,
+      undefined,
+      { distanceMeters: distM },
+      locale,
+    );
+  }
   setPlaceDetailHandoff(handoff);
   const placeId = handoff.googlePlaceId || handoff.placeId || item.googlePlaceId || "";
   console.info(
@@ -132,6 +163,8 @@ export function openTripItineraryPlaceDetail(
         returnTo: "trip",
         tripId: viewState.tripId,
         day: viewState.activeDayIndex + 1,
+        originLat,
+        originLng,
       },
     },
   };

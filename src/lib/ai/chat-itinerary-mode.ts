@@ -4,6 +4,7 @@ import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 import { resolveConversationDestination } from "@/lib/ai/ai-chat-conversation-state";
 import {
   hasConfirmedTripDays,
+  resolveInferredTripDays,
   resolveTripStyleFromContext,
   type TripStyleKey,
 } from "@/lib/ai/ai-trip-style";
@@ -112,8 +113,8 @@ export function resolveItineraryDays(
 ): number | undefined {
   const fromText = parseItineraryDaysFromText(userText);
   if (fromText && fromText > 0) return fromText;
-  if (context.days != null && context.days > 0) return context.days;
-  if (session?.tripDays && session.tripDays > 0) return session.tripDays;
+  const inferred = resolveInferredTripDays(context, session, userText);
+  if (inferred && inferred > 0) return inferred;
   return undefined;
 }
 

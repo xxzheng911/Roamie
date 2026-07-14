@@ -185,7 +185,17 @@ function distancePhrase(meters?: number): string | null {
   if (meters < 600) return "距離你很近";
   if (meters < 1800) return "走路或短程就能到";
   if (meters < 5000) return "不算遠，適合順路過去";
-  return "稍遠一點，但值得專程安排";
+  if (meters < 15_000) return "稍遠一點，但值得專程安排";
+  return "距離較遠，建議安排交通再前往";
+}
+
+function adjustIntroForDistance(intro: string, meters?: number): string {
+  if (meters == null || meters < 8000) return intro;
+  return intro
+    .replace(/適合順路繞進去看看、拍拍照/g, "值得專程安排行程來看、拍拍照")
+    .replace(/很適合順路探索/g, "值得排進行程細細逛")
+    .replace(/適合順路/g, "適合專門")
+    .replace(/可以順路安排進今天行程/g, "建議安排交通後再前往");
 }
 
 function ratingPhrase(rating: number | null, count: number | null): string | null {
@@ -195,9 +205,13 @@ function ratingPhrase(rating: number | null, count: number | null): string | nul
   return null;
 }
 
+function weatherConditionKey(weather?: WeatherSummary | null): string {
+  return typeof weather?.condition === "string" ? weather.condition.trim().toLowerCase() : "";
+}
+
 function weatherSupplement(weather?: WeatherSummary | null, identity?: PlaceIdentity): string | null {
   if (!weather) return null;
-  const cond = weather.condition.toLowerCase();
+  const cond = weatherConditionKey(weather);
   const precip = weather.precipProbability ?? 0;
   const indoor =
     identity &&
@@ -308,9 +322,9 @@ function weatherSupplementIntl(
     ["museum", "department_store", "shopping_mall", "bookstore", "cafe", "bakery"].includes(
       identity,
     );
-  const cond = weather.condition.toLowerCase();
+  const cond = weatherConditionKey(weather);
   const precip = weather.precipProbability ?? 0;
-  if (precip >= 50 || cond.includes("雨") || cond.includes("rain")) {
+  if (precip >= 50 || (cond && (cond.includes("雨") || cond.includes("rain")))) {
     return indoor ? copy.rainIndoor : copy.rainOutdoor;
   }
   if (weather.tempC != null && weather.tempC >= 32) {
@@ -357,6 +371,9 @@ function buildSafeReason(
   if (h) parts.push(h);
   if (parts.length === 0) return SAFE_FALLBACK;
   const lead = parts.slice(0, 2).join("，");
+  if (ctx.distanceMeters != null && ctx.distanceMeters >= 8000) {
+    return `${lead}，建議安排交通後再前往。`;
+  }
   return `${lead}，可以順路安排進今天行程。`;
 }
 
@@ -413,7 +430,10 @@ function buildReasonFromIdentity(
     return parts.filter(Boolean).join(resolvedLocale === "ja" ? "。" : ". ");
   }
 
-  const intro = hashPick(seed, IDENTITY_INTROS[identity] ?? [SAFE_FALLBACK]);
+  const intro = adjustIntroForDistance(
+    hashPick(seed, IDENTITY_INTROS[identity] ?? [SAFE_FALLBACK]),
+    ctx.distanceMeters,
+  );
   const scene = hashPick(seed, IDENTITY_SCENE[identity] ?? []);
   const dist = distancePhrase(ctx.distanceMeters);
   const rating = ratingPhrase(place.rating, place.userRatingCount);

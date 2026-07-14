@@ -67,7 +67,8 @@ export async function uploadProfileMedia(
   const { error } = await supabase.storage.from(BUCKET).upload(path, body, {
     upsert: true,
     contentType: "image/jpeg",
-    cacheControl: "3600",
+    // Long CDN TTL: display uses blob cache + versioned cacheKey; public URL stays stable.
+    cacheControl: "31536000",
   });
   if (error) {
     logAvatarUploadFailed({

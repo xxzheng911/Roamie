@@ -20,12 +20,10 @@ import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import {
   buildLocalClassicLandmarkPool,
   buildSyntheticClassicLandmarkPlace,
-  hasPlacesRateLimitEncountered,
   logAiPlacesRateLimitFallback,
   mergeClassicLandmarkCaches,
   persistClassicLandmarkCaches,
 } from "@/lib/places-classic-landmark-cache";
-import { isPlacesRateLimited } from "@/lib/places-api-guard";
 
 export { logAiPlacesRateLimitFallback };
 
@@ -43,7 +41,54 @@ export function logAiDayPlanRebuildFromCache(
 }
 
 export function shouldSkipPlanningPlacesApi(): boolean {
-  return isPlacesRateLimited() || hasPlacesRateLimitEncountered();
+  // Soft budget / brief cooldown must wait and resume — never hard-skip mid discovery.
+  // Sticky "encountered" alone must not abort a new generation.
+  return false;
+}
+
+/** Wait out a short Places cooldown instead of returning empty combinations. */
+export async function waitIfPlacesRateLimited(opts?: {
+  generationRequestId?: string;
+  maxWaitMs?: number;
+}): Promise<"ready" | "timeout" | "stale"> {
+  const {
+    waitForPlacesGenerationCooldown,
+    isPlacesRateLimited,
+    getActivePlacesGenerationRequestId,
+  } = await import("@/lib/places-api-guard");
+  const { logAiPipeline } = await import("@/lib/ai/ai-pipeline-log");
+  const maxWaitMs = opts?.maxWaitMs ?? 20_000;
+  const started = Date.now();
+  let waited = false;
+  while (isPlacesRateLimited()) {
+    if (
+      opts?.generationRequestId &&
+      getActivePlacesGenerationRequestId() &&
+      getActivePlacesGenerationRequestId() !== opts.generationRequestId
+    ) {
+      return "stale";
+    }
+    if (Date.now() - started > maxWaitMs) return "timeout";
+    waited = true;
+    logAiPipeline(
+      "[PLACES_COOLDOWN_WAIT]",
+      `generationRequestId=${opts?.generationRequestId ?? "—"}`,
+      `waitMs=${Math.max(0, generationWaitRemaining())}`,
+    );
+    await waitForPlacesGenerationCooldown();
+  }
+  if (waited) {
+    logAiPipeline(
+      "[PLACES_COOLDOWN_RESUMED]",
+      `generationRequestId=${opts?.generationRequestId ?? "—"}`,
+    );
+  }
+  return "ready";
+}
+
+function generationWaitRemaining(): number {
+  // Best-effort; waitForPlacesGenerationCooldown is the real gate.
+  return 1000;
 }
 
 function dedupePlaces(places: PlaceResult[]): PlaceResult[] {
@@ -170,6 +215,7 @@ export function rebuildDayPlansFromCandidatePool(params: {
         ensureAllDayPlansExist(rebuilt, days),
         current,
         days,
+        style,
       );
     }
 
@@ -187,13 +233,13 @@ export function rebuildDayPlansFromCandidatePool(params: {
         }),
         days,
       );
-      current = preferBetterComposedPlans(replanned, current, days);
+      current = preferBetterComposedPlans(replanned, current, days, style);
     }
 
     validation = validateGeneratedDays(current, days, style);
   }
 
-  return preferBetterComposedPlans(current, original, days);
+  return preferBetterComposedPlans(current, original, days, style);
 }
 
 export function ensureRenderableStyleDayPlans(params: {
@@ -241,6 +287,7 @@ export function ensureRenderableStyleDayPlans(params: {
     ensureAllDayPlansExist(composedPlans, days),
     ensureAllDayPlansExist(params.composedPlans, days),
     days,
+    style,
   );
 
   let validation = validateGeneratedDays(composedPlans, days, style);
@@ -269,6 +316,7 @@ export function ensureRenderableStyleDayPlans(params: {
       ensureAllDayPlansExist(rebuilt, days),
       composedPlans,
       days,
+      style,
     );
     validation = validateGeneratedDays(composedPlans, days, style);
   }

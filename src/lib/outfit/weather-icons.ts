@@ -2,7 +2,8 @@ import type { DayWeatherSnapshot } from "@/lib/outfit/types";
 
 /** 依天氣狀況回傳情境 emoji（非嚴謹 WMO 對照，重視旅伴感） */
 export function weatherDisplayEmoji(weather: DayWeatherSnapshot): string {
-  const cond = weather.condition.toLowerCase();
+  const cond =
+    typeof weather?.condition === "string" ? weather.condition.trim().toLowerCase() : "";
   const precip = weather.precipProbability ?? 0;
   if (precip >= 50 || cond.includes("雨") || cond.includes("雷")) return "🌧️";
   if (cond.includes("雪")) return "❄️";

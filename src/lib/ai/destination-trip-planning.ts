@@ -68,7 +68,11 @@ import {
   composedPlansToAiDayPlan,
   dayPlanToRecommendations,
   ensureAllDayPlansExist,
+  enforceStandardDaySlotPlans,
+  expectedItineraryItemCount,
   plannerTotalPlaces,
+  rebuildIncompleteDays,
+  resolveEntryLabel,
   type AiDayPlan,
   type ComposedDayPlan,
   type PlanPlaceKind,
@@ -87,7 +91,28 @@ import {
   logPlannerResult,
   logPlannerStart,
 } from "@/lib/ai/normalize-planning-places";
-import { filterExcludedRetailPlaces, validateItinerary } from "@/lib/ai/ai-day-plan-slot-rules";
+import {
+  beginPlannerSession,
+  beginPipelineStage,
+  beginPlannerRun,
+  buildCandidatePoolFingerprint,
+  buildPlannerRunKey,
+  finishPipelineStage,
+  finishPlannerRun,
+  finishPlannerSession,
+} from "@/lib/ai/planner-session-guard";
+import {
+  computeSlotDeficitFromPools,
+  filterRealPlanningPlacesWithDiagnostics,
+  hasSlotDeficit,
+  logCategoryPoolCounts,
+  logItineraryPipelineSummary,
+  logItinerarySlotDeficit,
+  logPlaceNormalizeDropSummary,
+  type SlotDeficitCounts,
+} from "@/lib/ai/itinerary-postprocess-diagnostics";
+import { buildLocalLifeCandidatePools } from "@/lib/ai/ai-local-life-rules";
+import { filterExcludedRetailPlaces, repairDayPlanSlots, validateItinerary } from "@/lib/ai/ai-day-plan-slot-rules";
 import {
   buildLocalLifeIncompleteDaySearchAttempts,
   normalizeAreaKey,
@@ -96,7 +121,7 @@ import { CHAT_PLANNING_RECOMMENDATION_TARGET_COUNT } from "@/lib/ai/chat-destina
 import type { classifyDestinationForPlaceSearch } from "@/lib/ai/landmark-place-strategy";
 import { ensureClassicLandmarkPlacePool } from "@/lib/ai/ai-classic-landmark-pool";
 import { buildWeatherAwareSearchAttempts } from "@/lib/ai/weather-place-search";
-import { alignDayPlanToSession, freezePlanningDayPlan } from "@/lib/ai/ai-planning-session";
+import { alignDayPlanToSession, freezePlanningDayPlan, getFrozenPlanningDayPlan } from "@/lib/ai/ai-planning-session";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { getMustVisitPlacesForDestination } from "@/lib/ai/must-visit-places";
 import {
@@ -112,7 +137,7 @@ import {
   persistPlanningCandidatePool,
   shouldSkipPlanningPlacesApi,
 } from "@/lib/ai/planning-candidate-pool";
-import { filterRealPlanningPlaces } from "@/lib/ai/planning-real-place";
+import { countRealPlanningPool, filterRealPlanningPlaces } from "@/lib/ai/planning-real-place";
 import type { FetchPlaceDetailsForFocusFn } from "@/lib/ai/place-detail-chat";
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import {
@@ -123,11 +148,13 @@ import {
   minGeocodedPlacesForItinerary,
 } from "@/lib/ai/planning-place-geocode";
 import {
+  buildItinerarySlotPools,
   canEvenlyMeetMinPerDay,
   countDiningPoolPlaces,
   countScenicPoolPlaces,
   dedupeCandidatePlaces,
   ensureEveryDayPopulated,
+  evaluatePlannerPoolGate,
   isPlannerPoolCompositionSufficient,
   isPlannerPoolReady,
   isPlannerPoolSufficient,
@@ -135,6 +162,7 @@ import {
   minDiningPoolSize,
   minScenicPoolSize,
   redistributePlacesEvenly,
+  refillMissingDaySlots,
   resolveAdaptiveMinPerDay,
 } from "@/lib/ai/ai-multi-day-planner";
 import { expandPlacePoolUntilSufficient } from "@/lib/ai/place-pool-expansion";
@@ -260,13 +288,17 @@ export function rankPlacesForTripPlanning(params: {
   lng: number;
   profile: Awaited<ReturnType<typeof resolvePlanningReasonProfile>>;
   label: string;
+  skipNormalizeLog?: boolean;
+  planningSessionId?: string;
 }): {
   ranked: PlaceResult[];
   buckets: DayPlanBucket[];
   composedPlans: ComposedDayPlan[];
 } {
   const retailFiltered = filterExcludedRetailPlaces(params.places, { style: params.style });
-  const normalized = normalizePlanningPlaces(filterRealPlanningPlaces(retailFiltered));
+  const normalized = normalizePlanningPlaces(filterRealPlanningPlaces(retailFiltered), {
+    logSummary: !params.skipNormalizeLog,
+  });
   logAiResolvedPlacesCount(normalized.length);
 
   // 空 pool：直接略過，避免 PLANNER_START placesCount=0 污染 / 被覆寫採用
@@ -280,22 +312,31 @@ export function rankPlacesForTripPlanning(params: {
   }
 
   if (!isPlannerPoolReady(normalized, params.days)) {
+    const gate = evaluatePlannerPoolGate(normalized, params.days);
+    if (gate.decision === "block") {
+      logAiPipeline(
+        "[AI_PLANNER_DEFERRED]",
+        `pool=${normalized.length}`,
+        `dining=${countDiningPoolPlaces(normalized)}`,
+        `scenic=${countScenicPoolPlaces(normalized)}`,
+        `target=${minCandidatePoolSize(params.days)}`,
+        `diningTarget=${minDiningPoolSize(params.days)}`,
+        `scenicTarget=${minScenicPoolSize(params.days)}`,
+        "action=await_pool_expansion",
+      );
+      logPlannerResult(params.days, 0, false);
+      return {
+        ranked: normalized,
+        buckets: composedDayPlansToBuckets(ensureAllDayPlansExist([], params.days)),
+        composedPlans: ensureAllDayPlansExist([], params.days),
+      };
+    }
     logAiPipeline(
       "[AI_PLANNER_DEFERRED]",
       `pool=${normalized.length}`,
-      `dining=${countDiningPoolPlaces(normalized)}`,
-      `scenic=${countScenicPoolPlaces(normalized)}`,
-      `target=${minCandidatePoolSize(params.days)}`,
-      `diningTarget=${minDiningPoolSize(params.days)}`,
-      `scenicTarget=${minScenicPoolSize(params.days)}`,
-      "action=await_pool_expansion",
+      `decision=${gate.decision}`,
+      "action=continue_with_refill",
     );
-    logPlannerResult(params.days, 0, false);
-    return {
-      ranked: normalized,
-      buckets: composedDayPlansToBuckets(ensureAllDayPlansExist([], params.days)),
-      composedPlans: ensureAllDayPlansExist([], params.days),
-    };
   }
 
   logPlannerStart(params.days, normalized.length);
@@ -469,6 +510,87 @@ export async function searchLocalLifeIncompleteDayBatch(params: {
   }
 
   return filterExcludedRetailPlaces(collected, { style: "local_life", userText: params.userText });
+}
+
+function slotDeficitSearchKinds(deficit: SlotDeficitCounts): PlanPlaceKind[] {
+  const kinds: PlanPlaceKind[] = [];
+  if (deficit.breakfastNeeded > 0 || deficit.lunchNeeded > 0 || deficit.dinnerNeeded > 0) {
+    kinds.push("restaurant");
+  }
+  if (deficit.attractionNeeded > 0) {
+    kinds.push("attraction", "nature", "culture");
+  }
+  if (deficit.cafeNeeded > 0) kinds.push("cafe");
+  if (deficit.eveningNeeded > 0) kinds.push("shopping");
+  return [...new Set(kinds)];
+}
+
+export async function searchSlotDeficitBatch(params: {
+  label: string;
+  lat: number;
+  lng: number;
+  locale: Locale;
+  searchPlaces: PlaceSearchFn;
+  weather: WeatherSummary | null;
+  context: CanonicalTravelContext;
+  caller: string;
+  excludePlaceIds: string[];
+  userText?: string;
+  profile?: ReturnType<typeof classifyDestinationForPlaceSearch>;
+  searchContext: ChatPlaceSearchContext;
+  existingPlaces: PlaceResult[];
+  deficit: SlotDeficitCounts;
+  retryIndex: number;
+  searchDestinationPlaces: DestinationPlaceSearchFn;
+}): Promise<PlaceResult[]> {
+  if (shouldSkipPlanningPlacesApi() || !hasSlotDeficit(params.deficit)) {
+    return params.existingPlaces;
+  }
+
+  let collected = [...params.existingPlaces];
+  const kinds = slotDeficitSearchKinds(params.deficit);
+
+  console.warn(
+    "[ITINERARY_SLOT_REFILL]",
+    `retry=${params.retryIndex}`,
+    `kinds=${kinds.join(",")}`,
+    `before=${collected.length}`,
+  );
+
+  for (const kind of kinds) {
+    if (shouldSkipPlanningPlacesApi()) break;
+    logAiPlaceSearchFallback(`slot_deficit_${kind}`);
+    const attempts = buildCategorySearchAttempts(params.label, kind);
+    const batch = await params.searchDestinationPlaces({
+      label: params.label,
+      lat: params.lat,
+      lng: params.lng,
+      locale: params.locale,
+      searchPlaces: params.searchPlaces,
+      weather: params.weather,
+      context: params.context,
+      attempts,
+      caller: `${params.caller}.slotDeficit.r${params.retryIndex}.${kind}`,
+      excludePlaceIds: [
+        ...params.excludePlaceIds,
+        ...(collected.map((place) => place.id).filter(Boolean) as string[]),
+      ],
+      userText: params.userText,
+      profile: params.profile,
+      searchContext: params.searchContext,
+      planningMode: true,
+    });
+    collected = dedupePlaces([...collected, ...batch]);
+  }
+
+  console.warn(
+    "[ITINERARY_SLOT_REFILL]",
+    `retry=${params.retryIndex}`,
+    `after=${collected.length}`,
+    `added=${collected.length - params.existingPlaces.length}`,
+  );
+
+  return filterExcludedRetailPlaces(collected, { userText: params.userText });
 }
 
 export async function searchOpenHoursFallbackBatch(params: {
@@ -857,7 +979,7 @@ export async function fetchComposedCategoryPlaces(params: {
       searchDestinationPlaces,
     });
   } else {
-    const perKindTarget = Math.max(3, Math.ceil((days * 6) / kindsForStyle(style).length));
+    const perKindTarget = Math.max(6, Math.ceil((days * 7) / Math.max(1, kindsForStyle(style).length)));
     collected = [];
 
     const cachedPool = mergeClassicLandmarkCaches(label, style);
@@ -965,6 +1087,7 @@ export async function resolveTripPlanningDayPlans(params: {
   userText?: string;
   searchProfile: ReturnType<typeof classifyDestinationForPlaceSearch>;
   searchDestinationPlaces: DestinationPlaceSearchFn;
+  planningSessionId?: string;
 }): Promise<
   ReturnType<typeof rankPlacesForTripPlanning> & { places: PlaceResult[]; slowTravel?: boolean }
 > {
@@ -977,23 +1100,26 @@ export async function resolveTripPlanningDayPlans(params: {
   let slowTravel = false;
 
   if (!isPlannerPoolReady(places, params.days)) {
-    logAiPipeline(
-      "[AI_PLANNER_POOL_GATE]",
-      `pool=${places.length}`,
-      `dining=${countDiningPoolPlaces(places)}`,
-      `scenic=${countScenicPoolPlaces(places)}`,
-      `target=${minCandidatePoolSize(params.days)}`,
-      `diningTarget=${minDiningPoolSize(params.days)}`,
-      `scenicTarget=${minScenicPoolSize(params.days)}`,
-      "action=defer_until_expansion",
-    );
-    return {
-      ranked: places,
-      buckets: composedDayPlansToBuckets(ensureAllDayPlansExist([], params.days)),
-      composedPlans: ensureAllDayPlansExist([], params.days),
-      places,
-      slowTravel,
-    };
+    const gate = evaluatePlannerPoolGate(places, params.days);
+    if (gate.decision === "block") {
+      logAiPipeline(
+        "[AI_PLANNER_POOL_GATE]",
+        `pool=${places.length}`,
+        `dining=${countDiningPoolPlaces(places)}`,
+        `scenic=${countScenicPoolPlaces(places)}`,
+        `target=${minCandidatePoolSize(params.days)}`,
+        `diningTarget=${minDiningPoolSize(params.days)}`,
+        `scenicTarget=${minScenicPoolSize(params.days)}`,
+        "action=defer_until_expansion",
+      );
+      return {
+        ranked: places,
+        buckets: composedDayPlansToBuckets(ensureAllDayPlansExist([], params.days)),
+        composedPlans: ensureAllDayPlansExist([], params.days),
+        places,
+        slowTravel,
+      };
+    }
   }
 
   if (countScenicPlaces(places) === 0 && !shouldSkipPlanningPlacesApi()) {
@@ -1017,7 +1143,7 @@ export async function resolveTripPlanningDayPlans(params: {
     });
   }
 
-  let result = rankPlacesForTripPlanning({ ...params, places });
+  let result = rankPlacesForTripPlanning({ ...params, places, planningSessionId: params.planningSessionId });
   let validation = validateComposedDayPlans(
     result.composedPlans,
     params.days,
@@ -1030,6 +1156,36 @@ export async function resolveTripPlanningDayPlans(params: {
     params.context.startDate,
     params.days,
   );
+  if (!validation.ok || !itineraryValidation.ok) {
+    const refilled = refillMissingDaySlots({
+      plans: result.composedPlans,
+      pool: places,
+      days: params.days,
+      style: params.style,
+      plannedDate: params.context.startDate,
+    });
+    result = {
+      ...result,
+      composedPlans: enforceStandardDaySlotPlans(
+        ensureAllDayPlansExist(refilled, params.days),
+        params.days,
+      ),
+      ranked: flattenComposedDayPlanPlaces(refilled),
+      buckets: composedDayPlansToBuckets(refilled),
+    };
+    validation = validateComposedDayPlans(
+      result.composedPlans,
+      params.days,
+      minItemsPerDayForTrip(params.days),
+    );
+    itineraryValidation = validateItinerary(
+      result.composedPlans,
+      classifyPlanPlaceKind,
+      params.style,
+      params.context.startDate,
+      params.days,
+    );
+  }
   let classicValidation =
     params.style === "classic_landmarks"
       ? validateClassicLandmarkItinerary(result.composedPlans, classifyPlanPlaceKind)
@@ -1117,7 +1273,7 @@ export async function resolveTripPlanningDayPlans(params: {
         places = dedupePlaces([...places, ...batch]);
       }
     }
-    result = rankPlacesForTripPlanning({ ...params, places });
+    result = rankPlacesForTripPlanning({ ...params, places, skipNormalizeLog: true });
     validation = validateComposedDayPlans(
       result.composedPlans,
       params.days,
@@ -1154,7 +1310,7 @@ export async function resolveTripPlanningDayPlans(params: {
         searchContext: params.searchContext,
         searchDestinationPlaces: params.searchDestinationPlaces,
       });
-      result = rankPlacesForTripPlanning({ ...params, places });
+      result = rankPlacesForTripPlanning({ ...params, places, skipNormalizeLog: true });
       validation = validateComposedDayPlans(
         result.composedPlans,
         params.days,
@@ -1177,20 +1333,13 @@ export async function resolveTripPlanningDayPlans(params: {
             style: params.style,
             plannedDate: params.context.startDate,
           })
-        : canEvenlyMeetMinPerDay(places.length, params.days)
-          ? redistributePlacesEvenly({
-              places,
-              days: params.days,
-              style: params.style,
-              plannedDate: params.context.startDate,
-            })
-          : buildComposedDayPlans({
-              places,
-              days: params.days,
-              style: params.style,
-              destination: params.label,
-              plannedDate: params.context.startDate,
-            });
+        : buildComposedDayPlans({
+            places,
+            days: params.days,
+            style: params.style,
+            destination: params.label,
+            plannedDate: params.context.startDate,
+          });
     const slowValidation = validateComposedDayPlans(
       fallbackPlans,
       params.days,
@@ -1424,6 +1573,23 @@ export async function generateTripPlanFromStyle(params: {
   } = params;
 
   logAiStylePlanGenerateStart(label, style, days, planningSessionId);
+  if (!beginPlannerSession(planningSessionId)) {
+    const frozen = getFrozenPlanningDayPlan(planningSessionId);
+    if (frozen?.items.length) {
+      logAiPipeline("[AI_PLANNER_SESSION_REUSE]", `sessionId=${planningSessionId}`, `items=${frozen.items.length}`);
+      return {
+        places: [],
+        rankedPlaces: [],
+        dayBuckets: [],
+        composedPlans: ensureAllDayPlansExist([], days),
+        dayPlan: alignDayPlanToSession(frozen, planningSessionId),
+        recommendations: dayPlanToRecommendations(frozen),
+        slowTravel: false,
+        poolExpansionExhausted: false,
+      };
+    }
+    logAiPipeline("[AI_PLANNER_SESSION_SKIP]", `sessionId=${planningSessionId}`);
+  }
   if (params.planVersion != null) {
     logAiPipeline("[AI_STYLE_PLAN_GENERATE_START]", `planVersion=${params.planVersion}`);
   }
@@ -1436,6 +1602,7 @@ export async function generateTripPlanFromStyle(params: {
     templateNameSearchAttempts,
     searchDestinationPlaces,
   });
+  let searchCount = places.length;
   logAiStylePlacesResult(places.length, "primary_search");
 
   if (places.length < minRenderablePlaces(days, style) && !shouldSkipPlanningPlacesApi()) {
@@ -1450,10 +1617,19 @@ export async function generateTripPlanFromStyle(params: {
     }
   }
 
-  places = filterExcludedRetailPlaces(normalizePlanningPlaces(places), {
-    style: params.style,
-    userText: params.userText,
-  });
+  const shouldLogNormalize = beginPipelineStage(planningSessionId, "normalize_planning");
+  places = filterExcludedRetailPlaces(
+    normalizePlanningPlaces(places, {
+      logSummary: shouldLogNormalize,
+    }),
+    {
+      style: params.style,
+      userText: params.userText,
+    },
+  );
+  if (shouldLogNormalize) {
+    finishPipelineStage(planningSessionId, "normalize_planning");
+  }
   logAiStylePlacesResult(places.length, "normalized");
   persistPlanningCandidatePool(label, style, places);
 
@@ -1542,7 +1718,14 @@ export async function generateTripPlanFromStyle(params: {
     places = geocodePool.validPlaces;
   }
 
-  places = filterRealPlanningPlaces(dedupePlaces(places));
+  const realFilter = filterRealPlanningPlacesWithDiagnostics(places, { stage: "pre_planner_real" });
+  places = realFilter.places;
+  logPlaceNormalizeDropSummary({
+    input: searchCount,
+    output: realFilter.places.length,
+    realFilterCounters: realFilter.counters,
+    unsupportedPayload: Math.max(0, searchCount - places.length - (realFilter.counters.droppedMissingPlaceId ?? 0)),
+  });
   logAiStylePlacesResult(places.length, "real_places_only");
   persistPlanningCandidatePool(label, style, places);
 
@@ -1603,12 +1786,7 @@ export async function generateTripPlanFromStyle(params: {
     });
 
   for (let prePlanRound = 0; prePlanRound < MAX_POOL_EXPAND_REPLAN_ROUNDS; prePlanRound += 1) {
-    const poolBefore = filterRealPlanningPlaces(
-      filterExcludedRetailPlaces(normalizePlanningPlaces(places), {
-        style: params.style,
-        userText: params.userText,
-      }),
-    ).length;
+    const poolBefore = countRealPlanningPool(places);
     if (isPlannerPoolReady(places, days)) break;
 
     places = await ensureMinPlanningCandidatePool({
@@ -1622,12 +1800,7 @@ export async function generateTripPlanFromStyle(params: {
     });
     logAiStylePlacesResult(places.length, `pre_plan_expand_r${prePlanRound + 1}`);
 
-    const poolAfter = filterRealPlanningPlaces(
-      filterExcludedRetailPlaces(normalizePlanningPlaces(places), {
-        style: params.style,
-        userText: params.userText,
-      }),
-    ).length;
+    const poolAfter = countRealPlanningPool(places);
     if (poolAfter <= poolBefore && prePlanRound > 0) break;
   }
 
@@ -1646,7 +1819,15 @@ export async function generateTripPlanFromStyle(params: {
   }
 
   logItineraryRenderStart();
-  planningResult = await resolveTripPlanningDayPlans({
+  const mainPlannerRunKey = buildPlannerRunKey({
+    sessionId: planningSessionId,
+    style,
+    days,
+    poolFingerprint: buildCandidatePoolFingerprint(places),
+  });
+  const shouldRunMainPlanner = beginPlannerRun(mainPlannerRunKey);
+  if (shouldRunMainPlanner) {
+    planningResult = await resolveTripPlanningDayPlans({
     filteredPlaces: places,
     style: params.style,
     days,
@@ -1662,7 +1843,22 @@ export async function generateTripPlanFromStyle(params: {
     userText: params.userText,
     searchProfile: params.searchProfile,
     searchDestinationPlaces,
+    planningSessionId,
   });
+  } else {
+    logAiPipeline(
+      "[AI_PLANNER_SESSION_REUSE]",
+      `runKey=${mainPlannerRunKey}`,
+      "reason=duplicate_main_planner",
+    );
+    planningResult = {
+      ranked: places,
+      buckets: composedDayPlansToBuckets(ensureAllDayPlansExist([], days)),
+      composedPlans: ensureAllDayPlansExist([], days),
+      places,
+      slowTravel: false,
+    };
+  }
   composedPlans = planningResult.composedPlans;
   let bestFrozenPlans = ensureAllDayPlansExist(composedPlans, days);
   let bestFrozenPlaces = planningResult.places.length ? planningResult.places : places;
@@ -1684,7 +1880,7 @@ export async function generateTripPlanFromStyle(params: {
   };
 
   const keepBetter = (next: ComposedDayPlan[], nextPlaces?: PlaceResult[]) => {
-    const kept = preferBetterComposedPlans(next, bestFrozenPlans, days);
+    const kept = preferBetterComposedPlans(next, bestFrozenPlans, days, style);
     const keptTotal = plannerTotalPlaces(kept);
     const nextTotal = plannerTotalPlaces(next);
     if (nextTotal <= 0 && keptTotal > 0) {
@@ -1700,14 +1896,23 @@ export async function generateTripPlanFromStyle(params: {
     !renderValidation.ok &&
     bestFrozenPlaces.length > 0
   ) {
-    const filled = ensureEveryDayPopulated({
-      plans: composedPlans,
-      pool: places,
-      days,
+    const trimmed = enforceStandardDaySlotPlans(composedPlans, days);
+    const repaired = repairDayPlanSlots(
+      trimmed,
+      places,
       style,
-      plannedDate: params.context.startDate,
-    });
-    keepBetter(filled, places);
+      classifyPlanPlaceKind,
+      resolveEntryLabel,
+      days,
+      params.context.startDate,
+    );
+    const slotRebuilt = renderValidation.incompleteDays.length
+      ? rebuildIncompleteDays(repaired, renderValidation.incompleteDays, places, style, label, days)
+      : repaired;
+    keepBetter(
+      enforceStandardDaySlotPlans(slotRebuilt, days),
+      places,
+    );
     renderValidation = validateGeneratedDays(composedPlans, days, style);
     planningResult = {
       ...planningResult,
@@ -1866,24 +2071,17 @@ export async function generateTripPlanFromStyle(params: {
         continue;
       }
 
-      const replanned = await resolveTripPlanningDayPlans({
-        filteredPlaces: bestFrozenPlaces,
-        style: params.style,
+      const refilledPlans = refillMissingDaySlots({
+        plans: composedPlans,
+        pool: bestFrozenPlaces,
         days,
-        context: params.context,
-        weather: params.weather,
-        lat: params.lat,
-        lng: params.lng,
-        profile: reasonProfile,
-        label,
-        locale: params.locale,
-        searchPlaces: params.searchPlaces,
-        searchContext: params.searchContext,
-        userText: params.userText,
-        searchProfile: params.searchProfile,
-        searchDestinationPlaces,
+        style,
+        plannedDate: params.context.startDate,
       });
-      keepBetter(replanned.composedPlans, bestFrozenPlaces);
+      keepBetter(
+        enforceStandardDaySlotPlans(ensureAllDayPlansExist(refilledPlans, days), days),
+        bestFrozenPlaces,
+      );
       renderValidation = validateGeneratedDays(composedPlans, days, style);
       planningResult = {
         ...planningResult,
@@ -1900,7 +2098,7 @@ export async function generateTripPlanFromStyle(params: {
     }
   }
 
-  composedPlans = preferBetterComposedPlans(composedPlans, bestFrozenPlans, days);
+  composedPlans = preferBetterComposedPlans(composedPlans, bestFrozenPlans, days, style);
   planningResult = {
     ...planningResult,
     places: bestFrozenPlaces.length ? bestFrozenPlaces : planningResult.places,
@@ -1909,7 +2107,86 @@ export async function generateTripPlanFromStyle(params: {
     buckets: composedDayPlansToBuckets(composedPlans),
   };
 
-  const finalRenderable = isItineraryRenderable(composedPlans, days, style);
+  let finalRenderable = isItineraryRenderable(composedPlans, days, style);
+  const poolCountsForDeficit = buildItinerarySlotPools(
+    bestFrozenPlaces.length ? bestFrozenPlaces : places,
+  );
+
+  if (!finalRenderable && poolCountsForDeficit.total > 0) {
+    composedPlans = refillMissingDaySlots({
+      plans: composedPlans,
+      pool: bestFrozenPlaces.length ? bestFrozenPlaces : places,
+      days,
+      style,
+      plannedDate: params.context.startDate,
+    });
+    composedPlans = enforceStandardDaySlotPlans(ensureAllDayPlansExist(composedPlans, days), days);
+    planningResult = {
+      ...planningResult,
+      composedPlans,
+      ranked: flattenComposedDayPlanPlaces(composedPlans),
+      buckets: composedDayPlansToBuckets(composedPlans),
+    };
+    finalRenderable = isItineraryRenderable(composedPlans, days, style);
+  }
+
+  if (!finalRenderable && !shouldSkipPlanningPlacesApi()) {
+    const deficit = computeSlotDeficitFromPools(days, poolCountsForDeficit);
+    logItinerarySlotDeficit(deficit);
+
+    if (
+      hasSlotDeficit(deficit) &&
+      beginPipelineStage(planningSessionId, "slot_deficit_refill", { retry: true, reason: "validation_failed" })
+    ) {
+      const refilled = await searchSlotDeficitBatch({
+        label,
+        lat: params.lat,
+        lng: params.lng,
+        locale: params.locale,
+        searchPlaces: params.searchPlaces,
+        weather: params.weather,
+        context: params.context,
+        caller: `${caller}.slotDeficit`,
+        excludePlaceIds: params.excludePlaceIds ?? [],
+        userText: params.userText,
+        profile: params.profile,
+        searchContext: params.searchContext,
+        existingPlaces: bestFrozenPlaces.length ? bestFrozenPlaces : places,
+        deficit,
+        retryIndex: 1,
+        searchDestinationPlaces,
+      });
+
+      if (refilled.length > (bestFrozenPlaces.length ? bestFrozenPlaces : places).length) {
+        bestFrozenPlaces = refilled;
+        places = refilled;
+        persistPlanningCandidatePool(label, style, refilled);
+
+        const refilledPlans = refillMissingDaySlots({
+          plans: composedPlans,
+          pool: refilled,
+          days,
+          style,
+          plannedDate: params.context.startDate,
+        });
+        keepBetter(
+          enforceStandardDaySlotPlans(ensureAllDayPlansExist(refilledPlans, days), days),
+          refilled,
+        );
+        composedPlans = bestFrozenPlans;
+        planningResult = {
+          ...planningResult,
+          places: bestFrozenPlaces,
+          composedPlans,
+          ranked: flattenComposedDayPlanPlaces(composedPlans),
+          buckets: composedDayPlansToBuckets(composedPlans),
+        };
+        finalRenderable = isItineraryRenderable(composedPlans, days, style);
+      }
+      finishPipelineStage(planningSessionId, "slot_deficit_refill");
+    }
+  }
+
   const finalTotalPlaces = plannerTotalPlaces(composedPlans);
 
   let dayPlan: AiDayPlan | undefined;
@@ -1945,6 +2222,41 @@ export async function generateTripPlanFromStyle(params: {
       false,
     );
   }
+
+  const poolCounts = buildItinerarySlotPools(
+    bestFrozenPlaces.length ? bestFrozenPlaces : places,
+  );
+  logCategoryPoolCounts("pre_render", {
+    breakfast: poolCounts.breakfast,
+    attraction: poolCounts.attraction,
+    lunch: poolCounts.lunch,
+    cafe: poolCounts.cafe,
+    dinner: poolCounts.dinner,
+    evening: poolCounts.evening,
+    total: poolCounts.total,
+  });
+
+  logItineraryPipelineSummary({
+    searchCount,
+    normalizedCount: realFilter.places.length + (realFilter.counters.droppedMissingPlaceId ?? 0),
+    detailsEnrichedCount: geocodePool.validPlaces.length,
+    postprocessCount: realFilter.places.length,
+    poolCounts: {
+      breakfast: poolCounts.breakfast,
+      attraction: poolCounts.attraction,
+      lunch: poolCounts.lunch,
+      cafe: poolCounts.cafe,
+      dinner: poolCounts.dinner,
+      evening: poolCounts.evening,
+      total: poolCounts.total,
+    },
+    plannerItemCount: finalTotalPlaces,
+    validationOk: finalRenderable,
+    renderedCardsCount: recommendations.length,
+  });
+
+  finishPlannerSession(planningSessionId, finalTotalPlaces);
+  finishPlannerRun(mainPlannerRunKey, finalTotalPlaces);
 
   return {
     places: planningResult.places,

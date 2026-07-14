@@ -9,7 +9,7 @@ import {
 } from "@/lib/ai/destination-pending-question";
 import { isDestinationAdviceActive, coerceTravelDestination } from "@/lib/ai/trip-planning-context";
 import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
-import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+import { resolveInferredTripDays } from "@/lib/ai/ai-trip-style";
 
 export { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 
@@ -175,8 +175,9 @@ export function buildPlanningOfflineReply(
   if (!dest) return null;
 
   const summary = buildPlanningContextSummary(ctx);
-  if (session.pendingQuestion?.type === "ask_days" || (!ctx.days && !session.pendingQuestion)) {
-    return [`好，我先記下：`, summary, "", `你這趟大概幾天？`].filter(Boolean).join("\n");
+  const inferredDays = resolveInferredTripDays(ctx, session);
+  if (session.pendingQuestion?.type === "ask_days" || (!inferredDays && !session.pendingQuestion)) {
+    return [`好，目的地先記成${dest}。`, summary, "", `你這趟大概幾天？`].filter(Boolean).join("\n");
   }
   const constraintAck = buildWeatherConstraintAcknowledgement(ctx, ctx.weather);
   if (constraintAck && ctx.excludedCategories?.some((c) => /曝曬|中午|高溫|戶外/.test(c))) {
@@ -185,23 +186,23 @@ export function buildPlanningOfflineReply(
 
   if (
     session.pendingQuestion?.type === "ask_preference" ||
-    (ctx.days && !ctx.vibe && !ctx.selectedInterests?.length)
+    session.pendingQuestion?.type === "combination_choice" ||
+    (inferredDays && !ctx.vibe && !ctx.selectedInterests?.length)
   ) {
     const planned = buildWeatherAwarePlanningReply({
       destination: dest,
-      days: ctx.days ?? 1,
+      days: ctx.days ?? inferredDays ?? 1,
       weather: ctx.weather,
       context: ctx,
-      preferNextStepQuestion: true,
     });
     return planned.reply;
   }
 
-  return [
-    `好，我先記下：`,
-    summary,
-    "",
-    `接下來我可以幫你抓必去點，或直接排完整 ${ctx.days ?? ""} 天行程。`,
-    "你比較想先列必去點，還是直接排完整行程？",
-  ].join("\n");
+  const planned = buildWeatherAwarePlanningReply({
+    destination: dest,
+    days: ctx.days ?? inferredDays ?? 1,
+    weather: ctx.weather,
+    context: ctx,
+  });
+  return planned.reply;
 }

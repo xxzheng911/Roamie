@@ -6,7 +6,11 @@ import {
   type PersistedTravelPrefResult,
 } from "@/lib/travel-pref-result-cache";
 import { resetPreferencesRemoteHydration } from "@/lib/preferences-storage";
-import { restoreTravelPrefFromNativePersist, purgeLegacyTravelPrefCachesOnce, resetTravelPrefLegacyPurgeFlag } from "@/lib/travel-pref-native-persist";
+import {
+  restoreTravelPrefFromNativePersist,
+  purgeLegacyTravelPrefCachesOnce,
+  resetTravelPrefLegacyPurgeFlag,
+} from "@/lib/travel-pref-native-persist";
 import { schedulePendingTravelPrefSyncIfNeeded } from "@/lib/travel-pref-sync";
 import {
   markTravelPrefPendingSync,
@@ -15,7 +19,10 @@ import {
 } from "@/lib/travel-pref-sync-state";
 import { readCachedPreferencesSync } from "@/lib/preferences-storage";
 import { readCachedProfile } from "@/lib/profile-persisted-cache";
-import { preloadAvatarImage } from "@/lib/profile-avatar-preload";
+import {
+  hydrateUserMediaFromCache,
+  resetUserMediaStore,
+} from "@/lib/user-media/user-media-store";
 
 let bootHydrated = false;
 let bootHydratedUserId: string | null | undefined;
@@ -35,6 +42,7 @@ export function hydrateAppBootCaches(userId?: string | null): PersistedTravelPre
   }
   bootHydrated = true;
   bootHydratedUserId = resolvedUserId;
+  void hydrateUserMediaFromCache(resolvedUserId ?? readCachedProfile(undefined, { quiet: true })?.userId);
   return hydrateTravelPrefResultOnBoot(resolvedUserId, { allowRepeatLog: true });
 }
 
@@ -59,6 +67,7 @@ export function resetAppBootCachesForUserChange(): void {
   resetTravelPrefLegacyPurgeFlag();
   resetTravelPrefSyncMemory();
   resetPreferencesRemoteHydration();
+  resetUserMediaStore();
 }
 
 export async function hydrateAppBootCachesAsync(
@@ -78,16 +87,10 @@ export async function hydrateAppBootCachesAsync(
   bootHydratedUserId = resolvedUserId;
   const snapshot = hydrateTravelPrefResultOnBoot(resolvedUserId, { allowRepeatLog: true });
 
-  if (resolvedUserId) {
-    const cachedProfile = readCachedProfile(resolvedUserId);
-    if (cachedProfile?.avatarUrl) {
-      preloadAvatarImage(
-        resolvedUserId,
-        cachedProfile.avatarUrl,
-        cachedProfile.avatarUpdatedAt,
-      );
-    }
+  // Non-blocking: restore avatar/cover bytes from IndexedDB before profile API.
+  void hydrateUserMediaFromCache(resolvedUserId ?? readCachedProfile(undefined, { quiet: true })?.userId);
 
+  if (resolvedUserId) {
     if (snapshot?.quizCompleted) {
       const syncState = readTravelPrefSyncState(resolvedUserId);
       if (!syncState.syncedAt) {

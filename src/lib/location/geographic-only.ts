@@ -64,18 +64,26 @@ const REJECTED_POI_TYPES = new Set([
   "route",
   "intersection",
   "postal_code",
-  "plus_code",
-  "geocode",
   "floor",
   "room",
 ]);
 
+/**
+ * Accept country / city / admin results from Geocoding API.
+ * Google often includes "geocode" or "plus_code" alongside locality/political —
+ * those meta types must not reject an otherwise valid administrative result.
+ */
 export function isGeographicPlaceTypes(types: string[] | undefined): boolean {
   if (!types?.length) return true;
-  if (types.some((t) => REJECTED_POI_TYPES.has(t))) return false;
   if (types.some((t) => ALLOWED_GEO_TYPES.has(t))) return true;
-  /** Geocoding API 有時只回傳 geocode / plus_code */
-  if (types.includes("geocode") && !types.some((t) => REJECTED_POI_TYPES.has(t))) return true;
+  /** Geocoding API 有時只回傳 geocode / plus_code（無行政區 type） */
+  if (
+    (types.includes("geocode") || types.includes("plus_code")) &&
+    !types.some((t) => REJECTED_POI_TYPES.has(t))
+  ) {
+    return true;
+  }
+  if (types.some((t) => REJECTED_POI_TYPES.has(t))) return false;
   return false;
 }
 

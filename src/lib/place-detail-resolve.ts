@@ -18,7 +18,6 @@ import {
   cachePlaceOpeningFromResult,
   readPlaceRuntimeCache,
 } from "@/lib/place-runtime-cache";
-import { getRoamieDefaultImage } from "@/services/placeImageService";
 import { searchPlaces } from "@/services/placesService";
 import {
   buildUnifiedPlaceDetailsCacheKey,
@@ -113,12 +112,6 @@ export function buildPlaceImageUrls(place: PlaceImageSources): string[] {
     .map((name) => buildPlacePhotoUrl(name, 800))
     .filter((u): u is string => Boolean(u));
 
-  const generated =
-    place.generatedImageUrl?.trim() ||
-    place.fallbackImageUrl?.trim() ||
-    cached?.generatedImageUrl?.trim() ||
-    cached?.fallbackImageUrl?.trim() ||
-    null;
   const cover =
     place.coverImageUrl?.trim() ||
     cached?.coverImageUrl?.trim() ||
@@ -127,17 +120,11 @@ export function buildPlaceImageUrls(place: PlaceImageSources): string[] {
   if (fromNames.length > 0) {
     return dedupePlaceImageUrls(fromNames);
   }
-  if (cover) {
+  // Place detail: never fall back to generic cafe / scene / Unsplash images when Google photo is missing.
+  if (cover && !/scene-cafe|unsplash\.com/i.test(cover)) {
     return dedupePlaceImageUrls([sanitizePlaceImageUrl(cover, { maxWidth: 800 })]);
   }
-  if (generated) {
-    return dedupePlaceImageUrls([sanitizePlaceImageUrl(generated, { maxWidth: 800 })]);
-  }
-  return dedupePlaceImageUrls([
-    sanitizePlaceImageUrl(
-      getRoamieDefaultImage(place.categoryId ?? place.primaryType ?? undefined),
-    ),
-  ]);
+  return [];
 }
 
 export function resolvePlaceDetailHandoff(

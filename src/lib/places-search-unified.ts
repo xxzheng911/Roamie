@@ -14,15 +14,22 @@ import {
   logPlacesApiCall,
 } from "@/lib/places-diagnostics";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
-import { isPlacesRateLimited } from "@/lib/places-api-guard";
+import {
+  isPlacesRateLimited,
+  notePlacesRateLimited,
+  waitForPlacesGenerationCooldown,
+} from "@/lib/places-api-guard";
 import { normalizePlacesSearchResult } from "@/lib/places-search-normalize";
 
 async function runClientSearch(
   args: Parameters<SearchPlacesFn>[0],
   key: string,
 ): Promise<ReturnType<SearchPlacesFn>> {
+  // Never hard-fail mid-generation: wait for cooldown, then let executeExploreSearch
+  // / runPlacesApiDeduped apply concurrency + Retry-After backoff.
   if (isPlacesRateLimited()) {
-    return { places: [], error: "places_rate_limited" };
+    notePlacesRateLimited({ attemptIndex: 0 });
+    await waitForPlacesGenerationCooldown();
   }
   if (hasPlacesClientFallbackAttempted(key)) {
     logPlacesApiSkipDuplicate("client_fallback", { key });
