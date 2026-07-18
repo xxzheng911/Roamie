@@ -99,10 +99,13 @@ export function requestIosSnapshotRefresh(reason = "spa", options?: { force?: bo
 
 /** 等 React 首屏（Login 按鈕等）後再 ping native */
 export function scheduleIosSnapshotRefreshBurst(reason = "app-ready"): void {
-  for (const delayMs of [0, 800, 2000, 4000, 7000]) {
+  // Native already schedules boot catch-up captures. Keep this JS burst small
+  // and only force the first frame; repeated forced WKSnapshot calls block
+  // keyboard/input work on physical iOS devices.
+  for (const delayMs of [0, 2000, 5000]) {
     window.setTimeout(() => {
       if (!isIosSnapshotUiReady()) return;
-      requestIosSnapshotRefresh(reason, { force: true });
+      requestIosSnapshotRefresh(reason, { force: delayMs === 0 });
     }, delayMs);
   }
 }

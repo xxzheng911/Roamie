@@ -49,6 +49,7 @@ import {
   buildLandmarkCompanionSearchAttempts,
   classifyDestinationForPlaceSearch,
 } from "@/lib/ai/landmark-place-strategy";
+import { detectSubPlaceType } from "@/lib/ai/landmark-keywords";
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { ITINERARY_PARTIAL_FAILURE_MESSAGE } from "@/lib/trip/itinerary-guards";
@@ -69,12 +70,15 @@ import {
 import {
   annotatePlaceWithCombinationMetadata,
   buildCombinationPlaceMappingStats,
+  buildMultiCombinationCoverageReport,
   mergeSelectedCombinationCandidates,
   resolveSelectedCombinationPools,
-  computeMinimumResolvedPerCombination,
-  computeMinimumResolvedPlaces,
   expandAllowlistNamesFromPools,
   clearCombinationPoolMemo,
+  ensureCombinationProvenanceOnPlaces,
+  planSelectedCombinationCapacity,
+  validateSelectedCombinationIntegrity,
+  type MultiCombinationCoverageReport,
 } from "@/lib/ai/combination-itinerary-integrity";
 import {
   themeSearchQueries,
@@ -96,6 +100,22 @@ import {
   mapWithConcurrencyLimit,
   PLACE_MAP_MAX_CONCURRENCY,
 } from "@/lib/ai/place-map-queue";
+import {
+  calculateDynamicStopCapacity,
+  buildSelectedThemeProfile,
+  evaluateTotalRealPlaceValidation,
+  SELECTED_COMBINATION_FILLER_POLICY,
+  supplementRealPlacesForItinerary,
+} from "@/lib/ai/real-place-supplement";
+import {
+  combinationIdsFromPlace,
+  mergeCombinationProvenance,
+  mergePlaceProvenance,
+} from "@/lib/ai/combination-provenance";
+import {
+  classifyCombinationCandidate,
+  expandRegionCandidatesForCombination,
+} from "@/lib/ai/region-candidate-expand";
 
 export { INSUFFICIENT_ITINERARY_PLACES_MESSAGE };
 
@@ -105,8 +125,17 @@ export type ItineraryPlaceFailureCode =
   | "places_invalid_request"
   | "place_details_failed"
   | "insufficient_resolved_places"
+  | "insufficient_real_places"
   | "places_api_empty"
-  | "no_candidate_places";
+  | "no_candidate_places"
+  | "combination_uncovered"
+  | "combination_coverage_insufficient"
+  | "total_real_place_count_insufficient"
+  | "total_place_count_insufficient"
+  | "region_expansion_failed"
+  | "selected_place_resolution_failed"
+  | "place_resolution_failed"
+  | "final_allocation_insufficient";
 
 export type ItineraryPlaceFailure = {
   code: ItineraryPlaceFailureCode;
@@ -131,13 +160,45 @@ export const COMBINATION_MAPPING_AUTO_RETRY_MESSAGE =
 export const COMBINATION_MAPPING_FAILED_MESSAGE =
   "部分已選組合目前無法取得足夠的真實地點。";
 
+export const SINGLE_COMBINATION_MAPPING_FAILED_MESSAGE =
+  "目前這個主題找到的可用真實地點不足，請改選其他組合或點「重新生成」再試一次。";
+
+export const COMPACT_ITINERARY_NOTICE_MESSAGE =
+  "目前找到的可用地點較少，我先幫你安排精簡版行程。";
+
 export const COMBINATION_MAPPING_REGENERATE_OPTION = "重新生成";
+
+export function combinationMappingFailureMessage(params: {
+  code?: ItineraryPlaceFailureCode;
+  selectedCombinationCount?: number;
+}): string {
+  const count = params.selectedCombinationCount ?? 0;
+  if (
+    params.code === "total_real_place_count_insufficient" ||
+    params.code === "insufficient_real_places"
+  ) {
+    if (count <= 1) return SINGLE_COMBINATION_MAPPING_FAILED_MESSAGE;
+    return COMBINATION_MAPPING_FAILED_MESSAGE;
+  }
+  if (params.code === "combination_uncovered" && count <= 1) {
+    return SINGLE_COMBINATION_MAPPING_FAILED_MESSAGE;
+  }
+  return COMBINATION_MAPPING_FAILED_MESSAGE;
+}
 
 const PLACE_FAILURE_PRIORITY: ItineraryPlaceFailureCode[] = [
   "places_rate_limited",
   "places_auth_error",
   "places_invalid_request",
   "place_details_failed",
+  "region_expansion_failed",
+  "combination_uncovered",
+  "combination_coverage_insufficient",
+  "place_resolution_failed",
+  "selected_place_resolution_failed",
+  "total_real_place_count_insufficient",
+  "total_place_count_insufficient",
+  "final_allocation_insufficient",
   "insufficient_resolved_places",
   "places_api_empty",
 ];
@@ -248,15 +309,27 @@ function rankByQuality(places: PlaceResult[]): PlaceResult[] {
 }
 
 function dedupeChatPlaces(places: ChatPlaceItem[]): ChatPlaceItem[] {
-  const seen = new Set<string>();
-  const out: ChatPlaceItem[] = [];
+  const byKey = new Map<string, ChatPlaceItem>();
   for (const p of places) {
-    const key = p.placeId?.trim() || p.googlePlaceId?.trim() || `${p.name}@${p.address ?? ""}`;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(p);
+    const key =
+      p.placeId?.trim() ||
+      p.googlePlaceId?.trim() ||
+      `${(p.name ?? p.placeName ?? "").replace(/\s+/g, "").toLowerCase()}@${p.address ?? ""}`;
+    if (!key) continue;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, p);
+      continue;
+    }
+    byKey.set(
+      key,
+      mergePlaceProvenance(existing, p, {
+        representativeName: existing.placeName ?? existing.name,
+        otherName: p.placeName ?? p.name,
+      }),
+    );
   }
-  return out;
+  return [...byKey.values()];
 }
 
 function dedupePlaces(places: PlaceResult[]): PlaceResult[] {
@@ -528,7 +601,6 @@ async function mergeSessionPlacesWithFetch(params: {
     }
 > {
   const fetchTarget = computeItineraryResolvedTarget(params.days);
-  const firstRoundCap = computeFirstRoundPlaceMapCap(params.days);
   const allowlist = resolveGenerationAllowlist(params.context, params.destination);
   const dedupe = createPlaceMapDedupeScope(params.generationRequestId);
 
@@ -630,6 +702,12 @@ async function mergeSessionPlacesWithFetch(params: {
     prioritizeNames.push(n);
   }
 
+  const firstRoundCap = Math.max(
+    computeFirstRoundPlaceMapCap(params.days),
+    // Selected combinations: never cap below the full primary named pool.
+    comboPools.reduce((n, p) => n + p.primary.length, 0),
+    allowlist ? prioritizeNames.length : 0,
+  );
   const firstRoundNames = prioritizeNames.slice(0, firstRoundCap);
   const reserveNames = prioritizeNames.slice(firstRoundCap);
   logAiPipeline(
@@ -639,6 +717,11 @@ async function mergeSessionPlacesWithFetch(params: {
     `reserve=${reserveNames.length}`,
     `cap=${firstRoundCap}`,
     `target=${fetchTarget}`,
+  );
+  logAiPipeline(
+    "[SELECTED_PLACE_POOL_BUILT]",
+    `count=${prioritizeNames.length}`,
+    `places=[${prioritizeNames.join(",")}]`,
   );
 
   if (firstRoundNames.length === 0) {
@@ -676,13 +759,8 @@ async function mergeSessionPlacesWithFetch(params: {
       params.destination,
       ids,
     );
-    if (forceComboId != null && annotated.sourceCombinationId == null) {
-      return {
-        ...annotated,
-        sourceCombinationId: forceComboId,
-        matchedSelectedCombinationIds: [forceComboId],
-        matchedCombinationIds: [forceComboId],
-      };
+    if (forceComboId != null) {
+      return mergeCombinationProvenance(annotated, [forceComboId]);
     }
     return annotated;
   };
@@ -805,9 +883,7 @@ async function mergeSessionPlacesWithFetch(params: {
       return true;
     }
     // Theme-search / promoted fallback places carry combination provenance.
-    const matched =
-      p.matchedSelectedCombinationIds ??
-      (p.sourceCombinationId != null ? [p.sourceCombinationId] : []);
+    const matched = combinationIdsFromPlace(p);
     return matched.some((id) => effectiveAllowlist.selectedCombinationIds.includes(id));
   };
 
@@ -856,10 +932,7 @@ async function mergeSessionPlacesWithFetch(params: {
 
   const countResolvedForCombo = (comboId: number): number =>
     merged.filter((p) => {
-      const ids =
-        p.matchedSelectedCombinationIds ??
-        (p.sourceCombinationId != null ? [p.sourceCombinationId] : []);
-      if (ids.includes(comboId)) return true;
+      if (combinationIdsFromPlace(p).includes(comboId)) return true;
       return annotatePlaceWithCombinationMetadata(
         p,
         params.destination,
@@ -919,13 +992,19 @@ async function mergeSessionPlacesWithFetch(params: {
     );
   };
 
-  // Per-combination: primary → fallback → theme Places search until quota.
+  // Per-combination: capacity plan → primary/fallback map → coverage → region/supplement.
   if (effectiveAllowlist?.selectedCombinationIds.length) {
-    const minPerCombo = computeMinimumResolvedPerCombination(params.days);
-    const minTotal = computeMinimumResolvedPlaces({
+    const capacityPlan = planSelectedCombinationCapacity({
       tripDays: params.days,
-      selectedCombinationCount: effectiveAllowlist.selectedCombinationIds.length,
+      selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
     });
+    const minPerCombo = capacityPlan.minimumRepresentativePerCombination;
+
+    merged = ensureCombinationProvenanceOnPlaces(
+      merged,
+      params.destination,
+      effectiveAllowlist.selectedCombinationIds,
+    );
 
     for (const pool of comboPools) {
       mappingMeta[pool.combinationId] = {
@@ -934,11 +1013,13 @@ async function mergeSessionPlacesWithFetch(params: {
         searchRetries: 0,
         primaryCandidates: pool.primary.length,
       };
+      const softTarget =
+        capacityPlan.targetPerCombination[pool.combinationId] ?? minPerCombo;
       let resolved = countResolvedForCombo(pool.combinationId);
 
-      // Map unused primary candidates that still lack a match.
-      if (resolved < minPerCombo) {
-        const needed = minPerCombo - resolved;
+      // Map unused primary candidates until soft capacity target (never a hard fail gate).
+      if (resolved < softTarget) {
+        const needed = softTarget - resolved;
         const primaryPending = pool.primary.filter(
           (c) =>
             !merged.some((p) =>
@@ -962,18 +1043,18 @@ async function mergeSessionPlacesWithFetch(params: {
         resolved = countResolvedForCombo(pool.combinationId);
       }
 
-      // Fallback candidates — stop once quota met.
-      if (resolved < minPerCombo && pool.fallback.length) {
+      // Fallback candidates — stop once soft target met.
+      if (resolved < softTarget && pool.fallback.length) {
         logAiPipeline(
           "[COMBINATION_PLACE_MAPPING_RETRY]",
           `combinationId=${pool.combinationId}`,
           `phase=fallback`,
-          `need=${minPerCombo - resolved}`,
+          `need=${softTarget - resolved}`,
           `fallback=${pool.fallback.map((f) => f.name).join("|")}`,
         );
         searchRetryCount += 1;
         for (const c of pool.fallback) {
-          if (resolved >= minPerCombo) break;
+          if (resolved >= softTarget) break;
           mappingMeta[pool.combinationId]!.fallbackCandidatesUsed += 1;
           fallbackCandidateCount += 1;
           attemptedCandidates += 1;
@@ -987,19 +1068,20 @@ async function mergeSessionPlacesWithFetch(params: {
         }
       }
 
-      // Theme Places search refill (real Places → candidates).
-      if (resolved < minPerCombo) {
+      // Theme Places soft refill when already has ≥1 named place but under soft target.
+      if (resolved < softTarget && resolved > 0) {
         const queries = themeSearchQueries(pool.theme, params.destination);
         logAiPipeline(
           "[COMBINATION_PLACE_MAPPING_RETRY]",
           `combinationId=${pool.combinationId}`,
-          `phase=theme_search`,
+          `phase=theme_search_supplement`,
           `queries=${queries.slice(0, 4).join("|")}`,
+          `reason=named_quota_underfilled`,
         );
         searchRetryCount += 1;
         candidateRegenerationCount += 1;
         for (const query of queries) {
-          if (resolved >= minPerCombo) break;
+          if (resolved >= softTarget) break;
           mappingMeta[pool.combinationId]!.searchRequests += 1;
           mappingMeta[pool.combinationId]!.searchRetries += 1;
           try {
@@ -1027,7 +1109,7 @@ async function mergeSessionPlacesWithFetch(params: {
               },
             });
             for (const place of result.places ?? []) {
-              if (resolved >= minPerCombo) break;
+              if (resolved >= softTarget) break;
               const quality = validateCandidateIntent(
                 {
                   name: place.name ?? "",
@@ -1059,6 +1141,15 @@ async function mergeSessionPlacesWithFetch(params: {
               ) {
                 continue;
               }
+              if (detectSubPlaceType(place.name ?? "")) {
+                logAiPipeline(
+                  "[THEME_REFILL_SKIPPED_SUBPLACE]",
+                  `name=${place.name}`,
+                  `combinationId=${pool.combinationId}`,
+                );
+                continue;
+              }
+              fallbackCandidateCount += 1;
               attemptedCandidates += 1;
               const item = withComboMeta(
                 mapPlaceResultToChatItem(place, {
@@ -1068,16 +1159,29 @@ async function mergeSessionPlacesWithFetch(params: {
                 }),
                 pool.combinationId,
               );
+              logAiPipeline(
+                "[FALLBACK_PLACE_ADDED]",
+                `name=${place.name}`,
+                `combinationId=${pool.combinationId}`,
+                `reason=theme_search_supplement`,
+                `source=places_theme_query`,
+              );
               merged.push(item);
               merged = dedupeChatPlaces(merged);
               resolved = countResolvedForCombo(pool.combinationId);
             }
-          } catch {
-            // continue other queries
+          } catch (e) {
+            console.warn("[combination_theme_refill] search failed", e);
           }
         }
       }
     }
+
+    merged = ensureCombinationProvenanceOnPlaces(
+      dedupeChatPlaces(merged),
+      params.destination,
+      effectiveAllowlist.selectedCombinationIds,
+    );
 
     let mappingStats = buildCombinationPlaceMappingStats({
       destination: params.destination,
@@ -1086,22 +1190,363 @@ async function mergeSessionPlacesWithFetch(params: {
       mappingMeta,
     });
 
-    const missingCombos = mappingStats.filter((s) => s.resolvedCount === 0);
-    const underQuota = mappingStats.filter((s) => s.resolvedCount < minPerCombo);
-    const totalOk = merged.length >= Math.min(minTotal, minPerCombo * comboPools.length);
+    const regionExpansion: Record<
+      number,
+      {
+        regions: string[];
+        expandedPlaces: number;
+        selectedRegion?: string;
+        failedRegions?: string[];
+      }
+    > = {};
+    let supplementAttempted = false;
+    const addedByCombination: Record<number, number> = {};
 
-    if (missingCombos.length || (underQuota.length && !totalOk && merged.length < params.days)) {
+    const coverageBefore = buildMultiCombinationCoverageReport({
+      destination: params.destination,
+      selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
+      resolvedPlaces: merged,
+      regionExpansion,
+      supplementAttempted: false,
+      tripDays: params.days,
+      capacityPlan,
+    });
+    logAiPipeline(
+      "[COMBINATION_COVERAGE_BEFORE_SUPPLEMENT]",
+      `report=${JSON.stringify(coverageBefore)}`,
+    );
+
+    // Region expand for uncovered combos whose candidates are regions/districts.
+    for (const comboId of coverageBefore.uncoveredIds) {
+      const pool = comboPools.find((p) => p.combinationId === comboId);
+      if (!pool) continue;
+
+      const regionNames = pool.all
+        .map((c) => c.name)
+        .filter(
+          (name) =>
+            classifyCombinationCandidate(name, params.destination, {
+              types: pool.all.find((c) => c.name === name)?.types,
+              primaryType: pool.all.find((c) => c.name === name)?.primaryType,
+            }) === "city_or_region",
+        );
+
+      if (!regionNames.length) continue;
+
+      const expanded = await expandRegionCandidatesForCombination({
+        combinationId: pool.combinationId,
+        regionNames,
+        destination: params.destination,
+        lat,
+        lng,
+        locale: params.locale,
+        searchPlaces: params.searchPlaces,
+        geocodeFn: params.geocodeFn,
+        generationRequestId: params.generationRequestId,
+        theme: pool.theme,
+        title: pool.title,
+        mood: params.context.mood,
+        weather: params.context.weather,
+      });
+      regionExpansion[pool.combinationId] = {
+        regions: expanded.regions,
+        expandedPlaces: expanded.expandedPlaces.length,
+        selectedRegion: expanded.expandedPlaces[0]
+          ? (expanded.expandedPlaces[0] as ChatPlaceItem & { sourceRegionCandidate?: string })
+              .sourceRegionCandidate
+          : expanded.regions[0],
+        failedRegions: expanded.failedRegions,
+      };
+      if (expanded.expandedPlaces.length) {
+        for (const item of expanded.expandedPlaces) {
+          merged.push(mergeCombinationProvenance(item, [pool.combinationId]));
+        }
+        merged = dedupeChatPlaces(merged);
+        fallbackCandidateCount += expanded.expandedPlaces.length;
+        candidateRegenerationCount += 1;
+        addedByCombination[pool.combinationId] =
+          (addedByCombination[pool.combinationId] ?? 0) + expanded.expandedPlaces.length;
+      }
+    }
+
+    merged = ensureCombinationProvenanceOnPlaces(
+      merged,
+      params.destination,
+      effectiveAllowlist.selectedCombinationIds,
+    );
+
+    const coverageAfterRegion = buildMultiCombinationCoverageReport({
+      destination: params.destination,
+      selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
+      resolvedPlaces: merged,
+      regionExpansion,
+      supplementAttempted: false,
+      tripDays: params.days,
+      capacityPlan,
+    });
+
+    const stillUncovered = coverageAfterRegion.uncoveredIds;
+    if (stillUncovered.length) {
+      logAiPipeline(
+        "[COMBINATION_SUPPLEMENT_STARTED]",
+        `uncoveredIds=[${stillUncovered.join(",")}]`,
+      );
+    }
+
+    // Real-place theme supplement for still-uncovered combos (must run before fail).
+    for (const comboId of stillUncovered) {
+      const pool = comboPools.find((p) => p.combinationId === comboId);
+      if (!pool) continue;
+      if (regionExpansion[pool.combinationId]?.expandedPlaces) continue;
+
+      const needed = 1;
+      logAiPipeline(
+        "[COMBINATION_REAL_PLACE_SUPPLEMENT_STARTED]",
+        `combinationId=${pool.combinationId}`,
+        `needed=${needed}`,
+        `theme=${pool.theme}`,
+      );
+      supplementAttempted = true;
+      candidateRegenerationCount += 1;
+      searchRetryCount += 1;
+
+      const queries = themeSearchQueries(pool.theme, params.destination).slice(0, 2);
+      let added = 0;
+      let failed = 0;
+      for (const query of queries) {
+        if (added >= needed) break;
+        try {
+          const result = await params.searchPlaces({
+            data: {
+              query,
+              lat,
+              lng,
+              radius: 30_000,
+              mode: "text",
+              placesScreen: "chat",
+              placesCaller: "combination_real_place_supplement",
+              destinationName: params.destination,
+              searchMode: "destination",
+              includedTypes: [
+                "tourist_attraction",
+                "museum",
+                "art_gallery",
+                "park",
+                "market",
+                "shopping_mall",
+                "cultural_landmark",
+                "historical_landmark",
+                "neighborhood",
+              ],
+            },
+          });
+          for (const place of result.places ?? []) {
+            if (added >= needed) break;
+            if (!isMappableGooglePlaceId(place.id)) continue;
+            if (!isResolvedCorePlace({ ...place, destinationMatch: true })) continue;
+            if (detectSubPlaceType(place.name ?? "")) continue;
+            if (merged.some((p) => (p.googlePlaceId ?? p.placeId) === place.id)) continue;
+            const quality = validateCandidateIntent(
+              {
+                name: place.name ?? "",
+                types: place.types ?? undefined,
+                primaryType: place.primaryType,
+                address: place.address,
+                lat: place.lat,
+                lng: place.lng,
+                googlePlaceId: place.id,
+              },
+              { theme: pool.theme, title: pool.title },
+              params.destination,
+              { center: { lat, lng }, requireTourismType: true },
+            );
+            if (!quality.ok) {
+              failed += 1;
+              continue;
+            }
+            const item = withComboMeta(
+              mapPlaceResultToChatItem(place, {
+                mood: params.context.mood,
+                weather: params.context.weather,
+                locale: params.locale,
+              }),
+              pool.combinationId,
+            );
+            merged.push(item);
+            added += 1;
+            fallbackCandidateCount += 1;
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+      merged = dedupeChatPlaces(merged);
+      addedByCombination[pool.combinationId] =
+        (addedByCombination[pool.combinationId] ?? 0) + added;
+      logAiPipeline(
+        "[COMBINATION_REAL_PLACE_SUPPLEMENT_RESULT]",
+        `combinationId=${pool.combinationId}`,
+        `added=${added}`,
+        `failed=${failed}`,
+      );
+      logAiPipeline(
+        "[COMBINATION_SUPPLEMENT_COMPLETED]",
+        `combinationId=${pool.combinationId}`,
+        `added=${added}`,
+      );
+    }
+
+    // If any combo was uncovered before this stage, mark supplement attempted
+    // even when region expand alone covered them — regenerate must not re-query blindly.
+    if (coverageBefore.uncoveredIds.length) {
+      supplementAttempted = true;
+    }
+
+    if (stillUncovered.length || Object.keys(addedByCombination).length) {
+      logAiPipeline(
+        "[COMBINATION_SUPPLEMENT_COMPLETED]",
+        `addedByCombination=${JSON.stringify(addedByCombination)}`,
+      );
+    }
+
+    merged = ensureCombinationProvenanceOnPlaces(
+      dedupeChatPlaces(merged),
+      params.destination,
+      effectiveAllowlist.selectedCombinationIds,
+    );
+
+    // Capacity-based same-theme supplement MUST run before total-count validation.
+    const themeProfile = buildSelectedThemeProfile({
+      selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
+      pools: comboPools,
+    });
+    const mode =
+      effectiveAllowlist.selectedCombinationIds.length <= 1 ? "single" : "multiple";
+    logAiPipeline(
+      "[SELECTED_COMBINATION_MODE]",
+      `mode=${mode}`,
+      `selectedIds=[${effectiveAllowlist.selectedCombinationIds.join(",")}]`,
+    );
+    if (mode === "single") {
+      logAiPipeline(
+        "[SINGLE_COMBINATION_MODE]",
+        `selectedCombinationId=${effectiveAllowlist.selectedCombinationIds[0]}`,
+        `tripDays=${params.days}`,
+      );
+    }
+
+    logAiPipeline(
+      "[REAL_PLACE_COUNT_BEFORE_SUPPLEMENT]",
+      `count=${merged.length}`,
+      `uniqueMajorLandmarks=${merged.length}`,
+    );
+
+    const preferredStops = capacityPlan.preferredStops;
+    if (
+      merged.length < preferredStops &&
+      SELECTED_COMBINATION_FILLER_POLICY.allowResolvedRealPlaceSupplement
+    ) {
+      supplementAttempted = true;
+      const capacitySupplement = await supplementRealPlacesForItinerary({
+        destination: params.destination,
+        tripDays: params.days,
+        existingPlaces: merged,
+        selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
+        themes: themeProfile.primaryThemes,
+        themeProfile,
+        lat,
+        lng,
+        locale: params.locale,
+        searchPlaces: params.searchPlaces,
+        needed: preferredStops - merged.length,
+        mood: params.context.mood,
+        weather: params.context.weather,
+        uniqueMajorLandmarksBefore: merged.length,
+      });
+      if (capacitySupplement.added.length) {
+        merged = dedupeChatPlaces([...merged, ...capacitySupplement.added]);
+        fallbackCandidateCount += capacitySupplement.added.length;
+      }
+      logAiPipeline(
+        "[REAL_PLACE_COUNT_AFTER_SUPPLEMENT]",
+        `count=${merged.length}`,
+      );
+    } else {
+      logAiPipeline(
+        "[REAL_PLACE_COUNT_AFTER_SUPPLEMENT]",
+        `count=${merged.length}`,
+      );
+    }
+
+    merged = ensureCombinationProvenanceOnPlaces(
+      dedupeChatPlaces(merged),
+      params.destination,
+      effectiveAllowlist.selectedCombinationIds,
+    );
+
+    const coverageAfter = buildMultiCombinationCoverageReport({
+      destination: params.destination,
+      selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
+      resolvedPlaces: merged,
+      regionExpansion,
+      supplementAttempted,
+      tripDays: params.days,
+      capacityPlan,
+    });
+    logAiPipeline(
+      "[COMBINATION_COVERAGE_AFTER_SUPPLEMENT]",
+      `report=${JSON.stringify(coverageAfter)}`,
+    );
+
+    mappingStats = buildCombinationPlaceMappingStats({
+      destination: params.destination,
+      selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
+      resolvedPlaces: merged,
+      mappingMeta,
+    });
+    void mappingStats;
+
+    const placeValidation = evaluateTotalRealPlaceValidation(
+      merged.length,
+      capacityPlan.dynamicCapacity,
+    );
+
+    const integrity = validateSelectedCombinationIntegrity({
+      destination: params.destination,
+      selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
+      resolvedPlaces: merged,
+      regionExpansion,
+      supplementAttempted,
+      tripDays: params.days,
+      capacityPlan,
+    });
+
+    if (!integrity.ok) {
+      const uncovered = integrity.coverage.uncoveredIds;
       logAiPipeline(
         "[COMBINATION_PLACE_MAPPING_INCOMPLETE]",
-        `missing=${missingCombos.map((s) => s.combinationId).join(",") || "none"}`,
-        `underQuota=${underQuota.map((s) => s.combinationId).join(",")}`,
+        `uncovered=${uncovered.join(",") || "none"}`,
+        `reasons=${integrity.reasons.join("|")}`,
         `resolvedTotal=${merged.length}`,
-        `minPerCombo=${minPerCombo}`,
-        `minTotal=${minTotal}`,
+        `minTotal=${capacityPlan.minimumViableStops}`,
+        `preferred=${capacityPlan.preferredStops}`,
+        `validation=${placeValidation.result}`,
+        `supplementAttempted=${supplementAttempted}`,
       );
       const apiStats = getPlacesApiCallStats();
+      const mappedCode =
+        integrity.failureCode === "supplement_required"
+          ? "combination_uncovered"
+          : integrity.failureCode === "total_real_place_count_insufficient"
+            ? "total_real_place_count_insufficient"
+            : integrity.failureCode === "place_resolution_failed"
+              ? "place_resolution_failed"
+              : integrity.failureCode === "combination_uncovered"
+                ? "combination_uncovered"
+                : (integrity.failureCode as ItineraryPlaceFailureCode | undefined) ??
+                  "combination_uncovered";
       const failure: ItineraryPlaceFailure = {
-        code: "insufficient_resolved_places",
+        code: mappedCode,
         stage: "combination_mapping",
         attemptedCandidates,
         resolvedCandidates: merged.length,
@@ -1116,31 +1561,56 @@ async function mergeSessionPlacesWithFetch(params: {
       logItineraryRootCause(failure);
       return {
         ok: false,
-        message: COMBINATION_MAPPING_FAILED_MESSAGE,
+        message: combinationMappingFailureMessage({
+          code: mappedCode,
+          selectedCombinationCount: effectiveAllowlist.selectedCombinationIds.length,
+        }),
         apiEmpty: false,
         failure,
       };
     }
 
-    // Soft: allow continue when every combo has ≥1 place and trip days can be filled.
+    // Soft: under soft capacity target is OK when every combo has a representative.
+    const underQuota = mappingStats.filter((s) => {
+      const target =
+        capacityPlan.targetPerCombination[s.combinationId] ?? minPerCombo;
+      return s.resolvedCount < target;
+    });
     if (underQuota.length) {
       logAiPipeline(
         "[COMBINATION_PLACE_MAPPING_SOFT_PASS]",
         `underQuota=${underQuota.map((s) => `${s.combinationId}:${s.resolvedCount}`).join(",")}`,
         `resolvedTotal=${merged.length}`,
+        `coverage=ok`,
       );
     }
 
-    mappingStats = buildCombinationPlaceMappingStats({
-      destination: params.destination,
-      selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
-      resolvedPlaces: merged,
-      mappingMeta,
-    });
-    void mappingStats;
+    void (integrity.coverage as MultiCombinationCoverageReport);
   }
 
   merged = merged.slice(0, Math.max(fetchTarget, mappedSession.length || 1, params.days));
+
+  // Never truncate away places that represent a selected combination after coverage passed.
+  if (effectiveAllowlist?.selectedCombinationIds.length) {
+    const keptKeys = new Set(
+      merged.map(
+        (p) =>
+          p.googlePlaceId?.trim() ||
+          `${(p.placeName ?? p.name).replace(/\s+/g, "").toLowerCase()}`,
+      ),
+    );
+    for (const place of [...mappedSession, ...mappedCombo]) {
+      const key =
+        place.googlePlaceId?.trim() ||
+        `${(place.placeName ?? place.name).replace(/\s+/g, "").toLowerCase()}`;
+      if (!key || keptKeys.has(key)) continue;
+      const ids = combinationIdsFromPlace(place);
+      if (ids.some((id) => effectiveAllowlist.selectedCombinationIds.includes(id))) {
+        merged.push(place);
+        keptKeys.add(key);
+      }
+    }
+  }
 
   const stats = getPlacesApiCallStats();
   logPlacesApiCallStats("itinerary_merge");
@@ -1157,6 +1627,92 @@ async function mergeSessionPlacesWithFetch(params: {
     `fallbackCandidateCount=${fallbackCandidateCount}`,
     `apiCalls=${JSON.stringify(stats)}`,
   );
+
+  const selectedCount = effectiveAllowlist?.selectedCombinationIds.length ?? 0;
+  const dynamicCapacity = calculateDynamicStopCapacity({
+    tripDays: params.days,
+    selectedCombinationCount: Math.max(selectedCount, 1),
+  });
+  const minPlaces = dynamicCapacity.minimumViableStops;
+
+  // Non-allowlist path: capacity supplement still runs here.
+  // Allowlist path already supplemented before integrity validation.
+  if (
+    !effectiveAllowlist?.selectedCombinationIds.length &&
+    merged.length > 0 &&
+    merged.length < dynamicCapacity.preferredStops &&
+    SELECTED_COMBINATION_FILLER_POLICY.allowResolvedRealPlaceSupplement
+  ) {
+    logAiPipeline(
+      "[INSUFFICIENT_REAL_PLACES_DETECTED]",
+      `tripDays=${params.days}`,
+      `resolvedPlaces=${merged.length}`,
+      `minimumRequired=${minPlaces}`,
+      `preferred=${dynamicCapacity.preferredStops}`,
+    );
+    const supplement = await supplementRealPlacesForItinerary({
+      destination: params.destination,
+      tripDays: params.days,
+      existingPlaces: merged,
+      selectedCombinationIds: effectiveAllowlist?.selectedCombinationIds,
+      themes: comboPools.map((p) => p.theme).filter(Boolean),
+      lat,
+      lng,
+      locale: params.locale,
+      searchPlaces: params.searchPlaces,
+      mood: params.context.mood,
+      weather: params.context.weather,
+    });
+    if (supplement.added.length) {
+      merged = dedupeChatPlaces([...merged, ...supplement.added]);
+      fallbackCandidateCount += supplement.added.length;
+    }
+    logAiPipeline(
+      "[REAL_PLACE_SUPPLEMENT_STATS]",
+      `needed=${supplement.needed}`,
+      `resolved=${supplement.added.length}`,
+      `failed=${supplement.failed}`,
+      `afterMerge=${merged.length}`,
+    );
+  }
+
+  const finalValidation = evaluateTotalRealPlaceValidation(
+    merged.length,
+    dynamicCapacity,
+  );
+
+  if (merged.length > 0 && finalValidation.result === "fail") {
+    logAiPipeline(
+      "[INSUFFICIENT_REAL_PLACES_DETECTED]",
+      `tripDays=${params.days}`,
+      `resolvedPlaces=${merged.length}`,
+      `minimumRequired=${minPlaces}`,
+      `preferred=${dynamicCapacity.preferredStops}`,
+      "stage=after_supplement",
+    );
+    const failure: ItineraryPlaceFailure = {
+      code: "insufficient_real_places",
+      stage: "real_place_supplement",
+      attemptedCandidates,
+      resolvedCandidates: merged.length,
+      retryCount: stats.retryCount,
+      searchRetryCount,
+      candidateRegenerationCount,
+      fallbackCandidateCount,
+      generationRequestId: params.generationRequestId,
+      partialResolvedPlaces: merged,
+    };
+    logItineraryRootCause(failure);
+    return {
+      ok: false,
+      message: combinationMappingFailureMessage({
+        code: "insufficient_real_places",
+        selectedCombinationCount: selectedCount,
+      }),
+      apiEmpty: false,
+      failure,
+    };
+  }
 
   if (merged.length > 0) {
     return { ok: true, places: merged };
@@ -1177,7 +1733,10 @@ async function mergeSessionPlacesWithFetch(params: {
 
   return {
     ok: false,
-    message: `${COMBINATION_MAPPING_FAILED_MESSAGE}\n\n點選「${COMBINATION_MAPPING_REGENERATE_OPTION}」可沿用目前目的地與選擇再試一次。`,
+    message: `${combinationMappingFailureMessage({
+      code: failure.code,
+      selectedCombinationCount: selectedCount,
+    })}\n\n點選「${COMBINATION_MAPPING_REGENERATE_OPTION}」可沿用目前目的地與選擇再試一次。`,
     apiEmpty: failure.code === "places_api_empty",
     failure,
   };

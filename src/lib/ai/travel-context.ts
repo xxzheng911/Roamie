@@ -54,6 +54,7 @@ import {
   logDestinationCitySelected,
   logDestinationSearchScopeUpdated,
 } from "@/lib/ai/destination-scope";
+import { maybeResetForNewTripPlanning } from "@/lib/ai/trip-planning-session-reset";
 
 /** Canonical travel context — merged on every user turn */
 export type CanonicalTravelContext = {
@@ -68,6 +69,8 @@ export type CanonicalTravelContext = {
   destinationRegion?: string;
   currentLocation?: string;
   travelMonth?: string;
+  /** Absolute year when user said 明年 / 今年 / YYYY */
+  travelYear?: number;
   startDate?: string;
   endDate?: string;
   /** AI-suggested start (e.g. mid-month) when user has not locked exact dates yet */
@@ -104,13 +107,21 @@ export type CanonicalTravelContext = {
     id: number;
     title: string;
     places: Array<{
+      candidateId?: string;
+      originalName?: string;
       name: string;
       searchQuery: string;
+      destination?: string;
       sourceCombinationId: number;
+      isRequiredBySelection?: boolean;
       googlePlaceId?: string;
       latitude?: number;
       longitude?: number;
-      resolutionStatus: "named" | "resolved" | "unresolved";
+      address?: string;
+      types?: string[];
+      primaryType?: string | null;
+      rating?: number | null;
+      resolutionStatus: "named" | "resolved" | "unresolved" | "pending";
     }>;
   }>;
   /** Stable id for one Places mapping / itinerary generation attempt */
@@ -251,6 +262,19 @@ function parseMonth(text: string): string | undefined {
   const m = text.match(/(\d{1,2})\s*月/);
   if (!m) return undefined;
   return `${Number.parseInt(m[1], 10)}月`;
+}
+
+/** Resolve travel year from 明年 / 今年 / explicit YYYY near a month mention. */
+function parseTravelYear(text: string, now = new Date()): number | undefined {
+  const explicit = text.match(/(20\d{2})\s*年/);
+  if (explicit) {
+    const y = Number.parseInt(explicit[1], 10);
+    if (y >= 2000 && y <= 2100) return y;
+  }
+  if (/明年/.test(text)) return now.getFullYear() + 1;
+  if (/今年/.test(text)) return now.getFullYear();
+  if (/後年|后年/.test(text)) return now.getFullYear() + 2;
+  return undefined;
 }
 
 function parseInterests(text: string, mood?: string): string[] {
@@ -419,6 +443,19 @@ function mergeDestinationFields(
         city: label,
       });
     }
+    // City change invalidates prior destination coordinates (never reuse Taiwan etc.).
+    if (prev.destination && normalizeDestinationLabel(prev.destination) !== label) {
+      void import("@/lib/ai/resolved-destination-scope").then((m) => {
+        m.clearResolvedDestinationScope(prev.destination!);
+        void import("@/lib/ai/ai-pipeline-log").then(({ logAiPipeline }) => {
+          logAiPipeline(
+            "[STALE_DESTINATION_COORDINATES_BLOCKED]",
+            `oldDestination=${normalizeDestinationLabel(prev.destination!)}`,
+            `newDestination=${label}`,
+          );
+        });
+      });
+    }
     return {
       destination: scope.destinationName,
       destinationCountry: scope.destinationCountry ?? country,
@@ -429,6 +466,18 @@ function mergeDestinationFields(
   }
 
   const scope = resolveDestinationScopeFields(label, prev.destinationCountry);
+  if (prev.destination && normalizeDestinationLabel(prev.destination) !== label) {
+    void import("@/lib/ai/resolved-destination-scope").then((m) => {
+      m.clearResolvedDestinationScope(prev.destination!);
+      void import("@/lib/ai/ai-pipeline-log").then(({ logAiPipeline }) => {
+        logAiPipeline(
+          "[STALE_DESTINATION_COORDINATES_BLOCKED]",
+          `oldDestination=${normalizeDestinationLabel(prev.destination!)}`,
+          `newDestination=${label}`,
+        );
+      });
+    });
+  }
   return {
     destination: scope.destinationName,
     destinationCountry: scope.destinationCountry ?? prev.destinationCountry,
@@ -447,23 +496,38 @@ export function parseTravelContextFromText(
   if (session.pendingQuestion) {
     const prev = session.travelContext ?? EMPTY_TRAVEL_CONTEXT;
     const pq = session.pendingQuestion;
-    return {
-      destination: prev.destination ?? pq.baseDestination,
-      destinationCountry: prev.destinationCountry ?? pq.destinationCountry,
-      days: parseDays(t) ?? prev.days ?? session.tripDays,
-      travelMonth: prev.travelMonth,
-      startDate: parseTravelDateFromText(t) ?? prev.startDate ?? session.tripStartDate,
-      tripPurpose: prev.tripPurpose,
-      vibe: prev.vibe,
-      mood: prev.mood,
-      selectedInterests: prev.selectedInterests,
-      conversationState: prev.conversationState,
-      selectedPlanMode: prev.selectedPlanMode,
-      destinationCities: prev.destinationCities,
-      selectedTripStyle: prev.selectedTripStyle,
-      useDefaultRecommendation: prev.useDefaultRecommendation,
-      ...parseTravelConstraints(t),
-    };
+    const pendingDestIncoming = resolveDestinationFromText(t);
+    const prevDestLabel = prev.destination
+      ? normalizeDestinationLabel(prev.destination)
+      : pq.baseDestination
+        ? normalizeDestinationLabel(pq.baseDestination)
+        : undefined;
+    // A clearly different destination means a new trip — do not trap in pending early-return.
+    if (
+      pendingDestIncoming &&
+      prevDestLabel &&
+      normalizeDestinationLabel(pendingDestIncoming) !== prevDestLabel
+    ) {
+      // fall through to normal parse
+    } else {
+      return {
+        destination: prev.destination ?? pq.baseDestination,
+        destinationCountry: prev.destinationCountry ?? pq.destinationCountry,
+        days: parseDays(t) ?? prev.days ?? session.tripDays,
+        travelMonth: parseMonth(t) ?? prev.travelMonth,
+        startDate: parseTravelDateFromText(t) ?? prev.startDate ?? session.tripStartDate,
+        tripPurpose: prev.tripPurpose,
+        vibe: prev.vibe,
+        mood: prev.mood,
+        selectedInterests: prev.selectedInterests,
+        conversationState: prev.conversationState,
+        selectedPlanMode: prev.selectedPlanMode,
+        destinationCities: prev.destinationCities,
+        selectedTripStyle: prev.selectedTripStyle,
+        useDefaultRecommendation: prev.useDefaultRecommendation,
+        ...parseTravelConstraints(t),
+      };
+    }
   }
   if (session.adviceSelectionThisTurn) {
     const prev = session.travelContext;
@@ -512,17 +576,19 @@ export function parseTravelContextFromText(
 
   const newlyParsedDest = parseDestinationFromTurn(t, skipDestParse);
   const dateRange = parseTravelDateRangeFromText(t);
+  // Only return dates/days found in THIS turn. Session fallbacks belong in merge —
+  // otherwise a new destination inherits the previous trip's startDate/endDate/days.
+  const startFromText = dateRange.startDate ?? parseTravelDateFromText(t);
+  const endFromText = dateRange.endDate;
+  const daysFromText = dateRange.days ?? parseDays(t);
 
   const base: Partial<CanonicalTravelContext> = {
     currentLocation: session.location?.city,
     travelMonth: parseMonth(t),
-    startDate:
-      dateRange.startDate ??
-      parseTravelDateFromText(t) ??
-      session.tripStartDate ??
-      session.travelDate,
-    endDate: dateRange.endDate ?? session.tripEndDate,
-    days: dateRange.days ?? parseDays(t) ?? session.tripDays,
+    travelYear: parseTravelYear(t),
+    ...(startFromText ? { startDate: startFromText } : {}),
+    ...(endFromText ? { endDate: endFromText } : {}),
+    ...(daysFromText != null ? { days: daysFromText } : {}),
     mood: preset?.mood ?? moodHint ?? parseVibe(t),
     companion: parseCompanion(t) ?? session.discovery?.companionship,
     interests: parseInterests(t, moodHint),
@@ -535,7 +601,7 @@ export function parseTravelContextFromText(
     setting: parseSetting(t, moodHint) ?? session.discovery?.setting,
     ...parseTravelConstraints(t),
     ...budgetRefinement,
-    ...(dateRange.days && dateRange.startDate && dateRange.endDate
+    ...(daysFromText && startFromText && endFromText
       ? { planningDaysConfirmed: true }
       : {}),
   };
@@ -608,7 +674,12 @@ export function mergeTravelContext(
       return { context: merged, session: nextSession };
     }
 
-    const prepared = prepareSessionForUserTurn(session, lastAssistantReply);
+    // New trip (destination/month/date change) must reset BEFORE parse/merge,
+    // otherwise stale Tokyo dates are injected into a Taitung context.
+    const tripReset = maybeResetForNewTripPlanning(session, userText);
+    const sessionForTurn = tripReset.session;
+
+    const prepared = prepareSessionForUserTurn(sessionForTurn, lastAssistantReply);
     const prev = prepared.travelContext ?? EMPTY_TRAVEL_CONTEXT;
 
     logChatContextBefore({
@@ -730,6 +801,23 @@ export function mergeTravelContext(
       }
     }
 
+    const prevDestNorm = prevDest
+      ? normalizeDestinationLabel(prevDest)
+      : undefined;
+    const nextDestNorm = destMerge.destination
+      ? normalizeDestinationLabel(destMerge.destination)
+      : undefined;
+    const destinationSwitched = Boolean(
+      prevDestNorm &&
+        nextDestNorm &&
+        prevDestNorm !== nextDestNorm &&
+        !tripReset.didReset,
+    );
+
+    // After a destination switch (or explicit new-trip reset), never inherit
+    // previous trip dates / combinations / generated planning artifacts.
+    const inheritTripBoundFields = !destinationSwitched && !tripReset.didReset;
+
     const merged: CanonicalTravelContext = {
       ...prev,
       ...pendingSelection.contextPatch,
@@ -750,11 +838,35 @@ export function mergeTravelContext(
         workingSession.discovery?.companionship,
       days:
         itineraryExtracted?.days ??
-        pickValidContextValue(parsed.days, prev.days) ??
-        workingSession.tripDays,
-      travelMonth: pickValidContextValue(parsed.travelMonth, prev.travelMonth),
-      startDate: parsed.startDate ?? prev.startDate ?? workingSession.tripStartDate,
-      endDate: parsed.endDate ?? prev.endDate ?? workingSession.tripEndDate,
+        pendingSelection.contextPatch.days ??
+        (inheritTripBoundFields
+          ? pickValidContextValue(parsed.days, prev.days) ?? workingSession.tripDays
+          : parsed.days),
+      travelMonth: inheritTripBoundFields
+        ? pickValidContextValue(parsed.travelMonth, prev.travelMonth)
+        : parsed.travelMonth,
+      travelYear: inheritTripBoundFields
+        ? pickValidContextValue(parsed.travelYear, prev.travelYear)
+        : parsed.travelYear,
+      startDate: inheritTripBoundFields
+        ? pendingSelection.contextPatch.startDate ??
+          parsed.startDate ??
+          prev.startDate ??
+          workingSession.tripStartDate
+        : pendingSelection.contextPatch.startDate ?? parsed.startDate,
+      endDate: inheritTripBoundFields
+        ? pendingSelection.contextPatch.endDate ??
+          parsed.endDate ??
+          prev.endDate ??
+          workingSession.tripEndDate
+        : pendingSelection.contextPatch.endDate ?? parsed.endDate,
+      suggestedStartDate: inheritTripBoundFields ? prev.suggestedStartDate : undefined,
+      planningDaysConfirmed: inheritTripBoundFields
+        ? pendingSelection.contextPatch.planningDaysConfirmed ??
+          parsed.planningDaysConfirmed ??
+          prev.planningDaysConfirmed
+        : pendingSelection.contextPatch.planningDaysConfirmed ??
+          parsed.planningDaysConfirmed,
       transportMode: parsed.transportMode ?? prev.transportMode ?? workingSession.transportation,
       budgetLevel: parsed.budgetLevel ?? prev.budgetLevel ?? workingSession.budget,
       travelStyle:
@@ -762,44 +874,65 @@ export function mergeTravelContext(
         parsed.travelStyle ??
         prev.travelStyle ??
         workingSession.tripStyles,
-      weather: workingSession.weather ?? prev.weather ?? null,
+      weather: inheritTripBoundFields
+        ? workingSession.weather ?? prev.weather ?? null
+        : workingSession.weather ?? null,
       interests: uniqStrings([...prev.interests, ...(parsed.interests ?? [])]),
       tripPurpose:
         pendingSelection.contextPatch.tripPurpose ??
         parsed.tripPurpose ??
         chatContextIntentToTripPurpose(currentIntent) ??
         preset?.tripPurpose ??
-        (currentIntent === "general_chat" ? prev.tripPurpose : undefined),
+        (currentIntent === "general_chat" && inheritTripBoundFields
+          ? prev.tripPurpose
+          : undefined),
       lastIntent: currentIntent,
-      destinationCities: pendingSelection.contextPatch.destinationCities ?? prev.destinationCities,
-      selectedTripStyle:
-        pendingSelection.contextPatch.selectedTripStyle ?? prev.selectedTripStyle,
-      selectedCombinationIds:
-        pendingSelection.contextPatch.selectedCombinationIds ?? prev.selectedCombinationIds,
-      selectedCombinationPlaceNames:
-        pendingSelection.contextPatch.selectedCombinationPlaceNames ??
-        prev.selectedCombinationPlaceNames,
-      excludedCombinationPlaceNames:
-        pendingSelection.contextPatch.excludedCombinationPlaceNames ??
-        prev.excludedCombinationPlaceNames,
-      selectionSource:
-        pendingSelection.contextPatch.selectionSource ?? prev.selectionSource,
-      generationRequestId:
-        pendingSelection.contextPatch.generationRequestId ?? prev.generationRequestId,
-      lastItineraryFailure:
-        pendingSelection.contextPatch.lastItineraryFailure ?? prev.lastItineraryFailure,
-      partiallyResolvedPlaces:
-        pendingSelection.contextPatch.partiallyResolvedPlaces ?? prev.partiallyResolvedPlaces,
-      failedCombinationIds:
-        pendingSelection.contextPatch.failedCombinationIds ?? prev.failedCombinationIds,
+      destinationCities: inheritTripBoundFields
+        ? pendingSelection.contextPatch.destinationCities ?? prev.destinationCities
+        : pendingSelection.contextPatch.destinationCities,
+      selectedTripStyle: inheritTripBoundFields
+        ? pendingSelection.contextPatch.selectedTripStyle ?? prev.selectedTripStyle
+        : pendingSelection.contextPatch.selectedTripStyle,
+      selectedCombinationIds: inheritTripBoundFields
+        ? pendingSelection.contextPatch.selectedCombinationIds ?? prev.selectedCombinationIds
+        : pendingSelection.contextPatch.selectedCombinationIds ?? [],
+      selectedCombinationPlaceNames: inheritTripBoundFields
+        ? pendingSelection.contextPatch.selectedCombinationPlaceNames ??
+          prev.selectedCombinationPlaceNames
+        : pendingSelection.contextPatch.selectedCombinationPlaceNames,
+      excludedCombinationPlaceNames: inheritTripBoundFields
+        ? pendingSelection.contextPatch.excludedCombinationPlaceNames ??
+          prev.excludedCombinationPlaceNames
+        : pendingSelection.contextPatch.excludedCombinationPlaceNames,
+      selectionSource: inheritTripBoundFields
+        ? pendingSelection.contextPatch.selectionSource ?? prev.selectionSource
+        : pendingSelection.contextPatch.selectionSource,
+      offeredCombinations: inheritTripBoundFields ? prev.offeredCombinations : undefined,
+      generationRequestId: inheritTripBoundFields
+        ? pendingSelection.contextPatch.generationRequestId ?? prev.generationRequestId
+        : pendingSelection.contextPatch.generationRequestId,
+      lastItineraryFailure: inheritTripBoundFields
+        ? pendingSelection.contextPatch.lastItineraryFailure ?? prev.lastItineraryFailure
+        : undefined,
+      partiallyResolvedPlaces: inheritTripBoundFields
+        ? pendingSelection.contextPatch.partiallyResolvedPlaces ?? prev.partiallyResolvedPlaces
+        : undefined,
+      failedCombinationIds: inheritTripBoundFields
+        ? pendingSelection.contextPatch.failedCombinationIds ?? prev.failedCombinationIds
+        : undefined,
       selectedInterests:
         pendingSelection.contextPatch.selectedInterests ?? prev.selectedInterests,
-      mustVisitGenerated:
-        pendingSelection.contextPatch.mustVisitGenerated ?? prev.mustVisitGenerated,
-      conversationState:
-        pendingSelection.contextPatch.conversationState ?? prev.conversationState,
-      selectedPlanMode:
-        pendingSelection.contextPatch.selectedPlanMode ?? prev.selectedPlanMode,
+      mustVisitGenerated: inheritTripBoundFields
+        ? pendingSelection.contextPatch.mustVisitGenerated ?? prev.mustVisitGenerated
+        : false,
+      conversationState: inheritTripBoundFields
+        ? pendingSelection.contextPatch.conversationState ?? prev.conversationState
+        : pendingSelection.contextPatch.conversationState ?? "awaiting_days",
+      selectedPlanMode: inheritTripBoundFields
+        ? pendingSelection.contextPatch.selectedPlanMode ?? prev.selectedPlanMode
+        : pendingSelection.contextPatch.selectedPlanMode,
+      planningStage: inheritTripBoundFields ? prev.planningStage : undefined,
+      planningTripStyle: inheritTripBoundFields ? prev.planningTripStyle : undefined,
       excludedCategories: uniqStrings([
         ...(workingSession.excludedCategories ?? []),
         ...(prev.excludedCategories ?? []),
@@ -824,7 +957,15 @@ export function mergeTravelContext(
       if (!discovery.companionship) discovery.companionship = "情侶";
     }
 
-    const datePatch = enrichTripDatesInContext(userText, merged, workingSession);
+    const datePatch =
+      inheritTripBoundFields ||
+      parsed.startDate ||
+      parsed.endDate ||
+      parsed.days ||
+      pendingSelection.contextPatch.days ||
+      pendingSelection.contextPatch.startDate
+        ? enrichTripDatesInContext(userText, merged, workingSession)
+        : {};
     const mergedWithDates: CanonicalTravelContext = {
       ...merged,
       ...datePatch,
@@ -835,15 +976,24 @@ export function mergeTravelContext(
       travelContext: mergedWithDates,
       discovery,
       mood: mergedWithDates.mood ?? workingSession.mood,
-      tripDays: mergedWithDates.days ?? workingSession.tripDays,
-      travelDate: mergedWithDates.startDate ?? workingSession.travelDate,
-      tripStartDate: mergedWithDates.startDate ?? workingSession.tripStartDate,
-      tripEndDate: mergedWithDates.endDate ?? workingSession.tripEndDate,
+      tripDays: inheritTripBoundFields
+        ? mergedWithDates.days ?? workingSession.tripDays
+        : mergedWithDates.days,
+      travelDate: inheritTripBoundFields
+        ? mergedWithDates.startDate ?? workingSession.travelDate
+        : mergedWithDates.startDate,
+      tripStartDate: inheritTripBoundFields
+        ? mergedWithDates.startDate ?? workingSession.tripStartDate
+        : mergedWithDates.startDate,
+      tripEndDate: inheritTripBoundFields
+        ? mergedWithDates.endDate ?? workingSession.tripEndDate
+        : mergedWithDates.endDate,
       transportation: merged.transportMode ?? workingSession.transportation,
       budget: merged.budgetLevel ?? workingSession.budget,
       preferredArea: skipDestParse
         ? workingSession.preferredArea
         : mergedWithDates.destination ?? workingSession.preferredArea,
+      ...(inheritTripBoundFields ? {} : { weather: workingSession.weather }),
     };
 
     logChatContextMerge({

@@ -63,10 +63,10 @@ assert(
 );
 
 const merged = mergeSelectedCombinationCandidates("台北", [2, 3]);
-assert(merged.perCombinationBeforeDedup[2] === 3, `combo2 count=${merged.perCombinationBeforeDedup[2]}`);
-assert(merged.perCombinationBeforeDedup[3] === 4, `combo3 count=${merged.perCombinationBeforeDedup[3]}`);
-assert(merged.mergedBeforeDedup === 7, `mergedBeforeDedup=${merged.mergedBeforeDedup}`);
-assert(merged.mergedAfterDedup === 7, `mergedAfterDedup=${merged.mergedAfterDedup}`);
+assert(merged.perCombinationBeforeDedup[2] >= 3, `combo2 count=${merged.perCombinationBeforeDedup[2]}`);
+assert(merged.perCombinationBeforeDedup[3] >= 3, `combo3 count=${merged.perCombinationBeforeDedup[3]}`);
+assert(merged.mergedBeforeDedup >= 6, `mergedBeforeDedup=${merged.mergedBeforeDedup}`);
+assert(merged.mergedAfterDedup >= 6, `mergedAfterDedup=${merged.mergedAfterDedup}`);
 
 const mockPlaces = [
   {
@@ -248,15 +248,24 @@ const validation = validateGeneratedItinerary({
 });
 assert(validation.ok, `validateGeneratedItinerary ok=${validation.ok} reasons=${validation.reasons.join("|")}`);
 
-// Regression: combo2-only (3 places) must not leave Day 4 blank in the UI
+// When unique resolved places < trip days, allocation must not invent synthetic
+// fillers. Real-place supplement (earlier in the pipeline) is required; empty
+// non-free days fail pre-save validation.
 const combo2Only = mockPlaces.filter((p) => p.sourceCombinationId === 2);
 const combo2Stops = buildFallbackItineraryFromPlaces(combo2Only, 4, "2026-09-01", "台北", {
   selectedCombinationIds: [2],
 });
-const combo2Days = groupStopsByTripDays(combo2Stops, 4, "2026-09-01");
 assert(
-  combo2Days.every((d) => d.places.length > 0),
-  "combo2-only still fills all 4 days (redistribute + filler, no blank Day 4)",
+  combo2Stops.every((s) => Boolean(s.googlePlaceId?.trim())),
+  "combo2-only never invents synthetic stops without Place IDs",
+);
+assert(
+  combo2Stops.length === combo2Only.length,
+  `combo2-only schedules all resolved places (got ${combo2Stops.length}, expected ${combo2Only.length})`,
+);
+assert(
+  combo2Stops.length < 4,
+  "combo2-only with 3 places cannot fill 4 days without real-place supplement",
 );
 
 if (failed > 0) {

@@ -1,6 +1,7 @@
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { isLikelyPlaceName } from "@/lib/ai/place-name-likelihood";
 
 /** Category suffixes wrongly concatenated with destination names (not Places). */
 export const GENERIC_DESTINATION_CATEGORY_SUFFIXES = [
@@ -100,6 +101,7 @@ export function isValidItineraryStopPlace(
 ): boolean {
   const name = (place.placeName ?? place.name ?? "").trim();
   if (!name || isGenericPlaceLabel(name, destination)) return false;
+  if (!isLikelyPlaceName(name).ok) return false;
   if (isBurialOrFuneralPlace(place)) return false;
 
   const placeId = (place.placeId ?? place.googlePlaceId ?? place.id ?? "").trim();

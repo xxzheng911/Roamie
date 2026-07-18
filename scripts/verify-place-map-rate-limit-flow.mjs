@@ -69,7 +69,8 @@ assert(amb === null, "ambiguous → null (no silent all)");
 
 console.log("\n=== Candidate cap + concurrency ===\n");
 assert(computeFirstRoundPlaceMapCap(4) === 16, `cap4=${computeFirstRoundPlaceMapCap(4)}`);
-assert(computeItineraryResolvedTarget(4) === 12, `target4=${computeItineraryResolvedTarget(4)}`);
+assert(computeItineraryResolvedTarget(4) === 9, `target4=${computeItineraryResolvedTarget(4)}`);
+assert(computeItineraryResolvedTarget(3) === 7, `target3=${computeItineraryResolvedTarget(3)}`);
 assert(PLACE_MAP_MAX_CONCURRENCY === 2, "place map concurrency 2");
 assert(PLACES_API_MAX_CONCURRENT === 2, "places api concurrency 2");
 

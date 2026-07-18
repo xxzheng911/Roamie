@@ -3,6 +3,7 @@ import { distanceMeters } from "@/lib/map-explore";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { normalizeCorePlaceName, normalizePlaceName } from "@/lib/place-planning-memory";
 import { resolveTripPlaceId } from "@/lib/ai/ai-trip-place-allocator";
+import { clusterAndDedupeLandmarks } from "@/lib/ai/landmark-cluster";
 
 const LANDMARK_COMPLEX_RE =
   /文化園區|文創園區|創意園區|產業園區|國家森林遊樂區|國家風景區|森林遊樂區|遊樂區|主題公園|theme\s*park|national\s*park|風景區|文化公園|historic\s*site|世界遺產/i;
@@ -159,5 +160,7 @@ export function dedupeParentLandmarkPlaces(places: PlaceResult[]): PlaceResult[]
     if (!dominated) out.push(place);
   }
 
-  return out;
+  // Final generic pass: same-core-name + proximity clustering (handles cases the
+  // dash/complex heuristics above miss, e.g. 饒河街觀光夜市 vs 饒河夜市牌樓).
+  return clusterAndDedupeLandmarks(out).places;
 }

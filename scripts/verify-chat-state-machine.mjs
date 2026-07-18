@@ -66,6 +66,9 @@ session = {
 const busanRoute = adviceRoute("釜山", session);
 assert(busanRoute.question?.includes("釜山"), "case2 busan extends Busan");
 assert(!busanRoute.question?.includes("4～5 月或 10～11 月"), "case2 busan does not repeat korea months");
+assert(/旅行日期或天數|幾天|天數/.test(busanRoute.question ?? ""), "case2 busan asks date/days");
+assert(!/海邊放鬆|城市散策|想偏重|海雲台|甘川|札嘎其/.test(busanRoute.question ?? ""), "case2 busan no legacy style");
+assert(busanRoute.pendingQuestion?.type === "ask_days", "case2 busan pending=ask_days");
 
 // 2b. Busan → 都可以
 session = {
@@ -86,10 +89,17 @@ session = {
 };
 const flexRoute = adviceRoute("都可以", session);
 assert(flexRoute.mode === "advice", "case2b flexible stays advice");
-assert(flexRoute.question?.includes("幾天"), "case2b flexible advances to days");
+assert(
+  /幾天|天數|日期/.test(flexRoute.question ?? ""),
+  "case2b flexible advances to days/dates",
+);
 assert(
   !flexRoute.question?.includes("城市探索、美食，還是海島放鬆"),
   "case2b flexible does not repeat wrong question",
+);
+assert(
+  !/海邊放鬆|城市散策|想偏重/.test(flexRoute.question ?? ""),
+  "case2b does not re-ask style",
 );
 
 // 3. Bangkok 5 days → must visit

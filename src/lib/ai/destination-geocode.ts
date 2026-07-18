@@ -140,6 +140,9 @@ export const EN_CITY_NAMES: Record<string, string> = {
   墨爾本: "Melbourne",
   巴黎: "Paris",
   倫敦: "London",
+  愛丁堡: "Edinburgh",
+  曼徹斯特: "Manchester",
+  湖區: "Lake District",
   紐約: "New York",
   洛杉磯: "Los Angeles",
   舊金山: "San Francisco",
@@ -157,6 +160,7 @@ export const EN_CITY_NAMES: Record<string, string> = {
   九州: "Kyushu",
   峇里島: "Bali",
   長灘島: "Boracay",
+  宿霧: "Cebu",
 };
 
 const INTL_GEOCODE: Record<string, readonly string[]> = {
@@ -170,6 +174,9 @@ const INTL_GEOCODE: Record<string, readonly string[]> = {
   雪梨: ["Sydney, New South Wales, Australia", "Sydney, Australia", "雪梨, 澳洲"],
   巴黎: ["Paris, France", "巴黎, 法國"],
   倫敦: ["London, United Kingdom", "倫敦, 英國"],
+  愛丁堡: ["Edinburgh, United Kingdom", "Edinburgh, Scotland", "愛丁堡, 英國"],
+  曼徹斯特: ["Manchester, United Kingdom", "曼徹斯特, 英國"],
+  湖區: ["Lake District, United Kingdom", "Lake District National Park, England", "湖區, 英國"],
   紐約: ["New York, NY, USA", "New York City, United States"],
   洛杉磯: ["Los Angeles, CA, USA", "Los Angeles, California"],
   舊金山: ["San Francisco, CA, USA", "San Francisco, California"],
@@ -193,6 +200,7 @@ const INTL_GEOCODE: Record<string, readonly string[]> = {
   九州: ["Kyushu, Japan", "九州, 日本", "Fukuoka, Japan"],
   峇里島: ["Bali, Indonesia", "峇里島, 印尼", "Denpasar, Bali"],
   長灘島: ["Boracay, Philippines", "長灘島, 菲律賓"],
+  宿霧: ["Cebu, Philippines", "Cebu City, Philippines", "宿霧, 菲律賓", "Mactan, Cebu"],
 };
 
 /** 無 geocode 時 text search 用的近似中心 */
@@ -224,6 +232,9 @@ const DESTINATION_APPROX_CENTER: Record<string, { lat: number; lng: number }> = 
   雪梨: { lat: -33.8688, lng: 151.2093 },
   巴黎: { lat: 48.8566, lng: 2.3522 },
   倫敦: { lat: 51.5074, lng: -0.1278 },
+  愛丁堡: { lat: 55.9533, lng: -3.1883 },
+  曼徹斯特: { lat: 53.4808, lng: -2.2426 },
+  湖區: { lat: 54.4609, lng: -3.0886 },
   紐約: { lat: 40.7128, lng: -74.006 },
   洛杉磯: { lat: 34.0522, lng: -118.2437 },
   舊金山: { lat: 37.7749, lng: -122.4194 },
@@ -237,6 +248,7 @@ const DESTINATION_APPROX_CENTER: Record<string, { lat: number; lng: number }> = 
   九州: { lat: 33.5904, lng: 130.4017 },
   峇里島: { lat: -8.4095, lng: 115.1889 },
   長灘島: { lat: 11.9674, lng: 121.9248 },
+  宿霧: { lat: 10.3157, lng: 123.8854 },
   冰島: { lat: 64.1466, lng: -21.9426 },
   雷克雅維克: { lat: 64.1466, lng: -21.9426 },
 };
@@ -247,6 +259,7 @@ function isTaiwanDestination(label: string): boolean {
   const entity = resolveDestinationEntity(label);
   if (entity.country === "台灣" || entity.country === "台湾") return true;
   if (entity.type === "country" && (label === "台灣" || label === "台湾")) return true;
+  // Taiwan cities live in approx centers without INTL_GEOCODE rows.
   return Boolean(DESTINATION_APPROX_CENTER[label] && !INTL_GEOCODE[label]);
 }
 
@@ -293,11 +306,14 @@ export function buildDestinationGeocodeQueries(destination: string, _locale?: Lo
       queries.push(`${en}, ${countryEn}`, `${en}, ${country}`);
     }
     queries.push(`${label}, ${country}`, `${label}, ${countryEn}`);
-  } else if (isTaiwanDestination(label) || !country) {
+  } else if (isTaiwanDestination(label)) {
+    // Taiwan-only 市/縣 expansion — never apply to overseas cities.
     queries.push(`${label}市, 台灣`, `${label}縣, 台灣`, `${label}, 台灣`, `${label}, Taiwan`);
     if (en) {
       queries.push(`${en} City, Taiwan`, `${en}, Taiwan`, `${en} County, Taiwan`);
     }
+  } else if (en) {
+    queries.push(en, `${en} city`);
   }
 
   queries.push(label);
@@ -305,15 +321,31 @@ export function buildDestinationGeocodeQueries(destination: string, _locale?: Lo
   return [...new Set(queries.map((q) => q.trim()).filter(Boolean))];
 }
 
+/**
+ * Approx center for bias only. Never returns Taiwan default for non-Taiwan destinations.
+ * Unknown overseas cities return null so callers must geocode or fail — not invent Taiwan coords.
+ */
 export function resolveDestinationApproxCenter(
   destination: string,
+  countryHint?: string | null,
 ): { lat: number; lng: number } | null {
   const label = normalizeDestinationLabel(destination);
   const known = DESTINATION_APPROX_CENTER[label];
   if (known) return known;
 
   const entity = resolveDestinationEntity(label);
-  if (entity.country && entity.country !== "台灣" && entity.country !== "台湾") {
+  const country =
+    (countryHint ? normalizeDestinationLabel(countryHint) : undefined) ??
+    entity.country;
+
+  if (country && country !== "台灣" && country !== "台湾") {
+    return null;
+  }
+  if (!isTaiwanDestination(label) && country !== "台灣" && country !== "台湾") {
+    // Unknown city without Taiwan affiliation — do NOT fall back to Taiwan center.
+    return null;
+  }
+  if (!country && !isTaiwanDestination(label)) {
     return null;
   }
 
@@ -376,9 +408,19 @@ export async function geocodeDestinationWithFallback(params: {
         `lat=${locked.latitude}`,
         `lng=${locked.longitude}`,
       );
+      const country =
+        locked.countryCode ??
+        resolveDestinationEntity(label).country ??
+        (isTaiwanDestination(label) ? "台灣" : undefined);
+      const countryName =
+        country === "TW" || country === "tw"
+          ? "台灣"
+          : country && /^[A-Z]{2}$/i.test(country)
+            ? resolveDestinationEntity(label).country
+            : country;
       return {
         placeId: `scope:${label}`,
-        country: "台灣",
+        country: countryName ?? "unknown",
         city: label,
         lat: locked.latitude,
         lng: locked.longitude,
@@ -389,16 +431,24 @@ export async function geocodeDestinationWithFallback(params: {
         utcOffsetMinutes: null,
       };
     }
-    const approx = resolveDestinationApproxCenter(label);
+      const approx = resolveDestinationApproxCenter(label);
     if (approx) {
-      setResolvedDestinationScope({
+      const country =
+        resolveDestinationEntity(label).country ??
+        (isTaiwanDestination(label) ? "台灣" : undefined);
+      const locked = setResolvedDestinationScope({
         displayName: label,
         normalizedName: label,
+        countryCode: country === "台灣" || country === "台湾" ? "TW" : undefined,
+        country,
         latitude: approx.lat,
         longitude: approx.lng,
         source: "approx_center",
         resolvedAt: Date.now(),
       });
+      if (!locked) {
+        // Invalid approx for this destination — fall through to live geocode.
+      } else {
       logAiPipeline(
         "[DESTINATION_RESOLUTION_REUSED]",
         "source=approx_center",
@@ -408,7 +458,7 @@ export async function geocodeDestinationWithFallback(params: {
       );
       return {
         placeId: `approx:${label}`,
-        country: "台灣",
+        country: country ?? "unknown",
         city: label,
         lat: approx.lat,
         lng: approx.lng,
@@ -418,6 +468,7 @@ export async function geocodeDestinationWithFallback(params: {
         timezone: undefined,
         utcOffsetMinutes: null,
       };
+      }
     }
   }
 

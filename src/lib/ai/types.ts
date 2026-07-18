@@ -25,10 +25,14 @@ export const RoamieRecommendationItemSchema = z.object({
   todayHoursLabel: z.string().optional(),
   closingSoonNote: z.string().optional(),
   nextOpenHint: z.string().optional(),
-  /** 1-based combination id this place was sourced from */
+  /** 1-based combination id this place was sourced from (legacy singular) */
   sourceCombinationId: z.number().optional(),
+  /** All combination ids this place covers (union after merge / dedupe) */
+  sourceCombinationIds: z.array(z.number()).optional(),
   matchedCombinationIds: z.array(z.number()).optional(),
   matchedSelectedCombinationIds: z.array(z.number()).optional(),
+  /** When expanded from a region candidate (e.g. 鎌倉 → 鶴岡八幡宮) */
+  sourceRegionCandidate: z.string().optional(),
 });
 
 export const RoamieItineraryItemSchema = z.object({
@@ -50,8 +54,21 @@ export const RoamieItineraryItemSchema = z.object({
   order: z.number().optional(),
   /** Combination provenance (multi-select itinerary integrity) */
   sourceCombinationId: z.number().optional(),
+  sourceCombinationIds: z.array(z.number()).optional(),
   matchedCombinationIds: z.array(z.number()).optional(),
   matchedSelectedCombinationIds: z.array(z.number()).optional(),
+  sourceRegionCandidate: z.string().optional(),
+  /** Rich place snapshot for immediate detail render (stale-while-revalidate). */
+  photoName: z.string().nullable().optional(),
+  rating: z.number().nullable().optional(),
+  userRatingCount: z.number().nullable().optional(),
+  businessStatus: z.string().nullable().optional(),
+  openStatusLabel: z.string().optional(),
+  todayHoursLabel: z.string().optional(),
+  website: z.string().optional(),
+  phone: z.string().optional(),
+  types: z.array(z.string()).optional(),
+  placeSnapshotSource: z.enum(["selected_place", "places_details", "handoff"]).optional(),
 });
 
 export const RoamieResponseSchema = z.object({
@@ -140,8 +157,20 @@ export function normalizeItineraryItem(
     sortIndex: raw.sortIndex,
     order: raw.order,
     sourceCombinationId: raw.sourceCombinationId,
+    sourceCombinationIds: raw.sourceCombinationIds,
     matchedCombinationIds: raw.matchedCombinationIds,
     matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
+    sourceRegionCandidate: raw.sourceRegionCandidate,
+    photoName: raw.photoName,
+    rating: raw.rating,
+    userRatingCount: raw.userRatingCount,
+    businessStatus: raw.businessStatus,
+    openStatusLabel: raw.openStatusLabel,
+    todayHoursLabel: raw.todayHoursLabel,
+    website: raw.website,
+    phone: raw.phone,
+    types: raw.types,
+    placeSnapshotSource: raw.placeSnapshotSource,
   };
 }
 
@@ -189,8 +218,10 @@ export function normalizeRecommendationItem(
     closingSoonNote: raw.closingSoonNote,
     nextOpenHint: raw.nextOpenHint,
     sourceCombinationId: raw.sourceCombinationId,
+    sourceCombinationIds: raw.sourceCombinationIds,
     matchedCombinationIds: raw.matchedCombinationIds,
     matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
+    sourceRegionCandidate: raw.sourceRegionCandidate,
   };
 }
 

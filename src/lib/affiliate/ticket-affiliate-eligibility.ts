@@ -532,7 +532,12 @@ export function shouldShowTicketAffiliate(
     return logDecision(true, "tourism_keyword");
   }
 
+  // Ordinary night markets are free-entry and rarely sell tickets — hide by default.
+  // Other tourist markets (e.g. themed outer markets) may still be ticketable.
   if (hasTouristMarketKeyword(name)) {
+    if (/夜市|night\s*market/i.test(name)) {
+      return logDecision(false, "excluded_general_night_market");
+    }
     return logDecision(true, "tourist_market_keyword");
   }
 

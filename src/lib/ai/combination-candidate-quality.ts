@@ -6,6 +6,14 @@ import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { distanceMeters } from "@/lib/map-explore";
+import {
+  isLikelyPlaceName,
+  normalizePlaceCandidateName,
+  logNonPlaceCandidateRejected,
+  logAffiliateExcludedFromPlacePool,
+  type NonPlaceRejectReason,
+  type PlaceNameLikelihood,
+} from "@/lib/ai/place-name-likelihood";
 
 export type CandidateIntentInput = {
   name: string;
@@ -21,6 +29,14 @@ export type CandidateIntentInput = {
 export type CandidateValidationResult = {
   ok: boolean;
   reason?: string;
+};
+
+export type { NonPlaceRejectReason, PlaceNameLikelihood };
+export {
+  isLikelyPlaceName,
+  normalizePlaceCandidateName,
+  logNonPlaceCandidateRejected,
+  logAffiliateExcludedFromPlacePool,
 };
 
 const NON_TOURISM_NAME_RE =
@@ -53,6 +69,16 @@ const NON_TOURISM_TYPES = new Set([
   "storage",
   "moving_company",
   "funeral_home",
+  "travel_agency",
+  "tour_operator",
+  "event_ticket_seller",
+  "taxi_stand",
+  "car_rental",
+  "bus_station",
+  "train_station",
+  "subway_station",
+  "transit_station",
+  "light_rail_station",
 ]);
 
 const TOURISM_TYPES = new Set([
@@ -63,7 +89,6 @@ const TOURISM_TYPES = new Set([
   "zoo",
   "aquarium",
   "amusement_park",
-  "aquarium",
   "historical_landmark",
   "cultural_landmark",
   "place_of_worship",
@@ -77,11 +102,15 @@ const TOURISM_TYPES = new Set([
   "night_club",
   "movie_theater",
   "stadium",
-  "aquarium",
   "natural_feature",
   "point_of_interest",
   "landmark",
   "establishment",
+  "restaurant",
+  "cafe",
+  "bakery",
+  "food",
+  "meal_takeaway",
 ]);
 
 /** Theme keywords used to check combination fit (soft). */
@@ -117,7 +146,6 @@ function destinationInAddress(
   if (addr.includes(dest)) return true;
   if (dest.includes("台") && addr.includes(dest.replace(/台/g, "臺"))) return true;
   if (dest.includes("臺") && addr.includes(dest.replace(/臺/g, "台"))) return true;
-  // Soft: county / city suffix variants
   const bare = dest.replace(/(市|縣|區)$/, "");
   return bare.length >= 2 && addr.includes(bare);
 }
@@ -132,14 +160,34 @@ export function validateCandidateIntent(
   opts?: {
     center?: { lat: number; lng: number } | null;
     requireTourismType?: boolean;
+    source?: string;
   },
 ): CandidateValidationResult {
   const label = normalizeDestinationLabel(destination);
-  const name = candidate.name?.trim() ?? "";
+  const rawName = candidate.name?.trim() ?? "";
 
-  if (!name || name.length < 2) {
+  logAiPipeline(
+    "[RAW_PLACE_CANDIDATE]",
+    `name=${rawName.slice(0, 160)}`,
+    `source=${opts?.source ?? "candidate_intent"}`,
+  );
+
+  if (!rawName || rawName.length < 2) {
     return { ok: false, reason: "incomplete_name" };
   }
+
+  const normalized = normalizePlaceCandidateName(rawName);
+  if (!normalized.accepted) {
+    logNonPlaceCandidateRejected(
+      rawName,
+      normalized.reason ?? "long_marketing_text",
+      opts?.source ?? "candidate_intent",
+    );
+    return { ok: false, reason: normalized.reason ?? "rejected_non_place" };
+  }
+
+  const name = normalized.normalized;
+
   if (isGenericPlaceLabel(name, label) || isGenericDestinationPlaceholder(name, label)) {
     return { ok: false, reason: "generic_category_label" };
   }
@@ -149,7 +197,13 @@ export function validateCandidateIntent(
   if (NON_TOURISM_NAME_RE.test(name)) {
     return { ok: false, reason: "non_tourism_name" };
   }
-  if (isForbiddenTransitAttraction({ name, types: candidate.types, primaryType: candidate.primaryType })) {
+  if (
+    isForbiddenTransitAttraction({
+      name,
+      types: candidate.types,
+      primaryType: candidate.primaryType,
+    })
+  ) {
     return { ok: false, reason: "transit_or_station" };
   }
 
@@ -160,6 +214,15 @@ export function validateCandidateIntent(
     }
   }
 
+  if (
+    (types.has("travel_agency") ||
+      types.has("tour_operator") ||
+      types.has("event_ticket_seller")) &&
+    !types.has("tourist_attraction")
+  ) {
+    return { ok: false, reason: "forbidden_type:tour_commerce" };
+  }
+
   if (opts?.requireTourismType && types.size > 0) {
     const hasTourism = [...types].some((t) => TOURISM_TYPES.has(t));
     if (!hasTourism) {
@@ -168,7 +231,6 @@ export function validateCandidateIntent(
   }
 
   if (candidate.address && !destinationInAddress(candidate.address, label)) {
-    // Soft fail only when coords also miss the destination range below.
     if (
       opts?.center &&
       candidate.lat != null &&
@@ -199,13 +261,15 @@ export function validateCandidateIntent(
   const hint = THEME_HINTS[themeKey];
   if (hint) {
     const blob = `${name} ${candidate.address ?? ""} ${[...types].join(" ")}`;
-    // Soft: only reject when types clearly conflict with theme and name has no hint.
     if (types.size > 0 && !hint.test(blob)) {
       const cultureTypes = /museum|art_gallery|cultural/i;
       const marketTypes = /market|shopping_mall|store/i;
       if (themeKey === "culture" && !cultureTypes.test([...types].join(" "))) {
-        // Allow point_of_interest / establishment when name still matches culture hint
-        if (!hint.test(name) && !types.has("tourist_attraction") && !types.has("point_of_interest")) {
+        if (
+          !hint.test(name) &&
+          !types.has("tourist_attraction") &&
+          !types.has("point_of_interest")
+        ) {
           return { ok: false, reason: "theme_mismatch:culture" };
         }
       }
@@ -247,6 +311,16 @@ export function themeSearchQueries(theme: string, destination: string): string[]
       `cultural center ${label}`,
       `gallery ${label}`,
     ],
+    museum: [
+      `${label} 博物館`,
+      `museum ${label}`,
+      `art museum ${label}`,
+    ],
+    art: [
+      `${label} 美術館`,
+      `gallery ${label}`,
+      `art museum ${label}`,
+    ],
     historic: [
       `${label} 古蹟`,
       `${label} 老街`,
@@ -254,6 +328,8 @@ export function themeSearchQueries(theme: string, destination: string): string[]
       `historic ${label}`,
       `temple ${label}`,
     ],
+    temple: [`${label} 廟`, `${label} 寺`, `temple ${label}`, `shrine ${label}`],
+    heritage: [`${label} 古蹟`, `heritage ${label}`, `historic ${label}`],
     market: [
       `${label} 夜市`,
       `${label} 市場`,
@@ -261,17 +337,73 @@ export function themeSearchQueries(theme: string, destination: string): string[]
       `market ${label}`,
       `night market ${label}`,
     ],
+    night_market: [`${label} 夜市`, `night market ${label}`],
+    shopping: [`${label} 商圈`, `${label} 市場`, `shopping ${label}`],
     nature: [`${label} 公園`, `${label} 濕地`, `park ${label}`, `garden ${label}`],
-    coast: [`${label} 海岸`, `${label} 漁港`, `beach ${label}`, `harbor ${label}`],
+    park: [`${label} 公園`, `park ${label}`, `garden ${label}`],
+    coast: [
+      `${label} 海岸`,
+      `${label} 漁港`,
+      `${label} 海濱`,
+      `${label} 港區`,
+      `${label} 夕陽`,
+      `${label} 觀景點`,
+      `${label} 海濱步道`,
+      `beach ${label}`,
+      `harbor ${label}`,
+      `sunset viewpoint ${label}`,
+      `coastal walk ${label}`,
+    ],
+    harbor: [
+      `${label} 港`,
+      `${label} 漁港`,
+      `${label} 碼頭`,
+      `harbor ${label}`,
+      `marina ${label}`,
+    ],
+    sunset: [
+      `${label} 夕陽`,
+      `${label} 日落`,
+      `${label} 觀景`,
+      `sunset ${label}`,
+      `sunset viewpoint ${label}`,
+    ],
+    scenic_walk: [
+      `${label} 步道`,
+      `${label} 海濱步道`,
+      `${label} 觀景`,
+      `promenade ${label}`,
+      `scenic walk ${label}`,
+    ],
     suburb: [`${label} 溫泉`, `${label} 農場`, `${label} 森林`, `hot spring ${label}`],
+    hot_spring: [`${label} 溫泉`, `hot spring ${label}`],
     attraction: [
       `${label} 景點`,
       `${label} 必去`,
       `tourist attractions ${label}`,
       `landmark ${label}`,
     ],
+    landmark: [`${label} 地標`, `landmark ${label}`, `tourist attraction ${label}`],
   };
   return byTheme[key] ?? byTheme.attraction!;
+}
+
+/** Expand a base theme into search facets (single-select theme supplement). */
+export function primaryThemesForCombinationTheme(
+  theme: string,
+  title?: string,
+): string[] {
+  const key = (theme || resolveThemeKeyFromTitle(title ?? "")).trim().toLowerCase();
+  const facets: Record<string, string[]> = {
+    coast: ["coast", "harbor", "sunset", "scenic_walk"],
+    culture: ["culture", "museum", "art"],
+    historic: ["historic", "temple", "heritage"],
+    market: ["market", "night_market", "shopping"],
+    nature: ["nature", "park", "scenic_walk"],
+    suburb: ["suburb", "nature", "hot_spring"],
+    attraction: ["attraction", "landmark", "scenic_walk"],
+  };
+  return facets[key] ?? facets.attraction!;
 }
 
 export function resolveThemeKeyFromTitle(title: string): string {

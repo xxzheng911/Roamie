@@ -16,6 +16,15 @@ import {
   logRejectedCandidate,
 } from "@/lib/ai/combination-candidate-quality";
 import { listTripDates } from "@/lib/outfit/group-by-date";
+import {
+  combinationIdsFromPlace,
+  mergeCombinationProvenance,
+} from "@/lib/ai/combination-provenance";
+import {
+  calculateDynamicStopCapacity,
+  evaluateTotalRealPlaceValidation,
+  type DynamicStopCapacity,
+} from "@/lib/ai/real-place-supplement";
 
 function normalizePlaceNameKey(name: string): string {
   return name.trim().replace(/\s+/g, "").toLowerCase();
@@ -109,11 +118,30 @@ export function resolveSelectedCombinationPools(
       return true;
     };
 
-    const qualityPrimary = primary.filter((c) => keep(c, id));
-    const qualityFallback = fallback.filter((c) => keep(c, id));
+    let qualityPrimary = primary.filter((c) => keep(c, id));
+    let qualityFallback = fallback.filter((c) => keep(c, id));
     // Promote fallback into primary when primary was depleted by quality filter.
     while (qualityPrimary.length < PRIMARY_PLACES_PER_COMBO && qualityFallback.length) {
       qualityPrimary.push(qualityFallback.shift()!);
+    }
+
+    // If discovery candidates were all quality-rejected, fall back to light profile names.
+    if (!qualityPrimary.length && !qualityFallback.length && lightCombo?.places.length) {
+      const lightPrimary = lightCombo.places.slice(0, PRIMARY_PLACES_PER_COMBO).map((name) => ({
+        name,
+        searchCandidateId: `name:${name}`,
+        types: [] as string[],
+      }));
+      const lightFallback = lightCombo.places.slice(PRIMARY_PLACES_PER_COMBO).map((name) => ({
+        name,
+        searchCandidateId: `name:${name}`,
+        types: [] as string[],
+      }));
+      qualityPrimary = lightPrimary.filter((c) => keep(c, id));
+      qualityFallback = lightFallback.filter((c) => keep(c, id));
+      while (qualityPrimary.length < PRIMARY_PLACES_PER_COMBO && qualityFallback.length) {
+        qualityPrimary.push(qualityFallback.shift()!);
+      }
     }
 
     const all = [...qualityPrimary, ...qualityFallback];
@@ -123,6 +151,12 @@ export function resolveSelectedCombinationPools(
       `theme=${theme}`,
       `primary=${qualityPrimary.map((p) => p.name).join("|")}`,
       `fallback=${qualityFallback.map((p) => p.name).join("|")}`,
+    );
+    logAiPipeline(
+      "[SELECTED_COMBINATION_PLACE_POOL]",
+      `combinationId=${id}`,
+      `count=${all.length}`,
+      `places=[${all.map((p) => p.name).join(",")}]`,
     );
 
     return {
@@ -173,6 +207,7 @@ export function annotatePlaceWithCombinationMetadata<
     name?: string;
     placeName?: string;
     sourceCombinationId?: number;
+    sourceCombinationIds?: number[];
     matchedCombinationIds?: number[];
     matchedSelectedCombinationIds?: number[];
   },
@@ -188,15 +223,10 @@ export function annotatePlaceWithCombinationMetadata<
     destination,
     selectedCombinationIds,
   );
-  if (!matched.length) return place;
-  return {
-    ...place,
-    sourceCombinationId: place.sourceCombinationId ?? matched[0],
-    matchedCombinationIds: place.matchedCombinationIds?.length
-      ? place.matchedCombinationIds
-      : matched,
-    matchedSelectedCombinationIds: matched,
-  };
+  if (!matched.length && !place.sourceCombinationId && !place.sourceCombinationIds?.length) {
+    return place;
+  }
+  return mergeCombinationProvenance(place, matched);
 }
 
 export type CombinationCandidateMergeStats = {
@@ -260,20 +290,103 @@ export function computeMinimumPerSelectedCombination(
   return Math.max(1, Math.floor(targetPlaceCount / selectedCombinationCount / 2));
 }
 
-/** Minimum resolved places required per selected combination before scheduling. */
-export function computeMinimumResolvedPerCombination(tripDays: number): number {
-  return tripDays >= 4 ? 2 : 1;
+/**
+ * Hard floor per selected combination: theme representation only (≥1).
+ * Soft targets come from planSelectedCombinationCapacity — never a fixed 2–3 fail gate.
+ */
+export function computeMinimumResolvedPerCombination(_tripDays: number): number {
+  return 1;
 }
 
-/** Overall minimum for a multi-day trip with selected combinations. */
+/** Overall hard floor from dynamic capacity (not combo×3 / days×3). */
 export function computeMinimumResolvedPlaces(params: {
   tripDays: number;
   selectedCombinationCount: number;
 }): number {
-  const perCombo = computeMinimumResolvedPerCombination(params.tripDays);
-  const byCombo = params.selectedCombinationCount * perCombo;
-  const byDays = params.tripDays;
-  return Math.max(byCombo, byDays, Math.min(params.tripDays * 2, 12));
+  return calculateDynamicStopCapacity({
+    tripDays: params.tripDays,
+    selectedCombinationCount: params.selectedCombinationCount,
+  }).minimumViableStops;
+}
+
+export type CombinationCapacityPlan = {
+  tripDays: number;
+  availableStopCapacity: number;
+  preferredStops: number;
+  minimumViableStops: number;
+  maximumStops: number;
+  selectedIds: number[];
+  targetPerCombination: Record<number, number>;
+  minimumRepresentativePerCombination: number;
+  dynamicCapacity: DynamicStopCapacity;
+};
+
+/**
+ * Estimate trip stop capacity first, then allocate soft targets per selected combination.
+ * Never requires fixed N places per combo before knowing total capacity.
+ */
+export function planSelectedCombinationCapacity(params: {
+  tripDays: number;
+  selectedCombinationIds: number[];
+}): CombinationCapacityPlan {
+  const selectedIds = [...params.selectedCombinationIds].sort((a, b) => a - b);
+  const tripDays = Math.max(1, params.tripDays);
+  const dynamicCapacity = calculateDynamicStopCapacity({
+    tripDays,
+    selectedCombinationCount: selectedIds.length,
+  });
+  const availableStopCapacity = dynamicCapacity.preferredStops;
+  const minimumRepresentativePerCombination = 1;
+  const n = Math.max(selectedIds.length, 1);
+  const base = Math.floor(availableStopCapacity / n);
+  let remainder = availableStopCapacity - base * n;
+  const targetPerCombination: Record<number, number> = {};
+  for (const id of selectedIds) {
+    const extra = remainder > 0 ? 1 : 0;
+    if (remainder > 0) remainder -= 1;
+    targetPerCombination[id] = Math.max(
+      minimumRepresentativePerCombination,
+      base + extra,
+    );
+  }
+  const plan: CombinationCapacityPlan = {
+    tripDays,
+    availableStopCapacity,
+    preferredStops: dynamicCapacity.preferredStops,
+    minimumViableStops: dynamicCapacity.minimumViableStops,
+    maximumStops: dynamicCapacity.maximumStops,
+    selectedIds,
+    targetPerCombination,
+    minimumRepresentativePerCombination,
+    dynamicCapacity,
+  };
+  logAiPipeline(
+    "[SELECTED_COMBINATION_CAPACITY_PLAN]",
+    `tripDays=${tripDays}`,
+    `availableStopCapacity=${availableStopCapacity}`,
+    `preferredStops=${dynamicCapacity.preferredStops}`,
+    `minimumViableStops=${dynamicCapacity.minimumViableStops}`,
+    `selectedIds=[${selectedIds.join(",")}]`,
+    `targetPerCombination=${JSON.stringify(targetPerCombination)}`,
+  );
+  return plan;
+}
+
+/** Stamp / union combination provenance from pool name matches (never drop sources). */
+export function ensureCombinationProvenanceOnPlaces<
+  T extends {
+    name?: string;
+    placeName?: string;
+    sourceCombinationId?: number;
+    sourceCombinationIds?: number[];
+    matchedCombinationIds?: number[];
+    matchedSelectedCombinationIds?: number[];
+  },
+>(places: T[], destination: string, selectedCombinationIds: number[]): T[] {
+  if (!selectedCombinationIds.length) return places;
+  return places.map((p) =>
+    annotatePlaceWithCombinationMetadata(p, destination, selectedCombinationIds),
+  );
 }
 
 export type CombinationPlaceMappingStats = {
@@ -311,23 +424,33 @@ export function buildCombinationPlaceMappingStats(params: {
     const resolvedNames: string[] = [];
     const failedNames: string[] = [];
     for (const candidate of candidates) {
-      const hit = params.resolvedPlaces.some(
-        (p) =>
-          placeNameMatchesCandidate(p.placeName ?? p.name ?? "", candidate.name) ||
-          (p as { sourceCombinationId?: number }).sourceCombinationId ===
-            pool.combinationId,
-      );
+      const hit = params.resolvedPlaces.some((p) => {
+        if (placeNameMatchesCandidate(p.placeName ?? p.name ?? "", candidate.name)) {
+          return true;
+        }
+        return combinationIdsFromPlace(
+          p as {
+            sourceCombinationId?: number;
+            sourceCombinationIds?: number[];
+            matchedSelectedCombinationIds?: number[];
+            matchedCombinationIds?: number[];
+          },
+        ).includes(pool.combinationId);
+      });
       if (hit) resolvedNames.push(candidate.name);
       else failedNames.push(candidate.name);
     }
     // Also count places annotated to this combination that aren't in the name pool
-    // (theme-search refill hits).
+    // (theme-search refill / region expansion hits).
     const annotatedExtra = params.resolvedPlaces.filter((p) => {
-      const ids =
-        (p as { matchedSelectedCombinationIds?: number[] }).matchedSelectedCombinationIds ??
-        ((p as { sourceCombinationId?: number }).sourceCombinationId != null
-          ? [(p as { sourceCombinationId: number }).sourceCombinationId]
-          : []);
+      const ids = combinationIdsFromPlace(
+        p as {
+          sourceCombinationId?: number;
+          sourceCombinationIds?: number[];
+          matchedSelectedCombinationIds?: number[];
+          matchedCombinationIds?: number[];
+        },
+      );
       if (!ids.includes(pool.combinationId)) return false;
       return !candidates.some((c) =>
         placeNameMatchesCandidate(p.placeName ?? p.name ?? "", c.name),
@@ -380,11 +503,7 @@ function placeKey(place: RoamieRecommendationItem): string {
 }
 
 function combinationIdsOf(place: RoamieRecommendationItem): number[] {
-  if (place.matchedSelectedCombinationIds?.length) {
-    return place.matchedSelectedCombinationIds;
-  }
-  if (place.sourceCombinationId != null) return [place.sourceCombinationId];
-  return [];
+  return combinationIdsFromPlace(place);
 }
 
 /**
@@ -477,6 +596,11 @@ export function validateGeneratedItinerary(params: {
 
   for (let i = 0; i < days.length; i += 1) {
     if (!days[i]?.places.length) {
+      const isFree = Boolean(
+        (days[i] as { isFreeDay?: boolean } | undefined)?.isFreeDay,
+      );
+      if (isFree) continue;
+      reasons.push(`empty_non_free_day:${i + 1}`);
       reasons.push(`empty_day:${i + 1}`);
     }
   }
@@ -521,19 +645,15 @@ export function validateGeneratedItinerary(params: {
   if (selectedCombinationIds.length) {
     for (const id of selectedCombinationIds) {
       const covered = itineraryPlaces.some((stop) => {
-        const matched =
-          (stop as RoamieItineraryItem & {
+        const stopIds = combinationIdsFromPlace(
+          stop as RoamieItineraryItem & {
             matchedSelectedCombinationIds?: number[];
             sourceCombinationId?: number;
-          }).matchedSelectedCombinationIds ??
-          ((stop as RoamieItineraryItem & { sourceCombinationId?: number })
-            .sourceCombinationId != null
-            ? [
-                (stop as RoamieItineraryItem & { sourceCombinationId?: number })
-                  .sourceCombinationId!,
-              ]
-            : []);
-        if (matched.includes(id)) return true;
+            sourceCombinationIds?: number[];
+            matchedCombinationIds?: number[];
+          },
+        );
+        if (stopIds.includes(id)) return true;
         const linked = resolvedPlaces.find(
           (p) =>
             (p.googlePlaceId && p.googlePlaceId === stop.googlePlaceId) ||
@@ -549,7 +669,7 @@ export function validateGeneratedItinerary(params: {
 
   if (itineraryPlaces.length < tripDays) {
     reasons.push(
-      `insufficient_places:got=${itineraryPlaces.length},need_at_least=${tripDays}`,
+      `insufficient_real_places:got=${itineraryPlaces.length},need_at_least=${tripDays}`,
     );
   }
 
@@ -635,6 +755,298 @@ export function groupStopsByTripDays(
   }));
 }
 
+export type SelectedPlaceOutcomeStatus =
+  | "scheduled"
+  | "merged_as_same_landmark"
+  | "rejected_invalid_real_place"
+  | "rejected_closed_or_unavailable"
+  | "unresolved_after_all_retries"
+  | "excluded_unselected_combination";
+
+export type SelectedPlaceOutcome = {
+  originalName: string;
+  sourceCombinationId?: number;
+  status: SelectedPlaceOutcomeStatus;
+  scheduledPlaceName?: string;
+  representativeName?: string;
+  reason?: string;
+};
+
+export type SelectedCombinationCoverageReport = {
+  required: number;
+  scheduled: number;
+  mergedAsDuplicate: number;
+  invalid: number;
+  unresolved: number;
+  fallbackAdded: number;
+  outcomes: SelectedPlaceOutcome[];
+};
+
+/**
+ * Trace every user-selected place to an explicit outcome. Silent drops are not allowed.
+ */
+export function validateSelectedCombinationCoverage(params: {
+  requiredPlaceNames: string[];
+  scheduledStops: RoamieItineraryItem[];
+  resolvedPlaces: RoamieRecommendationItem[];
+  mergedAsDuplicate?: Array<{ source: string; representative: string; reason?: string }>;
+  unresolvedNames?: string[];
+  invalidNames?: Array<{ name: string; reason?: string }>;
+  fallbackPlaceNames?: string[];
+}): SelectedCombinationCoverageReport {
+  const required = [...new Set(params.requiredPlaceNames.map((n) => n.trim()).filter(Boolean))];
+  const outcomes: SelectedPlaceOutcome[] = [];
+  const mergedMap = new Map(
+    (params.mergedAsDuplicate ?? []).map((m) => [
+      normalizePlaceNameKey(m.source),
+      m,
+    ]),
+  );
+  const unresolvedSet = new Set(
+    (params.unresolvedNames ?? []).map((n) => normalizePlaceNameKey(n)),
+  );
+  const invalidMap = new Map(
+    (params.invalidNames ?? []).map((n) => [normalizePlaceNameKey(n.name), n]),
+  );
+
+  let scheduled = 0;
+  let mergedAsDuplicate = 0;
+  let invalid = 0;
+  let unresolved = 0;
+
+  for (const name of required) {
+    const key = normalizePlaceNameKey(name);
+    const scheduledHit = params.scheduledStops.find((stop) =>
+      placeNameMatchesCandidate(stop.placeName ?? stop.title, name),
+    );
+    if (scheduledHit) {
+      scheduled += 1;
+      outcomes.push({
+        originalName: name,
+        status: "scheduled",
+        scheduledPlaceName: scheduledHit.placeName ?? scheduledHit.title,
+      });
+      continue;
+    }
+
+    const merged = mergedMap.get(key);
+    if (merged) {
+      mergedAsDuplicate += 1;
+      outcomes.push({
+        originalName: name,
+        status: "merged_as_same_landmark",
+        representativeName: merged.representative,
+        reason: merged.reason ?? "sub_place_of_same_landmark",
+      });
+      continue;
+    }
+
+    // Also count as merged when the representative of a same-landmark merge is scheduled
+    // and this name was a known alias of a resolved place that didn't make the cut.
+    const resolvedAlias = params.resolvedPlaces.find((p) =>
+      placeNameMatchesCandidate(p.placeName ?? p.name, name),
+    );
+    if (resolvedAlias) {
+      const aliasScheduled = params.scheduledStops.find(
+        (stop) =>
+          (resolvedAlias.googlePlaceId &&
+            stop.googlePlaceId === resolvedAlias.googlePlaceId) ||
+          placeNameMatchesCandidate(
+            stop.placeName ?? stop.title,
+            resolvedAlias.placeName ?? resolvedAlias.name,
+          ),
+      );
+      if (aliasScheduled) {
+        scheduled += 1;
+        outcomes.push({
+          originalName: name,
+          status: "scheduled",
+          scheduledPlaceName: aliasScheduled.placeName ?? aliasScheduled.title,
+        });
+        continue;
+      }
+    }
+
+    const invalidHit = invalidMap.get(key);
+    if (invalidHit) {
+      invalid += 1;
+      outcomes.push({
+        originalName: name,
+        status: "rejected_invalid_real_place",
+        reason: invalidHit.reason,
+      });
+      continue;
+    }
+
+    if (unresolvedSet.has(key) || !resolvedAlias) {
+      unresolved += 1;
+      outcomes.push({
+        originalName: name,
+        status: "unresolved_after_all_retries",
+        reason: unresolvedSet.has(key) ? "mapping_failed" : "missing_from_pool",
+      });
+      continue;
+    }
+
+    unresolved += 1;
+    outcomes.push({
+      originalName: name,
+      status: "unresolved_after_all_retries",
+      reason: "resolved_but_not_scheduled",
+    });
+  }
+
+  const requiredKeys = new Set(required.map(normalizePlaceNameKey));
+  const fallbackAdded = (params.fallbackPlaceNames ?? []).filter(
+    (n) => !requiredKeys.has(normalizePlaceNameKey(n)),
+  ).length;
+
+  const report: SelectedCombinationCoverageReport = {
+    required: required.length,
+    scheduled,
+    mergedAsDuplicate,
+    invalid,
+    unresolved,
+    fallbackAdded,
+    outcomes,
+  };
+
+  logAiPipeline(
+    "[SELECTED_PLACE_COVERAGE]",
+    `required=${report.required}`,
+    `scheduled=${report.scheduled}`,
+    `mergedAsDuplicate=${report.mergedAsDuplicate}`,
+    `invalid=${report.invalid}`,
+    `unresolved=${report.unresolved}`,
+    `fallbackAdded=${report.fallbackAdded}`,
+  );
+
+  return report;
+}
+
+export type FinalItineraryIntegrityResult = {
+  ok: boolean;
+  reasons: string[];
+  coverage?: SelectedCombinationCoverageReport;
+};
+
+/**
+ * Hard gate before persisting a formal itinerary. Failures must not save a half-built trip.
+ */
+export function validateFinalItineraryIntegrity(params: {
+  selectedCombinationIds: number[];
+  sessionSelectedCombinationIds?: number[];
+  requiredPlaceNames: string[];
+  scheduledStops: RoamieItineraryItem[];
+  resolvedPlaces: RoamieRecommendationItem[];
+  mergedAsDuplicate?: Array<{ source: string; representative: string; reason?: string }>;
+  unresolvedNames?: string[];
+  invalidNames?: Array<{ name: string; reason?: string }>;
+  excludedPlaceNames?: string[];
+  tripDays: number;
+  startDate: string;
+  destination?: string;
+}): FinalItineraryIntegrityResult {
+  const reasons: string[] = [];
+  const {
+    selectedCombinationIds,
+    sessionSelectedCombinationIds,
+    requiredPlaceNames,
+    scheduledStops,
+    resolvedPlaces,
+    tripDays,
+    startDate,
+    destination,
+  } = params;
+
+  if (
+    sessionSelectedCombinationIds?.length &&
+    (sessionSelectedCombinationIds.length !== selectedCombinationIds.length ||
+      sessionSelectedCombinationIds.some((id, i) => id !== selectedCombinationIds[i]))
+  ) {
+    reasons.push("selectedCombinationIds_session_mismatch");
+  }
+
+  const coverage = validateSelectedCombinationCoverage({
+    requiredPlaceNames,
+    scheduledStops,
+    resolvedPlaces,
+    mergedAsDuplicate: params.mergedAsDuplicate,
+    unresolvedNames: params.unresolvedNames,
+    invalidNames: params.invalidNames,
+    fallbackPlaceNames: scheduledStops
+      .map((s) => s.placeName ?? s.title)
+      .filter((name) => {
+        const key = normalizePlaceNameKey(name);
+        return !requiredPlaceNames.some((r) => normalizePlaceNameKey(r) === key);
+      }),
+  });
+
+  // Silent drops: every required place must have an explicit outcome, and unresolved
+  // may not dominate when we still have capacity to schedule resolved required places.
+  const silent = coverage.outcomes.filter(
+    (o) =>
+      o.status === "unresolved_after_all_retries" &&
+      o.reason === "resolved_but_not_scheduled",
+  );
+  if (silent.length) {
+    reasons.push(
+      `silent_drop:${silent.map((o) => o.originalName).join(",")}`,
+    );
+  }
+
+  // Fallback must not massively replace selected places.
+  if (
+    coverage.required > 0 &&
+    coverage.fallbackAdded > coverage.scheduled &&
+    coverage.scheduled < Math.ceil(coverage.required * 0.5)
+  ) {
+    reasons.push(
+      `fallback_over_selected:scheduled=${coverage.scheduled},fallback=${coverage.fallbackAdded}`,
+    );
+  }
+
+  const excluded = params.excludedPlaceNames ?? [];
+  for (const stop of scheduledStops) {
+    const name = stop.placeName ?? stop.title;
+    if (excluded.some((ex) => placeNameMatchesCandidate(name, ex))) {
+      reasons.push(`unselected_combination_place:${name}`);
+    }
+    if (!stop.googlePlaceId?.trim()) {
+      reasons.push(`missing_place_id:${name}`);
+    }
+    if (stop.lat == null || stop.lng == null) {
+      reasons.push(`missing_coordinates:${name}`);
+    }
+    // Snapshot readiness: address is the minimum for immediate detail render.
+    if (!stop.address?.trim() && !stop.googlePlaceId?.trim()) {
+      reasons.push(`missing_snapshot:${name}`);
+    }
+  }
+
+  const base = validateGeneratedItinerary({
+    tripDays,
+    startDate,
+    selectedCombinationIds,
+    days: groupStopsByTripDays(scheduledStops, tripDays, startDate),
+    resolvedPlaces,
+    destination,
+  });
+  reasons.push(...base.reasons);
+
+  const result: FinalItineraryIntegrityResult = {
+    ok: reasons.length === 0,
+    reasons,
+    coverage,
+  };
+  logAiPipeline(
+    "[ITINERARY_INTEGRITY_CHECK]",
+    `ok=${result.ok}`,
+    `reasons=${result.reasons.join("|") || "none"}`,
+  );
+  return result;
+}
+
 export function expandAllowlistNamesFromPools(
   destination: string,
   selectedCombinationIds: number[],
@@ -672,3 +1084,377 @@ export function expandAllowlistNamesFromPools(
   }
   return out;
 }
+
+export type CombinationCoverageStatus =
+  | "covered"
+  | "covered_by_region_selection"
+  | "covered_by_merge"
+  | "partially_covered"
+  | "uncovered"
+  | "unresolved_after_retry";
+
+export type CombinationCoverageEntry = {
+  rawCandidates: number;
+  resolved: number;
+  merged: number;
+  scheduled?: number;
+  resolvedRegions?: number;
+  expandedPlaces?: number;
+  scheduledRegions?: number;
+  selectedRegion?: string;
+  targetRepresentatives?: number;
+  status: CombinationCoverageStatus;
+};
+
+export type MultiCombinationCoverageReport = {
+  selectedCombinationIds: number[];
+  combinations: Record<string, CombinationCoverageEntry>;
+  totalResolved: number;
+  minimumRequired: number;
+  availableStopCapacity?: number;
+  targetPerCombination?: Record<number, number>;
+  supplementAttempted: boolean;
+  coveredIds: number[];
+  partiallyCoveredIds: number[];
+  uncoveredIds: number[];
+};
+
+function isCoverageSatisfied(status: CombinationCoverageStatus): boolean {
+  return (
+    status === "covered" ||
+    status === "covered_by_region_selection" ||
+    status === "covered_by_merge" ||
+    status === "partially_covered"
+  );
+}
+
+/**
+ * Build per-combination coverage after resolve / merge / optional region expand.
+ * A combo is covered when it has ≥1 representative place (including merged provenance
+ * or region-expanded landmarks) — not a fixed 3–4 places per combo.
+ *
+ * Attribution uses provenance arrays AND name-pool matching so mapping rename
+ * cannot leave a combo "uncovered" while places exist.
+ */
+export function buildMultiCombinationCoverageReport(params: {
+  destination: string;
+  selectedCombinationIds: number[];
+  resolvedPlaces: Array<{
+    name?: string;
+    placeName?: string;
+    sourceCombinationId?: number;
+    sourceCombinationIds?: number[];
+    matchedSelectedCombinationIds?: number[];
+    matchedCombinationIds?: number[];
+    sourceRegionCandidate?: string;
+  }>;
+  regionExpansion?: Record<
+    number,
+    { regions: string[]; expandedPlaces: number; selectedRegion?: string }
+  >;
+  supplementAttempted?: boolean;
+  tripDays?: number;
+  capacityPlan?: CombinationCapacityPlan;
+}): MultiCombinationCoverageReport {
+  const pools = resolveSelectedCombinationPools(
+    params.destination,
+    params.selectedCombinationIds,
+  );
+  const stamped = ensureCombinationProvenanceOnPlaces(
+    params.resolvedPlaces,
+    params.destination,
+    params.selectedCombinationIds,
+  );
+  const capacityPlan =
+    params.capacityPlan ??
+    planSelectedCombinationCapacity({
+      tripDays: params.tripDays ?? Math.max(params.selectedCombinationIds.length, 1),
+      selectedCombinationIds: params.selectedCombinationIds,
+    });
+  const combinations: Record<string, CombinationCoverageEntry> = {};
+  const minTotal = capacityPlan.minimumViableStops;
+
+  for (const pool of pools) {
+    const regionMeta = params.regionExpansion?.[pool.combinationId];
+    const target =
+      capacityPlan.targetPerCombination[pool.combinationId] ??
+      capacityPlan.minimumRepresentativePerCombination;
+    const attributed = stamped.filter((p) =>
+      combinationIdsFromPlace(p).includes(pool.combinationId),
+    );
+    const namedHits = pool.all.filter((c) =>
+      stamped.some((p) =>
+        placeNameMatchesCandidate(p.placeName ?? p.name ?? "", c.name),
+      ),
+    ).length;
+    // Name-pool hits without provenance still count as representatives.
+    const nameOnlyHits = stamped.filter((p) => {
+      if (combinationIdsFromPlace(p).includes(pool.combinationId)) return false;
+      return pool.all.some((c) =>
+        placeNameMatchesCandidate(p.placeName ?? p.name ?? "", c.name),
+      );
+    });
+    const representativeCount = attributed.length + nameOnlyHits.length;
+    const regionExpanded = attributed.filter((p) => Boolean(p.sourceRegionCandidate));
+    const hasDirect = representativeCount > 0;
+    let status: CombinationCoverageStatus = "uncovered";
+    if (regionMeta && regionMeta.expandedPlaces > 0 && (regionExpanded.length > 0 || hasDirect)) {
+      // Region selection is a complete theme representation regardless of soft target.
+      status = "covered_by_region_selection";
+    } else if (hasDirect && namedHits === 0 && attributed.length > 0) {
+      status = representativeCount >= target ? "covered_by_merge" : "partially_covered";
+    } else if (hasDirect) {
+      status = representativeCount >= target ? "covered" : "partially_covered";
+    } else if (params.supplementAttempted) {
+      status = "unresolved_after_retry";
+    }
+
+    combinations[String(pool.combinationId)] = {
+      rawCandidates: pool.all.length,
+      resolved: representativeCount,
+      merged: Math.max(0, attributed.length - namedHits),
+      resolvedRegions: regionMeta?.regions.length,
+      expandedPlaces: regionMeta?.expandedPlaces,
+      scheduledRegions:
+        status === "covered_by_region_selection" ? 1 : regionMeta ? 0 : undefined,
+      selectedRegion: regionMeta?.selectedRegion,
+      targetRepresentatives: target,
+      status,
+    };
+
+    logAiPipeline(
+      "[COMBINATION_RESOLUTION_STATS]",
+      `combinationId=${pool.combinationId}`,
+      `raw=${pool.all.length}`,
+      `resolved=${representativeCount}`,
+      `failed=${Math.max(0, pool.all.length - namedHits)}`,
+      `status=${status}`,
+    );
+
+    if (status === "partially_covered") {
+      logAiPipeline(
+        "[COMBINATION_PARTIAL_COVERAGE_ACCEPTED]",
+        `combinationId=${pool.combinationId}`,
+        `scheduledRepresentativeCount=${representativeCount}`,
+        `target=${target}`,
+      );
+    }
+  }
+
+  const coveredIds = params.selectedCombinationIds.filter((id) => {
+    const s = combinations[String(id)]?.status;
+    return s === "covered" || s === "covered_by_merge" || s === "covered_by_region_selection";
+  });
+  const partiallyCoveredIds = params.selectedCombinationIds.filter(
+    (id) => combinations[String(id)]?.status === "partially_covered",
+  );
+  const uncoveredIds = params.selectedCombinationIds.filter((id) => {
+    const s = combinations[String(id)]?.status;
+    return !s || s === "uncovered" || s === "unresolved_after_retry";
+  });
+
+  const report: MultiCombinationCoverageReport = {
+    selectedCombinationIds: params.selectedCombinationIds,
+    combinations,
+    totalResolved: stamped.length,
+    minimumRequired: minTotal,
+    availableStopCapacity: capacityPlan.availableStopCapacity,
+    targetPerCombination: capacityPlan.targetPerCombination,
+    supplementAttempted: Boolean(params.supplementAttempted),
+    coveredIds,
+    partiallyCoveredIds,
+    uncoveredIds,
+  };
+
+  logAiPipeline("[COMBINATION_COVERAGE_REPORT]", `report=${JSON.stringify(report)}`);
+  return report;
+}
+
+export type SelectedCombinationIntegrityResult = {
+  ok: boolean;
+  reasons: string[];
+  coverage: MultiCombinationCoverageReport;
+  failureCode?:
+    | "combination_uncovered"
+    | "combination_coverage_insufficient"
+    | "total_real_place_count_insufficient"
+    | "total_place_count_insufficient"
+    | "region_expansion_failed"
+    | "selected_place_resolution_failed"
+    | "place_resolution_failed"
+    | "supplement_required";
+};
+
+/**
+ * Gate after resolve+supplement and before geographic allocation.
+ * Does NOT require a fixed N places per combo.
+ * Uncovered combos may only fail after supplementAttempted === true.
+ */
+export function validateSelectedCombinationIntegrity(params: {
+  destination: string;
+  selectedCombinationIds: number[];
+  resolvedPlaces: Array<{
+    name?: string;
+    placeName?: string;
+    googlePlaceId?: string;
+    sourceCombinationId?: number;
+    sourceCombinationIds?: number[];
+    matchedSelectedCombinationIds?: number[];
+    matchedCombinationIds?: number[];
+    sourceRegionCandidate?: string;
+  }>;
+  regionExpansion?: Record<
+    number,
+    { regions: string[]; expandedPlaces: number; selectedRegion?: string; failedRegions?: string[] }
+  >;
+  supplementAttempted?: boolean;
+  tripDays: number;
+  capacityPlan?: CombinationCapacityPlan;
+}): SelectedCombinationIntegrityResult {
+  const reasons: string[] = [];
+  const ids = params.selectedCombinationIds;
+
+  if (!ids.length) {
+    reasons.push("selectedCombinationIds_empty");
+  }
+
+  const stamped = ensureCombinationProvenanceOnPlaces(
+    params.resolvedPlaces,
+    params.destination,
+    ids,
+  );
+
+  const pools = resolveSelectedCombinationPools(params.destination, ids);
+  for (const id of ids) {
+    const pool = pools.find((p) => p.combinationId === id);
+    const regionCovered =
+      (params.regionExpansion?.[id]?.expandedPlaces ?? 0) > 0;
+    if ((!pool || pool.all.length === 0) && !regionCovered) {
+      reasons.push(`missing_candidate_pool:${id}`);
+    }
+  }
+
+  for (const place of stamped) {
+    if (!place.googlePlaceId?.trim()) {
+      reasons.push(`unresolved_place:${place.placeName ?? place.name}`);
+    }
+  }
+
+  const coverage = buildMultiCombinationCoverageReport({
+    destination: params.destination,
+    selectedCombinationIds: ids,
+    resolvedPlaces: stamped,
+    regionExpansion: params.regionExpansion,
+    supplementAttempted: params.supplementAttempted,
+    tripDays: params.tripDays,
+    capacityPlan: params.capacityPlan,
+  });
+
+  const uncovered = coverage.uncoveredIds;
+
+  if (uncovered.length && !params.supplementAttempted) {
+    reasons.push(`supplement_required:${uncovered.join(",")}`);
+  } else if (uncovered.length) {
+    reasons.push(`uncovered_combinations:${uncovered.join(",")}`);
+  }
+
+  const dynamicCapacity =
+    params.capacityPlan?.dynamicCapacity ??
+    calculateDynamicStopCapacity({
+      tripDays: params.tripDays,
+      selectedCombinationCount: ids.length,
+    });
+  const placeValidation = evaluateTotalRealPlaceValidation(
+    stamped.length,
+    dynamicCapacity,
+  );
+
+  // Fail only below minimumViable — preferred shortfall enables compact mode.
+  if (placeValidation.result === "fail") {
+    reasons.push(
+      `total_real_place_count_insufficient:got=${stamped.length},need=${dynamicCapacity.minimumViableStops},preferred=${dynamicCapacity.preferredStops}`,
+    );
+  }
+
+  for (const id of ids) {
+    const region = params.regionExpansion?.[id];
+    if (
+      region &&
+      region.regions.length > 0 &&
+      region.expandedPlaces === 0 &&
+      (region.failedRegions?.length ?? 0) === region.regions.length
+    ) {
+      reasons.push(`region_expansion_failed:${id}`);
+    }
+  }
+
+  let failureCode: SelectedCombinationIntegrityResult["failureCode"];
+  if (uncovered.length && !params.supplementAttempted) {
+    failureCode = "supplement_required";
+  } else if (uncovered.length) {
+    failureCode = "combination_uncovered";
+  } else if (reasons.some((r) => r.startsWith("region_expansion_failed"))) {
+    failureCode = "region_expansion_failed";
+  } else if (reasons.some((r) => r.startsWith("total_real_place_count"))) {
+    failureCode = "total_real_place_count_insufficient";
+  } else if (reasons.some((r) => r.startsWith("unresolved_place"))) {
+    failureCode = "place_resolution_failed";
+  }
+
+  // Partial coverage is accepted — never fail solely for under-target counts.
+  for (const id of coverage.partiallyCoveredIds) {
+    const entry = coverage.combinations[String(id)];
+    logAiPipeline(
+      "[COMBINATION_PARTIAL_COVERAGE_ACCEPTED]",
+      `combinationId=${id}`,
+      `scheduledRepresentativeCount=${entry?.resolved ?? 0}`,
+    );
+  }
+
+  logAiPipeline(
+    "[FINAL_COMBINATION_COVERAGE]",
+    `selectedIds=[${ids.join(",")}]`,
+    `coveredIds=[${coverage.coveredIds.join(",")}]`,
+    `partiallyCoveredIds=[${coverage.partiallyCoveredIds.join(",")}]`,
+    `uncoveredIds=[${uncovered.join(",")}]`,
+  );
+
+  if (uncovered.length || params.supplementAttempted) {
+    logAiPipeline(
+      "[INSUFFICIENT_RESOLVED_PLACES_DETAIL]",
+      `uncoveredCombinationIds=[${uncovered.join(",")}]`,
+      `totalResolved=${stamped.length}`,
+      `minimumRequired=${coverage.minimumRequired}`,
+      `minimumViable=${dynamicCapacity.minimumViableStops}`,
+      `preferred=${dynamicCapacity.preferredStops}`,
+      `validation=${placeValidation.result}`,
+      `supplementAttempted=${Boolean(params.supplementAttempted)}`,
+    );
+  }
+
+  // Only hard-fail on truly uncovered (after supplement) or empty total / bad place ids.
+  // missing_candidate_pool alone is not fatal when places already cover the theme.
+  const fatalReasons = reasons.filter(
+    (r) =>
+      r.startsWith("uncovered_combinations") ||
+      r.startsWith("supplement_required") ||
+      r.startsWith("total_real_place_count") ||
+      r.startsWith("unresolved_place") ||
+      r.startsWith("region_expansion_failed") ||
+      r === "selectedCombinationIds_empty",
+  );
+
+  const ok = fatalReasons.length === 0;
+  if (ok) {
+    logAiPipeline("[ITINERARY_GENERATION_CONTRACT_PASSED]");
+  }
+
+  return {
+    ok,
+    reasons: fatalReasons.length ? fatalReasons : reasons,
+    coverage,
+    failureCode: ok ? undefined : failureCode,
+  };
+}
+
+export { isCoverageSatisfied };

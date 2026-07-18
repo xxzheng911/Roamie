@@ -45,12 +45,15 @@ function isRealGoogleId(id: string | undefined | null): boolean {
   return /^ChIJ[\w-]+$/i.test(normalized);
 }
 
+import { mergeCombinationProvenance } from "@/lib/ai/combination-provenance";
+
 function placeToChatItem(
   place: PlaceResult,
   context: CanonicalTravelContext,
   locale: Locale,
   provenance?: {
     sourceCombinationId?: number;
+    sourceCombinationIds?: number[];
     matchedCombinationIds?: number[];
     matchedSelectedCombinationIds?: number[];
   },
@@ -61,14 +64,20 @@ function placeToChatItem(
     locale,
   });
   if (!provenance) return item;
-  return {
-    ...item,
-    sourceCombinationId: provenance.sourceCombinationId ?? item.sourceCombinationId,
-    matchedCombinationIds:
-      provenance.matchedCombinationIds ?? item.matchedCombinationIds,
-    matchedSelectedCombinationIds:
-      provenance.matchedSelectedCombinationIds ?? item.matchedSelectedCombinationIds,
-  };
+  return mergeCombinationProvenance(
+    {
+      ...item,
+      sourceCombinationId: provenance.sourceCombinationId ?? item.sourceCombinationId,
+      sourceCombinationIds: provenance.sourceCombinationIds ?? item.sourceCombinationIds,
+      matchedCombinationIds:
+        provenance.matchedCombinationIds ?? item.matchedCombinationIds,
+      matchedSelectedCombinationIds:
+        provenance.matchedSelectedCombinationIds ?? item.matchedSelectedCombinationIds,
+    },
+    provenance.sourceCombinationIds ??
+      provenance.matchedSelectedCombinationIds ??
+      (provenance.sourceCombinationId != null ? [provenance.sourceCombinationId] : []),
+  );
 }
 
 function normalizeNameKey(name: string): string {
@@ -482,6 +491,7 @@ export async function mapChatPlacesToGooglePlaces(params: {
           ready.push(
             placeToChatItem(detailed.place, params.context, params.locale, {
               sourceCombinationId: raw.sourceCombinationId,
+              sourceCombinationIds: raw.sourceCombinationIds,
               matchedCombinationIds: raw.matchedCombinationIds,
               matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
             }),
@@ -534,6 +544,7 @@ export async function mapChatPlacesToGooglePlaces(params: {
     ready.push(
       placeToChatItem(row.found, params.context, params.locale, {
         sourceCombinationId: row.raw.sourceCombinationId,
+        sourceCombinationIds: row.raw.sourceCombinationIds,
         matchedCombinationIds: row.raw.matchedCombinationIds,
         matchedSelectedCombinationIds: row.raw.matchedSelectedCombinationIds,
       }),

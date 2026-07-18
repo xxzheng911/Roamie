@@ -1,15 +1,20 @@
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeItineraryItem } from "@/lib/ai/types";
-import { resolveDestinationApproxCenter } from "@/lib/ai/destination-geocode";
+import type { PlaceResult } from "@/lib/place-result";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { listTripDates } from "@/lib/outfit/group-by-date";
-import { distanceMeters } from "@/lib/map-explore";
 import {
   annotatePlaceWithCombinationMetadata,
   redistributeToFillEmptyDays,
   selectPlacesWithCombinationQuota,
 } from "@/lib/ai/combination-itinerary-integrity";
+import { clusterAndDedupeLandmarks } from "@/lib/ai/landmark-cluster";
+import {
+  clusterItemsByGeography,
+  type GeoAccessor,
+} from "@/lib/ai/geographic-clustering";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { combinationIdsFromPlace } from "@/lib/ai/combination-provenance";
 
 type PlaceBucket =
   | "attraction"
@@ -34,16 +39,6 @@ const BUCKET_TIME: Record<PlaceBucket, string> = {
   other: "14:00",
 };
 
-const DAY_BUCKET_ORDER: PlaceBucket[][] = [
-  ["attraction", "creative", "restaurant", "shopping"],
-  ["museum", "creative", "restaurant", "cafe"],
-  ["attraction", "shopping", "restaurant", "night_market"],
-  ["park", "creative", "cafe", "night_market"],
-  ["museum", "shopping", "restaurant", "other"],
-  ["attraction", "cafe", "restaurant", "other"],
-  ["park", "shopping", "creative", "night_market"],
-];
-
 function classifyPlaceBucket(place: RoamieRecommendationItem): PlaceBucket {
   const blob = `${place.type ?? ""} ${place.name ?? ""} ${place.placeName ?? ""}`.toLowerCase();
   if (/(夜市|night\s*market)/i.test(blob)) return "night_market";
@@ -67,31 +62,6 @@ function placeCoords(place: RoamieRecommendationItem): { lat: number; lng: numbe
   return { lat: place.lat, lng: place.lng };
 }
 
-function pickClosestUnused(
-  candidates: RoamieRecommendationItem[],
-  anchor: { lat: number; lng: number } | null,
-  used: Set<string>,
-): RoamieRecommendationItem | null {
-  let best: RoamieRecommendationItem | null = null;
-  let bestScore = Number.POSITIVE_INFINITY;
-  for (const place of candidates) {
-    const key = placeKey(place);
-    if (used.has(key)) continue;
-    const coords = placeCoords(place);
-    const quality =
-      (place.rating ?? 0) * Math.log10((place.userRatingCount ?? 0) + 10) +
-      (place.photoName ? 0.3 : 0);
-    const distance =
-      anchor && coords ? distanceMeters(anchor, coords) : coords ? 0 : 50_000;
-    const score = distance - quality * 120;
-    if (score < bestScore) {
-      bestScore = score;
-      best = place;
-    }
-  }
-  return best;
-}
-
 function placeKey(place: RoamieRecommendationItem): string {
   return (
     place.googlePlaceId?.trim() ||
@@ -101,24 +71,21 @@ function placeKey(place: RoamieRecommendationItem): string {
 }
 
 function combinationIdsOf(place: RoamieRecommendationItem): number[] {
-  if (place.matchedSelectedCombinationIds?.length) {
-    return place.matchedSelectedCombinationIds;
-  }
-  if (place.sourceCombinationId != null) return [place.sourceCombinationId];
-  return [];
+  return combinationIdsFromPlace(place);
 }
 
 function makeStop(
   place: RoamieRecommendationItem,
   date: string,
   bucket: PlaceBucket,
+  timeOverride?: string,
 ): RoamieItineraryItem {
   const placeId =
     place.googlePlaceId?.trim() ||
     (place as RoamieRecommendationItem & { placeId?: string }).placeId?.trim();
   return normalizeItineraryItem({
     date,
-    time: BUCKET_TIME[bucket],
+    time: timeOverride ?? BUCKET_TIME[bucket],
     title: place.name,
     placeName: place.placeName ?? place.name,
     description: place.description || place.reason || "",
@@ -128,14 +95,94 @@ function makeStop(
     googlePlaceId: placeId || undefined,
     placeType: place.type || bucket,
     sourceCombinationId: place.sourceCombinationId,
+    sourceCombinationIds: place.sourceCombinationIds,
     matchedCombinationIds: place.matchedCombinationIds,
     matchedSelectedCombinationIds: place.matchedSelectedCombinationIds,
+    sourceRegionCandidate: place.sourceRegionCandidate,
+    photoName: place.photoName,
+    rating: place.rating,
+    userRatingCount: place.userRatingCount,
+    businessStatus: place.businessStatus,
+    openStatusLabel: place.openStatusLabel,
+    todayHoursLabel: place.todayHoursLabel,
+    types: place.type ? [place.type] : undefined,
+    placeSnapshotSource: "selected_place",
+  });
+}
+
+/** Map a recommendation item to a PlaceResult-lite for landmark clustering. */
+function recToLandmarkPlace(
+  item: RoamieRecommendationItem,
+): PlaceResult & { __rec: RoamieRecommendationItem } {
+  const id =
+    item.googlePlaceId?.trim() ||
+    (item as RoamieRecommendationItem & { placeId?: string }).placeId?.trim() ||
+    (item.placeName ?? item.name ?? "");
+  return {
+    id,
+    name: item.placeName ?? item.name ?? "",
+    address: item.address ?? null,
+    lat: item.lat ?? null,
+    lng: item.lng ?? null,
+    rating: item.rating ?? null,
+    userRatingCount: item.userRatingCount ?? null,
+    photoName: item.photoName ?? null,
+    primaryType: item.type ?? null,
+    types: item.type ? [item.type] : null,
+    businessStatus: item.businessStatus ?? null,
+    openStatus: "unknown",
+    openStatusLabel: item.openStatusLabel ?? "",
+    todayHoursLabel: item.todayHoursLabel ?? "",
+    closingSoonNote: item.closingSoonNote ?? "",
+    nextOpenHint: item.nextOpenHint ?? "",
+    __rec: item,
+  } as unknown as PlaceResult & { __rec: RoamieRecommendationItem };
+}
+
+/** Remove附屬地標 (main/sub landmark) duplicates from a recommendation pool. */
+function dedupeLandmarksForRecs(
+  items: RoamieRecommendationItem[],
+): RoamieRecommendationItem[] {
+  const lite = items.map(recToLandmarkPlace);
+  const { places } = clusterAndDedupeLandmarks(lite);
+  return places.map(
+    (p) => (p as PlaceResult & { __rec: RoamieRecommendationItem }).__rec,
+  );
+}
+
+const GEO_ACCESSOR: GeoAccessor<RoamieRecommendationItem> = {
+  coords: (p) => placeCoords(p),
+  id: (p) => placeKey(p),
+  name: (p) => p.placeName ?? p.name,
+  address: (p) => p.address ?? "",
+  weight: (p) => p.userRatingCount ?? 0,
+};
+
+const DAY_TIME_SLOTS = ["09:30", "11:00", "12:30", "14:00", "15:30", "17:00", "19:00", "20:30"];
+
+/** Order a day's places by time-of-day intent then assign non-colliding clock times. */
+function scheduleDayPlaces(
+  places: RoamieRecommendationItem[],
+): { place: RoamieRecommendationItem; bucket: PlaceBucket; time: string }[] {
+  const ranked = places
+    .map((place) => ({ place, bucket: classifyPlaceBucket(place) }))
+    .sort((a, b) => BUCKET_TIME[a.bucket].localeCompare(BUCKET_TIME[b.bucket]));
+
+  return ranked.map((entry, index) => {
+    let time = DAY_TIME_SLOTS[Math.min(index, DAY_TIME_SLOTS.length - 1)]!;
+    // Keep nightlife in the evening even if it sorts early.
+    if ((entry.bucket === "night_market" || entry.place.type === "bar") && time < "18:00") {
+      time = "19:00";
+    }
+    return { place: entry.place, bucket: entry.bucket, time };
   });
 }
 
 /**
- * Allocate places across days with combination quotas.
- * Never lets the first selected combination fill all days before others are scheduled.
+ * Allocate places across days using GEOGRAPHY-FIRST clustering: nearby places are
+ * grouped into the same day, then each geographic cluster maps to a day. Selected
+ * combinations only influence which places are kept (via quota selection), not the
+ * per-day boundaries. Empty days are back-filled by redistribute.
  */
 export function buildMixedItineraryFromPlaces(
   selectedPlaces: RoamieRecommendationItem[],
@@ -147,7 +194,6 @@ export function buildMixedItineraryFromPlaces(
   const dayCount = Math.max(days, 1);
   const dates = listTripDates([], startDate, dayCount);
   const destLabel = destination?.trim() ? normalizeDestinationLabel(destination) : "";
-  const center = destLabel ? resolveDestinationApproxCenter(destLabel) : null;
 
   const selectedCombinationIds =
     opts?.selectedCombinationIds?.length
@@ -184,89 +230,73 @@ export function buildMixedItineraryFromPlaces(
     unique.push(place);
   }
 
-  const buckets = new Map<PlaceBucket, RoamieRecommendationItem[]>();
-  for (const place of unique) {
-    const bucket = classifyPlaceBucket(place);
-    const list = buckets.get(bucket) ?? [];
-    list.push(place);
-    buckets.set(bucket, list);
+  // Global main/sub landmark de-duplication before day assignment.
+  const beforeDedupe = unique.length;
+  const landmarkKept = dedupeLandmarksForRecs(unique);
+  logAiPipeline(
+    "[GLOBAL_LANDMARK_DEDUPE_STATS]",
+    `before=${beforeDedupe}`,
+    `after=${landmarkKept.length}`,
+    `merged=${beforeDedupe - landmarkKept.length}`,
+  );
+
+  // Geography-first: cluster nearby places, then map each cluster to a day.
+  const { clusters, unlocated } = clusterItemsByGeography(
+    landmarkKept,
+    dayCount,
+    GEO_ACCESSOR,
+  );
+  logAiPipeline(
+    "[GEOGRAPHIC_CLUSTER_STATS]",
+    `clusterCount=${clusters.length}`,
+    `unlocated=${unlocated.length}`,
+    `clusters=[${clusters.map((c) => `${c.areaName}:${c.items.length}`).join("|")}]`,
+  );
+
+  logAiPipeline(
+    "[DAILY_ALLOCATION_INPUT]",
+    `tripDays=${dayCount}`,
+    `placeCount=${landmarkKept.length}`,
+    `clusterCount=${clusters.length}`,
+  );
+
+  const dayByKey = new Map<string, number>();
+  const dayLoad = new Array<number>(dayCount).fill(0);
+  for (const cluster of clusters) {
+    const dayIdx = Math.min(dayCount - 1, Math.max(0, (cluster.candidateDay ?? 1) - 1));
+    logAiPipeline(
+      "[DAY_AREA_ASSIGNMENT]",
+      `day=${dayIdx + 1}`,
+      `primaryArea=${cluster.areaName}`,
+      `clusterIds=[${cluster.clusterId}]`,
+    );
+    for (const item of cluster.items) {
+      dayByKey.set(placeKey(item), dayIdx);
+      dayLoad[dayIdx] += 1;
+    }
+  }
+  // Places without usable coordinates → least-loaded day.
+  for (const item of unlocated) {
+    let best = 0;
+    for (let i = 1; i < dayCount; i += 1) if (dayLoad[i]! < dayLoad[best]!) best = i;
+    dayByKey.set(placeKey(item), best);
+    dayLoad[best] += 1;
   }
 
-  const used = new Set<string>();
   const stops: RoamieItineraryItem[] = [];
-  const comboCoverageByDay = new Map<number, Set<number>>();
-
-  // Phase 1: seed one place per selected combination across different days first.
-  if (selectedCombinationIds.length > 0) {
-    selectedCombinationIds.forEach((comboId, comboOffset) => {
-      const pool = unique.filter((p) => combinationIdsOf(p).includes(comboId));
-      const dayIdx = comboOffset % dayCount;
-      const date = dates[dayIdx] ?? startDate;
-      const picked = pickClosestUnused(pool, center, used);
-      if (!picked) return;
-      used.add(placeKey(picked));
-      const bucket = classifyPlaceBucket(picked);
-      stops.push(makeStop(picked, date, bucket));
-      const covered = comboCoverageByDay.get(dayIdx) ?? new Set<number>();
-      covered.add(comboId);
-      comboCoverageByDay.set(dayIdx, covered);
-    });
-  }
-
-  // Phase 2: bucket-based fill (includes creative / night_market / other).
   for (let dayIdx = 0; dayIdx < dayCount; dayIdx += 1) {
     const date = dates[dayIdx] ?? startDate;
-    const order = DAY_BUCKET_ORDER[dayIdx % DAY_BUCKET_ORDER.length] ?? DAY_BUCKET_ORDER[0]!;
-    let anchor = center;
-    const existing = stops.filter((s) => s.date === date);
-    if (existing.length) {
-      const last = existing[existing.length - 1]!;
-      if (last.lat != null && last.lng != null) {
-        anchor = { lat: last.lat, lng: last.lng };
-      }
+    const dayPlaces = landmarkKept.filter((p) => dayByKey.get(placeKey(p)) === dayIdx);
+    for (const scheduled of scheduleDayPlaces(dayPlaces)) {
+      stops.push(makeStop(scheduled.place, date, scheduled.bucket, scheduled.time));
     }
-
-    for (const bucket of order) {
-      const candidates = buckets.get(bucket) ?? [];
-      const picked = pickClosestUnused(candidates, anchor, used);
-      if (!picked) continue;
-      used.add(placeKey(picked));
-      stops.push(makeStop(picked, date, bucket));
-      anchor = placeCoords(picked) ?? anchor;
-    }
-  }
-
-  // Phase 3: leftovers — prefer under-filled days and under-covered combinations.
-  const leftovers = unique.filter((p) => !used.has(placeKey(p)));
-  for (const place of leftovers) {
-    let bestDay = 0;
-    let bestScore = Number.POSITIVE_INFINITY;
-    for (let dayIdx = 0; dayIdx < dayCount; dayIdx += 1) {
-      const date = dates[dayIdx] ?? startDate;
-      const count = stops.filter((s) => s.date === date).length;
-      const comboIds = combinationIdsOf(place);
-      const covered = comboCoverageByDay.get(dayIdx) ?? new Set();
-      const comboBonus = comboIds.some((id) => !covered.has(id)) ? -2 : 0;
-      const score = count + comboBonus;
-      if (score < bestScore) {
-        bestScore = score;
-        bestDay = dayIdx;
-      }
-    }
-    const date = dates[bestDay] ?? startDate;
-    const bucket = classifyPlaceBucket(place);
-    used.add(placeKey(place));
-    stops.push(makeStop(place, date, bucket));
-    const covered = comboCoverageByDay.get(bestDay) ?? new Set<number>();
-    for (const id of combinationIdsOf(place)) covered.add(id);
-    comboCoverageByDay.set(bestDay, covered);
   }
 
   const filled = redistributeToFillEmptyDays({
     stops,
     days: dayCount,
     startDate,
-    sparePlaces: unique,
+    sparePlaces: landmarkKept,
     makeStop: (place, date) => makeStop(place, date, classifyPlaceBucket(place)),
   });
 
@@ -286,6 +316,15 @@ export function buildMixedItineraryFromPlaces(
         .join(";")}`,
     );
   }
+
+  logAiPipeline(
+    "[DAILY_ALLOCATION_OUTPUT]",
+    ...Array.from({ length: dayCount }, (_, i) => {
+      const date = dates[i] ?? startDate;
+      const count = filled.filter((s) => s.date === date).length;
+      return `day${i + 1}Count=${count}`;
+    }),
+  );
 
   return filled.sort((a, b) => {
     const dateCmp = (a.date ?? "").localeCompare(b.date ?? "");

@@ -127,6 +127,7 @@ const RequestSchema = z.object({
       travelers: z.number().int().min(1).max(20).optional(),
       transport: z.string().max(120).optional(),
       selectedPlaces: z.array(PlaceItemSchema).max(20).optional(),
+      selectedCombinationIds: z.array(z.number().int().positive()).max(10).optional(),
       interests: z.string().max(2000).optional(),
     })
     .optional(),

@@ -359,6 +359,7 @@ import { applyAdviceResultToSession, resolveDestinationAdvice, adviceToAssistant
 import {
   clearDiscoveredCombinationsCache,
   ensureDestinationCombinationsReady,
+  getCachedDiscoveredCombinations,
   REFRESH_DESTINATION_RECOMMENDATIONS_OPTION,
 } from "@/lib/ai/destination-combination-discovery";
 import {
@@ -630,12 +631,35 @@ function Chat() {
         logCountryLevelPlacesBlocked(label, "city_required");
         return;
       }
-      if (getDestinationCombinations(label).length >= 3) return;
+      // Always run discovery when cache is empty — never treat theme titles as ready combos.
+      if (getCachedDiscoveredCombinations(label)?.length) return;
+      if (getDestinationCombinations(label).length >= 3) {
+        // Curated real-name combos already available — still ensure session cache is warm.
+        await ensureDestinationCombinationsReady({
+          destination: label,
+          searchPlaces: searchNearbyPlaces,
+          geocodeFn: geocodeLocationFn,
+          locale,
+          days,
+          generationRequestId:
+            context.generationRequestId?.trim() ||
+            `combo_${label}_${Date.now().toString(36)}`,
+          destinationCountry:
+            context.destinationCountry ??
+            session.travelContext?.destinationCountry ??
+            session.tripDestination?.country,
+        });
+        return;
+      }
       const generationRequestId =
         context.generationRequestId?.trim() ||
         `combo_${label}_${Date.now().toString(36)}`;
       beginPlacesGenerationSession(generationRequestId);
-      logAiPipeline("[TRIP_PIPELINE_STARTED]", `generationRequestId=${generationRequestId}`);
+      logAiPipeline(
+        "[COMBINATION_DISCOVERY_STARTED]",
+        `destination=${label}`,
+        `generationRequestId=${generationRequestId}`,
+      );
       await ensureDestinationCombinationsReady({
         destination: label,
         searchPlaces: searchNearbyPlaces,
@@ -643,12 +667,23 @@ function Chat() {
         locale,
         days,
         generationRequestId,
+        destinationCountry:
+          context.destinationCountry ??
+          session.travelContext?.destinationCountry ??
+          session.tripDestination?.country,
       });
+      if (getDestinationCombinations(label).length < 3) {
+        logAiPipeline(
+          "[COMBINATION_DISCOVERY_INSUFFICIENT]",
+          `destination=${label}`,
+          "reason=real_places_below_minimum",
+        );
+      }
     },
     [searchNearbyPlaces, geocodeLocationFn, locale],
   );
 
-  const stopDiscoveringLoadingAnimation = useCallback(() => {
+  const stopDiscoveringLoadingAnimation = useCallback((reason = "cancelled") => {
     if (discoveringLoadingAnimRef.current != null) {
       clearInterval(discoveringLoadingAnimRef.current);
       discoveringLoadingAnimRef.current = null;
@@ -656,6 +691,7 @@ function Chat() {
     const requestId = discoveringLoadingRequestIdRef.current;
     if (requestId) {
       logAiPipeline("[CHAT_LOADING_DOTS_STOPPED]", `requestId=${requestId}`);
+      logAiPipeline("[CHAT_LOADING_STOPPED]", `reason=${reason}`, `requestId=${requestId}`);
       discoveringLoadingRequestIdRef.current = null;
     }
     setChatLoading(null);
@@ -873,7 +909,7 @@ function Chat() {
       context: CanonicalTravelContext,
       conversation: ChatMsg[],
     ) => {
-      stopDiscoveringLoadingAnimation();
+      stopDiscoveringLoadingAnimation("success");
       const updated = persistPlanningAdviceTurn(turn, baseSession);
       const userText = [...conversation].reverse().find((m) => m.role === "user")?.content ?? "";
       const conversationBase = stripDiscoveringLoadingMessage(conversation);
@@ -4000,7 +4036,7 @@ function Chat() {
           );
           return;
         }
-        stopDiscoveringLoadingAnimation();
+        stopDiscoveringLoadingAnimation("failure");
         setMsgs([
           ...stripDiscoveringLoadingMessage(next),
           {
@@ -4010,7 +4046,7 @@ function Chat() {
         ]);
         setStreaming(false);
       } catch (error) {
-        stopDiscoveringLoadingAnimation();
+        stopDiscoveringLoadingAnimation("failure");
         setStreaming(false);
         console.warn("[CHAT_REFRESH_RECOMMENDATIONS_ERROR]", error);
       }
@@ -4567,20 +4603,39 @@ function Chat() {
         await prepareDestinationCombinations(planningCtx, nextSession);
         const earlyPlanningTurn = processAdviceTurn(trimmed, nextSession, planningCtx);
         if (earlyPlanningTurn.advice.reply) {
-          await completeAdviceTurn(earlyPlanningTurn, nextSession, merged.context, next);
-          return;
+          // Duration → combination options (including theme fallback) must never be
+          // overwritten by place-discovery failure copy.
+          const isPlaceFailureCopy = /暫時無法取得.*景點資料/.test(
+            earlyPlanningTurn.advice.reply,
+          );
+          const isComboOffered =
+            earlyPlanningTurn.advice.pendingQuestion?.type === "combination_choice" ||
+            earlyPlanningTurn.advice.contextPatch?.tripPurpose ===
+              "combination_suggestions_offered";
+          if (isPlaceFailureCopy && !isComboOffered) {
+            // Fall through to soft failure only when advice truly has no combo path.
+          } else {
+            await completeAdviceTurn(earlyPlanningTurn, nextSession, merged.context, next);
+            return;
+          }
         }
-        // Discovery failed without advice reply — replace loading with failure.
-        stopDiscoveringLoadingAnimation();
+        // Discovery failed without real-place combinations — never pad with category labels.
         const destLabel =
           planningCtx.destination?.trim() ||
           nextSession.tripDestination?.city?.trim() ||
-          "這個目的地";
+          "";
+        const days = planningCtx.days ?? nextSession.tripDays;
+        // Last resort — keep destination/days, offer refresh (not itinerary failure).
+        stopDiscoveringLoadingAnimation("failure");
         setMsgs([
           ...stripDiscoveringLoadingMessage(next),
           {
             role: "assistant",
-            content: `目前暫時無法取得${normalizeDestinationLabel(destLabel)}的景點資料。\n\n你可以點「重新整理推薦」再試一次。`,
+            content: [
+              `好，我先記下 ${normalizeDestinationLabel(destLabel || "這趟")} ${days ?? ""} 天行程方向。`.trim(),
+              "",
+              "目前暫時無法取得足夠的實際地點組合，請稍後回「重新整理推薦」再試一次。",
+            ].join("\n"),
           },
         ]);
         setStreaming(false);
@@ -4589,18 +4644,13 @@ function Chat() {
           pendingQuestion: {
             type: "ask_preference",
             options: [REFRESH_DESTINATION_RECOMMENDATIONS_OPTION],
-            contextPatch: {
-              destination: planningCtx.destination,
-              days: planningCtx.days,
-              startDate: planningCtx.startDate,
-              endDate: planningCtx.endDate,
-              tripPurpose: "combination_discovery_failed",
-            },
+            baseDestination: destLabel || undefined,
+            destinationCountry: planningCtx.destinationCountry,
           },
         });
         return;
       } catch (error) {
-        stopDiscoveringLoadingAnimation();
+        stopDiscoveringLoadingAnimation("failure");
         setStreaming(false);
         setMsgs([
           ...stripDiscoveringLoadingMessage(next),

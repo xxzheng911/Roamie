@@ -1,4 +1,8 @@
 import { distanceMeters } from "@/lib/map-explore";
+import {
+  normalizeNightMarketFiller,
+  stripSubPlaceMarkers,
+} from "@/lib/ai/landmark-keywords";
 import type { RoamieLocation } from "@/lib/ai/context";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { ChatMsg } from "@/lib/chat-history";
@@ -19,7 +23,11 @@ export type PlaceLike = {
   lng?: number | null;
 };
 
-/** 核心地點正規化 — 同一景點不同附屬名稱視為相同 */
+/**
+ * Core place-name normalization — same landmark under different附属 names collapses
+ * to one key. Fully data-driven: strip sub-place markers / night-market fillers /
+ * generic facility suffixes. No per-city or per-landmark hardcode lists.
+ */
 export function normalizeCorePlaceName(name: string): string {
   const raw = name.trim();
   if (!raw) return "";
@@ -29,32 +37,23 @@ export function normalizeCorePlaceName(name: string): string {
     .replace(/\s+/g, "")
     .replace(/[（(].*[)）]/g, "");
 
-  const KNOWN_CORE_LANDMARKS: { core: string; patterns: RegExp[] }[] = [
-    { core: "台北101", patterns: [/台北\s*101/i, /^101/i] },
-    { core: "阿里山", patterns: [/阿里山/i] },
-    { core: "富士山", patterns: [/富士山/i] },
-    { core: "象山", patterns: [/象山/i] },
-    { core: "愛河", patterns: [/愛河/i] },
-    { core: "清水寺", patterns: [/清水寺/i] },
-    { core: "淺草寺", patterns: [/淺草寺/i] },
-  ];
+  // Night-market naming convention first: 饒河街觀光夜市 → 饒河夜市 (so the
+  // main market and its 牌樓/入口 sub-landmarks collapse to the same core).
+  const nightMarketNormalized = normalizeNightMarketFiller(compact);
 
-  for (const { core, patterns } of KNOWN_CORE_LANDMARKS) {
-    if (patterns.some((re) => re.test(raw) || re.test(compact))) {
-      return core.toLowerCase().replace(/\s+/g, "");
-    }
-  }
+  // Strip trailing sub-landmark markers (牌樓/入口/大門/觀景台/天守閣/公共藝術…)
+  // so a main landmark and its附属地標 normalize to the same core name.
+  const withoutSubMarkers = stripSubPlaceMarkers(nightMarketNormalized);
 
-  const stripped = compact
-    .replace(/觀景台|觀景平台|展望台|觀景/g, "")
+  const stripped = withoutSubMarkers
     .replace(/親水公園|親水平台|景觀親水平台|親水/g, "")
     .replace(/國家森林遊樂區|國家風景區|森林遊樂區|風景區/g, "")
     .replace(/五合目|四合目|三合目|二合目|一合目/g, "")
-    .replace(/火車站|火车站|車站|火车站|遊客中心|游客中心/g, "")
-    .replace(/廣場|步道|停車場|停车场/g, "")
-    .replace(/公園/g, "");
+    .replace(/火車站|火车站|車站|车站/g, "")
+    .replace(/步道|停車場|停车场/g, "")
+    .replace(/公園|公园/g, "");
 
-  return stripped || compact;
+  return stripped || withoutSubMarkers || compact;
 }
 
 /** 正規化名稱 — 同 normalizeCorePlaceName */
@@ -397,9 +396,10 @@ export function canBuildItineraryFromPlaceCount(count: number): boolean {
   return count >= 1;
 }
 
-/** fetch 目標數量（依天數估算，供混合排程使用） */
+/** fetch 目標數量（依動態 preferredStops，供混合排程使用） */
 export function computeItineraryFetchTarget(days: number): number {
-  return Math.min(Math.max(days * 3, 9), 30);
+  // Soft preferred density — never a hard fail gate of days×3.
+  return Math.min(Math.max(days * 2 + 1, days + 2), 16);
 }
 
 export function buildExcludePlacesBlock(session: ChatPlanningSession): string {

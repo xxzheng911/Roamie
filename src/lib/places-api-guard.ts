@@ -20,6 +20,8 @@ const MAX_CONCURRENT = 2;
 const BACKOFF_MS = [1000, 2000] as const;
 
 const pending = new Map<string, Promise<unknown>>();
+/** Per-requestKey cooldown — identical blocked requests must not re-hit the API. */
+const blockedUntilByKey = new Map<string, number>();
 const recentCallAt: number[] = [];
 const retryCount = new Map<string, number>();
 
@@ -29,6 +31,10 @@ const concurrencyWaiters: Array<() => void> = [];
 /** Pause new Places requests until this timestamp (rate-limit cooldown). */
 let generationCooldownUntil = 0;
 let activeGenerationRequestId: string | null = null;
+
+/** Log dedupe: only print blocked once per key+blockedUntil window. */
+let lastLoggedBlocked: { key: string; until: number } | null = null;
+let lastLoggedSkipped: { key: string; until: number } | null = null;
 
 const callStats = {
   text: 0,
@@ -83,12 +89,34 @@ export function logPlacesCacheMiss(key: string): void {
 
 export function logPlacesDedupePending(key: string): void {
   logOnce(`pending:${key}`, `[PLACES_DEDUPE_PENDING] key=${key}`);
+  logOnce(
+    `deduped:${key}:${activeGenerationRequestId ?? ""}`,
+    `[PLACES_REQUEST_DEDUPED] requestKey=${key}` +
+      (activeGenerationRequestId ? ` generationRequestId=${activeGenerationRequestId}` : ""),
+  );
 }
 
-export function logPlacesRateLimitBlocked(key: string): void {
+export function logPlacesRateLimitBlocked(key: string, blockedUntil?: number): void {
+  const until = blockedUntil ?? generationCooldownUntil;
+  if (lastLoggedBlocked?.key === key && lastLoggedBlocked.until === until && until > 0) {
+    return;
+  }
+  lastLoggedBlocked = { key, until };
   callStats.blocked += 1;
   callStats.textRateLimited += 1;
-  devVerboseInfo(`[PLACES_RATE_LIMIT_BLOCKED] key=${key}`);
+  devVerboseInfo(
+    `[PLACES_RATE_LIMIT_BLOCKED] requestKey=${key}` +
+      ` blockedUntil=${until}` +
+      (activeGenerationRequestId ? ` generationRequestId=${activeGenerationRequestId}` : ""),
+  );
+}
+
+function logPlacesRequestSkipped(key: string, blockedUntil: number): void {
+  if (lastLoggedSkipped?.key === key && lastLoggedSkipped.until === blockedUntil) {
+    return;
+  }
+  lastLoggedSkipped = { key, until: blockedUntil };
+  devVerboseInfo(`[PLACES_REQUEST_SKIPPED] reason=active_cooldown requestKey=${key}`);
 }
 
 export function logPlacesSkipSmallLocationChange(distanceM: number): void {
@@ -115,18 +143,32 @@ export function notePlacesRateLimited(opts?: {
   retryAfterMs?: number;
   attemptIndex?: number;
   generationRequestId?: string;
+  requestKey?: string;
 }): void {
   const attempt = opts?.attemptIndex ?? 0;
   const fallback = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)] ?? 2000;
   const wait = withJitter(
     opts?.retryAfterMs != null && opts.retryAfterMs > 0 ? opts.retryAfterMs : fallback,
   );
-  generationCooldownUntil = Math.max(generationCooldownUntil, Date.now() + wait);
+  const until = Date.now() + wait;
+  generationCooldownUntil = Math.max(generationCooldownUntil, until);
   callStats.textRateLimited += 1;
   if (opts?.generationRequestId) {
     activeGenerationRequestId = opts.generationRequestId;
   }
+  if (opts?.requestKey) {
+    blockedUntilByKey.set(
+      opts.requestKey,
+      Math.max(blockedUntilByKey.get(opts.requestKey) ?? 0, until),
+    );
+  }
   devVerboseInfo(
+    `[PLACES_COOLDOWN_STARTED] blockedUntil=${generationCooldownUntil} waitMs=${wait}` +
+      (activeGenerationRequestId ? ` generationRequestId=${activeGenerationRequestId}` : ""),
+  );
+  // Keep legacy alias for older log greps
+  logOnce(
+    `cooldown:${generationCooldownUntil}`,
     `[PLACES_GENERATION_COOLDOWN] waitMs=${wait} until=${generationCooldownUntil}` +
       (activeGenerationRequestId ? ` generationRequestId=${activeGenerationRequestId}` : ""),
   );
@@ -141,6 +183,9 @@ export async function waitForPlacesGenerationCooldown(): Promise<void> {
 export function beginPlacesGenerationSession(generationRequestId: string): void {
   activeGenerationRequestId = generationRequestId;
   generationCooldownUntil = 0;
+  blockedUntilByKey.clear();
+  lastLoggedBlocked = null;
+  lastLoggedSkipped = null;
   resetPlacesApiCallStats();
   retryCount.clear();
   loggedKeys.clear();
@@ -274,11 +319,15 @@ function releaseConcurrencySlot(): void {
   if (next) next();
 }
 
-/** Wait until under rate window / generation cooldown — never invent placeholders. */
-async function waitForRateWindow(key: string): Promise<void> {
+/** Wait until under rate window / generation cooldown — log blocked at most once. */
+async function waitForRateWindow(key: string): Promise<"ready" | "cooldown"> {
   let rounds = 0;
+  let logged = false;
   while (isPlacesRateLimited()) {
-    logPlacesRateLimitBlocked(key);
+    if (!logged) {
+      logPlacesRateLimitBlocked(key, generationCooldownUntil || Date.now() + 1000);
+      logged = true;
+    }
     await waitForPlacesGenerationCooldown();
     pruneRateWindow(Date.now());
     if (!isPlacesRateLimited()) break;
@@ -289,20 +338,34 @@ async function waitForRateWindow(key: string): Promise<void> {
       : BACKOFF_MS[Math.min(rounds, BACKOFF_MS.length - 1)]!;
     await sleep(withJitter(Math.min(untilClear, 5000)));
     rounds += 1;
-    // Cap total wait ~90s then allow one more attempt (caller may still get null).
-    if (rounds > 24) break;
+    // Cap total wait ~45s then give up for this key.
+    if (rounds > 12) {
+      const until = Date.now() + withJitter(BACKOFF_MS[1]!);
+      blockedUntilByKey.set(key, until);
+      logPlacesRateLimitBlocked(key, until);
+      return "cooldown";
+    }
   }
+  return "ready";
 }
 
 /**
  * Same requestKey shares in-flight Promise.
  * Concurrency capped at 2; rate window waited (with exponential backoff), not hard-failed immediately.
+ * Max throw-retries per key: 2 (attempts = 1 + MAX_RETRIES).
  */
 export async function runPlacesApiDeduped<T>(
   key: string,
   type: string,
   runner: () => Promise<T>,
 ): Promise<T | null> {
+  const now = Date.now();
+  const keyBlockedUntil = blockedUntilByKey.get(key) ?? 0;
+  if (now < keyBlockedUntil) {
+    logPlacesRequestSkipped(key, keyBlockedUntil);
+    return null;
+  }
+
   const inflight = pending.get(key);
   if (inflight) {
     logPlacesDedupePending(key);
@@ -310,10 +373,12 @@ export async function runPlacesApiDeduped<T>(
   }
 
   const promise = (async () => {
-    await waitForRateWindow(key);
-    if (isPlacesRateLimited()) {
-      logPlacesRateLimitBlocked(key);
-      notePlacesRateLimited({ attemptIndex: 0 });
+    const waitResult = await waitForRateWindow(key);
+    if (waitResult === "cooldown" || isPlacesRateLimited()) {
+      const until = Math.max(generationCooldownUntil, Date.now() + BACKOFF_MS[0]!);
+      blockedUntilByKey.set(key, until);
+      logPlacesRateLimitBlocked(key, until);
+      notePlacesRateLimited({ attemptIndex: 0, requestKey: key });
       return null;
     }
 
@@ -343,9 +408,21 @@ export async function runPlacesApiDeduped<T>(
             const retryAfterMs = retryAfterMatch
               ? Number(retryAfterMatch[1]) * (Number(retryAfterMatch[1]) < 100 ? 1000 : 1)
               : undefined;
-            notePlacesRateLimited({ retryAfterMs, attemptIndex: attempt });
+            notePlacesRateLimited({
+              retryAfterMs,
+              attemptIndex: attempt,
+              requestKey: key,
+            });
           }
-          if (attempt >= MAX_RETRIES || !canRetryPlacesRequest(`${key}:throw`)) break;
+          if (attempt >= MAX_RETRIES || !canRetryPlacesRequest(`${key}:throw`)) {
+            if (isRate) {
+              logOnce(
+                `retry_limit:${key}`,
+                `[PLACES_RETRY_LIMIT_REACHED] requestKey=${key}`,
+              );
+            }
+            break;
+          }
           markPlacesRequestRetried(
             `${key}:throw`,
             type.toLowerCase().includes("detail") ? "detail" : "search",
@@ -379,4 +456,4 @@ export function buildPlacesHttpKey(
     .join("&")}`;
 }
 
-export { MAX_CONCURRENT as PLACES_API_MAX_CONCURRENT };
+export { MAX_CONCURRENT as PLACES_API_MAX_CONCURRENT, MAX_RETRIES as PLACES_API_MAX_RETRIES };

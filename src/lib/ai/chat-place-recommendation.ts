@@ -38,6 +38,7 @@ import {
   userWantsParkRecommendations,
 } from "@/lib/ai/place-recommendation-rules";
 import { classifyDestinationForPlaceSearch } from "@/lib/ai/landmark-place-strategy";
+import { isLikelyPlaceName, logNonPlaceCandidateRejected } from "@/lib/ai/place-name-likelihood";
 import { filterExcludedRetailPlaces } from "@/lib/ai/ai-day-plan-slot-rules";
 import {
   filterAlreadyRecommendedPlaces,
@@ -683,6 +684,20 @@ function applyNearbyPlaceFilters(
   if (params.tripAddPlace) {
     working = working.filter((place) => !isTripAddPlaceHardReject(place));
   }
+  working = working.filter((place) => {
+    const name = (place.name ?? "").trim();
+    if (!name) return false;
+    const likelihood = isLikelyPlaceName(name);
+    if (!likelihood.ok) {
+      logNonPlaceCandidateRejected(
+        name,
+        likelihood.reason ?? "rejected_non_place",
+        "chat_nearby_filter",
+      );
+      return false;
+    }
+    return true;
+  });
   if (params.searchContext?.searchMode === "destination" && params.searchContext.destinationName) {
     working = filterPlacesByDestinationGuard(
       working,

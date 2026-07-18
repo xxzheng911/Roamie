@@ -20,8 +20,10 @@ import {
 } from "@/lib/ai/trip-preference";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
+import { parseTripDaysFromPendingReply } from "@/lib/ai/bare-number-reply";
 import {
   buildCityDaysConfirmedReply,
+  buildDateAndDurationQuestionReply,
   pendingQuestionForAskDays,
   pendingQuestionForCityPreference,
 } from "@/lib/ai/city-days-planning";
@@ -56,6 +58,8 @@ import {
   getDestinationStyleGuide,
 } from "@/lib/ai/destination-style-guide";
 import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { parseMonthNumber } from "@/lib/ai/season-response-guardrail";
 
 const FLEXIBLE_REPLY_RE =
   /^(都可以|都行|不限|沒特別|沒有特別|隨意|你推|都行吧|隨便|任何|沒有偏好|沒偏好)$/;
@@ -262,10 +266,31 @@ export function isAskDaysPending(pending?: PendingQuestion): boolean {
   return pending?.type === "ask_days" || pending?.type === "duration_choice";
 }
 
-export function parseAskDaysFromText(text: string): number | undefined {
-  const range = parseTravelDateRangeFromText(text.trim());
-  if (range.days && range.days > 0) return range.days;
-  return parseDayCountFromText(text.trim());
+export function parseAskDaysFromText(
+  text: string,
+  pending?: PendingQuestion,
+): number | undefined {
+  const parsed = parseTripDaysFromPendingReply(text, {
+    pendingQuestion: pending ?? { type: "ask_days", options: [] },
+    pendingQuestionAlias:
+      pending?.type === "ask_days" ? "ask_date_or_duration" : pending?.type,
+    conversationStage: "COLLECTING_DATE_AND_DURATION",
+  });
+  return parsed.days;
+}
+
+/** Clarify when a bare/calendar reply is ambiguous under ask_days. */
+export function parseAskDaysClarification(
+  text: string,
+  pending?: PendingQuestion,
+): string | undefined {
+  const parsed = parseTripDaysFromPendingReply(text, {
+    pendingQuestion: pending ?? { type: "ask_days", options: [] },
+    pendingQuestionAlias:
+      pending?.type === "ask_days" ? "ask_date_or_duration" : pending?.type,
+    conversationStage: "COLLECTING_DATE_AND_DURATION",
+  });
+  return parsed.clarificationReply;
 }
 
 export function parsePendingOptionSelection(
@@ -276,7 +301,9 @@ export function parsePendingOptionSelection(
   if (!t) return null;
 
   if (pending.type === "ask_days" || pending.type === "duration_choice") {
-    const days = parseAskDaysFromText(t);
+    // Pending-specific parser first — bare numbers must resolve as tripDays here,
+    // never fall through to combination / menu index parsers.
+    const days = parseAskDaysFromText(t, pending);
     if (days) return String(days);
   }
 
@@ -390,7 +417,13 @@ export function applyDestinationPendingSelection(
     return { session, contextPatch: {} };
   }
 
-  const contextPatch = buildContextPatchForSelection(selected, pending);
+  const contextPatch = buildContextPatchForSelection(selected, pending, session.travelContext);
+  if (pending.type === "ask_days" || pending.type === "duration_choice") {
+    logAiPipeline(
+      "[PENDING_QUESTION_CLEARED]",
+      `previous=${pending.type === "ask_days" ? "ask_date_or_duration" : pending.type}`,
+    );
+  }
   return {
     session: {
       ...session,
@@ -449,6 +482,7 @@ function buildThailandTripStylePatch(
 function buildContextPatchForSelection(
   selected: string,
   pending: PendingQuestion,
+  sessionContext?: CanonicalTravelContext | null,
 ): Partial<CanonicalTravelContext> {
   const country = pending.destinationCountry;
   const base: Partial<CanonicalTravelContext> = {
@@ -483,7 +517,6 @@ function buildContextPatchForSelection(
   if (pending.type === "duration_choice") {
     const days = parseDayCountFromText(selected) ?? parseDayCountFromText(selected.replace(/\s/g, ""));
     return {
-      ...base,
       destination: pending.baseDestination ?? base.destination,
       destinationCountry: country ?? pending.destinationCountry,
       days,
@@ -497,7 +530,6 @@ function buildContextPatchForSelection(
     const range = parseTravelDateRangeFromText(selected);
     const days = range.days ?? (Number(selected) || parseDayCountFromText(selected));
     return {
-      ...base,
       destination: pending.baseDestination ?? base.destination,
       destinationCountry: country ?? pending.destinationCountry,
       days,
@@ -648,14 +680,21 @@ function buildContextPatchForSelection(
     const city = selected === "__flexible_city_mix__" ? pending.options[0] : selected;
     const countryLabel = country ?? pending.destinationCountry;
     if (city) {
+      const monthNum = parseMonthNumber(sessionContext?.travelMonth);
       logDestinationCitySelected({ country: countryLabel, city });
+      logAiPipeline(
+        "[CITY_SELECTION_CONFIRMED]",
+        `country=${countryLabel ? normalizeDestinationLabel(countryLabel) : "unknown"}`,
+        `city=${normalizeDestinationLabel(city)}`,
+        `month=${monthNum ?? "none"}`,
+      );
       logDestinationSearchScopeUpdated({
         from: "country",
         to: "city",
         city,
       });
       logConversationStageTransition(
-        "COLLECTING_DESTINATION_CITY",
+        "AWAITING_CITY_SELECTION",
         "COLLECTING_DATE_AND_DURATION",
       );
     }
@@ -666,6 +705,8 @@ function buildContextPatchForSelection(
       destinationType: "city",
       destinationCity: city,
       tripPurpose: "region_selected",
+      conversationState: "awaiting_days",
+      planningDaysConfirmed: false,
     };
   }
 
@@ -683,8 +724,32 @@ export function buildNextStepAfterAdviceSelection(
   ctx: CanonicalTravelContext,
 ): { reply: string; pendingQuestion?: PendingQuestion } {
   if (pending.type === "ask_days") {
-    const days = Number(selected) || parseDayCountFromText(selected) || ctx.days;
+    const days =
+      Number(selected) ||
+      parseDayCountFromText(selected) ||
+      parseAskDaysFromText(selected, pending) ||
+      ctx.days;
     const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
+    if (ctx.days != null && ctx.days > 0 && !days) {
+      logAiPipeline(
+        "[ASK_DAYS_TEMPLATE_BLOCKED]",
+        "reason=trip_days_already_resolved",
+        `tripDays=${ctx.days}`,
+      );
+      return buildCityDaysConfirmedReply(
+        dest,
+        ctx.days,
+        pending.destinationCountry ?? ctx.destinationCountry,
+        {
+          weather: ctx.weather,
+          context: {
+            ...ctx,
+            destination: normalizeDestinationLabel(dest),
+            days: ctx.days,
+          },
+        },
+      );
+    }
     if (!days) {
       return {
         reply: `好，${dest}是很好的選擇。你這趟大概幾天？`,
@@ -695,6 +760,10 @@ export function buildNextStepAfterAdviceSelection(
       };
     }
     logChatContextUpdate({ destination: dest, days });
+    logAiPipeline(
+      "[PENDING_QUESTION_CLEARED]",
+      "previous=ask_date_or_duration",
+    );
     const label = normalizeDestinationLabel(dest);
     // Always New Trip Conversation: destination combinations (never legacy trip style).
     return buildCityDaysConfirmedReply(
@@ -783,49 +852,32 @@ export function buildNextStepAfterAdviceSelection(
 
   if (pending.type === "region_choice") {
     const city = selected === "__flexible_city_mix__" ? pending.options[0] ?? selected : selected;
-    if (city === "釜山") {
-      return {
-        reply: [
-          "釜山 4～6 月與 9～11 月很舒服，海景、海鮮和慢步調散策都很適合。",
-          "海雲台、甘川文化村、札嘎其市場是經典組合。",
-          "你比較想偏重海邊放鬆、美食，還是城市散策？",
-        ].join("\n"),
-        pendingQuestion: pendingQuestionForCityStyleChoice(
-          "釜山",
-          pending.destinationCountry ?? "韓國",
-        ),
-      };
-    }
-    return {
-      reply: `好，我們以${city}為主往下規劃。你這趟大概想排幾天？`,
-      pendingQuestion: pendingQuestionForAskDays(
-        city,
-        pending.destinationCountry ?? ctx.destinationCountry,
-      ),
-    };
+    const country = pending.destinationCountry ?? ctx.destinationCountry;
+    // City confirmed → always collect date/days. Never travel-style / landmark intro.
+    return buildDateAndDurationQuestionReply(city, country, {
+      context: { ...ctx, destination: city, destinationCountry: country, destinationType: "city" },
+      userText: selected,
+      previousPendingType: "region_choice",
+      blockedLegacyTemplate:
+        city === "釜山" || city === "首爾" || city === "濟州"
+          ? "korea_city_style_followup"
+          : "city_preference_or_style_followup",
+    });
   }
 
   if (pending.type === "city_style_choice") {
+    // Legacy pending: ignore style answer and force date/duration collection.
     const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
-    const mixLabel =
-      selected === "__flexible_city_mix__"
-        ? "海邊、美食和散策混搭"
-        : selected;
-    const busanTip =
-      dest === "釜山"
-        ? "海雲台、札嘎其市場和甘川文化村都很適合一起排，節奏不會太趕。"
-        : "我會先抓經典區域，再依你想放慢或加碼調整。";
-    return {
-      reply: [
-        `好，那我會幫你把${dest}排成${mixLabel}。`,
-        busanTip,
-        "你這趟大概想排幾天？",
-      ].join("\n"),
-      pendingQuestion: pendingQuestionForAskDays(
-        dest,
-        pending.destinationCountry ?? ctx.destinationCountry,
-      ),
-    };
+    return buildDateAndDurationQuestionReply(
+      dest,
+      pending.destinationCountry ?? ctx.destinationCountry,
+      {
+        context: { ...ctx, destination: dest },
+        userText: selected,
+        previousPendingType: "city_style_choice",
+        blockedLegacyTemplate: "city_style_choice",
+      },
+    );
   }
 
   if (pending.type === "trip_style_choice" && pending.options.includes("城市")) {
@@ -1013,8 +1065,31 @@ export function buildNextStepAfterAdviceSelection(
   }
 
   if (pending.type === "duration_choice") {
-    const days = parseDayCountFromText(selected) ?? ctx.days;
+    const days =
+      parseDayCountFromText(selected) ??
+      parseAskDaysFromText(selected, pending) ??
+      ctx.days;
     const dest = pending.baseDestination ?? ctx.destination ?? "這趟";
+    if (ctx.days != null && ctx.days > 0 && !days) {
+      logAiPipeline(
+        "[ASK_DAYS_TEMPLATE_BLOCKED]",
+        "reason=trip_days_already_resolved",
+        `tripDays=${ctx.days}`,
+      );
+      return buildCityDaysConfirmedReply(
+        dest,
+        ctx.days,
+        pending.destinationCountry ?? ctx.destinationCountry,
+        {
+          weather: ctx.weather,
+          context: {
+            ...ctx,
+            destination: normalizeDestinationLabel(dest),
+            days: ctx.days,
+          },
+        },
+      );
+    }
     if (!days) {
       return {
         reply: `好，${dest}是很好的選擇。你這趟大概幾天？`,
@@ -1220,8 +1295,11 @@ export function inferPendingQuestionFromAdviceReply(
   }
 
   if (reply.includes("海邊放鬆、美食，還是城市散策")) {
-    return pendingQuestionForCityStyleChoice(
-      ctx.destination ?? session.travelContext?.destination ?? "釜山",
+    // Legacy city-style question text — force date/duration instead.
+    const dest =
+      ctx.destination ?? session.travelContext?.destination ?? "釜山";
+    return pendingQuestionForAskDays(
+      dest,
       ctx.destinationCountry ?? session.travelContext?.destinationCountry ?? "韓國",
     );
   }
@@ -1293,7 +1371,11 @@ export function inferPendingQuestionFromAdviceReply(
     }
   }
 
-  if (reply.includes("你這趟大概幾天")) {
+  if (
+    reply.includes("你這趟大概幾天") ||
+    reply.includes("你目前有預計的旅行日期或天數嗎") ||
+    reply.includes("你這趟大概想排幾天")
+  ) {
     const dest = ctx.destination ?? session.travelContext?.destination ?? session.tripPlanningContext?.destination;
     if (dest) {
       return pendingQuestionForAskDays(

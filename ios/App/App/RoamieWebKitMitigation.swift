@@ -582,6 +582,8 @@ enum RoamieCompositorFallback {
     private static weak var boundWebView: WKWebView?
     private static var mode: DisplayMode = .booting
     private static var snapshotInFlight = false
+    /// Coalesce repeated forced SPA refreshes while WKSnapshot is still running.
+    private static var pendingForcedSpaRefresh = false
     private static var capturesThisNavigation = 0
     private static var pendingEvaluations: [Timer] = []
     private static var loggedOnce = Set<String>()
@@ -653,6 +655,7 @@ enum RoamieCompositorFallback {
         bind(webView)
         webContentJsReliable = false
         snapshotInFlight = false
+        pendingForcedSpaRefresh = false
         capturesThisNavigation = 0
         processReloadAttempts += 1
         liveInteractionDepth = max(liveInteractionDepth, 1)
@@ -694,6 +697,7 @@ enum RoamieCompositorFallback {
         boundWebView = nil
         mode = .booting
         snapshotInFlight = false
+        pendingForcedSpaRefresh = false
         capturesThisNavigation = 0
         lastCapturedURL = nil
         lastSpaCaptureAt = nil
@@ -853,9 +857,7 @@ enum RoamieCompositorFallback {
 
         if snapshotInFlight {
             if force {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    requestSpaSnapshotRefresh(force: true)
-                }
+                pendingForcedSpaRefresh = true
             }
             return
         }
@@ -876,8 +878,9 @@ enum RoamieCompositorFallback {
             }
             lastSpaCaptureAt = Date()
             captureSnapshot(label: "spa_ui", countsTowardCap: false) { image in
-                guard let image, imageHasMeaningfulContent(image) else { return }
-                activateSnapshotRenderer(reason: "spa_ui", snapshot: image)
+                if let image, imageHasMeaningfulContent(image) {
+                    activateSnapshotRenderer(reason: "spa_ui", snapshot: image)
+                }
             }
         }
     }
@@ -1219,6 +1222,11 @@ enum RoamieCompositorFallback {
             takeSnapshotImpl(from: webView, label: label) { image in
                 snapshotInFlight = false
                 completion(image)
+                guard pendingForcedSpaRefresh else { return }
+                pendingForcedSpaRefresh = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + spaCaptureMinInterval) {
+                    requestSpaSnapshotRefresh(force: true)
+                }
             }
         }
     }

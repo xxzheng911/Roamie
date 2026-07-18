@@ -11,19 +11,101 @@ import {
 } from "@/lib/ai/destination-travel-profile";
 import { isCountryLevelDestination } from "@/lib/ai/destination-scope";
 import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
-import { isGenericDestinationPlaceholder } from "@/lib/ai/generic-place-label";
+import {
+  isGenericDestinationPlaceholder,
+} from "@/lib/ai/generic-place-label";
+import {
+  isLikelyPlaceName,
+  normalizePlaceCandidateName,
+  logNonPlaceCandidateRejected,
+} from "@/lib/ai/place-name-likelihood";
 import {
   INSUFFICIENT_COMBINATION_PLACES_MESSAGE,
   validateCombinationOptions,
+  getCachedDiscoveredCombinations,
+  PRIMARY_PLACES_PER_COMBO,
   type StructuredCombinationOption,
 } from "@/lib/ai/destination-combination-discovery";
+import {
+  buildThemeSearchDirections,
+  type ThemeSearchDirection,
+} from "@/lib/ai/destination-discovery-queries";
 
 export type DestinationCombination = {
   title: string;
   places: string[];
 };
 
+export type { ThemeSearchDirection };
+
 export { INSUFFICIENT_COMBINATION_PLACES_MESSAGE, isGenericDestinationPlaceholder };
+
+/** Category keywords that must never appear as combination place names. */
+const THEME_CATEGORY_LABELS = new Set([
+  "海灘",
+  "跳島",
+  "日落海岸",
+  "老城",
+  "教堂",
+  "市集",
+  "海鮮",
+  "夜市",
+  "酒吧街",
+  "瀑布",
+  "山林",
+  "湖畔",
+  "市區地標",
+  "老街",
+  "文創園區",
+  "咖啡街",
+  "商圈",
+  "小吃街",
+  "市場",
+  "步道",
+  "海岸",
+  "地標",
+  "神社寺廟",
+  "舊城",
+  "公園",
+  "河畔",
+  "美食街",
+  "咖啡店街",
+  "近郊景點",
+  "溫泉",
+  "山區",
+  "地標廣場",
+  "老城區",
+  "河岸",
+  "博物館",
+  "藝廊",
+  "劇院區",
+  "餐酒館",
+  "近郊小鎮",
+  "觀景點",
+  "自然風景",
+]);
+
+export function isThemeCategoryLabel(value: string): boolean {
+  const n = value.trim().replace(/\s+/g, "");
+  return THEME_CATEGORY_LABELS.has(n) || THEME_CATEGORY_LABELS.has(value.trim());
+}
+
+export function dropGenericCombinationLabel(
+  value: string,
+  reason = "not_a_real_place",
+): boolean {
+  const trimmed = value.trim();
+  // Exact category keywords only — do not substring-match (e.g. keep「暹羅商圈」).
+  const dropped = isThemeCategoryLabel(trimmed) || !isLikelyPlaceName(trimmed).ok;
+  if (dropped) {
+    logAiPipeline(
+      "[COMBINATION_GENERIC_LABEL_DROPPED]",
+      `value=${value}`,
+      `reason=${reason}`,
+    );
+  }
+  return dropped;
+}
 
 /** 已知目的地時，禁止出現的其他城市／錯誤模板關鍵字（資料隔離，非流程分支） */
 const REJECTED_SCOPE_MARKERS: Record<string, readonly string[]> = {
@@ -51,6 +133,41 @@ export function hasDestinationCombinations(destination: string): boolean {
   if (!label) return false;
   if (isCountryLevelDestination(label)) return false;
   return hasDynamicDestinationCombinations(label);
+}
+
+/**
+ * Theme fallback for SEARCH DIRECTION only.
+ * Returns titles + queries — places are always empty (never fake category labels).
+ * Use buildThemeSearchDirections for full query metadata.
+ */
+export function buildThemeFallbackCombinations(
+  destination: string,
+  countryHint?: string | null,
+): DestinationCombination[] {
+  const directions = buildThemeSearchDirections(destination, countryHint);
+  return directions.map((d) => ({
+    title: d.title,
+    places: [],
+  }));
+}
+
+/** @deprecated Prefer buildThemeSearchDirections — kept for call-site compatibility. */
+export function buildThemeSearchDirectionsForDestination(
+  destination: string,
+  countryHint?: string | null,
+): ThemeSearchDirection[] {
+  return buildThemeSearchDirections(destination, countryHint);
+}
+
+/** True when title matches a search-direction theme (not Places-backed). */
+export function isThemeFallbackCombinationTitle(
+  destination: string,
+  title: string,
+  countryHint?: string | null,
+): boolean {
+  return buildThemeSearchDirections(destination, countryHint).some(
+    (c) => c.title === title,
+  );
 }
 
 export function logChatDestinationScopeLock(destination: string): void {
@@ -119,17 +236,63 @@ function toStructuredForValidation(
   }));
 }
 
-export function getDestinationCombinations(destination: string): DestinationCombination[] {
+/**
+ * Real place combinations only.
+ * Prefer Places discovery cache; never pad with theme-category labels.
+ * `allowThemeFallback` is ignored (kept for API compat) — themes are search-only.
+ */
+export function getDestinationCombinations(
+  destination: string,
+  _opts?: { allowThemeFallback?: boolean; countryHint?: string | null },
+): DestinationCombination[] {
   const label = normalizeDestinationLabel(destination);
+
+  const cached = getCachedDiscoveredCombinations(label);
+  if (cached?.length) {
+    return cached
+      .map((combo) => {
+        const primary = combo.primaryCandidates?.length
+          ? combo.primaryCandidates
+          : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO);
+        const places = primary
+          .map((c) => c.name)
+          .filter(
+            (place) =>
+              place &&
+              !dropGenericCombinationLabel(place) &&
+              isSuggestionInDestinationScope(place, destination) &&
+              !isForbiddenTransitAttraction({ name: place }),
+          );
+        return { title: combo.title, places };
+      })
+      .filter((combo) => combo.places.length >= 2);
+  }
+
   const combos = buildDynamicDestinationCombinations(label)
     .map((combo) => ({
       title: combo.title,
-      places: combo.places.filter(
-        (place) =>
-          isSuggestionInDestinationScope(place, destination) &&
-          !isGenericDestinationPlaceholder(place, label) &&
-          !isForbiddenTransitAttraction({ name: place }),
-      ),
+      places: combo.places
+        .map((place) => {
+          const normalized = normalizePlaceCandidateName(place);
+          if (!normalized.accepted) {
+            logNonPlaceCandidateRejected(
+              place,
+              normalized.reason ?? "rejected_non_place",
+              "getDestinationCombinations",
+            );
+            return null;
+          }
+          return normalized.normalized;
+        })
+        .filter((place): place is string => Boolean(place))
+        .filter(
+          (place) =>
+            !dropGenericCombinationLabel(place) &&
+            isSuggestionInDestinationScope(place, destination) &&
+            !isGenericDestinationPlaceholder(place, label) &&
+            !isForbiddenTransitAttraction({ name: place }) &&
+            isLikelyPlaceName(place).ok,
+        ),
     }))
     .filter((combo) => combo.places.length >= 2);
 
@@ -137,17 +300,12 @@ export function getDestinationCombinations(destination: string): DestinationComb
     toStructuredForValidation(label, combos),
     label,
   );
-  if (!validation.ok) {
-    if (validation.genericPlaceNames.length) {
-      return [];
-    }
-    // Curated profiles with >=3 valid combos may fail strict overlap checks; still allow.
-    if (combos.length >= 3 && !validation.reason?.includes("generic")) {
-      return combos;
-    }
-    return [];
+  if (validation.ok) return combos;
+  if (combos.length >= 3 && !validation.genericPlaceNames.length) {
+    return combos;
   }
-  return combos;
+  // Never return theme-category placeholders as places.
+  return [];
 }
 
 export function flattenDestinationCombinationPlaces(destination: string): string[] {
@@ -170,13 +328,51 @@ export function buildOfferedCombinationsForSession(destination: string): NonNull
   import("@/lib/ai/travel-context").CanonicalTravelContext["offeredCombinations"]
 > {
   const label = normalizeDestinationLabel(destination);
+  const cached = getCachedDiscoveredCombinations(label);
+  if (cached?.length) {
+    return cached.map((combo, index) => {
+      const primary = combo.primaryCandidates?.length
+        ? combo.primaryCandidates
+        : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO);
+      return {
+        id: index + 1,
+        title: combo.title,
+        places: primary.map((c) => ({
+          candidateId: c.searchCandidateId ?? c.googlePlaceId ?? `name:${c.name}`,
+          originalName: c.name,
+          name: c.name,
+          searchQuery: `${c.name} ${label}`,
+          destination: label,
+          sourceCombinationId: index + 1,
+          isRequiredBySelection: false,
+          googlePlaceId: c.googlePlaceId,
+          latitude: c.coordinates?.lat,
+          longitude: c.coordinates?.lng,
+          address: c.address,
+          types: c.types,
+          primaryType: c.primaryType,
+          rating: c.rating,
+          resolutionStatus: (c.googlePlaceId ? "resolved" : "named") as
+            | "named"
+            | "resolved"
+            | "unresolved"
+            | "pending",
+        })),
+      };
+    });
+  }
+
   return getDestinationCombinations(label).map((combo, index) => ({
     id: index + 1,
     title: combo.title,
     places: combo.places.map((name) => ({
+      candidateId: `name:${name}`,
+      originalName: name,
       name,
       searchQuery: `${name} ${label}`,
+      destination: label,
       sourceCombinationId: index + 1,
+      isRequiredBySelection: false,
       resolutionStatus: "named" as const,
     })),
   }));
@@ -193,52 +389,90 @@ function formatDisplayDate(iso?: string | null): string | null {
 function formatTravelDateRangeLine(
   startDate?: string | null,
   endDate?: string | null,
+  tentative?: boolean,
 ): string | null {
   const start = formatDisplayDate(startDate);
   const end = formatDisplayDate(endDate);
-  if (start && end) return `旅行日期：${start}～${end}`;
-  if (start) return `旅行日期：${start}`;
+  const prefix = tentative ? "暫定旅行日期" : "旅行日期";
+  if (start && end) return `${prefix}：${start}～${end}`;
+  if (start) return `${prefix}：${start}`;
   return null;
 }
 
 export function buildDestinationCombinationSuggestionsReply(
   destination: string,
   days: number,
-  opts?: { startDate?: string; endDate?: string; weatherLine?: string | null },
+  opts?: {
+    startDate?: string | null;
+    endDate?: string | null;
+    weatherLine?: string | null;
+    /** System-suggested mid-month dates (user only gave month + days). */
+    tentativeDates?: boolean;
+    /**
+     * Force a specific combination list — must already contain real place names.
+     * Theme-category labels are always dropped.
+     */
+    forceCombinations?: DestinationCombination[];
+  },
 ): string | null {
   const label = normalizeDestinationLabel(destination);
-  const combos = getDestinationCombinations(label);
+  const combos = (opts?.forceCombinations?.length
+    ? opts.forceCombinations
+    : getDestinationCombinations(label)
+  ).map((c) => ({ ...c, places: [...c.places] }));
   if (!combos.length) return null;
 
-  // Structured data only — never surface AI-invented category placeholders.
+  // Structured data only — never surface category placeholders as places.
   for (const combo of combos) {
-    for (const place of combo.places) {
+    combo.places = combo.places.filter((place) => {
+      if (dropGenericCombinationLabel(place)) return false;
       if (isGenericDestinationPlaceholder(place, label)) {
         logAiPipeline(
           "[COMBINATION_VALIDATION_FAILED]",
           "reason=generic_in_reply_builder",
           `genericPlaceNames=[${place}]`,
         );
-        return null;
+        return false;
       }
-    }
+      const likelihood = isLikelyPlaceName(place);
+      if (!likelihood.ok) {
+        logNonPlaceCandidateRejected(
+          place,
+          likelihood.reason ?? "rejected_non_place",
+          "combination_reply_builder",
+        );
+        return false;
+      }
+      return true;
+    });
   }
 
-  if (combos.length < 3) {
-    // Reply builder may be called each render — do not spam identical failure logs.
+  // Prefer ≥3 combos with ≥3 real places each; allow ≥2 only when discovery is thin.
+  const displayCombos = combos.filter((c) => c.places.length >= 3);
+  const softDisplay =
+    displayCombos.length >= 3
+      ? displayCombos
+      : combos.filter((c) => c.places.length >= 2);
+  if (softDisplay.length < 3) {
     return null;
   }
 
   logChatDestinationScopeLock(label);
 
-  const dateLine = formatTravelDateRangeLine(opts?.startDate, opts?.endDate);
+  const dateLine = formatTravelDateRangeLine(
+    opts?.startDate,
+    opts?.endDate,
+    opts?.tentativeDates,
+  );
 
   const header = [
     opts?.weatherLine?.trim() || `好，我先記下 ${label} ${days} 天行程方向。`,
     "",
     `以下是${label}的建議組合搭配，你可以選一組或多組混搭：`,
     "",
-    ...combos.map((combo, index) => `${index + 1}. ${combo.title}：${combo.places.join("、")}`),
+    ...softDisplay.map(
+      (combo, index) => `${index + 1}. ${combo.title}：${combo.places.join("、")}`,
+    ),
     "",
     ...(dateLine ? [dateLine, ""] : []),
     "回覆你比較有興趣的組合，我來幫你生成行程。",
@@ -493,6 +727,15 @@ export function buildCombinationSelectionAllowlist(
     `rawInput=${text.trim()}`,
     `selectedCombinationIds=[${selectedCombinationIds.join(",")}]`,
     `selectionSource=${resolved.selectionSource}`,
+  );
+  logAiPipeline(
+    "[SELECTED_COMBINATION_PARSE_RESULT]",
+    `rawText=${JSON.stringify(text.trim())}`,
+    `ids=[${selectedCombinationIds.join(",")}]`,
+  );
+  logAiPipeline(
+    "[SELECTED_COMBINATION_CONTEXT_SAVED]",
+    `ids=[${selectedCombinationIds.join(",")}]`,
   );
 
   logAiPipeline(

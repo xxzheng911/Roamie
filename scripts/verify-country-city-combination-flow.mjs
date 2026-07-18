@@ -167,7 +167,59 @@ assert(getDestinationCombinations("首爾").length >= 3, "首爾 has ≥3 curate
   const a2 = resolveDestinationAdvice(session.travelContext, session, "首爾");
   assert(Boolean(a2.reply), "A2 has reply");
   assert(/幾天|天數|日期/.test(a2.reply ?? ""), "A2 asks days/dates");
+  assert(a2.pendingQuestion?.type === "ask_days", "A2 pending=ask_days");
+  assert(!/海邊放鬆|城市散策|想偏重/.test(a2.reply ?? ""), "A2 no style question");
+  assert(!/海雲台|甘川|札嘎其/.test(a2.reply ?? ""), "A2 no premature landmarks");
 }
+
+// Case A2-Busan: Dec Korea → Busan → date/duration (not legacy style)
+{
+  let session = createEmptySession();
+  const m1 = mergeTravelContext(session, "我12月要去韓國");
+  session = {
+    ...m1.session,
+    travelContext: m1.context,
+    conversationMode: "destination_planning",
+    activeChatIntent: "destination_advice",
+  };
+  const a1 = resolveDestinationAdvice(m1.context, session, "我12月要去韓國");
+  assert(adviceMonthPreserved(a1, m1.context), "Busan flow: month preserved after country");
+  session = {
+    ...session,
+    pendingQuestion: a1.pendingQuestion,
+    travelContext: { ...m1.context, ...a1.contextPatch },
+  };
+  const applied = applyDestinationPendingSelection("釜山", session);
+  assert(applied.contextPatch.destination === "釜山", "Busan destination→釜山");
+  assert(applied.contextPatch.destinationType === "city", "Busan type=city");
+  assert(applied.contextPatch.destinationCountry === "韓國", "Busan country=韓國");
+  session = {
+    ...applied.session,
+    travelContext: {
+      ...session.travelContext,
+      ...applied.contextPatch,
+      interests: session.travelContext?.interests ?? [],
+    },
+    adviceSelectionThisTurn: applied.selectedOption,
+    lastResolvedPendingQuestion: session.pendingQuestion,
+    pendingQuestion: undefined,
+  };
+  const a2 = resolveDestinationAdvice(session.travelContext, session, "釜山");
+  assert(Boolean(a2.reply), "Busan has reply");
+  assert(/12\s*月/.test(a2.reply ?? ""), "Busan reply uses December");
+  assert(!/4～6\s*月|9～11\s*月/.test(a2.reply ?? ""), "Busan does not push other seasons");
+  assert(/旅行日期或天數/.test(a2.reply ?? ""), "Busan asks date or days");
+  assert(a2.pendingQuestion?.type === "ask_days", "Busan pending=ask_days");
+  assert(!/海邊放鬆|城市散策|想偏重/.test(a2.reply ?? ""), "Busan no style question");
+  assert(!/海雲台|甘川文化村|札嘎其市場/.test(a2.reply ?? ""), "Busan no premature landmarks");
+  assert(a2.contextPatch?.destination === "釜山" || session.travelContext.destination === "釜山", "Busan dest kept");
+}
+
+function adviceMonthPreserved(advice, ctx) {
+  const month = ctx.travelMonth ?? advice.contextPatch?.travelMonth;
+  return Boolean(month && /12/.test(String(month)));
+}
+
 
 // Case A step 3: 6 days → combinations
 {

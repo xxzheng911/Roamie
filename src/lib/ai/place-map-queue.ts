@@ -94,7 +94,10 @@ export function computeFirstRoundPlaceMapCap(days: number): number {
   return Math.min(Math.max(days * 4, 12), 18);
 }
 
-/** Fetch target for a complete itinerary after mapping (4 days → 12–16). */
+/**
+ * Soft fetch target after mapping — capacity scales with trip days.
+ * Short trips stay lean (3d ≈ 7) so we do not over-fetch / rate-limit.
+ */
 export function computeItineraryResolvedTarget(days: number): number {
-  return Math.min(Math.max(days * 3, 12), 16);
+  return Math.min(Math.max(days * 2 + 1, days + 2), 16);
 }

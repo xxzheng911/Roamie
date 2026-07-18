@@ -10,6 +10,7 @@ import {
 import { isDestinationAdviceActive, coerceTravelDestination } from "@/lib/ai/trip-planning-context";
 import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 import { resolveInferredTripDays } from "@/lib/ai/ai-trip-style";
+import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 
 export { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 
@@ -177,7 +178,15 @@ export function buildPlanningOfflineReply(
   const summary = buildPlanningContextSummary(ctx);
   const inferredDays = resolveInferredTripDays(ctx, session);
   if (session.pendingQuestion?.type === "ask_days" || (!inferredDays && !session.pendingQuestion)) {
-    return [`好，目的地先記成${dest}。`, summary, "", `你這趟大概幾天？`].filter(Boolean).join("\n");
+    if (inferredDays) {
+      logAiPipeline(
+        "[ASK_DAYS_TEMPLATE_BLOCKED]",
+        "reason=trip_days_already_resolved",
+        `tripDays=${inferredDays}`,
+      );
+    } else {
+      return [`好，目的地先記成${dest}。`, summary, "", `你這趟大概幾天？`].filter(Boolean).join("\n");
+    }
   }
   const constraintAck = buildWeatherConstraintAcknowledgement(ctx, ctx.weather);
   if (constraintAck && ctx.excludedCategories?.some((c) => /曝曬|中午|高溫|戶外/.test(c))) {

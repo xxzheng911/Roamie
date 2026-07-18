@@ -15,6 +15,11 @@ import {
   validateGeneratedItinerary,
 } from "@/lib/ai/combination-itinerary-integrity";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import {
+  computeMinimumPlacesForTripDays,
+  SELECTED_COMBINATION_FILLER_POLICY,
+  validateItineraryPreSave,
+} from "@/lib/ai/real-place-supplement";
 
 export const ITINERARY_GENERATION_FAILED_MESSAGE =
   "行程建立失敗，我再幫你重新整理一次。";
@@ -83,9 +88,18 @@ function makePlaceItineraryStop(
     lng: place.lng,
     address: place.address?.trim() || place.name,
     googlePlaceId: placeId || undefined,
+    placeType: place.type,
     sourceCombinationId: place.sourceCombinationId,
     matchedCombinationIds: place.matchedCombinationIds,
     matchedSelectedCombinationIds: place.matchedSelectedCombinationIds,
+    photoName: place.photoName,
+    rating: place.rating,
+    userRatingCount: place.userRatingCount,
+    businessStatus: place.businessStatus,
+    openStatusLabel: place.openStatusLabel,
+    todayHoursLabel: place.todayHoursLabel,
+    types: place.type ? [place.type] : undefined,
+    placeSnapshotSource: "selected_place",
   });
 }
 
@@ -196,7 +210,9 @@ export function buildFallbackItineraryFromPlaces(
     stops.map((s) => s.date?.trim()).filter(Boolean),
   );
 
-  // When unique places < days, filler prevents blank calendar days after redistribute.
+  // When unique places < days, never invent synthetic stops for selected combinations.
+  // Real-place supplement must happen earlier (place-fetch). If we still lack places here,
+  // leave empty days and let pre-save validation fail — do not save a half-built trip.
   let fillerIdx = 0;
   for (const date of dates) {
     if (occupied.has(date)) continue;
@@ -218,6 +234,23 @@ export function buildFallbackItineraryFromPlaces(
       occupied.add(date);
       continue;
     }
+    if (
+      selectedCombinationIds.length > 0 &&
+      !SELECTED_COMBINATION_FILLER_POLICY.allowSynthetic
+    ) {
+      logAiPipeline(
+        "[DAY_FILLER_SKIPPED]",
+        `date=${date}`,
+        "reason=selected_combinations_forbid_synthetic_filler",
+        "note=real_place_supplement_should_run_before_allocation",
+      );
+      logAiPipeline(
+        "[EMPTY_DAY_BLOCKED]",
+        `date=${date}`,
+        "reason=no_places_and_not_free_day",
+      );
+      continue;
+    }
     const template = DAY_FILLER_TEMPLATES[fillerIdx % DAY_FILLER_TEMPLATES.length]!;
     fillerIdx += 1;
     stops.push(
@@ -234,6 +267,16 @@ export function buildFallbackItineraryFromPlaces(
     occupied.add(date);
   }
 
+  if (stops.length < computeMinimumPlacesForTripDays(dayCount)) {
+    logAiPipeline(
+      "[INSUFFICIENT_REAL_PLACES_DETECTED]",
+      `tripDays=${dayCount}`,
+      `resolvedPlaces=${stops.length}`,
+      `minimumRequired=${computeMinimumPlacesForTripDays(dayCount)}`,
+      "stage=fallback_build",
+    );
+  }
+
   const grouped = groupStopsByTripDays(stops, dayCount, startDate);
   const validation = validateGeneratedItinerary({
     tripDays: dayCount,
@@ -246,6 +289,22 @@ export function buildFallbackItineraryFromPlaces(
     logAiPipeline(
       "[ITINERARY_INTEGRITY_WARN]",
       `reasons=${validation.reasons.join("|")}`,
+    );
+  }
+
+  const preSave = validateItineraryPreSave({
+    tripDays: dayCount,
+    startDate,
+    stops,
+  });
+  if (!preSave.ok) {
+    logAiPipeline(
+      "[ITINERARY_PRE_SAVE_VALIDATION]",
+      `days=${preSave.days}`,
+      `stops=${preSave.stops}`,
+      `emptyNonFreeDays=[${preSave.emptyNonFreeDays.join(",")}]`,
+      `invalidStops=${preSave.invalidStops.length}`,
+      `reasons=${preSave.reasons.join("|")}`,
     );
   }
 
@@ -353,17 +412,69 @@ export function hasValidItineraryStops(
   minStops = 1,
 ): boolean {
   const items = coalesceItineraryItems(payload.itinerary);
-  if (items.length < minStops) return false;
-  return items.every((item) => {
+  if (items.length < minStops) {
+    logAiPipeline(
+      "[STOP_VALIDATION_FAILED]",
+      "index=-1",
+      "name=",
+      `missingFields=[stop_count]`,
+      `invalidFields=[]`,
+      `detail=got=${items.length},min=${minStops}`,
+    );
+    return false;
+  }
+  return items.every((item, index) => {
     const name = (item.placeName ?? item.title)?.trim();
-    if (!name) return false;
+    if (!name) {
+      logAiPipeline(
+        "[STOP_VALIDATION_FAILED]",
+        `index=${index}`,
+        "name=",
+        "missingFields=[name]",
+        "invalidFields=[]",
+      );
+      return false;
+    }
     const hasId = Boolean(item.googlePlaceId?.trim());
     const hasCoords =
       item.lat != null &&
       item.lng != null &&
       (Math.abs(item.lat) > 0.001 || Math.abs(item.lng) > 0.001);
-    return hasId || hasCoords;
+    if (!hasId && !hasCoords) {
+      logAiPipeline(
+        "[STOP_VALIDATION_FAILED]",
+        `index=${index}`,
+        `name=${name}`,
+        "missingFields=[googlePlaceId,coordinates]",
+        "invalidFields=[]",
+      );
+      return false;
+    }
+    return true;
   });
+}
+
+/** Full pre-save gate used by the state machine (days + schema + empty non-free days). */
+export function hasCompleteItineraryPayload(
+  payload: Pick<RoamiePayloadV2, "itinerary">,
+  tripDays: number,
+  startDate: string,
+): boolean {
+  const items = coalesceItineraryItems(payload.itinerary);
+  const preSave = validateItineraryPreSave({
+    tripDays,
+    startDate,
+    stops: items,
+  });
+  if (!preSave.ok) {
+    logAiPipeline(
+      "[ITINERARY_VALIDATION_RESULT]",
+      "invalid",
+      `detail=${preSave.reasons.join("|")}`,
+    );
+    return false;
+  }
+  return hasValidItineraryStops(payload, computeMinimumPlacesForTripDays(tripDays));
 }
 
 export function formatItineraryUserError(error: unknown): string {

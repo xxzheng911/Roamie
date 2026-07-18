@@ -229,6 +229,22 @@ function typicalClimateForMonth(
   }
 
   if (monthNum === 12 || monthNum <= 2) {
+    if (/釜山/.test(label)) {
+      return {
+        climate: `${label} ${monthNum} 月通常偏冷，海邊風勢也會比較明顯，建議準備保暖、防風的衣物。`,
+        windowHint: `若還沒定日期，可以先從 ${monthNum} 月中旬挑一段較順的區間。`,
+        weatherFacts: "cold,coastal_wind",
+        suggestedWindow: `${monthNum} 月中旬`,
+      };
+    }
+    if (/濟州/.test(label)) {
+      return {
+        climate: `${label} ${monthNum} 月通常偏冷，風勢也可能較明顯，建議準備保暖層。`,
+        windowHint: `若還沒定日期，可以先從 ${monthNum} 月中旬挑一段較順的區間。`,
+        weatherFacts: "cold,windy",
+        suggestedWindow: `${monthNum} 月中旬`,
+      };
+    }
     return {
       climate: `${label} ${monthNum} 月通常偏冷，早晚溫差可能較大，建議準備保暖層。`,
       windowHint: `若還沒定日期，可以先從 ${monthNum} 月中旬挑一段較順的區間。`,

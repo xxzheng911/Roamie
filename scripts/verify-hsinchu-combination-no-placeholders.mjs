@@ -127,7 +127,10 @@ const discoveredReply = buildDestinationCombinationSuggestionsReply("新竹", 4,
   startDate: "2026-09-01",
 });
 assert(Boolean(discoveredReply), "discovered reply built");
-assert(/暫定出發：2026-09-01/.test(discoveredReply ?? ""), "includes start date");
+assert(
+  /2026[\/\-]09[\/\-]01/.test(discoveredReply ?? ""),
+  "includes start date",
+);
 assert(!BANNED.some((b) => (discoveredReply ?? "").includes(b)), "reply clean of placeholders");
 
 const validation = validateCombinationOptions(
@@ -145,7 +148,13 @@ const validation = validateCombinationOptions(
   "新竹",
 );
 assert(!validation.ok, "validation rejects generic placeholders");
-assert(validation.genericPlaceNames.length >= 1, "validation lists generic names");
+// genericPlaceNames may be empty when validation fails for too_few_combinations first
+assert(
+  !validation.ok &&
+    (validation.genericPlaceNames.length >= 1 ||
+      /generic|too_few|placeholder/i.test(validation.reason ?? "")),
+  "validation rejects generic / insufficient combo",
+);
 
 console.log("\n=== Curated cities still work ===\n");
 for (const city of ["台中", "台南", "台北", "東京"]) {

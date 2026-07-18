@@ -46,7 +46,11 @@ function itineraryItemToPlaceResult(
       ? latLngFallbackPlaceId(item.lat, item.lng)
       : `trip-${encodeURIComponent(name)}`);
   const primaryType = item.placeType?.trim() || null;
-  const types = primaryType ? [primaryType] : null;
+  const types = item.types?.length
+    ? item.types
+    : primaryType
+      ? [primaryType]
+      : null;
 
   return {
     id,
@@ -54,15 +58,15 @@ function itineraryItemToPlaceResult(
     address: item.address ?? null,
     lat: item.lat,
     lng: item.lng,
-    rating: null,
-    userRatingCount: null,
-    photoName: null,
+    rating: item.rating ?? null,
+    userRatingCount: item.userRatingCount ?? null,
+    photoName: item.photoName ?? null,
     primaryType,
     types,
-    businessStatus: null,
+    businessStatus: item.businessStatus ?? null,
     openStatus: "unknown",
-    openStatusLabel: "",
-    todayHoursLabel: "",
+    openStatusLabel: item.openStatusLabel ?? "",
+    todayHoursLabel: item.todayHoursLabel ?? "",
     closingSoonNote: "",
     nextOpenHint: "",
   };
@@ -101,6 +105,10 @@ export function itineraryItemToPlaceHandoff(
     category: place.primaryType,
     categoryId,
     reason,
+    rating: place.rating,
+    userRatingCount: place.userRatingCount,
+    photoName: place.photoName,
+    openStatusLabel: place.openStatusLabel || undefined,
     snapshot: {
       ...snapshot,
       id: resolvedGooglePlaceId || place.id,
@@ -148,6 +156,13 @@ export function openTripItineraryPlaceDetail(
   }
   setPlaceDetailHandoff(handoff);
   const placeId = handoff.googlePlaceId || handoff.placeId || item.googlePlaceId || "";
+  const snapshotAvailable = Boolean(
+    handoff.name &&
+      (handoff.address || handoff.lat != null || handoff.googlePlaceId || handoff.rating != null),
+  );
+  console.info(
+    `[PLACE_DETAIL_OPEN] placeId=${placeId} snapshotAvailable=${snapshotAvailable}`,
+  );
   console.info(
     `[PLACE_DETAIL_OPEN_FROM_TRIP] tripId=${viewState.tripId} dayIndex=${viewState.activeDayIndex} placeId=${placeId}`,
   );

@@ -88,6 +88,7 @@ export type RoamieItineraryRequest = {
   travelers?: number;
   transport?: string;
   selectedPlaces?: RoamieRecommendationItem[];
+  selectedCombinationIds?: number[];
 };
 
 export type RoamieRequestContext = {

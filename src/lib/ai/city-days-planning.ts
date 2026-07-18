@@ -6,6 +6,8 @@ import { enrichPendingQuestion } from "@/lib/ai/chat-conversation-state";
 import { pendingQuestionForCombinationChoice } from "@/lib/ai/destination-pending-question";
 import { buildWeatherAwarePlanningReply } from "@/lib/ai/weather-planning-reply";
 import { buildDestinationCombinationSuggestionsReply } from "@/lib/ai/destination-combination-suggestions";
+import { buildScenicMonthPlanningResult } from "@/lib/ai/scenic-month-reply";
+import { parseMonthNumber } from "@/lib/ai/season-response-guardrail";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export function pendingQuestionForCityPreference(
@@ -30,6 +32,73 @@ export function pendingQuestionForAskDays(
     baseDestination,
     destinationCountry,
   });
+}
+
+/**
+ * After a city is confirmed but date/days are still missing:
+ * optional month climate note → always ask date or duration.
+ * Never asks travel style / lists fixed attractions.
+ */
+export function buildDateAndDurationQuestionReply(
+  destination: string,
+  destinationCountry?: string,
+  options?: {
+    context?: CanonicalTravelContext;
+    userText?: string;
+    weather?: WeatherSummary | null;
+    /** Legacy template that was blocked (for logging). */
+    blockedLegacyTemplate?: string;
+    previousPendingType?: string;
+  },
+): { reply: string; pendingQuestion: PendingQuestion } {
+  const label = normalizeDestinationLabel(destination);
+  const monthNum = parseMonthNumber(options?.context?.travelMonth);
+  const hasMonth = monthNum != null;
+
+  if (options?.blockedLegacyTemplate) {
+    logAiPipeline(
+      "[LEGACY_CITY_FOLLOWUP_BLOCKED]",
+      `destination=${label}`,
+      "stage=COLLECTING_DATE_AND_DURATION",
+      `template=${options.blockedLegacyTemplate}`,
+      "reason=date_and_duration_required",
+    );
+  }
+
+  logAiPipeline(
+    "[DATE_DURATION_REPLY_BUILDER_USED]",
+    `destination=${label}`,
+    `month=${hasMonth ? monthNum : "none"}`,
+  );
+  if (hasMonth) {
+    logAiPipeline("[MONTH_CONTEXT_PRESERVED]", `month=${monthNum}`);
+  }
+  logAiPipeline(
+    "[PENDING_QUESTION_UPDATED]",
+    `from=${options?.previousPendingType ?? "none"}`,
+    "to=ask_date_or_days",
+  );
+
+  let reply: string;
+  if (options?.context && hasMonth) {
+    reply = buildScenicMonthPlanningResult({
+      destination: label,
+      context: { ...options.context, destination: label },
+      userText: options.userText ?? "",
+      weather: options.weather ?? options.context.weather ?? null,
+    }).reply;
+  } else {
+    reply = [
+      `好，我們以${label}為主往下規劃。`,
+      "",
+      "你目前有預計的旅行日期或天數嗎？",
+    ].join("\n");
+  }
+
+  return {
+    reply,
+    pendingQuestion: pendingQuestionForAskDays(label, destinationCountry),
+  };
 }
 
 export function buildCityDaysConfirmedReply(

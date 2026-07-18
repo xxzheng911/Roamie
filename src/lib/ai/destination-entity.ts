@@ -25,7 +25,9 @@ export type ClimateZone =
   | "alpine"
   | "desert"
   | "subpolar"
-  | "monsoon";
+  | "monsoon"
+  /** Uncertain profile — never invent temperate_continental when country/coords missing. */
+  | "seasonal_general";
 
 export type SeasonEvent = {
   label: string;
@@ -434,6 +436,7 @@ const ENTITY_SEEDS: EntitySeed[] = [
 ];
 
 let entityByNameCache: Map<string, DestinationEntity> | null = null;
+let uniqueEntitiesCache: DestinationEntity[] | null = null;
 
 function getEntityByNameMap(): Map<string, DestinationEntity> {
   if (entityByNameCache) return entityByNameCache;
@@ -448,15 +451,87 @@ function getEntityByNameMap(): Map<string, DestinationEntity> {
   return entityByNameCache;
 }
 
+/** Unique registered entities (one per canonical name). */
+export function listRegisteredDestinationEntities(): DestinationEntity[] {
+  if (uniqueEntitiesCache) return uniqueEntitiesCache;
+  const seen = new Set<string>();
+  const out: DestinationEntity[] = [];
+  for (const seed of ENTITY_SEEDS) {
+    const { names, ...rest } = seed;
+    const name = normalizeDestinationLabel(names[0] ?? "");
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, ...rest });
+  }
+  uniqueEntitiesCache = out;
+  return out;
+}
+
+/**
+ * City / region / island entities registered under a country.
+ * Used by country→city discovery — not bound to travel month.
+ */
+export function listChildDestinationsByCountry(country: string): DestinationEntity[] {
+  const label = normalizeDestinationLabel(country);
+  return listRegisteredDestinationEntities().filter((entity) => {
+    if (entity.type === "country" || entity.type === "attraction") return false;
+    const entityCountry = entity.country
+      ? normalizeDestinationLabel(entity.country)
+      : undefined;
+    return entityCountry === label && entity.name !== label;
+  });
+}
+
+/**
+ * Prefecture/county-scale travel destinations.
+ * Users saying「去屏東／宜蘭／北海道」mean a regional travel scope, not CBD-only.
+ * Shared lookup — not a per-destination special case in the planning pipeline.
+ */
+const TRAVEL_REGION_LABELS = new Set([
+  // Taiwan counties / travel regions
+  "屏東",
+  "屏东",
+  "宜蘭",
+  "花蓮",
+  "台東",
+  "臺東",
+  "南投",
+  "嘉義",
+  "苗栗",
+  "彰化",
+  "雲林",
+  "新竹",
+  "澎湖",
+  "金門",
+  "馬祖",
+  "連江",
+  // Japan regions
+  "北海道",
+  "九州",
+  "四國",
+  "本州",
+  "沖繩",
+  "冲绳",
+  // Korea
+  "濟州",
+  "濟州島",
+]);
+
 const PARENT_COUNTRY_HINTS: Record<string, string> = {
   東京: "日本",
   大阪: "日本",
   京都: "日本",
   札幌: "日本",
   沖繩: "日本",
+  冲绳: "日本",
+  北海道: "日本",
+  九州: "日本",
+  四國: "日本",
+  本州: "日本",
   首爾: "韓國",
   釜山: "韓國",
   濟州: "韓國",
+  濟州島: "韓國",
   清邁: "泰國",
   芭達雅: "泰國",
   普吉島: "泰國",
@@ -464,8 +539,53 @@ const PARENT_COUNTRY_HINTS: Record<string, string> = {
   墨爾本: "澳洲",
   巴黎: "法國",
   倫敦: "英國",
+  愛丁堡: "英國",
+  曼徹斯特: "英國",
+  湖區: "英國",
   紐約: "美國",
+  馬尼拉: "菲律賓",
+  宿霧: "菲律賓",
+  長灘島: "菲律賓",
+  巴拉望: "菲律賓",
+  // Taiwan cities / counties — prevent country=unknown when entity has no seed
+  台北: "台灣",
+  臺北: "台灣",
+  新北: "台灣",
+  桃園: "台灣",
+  台中: "台灣",
+  臺中: "台灣",
+  台南: "台灣",
+  臺南: "台灣",
+  高雄: "台灣",
+  基隆: "台灣",
+  新竹: "台灣",
+  苗栗: "台灣",
+  南投: "台灣",
+  彰化: "台灣",
+  雲林: "台灣",
+  嘉義: "台灣",
+  屏東: "台灣",
+  屏东: "台灣",
+  宜蘭: "台灣",
+  花蓮: "台灣",
+  台東: "台灣",
+  臺東: "台灣",
+  澎湖: "台灣",
+  金門: "台灣",
+  馬祖: "台灣",
+  連江: "台灣",
+  墾丁: "台灣",
+  阿里山: "台灣",
+  日月潭: "台灣",
 };
+
+/** True when label is typically planned as a travel region (縣／道／島 scale). */
+export function isTravelRegionLabel(name: string): boolean {
+  const label = normalizeDestinationLabel(name);
+  if (TRAVEL_REGION_LABELS.has(label)) return true;
+  if (/(島|岛)$/.test(label) && !isKnownCountryLabel(label)) return true;
+  return false;
+}
 
 const SOUTHERN_COUNTRY_NAMES = new Set([
   "澳洲",
@@ -489,11 +609,11 @@ function inferType(name: string): DestinationEntityType {
   // Country labels must win over short-name → city heuristics
   // (e.g. 日本 / 法國 / 荷蘭 without a trailing 國 character).
   if (isKnownCountryLabel(name) && !isKnownTouristCityLabel(name)) return "country";
-  // Island / region tokens before tourist-city default (濟州, 沖繩, …).
-  if (/(島|岛)$/.test(name) || /^(濟州|冲绳|沖繩|北海道|九州|四國|本州)$/.test(name)) {
-    if (/(島|岛)$/.test(name) || /^(濟州|冲绳|沖繩)$/.test(name)) return "island";
-    return "region";
-  }
+  // Island tokens first.
+  if (/(島|岛)$/.test(name) || /^(濟州|冲绳|沖繩)$/.test(name)) return "island";
+  // Prefecture / county-scale travel regions (屏東、宜蘭、北海道、…) before city default.
+  if (isTravelRegionLabel(name)) return "region";
+  if (/^(北海道|九州|四國|本州)$/.test(name)) return "region";
   if (isKnownTouristCityLabel(name)) return "city";
   if (isKnownScenicLabel(name)) return "attraction";
   if (/(山|湖|瀑布|國家公園|国家公园|寺|廟|庙)/.test(name)) return "attraction";
@@ -532,23 +652,89 @@ function inferClimateZone(
   const registered = getEntityByNameMap().get(name);
   if (registered) return registered.climateZone;
 
+  const blob = name + (country ?? "");
   if (/(冰島|Iceland|格陵蘭)/.test(name)) return "subpolar";
   if (/(瑞士|喜馬拉雅|富士山|阿爾卑斯)/.test(name)) return "alpine";
-  if (/(土耳其|希臘|西班牙|義大利|意大利|摩洛哥)/.test(name + (country ?? ""))) {
+  if (/(土耳其|希臘|西班牙|義大利|意大利|摩洛哥)/.test(blob)) {
     return "mediterranean";
   }
-  if (/(泰國|泰国|新加坡|印尼|菲律賓|菲律宾|馬來西亞|马来西亚|越南|印度)/.test(name + (country ?? ""))) {
+  if (/(泰國|泰国|新加坡|印尼|菲律賓|菲律宾|馬來西亞|马来西亚|越南|印度)/.test(blob)) {
     return "tropical";
   }
-  if (/(日本|韓國|韩国|台灣|台湾|香港|澳門|澳门|中國|中国)/.test(name + (country ?? ""))) {
+  if (/(日本|韓國|韩国|台灣|台湾|香港|澳門|澳门|中國|中国)/.test(blob)) {
     return "subtropical";
   }
-  if (/(英國|英国|愛爾蘭|爱尔兰|紐西蘭|新西兰|澳洲|澳大利亚|塔斯馬尼亞)/.test(name + (country ?? ""))) {
+  if (/(英國|英国|愛爾蘭|爱尔兰|紐西蘭|新西兰|澳洲|澳大利亚|塔斯馬尼亞)/.test(blob)) {
     return "temperate_oceanic";
   }
   if (type === "region" && name === "大洋洲") return "temperate_oceanic";
   if (type === "region" && name === "南美") return "tropical";
-  return "temperate_continental";
+  // Missing country must not invent temperate_continental (屏東 previously hit this).
+  return "seasonal_general";
+}
+
+/**
+ * Climate from coordinates when available; otherwise name/country heuristics.
+ * Southern Taiwan (approx south of Tropic of Cancer) → tropical.
+ */
+export function resolveClimateZoneForDestination(params: {
+  destination: string;
+  country?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+}): { climateZone: ClimateZone; source: "coordinates" | "country" | "name" | "default" } {
+  const name = normalizeDestinationLabel(params.destination);
+  const country = params.country ? normalizeDestinationLabel(params.country) : undefined;
+  const lat = params.latitude;
+  const lng = params.longitude;
+  const registered = getEntityByNameMap().get(name);
+  if (registered) {
+    return { climateZone: registered.climateZone, source: "name" };
+  }
+
+  const inTaiwanBbox =
+    lat != null &&
+    lng != null &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= 21.5 &&
+    lat <= 26.5 &&
+    lng >= 119.0 &&
+    lng <= 122.5;
+
+  if (
+    inTaiwanBbox ||
+    country === "台灣" ||
+    country === "台湾" ||
+    PARENT_COUNTRY_HINTS[name] === "台灣"
+  ) {
+    if (lat != null && Number.isFinite(lat) && lat < 23.5) {
+      return { climateZone: "tropical", source: "coordinates" };
+    }
+    if (lat != null && Number.isFinite(lat)) {
+      return { climateZone: "subtropical", source: "coordinates" };
+    }
+    return { climateZone: "subtropical", source: country ? "country" : "name" };
+  }
+
+  if (lat != null && Number.isFinite(lat)) {
+    const absLat = Math.abs(lat);
+    if (absLat <= 15) return { climateZone: "tropical", source: "coordinates" };
+    if (absLat <= 30) return { climateZone: "subtropical", source: "coordinates" };
+    if (absLat <= 50) {
+      // Don't invent continental without country — seasonal_general is safer.
+      if (!country) return { climateZone: "seasonal_general", source: "coordinates" };
+      return { climateZone: "temperate_continental", source: "coordinates" };
+    }
+    return { climateZone: "subpolar", source: "coordinates" };
+  }
+
+  const type = inferType(name);
+  const zone = inferClimateZone(name, type, country);
+  if (zone === "seasonal_general") {
+    return { climateZone: zone, source: "default" };
+  }
+  return { climateZone: zone, source: country ? "country" : "name" };
 }
 
 export function inferSeasonalityFromClimate(
@@ -632,7 +818,11 @@ export function resolveDestinationEntity(rawName: string): DestinationEntity {
   const type = inferType(name);
   const country = inferCountry(name, type);
   const hemisphere = inferHemisphere(name, country);
-  const climateZone = inferClimateZone(name, type, country);
+  const climateResolved = resolveClimateZoneForDestination({
+    destination: name,
+    country,
+  });
+  const climateZone = climateResolved.climateZone;
   const seasonality = inferSeasonalityFromClimate(hemisphere, climateZone, name);
 
   const entity: DestinationEntity = {
@@ -648,7 +838,15 @@ export function resolveDestinationEntity(rawName: string): DestinationEntity {
   return entity;
 }
 
+const entityLogOnce = new Set<string>();
+
 function logDestinationEntityResolved(entity: DestinationEntity): void {
+  const key = `${entity.name}|${entity.type}|${entity.country ?? ""}|${entity.climateZone}`;
+  if (entityLogOnce.has(key)) return;
+  entityLogOnce.add(key);
+  // Bound memory for long sessions
+  if (entityLogOnce.size > 200) entityLogOnce.clear();
+
   logAiPipeline("[DESTINATION_ENTITY_RESOLVED]", `name=${entity.name}`, `type=${entity.type}`);
   logAiPipeline("[AI_DESTINATION_ENTITY]", `name=${entity.name}`, `type=${entity.type}`);
   logAiPipeline("[AI_DESTINATION_TYPE]", entity.type);

@@ -109,7 +109,9 @@ function isTravelRelatedType(place: PlaceResult): boolean {
 
 function isPermanentlyClosed(place: PlaceResult): boolean {
   const biz = (place.businessStatus ?? "").trim().toUpperCase();
-  return biz === "CLOSED_PERMANENTLY" || biz === "CLOSED_TEMPORARILY";
+  // Only permanent closure is a hard exclude. Temporary / today-closed must not
+  // drop places when the trip is on a future date.
+  return biz === "CLOSED_PERMANENTLY";
 }
 
 function userRequiresOpenNow(userText?: string): boolean {

@@ -68,6 +68,7 @@ import { requestExploreMapClearSelection } from "@/lib/explore-map-selection";
 import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { resolveTabelogPlaceExternalUrl } from "@/lib/tabelog-reference";
 import { buildPlaceDetailTicketOffers } from "@/lib/affiliate/affiliate-links";
+import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
 
 const searchSchema = z.object({
   placeId: z.string().optional(),
@@ -118,7 +119,21 @@ function PlaceDetailPage() {
     const handoff = resolvePlaceDetailHandoff(search, handoffRef.current);
     return handoff ? handoffToPlaceDetailData(handoff, locale) : null;
   });
-  const [loading, setLoading] = useState(true);
+  // Stale-while-revalidate: if a snapshot is already available, never block the first paint.
+  const [loading, setLoading] = useState(() => {
+    const handoff = resolvePlaceDetailHandoff(search, handoffRef.current);
+    if (!handoff) return true;
+    const hasSnapshot = Boolean(
+      handoff.name &&
+        (handoff.address ||
+          handoff.lat != null ||
+          handoff.googlePlaceId ||
+          handoff.rating != null ||
+          handoff.snapshot),
+    );
+    return !hasSnapshot;
+  });
+  const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [usedFallback, setUsedFallback] = useState(false);
   const [userLocation, setUserLocation] = useState(TAIPEI_CENTER);
@@ -162,14 +177,36 @@ function PlaceDetailPage() {
 
     const base = handoffToPlaceDetailData(handoff, locale);
     setPlace(base);
-    setLoading(true);
+    const hasSnapshot = Boolean(
+      handoff.name &&
+        (handoff.address ||
+          handoff.lat != null ||
+          handoff.googlePlaceId ||
+          handoff.rating != null ||
+          handoff.snapshot),
+    );
+    // Snapshot-first: show immediately; remote refresh runs in background.
+    setLoading(!hasSnapshot);
+    setRefreshing(hasSnapshot);
     setFetchError(null);
     setUsedFallback(false);
 
     let cancelled = false;
+    const openedAt = performance.now();
+    console.info(
+      `[PLACE_DETAIL_OPEN] placeId=${handoff.placeId ?? ""} snapshotAvailable=${hasSnapshot}`,
+    );
+    if (hasSnapshot) {
+      console.info(
+        `[PLACE_DETAIL_FIRST_RENDER] source=saved_snapshot elapsedMs=${Math.round(performance.now() - openedAt)}`,
+      );
+    }
 
     const finishLoading = () => {
-      if (!cancelled) setLoading(false);
+      if (!cancelled) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     };
 
     const applyFetched = (fetched: PlaceDetailsScreenResult, resolvedPlaceId: string) => {
@@ -180,6 +217,7 @@ function PlaceDetailPage() {
     };
 
     void (async () => {
+      const refreshStarted = performance.now();
       let placeId = handoff.placeId?.trim() || "";
       if (!canFetchGooglePlaceDetails(placeId)) {
         const resolved = await resolveGooglePlaceIdForDetail(handoff, locale);
@@ -190,6 +228,11 @@ function PlaceDetailPage() {
       if (!canFetchGooglePlaceDetails(placeId)) {
         logPlaceDetailFallbackUsed("no_google_place_id");
         setUsedFallback(true);
+        if (!hasSnapshot) {
+          console.info(
+            `[PLACE_DETAIL_FIRST_RENDER] source=cache elapsedMs=${Math.round(performance.now() - openedAt)}`,
+          );
+        }
         finishLoading();
         return;
       }
@@ -200,8 +243,9 @@ function PlaceDetailPage() {
 
       logPlaceDetailFetchStarted(placeId);
 
+      const DETAIL_REFRESH_TIMEOUT_MS = 8_000;
       try {
-        const { place: fetched, error } = await fetchGooglePlaceDetailsForHandoff(
+        const fetchPromise = fetchGooglePlaceDetailsForHandoff(
           placeId,
           locale,
           fetchPlaceDetailsFn,
@@ -213,15 +257,33 @@ function PlaceDetailPage() {
               }
             : undefined,
         );
+        const timeoutPromise = new Promise<{ place: null; error: string }>((resolve) => {
+          setTimeout(
+            () => resolve({ place: null, error: "detail_refresh_timeout" }),
+            DETAIL_REFRESH_TIMEOUT_MS,
+          );
+        });
+        const { place: fetched, error } = await Promise.race([fetchPromise, timeoutPromise]);
         if (cancelled) return;
         if (fetched) {
           applyFetched(fetched, placeId);
+          if (!hasSnapshot) {
+            console.info(
+              `[PLACE_DETAIL_FIRST_RENDER] source=remote elapsedMs=${Math.round(performance.now() - openedAt)}`,
+            );
+          }
+          console.info(
+            `[PLACE_DETAIL_REMOTE_REFRESH] elapsedMs=${Math.round(performance.now() - refreshStarted)} success=true`,
+          );
           return;
         }
         logPlaceDetailFetchFailed(placeId, error ?? "unknown");
         logPlaceDetailFallbackUsed(error ?? "fetch_failed");
         setUsedFallback(true);
         setFetchError(error);
+        console.info(
+          `[PLACE_DETAIL_REMOTE_REFRESH] elapsedMs=${Math.round(performance.now() - refreshStarted)} success=false`,
+        );
       } catch (e) {
         if (cancelled) return;
         const msg = e instanceof Error ? e.message : "fetch_failed";
@@ -229,6 +291,9 @@ function PlaceDetailPage() {
         logPlaceDetailFallbackUsed(msg);
         setUsedFallback(true);
         setFetchError(msg);
+        console.info(
+          `[PLACE_DETAIL_REMOTE_REFRESH] elapsedMs=${Math.round(performance.now() - refreshStarted)} success=false`,
+        );
       } finally {
         finishLoading();
       }
@@ -500,6 +565,17 @@ function PlaceDetailPage() {
   };
 
   if (!place) {
+    if (loading) {
+      return (
+        <div className="place-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain">
+          <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBack} />
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
+            <Loader2 className="h-7 w-7 animate-spin text-clay" aria-hidden />
+            <p className="text-sm text-muted-foreground">載入地點資訊…</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-20 text-center">
         <p className="text-sm text-muted-foreground">暫時讀不到這個地點，稍後再試一次</p>
@@ -518,12 +594,7 @@ function PlaceDetailPage() {
     <div className="place-detail-route flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-y-contain">
       <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBack} />
 
-      {loading ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
-          <Loader2 className="h-7 w-7 animate-spin text-clay" aria-hidden />
-          <p className="text-sm text-muted-foreground">載入地點資訊…</p>
-        </div>
-      ) : fetchError && usedFallback && !place.address && place.lat == null ? (
+      {fetchError && usedFallback && !place.address && place.lat == null ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-16 text-center">
           <p className="text-sm text-muted-foreground">暫時讀不到這個地點，稍後再試一次</p>
           <button
@@ -540,6 +611,8 @@ function PlaceDetailPage() {
             <p className="mx-5 mb-1 rounded-2xl bg-secondary/80 px-3 py-2 text-xs text-muted-foreground">
               部分資訊暫時無法更新，先顯示已知內容
             </p>
+          ) : refreshing ? (
+            <p className="mx-5 mb-1 text-xs text-muted-foreground/80">正在更新最新資訊…</p>
           ) : null}
           <PlaceDetailSheet
             place={placeForSheet ?? place}

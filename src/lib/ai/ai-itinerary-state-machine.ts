@@ -14,6 +14,8 @@ import type { WeatherSummary } from "@/lib/weather-types";
 import { prepareDirectItinerarySession } from "@/lib/ai/itinerary-place-fetch";
 import {
   buildFallbackItineraryFromPlaces,
+  coalesceItineraryItems,
+  hasCompleteItineraryPayload,
   hasValidItineraryStops,
   isGenerateItineraryFailure,
   ITINERARY_GENERATION_FAILED_MESSAGE,
@@ -36,6 +38,7 @@ import {
   sanitizeDestinationForGeocode,
 } from "@/lib/ai/itinerary-entity-extraction";
 import { groupStopsByTripDays } from "@/lib/ai/combination-itinerary-integrity";
+import { computeMinimumPlacesForTripDays } from "@/lib/ai/real-place-supplement";
 import {
   contextRequiresCombinationSelection,
   logDirectItineraryGenInput,
@@ -358,6 +361,18 @@ function buildLocalItineraryPayload(
   logItineraryDaysBuilt(generateInput.days, builtStops.length);
   logAiItineraryBuild(builtStops.length, generateInput.days);
 
+  if (selectedPlaces.length < computeMinimumPlacesForTripDays(generateInput.days, comboIds.length || 1)) {
+    logAiPipeline(
+      "[INSUFFICIENT_REAL_PLACES_DETECTED]",
+      `tripDays=${generateInput.days}`,
+      `resolvedPlaces=${selectedPlaces.length}`,
+      `minimumRequired=${computeMinimumPlacesForTripDays(generateInput.days, comboIds.length || 1)}`,
+      "stage=local_build",
+    );
+    logItineraryValidationResult(false, "insufficient_real_places");
+    return null;
+  }
+
   const grouped = groupStopsByTripDays(builtStops, generateInput.days, startDate);
   const integrity = validateGeneratedItinerary({
     tripDays: generateInput.days,
@@ -372,13 +387,16 @@ function buildLocalItineraryPayload(
       `reasons=${integrity.reasons.join("|")}`,
     );
     logItineraryValidationResult(false, integrity.reasons.join("|"));
-    // Still reject blank days even for local fallback — do not navigate with partial trip.
-    if (integrity.reasons.some((r) => r.startsWith("empty_day") || r.startsWith("day_count"))) {
-      return null;
-    }
+    // Never navigate with blank non-free days or missing combination coverage.
     if (
-      comboIds.length > 0 &&
-      integrity.reasons.some((r) => r.startsWith("missing_combination"))
+      integrity.reasons.some(
+        (r) =>
+          r.startsWith("empty_day") ||
+          r.startsWith("empty_non_free_day") ||
+          r.startsWith("day_count") ||
+          r.startsWith("insufficient_real_places") ||
+          r.startsWith("missing_combination"),
+      )
     ) {
       return null;
     }
@@ -395,8 +413,15 @@ function buildLocalItineraryPayload(
     days: generateInput.days,
     generatedAt: new Date().toISOString(),
   };
-  const valid = hasValidItineraryStops(localPayload, generateInput.days);
-  logItineraryValidationResult(valid, valid ? undefined : "local_payload_invalid");
+  const valid = hasCompleteItineraryPayload(
+    localPayload,
+    generateInput.days,
+    startDate,
+  );
+  logItineraryValidationResult(
+    valid,
+    valid ? undefined : "local_payload_invalid",
+  );
   if (!valid) return null;
   return localPayload;
 }
@@ -467,7 +492,12 @@ export async function createItineraryFromSession(params: {
     }
 
     const payload = unwrapGeneratedTripPayload(generateResult);
-    if (!payload || !hasValidItineraryStops(payload, 1)) {
+    const startDate =
+      generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
+    if (
+      !payload ||
+      !hasCompleteItineraryPayload(payload, generateInput.days, startDate)
+    ) {
       const localPayload = buildLocalItineraryPayload(
         generateInput,
         selectedPlaces,
@@ -484,14 +514,26 @@ export async function createItineraryFromSession(params: {
           generateResult,
         };
       }
-      logItineraryFailureReason("invalid_stops_after_unwrap");
-      logAiItineraryFailed("invalid_stops");
-      logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "itinerary validation failed");
-      logAiState("FAILED", "invalid_stops");
+      const stops = payload ? coalesceItineraryItems(payload.itinerary) : [];
+      const reason =
+        selectedPlaces.length < computeMinimumPlacesForTripDays(generateInput.days, comboIds.length || 1)
+          ? "insufficient_real_places"
+          : stops.length > 0 && stops.length < generateInput.days
+            ? "empty_non_free_day"
+            : !payload
+              ? "stop_unwrap_failed"
+              : "invalid_stops_after_unwrap";
+      logItineraryFailureReason(reason);
+      logAiItineraryFailed(reason);
+      logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", reason);
+      logAiState("FAILED", reason);
       return {
         ok: false,
         state: "FAILED",
-        message: ITINERARY_GENERATION_FAILED_MESSAGE,
+        message:
+          reason === "insufficient_real_places"
+            ? INSUFFICIENT_ITINERARY_PLACES_MESSAGE
+            : ITINERARY_GENERATION_FAILED_MESSAGE,
         session: {
           ...session,
           aiItineraryState: "FAILED",
@@ -501,7 +543,7 @@ export async function createItineraryFromSession(params: {
       };
     }
 
-    logItineraryDaysBuilt(generateInput.days, coalesceStops(payload).length);
+    logItineraryDaysBuilt(generateInput.days, coalesceItineraryItems(payload.itinerary).length);
     logItineraryValidationResult(true);
     logAiItinerarySuccess();
     logAiState("SUCCESS");

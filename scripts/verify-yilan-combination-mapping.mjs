@@ -179,8 +179,10 @@ for (const pool of pools) {
 
 const minPer = computeMinimumResolvedPerCombination(4);
 const minTotal = computeMinimumResolvedPlaces({ tripDays: 4, selectedCombinationCount: 3 });
-assert(minPer === 2, `minPerCombo=2 got=${minPer}`);
-assert(minTotal >= 6, `minTotal>=6 got=${minTotal}`);
+assert(minPer === 1, `minPerCombo hard floor=1 got=${minPer}`);
+// Multi-select viability floors at combo count — not days×3 / fixed 4.
+assert(minTotal === 3, `minTotal=comboCount got=${minTotal}`);
+assert(minTotal < 4 * 3, "must not require days×3");
 
 const expanded = expandAllowlistNamesFromPools("宜蘭", selected);
 assert(

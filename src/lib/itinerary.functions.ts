@@ -22,6 +22,15 @@ import {
   type GenerateItineraryResult,
 } from "@/lib/trip/itinerary-guards";
 import { preparePlacesForItineraryBuild } from "@/lib/place-planning-memory";
+import type { PlaceResult } from "@/lib/place-result";
+import { dedupeLandmarkItems } from "@/lib/ai/landmark-cluster";
+import { validateCrossDayGeographicAllocation } from "@/lib/ai/geographic-clustering";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import {
+  validateFinalItineraryIntegrity,
+  validateGeneratedItinerary,
+  groupStopsByTripDays,
+} from "@/lib/ai/combination-itinerary-integrity";
 
 const PlaceSchema = z
   .object({
@@ -38,8 +47,16 @@ const PlaceSchema = z
     googlePlaceId: z.string().optional(),
     reasonSource: z.enum(["template", "ai"]).optional(),
     sourceCombinationId: z.number().optional(),
+    sourceCombinationIds: z.array(z.number()).optional(),
     matchedCombinationIds: z.array(z.number()).optional(),
     matchedSelectedCombinationIds: z.array(z.number()).optional(),
+    sourceRegionCandidate: z.string().optional(),
+    photoName: z.string().nullable().optional(),
+    rating: z.number().nullable().optional(),
+    userRatingCount: z.number().nullable().optional(),
+    businessStatus: z.string().nullable().optional(),
+    openStatusLabel: z.string().optional(),
+    todayHoursLabel: z.string().optional(),
   })
   .transform((raw) => ({
     name: raw.name,
@@ -55,8 +72,16 @@ const PlaceSchema = z
     googlePlaceId: raw.googlePlaceId,
     reasonSource: raw.reasonSource ?? "template",
     sourceCombinationId: raw.sourceCombinationId,
+    sourceCombinationIds: raw.sourceCombinationIds,
     matchedCombinationIds: raw.matchedCombinationIds,
     matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
+    sourceRegionCandidate: raw.sourceRegionCandidate,
+    photoName: raw.photoName,
+    rating: raw.rating,
+    userRatingCount: raw.userRatingCount,
+    businessStatus: raw.businessStatus,
+    openStatusLabel: raw.openStatusLabel,
+    todayHoursLabel: raw.todayHoursLabel,
   }));
 
 const InputSchema = z.object({
@@ -137,6 +162,20 @@ function enrichItineraryFromSelectedPlaces(
             lat: match.lat,
             lng: match.lng,
             address: item.address?.trim() ? item.address : match.address,
+            placeType: item.placeType || match.type,
+            photoName: item.photoName ?? match.photoName,
+            rating: item.rating ?? match.rating,
+            userRatingCount: item.userRatingCount ?? match.userRatingCount,
+            businessStatus: item.businessStatus ?? match.businessStatus,
+            openStatusLabel: item.openStatusLabel || match.openStatusLabel,
+            todayHoursLabel: item.todayHoursLabel || match.todayHoursLabel,
+            types: item.types?.length ? item.types : match.type ? [match.type] : undefined,
+            placeSnapshotSource: item.placeSnapshotSource ?? "selected_place",
+            sourceCombinationId: item.sourceCombinationId ?? match.sourceCombinationId,
+            matchedCombinationIds:
+              item.matchedCombinationIds ?? match.matchedCombinationIds,
+            matchedSelectedCombinationIds:
+              item.matchedSelectedCombinationIds ?? match.matchedSelectedCombinationIds,
           }
         : item;
 
@@ -248,54 +287,133 @@ export const generateItinerary = createServerFn({ method: "POST" })
       };
     }
 
+    if (selectedPlaces.length < data.days) {
+      logAiPipeline(
+        "[INSUFFICIENT_REAL_PLACES_DETECTED]",
+        `tripDays=${data.days}`,
+        `resolvedPlaces=${selectedPlaces.length}`,
+        `minimumRequired=${data.days}`,
+        "stage=generate_itinerary_entry",
+      );
+      return {
+        success: false,
+        errorCode: "insufficient_places",
+        message: INSUFFICIENT_ITINERARY_PLACES_MESSAGE,
+      };
+    }
+
     const interestsText = [data.interests, data.conversationSummary].filter(Boolean).join("\n\n");
     const startDate = data.startDate?.trim() || new Date().toISOString().slice(0, 10);
+    const selectedCombinationIds = data.selectedCombinationIds ?? [];
+    const requiredPlaceNames = selectedPlaces.map((p) => p.placeName ?? p.name);
+
+    logAiPipeline(
+      "[SELECTED_COMBINATIONS_CONFIRMED]",
+      `ids=[${selectedCombinationIds.join(",")}]`,
+    );
+    logAiPipeline(
+      "[SELECTED_PLACE_POOL_BUILT]",
+      `count=${selectedPlaces.length}`,
+      `places=[${requiredPlaceNames.join(",")}]`,
+    );
 
     let ai: RoamiePayloadV2 | null = null;
+    let usedDeterministic = false;
 
-    try {
-      const aiResponse: RoamieResponse = await callRoamieAI({
-        mode: "itinerary",
-        locale: data.locale,
-        mood: data.mood,
-        preferences: data.preferences as never,
-        location: data.location,
-        weather: data.weather as never,
-        time: data.time,
-        planningHints: {
-          transportation: data.transport,
-          budget: data.budget === "low" ? "省錢" : data.budget === "high" ? "舒適" : "適中",
-          conversationSummary: data.conversationSummary,
-        },
-        itineraryRequest: {
-          destination: data.destination,
-          days: data.days,
-          budget: data.budget,
-          style: data.style,
-          mood: data.mood,
-          interests: interestsText,
-          startDate: data.startDate,
-          endDate: data.endDate,
-          origin: data.origin,
-          travelers: data.travelers,
-          transport: data.transport,
-          selectedPlaces,
-        },
+    // When the user locked combination selections, the deterministic geography-first
+    // allocator is authoritative. AI may only rearrange; coverage failures rebuild.
+    if (selectedCombinationIds.length > 0) {
+      const builtItems = buildItineraryFromSelectedPlaces(
+        selectedPlaces,
+        data.days,
+        startDate,
+        data.destination,
+        selectedCombinationIds,
+      );
+      const coverageCheck = validateGeneratedItinerary({
+        tripDays: data.days,
+        startDate,
+        selectedCombinationIds,
+        days: groupStopsByTripDays(builtItems, data.days, startDate),
+        resolvedPlaces: selectedPlaces,
+        destination: data.destination,
       });
-
-      let rawItinerary = coalesceItineraryItems(aiResponse.itinerary);
-      if (rawItinerary.length > 0) {
-        const enrichedItinerary = enrichItineraryFromSelectedPlaces(
-          rawItinerary,
-          selectedPlaces,
-          data.destination,
+      if (coverageCheck.ok || builtItems.length >= selectedCombinationIds.length) {
+        ai = buildFallbackTripPayload(data, builtItems, selectedPlaces);
+        usedDeterministic = true;
+        logAiPipeline(
+          "[ITINERARY_BUILD_PATH]",
+          "path=deterministic_selected_combinations",
+          `places=${builtItems.length}`,
         );
-        if (enrichedItinerary.length > 0) {
-          ai = { ...aiResponse, itinerary: enrichedItinerary };
-        }
       }
-    } catch (e) {
-      console.warn("[Roamie] AI itinerary generation failed", e);
+    }
+
+    if (!ai) {
+      try {
+        const aiResponse: RoamieResponse = await callRoamieAI({
+          mode: "itinerary",
+          locale: data.locale,
+          mood: data.mood,
+          preferences: data.preferences as never,
+          location: data.location,
+          weather: data.weather as never,
+          time: data.time,
+          planningHints: {
+            transportation: data.transport,
+            budget: data.budget === "low" ? "省錢" : data.budget === "high" ? "舒適" : "適中",
+            conversationSummary: data.conversationSummary,
+          },
+          itineraryRequest: {
+            destination: data.destination,
+            days: data.days,
+            budget: data.budget,
+            style: data.style,
+            mood: data.mood,
+            interests: interestsText,
+            startDate: data.startDate,
+            endDate: data.endDate,
+            origin: data.origin,
+            travelers: data.travelers,
+            transport: data.transport,
+            selectedPlaces,
+            selectedCombinationIds,
+          },
+        });
+
+        let rawItinerary = coalesceItineraryItems(aiResponse.itinerary);
+        if (rawItinerary.length > 0) {
+          const enrichedItinerary = enrichItineraryFromSelectedPlaces(
+            rawItinerary,
+            selectedPlaces,
+            data.destination,
+          );
+          if (enrichedItinerary.length > 0) {
+            const aiCoverage = validateGeneratedItinerary({
+              tripDays: data.days,
+              startDate,
+              selectedCombinationIds,
+              days: groupStopsByTripDays(enrichedItinerary, data.days, startDate),
+              resolvedPlaces: selectedPlaces,
+              destination: data.destination,
+            });
+            if (!aiCoverage.ok && selectedCombinationIds.length > 0) {
+              logAiPipeline(
+                "[ITINERARY_AI_COVERAGE_FAILED]",
+                `reasons=${aiCoverage.reasons.join("|")}`,
+              );
+            } else {
+              ai = {
+                ...aiResponse,
+                itinerary: enrichedItinerary,
+              } as RoamiePayloadV2;
+              logAiPipeline("[ITINERARY_BUILD_PATH]", "path=ai");
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[Roamie] AI itinerary generation failed", e);
+      }
     }
 
     if (!ai || coalesceItineraryItems(ai.itinerary).length < 1) {
@@ -308,10 +426,151 @@ export const generateItinerary = createServerFn({ method: "POST" })
         data.days,
         startDate,
         data.destination,
-        data.selectedCombinationIds,
+        selectedCombinationIds,
       );
       ai = buildFallbackTripPayload(data, builtItems, selectedPlaces);
+      usedDeterministic = true;
+      logAiPipeline(
+        "[ITINERARY_BUILD_PATH]",
+        "path=deterministic_fallback",
+        `places=${builtItems.length}`,
+      );
     }
+
+    // Global landmark dedupe must run before final day geography is trusted.
+    // For AI paths that already assigned dates, rebuild via deterministic allocator
+    // when nearby main/sub landmarks remain or selected coverage is incomplete.
+    {
+      const itemToPlace = (item: RoamieItineraryItem): PlaceResult =>
+        ({
+          id: item.googlePlaceId?.trim() || item.placeName || item.title,
+          name: item.placeName || item.title,
+          address: item.address ?? null,
+          lat: item.lat ?? null,
+          lng: item.lng ?? null,
+          rating: item.rating ?? null,
+          userRatingCount: item.userRatingCount ?? null,
+          photoName: item.photoName ?? null,
+          primaryType: item.placeType ?? null,
+          types: item.types ?? (item.placeType ? [item.placeType] : null),
+          businessStatus: item.businessStatus ?? null,
+          openStatus: "unknown",
+          openStatusLabel: item.openStatusLabel ?? "",
+          todayHoursLabel: item.todayHoursLabel ?? "",
+          closingSoonNote: "",
+          nextOpenHint: "",
+        }) as unknown as PlaceResult;
+
+      const current = coalesceItineraryItems(ai.itinerary);
+      const { kept, removed } = dedupeLandmarkItems(current, itemToPlace);
+      if (removed.length) {
+        for (const r of removed) {
+          logAiPipeline(
+            "[SELECTED_PLACE_MERGED]",
+            `source=${r.item.placeName ?? r.item.title}`,
+            `representative=${kept.find((k) => k.googlePlaceId === r.item.googlePlaceId)?.placeName ?? "cluster"}`,
+            `reason=${r.reason}`,
+          );
+          logAiPipeline(
+            "[DUPLICATE_LANDMARK_REMOVED]",
+            `day=${(r.item.dayIndex ?? 0) + 1}`,
+            `place=${r.item.placeName ?? r.item.title}`,
+            `reason=${r.reason}`,
+          );
+        }
+        logAiPipeline(
+          "[ITINERARY_TIMELINE_RECALCULATED]",
+          `removedPlaceCount=${removed.length}`,
+        );
+        ai = { ...ai, itinerary: kept };
+      }
+
+      const dateOrder: string[] = [];
+      for (const item of kept) {
+        const d = item.date?.trim();
+        if (d && !dateOrder.includes(d)) dateOrder.push(d);
+      }
+      const entries = kept.map((item) => ({
+        place: itemToPlace(item),
+        day:
+          item.dayIndex != null
+            ? item.dayIndex + 1
+            : Math.max(1, dateOrder.indexOf(item.date?.trim() ?? "") + 1),
+      }));
+      const geoCheck = validateCrossDayGeographicAllocation(entries, data.days);
+      if (!geoCheck.ok && !usedDeterministic) {
+        logAiPipeline(
+          "[ITINERARY_GEOGRAPHIC_REALLOCATION]",
+          `reason=nearby_places_split_across_days`,
+          `details=${geoCheck.reasons.join("|")}`,
+        );
+        // Rebuild with geography-first allocator instead of keeping a broken AI layout.
+        const rebuilt = buildItineraryFromSelectedPlaces(
+          selectedPlaces,
+          data.days,
+          startDate,
+          data.destination,
+          selectedCombinationIds,
+        );
+        ai = buildFallbackTripPayload(data, rebuilt, selectedPlaces);
+        usedDeterministic = true;
+      } else if (!geoCheck.ok) {
+        logAiPipeline(
+          "[ITINERARY_GEOGRAPHIC_REALLOCATION]",
+          `reason=nearby_places_split_across_days`,
+          `details=${geoCheck.reasons.join("|")}`,
+        );
+      }
+    }
+
+    const finalStops = coalesceItineraryItems(ai.itinerary);
+    const integrity = validateFinalItineraryIntegrity({
+      selectedCombinationIds,
+      sessionSelectedCombinationIds: selectedCombinationIds,
+      requiredPlaceNames,
+      scheduledStops: finalStops,
+      resolvedPlaces: selectedPlaces,
+      tripDays: data.days,
+      startDate,
+      destination: data.destination,
+    });
+
+    logAiPipeline(
+      "[ITINERARY_SAVE_STATS]",
+      `expectedPlaces=${selectedPlaces.length}`,
+      `savedPlaces=${finalStops.length}`,
+      `integrityOk=${integrity.ok}`,
+    );
+
+    if (!integrity.ok && selectedCombinationIds.length > 0) {
+      // Hard gate: do not persist a half-built selected-combination itinerary.
+      const critical = integrity.reasons.filter(
+        (r) =>
+          r.startsWith("fallback_over_selected") ||
+          r.startsWith("silent_drop") ||
+          r.startsWith("unselected_combination_place") ||
+          r.startsWith("missing_combination") ||
+          r.startsWith("empty_day") ||
+          r.startsWith("empty_non_free_day") ||
+          r.startsWith("insufficient_real_places"),
+      );
+      if (critical.length) {
+        logAiPipeline(
+          "[ITINERARY_INTEGRITY_BLOCKED_SAVE]",
+          `reasons=${critical.join("|")}`,
+        );
+        return {
+          success: false,
+          errorCode: "itinerary_integrity_failed",
+          message: INSUFFICIENT_ITINERARY_PLACES_MESSAGE,
+        };
+      }
+    }
+
+    const dayStats = groupStopsByTripDays(finalStops, data.days, startDate)
+      .map((d, i) => `day${i + 1}=${d.places.length}`)
+      .join(" ");
+    logAiPipeline("[DAILY_ALLOCATION_STATS]", dayStats);
 
     const lat = data.location?.lat;
     const lng = data.location?.lng;

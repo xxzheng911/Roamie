@@ -57,11 +57,7 @@ export function resolveDestinationScopeFields(
       : entity.country ??
         (previousCountry ? normalizeDestinationLabel(previousCountry) : undefined);
 
-  logAiPipeline(
-    "[DESTINATION_ENTITY_RESOLVED]",
-    `name=${label}`,
-    `type=${entity.type}`,
-  );
+  // Entity resolver already emits DESTINATION_ENTITY_RESOLVED — avoid duplicate spam.
 
   if (entity.type === "country") {
     return {

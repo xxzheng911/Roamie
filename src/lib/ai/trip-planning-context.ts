@@ -45,11 +45,11 @@ export const EMPTY_TRIP_PLANNING_CONTEXT: TripPlanningContext = {
 };
 
 const KNOWN_CITIES =
-  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|苗栗|南投|彰化|雲林|屏東|屏东|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|連江|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
+  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|苗栗|南投|彰化|雲林|屏東|屏东|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|連江|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|愛丁堡|曼徹斯特|湖區|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
 
 /** 熱門旅遊城市（含泰國海島等） */
 const KNOWN_TOURIST_CITIES =
-  /^(芭達雅|帕塔雅|普吉島|普吉|蘇梅島|蘇梅|清邁|清迈|河內|胡志明|峴港|金邊|吳哥窟|吉隆坡|檳城|槟城|峇里島|巴厘岛|宿霧|長灘島|長灘|札幌|北海道|沖繩|冲绳|廣島|奈良|神戶|箱根|鎌倉|濟州|濟州島)(市|府|島|县)?$/i;
+  /^(芭達雅|帕塔雅|普吉島|普吉|蘇梅島|蘇梅|清邁|清迈|河內|胡志明|峴港|金邊|吳哥窟|吉隆坡|檳城|槟城|峇里島|巴厘岛|宿霧|長灘島|長灘|馬尼拉|巴拉望|札幌|北海道|沖繩|冲绳|廣島|奈良|神戶|箱根|鎌倉|濟州|濟州島)(市|府|島|县)?$/i;
 
 /** 知名景點／山岳／風景區（非城市但為明確旅遊目的地） */
 const KNOWN_SCENIC_SPOTS =
@@ -825,14 +825,27 @@ export function mergeTripPlanningContext(
       session.tripDestination?.city ??
       (skipDestParse ? undefined : session.preferredArea);
 
-    const days =
-      travelCtx.days ??
-      session.tripDays ??
-      prev.days ??
-      (travelCtx.startDate && travelCtx.endDate
-        ? enrichTripDatesInContext("", travelCtx, session).days
-        : undefined);
-    const travelMonth = travelCtx.travelMonth ?? prev.travelMonth;
+    const prevDestNorm = prev.destination
+      ? normalizeDestinationLabel(prev.destination)
+      : session.tripDestination?.city
+        ? normalizeDestinationLabel(session.tripDestination.city)
+        : undefined;
+    const nextDestNorm = destination ? normalizeDestinationLabel(destination) : undefined;
+    const destinationSwitched = Boolean(
+      prevDestNorm && nextDestNorm && prevDestNorm !== nextDestNorm,
+    );
+
+    const days = destinationSwitched
+      ? travelCtx.days
+      : travelCtx.days ??
+        session.tripDays ??
+        prev.days ??
+        (travelCtx.startDate && travelCtx.endDate
+          ? enrichTripDatesInContext("", travelCtx, session).days
+          : undefined);
+    const travelMonth = destinationSwitched
+      ? travelCtx.travelMonth
+      : travelCtx.travelMonth ?? prev.travelMonth;
     const travelStyle =
       travelCtx.travelStyle ??
       travelCtx.vibe ??
@@ -842,8 +855,12 @@ export function mergeTripPlanningContext(
     const context: TripPlanningContext = {
       destination,
       origin: session.tripOrigin?.displayLabel ?? session.tripOrigin?.city ?? prev.origin,
-      startDate: travelCtx.startDate ?? session.tripStartDate ?? prev.startDate,
-      endDate: travelCtx.endDate ?? session.tripEndDate ?? prev.endDate,
+      startDate: destinationSwitched
+        ? travelCtx.startDate
+        : travelCtx.startDate ?? session.tripStartDate ?? prev.startDate,
+      endDate: destinationSwitched
+        ? travelCtx.endDate
+        : travelCtx.endDate ?? session.tripEndDate ?? prev.endDate,
       days,
       budget: travelCtx.budgetLevel ?? session.budget ?? prev.budget,
       travelStyle,
@@ -861,11 +878,17 @@ export function mergeTripPlanningContext(
       preferredArea: destination ?? session.preferredArea,
     };
 
-    if (destination && mode === "destination_planning" && !session.tripDestination?.city) {
-      nextSession = {
-        ...nextSession,
-        tripDestination: tripLocationFromCity(destination),
-      };
+    if (destination && mode === "destination_planning") {
+      const existingCity = session.tripDestination?.city?.trim();
+      const shouldReplaceTripDestination =
+        !existingCity ||
+        normalizeDestinationLabel(existingCity) !== normalizeDestinationLabel(destination);
+      if (shouldReplaceTripDestination) {
+        nextSession = {
+          ...nextSession,
+          tripDestination: tripLocationFromCity(destination),
+        };
+      }
     }
 
     if (mode === "destination_planning") {

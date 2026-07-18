@@ -29,15 +29,38 @@ import {
   logRejectedCandidate,
 } from "@/lib/ai/combination-candidate-quality";
 import {
+  isLikelyPlaceName,
+  normalizePlaceCandidateName,
+  logNonPlaceCandidateRejected,
+} from "@/lib/ai/place-name-likelihood";
+import {
   resolveDestinationCoordinates,
+  validateDestinationScope,
+  resolveDestinationCountryLabel,
+  clearResolvedDestinationScope,
+  enrichDestinationCountry,
+  finalizeDestinationScope,
+  buildDestinationScopeContextPatch,
+  countryCodeForCountryName,
 } from "@/lib/ai/resolved-destination-scope";
-import { beginPlacesGenerationSession } from "@/lib/places-api-guard";
+import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
+import { beginPlacesGenerationSession, getActivePlacesGenerationRequestId } from "@/lib/places-api-guard";
+import {
+  buildDestinationDiscoveryQueries,
+  buildDestinationSearchAreas,
+  buildThemeSearchDirections,
+  resolveDiscoveryRegionProfile,
+} from "@/lib/ai/destination-discovery-queries";
+
+/** Soft ceiling — stop discovery rather than hang forever on rate limits. */
+const COMBINATION_DISCOVERY_TIMEOUT_MS = 45_000;
 
 export type CombinationPlaceCandidate = {
   name: string;
   googlePlaceId?: string;
   searchCandidateId?: string;
   coordinates?: { lat: number; lng: number };
+  address?: string;
   district?: string;
   types: string[];
   primaryType?: string | null;
@@ -67,11 +90,72 @@ export type CombinationValidationResult = {
   genericPlaceNames: string[];
 };
 
+export type DestinationDiscoveryFailureReason =
+  | "destination_resolution_failed"
+  | "destination_country_unresolved"
+  | "destination_coordinate_mismatch"
+  | "places_no_results"
+  | "places_rate_limited"
+  | "combination_insufficient"
+  | "invalid_destination_scope"
+  | "blocked_country"
+  | "timeout";
+
+let lastDiscoveryFailure: {
+  destination: string;
+  reason: DestinationDiscoveryFailureReason;
+  detail?: string;
+} | null = null;
+
+let lastFinalizedScopePatch: ReturnType<typeof buildDestinationScopeContextPatch> | null = null;
+
+export function getLastCombinationDiscoveryFailure(): typeof lastDiscoveryFailure {
+  return lastDiscoveryFailure;
+}
+
+export function getLastFinalizedDestinationScopePatch(): typeof lastFinalizedScopePatch {
+  return lastFinalizedScopePatch;
+}
+
+function setDiscoveryFailure(
+  destination: string,
+  reason: DestinationDiscoveryFailureReason,
+  detail?: string,
+): null {
+  lastDiscoveryFailure = { destination: normalizeDestinationLabel(destination), reason, detail };
+  return null;
+}
+
 export const INSUFFICIENT_COMBINATION_PLACES_MESSAGE =
   "目前暫時無法取得景點資料。";
 
-export function buildDestinationRecommendationFailedMessage(destination: string): string {
+/**
+ * User-facing failure copy. Keeps root reasons in logs via getLastCombinationDiscoveryFailure.
+ * Do not collapse scope/country errors into a Places「無資料」message.
+ */
+export function buildDestinationRecommendationFailedMessage(
+  destination: string,
+  reason?: string | null,
+): string {
   const label = normalizeDestinationLabel(destination) || "這個目的地";
+  const r = (reason ?? lastDiscoveryFailure?.reason ?? "").toLowerCase();
+  if (
+    r.includes("country_unresolved") ||
+    r.includes("destination_country") ||
+    r === "country_unresolved"
+  ) {
+    return `目前暫時無法確認${label}的國家範圍，請稍後再試一次。`;
+  }
+  if (
+    r.includes("coordinate_mismatch") ||
+    r.includes("taiwan_default") ||
+    r.includes("invalid_destination_scope")
+  ) {
+    return `目前暫時無法確認${label}的目的地範圍，請稍後再試或換個寫法。`;
+  }
+  if (r.includes("rate_limited") || r.includes("timeout")) {
+    return `目前服務較忙碌，暫時無法整理${label}的推薦，請稍後再試。`;
+  }
   return `目前暫時無法取得${label}的景點資料。\n\n你可以點「重新整理推薦」再試一次。`;
 }
 
@@ -79,9 +163,10 @@ export const REFRESH_DESTINATION_RECOMMENDATIONS_OPTION = "重新整理推薦";
 
 const MIN_COMBINATIONS = 3;
 const MAX_COMBINATIONS = 5;
-const MIN_PLACES_PER_COMBO = 2;
+/** Minimum real Places required per combination before showing it. */
+const MIN_PLACES_PER_COMBO = 3;
 /** Soft floor: enough real Places to assemble combinations without strict themes. */
-const MIN_RESOLVED_PLACES_FOR_SOFT_COMBOS = 5;
+const MIN_RESOLVED_PLACES_FOR_SOFT_COMBOS = 6;
 /** Primary slots shown / mapped first */
 const PRIMARY_PLACES_PER_COMBO = 3;
 /** Extra backup candidates kept per combination for mapping refill */
@@ -145,15 +230,23 @@ const THEME_DEFS: Array<{
 /** Soft search-area hints for dual city/county labels — data only, not flow branching. */
 const SEARCH_AREA_HINTS: Record<string, string[]> = {
   新竹: ["新竹市", "竹北", "南寮", "香山", "北埔", "峨眉"],
-  嘉義: ["嘉義市", "民雄", "中埔"],
+  嘉義: ["嘉義市", "民雄", "中埔", "阿里山"],
   彰化: ["彰化市", "鹿港", "員林"],
   宜蘭: ["宜蘭市", "羅東", "礁溪", "頭城", "冬山", "五結", "蘇澳"],
+  屏東: ["屏東市區", "東港", "恆春", "墾丁", "車城", "枋寮"],
+  花蓮: ["花蓮市", "壽豐", "瑞穗", "玉里", "太魯閣"],
+  台東: ["台東市", "鹿野", "池上", "成功", "知本"],
+  南投: ["南投市", "埔里", "魚池", "日月潭", "竹山"],
   濟州: ["濟州島", "Jeju", "Jeju Island", "제주도", "西歸浦", "濟州市"],
+  宿霧: ["Cebu", "Cebu City", "Mactan", "麥克坦", "宿霧市"],
   沖繩: ["那霸", "Okinawa", "沖繩縣"],
   北海道: ["札幌", "小樽", "函館", "Hokkaido"],
   九州: ["福岡", "熊本", "長崎", "Kyushu"],
   峇里島: ["烏布", "庫塔", "Bali", "Denpasar"],
   長灘島: ["Boracay", "White Beach"],
+  愛丁堡: ["Edinburgh", "Edinburgh Old Town", "Leith"],
+  曼徹斯特: ["Manchester", "Salford"],
+  湖區: ["Lake District", "Keswick", "Windermere"],
 };
 
 const discoveryCache = new Map<string, StructuredCombinationOption[]>();
@@ -198,25 +291,27 @@ export function clearDiscoveredCombinationsCache(destination?: string): void {
   discoveryCache.delete(normalizeDestinationLabel(destination));
 }
 
-export function resolveDestinationSearchAreas(destination: string): string[] {
+export function resolveDestinationSearchAreas(
+  destination: string,
+  country?: string | null,
+): string[] {
   const label = normalizeDestinationLabel(destination);
   const hints = SEARCH_AREA_HINTS[label];
-  const en = EN_CITY_NAMES[label];
-  const base = hints?.length
-    ? [label, ...hints]
-    : [label, `${label}市`, `${label}縣`, `${label}島`];
-  if (en) base.push(en, `${en} Island`);
-  return [...new Set(base.filter(Boolean))];
+  if (hints?.length) {
+    return [...new Set([label, ...hints].filter(Boolean))];
+  }
+  return buildDestinationSearchAreas({ destination: label, country });
 }
 
 export function resolveDestinationForCombinations(
   destination: string,
   coordinates?: { lat: number; lng: number } | null,
+  country?: string | null,
 ): DestinationResolution {
   const displayName = normalizeDestinationLabel(destination);
-  const searchAreas = resolveDestinationSearchAreas(displayName);
+  const searchAreas = resolveDestinationSearchAreas(displayName, country);
   const coords =
-    coordinates ?? resolveDestinationApproxCenter(displayName) ?? null;
+    coordinates ?? resolveDestinationApproxCenter(displayName, country) ?? null;
 
   logAiPipeline(
     "[DESTINATION_RESOLVED]",
@@ -243,6 +338,15 @@ function isNonAttractionPlace(place: PlaceResult): boolean {
   const name = placeNameOf(place);
   if (!name) return true;
   if (NON_ATTRACTION_NAME_RE.test(name)) return true;
+  const likelihood = isLikelyPlaceName(name);
+  if (!likelihood.ok) {
+    logNonPlaceCandidateRejected(
+      name,
+      likelihood.reason ?? "long_marketing_text",
+      "places_discovery",
+    );
+    return true;
+  }
   const types = new Set(
     [...(place.types ?? []), place.primaryType ?? ""]
       .map((t) => t.trim().toLowerCase())
@@ -264,7 +368,10 @@ function isNonAttractionPlace(place: PlaceResult): boolean {
     types.has("real_estate_agency") ||
     types.has("accounting") ||
     types.has("lawyer") ||
-    types.has("funeral_home")
+    types.has("funeral_home") ||
+    types.has("travel_agency") ||
+    types.has("tour_operator") ||
+    types.has("event_ticket_seller")
   ) {
     return true;
   }
@@ -292,10 +399,21 @@ function toCandidate(
   destination: string,
   center?: { lat: number; lng: number } | null,
 ): CombinationPlaceCandidate | null {
-  const name = placeNameOf(place);
-  if (!name) return null;
-  if (isGenericDestinationPlaceholder(name, destination)) return null;
+  const rawName = placeNameOf(place);
+  if (!rawName) return null;
+  if (isGenericDestinationPlaceholder(rawName, destination)) return null;
   if (isNonAttractionPlace(place)) return null;
+
+  const normalized = normalizePlaceCandidateName(rawName);
+  if (!normalized.accepted) {
+    logNonPlaceCandidateRejected(
+      rawName,
+      normalized.reason ?? "rejected_non_place",
+      "places_discovery_to_candidate",
+    );
+    return null;
+  }
+  const name = normalized.normalized;
 
   const lat = place.lat;
   const lng = place.lng;
@@ -307,6 +425,7 @@ function toCandidate(
       lat != null && lng != null && (Math.abs(lat) > 0.001 || Math.abs(lng) > 0.001)
         ? { lat, lng }
         : undefined,
+    address: place.address?.trim() || undefined,
     district: place.address?.split(/[，,]/)[0]?.trim(),
     types: place.types ?? [],
     primaryType: place.primaryType,
@@ -326,7 +445,7 @@ function toCandidate(
     },
     { theme: assignThemeKey(candidate) },
     destination,
-    { center: center ?? null, requireTourismType: false },
+    { center: center ?? null, requireTourismType: false, source: "places_discovery" },
   );
   if (!quality.ok) {
     logRejectedCandidate(candidate, "discovery", quality.reason ?? "quality");
@@ -356,6 +475,53 @@ function jaccardOverlap(a: string[], b: string[]): number {
 }
 
 /**
+ * Drop SEO / booking / affiliate product titles from structured combo pools
+ * before chat UI or validation. Mutates `combinations` in place.
+ */
+export function sanitizeStructuredCombinationPlaces(
+  combinations: StructuredCombinationOption[],
+  destination: string,
+): void {
+  const label = normalizeDestinationLabel(destination);
+  for (let i = combinations.length - 1; i >= 0; i -= 1) {
+    const combo = combinations[i]!;
+    const rawCount = combo.placeCandidates.length;
+    const kept: CombinationPlaceCandidate[] = [];
+    let rejectedNonPlaces = 0;
+    for (const place of combo.placeCandidates) {
+      const check = normalizePlaceCandidateName(place.name);
+      if (!check.accepted) {
+        rejectedNonPlaces += 1;
+        logNonPlaceCandidateRejected(
+          place.name,
+          check.reason ?? "rejected_non_place",
+          `combination:${combo.title}`,
+        );
+        continue;
+      }
+      if (isGenericDestinationPlaceholder(check.normalized, label)) {
+        rejectedNonPlaces += 1;
+        continue;
+      }
+      kept.push({ ...place, name: check.normalized });
+    }
+    combo.placeCandidates = kept;
+    combo.primaryCandidates = kept.slice(0, PRIMARY_PLACES_PER_COMBO);
+    combo.fallbackCandidates = kept.slice(PRIMARY_PLACES_PER_COMBO);
+    logAiPipeline(
+      "[COMBINATION_PLACE_VALIDATION]",
+      `combinationId=${combo.combinationId}`,
+      `rawCount=${rawCount}`,
+      `validRealPlaces=${kept.length}`,
+      `rejectedNonPlaces=${rejectedNonPlaces}`,
+    );
+    if (kept.length < MIN_PLACES_PER_COMBO) {
+      combinations.splice(i, 1);
+    }
+  }
+}
+
+/**
  * Validate structured combinations before showing them in chat.
  */
 export function validateCombinationOptions(
@@ -367,10 +533,21 @@ export function validateCombinationOptions(
   const genericPlaceNames: string[] = [];
   const label = normalizeDestinationLabel(destination);
 
+  sanitizeStructuredCombinationPlaces(combinations, label);
+
   for (const combo of combinations) {
     for (const place of combo.placeCandidates) {
       if (isGenericDestinationPlaceholder(place.name, label)) {
         genericPlaceNames.push(place.name);
+      }
+      const likelihood = isLikelyPlaceName(place.name);
+      if (!likelihood.ok) {
+        genericPlaceNames.push(place.name);
+        logNonPlaceCandidateRejected(
+          place.name,
+          likelihood.reason ?? "rejected_non_place",
+          "combination_validation",
+        );
       }
     }
   }
@@ -596,56 +773,70 @@ type FallbackSearchMode =
 
 const FALLBACK_SEARCH_MODES: Array<{
   mode: FallbackSearchMode;
-  queries: (area: string, en?: string) => string[];
+  queries: (area: string, en: string | undefined, profile: string) => string[];
   includedTypes: string[];
   minRating?: number;
 }> = [
   {
     mode: "popular_places",
-    queries: (area, en) => [
-      `${area} 熱門景點`,
-      `${area} 必去景點`,
-      `${area} popular attractions`,
-      ...(en ? [`${en} tourist attractions`, `${en} must visit`] : []),
-    ],
+    queries: (area, en, profile) => {
+      if (profile === "taiwan") {
+        return [
+          `${area} 熱門景點`,
+          `${area} 必去景點`,
+          `${area} popular attractions`,
+          ...(en ? [`${en} tourist attractions`, `${en} must visit`] : []),
+        ];
+      }
+      return [
+        `${en ?? area} tourist attractions`,
+        `${en ?? area} must visit`,
+        `${area} 景點`,
+        ...(en ? [`${en} top attractions`] : []),
+      ];
+    },
     includedTypes: ["tourist_attraction", "park", "museum", "natural_feature"],
   },
   {
     mode: "popular_plus_cafe",
     queries: (area, en) => [
+      `${en ?? area} attractions`,
+      `${en ?? area} cafe`,
       `${area} 景點`,
       `${area} 咖啡`,
-      `${area} cafe`,
-      ...(en ? [`${en} cafe`, `${en} attractions`] : []),
     ],
     includedTypes: ["tourist_attraction", "cafe", "coffee_shop", "park"],
   },
   {
     mode: "popular_plus_food",
     queries: (area, en) => [
+      `${en ?? area} restaurant`,
+      `${en ?? area} food`,
       `${area} 景點`,
       `${area} 美食`,
-      `${area} 餐厅`,
-      `${area} restaurant`,
-      ...(en ? [`${en} food`, `${en} restaurant`] : []),
     ],
     includedTypes: ["tourist_attraction", "restaurant", "market"],
   },
   {
     mode: "popular_plus_shopping",
-    queries: (area, en) => [
-      `${area} 景點`,
-      `${area} 商圈`,
-      `${area} 購物`,
-      ...(en ? [`${en} shopping`, `${en} market`] : []),
-    ],
+    queries: (area, en, profile) => {
+      if (profile === "taiwan") {
+        return [`${area} 景點`, `${area} 商圈`, `${area} 購物`, ...(en ? [`${en} shopping`] : [])];
+      }
+      return [
+        `${en ?? area} market`,
+        `${en ?? area} shopping`,
+        `${area} 景點`,
+        ...(en ? [`${en} market`] : []),
+      ];
+    },
     includedTypes: ["tourist_attraction", "shopping_mall", "market"],
   },
   {
     mode: "high_rating",
     queries: (area, en) => [
+      `${en ?? area} tourist attractions`,
       `${area} 熱門景點`,
-      `${area} tourist attractions`,
       ...(en ? [`${en} top attractions`] : []),
     ],
     includedTypes: ["tourist_attraction", "park", "museum", "natural_feature"],
@@ -661,22 +852,27 @@ async function searchFallbackPlaces(params: {
   searchPlaces: PlaceSearchFn;
   mode: (typeof FALLBACK_SEARCH_MODES)[number];
   generationRequestId: string;
+  country?: string | null;
+  deadlineAt: number;
 }): Promise<PlaceResult[]> {
-  const { destination, areas, lat, lng, searchPlaces, mode, generationRequestId } = params;
+  const { destination, areas, lat, lng, searchPlaces, mode, generationRequestId, country, deadlineAt } =
+    params;
   const en = EN_CITY_NAMES[normalizeDestinationLabel(destination)];
+  const profile = resolveDiscoveryRegionProfile(destination, country);
   const out: PlaceResult[] = [];
   const seen = new Set<string>();
 
   for (const area of areas.slice(0, 3)) {
     if (out.length >= 18) break;
+    if (Date.now() > deadlineAt) break;
     const cooldown = await waitIfPlacesRateLimited({
       generationRequestId,
-      maxWaitMs: 10_000,
+      maxWaitMs: Math.min(10_000, Math.max(0, deadlineAt - Date.now())),
     });
     if (cooldown !== "ready") break;
 
-    for (const query of mode.queries(area, en)) {
-      if (out.length >= 18) break;
+    for (const query of mode.queries(area, en, profile)) {
+      if (out.length >= 18 || Date.now() > deadlineAt) break;
       try {
         const result = await searchPlaces({
           data: {
@@ -706,6 +902,132 @@ async function searchFallbackPlaces(params: {
   }
 
   return out;
+}
+
+/**
+ * Per-theme Places search driven by theme fallback directions.
+ * Themes never become place names — only search queries.
+ */
+async function searchPlacesForThemeDirections(params: {
+  destination: string;
+  country?: string | null;
+  lat: number;
+  lng: number;
+  searchPlaces: PlaceSearchFn;
+  generationRequestId: string;
+  deadlineAt: number;
+}): Promise<StructuredCombinationOption[]> {
+  const { destination, country, lat, lng, searchPlaces, generationRequestId, deadlineAt } =
+    params;
+  const directions = buildThemeSearchDirections(destination, country);
+  const usedKeys = new Set<string>();
+  const ready: StructuredCombinationOption[] = [];
+
+  for (const direction of directions) {
+    if (Date.now() > deadlineAt) break;
+
+    logAiPipeline(
+      "[COMBINATION_THEME_CREATED]",
+      `combinationId=${direction.combinationId}`,
+      `title=${direction.title}`,
+      `queries=[${direction.queries.slice(0, 6).join("|")}]`,
+    );
+    logAiPipeline(
+      "[COMBINATION_REAL_PLACE_SEARCH_STARTED]",
+      `combinationId=${direction.combinationId}`,
+      `destination=${destination}`,
+      `queryCount=${direction.queries.length}`,
+    );
+
+    const raw: PlaceResult[] = [];
+    const seen = new Set<string>();
+    for (const query of direction.queries.slice(0, 6)) {
+      if (raw.length >= 12 || Date.now() > deadlineAt) break;
+      const cooldown = await waitIfPlacesRateLimited({
+        generationRequestId,
+        maxWaitMs: Math.min(8_000, Math.max(0, deadlineAt - Date.now())),
+      });
+      if (cooldown !== "ready") break;
+      try {
+        const result = await searchPlaces({
+          data: {
+            query,
+            lat,
+            lng,
+            radius: 45_000,
+            mode: "text",
+            placesScreen: "chat",
+            placesCaller: "combination_theme_direction",
+            destinationName: destination,
+            searchMode: "destination",
+          },
+        });
+        for (const place of result.places ?? []) {
+          const key = (place.id ?? place.name ?? "").trim().toLowerCase();
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          raw.push(place);
+        }
+      } catch {
+        // continue other queries for this theme only
+      }
+    }
+
+    const candidates = candidatesFromPlaces(destination, raw, { lat, lng }).filter((c) => {
+      const key = c.name.replace(/\s+/g, "").toLowerCase();
+      if (usedKeys.has(key)) return false;
+      if (isGenericDestinationPlaceholder(c.name, destination)) {
+        logAiPipeline(
+          "[COMBINATION_GENERIC_LABEL_DROPPED]",
+          `value=${c.name}`,
+          "reason=not_a_real_place",
+        );
+        return false;
+      }
+      return true;
+    });
+
+    logAiPipeline(
+      "[COMBINATION_REAL_PLACE_RESOLVED]",
+      `combinationId=${direction.combinationId}`,
+      `candidateCount=${raw.length}`,
+      `resolvedCount=${candidates.length}`,
+    );
+
+    if (candidates.length < MIN_PLACES_PER_COMBO) {
+      // Per-combo failure: skip this theme only — do not wipe other ready combos.
+      continue;
+    }
+
+    const { primary, fallback, all } = splitPrimaryFallback(candidates);
+    for (const p of all) {
+      usedKeys.add(p.name.replace(/\s+/g, "").toLowerCase());
+      if (p.googlePlaceId) {
+        logAiPipeline(
+          "[COMBINATION_PLACE_VALIDATED]",
+          `combinationId=${direction.combinationId}`,
+          `placeId=${p.googlePlaceId}`,
+          `displayName=${p.name}`,
+        );
+      }
+    }
+
+    ready.push({
+      combinationId: `${normalizeDestinationLabel(destination)}:theme:${direction.combinationId}`,
+      title: direction.title,
+      theme: direction.themeKey,
+      placeCandidates: all,
+      primaryCandidates: primary,
+      fallbackCandidates: fallback,
+    });
+    logAiPipeline(
+      "[COMBINATION_READY]",
+      `combinationId=${direction.combinationId}`,
+      `realPlaceCount=${all.length}`,
+    );
+  }
+
+  return ready;
 }
 
 function candidatesFromPlaces(
@@ -795,33 +1117,29 @@ async function searchAreaPlaces(params: {
   lat: number;
   lng: number;
   searchPlaces: PlaceSearchFn;
+  country?: string | null;
+  generationRequestId: string;
+  deadlineAt: number;
 }): Promise<PlaceResult[]> {
-  const { area, destination, lat, lng, searchPlaces } = params;
-  const en = EN_CITY_NAMES[normalizeDestinationLabel(destination)];
-  // Places-first: category queries produce real results; never invent names then search.
-  const queries = [
-    `${area} 景點`,
-    `${area} 必去`,
-    `${area} 博物館`,
-    `${area} 美術館`,
-    `${area} 文化館`,
-    `${area} 公園`,
-    `${area} 夜市`,
-    `${area} 老街`,
-    `${area} tourist attractions`,
-    `museum ${area}`,
-    `art museum ${area}`,
-    `cultural center ${area}`,
-  ];
-  if (en && en !== area) {
-    queries.push(`${en} attractions`, `${en} museum`, `${en} park`, `${en} art gallery`);
-  }
+  const { area, destination, lat, lng, searchPlaces, country, generationRequestId, deadlineAt } =
+    params;
+  const queries = buildDestinationDiscoveryQueries({
+    destination,
+    country,
+    area,
+  });
 
   const out: PlaceResult[] = [];
   const seen = new Set<string>();
 
   for (const query of queries) {
     if (out.length >= 18) break;
+    if (Date.now() > deadlineAt) break;
+    const cooldown = await waitIfPlacesRateLimited({
+      generationRequestId,
+      maxWaitMs: Math.min(8_000, Math.max(0, deadlineAt - Date.now())),
+    });
+    if (cooldown !== "ready") break;
     try {
       const result = await searchPlaces({
         data: {
@@ -860,29 +1178,31 @@ async function searchAreaPlaces(params: {
   }
 
   // Nearby fallback for denser core results
-  try {
-    const nearby = await searchPlaces({
-      data: {
-        query: `${destination} attractions`,
-        lat,
-        lng,
-        radius: 12_000,
-        mode: "nearby",
-        placesScreen: "chat",
-        placesCaller: "combination_discovery_nearby",
-        destinationName: destination,
-        searchMode: "destination",
-        includedTypes: ["tourist_attraction", "museum", "park", "art_gallery"],
-      },
-    });
-    for (const place of nearby.places ?? []) {
-      const key = (place.id ?? place.name ?? "").trim().toLowerCase();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      out.push(place);
+  if (Date.now() <= deadlineAt) {
+    try {
+      const nearby = await searchPlaces({
+        data: {
+          query: `${destination} attractions`,
+          lat,
+          lng,
+          radius: 12_000,
+          mode: "nearby",
+          placesScreen: "chat",
+          placesCaller: "combination_discovery_nearby",
+          destinationName: destination,
+          searchMode: "destination",
+          includedTypes: ["tourist_attraction", "museum", "park", "art_gallery"],
+        },
+      });
+      for (const place of nearby.places ?? []) {
+        const key = (place.id ?? place.name ?? "").trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(place);
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
 
   return out;
@@ -900,30 +1220,48 @@ export async function discoverDestinationCombinations(params: {
   locale?: Locale;
   days?: number;
   generationRequestId?: string;
+  destinationCountry?: string | null;
 }): Promise<StructuredCombinationOption[] | null> {
   const label = normalizeDestinationLabel(params.destination);
   if (isCountryLevelDestination(label)) {
     logCountryLevelPlacesBlocked(label, "city_required");
-    return null;
+    return setDiscoveryFailure(label, "blocked_country", "city_required");
   }
+  lastDiscoveryFailure = null;
+  lastFinalizedScopePatch = null;
+
+  let country = resolveDestinationCountryLabel(label, params.destinationCountry);
   const generationRequestId =
     params.generationRequestId?.trim() ||
     `combo_${label}_${Date.now().toString(36)}`;
   beginPlacesGenerationSession(generationRequestId);
 
   const startedAt = Date.now();
+  const deadlineAt = startedAt + COMBINATION_DISCOVERY_TIMEOUT_MS;
   const cached = getCachedDiscoveredCombinations(label);
   if (cached) return cached;
 
   logAiPipeline(
     "[COMBINATION_DISCOVERY_STARTED]",
     `destination=${label}`,
+    `country=${country ?? "unknown"}`,
     `generationRequestId=${generationRequestId}`,
   );
 
+  const timedOut = () => Date.now() > deadlineAt;
+  const failTimeout = () => {
+    logAiPipeline(
+      "[RECOMMENDATION_PIPELINE_TIMEOUT]",
+      `generationRequestId=${generationRequestId}`,
+      `destination=${label}`,
+      `elapsedMs=${Date.now() - startedAt}`,
+    );
+    return setDiscoveryFailure(label, "timeout");
+  };
+
   const waitState = await waitIfPlacesRateLimited({
     generationRequestId,
-    maxWaitMs: 20_000,
+    maxWaitMs: Math.min(20_000, COMBINATION_DISCOVERY_TIMEOUT_MS),
   });
   if (waitState === "stale") {
     logAiPipeline(
@@ -933,7 +1271,7 @@ export async function discoverDestinationCombinations(params: {
     );
     return null;
   }
-  if (waitState === "timeout") {
+  if (waitState === "timeout" || timedOut()) {
     logAiPipeline(
       "[COMBINATION_DISCOVERY_STATS]",
       `destination=${label}`,
@@ -943,15 +1281,31 @@ export async function discoverDestinationCombinations(params: {
       "themeCount=0",
       "reason=places_rate_limited",
     );
-    return null;
+    return waitState === "timeout" || timedOut()
+      ? failTimeout()
+      : setDiscoveryFailure(label, "places_rate_limited");
   }
 
   // Prefer locked / approx / places geometry before burning Geocode quota.
-  let coordinates =
-    resolveDestinationCoordinates({
+  // Enrich country from coords before validation — never leave country=unknown + TW coords.
+  let coordResult = resolveDestinationCoordinates({
+    destination: label,
+    country,
+    approxCenter: resolveDestinationApproxCenter(label, country),
+    generationRequestId,
+  });
+  let coordinates = coordResult.coordinates;
+  if (coordResult.scope?.country) {
+    country = coordResult.scope.country;
+  } else if (coordinates) {
+    const enriched = enrichDestinationCountry({
       destination: label,
-      approxCenter: resolveDestinationApproxCenter(label),
-    }).coordinates ?? null;
+      country,
+      latitude: coordinates.lat,
+      longitude: coordinates.lng,
+    });
+    if (enriched.country) country = enriched.country;
+  }
 
   if (params.geocodeFn && !coordinates) {
     const geo = await geocodeDestinationWithFallback({
@@ -961,16 +1315,37 @@ export async function discoverDestinationCombinations(params: {
       preferCachedCoordinates: true,
     });
     if (geo?.lat != null && geo?.lng != null) {
-      coordinates = { lat: geo.lat, lng: geo.lng };
+      const enriched = enrichDestinationCountry({
+        destination: label,
+        country: country ?? geo.country,
+        latitude: geo.lat,
+        longitude: geo.lng,
+      });
+      if (enriched.country) country = enriched.country;
+      const v = validateDestinationScope({
+        destination: label,
+        country,
+        countryCode: enriched.countryCode,
+        latitude: geo.lat,
+        longitude: geo.lng,
+      });
+      if (v.ok) {
+        coordinates = { lat: geo.lat, lng: geo.lng };
+        country = v.country ?? country;
+        finalizeDestinationScope({
+          destination: label,
+          latitude: geo.lat,
+          longitude: geo.lng,
+          source: "geocode",
+          country: v.country,
+          countryCode: v.countryCode,
+          type: resolveDestinationEntity(label).type,
+          generationRequestId,
+        });
+      } else {
+        clearResolvedDestinationScope(label);
+      }
     }
-  } else if (params.geocodeFn && coordinates) {
-    // Warm geocode cache in background only when we already have coords — do not block.
-    void geocodeDestinationWithFallback({
-      destination: label,
-      locale: params.locale ?? "zh-TW",
-      geocodeFn: params.geocodeFn,
-      preferCachedCoordinates: true,
-    });
   }
 
   // Still no coords: retry live geocode (bypass failed cache) then approx again.
@@ -983,14 +1358,50 @@ export async function discoverDestinationCombinations(params: {
       preferCachedCoordinates: false,
     });
     if (geoRetry?.lat != null && geoRetry?.lng != null) {
-      coordinates = { lat: geoRetry.lat, lng: geoRetry.lng };
+      const enriched = enrichDestinationCountry({
+        destination: label,
+        country: country ?? geoRetry.country,
+        latitude: geoRetry.lat,
+        longitude: geoRetry.lng,
+      });
+      if (enriched.country) country = enriched.country;
+      const v = validateDestinationScope({
+        destination: label,
+        country,
+        countryCode: enriched.countryCode,
+        latitude: geoRetry.lat,
+        longitude: geoRetry.lng,
+      });
+      if (v.ok) {
+        coordinates = { lat: geoRetry.lat, lng: geoRetry.lng };
+        country = v.country ?? country;
+        finalizeDestinationScope({
+          destination: label,
+          latitude: geoRetry.lat,
+          longitude: geoRetry.lng,
+          source: "geocode",
+          country: v.country,
+          countryCode: v.countryCode,
+          type: resolveDestinationEntity(label).type,
+          generationRequestId,
+        });
+      }
     }
   }
   if (!coordinates) {
-    coordinates = resolveDestinationApproxCenter(label);
+    coordinates = resolveDestinationApproxCenter(label, country);
+    if (coordinates) {
+      const enriched = enrichDestinationCountry({
+        destination: label,
+        country,
+        latitude: coordinates.lat,
+        longitude: coordinates.lng,
+      });
+      if (enriched.country) country = enriched.country;
+    }
   }
 
-  const resolution = resolveDestinationForCombinations(label, coordinates);
+  const resolution = resolveDestinationForCombinations(label, coordinates, country);
   if (!resolution.coordinates) {
     logAiPipeline(
       "[COMBINATION_DISCOVERY_FAILED]",
@@ -1009,10 +1420,55 @@ export async function discoverDestinationCombinations(params: {
       "themeCount=0",
       "reason=no_coordinates",
     );
-    return null;
+    return setDiscoveryFailure(label, "destination_resolution_failed", "no_coordinates");
   }
 
   const { lat, lng } = resolution.coordinates;
+  const scopeValidation = validateDestinationScope({
+    destination: label,
+    country,
+    latitude: lat,
+    longitude: lng,
+  });
+  logAiPipeline(
+    "[DESTINATION_SCOPE_BEFORE_SEARCH]",
+    `destination=${label}`,
+    `country=${scopeValidation.country ?? country ?? "unknown"}`,
+    `lat=${lat}`,
+    `lng=${lng}`,
+    `source=resolved`,
+  );
+  if (!scopeValidation.ok) {
+    const mapped: DestinationDiscoveryFailureReason =
+      scopeValidation.reason === "country_unresolved"
+        ? "destination_country_unresolved"
+        : scopeValidation.reason === "country_coordinate_mismatch" ||
+            scopeValidation.reason === "taiwan_default_fallback"
+          ? "destination_coordinate_mismatch"
+          : "invalid_destination_scope";
+    logAiPipeline(
+      "[COMBINATION_DISCOVERY_FAILED]",
+      `reason=invalid_destination_scope:${scopeValidation.reason ?? "unknown"}`,
+      `destination=${label}`,
+    );
+    return setDiscoveryFailure(label, mapped, scopeValidation.reason);
+  }
+
+  country = scopeValidation.country ?? country;
+  const finalized = finalizeDestinationScope({
+    destination: label,
+    latitude: lat,
+    longitude: lng,
+    source: coordResult.source ?? "approx_center",
+    country,
+    countryCode: scopeValidation.countryCode ?? countryCodeForCountryName(country),
+    type: resolveDestinationEntity(label).type,
+    generationRequestId,
+  });
+  if (finalized) {
+    lastFinalizedScopePatch = buildDestinationScopeContextPatch(finalized);
+  }
+
   const regionRadiusM = 40_000;
   logAiPipeline(
     "[REGION_SEARCH_CENTER_CREATED]",
@@ -1023,10 +1479,16 @@ export async function discoverDestinationCombinations(params: {
 
   const rawPlaces: PlaceResult[] = [];
   for (const area of resolution.searchAreas.slice(0, 4)) {
-    if (shouldSkipPlanningPlacesApi()) break;
+    if (shouldSkipPlanningPlacesApi() || timedOut()) break;
+    if (
+      getActivePlacesGenerationRequestId() &&
+      getActivePlacesGenerationRequestId() !== generationRequestId
+    ) {
+      return null;
+    }
     const cooldown = await waitIfPlacesRateLimited({
       generationRequestId,
-      maxWaitMs: 15_000,
+      maxWaitMs: Math.min(15_000, Math.max(0, deadlineAt - Date.now())),
     });
     if (cooldown !== "ready") {
       logAiPipeline(
@@ -1046,17 +1508,21 @@ export async function discoverDestinationCombinations(params: {
       lat,
       lng,
       searchPlaces: params.searchPlaces,
+      country,
+      generationRequestId,
+      deadlineAt,
     });
     rawPlaces.push(...batch);
     if (rawPlaces.length >= 24) break;
   }
 
   // Expand radius via secondary areas if sparse
-  if (rawPlaces.length < 12) {
+  if (rawPlaces.length < 12 && !timedOut()) {
     for (const area of resolution.searchAreas.slice(4, 8)) {
+      if (timedOut()) break;
       const cooldown = await waitIfPlacesRateLimited({
         generationRequestId,
-        maxWaitMs: 10_000,
+        maxWaitMs: Math.min(10_000, Math.max(0, deadlineAt - Date.now())),
       });
       if (cooldown !== "ready") break;
       const batch = await searchAreaPlaces({
@@ -1065,10 +1531,15 @@ export async function discoverDestinationCombinations(params: {
         lat,
         lng,
         searchPlaces: params.searchPlaces,
+        country,
+        generationRequestId,
+        deadlineAt,
       });
       rawPlaces.push(...batch);
     }
   }
+
+  if (timedOut() && rawPlaces.length === 0) return failTimeout();
 
   let candidates = candidatesFromPlaces(label, rawPlaces, { lat, lng });
 
@@ -1093,7 +1564,7 @@ export async function discoverDestinationCombinations(params: {
   );
 
   // Fallback Discovery: do not hard-fail on sparse themes.
-  if (!combinations) {
+  if (!combinations && !timedOut()) {
     logAiPipeline(
       "[COMBINATION_DISCOVERY_FAILED]",
       "reason=too_few_combinations",
@@ -1103,6 +1574,7 @@ export async function discoverDestinationCombinations(params: {
     );
 
     for (const mode of FALLBACK_SEARCH_MODES) {
+      if (timedOut()) break;
       logAiPipeline("[COMBINATION_FALLBACK_STARTED]", `mode=${mode.mode}`);
       const fallbackPlaces = await searchFallbackPlaces({
         destination: label,
@@ -1112,6 +1584,8 @@ export async function discoverDestinationCombinations(params: {
         searchPlaces: params.searchPlaces,
         mode,
         generationRequestId,
+        country,
+        deadlineAt,
       });
       const mergedPlaces = [...rawPlaces, ...fallbackPlaces];
       candidates = candidatesFromPlaces(label, mergedPlaces, { lat, lng });
@@ -1132,6 +1606,55 @@ export async function discoverDestinationCombinations(params: {
     }
   }
 
+  if (timedOut() && !combinations?.length) return failTimeout();
+
+  // Theme-directed per-combo search: fill missing themes without wiping ready ones.
+  if (
+    (!combinations || combinations.length < MIN_COMBINATIONS) &&
+    !timedOut()
+  ) {
+    const themed = await searchPlacesForThemeDirections({
+      destination: label,
+      country,
+      lat,
+      lng,
+      searchPlaces: params.searchPlaces,
+      generationRequestId,
+      deadlineAt,
+    });
+    if (themed.length) {
+      const byTitle = new Map<string, StructuredCombinationOption>();
+      for (const c of combinations ?? []) byTitle.set(c.title, c);
+      for (const c of themed) {
+        const existing = byTitle.get(c.title);
+        if (
+          !existing ||
+          (existing.placeCandidates?.length ?? 0) < (c.placeCandidates?.length ?? 0)
+        ) {
+          byTitle.set(c.title, c);
+        }
+      }
+      const merged = [...byTitle.values()].filter(
+        (c) => (c.primaryCandidates ?? c.placeCandidates).length >= MIN_PLACES_PER_COMBO,
+      );
+      if (merged.length >= Math.min(MIN_COMBINATIONS, themed.length) || merged.length >= 3) {
+        combinations = merged.slice(0, MAX_COMBINATIONS);
+      } else if (merged.length > (combinations?.length ?? 0)) {
+        combinations = merged;
+      }
+    }
+  }
+
+  // Drop any combo that still lacks enough real places (never show thin/generic groups).
+  if (combinations?.length) {
+    combinations = combinations.filter(
+      (c) => (c.primaryCandidates ?? c.placeCandidates).length >= MIN_PLACES_PER_COMBO,
+    );
+    if (combinations.length < 3) {
+      combinations = null;
+    }
+  }
+
   if (!combinations?.length) {
     logAiPipeline(
       "[COMBINATION_DISCOVERY_FAILED]",
@@ -1140,10 +1663,23 @@ export async function discoverDestinationCombinations(params: {
       `themeCount=0`,
       `districtCount=${districts.size}`,
     );
-    return null;
+    return setDiscoveryFailure(
+      label,
+      candidates.length === 0 ? "places_no_results" : "combination_insufficient",
+      "all_layers_exhausted",
+    );
   }
 
   setCachedDiscoveredCombinations(label, combinations);
+  for (let i = 0; i < combinations.length; i += 1) {
+    const combo = combinations[i]!;
+    const count = (combo.primaryCandidates ?? combo.placeCandidates).length;
+    logAiPipeline(
+      "[COMBINATION_READY]",
+      `combinationId=${i + 1}`,
+      `realPlaceCount=${count}`,
+    );
+  }
   logAiPipeline(
     "[COMBINATION_DISCOVERY_COMPLETED]",
     `candidateCount=${candidates.length}`,
@@ -1193,15 +1729,23 @@ export async function ensureDestinationCombinationsReady(params: {
   locale?: Locale;
   days?: number;
   generationRequestId?: string;
+  destinationCountry?: string | null;
 }): Promise<{
   ok: boolean;
   combinations: StructuredCombinationOption[];
   source: "cache" | "curated_or_local" | "discovered" | "failed" | "blocked_country";
+  failureReason?: DestinationDiscoveryFailureReason;
+  scopePatch?: ReturnType<typeof buildDestinationScopeContextPatch> | null;
 }> {
   const label = normalizeDestinationLabel(params.destination);
   if (isCountryLevelDestination(label)) {
     logCountryLevelPlacesBlocked(label, "city_required");
-    return { ok: false, combinations: [], source: "blocked_country" };
+    return {
+      ok: false,
+      combinations: [],
+      source: "blocked_country",
+      failureReason: "blocked_country",
+    };
   }
   const cached = getCachedDiscoveredCombinations(label);
   if (cached?.length) {
@@ -1209,12 +1753,18 @@ export async function ensureDestinationCombinationsReady(params: {
   }
 
   // Lazy import to avoid circular dependency with destination-travel-profile
-  const { getDestinationCombinations } = await import(
+  const { getDestinationCombinations, dropGenericCombinationLabel } = await import(
     "@/lib/ai/destination-combination-suggestions"
   );
+  // Curated/local named places only — theme fallback no longer returns fake places.
   const local = getDestinationCombinations(label);
-  if (local.length >= MIN_COMBINATIONS) {
-    const structured: StructuredCombinationOption[] = local.map((combo, index) => ({
+  const strongLocal = local.filter(
+    (c) =>
+      c.places.length >= MIN_PLACES_PER_COMBO &&
+      c.places.every((p) => !dropGenericCombinationLabel(p, "not_a_real_place")),
+  );
+  if (strongLocal.length >= MIN_COMBINATIONS) {
+    const structured: StructuredCombinationOption[] = strongLocal.map((combo, index) => ({
       combinationId: `${label}:local:${index + 1}`,
       title: combo.title,
       theme: combo.title.replace(/組合$/, ""),
@@ -1223,16 +1773,34 @@ export async function ensureDestinationCombinationsReady(params: {
         searchCandidateId: `name:${name}`,
         types: [],
       })),
+      primaryCandidates: combo.places.slice(0, PRIMARY_PLACES_PER_COMBO).map((name) => ({
+        name,
+        searchCandidateId: `name:${name}`,
+        types: [],
+      })),
     }));
+    // Cache so reply builder / offeredCombinations share the same resolved list.
+    setCachedDiscoveredCombinations(label, structured);
     return { ok: true, combinations: structured, source: "curated_or_local" };
   }
 
   const discovered = await discoverDestinationCombinations(params);
   if (discovered?.length) {
-    return { ok: true, combinations: discovered, source: "discovered" };
+    return {
+      ok: true,
+      combinations: discovered,
+      source: "discovered",
+      scopePatch: lastFinalizedScopePatch,
+    };
   }
 
-  return { ok: false, combinations: [], source: "failed" };
+  return {
+    ok: false,
+    combinations: [],
+    source: "failed",
+    failureReason: lastDiscoveryFailure?.reason ?? "places_no_results",
+    scopePatch: lastFinalizedScopePatch,
+  };
 }
 
 export function needsDestinationCombinationDiscovery(destination: string): boolean {
