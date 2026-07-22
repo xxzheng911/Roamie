@@ -1,7 +1,8 @@
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
-import { fetchPlaceDetailsForScreenWithKey, type PlaceDetailsScreenResult } from "@/lib/places.functions";
+import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
+import { fetchPlaceDetailsForScreenWithKeyViaGateway } from "@/lib/pie/places-gateway";
 import { getGoogleMapsBrowserKey, buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
@@ -9,19 +10,14 @@ import type { UserProfileForReason } from "@/lib/build-place-recommendation-reas
 import type { WeatherSummary } from "@/lib/weather-types";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
-import {
-  isPinnableSearchSelection,
-  normalizeExplorePlaceId,
-} from "@/lib/explore-selected-place";
+import { isPinnableSearchSelection, normalizeExplorePlaceId } from "@/lib/explore-selected-place";
 import { resolveExploreMapSuggestion, type ExploreMapSearchCard } from "@/lib/explore-map-search";
 
 export type ExplorePrimaryPlaceCard = ExploreMapSearchCard & {
   isPrimaryExplorePlace: true;
 };
 
-type ResolveFn = (args: {
-  data: { placeId: string; locale?: Locale };
-}) => Promise<{
+type ResolveFn = (args: { data: { placeId: string; locale?: Locale } }) => Promise<{
   stop: { lat: number | null; lng: number | null; name?: string; address?: string } | null;
   error: string | null;
 }>;
@@ -148,7 +144,11 @@ export async function resolveExplorePrimaryPlace(
 
   const browserKey = getGoogleMapsBrowserKey();
   if (browserKey) {
-    details = await fetchPlaceDetailsForScreenWithKey(placeId, browserKey, options.locale);
+    details = await fetchPlaceDetailsForScreenWithKeyViaGateway(
+      placeId,
+      browserKey,
+      options.locale,
+    );
   }
   if (!details && options.fetchPlaceDetailsFn) {
     const result = await options.fetchPlaceDetailsFn({
@@ -194,6 +194,8 @@ export function pickPrimarySuggestion(
   if (!trimmed || suggestions.length === 0) return null;
   const exact = suggestions.find((s) => s.label.trim() === trimmed);
   if (exact) return exact;
-  const contains = suggestions.find((s) => s.label.includes(trimmed) || trimmed.includes(s.label.trim()));
+  const contains = suggestions.find(
+    (s) => s.label.includes(trimmed) || trimmed.includes(s.label.trim()),
+  );
   return contains ?? suggestions[0] ?? null;
 }

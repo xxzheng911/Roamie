@@ -5,16 +5,26 @@ import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { listTripDates } from "@/lib/outfit/group-by-date";
 import {
   annotatePlaceWithCombinationMetadata,
-  redistributeToFillEmptyDays,
   selectPlacesWithCombinationQuota,
 } from "@/lib/ai/combination-itinerary-integrity";
 import { clusterAndDedupeLandmarks } from "@/lib/ai/landmark-cluster";
+import {
+  dedupeByCanonicalLandmark,
+  requiredCanonicalCandidatesForTrip,
+  resolveCanonicalLandmarkKey,
+} from "@/lib/ai/canonical-landmark";
 import {
   clusterItemsByGeography,
   type GeoAccessor,
 } from "@/lib/ai/geographic-clustering";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { combinationIdsFromPlace } from "@/lib/ai/combination-provenance";
+import {
+  applyPlannerRouteAndCapacityAssembly,
+  minEffectivePlacesPerDay,
+  type AssemblyDayPlan,
+  type PlannerPaceHint,
+} from "@/lib/ai/planner-day-route-assembly";
 
 type PlaceBucket =
   | "attraction"
@@ -139,15 +149,22 @@ function recToLandmarkPlace(
   } as unknown as PlaceResult & { __rec: RoamieRecommendationItem };
 }
 
-/** Remove附屬地標 (main/sub landmark) duplicates from a recommendation pool. */
+/** Remove附屬地標 + canonical landmark duplicates from a recommendation pool. */
 function dedupeLandmarksForRecs(
   items: RoamieRecommendationItem[],
 ): RoamieRecommendationItem[] {
   const lite = items.map(recToLandmarkPlace);
-  const { places } = clusterAndDedupeLandmarks(lite);
-  return places.map(
+  const clustered = clusterAndDedupeLandmarks(lite).places;
+  const canonical = dedupeByCanonicalLandmark(clustered).places;
+  return canonical.map(
     (p) => (p as PlaceResult & { __rec: RoamieRecommendationItem }).__rec,
   );
+}
+
+function recFromPlace(place: PlaceResult): RoamieRecommendationItem | null {
+  const tagged = place as PlaceResult & { __rec?: RoamieRecommendationItem };
+  if (tagged.__rec) return tagged.__rec;
+  return null;
 }
 
 const GEO_ACCESSOR: GeoAccessor<RoamieRecommendationItem> = {
@@ -178,22 +195,44 @@ function scheduleDayPlaces(
   });
 }
 
+export type MixedItineraryBuildResult = {
+  stops: RoamieItineraryItem[];
+  candidateInsufficient: boolean;
+  requiredCount: number;
+  availableCount: number;
+  missingCount: number;
+  affectedDays: number[];
+  replanReasons: string[];
+  dayCounts: number[];
+};
+
 /**
- * Allocate places across days using GEOGRAPHY-FIRST clustering: nearby places are
- * grouped into the same day, then each geographic cluster maps to a day. Selected
- * combinations only influence which places are kept (via quota selection), not the
- * per-day boundaries. Empty days are back-filled by redistribute.
+ * Allocate places across days using GEOGRAPHY-FIRST clustering, then
+ * Planner Route + Capacity Assembly（與 Style 路徑同一套約束）。
+ *
+ * Selected combinations only influence which places are kept (quota), not
+ * per-day boundaries. nearbyExtensions 集中於單一天。
  */
-export function buildMixedItineraryFromPlaces(
+export function buildMixedItineraryWithDiagnostics(
   selectedPlaces: RoamieRecommendationItem[],
   days: number,
   startDate: string,
   destination?: string,
-  opts?: { selectedCombinationIds?: number[] },
-): RoamieItineraryItem[] {
+  opts?: {
+    selectedCombinationIds?: number[];
+    nearbyExtensions?: string[];
+    pace?: PlannerPaceHint;
+  },
+): MixedItineraryBuildResult {
   const dayCount = Math.max(days, 1);
   const dates = listTripDates([], startDate, dayCount);
   const destLabel = destination?.trim() ? normalizeDestinationLabel(destination) : "";
+  const pace: PlannerPaceHint = opts?.pace ?? "medium";
+  const minPerDay = minEffectivePlacesPerDay(pace);
+  const requiredCanonical = requiredCanonicalCandidatesForTrip(dayCount, pace);
+  const nearbyExtensions = (opts?.nearbyExtensions ?? [])
+    .map((e) => normalizeDestinationLabel(e))
+    .filter(Boolean);
 
   const selectedCombinationIds =
     opts?.selectedCombinationIds?.length
@@ -212,11 +251,12 @@ export function buildMixedItineraryFromPlaces(
       : p,
   );
 
+  const quotaTarget = Math.max(dayCount * minPerDay, annotated.length);
   const quotaPicked = selectedCombinationIds.length
     ? selectPlacesWithCombinationQuota({
         places: annotated,
         selectedCombinationIds,
-        targetPlaceCount: Math.max(dayCount * 2, annotated.length),
+        targetPlaceCount: quotaTarget,
         destination: destLabel || destination || "",
       })
     : annotated;
@@ -230,17 +270,47 @@ export function buildMixedItineraryFromPlaces(
     unique.push(place);
   }
 
-  // Global main/sub landmark de-duplication before day assignment.
+  // Global main/sub + canonical landmark de-duplication BEFORE day assignment.
   const beforeDedupe = unique.length;
   const landmarkKept = dedupeLandmarksForRecs(unique);
+  const uniquePlaceIds = new Set(
+    landmarkKept.map((p) => p.googlePlaceId?.trim()).filter(Boolean),
+  );
+  const canonicalKeys = new Set(
+    landmarkKept.map((p) =>
+      resolveCanonicalLandmarkKey(recToLandmarkPlace(p)),
+    ),
+  );
   logAiPipeline(
     "[GLOBAL_LANDMARK_DEDUPE_STATS]",
     `before=${beforeDedupe}`,
     `after=${landmarkKept.length}`,
     `merged=${beforeDedupe - landmarkKept.length}`,
+    `uniquePlaceIds=${uniquePlaceIds.size}`,
+    `canonicalCount=${canonicalKeys.size}`,
+  );
+  logAiPipeline(
+    "[PLANNER_POOL_DIAG_A]",
+    `totalCandidateCount=${beforeDedupe}`,
+    `uniquePlaceIdCount=${uniquePlaceIds.size}`,
+    `canonicalPlaceCount=${canonicalKeys.size}`,
+    `requiredCanonical=${requiredCanonical}`,
   );
 
-  // Geography-first: cluster nearby places, then map each cluster to a day.
+  const poolPlaces = landmarkKept.map(recToLandmarkPlace);
+  let candidateInsufficient = canonicalKeys.size < requiredCanonical;
+  if (candidateInsufficient) {
+    logAiPipeline(
+      "[AI_PLANNER_CANDIDATE_INSUFFICIENT]",
+      `available=${canonicalKeys.size}`,
+      `required=${requiredCanonical}`,
+      `days=${dayCount}`,
+      `pace=${pace}`,
+      "stage=pre_allocation",
+    );
+  }
+
+  // Geography-first seed → Assembly 補位／近郊集中／Route
   const { clusters, unlocated } = clusterItemsByGeography(
     landmarkKept,
     dayCount,
@@ -258,6 +328,7 @@ export function buildMixedItineraryFromPlaces(
     `tripDays=${dayCount}`,
     `placeCount=${landmarkKept.length}`,
     `clusterCount=${clusters.length}`,
+    `requiredMinPerDay=${minPerDay}`,
   );
 
   const dayByKey = new Map<string, number>();
@@ -275,7 +346,6 @@ export function buildMixedItineraryFromPlaces(
       dayLoad[dayIdx] += 1;
     }
   }
-  // Places without usable coordinates → least-loaded day.
   for (const item of unlocated) {
     let best = 0;
     for (let i = 1; i < dayCount; i += 1) if (dayLoad[i]! < dayLoad[best]!) best = i;
@@ -283,29 +353,219 @@ export function buildMixedItineraryFromPlaces(
     dayLoad[best] += 1;
   }
 
+  const seedPlans: AssemblyDayPlan[] = Array.from({ length: dayCount }, (_, i) => {
+    const dayPlaces = landmarkKept.filter((p) => dayByKey.get(placeKey(p)) === i);
+    const entries = scheduleDayPlaces(dayPlaces).map((s) => ({
+      time: s.time,
+      label: s.bucket === "restaurant" || s.bucket === "cafe" ? "餐食" : "景點",
+      name: s.place.placeName ?? s.place.name,
+      place: recToLandmarkPlace(s.place),
+    }));
+    return { day: i + 1, entries };
+  });
+
+  logAiPipeline(
+    "[PLANNER_POOL_DIAG_C]",
+    `availableCandidateCount=${poolPlaces.length}`,
+    `requestedDays=${dayCount}`,
+    `requiredMinimumCount=${dayCount * minPerDay}`,
+    `enough=${poolPlaces.length >= dayCount * minPerDay}`,
+  );
+
+  const assembled = applyPlannerRouteAndCapacityAssembly({
+    plans: seedPlans,
+    pool: poolPlaces,
+    days: dayCount,
+    style: "mixed",
+    nearbyExtensions,
+    pace,
+  });
+  candidateInsufficient = candidateInsufficient || assembled.candidateInsufficient;
+
+  logAiPipeline(
+    "[PLANNER_POOL_DIAG_D]",
+    `dayCounts=${assembled.diagnostics.map((d) => d.finalPlaceCount).join(",")}`,
+    `capacityFallback=${assembled.capacityFallbackTriggered}`,
+    `candidateInsufficient=${candidateInsufficient}`,
+    `dayPlaceIds=${assembled.plans
+      .map(
+        (p) =>
+          `${p.day}:[${p.entries.map((e) => e.place.id ?? e.name).join("|")}]`,
+      )
+      .join(";")}`,
+  );
+
+  const resolveRec = (entry: {
+    name: string;
+    place: PlaceResult;
+  }): RoamieRecommendationItem => {
+    const fromTag = recFromPlace(entry.place);
+    if (fromTag) return fromTag;
+    const matched = landmarkKept.find(
+      (r) =>
+        (r.googlePlaceId?.trim() &&
+          r.googlePlaceId.trim() === (entry.place.id ?? "").trim()) ||
+        (r.placeName ?? r.name) === entry.name,
+    );
+    if (matched) return matched;
+    return {
+      name: entry.name,
+      placeName: entry.name,
+      type: entry.place.primaryType ?? "tourist_attraction",
+      description: entry.place.address ?? entry.name,
+      reason: "",
+      estimatedTime: "1-2 小時",
+      address: entry.place.address ?? entry.name,
+      lat: entry.place.lat,
+      lng: entry.place.lng,
+      googleMapsUrl: "",
+      reasonSource: "template",
+      googlePlaceId: entry.place.id || undefined,
+      photoName: entry.place.photoName,
+      rating: entry.place.rating,
+      userRatingCount: entry.place.userRatingCount ?? undefined,
+    } as RoamieRecommendationItem;
+  };
+
+  // Assembly → itinerary stops（單點日交給後續 merge，勿在此丟棄地點）
+  // Prefer day→date Map over dates[day-1] so remapped / out-of-range days never crash.
+  const dateByDay = new Map<number, string>();
+  for (let day = 1; day <= dayCount; day += 1) {
+    dateByDay.set(day, dates[day - 1] ?? startDate);
+  }
   const stops: RoamieItineraryItem[] = [];
-  for (let dayIdx = 0; dayIdx < dayCount; dayIdx += 1) {
-    const date = dates[dayIdx] ?? startDate;
-    const dayPlaces = landmarkKept.filter((p) => dayByKey.get(placeKey(p)) === dayIdx);
-    for (const scheduled of scheduleDayPlaces(dayPlaces)) {
-      stops.push(makeStop(scheduled.place, date, scheduled.bucket, scheduled.time));
+  for (const plan of assembled.plans) {
+    const safeDay =
+      Number.isFinite(plan.day) && plan.day >= 1 && plan.day <= dayCount
+        ? plan.day
+        : Math.min(dayCount, Math.max(1, Math.floor(plan.day) || 1));
+    const date = dateByDay.get(safeDay) ?? startDate;
+    if (plan.entries.length === 1) {
+      candidateInsufficient = true;
+    }
+    plan.entries.forEach((entry, index) => {
+      const rec = resolveRec(entry);
+      const bucket = classifyPlaceBucket(rec);
+      const time =
+        entry.time || DAY_TIME_SLOTS[Math.min(index, DAY_TIME_SLOTS.length - 1)]!;
+      stops.push(makeStop(rec, date, bucket, time));
+    });
+  }
+
+  // 禁止 redistribute 從已達容量的天拆 1 點去填空日——會製造單點日，
+  // 接著再被 drop，反而讓原本完整天掉成 1～2 點（實機回歸根因之一）。
+  const finalByDate = new Map<string, RoamieItineraryItem[]>();
+  for (const date of dates) finalByDate.set(date, []);
+  for (const stop of stops) {
+    const date = stop.date?.trim() || dates[0]!;
+    const list = finalByDate.get(date) ?? [];
+    list.push(stop);
+    finalByDate.set(date, list);
+  }
+
+  // 僅當 spare 足以一次補滿 minPerDay 時才填空日；否則標記 insufficient、保持空日
+  const usedKeys = new Set(
+    stops.map(
+      (s) =>
+        s.googlePlaceId?.trim() ||
+        `${(s.placeName ?? s.title).replace(/\s+/g, "").toLowerCase()}`,
+    ),
+  );
+
+  const mergeSingletonIntoNeighbor = (dayIdx: number): void => {
+    const date = dates[dayIdx]!;
+    const lone = finalByDate.get(date) ?? [];
+    if (lone.length !== 1) return;
+    candidateInsufficient = true;
+    const candidates = [dayIdx - 1, dayIdx + 1, ...Array.from({ length: dayCount }, (_, i) => i)].filter(
+      (i) => i >= 0 && i < dayCount && i !== dayIdx,
+    );
+    let merged = false;
+    for (const targetIdx of candidates) {
+      const targetDate = dates[targetIdx]!;
+      const target = finalByDate.get(targetDate) ?? [];
+      if (target.length === 0) continue;
+      finalByDate.set(targetDate, [
+        ...target,
+        ...lone.map((s) => ({ ...s, date: targetDate })),
+      ]);
+      finalByDate.set(date, []);
+      merged = true;
+      logAiPipeline(
+        "[AI_PLANNER_CANDIDATE_INSUFFICIENT]",
+        `day=${dayIdx + 1}`,
+        "action=merge_singleton_into_neighbor",
+        `toDay=${targetIdx + 1}`,
+        `place=${lone[0]?.placeName ?? ""}`,
+      );
+      break;
+    }
+    if (!merged) {
+      finalByDate.set(date, []);
+      logAiPipeline(
+        "[AI_PLANNER_CANDIDATE_INSUFFICIENT]",
+        `day=${dayIdx + 1}`,
+        "action=clear_singleton_no_neighbor",
+        `place=${lone[0]?.placeName ?? ""}`,
+      );
+    }
+  };
+
+  for (let i = 0; i < dayCount; i += 1) {
+    const date = dates[i]!;
+    const dayStops = finalByDate.get(date) ?? [];
+    if (dayStops.length >= minPerDay) continue;
+    if (dayStops.length === 1 && dayStops.length < minPerDay) {
+      // 單點日：併入鄰近日（保留地點），勿靜默保留 1 點日、也勿直接丟棄
+      mergeSingletonIntoNeighbor(i);
+      continue;
+    }
+    if (dayStops.length === 0) {
+      const spares = landmarkKept.filter((p) => {
+        const key =
+          p.googlePlaceId?.trim() ||
+          `${(p.placeName ?? p.name).replace(/\s+/g, "").toLowerCase()}`;
+        return key && !usedKeys.has(key);
+      });
+      if (spares.length >= minPerDay) {
+        const filledDay: RoamieItineraryItem[] = [];
+        for (let n = 0; n < minPerDay; n += 1) {
+          const spare = spares[n]!;
+          const key =
+            spare.googlePlaceId?.trim() ||
+            `${(spare.placeName ?? spare.name).replace(/\s+/g, "").toLowerCase()}`;
+          usedKeys.add(key);
+          filledDay.push(
+            makeStop(
+              spare,
+              date,
+              classifyPlaceBucket(spare),
+              DAY_TIME_SLOTS[Math.min(n, DAY_TIME_SLOTS.length - 1)]!,
+            ),
+          );
+        }
+        finalByDate.set(date, filledDay);
+      } else {
+        candidateInsufficient = true;
+        logAiPipeline(
+          "[AI_PLANNER_CANDIDATE_INSUFFICIENT]",
+          `day=${i + 1}`,
+          "action=leave_empty_no_singleton_fill",
+          `spare=${spares.length}`,
+          `need=${minPerDay}`,
+        );
+      }
     }
   }
 
-  const filled = redistributeToFillEmptyDays({
-    stops,
-    days: dayCount,
-    startDate,
-    sparePlaces: landmarkKept,
-    makeStop: (place, date) => makeStop(place, date, classifyPlaceBucket(place)),
-  });
-
-  for (let dayIdx = 0; dayIdx < dayCount; dayIdx += 1) {
-    const date = dates[dayIdx] ?? startDate;
-    const dayStops = filled.filter((s) => s.date === date);
+  const output: RoamieItineraryItem[] = [];
+  for (let i = 0; i < dayCount; i += 1) {
+    const date = dates[i]!;
+    const dayStops = finalByDate.get(date) ?? [];
+    output.push(...dayStops);
     logAiPipeline(
       "[COMBINATION_DAY_ALLOCATION]",
-      `day=${dayIdx + 1}`,
+      `day=${i + 1}`,
       `date=${date}`,
       `places=${dayStops.map((s) => s.placeName).join("|")}`,
       `sources=${dayStops
@@ -318,17 +578,85 @@ export function buildMixedItineraryFromPlaces(
   }
 
   logAiPipeline(
+    "[PLANNER_POOL_DIAG_E]",
+    `finalDayCounts=${dates
+      .map((d, i) => `${i + 1}:${output.filter((s) => s.date === d).length}`)
+      .join(",")}`,
+    `candidateInsufficient=${candidateInsufficient}`,
+    `uiStopCount=${output.length}`,
+  );
+
+  logAiPipeline(
     "[DAILY_ALLOCATION_OUTPUT]",
     ...Array.from({ length: dayCount }, (_, i) => {
       const date = dates[i] ?? startDate;
-      const count = filled.filter((s) => s.date === date).length;
+      const count = output.filter((s) => s.date === date).length;
       return `day${i + 1}Count=${count}`;
     }),
+    `candidateInsufficient=${candidateInsufficient}`,
   );
 
-  return filled.sort((a, b) => {
+  const sortedStops = output.sort((a, b) => {
     const dateCmp = (a.date ?? "").localeCompare(b.date ?? "");
     if (dateCmp !== 0) return dateCmp;
     return (a.time ?? "").localeCompare(b.time ?? "");
   });
+
+  const dayCounts = dates.map(
+    (d) => sortedStops.filter((s) => (s.date?.trim() || dates[0]) === d).length,
+  );
+  const requiredCount = dayCount * minPerDay;
+  const availableCount = canonicalKeys.size;
+  const affectedDays = dayCounts
+    .map((count, idx) => (count < minPerDay ? idx + 1 : -1))
+    .filter((d) => d > 0);
+  const insufficient =
+    candidateInsufficient || availableCount < requiredCount || affectedDays.length > 0;
+  const missingCount = Math.max(0, requiredCount - availableCount);
+  const replanReasons = insufficient ? ["insufficient_candidates"] : [];
+
+  if (insufficient) {
+    logAiPipeline(
+      "[CANDIDATE_INSUFFICIENT_RESULT]",
+      `candidateInsufficient=true`,
+      `requiredCount=${requiredCount}`,
+      `availableCount=${availableCount}`,
+      `missingCount=${missingCount}`,
+      `affectedDays=[${affectedDays.join(",")}]`,
+      `replanReasons=${replanReasons.join("|")}`,
+      `dayCounts=${dayCounts.join(",")}`,
+    );
+  }
+
+  return {
+    stops: sortedStops,
+    candidateInsufficient: insufficient,
+    requiredCount,
+    availableCount,
+    missingCount,
+    affectedDays,
+    replanReasons,
+    dayCounts,
+  };
+}
+
+/** Compatibility wrapper — returns stops only. Prefer {@link buildMixedItineraryWithDiagnostics}. */
+export function buildMixedItineraryFromPlaces(
+  selectedPlaces: RoamieRecommendationItem[],
+  days: number,
+  startDate: string,
+  destination?: string,
+  opts?: {
+    selectedCombinationIds?: number[];
+    nearbyExtensions?: string[];
+    pace?: PlannerPaceHint;
+  },
+): RoamieItineraryItem[] {
+  return buildMixedItineraryWithDiagnostics(
+    selectedPlaces,
+    days,
+    startDate,
+    destination,
+    opts,
+  ).stops;
 }

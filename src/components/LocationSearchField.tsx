@@ -14,7 +14,10 @@ import {
   tripPlaceInputToTripLocation,
   type TripPlaceFieldRole,
 } from "@/lib/trip/trip-place-ref";
-import { getPlaceDetails, searchPlaces as searchPlacesService } from "@/services/placesService";
+import {
+  getPlaceLiteDetailsViaGateway,
+  searchAutocompleteViaGateway,
+} from "@/lib/pie/places-gateway";
 
 export type LocationSearchMode = "geographic" | "place";
 const PLACE_NOT_FOUND_MESSAGE = "找不到相關地點";
@@ -92,7 +95,8 @@ export function LocationSearchField({
       setSearching(true);
       setSearchError(null);
       try {
-        const stopResult = await searchPlacesService(trimmed, {
+        // Phase 1 Step B #1：Autocomplete 經 places-gateway（flag OFF=舊路徑，ON=PIE Facade→舊實作）
+        const stopResult = await searchAutocompleteViaGateway(trimmed, {
           locale,
           sessionToken: sessionTokenRef.current,
           searchFn: searchStopFn,
@@ -160,14 +164,18 @@ export function LocationSearchField({
   const handleSelect = async (item: PlaceSearchResultItem) => {
     console.info("[PLACE_SELECT] rawPrediction=", JSON.stringify(item));
     console.info("[PLACE_SELECT] placeId=", item.placeId ?? "");
-    console.info("[PLACE_SELECT] description=", [item.label, item.secondary].filter(Boolean).join(" · "));
+    console.info(
+      "[PLACE_SELECT] description=",
+      [item.label, item.secondary].filter(Boolean).join(" · "),
+    );
     logTripPlace(fieldRole, "selected", {
       placeId: item.placeId,
       label: item.label,
     });
     setResolvingId(item.placeId);
     try {
-      const { place, error } = await getPlaceDetails(item.placeId, {
+      // Phase 1 Step B #2：PlaceLite details 經 places-gateway（flag OFF=舊路徑，ON=PIE Facade→舊實作）
+      const { place, error } = await getPlaceLiteDetailsViaGateway(item.placeId, {
         locale,
         resolveFn: resolveStopFn,
         fallback: {

@@ -3,6 +3,7 @@ import { resolveDestinationForCategorySearch } from "@/lib/ai/chat-category-dest
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { resolveDestinationFromText } from "@/lib/ai/trip-planning-context";
+import { isExplicitDeviceNearbyRequest } from "@/lib/ai/recommendation-search-scope";
 
 /** Intent Router 優先序：行程規劃 > 日期詢問 > 地點詢問 > 心情推薦 > 附近推薦 */
 export type IntentRouteCategory =
@@ -25,8 +26,9 @@ const DESTINATION_INQUIRY_SIGNALS =
 const MOOD_ONLY_SIGNALS =
   /(?:累|疲|心情|放空|散散心|不知道去哪|有點累|有点累|有點闷|有点闷|無聊|无聊|壓力|压力|想散心)/;
 
+/** Device GPS only — bare「附近」keeps trip destination when present. */
 const NEARBY_EXPLICIT =
-  /(?:附近|這一帶|这一带|現在|今天|當下|当下|離我|我這邊|我这边|我附近|離這裡|离这里)/;
+  /(?:我現在附近|我目前所在|離我最近|以現在定位|用定位搜|我這邊附近|我这边附近|around\s*me|near\s*me|我的附近|今天附近可以|現在附近有)/i;
 
 /** 常見城市／國家／景點 — 用於意圖判斷（完整解析在 trip-planning-context） */
 const NAMED_DESTINATION_IN_TEXT =
@@ -90,6 +92,15 @@ export function isTravelPlanningText(text: string): boolean {
 
   if (isBestTravelTimeIntent(t)) return false;
 
+  // Destination + place category recommendation is NOT trip planning
+  // (e.g.「台南有什麼咖啡廳推薦嗎」) unless user also asks to plan an itinerary.
+  if (
+    hasCategoryPlaceQuery(t) &&
+    !/(?:安排|規劃|规划|幫我排|帮我排|一日遊|一日游|幾天行程|几天行程|完整行程|建立行程|生成行程)/.test(t)
+  ) {
+    return false;
+  }
+
   if (isTravelPlanningAdviceText(t)) return true;
   if (isDateInquiryText(t)) return true;
   if (isDestinationInquiryText(t)) return true;
@@ -133,8 +144,10 @@ export function shouldBlockNearbyRecommendation(text: string, session?: ChatPlan
   if (isTravelPlanningText(t)) return true;
   if (isDateInquiryText(t)) return true;
   if (isDestinationInquiryText(t)) return true;
-  if (hasNamedDestinationInText(t) && !NEARBY_EXPLICIT.test(t)) return true;
-  if (/(?:\d{1,2}\s*月|下個月|下个月|幾天|几号|幾號|日期)/.test(t) && !NEARBY_EXPLICIT.test(t)) {
+  if (hasNamedDestinationInText(t) && !isExplicitDeviceNearbyRequest(t) && !NEARBY_EXPLICIT.test(t)) {
+    return true;
+  }
+  if (/(?:\d{1,2}\s*月|下個月|下个月|幾天|几号|幾號|日期)/.test(t) && !isExplicitDeviceNearbyRequest(t) && !NEARBY_EXPLICIT.test(t)) {
     return true;
   }
 
@@ -151,7 +164,7 @@ export function shouldBlockNearbyRecommendation(text: string, session?: ChatPlan
       session.conversationMode === "destination_planning" ||
       session.tripPlanningContext?.intent === "destination_planning"
     ) {
-      return !NEARBY_EXPLICIT.test(t);
+      return !isExplicitDeviceNearbyRequest(t) && !NEARBY_EXPLICIT.test(t);
     }
   }
 
@@ -165,10 +178,29 @@ export function routeUserIntent(
   const t = text.trim();
   if (!t) return "general";
 
+  // 1. Explicit place-category recommendation beats trip planning
+  if (hasCategoryPlaceQuery(t) && !isTravelPlanningText(t)) {
+    const destination = session
+      ? resolveDestinationForCategorySearch(
+          session.travelContext ?? { interests: [] },
+          session,
+          t,
+        )
+      : undefined;
+    if (destination || /[\u4e00-\u9fffA-Za-z]{2,}/.test(t)) {
+      return "nearby_recommendation";
+    }
+  }
+
   if (isTravelPlanningText(t) || isDateInquiryText(t)) return "travel_planning";
   if (isDestinationInquiryText(t)) return "destination_inquiry";
 
-  if (session?.conversationMode === "destination_planning") return "travel_planning";
+  if (
+    session?.conversationMode === "destination_planning" &&
+    !hasCategoryPlaceQuery(t)
+  ) {
+    return "travel_planning";
+  }
 
   if (isMoodOnlyText(t) && !NEARBY_EXPLICIT.test(t)) return "mood_recommendation";
   if (NEARBY_EXPLICIT.test(t)) return "nearby_recommendation";

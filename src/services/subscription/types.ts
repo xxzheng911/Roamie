@@ -9,7 +9,8 @@ export type SubscriptionFeature =
   | "weather_planning"
   | "hidden_locals"
   | "ai_memory"
-  | "advanced_travel_modes";
+  | "advanced_travel_modes"
+  | "conversation_workspace";
 
 export type SubscriptionStatus = {
   tier: SubscriptionTierId;

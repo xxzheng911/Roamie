@@ -145,7 +145,20 @@ export function buildDestinationDiscoveryQueries(params: {
 
   let queries: string[] = [];
 
-  if (profile === "taiwan") {
+  // Desert / sparse regions — widen to known gateways + natural features.
+  if (label === "戈壁" || label === "戈壁沙漠" || /gobi/i.test(en ?? "")) {
+    queries = [
+      "Gobi Desert Mongolia attractions",
+      "Gobi Desert national park",
+      "Yolyn Am",
+      "Dalanzadgad attractions",
+      "Sainshand Mongolia",
+      "戈壁沙漠 景點",
+      "蒙古 戈壁 景點",
+      `${enArea} desert`,
+      `${enArea} national park`,
+    ];
+  } else if (profile === "taiwan") {
     queries = [
       `${area} 景點`,
       `${area} 必去`,
@@ -256,9 +269,9 @@ export function buildThemeSearchDirections(
         searchKeywords: ["historical landmark", "church", "museum", "market"],
       },
       {
-        title: "美食夜生活組合",
-        themeKey: "market",
-        searchKeywords: ["restaurant", "food market", "night market", "bar"],
+        title: "人氣美食組合",
+        themeKey: "food",
+        searchKeywords: ["restaurant", "food market", "night market", "cafe"],
       },
       {
         title: "近郊自然組合",
@@ -268,24 +281,24 @@ export function buildThemeSearchDirections(
     ],
     taiwan: [
       {
-        title: "經典地標組合",
-        themeKey: "attraction",
-        searchKeywords: ["地標", "景點", "tourist attractions"],
+        title: "自然風景組合",
+        themeKey: "nature",
+        searchKeywords: ["公園", "步道", "自然風景", "park"],
       },
       {
-        title: "文創慢逛組合",
-        themeKey: "culture",
-        searchKeywords: ["文創", "museum", "art"],
+        title: "人氣美食組合",
+        themeKey: "food",
+        searchKeywords: ["人氣餐廳", "在地小吃", "必吃美食", "夜市", "甜點"],
       },
       {
-        title: "美食市集組合",
-        themeKey: "market",
-        searchKeywords: ["夜市", "市場", "美食"],
+        title: "購物散策組合",
+        themeKey: "shopping",
+        searchKeywords: ["商圈", "百貨", "購物中心", "老街", "市場", "伴手禮"],
       },
       {
-        title: "近郊自然組合",
-        themeKey: "suburb",
-        searchKeywords: ["步道", "自然", "公園"],
+        title: "咖啡散步組合",
+        themeKey: "cafe",
+        searchKeywords: ["咖啡廳", "cafe", "甜點", "bakery"],
       },
     ],
     cjk: [
@@ -295,14 +308,14 @@ export function buildThemeSearchDirections(
         searchKeywords: ["tourist attractions", "landmark", "temple"],
       },
       {
-        title: "城市散策組合",
-        themeKey: "nature",
-        searchKeywords: ["park", "shopping street", "river"],
+        title: "人氣美食組合",
+        themeKey: "food",
+        searchKeywords: ["restaurant", "local food", "night market", "cafe"],
       },
       {
-        title: "美食咖啡組合",
-        themeKey: "market",
-        searchKeywords: ["food", "cafe", "market"],
+        title: "購物散策組合",
+        themeKey: "shopping",
+        searchKeywords: ["shopping street", "shopping mall", "market", "department store"],
       },
       {
         title: "近郊一日組合",
@@ -317,14 +330,14 @@ export function buildThemeSearchDirections(
         searchKeywords: ["landmark", "old town", "historic"],
       },
       {
-        title: "博物館藝文組合",
-        themeKey: "culture",
-        searchKeywords: ["museum", "gallery", "theatre"],
+        title: "在地美食組合",
+        themeKey: "food",
+        searchKeywords: ["restaurant", "cafe", "bakery", "food market"],
       },
       {
-        title: "在地美食組合",
-        themeKey: "market",
-        searchKeywords: ["market", "cafe", "restaurant"],
+        title: "購物散策組合",
+        themeKey: "shopping",
+        searchKeywords: ["shopping street", "department store", "market", "boutique"],
       },
       {
         title: "近郊放鬆組合",
@@ -339,19 +352,19 @@ export function buildThemeSearchDirections(
         searchKeywords: ["tourist attractions", "landmark"],
       },
       {
-        title: "城市散策組合",
-        themeKey: "nature",
-        searchKeywords: ["park", "shopping", "waterfront"],
+        title: "人氣美食組合",
+        themeKey: "food",
+        searchKeywords: ["restaurant", "local food", "cafe", "market"],
       },
       {
-        title: "美食市集組合",
-        themeKey: "market",
-        searchKeywords: ["market", "food", "restaurant"],
+        title: "購物散策組合",
+        themeKey: "shopping",
+        searchKeywords: ["shopping mall", "shopping street", "market", "department store"],
       },
       {
         title: "近郊自然組合",
-        themeKey: "suburb",
-        searchKeywords: ["nature", "scenic", "trail"],
+        themeKey: "nature",
+        searchKeywords: ["park", "nature", "trail"],
       },
     ],
   };

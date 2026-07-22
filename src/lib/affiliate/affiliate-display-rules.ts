@@ -2,6 +2,10 @@ import type { RoamieItineraryItem, RoamiePayloadV2 } from "@/lib/ai/types";
 import type { TripAffiliateContext } from "@/lib/affiliate/affiliate-types";
 import { PLACE_TYPE_CATEGORY_MAP } from "@/lib/affiliate/place-type-category-map";
 import { shouldShowTicketAffiliate } from "@/lib/affiliate/ticket-affiliate-eligibility";
+import {
+  affiliateDebugInfo,
+  logAffiliateSummary,
+} from "@/lib/affiliate/affiliate-debug-log";
 import { daysBetweenDates } from "@/lib/fetch-context";
 import type { TripLocation } from "@/lib/location/types";
 
@@ -276,9 +280,22 @@ export type AffiliateRuleCheckLog = {
 };
 
 export function logAffiliateRuleCheck(input: AffiliateRuleCheckLog): void {
-  console.info(
+  affiliateDebugInfo(
     `[AFFILIATE_RULE_CHECK] destination=${input.destination ?? ""} country=${input.country ?? ""} isInternational=${String(input.isInternational ?? false)} tripDays=${input.tripDays ?? ""} nights=${input.nights ?? ""} placeName=${input.placeName ?? ""} placeTypes=${input.placeTypes ?? ""} category=${input.category ?? ""} tags=${input.tags ?? ""} showKlook=${String(input.showKlook ?? false)} showKKday=${String(input.showKKday ?? false)} showTripFlight=${String(input.showTripFlight ?? false)} showAgodaHotel=${String(input.showAgodaHotel ?? false)} showTripHotel=${String(input.showTripHotel ?? false)}${input.reason ? ` reason=${input.reason}` : ""}`,
   );
+
+  const place = input.placeName?.trim() || input.destination?.trim() || "(trip)";
+  logAffiliateSummary({
+    place,
+    category: input.category,
+    placeTypes: input.placeTypes,
+    tripFlight: input.showTripFlight,
+    tripHotel: Boolean(input.showTripHotel || input.showAgodaHotel),
+    agoda: input.showAgodaHotel,
+    kkday: input.showKKday,
+    klook: input.showKlook,
+    reason: input.reason,
+  });
 }
 
 export function logPlaceAffiliateRuleCheck(
@@ -288,6 +305,8 @@ export function logPlaceAffiliateRuleCheck(
 ): void {
   const decision = resolveTicketAffiliateEligibility(place);
   const enabled = offers.filter((o) => o.enabled);
+  const showKlook = decision.eligible && enabled.some((o) => o.provider === "klook");
+  const showKKday = decision.eligible && enabled.some((o) => o.provider === "kkday");
   logAffiliateRuleCheck({
     destination: tripCtx?.destinationLabel,
     country: tripCtx ? resolveDestinationCountryCode(tripCtx) : undefined,
@@ -300,8 +319,8 @@ export function logPlaceAffiliateRuleCheck(
     placeTypes: parsePlaceGoogleTypes(place).join(","),
     category: resolvePlaceCategory(place),
     tags: parsePlaceTags(place),
-    showKlook: decision.eligible && enabled.some((o) => o.provider === "klook"),
-    showKKday: decision.eligible && enabled.some((o) => o.provider === "kkday"),
+    showKlook,
+    showKKday,
     showTripFlight: false,
     showAgodaHotel: false,
     showTripHotel: false,
@@ -327,6 +346,8 @@ export function logTripAffiliateRuleCheck(
     isInternational: intl.international,
     tripDays: ctx.dayCount,
     nights: hotel.nights,
+    placeName: ctx.destinationLabel || "(trip)",
+    category: "trip",
     showKlook: false,
     showKKday: false,
     showTripFlight: sections.showTripFlight && flight.eligible,

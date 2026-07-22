@@ -21,6 +21,18 @@ const ALLOWED_GEO_TYPES = new Set([
   "political",
   "colloquial_area",
   "archipelago",
+  /**
+   * Travel islands / atolls / natural destinations.
+   * Google Geocoding often returns e.g. Koh Samui / Santorini / Boracay as
+   * `["establishment","natural_feature"]` — must accept for Destination Anchor.
+   */
+  "natural_feature",
+  "island",
+  /**
+   * Tourist towns / resort areas (e.g. Pattaya) may surface as postal_town
+   * or only political + geocode meta types.
+   */
+  "postal_town",
 ]);
 
 const REJECTED_POI_TYPES = new Set([
@@ -69,9 +81,12 @@ const REJECTED_POI_TYPES = new Set([
 ]);
 
 /**
- * Accept country / city / admin results from Geocoding API.
+ * Accept country / city / admin / tourist-destination results from Geocoding API.
  * Google often includes "geocode" or "plus_code" alongside locality/political —
  * those meta types must not reject an otherwise valid administrative result.
+ *
+ * Destination Anchor must not require a single `locality` type — islands,
+ * regions, resort towns, and districts are all valid travel destinations.
  */
 export function isGeographicPlaceTypes(types: string[] | undefined): boolean {
   if (!types?.length) return true;
@@ -80,6 +95,23 @@ export function isGeographicPlaceTypes(types: string[] | undefined): boolean {
   if (
     (types.includes("geocode") || types.includes("plus_code")) &&
     !types.some((t) => REJECTED_POI_TYPES.has(t))
+  ) {
+    return true;
+  }
+  /**
+   * Soft accept: political + establishment (common for tourist destinations)
+   * when not clearly a shop/restaurant/attraction POI.
+   */
+  if (
+    types.includes("political") &&
+    types.includes("establishment") &&
+    !types.some(
+      (t) =>
+        t !== "establishment" &&
+        t !== "political" &&
+        t !== "point_of_interest" &&
+        REJECTED_POI_TYPES.has(t),
+    )
   ) {
     return true;
   }

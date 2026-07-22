@@ -20,6 +20,7 @@ import {
   scoreClassicLandmarkPriority,
   sortClassicLandmarkPlaces,
 } from "@/lib/ai/ai-classic-landmark-rules";
+import { isRecEnginePlannerEnabled } from "@/lib/recommendation/engine/feature-flag-planner";
 
 export type ClassicLandmarkCluster = "CITY" | "LUYE" | "COAST" | "SOUTH" | "CHISHANG";
 
@@ -221,15 +222,22 @@ function buildClusterMap(
   return map;
 }
 
+/**
+ * 路線組裝：最近鄰。
+ * Flag ON（P2.3）：起點取 pool 順序第一個（不依 priority 重排）；後續僅 Route 約束。
+ * Flag OFF：legacy 先依 scoreClassicLandmarkPriority 排序再最近鄰。
+ */
 function orderByNearestNeighbor(
   places: PlaceResult[],
   maxLegM = CLASSIC_LANDMARK_MAX_LEG_DISTANCE_M,
 ): PlaceResult[] {
   if (places.length <= 1) return [...places];
 
-  const remaining = [...places].sort(
-    (a, b) => scoreClassicLandmarkPriority(b) - scoreClassicLandmarkPriority(a),
-  );
+  const remaining = isRecEnginePlannerEnabled()
+    ? [...places]
+    : [...places].sort(
+        (a, b) => scoreClassicLandmarkPriority(b) - scoreClassicLandmarkPriority(a),
+      );
   const ordered: PlaceResult[] = [];
   let current = remaining.shift()!;
   ordered.push(current);

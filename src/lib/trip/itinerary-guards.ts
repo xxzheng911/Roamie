@@ -8,7 +8,7 @@ import { resolveDestinationApproxCenter } from "@/lib/ai/destination-geocode";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { INSUFFICIENT_ITINERARY_PLACES_MESSAGE } from "@/lib/ai/generic-place-label";
 import { listTripDates } from "@/lib/outfit/group-by-date";
-import { buildMixedItineraryFromPlaces } from "@/lib/trip/mixed-itinerary-schedule";
+import { buildMixedItineraryWithDiagnostics } from "@/lib/trip/mixed-itinerary-schedule";
 import {
   groupStopsByTripDays,
   redistributeToFillEmptyDays,
@@ -20,6 +20,7 @@ import {
   SELECTED_COMBINATION_FILLER_POLICY,
   validateItineraryPreSave,
 } from "@/lib/ai/real-place-supplement";
+import { minEffectivePlacesPerDay } from "@/lib/ai/planner-day-route-assembly";
 
 export const ITINERARY_GENERATION_FAILED_MESSAGE =
   "行程建立失敗，我再幫你重新整理一次。";
@@ -168,15 +169,21 @@ export function groupItineraryItemsByDay(
   }));
 }
 
-/** 從已選地點建立保底行程 — 混合類型分配到每天；禁止空白日 */
+/** 從已選地點建立保底行程 — 候選不足時保留空日並讓後續驗證擋下儲存，禁止單點日補洞 */
 export function buildFallbackItineraryFromPlaces(
   selectedPlaces: RoamieRecommendationItem[],
   days: number,
   startDate: string,
   destination?: string,
-  opts?: { selectedCombinationIds?: number[] },
+  opts?: {
+    selectedCombinationIds?: number[];
+    nearbyExtensions?: string[];
+    pace?: "slow" | "medium" | "active";
+  },
 ): RoamieItineraryItem[] {
   const dayCount = Math.max(days, 1);
+  const pace = opts?.pace ?? "medium";
+  const minPerDay = minEffectivePlacesPerDay(pace);
   const selectedCombinationIds =
     opts?.selectedCombinationIds ??
     [
@@ -187,20 +194,51 @@ export function buildFallbackItineraryFromPlaces(
       ),
     ].sort((a, b) => a - b);
 
-  const mixed = buildMixedItineraryFromPlaces(
+  const mixedResult = buildMixedItineraryWithDiagnostics(
     selectedPlaces,
     days,
     startDate,
     destination,
-    { selectedCombinationIds },
+    {
+      selectedCombinationIds,
+      nearbyExtensions: opts?.nearbyExtensions,
+      pace: opts?.pace,
+    },
   );
 
+  logAiPipeline(
+    "[FALLBACK_ITINERARY_DIAG]",
+    `dayCounts=${mixedResult.dayCounts.join(",")}`,
+    `candidateInsufficient=${mixedResult.candidateInsufficient}`,
+    `requiredCount=${mixedResult.requiredCount}`,
+    `availableCount=${mixedResult.availableCount}`,
+    `missingCount=${mixedResult.missingCount}`,
+    `affectedDays=[${mixedResult.affectedDays.join(",")}]`,
+    "sourceFunction=buildFallbackItineraryFromPlaces",
+  );
+
+  // candidateInsufficient：禁止 redistribute／spare 單點填空，保留 Planner 空日給 integrity 擋下。
+  if (mixedResult.candidateInsufficient) {
+    logAiPipeline(
+      "[CANDIDATE_INSUFFICIENT_BLOCK_SAVE]",
+      `requiredCount=${mixedResult.requiredCount}`,
+      `availableCount=${mixedResult.availableCount}`,
+      `missingCount=${mixedResult.missingCount}`,
+      `affectedDays=[${mixedResult.affectedDays.join(",")}]`,
+      `replanReasons=${mixedResult.replanReasons.join("|")}`,
+      "action=skip_redistribute_and_singleton_fill",
+    );
+    return mixedResult.stops;
+  }
+
   const filled = redistributeToFillEmptyDays({
-    stops: mixed,
+    stops: mixedResult.stops,
     days: dayCount,
     startDate,
     sparePlaces: selectedPlaces,
     makeStop: (place, date, time) => makePlaceItineraryStop(place, date, time),
+    minPerDay,
+    forbidSingletonFill: true,
   });
 
   const dates = listTripDates([], startDate, dayCount);
@@ -210,10 +248,7 @@ export function buildFallbackItineraryFromPlaces(
     stops.map((s) => s.date?.trim()).filter(Boolean),
   );
 
-  // When unique places < days, never invent synthetic stops for selected combinations.
-  // Real-place supplement must happen earlier (place-fetch). If we still lack places here,
-  // leave empty days and let pre-save validation fail — do not save a half-built trip.
-  let fillerIdx = 0;
+  // Never invent synthetic / singleton fillers. Real-place supplement must run earlier.
   for (const date of dates) {
     if (occupied.has(date)) continue;
     const usedKeys = new Set(
@@ -223,48 +258,38 @@ export function buildFallbackItineraryFromPlaces(
           `${(s.placeName ?? s.title).replace(/\s+/g, "").toLowerCase()}`,
       ),
     );
-    const spare = selectedPlaces.find((p) => {
+    const spares = selectedPlaces.filter((p) => {
       const key =
         p.googlePlaceId?.trim() ||
         `${(p.placeName ?? p.name).replace(/\s+/g, "").toLowerCase()}`;
       return key && !usedKeys.has(key);
     });
-    if (spare) {
-      stops.push(makePlaceItineraryStop(spare, date, "14:00"));
+    // Only fill empty day with ≥ minPerDay unused places — never a singleton.
+    if (spares.length >= minPerDay) {
+      for (let i = 0; i < minPerDay; i += 1) {
+        stops.push(
+          makePlaceItineraryStop(spares[i]!, date, i === 0 ? "10:00" : "14:00"),
+        );
+      }
       occupied.add(date);
       continue;
     }
-    if (
+    logAiPipeline(
+      "[DAY_FILLER_SKIPPED]",
+      `date=${date}`,
       selectedCombinationIds.length > 0 &&
-      !SELECTED_COMBINATION_FILLER_POLICY.allowSynthetic
-    ) {
-      logAiPipeline(
-        "[DAY_FILLER_SKIPPED]",
-        `date=${date}`,
-        "reason=selected_combinations_forbid_synthetic_filler",
-        "note=real_place_supplement_should_run_before_allocation",
-      );
-      logAiPipeline(
-        "[EMPTY_DAY_BLOCKED]",
-        `date=${date}`,
-        "reason=no_places_and_not_free_day",
-      );
-      continue;
-    }
-    const template = DAY_FILLER_TEMPLATES[fillerIdx % DAY_FILLER_TEMPLATES.length]!;
-    fillerIdx += 1;
-    stops.push(
-      destLabel
-        ? makeFillerItineraryStop(destLabel, date, template)
-        : normalizeItineraryItem({
-            date,
-            time: template.time,
-            title: template.title,
-            placeName: template.title,
-            description: template.description,
-          }),
+        !SELECTED_COMBINATION_FILLER_POLICY.allowSynthetic
+        ? "reason=selected_combinations_forbid_synthetic_filler"
+        : "reason=forbid_singleton_or_synthetic_empty_day_fill",
+      `spare=${spares.length}`,
+      `need=${minPerDay}`,
+      destLabel ? `destination=${destLabel}` : "",
     );
-    occupied.add(date);
+    logAiPipeline(
+      "[EMPTY_DAY_BLOCKED]",
+      `date=${date}`,
+      "reason=no_places_and_not_free_day",
+    );
   }
 
   if (stops.length < computeMinimumPlacesForTripDays(dayCount)) {

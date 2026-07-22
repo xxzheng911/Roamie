@@ -46,6 +46,17 @@ import {
   isDestinationSelectionText,
   coerceTravelDestination,
 } from "@/lib/ai/trip-planning-context";
+import {
+  resolveChatIntentArbitration,
+  hasActiveRecommendationContext,
+} from "@/lib/ai/recommendation-refinement/arbitrate";
+import {
+  recommendationIntentToCategoryIntent,
+  categoryIntentToRecommendationIntent,
+  type RecommendationIntent,
+} from "@/lib/ai/recommendation-refinement/types";
+import { resolveActiveCategoryIntent } from "@/lib/ai/conversation-recommendation-session";
+import { isExplicitDeviceNearbyRequest } from "@/lib/ai/recommendation-search-scope";
 
 /** 使用者回覆餐廳菜系 / 不限 */
 export function isFoodPreferenceReply(text: string): boolean {
@@ -55,7 +66,7 @@ export function isFoodPreferenceReply(text: string): boolean {
   if (/^(都可以|都行|不限|沒特別|沒有特別|隨意|你推|都行吧|任何|沒有偏好|沒偏好)$/.test(t)) {
     return true;
   }
-  return /(日式|日料|燒肉|烤肉|火鍋|義式|義大利|韓式|泰式|素食|海鮮|牛排|拉麵|壽司|中餐|台式|法式|不限)/.test(
+  return /(日式|日料|燒肉|烤肉|火鍋|義式|義大利|韓式|泰式|素食|海鮮|牛排|拉麵|壽司|壽喜燒|寿喜焼|すき焼き|成吉思汗|居酒屋|咖哩|天婦羅|螃蟹|中餐|台式|法式|不限)/.test(
     t,
   );
 }
@@ -67,6 +78,7 @@ export function parseFoodPreference(text: string): string | undefined {
   if (/^(都可以|都行|不限|沒特別|沒有特別|隨意|你推|都行吧|任何|沒有偏好|沒偏好)$/.test(t)) {
     return "any";
   }
+  if (/壽喜燒|寿喜焼|すき焼き|sukiyaki/i.test(t)) return "sukiyaki";
   if (/日式|日料/.test(t)) return "japanese";
   if (/燒肉|烤肉/.test(t)) return "bbq";
   if (/火鍋/.test(t)) return "hotpot";
@@ -78,6 +90,11 @@ export function parseFoodPreference(text: string): string | undefined {
   if (/牛排/.test(t)) return "steak";
   if (/拉麵/.test(t)) return "ramen";
   if (/壽司/.test(t)) return "sushi";
+  if (/成吉思汗|ジンギスカン/i.test(t)) return "jingisukan";
+  if (/居酒屋/.test(t)) return "izakaya";
+  if (/咖哩|カレー/i.test(t)) return "curry";
+  if (/天婦羅|天ぷら/i.test(t)) return "tempura";
+  if (/螃蟹|毛蟹|蟹/.test(t)) return "crab";
   return undefined;
 }
 
@@ -92,10 +109,50 @@ export function parseDiningTimeHint(text: string): string | undefined {
   return undefined;
 }
 
+function resolveSessionRecommendationIntent(
+  session: ChatPlanningSession,
+): RecommendationIntent | undefined {
+  if (session.activeRecommendationContext?.intent) {
+    return session.activeRecommendationContext.intent;
+  }
+  const category = resolveActiveCategoryIntent(session);
+  if (category) return categoryIntentToRecommendationIntent(category);
+  return undefined;
+}
+
 export function resolveChatIntent(text: string, session: ChatPlanningSession): ChatIntent {
   const categoryIntents = parseChatPlaceIntents(text);
   const travelCtx = session.travelContext ?? { interests: [] };
 
+  // Active recommendation refinement must beat sticky destination_planning.
+  if (hasActiveRecommendationContext(session)) {
+    const arbitration = resolveChatIntentArbitration(text, session);
+    if (
+      arbitration.route === "RECOMMENDATION_REFINEMENT" ||
+      arbitration.route === "MORE_RECOMMENDATIONS"
+    ) {
+      const intent =
+        arbitration.refinement?.intentSwitch ?? resolveSessionRecommendationIntent(session);
+      if (intent === "cafe" || intent === "restaurant") return intent;
+      if (intent) {
+        const category = recommendationIntentToCategoryIntent(intent);
+        return mapCategoryIntentToNearbyIntent(category);
+      }
+      return session.activeChatIntent && isNearbyPlaceIntent(session.activeChatIntent)
+        ? session.activeChatIntent
+        : "restaurant";
+    }
+    if (arbitration.route === "NEW_TRIP_PLANNING" || arbitration.route === "NEW_DESTINATION") {
+      // Fall through to create_itinerary / destination handling below
+    }
+    if (arbitration.route === "NEW_RECOMMENDATION") {
+      const intents = parseChatPlaceIntents(text);
+      if (intents.length) return mapCategoryIntentToNearbyIntent(intents[0]!);
+      return "restaurant";
+    }
+  }
+
+  // Explicit place recommendation — even while combination_choice is pending
   if (categoryIntents.length > 0 && hasCategoryPlaceQuery(text)) {
     const categoryDest = resolveDestinationForCategorySearch(travelCtx, session, text);
     if (coerceTravelDestination(categoryDest)) {
@@ -104,16 +161,53 @@ export function resolveChatIntent(text: string, session: ChatPlanningSession): C
     return mapCategoryIntentToNearbyIntent(categoryIntents[0]!);
   }
 
+  {
+    const arbitration = resolveChatIntentArbitration(text, session);
+    if (arbitration.route === "NEW_RECOMMENDATION") {
+      const intents = parseChatPlaceIntents(text);
+      if (intents.length) return mapCategoryIntentToNearbyIntent(intents[0]!);
+      return "restaurant";
+    }
+  }
+
   if (isCreateItineraryIntent(text)) return "create_itinerary";
 
   if (session.pendingQuestion || session.adviceSelectionThisTurn) {
     if (isCreateItineraryIntent(text)) return "create_itinerary";
+    // Refinement-like replies should not stick in destination_advice when rec context exists
+    if (hasActiveRecommendationContext(session)) {
+      const arbitration = resolveChatIntentArbitration(text, session);
+      if (
+        arbitration.route === "RECOMMENDATION_REFINEMENT" ||
+        arbitration.route === "MORE_RECOMMENDATIONS"
+      ) {
+        const active = session.activeChatIntent;
+        if (active && isNearbyPlaceIntent(active)) return active;
+        return "restaurant";
+      }
+    }
+    // Place intent while combination pending → not destination_advice
+    if (hasCategoryPlaceQuery(text) && parseChatPlaceIntents(text).length > 0) {
+      return mapCategoryIntentToNearbyIntent(parseChatPlaceIntents(text)[0]!);
+    }
     return "destination_advice";
   }
 
   if (isDestinationPlanningSession(session, session.travelContext)) {
     if (isCreateItineraryIntent(text)) return "create_itinerary";
     if (isBestTravelTimeIntent(text)) return "best_travel_time";
+    if (hasActiveRecommendationContext(session)) {
+      const arbitration = resolveChatIntentArbitration(text, session);
+      if (
+        arbitration.route === "RECOMMENDATION_REFINEMENT" ||
+        arbitration.route === "MORE_RECOMMENDATIONS" ||
+        arbitration.route === "NEW_RECOMMENDATION"
+      ) {
+        const active = session.activeChatIntent;
+        if (active && isNearbyPlaceIntent(active)) return active;
+        return "restaurant";
+      }
+    }
     return "destination_advice";
   }
 
@@ -214,14 +308,36 @@ export function shouldFetchNearbyPlaces(
     return sessionHasLocation(session);
   }
   if (
-    /(還有嗎|還有沒有|再推薦|換其他|換一批|提供其他|其他推薦|不要這些)/.test(text.trim()) &&
+    /(還有嗎|還有沒有|再推薦|換其他|換一批|提供其他|其他推薦|不要這些|有其他的嗎)/.test(
+      text.trim(),
+    ) &&
     session.recommendedPlaces.length > 0
   ) {
+    // Continue with trip destination → destination path, not device nearby.
+    const dest =
+      session.travelContext?.destination?.trim() ||
+      session.activeRecommendationContext?.destinationName ||
+      session.recommendationSession?.destination ||
+      session.tripPlanningContext?.destination?.trim();
+    if (dest && !isExplicitDeviceNearbyRequest(text)) {
+      return false;
+    }
     return sessionHasLocation(session);
   }
   if (shouldBlockNearbyRecommendation(text, session)) return false;
+
+  // Trip destination + place query → destination category path, not device nearby.
+  const categoryDest = resolveDestinationForCategorySearch(
+    session.travelContext ?? { interests: [] },
+    session,
+    text,
+  );
+  if (categoryDest && hasCategoryPlaceQuery(text) && !isExplicitDeviceNearbyRequest(text)) {
+    return false;
+  }
+
   if (intent === "restaurant") {
-    if (resolveDestinationForCategorySearch(session.travelContext ?? { interests: [] }, session, text)) {
+    if (categoryDest) {
       return true;
     }
     return (
@@ -324,6 +440,18 @@ export function foodPreferenceSearchQuery(foodPreference?: string): string | und
       return "拉麵";
     case "sushi":
       return "壽司";
+    case "sukiyaki":
+      return "壽喜燒 すき焼き";
+    case "izakaya":
+      return "居酒屋";
+    case "jingisukan":
+      return "成吉思汗 ジンギスカン";
+    case "curry":
+      return "咖哩";
+    case "tempura":
+      return "天婦羅";
+    case "crab":
+      return "螃蟹";
     default:
       return undefined;
   }

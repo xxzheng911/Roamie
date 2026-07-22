@@ -1,0 +1,30 @@
+---
+description: RAOS AI engines — Conversation, Context, Decision, AIL
+globs: src/lib/ai/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# AI Architecture (RAOS Ch.3, 6, 7, 10)
+
+Full docs: `docs/raos/chapter-03-*.md`, `chapter-06-*.md`, `chapter-07-*.md`, `chapter-10-*.md`.
+
+## Engines
+
+| Engine | Role |
+|---|---|
+| Conversation | Mouth — guide toward completing travel goals |
+| Context | Brain — integrate trip, workspace, memory, DNA before reply |
+| Decision | Decide what/whether to answer; emit Decision Object |
+| AIL | Suggest proactive improvements; never mute user agency |
+| Prompt Builder | Assemble prompts from Context + Decision only |
+
+## Rules
+
+- Context order: current chat → current trip → Memory (Plus) → DNA (Plus) → latest user input.
+- Never restart known context; never re-ask destination/days already known.
+- Never repeat already-recommended places (incl. alias / Place ID).
+- Ask at most one natural follow-up when info is missing; no questionnaire dumps.
+- Planning stages: understand → directions/options → full itinerary (do not skip).
+- Decision priority (do not invert): latest need → trip context → Memory → DNA → weather → hours → date → distance → Places data → reasons.
+- AIL may suggest weather/budget/risk/seasonal opportunities; other modules execute; major changes need user confirm.
+- Prefer changing engines / Decision rules over editing scattered prompts.

@@ -28,9 +28,21 @@ export type UserProfileForReason = {
   aiPreferences?: Record<string, unknown>;
 };
 
+export type PlaceRecommendationIntent =
+  | "shopping"
+  | "restaurant"
+  | "cafe"
+  | "attraction"
+  | "scenic"
+  | "night_market"
+  | "bar"
+  | "indoor";
+
 export type PlaceRecommendationContext = {
-  /** 僅供相容；文案類型判斷請用 resolvePlaceIdentity，不看 chip 名稱 */
+  /** 僅供相容；優先使用 categoryIntent */
   categoryLabel?: string;
+  /** Active recommendation intent — locks description templates */
+  categoryIntent?: PlaceRecommendationIntent | string;
   distanceMeters?: number;
   mood?: string;
   isSavedFavorite?: boolean;
@@ -70,16 +82,20 @@ const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
     "小吃店適合順路買一份，邊走邊吃或外帶。",
   ],
   shopping_mall: [
+    "適合慢慢逛街，可以一次逛很多品牌。",
+    "適合購買伴手禮，也可安排下午購物。",
+    "商場餐飲選擇多，雨天也適合慢慢逛。",
     "可以一次逛很多店，適合慢慢逛街放空。",
-    "很適合順路探索，想逛多久都可以自己安排。",
   ],
   department_store: [
-    "適合慢慢逛街放空，可以一次逛很多品牌。",
-    "很適合順路探索，室內逛起來節奏比較舒服。",
+    "適合慢慢逛街，可以一次逛很多品牌。",
+    "適合購買伴手禮，室內逛起來節奏比較舒服。",
+    "可安排下午購物，雨天也適合。",
   ],
   tourist_attraction: [
     "這是一處景點，適合順路繞進去看看、拍拍照。",
     "景點適合排進行程中彈性的一站，不必趕。",
+    "適合拍照觀景，節奏可以自己掌握。",
   ],
   museum: [
     "如果你喜歡慢慢看展或室內行程，這裡會是不錯的停留點。",
@@ -112,9 +128,12 @@ const IDENTITY_SCENE: Partial<Record<PlaceIdentity, string[]>> = {
   night_market: ["晚上氣氛不錯", "很適合晚上散步", "可以一次逛很多攤"],
   museum: ["適合室內待一陣子", "適合喜歡文化的人"],
   park: ["綠意多、步調輕鬆", "適合傍晚"],
-  department_store: ["可以一次逛很多店", "適合找伴手禮"],
-  shopping_mall: ["適合慢慢逛", "可以一次逛很多店"],
-  district: ["很適合順路探索", "適合找伴手禮"],
+  department_store: ["可以一次逛很多品牌", "適合購買伴手禮", "雨天也適合"],
+  shopping_mall: ["適合慢慢逛街", "可以一次逛很多品牌", "可安排下午購物"],
+  district: ["很適合順路探索", "適合購買伴手禮", "適合慢慢逛街"],
+  cafe: ["適合下午休息", "氣氛偏安靜"],
+  restaurant: ["適合午餐或晚餐", "推薦料理值得一試"],
+  tourist_attraction: ["適合拍照", "適合觀景"],
 };
 
 const DISTRICT_STYLE_IDENTITIES: PlaceIdentity[] = [
@@ -128,9 +147,81 @@ function isDistrictStyleReason(
   identity: PlaceIdentity,
   ctx?: PlaceRecommendationContext,
 ): boolean {
+  const intent = resolveReasonIntent(ctx);
   return (
-    DISTRICT_STYLE_IDENTITIES.includes(identity) || ctx?.categoryLabel === "商圈"
+    DISTRICT_STYLE_IDENTITIES.includes(identity) ||
+    intent === "shopping" ||
+    /商圈|購物/i.test(ctx?.categoryLabel ?? "")
   );
+}
+
+/** Resolve recommendation intent from explicit field or category label. */
+export function resolveReasonIntent(
+  ctx?: PlaceRecommendationContext | null,
+): PlaceRecommendationIntent | undefined {
+  const raw = (ctx?.categoryIntent ?? "").trim().toLowerCase();
+  if (
+    raw === "shopping" ||
+    raw === "restaurant" ||
+    raw === "cafe" ||
+    raw === "attraction" ||
+    raw === "scenic" ||
+    raw === "night_market" ||
+    raw === "bar" ||
+    raw === "indoor"
+  ) {
+    return raw;
+  }
+  const label = ctx?.categoryLabel ?? "";
+  if (/購物|商圈|shopping|outlet|百貨/i.test(label)) return "shopping";
+  if (/餐廳|美食|restaurant|food|正餐/i.test(label)) return "restaurant";
+  if (/咖啡|cafe|café/i.test(label)) return "cafe";
+  if (/夜市|night\s*market/i.test(label)) return "night_market";
+  if (/酒吧|bar|nightlife/i.test(label)) return "bar";
+  if (/室內|indoor/i.test(label)) return "indoor";
+  if (/景點|觀景|scenic|attraction/i.test(label)) return "attraction";
+  return undefined;
+}
+
+/**
+ * Lock place identity to the active recommendation intent so templates
+ * never cross (e.g. shopping must not use restaurant copy).
+ */
+export function resolveIdentityForReason(
+  place: PlaceResult,
+  ctx?: PlaceRecommendationContext | null,
+): PlaceIdentity {
+  const base = resolvePlaceIdentity(place);
+  const intent = resolveReasonIntent(ctx);
+  if (!intent) return base;
+
+  if (intent === "shopping") {
+    if (
+      base === "shopping_mall" ||
+      base === "department_store" ||
+      base === "district" ||
+      base === "night_market" ||
+      base === "bookstore"
+    ) {
+      return base;
+    }
+    return "shopping_mall";
+  }
+  if (intent === "restaurant") {
+    if (base === "food_stall" || base === "breakfast_shop") return base;
+    return "restaurant";
+  }
+  if (intent === "cafe") {
+    if (base === "bakery" || base === "dessert") return base;
+    return "cafe";
+  }
+  if (intent === "night_market") return "night_market";
+  if (intent === "bar") return "bar";
+  if (intent === "attraction" || intent === "scenic" || intent === "indoor") {
+    if (base === "museum" || base === "park" || base === "tourist_attraction") return base;
+    return intent === "indoor" && base === "museum" ? "museum" : "tourist_attraction";
+  }
+  return base;
 }
 
 const PACE_PHRASE: Record<string, string> = {
@@ -551,7 +642,7 @@ export function buildPlaceRecommendationReason(
         ? new Date(currentTime).getHours()
         : new Date().getHours();
 
-  const identity = resolvePlaceIdentity(place);
+  const identity = resolveIdentityForReason(place, ctx);
   const copy = getPlaceReasonCopy(locale);
 
   if (ctx.isSavedFavorite) {

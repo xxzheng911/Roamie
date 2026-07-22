@@ -155,9 +155,25 @@ export function finishPlannerSession(sessionId: string | undefined, itemCount: n
 
 export function resetPlannerSession(sessionId: string | undefined): void {
   if (!sessionId) return;
+  const hadActive = activePlannerSessions.has(sessionId);
+  const hadCompleted = completedPlannerSessions.has(sessionId);
   activePlannerSessions.delete(sessionId);
   completedPlannerSessions.delete(sessionId);
   resetPipelineStages(sessionId);
+  // Drop any planner run keys scoped to this session (sid|style|days|fingerprint).
+  const prefix = `${sessionId}|`;
+  for (const key of [...activePlannerRuns]) {
+    if (key.startsWith(prefix)) activePlannerRuns.delete(key);
+  }
+  for (const key of [...completedPlannerRuns.keys()]) {
+    if (key.startsWith(prefix)) completedPlannerRuns.delete(key);
+  }
+  console.info(
+    "[PLANNER_SESSION_RESET]",
+    `sessionId=${sessionId}`,
+    `hadActive=${hadActive}`,
+    `hadCompleted=${hadCompleted}`,
+  );
 }
 
 export function getPlannerSessionItemCount(sessionId: string | undefined): number | undefined {

@@ -21,6 +21,8 @@ import {
   resolveConversationDays,
   resolveConversationDestination,
 } from "@/lib/ai/ai-chat-conversation-state";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { isComboItineraryQuery } from "@/lib/ai/chat-category-place-guard";
 
 export type TripStyleKey = "classic_landmarks" | "local_life" | "slow_nature" | "mixed";
 
@@ -281,6 +283,15 @@ export function shouldAskTripDuration(
   session?: ChatPlanningSession,
   userText?: string,
 ): boolean {
+  if (userText?.trim() && hasCategoryPlaceQuery(userText) && !isComboItineraryQuery(userText)) {
+    return false;
+  }
+  if (ctx.tripPurpose === "recommend_places" || ctx.tripPurpose === "more_place_recommendations") {
+    return false;
+  }
+  if (session?.activeCategoryIntent || session?.recommendationSession) {
+    return false;
+  }
   if (!resolveConversationDestination(ctx, session)) return false;
   if (hasConfirmedTripDays(ctx, session)) return false;
   if (resolveInferredTripDays(ctx, session, userText)) return false;
@@ -389,7 +400,7 @@ export function buildAskTripStyleReply(
     return buildAskTripDurationReply(ctx, session);
   }
   return [
-    `好，我先記下 ${label} ${days} 天行程方向。`,
+    `好，我先記下 ${label} ${days} 天的行程方向。`,
     "接下來我會依目的地給你幾組動態行程組合，回覆你比較有興趣的組合即可。",
   ].join("\n");
 }
@@ -447,7 +458,7 @@ export function buildAskTripStyleAdviceResult(
     buildDestinationCombinationSuggestionsReply(label, days, {
       startDate: hasExactDate ? ctx.startDate : undefined,
       endDate: hasExactDate ? ctx.endDate : undefined,
-      weatherLine: `好，我先記下 ${label} ${days} 天行程方向。`,
+      weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
     }) ?? buildAskTripStyleReply(ctx, session, userText);
 
   const comboOptions = pendingOptionTitlesForCombinations(label);

@@ -31,6 +31,26 @@ import {
   validateGeneratedItinerary,
   groupStopsByTripDays,
 } from "@/lib/ai/combination-itinerary-integrity";
+import {
+  isItineraryValidatorEnabled,
+  validateItineraryPlan,
+  shouldBlockItineraryDelivery,
+  logItineraryDeliveryBlocked,
+  logItineraryDeliveryAllowed,
+  dayCountsOfPlans,
+  compareItineraryPersistenceDayCounts,
+  ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
+} from "@/lib/ai/itinerary-validator";
+import {
+  applyComposedPlansToItineraryItems,
+  composedPlansFromItineraryItems,
+} from "@/lib/ai/itinerary-validator/from-payload";
+import { replanUntilItineraryValid } from "@/lib/ai/itinerary-validator/replan";
+import type { ItineraryValidatorInput } from "@/lib/ai/itinerary-validator/types";
+import {
+  resolvePlannerStyleKey,
+  type ComposedDayPlan,
+} from "@/lib/ai/ai-day-plan-source";
 
 const PlaceSchema = z
   .object({
@@ -99,6 +119,8 @@ const InputSchema = z.object({
   transport: z.string().max(120).optional().default(""),
   selectedPlaces: z.array(PlaceSchema).max(20).optional().default([]),
   selectedCombinationIds: z.array(z.number().int().positive()).max(10).optional().default([]),
+  nearbyExtensions: z.array(z.string().max(80)).max(10).optional().default([]),
+  excludedCategories: z.array(z.string().max(40)).max(30).optional().default([]),
   preferences: z.record(z.unknown()).optional(),
   location: z.object({ lat: z.number(), lng: z.number(), city: z.string().optional() }).optional(),
   weather: z.record(z.unknown()).nullable().optional(),
@@ -317,6 +339,14 @@ export const generateItinerary = createServerFn({ method: "POST" })
       `places=[${requiredPlaceNames.join(",")}]`,
     );
 
+    logAiPipeline(
+      "[ITINERARY_PLANNER_START]",
+      `destination=${data.destination}`,
+      `days=${data.days}`,
+      `selectedPlaces=${selectedPlaces.length}`,
+      `selectedCombinationIds=${selectedCombinationIds.join(",")}`,
+    );
+
     let ai: RoamiePayloadV2 | null = null;
     let usedDeterministic = false;
 
@@ -523,7 +553,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       }
     }
 
-    const finalStops = coalesceItineraryItems(ai.itinerary);
+    let finalStops = coalesceItineraryItems(ai.itinerary);
     const integrity = validateFinalItineraryIntegrity({
       selectedCombinationIds,
       sessionSelectedCombinationIds: selectedCombinationIds,
@@ -566,6 +596,119 @@ export const generateItinerary = createServerFn({ method: "POST" })
         };
       }
     }
+
+    // P4.2：Itinerary Validator — direct / selected_places 建立路徑
+    if (isItineraryValidatorEnabled()) {
+      const composed = composedPlansFromItineraryItems(finalStops, data.days, startDate);
+      const plannerDayCounts = dayCountsOfPlans(composed);
+      const styleKey = resolvePlannerStyleKey(data.style);
+      const creationPath =
+        selectedCombinationIds.length > 0 ? "selected_places" : "direct";
+      logAiPipeline(
+        "[ITINERARY_PLANNER_RESULT]",
+        `success=true`,
+        `stopCount=${finalStops.length}`,
+        `dayCounts=${plannerDayCounts.join(",")}`,
+        `path=${usedDeterministic ? "deterministic" : "ai"}`,
+      );
+      const validatorInputBase: Omit<ItineraryValidatorInput, "plans"> = {
+        requestedDays: data.days,
+        style: styleKey,
+        plannedDate: startDate,
+        endDate: data.endDate?.trim() || undefined,
+        nearbyExtensions: data.nearbyExtensions,
+        excludedCategories: data.excludedCategories,
+        userText: [data.interests, data.conversationSummary].filter(Boolean).join("\n"),
+        destination: data.destination,
+        creationPath: creationPath as ItineraryValidatorInput["creationPath"],
+      };
+      let validation = validateItineraryPlan({
+        plans: composed,
+        ...validatorInputBase,
+      });
+      if (!validation.pass) {
+        const pool: PlaceResult[] = selectedPlaces.map((p) => ({
+          id: (p.googlePlaceId ?? p.name).trim(),
+          name: p.placeName ?? p.name,
+          address: p.address ?? null,
+          lat: p.lat ?? null,
+          lng: p.lng ?? null,
+          rating: p.rating ?? null,
+          userRatingCount: p.userRatingCount ?? null,
+          photoName: p.photoName ?? null,
+          primaryType: p.type ?? null,
+          types: p.type ? [p.type] : null,
+          businessStatus: null,
+          openStatus: "unknown",
+          openStatusLabel: "",
+          todayHoursLabel: "",
+          closingSoonNote: "",
+          nextOpenHint: "",
+          openNow: null,
+        }));
+        const replanned = replanUntilItineraryValid(
+          {
+            plans: composed as unknown as ComposedDayPlan[],
+            pool,
+            days: data.days,
+            style: styleKey,
+            plannedDate: startDate,
+            nearbyExtensions: data.nearbyExtensions,
+            validatorInput: validatorInputBase,
+          },
+          validation,
+        );
+        validation = replanned.validation;
+        if (replanned.plans.length) {
+          finalStops = applyComposedPlansToItineraryItems(
+            finalStops,
+            replanned.plans,
+            startDate,
+          );
+          ai = { ...ai, itinerary: finalStops };
+        }
+      }
+      if (shouldBlockItineraryDelivery(validation)) {
+        logItineraryDeliveryBlocked("validator_failed", validation);
+        return {
+          success: false,
+          errorCode: "itinerary_validator_failed",
+          message: ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
+        };
+      }
+      const finalDayCounts = dayCountsOfPlans(
+        composedPlansFromItineraryItems(finalStops, data.days, startDate),
+      );
+      const compare = compareItineraryPersistenceDayCounts({
+        plannerDayCounts: finalDayCounts,
+        validatedDayCounts: finalDayCounts,
+        persistedDayCounts: finalDayCounts,
+        uiDayCounts: finalDayCounts,
+      });
+      if (!compare.matched) {
+        logItineraryDeliveryBlocked("persistence_mismatch", validation);
+        return {
+          success: false,
+          errorCode: "persistence_mismatch",
+          message: ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
+        };
+      }
+      logItineraryDeliveryAllowed(validation, finalDayCounts);
+    } else {
+      logAiPipeline(
+        "[ITINERARY_PLANNER_RESULT]",
+        `success=true`,
+        `stopCount=${finalStops.length}`,
+        `path=${usedDeterministic ? "deterministic" : "ai"}`,
+      );
+    }
+
+    logAiPipeline(
+      "[ITINERARY_SAVE_RESULT]",
+      "success=true",
+      `stops=${finalStops.length}`,
+      `days=${data.days}`,
+    );
 
     const dayStats = groupStopsByTripDays(finalStops, data.days, startDate)
       .map((d, i) => `day${i + 1}=${d.places.length}`)

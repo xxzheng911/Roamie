@@ -34,6 +34,19 @@ import {
   filterChatCategoryPlaces,
 } from "@/lib/ai/chat-destination-place-filter";
 import {
+  buildInitialShoppingSearchAttempts,
+  flattenInitialShoppingAttempts,
+  logShoppingInitialPool,
+  logShoppingInitialSearchSummary,
+  SHOPPING_INITIAL_RESERVE_TARGET,
+  SHOPPING_INITIAL_VALID_TARGET,
+  SHOPPING_DISPLAY_LIMIT,
+  SHOPPING_RESULTS_PER_QUERY,
+  inferShoppingTypesFromPlace,
+} from "@/lib/ai/shopping-query-queue";
+import { resolveShoppingSearchScope } from "@/lib/ai/shopping-search-scope";
+import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
+import {
   buildCafeRelaxedSearchAttempts,
 } from "@/lib/ai/chat-cafe-search";
 import {
@@ -52,7 +65,6 @@ import {
   filterExcludedPlaceIds,
 } from "@/lib/place-planning-memory";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
-import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import { buildNamedFallbackRecommendations } from "@/lib/ai/must-visit-places";
 import {
   filterPlacesByDestinationGuard,
@@ -60,6 +72,7 @@ import {
 } from "@/lib/ai/chat-place-search-context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
+import { ingestResolvedPlacesIntoCandidatePool } from "@/lib/ai/places-cost-cache";
 import {
   buildMealRecommendationDescription,
   buildMealSearchAttempts,
@@ -69,9 +82,24 @@ import {
   sanitizeMealReasonText,
   type ParsedMealIntent,
 } from "@/lib/ai/meal-intent-parser";
+import {
+  placeMatchesCuisineRelevance,
+  isAcceptableRestaurantPlace,
+} from "@/lib/ai/recommendation-refinement/search";
+import {
+  parsePlaceRecommendationIntent,
+  logPlaceRecommendationSearchStart,
+  logPlaceRecommendationSearchResult,
+  logPlaceRequirementParsed,
+} from "@/lib/ai/place-recommendation-intent";
+import { resolveRegionPrimaryCity } from "@/lib/ai/shopping-search-scope";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { cuisineSearchTokens } from "@/lib/ai/recommendation-refinement/parser";
 
 const PER_GROUP_TARGET = 3;
 const SINGLE_INTENT_MAX = 6;
+/** Larger pool so「還有嗎」can continue from cursor without re-search */
+const SINGLE_INTENT_POOL_MAX = 24;
 
 function rankCategoryPlaces(
   places: PlaceResult[],
@@ -128,9 +156,55 @@ async function searchCategoryPlaces(params: {
     mealIntent && intent === "restaurant"
       ? buildMealSearchAttempts(mealIntent.city ?? destination, mealIntent.slot)
       : null;
+
+  // Shopping: multi-group oversample (street/dept/underground/mall/market) for reserve.
+  const shoppingScope =
+    intent === "shopping"
+      ? resolveShoppingSearchScope({ destination })
+      : null;
+  const shoppingEntity =
+    intent === "shopping" ? resolveDestinationEntity(destination) : null;
+  const shoppingSeed =
+    intent === "shopping"
+      ? buildInitialShoppingSearchAttempts(
+          destination,
+          userText,
+          shoppingScope?.activeSearchCity,
+          shoppingEntity?.country,
+        )
+      : null;
+
   const { primary, fallback } = mealAttempts
     ? { primary: mealAttempts, fallback: [] as SearchAttempt[] }
-    : buildChatPlaceSearchAttempts(intent, destination);
+    : intent === "shopping" && shoppingSeed
+      ? {
+          primary: shoppingSeed.primary,
+          fallback: shoppingSeed.fallback,
+        }
+      : buildChatPlaceSearchAttempts(intent, destination, userText);
+
+  const placeReq = parsePlaceRecommendationIntent(userText);
+  if (placeReq) {
+    logPlaceRequirementParsed({
+      ...placeReq,
+      destinationName: placeReq.destinationName ?? destination,
+      resolvedSearchCity: resolveRegionPrimaryCity(destination) ?? destination,
+    });
+    logPlaceRecommendationSearchStart(
+      {
+        destination,
+        resolvedSearchCity: resolveRegionPrimaryCity(destination) ?? destination,
+        primaryType: placeReq.primaryType,
+        subtypes: placeReq.subtypes,
+        preferredFeatures: placeReq.preferredFeatures,
+        excludedFeatures: placeReq.excludedFeatures,
+        mealSlot: placeReq.mealSlot,
+        budget: placeReq.budget,
+      },
+      [...primary, ...fallback].map((a) => a.query),
+    );
+  }
+
   const minResults = CHAT_DESTINATION_MIN_COUNT;
   const searchExtras = searchContext
     ? { searchContext, intentCategory: intent }
@@ -147,11 +221,18 @@ async function searchCategoryPlaces(params: {
       locale,
       attempts,
       `chat.category.${intent}${isFallback ? ".fallback" : ""}`,
-      { minResults, maxResults: 24, extras: searchExtras },
+      {
+        // Per-attempt: low min so multi-group oversample can continue across queries.
+        // Aggregate target SHOPPING_INITIAL_VALID_TARGET is enforced by the shopping loop.
+        minResults: intent === "shopping" ? 2 : minResults,
+        maxResults: intent === "shopping" ? SHOPPING_RESULTS_PER_QUERY : 24,
+        extras: searchExtras,
+      },
     );
     places = filterPlacesByDestinationGuard(places, destination, userText);
     places = filterExcludedPlaceIds(places, excludePlaceIds);
-    if (intent !== "cafe") {
+    // Shopping / cafe use dedicated category guards — do not run attraction filters
+    if (intent !== "cafe" && intent !== "shopping") {
       places = filterPlacesForAttractionRecommendation(places, {
         allowParks: intent === "attraction" || intent === "indoor",
         profile,
@@ -169,17 +250,100 @@ async function searchCategoryPlaces(params: {
     if (mealIntent && intent === "restaurant") {
       places = filterPlacesForMealIntent(places, mealIntent);
     }
+    // Subtype validation (e.g. sukiyaki) — never pad with unrelated restaurants
+    if (intent === "restaurant" && placeReq?.subtypes.length) {
+      const matched = places.filter(
+        (p) =>
+          isAcceptableRestaurantPlace(p) &&
+          placeMatchesCuisineRelevance(p, placeReq.subtypes),
+      );
+      const rejected = places.length - matched.length;
+      for (const p of places) {
+        if (
+          isAcceptableRestaurantPlace(p) &&
+          !placeMatchesCuisineRelevance(p, placeReq.subtypes)
+        ) {
+          logAiPipeline(
+            "[FOOD_INTENT_MATCH]",
+            `name=${p.name}`,
+            `requestedDish=${placeReq.subtypes.join("|")}`,
+            "matched=false",
+            "reason=dish_type_mismatch",
+          );
+        }
+      }
+      logAiPipeline(
+        "[FOOD_RECOMMENDATION_FINAL]",
+        `destination=${destination}`,
+        `requestedDish=${placeReq.subtypes.join("|")}`,
+        `rawCount=${places.length}`,
+        `acceptedCount=${matched.length}`,
+        `rejectedTypeMismatch=${rejected}`,
+      );
+      // Keep only cuisine matches — never substitute roast-duck / breakfast for sukiyaki.
+      places = matched;
+    }
     return places;
   };
 
-  let places = await runSearch(primary, false);
+  const mergeUnique = (base: PlaceResult[], more: PlaceResult[]): PlaceResult[] => {
+    const seen = new Set(base.map((p) => (p.id ?? p.name ?? "").trim()).filter(Boolean));
+    const out = [...base];
+    for (const place of more) {
+      const id = (place.id ?? place.name ?? "").trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(place);
+    }
+    return out;
+  };
+
+  let rawCount = 0;
+  let places: PlaceResult[] = [];
+
+  if (intent === "shopping" && shoppingSeed) {
+    // Oversample across groups until valid≥8 (or attempts exhausted). Never stop at 4.
+    const attempts = flattenInitialShoppingAttempts(shoppingSeed);
+    for (let i = 0; i < attempts.length; i++) {
+      if (places.length >= SHOPPING_INITIAL_VALID_TARGET) break;
+      const attempt = attempts[i]!;
+      const isFallback = i >= shoppingSeed.primary.length;
+      const round = await runSearch([attempt], isFallback);
+      rawCount += round.length;
+      places = mergeUnique(places, round);
+      logChatPlaceResults(intent, places.length);
+    }
+    const byType: Record<string, number> = {};
+    for (const p of places) {
+      for (const t of inferShoppingTypesFromPlace(p)) {
+        byType[t] = (byType[t] ?? 0) + 1;
+      }
+    }
+    logShoppingInitialSearchSummary({
+      rawCount,
+      validatedCount: places.length,
+      canonicalCount: places.length,
+      displayTarget: SHOPPING_DISPLAY_LIMIT,
+      reserveTarget: SHOPPING_INITIAL_RESERVE_TARGET,
+    });
+    logShoppingInitialPool({
+      candidateCount: places.length,
+      byType,
+      byCluster: shoppingScope?.geoClusterLabel
+        ? { [shoppingScope.geoClusterLabel]: places.length }
+        : {},
+    });
+    return places;
+  }
+
+  places = await runSearch(primary, false);
   logChatPlaceResults(intent, places.length);
 
   if (places.length >= minResults) {
     return places;
   }
 
-  if (places.length < minResults && fallback.length > 0) {
+  if (fallback.length > 0) {
     for (const attempt of fallback) {
       logChatPlaceFallback(intent, attempt.query);
     }
@@ -198,6 +362,19 @@ async function searchCategoryPlaces(params: {
     }
   }
 
+  if (placeReq) {
+    logPlaceRecommendationSearchResult({
+      rawCount,
+      typeAccepted: places.length,
+      subtypeAccepted: placeReq.subtypes.length
+        ? places.filter((p) => placeMatchesCuisineRelevance(p, placeReq.subtypes)).length
+        : places.length,
+      qualityRejected: 0,
+      duplicateRejected: 0,
+      finalCount: places.length,
+    });
+  }
+
   return places;
 }
 
@@ -208,6 +385,7 @@ function placesToRecommendations(
   context: CanonicalTravelContext,
   locale: Locale,
   categoryLabel: string,
+  categoryIntent: ChatPlaceCategoryIntent,
   mealIntent?: ParsedMealIntent | null,
 ): RoamieRecommendationItem[] {
   return places.map((place) => {
@@ -220,15 +398,24 @@ function placesToRecommendations(
       locale,
       distanceMeters: distM,
       categoryLabel,
+      categoryIntent,
     });
+    const withTypes = {
+      ...item,
+      types: place.types?.length
+        ? place.types
+        : place.primaryType
+          ? [place.primaryType]
+          : undefined,
+    } as RoamieRecommendationItem & { types?: string[] };
     if (mealIntent) {
       return {
-        ...item,
+        ...withTypes,
         reason: buildMealRecommendationDescription(place, mealIntent),
         description: buildMealRecommendationDescription(place, mealIntent),
       };
     }
-    return item;
+    return withTypes;
   }).map(dedupeRecommendationCopy);
 }
 
@@ -236,9 +423,15 @@ function buildGroupedSummary(
   destination: string,
   groups: Array<{ intent: ChatPlaceCategoryIntent; recommendations: RoamieRecommendationItem[] }>,
   mealIntent?: ParsedMealIntent | null,
+  dishLabel?: string,
 ): string {
   const label = normalizeDestinationLabel(destination);
-  const sections: string[] = [`在${label}，這些地方值得先看看：`];
+  const dish = dishLabel?.trim();
+  const sections: string[] = [
+    dish
+      ? `在${label}，這幾間${dish}可以先看看：`
+      : `在${label}，這些地方值得先看看：`,
+  ];
 
   for (const group of groups) {
     if (!group.recommendations.length) continue;
@@ -339,7 +532,8 @@ export async function buildDestinationCategoryRecommendations(params: {
     };
 
     const profile = classifyDestinationForPlaceSearch(label, geocoded);
-    const perGroupMax = searchIntents.length > 1 ? PER_GROUP_TARGET : SINGLE_INTENT_MAX;
+    const perGroupMax =
+      searchIntents.length > 1 ? PER_GROUP_TARGET : SINGLE_INTENT_POOL_MAX;
     const seenIds = new Set<string>();
     const groups: Array<{
       intent: ChatPlaceCategoryIntent;
@@ -373,12 +567,38 @@ export async function buildDestinationCategoryRecommendations(params: {
       });
       places = places.slice(0, perGroupMax);
 
+      if (places.length) {
+        ingestResolvedPlacesIntoCandidatePool({
+          sessionId:
+            session?.planningSessionId?.trim() ||
+            session?.conversationId?.trim() ||
+            "chat_default",
+          destination: label,
+          countryCode: entity.country ?? undefined,
+          places,
+          source: `chat.category.${intent}`,
+        });
+      }
+
       const categoryLabel = CHAT_PLACE_CATEGORY_LABELS[intent];
       let recommendations =
         places.length > 0
-          ? placesToRecommendations(places, lat, lng, context, locale, categoryLabel, mealIntent)
+          ? placesToRecommendations(
+              places,
+              lat,
+              lng,
+              context,
+              locale,
+              categoryLabel,
+              intent,
+              mealIntent,
+            )
           : [];
-      recommendations = filterRecommendationsForCategoryRender(recommendations, intent);
+      recommendations = filterRecommendationsForCategoryRender(
+        recommendations,
+        intent,
+        userText,
+      );
 
       if (recommendations.length > 0) {
         logChatPlacesResponse(recommendations.length, `category_${intent}`);
@@ -387,6 +607,7 @@ export async function buildDestinationCategoryRecommendations(params: {
       groups.push({ intent, recommendations });
     }
 
+    // Full pool returned; chat layer paginates via ConversationRecommendationSession
     let allRecommendations = groups.flatMap((g) => g.recommendations);
     logDestinationTextSearchResult(allRecommendations.length);
 
@@ -403,12 +624,20 @@ export async function buildDestinationCategoryRecommendations(params: {
       }
     }
 
+    const placeReqForSummary = parsePlaceRecommendationIntent(userText);
+    const dishLabel =
+      placeReqForSummary?.subtypes?.[0] != null
+        ? cuisineSearchTokens(placeReqForSummary.subtypes[0])[0]
+        : undefined;
+
     let summary =
       allRecommendations.length > 0
-        ? buildGroupedSummary(label, groups, mealIntent)
-        : primaryIntent === "cafe"
-          ? `目前在${label}暫時找不到符合的咖啡廳，可以換個描述或稍後再試。`
-          : `目前在${label}暫時找不到符合的地點，可以換個描述或稍後再試。`;
+        ? buildGroupedSummary(label, groups, mealIntent, dishLabel)
+        : placeReqForSummary?.subtypes?.length
+          ? `目前找到的${label}${dishLabel ?? "餐廳"}數量不多，可以換個菜系或稍後再試。`
+          : primaryIntent === "cafe"
+            ? `目前在${label}暫時找不到符合的咖啡廳，可以換個描述或稍後再試。`
+            : `目前在${label}暫時找不到符合的地點，可以換個描述或稍後再試。`;
     if (mealIntent) {
       summary = sanitizeMealSummaryText(summary, mealIntent.slot);
     }

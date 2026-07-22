@@ -49,6 +49,10 @@ export type GeographicClusteringResult = {
 
 const MIN_CLUSTER_RADIUS_M = 700;
 const MAX_CLUSTER_RADIUS_M = 6_000;
+/** Sparse / island-scale trips (nearest neighbors often >8km). Destination-agnostic. */
+const MAX_SPARSE_CLUSTER_RADIUS_M = 40_000;
+/** Do not merge day clusters farther than this — prefer more days over cross-island days. */
+const MAX_SAME_DAY_CLUSTER_MERGE_M = 35_000;
 
 function normalizeCoords(coords: LatLng | null): LatLng | null {
   if (!coords) return null;
@@ -108,7 +112,11 @@ export function estimateRadius<T>(items: T[], acc: GeoAccessor<T>): number {
   if (!nearest.length) return MIN_CLUSTER_RADIUS_M;
   nearest.sort((a, b) => a - b);
   const p75 = nearest[Math.floor(nearest.length * 0.75)] ?? nearest[nearest.length - 1]!;
-  return Math.min(MAX_CLUSTER_RADIUS_M, Math.max(MIN_CLUSTER_RADIUS_M, p75 * 1.8));
+  const candidate = p75 * 1.8;
+  // Sparse destinations (islands, rural): allow larger same-area radius so east/west
+  // places do not each become tiny clusters that later get force-merged across the island.
+  const maxCap = p75 > 8_000 ? MAX_SPARSE_CLUSTER_RADIUS_M : MAX_CLUSTER_RADIUS_M;
+  return Math.min(maxCap, Math.max(MIN_CLUSTER_RADIUS_M, candidate));
 }
 
 type Working<T> = { items: T[]; center: LatLng };
@@ -129,6 +137,8 @@ function mergeToFit<T>(working: Working<T>[], days: number, acc: GeoAccessor<T>)
       }
     }
     if (bestI < 0 || bestJ < 0) break;
+    // Prefer leaving extra geographic clusters over merging opposite sides of a region.
+    if (bestDist > MAX_SAME_DAY_CLUSTER_MERGE_M) break;
     const merged = [...working[bestI]!.items, ...working[bestJ]!.items];
     working[bestI] = { items: merged, center: centroid(merged, acc) };
     working.splice(bestJ, 1);
@@ -156,17 +166,30 @@ function orderByRoute<T>(clusters: GeoClusterOf<T>[], days: number): void {
     current = remaining.splice(bestIdx, 1)[0]!;
     route.push(current);
   }
+  // Spread along the geographic route — avoid dumping leftovers onto the last day.
   route.forEach((cluster, index) => {
-    cluster.candidateDay = Math.min(days, index + 1);
+    cluster.candidateDay = Math.min(
+      days,
+      Math.floor((index / Math.max(1, route.length)) * days) + 1,
+    );
   });
 }
+
+export type ClusterGeographyOptions = {
+  radiusMeters?: number;
+  /**
+   * When true (default), merge clusters down to ≈ tripDays for day allocation.
+   * Candidate Pool Geo Diversity should pass false so density clusters stay natural.
+   */
+  fitToDays?: boolean;
+};
 
 /** Generic geographic clustering usable on any place-like item. */
 export function clusterItemsByGeography<T>(
   items: T[],
   tripDays: number,
   acc: GeoAccessor<T>,
-  opts?: { radiusMeters?: number },
+  opts?: ClusterGeographyOptions,
 ): { clusters: GeoClusterOf<T>[]; unlocated: T[]; radiusMeters: number } {
   const located: T[] = [];
   const unlocated: T[] = [];
@@ -177,6 +200,7 @@ export function clusterItemsByGeography<T>(
 
   const radius = opts?.radiusMeters ?? estimateRadius(located, acc);
   const days = Math.max(1, tripDays);
+  const fitToDays = opts?.fitToDays !== false;
 
   const ordered = [...located].sort((a, b) => acc.weight(b) - acc.weight(a));
   const working: Working<T>[] = [];
@@ -199,7 +223,9 @@ export function clusterItemsByGeography<T>(
     }
   }
 
-  mergeToFit(working, days, acc);
+  if (fitToDays) {
+    mergeToFit(working, days, acc);
+  }
 
   const clusters: GeoClusterOf<T>[] = working
     .map((cluster, index) => {
@@ -234,7 +260,7 @@ const PLACE_RESULT_ACCESSOR: GeoAccessor<PlaceResult> = {
 export function clusterPlacesByGeography(
   places: PlaceResult[],
   tripDays: number,
-  opts?: { radiusMeters?: number },
+  opts?: ClusterGeographyOptions,
 ): GeographicClusteringResult {
   const { clusters, unlocated, radiusMeters } = clusterItemsByGeography(
     places,

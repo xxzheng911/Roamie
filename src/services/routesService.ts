@@ -434,14 +434,36 @@ export async function getTripLegsWithDurations(
   if (places.length < 2) return [];
 
   const key = tripLegsCacheKey(places, travelMode);
-  return routesCache.getOrFetch(key, async () => {
-    const result = await requireTripLegsFn()({ data: { places, travelMode } });
-    if (!result.ok || !result.data) return [];
-    return result.data.map((leg) => ({
-      durationMinutes: leg.durationMinutes,
-      distanceMeters: leg.distanceMeters,
-    }));
-  });
+  try {
+    return await routesCache.getOrFetch(key, async () => {
+      try {
+        const result = await requireTripLegsFn()({ data: { places, travelMode } });
+        if (!result.ok || !result.data) {
+          warnRouteOnce(
+            `${key}|trip_legs`,
+            `[ROUTE_DURATION_ERROR] status=${result.statusCode ?? "failed"} message=${result.message ?? "trip_legs_failed"} soft=empty_legs`,
+          );
+          return [];
+        }
+        return result.data.map((leg) => ({
+          durationMinutes: leg.durationMinutes,
+          distanceMeters: leg.distanceMeters,
+        }));
+      } catch (e) {
+        warnRouteOnce(
+          `${key}|trip_legs_ex`,
+          `[ROUTE_DURATION_ERROR] status=exception message=${e instanceof Error ? e.message : String(e)} soft=empty_legs`,
+        );
+        return [];
+      }
+    });
+  } catch (e) {
+    warnRouteOnce(
+      `${key}|cache_ex`,
+      `[ROUTE_DURATION_ERROR] status=cache_exception message=${e instanceof Error ? e.message : String(e)} soft=empty_legs`,
+    );
+    return [];
+  }
 }
 
 /** 將 UI 交通標籤對應為 Routes travelMode */

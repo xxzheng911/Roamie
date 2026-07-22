@@ -23,6 +23,7 @@ import { Route as ApiRoamieRouteImport } from './routes/api/roamie'
 import { Route as ApiPlacePhotoRouteImport } from './routes/api/place-photo'
 import { Route as ApiGenerateItineraryRouteImport } from './routes/api/generate-itinerary'
 import { Route as ApiChatRouteImport } from './routes/api/chat'
+import { Route as AppTravelDraftsRouteImport } from './routes/_app.travel-drafts'
 import { Route as AppSettingsRouteImport } from './routes/_app.settings'
 import { Route as AppSavedRouteImport } from './routes/_app.saved'
 import { Route as AppRecommendationsRouteImport } from './routes/_app.recommendations'
@@ -104,6 +105,11 @@ const ApiChatRoute = ApiChatRouteImport.update({
   path: '/api/chat',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppTravelDraftsRoute = AppTravelDraftsRouteImport.update({
+  id: '/travel-drafts',
+  path: '/travel-drafts',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -176,6 +182,7 @@ export interface FileRoutesByFullPath {
   '/recommendations': typeof AppRecommendationsRoute
   '/saved': typeof AppSavedRouteWithChildren
   '/settings': typeof AppSettingsRoute
+  '/travel-drafts': typeof AppTravelDraftsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
@@ -200,6 +207,7 @@ export interface FileRoutesByTo {
   '/profile': typeof AppProfileRoute
   '/recommendations': typeof AppRecommendationsRoute
   '/settings': typeof AppSettingsRoute
+  '/travel-drafts': typeof AppTravelDraftsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
@@ -228,6 +236,7 @@ export interface FileRoutesById {
   '/_app/recommendations': typeof AppRecommendationsRoute
   '/_app/saved': typeof AppSavedRouteWithChildren
   '/_app/settings': typeof AppSettingsRoute
+  '/_app/travel-drafts': typeof AppTravelDraftsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
   '/api/place-photo': typeof ApiPlacePhotoRoute
@@ -257,6 +266,7 @@ export interface FileRouteTypes {
     | '/recommendations'
     | '/saved'
     | '/settings'
+    | '/travel-drafts'
     | '/api/chat'
     | '/api/generate-itinerary'
     | '/api/place-photo'
@@ -281,6 +291,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/recommendations'
     | '/settings'
+    | '/travel-drafts'
     | '/api/chat'
     | '/api/generate-itinerary'
     | '/api/place-photo'
@@ -308,6 +319,7 @@ export interface FileRouteTypes {
     | '/_app/recommendations'
     | '/_app/saved'
     | '/_app/settings'
+    | '/_app/travel-drafts'
     | '/api/chat'
     | '/api/generate-itinerary'
     | '/api/place-photo'
@@ -435,6 +447,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiChatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_app/travel-drafts': {
+      id: '/_app/travel-drafts'
+      path: '/travel-drafts'
+      fullPath: '/travel-drafts'
+      preLoaderRoute: typeof AppTravelDraftsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/settings': {
       id: '/_app/settings'
       path: '/settings'
@@ -539,6 +558,7 @@ interface AppRouteChildren {
   AppRecommendationsRoute: typeof AppRecommendationsRoute
   AppSavedRoute: typeof AppSavedRouteWithChildren
   AppSettingsRoute: typeof AppSettingsRoute
+  AppTravelDraftsRoute: typeof AppTravelDraftsRoute
   AppIndexRoute: typeof AppIndexRoute
 }
 
@@ -552,6 +572,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppRecommendationsRoute: AppRecommendationsRoute,
   AppSavedRoute: AppSavedRouteWithChildren,
   AppSettingsRoute: AppSettingsRoute,
+  AppTravelDraftsRoute: AppTravelDraftsRoute,
   AppIndexRoute: AppIndexRoute,
 }
 

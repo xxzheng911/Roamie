@@ -1,6 +1,7 @@
 import { distanceMeters } from "@/lib/map-explore";
 import {
   normalizeNightMarketFiller,
+  stripCommercialAnnexSuffix,
   stripSubPlaceMarkers,
 } from "@/lib/ai/landmark-keywords";
 import type { RoamieLocation } from "@/lib/ai/context";
@@ -53,7 +54,9 @@ export function normalizeCorePlaceName(name: string): string {
     .replace(/步道|停車場|停车场/g, "")
     .replace(/公園|公园/g, "");
 
-  return stripped || withoutSubMarkers || compact;
+  // 母地標商業複合設施（晴空塔城／Skytree Town）→ 與母地標同 core
+  const withoutAnnex = stripCommercialAnnexSuffix(stripped || withoutSubMarkers || compact);
+  return withoutAnnex || stripped || withoutSubMarkers || compact;
 }
 
 /** 正規化名稱 — 同 normalizeCorePlaceName */
@@ -396,10 +399,10 @@ export function canBuildItineraryFromPlaceCount(count: number): boolean {
   return count >= 1;
 }
 
-/** fetch 目標數量（依動態 preferredStops，供混合排程使用） */
+/** fetch 目標數量（供混合排程使用；與 resolved target 對齊每日 ≥3） */
 export function computeItineraryFetchTarget(days: number): number {
-  // Soft preferred density — never a hard fail gate of days×3.
-  return Math.min(Math.max(days * 2 + 1, days + 2), 16);
+  const safe = Math.max(1, days);
+  return Math.min(Math.max(safe * 3, safe + 2), 24);
 }
 
 export function buildExcludePlacesBlock(session: ChatPlanningSession): string {

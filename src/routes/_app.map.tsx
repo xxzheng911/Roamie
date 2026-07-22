@@ -4,10 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { MapErrorBoundary } from "@/components/MapErrorBoundary";
-import {
-  MapExploreSheetSafe,
-  type MapExploreSheetHandle,
-} from "@/components/MapExploreSheetSafe";
+import { MapExploreSheetSafe, type MapExploreSheetHandle } from "@/components/MapExploreSheetSafe";
 import { focusPlaceInVisibleMapArea } from "@/lib/map-focus-place";
 import { PlaceDetailSheet, ExploreSubpageHeader } from "@/components/map/PlaceDetailSheet";
 import {
@@ -20,7 +17,10 @@ import {
   type MapExploreCardsHandle,
 } from "@/components/map/MapExplorePlaceCards";
 import { MapExploreCategoryChips } from "@/components/map/MapExploreCategoryChips";
-import { MapSearchBarOverlay, type MapSearchBarOverlayHandle } from "@/components/map/MapSearchBarOverlay";
+import {
+  MapSearchBarOverlay,
+  type MapSearchBarOverlayHandle,
+} from "@/components/map/MapSearchBarOverlay";
 import {
   MapExploreSearchResults,
   type MapExploreSearchResultItem,
@@ -42,13 +42,10 @@ import {
 } from "@/lib/explore-primary-place";
 import { pickExploreCitySuggestion } from "@/lib/explore-city-popular-places";
 import { listPlaces, toggleSavePlace, type SavedPlace } from "@/lib/places-storage";
-import { searchPlaces, getPlaceDetails as fetchExplorePlaceDetails } from "@/lib/places.functions";
+import { searchPlaces } from "@/lib/places.functions";
+import { getPlaceDetailsServerFnViaGateway as fetchExplorePlaceDetails } from "@/lib/pie/places-gateway";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
-import {
-  beginPlacesFlow,
-  endPlacesFlow,
-  placesStatsPayload,
-} from "@/lib/places-api-stats";
+import { beginPlacesFlow, endPlacesFlow, placesStatsPayload } from "@/lib/places-api-stats";
 import type { PlaceResult } from "@/lib/place-result";
 import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
@@ -63,7 +60,12 @@ import {
 } from "@/lib/build-place-recommendation-reason";
 import { usePlaceNavigation } from "@/hooks/use-place-navigation";
 import { isMapDetailOpen, type MapExploreSheetMode } from "@/lib/map-explore-sheet-mode";
-import { mapPlaceResultToChatItem, addSelectedPlace, saveChatSession, loadChatSession } from "@/lib/chat-session";
+import {
+  mapPlaceResultToChatItem,
+  addSelectedPlace,
+  saveChatSession,
+  loadChatSession,
+} from "@/lib/chat-session";
 import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { useAccess } from "@/hooks/use-access";
@@ -72,21 +74,22 @@ import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAvatar } from "@/hooks/use-avatar";
-import { buildExploreQuery, distanceMeters, formatDistanceLabel, savedPlacesNear } from "@/lib/map-explore";
-import { sortExplorePlaces, type ExplorePlacesSortContext } from "@/lib/sort-explore-places";
 import {
-  resolveExploreMapFoodSortContext,
-} from "@/lib/tabelog-reference";
+  buildExploreQuery,
+  distanceMeters,
+  formatDistanceLabel,
+  savedPlacesNear,
+} from "@/lib/map-explore";
+import { sortExplorePlacesViaRecEngine } from "@/lib/recommendation/engine";
+import type { ExplorePlacesSortContext } from "@/lib/sort-explore-places";
+import { resolveExploreMapFoodSortContext } from "@/lib/tabelog-reference";
 import { consumeExploreMapClearSelection } from "@/lib/explore-map-selection";
 import { filterExplorePlaces, isTravelFriendlyPlace } from "@/lib/filter-explore-places";
 import { filterAndSelectExploreMapPlaces } from "@/lib/explore-map-places-filter";
 import { simplifyExploreOpeningLabel } from "@/lib/explore-places-eligibility";
 import { localizePlaceDisplayName } from "@/lib/place-display-name";
 import { exploreCategorySheetTitle } from "@/lib/explore-search-radius";
-import {
-  getExploreCategoryDisplayLabel,
-  matchesCategory,
-} from "@/lib/place-category";
+import { getExploreCategoryDisplayLabel, matchesCategory } from "@/lib/place-category";
 import { getMockMapPlaces, getMockPlacesForCategory } from "@/lib/map-mock-places";
 import { allowDemoPlaceFallback, searchRadiusMeters } from "@/lib/search-radius";
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
@@ -106,10 +109,7 @@ import {
 import { homeNearbyLoadPeriodKey } from "@/lib/home-nearby-search";
 import { homeNearbyLoadKey } from "@/lib/home-nearby-picks-policy";
 import { readSharedNearbyPlaces } from "@/lib/home-nearby-repository";
-import {
-  buildExploreRawPoolKey,
-  readExploreRawPool,
-} from "@/lib/explore-raw-places-pool";
+import { buildExploreRawPoolKey, readExploreRawPool } from "@/lib/explore-raw-places-pool";
 import { TAIPEI_CENTER } from "@/lib/geo";
 import { requestDeviceLocation } from "@/lib/device-location";
 import { subscribeNavigationLocationWatch } from "@/lib/navigation-location-watch";
@@ -137,10 +137,7 @@ import { resolveUserMarkerAvatarSrc } from "@/lib/map-user-location-marker";
 import { useI18n } from "@/hooks/use-i18n";
 import type { Locale } from "@/lib/i18n/types";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
-import {
-  captureMapLayoutHeight,
-  resetMapSearchKeyboardMode,
-} from "@/lib/map-search-keyboard";
+import { captureMapLayoutHeight, resetMapSearchKeyboardMode } from "@/lib/map-search-keyboard";
 import { normalizedLocationKey } from "@/lib/location-key";
 import {
   buildExploreSessionKey,
@@ -217,7 +214,15 @@ function sortMapCards(
   weather: WeatherSummary | null,
   sortContext?: ExplorePlacesSortContext,
 ): MapPlaceCard[] {
-  return sortExplorePlaces(cards, origin, profile, weather, categoryId, sortContext);
+  // R0：經 Recommendation Engine Explore Adapter（Flag OFF = 直呼舊 sortExplorePlaces）
+  return sortExplorePlacesViaRecEngine(
+    cards,
+    origin,
+    profile,
+    weather,
+    categoryId,
+    sortContext,
+  );
 }
 
 function finalizeMapResults(
@@ -237,14 +242,15 @@ function finalizeMapResults(
   if (primary) {
     logExplorePrimaryPlacePinned(primary.name, 0);
   }
-  logExploreFinalRecommendations(merged.map((c) => c.name), categoryId, locationKey);
+  logExploreFinalRecommendations(
+    merged.map((c) => c.name),
+    categoryId,
+    locationKey,
+  );
   return merged;
 }
 
-function normalizeExploreMapCard(
-  card: ExplorePlaceCard,
-  locale: Locale,
-): MapPlaceCard {
+function normalizeExploreMapCard(card: ExplorePlaceCard, locale: Locale): MapPlaceCard {
   const hoursLabel = simplifyExploreOpeningLabel(card);
   const name = localizePlaceDisplayName(card.name, locale);
   const displayCategory = localizePlaceDisplayName(card.displayCategory ?? "", locale);
@@ -313,8 +319,7 @@ function buildMapExploreCacheKeys(parts: {
           parts.center.lat,
           parts.center.lng,
         )
-      : (parts.nearbyLocationKey ??
-        normalizedLocationKey(parts.center.lat, parts.center.lng));
+      : (parts.nearbyLocationKey ?? normalizedLocationKey(parts.center.lat, parts.center.lng));
   const sessionKey = buildExploreSessionKey({
     locationKey,
     categoryId: parts.categoryId,
@@ -523,35 +528,30 @@ function MapView() {
     primaryPlaceRef.current = primaryPlace;
   }, [primaryPlace]);
 
-  const handleSearchQueryChange = useCallback(
-    (value: string) => {
-      setQuery(value);
-      if (!value.trim()) {
-        setSearchSelectedCenter(null);
-        setPrimaryPlace(null);
-        primaryPlaceRef.current = null;
-        setSearchDropdownOpen(false);
-        setSearchSuggestions([]);
-        lastMapSearchSessionRef.current = null;
-        clearExploreMapSearchSession();
-        return;
-      }
-      setSearchDropdownOpen(true);
-      setSearchSelectedCenter((prev) =>
-        prev && value.trim() !== prev.label ? null : prev,
-      );
-      if (value.trim()) {
-        setPrimaryPlace((prev) => {
-          if (prev && value.trim() !== prev.name) {
-            primaryPlaceRef.current = null;
-            return null;
-          }
-          return prev;
-        });
-      }
-    },
-    [],
-  );
+  const handleSearchQueryChange = useCallback((value: string) => {
+    setQuery(value);
+    if (!value.trim()) {
+      setSearchSelectedCenter(null);
+      setPrimaryPlace(null);
+      primaryPlaceRef.current = null;
+      setSearchDropdownOpen(false);
+      setSearchSuggestions([]);
+      lastMapSearchSessionRef.current = null;
+      clearExploreMapSearchSession();
+      return;
+    }
+    setSearchDropdownOpen(true);
+    setSearchSelectedCenter((prev) => (prev && value.trim() !== prev.label ? null : prev));
+    if (value.trim()) {
+      setPrimaryPlace((prev) => {
+        if (prev && value.trim() !== prev.name) {
+          primaryPlaceRef.current = null;
+          return null;
+        }
+        return prev;
+      });
+    }
+  }, []);
 
   const applyEffectiveLocationToMap = useCallback(
     (lat: number, lng: number, isFallback: boolean) => {
@@ -640,9 +640,7 @@ function MapView() {
       } catch {
         if (!cancelled) {
           getPreferences()
-            .then((prefs) =>
-              setReasonProfile(userProfileForReasonFrom(prefs, { hasPlusAccess })),
-            )
+            .then((prefs) => setReasonProfile(userProfileForReasonFrom(prefs, { hasPlusAccess })))
             .catch(() => {});
         }
       }
@@ -696,7 +694,12 @@ function MapView() {
     prevQueryRef.current = query;
     prevCatIdRef.current = cat.id;
 
-    if (lastMapSearchSessionRef.current === sessionKey && !queryDirty && !catDirty && !forceRefresh) {
+    if (
+      lastMapSearchSessionRef.current === sessionKey &&
+      !queryDirty &&
+      !catDirty &&
+      !forceRefresh
+    ) {
       return;
     }
 
@@ -767,23 +770,21 @@ function MapView() {
           });
           if (localCards.length > 0) {
             lastMapSearchSessionRef.current = sessionKey;
-            applyCachedResults(exploreCardsToMapCards(localCards, {
-              weather: weatherRef.current,
-              reasonProfile: reasonProfileRef.current,
-              locale,
-            }), null);
+            applyCachedResults(
+              exploreCardsToMapCards(localCards, {
+                weather: weatherRef.current,
+                reasonProfile: reasonProfileRef.current,
+                locale,
+              }),
+              null,
+            );
             return;
           }
         }
       } else if (!skipCacheForPrimarySearch && !forceRefresh && cityRecommendMode !== "city") {
         // 與首頁共用附近快取，避免同定位再刷一輪 Places
         const shared = readSharedNearbyPlaces({
-          loadKey: homeNearbyLoadKey(
-            center.lat,
-            center.lng,
-            homeNearbyLoadPeriodKey(),
-            locale,
-          ),
+          loadKey: homeNearbyLoadKey(center.lat, center.lng, homeNearbyLoadPeriodKey(), locale),
         });
         if (shared && shared.length > 0) {
           lastMapSearchSessionRef.current = sessionKey;
@@ -834,211 +835,220 @@ function MapView() {
 
       const runSearch = async () => {
         const flowName =
-          isFreeText || queryDirty ? "explore_open" : catDirty ? "explore_category" : "explore_open";
+          isFreeText || queryDirty
+            ? "explore_open"
+            : catDirty
+              ? "explore_category"
+              : "explore_open";
         const flow = beginPlacesFlow(flowName);
         try {
-        let enriched: MapPlaceCard[] = [];
-        let fromCache = false;
-        let emptyError: string | null = null;
+          let enriched: MapPlaceCard[] = [];
+          let fromCache = false;
+          let emptyError: string | null = null;
 
-        if (!isFreeText) {
-          if (cat.id !== "all") {
-            await ensureExploreRawPool(
-              center,
-              cityRecommendMode,
-              searchPlacesFn,
-              locale,
-              undefined,
-              "explore",
-              cityMeta,
+          if (!isFreeText) {
+            if (cat.id !== "all") {
+              await ensureExploreRawPool(
+                center,
+                cityRecommendMode,
+                searchPlacesFn,
+                locale,
+                undefined,
+                "explore",
+                cityMeta,
+              );
+            }
+            const cachedBefore = readMapPlacesCache(cacheKey, { ignoreCache: forceRefresh });
+            fromCache = cachedBefore !== null;
+            const entry = await withSearchTimeout(
+              getMapPlacesCachedOrRun(
+                cacheKey,
+                async () => {
+                  const cards = await searchExploreCategoryPlaces(cat, {
+                    userLocation: center,
+                    weather: weatherRef.current,
+                    locale,
+                    reasonProfile: reasonProfileRef.current,
+                    saved: savedRef.current,
+                    searchPlacesFn,
+                    forHome: false,
+                    recommendMode: cityRecommendMode,
+                    cityLabel: inferExploreCityLabel(
+                      center.lat,
+                      center.lng,
+                      searchSelectedCenter?.label,
+                    ),
+                    cityPlaceId: searchSelectedCenter?.placeId,
+                  });
+                  const mapped = exploreCardsToMapCards(cards, cardOpts);
+                  return { places: mapped, error: null };
+                },
+                { silent: true, forceRefresh },
+              ),
+              cityRecommendMode === "city" ? 45_000 : 20_000,
             );
-          }
-          const cachedBefore = readMapPlacesCache(cacheKey, { ignoreCache: forceRefresh });
-          fromCache = cachedBefore !== null;
-          const entry = await withSearchTimeout(
-            getMapPlacesCachedOrRun(
-              cacheKey,
-              async () => {
-                const cards = await searchExploreCategoryPlaces(cat, {
+            enriched = exploreCardsToMapCards(entry.places as ExplorePlaceCard[], cardOpts);
+            emptyError = entry.error;
+          } else {
+            const basePayload = {
+              lat: center.lat,
+              lng: center.lng,
+              radius: searchRadiusMeters(),
+            };
+
+            const primary = await withSearchTimeout(
+              searchPlacesFn({
+                data: {
+                  ...basePayload,
+                  query: searchQuery,
+                  mode: "text",
+                  locale,
+                  ...placesStatsPayload({
+                    placesCaller: "map.freeTextSearch",
+                    placesScreen: "explore",
+                    categoryId: "search",
+                  }),
+                },
+              }),
+            );
+
+            const apiPlaces = Array.isArray(primary.places) ? primary.places : [];
+            emptyError = primary.error ?? null;
+
+            if (requestId !== searchRequestIdRef.current) return;
+
+            const selection = filterAndSelectExploreMapPlaces(apiPlaces, {
+              cat: filterCat,
+              origin: center,
+              locale,
+            });
+            const filtered = selection.places;
+
+            const nearbySaved = savedPlacesNear(center, savedRef.current, 5000);
+            const apiNames = new Set(apiPlaces.map((p) => p.name));
+            const savedCards: MapPlaceCard[] = nearbySaved
+              .filter((s) => !apiNames.has(s.name))
+              .filter((s) =>
+                matchesCategory(
+                  {
+                    primaryType: s.category,
+                    name: s.name,
+                    types: s.category ? [s.category] : null,
+                  },
+                  filterCat,
+                ),
+              )
+              .map((s) => {
+                const base = savedToPlaceResult(s);
+                const card = buildUnifiedPlaceCard({
+                  place: base,
+                  categoryId: filterCat.id,
+                  isSavedFavorite: true,
                   userLocation: center,
                   weather: weatherRef.current,
+                  userProfile: reasonProfileRef.current,
                   locale,
-                  reasonProfile: reasonProfileRef.current,
-                  saved: savedRef.current,
-                  searchPlacesFn,
-                  forHome: false,
-                  recommendMode: cityRecommendMode,
-                  cityLabel: inferExploreCityLabel(
-                    center.lat,
-                    center.lng,
-                    searchSelectedCenter?.label,
-                  ),
-                  cityPlaceId: searchSelectedCenter?.placeId,
                 });
-                const mapped = exploreCardsToMapCards(cards, cardOpts);
-                return { places: mapped, error: null };
-              },
-              { silent: true, forceRefresh },
-            ),
-            cityRecommendMode === "city" ? 45_000 : 20_000,
-          );
-          enriched = exploreCardsToMapCards(entry.places as ExplorePlaceCard[], cardOpts);
-          emptyError = entry.error;
-        } else {
-          const basePayload = {
-            lat: center.lat,
-            lng: center.lng,
-            radius: searchRadiusMeters(),
-          };
+                const item = mapPlaceResultToChatItem(base, {
+                  weather: weatherRef.current,
+                  userProfile: reasonProfileRef.current,
+                  locale,
+                });
+                return {
+                  ...card,
+                  googleMapsUrl: item.googleMapsUrl,
+                };
+              });
 
-          const primary = await withSearchTimeout(
-            searchPlacesFn({
-              data: {
-                ...basePayload,
-                query: searchQuery,
-                mode: "text",
-                locale,
-                ...placesStatsPayload({
-                  placesCaller: "map.freeTextSearch",
-                  placesScreen: "explore",
-                  categoryId: "search",
-                }),
-              },
-            }),
-          );
-
-          const apiPlaces = Array.isArray(primary.places) ? primary.places : [];
-          emptyError = primary.error ?? null;
+            enriched = [
+              ...savedCards,
+              ...filtered.map((p) => {
+                const card = buildUnifiedPlaceCard({
+                  place: p,
+                  categoryId: filterCat.id,
+                  userLocation: center,
+                  weather: weatherRef.current,
+                  userProfile: reasonProfileRef.current,
+                  locale,
+                });
+                const item = mapPlaceResultToChatItem(p, {
+                  weather: weatherRef.current,
+                  userProfile: reasonProfileRef.current,
+                  locale,
+                });
+                return { ...card, googleMapsUrl: item.googleMapsUrl };
+              }),
+            ];
+          }
 
           if (requestId !== searchRequestIdRef.current) return;
 
-          const selection = filterAndSelectExploreMapPlaces(apiPlaces, {
-            cat: filterCat,
-            origin: center,
-            locale,
-          });
-          const filtered = selection.places;
-
-          const nearbySaved = savedPlacesNear(center, savedRef.current, 5000);
-          const apiNames = new Set(apiPlaces.map((p) => p.name));
-          const savedCards: MapPlaceCard[] = nearbySaved
-            .filter((s) => !apiNames.has(s.name))
-            .filter((s) =>
-              matchesCategory(
-                { primaryType: s.category, name: s.name, types: s.category ? [s.category] : null },
-                filterCat,
-              ),
-            )
-            .map((s) => {
-              const base = savedToPlaceResult(s);
-              const card = buildUnifiedPlaceCard({
-                place: base,
-                categoryId: filterCat.id,
-                isSavedFavorite: true,
-                userLocation: center,
-                weather: weatherRef.current,
-                userProfile: reasonProfileRef.current,
-                locale,
-              });
-              const item = mapPlaceResultToChatItem(base, {
-                weather: weatherRef.current,
-                userProfile: reasonProfileRef.current,
-                locale,
-              });
-              return {
-                ...card,
-                googleMapsUrl: item.googleMapsUrl,
-              };
-            });
-
-          enriched = [
-            ...savedCards,
-            ...filtered.map((p) => {
-              const card = buildUnifiedPlaceCard({
-                place: p,
-                categoryId: filterCat.id,
-                userLocation: center,
-                weather: weatherRef.current,
-                userProfile: reasonProfileRef.current,
-                locale,
-              });
-              const item = mapPlaceResultToChatItem(p, {
-                weather: weatherRef.current,
-                userProfile: reasonProfileRef.current,
-                locale,
-              });
-              return { ...card, googleMapsUrl: item.googleMapsUrl };
-            }),
-          ];
-        }
-
-        if (requestId !== searchRequestIdRef.current) return;
-
-        if (enriched.length > 0) {
-          /* feedback set after finalize */
-        } else if (allowDemoPlaceFallback() && !isFreeText) {
-          enriched = mockMapCards(center, cat);
-          setError(t("map.demoPlacesNote"));
-        } else {
-          setError(null);
-          if (!isFreeText) {
-            console.info("[explore] map places empty", { category: cat.id, emptyError });
+          if (enriched.length > 0) {
+            /* feedback set after finalize */
+          } else if (allowDemoPlaceFallback() && !isFreeText) {
+            enriched = mockMapCards(center, cat);
+            setError(t("map.demoPlacesNote"));
+          } else {
+            setError(null);
+            if (!isFreeText) {
+              console.info("[explore] map places empty", { category: cat.id, emptyError });
+            }
           }
-        }
 
-        const finalResults = finalizeMapResults(
-          enriched,
-          center,
-          reasonProfileRef.current,
-          isFreeText ? "all" : cat.id,
-          weatherRef.current,
-          primaryPlaceRef.current,
-          locationKey,
-          searchSelectedCenter?.label,
-        );
-        if (enriched.length > 0) {
-          syncExploreSheetFeedback();
-        }
-        setResults(finalResults);
-        if (
-          cityRecommendMode === "city" &&
-          searchSelectedCenter &&
-          finalResults.length > 0 &&
-          !isFreeText
-        ) {
-          writeExploreMapSearchSession({
-            center: {
-              lat: searchSelectedCenter.lat,
-              lng: searchSelectedCenter.lng,
-              label: searchSelectedCenter.label,
-              types: searchSelectedCenter.types,
-              primaryType: searchSelectedCenter.primaryType,
-              placeId: searchSelectedCenter.placeId,
-            },
-            query: searchSelectedCenter.label,
-            categoryId: cat.id,
-            locale,
-            savedAt: Date.now(),
-          });
-        }
-        if (!fromCache) {
-          logMapNearbyReady({
-            count: finalResults.length,
+          const finalResults = finalizeMapResults(
+            enriched,
+            center,
+            reasonProfileRef.current,
+            isFreeText ? "all" : cat.id,
+            weatherRef.current,
+            primaryPlaceRef.current,
             locationKey,
-            categoryId: isFreeText ? "search" : cat.id,
-            query: isFreeText ? text : cat.query,
-          });
-        }
-        if (sheetMode === "list") {
-          setSelectedPlace(null);
-          setSelectedPlaceIndex(null);
-        }
+            searchSelectedCenter?.label,
+          );
+          if (enriched.length > 0) {
+            syncExploreSheetFeedback();
+          }
+          setResults(finalResults);
+          if (
+            cityRecommendMode === "city" &&
+            searchSelectedCenter &&
+            finalResults.length > 0 &&
+            !isFreeText
+          ) {
+            writeExploreMapSearchSession({
+              center: {
+                lat: searchSelectedCenter.lat,
+                lng: searchSelectedCenter.lng,
+                label: searchSelectedCenter.label,
+                types: searchSelectedCenter.types,
+                primaryType: searchSelectedCenter.primaryType,
+                placeId: searchSelectedCenter.placeId,
+              },
+              query: searchSelectedCenter.label,
+              categoryId: cat.id,
+              locale,
+              savedAt: Date.now(),
+            });
+          }
+          if (!fromCache) {
+            logMapNearbyReady({
+              count: finalResults.length,
+              locationKey,
+              categoryId: isFreeText ? "search" : cat.id,
+              query: isFreeText ? text : cat.query,
+            });
+          }
+          if (sheetMode === "list") {
+            setSelectedPlace(null);
+            setSelectedPlaceIndex(null);
+          }
         } finally {
           endPlacesFlow(flow);
         }
       };
 
-      void runSearch().catch((e) => {
+      void runSearch()
+        .catch((e) => {
           const msg = resolveExploreSearchUserMessage(e, t("map.searchFailed"));
           const note = t("map.demoPlacesNote");
           if (query.trim()) {
@@ -1344,21 +1354,18 @@ function MapView() {
 
   const savedByName = useMemo(() => new Map(saved.map((s) => [s.name, s])), [saved]);
 
-  const refocusSelectedPlace = useCallback(
-    (lat: number, lng: number) => {
-      const pos = { lat, lng };
-      setMapCenter(pos);
-      setMapZoom(MAP_ZOOM_PLACE);
-      const run = () => {
-        const map = mapInstanceRef.current;
-        if (!map) return;
-        const sheet = document.querySelector<HTMLElement>("[data-map-explore-sheet]");
-        focusPlaceInVisibleMapArea(map, pos, MAP_ZOOM_PLACE, sheet);
-      };
-      requestAnimationFrame(() => requestAnimationFrame(run));
-    },
-    [],
-  );
+  const refocusSelectedPlace = useCallback((lat: number, lng: number) => {
+    const pos = { lat, lng };
+    setMapCenter(pos);
+    setMapZoom(MAP_ZOOM_PLACE);
+    const run = () => {
+      const map = mapInstanceRef.current;
+      if (!map) return;
+      const sheet = document.querySelector<HTMLElement>("[data-map-explore-sheet]");
+      focusPlaceInVisibleMapArea(map, pos, MAP_ZOOM_PLACE, sheet);
+    };
+    requestAnimationFrame(() => requestAnimationFrame(run));
+  }, []);
 
   const focusMapOnPlace = useCallback(
     (lat: number, lng: number) => {
@@ -1428,9 +1435,7 @@ function MapView() {
       }
 
       const isSameAsSelected =
-        selectedPlaceIndex === index &&
-        selectedPlace != null &&
-        selectedPlace.id === place.id;
+        selectedPlaceIndex === index && selectedPlace != null && selectedPlace.id === place.id;
 
       if (isSameAsSelected && sheetMode === "list") {
         clearExploreSelectionState();
@@ -1681,12 +1686,12 @@ function MapView() {
               (chosenPhoto ? (buildPlacePhotoUrl(chosenPhoto, 600) ?? null) : null),
             { maxWidth: 600 },
           ) || undefined,
-          ...(shouldHavePrimary
-            ? {
-                isPrimaryExplorePlace: true,
-                isSelectedExplorePin: true,
-              }
-            : {}),
+        ...(shouldHavePrimary
+          ? {
+              isPrimaryExplorePlace: true,
+              isSelectedExplorePin: true,
+            }
+          : {}),
       };
 
       if (shouldHavePrimary) {
@@ -1971,114 +1976,119 @@ function MapView() {
 
       {/* Sheet：疊在地圖上方，不透明 cream、z-index 高於 map canvas */}
       <div className="map-sheet-layer pointer-events-none absolute inset-x-0 bottom-0 z-40">
-      <MapExploreSheetSafe
-        ref={sheetRef}
-        sheetMode={sheetMode}
-        header={
-          sheetMode === "navigation" && selectedPlace ? (
-            <NavigationPreviewSheetHeader onBack={handleBackToDetail} />
-          ) : sheetMode === "detail" && selectedPlace ? (
-            <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBackToList} />
-          ) : (
-            <>
-              <div className="px-5 pb-2">
-                <p className="font-display text-lg leading-tight">
-                  {exploreCategorySheetTitle(cat.id)}
-                </p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {searchSelectedCenter
-                    ? `「${searchSelectedCenter.label}」· ${loading ? t("common.search") : tt("map.placesCount", { count: displayResults.length })}`
-                    : `${loading ? t("common.search") : tt("map.placesCount", { count: displayResults.length })}`}
-                  {saved.length > 0 ? ` · 已收藏 ${saved.length}` : ""}
-                </p>
-                {locationHint && (
-                  <p className="mt-1 text-xs text-muted-foreground/90">{locationHint}</p>
+        <MapExploreSheetSafe
+          ref={sheetRef}
+          sheetMode={sheetMode}
+          header={
+            sheetMode === "navigation" && selectedPlace ? (
+              <NavigationPreviewSheetHeader onBack={handleBackToDetail} />
+            ) : sheetMode === "detail" && selectedPlace ? (
+              <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBackToList} />
+            ) : (
+              <>
+                <div className="px-5 pb-2">
+                  <p className="font-display text-lg leading-tight">
+                    {exploreCategorySheetTitle(cat.id)}
+                  </p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    {searchSelectedCenter
+                      ? `「${searchSelectedCenter.label}」· ${loading ? t("common.search") : tt("map.placesCount", { count: displayResults.length })}`
+                      : `${loading ? t("common.search") : tt("map.placesCount", { count: displayResults.length })}`}
+                    {saved.length > 0 ? ` · 已收藏 ${saved.length}` : ""}
+                  </p>
+                  {locationHint && (
+                    <p className="mt-1 text-xs text-muted-foreground/90">{locationHint}</p>
+                  )}
+                </div>
+
+                {!searchDropdownOpen ? (
+                  <MapExploreCategoryChips selected={cat} onSelect={handleCategorySelect} />
+                ) : null}
+
+                {error && (
+                  <p className="mx-5 mb-2 rounded-2xl bg-clay/15 px-3 py-2 text-xs text-clay">
+                    {error}
+                  </p>
                 )}
-              </div>
-
-              {!searchDropdownOpen ? (
-                <MapExploreCategoryChips selected={cat} onSelect={handleCategorySelect} />
-              ) : null}
-
-              {error && (
-                <p className="mx-5 mb-2 rounded-2xl bg-clay/15 px-3 py-2 text-xs text-clay">{error}</p>
-              )}
-            </>
-          )
-        }
-      >
-        <>
-          <div className={sheetMode !== "list" ? "hidden" : undefined} aria-hidden={sheetMode !== "list"}>
-            <MapExplorePlaceCards
-              ref={cardsRef}
-              places={displayResults}
-              loading={loading}
-              categoryKey={cat.id}
-              emptyMessage={null}
-              highlightIndex={selectedPlaceIndex}
-              busyId={busy}
-              savedNames={savedNames}
-              userLocation={{ lat: recommendCenter.lat, lng: recommendCenter.lng }}
-              formatDistance={formatDistanceLabel}
-              distanceMeters={distanceMeters}
-              imageUrl={(photoName) =>
-                photoName
-                  ? resolvePlaceImageUrl(buildPlacePhotoUrl(photoName, 600), { maxWidth: 600 })
-                  : null
-              }
-              onSelect={handlePlaceSelect}
-              onToggleSave={(p) => void handleToggleSave(p)}
-              onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p))}
-              addToTripLabel={t("chat.addToTrip")}
-            />
-          </div>
-          {sheetMode === "detail" && selectedPlace && (
-            <PlaceDetailSheet
-              place={selectedPlace}
-              imageUrls={buildPlaceImageUrls(selectedPlace)}
-              distanceLabel={
-                selectedPlace.lat != null && selectedPlace.lng != null
-                  ? formatDistanceLabel(
-                      distanceMeters(
-                        { lat: recommendCenter.lat, lng: recommendCenter.lng },
-                        {
-                          lat: selectedPlace.lat,
-                          lng: selectedPlace.lng,
-                        },
-                      ),
-                    )
-                  : null
-              }
-              isSaved={savedByName.has(selectedPlace.name)}
-              isBusy={busy === selectedPlace.id}
-              transportModes={navigation.modes}
-              transportLoading={navigation.loading}
-              transportTip={navigation.aiTip}
-              selectedTransportMode={navigation.selectedMode}
-              onSelectTransportMode={navigation.setSelectedMode}
-              onNavigate={handleNavigateFromDetail}
-              onToggleSave={() => void handleToggleSave(selectedPlace)}
-              onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(selectedPlace))}
-              addToTripLabel={t("chat.addToTrip")}
-              saveLabel="收藏"
-              onOpenChat={() => openInChat(selectedPlace)}
-              ticketOffers={selectedPlaceTicketOffers}
-            />
-          )}
-          {sheetMode === "navigation" && selectedPlace && (
-            <NavigationPreviewSheet
-              placeName={selectedPlace.name}
-              modes={navigation.modes}
-              selectedMode={navigation.selectedMode}
-              onSelectMode={navigation.setSelectedMode}
-              loading={navigation.loading}
-              aiTip={navigation.aiTip}
-              onBack={handleBackToDetail}
-              onStartNavigation={navigation.startNavigation}
-            />
-          )}
-        </>
-      </MapExploreSheetSafe>
+              </>
+            )
+          }
+        >
+          <>
+            <div
+              className={sheetMode !== "list" ? "hidden" : undefined}
+              aria-hidden={sheetMode !== "list"}
+            >
+              <MapExplorePlaceCards
+                ref={cardsRef}
+                places={displayResults}
+                loading={loading}
+                categoryKey={cat.id}
+                emptyMessage={null}
+                highlightIndex={selectedPlaceIndex}
+                busyId={busy}
+                savedNames={savedNames}
+                userLocation={{ lat: recommendCenter.lat, lng: recommendCenter.lng }}
+                formatDistance={formatDistanceLabel}
+                distanceMeters={distanceMeters}
+                imageUrl={(photoName) =>
+                  photoName
+                    ? resolvePlaceImageUrl(buildPlacePhotoUrl(photoName, 600), { maxWidth: 600 })
+                    : null
+                }
+                onSelect={handlePlaceSelect}
+                onToggleSave={(p) => void handleToggleSave(p)}
+                onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p))}
+                addToTripLabel={t("chat.addToTrip")}
+              />
+            </div>
+            {sheetMode === "detail" && selectedPlace && (
+              <PlaceDetailSheet
+                place={selectedPlace}
+                imageUrls={buildPlaceImageUrls(selectedPlace)}
+                distanceLabel={
+                  selectedPlace.lat != null && selectedPlace.lng != null
+                    ? formatDistanceLabel(
+                        distanceMeters(
+                          { lat: recommendCenter.lat, lng: recommendCenter.lng },
+                          {
+                            lat: selectedPlace.lat,
+                            lng: selectedPlace.lng,
+                          },
+                        ),
+                      )
+                    : null
+                }
+                isSaved={savedByName.has(selectedPlace.name)}
+                isBusy={busy === selectedPlace.id}
+                transportModes={navigation.modes}
+                transportLoading={navigation.loading}
+                transportTip={navigation.aiTip}
+                selectedTransportMode={navigation.selectedMode}
+                onSelectTransportMode={navigation.setSelectedMode}
+                onNavigate={handleNavigateFromDetail}
+                onToggleSave={() => void handleToggleSave(selectedPlace)}
+                onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(selectedPlace))}
+                addToTripLabel={t("chat.addToTrip")}
+                saveLabel="收藏"
+                onOpenChat={() => openInChat(selectedPlace)}
+                ticketOffers={selectedPlaceTicketOffers}
+              />
+            )}
+            {sheetMode === "navigation" && selectedPlace && (
+              <NavigationPreviewSheet
+                placeName={selectedPlace.name}
+                modes={navigation.modes}
+                selectedMode={navigation.selectedMode}
+                onSelectMode={navigation.setSelectedMode}
+                loading={navigation.loading}
+                aiTip={navigation.aiTip}
+                onBack={handleBackToDetail}
+                onStartNavigation={navigation.startNavigation}
+              />
+            )}
+          </>
+        </MapExploreSheetSafe>
       </div>
     </div>
   );

@@ -246,7 +246,14 @@ export async function ensureClassicLandmarkPlacePool(params: {
         rateLimitHit = true;
         break;
       }
-      if (collected.length >= poolTarget) break;
+      // 不要因「數量夠」就停在前幾個同義景點 query；至少跑完一輪不同 query。
+      // 仍保留 soft cap，避免無限打 API。
+      if (
+        collected.length >= poolTarget &&
+        seenQueries.size >= Math.min(allAttempts.length, 6)
+      ) {
+        break;
+      }
     }
   } else {
     rateLimitHit = true;

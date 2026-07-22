@@ -97,6 +97,11 @@ const EXCLUSION_CATEGORIES: ExclusionCategoryDef[] = [
     labels: ["咖啡廳", "咖啡"],
     keywords: ["咖啡廳", "咖啡店", "cafe", "coffee"],
   },
+  {
+    id: "outdoor",
+    labels: ["公園", "戶外"],
+    keywords: ["公園", "park", "戶外", "outdoor", "綠地"],
+  },
 ];
 
 const EXCLUSION_TRIGGER_RE =
@@ -168,10 +173,42 @@ export function expandExcludedKeywords(categoryIds: Iterable<ExclusionCategoryId
 }
 
 export function parseExcludedCategoriesFromText(text: string): string[] {
-  if (!EXCLUSION_TRIGGER_RE.test(text.trim()) && !isExclusionLiftReply(text)) {
+  const userOnly = extractUserAuthoredExclusionText(text);
+  if (!userOnly) return [];
+  if (!EXCLUSION_TRIGGER_RE.test(userOnly.trim()) && !isExclusionLiftReply(userOnly)) {
     return [];
   }
-  return expandExcludedKeywords(parseExcludedCategoryIds(text));
+  return expandExcludedKeywords(parseExcludedCategoryIds(userOnly));
+}
+
+/**
+ * Strip assistant / system lines from conversation summaries so AI phrases
+ * like「不要排太滿」never become false user exclusions.
+ */
+export function extractUserAuthoredExclusionText(text: string): string {
+  if (!text?.trim()) return "";
+  const lines = text.split(/\n+/);
+  const userLines: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // Drop Roamie / assistant / system prefixed lines from buildConversationSummary.
+    if (/^(roamie|assistant|系統|ai)\s*[：:]/i.test(trimmed)) continue;
+    if (/^使用者\s*[：:]/.test(trimmed)) {
+      userLines.push(trimmed.replace(/^使用者\s*[：:]\s*/, ""));
+      continue;
+    }
+    // Keep bare user content / structured session fields that are not AI prose.
+    if (/^(心情|selectedMood|已選地點|今天想|旅伴|室內外|必去|交通|預算|節奏|日期|時間)[：:]/.test(trimmed)) {
+      continue;
+    }
+    userLines.push(trimmed);
+  }
+  // If summary was mostly AI lines, only keep lines that look like exclusion intents.
+  const joined = userLines.join("\n").trim();
+  if (EXCLUSION_TRIGGER_RE.test(joined)) return joined;
+  // No exclusion trigger in user-authored content → empty (do not scan AI reply body).
+  return "";
 }
 
 export function parseExclusionLifts(text: string): ExclusionCategoryId[] {
@@ -257,6 +294,61 @@ function placeTextBlob(place: {
     .toLowerCase();
 }
 
+/** Types that contain "park" but are not outdoor parks for exclusion matching. */
+const NON_PARK_COMPOUND_TYPES = new Set([
+  "amusement_park",
+  "water_park",
+  "theme_park",
+  "parking",
+  "parking_lot",
+  "parking_garage",
+]);
+
+/**
+ * Match exclusion keywords against place text without false positives
+ * (e.g. keyword "park" must not match amusement_park / parking).
+ */
+export function exclusionKeywordMatchesPlace(
+  keyword: string,
+  place: {
+    name?: string;
+    address?: string | null;
+    type?: string;
+    description?: string;
+    primaryType?: string | null;
+    types?: string[] | null;
+  },
+): boolean {
+  const kw = keyword.trim().toLowerCase();
+  if (!kw) return false;
+  const types = [place.primaryType, ...(place.types ?? [])]
+    .filter(Boolean)
+    .map((t) => String(t).toLowerCase());
+  const name = (place.name ?? "").toLowerCase();
+  const blob = placeTextBlob(place);
+
+  if (kw === "park" || kw === "公園") {
+    if (types.some((t) => NON_PARK_COMPOUND_TYPES.has(t))) {
+      // amusement_park etc. — only match if name clearly is a city park
+      if (!/公園/.test(name) || /樂園|遊樂|環球|disney|universal|theme/i.test(name)) {
+        return false;
+      }
+    }
+    if (types.some((t) => t === "park" || t === "national_park" || t === "garden")) {
+      return true;
+    }
+    return /公園|綠地/.test(name) && !/樂園|遊樂/.test(name);
+  }
+
+  // Short English tokens: require whole-token match (split on non-alnum).
+  if (/^[a-z]{2,8}$/.test(kw)) {
+    const tokens = blob.split(/[^a-z0-9\u4e00-\u9fff]+/).filter(Boolean);
+    return tokens.some((tok) => tok === kw);
+  }
+
+  return blob.includes(kw);
+}
+
 export function placeMatchesExcludedCategories(
   place: {
     name?: string;
@@ -269,8 +361,7 @@ export function placeMatchesExcludedCategories(
   excludedCategories: string[] | undefined,
 ): boolean {
   if (!excludedCategories?.length) return false;
-  const blob = placeTextBlob(place);
-  return excludedCategories.some((kw) => blob.includes(kw.toLowerCase()));
+  return excludedCategories.some((kw) => exclusionKeywordMatchesPlace(kw, place));
 }
 
 export function filterPlacesByExclusion<T extends PlaceResult>(places: T[], excluded?: string[]): T[] {

@@ -15,6 +15,13 @@ import {
   logChatPlaceRecommendationTriggered,
   logChatWrongFallbackBlocked,
 } from "@/lib/ai/chat-place-flow-log";
+import { buildInitialShoppingSearchAttempts } from "@/lib/ai/shopping-query-queue";
+import {
+  parsePlaceRecommendationIntent,
+  placeIntentToCategoryIntent,
+  buildPlaceRecommendationQueries,
+} from "@/lib/ai/place-recommendation-intent";
+import { resolveRegionPrimaryCity } from "@/lib/ai/shopping-search-scope";
 
 export type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 export {
@@ -26,7 +33,7 @@ export {
 export const CHAT_PLACE_CATEGORY_LABELS: Record<ChatPlaceCategoryIntent, string> = {
   cafe: "咖啡廳",
   restaurant: "餐廳",
-  shopping: "商圈",
+  shopping: "購物／商圈",
   attraction: "景點",
   night_market: "夜市",
   bar: "酒吧",
@@ -46,7 +53,8 @@ const CATEGORY_ORDER: ChatPlaceCategoryIntent[] = [
 const CATEGORY_PATTERNS: Record<ChatPlaceCategoryIntent, RegExp> = {
   cafe: /(咖啡廳|咖啡店|咖啡|café|cafe)/i,
   restaurant: /(餐廳|美食|吃飯|用餐|吃的地方|想吃|吃什麼|找吃的|想找餐廳|推薦餐廳|找餐廳|找美食|有推薦的餐廳|推薦.{0,6}吃)/,
-  shopping: /(商圈|shopping|百貨|市集|購物|商場|mall|department\s*store)/i,
+  shopping:
+    /(商圈|shopping|百貨|市集|購物|商場|mall|department\s*store|outlet|アウトレット|逛街|購物行程|購物中心|商店街)/i,
   attraction: /(景點|必去|必去景點|附近景點|去哪玩|推薦景點|好玩的|附近.*逛|美術館|博物館|museum|tourist)/i,
   night_market: /(夜市|market)/i,
   bar: /(酒吧|居酒屋|宵夜|夜生活)/,
@@ -68,6 +76,15 @@ export function parseChatPlaceIntents(text: string): ChatPlaceCategoryIntent[] {
       found.push(intent);
     }
   }
+
+  // Cuisine / feature NL (e.g.「有拉麵店推薦嗎」) without category keyword
+  if (!found.length) {
+    const parsed = parsePlaceRecommendationIntent(t);
+    if (parsed) {
+      found.push(placeIntentToCategoryIntent(parsed.primaryType));
+    }
+  }
+
   return found;
 }
 
@@ -110,18 +127,75 @@ export function shouldBlockPlanningFallbackForCategoryQuery(
   return true;
 }
 
+/**
+ * Map category → nearby GPS intent.
+ * Shopping is not a nearby GPS mode; callers must persist `activeCategoryIntent`
+ * separately so「還有嗎」does not collapse shopping → attraction.
+ */
 export function mapCategoryIntentToNearbyIntent(
   intent: ChatPlaceCategoryIntent,
 ): "cafe" | "restaurant" | "attraction" {
   if (intent === "cafe") return "cafe";
   if (intent === "restaurant") return "restaurant";
+  // Keep shopping/night_market/bar out of attraction-only nearby when possible —
+  // activeCategoryIntent on session is the source of truth for continue.
   return "attraction";
 }
 
 export function buildChatPlaceSearchAttempts(
   intent: ChatPlaceCategoryIntent,
   destination: string,
+  userText = "",
 ): { primary: SearchAttempt[]; fallback: SearchAttempt[] } {
+  const parsed = userText.trim() ? parsePlaceRecommendationIntent(userText) : null;
+  const searchCity = resolveRegionPrimaryCity(destination) ?? destination;
+
+  // Prefer universal query builder when subtypes / features are present
+  if (
+    parsed &&
+    (parsed.subtypes.length > 0 ||
+      parsed.preferredFeatures.length > 0 ||
+      parsed.indoorOnly ||
+      (intent === "restaurant" && parsed.primaryType === "restaurant") ||
+      (intent === "cafe" && parsed.primaryType === "cafe") ||
+      (intent === "shopping" && parsed.primaryType === "shopping") ||
+      (intent === "indoor" && (parsed.primaryType === "indoor" || parsed.indoorOnly)) ||
+      (intent === "bar" && parsed.primaryType === "nightlife"))
+  ) {
+    const primaryType =
+      intent === "bar"
+        ? ("nightlife" as const)
+        : intent === "night_market"
+          ? ("attraction" as const)
+          : intent === "indoor"
+            ? ("indoor" as const)
+            : intent === "cafe" ||
+                intent === "restaurant" ||
+                intent === "shopping" ||
+                intent === "attraction"
+              ? intent
+              : parsed.primaryType;
+    const built = buildPlaceRecommendationQueries({
+      destination,
+      resolvedSearchCity: searchCity,
+      primaryType,
+      subtypes: parsed.subtypes,
+      preferredFeatures: parsed.preferredFeatures,
+      excludedFeatures: parsed.excludedFeatures,
+      mealSlot: parsed.mealSlot,
+      budget: parsed.budget,
+      atmosphere: parsed.atmosphere,
+      indoorOnly: parsed.indoorOnly,
+    });
+    if (built.length) {
+      const mid = Math.min(4, built.length);
+      return {
+        primary: built.slice(0, mid),
+        fallback: built.slice(mid),
+      };
+    }
+  }
+
   if (intent === "cafe") {
     return buildCafeSearchAttempts(destination);
   }
@@ -131,61 +205,39 @@ export function buildChatPlaceSearchAttempts(
       return {
         primary: [
           {
-            query: `${destination} restaurant`,
+            query: `${searchCity} restaurant`,
             mode: "text",
             includedTypes: ["restaurant", "food"],
           },
           {
-            query: `${destination} 人氣餐廳`,
+            query: `${searchCity} 人氣餐廳`,
             mode: "text",
             includedTypes: ["restaurant", "food", "meal_takeaway"],
           },
           {
-            query: `${destination} 美食 小吃`,
+            query: `${searchCity} 美食 小吃`,
             mode: "text",
             includedTypes: ["restaurant", "food", "cafe", "bakery"],
           },
         ],
         fallback: [
           {
-            query: `${destination} food dining`,
+            query: `${searchCity} food dining`,
             mode: "text",
             includedTypes: ["restaurant", "food", "cafe"],
           },
           {
-            query: `${destination} local restaurants`,
+            query: `${searchCity} local restaurants`,
             mode: "text",
             includedTypes: ["restaurant", "meal_takeaway", "bakery"],
           },
         ],
       };
-    case "shopping":
-      return {
-        primary: [
-          {
-            query: `${destination} shopping district`,
-            mode: "text",
-            includedTypes: ["shopping_mall", "department_store", "tourist_attraction"],
-          },
-          {
-            query: `${destination} 商圈`,
-            mode: "text",
-            includedTypes: ["shopping_mall", "department_store", "tourist_attraction"],
-          },
-        ],
-        fallback: [
-          {
-            query: `${destination} department store`,
-            mode: "text",
-            includedTypes: ["department_store", "shopping_mall"],
-          },
-          {
-            query: `${destination} 百貨`,
-            mode: "text",
-            includedTypes: ["department_store", "shopping_mall"],
-          },
-        ],
-      };
+    case "shopping": {
+      // Shopping Query Queue page 0 (+ page 1 as fallback) — see shopping-query-queue.ts
+      const seeded = buildInitialShoppingSearchAttempts(destination, userText);
+      return { primary: seeded.primary, fallback: seeded.fallback };
+    }
     case "attraction":
       return {
         primary: [

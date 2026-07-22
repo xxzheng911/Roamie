@@ -1,0 +1,45 @@
+---
+description: RAOS Recommendation System and Place Intelligence Engine
+globs: src/lib/pie/**/*.{ts,tsx},src/lib/recommendation/**/*.{ts,tsx},src/lib/places*.{ts,tsx},src/lib/place-*.{ts,tsx},src/services/placesService.ts,src/services/placeImageService.ts,src/lib/ai/**/*place*.{ts,tsx},src/lib/ai/**/*recommend*.{ts,tsx}
+alwaysApply: false
+---
+
+# Recommendation & PIE (RAOS Ch.11–12)
+
+Full docs: `docs/raos/chapter-11-*.md`, `chapter-12-*.md`.
+
+## Candidate Pool（Priority 1）
+
+- Pipeline: Places Search → Quality → Category → Query → Geo Clustering → Temporal → Travel Flow → Experience → **Candidate Pool** → Recommendation → Planner → Validator.
+- Module: `src/lib/ai/candidate-pool/`；Flag `VITE_CANDIDATE_POOL_ENABLED`（預設 OFF；與 Validator / PIE Search 獨立）.
+- **Places Cost Cache**（Beta）：`src/lib/ai/places-cost-cache/` — Layer1 Destination / Layer2 Candidate Pool 30m / Layer3 Combination；Session reuse；≤5 category searches once；5s query cooldown；Rate Protection（no retry）. Verify: `npm run verify:places-cost-cache`.
+- Geo = density clustering（`fitToDays: false`）；**禁止** `destination-travel-profile.districts` / `KNOWN_HUB_CENTERS` / 城市特例.
+- Docs: `docs/raos/candidate-pool-pipeline.md`；verify: `npm run verify:candidate-pool`.
+
+## Recommendation System
+
+- One shared engine + Adapter; Pipeline: `normalize → filter → deduplicate → score → rank → diversify → explain → validate`.
+- Surfaces must not each maintain incompatible ranking; Planner only consumes ranked results (does not recommend).
+- `explain` emits structured `RecommendationReason` codes (not full sentences); UI/AI renders copy.
+- Weights live in Recommendation Profiles (`general|food|night|cafe|nature|shopping`), not hardcoded in Engine.
+- Memory/DNA only emit Weight Suggestion / Preference Signal; Engine computes final rank.
+- Design: `docs/raos/recommendation-engine-design.md`, `docs/raos/planner-recommendation-integration.md`.
+- Flags: `VITE_REC_ENGINE_ENABLED`, `_R1_1_`, `_R1_2_`, `_PLANNER_`, `VITE_PIE_PLANNER_SEARCH_ENABLED`, `VITE_REC_ENGINE_VALIDATOR_ENABLED`, `VITE_ITINERARY_VALIDATOR_ENABLED` (all default OFF).
+- Planner: Engine is sole candidate ranker; Planner only schedules (slots/route/meals/dedupe/pace/locks). P1–P2.3 ranking ✅; P3.1 PIE Search ✅; P4.1 Rec Validator ✅; P4.2 Itinerary Validator ✅; P3.2+ PIE internals (after Validator). R1.3 paused.
+- P3.1: Planner candidate fetch via `wrapPlannerPlaceSearchViaGateway` (itinerary / trip-plan entries only; Chat/Explore/Home unchanged).
+- P4.1 / Priority 2: `validate` stage = Recommendation Validator（Flag OFF pass-through；ON = quality gate, no re-rank；不足 → `recommendationInsufficient` 清空池；log `[REC_VALIDATOR_*]`）.
+- P4.2: Itinerary Validator after Planner compose（`validateItineraryPlan`；no re-rank/rebuild/substitute places）— **未與 Priority 2 同時開啟**.
+- `RecommendationResult.scoreBreakdown` for Explain/Debug/A/B; Recommendation Validator ≠ Itinerary Validator.
+- Do not change Home/Chat/Planner business logic until their adapter phase.
+- Keep category purity (cafe ≠ bar), diversity, time/season/weather awareness.
+- Exclude cemetery, private home, closed, sparse reviews, supermarket/hypermarket unless explicit search.
+- Refresh: keep liked, replace ignored; learn from save/click/nav/add/delete/skip.
+- Final gate: Validator Engine (`validate` stage).
+
+## PIE (Place Intelligence Engine)
+
+- Sole place gateway: search, match, validate, dedupe, quality, images, cache, affiliate hints.
+- Modules must not call Google Places directly (target architecture).
+- Normalize categories; Travel Suitability Score feeds Recommendation.
+- Image order: Google Photo → Unsplash → Roamie shared → placeholder.
+- Cache aggressively; detail payload must be consistent across screens.

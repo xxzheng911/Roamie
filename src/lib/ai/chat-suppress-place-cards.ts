@@ -20,6 +20,24 @@ export function shouldSuppressChatPlaceCards(
   const aiState = session.aiItineraryState;
   const planningState = session.chatPlanningState;
 
+  // Category / more-place recommendations must keep Place Cards even inside
+  // destination_planning (e.g. after dates/combinations were collected).
+  if (
+    purpose === "recommend_places" ||
+    purpose === "more_place_recommendations" ||
+    purpose === "alternative_recommendations" ||
+    purpose === "refresh_recommendations" ||
+    purpose === "must_visit_places"
+  ) {
+    return false;
+  }
+  if (
+    session.phase === "recommend" &&
+    (session.activeCategoryIntent || session.recommendationSession)
+  ) {
+    return false;
+  }
+
   if (pending === "combination_choice") return true;
   if (session.phase === "generating") return true;
   if (planningState === "generatingPlan" || planningState === "generationFailed") {

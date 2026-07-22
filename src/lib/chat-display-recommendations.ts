@@ -61,11 +61,16 @@ function isDestinationCategoryPlaceDisplay(
   session: ChatPlanningSession,
   userText: string,
 ): boolean {
-  if (!hasCategoryPlaceQuery(userText)) return false;
   const dest =
     session.travelContext?.destination?.trim() ||
     resolveDestinationFromText(userText);
-  return Boolean(dest);
+  if (!dest) return false;
+  if (hasCategoryPlaceQuery(userText)) return true;
+  // Continue phrases inherit active category Recommendation Session.
+  if (session.activeCategoryIntent || session.recommendationSession?.topic) {
+    return true;
+  }
+  return false;
 }
 
 function shouldSkipDestinationRenderGuard(
@@ -99,6 +104,9 @@ function resolveCategoryDisplayIntent(
 ): ChatPlaceCategoryIntent | null {
   const intents = parseChatPlaceIntents(userText);
   if (intents.length === 1) return intents[0]!;
+  // Prefer Recommendation Session topic so「還有嗎」keeps shopping/cafe.
+  if (session.recommendationSession?.topic) return session.recommendationSession.topic;
+  if (session.activeCategoryIntent) return session.activeCategoryIntent;
   if (session.activeChatIntent === "cafe") return "cafe";
   if (session.activeChatIntent === "restaurant") return "restaurant";
   if (session.activeChatIntent === "attraction") return "attraction";

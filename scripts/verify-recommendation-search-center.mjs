@@ -1,0 +1,261 @@
+#!/usr/bin/env node
+/**
+ * Offline acceptance: Recommendation Search Center + continue scope
+ * (destination vs GPS, category inheritance, isNearbyPlaceIntent defined).
+ * No Places API calls.
+ */
+import assert from "node:assert/strict";
+import {
+  isExplicitDeviceNearbyRequest,
+  resolveRecommendationSearchCenter,
+  resolveRecommendationSearchScope,
+  assertDestinationRequestNotUsingGps,
+  restoreContinueRecommendationCategory,
+} from "../src/lib/ai/recommendation-search-scope.ts";
+import { resolveNearbySearchCenter } from "../src/lib/ai/chat-nearby-search.ts";
+import { resolveRefreshNearbyIntent } from "../src/lib/ai/chat-recommendation-refresh.ts";
+import { isNearbyPlaceIntent } from "../src/lib/ai/chat-intent.ts";
+import { shouldFetchNearbyPlaces } from "../src/lib/ai/chat-dining-flow.ts";
+import { resolveChatIntentArbitration } from "../src/lib/ai/recommendation-refinement/arbitrate.ts";
+import { resolveDestinationApproxCenter } from "../src/lib/ai/destination-geocode.ts";
+
+const KAOHSIUNG = { lat: 22.6399, lng: 120.2935 };
+const HOKKAIDO = resolveDestinationApproxCenter("北海道") ?? {
+  lat: 43.0618,
+  lng: 141.3545,
+};
+
+function shoppingSession(overrides = {}) {
+  return {
+    recommendedPlaces: [
+      { name: "大通公園店", placeId: "p1", googlePlaceId: "gp1" },
+      { name: "狸小路", placeId: "p2", googlePlaceId: "gp2" },
+    ],
+    selectedPlaces: [],
+    phase: "recommend",
+    discovery: {},
+    updatedAt: new Date().toISOString(),
+    conversationMode: "destination_planning",
+    location: { city: "高雄", ...KAOHSIUNG },
+    activeCategoryIntent: "shopping",
+    activeChatIntent: undefined,
+    recommendationSession: {
+      sessionId: "rec_test",
+      destination: "北海道",
+      topic: "shopping",
+      returnedPlaceIds: ["gp1", "gp2"],
+      pool: [],
+      cursor: 2,
+      searchCentroid: { lat: HOKKAIDO.lat, lng: HOKKAIDO.lng },
+      activeSearchCity: "札幌",
+      searchRegionLabel: "北海道",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    activeRecommendationContext: {
+      destinationName: "北海道",
+      destinationDisplayName: "北海道",
+      countryCode: "日本",
+      resolvedSearchCity: "札幌",
+      latitude: HOKKAIDO.lat,
+      longitude: HOKKAIDO.lng,
+      intent: "shopping",
+      previousPlaceIds: ["gp1", "gp2"],
+      previousCanonicalKeys: [],
+      currentResultPlaceIds: ["gp1", "gp2"],
+      usedQueries: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+    travelContext: {
+      destination: "北海道",
+      destinationCountry: "日本",
+      days: 6,
+      interests: ["自然"],
+      tripPurpose: "recommend_places",
+    },
+    tripPlanningContext: {
+      destination: "北海道",
+      days: 6,
+    },
+    tripDays: 6,
+    pendingQuestion: {
+      type: "combination_choice",
+      options: ["1", "2", "3", "4"],
+      baseDestination: "北海道",
+      destinationCountry: "日本",
+    },
+    ...overrides,
+  };
+}
+
+let passed = 0;
+let failed = 0;
+function check(name, fn) {
+  try {
+    fn();
+    passed += 1;
+    console.log(`OK ${name}`);
+  } catch (e) {
+    failed += 1;
+    console.error(`FAIL ${name}`);
+    console.error(e);
+  }
+}
+
+console.log("=== recommendation search center (cases 1–5) ===\n");
+
+// Case 1: 北海道 shopping continue — destination anchor, not Kaohsiung GPS
+check("Case 1: 有其他的嗎 → MORE_RECOMMENDATIONS shopping @ 北海道", () => {
+  const session = shoppingSession();
+  const text = "有其他的嗎";
+  const arbitration = resolveChatIntentArbitration(text, session);
+  assert.equal(arbitration.route, "MORE_RECOMMENDATIONS");
+
+  const center = resolveRecommendationSearchCenter({
+    userText: text,
+    session,
+    context: session.travelContext,
+    destinationLatLng: HOKKAIDO,
+    destinationName: "北海道",
+    deviceLatLng: KAOHSIUNG,
+  });
+  assert.ok(center);
+  assert.equal(center.mode, "destination");
+  assert.equal(center.destination, "北海道");
+  assert.equal(center.deviceLocationUsed, false);
+  assert.ok(Math.abs(center.latitude - HOKKAIDO.lat) < 0.5);
+  assert.ok(Math.abs(center.longitude - HOKKAIDO.lng) < 0.5);
+  assert.ok(Math.abs(center.latitude - KAOHSIUNG.lat) > 1);
+
+  assert.equal(shouldFetchNearbyPlaces("attraction", session, text), false);
+
+  const nearbyOverride = resolveNearbySearchCenter(session, text, {
+    searchMode: "destination",
+    destinationLatLng: HOKKAIDO,
+    destinationName: "北海道",
+  });
+  assert.ok(nearbyOverride);
+  assert.equal(nearbyOverride.mode, "basePlace");
+  assert.ok(Math.abs(nearbyOverride.lat - KAOHSIUNG.lat) > 1);
+
+  const guard = assertDestinationRequestNotUsingGps({
+    searchMode: "destination",
+    center: { latitude: center.latitude, longitude: center.longitude },
+    centerSource: "recommendation_snapshot",
+    destination: "北海道",
+    category: "shopping",
+    radiusMeters: 1500,
+  });
+  assert.equal(guard.ok, true);
+
+  const gpsMix = assertDestinationRequestNotUsingGps({
+    searchMode: "destination",
+    center: { latitude: KAOHSIUNG.lat, longitude: KAOHSIUNG.lng },
+    centerSource: "gps",
+    destination: "北海道",
+    category: "shopping",
+    radiusMeters: 1500,
+  });
+  assert.equal(gpsMix.ok, false);
+  assert.equal(gpsMix.reason, "destination_request_using_gps");
+});
+
+// Case 2: cafe continue inherits cafe
+check("Case 2: 還有其他咖啡廳嗎 → cafe + 北海道", () => {
+  const session = shoppingSession({
+    activeCategoryIntent: "cafe",
+    recommendationSession: {
+      ...shoppingSession().recommendationSession,
+      topic: "cafe",
+    },
+    activeRecommendationContext: {
+      ...shoppingSession().activeRecommendationContext,
+      intent: "cafe",
+    },
+  });
+  const text = "還有其他咖啡廳嗎";
+  const center = resolveRecommendationSearchCenter({
+    userText: text,
+    session,
+    context: session.travelContext,
+    destinationName: "北海道",
+    destinationLatLng: HOKKAIDO,
+    deviceLatLng: KAOHSIUNG,
+  });
+  assert.equal(center?.mode, "destination");
+  assert.equal(center?.deviceLocationUsed, false);
+  const refreshIntent = resolveRefreshNearbyIntent(session, session.travelContext);
+  assert.equal(refreshIntent, "cafe");
+});
+
+// Case 3: explicit current location → GPS allowed
+check("Case 3: 那我現在附近有嗎 → current_location + GPS", () => {
+  const session = shoppingSession();
+  const text = "那我現在附近有嗎";
+  assert.equal(isExplicitDeviceNearbyRequest(text), true);
+  const center = resolveRecommendationSearchCenter({
+    userText: text,
+    session,
+    context: session.travelContext,
+    destinationName: "北海道",
+    destinationLatLng: HOKKAIDO,
+    deviceLatLng: KAOHSIUNG,
+  });
+  assert.ok(center);
+  assert.equal(center.mode, "current_location");
+  assert.equal(center.deviceLocationUsed, true);
+  assert.ok(Math.abs(center.latitude - KAOHSIUNG.lat) < 0.01);
+});
+
+// Case 4: explicit Osaka switch
+check("Case 4: 有大阪的嗎 → destination 大阪", () => {
+  const session = shoppingSession();
+  const text = "大阪有逛街點推薦嗎";
+  const scope = resolveRecommendationSearchScope({
+    userText: text,
+    session,
+    context: session.travelContext,
+  });
+  assert.equal(scope?.source, "explicit_user_destination");
+  assert.equal(scope?.destinationName, "大阪");
+
+  const osakaApprox = resolveDestinationApproxCenter("大阪");
+  assert.ok(osakaApprox);
+  const center = resolveRecommendationSearchCenter({
+    userText: text,
+    session,
+    context: session.travelContext,
+    destinationName: "大阪",
+    destinationLatLng: osakaApprox,
+    deviceLatLng: KAOHSIUNG,
+  });
+  assert.equal(center?.mode, "destination");
+  assert.equal(center?.destination, "大阪");
+  assert.equal(center?.deviceLocationUsed, false);
+  assert.ok(Math.abs((center?.latitude ?? 0) - KAOHSIUNG.lat) > 1);
+});
+
+// Case 5: isNearbyPlaceIntent is defined (no ReferenceError) + scope runtime
+check("Case 5: isNearbyPlaceIntent defined; shopping refresh ≠ attraction GPS", () => {
+  assert.equal(typeof isNearbyPlaceIntent, "function");
+  assert.equal(isNearbyPlaceIntent("cafe"), true);
+  assert.equal(isNearbyPlaceIntent("attraction"), true);
+  assert.equal(isNearbyPlaceIntent("destination_advice"), false);
+
+  const session = shoppingSession();
+  const refresh = resolveRefreshNearbyIntent(session, session.travelContext);
+  // shopping stays off nearby GPS path
+  assert.equal(refresh, null);
+
+  const restored = restoreContinueRecommendationCategory({
+    resolvedRoute: "MORE_RECOMMENDATIONS",
+    requestCategory: "attraction",
+    snapshotCategory: "shopping",
+  });
+  assert.equal(restored, "shopping");
+});
+
+console.log(`\n${passed} passed, ${failed} failed`);
+if (failed > 0) process.exit(1);
+console.log("verify-recommendation-search-center: ok (no Places API)");

@@ -1,0 +1,42 @@
+---
+description: RAOS Free vs Plus membership and AI credits
+globs: src/lib/access/**/*.{ts,tsx},src/lib/plan-tier/**/*.{ts,tsx},src/lib/credits/**/*.{ts,tsx},src/hooks/use-plus-upgrade.ts,src/providers/SubscriptionProvider.tsx
+alwaysApply: false
+---
+
+# Membership (RAOS Ch.1–2 + AI Credits Runtime)
+
+Full docs: `docs/raos/chapter-01-*.md`, `chapter-02-*.md`.
+Credits Runtime: `src/lib/credits/`.
+
+## Positioning
+
+- Free = AI Travel Assistant (complete planning, no long-term intelligence).
+- Plus = AI Travel Companion (Memory, DNA, History, Workspace, Insights, Optimizer personalization, proactive learning).
+- Same AI stack; Plus adds Intelligence Layer.
+
+## Free may use
+
+Chat, place/food/stay/transport recommendations, create/edit full itineraries, map, favorites, place detail, weather, outfit tips.
+
+## Plus-only (permission-gated)
+
+Conversation Workspace / History, Travel Memory, Travel DNA, Preference Learning, Planner Optimizer personalization, AI Insights, History Engine, long-term context, proactive recommendations, Memory/DNA snapshots, conversation resume.
+
+## Credits (product policy — Runtime)
+
+- Monthly credits (natural month, no rollover). Free: **20**/month.
+- Only two billable features:
+  - `PLACE_RECOMMENDATION` = **1** credit per successful recommendation **batch** (not per place / card / Places API call).
+  - `ITINERARY_GENERATION` = **7** credits for one full itinerary success (ask → combo → planner → persist → favorites).
+- Manual trip edits (favorites / detail) = **0** credits.
+- Flow: Check → Reserve → Execute → Commit; failure → Rollback.
+- Plus: skip Check / Reserve / Commit; keep Fair Use / rate limit / provider protection.
+- Cancel Plus: remain Plus until end of current billing period, then Free + 20 credits.
+- Enforce via Supabase RPCs (`credit_accounts` / `credit_ledger`); client must not mutate balances.
+- Feature flag: `VITE_FEATURE_CREDITS_ENABLED` (dev/test ON; production public OFF until verified).
+- Home must not show remaining credits; chat Greeting uses stages 15–20 / 8–14 / 1–7 / 0.
+- Debug: `credit_debug_overrides` only — Runtime prefers Override over formal balances; never mutate formal `available_credits` for QA.
+- Subscription Debug: Auto (real sub) / Force Free / Force Plus.
+- Stale `reserved` ledger rows auto-rollback after 5 minutes.
+- Ledger `environment`: `debug` | `production`.

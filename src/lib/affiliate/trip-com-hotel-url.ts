@@ -1,4 +1,5 @@
 import type { Locale } from "@/lib/i18n/types";
+import { affiliateDebugInfo } from "@/lib/affiliate/affiliate-debug-log";
 import type { AffiliateEnvConfig } from "@/lib/affiliate/affiliate-env";
 import {
   buildTripComAffiliateUrl,
@@ -150,7 +151,7 @@ function logTripAffiliateHotelUrl(details: {
   hasDestination: boolean;
   hasDates: boolean;
 }): void {
-  console.info(
+  affiliateDebugInfo(
     `[Affiliate] tripHotelLink hasDestination=${details.hasDestination} hasDates=${details.hasDates}`,
   );
 }
@@ -213,12 +214,12 @@ export function buildTripComHotelUrl(
     hasDates: Boolean(checkIn),
   });
 
-  console.info(`[AFFILIATE_URL_BUILT] type=hotel url=${finalUrl}`);
+  affiliateDebugInfo(`[AFFILIATE_URL_BUILT] type=hotel url=${finalUrl}`);
 
   return finalUrl;
 }
 
 /** 點按 Trip.com 連結前再次記錄（不輸出完整 URL） */
 export function logTripComAffiliateOpen(_finalUrl: string): void {
-  console.info("[Affiliate] tripComLink action=open");
+  affiliateDebugInfo("[Affiliate] tripComLink action=open");
 }

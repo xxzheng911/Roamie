@@ -1,0 +1,50 @@
+---
+description: RAOS core non-negotiable principles for all Roamie work
+alwaysApply: true
+---
+
+# RAOS Core Principles
+
+Source of truth: `docs/raos/` (Chapters 1–21).
+
+## Product
+
+- Roamie is an **AI Travel Companion**, not ChatGPT, not a generic chatbot, not a search engine.
+- AI assists travel decisions; the traveler always makes the final call.
+- Free = full planning capability without long-term memory. Plus = AI Intelligence (Memory, DNA, Workspace, learning). Difference is personalization, not feature amputation.
+
+## Layered Architecture
+
+```
+Presentation → Application → AI → Knowledge → Service → Data
+```
+
+- Do not put AI logic in UI.
+- Do not call third-party APIs from UI.
+- Upper layers may depend on lower layers; never reverse.
+
+## Required patterns
+
+- **Repository**: all persistence via repositories; no direct DB access from features.
+- **Event Bus**: state changes publish events; modules must not directly refresh each other’s UI.
+- **Domain Model**: prefer shared domain objects over ad-hoc JSON blobs.
+
+## Standard AI pipeline
+
+```
+Conversation → Context → Decision → (AIL) → Planner Optimizer → LLM → Validator → Response
+```
+
+- New AI features must plug into this pipeline; do not bypass Conversation / Context / Decision / Validator.
+- **Prompts must not own business logic.** Engines decide; Prompt Builder assembles; LLM generates text; Validator gates output.
+
+## Membership & privacy
+
+- Free/Plus gates are **server/permission enforced**, never UI-only hiding.
+- Privacy by Design: users own Trip, Workspace, Conversation, Memory, DNA; export/delete/forget required for personal data features.
+
+## Change discipline
+
+- Prefer extending existing RAOS modules over inventing parallel systems.
+- Do not “fix” quality by stacking prompts or duplicate API calls.
+- When RAOS conflicts with current code, document the gap first; do not silently rewrite production paths without explicit approval.

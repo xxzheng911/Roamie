@@ -7,7 +7,15 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import type { PlaceSearchFn, SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import {
   buildDestinationTextSearchAttempts,
+  resolveDestinationApproxCenter,
 } from "@/lib/ai/destination-geocode";
+import {
+  evaluateNearbyExtensionPoolStatus,
+  logNearbyExtensionContext,
+  logNearbyExtensionPool,
+  NEARBY_EXTENSION_MIN_STOPS,
+  NEARBY_EXTENSION_SEARCH_TARGET,
+} from "@/lib/ai/nearby-extension-requirements";
 import { buildDestinationPlaceSearchAttempts } from "@/lib/ai/landmark-place-strategy";
 import type { ChatPlaceSearchContext } from "@/lib/ai/chat-place-search-context";
 import {
@@ -27,10 +35,61 @@ import {
   type DayPlanBucket,
   type TripStyleKey,
 } from "@/lib/ai/ai-trip-style";
+import { buildTripPlaceScoringContext } from "@/lib/ai/trip-place-scoring";
 import {
-  buildTripPlaceScoringContext,
-  filterAndRankTripPlacesForPlanning,
-} from "@/lib/ai/trip-place-scoring";
+  isItineraryValidatorEnabled,
+  validateItineraryPlan,
+  shouldBlockItineraryDelivery,
+  logItineraryDeliveryAllowed,
+  logItineraryDeliveryBlocked,
+  dayCountsOfPlans,
+  type ItineraryValidationResult,
+} from "@/lib/ai/itinerary-validator";
+import { replanUntilItineraryValid } from "@/lib/ai/itinerary-validator/replan";
+import { wrapPlannerPlaceSearchViaGateway } from "@/lib/pie/planner-search";
+import {
+  getLastRecommendationValidationSummary,
+  isRecEngineValidatorEnabled,
+  rankPlannerPlacesViaRecEngine,
+} from "@/lib/recommendation/engine";
+import {
+  countUniqueCanonicalLandmarks,
+  requiredCanonicalCandidatesForTrip,
+  resolveCanonicalLandmarkKey,
+  normalizeLandmarkNameForDedup,
+} from "@/lib/ai/canonical-landmark";
+import {
+  minEffectivePlacesPerDay,
+  placeMatchesNearbyExtension,
+} from "@/lib/ai/planner-day-route-assembly";
+import { resolveRegionCandidate } from "@/lib/ai/region-candidate-expand";
+import { isMappableGooglePlaceId } from "@/lib/ai/map-named-places-to-google";
+import {
+  STYLE_PER_QUERY_KEEP,
+  buildAttemptsForStyleKind,
+  logStyleCategoryInventory,
+  resolveStyleSearchKinds,
+  underrepresentedKinds,
+} from "@/lib/ai/style-candidate-diversity";
+import {
+  GEO_REGION_SEARCH_RADIUS_M,
+  logStyleGeoInventory,
+  pickNextGeoHub,
+  resolveGeoHubsForDestination,
+  scopeAttemptToGeoHub,
+  underrepresentedGeoHubs,
+} from "@/lib/ai/style-geo-diversity";
+import {
+  buildCandidatePool,
+  isCandidatePoolEnabled,
+  type CandidatePoolSearchFn,
+} from "@/lib/ai/candidate-pool";
+import {
+  bindSessionCandidatePool,
+  readCandidatePoolCache,
+  shouldBlockNewPlacesCalls,
+  writeCandidatePoolCache,
+} from "@/lib/ai/places-cost-cache";
 import { classifyWeatherScene } from "@/lib/weather-scene";
 import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
 import { getPreferences } from "@/lib/preferences-storage";
@@ -294,12 +353,18 @@ export function rankPlacesForTripPlanning(params: {
   ranked: PlaceResult[];
   buckets: DayPlanBucket[];
   composedPlans: ComposedDayPlan[];
+  candidateInsufficient?: CandidateInsufficientResult;
 } {
   const retailFiltered = filterExcludedRetailPlaces(params.places, { style: params.style });
   const normalized = normalizePlanningPlaces(filterRealPlanningPlaces(retailFiltered), {
     logSummary: !params.skipNormalizeLog,
   });
   logAiResolvedPlacesCount(normalized.length);
+
+  const requiredCanonical = requiredCanonicalCandidatesForTrip(
+    params.days,
+    params.style === "slow_nature" ? "slow" : "medium",
+  );
 
   // 空 pool：直接略過，避免 PLANNER_START placesCount=0 污染 / 被覆寫採用
   if (normalized.length === 0) {
@@ -308,6 +373,14 @@ export function rankPlacesForTripPlanning(params: {
       ranked: [],
       buckets: composedDayPlansToBuckets(ensureAllDayPlansExist([], params.days)),
       composedPlans: ensureAllDayPlansExist([], params.days),
+      candidateInsufficient: {
+        candidateInsufficient: true,
+        requiredCount: requiredCanonical,
+        availableCount: 0,
+        missingCount: requiredCanonical,
+        affectedDays: Array.from({ length: params.days }, (_, i) => i + 1),
+        replanReasons: ["insufficient_candidates"],
+      },
     };
   }
 
@@ -325,10 +398,19 @@ export function rankPlacesForTripPlanning(params: {
         "action=await_pool_expansion",
       );
       logPlannerResult(params.days, 0, false);
+      const available = countUniqueCanonicalLandmarks(normalized);
       return {
         ranked: normalized,
         buckets: composedDayPlansToBuckets(ensureAllDayPlansExist([], params.days)),
         composedPlans: ensureAllDayPlansExist([], params.days),
+        candidateInsufficient: {
+          candidateInsufficient: true,
+          requiredCount: requiredCanonical,
+          availableCount: available,
+          missingCount: Math.max(0, requiredCanonical - available),
+          affectedDays: Array.from({ length: params.days }, (_, i) => i + 1),
+          replanReasons: ["insufficient_candidates"],
+        },
       };
     }
     logAiPipeline(
@@ -358,8 +440,78 @@ export function rankPlacesForTripPlanning(params: {
     centerLat: params.lat,
     centerLng: params.lng,
   });
-  const ranked = filterAndRankTripPlacesForPlanning(normalized, scoringInput);
+  // Planner Adapter：Flag OFF = legacy trip-place-scoring；ON = Engine Profile 排序（P2.1）
+  // Contract：不得對 ranked 重新排序或重算推薦分數；僅組裝日程。
+  // Recommendation Validator（Flag ON）在 Engine pipeline 末端閘門；不足時回傳空池。
+  const ranked = rankPlannerPlacesViaRecEngine(normalized, scoringInput);
   logAiResolvedPlacesCount(ranked.length);
+
+  const pace = params.style === "slow_nature" ? "slow" : "medium";
+  const validationSummary = getLastRecommendationValidationSummary();
+  if (isRecEngineValidatorEnabled() && validationSummary.recommendationInsufficient) {
+    logAiPipeline(
+      "[CANDIDATE_INSUFFICIENT_RESULT]",
+      "candidateInsufficient=true",
+      "recommendationInsufficient=true",
+      `requiredCount=${validationSummary.requiredCount}`,
+      `availableCount=${validationSummary.availableCount}`,
+      `missingCount=${validationSummary.missingCount}`,
+      `failedRules=${Object.keys(validationSummary.failedRuleCounts).join("|") || "none"}`,
+      `affectedKinds=${validationSummary.affectedKinds.join("|") || "none"}`,
+      `affectedClusters=${validationSummary.affectedClusters.length}`,
+      "replanReasons=recommendation_validator_insufficient",
+      "sourceFunction=rankPlacesForTripPlanning",
+    );
+    logPlannerResult(params.days, 0, false);
+    return {
+      ranked: [],
+      buckets: composedDayPlansToBuckets(ensureAllDayPlansExist([], params.days)),
+      composedPlans: ensureAllDayPlansExist([], params.days),
+      candidateInsufficient: {
+        candidateInsufficient: true,
+        recommendationInsufficient: true,
+        requiredCount: validationSummary.requiredCount,
+        availableCount: validationSummary.availableCount,
+        missingCount: validationSummary.missingCount,
+        affectedDays: Array.from({ length: params.days }, (_, i) => i + 1),
+        replanReasons: ["recommendation_validator_insufficient"],
+        failedRules: Object.keys(validationSummary.failedRuleCounts),
+        affectedKinds: validationSummary.affectedKinds,
+        affectedClusters: validationSummary.affectedClusters,
+      },
+    };
+  }
+
+  const uniquePlaceIds = new Set(ranked.map((p) => (p.id ?? "").trim()).filter(Boolean));
+  const canonicalCount = countUniqueCanonicalLandmarks(ranked);
+  // requiredCanonical already computed above for early returns; re-align with pace.
+  logStyleCategoryInventory({
+    stage: "planner_final",
+    places: ranked,
+    days: params.days,
+    style: params.style,
+  });
+  logAiPipeline(
+    "[PLANNER_POOL_DIAG_A]",
+    `totalCandidateCount=${ranked.length}`,
+    `uniquePlaceIdCount=${uniquePlaceIds.size}`,
+    `canonicalPlaceCount=${canonicalCount}`,
+    `requiredCanonical=${requiredCanonical}`,
+  );
+  ranked.forEach((place, rank) => {
+    logAiPipeline(
+      "[PLANNER_POOL_DIAG_A_ITEM]",
+      `rank=${rank + 1}`,
+      `placeId=${place.id ?? ""}`,
+      `name=${place.name ?? ""}`,
+      `normalizedName=${normalizeLandmarkNameForDedup(place.name ?? "")}`,
+      `canonicalLandmarkKey=${resolveCanonicalLandmarkKey(place)}`,
+      `category=${place.primaryType ?? ""}`,
+      `coordinates=${place.lat ?? ""},${place.lng ?? ""}`,
+      "source=rec_engine",
+    );
+  });
+
   let composedPlans: ComposedDayPlan[];
   try {
     composedPlans = buildComposedDayPlans({
@@ -370,6 +522,8 @@ export function rankPlacesForTripPlanning(params: {
       plannedDate: params.context.startDate,
       lat: params.lat,
       lng: params.lng,
+      nearbyExtensions: params.context.nearbyExtensions,
+      pace,
     });
   } catch (error) {
     logAiPipeline(
@@ -384,6 +538,39 @@ export function rankPlacesForTripPlanning(params: {
       plannedDate: params.context.startDate,
     });
   }
+
+  const dayCounts = composedPlans.map((p) => p.entries.length);
+  const minPerDay = minEffectivePlacesPerDay(pace);
+  const singletonDays = composedPlans.filter(
+    (p) => p.entries.length === 1 && p.entries.length < minPerDay,
+  );
+  const affectedDays = composedPlans
+    .filter((p) => p.entries.length < minPerDay)
+    .map((p) => p.day);
+  const candidateInsufficient =
+    canonicalCount < requiredCanonical ||
+    singletonDays.length > 0 ||
+    affectedDays.length > 0;
+  logAiPipeline(
+    "[PLANNER_POOL_DIAG_E]",
+    `finalDayCounts=${dayCounts.join(",")}`,
+    `singletonDays=${singletonDays.map((p) => p.day).join(",") || "none"}`,
+    `canonicalPlaceCount=${canonicalCount}`,
+    `candidateInsufficient=${candidateInsufficient}`,
+  );
+  if (candidateInsufficient) {
+    logAiPipeline(
+      "[CANDIDATE_INSUFFICIENT_RESULT]",
+      "candidateInsufficient=true",
+      `requiredCount=${requiredCanonical}`,
+      `availableCount=${canonicalCount}`,
+      `missingCount=${Math.max(0, requiredCanonical - canonicalCount)}`,
+      `affectedDays=[${affectedDays.join(",")}]`,
+      "replanReasons=insufficient_candidates",
+      "sourceFunction=rankPlacesForTripPlanning",
+    );
+  }
+
   const buckets = composedDayPlansToBuckets(composedPlans);
   const totalPlaces = composedPlans.reduce((n, p) => n + p.entries.length, 0);
   logPlannerResult(
@@ -395,6 +582,16 @@ export function rankPlacesForTripPlanning(params: {
     ranked: flattenComposedDayPlanPlaces(composedPlans),
     buckets,
     composedPlans,
+    candidateInsufficient: candidateInsufficient
+      ? ({
+          candidateInsufficient: true,
+          requiredCount: requiredCanonical,
+          availableCount: canonicalCount,
+          missingCount: Math.max(0, requiredCanonical - canonicalCount),
+          affectedDays,
+          replanReasons: ["insufficient_candidates"],
+        } satisfies CandidateInsufficientResult)
+      : undefined,
   };
 }
 
@@ -687,6 +884,8 @@ export async function fetchPlacesUntilTarget(params: {
 
   const targetCount = computeDayPlanTargetCount(days);
   const minRequired = days * CHAT_DAY_PLAN_MIN_PER_DAY;
+  // Oversample past requiredMinimum so canonical dedupe / hard filters still leave days×3.
+  const fetchTarget = Math.max(minRequired, days * 4);
   const planningOpts = destinationPlanningSearchOpts(days, style);
   let collected: PlaceResult[] = [];
 
@@ -732,7 +931,15 @@ export async function fetchPlacesUntilTarget(params: {
       ...planningOpts,
     });
     collected = dedupePlaces([...collected, ...batch]);
-    if (collected.length >= minRequired) break;
+    logAiPipeline(
+      "[STYLE_CANDIDATE_FETCH_PASS]",
+      `pass=${pass}`,
+      `batch=${batch.length}`,
+      `collected=${collected.length}`,
+      `fetchTarget=${fetchTarget}`,
+      `minRequired=${minRequired}`,
+    );
+    if (collected.length >= fetchTarget) break;
   }
 
   return filterExcludedRetailPlaces(normalizePlanningPlaces(collected), { style, userText });
@@ -936,6 +1143,9 @@ export async function fetchComposedCategoryPlaces(params: {
   weatherSearchLabel: string;
   templateNameSearchAttempts: (destination: string) => SearchAttempt[];
   searchDestinationPlaces: DestinationPlaceSearchFn;
+  /** Bind Layer-2 pool to chat/planning session */
+  sessionId?: string | null;
+  countryCode?: string;
 }): Promise<PlaceResult[]> {
   const {
     label,
@@ -957,10 +1167,19 @@ export async function fetchComposedCategoryPlaces(params: {
     weatherSearchLabel,
     templateNameSearchAttempts,
     searchDestinationPlaces,
+    sessionId,
+    countryCode,
   } = params;
 
-  let collected: PlaceResult[];
+  let collected: PlaceResult[] = [];
+  let searchRequestCount = 0;
+  let geoRoundIndex = 0;
+  const paceHint = style === "slow_nature" ? "slow" : "medium";
+  const requiredCanonical = requiredCanonicalCandidatesForTrip(days, paceHint);
+  const primaryKinds = kindsForStyle(style);
+  const diversityKinds = resolveStyleSearchKinds(style, days);
 
+  // classic：先取地標 scenic，再補 meal／culture 等（勿只靠單一 scenic pool limit）
   if (style === "classic_landmarks") {
     collected = await fetchClassicLandmarkPlacesForTrip({
       label,
@@ -978,20 +1197,152 @@ export async function fetchComposedCategoryPlaces(params: {
       searchContext,
       searchDestinationPlaces,
     });
+    logAiPipeline(
+      "[STYLE_SEARCH_INVENTORY]",
+      `style=${style}`,
+      "phase=classic_scenic_seed",
+      `seedCount=${collected.length}`,
+      `primaryKinds=[${primaryKinds.join(",")}]`,
+    );
   } else {
-    const perKindTarget = Math.max(6, Math.ceil((days * 7) / Math.max(1, kindsForStyle(style).length)));
-    collected = [];
-
     const cachedPool = mergeClassicLandmarkCaches(label, style);
     if (cachedPool?.length) {
       logAiCandidatePoolReused(cachedPool.length, "prefetch_cache");
       collected = dedupePlaces([...cachedPool]);
     }
+  }
 
-    for (const kind of kindsForStyle(style)) {
-      if (shouldSkipPlanningPlacesApi()) break;
-      const attempts = buildCategorySearchAttempts(label, kind);
+  /**
+   * RAOS Candidate Pool Pipeline（Flag ON）：
+   * Quality → Category/Query → Geo Clustering → Temporal → Flow → Experience
+   * Cost cache: Destination → ≤5 category searches once → pool shared by all combos.
+   */
+  if (isCandidatePoolEnabled()) {
+    // Layer 2 hit — regenerate / style switch / chat reuse without Places
+    const cachedPool = readCandidatePoolCache(label, countryCode);
+    if (cachedPool?.places.length) {
+      logAiCandidatePoolReused(cachedPool.places.length, "places_cost_cache");
+      if (sessionId) {
+        bindSessionCandidatePool({
+          sessionId,
+          destination: label,
+          places: cachedPool.places,
+          poolResult: cachedPool.poolResult,
+        });
+      }
+      return filterExcludedRetailPlaces(
+        normalizePlanningPlaces(cachedPool.places),
+        { style, userText },
+      );
+    }
+
+    const planningOpts = destinationPlanningSearchOpts(days, style);
+    const knownIds = new Set<string>(
+      [
+        ...excludePlaceIds,
+        ...collected.map((place) => place.id).filter(Boolean),
+      ].filter((id): id is string => Boolean(id)),
+    );
+    const poolSearch: CandidatePoolSearchFn = async ({
+      attempt,
+      kind,
+      lat: searchLat,
+      lng: searchLng,
+      radiusM,
+      phase,
+    }) => {
+      if (shouldSkipPlanningPlacesApi() || shouldBlockNewPlacesCalls({ destination: label, query: attempt.query })) {
+        return [];
+      }
+      searchRequestCount += 1;
       const batch = await searchDestinationPlaces({
+        label,
+        lat: searchLat,
+        lng: searchLng,
+        locale,
+        searchPlaces,
+        weather,
+        context,
+        attempts: [attempt],
+        caller: `${caller}.candidate_pool.${phase}.${kind}`,
+        excludePlaceIds: [...knownIds],
+        userText,
+        profile,
+        searchContext,
+        radius: radiusM,
+        ...planningOpts,
+      });
+      for (const place of batch) {
+        if (place.id) knownIds.add(place.id);
+      }
+      return batch;
+    };
+
+    const pool = await buildCandidatePool({
+      destination: label,
+      lat,
+      lng,
+      style,
+      days,
+      search: poolSearch,
+      seedPlaces: collected,
+      userText,
+      sessionId,
+      countryCode,
+      costCacheMode: true,
+    });
+
+    logStyleCategoryInventory({
+      stage: "post_canonical",
+      places: pool.places,
+      days,
+      style,
+      searchRequestCount,
+    });
+    logAiPipeline(
+      "[STYLE_SEARCH_INVENTORY]",
+      `style=${style}`,
+      `days=${days}`,
+      `path=candidate_pool`,
+      `version=${pool.version}`,
+      `searchRequestCount=${searchRequestCount}`,
+      `totalCandidates=${pool.places.length}`,
+      `canonicalEstimate=${pool.stats.canonicalCount}`,
+      `requiredCanonical=${pool.demand.minCanonical}`,
+      `geoClusters=${pool.clusters.length}`,
+    );
+
+    // Persist even if pipeline already wrote — keeps classic merge path warm
+    if (pool.places.length) {
+      writeCandidatePoolCache({
+        destination: label,
+        countryCode,
+        places: pool.places,
+        poolResult: pool,
+        searchRequestCount,
+      });
+      if (sessionId) {
+        bindSessionCandidatePool({
+          sessionId,
+          destination: label,
+          places: pool.places,
+          poolResult: pool,
+        });
+      }
+    }
+
+    // Size fallbacks only when cost cache miss left a thin pool AND rate protection is off
+    let finalPlaces = pool.places;
+    const allowFallback =
+      !shouldSkipPlanningPlacesApi() &&
+      !shouldBlockNewPlacesCalls({ logSkip: false }) &&
+      searchRequestCount > 0;
+    if (
+      allowFallback &&
+      pool.stats.canonicalCount < pool.demand.minCanonical &&
+      finalPlaces.length < days * 4
+    ) {
+      const supplement = await fetchPlacesUntilTarget({
         label,
         lat,
         lng,
@@ -999,26 +1350,305 @@ export async function fetchComposedCategoryPlaces(params: {
         searchPlaces,
         weather,
         context,
-        attempts,
-        caller: `${caller}.${kind}`,
-        excludePlaceIds: [
-          ...excludePlaceIds,
-          ...(collected.map((place) => place.id).filter(Boolean) as string[]),
-        ],
+        style,
+        days,
+        caller,
+        excludePlaceIds,
         userText,
         profile,
         searchContext,
-        ...destinationPlanningSearchOpts(days, style),
+        geocodeSucceeded,
+        searchProfile,
+        weatherSearchLabel,
+        templateNameSearchAttempts,
+        searchDestinationPlaces,
       });
-      collected = dedupePlaces([...collected, ...batch.slice(0, perKindTarget)]);
+      finalPlaces = dedupePlaces([...finalPlaces, ...supplement]);
+    }
+    if (
+      allowFallback &&
+      finalPlaces.length < minCandidatePoolSize(days)
+    ) {
+      finalPlaces = await expandPlanningCandidatePool({
+        label,
+        lat,
+        lng,
+        locale,
+        searchPlaces,
+        weather,
+        context,
+        style,
+        days,
+        caller,
+        excludePlaceIds,
+        userText,
+        profile,
+        searchContext,
+        geocodeSucceeded,
+        searchProfile,
+        weatherSearchLabel,
+        templateNameSearchAttempts,
+        searchDestinationPlaces,
+        existingPlaces: finalPlaces,
+      });
+    }
 
-      if (kind === "attraction") logAiGenerateAttractions(batch.length);
-      if (kind === "restaurant") logAiGenerateRestaurants(batch.length);
-      if (kind === "cafe") logAiGenerateCafes(batch.length);
+    return filterExcludedRetailPlaces(normalizePlanningPlaces(finalPlaces), {
+      style,
+      userText,
+    });
+  }
+
+  // ── Legacy path (Flag OFF): fixed Geo Hub rotation ─────────────────────
+  const geoHubs = resolveGeoHubsForDestination(label);
+
+  logAiPipeline(
+    "[STYLE_GEO_HUBS]",
+    `destination=${label}`,
+    `hubs=[${geoHubs.map((h) => h.label).join(",")}]`,
+    `withCoords=${geoHubs.filter((h) => h.lat != null).length}`,
+  );
+
+  if (geoHubs.length && collected.length) {
+    logStyleGeoInventory({
+      stage: "after_search",
+      places: collected,
+      hubs: geoHubs,
+      destination: label,
+    });
+  }
+
+  /**
+   * Category + Query + Geo Diversity：
+   * 每個 kind × 每個 query 各自打 Places API；
+   * 每輪輪替 Region hub，飽和區優先跳過。
+   */
+  const fetchKindQueries = async (
+    kinds: PlanPlaceKind[],
+    phase: string,
+  ): Promise<void> => {
+    for (const kind of kinds) {
+      if (shouldSkipPlanningPlacesApi()) break;
+      const attempts = buildAttemptsForStyleKind(label, kind);
+      let kindRaw = 0;
+      let kindKept = 0;
+      for (const attempt of attempts) {
+        if (shouldSkipPlanningPlacesApi()) break;
+
+        const { hub, skippedSaturated } = pickNextGeoHub({
+          hubs: geoHubs,
+          places: collected,
+          roundIndex: geoRoundIndex,
+        });
+        geoRoundIndex += 1;
+
+        const scopedAttempt = hub
+          ? scopeAttemptToGeoHub(attempt, hub, label)
+          : attempt;
+        const searchLat = hub?.lat ?? lat;
+        const searchLng = hub?.lng ?? lng;
+        const searchRadius = hub?.lat != null ? GEO_REGION_SEARCH_RADIUS_M : undefined;
+
+        searchRequestCount += 1;
+        const batch = await searchDestinationPlaces({
+          label,
+          lat: searchLat,
+          lng: searchLng,
+          locale,
+          searchPlaces,
+          weather,
+          context,
+          attempts: [scopedAttempt],
+          caller: `${caller}.${phase}.${kind}${hub ? `.geo_${hub.id}` : ""}`,
+          excludePlaceIds: [
+            ...excludePlaceIds,
+            ...(collected.map((place) => place.id).filter(Boolean) as string[]),
+          ],
+          userText,
+          profile,
+          searchContext,
+          radius: searchRadius,
+          ...destinationPlanningSearchOpts(days, style),
+        });
+        const kept = batch.slice(0, STYLE_PER_QUERY_KEEP);
+        kindRaw += batch.length;
+        kindKept += kept.length;
+        collected = dedupePlaces([...collected, ...kept]);
+        logAiPipeline(
+          "[STYLE_SEARCH_QUERY]",
+          `style=${style}`,
+          `kind=${kind}`,
+          `region=${hub?.label ?? "city"}`,
+          `query=${scopedAttempt.query}`,
+          `returned=${batch.length}`,
+          `kept=${kept.length}`,
+          `collected=${collected.length}`,
+          `canonicalEstimate=${countUniqueCanonicalLandmarks(collected)}`,
+          skippedSaturated.length
+            ? `skippedSaturated=[${skippedSaturated.join(",")}]`
+            : "",
+        );
+      }
+      logAiPipeline(
+        "[STYLE_CATEGORY_FETCH]",
+        `style=${style}`,
+        `phase=${phase}`,
+        `kind=${kind}`,
+        `queries=${attempts.length}`,
+        `raw=${kindRaw}`,
+        `kept=${kindKept}`,
+        `collected=${collected.length}`,
+      );
+      if (kind === "attraction") logAiGenerateAttractions(kindKept);
+      if (kind === "restaurant") logAiGenerateRestaurants(kindKept);
+      if (kind === "cafe") logAiGenerateCafes(kindKept);
+    }
+  };
+
+  // 主輪：只打 style 組成 kinds（每 kind 多 query + region 輪替）
+  if (!shouldSkipPlanningPlacesApi()) {
+    // classic scenic 已覆蓋大量 attraction — 主輪略過 attraction，補餐飲／文化／自然
+    const primaryFetchKinds =
+      style === "classic_landmarks"
+        ? primaryKinds.filter((k) => k !== "attraction")
+        : primaryKinds;
+    await fetchKindQueries(primaryFetchKinds, "primary");
+  }
+
+  logStyleCategoryInventory({
+    stage: "pre_canonical",
+    places: collected,
+    days,
+    style,
+    searchRequestCount,
+  });
+  if (geoHubs.length) {
+    logStyleGeoInventory({
+      stage: "after_search",
+      places: collected,
+      hubs: geoHubs,
+      destination: label,
+    });
+  }
+
+  // canonical 仍不足 → 優先補「偏低的不同類型」，不拉高單一 query limit
+  let canonicalEstimate = countUniqueCanonicalLandmarks(collected);
+  if (
+    canonicalEstimate < requiredCanonical &&
+    !shouldSkipPlanningPlacesApi()
+  ) {
+    const minPerKind = Math.max(
+      2,
+      Math.ceil(requiredCanonical / Math.max(diversityKinds.length, 1)),
+    );
+    const weak = underrepresentedKinds(collected, diversityKinds, minPerKind);
+    logAiPipeline(
+      "[STYLE_DIVERSITY_EXPAND]",
+      `canonical=${canonicalEstimate}`,
+      `required=${requiredCanonical}`,
+      `weakKinds=[${weak.join(",")}]`,
+      `minPerKind=${minPerKind}`,
+      "action=multi_kind_requery_not_single_limit",
+    );
+    if (weak.length) {
+      await fetchKindQueries(weak, "diversity");
+    }
+    canonicalEstimate = countUniqueCanonicalLandmarks(collected);
+  }
+
+  // Geo 仍集中 → 對未覆蓋 Region 補 attraction／culture（不補同區）
+  if (geoHubs.length && !shouldSkipPlanningPlacesApi()) {
+    const weakHubs = underrepresentedGeoHubs(collected, geoHubs, 2);
+    if (weakHubs.length) {
+      logAiPipeline(
+        "[STYLE_GEO_DIVERSITY_EXPAND]",
+        `weakRegions=[${weakHubs.map((h) => h.label).join(",")}]`,
+        "action=search_unsaturated_regions",
+      );
+      for (const hub of weakHubs.slice(0, 4)) {
+        if (shouldSkipPlanningPlacesApi()) break;
+        const attempt = scopeAttemptToGeoHub(
+          {
+            query: `${label} 景點`,
+            mode: "text",
+            includedTypes: ["tourist_attraction", "museum", "park"],
+          },
+          hub,
+          label,
+        );
+        searchRequestCount += 1;
+        const batch = await searchDestinationPlaces({
+          label,
+          lat: hub.lat ?? lat,
+          lng: hub.lng ?? lng,
+          locale,
+          searchPlaces,
+          weather,
+          context,
+          attempts: [attempt],
+          caller: `${caller}.geoExpand.${hub.id}`,
+          excludePlaceIds: [
+            ...excludePlaceIds,
+            ...(collected.map((place) => place.id).filter(Boolean) as string[]),
+          ],
+          userText,
+          profile,
+          searchContext,
+          radius: GEO_REGION_SEARCH_RADIUS_M,
+          ...destinationPlanningSearchOpts(days, style),
+        });
+        const kept = batch.slice(0, STYLE_PER_QUERY_KEEP);
+        collected = dedupePlaces([...collected, ...kept]);
+        logAiPipeline(
+          "[STYLE_SEARCH_QUERY]",
+          `style=${style}`,
+          "kind=attraction",
+          `region=${hub.label}`,
+          `phase=geo_expand`,
+          `query=${attempt.query}`,
+          `returned=${batch.length}`,
+          `kept=${kept.length}`,
+          `collected=${collected.length}`,
+        );
+      }
+      canonicalEstimate = countUniqueCanonicalLandmarks(collected);
     }
   }
 
-  if (collected.length < days * CHAT_DAY_PLAN_MIN_PER_DAY && !shouldSkipPlanningPlacesApi()) {
+  logStyleCategoryInventory({
+    stage: "post_canonical",
+    places: collected,
+    days,
+    style,
+    searchRequestCount,
+  });
+  if (geoHubs.length) {
+    logStyleGeoInventory({
+      stage: "pre_planner",
+      places: collected,
+      hubs: geoHubs,
+      destination: label,
+    });
+  }
+
+  logAiPipeline(
+    "[STYLE_SEARCH_INVENTORY]",
+    `style=${style}`,
+    `days=${days}`,
+    `searchRequestCount=${searchRequestCount}`,
+    `primaryKinds=[${primaryKinds.join(",")}]`,
+    `diversityKinds=[${diversityKinds.join(",")}]`,
+    `geoHubs=[${geoHubs.map((h) => h.label).join(",")}]`,
+    `totalCandidates=${collected.length}`,
+    `canonicalEstimate=${canonicalEstimate}`,
+    `requiredCanonical=${requiredCanonical}`,
+  );
+
+  if (
+    canonicalEstimate < requiredCanonical &&
+    collected.length < days * 4 &&
+    !shouldSkipPlanningPlacesApi()
+  ) {
     const supplement = await fetchPlacesUntilTarget({
       label,
       lat,
@@ -1339,6 +1969,7 @@ export async function resolveTripPlanningDayPlans(params: {
             style: params.style,
             destination: params.label,
             plannedDate: params.context.startDate,
+            nearbyExtensions: params.context.nearbyExtensions,
           });
     const slowValidation = validateComposedDayPlans(
       fallbackPlans,
@@ -1374,6 +2005,20 @@ export async function resolveTripPlanningDayPlans(params: {
   return { ...result, places, slowTravel };
 }
 
+export type CandidateInsufficientResult = {
+  candidateInsufficient: true;
+  requiredCount: number;
+  availableCount: number;
+  missingCount: number;
+  affectedDays: number[];
+  replanReasons: string[];
+  /** Priority 2：Recommendation Validator 不足診斷 */
+  recommendationInsufficient?: boolean;
+  failedRules?: string[];
+  affectedKinds?: string[];
+  affectedClusters?: string[];
+};
+
 export type TripStylePlanGenerateResult = {
   places: PlaceResult[];
   rankedPlaces: PlaceResult[];
@@ -1383,6 +2028,10 @@ export type TripStylePlanGenerateResult = {
   recommendations: RoamieRecommendationItem[];
   slowTravel?: boolean;
   poolExpansionExhausted?: boolean;
+  /** P1 Step 1：候選不足時結構化結果；不得建立假完成行程 */
+  candidateInsufficient?: CandidateInsufficientResult;
+  /** P4.2：Flag ON 時附上結構化行程驗證；OFF 時為 undefined（行為不變） */
+  itineraryValidation?: ItineraryValidationResult;
 };
 
 async function resolveStylePlanningPlaceFallback(params: {
@@ -1536,7 +2185,7 @@ async function resolveStylePlanningPlaceFallback(params: {
   return { places: [], source: "none" };
 }
 
-export async function generateTripPlanFromStyle(params: {
+export async function generateTripPlanFromStyle(input: {
   label: string;
   lat: number;
   lng: number;
@@ -1561,6 +2210,11 @@ export async function generateTripPlanFromStyle(params: {
   geocodeFn: GeocodeDestinationFn;
   fetchPlaceDetailsFn?: FetchPlaceDetailsForFocusFn;
 }): Promise<TripStylePlanGenerateResult> {
+  // P3：候選搜尋經 PIE Gateway（Flag OFF = legacy 注入函式）
+  const params = {
+    ...input,
+    searchPlaces: wrapPlannerPlaceSearchViaGateway(input.searchPlaces),
+  };
   const {
     label,
     style,
@@ -1601,9 +2255,115 @@ export async function generateTripPlanFromStyle(params: {
     caller: geocodeSucceeded ? `${caller}.stylePlan` : `${caller}.stylePlan.textOnly`,
     templateNameSearchAttempts,
     searchDestinationPlaces,
+    sessionId: planningSessionId,
   });
   let searchCount = places.length;
   logAiStylePlacesResult(places.length, "primary_search");
+
+  // nearbyExtensions（橫濱／箱根等）獨立搜尋進 Style 候選子池（不以東京 center 搜尋）
+  const styleNearbyExtensions = (params.context.nearbyExtensions ?? [])
+    .map((e) => normalizeDestinationLabel(e))
+    .filter(Boolean);
+  if (styleNearbyExtensions.length && !shouldSkipPlanningPlacesApi()) {
+    logNearbyExtensionContext({
+      primary: label,
+      extensions: styleNearbyExtensions,
+      selectedCombinations: params.context.selectedCombinationIds,
+      tripDays: days,
+    });
+    const nearbyPlaces: PlaceResult[] = [];
+    const insufficientExts: string[] = [];
+    for (const ext of styleNearbyExtensions) {
+      const approx = resolveDestinationApproxCenter(ext);
+      const searchLat = approx?.lat ?? params.lat;
+      const searchLng = approx?.lng ?? params.lng;
+      const expanded = await resolveRegionCandidate({
+        regionName: ext,
+        combinationId: 0,
+        destination: ext,
+        lat: searchLat,
+        lng: searchLng,
+        locale: params.locale,
+        searchPlaces: params.searchPlaces,
+        geocodeFn: params.geocodeFn,
+        maxPlaces: NEARBY_EXTENSION_SEARCH_TARGET,
+        theme: "attraction",
+        title: ext,
+      });
+      const matchedThisExt: PlaceResult[] = [];
+      for (const item of expanded.places) {
+        if (!isMappableGooglePlaceId(item.googlePlaceId)) continue;
+        const asPlace: PlaceResult = {
+          id: item.googlePlaceId!,
+          name: item.placeName ?? item.name,
+          address: item.address ?? null,
+          lat: item.lat ?? null,
+          lng: item.lng ?? null,
+          rating: item.rating ?? null,
+          userRatingCount: item.userRatingCount ?? null,
+          photoName: item.photoName ?? null,
+          primaryType: item.type ?? "tourist_attraction",
+          types: item.types ?? [item.type ?? "tourist_attraction"],
+          businessStatus: null,
+          openStatus: "unknown",
+          openStatusLabel: "",
+          todayHoursLabel: "",
+          closingSoonNote: "",
+          nextOpenHint: "",
+          destinationScope: "nearby_extension",
+          extensionDestination: ext,
+        };
+        if (placeMatchesNearbyExtension(asPlace, [ext])) {
+          matchedThisExt.push(asPlace);
+        }
+      }
+      nearbyPlaces.push(...matchedThisExt);
+      const poolStatus = evaluateNearbyExtensionPoolStatus({
+        extension: ext,
+        candidateCount: matchedThisExt.length,
+        requiredStops: NEARBY_EXTENSION_MIN_STOPS,
+      });
+      logNearbyExtensionPool(poolStatus);
+      if (!poolStatus.enough) insufficientExts.push(ext);
+      logAiPipeline(
+        "[NEARBY_EXTENSION_SEARCH]",
+        `extension=${ext}`,
+        `path=generateTripPlanFromStyle`,
+        `queryCount=4`,
+        `rawCount=${expanded.places.length}`,
+        `acceptedCount=${matchedThisExt.length}`,
+        `canonicalCount=${matchedThisExt.length}`,
+        `searchLat=${searchLat}`,
+        `searchLng=${searchLng}`,
+        `failed=${matchedThisExt.length === 0}`,
+      );
+    }
+    if (nearbyPlaces.length) {
+      places = dedupePlaces([...places, ...nearbyPlaces]);
+      searchCount = places.length;
+      logAiStylePlacesResult(places.length, "nearby_extension_merged");
+    }
+    if (insufficientExts.length) {
+      params.context.unresolvedNearbyExtensions = [
+        ...new Set([
+          ...(params.context.unresolvedNearbyExtensions ?? []),
+          ...insufficientExts,
+        ]),
+      ];
+      logAiPipeline(
+        "[NEARBY_EXTENSION_EMPTY]",
+        `extensions=[${insufficientExts.join(",")}]`,
+        "path=generateTripPlanFromStyle",
+        "replanReasons=nearby_extension_insufficient",
+      );
+    } else {
+      params.context.unresolvedNearbyExtensions = (
+        params.context.unresolvedNearbyExtensions ?? []
+      ).filter(
+        (e) => !styleNearbyExtensions.includes(normalizeDestinationLabel(e)),
+      );
+    }
+  }
 
   if (places.length < minRenderablePlaces(days, style) && !shouldSkipPlanningPlacesApi()) {
     const fallback = await resolveStylePlanningPlaceFallback({
@@ -2189,10 +2949,46 @@ export async function generateTripPlanFromStyle(params: {
 
   const finalTotalPlaces = plannerTotalPlaces(composedPlans);
 
+  const paceHint = style === "slow_nature" ? "slow" : "medium";
+  const requiredCanonicalFinal = requiredCanonicalCandidatesForTrip(days, paceHint);
+  const availableCanonicalFinal = countUniqueCanonicalLandmarks(
+    flattenComposedDayPlanPlaces(composedPlans),
+  );
+  const finalDayCounts = composedPlans.map((p) => p.entries.length);
+  const affectedDaysFinal = composedPlans
+    .filter((p) => p.entries.length < minEffectivePlacesPerDay(paceHint))
+    .map((p) => p.day);
+  const candidateInsufficientResult: CandidateInsufficientResult | undefined =
+    planningResult.candidateInsufficient ??
+    (availableCanonicalFinal < requiredCanonicalFinal || affectedDaysFinal.length > 0
+      ? {
+          candidateInsufficient: true,
+          requiredCount: requiredCanonicalFinal,
+          availableCount: availableCanonicalFinal,
+          missingCount: Math.max(0, requiredCanonicalFinal - availableCanonicalFinal),
+          affectedDays: affectedDaysFinal,
+          replanReasons: ["insufficient_candidates"],
+        }
+      : undefined);
+
+  if (candidateInsufficientResult) {
+    logAiPipeline(
+      "[CANDIDATE_INSUFFICIENT_BLOCK_SAVE]",
+      `requiredCount=${candidateInsufficientResult.requiredCount}`,
+      `availableCount=${candidateInsufficientResult.availableCount}`,
+      `missingCount=${candidateInsufficientResult.missingCount}`,
+      `affectedDays=[${candidateInsufficientResult.affectedDays.join(",")}]`,
+      `dayCounts=${finalDayCounts.join(",")}`,
+      "action=do_not_freeze_incomplete_itinerary",
+      "sourceFunction=generateTripPlanFromStyle",
+    );
+  }
+
   let dayPlan: AiDayPlan | undefined;
   let recommendations: RoamieRecommendationItem[] = [];
 
-  const renderableAfterForce = finalRenderable;
+  const renderableAfterForce =
+    finalRenderable && !candidateInsufficientResult;
   const totalAfterForce = finalTotalPlaces;
   if (renderableAfterForce && totalAfterForce > 0) {
     dayPlan = alignDayPlanToSession(
@@ -2216,6 +3012,9 @@ export async function generateTripPlanFromStyle(params: {
     );
     logPlannerFrozen(planningSessionId, finalTotalPlaces);
   } else {
+    // 候選不足：不得輸出看似完成的假行程
+    dayPlan = undefined;
+    recommendations = [];
     logPlannerResult(
       composedPlans.length,
       totalAfterForce,
@@ -2258,6 +3057,81 @@ export async function generateTripPlanFromStyle(params: {
   finishPlannerSession(planningSessionId, finalTotalPlaces);
   finishPlannerRun(mainPlannerRunKey, finalTotalPlaces);
 
+  // P4.2：Itinerary Validator（行程層閘門）
+  // Flag ON → validate → Auto Repair 最多 3 次 → soft-only 不擋交付；硬錯誤才阻擋
+  let itineraryValidation: ItineraryValidationResult | undefined;
+  if (isItineraryValidatorEnabled()) {
+    const validatorInputBase = {
+      requestedDays: days,
+      style,
+      plannedDate: params.context.startDate,
+      endDate: params.context.endDate,
+      excludePlaceIds: params.excludePlaceIds,
+      rejectedPlaceNames: params.context.excludedCombinationPlaceNames,
+      excludedCategories: params.context.excludedCategories,
+      userText: params.userText,
+      slowTravel: planningResult.slowTravel,
+      nearbyExtensions: params.context.nearbyExtensions,
+      destination: label,
+      creationPath: "style" as const,
+    };
+
+    let validation = validateItineraryPlan({
+      ...validatorInputBase,
+      plans: composedPlans,
+    });
+
+    if (!validation.pass) {
+      const replanned = replanUntilItineraryValid(
+        {
+          plans: composedPlans,
+          pool: bestFrozenPlaces.length ? bestFrozenPlaces : places,
+          days,
+          style,
+          plannedDate: params.context.startDate,
+          nearbyExtensions: params.context.nearbyExtensions,
+          validatorInput: validatorInputBase,
+        },
+        validation,
+      );
+      composedPlans = replanned.plans;
+      validation = replanned.validation;
+      planningResult = {
+        ...planningResult,
+        composedPlans,
+        ranked: flattenComposedDayPlanPlaces(composedPlans),
+        buckets: composedDayPlansToBuckets(composedPlans),
+      };
+    }
+
+    itineraryValidation = validation;
+
+    if (shouldBlockItineraryDelivery(validation)) {
+      dayPlan = undefined;
+      recommendations = [];
+      logItineraryDeliveryBlocked("validator_failed", validation);
+    } else {
+      // replan 可能已改寫 composedPlans — 若先前已產出 dayPlan，對齊最終計畫
+      if (validation.pass && composedPlans.length) {
+        const renderable = isItineraryRenderable(composedPlans, days, style);
+        if (renderable && !candidateInsufficientResult) {
+          dayPlan = alignDayPlanToSession(
+            composedPlansToAiDayPlan({
+              composedPlans,
+              destination: label,
+              days,
+              planningSessionId,
+            }),
+            planningSessionId,
+          );
+          freezePlanningDayPlan(planningSessionId, dayPlan);
+          recommendations = dayPlanToRecommendations(dayPlan);
+        }
+      }
+      logItineraryDeliveryAllowed(validation, dayCountsOfPlans(composedPlans));
+    }
+  }
+
   return {
     places: planningResult.places,
     rankedPlaces: planningResult.ranked,
@@ -2267,5 +3141,7 @@ export async function generateTripPlanFromStyle(params: {
     recommendations,
     slowTravel: planningResult.slowTravel,
     poolExpansionExhausted,
+    candidateInsufficient: candidateInsufficientResult,
+    itineraryValidation,
   };
 }

@@ -189,6 +189,19 @@ export function itineraryGenerationStatusReply(ctx: CanonicalTravelContext): str
   const days = ctx.days;
   if (!destination || !days) return null;
   const label = normalizeDestinationLabel(destination);
+  const nearby = (ctx.nearbyExtensions ?? [])
+    .map((e) => normalizeDestinationLabel(e))
+    .filter(Boolean);
+  const unresolved = (ctx.unresolvedNearbyExtensions ?? [])
+    .map((e) => normalizeDestinationLabel(e))
+    .filter(Boolean);
+  if (unresolved.length) {
+    const ext = unresolved[0]!;
+    return `好，我先排${label}行程；目前找到的${ext}地點還不足以組成完整一天，我會標示近郊待補，也可以請我重新補找${ext}。`;
+  }
+  if (nearby.length) {
+    return `好，我來幫你找${label}的實際景點，並安排 ${nearby.join("、")} 專屬日，排成 ${days} 天行程，稍等我一下。`;
+  }
   return `好，我來幫你找${label}的實際景點，並排成 ${days} 天行程，稍等我一下。`;
 }
 

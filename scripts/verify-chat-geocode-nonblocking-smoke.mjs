@@ -41,6 +41,19 @@ if (isGeographicPlaceTypes(["restaurant", "geocode"])) {
   console.error("FAIL restaurant+geocode should reject");
   process.exit(1);
 }
+// Travel islands (Koh Samui / Santorini / Boracay) often return establishment+natural_feature.
+if (!isGeographicPlaceTypes(["establishment", "natural_feature"])) {
+  console.error("FAIL island natural_feature should pass");
+  process.exit(1);
+}
+if (!isGeographicPlaceTypes(["island"])) {
+  console.error("FAIL island type should pass");
+  process.exit(1);
+}
+if (isGeographicPlaceTypes(["establishment", "point_of_interest"])) {
+  console.error("FAIL pure POI establishment should reject");
+  process.exit(1);
+}
 console.log("OK geographic type gate");
 
 clearDestinationGeocodeCache();

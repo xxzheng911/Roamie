@@ -23,6 +23,12 @@ import {
   hydrateUserMediaFromCache,
   resetUserMediaStore,
 } from "@/lib/user-media/user-media-store";
+import {
+  hydrateConversationWorkspaces,
+} from "@/lib/conversation-workspace/storage";
+import {
+  mergeRemoteConversationWorkspaces,
+} from "@/lib/conversation-workspace/remote-sync";
 
 let bootHydrated = false;
 let bootHydratedUserId: string | null | undefined;
@@ -81,6 +87,13 @@ export async function hydrateAppBootCachesAsync(
 
   await purgeLegacyTravelPrefCachesOnce(resolvedUserId);
   await restoreTravelPrefFromNativePersist(resolvedUserId);
+  // Preferences → localStorage for travel drafts (critical on iOS 26 nonPersistent WK)
+  await hydrateConversationWorkspaces(resolvedUserId);
+  if (resolvedUserId) {
+    void mergeRemoteConversationWorkspaces(resolvedUserId).catch(() => {
+      /* offline / schema — keep local */
+    });
+  }
   resetTravelPrefMemoryCache();
 
   bootHydrated = true;

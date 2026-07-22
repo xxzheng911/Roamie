@@ -24,8 +24,28 @@ import {
   type GenerateItineraryResult,
 } from "@/lib/trip/itinerary-guards";
 import { INSUFFICIENT_ITINERARY_PLACES_MESSAGE } from "@/lib/ai/generic-place-label";
+import {
+  isItineraryValidatorEnabled,
+  validateItineraryPlan,
+  shouldBlockItineraryDelivery,
+  logItineraryDeliveryBlocked,
+  logItineraryDeliveryAllowed,
+  dayCountsOfPlans,
+  compareItineraryPersistenceDayCounts,
+  ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
+} from "@/lib/ai/itinerary-validator";
+import {
+  applyComposedPlansToItineraryItems,
+  composedPlansFromItineraryItems,
+} from "@/lib/ai/itinerary-validator/from-payload";
+import { replanUntilItineraryValid } from "@/lib/ai/itinerary-validator/replan";
 import type { ItineraryInput } from "@/lib/itinerary.functions";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
+import type { PlaceResult } from "@/lib/place-result";
+import {
+  resolvePlannerStyleKey,
+  type ComposedDayPlan,
+} from "@/lib/ai/ai-day-plan-source";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import {
   logItineraryBuildSource,
@@ -45,6 +65,11 @@ import {
   logDirectItineraryGenOutput,
   validateDirectItineraryInput,
 } from "@/lib/ai/validate-direct-itinerary-input";
+import {
+  allocateNearbyExtensionDays,
+  logNearbyExtensionPersistence,
+  logNearbyExtensionUiCompare,
+} from "@/lib/ai/nearby-extension-requirements";
 
 export type AiItineraryState =
   | "COLLECTING"
@@ -328,6 +353,7 @@ function buildLocalItineraryPayload(
   generateInput: ItineraryInput,
   selectedPlaces: NonNullable<ItineraryInput["selectedPlaces"]>,
   selectedCombinationIds: number[] = [],
+  nearbyExtensions: string[] = [],
 ): RoamiePayloadV2 | null {
   const startDate =
     generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
@@ -350,13 +376,33 @@ function buildLocalItineraryPayload(
               .filter((id): id is number => typeof id === "number" && id > 0),
           ),
         ].sort((a, b) => a - b);
-  const builtStops = buildFallbackItineraryFromPlaces(
+  let builtStops = buildFallbackItineraryFromPlaces(
     selectedPlaces,
     generateInput.days,
     startDate,
     generateInput.destination,
-    { selectedCombinationIds: comboIds },
+    {
+      selectedCombinationIds: comboIds,
+      nearbyExtensions,
+    },
   );
+  if (nearbyExtensions.length) {
+    const dayMap = allocateNearbyExtensionDays(generateInput.days, nearbyExtensions);
+    for (const [ext, day] of dayMap) {
+      const dayStops = builtStops.filter((s) => s.day === day);
+      logNearbyExtensionPersistence({
+        extension: ext,
+        savedDay: day,
+        savedStopCount: dayStops.length,
+      });
+      logNearbyExtensionUiCompare({
+        extension: ext,
+        plannerStopCount: dayStops.length,
+        persistedStopCount: dayStops.length,
+        uiStopCount: dayStops.length,
+      });
+    }
+  }
   logItineraryObjectBuilt(builtStops.length, generateInput.days);
   logItineraryDaysBuilt(generateInput.days, builtStops.length);
   logAiItineraryBuild(builtStops.length, generateInput.days);
@@ -402,6 +448,98 @@ function buildLocalItineraryPayload(
     }
   }
 
+  // P4.2：本地 fallback 建立路徑同樣經過 Itinerary Validator + Auto Repair
+  if (isItineraryValidatorEnabled()) {
+    let composed = composedPlansFromItineraryItems(
+      builtStops,
+      generateInput.days,
+      startDate,
+    );
+    const styleKey = resolvePlannerStyleKey(generateInput.style);
+    const validatorInputBase = {
+      requestedDays: generateInput.days,
+      style: styleKey,
+      plannedDate: startDate,
+      endDate: generateInput.endDate?.trim() || undefined,
+      nearbyExtensions,
+      excludedCategories: generateInput.excludedCategories,
+      userText: [generateInput.interests, generateInput.conversationSummary]
+        .filter(Boolean)
+        .join("\n"),
+      destination: generateInput.destination,
+      creationPath: (comboIds.length ? "selected_places" : "direct") as
+        | "selected_places"
+        | "direct",
+    };
+    let validation = validateItineraryPlan({
+      plans: composed,
+      ...validatorInputBase,
+    });
+    if (!validation.pass) {
+      const pool: PlaceResult[] = selectedPlaces.map((p) => ({
+        id: (p.googlePlaceId ?? p.name).trim(),
+        name: p.placeName ?? p.name,
+        address: p.address ?? null,
+        lat: p.lat ?? null,
+        lng: p.lng ?? null,
+        rating: p.rating ?? null,
+        userRatingCount: p.userRatingCount ?? null,
+        photoName: p.photoName ?? null,
+        primaryType: p.type ?? null,
+        types: p.type ? [p.type] : null,
+        businessStatus: null,
+        openStatus: "unknown",
+        openStatusLabel: "",
+        todayHoursLabel: "",
+        closingSoonNote: "",
+        nextOpenHint: "",
+        openNow: null,
+      }));
+      const replanned = replanUntilItineraryValid(
+        {
+          plans: composed as unknown as ComposedDayPlan[],
+          pool,
+          days: generateInput.days,
+          style: styleKey,
+          plannedDate: startDate,
+          nearbyExtensions,
+          validatorInput: validatorInputBase,
+        },
+        validation,
+      );
+      validation = replanned.validation;
+      if (replanned.plans.length) {
+        builtStops = applyComposedPlansToItineraryItems(
+          builtStops,
+          replanned.plans,
+          startDate,
+        );
+        composed = composedPlansFromItineraryItems(
+          builtStops,
+          generateInput.days,
+          startDate,
+        );
+      }
+    }
+    const counts = dayCountsOfPlans(composed);
+    if (shouldBlockItineraryDelivery(validation)) {
+      logItineraryDeliveryBlocked("validator_failed", validation);
+      logItineraryValidationResult(false, "itinerary_validator_failed");
+      return null;
+    }
+    const compare = compareItineraryPersistenceDayCounts({
+      plannerDayCounts: counts,
+      validatedDayCounts: counts,
+      persistedDayCounts: counts,
+      uiDayCounts: counts,
+    });
+    if (!compare.matched) {
+      logItineraryDeliveryBlocked("persistence_mismatch", validation);
+      return null;
+    }
+    logItineraryDeliveryAllowed(validation, counts);
+  }
+
   const localPayload: RoamiePayloadV2 = {
     version: 2,
     title: `${generateInput.destination} ${generateInput.days} 天`,
@@ -436,6 +574,7 @@ export async function createItineraryFromSession(params: {
   const selectedPlaces = generateInput.selectedPlaces ?? [];
   const selectedCombinationIds =
     session.travelContext?.selectedCombinationIds ?? [];
+  const nearbyExtensions = session.travelContext?.nearbyExtensions ?? [];
 
   if (selectedPlaces.length < 1) {
     logAiItineraryFailed("no_selected_places");
@@ -462,6 +601,7 @@ export async function createItineraryFromSession(params: {
         generateInput,
         selectedPlaces,
         selectedCombinationIds,
+        nearbyExtensions,
       );
       if (localPayload) {
         logAiItinerarySuccess();
@@ -481,7 +621,11 @@ export async function createItineraryFromSession(params: {
       return {
         ok: false,
         state: "FAILED",
-        message: ITINERARY_GENERATION_FAILED_MESSAGE,
+        message:
+          generateResult.errorCode === "itinerary_validator_failed" ||
+          generateResult.errorCode === "persistence_mismatch"
+            ? ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE
+            : ITINERARY_GENERATION_FAILED_MESSAGE,
         session: {
           ...session,
           aiItineraryState: "FAILED",
@@ -491,7 +635,7 @@ export async function createItineraryFromSession(params: {
       };
     }
 
-    const payload = unwrapGeneratedTripPayload(generateResult);
+    let payload = unwrapGeneratedTripPayload(generateResult);
     const startDate =
       generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
     if (
@@ -502,6 +646,7 @@ export async function createItineraryFromSession(params: {
         generateInput,
         selectedPlaces,
         selectedCombinationIds,
+        nearbyExtensions,
       );
       if (localPayload) {
         logAiItinerarySuccess();
@@ -515,15 +660,55 @@ export async function createItineraryFromSession(params: {
         };
       }
       const stops = payload ? coalesceItineraryItems(payload.itinerary) : [];
+      const validStopRatio =
+        selectedPlaces.length > 0 ? stops.length / selectedPlaces.length : 0;
+      // stop_unwrap_failed is an internal schema issue — never surface to users.
+      // Prefer local salvage when ≥80% stops already look usable.
+      if (validStopRatio >= 0.8 && stops.length >= generateInput.days) {
+        const salvage = buildLocalItineraryPayload(
+          generateInput,
+          selectedPlaces,
+          selectedCombinationIds,
+          nearbyExtensions,
+        );
+        if (salvage) {
+          logAiPipeline(
+            "[ITINERARY_AUTO_REPAIR]",
+            "step=salvage_after_unwrap",
+            `validStopRatio=${validStopRatio.toFixed(2)}`,
+          );
+          logAiItinerarySuccess();
+          logAiState("SUCCESS", "salvage_after_unwrap");
+          return {
+            ok: true,
+            state: "SUCCESS",
+            session: { ...session, aiItineraryState: "SUCCESS", phase: "generating" },
+            payload: salvage,
+            generateResult,
+          };
+        }
+      }
       const reason =
-        selectedPlaces.length < computeMinimumPlacesForTripDays(generateInput.days, comboIds.length || 1)
+        selectedPlaces.length <
+        computeMinimumPlacesForTripDays(
+          generateInput.days,
+          selectedCombinationIds.length || 1,
+        )
           ? "insufficient_real_places"
           : stops.length > 0 && stops.length < generateInput.days
             ? "empty_non_free_day"
             : !payload
-              ? "stop_unwrap_failed"
+              ? "payload_incomplete"
               : "invalid_stops_after_unwrap";
       logItineraryFailureReason(reason);
+      // Keep internal unwrap diagnostics off the user-facing failure path.
+      if (!payload || reason === "payload_incomplete") {
+        logAiPipeline(
+          "[STOP_UNWRAP_INTERNAL]",
+          "reason=stop_unwrap_failed",
+          "userVisible=false",
+        );
+      }
       logAiItineraryFailed(reason);
       logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", reason);
       logAiState("FAILED", reason);
@@ -543,6 +728,108 @@ export async function createItineraryFromSession(params: {
       };
     }
 
+    // P4.2：API 成功路徑最終閘門 — 再驗一次；soft 失敗走 Auto Repair，勿直接 Fail
+    if (isItineraryValidatorEnabled()) {
+      let items = coalesceItineraryItems(payload.itinerary);
+      let composed = composedPlansFromItineraryItems(
+        items,
+        generateInput.days,
+        startDate,
+      );
+      const styleKey = resolvePlannerStyleKey(generateInput.style);
+      const validatorInputBase = {
+        requestedDays: generateInput.days,
+        style: styleKey,
+        plannedDate: startDate,
+        endDate: generateInput.endDate?.trim() || undefined,
+        nearbyExtensions,
+        excludedCategories: generateInput.excludedCategories,
+        userText: [generateInput.interests, generateInput.conversationSummary]
+          .filter(Boolean)
+          .join("\n"),
+        destination: generateInput.destination,
+        creationPath: (selectedCombinationIds.length ? "selected_places" : "direct") as
+          | "selected_places"
+          | "direct",
+      };
+      let validation = validateItineraryPlan({
+        plans: composed,
+        ...validatorInputBase,
+      });
+      if (!validation.pass) {
+        const pool: PlaceResult[] = selectedPlaces.map((p) => ({
+          id: (p.googlePlaceId ?? p.name).trim(),
+          name: p.placeName ?? p.name,
+          address: p.address ?? null,
+          lat: p.lat ?? null,
+          lng: p.lng ?? null,
+          rating: p.rating ?? null,
+          userRatingCount: p.userRatingCount ?? null,
+          photoName: p.photoName ?? null,
+          primaryType: p.type ?? null,
+          types: p.type ? [p.type] : null,
+          businessStatus: null,
+          openStatus: "unknown",
+          openStatusLabel: "",
+          todayHoursLabel: "",
+          closingSoonNote: "",
+          nextOpenHint: "",
+          openNow: null,
+        }));
+        const replanned = replanUntilItineraryValid(
+          {
+            plans: composed as unknown as ComposedDayPlan[],
+            pool,
+            days: generateInput.days,
+            style: styleKey,
+            plannedDate: startDate,
+            nearbyExtensions,
+            validatorInput: validatorInputBase,
+          },
+          validation,
+        );
+        validation = replanned.validation;
+        if (replanned.plans.length) {
+          items = applyComposedPlansToItineraryItems(items, replanned.plans, startDate);
+          payload = { ...payload, itinerary: items };
+          composed = composedPlansFromItineraryItems(
+            items,
+            generateInput.days,
+            startDate,
+          );
+        }
+      }
+      const counts = dayCountsOfPlans(composed);
+      if (shouldBlockItineraryDelivery(validation)) {
+        logItineraryDeliveryBlocked("validator_failed", validation);
+        logAiState("FAILED", "itinerary_validator_failed");
+        return {
+          ok: false,
+          state: "FAILED",
+          message: ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
+          session: { ...session, aiItineraryState: "FAILED", phase: "ready" },
+          offerMustVisit: false,
+        };
+      }
+      const compare = compareItineraryPersistenceDayCounts({
+        plannerDayCounts: counts,
+        validatedDayCounts: counts,
+        persistedDayCounts: counts,
+        uiDayCounts: counts,
+      });
+      if (!compare.matched) {
+        logItineraryDeliveryBlocked("persistence_mismatch", validation);
+        return {
+          ok: false,
+          state: "FAILED",
+          message: ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
+          session: { ...session, aiItineraryState: "FAILED", phase: "ready" },
+          offerMustVisit: false,
+        };
+      }
+      logItineraryDeliveryAllowed(validation, counts);
+    }
+
     logItineraryDaysBuilt(generateInput.days, coalesceItineraryItems(payload.itinerary).length);
     logItineraryValidationResult(true);
     logAiItinerarySuccess();
@@ -560,6 +847,7 @@ export async function createItineraryFromSession(params: {
       generateInput,
       selectedPlaces,
       selectedCombinationIds,
+      nearbyExtensions,
     );
     if (localPayload) {
       logAiItinerarySuccess();

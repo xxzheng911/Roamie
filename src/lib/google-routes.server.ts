@@ -80,11 +80,32 @@ export async function getTripLegsWithDurations(
   }
 
   const legs: TripLegRoute[] = [];
+  let anyOk = false;
+  let lastError: RoutesApiError | null = null;
   for (let i = 0; i < places.length - 1; i++) {
     const from = places[i]!;
     const to = places[i + 1]!;
     const result = await computeRouteRaw(from, to, travelMode);
-    if (!result.ok) return result;
+    if (!result.ok) {
+      // Soft-fail per leg — ZERO_RESULTS / route errors must not abort the whole trip.
+      lastError = result;
+      console.warn(
+        "[ROUTE_DURATION_ERROR]",
+        `status=${result.googleStatus ?? result.statusCode ?? "failed"}`,
+        `message=${result.message ?? "route_failed"}`,
+        "soft=skip_leg",
+        `leg=${i}`,
+      );
+      legs.push({
+        from,
+        to,
+        travelMode,
+        durationMinutes: 0,
+        distanceMeters: 0,
+      });
+      continue;
+    }
+    anyOk = true;
     legs.push({
       from,
       to,
@@ -92,6 +113,10 @@ export async function getTripLegsWithDurations(
       durationMinutes: result.data.durationMinutes,
       distanceMeters: result.data.distanceMeters,
     });
+  }
+  if (!anyOk && lastError) {
+    // Still return soft legs so Persistence can proceed; UI shows unavailable times.
+    return { ok: true, data: legs };
   }
   return { ok: true, data: legs };
 }

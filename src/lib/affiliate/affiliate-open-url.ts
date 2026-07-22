@@ -1,3 +1,5 @@
+import { affiliateDebugInfo, affiliateDebugWarn } from "@/lib/affiliate/affiliate-debug-log";
+
 export type AffiliatePlatform = "tripcom_flight" | "agoda_hotel" | "tripcom_hotel" | "other";
 
 export type AffiliateUrlDateParams = {
@@ -92,8 +94,8 @@ export async function probeAffiliateRedirectUrl(
   platform: AffiliatePlatform,
 ): Promise<{ finalUrl: string; params: AffiliateUrlDateParams; datesPreserved: boolean }> {
   const initialParams = extractAffiliateDateParams(initialUrl, platform);
-  console.info(`[AFFILIATE_OPEN_INITIAL_URL] platform=${platform} url=${initialUrl}`);
-  console.info(
+  affiliateDebugInfo(`[AFFILIATE_OPEN_INITIAL_URL] platform=${platform} url=${initialUrl}`);
+  affiliateDebugInfo(
     `[AFFILIATE_PARAMS_AFTER_REDIRECT] stage=initial ${formatDateParamsLog(initialParams, platform)}`,
   );
 
@@ -106,18 +108,18 @@ export async function probeAffiliateRedirectUrl(
     });
     if (res.url) finalUrl = res.url;
   } catch (e) {
-    console.warn("[AFFILIATE_OPEN] redirect probe failed", e);
+    affiliateDebugWarn("[AFFILIATE_OPEN] redirect probe failed", e);
   }
 
   const finalParams = extractAffiliateDateParams(finalUrl, platform);
-  console.info(`[AFFILIATE_OPEN_FINAL_URL] platform=${platform} url=${finalUrl}`);
-  console.info(
+  affiliateDebugInfo(`[AFFILIATE_OPEN_FINAL_URL] platform=${platform} url=${finalUrl}`);
+  affiliateDebugInfo(
     `[AFFILIATE_PARAMS_AFTER_REDIRECT] stage=final ${formatDateParamsLog(finalParams, platform)}`,
   );
 
   const datesPreserved = affiliateDatesPreserved(initialParams, finalParams, platform);
   if (!datesPreserved) {
-    console.warn(
+    affiliateDebugWarn(
       `[AFFILIATE_OPEN] dates_lost_in_redirect platform=${platform} keeping=${initialUrl}`,
     );
     return { finalUrl: initialUrl, params: initialParams, datesPreserved: false };

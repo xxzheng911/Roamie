@@ -1,0 +1,24 @@
+---
+description: RAOS Security and Privacy Framework
+globs: src/lib/access/**/*.{ts,tsx},src/lib/auth/**/*.{ts,tsx},src/lib/plan-tier/**/*.{ts,tsx},src/lib/ai/memory/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Security & Privacy (RAOS Ch.20)
+
+Full doc: `docs/raos/chapter-20-security-privacy.md`.
+
+## Principles
+
+- Privacy by Design; users own Trip, Workspace, Conversation, Memory, DNA.
+- Classify data: Public / Internal / Private / Sensitive; protect accordingly.
+- Memory/DNA/Learning require explicit consent; not default-all-on.
+- Users can view/export/delete; support Forget Everything.
+- Workspace private by default; sharing is opt-in.
+- Sharing a Trip must not leak Memory/DNA/Conversation unless separately authorized.
+- Collaboration may edit Trip only — never creator Memory/DNA/Learning/preferences.
+- Learning may be disabled; then stop Memory/DNA/learning updates.
+- Explain Memory/DNA-influenced recommendations when asked/used.
+- Encrypt Private/Sensitive in transit and at rest; API authz by identity + membership + permission.
+- Audit sensitive ops (delete memory, share workspace/trip, permission changes).
+- New feature checklist: personal data? consent? deletable? viewable? If no → redesign before ship.

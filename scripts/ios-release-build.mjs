@@ -16,6 +16,9 @@ delete env.CAPACITOR_LIVE_RELOAD;
 delete env.CAPACITOR_DEV_SERVER_URL;
 delete env.CAPACITOR_USE_REMOTE_SERVER;
 delete env.CAPACITOR_SERVER_URL;
+// Credits Runtime stays OFF for public TestFlight / App Store until explicitly enabled.
+// Dev / Xcode live-reload uses .env VITE_FEATURE_CREDITS_ENABLED=1.
+env.VITE_FEATURE_CREDITS_ENABLED = "0";
 
 function run(label, cmd, args) {
   console.info(`\n[ios:release] ${label}`);

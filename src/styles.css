@@ -1497,6 +1497,18 @@ html.plan-keyboard-open .plan-page-scroll {
   }
 }
 
+/* Travel drafts：清單在 Header 與 Bottom Nav 之間完整捲動，不可被 flex-shrink 裁切 */
+.travel-drafts-page {
+  min-height: 0;
+}
+.travel-drafts-scroll {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+.travel-drafts-list {
+  flex-shrink: 0;
+}
+
 /* Sonner：頂部通知避開動態島／瀏海（offset prop 備援） */
 [data-sonner-toaster][data-y-position="top"] {
   top: var(--toast-offset-top) !important;

@@ -57,10 +57,13 @@ export type SelectedThemeProfile = {
 };
 
 /**
- * Dynamic stop capacity — never tripDays×3 as a hard fail gate.
+ * Dynamic stop capacity.
  *
- * Example (3 days, single select): preferred≈7, minimumViable≈4, maximum≈10.
- * Multi-select viability floors at one representative per combo.
+ * Soft fetch target (`preferredStops`) must cover Planner requiredMinimum
+ * (days×3 for medium pace) with oversampling headroom (days×4).
+ * Do NOT clamp with `tripDays+6` — that starved 6-day pools at ~12 places.
+ *
+ * `minimumViableStops` stays a lean pre-save floor (not a fetch ceiling).
  */
 export function calculateDynamicStopCapacity(params: {
   tripDays: number;
@@ -76,16 +79,19 @@ export function calculateDynamicStopCapacity(params: {
   const paceMul = pace === "relaxed" ? 1.6 : pace === "packed" ? 2.4 : 2.0;
   const densityAdj = density === "sparse" ? -0.25 : density === "dense" ? 0.25 : 0;
 
+  const requiredMinimum = tripDays * 3;
+  const fetchOversample = tripDays * 4;
+  const pacePreferred =
+    Math.round(tripDays * (paceMul + densityAdj)) + (tripDays >= 3 ? 1 : 0);
+
+  // Soft acquisition target: at least days×3; allow up to days×4 oversampling.
   const preferredStops = Math.max(
     n,
-    Math.min(
-      Math.round(tripDays * (paceMul + densityAdj)) + (tripDays >= 3 ? 1 : 0),
-      tripDays * 2 + 1,
-      tripDays + 6,
-    ),
+    requiredMinimum,
+    Math.min(Math.max(pacePreferred, requiredMinimum), fetchOversample),
   );
 
-  // Single-select: lean floor (~55% of preferred → 4 for a 3-day trip).
+  // Single-select: lean floor (~55% of requiredMinimum, not of oversampled preferred).
   // Multi-select: one real place per combo is enough for viability.
   const minimumViableStops =
     selectedCombinationCount <= 1
@@ -93,14 +99,14 @@ export function calculateDynamicStopCapacity(params: {
           1,
           Math.min(
             preferredStops,
-            Math.max(tripDays > 1 ? 2 : 1, Math.ceil(preferredStops * 0.55)),
+            Math.max(tripDays > 1 ? 2 : 1, Math.ceil(requiredMinimum * 0.55)),
           ),
         )
       : Math.max(selectedCombinationCount, Math.min(tripDays, selectedCombinationCount));
 
   const maximumStops = Math.max(
     preferredStops + 2,
-    Math.min(tripDays * 3 + 1, preferredStops + Math.max(3, tripDays)),
+    Math.min(fetchOversample + 2, preferredStops + Math.max(3, tripDays)),
   );
 
   const capacity: DynamicStopCapacity = {
@@ -559,6 +565,21 @@ export function normalizeItineraryStop(
       "invalidFields=[]",
       "reason=stop_unwrap_failed",
     );
+    logAiPipeline(
+      "[ITINERARY_STOP_NORMALIZED]",
+      "day=",
+      `order=${index}`,
+      "placeId=",
+      "placeName=",
+      "valid=false",
+    );
+    // Internal only — never escalate single-stop unwrap to user-facing itinerary failure.
+    logAiPipeline(
+      "[STOP_UNWRAP_INTERNAL]",
+      "reason=stop_unwrap_failed",
+      `index=${index}`,
+      "userVisible=false",
+    );
     return { ok: false, issue };
   }
 
@@ -618,6 +639,14 @@ export function normalizeItineraryStop(
       `missingFields=[${missingFields.join(",")}]`,
       `invalidFields=[${invalidFields.join(",")}]`,
     );
+    logAiPipeline(
+      "[ITINERARY_STOP_NORMALIZED]",
+      `day=`,
+      `order=${index}`,
+      `placeId=${googlePlaceId}`,
+      `placeName=${name}`,
+      "valid=false",
+    );
     return { ok: false, issue };
   }
 
@@ -662,6 +691,15 @@ export function normalizeItineraryStop(
       : undefined,
     placeSnapshotSource: "selected_place",
   };
+
+  logAiPipeline(
+    "[ITINERARY_STOP_NORMALIZED]",
+    `day=${item.dayIndex ?? ""}`,
+    `order=${index}`,
+    `placeId=${googlePlaceId}`,
+    `placeName=${name}`,
+    "valid=true",
+  );
 
   return {
     ok: true,
@@ -725,8 +763,19 @@ export function validateItineraryPreSave(params: {
 }): PreSaveValidationResult {
   const { valid, invalid } = normalizeItineraryStops(params.stops);
   const reasons: string[] = [];
-  if (invalid.length) {
+  const inputCount = params.stops.length;
+  const validRatio = inputCount > 0 ? valid.length / inputCount : 0;
+  // Prefer delivering when ≥80% stops normalize cleanly — drop invalids instead of total fail.
+  if (invalid.length && validRatio < 0.8) {
     reasons.push(`stop_schema_invalid:count=${invalid.length}`);
+  } else if (invalid.length) {
+    logAiPipeline(
+      "[STOP_UNWRAP_INTERNAL]",
+      `droppedInvalid=${invalid.length}`,
+      `validRatio=${validRatio.toFixed(2)}`,
+      "userVisible=false",
+      "action=continue_with_valid_stops",
+    );
   }
 
   const freeDays = new Set(params.freeDayDates ?? []);

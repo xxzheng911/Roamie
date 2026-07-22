@@ -62,7 +62,7 @@ export function buildWeatherAwarePlanningReply(params: {
 
   if (hasDestinationCombinations(label)) {
     const comboReply = buildDestinationCombinationSuggestionsReply(label, days, {
-      weatherLine: `好，我先記下 ${label} ${days} 天行程方向。`,
+      weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
       startDate: hasExactDate ? startDate : undefined,
       endDate: hasExactDate ? endDate : undefined,
     });

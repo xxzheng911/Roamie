@@ -89,9 +89,13 @@ export function buildDateAndDurationQuestionReply(
     }).reply;
   } else {
     reply = [
-      `好，我們以${label}為主往下規劃。`,
+      `好的，我們以${label}為主往下規劃。`,
       "",
       "你目前有預計的旅行日期或天數嗎？",
+      "例如：",
+      "・3天2夜",
+      "・5天4夜",
+      "・7天以上",
     ].join("\n");
   }
 
@@ -136,7 +140,7 @@ export function buildCityDaysConfirmedReply(
   const comboReply = buildDestinationCombinationSuggestionsReply(label, days, {
     startDate: hasExactDate ? startDate : undefined,
     endDate: hasExactDate ? endDate : undefined,
-    weatherLine: `好，我先記下 ${label} ${days} 天行程方向。`,
+    weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
   });
   if (comboReply) {
     return {

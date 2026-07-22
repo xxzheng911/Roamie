@@ -12,8 +12,10 @@ import {
   isBestSeasonQuestion,
 } from "@/lib/ai/season-response-guardrail";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { isComboItineraryQuery } from "@/lib/ai/chat-category-place-guard";
 import { extractItineraryDestinationFromText } from "@/lib/ai/itinerary-entity-extraction";
 import { enrichTripDatesInContext } from "@/lib/ai/ai-trip-style";
+import { applyCityLocaleAlias } from "@/lib/ai/destination-locale-aliases";
 
 /** A 附近探索 | B 目的地規劃 | C 特定地點 | D 心情推薦 */
 export type ChatConversationMode =
@@ -45,11 +47,11 @@ export const EMPTY_TRIP_PLANNING_CONTEXT: TripPlanningContext = {
 };
 
 const KNOWN_CITIES =
-  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|苗栗|南投|彰化|雲林|屏東|屏东|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|連江|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|愛丁堡|曼徹斯特|湖區|紐約|洛杉磯|舊金山|雪梨|墨爾本)(市|縣|都|府)?$/i;
+  /^(台北|臺北|新北|桃園|台中|臺中|台南|臺南|高雄|基隆|新竹|苗栗|南投|彰化|雲林|屏東|屏东|嘉義|花蓮|台東|臺東|宜蘭|澎湖|金門|馬祖|連江|京都|大阪|東京|橫濱|名古屋|福岡|首爾|釜山|香港|澳門|新加坡|曼谷|清邁|巴黎|倫敦|愛丁堡|曼徹斯特|湖區|紐約|洛杉磯|舊金山|雪梨|墨爾本|深圳|廣州|上海|北京|巴塞隆納|峴港)(市|縣|都|府)?$/i;
 
 /** 熱門旅遊城市（含泰國海島等） */
 const KNOWN_TOURIST_CITIES =
-  /^(芭達雅|帕塔雅|普吉島|普吉|蘇梅島|蘇梅|清邁|清迈|河內|胡志明|峴港|金邊|吳哥窟|吉隆坡|檳城|槟城|峇里島|巴厘岛|宿霧|長灘島|長灘|馬尼拉|巴拉望|札幌|北海道|沖繩|冲绳|廣島|奈良|神戶|箱根|鎌倉|濟州|濟州島)(市|府|島|县)?$/i;
+  /^(芭達雅|芭堤雅|巴達雅|帕塔雅|普吉島|普吉|蘇梅島|蘇梅|清邁|清迈|河內|胡志明|峴港|金邊|吳哥窟|吉隆坡|檳城|槟城|峇里島|峇厘島|巴厘岛|巴里島|宿霧|長灘島|長灘|馬尼拉|巴拉望|札幌|北海道|沖繩|冲绳|廣島|広島|熊本|長崎|鹿兒島|仙台|金澤|松本|高山|函館|小樽|奈良|神戶|神戸|箱根|鎌倉|輕井澤|白川鄉|佛羅倫斯|翡冷翠|濟州|濟州島|慶州|江陵|阿里山|日月潭|墾丁|塔斯馬尼亞|深圳|廣州|上海|北京|巴塞隆納)(市|府|島|县|縣)?$/i;
 
 /** 知名景點／山岳／風景區（非城市但為明確旅遊目的地） */
 const KNOWN_SCENIC_SPOTS =
@@ -57,20 +59,51 @@ const KNOWN_SCENIC_SPOTS =
 
 const DESTINATION_ALIASES: Record<string, string> = {
   帕塔雅: "芭達雅",
+  芭堤雅: "芭達雅",
+  巴達雅: "芭達雅",
+  Pattaya: "芭達雅",
+  pattaya: "芭達雅",
+  "Pattaya City": "芭達雅",
+  "pattaya city": "芭達雅",
+  พัทยา: "芭達雅",
   清迈: "清邁",
   普吉: "普吉島",
   苏梅: "蘇梅島",
   苏梅岛: "蘇梅島",
   巴厘岛: "峇里島",
+  峇厘島: "峇里島",
+  巴里島: "峇里島",
   冲绳: "沖繩",
   槟城: "檳城",
   長灘: "長灘島",
   濟州島: "濟州",
+  横浜: "橫濱",
+  横濱: "橫濱",
+  Yokohama: "橫濱",
+  yokohama: "橫濱",
+  Hakone: "箱根",
+  hakone: "箱根",
+  Kamakura: "鎌倉",
+  kamakura: "鎌倉",
+  Phuket: "普吉島",
+  phuket: "普吉島",
+  "Koh Samui": "蘇梅島",
+  "Ko Samui": "蘇梅島",
+  Bali: "峇里島",
+  bali: "峇里島",
+  Hokkaido: "北海道",
+  hokkaido: "北海道",
+  Okinawa: "沖繩",
+  okinawa: "沖繩",
+  Jeju: "濟州",
+  jeju: "濟州",
 };
 
 export function normalizeDestinationLabel(name: string): string {
-  const n = normalizeCityLabel(name.trim());
-  return DESTINATION_ALIASES[n] ?? n;
+  const stripped = normalizeCityLabel(name.trim()).replace(/\s+city$/i, "").trim();
+  const aliased = DESTINATION_ALIASES[stripped] ?? DESTINATION_ALIASES[stripped.toLowerCase()];
+  if (aliased) return aliased;
+  return applyCityLocaleAlias(stripped);
 }
 
 export function isKnownTouristCityLabel(name: string): boolean {
@@ -491,6 +524,8 @@ const EMBEDDED_DESTINATION_LABELS = [
   "大阪",
   "東京",
   "橫濱",
+  "横浜",
+  "Yokohama",
   "名古屋",
   "福岡",
   "首爾",
@@ -672,6 +707,8 @@ export function isNearbyExploreText(text: string): boolean {
 export function isDestinationPlanningText(text: string, session: ChatPlanningSession): boolean {
   const t = text.trim();
   if (!t) return false;
+  // Explicit place-category recommendation is never trip planning
+  if (hasCategoryPlaceQuery(t) && !isComboItineraryQuery(t)) return false;
   if (isDestinationAdviceText(t)) return true;
   if (isTravelPlanningText(t)) return true;
   if (/(我想?去|要去|想去|幫我規劃|規劃.*行程|安排.*行程)/.test(t) && parseDestinationFromText(t)) {
@@ -746,6 +783,14 @@ export function resolveConversationMode(
     return "place_focus";
   }
 
+  // Place recommendation (destination + category) must beat sticky destination_planning
+  if (
+    isExplicitNearbyCategoryText(text) ||
+    (hasCategoryPlaceQuery(text) && !isComboItineraryQuery(text))
+  ) {
+    return "nearby_explore";
+  }
+
   const persisted = session.tripPlanningContext?.intent;
   if (
     (persisted === "destination_planning" || isDestinationAdviceActive(session)) &&
@@ -768,10 +813,6 @@ export function resolveConversationMode(
 
   if (isDestinationPlanningText(text, session) || session.conversationMode === "destination_planning") {
     return "destination_planning";
-  }
-
-  if (isExplicitNearbyCategoryText(text)) {
-    return "nearby_explore";
   }
 
   return persisted ?? session.conversationMode ?? "general";

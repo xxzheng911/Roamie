@@ -25,6 +25,7 @@ import {
   logChatSearchMode,
 } from "@/lib/ai/chat-place-flow-log";
 import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
+import { isExplicitDeviceNearbyRequest } from "@/lib/ai/recommendation-search-scope";
 
 export type ChatPlaceSearchMode = "destination" | "nearby";
 
@@ -41,8 +42,9 @@ export type ChatPlaceSearchContext = {
   destinationCity?: string;
 };
 
+/** @deprecated Use isExplicitDeviceNearbyRequest — bare「附近」follows trip destination. */
 const EXPLICIT_NEARBY_RE =
-  /(?:附近|這一帶|这一带|現在|今天|當下|当下|離我|我這邊|我这边|我附近|離這裡|离这里)/;
+  /(?:我現在附近|我目前所在|離我最近|以現在定位|用定位搜|我這邊附近|我这边附近|around\s*me|near\s*me|我的附近|今天附近可以|現在附近有)/;
 
 const COUNTRY_ALIASES: Record<string, string[]> = {
   澳洲: ["Australia", "AU", "澳洲", "澳大利亚", "Victoria", "VIC", "New South Wales", "NSW"],
@@ -78,7 +80,7 @@ export type DestinationGuardProfile = {
 };
 
 export function isExplicitNearbyQuery(userText: string): boolean {
-  return EXPLICIT_NEARBY_RE.test(userText.trim());
+  return isExplicitDeviceNearbyRequest(userText) || EXPLICIT_NEARBY_RE.test(userText.trim());
 }
 
 export function resolveDestinationNameForSearch(
@@ -96,11 +98,16 @@ export function resolveChatPlaceSearchMode(
   session: ChatPlanningSession,
   userText: string,
 ): ChatPlaceSearchMode {
-  if (isExplicitNearbyQuery(userText) || isPlaceDetailChatActive(session)) {
+  // Device GPS only for explicit current-location requests (or place-detail focus).
+  if (isExplicitDeviceNearbyRequest(userText) || isPlaceDetailChatActive(session)) {
     return "nearby";
   }
   const destination = resolveDestinationNameForSearch(context, session);
   if (destination) return "destination";
+  // Bare「附近」without trip destination → device nearby
+  if (/附近|這一帶|这一带|離我|我這邊|我这边|around\s*me|nearby/i.test(userText)) {
+    return "nearby";
+  }
   return "nearby";
 }
 

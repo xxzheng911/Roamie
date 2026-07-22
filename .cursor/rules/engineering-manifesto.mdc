@@ -1,0 +1,33 @@
+---
+description: RAOS engineering manifesto and product evolution principles
+globs: docs/raos/**/*.md,src/lib/ai/**/*.{ts,tsx},src/lib/recommendation/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Engineering Manifesto (RAOS Ch.21)
+
+Full doc: `docs/raos/chapter-21-engineering-manifesto.md`.
+
+## Mission
+
+Build a trustworthy AI Travel Companion that understands the traveler — not the most verbose chatbot.
+
+## Before shipping a feature, answer
+
+1. Fits Product Vision?
+2. Fits AI Philosophy (assist, don’t decide for the user)?
+3. Fits Privacy / SPF?
+4. Fits Architecture / RAOS modules?
+5. Fits long-term strategy (modular, scalable, maintainable)?
+
+If any answer is no → redesign.
+
+## Practices
+
+- Architecture first; extend modules; avoid parallel systems and prompt debt.
+- Reliability over raw speed; ask when uncertain; no guessing travel facts.
+- Protect trust: consent, explainability, deletability, no notification spam.
+- Modular Memory/DNA/Knowledge/Planner/Validator/Agent/Learning — swappable.
+- Manage tech debt each major release: refactor + architecture + performance review.
+- Document important capabilities; keep RAOS docs current.
+- If it does not make travel simpler, safer, or more enjoyable — do not add it.

@@ -1,0 +1,30 @@
+---
+description: RAOS Performance and Scalability Framework
+globs: src/lib/**/*cache*.{ts,tsx},src/lib/places-api-*.{ts,tsx},src/lib/home-session-cache.ts,src/lib/places-search-*.{ts,tsx},src/lib/ai/stream-client.ts
+alwaysApply: false
+---
+
+# Performance (RAOS Ch.19)
+
+Full doc: `docs/raos/chapter-19-performance-scalability.md`.
+
+## Goals (targets)
+
+- Home interactive < 2s; home recommendations < 3s.
+- Explore category switch (cached) < 1s.
+- AI first token < 3s; full reply < 10s (complexity-dependent).
+- Itinerary build < 8s; place detail (cached) < 1s.
+
+## Practices
+
+- Multi-level cache: Memory → Disk → Cloud → API.
+- Deduplicate concurrent identical place/API requests.
+- Preload hot paths; lazy-load reviews/heavy images/insights.
+- Parallelize independent fetches before Decision.
+- Offline-first for Trip/Place/images/Memory/Workspace where possible.
+- Images: thumbnail → medium → original.
+- Quota monitors; degrade non-essential requests near limits.
+- Smart refresh: update only changed slices.
+- Background sync must not block UI.
+- Failure path: retry → fallback → cache → partial response (never blank).
+- Optimize via PSF/cache/queue/background tasks — not prompt stacking or duplicate APIs.

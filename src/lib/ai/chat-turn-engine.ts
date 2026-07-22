@@ -11,6 +11,7 @@ import { isDestinationAdviceActive, coerceTravelDestination } from "@/lib/ai/tri
 import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 import { resolveInferredTripDays } from "@/lib/ai/ai-trip-style";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 
 export { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 
@@ -164,6 +165,7 @@ export function buildPlanningContextSummary(ctx: CanonicalTravelContext): string
 export function buildPlanningOfflineReply(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
+  userText?: string,
 ): string | null {
   const dest = coerceTravelDestination(
     ctx.destination ??
@@ -174,6 +176,23 @@ export function buildPlanningOfflineReply(
       session.travelContext?.destination,
   );
   if (!dest) return null;
+
+  // Never ask trip duration for explicit place-category recommendations
+  if (
+    (userText && hasCategoryPlaceQuery(userText)) ||
+    ctx.tripPurpose === "recommend_places" ||
+    ctx.tripPurpose === "more_place_recommendations" ||
+    session.activeCategoryIntent ||
+    session.recommendationSession
+  ) {
+    logAiPipeline(
+      "[TRIP_FLOW_BYPASSED]",
+      "reason=explicit_place_recommendation",
+      `destination=${dest}`,
+      userText ? `text=${userText.trim().slice(0, 60)}` : "",
+    );
+    return null;
+  }
 
   const summary = buildPlanningContextSummary(ctx);
   const inferredDays = resolveInferredTripDays(ctx, session);

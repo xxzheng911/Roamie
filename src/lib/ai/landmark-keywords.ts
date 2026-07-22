@@ -189,3 +189,28 @@ export function stripSubPlaceMarkers(compact: string): string {
   }
   return current || compact;
 }
+
+/** 商業複合設施後綴（接在地標語幹後才剝，避免「大阪城」→「大阪」） */
+const COMMERCIAL_ANNEX_SUFFIX =
+  /(?:城|town|タウン|シティ|city|ソラマチ|solamachi|商業設施|購物中心|ショッピング|shoppingmall|mall)$/i;
+
+const LANDMARK_STEM_BEFORE_ANNEX =
+  /(?:塔|寺|宮|神社|廟|園|橋|館|樓|楼|駅|站|skytree|tower|temple|shrine|castle|palace|museum)$/i;
+
+/**
+ * 剝商業附屬後綴：晴空塔城 → 晴空塔；大阪城 保持不變（語幹即城）。
+ */
+export function stripCommercialAnnexSuffix(core: string): string {
+  if (!core) return core;
+  let current = core;
+  for (let i = 0; i < 3; i += 1) {
+    const stripped = current.replace(COMMERCIAL_ANNEX_SUFFIX, "");
+    if (!stripped || stripped === current) break;
+    if (stripped.length < 3) break;
+    if (!LANDMARK_STEM_BEFORE_ANNEX.test(stripped) && !/^[a-z]{4,}$/i.test(stripped)) {
+      break;
+    }
+    current = stripped;
+  }
+  return current || core;
+}

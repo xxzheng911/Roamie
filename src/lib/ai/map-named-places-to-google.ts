@@ -28,6 +28,7 @@ import {
   notePlacesRateLimited,
   waitForPlacesGenerationCooldown,
 } from "@/lib/places-api-guard";
+import { matchNamedPlaceFromCandidatePool } from "@/lib/ai/places-cost-cache";
 
 const MAX_SEARCH_RETRIES = 2;
 const MAX_DISTANCE_FROM_DESTINATION_M = 45_000;
@@ -350,6 +351,9 @@ export async function mapNamedPlaceToGoogle(params: {
   candidates?: string[];
   dedupe?: PlaceMapDedupeScope;
   generationRequestId?: string;
+  /** Prefer Layer-2 / session Candidate Pool before Places Search */
+  sessionId?: string | null;
+  countryCode?: string;
 }): Promise<PlaceResult | null> {
   const cached = params.dedupe?.getResolvedName<PlaceResult | null>(params.name);
   if (cached !== undefined) return cached;
@@ -358,6 +362,33 @@ export async function mapNamedPlaceToGoogle(params: {
     params.name,
     ...(params.candidates ?? []).filter((c) => c && c !== params.name),
   ];
+
+  // Recommendation → Planner: resolve from shared pool first (0 Places)
+  for (const candidateName of namesToTry) {
+    const fromPool = matchNamedPlaceFromCandidatePool({
+      name: candidateName,
+      destination: params.destination,
+      sessionId: params.sessionId,
+      countryCode: params.countryCode,
+    });
+    if (!fromPool) continue;
+    const core = asCorePlace(fromPool, params.destination);
+    if (!core) continue;
+    if (isResolvedCorePlace({ ...core, destinationMatch: true })) {
+      logAiPipeline(
+        "[PLACE_MAP_SUCCESS]",
+        `name=${params.name}`,
+        `mapped=${core.name}`,
+        `placeId=${core.id}`,
+        "enriched=0",
+        "attempt=pool",
+        "source=candidate_pool",
+      );
+      markPlacesResolved(true);
+      params.dedupe?.setResolvedName(params.name, core);
+      return core;
+    }
+  }
 
   let sawRateLimit = false;
 
@@ -433,6 +464,8 @@ export async function mapChatPlacesToGooglePlaces(params: {
   context: CanonicalTravelContext;
   generationRequestId?: string;
   dedupe?: PlaceMapDedupeScope;
+  sessionId?: string | null;
+  countryCode?: string;
 }): Promise<ChatPlaceItem[]> {
   const generationRequestId =
     params.generationRequestId ??
@@ -527,6 +560,8 @@ export async function mapChatPlacesToGooglePlaces(params: {
         fetchPlaceDetails: params.fetchPlaceDetails,
         dedupe,
         generationRequestId,
+        sessionId: params.sessionId,
+        countryCode: params.countryCode,
       });
       if (!found) return null;
       return { found, raw };

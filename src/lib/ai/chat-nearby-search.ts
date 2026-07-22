@@ -48,6 +48,12 @@ export function logChatNearbyContext(params: {
 export function resolveNearbySearchCenter(
   session: ChatPlanningSession,
   userText: string,
+  opts?: {
+    /** When destination-scoped, never return device GPS as search center. */
+    searchMode?: "destination" | "nearby";
+    destinationLatLng?: { lat: number; lng: number } | null;
+    destinationName?: string;
+  },
 ): NearbySearchCenter | null {
   const deviceLat = session.location?.lat;
   const deviceLng = session.location?.lng;
@@ -75,6 +81,43 @@ export function resolveNearbySearchCenter(
       return center;
     }
     console.warn("[CHAT_NEARBY_CONTEXT] place_detail_missing_coords");
+    return null;
+  }
+
+  // Destination scope: use destination coords only — never device GPS.
+  if (
+    opts?.searchMode === "destination" &&
+    opts.destinationLatLng &&
+    Number.isFinite(opts.destinationLatLng.lat) &&
+    Number.isFinite(opts.destinationLatLng.lng)
+  ) {
+    const center: NearbySearchCenter = {
+      mode: "basePlace",
+      lat: opts.destinationLatLng.lat,
+      lng: opts.destinationLatLng.lng,
+      basePlaceName: opts.destinationName,
+    };
+    logChatNearbyContext({
+      mode: center.mode,
+      basePlaceName: center.basePlaceName,
+      baseLat: center.lat,
+      baseLng: center.lng,
+      userLat: deviceLat,
+      userLng: deviceLng,
+    });
+    return center;
+  }
+
+  if (opts?.searchMode === "destination") {
+    // Destination known but coords missing — refuse GPS override.
+    logChatNearbyContext({
+      mode: "basePlace",
+      basePlaceName: opts.destinationName,
+      baseLat: undefined,
+      baseLng: undefined,
+      userLat: deviceLat,
+      userLng: deviceLng,
+    });
     return null;
   }
 

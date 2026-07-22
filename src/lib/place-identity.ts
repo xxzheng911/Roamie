@@ -33,7 +33,7 @@ export type PlaceIdentityInput = Pick<
   types?: string[] | null;
 };
 
-/** 不生成文青旅遊文案，僅安全 fallback */
+/** 不生成文青旅遊文案，僅安全 fallback（不含零售購物類型） */
 export const REASON_BLACKLIST_TYPES = [
   "car_repair",
   "car_dealer",
@@ -41,8 +41,6 @@ export const REASON_BLACKLIST_TYPES = [
   "motorcycle_dealer",
   "motorcycle_repair",
   "hardware_store",
-  "home_goods_store",
-  "electronics_store",
   "warehouse_store",
   "wholesaler",
   "corporate_office",
@@ -79,6 +77,30 @@ export const REASON_BLACKLIST_TYPES = [
   "mortuary",
 ] as const;
 
+/** Retail / shopping types — resolve before food (avoids store+food → restaurant) */
+const RETAIL_SHOPPING_TYPES = [
+  "shopping_mall",
+  "shopping_center",
+  "department_store",
+  "clothing_store",
+  "shoe_store",
+  "book_store",
+  "jewelry_store",
+  "electronics_store",
+  "home_goods_store",
+  "furniture_store",
+  "gift_shop",
+  "store",
+  "outlet",
+  "outlet_mall",
+  "outlet_store",
+  "market",
+  "flea_market",
+] as const;
+
+const RETAIL_SHOPPING_NAME_RE =
+  /(?:商店街|百貨|outlet|アウトレット|商場|購物中心|地下街|デパート|ショッピングモール|複合商業|商業施設|ファッションビル|3coins|スリーコインズ|無印|muji|daiso|ダイソー|loft|ハンズ|francfranc|狸小路|parco|大丸|三越|イオン|aeon)/i;
+
 function normalizeType(type: string): string {
   return type.trim().toLowerCase().replace(/\s+/g, "_");
 }
@@ -109,12 +131,50 @@ function isBlacklisted(types: string[]): boolean {
 /**
  * 辨識地點真實類型（types → 名稱關鍵字 → 不參考 UI chip 名稱）。
  */
+function hasExactType(types: string[], candidates: readonly string[]): boolean {
+  return candidates.some((c) => types.includes(c));
+}
+
+function isRetailShoppingPlace(place: PlaceIdentityInput, types: string[]): boolean {
+  if (hasExactType(types, RETAIL_SHOPPING_TYPES)) return true;
+  return RETAIL_SHOPPING_NAME_RE.test(placeBlob(place));
+}
+
 export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
   const types = collectPlaceTypes(place);
   const name = place.name ?? "";
   const blob = placeBlob(place);
 
   if (isBlacklisted(types)) return "unsupported";
+
+  // Retail / shopping BEFORE food — Google often tags variety stores with "food"
+  if (isRetailShoppingPlace(place, types)) {
+    if (/書店|書局|誠品|金石堂|茉莉|書屋/i.test(name) || hasExactType(types, ["book_store"])) {
+      return "bookstore";
+    }
+    if (/百貨|三越|新光|遠百|大遠百|SOGO|夢時代|漢神|大立|義享|Outlet|OUTLET|デパート|department/i.test(name)) {
+      return "department_store";
+    }
+    if (hasExactType(types, ["department_store"])) return "department_store";
+    if (
+      hasExactType(types, ["shopping_mall", "shopping_center"]) ||
+      /購物中心|SKM\s*Park|mall|plaza|ショッピングモール/i.test(name)
+    ) {
+      if (/商務廣場|辦公/i.test(name)) return "generic";
+      return "shopping_mall";
+    }
+    if (/夜市/i.test(blob)) return "night_market";
+    if (
+      /商圈|商店街|駁二|老街|步行街|文創|市集|徒步|潮流|伴手禮|名產|禮品|特產|souvenir/i.test(blob)
+    ) {
+      return "district";
+    }
+    if (hasExactType(types, ["market", "flea_market"])) {
+      return /夜市/i.test(blob) ? "night_market" : "district";
+    }
+    // Specialty retail (3COINS / clothing / home goods) → shopping copy
+    return "shopping_mall";
+  }
 
   if (isExplicitFoodMerchant(place)) {
     if (/宵夜|深夜|夜市|夜食/i.test(blob)) return "food_stall";
@@ -127,7 +187,6 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
     if (!/蛋糕|烘焙坊|西點|甜點屋/i.test(name)) return "breakfast_shop";
   }
   if (/宵夜|夜食|深夜|夜晚小吃|夜間食堂/i.test(name)) {
-    // avoid misclassifying night snacks as cafe when name is explicit
     return "food_stall";
   }
   if (/夜市/i.test(blob)) return "night_market";
@@ -173,13 +232,14 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
   if (hasAnyType(types, ["tourist_attraction", "historical_landmark", "monument", "cultural_center"])) {
     if (hasAnyType(types, ["book_store", "bookstore"])) return "bookstore";
     if (/書/i.test(name)) return "bookstore";
+    if (RETAIL_SHOPPING_NAME_RE.test(blob)) return "district";
     return "tourist_attraction";
   }
   if (hasAnyType(types, ["market", "flea_market"])) {
     return /夜市/i.test(blob) ? "night_market" : "district";
   }
   if (
-    hasAnyType(types, [
+    hasExactType(types, [
       "restaurant",
       "food",
       "meal_takeaway",
@@ -195,7 +255,7 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
   if (/甜點|蛋糕|冰淇淋/i.test(name)) return "dessert";
   if (/餐廳|食堂|料理|火鍋|燒肉|拉麵/i.test(name)) return "restaurant";
 
-  if (hasAnyType(types, ["store", "point_of_interest", "establishment"])) {
+  if (hasAnyType(types, ["point_of_interest", "establishment"])) {
     return "generic";
   }
 

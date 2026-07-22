@@ -23,6 +23,7 @@ import {
 } from "@/lib/ai/destination-advice";
 import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { finalizePlanningContextAuthority } from "@/lib/ai/planning-context-authority";
 import {
   logChatContextBefore,
   logChatContextMerge,
@@ -38,6 +39,11 @@ import {
   extractItineraryEntitiesFromText,
   sanitizeDestinationForGeocode,
 } from "@/lib/ai/itinerary-entity-extraction";
+import {
+  isCombinationSelectionContinuationReply,
+  isExplicitPrimaryDestinationSwitch,
+  parseNearbyExtensionsFromText,
+} from "@/lib/ai/combination-selection-reply";
 import {
   applyBudgetRefinementToContext,
   isBudgetRefinementText,
@@ -97,6 +103,13 @@ export type CanonicalTravelContext = {
   selectedCombinationPlaceNames?: string[];
   /** Places exclusive to unselected combinations — must never enter the itinerary */
   excludedCombinationPlaceNames?: string[];
+  /**
+   * Near-suburb / day-trip extensions under the primary destination
+   * (e.g. Tokyo trip + 橫濱). Must not replace `destination`.
+   */
+  nearbyExtensions?: string[];
+  /** Nearby extensions that could not be geocoded yet — keep context, do not reset days. */
+  unresolvedNearbyExtensions?: string[];
   /** How combination selection was resolved for this generation */
   selectionSource?: "user_indexed" | "user_title" | "user_all_or_auto" | "all_selected_by_user";
   /**
@@ -120,10 +133,18 @@ export type CanonicalTravelContext = {
       address?: string;
       types?: string[];
       primaryType?: string | null;
+      /** Category-contract result shared with itinerary generation. */
+      normalizedCategory?: string;
+      combinationId?: string | number;
       rating?: number | null;
       resolutionStatus: "named" | "resolved" | "unresolved" | "pending";
     }>;
   }>;
+  /**
+   * Country→city/region/island options from the previous assistant turn.
+   * Destination Anchor matches user replies against this metadata first.
+   */
+  offeredDestinationOptions?: import("@/lib/ai/destination-anchor").DestinationOptionMetadata[];
   /** Stable id for one Places mapping / itinerary generation attempt */
   generationRequestId?: string;
   /** Last itinerary Places failure root cause (tech, not user copy) */
@@ -241,7 +262,14 @@ function parseCompanion(text: string): string | undefined {
   if (/(朋友|閨蜜|同學|同事)/.test(text)) return "朋友";
   if (/(家人|爸媽|父母|小孩|親子)/.test(text)) return "家人";
   const withMatch = text.match(/跟([\u4e00-\u9fffA-Za-z]{1,8})/);
-  if (withMatch?.[1]) return withMatch[1];
+  if (withMatch?.[1]) {
+    const candidate = withMatch[1];
+    // 「1、2跟橫濱」中的城市是近郊延伸，不是同行對象
+    if (KNOWN_CITIES.test(candidate) || isKnownTouristCityLabel(candidate)) {
+      return undefined;
+    }
+    return candidate;
+  }
   return undefined;
 }
 
@@ -502,14 +530,29 @@ export function parseTravelContextFromText(
       : pq.baseDestination
         ? normalizeDestinationLabel(pq.baseDestination)
         : undefined;
+    const comboContinuation =
+      pq.type === "combination_choice" &&
+      isCombinationSelectionContinuationReply(t, {
+        pendingType: pq.type,
+        primaryDestination: prevDestLabel ?? pq.baseDestination,
+        combinationCount: prev.offeredCombinations?.length,
+        hasOfferedCombinations: Boolean(prev.offeredCombinations?.length),
+      });
+    const explicitSwitch = isExplicitPrimaryDestinationSwitch(t);
     // A clearly different destination means a new trip — do not trap in pending early-return.
+    // Exception: combo reply with nearby extension (「1、2跟橫濱」) must keep primary + days.
     if (
       pendingDestIncoming &&
       prevDestLabel &&
-      normalizeDestinationLabel(pendingDestIncoming) !== prevDestLabel
+      normalizeDestinationLabel(pendingDestIncoming) !== prevDestLabel &&
+      !comboContinuation &&
+      (explicitSwitch || pq.type !== "combination_choice")
     ) {
       // fall through to normal parse
     } else {
+      const nearby = comboContinuation
+        ? parseNearbyExtensionsFromText(t, prevDestLabel ?? pq.baseDestination)
+        : undefined;
       return {
         destination: prev.destination ?? pq.baseDestination,
         destinationCountry: prev.destinationCountry ?? pq.destinationCountry,
@@ -525,6 +568,12 @@ export function parseTravelContextFromText(
         destinationCities: prev.destinationCities,
         selectedTripStyle: prev.selectedTripStyle,
         useDefaultRecommendation: prev.useDefaultRecommendation,
+        ...(nearby?.length
+          ? {
+              nearbyExtensions: nearby,
+              unresolvedNearbyExtensions: nearby,
+            }
+          : {}),
         ...parseTravelConstraints(t),
       };
     }
@@ -904,10 +953,25 @@ export function mergeTravelContext(
         ? pendingSelection.contextPatch.excludedCombinationPlaceNames ??
           prev.excludedCombinationPlaceNames
         : pendingSelection.contextPatch.excludedCombinationPlaceNames,
+      nearbyExtensions: inheritTripBoundFields
+        ? pendingSelection.contextPatch.nearbyExtensions ??
+          parsed.nearbyExtensions ??
+          prev.nearbyExtensions
+        : pendingSelection.contextPatch.nearbyExtensions ?? parsed.nearbyExtensions,
+      unresolvedNearbyExtensions: inheritTripBoundFields
+        ? pendingSelection.contextPatch.unresolvedNearbyExtensions ??
+          parsed.unresolvedNearbyExtensions ??
+          prev.unresolvedNearbyExtensions
+        : pendingSelection.contextPatch.unresolvedNearbyExtensions ??
+          parsed.unresolvedNearbyExtensions,
       selectionSource: inheritTripBoundFields
         ? pendingSelection.contextPatch.selectionSource ?? prev.selectionSource
         : pendingSelection.contextPatch.selectionSource,
       offeredCombinations: inheritTripBoundFields ? prev.offeredCombinations : undefined,
+      offeredDestinationOptions: inheritTripBoundFields
+        ? pendingSelection.contextPatch.offeredDestinationOptions ??
+          prev.offeredDestinationOptions
+        : pendingSelection.contextPatch.offeredDestinationOptions,
       generationRequestId: inheritTripBoundFields
         ? pendingSelection.contextPatch.generationRequestId ?? prev.generationRequestId
         : pendingSelection.contextPatch.generationRequestId,
@@ -1018,7 +1082,13 @@ export function mergeTravelContext(
     });
 
     devVerboseInfo("[AI_CONTEXT] updated", logTravelContext(mergedWithDates));
-    return { context: mergedWithDates, session: nextSession };
+    return finalizePlanningContextAuthority({
+      before: sessionForTurn,
+      context: mergedWithDates,
+      session: nextSession,
+      destinationSwitched,
+      didReset: tripReset.didReset,
+    });
   } catch (e) {
     console.warn("[AI_CONTEXT] mergeTravelContext failed", e);
     return {

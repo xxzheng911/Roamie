@@ -5,6 +5,12 @@ import type { ChatPlaceItem, ChatPlanningSession } from "@/lib/chat-session";
 import type { ChatMsg } from "@/lib/chat-history";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { wrapPlannerPlaceSearchViaGateway } from "@/lib/pie/planner-search";
+import { isRecEnginePlannerEnabled } from "@/lib/recommendation/engine/feature-flag-planner";
+import {
+  chatPlaceItemToPlaceResult,
+  ingestResolvedPlacesIntoCandidatePool,
+} from "@/lib/ai/places-cost-cache";
 import {
   syncSessionPlaceMemory,
   computeItineraryFetchTarget,
@@ -85,6 +91,7 @@ import {
   validateCandidateIntent,
   logRejectedCandidate,
 } from "@/lib/ai/combination-candidate-quality";
+import { includedTypesForTheme } from "@/lib/ai/combination-category-contract";
 import { beginDestinationTravelProfileSession } from "@/lib/ai/destination-travel-profile";
 import type { CombinationPlaceCandidate } from "@/lib/ai/destination-combination-discovery";
 import { isResolvedCorePlace } from "@/lib/ai/planning-real-place";
@@ -115,9 +122,152 @@ import {
 import {
   classifyCombinationCandidate,
   expandRegionCandidatesForCombination,
+  resolveRegionCandidate,
 } from "@/lib/ai/region-candidate-expand";
+import { placeMatchesNearbyExtension } from "@/lib/ai/planner-day-route-assembly";
+import {
+  evaluateNearbyExtensionPoolStatus,
+  logNearbyExtensionContext,
+  logNearbyExtensionPool,
+  NEARBY_EXTENSION_MIN_STOPS,
+  NEARBY_EXTENSION_SEARCH_TARGET,
+} from "@/lib/ai/nearby-extension-requirements";
 
 export { INSUFFICIENT_ITINERARY_PLACES_MESSAGE };
+
+/**
+ * nearbyExtensions（如「橫濱」「箱根」）必須有獨立搜尋，不得只存在 Context。
+ * Uses region expand centered on the extension city — never primary Tokyo lat/lng alone.
+ */
+async function fetchNearbyExtensionPlaces(params: {
+  extensions: string[];
+  primaryDestination: string;
+  lat: number;
+  lng: number;
+  locale: Locale;
+  searchPlaces: PlaceSearchFn;
+  geocodeFn: GeocodeDestinationFn;
+  mood?: string;
+  weather?: unknown;
+  selectedCombinationIds?: number[];
+  tripDays?: number;
+}): Promise<{ places: ChatPlaceItem[]; insufficient: string[] }> {
+  const extensions = [...new Set(
+    params.extensions.map((e) => normalizeDestinationLabel(e)).filter(Boolean),
+  )];
+  if (!extensions.length) return { places: [], insufficient: [] };
+
+  logNearbyExtensionContext({
+    primary: params.primaryDestination,
+    extensions,
+    selectedCombinations: params.selectedCombinationIds,
+    tripDays: params.tripDays,
+  });
+
+  const collected: ChatPlaceItem[] = [];
+  const insufficient: string[] = [];
+  for (const ext of extensions) {
+    const approx = resolveDestinationApproxCenter(ext);
+    const searchLat = approx?.lat ?? params.lat;
+    const searchLng = approx?.lng ?? params.lng;
+    const result = await resolveRegionCandidate({
+      regionName: ext,
+      // Nearby day is not a selected combination — keep provenance empty via 0 strip below.
+      combinationId: 0,
+      destination: ext,
+      lat: searchLat,
+      lng: searchLng,
+      locale: params.locale,
+      searchPlaces: params.searchPlaces,
+      geocodeFn: params.geocodeFn,
+      mood: params.mood,
+      weather: params.weather,
+      maxPlaces: NEARBY_EXTENSION_SEARCH_TARGET,
+      theme: "attraction",
+      title: ext,
+    });
+
+    const cleaned = result.places.map((p) => {
+      const {
+        sourceCombinationId: _sid,
+        matchedSelectedCombinationIds: _ms,
+        matchedCombinationIds: _mc,
+        ...rest
+      } = p as ChatPlaceItem & {
+        sourceCombinationId?: number;
+        matchedSelectedCombinationIds?: number[];
+        matchedCombinationIds?: number[];
+      };
+      return {
+        ...rest,
+        destinationScope: "nearby_extension",
+        extensionDestination: ext,
+      } as ChatPlaceItem;
+    });
+
+    const matched = cleaned.filter((p) =>
+      placeMatchesNearbyExtension(
+        {
+          id: p.googlePlaceId ?? "",
+          name: p.placeName ?? p.name,
+          address: p.address,
+          lat: p.lat,
+          lng: p.lng,
+          rating: p.rating,
+          userRatingCount: p.userRatingCount,
+          photoName: p.photoName,
+          primaryType: p.type,
+          types: p.types ?? (p.type ? [p.type] : []),
+          businessStatus: null,
+          openStatus: "unknown",
+          openStatusLabel: "",
+          todayHoursLabel: "",
+          closingSoonNote: "",
+          nextOpenHint: "",
+          destinationScope: "nearby_extension",
+          extensionDestination: ext,
+        },
+        [ext],
+      ),
+    );
+
+    const poolStatus = evaluateNearbyExtensionPoolStatus({
+      extension: ext,
+      candidateCount: matched.length,
+      requiredStops: NEARBY_EXTENSION_MIN_STOPS,
+    });
+    logNearbyExtensionPool(poolStatus);
+
+    logAiPipeline(
+      "[NEARBY_EXTENSION_SEARCH]",
+      `extension=${ext}`,
+      `primaryDestination=${params.primaryDestination}`,
+      `queryCount=4`,
+      `rawCount=${result.places.length}`,
+      `acceptedCount=${matched.length}`,
+      `canonicalCount=${matched.length}`,
+      `searchLat=${searchLat}`,
+      `searchLng=${searchLng}`,
+      `failed=${matched.length === 0}`,
+      `names=[${matched.map((p) => p.placeName ?? p.name).join("|")}]`,
+    );
+
+    if (!poolStatus.enough) {
+      insufficient.push(ext);
+      logAiPipeline(
+        "[NEARBY_EXTENSION_EMPTY]",
+        `extension=${ext}`,
+        `availableStops=${matched.length}`,
+        `requiredStops=${NEARBY_EXTENSION_MIN_STOPS}`,
+        "replanReasons=nearby_extension_insufficient",
+      );
+    }
+
+    collected.push(...matched);
+  }
+
+  return { places: dedupeChatPlaces(collected), insufficient };
+}
 
 export type ItineraryPlaceFailureCode =
   | "places_rate_limited"
@@ -299,6 +449,7 @@ function templateNameSearchAttempts(destination: string): SearchAttempt[] {
     }));
 }
 
+/** @deprecated Flag ON（P2.3）不再呼叫；僅 Flag OFF legacy。 */
 function rankByQuality(places: PlaceResult[]): PlaceResult[] {
   return [...places].sort((a, b) => {
     const score = (p: PlaceResult) =>
@@ -306,6 +457,20 @@ function rankByQuality(places: PlaceResult[]): PlaceResult[] {
       (p.photoName ? 0.5 : 0);
     return score(b) - score(a);
   });
+}
+
+/**
+ * 取用候選：Flag ON 保留輸入順序（Filter/slice，不重排）；
+ * Flag OFF 仍用 rankByQuality。
+ */
+function selectPlacesForItinerary(
+  places: PlaceResult[],
+  limit: number,
+): PlaceResult[] {
+  if (isRecEnginePlannerEnabled()) {
+    return places.slice(0, Math.max(0, limit));
+  }
+  return rankByQuality(places).slice(0, Math.max(0, limit));
 }
 
 function dedupeChatPlaces(places: ChatPlaceItem[]): ChatPlaceItem[] {
@@ -406,11 +571,12 @@ export async function fetchItineraryPlaces(params: {
     days,
     context,
     locale,
-    searchPlaces,
     geocodeFn,
     fetchWeatherFn,
     excludePlaceIds = [],
   } = params;
+  // P3：候選搜尋經 PIE Gateway（Flag OFF = legacy 注入函式）
+  const searchPlaces = wrapPlannerPlaceSearchViaGateway(params.searchPlaces);
 
   const label = sanitizeDestinationForGeocode(destination);
   const fetchTarget = computeItineraryFetchTarget(days);
@@ -507,7 +673,7 @@ export async function fetchItineraryPlaces(params: {
     filterOutTransitAttractions(filterExcludedPlaceIds(raw, excludePlaceIds)),
     label,
   );
-  const ranked = rankByQuality(valid).slice(0, Math.max(fetchTarget, days + 2));
+  const ranked = selectPlacesForItinerary(valid, Math.max(fetchTarget, days + 2));
 
   logAiPipeline(
     "[ITINERARY_PLACES_FETCH]",
@@ -591,6 +757,7 @@ async function mergeSessionPlacesWithFetch(params: {
   excludePlaceIds?: string[];
   fetchPlaceDetails?: (placeId: string) => Promise<PlaceResult | null>;
   generationRequestId: string;
+  sessionId?: string | null;
 }): Promise<
   | { ok: true; places: ChatPlaceItem[] }
   | {
@@ -819,6 +986,7 @@ async function mergeSessionPlacesWithFetch(params: {
     context: params.context,
     generationRequestId: params.generationRequestId,
     dedupe,
+    sessionId: params.sessionId,
   });
 
   // Backfill from reserve pool only when first round is short — concurrency 2.
@@ -846,6 +1014,7 @@ async function mergeSessionPlacesWithFetch(params: {
           fetchPlaceDetails: params.fetchPlaceDetails,
           dedupe,
           generationRequestId: params.generationRequestId,
+          sessionId: params.sessionId,
         });
       },
       { concurrency: PLACE_MAP_MAX_CONCURRENCY },
@@ -954,6 +1123,7 @@ async function mergeSessionPlacesWithFetch(params: {
       fetchPlaceDetails: params.fetchPlaceDetails,
       dedupe,
       generationRequestId: params.generationRequestId,
+      sessionId: params.sessionId,
     });
     if (!found || !isResolvedCorePlace({ ...found, destinationMatch: true })) return null;
     if (!isMappableGooglePlaceId(found.id)) return null;
@@ -1013,8 +1183,10 @@ async function mergeSessionPlacesWithFetch(params: {
         searchRetries: 0,
         primaryCandidates: pool.primary.length,
       };
-      const softTarget =
-        capacityPlan.targetPerCombination[pool.combinationId] ?? minPerCombo;
+      const softTarget = Math.max(
+        capacityPlan.targetPerCombination[pool.combinationId] ?? minPerCombo,
+        Math.ceil(fetchTarget / Math.max(comboPools.length, 1)),
+      );
       let resolved = countResolvedForCombo(pool.combinationId);
 
       // Map unused primary candidates until soft capacity target (never a hard fail gate).
@@ -1096,16 +1268,7 @@ async function mergeSessionPlacesWithFetch(params: {
                 placesCaller: "combination_theme_refill",
                 destinationName: params.destination,
                 searchMode: "destination",
-                includedTypes: [
-                  "tourist_attraction",
-                  "museum",
-                  "art_gallery",
-                  "park",
-                  "market",
-                  "shopping_mall",
-                  "cultural_landmark",
-                  "historical_landmark",
-                ],
+                includedTypes: includedTypesForTheme(pool.theme),
               },
             });
             for (const place of result.places ?? []) {
@@ -1327,17 +1490,7 @@ async function mergeSessionPlacesWithFetch(params: {
               placesCaller: "combination_real_place_supplement",
               destinationName: params.destination,
               searchMode: "destination",
-              includedTypes: [
-                "tourist_attraction",
-                "museum",
-                "art_gallery",
-                "park",
-                "market",
-                "shopping_mall",
-                "cultural_landmark",
-                "historical_landmark",
-                "neighborhood",
-              ],
+              includedTypes: includedTypesForTheme(pool.theme),
             },
           });
           for (const place of result.places ?? []) {
@@ -1441,7 +1594,7 @@ async function mergeSessionPlacesWithFetch(params: {
       `uniqueMajorLandmarks=${merged.length}`,
     );
 
-    const preferredStops = capacityPlan.preferredStops;
+    const preferredStops = Math.max(capacityPlan.preferredStops, fetchTarget);
     if (
       merged.length < preferredStops &&
       SELECTED_COMBINATION_FILLER_POLICY.allowResolvedRealPlaceSupplement
@@ -1588,7 +1741,57 @@ async function mergeSessionPlacesWithFetch(params: {
     void (integrity.coverage as MultiCombinationCoverageReport);
   }
 
-  merged = merged.slice(0, Math.max(fetchTarget, mappedSession.length || 1, params.days));
+  // nearbyExtensions（橫濱／箱根等）獨立搜尋 — 不得只存在 Context／assembly
+  const nearbyExtensions = (params.context.nearbyExtensions ?? [])
+    .map((e) => normalizeDestinationLabel(e))
+    .filter(Boolean);
+  if (nearbyExtensions.length) {
+    const nearbyResult = await fetchNearbyExtensionPlaces({
+      extensions: nearbyExtensions,
+      primaryDestination: params.destination,
+      lat,
+      lng,
+      locale: params.locale,
+      searchPlaces: params.searchPlaces,
+      geocodeFn: params.geocodeFn,
+      mood: params.context.mood,
+      weather: params.context.weather,
+      selectedCombinationIds: params.context.selectedCombinationIds,
+      tripDays: params.days,
+    });
+    if (nearbyResult.places.length) {
+      merged = dedupeChatPlaces([...merged, ...nearbyResult.places]);
+      fallbackCandidateCount += nearbyResult.places.length;
+    }
+    if (nearbyResult.insufficient.length) {
+      // Keep unresolved so UI / advice can surface — never silently drop the requirement.
+      params.context.unresolvedNearbyExtensions = [
+        ...new Set([
+          ...(params.context.unresolvedNearbyExtensions ?? []),
+          ...nearbyResult.insufficient,
+        ]),
+      ];
+    } else if (params.context.unresolvedNearbyExtensions?.length) {
+      params.context.unresolvedNearbyExtensions =
+        params.context.unresolvedNearbyExtensions.filter(
+          (e) => !nearbyExtensions.includes(normalizeDestinationLabel(e)),
+        );
+    }
+    logAiPipeline(
+      "[NEARBY_EXTENSION_MERGE]",
+      `extensions=[${nearbyExtensions.join(",")}]`,
+      `added=${nearbyResult.places.length}`,
+      `insufficient=[${nearbyResult.insufficient.join(",")}]`,
+      `merged=${merged.length}`,
+      `fetchTarget=${fetchTarget}`,
+    );
+  }
+
+  // 保留足夠 unique 候選供每日最低容量（不得截成 ≈ days 筆導致單點日）
+  merged = merged.slice(
+    0,
+    Math.max(fetchTarget, mappedSession.length || 1, params.days * 4, params.days * 3),
+  );
 
   // Never truncate away places that represent a selected combination after coverage passed.
   if (effectiveAllowlist?.selectedCombinationIds.length) {
@@ -1767,13 +1970,14 @@ export async function prepareDirectItinerarySession(params: {
     session,
     context,
     locale,
-    searchPlaces,
     geocodeFn,
     fetchWeatherFn,
     excludePlaceIds,
     msgs,
     fetchPlaceDetails,
   } = params;
+  // P3：候選搜尋經 PIE Gateway（Flag OFF = legacy 注入函式）
+  const searchPlaces = wrapPlannerPlaceSearchViaGateway(params.searchPlaces);
 
   const generationRequestId =
     context.generationRequestId?.trim() ||
@@ -1814,6 +2018,25 @@ export async function prepareDirectItinerarySession(params: {
   const syncedSession = syncSessionPlaceMemory(session);
   const { places: rawSessionPlaces, source } = resolveItineraryPlaceSources(syncedSession, msgs);
   let sessionPlaces = preparePlacesForItineraryBuild(rawSessionPlaces, label);
+
+  // Recommendation → Planner: seed Candidate Pool from chat cards before Places mapping
+  {
+    const poolSessionId =
+      syncedSession.planningSessionId?.trim() ||
+      syncedSession.conversationId?.trim() ||
+      generationRequestId;
+    const fromCards = sessionPlaces
+      .map(chatPlaceItemToPlaceResult)
+      .filter((p): p is PlaceResult => p != null);
+    if (fromCards.length) {
+      ingestResolvedPlacesIntoCandidatePool({
+        sessionId: poolSessionId,
+        destination: label,
+        places: fromCards,
+        source: "itinerary_session_recommended",
+      });
+    }
+  }
 
   // Seed allowlisted names when chat did not persist recommendation cards.
   // Cap is applied again inside mergeSessionPlacesWithFetch.
@@ -1885,6 +2108,10 @@ export async function prepareDirectItinerarySession(params: {
     excludePlaceIds,
     fetchPlaceDetails,
     generationRequestId,
+    sessionId:
+      syncedSession.planningSessionId?.trim() ||
+      syncedSession.conversationId?.trim() ||
+      generationRequestId,
   });
 
   if (!merged.ok) {

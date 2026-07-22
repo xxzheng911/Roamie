@@ -5,6 +5,10 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
 import { logAiStyleReselectSessionReset } from "@/lib/ai/planning-style-reselect-log";
 import { resetPlannerSession } from "@/lib/ai/planner-session-guard";
+import { clearNormalizePlanningCache } from "@/lib/ai/normalize-planning-places";
+import { clearCombinationPoolMemo } from "@/lib/ai/combination-itinerary-integrity";
+import { clearCombinationCache } from "@/lib/ai/places-cost-cache/combination-cache";
+import { clearPlacesQueryCooldown } from "@/lib/ai/places-cost-cache/query-cooldown";
 
 let planningRenderInProgress = false;
 let planningRenderSessionId: string | undefined;
@@ -151,15 +155,109 @@ export function clearPlanningSessionState(
     recommendedNormalizedNames: [],
     plannedStops: [],
     draftTrip: undefined,
+    pendingQuestion: undefined,
+    adviceSelectionThisTurn: undefined,
+    lastResolvedPendingQuestion: undefined,
+    lastAssistantReply: undefined,
     travelContext: session.travelContext
       ? {
           ...session.travelContext,
           mustVisitGenerated: false,
           planningTripStyle: undefined,
           tripPurpose: undefined,
+          offeredCombinations: undefined,
+          selectedCombinationIds: [],
+          conversationState: undefined,
         }
       : session.travelContext,
     chatPlanningState: "idle",
+  };
+}
+
+/**
+ * 重新生成行程：完整建立新 Planning Pipeline。
+ * 保留目的地／日期／天數與使用者組合選擇 ID；不沿用上一輪
+ * planner / validator / repair / delivery / combination / workspace 規劃快取。
+ */
+export function resetPlanningPipelineForRegenerate(
+  session: ChatPlanningSession,
+  reason = "regenerate",
+): ChatPlanningSession {
+  const oldSessionId = session.planningSessionId;
+  const destination =
+    session.travelContext?.destination?.trim() ||
+    session.tripDestination?.displayLabel?.trim() ||
+    session.tripDestination?.city?.trim() ||
+    "";
+
+  logAiPipeline(
+    "[PLANNER_SESSION_RESET]",
+    `oldSessionId=${oldSessionId ?? "none"}`,
+    `reason=${reason}`,
+    "cleared=[plannerState,validatorState,repairState,deliveryCache,combinationCache,workspacePlanning]",
+  );
+
+  clearFrozenPlanningDayPlan(oldSessionId);
+  resetPlannerSession(oldSessionId);
+  clearNormalizePlanningCache();
+  clearCombinationPoolMemo();
+  if (destination) clearCombinationCache(destination);
+  else clearCombinationCache();
+  clearPlacesQueryCooldown(oldSessionId);
+
+  const planningSessionId = createPlanningSessionId();
+  const planVersion = (session.planVersion ?? 0) + 1;
+
+  logAiPipeline(
+    "[PLANNER_SESSION_NEW]",
+    `oldSessionId=${oldSessionId ?? "none"}`,
+    `newSessionId=${planningSessionId}`,
+    `planVersion=${planVersion}`,
+    `reason=${reason}`,
+  );
+  logAiSessionCreate(reason, planningSessionId);
+  logAiPlanningSessionStart(planningSessionId);
+
+  const prevCtx = session.travelContext;
+  return {
+    ...session,
+    planningSessionId,
+    planVersion,
+    phase: "generating",
+    aiItineraryState: "CREATING_TRIP",
+    chatPlanningState: "generatingPlan",
+    currentDayPlan: undefined,
+    draftTrip: undefined,
+    lastGeneratedTripId: undefined,
+    recommendedPlaces: [],
+    selectedPlaces: [],
+    recommendedPlaceIds: [],
+    recommendedNormalizedNames: [],
+    plannedStops: [],
+    selectedPlaceIds: [],
+    selectedPlaceNames: [],
+    usedPlaceIds: undefined,
+    usedPlaceNames: undefined,
+    usedAreaKeys: undefined,
+    pendingQuestion: undefined,
+    adviceSelectionThisTurn: undefined,
+    lastResolvedPendingQuestion: undefined,
+    lastAssistantReply: undefined,
+    travelContext: prevCtx
+      ? {
+          ...prevCtx,
+          // Keep destination / dates / days / selectedCombinationIds as user inputs.
+          // Drop pipeline outputs & failed-run residue (do not reuse combination caches).
+          selectedCombinationPlaceNames: undefined,
+          excludedCombinationPlaceNames: undefined,
+          generationRequestId: undefined,
+          lastItineraryFailure: undefined,
+          partiallyResolvedPlaces: undefined,
+          failedCombinationIds: undefined,
+          mustVisitGenerated: false,
+          planningStage: undefined,
+        }
+      : prevCtx,
   };
 }
 
@@ -175,6 +273,12 @@ export function resetPlanningSessionForStyleReselect(
   logAiStyleReselectSessionReset(planVersion, planningSessionId);
   logAiSessionCreate("style_reselect", planningSessionId);
   logAiPlanningSessionStart(planningSessionId);
+  logAiPipeline(
+    "[PLANNER_SESSION_NEW]",
+    `newSessionId=${planningSessionId}`,
+    `planVersion=${planVersion}`,
+    "reason=style_reselect",
+  );
 
   return {
     ...session,

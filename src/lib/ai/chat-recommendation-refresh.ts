@@ -1,10 +1,4 @@
-import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
-import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
-import {
-  isNearbyPlaceIntent,
-  type ChatIntent,
-  type NearbyPlaceIntent,
-} from "@/lib/ai/chat-intent";
+import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
 import { isExclusionReply } from "@/lib/ai/recommendation-exclusion";
 import {
   placeDisplayName,
@@ -21,6 +15,18 @@ import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
 import { extractAllRecommendedFromMsgs } from "@/lib/ai/trip-planning-follow-up";
 import { isAffirmativeReply } from "@/lib/ai/chat-conversation-state";
 import { NO_MORE_RECOMMENDATIONS_MESSAGE } from "@/lib/ai/place-recommendation-rules";
+import {
+  isNearbyPlaceIntent,
+  type ChatIntent,
+  type NearbyPlaceIntent,
+} from "@/lib/ai/chat-intent";
+import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { resolveActiveCategoryIntent } from "@/lib/ai/conversation-recommendation-session";
+import {
+  recommendationIntentToCategoryIntent,
+  type RecommendationIntent,
+} from "@/lib/ai/recommendation-refinement/types";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export const CHAT_STATE_MACHINE_RECOVERY_MESSAGE =
   "我剛剛整理時卡住了，我再幫你重新推薦一次。";
@@ -57,20 +63,17 @@ export function shouldAcceptAlternativeRecommendations(
   );
 }
 
-const REFRESH_REQUEST_RE =
-  /(還有嗎|還有沒有|還有其他|有其他嗎|再推薦|再找找|再找一些|再幫我找|再給我|換其他|換一批|換一個|換別的|有別的嗎|提供其他|其他推薦|不喜歡|不要這些|不要這幾個|不想要這些|不喜歡這些|別的景點|其他景點|還能推薦|再來幾個)/;
-
 const REJECT_CURRENT_BATCH_RE =
   /(不要這些|不要這幾個|不想要這些|不喜歡這些|換掉這些|不要剛剛|不要上面)/;
 
 const PREFERENCE_REFETCH_RE =
   /(想|要|偏好|改|換成).*(室內|戶外|室外|安靜|熱鬧)|^(室內|戶外|室外)/;
 
-/** 使用者要求換一批 / 其他推薦 / 還有嗎 */
+/** 使用者要求換一批 / 其他推薦 / 還有嗎 — unified continue grammar */
 export function isRefreshRecommendationsRequest(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-  return REFRESH_REQUEST_RE.test(t);
+  return matchesContinueRecommendationGrammar(t);
 }
 
 /** intent = MORE_PLACE_RECOMMENDATIONS */
@@ -150,6 +153,12 @@ export function hasPriorPlaceRecommendations(
   ) {
     return true;
   }
+  if (session.recommendationSession?.pool?.length) {
+    return true;
+  }
+  if (session.activeCategoryIntent) {
+    return true;
+  }
   if (msgs?.some((m) => (m.roamie?.recommendations?.length ?? 0) > 0)) {
     return true;
   }
@@ -157,7 +166,8 @@ export function hasPriorPlaceRecommendations(
     session.travelContext?.mustVisitGenerated ||
       session.travelContext?.tripPurpose === "must_visit_places" ||
       session.travelContext?.tripPurpose === "refresh_recommendations" ||
-      session.travelContext?.tripPurpose === "more_place_recommendations",
+      session.travelContext?.tripPurpose === "more_place_recommendations" ||
+      session.travelContext?.tripPurpose === "recommend_places",
   );
 }
 
@@ -189,20 +199,52 @@ export function shouldRefetchPlaces(
   return hasDestination || hasNearbyIntent || hasLocation;
 }
 
+/**
+ * Resolve category for a GPS-nearby refresh path.
+ * Prefer Active Recommendation Snapshot / Recommendation Session topic.
+ * Returns null for destination-scoped categories (shopping / nightlife / …)
+ * so callers must use destination search — never silently fall back to attraction+GPS.
+ */
 export function resolveRefreshNearbyIntent(
   session: ChatPlanningSession,
   context: CanonicalTravelContext,
 ): NearbyPlaceIntent | null {
+  const snapshotIntent = session.activeRecommendationContext?.intent;
+  const snapshotCategory = snapshotIntent
+    ? recommendationIntentToCategoryIntent(snapshotIntent as RecommendationIntent)
+    : undefined;
+  const topic =
+    resolveActiveCategoryIntent(session) ??
+    snapshotCategory ??
+    (session.activeChatIntent && isNearbyPlaceIntent(session.activeChatIntent)
+      ? session.activeChatIntent
+      : undefined);
+
+  if (topic === "cafe") return "cafe";
+  if (topic === "restaurant") return "restaurant";
+  if (topic === "attraction" || topic === "indoor") return "attraction";
+  // shopping / nightlife / bar / night_market stay on destination continue path
+  if (topic === "shopping" || topic === "bar" || topic === "night_market") {
+    return null;
+  }
+
   if (session.activeChatIntent && isNearbyPlaceIntent(session.activeChatIntent)) {
     return session.activeChatIntent;
   }
   if (context.setting === "室內" || /室內/.test(context.mood ?? "")) {
-    if (session.activeChatIntent === "cafe") return "cafe";
     return "attraction";
   }
   if (/咖啡/.test(context.mood ?? "") || context.interests?.includes("咖啡")) return "cafe";
   if (/美食|餐廳|吃/.test(context.mood ?? "") || context.interests?.includes("美食")) {
     return "restaurant";
+  }
+  // Destination trip active → do not invent attraction+GPS
+  if (
+    context.destination?.trim() ||
+    session.tripPlanningContext?.destination?.trim() ||
+    session.activeRecommendationContext?.destinationName
+  ) {
+    return null;
   }
   return "attraction";
 }
@@ -287,7 +329,7 @@ export function buildAlternativeRecommendationSummary(picks: { name: string }[])
 
 export function buildRefreshRecommendationSummary(
   picks: { name: string }[],
-  intent: ChatIntent,
+  intent: ChatIntent | string,
 ): string {
   const list = picks.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
   if (intent === "cafe") {
@@ -295,6 +337,9 @@ export function buildRefreshRecommendationSummary(
   }
   if (intent === "restaurant") {
     return ["了解，這次換幾間不同的餐廳：", "", list, "", "想調整菜系或預算都可以說。"].join("\n");
+  }
+  if (intent === "shopping") {
+    return ["好的，再幫你找幾個購物／商圈：", "", list, "", "想加進行程的話跟我說。"].join("\n");
   }
   return ["好的，再幫你找幾個不同的地方：", "", list, "", "想再加進行程的話跟我說。"].join("\n");
 }

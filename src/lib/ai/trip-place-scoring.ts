@@ -18,6 +18,12 @@ import {
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import { distanceMeters } from "@/lib/map-explore";
+import {
+  buildDayPreferredPools,
+  minEffectivePlacesPerDay,
+  orderPlacesNearestNeighbor,
+} from "@/lib/ai/planner-day-route-assembly";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export type TripPlaceCategory =
   | "city_landmark"
@@ -399,32 +405,53 @@ function openingHoursScore(place: PlaceResult, category: TripPlaceCategory): num
   return 100;
 }
 
+export type TripPlaceScoreBreakdown = {
+  style: number;
+  vibe: number;
+  weather: number;
+  pace: number;
+  avoid: number;
+  popularity: number;
+  rating: number;
+  route: number;
+  hours: number;
+};
+
+/** 與 scoreTripPlace 同一公式；供 Rec Engine scoreBreakdown / Explain / Debug */
+export function scoreTripPlaceWithBreakdown(
+  place: PlaceResult,
+  input: TripPlaceScoringInput,
+): { score: number; scoreBreakdown: TripPlaceScoreBreakdown } {
+  const category = classifyTripPlaceCategory(place);
+  const scoreBreakdown: TripPlaceScoreBreakdown = {
+    style: styleCategoryScore(input.style, category) * 0.35,
+    vibe: vibeCategoryScore(input.vibe, category) * 0.15,
+    weather: weatherCategoryScore(input.weatherScene, category) * 0.15,
+    pace: paceCategoryScore(input.pace, category) * 0.1,
+    avoid: avoidScore(place, input.plusContext) * 0.1,
+    popularity: popularityScore(place) * 0.05,
+    rating: ratingScore(place) * 0.05,
+    route: routeScore(place, input.centerLat, input.centerLng) * 0.04,
+    hours: openingHoursScore(place, category) * 0.06,
+  };
+  const score =
+    scoreBreakdown.style +
+    scoreBreakdown.vibe +
+    scoreBreakdown.weather +
+    scoreBreakdown.pace +
+    scoreBreakdown.avoid +
+    scoreBreakdown.popularity +
+    scoreBreakdown.rating +
+    scoreBreakdown.route +
+    scoreBreakdown.hours;
+  return { score, scoreBreakdown };
+}
+
 export function scoreTripPlace(
   place: PlaceResult,
   input: TripPlaceScoringInput,
 ): number {
-  const category = classifyTripPlaceCategory(place);
-  const stylePart = styleCategoryScore(input.style, category) * 0.35;
-  const vibePart = vibeCategoryScore(input.vibe, category) * 0.15;
-  const weatherPart = weatherCategoryScore(input.weatherScene, category) * 0.15;
-  const pacePart = paceCategoryScore(input.pace, category) * 0.1;
-  const avoidPart = avoidScore(place, input.plusContext) * 0.1;
-  const popularityPart = popularityScore(place) * 0.05;
-  const ratingPart = ratingScore(place) * 0.05;
-  const routePart = routeScore(place, input.centerLat, input.centerLng) * 0.04;
-  const hoursPart = openingHoursScore(place, category) * 0.06;
-
-  return (
-    stylePart +
-    vibePart +
-    weatherPart +
-    pacePart +
-    avoidPart +
-    popularityPart +
-    ratingPart +
-    routePart +
-    hoursPart
-  );
+  return scoreTripPlaceWithBreakdown(place, input).score;
 }
 
 export function buildTripPlaceScoringContext(input: {
@@ -521,9 +548,10 @@ export function distributeTripPlacesAcrossDays(
 ): DayPlanBucket[] {
   const safeDays = Math.max(1, input.days);
   const paceRange = pacePlacesPerDay(input.pace);
+  const minPerDay = Math.max(paceRange.min, minEffectivePlacesPerDay(input.pace));
   const perDay = Math.min(
     paceRange.max,
-    Math.max(paceRange.min, CHAT_DAY_PLAN_MIN_PER_DAY, Math.ceil(places.length / safeDays)),
+    Math.max(minPerDay, CHAT_DAY_PLAN_MIN_PER_DAY, Math.ceil(places.length / safeDays)),
   );
   const buckets: DayPlanBucket[] = Array.from({ length: safeDays }, (_, index) => ({
     day: index + 1,
@@ -531,17 +559,54 @@ export function distributeTripPlacesAcrossDays(
   }));
   const categoryCountByDay: TripPlaceCategory[][] = Array.from({ length: safeDays }, () => []);
   const usedIds = new Set<string>();
+  const nearbyExtensions = input.context?.nearbyExtensions ?? [];
+  const dayPools = buildDayPreferredPools(places, safeDays, nearbyExtensions);
 
   const slotsForDay = (dayIndex: number): TripPlaceCategory[] => {
     const template = STYLE_DAY_SLOTS[input.style][dayIndex] ?? STYLE_DAY_SLOTS[input.style][0] ?? [];
     return template.length ? template : ["popular_attraction", "local_food", "coffee", "shopping_district", "night_view"];
   };
 
+  const tryAssign = (dayIndex: number, place: PlaceResult, enforceCategoryCap: boolean): boolean => {
+    const id = place.id ?? place.name;
+    if (!id || usedIds.has(id) || !place.name?.trim()) return false;
+    if (buckets[dayIndex]!.names.length >= perDay) return false;
+    const category = classifyTripPlaceCategory(place);
+    const dayCategories = categoryCountByDay[dayIndex]!;
+    if (enforceCategoryCap && dayCategories.filter((c) => c === category).length >= 2) return false;
+    usedIds.add(id);
+    buckets[dayIndex]!.names.push(place.name);
+    dayCategories.push(category);
+    return true;
+  };
+
+  // Phase 1：地理／近郊偏好池先達到最低容量（不提前耗盡整個池）
+  for (let dayIndex = 0; dayIndex < safeDays; dayIndex += 1) {
+    const preferred = dayPools.get(dayIndex + 1) ?? [];
+    for (const place of preferred) {
+      if (buckets[dayIndex]!.names.length >= minPerDay) break;
+      tryAssign(dayIndex, place, false);
+    }
+    logAiPipeline(
+      "[AI_PLANNER_DAY_ASSIGN_COUNT]",
+      `day=${dayIndex + 1}`,
+      `count=${buckets[dayIndex]!.names.length}`,
+      `phase=geo_min_capacity`,
+    );
+  }
+
+  // Phase 2：slot／類型平衡（仍依 places Engine 順序掃描）
   for (let dayIndex = 0; dayIndex < safeDays; dayIndex += 1) {
     const slots = slotsForDay(dayIndex);
+    const preferred = dayPools.get(dayIndex + 1) ?? [];
+    const preferredIds = new Set(preferred.map((p) => p.id ?? p.name));
+    const ordered = [
+      ...preferred,
+      ...places.filter((p) => !preferredIds.has(p.id ?? p.name)),
+    ];
     for (const slot of slots) {
       if (buckets[dayIndex]!.names.length >= perDay) break;
-      const match = places.find((place) => {
+      const match = ordered.find((place) => {
         const id = place.id ?? place.name;
         if (!id || usedIds.has(id)) return false;
         const category = classifyTripPlaceCategory(place);
@@ -550,32 +615,44 @@ export function distributeTripPlacesAcrossDays(
         return slotMatchesCategory(slot, category);
       });
       if (!match?.name) continue;
-      usedIds.add(match.id ?? match.name);
-      buckets[dayIndex]!.names.push(match.name);
-      categoryCountByDay[dayIndex]!.push(classifyTripPlaceCategory(match));
+      tryAssign(dayIndex, match, true);
     }
   }
 
-  for (const place of places) {
-    const id = place.id ?? place.name;
-    if (!id || usedIds.has(id) || !place.name?.trim()) continue;
-    const category = classifyTripPlaceCategory(place);
-    let assigned = false;
-    for (let dayIndex = 0; dayIndex < safeDays; dayIndex += 1) {
-      if (buckets[dayIndex]!.names.length >= perDay) continue;
-      const dayCategories = categoryCountByDay[dayIndex]!;
-      if (dayCategories.filter((c) => c === category).length >= 2) continue;
-      usedIds.add(id);
-      buckets[dayIndex]!.names.push(place.name);
-      dayCategories.push(category);
-      assigned = true;
-      break;
+  // Phase 3：剩餘候選補齊未達 min 的天（跳過已用；不得靜默留 1 點）
+  for (let dayIndex = 0; dayIndex < safeDays; dayIndex += 1) {
+    if (buckets[dayIndex]!.names.length >= minPerDay) continue;
+    logAiPipeline(
+      "[AI_PLANNER_MIN_CAPACITY_FALLBACK]",
+      `day=${dayIndex + 1}`,
+      `have=${buckets[dayIndex]!.names.length}`,
+      `need=${minPerDay}`,
+    );
+    for (const place of places) {
+      if (buckets[dayIndex]!.names.length >= minPerDay) break;
+      tryAssign(dayIndex, place, false);
     }
-    if (!assigned) break;
   }
 
+  // Phase 4：同日名稱依座標 nearest-neighbor 重排（非推薦重排）
+  const byName = new Map(places.map((p) => [p.name, p]));
   for (const bucket of buckets) {
+    const dayPlaces = bucket.names
+      .map((n) => byName.get(n))
+      .filter((p): p is PlaceResult => Boolean(p));
+    const { ordered } = orderPlacesNearestNeighbor(dayPlaces);
+    if (ordered.length === bucket.names.length) {
+      bucket.names = ordered.map((p) => p.name);
+    }
     logAiDayPlanGenerated(bucket.day, bucket.names.length);
+    if (bucket.names.length < minPerDay) {
+      logAiPipeline(
+        "[AI_PLANNER_CANDIDATE_INSUFFICIENT]",
+        `day=${bucket.day}`,
+        `placeCount=${bucket.names.length}`,
+        `need=${minPerDay}`,
+      );
+    }
   }
 
   return buckets;

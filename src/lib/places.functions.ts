@@ -289,8 +289,10 @@ async function postPlaces(
       console.warn("[CHAT_NEARBY_ERROR]", {
         message: "places_rate_limited",
         rawResponse: "",
+        soft: "skip_nearby_use_existing_places",
       });
     }
+    // Soft-fail: never throw — callers must degrade to existing places / skip nearby.
     return { places: [], error: "places_rate_limited" };
   }
   return guarded;

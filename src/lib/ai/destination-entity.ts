@@ -9,9 +9,14 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 export type DestinationEntityType =
   | "country"
   | "city"
+  | "province"
+  | "state"
   | "region"
   | "island"
-  | "state"
+  | "archipelago"
+  | "resort_area"
+  | "district"
+  | "administrative_area"
   | "attraction";
 
 export type Hemisphere = "north" | "south" | "equatorial";
@@ -197,6 +202,30 @@ const ENTITY_SEEDS: EntitySeed[] = [
     },
   },
   {
+    names: ["普吉島", "普吉", "Phuket"],
+    type: "island",
+    country: "泰國",
+    hemisphere: "north",
+    climateZone: "tropical",
+    seasonality: {
+      bestMonthRanges: ["11~4月"],
+      events: [],
+      notes: ["海島度假熱門；乾季較適合海邊活動。"],
+    },
+  },
+  {
+    names: ["蘇梅島", "蘇梅", "苏梅岛", "Koh Samui", "Ko Samui"],
+    type: "island",
+    country: "泰國",
+    hemisphere: "north",
+    climateZone: "tropical",
+    seasonality: {
+      bestMonthRanges: ["12~4月"],
+      events: [],
+      notes: ["較悠閒的海島節奏；適合放鬆與跳島。"],
+    },
+  },
+  {
     names: ["長灘島", "长滩岛"],
     type: "island",
     country: "菲律賓",
@@ -206,6 +235,30 @@ const ENTITY_SEEDS: EntitySeed[] = [
       bestMonthRanges: ["11~5月"],
       events: [],
       notes: ["乾季較適合海邊活動。"],
+    },
+  },
+  {
+    names: ["夏威夷", "Hawaii"],
+    type: "region",
+    country: "美國",
+    hemisphere: "north",
+    climateZone: "tropical",
+    seasonality: {
+      bestMonthRanges: ["4~6月", "9~11月"],
+      events: [],
+      notes: ["多島嶼度假區；氣候全年溫暖。"],
+    },
+  },
+  {
+    names: ["馬爾地夫", "马尔代夫", "Maldives"],
+    type: "country",
+    country: "馬爾地夫",
+    hemisphere: "equatorial",
+    climateZone: "tropical",
+    seasonality: {
+      bestMonthRanges: ["12~4月"],
+      events: [],
+      notes: ["乾季較適合度假與潛水。"],
     },
   },
   {
@@ -392,6 +445,42 @@ const ENTITY_SEEDS: EntitySeed[] = [
     },
   },
   {
+    names: ["戈壁", "戈壁沙漠", "Gobi", "Gobi Desert"],
+    type: "region",
+    country: "蒙古",
+    hemisphere: "north",
+    climateZone: "desert",
+    seasonality: {
+      bestMonthRanges: ["5~9月"],
+      events: [],
+      notes: ["戈壁為沙漠／自然區域，非單一城市；行程以區域據點規劃。"],
+    },
+  },
+  {
+    names: ["特勒吉", "Terelj"],
+    type: "region",
+    country: "蒙古",
+    hemisphere: "north",
+    climateZone: "temperate_continental",
+    seasonality: {
+      bestMonthRanges: ["6~9月"],
+      events: [],
+      notes: ["近郊草原與自然風景，適合短途深度行程。"],
+    },
+  },
+  {
+    names: ["烏蘭巴托", "乌兰巴托", "Ulaanbaatar", "Ulan Bator"],
+    type: "city",
+    country: "蒙古",
+    hemisphere: "north",
+    climateZone: "temperate_continental",
+    seasonality: {
+      bestMonthRanges: ["6~9月"],
+      events: [],
+      notes: ["蒙古主要城市起點與文化體驗。"],
+    },
+  },
+  {
     names: ["富士山"],
     type: "attraction",
     country: "日本",
@@ -521,6 +610,28 @@ const PARENT_COUNTRY_HINTS: Record<string, string> = {
   東京: "日本",
   大阪: "日本",
   京都: "日本",
+  名古屋: "日本",
+  福岡: "日本",
+  熊本: "日本",
+  廣島: "日本",
+  広島: "日本",
+  長崎: "日本",
+  鹿兒島: "日本",
+  鹿児島: "日本",
+  仙台: "日本",
+  金澤: "日本",
+  金沢: "日本",
+  神戶: "日本",
+  神戸: "日本",
+  奈良: "日本",
+  函館: "日本",
+  小樽: "日本",
+  輕井澤: "日本",
+  白川鄉: "日本",
+  橫濱: "日本",
+  横浜: "日本",
+  箱根: "日本",
+  鎌倉: "日本",
   札幌: "日本",
   沖繩: "日本",
   冲绳: "日本",
@@ -528,13 +639,38 @@ const PARENT_COUNTRY_HINTS: Record<string, string> = {
   九州: "日本",
   四國: "日本",
   本州: "日本",
+  佛羅倫斯: "義大利",
+  羅馬: "義大利",
+  米蘭: "義大利",
+  威尼斯: "義大利",
+  塔斯馬尼亞: "澳洲",
   首爾: "韓國",
   釜山: "韓國",
   濟州: "韓國",
   濟州島: "韓國",
+  慶州: "韓國",
+  江陵: "韓國",
   清邁: "泰國",
   芭達雅: "泰國",
   普吉島: "泰國",
+  普吉: "泰國",
+  蘇梅島: "泰國",
+  蘇梅: "泰國",
+  深圳: "中國",
+  深圳市: "中國",
+  廣州: "中國",
+  广州市: "中國",
+  廣州市: "中國",
+  上海: "中國",
+  北京: "中國",
+  杭州: "中國",
+  成都: "中國",
+  廈門: "中國",
+  厦门: "中國",
+  峇里島: "印尼",
+  巴厘岛: "印尼",
+  夏威夷: "美國",
+  馬爾地夫: "馬爾地夫",
   雪梨: "澳洲",
   墨爾本: "澳洲",
   巴黎: "法國",
@@ -610,7 +746,9 @@ function inferType(name: string): DestinationEntityType {
   // (e.g. 日本 / 法國 / 荷蘭 without a trailing 國 character).
   if (isKnownCountryLabel(name) && !isKnownTouristCityLabel(name)) return "country";
   // Island tokens first.
-  if (/(島|岛)$/.test(name) || /^(濟州|冲绳|沖繩)$/.test(name)) return "island";
+  if (/(島|岛)$/.test(name) || /^(濟州|冲绳|沖繩|夏威夷)$/.test(name)) return "island";
+  // Resort / beach-town areas (not full cities).
+  if (/^(芭達雅|帕塔雅|墾丁|聖淘沙)$/.test(name)) return "resort_area";
   // Prefecture / county-scale travel regions (屏東、宜蘭、北海道、…) before city default.
   if (isTravelRegionLabel(name)) return "region";
   if (/^(北海道|九州|四國|本州)$/.test(name)) return "region";
@@ -618,7 +756,8 @@ function inferType(name: string): DestinationEntityType {
   if (isKnownScenicLabel(name)) return "attraction";
   if (/(山|湖|瀑布|國家公園|国家公园|寺|廟|庙)/.test(name)) return "attraction";
   if (/(島|岛)/.test(name)) return "island";
-  if (/(省|州|道|縣|县)/.test(name)) return "state";
+  if (/(省|道|縣|县)$/.test(name)) return "province";
+  if (/(州)$/.test(name)) return "province";
   if (/(國|国)$/.test(name)) return "country";
   if (name.length <= 4 && !/(國|国)/.test(name)) return "city";
   return "country";

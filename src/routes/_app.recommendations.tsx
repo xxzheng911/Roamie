@@ -12,7 +12,12 @@ import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { buildClientContextBundle } from "@/lib/fetch-context";
 import { getWeather } from "@/lib/weather.functions";
 import { getPreferences } from "@/lib/preferences-storage";
-import { saveRecPagePicks, loadRecPagePicks } from "@/lib/chat-session";
+import {
+  saveRecPagePicks,
+  loadRecPagePicks,
+  saveChatSession,
+  createEmptySession,
+} from "@/lib/chat-session";
 import { prepareMoodFlowSession } from "@/lib/mood-chat-handoff";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromRecommendation } from "@/lib/trip/trip-place-input";
@@ -115,7 +120,7 @@ function RecommendationsPage() {
         payload: data,
         bundle,
         preferences: prefs,
-        existing: loadChatSession(),
+        existing: createEmptySession(),
       });
       saveChatSession(session);
       navigate({

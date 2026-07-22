@@ -47,7 +47,10 @@ import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useAccess } from "@/hooks/use-access";
 import { isDeveloperBuildEnabled } from "@/lib/access/developer";
-import { loadDraftTrip } from "@/lib/trip-draft-storage";
+import {
+  hydrateConversationWorkspaces,
+  listConversationWorkspaces,
+} from "@/lib/conversation-workspace";
 import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
 import {
   readProfileSessionCache,
@@ -110,7 +113,9 @@ function Profile() {
     syncFromProfile: syncCoverFromProfile,
   } = useCover();
   const { hasPlusAccess } = useAccess();
-  const [hasDraft, setHasDraft] = useState(false);
+  const [travelDrafts, setTravelDrafts] = useState(() =>
+    hasPlusAccess ? listConversationWorkspaces(userId) : [],
+  );
   const [signingOut, setSigningOut] = useState(false);
 
   /** Local blob preview after pick — never write unstable ?t= URLs into profile state */
@@ -205,8 +210,19 @@ function Profile() {
   const resolvedDisplayName = displayName.trim() || t("profile.defaultName");
 
   useEffect(() => {
-    setHasDraft(Boolean(loadDraftTrip()));
-  }, []);
+    if (!hasPlusAccess) {
+      // Visibility only — do not delete durable drafts when Free
+      setTravelDrafts([]);
+      return;
+    }
+    let cancelled = false;
+    void hydrateConversationWorkspaces(userId).then(() => {
+      if (!cancelled) setTravelDrafts(listConversationWorkspaces(userId));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasPlusAccess, userId]);
 
   useEffect(() => {
     const onCover = () => {
@@ -709,13 +725,19 @@ function Profile() {
       label: t("settings.account"),
       to: "/settings" as const,
     },
-    {
-      icon: RouteIcon,
-      label: "行程草稿",
-      value: hasDraft ? "1 份" : "尚無",
-      to: hasDraft ? "/trip" : "/chat",
-      search: hasDraft ? { draft: "1" } : undefined,
-    },
+    ...(hasPlusAccess
+      ? [
+          {
+            icon: RouteIcon,
+            label: t("trip.travelDraft"),
+            value:
+              travelDrafts.length > 0
+                ? `${travelDrafts.length}`
+                : t("trip.travelDraftEmpty"),
+            to: "/travel-drafts" as const,
+          },
+        ]
+      : []),
   ];
 
   const cancelLabel = t("profile.cancel");
@@ -967,7 +989,11 @@ function Profile() {
             const cls = `flex w-full items-center gap-3 px-4 py-3.5 text-left ${i !== items.length - 1 ? "border-b border-border" : ""}`;
             return (
               <li key={it.label} className={i !== items.length - 1 ? "border-b border-border" : ""}>
-                <Link to={it.to} search={it.search} className={cls}>
+                <Link
+                  to={it.to}
+                  {...("search" in it && it.search ? { search: it.search } : {})}
+                  className={cls}
+                >
                   <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-secondary">
                     <Icon className="h-4 w-4" />
                   </div>

@@ -112,7 +112,7 @@ import {
   HOME_MOOD_SHORTCUT_IDS,
   type HomeMoodId,
 } from "@/lib/home-mood-options";
-import { saveChatSession, loadChatSession } from "@/lib/chat-session";
+import { saveChatSession, createEmptySession, loadChatSession } from "@/lib/chat-session";
 
 export const Route = createFileRoute("/_app/")({
   component: Home,
@@ -681,7 +681,7 @@ function Home() {
         },
       });
       saveChatSession(
-        beginHomeMoodShortcutSession(loadChatSession(), moodLabel),
+        beginHomeMoodShortcutSession(createEmptySession(), moodLabel),
       );
     } catch (error) {
       console.error(

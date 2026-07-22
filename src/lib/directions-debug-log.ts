@@ -56,8 +56,15 @@ export function logDirectionsDebug(event: string, ctx: DirectionsDebugContext = 
     ctx.skippedReason ? `skipped=${ctx.skippedReason}` : "",
   ].filter(Boolean);
 
-  if (event.includes("failed") || event.includes("skipped") || event.includes("fallback") || ctx.error || ctx.skippedReason) {
+  if (event.includes("failed") || event.includes("fallback") || ctx.error) {
     console.warn(parts.join(" "));
+  } else if (ctx.skippedReason === "scoped_cache_hit" || ctx.skippedReason === "scoped_inflight") {
+    // Cache hits are normal — debug only, never warn (avoids Xcode spam).
+    if (import.meta.env.DEV) {
+      console.debug(parts.join(" "));
+    }
+  } else if (event.includes("skipped")) {
+    console.info(parts.join(" "));
   } else {
     console.info(parts.join(" "));
   }

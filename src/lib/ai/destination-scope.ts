@@ -21,6 +21,10 @@ export type DestinationScopeFields = {
 export function isCountryLevelDestination(name: string | null | undefined): boolean {
   if (!name?.trim()) return false;
   const label = normalizeDestinationLabel(name);
+  // City-states are valid travel destinations (same label as country).
+  if (label === "新加坡" || label === "香港" || label === "澳門" || label === "澳门") {
+    return false;
+  }
   if (isKnownTouristCityLabel(label) && !isKnownCountryLabel(label)) return false;
   if (isKnownCountryLabel(label) && !isKnownTouristCityLabel(label)) return true;
   const entity = resolveDestinationEntity(label);

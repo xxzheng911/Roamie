@@ -3,6 +3,7 @@ import {
   isRefreshRecommendationsRequest,
   isRejectCurrentBatch,
 } from "@/lib/ai/chat-recommendation-refresh";
+import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { loadChatSession, roamieRecToChatItem, createEmptySession, type ChatPlaceItem } from "@/lib/chat-session";
 import { alignChatRecommendationCount } from "@/lib/chat-display-recommendations";
@@ -31,9 +32,6 @@ export const TRIP_ADD_PLACE_EXHAUSTED_MESSAGE =
 
 export const TRIP_ADD_PLACE_ERROR_RECOVERY_MESSAGE =
   "我剛剛整理推薦時卡住了，\n不過我還可以繼續幫你找附近其他熱門景點。";
-
-const TRIP_ADD_PLACE_MORE_RE =
-  /(還有其他選擇|想看更多|附近還有|還有附近的|還有景點|再推薦幾個|還有附近的嗎|再找找)/;
 
 export type TripAddPlaceRecommendationSession = {
   sessionId: string;
@@ -74,10 +72,11 @@ export type TripAddPlaceRecommendationSession = {
 export function isTripAddPlaceMoreRecommendationsRequest(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
-  if (isRefreshRecommendationsRequest(t) || TRIP_ADD_PLACE_MORE_RE.test(t)) return true;
-  // 單獨短句常見追問（避免 regex 漏接）
-  if (/^(還有嗎|再推薦|還有其他嗎|還有其他|有其他嗎|再看|再多|再來|再找找)[？?]?$/.test(t)) return true;
-  return false;
+  return (
+    isRefreshRecommendationsRequest(t) ||
+    matchesContinueRecommendationGrammar(t) ||
+    /想看更多|還有其他選擇|还有其他选择/.test(t)
+  );
 }
 
 /** 合併 React state 與 sessionStorage，避免 fromTripAddPlace 遺失導致誤走 AI */

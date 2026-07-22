@@ -26,6 +26,15 @@ export function resolveDestinationForCategorySearch(
   session: ChatPlanningSession,
   userText?: string,
 ): string | undefined {
+  // 1. Explicit city/region in this message wins over trip context
+  if (userText?.trim()) {
+    const fromText = acceptCategorySearchDestination(resolveDestinationFromText(userText));
+    if (fromText) {
+      logChatPlaceDestination(fromText, "user_text");
+      return fromText;
+    }
+  }
+
   const fromCtx = acceptCategorySearchDestination(ctx.destination?.trim());
   if (fromCtx) return fromCtx;
 
@@ -41,14 +50,6 @@ export function resolveDestinationForCategorySearch(
     if (label) {
       logChatPlaceDestination(label, "session");
       return label;
-    }
-  }
-
-  if (userText?.trim()) {
-    const fromText = acceptCategorySearchDestination(resolveDestinationFromText(userText));
-    if (fromText) {
-      logChatPlaceDestination(fromText, "user_text");
-      return fromText;
     }
   }
 

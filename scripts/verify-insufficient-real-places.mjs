@@ -36,25 +36,34 @@ check("filler policy forbids synthetic, allows real supplement", () => {
   assert.equal(SELECTED_COMBINATION_FILLER_POLICY.allowResolvedRealPlaceSupplement, true);
 });
 
-check("3-day single-select dynamic capacity: preferred≈7 minViable≈4 max≈10", () => {
+check("3-day single-select dynamic capacity: preferred≥days×3 with oversample headroom", () => {
   const cap = calculateDynamicStopCapacity({
     tripDays: 3,
     selectedCombinationCount: 1,
   });
-  assert.equal(cap.preferredStops, 7);
-  assert.equal(cap.minimumViableStops, 4);
-  assert.ok(cap.maximumStops >= 10);
-  assert.equal(computeMinimumPlacesForTripDays(3, 1), 4);
+  assert.equal(cap.preferredStops, 9, "soft fetch target = days×3");
+  assert.equal(cap.minimumViableStops, 5);
+  assert.ok(cap.maximumStops >= 11);
+  assert.equal(computeMinimumPlacesForTripDays(3, 1), 5);
 });
 
-check("multi-select viability floors at combo count (not days×3)", () => {
+check("6-day preferred covers Planner requiredMinimum (18) with days×4 oversample", () => {
+  const cap = calculateDynamicStopCapacity({
+    tripDays: 6,
+    selectedCombinationCount: 2,
+  });
+  assert.ok(cap.preferredStops >= 18, `preferred=${cap.preferredStops} must be ≥18`);
+  assert.ok(cap.preferredStops <= 24, `preferred=${cap.preferredStops} oversample cap days×4`);
+  assert.ok(cap.preferredStops > 12, "must not clamp at legacy tripDays+6=12");
+});
+
+check("multi-select viability floors at combo count; preferred still days×3", () => {
   const cap = calculateDynamicStopCapacity({
     tripDays: 3,
     selectedCombinationCount: 3,
   });
   assert.equal(cap.minimumViableStops, 3);
-  assert.ok(cap.preferredStops >= 3);
-  assert.ok(cap.preferredStops < 3 * 3, "must not require days×3 / combo×3");
+  assert.equal(cap.preferredStops, 9, "fetch target still days×3");
 });
 
 check("compact mode when between minimumViable and preferred", () => {
@@ -62,7 +71,7 @@ check("compact mode when between minimumViable and preferred", () => {
   const compact = evaluateTotalRealPlaceValidation(5, cap);
   assert.equal(compact.result, "compact");
   assert.equal(compact.compactItineraryMode, true);
-  const pass = evaluateTotalRealPlaceValidation(7, cap);
+  const pass = evaluateTotalRealPlaceValidation(9, cap);
   assert.equal(pass.result, "pass");
   const fail = evaluateTotalRealPlaceValidation(2, cap);
   assert.equal(fail.result, "fail");

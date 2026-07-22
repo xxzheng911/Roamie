@@ -27,6 +27,7 @@ import {
   parseAskDaysFromText,
   parseAskDaysClarification,
   parsePendingOptionSelection,
+  resolveFreeFormRegionChoice,
   pendingQuestionForTripPreference,
   pendingQuestionForDestinationStyleChoice,
   pendingQuestionForItineraryAction,
@@ -52,6 +53,7 @@ import {
   validateCountryCityOptions,
   type CountryCityOption,
 } from "@/lib/ai/country-city-options";
+import { buildDestinationOptionsFromCityList } from "@/lib/ai/destination-anchor";
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import {
   canDiscoverDestinationPlaces,
@@ -102,7 +104,15 @@ import {
   resolveMustVisitDestination,
 } from "@/lib/ai/must-visit-places";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { isComboItineraryQuery } from "@/lib/ai/chat-category-place-guard";
 import { logChatWrongFallbackBlocked } from "@/lib/ai/chat-place-flow-log";
+import {
+  hasExplicitPlaceRecommendationIntent,
+  isCombinationSelectionGrammar,
+  logCombinationPendingBypassed,
+  parsePlaceRecommendationIntent,
+  shouldBypassCombinationPending,
+} from "@/lib/ai/place-recommendation-intent";
 import {
   buildItineraryPlanningReply,
   buildDailyRecommendationsReply,
@@ -127,6 +137,7 @@ import {
   resolveSelectedCombinations,
   type CombinationSelectionAllowlist,
 } from "@/lib/ai/destination-combination-suggestions";
+import { parseNearbyExtensionsFromText } from "@/lib/ai/combination-selection-reply";
 import {
   buildDestinationRecommendationFailedMessage,
   REFRESH_DESTINATION_RECOMMENDATIONS_OPTION,
@@ -150,6 +161,16 @@ import {
   parseAskTripStyleSelection,
   parseTripStyleKey,
 } from "@/lib/ai/ai-trip-style";
+import {
+  buildDestinationDirectionAck,
+  evaluateCombinationDiscoveryGuard,
+  hasValidTripDuration,
+  logCombinationDiscoveryGuard,
+  logConversationStateTransition,
+  logTripDurationGuard,
+  resolveValidTripDays,
+  tripDurationFieldsFromContext,
+} from "@/lib/ai/trip-duration-guard";
 
 export type DestinationAdvicePurpose =
   | "create_itinerary"
@@ -349,7 +370,16 @@ function buildCombinationSelectionGenerationAdvice(params: {
   if (!allowlist?.allowedPlaceNames.length) return null;
 
   const labelList = allowlist.allowedTitles.join("、") || "建議組合";
-  const patch = allowlistContextPatch(allowlist, dest, days, labelList);
+  const nearbyExtensions = parseNearbyExtensionsFromText(userText, dest);
+  const patch: Partial<CanonicalTravelContext> = {
+    ...allowlistContextPatch(allowlist, dest, days, labelList),
+    ...(nearbyExtensions.length
+      ? {
+          nearbyExtensions,
+          unresolvedNearbyExtensions: nearbyExtensions,
+        }
+      : {}),
+  };
   const gen = buildItineraryGenerationAdvice(
     {
       ...ctx,
@@ -357,6 +387,7 @@ function buildCombinationSelectionGenerationAdvice(params: {
       days,
       selectedTripStyle: labelList,
       travelStyle: labelList,
+      ...(nearbyExtensions.length ? { nearbyExtensions } : {}),
     },
     patch,
   );
@@ -648,8 +679,33 @@ function resolveDestinationCombinationsAdvice(
   session: ChatPlanningSession,
 ): DestinationAdviceResult | null {
   const destination = resolveContextDestination(ctx, session);
-  const days = resolveContextDays(ctx, session);
-  if (!destination || !days) return null;
+  const days = resolveValidTripDays({
+    ...tripDurationFieldsFromContext(ctx, session),
+    days: resolveContextDays(ctx, session),
+  });
+  const guard = evaluateCombinationDiscoveryGuard({
+    destination,
+    destinationType: ctx.destinationType,
+    destinationCountry: ctx.destinationCountry,
+    days,
+    tripDays: session.tripDays,
+    startDate: ctx.startDate,
+    endDate: ctx.endDate,
+    pendingQuestion: session.pendingQuestion,
+  });
+  logCombinationDiscoveryGuard(guard, destination);
+  if (!guard.allowed || !destination || days == null) {
+    if (guard.reason === "missing_trip_duration") {
+      logTripDurationGuard({
+        tripDays: days ?? ctx.days ?? null,
+        startDate: ctx.startDate,
+        endDate: ctx.endDate,
+        valid: false,
+        nextState: "waitingTripDays",
+      });
+    }
+    return null;
+  }
 
   if (!canDiscoverDestinationPlaces(destination) || isCountryLevelDestination(destination)) {
     logCountryLevelPlacesBlocked(destination, "city_required");
@@ -699,7 +755,12 @@ function resolveDestinationCombinationsAdvice(
   const reply = buildDestinationCombinationSuggestionsReply(destination, days, {
     startDate: hasExactDate ? startDate : undefined,
     endDate: hasExactDate ? endDate : undefined,
-    weatherLine: `好，我先記下 ${destination} ${days} 天行程方向。`,
+    weatherLine: buildDestinationDirectionAck({
+      destination,
+      tripDays: days,
+      startDate: hasExactDate ? startDate : undefined,
+      endDate: hasExactDate ? endDate : undefined,
+    }),
     tentativeDates: Boolean(hasExactDate && startDate && endDate),
   });
   if (!reply) {
@@ -1167,6 +1228,11 @@ export function parseDestinationAdvicePurpose(text: string): DestinationAdvicePu
 
   if (isBestTravelTimeIntent(t)) return "best_time_to_visit";
 
+  // Place recommendation must not be treated as destination / region selection
+  if (hasCategoryPlaceQuery(t) && !isComboItineraryQuery(t) && !isCreateItineraryIntent(t)) {
+    return undefined;
+  }
+
   if (
     /[\u4e00-\u9fff]{2,8}\s*(?:\d+|[一二三四五六七八九十百千兩两]+)\s*天.*(怎麼排|行程|規劃|规划|安排)/.test(
       t,
@@ -1618,6 +1684,10 @@ function buildCountryCityCollectAdvice(
       destinationCountry: label,
       destinationType: "country",
       destinationCity: undefined,
+      offeredDestinationOptions: buildDestinationOptionsFromCityList(
+        options.map((o) => ({ name: o.name, type: o.type, country: o.country })),
+        label,
+      ),
       ...(withMonth && monthNum ? { travelMonth: ctx.travelMonth } : {}),
       ...(ctx.travelYear != null ? { travelYear: ctx.travelYear } : {}),
       tripPurpose: "destination_selection",
@@ -1888,6 +1958,20 @@ export function resolveDestinationAdvice(
         session.tripPlanningContext?.destination,
     )
   ) {
+    return { reply: null };
+  }
+
+  // Category / place recommendation with known destination — never answer via combination lock
+  if (
+    (hasCategoryPlaceQuery(userText) || hasExplicitPlaceRecommendationIntent(userText)) &&
+    coerceTravelDestination(
+      ctx.destination ??
+        session.travelContext?.destination ??
+        session.tripPlanningContext?.destination ??
+        session.pendingQuestion?.baseDestination,
+    )
+  ) {
+    logChatWrongFallbackBlocked("category_place_advice_blocked");
     return { reply: null };
   }
 
@@ -2352,9 +2436,16 @@ export function resolveDestinationAdvice(
                     session.adviceSelectionThisTurn === "__flexible_city_mix__"
                       ? session.lastResolvedPendingQuestion.options[0]
                       : session.adviceSelectionThisTurn,
-                  tripPurpose: "region_selected",
-                  conversationState: "awaiting_days",
-                  planningDaysConfirmed: false,
+                  tripPurpose: hasValidTripDuration(workingCtx)
+                    ? "duration_selected"
+                    : "region_selected",
+                  conversationState: hasValidTripDuration(workingCtx)
+                    ? "awaiting_preference"
+                    : "awaiting_days",
+                  planningDaysConfirmed: hasValidTripDuration(workingCtx),
+                  ...(hasValidTripDuration(workingCtx)
+                    ? { days: resolveValidTripDays(workingCtx) }
+                    : {}),
                 }
             : session.adviceSelectionThisTurn === "daily_recommendations"
                 ? {
@@ -2411,12 +2502,51 @@ export function resolveDestinationAdvice(
       const dest = normalizeDestinationLabel(
         pending.baseDestination ?? workingCtx.destination ?? "",
       );
-      return {
-        reply: dest
-          ? `我還不確定你想用哪幾組。請回覆組合編號（例如 1、3），或說「可以幫我生成」讓我混搭全部組合。`
-          : `我還不確定你想用哪幾組。請回覆組合編號，或說「可以幫我生成」。`,
-        pendingQuestion: pending,
-      };
+      const bypass = shouldBypassCombinationPending(userText, {
+        hasActiveRecommendationContext: Boolean(
+          session.activeRecommendationContext ||
+            session.recommendationSession ||
+            session.activeCategoryIntent,
+        ),
+      });
+      if (bypass.bypass && bypass.intent) {
+        logCombinationPendingBypassed(userText, bypass.intent, bypass.reason);
+        // Preserve pending combination + trip context; let place-recommendation route handle.
+        return { reply: null, pendingQuestion: pending };
+      }
+      // Only lock when message is not place intent and not other free-form chat.
+      // Non-grammar messages fall through so other intents can run.
+      if (
+        !hasExplicitPlaceRecommendationIntent(userText) &&
+        isCombinationSelectionGrammar(userText, { destination: dest || undefined })
+      ) {
+        // Grammar matched but parsePendingOptionSelection failed — nudge again
+        return {
+          reply: dest
+            ? `我還不確定你想用哪幾組。請回覆組合編號（例如 1、3），或說「可以幫我生成」讓我混搭全部組合。`
+            : `我還不確定你想用哪幾組。請回覆組合編號，或說「可以幫我生成」。`,
+          pendingQuestion: pending,
+        };
+      }
+      if (
+        !hasExplicitPlaceRecommendationIntent(userText) &&
+        !isCombinationSelectionGrammar(userText, { destination: dest || undefined }) &&
+        !hasCategoryPlaceQuery(userText)
+      ) {
+        // Ambiguous non-place reply while waiting — keep pending, soft nudge
+        return {
+          reply: dest
+            ? `我還不確定你想用哪幾組。請回覆組合編號（例如 1、3），或說「可以幫我生成」讓我混搭全部組合。`
+            : `我還不確定你想用哪幾組。請回覆組合編號，或說「可以幫我生成」。`,
+          pendingQuestion: pending,
+        };
+      }
+      // Place / category query: release advice so chat can fetch places
+      if (hasCategoryPlaceQuery(userText) || hasExplicitPlaceRecommendationIntent(userText)) {
+        const intent = bypass.intent ?? parsePlaceRecommendationIntent(userText);
+        if (intent) logCombinationPendingBypassed(userText, intent);
+        return { reply: null, pendingQuestion: pending };
+      }
     }
     if (selected) {
       if (selected === "full_itinerary" || selected === "daily_recommendations") {
@@ -2752,7 +2882,7 @@ export function resolveDestinationAdvice(
           // Soft acknowledge + re-ask combinations, never place-failure copy.
           return {
             reply: [
-              `好，我先記下 ${destLabel || "這趟"} ${parsedDays} 天行程方向。`,
+              `好，我先記下 ${destLabel || "這趟"} ${parsedDays} 天的行程方向。`,
               "",
               "目前還在整理實際地點組合，請稍後再試或回「重新整理推薦」。",
             ].join("\n"),
@@ -2846,6 +2976,91 @@ export function resolveDestinationAdvice(
         if (abAdvice) return abAdvice;
       }
       return { reply: null };
+    }
+    // Safety net: region_choice still pending but free-form city resolved in context
+    // (e.g. 福岡 not in previous option list). Ask duration — never Places / combinations.
+    if (pending.type === "region_choice") {
+      const freeCity =
+        resolveFreeFormRegionChoice(userText, pending) ??
+        (workingCtx.destination &&
+        !isCountryLevelDestination(workingCtx.destination) &&
+        normalizeDestinationLabel(workingCtx.destination) !==
+          normalizeDestinationLabel(
+            pending.destinationCountry ?? pending.baseDestination ?? "",
+          )
+          ? normalizeDestinationLabel(workingCtx.destination)
+          : null);
+      if (freeCity) {
+        const country =
+          pending.destinationCountry ??
+          workingCtx.destinationCountry ??
+          pending.baseDestination;
+        const cityCtx: CanonicalTravelContext = {
+          ...workingCtx,
+          destination: freeCity,
+          destinationCountry: country,
+          destinationType: "city",
+        };
+        const validDays = resolveValidTripDays(cityCtx);
+        logTripDurationGuard({
+          tripDays: validDays ?? null,
+          startDate: cityCtx.startDate,
+          endDate: cityCtx.endDate,
+          valid: validDays != null,
+          nextState:
+            validDays != null ? "awaiting_combination_selection" : "waitingTripDays",
+        });
+        logConversationStateTransition({
+          from: "region_choice",
+          to: validDays != null ? "awaiting_combination_selection" : "waitingTripDays",
+          reason:
+            validDays != null
+              ? "destination_selected_duration_present"
+              : "destination_selected_duration_missing",
+        });
+        if (validDays != null) {
+          const comboAdvice = resolveDestinationCombinationsAdvice(
+            { ...cityCtx, days: validDays, planningDaysConfirmed: true },
+            { ...session, pendingQuestion: undefined },
+          );
+          if (comboAdvice) return comboAdvice;
+          return {
+            ...buildCityDaysConfirmedReply(freeCity, validDays, country, {
+              weather: cityCtx.weather,
+              context: { ...cityCtx, days: validDays, planningDaysConfirmed: true },
+            }),
+            contextPatch: {
+              destination: freeCity,
+              destinationCountry: country,
+              destinationType: "city",
+              destinationCity: freeCity,
+              days: validDays,
+              planningDaysConfirmed: true,
+              tripPurpose: "duration_selected",
+              conversationState: "awaiting_preference",
+            },
+          };
+        }
+        const dateAsk = buildDateAndDurationQuestionReply(freeCity, country, {
+          context: cityCtx,
+          userText,
+          previousPendingType: "region_choice",
+          blockedLegacyTemplate: "free_form_city_without_days",
+        });
+        return {
+          reply: dateAsk.reply,
+          pendingQuestion: dateAsk.pendingQuestion,
+          contextPatch: {
+            destination: freeCity,
+            destinationCountry: country,
+            destinationType: "city",
+            destinationCity: freeCity,
+            tripPurpose: "region_selected",
+            conversationState: "awaiting_days",
+            planningDaysConfirmed: false,
+          },
+        };
+      }
     }
     const followUpReply = resolvePlanningFollowUpReply(ctx, userText);
     if (followUpReply?.reply) {

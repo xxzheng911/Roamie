@@ -74,9 +74,13 @@ const STRUCTURED_COUNTRY_DESTINATIONS: StructuredSeed[] = [
   { name: "東京", type: "city", country: "日本", summary: "購物、美食、展覽與城市散策" },
   { name: "大阪", type: "city", country: "日本", summary: "美食、商圈與熱鬧夜生活" },
   { name: "京都", type: "city", country: "日本", summary: "寺院、傳統街區與季節景色" },
+  { name: "名古屋", type: "city", country: "日本", summary: "城堡、美食與中部城市散策" },
+  { name: "福岡", type: "city", country: "日本", summary: "美食、商圈與九州門戶" },
+  { name: "橫濱", type: "city", country: "日本", summary: "港灣、倉庫區與近郊散步" },
   { name: "北海道", type: "region", country: "日本", summary: "自然、花季、雪景與較慢步調" },
   { name: "曼谷", type: "city", country: "泰國", summary: "美食、按摩、購物和城市行程" },
   { name: "清邁", type: "city", country: "泰國", summary: "寺廟、市集與較慢步調的旅行" },
+  { name: "芭達雅", type: "city", country: "泰國", summary: "海灘、度假與夜生活" },
   { name: "普吉島", type: "island", country: "泰國", summary: "海灘、度假與海島活動" },
   { name: "蘇梅島", type: "island", country: "泰國", summary: "放鬆、海景與較悠閒的行程" },
   { name: "馬尼拉", type: "city", country: "菲律賓", summary: "城市景點、購物、美食與歷史街區" },
@@ -115,6 +119,8 @@ const STRUCTURED_COUNTRY_DESTINATIONS: StructuredSeed[] = [
   { name: "戈壁", type: "region", country: "蒙古", summary: "沙漠景觀與深度旅程" },
   { name: "北京", type: "city", country: "中國", summary: "古蹟、博物館與城市散策" },
   { name: "上海", type: "city", country: "中國", summary: "都會節奏、購物與夜景" },
+  { name: "深圳", type: "city", country: "中國", summary: "現代都會、科技與海岸線" },
+  { name: "廣州", type: "city", country: "中國", summary: "美食、商圈與珠江夜景" },
   { name: "成都", type: "city", country: "中國", summary: "美食、慢生活與近郊自然" },
   { name: "西安", type: "city", country: "中國", summary: "古城、歷史遺址與文化" },
   { name: "金邊", type: "city", country: "柬埔寨", summary: "首都節奏、博物館與河岸" },
@@ -273,7 +279,8 @@ function toOptionType(raw: string | undefined): CountryCityOptionType {
 
 function entityTypeToOptionType(type: DestinationEntityType): CountryCityOptionType | null {
   if (type === "city" || type === "region" || type === "island") return type;
-  if (type === "state") return "region";
+  if (type === "state" || type === "province") return "region";
+  if (type === "resort_area") return "region";
   return null;
 }
 

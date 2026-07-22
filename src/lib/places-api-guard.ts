@@ -172,6 +172,13 @@ export function notePlacesRateLimited(opts?: {
     `[PLACES_GENERATION_COOLDOWN] waitMs=${wait} until=${generationCooldownUntil}` +
       (activeGenerationRequestId ? ` generationRequestId=${activeGenerationRequestId}` : ""),
   );
+  // Cost protection: stop new Places + no retry — force Candidate Pool / caches
+  void import("@/lib/ai/places-cost-cache/rate-protection").then((m) => {
+    m.activatePlacesRateProtection({
+      reason: "PLACES_RATE_LIMIT_BLOCKED",
+      ttlMs: Math.max(wait, 30_000),
+    });
+  });
 }
 
 export async function waitForPlacesGenerationCooldown(): Promise<void> {
@@ -193,6 +200,9 @@ export function beginPlacesGenerationSession(generationRequestId: string): void 
   void import("@/lib/places-classic-landmark-cache").then((m) => {
     m.resetPlacesRateLimitEncountered();
   });
+  void import("@/lib/ai/places-cost-cache/rate-protection").then((m) => {
+    m.clearPlacesRateProtection();
+  });
 }
 
 export function getActivePlacesGenerationRequestId(): string | null {
@@ -205,6 +215,8 @@ function recordPlacesApiCall(now = Date.now()): void {
 }
 
 export function canRetryPlacesRequest(key: string): boolean {
+  // Rate protection / active cooldown: never retry — callers must use cache.
+  if (isPlacesRateLimited()) return false;
   const n = retryCount.get(key) ?? 0;
   return n < MAX_RETRIES;
 }
@@ -360,6 +372,17 @@ export async function runPlacesApiDeduped<T>(
   runner: () => Promise<T>,
 ): Promise<T | null> {
   const now = Date.now();
+
+  // Rate protection → stop new Places (force cache)
+  try {
+    const { shouldBlockNewPlacesCalls } = await import("@/lib/ai/places-cost-cache");
+    if (shouldBlockNewPlacesCalls({ query: key, logSkip: true })) {
+      return null;
+    }
+  } catch {
+    /* ignore */
+  }
+
   const keyBlockedUntil = blockedUntilByKey.get(key) ?? 0;
   if (now < keyBlockedUntil) {
     logPlacesRequestSkipped(key, keyBlockedUntil);
@@ -370,6 +393,25 @@ export async function runPlacesApiDeduped<T>(
   if (inflight) {
     logPlacesDedupePending(key);
     return inflight as Promise<T>;
+  }
+
+  // 5s same-query cooldown (after in-flight share so concurrent callers still join)
+  try {
+    const {
+      isPlacesQueryOnCooldown,
+      logPlacesSearchSkipped,
+      PLACES_QUERY_COOLDOWN_MS,
+    } = await import("@/lib/ai/places-cost-cache");
+    if (isPlacesQueryOnCooldown(key)) {
+      logPlacesSearchSkipped({
+        reason: "query_cooldown",
+        query: key,
+        cooldownMs: PLACES_QUERY_COOLDOWN_MS,
+      });
+      return null;
+    }
+  } catch {
+    /* ignore */
   }
 
   const promise = (async () => {
@@ -387,6 +429,9 @@ export async function runPlacesApiDeduped<T>(
       logPlacesApiCall(type, key);
       bumpCallStat(type);
       recordPlacesApiCall();
+      void import("@/lib/ai/places-cost-cache").then((m) => {
+        m.notePlacesQueryCooldown(key);
+      });
 
       let lastError: unknown;
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
@@ -413,6 +458,8 @@ export async function runPlacesApiDeduped<T>(
               attemptIndex: attempt,
               requestKey: key,
             });
+            // No retry under rate protection — stop immediately
+            break;
           }
           if (attempt >= MAX_RETRIES || !canRetryPlacesRequest(`${key}:throw`)) {
             if (isRate) {

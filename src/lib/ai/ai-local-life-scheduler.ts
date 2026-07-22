@@ -29,6 +29,7 @@ import {
   preferredAreaKeysForDay,
   type LocalLifeCandidatePools,
 } from "@/lib/ai/ai-local-life-rules";
+import { isRecEnginePlannerEnabled } from "@/lib/recommendation/engine/feature-flag-planner";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   filterPoolForScheduling,
@@ -206,11 +207,15 @@ export function validateTripNoDuplicate(
   };
 }
 
+/** @deprecated Flag ON（P2.3）不再用於排序；僅 Flag OFF legacy。 */
 function scoreLocalLifePlace(place: PlaceResult): number {
   const rating = place.rating ?? 0;
   const reviews = place.userRatingCount ?? 0;
   return rating * 10 + Math.min(Math.log10(reviews + 1) * 15, 50);
 }
+
+/** Route constraint：過遠則跳過（不重算分數）。 */
+const LOCAL_LIFE_NEAR_MAX_M = 12_000;
 
 function pickBestPlace(
   pool: PlaceResult[],
@@ -231,35 +236,52 @@ function pickBestPlace(
         return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       })()
     : undefined;
+
+  const passesConstraints = (p: PlaceResult): boolean => {
+    if (!p.name?.trim()) return false;
+    if (!filter(p)) return false;
+    if (dayDate && !validatePlaceOpenAtTime(p, dayDate, slot.time)) return false;
+    const id = resolveTripPlaceId(p);
+    if (!id) return false;
+    if (allocator.usedPlaceIds.has(id)) {
+      allocator.rejectIfUsed(p, day, "already_used");
+      return false;
+    }
+    if (opts?.meal) {
+      if (allocator.isMealUsed(p, destination)) {
+        allocator.rejectIfUsed(p, day, "meal_used");
+        return false;
+      }
+    } else if (allocator.isPlaceUsed(p, destination)) {
+      allocator.rejectIfUsed(p, day, "place_used");
+      return false;
+    }
+    if (opts?.district) {
+      const area = normalizeAreaKey(p, destination);
+      if (area && allocator.isAreaUsedOnOtherDay(area, day)) {
+        logAiDuplicateAreaDrop(area, day);
+        return false;
+      }
+    }
+    if (isRecEnginePlannerEnabled() && opts?.near && hasCoords(p) && hasCoords(opts.near)) {
+      const d = placeDistanceM(p, opts.near);
+      if (d > LOCAL_LIFE_NEAR_MAX_M) return false;
+    }
+    return true;
+  };
+
+  // P2.3 Flag ON：依 pool 順序取第一個通過約束者（不 score/sort）
+  if (isRecEnginePlannerEnabled()) {
+    for (const p of pool) {
+      if (!passesConstraints(p)) continue;
+      return p;
+    }
+    return undefined;
+  }
+
+  // Flag OFF legacy：scoreLocalLifePlace + preferAreas / near 加成排序
   const candidates = pool
-    .filter((p) => {
-      if (!p.name?.trim()) return false;
-      if (!filter(p)) return false;
-      if (dayDate && !validatePlaceOpenAtTime(p, dayDate, slot.time)) return false;
-      const id = resolveTripPlaceId(p);
-      if (!id) return false;
-      if (allocator.usedPlaceIds.has(id)) {
-        allocator.rejectIfUsed(p, day, "already_used");
-        return false;
-      }
-      if (opts?.meal) {
-        if (allocator.isMealUsed(p, destination)) {
-          allocator.rejectIfUsed(p, day, "meal_used");
-          return false;
-        }
-      } else if (allocator.isPlaceUsed(p, destination)) {
-        allocator.rejectIfUsed(p, day, "place_used");
-        return false;
-      }
-      if (opts?.district) {
-        const area = normalizeAreaKey(p, destination);
-        if (area && allocator.isAreaUsedOnOtherDay(area, day)) {
-          logAiDuplicateAreaDrop(area, day);
-          return false;
-        }
-      }
-      return true;
-    })
+    .filter(passesConstraints)
     .map((p) => {
       let score = scoreLocalLifePlace(p);
       const area = normalizeAreaKey(p, destination);

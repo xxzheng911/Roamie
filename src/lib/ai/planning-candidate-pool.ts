@@ -25,6 +25,10 @@ import {
   persistClassicLandmarkCaches,
 } from "@/lib/places-classic-landmark-cache";
 
+import {
+  shouldBlockNewPlacesCalls,
+} from "@/lib/ai/places-cost-cache/rate-protection";
+
 export { logAiPlacesRateLimitFallback };
 
 export const MAX_DAY_PLAN_CACHE_REBUILDS = 3;
@@ -41,9 +45,8 @@ export function logAiDayPlanRebuildFromCache(
 }
 
 export function shouldSkipPlanningPlacesApi(): boolean {
-  // Soft budget / brief cooldown must wait and resume — never hard-skip mid discovery.
-  // Sticky "encountered" alone must not abort a new generation.
-  return false;
+  // Rate protection / quota lock → stop new Places; callers must use Candidate Pool cache.
+  return shouldBlockNewPlacesCalls({ logSkip: true });
 }
 
 /** Wait out a short Places cooldown instead of returning empty combinations. */

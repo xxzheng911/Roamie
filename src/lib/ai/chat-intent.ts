@@ -28,6 +28,7 @@ import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 import { isMoodNearbyRelaxationRequest } from "@/lib/mood-nearby-intent";
+import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
 import { isFoodIntentText } from "@/lib/ai/chat-food-filter";
 
 function isTripAddPlaceChat(session: ChatPlanningSession): boolean {
@@ -115,11 +116,7 @@ export function detectChatIntent(text: string): ChatIntent {
 
   if (isBudgetRefinementText(t)) return "refine_recommendations";
 
-  if (
-    /(還有嗎|還有沒有|再推薦|換其他|換一批|提供其他|其他推薦|不喜歡|不要這些|有別的嗎|別的景點)/.test(
-      t,
-    )
-  ) {
+  if (matchesContinueRecommendationGrammar(t)) {
     return "refine_recommendations";
   }
 

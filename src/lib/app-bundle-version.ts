@@ -6,8 +6,12 @@ import {
   APP_BUILD_TIME,
   ROAMIE_BUILD_DEBUG,
 } from "@/generated/app-bundle-meta";
+import {
+  DESTINATION_ANCHOR_BUILD_VERSION,
+  logDestinationAnchorBuildVersion,
+} from "@/lib/ai/destination-provider-log";
 
-export { ROAMIE_BUILD_DEBUG };
+export { ROAMIE_BUILD_DEBUG, DESTINATION_ANCHOR_BUILD_VERSION };
 
 function resolveRuntimeBundleEntry(): string | null {
   if (typeof document === "undefined") return null;
@@ -33,8 +37,15 @@ export function logAppBundleVersion(caller = "boot"): void {
     branch: APP_BUILD_BRANCH,
     buildTime: APP_BUILD_TIME,
     buildDebug: ROAMIE_BUILD_DEBUG,
+    destinationAnchorVersion: DESTINATION_ANCHOR_BUILD_VERSION,
     bundleEntry,
     href: typeof location !== "undefined" ? location.href : null,
   });
   console.info(`[ROAMIE_BUILD_DEBUG] ${ROAMIE_BUILD_DEBUG}`);
+  logDestinationAnchorBuildVersion({
+    commit: APP_BUILD_COMMIT_SHORT,
+    buildTime: APP_BUILD_TIME,
+    buildDebug: ROAMIE_BUILD_DEBUG,
+    caller,
+  });
 }

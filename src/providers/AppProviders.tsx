@@ -17,6 +17,11 @@ import {
   shouldUseLightStartupShell,
 } from "@/lib/startup-path";
 import { hydrateAppBootCachesAsync, resetAppBootCachesForUserChange } from "@/lib/app-boot-cache";
+import {
+  flushConversationWorkspacesToNative,
+} from "@/lib/conversation-workspace/storage";
+import { pushConversationWorkspacesRemote } from "@/lib/conversation-workspace/remote-sync";
+import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 
 type Props = { children: ReactNode };
 
@@ -79,6 +84,30 @@ function BootCacheHydrator() {
     lastUserIdRef.current = userId;
     void hydrateAppBootCachesAsync(userId);
   }, [loading, user?.id]);
+
+  // Persist travel drafts when app backgrounds (WK localStorage may be non-durable)
+  useEffect(() => {
+    if (!isCapacitorNativeShell()) return;
+    let remove: (() => void) | undefined;
+    let cancelled = false;
+    void import("@capacitor/app").then(({ App }) => {
+      if (cancelled) return;
+      void App.addListener("appStateChange", ({ isActive }) => {
+        if (isActive) return;
+        const userId = user?.id ?? null;
+        void flushConversationWorkspacesToNative(userId);
+        if (userId) void pushConversationWorkspacesRemote(userId);
+      }).then((handle) => {
+        remove = () => {
+          void handle.remove();
+        };
+      });
+    });
+    return () => {
+      cancelled = true;
+      remove?.();
+    };
+  }, [user?.id]);
 
   return null;
 }

@@ -1,8 +1,8 @@
 import type { PlaceResult } from "@/lib/place-result";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
+import { isRecEnginePlannerEnabled } from "@/lib/recommendation/engine/feature-flag-planner";
 import {
-  STYLE_DAY_SLOT_TEMPLATES,
   classifyPlanPlaceKind,
   canPlaceFillSlot,
   ensureAllDayPlansExist,
@@ -12,6 +12,8 @@ import {
   plannerTotalPlaces,
   preferBetterComposedPlans,
   resolveEntryLabel,
+  resolvePlannerStyleKey,
+  resolveStyleDaySlotTemplate,
   type ComposedDayPlan,
   type DayPlanEntry,
   type DayPlanSlot,
@@ -41,7 +43,15 @@ import {
   type TripPlaceUniquenessValidation,
 } from "@/lib/ai/ai-trip-place-allocator";
 import { dedupeParentLandmarkPlaces } from "@/lib/ai/ai-parent-landmark-dedup";
+import { dedupeByCanonicalLandmark } from "@/lib/ai/canonical-landmark";
 import { filterRealPlanningPlaces } from "@/lib/ai/planning-real-place";
+import {
+  applyPlannerRouteAndCapacityAssembly,
+  buildDayPreferredPools,
+  passesDayRouteConstraint,
+  resolveNearbyExtensionDay,
+  type PlannerPaceHint,
+} from "@/lib/ai/planner-day-route-assembly";
 
 export const MAX_TRIP_DUPLICATE_RATE = 0.2;
 /** 進入 Planner 前：候選池每天至少 6 個（4 天 = 至少 24） */
@@ -142,10 +152,7 @@ function distributeSlotForPlace(
   index: number,
   style: TripStyleKey,
 ): DayPlanSlot {
-  const template =
-    STYLE_DAY_SLOT_TEMPLATES[style][0] ??
-    STYLE_DAY_SLOT_TEMPLATES.mixed[0] ??
-    [];
+  const template = resolveStyleDaySlotTemplate(style, 1);
   if (template[index]) return template[index]!;
 
   const kind = classifyPlanPlaceKind(place);
@@ -261,6 +268,20 @@ export function ensureEveryDayPopulated(params: {
       style: params.style,
       plannedDate: params.plannedDate,
     });
+  }
+
+  // P1 Step 1: pool < days×minPerDay → leave empty days; never redistribute into singletons.
+  if (mergedPool.length < params.days * slotsPerDay) {
+    logAiPipeline(
+      "[AI_PLANNER_POOL_INSUFFICIENT]",
+      `pool=${mergedPool.length}`,
+      `required=${params.days * slotsPerDay}`,
+      `target=${minCandidatePoolSize(params.days)}`,
+      "action=leave_empty_no_singleton_redistribute",
+      `empty=${emptyDays.map((p) => p.day).join(",")}`,
+      "sourceFunction=ensureEveryDayPopulated",
+    );
+    return normalized;
   }
 
   if (!isPlannerPoolSufficient(mergedPool.length, params.days)) {
@@ -525,7 +546,8 @@ export function dedupeCandidatePlaces(places: PlaceResult[]): PlaceResult[] {
     seen.add(key);
     out.push(place);
   }
-  return dedupeParentLandmarkPlaces(out);
+  // placeId → parent landmark → canonical（含多語／商業複合設施）
+  return dedupeByCanonicalLandmark(dedupeParentLandmarkPlaces(out)).places;
 }
 
 function placeBlob(place: PlaceResult): string {
@@ -534,6 +556,11 @@ function placeBlob(place: PlaceResult): string {
     .join(" ");
 }
 
+/**
+ * @deprecated P2.2：Flag ON 時不再用於排序。
+ * 僅 Flag OFF（legacy 回退）保留 theme 分數挑選。
+ * 不得新增權重；rating 加成屬舊行為，P2.2+ 契約路徑禁止。
+ */
 function scorePlaceForTheme(place: PlaceResult, theme: DayThemeProfile): number {
   const blob = placeBlob(place);
   let score = 0;
@@ -565,7 +592,97 @@ function markDaySlotBudget(place: PlaceResult, budget: DaySlotBudget): void {
   else if (kind === "shopping" || kind === "market") budget.shopping += 1;
 }
 
-function pickPlaceForSlot(params: {
+/**
+ * Slot 約束（Contract 允許的跳過理由）：
+ * Business Hours / Meal / Day Capacity / Duplicate / Route / retail 排除等。
+ * 不做推薦排序。
+ */
+export function passesPlannerSlotConstraints(params: {
+  place: PlaceResult;
+  slot: DayPlanSlot;
+  allocator: TripPlaceAllocator;
+  budget: DaySlotBudget;
+  plannedDate?: string;
+  allowRepeat?: boolean;
+  relaxConstraints?: boolean;
+  dayPlaces?: PlaceResult[];
+  day?: number;
+  tripDays?: number;
+  nearbyExtensions?: string[];
+  skipRouteConstraint?: boolean;
+}): boolean {
+  const {
+    place,
+    slot,
+    allocator,
+    budget,
+    plannedDate,
+    allowRepeat,
+    relaxConstraints,
+    dayPlaces,
+    day,
+    tripDays,
+    nearbyExtensions,
+    skipRouteConstraint,
+  } = params;
+  if (!place.name?.trim()) return false;
+  if (isGeocodeEmptyPlace(place)) return false;
+  if (isExcludedRetailPlace(place)) return false;
+  if (!allowRepeat && allocator.isUsed(place)) return false; // Duplicate / Lock 已用
+  if (exceedsDaySlotBudget(place, budget)) return false; // Day Capacity / Pace 密度
+  if (!relaxConstraints && !canPlaceFillSlot(place, slot, plannedDate)) return false; // Hours / Meal
+  if (relaxConstraints) {
+    const kind = classifyPlanPlaceKind(place);
+    if (/早餐|午餐|晚餐|宵夜/.test(slot.label)) {
+      if (!isDiningPlace(place, classifyPlanPlaceKind) && kind !== "night_market") return false;
+    } else if (slot.kind === "cafe" || /咖啡/.test(slot.label)) {
+      if (!isCafePlace(place) && kind !== "cafe") return false;
+    } else if (isDiningPlace(place, classifyPlanPlaceKind) && !/咖啡/.test(slot.label)) {
+      return false;
+    }
+  }
+  if (/早餐/.test(slot.label) && !isProperRestaurantPlace(place) && !isCafePlace(place)) {
+    return false;
+  }
+  if (/午餐|晚餐|宵夜/.test(slot.label) && !isDiningPlace(place, classifyPlanPlaceKind)) {
+    if (!isProperRestaurantPlace(place) && !isNightMarketPlace(place)) return false;
+  }
+  if (
+    !skipRouteConstraint &&
+    !relaxConstraints &&
+    day != null &&
+    dayPlaces &&
+    dayPlaces.length > 0
+  ) {
+    const route = passesDayRouteConstraint({
+      place,
+      dayPlaces,
+      day,
+      nearbyExtensions,
+      nearbyDay: resolveNearbyExtensionDay(tripDays ?? day),
+    });
+    if (!route.ok) {
+      logAiPipeline(
+        "[AI_PLANNER_CANDIDATE_SKIP]",
+        `day=${day}`,
+        `name=${place.name}`,
+        `reason=${route.reason ?? "route_too_far"}`,
+      );
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 從已排序 Candidate Pool 挑選 slot 用地點。
+ *
+ * P2.2 + Flag ON：依 pool 順序消費，第一個通過約束者入選（不重排、不打分）。
+ * Flag OFF：legacy theme 分數挑選（完整回退）。
+ *
+ * Contract: docs/raos/planner-contract.md
+ */
+export function pickPlaceForSlot(params: {
   pool: PlaceResult[];
   slot: DayPlanSlot;
   theme: DayThemeProfile;
@@ -575,38 +692,60 @@ function pickPlaceForSlot(params: {
   plannedDate?: string;
   allowRepeat?: boolean;
   relaxConstraints?: boolean;
+  dayPlaces?: PlaceResult[];
+  nearbyExtensions?: string[];
+  tripDays?: number;
+  /** 容量補齊末段可暫時放寬 Route，避免空日 */
+  skipRouteConstraint?: boolean;
 }): PlaceResult | undefined {
-  const { pool, slot, theme, allocator, day, budget, plannedDate, allowRepeat, relaxConstraints } = params;
-  const candidates = pool
-    .filter((place) => {
-      if (!place.name?.trim()) return false;
-      if (isGeocodeEmptyPlace(place)) return false;
-      if (isExcludedRetailPlace(place)) return false;
-      if (!allowRepeat && allocator.isUsed(place)) return false;
-      if (exceedsDaySlotBudget(place, budget)) return false;
-      if (!relaxConstraints && !canPlaceFillSlot(place, slot, plannedDate)) return false;
-      if (relaxConstraints) {
-        const kind = classifyPlanPlaceKind(place);
-        if (/早餐|午餐|晚餐|宵夜/.test(slot.label)) {
-          if (!isDiningPlace(place, classifyPlanPlaceKind) && kind !== "night_market") return false;
-        } else if (slot.kind === "cafe" || /咖啡/.test(slot.label)) {
-          if (!isCafePlace(place) && kind !== "cafe") return false;
-        } else if (isDiningPlace(place, classifyPlanPlaceKind) && !/咖啡/.test(slot.label)) {
-          return false;
-        }
-      }
-      if (/早餐/.test(slot.label) && !isProperRestaurantPlace(place) && !isCafePlace(place)) {
-        return false;
-      }
-      if (/午餐|晚餐|宵夜/.test(slot.label) && !isDiningPlace(place, classifyPlanPlaceKind)) {
-        if (!isProperRestaurantPlace(place) && !isNightMarketPlace(place)) return false;
-      }
-      return true;
-    })
-    .map((place) => ({ place, score: scorePlaceForTheme(place, theme) }))
-    .sort((a, b) => b.score - a.score);
+  const {
+    pool,
+    slot,
+    theme,
+    allocator,
+    day,
+    budget,
+    plannedDate,
+    allowRepeat,
+    relaxConstraints,
+    dayPlaces,
+    nearbyExtensions,
+    tripDays,
+    skipRouteConstraint,
+  } = params;
 
-  const picked = candidates[0]?.place;
+  const constraintArgs = {
+    slot,
+    allocator,
+    budget,
+    plannedDate,
+    allowRepeat,
+    relaxConstraints,
+    dayPlaces,
+    day,
+    tripDays,
+    nearbyExtensions,
+    skipRouteConstraint,
+  };
+
+  let picked: PlaceResult | undefined;
+
+  if (isRecEnginePlannerEnabled()) {
+    // P2.2：唯一消費順序 = Recommendation Engine 已排序的 pool
+    for (const place of pool) {
+      if (!passesPlannerSlotConstraints({ place, ...constraintArgs })) continue;
+      picked = place;
+      break;
+    }
+  } else {
+    // Legacy 回退：theme 分數（非契約路徑；僅 Flag OFF）
+    const candidates = pool
+      .filter((place) => passesPlannerSlotConstraints({ place, ...constraintArgs }))
+      .map((place) => ({ place, score: scorePlaceForTheme(place, theme) }))
+      .sort((a, b) => b.score - a.score);
+    picked = candidates[0]?.place;
+  }
+
   if (!picked) return undefined;
   allocator.markUsed(picked, day);
   markDaySlotBudget(picked, budget);
@@ -636,6 +775,8 @@ export function buildThemedMultiDayPlans(params: {
   startDay?: number;
   seedAllocator?: TripPlaceAllocator;
   tripDays?: number;
+  nearbyExtensions?: string[];
+  pace?: PlannerPaceHint;
 }): ComposedDayPlan[] {
   const { places, style, days, plannedDate } = params;
   const safeDays = Math.max(1, days);
@@ -645,31 +786,55 @@ export function buildThemedMultiDayPlans(params: {
   const allocator = params.seedAllocator ?? new TripPlaceAllocator();
   const plans: ComposedDayPlan[] = [];
   const minPerDay = resolveAdaptiveMinPerDay(pool.length, tripDays);
+  const dayPools = buildDayPreferredPools(pool, tripDays, params.nearbyExtensions);
 
   logAiPipeline("[AI_MULTI_DAY_BUILD_START]", `days=${safeDays}`, `pool=${pool.length}`, `startDay=${startDay}`);
 
   for (let dayIndex = 0; dayIndex < safeDays; dayIndex += 1) {
     const day = startDay + dayIndex;
     const theme = resolveDayTheme(style, day - 1);
-    const template =
-      STYLE_DAY_SLOT_TEMPLATES[style][(day - 1) % STYLE_DAY_SLOT_TEMPLATES[style].length] ??
-      STYLE_DAY_SLOT_TEMPLATES[style][0] ??
-      STYLE_DAY_SLOT_TEMPLATES.mixed[0]!;
+    const template = resolveStyleDaySlotTemplate(style, day);
     const budget = emptyDayBudget();
     const entries: DayPlanEntry[] = [];
+    // 當日偏好池在前、其餘 Engine 順序在後（不重排分數）
+    const preferred = dayPools.get(day) ?? [];
+    const preferredIds = new Set(preferred.map((p) => resolveTripPlaceId(p)));
+    const dayOrderedPool = [
+      ...preferred,
+      ...pool.filter((p) => !preferredIds.has(resolveTripPlaceId(p))),
+    ];
 
     logAiPipeline("[AI_DAY_THEME]", `day=${day}`, `theme=${theme.theme}`);
+    logAiPipeline("[AI_PLANNER_DAY_ASSIGN_COUNT]", `day=${day}`, `preferredPool=${preferred.length}`);
 
     for (const slot of template) {
-      const place = pickPlaceForSlot({
-        pool,
-        slot,
-        theme,
-        allocator,
-        day,
-        budget,
-        plannedDate,
-      });
+      const dayPlaces = entries.map((e) => e.place);
+      const place =
+        pickPlaceForSlot({
+          pool: dayOrderedPool,
+          slot,
+          theme,
+          allocator,
+          day,
+          budget,
+          plannedDate,
+          dayPlaces,
+          nearbyExtensions: params.nearbyExtensions,
+          tripDays,
+        }) ??
+        pickPlaceForSlot({
+          pool: dayOrderedPool,
+          slot,
+          theme,
+          allocator,
+          day,
+          budget,
+          plannedDate,
+          dayPlaces,
+          nearbyExtensions: params.nearbyExtensions,
+          tripDays,
+          skipRouteConstraint: true,
+        });
       if (!place?.name) continue;
       entries.push({
         time: slot.time,
@@ -683,15 +848,33 @@ export function buildThemedMultiDayPlans(params: {
       for (const kind of theme.preferKinds) {
         if (entries.length >= minPerDay) break;
         const slot = fillerSlotForKind(kind, entries.length);
-        const place = pickPlaceForSlot({
-          pool,
-          slot,
-          theme,
-          allocator,
-          day,
-          budget,
-          plannedDate,
-        });
+        const dayPlaces = entries.map((e) => e.place);
+        const place =
+          pickPlaceForSlot({
+            pool: dayOrderedPool,
+            slot,
+            theme,
+            allocator,
+            day,
+            budget,
+            plannedDate,
+            dayPlaces,
+            nearbyExtensions: params.nearbyExtensions,
+            tripDays,
+          }) ??
+          pickPlaceForSlot({
+            pool: dayOrderedPool,
+            slot,
+            theme,
+            allocator,
+            day,
+            budget,
+            plannedDate,
+            dayPlaces,
+            nearbyExtensions: params.nearbyExtensions,
+            tripDays,
+            skipRouteConstraint: true,
+          });
         if (!place?.name) continue;
         entries.push({
           time: slot.time,
@@ -712,7 +895,15 @@ export function buildThemedMultiDayPlans(params: {
     );
   }
 
-  return ensureAllDayPlansExist(plans, safeDays);
+  const assembled = applyPlannerRouteAndCapacityAssembly({
+    plans,
+    pool,
+    days: safeDays,
+    style,
+    nearbyExtensions: params.nearbyExtensions,
+    pace: params.pace,
+  });
+  return ensureAllDayPlansExist(assembled.plans as ComposedDayPlan[], safeDays);
 }
 
 export function countTripPlaceSlots(plans: ComposedDayPlan[]): number {
@@ -842,6 +1033,8 @@ export function ensureDayPlansMeetMinimum(params: {
   days: number;
   style: TripStyleKey;
   plannedDate?: string;
+  nearbyExtensions?: string[];
+  pace?: PlannerPaceHint;
 }): ComposedDayPlan[] {
   const minPerDay = minItemsPerDayForTrip(params.days);
   const pool = dedupeCandidatePlaces(filterExcludedRetailPlaces(filterRealPlanningPlaces(params.pool)));
@@ -876,6 +1069,8 @@ export function ensureDayPlansMeetMinimum(params: {
       days: params.days,
       style: params.style,
       plannedDate: params.plannedDate,
+      nearbyExtensions: params.nearbyExtensions,
+      pace: params.pace,
     });
     current = preferBetterComposedPlans(themed, current, params.days, params.style);
     current = fillSparseDaysWithControlledRepeats({
@@ -893,6 +1088,16 @@ export function ensureDayPlansMeetMinimum(params: {
       plannedDate: params.plannedDate,
     });
   }
+
+  const assembled = applyPlannerRouteAndCapacityAssembly({
+    plans: current,
+    pool,
+    days: params.days,
+    style: params.style,
+    nearbyExtensions: params.nearbyExtensions,
+    pace: params.pace,
+  });
+  current = ensureAllDayPlansExist(assembled.plans as ComposedDayPlan[], params.days);
 
   current = repairTripDuplicatePlaces({
     plans: current,
@@ -915,9 +1120,7 @@ export function refillMissingDaySlots(params: {
 }): ComposedDayPlan[] {
   const pool = dedupeCandidatePlaces(filterExcludedRetailPlaces(filterRealPlanningPlaces(params.pool)));
   const slotPools = buildItinerarySlotPools(pool);
-  const template =
-    STYLE_DAY_SLOT_TEMPLATES[params.style][0] ??
-    STYLE_DAY_SLOT_TEMPLATES.mixed[0]!;
+  const template = resolveStyleDaySlotTemplate(params.style, 1);
   const allocator = new TripPlaceAllocator();
   seedTripAllocatorFromPlans(allocator, params.plans);
 
@@ -1050,6 +1253,18 @@ export function refillMissingDaySlots(params: {
         `after=${after}`,
       );
     }
+    // P1 Step 1: never leave a partial / singleton day after refill — empty is honest.
+    if (after > 0 && after < minPerDay) {
+      logAiPipeline(
+        "[AI_PLANNER_CANDIDATE_INSUFFICIENT]",
+        `day=${plan.day}`,
+        "action=clear_partial_day_no_singleton",
+        `have=${after}`,
+        `need=${minPerDay}`,
+        "sourceFunction=refillMissingDaySlots",
+      );
+      return { day: plan.day, entries: [] };
+    }
     return { day: plan.day, entries: sorted };
   });
 }
@@ -1062,7 +1277,8 @@ export function fillSparseDaysWithControlledRepeats(params: {
   style: TripStyleKey;
   plannedDate?: string;
 }): ComposedDayPlan[] {
-  const { pool, days, style, plannedDate } = params;
+  const { pool, days, plannedDate } = params;
+  const style = resolvePlannerStyleKey(params.style);
   const minPerDay = minItemsPerDayForTrip(days);
   let current = ensureAllDayPlansExist(params.plans, days);
   const maxRepeats = Math.floor(countTripPlaceSlots(current) * MAX_TRIP_DUPLICATE_RATE);
@@ -1073,10 +1289,9 @@ export function fillSparseDaysWithControlledRepeats(params: {
   current = current.map((plan) => {
     if (plan.entries.length >= minPerDay) return plan;
     const theme = resolveDayTheme(style, plan.day - 1);
-    const template =
-      STYLE_DAY_SLOT_TEMPLATES[style][plan.day - 1] ??
-      STYLE_DAY_SLOT_TEMPLATES[style][0] ??
-      STYLE_DAY_SLOT_TEMPLATES.mixed[0]!;
+    // Must use Map-safe helper — never STYLE_DAY_SLOT_TEMPLATES[style][plan.day-1]
+    // (illegal style keys throw: undefined is not an object evaluating '[...][plan.day-1]').
+    const template = resolveStyleDaySlotTemplate(style, plan.day);
     const budget = emptyDayBudget();
     for (const entry of plan.entries) markDaySlotBudget(entry.place, budget);
     const entries = [...plan.entries];

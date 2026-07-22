@@ -6,7 +6,8 @@ import { PlaceSearchPanel, type PlaceSearchResultItem } from "@/components/Place
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
 import { useI18n } from "@/hooks/use-i18n";
 import { toast } from "sonner";
-import { getPlaceDetails, searchPlaces as searchPlacesService } from "@/services/placesService";
+import { searchPlaces as searchPlacesService } from "@/services/placesService";
+import { getPlaceLiteDetailsViaGateway } from "@/lib/pie/places-gateway";
 
 type Props = {
   label?: string;
@@ -70,7 +71,8 @@ export function TripStopSearchField({ label, onPick, disabled }: Props) {
   const handleSelect = async (item: PlaceSearchResultItem) => {
     setResolvingId(item.placeId);
     try {
-      const { place, error } = await getPlaceDetails(item.placeId, {
+      // Phase 1 Step B：PlaceLite details 經 places-gateway（Autocomplete 仍走舊路徑）
+      const { place, error } = await getPlaceLiteDetailsViaGateway(item.placeId, {
         locale,
         resolveFn,
         fallback: { placeId: item.placeId, label: item.label, secondary: item.secondary },

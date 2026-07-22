@@ -81,7 +81,7 @@ window.__ROAMIE_BOOT_LOG__={
   verbose:function(){try{return localStorage.getItem("roamie:boot-diagnostics")==="1";}catch(_){return false;}},
   log:function(msg,critical){
     var s=String(msg||"");
-    if(s.indexOf("[APP_BOOT]")>=0||s.indexOf("[ONBOARDING_GUARD]")>=0||s.indexOf("REAL ENTRY")>=0){
+    if(s.indexOf("[APP_BOOT]")>=0||s.indexOf("[ONBOARDING_GUARD]")>=0||s.indexOf("REAL ENTRY")>=0||s.indexOf("[RAOS_FLAGS]")>=0){
       console.log(s);
       return;
     }

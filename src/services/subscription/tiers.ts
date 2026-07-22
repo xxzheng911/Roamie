@@ -46,6 +46,7 @@ export function canUseFeature(
     case "smart_itinerary":
     case "weather_planning":
     case "unlimited_ai":
+    case "conversation_workspace":
       return { allowed: false, reason: "premium_required", feature };
     default:
       break;

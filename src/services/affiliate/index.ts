@@ -8,6 +8,7 @@ import {
 import { buildKlookAffiliateUrl } from "@/lib/affiliate/klook-affiliate-url";
 import { openAffiliateUrl } from "@/lib/affiliate/affiliate-links";
 import { getAffiliateEnv, resolveTripAffiliateBaseUrl } from "@/lib/affiliate/affiliate-env";
+import { affiliateDebugInfo } from "@/lib/affiliate/affiliate-debug-log";
 import type { AffiliateOffer, AffiliateProvider } from "./types";
 
 type PartnerConfig = {
@@ -91,7 +92,7 @@ export const affiliateRegistry: AffiliateProvider[] = PARTNERS.map(toProvider);
 function logAffiliateServiceInit(): void {
   const env = getAffiliateEnv();
   const tripUrl = resolveTripAffiliateBaseUrl(env);
-  console.info(
+  affiliateDebugInfo(
     `[AffiliateService] init hasTripAffiliateUrl=${Boolean(tripUrl)} tripUrlLength=${tripUrl.length}`,
   );
 }

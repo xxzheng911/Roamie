@@ -111,8 +111,8 @@ check("花蓮 3d select 4 — single mode capacity + compact pass", () => {
     tripDays: 3,
     selectedCombinationIds: ids,
   });
-  assert.equal(plan.minimumViableStops, 4);
-  assert.equal(plan.preferredStops, 7);
+  assert.equal(plan.minimumViableStops, 5);
+  assert.equal(plan.preferredStops, 9);
   assert.equal(plan.minimumRepresentativePerCombination, 1);
 
   // Offline discovery may be empty; seed theme from product title for combo 4.
@@ -184,12 +184,14 @@ check("single select with 2 places fails before supplement (below minimumViable)
   assert.equal(integrity.failureCode, "total_real_place_count_insufficient");
 });
 
-check("single select with 4 places passes compact (not days×3=9)", () => {
+check("single select with 5 places passes compact (fetch preferred=days×3, viable floor leaner)", () => {
   const plan = planSelectedCombinationCapacity({
     tripDays: 3,
     selectedCombinationIds: [1],
   });
-  const places = Array.from({ length: 4 }, (_, i) =>
+  assert.equal(plan.preferredStops, 9);
+  assert.equal(plan.minimumViableStops, 5);
+  const places = Array.from({ length: 5 }, (_, i) =>
     mockPlace(`景點${i}`, 1, i, "台北"),
   );
   const integrity = validateSelectedCombinationIntegrity({
@@ -201,7 +203,7 @@ check("single select with 4 places passes compact (not days×3=9)", () => {
     capacityPlan: plan,
   });
   assert.equal(integrity.ok, true, integrity.reasons.join("|"));
-  const v = evaluateTotalRealPlaceValidation(4, plan.dynamicCapacity);
+  const v = evaluateTotalRealPlaceValidation(5, plan.dynamicCapacity);
   assert.equal(v.result, "compact");
 });
 

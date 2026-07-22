@@ -181,6 +181,23 @@ export type ChatPlanningSession = {
   tripCompanionCount?: number;
   /** 進行中的聊聊地點意圖（餐廳 / 咖啡 / 景點） */
   activeChatIntent?: import("@/lib/ai/chat-intent").ChatIntent;
+  /**
+   * Category recommendation topic (shopping / cafe / …).
+   * Source of truth for continueRecommendation — do not collapse shopping → attraction.
+   */
+  activeCategoryIntent?: import("@/lib/ai/chat-place-category-types").ChatPlaceCategoryIntent;
+  /** Accumulated travel intents in this conversation (Travel Intent += Shopping / Cafe) */
+  travelIntents?: import("@/lib/ai/chat-place-category-types").ChatPlaceCategoryIntent[];
+  /** Paginated recommendation session (pool + cursor) */
+  recommendationSession?: import("@/lib/ai/conversation-recommendation-session").ConversationRecommendationSession;
+  /**
+   * Active multi-turn recommendation refinement context (cuisine / budget / exclusions).
+   * Persisted via Conversation Workspace so refinements survive app relaunch.
+   */
+  activeRecommendationContext?: import("@/lib/ai/recommendation-refinement/types").ActiveRecommendationContext;
+  /** Plus Conversation Workspace ids */
+  workspaceId?: string;
+  conversationId?: string;
   /** 餐飲偏好：any / japanese / hotpot … */
   foodPreference?: string;
   /** 用餐時間提示：tomorrow_noon … */
@@ -449,6 +466,8 @@ export function mapPlaceResultToChatItem(
     weather?: WeatherSummary | null;
     userProfile?: UserProfileForReason | null;
     categoryLabel?: string;
+    /** Locks recommendation description templates to this intent */
+    categoryIntent?: string;
     distanceMeters?: number;
     isSavedFavorite?: boolean;
     currentTime?: Date;
@@ -474,6 +493,7 @@ export function mapPlaceResultToChatItem(
     {
       mood: ctx.mood,
       categoryLabel: ctx.categoryLabel,
+      categoryIntent: ctx.categoryIntent,
       distanceMeters: ctx.distanceMeters,
       isSavedFavorite: ctx.isSavedFavorite,
     },
@@ -501,6 +521,7 @@ export function mapPlaceResultToChatItem(
     todayHoursLabel: p.todayHoursLabel || undefined,
     closingSoonNote: p.closingSoonNote || undefined,
     nextOpenHint: p.nextOpenHint || undefined,
+    types: p.types?.length ? p.types : p.primaryType ? [p.primaryType] : undefined,
   });
   return {
     ...base,

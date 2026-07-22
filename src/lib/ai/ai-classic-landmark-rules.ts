@@ -14,6 +14,7 @@ import {
   isProperRestaurantPlace,
   parseDayPlanTimeMinutes,
 } from "@/lib/ai/ai-day-plan-slot-rules";
+import { isRecEnginePlannerEnabled } from "@/lib/recommendation/engine/feature-flag-planner";
 
 export const CLASSIC_LANDMARK_MIN_ATTRACTIONS_PER_DAY = 2;
 export const CLASSIC_LANDMARK_MIN_ITEMS_PER_DAY = 5;
@@ -300,6 +301,10 @@ export function isClassicLandmarkScenicCandidate(place: PlaceResult): boolean {
   return false;
 }
 
+/**
+ * Classic landmark 優先分數。
+ * @deprecated Flag ON（P2.3）不再用於排序；僅 Flag OFF legacy。
+ */
 export function scoreClassicLandmarkPriority(place: PlaceResult): number {
   if (isExcludedFromClassicLandmarkScenic(place)) return -100;
   if (isLocalNeighborhoodPark(place)) return 0;
@@ -340,7 +345,14 @@ export function scoreClassicLandmarkPriority(place: PlaceResult): number {
   return base;
 }
 
+/**
+ * Flag ON（P2.3）：保留輸入順序（Engine pool），不依 priority 重排。
+ * Flag OFF：legacy scoreClassicLandmarkPriority 排序。
+ */
 export function sortClassicLandmarkPlaces(places: PlaceResult[]): PlaceResult[] {
+  if (isRecEnginePlannerEnabled()) {
+    return [...places];
+  }
   return [...places].sort(
     (a, b) => scoreClassicLandmarkPriority(b) - scoreClassicLandmarkPriority(a),
   );

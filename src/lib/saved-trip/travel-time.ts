@@ -23,9 +23,29 @@ export function transitUnavailableWithWalkFallback(
   return false;
 }
 
-/** 依使用者選擇的交通方式取分鐘數；不跨 mode 共用 durationMinutes */
+/** 依使用者選擇的交通方式取分鐘數；若有 fallback 則取實際成功模式的耗時 */
 export function travelMinutesForMode(leg: TransitLegAdvice, transportLabel: string): number | null {
   const t = transportLabel.trim();
+
+  if (leg.transportFallbackMode === "drive" && leg.estimates.drive != null) {
+    return leg.estimates.drive;
+  }
+  if (leg.transportFallbackMode === "transit" && leg.estimates.transit != null) {
+    return leg.estimates.transit;
+  }
+  if (leg.transportFallbackMode === "walk" && leg.estimates.walk != null) {
+    return leg.estimates.walk;
+  }
+
+  // Resolved mode on the leg may differ from the UI preference label (auto drive).
+  if (leg.transportMode === "DRIVE" || leg.transportMode === "TWO_WHEELER") {
+    if (leg.estimates.drive != null) return leg.estimates.drive;
+    if (leg.durationMinutes > 0 && leg.transportStatus === "ok") return leg.durationMinutes;
+  }
+  if (leg.transportMode === "TRANSIT" && leg.estimates.transit != null) {
+    return leg.estimates.transit;
+  }
+
   if (!t) {
     return leg.transportMode && leg.durationMinutes > 0 ? leg.durationMinutes : null;
   }
@@ -52,7 +72,15 @@ export function travelMinutesForMode(leg: TransitLegAdvice, transportLabel: stri
     if (requestedMode === "BICYCLE" && leg.transportMode === "BICYCLE" && leg.durationMinutes > 0) {
       return leg.durationMinutes;
     }
-    return estimateMinutesForRoutesMode(leg, "BICYCLE");
+    const bike = estimateMinutesForRoutesMode(leg, "BICYCLE");
+    if (bike != null) return bike;
+    // Long bike legs often resolve via driving Directions.
+    return estimateMinutesForRoutesMode(leg, "DRIVE");
+  }
+
+  // Default walk preference but duration came from drive — still show minutes.
+  if (/步行|走路|walk/i.test(t) && leg.estimates.drive != null) {
+    return leg.estimates.drive;
   }
 
   return null;
@@ -142,13 +170,34 @@ function displayTextMatchesTransportMode(
 ): boolean {
   const text = leg.transportDisplayText?.trim();
   if (!text) return false;
+  // Soft unavailable / view-route copy is always acceptable.
+  if (/查看路線|暫時無法|無法取得/.test(text)) return true;
+  // Fallback drive/transit may differ from preference label.
+  if (leg.transportFallbackMode === "drive" && /開車|自駕|租車|drive/i.test(text)) {
+    return true;
+  }
+  if (leg.transportFallbackMode === "transit" && /大眾運輸/.test(text)) return true;
+  if (
+    (leg.transportMode === "DRIVE" || leg.transportMode === "TWO_WHEELER") &&
+    /開車|自駕|租車|drive/i.test(text)
+  ) {
+    return true;
+  }
   const requestedMode = travelLabelToRoutesMode(transportLabel);
-  if (leg.transportMode && leg.transportMode !== requestedMode) return false;
+  if (
+    leg.transportMode &&
+    leg.transportMode !== requestedMode &&
+    !leg.transportFallbackMode
+  ) {
+    // Auto-resolved mode (e.g. walk→drive) still OK if text matches resolved mode.
+    if (leg.transportMode === "DRIVE" && /開車|自駕/.test(text)) return true;
+    if (leg.transportMode === "TRANSIT" && /大眾運輸/.test(text)) return true;
+  }
   if (isTransitRequested(transportLabel)) {
     return /大眾運輸/.test(text);
   }
   if (/步行|走路|walk/i.test(transportLabel)) {
-    return /步行|走路/.test(text);
+    return /步行|走路|開車|大眾運輸/.test(text);
   }
   if (/開車|drive|自駕|租車|計程車|共乘|taxi/i.test(transportLabel)) {
     return /開車|自駕|租車|計程車|共乘|drive/i.test(text);
@@ -193,11 +242,20 @@ export function formatLegTravelTimeLabel(
   }
 
   const mins = travelMinutesForMode(leg, transportLabel);
-  if (mins == null) return "暫時無法取得交通時間";
+  if (mins == null) return "查看路線";
 
-  const label = transportLabel.trim() || "移動";
+  const fallbackLabel =
+    leg.transportFallbackMode === "drive"
+      ? "開車"
+      : leg.transportFallbackMode === "transit"
+        ? "大眾運輸"
+        : leg.transportMode === "DRIVE" || leg.transportMode === "TWO_WHEELER"
+          ? /步行|走路|walk|單車|bike/i.test(transportLabel)
+            ? "開車"
+            : transportLabel.trim() || "移動"
+          : transportLabel.trim() || "移動";
   const estimatedSuffix = leg.transportFallbackMode ? "（估算）" : "";
-  return `${label} 約 ${mins} 分鐘${estimatedSuffix}`;
+  return `${fallbackLabel} 約 ${mins} 分鐘${estimatedSuffix}`;
 }
 
 /** 不再顯示步行 fallback 提示 */

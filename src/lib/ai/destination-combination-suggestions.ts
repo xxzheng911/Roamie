@@ -30,6 +30,11 @@ import {
   buildThemeSearchDirections,
   type ThemeSearchDirection,
 } from "@/lib/ai/destination-discovery-queries";
+import { hasValidTripDuration } from "@/lib/ai/trip-duration-guard";
+import {
+  applyNearbyRegionPolicyToCombinations,
+  isNearbyRegionThemeTitle,
+} from "@/lib/ai/region-adjacency";
 
 export type DestinationCombination = {
   title: string;
@@ -243,13 +248,18 @@ function toStructuredForValidation(
  */
 export function getDestinationCombinations(
   destination: string,
-  _opts?: { allowThemeFallback?: boolean; countryHint?: string | null },
+  opts?: {
+    allowThemeFallback?: boolean;
+    countryHint?: string | null;
+    tripDays?: number | null;
+    includeFartherNearby?: boolean;
+  },
 ): DestinationCombination[] {
   const label = normalizeDestinationLabel(destination);
 
   const cached = getCachedDiscoveredCombinations(label);
   if (cached?.length) {
-    return cached
+    const fromCache = cached
       .map((combo) => {
         const primary = combo.primaryCandidates?.length
           ? combo.primaryCandidates
@@ -266,9 +276,20 @@ export function getDestinationCombinations(
         return { title: combo.title, places };
       })
       .filter((combo) => combo.places.length >= 2);
+
+    return applyNearbyRegionPolicyToCombinations(label, fromCache, {
+      tripDays: opts?.tripDays,
+      includeFarther: Boolean(opts?.includeFartherNearby),
+      forceInclude: opts?.tripDays == null,
+      maxCandidates: opts?.tripDays == null ? 5 : undefined,
+      countryHint: opts?.countryHint,
+    });
   }
 
-  const combos = buildDynamicDestinationCombinations(label)
+  const combos = buildDynamicDestinationCombinations(label, {
+    tripDays: opts?.tripDays,
+    includeFartherNearby: opts?.includeFartherNearby,
+  })
     .map((combo) => ({
       title: combo.title,
       places: combo.places
@@ -288,13 +309,19 @@ export function getDestinationCombinations(
         .filter(
           (place) =>
             !dropGenericCombinationLabel(place) &&
-            isSuggestionInDestinationScope(place, destination) &&
+            // Nearby region labels are cities outside primary scope — skip metro scope filter.
+            (isNearbyRegionThemeTitle(combo.title) ||
+              isSuggestionInDestinationScope(place, destination)) &&
             !isGenericDestinationPlaceholder(place, label) &&
             !isForbiddenTransitAttraction({ name: place }) &&
-            isLikelyPlaceName(place).ok,
+            (isNearbyRegionThemeTitle(combo.title) || isLikelyPlaceName(place).ok),
         ),
     }))
-    .filter((combo) => combo.places.length >= 2);
+    .filter(
+      (combo) =>
+        combo.places.length >= 2 ||
+        (isNearbyRegionThemeTitle(combo.title) && combo.places.length >= 1),
+    );
 
   const validation = validateCombinationOptions(
     toStructuredForValidation(label, combos),
@@ -351,6 +378,8 @@ export function buildOfferedCombinationsForSession(destination: string): NonNull
           address: c.address,
           types: c.types,
           primaryType: c.primaryType,
+          normalizedCategory: c.normalizedCategory,
+          combinationId: c.combinationId ?? index + 1,
           rating: c.rating,
           resolutionStatus: (c.googlePlaceId ? "resolved" : "named") as
             | "named"
@@ -418,7 +447,7 @@ export function buildDestinationCombinationSuggestionsReply(
   const label = normalizeDestinationLabel(destination);
   const combos = (opts?.forceCombinations?.length
     ? opts.forceCombinations
-    : getDestinationCombinations(label)
+    : getDestinationCombinations(label, { tripDays: days })
   ).map((c) => ({ ...c, places: [...c.places] }));
   if (!combos.length) return null;
 
@@ -434,6 +463,7 @@ export function buildDestinationCombinationSuggestionsReply(
         );
         return false;
       }
+      if (isNearbyRegionThemeTitle(combo.title)) return place.trim().length >= 2;
       const likelihood = isLikelyPlaceName(place);
       if (!likelihood.ok) {
         logNonPlaceCandidateRejected(
@@ -448,11 +478,20 @@ export function buildDestinationCombinationSuggestionsReply(
   }
 
   // Prefer ≥3 combos with ≥3 real places each; allow ≥2 only when discovery is thin.
-  const displayCombos = combos.filter((c) => c.places.length >= 3);
+  // Nearby-region themes may list 1 city on medium-length trips.
+  const displayCombos = combos.filter(
+    (c) =>
+      c.places.length >= 3 ||
+      (isNearbyRegionThemeTitle(c.title) && c.places.length >= 1),
+  );
   const softDisplay =
     displayCombos.length >= 3
       ? displayCombos
-      : combos.filter((c) => c.places.length >= 2);
+      : combos.filter(
+          (c) =>
+            c.places.length >= 2 ||
+            (isNearbyRegionThemeTitle(c.title) && c.places.length >= 1),
+        );
   if (softDisplay.length < 3) {
     return null;
   }
@@ -466,7 +505,7 @@ export function buildDestinationCombinationSuggestionsReply(
   );
 
   const header = [
-    opts?.weatherLine?.trim() || `好，我先記下 ${label} ${days} 天行程方向。`,
+    opts?.weatherLine?.trim() || `好，我先記下 ${label} ${days} 天的行程方向。`,
     "",
     `以下是${label}的建議組合搭配，你可以選一組或多組混搭：`,
     "",
@@ -567,6 +606,8 @@ export function isUserAllOrAutoCombinationReply(text: string): boolean {
   if (!t) return false;
   if (USER_ALL_OR_AUTO_COMBINATION_RE.test(t)) return true;
   if (isSoftAcceptAllCombinationsReply(t)) return true;
+  // 「全部，也想去鎌倉」「全部順便安排箱根」— 全選 + 近郊延伸
+  if (/^全部(?:[，,、]|也|都|順便|再|加|跟|和)/.test(t)) return true;
   // Soft variants with light fluff:「那就幫我生成」「可以幫我生成行程」
   if (
     /^(那就|那就請|請|可以)?(幫我|請你)?(生成|排|安排)(行程)?$/.test(t) ||
@@ -888,7 +929,17 @@ export function buildSafeCombinationRecommendations(
 export function hasDestinationPlanningBasics(ctx: {
   destination?: string;
   days?: number;
+  tripDays?: number;
   startDate?: string;
+  endDate?: string;
 }): boolean {
-  return Boolean(ctx.destination?.trim() && ctx.days && ctx.days > 0);
+  return Boolean(
+    ctx.destination?.trim() &&
+      hasValidTripDuration({
+        days: ctx.days,
+        tripDays: ctx.tripDays,
+        startDate: ctx.startDate,
+        endDate: ctx.endDate,
+      }),
+  );
 }

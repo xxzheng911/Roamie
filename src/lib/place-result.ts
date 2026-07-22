@@ -37,4 +37,8 @@ export type PlaceResult = {
   /** Google regularOpeningHours（行程排程營業時間驗證用） */
   regularOpeningHours?: PlaceHoursData["regularOpeningHours"];
   utcOffsetMinutes?: number | null;
+  /** Primary destination vs user-requested nearby extension (箱根／橫濱…) */
+  destinationScope?: "primary" | "nearby_extension";
+  /** Normalized nearby city when destinationScope = nearby_extension */
+  extensionDestination?: string;
 };

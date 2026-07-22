@@ -123,6 +123,9 @@ export type PlaceSearchData = {
   searchMode?: "destination" | "nearby";
   skipLocationBias?: boolean;
   intentCategory?: string;
+  cacheDestination?: string;
+  cacheCity?: string;
+  cacheCountry?: string;
 };
 
 export type PlaceSearchFn = (args: {
@@ -132,6 +135,12 @@ export type PlaceSearchFn = (args: {
 export type PlaceSearchExtras = {
   searchContext?: ChatPlaceSearchContext;
   intentCategory?: string;
+  /**
+   * When true (or intentCategory=shopping), do not strip shopping_mall /
+   * department_store via itinerary retail exclusion — that filter is for
+   * day-plan scenic slots, not Shopping Intent discovery.
+   */
+  skipExcludedRetailFilter?: boolean;
 };
 
 const RECOMMENDATION_COUNT = 5;
@@ -386,8 +395,12 @@ function buildSummary(
   }
 
   if (intent === "restaurant") {
+    const dest = ctx.destination?.trim();
     const lead =
-      exclusionAck ?? "依你現在的需求，附近這幾間餐廳值得先看看：";
+      exclusionAck ??
+      (dest
+        ? `在${dest}，這幾間餐廳值得先看看：`
+        : "依你現在的需求，附近這幾間餐廳值得先看看：");
     return [
       lead,
       "",
@@ -530,16 +543,24 @@ async function runPlaceSearch(
       searchMode: ctxPayload.searchMode ?? "nearby",
     },
   });
-  const places = filterExcludedRetailPlaces(result.places ?? []);
+  const skipRetail =
+    extras?.skipExcludedRetailFilter === true ||
+    extras?.intentCategory === "shopping";
+  const rawPlaces = result.places ?? [];
+  const places = skipRetail
+    ? rawPlaces
+    : filterExcludedRetailPlaces(rawPlaces);
   if (result.error) {
     notePlacesSearchRateLimit(result.error);
     logChatNearbyError({ message: result.error });
   }
   logAiPipeline("[CHAT_PLACES_RAW_COUNT]", {
     count: places.length,
+    apiCount: rawPlaces.length,
     error: result.error ?? "",
     mode: attempt.mode,
     types: attempt.includedTypes?.join(",") ?? attempt.nearbyGroups?.length ?? "",
+    skipRetail: skipRetail ? 1 : 0,
   });
   logChatPlacesRawCount(places.length);
   return { places, error: result.error ?? null };
@@ -580,7 +601,8 @@ export async function fetchPlacesWithSearchAttempts(
       );
       if (places.length > 0) {
         logChatPlacesResponse(places.length, attempt.query);
-        return filterExcludedRetailPlaces(places);
+        // runPlaceSearch already applied retail filter unless shopping skip
+        return places;
       }
     } catch (error) {
       logChatPlacesError(error, `query=${attempt.query}`);
@@ -646,7 +668,11 @@ export async function fetchPlacesWithSearchAttemptsMerged(
   if (merged.length > 0) {
     logChatPlacesResponse(merged.length, "merged");
   }
-  return filterExcludedRetailPlaces(merged.slice(0, maxResults));
+  const skipRetail =
+    extras?.skipExcludedRetailFilter === true ||
+    extras?.intentCategory === "shopping";
+  const sliced = merged.slice(0, maxResults);
+  return skipRetail ? sliced : filterExcludedRetailPlaces(sliced);
 }
 
 function applyNearbyPlaceFilters(
@@ -1004,7 +1030,12 @@ export function buildSummaryForRecommendations(
   }
 
   if (intent === "restaurant") {
-    const lead = exclusionAck ?? "依你現在的需求，附近這幾間餐廳值得先看看：";
+    const dest = ctx.destination?.trim();
+    const lead =
+      exclusionAck ??
+      (dest
+        ? `在${dest}，這幾間餐廳值得先看看：`
+        : "依你現在的需求，附近這幾間餐廳值得先看看：");
     return [lead, "", list, "", "如果想換個菜系或預算，跟我說一聲就好。"].join("\n");
   }
 

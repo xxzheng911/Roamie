@@ -23,6 +23,9 @@ import {
 import { isTransitRequested, travelMinutesForMode } from "@/lib/saved-trip/travel-time";
 import {
   estimatedDisplaySuffix,
+  resolveInitialDirectionsMode,
+  resolvedTransportDisplayLabel,
+  straightLineDistanceMeters,
   transportFallbackModeFromResult,
 } from "@/lib/saved-trip/route-duration-fallback";
 import { resolveLegTransportLabel } from "@/lib/saved-trip/transport-options";
@@ -185,11 +188,11 @@ async function resolveItemCoords(
       options.onCoordsResolved?.(item, coords);
       return coords;
     }
-    console.warn(
+    console.info(
       `[ROUTE_DURATION_ERROR] status=geocode_empty message=no_coords name=${item.placeName || item.title}`,
     );
   } catch (e) {
-    console.warn(
+    console.info(
       `[ROUTE_DURATION_ERROR] status=geocode_exception message=${e instanceof Error ? e.message : String(e)} name=${item.placeName || item.title}`,
     );
   }
@@ -204,7 +207,7 @@ function buildTransportDisplayText(
     return undefined;
   }
 
-  if (isTransitRequested(transportLabel)) {
+  if (isTransitRequested(transportLabel) && !transportFallbackModeFromResult(route)) {
     if (route.estimates.transit != null) {
       return `大眾運輸 約 ${route.estimates.transit} 分鐘`;
     }
@@ -215,13 +218,14 @@ function buildTransportDisplayText(
   }
 
   const transportFallbackMode = transportFallbackModeFromResult(route);
+  const displayLabel = resolvedTransportDisplayLabel(transportLabel, route);
 
   const pseudoLeg: TransitLegAdvice = {
     legKey: "",
     fromName: "",
     toName: "",
     recommendedMode: "walk",
-    headline: transportLabel,
+    headline: displayLabel,
     durationMinutes: route.durationMinutes,
     distanceMeters: route.distanceMeters,
     reason: "",
@@ -229,28 +233,28 @@ function buildTransportDisplayText(
     estimates: route.estimates,
     source: "rules",
     transportFallbackMode,
+    transportMode: route.mode,
   };
 
-  const mins = travelMinutesForMode(pseudoLeg, transportLabel);
+  const mins = travelMinutesForMode(pseudoLeg, displayLabel);
   if (mins == null) {
-    if (!route.ok) {
-      console.warn(
-        `[ROUTE_DURATION_ERROR] display_unavailable label=${transportLabel} mode=${route.mode}`,
-      );
-    }
-    return route.ok ? undefined : "暫時無法取得交通時間";
+    // Soft UI — never spam ROUTE_DURATION_ERROR on every render.
+    return route.ok ? undefined : "查看路線";
   }
 
-  const label = transportLabel.trim() || "移動";
-  return `${label} 約 ${mins} 分鐘${estimatedDisplaySuffix(transportLabel, route)}`;
+  return `${displayLabel} 約 ${mins} 分鐘${estimatedDisplaySuffix(displayLabel, route)}`;
 }
 
 function recommendedModeFromLabel(transportLabel: string, route: RouteLegDurationResult): TransitMode {
-  if (/步行|walk/i.test(transportLabel)) return "walk";
+  const fallback = transportFallbackModeFromResult(route);
+  if (fallback === "drive") return "drive";
+  if (fallback === "transit") return "transit";
+  if (fallback === "walk") return "walk";
+  if (route.mode === "DRIVE" || route.mode === "TWO_WHEELER") return "drive";
+  if (route.mode === "TRANSIT") return "transit";
   if (/開車|drive|自駕|租車|計程車|共乘/i.test(transportLabel)) return "drive";
   if (/大眾|transit|捷運|地鐵/i.test(transportLabel)) return "transit";
-  if (route.mode === "DRIVE") return "drive";
-  if (route.mode === "TRANSIT") return "transit";
+  if (/步行|walk/i.test(transportLabel)) return "walk";
   return "walk";
 }
 
@@ -276,13 +280,15 @@ function buildTransitLeg(
 
   const transitMinutes = route.estimates.transit;
   const transportFallbackMode = transportFallbackModeFromResult(route);
+  const resolvedMode = route.mode || requestedMode;
+  const displayLabel = resolvedTransportDisplayLabel(transportLabel, route);
 
   const leg: TransitLegAdvice = {
     legKey,
     fromName,
     toName,
     recommendedMode: recommendedModeFromLabel(transportLabel, route),
-    headline: transportLabel,
+    headline: displayLabel,
     durationMinutes: transitMinutes ?? (route.ok ? route.durationMinutes : 0),
     distanceMeters: route.distanceMeters,
     reason: transitFailed ? "transit_unavailable" : "",
@@ -293,7 +299,7 @@ function buildTransitLeg(
       transit: route.estimates.transit,
     },
     source: "rules",
-    transportMode: requestedMode,
+    transportMode: resolvedMode,
     transportStatus,
     transportFallbackMode,
     transportDurationMinutes: transitMinutes ?? (route.ok ? route.durationMinutes : undefined),
@@ -301,10 +307,6 @@ function buildTransitLeg(
     routeCacheFingerprint,
     transitUnavailableProvider: route.transitUnavailableProvider ?? null,
   };
-
-  console.info(
-    `[ROUTE_UI_UPDATE] legId=${legKey} mode=${requestedMode} durationMinutes=${leg.transportDurationMinutes ?? 0}`,
-  );
 
   return leg;
 }
@@ -338,7 +340,7 @@ function buildMissingCoordsLeg(
     transportStatus: japanTransit ? "transit_unavailable" : "failed",
     transportFallbackMode: null,
     transportDurationMinutes: undefined,
-    transportDisplayText: japanTransit ? undefined : "暫時無法取得交通時間",
+    transportDisplayText: japanTransit ? undefined : "查看路線",
     transitUnavailableProvider: japanTransit ? "google_maps_deeplink" : null,
   };
 }
@@ -483,8 +485,7 @@ async function syncOneLeg(
   const toName = curr.placeName || curr.title;
   const legKey = buildDayLegKey(dateKey, fromName, toName);
   const transportLabel = transportLabelForLeg(settings, curr, dateKey);
-  const mode: RoutesTravelMode = travelLabelToRoutesMode(transportLabel);
-  const modeLabel = routesModeToDirectionsModeLabel(mode);
+  const userMode: RoutesTravelMode = travelLabelToRoutesMode(transportLabel);
   const existing =
     settings.transitLegs?.[legKey] ??
     resolveTransitLeg(settings.transitLegs, dateKey, fromName, toName);
@@ -499,6 +500,25 @@ async function syncOneLeg(
   };
 
   const region = options.directionsRegion ?? resolveDirectionsRegion(options.locationContext);
+
+  const origin = await resolveItemCoords(prev, options);
+  const destination = await resolveItemCoords(curr, options);
+
+  if (!origin || !destination) {
+    logDirectionsDebug("skipped", {
+      legKey,
+      mode: routesModeToDirectionsModeLabel(userMode),
+      hasOrigin: Boolean(origin),
+      hasDestination: Boolean(destination),
+      skippedReason: "missing_coords",
+    });
+    return buildMissingCoordsLeg(legKey, fromName, toName, transportLabel, userMode, region);
+  }
+
+  // Distance-first mode: do not lead with walking for long / cross-area legs.
+  const straightM = straightLineDistanceMeters(origin, destination);
+  const mode = resolveInitialDirectionsMode(userMode, straightM);
+  const modeLabel = routesModeToDirectionsModeLabel(mode);
   const isJapanTransitLeg = mode === "TRANSIT" && region === "jp";
 
   const departureTime =
@@ -511,20 +531,6 @@ async function syncOneLeg(
       : undefined;
 
   const queryBase = buildRouteQueryOptions(prev, curr, dateKey, options, departureTime, legKey);
-
-  const origin = await resolveItemCoords(prev, options);
-  const destination = await resolveItemCoords(curr, options);
-
-  if (!origin || !destination) {
-    logDirectionsDebug("skipped", {
-      legKey,
-      mode: modeLabel,
-      hasOrigin: Boolean(origin),
-      hasDestination: Boolean(destination),
-      skippedReason: "missing_coords",
-    });
-    return buildMissingCoordsLeg(legKey, fromName, toName, transportLabel, mode, region);
-  }
 
   const routeCacheFingerprint = buildLegRouteFingerprint(
     dayIndex,
@@ -549,33 +555,32 @@ async function syncOneLeg(
     return { ...existing!, legKey };
   }
 
+  // Also accept prior coverage under the user's original mode fingerprint (legacy walk legs).
+  if (
+    !forceThisLeg &&
+    mode !== userMode &&
+    legRouteIsCovered(
+      existing,
+      userMode,
+      buildLegRouteFingerprint(dayIndex, legIndex, origin, destination, userMode, departureTime, {
+        originPlaceId: prev.googlePlaceId,
+        destinationPlaceId: curr.googlePlaceId,
+        tripDate: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : undefined,
+      }),
+    )
+  ) {
+    return { ...existing!, legKey };
+  }
+
   try {
     const route = await fetchScopedLegDuration({
       scope,
       origin,
       destination,
-      preferredMode: mode,
+      preferredMode: userMode,
       query: { ...queryBase, departureTime },
       force: forceThisLeg,
     });
-
-    if (!route.ok && route.transitUnavailableProvider !== "google_maps_deeplink") {
-      logDirectionsDebug("request failed", {
-        legKey,
-        mode: modeLabel,
-        origin: `${origin.lat},${origin.lng}`,
-        destination: `${destination.lat},${destination.lng}`,
-        error: mode === "TRANSIT" ? "transit_unavailable" : "route_failed",
-      });
-    } else {
-      logDirectionsDebug("request success", {
-        legKey,
-        mode: modeLabel,
-        origin: `${origin.lat},${origin.lng}`,
-        destination: `${destination.lat},${destination.lng}`,
-        durationMinutes: route.durationMinutes,
-      });
-    }
 
     return buildTransitLeg(
       legKey,
@@ -583,13 +588,13 @@ async function syncOneLeg(
       toName,
       route,
       transportLabel,
-      mode,
+      userMode,
       routeCacheFingerprint,
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     logDirectionsDebug("request failed", { legKey, mode: modeLabel, error: msg });
-    return buildMissingCoordsLeg(legKey, fromName, toName, transportLabel, mode, region);
+    return buildMissingCoordsLeg(legKey, fromName, toName, transportLabel, userMode, region);
   }
 }
 

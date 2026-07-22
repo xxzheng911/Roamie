@@ -1,8 +1,12 @@
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
-import { searchPlaces, getPlaceDetails, type PlaceLite } from "@/services/placesService";
-import { fetchPlaceDetailsForScreenWithKey, type PlaceDetailsScreenResult } from "@/lib/places.functions";
+import { searchPlaces, type PlaceLite } from "@/services/placesService";
+import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
+import {
+  fetchPlaceDetailsForScreenWithKeyViaGateway,
+  getPlaceLiteDetailsViaGateway,
+} from "@/lib/pie/places-gateway";
 import { getGoogleMapsBrowserKey, buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
@@ -30,9 +34,7 @@ type SearchFn = (args: {
   data: { query: string; locale?: Locale; lat?: number; lng?: number; sessionToken?: string };
 }) => Promise<{ suggestions: TripStopSuggestion[]; error: string | null }>;
 
-type ResolveFn = (args: {
-  data: { placeId: string; locale?: Locale };
-}) => Promise<{
+type ResolveFn = (args: { data: { placeId: string; locale?: Locale } }) => Promise<{
   stop: { lat: number | null; lng: number | null; name?: string; address?: string } | null;
   error: string | null;
 }>;
@@ -73,11 +75,7 @@ export async function runExploreMapPlaceSearch(
 
 function placeLiteToResult(place: PlaceLite, types?: string[] | null): PlaceResult {
   const mergedTypes =
-    types && types.length > 0
-      ? types
-      : place.placeType
-        ? [place.placeType]
-        : null;
+    types && types.length > 0 ? types : place.placeType ? [place.placeType] : null;
   return {
     id: place.placeId,
     name: place.name,
@@ -198,7 +196,11 @@ export async function resolveExploreSelectedPlacePin(
 
   const browserKey = getGoogleMapsBrowserKey();
   if (browserKey) {
-    details = await fetchPlaceDetailsForScreenWithKey(placeId, browserKey, options.locale);
+    details = await fetchPlaceDetailsForScreenWithKeyViaGateway(
+      placeId,
+      browserKey,
+      options.locale,
+    );
   } else if (options.fetchPlaceDetailsFn) {
     const result = await options.fetchPlaceDetailsFn({
       data: { placeId, locale: options.locale },
@@ -245,7 +247,7 @@ export async function resolveExploreMapSuggestion(
     reasonProfile: UserProfileForReason | null;
   },
 ): Promise<{ card: ExploreMapSearchCard | null; error: string | null }> {
-  const { place, error } = await getPlaceDetails(suggestion.placeId, {
+  const { place, error } = await getPlaceLiteDetailsViaGateway(suggestion.placeId, {
     locale: options.locale,
     resolveFn: options.resolveFn,
     fallback: suggestion,

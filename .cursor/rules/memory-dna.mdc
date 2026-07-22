@@ -1,0 +1,29 @@
+---
+description: RAOS Travel Memory and Travel DNA modules
+globs: src/lib/ai/memory/**/*.{ts,tsx},src/lib/travel-pref*.ts,src/lib/build-place-recommendation-reason.ts
+alwaysApply: false
+---
+
+# Travel Memory & DNA (RAOS Ch.4–5)
+
+Full docs: `docs/raos/chapter-04-*.md`, `chapter-05-*.md`.
+
+## Separation
+
+- **Memory** = structured facts/preferences (not chat logs).
+- **DNA** = weighted travel personality analysis derived from Memory + behavior.
+- Both Plus-only. Neither should be written directly into prompts; Conversation/Context reads them.
+
+## Memory rules
+
+- Store valuable structured fields (style, food likes/dislikes, budget band, transport, companions, visited places, etc.).
+- Update via accumulation/weights; do not lock from a single utterance.
+- Behavior sources: chat, favorites, trip edits, search, map, dwell, completed trips.
+- User can view / edit / delete / reset.
+
+## DNA rules
+
+- Multi-label with weights (e.g. Cafe Lover 92%); dynamic over time; keep evolution history.
+- Influence ranking/planning; speak naturally in recommendations — do not spam labels.
+- User can keep / downweight / ignore / reanalyze.
+- DNA must not mutate Memory directly; LFE provides evidence, Decision/update modules apply.

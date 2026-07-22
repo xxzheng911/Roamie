@@ -676,15 +676,27 @@ export function validateGeneratedItinerary(params: {
   return { ok: reasons.length === 0, reasons };
 }
 
-/** Redistribute stops so every trip day has ≥1 place (prefer real places over leaving blanks). */
+/**
+ * Redistribute stops into empty days.
+ *
+ * P1 Step 1: never invent singleton days by peeling one stop from a full day.
+ * Only fill an empty day when we can place `minPerDay` real stops without
+ * dropping any donor below `minPerDay`. Otherwise leave empty (caller blocks save).
+ */
 export function redistributeToFillEmptyDays(params: {
   stops: RoamieItineraryItem[];
   days: number;
   startDate: string;
   sparePlaces?: RoamieRecommendationItem[];
   makeStop?: (place: RoamieRecommendationItem, date: string, time: string) => RoamieItineraryItem;
+  /** Minimum stops required on a filled day (default 2). Singleton fill is forbidden. */
+  minPerDay?: number;
+  /** When true (default), skip all empty-day fills that would create 1-stop days. */
+  forbidSingletonFill?: boolean;
 }): RoamieItineraryItem[] {
   const dayCount = Math.max(params.days, 1);
+  const minPerDay = Math.max(2, params.minPerDay ?? 2);
+  const forbidSingleton = params.forbidSingletonFill !== false;
   const dates = listTripDates([], params.startDate, dayCount);
   const byDate = new Map<string, RoamieItineraryItem[]>();
   for (const date of dates) byDate.set(date, []);
@@ -702,6 +714,50 @@ export function redistributeToFillEmptyDays(params: {
   }
 
   for (const emptyDate of emptyDates) {
+    // Prefer unused spare places — only if we can fill minPerDay at once.
+    if (params.sparePlaces?.length && params.makeStop) {
+      const usedIds = new Set(
+        [...byDate.values()].flat().map((s) => s.googlePlaceId?.trim()).filter(Boolean),
+      );
+      const usedNames = new Set(
+        [...byDate.values()]
+          .flat()
+          .map((s) => normalizePlaceNameKey(s.placeName ?? s.title)),
+      );
+      const spares = params.sparePlaces.filter((p) => {
+        const id = p.googlePlaceId?.trim();
+        if (id && usedIds.has(id)) return false;
+        const nameKey = normalizePlaceNameKey(p.placeName ?? p.name);
+        return Boolean(nameKey) && !usedNames.has(nameKey);
+      });
+      if (spares.length >= minPerDay) {
+        const filled = spares.slice(0, minPerDay).map((spare, i) =>
+          params.makeStop!(spare, emptyDate, i === 0 ? "10:00" : "14:00"),
+        );
+        byDate.set(emptyDate, filled);
+        logAiPipeline(
+          "[AI_PLANNER_REDISTRIBUTE]",
+          `emptyDate=${emptyDate}`,
+          `action=fill_from_spares`,
+          `count=${filled.length}`,
+          "sourceFunction=redistributeToFillEmptyDays",
+        );
+        continue;
+      }
+    }
+
+    if (forbidSingleton) {
+      logAiPipeline(
+        "[AI_PLANNER_REDISTRIBUTE]",
+        `emptyDate=${emptyDate}`,
+        "action=leave_empty_no_singleton_fill",
+        `minPerDay=${minPerDay}`,
+        "sourceFunction=redistributeToFillEmptyDays",
+      );
+      continue;
+    }
+
+    // Legacy path (explicitly opted in): peel one stop — kept only for tests that disable forbid.
     let donorDate: string | null = null;
     let donorList: RoamieItineraryItem[] | null = null;
     for (const date of dates) {
@@ -716,27 +772,6 @@ export function redistributeToFillEmptyDays(params: {
       const moved = donorList.pop()!;
       byDate.set(donorDate, donorList);
       byDate.set(emptyDate, [{ ...moved, date: emptyDate }]);
-      continue;
-    }
-
-    if (params.sparePlaces?.length && params.makeStop) {
-      const usedIds = new Set(
-        [...byDate.values()].flat().map((s) => s.googlePlaceId?.trim()).filter(Boolean),
-      );
-      const usedNames = new Set(
-        [...byDate.values()]
-          .flat()
-          .map((s) => normalizePlaceNameKey(s.placeName ?? s.title)),
-      );
-      const spare = params.sparePlaces.find((p) => {
-        const id = p.googlePlaceId?.trim();
-        if (id && usedIds.has(id)) return false;
-        const nameKey = normalizePlaceNameKey(p.placeName ?? p.name);
-        return !usedNames.has(nameKey);
-      });
-      if (spare) {
-        byDate.set(emptyDate, [params.makeStop(spare, emptyDate, "14:00")]);
-      }
     }
   }
 

@@ -1,4 +1,5 @@
 import type { AffiliateEnvConfig } from "@/lib/affiliate/affiliate-env";
+import { affiliateDebugInfo } from "@/lib/affiliate/affiliate-debug-log";
 import type { TripAffiliateContext } from "@/lib/affiliate/affiliate-types";
 import { resolveAgodaCityId } from "@/lib/affiliate/agoda-city-ids";
 import { resolveAgodaStayDates } from "@/lib/affiliate/trip-affiliate-dates";
@@ -91,9 +92,9 @@ export function buildAgodaAffiliateUrl(
   const localePath = mapLocaleToAgodaPath(input.locale);
 
   if (!checkIn || !checkOut) {
-    console.info(`[AFFILIATE_DATE_MISSING] tripId=${tripId || "(none)"} reason=missing_hotel_dates`);
+    affiliateDebugInfo(`[AFFILIATE_DATE_MISSING] tripId=${tripId || "(none)"} reason=missing_hotel_dates`);
   } else {
-    console.info(`[AGODA_HOTEL_DATES] checkIn=${checkIn} checkOut=${checkOut}`);
+    affiliateDebugInfo(`[AGODA_HOTEL_DATES] checkIn=${checkIn} checkOut=${checkOut}`);
   }
 
   const url = new URL(`${AGODA_SEARCH_ORIGIN}/${localePath}/search`);
@@ -116,7 +117,7 @@ export function buildAgodaAffiliateUrl(
   url.searchParams.set("pslc", "1");
 
   const built = url.toString();
-  console.info(
+  affiliateDebugInfo(
     `[AFFILIATE_URL_BUILT] type=hotel platform=agoda cityId=${cityId ?? ""} url=${built}`,
   );
   return built;

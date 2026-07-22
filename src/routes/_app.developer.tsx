@@ -1,21 +1,35 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ChevronLeft } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useAccess } from "@/hooks/use-access";
 import { runOpenWeatherDevTest, runRoutesDevTest, type ApiDevTestResult } from "@/services/apiDevTools";
 import {
   clearSavedCollections,
-  forceFreeMode,
   forceOnboarding,
-  forcePlusMode,
-  clearTestModeOverride,
   resetTravelPreference,
   resetUserMemory,
 } from "@/lib/access/dev-actions";
 import { lockDeveloperMode } from "@/lib/access/developer";
 import { broadcastAccessChange } from "@/lib/access/events";
 import { clearBootstrapSplashForDev } from "@/lib/bootstrap-splash";
+import {
+  creditsDebugStatusLine,
+  DEBUG_CREDIT_PRESETS,
+  debugClearCreditsOverride,
+  debugClearOverride,
+  debugDeductOneCredit,
+  debugForceFree,
+  debugForcePlus,
+  debugResetCredits,
+  debugSetCredits,
+  debugSubscriptionAuto,
+  fetchCreditAccount,
+  getCachedCreditAccount,
+  isCreditsFeatureEnabled,
+  resolveCreditsFeatureFlag,
+  usableCredits,
+} from "@/lib/credits";
 
 export const Route = createFileRoute("/_app/developer")({
   beforeLoad: () => {
@@ -86,6 +100,9 @@ function DeveloperSettingsPage() {
   const navigate = useNavigate();
   const [weatherTestResult, setWeatherTestResult] = useState<ApiDevTestResult | null>(null);
   const [routesTestResult, setRoutesTestResult] = useState<ApiDevTestResult | null>(null);
+  const [creditsAvailable, setCreditsAvailable] = useState<number | null>(null);
+  const [formalAvailable, setFormalAvailable] = useState<number | null>(null);
+  const [overrideActive, setOverrideActive] = useState(false);
   const {
     canShowDeveloperTools,
     subscriptionState,
@@ -96,6 +113,36 @@ function DeveloperSettingsPage() {
     setSubscriptionState,
     refresh,
   } = useAccess();
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const account = (await fetchCreditAccount()) ?? getCachedCreditAccount();
+      if (!cancelled) {
+        setCreditsAvailable(account ? usableCredits(account) : null);
+        setFormalAvailable(account?.formal_available_credits ?? null);
+        setOverrideActive(Boolean(account?.override_active));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hasPlusAccess, testModeOverride]);
+
+  const reloadCredits = async () => {
+    const account = (await fetchCreditAccount()) ?? getCachedCreditAccount();
+    setCreditsAvailable(account ? usableCredits(account) : null);
+    setFormalAvailable(account?.formal_available_credits ?? null);
+    setOverrideActive(Boolean(account?.override_active));
+  };
+
+  const subscriptionDebugMode =
+    testModeOverride === "force-free"
+      ? "force-free"
+      : testModeOverride === "force-plus"
+        ? "force-plus"
+        : "auto";
+
 
   if (!canShowDeveloperTools) {
     return (
@@ -191,18 +238,35 @@ function DeveloperSettingsPage() {
 
       <section className="mt-5 space-y-2">
         <p className="px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Force test mode
+          Subscription Debug
         </p>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => {
-              forceFreeMode();
+              debugSubscriptionAuto();
               refresh();
-              toast.message("強制 Free 模式");
+              toast.message("Subscription Auto（讀取真實訂閱）");
             }}
             className={`rounded-full border px-4 py-2 text-xs ${
-              testModeOverride === "force-free" ? "border-foreground bg-foreground text-background" : "border-border"
+              subscriptionDebugMode === "auto"
+                ? "border-foreground bg-foreground text-background"
+                : "border-border"
+            }`}
+          >
+            Auto
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              debugForceFree();
+              refresh();
+              toast.message("Force Free");
+            }}
+            className={`rounded-full border px-4 py-2 text-xs ${
+              subscriptionDebugMode === "force-free"
+                ? "border-foreground bg-foreground text-background"
+                : "border-border"
             }`}
           >
             Force Free
@@ -210,31 +274,121 @@ function DeveloperSettingsPage() {
           <button
             type="button"
             onClick={() => {
-              forcePlusMode();
+              debugForcePlus();
               refresh();
-              toast.message("強制 Plus 模式");
+              toast.message("Force Plus");
             }}
             className={`rounded-full border px-4 py-2 text-xs ${
-              testModeOverride === "force-plus" ? "border-foreground bg-foreground text-background" : "border-border"
+              subscriptionDebugMode === "force-plus"
+                ? "border-foreground bg-foreground text-background"
+                : "border-border"
             }`}
           >
             Force Plus
           </button>
+        </div>
+        <p className="px-1 text-[11px] text-muted-foreground">
+          Auto = 真實 Apple／Supabase 訂閱。Force 僅覆寫本機測試狀態，不模擬訂閱週期。目前 Plus：
+          {hasPlusAccess ? "是" : "否"} · mode={subscriptionDebugMode}
+        </p>
+      </section>
+
+      <section className="mt-5 space-y-2">
+        <p className="px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          Credits Debug Override
+        </p>
+        <p className="px-1 text-[11px] text-muted-foreground">
+          {creditsDebugStatusLine({
+            available: creditsAvailable,
+            formalAvailable,
+            overrideActive,
+            hasPlusAccess,
+            subscriptionMode: subscriptionDebugMode,
+          })}{" "}
+          · source={resolveCreditsFeatureFlag().source}
+        </p>
+        <p className="rounded-2xl border border-border bg-secondary/40 px-4 py-3 text-xs text-muted-foreground">
+          Set／Deduct／Reset 只寫入 <strong>credit_debug_overrides</strong>，不改正式{" "}
+          <strong>available_credits</strong>。Runtime 優先讀 Override；Clear Override 後恢復正式資料。
+        </p>
+        {!isCreditsFeatureEnabled() ? (
+          <p className="rounded-2xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-800">
+            VITE_FEATURE_CREDITS_ENABLED 目前為 OFF。Debug Override 可設定，但 Runtime 不會 Gate／扣點。
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          {DEBUG_CREDIT_PRESETS.map((n) => (
+            <button
+              key={n}
+              type="button"
+              onClick={async () => {
+                const result = await debugSetCredits(n);
+                await reloadCredits();
+                refresh();
+                if (result.ok) toast.success(`Override Credits = ${n}（Force Free）`);
+                else toast.error(result.message ?? "Set Override 失敗");
+              }}
+              className={`rounded-full border px-3 py-2 text-xs ${
+                overrideActive && creditsAvailable === n
+                  ? "border-foreground bg-foreground text-background"
+                  : "border-border"
+              }`}
+            >
+              Set {n}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => {
-              clearTestModeOverride();
+            onClick={async () => {
+              const result = await debugResetCredits();
+              await reloadCredits();
               refresh();
-              toast.message("已清除覆寫");
+              if (result.ok) toast.success("Override Reset → 20 + Force Free");
+              else toast.error(result.message ?? "Reset 失敗");
             }}
             className="rounded-full border border-border px-4 py-2 text-xs"
           >
-            清除覆寫
+            Reset Override
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              const result = await debugDeductOneCredit();
+              await reloadCredits();
+              if (result.ok) toast.message(`Override Deduct 1 → ${result.available_credits}`);
+              else toast.error(result.message ?? "Deduct 失敗");
+            }}
+            className="rounded-full border border-border px-4 py-2 text-xs"
+          >
+            Deduct 1 Credit
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              const result = await debugClearCreditsOverride();
+              await reloadCredits();
+              if (result.ok) toast.success("已清除 Credits Override（讀正式 Credits）");
+              else toast.error(result.message ?? "Clear Override 失敗");
+            }}
+            className="rounded-full border border-border px-4 py-2 text-xs"
+          >
+            Clear Credits Override
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              await debugClearOverride();
+              await reloadCredits();
+              refresh();
+              toast.message("Clear All Debug（Subscription Auto + Credits Override）");
+            }}
+            className="rounded-full border border-border px-4 py-2 text-xs"
+          >
+            Clear All Debug
           </button>
         </div>
-        <p className="px-1 text-[11px] text-muted-foreground">
-          Developer 預設擁有 Plus；Force Free 可模擬一般免費使用者體驗。目前 Plus 存取：{hasPlusAccess ? "是" : "否"}
-        </p>
       </section>
 
       <section className="mt-6 space-y-2">

@@ -1,0 +1,28 @@
+---
+description: RAOS Planner Optimizer and Validator Engine
+globs: src/lib/ai/**/*planner*.{ts,tsx},src/lib/ai/**/*itinerary*.{ts,tsx},src/lib/ai/**/*day-plan*.{ts,tsx},src/lib/ai/**/*validate*.{ts,tsx},src/lib/ai/combination-*.ts
+alwaysApply: false
+---
+
+# Planner & Validator (RAOS Ch.8–9)
+
+Full docs: `docs/raos/chapter-08-*.md`, `chapter-09-*.md`.
+
+## Planner Optimizer
+
+- Does not invent places; reorders/validates candidates into a travelable itinerary.
+- Pipeline: candidates → route → hours → meals → pace → duplicate → category → schedule → final.
+- Enforce route efficiency, business hours, meal timing, category balance, weather, pace, multi-day balance.
+- Dedup by Place ID + zh/en + alias.
+- Regen keeps locked/favorited/fixed items; A/B/C versions must differ in places/meals/pace, not only order.
+- Independent module: do not write prompts or mutate Conversation here.
+
+## Validator Engine
+
+- Final gate after LLM; user never sees failing output.
+- Fail → regenerate → revalidate (score threshold target: overall ≥ 90).
+- Validate destination existence, category fit, meals/time, hours, route, weather, budget, days/pace, negatives, quality, language, conversational referents (“第二個”).
+- Prefer adding Validation Rules over prompt patches when bugs appear.
+- **Itinerary Validator**（P4.2+）：`src/lib/ai/itinerary-validator/` + Flag `VITE_ITINERARY_VALIDATOR_ENABLED`。
+  Soft 失敗（`timeline_conflict` / `business_hours_cover` / `multi_day_balance`…）→ Auto Repair（最多 3 次）→ 品質門檻 soft-pass（日結構／偏好／去重／無明顯營業衝突）；不以 Stop 百分比交付。僅硬錯誤（missing days / persistence）與品質不足擋交付。
+  `stop_unwrap_failed` 為內部診斷，不得成為使用者可見錯誤。

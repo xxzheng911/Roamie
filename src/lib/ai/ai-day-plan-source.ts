@@ -7,6 +7,7 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   CHAT_DAY_PLAN_MAX_PER_DAY,
   CHAT_DAY_PLAN_MIN_PER_DAY,
+  parseTripStyleKey,
   type TripStyleKey,
 } from "@/lib/ai/ai-trip-style";
 import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
@@ -898,6 +899,41 @@ export const STYLE_DAY_SLOT_TEMPLATES: Record<TripStyleKey, DayPlanSlot[][]> = {
   mixed: [STANDARD_DAY_SLOTS],
 };
 
+/** 將任意 style 字串正規成 TripStyleKey（非法值 → mixed，避免模板 Map miss）。 */
+export function resolvePlannerStyleKey(
+  style?: string | TripStyleKey | null,
+): TripStyleKey {
+  if (!style) return "mixed";
+  if (
+    style === "classic_landmarks" ||
+    style === "local_life" ||
+    style === "slow_nature" ||
+    style === "mixed"
+  ) {
+    return style;
+  }
+  return parseTripStyleKey(String(style)) ?? "mixed";
+}
+
+/**
+ * 依 style + day（1-based 或 0-based index）安全取得當日 slot template。
+ * 禁止 `STYLE_DAY_SLOT_TEMPLATES[style][day-1]` 直接索引（非法 style 會 throw）。
+ */
+export function resolveStyleDaySlotTemplate(
+  style: string | TripStyleKey | null | undefined,
+  dayOrIndex: number,
+): DayPlanSlot[] {
+  const key = resolvePlannerStyleKey(style);
+  const templates = STYLE_DAY_SLOT_TEMPLATES[key] ?? STYLE_DAY_SLOT_TEMPLATES.mixed;
+  const safe =
+    templates.length > 0 ? templates : STYLE_DAY_SLOT_TEMPLATES.mixed;
+  const fallback = STYLE_DAY_SLOT_TEMPLATES.mixed[0] ?? STANDARD_DAY_SLOTS;
+  if (safe.length === 0) return fallback;
+  // Accept 1-based day or 0-based index; wrap so Day5+ still resolves.
+  const index = dayOrIndex >= 1 ? dayOrIndex - 1 : Math.max(0, dayOrIndex);
+  return safe[index % safe.length] ?? safe[0] ?? fallback;
+}
+
 export function logAiGenerateAttractions(count: number): void {
   logAiPipeline("[AI_GENERATE_ATTRACTIONS]", `count=${count}`);
 }
@@ -1201,10 +1237,7 @@ export function computeDayPlanPlaceNeed(days: number, style: TripStyleKey = "mix
   const safeDays = Math.max(1, days);
   let slots = 0;
   for (let dayIndex = 0; dayIndex < safeDays; dayIndex += 1) {
-    const template =
-      STYLE_DAY_SLOT_TEMPLATES[style][dayIndex] ??
-      STYLE_DAY_SLOT_TEMPLATES[style][0] ??
-      STYLE_DAY_SLOT_TEMPLATES.mixed[0]!;
+    const template = resolveStyleDaySlotTemplate(style, dayIndex);
     slots += template.length;
   }
   return Math.max(slots, safeDays * CHAT_DAY_PLAN_MIN_PER_DAY);
@@ -1310,6 +1343,8 @@ function applyMultiDayTripPipeline(params: {
   days: number;
   destination?: string;
   plannedDate?: string;
+  nearbyExtensions?: string[];
+  pace?: "slow" | "medium" | "active";
 }): ComposedDayPlan[] {
   const { places, style, days, plannedDate } = params;
   let current = enforceStandardDaySlotPlans(
@@ -1361,7 +1396,14 @@ function applyMultiDayTripPipeline(params: {
       `populated=${plannerPopulatedDayCount(current, days)}/${days}`,
       `total=${plannerTotalPlaces(current)}`,
     );
-    current = buildThemedMultiDayPlans({ places: mergedPool, days, style, plannedDate });
+    current = buildThemedMultiDayPlans({
+      places: mergedPool,
+      days,
+      style,
+      plannedDate,
+      nearbyExtensions: params.nearbyExtensions,
+      pace: params.pace,
+    });
   }
 
   const duplicateRate = tripDuplicateRate(current);
@@ -1374,7 +1416,14 @@ function applyMultiDayTripPipeline(params: {
       `reason=duplicate_detected`,
       `rate=${duplicateRate.toFixed(2)}`,
     );
-    const themed = buildThemedMultiDayPlans({ places: mergedPool, days, style, plannedDate });
+    const themed = buildThemedMultiDayPlans({
+      places: mergedPool,
+      days,
+      style,
+      plannedDate,
+      nearbyExtensions: params.nearbyExtensions,
+      pace: params.pace,
+    });
     current = preferBetterComposedPlans(
       finalizeMultiDayItinerary({ plans: themed, pool: mergedPool, days, style, plannedDate }),
       current,
@@ -1768,6 +1817,8 @@ export function buildComposedDayPlans(params: {
   plannedDate?: string;
   lat?: number;
   lng?: number;
+  nearbyExtensions?: string[];
+  pace?: "slow" | "medium" | "active";
 }): ComposedDayPlan[] {
   const { days, style, destination, plannedDate, lat, lng } = params;
   const places = filterRealPlanningPlaces(params.places);
@@ -1816,11 +1867,15 @@ export function buildComposedDayPlans(params: {
         days: safeDays,
         destination,
         plannedDate,
+        nearbyExtensions: params.nearbyExtensions,
+        pace: params.pace,
       }),
       pool: places,
       days: safeDays,
       style,
       plannedDate,
+      nearbyExtensions: params.nearbyExtensions,
+      pace: params.pace,
     });
     logPlannerAssign(dayCountsFromPlans(piped));
     for (const plan of piped) {
@@ -1860,11 +1915,15 @@ export function buildComposedDayPlans(params: {
         days: safeDays,
         destination,
         plannedDate,
+        nearbyExtensions: params.nearbyExtensions,
+        pace: params.pace,
       }),
       pool: safePlaces,
       days: safeDays,
       style,
       plannedDate,
+      nearbyExtensions: params.nearbyExtensions,
+      pace: params.pace,
     });
     logPlannerAssign(dayCountsFromPlans(piped));
     for (const plan of piped) {
@@ -2028,10 +2087,7 @@ export function buildComposedDayPlans(params: {
   };
 
   for (let dayIndex = 0; dayIndex < safeDays; dayIndex += 1) {
-    const template =
-      STYLE_DAY_SLOT_TEMPLATES[style][dayIndex] ??
-      STYLE_DAY_SLOT_TEMPLATES[style][0] ??
-      STYLE_DAY_SLOT_TEMPLATES.mixed[0]!;
+    const template = resolveStyleDaySlotTemplate(style, dayIndex);
     const entries: DayPlanEntry[] = [];
     const dayState = { cafeCount: 0, mallCount: 0 };
 
@@ -2121,11 +2177,15 @@ export function buildComposedDayPlans(params: {
       days: safeDays,
       destination,
       plannedDate,
+      nearbyExtensions: params.nearbyExtensions,
+      pace: params.pace,
     }),
     pool: safePlaces,
     days: safeDays,
     style,
     plannedDate,
+    nearbyExtensions: params.nearbyExtensions,
+    pace: params.pace,
   });
   logPlannerSplit(dayCountsFromPlans(finalized));
   logPlannerAssign(dayCountsFromPlans(piped));
@@ -2461,16 +2521,71 @@ export function mergeEnrichedIntoDayPlan(
   return { ...plan, items };
 }
 
+/**
+ * 將任意 day 編號 clamp 到 1..tripDays（禁止 Day0 / DayN+1 直接當 index）。
+ */
+export function clampTripDayNumber(day: number, tripDays: number): number {
+  const safeDays = Math.max(1, tripDays);
+  if (!Number.isFinite(day)) return 1;
+  return Math.min(safeDays, Math.max(1, Math.floor(day)));
+}
+
+/**
+ * Persistence 前驗證：確保 Day1..DayN 皆存在、無越界／undefined。
+ * 缺日會建立空 Day；越界 day 會 clamp 後歸併。
+ */
+export function ensurePersistenceDayMap(
+  tripDays: number,
+  dayEntries: Iterable<{ day: number; items: RoamieItineraryItem[] }>,
+  dayDates: readonly (string | undefined)[] = [],
+): Map<number, ItineraryDayPayload> {
+  const safeDays = Math.max(1, tripDays);
+  const byDay = new Map<number, ItineraryDayPayload>();
+  for (let day = 1; day <= safeDays; day += 1) {
+    byDay.set(day, {
+      dayIndex: day,
+      date: dayDates[day - 1],
+      items: [],
+    });
+  }
+  for (const entry of dayEntries) {
+    const day = clampTripDayNumber(entry.day, safeDays);
+    const existing = byDay.get(day) ?? {
+      dayIndex: day,
+      date: dayDates[day - 1],
+      items: [],
+    };
+    existing.items.push(...entry.items);
+    byDay.set(day, existing);
+  }
+  return byDay;
+}
+
+export function persistenceDaysFromMap(
+  byDay: Map<number, ItineraryDayPayload>,
+): ItineraryDayPayload[] {
+  return [...byDay.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, payload]) => payload);
+}
+
 export function buildItineraryFromDayPlan(
   plan: AiDayPlan,
   dates: TripCreateDates,
 ): RoamieItineraryItem[] {
   logAiCreateTripFromDayPlanStart();
+  const safeDays = Math.max(1, plan.days);
+  const dateByDay = new Map<number, string | undefined>();
+  for (let day = 1; day <= safeDays; day += 1) {
+    dateByDay.set(day, dates.dayDates[day - 1]);
+  }
   const sorted = sortDayPlanItems(plan.items);
   return sorted.map((item) => {
-    const date = dates.dayDates[item.dayIndex - 1] ?? "";
-    logAiCreateTripItem(item, date || undefined);
-    logTripDetailItemsRender(item, date || undefined);
+    // AiDayPlanItem.dayIndex is 1-based (plan.day); clamp before any index use.
+    const dayNumber = clampTripDayNumber(item.dayIndex, safeDays);
+    const date = dateByDay.get(dayNumber) ?? "";
+    logAiCreateTripItem({ ...item, dayIndex: dayNumber }, date || undefined);
+    logTripDetailItemsRender({ ...item, dayIndex: dayNumber }, date || undefined);
     return normalizeItineraryItem({
       date,
       time: item.time,
@@ -2482,7 +2597,7 @@ export function buildItineraryFromDayPlan(
       address: item.address || item.name,
       googlePlaceId: item.placeId || undefined,
       placeType: item.slotType || item.type,
-      dayIndex: item.dayIndex - 1,
+      dayIndex: dayNumber - 1,
       sortIndex: item.orderIndex,
       order: item.orderIndex,
     });
@@ -2494,12 +2609,26 @@ export function buildItineraryDaysFromDayPlan(
   dates: TripCreateDates,
   itineraryItems: RoamieItineraryItem[],
 ): ItineraryDayPayload[] {
-  const days: ItineraryDayPayload[] = [];
-  for (let day = 1; day <= plan.days; day += 1) {
-    const date = dates.dayDates[day - 1];
-    const items = itineraryItems.filter((item) => (item.dayIndex ?? 0) + 1 === day);
-    days.push({ dayIndex: day, date, items });
+  const safeDays = Math.max(1, plan.days);
+  const grouped = new Map<number, RoamieItineraryItem[]>();
+  for (const item of itineraryItems) {
+    const dayNumber = clampTripDayNumber((item.dayIndex ?? 0) + 1, safeDays);
+    const list = grouped.get(dayNumber) ?? [];
+    list.push(item);
+    grouped.set(dayNumber, list);
   }
+  const byDay = ensurePersistenceDayMap(
+    safeDays,
+    [...grouped.entries()].map(([day, items]) => ({ day, items })),
+    dates.dayDates,
+  );
+  const days = persistenceDaysFromMap(byDay);
+  logAiPipeline(
+    "[ITINERARY_PERSISTENCE_DAYS]",
+    `requested=${safeDays}`,
+    `built=${days.length}`,
+    `counts=${days.map((d) => d.items.length).join(",")}`,
+  );
   return days;
 }
 

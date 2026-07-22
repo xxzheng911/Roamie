@@ -177,6 +177,12 @@ export { hydrateOnboardingStatus } from "@/lib/onboarding-storage";
 export function markAppReady(): void {
   if (typeof document === "undefined") return;
   document.documentElement.dataset.roamieAppReady = "1";
+  // Debug-only Flag 可觀測性：啟動完成後印一次（不改 Flag 行為）
+  void import("@/lib/raos-flags-startup-log")
+    .then((m) => m.logRaosFlagsOnStartup())
+    .catch(() => {
+      /* ignore */
+    });
 }
 
 export function isAppReady(): boolean {

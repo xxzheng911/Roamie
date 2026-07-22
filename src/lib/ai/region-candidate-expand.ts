@@ -20,7 +20,10 @@ import {
 } from "@/lib/ai/combination-candidate-quality";
 import { mergeCombinationProvenance } from "@/lib/ai/combination-provenance";
 import { mapPlaceResultToChatItem, type ChatPlaceItem } from "@/lib/chat-session";
-import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
+import {
+  resolveDestinationApproxCenter,
+  type GeocodeDestinationFn,
+} from "@/lib/ai/destination-geocode";
 
 /** Landmark-ish suffixes — if present, treat as a concrete place, not a bare region. */
 const PLACE_SUFFIX_RE =
@@ -121,21 +124,36 @@ export async function resolveRegionCandidate(params: {
     `destination=${params.destination}`,
   );
 
-  let searchLat = params.lat;
-  let searchLng = params.lng;
+  // Prefer the region’s own centroid — never silently search from primary-city lat/lng
+  // (東京 center would reject 箱根 via outside_destination_radius ~55km).
+  const approx = resolveDestinationApproxCenter(region);
+  let searchLat = approx?.lat ?? params.lat;
+  let searchLng = approx?.lng ?? params.lng;
   if (params.geocodeFn) {
     try {
+      const geoQuery =
+        normalizeDestinationLabel(region) ===
+        normalizeDestinationLabel(params.destination)
+          ? region
+          : `${region} ${params.destination}`;
       const geo = await params.geocodeFn({
-        data: { query: `${region} ${params.destination}`, locale: params.locale },
+        data: { query: geoQuery, locale: params.locale },
       });
       if (geo.location?.lat != null && geo.location?.lng != null) {
         searchLat = geo.location.lat;
         searchLng = geo.location.lng;
       }
     } catch {
-      /* keep destination center */
+      /* keep approx / fallback center */
     }
   }
+  logAiPipeline(
+    "[COMBINATION_REGION_SEARCH_CENTER]",
+    `region=${region}`,
+    `lat=${searchLat}`,
+    `lng=${searchLng}`,
+    `approxFallback=${Boolean(approx)}`,
+  );
 
   const seen = new Set<string>();
   for (const buildQuery of REGION_EXPAND_QUERIES) {

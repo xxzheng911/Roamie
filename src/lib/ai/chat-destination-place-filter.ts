@@ -13,7 +13,12 @@ import {
   logChatPlacesRawCount,
 } from "@/lib/ai/chat-place-flow-log";
 import type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
-import { filterPlacesByCafeGuard, isCafePlace } from "@/lib/ai/chat-category-place-guard";
+import {
+  filterPlacesByCafeGuard,
+  filterPlacesByShoppingGuard,
+  isCafePlace,
+  isShoppingPlace,
+} from "@/lib/ai/chat-category-place-guard";
 
 export const CHAT_DESTINATION_MIN_COUNT = 3;
 export const CHAT_DESTINATION_TARGET_COUNT = 6;
@@ -332,6 +337,8 @@ export function filterChatCategoryPlaces(
 
   if (opts.intent === "cafe") {
     eligible = filterPlacesByCafeGuard(eligible);
+  } else if (opts.intent === "shopping") {
+    eligible = filterPlacesByShoppingGuard(eligible, opts.userText);
   }
 
   const relaxed = eligible.filter(passesRelaxedTier);
@@ -340,11 +347,19 @@ export function filterChatCategoryPlaces(
   let picked = relaxed.length > 0 ? relaxed : eligible.filter(passesFallbackTier);
   if (opts.intent === "cafe") {
     picked = picked.filter(isCafePlace);
+  } else if (opts.intent === "shopping") {
+    // Shopping: never fall back to attractions / observation decks
+    picked = picked.filter((p) => isShoppingPlace(p, opts.userText));
   }
 
+  // Shopping must oversample for reserve (display 4 + reserve ≥4). Do not cap at TARGET(6).
+  const poolCap =
+    opts.intent === "shopping"
+      ? Math.max(CHAT_DESTINATION_TARGET_COUNT, 20)
+      : CHAT_DESTINATION_TARGET_COUNT;
   const final = picked
     .sort((a, b) => rankChatDestinationPlace(b) - rankChatDestinationPlace(a))
-    .slice(0, CHAT_DESTINATION_TARGET_COUNT);
+    .slice(0, poolCap);
 
   logChatPlacesFinalCount(final.length);
   return final;

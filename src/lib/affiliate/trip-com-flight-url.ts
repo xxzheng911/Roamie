@@ -1,5 +1,6 @@
 import type { AffiliateEnvConfig } from "@/lib/affiliate/affiliate-env";
 import { resolveTripAffiliateBaseUrl } from "@/lib/affiliate/affiliate-env";
+import { affiliateDebugInfo } from "@/lib/affiliate/affiliate-debug-log";
 import type { TripAffiliateContext } from "@/lib/affiliate/affiliate-types";
 import {
   defaultTripComCurrency,
@@ -261,12 +262,12 @@ export function buildTripComFlightUrl(
   input: TripComFlightUrlInput,
   env: AffiliateEnvConfig,
 ): string | null {
-  console.info("[TRIP_AFFILIATE_FLIGHT_URL_BUILD_START]");
+  affiliateDebugInfo("[TRIP_AFFILIATE_FLIGHT_URL_BUILD_START]");
 
   const departDate = normalizeIsoDate(input.startDate);
   const returnDate = normalizeIsoDate(input.endDate);
   if (departDate) {
-    console.info(
+    affiliateDebugInfo(
       `[TRIP_FLIGHT_DATES] departDate=${departDate} returnDate=${returnDate ?? departDate}`,
     );
   }
@@ -276,24 +277,24 @@ export function buildTripComFlightUrl(
 
   const searchParams = buildFlightSearchParams(input);
   if (!searchParams) {
-    console.info(
+    affiliateDebugInfo(
       `[TRIP_AFFILIATE_FLIGHT_URL_FALLBACK] reason=missing_airport_codes fallbackUrl=${fallbackUrl}`,
     );
-    console.info(`[AFFILIATE_URL_BUILT] type=flight platform=tripcom url=${fallbackUrl}`);
+    affiliateDebugInfo(`[AFFILIATE_URL_BUILT] type=flight platform=tripcom url=${fallbackUrl}`);
     return fallbackUrl;
   }
 
   const primaryUrl = buildFlightSearchUrl(env, searchParams);
   if (!isValidTripComFlightPageUrl(primaryUrl)) {
-    console.info(
+    affiliateDebugInfo(
       `[TRIP_AFFILIATE_FLIGHT_URL_FALLBACK] reason=invalid_primary_url fallbackUrl=${fallbackUrl}`,
     );
-    console.info(`[AFFILIATE_URL_BUILT] type=flight platform=tripcom url=${fallbackUrl}`);
+    affiliateDebugInfo(`[AFFILIATE_URL_BUILT] type=flight platform=tripcom url=${fallbackUrl}`);
     return fallbackUrl;
   }
 
-  console.info(`[TRIP_AFFILIATE_FLIGHT_URL_BUILT] url=${primaryUrl}`);
-  console.info(`[AFFILIATE_URL_BUILT] type=flight platform=tripcom url=${primaryUrl}`);
+  affiliateDebugInfo(`[TRIP_AFFILIATE_FLIGHT_URL_BUILT] url=${primaryUrl}`);
+  affiliateDebugInfo(`[AFFILIATE_URL_BUILT] type=flight platform=tripcom url=${primaryUrl}`);
   return primaryUrl;
 }
 
@@ -322,7 +323,7 @@ export function resolveTripComFlightOpenUrl(
 ): string {
   const trimmed = url.trim();
   if (trimmed && isValidTripComFlightPageUrl(trimmed)) {
-    console.info(`[TRIP_AFFILIATE_OPEN_FLIGHT] url=${trimmed}`);
+    affiliateDebugInfo(`[TRIP_AFFILIATE_OPEN_FLIGHT] url=${trimmed}`);
     return trimmed;
   }
 
@@ -331,7 +332,7 @@ export function resolveTripComFlightOpenUrl(
     `[TRIP_AFFILIATE_OPEN_ERROR] reason=invalid_flight_url attempted=${trimmed || "(empty)"} fallbackUrl=${fallbackUrl}`,
   );
   if (fallbackUrl && isValidTripComFlightPageUrl(fallbackUrl)) {
-    console.info(`[TRIP_AFFILIATE_OPEN_FLIGHT] url=${fallbackUrl}`);
+    affiliateDebugInfo(`[TRIP_AFFILIATE_OPEN_FLIGHT] url=${fallbackUrl}`);
   }
   return fallbackUrl;
 }

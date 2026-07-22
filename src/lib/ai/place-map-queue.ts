@@ -89,15 +89,16 @@ export function rateLimitBackoffMs(attemptIndex: number, retryAfterMs?: number):
   return jitter(base);
 }
 
-/** First-round Places candidate cap before mapping (4 days → 16, hard max 18). */
+/** First-round Places candidate cap before mapping (6 days → 24). */
 export function computeFirstRoundPlaceMapCap(days: number): number {
-  return Math.min(Math.max(days * 4, 12), 18);
+  return Math.min(Math.max(days * 4, 12), 24);
 }
 
 /**
  * Soft fetch target after mapping — capacity scales with trip days.
- * Short trips stay lean (3d ≈ 7) so we do not over-fetch / rate-limit.
+ * P1 Step 1：requiredMinimum = days×3；fetchTarget 以 days×4 oversampling 保留去重空間。
  */
 export function computeItineraryResolvedTarget(days: number): number {
-  return Math.min(Math.max(days * 2 + 1, days + 2), 16);
+  const safe = Math.max(1, days);
+  return Math.min(Math.max(safe * 4, safe * 3), 30);
 }

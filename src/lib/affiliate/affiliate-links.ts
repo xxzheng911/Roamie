@@ -22,6 +22,7 @@ import {
   warnAffiliateOnce,
   type AffiliateEnvConfig,
 } from "@/lib/affiliate/affiliate-env";
+import { isDebugAffiliateEnabled } from "@/lib/affiliate/affiliate-debug-log";
 import {
   logAffiliateClick,
   logAffiliateRender,
@@ -354,6 +355,8 @@ export function logPlaceDetailAffiliateRender(input: {
   showKlook: boolean;
   showKKday: boolean;
 }): void {
+  // Consolidated into [AFFILIATE_SUMMARY] / [AFFILIATE_SKIP] via logPlaceAffiliateRuleCheck.
+  if (!isDebugAffiliateEnabled()) return;
   console.log(
     `[PLACE_DETAIL_AFFILIATE_RENDER] placeName=${input.placeName} placeTypes=${input.placeTypes} showKlook=${input.showKlook} showKKday=${input.showKKday}`,
   );
@@ -463,10 +466,10 @@ export async function openAffiliateUrl(
       const probed = await probeAffiliateRedirectUrl(trimmed, platform);
       openUrl = probed.finalUrl || trimmed;
     } catch {
-      console.info(`[AFFILIATE_OPEN_INITIAL_URL] platform=${platform} url=${trimmed}`);
+      // ignore probe failure
     }
   } else {
-    console.info(`[AFFILIATE_OPEN_INITIAL_URL] platform=other url=${trimmed}`);
+    // no-op for other platforms
   }
 
   const now = Date.now();

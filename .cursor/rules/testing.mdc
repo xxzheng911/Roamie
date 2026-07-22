@@ -1,0 +1,28 @@
+---
+description: RAOS testing and validation strategy for AI and domain work
+globs: **/*.{test,spec}.{ts,tsx},**/scripts/verify-*.mjs,src/lib/ai/**/*validate*.{ts,tsx},src/lib/ai/**/*guard*.{ts,tsx}
+alwaysApply: false
+---
+
+# Testing (derived from RAOS Ch.8–9, 16, 21)
+
+## Prefer executable guards over prompt hope
+
+- Place existence / Place ID validity
+- Duplicate Place ID + alias
+- Category purity (requested cafe ≠ bar)
+- Meal timing / business hours
+- Negative preferences (“不要火鍋”)
+- Route fold-backs when planner claims optimization
+- Membership permission boundaries (Plus-only modules)
+
+## Levels
+
+- Unit: Decision rules, validators, dedupe, category maps, credit/session helpers.
+- Integration: Conversation → Context → Decision → Planner → Validator happy/fail paths.
+- Contract: PIE/Recommendation inputs/outputs; domain schema version compatibility.
+- Regression: previously failing place/category/hallucination cases become fixtures.
+
+## Documentation
+
+Important capabilities need design notes + data model + event flow + test strategy (`docs/raos/` + adjacent docs). Do not leave critical AI rules only in prompts.

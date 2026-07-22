@@ -1,3 +1,5 @@
+import { isDebugAffiliateEnabled } from "@/lib/affiliate/affiliate-debug-log";
+
 export type AffiliateEnvConfig = {
   tripAffiliateUrl: string;
   tripAccountId: string;
@@ -65,6 +67,7 @@ const AFFILIATE_ENV: AffiliateEnvConfig = {
 };
 
 function logAffiliateEnvInit(env: AffiliateEnvConfig): void {
+  if (!isDebugAffiliateEnabled()) return;
   const resolvedTripUrl = resolveTripAffiliateBaseUrl(env);
   const rawAffiliateUrlLen =
     typeof import.meta.env.VITE_TRIP_AFFILIATE_URL === "string"

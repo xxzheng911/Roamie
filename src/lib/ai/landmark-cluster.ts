@@ -187,6 +187,10 @@ function belongsToCluster(cluster: WorkingCluster, candidate: ResolvedLandmark):
       member.parentLandmarkKey ?? "",
     );
     const eitherSub = candidate.isSubPlace || member.isSubPlace;
+    const shorterStemLen = Math.min(
+      (candidate.parentLandmarkKey ?? "").length,
+      (member.parentLandmarkKey ?? "").length,
+    );
 
     // Contained-name precinct: 草悟道 + 草悟道綠園道公共藝術 (~12 min walk).
     if (
@@ -195,6 +199,17 @@ function belongsToCluster(cluster: WorkingCluster, candidate: ResolvedLandmark):
       candidate.latitude != null &&
       member.latitude != null &&
       coordsWithin(candidate, member, CONTAINED_NAME_SUBPLACE_METERS)
+    ) {
+      return true;
+    }
+
+    // 母地標 ↔ 商業複合設施（晴空塔 / 晴空塔城）：語幹包含且近距，不要求 sub-place keyword
+    if (
+      sharedStem &&
+      shorterStemLen >= 4 &&
+      candidate.latitude != null &&
+      member.latitude != null &&
+      coordsWithin(candidate, member, SAME_CORE_CLUSTER_METERS)
     ) {
       return true;
     }

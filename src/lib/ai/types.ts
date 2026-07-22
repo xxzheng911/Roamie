@@ -25,6 +25,8 @@ export const RoamieRecommendationItemSchema = z.object({
   todayHoursLabel: z.string().optional(),
   closingSoonNote: z.string().optional(),
   nextOpenHint: z.string().optional(),
+  /** Google place types retained for category render guards (shopping / cafe). */
+  types: z.array(z.string()).optional(),
   /** 1-based combination id this place was sourced from (legacy singular) */
   sourceCombinationId: z.number().optional(),
   /** All combination ids this place covers (union after merge / dedupe) */
@@ -217,6 +219,7 @@ export function normalizeRecommendationItem(
     todayHoursLabel: raw.todayHoursLabel,
     closingSoonNote: raw.closingSoonNote,
     nextOpenHint: raw.nextOpenHint,
+    types: raw.types,
     sourceCombinationId: raw.sourceCombinationId,
     sourceCombinationIds: raw.sourceCombinationIds,
     matchedCombinationIds: raw.matchedCombinationIds,

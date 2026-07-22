@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 const CATEGORY_PATTERNS = {
   cafe: /(咖啡廳|咖啡店|咖啡|café|cafe)/i,
   restaurant: /(餐廳|美食|吃飯|用餐|想找餐廳|推薦餐廳|找餐廳|找美食|有推薦的餐廳)/,
-  shopping: /(商圈|shopping|百貨|市集|購物|商場|mall|department\s*store)/i,
+  shopping: /(商圈|shopping|百貨|市集|購物|商場|mall|department\s*store|outlet|アウトレット|逛街|購物行程|購物中心|商店街)/i,
   attraction: /(景點|必去|必去景點|附近景點|去哪玩|推薦景點|好玩的|附近.*逛|美術館|博物館|museum|tourist)/i,
 };
 
@@ -46,6 +46,8 @@ function shouldFetch(userText, ctx, sess) {
 
 assert.deepEqual(parseIntents("推薦咖啡廳"), ["cafe"]);
 assert.deepEqual(parseIntents("有沒有商圈"), ["shopping"]);
+assert.deepEqual(parseIntents("我還想購物行程"), ["shopping"]);
+assert.deepEqual(parseIntents("推薦 Outlet"), ["shopping"]);
 assert.deepEqual(parseIntents("想找餐廳"), ["restaurant"]);
 assert.deepEqual(parseIntents("東京有推薦的餐廳嗎"), ["restaurant"]);
 assert.deepEqual(parseIntents("附近景點"), ["attraction"]);

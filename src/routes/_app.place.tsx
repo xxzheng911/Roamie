@@ -25,18 +25,18 @@ import { placeOpeningStatusLabel } from "@/lib/normalized-opening-status";
 import {
   buildPlaceImageUrls,
   canFetchGooglePlaceDetails,
-  fetchGooglePlaceDetailsForHandoff,
   handoffToPlaceDetailData,
   mergeFetchedPlace,
   resolveGooglePlaceIdForDetail,
   resolvePlaceDetailHandoff,
   type PlaceDetailViewModel,
 } from "@/lib/place-detail-resolve";
+import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
 import {
-  fetchPlaceDetailsForScreenWithKey,
-  getPlaceDetails,
-  type PlaceDetailsScreenResult,
-} from "@/lib/places.functions";
+  fetchGooglePlaceDetailsForHandoffViaGateway,
+  fetchPlaceDetailsForScreenWithKeyViaGateway,
+  getPlaceDetailsServerFnViaGateway,
+} from "@/lib/pie/places-gateway";
 import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
 import { detectPlatform } from "@/services/platform";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
@@ -109,7 +109,7 @@ function PlaceDetailPage() {
   const navigate = Route.useNavigate();
   const { t, locale } = useI18n();
   const { hasPlusAccess } = useAccess();
-  const fetchPlaceDetailsFn = useServerFn(getPlaceDetails);
+  const fetchPlaceDetailsFn = useServerFn(getPlaceDetailsServerFnViaGateway);
   const fetchWeatherFn = useServerFn(getWeather);
   const { openAddToTrip } = useAddToTrip();
   useAvatar();
@@ -125,11 +125,11 @@ function PlaceDetailPage() {
     if (!handoff) return true;
     const hasSnapshot = Boolean(
       handoff.name &&
-        (handoff.address ||
-          handoff.lat != null ||
-          handoff.googlePlaceId ||
-          handoff.rating != null ||
-          handoff.snapshot),
+      (handoff.address ||
+        handoff.lat != null ||
+        handoff.googlePlaceId ||
+        handoff.rating != null ||
+        handoff.snapshot),
     );
     return !hasSnapshot;
   });
@@ -179,11 +179,11 @@ function PlaceDetailPage() {
     setPlace(base);
     const hasSnapshot = Boolean(
       handoff.name &&
-        (handoff.address ||
-          handoff.lat != null ||
-          handoff.googlePlaceId ||
-          handoff.rating != null ||
-          handoff.snapshot),
+      (handoff.address ||
+        handoff.lat != null ||
+        handoff.googlePlaceId ||
+        handoff.rating != null ||
+        handoff.snapshot),
     );
     // Snapshot-first: show immediately; remote refresh runs in background.
     setLoading(!hasSnapshot);
@@ -245,7 +245,7 @@ function PlaceDetailPage() {
 
       const DETAIL_REFRESH_TIMEOUT_MS = 8_000;
       try {
-        const fetchPromise = fetchGooglePlaceDetailsForHandoff(
+        const fetchPromise = fetchGooglePlaceDetailsForHandoffViaGateway(
           placeId,
           locale,
           fetchPlaceDetailsFn,
@@ -253,7 +253,7 @@ function PlaceDetailPage() {
             ? async (id, loc) => {
                 const mapsKey = getGoogleMapsBrowserKey();
                 if (!mapsKey) return null;
-                return fetchPlaceDetailsForScreenWithKey(id, mapsKey, loc);
+                return fetchPlaceDetailsForScreenWithKeyViaGateway(id, mapsKey, loc);
               }
             : undefined,
         );
@@ -309,19 +309,21 @@ function PlaceDetailPage() {
     if (tripPlanningOrigin) {
       setUserLocation(tripPlanningOrigin);
     } else {
-      void import("@/lib/location-app-gate").then(({ waitForAppActiveForLocation }) =>
-        waitForAppActiveForLocation().then((active) => {
-          if (!active || cancelled) return;
-          return requestDeviceLocation().then((loc) => {
-            if (cancelled || !loc) return;
-            setUserLocation({ lat: loc.lat, lng: loc.lng });
-          });
-        }),
-      ).catch(() => {});
+      void import("@/lib/location-app-gate")
+        .then(({ waitForAppActiveForLocation }) =>
+          waitForAppActiveForLocation().then((active) => {
+            if (!active || cancelled) return;
+            return requestDeviceLocation().then((loc) => {
+              if (cancelled || !loc) return;
+              setUserLocation({ lat: loc.lat, lng: loc.lng });
+            });
+          }),
+        )
+        .catch(() => {});
     }
     void Promise.all([
       getUserProfile(locale).catch(() => null),
-      getPreferences().catch(() => ({} as Awaited<ReturnType<typeof getPreferences>>)),
+      getPreferences().catch(() => ({}) as Awaited<ReturnType<typeof getPreferences>>),
       listPlaces().catch(() => []),
     ])
       .then(([profile, prefs, saved]) => {
@@ -376,14 +378,7 @@ function PlaceDetailPage() {
       );
       return prev.reason !== nextReason ? { ...prev, reason: nextReason } : prev;
     });
-  }, [
-    place?.id,
-    weather,
-    reasonProfile,
-    locale,
-    navigationOrigin.lat,
-    navigationOrigin.lng,
-  ]);
+  }, [place?.id, weather, reasonProfile, locale, navigationOrigin.lat, navigationOrigin.lng]);
 
   const destination =
     place?.lat != null && place.lng != null ? { lat: place.lat, lng: place.lng } : null;
@@ -414,22 +409,21 @@ function PlaceDetailPage() {
           locale,
           googleFieldsOnly: Boolean(google.googleFormattedAddress),
         },
-      ) ??
-      (place.address ? sanitizeGooglePlaceAddress(place.address, locale) : null);
+      ) ?? (place.address ? sanitizeGooglePlaceAddress(place.address, locale) : null);
     return {
       ...place,
       address,
       openStatusLabel: placeOpeningStatusLabel(place) ?? place.openStatusLabel,
       normalizedOpeningLabel:
-        place.normalizedOpeningLabel ??
-        placeOpeningStatusLabel(place) ??
-        place.openStatusLabel,
+        place.normalizedOpeningLabel ?? placeOpeningStatusLabel(place) ?? place.openStatusLabel,
     };
   }, [place, locale]);
 
   const distanceLabel = useMemo(() => {
     if (!place || place.lat == null || place.lng == null) return null;
-    return formatDistanceLabel(distanceMeters(navigationOrigin, { lat: place.lat, lng: place.lng }));
+    return formatDistanceLabel(
+      distanceMeters(navigationOrigin, { lat: place.lat, lng: place.lng }),
+    );
   }, [place, navigationOrigin]);
 
   const placeTabelogUrl = useMemo(() => {
@@ -486,10 +480,7 @@ function PlaceDetailPage() {
         search.day != null && search.day > 0
           ? search.day - 1
           : (readTripDetailSelectedDay(search.tripId) ?? 0);
-      const restoreDay =
-        search.day != null && search.day > 0
-          ? search.day
-          : restoreDayIndex + 1;
+      const restoreDay = search.day != null && search.day > 0 ? search.day : restoreDayIndex + 1;
       console.info(
         `[PLACE_DETAIL_BACK_TO_TRIP] tripId=${search.tripId} restoreDayIndex=${restoreDayIndex}`,
       );

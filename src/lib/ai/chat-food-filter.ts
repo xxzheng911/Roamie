@@ -287,10 +287,31 @@ export function buildFoodSearchAttempts(
     foodPreference && foodPreference !== "any"
       ? foodPreferenceSearchQuery(foodPreference)
       : undefined;
+  const city = cityLabel?.trim();
 
   if (cuisineQuery) {
-    attempts.push({ query: cuisineQuery, mode: "text", includedTypes: ["restaurant"] });
-    attempts.push({ query: cuisineQuery, mode: "text", includedTypes: ["food", "cafe"] });
+    const prefixed = city ? `${city} ${cuisineQuery}` : cuisineQuery;
+    attempts.push({ query: prefixed, mode: "text", includedTypes: ["restaurant"] });
+    attempts.push({ query: prefixed, mode: "text", includedTypes: ["food", "cafe"] });
+    if (city && /壽喜燒|すき焼き|sukiyaki/i.test(cuisineQuery)) {
+      attempts.push({
+        query: `${city} すき焼き`,
+        mode: "text",
+        includedTypes: ["restaurant", "japanese_restaurant"],
+      });
+      attempts.push({
+        query: `${city} sukiyaki restaurant`,
+        mode: "text",
+        includedTypes: ["restaurant"],
+      });
+      attempts.push({
+        query: `${city} 牛鍋`,
+        mode: "text",
+        includedTypes: ["restaurant"],
+      });
+    }
+    // Cuisine-specific: do not pad with generic nearby restaurants.
+    return attempts.slice(0, 4);
   }
 
   attempts.push(

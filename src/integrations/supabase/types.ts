@@ -14,6 +14,114 @@ export type Database = {
   }
   public: {
     Tables: {
+      credit_accounts: {
+        Row: {
+          user_id: string
+          plan: string
+          monthly_limit: number
+          available_credits: number
+          reserved_credits: number
+          period_start: string
+          period_end: string
+          last_reset_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          user_id: string
+          plan?: string
+          monthly_limit?: number
+          available_credits?: number
+          reserved_credits?: number
+          period_start: string
+          period_end: string
+          last_reset_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          user_id?: string
+          plan?: string
+          monthly_limit?: number
+          available_credits?: number
+          reserved_credits?: number
+          period_start?: string
+          period_end?: string
+          last_reset_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      credit_ledger: {
+        Row: {
+          id: string
+          user_id: string
+          feature_type: string
+          amount: number
+          status: string
+          request_id: string
+          idempotency_key: string
+          metadata: Json
+          environment: string
+          created_at: string
+          committed_at: string | null
+          rolled_back_at: string | null
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          feature_type: string
+          amount: number
+          status?: string
+          request_id: string
+          idempotency_key: string
+          metadata?: Json
+          environment?: string
+          created_at?: string
+          committed_at?: string | null
+          rolled_back_at?: string | null
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          feature_type?: string
+          amount?: number
+          status?: string
+          request_id?: string
+          idempotency_key?: string
+          metadata?: Json
+          environment?: string
+          created_at?: string
+          committed_at?: string | null
+          rolled_back_at?: string | null
+        }
+        Relationships: []
+      }
+      credit_debug_overrides: {
+        Row: {
+          user_id: string
+          available_credits: number
+          reserved_credits: number
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          user_id: string
+          available_credits?: number
+          reserved_credits?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          user_id?: string
+          available_credits?: number
+          reserved_credits?: number
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       chat_messages: {
         Row: {
           content: string
@@ -310,6 +418,52 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      credits_get_account: {
+        Args: Record<string, never>
+        Returns: Json
+      }
+      credits_check: {
+        Args: { p_feature_type: string; p_amount?: number }
+        Returns: Json
+      }
+      credits_reserve: {
+        Args: {
+          p_feature_type: string
+          p_request_id: string
+          p_idempotency_key: string
+          p_amount?: number
+          p_metadata?: Json
+        }
+        Returns: Json
+      }
+      credits_commit: {
+        Args: { p_ledger_id?: string | null; p_idempotency_key?: string | null }
+        Returns: Json
+      }
+      credits_rollback: {
+        Args: { p_ledger_id?: string | null; p_idempotency_key?: string | null }
+        Returns: Json
+      }
+      credits_debug_set: {
+        Args: { p_available: number; p_force_plan?: string | null }
+        Returns: Json
+      }
+      credits_debug_reset: {
+        Args: Record<string, never>
+        Returns: Json
+      }
+      credits_debug_deduct: {
+        Args: { p_amount?: number }
+        Returns: Json
+      }
+      credits_debug_clear_override: {
+        Args: Record<string, never>
+        Returns: Json
+      }
+      credits_release_stale_reservations: {
+        Args: { p_user_id?: string | null; p_max_age?: unknown }
+        Returns: number
+      }
       accept_trip_invite: {
         Args: { invite_token: string }
         Returns: string

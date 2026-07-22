@@ -1,4 +1,5 @@
 import type { AffiliateEnvConfig } from "@/lib/affiliate/affiliate-env";
+import { affiliateDebugInfo } from "@/lib/affiliate/affiliate-debug-log";
 import { ensureQueryParam } from "@/lib/affiliate/affiliate-url-utils";
 import { normalizeTripComDestination } from "@/lib/affiliate/trip-com-hotel-url";
 import type { Locale } from "@/lib/i18n/types";
@@ -66,10 +67,10 @@ function logKkdayAffiliateBuild(input: {
   keyword: string;
   finalUrl: string;
 }): void {
-  console.info(`[KKDAY_AFFILIATE] placeName=${input.placeName}`);
-  console.info(`[KKDAY_AFFILIATE] destination=${input.destination}`);
-  console.info(`[KKDAY_AFFILIATE] keyword=${input.keyword}`);
-  console.info(`[KKDAY_AFFILIATE] finalUrl=${input.finalUrl}`);
+  affiliateDebugInfo(`[KKDAY_AFFILIATE] placeName=${input.placeName}`);
+  affiliateDebugInfo(`[KKDAY_AFFILIATE] destination=${input.destination}`);
+  affiliateDebugInfo(`[KKDAY_AFFILIATE] keyword=${input.keyword}`);
+  affiliateDebugInfo(`[KKDAY_AFFILIATE] finalUrl=${input.finalUrl}`);
 }
 
 /** 建立 KKday 聯盟搜尋 / 商品 URL（保留 cid） */
@@ -110,5 +111,5 @@ export function buildKkdayAffiliateUrl(
 
 /** @deprecated 點擊 log 已統一由 openAffiliateUrl → [AFFILIATE_CLICK] 輸出 */
 export function logKkdayAffiliateOpen(finalUrl: string): void {
-  console.info(`[KKDAY_AFFILIATE] finalUrl=${finalUrl}`);
+  affiliateDebugInfo(`[KKDAY_AFFILIATE] finalUrl=${finalUrl}`);
 }

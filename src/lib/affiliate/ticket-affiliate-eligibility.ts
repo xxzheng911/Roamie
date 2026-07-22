@@ -1,4 +1,5 @@
 import type { TripAffiliateContext } from "@/lib/affiliate/affiliate-types";
+import { affiliateDebugInfo } from "@/lib/affiliate/affiliate-debug-log";
 import {
   isAttractionAffiliateCategory,
   isExcludedAffiliateCategory,
@@ -502,7 +503,8 @@ export function shouldShowTicketAffiliate(
   const categoryLabel = place.category?.trim() || place.placeType?.trim() || "";
 
   const logDecision = (show: boolean, reason: string): TicketAffiliateDecision => {
-    console.info(
+    // Detail only when DEBUG_AFFILIATE; consolidated summary/skip is emitted by display-rules callers.
+    affiliateDebugInfo(
       `[TICKET_AFFILIATE_DECISION] placeName=${name} types=${types.join(",")} category=${categoryLabel} destination=${destination} show=${String(show)} reason=${reason} searchKeyword=${searchKeyword}`,
     );
     return { show, reason, searchKeyword };

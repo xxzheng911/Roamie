@@ -1,0 +1,30 @@
+---
+description: RAOS Learning and Feedback Engine
+globs: src/lib/ai/memory/**/*.{ts,tsx},src/lib/analytics/**/*.{ts,tsx},src/lib/ai/**/*feedback*.{ts,tsx}
+alwaysApply: false
+---
+
+# Learning & Feedback (RAOS Ch.15)
+
+Full doc: `docs/raos/chapter-15-learning-feedback-engine.md`.
+
+## Role
+
+- Analysis layer only: improve future decisions from outcomes.
+- Does **not** chat, recommend, or build itineraries.
+- Emits **Evidence**; Memory/DNA/Decision/Recommendation decide whether to apply.
+
+## Signals
+
+- Positive: add to trip, favorite, navigate, dwell on detail, share, similar search, keep after trip.
+- Negative: instant delete, regenerate, skip, ignore, unfavorite, heavily edit AI plan.
+- Explicit like/ok/dislike = high weight.
+
+## Requirements
+
+- Per-recommendation result scoring; planner day-edit hotspots; conversation KPIs (follow-ups, completion, regen).
+- Memory items need Confidence; low confidence must not dominate ranking.
+- Pattern discovery + small exploration experiments allowed.
+- Global learning must be anonymized.
+- Privacy: no third-party sale/ads use of learning data.
+- Learning can be disabled by user (SPF).

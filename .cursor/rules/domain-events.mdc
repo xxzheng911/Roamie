@@ -1,0 +1,26 @@
+---
+description: RAOS Domain Model and Event-Driven Architecture
+globs: src/lib/**/*repository*.{ts,tsx},src/lib/**/*event*.{ts,tsx},src/lib/trip/**/*.{ts,tsx},src/lib/places-storage.ts,src/lib/trip-draft-storage.ts
+alwaysApply: false
+---
+
+# Domain & Events (RAOS Ch.17–18)
+
+Full docs: `docs/raos/chapter-17-*.md`, `chapter-18-*.md`.
+
+## Domain Model
+
+Core objects: User, Trip, TripDay, TripPlace, Place, Conversation, Workspace, TravelMemory, TravelDNA, Recommendation, DecisionObject, ValidationResult, KnowledgeObject, AgentTask, WeatherSnapshot, Route, Budget, Event.
+
+- One object, one responsibility.
+- Conversation does not store Memory; Recommendation stores Place refs only; Validator does not mutate data.
+- Include Schema Version + Created/Updated for migration.
+- Prefer new domain objects over ad-hoc JSON for new features.
+
+## Event-Driven Architecture
+
+- All state changes publish to Event Bus; subscribers update via State Manager.
+- Modules must not directly refresh other UIs.
+- Event fields: id, type, timestamp, source, optional target, payload, priority, correlationId, schemaVersion.
+- Subscribe narrowly; isolate subscriber failures; support retry/offline queue/replay where needed.
+- Event Bus is the only cross-module notification mechanism (target architecture).

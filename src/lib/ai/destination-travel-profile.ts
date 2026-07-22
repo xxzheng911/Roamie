@@ -15,6 +15,7 @@ import {
   validateCombinationOptions,
   type StructuredCombinationOption,
 } from "@/lib/ai/destination-combination-discovery";
+import { applyNearbyRegionPolicyToThemes } from "@/lib/ai/region-adjacency";
 
 export type DestinationTravelTheme = {
   /** Combination title shown to user */
@@ -138,13 +139,13 @@ const CURATED_PROFILES: Record<
   },
   東京: {
     categories: ["下町經典", "時尚商圈", "文化歷史", "夜景", "近郊"],
-    districts: ["淺草", "上野", "新宿", "澀谷", "原宿", "六本木"],
+    districts: ["淺草", "上野", "新宿", "銀座", "澀谷", "原宿", "六本木"],
     themes: [
       { title: "經典東京組合", places: ["淺草寺", "東京晴空塔", "上野公園", "阿美橫町"] },
       { title: "時尚商圈組合", places: ["澀谷十字路口", "原宿", "表參道", "新宿"] },
       { title: "文化歷史組合", places: ["明治神宮", "皇居外苑", "日本橋", "銀座"] },
       { title: "夜景地標組合", places: ["東京塔", "六本木", "台場", "豐洲市場"] },
-      { title: "近郊備案", places: ["鎌倉", "箱根", "橫濱"] },
+      { title: "近郊備案", places: ["橫濱", "川崎", "千葉", "埼玉", "鎌倉"] },
     ],
   },
   大阪: {
@@ -152,9 +153,20 @@ const CURATED_PROFILES: Record<
     districts: ["道頓堀", "心齋橋", "新世界", "大阪城"],
     themes: [
       { title: "經典大阪組合", places: ["大阪城", "道頓堀", "心齋橋", "黑門市場"] },
-      { title: "美食探索組合", places: ["新世界", "通天閣", "難波", "美國村"] },
+      { title: "美食探索組合", places: ["くくる道頓堀店", "一蘭道頓堀店", "かに道楽本店", "だるま新世界本店"] },
       { title: "親子娛樂組合", places: ["環球影城", "海遊館", "天保山"] },
       { title: "近郊備案", places: ["奈良", "京都", "神戶"] },
+    ],
+  },
+  名古屋: {
+    categories: ["經典地標", "美食", "購物商圈", "近郊"],
+    districts: ["名古屋城", "大須", "榮", "名古屋站"],
+    themes: [
+      { title: "經典名古屋組合", places: ["名古屋城", "熱田神宮", "名古屋電視塔", "綠洲21"] },
+      { title: "美食探索組合", places: ["矢場とん本店", "ひつまぶし名古屋備長", "今池世界の山ちゃん", "みそかつの矢場とん"] },
+      { title: "購物商圈組合", places: ["榮商圈", "大須商店街", "星ヶ丘テラス", "名鐵百貨"] },
+      // Places filled by Region Adjacency at build time (犬山／常滑／瀨戶…).
+      { title: "近郊備案", places: ["犬山", "常滑", "瀨戶", "岐阜"] },
     ],
   },
   京都: {
@@ -175,7 +187,7 @@ const CURATED_PROFILES: Record<
       { title: "年輕商圈組合", places: ["弘大", "梨大", "聖水洞", "延南洞"] },
       { title: "購物美食組合", places: ["明洞", "東大門", "廣藏市場", "樂天世界塔"] },
       { title: "夜景放鬆組合", places: ["南山首爾塔", "漢江", "汝矣島"] },
-      { title: "近郊備案", places: ["水原華城", "南怡島", "坡州"] },
+      { title: "近郊備案", places: ["仁川", "水原", "城南"] },
     ],
   },
   濟州: {
@@ -428,14 +440,36 @@ export function resolveDestinationTravelProfile(destination: string): Destinatio
 /** Dynamic combinations for ANY destination — may be empty until Places discovery completes. */
 export function buildDynamicDestinationCombinations(
   destination: string,
+  opts?: { tripDays?: number | null; includeFartherNearby?: boolean },
 ): DestinationTravelTheme[] {
   const profile = resolveDestinationTravelProfile(destination);
-  const themes = profile.themes
+  const rawThemes = profile.themes
     .map((theme) => ({
       title: theme.title,
       places: theme.places.filter((p) => isUsablePlaceName(p, profile.destination)),
     }))
     .filter((theme) => theme.places.length >= 2);
+
+  // Region Adjacency: replace/filter 「近郊備案」 with living-circle regions.
+  // When tripDays omitted, keep nearby (compat); reply builder applies day gate.
+  const themes = applyNearbyRegionPolicyToThemes(
+    profile.destination,
+    rawThemes,
+    {
+      tripDays: opts?.tripDays,
+      includeFarther: Boolean(opts?.includeFartherNearby),
+      // Without explicit days, do not suppress (callers with days pass tripDays).
+      forceInclude: opts?.tripDays == null,
+      maxCandidates: opts?.tripDays == null ? 5 : undefined,
+    },
+  ).filter((theme) => {
+    if (theme.places.length >= 2) return true;
+    // Medium trips may only surface 1 nearby region option.
+    return (
+      theme.places.length >= 1 &&
+      /近郊/.test(theme.title)
+    );
+  });
 
   const structured = themesToStructured(profile.destination, themes);
   const validation = validateCombinationOptions(structured, profile.destination);

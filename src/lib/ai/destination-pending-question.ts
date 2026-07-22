@@ -40,12 +40,31 @@ import {
   pendingOptionTitlesForCombinations,
   resolveSelectedCombinations,
 } from "@/lib/ai/destination-combination-suggestions";
-import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import { parseNearbyExtensionsFromText } from "@/lib/ai/combination-selection-reply";
+import {
+  isKnownCountryLabel,
+  isKnownTouristCityLabel,
+  normalizeDestinationLabel,
+  parseDestinationFromText,
+  resolveDestinationFromText,
+} from "@/lib/ai/trip-planning-context";
+import {
+  listChildDestinationsByCountry,
+  resolveDestinationEntity,
+} from "@/lib/ai/destination-entity";
+import { resolveDestinationAlias } from "@/lib/ai/destination-alias-resolver";
 import {
   logDestinationCitySelected,
   logDestinationSearchScopeUpdated,
   logConversationStageTransition,
 } from "@/lib/ai/destination-scope";
+import {
+  hasValidTripDuration,
+  logConversationStateTransition,
+  logTripDurationGuard,
+  resolveValidTripDays,
+} from "@/lib/ai/trip-duration-guard";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   contextPatchForPreferenceSelection,
   enrichPendingQuestion,
@@ -58,7 +77,6 @@ import {
   getDestinationStyleGuide,
 } from "@/lib/ai/destination-style-guide";
 import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
-import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { parseMonthNumber } from "@/lib/ai/season-response-guardrail";
 
 const FLEXIBLE_REPLY_RE =
@@ -223,6 +241,36 @@ function optionKeywords(option: string): string[] {
   return [...new Set([option, ...aliases])];
 }
 
+/** Parse "第4個" / "第四個" / "4" → 0-based index. */
+function parseOptionOrdinalIndex(text: string): number | null {
+  const t = text.trim();
+  if (!t) return null;
+  const digit = t.match(/^(?:我要|選|选|我想|要)?\s*(?:第\s*)?(\d+)\s*(?:個|个|项|項)?\s*$/);
+  if (digit?.[1]) {
+    const n = Number(digit[1]);
+    return Number.isFinite(n) && n >= 1 ? n - 1 : null;
+  }
+  const cnMap: Record<string, number> = {
+    一: 1,
+    二: 2,
+    兩: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10,
+  };
+  const cn = t.match(
+    /^(?:我要|選|选|我想|要)?\s*(?:第\s*)?([一二兩三四五六七八九十两])\s*(?:個|个|项|項)?\s*$/,
+  );
+  if (cn?.[1] && cnMap[cn[1]]) return cnMap[cn[1]]! - 1;
+  return null;
+}
+
 function textMatchesOption(text: string, option: string): boolean {
   const normalized = normalizeOptionText(text);
   for (const keyword of optionKeywords(option)) {
@@ -236,6 +284,154 @@ function textMatchesOption(text: string, option: string): boolean {
     }
   }
   return false;
+}
+
+const REGION_CHOICE_ENTITY_TYPES = new Set([
+  "city",
+  "region",
+  "island",
+  "province",
+  "state",
+  "resort_area",
+  "archipelago",
+  "district",
+  "administrative_area",
+]);
+
+/** Strip trailing duration/date fragments so「福岡6天」still yields 福岡. */
+function stripDurationAndDateSuffix(text: string): string {
+  return text
+    .trim()
+    .replace(
+      /(?:\d{1,2}\s*[\/\-月]\s*\d{1,2}(?:\s*[\/\-～~至到]\s*\d{1,2}\s*[\/\-月]?\s*\d{1,2})?).*$/u,
+      "",
+    )
+    .replace(/(?:\d+|[一二三四五六七八九十兩两]+)\s*天(?:\s*\d+\s*夜)?.*$/u, "")
+    .trim();
+}
+
+/**
+ * Accept a free-form city/region that was not listed in the previous round's
+ * country destination options (e.g. Japan options show 東京/大阪/京都/北海道,
+ * user replies 福岡).
+ */
+export function resolveFreeFormRegionChoice(
+  text: string,
+  pending: PendingQuestion,
+): string | null {
+  if (pending.type !== "region_choice") return null;
+
+  const stripped = stripDurationAndDateSuffix(text);
+  const countryRaw =
+    pending.destinationCountry?.trim() || pending.baseDestination?.trim() || "";
+  const country = countryRaw ? normalizeDestinationLabel(countryRaw) : undefined;
+
+  const aliasHit = resolveDestinationAlias(stripped || text.trim(), {
+    countryHint: countryRaw || undefined,
+  });
+  const aliasCanonical =
+    // Only trust alias table hits — heuristic fallback returns the raw label unchanged.
+    aliasHit &&
+    (aliasHit.aliases.length > 1 ||
+      Boolean(aliasHit.entityType) ||
+      Boolean(aliasHit.countryHint) ||
+      aliasHit.searchName !== aliasHit.normalizedName)
+      ? aliasHit.normalizedName
+      : undefined;
+
+  const raw =
+    resolveDestinationFromText(stripped)?.trim() ||
+    parseDestinationFromText(stripped)?.trim() ||
+    resolveDestinationFromText(text)?.trim() ||
+    parseDestinationFromText(text)?.trim() ||
+    aliasCanonical?.trim() ||
+    undefined;
+
+  let label = raw ? normalizeDestinationLabel(raw) : "";
+
+  // Registered child destinations under the country (covers 塔斯馬尼亞 etc.).
+  if (!label && country) {
+    const probe = normalizeDestinationLabel(stripped || text.trim());
+    if (probe) {
+      const children = listChildDestinationsByCountry(country);
+      const hit = children.find((child) => {
+        const name = normalizeDestinationLabel(child.name);
+        return (
+          name === probe ||
+          name.includes(probe) ||
+          probe.includes(name) ||
+          textMatchesOption(probe, child.name)
+        );
+      });
+      if (hit) label = normalizeDestinationLabel(hit.name);
+    }
+  }
+
+  // Alias / registered entity fallback when parsers miss a known place label.
+  if (!label) {
+    const probe = normalizeDestinationLabel(stripped || text.trim());
+    if (probe && probe.length >= 2 && probe.length <= 16) {
+      const alias = resolveDestinationAlias(probe, { countryHint: country });
+      const aliasOk =
+        alias.aliases.length > 1 ||
+        Boolean(alias.entityType) ||
+        Boolean(alias.countryHint) ||
+        alias.searchName !== alias.normalizedName;
+      if (aliasOk && alias.normalizedName) {
+        label = normalizeDestinationLabel(alias.normalizedName);
+      } else {
+        const entity = resolveDestinationEntity(probe);
+        if (
+          REGION_CHOICE_ENTITY_TYPES.has(entity.type) &&
+          (!country ||
+            !entity.country ||
+            normalizeDestinationLabel(entity.country) === country)
+        ) {
+          const registered = listChildDestinationsByCountry(
+            entity.country ?? country ?? "",
+          ).some((c) => normalizeDestinationLabel(c.name) === probe);
+          if (registered || isKnownTouristCityLabel(probe)) {
+            label = probe;
+          }
+        }
+      }
+    }
+  }
+
+  if (!label) return null;
+
+  // Selecting the country again is not a city answer.
+  if (country && label === country) return null;
+  if (isKnownCountryLabel(label) && !isKnownTouristCityLabel(label)) return null;
+
+  const entity = resolveDestinationEntity(label);
+  const acceptableType =
+    REGION_CHOICE_ENTITY_TYPES.has(entity.type) || isKnownTouristCityLabel(label);
+  if (!acceptableType) return null;
+
+  const entityCountry = entity.country
+    ? normalizeDestinationLabel(entity.country)
+    : undefined;
+  if (country && entityCountry && entityCountry !== country) {
+    return null;
+  }
+
+  logAiPipeline(
+    "[DESTINATION_SELECTION_RECEIVED]",
+    `input=${text.trim()}`,
+    `previousState=region_choice`,
+    `countryContext=${country ?? ""}`,
+  );
+  logAiPipeline(
+    "[DESTINATION_SELECTION_RESOLVED]",
+    `raw=${text.trim()}`,
+    `normalized=${label}`,
+    `countryCode=${entityCountry ?? country ?? ""}`,
+    `entityType=${entity.type}`,
+    `hasCoordinates=false`,
+  );
+
+  return label;
 }
 
 export function isItineraryNextStepPending(pending?: PendingQuestion): boolean {
@@ -364,6 +560,18 @@ export function parsePendingOptionSelection(
     if (preferences) return preferences;
   }
 
+  if (
+    pending.type === "region_choice" ||
+    pending.type === "destination_style_choice" ||
+    pending.type === "city_style_choice" ||
+    pending.type === "trip_style_choice"
+  ) {
+    const ordinal = parseOptionOrdinalIndex(t);
+    if (ordinal != null && pending.options[ordinal]) {
+      return pending.options[ordinal]!;
+    }
+  }
+
   if (pending.type === "destination_style_choice") {
     const indexMatch = t.match(/^(\d)[\.、)]?$/);
     if (indexMatch) {
@@ -385,6 +593,14 @@ export function parsePendingOptionSelection(
     for (const option of sorted) {
       if (textMatchesOption(stripped, option)) return option;
     }
+  }
+
+  // Free-form city under country options (福岡 when options are 東京/大阪/京都/北海道).
+  // Must run before flexible/affirmative defaults so we never coerce a city name
+  // into the first listed option.
+  if (pending.type === "region_choice") {
+    const freeForm = resolveFreeFormRegionChoice(t, pending);
+    if (freeForm) return freeForm;
   }
 
   if (FLEXIBLE_REPLY_RE.test(t) || AFFIRMATIVE_TAIL_RE.test(t)) {
@@ -417,7 +633,12 @@ export function applyDestinationPendingSelection(
     return { session, contextPatch: {} };
   }
 
-  const contextPatch = buildContextPatchForSelection(selected, pending, session.travelContext);
+  const contextPatch = buildContextPatchForSelection(
+    selected,
+    pending,
+    session.travelContext,
+    text,
+  );
   if (pending.type === "ask_days" || pending.type === "duration_choice") {
     logAiPipeline(
       "[PENDING_QUESTION_CLEARED]",
@@ -483,6 +704,7 @@ function buildContextPatchForSelection(
   selected: string,
   pending: PendingQuestion,
   sessionContext?: CanonicalTravelContext | null,
+  userText?: string,
 ): Partial<CanonicalTravelContext> {
   const country = pending.destinationCountry;
   const base: Partial<CanonicalTravelContext> = {
@@ -555,6 +777,9 @@ function buildContextPatchForSelection(
       ? buildCombinationAllowlistFromTitles(dest, titles) ??
         buildCombinationSelectionAllowlist(dest, titles.join("、"))
       : null;
+    const nearbyExtensions = userText
+      ? parseNearbyExtensionsFromText(userText, dest)
+      : [];
     return {
       ...base,
       destination: pending.baseDestination ?? base.destination,
@@ -565,6 +790,12 @@ function buildContextPatchForSelection(
       selectedCombinationPlaceNames: allowlist?.allowedPlaceNames,
       excludedCombinationPlaceNames: allowlist?.exclusiveExcludedPlaceNames,
       selectionSource: allowlist?.selectionSource,
+      ...(nearbyExtensions.length
+        ? {
+            nearbyExtensions,
+            unresolvedNearbyExtensions: nearbyExtensions,
+          }
+        : {}),
       tripPurpose: "route_combination_selected",
       conversationState: "ready_for_itinerary",
     };
@@ -679,6 +910,16 @@ function buildContextPatchForSelection(
   if (pending.type === "region_choice") {
     const city = selected === "__flexible_city_mix__" ? pending.options[0] : selected;
     const countryLabel = country ?? pending.destinationCountry;
+    const selectedLabel = city ? normalizeDestinationLabel(city) : undefined;
+    const selectedEntity = selectedLabel
+      ? resolveDestinationEntity(selectedLabel)
+      : undefined;
+    const isRegionLike =
+      selectedEntity?.type === "island" ||
+      selectedEntity?.type === "region" ||
+      selectedEntity?.type === "province" ||
+      selectedEntity?.type === "state" ||
+      selectedEntity?.type === "resort_area";
     if (city) {
       const monthNum = parseMonthNumber(sessionContext?.travelMonth);
       logDestinationCitySelected({ country: countryLabel, city });
@@ -686,11 +927,12 @@ function buildContextPatchForSelection(
         "[CITY_SELECTION_CONFIRMED]",
         `country=${countryLabel ? normalizeDestinationLabel(countryLabel) : "unknown"}`,
         `city=${normalizeDestinationLabel(city)}`,
+        `entityType=${selectedEntity?.type ?? "city"}`,
         `month=${monthNum ?? "none"}`,
       );
       logDestinationSearchScopeUpdated({
         from: "country",
-        to: "city",
+        to: isRegionLike ? "region" : "city",
         city,
       });
       logConversationStageTransition(
@@ -702,8 +944,9 @@ function buildContextPatchForSelection(
       ...base,
       destination: city,
       destinationCountry: countryLabel,
-      destinationType: "city",
-      destinationCity: city,
+      destinationType: selectedEntity?.type ?? "city",
+      destinationCity: isRegionLike ? undefined : city,
+      destinationRegion: isRegionLike ? selectedLabel : undefined,
       tripPurpose: "region_selected",
       conversationState: "awaiting_days",
       planningDaysConfirmed: false,
@@ -853,9 +1096,42 @@ export function buildNextStepAfterAdviceSelection(
   if (pending.type === "region_choice") {
     const city = selected === "__flexible_city_mix__" ? pending.options[0] ?? selected : selected;
     const country = pending.destinationCountry ?? ctx.destinationCountry;
-    // City confirmed → always collect date/days. Never travel-style / landmark intro.
+    const cityCtx: CanonicalTravelContext = {
+      ...ctx,
+      destination: city,
+      destinationCountry: country,
+      destinationType: "city",
+    };
+    const validDays = resolveValidTripDays(cityCtx);
+    logTripDurationGuard({
+      tripDays: validDays ?? ctx.days ?? null,
+      startDate: ctx.startDate,
+      endDate: ctx.endDate,
+      valid: validDays != null,
+      nextState: validDays != null ? "awaiting_combination_selection" : "waitingTripDays",
+    });
+
+    // Case G/H: destination + days/dates arrived together — skip re-asking duration.
+    if (hasValidTripDuration(cityCtx) && validDays != null) {
+      logConversationStateTransition({
+        from: "region_choice",
+        to: "awaiting_combination_selection",
+        reason: "destination_selected_duration_present",
+      });
+      return buildCityDaysConfirmedReply(city, validDays, country, {
+        weather: ctx.weather,
+        context: { ...cityCtx, days: validDays, planningDaysConfirmed: true },
+      });
+    }
+
+    logConversationStateTransition({
+      from: "region_choice",
+      to: "waitingTripDays",
+      reason: "destination_selected_duration_missing",
+    });
+    // City confirmed → collect date/days. Never travel-style / landmark intro.
     return buildDateAndDurationQuestionReply(city, country, {
-      context: { ...ctx, destination: city, destinationCountry: country, destinationType: "city" },
+      context: cityCtx,
       userText: selected,
       previousPendingType: "region_choice",
       blockedLegacyTemplate:

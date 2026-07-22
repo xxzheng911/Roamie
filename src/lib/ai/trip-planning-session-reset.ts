@@ -23,6 +23,11 @@ import { resolveDestinationScopeFields } from "@/lib/ai/destination-scope";
 import { clearResolvedDestinationScope } from "@/lib/ai/resolved-destination-scope";
 import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+import {
+  isCombinationSelectionContinuationReply,
+  isExplicitPrimaryDestinationSwitch,
+  parseExplicitPrimaryDestinationSwitch,
+} from "@/lib/ai/combination-selection-reply";
 
 export type NewTripPlanningReason =
   | "destination_changed"
@@ -58,6 +63,8 @@ const TRIP_RESET_CLEARED_FIELDS = [
   "selectedCombinationIds",
   "selectedCombinationPlaceNames",
   "excludedCombinationPlaceNames",
+  "nearbyExtensions",
+  "unresolvedNearbyExtensions",
   "offeredCombinations",
   "selectionSource",
   "generationRequestId",
@@ -189,11 +196,48 @@ export function isNewTripPlanning(
   const text = userText.trim();
   if (!text) return { isNew: false };
 
-  const incomingDestination = resolveDestinationFromText(text);
-  const incomingTravelMonth = parseTravelMonthFromText(text);
-  const incomingRange = parseTravelDateRangeFromText(text);
   const prevDest = resolveActiveDestination(session);
   const prevCountry = resolveActiveCountry(session);
+  const offeredCount = session.travelContext?.offeredCombinations?.length ?? 0;
+  const pendingType = session.pendingQuestion?.type;
+  const primaryForContinuation =
+    session.pendingQuestion?.baseDestination?.trim() || prevDest;
+
+  // 組合選擇延續（如「1、2跟橫濱」）：近郊延伸不得觸發 city_changed reset
+  if (
+    isCombinationSelectionContinuationReply(text, {
+      pendingType,
+      primaryDestination: primaryForContinuation,
+      combinationCount: offeredCount || undefined,
+      hasOfferedCombinations: offeredCount > 0,
+    })
+  ) {
+    return {
+      isNew: false,
+      incomingDestination: prevDest,
+    };
+  }
+
+  // combination_choice 中未明確「改去／目的地改成」時，嵌入城市不得覆蓋主目的地
+  if (
+    pendingType === "combination_choice" &&
+    !isExplicitPrimaryDestinationSwitch(text) &&
+    prevDest
+  ) {
+    return {
+      isNew: false,
+      incomingDestination: prevDest,
+    };
+  }
+
+  const explicitSwitch = parseExplicitPrimaryDestinationSwitch(text);
+  const incomingDestination =
+    explicitSwitch ??
+    (isExplicitPrimaryDestinationSwitch(text)
+      ? undefined
+      : resolveDestinationFromText(text));
+  const incomingTravelMonth = parseTravelMonthFromText(text);
+  const incomingRange = parseTravelDateRangeFromText(text);
   const prevMonth = session.travelContext?.travelMonth?.trim();
   const prevStart =
     session.travelContext?.startDate?.trim() ||
@@ -401,6 +445,12 @@ export function resetTripPlanningContext(
 
   logAiPipeline(
     "[NEW_TRIP_SESSION_CREATED]",
+    `oldSessionId=${oldSessionId ?? "none"}`,
+    `newSessionId=${newSessionId}`,
+    `reason=${opts.reason}`,
+  );
+  logAiPipeline(
+    "[PLANNER_SESSION_NEW]",
     `oldSessionId=${oldSessionId ?? "none"}`,
     `newSessionId=${newSessionId}`,
     `reason=${opts.reason}`,

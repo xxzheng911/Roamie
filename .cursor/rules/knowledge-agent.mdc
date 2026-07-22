@@ -1,0 +1,26 @@
+---
+description: RAOS Travel Knowledge Graph and Travel Agent Framework
+globs: src/lib/ai/**/*season*.{ts,tsx},src/lib/ai/**/*weather*.{ts,tsx},src/lib/ai/**/*festival*.{ts,tsx},src/lib/ai/destination-*.ts,src/lib/ai/best-travel-time-intent.ts
+alwaysApply: false
+---
+
+# TKG & TAF (RAOS Ch.13–14)
+
+Full docs: `docs/raos/chapter-13-*.md`, `chapter-14-*.md`.
+
+## Travel Knowledge Graph
+
+- Facts layer for country/city/season/festival/visa/transport/culture/safety/reservations.
+- LLM must not invent festivals, blossom seasons, visa, tickets, travel rules — query TKG first.
+- Source priority: government → tourism board → official attraction → transport operator → trusted partner → verified internal DB.
+- Independent; do not write into Memory/DNA/Conversation/Decision directly.
+- Updatable without rewriting AI architecture.
+
+## Travel Agent Framework
+
+- Task coordination layer: detect → queue → execute → validate → notify.
+- Agents (Planner/Weather/Transport/Stay/Budget/Schedule/Reminder/Safety/…) share one framework.
+- Continuous monitoring after trip creation; priority Critical → High → Medium → Low.
+- User can accept / snooze / ignore / permanently disable reminder types.
+- Agents collaborate (e.g. Weather → Schedule → Planner); **no major trip mutations without user confirmation**.
+- Do not directly mutate Memory/DNA/Conversation.

@@ -37,6 +37,13 @@ export function buildCafeSearchAttempts(destination: string): {
     { query: `${label} 人気 カフェ`, mode: "text", includedTypes: ["cafe", "coffee_shop"] },
     { query: `${label} 咖啡廳`, mode: "text", includedTypes: ["cafe", "coffee_shop"] },
   ];
+  console.info(
+    "[CAFE_SEARCH_START]",
+    `destination=${label}`,
+    `queries=${primary.map((a) => a.query).join("|")}`,
+    `excludedPlaceIds=`,
+    `excludedCanonicalKeys=`,
+  );
   for (const attempt of primary) {
     logChatCafeQuery(attempt.query);
   }

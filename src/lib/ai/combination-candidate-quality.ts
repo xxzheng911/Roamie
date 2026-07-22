@@ -14,6 +14,10 @@ import {
   type NonPlaceRejectReason,
   type PlaceNameLikelihood,
 } from "@/lib/ai/place-name-likelihood";
+import {
+  themeRequiresCategoryContract,
+  validatePlaceForCombination,
+} from "@/lib/ai/combination-category-contract";
 
 export type CandidateIntentInput = {
   name: string;
@@ -99,6 +103,13 @@ const TOURISM_TYPES = new Set([
   "market",
   "shopping_mall",
   "department_store",
+  "clothing_store",
+  "store",
+  "book_store",
+  "bookstore",
+  "souvenir_store",
+  "gift_shop",
+  "supermarket",
   "night_club",
   "movie_theater",
   "stadium",
@@ -108,9 +119,12 @@ const TOURISM_TYPES = new Set([
   "establishment",
   "restaurant",
   "cafe",
+  "coffee_shop",
   "bakery",
   "food",
   "meal_takeaway",
+  "food_court",
+  "dessert_shop",
 ]);
 
 /** Theme keywords used to check combination fit (soft). */
@@ -258,24 +272,39 @@ export function validateCandidateIntent(
   }
 
   const themeKey = (combination.theme ?? "").trim().toLowerCase();
-  const hint = THEME_HINTS[themeKey];
-  if (hint) {
-    const blob = `${name} ${candidate.address ?? ""} ${[...types].join(" ")}`;
-    if (types.size > 0 && !hint.test(blob)) {
-      const cultureTypes = /museum|art_gallery|cultural/i;
-      const marketTypes = /market|shopping_mall|store/i;
-      if (themeKey === "culture" && !cultureTypes.test([...types].join(" "))) {
-        if (
-          !hint.test(name) &&
-          !types.has("tourist_attraction") &&
-          !types.has("point_of_interest")
-        ) {
-          return { ok: false, reason: "theme_mismatch:culture" };
-        }
-      }
-      if (themeKey === "market" && !marketTypes.test([...types].join(" ")) && !hint.test(name)) {
-        if (!types.has("tourist_attraction") && !types.has("point_of_interest")) {
-          return { ok: false, reason: "theme_mismatch:market" };
+
+  // Strict category contracts for food / shopping / cafe / market / nature.
+  if (themeRequiresCategoryContract(themeKey, combination.title)) {
+    const categoryCheck = validatePlaceForCombination(
+      {
+        name,
+        types: candidate.types,
+        primaryType: candidate.primaryType,
+        address: candidate.address,
+      },
+      themeKey,
+      { title: combination.title },
+    );
+    if (!categoryCheck.valid) {
+      return {
+        ok: false,
+        reason: categoryCheck.rejectReason ?? `theme_mismatch:${themeKey}`,
+      };
+    }
+  } else {
+    const hint = THEME_HINTS[themeKey];
+    if (hint) {
+      const blob = `${name} ${candidate.address ?? ""} ${[...types].join(" ")}`;
+      if (types.size > 0 && !hint.test(blob)) {
+        const cultureTypes = /museum|art_gallery|cultural/i;
+        if (themeKey === "culture" && !cultureTypes.test([...types].join(" "))) {
+          if (
+            !hint.test(name) &&
+            !types.has("tourist_attraction") &&
+            !types.has("point_of_interest")
+          ) {
+            return { ok: false, reason: "theme_mismatch:culture" };
+          }
         }
       }
     }
@@ -338,7 +367,33 @@ export function themeSearchQueries(theme: string, destination: string): string[]
       `night market ${label}`,
     ],
     night_market: [`${label} 夜市`, `night market ${label}`],
-    shopping: [`${label} 商圈`, `${label} 市場`, `shopping ${label}`],
+    food: [
+      `${label} 人氣餐廳`,
+      `${label} 在地小吃`,
+      `${label} 必吃美食`,
+      `${label} 夜市`,
+      `${label} 甜點`,
+      `${label} local restaurant`,
+      `${label} popular food`,
+    ],
+    cafe: [
+      `${label} 咖啡廳`,
+      `${label} cafe`,
+      `${label} coffee`,
+      `${label} 甜點`,
+      `${label} bakery`,
+    ],
+    shopping: [
+      `${label} 商圈`,
+      `${label} 百貨`,
+      `${label} 購物中心`,
+      `${label} 老街`,
+      `${label} 市場`,
+      `${label} 伴手禮`,
+      `shopping mall ${label}`,
+      `shopping street ${label}`,
+      `department store ${label}`,
+    ],
     nature: [`${label} 公園`, `${label} 濕地`, `park ${label}`, `garden ${label}`],
     park: [`${label} 公園`, `park ${label}`, `garden ${label}`],
     coast: [
@@ -399,20 +454,31 @@ export function primaryThemesForCombinationTheme(
     culture: ["culture", "museum", "art"],
     historic: ["historic", "temple", "heritage"],
     market: ["market", "night_market", "shopping"],
+    food: ["food", "night_market", "cafe"],
+    cafe: ["cafe", "food"],
+    shopping: ["shopping", "market"],
     nature: ["nature", "park", "scenic_walk"],
     suburb: ["suburb", "nature", "hot_spring"],
     attraction: ["attraction", "landmark", "scenic_walk"],
+    soft: ["food", "shopping", "cafe", "nature"],
   };
   return facets[key] ?? facets.attraction!;
 }
 
 export function resolveThemeKeyFromTitle(title: string): string {
   const t = title.replace(/\s+/g, "");
+  if (/人氣美食|美食|餐廳|小吃|夜市小吃|在地美食|美食咖啡|美食市集|美食夜生活/.test(t)) {
+    if (/購物|百貨|商場/.test(t) && !/美食|餐廳|小吃/.test(t)) return "shopping";
+    if (/咖啡甜點|咖啡散步/.test(t) && !/美食|餐廳|小吃|夜市/.test(t)) return "cafe";
+    return "food";
+  }
+  if (/購物|百貨|商場|Outlet|散策|伴手禮|老街市集散策/.test(t)) return "shopping";
+  if (/咖啡|甜點|烘焙/.test(t)) return "cafe";
   if (/藝文|博物|美術|文化/.test(t)) return "culture";
   if (/舊城|古蹟|廟|寺|文化古/.test(t)) return "historic";
   if (/商圈|市集|夜市|市場/.test(t)) return "market";
   if (/海岸|漁港|海灘|夕陽/.test(t)) return "coast";
   if (/近郊|溫泉|牧場|森林/.test(t)) return "suburb";
-  if (/慢遊|公園|綠地|自然/.test(t)) return "nature";
+  if (/慢遊|公園|綠地|自然|風景/.test(t)) return "nature";
   return "attraction";
 }

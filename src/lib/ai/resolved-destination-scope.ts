@@ -6,6 +6,11 @@ import {
   resolveClimateZoneForDestination,
   type DestinationEntityType,
 } from "@/lib/ai/destination-entity";
+import {
+  countryCodeForLabel,
+  countryLabelForCode,
+  normalizeCountryReference,
+} from "@/lib/ai/destination-country-normalize";
 
 export type DestinationCoordSource =
   | "scope_lock"
@@ -64,6 +69,25 @@ const COUNTRY_BBOX: Record<
   泰国: { minLat: 5.5, maxLat: 20.5, minLng: 97.0, maxLng: 106.0 },
   菲律賓: { minLat: 4.5, maxLat: 21.5, minLng: 116.0, maxLng: 127.0 },
   菲律宾: { minLat: 4.5, maxLat: 21.5, minLng: 116.0, maxLng: 127.0 },
+  希臘: { minLat: 34.5, maxLat: 41.8, minLng: 19.0, maxLng: 29.7 },
+  西班牙: { minLat: 27.5, maxLat: 44.0, minLng: -18.5, maxLng: 5.0 },
+  印尼: { minLat: -11.0, maxLat: 6.5, minLng: 95.0, maxLng: 141.0 },
+  越南: { minLat: 8.0, maxLat: 23.5, minLng: 102.0, maxLng: 110.0 },
+  馬來西亞: { minLat: 0.8, maxLat: 7.5, minLng: 99.5, maxLng: 119.5 },
+  马来西亚: { minLat: 0.8, maxLat: 7.5, minLng: 99.5, maxLng: 119.5 },
+  馬爾地夫: { minLat: -1.0, maxLat: 7.5, minLng: 72.0, maxLng: 74.0 },
+  马尔代夫: { minLat: -1.0, maxLat: 7.5, minLng: 72.0, maxLng: 74.0 },
+  義大利: { minLat: 36.0, maxLat: 47.5, minLng: 6.5, maxLng: 19.0 },
+  意大利: { minLat: 36.0, maxLat: 47.5, minLng: 6.5, maxLng: 19.0 },
+  加拿大: { minLat: 41.5, maxLat: 83.5, minLng: -141.0, maxLng: -52.0 },
+  蒙古: { minLat: 41.5, maxLat: 52.2, minLng: 87.7, maxLng: 119.9 },
+  /** Mainland China — Taiwan bbox is checked first in inferCountryFromCoordinates. */
+  中國: { minLat: 18.0, maxLat: 54.0, minLng: 73.0, maxLng: 135.0 },
+  中国: { minLat: 18.0, maxLat: 54.0, minLng: 73.0, maxLng: 135.0 },
+  埃及: { minLat: 22.0, maxLat: 32.0, minLng: 24.5, maxLng: 37.0 },
+  捷克: { minLat: 48.5, maxLat: 51.1, minLng: 12.0, maxLng: 18.9 },
+  墨西哥: { minLat: 14.5, maxLat: 32.7, minLng: -118.5, maxLng: -86.5 },
+  新加坡: { minLat: 1.15, maxLat: 1.48, minLng: 103.6, maxLng: 104.1 },
 };
 
 const COUNTRY_CODE_BY_NAME: Record<string, string> = {
@@ -94,6 +118,18 @@ const COUNTRY_CODE_BY_NAME: Record<string, string> = {
   香港: "HK",
   澳門: "MO",
   澳门: "MO",
+  希臘: "GR",
+  西班牙: "ES",
+  馬爾地夫: "MV",
+  马尔代夫: "MV",
+  義大利: "IT",
+  意大利: "IT",
+  加拿大: "CA",
+  蒙古: "MN",
+  埃及: "EG",
+  捷克: "CZ",
+  墨西哥: "MX",
+  新加坡: "SG",
 };
 
 const scopeByDestination = new Map<string, ResolvedDestinationScope>();
@@ -131,8 +167,10 @@ function inBbox(
 
 export function countryCodeForCountryName(country?: string | null): string | undefined {
   if (!country?.trim()) return undefined;
+  const normalized = normalizeCountryReference(country);
+  if (normalized.countryCode) return normalized.countryCode;
   const label = normalizeDestinationLabel(country);
-  return COUNTRY_CODE_BY_NAME[label];
+  return COUNTRY_CODE_BY_NAME[label] ?? countryCodeForLabel(label);
 }
 
 /**
@@ -172,23 +210,28 @@ export function resolveDestinationCountryLabel(
   countryHint?: string | null,
 ): string | undefined {
   if (countryHint?.trim()) {
+    const fromHint = normalizeCountryReference(countryHint);
+    if (fromHint.country && fromHint.country !== "unknown") {
+      return fromHint.country;
+    }
     const hint = normalizeDestinationLabel(countryHint);
     // Ignore placeholder / ISO codes mistaken as names when a better source exists later.
     if (hint && hint !== "unknown" && hint.length > 1 && !/^[A-Z]{2}$/i.test(hint)) {
       return hint;
     }
     if (/^[A-Z]{2}$/i.test(hint)) {
-      const fromCode = Object.entries(COUNTRY_CODE_BY_NAME).find(
-        ([, code]) => code === hint.toUpperCase(),
-      );
-      if (fromCode) return normalizeDestinationLabel(fromCode[0]);
+      return countryLabelForCode(hint.toUpperCase());
     }
   }
   const label = normalizeDestinationLabel(destination);
   const entity = resolveDestinationEntity(label);
-  if (entity.country) return normalizeDestinationLabel(entity.country);
+  if (entity.country) {
+    return normalizeCountryReference(entity.country).country ?? normalizeDestinationLabel(entity.country);
+  }
   const structured = lookupStructuredCountryForCity(label);
-  if (structured) return structured;
+  if (structured) {
+    return normalizeCountryReference(structured).country ?? structured;
+  }
   return undefined;
 }
 
@@ -219,9 +262,13 @@ export function enrichDestinationCountry(params: {
     lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng);
 
   if (before) {
+    const normalized = normalizeCountryReference(before, params.countryCode);
     return {
-      country: before,
-      countryCode: params.countryCode?.trim().toUpperCase() || countryCodeForCountryName(before),
+      country: normalized.country ?? before,
+      countryCode:
+        normalized.countryCode ||
+        params.countryCode?.trim().toUpperCase() ||
+        countryCodeForCountryName(before),
       source: params.country?.trim() ? "hint" : "entity",
       enriched: false,
     };
@@ -335,6 +382,17 @@ export function validateDestinationScope(params: {
   let countryCode =
     params.countryCode?.trim().toUpperCase() || countryCodeForCountryName(country);
   let countrySource: DestinationCountrySource | undefined;
+
+  // Normalize English / ISO country strings from Geocode before enrichment.
+  if (params.country?.trim() || params.countryCode?.trim()) {
+    const normalized = normalizeCountryReference(params.country, params.countryCode);
+    if (normalized.country && !country) country = normalized.country;
+    if (normalized.countryCode && !countryCode) countryCode = normalized.countryCode;
+    if (normalized.country && country === params.country) {
+      country = normalized.country;
+      countryCode = normalized.countryCode ?? countryCode;
+    }
+  }
 
   if (!country && enrichIfUnknown) {
     const enriched = enrichDestinationCountry({

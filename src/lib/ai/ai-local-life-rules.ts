@@ -14,6 +14,7 @@ import {
 import { classifyTripPlaceCategory } from "@/lib/ai/trip-place-scoring";
 import { buildSyntheticClassicLandmarkPlace } from "@/lib/places-classic-landmark-cache";
 import { isGeocodeEmptyPlace } from "@/lib/ai/ai-trip-place-allocator";
+import { isRecEnginePlannerEnabled } from "@/lib/recommendation/engine/feature-flag-planner";
 
 export const LOCAL_LIFE_MIN_ITEMS_PER_DAY = 7;
 export const LOCAL_LIFE_MAX_ITEMS_PER_DAY = 7;
@@ -198,7 +199,9 @@ export function isLocalLifePlanningCandidate(place: PlaceResult): boolean {
   return isLocalLifeDistrictCandidate(place) || isLocalLifeMealCandidate(place);
 }
 
-/** Higher score = stronger local-life fit; used for sorting, not exclusion. */
+/** Higher score = stronger local-life fit.
+ * @deprecated Flag ON（P2.3）不再用於排序；僅 Flag OFF legacy 保留。
+ */
 export function scoreLocalLifeCandidate(place: PlaceResult): number {
   if (!isLocalLifePlanningCandidate(place)) return -1;
 
@@ -232,14 +235,22 @@ export type LocalLifeCandidatePools = {
   all: PlaceResult[];
 };
 
+/**
+ * 依候選建 local-life 分池。
+ * Flag ON（P2.3）：只 filter，**保留 Engine pool 順序**，不 score/sort。
+ * Flag OFF：legacy `scoreLocalLifeCandidate` 排序（回退）。
+ */
 export function buildLocalLifeCandidatePools(places: PlaceResult[]): LocalLifeCandidatePools {
-  const ranked = [...places]
-    .filter((p) => isLocalLifePlanningCandidate(p))
-    .sort((a, b) => scoreLocalLifeCandidate(b) - scoreLocalLifeCandidate(a));
+  const filtered = places.filter((p) => isLocalLifePlanningCandidate(p));
+  const ordered = isRecEnginePlannerEnabled()
+    ? filtered
+    : [...filtered].sort(
+        (a, b) => scoreLocalLifeCandidate(b) - scoreLocalLifeCandidate(a),
+      );
 
   const all: PlaceResult[] = [];
   const seen = new Set<string>();
-  for (const place of ranked) {
+  for (const place of ordered) {
     const id = place.id ?? place.name;
     if (!id || seen.has(id)) continue;
     seen.add(id);

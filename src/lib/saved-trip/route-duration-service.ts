@@ -2,6 +2,10 @@ import type { LatLng } from "@/lib/google-routes-fetch";
 import type { RoutesTravelMode } from "@/lib/routes/types";
 import { logDirectionsDebug } from "@/lib/directions-debug-log";
 import { fetchRouteDurationFromProvider } from "@/lib/saved-trip/route-duration-providers";
+import {
+  AUTO_WALK_MAX_METERS,
+  straightLineDistanceMeters,
+} from "@/lib/saved-trip/route-duration-fallback";
 import type {
   FetchLegDurationInput,
   RouteLegDurationResult,
@@ -119,12 +123,21 @@ export async function fetchScopedLegDuration(
   if (!force) {
     const cached = readScopedCache(cacheKey);
     if (cached) {
-      logDirectionsDebug("skipped", {
-        legKey: scope.legKey,
-        mode: preferredMode.toLowerCase(),
-        skippedReason: "scoped_cache_hit",
-      });
-      return cached;
+      const straightM = straightLineDistanceMeters(origin, destination);
+      // Ignore stale walk-only failures on long legs so distance-aware fallback can run.
+      const staleWalkFail =
+        !cached.ok &&
+        preferredMode === "WALK" &&
+        straightM > AUTO_WALK_MAX_METERS &&
+        !cached.usedEstimatedFallback;
+      if (!staleWalkFail) {
+        logDirectionsDebug("skipped", {
+          legKey: scope.legKey,
+          mode: preferredMode.toLowerCase(),
+          skippedReason: "scoped_cache_hit",
+        });
+        return cached;
+      }
     }
     const pending = scopedInflight.get(cacheKey);
     if (pending) {

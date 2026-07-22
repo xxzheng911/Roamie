@@ -2,3 +2,6 @@
 export function isDebugDiagnosticsEnabled(): boolean {
   return import.meta.env.VITE_DEBUG_DIAGNOSTICS === "1";
 }
+
+/** Affiliate 判定細節；預設關閉，避免淹沒 Planner / Places / Validator log */
+export { isDebugAffiliateEnabled } from "@/lib/affiliate/affiliate-debug-log";

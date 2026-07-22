@@ -9,12 +9,14 @@ export const SUBSCRIPTION_PRODUCT_IDS = {
 /** Entitlement identifier in RevenueCat */
 export const PREMIUM_ENTITLEMENT_ID = "premium";
 
-/** Free-tier daily limits (server should enforce the same limits) */
+/** Free-tier daily limits (legacy scaffolding — AI Credits Runtime supersedes for place/itinerary) */
 export const FREE_TIER_LIMITS = {
   aiChatsPerDay: 15,
   itineraryGenerationsPerDay: 2,
   advancedRecommendationsPerDay: 10,
 } as const;
+
+/** @see src/lib/credits — Free monthly AI Credits = 20; PLACE=1 / ITINERARY=7 */
 
 /** Feature → minimum tier required */
 export const FEATURE_TIER_MAP: Record<SubscriptionFeature, SubscriptionTierId> = {
@@ -27,4 +29,5 @@ export const FEATURE_TIER_MAP: Record<SubscriptionFeature, SubscriptionTierId> =
   hidden_locals: "plus",
   ai_memory: "plus",
   advanced_travel_modes: "plus",
+  conversation_workspace: "plus",
 };
