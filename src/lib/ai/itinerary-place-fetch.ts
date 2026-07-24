@@ -41,10 +41,7 @@ import {
   sanitizeDestinationForGeocode,
 } from "@/lib/ai/itinerary-entity-extraction";
 import { buildDestinationTextSearchAttempts } from "@/lib/ai/destination-geocode";
-import {
-  filterExcludedPlaceIds,
-  type PlaceLike,
-} from "@/lib/place-planning-memory";
+import { filterExcludedPlaceIds, type PlaceLike } from "@/lib/place-planning-memory";
 import {
   INSUFFICIENT_ITINERARY_PLACES_MESSAGE,
   isGenericPlaceLabel,
@@ -152,9 +149,9 @@ async function fetchNearbyExtensionPlaces(params: {
   selectedCombinationIds?: number[];
   tripDays?: number;
 }): Promise<{ places: ChatPlaceItem[]; insufficient: string[] }> {
-  const extensions = [...new Set(
-    params.extensions.map((e) => normalizeDestinationLabel(e)).filter(Boolean),
-  )];
+  const extensions = [
+    ...new Set(params.extensions.map((e) => normalizeDestinationLabel(e)).filter(Boolean)),
+  ];
   if (!extensions.length) return { places: [], insufficient: [] };
 
   logNearbyExtensionContext({
@@ -307,14 +304,12 @@ export type ItineraryPlaceFailure = {
 export const COMBINATION_MAPPING_AUTO_RETRY_MESSAGE =
   "部分景點仍在確認中，正在重新搜尋符合你選擇的地點…";
 
-export const COMBINATION_MAPPING_FAILED_MESSAGE =
-  "部分已選組合目前無法取得足夠的真實地點。";
+export const COMBINATION_MAPPING_FAILED_MESSAGE = "部分已選組合目前無法取得足夠的真實地點。";
 
 export const SINGLE_COMBINATION_MAPPING_FAILED_MESSAGE =
   "目前這個主題找到的可用真實地點不足，請改選其他組合或點「重新生成」再試一次。";
 
-export const COMPACT_ITINERARY_NOTICE_MESSAGE =
-  "目前找到的可用地點較少，我先幫你安排精簡版行程。";
+export const COMPACT_ITINERARY_NOTICE_MESSAGE = "目前找到的可用地點較少，我先幫你安排精簡版行程。";
 
 export const COMBINATION_MAPPING_REGENERATE_OPTION = "重新生成";
 
@@ -371,10 +366,7 @@ function pickDominantFailureCode(
 }
 
 function logItineraryRootCause(failure: ItineraryPlaceFailure): void {
-  logAiPipeline(
-    "[ITINERARY_FAILURE_ROOT_CAUSE]",
-    JSON.stringify(failure),
-  );
+  logAiPipeline("[ITINERARY_FAILURE_ROOT_CAUSE]", JSON.stringify(failure));
   // Prefer root cause over generic places_api_empty in Xcode.
   const preferred = PLACE_FAILURE_PRIORITY.includes(failure.code)
     ? failure.code
@@ -453,8 +445,7 @@ function templateNameSearchAttempts(destination: string): SearchAttempt[] {
 function rankByQuality(places: PlaceResult[]): PlaceResult[] {
   return [...places].sort((a, b) => {
     const score = (p: PlaceResult) =>
-      (p.rating ?? 0) * Math.log10((p.userRatingCount ?? 0) + 10) +
-      (p.photoName ? 0.5 : 0);
+      (p.rating ?? 0) * Math.log10((p.userRatingCount ?? 0) + 10) + (p.photoName ? 0.5 : 0);
     return score(b) - score(a);
   });
 }
@@ -463,10 +454,7 @@ function rankByQuality(places: PlaceResult[]): PlaceResult[] {
  * 取用候選：Flag ON 保留輸入順序（Filter/slice，不重排）；
  * Flag OFF 仍用 rankByQuality。
  */
-function selectPlacesForItinerary(
-  places: PlaceResult[],
-  limit: number,
-): PlaceResult[] {
+function selectPlacesForItinerary(places: PlaceResult[], limit: number): PlaceResult[] {
   if (isRecEnginePlannerEnabled()) {
     return places.slice(0, Math.max(0, limit));
   }
@@ -495,6 +483,180 @@ function dedupeChatPlaces(places: ChatPlaceItem[]): ChatPlaceItem[] {
     );
   }
   return [...byKey.values()];
+}
+
+type StructuredCombinationSeedCandidate = {
+  name: string;
+  originalName?: string;
+  localizedDisplayName?: string;
+  googlePlaceId?: string;
+  latitude?: number;
+  longitude?: number;
+  address?: string;
+  types?: string[];
+  primaryType?: string | null;
+  rating?: number | null;
+};
+
+export type CombinationGenerationSeedPlan = {
+  resolvedSeeds: ChatPlaceItem[];
+  resolvedByName: Map<string, ChatPlaceItem>;
+  offeredResolvedSeedCount: number;
+  poolResolvedSeedCount: number;
+  dedupedResolvedSeedCount: number;
+};
+
+function combinationSeedNameKey(name: string): string {
+  return name.trim().replace(/\s+/g, "").toLowerCase();
+}
+
+/**
+ * Build immutable, resolved generation seeds from structured combination metadata.
+ * Offered session metadata wins over refreshed pool metadata; invalid/name-only rows
+ * are deliberately omitted so the existing name-resolution path can handle them.
+ */
+export function buildCombinationGenerationSeedPlan(params: {
+  context: CanonicalTravelContext;
+  destination: string;
+  selectedCombinationIds: number[];
+  pools: ReturnType<typeof resolveSelectedCombinationPools>;
+  center: { lat: number; lng: number };
+  locale: Locale;
+}): CombinationGenerationSeedPlan {
+  const selectedIds = new Set(params.selectedCombinationIds);
+  const byId = new Map<string, ChatPlaceItem>();
+  const resolvedByName = new Map<string, ChatPlaceItem>();
+  let offeredResolvedSeedCount = 0;
+  let poolResolvedSeedCount = 0;
+
+  const addCandidate = (
+    candidate: StructuredCombinationSeedCandidate,
+    combinationId: number,
+    combination: { title?: string; theme?: string },
+    source: "offered" | "pool",
+  ): void => {
+    if (!selectedIds.has(combinationId)) return;
+    const id = candidate.googlePlaceId?.trim() ?? "";
+    const name = candidate.localizedDisplayName?.trim() || candidate.name.trim();
+    const lat = candidate.latitude;
+    const lng = candidate.longitude;
+    if (!isMappableGooglePlaceId(id) || lat == null || lng == null) return;
+    if (!candidate.address?.trim() || detectSubPlaceType(name)) return;
+
+    const quality = validateCandidateIntent(
+      {
+        name,
+        types: candidate.types,
+        primaryType: candidate.primaryType,
+        address: candidate.address,
+        lat,
+        lng,
+        rating: candidate.rating,
+        googlePlaceId: id,
+      },
+      combination,
+      params.destination,
+      {
+        center: params.center,
+        source: `combination_${source}_resolved_seed`,
+      },
+    );
+    if (!quality.ok) return;
+
+    const place: PlaceResult = {
+      id,
+      name,
+      originalName: candidate.originalName?.trim() || candidate.name.trim(),
+      localizedDisplayName: name,
+      address: candidate.address,
+      lat,
+      lng,
+      rating: candidate.rating ?? null,
+      userRatingCount: null,
+      photoName: null,
+      primaryType: candidate.primaryType ?? null,
+      types: candidate.types ?? null,
+      businessStatus: null,
+      openStatus: "unknown",
+      openStatusLabel: "",
+      todayHoursLabel: "",
+      closingSoonNote: "",
+      nextOpenHint: "",
+    };
+    if (!isResolvedCorePlace({ ...place, googlePlaceId: id, destinationMatch: true })) {
+      return;
+    }
+
+    const item = mergeCombinationProvenance(
+      mapPlaceResultToChatItem(place, {
+        mood: params.context.mood,
+        weather: params.context.weather,
+        locale: params.locale,
+      }),
+      [combinationId],
+    );
+    const existing = byId.get(id);
+    const representative = existing
+      ? mergePlaceProvenance(existing, item, {
+          representativeName: existing.placeName ?? existing.name,
+          otherName: item.placeName ?? item.name,
+        })
+      : item;
+    byId.set(id, representative);
+
+    for (const alias of [candidate.name, candidate.originalName, candidate.localizedDisplayName]) {
+      if (!alias?.trim()) continue;
+      resolvedByName.set(combinationSeedNameKey(alias), representative);
+    }
+    if (!existing) {
+      if (source === "offered") offeredResolvedSeedCount += 1;
+      else poolResolvedSeedCount += 1;
+    }
+  };
+
+  for (const combination of params.context.offeredCombinations ?? []) {
+    if (!selectedIds.has(combination.id)) continue;
+    for (const place of combination.places) {
+      addCandidate(place, combination.id, combination, "offered");
+    }
+  }
+
+  for (const pool of params.pools) {
+    for (const candidate of pool.all) {
+      addCandidate(
+        {
+          name: candidate.name,
+          originalName: candidate.originalName,
+          localizedDisplayName: candidate.localizedDisplayName,
+          googlePlaceId: candidate.googlePlaceId,
+          latitude: candidate.coordinates?.lat,
+          longitude: candidate.coordinates?.lng,
+          address: candidate.address,
+          types: candidate.types,
+          primaryType: candidate.primaryType,
+          rating: candidate.rating,
+        },
+        pool.combinationId,
+        pool,
+        "pool",
+      );
+    }
+  }
+
+  // Repoint every alias at the final provenance-merged representative.
+  for (const [name, item] of resolvedByName) {
+    const id = item.googlePlaceId ?? item.placeId ?? "";
+    const merged = byId.get(id);
+    if (merged) resolvedByName.set(name, merged);
+  }
+
+  return {
+    resolvedSeeds: [...byId.values()],
+    resolvedByName,
+    offeredResolvedSeedCount,
+    poolResolvedSeedCount,
+    dedupedResolvedSeedCount: byId.size,
+  };
 }
 
 function dedupePlaces(places: PlaceResult[]): PlaceResult[] {
@@ -639,7 +801,11 @@ export async function fetchItineraryPlaces(params: {
     ...templateNameSearchAttempts(label),
     ...buildDestinationTextSearchAttempts(label),
     { query: `${label} 必去景點`, mode: "text", includedTypes: ["tourist_attraction"] },
-    { query: `${label} 景點`, mode: "nearby", includedTypes: ["tourist_attraction", "museum", "park"] },
+    {
+      query: `${label} 景點`,
+      mode: "nearby",
+      includedTypes: ["tourist_attraction", "museum", "park"],
+    },
   ];
 
   const searchExtras = geocoded
@@ -726,7 +892,10 @@ function resolveGenerationAllowlist(
       selectedCombinationIds: ids,
       selectedCombinationIndexes: ids.map((id) => id - 1),
       allowedTitles: context.selectedTripStyle
-        ? context.selectedTripStyle.split("、").map((s) => s.trim()).filter(Boolean)
+        ? context.selectedTripStyle
+            .split("、")
+            .map((s) => s.trim())
+            .filter(Boolean)
         : [],
       allowedPlaceNames: context.selectedCombinationPlaceNames,
       excludedTitles: [],
@@ -793,11 +962,9 @@ async function mergeSessionPlacesWithFetch(params: {
   beginDestinationTravelProfileSession(params.generationRequestId);
 
   const comboPools = allowlist?.selectedCombinationIds.length
-    ? resolveSelectedCombinationPools(
-        params.destination,
-        allowlist.selectedCombinationIds,
-        { forceRefresh: true },
-      )
+    ? resolveSelectedCombinationPools(params.destination, allowlist.selectedCombinationIds, {
+        forceRefresh: true,
+      })
     : [];
 
   const expandedAllowNames = allowlist
@@ -812,15 +979,30 @@ async function mergeSessionPlacesWithFetch(params: {
     ? { ...allowlist, allowedPlaceNames: expandedAllowNames }
     : null;
 
+  const structuredSeedPlan = effectiveAllowlist
+    ? buildCombinationGenerationSeedPlan({
+        context: params.context,
+        destination: params.destination,
+        selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
+        pools: comboPools,
+        center: { lat, lng },
+        locale: params.locale,
+      })
+    : {
+        resolvedSeeds: [],
+        resolvedByName: new Map<string, ChatPlaceItem>(),
+        offeredResolvedSeedCount: 0,
+        poolResolvedSeedCount: 0,
+        dedupedResolvedSeedCount: 0,
+      };
+
   const comboNamesRaw = effectiveAllowlist?.allowedPlaceNames?.length
     ? (() => {
         const merged = mergeSelectedCombinationCandidates(
           params.destination,
           effectiveAllowlist.selectedCombinationIds,
         );
-        return merged.places.length
-          ? merged.places
-          : effectiveAllowlist.allowedPlaceNames;
+        return merged.places.length ? merged.places : effectiveAllowlist.allowedPlaceNames;
       })()
     : !effectiveAllowlist
       ? flattenDestinationCombinationPlaces(params.destination)
@@ -836,6 +1018,15 @@ async function mergeSessionPlacesWithFetch(params: {
 
   const seenName = new Set<string>();
   const prioritizeNames: string[] = [];
+  // Resolved structured metadata is the authoritative seed source.
+  for (const p of structuredSeedPlan.resolvedSeeds) {
+    const n = (p.placeName ?? p.name ?? "").trim();
+    if (!n) continue;
+    const key = combinationSeedNameKey(n);
+    if (seenName.has(key)) continue;
+    seenName.add(key);
+    prioritizeNames.push(n);
+  }
   // Seed prior resolved first so regenerate does not re-search them blindly.
   for (const p of priorResolved) {
     const n = (p.placeName ?? p.name ?? "").trim();
@@ -921,11 +1112,7 @@ async function mergeSessionPlacesWithFetch(params: {
   const withComboMeta = (item: ChatPlaceItem, forceComboId?: number): ChatPlaceItem => {
     const ids = effectiveAllowlist?.selectedCombinationIds ?? [];
     if (!ids.length) return item;
-    const annotated = annotatePlaceWithCombinationMetadata(
-      item,
-      params.destination,
-      ids,
-    );
+    const annotated = annotatePlaceWithCombinationMetadata(item, params.destination, ids);
     if (forceComboId != null) {
       return mergeCombinationProvenance(annotated, [forceComboId]);
     }
@@ -933,6 +1120,8 @@ async function mergeSessionPlacesWithFetch(params: {
   };
 
   const seedFromName = (place: string): ChatPlaceItem => {
+    const structured = structuredSeedPlan.resolvedByName.get(combinationSeedNameKey(place));
+    if (structured) return structured;
     const existing =
       priorResolved.find((p) => (p.placeName ?? p.name ?? "").trim() === place) ??
       scopedSessionPlaces.find((p) => (p.placeName ?? p.name ?? "").trim() === place);
@@ -970,6 +1159,44 @@ async function mergeSessionPlacesWithFetch(params: {
 
   const seedPlaces: ChatPlaceItem[] = firstRoundNames.map(seedFromName);
 
+  const isReusableExistingSeed = (place: ChatPlaceItem): boolean => {
+    const id = place.googlePlaceId ?? place.placeId;
+    return (
+      isMappableGooglePlaceId(id) &&
+      isResolvedCorePlace({
+        id,
+        googlePlaceId: id,
+        name: place.placeName ?? place.name,
+        address: place.address,
+        lat: place.lat,
+        lng: place.lng,
+        destinationMatch: true,
+      })
+    );
+  };
+  const textSearchCandidateCount = firstRoundNames.filter(
+    (name) =>
+      !structuredSeedPlan.resolvedByName.has(combinationSeedNameKey(name)) &&
+      !priorResolved.some(
+        (p) =>
+          isReusableExistingSeed(p) &&
+          combinationSeedNameKey(p.placeName ?? p.name ?? "") === combinationSeedNameKey(name),
+      ) &&
+      !scopedSessionPlaces.some(
+        (p) =>
+          isReusableExistingSeed(p) &&
+          combinationSeedNameKey(p.placeName ?? p.name ?? "") === combinationSeedNameKey(name),
+      ),
+  ).length;
+  logAiPipeline(
+    "[COMBINATION_GENERATION_SEEDS]",
+    `offeredResolvedSeedCount=${structuredSeedPlan.offeredResolvedSeedCount}`,
+    `poolResolvedSeedCount=${structuredSeedPlan.poolResolvedSeedCount}`,
+    `nameOnlyCandidateCount=${textSearchCandidateCount}`,
+    `textSearchCandidateCount=${textSearchCandidateCount}`,
+    `dedupedResolvedSeedCount=${structuredSeedPlan.dedupedResolvedSeedCount}`,
+  );
+
   let attemptedCandidates = firstRoundNames.length;
   let candidateRegenerationCount = 0;
   let searchRetryCount = 0;
@@ -998,10 +1225,7 @@ async function mergeSessionPlacesWithFetch(params: {
     const mappedBackfill = await mapWithConcurrencyLimit(
       backfill,
       async (name) => {
-        if (
-          effectiveAllowlist &&
-          !isPlaceNameInCombinationAllowlist(name, effectiveAllowlist)
-        ) {
+        if (effectiveAllowlist && !isPlaceNameInCombinationAllowlist(name, effectiveAllowlist)) {
           return null;
         }
         return mapNamedPlaceToGoogle({
@@ -1040,9 +1264,7 @@ async function mergeSessionPlacesWithFetch(params: {
   if (!effectiveAllowlist && mappedSession.length + mappedCombo.length < fetchTarget) {
     const fetchResult = await fetchItineraryPlaces(params);
     fetched = fetchResult.ok
-      ? fetchResult.places.filter((p) =>
-          isMappableGooglePlaceId(p.googlePlaceId ?? p.placeId),
-        )
+      ? fetchResult.places.filter((p) => isMappableGooglePlaceId(p.googlePlaceId ?? p.placeId))
       : [];
   }
 
@@ -1061,33 +1283,32 @@ async function mergeSessionPlacesWithFetch(params: {
     ...mappedSession.map((p) => withComboMeta(p)),
     ...mappedCombo,
     ...fetched.map((p) => withComboMeta(p)),
-  ])
-    .filter((p) => {
-      const id = p.googlePlaceId ?? p.placeId;
-      if (!isMappableGooglePlaceId(id)) return false;
-      if (
-        !isResolvedCorePlace({
-          id,
-          googlePlaceId: id,
-          name: p.placeName ?? p.name,
-          address: p.address ?? `${p.placeName ?? p.name}, ${params.destination}`,
-          lat: p.lat,
-          lng: p.lng,
-          destinationMatch: true,
-        })
-      ) {
-        return false;
-      }
-      if (!allowOrComboAnnotated(p)) {
-        logAiPipeline(
-          "[COMBINATION_ALLOWLIST_FILTERED]",
-          `place=${p.placeName ?? p.name}`,
-          `reason=not_in_selected_combinations`,
-        );
-        return false;
-      }
-      return true;
-    });
+  ]).filter((p) => {
+    const id = p.googlePlaceId ?? p.placeId;
+    if (!isMappableGooglePlaceId(id)) return false;
+    if (
+      !isResolvedCorePlace({
+        id,
+        googlePlaceId: id,
+        name: p.placeName ?? p.name,
+        address: p.address ?? `${p.placeName ?? p.name}, ${params.destination}`,
+        lat: p.lat,
+        lng: p.lng,
+        destinationMatch: true,
+      })
+    ) {
+      return false;
+    }
+    if (!allowOrComboAnnotated(p)) {
+      logAiPipeline(
+        "[COMBINATION_ALLOWLIST_FILTERED]",
+        `place=${p.placeName ?? p.name}`,
+        `reason=not_in_selected_combinations`,
+      );
+      return false;
+    }
+    return true;
+  });
 
   const mappingMeta: Record<
     number,
@@ -1109,10 +1330,7 @@ async function mergeSessionPlacesWithFetch(params: {
       ).matchedSelectedCombinationIds?.includes(comboId);
     }).length;
 
-  const mapCandidateName = async (
-    name: string,
-    comboId: number,
-  ): Promise<ChatPlaceItem | null> => {
+  const mapCandidateName = async (name: string, comboId: number): Promise<ChatPlaceItem | null> => {
     const found = await mapNamedPlaceToGoogle({
       name,
       destination: params.destination,
@@ -1297,11 +1515,7 @@ async function mergeSessionPlacesWithFetch(params: {
               }
               if (!isMappableGooglePlaceId(place.id)) continue;
               if (!isResolvedCorePlace({ ...place, destinationMatch: true })) continue;
-              if (
-                merged.some(
-                  (p) => (p.googlePlaceId ?? p.placeId) === place.id,
-                )
-              ) {
+              if (merged.some((p) => (p.googlePlaceId ?? p.placeId) === place.id)) {
                 continue;
               }
               if (detectSubPlaceType(place.name ?? "")) {
@@ -1573,8 +1787,7 @@ async function mergeSessionPlacesWithFetch(params: {
       selectedCombinationIds: effectiveAllowlist.selectedCombinationIds,
       pools: comboPools,
     });
-    const mode =
-      effectiveAllowlist.selectedCombinationIds.length <= 1 ? "single" : "multiple";
+    const mode = effectiveAllowlist.selectedCombinationIds.length <= 1 ? "single" : "multiple";
     logAiPipeline(
       "[SELECTED_COMBINATION_MODE]",
       `mode=${mode}`,
@@ -1620,15 +1833,9 @@ async function mergeSessionPlacesWithFetch(params: {
         merged = dedupeChatPlaces([...merged, ...capacitySupplement.added]);
         fallbackCandidateCount += capacitySupplement.added.length;
       }
-      logAiPipeline(
-        "[REAL_PLACE_COUNT_AFTER_SUPPLEMENT]",
-        `count=${merged.length}`,
-      );
+      logAiPipeline("[REAL_PLACE_COUNT_AFTER_SUPPLEMENT]", `count=${merged.length}`);
     } else {
-      logAiPipeline(
-        "[REAL_PLACE_COUNT_AFTER_SUPPLEMENT]",
-        `count=${merged.length}`,
-      );
+      logAiPipeline("[REAL_PLACE_COUNT_AFTER_SUPPLEMENT]", `count=${merged.length}`);
     }
 
     merged = ensureCombinationProvenanceOnPlaces(
@@ -1696,8 +1903,8 @@ async function mergeSessionPlacesWithFetch(params: {
               ? "place_resolution_failed"
               : integrity.failureCode === "combination_uncovered"
                 ? "combination_uncovered"
-                : (integrity.failureCode as ItineraryPlaceFailureCode | undefined) ??
-                  "combination_uncovered";
+                : ((integrity.failureCode as ItineraryPlaceFailureCode | undefined) ??
+                  "combination_uncovered");
       const failure: ItineraryPlaceFailure = {
         code: mappedCode,
         stage: "combination_mapping",
@@ -1725,8 +1932,7 @@ async function mergeSessionPlacesWithFetch(params: {
 
     // Soft: under soft capacity target is OK when every combo has a representative.
     const underQuota = mappingStats.filter((s) => {
-      const target =
-        capacityPlan.targetPerCombination[s.combinationId] ?? minPerCombo;
+      const target = capacityPlan.targetPerCombination[s.combinationId] ?? minPerCombo;
       return s.resolvedCount < target;
     });
     if (underQuota.length) {
@@ -1772,10 +1978,9 @@ async function mergeSessionPlacesWithFetch(params: {
         ]),
       ];
     } else if (params.context.unresolvedNearbyExtensions?.length) {
-      params.context.unresolvedNearbyExtensions =
-        params.context.unresolvedNearbyExtensions.filter(
-          (e) => !nearbyExtensions.includes(normalizeDestinationLabel(e)),
-        );
+      params.context.unresolvedNearbyExtensions = params.context.unresolvedNearbyExtensions.filter(
+        (e) => !nearbyExtensions.includes(normalizeDestinationLabel(e)),
+      );
     }
     logAiPipeline(
       "[NEARBY_EXTENSION_MERGE]",
@@ -1798,8 +2003,7 @@ async function mergeSessionPlacesWithFetch(params: {
     const keptKeys = new Set(
       merged.map(
         (p) =>
-          p.googlePlaceId?.trim() ||
-          `${(p.placeName ?? p.name).replace(/\s+/g, "").toLowerCase()}`,
+          p.googlePlaceId?.trim() || `${(p.placeName ?? p.name).replace(/\s+/g, "").toLowerCase()}`,
       ),
     );
     for (const place of [...mappedSession, ...mappedCombo]) {
@@ -1879,10 +2083,7 @@ async function mergeSessionPlacesWithFetch(params: {
     );
   }
 
-  const finalValidation = evaluateTotalRealPlaceValidation(
-    merged.length,
-    dynamicCapacity,
-  );
+  const finalValidation = evaluateTotalRealPlaceValidation(merged.length, dynamicCapacity);
 
   if (merged.length > 0 && finalValidation.result === "fail") {
     logAiPipeline(
@@ -2000,9 +2201,7 @@ export async function prepareDirectItinerarySession(params: {
     };
   }
 
-  const label = sanitizeDestinationForGeocode(
-    normalizeDestinationLabel(destination),
-  );
+  const label = sanitizeDestinationForGeocode(normalizeDestinationLabel(destination));
   logItineraryDaysParsed(days);
 
   const allowlist = resolveGenerationAllowlist(context, label);
@@ -2096,8 +2295,7 @@ export async function prepareDirectItinerarySession(params: {
             selectedCombinationIds: allowlist.selectedCombinationIds,
             selectedCombinationPlaceNames: allowlist.allowedPlaceNames,
             excludedCombinationPlaceNames: allowlist.exclusiveExcludedPlaceNames,
-            selectionSource:
-              context.selectionSource ?? allowlist.selectionSource,
+            selectionSource: context.selectionSource ?? allowlist.selectionSource,
           }
         : {}),
     },
@@ -2139,11 +2337,7 @@ export async function prepareDirectItinerarySession(params: {
     )
     .map((p) =>
       allowlist?.selectedCombinationIds.length
-        ? annotatePlaceWithCombinationMetadata(
-            p,
-            label,
-            allowlist.selectedCombinationIds,
-          )
+        ? annotatePlaceWithCombinationMetadata(p, label, allowlist.selectedCombinationIds)
         : p,
     );
   logAiPipeline(
@@ -2186,7 +2380,10 @@ export async function prepareDirectItinerarySession(params: {
     },
     session,
     days,
-    userText: msgs?.slice().reverse().find((m) => m.role === "user")?.content,
+    userText: msgs
+      ?.slice()
+      .reverse()
+      .find((m) => m.role === "user")?.content,
   });
   const startDate = tripDates.startDate;
   const endDate = tripDates.endDate;
@@ -2232,8 +2429,7 @@ export async function prepareDirectItinerarySession(params: {
             selectedCombinationIds: allowlist.selectedCombinationIds,
             selectedCombinationPlaceNames: allowlist.allowedPlaceNames,
             excludedCombinationPlaceNames: allowlist.exclusiveExcludedPlaceNames,
-            selectionSource:
-              context.selectionSource ?? allowlist.selectionSource,
+            selectionSource: context.selectionSource ?? allowlist.selectionSource,
           }
         : {}),
     },
