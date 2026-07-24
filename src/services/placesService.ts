@@ -1,11 +1,10 @@
 import type { Locale } from "@/lib/i18n/types";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
+import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
 import { logPlacesCacheHit } from "@/lib/places-api-guard";
 import {
   buildUnifiedPlaceDetailsCacheKey,
   readUnifiedPlaceDetailsCache,
-  writeUnifiedPlaceDetailsCache,
-  isPlaceDetailsMinimallyCacheable,
 } from "@/lib/unified-place-cache";
 import { createRequestCache } from "@/services/requestCache";
 import { unifiedResolveTripStop, unifiedSearchTripStops } from "@/lib/trip-stop-search-unified";
@@ -22,11 +21,116 @@ export type PlaceLite = {
   rating?: number | null;
 };
 
+export type PlacesServiceInputSource = "trip_place_input" | "place_lite";
+
+export type NormalizedPlacesServiceInput = {
+  canonicalPlaceId: string | null;
+  googlePlaceId: string | null;
+  placeName: string | null;
+  coordinates: { latitude: number; longitude: number } | null;
+  address: string | null;
+  source: PlacesServiceInputSource | null;
+};
+
+export type PlacesServiceErrorCode = "missing_place_id";
+
+export type PlaceDetailsResult = {
+  place: PlaceLite | null;
+  error: string | null;
+  /** Additive diagnostic; existing consumers may continue reading place/error only. */
+  errorCode?: PlacesServiceErrorCode;
+};
+
 type SearchPlacesFn = typeof searchTripStops;
 type ResolvePlaceFn = typeof resolveTripStop;
 
 function normalizeGooglePlaceId(raw: string): string {
   return raw.replace(/^places\//, "").trim();
+}
+
+export function isTripPlaceInput(
+  place: TripPlaceInput | PlaceLite,
+): place is TripPlaceInput {
+  return (
+    "placeName" in place &&
+    "title" in place &&
+    typeof place.name === "string" &&
+    typeof place.placeName === "string" &&
+    typeof place.title === "string" &&
+    typeof place.address === "string"
+  );
+}
+
+export function isPlaceLite(place: TripPlaceInput | PlaceLite): place is PlaceLite {
+  return (
+    "placeId" in place &&
+    !("placeName" in place) &&
+    typeof place.placeId === "string" &&
+    typeof place.name === "string" &&
+    typeof place.address === "string"
+  );
+}
+
+function coordinatesOf(
+  lat: number | null,
+  lng: number | null,
+): NormalizedPlacesServiceInput["coordinates"] {
+  if (lat == null || lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+  return { latitude: lat, longitude: lng };
+}
+
+export function normalizePlacesServiceInput(
+  place: TripPlaceInput | PlaceLite,
+): NormalizedPlacesServiceInput {
+  if (isTripPlaceInput(place)) {
+    const identity = resolveCanonicalPlaceIdentity({
+      googlePlaceId: place.googlePlaceId,
+      name: place.name,
+      placeName: place.placeName,
+      address: place.address,
+      lat: place.lat,
+      lng: place.lng,
+      type: place.placeType,
+    });
+    return {
+      canonicalPlaceId: identity.canonicalPlaceId,
+      googlePlaceId: identity.googlePlaceId,
+      placeName: place.placeName.trim() || place.name.trim() || null,
+      coordinates: coordinatesOf(place.lat, place.lng),
+      address: place.address.trim() || null,
+      source: "trip_place_input",
+    };
+  }
+
+  if (isPlaceLite(place)) {
+    const identity = resolveCanonicalPlaceIdentity({
+      placeId: place.placeId,
+      name: place.name,
+      address: place.address,
+      lat: place.lat,
+      lng: place.lng,
+      type: place.placeType,
+    });
+    return {
+      canonicalPlaceId: identity.canonicalPlaceId,
+      googlePlaceId: identity.googlePlaceId,
+      placeName: place.name.trim() || null,
+      coordinates: coordinatesOf(place.lat, place.lng),
+      address: place.address.trim() || null,
+      source: "place_lite",
+    };
+  }
+
+  return {
+    canonicalPlaceId: null,
+    googlePlaceId: null,
+    placeName: null,
+    coordinates: null,
+    address: null,
+    source: null,
+  };
 }
 
 const autocompleteCache = createRequestCache({
@@ -41,15 +145,16 @@ function searchKey(query: string, locale: Locale, center?: { lat: number; lng: n
 }
 
 export function normalizePlace(place: TripPlaceInput | PlaceLite): PlaceLite {
-  const placeId = normalizeGooglePlaceId(place.googlePlaceId ?? place.placeId ?? "");
-  const name = (place.placeName ?? place.name ?? "").trim() || "地點";
-  const address = (place.address ?? "").trim();
+  const input = normalizePlacesServiceInput(place);
+  const placeId = input.googlePlaceId ?? "";
+  const name = input.placeName ?? "地點";
+  const address = input.address ?? "";
   return {
     placeId,
     name,
     address: address || name,
-    lat: place.lat ?? null,
-    lng: place.lng ?? null,
+    lat: input.coordinates?.latitude ?? null,
+    lng: input.coordinates?.longitude ?? null,
     placeType: place.placeType,
     photoName: place.photoName ?? null,
     rating: place.rating ?? null,
@@ -83,9 +188,21 @@ export async function getPlaceDetails(
     cacheCity?: string;
     cacheCountry?: string;
   },
-): Promise<{ place: PlaceLite | null; error: string | null }> {
+): Promise<PlaceDetailsResult> {
   const locale = options?.locale ?? "zh-TW";
-  const normalizedPlaceId = normalizeGooglePlaceId(placeId);
+  const normalizedPlaceId = resolveCanonicalPlaceIdentity({ placeId }).googlePlaceId;
+  if (!normalizedPlaceId) {
+    console.warn(
+      "[PLACES_DETAILS]",
+      "error=missing_place_id",
+      `input=${placeId.trim() || "empty"}`,
+    );
+    return {
+      place: null,
+      error: "missing_place_id",
+      errorCode: "missing_place_id",
+    };
+  }
   const cacheKey = buildUnifiedPlaceDetailsCacheKey(normalizedPlaceId, locale, {
     cityLabel: options?.cacheCity,
     country: options?.cacheCountry,
@@ -141,32 +258,8 @@ export async function getPlaceDetails(
         : null;
       return { place: fallbackPlace, error: resolved.error };
     }
-    if (isPlaceDetailsMinimallyCacheable(normalized)) {
-      writeUnifiedPlaceDetailsCache(
-        cacheKey,
-        {
-          id: normalized.placeId,
-          name: normalized.name,
-          address: normalized.address,
-          lat: normalized.lat,
-          lng: normalized.lng,
-          rating: normalized.rating ?? null,
-          userRatingCount: null,
-          photoName: normalized.photoName ?? null,
-          primaryType: normalized.placeType ?? null,
-          types: normalized.placeType ? [normalized.placeType] : null,
-          businessStatus: null,
-          openStatus: "unknown",
-          openStatusLabel: "",
-          todayHoursLabel: "",
-          closingSoonNote: "",
-          nextOpenHint: "",
-          website: null,
-          phone: null,
-        },
-        null,
-      );
-    }
+    // Preserve the legacy PlaceLite contract: this client resolver reads shared
+    // details cache entries but does not populate the screen-details cache.
     return { place: normalized, error: resolved.error };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
