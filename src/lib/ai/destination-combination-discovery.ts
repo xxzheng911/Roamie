@@ -298,6 +298,7 @@ const PRIMARY_PLACES_PER_COMBO = 3;
 /** Extra backup candidates kept per combination for mapping refill */
 const FALLBACK_PLACES_PER_COMBO = 5;
 const TARGET_PLACES_PER_COMBO = PRIMARY_PLACES_PER_COMBO + FALLBACK_PLACES_PER_COMBO;
+const MAX_TOP_UP_THEME_ATTEMPTS = 4;
 const MAX_DISTANCE_FROM_CENTER_M = 55_000;
 
 const NON_ATTRACTION_NAME_RE =
@@ -1299,6 +1300,18 @@ type FallbackSearchMode =
   | "popular_plus_shopping"
   | "high_rating";
 
+export type CombinationTopUpDegradedReason =
+  | "insufficient_verified_candidates"
+  | "rate_limited"
+  | "no_unused_theme"
+  | "validation_failed";
+
+type ThemeDirectionSearchResult = {
+  combinations: StructuredCombinationOption[];
+  attemptedThemeCount: number;
+  stopReason?: CombinationTopUpDegradedReason;
+};
+
 const FALLBACK_SEARCH_MODES: Array<{
   mode: FallbackSearchMode;
   queries: (area: string, en: string | undefined, profile: string) => string[];
@@ -1463,7 +1476,7 @@ async function searchFallbackPlaces(params: {
  * Per-theme Places search driven by theme fallback directions.
  * Themes never become place names — only search queries.
  */
-async function searchPlacesForThemeDirections(params: {
+export async function searchPlacesForThemeDirections(params: {
   destination: string;
   country?: string | null;
   lat: number;
@@ -1472,7 +1485,10 @@ async function searchPlacesForThemeDirections(params: {
   generationRequestId: string;
   deadlineAt: number;
   locale?: Locale;
-}): Promise<StructuredCombinationOption[]> {
+  existingCombinations?: StructuredCombinationOption[];
+  targetCombinationCount?: number;
+  rateProtectionActive?: () => boolean;
+}): Promise<ThemeDirectionSearchResult> {
   const {
     destination,
     country,
@@ -1482,13 +1498,42 @@ async function searchPlacesForThemeDirections(params: {
     generationRequestId,
     deadlineAt,
     locale = effectiveAppLocale(),
+    existingCombinations = [],
+    targetCombinationCount = PREFERRED_COMBINATIONS,
+    rateProtectionActive = shouldSkipPlanningPlacesApi,
   } = params;
   const directions = buildThemeSearchDirections(destination, country);
-  const usedKeys = new Set<string>();
+  const usedKeys = new Set(
+    existingCombinations.flatMap((combo) =>
+      combo.placeCandidates.map((place) => place.name.replace(/\s+/g, "").toLowerCase()),
+    ),
+  );
+  const usedPlaceIds = new Set(
+    existingCombinations.flatMap((combo) =>
+      combo.placeCandidates
+        .map((place) => place.googlePlaceId?.trim())
+        .filter((id): id is string => Boolean(id)),
+    ),
+  );
+  const usedThemes = new Set(
+    existingCombinations.map((combo) => resolveCombinationThemeKey(combo.theme, combo.title)),
+  );
   const ready: StructuredCombinationOption[] = [];
+  let attemptedThemeCount = 0;
+  let stopReason: CombinationTopUpDegradedReason | undefined;
 
   for (const direction of directions) {
+    if (existingCombinations.length + ready.length >= targetCombinationCount) break;
+    if (attemptedThemeCount >= MAX_TOP_UP_THEME_ATTEMPTS) break;
     if (Date.now() > deadlineAt) break;
+
+    const themeKeyForSearch = resolveCombinationThemeKey(direction.themeKey, direction.title);
+    if (usedThemes.has(themeKeyForSearch)) continue;
+    if (rateProtectionActive()) {
+      stopReason = "rate_limited";
+      break;
+    }
+    attemptedThemeCount += 1;
 
     const localizedTitle = localizeCombinationThemeTitle(direction.title, locale);
     logAiPipeline(
@@ -1504,7 +1549,6 @@ async function searchPlacesForThemeDirections(params: {
       `queryCount=${direction.queries.length}`,
     );
 
-    const themeKeyForSearch = resolveCombinationThemeKey(direction.themeKey, direction.title);
     const queries = [
       ...direction.queries,
       ...categoryThemeSearchQueries(themeKeyForSearch, destination),
@@ -1520,7 +1564,14 @@ async function searchPlacesForThemeDirections(params: {
         generationRequestId,
         maxWaitMs: Math.min(8_000, Math.max(0, deadlineAt - Date.now())),
       });
-      if (cooldown !== "ready") break;
+      if (cooldown !== "ready") {
+        stopReason = "rate_limited";
+        break;
+      }
+      if (rateProtectionActive()) {
+        stopReason = "rate_limited";
+        break;
+      }
       try {
         const result = await searchPlaces({
           data: {
@@ -1550,7 +1601,10 @@ async function searchPlacesForThemeDirections(params: {
 
     const scoped = candidatesFromPlaces(destination, raw, { lat, lng }, locale).filter((c) => {
       const key = c.name.replace(/\s+/g, "").toLowerCase();
-      if (usedKeys.has(key)) return false;
+      if (usedKeys.has(key) || (c.googlePlaceId && usedPlaceIds.has(c.googlePlaceId))) return false;
+      // A top-up group must be Places-backed and navigable. Existing minimum
+      // recovery keeps its prior contract when no combinations exist yet.
+      if (existingCombinations.length > 0 && (!c.googlePlaceId || !c.coordinates)) return false;
       if (isGenericDestinationPlaceholder(c.name, destination)) {
         logAiPipeline(
           "[COMBINATION_GENERIC_LABEL_DROPPED]",
@@ -1578,7 +1632,9 @@ async function searchPlacesForThemeDirections(params: {
       `resolvedCount=${candidates.length}`,
     );
 
-    const minPlaces = minPlacesForTheme(themeKey, direction.title);
+    const minPlaces = existingCombinations.length > 0
+      ? Math.max(MIN_PLACES_PER_COMBO, minPlacesForTheme(themeKey, direction.title))
+      : minPlacesForTheme(themeKey, direction.title);
     if (candidates.length < minPlaces) {
       // Per-combo failure: skip this theme only — do not wipe other ready combos.
       continue;
@@ -1587,6 +1643,7 @@ async function searchPlacesForThemeDirections(params: {
     const { primary, fallback, all } = splitPrimaryFallback(candidates);
     for (const p of all) {
       usedKeys.add(p.name.replace(/\s+/g, "").toLowerCase());
+      if (p.googlePlaceId) usedPlaceIds.add(p.googlePlaceId);
       if (p.googlePlaceId) {
         logAiPipeline(
           "[COMBINATION_PLACE_VALIDATED]",
@@ -1613,6 +1670,7 @@ async function searchPlacesForThemeDirections(params: {
       primaryCandidates: primary,
       fallbackCandidates: fallback,
     });
+    usedThemes.add(themeKey);
     logAiPipeline(
       "[COMBINATION_READY]",
       `combinationId=${direction.combinationId}`,
@@ -1620,7 +1678,139 @@ async function searchPlacesForThemeDirections(params: {
     );
   }
 
-  return ready;
+  if (!stopReason && attemptedThemeCount === 0) stopReason = "no_unused_theme";
+  if (!stopReason && existingCombinations.length + ready.length < targetCombinationCount) {
+    stopReason = "insufficient_verified_candidates";
+  }
+  return { combinations: ready, attemptedThemeCount, stopReason };
+}
+
+/** Append only verified, unused-theme top-up groups while preserving existing groups. */
+export function mergeVerifiedCombinationTopUp(
+  destination: string,
+  existing: StructuredCombinationOption[],
+  topUpCandidates: StructuredCombinationOption[],
+  preferredCount = PREFERRED_COMBINATIONS,
+): {
+  combinations: StructuredCombinationOption[];
+  addedCount: number;
+  degradedReason?: CombinationTopUpDegradedReason;
+} {
+  if (existing.length >= preferredCount) {
+    return { combinations: existing, addedCount: 0 };
+  }
+
+  const result = [...existing];
+  const usedThemes = new Set(
+    existing.map((combo) => resolveCombinationThemeKey(combo.theme, combo.title)),
+  );
+  const usedNames = new Set(
+    existing.flatMap((combo) =>
+      combo.placeCandidates.map((place) => place.name.replace(/\s+/g, "").toLowerCase()),
+    ),
+  );
+  const usedIds = new Set(
+    existing.flatMap((combo) =>
+      combo.placeCandidates
+        .map((place) => place.googlePlaceId?.trim())
+        .filter((id): id is string => Boolean(id)),
+    ),
+  );
+  let sawValidationFailure = false;
+
+  for (const combo of topUpCandidates) {
+    if (result.length >= preferredCount) break;
+    const themeKey = resolveCombinationThemeKey(combo.theme, combo.title);
+    if (usedThemes.has(themeKey)) continue;
+
+    const verified = combo.placeCandidates.filter((place) => {
+      const id = place.googlePlaceId?.trim();
+      const nameKey = place.name.replace(/\s+/g, "").toLowerCase();
+      const syntheticId = /^(?:name|synthetic|generated|fallback):/i.test(id ?? "");
+      if (
+        !id ||
+        syntheticId ||
+        !place.coordinates ||
+        usedIds.has(id) ||
+        usedNames.has(nameKey)
+      ) {
+        return false;
+      }
+      return validateCandidateIntent(
+        {
+          name: place.name,
+          types: place.types,
+          primaryType: place.primaryType,
+          address: place.address,
+          lat: place.coordinates.lat,
+          lng: place.coordinates.lng,
+          rating: place.rating,
+          googlePlaceId: id,
+        },
+        { title: combo.title, theme: themeKey },
+        destination,
+        { requireTourismType: true, source: "combination_preferred_top_up" },
+      ).ok;
+    });
+    if (
+      verified.length <
+      Math.max(MIN_PLACES_PER_COMBO, minPlacesForTheme(themeKey, combo.title))
+    ) {
+      sawValidationFailure = true;
+      continue;
+    }
+
+    const { primary, fallback, all } = splitPrimaryFallback(verified);
+    const added: StructuredCombinationOption = {
+      ...combo,
+      theme: themeKey,
+      placeCandidates: all,
+      primaryCandidates: primary,
+      fallbackCandidates: fallback,
+    };
+
+    // Re-run the final combination contract on a disposable copy. Validation
+    // may sanitize arrays, so the already-deliverable groups remain untouched.
+    const validationCopy = [...result, added].map((candidateCombo) => ({
+      ...candidateCombo,
+      placeCandidates: candidateCombo.placeCandidates.map((place) => ({ ...place })),
+      primaryCandidates: candidateCombo.primaryCandidates?.map((place) => ({ ...place })),
+      fallbackCandidates: candidateCombo.fallbackCandidates?.map((place) => ({ ...place })),
+    }));
+    const knownNames = new Set(
+      validationCopy.flatMap((candidateCombo) =>
+        candidateCombo.placeCandidates.map((place) =>
+          place.name.replace(/\s+/g, "").toLowerCase(),
+        ),
+      ),
+    );
+    const finalValidation = validateCombinationOptions(
+      validationCopy,
+      destination,
+      knownNames,
+    );
+    if (!finalValidation.ok || validationCopy.length < result.length + 1) {
+      sawValidationFailure = true;
+      continue;
+    }
+    result.push(added);
+    usedThemes.add(themeKey);
+    for (const place of all) {
+      usedNames.add(place.name.replace(/\s+/g, "").toLowerCase());
+      if (place.googlePlaceId) usedIds.add(place.googlePlaceId);
+    }
+  }
+
+  return {
+    combinations: result,
+    addedCount: result.length - existing.length,
+    degradedReason:
+      result.length >= preferredCount
+        ? undefined
+        : sawValidationFailure
+          ? "validation_failed"
+          : "insufficient_verified_candidates",
+  };
 }
 
 function candidatesFromPlaces(
@@ -2290,11 +2480,15 @@ export async function discoverDestinationCombinations(params: {
 
   if (timedOut() && !combinations?.length) return failTimeout();
 
-  // Theme-directed per-combo search: fill missing themes without wiping ready ones.
-  if (
-    (!combinations || combinations.length < MIN_COMBINATIONS) &&
-    !timedOut()
-  ) {
+  // Theme-directed per-combo search: minimum (2) is degraded delivery, not
+  // discovery completion. Preserve ready groups and try unused themes until 3.
+  const initialCombinationCount = combinations?.length ?? 0;
+  let topUpAttempted = false;
+  let topUpThemeCount = 0;
+  let topUpResultCount = 0;
+  let degradedReason: CombinationTopUpDegradedReason | undefined;
+  if ((!combinations || combinations.length < PREFERRED_COMBINATIONS) && !timedOut()) {
+    topUpAttempted = true;
     const themed = await searchPlacesForThemeDirections({
       destination: label,
       country,
@@ -2304,29 +2498,48 @@ export async function discoverDestinationCombinations(params: {
       generationRequestId,
       deadlineAt,
       locale,
+      existingCombinations: combinations ?? [],
+      targetCombinationCount: PREFERRED_COMBINATIONS,
     });
-    if (themed.length) {
-      const byTitle = new Map<string, StructuredCombinationOption>();
-      for (const c of combinations ?? []) byTitle.set(c.title, c);
-      for (const c of themed) {
-        const existing = byTitle.get(c.title);
-        if (
-          !existing ||
-          (existing.placeCandidates?.length ?? 0) < (c.placeCandidates?.length ?? 0)
-        ) {
-          byTitle.set(c.title, c);
-        }
-      }
-      const merged = [...byTitle.values()].filter(
-        (c) => (c.primaryCandidates ?? c.placeCandidates).length >= MIN_PLACES_PER_COMBO,
+    topUpThemeCount = themed.attemptedThemeCount;
+    if (initialCombinationCount >= MIN_COMBINATIONS) {
+      const merged = mergeVerifiedCombinationTopUp(
+        label,
+        combinations ?? [],
+        themed.combinations,
+        PREFERRED_COMBINATIONS,
       );
-      if (merged.length >= Math.min(MIN_COMBINATIONS, themed.length) || merged.length >= 3) {
-        combinations = merged.slice(0, MAX_COMBINATIONS);
-      } else if (merged.length > (combinations?.length ?? 0)) {
-        combinations = merged;
-      }
+      combinations = merged.combinations.length ? merged.combinations : null;
+      topUpResultCount = merged.addedCount;
+      degradedReason = themed.stopReason ?? merged.degradedReason;
+    } else {
+      // Preserve the pre-existing minimum-recovery contract for <2 groups.
+      combinations = themed.combinations.length >= MIN_COMBINATIONS
+        ? themed.combinations.slice(0, PREFERRED_COMBINATIONS)
+        : combinations;
+      topUpResultCount = Math.max(0, (combinations?.length ?? 0) - initialCombinationCount);
+      degradedReason = themed.stopReason;
     }
   }
+
+  const finalTopUpCombinationCount = combinations?.length ?? 0;
+  const degradedDelivery =
+    finalTopUpCombinationCount >= MIN_COMBINATIONS &&
+    finalTopUpCombinationCount < PREFERRED_COMBINATIONS;
+  if (degradedDelivery && !degradedReason) {
+    degradedReason = "insufficient_verified_candidates";
+  }
+  logAiPipeline(
+    "[COMBINATION_PREFERRED_TOP_UP]",
+    `initialCombinationCount=${initialCombinationCount}`,
+    `preferredCombinationCount=${PREFERRED_COMBINATIONS}`,
+    `topUpAttempted=${topUpAttempted}`,
+    `topUpThemeCount=${topUpThemeCount}`,
+    `topUpResultCount=${topUpResultCount}`,
+    `finalCombinationCount=${finalTopUpCombinationCount}`,
+    `degradedDelivery=${degradedDelivery}`,
+    `degradedReason=${degradedDelivery ? degradedReason ?? "insufficient_verified_candidates" : ""}`,
+  );
 
   // Drop any combo that still lacks enough real places (typed food/shopping may show with 2).
   if (combinations?.length) {
