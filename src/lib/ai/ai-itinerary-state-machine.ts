@@ -11,7 +11,10 @@ import {
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import type { PlaceSearchFn } from "@/lib/ai/chat-place-recommendation";
 import type { WeatherSummary } from "@/lib/weather-types";
-import { prepareDirectItinerarySession } from "@/lib/ai/itinerary-place-fetch";
+import {
+  prepareDirectItinerarySession,
+  type ItineraryPlaceFailure,
+} from "@/lib/ai/itinerary-place-fetch";
 import {
   buildFallbackItineraryFromPlaces,
   coalesceItineraryItems,
@@ -116,6 +119,8 @@ export type DirectItineraryPrepareResult =
       ok: false;
       state: "FAILED";
       message: string;
+      failureReason: string;
+      diagnostics: ItineraryPlaceFailure | null;
       session: ChatPlanningSession;
       offerMustVisit?: boolean;
     };
@@ -154,6 +159,8 @@ export async function prepareDirectItineraryFlow(params: {
       ok: false,
       state: "FAILED",
       message: "我還需要知道目的地和天數，才能幫你排完整行程。",
+      failureReason: "missing_destination_or_days",
+      diagnostics: null,
       session: {
         ...session,
         aiItineraryState: "FAILED",
@@ -189,6 +196,8 @@ export async function prepareDirectItineraryFlow(params: {
       state: "FAILED",
       message:
         "我還需要你確認想用哪些組合，才能幫你生成行程。回覆組合編號，或回「都不錯」全選。",
+      failureReason: "missing_combination_selection",
+      diagnostics: null,
       session: {
         ...session,
         aiItineraryState: "FAILED",
@@ -221,16 +230,13 @@ export async function prepareDirectItineraryFlow(params: {
       logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", failCode);
     }
     logAiState("FAILED", failCode);
-    const partial =
-      prepared.failure &&
-      "partialResolvedPlaces" in prepared.failure
-        ? (prepared.failure as { partialResolvedPlaces?: typeof session.selectedPlaces })
-            .partialResolvedPlaces
-        : undefined;
+    const partial = prepared.failure?.partialResolvedPlaces;
     return {
       ok: false,
       state: "FAILED",
       message: prepared.message,
+      failureReason: failCode,
+      diagnostics: prepared.failure ?? null,
       session: {
         ...session,
         aiItineraryState: "FAILED",
@@ -295,6 +301,8 @@ export async function prepareDirectItineraryFlow(params: {
         inputCheck.code === "no_candidate_places"
           ? "目前暫時找不到足夠的真實景點候選，請點「重新生成」再試一次。"
           : "行程資料還不完整，請確認目的地、天數與組合選擇後再試。",
+      failureReason: inputCheck.code ?? "invalid_itinerary_input",
+      diagnostics: null,
       session: {
         ...prepared.session,
         aiItineraryState: "FAILED",

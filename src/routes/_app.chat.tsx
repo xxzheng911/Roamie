@@ -7241,7 +7241,9 @@ function Chat() {
         await settleCreditsOperation(itinCreditsHandle, false);
         itinCreditsHandle = null;
         logItineraryFailureReason(
-          prepared.failure ? JSON.stringify(prepared.failure) : prepared.message,
+          prepared.diagnostics
+            ? JSON.stringify(prepared.diagnostics)
+            : prepared.failureReason,
         );
         setGenerating(false);
         setStreaming(false);
