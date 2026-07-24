@@ -245,7 +245,9 @@ function optionKeywords(option: string): string[] {
 function parseOptionOrdinalIndex(text: string): number | null {
   const t = text.trim();
   if (!t) return null;
-  const digit = t.match(/^(?:我要|選|选|我想|要)?\s*(?:第\s*)?(\d+)\s*(?:個|个|项|項)?\s*$/);
+  const digit = t.match(
+    /^(?:我要|選|选|我想|要|就)?\s*(?:第\s*)?(\d+)\s*(?:個|个|项|項)?\s*(?:那個|那个)?\s*吧?$/,
+  );
   if (digit?.[1]) {
     const n = Number(digit[1]);
     return Number.isFinite(n) && n >= 1 ? n - 1 : null;
@@ -265,7 +267,7 @@ function parseOptionOrdinalIndex(text: string): number | null {
     十: 10,
   };
   const cn = t.match(
-    /^(?:我要|選|选|我想|要)?\s*(?:第\s*)?([一二兩三四五六七八九十两])\s*(?:個|个|项|項)?\s*$/,
+    /^(?:我要|選|选|我想|要|就)?\s*(?:第\s*)?([一二兩三四五六七八九十两])\s*(?:個|个|项|項)?\s*(?:那個|那个)?\s*吧?$/,
   );
   if (cn?.[1] && cnMap[cn[1]]) return cnMap[cn[1]]! - 1;
   return null;

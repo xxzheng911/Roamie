@@ -180,11 +180,77 @@ export function shouldSkipAskingPreference(ctx: CanonicalTravelContext): boolean
   );
 }
 
+const REGION_CHOICE_PROMPT_RE =
+  /(?:你(?:比較)?想去哪個城市(?:或地區)?|你想選哪個地區|以下城市[／/]地區你比較有興趣哪一個|可以先從這幾個城市[／/]地區考慮)/;
+const REGION_CHOICE_LIST_PREFIX_RE =
+  /^(?:[•・●▪◦*-]|\d{1,2}\s*[.．、)])\s*/u;
+const REGION_CHOICE_NON_OPTION_RE =
+  /(?:組合|偏好|天數|幾天|預算|重新生成|進階手動規劃|今天想|排完整|必去點|全選)/;
+
+function isCountryRegionSelectionContext(ctx: CanonicalTravelContext): boolean {
+  const destination = ctx.destination?.trim();
+  const destinationCountry = ctx.destinationCountry?.trim();
+  return Boolean(
+    ctx.destinationType === "country" ||
+      ctx.tripPurpose === "destination_selection" ||
+      (destination && destinationCountry && destination === destinationCountry),
+  );
+}
+
+function extractRegionChoiceOptions(reply: string): string[] {
+  const options: string[] = [];
+  for (const rawLine of reply.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line || REGION_CHOICE_PROMPT_RE.test(line)) continue;
+
+    const hadListPrefix = REGION_CHOICE_LIST_PREFIX_RE.test(line);
+    const withoutPrefix = line.replace(REGION_CHOICE_LIST_PREFIX_RE, "").trim();
+    const label = (withoutPrefix.split(/[：:]/u)[0] ?? "")
+      .trim()
+      .replace(/[，,；;。.!！?？]+$/u, "")
+      .trim();
+
+    const isPlainDestinationLine =
+      !hadListPrefix &&
+      label === withoutPrefix &&
+      label.length >= 2 &&
+      label.length <= 24 &&
+      !/[，,；;。.!！?？]/u.test(label);
+    if (
+      (!hadListPrefix && !isPlainDestinationLine) ||
+      label.length < 2 ||
+      label.length > 24 ||
+      REGION_CHOICE_NON_OPTION_RE.test(label) ||
+      !/[\p{L}\p{N}]/u.test(label)
+    ) {
+      continue;
+    }
+    options.push(label);
+  }
+  return [...new Set(options)];
+}
+
 export function recoverPendingFromAssistantReply(
   reply: string,
   ctx: CanonicalTravelContext,
 ): PendingQuestion | undefined {
   if (!reply.trim()) return undefined;
+
+  if (
+    REGION_CHOICE_PROMPT_RE.test(reply) &&
+    isCountryRegionSelectionContext(ctx) &&
+    !/組合/.test(reply)
+  ) {
+    const options = extractRegionChoiceOptions(reply);
+    if (options.length >= 2) {
+      return enrichPendingQuestion({
+        type: "region_choice",
+        options,
+        baseDestination: ctx.destination,
+        destinationCountry: ctx.destinationCountry ?? ctx.destination,
+      });
+    }
+  }
 
   if (reply.includes("你比較偏：") && reply.includes("A. 經典景點") && ctx.destination) {
     return enrichPendingQuestion({
