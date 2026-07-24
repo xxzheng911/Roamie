@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   AI_ITINERARY_FAILED_OFFER_MESSAGE,
+  createItineraryFromSession,
   logAiState,
 } from "../src/lib/ai/ai-itinerary-state-machine.ts";
 import { ITINERARY_PARTIAL_FAILURE_MESSAGE } from "../src/lib/trip/itinerary-guards.ts";
@@ -32,5 +33,91 @@ assert(session.aiItineraryState == null, "empty session has no ai itinerary stat
 
 logAiState("COLLECTING");
 logAiState("SUCCESS", "test");
+
+const validatorFailureLogs = [];
+const originalConsole = {
+  log: console.log,
+  info: console.info,
+  warn: console.warn,
+  error: console.error,
+};
+const captureValidatorFailure = (...args) => validatorFailureLogs.push(args.join(" "));
+console.log = captureValidatorFailure;
+console.info = captureValidatorFailure;
+console.warn = captureValidatorFailure;
+console.error = captureValidatorFailure;
+let validatorFailure;
+try {
+  validatorFailure = await createItineraryFromSession({
+    session: {
+      ...createEmptySession(),
+      selectedPlaces: places,
+      travelContext: { interests: [], selectedCombinationIds: [1, 3] },
+    },
+    generateInput: {
+      destination: "台東",
+      days: 2,
+      selectedPlaces: places,
+    },
+    generateItineraryFn: async () => ({
+      success: false,
+      errorCode: "itinerary_validator_failed",
+      message: "daily_category_diversity",
+    }),
+  });
+} finally {
+  Object.assign(console, originalConsole);
+}
+assert.equal(validatorFailure.ok, false);
+const validatorChain = validatorFailureLogs.find((line) =>
+  line.includes("[ITINERARY_FAILURE_CHAIN]"),
+);
+assert.ok(validatorChain, "validator failure chain logged");
+assert.match(validatorChain, /"primary":"itinerary_validator_failed"/);
+assert.match(validatorChain, /"validator":"validator_failed"/);
+assert.match(validatorChain, /"payloadPresent":false/);
+assert.doesNotMatch(validatorChain, /payload_incomplete/);
+
+const missingPayloadLogs = [];
+const captureMissingPayload = (...args) => missingPayloadLogs.push(args.join(" "));
+console.log = captureMissingPayload;
+console.info = captureMissingPayload;
+console.warn = captureMissingPayload;
+console.error = captureMissingPayload;
+let missingPayload;
+try {
+  missingPayload = await createItineraryFromSession({
+    session: {
+      ...createEmptySession(),
+      selectedPlaces: places,
+      travelContext: { interests: [], selectedCombinationIds: [1, 3] },
+    },
+    generateInput: {
+      destination: "台東",
+      days: 6,
+      selectedPlaces: places,
+    },
+    generateItineraryFn: async () => ({
+      success: true,
+      trip: {
+        id: "missing-payload",
+        title: "missing",
+        destination: "台東",
+        days: 6,
+        itinerary: [],
+        payload: null,
+      },
+    }),
+  });
+} finally {
+  Object.assign(console, originalConsole);
+}
+assert.equal(missingPayload.ok, false);
+assert.ok(
+  missingPayloadLogs.some(
+    (line) => line.includes("[ITINERARY_FAILURE_REASON]") && line.includes("payload_incomplete"),
+  ),
+  "genuinely missing success payload remains payload_incomplete",
+);
 
 console.log("verify-ai-itinerary-state-machine: ok");

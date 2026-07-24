@@ -33,6 +33,7 @@ import {
   validateItineraryPlan,
   shouldBlockItineraryDelivery,
   dayCountsOfPlans,
+  logItineraryDeliveryBlocked,
 } from "../src/lib/ai/itinerary-validator/index.ts";
 import { replanUntilItineraryValid } from "../src/lib/ai/itinerary-validator/replan.ts";
 import { normalizeItineraryStop } from "../src/lib/ai/real-place-supplement.ts";
@@ -482,6 +483,59 @@ test("quality gate rejects soft-pass when preferences violated", () => {
   // Preference violation must not soft-pass via stop count / soft-only.
   assert.equal(outcome.validation.pass, false);
   assert.equal(shouldBlockItineraryDelivery(outcome.validation), true);
+});
+
+test("blocked delivery telemetry keeps plan counts separate from affected days", () => {
+  setItineraryValidatorEnabledOverride(true);
+  const plans = Array.from({ length: 6 }, (_, dayIndex) => ({
+    day: dayIndex + 1,
+    entries: Array.from({ length: 2 }, (_, entryIndex) => {
+      const p = place({
+        id: `telemetry-${dayIndex}-${entryIndex}`,
+        name: `Telemetry ${dayIndex < 3 ? "Park" : "Attraction"} ${dayIndex}-${entryIndex}`,
+        primaryType: dayIndex < 3 ? "park" : "tourist_attraction",
+        types: dayIndex < 3 ? ["park", "tourist_attraction"] : ["tourist_attraction"],
+      });
+      return entry(`${9 + entryIndex}:00`, "景點", p);
+    }),
+  }));
+  const validation = validateItineraryPlan({
+    plans,
+    requestedDays: 6,
+    plannedDate: "2026-12-03",
+    endDate: "2026-12-08",
+    destination: "大阪",
+    userText: "",
+  });
+  assert.equal(validation.pass, false);
+
+  const lines = [];
+  const originalConsole = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+    error: console.error,
+  };
+  const capture = (...args) => lines.push(args.join(" "));
+  console.log = capture;
+  console.info = capture;
+  console.warn = capture;
+  console.error = capture;
+  try {
+    logItineraryDeliveryBlocked("validator_failed", validation, {
+      plans,
+      payloadPresent: true,
+    });
+  } finally {
+    Object.assign(console, originalConsole);
+  }
+  const chain = lines.find((line) => line.includes("[ITINERARY_FAILURE_CHAIN]"));
+  assert.ok(chain, "failure chain log");
+  assert.match(chain, /"payloadPresent":true/);
+  assert.match(chain, /"dayCount":6/);
+  assert.match(chain, /"stopCount":12/);
+  assert.match(chain, /"failedRuleCount":3/);
+  assert.match(chain, /"affectedDays":\[1,2,3/);
 });
 
 console.log("\n=== City delivery cases ===");

@@ -120,6 +120,10 @@ const CHAIN_EXCLUDE_RE = /不要連鎖|不要連鎖店|別給連鎖|避免連鎖
 const PARK_EXCLUDE_RE = /不要公園|不要戶外|別推薦公園/;
 
 let lastResult: ItineraryValidationResult | null = null;
+let validationTelemetry = new WeakMap<
+  ItineraryValidationResult,
+  { dayCount: number; stopCount: number }
+>();
 
 export function getLastItineraryValidationResult(): ItineraryValidationResult | null {
   return lastResult
@@ -136,6 +140,7 @@ export function getLastItineraryValidationResult(): ItineraryValidationResult | 
 
 export function resetLastItineraryValidationResult(): void {
   lastResult = null;
+  validationTelemetry = new WeakMap();
 }
 
 function parseTimeMinutes(time: string): number {
@@ -1095,6 +1100,10 @@ export function validateItineraryPlan(input: ItineraryValidatorInput): Itinerary
     path: "validator",
     nearbyCoverage,
   };
+  validationTelemetry.set(result, {
+    dayCount: input.plans.length,
+    stopCount,
+  });
   lastResult = result;
 
   logAiPipeline(
@@ -1175,6 +1184,10 @@ export function logItineraryDeliveryAllowed(
 export function logItineraryDeliveryBlocked(
   reason: string,
   validation?: ItineraryValidationResult | null,
+  telemetry?: {
+    plans?: readonly { entries: readonly unknown[] }[];
+    payloadPresent?: boolean;
+  },
 ): void {
   const failed =
     validation?.failedRules.map((r) => `${r.code}:${r.message}`).join("|") ?? "";
@@ -1185,6 +1198,13 @@ export function logItineraryDeliveryBlocked(
   const primary =
     validation?.failedRules[0]?.code ??
     (reason === "validator_failed" ? "validator_failed" : reason);
+  const captured = validation ? validationTelemetry.get(validation) : undefined;
+  const dayCount = telemetry?.plans?.length ?? captured?.dayCount ?? 0;
+  const stopCount =
+    telemetry?.plans?.reduce((total, plan) => total + plan.entries.length, 0) ??
+    captured?.stopCount ??
+    0;
+  const payloadPresent = telemetry?.payloadPresent ?? false;
   logAiPipeline("[ITINERARY_DELIVERY_BLOCKED]", `reason=${reason}`);
   logAiPipeline(
     "[ITINERARY_DELIVERY_BLOCKED_DETAIL]",
@@ -1214,9 +1234,10 @@ export function logItineraryDeliveryBlocked(
       primary,
       validator: reason === "validator_failed" || validation ? "validator_failed" : "",
       persistence: reason === "payload_incomplete" ? "payload_incomplete" : "",
-      payloadPresent: validation != null,
-      dayCount: validation?.affectedDays.length ?? 0,
-      stopCount: 0,
+      payloadPresent,
+      dayCount,
+      stopCount,
+      failedRuleCount: validation?.failedRules.length ?? 0,
       failedRules: validation?.failedRules.map((rule) => rule.code) ?? [],
       warnings: validation?.warnings.map((warning) => warning.code) ?? [],
       affectedDays: validation?.affectedDays ?? [],

@@ -532,7 +532,10 @@ function buildLocalItineraryPayload(
     }
     const counts = dayCountsOfPlans(composed);
     if (shouldBlockItineraryDelivery(validation)) {
-      logItineraryDeliveryBlocked("validator_failed", validation);
+      logItineraryDeliveryBlocked("validator_failed", validation, {
+        plans: composed,
+        payloadPresent: false,
+      });
       logItineraryValidationResult(false, "itinerary_validator_failed");
       return null;
     }
@@ -543,7 +546,10 @@ function buildLocalItineraryPayload(
       uiDayCounts: counts,
     });
     if (!compare.matched) {
-      logItineraryDeliveryBlocked("persistence_mismatch", validation);
+      logItineraryDeliveryBlocked("persistence_mismatch", validation, {
+        plans: composed,
+        payloadPresent: false,
+      });
       return null;
     }
     logItineraryDeliveryAllowed(validation, counts);
@@ -616,6 +622,34 @@ export async function createItineraryFromSession(params: {
     const generateResult = await generateItineraryFn({ data: generateInput });
 
     if (isGenerateItineraryFailure(generateResult)) {
+      if (generateResult.errorCode === "itinerary_validator_failed") {
+        logItineraryFailureChain({
+          primary: "itinerary_validator_failed",
+          validator: "validator_failed",
+          persistence: undefined,
+          payloadPresent: false,
+          dayCount: 0,
+          stopCount: 0,
+        });
+        logItineraryFailureReason("itinerary_validator_failed");
+        logAiItineraryFailed("validator_failed");
+        logAiPipeline(
+          "[ITINERARY_SAVE_FAILED_REASON]",
+          "itinerary_validator_failed",
+        );
+        logAiState("FAILED", "itinerary_validator_failed");
+        return {
+          ok: false,
+          state: "FAILED",
+          message: ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
+          session: {
+            ...session,
+            aiItineraryState: "FAILED",
+            phase: "ready",
+          },
+          offerMustVisit: false,
+        };
+      }
       const localPayload = buildLocalItineraryPayload(
         generateInput,
         selectedPlaces,
@@ -640,18 +674,15 @@ export async function createItineraryFromSession(params: {
           generateResult,
         };
       }
-      const preservedFailureReason =
-        generateResult.errorCode === "itinerary_validator_failed"
-          ? "validator_failed"
-          : `generate_api_failed:${generateResult.errorCode}`;
+      const preservedFailureReason = `generate_api_failed:${generateResult.errorCode}`;
       logItineraryFailureChain({
         primary: preservedFailureReason,
-        validator: preservedFailureReason === "validator_failed" ? "validator_failed" : undefined,
+        validator: undefined,
         persistence: undefined,
         payloadPresent: false,
         dayCount: 0,
         stopCount: 0,
-        failedRules: preservedFailureReason === "validator_failed" ? ["validator_failed"] : [],
+        failedRules: [],
       });
       logItineraryFailureReason(preservedFailureReason);
       logAiItineraryFailed(preservedFailureReason);
@@ -661,7 +692,6 @@ export async function createItineraryFromSession(params: {
         ok: false,
         state: "FAILED",
         message:
-          generateResult.errorCode === "itinerary_validator_failed" ||
           generateResult.errorCode === "persistence_mismatch"
             ? ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE
             : ITINERARY_GENERATION_FAILED_MESSAGE,
@@ -858,7 +888,10 @@ export async function createItineraryFromSession(params: {
       }
       const counts = dayCountsOfPlans(composed);
       if (shouldBlockItineraryDelivery(validation)) {
-        logItineraryDeliveryBlocked("validator_failed", validation);
+        logItineraryDeliveryBlocked("validator_failed", validation, {
+          plans: composed,
+          payloadPresent: true,
+        });
         logAiState("FAILED", "itinerary_validator_failed");
         return {
           ok: false,
@@ -875,7 +908,10 @@ export async function createItineraryFromSession(params: {
         uiDayCounts: counts,
       });
       if (!compare.matched) {
-        logItineraryDeliveryBlocked("persistence_mismatch", validation);
+        logItineraryDeliveryBlocked("persistence_mismatch", validation, {
+          plans: composed,
+          payloadPresent: true,
+        });
         return {
           ok: false,
           state: "FAILED",
