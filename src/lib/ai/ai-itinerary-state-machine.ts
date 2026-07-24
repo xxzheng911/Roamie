@@ -22,6 +22,7 @@ import {
   hasValidItineraryStops,
   isGenerateItineraryFailure,
   ITINERARY_GENERATION_FAILED_MESSAGE,
+  normalizeGenerateItineraryResult,
   unwrapGeneratedTripPayload,
   validateGeneratedItinerary,
   type GenerateItineraryResult,
@@ -347,7 +348,7 @@ export type DirectItineraryCreateResult =
       state: "SUCCESS";
       session: ChatPlanningSession;
       payload: RoamiePayloadV2;
-      generateResult: GenerateItineraryResult;
+      generateResult: GenerateItineraryResult | null;
     }
   | {
       ok: false;
@@ -586,7 +587,7 @@ function buildLocalItineraryPayload(
 export async function createItineraryFromSession(params: {
   session: ChatPlanningSession;
   generateInput: ItineraryInput;
-  generateItineraryFn: (args: { data: ItineraryInput }) => Promise<GenerateItineraryResult>;
+  generateItineraryFn: (args: { data: ItineraryInput }) => Promise<unknown>;
 }): Promise<DirectItineraryCreateResult> {
   const { session, generateInput, generateItineraryFn } = params;
   const selectedPlaces = generateInput.selectedPlaces ?? [];
@@ -619,17 +620,20 @@ export async function createItineraryFromSession(params: {
   try {
     logAiState("CREATING_TRIP");
     logAiItineraryCreate(generateInput.destination, selectedPlaces.length);
-    const generateResult = await generateItineraryFn({ data: generateInput });
+    const rawGenerateResult = await generateItineraryFn({ data: generateInput });
+    const generateResult = normalizeGenerateItineraryResult(rawGenerateResult);
 
     if (isGenerateItineraryFailure(generateResult)) {
       if (generateResult.errorCode === "itinerary_validator_failed") {
         logItineraryFailureChain({
           primary: "itinerary_validator_failed",
-          validator: "validator_failed",
+          validator: generateResult.failureReason ?? "validator_failed",
           persistence: undefined,
           payloadPresent: false,
-          dayCount: 0,
-          stopCount: 0,
+          dayCount: generateResult.diagnostics?.dayCount ?? 0,
+          stopCount: generateResult.diagnostics?.stopCount ?? 0,
+          affectedDays: generateResult.diagnostics?.affectedDays ?? [],
+          failedRules: generateResult.failedRules ?? [],
         });
         logItineraryFailureReason("itinerary_validator_failed");
         logAiItineraryFailed("validator_failed");

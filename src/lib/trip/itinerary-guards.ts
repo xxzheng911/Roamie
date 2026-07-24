@@ -50,9 +50,24 @@ export type GenerateItineraryFailure = {
   success: false;
   errorCode: string;
   message: string;
+  failureReason?: string;
+  failedRules?: string[];
+  diagnostics?: {
+    affectedDays?: number[];
+    dayCount?: number;
+    stopCount?: number;
+    details?: string[];
+  };
 };
 
 export type GenerateItineraryResult = GenerateItinerarySuccess | GenerateItineraryFailure;
+
+const GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS = [
+  "data",
+  "result",
+  "payload",
+  "response",
+] as const;
 
 const FALLBACK_STOP_TIMES = ["09:30", "11:30", "14:30", "18:00"];
 
@@ -128,11 +143,34 @@ function makeFillerItineraryStop(
 export function isGenerateItineraryFailure(
   result: unknown,
 ): result is GenerateItineraryFailure {
-  return Boolean(
-    result &&
-      typeof result === "object" &&
-      (result as GenerateItineraryFailure).success === false,
-  );
+  if (!result || typeof result !== "object") return false;
+  const record = result as Record<string, unknown>;
+  return record.success === false && typeof record.errorCode === "string";
+}
+
+function isGenerateItinerarySuccess(result: unknown): result is GenerateItinerarySuccess {
+  if (!result || typeof result !== "object") return false;
+  const record = result as Record<string, unknown>;
+  return record.success === true && Boolean(record.trip && typeof record.trip === "object");
+}
+
+/** Normalize the direct server result or one known transport-envelope layer. */
+export function normalizeGenerateItineraryResult(
+  raw: unknown,
+): GenerateItineraryResult | null {
+  if (isGenerateItineraryFailure(raw) || isGenerateItinerarySuccess(raw)) {
+    return raw;
+  }
+  if (!raw || typeof raw !== "object") return null;
+
+  const envelope = raw as Record<string, unknown>;
+  for (const key of GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS) {
+    const candidate = envelope[key];
+    if (isGenerateItineraryFailure(candidate) || isGenerateItinerarySuccess(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 export function groupItineraryItemsByDay(

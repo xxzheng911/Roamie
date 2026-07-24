@@ -78,6 +78,55 @@ assert.match(validatorChain, /"validator":"validator_failed"/);
 assert.match(validatorChain, /"payloadPresent":false/);
 assert.doesNotMatch(validatorChain, /payload_incomplete/);
 
+const envelopedValidatorFailureLogs = [];
+const captureEnvelopedValidatorFailure = (...args) =>
+  envelopedValidatorFailureLogs.push(args.join(" "));
+console.log = captureEnvelopedValidatorFailure;
+console.info = captureEnvelopedValidatorFailure;
+console.warn = captureEnvelopedValidatorFailure;
+console.error = captureEnvelopedValidatorFailure;
+let envelopedValidatorFailure;
+try {
+  envelopedValidatorFailure = await createItineraryFromSession({
+    session: {
+      ...createEmptySession(),
+      selectedPlaces: places,
+      travelContext: { interests: [], selectedCombinationIds: [1, 2, 3] },
+    },
+    generateInput: {
+      destination: "台東",
+      days: 2,
+      selectedPlaces: places,
+    },
+    generateItineraryFn: async () => ({
+      data: {
+        success: false,
+        errorCode: "itinerary_validator_failed",
+        message: "validator failed",
+        failureReason: "validator_failed",
+        failedRules: ["daily_category_diversity"],
+      },
+    }),
+  });
+} finally {
+  Object.assign(console, originalConsole);
+}
+assert.equal(envelopedValidatorFailure.ok, false);
+assert.ok(
+  envelopedValidatorFailureLogs.some(
+    (line) =>
+      line.includes("[ITINERARY_FAILURE_CHAIN]") &&
+      line.includes("itinerary_validator_failed") &&
+      line.includes("daily_category_diversity") &&
+      !line.includes("payload_incomplete"),
+  ),
+  "enveloped validator failure preserves taxonomy",
+);
+assert.ok(
+  !envelopedValidatorFailureLogs.some((line) => line.includes("[STOP_UNWRAP_INTERNAL]")),
+  "enveloped validator failure does not enter payload unwrap failure path",
+);
+
 const missingPayloadLogs = [];
 const captureMissingPayload = (...args) => missingPayloadLogs.push(args.join(" "));
 console.log = captureMissingPayload;
