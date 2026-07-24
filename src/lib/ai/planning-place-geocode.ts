@@ -4,10 +4,10 @@ import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import type { FetchPlaceDetailsForFocusFn } from "@/lib/ai/place-detail-chat";
 import { resolveTripPlaceId, isGeocodeEmptyPlace } from "@/lib/ai/ai-trip-place-allocator";
 import {
-  isFallbackPlanningPlaceId,
   logGeocodeEmptyIgnored,
   logPlaceDetailsPartialFailureIgnored,
 } from "@/lib/ai/planning-place-id";
+import { resolveGooglePlaceId } from "@/lib/place-canonical-identity";
 import {
   logChatGeocodeReplaced,
   logChatGeocodeRetry,
@@ -81,11 +81,9 @@ export async function geocodePlanningPlace(params: {
     return mergePlaceCoordinates(place, primary);
   }
 
-  const placeId = (place.id ?? "").trim();
+  const placeId = resolveGooglePlaceId(place);
   if (
     placeId &&
-    !placeId.startsWith("synthetic:") &&
-    !isFallbackPlanningPlaceId(placeId) &&
     fetchPlaceDetails
   ) {
     logChatGeocodeRetry(name, "place_details_address");

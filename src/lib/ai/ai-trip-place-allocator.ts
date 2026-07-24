@@ -3,6 +3,7 @@ import { normalizeCorePlaceName, normalizePlaceName } from "@/lib/place-planning
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import type { ComposedDayPlan } from "@/lib/ai/ai-day-plan-source";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
+import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
 
 export type PlaceGeocodeStatus = "ok" | "empty";
 
@@ -81,24 +82,7 @@ export function dedupeRecommendationItems(items: RoamieRecommendationItem[]): Ro
 
 /** Step7：Google Place ID 優先；fallback 則用核心名稱去重（象山/象山步道視為同一） */
 export function resolveTripPlaceId(place: PlaceResult): string {
-  const rawId = (
-    place.id ??
-    (place as PlaceResult & { placeId?: string; googlePlaceId?: string }).placeId ??
-    (place as PlaceResult & { googlePlaceId?: string }).googlePlaceId ??
-    ""
-  ).trim();
-  if (rawId && !isFallbackPlanningId(rawId)) return rawId;
-
-  const core = normalizeCorePlaceName(place.name ?? "");
-  const address = normalizePlaceName(place.address ?? "");
-  if (core && address) return `na:${core}|${address}`;
-
-  if (core) return `core:${core}`;
-
-  const norm = normalizePlaceName(place.name ?? "");
-  if (norm) return `name:${norm}`;
-
-  return rawId;
+  return resolveCanonicalPlaceIdentity(place).identityKey;
 }
 
 export function resolvePlaceGeocodeStatus(place: PlaceResult): PlaceGeocodeStatus {

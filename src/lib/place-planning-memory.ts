@@ -13,6 +13,7 @@ import { isGenericPlaceLabel, isValidItineraryStopPlace } from "@/lib/ai/generic
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import type { ChatPlaceItem, ChatPlanningSession } from "@/lib/chat-session";
 import { placeDisplayName, roamieRecToChatItem } from "@/lib/chat-session";
+import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
 
 export type PlaceLike = {
   name: string;
@@ -71,10 +72,7 @@ function normalizeAddress(address?: string): string {
 
 /** 穩定 id：placeId > name+address */
 export function placeIdentityKey(p: PlaceLike): string {
-  if (p.placeId?.trim()) return `id:${p.placeId.trim()}`;
-  const name = normalizePlaceName(p.placeName ?? p.name);
-  const addr = normalizeAddress(p.address);
-  return addr ? `na:${name}@${addr}` : `n:${name}`;
+  return resolveCanonicalPlaceIdentity(p).identityKey;
 }
 
 export function isSameCorePlace(a: PlaceLike, b: PlaceLike): boolean {

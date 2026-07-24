@@ -26,6 +26,7 @@ import {
   evaluateTotalRealPlaceValidation,
   type DynamicStopCapacity,
 } from "@/lib/ai/real-place-supplement";
+import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
 
 function normalizePlaceNameKey(name: string): string {
   return name.trim().replace(/\s+/g, "").toLowerCase();
@@ -516,10 +517,7 @@ export function buildCombinationPlaceMappingStats(params: {
 }
 
 function placeKey(place: RoamieRecommendationItem): string {
-  return (
-    place.googlePlaceId?.trim() ||
-    `${normalizePlaceNameKey(place.placeName ?? place.name)}@${place.lat ?? ""},${place.lng ?? ""}`
-  );
+  return resolveCanonicalPlaceIdentity(place).identityKey;
 }
 
 function combinationIdsOf(place: RoamieRecommendationItem): number[] {

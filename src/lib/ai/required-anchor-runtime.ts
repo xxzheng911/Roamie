@@ -10,6 +10,7 @@
  *   selectedPlace → requiredAnchor → coverage → planner → validator → delivery
  */
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
 
 function normalizePlaceNameKey(name: string): string {
   return name.trim().replace(/\s+/g, "").toLowerCase();
@@ -127,7 +128,9 @@ export function buildSelectedPlaceLock(params: {
     [
       ...(params.placeIds ?? []),
       ...anchors.map((a) => a.placeId).filter((id): id is string => Boolean(id)),
-    ].map((id) => id.trim()).filter(Boolean),
+    ]
+      .map((id) => resolveCanonicalPlaceIdentity({ id }).identityKey)
+      .filter(Boolean),
   );
   return { names, normalizedNames, placeIds, anchors };
 }
@@ -147,7 +150,7 @@ export function isPlaceIdLocked(
   lock: SelectedPlaceLock | null | undefined,
 ): boolean {
   if (!lock || !placeId?.trim()) return false;
-  return lock.placeIds.has(placeId.trim());
+  return lock.placeIds.has(resolveCanonicalPlaceIdentity({ id: placeId }).identityKey);
 }
 
 export function isPlaceLocked(
@@ -155,8 +158,8 @@ export function isPlaceLocked(
   lock: SelectedPlaceLock | null | undefined,
 ): boolean {
   if (!lock) return false;
-  const id = (place.id ?? place.googlePlaceId ?? "").trim();
-  if (id && isPlaceIdLocked(id, lock)) return true;
+  const identity = resolveCanonicalPlaceIdentity(place);
+  if (identity.canonicalPlaceId && lock.placeIds.has(identity.identityKey)) return true;
   const name = place.placeName ?? place.name;
   return isPlaceNameLocked(name, lock);
 }

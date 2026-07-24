@@ -1,6 +1,7 @@
 import type { PlaceResult } from "@/lib/place-result";
 import { normalizeGooglePlaceId } from "@/lib/ai/normalize-google-place";
 import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
+import { resolveGooglePlaceId } from "@/lib/place-canonical-identity";
 
 export const ALLOWED_ITINERARY_SLOT_LABELS = [
   "早餐",
@@ -119,12 +120,7 @@ function parseTimeMinutes(time: string): number {
 }
 
 export function resolvePlanningPlaceId(place: PlaceResult): string {
-  const raw =
-    place.id ??
-    (place as PlaceResult & { placeId?: string }).placeId ??
-    (place as PlaceResult & { googlePlaceId?: string }).googlePlaceId ??
-    "";
-  return normalizeGooglePlaceId(raw);
+  return resolveGooglePlaceId(place) ?? "";
 }
 
 export function isSyntheticPlanningPlaceId(placeId: string): boolean {
