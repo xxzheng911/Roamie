@@ -124,7 +124,6 @@ const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
 const IDENTITY_SCENE: Partial<Record<PlaceIdentity, string[]>> = {
   bookstore: ["適合慢慢翻書", "適合找室內休息點"],
   breakfast_shop: ["適合一早出發前", "不用排太久"],
-  cafe: ["適合坐下來發呆", "適合下午歇腳"],
   night_market: ["晚上氣氛不錯", "很適合晚上散步", "可以一次逛很多攤"],
   museum: ["適合室內待一陣子", "適合喜歡文化的人"],
   park: ["綠意多、步調輕鬆", "適合傍晚"],

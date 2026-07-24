@@ -105,6 +105,10 @@ const EXCLUDED_TYPES = new Set([
   "police",
   "fire_station",
   "post_office",
+  "beverage_store",
+  "juice_shop",
+  "internal_fountain",
+  "lawn_area",
 ]);
 
 /**
@@ -112,7 +116,7 @@ const EXCLUDED_TYPES = new Set([
  * Famous landmarks can still pass via landmarkException().
  */
 const EXCLUDED_NAME_RE =
-  /飲水|飲水處|水飲み|水飲み場|聖火台|時計台|電視塔|テレビ塔|市役所|區役所|区役所|道廳|道庁|廳舍|庁舎|政府大樓|行政大樓|辦公廳|公所|停車場|トイレ|廁所|公衆便所|道路|街道|入口|橋跡|記念碑|紀念碑|近鄰公園|近隣公園|neighborhood\s*park|drinking\s*fountain|water\s*fountain|olympic\s*cauldron|city\s*hall|prefectur|municipal\s*office/i;
+  /飲水|飲水處|水飲み|水飲み場|聖火台|時計台|電視塔|テレビ塔|市役所|區役所|区役所|道廳|道庁|廳舍|庁舎|政府大樓|行政大樓|辦公廳|公所|停車場|トイレ|廁所|公衆便所|道路|街道|入口|橋跡|記念碑|紀念碑|近鄰公園|近隣公園|一般草地|普通噴泉|飲料店|neighborhood\s*park|(?:lawn|grass)\s*area|(?:crystal\s*)?fountain|beverage\s*(?:shop|store)?|drinking\s*fountain|water\s*fountain|olympic\s*cauldron|city\s*hall|prefectur|municipal\s*office/i;
 
 /** Soft park / market / plaza keywords — exclude unless landmark exception. */
 const SOFT_LOW_VALUE_NAME_RE =
@@ -259,6 +263,11 @@ export function evaluateTourismQuality(place: PlaceResult): TourismQualityDecisi
   }
 
   const types = placeTypes(place);
+  // Ordinary lawns, fountains and beverage counters are sub-facilities, not
+  // itinerary anchors. Popularity cannot promote these descriptive POIs.
+  if (/(?:lawn|grass)\s*area|(?:crystal\s*)?fountain|beverage\s*(?:shop|store)?|一般草地|普通噴泉|飲料店/i.test(name)) {
+    return { ok: false, reason: "low_value_facility", detail: "sub_facility" };
+  }
   const hardType = isHardExcludedType(types);
   if (hardType) {
     // Some excluded types can still be famous landmarks (clock tower, TV tower, city hall).

@@ -273,21 +273,32 @@ export function ensureEveryDayPopulated(params: {
     });
   }
 
-  // P1 Step 1: pool < days×minPerDay → leave empty days; never redistribute into singletons.
-  if (mergedPool.length < params.days * slotsPerDay) {
+  // Coverage-first: if pool can put ≥1 stop on every day, redistribute (lower
+  // per-day targets). Only leave empty when totals cannot cover tripDays.
+  if (mergedPool.length < params.days) {
     logAiPipeline(
       "[AI_PLANNER_POOL_INSUFFICIENT]",
       `pool=${mergedPool.length}`,
-      `required=${params.days * slotsPerDay}`,
+      `required=${params.days}`,
       `target=${minCandidatePoolSize(params.days)}`,
-      "action=leave_empty_no_singleton_redistribute",
+      "action=leave_empty_math_impossible",
       `empty=${emptyDays.map((p) => p.day).join(",")}`,
       "sourceFunction=ensureEveryDayPopulated",
     );
     return normalized;
   }
 
-  if (!isPlannerPoolSufficient(mergedPool.length, params.days)) {
+  if (mergedPool.length < params.days * slotsPerDay) {
+    logAiPipeline(
+      "[AI_PLANNER_POOL_INSUFFICIENT]",
+      `pool=${mergedPool.length}`,
+      `required=${params.days * slotsPerDay}`,
+      `target=${minCandidatePoolSize(params.days)}`,
+      "action=redistribute_lower_targets_for_coverage",
+      `empty=${emptyDays.map((p) => p.day).join(",")}`,
+      "sourceFunction=ensureEveryDayPopulated",
+    );
+  } else if (!isPlannerPoolSufficient(mergedPool.length, params.days)) {
     logAiPipeline(
       "[AI_PLANNER_POOL_INSUFFICIENT]",
       `pool=${mergedPool.length}`,

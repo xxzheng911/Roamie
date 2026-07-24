@@ -240,6 +240,7 @@ async function ensureRecommendationSession(
   msgs: ChatMsg[],
   searchPlaces: PlaceSearchFn,
   locale: Locale,
+  userText: string,
 ): Promise<ChatPlanningSession> {
   const ctx = session.tripAddPlaceContext;
   let rec = session.tripAddPlaceRecommendationSession;
@@ -374,7 +375,7 @@ export async function runTripAddPlaceRecommendationEngine(params: {
     logRecommendDedup(session.tripAddPlaceRecommendationSession, ctx, "engine_start");
   }
 
-  session = await ensureRecommendationSession(session, msgs, searchPlaces, locale);
+  session = await ensureRecommendationSession(session, msgs, searchPlaces, locale, userText);
 
   const wantsExpand = isTripAddPlaceExpandSearchConsent(userText, msgs, session.tripAddPlaceRecommendationSession);
   const wantsMore =

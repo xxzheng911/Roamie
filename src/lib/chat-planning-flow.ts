@@ -1,4 +1,5 @@
 import type { ChatPhase } from "@/lib/ai/context";
+import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import {
   chatPhaseForStage,
   resolveConversationStage,

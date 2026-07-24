@@ -166,11 +166,20 @@ function orderByRoute<T>(clusters: GeoClusterOf<T>[], days: number): void {
     current = remaining.splice(bestIdx, 1)[0]!;
     route.push(current);
   }
-  // Spread along the geographic route — avoid dumping leftovers onto the last day.
+  // Spread along the geographic route; always assign the last cluster to Day N
+  // so seed plans do not systematically leave the final travel day empty.
   route.forEach((cluster, index) => {
+    if (route.length === 1) {
+      cluster.candidateDay = 1;
+      return;
+    }
+    if (index === route.length - 1) {
+      cluster.candidateDay = days;
+      return;
+    }
     cluster.candidateDay = Math.min(
-      days,
-      Math.floor((index / Math.max(1, route.length)) * days) + 1,
+      days - 1,
+      Math.floor((index / (route.length - 1)) * (days - 1)) + 1,
     );
   });
 }

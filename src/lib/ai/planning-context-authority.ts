@@ -135,6 +135,20 @@ export function finalizePlanningContextAuthority(params: {
       destination: beforeDest,
       destinationCountry:
         context.destinationCountry ?? before.travelContext?.destinationCountry,
+      destinationCity:
+        context.destinationCity ?? before.travelContext?.destinationCity,
+      destinationType:
+        context.destinationType ?? before.travelContext?.destinationType,
+      destinationCountryCode:
+        context.destinationCountryCode ??
+        before.travelContext?.destinationCountryCode,
+      destinationCoordinates:
+        context.destinationCoordinates ??
+        before.travelContext?.destinationCoordinates,
+      destinationScopeId:
+        context.destinationScopeId ?? before.travelContext?.destinationScopeId,
+      destinationRegion:
+        context.destinationRegion ?? before.travelContext?.destinationRegion,
     };
   }
 
@@ -161,6 +175,18 @@ export function finalizePlanningContextAuthority(params: {
       startDate: context.startDate ?? session.tripStartDate,
       endDate: context.endDate ?? session.tripEndDate,
     }) ?? context.days;
+
+  // Dates + destination present must not remain stuck in awaiting_days.
+  if (
+    days != null &&
+    authorityDest &&
+    (context.conversationState === "awaiting_days" || !context.conversationState)
+  ) {
+    context = {
+      ...context,
+      conversationState: "awaiting_combination_selection",
+    };
+  }
 
   // Mirror SoT onto session scalars + tripPlanningContext (derived, not independent).
   session = {

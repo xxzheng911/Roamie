@@ -4,6 +4,7 @@
  */
 
 import type { PlaceResult } from "@/lib/place-result";
+import { resolveNightlifeClassification } from "@/lib/ai/nightlife-classification";
 
 function blob(place: PlaceResult): string {
   return [place.name, place.address, place.primaryType, ...(place.types ?? [])]
@@ -26,17 +27,11 @@ export function isCafePlaceLocal(place: PlaceResult): boolean {
 }
 
 export function isBarBistroPlaceLocal(place: PlaceResult): boolean {
-  const t = typesOf(place);
-  return (
-    t.has("bar") ||
-    t.has("night_club") ||
-    t.has("pub") ||
-    /酒吧|bar|bistro|居酒屋|izakaya/.test(blob(place))
-  );
+  return resolveNightlifeClassification(place).isNightlife;
 }
 
 export function isNightMarketPlaceLocal(place: PlaceResult): boolean {
-  return /夜市|night\s*market/.test(blob(place)) || typesOf(place).has("night_market");
+  return resolveNightlifeClassification(place).nightlifeSubtype === "night_market";
 }
 
 export function isProperRestaurantPlaceLocal(place: PlaceResult): boolean {

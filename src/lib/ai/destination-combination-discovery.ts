@@ -114,9 +114,13 @@ export type CombinationPlaceCandidate = {
   originalName?: string;
   /** App-locale display name (UI / chat must prefer this) */
   localizedDisplayName?: string;
+  /** Final UI name: localizedDisplayName || englishName || readable original */
+  effectiveDisplayName?: string;
   languageCode?: string;
   localizationSource?: PlaceNameLocalizationSource | string;
   englishName?: string;
+  localizationStatus?: "complete" | "partial" | "fallback";
+  isReadableFallback?: boolean;
 };
 
 export type StructuredCombinationOption = {
@@ -320,14 +324,16 @@ const THEME_DEFS: Array<{
   {
     key: "nature",
     title: "城市慢遊組合",
-    typeHint: /park|zoo|garden|natural/i,
-    nameHint: /公園|動物園|綠地|湖|草原|步道|濕地/,
+    typeHint: /park|zoo|garden|natural|waterfall|hiking|campground/i,
+    nameHint:
+      /公園|動物園|綠地|湖|草原|步道|濕地|瀑布|waterfall|viewpoint|view point|觀景|lookout|observation|zipline|樹冠/,
   },
   {
     key: "coast",
     title: "海岸夕陽組合",
     typeHint: /marina|beach|natural_feature|park/i,
-    nameHint: /漁港|海岸|海灘|濱海|濕地|碼頭|天梯|漁會|港/,
+    nameHint:
+      /漁港|海岸|海灘|濱海|濕地|碼頭|天梯|漁會|港|beach|beach club|sunset|海岸線/,
   },
   {
     key: "cafe",
@@ -362,8 +368,8 @@ const THEME_DEFS: Array<{
   {
     key: "suburb",
     title: "近郊自然組合",
-    typeHint: /park|natural/i,
-    nameHint: /山|湖|牧場|森林|露營|溫泉|農場|溪/,
+    typeHint: /park|natural|waterfall|hiking/i,
+    nameHint: /山|湖|牧場|森林|露營|溫泉|農場|溪|waterfall|瀑布|viewpoint|觀景/,
   },
 ];
 
@@ -410,6 +416,29 @@ function logCombinationValidationOnce(
     `reason=${reason}`,
     `genericPlaceNames=[${genericPlaceNames.join(",")}]`,
   );
+  if (reason.startsWith("too_few_combinations")) {
+    void import("@/lib/ai/resolved-trip-destination").then(
+      ({
+        resolvePlanningDestination,
+        assertDestinationConsistency,
+        logCombinationFailureChain,
+      }) => {
+        const resolved = resolvePlanningDestination({ destination });
+        const consistency = assertDestinationConsistency(resolved);
+        logCombinationFailureChain({
+          destinationLabel: destination,
+          destinationResolved: consistency.ok,
+          destinationLocked: Boolean(resolved?.scopeLocked),
+          guardHasDestination: consistency.ok,
+          primaryReason: consistency.ok
+            ? "candidate_pool_insufficient"
+            : "destination_state_desync",
+          secondaryReason: consistency.ok ? undefined : "missing_destination",
+          terminalReason: reason,
+        });
+      },
+    );
+  }
 }
 
 function localizeCachedCombinations(
@@ -1969,6 +1998,15 @@ export async function discoverDestinationCombinations(params: {
       "status=destination_resolution_failed",
       "retryable=true",
     );
+    logAiPipeline(
+      "[DESTINATION_CANDIDATE_FETCH_FAILED]",
+      `destination=${label}`,
+      `countryCode=${anchor.countryCode ?? ""}`,
+      `coordinates=missing`,
+      "requestCount=0",
+      "provider=geocode",
+      "failureReason=no_coordinates",
+    );
     return setDiscoveryFailure(label, "destination_resolution_failed", "no_coordinates");
   }
 
@@ -2135,6 +2173,18 @@ export async function discoverDestinationCombinations(params: {
 
   if (timedOut() && rawPlaces.length === 0) return failTimeout();
 
+  if (rawPlaces.length === 0) {
+    logAiPipeline(
+      "[DESTINATION_CANDIDATE_FETCH_FAILED]",
+      `destination=${label}`,
+      `countryCode=${anchor.countryCode ?? ""}`,
+      `coordinates=${lat},${lng}`,
+      "requestCount=places_search",
+      "provider=places",
+      "failureReason=empty_places_response",
+    );
+  }
+
   let candidates = candidatesFromPlaces(label, rawPlaces, { lat, lng }, locale);
 
   const districts = new Set(
@@ -2289,25 +2339,49 @@ export async function discoverDestinationCombinations(params: {
     }
   }
 
-  // Combination Localization Gate — must pass before chat delivery / cache write.
+  // Combination Localization Repair Gate — names only; never delete for English fallback.
   if (combinations?.length) {
     const gated = applyCombinationLocalizationGate(combinations, {
       locale,
       minPlacesPerCombo: 2,
       minCombinations: MIN_COMBINATIONS,
+      preferredCombinations: PREFERRED_COMBINATIONS,
     });
     combinations = gated.combinations as StructuredCombinationOption[];
+    logAiPipeline(
+      "[COMBINATION_DELIVERY_SUMMARY]",
+      `destination=${label}`,
+      `tripDays=`,
+      `candidatePlaceCount=${candidates.length}`,
+      `validRealPlaceCount=${gated.localizationCompleteCount + gated.localizationPartialCount}`,
+      `qualityRejectedCount=${gated.unreadableRejectedCount}`,
+      `localizationCompleteCount=${gated.localizationCompleteCount}`,
+      `localizationPartialCount=${gated.localizationPartialCount}`,
+      `englishFallbackCount=${gated.englishFallbackCount}`,
+      `unreadableRejectedCount=${gated.unreadableRejectedCount}`,
+      `combinationTargetCount=${PREFERRED_COMBINATIONS}`,
+      `combinationBuiltCount=${gated.combinations.length}`,
+      `combinationDeliveredCount=${gated.combinations.length}`,
+      `deliveryPass=${gated.tripCombinationDeliveryPass}`,
+      `failureReason=${gated.reason ?? ""}`,
+      `localizationDisplayPass=${gated.localizationDisplayPass}`,
+      `minimumCombinationCountPass=${gated.minimumCombinationCountPass}`,
+    );
+    // Fail discovery only when no deliverable real-place combinations remain —
+    // never solely because localizationCoverage < 1 / english_fallback.
     if (!combinations.length) {
       logAiPipeline(
         "[COMBINATION_DISCOVERY_FAILED]",
-        "reason=combination_localization_gate",
-        `detail=${gated.reason ?? "unreadable"}`,
+        "reason=combination_real_places_insufficient",
+        `detail=${gated.reason ?? "no_deliverable_combinations"}`,
         `droppedForeignScript=${gated.droppedForeignScript}`,
+        `droppedUnreadable=${gated.droppedUnreadable}`,
+        `droppedEnglishFallback=${gated.droppedEnglishFallback}`,
       );
       return setDiscoveryFailure(
         label,
         "combination_candidates_insufficient",
-        "combination_localization_gate",
+        "combination_real_places_insufficient",
       );
     }
     // Localize theme titles to effective App locale (never mechanical numbered titles).
@@ -2380,12 +2454,18 @@ export function structuredCombinationsToTitlesPlaces(
           { baseTitle: combo.title },
         )
       : localizeCombinationThemeTitle(combo.title);
-    // Reply surfaces localizedDisplayName only — never raw name / english fallback.
+    // Reply surfaces effectiveDisplayName (繁中 → English readable fallback).
     const places = (combo.primaryCandidates?.length
       ? combo.primaryCandidates
       : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO)
     )
-      .map((p) => p.localizedDisplayName?.trim() || "")
+      .map(
+        (p) =>
+          p.effectiveDisplayName?.trim() ||
+          p.localizedDisplayName?.trim() ||
+          p.name?.trim() ||
+          "",
+      )
       .filter(Boolean);
     return { title, places };
   });
@@ -2532,8 +2612,10 @@ export async function ensureDestinationCombinationsReady(params: {
         locale,
         minPlacesPerCombo: 2,
         minCombinations: MIN_COMBINATIONS,
+        preferredCombinations: PREFERRED_COMBINATIONS,
       });
-      if (gatedLocal.combinations.length >= MIN_COMBINATIONS) {
+      // Deliver when Repair Gate kept ≥ MIN real-place combos (English fallback OK).
+      if (gatedLocal.tripCombinationDeliveryPass || gatedLocal.combinations.length >= MIN_COMBINATIONS) {
         const localized = gatedLocal.combinations as StructuredCombinationOption[];
         setCachedDiscoveredCombinations(label, localized);
         return { ok: true, combinations: localized, source: "curated_or_local" };

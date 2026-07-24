@@ -24,9 +24,3 @@ export function mountImmediateBootShell(): void {
   boot.phase = "dom-shell";
   window.__ROAMIE_BOOT__ = boot;
 }
-
-declare global {
-  interface Window {
-    __ROAMIE_BOOT__?: { phase?: string; t0?: number; import?: string; error?: string };
-  }
-}

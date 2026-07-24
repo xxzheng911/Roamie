@@ -16,6 +16,11 @@ import {
   type StructuredCombinationOption,
 } from "@/lib/ai/destination-combination-discovery";
 import { applyNearbyRegionPolicyToThemes } from "@/lib/ai/region-adjacency";
+import {
+  assertDestinationConsistency,
+  logDestinationContextInvalid,
+  resolvePlanningDestination,
+} from "@/lib/ai/resolved-trip-destination";
 
 export type DestinationTravelTheme = {
   /** Combination title shown to user */
@@ -322,13 +327,36 @@ function synthesizeProfile(destination: string): DestinationTravelProfile {
   }
 
   if (pool.length < 6) {
-    // Insufficient real named places — return empty; caller must discover via Places
-    // or show insufficiency message. Never invent category placeholders.
+    // Insufficient curated names — never invent placeholders.
+    // Incomplete destination state must not look like "empty Places pool".
+    const resolved = resolvePlanningDestination({ destination: label });
+    const consistency = assertDestinationConsistency(resolved);
+    if (!consistency.ok) {
+      logDestinationContextInvalid(resolved, consistency.missingFields);
+      logAiPipeline(
+        "[DESTINATION_TRAVEL_PROFILE]",
+        `destination=${label}`,
+        "source=destination_context_invalid",
+        `pool=${pool.length}`,
+        `missingFields=[${consistency.missingFields.join(",")}]`,
+      );
+      return {
+        destination: label,
+        categories: [],
+        districts: [],
+        themes: [],
+        source: "synthesized",
+      };
+    }
+    // Resolved destination is complete — defer to Places discovery (not synthesized_empty).
     logAiPipeline(
       "[DESTINATION_TRAVEL_PROFILE]",
       `destination=${label}`,
-      "source=synthesized_empty",
+      "source=pending_places_discovery",
       `pool=${pool.length}`,
+      `countryCode=${resolved?.countryCode ?? ""}`,
+      `lat=${resolved?.latitude ?? ""}`,
+      `lng=${resolved?.longitude ?? ""}`,
     );
     return {
       destination: label,

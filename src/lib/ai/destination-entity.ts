@@ -9,6 +9,8 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 export type DestinationEntityType =
   | "country"
   | "city"
+  /** City-state / SAR where city and country share one travel label (SG, HK, MO, …). */
+  | "city_state"
   | "province"
   | "state"
   | "region"
@@ -397,15 +399,63 @@ const ENTITY_SEEDS: EntitySeed[] = [
     },
   },
   {
-    names: ["新加坡"],
-    type: "country",
+    names: ["新加坡", "Singapore"],
+    type: "city_state",
     country: "新加坡",
-    hemisphere: "north",
+    hemisphere: "equatorial",
     climateZone: "tropical",
     seasonality: {
       bestMonthRanges: ["2~4月", "9~11月"],
       events: [],
       notes: ["全年溫暖；6~8 月較多雨。"],
+    },
+  },
+  {
+    names: ["香港", "Hong Kong"],
+    type: "city_state",
+    country: "香港",
+    hemisphere: "north",
+    climateZone: "subtropical",
+    seasonality: {
+      bestMonthRanges: ["10~12月", "3~4月"],
+      events: [],
+      notes: ["秋冬較舒適；夏季湿热多雨。"],
+    },
+  },
+  {
+    names: ["澳門", "澳门", "Macau", "Macao"],
+    type: "city_state",
+    country: "澳門",
+    hemisphere: "north",
+    climateZone: "subtropical",
+    seasonality: {
+      bestMonthRanges: ["10~12月", "3~4月"],
+      events: [],
+      notes: ["秋冬較舒適；夏季湿热多雨。"],
+    },
+  },
+  {
+    names: ["摩納哥", "摩纳哥", "Monaco"],
+    type: "city_state",
+    country: "摩納哥",
+    hemisphere: "north",
+    climateZone: "mediterranean",
+    seasonality: {
+      bestMonthRanges: ["4~6月", "9~10月"],
+      events: [],
+      notes: ["地中海氣候，春秋最舒適。"],
+    },
+  },
+  {
+    names: ["梵蒂岡", "梵蒂冈", "Vatican", "Vatican City"],
+    type: "city_state",
+    country: "梵蒂岡",
+    hemisphere: "north",
+    climateZone: "mediterranean",
+    seasonality: {
+      bestMonthRanges: ["4~6月", "9~10月"],
+      events: [],
+      notes: ["義大利半島地中海氣候，春秋最適合步行參觀。"],
     },
   },
   {
@@ -563,12 +613,25 @@ export function listRegisteredDestinationEntities(): DestinationEntity[] {
 export function listChildDestinationsByCountry(country: string): DestinationEntity[] {
   const label = normalizeDestinationLabel(country);
   return listRegisteredDestinationEntities().filter((entity) => {
-    if (entity.type === "country" || entity.type === "attraction") return false;
+    if (
+      entity.type === "country" ||
+      entity.type === "city_state" ||
+      entity.type === "attraction"
+    ) {
+      return false;
+    }
     const entityCountry = entity.country
       ? normalizeDestinationLabel(entity.country)
       : undefined;
     return entityCountry === label && entity.name !== label;
   });
+}
+
+/** True when the destination is a city-state / SAR (city label == country label). */
+export function isCityStateDestination(name: string | null | undefined): boolean {
+  if (!name?.trim()) return false;
+  const label = normalizeDestinationLabel(name);
+  return resolveDestinationEntity(label).type === "city_state";
 }
 
 /**
@@ -767,7 +830,7 @@ function inferCountry(name: string, type: DestinationEntityType): string | undef
   const registered = getEntityByNameMap().get(name);
   if (registered?.country) return registered.country;
   if (PARENT_COUNTRY_HINTS[name]) return PARENT_COUNTRY_HINTS[name];
-  if (type === "country") return name;
+  if (type === "country" || type === "city_state") return name;
   return undefined;
 }
 

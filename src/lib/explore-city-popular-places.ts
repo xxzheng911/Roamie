@@ -88,7 +88,6 @@ const CITY_LANDMARK_QUERIES: Record<string, string[]> = {
   ],
   大阪: ["Osaka Castle", "Dotonbori Osaka", "道頓堀", "大阪城"],
   京都: ["Fushimi Inari Kyoto", "Kiyomizu-dera", "伏見稻荷", "清水寺"],
-  曼谷: ["Chatuchak Market Bangkok", "Wat Arun", "考山路", "洽圖洽周末市集"],
   首爾: ["Gyeongbokgung Seoul", "Myeongdong", "景福宮", "明洞", "N Seoul Tower"],
   曼谷: ["Grand Palace Bangkok", "Wat Arun", "Chatuchak Market Bangkok", "考山路"],
   巴黎: ["Eiffel Tower Paris", "Louvre Museum Paris", "Notre Dame Paris", "艾菲爾鐵塔"],
@@ -530,7 +529,7 @@ async function runCityTextQueries(
           if (places.length === 0) return;
           console.info("[EXPLORE_TEXT_SEARCH_FALLBACK]", `query=${queryText}`, `count=${places.length}`);
           for (const place of places) {
-            acceptCityPlace(place, label, cityCenter, merged, categoryId);
+            acceptCityPlace(place, label, cityCenter, merged, "sight");
           }
         } catch (e) {
           console.warn("[EXPLORE_TEXT_SEARCH_FALLBACK]", queryText, e);

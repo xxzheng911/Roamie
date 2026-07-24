@@ -1,4 +1,5 @@
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { isAffirmativeReply } from "@/lib/ai/chat-conversation-state";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeRecommendationItem } from "@/lib/ai/types";
 import {

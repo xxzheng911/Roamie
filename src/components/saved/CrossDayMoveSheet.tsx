@@ -141,7 +141,7 @@ export function CrossDayMoveSheet({
             <option value="start">該天最前面</option>
             <option value="end">該天最後面</option>
             {targetStops.map((stop, idx) => {
-              const name = stop.placeName || stop.title;
+              const name = stop.localizedDisplayName ?? "";
               return (
                 <option key={`${stop.placeName}-${idx}`} value={`after:${idx}`}>
                   第 {idx + 1} 個地點（{name}）後

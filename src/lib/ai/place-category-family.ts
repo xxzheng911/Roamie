@@ -5,20 +5,18 @@
 import type { PlaceResult } from "@/lib/place-result";
 
 export type PlaceCategoryFamily =
-  | "museum"
-  | "gallery"
+  | "museum_family"
   | "temple_shrine"
   | "church"
-  | "park"
-  | "garden"
-  | "market"
+  | "park_family"
+  | "market_family"
   | "shopping"
-  | "viewpoint"
+  | "viewpoint_family"
   | "beach"
   | "historic_district"
   | "monument"
   | "theme_park"
-  | "zoo_aquarium"
+  | "wildlife_family"
   | "cafe"
   | "restaurant"
   | "nightlife"
@@ -71,6 +69,17 @@ export function resolvePlaceCategoryFamily(place: PlaceResult): PlaceCategoryFam
   const types = typeSet(place);
   const blob = blobOf(place);
 
+  // Wildlife wins before park/name matching: e.g. "Bird Park" occupies only wildlife_family.
+  if (
+    types.has("zoo") ||
+    types.has("bird_park") ||
+    types.has("wildlife_park") ||
+    types.has("aquarium") ||
+    types.has("animal_park") ||
+    /飛禽公園|鸟园|鳥園|bird\s*park|wildlife\s*park|動物園|水族館|zoo|aquarium/i.test(blob)
+  ) {
+    return "wildlife_family";
+  }
   if (
     types.has("amusement_park") ||
     types.has("theme_park") ||
@@ -78,23 +87,13 @@ export function resolvePlaceCategoryFamily(place: PlaceResult): PlaceCategoryFam
   ) {
     return "theme_park";
   }
-  if (
-    types.has("zoo") ||
-    types.has("aquarium") ||
-    /動物園|水族館|zoo|aquarium/i.test(blob)
-  ) {
-    return "zoo_aquarium";
-  }
   if (looksMuseumFamily(types, blob)) {
-    if (types.has("art_gallery") || /美術館|art\s*gallery|gallery/i.test(blob)) {
-      return "gallery";
-    }
-    return "museum";
+    return "museum_family";
   }
   if (
     types.has("castle") ||
     types.has("palace") ||
-    /城|宮殿|castle|palace|皇宮/i.test(blob)
+    /城堡|古城(?:區|遗址|遺址)?$|宮殿|castle|palace|皇宮/i.test(blob)
   ) {
     return "palace_castle";
   }
@@ -118,7 +117,7 @@ export function resolvePlaceCategoryFamily(place: PlaceResult): PlaceCategoryFam
     types.has("observation_deck") ||
     /觀景|展望|observation|viewpoint|lookout|塔$|tower/i.test(blob)
   ) {
-    return "viewpoint";
+    return "viewpoint_family";
   }
   if (types.has("beach") || /海灘|beach|海水浴場/i.test(blob)) return "beach";
   if (
@@ -128,13 +127,15 @@ export function resolvePlaceCategoryFamily(place: PlaceResult): PlaceCategoryFam
   ) {
     return "nature_trail";
   }
-  if (types.has("garden") || /庭園|植物園|garden/i.test(blob)) return "garden";
-  if (types.has("park") || /公園|park/i.test(blob)) return "park";
+  if (
+    ["park", "urban_park", "city_park", "public_park", "garden", "botanical_garden", "lake_garden", "ecological_park", "recreational_park", "landmark_park"].some((type) => types.has(type)) ||
+    /公園|花園|庭園|植物園|park|garden/i.test(blob)
+  ) return "park_family";
   if (
     types.has("market") ||
     /市場|夜市|market/i.test(blob)
   ) {
-    return "market";
+    return "market_family";
   }
   if (
     types.has("shopping_mall") ||
@@ -179,13 +180,11 @@ export function resolvePlaceCategoryFamily(place: PlaceResult): PlaceCategoryFam
 export function categoryFamilyToDiversityKey(
   family: PlaceCategoryFamily,
 ): string {
-  if (family === "gallery") return "museum";
+  if (family === "museum_family") return "museum_family";
   if (family === "palace_castle") return "attraction";
   if (family === "temple_shrine" || family === "church") return "shrine_temple";
-  if (family === "viewpoint") return "viewpoint_tower";
-  if (family === "park" || family === "garden" || family === "nature_trail") {
-    return "ordinary_park";
-  }
-  if (family === "market") return "ordinary_market";
+  if (family === "viewpoint_family") return "viewpoint_family";
+  if (family === "park_family") return "park_family";
+  if (family === "market_family") return "market_family";
   return family;
 }

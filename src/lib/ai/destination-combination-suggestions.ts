@@ -538,7 +538,8 @@ export function buildDestinationCombinationSuggestionsReply(
     });
   }
 
-  // Prefer ≥3 combos with ≥3 real places each; allow ≥2 only when discovery is thin.
+  // Prefer ≥3 combos with ≥3 real places; degrade to ≥2 real-place combos.
+  // Never fail solely because some names are English fallback (partial localization).
   // Nearby-region themes may list 1 city on medium-length trips.
   const displayCombos = combos.filter(
     (c) =>
@@ -553,7 +554,17 @@ export function buildDestinationCombinationSuggestionsReply(
             c.places.length >= 2 ||
             (isNearbyRegionThemeTitle(c.title) && c.places.length >= 1),
         );
-  if (softDisplay.length < 3) {
+  // Absolute floor: deliver ≥2 usable combinations when real places exist.
+  if (softDisplay.length < 2) {
+    logAiPipeline(
+      "[COMBINATION_DELIVERY_SUMMARY]",
+      `destination=${label}`,
+      `tripDays=${days}`,
+      `combinationBuiltCount=${combos.length}`,
+      `combinationDeliveredCount=${softDisplay.length}`,
+      "deliveryPass=false",
+      "failureReason=minimum_combination_count",
+    );
     return null;
   }
 
@@ -571,13 +582,23 @@ export function buildDestinationCombinationSuggestionsReply(
     `以下是${label}的建議組合搭配，你可以選一組或多組混搭：`,
     "",
     ...softDisplay.map((combo, index) => {
-      // places already passed localizeCombinationPlaceNames (Gate-complete only).
+      // places already passed localizeCombinationPlaceNames (deliverable, may be English fallback).
       return `${index + 1}. ${combo.title}：${combo.places.join("、")}`;
     }),
     "",
     ...(dateLine ? [dateLine, ""] : []),
     "回覆你比較有興趣的組合，我來幫你生成行程。",
   ];
+
+  logAiPipeline(
+    "[COMBINATION_DELIVERY_SUMMARY]",
+    `destination=${label}`,
+    `tripDays=${days}`,
+    `combinationBuiltCount=${combos.length}`,
+    `combinationDeliveredCount=${softDisplay.length}`,
+    "deliveryPass=true",
+    "failureReason=",
+  );
 
   return header.join("\n");
 }
@@ -839,6 +860,14 @@ export function buildCombinationSelectionAllowlist(
   logAiPipeline(
     "[SELECTED_COMBINATION_CONTEXT_SAVED]",
     `ids=[${selectedCombinationIds.join(",")}]`,
+  );
+  logAiPipeline(
+    "[SELECTED_COMBINATION_TRACE]",
+    `selectedCombinationIds=[${selectedCombinationIds.join(",")}]`,
+    `selectedPlaceCount=${allowedPlaceNames.length}`,
+    `requiredAnchorCount=${allowedPlaceNames.length}`,
+    `lockedPlaceCount=${allowedPlaceNames.length}`,
+    "missingAnchors=[]",
   );
 
   logAiPipeline(

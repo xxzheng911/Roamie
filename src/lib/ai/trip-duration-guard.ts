@@ -12,6 +12,15 @@ import {
   isCountryLevelDestination,
 } from "@/lib/ai/destination-scope";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import {
+  assertDestinationConsistency,
+  hasCompleteResolvedDestination,
+  logCombinationFailureChain,
+  logPlanningDestinationSummary,
+  resolvePlanningDestination,
+  type PlanningDestinationInput,
+  type ResolvedTripDestination,
+} from "@/lib/ai/resolved-trip-destination";
 
 /** Inclusive upper bound for a single trip planning session. */
 export const MAX_VALID_TRIP_DAYS = 30;
@@ -31,14 +40,13 @@ export type DurationGuardPendingQuestion = {
   type?: string | null;
 };
 
-export type CombinationDiscoveryGuardContext = TripDurationFields & {
-  destination?: string | null;
-  destinationType?: string | null;
-  destinationCountry?: string | null;
-  pendingQuestion?: DurationGuardPendingQuestion | null;
-  tripPurpose?: string | null;
-  conversationState?: string | null;
-};
+export type CombinationDiscoveryGuardContext = TripDurationFields &
+  PlanningDestinationInput & {
+    pendingQuestion?: DurationGuardPendingQuestion | null;
+    tripPurpose?: string | null;
+    conversationState?: string | null;
+    session?: ChatPlanningSession | null;
+  };
 
 export type CombinationDiscoveryGuardResult = {
   allowed: boolean;
@@ -46,12 +54,14 @@ export type CombinationDiscoveryGuardResult = {
     | "ok"
     | "missing_destination"
     | "country_level_destination"
+    | "destination_state_desync"
     | "missing_trip_duration"
     | "pending_destination_question"
     | "pending_duration_question";
   tripDays?: number;
   hasDestination: boolean;
   hasValidTripDuration: boolean;
+  resolvedDestination?: ResolvedTripDestination | null;
 };
 
 function coerceFiniteDays(value: unknown): number | undefined {
@@ -116,17 +126,37 @@ export function resolveValidTripDays(context: TripDurationFields): number | unde
   return undefined;
 }
 
-/** City / region / island level destination — not a bare country. */
+/**
+ * City / region / island / city_state destination ready for combination discovery.
+ * Uses ResolvedTripDestination SoT — never label-only or destinationType===country alone.
+ */
 export function hasResolvedDestination(
-  context: Pick<CombinationDiscoveryGuardContext, "destination" | "destinationType">,
+  context: CombinationDiscoveryGuardContext,
 ): boolean {
-  const raw = context.destination?.trim();
-  if (!raw) return false;
-  const label = normalizeDestinationLabel(raw);
-  if (!label) return false;
-  if (isCountryLevelDestination(label)) return false;
-  if (context.destinationType === "country") return false;
-  return canDiscoverDestinationPlaces(label);
+  const resolved = resolvePlanningDestination(context, context.session);
+  if (!resolved?.label) return false;
+  if (resolved.type === "country" || isCountryLevelDestination(resolved.label)) {
+    return false;
+  }
+  if (hasCompleteResolvedDestination(resolved)) return true;
+  // Discoverable entity with countryCode — coords may hydrate from approx/scope shortly after.
+  if (
+    resolved.countryCode &&
+    canDiscoverDestinationPlaces(resolved.label) &&
+    resolved.type !== "country" &&
+    resolved.type !== "unknown"
+  ) {
+    return true;
+  }
+  // Scope already locked with valid coords/countryCode must always pass.
+  if (
+    resolved.scopeLocked &&
+    resolved.countryCode &&
+    canDiscoverDestinationPlaces(resolved.label)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function hasPendingDestinationQuestion(
@@ -144,9 +174,19 @@ export function hasPendingDurationQuestion(
 export function evaluateCombinationDiscoveryGuard(
   context: CombinationDiscoveryGuardContext,
 ): CombinationDiscoveryGuardResult {
+  const resolved = resolvePlanningDestination(context, context.session);
+  const consistency = assertDestinationConsistency(resolved);
   const hasDestination = hasResolvedDestination(context);
   const tripDays = resolveValidTripDays(context);
   const durationOk = tripDays != null;
+
+  logPlanningDestinationSummary(resolved, { hasDestination });
+
+  // Label present + scope locked, but SoT incomplete → desync (not "no destination").
+  const labelOnlyDesync =
+    Boolean(resolved?.label) &&
+    !hasDestination &&
+    (resolved?.scopeLocked || Boolean(context.destination?.trim()));
 
   if (hasPendingDestinationQuestion(context.pendingQuestion)) {
     return {
@@ -155,6 +195,7 @@ export function evaluateCombinationDiscoveryGuard(
       hasDestination,
       hasValidTripDuration: durationOk,
       tripDays,
+      resolvedDestination: resolved,
     };
   }
 
@@ -165,21 +206,33 @@ export function evaluateCombinationDiscoveryGuard(
       hasDestination,
       hasValidTripDuration: durationOk,
       tripDays,
+      resolvedDestination: resolved,
     };
   }
 
   if (!hasDestination) {
-    const raw = context.destination?.trim();
-    const reason =
-      raw && isCountryLevelDestination(raw)
-        ? "country_level_destination"
-        : "missing_destination";
+    const raw = resolved?.label ?? context.destination?.trim();
+    let reason: CombinationDiscoveryGuardResult["reason"] = "missing_destination";
+    if (raw && isCountryLevelDestination(raw)) {
+      reason = "country_level_destination";
+    } else if (labelOnlyDesync) {
+      reason = "destination_state_desync";
+      logCombinationFailureChain({
+        destinationLabel: raw,
+        destinationResolved: consistency.ok,
+        destinationLocked: Boolean(resolved?.scopeLocked),
+        guardHasDestination: false,
+        primaryReason: "destination_state_desync",
+        secondaryReason: "missing_destination",
+      });
+    }
     return {
       allowed: false,
       reason,
       hasDestination: false,
       hasValidTripDuration: durationOk,
       tripDays,
+      resolvedDestination: resolved,
     };
   }
 
@@ -189,6 +242,7 @@ export function evaluateCombinationDiscoveryGuard(
       reason: "missing_trip_duration",
       hasDestination: true,
       hasValidTripDuration: false,
+      resolvedDestination: resolved,
     };
   }
 
@@ -198,6 +252,7 @@ export function evaluateCombinationDiscoveryGuard(
     hasDestination: true,
     hasValidTripDuration: true,
     tripDays,
+    resolvedDestination: resolved,
   };
 }
 
@@ -230,7 +285,7 @@ export function logCombinationDiscoveryGuard(
 ): void {
   logAiPipeline(
     "[COMBINATION_DISCOVERY_GUARD]",
-    `destination=${destination?.trim() || ""}`,
+    `destination=${destination?.trim() || result.resolvedDestination?.label || ""}`,
     `hasDestination=${result.hasDestination}`,
     `tripDays=${result.tripDays ?? ""}`,
     `hasValidTripDuration=${result.hasValidTripDuration}`,

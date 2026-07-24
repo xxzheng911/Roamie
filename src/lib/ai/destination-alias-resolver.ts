@@ -661,12 +661,12 @@ const DESTINATION_ALIAS_RECORDS: DestinationAliasRecord[] = [
     entityType: "city",
     countryHint: "馬來西亞",
   },
-  // Singapore
+  // Singapore (city-state — city label == country label)
   {
     canonicalName: "新加坡",
     searchName: "Singapore",
     aliases: ["新加坡", "Singapore"],
-    entityType: "city",
+    entityType: "city_state",
     countryHint: "新加坡",
   },
   {

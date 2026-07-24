@@ -25,6 +25,7 @@ export {
   shouldBlockItineraryDelivery,
   isOnlySoftRepairableFailures,
   hasHardBlockFailures,
+  hasUnrepairableHardBlockFailures,
 } from "@/lib/ai/itinerary-validator/validate";
 
 export {
@@ -33,6 +34,7 @@ export {
   MAX_ITINERARY_VALIDATOR_REPLAN_ATTEMPTS,
   SOFT_REPAIRABLE_RULE_CODES,
   HARD_BLOCK_RULE_CODES,
+  REPAIR_FIRST_HARD_RULE_CODES,
   SOFT_PASS_MIN_PLACES_PER_FULL_DAY,
   type SoftPassQualityCheck,
   type ItineraryFailedRule,

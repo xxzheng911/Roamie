@@ -271,6 +271,9 @@ const NATURE_ALLOWED = new Set([
   "hiking_area",
   "beach",
   "marina",
+  "waterfall",
+  "scenic_spot",
+  "observation_deck",
 ]);
 
 const NATURE_FORBIDDEN = new Set([
@@ -321,7 +324,8 @@ const CONTRACTS: Record<string, CategoryContract> = {
     defaultTitle: "自然風景組合",
     allowedTypes: NATURE_ALLOWED,
     forbiddenTypes: NATURE_FORBIDDEN,
-    allowNameHints: /公園|步道|濕地|湖|山|森林|草原|綠地|動物園|beach|park|trail|garden|nature/i,
+    allowNameHints:
+      /公園|步道|濕地|湖|山|森林|草原|綠地|動物園|瀑布|觀景|beach|park|trail|garden|nature|waterfall|viewpoint|view\s*point|lookout|observation|zipline/i,
     forbidNameHints: /機場|車站|停車場|百貨|商場|airport|station|mall/i,
     allowedPrimaryTypes: NATURE_ALLOWED,
   },

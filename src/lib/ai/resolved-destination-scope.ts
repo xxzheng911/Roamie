@@ -118,6 +118,10 @@ const COUNTRY_CODE_BY_NAME: Record<string, string> = {
   香港: "HK",
   澳門: "MO",
   澳门: "MO",
+  摩納哥: "MC",
+  摩纳哥: "MC",
+  梵蒂岡: "VA",
+  梵蒂冈: "VA",
   希臘: "GR",
   西班牙: "ES",
   馬爾地夫: "MV",
@@ -129,7 +133,6 @@ const COUNTRY_CODE_BY_NAME: Record<string, string> = {
   埃及: "EG",
   捷克: "CZ",
   墨西哥: "MX",
-  新加坡: "SG",
 };
 
 const scopeByDestination = new Map<string, ResolvedDestinationScope>();
@@ -589,10 +592,11 @@ export function buildDestinationScopeContextPatch(scope: ResolvedDestinationScop
     scope.type === "region" ||
     scope.type === "island" ||
     scope.type === "state";
+  const isCityState = scope.type === "city_state";
   return {
     destination: scope.normalizedName,
     destinationType: scope.type ?? "city",
-    destinationCountry: scope.country,
+    destinationCountry: scope.country ?? (isCityState ? scope.normalizedName : undefined),
     destinationCountryCode: scope.countryCode,
     destinationCity: isRegionLike ? undefined : scope.normalizedName,
     destinationRegion: isRegionLike ? scope.normalizedName : undefined,

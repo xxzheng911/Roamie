@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import type { Json } from "@/integrations/supabase/types";
 import { fetchCreditAccount, setCachedCreditAccount } from "./account";
 import {
   CREDITS_COSTS,
@@ -15,6 +16,7 @@ import type {
   CreditsReserveResult,
   CreditsRollbackResult,
 } from "./types";
+export type { CreditsOperationHandle } from "./types";
 
 function costFor(featureType: CreditsFeatureType, amount?: number): number {
   return amount ?? CREDITS_COSTS[featureType];
@@ -61,12 +63,20 @@ async function rpcReserve(
   amount: number,
   metadata?: Record<string, unknown>,
 ): Promise<CreditsReserveResult> {
+  let jsonMetadata: Json = {};
+  if (metadata) {
+    try {
+      jsonMetadata = JSON.parse(JSON.stringify(metadata)) as Json;
+    } catch (error) {
+      console.warn("[CREDITS_METADATA] invalid metadata omitted", error);
+    }
+  }
   const { data, error } = await supabase.rpc("credits_reserve", {
     p_feature_type: featureType,
     p_request_id: requestId,
     p_idempotency_key: idempotencyKey,
     p_amount: amount,
-    p_metadata: metadata ?? {},
+    p_metadata: jsonMetadata,
   });
   if (error) {
     console.warn("[CREDITS_RESERVE]", error.message);

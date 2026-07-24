@@ -3,22 +3,6 @@ const DEFAULT_ANDROID_PACKAGE = "com.roamie.app";
 
 type MobilePlatform = "ios" | "android" | "other";
 
-declare global {
-  interface Window {
-    Capacitor?: {
-      getPlatform?: () => string;
-      Plugins?: {
-        App?: {
-          openUrl?: (options: { url: string }) => Promise<void>;
-        };
-      };
-    };
-    RoamieNative?: {
-      openAppSettings?: () => void | Promise<void>;
-    };
-  }
-}
-
 function detectMobilePlatform(): MobilePlatform {
   if (typeof navigator === "undefined") return "other";
   const ua = navigator.userAgent;

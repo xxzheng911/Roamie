@@ -113,9 +113,9 @@ const museumB = {
   types: ["tourist_attraction", "military_museum"],
   primaryType: "point_of_interest",
 };
-assert.equal(resolvePlaceCategoryFamily(museumA), "museum");
-assert.equal(resolvePlaceCategoryFamily(museumB), "museum");
-assert.equal(classifyDailyDiversityCategory(museumA), "museum");
+assert.equal(resolvePlaceCategoryFamily(museumA), "museum_family");
+assert.equal(resolvePlaceCategoryFamily(museumB), "museum_family");
+assert.equal(classifyDailyDiversityCategory(museumA), "museum_family");
 assert.equal(wouldViolateDailyDiversity([museumA], museumB).ok, false, "2nd museum blocked");
 const div = summarizeDailyCategoryDiversity(1, [museumA, museumB, { ...museumA, id: "m3", name: "Art Museum", types: ["art_museum"] }]);
 assert.equal(div.gatePass, false);

@@ -15,20 +15,6 @@ export function bootDiagnosticLog(message: string): void {
   console.info("[BOOT_DIAG]", message);
 }
 
-declare global {
-  interface Window {
-    __ROAMIE_BOOT__?: {
-      phase?: string;
-      t0?: number;
-      import?: string;
-      error?: string;
-      lastHref?: string;
-      lastPathname?: string;
-      blankAtMs?: number;
-    };
-  }
-}
-
 export function markBootPhase(phase: string, detail?: string): void {
   if (typeof window === "undefined") return;
   try {

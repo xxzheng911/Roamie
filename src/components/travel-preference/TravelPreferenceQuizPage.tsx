@@ -75,6 +75,10 @@ function describeMissingQuizFields(draft: QuizDraft): string[] {
   return missing;
 }
 
+function describeMissingStepField(step: QuizStepKey): string {
+  return STEP_LABELS[step];
+}
+
 function buildPreferencePayload(
   draft: QuizDraft,
 ): { prefs: TravelPreferences; personality: ReturnType<typeof derivePersonality> } {

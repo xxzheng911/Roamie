@@ -6,12 +6,13 @@
  * 2. Google Places zh-Hant localized name
  * 3. App verified Traditional Chinese place data
  * 4. Verifiable Traditional Chinese translation / transliteration (confidence gate)
- * 5. Brand exception (Latin stem + 繁中 type)
- * 6. English name (intermediate only — NOT a Combination Gate pass)
- * 7. Local original name (intermediate only)
+ * 5. Brand exception (Latin stem + 繁中 type) / canonical Chinese
+ * 6. Trustworthy English name (deliverable fallback — partial localization)
+ * 7. Readable original Latin name (deliverable); unreadable foreign script → reject
  *
- * UI / Combination Gate must read localizedDisplayName; English is not a complete
- * localization for zh-TW travelers unless brand_exception applies.
+ * Completeness (`isCompleteLocalizationForLocale`) measures display quality.
+ * Delivery (`isDeliverablePlaceNameForLocale`) allows readable English fallback.
+ * Localization must never delete a valid place solely for missing 繁中.
  */
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import type { Locale } from "@/lib/i18n/types";
@@ -79,6 +80,8 @@ export type ResolvedPlaceDisplayName = {
   resolvedLanguage?: string;
   translationPolicy?: string;
   isBrandName?: boolean;
+  /** Explicit exception bit persisted with the display-name source of truth. */
+  brandNameException?: boolean;
   translatedAt?: number;
 };
 
@@ -158,6 +161,25 @@ export function isReadablePlaceNameForLocale(name: string, locale: Locale): bool
   return HAS_LATIN_RE.test(t);
 }
 
+/** Google Plus Code-only labels are not place names for delivery. */
+const PLUS_CODE_ONLY_RE = /^[A-Z0-9]{2,8}\+[A-Z0-9]{2,4}\b/i;
+/** Names with no letters / CJK at all (symbols, punctuation noise). */
+const HAS_WORD_CHAR_RE = /[\p{L}\p{N}]/u;
+
+export function isPlusCodeOnlyName(name: string): boolean {
+  const t = (name ?? "").trim();
+  if (!t) return false;
+  return PLUS_CODE_ONLY_RE.test(t) && !HAS_CJK_RE.test(t) && t.length <= 16;
+}
+
+export function isUnreadablePlaceName(name: string): boolean {
+  const t = (name ?? "").trim();
+  if (!t) return true;
+  if (isPlusCodeOnlyName(t)) return true;
+  if (!HAS_WORD_CHAR_RE.test(t)) return true;
+  return false;
+}
+
 const INCOMPLETE_SOURCES = new Set<PlaceNameLocalizationSource>([
   "english",
   "english_fallback",
@@ -167,9 +189,11 @@ const INCOMPLETE_SOURCES = new Set<PlaceNameLocalizationSource>([
   "passthrough",
 ]);
 
+export type PlaceLocalizationStatus = "complete" | "partial" | "fallback";
+
 /**
- * Strict completeness for Combination Localization Gate.
- * For zh-TW: English-only delivery is incomplete unless brand_exception with CJK type.
+ * Display-quality completeness (metrics only).
+ * English-only is incomplete for zh-TW — but still deliverable via Repair Gate.
  */
 export function isCompleteLocalizationForLocale(
   resolved: Pick<
@@ -229,6 +253,64 @@ export function isCompleteLocalizationForLocale(
   }
 
   return { ok: true };
+}
+
+/**
+ * Delivery eligibility for Combination / chat UI.
+ * Readable English (or Latin) fallback is allowed; foreign-script-only is not.
+ */
+export function isDeliverablePlaceNameForLocale(
+  resolved: Pick<
+    ResolvedPlaceDisplayName,
+    "localizedDisplayName" | "localizationSource" | "languageCode" | "originalName" | "englishName"
+  >,
+  locale: Locale,
+): { ok: boolean; reason?: string; status: PlaceLocalizationStatus } {
+  const display = (resolved.localizedDisplayName ?? "").trim();
+  if (!display) return { ok: false, reason: "empty_display_name", status: "fallback" };
+  if (isPlusCodeOnlyName(display)) {
+    return { ok: false, reason: "plus_code_only", status: "fallback" };
+  }
+  if (isUnreadablePlaceName(display)) {
+    return { ok: false, reason: "unreadable_symbols", status: "fallback" };
+  }
+
+  const complete = isCompleteLocalizationForLocale(resolved, locale);
+  if (complete.ok) {
+    return { ok: true, status: "complete" };
+  }
+
+  // Foreign script on resolved display — try English name as repair.
+  if (hasForeignLocalScript(display, locale)) {
+    const english = (resolved.englishName ?? "").trim();
+    if (
+      english &&
+      !hasForeignLocalScript(english, locale) &&
+      isReadablePlaceNameForLocale(english, locale)
+    ) {
+      return { ok: true, reason: "repaired_to_english", status: "partial" };
+    }
+    return { ok: false, reason: "foreign_local_script_no_english", status: "fallback" };
+  }
+
+  if (isReadablePlaceNameForLocale(display, locale)) {
+    const status: PlaceLocalizationStatus = sourceIsEnglish(resolved.localizationSource)
+      ? "partial"
+      : "fallback";
+    return { ok: true, reason: complete.reason, status };
+  }
+
+  return { ok: false, reason: complete.reason ?? "unreadable_for_locale", status: "fallback" };
+}
+
+export function resolveLocalizationStatus(
+  resolved: Pick<
+    ResolvedPlaceDisplayName,
+    "localizedDisplayName" | "localizationSource" | "languageCode" | "originalName" | "englishName"
+  >,
+  locale: Locale,
+): PlaceLocalizationStatus {
+  return isDeliverablePlaceNameForLocale(resolved, locale).status;
 }
 
 function sourceIsEnglish(source: PlaceNameLocalizationSource): boolean {
@@ -370,6 +452,7 @@ export function resolvePlaceDisplayName(
       canonicalPlaceId: cached.canonicalPlaceId,
       requestedLocale: locale,
       resolvedLanguage: cached.resolvedLanguage ?? cached.languageCode,
+      brandNameException: cached.localizationSource === "brand_exception",
       translatedAt: cached.translatedAt,
     };
   }
@@ -378,6 +461,8 @@ export function resolvePlaceDisplayName(
     const withMeta: ResolvedPlaceDisplayName = {
       ...resolved,
       englishName: resolved.englishName ?? englishName,
+      brandNameException:
+        resolved.brandNameException ?? resolved.localizationSource === "brand_exception",
       requestedLocale: locale,
       resolvedLanguage: resolved.resolvedLanguage ?? resolved.languageCode,
       translatedAt: resolved.translatedAt ?? translatedAt,
@@ -587,14 +672,14 @@ export function resolvePlaceDisplayName(
       }
     }
 
-    // 6. English — intermediate only (Gate must reject for zh-TW)
+    // 6. English — deliverable partial fallback (Repair Gate keeps the place)
     if (
       englishName &&
       !HAS_KANA_RE.test(englishName) &&
       !HAS_HANGUL_RE.test(englishName) &&
       !hasForeignLocalScript(englishName, "zh-TW")
     ) {
-      return emitFallback("no_verified_zh_hant_name_english_intermediate", {
+      return emitFallback("no_verified_zh_hant_name_english_fallback", {
         originalName,
         englishName,
         localizedDisplayName: englishName,
@@ -715,52 +800,10 @@ export function displayNameForPlaceLike(
   locale: Locale = effectiveAppLocale(),
 ): string {
   const persistedLocalized = (item.localizedDisplayName ?? "").trim();
-  const rawName = pickFirstNonEmpty(
-    item.originalName,
-    item.placeName,
-    item.title,
-    item.name,
-  );
-
-  if (locale === "zh-TW" || localeToGoogleLanguageCode(locale) === "zh-TW") {
-    const candidate = persistedLocalized || rawName;
-    const needsResolve =
-      Boolean(candidate) &&
-      (!HAS_CJK_RE.test(candidate) ||
-        hasForeignLocalScript(candidate, locale) ||
-        hasLocalLatinDiacritics(candidate));
-    // Re-resolve Latin / local-diacritic / foreign-script names so verified translations apply.
-    if (needsResolve) {
-      return resolvePlaceDisplayName(
-        {
-          name: candidate,
-          originalName: rawName || candidate,
-          placeId: item.googlePlaceId ?? item.placeId,
-          canonicalPlaceId: item.googlePlaceId ?? item.placeId,
-          countryCode: item.countryCode,
-          types: item.types,
-          primaryType: item.primaryType,
-        },
-        locale,
-      ).localizedDisplayName;
-    }
-    if (persistedLocalized && HAS_CJK_RE.test(persistedLocalized)) return persistedLocalized;
-  } else if (persistedLocalized) {
-    return persistedLocalized;
-  }
-
-  return resolvePlaceDisplayName(
-    {
-      name: rawName,
-      originalName: rawName,
-      placeId: item.googlePlaceId ?? item.placeId,
-      canonicalPlaceId: item.googlePlaceId ?? item.placeId,
-      countryCode: item.countryCode,
-      types: item.types,
-      primaryType: item.primaryType,
-    },
-    locale,
-  ).localizedDisplayName;
+  void locale;
+  // Presentation is deliberately not a resolver/fallback layer. Missing data is
+  // a pipeline error and must be repaired before persistence/delivery.
+  return persistedLocalized;
 }
 
 /** Apply resolver onto a place-like object; returns display fields to persist. */

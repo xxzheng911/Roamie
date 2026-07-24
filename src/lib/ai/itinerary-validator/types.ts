@@ -18,6 +18,7 @@ export type ItineraryRuleCode =
   | "days_date_consistency"
   | "day_place_count"
   | "day_capacity_pace_lock"
+  | "daily_category_diversity"
   | "missing_days"
   | "place_duplicate"
   | "user_exclusions"
@@ -46,11 +47,24 @@ export const SOFT_REPAIRABLE_RULE_CODES: readonly ItineraryRuleCode[] = [
   "nightlife_timing",
 ];
 
-/** 真正不可修復、應阻擋交付的結構性錯誤 */
+/**
+ * 結構性硬錯誤。
+ * `missing_days` 仍阻擋最終交付／不得 Soft Pass，但 Auto Repair 必須先嘗試搬移景點補齊。
+ */
 export const HARD_BLOCK_RULE_CODES: readonly ItineraryRuleCode[] = [
   "missing_days",
+  "daily_category_diversity",
   "days_date_consistency",
   "persistence_mismatch",
+];
+
+/**
+ * 硬錯誤但允許進入 Auto Repair（修完仍失敗才擋交付）。
+ * 不得把這些規則改成 Soft Pass。
+ */
+export const REPAIR_FIRST_HARD_RULE_CODES: readonly ItineraryRuleCode[] = [
+  "missing_days",
+  "daily_category_diversity",
 ];
 
 /**

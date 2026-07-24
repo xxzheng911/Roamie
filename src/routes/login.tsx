@@ -33,6 +33,7 @@ import {
   navigateOnceAfterLogin,
 } from "@/lib/login-navigation";
 import { readStashedTripInviteToken } from "@/lib/trip/trip-collab";
+import { tripInvitePathFromToken } from "@/lib/trip/trip-invite-deep-link";
 import { detectPlatform } from "@/services/platform";
 import { loadOnboardingState } from "@/lib/onboarding-storage";
 import { isOnboardingCompletedSync } from "@/lib/onboarding-storage";

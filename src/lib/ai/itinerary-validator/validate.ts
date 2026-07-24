@@ -19,6 +19,7 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { isItineraryValidatorEnabled } from "@/lib/ai/itinerary-validator/feature-flag";
 import {
   HARD_BLOCK_RULE_CODES,
+  REPAIR_FIRST_HARD_RULE_CODES,
   ITINERARY_VALIDATOR_VERSION,
   SOFT_REPAIRABLE_RULE_CODES,
   type ItineraryFailedRule,
@@ -41,6 +42,8 @@ import { distanceMeters } from "@/lib/geo-distance";
 import { isLodgingPlace } from "@/lib/lodging-place-filter";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import type { PlaceResult } from "@/lib/place-result";
+import { summarizeDailyCategoryDiversity } from "@/lib/ai/daily-category-diversity";
+import { resolveNightlifeClassification } from "@/lib/ai/nightlife-classification";
 
 /** 本地結構型別 — 避免 import ai-day-plan-source 觸發循環依賴 */
 type DayPlanEntry = {
@@ -91,7 +94,6 @@ const BREAKFAST_RE = /早餐/;
 const LUNCH_RE = /午餐/;
 const DINNER_RE = /晚餐/;
 const MEAL_RE = /早餐|午餐|晚餐/;
-const IZAKAYA_RE = /居酒屋|izakaya/i;
 
 /** 完整旅遊日硬下限（單點日必須 fail） */
 const HARD_MIN_PLACES_FULL_DAY = 2;
@@ -297,7 +299,7 @@ function nameStemOverlap(a: string, b: string): boolean {
 }
 
 function evaluateNearbyCoverage(
-  plans: ComposedDayPlan[],
+  plans: readonly import("@/lib/ai/itinerary-validator/types").ItineraryComposedDayPlanLike[],
   extensions: string[],
 ): NearbyExtensionCoverage {
   const expected = [...new Set(extensions.map((e) => normalizeDestinationLabel(e)).filter(Boolean))];
@@ -487,6 +489,26 @@ function runRules(input: ItineraryValidatorInput): {
     }
   }
 
+  // ——— daily_category_diversity (hard; repair must move or replace) ———
+  for (const plan of plans) {
+    const diversity = summarizeDailyCategoryDiversity(
+      plan.day,
+      plan.entries.map((entry) => entry.place),
+      { style: input.style, userText: input.userText },
+    );
+    if (!diversity.gatePass) {
+      pushFail(
+        failedRules,
+        "daily_category_diversity",
+        diversity.violations.join("|"),
+        plan.day,
+        plan.entries.map((entry) => placeId(entry.place)).filter(Boolean),
+      );
+    } else {
+      logRule("daily_category_diversity", true, { day: plan.day });
+    }
+  }
+
   // ——— place_duplicate ———
   type Seen = { day: number; name: string; place: PlaceResult; key: string };
   const byPlaceId = new Map<string, Seen>();
@@ -671,12 +693,13 @@ function runRules(input: ItineraryValidatorInput): {
         }
       }
 
-      if (isBarBistroPlaceLocal(entry.place) || IZAKAYA_RE.test(entry.name)) {
+      const nightlife = resolveNightlifeClassification(entry.place);
+      if (nightlife.isNightlife && nightlife.confidence >= 0.9 && nightlife.nightlifeSubtype !== "night_market") {
         if (minutes < 17 * 60) {
           pushFail(
             failedRules,
             "nightlife_timing",
-            `bar_or_izakaya_too_early:${entry.name}@${entry.time}`,
+            `${nightlife.nightlifeSubtype}_too_early:${entry.name}@${entry.time}`,
             plan.day,
             ids,
           );
@@ -992,6 +1015,7 @@ function buildReplanReasons(failedRules: ItineraryFailedRule[]): string[] {
   if (codes.has("day_place_count") || codes.has("day_capacity_pace_lock")) {
     reasons.push("replan_for_day_capacity");
   }
+  if (codes.has("daily_category_diversity")) reasons.push("replan_daily_category_diversity");
   if (codes.has("place_duplicate")) reasons.push("replan_to_dedupe_places");
   if (codes.has("meal_slot_category") || codes.has("nightlife_timing")) {
     reasons.push("replan_meal_or_nightlife_slots");
@@ -1013,10 +1037,6 @@ function buildReplanReasons(failedRules: ItineraryFailedRule[]): string[] {
   if (codes.has("multi_day_balance")) reasons.push("replan_for_multi_day_balance");
   if (codes.has("persistence_mismatch")) reasons.push("replan_persistence_mismatch");
   return reasons;
-}
-
-function dayCountsFromPlans(plans: readonly ComposedDayPlan[]): number[] {
-  return [...plans].sort((a, b) => a.day - b.day).map((p) => p.entries.length);
 }
 
 /**
@@ -1162,6 +1182,9 @@ export function logItineraryDeliveryBlocked(
     validation?.warnings.map((w) => `${w.code}:${w.message}`).join("|") ?? "";
   const score = validation?.score != null ? String(validation.score) : "";
   const affectedDays = validation?.affectedDays?.join(",") ?? "";
+  const primary =
+    validation?.failedRules[0]?.code ??
+    (reason === "validator_failed" ? "validator_failed" : reason);
   logAiPipeline("[ITINERARY_DELIVERY_BLOCKED]", `reason=${reason}`);
   logAiPipeline(
     "[ITINERARY_DELIVERY_BLOCKED_DETAIL]",
@@ -1185,10 +1208,26 @@ export function logItineraryDeliveryBlocked(
     `reason=${reason}`,
     `failedRules=${validation?.failedRules.map((r) => r.code).join(",") ?? ""}`,
   );
+  logAiPipeline(
+    "[ITINERARY_FAILURE_CHAIN]",
+    JSON.stringify({
+      primary,
+      validator: reason === "validator_failed" || validation ? "validator_failed" : "",
+      persistence: reason === "payload_incomplete" ? "payload_incomplete" : "",
+      payloadPresent: validation != null,
+      dayCount: validation?.affectedDays.length ?? 0,
+      stopCount: 0,
+      failedRules: validation?.failedRules.map((rule) => rule.code) ?? [],
+      warnings: validation?.warnings.map((warning) => warning.code) ?? [],
+      affectedDays: validation?.affectedDays ?? [],
+    }),
+  );
 }
 
-export function dayCountsOfPlans(plans: readonly ComposedDayPlan[]): number[] {
-  return dayCountsFromPlans(plans);
+export function dayCountsOfPlans(
+  plans: readonly { day: number; entries: readonly unknown[] }[],
+): number[] {
+  return [...plans].sort((a, b) => a.day - b.day).map((plan) => plan.entries.length);
 }
 
 /**
@@ -1212,6 +1251,22 @@ export function hasHardBlockFailures(
   if (!result?.failedRules.length) return false;
   return result.failedRules.some((r) =>
     (HARD_BLOCK_RULE_CODES as readonly string[]).includes(r.code),
+  );
+}
+
+/**
+ * 是否含「不可先修」的硬阻擋（排除 missing_days 等 REPAIR_FIRST）。
+ * Auto Repair 迴圈用此判斷；最終交付仍看 hasHardBlockFailures / pass。
+ */
+export function hasUnrepairableHardBlockFailures(
+  result: ItineraryValidationResult | undefined | null,
+): boolean {
+  if (!result?.failedRules.length) return false;
+  const repairFirst = new Set<string>(REPAIR_FIRST_HARD_RULE_CODES);
+  return result.failedRules.some(
+    (r) =>
+      (HARD_BLOCK_RULE_CODES as readonly string[]).includes(r.code) &&
+      !repairFirst.has(r.code),
   );
 }
 

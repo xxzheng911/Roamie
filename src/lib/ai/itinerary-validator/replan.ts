@@ -46,13 +46,17 @@ import {
 import {
   dayCountsOfPlans,
   hasHardBlockFailures,
+  hasUnrepairableHardBlockFailures,
   validateItineraryPlan,
 } from "@/lib/ai/itinerary-validator/validate";
 import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
 import {
-  wouldViolateDailyDiversity,
-  resolveDailyDiversityLimits,
-} from "@/lib/ai/daily-category-diversity";
+  asComposedDayPlans,
+  ensureAllDaysCovered,
+  evaluateDayCoverageGate,
+  normalizeCompleteDayMap,
+  repairDailyDiversityByMove,
+} from "@/lib/ai/itinerary-day-coverage";
 import {
   buildItineraryQualitySummary,
   logItineraryQualitySummary,
@@ -70,6 +74,7 @@ import {
   buildSelectedPlaceLock,
   type SelectedPlaceLock,
 } from "@/lib/ai/required-anchor-runtime";
+import { resolveNightlifeClassification } from "@/lib/ai/nightlife-classification";
 
 export type ItineraryReplanParams = {
   plans: ComposedDayPlan[];
@@ -232,40 +237,59 @@ function repairRemoveLowValueAndLocalize(
   return current;
 }
 
-/** Enforce daily category diversity caps per day. */
+/** Enforce daily category diversity — move violators to other days (do not drop). */
 function repairDailyCategoryDiversity(
   plans: ComposedDayPlan[],
   days: number,
   style: TripStyleKey,
   lock: SelectedPlaceLock | null = null,
 ): ComposedDayPlan[] {
-  const limits = resolveDailyDiversityLimits({ style });
-  let dropped = 0;
-  const current = ensureAllDayPlansExist(plans, days).map((plan) => {
-    const kept: DayPlanEntry[] = [];
-    const keptPlaces: PlaceResult[] = [];
-    for (const entry of plan.entries) {
-      if (isLockedEntry(entry, lock)) {
-        keptPlaces.push(entry.place);
-        kept.push(entry);
-        continue;
-      }
-      const check = wouldViolateDailyDiversity(keptPlaces, entry.place, limits);
-      if (!check.ok) {
-        dropped += 1;
-        continue;
-      }
-      keptPlaces.push(entry.place);
-      kept.push(entry);
-    }
-    return { ...plan, entries: kept };
+  const moved = repairDailyDiversityByMove({
+    plans,
+    tripDays: days,
+    style,
+    lock,
+  });
+  // Coverage may have been disturbed by moves — re-cover empty days.
+  const covered = ensureAllDaysCovered({
+    plans: moved.plans,
+    tripDays: days,
+    lock,
+    source: "daily_diversity_repair",
   });
   logAiPipeline(
     "[ITINERARY_AUTO_REPAIR]",
     "step=daily_category_diversity",
-    `dropped=${dropped}`,
+    `moved=${moved.moved}`,
+    `dropped=0`,
   );
-  return current;
+  return asComposedDayPlans(covered.plans);
+}
+
+/** Peel from heaviest days into empty days until minimum coverage. */
+function repairEmptyDays(
+  plans: ComposedDayPlan[],
+  days: number,
+  partialDays: readonly number[] | undefined,
+  lock: SelectedPlaceLock | null,
+): ComposedDayPlan[] {
+  const before = dayCountsOfPlans(plans);
+  const covered = ensureAllDaysCovered({
+    plans,
+    tripDays: days,
+    partialDays,
+    lock,
+    source: "auto_repair_empty_days",
+  });
+  const after = dayCountsOfPlans(asComposedDayPlans(covered.plans));
+  logAiPipeline(
+    "[ITINERARY_AUTO_REPAIR]",
+    "step=repair_empty_days",
+    `before=${before.join(",")}`,
+    `after=${after.join(",")}`,
+    `remainingEmpty=${covered.emptyDaysRemaining.join(",") || "(none)"}`,
+  );
+  return asComposedDayPlans(covered.plans);
 }
 
 /**
@@ -457,6 +481,57 @@ function repairMoveEveningToDaytime(plans: ComposedDayPlan[], days: number): Com
   return current;
 }
 
+/** Move only high-confidence, type-backed nightlife to an evening slot. */
+export function repairNightlifeTiming(
+  plans: ComposedDayPlan[],
+  days: number,
+): ComposedDayPlan[] {
+  return ensureAllDayPlansExist(plans, days).map((plan) => {
+    const used = new Set(plan.entries.map((entry) => parseMinutes(entry.time)));
+    const entries = plan.entries.map((entry) => {
+      const classification = resolveNightlifeClassification(entry.place);
+      if (!classification.isNightlife || classification.confidence < 0.9) return entry;
+      const earliest = classification.nightlifeSubtype === "night_market" ? 17 * 60 + 30 : 18 * 60;
+      const from = parseMinutes(entry.time);
+      if (from >= earliest) return entry;
+      let target = earliest;
+      while (used.has(target) && target <= 21 * 60 + 30) target += 30;
+      if (target > 21 * 60 + 30) {
+        logAiPipeline(
+          "[ITINERARY_AUTO_REPAIR]",
+          "rule=nightlife_timing",
+          `placeId=${entry.place.id}`,
+          `placeName=${entry.place.localizedDisplayName ?? entry.name}`,
+          `fromDay=${plan.day}`,
+          `fromTime=${entry.time}`,
+          `toDay=${plan.day}`,
+          "toTime=",
+          "action=replan_required",
+          "reason=no_evening_capacity",
+        );
+        return entry;
+      }
+      used.delete(from);
+      used.add(target);
+      const toTime = formatMinutes(target);
+      logAiPipeline(
+        "[ITINERARY_AUTO_REPAIR]",
+        "rule=nightlife_timing",
+        `placeId=${entry.place.id}`,
+        `placeName=${entry.place.localizedDisplayName ?? entry.name}`,
+        `fromDay=${plan.day}`,
+        `fromTime=${entry.time}`,
+        `toDay=${plan.day}`,
+        `toTime=${toTime}`,
+        "action=moved",
+        `reason=${classification.reason}`,
+      );
+      return { ...entry, time: toTime, label: entry.label || "夜間" };
+    });
+    return { ...plan, entries: dedupeEntryTimes(entries) };
+  });
+}
+
 function similarType(a: PlaceResult, b: PlaceResult): boolean {
   const ta = primaryTypeOf(a);
   const tb = primaryTypeOf(b);
@@ -598,19 +673,31 @@ function applyAutoRepairPass(
   nearbyExtensions: string[] | undefined,
   attempt: number,
   lock: SelectedPlaceLock | null = null,
+  partialDays?: readonly number[],
+  failedDays?: readonly number[],
 ): ComposedDayPlan[] {
   const reasonSet = new Set(reasons);
-  let current = ensureAllDayPlansExist(plans, days);
+  let current = normalizeCompleteDayMap(
+    ensureAllDayPlansExist(plans, days),
+    days,
+  ) as ComposedDayPlan[];
   const mergedPool = dedupeByCanonicalLandmark([
     ...flattenComposedDayPlanPlaces(current),
     ...pool,
   ]).places;
+  const previousDayCounts = dayCountsOfPlans(current);
+  const needsCoverage =
+    reasonSet.has("replan_for_full_day_coverage") ||
+    previousDayCounts.some((c) => c === 0) ||
+    (failedDays?.length ?? 0) > 0;
 
   logAiPipeline(
     "[ITINERARY_AUTO_REPAIR_START]",
     `attempt=${attempt}`,
     `reasons=${reasons.join("|") || "(soft)"}`,
     `poolSize=${mergedPool.length}`,
+    `previousDayCounts=${previousDayCounts.join(",")}`,
+    `failedDays=${(failedDays ?? []).join(",") || "(none)"}`,
   );
 
   // Always-safe soft repairs for timeline / hours / balance (and any soft pass).
@@ -624,13 +711,20 @@ function applyAutoRepairPass(
   const softBalance =
     reasonSet.has("replan_for_multi_day_balance") ||
     reasonSet.has("replan_for_day_capacity") ||
-    reasonSet.has("replan_for_full_day_coverage");
+    reasonSet.has("replan_for_full_day_coverage") ||
+    needsCoverage;
+
+  // Step 0 — empty-day coverage BEFORE reorder/assembly (assembly used to re-empty Day N).
+  if (needsCoverage || attempt === 1) {
+    current = repairEmptyDays(current, days, partialDays, lock);
+  }
 
   // Always strip low-value facilities + unify display names before other repairs.
   // Selected Place Lock: quality / diversity / replacement must not drop locked anchors.
   current = repairRemoveLowValueAndLocalize(current, days, lock);
   current = repairDailyCategoryDiversity(current, days, style, lock);
   current = repairNonNavigableStops(current, mergedPool, days, lock);
+  current = repairNightlifeTiming(current, days);
 
   if (
     reasonSet.has("replan_to_dedupe_places") ||
@@ -645,15 +739,18 @@ function applyAutoRepairPass(
     });
   }
 
-  // Step 1 — reorder same day
+  // Step 1 — reorder same day (assembly now preserves day coverage)
   if (softTimeline || softHours || attempt === 1) {
     current = repairReorderSameDay(current, mergedPool, days, style, nearbyExtensions);
+    current = repairEmptyDays(current, days, partialDays, lock);
   }
 
   // Long / cross-area legs: move stops across days (do not mask with transport mode).
   if (softTimeline || attempt <= 2) {
     current = repairLongRouteLegs(current, days);
+    current = repairEmptyDays(current, days, partialDays, lock);
     current = repairReorderSameDay(current, mergedPool, days, style, nearbyExtensions);
+    current = repairEmptyDays(current, days, partialDays, lock);
   }
 
   // Step 2 — evening → daytime
@@ -675,8 +772,8 @@ function applyAutoRepairPass(
     );
   }
 
-  // Step 4 — redistribute across days
-  if (softBalance || attempt >= 2) {
+  // Step 4 — redistribute across days (force when coverage failed)
+  if (softBalance || attempt >= 2 || needsCoverage) {
     current = repairRedistributeAcrossDays(
       current,
       mergedPool,
@@ -684,8 +781,9 @@ function applyAutoRepairPass(
       style,
       plannedDate,
       nearbyExtensions,
-      softBalance || attempt >= 3,
+      softBalance || attempt >= 3 || needsCoverage,
     );
+    current = repairEmptyDays(current, days, partialDays, lock);
   }
 
   if (reasonSet.has("replan_for_nearby_extension_coverage")) {
@@ -698,16 +796,23 @@ function applyAutoRepairPass(
         nearbyExtensions,
       });
       current = ensureAllDayPlansExist(assembled.plans as ComposedDayPlan[], days);
+      current = repairEmptyDays(current, days, partialDays, lock);
     } catch {
       /* keep */
     }
   }
 
-  // Final pass: always dedupe times after repairs
-  current = ensureAllDayPlansExist(current, days).map((plan) => ({
-    ...plan,
-    entries: dedupeEntryTimes(plan.entries),
-  }));
+  // Final: diversity move + coverage + time dedupe
+  current = repairDailyCategoryDiversity(current, days, style, lock);
+  current = repairEmptyDays(current, days, partialDays, lock);
+  current = repairNightlifeTiming(current, days);
+  current = normalizeCompleteDayMap(
+    ensureAllDayPlansExist(current, days).map((plan) => ({
+      ...plan,
+      entries: dedupeEntryTimes(plan.entries),
+    })),
+    days,
+  ) as ComposedDayPlan[];
 
   logAiPipeline(
     "[ITINERARY_AUTO_REPAIR_DONE]",
@@ -864,17 +969,48 @@ export function replanUntilItineraryValid(
 ): ItineraryReplanOutcome {
   const originalPlans = params.plans;
   const originalStopCount = originalPlans.reduce((n, p) => n + p.entries.length, 0);
-  let plans = params.plans;
+  let plans = normalizeCompleteDayMap(
+    ensureAllDayPlansExist(params.plans, params.days),
+    params.days,
+  ) as ComposedDayPlan[];
   let validation = initial;
   let attempts = 0;
 
+  // missing_days is hard for delivery but MUST enter Auto Repair first.
   while (
     !validation.pass &&
     validation.path === "validator" &&
-    !hasHardBlockFailures(validation) &&
+    !hasUnrepairableHardBlockFailures(validation) &&
     attempts < MAX_ITINERARY_VALIDATOR_REPLAN_ATTEMPTS
   ) {
     attempts += 1;
+    const previousDayCounts = dayCountsOfPlans(plans);
+    const failedDays = [
+      ...new Set([
+        ...validation.affectedDays,
+        ...validation.failedRules
+          .filter((r) => r.code === "missing_days" && r.day != null)
+          .map((r) => r.day!),
+      ]),
+    ];
+    const lockedCount =
+      (params.validatorInput.lockedPlaceIds?.length ?? 0) +
+      (params.validatorInput.lockedPlaceNames?.length ?? 0);
+    const redistributionRequired =
+      validation.replanReasons.includes("replan_for_full_day_coverage") ||
+      previousDayCounts.some((c) => c === 0);
+
+    logAiPipeline(
+      "[ITINERARY_REPLAN_INPUT]",
+      `attempt=${attempts}`,
+      `tripDays=${params.days}`,
+      `previousDayCounts=${previousDayCounts.join(",")}`,
+      `failedRules=${validation.failedRules.map((r) => r.code).join(",")}`,
+      `failedDays=${failedDays.join(",") || "(none)"}`,
+      `candidateCount=${params.pool.length}`,
+      `lockedPlaceCount=${lockedCount}`,
+      `redistributionRequired=${redistributionRequired}`,
+    );
     logAiPipeline(
       "[ITINERARY_REPLAN_START]",
       `attempt=${attempts}`,
@@ -886,6 +1022,7 @@ export function replanUntilItineraryValid(
 
     const before = plans;
     const selectedLock = lockFromValidatorInput(params.validatorInput);
+    // Do not reuse a failed day map: coverage repair rebuilds from stops across days.
     plans = applyAutoRepairPass(
       plans,
       params.pool,
@@ -894,22 +1031,54 @@ export function replanUntilItineraryValid(
       params.plannedDate,
       validation.replanReasons.length
         ? validation.replanReasons
-        : ["replan_for_route_timeline", "replan_for_open_hours", "replan_for_multi_day_balance"],
+        : [
+            "replan_for_full_day_coverage",
+            "replan_for_route_timeline",
+            "replan_for_open_hours",
+            "replan_for_multi_day_balance",
+          ],
       params.nearbyExtensions,
       attempts,
       selectedLock,
+      params.validatorInput.partialDays,
+      failedDays,
     );
+
+    const coverageGate = evaluateDayCoverageGate({
+      plans,
+      tripDays: params.days,
+      partialDays: params.validatorInput.partialDays,
+    });
+    if (!coverageGate.allDaysCovered) {
+      plans = repairEmptyDays(
+        plans,
+        params.days,
+        params.validatorInput.partialDays,
+        selectedLock,
+      );
+    }
 
     validation = validateItineraryPlan({
       ...params.validatorInput,
       plans,
     });
 
+    const newDayCounts = dayCountsOfPlans(plans);
+    const remainingEmptyDays = newDayCounts
+      .map((c, i) => (c === 0 ? i + 1 : 0))
+      .filter((d) => d > 0);
+    logAiPipeline(
+      "[ITINERARY_REPLAN_OUTPUT]",
+      `newDayCounts=${newDayCounts.join(",")}`,
+      `movedPlaces=${previousDayCounts.join(">")}->${newDayCounts.join(",")}`,
+      `remainingEmptyDays=${remainingEmptyDays.join(",") || "(none)"}`,
+      `validatorPass=${validation.pass}`,
+    );
     logAiPipeline(
       "[ITINERARY_REPLAN_RESULT]",
       `attempt=${attempts}`,
       `pass=${validation.pass}`,
-      `dayCounts=${dayCountsOfPlans(plans).join(",")}`,
+      `dayCounts=${newDayCounts.join(",")}`,
       `stopCount=${plans.reduce((n, p) => n + p.entries.length, 0)}`,
       `failedRules=${validation.failedRules.map((r) => r.code).join(",")}`,
     );
@@ -924,6 +1093,52 @@ export function replanUntilItineraryValid(
         `after=${stopCount}`,
       );
       plans = before;
+    }
+
+    // Identical empty day map after a coverage repair → force even redistribute once.
+    if (
+      !validation.pass &&
+      redistributionRequired &&
+      newDayCounts.join(",") === previousDayCounts.join(",") &&
+      previousDayCounts.some((c) => c === 0)
+    ) {
+      const mergedPool = dedupeByCanonicalLandmark([
+        ...flattenComposedDayPlanPlaces(plans),
+        ...params.pool,
+      ]).places;
+      if (mergedPool.length >= params.days) {
+        logAiPipeline(
+          "[ITINERARY_REPLAN_FORCE_REDISTRIBUTE]",
+          `attempt=${attempts}`,
+          `previousDayCounts=${previousDayCounts.join(",")}`,
+        );
+        plans = redistributePlacesEvenly({
+          places: mergedPool,
+          days: params.days,
+          style: params.style,
+          plannedDate: params.plannedDate,
+        });
+        plans = repairEmptyDays(
+          plans,
+          params.days,
+          params.validatorInput.partialDays,
+          selectedLock,
+        );
+        validation = validateItineraryPlan({
+          ...params.validatorInput,
+          plans,
+        });
+        logAiPipeline(
+          "[ITINERARY_REPLAN_OUTPUT]",
+          `newDayCounts=${dayCountsOfPlans(plans).join(",")}`,
+          `movedPlaces=force_redistribute`,
+          `remainingEmptyDays=${dayCountsOfPlans(plans)
+            .map((c, i) => (c === 0 ? i + 1 : 0))
+            .filter((d) => d > 0)
+            .join(",") || "(none)"}`,
+          `validatorPass=${validation.pass}`,
+        );
+      }
     }
   }
 
@@ -979,6 +1194,18 @@ export function replanUntilItineraryValid(
     candidatePool: params.pool,
   });
   logItineraryQualitySummary(summary);
+
+  const hardFailures = validation.failedRules.filter((rule) =>
+    hasHardBlockFailures({ ...validation, failedRules: [rule] }),
+  );
+  logAiPipeline(
+    "[ITINERARY_FINAL_GATE]",
+    `hardFailures=${hardFailures.map((rule) => rule.code).join(",") || "(none)"}`,
+    `warnings=${validation.warnings.map((warning) => warning.code).join(",") || "(none)"}`,
+    `repairAttempts=${attempts}`,
+    `deliveryAllowed=${validation.pass || hardFailures.length === 0}`,
+    `reason=${validation.pass ? "validated" : hardFailures.length ? "hard_failure" : "warnings_only"}`,
+  );
 
   return { plans, validation, attempts };
 }

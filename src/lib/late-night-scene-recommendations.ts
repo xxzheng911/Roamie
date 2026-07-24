@@ -347,11 +347,14 @@ export function lateNightSceneRecommendations(opts: {
   const exclude = new Set((opts.excludeNames ?? []).map((n) => n.trim()));
 
   const candidates = SCENE_SEEDS.filter((s) => seedMatchesRegion(s, hints))
-    .map((seed) => ({
-      seed,
-      dist: distanceMeters(origin, { lat: seed.lat, lng: seed.lng }),
-      score: lateNightCategoryRankScore(seed.category, opts.mood) + Math.min(dist / 8000, 12),
-    }))
+    .map((seed) => {
+      const dist = distanceMeters(origin, { lat: seed.lat, lng: seed.lng });
+      return {
+        seed,
+        dist,
+        score: lateNightCategoryRankScore(seed.category, opts.mood) + Math.min(dist / 8000, 12),
+      };
+    })
     .filter((x) => !exclude.has(x.seed.name))
     .sort((a, b) => a.score - b.score || a.dist - b.dist);
 

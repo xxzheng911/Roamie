@@ -4,6 +4,7 @@ import {
   LOCAL_DEV_AUTH_CALLBACK,
   OAUTH_DEEP_LINK_REDIRECT,
   readOptionalWebAuthCallback,
+  suggestedSupabaseRedirectUrls,
 } from "@/constants/auth-redirect";
 import { readSupabaseProjectUrl } from "@/lib/supabase-project-url";
 import { detectPlatform } from "@/services/platform";

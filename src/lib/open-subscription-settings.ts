@@ -10,19 +10,6 @@ function detectMobilePlatform(): MobilePlatform {
   return "other";
 }
 
-declare global {
-  interface Window {
-    Capacitor?: {
-      isNativePlatform?: () => boolean;
-      Plugins?: {
-        App?: {
-          openUrl?: (options: { url: string }) => Promise<void>;
-        };
-      };
-    };
-  }
-}
-
 function navigateTo(url: string): boolean {
   try {
     window.location.href = url;

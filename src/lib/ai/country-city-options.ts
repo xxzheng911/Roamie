@@ -278,7 +278,9 @@ function toOptionType(raw: string | undefined): CountryCityOptionType {
 }
 
 function entityTypeToOptionType(type: DestinationEntityType): CountryCityOptionType | null {
-  if (type === "city" || type === "region" || type === "island") return type;
+  if (type === "city" || type === "city_state" || type === "region" || type === "island") {
+    return type === "city_state" ? "city" : type;
+  }
   if (type === "state" || type === "province") return "region";
   if (type === "resort_area") return "region";
   return null;

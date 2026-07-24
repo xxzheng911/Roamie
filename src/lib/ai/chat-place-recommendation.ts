@@ -1,5 +1,6 @@
 import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   notePlacesSearchRateLimit,

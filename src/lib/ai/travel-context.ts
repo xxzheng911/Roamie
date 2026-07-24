@@ -1,4 +1,5 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
@@ -69,12 +70,18 @@ export type CanonicalTravelContext = {
   destination?: string;
   /** 國家層級目的地（城市選定後保留） */
   destinationCountry?: string;
-  /** Entity resolver type: country / city / region / … */
+  /** ISO country code when resolved (SG / JP / …) */
+  destinationCountryCode?: string;
+  /** Entity resolver type: country / city / city_state / region / … */
   destinationType?: import("@/lib/ai/destination-entity").DestinationEntityType;
   /** City when destination is city-level (or selected under a country) */
   destinationCity?: string;
   /** Region / island / state when applicable */
   destinationRegion?: string;
+  /** Locked destination scope id (generation-safe) */
+  destinationScopeId?: string;
+  /** Locked / resolved destination coordinates */
+  destinationCoordinates?: { lat: number; lng: number };
   currentLocation?: string;
   travelMonth?: string;
   /** Absolute year when user said 明年 / 今年 / YYYY */
@@ -454,6 +461,16 @@ function mergeDestinationFields(
 
   if (isKnownCountryLabel(label) && !isKnownTouristCityLabel(label)) {
     const scope = resolveDestinationScopeFields(label);
+    // City-states share country/city label — never treat as bare country refinement.
+    if (scope.destinationType === "city_state") {
+      return {
+        destination: scope.destinationName,
+        destinationCountry: scope.destinationCountry,
+        destinationType: "city_state",
+        destinationCity: scope.destinationCity ?? scope.destinationName,
+        destinationRegion: undefined,
+      };
+    }
     return {
       destination: scope.destinationName,
       destinationCountry: scope.destinationCountry,

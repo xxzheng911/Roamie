@@ -463,6 +463,8 @@ const DESTINATION_APPROX_CENTER: Record<string, { lat: number; lng: number }> = 
   清邁: { lat: 18.7883, lng: 98.9853 },
   香港: { lat: 22.3193, lng: 114.1694 },
   澳門: { lat: 22.1987, lng: 113.5439 },
+  摩納哥: { lat: 43.7384, lng: 7.4246 },
+  梵蒂岡: { lat: 41.9029, lng: 12.4534 },
   釜山: { lat: 35.1796, lng: 129.0756 },
   濟州: { lat: 33.4996, lng: 126.5312 },
   沖繩: { lat: 26.2124, lng: 127.6809 },

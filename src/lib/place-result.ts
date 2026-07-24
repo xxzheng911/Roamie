@@ -47,6 +47,8 @@ export type PlaceResult = {
   localizedDisplayName?: string | null;
   languageCode?: string | null;
   localizationSource?: string | null;
+  translationConfidence?: number | null;
+  brandNameException?: boolean | null;
   /** Prefer for Directions when set (entrance / roadside). */
   navigationLatitude?: number | null;
   navigationLongitude?: number | null;

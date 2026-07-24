@@ -42,6 +42,10 @@ import {
   type DayTimeBudget,
 } from "@/lib/ai/time-budget-planner";
 import { summarizeDailyCategoryDiversity } from "@/lib/ai/daily-category-diversity";
+import {
+  ensureAllDaysCovered,
+  normalizeCompleteDayMap,
+} from "@/lib/ai/itinerary-day-coverage";
 
 function withLocalizedName(place: PlaceResult): PlaceResult {
   const resolved = resolvePlaceDisplayName(
@@ -770,14 +774,16 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
     }
   }
 
-  // ── 4) 仍不足時：從過滿天挪點（保底，避免單點日）──
+  // ── 4) 仍不足時：從過滿天挪點（空日可用 coverage floor=2，勿卡在 pace min=3）──
   for (const plan of plans) {
     const dayMin =
       extensions.length && plan.day === nearbyDay ? Math.max(nearbyDayMin, 2) : minPerDay;
-    if (plan.entries.length >= dayMin) continue;
-    while (plan.entries.length < dayMin) {
+    const need = plan.entries.length === 0 ? 2 : dayMin;
+    if (plan.entries.length >= need) continue;
+    while (plan.entries.length < need) {
+      const donorFloor = plan.entries.length === 0 ? 2 : dayMin;
       const donor = plans
-        .filter((p) => p.day !== plan.day && p.entries.length > dayMin)
+        .filter((p) => p.day !== plan.day && p.entries.length > donorFloor)
         .sort((a, b) => b.entries.length - a.entries.length)[0];
       if (!donor) break;
       const moved = donor.entries.pop();
@@ -797,13 +803,41 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
     }
   }
 
-  // ── 5) 先補齊容量，再吸收單點（順序很重要：先 absorb 會讓空日搶不到候選）──
+  // ── 5) 先補齊容量；空日優先，禁止把可覆蓋天數的 stop 吸回前幾天 ──
   let candidateInsufficient = false;
+  const totalStops = () => plans.reduce((n, p) => n + p.entries.length, 0);
+  const coverageMinPerDay = 2;
 
+  /**
+   * Absorb singleton only when totals cannot cover every day with ≥1 stop.
+   * With enough stops (e.g. 16 for 6 days), keep sparse days and peel instead.
+   */
   const absorbSingleton = (plan: AssemblyDayPlan): void => {
     const dayMin =
       extensions.length && plan.day === nearbyDay ? Math.max(nearbyDayMin, 2) : minPerDay;
     if (!(plan.entries.length === 1 && plan.entries.length < dayMin)) return;
+    if (totalStops() >= safeDays * coverageMinPerDay) {
+      logAiPipeline(
+        "[AI_PLANNER_KEEP_SPARSE_DAY]",
+        `day=${plan.day}`,
+        `placeCount=1`,
+        "action=keep_for_day_coverage",
+        `totalStops=${totalStops()}`,
+        `need=${safeDays * coverageMinPerDay}`,
+      );
+      return;
+    }
+    if (totalStops() >= safeDays) {
+      // Can cover every day with ≥1 — never create an empty day by absorbing.
+      logAiPipeline(
+        "[AI_PLANNER_KEEP_SPARSE_DAY]",
+        `day=${plan.day}`,
+        `placeCount=1`,
+        "action=keep_singleton_for_coverage",
+        `totalStops=${totalStops()}`,
+      );
+      return;
+    }
     logAiPipeline(
       "[AI_PLANNER_CANDIDATE_INSUFFICIENT]",
       `day=${plan.day}`,
@@ -811,7 +845,6 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
       "action=block_singleton_day",
     );
     const lone = plan.entries.splice(0, plan.entries.length);
-    // Prefer lightest non-empty day (never dump into Day 1 by default).
     const target =
       [...plans]
         .filter((p) => p.day !== plan.day && p.entries.length >= 1)
@@ -828,18 +861,23 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
   for (const plan of fillOrder) {
     const dayMin =
       extensions.length && plan.day === nearbyDay ? Math.max(nearbyDayMin, 2) : minPerDay;
-    if (plan.entries.length >= dayMin) continue;
+    // Coverage floor: prefer ≥2 everywhere when totals allow, even if pace min is 3.
+    const fillTarget =
+      totalStops() + (params.pool.filter(isUnused).length) >= safeDays * coverageMinPerDay
+        ? Math.min(dayMin, Math.max(coverageMinPerDay, plan.entries.length || coverageMinPerDay))
+        : dayMin;
+    if (plan.entries.length >= fillTarget) continue;
     capacityFallbackTriggered = true;
     diagnosticsMap.get(plan.day)!.capacityFallbackTriggered = true;
     logAiPipeline(
       "[AI_PLANNER_MIN_CAPACITY_FALLBACK]",
       `day=${plan.day}`,
       `have=${plan.entries.length}`,
-      `need=${dayMin}`,
+      `need=${fillTarget}`,
       "phase=5b",
     );
     for (const place of params.pool) {
-      if (plan.entries.length >= dayMin) break;
+      if (plan.entries.length >= fillTarget) break;
       if (!isUnused(place)) continue;
       const id = placeId(place) || place.name;
       if (!id) continue;
@@ -866,15 +904,18 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
       for (const key of identityKeys(place)) usedIds.add(key);
       usedIds.add(id);
     }
-    while (plan.entries.length < dayMin) {
+    while (plan.entries.length < fillTarget) {
       const donor = plans
         .filter((p) => {
           if (p.day === plan.day) return false;
-          const donorMin =
-            extensions.length && p.day === nearbyDay
-              ? Math.max(nearbyDayMin, 2)
-              : dayMin;
-          return p.entries.length > donorMin;
+          // Allow peel down to coverage floor (2) so empty days can be filled.
+          const donorFloor =
+            plan.entries.length === 0
+              ? coverageMinPerDay
+              : extensions.length && p.day === nearbyDay
+                ? Math.max(nearbyDayMin, 2)
+                : Math.min(dayMin, coverageMinPerDay);
+          return p.entries.length > donorFloor;
         })
         .sort((a, b) => b.entries.length - a.entries.length)[0];
       if (!donor) break;
@@ -892,14 +933,57 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
     }
   }
 
-  // 補完仍單點 → 合併到鄰近日（不得丟棄）
+  const nearbyGuard =
+    extensions.length > 0
+      ? {
+          isNearbyPlace: (p: PlaceResult) =>
+            Boolean(placeMatchesNearbyExtension(p, extensions)),
+          dedicatedDays: dedicatedNearbyDays,
+        }
+      : null;
+
+  // Hard coverage: peel heaviest → empty until every day has a viable plan.
+  // Nearby-extension places must stay on dedicated days (do not dilute Yokohama day).
+  {
+    const covered = ensureAllDaysCovered({
+      plans,
+      tripDays: safeDays,
+      maxPerDay,
+      nearbyGuard,
+      source: "planner_assembly",
+    });
+    plans = normalizeCompleteDayMap(covered.plans, safeDays) as AssemblyDayPlan[];
+    if (covered.changed) capacityFallbackTriggered = true;
+  }
+
+  // Only absorb singletons when totals cannot cover the trip.
   for (const plan of plans) absorbSingleton(plan);
+
+  // Re-run coverage after absorb (absorb may have created empties on tiny pools).
+  {
+    const covered = ensureAllDaysCovered({
+      plans,
+      tripDays: safeDays,
+      maxPerDay,
+      nearbyGuard,
+      source: "planner_assembly_post_absorb",
+    });
+    plans = normalizeCompleteDayMap(covered.plans, safeDays) as AssemblyDayPlan[];
+  }
+
   for (const plan of plans) {
-    const dayMin =
-      extensions.length && plan.day === nearbyDay ? Math.max(nearbyDayMin, 2) : minPerDay;
-    if (plan.entries.length === 0 || plan.entries.length < Math.min(2, dayMin)) {
+    if (plan.entries.length === 0) {
       candidateInsufficient = true;
     }
+  }
+  // True insufficiency: cannot place ≥2 stops on every day (or ≥1 when totals force it).
+  if (totalStops() < safeDays) {
+    candidateInsufficient = true;
+  } else if (
+    totalStops() < safeDays * coverageMinPerDay &&
+    plans.some((p) => p.entries.length === 0)
+  ) {
+    candidateInsufficient = true;
   }
 
   // ── 5c) Time-budget rebalance: move overflow from heavy → light days ──
@@ -997,15 +1081,16 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
     return { ...plan, entries: routed.entries };
   });
 
-  // 總量不足
+  // 總量不足：以「每天至少 2 個」為覆蓋門檻（非 pace min=3/7）
   const total = plans.reduce((n, p) => n + p.entries.length, 0);
-  if (total < safeDays * Math.min(minPerDay, 2)) {
+  if (total < safeDays * coverageMinPerDay || plans.some((p) => p.entries.length === 0)) {
     candidateInsufficient = true;
     logAiPipeline(
       "[AI_PLANNER_CANDIDATE_INSUFFICIENT]",
       `total=${total}`,
-      `need=${safeDays * minPerDay}`,
+      `need=${safeDays * coverageMinPerDay}`,
       `pool=${params.pool.length}`,
+      `emptyDays=${plans.filter((p) => p.entries.length === 0).map((p) => p.day).join(",")}`,
     );
   }
 

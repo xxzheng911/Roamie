@@ -45,13 +45,13 @@ export function filterAndSelectExploreMapPlaces<T extends PlaceResult>(
   const categoryId =
     options.categoryId ??
     (typeof options.cat === "string" ? options.cat : options.cat.id);
+  const cityMode = options.cityMode === true;
   const minResults =
     options.minResults ??
     (cityMode ? EXPLORE_CITY_CATEGORY_MIN_DISPLAY : EXPLORE_MAP_MIN_DISPLAY);
   const maxResults = options.maxResults ?? (options.cityMode ? 20 : EXPLORE_MAP_MAX_DISPLAY);
   const maxDistanceM = options.maxDistanceM;
   const locale = options.locale ?? "zh-TW";
-  const cityMode = options.cityMode === true;
   const hardExcludeOpts = cityMode ? { cityMode: true } : undefined;
   const scoreOpts = cityMode ? { cityMode: true } : undefined;
   const tierOpts = cityMode ? { cityMode: true } : undefined;

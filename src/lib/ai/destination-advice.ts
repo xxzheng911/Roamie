@@ -691,11 +691,16 @@ function resolveDestinationCombinationsAdvice(
     destination,
     destinationType: ctx.destinationType,
     destinationCountry: ctx.destinationCountry,
+    destinationCity: ctx.destinationCity,
+    destinationCountryCode: ctx.destinationCountryCode,
+    destinationCoordinates: ctx.destinationCoordinates,
+    destinationScopeId: ctx.destinationScopeId,
     days,
     tripDays: session.tripDays,
     startDate: ctx.startDate,
     endDate: ctx.endDate,
     pendingQuestion: session.pendingQuestion,
+    session,
   });
   logCombinationDiscoveryGuard(guard, destination);
   if (!guard.allowed || !destination || days == null) {
@@ -768,14 +773,28 @@ function resolveDestinationCombinationsAdvice(
     tentativeDates: Boolean(hasExactDate && startDate && endDate),
   });
   if (!reply) {
+    const failure = getLastCombinationDiscoveryFailure();
     logAiPipeline(
       "[LEGACY_TRIP_REPLY_BLOCKED]",
       "template=trip_summary_or_direct_choice",
       `destination=${destination}`,
     );
+    logAiPipeline(
+      "[TRIP_REPLY_PIPELINE_SUMMARY]",
+      `destination=${destination}`,
+      `tripDays=${days}`,
+      "combinationDiscoverySuccess=false",
+      "localizationRepairResult=n/a",
+      "combinationCount=0",
+      "legacyReplyBlocked=true",
+      "newReplyBuilt=false",
+      "finalReplyStatus=failure",
+      `finalFailureReason=${failure?.reason ?? failure?.detail ?? "combination_reply_empty"}`,
+    );
     // Theme directions are search-only — never render category labels as places.
     // Preserve destination / dates so refresh only re-runs discovery.
-    const failure = getLastCombinationDiscoveryFailure();
+    // Legacy blocker only suppresses old templates — failure reason must reflect
+    // real place/combination shortage, not localization English fallback.
     const scopePatch = getLastFinalizedDestinationScopePatch();
     return {
       reply: buildDestinationRecommendationFailedMessage(
@@ -815,6 +834,19 @@ function resolveDestinationCombinationsAdvice(
       },
     };
   }
+
+  logAiPipeline(
+    "[TRIP_REPLY_PIPELINE_SUMMARY]",
+    `destination=${destination}`,
+    `tripDays=${days}`,
+    "combinationDiscoverySuccess=true",
+    "localizationRepairResult=delivered",
+    `combinationCount=${(reply.match(/^\d+\./gm) ?? []).length}`,
+    "legacyReplyBlocked=false",
+    "newReplyBuilt=true",
+    "finalReplyStatus=success",
+    "finalFailureReason=",
+  );
 
   logAiPipeline(
     "[NEXT_STEP_RESOLUTION]",

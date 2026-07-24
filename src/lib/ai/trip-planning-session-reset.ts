@@ -28,6 +28,13 @@ import {
   isExplicitPrimaryDestinationSwitch,
   parseExplicitPrimaryDestinationSwitch,
 } from "@/lib/ai/combination-selection-reply";
+import {
+  captureLockedDestinationSnapshot,
+  isValidCoordinate,
+  resolvePlanningDestination,
+  restoreLockedDestinationToContext,
+  type ResolvedTripDestination,
+} from "@/lib/ai/resolved-trip-destination";
 
 export type NewTripPlanningReason =
   | "destination_changed"
@@ -45,7 +52,8 @@ export type NewTripPlanningResult = {
   incomingTravelMonth?: string;
 };
 
-const TRIP_RESET_CLEARED_FIELDS = [
+/** Date / itinerary fields only — never wipe a locked destination. */
+const DATE_CHANGE_CLEARED_FIELDS = [
   "travelDate",
   "startDate",
   "endDate",
@@ -55,11 +63,6 @@ const TRIP_RESET_CLEARED_FIELDS = [
   "suggestedStartDate",
   "travelMonth",
   "travelYear",
-  "destination",
-  "destinationCountry",
-  "destinationCity",
-  "destinationRegion",
-  "destinationCities",
   "selectedCombinationIds",
   "selectedCombinationPlaceNames",
   "excludedCombinationPlaceNames",
@@ -92,6 +95,35 @@ const TRIP_RESET_CLEARED_FIELDS = [
   "combinationSelectionState",
   "aiItineraryState",
 ] as const;
+
+/** Destination switch — clear destination + date/itinerary state. */
+const DESTINATION_CHANGE_CLEARED_FIELDS = [
+  ...DATE_CHANGE_CLEARED_FIELDS,
+  "destination",
+  "destinationCountry",
+  "destinationCountryCode",
+  "destinationCity",
+  "destinationRegion",
+  "destinationCities",
+  "destinationType",
+  "destinationScopeId",
+  "destinationCoordinates",
+] as const;
+
+/** Full new conversation — same as destination change for trip fields. */
+const NEW_CONVERSATION_CLEARED_FIELDS = DESTINATION_CHANGE_CLEARED_FIELDS;
+
+function isDateOnlyResetReason(reason: NewTripPlanningReason): boolean {
+  return reason === "travel_date_changed" || reason === "travel_month_changed";
+}
+
+function isDestinationResetReason(reason: NewTripPlanningReason): boolean {
+  return (
+    reason === "destination_changed" ||
+    reason === "country_changed" ||
+    reason === "city_changed"
+  );
+}
 
 /** Parse relative / absolute month labels from user text. */
 export function parseTravelMonthFromText(text: string, now = new Date()): string | undefined {
@@ -148,19 +180,25 @@ export function isCountryToCityRefinement(
   const next = normalizeDestinationLabel(nextDestination);
   if (!prev || !next || prev === next) return false;
 
+  const prevEntity = resolveDestinationEntity(prev);
   const prevIsCountry =
-    isKnownCountryLabel(prev) && !isKnownTouristCityLabel(prev) && !isTravelRegionLabel(prev);
+    prevEntity.type === "country" &&
+    isKnownCountryLabel(prev) &&
+    !isKnownTouristCityLabel(prev) &&
+    !isTravelRegionLabel(prev);
   if (!prevIsCountry) return false;
+
+  const nextEntity = resolveDestinationEntity(next);
+  if (nextEntity.type === "city_state") return false;
 
   const nextIsPlace =
     isKnownTouristCityLabel(next) ||
     isTravelRegionLabel(next) ||
-    resolveDestinationEntity(next).type !== "country";
+    nextEntity.type !== "country";
   if (!nextIsPlace) return false;
 
-  const entity = resolveDestinationEntity(next);
-  const nextCountry = entity.country
-    ? normalizeDestinationLabel(entity.country)
+  const nextCountry = nextEntity.country
+    ? normalizeDestinationLabel(nextEntity.country)
     : undefined;
   const expectedCountry = prevCountry
     ? normalizeDestinationLabel(prevCountry)
@@ -267,24 +305,34 @@ export function isNewTripPlanning(
         const nextEntity = resolveDestinationEntity(next);
         const prevCountryLabel = normalizeDestinationLabel(
           prevCountry ??
-            (prevEntity.type === "country" ? prevDest : prevEntity.country ?? prevDest),
+            (prevEntity.type === "country" || prevEntity.type === "city_state"
+              ? prevDest
+              : prevEntity.country ?? prevDest),
         );
         const nextCountryLabel = normalizeDestinationLabel(
-          nextEntity.type === "country" ? next : nextEntity.country ?? next,
+          nextEntity.type === "country" || nextEntity.type === "city_state"
+            ? next
+            : nextEntity.country ?? next,
         );
         const bothCountries =
           (prevEntity.type === "country" ||
-            (isKnownCountryLabel(prevDest) && !isKnownTouristCityLabel(prevDest))) &&
+            (isKnownCountryLabel(prevDest) &&
+              !isKnownTouristCityLabel(prevDest) &&
+              prevEntity.type !== "city_state")) &&
           (nextEntity.type === "country" ||
-            (isKnownCountryLabel(next) && !isKnownTouristCityLabel(next)));
+            (isKnownCountryLabel(next) &&
+              !isKnownTouristCityLabel(next) &&
+              nextEntity.type !== "city_state"));
         const bothPlacesSameCountry =
           prevCountryLabel === nextCountryLabel &&
           !bothCountries &&
           (prevEntity.type === "city" ||
+            prevEntity.type === "city_state" ||
             prevEntity.type === "region" ||
             isKnownTouristCityLabel(prevDest) ||
             isTravelRegionLabel(prevDest)) &&
           (nextEntity.type === "city" ||
+            nextEntity.type === "city_state" ||
             nextEntity.type === "region" ||
             isKnownTouristCityLabel(next) ||
             isTravelRegionLabel(next));
@@ -329,12 +377,22 @@ export function isNewTripPlanning(
     };
   }
 
+  const monthOnlyToConcreteDates =
+    Boolean(prevMonth || prevStart) &&
+    !session.travelContext?.startDate &&
+    !session.tripStartDate &&
+    Boolean(incomingRange.startDate || incomingRange.endDate) &&
+    // prevStart may be a non-ISO month label mirrored onto session.travelDate
+    Boolean(prevDest || incomingDestination) &&
+    hasExistingTripState;
+
   if (
     (incomingRange.startDate || incomingRange.endDate) &&
-    datesDiffer(
+    (datesDiffer(
       { start: prevStart, end: prevEnd },
       { start: incomingRange.startDate, end: incomingRange.endDate },
-    ) &&
+    ) ||
+      monthOnlyToConcreteDates) &&
     hasExistingTripState &&
     // Changing dates on an active destination is a new trip window.
     Boolean(prevDest || incomingDestination)
@@ -416,94 +474,101 @@ function preserveLongTermPreferences(
   };
 }
 
-/**
- * Hard-reset destination-bound trip planning state and open a new planningSessionId.
- * Long-term Plus Memory preferences (coffee / slow travel / no spice / photo) are kept.
- */
-export function resetTripPlanningContext(
-  session: ChatPlanningSession,
-  opts: {
-    reason: NewTripPlanningReason;
-    incomingDestination?: string;
-    incomingTravelMonth?: string;
-    userText?: string;
-  },
-): ChatPlanningSession {
-  const oldSessionId = session.planningSessionId;
-  const newSessionId = createPlanningSessionId();
-  const prefs = preserveLongTermPreferences(session.travelContext);
-  const clearedList = [...TRIP_RESET_CLEARED_FIELDS];
+function buildTripDestinationFromResolved(
+  resolved: ResolvedTripDestination,
+): ChatPlanningSession["tripDestination"] {
+  const coordsOk = isValidCoordinate(resolved.latitude, resolved.longitude);
+  return {
+    placeId: resolved.placeId ?? "",
+    country: resolved.country ?? "",
+    city: resolved.city ?? resolved.label,
+    lat: coordsOk ? resolved.latitude! : 0,
+    lng: coordsOk ? resolved.longitude! : 0,
+    formattedName: resolved.label,
+    displayLabel: resolved.label,
+  };
+}
 
-  clearFrozenPlanningDayPlan(session.planningSessionId);
-  resetPlannerSession(session.planningSessionId);
-  if (session.travelContext?.destination) {
-    clearResolvedDestinationScope(session.travelContext.destination);
-  }
-  if (session.tripDestination?.city) {
-    clearResolvedDestinationScope(session.tripDestination.city);
-  }
-
-  logAiPipeline(
-    "[NEW_TRIP_SESSION_CREATED]",
-    `oldSessionId=${oldSessionId ?? "none"}`,
-    `newSessionId=${newSessionId}`,
-    `reason=${opts.reason}`,
-  );
-  logAiPipeline(
-    "[PLANNER_SESSION_NEW]",
-    `oldSessionId=${oldSessionId ?? "none"}`,
-    `newSessionId=${newSessionId}`,
-    `reason=${opts.reason}`,
-  );
-  logAiSessionCreate(opts.reason, newSessionId);
-  logAiPlanningSessionStart(newSessionId);
-  logAiPipeline(
-    "[TRIP_CONTEXT_RESET]",
-    `cleared=[${clearedList.join(",")}]`,
-    `reason=${opts.reason}`,
-  );
-
-  const incoming = opts.incomingDestination?.trim()
-    ? normalizeDestinationLabel(opts.incomingDestination)
-    : undefined;
-  const scope = incoming ? resolveDestinationScopeFields(incoming) : undefined;
-  const monthFromText =
-    opts.incomingTravelMonth ??
-    (opts.userText ? parseTravelMonthFromText(opts.userText) : undefined);
-  const rangeFromText = opts.userText
-    ? parseTravelDateRangeFromText(opts.userText)
-    : {};
-  const daysFromText = opts.userText
-    ? parseDayCountFromText(opts.userText) ?? rangeFromText.days
-    : undefined;
-
-  const travelContext: CanonicalTravelContext = {
+function hydrateDestinationFromIncoming(
+  incoming: string,
+  prefs: ReturnType<typeof preserveLongTermPreferences>,
+  locked?: ResolvedTripDestination | null,
+): {
+  travelContext: CanonicalTravelContext;
+  resolved: ResolvedTripDestination;
+} {
+  const scope = resolveDestinationScopeFields(incoming);
+  const base: CanonicalTravelContext = {
     ...prefs,
-    destination: scope?.destinationName,
-    destinationCountry: scope?.destinationCountry,
-    destinationType: scope?.destinationType,
-    destinationCity: scope?.destinationCity,
-    destinationRegion: scope?.destinationRegion,
-    travelMonth: monthFromText,
-    startDate: rangeFromText.startDate,
-    endDate: rangeFromText.endDate,
-    days: daysFromText,
-    planningDaysConfirmed: Boolean(
-      daysFromText && rangeFromText.startDate && rangeFromText.endDate,
-    ),
-    conversationState: daysFromText ? undefined : "awaiting_days",
-    selectedCombinationIds: [],
+    destination: scope.destinationName,
+    destinationCountry: scope.destinationCountry,
+    destinationType: scope.destinationType,
+    destinationCity: scope.destinationCity,
+    destinationRegion: scope.destinationRegion,
     interests: prefs.interests,
   };
 
-  logAiPipeline(
-    "[TRIP_CONTEXT_AFTER_RESET]",
-    `destination=${travelContext.destination ?? "null"}`,
-    `travelDate=${travelContext.startDate ?? "null"}`,
-    `tripDays=${travelContext.days ?? "null"}`,
-    `selectedCombinationIds=[]`,
-    `planningStage=ASK_DATE`,
-  );
+  // Prefer previously locked snapshot (same label) over label-only stub.
+  if (locked && normalizeDestinationLabel(locked.label) === incoming) {
+    const restored = restoreLockedDestinationToContext(locked, base);
+    const resolved =
+      resolvePlanningDestination(restored) ??
+      ({
+        ...locked,
+        label: incoming,
+        type: scope.destinationType,
+        city: scope.destinationCity ?? locked.city,
+        country: scope.destinationCountry ?? locked.country,
+      } satisfies ResolvedTripDestination);
+    return { travelContext: restored, resolved };
+  }
+
+  const resolved =
+    resolvePlanningDestination(base) ??
+    ({
+      label: incoming,
+      city: scope.destinationCity,
+      country: scope.destinationCountry,
+      type: scope.destinationType,
+      source: "scope_fields",
+      scopeLocked: false,
+    } satisfies ResolvedTripDestination);
+
+  return {
+    travelContext: {
+      ...base,
+      destinationCountryCode: resolved.countryCode,
+      destinationCoordinates: isValidCoordinate(resolved.latitude, resolved.longitude)
+        ? { lat: resolved.latitude!, lng: resolved.longitude! }
+        : undefined,
+      destinationScopeId: resolved.scopeId,
+    },
+    resolved,
+  };
+}
+
+function applyCommonSessionShell(
+  session: ChatPlanningSession,
+  opts: {
+    reason: NewTripPlanningReason;
+    newSessionId: string;
+    travelContext: CanonicalTravelContext;
+    tripDestination?: ChatPlanningSession["tripDestination"];
+    incoming?: string;
+    monthFromText?: string;
+    rangeFromText: { startDate?: string; endDate?: string; days?: number };
+    daysFromText?: number;
+  },
+): ChatPlanningSession {
+  const {
+    newSessionId,
+    travelContext,
+    tripDestination,
+    incoming,
+    monthFromText,
+    rangeFromText,
+    daysFromText,
+  } = opts;
 
   return {
     ...session,
@@ -514,17 +579,7 @@ export function resetTripPlanningContext(
     tripStartDate: travelContext.startDate,
     tripEndDate: travelContext.endDate,
     tripDays: travelContext.days,
-    tripDestination: incoming
-      ? {
-          placeId: "",
-          country: travelContext.destinationCountry ?? "",
-          city: incoming,
-          lat: 0,
-          lng: 0,
-          formattedName: incoming,
-          displayLabel: incoming,
-        }
-      : undefined,
+    tripDestination,
     tripPlanningContext: incoming
       ? {
           destination: incoming,
@@ -562,6 +617,348 @@ export function resetTripPlanningContext(
     askedClarifyKeys: undefined,
     activeChatIntent: undefined,
   };
+}
+
+function beginNewPlanningSessionIds(
+  session: ChatPlanningSession,
+  reason: NewTripPlanningReason,
+): string {
+  const oldSessionId = session.planningSessionId;
+  const newSessionId = createPlanningSessionId();
+  clearFrozenPlanningDayPlan(session.planningSessionId);
+  resetPlannerSession(session.planningSessionId);
+  logAiPipeline(
+    "[NEW_TRIP_SESSION_CREATED]",
+    `oldSessionId=${oldSessionId ?? "none"}`,
+    `newSessionId=${newSessionId}`,
+    `reason=${reason}`,
+  );
+  logAiPipeline(
+    "[PLANNER_SESSION_NEW]",
+    `oldSessionId=${oldSessionId ?? "none"}`,
+    `newSessionId=${newSessionId}`,
+    `reason=${reason}`,
+  );
+  logAiSessionCreate(reason, newSessionId);
+  logAiPlanningSessionStart(newSessionId);
+  return newSessionId;
+}
+
+/**
+ * Date / month change: clear itinerary + date fields only.
+ * Preserve locked destination (label, city, country, coords, scope).
+ */
+export function resetForDateChange(
+  session: ChatPlanningSession,
+  opts: {
+    reason: "travel_date_changed" | "travel_month_changed";
+    incomingDestination?: string;
+    incomingTravelMonth?: string;
+    userText?: string;
+  },
+): ChatPlanningSession {
+  const prefs = preserveLongTermPreferences(session.travelContext);
+  const locked = captureLockedDestinationSnapshot(session);
+  const clearedList = [...DATE_CHANGE_CLEARED_FIELDS];
+  const newSessionId = beginNewPlanningSessionIds(session, opts.reason);
+
+  // Do NOT clearResolvedDestinationScope — date change must keep the lock.
+
+  logAiPipeline(
+    "[TRIP_CONTEXT_RESET]",
+    `cleared=[${clearedList.join(",")}]`,
+    `reason=${opts.reason}`,
+    "mode=resetForDateChange",
+  );
+
+  const incomingRaw =
+    opts.incomingDestination?.trim() ||
+    locked?.label ||
+    resolveActiveDestination(session);
+  const incoming = incomingRaw
+    ? normalizeDestinationLabel(incomingRaw)
+    : undefined;
+
+  const monthFromText =
+    opts.incomingTravelMonth ??
+    (opts.userText ? parseTravelMonthFromText(opts.userText) : undefined);
+  const rangeFromText = opts.userText
+    ? parseTravelDateRangeFromText(opts.userText)
+    : {};
+  const daysFromText = opts.userText
+    ? parseDayCountFromText(opts.userText) ?? rangeFromText.days
+    : undefined;
+
+  const hydrated = incoming
+    ? hydrateDestinationFromIncoming(incoming, prefs, locked)
+    : {
+        travelContext: { ...prefs, interests: prefs.interests } as CanonicalTravelContext,
+        resolved: null as ResolvedTripDestination | null,
+      };
+
+  const conversationState = daysFromText
+    ? "awaiting_combination_selection"
+    : "awaiting_days";
+  const planningStage = daysFromText ? "GENERATING_COMBINATIONS" : "ASK_DATE";
+
+  const travelContext: CanonicalTravelContext = {
+    ...hydrated.travelContext,
+    travelMonth: monthFromText,
+    startDate: rangeFromText.startDate,
+    endDate: rangeFromText.endDate,
+    days: daysFromText,
+    planningDaysConfirmed: Boolean(
+      daysFromText && rangeFromText.startDate && rangeFromText.endDate,
+    ),
+    conversationState,
+    selectedCombinationIds: [],
+  };
+
+  logAiPipeline(
+    "[TRIP_CONTEXT_AFTER_RESET]",
+    `destination=${travelContext.destination ?? "null"}`,
+    `destinationCity=${travelContext.destinationCity ?? "null"}`,
+    `destinationCountry=${travelContext.destinationCountry ?? "null"}`,
+    `destinationType=${travelContext.destinationType ?? "null"}`,
+    `countryCode=${travelContext.destinationCountryCode ?? hydrated.resolved?.countryCode ?? "null"}`,
+    `lat=${travelContext.destinationCoordinates?.lat ?? hydrated.resolved?.latitude ?? "null"}`,
+    `lng=${travelContext.destinationCoordinates?.lng ?? hydrated.resolved?.longitude ?? "null"}`,
+    `travelDate=${travelContext.startDate ?? "null"}`,
+    `tripDays=${travelContext.days ?? "null"}`,
+    `selectedCombinationIds=[]`,
+    `planningStage=${planningStage}`,
+    `conversationState=${conversationState}`,
+  );
+
+  return applyCommonSessionShell(session, {
+    reason: opts.reason,
+    newSessionId,
+    travelContext,
+    tripDestination: hydrated.resolved
+      ? buildTripDestinationFromResolved(hydrated.resolved)
+      : undefined,
+    incoming,
+    monthFromText,
+    rangeFromText,
+    daysFromText,
+  });
+}
+
+/**
+ * Destination / country / city switch: clear destination + itinerary, rehydrate new label.
+ */
+export function resetForDestinationChange(
+  session: ChatPlanningSession,
+  opts: {
+    reason: NewTripPlanningReason;
+    incomingDestination?: string;
+    incomingTravelMonth?: string;
+    userText?: string;
+  },
+): ChatPlanningSession {
+  const prefs = preserveLongTermPreferences(session.travelContext);
+  const clearedList = [...DESTINATION_CHANGE_CLEARED_FIELDS];
+  const newSessionId = beginNewPlanningSessionIds(session, opts.reason);
+
+  if (session.travelContext?.destination) {
+    clearResolvedDestinationScope(session.travelContext.destination);
+  }
+  if (session.tripDestination?.city) {
+    clearResolvedDestinationScope(session.tripDestination.city);
+  }
+
+  logAiPipeline(
+    "[TRIP_CONTEXT_RESET]",
+    `cleared=[${clearedList.join(",")}]`,
+    `reason=${opts.reason}`,
+    "mode=resetForDestinationChange",
+  );
+
+  const incoming = opts.incomingDestination?.trim()
+    ? normalizeDestinationLabel(opts.incomingDestination)
+    : undefined;
+  const monthFromText =
+    opts.incomingTravelMonth ??
+    (opts.userText ? parseTravelMonthFromText(opts.userText) : undefined);
+  const rangeFromText = opts.userText
+    ? parseTravelDateRangeFromText(opts.userText)
+    : {};
+  const daysFromText = opts.userText
+    ? parseDayCountFromText(opts.userText) ?? rangeFromText.days
+    : undefined;
+
+  const hydrated = incoming
+    ? hydrateDestinationFromIncoming(incoming, prefs, null)
+    : {
+        travelContext: { ...prefs, interests: prefs.interests } as CanonicalTravelContext,
+        resolved: null as ResolvedTripDestination | null,
+      };
+
+  const conversationState = daysFromText
+    ? "awaiting_combination_selection"
+    : "awaiting_days";
+  const planningStage = daysFromText ? "GENERATING_COMBINATIONS" : "ASK_DATE";
+
+  const travelContext: CanonicalTravelContext = {
+    ...hydrated.travelContext,
+    travelMonth: monthFromText,
+    startDate: rangeFromText.startDate,
+    endDate: rangeFromText.endDate,
+    days: daysFromText,
+    planningDaysConfirmed: Boolean(
+      daysFromText && rangeFromText.startDate && rangeFromText.endDate,
+    ),
+    conversationState,
+    selectedCombinationIds: [],
+  };
+
+  logAiPipeline(
+    "[TRIP_CONTEXT_AFTER_RESET]",
+    `destination=${travelContext.destination ?? "null"}`,
+    `destinationCity=${travelContext.destinationCity ?? "null"}`,
+    `destinationCountry=${travelContext.destinationCountry ?? "null"}`,
+    `destinationType=${travelContext.destinationType ?? "null"}`,
+    `travelDate=${travelContext.startDate ?? "null"}`,
+    `tripDays=${travelContext.days ?? "null"}`,
+    `selectedCombinationIds=[]`,
+    `planningStage=${planningStage}`,
+  );
+
+  return applyCommonSessionShell(session, {
+    reason: opts.reason,
+    newSessionId,
+    travelContext,
+    tripDestination: hydrated.resolved
+      ? buildTripDestinationFromResolved(hydrated.resolved)
+      : undefined,
+    incoming,
+    monthFromText,
+    rangeFromText,
+    daysFromText,
+  });
+}
+
+/** Finished trip / new conversation requirements. */
+export function resetForNewConversation(
+  session: ChatPlanningSession,
+  opts: {
+    reason: NewTripPlanningReason;
+    incomingDestination?: string;
+    incomingTravelMonth?: string;
+    userText?: string;
+  },
+): ChatPlanningSession {
+  const prefs = preserveLongTermPreferences(session.travelContext);
+  const clearedList = [...NEW_CONVERSATION_CLEARED_FIELDS];
+  const newSessionId = beginNewPlanningSessionIds(session, opts.reason);
+
+  if (session.travelContext?.destination) {
+    clearResolvedDestinationScope(session.travelContext.destination);
+  }
+  if (session.tripDestination?.city) {
+    clearResolvedDestinationScope(session.tripDestination.city);
+  }
+
+  logAiPipeline(
+    "[TRIP_CONTEXT_RESET]",
+    `cleared=[${clearedList.join(",")}]`,
+    `reason=${opts.reason}`,
+    "mode=resetForNewConversation",
+  );
+
+  const incoming = opts.incomingDestination?.trim()
+    ? normalizeDestinationLabel(opts.incomingDestination)
+    : undefined;
+  const monthFromText =
+    opts.incomingTravelMonth ??
+    (opts.userText ? parseTravelMonthFromText(opts.userText) : undefined);
+  const rangeFromText = opts.userText
+    ? parseTravelDateRangeFromText(opts.userText)
+    : {};
+  const daysFromText = opts.userText
+    ? parseDayCountFromText(opts.userText) ?? rangeFromText.days
+    : undefined;
+
+  const hydrated = incoming
+    ? hydrateDestinationFromIncoming(incoming, prefs, null)
+    : {
+        travelContext: { ...prefs, interests: prefs.interests } as CanonicalTravelContext,
+        resolved: null as ResolvedTripDestination | null,
+      };
+
+  const conversationState = daysFromText
+    ? "awaiting_combination_selection"
+    : incoming
+      ? "awaiting_days"
+      : undefined;
+  const planningStage = daysFromText
+    ? "GENERATING_COMBINATIONS"
+    : incoming
+      ? "ASK_DATE"
+      : "NEW";
+
+  const travelContext: CanonicalTravelContext = {
+    ...hydrated.travelContext,
+    travelMonth: monthFromText,
+    startDate: rangeFromText.startDate,
+    endDate: rangeFromText.endDate,
+    days: daysFromText,
+    planningDaysConfirmed: Boolean(
+      daysFromText && rangeFromText.startDate && rangeFromText.endDate,
+    ),
+    conversationState,
+    selectedCombinationIds: [],
+  };
+
+  logAiPipeline(
+    "[TRIP_CONTEXT_AFTER_RESET]",
+    `destination=${travelContext.destination ?? "null"}`,
+    `travelDate=${travelContext.startDate ?? "null"}`,
+    `tripDays=${travelContext.days ?? "null"}`,
+    `selectedCombinationIds=[]`,
+    `planningStage=${planningStage}`,
+  );
+
+  return applyCommonSessionShell(session, {
+    reason: opts.reason,
+    newSessionId,
+    travelContext,
+    tripDestination: hydrated.resolved
+      ? buildTripDestinationFromResolved(hydrated.resolved)
+      : undefined,
+    incoming,
+    monthFromText,
+    rangeFromText,
+    daysFromText,
+  });
+}
+
+/**
+ * Hard-reset destination-bound trip planning state and open a new planningSessionId.
+ * Dispatches to date / destination / new-conversation reset modes.
+ * Long-term Plus Memory preferences (coffee / slow travel / no spice / photo) are kept.
+ */
+export function resetTripPlanningContext(
+  session: ChatPlanningSession,
+  opts: {
+    reason: NewTripPlanningReason;
+    incomingDestination?: string;
+    incomingTravelMonth?: string;
+    userText?: string;
+  },
+): ChatPlanningSession {
+  if (isDateOnlyResetReason(opts.reason)) {
+    return resetForDateChange(session, {
+      reason: opts.reason,
+      incomingDestination: opts.incomingDestination,
+      incomingTravelMonth: opts.incomingTravelMonth,
+      userText: opts.userText,
+    });
+  }
+  if (isDestinationResetReason(opts.reason)) {
+    return resetForDestinationChange(session, opts);
+  }
+  return resetForNewConversation(session, opts);
 }
 
 /**

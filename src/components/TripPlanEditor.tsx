@@ -41,7 +41,7 @@ const TRANSPORT_LABEL: Record<TripTransportMode, string> = {
 };
 
 function legKey(item: RoamieItineraryItem): string {
-  return item.placeName || item.title;
+  return item.localizedDisplayName ?? "";
 }
 
 function stopDisplayName(item: RoamieItineraryItem): string {

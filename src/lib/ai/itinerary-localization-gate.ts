@@ -28,6 +28,7 @@ export type ItineraryLocalizationStopTrace = {
   requestedLocale: Locale;
   resolvedLanguage: string;
   localizationSource: PlaceNameLocalizationSource | string;
+  translationConfidence?: number;
   renderedName: string;
   fallbackReason?: string;
   gateResult: "pass" | "repaired" | "english_fallback" | "original_fallback" | "foreign_script";
@@ -143,6 +144,8 @@ function localizeItem(
     originalName: resolved.originalName || originalName,
     languageCode: resolved.languageCode,
     localizationSource: resolved.localizationSource,
+    translationConfidence: resolved.translationConfidence,
+    brandNameException: resolved.brandNameException === true,
   };
 
   const trace: ItineraryLocalizationStopTrace = {
@@ -155,6 +158,7 @@ function localizeItem(
     requestedLocale: locale,
     resolvedLanguage: resolved.resolvedLanguage ?? resolved.languageCode,
     localizationSource: resolved.localizationSource,
+    translationConfidence: resolved.translationConfidence,
     renderedName: display,
     fallbackReason,
     gateResult,
@@ -244,6 +248,16 @@ export function applyItineraryLocalizationGate(
         `fallbackReason=${trace.fallbackReason ?? ""}`,
         `gateResult=${trace.gateResult}`,
       );
+      logAiPipeline(
+        "[PLACE_DISPLAY_NAME_TRACE]",
+        `placeId=${trace.placeId}`,
+        `originalName=${trace.originalName}`,
+        `localizedDisplayName=${trace.localizedDisplayName}`,
+        `requestedLocale=${trace.requestedLocale}`,
+        `localizationSource=${trace.localizationSource}`,
+        `translationConfidence=${trace.translationConfidence ?? ""}`,
+        `finalDisplayedName=${trace.renderedName}`,
+      );
     }
   });
 
@@ -256,7 +270,8 @@ export function applyItineraryLocalizationGate(
     ? foreignScriptStops === 0 &&
       missingLocalized === 0 &&
       localizationCoverage >= 1 &&
-      (opts?.softPassEnglish ? true : englishFallbackStops + originalFallbackStops === 0)
+      englishFallbackStops + originalFallbackStops === 0 &&
+      mixedLanguageStops === 0
     : foreignScriptStops === 0 && missingLocalized === 0 && localizationCoverage >= 0.9;
 
   const result: ItineraryLocalizationGateResult = {
@@ -277,6 +292,21 @@ export function applyItineraryLocalizationGate(
       ? undefined
       : `foreign=${foreignScriptStops};english=${englishFallbackStops};original=${originalFallbackStops};coverage=${localizationCoverage.toFixed(2)}`,
   };
+
+  if (!gatePass) {
+    for (const trace of traces.filter((entry) => entry.gateResult !== "pass" && entry.gateResult !== "repaired")) {
+      logAiPipeline(
+        "[PLACE_LOCALIZATION_INCOMPLETE]",
+        `day=${trace.day}`,
+        `placeId=${trace.placeId}`,
+        `placeName=${trace.localizedDisplayName}`,
+        `localizationSource=${trace.localizationSource}`,
+        `resolvedLanguage=${trace.resolvedLanguage}`,
+        `reason=${trace.fallbackReason ?? trace.gateResult}`,
+        "action=replan_or_replace",
+      );
+    }
+  }
 
   logAiPipeline(
     "[ITINERARY_LOCALIZATION_SUMMARY]",

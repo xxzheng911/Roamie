@@ -46,6 +46,11 @@ import {
   type ItineraryValidationResult,
 } from "@/lib/ai/itinerary-validator";
 import { replanUntilItineraryValid } from "@/lib/ai/itinerary-validator/replan";
+import {
+  evaluateDayCoverageGate,
+  ensureAllDaysCovered,
+  asComposedDayPlans,
+} from "@/lib/ai/itinerary-day-coverage";
 import { wrapPlannerPlaceSearchViaGateway } from "@/lib/pie/planner-search";
 import {
   getLastRecommendationValidationSummary,
@@ -3126,6 +3131,42 @@ export async function generateTripPlanFromStyle(input: {
     }
 
     itineraryValidation = validation;
+
+    // Final hard coverage gate before persistence — never save empty travel days.
+    const coverageGate = evaluateDayCoverageGate({
+      plans: composedPlans,
+      tripDays: days,
+    });
+    if (!coverageGate.allDaysCovered) {
+      const covered = ensureAllDaysCovered({
+        plans: composedPlans,
+        tripDays: days,
+        source: "pre_persistence_coverage_gate",
+      });
+      composedPlans = asComposedDayPlans(covered.plans);
+      validation = validateItineraryPlan({
+        ...validatorInputBase,
+        plans: composedPlans,
+      });
+      itineraryValidation = validation;
+      if (!covered.emptyDaysRemaining.length && !validation.pass) {
+        const replanned = replanUntilItineraryValid(
+          {
+            plans: composedPlans,
+            pool: bestFrozenPlaces.length ? bestFrozenPlaces : places,
+            days,
+            style,
+            plannedDate: params.context.startDate,
+            nearbyExtensions: params.context.nearbyExtensions,
+            validatorInput: validatorInputBase,
+          },
+          validation,
+        );
+        composedPlans = replanned.plans;
+        validation = replanned.validation;
+        itineraryValidation = validation;
+      }
+    }
 
     if (shouldBlockItineraryDelivery(validation)) {
       dayPlan = undefined;

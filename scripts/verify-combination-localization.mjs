@@ -1,5 +1,8 @@
 /**
- * Combination Localization Runtime — zh-TW must not deliver bare English.
+ * Combination Localization Repair Gate —
+ * zh-TW prefers 繁中; readable English fallback is deliverable (partial).
+ * Foreign scripts (Thai / Greek / Kana / Hangul / Myanmar) must not be delivered.
+ *
  * Run: npx vite-node --config scripts/vite.verify.config.mjs scripts/verify-combination-localization.mjs
  */
 import assert from "node:assert/strict";
@@ -10,6 +13,7 @@ import {
 } from "../src/lib/ai/combination-theme-titles.ts";
 import {
   isCompleteLocalizationForLocale,
+  isDeliverablePlaceNameForLocale,
   resolvePlaceDisplayName,
 } from "../src/lib/place-display-name.ts";
 import { clearLocalizedPlaceNameCache } from "../src/lib/place-localization/localized-place-name-cache.ts";
@@ -19,9 +23,6 @@ clearLocalizedPlaceNameCache();
 
 const HAS_CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
 const HAS_THAI_RE = /[\u0e00-\u0e7f]/;
-const HAS_GREEK_RE = /[\u0370-\u03ff\u1f00-\u1fff]/;
-const HAS_KANA_RE = /[\u3040-\u30ff]/;
-const HAS_HANGUL_RE = /[\uac00-\ud7a3]/;
 const HAS_MYANMAR_RE = /[\u1000-\u109f]/;
 
 function assertZh(name, label) {
@@ -74,7 +75,7 @@ assert.equal(brandResolved.localizationSource, "brand_exception");
 assertZh(brandResolved.localizedDisplayName, "brand");
 console.log(`OK brand: ${brandResolved.localizedDisplayName}`);
 
-// --- Gate rejects Thai / Greek / Kana / Hangul / bare English ---
+// --- Repair Gate: keep English fallback; drop Thai; keep 繁中 + brand ---
 clearLocalizedPlaceNameCache();
 const gated = applyCombinationLocalizationGate(
   [
@@ -86,7 +87,11 @@ const gated = applyCombinationLocalizationGate(
         { name: "普吉老城區", types: ["tourist_attraction"] },
         { name: "土生華人博物館", types: ["museum"] },
         { name: "เมืองเก่าท่องเที่ยวภูเก็ต", types: ["tourist_attraction"] },
-        { name: "Phuket Elephant Conservation", types: ["tourist_attraction"] },
+        {
+          name: "Phuket Elephant Conservation",
+          englishName: "Phuket Elephant Conservation",
+          types: ["tourist_attraction"],
+        },
         { name: "Tree O’ Clock Gallery & Restaurant", types: ["restaurant"] },
       ],
     },
@@ -104,32 +109,88 @@ const gated = applyCombinationLocalizationGate(
         },
       ],
     },
+    {
+      combinationId: "test:samui-coast",
+      title: "海岸夕陽組合",
+      theme: "coast",
+      placeCandidates: [
+        {
+          name: "Cabanas Beach Club",
+          englishName: "Cabanas Beach Club",
+          types: ["beach"],
+        },
+        {
+          name: "Hin Lat Waterfall",
+          englishName: "Hin Lat Waterfall",
+          types: ["natural_feature", "tourist_attraction"],
+        },
+        {
+          name: "Samui View Point",
+          englishName: "Samui View Point",
+          types: ["tourist_attraction"],
+        },
+      ],
+    },
   ],
-  { locale: "zh-TW", minPlacesPerCombo: 2, minCombinations: 2 },
+  { locale: "zh-TW", minPlacesPerCombo: 2, minCombinations: 2, preferredCombinations: 3 },
 );
 
 assert.ok(gated.combinations.length >= 2, `expected ≥2 combos, got ${gated.combinations.length}`);
-for (const combo of gated.combinations) {
-  for (const p of combo.placeCandidates) {
-    assertZh(p.localizedDisplayName || "", combo.title);
-    assert.ok(!HAS_THAI_RE.test(p.localizedDisplayName || ""));
-  }
-  assert.ok(!isMechanicalCombinationTitle(combo.title) || true);
-}
+assert.equal(gated.droppedEnglishFallback, 0, "English fallback must not be dropped");
+assert.ok(gated.localizationDisplayPass, "readable names must pass display gate");
+assert.ok(gated.tripCombinationDeliveryPass, "trip delivery must pass with real places");
+assert.ok(gated.englishFallbackCount > 0, "readable English fallback must be retained as warning");
+assert.ok(gated.localizationPartialCount > 0, "fallback names must be marked partial");
 
 const allNames = gated.combinations.flatMap((c) =>
-  c.placeCandidates.map((p) => p.localizedDisplayName),
+  c.placeCandidates.map((p) => p.effectiveDisplayName || p.localizedDisplayName),
 );
 assert.ok(
-  !allNames.some((n) => /Phuket Elephant|Elephant Conservation/i.test(n || "")),
-  "unverified English descriptive names must not pass gate",
+  !allNames.some((n) => HAS_THAI_RE.test(n || "")),
+  "Thai script must not be delivered",
 );
-assert.ok(!allNames.some((n) => n === "Bulethi"), "Bulethi English must not pass");
-assert.ok(allNames.some((n) => /布雷迪/.test(n || "")), "Bulethi must resolve to 繁中");
+assert.ok(
+  allNames.some((n) => /Cabanas|Hin Lat|Samui View/i.test(n || "")),
+  "valid real places must not be dropped solely for incomplete localization",
+);
+assert.ok(
+  allNames.some((n) => /布雷迪|摩訶|普吉|土生/.test(n || "")),
+  "繁中 names must still be preferred when available",
+);
 assert.ok(
   !gated.combinations.some((c) => isMechanicalCombinationTitle(c.title)),
   "mechanical titles must be rewritten by gate",
 );
+
+for (const combo of gated.combinations) {
+  for (const p of combo.placeCandidates) {
+    const name = p.effectiveDisplayName || p.localizedDisplayName || "";
+    assert.ok(!HAS_THAI_RE.test(name), `${combo.title}: Thai leaked`);
+    assert.ok(name.trim().length >= 2, `${combo.title}: empty name`);
+    assert.ok(
+      HAS_CJK_RE.test(name) || p.brandNameException === true || p.localizationStatus === "partial",
+      `${name} must be App-locale text, explicit brand exception, or marked partial fallback`,
+    );
+  }
+}
+
+// Completeness metric: English is incomplete but deliverable.
+clearLocalizedPlaceNameCache();
+const englishOnly = resolvePlaceDisplayName(
+  {
+    name: "Hin Lat Waterfall",
+    originalName: "Hin Lat Waterfall",
+    englishName: "Hin Lat Waterfall",
+    types: ["natural_feature"],
+  },
+  "zh-TW",
+);
+const completeEn = isCompleteLocalizationForLocale(englishOnly, "zh-TW");
+const deliverableEn = isDeliverablePlaceNameForLocale(englishOnly, "zh-TW");
+assert.equal(completeEn.ok, false, "English-only is not complete for zh-TW");
+assert.equal(deliverableEn.ok, true, "English-only must be deliverable");
+assert.equal(deliverableEn.status, "partial");
+console.log(`OK deliverable english: ${englishOnly.localizedDisplayName}`);
 
 // Mechanical title derivation
 const derived = deriveCombinationThemeTitle(
@@ -144,19 +205,28 @@ assert.ok(!isMechanicalCombinationTitle(derived), derived);
 assert.ok(HAS_CJK_RE.test(derived), derived);
 console.log(`OK theme derive: 推薦景點組合 3 → ${derived}`);
 
-// Foreign scripts never complete for zh-TW
+// Foreign scripts never complete for zh-TW; undeliverable without English.
 for (const foreign of ["Ακρόπολη", "東京タワー", "남산타워", "ရွှေ့ဂူကြီး"]) {
   clearLocalizedPlaceNameCache();
   const r = resolvePlaceDisplayName(foreign, "zh-TW");
-  // May fall back to original; Gate completeness must fail if still foreign/english-only
   if (/[\u0370-\u03ff\u3040-\u30ff\uac00-\ud7a3\u1000-\u109f]/.test(r.localizedDisplayName)) {
     const c = isCompleteLocalizationForLocale(r, "zh-TW");
     assert.equal(c.ok, false, foreign);
+    const d = isDeliverablePlaceNameForLocale(r, "zh-TW");
+    assert.equal(d.ok, false, `${foreign} must not be deliverable without English`);
   }
 }
 
 console.log("verify-combination-localization: OK");
 console.log(
   "Sample gated places:",
-  gated.combinations.map((c) => `${c.title}:${c.placeCandidates.map((p) => p.localizedDisplayName).join("、")}`).join(" | "),
+  gated.combinations
+    .map(
+      (c) =>
+        `${c.title}[${c.localizationStatus}]:${c.placeCandidates.map((p) => p.effectiveDisplayName || p.localizedDisplayName).join("、")}`,
+    )
+    .join(" | "),
+);
+console.log(
+  `deliveryPass=${gated.tripCombinationDeliveryPass} displayPass=${gated.localizationDisplayPass} englishFallback=${gated.englishFallbackCount} droppedEnglish=${gated.droppedEnglishFallback}`,
 );

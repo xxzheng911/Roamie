@@ -42,6 +42,7 @@ import {
   composedPlansFromItineraryItems,
 } from "@/lib/ai/itinerary-validator/from-payload";
 import { replanUntilItineraryValid } from "@/lib/ai/itinerary-validator/replan";
+import { logItineraryFailureChain } from "@/lib/ai/itinerary-day-coverage";
 import type { ItineraryInput } from "@/lib/itinerary.functions";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import type { PlaceResult } from "@/lib/place-result";
@@ -397,7 +398,7 @@ function buildLocalItineraryPayload(
   if (nearbyExtensions.length) {
     const dayMap = allocateNearbyExtensionDays(generateInput.days, nearbyExtensions);
     for (const [ext, day] of dayMap) {
-      const dayStops = builtStops.filter((s) => s.day === day);
+      const dayStops = builtStops.filter((s) => (s.dayIndex ?? 0) + 1 === day);
       logNearbyExtensionPersistence({
         extension: ext,
         savedDay: day,
@@ -569,7 +570,10 @@ function buildLocalItineraryPayload(
     valid ? undefined : "local_payload_invalid",
   );
   if (!valid) return null;
-  return localPayload;
+  return unwrapGeneratedTripPayload({
+    success: true,
+    trip: { payload: localPayload },
+  });
 }
 
 /** BUILDING_ITINERARY → CREATING_TRIP — selectedPlaces > 0 時必須產出行程 */
@@ -598,6 +602,13 @@ export async function createItineraryFromSession(params: {
   }
 
   logAiState("BUILDING_ITINERARY", `places=${selectedPlaces.length}`);
+  logAiPipeline(
+    "[AI_RUNTIME_PATH]",
+    "serverFnUsed=true",
+    "localFallbackUsed=false",
+    "bundledRuntime=true",
+    "resultVersion=2",
+  );
 
   try {
     logAiState("CREATING_TRIP");
@@ -612,6 +623,13 @@ export async function createItineraryFromSession(params: {
         nearbyExtensions,
       );
       if (localPayload) {
+        logAiPipeline(
+          "[AI_RUNTIME_PATH]",
+          "serverFnUsed=true",
+          "localFallbackUsed=true",
+          "bundledRuntime=true",
+          "resultVersion=2",
+        );
         logAiItinerarySuccess();
         logAiState("SUCCESS", "local_build_after_api_fail");
         return {
@@ -622,10 +640,23 @@ export async function createItineraryFromSession(params: {
           generateResult,
         };
       }
-      logItineraryFailureReason(`generate_api_failed:${generateResult.errorCode}`);
-      logAiItineraryFailed(generateResult.errorCode);
+      const preservedFailureReason =
+        generateResult.errorCode === "itinerary_validator_failed"
+          ? "validator_failed"
+          : `generate_api_failed:${generateResult.errorCode}`;
+      logItineraryFailureChain({
+        primary: preservedFailureReason,
+        validator: preservedFailureReason === "validator_failed" ? "validator_failed" : undefined,
+        persistence: undefined,
+        payloadPresent: false,
+        dayCount: 0,
+        stopCount: 0,
+        failedRules: preservedFailureReason === "validator_failed" ? ["validator_failed"] : [],
+      });
+      logItineraryFailureReason(preservedFailureReason);
+      logAiItineraryFailed(preservedFailureReason);
       logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "itinerary validation failed");
-      logAiState("FAILED", generateResult.errorCode);
+      logAiState("FAILED", preservedFailureReason);
       return {
         ok: false,
         state: "FAILED",
@@ -657,6 +688,13 @@ export async function createItineraryFromSession(params: {
         nearbyExtensions,
       );
       if (localPayload) {
+        logAiPipeline(
+          "[AI_RUNTIME_PATH]",
+          "serverFnUsed=true",
+          "localFallbackUsed=true",
+          "bundledRuntime=true",
+          "resultVersion=2",
+        );
         logAiItinerarySuccess();
         logAiState("SUCCESS", "local_build");
         return {
@@ -708,6 +746,17 @@ export async function createItineraryFromSession(params: {
             : !payload
               ? "payload_incomplete"
               : "invalid_stops_after_unwrap";
+      // Preserve root-cause chain — payload_incomplete is often terminal, not primary.
+      logItineraryFailureChain({
+        primary: stops.length > 0 && stops.length < generateInput.days
+          ? "empty_non_free_day"
+          : reason,
+        validator: undefined,
+        persistence: reason === "payload_incomplete" ? "payload_incomplete" : undefined,
+        payloadPresent: Boolean(payload),
+        dayCount: payload?.days ?? 0,
+        stopCount: stops.length,
+      });
       logItineraryFailureReason(reason);
       // Keep internal unwrap diagnostics off the user-facing failure path.
       if (!payload || reason === "payload_incomplete") {
@@ -839,6 +888,18 @@ export async function createItineraryFromSession(params: {
     }
 
     logItineraryDaysBuilt(generateInput.days, coalesceItineraryItems(payload.itinerary).length);
+    logAiPipeline(
+      "[ITINERARY_RESULT_TRACE]",
+      "plannerSuccess=true",
+      "itineraryPresent=true",
+      `dayCount=${payload.days ?? generateInput.days}`,
+      `stopCount=${coalesceItineraryItems(payload.itinerary).length}`,
+      "validatorPass=true",
+      "hardFailures=[]",
+      "persistenceAttempted=false",
+      "persistenceSuccess=false",
+      "finalFailureReason=",
+    );
     logItineraryValidationResult(true);
     logAiItinerarySuccess();
     logAiState("SUCCESS");

@@ -847,9 +847,14 @@ function Chat() {
         destination: comboDest,
         destinationType: context.destinationType,
         destinationCountry: context.destinationCountry,
+        destinationCity: context.destinationCity,
+        destinationCountryCode: context.destinationCountryCode,
+        destinationCoordinates: context.destinationCoordinates,
+        destinationScopeId: context.destinationScopeId,
         ...durationFields,
         days,
         pendingQuestion: session.pendingQuestion,
+        session,
       });
       logCombinationDiscoveryGuard(guard, comboDest);
       if (!guard.allowed || days == null) {
@@ -6206,9 +6211,14 @@ function Chat() {
             destination: planningCtx.destination,
             destinationType: planningCtx.destinationType,
             destinationCountry: planningCtx.destinationCountry,
+            destinationCity: planningCtx.destinationCity,
+            destinationCountryCode: planningCtx.destinationCountryCode,
+            destinationCoordinates: planningCtx.destinationCoordinates,
+            destinationScopeId: planningCtx.destinationScopeId,
             ...durationFields,
             days: validDays,
             pendingQuestion: nextSession.pendingQuestion,
+            session: nextSession,
           });
           logCombinationDiscoveryGuard(discoveryGuard, planningCtx.destination);
 
@@ -6278,9 +6288,14 @@ function Chat() {
             destination: planningCtx.destination,
             destinationType: planningCtx.destinationType,
             destinationCountry: planningCtx.destinationCountry,
+            destinationCity: planningCtx.destinationCity,
+            destinationCountryCode: planningCtx.destinationCountryCode,
+            destinationCoordinates: planningCtx.destinationCoordinates,
+            destinationScopeId: planningCtx.destinationScopeId,
             ...durationFields,
             days: validDays,
             pendingQuestion: nextSession.pendingQuestion,
+            session: nextSession,
           })) {
             await prepareDestinationCombinations(planningCtx, nextSession);
           }
@@ -6355,6 +6370,18 @@ function Chat() {
           const isDestResolutionFailed =
             discoveryFailure?.reason === "destination_resolution_failed" ||
             discoveryFailure?.detail === "no_coordinates";
+          const isDestinationStateDesync =
+            discoveryGuard.reason === "destination_state_desync" ||
+            discoveryGuard.reason === "missing_destination";
+          if (isDestinationStateDesync) {
+            console.info(
+              "[COMBINATION_FAILURE_UI]",
+              "reason=destination_state_desync",
+              `destination=${destLabel}`,
+              `guardReason=${discoveryGuard.reason}`,
+              `hasDestination=${discoveryGuard.hasDestination}`,
+            );
+          }
           const failureBody = isDestResolutionFailed
             ? buildDestinationRecommendationFailedMessage(
                 destLabel,
@@ -6362,6 +6389,8 @@ function Chat() {
               )
             : "目前暫時無法取得足夠的實際地點組合，請稍後回「重新整理推薦」再試一次。";
           // Last resort — keep destination/days, offer refresh (not itinerary failure).
+          // Note: destination_state_desync uses the same user-facing retry copy but
+          // debug logs above record the true primary failure (not candidate scarcity).
           stopDiscoveringLoadingAnimation("failure");
           setMsgs([
             ...stripDiscoveringLoadingMessage(next),
@@ -7132,6 +7161,16 @@ function Chat() {
       logItinerarySaveSuccess(saved.id);
       logAiItinerarySuccess(saved.id);
       logAiCreateTripSuccess(saved.id);
+      logAiPipeline(
+        "[ITINERARY_RESULT_TRACE]",
+        "plannerSuccess=true",
+        "itineraryPresent=true",
+        `dayCount=${tripDays}`,
+        `stopCount=${itineraryStops.length}`,
+        "persistenceAttempted=true",
+        "persistenceSuccess=true",
+        "finalFailureReason=",
+      );
 
       persistSession(
         clearPlanningSessionState(

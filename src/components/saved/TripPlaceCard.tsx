@@ -42,7 +42,7 @@ export function TripPlaceCard({
     settings.legMinutes?.[item.placeName] ??
     estimatePlaceVisitDuration({
       id: item.googlePlaceId ?? item.placeName,
-      name: item.localizedDisplayName || item.placeName || item.title,
+      name: item.localizedDisplayName ?? "",
       address: item.address ?? null,
       lat: item.lat,
       lng: item.lng,

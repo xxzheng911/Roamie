@@ -1,9 +1,13 @@
 /**
- * Combination Localization Gate — runs before combination delivery to chat.
+ * Combination Localization Repair / Display Gate.
  *
- * Ensures every place uses resolvePlaceDisplayName / localizedDisplayName.
- * For zh-TW: English fallback is NOT a pass — only official/verified/canonical
- * 繁中 (or brand_exception with 繁中 type) may be delivered.
+ * Localizes place display names before combination delivery.
+ * Every delivered place must be complete in the App locale (or an explicit brand exception).
+ *
+ * Reject only when the name is empty, Plus Code-only, unreadable symbols,
+ * foreign-script with no English repair, or otherwise undeliverable.
+ *
+ * localizationCoverage is a display-quality metric — not combo life/death.
  */
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
@@ -13,18 +17,28 @@ import {
 } from "@/lib/ai/combination-theme-titles";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import type { Locale } from "@/lib/i18n/types";
+import { resolvePlaceCategoryFamily } from "@/lib/ai/place-category-family";
+import type { PlaceResult } from "@/lib/place-result";
 import {
   hasForeignLocalScript,
   isCompleteLocalizationForLocale,
+  isDeliverablePlaceNameForLocale,
+  isPlusCodeOnlyName,
+  isReadablePlaceNameForLocale,
+  isUnreadablePlaceName,
   resolvePlaceDisplayName,
+  type PlaceLocalizationStatus,
   type PlaceNameLocalizationSource,
 } from "@/lib/place-display-name";
 
 const HAS_CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
 const HAS_LATIN_RE = /[A-Za-z]/;
 
-/** zh-TW requires full coverage; other locales keep a soft readable floor. */
+/** Soft floor for non-zh locales: fraction of places with a readable display name. */
 const MIN_READABLE_RATIO_NON_ZH = 0.8;
+
+/** Absolute minimum combinations for trip delivery (degradation floor). */
+const ABSOLUTE_MIN_COMBINATIONS = 2;
 
 export type CombinationPlaceLocalizationFields = {
   localizedDisplayName?: string;
@@ -33,6 +47,10 @@ export type CombinationPlaceLocalizationFields = {
   localizationSource?: PlaceNameLocalizationSource | string;
   englishName?: string;
   translationConfidence?: number;
+  brandNameException?: boolean;
+  localizationStatus?: PlaceLocalizationStatus;
+  isReadableFallback?: boolean;
+  effectiveDisplayName?: string;
 };
 
 export type GateCombinationPlaceCandidate = {
@@ -56,22 +74,29 @@ export type GateStructuredCombinationOption = {
   placeCandidates: GateCombinationPlaceCandidate[];
   primaryCandidates?: GateCombinationPlaceCandidate[];
   fallbackCandidates?: GateCombinationPlaceCandidate[];
+  localizationStatus?: PlaceLocalizationStatus;
+  localizationCoverage?: number;
 };
 
 export type LocalizedCombinationPlace = GateCombinationPlaceCandidate & {
   localizedDisplayName: string;
+  effectiveDisplayName: string;
   originalName: string;
   languageCode: string;
   localizationSource: PlaceNameLocalizationSource;
   englishName?: string;
   translationConfidence?: number;
+  localizationStatus: PlaceLocalizationStatus;
+  isReadableFallback: boolean;
 };
 
 export type CombinationLocalizationGateResult = {
+  /** @deprecated Prefer tripCombinationDeliveryPass — kept for callers. */
   ok: boolean;
   combinations: GateStructuredCombinationOption[];
   droppedForeignScript: number;
   droppedUnreadable: number;
+  /** Always 0 after Repair Gate — English fallback is retained. */
   droppedEnglishFallback: number;
   englishFallbackCount: number;
   originalFallbackCount: number;
@@ -80,8 +105,15 @@ export type CombinationLocalizationGateResult = {
   brandNameExceptionCount: number;
   mixedLanguageCount: number;
   rejectedCombinationCount: number;
+  localizationCompleteCount: number;
+  localizationPartialCount: number;
+  unreadableRejectedCount: number;
   localizationCoverage: number;
   readableRatio: number;
+  localizationDisplayPass: boolean;
+  minimumCombinationCountPass: boolean;
+  placeQualityPass: boolean;
+  tripCombinationDeliveryPass: boolean;
   reason?: string;
 };
 
@@ -108,7 +140,8 @@ function logPlaceTrace(entry: {
   resolvedLanguage: string;
   localizationSource: string;
   translationConfidence?: number;
-  gateResult: "pass" | "fail";
+  localizationStatus: PlaceLocalizationStatus;
+  gateResult: "pass" | "repaired" | "partial" | "fail";
   reason: string;
 }): void {
   if (!isDebugLocalization() && entry.gateResult === "pass") return;
@@ -123,129 +156,10 @@ function logPlaceTrace(entry: {
     `resolvedLanguage=${entry.resolvedLanguage}`,
     `localizationSource=${entry.localizationSource}`,
     `translationConfidence=${entry.translationConfidence ?? ""}`,
+    `localizationStatus=${entry.localizationStatus}`,
     `gateResult=${entry.gateResult}`,
     `reason=${entry.reason}`,
   );
-}
-
-function localizeCandidate(
-  candidate: GateCombinationPlaceCandidate,
-  locale: Locale,
-): LocalizedCombinationPlace | null {
-  const originalName = (candidate.originalName ?? candidate.name ?? "").trim();
-  if (!originalName) return null;
-
-  const resolved = resolvePlaceDisplayName(
-    {
-      name: candidate.localizedDisplayName || candidate.name,
-      originalName,
-      englishName: candidate.englishName,
-      placeId: candidate.googlePlaceId,
-      canonicalPlaceId: candidate.googlePlaceId,
-      types: candidate.types,
-      primaryType: candidate.primaryType,
-    },
-    locale,
-  );
-
-  const display = resolved.localizedDisplayName.trim();
-  if (!display) {
-    logPlaceTrace({
-      placeId: candidate.googlePlaceId,
-      canonicalPlaceId: candidate.googlePlaceId,
-      rawName: originalName,
-      englishName: resolved.englishName ?? candidate.englishName,
-      requestedLocale: locale,
-      resolvedName: "",
-      resolvedLanguage: resolved.languageCode,
-      localizationSource: resolved.localizationSource,
-      translationConfidence: resolved.translationConfidence,
-      gateResult: "fail",
-      reason: "empty_display_name",
-    });
-    return null;
-  }
-
-  if (hasForeignLocalScript(display, locale)) {
-    logPlaceTrace({
-      placeId: candidate.googlePlaceId,
-      canonicalPlaceId: candidate.googlePlaceId,
-      rawName: originalName,
-      englishName: resolved.englishName ?? candidate.englishName,
-      requestedLocale: locale,
-      resolvedName: display,
-      resolvedLanguage: resolved.languageCode,
-      localizationSource: resolved.localizationSource,
-      translationConfidence: resolved.translationConfidence,
-      gateResult: "fail",
-      reason: "foreign_local_script_blocked",
-    });
-    return null;
-  }
-
-  const completeness = isCompleteLocalizationForLocale(
-    {
-      localizedDisplayName: display,
-      localizationSource: resolved.localizationSource,
-      languageCode: resolved.languageCode,
-      originalName,
-    },
-    locale,
-  );
-
-  if (!completeness.ok) {
-    logPlaceTrace({
-      placeId: candidate.googlePlaceId,
-      canonicalPlaceId: candidate.googlePlaceId,
-      rawName: originalName,
-      englishName: resolved.englishName ?? candidate.englishName,
-      requestedLocale: locale,
-      resolvedName: display,
-      resolvedLanguage: resolved.languageCode,
-      localizationSource: resolved.localizationSource,
-      translationConfidence: resolved.translationConfidence,
-      gateResult: "fail",
-      reason: completeness.reason ?? "incomplete_localization",
-    });
-    return null;
-  }
-
-  logPlaceTrace({
-    placeId: candidate.googlePlaceId,
-    canonicalPlaceId: candidate.googlePlaceId,
-    rawName: originalName,
-    englishName: resolved.englishName ?? candidate.englishName,
-    requestedLocale: locale,
-    resolvedName: display,
-    resolvedLanguage: resolved.languageCode,
-    localizationSource: resolved.localizationSource,
-    translationConfidence: resolved.translationConfidence,
-    gateResult: "pass",
-    reason: "localized",
-  });
-
-  return {
-    name: display,
-    localizedDisplayName: display,
-    originalName: resolved.originalName || originalName,
-    englishName: resolved.englishName ?? candidate.englishName,
-    languageCode: resolved.languageCode,
-    localizationSource: resolved.localizationSource,
-    translationConfidence: resolved.translationConfidence,
-    googlePlaceId: candidate.googlePlaceId,
-    searchCandidateId:
-      candidate.searchCandidateId ??
-      candidate.googlePlaceId ??
-      `name:${display}`,
-    coordinates: candidate.coordinates,
-    address: candidate.address,
-    district: candidate.district,
-    types: candidate.types ?? [],
-    primaryType: candidate.primaryType,
-    rating: candidate.rating,
-    normalizedCategory: candidate.normalizedCategory,
-    combinationId: candidate.combinationId,
-  };
 }
 
 function scriptTier(
@@ -272,21 +186,218 @@ function countMixedLanguage(places: LocalizedCombinationPlace[]): number {
   let cjk = 0;
   let latinOnly = 0;
   for (const p of places) {
-    const n = p.localizedDisplayName;
+    const n = p.effectiveDisplayName || p.localizedDisplayName;
     if (HAS_CJK_RE.test(n) && !HAS_LATIN_RE.test(n)) cjk += 1;
     else if (HAS_LATIN_RE.test(n) && !HAS_CJK_RE.test(n)) latinOnly += 1;
     else if (HAS_CJK_RE.test(n) && HAS_LATIN_RE.test(n)) {
-      // brand mix is OK; still counts toward mixed if no brand source
       if (p.localizationSource !== "brand_exception") cjk += 1;
     }
   }
   return cjk > 0 && latinOnly > 0 ? latinOnly : 0;
 }
 
+function comboLocalizationStatus(
+  places: LocalizedCombinationPlace[],
+): PlaceLocalizationStatus {
+  if (!places.length) return "fallback";
+  if (places.every((p) => p.localizationStatus === "complete")) return "complete";
+  if (places.some((p) => p.localizationStatus === "complete")) return "partial";
+  if (places.every((p) => p.localizationStatus === "partial")) return "partial";
+  return "fallback";
+}
+
+/** Repair a single place name for display without dropping a valid real place solely for language. */
+function localizeCandidate(
+  candidate: GateCombinationPlaceCandidate,
+  locale: Locale,
+): LocalizedCombinationPlace | null {
+  const originalName = (candidate.originalName ?? candidate.name ?? "").trim();
+  if (!originalName || isUnreadablePlaceName(originalName)) {
+    if (originalName) {
+      logPlaceTrace({
+        placeId: candidate.googlePlaceId,
+        canonicalPlaceId: candidate.googlePlaceId,
+        rawName: originalName,
+        englishName: candidate.englishName,
+        requestedLocale: locale,
+        resolvedName: "",
+        resolvedLanguage: "und",
+        localizationSource: "raw_name",
+        localizationStatus: "fallback",
+        gateResult: "fail",
+        reason: isPlusCodeOnlyName(originalName) ? "plus_code_only" : "unreadable_symbols",
+      });
+    }
+    return null;
+  }
+
+  let resolved = resolvePlaceDisplayName(
+    {
+      name: candidate.localizedDisplayName || candidate.name,
+      originalName,
+      englishName: candidate.englishName,
+      placeId: candidate.googlePlaceId,
+      canonicalPlaceId: candidate.googlePlaceId,
+      types: candidate.types,
+      primaryType: candidate.primaryType,
+    },
+    locale,
+  );
+
+  let display = resolved.localizedDisplayName.trim();
+  let localizationSource = resolved.localizationSource;
+  let languageCode = resolved.languageCode;
+
+  // Repair: foreign script → English when available.
+  if (display && hasForeignLocalScript(display, locale)) {
+    const english = (
+      resolved.englishName ||
+      candidate.englishName ||
+      (HAS_LATIN_RE.test(originalName) && !hasForeignLocalScript(originalName, locale)
+        ? originalName
+        : "")
+    ).trim();
+    if (english && isReadablePlaceNameForLocale(english, locale)) {
+      display = english;
+      localizationSource = "english_fallback";
+      languageCode = "en";
+      resolved = {
+        ...resolved,
+        localizedDisplayName: english,
+        englishName: english,
+        localizationSource: "english_fallback",
+        languageCode: "en",
+        translationConfidence: 0,
+      };
+    }
+  }
+
+  if (!display) {
+    logPlaceTrace({
+      placeId: candidate.googlePlaceId,
+      canonicalPlaceId: candidate.googlePlaceId,
+      rawName: originalName,
+      englishName: resolved.englishName ?? candidate.englishName,
+      requestedLocale: locale,
+      resolvedName: "",
+      resolvedLanguage: languageCode,
+      localizationSource,
+      translationConfidence: resolved.translationConfidence,
+      localizationStatus: "fallback",
+      gateResult: "fail",
+      reason: "empty_display_name",
+    });
+    return null;
+  }
+
+  const deliverable = isDeliverablePlaceNameForLocale(
+    {
+      localizedDisplayName: display,
+      localizationSource,
+      languageCode,
+      originalName,
+      englishName: resolved.englishName ?? candidate.englishName,
+    },
+    locale,
+  );
+
+  if (!deliverable.ok) {
+    logPlaceTrace({
+      placeId: candidate.googlePlaceId,
+      canonicalPlaceId: candidate.googlePlaceId,
+      rawName: originalName,
+      englishName: resolved.englishName ?? candidate.englishName,
+      requestedLocale: locale,
+      resolvedName: display,
+      resolvedLanguage: languageCode,
+      localizationSource,
+      translationConfidence: resolved.translationConfidence,
+      localizationStatus: deliverable.status,
+      gateResult: "fail",
+      reason: deliverable.reason ?? "undeliverable",
+    });
+    return null;
+  }
+
+  const complete = isCompleteLocalizationForLocale(
+    {
+      localizedDisplayName: display,
+      localizationSource,
+      languageCode,
+      originalName,
+    },
+    locale,
+  );
+  const explicitBrandException =
+    localizationSource === "brand_exception" && resolved.brandNameException === true;
+  if (locale === "zh-TW" && !complete.ok && !explicitBrandException) {
+    logAiPipeline(
+      "[PLACE_LOCALIZATION_INCOMPLETE]",
+      `placeId=${candidate.googlePlaceId ?? ""}`,
+      `placeName=${display}`,
+      `localizationSource=${localizationSource}`,
+      `resolvedLanguage=${languageCode}`,
+      `translationConfidence=${resolved.translationConfidence ?? 0}`,
+      `reason=${complete.reason ?? "incomplete"}`,
+      "action=keep_with_warning",
+    );
+  }
+  const status = deliverable.status;
+  const isReadableFallback = status !== "complete";
+  const gateResult: "pass" | "repaired" | "partial" =
+    status === "complete"
+      ? "pass"
+      : deliverable.reason === "repaired_to_english"
+        ? "repaired"
+        : "partial";
+
+  logPlaceTrace({
+    placeId: candidate.googlePlaceId,
+    canonicalPlaceId: candidate.googlePlaceId,
+    rawName: originalName,
+    englishName: resolved.englishName ?? candidate.englishName,
+    requestedLocale: locale,
+    resolvedName: display,
+    resolvedLanguage: languageCode,
+    localizationSource,
+    translationConfidence: resolved.translationConfidence,
+    localizationStatus: status,
+    gateResult,
+    reason: complete.ok ? "localized" : (deliverable.reason ?? "readable_fallback"),
+  });
+
+  return {
+    name: display,
+    localizedDisplayName: display,
+    effectiveDisplayName: display,
+    originalName: resolved.originalName || originalName,
+    englishName: resolved.englishName ?? candidate.englishName,
+    languageCode,
+    localizationSource,
+    translationConfidence: resolved.translationConfidence,
+    brandNameException: explicitBrandException,
+    localizationStatus: status,
+    isReadableFallback,
+    googlePlaceId: candidate.googlePlaceId,
+    searchCandidateId:
+      candidate.searchCandidateId ??
+      candidate.googlePlaceId ??
+      `name:${display}`,
+    coordinates: candidate.coordinates,
+    address: candidate.address,
+    district: candidate.district,
+    types: candidate.types ?? [],
+    primaryType: candidate.primaryType,
+    rating: candidate.rating,
+    normalizedCategory: candidate.normalizedCategory,
+    combinationId: candidate.combinationId,
+  };
+}
+
 /**
- * Localize + validate combination options for the effective App locale.
- * Mutates place names onto localizedDisplayName; drops incomplete places;
- * rejects combos below coverage / min place count.
+ * Localize + soft-validate combination options for the effective App locale.
+ * Repairs names; keeps readable English fallback; never rejects a combo solely
+ * for partial localization / english_fallback / translationConfidence=0.
  */
 export function applyCombinationLocalizationGate(
   combinations: GateStructuredCombinationOption[],
@@ -294,16 +405,18 @@ export function applyCombinationLocalizationGate(
     locale?: Locale;
     minPlacesPerCombo?: number;
     minCombinations?: number;
+    /** Preferred combination count (soft target; degradation may deliver fewer). */
+    preferredCombinations?: number;
   },
 ): CombinationLocalizationGateResult {
   const locale = opts?.locale ?? effectiveAppLocale();
   const minPlaces = opts?.minPlacesPerCombo ?? 2;
-  const minCombos = opts?.minCombinations ?? 2;
-  const requireFullCoverage = locale === "zh-TW";
+  const minCombos = opts?.minCombinations ?? ABSOLUTE_MIN_COMBINATIONS;
+  const preferredCombos = opts?.preferredCombinations ?? Math.max(minCombos, 3);
 
   let droppedForeignScript = 0;
   let droppedUnreadable = 0;
-  let droppedEnglishFallback = 0;
+  const droppedEnglishFallback = 0;
   let englishFallbackCount = 0;
   let originalFallbackCount = 0;
   let verifiedTranslationCount = 0;
@@ -311,8 +424,11 @@ export function applyCombinationLocalizationGate(
   let brandNameExceptionCount = 0;
   let mixedLanguageCount = 0;
   let rejectedCombinationCount = 0;
-  let completePlaces = 0;
+  let localizationCompleteCount = 0;
+  let localizationPartialCount = 0;
+  let unreadableRejectedCount = 0;
   let totalPlaces = 0;
+  let validRealPlaceCount = 0;
 
   const gated: GateStructuredCombinationOption[] = [];
   const usedTitles = new Set<string>();
@@ -340,34 +456,16 @@ export function applyCombinationLocalizationGate(
         if (before && hasForeignLocalScript(before, locale)) {
           droppedForeignScript += 1;
         } else {
-          // Probe why — english vs other
-          const probe = resolvePlaceDisplayName(
-            {
-              name: place.name,
-              originalName: before,
-              englishName: place.englishName,
-              placeId: place.googlePlaceId,
-              types: place.types,
-              primaryType: place.primaryType,
-            },
-            locale,
-          );
-          if (
-            probe.localizationSource === "english" ||
-            probe.localizationSource === "english_fallback" ||
-            probe.languageCode === "en"
-          ) {
-            droppedEnglishFallback += 1;
-            englishFallbackCount += 1;
-          } else {
-            droppedUnreadable += 1;
-          }
-          if (probe.localizationSource === "original") originalFallbackCount += 1;
+          droppedUnreadable += 1;
         }
+        unreadableRejectedCount += 1;
         continue;
       }
 
-      completePlaces += 1;
+      validRealPlaceCount += 1;
+      if (localized.localizationStatus === "complete") localizationCompleteCount += 1;
+      else localizationPartialCount += 1;
+
       const tier = scriptTier(localized.localizationSource, localized.languageCode);
       if (tier === "locale") {
         zhTwResolvedCount += 1;
@@ -380,13 +478,19 @@ export function applyCombinationLocalizationGate(
       }
       if (tier === "brand") brandNameExceptionCount += 1;
       if (tier === "english") englishFallbackCount += 1;
-      if (localized.localizationSource === "original") originalFallbackCount += 1;
+      if (
+        localized.localizationSource === "original" ||
+        localized.localizationSource === "raw_name" ||
+        localized.localizationSource === "passthrough"
+      ) {
+        originalFallbackCount += 1;
+      }
       localizedPool.push(localized);
     }
 
     mixedLanguageCount += countMixedLanguage(localizedPool);
 
-    // Prefer locale-tier names first, then brand — never keep incomplete English.
+    // Prefer locale-tier names first, then brand, then readable English.
     localizedPool.sort((a, b) => {
       const ta = scriptTier(a.localizationSource, a.languageCode);
       const tb = scriptTier(b.localizationSource, b.languageCode);
@@ -395,46 +499,93 @@ export function applyCombinationLocalizationGate(
       return rank(ta) - rank(tb);
     });
 
-    const primaryCount = Math.min(3, localizedPool.length);
-    const primary = localizedPool.slice(0, primaryCount);
-    const fallback = localizedPool.slice(primaryCount);
+    // Combination-level hard diversity: representative places may not repeat a
+    // normalized capped family (park/garden, wildlife, museum, market, viewpoint,
+    // cafe or shopping). Fallbacks remain available for later replacement.
+    const cappedFamilies = new Set([
+      "park_family", "wildlife_family", "museum_family", "market_family",
+      "viewpoint_family", "cafe", "shopping",
+    ]);
+    const usedFamilies = new Set<string>();
+    const primary: LocalizedCombinationPlace[] = [];
+    const fallback: LocalizedCombinationPlace[] = [];
+    for (const place of localizedPool) {
+      const family = resolvePlaceCategoryFamily(place as unknown as PlaceResult);
+      if (
+        primary.length < 3 &&
+        (!cappedFamilies.has(family) || !usedFamilies.has(family))
+      ) {
+        primary.push(place);
+        if (cappedFamilies.has(family)) usedFamilies.add(family);
+      } else {
+        fallback.push(place);
+      }
+    }
 
     const comboCoverage =
       pool.length === 0 ? 0 : localizedPool.length / Math.max(1, pool.length);
-    const comboMixed = countMixedLanguage(localizedPool);
-    const deliveredEnglish = localizedPool.filter(
-      (p) =>
-        p.localizationSource === "english" ||
-        p.localizationSource === "english_fallback" ||
-        (p.languageCode === "en" && p.localizationSource !== "brand_exception"),
-    ).length;
+    const locStatus = comboLocalizationStatus(localizedPool);
 
-    // Delivered pool must be fully localized; incomplete places were already dropped.
-    // zh-TW: require enough complete places, zero delivered English, zero mixed leftover.
-    if (
-      primary.length < minPlaces ||
-      deliveredEnglish > 0 ||
-      (requireFullCoverage
-        ? localizedPool.length < minPlaces || comboMixed > 0
-        : comboCoverage < MIN_READABLE_RATIO_NON_ZH)
-    ) {
+    // Delivery: real place count only — NOT localization completeness.
+    const placeValidityPass = localizedPool.length >= minPlaces;
+    const tourismQualityPass = primary.length >= minPlaces;
+    const rejected = !placeValidityPass || !tourismQualityPass;
+    // Soft reasons that must NEVER reject a combination.
+    const softOnlyReasons = [
+      "english_fallback",
+      "partial_localization",
+      "translationConfidence=0",
+      "incomplete_source:english_fallback",
+    ];
+    void softOnlyReasons;
+
+    if (rejected) {
       rejectedCombinationCount += 1;
+      const rejectionReason = !placeValidityPass
+        ? `real_places_below_minimum:${localizedPool.length}<${minPlaces}`
+        : `primary_places_below_minimum:${primary.length}<${minPlaces}`;
+      logAiPipeline(
+        "[COMBINATION_REJECTION_TRACE]",
+        `combinationId=${combo.combinationId}`,
+        `theme=${combo.theme}`,
+        `realPlaceCount=${localizedPool.length}`,
+        `placeValidityPass=${placeValidityPass}`,
+        `tourismQualityPass=${tourismQualityPass}`,
+        `localizationStatus=${locStatus}`,
+        `localizationCoverage=${comboCoverage.toFixed(2)}`,
+        "rejected=true",
+        `rejectionReason=${rejectionReason}`,
+      );
       logAiPipeline(
         "[COMBINATION_LOCALIZATION_GATE]",
         `combinationId=${combo.combinationId}`,
         "status=rejected",
-        `complete=${localizedPool.length}`,
+        `complete=${localizationCompleteCount}`,
+        `partial=${localizedPool.filter((p) => p.localizationStatus === "partial").length}`,
         `raw=${pool.length}`,
         `coverage=${comboCoverage.toFixed(2)}`,
-        `mixed=${comboMixed}`,
-        `deliveredEnglish=${deliveredEnglish}`,
+        `localizationStatus=${locStatus}`,
         `title=${combo.title}`,
+        `reason=${rejectionReason}`,
       );
       continue;
     }
 
+    logAiPipeline(
+      "[COMBINATION_REJECTION_TRACE]",
+      `combinationId=${combo.combinationId}`,
+      `theme=${combo.theme}`,
+      `realPlaceCount=${localizedPool.length}`,
+      "placeValidityPass=true",
+      "tourismQualityPass=true",
+      `localizationStatus=${locStatus}`,
+      `localizationCoverage=${comboCoverage.toFixed(2)}`,
+      "rejected=false",
+      "rejectionReason=",
+    );
+
     const toCandidate = (p: LocalizedCombinationPlace): GateCombinationPlaceCandidate => ({
-      name: p.localizedDisplayName,
+      name: p.effectiveDisplayName,
       googlePlaceId: p.googlePlaceId,
       searchCandidateId: p.searchCandidateId,
       coordinates: p.coordinates,
@@ -446,11 +597,14 @@ export function applyCombinationLocalizationGate(
       normalizedCategory: p.normalizedCategory,
       combinationId: p.combinationId,
       localizedDisplayName: p.localizedDisplayName,
+      effectiveDisplayName: p.effectiveDisplayName,
       originalName: p.originalName,
       englishName: p.englishName,
       languageCode: p.languageCode,
       localizationSource: p.localizationSource,
       translationConfidence: p.translationConfidence,
+      localizationStatus: p.localizationStatus,
+      isReadableFallback: p.isReadableFallback,
     });
 
     const localizedTitle = isMechanicalCombinationTitle(combo.title)
@@ -468,25 +622,39 @@ export function applyCombinationLocalizationGate(
       placeCandidates: localizedPool.map(toCandidate),
       primaryCandidates: primary.map(toCandidate),
       fallbackCandidates: fallback.map(toCandidate),
+      localizationStatus: locStatus,
+      localizationCoverage: comboCoverage,
     });
   }
 
-  // Coverage of places that still need localization among inputs.
-  // Delivered combinations are 100% complete by construction; leftover English was dropped.
-  const localizationCoverage = totalPlaces === 0 ? 0 : completePlaces / totalPlaces;
-  const readableRatio = localizationCoverage;
-  const deliveredPlaceCount = gated.reduce(
-    (n, c) => n + (c.placeCandidates?.length ?? 0),
-    0,
-  );
-  const deliveredCoverage = deliveredPlaceCount === 0 ? 0 : 1;
+  const localizationCoverage =
+    totalPlaces === 0 ? 0 : localizationCompleteCount / totalPlaces;
+  const readableRatio =
+    totalPlaces === 0 ? 0 : validRealPlaceCount / totalPlaces;
 
-  const ok =
-    gated.length >= minCombos &&
-    gated.every((c) => (c.primaryCandidates?.length ?? 0) >= minPlaces) &&
-    (requireFullCoverage
-      ? deliveredCoverage >= 1 && mixedLanguageCount === 0
-      : readableRatio >= MIN_READABLE_RATIO_NON_ZH * 0.75);
+  // Display pass: every retained place has a readable name (by construction).
+  const localizationDisplayPass =
+    gated.length === 0
+      ? false
+      : gated.every((c) =>
+          (c.placeCandidates ?? []).every((p) => {
+            const name = (p.effectiveDisplayName || p.localizedDisplayName || p.name || "").trim();
+            return Boolean(name) && isReadablePlaceNameForLocale(name, locale);
+          }),
+        ) &&
+        (locale === "zh-TW" ? true : readableRatio >= MIN_READABLE_RATIO_NON_ZH * 0.75);
+
+  const placeQualityPass =
+    validRealPlaceCount >= minPlaces * ABSOLUTE_MIN_COMBINATIONS && gated.length > 0;
+
+  const minimumCombinationCountPass = gated.length >= minCombos;
+  const preferredCombinationCountPass = gated.length >= preferredCombos;
+
+  // Trip delivery: quality + absolute minimum combo count (not localization completeness).
+  const tripCombinationDeliveryPass = placeQualityPass && minimumCombinationCountPass;
+
+  // Legacy `ok` mirrors trip delivery (not localization completeness).
+  const ok = tripCombinationDeliveryPass;
 
   logAiPipeline(
     "[COMBINATION_LOCALIZATION_SUMMARY]",
@@ -501,7 +669,14 @@ export function applyCombinationLocalizationGate(
     `droppedForeignScript=${droppedForeignScript}`,
     `droppedUnreadable=${droppedUnreadable}`,
     `droppedEnglishFallback=${droppedEnglishFallback}`,
+    `localizationCompleteCount=${localizationCompleteCount}`,
+    `localizationPartialCount=${localizationPartialCount}`,
     `localizationCoverage=${localizationCoverage.toFixed(2)}`,
+    `localizationDisplayPass=${localizationDisplayPass}`,
+    `minimumCombinationCountPass=${minimumCombinationCountPass}`,
+    `preferredCombinationCountPass=${preferredCombinationCountPass}`,
+    `placeQualityPass=${placeQualityPass}`,
+    `tripCombinationDeliveryPass=${tripCombinationDeliveryPass}`,
     `gatePass=${ok}`,
     `combinations=${gated.length}/${combinations.length}`,
   );
@@ -517,6 +692,36 @@ export function applyCombinationLocalizationGate(
     `englishFallback=${englishFallbackCount}`,
     `originalFallback=${originalFallbackCount}`,
     `coverage=${localizationCoverage.toFixed(2)}`,
+    `localizationDisplayPass=${localizationDisplayPass}`,
+    `minimumCombinationCountPass=${minimumCombinationCountPass}`,
+    `tripCombinationDeliveryPass=${tripCombinationDeliveryPass}`,
+  );
+
+  logAiPipeline(
+    "[COMBINATION_DELIVERY_SUMMARY]",
+    `destination=`,
+    `tripDays=`,
+    `candidatePlaceCount=${totalPlaces}`,
+    `validRealPlaceCount=${validRealPlaceCount}`,
+    `qualityRejectedCount=${unreadableRejectedCount}`,
+    `localizationCompleteCount=${localizationCompleteCount}`,
+    `localizationPartialCount=${localizationPartialCount}`,
+    `englishFallbackCount=${englishFallbackCount}`,
+    `unreadableRejectedCount=${unreadableRejectedCount}`,
+    `combinationTargetCount=${preferredCombos}`,
+    `combinationBuiltCount=${combinations.length}`,
+    `combinationDeliveredCount=${gated.length}`,
+    `deliveryPass=${tripCombinationDeliveryPass}`,
+    `failureReason=${ok ? "" : !placeQualityPass ? "place_quality_insufficient" : "minimum_combination_count"}`,
+  );
+  logAiPipeline(
+    "[COMBINATION_PIPELINE_SUMMARY]",
+    "destination=",
+    `candidateCount=${totalPlaces}`,
+    `localizedCount=${localizationCompleteCount + localizationPartialCount}`,
+    `rejectedForLocalization=${droppedForeignScript + droppedUnreadable}`,
+    `finalCombinationCount=${gated.length}`,
+    `failureStage=${ok ? "" : !placeQualityPass ? "quality" : "minimum_combination_count"}`,
   );
 
   return {
@@ -532,9 +737,20 @@ export function applyCombinationLocalizationGate(
     brandNameExceptionCount,
     mixedLanguageCount,
     rejectedCombinationCount,
+    localizationCompleteCount,
+    localizationPartialCount,
+    unreadableRejectedCount,
     localizationCoverage,
     readableRatio,
-    reason: ok ? undefined : "incomplete_localization_for_app_locale",
+    localizationDisplayPass,
+    minimumCombinationCountPass,
+    placeQualityPass,
+    tripCombinationDeliveryPass,
+    reason: ok
+      ? undefined
+      : !placeQualityPass
+        ? "place_quality_insufficient"
+        : "minimum_combination_count",
   };
 }
 
@@ -546,19 +762,33 @@ export function localizeCombinationPlaceNames(
   const out: string[] = [];
   for (const name of names) {
     const resolved = resolvePlaceDisplayName(name, locale);
-    const display = resolved.localizedDisplayName.trim();
+    let display = resolved.localizedDisplayName.trim();
     if (!display) continue;
-    const complete = isCompleteLocalizationForLocale(
+
+    if (hasForeignLocalScript(display, locale)) {
+      const english = (resolved.englishName ?? "").trim();
+      if (english && isReadablePlaceNameForLocale(english, locale)) {
+        display = english;
+      } else {
+        continue;
+      }
+    }
+
+    const deliverable = isDeliverablePlaceNameForLocale(
       {
         localizedDisplayName: display,
-        localizationSource: resolved.localizationSource,
-        languageCode: resolved.languageCode,
+        localizationSource:
+          display === resolved.localizedDisplayName
+            ? resolved.localizationSource
+            : "english_fallback",
+        languageCode:
+          display === resolved.localizedDisplayName ? resolved.languageCode : "en",
         originalName: resolved.originalName,
+        englishName: resolved.englishName,
       },
       locale,
     );
-    if (!complete.ok) continue;
-    if (hasForeignLocalScript(display, locale)) continue;
+    if (!deliverable.ok) continue;
     out.push(display);
   }
   return out;

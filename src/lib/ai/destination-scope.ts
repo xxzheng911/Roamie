@@ -21,13 +21,11 @@ export type DestinationScopeFields = {
 export function isCountryLevelDestination(name: string | null | undefined): boolean {
   if (!name?.trim()) return false;
   const label = normalizeDestinationLabel(name);
-  // City-states are valid travel destinations (same label as country).
-  if (label === "新加坡" || label === "香港" || label === "澳門" || label === "澳门") {
-    return false;
-  }
+  const entity = resolveDestinationEntity(label);
+  // City-states are valid Places destinations (city label == country label).
+  if (entity.type === "city_state") return false;
   if (isKnownTouristCityLabel(label) && !isKnownCountryLabel(label)) return false;
   if (isKnownCountryLabel(label) && !isKnownTouristCityLabel(label)) return true;
-  const entity = resolveDestinationEntity(label);
   return entity.type === "country";
 }
 
@@ -41,6 +39,7 @@ export function canDiscoverDestinationPlaces(name: string | null | undefined): b
   const entity = resolveDestinationEntity(name);
   return (
     entity.type === "city" ||
+    entity.type === "city_state" ||
     entity.type === "region" ||
     entity.type === "island" ||
     entity.type === "state" ||
@@ -56,12 +55,21 @@ export function resolveDestinationScopeFields(
   const label = normalizeDestinationLabel(name);
   const entity = resolveDestinationEntity(label);
   const country =
-    entity.type === "country"
+    entity.type === "country" || entity.type === "city_state"
       ? label
       : entity.country ??
         (previousCountry ? normalizeDestinationLabel(previousCountry) : undefined);
 
   // Entity resolver already emits DESTINATION_ENTITY_RESOLVED — avoid duplicate spam.
+
+  if (entity.type === "city_state") {
+    return {
+      destinationName: label,
+      destinationType: "city_state",
+      destinationCountry: country ?? label,
+      destinationCity: label,
+    };
+  }
 
   if (entity.type === "country") {
     return {
@@ -136,7 +144,7 @@ function mapScopePrecision(
   if (type === "state" || type === "province" || type === "administrative_area") {
     return "state";
   }
-  if (type === "city") return "city";
+  if (type === "city" || type === "city_state") return "city";
   if (type === "district") return "district";
   if (type === "attraction") return "landmark";
   return "unknown";
@@ -160,8 +168,9 @@ export function evaluateDestinationScopeGate(params: {
     entity?.type ??
     "unknown") as DestinationEntityType | "unknown";
   const countryLevel =
-    destinationType === "country" ||
-    (destination ? isCountryLevelDestination(destination) : false);
+    destinationType !== "city_state" &&
+    (destinationType === "country" ||
+      (destination ? isCountryLevelDestination(destination) : false));
   const scopePrecision = countryLevel
     ? "country"
     : mapScopePrecision(

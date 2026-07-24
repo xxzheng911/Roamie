@@ -53,6 +53,8 @@ export const RoamieItineraryItemSchema = z.object({
   originalName: z.string().optional(),
   /** Localized display name — sole UI SoT (kept in sync with placeId / coords). */
   localizedDisplayName: z.string().optional(),
+  translationConfidence: z.number().optional(),
+  brandNameException: z.boolean().optional(),
   languageCode: z.string().optional(),
   localizationSource: z.string().optional(),
   /** Prefer for Directions when set. */

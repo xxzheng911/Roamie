@@ -697,9 +697,10 @@ export function validateGeneratedItinerary(params: {
 /**
  * Redistribute stops into empty days.
  *
- * P1 Step 1: never invent singleton days by peeling one stop from a full day.
- * Only fill an empty day when we can place `minPerDay` real stops without
- * dropping any donor below `minPerDay`. Otherwise leave empty (caller blocks save).
+ * Coverage-first: when total stops can meet minPerDay across all days, peel from
+ * heaviest donors (keeping each donor ≥ minPerDay). Prefer lower per-day counts
+ * over leaving a travel day empty. Singleton fill is only used when totals cannot
+ * meet days×minPerDay but can still put ≥1 stop on every day.
  */
 export function redistributeToFillEmptyDays(params: {
   stops: RoamieItineraryItem[];
@@ -707,9 +708,12 @@ export function redistributeToFillEmptyDays(params: {
   startDate: string;
   sparePlaces?: RoamieRecommendationItem[];
   makeStop?: (place: RoamieRecommendationItem, date: string, time: string) => RoamieItineraryItem;
-  /** Minimum stops required on a filled day (default 2). Singleton fill is forbidden. */
+  /** Minimum stops required on a filled day (default 2). */
   minPerDay?: number;
-  /** When true (default), skip all empty-day fills that would create 1-stop days. */
+  /**
+   * When true, do not create 1-stop days if totals can instead leave empties.
+   * When totals ≥ days×minPerDay, peels proceed regardless.
+   */
   forbidSingletonFill?: boolean;
 }): RoamieItineraryItem[] {
   const dayCount = Math.max(params.days, 1);
@@ -726,12 +730,16 @@ export function redistributeToFillEmptyDays(params: {
     byDate.set(date, list);
   }
 
-  const emptyDates = dates.filter((d) => !(byDate.get(d)?.length));
-  if (!emptyDates.length) {
+  const totalStops = params.stops.length;
+  const canCoverFull = totalStops >= dayCount * minPerDay;
+  const canCoverSparse = totalStops >= dayCount;
+
+  const emptyDates = () => dates.filter((d) => !(byDate.get(d)?.length));
+  if (!emptyDates().length) {
     return params.stops;
   }
 
-  for (const emptyDate of emptyDates) {
+  for (const emptyDate of emptyDates()) {
     // Prefer unused spare places — only if we can fill minPerDay at once.
     if (params.sparePlaces?.length && params.makeStop) {
       const usedIds = new Set(
@@ -764,7 +772,59 @@ export function redistributeToFillEmptyDays(params: {
       }
     }
 
-    if (forbidSingleton) {
+    // Peel from heaviest donors while keeping donor ≥ minPerDay.
+    if (canCoverFull) {
+      const filled: RoamieItineraryItem[] = [];
+      while (filled.length < minPerDay) {
+        const donorDate = [...dates]
+          .filter((d) => d !== emptyDate && (byDate.get(d)?.length ?? 0) > minPerDay)
+          .sort(
+            (a, b) => (byDate.get(b)?.length ?? 0) - (byDate.get(a)?.length ?? 0),
+          )[0];
+        if (!donorDate) break;
+        const donorList = byDate.get(donorDate)!;
+        const moved = donorList.pop()!;
+        byDate.set(donorDate, donorList);
+        filled.push({ ...moved, date: emptyDate });
+      }
+      if (filled.length >= minPerDay) {
+        byDate.set(emptyDate, filled);
+        logAiPipeline(
+          "[AI_PLANNER_REDISTRIBUTE]",
+          `emptyDate=${emptyDate}`,
+          "action=peel_from_donors",
+          `count=${filled.length}`,
+          "sourceFunction=redistributeToFillEmptyDays",
+        );
+        continue;
+      }
+      if (filled.length > 0 && canCoverSparse) {
+        byDate.set(emptyDate, filled);
+        logAiPipeline(
+          "[AI_PLANNER_REDISTRIBUTE]",
+          `emptyDate=${emptyDate}`,
+          "action=peel_partial_for_coverage",
+          `count=${filled.length}`,
+          "sourceFunction=redistributeToFillEmptyDays",
+        );
+        continue;
+      }
+      // Return partial peels to heaviest donor when we cannot keep them.
+      if (filled.length) {
+        const restoreDate = [...dates]
+          .filter((d) => d !== emptyDate)
+          .sort(
+            (a, b) => (byDate.get(b)?.length ?? 0) - (byDate.get(a)?.length ?? 0),
+          )[0]!;
+        const list = byDate.get(restoreDate) ?? [];
+        for (const item of filled) {
+          list.push({ ...item, date: restoreDate });
+        }
+        byDate.set(restoreDate, list);
+      }
+    }
+
+    if (forbidSingleton && !canCoverSparse) {
       logAiPipeline(
         "[AI_PLANNER_REDISTRIBUTE]",
         `emptyDate=${emptyDate}`,
@@ -775,12 +835,12 @@ export function redistributeToFillEmptyDays(params: {
       continue;
     }
 
-    // Legacy path (explicitly opted in): peel one stop — kept only for tests that disable forbid.
+    // Sparse coverage: peel one stop so the day is not blank.
     let donorDate: string | null = null;
     let donorList: RoamieItineraryItem[] | null = null;
     for (const date of dates) {
       const list = byDate.get(date) ?? [];
-      if (list.length > 1) {
+      if (list.length > minPerDay || (!forbidSingleton && list.length > 1)) {
         donorDate = date;
         donorList = list;
         break;
@@ -790,6 +850,12 @@ export function redistributeToFillEmptyDays(params: {
       const moved = donorList.pop()!;
       byDate.set(donorDate, donorList);
       byDate.set(emptyDate, [{ ...moved, date: emptyDate }]);
+      logAiPipeline(
+        "[AI_PLANNER_REDISTRIBUTE]",
+        `emptyDate=${emptyDate}`,
+        "action=peel_singleton_for_coverage",
+        "sourceFunction=redistributeToFillEmptyDays",
+      );
     }
   }
 

@@ -12,14 +12,13 @@ import {
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 export type DailyDiversityCategory =
-  | "ordinary_park"
-  | "landmark_park"
-  | "ordinary_market"
-  | "tourist_market"
+  | "park_family"
+  | "wildlife_family"
+  | "market_family"
   | "cafe"
-  | "viewpoint_tower"
+  | "viewpoint_family"
   | "shrine_temple"
-  | "museum"
+  | "museum_family"
   | "restaurant"
   | "shopping"
   | "nightlife"
@@ -28,28 +27,26 @@ export type DailyDiversityCategory =
   | "other";
 
 export type DailyDiversityLimits = {
-  ordinary_park: number;
-  landmark_park: number;
-  ordinary_market: number;
-  tourist_market: number;
+  park_family: number;
+  wildlife_family: number;
+  market_family: number;
   cafe: number;
-  viewpoint_tower: number;
+  viewpoint_family: number;
   shrine_temple: number;
-  museum: number;
+  museum_family: number;
   shopping: number;
   monument: number;
 };
 
 const DEFAULT_LIMITS: DailyDiversityLimits = {
-  ordinary_park: 0,
-  landmark_park: 1,
-  ordinary_market: 0,
-  tourist_market: 1,
+  park_family: 1,
+  wildlife_family: 1,
+  market_family: 1,
   cafe: 1,
-  viewpoint_tower: 1,
+  viewpoint_family: 1,
   shrine_temple: 2,
   /** museum + gallery combined via classify → museum */
-  museum: 1,
+  museum_family: 1,
   shopping: 1,
   monument: 0,
 };
@@ -90,13 +87,13 @@ export function resolveDailyDiversityLimits(opts?: {
     (style === "slow_nature" || /公園|戶外|户外|nature|hiking|綠地/i.test(text)) &&
     /公園|nature|戶外|户外/.test(text + (style ?? ""))
   ) {
-    limits.landmark_park = 2;
+    limits.park_family = 1;
   }
   if (/夜市|市場巡|逛市場|market\s*hop/i.test(text)) {
-    limits.tourist_market = 2;
+    limits.market_family = 1;
   }
   if (/博物館巡|美術館|藝術之旅|museum\s*hop|art\s*tour|museum\s*day/i.test(text)) {
-    limits.museum = 3;
+    limits.museum_family = 2;
   }
   if (/宗教文化|temple\s*tour|shrine\s*hop/i.test(text)) {
     limits.shrine_temple = 4;
@@ -118,8 +115,9 @@ export function diversityCategoryFromFamily(
   const blob = placeBlob(place);
   const landmark = isTourismLandmarkException(place);
 
-  if (family === "museum" || family === "gallery") return "museum";
-  if (family === "viewpoint") return "viewpoint_tower";
+  if (family === "museum_family") return "museum_family";
+  if (family === "viewpoint_family") return "viewpoint_family";
+  if (family === "wildlife_family") return "wildlife_family";
   if (family === "temple_shrine" || family === "church") return "shrine_temple";
   if (family === "cafe") return "cafe";
   if (family === "nightlife") return "nightlife";
@@ -128,19 +126,8 @@ export function diversityCategoryFromFamily(
   if (family === "monument") {
     return landmark ? "attraction" : "monument";
   }
-  if (family === "market") {
-    return landmark || /夜市|觀光市場|traditional\s*market/i.test(blob)
-      ? "tourist_market"
-      : "ordinary_market";
-  }
-  if (family === "park" || family === "garden" || family === "nature_trail") {
-    return landmark ||
-      /國家公園|国営|国立|森林公園|中央公園|central\s*park|上野公園|代代木|奈良公園|yoyogi/i.test(
-        blob,
-      )
-      ? "landmark_park"
-      : "ordinary_park";
-  }
+  if (family === "market_family") return "market_family";
+  if (family === "park_family") return "park_family";
 
   if (
     /塔|タワー|tower|觀景|展望|observation|電視塔|テレビ塔|通天閣|skytree|鐵塔|viewing\s*mound|sunset\s*hill|viewpoint|lookout|觀景丘|夕陽丘/i.test(
@@ -148,7 +135,7 @@ export function diversityCategoryFromFamily(
     ) ||
     types.has("observation_deck")
   ) {
-    return "viewpoint_tower";
+    return "viewpoint_family";
   }
 
   if (
@@ -171,7 +158,7 @@ export function diversityCategoryFromFamily(
     types.has("military_museum") ||
     /博物|美術館|gallery|museum|紀念館|軍區/i.test(blob)
   ) {
-    return "museum";
+    return "museum_family";
   }
 
   if (types.has("cafe") || types.has("coffee_shop") || /咖啡|カフェ|cafe|coffee/i.test(blob)) {
@@ -190,20 +177,15 @@ export function diversityCategoryFromFamily(
     /夜市|觀光市場|観光市場|traditional\s*market|築地|豊洲|東大門|南大門|廣藏/i.test(blob) ||
     (types.has("market") && landmark)
   ) {
-    return "tourist_market";
+    return "market_family";
   }
 
   if (types.has("market") || (/市場|market/i.test(blob) && !landmark)) {
-    return "ordinary_market";
+    return "market_family";
   }
 
   if (types.has("park") || /公園|park/i.test(blob)) {
-    return landmark ||
-      /國家公園|国営|国立|森林公園|中央公園|central\s*park|上野公園|代代木|奈良公園|yoyogi/i.test(
-        blob,
-      )
-      ? "landmark_park"
-      : "ordinary_park";
+    return "park_family";
   }
 
   if (
@@ -322,6 +304,32 @@ export function summarizeDailyCategoryDiversity(
     }
   }
   const gatePass = violations.length === 0 || Boolean(opts?.overrideReason);
+  if (!gatePass) {
+    const seen: Record<string, number> = {};
+    for (const place of places) {
+      const categoryFamily = classifyDailyDiversityCategory(place);
+      seen[categoryFamily] = (seen[categoryFamily] ?? 0) + 1;
+      const limit =
+        categoryFamily in limits
+          ? limits[categoryFamily as keyof DailyDiversityLimits]
+          : Number.POSITIVE_INFINITY;
+      if (Number.isFinite(limit) && seen[categoryFamily] > limit) {
+        logAiPipeline(
+          "[DAILY_CATEGORY_HARD_GATE]",
+          `day=${day}`,
+          `placeId=${place.id}`,
+          `placeName=${place.localizedDisplayName ?? place.name}`,
+          `rawType=${place.primaryType ?? place.types?.[0] ?? ""}`,
+          `categoryFamily=${categoryFamily}`,
+          `currentCount=${seen[categoryFamily]}`,
+          `limit=${limit}`,
+          "action=replan_or_replace",
+          "replacementPlaceId=",
+          "replacementCategoryFamily=",
+        );
+      }
+    }
+  }
   logAiPipeline(
     "[DAILY_CATEGORY_DIVERSITY_SUMMARY]",
     `day=${day}`,
