@@ -648,6 +648,47 @@ function parseOrdinalCombinationIndices(text: string, combinationCount: number):
   return [...indices].sort((a, b) => a - b);
 }
 
+const COMBINATION_RANGE_SEPARATOR_RE = /(?:~|～|〜|-|–|—|到|至)/;
+const COMBINATION_RANGE_SEPARATOR_SOURCE = "(?:~|～|〜|-|–|—|到|至)";
+const ORDINAL_RANGE_TOKEN_SOURCE = "[一二三四五六七八九十壹貳叁參肆伍]|\\d{1,2}";
+
+function ordinalTokenToOneBased(token: string): number | null {
+  if (/^\d{1,2}$/.test(token)) return Number(token);
+  if (token.length !== 1) return null;
+  const index = ORDINAL_TO_INDEX[token];
+  return index == null ? null : index + 1;
+}
+
+function expandCombinationRange(start: number, end: number): number[] {
+  const lower = Math.min(start, end);
+  const upper = Math.max(start, end);
+  return Array.from({ length: upper - lower + 1 }, (_, offset) => lower + offset);
+}
+
+function parseCombinationRangeValues(text: string): number[] {
+  const values: number[] = [];
+  const numericRangeRe = new RegExp(
+    `(?:^|[^第\\d])(\\d{1,2})\\s*${COMBINATION_RANGE_SEPARATOR_SOURCE}\\s*(?:第\\s*)?(\\d{1,2})(?:\\s*(?:個組合|個|組))?`,
+    "g",
+  );
+  for (const match of text.matchAll(numericRangeRe)) {
+    values.push(...expandCombinationRange(Number(match[1]), Number(match[2])));
+  }
+
+  const ordinalRangeRe = new RegExp(
+    `第\\s*(${ORDINAL_RANGE_TOKEN_SOURCE})\\s*(?:個組合|個|組)?\\s*${COMBINATION_RANGE_SEPARATOR_SOURCE}\\s*第?\\s*(${ORDINAL_RANGE_TOKEN_SOURCE})(?:\\s*(?:個組合|個|組))?`,
+    "g",
+  );
+  for (const match of text.matchAll(ordinalRangeRe)) {
+    const start = ordinalTokenToOneBased(match[1] ?? "");
+    const end = ordinalTokenToOneBased(match[2] ?? "");
+    if (start != null && end != null) {
+      values.push(...expandCombinationRange(start, end));
+    }
+  }
+  return values;
+}
+
 export function parseCombinationSelectionIndices(
   text: string,
   combinationCount: number,
@@ -660,20 +701,25 @@ export function parseCombinationSelectionIndices(
     return Array.from({ length: combinationCount }, (_, i) => i);
   }
 
-  const indices = new Set<number>();
+  const oneBasedValues: number[] = [];
+  if (COMBINATION_RANGE_SEPARATOR_RE.test(t)) {
+    oneBasedValues.push(...parseCombinationRangeValues(t));
+  }
   for (const match of t.matchAll(/(\d{1,2})/g)) {
-    const index = Number(match[1]) - 1;
-    if (index >= 0 && index < combinationCount) indices.add(index);
+    oneBasedValues.push(Number(match[1]));
   }
   for (const index of parseOrdinalCombinationIndices(t, combinationCount)) {
-    indices.add(index);
+    oneBasedValues.push(index + 1);
   }
-  return [...indices].sort((a, b) => a - b);
+  return [...new Set(oneBasedValues)]
+    .sort((a, b) => a - b)
+    .filter((value) => value >= 1 && value <= combinationCount)
+    .map((value) => value - 1);
 }
 
 /** Phrases that mean: select all currently shown combinations / Roamie mix. */
 export const USER_ALL_OR_AUTO_COMBINATION_RE =
-  /^(可以)?幫我生成$|^(可以)?幫我排$|^都可以$|^都不錯$|^這些都可以$|^這些都不錯$|^你決定$|^Roamie\s*幫我安排$|^幫我安排$|^直接排$|^全部$|^混搭$|都行$|^都行吧$|^就這些$|^就這樣$|^沒問題$/i;
+  /^(可以)?幫我生成$|^(可以)?幫我排$|^都可以$|^都不錯$|^這些都可以$|^這些都不錯$|^你決定$|^Roamie\s*幫我安排$|^幫我安排$|^直接排$|^(?:全部|全選|都要|全部都要|[一二三四五六七八九十兩俩壹貳叁參肆伍\d]+(?:組|個)都要)$|^混搭$|都行$|^都行吧$|^就這些$|^就這樣$|^沒問題$/i;
 
 /** Soft accept-all without an explicit generate verb (lock selection only). */
 export const SOFT_ACCEPT_ALL_COMBINATIONS_RE =
