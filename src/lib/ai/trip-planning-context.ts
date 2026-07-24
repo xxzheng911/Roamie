@@ -276,6 +276,55 @@ export function isDestinationSelectionText(text: string): boolean {
   return Boolean(parseDestinationFromText(t) || parseDestinationSelectionFromText(t));
 }
 
+/**
+ * Future trip narrative: time/season + destination + travel verb.
+ * Must beat cuisine/place false positives (e.g. bare「越南」≠ Vietnamese food).
+ */
+export function isFutureTripPlanningStatement(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+
+  // Explicit place-category asks are not trip planning narratives.
+  if (
+    /(?:推薦|有沒有|有什麼|哪些|想找|找).{0,10}(?:餐廳|咖啡|景點|美食|夜市|酒吧|商圈|店)/.test(t) ||
+    /(?:餐廳|咖啡廳|咖啡店|景點|美食|夜市).{0,8}(?:推薦|有沒有|有什麼|哪些)/.test(t)
+  ) {
+    return false;
+  }
+
+  const dest =
+    parseDestinationFromText(t) ||
+    parseDestinationSelectionFromText(t) ||
+    resolveDestinationFromText(t);
+  if (!dest) return false;
+
+  const hasTimeOrSeason =
+    /(?:\d{1,2}\s*月|下個月|下个月|這個月|这个月|明年|後年|暑假|寒假|春節|過年|黃金週|連假|春天|夏天|秋天|冬天)/.test(
+      t,
+    ) || /(?:\d+|[一二三四五六七八九十兩两]+)\s*天/.test(t);
+  const hasTravelVerb = /(?:要去|想去|去|安排|規劃|规划|旅行|旅遊|旅游|玩)/.test(t);
+
+  if (hasTimeOrSeason && hasTravelVerb) return true;
+  if (/(?:安排|規劃|规划)/.test(t) && /(?:\d+|[一二三四五六七八九十兩两]+)\s*天/.test(t)) {
+    return true;
+  }
+  if (/(?:明年|後年|暑假|寒假)/.test(t) && /(?:想去|要去|去)/.test(t)) return true;
+  return false;
+}
+
+/** 「越南有哪些城市適合第一次去」— country → city/region advice, not place cards */
+export function isCountryCityInquiryText(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  const dest = resolveDestinationFromText(t) || parseDestinationFromText(t);
+  if (!dest) return false;
+  return (
+    /(?:有哪些|哪些|推薦).{0,8}(?:城市|地區|區域|旅行區|地方)/.test(t) ||
+    /(?:適合第一次|第一次去|第一次).{0,10}(?:城市|地區|去哪)/.test(t) ||
+    /(?:城市|地區).{0,8}(?:適合第一次|推薦|值得)/.test(t)
+  );
+}
+
 export function isDestinationAdviceActive(session: ChatPlanningSession): boolean {
   const purpose = session.travelContext?.tripPurpose;
   return (

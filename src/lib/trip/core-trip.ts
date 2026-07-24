@@ -66,7 +66,7 @@ export function resolveCoreTripCoverDisplayUrl(trip: CoreTrip): string {
 function transportLabel(mode?: string): string {
   if (!mode) return "步行";
   if (mode === "walk") return "步行";
-  if (mode === "drive") return "開車";
+  if (mode === "drive") return "租車自駕";
   if (mode === "transit") return "大眾運輸";
   if (mode === "scooter") return "機車";
   return mode;

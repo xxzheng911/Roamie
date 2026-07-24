@@ -5,6 +5,8 @@ import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { isNearbyPlaceIntent, type ChatIntent } from "@/lib/ai/chat-intent";
 import {
   hasRemoteDestination,
+  isCountryCityInquiryText,
+  isFutureTripPlanningStatement,
   isKnownCountryLabel,
   isKnownTouristCityLabel,
   missingDestinationPlanningKeys,
@@ -123,6 +125,10 @@ export type CanonicalTravelContext = {
       candidateId?: string;
       originalName?: string;
       name: string;
+      /** App-locale display name — UI / chat must prefer this over name/raw. */
+      localizedDisplayName?: string;
+      languageCode?: string;
+      localizationSource?: string;
       searchQuery: string;
       destination?: string;
       sourceCombinationId: number;
@@ -745,9 +751,12 @@ export function mergeTravelContext(
     const hasPendingState = Boolean(prepared.pendingQuestion);
     const explicitPendingTransition =
       Boolean(parseItineraryPlanModeIntent(userText)) || isCreateItineraryIntent(userText);
+    // New future-trip narrative must not inherit stale place_recommendation under pending.
+    const futureTripBreaksSticky =
+      isFutureTripPlanningStatement(userText) || isCountryCityInquiryText(userText);
 
     const currentIntentRaw =
-      hasPendingState && !explicitPendingTransition
+      hasPendingState && !explicitPendingTransition && !futureTripBreaksSticky
         ? prev.lastIntent === "create_itinerary"
           ? "create_itinerary"
           : prev.lastIntent === "best_travel_time"
@@ -796,36 +805,32 @@ export function mergeTravelContext(
         ? extractItineraryEntitiesFromText(userText)
         : undefined;
 
-    let destMerge = pendingSelection.selectedOption
-      ? {
-          destination: pickValidContextValue(
+    let destMerge: ReturnType<typeof mergeDestinationFields> = pendingSelection.selectedOption
+      ? mergeDestinationFields(
+          prev,
+          pickValidContextValue(
             pendingSelection.contextPatch.destination,
             prevDest ?? sessionDest,
           ),
-          destinationCountry: pickValidContextValue(
-            pendingSelection.contextPatch.destinationCountry,
-            prev.destinationCountry,
-          ),
-        }
+        )
       : parsedDest
-        ? {
-            destination: parsedDest,
-            destinationCountry:
-              pickValidContextValue(parsed.destinationCountry, prev.destinationCountry) ??
-              prev.destinationCountry,
-          }
-        : {
-            destination: prevDest ?? sessionDest,
-            destinationCountry: prev.destinationCountry,
-          };
+        ? mergeDestinationFields(prev, parsedDest)
+        : mergeDestinationFields(prev, prevDest ?? sessionDest);
+
+    if (pendingSelection.selectedOption?.destinationCountry) {
+      destMerge = {
+        ...destMerge,
+        destinationCountry:
+          pickValidContextValue(
+            pendingSelection.contextPatch.destinationCountry,
+            destMerge.destinationCountry,
+          ) ?? destMerge.destinationCountry,
+      };
+    }
 
     if (itineraryExtracted?.destination) {
       const clean = normalizeDestinationLabel(itineraryExtracted.destination);
-      const fields = mergeDestinationFields(prev, clean);
-      destMerge = {
-        destination: clean,
-        destinationCountry: fields.destinationCountry,
-      };
+      destMerge = mergeDestinationFields(prev, clean);
     }
 
     if (destMerge.destination) {
@@ -833,20 +838,15 @@ export function mergeTravelContext(
       if (label) {
         const sanitized = sanitizeDestinationForGeocode(label);
         label = coerceTravelDestination(sanitized) ?? label;
-        if (sanitized !== label && label) {
-          const fields = mergeDestinationFields(prev, sanitized);
-          destMerge = {
-            destination: label,
-            destinationCountry: fields.destinationCountry ?? destMerge.destinationCountry,
-          };
-        } else {
-          destMerge = { ...destMerge, destination: label };
-        }
-      } else {
         destMerge = {
-          destination: coerceTravelDestination(prevDest) ?? coerceTravelDestination(sessionDest),
-          destinationCountry: prev.destinationCountry,
+          ...mergeDestinationFields(prev, sanitized || label),
+          destination: label,
         };
+      } else {
+        destMerge = mergeDestinationFields(
+          prev,
+          coerceTravelDestination(prevDest) ?? coerceTravelDestination(sessionDest),
+        );
       }
     }
 

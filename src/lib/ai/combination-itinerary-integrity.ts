@@ -15,6 +15,7 @@ import {
   validateCandidateIntent,
   logRejectedCandidate,
 } from "@/lib/ai/combination-candidate-quality";
+import { collapseParentLandmarkCandidates } from "@/lib/ai/ai-parent-landmark-dedup";
 import { listTripDates } from "@/lib/outfit/group-by-date";
 import {
   combinationIdsFromPlace,
@@ -144,7 +145,25 @@ export function resolveSelectedCombinationPools(
       }
     }
 
-    const all = [...qualityPrimary, ...qualityFallback];
+    const allRaw = [...qualityPrimary, ...qualityFallback];
+    const collapsed = collapseParentLandmarkCandidates(
+      allRaw.map((p) => ({
+        name: p.name,
+        googlePlaceId: p.googlePlaceId,
+        address: p.address,
+        lat: p.coordinates?.lat,
+        lng: p.coordinates?.lng,
+        rating: p.rating,
+      })),
+    );
+    const keepKeys = new Set(
+      collapsed.kept.map((c) => c.name.trim().replace(/\s+/g, "").toLowerCase()),
+    );
+    const all = allRaw.filter((p) =>
+      keepKeys.has(p.name.trim().replace(/\s+/g, "").toLowerCase()),
+    );
+    qualityPrimary = all.slice(0, PRIMARY_PLACES_PER_COMBO);
+    qualityFallback = all.slice(PRIMARY_PLACES_PER_COMBO);
     logAiPipeline(
       "[COMBINATION_CANDIDATE_POOL]",
       `combinationId=${id}`,
@@ -291,8 +310,9 @@ export function computeMinimumPerSelectedCombination(
 }
 
 /**
- * Hard floor per selected combination: theme representation only (≥1).
- * Soft targets come from planSelectedCombinationCapacity — never a fixed 2–3 fail gate.
+ * Hard floor per selected combination was historically ≥1 representative.
+ * Place-level coverage is now enforced via requiredAnchorPlaces (100%).
+ * Soft per-combo targets still come from planSelectedCombinationCapacity.
  */
 export function computeMinimumResolvedPerCombination(_tripDays: number): number {
   return 1;
@@ -1028,6 +1048,33 @@ export function validateFinalItineraryIntegrity(params: {
     reasons.push(
       `silent_drop:${silent.map((o) => o.originalName).join(",")}`,
     );
+  }
+
+  // requiredAnchorPlaces: 100% coverage — merged_as_same_landmark is NOT enough
+  // after user selection (parent collapse must happen before selection).
+  const notDelivered = coverage.outcomes.filter(
+    (o) =>
+      o.status === "unresolved_after_all_retries" ||
+      o.status === "merged_as_same_landmark",
+  );
+  if (requiredPlaceNames.length > 0 && notDelivered.length) {
+    const missingScheduled = notDelivered.filter((o) => o.status !== "rejected_invalid_real_place");
+    // merged_as_same_landmark after selection is a coverage failure.
+    const merged = notDelivered.filter((o) => o.status === "merged_as_same_landmark");
+    if (merged.length) {
+      reasons.push(
+        `required_anchor_collapsed_after_selection:${merged.map((o) => o.originalName).join(",")}`,
+      );
+    }
+    const unresolved = silent.length
+      ? silent
+      : notDelivered.filter((o) => o.status === "unresolved_after_all_retries");
+    if (unresolved.length) {
+      reasons.push(
+        `required_anchor_missing:${unresolved.map((o) => o.originalName).join(",")}`,
+      );
+    }
+    void missingScheduled;
   }
 
   // Fallback must not massively replace selected places.

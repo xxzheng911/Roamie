@@ -56,7 +56,7 @@ export const Route = createFileRoute("/trip")({
 const TRANSPORT_HINT: Record<string, string> = {
   walk: "步行",
   scooter: "機車",
-  drive: "開車",
+  drive: "租車自駕",
   transit: "大眾運輸",
 };
 

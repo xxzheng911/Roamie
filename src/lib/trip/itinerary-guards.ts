@@ -90,6 +90,7 @@ function makePlaceItineraryStop(
     address: place.address?.trim() || place.name,
     googlePlaceId: placeId || undefined,
     placeType: place.type,
+    coordinateSource: placeId && place.lat != null && place.lng != null ? "google_places" : undefined,
     sourceCombinationId: place.sourceCombinationId,
     matchedCombinationIds: place.matchedCombinationIds,
     matchedSelectedCombinationIds: place.matchedSelectedCombinationIds,

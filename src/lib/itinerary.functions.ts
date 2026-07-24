@@ -32,6 +32,12 @@ import {
   groupStopsByTripDays,
 } from "@/lib/ai/combination-itinerary-integrity";
 import {
+  buildRequiredAnchorPlaces,
+  buildSelectedPlaceLock,
+  recommendationIntegrityCheck,
+  plannerDeliveryCheck,
+} from "@/lib/ai/required-anchor-runtime";
+import {
   isItineraryValidatorEnabled,
   validateItineraryPlan,
   shouldBlockItineraryDelivery,
@@ -41,6 +47,9 @@ import {
   compareItineraryPersistenceDayCounts,
   ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
 } from "@/lib/ai/itinerary-validator";
+import { applyItineraryLocalizationGate } from "@/lib/ai/itinerary-localization-gate";
+import { buildLegMinutesFromPlaces } from "@/lib/ai/estimate-place-visit-duration";
+import { resolvePlannerPaceFromProfile } from "@/lib/ai/required-anchor-runtime";
 import {
   applyComposedPlansToItineraryItems,
   composedPlansFromItineraryItems,
@@ -554,6 +563,15 @@ export const generateItinerary = createServerFn({ method: "POST" })
     }
 
     let finalStops = coalesceItineraryItems(ai.itinerary);
+    const requiredAnchors = buildRequiredAnchorPlaces({
+      selectedPlaceNames: requiredPlaceNames,
+      placeIdsByName: Object.fromEntries(
+        selectedPlaces
+          .filter((p) => (p.placeName ?? p.name) && p.googlePlaceId)
+          .map((p) => [p.placeName ?? p.name, p.googlePlaceId!]),
+      ),
+    });
+    const selectedLock = buildSelectedPlaceLock({ anchors: requiredAnchors });
     const integrity = validateFinalItineraryIntegrity({
       selectedCombinationIds,
       sessionSelectedCombinationIds: selectedCombinationIds,
@@ -564,30 +582,52 @@ export const generateItinerary = createServerFn({ method: "POST" })
       startDate,
       destination: data.destination,
     });
+    const recommendationIntegrity = recommendationIntegrityCheck({
+      selectedPlaces: requiredPlaceNames,
+      anchors: requiredAnchors,
+      scheduledPlaceNames: finalStops.map((s) => s.placeName ?? s.title),
+    });
+    const delivery = plannerDeliveryCheck({
+      integrity: recommendationIntegrity,
+      validatorOk: integrity.ok || selectedCombinationIds.length === 0,
+      qualityGateOk: true,
+      routeOk: true,
+    });
 
     logAiPipeline(
       "[ITINERARY_SAVE_STATS]",
       `expectedPlaces=${selectedPlaces.length}`,
       `savedPlaces=${finalStops.length}`,
       `integrityOk=${integrity.ok}`,
+      `recommendationIntegrityOk=${recommendationIntegrity.ok}`,
+      `coveragePercent=${recommendationIntegrity.coveragePercent}`,
+      `delivery=${delivery.deliveryResult}`,
     );
 
-    if (!integrity.ok && selectedCombinationIds.length > 0) {
+    if (
+      (!integrity.ok || !recommendationIntegrity.ok || !delivery.ok) &&
+      selectedCombinationIds.length > 0
+    ) {
       // Hard gate: do not persist a half-built selected-combination itinerary.
-      const critical = integrity.reasons.filter(
-        (r) =>
-          r.startsWith("fallback_over_selected") ||
-          r.startsWith("silent_drop") ||
-          r.startsWith("unselected_combination_place") ||
-          r.startsWith("missing_combination") ||
-          r.startsWith("empty_day") ||
-          r.startsWith("empty_non_free_day") ||
-          r.startsWith("insufficient_real_places"),
-      );
-      if (critical.length) {
+      const critical = [
+        ...integrity.reasons.filter(
+          (r) =>
+            r.startsWith("fallback_over_selected") ||
+            r.startsWith("silent_drop") ||
+            r.startsWith("unselected_combination_place") ||
+            r.startsWith("missing_combination") ||
+            r.startsWith("empty_day") ||
+            r.startsWith("empty_non_free_day") ||
+            r.startsWith("insufficient_real_places"),
+        ),
+        ...recommendationIntegrity.reasons,
+        ...delivery.reasons.filter((r) => r.startsWith("missing_") || r.startsWith("coverage")),
+      ];
+      if (critical.length || !recommendationIntegrity.ok) {
         logAiPipeline(
           "[ITINERARY_INTEGRITY_BLOCKED_SAVE]",
-          `reasons=${critical.join("|")}`,
+          `reasons=${critical.join("|") || recommendationIntegrity.reasons.join("|")}`,
+          `coveragePercent=${recommendationIntegrity.coveragePercent}`,
         );
         return {
           success: false,
@@ -621,6 +661,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
         userText: [data.interests, data.conversationSummary].filter(Boolean).join("\n"),
         destination: data.destination,
         creationPath: creationPath as ItineraryValidatorInput["creationPath"],
+        lockedPlaceIds: [...selectedLock.placeIds],
+        lockedPlaceNames: selectedLock.names,
       };
       let validation = validateItineraryPlan({
         plans: composed,
@@ -775,6 +817,16 @@ export const generateItinerary = createServerFn({ method: "POST" })
         time: data.time,
         useAiReasons: true,
       });
+      const pace = resolvePlannerPaceFromProfile({
+        style: resolvePlannerStyleKey(data.style),
+        quizPace: data.preferences?.pace as "slow" | "medium" | "active" | null,
+      });
+      const localizedGate = applyItineraryLocalizationGate(
+        coalesceItineraryItems(ai.itinerary),
+        { softPassEnglish: true },
+      );
+      ai = { ...ai, itinerary: localizedGate.items };
+      const seededLegMinutes = buildLegMinutesFromPlaces(localizedGate.items, pace);
       tripSettings = {
         startTime: data.time
           ? normalizeTime(data.time)
@@ -782,7 +834,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         tripStartDate: data.startDate?.trim() || startDate,
         tripEndDate: data.endDate?.trim() || data.startDate?.trim() || startDate,
         transport: inferTripTransport(data.transport),
-        legMinutes: {},
+        legMinutes: seededLegMinutes,
         transitLegs: Object.fromEntries(transit.legs.map((l) => [l.legKey, l])),
         transportTips: transit.transportTips,
       };
@@ -790,7 +842,29 @@ export const generateItinerary = createServerFn({ method: "POST" })
       console.warn("[Roamie] transit legs skipped on generate", e);
     }
 
-    const itineraryItems = coalesceItineraryItems(ai.itinerary);
+    const gated = applyItineraryLocalizationGate(coalesceItineraryItems(ai.itinerary), {
+      softPassEnglish: true,
+    });
+    const itineraryItems = gated.items;
+    const paceForLegs = resolvePlannerPaceFromProfile({
+      style: resolvePlannerStyleKey(data.style),
+      quizPace: data.preferences?.pace as "slow" | "medium" | "active" | null,
+    });
+    if (!tripSettings) {
+      tripSettings = {
+        startTime:
+          coalesceItineraryItems(itineraryItems)[0]?.time?.slice(0, 5) ?? "09:30",
+        tripStartDate: data.startDate?.trim() || startDate,
+        tripEndDate: data.endDate?.trim() || data.startDate?.trim() || startDate,
+        transport: inferTripTransport(data.transport),
+        legMinutes: buildLegMinutesFromPlaces(itineraryItems, paceForLegs),
+      };
+    } else if (!tripSettings.legMinutes || !Object.keys(tripSettings.legMinutes).length) {
+      tripSettings = {
+        ...tripSettings,
+        legMinutes: buildLegMinutesFromPlaces(itineraryItems, paceForLegs),
+      };
+    }
     const payload: RoamiePayloadV2 = {
       ...ai,
       version: 2,

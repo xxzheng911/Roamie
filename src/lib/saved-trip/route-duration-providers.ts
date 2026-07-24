@@ -18,6 +18,7 @@ export type RouteDurationProviderContext = {
   preferredMode: RoutesTravelMode;
   query: FetchRouteQueryOptions;
   cacheKey: string;
+  allowModeFallback?: boolean;
 };
 
 function googleStatusFromResult(result: {
@@ -42,13 +43,19 @@ function estimatesForMode(minutes: number, mode: RoutesTravelMode, distanceMeter
 }
 
 function transitUnavailableResult(
+  preferredMode: RoutesTravelMode,
   provider: TransitUnavailableProvider,
 ): RouteLegDurationResult {
   return {
     ok: false,
     durationMinutes: 0,
     distanceMeters: 0,
-    mode: "TRANSIT",
+    mode: preferredMode,
+    requestedMode: preferredMode,
+    resolvedMode: preferredMode,
+    fallbackReason: "transit_unavailable",
+    durationSource: "none",
+    routeStatus: "transit_unavailable",
     usedWalkFallback: false,
     transitUnavailable: true,
     transitUnavailableProvider: provider,
@@ -74,7 +81,7 @@ export async function japanTransitProvider(
     `japan_transit|${ctx.cacheKey}`,
     `[TRANSIT_JAPAN_MAPS] leg=${ctx.scope.legKey} provider=japan_transit action=google_maps_deeplink skipped=google_directions_api`,
   );
-  return transitUnavailableResult("google_maps_deeplink");
+  return transitUnavailableResult(ctx.preferredMode, "google_maps_deeplink");
 }
 
 /** 非日本或 walking / driving 等模式 */
@@ -82,6 +89,7 @@ export async function googleDirectionsProvider(
   ctx: RouteDurationProviderContext,
 ): Promise<RouteLegDurationResult> {
   const { scope, origin, destination, preferredMode, query, cacheKey } = ctx;
+  const allowModeFallback = ctx.allowModeFallback !== false;
 
   if (preferredMode === "TRANSIT") {
     logRouteOnce(
@@ -97,6 +105,11 @@ export async function googleDirectionsProvider(
         durationMinutes: primary.data.durationMinutes,
         distanceMeters: primary.data.distanceMeters,
         mode: "TRANSIT",
+        requestedMode: preferredMode,
+        resolvedMode: "TRANSIT",
+        fallbackReason: null,
+        durationSource: "directions",
+        routeStatus: "ok",
         usedWalkFallback: false,
         transitUnavailable: false,
         transitUnavailableProvider: null,
@@ -114,10 +127,12 @@ export async function googleDirectionsProvider(
       `[ROUTE_TRANSIT_ERROR] leg=${scope.legKey} status=${primaryStatus} message=${primary.message ?? "route_failed"} available=${primary.availableTravelModes?.join(",") ?? "n/a"} region=${query.region ?? "auto"} provider=google_directions`,
     );
 
-    return transitUnavailableResult(null);
+    return transitUnavailableResult(preferredMode, null);
   }
 
-  return fetchRouteWithDirectionFallbacks(toFetchContext(ctx), preferredMode);
+  return fetchRouteWithDirectionFallbacks(toFetchContext(ctx), preferredMode, {
+    allowModeFallback,
+  });
 }
 
 export function resolveRouteDurationProviderId(

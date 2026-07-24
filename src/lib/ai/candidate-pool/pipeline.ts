@@ -19,6 +19,7 @@ import {
   clustersToMap,
 } from "@/lib/ai/candidate-pool/annotate";
 import { applyQualityGate } from "@/lib/ai/candidate-pool/stages/quality";
+import { dedupeParentLandmarkPlaces } from "@/lib/ai/ai-parent-landmark-dedup";
 import {
   underrepresentedCategories,
   logCategoryStage,
@@ -180,7 +181,8 @@ export async function buildCandidatePool(
     style: params.style,
     userText: params.userText,
   });
-  places = quality.kept;
+  // Parent Landmark Collapse — before category / geo / Planner
+  places = dedupeParentLandmarkPlaces(quality.kept);
 
   const allowPlacesExpand =
     !costCacheMode && !shouldBlockNewPlacesCalls({ logSkip: false });
@@ -376,7 +378,9 @@ export function shapeCandidatePoolPlaces(
     style: params.style,
     userText: params.userText,
   });
-  let next = applyTemporalDiversity(quality.kept, demand);
+  // Parent Landmark Collapse before Planner (global, destination-agnostic).
+  let next = dedupeParentLandmarkPlaces(quality.kept);
+  next = applyTemporalDiversity(next, demand);
   next = applyTravelFlow(next, demand).places;
   next = applyExperienceOptimizer(next, demand);
   next = filterExcludedRetailPlaces(normalizePlanningPlaces(next), {

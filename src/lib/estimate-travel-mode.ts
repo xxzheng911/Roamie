@@ -10,7 +10,7 @@ export const TRAVEL_MODE_ORDER: TravelModeId[] = ["walk", "motorcycle", "drive",
 export const TRAVEL_MODE_LABEL: Record<TravelModeId, string> = {
   walk: "步行",
   motorcycle: "騎車",
-  drive: "開車",
+  drive: "租車自駕",
   transit: "大眾運輸",
   taxi: "計程車",
 };
@@ -98,7 +98,7 @@ export function estimateTravelModesLocal(
     },
     {
       id: "drive",
-      label: "開車",
+      label: "租車自駕",
       minutes: driveMin,
       distanceMeters,
       distanceLabel: distLabel,
@@ -201,7 +201,7 @@ function recommendTaiwanMode(
     }
     const drive = modes.find((m) => m.id === "drive");
     if (drive) {
-      return { modeId: "drive", tip: "距離較遠，開車或搭車會比較合適。" };
+      return { modeId: "drive", tip: "距離較遠，租車自駕或搭車會比較合適。" };
     }
   }
 
@@ -274,7 +274,7 @@ export function recommendTransportMode(
     }
     const drive = modes.find((m) => m.id === "drive");
     if (drive) {
-      return { modeId: "drive", tip: "開車過去時間較可控，適合趕下一個點。" };
+      return { modeId: "drive", tip: "租車自駕過去時間較可控，適合趕下一個點。" };
     }
   }
 
@@ -286,7 +286,7 @@ export function recommendTransportMode(
   if (motorcycle && dist >= 1000 && dist <= 8000) {
     return {
       modeId: "motorcycle",
-      tip: "這段距離騎車或開車都方便，市區通常騎車較快。",
+      tip: "這段距離騎車或租車自駕都方便，市區通常騎車較快。",
     };
   }
 
@@ -302,7 +302,7 @@ export function recommendTransportMode(
 
   return {
     modeId: "drive",
-    tip: "開車過去時間較可控，適合趕下一個點。",
+    tip: "租車自駕過去時間較可控，適合趕下一個點。",
   };
 }
 

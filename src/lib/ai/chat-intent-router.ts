@@ -92,6 +92,24 @@ export function isTravelPlanningText(text: string): boolean {
 
   if (isBestTravelTimeIntent(t)) return false;
 
+  // Month/season + destination + travel verb always wins (before cuisine false positives).
+  // Imported lazily via resolveDestinationFromText path in trip-planning-context to avoid
+  // expanding the hasCategoryPlaceQuery cycle for the happy path.
+  if (
+    hasNamedDestinationInText(t) &&
+    /(?:要去|想去|去|安排|規劃|规划|旅行|旅遊|旅游)/.test(t) &&
+    (/(?:\d{1,2}\s*月|下個月|下个月|明年|後年|暑假|寒假|春節|連假)/.test(t) ||
+      /(?:\d+|[一二三四五六七八九十百千兩两]+)\s*天/.test(t))
+  ) {
+    // Still allow explicit place asks like「1 月去峴港推薦餐廳」
+    if (
+      !/(?:推薦|有沒有|有什麼|哪些|想找).{0,10}(?:餐廳|咖啡|景點|美食|夜市|酒吧|商圈|店)/.test(t) &&
+      !/(?:餐廳|咖啡廳|景點|美食).{0,8}(?:推薦|有沒有|有什麼)/.test(t)
+    ) {
+      return true;
+    }
+  }
+
   // Destination + place category recommendation is NOT trip planning
   // (e.g.「台南有什麼咖啡廳推薦嗎」) unless user also asks to plan an itinerary.
   if (

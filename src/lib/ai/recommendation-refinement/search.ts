@@ -21,7 +21,22 @@ const RESTAURANT_EXCLUDED_TYPES = new Set([
   "grocery_store",
   "food_court",
   "meal_takeaway",
+  "meal_delivery",
+  "food_delivery",
+  "catering_service",
+  "meal_catering",
+  "food_supplier",
+  "wholesaler",
+  "grocery_or_supermarket",
 ]);
+
+const CATERING_SERVICE_NAME_RE =
+  /(?:catering|外燴|外烩|外送專|外送专|到府烹飪|到府烹饪|私人廚房服務|私人厨房服务|烹飪服務|烹饪服务|nấu\s*ăn|dịch\s*vụ\s*nấu)/i;
+
+const PLUS_CODE_ONLY_ADDRESS_RE = /^[A-Z0-9]{4,8}\+[A-Z0-9]{2,4}\b/i;
+
+const RESTAURANT_MIN_RATING = 4.0;
+const RESTAURANT_MIN_REVIEWS = 20;
 
 const CITY_EN: Record<string, string> = {
   札幌: "Sapporo",
@@ -142,17 +157,50 @@ export function matchesFoodIntent(
 }
 
 export function isAcceptableRestaurantPlace(place: {
+  name?: string | null;
+  placeName?: string | null;
+  address?: string | null;
   types?: string[] | null;
   primaryType?: string | null;
   type?: string | null;
   businessStatus?: string | null;
+  rating?: number | null;
+  userRatingCount?: number | null;
 }): boolean {
   const types = placeTypes(place);
-  if (types.some((t) => RESTAURANT_EXCLUDED_TYPES.has(t)) && !types.some((t) => t.includes("restaurant"))) {
-    return false;
+  if (types.some((t) => RESTAURANT_EXCLUDED_TYPES.has(t))) {
+    // meal_delivery / catering alone is never a visit-worthy restaurant
+    if (
+      types.some((t) =>
+        /meal_delivery|catering|food_supplier|wholesaler/.test(t),
+      ) &&
+      !types.some((t) => t === "restaurant" || t.endsWith("_restaurant"))
+    ) {
+      return false;
+    }
+    if (!types.some((t) => t.includes("restaurant"))) {
+      return false;
+    }
   }
   const status = String(place.businessStatus ?? "").toUpperCase();
   if (status === "CLOSED_PERMANENTLY" || status === "PERMANENTLY_CLOSED") return false;
+
+  const name = `${place.name ?? ""} ${place.placeName ?? ""}`.trim();
+  if (CATERING_SERVICE_NAME_RE.test(name)) return false;
+
+  const address = (place.address ?? "").trim();
+  if (address && PLUS_CODE_ONLY_ADDRESS_RE.test(address) && !/[街路巷弄大道區市区縣县鄉乡鎮镇]/.test(address)) {
+    return false;
+  }
+
+  const rating = place.rating;
+  const reviews = place.userRatingCount ?? 0;
+  if (rating != null && rating < RESTAURANT_MIN_RATING) return false;
+  if (reviews > 0 && reviews < RESTAURANT_MIN_REVIEWS && (rating == null || rating < 4.3)) {
+    return false;
+  }
+  if (rating == null && reviews < RESTAURANT_MIN_REVIEWS) return false;
+
   return true;
 }
 

@@ -17,6 +17,19 @@ export type TransitComplexity = "low" | "medium" | "high";
 /** 未來可擴充 ekispert | navitime | jorudan */
 export type TransitUnavailableProvider = "google_maps_deeplink" | null;
 
+/** Single source of truth for one itinerary leg's transport + duration. */
+export type LegTransportRouteStatus =
+  | "ok"
+  | "failed"
+  | "pending"
+  | "transit_unavailable"
+  | "mode_unavailable";
+
+export type LegTransportDurationSource =
+  | "directions"
+  | "estimate"
+  | "none";
+
 export type TransitLegAdvice = {
   /** `${fromPlace}→${toPlace}` */
   legKey: string;
@@ -37,7 +50,23 @@ export type TransitLegAdvice = {
     durationMinutes: number;
   }>;
   source: "rules" | "ai";
-  /** 使用者選擇的交通模式（Routes API） */
+  /**
+   * User / day preference mode that initiated the Directions request.
+   * Do not show this in UI when it differs from resolvedMode.
+   */
+  requestedMode?: import("@/lib/routes/types").RoutesTravelMode;
+  /**
+   * Mode that actually produced durationMinutes (Source of Truth for UI).
+   * Same as transportMode when present.
+   */
+  resolvedMode?: import("@/lib/routes/types").RoutesTravelMode;
+  /** Why resolvedMode differs from requestedMode (or why the leg failed). */
+  fallbackReason?: string | null;
+  /** Where durationMinutes came from. */
+  durationSource?: LegTransportDurationSource;
+  /** Overall leg route status — UI + arrival must respect this. */
+  routeStatus?: LegTransportRouteStatus;
+  /** 使用者選擇的交通模式（Routes API）— prefer resolvedMode when set */
   transportMode?: import("@/lib/routes/types").RoutesTravelMode;
   transportStatus?: "ok" | "transit_unavailable" | "failed" | "pending";
   transportFallbackMode?: "walk" | "drive" | "transit" | null;
@@ -50,6 +79,11 @@ export type TransitLegAdvice = {
    * google_maps_deeplink：日本行程，改開 Google Maps 查路線。
    */
   transitUnavailableProvider?: TransitUnavailableProvider;
+  /**
+   * auto = AI / initial sync (allowModeFallback=true)
+   * manual = user explicitly picked a transport mode (allowModeFallback=false)
+   */
+  modeSelectionSource?: "auto" | "manual";
 };
 
 export type TransitPreferences = {

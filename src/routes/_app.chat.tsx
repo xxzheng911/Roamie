@@ -4775,6 +4775,16 @@ function Chat() {
           deviceLat != null && deviceLng != null ? { lat: deviceLat, lng: deviceLng } : null,
       });
 
+      if (searchCtx.placesCallBlocked) {
+        console.info(
+          "[DESTINATION_SCOPE_BLOCKED]",
+          `destination=${searchCtx.destinationName ?? "none"}`,
+          `reason=${searchCtx.placesBlockReason ?? "country_scope_requires_refinement"}`,
+          "callPath=applyLocalFallback",
+        );
+        return false;
+      }
+
       let lat: number | undefined;
       let lng: number | undefined;
       if (searchCtx.searchMode === "destination") {
@@ -6900,13 +6910,38 @@ function Chat() {
       let createResult: Awaited<ReturnType<typeof createItineraryFromSession>>;
 
       if (dayPlan?.items.length) {
-        const itineraryItems = buildItineraryFromDayPlan(dayPlan, tripDates);
+        const rawItineraryItems = buildItineraryFromDayPlan(dayPlan, tripDates);
+        const { applyItineraryLocalizationGate } = await import(
+          "@/lib/ai/itinerary-localization-gate"
+        );
+        const { buildLegMinutesFromPlaces } = await import(
+          "@/lib/ai/estimate-place-visit-duration"
+        );
+        const { resolvePlannerPaceFromProfile } = await import(
+          "@/lib/ai/required-anchor-runtime"
+        );
+        const gated = applyItineraryLocalizationGate(rawItineraryItems, {
+          softPassEnglish: true,
+        });
+        const itineraryItems = gated.items;
         verifyDayPlanItineraryOrder(dayPlan, itineraryItems);
         const itineraryDays = buildItineraryDaysFromDayPlan(dayPlan, tripDates, itineraryItems);
         for (const day of itineraryDays) {
           logAiCreateItineraryDay(day.dayIndex, day.date, day.items.length);
         }
         const recommendations = dayPlanToRecommendations(dayPlan);
+        const pace = resolvePlannerPaceFromProfile({
+          style: resolvePlannerStyleKey(
+            workingSession.tripStyles ||
+              (workingSession.pace === "排滿" ? "緊湊" : "慢旅行"),
+          ),
+          quizPace:
+            workingSession.pace === "慢旅" || workingSession.pace === "慢旅行"
+              ? "slow"
+              : workingSession.pace === "排滿"
+                ? "active"
+                : "medium",
+        });
         createResult = {
           ok: true,
           state: "SUCCESS",
@@ -6925,6 +6960,7 @@ function Chat() {
             tripSettings: {
               tripStartDate: startDate || undefined,
               tripEndDate: endDate || undefined,
+              legMinutes: buildLegMinutesFromPlaces(itineraryItems, pace),
             },
             generatedAt: new Date().toISOString(),
           },
@@ -6997,9 +7033,9 @@ function Chat() {
           travelLabelToRoutesMode(workingSession.transportation ?? "步行"),
         );
       } catch (routeError) {
-        console.warn(
-          "[ROUTE_DURATION_ERROR]",
-          "status=trip_legs_exception",
+        console.debug(
+          "[ROUTE_DURATION]",
+          "status=empty_legs",
           `message=${routeError instanceof Error ? routeError.message : String(routeError)}`,
           "soft=skip_legs_continue_save",
         );
@@ -7038,7 +7074,7 @@ function Chat() {
           tripStartDate: tripDates.hasExplicitDates ? startDate : undefined,
           tripEndDate: tripDates.hasExplicitDates ? endDate : undefined,
           transport:
-            workingSession.transportation === "開車"
+            /開車|自駕|租車|drive/i.test(workingSession.transportation ?? "")
               ? "drive"
               : workingSession.transportation === "大眾運輸"
                 ? "transit"

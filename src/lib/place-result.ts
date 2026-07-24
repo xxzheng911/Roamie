@@ -41,4 +41,28 @@ export type PlaceResult = {
   destinationScope?: "primary" | "nearby_extension";
   /** Normalized nearby city when destinationScope = nearby_extension */
   extensionDestination?: string;
+  /** Pre-localization / local-script name */
+  originalName?: string | null;
+  /** App-locale display name (UI should prefer this) */
+  localizedDisplayName?: string | null;
+  languageCode?: string | null;
+  localizationSource?: string | null;
+  /** Prefer for Directions when set (entrance / roadside). */
+  navigationLatitude?: number | null;
+  navigationLongitude?: number | null;
+  /**
+   * Where lat/lng came from.
+   * approx_center / generated / fallback / region_center must not be used as precise nav points.
+   */
+  coordinateSource?:
+    | "google_places"
+    | "place_details"
+    | "navigation"
+    | "approx_center"
+    | "generated"
+    | "fallback"
+    | "region_center"
+    | "geocode"
+    | "unknown"
+    | null;
 };

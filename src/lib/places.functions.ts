@@ -12,6 +12,7 @@ import {
 import { distanceMeters } from "@/lib/map-explore";
 import { DEFAULT_SEARCH_RADIUS_M, MAX_PLACE_DISTANCE_M } from "@/lib/places-search-config";
 import { geocodeRegionFromCoordinates, placesRegionCodeFromCoordinates } from "@/lib/geo-region";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
@@ -31,6 +32,7 @@ import {
 } from "@/lib/is-recommendable-place";
 import type { PlaceResult } from "@/lib/place-result";
 import { resolvePlaceDisplayAddress } from "@/lib/place-display-address";
+import { resolvePlaceDisplayName } from "@/lib/place-display-name";
 import {
   buildPlacesHttpKey,
   logPlacesCacheHit,
@@ -299,7 +301,7 @@ async function postPlaces(
 }
 
 function exploreLocale(lat: number, lng: number, userLocale?: Locale) {
-  const locale = userLocale ?? "zh-TW";
+  const locale = userLocale ?? effectiveAppLocale();
   return {
     languageCode: localeToGoogleLanguageCode(locale),
     regionCode: placesRegionCodeFromCoordinates(lat, lng),
@@ -843,9 +845,23 @@ function mapPlaceDetailsScreenRaw(
     shortFormattedAddress: p.shortFormattedAddress,
     vicinity: p.vicinity,
   };
+  const rawName = p.displayName?.text ?? "Unknown";
+  const resolvedName = resolvePlaceDisplayName(
+    {
+      name: rawName,
+      originalName: rawName,
+      placeId: p.id,
+      canonicalPlaceId: p.id,
+    },
+    locale ?? "zh-TW",
+  );
   const basePlace: PlaceResult = {
     id: p.id,
-    name: p.displayName?.text ?? "Unknown",
+    name: resolvedName.localizedDisplayName,
+    originalName: resolvedName.originalName,
+    localizedDisplayName: resolvedName.localizedDisplayName,
+    languageCode: resolvedName.languageCode,
+    localizationSource: resolvedName.localizationSource,
     address: resolvePlaceDisplayAddress(googleFields, {
       hasCoords,
       locale,

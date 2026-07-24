@@ -32,6 +32,7 @@ import {
   isRealGooglePlanningPlace,
   resolvePlanningPlaceId,
 } from "@/lib/ai/planning-real-place";
+import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
 
 export const EXCLUDED_RETAIL_RE =
   /公有市場|零售市場|傳統市場|黃昏市場|早市|菜市場|批發市場|批發商圈|魚市場|肉品市場|果菜市場|肉市場|農產品市場|農產品市集|第三公有|新民市場|中央市場|五金賣場|超市|量販|量販店|大賣場|生鮮超市|賣場|全聯|px\s*mart|家樂福|costco|carrefour|大潤發|愛買|hypermarket|wholesale|supermarket|grocery_store|grocery_or_supermarket|convenience_store|department_store|福利中心|福利量販|便利商店|7-eleven|7\s*eleven|familymart|family\s*mart|萊爾富|萬家福|停車場|停车场|parking|學校|学校|school|university|college|辦公大樓|办公大楼|office\s*building|corporate\s*office|meeting\s*point|集合點|集合点|walking\s*tour|route\s*meeting/i;
@@ -312,11 +313,21 @@ function minEntriesPerDayForTripDays(totalDays: number): number {
 export function isLowValuePlanningPlace(place: PlaceResult): boolean {
   const blob = placeBlob(place);
   if (LOW_VALUE_PLANNING_RE.test(blob)) return true;
+  if (
+    /飲水|水飲み|聖火台|時計台|電視塔|テレビ塔|市役所|區役所|区役所|道廳|道庁|廳舍|庁舎|政府大樓|行政大樓|辦公廳|公所|近鄰公園|近隣公園|drinking\s*fountain|olympic\s*cauldron/i.test(
+      blob,
+    )
+  ) {
+    return !evaluateTourismQuality(place).ok;
+  }
   const types = placeTypes(place);
   if (types.has("parking") || types.has("parking_lot") || types.has("school") || types.has("university")) {
     return true;
   }
-  if (types.has("corporate_office") || types.has("local_government_office")) return true;
+  if (types.has("corporate_office") || types.has("local_government_office") || types.has("city_hall")) {
+    return true;
+  }
+  if (types.has("drinking_water") || types.has("cemetery") || types.has("funeral_home")) return true;
   return false;
 }
 

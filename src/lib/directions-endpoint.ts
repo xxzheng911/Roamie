@@ -1,5 +1,6 @@
 import type { LatLng } from "@/lib/google-routes-fetch";
 import type { RoutesTravelMode } from "@/lib/routes/types";
+import { isGooglePlaceId } from "@/lib/place-detail-handoff";
 
 export type DirectionsLocationInput = {
   coords?: LatLng | null;
@@ -9,19 +10,35 @@ export type DirectionsLocationInput = {
   locationContext?: string | null;
 };
 
-/** Directions API 一律使用 lat,lng（不使用 place_id / 名稱） */
+/**
+ * Directions origin/destination formatter.
+ * Prefer place_id:<id> (routable entrance) over raw lat,lng (often POI centroid).
+ */
 export function formatDirectionsLocation(input: DirectionsLocationInput): string | null {
+  const placeId = input.placeId?.trim() ?? "";
+  if (placeId && isGooglePlaceId(placeId)) {
+    return `place_id:${placeId.replace(/^places\//i, "")}`;
+  }
+
   const coords = input.coords;
   if (
     coords &&
     coords.lat != null &&
     coords.lng != null &&
+    Number.isFinite(coords.lat) &&
+    Number.isFinite(coords.lng) &&
     !Number.isNaN(coords.lat) &&
     !Number.isNaN(coords.lng)
   ) {
     return `${coords.lat},${coords.lng}`;
   }
   return null;
+}
+
+export function directionsLocationType(formatted: string | null): "place_id" | "latlng" | "none" {
+  if (!formatted) return "none";
+  if (formatted.startsWith("place_id:")) return "place_id";
+  return "latlng";
 }
 
 export function formatDirectionsLatLng(coords: LatLng): string {

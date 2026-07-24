@@ -3,12 +3,22 @@ import type { RoutesTravelMode } from "@/lib/routes/types";
 import { fetchHttp } from "@/lib/capacitor-http-fetch";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import {
+  directionsLocationType,
   formatDirectionsLocation,
   resolveDirectionsRegion,
   type DirectionsLocationInput,
 } from "@/lib/directions-endpoint";
-import { logDirectionsDebug } from "@/lib/directions-debug-log";
+import { logDirectionsDebug, shouldLogDirectionsDebug } from "@/lib/directions-debug-log";
 import { logRouteOnce } from "@/lib/route-duration-log";
+
+function debugDirectionsVerbose(): boolean {
+  if (typeof import.meta !== "undefined" && import.meta.env?.DEV) {
+    const flag = String(import.meta.env.VITE_DEBUG_DIRECTIONS ?? import.meta.env.DEBUG_DIRECTIONS ?? "");
+    if (flag === "true" || flag === "1") return true;
+  }
+  if (typeof process !== "undefined" && process.env?.DEBUG_DIRECTIONS === "true") return true;
+  return false;
+}
 
 const DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json";
 const FETCH_TIMEOUT_MS = 15_000;
@@ -30,10 +40,12 @@ export type DirectionsTravelMode = "transit" | "walking" | "driving" | "bicyclin
 export type DirectionsQueryOptions = {
   region?: string;
   locationContext?: string;
-  /** 僅供 log，不送入 Directions API */
+  /** 送入 Directions API（place_id:…）並供 log */
   originPlaceId?: string;
   destinationPlaceId?: string;
   logLegKey?: string;
+  /** approx_center / google_places / … — for [ROUTE_SUMMARY] */
+  coordinateSource?: string;
 };
 
 function directionsModeForRoutesMode(mode: RoutesTravelMode): DirectionsTravelMode | null {
@@ -48,8 +60,13 @@ function sanitizeDirectionsUrl(url: string): string {
   return url.replace(/([?&]key=)[^&]+/, "$1***");
 }
 
-function buildLocationInput(coords: LatLng): DirectionsLocationInput {
-  return { coords };
+function buildLocationInput(
+  coords: LatLng,
+  placeId?: string | null,
+  placeName?: string | null,
+  locationContext?: string | null,
+): DirectionsLocationInput {
+  return { coords, placeId, placeName, locationContext };
 }
 
 /** 過去時間改為 now，避免 Directions API 拒絕 */
@@ -126,26 +143,34 @@ export async function fetchGoogleDirectionsRoute(
   const safeUrl = sanitizeDirectionsUrl(requestUrl);
   const logKey = `${originStr}>${destinationStr}|${mode}|${departureUnix}|${regionCode}`;
   const provider = isCapacitorNativeShell() ? "directions_api" : "directions_api";
+  const originType = directionsLocationType(originStr);
+  const destinationType = directionsLocationType(destinationStr);
+  const verbose = debugDirectionsVerbose();
 
-  logDirectionsDebug("request start", {
-    origin: originStr,
-    destination: destinationStr,
-    hasOrigin: true,
-    hasDestination: true,
-    mode,
-    provider,
-  });
+  if (verbose) {
+    logDirectionsDebug("request start", {
+      origin: originStr,
+      destination: destinationStr,
+      hasOrigin: true,
+      hasDestination: true,
+      mode,
+      provider,
+      legKey: logPlaceIds?.logLegKey,
+    });
+  }
 
-  if (mode === "transit") {
+  if (mode === "transit" && (verbose || shouldLogDirectionsDebug())) {
     console.info(
-      `[TRANSIT_INPUT] origin=${originStr} destination=${destinationStr} originType=latlng destinationType=latlng placeId=origin:${logPlaceIds?.originPlaceId ?? "none"} destination:${logPlaceIds?.destinationPlaceId ?? "none"}`,
+      `[TRANSIT_INPUT] origin=${originStr} destination=${destinationStr} originType=${originType} destinationType=${destinationType} placeId=origin:${logPlaceIds?.originPlaceId ?? origin.placeId ?? "none"} destination:${logPlaceIds?.destinationPlaceId ?? destination.placeId ?? "none"}`,
     );
   }
 
-  logRouteOnce(
-    logKey,
-    `[DIRECTIONS_API_REQUEST] url=${safeUrl} origin=${originStr} destination=${destinationStr} mode=${mode} region=${regionCode} departure_time=${mode === "transit" ? departureUnix : "n/a"} departure_iso=${departureTime ?? "now"} transport=${isCapacitorNativeShell() ? "capacitor_http" : "fetch"}`,
-  );
+  if (verbose) {
+    logRouteOnce(
+      logKey,
+      `[DIRECTIONS_API_REQUEST] url=${safeUrl} origin=${originStr} destination=${destinationStr} mode=${mode} region=${regionCode} departure_time=${mode === "transit" ? departureUnix : "n/a"} departure_iso=${departureTime ?? "now"} transport=${isCapacitorNativeShell() ? "capacitor_http" : "fetch"}`,
+    );
+  }
 
   try {
     const res = await fetchHttp(requestUrl, { signal: ctrl.signal });
@@ -155,29 +180,35 @@ export async function fetchGoogleDirectionsRoute(
 
     const availableModes = json.available_travel_modes?.join(",") ?? "";
 
-    logRouteOnce(
-      `${logKey}|resp`,
-      `[DIRECTIONS_API_RESPONSE] http_status=${res.status} body_status=${bodyStatus} error_message=${errorMessage || "none"} available_travel_modes=${availableModes || "n/a"} origin=${originStr} destination=${destinationStr} mode=${mode}`,
-    );
+    if (verbose) {
+      logRouteOnce(
+        `${logKey}|resp`,
+        `[DIRECTIONS_API_RESPONSE] http_status=${res.status} body_status=${bodyStatus} error_message=${errorMessage || "none"} available_travel_modes=${availableModes || "n/a"} origin=${originStr} destination=${destinationStr} mode=${mode}`,
+      );
+    }
 
     if (bodyStatus !== "OK" || !json.routes?.[0]) {
       if (mode === "transit") {
         console.info(
           `[TRANSIT_RESULT] status=${bodyStatus} durationMinutes=0 error=${errorMessage || bodyStatus}`,
         );
-        if (bodyStatus === "ZERO_RESULTS") {
+        if (bodyStatus === "ZERO_RESULTS" && verbose) {
           console.warn(
             `[TRANSIT_ZERO_RESULTS] leg=${logPlaceIds?.logLegKey ?? "n/a"} origin=${originStr} destination=${destinationStr} departureISO=${departureTime ?? "now"} departureUnix=${departureUnix} available_travel_modes=${availableModes || "n/a"} region=${regionCode}`,
           );
         }
       }
-      logDirectionsDebug("request failed", {
-        origin: originStr,
-        destination: destinationStr,
-        mode,
-        provider,
-        error: errorMessage || bodyStatus,
-      });
+      // Per-mode failures are summarized at [ROUTE_SUMMARY] — avoid Xcode spam.
+      if (verbose) {
+        logDirectionsDebug("request failed", {
+          origin: originStr,
+          destination: destinationStr,
+          mode,
+          provider,
+          error: errorMessage || bodyStatus,
+          legKey: logPlaceIds?.logLegKey,
+        });
+      }
       if (mode === "transit") {
         logRouteOnce(
           `${logKey}|transit_err`,
@@ -215,13 +246,16 @@ export async function fetchGoogleDirectionsRoute(
       );
     }
 
-    logDirectionsDebug("request success", {
-      origin: originStr,
-      destination: destinationStr,
-      mode,
-      provider,
-      durationMinutes,
-    });
+    if (verbose) {
+      logDirectionsDebug("request success", {
+        origin: originStr,
+        destination: destinationStr,
+        mode,
+        provider,
+        durationMinutes,
+        legKey: logPlaceIds?.logLegKey,
+      });
+    }
 
     return {
       ok: true,
@@ -234,17 +268,20 @@ export async function fetchGoogleDirectionsRoute(
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    logDirectionsDebug("request failed", {
-      origin: originStr,
-      destination: destinationStr,
-      mode,
-      provider,
-      error: msg,
-    });
-    logRouteOnce(
-      `${logKey}|exception`,
-      `[DIRECTIONS_API_RESPONSE] http_status=0 body_status=exception error_message=${msg}`,
-    );
+    if (debugDirectionsVerbose()) {
+      logDirectionsDebug("request failed", {
+        origin: originStr,
+        destination: destinationStr,
+        mode,
+        provider,
+        error: msg,
+        legKey: logPlaceIds?.logLegKey,
+      });
+      logRouteOnce(
+        `${logKey}|exception`,
+        `[DIRECTIONS_API_RESPONSE] http_status=0 body_status=exception error_message=${msg}`,
+      );
+    }
     if (mode === "transit") {
       console.info(`[ROUTE_TRANSIT_ERROR] status=exception message=${msg}`);
     }
@@ -265,8 +302,18 @@ export async function fetchGoogleDirectionsForRoutesMode(
   const mode = directionsModeForRoutesMode(travelMode);
   if (!mode) return null;
 
-  const originInput = buildLocationInput(origin);
-  const destinationInput = buildLocationInput(destination);
+  const originInput = buildLocationInput(
+    origin,
+    options?.originPlaceId,
+    undefined,
+    options?.locationContext,
+  );
+  const destinationInput = buildLocationInput(
+    destination,
+    options?.destinationPlaceId,
+    undefined,
+    options?.locationContext,
+  );
 
   return fetchGoogleDirectionsRoute(
     apiKey,

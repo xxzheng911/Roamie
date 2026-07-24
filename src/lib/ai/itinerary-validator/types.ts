@@ -136,6 +136,8 @@ export type ItineraryValidatorInput = {
   excludePlaceIds?: readonly string[];
   rejectedPlaceNames?: readonly string[];
   lockedPlaceIds?: readonly string[];
+  /** Selected combination / user-locked place names — never remove or replace. */
+  lockedPlaceNames?: readonly string[];
   userText?: string;
   /** session / context 已解析的排除關鍵字（火鍋、義式…） */
   excludedCategories?: readonly string[];

@@ -8,9 +8,13 @@ import type { PlaceResult } from "@/lib/place-result";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
 
 function itemToPlace(item: RoamieItineraryItem): PlaceResult {
+  const display =
+    (item.localizedDisplayName ?? "").trim() ||
+    item.placeName ||
+    item.title;
   return {
     id: item.googlePlaceId?.trim() || item.placeName || item.title,
-    name: item.placeName || item.title,
+    name: display,
     address: item.address ?? null,
     lat: item.lat ?? null,
     lng: item.lng ?? null,
@@ -26,6 +30,10 @@ function itemToPlace(item: RoamieItineraryItem): PlaceResult {
     closingSoonNote: "",
     nextOpenHint: "",
     openNow: false,
+    originalName: item.originalName ?? item.placeName ?? item.title,
+    localizedDisplayName: item.localizedDisplayName ?? display,
+    languageCode: item.languageCode ?? null,
+    localizationSource: item.localizationSource ?? null,
   } as PlaceResult;
 }
 
@@ -164,23 +172,45 @@ export function applyComposedPlansToItineraryItems(
       const bucket = byKey.get(key);
       const base = bucket?.shift();
       if (base) {
+        const displayName =
+          place.localizedDisplayName?.trim() ||
+          place.name ||
+          entry.name ||
+          base.localizedDisplayName ||
+          base.placeName ||
+          base.title;
         out.push({
           ...base,
           time: entry.time || base.time,
           date: date || base.date,
           dayIndex: safeDay - 1,
-          title: base.title || entry.name,
-          placeName: base.placeName || entry.name,
+          title: displayName,
+          placeName: displayName,
+          localizedDisplayName: displayName,
+          originalName:
+            place.originalName ??
+            base.originalName ??
+            base.placeName ??
+            entry.name,
+          languageCode: place.languageCode ?? base.languageCode,
+          localizationSource:
+            place.localizationSource ?? base.localizationSource,
         });
       } else {
+        const displayName =
+          place.localizedDisplayName?.trim() || place.name || entry.name;
         out.push({
           date,
           time: entry.time || "10:00",
-          title: entry.name,
+          title: displayName,
           description: "",
-          placeName: entry.name,
-          lat: place.lat ?? undefined,
-          lng: place.lng ?? undefined,
+          placeName: displayName,
+          localizedDisplayName: displayName,
+          originalName: place.originalName ?? place.name ?? entry.name,
+          languageCode: place.languageCode ?? undefined,
+          localizationSource: place.localizationSource ?? undefined,
+          lat: place.lat ?? null,
+          lng: place.lng ?? null,
           address: place.address ?? entry.name,
           googlePlaceId: place.id || undefined,
           placeType: place.primaryType ?? undefined,

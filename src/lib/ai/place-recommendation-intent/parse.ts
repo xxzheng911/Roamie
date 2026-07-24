@@ -10,7 +10,11 @@ import {
   RESTAURANT_CUISINES,
 } from "@/lib/ai/recommendation-refinement/parser";
 import type { RecommendationIntent } from "@/lib/ai/recommendation-refinement/types";
-import { resolveDestinationFromText } from "@/lib/ai/trip-planning-context";
+import {
+  isCountryCityInquiryText,
+  isFutureTripPlanningStatement,
+  resolveDestinationFromText,
+} from "@/lib/ai/trip-planning-context";
 import type {
   PlaceRecommendationContinuation,
   PlaceRecommendationIntent,
@@ -131,6 +135,11 @@ export function parsePlaceRecommendationIntent(
 ): PlaceRecommendationIntent | null {
   const t = text.trim();
   if (!t) return null;
+
+  // Future trip narrative / country city inquiry must never become place cards.
+  if (isFutureTripPlanningStatement(t) || isCountryCityInquiryText(t)) {
+    return null;
+  }
 
   const activeAsRec =
     opts?.activePrimaryType === "restaurant" ||

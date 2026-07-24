@@ -154,7 +154,8 @@ const RESTAURANT_CUISINES: CuisineDef[] = [
   {
     id: "italian",
     labels: ["義式料理", "italian"],
-    patterns: [/義式料理|义式料理|義式|义式|義大利|意大利|italian/i],
+    // Bare 義大利/意大利 is a country destination — require food surface.
+    patterns: [/義式料理|义式料理|義式|义式|義大利料理|意大利料理|義大利菜|意大利菜|italian\s*(?:food|cuisine|restaurant)/i],
   },
   {
     id: "pizza",
@@ -184,12 +185,14 @@ const RESTAURANT_CUISINES: CuisineDef[] = [
   {
     id: "mexican",
     labels: ["墨西哥料理", "mexican"],
-    patterns: [/墨西哥|mexican/i],
+    // Bare 墨西哥 is a country destination — require food surface.
+    patterns: [/墨西哥料理|墨西哥菜|mexican\s*(?:food|cuisine|restaurant)/i],
   },
   {
     id: "spanish",
     labels: ["西班牙料理", "spanish"],
-    patterns: [/西班牙|spanish\s*(?:food|cuisine)|tapas/i],
+    // Bare 西班牙 is a country destination — require food surface.
+    patterns: [/西班牙料理|西班牙菜|spanish\s*(?:food|cuisine)|tapas/i],
   },
   {
     id: "mediterranean",
@@ -266,12 +269,14 @@ const RESTAURANT_CUISINES: CuisineDef[] = [
   {
     id: "vietnamese",
     labels: ["越南料理", "vietnamese"],
-    patterns: [/越南料理|越南|vietnamese|pho\b/i],
+    // Bare 越南 is a country destination (「我 1 月要去越南」) — require food surface.
+    patterns: [/越南料理|越南菜|越南餐|越南粉|越南河粉|vietnamese\s*(?:food|cuisine|restaurant)|pho\b/i],
   },
   {
     id: "indian",
     labels: ["印度料理", "indian"],
-    patterns: [/印度料理|印度|indian\s*(?:food|cuisine|restaurant)/i],
+    // Bare 印度 is a country destination — require food surface.
+    patterns: [/印度料理|印度菜|印度餐|indian\s*(?:food|cuisine|restaurant)/i],
   },
   {
     id: "vegetarian",

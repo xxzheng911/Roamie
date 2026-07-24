@@ -22,6 +22,15 @@ import {
   buildPlaceRecommendationQueries,
 } from "@/lib/ai/place-recommendation-intent";
 import { resolveRegionPrimaryCity } from "@/lib/ai/shopping-search-scope";
+import {
+  evaluateDestinationScopeGate,
+  logDestinationScopeBlocked,
+  logUnexpectedPlacesCall,
+} from "@/lib/ai/destination-scope";
+import {
+  isCountryCityInquiryText,
+  isFutureTripPlanningStatement,
+} from "@/lib/ai/trip-planning-context";
 
 export type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 export {
@@ -95,6 +104,7 @@ export function shouldFetchDestinationCategoryPlaces(
 ): boolean {
   const t = userText.trim();
   if (!t) return false;
+  if (isFutureTripPlanningStatement(t) || isCountryCityInquiryText(t)) return false;
   if (!hasCategoryPlaceQuery(t)) return false;
 
   const destination = resolveDestinationForCategorySearch(ctx, session, t);
@@ -105,6 +115,24 @@ export function shouldFetchDestinationCategoryPlaces(
     /(?:安排|規劃|规划|行程|幫我排|帮我排)/.test(t) &&
     !/(咖啡|餐廳|商圈|夜市|酒吧|室內|景點|美食)/.test(t)
   ) {
+    return false;
+  }
+
+  const scopeGate = evaluateDestinationScopeGate({
+    destination,
+    destinationType: ctx.destinationType,
+    countryCode: ctx.destinationCountry,
+    requestedIntent: "place_recommendation",
+  });
+  if (scopeGate.placesCallBlocked) {
+    logDestinationScopeBlocked(scopeGate);
+    logUnexpectedPlacesCall({
+      trigger: "shouldFetchDestinationCategoryPlaces",
+      intent: "place_recommendation",
+      destinationType: scopeGate.destinationType,
+      scopePrecision: scopeGate.scopePrecision,
+      callPath: "chat-place-intent.shouldFetchDestinationCategoryPlaces",
+    });
     return false;
   }
 

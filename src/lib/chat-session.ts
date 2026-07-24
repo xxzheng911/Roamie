@@ -32,6 +32,8 @@ import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
 import { isFlexiblePreferenceReply } from "@/lib/ai/destination-advice";
+import { resolvePlaceDisplayName } from "@/lib/place-display-name";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 
 export {
   buildContextualMoodHandoffOpening,
@@ -500,9 +502,25 @@ export function mapPlaceResultToChatItem(
     ctx.locale,
   );
   const { city, country } = parseCityCountryFromAddress(p.address);
+  const locale = ctx.locale ?? effectiveAppLocale();
+  const resolvedName = resolvePlaceDisplayName(
+    {
+      name: p.localizedDisplayName || p.name,
+      originalName: p.originalName || p.name,
+      placeId: p.id,
+      canonicalPlaceId: p.id,
+      localizedDisplayName: p.localizedDisplayName,
+      languageCode: p.languageCode,
+      localizationSource: p.localizationSource,
+    },
+    locale,
+  );
+  const displayName = resolvedName.localizedDisplayName || p.name;
   const base = normalizeRecommendationItem({
-    name: p.name,
-    placeName: p.name,
+    name: displayName,
+    placeName: displayName,
+    localizedDisplayName: displayName,
+    originalName: resolvedName.originalName || p.originalName || p.name,
     type: p.primaryType ?? "地點",
     description: p.address ?? "附近推薦",
     reason,
@@ -526,7 +544,8 @@ export function mapPlaceResultToChatItem(
   return {
     ...base,
     placeId: p.id,
-    displayName: p.name,
+    displayName,
+    localizedDisplayName: displayName,
     city,
     country,
   };

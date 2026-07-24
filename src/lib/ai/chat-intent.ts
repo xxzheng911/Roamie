@@ -30,6 +30,10 @@ import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 import { isMoodNearbyRelaxationRequest } from "@/lib/mood-nearby-intent";
 import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
 import { isFoodIntentText } from "@/lib/ai/chat-food-filter";
+import {
+  isCountryCityInquiryText,
+  isFutureTripPlanningStatement,
+} from "@/lib/ai/trip-planning-context";
 
 function isTripAddPlaceChat(session: ChatPlanningSession): boolean {
   return Boolean(session.fromTripAddPlace && session.tripAddPlaceContext);
@@ -80,6 +84,11 @@ export function detectChatIntent(text: string): ChatIntent {
   if (isMoodNearbyRelaxationRequest(t) && !isFoodIntentText(t)) return "attraction";
   if (isCreateItineraryIntent(t)) return "create_itinerary";
   if (isBestTravelTimeIntent(t)) return "best_travel_time";
+
+  // Future trip narrative / country city inquiry → trip planning (before cuisine leak).
+  if (isFutureTripPlanningStatement(t) || isCountryCityInquiryText(t)) {
+    return "trip_planning";
+  }
 
   // PLACE_RECOMMENDATION 優先：目的地 + 類別 → 直接搜尋地點卡片
   const categoryIntents = parseChatPlaceIntents(t);

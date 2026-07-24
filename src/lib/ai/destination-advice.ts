@@ -6,8 +6,10 @@ import { normalizeRecommendationItem } from "@/lib/ai/types";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
+  isCountryCityInquiryText,
   isDestinationAdviceText,
   isDestinationSelectionText,
+  isFutureTripPlanningStatement,
   isKnownCountryLabel,
   isKnownDestinationLabel,
   isKnownScenicLabel,
@@ -57,11 +59,13 @@ import { buildDestinationOptionsFromCityList } from "@/lib/ai/destination-anchor
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import {
   canDiscoverDestinationPlaces,
+  evaluateDestinationScopeGate,
   isCountryLevelDestination,
   logCombinationFlowTriggered,
   logConversationStageTransition,
   logCountryLevelPlacesBlocked,
   logDestinationCityRequired,
+  logTripIntentScopeSummary,
 } from "@/lib/ai/destination-scope";
 import { resolveSuggestedTripDates } from "@/lib/ai/resolve-suggested-trip-dates";
 import {
@@ -1228,6 +1232,16 @@ export function parseDestinationAdvicePurpose(text: string): DestinationAdvicePu
 
   if (isBestTravelTimeIntent(t)) return "best_time_to_visit";
 
+  // Country city inquiry → destination selection (city/region list, not place cards)
+  if (isCountryCityInquiryText(t)) {
+    return "destination_selection";
+  }
+
+  // Future trip narrative (month + country/city + go) → region_selected / planning
+  if (isFutureTripPlanningStatement(t)) {
+    return "region_selected";
+  }
+
   // Place recommendation must not be treated as destination / region selection
   if (hasCategoryPlaceQuery(t) && !isComboItineraryQuery(t) && !isCreateItineraryIntent(t)) {
     return undefined;
@@ -1675,6 +1689,26 @@ function buildCountryCityCollectAdvice(
     "COLLECTING_DESTINATION",
     "AWAITING_CITY_SELECTION",
   );
+  const scopeGate = evaluateDestinationScopeGate({
+    destination: label,
+    destinationType: "country",
+    countryCode: label,
+    requestedIntent: "trip_planning",
+  });
+  logTripIntentScopeSummary({
+    userTextSummary: _userText,
+    intent: "trip_planning",
+    destination: label,
+    destinationType: "country",
+    countryCode: label,
+    travelMonth: withMonth ? monthNum : ctx.travelMonth,
+    travelDates: ctx.startDate && ctx.endDate ? `${ctx.startDate}~${ctx.endDate}` : null,
+    scopePrecision: scopeGate.scopePrecision,
+    requiresDestinationRefinement: true,
+    placesCallAllowed: false,
+    nextState: "COLLECTING_DESTINATION_REGION",
+    responseType: "clarifying_question",
+  });
 
   return {
     reply: built.reply,

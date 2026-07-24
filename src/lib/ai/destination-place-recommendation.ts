@@ -47,6 +47,11 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { distanceMeters } from "@/lib/map-explore";
 import { beginPlacesFlow, endPlacesFlow } from "@/lib/places-api-stats";
 import {
+  evaluateDestinationScopeGate,
+  logDestinationScopeBlocked,
+  logUnexpectedPlacesCall,
+} from "@/lib/ai/destination-scope";
+import {
   buildLandmarkCompanionIntro,
   buildDestinationPlaceSearchAttempts,
   classifyDestinationForPlaceSearch,
@@ -844,6 +849,41 @@ export async function buildDestinationMustVisitRecommendation(params: {
     session,
   } = params;
   const label = normalizeDestinationLabel(destination);
+  const scopeGate = evaluateDestinationScopeGate({
+    destination: label,
+    destinationType: context.destinationType,
+    countryCode: context.destinationCountry,
+    requestedIntent: "must_visit_places",
+  });
+  if (scopeGate.placesCallBlocked) {
+    logDestinationScopeBlocked(scopeGate);
+    logUnexpectedPlacesCall({
+      trigger: "buildDestinationMustVisitRecommendation",
+      intent: "must_visit_places",
+      destinationType: scopeGate.destinationType,
+      scopePrecision: scopeGate.scopePrecision,
+      callPath: "destination-place-recommendation",
+    });
+    const summary = `${label}範圍很大，請先告訴我比較想去哪個城市或地區，我再幫你找適合的地點。`;
+    return {
+      summary,
+      recommendations: [],
+      payload: {
+        title: "Roamie 推薦",
+        summary,
+        moodTag: context.mood ?? "",
+        recommendations: [],
+        itinerary: [],
+      },
+      contextPatch: {
+        destination: label,
+        destinationType: "country",
+        destinationCountry: label,
+        tripPurpose: "destination_selection",
+      },
+    };
+  }
+
   const useItineraryMode = shouldUseItineraryMode(userText, context, session);
   const planningContext = useItineraryMode
     ? enrichContextForItineraryMode(userText, context, session)

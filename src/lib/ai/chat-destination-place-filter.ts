@@ -19,6 +19,7 @@ import {
   isCafePlace,
   isShoppingPlace,
 } from "@/lib/ai/chat-category-place-guard";
+import { isAcceptableRestaurantPlace } from "@/lib/ai/recommendation-refinement/search";
 
 export const CHAT_DESTINATION_MIN_COUNT = 3;
 export const CHAT_DESTINATION_TARGET_COUNT = 6;
@@ -339,12 +340,23 @@ export function filterChatCategoryPlaces(
     eligible = filterPlacesByCafeGuard(eligible);
   } else if (opts.intent === "shopping") {
     eligible = filterPlacesByShoppingGuard(eligible, opts.userText);
+  } else if (opts.intent === "restaurant") {
+    eligible = eligible.filter((p) => isAcceptableRestaurantPlace(p));
   }
 
-  const relaxed = eligible.filter(passesRelaxedTier);
+  const relaxed = eligible.filter(
+    opts.intent === "restaurant"
+      ? (p) => (p.rating ?? 0) >= 4.0 && (p.userRatingCount ?? 0) >= 20
+      : passesRelaxedTier,
+  );
   logChatPlacesFilterRelaxedCount(relaxed.length);
 
-  let picked = relaxed.length > 0 ? relaxed : eligible.filter(passesFallbackTier);
+  let picked =
+    relaxed.length > 0
+      ? relaxed
+      : opts.intent === "restaurant"
+        ? [] // Never fall back to low-quality restaurants
+        : eligible.filter(passesFallbackTier);
   if (opts.intent === "cafe") {
     picked = picked.filter(isCafePlace);
   } else if (opts.intent === "shopping") {

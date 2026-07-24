@@ -78,15 +78,27 @@ function buildSummary(ctx: CanonicalTravelContext, placeCount: number, places: P
   }
 
   if (!mood) {
+    if (placeCount <= 0) {
+      return `目前沒有找到合適的地點，我可以換個區域或條件再找找。`;
+    }
+    if (placeCount === 1) {
+      return `我找到一個符合條件的地點，你可以先看看是否喜歡。`;
+    }
     return [
-      `我在${dest}幫你找了${placeCount > 0 ? `${placeCount} 個` : "幾個"}適合的地點。`,
-      "選一個後我可以幫你安排路線。",
+      `我在${dest}幫你找了 ${placeCount} 個適合的地點。`,
+      "你可以選一個或多個，我再幫你安排路線。",
     ].join("\n");
   }
 
+  if (placeCount <= 0) {
+    return `目前沒有找到合適的地點，我可以換個區域或條件再找找。`;
+  }
+  if (placeCount === 1) {
+    return `依「${mood}」的心情，我找到一個符合條件的地點，你可以先看看是否喜歡。`;
+  }
   return [
-    `依「${mood}」的心情，我在${dest}幫你找了${placeCount > 0 ? `${placeCount} 個` : "幾個"}適合的地點。`,
-    "選一個後我可以幫你安排路線。",
+    `依「${mood}」的心情，我在${dest}幫你找了 ${placeCount} 個適合的地點。`,
+    "你可以選一個或多個，我再幫你安排路線。",
   ].join("\n");
 }
 

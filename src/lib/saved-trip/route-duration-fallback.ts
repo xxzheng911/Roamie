@@ -4,10 +4,15 @@ import { distanceMeters } from "@/lib/geo-distance";
 import { logRouteOnce, warnRouteOnce } from "@/lib/route-duration-log";
 import type { RouteLegDurationResult, RouteLegScope } from "@/lib/saved-trip/route-duration-types";
 import {
+  resolveRouteRegionProfile,
+  type RouteRegionProfile,
+} from "@/lib/saved-trip/stop-navigation";
+import {
   fetchRouteResult,
   type FetchRouteQueryOptions,
   type RoutesFnResult,
 } from "@/services/routesService";
+import { displayTransportLabel } from "@/lib/saved-trip/leg-transport-sot";
 
 /**
  * Shared Directions distance thresholds (single source of truth).
@@ -52,17 +57,44 @@ function estimatesForMode(
   };
 }
 
+function fallbackReasonFor(
+  preferredMode: RoutesTravelMode,
+  resolvedMode: RoutesTravelMode,
+): string | null {
+  if (preferredMode === resolvedMode) return null;
+  if (preferredMode === "WALK" && resolvedMode === "DRIVE") {
+    return "walking_distance_or_zero_results_fallback";
+  }
+  if (preferredMode === "WALK" && resolvedMode === "TRANSIT") {
+    return "walking_zero_results_fallback_transit";
+  }
+  if (preferredMode === "DRIVE" && resolvedMode === "TRANSIT") {
+    return "driving_zero_results_fallback_transit";
+  }
+  return `${String(preferredMode).toLowerCase()}_fallback_${String(resolvedMode).toLowerCase()}`;
+}
+
 function toSuccessResult(
   result: RoutesFnResult & { ok: true },
   preferredMode: RoutesTravelMode,
   resolvedMode: RoutesTravelMode,
+  reasonOverride?: string | null,
 ): RouteLegDurationResult {
   const usedEstimatedFallback = resolvedMode !== preferredMode;
+  const fallbackReason =
+    reasonOverride !== undefined
+      ? reasonOverride
+      : fallbackReasonFor(preferredMode, resolvedMode);
   return {
     ok: true,
     durationMinutes: result.data.durationMinutes,
     distanceMeters: result.data.distanceMeters,
     mode: resolvedMode,
+    requestedMode: preferredMode,
+    resolvedMode,
+    fallbackReason,
+    durationSource: "directions",
+    routeStatus: "ok",
     usedWalkFallback: false,
     usedEstimatedFallback,
     fallbackEstimateMode: usedEstimatedFallback ? resolvedMode : undefined,
@@ -76,12 +108,20 @@ function toSuccessResult(
   };
 }
 
-function toFailureResult(preferredMode: RoutesTravelMode): RouteLegDurationResult {
+function toFailureResult(
+  preferredMode: RoutesTravelMode,
+  reason = "zero_results",
+): RouteLegDurationResult {
   return {
     ok: false,
     durationMinutes: 0,
     distanceMeters: 0,
     mode: preferredMode,
+    requestedMode: preferredMode,
+    resolvedMode: preferredMode,
+    fallbackReason: reason,
+    durationSource: "none",
+    routeStatus: reason === "mode_unavailable" ? "mode_unavailable" : "failed",
     usedWalkFallback: false,
     transitUnavailable: false,
     transitUnavailableProvider: null,
@@ -117,14 +157,21 @@ export function availableModesToRoutesModes(
   return out;
 }
 
+export type BuildFallbackModeChainOptions = {
+  locationContext?: string | null;
+  regionCode?: string | null;
+  regionProfile?: RouteRegionProfile;
+};
+
 /**
  * Build ordered Directions modes for one leg.
- * Distance gates walking/bicycling; each mode is attempted at most once by the fetcher.
+ * Region + distance aware; each mode is attempted at most once by the fetcher.
  */
 export function buildFallbackModeChain(
   preferred: RoutesTravelMode,
   straightLineMeters: number,
   availableTravelModes?: string[] | null,
+  options?: BuildFallbackModeChainOptions,
 ): RoutesTravelMode[] {
   const distance = Number.isFinite(straightLineMeters)
     ? Math.max(0, straightLineMeters)
@@ -132,6 +179,9 @@ export function buildFallbackModeChain(
   const walkOk = distance <= MAX_WALK_DIRECTIONS_METERS;
   const bikeOk = distance <= MAX_BICYCLE_DIRECTIONS_METERS;
   const available = availableModesToRoutesModes(availableTravelModes, preferred);
+  const profile =
+    options?.regionProfile ??
+    resolveRouteRegionProfile(options?.locationContext, distance, options?.regionCode);
   const chain: RoutesTravelMode[] = [];
   const add = (m: RoutesTravelMode) => {
     if (m === "WALK" && !walkOk) return;
@@ -142,24 +192,16 @@ export function buildFallbackModeChain(
   // When API reported available modes (e.g. after ZERO_RESULTS), prefer those.
   if (available.length > 0) {
     for (const m of available) add(m);
-    if (distance > 800) add("DRIVE");
+    if (profile === "island_rural" || distance > 800) add("DRIVE");
     if (preferred === "BICYCLE" || preferred === "WALK") {
       if (walkOk) add("WALK");
     }
     return chain.length ? chain : ["DRIVE"];
   }
 
-  if (preferred === "WALK") {
-    if (distance <= AUTO_WALK_MAX_METERS && walkOk) {
-      add("WALK");
-      if (distance > 800) add("DRIVE");
-    } else if (distance <= CROSS_AREA_DRIVE_MIN_METERS && walkOk) {
-      add("WALK");
-      add("DRIVE");
-    } else {
-      add("DRIVE");
-    }
-    return chain.length ? chain : ["DRIVE"];
+  if (preferred === "TRANSIT") {
+    add("TRANSIT");
+    return chain;
   }
 
   if (preferred === "BICYCLE") {
@@ -175,22 +217,82 @@ export function buildFallbackModeChain(
     return chain;
   }
 
-  if (preferred === "TRANSIT") {
-    add("TRANSIT");
-    return chain;
+  // Region-aware chains for WALK / DRIVE preferences.
+  if (profile === "island_rural") {
+    // Islands / suburbs / mountains: driving first, then transit.
+    if (preferred === "DRIVE" || preferred === "WALK") {
+      add("DRIVE");
+      add("TRANSIT");
+      if (walkOk && distance <= AUTO_WALK_MAX_METERS) add("WALK");
+    } else {
+      add(preferred);
+      add("DRIVE");
+    }
+    return chain.length ? chain : ["DRIVE"];
   }
 
-  add(preferred === "DRIVE" ? "DRIVE" : preferred);
-  if (!chain.length) add("DRIVE");
-  return chain;
+  if (profile === "transit_dense") {
+    if (preferred === "WALK" && distance <= AUTO_WALK_MAX_METERS && walkOk) {
+      add("WALK");
+      add("TRANSIT");
+      add("DRIVE");
+    } else if (preferred === "WALK") {
+      add("TRANSIT");
+      add("DRIVE");
+      if (walkOk) add("WALK");
+    } else if (preferred === "DRIVE") {
+      add("DRIVE");
+      add("TRANSIT");
+    } else {
+      add(preferred);
+      add("TRANSIT");
+      add("DRIVE");
+    }
+    return chain.length ? chain : ["TRANSIT"];
+  }
+
+  if (profile === "short_urban" || (preferred === "WALK" && distance <= AUTO_WALK_MAX_METERS)) {
+    // Short urban: walking → transit → driving
+    if (preferred === "WALK" && walkOk) {
+      add("WALK");
+      add("TRANSIT");
+      if (distance > 800) add("DRIVE");
+    } else if (preferred === "DRIVE") {
+      add("DRIVE");
+      add("TRANSIT");
+      if (walkOk) add("WALK");
+    } else {
+      add(preferred);
+      add("WALK");
+      add("TRANSIT");
+      add("DRIVE");
+    }
+    return chain.length ? chain : ["WALK"];
+  }
+
+  // Mid / long distance: driving → transit
+  if (preferred === "WALK") {
+    add("DRIVE");
+    add("TRANSIT");
+    if (walkOk) add("WALK");
+  } else if (preferred === "DRIVE") {
+    add("DRIVE");
+    add("TRANSIT");
+  } else {
+    add(preferred);
+    add("DRIVE");
+    add("TRANSIT");
+  }
+  return chain.length ? chain : ["DRIVE"];
 }
 
 /** First mode to request given preference + straight-line distance. */
 export function resolveInitialDirectionsMode(
   preferred: RoutesTravelMode,
   straightLineMeters: number,
+  options?: BuildFallbackModeChainOptions,
 ): RoutesTravelMode {
-  const chain = buildFallbackModeChain(preferred, straightLineMeters, null);
+  const chain = buildFallbackModeChain(preferred, straightLineMeters, null, options);
   return chain[0] ?? (preferred === "WALK" ? "DRIVE" : preferred);
 }
 
@@ -201,17 +303,74 @@ export function straightLineDistanceMeters(
   return distanceMeters(origin, destination);
 }
 
+export type FetchRouteFallbackOptions = {
+  /**
+   * When false (manual mode switch): only attempt preferredMode.
+   * Do not return another mode's duration — caller must show unavailable UI.
+   */
+  allowModeFallback?: boolean;
+};
+
+function formatRouteSummary(params: {
+  legKey: string;
+  originName?: string;
+  destinationName?: string;
+  originPlaceId?: string;
+  destinationPlaceId?: string;
+  coordinateSource?: string;
+  requestedMode: RoutesTravelMode;
+  attemptedModes: RoutesTravelMode[];
+  resolvedMode: RoutesTravelMode | null;
+  durationMinutes: number | null;
+  routeStatus: string;
+  reason: string;
+  allowModeFallback: boolean;
+  distanceM: number;
+  origin: LatLng;
+  destination: LatLng;
+}): string {
+  return [
+    "[ROUTE_SUMMARY]",
+    `leg=${params.legKey}`,
+    `originName=${params.originName ?? "n/a"}`,
+    `destinationName=${params.destinationName ?? "n/a"}`,
+    `originPlaceId=${params.originPlaceId ?? "none"}`,
+    `destinationPlaceId=${params.destinationPlaceId ?? "none"}`,
+    `coordinateSource=${params.coordinateSource ?? "unknown"}`,
+    `requestedMode=${params.requestedMode}`,
+    `attemptedModes=${params.attemptedModes.join(",")}`,
+    `resolvedMode=${params.resolvedMode ?? "none"}`,
+    `durationMinutes=${params.durationMinutes ?? "n/a"}`,
+    `routeStatus=${params.routeStatus}`,
+    `reason=${params.reason}`,
+    `distanceM=${Math.round(params.distanceM)}`,
+    `allowFallback=${params.allowModeFallback}`,
+    `origin=${params.origin.lat.toFixed(4)},${params.origin.lng.toFixed(4)}`,
+    `destination=${params.destination.lat.toFixed(4)},${params.destination.lng.toFixed(4)}`,
+  ].join(" ");
+}
+
 /**
  * Try each mode in the distance-aware chain at most once.
  */
 export async function fetchRouteWithDirectionFallbacks(
   ctx: RouteFetchContext,
   preferredMode: RoutesTravelMode,
+  options?: FetchRouteFallbackOptions,
 ): Promise<RouteLegDurationResult> {
+  const allowModeFallback = options?.allowModeFallback !== false;
   const straightM = straightLineDistanceMeters(ctx.origin, ctx.destination);
-  const chain = buildFallbackModeChain(preferredMode, straightM, null);
+  const chainOpts: BuildFallbackModeChainOptions = {
+    locationContext: ctx.query.locationContext,
+    regionCode: ctx.query.region,
+  };
+  const chain = allowModeFallback
+    ? buildFallbackModeChain(preferredMode, straightM, null, chainOpts)
+    : [preferredMode];
   const attempted: RoutesTravelMode[] = [];
   let lastAvailable: string[] | undefined;
+  const originName = ctx.query.logLegKey?.split("→")[0]?.split("§").pop();
+  const destinationName = ctx.query.logLegKey?.split("→")[1];
 
   for (let i = 0; i < chain.length; i++) {
     const mode = chain[i]!;
@@ -219,28 +378,36 @@ export async function fetchRouteWithDirectionFallbacks(
     const result = await tryFetchMode(ctx, mode);
 
     if (result.ok) {
+      // Manual strict mode: success only counts if it matches the requested mode.
+      if (!allowModeFallback && mode !== preferredMode) {
+        continue;
+      }
       const reason =
         mode === preferredMode
           ? "preferred"
-          : preferredMode === "WALK" && mode === "DRIVE"
-            ? "walking_zero_results_fallback"
-            : `${String(preferredMode).toLowerCase()}_fallback`;
+          : fallbackReasonFor(preferredMode, mode) ?? "fallback";
       logRouteOnce(
         `summary_ok|${ctx.cacheKey}|${mode}`,
-        [
-          "[ROUTE_SUMMARY]",
-          `leg=${ctx.scope.legKey}`,
-          `origin=${ctx.origin.lat.toFixed(4)},${ctx.origin.lng.toFixed(4)}`,
-          `destination=${ctx.destination.lat.toFixed(4)},${ctx.destination.lng.toFixed(4)}`,
-          `requestedMode=${preferredMode}`,
-          `resolvedMode=${mode}`,
-          `result=success`,
-          `duration=${result.data.durationMinutes}m`,
-          `distanceM=${Math.round(straightM)}`,
-          `reason=${reason}`,
-        ].join(" "),
+        formatRouteSummary({
+          legKey: ctx.scope.legKey,
+          originName,
+          destinationName,
+          originPlaceId: ctx.query.originPlaceId,
+          destinationPlaceId: ctx.query.destinationPlaceId,
+          coordinateSource: ctx.query.coordinateSource,
+          requestedMode: preferredMode,
+          attemptedModes: attempted,
+          resolvedMode: mode,
+          durationMinutes: result.data.durationMinutes,
+          routeStatus: "ok",
+          reason,
+          allowModeFallback,
+          distanceM: straightM,
+          origin: ctx.origin,
+          destination: ctx.destination,
+        }),
       );
-      return toSuccessResult(result, preferredMode, mode);
+      return toSuccessResult(result, preferredMode, mode, reason === "preferred" ? null : reason);
     }
 
     const status = googleStatus(result);
@@ -249,6 +416,7 @@ export async function fetchRouteWithDirectionFallbacks(
     }
 
     if (
+      allowModeFallback &&
       i === 0 &&
       /ZERO_RESULTS|NOT_FOUND|ZERO/i.test(status) &&
       lastAvailable?.length
@@ -257,6 +425,7 @@ export async function fetchRouteWithDirectionFallbacks(
         preferredMode,
         straightM,
         lastAvailable,
+        chainOpts,
       );
       for (const m of expanded) {
         if (!chain.includes(m)) chain.push(m);
@@ -264,18 +433,43 @@ export async function fetchRouteWithDirectionFallbacks(
     }
   }
 
+  const failReason = allowModeFallback ? "zero_results" : "mode_unavailable";
   warnRouteOnce(
     `summary_fail|${ctx.cacheKey}|${attempted.join(",")}`,
+    formatRouteSummary({
+      legKey: ctx.scope.legKey,
+      originName,
+      destinationName,
+      originPlaceId: ctx.query.originPlaceId,
+      destinationPlaceId: ctx.query.destinationPlaceId,
+      coordinateSource: ctx.query.coordinateSource,
+      requestedMode: preferredMode,
+      attemptedModes: attempted,
+      resolvedMode: null,
+      durationMinutes: null,
+      routeStatus: failReason === "mode_unavailable" ? "mode_unavailable" : "failed",
+      reason: failReason,
+      allowModeFallback,
+      distanceM: straightM,
+      origin: ctx.origin,
+      destination: ctx.destination,
+    }),
+  );
+
+  // Keep legacy tag for grepping during migration.
+  warnRouteOnce(
+    `unavailable|${ctx.cacheKey}|${attempted.join(",")}`,
     [
       "[ROUTE_UNAVAILABLE]",
       `leg=${ctx.scope.legKey}`,
       `attemptedModes=${attempted.join(",")}`,
       `distanceM=${Math.round(straightM)}`,
-      `reason=zero_results`,
+      `reason=${failReason}`,
+      `allowFallback=${allowModeFallback}`,
     ].join(" "),
   );
 
-  return toFailureResult(preferredMode);
+  return toFailureResult(preferredMode, failReason);
 }
 
 export function transportFallbackModeFromResult(
@@ -289,24 +483,31 @@ export function transportFallbackModeFromResult(
   return null;
 }
 
-/** UI label that matches the duration source. */
+/** UI label that matches the duration source. Always via displayTransportLabel. */
 export function resolvedTransportDisplayLabel(
   transportLabel: string,
   route: RouteLegDurationResult,
 ): string {
   const fallback = transportFallbackModeFromResult(route);
-  if (fallback === "drive") return "開車";
-  if (fallback === "transit") return "大眾運輸";
-  if (fallback === "walk") return "步行";
+  if (fallback === "drive") return displayTransportLabel("drive");
+  if (fallback === "transit") return displayTransportLabel("transit");
+  if (fallback === "walk") return displayTransportLabel("walk");
   if (route.ok) {
     if (route.mode === "DRIVE" || route.mode === "TWO_WHEELER") {
-      if (/步行|走路|walk|單車|bike/i.test(transportLabel)) return "開車";
+      if (/步行|走路|walk|單車|bike/i.test(transportLabel)) {
+        return displayTransportLabel("drive");
+      }
+      if (/計程車|共乘|taxi|uber/i.test(transportLabel)) {
+        return displayTransportLabel("taxi");
+      }
+      return displayTransportLabel("drive");
     }
     if (route.mode === "TRANSIT" && /步行|走路|walk/i.test(transportLabel)) {
-      return "大眾運輸";
+      return displayTransportLabel("transit");
     }
+    if (route.mode) return displayTransportLabel(route.mode);
   }
-  return transportLabel.trim() || "移動";
+  return displayTransportLabel(transportLabel) || "移動";
 }
 
 export function estimatedDisplaySuffix(

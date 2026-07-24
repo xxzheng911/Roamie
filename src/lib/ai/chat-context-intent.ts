@@ -4,6 +4,10 @@ import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
 import { hasChatPlaceCategoryQuery } from "@/lib/ai/chat-place-intent";
 import { isCreateItineraryRequest } from "@/lib/ai/itinerary-entity-extraction";
+import {
+  isCountryCityInquiryText,
+  isFutureTripPlanningStatement,
+} from "@/lib/ai/trip-planning-context";
 
 export type ChatContextIntent =
   | "create_itinerary"
@@ -52,7 +56,12 @@ export function isPlaceRecommendationIntent(text: string): boolean {
 
 /**
  * Intent 優先級：
- * CREATE_ITINERARY > PLACE_RECOMMENDATION > BEST_TRAVEL_TIME > TRIP_PLANNING > GENERAL_CHAT
+ * CREATE_ITINERARY >
+ * FUTURE_TRIP_PLANNING (month/season + destination) >
+ * PLACE_RECOMMENDATION >
+ * BEST_TRAVEL_TIME >
+ * TRIP_PLANNING >
+ * GENERAL_CHAT
  */
 export function resolveChatContextIntent(
   text: string,
@@ -63,6 +72,13 @@ export function resolveChatContextIntent(
   if (!t) return "general_chat";
 
   if (isCreateItineraryIntent(t)) return "create_itinerary";
+
+  // Future travel narrative / country city inquiry must not become place_recommendation
+  // (cuisine tokens like bare「越南」previously leaked into restaurant intent).
+  if (isFutureTripPlanningStatement(t) || isCountryCityInquiryText(t)) {
+    return "trip_planning";
+  }
+
   if (isPlaceRecommendationIntent(t)) return "place_recommendation";
   if (isBestTravelTimeIntent(t)) return "best_travel_time";
 

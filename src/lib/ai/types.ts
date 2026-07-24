@@ -49,6 +49,32 @@ export const RoamieItineraryItemSchema = z.object({
   googlePlaceId: z.string().optional(),
   placeType: z.string().optional(),
   notes: z.string().optional(),
+  /** Pre-localization / local-script name (search / nav / match only). */
+  originalName: z.string().optional(),
+  /** Localized display name — sole UI SoT (kept in sync with placeId / coords). */
+  localizedDisplayName: z.string().optional(),
+  languageCode: z.string().optional(),
+  localizationSource: z.string().optional(),
+  /** Prefer for Directions when set. */
+  navigationLatitude: z.number().nullable().optional(),
+  navigationLongitude: z.number().nullable().optional(),
+  /**
+   * Where lat/lng came from.
+   * approx_center / generated / fallback / region_center are not precise nav points.
+   */
+  coordinateSource: z
+    .enum([
+      "google_places",
+      "place_details",
+      "navigation",
+      "approx_center",
+      "generated",
+      "fallback",
+      "region_center",
+      "geocode",
+      "unknown",
+    ])
+    .optional(),
   /** 0-based day index within trip */
   dayIndex: z.number().optional(),
   /** 0-based order within the day (display / persistence) */
@@ -155,6 +181,13 @@ export function normalizeItineraryItem(
     googlePlaceId: raw.googlePlaceId,
     placeType: raw.placeType,
     notes: raw.notes,
+    originalName: raw.originalName,
+    localizedDisplayName: raw.localizedDisplayName,
+    languageCode: raw.languageCode,
+    localizationSource: raw.localizationSource,
+    navigationLatitude: raw.navigationLatitude,
+    navigationLongitude: raw.navigationLongitude,
+    coordinateSource: raw.coordinateSource,
     dayIndex: raw.dayIndex,
     sortIndex: raw.sortIndex,
     order: raw.order,
@@ -197,10 +230,24 @@ export function normalizeRoamieResponse(raw: Record<string, unknown>): RoamieRes
 }
 
 export function normalizeRecommendationItem(
-  raw: Partial<RoamieRecommendationItem> & { name: string },
-): RoamieRecommendationItem {
+  raw: Partial<RoamieRecommendationItem> & { name: string } & {
+    localizedDisplayName?: string;
+    originalName?: string;
+    languageCode?: string;
+    localizationSource?: string;
+  },
+): RoamieRecommendationItem & {
+  localizedDisplayName?: string;
+  originalName?: string;
+  languageCode?: string;
+  localizationSource?: string;
+} {
+  const localized =
+    (raw.localizedDisplayName ?? "").trim() ||
+    (raw.placeName ?? "").trim() ||
+    raw.name;
   return {
-    name: raw.name,
+    name: localized,
     type: raw.type ?? "地點",
     description: raw.description ?? "",
     reason: raw.reason ?? "",
@@ -209,7 +256,7 @@ export function normalizeRecommendationItem(
     lat: raw.lat ?? null,
     lng: raw.lng ?? null,
     googleMapsUrl: raw.googleMapsUrl ?? "",
-    placeName: raw.placeName ?? raw.name,
+    placeName: localized,
     reasonSource: raw.reasonSource ?? "template",
     googlePlaceId: raw.googlePlaceId,
     photoName: raw.photoName ?? null,
@@ -225,6 +272,10 @@ export function normalizeRecommendationItem(
     matchedCombinationIds: raw.matchedCombinationIds,
     matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
     sourceRegionCandidate: raw.sourceRegionCandidate,
+    localizedDisplayName: raw.localizedDisplayName ?? localized,
+    originalName: raw.originalName,
+    languageCode: raw.languageCode,
+    localizationSource: raw.localizationSource,
   };
 }
 

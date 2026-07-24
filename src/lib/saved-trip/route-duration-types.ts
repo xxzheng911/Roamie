@@ -15,6 +15,13 @@ export type RouteLegDurationResult = {
   durationMinutes: number;
   distanceMeters: number;
   mode: RoutesTravelMode;
+  /** Preference / initial request mode (may differ from mode after fallback). */
+  requestedMode?: RoutesTravelMode;
+  /** Same as mode when ok — explicit SoT alias. */
+  resolvedMode?: RoutesTravelMode;
+  fallbackReason?: string | null;
+  durationSource?: "directions" | "estimate" | "none";
+  routeStatus?: "ok" | "failed" | "mode_unavailable" | "transit_unavailable";
   usedWalkFallback: boolean;
   /** 單車等模式改以 driving/walking 估算 */
   usedEstimatedFallback?: boolean;
@@ -37,4 +44,9 @@ export type FetchLegDurationInput = {
   preferredMode: RoutesTravelMode;
   query: import("@/services/routesService").FetchRouteQueryOptions;
   force?: boolean;
+  /**
+   * When false (manual mode switch): only fetch preferredMode.
+   * Do not return another mode's duration.
+   */
+  allowModeFallback?: boolean;
 };

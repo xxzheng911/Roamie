@@ -40,6 +40,9 @@ export type ChatPlaceSearchContext = {
   textOnlyDestinationSearch?: boolean;
   destinationCountry?: string;
   destinationCity?: string;
+  /** Country-level destination blocked from Places until city/region refined */
+  placesCallBlocked?: boolean;
+  placesBlockReason?: string;
 };
 
 /** @deprecated Use isExplicitDeviceNearbyRequest — bare「附近」follows trip destination. */
@@ -328,6 +331,36 @@ export async function resolveChatPlaceSearchContext(params: {
 
   const label = normalizeDestinationLabel(destinationName);
   const entity = resolveDestinationEntity(label);
+
+  // Country-level destinations must never become a Places search center.
+  const { evaluateDestinationScopeGate, logDestinationScopeBlocked, logUnexpectedPlacesCall } =
+    await import("@/lib/ai/destination-scope");
+  const scopeGate = evaluateDestinationScopeGate({
+    destination: label,
+    destinationType: entity.type,
+    countryCode: entity.country,
+    requestedIntent: "chat_place_search",
+  });
+  if (scopeGate.placesCallBlocked) {
+    logDestinationScopeBlocked(scopeGate);
+    logUnexpectedPlacesCall({
+      trigger: "resolveChatPlaceSearchContext",
+      intent: "chat_place_search",
+      destinationType: scopeGate.destinationType,
+      scopePrecision: scopeGate.scopePrecision,
+      callPath: "chat-place-search-context.resolveChatPlaceSearchContext",
+    });
+    return {
+      searchMode: "destination",
+      destinationName: label,
+      destinationLatLng: null,
+      deviceLatLng: deviceLatLng ?? undefined,
+      destinationCountry: entity.country,
+      placesCallBlocked: true,
+      placesBlockReason: scopeGate.reason,
+    };
+  }
+
   let destinationLatLng: LatLng | null = null;
   let textOnlyDestinationSearch = false;
 

@@ -104,6 +104,7 @@ function makeStop(
     address: place.address?.trim() || place.name,
     googlePlaceId: placeId || undefined,
     placeType: place.type || bucket,
+    coordinateSource: placeId && place.lat != null && place.lng != null ? "google_places" : undefined,
     sourceCombinationId: place.sourceCombinationId,
     sourceCombinationIds: place.sourceCombinationIds,
     matchedCombinationIds: place.matchedCombinationIds,

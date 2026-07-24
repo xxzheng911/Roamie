@@ -95,6 +95,9 @@ import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reaso
 import { getPreferences } from "@/lib/preferences-storage";
 import { getUserProfile } from "@/lib/profile-storage";
 import {
+  resolvePlannerPaceFromProfile,
+} from "@/lib/ai/required-anchor-runtime";
+import {
   buildAttractionSupplementAttempts,
   buildBalancedSlowDayPlans,
   buildCategorySearchAttempts,
@@ -324,13 +327,17 @@ export async function resolvePlanningReasonProfile(): Promise<
   ReturnType<typeof userProfileForReasonFrom> | null
 > {
   try {
-    const [prefs, userProfile] = await Promise.all([
+    const { resolveProfileHasPlusAccess } = await import("@/lib/profile-persona");
+    const [prefs, userProfile, hasPlusAccess] = await Promise.all([
       getPreferences(),
       getUserProfile().catch(() => null),
+      resolveProfileHasPlusAccess().catch(() => false),
     ]);
     return userProfileForReasonFrom(prefs, {
       travelStyle: userProfile?.travelStyle,
       personalityType: userProfile?.personalityType,
+      personalitySummary: userProfile?.personalitySummary,
+      hasPlusAccess,
     });
   } catch {
     return null;
@@ -363,7 +370,10 @@ export function rankPlacesForTripPlanning(params: {
 
   const requiredCanonical = requiredCanonicalCandidatesForTrip(
     params.days,
-    params.style === "slow_nature" ? "slow" : "medium",
+    resolvePlannerPaceFromProfile({
+      style: params.style,
+      quizPace: params.profile?.pace,
+    }),
   );
 
   // 空 pool：直接略過，避免 PLANNER_START placesCount=0 污染 / 被覆寫採用
@@ -446,7 +456,10 @@ export function rankPlacesForTripPlanning(params: {
   const ranked = rankPlannerPlacesViaRecEngine(normalized, scoringInput);
   logAiResolvedPlacesCount(ranked.length);
 
-  const pace = params.style === "slow_nature" ? "slow" : "medium";
+  const pace = resolvePlannerPaceFromProfile({
+    style: params.style,
+    quizPace: params.profile?.pace,
+  });
   const validationSummary = getLastRecommendationValidationSummary();
   if (isRecEngineValidatorEnabled() && validationSummary.recommendationInsufficient) {
     logAiPipeline(
@@ -1174,7 +1187,10 @@ export async function fetchComposedCategoryPlaces(params: {
   let collected: PlaceResult[] = [];
   let searchRequestCount = 0;
   let geoRoundIndex = 0;
-  const paceHint = style === "slow_nature" ? "slow" : "medium";
+  const paceHint = resolvePlannerPaceFromProfile({
+    style,
+    quizPace: undefined,
+  });
   const requiredCanonical = requiredCanonicalCandidatesForTrip(days, paceHint);
   const primaryKinds = kindsForStyle(style);
   const diversityKinds = resolveStyleSearchKinds(style, days);
@@ -1727,7 +1743,8 @@ export async function resolveTripPlanningDayPlans(params: {
       userText: params.userText,
     }),
   );
-  let slowTravel = false;
+  let slowTravel =
+    params.style === "slow_nature" || params.profile?.pace === "slow";
 
   if (!isPlannerPoolReady(places, params.days)) {
     const gate = evaluatePlannerPoolGate(places, params.days);
@@ -1984,7 +2001,8 @@ export async function resolveTripPlanningDayPlans(params: {
     );
 
     if (fallbackPlans.some((plan) => plan.entries.length > 0)) {
-      slowTravel = params.style === "slow_nature";
+      slowTravel =
+        params.style === "slow_nature" || params.profile?.pace === "slow";
       return {
         ranked: flattenComposedDayPlanPlaces(fallbackPlans),
         buckets: composedDayPlansToBuckets(fallbackPlans),
@@ -2949,7 +2967,10 @@ export async function generateTripPlanFromStyle(input: {
 
   const finalTotalPlaces = plannerTotalPlaces(composedPlans);
 
-  const paceHint = style === "slow_nature" ? "slow" : "medium";
+  const paceHint = resolvePlannerPaceFromProfile({
+    style,
+    quizPace: reasonProfile?.pace,
+  });
   const requiredCanonicalFinal = requiredCanonicalCandidatesForTrip(days, paceHint);
   const availableCanonicalFinal = countUniqueCanonicalLandmarks(
     flattenComposedDayPlanPlaces(composedPlans),

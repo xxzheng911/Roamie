@@ -18,7 +18,9 @@ export type { RouteLegDurationResult, RouteLegScope, FetchLegDurationInput };
 const SUCCESS_TTL_MS = 30 * 60 * 1000;
 /** transit ZERO_RESULTS / 日本 Maps 深連結：不再重試 */
 const TRANSIT_UNAVAILABLE_TTL_MS = 24 * 60 * 60 * 1000;
-const FAILED_TTL_MS = 5 * 60 * 1000;
+/** ZERO_RESULTS / failed：負向快取，避免 render 後重複請求 */
+const FAILED_TTL_MS = 30 * 60 * 1000;
+const ZERO_RESULTS_TTL_MS = 60 * 60 * 1000;
 
 const scopedCache = new Map<string, ScopedCacheEntry>();
 const scopedInflight = new Map<string, Promise<RouteLegDurationResult>>();
@@ -78,6 +80,13 @@ export function buildScopedRouteCacheKey(
 function cacheTtl(result: RouteLegDurationResult): number {
   if (result.transitUnavailable) return TRANSIT_UNAVAILABLE_TTL_MS;
   if (result.ok) return SUCCESS_TTL_MS;
+  if (
+    result.fallbackReason === "zero_results" ||
+    result.routeStatus === "failed" ||
+    result.routeStatus === "mode_unavailable"
+  ) {
+    return ZERO_RESULTS_TTL_MS;
+  }
   return FAILED_TTL_MS;
 }
 
@@ -118,6 +127,7 @@ export async function fetchScopedLegDuration(
   input: FetchLegDurationInput,
 ): Promise<RouteLegDurationResult> {
   const { scope, origin, destination, preferredMode, query, force } = input;
+  const allowModeFallback = input.allowModeFallback !== false;
   const cacheKey = buildScopedRouteCacheKey(scope, origin, destination, preferredMode, query);
 
   if (!force) {
@@ -157,6 +167,7 @@ export async function fetchScopedLegDuration(
     preferredMode,
     query,
     cacheKey,
+    allowModeFallback,
   });
   scopedInflight.set(cacheKey, promise);
   try {

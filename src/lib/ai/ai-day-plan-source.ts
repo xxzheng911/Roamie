@@ -14,6 +14,7 @@ import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import { EN_CITY_NAMES } from "@/lib/ai/destination-geocode";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { classifyTripPlaceCategory, type TripPlaceCategory } from "@/lib/ai/trip-place-scoring";
+import { suggestStayDurationForPace } from "@/lib/ai/required-anchor-runtime";
 import {
   logAiBuildDayPlanStart,
   logAiDayPlanFinalSummary,
@@ -2336,6 +2337,14 @@ export type AiDayPlanItem = {
   type: string;
   photo?: string | null;
   rating?: number | null;
+  userRatingCount?: number | null;
+  types?: string[] | null;
+  /** Pre-localization / local-script name */
+  originalName?: string;
+  /** App-locale UI display name (SoT) */
+  localizedDisplayName?: string;
+  languageCode?: string;
+  localizationSource?: string;
 };
 
 export type AiDayPlan = {
@@ -2419,19 +2428,29 @@ export function composedPlansToAiDayPlan(params: {
       const dedupeKey = resolveTripPlaceId(place) || `${entry.name}:${place.address ?? ""}`;
       if (dedupeKey && seenPlaceKeys.has(dedupeKey)) continue;
       if (dedupeKey) seenPlaceKeys.add(dedupeKey);
+      const displayName =
+        (place.localizedDisplayName ?? "").trim() ||
+        (entry.name ?? "").trim() ||
+        (place.name ?? "").trim();
       const item: AiDayPlanItem = {
         dayIndex: plan.day,
         orderIndex,
         time: entry.time,
         slotType: entry.label,
         placeId: (place.id ?? "").trim(),
-        name: entry.name,
+        name: displayName,
         address: place.address?.trim() ?? "",
         lat: place.lat ?? null,
         lng: place.lng ?? null,
         type: place.primaryType?.trim() || entry.label,
         photo: place.photoName ?? null,
         rating: place.rating ?? null,
+        userRatingCount: place.userRatingCount ?? null,
+        types: place.types ?? null,
+        originalName: (place.originalName ?? place.name ?? entry.name ?? "").trim(),
+        localizedDisplayName: displayName,
+        languageCode: place.languageCode ?? undefined,
+        localizationSource: place.localizationSource ?? undefined,
       };
       items.push(item);
       logAiDayPlanFinal(item);
@@ -2460,15 +2479,20 @@ export function sortDayPlanItems(items: AiDayPlanItem[]): AiDayPlanItem[] {
   });
 }
 
-export function dayPlanItemToRecommendation(item: AiDayPlanItem): RoamieRecommendationItem {
+export function dayPlanItemToRecommendation(
+  item: AiDayPlanItem,
+  opts?: { pace?: "slow" | "medium" | "active" | null },
+): RoamieRecommendationItem {
+  const display =
+    (item.localizedDisplayName ?? "").trim() || item.name;
   return normalizeRecommendationItem({
-    name: item.name,
-    placeName: item.name,
+    name: display,
+    placeName: display,
     type: item.type,
-    description: item.address || item.name,
+    description: item.address || display,
     reason: "",
-    estimatedTime: "1-2 小時",
-    address: item.address || item.name,
+    estimatedTime: suggestStayDurationForPace(opts?.pace),
+    address: item.address || display,
     lat: item.lat,
     lng: item.lng,
     googleMapsUrl: "",
@@ -2476,12 +2500,21 @@ export function dayPlanItemToRecommendation(item: AiDayPlanItem): RoamieRecommen
     googlePlaceId: item.placeId || undefined,
     photoName: item.photo ?? null,
     rating: item.rating ?? null,
+    userRatingCount: item.userRatingCount ?? null,
+    types: item.types ?? undefined,
+    localizedDisplayName: display,
+    originalName: item.originalName,
+    languageCode: item.languageCode,
+    localizationSource: item.localizationSource,
   });
 }
 
-export function dayPlanToRecommendations(plan: AiDayPlan): RoamieRecommendationItem[] {
+export function dayPlanToRecommendations(
+  plan: AiDayPlan,
+  opts?: { pace?: "slow" | "medium" | "active" | null },
+): RoamieRecommendationItem[] {
   return dedupePlaceCardsForRender(
-    sortDayPlanItems(plan.items).map(dayPlanItemToRecommendation),
+    sortDayPlanItems(plan.items).map((item) => dayPlanItemToRecommendation(item, opts)),
   );
 }
 
@@ -2586,20 +2619,30 @@ export function buildItineraryFromDayPlan(
     const date = dateByDay.get(dayNumber) ?? "";
     logAiCreateTripItem({ ...item, dayIndex: dayNumber }, date || undefined);
     logTripDetailItemsRender({ ...item, dayIndex: dayNumber }, date || undefined);
+    const display =
+      (item.localizedDisplayName ?? "").trim() || item.name;
     return normalizeItineraryItem({
       date,
       time: item.time,
-      title: item.name,
-      placeName: item.name,
-      description: item.address || item.name,
+      title: display,
+      placeName: display,
+      description: item.address || display,
       lat: item.lat,
       lng: item.lng,
-      address: item.address || item.name,
+      address: item.address || display,
       googlePlaceId: item.placeId || undefined,
       placeType: item.slotType || item.type,
+      types: item.types ?? undefined,
       dayIndex: dayNumber - 1,
       sortIndex: item.orderIndex,
       order: item.orderIndex,
+      originalName: item.originalName || item.name,
+      localizedDisplayName: display,
+      languageCode: item.languageCode,
+      localizationSource: item.localizationSource,
+      userRatingCount: item.userRatingCount ?? null,
+      photoName: item.photo ?? null,
+      rating: item.rating ?? null,
     });
   });
 }

@@ -33,6 +33,18 @@ assert.ok(AUTO_WALK_MAX_METERS < MAX_WALK_DIRECTIONS_METERS);
 // Mid-distance default walk → drive first (no walking API call).
 assert.equal(resolveInitialDirectionsMode("WALK", 5_000), "DRIVE");
 
+// Island / Jeju: driving first even for mid walk preference.
+assert.deepEqual(
+  buildFallbackModeChain("WALK", 4_000, null, { locationContext: "濟州島, 韓國" }),
+  ["DRIVE", "TRANSIT"],
+);
+
+// Short urban walk chain.
+assert.deepEqual(
+  buildFallbackModeChain("WALK", 600, null, { locationContext: "台北, 台灣" }),
+  ["WALK", "TRANSIT"],
+);
+
 const longWalkFallback = {
   ok: true,
   durationMinutes: 18,

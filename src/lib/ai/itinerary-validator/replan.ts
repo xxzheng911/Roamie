@@ -48,6 +48,28 @@ import {
   hasHardBlockFailures,
   validateItineraryPlan,
 } from "@/lib/ai/itinerary-validator/validate";
+import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
+import {
+  wouldViolateDailyDiversity,
+  resolveDailyDiversityLimits,
+} from "@/lib/ai/daily-category-diversity";
+import {
+  buildItineraryQualitySummary,
+  logItineraryQualitySummary,
+} from "@/lib/ai/itinerary-quality-summary";
+import { resolvePlaceDisplayName } from "@/lib/place-display-name";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import {
+  evaluateRouteNavigabilityGate,
+  findNavigableReplacement,
+  logRouteNavigabilityGate,
+} from "@/lib/ai/route-navigability-gate";
+import { checkStopNavigationIdentity } from "@/lib/saved-trip/stop-navigation";
+import {
+  isPlaceLocked,
+  buildSelectedPlaceLock,
+  type SelectedPlaceLock,
+} from "@/lib/ai/required-anchor-runtime";
 
 export type ItineraryReplanParams = {
   plans: ComposedDayPlan[];
@@ -58,6 +80,29 @@ export type ItineraryReplanParams = {
   nearbyExtensions?: string[];
   validatorInput: Omit<ItineraryValidatorInput, "plans">;
 };
+
+function lockFromValidatorInput(
+  input: Omit<ItineraryValidatorInput, "plans"> | undefined,
+): SelectedPlaceLock | null {
+  if (!input?.lockedPlaceIds?.length && !input?.lockedPlaceNames?.length) return null;
+  return buildSelectedPlaceLock({
+    selectedPlaceNames: [...(input.lockedPlaceNames ?? [])],
+    placeIds: [...(input.lockedPlaceIds ?? [])],
+  });
+}
+
+function isLockedEntry(entry: DayPlanEntry, lock: SelectedPlaceLock | null): boolean {
+  if (!lock) return false;
+  return isPlaceLocked(
+    {
+      name: entry.name,
+      placeName: entry.place.name,
+      id: entry.place.id,
+      googlePlaceId: entry.place.id,
+    },
+    lock,
+  );
+}
 
 export type ItineraryReplanOutcome = {
   plans: ComposedDayPlan[];
@@ -135,6 +180,255 @@ function repairReorderSameDay(
   return current;
 }
 
+const LONG_LEG_REPAIR_M = 15_000;
+
+/** Remove non-tourism / low-value stops; localize remaining names. */
+function repairRemoveLowValueAndLocalize(
+  plans: ComposedDayPlan[],
+  days: number,
+  lock: SelectedPlaceLock | null = null,
+): ComposedDayPlan[] {
+  let removed = 0;
+  const current = ensureAllDayPlansExist(plans, days).map((plan) => {
+    const entries: DayPlanEntry[] = [];
+    for (const entry of plan.entries) {
+      if (!isLockedEntry(entry, lock) && !evaluateTourismQuality(entry.place).ok) {
+        removed += 1;
+        continue;
+      }
+      const resolved = resolvePlaceDisplayName(
+        {
+          name: entry.place.name ?? entry.name,
+          originalName: entry.place.originalName ?? entry.place.name ?? entry.name,
+          placeId: entry.place.id,
+          canonicalPlaceId: entry.place.id,
+          types: entry.place.types,
+          primaryType: entry.place.primaryType,
+        },
+        effectiveAppLocale(),
+      );
+      const place: PlaceResult = {
+        ...entry.place,
+        name: resolved.localizedDisplayName,
+        originalName: resolved.originalName,
+        localizedDisplayName: resolved.localizedDisplayName,
+        languageCode: resolved.languageCode,
+        localizationSource: resolved.localizationSource,
+      };
+      entries.push({
+        ...entry,
+        name: resolved.localizedDisplayName,
+        place,
+      });
+    }
+    return { ...plan, entries };
+  });
+  logAiPipeline(
+    "[ITINERARY_AUTO_REPAIR]",
+    "step=remove_low_value_and_localize",
+    `removed=${removed}`,
+    `lockedProtected=${Boolean(lock)}`,
+  );
+  return current;
+}
+
+/** Enforce daily category diversity caps per day. */
+function repairDailyCategoryDiversity(
+  plans: ComposedDayPlan[],
+  days: number,
+  style: TripStyleKey,
+  lock: SelectedPlaceLock | null = null,
+): ComposedDayPlan[] {
+  const limits = resolveDailyDiversityLimits({ style });
+  let dropped = 0;
+  const current = ensureAllDayPlansExist(plans, days).map((plan) => {
+    const kept: DayPlanEntry[] = [];
+    const keptPlaces: PlaceResult[] = [];
+    for (const entry of plan.entries) {
+      if (isLockedEntry(entry, lock)) {
+        keptPlaces.push(entry.place);
+        kept.push(entry);
+        continue;
+      }
+      const check = wouldViolateDailyDiversity(keptPlaces, entry.place, limits);
+      if (!check.ok) {
+        dropped += 1;
+        continue;
+      }
+      keptPlaces.push(entry.place);
+      kept.push(entry);
+    }
+    return { ...plan, entries: kept };
+  });
+  logAiPipeline(
+    "[ITINERARY_AUTO_REPAIR]",
+    "step=daily_category_diversity",
+    `dropped=${dropped}`,
+  );
+  return current;
+}
+
+/**
+ * Long-leg / geo repair: move the farther stop to another day with nearer cluster,
+ * or drop when no better day exists. Prefer not masking with transport-mode changes.
+ */
+function repairLongRouteLegs(
+  plans: ComposedDayPlan[],
+  days: number,
+): ComposedDayPlan[] {
+  const current = ensureAllDayPlansExist(plans, days).map((p) => ({
+    ...p,
+    entries: [...p.entries],
+  }));
+  let moved = 0;
+
+  for (const plan of current) {
+    if (plan.entries.length < 2) continue;
+    const toMove: DayPlanEntry[] = [];
+    const stay: DayPlanEntry[] = [plan.entries[0]!];
+
+    for (let i = 1; i < plan.entries.length; i++) {
+      const prev = stay[stay.length - 1]!;
+      const curr = plan.entries[i]!;
+      const a = prev.place;
+      const b = curr.place;
+      if (
+        a.lat == null ||
+        a.lng == null ||
+        b.lat == null ||
+        b.lng == null
+      ) {
+        stay.push(curr);
+        continue;
+      }
+      const dist = distanceMeters(
+        { lat: a.lat, lng: a.lng },
+        { lat: b.lat, lng: b.lng },
+      );
+      if (dist > LONG_LEG_REPAIR_M) {
+        toMove.push(curr);
+      } else {
+        stay.push(curr);
+      }
+    }
+
+    plan.entries = stay;
+
+    for (const entry of toMove) {
+      if (entry.place.lat == null || entry.place.lng == null) continue;
+      let bestDay: ComposedDayPlan | null = null;
+      let bestDist = Number.POSITIVE_INFINITY;
+      for (const other of current) {
+        if (other.day === plan.day) continue;
+        const anchor = other.entries[0]?.place;
+        if (anchor?.lat == null || anchor.lng == null) continue;
+        const d = distanceMeters(
+          { lat: entry.place.lat, lng: entry.place.lng },
+          { lat: anchor.lat, lng: anchor.lng },
+        );
+        if (d < bestDist && d < LONG_LEG_REPAIR_M) {
+          bestDist = d;
+          bestDay = other;
+        }
+      }
+      if (bestDay) {
+        bestDay.entries.push(entry);
+        moved += 1;
+      }
+      // else: drop the long-leg orphan rather than keep a zig-zag day
+    }
+  }
+
+  logAiPipeline(
+    "[ITINERARY_AUTO_REPAIR]",
+    "step=repair_long_route_legs",
+    `moved=${moved}`,
+  );
+  return current;
+}
+
+/**
+ * Replace stops that lack placeId / use approx coords with nearby navigable pool places.
+ * Syncs name + placeId + coords + types together (never name-only).
+ */
+function repairNonNavigableStops(
+  plans: ComposedDayPlan[],
+  pool: PlaceResult[],
+  days: number,
+  lock: SelectedPlaceLock | null = null,
+): ComposedDayPlan[] {
+  const usedIds = new Set<string>();
+  for (const plan of plans) {
+    for (const entry of plan.entries) {
+      const id = entry.place.id?.trim();
+      if (id) usedIds.add(id);
+    }
+  }
+
+  let replaced = 0;
+  const current = ensureAllDayPlansExist(plans, days).map((plan) => {
+    const entries = plan.entries.map((entry) => {
+      const identity = checkStopNavigationIdentity({
+        placeName: entry.name,
+        title: entry.name,
+        localizedDisplayName: entry.place.localizedDisplayName,
+        googlePlaceId: entry.place.id,
+        lat: entry.place.lat,
+        lng: entry.place.lng,
+        navigationLatitude: entry.place.navigationLatitude,
+        navigationLongitude: entry.place.navigationLongitude,
+        coordinateSource: entry.place.coordinateSource,
+        address: entry.place.address,
+      }, { silent: true });
+      if (identity.useForDirections && identity.placeId) return entry;
+      // Selected Place Lock: never silently replace user-chosen anchors.
+      if (isLockedEntry(entry, lock)) return entry;
+
+      const replacement = findNavigableReplacement(entry.place, pool, usedIds);
+      if (!replacement) return entry;
+
+      const oldId = entry.place.id?.trim();
+      if (oldId) usedIds.delete(oldId);
+      usedIds.add(replacement.id.trim());
+      replaced += 1;
+
+      const display = resolvePlaceDisplayName(
+        {
+          name: replacement.localizedDisplayName ?? replacement.name,
+          originalName: replacement.originalName ?? replacement.name,
+          placeId: replacement.id,
+          canonicalPlaceId: replacement.id,
+          types: replacement.types,
+          primaryType: replacement.primaryType,
+        },
+        effectiveAppLocale(),
+      );
+
+      return {
+        ...entry,
+        name: display.localizedDisplayName,
+        place: {
+          ...replacement,
+          name: display.localizedDisplayName,
+          localizedDisplayName: display.localizedDisplayName,
+          originalName: display.originalName,
+          languageCode: display.languageCode,
+          localizationSource: display.localizationSource,
+          coordinateSource: replacement.coordinateSource ?? "google_places",
+        },
+      };
+    });
+    return { ...plan, entries };
+  });
+
+  logAiPipeline(
+    "[ITINERARY_AUTO_REPAIR]",
+    "step=repair_non_navigable_stops",
+    `replaced=${replaced}`,
+  );
+  return current;
+}
+
 /** 2. 晚間景點移到白天（博物館／文創等不應排在 19:00+） */
 function repairMoveEveningToDaytime(plans: ComposedDayPlan[], days: number): ComposedDayPlan[] {
   const current = ensureAllDayPlansExist(plans, days).map((plan) => {
@@ -181,6 +475,7 @@ function repairReplaceClosedPlaces(
   pool: PlaceResult[],
   days: number,
   plannedDate?: string,
+  lock: SelectedPlaceLock | null = null,
 ): ComposedDayPlan[] {
   const used = new Set(
     flattenComposedDayPlanPlaces(plans)
@@ -197,6 +492,8 @@ function repairReplaceClosedPlaces(
     const entries = plan.entries.map((entry) => {
       const closed = isClearlyClosedAtSlot(entry.place, plannedDate, entry.time);
       if (closed !== true) return entry;
+      // Locked places: only permanently-closed Google status may replace (handled upstream).
+      if (isLockedEntry(entry, lock)) return entry;
       if (entry.place.lat == null || entry.place.lng == null) return entry;
 
       let best: PlaceResult | null = null;
@@ -300,6 +597,7 @@ function applyAutoRepairPass(
   reasons: string[],
   nearbyExtensions: string[] | undefined,
   attempt: number,
+  lock: SelectedPlaceLock | null = null,
 ): ComposedDayPlan[] {
   const reasonSet = new Set(reasons);
   let current = ensureAllDayPlansExist(plans, days);
@@ -328,6 +626,12 @@ function applyAutoRepairPass(
     reasonSet.has("replan_for_day_capacity") ||
     reasonSet.has("replan_for_full_day_coverage");
 
+  // Always strip low-value facilities + unify display names before other repairs.
+  // Selected Place Lock: quality / diversity / replacement must not drop locked anchors.
+  current = repairRemoveLowValueAndLocalize(current, days, lock);
+  current = repairDailyCategoryDiversity(current, days, style, lock);
+  current = repairNonNavigableStops(current, mergedPool, days, lock);
+
   if (
     reasonSet.has("replan_to_dedupe_places") ||
     reasonSet.has("replan_to_replace_excluded_or_unsuitable")
@@ -346,6 +650,12 @@ function applyAutoRepairPass(
     current = repairReorderSameDay(current, mergedPool, days, style, nearbyExtensions);
   }
 
+  // Long / cross-area legs: move stops across days (do not mask with transport mode).
+  if (softTimeline || attempt <= 2) {
+    current = repairLongRouteLegs(current, days);
+    current = repairReorderSameDay(current, mergedPool, days, style, nearbyExtensions);
+  }
+
   // Step 2 — evening → daytime
   if (softTimeline || softHours || attempt <= 2) {
     current = repairMoveEveningToDaytime(current, days);
@@ -353,7 +663,7 @@ function applyAutoRepairPass(
 
   // Step 3 — replace closed / hours conflict
   if (softHours || attempt >= 2) {
-    current = repairReplaceClosedPlaces(current, mergedPool, days, plannedDate);
+    current = repairReplaceClosedPlaces(current, mergedPool, days, plannedDate, lock);
     current = repairDayPlanSlots(
       current,
       mergedPool,
@@ -477,6 +787,17 @@ export function evaluateMinimumAcceptableQuality(
     }
   }
 
+  // Soft pass must never deliver low-value / non-tourism stops.
+  let noLowValue = true;
+  for (const plan of plans) {
+    for (const entry of plan.entries) {
+      if (!evaluateTourismQuality(entry.place).ok) {
+        noLowValue = false;
+        reasons.push(`low_value_place:${entry.name}`);
+      }
+    }
+  }
+
   const preferencesOk = !validation.failedRules.some((r) => r.code === "user_exclusions");
   if (!preferencesOk) reasons.push("preferences:user_exclusions");
 
@@ -495,7 +816,11 @@ export function evaluateMinimumAcceptableQuality(
   if (!noObviousHoursConflict) reasons.push("hours:not_open_at_slot");
 
   const ok =
-    dayStructureOk && preferencesOk && noDuplicates && noObviousHoursConflict;
+    dayStructureOk &&
+    preferencesOk &&
+    noDuplicates &&
+    noObviousHoursConflict &&
+    noLowValue;
 
   logAiPipeline(
     "[ITINERARY_SOFT_PASS_QUALITY]",
@@ -504,6 +829,7 @@ export function evaluateMinimumAcceptableQuality(
     `preferences=${preferencesOk}`,
     `noDuplicates=${noDuplicates}`,
     `noObviousHours=${noObviousHoursConflict}`,
+    `noLowValue=${noLowValue}`,
     `reasons=${reasons.join("|") || "(none)"}`,
     `dayCounts=${dayCountsOfPlans(plans).join(",")}`,
   );
@@ -559,6 +885,7 @@ export function replanUntilItineraryValid(
     );
 
     const before = plans;
+    const selectedLock = lockFromValidatorInput(params.validatorInput);
     plans = applyAutoRepairPass(
       plans,
       params.pool,
@@ -570,6 +897,7 @@ export function replanUntilItineraryValid(
         : ["replan_for_route_timeline", "replan_for_open_hours", "replan_for_multi_day_balance"],
       params.nearbyExtensions,
       attempts,
+      selectedLock,
     );
 
     validation = validateItineraryPlan({
@@ -605,8 +933,10 @@ export function replanUntilItineraryValid(
       partialDays: params.validatorInput.partialDays,
     });
     const tolerated = remainingFailsAreSoftPassTolerated(validation);
+    const navGate = evaluateRouteNavigabilityGate({ plans });
+    logRouteNavigabilityGate(navGate);
 
-    if (quality.ok && tolerated) {
+    if (quality.ok && tolerated && navGate.ok) {
       const repairedCount = plans.reduce((n, p) => n + p.entries.length, 0);
       if (repairedCount < params.days) {
         // Structure already checked by quality; prefer original only if repair emptied.
@@ -634,11 +964,21 @@ export function replanUntilItineraryValid(
         `attempts=${attempts}`,
         `qualityOk=${quality.ok}`,
         `tolerated=${tolerated}`,
-        `reasons=${quality.reasons.join("|") || "(none)"}`,
+        `navigabilityOk=${navGate.ok}`,
+        `reasons=${[...quality.reasons, ...navGate.reasons].join("|") || "(none)"}`,
         `failedRules=${validation.failedRules.map((r) => r.code).join(",")}`,
       );
     }
   }
+
+  // Final quality summary (one line — no per-place spam).
+  const summary = buildItineraryQualitySummary({
+    destination: params.validatorInput.destination ?? "",
+    days: params.days,
+    plans,
+    candidatePool: params.pool,
+  });
+  logItineraryQualitySummary(summary);
 
   return { plans, validation, attempts };
 }

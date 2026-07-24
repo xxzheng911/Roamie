@@ -38,6 +38,10 @@ import {
 const EXPLICIT_NEW_TRIP_RE =
   /(?:幫我排成|帮我排成|幫我規劃|帮我规划|幫我安排|帮我安排|建立新行程|创建新行程|重新規劃行程|重新规划行程|排成\s*\d+\s*天|規劃\s*\d+\s*天|规划\s*\d+\s*天|幫我排成行程|帮我排成行程|幫我規劃三天|帮我规划三天|排成三天行程|把.*排進.*行程|排進六天|排进六天|加進.*行程|加入行程)/i;
 
+/** Month/season + destination travel narrative — beats sticky place_recommendation. */
+const FUTURE_TRIP_PLANNING_RE =
+  /(?:\d{1,2}\s*月|明年|後年|暑假|寒假|春節|連假).{0,16}(?:要去|想去|去|安排|旅行|旅遊|旅游)|(?:要去|想去|去|安排).{0,12}(?:\d{1,2}\s*月|明年|後年|暑假|寒假)|(?:安排|規劃|规划).{0,12}[\u4e00-\u9fff]{2,8}.{0,8}(?:\d+|[一二三四五六七八九十兩两]+)\s*天/;
+
 const EXPLICIT_DESTINATION_CHANGE_RE =
   /(?:我要改去|改去|改成[\u4e00-\u9fff]{2,8}行程|換成[\u4e00-\u9fff]{2,8}行程|换成[\u4e00-\u9fff]{2,8}行程|目的地改成|改目的地|下一個目的地|下一个目的地)/i;
 
@@ -71,7 +75,15 @@ export function isExplicitNewTripPlanningText(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   if (isCreateItineraryIntent(t)) return true;
-  return EXPLICIT_NEW_TRIP_RE.test(t);
+  if (EXPLICIT_NEW_TRIP_RE.test(t)) return true;
+  // Future travel narrative must beat sticky place_recommendation context.
+  if (
+    FUTURE_TRIP_PLANNING_RE.test(t) &&
+    !/(?:推薦|有沒有|有什麼|哪些).{0,10}(?:餐廳|咖啡|景點|美食|夜市|酒吧|店)/.test(t)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function isExplicitDestinationChangeText(text: string): boolean {

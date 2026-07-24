@@ -25,6 +25,7 @@ import {
 } from "@/lib/estimate-travel-mode";
 import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
+import { displayNameForPlaceLike } from "@/lib/place-display-name";
 import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
 import { TabelogExternalLink } from "@/components/TabelogExternalLink";
@@ -208,7 +209,9 @@ export function PlaceDetailSheet({
 
       <div className="px-5 pb-6 pt-4">
         <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-xl leading-tight">{place.name}</h2>
+          <h2 className="font-display text-xl leading-tight">
+            {displayNameForPlaceLike(place)}
+          </h2>
           {place.rating != null && (
             <span className="flex shrink-0 items-center gap-1 rounded-full bg-card px-2.5 py-1 text-sm shadow-soft">
               <Star className="h-3.5 w-3.5 fill-clay text-clay" />

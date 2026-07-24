@@ -1,6 +1,8 @@
 import { ArrowRightLeft, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 import { TripLocationCard } from "@/components/saved/TripLocationCard";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
+import { estimatePlaceVisitDuration } from "@/lib/ai/estimate-place-visit-duration";
+import { displayNameForPlaceLike } from "@/lib/place-display-name";
 import { legKeyForItem } from "@/lib/trip/trip-stop-mutations";
 
 type Props = {
@@ -34,8 +36,30 @@ export function TripPlaceCard({
   onOpenPlaceDetail,
 }: Props) {
   const legKey = legKeyForItem(item);
-  const durationMins = settings.legMinutes?.[legKey] ?? 60;
-  const placeName = item.placeName || item.title;
+  const estimated =
+    settings.legMinutes?.[legKey] ??
+    settings.legMinutes?.[item.localizedDisplayName ?? ""] ??
+    settings.legMinutes?.[item.placeName] ??
+    estimatePlaceVisitDuration({
+      id: item.googlePlaceId ?? item.placeName,
+      name: item.localizedDisplayName || item.placeName || item.title,
+      address: item.address ?? null,
+      lat: item.lat,
+      lng: item.lng,
+      rating: item.rating ?? null,
+      userRatingCount: item.userRatingCount ?? null,
+      photoName: item.photoName ?? null,
+      primaryType: item.placeType ?? null,
+      types: item.types ?? null,
+      businessStatus: null,
+      openStatus: "unknown",
+      openStatusLabel: "",
+      todayHoursLabel: "",
+      closingSoonNote: "",
+      nextOpenHint: "",
+    }).finalDuration;
+  const durationMins = estimated;
+  const placeName = displayNameForPlaceLike(item);
 
   return (
     <article className="relative rounded-3xl border border-border bg-card p-4 shadow-soft">
@@ -100,7 +124,7 @@ export function TripPlaceCard({
         lat={item.lat}
         lng={item.lng}
         address={item.address}
-        placeName={item.placeName}
+        placeName={placeName}
         onSetArrivalTime={onSetArrivalTime}
         onSetDurationMinutes={onSetDurationMinutes}
       />

@@ -1,6 +1,7 @@
 import { MapPin, Clock, Footprints } from "lucide-react";
 import { toast } from "sonner";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
+import { displayNameForPlaceLike } from "@/lib/place-display-name";
 import type { SavedTripDayItem } from "@/lib/saved-trip/types";
 
 type Props = {
@@ -35,7 +36,9 @@ export function SavedTripStopCard({ item, isLast }: Props) {
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <p className="text-sm font-medium tabular-nums text-muted-foreground">{item.time}</p>
         </div>
-        <h3 className="mt-1.5 text-[16px] font-medium leading-snug">{item.placeName}</h3>
+        <h3 className="mt-1.5 text-[16px] font-medium leading-snug">
+          {displayNameForPlaceLike(item)}
+        </h3>
         {item.address && item.address !== "尚未設定" ? (
           <p className="mt-1 flex items-start gap-1 text-xs leading-relaxed text-muted-foreground">
             <MapPin className="mt-0.5 h-3 w-3 shrink-0" />
@@ -73,7 +76,7 @@ export function SavedTripStopCard({ item, isLast }: Props) {
             lat={item.lat}
             lng={item.lng}
             address={item.address !== "尚未設定" ? item.address : undefined}
-            placeName={item.placeName}
+            placeName={displayNameForPlaceLike(item)}
             compact
             className="mt-3"
           />

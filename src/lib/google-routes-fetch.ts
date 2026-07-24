@@ -187,7 +187,10 @@ export async function fetchGoogleRoute(
     const route = json.routes?.[0];
     if (!route) {
       logRouteResponse("ZERO_RESULTS", null, null, travelMode);
-      console.warn(`[ROUTE_DURATION_ERROR] status=ZERO_RESULTS message=no_routes mode=${travelMode}`);
+      // Soft: no path for this mode — caller may fall back; not a hard failure.
+      console.info(
+        `[ROUTE_DURATION] status=ZERO_RESULTS message=no_routes mode=${travelMode} soft=true`,
+      );
       return {
         ok: false,
         statusCode: res.status,

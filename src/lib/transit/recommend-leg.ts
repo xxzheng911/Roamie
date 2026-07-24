@@ -22,7 +22,7 @@ const MODE_LABEL: Record<TransitMode, string> = {
   uber: "Uber",
   hsr: "高鐵",
   train: "火車",
-  drive: "開車",
+  drive: "租車自駕",
   scooter: "機車",
 };
 
@@ -111,14 +111,14 @@ function buildReason(
     if (weather.isNight) return "夜間移動，搭車或大眾運輸較安心。";
     if (prefersTaxi(prefs)) return "依你的旅遊節奏，這段搭車會比較省力。";
     if (drive != null && walk != null && drive + 8 < walk) {
-      return `開車約 ${drive} 分鐘，比步行省不少時間。`;
+      return `租車自駕約 ${drive} 分鐘，比步行省不少時間。`;
     }
     return "這段搭車體驗較輕鬆，不用拖著行李轉乘。";
   }
 
   if (mode === "subway" || mode === "transit" || mode === "bus") {
     if (estimates.transit != null && drive != null && estimates.transit <= drive + 5) {
-      return "大眾運輸直達或轉乘合理，不必開車。";
+      return "大眾運輸直達或轉乘合理，不必租車自駕。";
     }
     if (region.metroComplexity === "high") {
       return "地鐵能避開路面塞車，但轉乘動線要預留時間。";
@@ -127,7 +127,7 @@ function buildReason(
   }
 
   if (mode === "hsr" || mode === "train") {
-    return "距離較遠，建議用鐵路移動，比開車省心。";
+    return "距離較遠，建議用鐵路移動，比租車自駕省心。";
   }
 
   if (mode === "scooter") {

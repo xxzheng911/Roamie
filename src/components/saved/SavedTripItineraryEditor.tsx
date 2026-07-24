@@ -23,6 +23,8 @@ import { type CropTransform } from "@/lib/image-crop";
 import { applyTripCoverUpload, validateCoverUploadBlob } from "@/lib/trip-cover-upload";
 import { withCacheBust, stripMediaUrlQuery } from "@/lib/media-display-url";
 import type { RoamieItineraryItem, RoamiePayloadV2, TripPlanSettings } from "@/lib/ai/types";
+import { repairItineraryLocalizedNames } from "@/lib/ai/repair-itinerary-localized-names";
+import { buildLegMinutesFromPlaces } from "@/lib/ai/estimate-place-visit-duration";
 import {
   normalizeStoredTrip,
 } from "@/lib/saved-trip/normalize";
@@ -46,6 +48,7 @@ import { buildCustomCoverPatch, buildCustomTitlePatch } from "@/lib/saved-trip/d
 import { applyTransitLegSyncToItems } from "@/lib/saved-trip/apply-transit-leg-sync";
 import type { TripOutfitSuggestionFields } from "@/lib/outfit/types";
 import { formatLegTravelTimeLabel, formatLegWalkFallbackHint } from "@/lib/saved-trip/travel-time";
+import { displayTransportLabelForLeg } from "@/lib/saved-trip/leg-transport-sot";
 import {
   isJapanTransitMapsLeg,
   openJapanTransitLegInGoogleMaps,
@@ -184,6 +187,8 @@ type RouteRefreshOverride = {
   onlyDateKey?: string;
   /** 交通方式切換前快照：API 失敗時保留原抵達時間 */
   itemsBeforeSync?: RoamieItineraryItem[];
+  /** Manual mode switch: do not fall back to another mode's duration */
+  allowModeFallback?: boolean;
 };
 
 type DayScheduleChangeOpts = {
@@ -300,19 +305,26 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   const [coverBusy, setCoverBusy] = useState(false);
   const isUploadingCoverRef = useRef(false);
   const coverFlowMountedRef = useRef(true);
-  const [settings, setSettings] = useState<TripPlanSettings>(
-    () =>
+  const [settings, setSettings] = useState<TripPlanSettings>(() => {
+    const base =
       restoredView?.settings ??
       initial.tripSettings ?? {
         startTime: coalesceItineraryItems(initial.itinerary)[0]?.time?.slice(0, 5) ?? "10:00",
-        transport: "walk",
+        transport: "walk" as const,
         legMinutes: {},
         legTransport: {},
-      },
-  );
-  const [items, setItems] = useState<RoamieItineraryItem[]>(() => [
-    ...(restoredView?.items ?? coalesceItineraryItems(initial.itinerary)),
-  ]);
+      };
+    const seedItems = restoredView?.items ?? coalesceItineraryItems(initial.itinerary);
+    if (base.legMinutes && Object.keys(base.legMinutes).length > 0) return base;
+    return {
+      ...base,
+      legMinutes: buildLegMinutesFromPlaces(seedItems),
+    };
+  });
+  const [items, setItems] = useState<RoamieItineraryItem[]>(() => {
+    const seed = restoredView?.items ?? coalesceItineraryItems(initial.itinerary);
+    return repairItineraryLocalizedNames(seed, { tripId: stored.id }).items;
+  });
   const [activeDayIndex, setActiveDayIndex] = useState(() => {
     if (restoredView != null) {
       console.info(`[TRIP_DETAIL_RESTORE_DAY] dayIndex=${restoredView.activeDayIndex}`);
@@ -363,6 +375,17 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       coverFlowMountedRef.current = false;
     };
   }, []);
+
+  // Hydration repair: legacy trips may only store raw local-script names.
+  useEffect(() => {
+    const repaired = repairItineraryLocalizedNames(itemsRef.current, { tripId: stored.id });
+    if (repaired.repairedCount <= 0) return;
+    setItems(repaired.items);
+    setSettings((s) => {
+      if (s.legMinutes && Object.keys(s.legMinutes).length > 0) return s;
+      return { ...s, legMinutes: buildLegMinutesFromPlaces(repaired.items) };
+    });
+  }, [stored.id]);
 
   useLayoutEffect(() => {
     const scrollTop = restoredViewRef.current?.scrollTop;
@@ -1146,6 +1169,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           onlyDateKey: override?.onlyDateKey,
           locationContext: directionsLocationContext,
           directionsRegion,
+          allowModeFallback: override?.allowModeFallback,
+          routeVersion: signature,
         });
 
         if (!routeSyncMountedRef.current) return;
@@ -1217,6 +1242,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
             force: true,
             locationContext: directionsLocationContext,
             directionsRegion,
+            allowModeFallback: false,
           },
         );
 
@@ -1327,6 +1353,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           settings: nextSettings,
           onlyDateKey: dateKey,
           itemsBeforeSync: prevItems,
+          allowModeFallback: false,
         });
         return;
       }
@@ -1907,7 +1934,11 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                 {activeDay.items.map((item, i) => {
                   const prev = i > 0 ? activeDay.items[i - 1] : null;
                   const legKey = legKeyForItem(item);
-                  const transport = resolveLegTransportLabel(settings, legKey, activeDay.dateKey);
+                  const preferenceTransport = resolveLegTransportLabel(
+                    settings,
+                    legKey,
+                    activeDay.dateKey,
+                  );
                   const transitKey =
                     prev != null
                       ? buildDayLegKey(
@@ -1917,27 +1948,29 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                         )
                       : null;
                   const transit = transitKey ? settings.transitLegs?.[transitKey] : undefined;
+                  // SoT: picker shows resolvedMode, not stale preference.
+                  const transport = displayTransportLabelForLeg(transit, preferenceTransport);
                   const showJapanTransitMaps =
                     prev != null &&
                     prev.lat != null &&
                     prev.lng != null &&
                     item.lat != null &&
                     item.lng != null &&
-                    isJapanTransitMapsLeg(transit, transport);
+                    isJapanTransitMapsLeg(transit, preferenceTransport);
 
                   return (
                     <div key={`${activeDay.dateKey}-${legKey}-${i}`}>
                       {i > 0 && transitKey ? (
                         <TripLegTransportConnector
                           transport={transport}
-                          travelTimeLabel={formatLegTravelTimeLabel(transit, transport, {
+                          travelTimeLabel={formatLegTravelTimeLabel(transit, preferenceTransport, {
                             loading:
                               transitLoading &&
                               !showJapanTransitMaps &&
                               (!transit ||
-                                transit.transportMode !== travelLabelToRoutesMode(transport)),
+                                (transit.routeStatus ?? transit.transportStatus) === "pending"),
                           })}
-                          walkFallbackHint={formatLegWalkFallbackHint(transit, transport)}
+                          walkFallbackHint={formatLegWalkFallbackHint(transit, preferenceTransport)}
                           onOpenTransitMaps={
                             showJapanTransitMaps
                               ? () =>

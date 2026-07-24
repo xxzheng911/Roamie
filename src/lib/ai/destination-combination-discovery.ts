@@ -4,6 +4,7 @@
  * destination + category-label templates.
  */
 import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import type { PlaceResult } from "@/lib/place-result";
 import type { PlaceSearchFn } from "@/lib/ai/chat-place-recommendation";
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
@@ -77,11 +78,25 @@ import {
   validatePlaceForCombination,
   type NormalizedPlaceCategory,
 } from "@/lib/ai/combination-category-contract";
+import { collapseParentLandmarkCandidates } from "@/lib/ai/ai-parent-landmark-dedup";
+import { applyCombinationLocalizationGate } from "@/lib/ai/combination-localization-gate";
+import {
+  hasForeignLocalScript,
+  resolvePlaceDisplayName,
+  type PlaceNameLocalizationSource,
+} from "@/lib/place-display-name";
+import {
+  deriveCombinationThemeTitle,
+  isMechanicalCombinationTitle,
+  localizeCombinationThemeTitle,
+} from "@/lib/ai/combination-theme-titles";
+import { classifyDailyDiversityCategory } from "@/lib/ai/daily-category-diversity";
 
 /** Soft ceiling — stop discovery rather than hang forever on rate limits. */
 const COMBINATION_DISCOVERY_TIMEOUT_MS = 45_000;
 
 export type CombinationPlaceCandidate = {
+  /** Display name — always localizedDisplayName after resolver / gate. */
   name: string;
   googlePlaceId?: string;
   searchCandidateId?: string;
@@ -95,6 +110,13 @@ export type CombinationPlaceCandidate = {
   normalizedCategory?: NormalizedPlaceCategory;
   /** Combination id this place was validated into (1-based when offered). */
   combinationId?: string;
+  /** Pre-localization / local-script name */
+  originalName?: string;
+  /** App-locale display name (UI / chat must prefer this) */
+  localizedDisplayName?: string;
+  languageCode?: string;
+  localizationSource?: PlaceNameLocalizationSource | string;
+  englishName?: string;
 };
 
 export type StructuredCombinationOption = {
@@ -390,13 +412,38 @@ function logCombinationValidationOnce(
   );
 }
 
+function localizeCachedCombinations(
+  combinations: StructuredCombinationOption[],
+  locale: Locale = effectiveAppLocale(),
+): StructuredCombinationOption[] | null {
+  const gated = applyCombinationLocalizationGate(combinations, {
+    locale,
+    minPlacesPerCombo: 2,
+    minCombinations: 2,
+  });
+  if (!gated.combinations.length) return null;
+  const usedTitles = new Set<string>();
+  return gated.combinations.map((c) => {
+    const title = isMechanicalCombinationTitle(c.title)
+      ? deriveCombinationThemeTitle(c.placeCandidates, {
+          locale,
+          baseTitle: c.title,
+          usedTitles,
+        })
+      : localizeCombinationThemeTitle(c.title, locale);
+    usedTitles.add(title);
+    return { ...c, title };
+  }) as StructuredCombinationOption[];
+}
+
 export function getCachedDiscoveredCombinations(
   destination: string,
   travelStyle?: string,
   group?: string,
-  opts?: { log?: boolean },
+  opts?: { log?: boolean; locale?: Locale; skipLocalizationGate?: boolean },
 ): StructuredCombinationOption[] | null {
   const shouldLog = opts?.log === true;
+  const locale = opts?.locale ?? effectiveAppLocale();
   // Prefer TTL'd Layer-3 cache (destination + style + group)
   const layered = readCombinationCache<StructuredCombinationOption>({
     destination,
@@ -414,7 +461,8 @@ export function getCachedDiscoveredCombinations(
         source: "layer3",
       });
     }
-    return layered;
+    if (opts?.skipLocalizationGate) return layered;
+    return localizeCachedCombinations(layered, locale);
   }
 
   const key = normalizeDestinationLabel(destination);
@@ -450,7 +498,8 @@ export function getCachedDiscoveredCombinations(
       source: "discovery_ttl",
     });
   }
-  return cached.combinations;
+  if (opts?.skipLocalizationGate) return cached.combinations;
+  return localizeCachedCombinations(cached.combinations, locale);
 }
 
 export function setCachedDiscoveredCombinations(
@@ -517,7 +566,50 @@ export function resolveDestinationForCombinations(
 }
 
 function placeNameOf(place: PlaceResult): string {
-  return (place.name ?? "").trim();
+  // Prefer localizedDisplayName only — never silently prefer raw English.
+  return (
+    place.localizedDisplayName?.trim() ||
+    place.name?.trim() ||
+    place.originalName?.trim() ||
+    ""
+  );
+}
+
+function resolveCandidateDisplayName(
+  place: PlaceResult,
+  locale: Locale,
+): {
+  displayName: string;
+  originalName: string;
+  englishName?: string;
+  languageCode: string;
+  localizationSource: PlaceNameLocalizationSource | string;
+} {
+  const originalName =
+    place.originalName?.trim() || place.name?.trim() || place.localizedDisplayName?.trim() || "";
+  const resolved = resolvePlaceDisplayName(
+    {
+      name: place.localizedDisplayName || place.name,
+      originalName,
+      placeId: place.id,
+      canonicalPlaceId: place.id,
+      englishName:
+        place.localizationSource === "english" ||
+        place.localizationSource === "english_fallback"
+          ? place.name
+          : undefined,
+      types: place.types,
+      primaryType: place.primaryType,
+    },
+    locale,
+  );
+  return {
+    displayName: resolved.localizedDisplayName,
+    originalName: resolved.originalName || originalName,
+    englishName: resolved.englishName,
+    languageCode: resolved.languageCode,
+    localizationSource: resolved.localizationSource,
+  };
 }
 
 function isNonAttractionPlace(place: PlaceResult): boolean {
@@ -565,6 +657,25 @@ function isNonAttractionPlace(place: PlaceResult): boolean {
   return false;
 }
 
+function isViewpointLikeCandidate(place: CombinationPlaceCandidate): boolean {
+  const blob = [place.name, place.localizedDisplayName, place.primaryType, ...(place.types ?? [])]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    classifyDailyDiversityCategory({
+      name: place.localizedDisplayName || place.name,
+      types: place.types,
+      primaryType: place.primaryType,
+    } as import("@/lib/place-result").PlaceResult) === "viewpoint_tower" ||
+    /觀景|viewpoint|viewing|sunset\s*hill|observation/i.test(blob)
+  );
+}
+
+/**
+ * Pick primary places with light category diversity:
+ * avoid packing 3 near-identical viewpoint/sunset spots into the shown trio.
+ * Extra viewpoints remain in fallback for optional user choice.
+ */
 function splitPrimaryFallback(
   pool: CombinationPlaceCandidate[],
 ): {
@@ -573,11 +684,44 @@ function splitPrimaryFallback(
   all: CombinationPlaceCandidate[];
 } {
   const sorted = [...pool].sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
-  const primary = sorted.slice(0, PRIMARY_PLACES_PER_COMBO);
-  const fallback = sorted.slice(
-    PRIMARY_PLACES_PER_COMBO,
-    PRIMARY_PLACES_PER_COMBO + FALLBACK_PLACES_PER_COMBO,
+  const primary: CombinationPlaceCandidate[] = [];
+  const deferredViewpoints: CombinationPlaceCandidate[] = [];
+  let viewpointInPrimary = 0;
+
+  for (const place of sorted) {
+    if (primary.length >= PRIMARY_PLACES_PER_COMBO) break;
+    if (isViewpointLikeCandidate(place)) {
+      if (viewpointInPrimary >= 1) {
+        deferredViewpoints.push(place);
+        continue;
+      }
+      viewpointInPrimary += 1;
+    }
+    primary.push(place);
+  }
+
+  // Fill remaining primary slots from non-deferred, then deferred if needed.
+  if (primary.length < PRIMARY_PLACES_PER_COMBO) {
+    for (const place of sorted) {
+      if (primary.length >= PRIMARY_PLACES_PER_COMBO) break;
+      if (primary.includes(place) || deferredViewpoints.includes(place)) continue;
+      primary.push(place);
+    }
+  }
+  if (primary.length < PRIMARY_PLACES_PER_COMBO) {
+    for (const place of deferredViewpoints) {
+      if (primary.length >= PRIMARY_PLACES_PER_COMBO) break;
+      primary.push(place);
+    }
+  }
+
+  const primaryKeys = new Set(
+    primary.map((p) => p.googlePlaceId || p.name.replace(/\s+/g, "").toLowerCase()),
   );
+  const rest = sorted.filter(
+    (p) => !primaryKeys.has(p.googlePlaceId || p.name.replace(/\s+/g, "").toLowerCase()),
+  );
+  const fallback = rest.slice(0, FALLBACK_PLACES_PER_COMBO);
   return { primary, fallback, all: [...primary, ...fallback] };
 }
 
@@ -585,22 +729,44 @@ function toCandidate(
   place: PlaceResult,
   destination: string,
   center?: { lat: number; lng: number } | null,
+  locale: Locale = effectiveAppLocale(),
 ): CombinationPlaceCandidate | null {
-  const rawName = placeNameOf(place);
-  if (!rawName) return null;
-  if (isGenericDestinationPlaceholder(rawName, destination)) return null;
-  if (isNonAttractionPlace(place)) return null;
+  const resolved = resolveCandidateDisplayName(place, locale);
+  if (!resolved.displayName) return null;
 
-  const normalized = normalizePlaceCandidateName(rawName);
-  if (!normalized.accepted) {
-    logNonPlaceCandidateRejected(
-      rawName,
-      normalized.reason ?? "rejected_non_place",
-      "places_discovery_to_candidate",
+  // Drop destination local-script names early (Thai / Greek / Myanmar / …).
+  if (hasForeignLocalScript(resolved.displayName, locale)) {
+    logAiPipeline(
+      "[PLACE_LOCALIZATION_FALLBACK]",
+      `placeId=${place.id ?? ""}`,
+      `originalName=${resolved.originalName}`,
+      `requestedLocale=${locale}`,
+      `resolvedName=${resolved.displayName}`,
+      `resolvedLanguage=${resolved.languageCode}`,
+      `localizationSource=${resolved.localizationSource}`,
+      "reason=foreign_local_script_dropped_at_candidate",
     );
     return null;
   }
-  const name = normalized.normalized;
+
+  if (isGenericDestinationPlaceholder(resolved.displayName, destination)) return null;
+  if (isGenericDestinationPlaceholder(resolved.originalName, destination)) return null;
+  if (isNonAttractionPlace(place)) return null;
+
+  // Likelihood / SEO filters run on original + display; keep original for proper-noun checks.
+  const normalized = normalizePlaceCandidateName(resolved.displayName);
+  if (!normalized.accepted) {
+    const originalCheck = normalizePlaceCandidateName(resolved.originalName);
+    if (!originalCheck.accepted) {
+      logNonPlaceCandidateRejected(
+        resolved.displayName,
+        normalized.reason ?? "rejected_non_place",
+        "places_discovery_to_candidate",
+      );
+      return null;
+    }
+  }
+  const name = normalized.accepted ? normalized.normalized : resolved.displayName;
 
   const lat = place.lat;
   const lng = place.lng;
@@ -612,6 +778,11 @@ function toCandidate(
   });
   const candidate: CombinationPlaceCandidate = {
     name,
+    localizedDisplayName: name,
+    originalName: resolved.originalName,
+    englishName: resolved.englishName,
+    languageCode: resolved.languageCode,
+    localizationSource: resolved.localizationSource,
     googlePlaceId: place.id?.trim() || undefined,
     searchCandidateId: place.id?.trim() || `name:${name}`,
     coordinates:
@@ -699,17 +870,37 @@ export function sanitizeStructuredCombinationPlaces(
       }
       kept.push({ ...place, name: check.normalized });
     }
-    combo.placeCandidates = kept;
-    combo.primaryCandidates = kept.slice(0, PRIMARY_PLACES_PER_COMBO);
-    combo.fallbackCandidates = kept.slice(PRIMARY_PLACES_PER_COMBO);
+
+    // Parent Landmark Collapse BEFORE user selection / Planner.
+    const collapsed = collapseParentLandmarkCandidates(
+      kept.map((p) => ({
+        name: p.name,
+        googlePlaceId: p.googlePlaceId,
+        address: p.address,
+        lat: p.coordinates?.lat,
+        lng: p.coordinates?.lng,
+        rating: p.rating,
+      })),
+    );
+    const collapseKeepKeys = new Set(
+      collapsed.kept.map((c) => c.name.trim().replace(/\s+/g, "").toLowerCase()),
+    );
+    const afterCollapse = kept.filter((p) =>
+      collapseKeepKeys.has(p.name.trim().replace(/\s+/g, "").toLowerCase()),
+    );
+
+    combo.placeCandidates = afterCollapse;
+    combo.primaryCandidates = afterCollapse.slice(0, PRIMARY_PLACES_PER_COMBO);
+    combo.fallbackCandidates = afterCollapse.slice(PRIMARY_PLACES_PER_COMBO);
     logAiPipeline(
       "[COMBINATION_PLACE_VALIDATION]",
       `combinationId=${combo.combinationId}`,
       `rawCount=${rawCount}`,
-      `validRealPlaces=${kept.length}`,
+      `validRealPlaces=${afterCollapse.length}`,
       `rejectedNonPlaces=${rejectedNonPlaces}`,
+      `parentCollapseDropped=${collapsed.dropped.length}`,
     );
-    if (kept.length < minPlacesForTheme(combo.theme, combo.title)) {
+    if (afterCollapse.length < minPlacesForTheme(combo.theme, combo.title)) {
       combinations.splice(i, 1);
     }
   }
@@ -945,10 +1136,11 @@ function buildCombinationsFromCandidates(
     for (const p of all) used.add(p.name.replace(/\s+/g, "").toLowerCase());
     const themeKey = assignThemeKey(all[0]!);
     const themeMeta = THEME_DEFS.find((t) => t.key === themeKey) ?? THEME_DEFS[0]!;
-    let title = themeMeta.title;
-    if (usedTitles.has(title)) {
-      title = `推薦景點組合 ${combos.length + 1}`;
-    }
+    const title = deriveCombinationThemeTitle(all, {
+      baseTitle: themeMeta.title,
+      usedTitles,
+      destinationLabel: normalizeDestinationLabel(destination),
+    });
     usedTitles.add(title);
     combos.push({
       combinationId: `${normalizeDestinationLabel(destination)}:extra:${combos.length + 1}`,
@@ -1176,9 +1368,20 @@ async function searchFallbackPlaces(params: {
   generationRequestId: string;
   country?: string | null;
   deadlineAt: number;
+  locale?: Locale;
 }): Promise<PlaceResult[]> {
-  const { destination, areas, lat, lng, searchPlaces, mode, generationRequestId, country, deadlineAt } =
-    params;
+  const {
+    destination,
+    areas,
+    lat,
+    lng,
+    searchPlaces,
+    mode,
+    generationRequestId,
+    country,
+    deadlineAt,
+    locale = effectiveAppLocale(),
+  } = params;
   const en = EN_CITY_NAMES[normalizeDestinationLabel(destination)];
   const profile = resolveDiscoveryRegionProfile(destination, country);
   const out: PlaceResult[] = [];
@@ -1208,6 +1411,7 @@ async function searchFallbackPlaces(params: {
             destinationName: destination,
             searchMode: "destination",
             includedTypes: mode.includedTypes,
+            locale,
           },
         });
         for (const place of result.places ?? []) {
@@ -1238,9 +1442,18 @@ async function searchPlacesForThemeDirections(params: {
   searchPlaces: PlaceSearchFn;
   generationRequestId: string;
   deadlineAt: number;
+  locale?: Locale;
 }): Promise<StructuredCombinationOption[]> {
-  const { destination, country, lat, lng, searchPlaces, generationRequestId, deadlineAt } =
-    params;
+  const {
+    destination,
+    country,
+    lat,
+    lng,
+    searchPlaces,
+    generationRequestId,
+    deadlineAt,
+    locale = effectiveAppLocale(),
+  } = params;
   const directions = buildThemeSearchDirections(destination, country);
   const usedKeys = new Set<string>();
   const ready: StructuredCombinationOption[] = [];
@@ -1248,10 +1461,11 @@ async function searchPlacesForThemeDirections(params: {
   for (const direction of directions) {
     if (Date.now() > deadlineAt) break;
 
+    const localizedTitle = localizeCombinationThemeTitle(direction.title, locale);
     logAiPipeline(
       "[COMBINATION_THEME_CREATED]",
       `combinationId=${direction.combinationId}`,
-      `title=${direction.title}`,
+      `title=${localizedTitle}`,
       `queries=[${direction.queries.slice(0, 6).join("|")}]`,
     );
     logAiPipeline(
@@ -1291,6 +1505,7 @@ async function searchPlacesForThemeDirections(params: {
             destinationName: destination,
             searchMode: "destination",
             includedTypes,
+            locale,
           },
         });
         for (const place of result.places ?? []) {
@@ -1304,7 +1519,7 @@ async function searchPlacesForThemeDirections(params: {
       }
     }
 
-    const scoped = candidatesFromPlaces(destination, raw, { lat, lng }).filter((c) => {
+    const scoped = candidatesFromPlaces(destination, raw, { lat, lng }, locale).filter((c) => {
       const key = c.name.replace(/\s+/g, "").toLowerCase();
       if (usedKeys.has(key)) return false;
       if (isGenericDestinationPlaceholder(c.name, destination)) {
@@ -1356,7 +1571,10 @@ async function searchPlacesForThemeDirections(params: {
     const categories = all
       .map((p) => p.normalizedCategory)
       .filter((c): c is NormalizedPlaceCategory => Boolean(c));
-    const title = adjustCombinationTitle(direction.title, themeKey, categories);
+    const title = localizeCombinationThemeTitle(
+      adjustCombinationTitle(direction.title, themeKey, categories),
+      locale,
+    );
 
     ready.push({
       combinationId,
@@ -1380,11 +1598,12 @@ function candidatesFromPlaces(
   destination: string,
   places: PlaceResult[],
   center: { lat: number; lng: number },
+  locale: Locale = effectiveAppLocale(),
 ): CombinationPlaceCandidate[] {
   const candidates: CombinationPlaceCandidate[] = [];
   const seenNames = new Set<string>();
   for (const place of places) {
-    const candidate = toCandidate(place, destination, center);
+    const candidate = toCandidate(place, destination, center, locale);
     if (!candidate) continue;
     if (
       candidate.coordinates &&
@@ -1471,9 +1690,19 @@ async function searchAreaPlaces(params: {
   country?: string | null;
   generationRequestId: string;
   deadlineAt: number;
+  locale?: Locale;
 }): Promise<PlaceResult[]> {
-  const { area, destination, lat, lng, searchPlaces, country, generationRequestId, deadlineAt } =
-    params;
+  const {
+    area,
+    destination,
+    lat,
+    lng,
+    searchPlaces,
+    country,
+    generationRequestId,
+    deadlineAt,
+    locale = effectiveAppLocale(),
+  } = params;
   const queries = buildDestinationDiscoveryQueries({
     destination,
     country,
@@ -1519,6 +1748,7 @@ async function searchAreaPlaces(params: {
             "cafe",
             "bakery",
           ],
+          locale,
         },
       });
       for (const place of result.places ?? []) {
@@ -1547,6 +1777,7 @@ async function searchAreaPlaces(params: {
           destinationName: destination,
           searchMode: "destination",
           includedTypes: ["tourist_attraction", "museum", "park", "art_gallery"],
+          locale,
         },
       });
       for (const place of nearby.places ?? []) {
@@ -1586,6 +1817,7 @@ export async function discoverDestinationCombinations(params: {
   sessionId?: string | null;
 }): Promise<StructuredCombinationOption[] | null> {
   const label = normalizeDestinationLabel(params.destination);
+  const locale = params.locale ?? effectiveAppLocale();
   if (isCountryLevelDestination(label)) {
     logCountryLevelPlacesBlocked(label, "city_required");
     return setDiscoveryFailure(label, "blocked_country", "city_required");
@@ -1861,6 +2093,7 @@ export async function discoverDestinationCombinations(params: {
       country,
       generationRequestId,
       deadlineAt,
+      locale,
     });
     rawPlaces.push(...batch);
     if (rawPlaces.length >= 24) break;
@@ -1884,6 +2117,7 @@ export async function discoverDestinationCombinations(params: {
         country,
         generationRequestId,
         deadlineAt,
+        locale,
       });
       rawPlaces.push(...batch);
     }
@@ -1901,7 +2135,7 @@ export async function discoverDestinationCombinations(params: {
 
   if (timedOut() && rawPlaces.length === 0) return failTimeout();
 
-  let candidates = candidatesFromPlaces(label, rawPlaces, { lat, lng });
+  let candidates = candidatesFromPlaces(label, rawPlaces, { lat, lng }, locale);
 
   const districts = new Set(
     candidates.map((c) => c.district).filter((d): d is string => Boolean(d)),
@@ -1983,9 +2217,10 @@ export async function discoverDestinationCombinations(params: {
         generationRequestId,
         country,
         deadlineAt,
+        locale,
       });
       const mergedPlaces = [...rawPlaces, ...fallbackPlaces];
-      candidates = candidatesFromPlaces(label, mergedPlaces, { lat, lng });
+      candidates = candidatesFromPlaces(label, mergedPlaces, { lat, lng }, locale);
       combinations = finalizeCombinationsFromCandidates(
         label,
         candidates,
@@ -2018,6 +2253,7 @@ export async function discoverDestinationCombinations(params: {
       searchPlaces: params.searchPlaces,
       generationRequestId,
       deadlineAt,
+      locale,
     });
     if (themed.length) {
       const byTitle = new Map<string, StructuredCombinationOption>();
@@ -2051,6 +2287,43 @@ export async function discoverDestinationCombinations(params: {
     if (combinations.length < 2) {
       combinations = null;
     }
+  }
+
+  // Combination Localization Gate — must pass before chat delivery / cache write.
+  if (combinations?.length) {
+    const gated = applyCombinationLocalizationGate(combinations, {
+      locale,
+      minPlacesPerCombo: 2,
+      minCombinations: MIN_COMBINATIONS,
+    });
+    combinations = gated.combinations as StructuredCombinationOption[];
+    if (!combinations.length) {
+      logAiPipeline(
+        "[COMBINATION_DISCOVERY_FAILED]",
+        "reason=combination_localization_gate",
+        `detail=${gated.reason ?? "unreadable"}`,
+        `droppedForeignScript=${gated.droppedForeignScript}`,
+      );
+      return setDiscoveryFailure(
+        label,
+        "combination_candidates_insufficient",
+        "combination_localization_gate",
+      );
+    }
+    // Localize theme titles to effective App locale (never mechanical numbered titles).
+    const usedTitles = new Set<string>();
+    combinations = combinations.map((c) => {
+      const title = isMechanicalCombinationTitle(c.title)
+        ? deriveCombinationThemeTitle(c.placeCandidates, {
+            locale,
+            baseTitle: c.title,
+            usedTitles,
+            destinationLabel: label,
+          })
+        : localizeCombinationThemeTitle(c.title, locale);
+      usedTitles.add(title);
+      return { ...c, title };
+    });
   }
 
   if (!combinations?.length) {
@@ -2098,14 +2371,24 @@ export async function discoverDestinationCombinations(params: {
 export function structuredCombinationsToTitlesPlaces(
   combinations: StructuredCombinationOption[],
 ): Array<{ title: string; places: string[] }> {
-  return combinations.map((combo) => ({
-    title: combo.title,
-    // Reply surfaces primary names; full pool (primary+fallback) stays in cache for mapping.
-    places: (combo.primaryCandidates?.length
+  return combinations.map((combo) => {
+    const title = isMechanicalCombinationTitle(combo.title)
+      ? deriveCombinationThemeTitle(
+          combo.primaryCandidates?.length
+            ? combo.primaryCandidates
+            : combo.placeCandidates,
+          { baseTitle: combo.title },
+        )
+      : localizeCombinationThemeTitle(combo.title);
+    // Reply surfaces localizedDisplayName only — never raw name / english fallback.
+    const places = (combo.primaryCandidates?.length
       ? combo.primaryCandidates
       : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO)
-    ).map((p) => p.name),
-  }));
+    )
+      .map((p) => p.localizedDisplayName?.trim() || "")
+      .filter(Boolean);
+    return { title, places };
+  });
 }
 
 export function getStructuredCombinationByIndex(
@@ -2149,6 +2432,7 @@ export async function ensureDestinationCombinationsReady(params: {
   scopePatch?: ReturnType<typeof buildDestinationScopeContextPatch> | null;
 }> {
   const label = normalizeDestinationLabel(params.destination);
+  const locale = params.locale ?? effectiveAppLocale();
   if (isCountryLevelDestination(label)) {
     logCountryLevelPlacesBlocked(label, "city_required");
     return {
@@ -2158,7 +2442,10 @@ export async function ensureDestinationCombinationsReady(params: {
       failureReason: "blocked_country",
     };
   }
-  const cached = getCachedDiscoveredCombinations(label, undefined, undefined, { log: false });
+  const cached = getCachedDiscoveredCombinations(label, undefined, undefined, {
+    log: false,
+    locale,
+  });
   if (cached?.length) {
     return { ok: true, combinations: cached, source: "cache" };
   }
@@ -2177,18 +2464,32 @@ export async function ensureDestinationCombinationsReady(params: {
   if (strongLocal.length >= MIN_COMBINATIONS) {
     const structured: StructuredCombinationOption[] = strongLocal.map((combo, index) => ({
       combinationId: `${label}:local:${index + 1}`,
-      title: combo.title,
+      title: localizeCombinationThemeTitle(combo.title, locale),
       theme: combo.title.replace(/組合$/, ""),
-      placeCandidates: combo.places.map((name) => ({
-        name,
-        searchCandidateId: `name:${name}`,
-        types: [],
-      })),
-      primaryCandidates: combo.places.slice(0, PRIMARY_PLACES_PER_COMBO).map((name) => ({
-        name,
-        searchCandidateId: `name:${name}`,
-        types: [],
-      })),
+      placeCandidates: combo.places.map((name) => {
+        const resolved = resolvePlaceDisplayName(name, locale);
+        return {
+          name: resolved.localizedDisplayName,
+          localizedDisplayName: resolved.localizedDisplayName,
+          originalName: resolved.originalName,
+          languageCode: resolved.languageCode,
+          localizationSource: resolved.localizationSource,
+          searchCandidateId: `name:${resolved.localizedDisplayName}`,
+          types: [],
+        };
+      }),
+      primaryCandidates: combo.places.slice(0, PRIMARY_PLACES_PER_COMBO).map((name) => {
+        const resolved = resolvePlaceDisplayName(name, locale);
+        return {
+          name: resolved.localizedDisplayName,
+          localizedDisplayName: resolved.localizedDisplayName,
+          originalName: resolved.originalName,
+          languageCode: resolved.languageCode,
+          localizationSource: resolved.localizationSource,
+          searchCandidateId: `name:${resolved.localizedDisplayName}`,
+          types: [],
+        };
+      }),
     }));
     // Enforce category contracts on curated seeds (e.g. 美食探索 must not keep temples).
     const contracted: StructuredCombinationOption[] = [];
@@ -2227,8 +2528,16 @@ export async function ensureDestinationCombinationsReady(params: {
       });
     }
     if (contracted.length >= MIN_COMBINATIONS) {
-      setCachedDiscoveredCombinations(label, contracted);
-      return { ok: true, combinations: contracted, source: "curated_or_local" };
+      const gatedLocal = applyCombinationLocalizationGate(contracted, {
+        locale,
+        minPlacesPerCombo: 2,
+        minCombinations: MIN_COMBINATIONS,
+      });
+      if (gatedLocal.combinations.length >= MIN_COMBINATIONS) {
+        const localized = gatedLocal.combinations as StructuredCombinationOption[];
+        setCachedDiscoveredCombinations(label, localized);
+        return { ok: true, combinations: localized, source: "curated_or_local" };
+      }
     }
     // Curated seeds failed food/shopping contracts — fall through to Places discovery.
   }

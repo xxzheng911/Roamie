@@ -151,7 +151,11 @@ export function sortStopsInDayByTime(
 }
 
 export function legKeyForItem(item: RoamieItineraryItem): string {
-  return item.placeName || item.title;
+  return (
+    (item.localizedDisplayName ?? "").trim() ||
+    item.placeName ||
+    item.title
+  );
 }
 
 /** 依畫面順序寫入 dayIndex / sortIndex / order，並同步 date 避免 reorder 後分組錯亂 */

@@ -24,6 +24,71 @@ import {
   NEARBY_EXTENSION_MIN_STOPS,
   resolveNearbyExtensionDedicatedDay,
 } from "@/lib/ai/nearby-extension-requirements";
+import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
+import {
+  wouldViolateDailyDiversity,
+  resolveDailyDiversityLimits,
+} from "@/lib/ai/daily-category-diversity";
+import { resolvePlaceDisplayName } from "@/lib/place-display-name";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import {
+  applyPlaceToDayBudget,
+  createEmptyDayBudget,
+  estimateTravelMinutesBetween,
+  logDayCapacitySummary,
+  logItineraryLoadBalance,
+  computeDayLoadScore,
+  wouldFitInDayBudget,
+  type DayTimeBudget,
+} from "@/lib/ai/time-budget-planner";
+import { summarizeDailyCategoryDiversity } from "@/lib/ai/daily-category-diversity";
+
+function withLocalizedName(place: PlaceResult): PlaceResult {
+  const resolved = resolvePlaceDisplayName(
+    {
+      name: place.name ?? "",
+      originalName: place.originalName ?? place.name ?? "",
+      placeId: place.id,
+      canonicalPlaceId: place.id,
+      englishName:
+        place.localizationSource === "english" ||
+        place.localizationSource === "english_fallback"
+          ? place.name
+          : undefined,
+      types: place.types,
+      primaryType: place.primaryType,
+    },
+    effectiveAppLocale(),
+  );
+  return {
+    ...place,
+    name: resolved.localizedDisplayName,
+    originalName: resolved.originalName,
+    localizedDisplayName: resolved.localizedDisplayName,
+    languageCode: resolved.languageCode,
+    localizationSource: resolved.localizationSource,
+  };
+}
+
+function canAcceptPlaceForDay(
+  existing: PlaceResult[],
+  place: PlaceResult,
+  style?: TripStyleKey,
+  budget?: DayTimeBudget | null,
+  pace?: PlannerPaceHint,
+): PlannerSkipReason | null {
+  if (!evaluateTourismQuality(place).ok) return "low_value_tourism";
+  const limits = resolveDailyDiversityLimits({ style });
+  if (!wouldViolateDailyDiversity(existing, place, limits).ok) {
+    return "category_diversity";
+  }
+  if (budget) {
+    const previous = existing[existing.length - 1] ?? null;
+    const fit = wouldFitInDayBudget(budget, place, previous, pace);
+    if (!fit.ok) return "time_budget";
+  }
+  return null;
+}
 
 /** 本地 place id，避免經 allocator → day-plan-source 循環依賴 */
 function placeId(place: PlaceResult): string {
@@ -92,7 +157,10 @@ export type PlannerSkipReason =
   | "duplicate"
   | "no_coords"
   | "nearby_reserved_other_day"
-  | "capacity_full";
+  | "capacity_full"
+  | "category_diversity"
+  | "low_value_tourism"
+  | "time_budget";
 
 export type DayAssemblyDiagnostics = {
   day: number;
@@ -114,7 +182,14 @@ export type PlannerAssemblyResult = {
 
 export function minEffectivePlacesPerDay(pace?: PlannerPaceHint): number {
   if (pace === "slow") return 2;
+  if (pace === "active") return 3;
   return 3;
+}
+
+export function maxEffectivePlacesPerDay(pace?: PlannerPaceHint): number {
+  if (pace === "slow") return 4;
+  if (pace === "active") return 8;
+  return 6;
 }
 
 function hasCoords(place: PlaceResult): boolean {
@@ -342,6 +417,7 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
 }): PlannerAssemblyResult {
   const safeDays = Math.max(1, params.days);
   const minPerDay = minEffectivePlacesPerDay(params.pace);
+  const maxPerDay = maxEffectivePlacesPerDay(params.pace);
   const nearbyDayMin = params.allowLongHaulDays || (params.nearbyExtensions?.length ?? 0) > 0 ? 2 : minPerDay;
   const extensions = (params.nearbyExtensions ?? [])
     .map((e) => normalizeDestinationLabel(e))
@@ -587,13 +663,29 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
 
   const unusedInOrder = params.pool.filter(isUnused);
 
+  const budgetForDay = (day: number, entries: AssemblyDayPlanEntry[]): DayTimeBudget => {
+    let budget = createEmptyDayBudget({
+      day,
+      totalDays: safeDays,
+      pace: params.pace,
+    });
+    let prev: PlaceResult | null = null;
+    for (const entry of entries) {
+      budget = applyPlaceToDayBudget(budget, entry.place, prev, params.pace);
+      prev = entry.place;
+    }
+    return budget;
+  };
+
   for (const plan of plans) {
     const diag = diagnosticsMap.get(plan.day)!;
     const isDedicatedNearby = dedicatedNearbyDays.has(plan.day);
     const dayExt = extensionByDay.get(plan.day);
     const dayMin =
       extensions.length && isDedicatedNearby ? Math.max(nearbyDayMin, 2) : minPerDay;
-    if (plan.entries.length >= dayMin) continue;
+    // Quiz pace / style: never pad a day past max capacity.
+    if (plan.entries.length >= Math.min(dayMin, maxPerDay)) continue;
+    if (plan.entries.length >= maxPerDay) continue;
 
     const centroid =
       computeDayCentroid(plan.entries.map((e) => e.place)) ??
@@ -642,14 +734,39 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
         }
       }
 
+      const dayBudget = budgetForDay(plan.day, plan.entries);
+      const diversityBlock = canAcceptPlaceForDay(
+        plan.entries.map((e) => e.place),
+        place,
+        params.style,
+        dayBudget,
+        params.pace,
+      );
+      if (diversityBlock) {
+        diag.skipped.push({ name: place.name, reason: diversityBlock });
+        continue;
+      }
+
+      const localized = withLocalizedName(place);
       plan.entries.push({
         time: "15:00",
         label: "景點",
-        name: place.name,
-        place,
+        name: localized.name,
+        place: localized,
       });
       for (const key of identityKeys(place)) usedIds.add(key);
       usedIds.add(id);
+      logAiPipeline(
+        "[DAY_ASSIGNMENT_TRACE]",
+        `place=${localized.name}`,
+        `requiredAnchor=false`,
+        `candidateDays=${plan.day}`,
+        `selectedDay=${plan.day}`,
+        `geoCluster=${areaLabelForPlace(localized)}`,
+        `addedLoad=${estimateTravelMinutesBetween(plan.entries[plan.entries.length - 2]?.place, localized)}`,
+        `remainingMinutes=${budgetForDay(plan.day, plan.entries).remainingMinutes}`,
+        `decisionReason=min_capacity_fill`,
+      );
     }
   }
 
@@ -694,10 +811,11 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
       "action=block_singleton_day",
     );
     const lone = plan.entries.splice(0, plan.entries.length);
-    const prev = plans.find((p) => p.day === plan.day - 1 && p.entries.length >= 1);
-    const next = plans.find((p) => p.day === plan.day + 1 && p.entries.length >= 1);
-    const any = plans.find((p) => p.day !== plan.day && p.entries.length >= 1);
-    const target = prev ?? next ?? any;
+    // Prefer lightest non-empty day (never dump into Day 1 by default).
+    const target =
+      [...plans]
+        .filter((p) => p.day !== plan.day && p.entries.length >= 1)
+        .sort((a, b) => a.entries.length - b.entries.length || a.day - b.day)[0] ?? null;
     if (target) target.entries.push(...lone);
     else {
       plan.entries.push(...lone);
@@ -730,11 +848,20 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
       if (extensions.length && plan.day === nearbyDay && !isNearby && plan.entries.length >= 2) {
         continue;
       }
+      const diversityBlock = canAcceptPlaceForDay(
+        plan.entries.map((e) => e.place),
+        place,
+        params.style,
+        budgetForDay(plan.day, plan.entries),
+        params.pace,
+      );
+      if (diversityBlock) continue;
+      const localized = withLocalizedName(place);
       plan.entries.push({
         time: "15:30",
         label: "景點",
-        name: place.name,
-        place,
+        name: localized.name,
+        place: localized,
       });
       for (const key of identityKeys(place)) usedIds.add(key);
       usedIds.add(id);
@@ -773,6 +900,63 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
     if (plan.entries.length === 0 || plan.entries.length < Math.min(2, dayMin)) {
       candidateInsufficient = true;
     }
+  }
+
+  // ── 5c) Time-budget rebalance: move overflow from heavy → light days ──
+  for (let pass = 0; pass < 3; pass += 1) {
+    let movedAny = false;
+    for (const plan of plans) {
+      let budget = budgetForDay(plan.day, plan.entries);
+      while (
+        (budget.remainingMinutes < 0 || plan.entries.length > maxPerDay) &&
+        plan.entries.length > minPerDay
+      ) {
+        const movable = [...plan.entries]
+          .reverse()
+          .find((e) => evaluateTourismQuality(e.place).ok);
+        if (!movable) break;
+        const lightest = [...plans]
+          .filter((p) => p.day !== plan.day && p.entries.length < maxPerDay)
+          .sort(
+            (a, b) =>
+              budgetForDay(a.day, a.entries).remainingMinutes -
+                budgetForDay(b.day, b.entries).remainingMinutes ||
+              a.entries.length - b.entries.length,
+          )
+          .reverse()[0];
+        if (!lightest) break;
+        const lightBudget = budgetForDay(lightest.day, lightest.entries);
+        const prev = lightest.entries[lightest.entries.length - 1]?.place ?? null;
+        if (
+          !wouldFitInDayBudget(lightBudget, movable.place, prev, params.pace).ok ||
+          canAcceptPlaceForDay(
+            lightest.entries.map((e) => e.place),
+            movable.place,
+            params.style,
+            lightBudget,
+            params.pace,
+          )
+        ) {
+          break;
+        }
+        plan.entries = plan.entries.filter((e) => e !== movable);
+        lightest.entries.push(movable);
+        budget = budgetForDay(plan.day, plan.entries);
+        movedAny = true;
+        logAiPipeline(
+          "[DAY_ASSIGNMENT_TRACE]",
+          `place=${movable.name}`,
+          `requiredAnchor=false`,
+          `candidateDays=${plan.day}->${lightest.day}`,
+          `selectedDay=${lightest.day}`,
+          `geoCluster=${areaLabelForPlace(movable.place)}`,
+          `addedLoad=0`,
+          `remainingMinutes=${budgetForDay(lightest.day, lightest.entries).remainingMinutes}`,
+          `decisionReason=time_budget_rebalance`,
+        );
+      }
+    }
+    if (!movedAny) break;
   }
 
   // ── 6) 同日 NN 路線排序 + 診斷 ──
@@ -826,6 +1010,29 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
   }
 
   const diagnostics = [...diagnosticsMap.values()];
+  const loadScores = plans.map((plan) => {
+    let travel = 0;
+    for (let i = 1; i < plan.entries.length; i += 1) {
+      travel += estimateTravelMinutesBetween(
+        plan.entries[i - 1]!.place,
+        plan.entries[i]!.place,
+      );
+    }
+    const budget = budgetForDay(plan.day, plan.entries);
+    logDayCapacitySummary(budget);
+    summarizeDailyCategoryDiversity(
+      plan.day,
+      plan.entries.map((e) => e.place),
+      { style: params.style },
+    );
+    return computeDayLoadScore(
+      plan.day,
+      plan.entries.map((e) => e.place),
+      travel,
+    );
+  });
+  logItineraryLoadBalance(loadScores);
+
   logAiPipeline(
     "[AI_PLANNER_ASSEMBLY_SUMMARY]",
     `days=${safeDays}`,

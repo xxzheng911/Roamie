@@ -95,6 +95,11 @@ import {
 import { resolveRegionPrimaryCity } from "@/lib/ai/shopping-search-scope";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { cuisineSearchTokens } from "@/lib/ai/recommendation-refinement/parser";
+import {
+  evaluateDestinationScopeGate,
+  logDestinationScopeBlocked,
+  logUnexpectedPlacesCall,
+} from "@/lib/ai/destination-scope";
 
 const PER_GROUP_TARGET = 3;
 const SINGLE_INTENT_MAX = 6;
@@ -481,6 +486,41 @@ export async function buildDestinationCategoryRecommendations(params: {
   } = params;
   const label = normalizeDestinationLabel(destination);
   const mealIntent = parseMealIntentFromText(userText);
+
+  const scopeGate = evaluateDestinationScopeGate({
+    destination: label,
+    destinationType: context.destinationType,
+    countryCode: context.destinationCountry,
+    requestedIntent: intents[0] ?? "place_recommendation",
+  });
+  if (scopeGate.placesCallBlocked) {
+    logDestinationScopeBlocked(scopeGate);
+    logUnexpectedPlacesCall({
+      trigger: "buildDestinationCategoryRecommendations",
+      intent: intents[0] ?? "place_recommendation",
+      destinationType: scopeGate.destinationType,
+      scopePrecision: scopeGate.scopePrecision,
+      callPath: "chat-destination-category-recommendation",
+    });
+    const summary = `${label}範圍很大，請先告訴我比較想去哪個城市或地區，我再幫你找適合的地點。`;
+    return {
+      summary,
+      recommendations: [],
+      payload: {
+        title: "Roamie 推薦",
+        summary,
+        moodTag: context.mood ?? "",
+        recommendations: [],
+        itinerary: [],
+      },
+      contextPatch: {
+        destination: label,
+        destinationType: "country",
+        destinationCountry: label,
+        tripPurpose: "destination_selection",
+      },
+    };
+  }
 
   logChatPlaceIntent(intents, userText);
   const lockedIntent = resolveCategorySearchIntent(userText, intents);

@@ -13,6 +13,7 @@ import {
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
 import type { QualityRejectReason } from "@/lib/ai/candidate-pool/types";
+import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
 
 /** Soft popularity floor — stricter than nothing, softer than legacy 4.0/100 */
 const MIN_RATING = 3.8;
@@ -114,6 +115,11 @@ export function qualityRejectReason(
   if (!place.name?.trim() || !place.id?.trim()) return "missing_identity";
   if (isPermanentlyClosed(place)) return "permanently_closed";
   if (isBurialOrFuneralPlace(place)) return "burial";
+
+  // Unified Tourism Quality Gate (drinking fountains, city halls, ordinary parks…)
+  const tourism = evaluateTourismQuality(place);
+  if (!tourism.ok) return "low_value";
+
   if (isExcludedRetailPlace(place, opts)) {
     const reason = getExcludedRetailReason(place, opts);
     if (reason === "hypermarket") return "hypermarket";
@@ -148,7 +154,12 @@ export function qualityRejectReason(
 
 export function applyQualityGate(
   places: PlaceResult[],
-  opts?: { style?: TripStyleKey; userText?: string },
+  opts?: {
+    style?: TripStyleKey;
+    userText?: string;
+    protectPlaceIds?: ReadonlySet<string> | readonly string[];
+    protectPlaceNames?: readonly string[];
+  },
 ): { kept: PlaceResult[]; rejected: number; reasons: Record<string, number> } {
   const retailFirst = filterExcludedRetailPlaces(places, opts);
   const seenBrands = new Set<string>();
@@ -157,7 +168,29 @@ export function applyQualityGate(
   let rejected = places.length - retailFirst.length;
   if (rejected > 0) reasons.supermarket = (reasons.supermarket ?? 0) + rejected;
 
+  const protectIds = new Set(
+    (opts?.protectPlaceIds ? [...opts.protectPlaceIds] : [])
+      .map((id) => String(id).trim())
+      .filter(Boolean),
+  );
+  const protectNames = (opts?.protectPlaceNames ?? [])
+    .map((n) => n.trim().replace(/\s+/g, "").toLowerCase())
+    .filter(Boolean);
+  const isProtected = (place: PlaceResult): boolean => {
+    const id = (place.id ?? "").trim();
+    if (id && protectIds.has(id)) return true;
+    const key = (place.name ?? "").trim().replace(/\s+/g, "").toLowerCase();
+    if (!key) return false;
+    return protectNames.some((n) => key === n || key.includes(n) || n.includes(key));
+  };
+
   for (const place of retailFirst) {
+    if (isProtected(place)) {
+      const brand = brandKey(place);
+      if (brand) seenBrands.add(brand);
+      kept.push(place);
+      continue;
+    }
     const reason = qualityRejectReason(place, { ...opts, seenBrands });
     if (reason) {
       rejected += 1;

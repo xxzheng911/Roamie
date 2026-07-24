@@ -207,10 +207,13 @@ export function redistributePlacesEvenly(params: {
 
   const base = Math.min(slotsPerDay, Math.floor(pool.length / safeDays));
   const extra = Math.min(slotsPerDay * safeDays - base * safeDays, pool.length % safeDays);
-  const perDayCounts = Array.from(
-    { length: safeDays },
-    (_, i) => Math.min(slotsPerDay, base + (i < extra ? 1 : 0)),
-  );
+  // Spread remainder across middle/later days — never bias Day 1 as the overflow sink.
+  const perDayCounts = Array.from({ length: safeDays }, () => base);
+  for (let e = 0; e < extra; e += 1) {
+    const idx =
+      safeDays <= 1 ? 0 : Math.min(safeDays - 1, Math.floor(((e + 1) * safeDays) / (extra + 1)));
+    perDayCounts[idx] = Math.min(slotsPerDay, (perDayCounts[idx] ?? base) + 1);
+  }
 
   logAiPipeline(
     "[AI_PLANNER_REDISTRIBUTE]",

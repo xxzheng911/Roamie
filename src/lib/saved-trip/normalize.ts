@@ -18,20 +18,22 @@ import {
   titleFieldsFromStored,
 } from "@/lib/saved-trip/display";
 import type { SavedTripDay, SavedTripDayItem, SavedTripView } from "@/lib/saved-trip/types";
+import { displayNameForPlaceLike } from "@/lib/place-display-name";
+import { displayTransportLabel } from "@/lib/saved-trip/leg-transport-sot";
 
 const UNSET = "尚未設定";
 
 const TRANSPORT_LABEL: Record<TripTransportMode, string> = {
   walk: "步行",
   scooter: "機車",
-  drive: "開車",
+  drive: "租車自駕",
   transit: "大眾運輸",
 };
 
 function transportLabel(mode?: TripTransportMode | string | null): string {
   if (!mode) return UNSET;
   if (mode in TRANSPORT_LABEL) return TRANSPORT_LABEL[mode as TripTransportMode];
-  return String(mode);
+  return displayTransportLabel(String(mode));
 }
 
 function inferCategory(item: RoamieItineraryItem): string {
@@ -81,7 +83,8 @@ function travelToNext(
   const legKey = buildLegKey(from, to);
   const leg = settings?.transitLegs?.[legKey];
   if (leg) {
-    return `${leg.headline} · 約 ${leg.durationMinutes} 分鐘`;
+    const headline = displayTransportLabel(leg.headline || leg.resolvedMode || leg.transportMode);
+    return `${headline} · 約 ${leg.durationMinutes} 分鐘`;
   }
   return UNSET;
 }
@@ -93,14 +96,19 @@ function itemToSaved(
   settings: RoamiePayloadV2["tripSettings"],
   next?: RoamieItineraryItem,
 ): SavedTripDayItem {
-  const placeName = raw.placeName || raw.title || "地點";
+  const placeName = displayNameForPlaceLike(raw) || "地點";
+  const legKey = placeName || raw.placeName || raw.title;
   return {
     id: `${dayNumber}-${index}-${placeName.slice(0, 12)}`,
     time: raw.time?.trim() || UNSET,
     placeName,
+    localizedDisplayName: placeName,
+    originalName: raw.originalName ?? raw.placeName ?? raw.title,
     address: raw.address?.trim() || UNSET,
     category: inferCategory(raw),
-    duration: legMinutesFor(settings, raw.placeName, raw.title),
+    duration: legMinutesFor(settings, legKey, raw.title) !== UNSET
+      ? legMinutesFor(settings, legKey, raw.title)
+      : legMinutesFor(settings, raw.placeName, raw.title),
     transportMode:
       settings?.legTransport?.[placeName] ??
       settings?.legTransport?.[raw.title] ??

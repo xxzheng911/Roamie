@@ -15,7 +15,7 @@ import {
   setCachedRouteDuration,
   type RouteDurationCacheEntry,
 } from "@/lib/route-duration-cache";
-import { logRouteOnce, warnRouteOnce } from "@/lib/route-duration-log";
+import { debugRouteOnce, logRouteOnce, warnRouteOnce } from "@/lib/route-duration-log";
 import { routesCache, routesCacheKey, tripLegsCacheKey } from "@/services/routesCache";
 
 export type LatLng = { lat: number; lng: number };
@@ -25,6 +25,7 @@ export type FetchRouteQueryOptions = DirectionsQueryOptions & {
   logLegKey?: string;
   /** 大眾運輸 cache key：無 departureTime 時以行程日期區分 */
   tripDate?: string;
+  coordinateSource?: string;
 };
 
 export type RoutesTestResult =
@@ -243,6 +244,7 @@ async function fetchRouteDurationUncached(
         originPlaceId: queryOptions.originPlaceId,
         destinationPlaceId: queryOptions.destinationPlaceId,
         logLegKey: queryOptions.logLegKey,
+        coordinateSource: queryOptions.coordinateSource,
       }
     : undefined;
 
@@ -379,7 +381,16 @@ export async function getRouteDuration(
           api.googleStatus ??
           api.message?.match(/PERMISSION_DENIED|REQUEST_DENIED|INVALID_REQUEST|ZERO_RESULTS/i)?.[0] ??
           String(api.statusCode ?? "failed");
-        warnRouteOnce(`${key}|err`, `[ROUTE_DURATION_ERROR] status=${status} message=${api.message ?? "duration_failed"}`);
+        const soft =
+          /ZERO_RESULTS|NOT_FOUND|no_routes|fallback|unavailable/i.test(
+            `${status} ${api.message ?? ""}`,
+          ) || api.statusCode === 404;
+        const line = `[ROUTE_DURATION_ERROR] status=${status} message=${api.message ?? "duration_failed"}`;
+        if (soft) {
+          debugRouteOnce(`${key}|err|soft`, `${line} soft=true`);
+        } else {
+          warnRouteOnce(`${key}|err`, line);
+        }
       }
       return null;
     },
@@ -412,12 +423,21 @@ export async function getRouteLegEstimates(
     async () => {
       const result = await requireLegEstimatesFn()({ data: { origin, destination } });
       if (!result.ok || !result.data) {
-        warnRouteOnce(`${key}|fail`, `[ROUTE_DURATION_ERROR] status=${result.statusCode ?? "failed"} message=${result.message ?? "leg_estimates_failed"}`);
+        const soft =
+          result.statusCode === 404 ||
+          /fallback|unavailable|init|provider|ZERO_RESULTS/i.test(result.message ?? "");
+        const line = `[ROUTE_DURATION_ERROR] status=${result.statusCode ?? "failed"} message=${result.message ?? "leg_estimates_failed"}`;
+        if (soft) debugRouteOnce(`${key}|fail|soft`, `${line} soft=true`);
+        else warnRouteOnce(`${key}|fail`, line);
         return null;
       }
       const { walk, drive, transit } = result.data;
       if (walk == null && drive == null && transit == null) {
-        warnRouteOnce(`${key}|empty`, `[ROUTE_DURATION_ERROR] status=empty_estimates message=all_modes_failed`);
+        // Soft empty — modes will fall back to local estimates.
+        debugRouteOnce(
+          `${key}|empty`,
+          `[ROUTE_DURATION] status=empty_estimates message=all_modes_failed soft=true`,
+        );
         return null;
       }
       return result.data;
@@ -431,7 +451,14 @@ export async function getTripLegsWithDurations(
   places: LatLng[],
   travelMode: RoutesTravelMode,
 ): Promise<Array<{ durationMinutes: number; distanceMeters: number }>> {
-  if (places.length < 2) return [];
+  // Not an error — route legs are only meaningful with ≥2 stops after hydration.
+  if (places.length < 2) {
+    debugRouteOnce(
+      `trip_legs|insufficient|${places.length}|${travelMode}`,
+      `[ROUTE_DURATION] status=not_required reason=insufficient_stops stopCount=${places.length}`,
+    );
+    return [];
+  }
 
   const key = tripLegsCacheKey(places, travelMode);
   try {
@@ -439,9 +466,17 @@ export async function getTripLegsWithDurations(
       try {
         const result = await requireTripLegsFn()({ data: { places, travelMode } });
         if (!result.ok || !result.data) {
-          warnRouteOnce(
+          // Soft empty during provider/init — not a user-facing route build failure.
+          debugRouteOnce(
             `${key}|trip_legs`,
-            `[ROUTE_DURATION_ERROR] status=${result.statusCode ?? "failed"} message=${result.message ?? "trip_legs_failed"} soft=empty_legs`,
+            `[ROUTE_DURATION] status=empty_legs message=${result.message ?? "trip_legs_empty"} soft=provider_or_init`,
+          );
+          return [];
+        }
+        if (result.data.length === 0) {
+          debugRouteOnce(
+            `${key}|trip_legs_empty`,
+            `[ROUTE_DURATION] status=empty_legs message=zero_legs soft=provider_or_init`,
           );
           return [];
         }
@@ -450,17 +485,17 @@ export async function getTripLegsWithDurations(
           distanceMeters: leg.distanceMeters,
         }));
       } catch (e) {
-        warnRouteOnce(
+        debugRouteOnce(
           `${key}|trip_legs_ex`,
-          `[ROUTE_DURATION_ERROR] status=exception message=${e instanceof Error ? e.message : String(e)} soft=empty_legs`,
+          `[ROUTE_DURATION] status=empty_legs message=${e instanceof Error ? e.message : String(e)} soft=exception`,
         );
         return [];
       }
     });
   } catch (e) {
-    warnRouteOnce(
+    debugRouteOnce(
       `${key}|cache_ex`,
-      `[ROUTE_DURATION_ERROR] status=cache_exception message=${e instanceof Error ? e.message : String(e)} soft=empty_legs`,
+      `[ROUTE_DURATION] status=empty_legs message=${e instanceof Error ? e.message : String(e)} soft=cache_exception`,
     );
     return [];
   }

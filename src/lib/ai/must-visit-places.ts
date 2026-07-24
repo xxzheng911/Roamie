@@ -2,6 +2,8 @@ import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeRecommendationItem } from "@/lib/ai/types";
 import {
+  isCountryCityInquiryText,
+  isFutureTripPlanningStatement,
   normalizeDestinationLabel,
   parseDestinationFromText,
   resolveDestinationFromText,
@@ -21,6 +23,10 @@ import {
   isSuggestionInDestinationScope,
 } from "@/lib/ai/destination-combination-suggestions";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import {
+  evaluateDestinationScopeGate,
+  logDestinationScopeBlocked,
+} from "@/lib/ai/destination-scope";
 
 export type PlanningFollowUpIntent = "must_visit_places" | "daily_rhythm" | "full_itinerary";
 
@@ -404,11 +410,27 @@ export function shouldFetchDestinationPlaces(
   userText: string,
   ctx: CanonicalTravelContext = { interests: [] },
 ): boolean {
+  if (isFutureTripPlanningStatement(userText) || isCountryCityInquiryText(userText)) {
+    return false;
+  }
   if (hasCategoryPlaceQuery(userText)) return false;
   if (!detectMustVisitIntent(userText) && !detectPlaceRecommendationIntent(userText)) {
     return false;
   }
-  return Boolean(resolveMustVisitDestination(ctx, userText));
+  const destination = resolveMustVisitDestination(ctx, userText);
+  if (!destination) return false;
+
+  const scopeGate = evaluateDestinationScopeGate({
+    destination,
+    destinationType: ctx.destinationType,
+    countryCode: ctx.destinationCountry,
+    requestedIntent: "must_visit_places",
+  });
+  if (scopeGate.placesCallBlocked) {
+    logDestinationScopeBlocked(scopeGate);
+    return false;
+  }
+  return true;
 }
 
 export function buildDestinationDayPlanSuggestions(destination: string, days: number): string[] {

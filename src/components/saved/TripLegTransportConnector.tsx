@@ -6,6 +6,7 @@ const mapsBtnClass =
   "inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[10px]";
 
 type Props = {
+  /** Displayed mode — must be resolvedMode (SoT), not stale preference. */
   transport: string;
   travelTimeLabel?: string;
   walkFallbackHint?: string | null;
@@ -13,7 +14,7 @@ type Props = {
   onOpenTransitMaps?: (() => void) | null;
 };
 
-/** 兩張地點卡片之間：交通方式 + 路程時間 */
+/** 兩張地點卡片之間：交通方式 + 路程時間（兩者皆依 resolvedMode） */
 export function TripLegTransportConnector({
   transport,
   travelTimeLabel,

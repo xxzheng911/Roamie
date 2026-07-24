@@ -84,7 +84,7 @@ export function transportLabelForPrompt(transport?: TripTransportMode | string |
     case "scooter":
       return "機車";
     case "drive":
-      return "開車";
+      return "租車自駕";
     case "transit":
       return "大眾運輸";
     default:

@@ -18,6 +18,8 @@ import {
   themeRequiresCategoryContract,
   validatePlaceForCombination,
 } from "@/lib/ai/combination-category-contract";
+import { isTourismLandmarkException } from "@/lib/ai/tourism-quality-gate";
+import type { PlaceResult } from "@/lib/place-result";
 
 export type CandidateIntentInput = {
   name: string;
@@ -210,6 +212,33 @@ export function validateCandidateIntent(
   }
   if (NON_TOURISM_NAME_RE.test(name)) {
     return { ok: false, reason: "non_tourism_name" };
+  }
+  if (
+    /飲水|水飲み|聖火台|時計台|電視塔|テレビ塔|市役所|區役所|区役所|道廳|廳舍|庁舎|近鄰公園|drinking\s*fountain|olympic\s*cauldron/i.test(
+      name,
+    )
+  ) {
+    const asPlace = {
+      id: candidate.googlePlaceId ?? name,
+      name,
+      address: candidate.address ?? null,
+      lat: candidate.lat ?? null,
+      lng: candidate.lng ?? null,
+      rating: candidate.rating ?? null,
+      userRatingCount: null,
+      photoName: null,
+      primaryType: candidate.primaryType ?? null,
+      types: candidate.types ?? null,
+      businessStatus: null,
+      openStatus: "unknown" as const,
+      openStatusLabel: "",
+      todayHoursLabel: "",
+      closingSoonNote: "",
+      nextOpenHint: "",
+    } satisfies PlaceResult;
+    if (!isTourismLandmarkException(asPlace)) {
+      return { ok: false, reason: "low_value_tourism_gate" };
+    }
   }
   if (
     isForbiddenTransitAttraction({

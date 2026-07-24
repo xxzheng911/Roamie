@@ -12,7 +12,8 @@ export type RouteDurationCacheEntry = {
 };
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
-const FAILED_TTL_MS = 10 * 60 * 1000;
+/** Negative cache for ZERO_RESULTS — avoid re-request on re-render */
+const FAILED_TTL_MS = 60 * 60 * 1000;
 
 type Cached = { entry: RouteDurationCacheEntry; expiresAt: number };
 const memory = new Map<string, Cached>();

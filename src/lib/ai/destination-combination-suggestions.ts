@@ -35,6 +35,14 @@ import {
   applyNearbyRegionPolicyToCombinations,
   isNearbyRegionThemeTitle,
 } from "@/lib/ai/region-adjacency";
+import { localizeCombinationPlaceNames } from "@/lib/ai/combination-localization-gate";
+import {
+  deriveCombinationThemeTitle,
+  isMechanicalCombinationTitle,
+  localizeCombinationThemeTitle,
+} from "@/lib/ai/combination-theme-titles";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { resolvePlaceDisplayName } from "@/lib/place-display-name";
 
 export type DestinationCombination = {
   title: string;
@@ -257,7 +265,8 @@ export function getDestinationCombinations(
 ): DestinationCombination[] {
   const label = normalizeDestinationLabel(destination);
 
-  const cached = getCachedDiscoveredCombinations(label);
+  const locale = effectiveAppLocale();
+  const cached = getCachedDiscoveredCombinations(label, undefined, undefined, { locale });
   if (cached?.length) {
     const fromCache = cached
       .map((combo) => {
@@ -265,7 +274,19 @@ export function getDestinationCombinations(
           ? combo.primaryCandidates
           : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO);
         const places = primary
-          .map((c) => c.name)
+          .map((c) => {
+            const resolved = resolvePlaceDisplayName(
+              {
+                name: c.localizedDisplayName || c.name,
+                originalName: c.originalName || c.name,
+                placeId: c.googlePlaceId,
+                canonicalPlaceId: c.googlePlaceId,
+                englishName: c.englishName,
+              },
+              locale,
+            );
+            return resolved.localizedDisplayName;
+          })
           .filter(
             (place) =>
               place &&
@@ -273,7 +294,10 @@ export function getDestinationCombinations(
               isSuggestionInDestinationScope(place, destination) &&
               !isForbiddenTransitAttraction({ name: place }),
           );
-        return { title: combo.title, places };
+        return {
+          title: localizeCombinationThemeTitle(combo.title, locale),
+          places,
+        };
       })
       .filter((combo) => combo.places.length >= 2);
 
@@ -356,6 +380,7 @@ export function buildOfferedCombinationsForSession(destination: string): NonNull
 > {
   const label = normalizeDestinationLabel(destination);
   const cached = getCachedDiscoveredCombinations(label);
+  const locale = effectiveAppLocale();
   if (cached?.length) {
     return cached.map((combo, index) => {
       const primary = combo.primaryCandidates?.length
@@ -363,47 +388,71 @@ export function buildOfferedCombinationsForSession(destination: string): NonNull
         : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO);
       return {
         id: index + 1,
-        title: combo.title,
-        places: primary.map((c) => ({
-          candidateId: c.searchCandidateId ?? c.googlePlaceId ?? `name:${c.name}`,
-          originalName: c.name,
-          name: c.name,
-          searchQuery: `${c.name} ${label}`,
-          destination: label,
-          sourceCombinationId: index + 1,
-          isRequiredBySelection: false,
-          googlePlaceId: c.googlePlaceId,
-          latitude: c.coordinates?.lat,
-          longitude: c.coordinates?.lng,
-          address: c.address,
-          types: c.types,
-          primaryType: c.primaryType,
-          normalizedCategory: c.normalizedCategory,
-          combinationId: c.combinationId ?? index + 1,
-          rating: c.rating,
-          resolutionStatus: (c.googlePlaceId ? "resolved" : "named") as
-            | "named"
-            | "resolved"
-            | "unresolved"
-            | "pending",
-        })),
+        title: localizeCombinationThemeTitle(combo.title, locale),
+        places: primary.map((c) => {
+          const resolved = resolvePlaceDisplayName(
+            {
+              name: c.localizedDisplayName || c.name,
+              originalName: c.originalName || c.name,
+              placeId: c.googlePlaceId,
+              canonicalPlaceId: c.googlePlaceId,
+              englishName: c.englishName,
+            },
+            locale,
+          );
+          return {
+            candidateId:
+              c.searchCandidateId ??
+              c.googlePlaceId ??
+              `name:${resolved.localizedDisplayName}`,
+            originalName: resolved.originalName,
+            name: resolved.localizedDisplayName,
+            localizedDisplayName: resolved.localizedDisplayName,
+            languageCode: resolved.languageCode,
+            localizationSource: resolved.localizationSource,
+            searchQuery: `${resolved.originalName || resolved.localizedDisplayName} ${label}`,
+            destination: label,
+            sourceCombinationId: index + 1,
+            isRequiredBySelection: false,
+            googlePlaceId: c.googlePlaceId,
+            latitude: c.coordinates?.lat,
+            longitude: c.coordinates?.lng,
+            address: c.address,
+            types: c.types,
+            primaryType: c.primaryType,
+            normalizedCategory: c.normalizedCategory,
+            combinationId: c.combinationId ?? index + 1,
+            rating: c.rating,
+            resolutionStatus: (c.googlePlaceId ? "resolved" : "named") as
+              | "named"
+              | "resolved"
+              | "unresolved"
+              | "pending",
+          };
+        }),
       };
     });
   }
 
   return getDestinationCombinations(label).map((combo, index) => ({
     id: index + 1,
-    title: combo.title,
-    places: combo.places.map((name) => ({
-      candidateId: `name:${name}`,
-      originalName: name,
-      name,
-      searchQuery: `${name} ${label}`,
-      destination: label,
-      sourceCombinationId: index + 1,
-      isRequiredBySelection: false,
-      resolutionStatus: "named" as const,
-    })),
+    title: localizeCombinationThemeTitle(combo.title, locale),
+    places: combo.places.map((name) => {
+      const resolved = resolvePlaceDisplayName(name, locale);
+      return {
+        candidateId: `name:${resolved.localizedDisplayName}`,
+        originalName: resolved.originalName,
+        name: resolved.localizedDisplayName,
+        localizedDisplayName: resolved.localizedDisplayName,
+        languageCode: resolved.languageCode,
+        localizationSource: resolved.localizationSource,
+        searchQuery: `${resolved.originalName || resolved.localizedDisplayName} ${label}`,
+        destination: label,
+        sourceCombinationId: index + 1,
+        isRequiredBySelection: false,
+        resolutionStatus: "named" as const,
+      };
+    }),
   }));
 }
 
@@ -445,10 +494,22 @@ export function buildDestinationCombinationSuggestionsReply(
   },
 ): string | null {
   const label = normalizeDestinationLabel(destination);
+  const locale = effectiveAppLocale();
+  const usedTitles = new Set<string>();
   const combos = (opts?.forceCombinations?.length
     ? opts.forceCombinations
     : getDestinationCombinations(label, { tripDays: days })
-  ).map((c) => ({ ...c, places: [...c.places] }));
+  ).map((c) => {
+    const places = localizeCombinationPlaceNames([...c.places], locale);
+    const title = isMechanicalCombinationTitle(c.title)
+      ? deriveCombinationThemeTitle(
+          places.map((name) => ({ name, localizedDisplayName: name })),
+          { locale, baseTitle: c.title, usedTitles, destinationLabel: label },
+        )
+      : localizeCombinationThemeTitle(c.title, locale);
+    usedTitles.add(title);
+    return { title, places };
+  });
   if (!combos.length) return null;
 
   // Structured data only — never surface category placeholders as places.
@@ -509,9 +570,10 @@ export function buildDestinationCombinationSuggestionsReply(
     "",
     `以下是${label}的建議組合搭配，你可以選一組或多組混搭：`,
     "",
-    ...softDisplay.map(
-      (combo, index) => `${index + 1}. ${combo.title}：${combo.places.join("、")}`,
-    ),
+    ...softDisplay.map((combo, index) => {
+      // places already passed localizeCombinationPlaceNames (Gate-complete only).
+      return `${index + 1}. ${combo.title}：${combo.places.join("、")}`;
+    }),
     "",
     ...(dateLine ? [dateLine, ""] : []),
     "回覆你比較有興趣的組合，我來幫你生成行程。",

@@ -20,6 +20,10 @@ export type TripPlaceInput = {
   googleMapsUrl?: string;
   photoName?: string | null;
   rating?: number | null;
+  localizedDisplayName?: string;
+  navigationLatitude?: number | null;
+  navigationLongitude?: number | null;
+  coordinateSource?: RoamieItineraryItem["coordinateSource"];
 };
 
 export function tripPlaceFromRecommendation(rec: RoamieRecommendationItem): TripPlaceInput {
@@ -41,19 +45,25 @@ export function tripPlaceFromRecommendation(rec: RoamieRecommendationItem): Trip
 
 export function tripPlaceFromPlaceResult(place: PlaceResult): TripPlaceInput {
   const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place));
+  const displayName =
+    place.localizedDisplayName?.trim() || place.name;
   return {
-    name: place.name,
-    placeName: place.name,
-    title: place.name,
+    name: displayName,
+    placeName: displayName,
+    title: displayName,
     address: place.address ?? "",
     lat: place.lat,
     lng: place.lng,
     googlePlaceId: place.id,
     placeType: typeLabel,
     description: "",
-    googleMapsUrl: buildPlaceMapsUrl(place.name, place.lat, place.lng),
+    googleMapsUrl: buildPlaceMapsUrl(displayName, place.lat, place.lng),
     photoName: place.photoName,
     rating: place.rating,
+    navigationLatitude: place.navigationLatitude ?? undefined,
+    navigationLongitude: place.navigationLongitude ?? undefined,
+    coordinateSource: place.coordinateSource ?? undefined,
+    localizedDisplayName: displayName,
   };
 }
 
@@ -91,5 +101,13 @@ export function tripPlaceToItineraryItem(
     googlePlaceId: place.googlePlaceId,
     placeType: place.placeType,
     notes: opts.notes ?? "",
+    localizedDisplayName: place.localizedDisplayName,
+    navigationLatitude: place.navigationLatitude,
+    navigationLongitude: place.navigationLongitude,
+    coordinateSource:
+      place.coordinateSource ??
+      (place.googlePlaceId && place.lat != null && place.lng != null
+        ? "google_places"
+        : undefined),
   });
 }

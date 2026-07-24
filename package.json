@@ -80,6 +80,7 @@
     "verify:single-combo-capacity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-single-combination-capacity.mjs",
     "verify:insufficient-real-places": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-insufficient-real-places.mjs",
     "verify:place-name-likelihood": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-name-likelihood.mjs",
+    "verify:combination-localization": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-combination-localization.mjs",
     "verify:yilan-combo-mapping": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-yilan-combination-mapping.mjs",
     "verify:user-media-keys": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-user-media-cache-keys.mjs",
     "verify:apply-location": "node scripts/verify-apply-location-dedup.mjs",

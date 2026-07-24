@@ -99,6 +99,153 @@ export function resolveDestinationScopeFields(
   };
 }
 
+export type DestinationScopePrecision =
+  | "country"
+  | "region"
+  | "state"
+  | "city"
+  | "district"
+  | "landmark"
+  | "unknown";
+
+export type DestinationScopeGate = {
+  destination: string;
+  destinationType: DestinationEntityType | "unknown";
+  countryCode?: string;
+  scopePrecision: DestinationScopePrecision;
+  requestedIntent?: string;
+  placesCallBlocked: boolean;
+  reason?: string;
+  requiresDestinationRefinement: boolean;
+  placesCallAllowed: boolean;
+};
+
+function mapScopePrecision(
+  type: DestinationEntityType | undefined,
+): DestinationScopePrecision {
+  if (!type) return "unknown";
+  if (type === "country") return "country";
+  if (
+    type === "region" ||
+    type === "island" ||
+    type === "archipelago" ||
+    type === "resort_area"
+  ) {
+    return "region";
+  }
+  if (type === "state" || type === "province" || type === "administrative_area") {
+    return "state";
+  }
+  if (type === "city") return "city";
+  if (type === "district") return "district";
+  if (type === "attraction") return "landmark";
+  return "unknown";
+}
+
+/**
+ * Destination Scope Gate — country-level destinations must refine to city/region
+ * before any Places Nearby / Text Search / place cards.
+ */
+export function evaluateDestinationScopeGate(params: {
+  destination?: string | null;
+  destinationType?: DestinationEntityType | string | null;
+  countryCode?: string | null;
+  requestedIntent?: string | null;
+}): DestinationScopeGate {
+  const destination = params.destination?.trim()
+    ? normalizeDestinationLabel(params.destination)
+    : "";
+  const entity = destination ? resolveDestinationEntity(destination) : null;
+  const destinationType = (params.destinationType ??
+    entity?.type ??
+    "unknown") as DestinationEntityType | "unknown";
+  const countryLevel =
+    destinationType === "country" ||
+    (destination ? isCountryLevelDestination(destination) : false);
+  const scopePrecision = countryLevel
+    ? "country"
+    : mapScopePrecision(
+        destinationType === "unknown" ? entity?.type : (destinationType as DestinationEntityType),
+      );
+  const requiresDestinationRefinement = countryLevel;
+  const placesCallAllowed =
+    Boolean(destination) && !requiresDestinationRefinement && canDiscoverDestinationPlaces(destination);
+  const placesCallBlocked = Boolean(destination) && !placesCallAllowed;
+
+  return {
+    destination: destination || "none",
+    destinationType,
+    countryCode: params.countryCode?.trim() || entity?.country || undefined,
+    scopePrecision,
+    requestedIntent: params.requestedIntent ?? undefined,
+    placesCallBlocked,
+    reason: placesCallBlocked ? "country_scope_requires_refinement" : undefined,
+    requiresDestinationRefinement,
+    placesCallAllowed,
+  };
+}
+
+export function logDestinationScopeBlocked(gate: DestinationScopeGate): void {
+  logAiPipeline(
+    "[DESTINATION_SCOPE_BLOCKED]",
+    `destination=${gate.destination}`,
+    `destinationType=${gate.destinationType}`,
+    `countryCode=${gate.countryCode ?? "none"}`,
+    `scopePrecision=${gate.scopePrecision}`,
+    `requestedIntent=${gate.requestedIntent ?? "none"}`,
+    `placesCallBlocked=${gate.placesCallBlocked}`,
+    `reason=${gate.reason ?? "none"}`,
+  );
+}
+
+export function logTripIntentScopeSummary(params: {
+  userTextSummary: string;
+  intent: string;
+  destination?: string | null;
+  destinationType?: string | null;
+  countryCode?: string | null;
+  travelMonth?: string | number | null;
+  travelDates?: string | null;
+  scopePrecision?: string | null;
+  requiresDestinationRefinement: boolean;
+  placesCallAllowed: boolean;
+  nextState: string;
+  responseType: string;
+}): void {
+  logAiPipeline(
+    "[TRIP_INTENT_SCOPE_SUMMARY]",
+    `userTextSummary=${params.userTextSummary.slice(0, 80)}`,
+    `intent=${params.intent}`,
+    `destination=${params.destination ?? "none"}`,
+    `destinationType=${params.destinationType ?? "none"}`,
+    `countryCode=${params.countryCode ?? "none"}`,
+    `travelMonth=${params.travelMonth ?? "none"}`,
+    `travelDates=${params.travelDates ?? "none"}`,
+    `scopePrecision=${params.scopePrecision ?? "none"}`,
+    `requiresDestinationRefinement=${params.requiresDestinationRefinement}`,
+    `placesCallAllowed=${params.placesCallAllowed}`,
+    `nextState=${params.nextState}`,
+    `responseType=${params.responseType}`,
+  );
+}
+
+export function logUnexpectedPlacesCall(params: {
+  trigger: string;
+  intent?: string | null;
+  destinationType?: string | null;
+  scopePrecision?: string | null;
+  callPath: string;
+}): void {
+  logAiPipeline(
+    "[UNEXPECTED_PLACES_CALL]",
+    `trigger=${params.trigger}`,
+    `intent=${params.intent ?? "none"}`,
+    `destinationType=${params.destinationType ?? "none"}`,
+    `scopePrecision=${params.scopePrecision ?? "none"}`,
+    `callPath=${params.callPath}`,
+  );
+}
+
 export function logCountryLevelPlacesBlocked(
   country: string,
   reason = "city_required",
@@ -107,6 +254,13 @@ export function logCountryLevelPlacesBlocked(
     "[COUNTRY_LEVEL_PLACES_BLOCKED]",
     `country=${normalizeDestinationLabel(country)}`,
     `reason=${reason}`,
+  );
+  logDestinationScopeBlocked(
+    evaluateDestinationScopeGate({
+      destination: country,
+      destinationType: "country",
+      requestedIntent: reason,
+    }),
   );
 }
 

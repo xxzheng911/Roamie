@@ -13,6 +13,7 @@ import {
   logChatUiReceivedCards,
   logChatUiRenderedCards,
 } from "@/lib/ai/chat-place-flow-log";
+import { displayNameForPlaceLike } from "@/lib/place-display-name";
 
 function ItineraryByDate({
   items,
@@ -73,14 +74,16 @@ function ItineraryByDate({
               >
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span className="font-medium">{item.time}</span>
-                  <span>{item.placeName}</span>
+                  <span>{displayNameForPlaceLike(item)}</span>
                 </div>
-                <h4 className="mt-1 text-[15px] font-medium">{item.title}</h4>
+                <h4 className="mt-1 text-[15px] font-medium">
+                  {displayNameForPlaceLike(item)}
+                </h4>
                 <p className="mt-1 text-sm text-muted-foreground">{item.description}</p>
                 <PlaceNavButtons
                   lat={item.lat}
                   lng={item.lng}
-                  placeName={item.placeName}
+                  placeName={displayNameForPlaceLike(item)}
                   compact
                   className="mt-2"
                 />

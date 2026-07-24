@@ -14,7 +14,7 @@ export const SAVED_TRIP_TRANSPORT_OPTIONS = [
   "步行",
   "捷運",
   "公車",
-  "開車",
+  "租車自駕",
   "Uber",
   "火車",
   "高鐵",

@@ -5,7 +5,11 @@ import { DayOutfitCard } from "@/components/DayOutfitCard";
 import type { DailyOutfitAdvice } from "@/lib/outfit/types";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 import { formatLegTravelTimeLabel } from "@/lib/saved-trip/travel-time";
-import { syncTripLegsFromGoogleRoutes } from "@/lib/saved-trip/sync-route-legs";
+import {
+  buildRouteVersionFingerprint,
+  syncTripLegsFromGoogleRoutes,
+} from "@/lib/saved-trip/sync-route-legs";
+import { displayNameForPlaceLike } from "@/lib/place-display-name";
 import { buildLegKey } from "@/lib/transit/types";
 import { RoamieDatePicker, RoamieDurationPicker, RoamieTimePicker } from "@/components/pickers";
 import { daysBetweenDates } from "@/lib/fetch-context";
@@ -25,19 +29,23 @@ import { useI18n } from "@/hooks/use-i18n";
 const TRANSPORT_OPTIONS: { value: TripTransportMode; label: string }[] = [
   { value: "walk", label: "步行" },
   { value: "scooter", label: "機車" },
-  { value: "drive", label: "開車" },
+  { value: "drive", label: "租車自駕" },
   { value: "transit", label: "大眾運輸" },
 ];
 
 const TRANSPORT_LABEL: Record<TripTransportMode, string> = {
   walk: "步行",
   scooter: "機車",
-  drive: "開車",
+  drive: "租車自駕",
   transit: "大眾運輸",
 };
 
 function legKey(item: RoamieItineraryItem): string {
   return item.placeName || item.title;
+}
+
+function stopDisplayName(item: RoamieItineraryItem): string {
+  return displayNameForPlaceLike(item);
 }
 
 function inferTripDates(
@@ -163,6 +171,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
     try {
       const transitLegs = await syncTripLegsFromGoogleRoutes(items, settings, {
         tripId: "trip-plan-draft",
+        routeVersion: buildRouteVersionFingerprint(items, settings),
       });
       setSettings((s) => ({ ...s, transitLegs }));
     } catch (e) {
@@ -370,7 +379,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                             />
                           </div>
                           <h3 className="mt-2 text-[16px] font-medium leading-snug">
-                            {item.placeName || item.title}
+                            {stopDisplayName(item)}
                           </h3>
                           {item.address ? (
                             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
@@ -380,7 +389,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                           <PlaceNavButtons
                             lat={item.lat}
                             lng={item.lng}
-                            placeName={item.placeName}
+                            placeName={stopDisplayName(item)}
                             compact
                             className="mt-3"
                           />

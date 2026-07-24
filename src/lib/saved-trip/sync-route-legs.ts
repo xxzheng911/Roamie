@@ -27,6 +27,7 @@ import {
   resolvedTransportDisplayLabel,
   straightLineDistanceMeters,
   transportFallbackModeFromResult,
+  CROSS_AREA_DRIVE_MIN_METERS,
 } from "@/lib/saved-trip/route-duration-fallback";
 import { resolveLegTransportLabel } from "@/lib/saved-trip/transport-options";
 import {
@@ -37,6 +38,12 @@ import {
 import { travelLabelToRoutesMode, type FetchRouteQueryOptions } from "@/services/routesService";
 import { logDirectionsDebug } from "@/lib/directions-debug-log";
 import { resolveDirectionsRegion, routesModeToDirectionsModeLabel } from "@/lib/directions-endpoint";
+import {
+  areEndpointsAbnormallySame,
+  checkStopNavigationIdentity,
+} from "@/lib/saved-trip/stop-navigation";
+import { debugRouteOnce, logRouteOnce, warnRouteOnce } from "@/lib/route-duration-log";
+import { displayTransportLabel } from "@/lib/saved-trip/leg-transport-sot";
 
 export function legKeysForItineraryItems(
   items: RoamieItineraryItem[],
@@ -136,6 +143,16 @@ export type SyncRouteLegsOptions = {
   locationContext?: string;
   directionsRegion?: string;
   onlyDateKey?: string;
+  /**
+   * Manual mode switch: only fetch the requested mode.
+   * Do not show another mode's duration if it fails.
+   */
+  allowModeFallback?: boolean;
+  /**
+   * Stable fingerprint of stop order + transport modes.
+   * Used to dedupe ROUTE_QUALITY_SUMMARY per trip/day/version.
+   */
+  routeVersion?: string;
 };
 
 export function transportLabelForLeg(
@@ -143,7 +160,29 @@ export function transportLabelForLeg(
   item: RoamieItineraryItem,
   dateKey: string,
 ): string {
-  return resolveLegTransportLabel(settings, legKeyForItem(item), dateKey);
+  return displayTransportLabel(
+    resolveLegTransportLabel(settings, legKeyForItem(item), dateKey),
+  );
+}
+
+/** Stable route version for quality-summary dedupe. */
+export function buildRouteVersionFingerprint(
+  items: RoamieItineraryItem[],
+  settings: TripPlanSettings,
+): string {
+  const placeKeys = items
+    .map(
+      (i, idx) =>
+        `${idx}:${i.date ?? ""}|${i.googlePlaceId ?? i.placeName ?? i.title}|${i.lat?.toFixed?.(4) ?? ""}|${i.lng?.toFixed?.(4) ?? ""}`,
+    )
+    .join("|");
+  return [
+    placeKeys,
+    settings.transport ?? "",
+    settings.defaultTransportLabel ?? "",
+    JSON.stringify(settings.dayTransportLabels ?? {}),
+    JSON.stringify(settings.legTransport ?? {}),
+  ].join("::");
 }
 
 function buildRouteQueryOptions(
@@ -156,6 +195,9 @@ function buildRouteQueryOptions(
 ): FetchRouteQueryOptions {
   const locationContext = options?.locationContext;
   const region = options?.directionsRegion ?? resolveDirectionsRegion(locationContext);
+  const sources = [prev.coordinateSource, curr.coordinateSource]
+    .filter(Boolean)
+    .join("|");
   return {
     departureTime,
     region,
@@ -164,6 +206,7 @@ function buildRouteQueryOptions(
     destinationPlaceId: curr.googlePlaceId,
     logLegKey: legKey,
     tripDate: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : undefined,
+    coordinateSource: sources || "unknown",
   };
 }
 
@@ -188,11 +231,13 @@ async function resolveItemCoords(
       options.onCoordsResolved?.(item, coords);
       return coords;
     }
-    console.info(
-      `[ROUTE_DURATION_ERROR] status=geocode_empty message=no_coords name=${item.placeName || item.title}`,
+    debugRouteOnce(
+      `geocode_empty|${item.googlePlaceId ?? item.placeName ?? item.title}`,
+      `[ROUTE_DURATION] status=geocode_empty message=no_coords name=${item.placeName || item.title}`,
     );
   } catch (e) {
-    console.info(
+    warnRouteOnce(
+      `geocode_ex|${item.googlePlaceId ?? item.placeName ?? item.title}`,
       `[ROUTE_DURATION_ERROR] status=geocode_exception message=${e instanceof Error ? e.message : String(e)} name=${item.placeName || item.title}`,
     );
   }
@@ -205,6 +250,13 @@ function buildTransportDisplayText(
 ): string | undefined {
   if (route.transitUnavailableProvider === "google_maps_deeplink") {
     return undefined;
+  }
+
+  if (!route.ok || route.routeStatus === "mode_unavailable" || route.routeStatus === "failed") {
+    if (route.routeStatus === "mode_unavailable" || route.fallbackReason === "mode_unavailable") {
+      return "暫無法取得交通時間";
+    }
+    return "查看路線";
   }
 
   if (isTransitRequested(transportLabel) && !transportFallbackModeFromResult(route)) {
@@ -233,12 +285,16 @@ function buildTransportDisplayText(
     estimates: route.estimates,
     source: "rules",
     transportFallbackMode,
-    transportMode: route.mode,
+    transportMode: route.resolvedMode ?? route.mode,
+    resolvedMode: route.resolvedMode ?? route.mode,
+    requestedMode: route.requestedMode,
+    routeStatus: route.routeStatus ?? (route.ok ? "ok" : "failed"),
+    durationSource: route.durationSource,
+    fallbackReason: route.fallbackReason,
   };
 
   const mins = travelMinutesForMode(pseudoLeg, displayLabel);
   if (mins == null) {
-    // Soft UI — never spam ROUTE_DURATION_ERROR on every render.
     return route.ok ? undefined : "查看路線";
   }
 
@@ -246,12 +302,14 @@ function buildTransportDisplayText(
 }
 
 function recommendedModeFromLabel(transportLabel: string, route: RouteLegDurationResult): TransitMode {
+  const resolved = route.resolvedMode ?? route.mode;
+  if (resolved === "DRIVE" || resolved === "TWO_WHEELER") return "drive";
+  if (resolved === "TRANSIT") return "transit";
+  if (resolved === "WALK" || resolved === "BICYCLE") return "walk";
   const fallback = transportFallbackModeFromResult(route);
   if (fallback === "drive") return "drive";
   if (fallback === "transit") return "transit";
   if (fallback === "walk") return "walk";
-  if (route.mode === "DRIVE" || route.mode === "TWO_WHEELER") return "drive";
-  if (route.mode === "TRANSIT") return "transit";
   if (/開車|drive|自駕|租車|計程車|共乘/i.test(transportLabel)) return "drive";
   if (/大眾|transit|捷運|地鐵/i.test(transportLabel)) return "transit";
   if (/步行|walk/i.test(transportLabel)) return "walk";
@@ -266,22 +324,37 @@ function buildTransitLeg(
   transportLabel: string,
   requestedMode: RoutesTravelMode,
   routeCacheFingerprint: string,
+  modeSelectionSource: "auto" | "manual" = "auto",
 ): TransitLegAdvice {
   const transitFailed =
     route.transitUnavailable &&
     isTransitRequested(transportLabel) &&
     route.estimates.transit == null;
 
-  const transportStatus = route.ok
-    ? "ok"
-    : transitFailed
-      ? "transit_unavailable"
-      : "failed";
+  const resolvedMode = route.resolvedMode ?? route.mode ?? requestedMode;
+  const routeStatus =
+    route.routeStatus ??
+    (route.ok
+      ? "ok"
+      : transitFailed
+        ? "transit_unavailable"
+        : route.fallbackReason === "mode_unavailable"
+          ? "mode_unavailable"
+          : "failed");
 
-  const transitMinutes = route.estimates.transit;
+  const transportStatus =
+    routeStatus === "ok"
+      ? "ok"
+      : routeStatus === "transit_unavailable"
+        ? "transit_unavailable"
+        : "failed";
+
   const transportFallbackMode = transportFallbackModeFromResult(route);
-  const resolvedMode = route.mode || requestedMode;
   const displayLabel = resolvedTransportDisplayLabel(transportLabel, route);
+  const durationMinutes =
+    route.ok && route.durationMinutes > 0
+      ? route.durationMinutes
+      : (route.estimates.transit ?? route.estimates.drive ?? route.estimates.walk ?? 0);
 
   const leg: TransitLegAdvice = {
     legKey,
@@ -289,9 +362,11 @@ function buildTransitLeg(
     toName,
     recommendedMode: recommendedModeFromLabel(transportLabel, route),
     headline: displayLabel,
-    durationMinutes: transitMinutes ?? (route.ok ? route.durationMinutes : 0),
+    durationMinutes,
     distanceMeters: route.distanceMeters,
-    reason: transitFailed ? "transit_unavailable" : "",
+    reason: transitFailed
+      ? "transit_unavailable"
+      : route.fallbackReason ?? "",
     complexity: "low",
     estimates: {
       walk: route.estimates.walk,
@@ -299,13 +374,19 @@ function buildTransitLeg(
       transit: route.estimates.transit,
     },
     source: "rules",
+    requestedMode: route.requestedMode ?? requestedMode,
+    resolvedMode,
+    fallbackReason: route.fallbackReason ?? null,
+    durationSource: route.durationSource ?? (route.ok ? "directions" : "none"),
+    routeStatus,
     transportMode: resolvedMode,
     transportStatus,
     transportFallbackMode,
-    transportDurationMinutes: transitMinutes ?? (route.ok ? route.durationMinutes : undefined),
+    transportDurationMinutes: route.ok ? durationMinutes : undefined,
     transportDisplayText: buildTransportDisplayText(route, transportLabel),
     routeCacheFingerprint,
     transitUnavailableProvider: route.transitUnavailableProvider ?? null,
+    modeSelectionSource,
   };
 
   return leg;
@@ -332,10 +413,15 @@ function buildMissingCoordsLeg(
     headline: transportLabel,
     durationMinutes: 0,
     distanceMeters: 0,
-    reason: isTransitRequested(transportLabel) ? "transit_unavailable" : "",
+    reason: isTransitRequested(transportLabel) ? "transit_unavailable" : "missing_coords",
     complexity: "low",
     estimates: {},
     source: "rules",
+    requestedMode,
+    resolvedMode: requestedMode,
+    fallbackReason: japanTransit ? "transit_unavailable" : "missing_coords",
+    durationSource: "none",
+    routeStatus: japanTransit ? "transit_unavailable" : "failed",
     transportMode: requestedMode,
     transportStatus: japanTransit ? "transit_unavailable" : "failed",
     transportFallbackMode: null,
@@ -351,16 +437,26 @@ export function legRouteIsCovered(
   routeCacheFingerprint: string,
 ): boolean {
   if (!leg) return false;
-  if (leg.transportMode && leg.transportMode !== requestedMode) return false;
+  // Coverage keys off the fingerprint of the *request* preference chain start mode.
+  // Resolved mode may differ after fallback — that is still a valid covered leg.
   if (leg.routeCacheFingerprint !== routeCacheFingerprint) return false;
 
+  const status = leg.routeStatus ?? leg.transportStatus;
+  if (status === "mode_unavailable" || status === "failed") {
+    // Failed legs for this fingerprint: treat as covered so we don't thrash retries
+    // within the same session (TTL handles refresh). Manual mode change clears the leg.
+    return leg.requestedMode === requestedMode;
+  }
+
   if (requestedMode === "TRANSIT") {
-    if (leg.transportStatus === "ok" && leg.estimates.transit != null) return true;
-    if (leg.transportStatus === "transit_unavailable") return true;
+    if (status === "ok" && (leg.resolvedMode ?? leg.transportMode) === "TRANSIT") {
+      return (leg.estimates.transit ?? leg.durationMinutes) > 0;
+    }
+    if (status === "transit_unavailable") return true;
     return false;
   }
 
-  if (leg.transportStatus === "ok") {
+  if (status === "ok") {
     return (
       leg.durationMinutes > 0 ||
       leg.estimates.walk != null ||
@@ -472,6 +568,42 @@ export function transitLegsCoverCurrentItems(
   return true;
 }
 
+function buildIdentityFailedLeg(
+  legKey: string,
+  fromName: string,
+  toName: string,
+  transportLabel: string,
+  requestedMode: RoutesTravelMode,
+  reason: string,
+  modeSelectionSource: "auto" | "manual",
+): TransitLegAdvice {
+  return {
+    legKey,
+    fromName,
+    toName,
+    recommendedMode: isTransitRequested(transportLabel) ? "transit" : "walk",
+    headline: transportLabel,
+    durationMinutes: 0,
+    distanceMeters: 0,
+    reason,
+    complexity: "low",
+    estimates: {},
+    source: "rules",
+    requestedMode,
+    resolvedMode: requestedMode,
+    fallbackReason: reason,
+    durationSource: "none",
+    routeStatus: "failed",
+    transportMode: requestedMode,
+    transportStatus: "failed",
+    transportFallbackMode: null,
+    transportDurationMinutes: undefined,
+    transportDisplayText: "查看路線",
+    transitUnavailableProvider: null,
+    modeSelectionSource,
+  };
+}
+
 async function syncOneLeg(
   prev: RoamieItineraryItem,
   curr: RoamieItineraryItem,
@@ -501,10 +633,42 @@ async function syncOneLeg(
 
   const region = options.directionsRegion ?? resolveDirectionsRegion(options.locationContext);
 
-  const origin = await resolveItemCoords(prev, options);
-  const destination = await resolveItemCoords(curr, options);
+  // Manual lock only when caller says so, or prior leg was user-locked.
+  // AI / initial sync must keep allowModeFallback=true.
+  const allowModeFallback =
+    options.allowModeFallback === false || existing?.modeSelectionSource === "manual"
+      ? false
+      : true;
+  const modeSelectionSource: "auto" | "manual" = allowModeFallback ? "auto" : "manual";
 
-  if (!origin || !destination) {
+  const prevIdentity = checkStopNavigationIdentity(prev);
+  const currIdentity = checkStopNavigationIdentity(curr);
+  if (!prevIdentity.useForDirections || !currIdentity.useForDirections) {
+    logDirectionsDebug("skipped", {
+      legKey,
+      mode: routesModeToDirectionsModeLabel(userMode),
+      skippedReason: "identity_or_coords_unusable",
+    });
+    return buildIdentityFailedLeg(
+      legKey,
+      fromName,
+      toName,
+      transportLabel,
+      userMode,
+      !prevIdentity.useForDirections
+        ? `origin_${prevIdentity.reason ?? "invalid"}`
+        : `destination_${currIdentity.reason ?? "invalid"}`,
+      modeSelectionSource,
+    );
+  }
+
+  const origin = prevIdentity.coords ?? (await resolveItemCoords(prev, options));
+  const destination = currIdentity.coords ?? (await resolveItemCoords(curr, options));
+
+  // place_id-only stops: still need coords for fingerprint / distance gates.
+  // If missing, use a sentinel near (0,0) is wrong — skip distance-based walk upgrade
+  // by using zeros only when both missing (rare when placeId present).
+  if ((!origin || !destination) && !(prevIdentity.placeId && currIdentity.placeId)) {
     logDirectionsDebug("skipped", {
       legKey,
       mode: routesModeToDirectionsModeLabel(userMode),
@@ -515,9 +679,33 @@ async function syncOneLeg(
     return buildMissingCoordsLeg(legKey, fromName, toName, transportLabel, userMode, region);
   }
 
+  const originLatLng = origin ?? { lat: 0, lng: 0 };
+  const destLatLng = destination ?? { lat: 0, lng: 0 };
+
+  if (origin && destination && areEndpointsAbnormallySame(origin, destination)) {
+    logDirectionsDebug("skipped", {
+      legKey,
+      mode: routesModeToDirectionsModeLabel(userMode),
+      skippedReason: "same_origin_destination",
+    });
+    return buildIdentityFailedLeg(
+      legKey,
+      fromName,
+      toName,
+      transportLabel,
+      userMode,
+      "same_origin_destination",
+      modeSelectionSource,
+    );
+  }
+
   // Distance-first mode: do not lead with walking for long / cross-area legs.
-  const straightM = straightLineDistanceMeters(origin, destination);
-  const mode = resolveInitialDirectionsMode(userMode, straightM);
+  const straightM =
+    origin && destination ? straightLineDistanceMeters(origin, destination) : CROSS_AREA_DRIVE_MIN_METERS + 1;
+  const mode = resolveInitialDirectionsMode(userMode, straightM, {
+    locationContext: options.locationContext,
+    regionCode: region,
+  });
   const modeLabel = routesModeToDirectionsModeLabel(mode);
   const isJapanTransitLeg = mode === "TRANSIT" && region === "jp";
 
@@ -535,13 +723,13 @@ async function syncOneLeg(
   const routeCacheFingerprint = buildLegRouteFingerprint(
     dayIndex,
     legIndex,
-    origin,
-    destination,
+    originLatLng,
+    destLatLng,
     mode,
     departureTime,
     {
-      originPlaceId: prev.googlePlaceId,
-      destinationPlaceId: curr.googlePlaceId,
+      originPlaceId: prev.googlePlaceId ?? prevIdentity.placeId ?? undefined,
+      destinationPlaceId: curr.googlePlaceId ?? currIdentity.placeId ?? undefined,
       tripDate: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : undefined,
     },
   );
@@ -562,9 +750,9 @@ async function syncOneLeg(
     legRouteIsCovered(
       existing,
       userMode,
-      buildLegRouteFingerprint(dayIndex, legIndex, origin, destination, userMode, departureTime, {
-        originPlaceId: prev.googlePlaceId,
-        destinationPlaceId: curr.googlePlaceId,
+      buildLegRouteFingerprint(dayIndex, legIndex, originLatLng, destLatLng, userMode, departureTime, {
+        originPlaceId: prev.googlePlaceId ?? prevIdentity.placeId ?? undefined,
+        destinationPlaceId: curr.googlePlaceId ?? currIdentity.placeId ?? undefined,
         tripDate: /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : undefined,
       }),
     )
@@ -575,11 +763,18 @@ async function syncOneLeg(
   try {
     const route = await fetchScopedLegDuration({
       scope,
-      origin,
-      destination,
+      origin: originLatLng,
+      destination: destLatLng,
       preferredMode: userMode,
-      query: { ...queryBase, departureTime },
+      query: {
+        ...queryBase,
+        departureTime,
+        originPlaceId: prev.googlePlaceId ?? prevIdentity.placeId ?? queryBase.originPlaceId,
+        destinationPlaceId:
+          curr.googlePlaceId ?? currIdentity.placeId ?? queryBase.destinationPlaceId,
+      },
       force: forceThisLeg,
+      allowModeFallback,
     });
 
     return buildTransitLeg(
@@ -590,6 +785,7 @@ async function syncOneLeg(
       transportLabel,
       userMode,
       routeCacheFingerprint,
+      modeSelectionSource,
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -606,10 +802,26 @@ export async function syncTripLegsFromGoogleRoutes(
   settings: TripPlanSettings,
   options: SyncRouteLegsOptions,
 ): Promise<Record<string, TransitLegAdvice>> {
+  if (items.length < 2) {
+    debugRouteOnce(
+      `sync|not_required|${options.tripId}|${items.length}`,
+      `[ROUTE_DURATION] status=not_required reason=insufficient_stops tripId=${options.tripId} stopCount=${items.length}`,
+    );
+    return pruneTransitLegsToItinerary(items, settings.transitLegs, settings);
+  }
+
   const pruned = pruneTransitLegsToItinerary(items, settings.transitLegs, settings);
   const next: Record<string, TransitLegAdvice> = { ...pruned };
   const groups = groupStopsByDate(items);
   const dateKeys = orderedTripDateKeys(items, settings);
+  const routeVersion =
+    options.routeVersion ?? buildRouteVersionFingerprint(items, settings);
+  let successLegs = 0;
+  let fallbackLegs = 0;
+  let unavailableLegs = 0;
+  let invalidCoordinateLegs = 0;
+  let identityMismatchLegs = 0;
+  let totalLegs = 0;
 
   for (let dayIndex = 0; dayIndex < dateKeys.length; dayIndex++) {
     const dateKey = dateKeys[dayIndex]!;
@@ -617,6 +829,13 @@ export async function syncTripLegsFromGoogleRoutes(
       continue;
     }
     const dayItems = groups.get(dateKey) ?? [];
+    if (dayItems.length < 2) {
+      debugRouteOnce(
+        `sync|day_insufficient|${options.tripId}|${dateKey}`,
+        `[ROUTE_DURATION] status=not_required reason=insufficient_stops tripId=${options.tripId} day=${dateKey} stopCount=${dayItems.length}`,
+      );
+      continue;
+    }
     for (let i = 1; i < dayItems.length; i++) {
       const prev = dayItems[i - 1]!;
       const curr = dayItems[i]!;
@@ -630,7 +849,8 @@ export async function syncTripLegsFromGoogleRoutes(
         continue;
       }
 
-      next[legKey] = await syncOneLeg(
+      totalLegs += 1;
+      const leg = await syncOneLeg(
         prev,
         curr,
         dateKey,
@@ -639,7 +859,82 @@ export async function syncTripLegsFromGoogleRoutes(
         settings,
         options,
       );
+      next[legKey] = leg;
+
+      const status = leg.routeStatus ?? leg.transportStatus;
+      if (status === "ok") {
+        successLegs += 1;
+        if (
+          leg.requestedMode &&
+          leg.resolvedMode &&
+          leg.requestedMode !== leg.resolvedMode
+        ) {
+          fallbackLegs += 1;
+        }
+      } else if (
+        leg.reason?.includes("invalid") ||
+        leg.reason?.includes("missing_coords") ||
+        leg.fallbackReason?.includes("missing_coords") ||
+        leg.fallbackReason?.includes("approx") ||
+        leg.fallbackReason?.includes("unusable")
+      ) {
+        invalidCoordinateLegs += 1;
+        unavailableLegs += 1;
+      } else if (
+        leg.reason?.includes("identity") ||
+        leg.fallbackReason?.startsWith("origin_") ||
+        leg.fallbackReason?.startsWith("destination_")
+      ) {
+        identityMismatchLegs += 1;
+        unavailableLegs += 1;
+      } else {
+        unavailableLegs += 1;
+      }
     }
+  }
+
+  const dayScope = options.onlyDateKey ?? "all";
+  const qualityKey = `quality|${options.tripId}|${dayScope}|${routeVersion}`;
+
+  if (totalLegs === 0) {
+    debugRouteOnce(
+      `sync|no_legs|${qualityKey}`,
+      `[ROUTE_DURATION] status=not_required reason=no_eligible_legs tripId=${options.tripId} day=${dayScope}`,
+    );
+    return next;
+  }
+
+  // One summary per trip / day / routeVersion — never include fluctuating counts in the key.
+  logRouteOnce(
+    qualityKey,
+    [
+      "[ROUTE_QUALITY_SUMMARY]",
+      `tripId=${options.tripId}`,
+      `day=${dayScope}`,
+      `routeVersion=${routeVersion.slice(0, 48)}`,
+      `totalLegs=${totalLegs}`,
+      `successLegs=${successLegs}`,
+      `fallbackLegs=${fallbackLegs}`,
+      `unavailableLegs=${unavailableLegs}`,
+      `invalidCoordinateLegs=${invalidCoordinateLegs}`,
+      `identityMismatchLegs=${identityMismatchLegs}`,
+    ].join(" "),
+  );
+
+  // Real failure: valid stops/legs expected, but none succeeded.
+  if (successLegs === 0 && totalLegs > 0) {
+    warnRouteOnce(
+      `build_failed|${qualityKey}`,
+      [
+        "[ROUTE_BUILD_FAILED]",
+        `tripId=${options.tripId}`,
+        `day=${dayScope}`,
+        `totalLegs=${totalLegs}`,
+        `unavailableLegs=${unavailableLegs}`,
+        `invalidCoordinateLegs=${invalidCoordinateLegs}`,
+        `identityMismatchLegs=${identityMismatchLegs}`,
+      ].join(" "),
+    );
   }
 
   return next;
@@ -656,6 +951,13 @@ export async function syncSingleTripLegFromGoogleRoutes(
     ...options,
     onlyLegKey: legKey,
     force: true,
+    // Manual mode switch default: never show another mode's duration.
+    // Caller may override allowModeFallback explicitly.
+    allowModeFallback: options.allowModeFallback ?? false,
   });
-  return merged[legKey] ?? null;
+  const leg = merged[legKey] ?? null;
+  if (leg && options.allowModeFallback === false) {
+    return { ...leg, modeSelectionSource: "manual" };
+  }
+  return leg;
 }

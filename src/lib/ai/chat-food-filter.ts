@@ -14,7 +14,6 @@ export const FOOD_ALLOWED_TYPES = [
   "restaurant",
   "food",
   "meal_takeaway",
-  "meal_delivery",
   "food_store",
   "fast_food_restaurant",
   "cafe",
@@ -27,6 +26,19 @@ export const FOOD_ALLOWED_TYPES = [
   "wine_bar",
   "night_club",
 ] as const;
+
+/** Delivery / catering / supplier — not visit-worthy restaurants */
+const FOOD_NON_VISIT_TYPES = new Set([
+  "meal_delivery",
+  "food_delivery",
+  "catering_service",
+  "meal_catering",
+  "food_supplier",
+  "wholesaler",
+]);
+
+const CATERING_SERVICE_NAME_RE =
+  /(?:catering|外燴|外烩|外送專|到府烹飪|私人廚房服務|烹飪服務|nấu\s*ăn|dịch\s*vụ\s*nấu)/i;
 
 /** Types that must not appear alone in food recommendations */
 export const FOOD_BLOCKED_TYPES = [
@@ -167,6 +179,16 @@ export function evaluateFoodPlace(
 
   if (isFoodDistrictPlace(place)) {
     return { allowed: false, isDistrict: true, reason: "food_district" };
+  }
+
+  if (types.some((t) => FOOD_NON_VISIT_TYPES.has(t)) && !types.some((t) => t.includes("restaurant"))) {
+    logChatFoodFilter(name, types.join("|"), false, "non_visit_food_service");
+    return { allowed: false, isDistrict: false, reason: "non_visit_food_service" };
+  }
+
+  if (CATERING_SERVICE_NAME_RE.test(blob)) {
+    logChatFoodFilter(name, types.join("|"), false, "catering_service");
+    return { allowed: false, isDistrict: false, reason: "catering_service" };
   }
 
   if (NON_FOOD_NAME_RE.test(blob) && !EXPLICIT_FOOD_NAME_RE.test(blob)) {

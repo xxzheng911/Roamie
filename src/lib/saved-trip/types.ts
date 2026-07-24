@@ -8,6 +8,9 @@ export type SavedTripDayItem = {
   id: string;
   time: string;
   placeName: string;
+  /** UI SoT — same as placeName after localization repair */
+  localizedDisplayName?: string;
+  originalName?: string;
   address: string;
   category: string;
   duration: string;

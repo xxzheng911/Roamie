@@ -121,9 +121,16 @@ export function resolveChatRoute(
   locale: Locale = "zh-TW",
   intent: ChatIntent = detectChatIntent(userText),
 ): AiChatRoute {
+  // Mood entry must not rewrite an explicit future trip narrative into place rec.
+  const isFutureTripNarrative =
+    /(?:要去|想去|安排|規劃|规划|旅行|旅遊|旅游)/.test(userText) &&
+    (/(?:\d{1,2}\s*月|明年|後年|暑假|寒假)/.test(userText) ||
+      /(?:\d+|[一二三四五六七八九十兩两]+)\s*天/.test(userText)) &&
+    Boolean(ctx.destination?.trim() || /[\u4e00-\u9fff]{2,8}/.test(userText));
   if (
     (session.fromMoodFlow || session.fromMoodCard || session.homeMoodShortcutEntry) &&
-    (intent === "create_itinerary" || intent === "trip_planning")
+    (intent === "create_itinerary" || intent === "trip_planning") &&
+    !isFutureTripNarrative
   ) {
     intent = "attraction";
   }

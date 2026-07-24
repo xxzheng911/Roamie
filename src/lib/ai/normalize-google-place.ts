@@ -2,7 +2,9 @@ import type { PlaceResult } from "@/lib/place-result";
 import type { PlaceHoursData } from "@/lib/filter-available-places";
 import { applyNormalizedOpeningToPlaceResult } from "@/lib/normalized-opening-status";
 import { resolvePlaceDisplayAddress } from "@/lib/place-display-address";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import type { Locale } from "@/lib/i18n/types";
+import { resolvePlaceDisplayName } from "@/lib/place-display-name";
 
 /** Raw shapes from Nearby Search, Text Search, and Place Details (Google Places API v1). */
 export type GooglePlaceRaw = {
@@ -127,12 +129,25 @@ export function normalizeGooglePlace(
   const types = resolveRawTypes(raw, name);
   const primaryType = (raw.primaryType ?? raw.type ?? types[0] ?? "tourist_attraction").trim().toLowerCase();
   const hours = resolveRawHours(raw);
-  const locale = options?.locale ?? "zh-TW";
+  const locale = options?.locale ?? effectiveAppLocale();
+  const resolvedName = resolvePlaceDisplayName(
+    {
+      name,
+      originalName: name,
+      placeId: id || options?.existing?.id || undefined,
+      canonicalPlaceId: id || options?.existing?.id || undefined,
+    },
+    locale,
+  );
 
   const base: PlaceResult = {
     ...(options?.existing ?? {}),
     id: id || options?.existing?.id || "",
-    name,
+    name: resolvedName.localizedDisplayName,
+    originalName: resolvedName.originalName,
+    localizedDisplayName: resolvedName.localizedDisplayName,
+    languageCode: resolvedName.languageCode,
+    localizationSource: resolvedName.localizationSource,
     address:
       options?.existing?.address ??
       resolvePlaceDisplayAddress(
@@ -145,6 +160,19 @@ export function normalizeGooglePlace(
       ),
     lat: lat ?? options?.existing?.lat ?? null,
     lng: lng ?? options?.existing?.lng ?? null,
+    navigationLatitude:
+      options?.existing?.navigationLatitude ??
+      (lat != null && lng != null ? lat : null),
+    navigationLongitude:
+      options?.existing?.navigationLongitude ??
+      (lat != null && lng != null ? lng : null),
+    coordinateSource:
+      options?.existing?.coordinateSource ??
+      (lat != null && lng != null
+        ? id
+          ? "google_places"
+          : "unknown"
+        : options?.existing?.coordinateSource ?? "unknown"),
     rating: raw.rating ?? options?.existing?.rating ?? null,
     userRatingCount: raw.userRatingCount ?? options?.existing?.userRatingCount ?? null,
     photoName:
