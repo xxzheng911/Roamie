@@ -51,10 +51,119 @@ export type StoredItinerary = {
   payload: Itinerary | RoamiePayloadV2;
 };
 
+type StoredItineraryRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is StoredItineraryRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isLegacyItinerary(value: unknown): value is Itinerary {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.title === "string" &&
+    typeof value.destination === "string" &&
+    typeof value.days === "number" &&
+    typeof value.mood === "string" &&
+    typeof value.summary === "string" &&
+    typeof value.total_estimated_cost === "string" &&
+    typeof value.transport_tips === "string" &&
+    Array.isArray(value.daily_plan)
+  );
+}
+
+function isStoredItineraryPayload(value: unknown): value is StoredItinerary["payload"] {
+  return isRoamiePayloadV2(value) || isLegacyItinerary(value);
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" || value === null ? value : null;
+}
+
+function isImageSource(value: unknown): value is ImageSource {
+  return (
+    value === "google" ||
+    value === "unsplash" ||
+    value === "upload" ||
+    value === "default" ||
+    value === "roamie"
+  );
+}
+
+/**
+ * Normalizes top-level StoredItinerary metadata from all read boundaries.
+ * The itinerary payload is validated but deliberately retained by reference and never migrated.
+ */
+export function normalizeStoredItinerary(
+  input: unknown,
+  payloadOverride?: unknown,
+): StoredItinerary | null {
+  if (!isRecord(input)) return null;
+
+  const payload = payloadOverride === undefined ? input.payload : payloadOverride;
+  if (!isStoredItineraryPayload(payload)) {
+    console.warn("[ITINERARY_STORAGE_NORMALIZE_SKIP] reason=invalid_payload");
+    return null;
+  }
+
+  if (
+    typeof input.id !== "string" ||
+    input.id.trim().length === 0 ||
+    typeof input.title !== "string" ||
+    typeof input.created_at !== "string" ||
+    input.created_at.trim().length === 0
+  ) {
+    console.warn("[ITINERARY_STORAGE_NORMALIZE_SKIP] reason=missing_required_metadata");
+    return null;
+  }
+
+  const legacyCoverImageUrl = nullableString(input.cover_image_url);
+  const customCoverImageUrl =
+    typeof input.custom_cover_image_url === "string" || input.custom_cover_image_url === null
+      ? input.custom_cover_image_url
+      : legacyCoverImageUrl;
+
+  return {
+    id: input.id,
+    title: input.title,
+    custom_title: nullableString(input.custom_title),
+    is_title_customized:
+      typeof input.is_title_customized === "boolean" ? input.is_title_customized : false,
+    mood: nullableString(input.mood),
+    cover_image: nullableString(input.cover_image),
+    cover_image_url: legacyCoverImageUrl,
+    custom_cover_image_url: customCoverImageUrl,
+    is_cover_customized:
+      typeof input.is_cover_customized === "boolean" ? input.is_cover_customized : false,
+    cover_source:
+      isImageSource(input.cover_source) || input.cover_source === null ? input.cover_source : null,
+    cover_query: nullableString(input.cover_query),
+    created_at: input.created_at,
+    updated_at: typeof input.updated_at === "string" ? input.updated_at : input.created_at,
+    payload,
+  };
+}
+
+export function normalizeStoredItineraryList(input: unknown): StoredItinerary[] {
+  if (!Array.isArray(input)) return [];
+  const normalized: StoredItinerary[] = [];
+  for (const item of input) {
+    const itinerary = normalizeStoredItinerary(item);
+    if (itinerary) normalized.push(itinerary);
+  }
+  return normalized;
+}
+
+function requireStoredItinerary(input: unknown, payloadOverride?: unknown): StoredItinerary {
+  const itinerary = normalizeStoredItinerary(input, payloadOverride);
+  if (!itinerary) throw new Error("invalid_saved_trip_row");
+  return itinerary;
+}
+
 function readGuest(): StoredItinerary[] {
   if (typeof window === "undefined") return [];
   try {
-    return JSON.parse(localStorage.getItem(GUEST_KEY) || "[]");
+    const parsed: unknown = JSON.parse(localStorage.getItem(GUEST_KEY) || "[]");
+    return normalizeStoredItineraryList(parsed);
   } catch {
     return [];
   }
@@ -63,42 +172,6 @@ function readGuest(): StoredItinerary[] {
 function writeGuest(list: StoredItinerary[]) {
   if (typeof window === "undefined") return;
   localStorage.setItem(GUEST_KEY, JSON.stringify(list));
-}
-
-function rowToStored(
-  row: {
-    id: string;
-    title: string;
-    custom_title?: string | null;
-    is_title_customized?: boolean | null;
-    mood: string | null;
-    cover_image: string | null;
-    cover_image_url?: string | null;
-    custom_cover_image_url?: string | null;
-    is_cover_customized?: boolean | null;
-    cover_source?: string | null;
-    cover_query?: string | null;
-    created_at: string;
-    updated_at?: string;
-  },
-  payload: Itinerary | RoamiePayloadV2,
-): StoredItinerary {
-  return {
-    id: row.id,
-    title: row.title,
-    custom_title: row.custom_title ?? null,
-    is_title_customized: Boolean(row.is_title_customized),
-    mood: row.mood,
-    cover_image: row.cover_image,
-    cover_image_url: row.cover_image_url ?? null,
-    custom_cover_image_url: row.custom_cover_image_url ?? row.cover_image_url ?? null,
-    is_cover_customized: Boolean(row.is_cover_customized),
-    cover_source: (row.cover_source as ImageSource | null) ?? null,
-    cover_query: row.cover_query ?? null,
-    created_at: row.created_at,
-    updated_at: row.updated_at ?? row.created_at,
-    payload,
-  };
 }
 
 const TRIP_SELECT =
@@ -168,7 +241,7 @@ async function persistItinerary(itinerary: Itinerary | RoamiePayloadV2): Promise
       }
       throw new Error(error.message);
     }
-    const stored = rowToStored(data, withTitle);
+    const stored = requireStoredItinerary(data, withTitle);
     console.info("[CORE_TRIP] created", stored.id);
     return stored;
   }
@@ -210,7 +283,8 @@ export async function listItineraries(): Promise<StoredItinerary[]> {
       throw new Error(error.message);
     }
     return (data ?? [])
-      .map((row) => rowToStored(row, row.payload as unknown as Itinerary | RoamiePayloadV2))
+      .map((row) => normalizeStoredItinerary(row))
+      .filter((row): row is StoredItinerary => row !== null)
       .filter((row) => isSavedCollectionTrip(row.payload));
   }
   return [];
@@ -233,9 +307,9 @@ export async function getItinerary(id: string): Promise<StoredItinerary | null> 
       throw new Error(error.message);
     }
     if (!data) return null;
-    const payload = data.payload as unknown as Itinerary | RoamiePayloadV2;
-    if (!isSavedCollectionTrip(payload)) return null;
-    return rowToStored(data, payload);
+    const stored = normalizeStoredItinerary(data);
+    if (!stored || !isSavedCollectionTrip(stored.payload)) return null;
+    return stored;
   }
   return null;
 }
@@ -292,8 +366,8 @@ export async function updateTripMeta(
     throw new Error(error.message);
   }
 
-  const resolvedPayload = payload ?? (data.payload as unknown as Itinerary | RoamiePayloadV2);
-  return afterTripMutation(rowToStored(data, resolvedPayload));
+  const stored = normalizeStoredItinerary(data, payload);
+  return afterTripMutation(stored);
 }
 
 export async function updateItinerary(
@@ -334,7 +408,7 @@ export async function updateItinerary(
     throw new Error(error.message);
   }
 
-  const updated = rowToStored(data, resolvedPayload);
+  const updated = requireStoredItinerary(data, resolvedPayload);
   console.info("[CORE_TRIP] updated", updated.id);
   return afterTripMutation(updated);
 }

@@ -13,13 +13,18 @@ import { requireAuthenticatedRoute } from "@/lib/require-auth";
 import {
   confirmSaveTrip,
   getItinerary,
+  normalizeStoredItinerary,
   updateItinerary,
   type StoredItinerary,
 } from "@/lib/itinerary-storage";
 import { clearDraftTrip, loadDraftTrip } from "@/lib/trip-draft-storage";
 import type { Itinerary } from "@/lib/itinerary.functions";
 import { generateItinerary } from "@/lib/itinerary.functions";
-import { coalesceItineraryItems, formatItineraryUserError, unwrapGeneratedTripPayload } from "@/lib/trip/itinerary-guards";
+import {
+  coalesceItineraryItems,
+  formatItineraryUserError,
+  unwrapGeneratedTripPayload,
+} from "@/lib/trip/itinerary-guards";
 import {
   isRoamiePayloadV2,
   type RoamieItineraryItem,
@@ -128,7 +133,7 @@ function Trip() {
       console.info("[Trip Plan Data Loading]", { source: "draft" });
       const payload = loadDraftTrip();
       if (payload) {
-        setTrip({
+        const stored = normalizeStoredItinerary({
           id: "draft",
           title: payload.title,
           mood: payload.moodTag ?? null,
@@ -140,7 +145,13 @@ function Trip() {
           updated_at: payload.generatedAt ?? new Date().toISOString(),
           payload,
         });
-        console.info("[Trip Plan Data Loaded]", { source: "draft", title: payload.title });
+        if (stored) {
+          setTrip(stored);
+          console.info("[Trip Plan Data Loaded]", { source: "draft", title: payload.title });
+        } else {
+          console.info("[Trip Plan Data Error]", { source: "draft", reason: "invalid_draft" });
+          setLoadError("找不到行程草稿");
+        }
       } else {
         console.info("[Trip Plan Data Error]", { source: "draft", reason: "empty_draft" });
         setLoadError("找不到行程草稿");
