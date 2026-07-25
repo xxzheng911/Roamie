@@ -25,6 +25,7 @@ import {
 } from "@/lib/ai/planner-day-route-assembly";
 import { computeMinimumPerSelectedCombination } from "@/lib/ai/combination-itinerary-integrity";
 import { enforceGlobalFamilyFeasibility } from "@/lib/ai/global-family-feasibility";
+import { assignDiversityAwareSeedDays } from "@/lib/ai/diversity-aware-seed-assignment";
 
 type PlaceBucket =
   | "attraction"
@@ -386,8 +387,15 @@ export function buildMixedItineraryWithDiagnostics(
     `requiredMinPerDay=${minPerDay}`,
   );
 
-  const dayByKey = new Map<string, number>();
-  const dayLoad = new Array<number>(dayCount).fill(0);
+  const seedCandidates: Array<{
+    item: RoamieRecommendationItem;
+    preferredDay: number;
+    preferredCenter?: { lat: number; lng: number };
+  }> = [];
+  const preferredDayLoad = new Array<number>(dayCount).fill(0);
+  const geographicDayCenters: Array<{ lat: number; lng: number } | null> = new Array(dayCount).fill(
+    null,
+  );
   for (const cluster of clusters) {
     const dayIdx = Math.min(dayCount - 1, Math.max(0, (cluster.candidateDay ?? 1) - 1));
     logAiPipeline(
@@ -396,17 +404,36 @@ export function buildMixedItineraryWithDiagnostics(
       `primaryArea=${cluster.areaName}`,
       `clusterIds=[${cluster.clusterId}]`,
     );
+    geographicDayCenters[dayIdx] ??= {
+      lat: cluster.centerLatitude,
+      lng: cluster.centerLongitude,
+    };
     for (const item of cluster.items) {
-      dayByKey.set(placeKey(item), dayIdx);
-      dayLoad[dayIdx] += 1;
+      seedCandidates.push({
+        item,
+        preferredDay: dayIdx,
+        preferredCenter: { lat: cluster.centerLatitude, lng: cluster.centerLongitude },
+      });
+      preferredDayLoad[dayIdx] += 1;
     }
   }
   for (const item of unlocated) {
     let best = 0;
-    for (let i = 1; i < dayCount; i += 1) if (dayLoad[i]! < dayLoad[best]!) best = i;
-    dayByKey.set(placeKey(item), best);
-    dayLoad[best] += 1;
+    for (let i = 1; i < dayCount; i += 1) {
+      if (preferredDayLoad[i]! < preferredDayLoad[best]!) best = i;
+    }
+    seedCandidates.push({ item, preferredDay: best });
+    preferredDayLoad[best] += 1;
   }
+
+  const seedAssignment = assignDiversityAwareSeedDays({
+    candidates: seedCandidates,
+    dayCount,
+    dailyScenicCapacity: dailyScenicTarget,
+    geographicDayCenters,
+  });
+  const dayByKey = seedAssignment.dayByKey;
+  if (dayByKey.size < landmarkKept.length) candidateInsufficient = true;
 
   const seedPlans: AssemblyDayPlan[] = Array.from({ length: dayCount }, (_, i) => {
     const dayPlaces = landmarkKept.filter((p) => dayByKey.get(placeKey(p)) === i);
