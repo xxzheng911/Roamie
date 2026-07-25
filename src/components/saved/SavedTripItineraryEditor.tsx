@@ -69,6 +69,7 @@ import {
   transitLegsCoverDay,
   clearTransitLegsForDay,
   dateKeyForLegKey,
+  type SyncRouteLegsOptions,
 } from "@/lib/saved-trip/sync-route-legs";
 import { invalidateScopedRouteCacheForLeg, clearScopedRouteCache } from "@/lib/saved-trip/route-duration-service";
 import { clearRouteDurationCache } from "@/lib/route-duration-cache";
@@ -189,6 +190,8 @@ type RouteRefreshOverride = {
   itemsBeforeSync?: RoamieItineraryItem[];
   /** Manual mode switch: do not fall back to another mode's duration */
   allowModeFallback?: boolean;
+  triggerSource?: SyncRouteLegsOptions["triggerSource"];
+  previousResultDeleted?: boolean;
 };
 
 type DayScheduleChangeOpts = {
@@ -803,6 +806,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           items: itemsWithTimes,
           settings: nextSettings,
           onlyDateKey: dateKey,
+          triggerSource: "stop_reorder",
         });
       }
     },
@@ -878,10 +882,12 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           items: itemsWithTimes,
           settings: nextSettings,
           onlyDateKey: sourceDateKey,
+          triggerSource: "stop_reorder",
         });
         if (sourceDateKey !== targetDateKey) {
           await refreshTransitRef.current(true, {
             onlyDateKey: targetDateKey,
+            triggerSource: "stop_reorder",
           });
         }
       })();
@@ -1013,6 +1019,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       void refreshTransitRef.current(true, {
         items: itemsWithTimes,
         settings: applied.settings,
+        triggerSource: "forced_refresh",
       });
 
       console.info(
@@ -1171,6 +1178,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           directionsRegion,
           allowModeFallback: override?.allowModeFallback,
           routeVersion: signature,
+          triggerSource: override?.triggerSource ?? "background_sync",
+          previousResultDeleted: override?.previousResultDeleted,
         });
 
         if (!routeSyncMountedRef.current) return;
@@ -1243,6 +1252,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
             locationContext: directionsLocationContext,
             directionsRegion,
             allowModeFallback: false,
+            triggerSource: "single_leg_manual_change",
+            previousResultDeleted: true,
           },
         );
 
@@ -1354,6 +1365,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           onlyDateKey: dateKey,
           itemsBeforeSync: prevItems,
           allowModeFallback: false,
+          triggerSource: "whole_day_manual_change",
+          previousResultDeleted: true,
         });
         return;
       }
@@ -1394,6 +1407,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         settings: nextSettings,
         onlyDateKey: dateKey,
         itemsBeforeSync: prevItems,
+        triggerSource: "single_leg_manual_change",
+        previousResultDeleted: true,
       });
     },
     [refreshTransit, refreshSingleLeg, stored.id],
@@ -1456,7 +1471,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     setTransitSettled(false);
     const timer = window.setTimeout(() => {
       if (!routeSyncMountedRef.current || routeSyncInFlightRef.current) return;
-      void refreshTransitRef.current(false, { onlyDateKey: dateKey });
+      void refreshTransitRef.current(false, {
+        onlyDateKey: dateKey,
+        triggerSource: "day_change",
+      });
     }, 400);
     return () => window.clearTimeout(timer);
   }, [activeDay?.dateKey, safeDayIndex, directionsRegion]);

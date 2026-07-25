@@ -17,6 +17,7 @@ import {
 } from "@/lib/route-duration-cache";
 import { debugRouteOnce, logRouteOnce, warnRouteOnce } from "@/lib/route-duration-log";
 import { routesCache, routesCacheKey, tripLegsCacheKey } from "@/services/routesCache";
+import type { RouteApiFailureTelemetry } from "@/lib/route-failure-telemetry";
 
 export type LatLng = { lat: number; lng: number };
 
@@ -34,7 +35,7 @@ export type RoutesTestResult =
 
 export type RoutesFnResult =
   | { ok: true; data: RouteResult }
-  | { ok: false; statusCode: number; message: string; hint?: string; googleStatus?: string; availableTravelModes?: string[] };
+  | { ok: false; statusCode: number; message: string; hint?: string; googleStatus?: string; availableTravelModes?: string[]; failureTelemetry?: RouteApiFailureTelemetry };
 
 type DurationFn = (args: {
   data: {
@@ -169,6 +170,9 @@ function normalizeDurationResponse(raw: unknown): RoutesFnResult {
       availableTravelModes: Array.isArray(raw.availableTravelModes)
         ? (raw.availableTravelModes as string[])
         : undefined,
+      failureTelemetry: isRecord(raw.failureTelemetry)
+        ? (raw.failureTelemetry as RouteApiFailureTelemetry)
+        : undefined,
     };
   }
 
@@ -193,6 +197,7 @@ function cacheEntryToFnResult(entry: RouteDurationCacheEntry): RoutesFnResult {
     message: entry.errorMessage ?? entry.status,
     googleStatus: entry.status,
     availableTravelModes: entry.availableTravelModes,
+    failureTelemetry: entry.failureTelemetry,
   };
 }
 
@@ -217,6 +222,7 @@ function fnResultToCacheEntry(
     travelMode,
     errorMessage: result.message,
     availableTravelModes: result.availableTravelModes,
+    failureTelemetry: result.failureTelemetry,
   };
 }
 
@@ -290,6 +296,7 @@ async function fetchRouteDurationUncached(
     message: client.message,
     googleStatus: client.googleStatus,
     availableTravelModes: client.availableTravelModes,
+    failureTelemetry: client.failureTelemetry,
   };
 }
 

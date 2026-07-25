@@ -10,6 +10,11 @@ import {
 } from "@/lib/directions-endpoint";
 import { logDirectionsDebug, shouldLogDirectionsDebug } from "@/lib/directions-debug-log";
 import { logRouteOnce } from "@/lib/route-duration-log";
+import {
+  classifyRouteFailure,
+  sanitizeRouteTelemetryText,
+  type RouteApiFailureTelemetry,
+} from "@/lib/route-failure-telemetry";
 
 function debugDirectionsVerbose(): boolean {
   if (typeof import.meta !== "undefined" && import.meta.env?.DEV) {
@@ -34,6 +39,48 @@ type DirectionsResponse = {
   available_travel_modes?: string[];
   routes?: Array<{ legs?: DirectionsLeg[] }>;
 };
+
+function directionsFailureTelemetry(params: {
+  httpStatus: number;
+  httpOk: boolean;
+  googleStatus: string;
+  googleErrorMessage?: string;
+  routesCount?: number;
+  legsCount?: number;
+  parserResult?: RouteApiFailureTelemetry["parserResult"];
+  exception?: unknown;
+}): RouteApiFailureTelemetry {
+  const exceptionName =
+    params.exception instanceof Error ? params.exception.name : params.exception ? "UnknownError" : "";
+  const exceptionMessage =
+    params.exception instanceof Error
+      ? params.exception.message
+      : params.exception
+        ? String(params.exception)
+        : "";
+  const parserResult = params.parserResult ?? "parsed";
+  return {
+    endpoint: "directions_api",
+    httpStatus: params.httpStatus,
+    httpOk: params.httpOk,
+    googleStatus: params.googleStatus,
+    googleErrorMessage: sanitizeRouteTelemetryText(params.googleErrorMessage),
+    routesCount: params.routesCount ?? 0,
+    legsCount: params.legsCount ?? 0,
+    parserResult,
+    failureKind: classifyRouteFailure({
+      httpStatus: params.httpStatus,
+      httpOk: params.httpOk,
+      googleStatus: params.googleStatus,
+      routesCount: params.routesCount,
+      legsCount: params.legsCount,
+      parserResult,
+      exceptionName,
+    }),
+    exceptionName,
+    exceptionMessage: sanitizeRouteTelemetryText(exceptionMessage),
+  };
+}
 
 export type DirectionsTravelMode = "transit" | "walking" | "driving" | "bicycling";
 
@@ -174,9 +221,29 @@ export async function fetchGoogleDirectionsRoute(
 
   try {
     const res = await fetchHttp(requestUrl, { signal: ctrl.signal });
-    const json = await res.json<DirectionsResponse>();
+    let json: DirectionsResponse;
+    try {
+      json = await res.json<DirectionsResponse>();
+    } catch (parseError) {
+      const parseMessage = parseError instanceof Error ? parseError.message : String(parseError);
+      return {
+        ok: false,
+        statusCode: res.status,
+        message: parseMessage,
+        googleStatus: "UNKNOWN",
+        failureTelemetry: directionsFailureTelemetry({
+          httpStatus: res.status,
+          httpOk: res.ok,
+          googleStatus: "UNKNOWN",
+          parserResult: "parse_error",
+          exception: parseError,
+        }),
+      };
+    }
     const bodyStatus = json.status ?? (res.ok ? "UNKNOWN" : String(res.status));
     const errorMessage = json.error_message ?? "";
+    const routesCount = json.routes?.length ?? 0;
+    const legsCount = json.routes?.[0]?.legs?.length ?? 0;
 
     const availableModes = json.available_travel_modes?.join(",") ?? "";
 
@@ -221,6 +288,14 @@ export async function fetchGoogleDirectionsRoute(
         message: errorMessage || bodyStatus,
         googleStatus: bodyStatus,
         availableTravelModes: json.available_travel_modes,
+        failureTelemetry: directionsFailureTelemetry({
+          httpStatus: res.status,
+          httpOk: res.ok,
+          googleStatus: bodyStatus,
+          googleErrorMessage: errorMessage,
+          routesCount,
+          legsCount,
+        }),
       };
     }
 
@@ -285,7 +360,18 @@ export async function fetchGoogleDirectionsRoute(
     if (mode === "transit") {
       console.info(`[ROUTE_TRANSIT_ERROR] status=exception message=${msg}`);
     }
-    return { ok: false, statusCode: 0, message: msg, googleStatus: "exception" };
+    return {
+      ok: false,
+      statusCode: 0,
+      message: msg,
+      googleStatus: "exception",
+      failureTelemetry: directionsFailureTelemetry({
+        httpStatus: 0,
+        httpOk: false,
+        googleStatus: "exception",
+        exception: e,
+      }),
+    };
   } finally {
     clearTimeout(timer);
   }

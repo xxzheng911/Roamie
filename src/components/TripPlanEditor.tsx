@@ -172,6 +172,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
       const transitLegs = await syncTripLegsFromGoogleRoutes(items, settings, {
         tripId: "trip-plan-draft",
         routeVersion: buildRouteVersionFingerprint(items, settings),
+        triggerSource: "background_sync",
       });
       setSettings((s) => ({ ...s, transitLegs }));
     } catch (e) {

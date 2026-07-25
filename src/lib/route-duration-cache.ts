@@ -1,5 +1,6 @@
 import type { RoutesTravelMode } from "@/lib/routes/types";
 import type { LatLng } from "@/lib/google-routes-fetch";
+import type { RouteApiFailureTelemetry } from "@/lib/route-failure-telemetry";
 
 export type RouteDurationCacheEntry = {
   ok: boolean;
@@ -9,6 +10,7 @@ export type RouteDurationCacheEntry = {
   travelMode: RoutesTravelMode;
   errorMessage?: string;
   availableTravelModes?: string[];
+  failureTelemetry?: RouteApiFailureTelemetry;
 };
 
 const CACHE_TTL_MS = 30 * 60 * 1000;

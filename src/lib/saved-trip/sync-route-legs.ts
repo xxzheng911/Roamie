@@ -153,7 +153,83 @@ export type SyncRouteLegsOptions = {
    * Used to dedupe ROUTE_QUALITY_SUMMARY per trip/day/version.
    */
   routeVersion?: string;
+  triggerSource?:
+    | "initial_load"
+    | "background_sync"
+    | "day_change"
+    | "stop_reorder"
+    | "single_leg_manual_change"
+    | "whole_day_manual_change"
+    | "trip_default_change"
+    | "coordinate_change"
+    | "forced_refresh"
+    | "unknown";
+  previousResultDeleted?: boolean;
 };
+
+function fingerprintEndpointPart(value: string | null | undefined): string {
+  return (value ?? "").split("|").slice(0, 6).join("|");
+}
+
+function logRouteResultPersistence(params: {
+  legKey: string;
+  existing: TransitLegAdvice | undefined;
+  incoming: TransitLegAdvice;
+  routeCacheFingerprint: string;
+  options: SyncRouteLegsOptions;
+  modeSelectionSource: "auto" | "manual";
+}): void {
+  const previousStatus = params.existing?.routeStatus ?? params.existing?.transportStatus;
+  const incomingStatus = params.incoming.routeStatus ?? params.incoming.transportStatus ?? "unknown";
+  const previousSucceeded = previousStatus === "ok";
+  const incomingFailed = incomingStatus !== "ok";
+  if (!incomingFailed && !previousSucceeded) return;
+
+  const syncScope = params.options.onlyLegKey
+    ? "single_leg"
+    : params.options.onlyDateKey
+      ? "day"
+      : "trip";
+  const overwriteDecision = params.options.previousResultDeleted
+    ? "delete_then_refresh"
+    : params.existing
+      ? "overwrite"
+      : incomingFailed
+        ? "insert_failure"
+        : "insert_success";
+  const endpointIdentitySame = Boolean(
+    params.existing?.routeCacheFingerprint &&
+      fingerprintEndpointPart(params.existing.routeCacheFingerprint) ===
+        fingerprintEndpointPart(params.routeCacheFingerprint),
+  );
+  const modeFingerprintSame =
+    params.existing?.routeCacheFingerprint === params.routeCacheFingerprint;
+
+  logRouteOnce(
+    `persistence|${params.legKey}|${params.routeCacheFingerprint}|${incomingStatus}`,
+    [
+      "[ROUTE_RESULT_PERSISTENCE]",
+      `legKey=${params.legKey}`,
+      `syncScope=${syncScope}`,
+      `forced=${Boolean(params.options.force)}`,
+      `manualSelection=${params.modeSelectionSource === "manual"}`,
+      `modeSelectionSource=${params.modeSelectionSource}`,
+      `triggerSource=${params.options.triggerSource ?? "unknown"}`,
+      `allowFallback=${params.options.allowModeFallback ?? params.modeSelectionSource !== "manual"}`,
+      `previousExists=${Boolean(params.existing)}`,
+      `previousStatus=${previousStatus ?? "none"}`,
+      `previousDuration=${params.existing?.durationMinutes ?? "n/a"}`,
+      `previousResolvedMode=${params.existing?.resolvedMode ?? params.existing?.transportMode ?? "none"}`,
+      `incomingStatus=${incomingStatus}`,
+      `incomingDuration=${params.incoming.durationMinutes}`,
+      `incomingResolvedMode=${params.incoming.resolvedMode ?? params.incoming.transportMode ?? "none"}`,
+      `endpointIdentitySame=${endpointIdentitySame}`,
+      `modeFingerprintSame=${modeFingerprintSame}`,
+      `overwriteDecision=${overwriteDecision}`,
+      `overwriteReason=${params.options.previousResultDeleted ? "manual_mode_result_removed_before_refresh" : incomingFailed ? "incoming_route_failure" : "incoming_route_result"}`,
+    ].join(" "),
+  );
+}
 
 export function transportLabelForLeg(
   settings: TripPlanSettings,
@@ -777,7 +853,7 @@ async function syncOneLeg(
       allowModeFallback,
     });
 
-    return buildTransitLeg(
+    const incoming = buildTransitLeg(
       legKey,
       fromName,
       toName,
@@ -787,6 +863,15 @@ async function syncOneLeg(
       routeCacheFingerprint,
       modeSelectionSource,
     );
+    logRouteResultPersistence({
+      legKey,
+      existing,
+      incoming,
+      routeCacheFingerprint,
+      options,
+      modeSelectionSource,
+    });
+    return incoming;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     logDirectionsDebug("request failed", { legKey, mode: modeLabel, error: msg });

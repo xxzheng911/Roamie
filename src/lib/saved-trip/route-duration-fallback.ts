@@ -13,6 +13,15 @@ import {
   type RoutesFnResult,
 } from "@/services/routesService";
 import { displayTransportLabel } from "@/lib/saved-trip/leg-transport-sot";
+import {
+  directionsLocationType,
+  formatDirectionsLocation,
+} from "@/lib/directions-endpoint";
+import {
+  maskRoutePlaceId,
+  sanitizeRouteTelemetryText,
+  type RouteApiFailureTelemetry,
+} from "@/lib/route-failure-telemetry";
 
 /**
  * Shared Directions distance thresholds (single source of truth).
@@ -42,6 +51,86 @@ export type RouteFetchContext = {
 function googleStatus(result: RoutesFnResult): string {
   if (result.ok) return "OK";
   return result.googleStatus ?? result.message ?? "UNKNOWN";
+}
+
+function fallbackFailureTelemetry(result: RoutesFnResult): RouteApiFailureTelemetry {
+  if (!result.ok && result.failureTelemetry) return result.failureTelemetry;
+  const status = googleStatus(result);
+  return {
+    endpoint: "unknown",
+    httpStatus: result.ok ? 200 : result.statusCode,
+    httpOk: result.ok,
+    googleStatus: status,
+    googleErrorMessage: result.ok ? "" : sanitizeRouteTelemetryText(result.message),
+    routesCount: 0,
+    legsCount: 0,
+    parserResult: "parsed",
+    failureKind: "unknown",
+    exceptionName: "",
+    exceptionMessage: "",
+  };
+}
+
+function logFailedRouteAttempt(params: {
+  ctx: RouteFetchContext;
+  requestedMode: RoutesTravelMode;
+  attemptedMode: RoutesTravelMode;
+  allowModeFallback: boolean;
+  originName?: string;
+  destinationName?: string;
+  telemetry: RouteApiFailureTelemetry;
+}): void {
+  const originFormatted = formatDirectionsLocation({
+    coords: params.ctx.origin,
+    placeId: params.ctx.query.originPlaceId,
+  });
+  const destinationFormatted = formatDirectionsLocation({
+    coords: params.ctx.destination,
+    placeId: params.ctx.query.destinationPlaceId,
+  });
+  const attemptKey = `${params.ctx.cacheKey}|${params.attemptedMode}`;
+  warnRouteOnce(
+    `request_detail|${attemptKey}`,
+    [
+      "[ROUTE_REQUEST_DETAIL]",
+      `legKey=${params.ctx.scope.legKey}`,
+      `originName=${params.originName ?? "n/a"}`,
+      `destinationName=${params.destinationName ?? "n/a"}`,
+      `requestedMode=${params.requestedMode}`,
+      `attemptedMode=${params.attemptedMode}`,
+      `allowFallback=${params.allowModeFallback}`,
+      `endpoint=${params.telemetry.endpoint}`,
+      `originKind=${directionsLocationType(originFormatted) === "latlng" ? "coordinates" : directionsLocationType(originFormatted)}`,
+      `destinationKind=${directionsLocationType(destinationFormatted) === "latlng" ? "coordinates" : directionsLocationType(destinationFormatted)}`,
+      `originPlaceIdMasked=${maskRoutePlaceId(params.ctx.query.originPlaceId)}`,
+      `destinationPlaceIdMasked=${maskRoutePlaceId(params.ctx.query.destinationPlaceId)}`,
+      `originLat=${params.ctx.origin.lat}`,
+      `originLng=${params.ctx.origin.lng}`,
+      `destinationLat=${params.ctx.destination.lat}`,
+      `destinationLng=${params.ctx.destination.lng}`,
+      `coordinateSource=${params.ctx.query.coordinateSource ?? "unknown"}`,
+      `region=${params.ctx.query.region ?? "auto"}`,
+      "language=zh-TW",
+    ].join(" "),
+  );
+  warnRouteOnce(
+    `raw_status|${attemptKey}`,
+    [
+      "[ROUTE_API_RAW_STATUS]",
+      `legKey=${params.ctx.scope.legKey}`,
+      `attemptedMode=${params.attemptedMode}`,
+      `httpStatus=${params.telemetry.httpStatus}`,
+      `httpOk=${params.telemetry.httpOk}`,
+      `googleStatus=${params.telemetry.googleStatus}`,
+      `googleErrorMessage=${params.telemetry.googleErrorMessage || "none"}`,
+      `routesCount=${params.telemetry.routesCount}`,
+      `legsCount=${params.telemetry.legsCount}`,
+      `parserResult=${params.telemetry.parserResult}`,
+      `failureKind=${params.telemetry.failureKind}`,
+      `exceptionName=${params.telemetry.exceptionName || "none"}`,
+      `exceptionMessage=${params.telemetry.exceptionMessage || "none"}`,
+    ].join(" "),
+  );
 }
 
 function estimatesForMode(
@@ -368,6 +457,7 @@ export async function fetchRouteWithDirectionFallbacks(
     ? buildFallbackModeChain(preferredMode, straightM, null, chainOpts)
     : [preferredMode];
   const attempted: RoutesTravelMode[] = [];
+  const rawFailures: RouteApiFailureTelemetry[] = [];
   let lastAvailable: string[] | undefined;
   const originName = ctx.query.logLegKey?.split("→")[0]?.split("§").pop();
   const destinationName = ctx.query.logLegKey?.split("→")[1];
@@ -386,6 +476,12 @@ export async function fetchRouteWithDirectionFallbacks(
         mode === preferredMode
           ? "preferred"
           : fallbackReasonFor(preferredMode, mode) ?? "fallback";
+      if (rawFailures.length > 0) {
+        logRouteOnce(
+          `fallback_result|${ctx.cacheKey}|${attempted.join(",")}`,
+          `[ROUTE_FALLBACK_RESULT] legKey=${ctx.scope.legKey} requestedMode=${preferredMode} attemptedModes=${attempted.join(",")} allowFallback=${allowModeFallback} resolvedMode=${mode} success=true finalLocalReason=${reason} rawFailureKinds=${rawFailures.map((failure) => failure.failureKind).join(",")} rawGoogleStatuses=${rawFailures.map((failure) => failure.googleStatus).join(",")} durationMinutes=${result.data.durationMinutes}`,
+        );
+      }
       logRouteOnce(
         `summary_ok|${ctx.cacheKey}|${mode}`,
         formatRouteSummary({
@@ -411,6 +507,17 @@ export async function fetchRouteWithDirectionFallbacks(
     }
 
     const status = googleStatus(result);
+    const failureTelemetry = fallbackFailureTelemetry(result);
+    rawFailures.push(failureTelemetry);
+    logFailedRouteAttempt({
+      ctx,
+      requestedMode: preferredMode,
+      attemptedMode: mode,
+      allowModeFallback,
+      originName,
+      destinationName,
+      telemetry: failureTelemetry,
+    });
     if (result.availableTravelModes?.length) {
       lastAvailable = result.availableTravelModes;
     }
@@ -434,6 +541,10 @@ export async function fetchRouteWithDirectionFallbacks(
   }
 
   const failReason = allowModeFallback ? "zero_results" : "mode_unavailable";
+  warnRouteOnce(
+    `fallback_result|${ctx.cacheKey}|${attempted.join(",")}`,
+    `[ROUTE_FALLBACK_RESULT] legKey=${ctx.scope.legKey} requestedMode=${preferredMode} attemptedModes=${attempted.join(",")} allowFallback=${allowModeFallback} resolvedMode=none success=false finalLocalReason=${failReason} rawFailureKinds=${rawFailures.map((failure) => failure.failureKind).join(",")} rawGoogleStatuses=${rawFailures.map((failure) => failure.googleStatus).join(",")} durationMinutes=n/a`,
+  );
   warnRouteOnce(
     `summary_fail|${ctx.cacheKey}|${attempted.join(",")}`,
     formatRouteSummary({

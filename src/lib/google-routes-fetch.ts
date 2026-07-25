@@ -4,6 +4,11 @@ import {
   type DirectionsQueryOptions,
 } from "@/lib/google-directions-fetch";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
+import {
+  classifyRouteFailure,
+  sanitizeRouteTelemetryText,
+  type RouteApiFailureTelemetry,
+} from "@/lib/route-failure-telemetry";
 
 export type LatLng = { lat: number; lng: number };
 
@@ -16,6 +21,7 @@ export type RoutesApiError = {
   hint?: string;
   googleStatus?: string;
   availableTravelModes?: string[];
+  failureTelemetry?: RouteApiFailureTelemetry;
 };
 
 export type RoutesApiSuccess<T> = { ok: true; data: T };
@@ -46,6 +52,39 @@ function routesDeniedHint(bodyText: string): string | undefined {
     return ROUTES_REQUEST_DENIED_HINT;
   }
   return undefined;
+}
+
+function routesFailureTelemetry(params: {
+  httpStatus: number;
+  httpOk: boolean;
+  googleStatus: string;
+  googleErrorMessage?: string;
+  routesCount?: number;
+  legsCount?: number;
+  exception?: unknown;
+}): RouteApiFailureTelemetry {
+  const exceptionName = params.exception instanceof Error ? params.exception.name : "";
+  const exceptionMessage = params.exception instanceof Error ? params.exception.message : "";
+  return {
+    endpoint: "routes_api",
+    httpStatus: params.httpStatus,
+    httpOk: params.httpOk,
+    googleStatus: params.googleStatus,
+    googleErrorMessage: sanitizeRouteTelemetryText(params.googleErrorMessage),
+    routesCount: params.routesCount ?? 0,
+    legsCount: params.legsCount ?? 0,
+    parserResult: "parsed",
+    failureKind: classifyRouteFailure({
+      httpStatus: params.httpStatus,
+      httpOk: params.httpOk,
+      googleStatus: params.googleStatus,
+      routesCount: params.routesCount,
+      legsCount: params.legsCount,
+      exceptionName,
+    }),
+    exceptionName,
+    exceptionMessage: sanitizeRouteTelemetryText(exceptionMessage),
+  };
 }
 
 export function extractGoogleRouteStatus(
@@ -156,6 +195,8 @@ export async function fetchGoogleRoute(
     }
 
     const googleStatus = extractGoogleRouteStatus(text, json);
+    const routesCount = json.routes?.length ?? 0;
+    const legsCount = json.routes?.[0]?.legs?.length ?? 0;
 
     if (!res.ok) {
       logRouteResponse(googleStatus, null, null, travelMode);
@@ -168,6 +209,14 @@ export async function fetchGoogleRoute(
         message: text.slice(0, 300) || res.statusText,
         hint: routesDeniedHint(text),
         googleStatus,
+        failureTelemetry: routesFailureTelemetry({
+          httpStatus: res.status,
+          httpOk: res.ok,
+          googleStatus,
+          googleErrorMessage: json.error?.message ?? res.statusText,
+          routesCount,
+          legsCount,
+        }),
       };
     }
 
@@ -181,6 +230,14 @@ export async function fetchGoogleRoute(
         message: msg,
         hint: routesDeniedHint(text),
         googleStatus,
+        failureTelemetry: routesFailureTelemetry({
+          httpStatus: res.status,
+          httpOk: res.ok,
+          googleStatus,
+          googleErrorMessage: msg,
+          routesCount,
+          legsCount,
+        }),
       };
     }
 
@@ -196,6 +253,13 @@ export async function fetchGoogleRoute(
         statusCode: res.status,
         message: "ZERO_RESULTS",
         googleStatus: "ZERO_RESULTS",
+        failureTelemetry: routesFailureTelemetry({
+          httpStatus: res.status,
+          httpOk: res.ok,
+          googleStatus: "ZERO_RESULTS",
+          routesCount,
+          legsCount,
+        }),
       };
     }
 
@@ -222,7 +286,18 @@ export async function fetchGoogleRoute(
     const msg = e instanceof Error ? e.message : String(e);
     logRouteResponse("exception", null, null, travelMode);
     console.warn(`[ROUTE_DURATION_ERROR] status=exception message=${msg}`);
-    return { ok: false, statusCode: 0, message: msg, googleStatus: "exception" };
+    return {
+      ok: false,
+      statusCode: 0,
+      message: msg,
+      googleStatus: "exception",
+      failureTelemetry: routesFailureTelemetry({
+        httpStatus: 0,
+        httpOk: false,
+        googleStatus: "exception",
+        exception: e,
+      }),
+    };
   } finally {
     clearTimeout(timer);
   }
