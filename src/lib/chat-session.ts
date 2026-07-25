@@ -297,9 +297,9 @@ export function nextMissingDiscoveryKey(discovery?: ChatDiscovery): keyof ChatDi
 function sessionHasTripDestination(session: ChatPlanningSession): boolean {
   return Boolean(
     session.tripDestination?.displayLabel?.trim() ||
-      session.tripDestination?.city?.trim() ||
-      session.location?.city?.trim() ||
-      session.preferredArea?.trim(),
+    session.tripDestination?.city?.trim() ||
+    session.location?.city?.trim() ||
+    session.preferredArea?.trim(),
   );
 }
 
@@ -313,19 +313,14 @@ export function isDiscoveryComplete(session: ChatPlanningSession): boolean {
     d.companionship?.trim() || session.travelContext?.companion?.trim(),
   );
   const hasSetting = Boolean(
-    d.setting?.trim() ||
-      session.travelContext?.setting ||
-      /散步|咖啡|雨|海/.test(moodLabel ?? ""),
+    d.setting?.trim() || session.travelContext?.setting || /散步|咖啡|雨|海/.test(moodLabel ?? ""),
   );
   // 跨城市旅行：有目的地 + 心情 + 旅伴即可推薦（室內外可稍後再細調）
   if (sessionHasTripDestination(session)) {
     return hasVibe && hasCompanionship;
   }
   const hasGps =
-    session.location?.lat != null &&
-    session.location?.lng != null &&
-    moodLabel &&
-    hasCompanionship;
+    session.location?.lat != null && session.location?.lng != null && moodLabel && hasCompanionship;
   if (hasGps && hasVibe) return true;
   return hasVibe && hasCompanionship && hasSetting;
 }
@@ -354,10 +349,7 @@ export function extractDiscoveryFromText(
   if (!t) return session;
   const discovery: ChatDiscovery = { ...session.discovery };
 
-  if (
-    !discovery.vibe &&
-    /(放鬆|放空|休息|慢下來|療癒|靜一靜)/.test(t)
-  ) {
+  if (!discovery.vibe && /(放鬆|放空|休息|慢下來|療癒|靜一靜)/.test(t)) {
     discovery.vibe = "放鬆";
   } else if (!discovery.vibe && /(探索|發現|走走看看|亂逛|挖寶|新鮮)/.test(t)) {
     discovery.vibe = "探索";
@@ -407,10 +399,7 @@ export function extractDiscoveryFromText(
   );
   if (mustVisitMatch?.[1]) {
     discovery.mustVisit = mustVisitMatch[1].trim().slice(0, 120);
-  } else if (
-    !discovery.mustVisit &&
-    /(沒有特別|沒有想|沒有一定要|隨意|都可以|你推)/.test(t)
-  ) {
+  } else if (!discovery.mustVisit && /(沒有特別|沒有想|沒有一定要|隨意|都可以|你推)/.test(t)) {
     discovery.mustVisit = "沒有特別";
   }
 
@@ -487,8 +476,7 @@ export function mapPlaceResultToChatItem(
     ctx.weather
       ? {
           ...ctx.weather,
-          condition:
-            typeof ctx.weather.condition === "string" ? ctx.weather.condition : "",
+          condition: typeof ctx.weather.condition === "string" ? ctx.weather.condition : "",
         }
       : null,
     ctx.currentTime,
@@ -522,6 +510,7 @@ export function mapPlaceResultToChatItem(
     localizedDisplayName: displayName,
     originalName: resolvedName.originalName || p.originalName || p.name,
     type: p.primaryType ?? "地點",
+    primaryType: p.primaryType,
     description: p.address ?? "附近推薦",
     reason,
     reasonSource: "template",
@@ -597,7 +586,8 @@ export function mergeSessionFromRoamie(
       : aiRecs.length
         ? (() => {
             const map = new Map(session.recommendedPlaces.map((p) => [p.name, p]));
-            for (const r of aiRecs) map.set(r.name, map.has(r.name) ? { ...map.get(r.name)!, ...r } : r);
+            for (const r of aiRecs)
+              map.set(r.name, map.has(r.name) ? { ...map.get(r.name)!, ...r } : r);
             return [...map.values()];
           })()
         : session.recommendedPlaces;
@@ -611,7 +601,10 @@ export function mergeSessionFromRoamie(
   });
 }
 
-export function addSelectedPlace(session: ChatPlanningSession, place: ChatPlaceItem): ChatPlanningSession {
+export function addSelectedPlace(
+  session: ChatPlanningSession,
+  place: ChatPlaceItem,
+): ChatPlanningSession {
   const exists = session.selectedPlaces.some((p) => p.name === place.name);
   return syncSessionPlaceMemory({
     ...session,
@@ -698,17 +691,13 @@ export function canGenerateItinerary(session: ChatPlanningSession): boolean {
     (session.tripDays ?? 0) > 0 &&
     Boolean(
       session.tripDestination?.city?.trim() ||
-        session.tripDestination?.displayLabel?.trim() ||
-        session.travelContext?.destination?.trim(),
+      session.tripDestination?.displayLabel?.trim() ||
+      session.travelContext?.destination?.trim(),
     );
   if (!hasPlaces && !hasDestinationPlan) return false;
   if (session.phase === "generating" || session.phase === "done") return false;
   if (session.fromPlanAi || session.planAiMode) {
-    return (
-      session.phase === "collect" ||
-      session.phase === "followup" ||
-      session.phase === "ready"
-    );
+    return session.phase === "collect" || session.phase === "followup" || session.phase === "ready";
   }
   return session.phase === "ready";
 }
@@ -760,10 +749,7 @@ export function initSessionFromRecommendation(payload: {
   lateNightMode?: boolean;
 }): ChatPlanningSession {
   const recommended = payload.recommendations.map(roamieRecToChatItem);
-  const selected = enrichPlacesWithDistance(
-    payload.selectedPlaces ?? [],
-    payload.location ?? null,
-  );
+  const selected = enrichPlacesWithDistance(payload.selectedPlaces ?? [], payload.location ?? null);
   const session: ChatPlanningSession = {
     ...createEmptySession(),
     mood: payload.moodTag,
@@ -789,4 +775,3 @@ export function initSessionFromRecommendation(payload: {
   session.initialChatContext = buildInitialChatContext(session);
   return session;
 }
-

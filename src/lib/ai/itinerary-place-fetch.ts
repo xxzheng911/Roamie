@@ -109,6 +109,7 @@ import {
   buildSelectedThemeProfile,
   evaluateTotalRealPlaceValidation,
   SELECTED_COMBINATION_FILLER_POLICY,
+  supplementMealsForSelectedCombinationItinerary,
   supplementRealPlacesForItinerary,
 } from "@/lib/ai/real-place-supplement";
 import {
@@ -2116,6 +2117,21 @@ async function mergeSessionPlacesWithFetch(params: {
       apiEmpty: false,
       failure,
     };
+  }
+
+  if (merged.length > 0 && effectiveAllowlist?.selectedCombinationIds.length) {
+    const mealPlaces = await supplementMealsForSelectedCombinationItinerary({
+      destination: params.destination,
+      tripDays: params.days,
+      existingPlaces: merged,
+      lat,
+      lng,
+      locale: params.locale,
+      searchPlaces: params.searchPlaces,
+      mood: params.context.mood,
+      weather: params.context.weather,
+    });
+    if (mealPlaces.length) merged = dedupeChatPlaces([...merged, ...mealPlaces]);
   }
 
   if (merged.length > 0) {

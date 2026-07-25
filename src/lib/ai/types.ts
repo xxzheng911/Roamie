@@ -7,6 +7,8 @@ import type { TripLocation } from "@/lib/location/types";
 export const RoamieRecommendationItemSchema = z.object({
   name: z.string(),
   type: z.string(),
+  /** Google primaryType retained separately from normalized/display type. */
+  primaryType: z.string().nullable().optional(),
   description: z.string(),
   reason: z.string(),
   estimatedTime: z.string(),
@@ -219,7 +221,9 @@ export function normalizeRoamieResponse(raw: Record<string, unknown>): RoamieRes
     : [];
   const itin = Array.isArray(raw.itinerary)
     ? raw.itinerary.map((i) =>
-        normalizeItineraryItem(i as Partial<RoamieItineraryItem> & { placeName: string; title: string }),
+        normalizeItineraryItem(
+          i as Partial<RoamieItineraryItem> & { placeName: string; title: string },
+        ),
       )
     : [];
   return RoamieResponseSchema.parse({
@@ -245,12 +249,11 @@ export function normalizeRecommendationItem(
   localizationSource?: string;
 } {
   const localized =
-    (raw.localizedDisplayName ?? "").trim() ||
-    (raw.placeName ?? "").trim() ||
-    raw.name;
+    (raw.localizedDisplayName ?? "").trim() || (raw.placeName ?? "").trim() || raw.name;
   return {
     name: localized,
     type: raw.type ?? "地點",
+    primaryType: raw.primaryType ?? raw.type ?? null,
     description: raw.description ?? "",
     reason: raw.reason ?? "",
     estimatedTime: raw.estimatedTime ?? "1-2 小時",
@@ -264,6 +267,7 @@ export function normalizeRecommendationItem(
     photoName: raw.photoName ?? null,
     rating: raw.rating ?? null,
     userRatingCount: raw.userRatingCount ?? null,
+    businessStatus: raw.businessStatus ?? null,
     openStatusLabel: raw.openStatusLabel,
     todayHoursLabel: raw.todayHoursLabel,
     closingSoonNote: raw.closingSoonNote,

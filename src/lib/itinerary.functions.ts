@@ -56,15 +56,14 @@ import {
 } from "@/lib/ai/itinerary-validator/from-payload";
 import { replanUntilItineraryValid } from "@/lib/ai/itinerary-validator/replan";
 import type { ItineraryValidatorInput } from "@/lib/ai/itinerary-validator/types";
-import {
-  resolvePlannerStyleKey,
-  type ComposedDayPlan,
-} from "@/lib/ai/ai-day-plan-source";
+import { resolvePlannerStyleKey, type ComposedDayPlan } from "@/lib/ai/ai-day-plan-source";
 
 const PlaceSchema = z
   .object({
     name: z.string(),
     type: z.string().optional(),
+    primaryType: z.string().nullable().optional(),
+    types: z.array(z.string()).optional(),
     description: z.string().optional(),
     reason: z.string().optional(),
     estimatedTime: z.string().optional(),
@@ -90,6 +89,8 @@ const PlaceSchema = z
   .transform((raw) => ({
     name: raw.name,
     type: raw.type ?? "地點",
+    ...(raw.primaryType != null ? { primaryType: raw.primaryType } : {}),
+    types: raw.types,
     description: raw.description ?? "",
     reason: raw.reason ?? "",
     estimatedTime: raw.estimatedTime ?? "1-2 小時",
@@ -126,7 +127,7 @@ const InputSchema = z.object({
   origin: z.string().max(120).optional().default(""),
   travelers: z.number().int().min(1).max(20).optional(),
   transport: z.string().max(120).optional().default(""),
-  selectedPlaces: z.array(PlaceSchema).max(20).optional().default([]),
+  selectedPlaces: z.array(PlaceSchema).max(70).optional().default([]),
   selectedCombinationIds: z.array(z.number().int().positive()).max(10).optional().default([]),
   nearbyExtensions: z.array(z.string().max(80)).max(10).optional().default([]),
   excludedCategories: z.array(z.string().max(40)).max(30).optional().default([]),
@@ -166,13 +167,9 @@ function enrichItineraryFromSelectedPlaces(
   destination: string,
 ): RoamieItineraryItem[] {
   const byId = new Map(
-    selectedPlaces
-      .filter((p) => p.googlePlaceId?.trim())
-      .map((p) => [p.googlePlaceId!.trim(), p]),
+    selectedPlaces.filter((p) => p.googlePlaceId?.trim()).map((p) => [p.googlePlaceId!.trim(), p]),
   );
-  const byName = new Map(
-    selectedPlaces.map((p) => [(p.placeName ?? p.name).trim(), p]),
-  );
+  const byName = new Map(selectedPlaces.map((p) => [(p.placeName ?? p.name).trim(), p]));
 
   return items
     .map((item) => {
@@ -203,8 +200,7 @@ function enrichItineraryFromSelectedPlaces(
             types: item.types?.length ? item.types : match.type ? [match.type] : undefined,
             placeSnapshotSource: item.placeSnapshotSource ?? "selected_place",
             sourceCombinationId: item.sourceCombinationId ?? match.sourceCombinationId,
-            matchedCombinationIds:
-              item.matchedCombinationIds ?? match.matchedCombinationIds,
+            matchedCombinationIds: item.matchedCombinationIds ?? match.matchedCombinationIds,
             matchedSelectedCombinationIds:
               item.matchedSelectedCombinationIds ?? match.matchedSelectedCombinationIds,
           }
@@ -338,10 +334,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
     const selectedCombinationIds = data.selectedCombinationIds ?? [];
     const requiredPlaceNames = selectedPlaces.map((p) => p.placeName ?? p.name);
 
-    logAiPipeline(
-      "[SELECTED_COMBINATIONS_CONFIRMED]",
-      `ids=[${selectedCombinationIds.join(",")}]`,
-    );
+    logAiPipeline("[SELECTED_COMBINATIONS_CONFIRMED]", `ids=[${selectedCombinationIds.join(",")}]`);
     logAiPipeline(
       "[SELECTED_PLACE_POOL_BUILT]",
       `count=${selectedPlaces.length}`,
@@ -517,10 +510,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
             `reason=${r.reason}`,
           );
         }
-        logAiPipeline(
-          "[ITINERARY_TIMELINE_RECALCULATED]",
-          `removedPlaceCount=${removed.length}`,
-        );
+        logAiPipeline("[ITINERARY_TIMELINE_RECALCULATED]", `removedPlaceCount=${removed.length}`);
         ai = { ...ai, itinerary: kept };
       }
 
@@ -642,8 +632,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       const composed = composedPlansFromItineraryItems(finalStops, data.days, startDate);
       const plannerDayCounts = dayCountsOfPlans(composed);
       const styleKey = resolvePlannerStyleKey(data.style);
-      const creationPath =
-        selectedCombinationIds.length > 0 ? "selected_places" : "direct";
+      const creationPath = selectedCombinationIds.length > 0 ? "selected_places" : "direct";
       logAiPipeline(
         "[ITINERARY_PLANNER_RESULT]",
         `success=true`,
@@ -702,11 +691,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         );
         validation = replanned.validation;
         if (replanned.plans.length) {
-          finalStops = applyComposedPlansToItineraryItems(
-            finalStops,
-            replanned.plans,
-            startDate,
-          );
+          finalStops = applyComposedPlansToItineraryItems(finalStops, replanned.plans, startDate);
           ai = { ...ai, itinerary: finalStops };
         }
       }
@@ -829,10 +814,9 @@ export const generateItinerary = createServerFn({ method: "POST" })
         style: resolvePlannerStyleKey(data.style),
         quizPace: data.preferences?.pace as "slow" | "medium" | "active" | null,
       });
-      const localizedGate = applyItineraryLocalizationGate(
-        coalesceItineraryItems(ai.itinerary),
-        { softPassEnglish: true },
-      );
+      const localizedGate = applyItineraryLocalizationGate(coalesceItineraryItems(ai.itinerary), {
+        softPassEnglish: true,
+      });
       ai = { ...ai, itinerary: localizedGate.items };
       const seededLegMinutes = buildLegMinutesFromPlaces(localizedGate.items, pace);
       tripSettings = {
@@ -860,8 +844,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
     });
     if (!tripSettings) {
       tripSettings = {
-        startTime:
-          coalesceItineraryItems(itineraryItems)[0]?.time?.slice(0, 5) ?? "09:30",
+        startTime: coalesceItineraryItems(itineraryItems)[0]?.time?.slice(0, 5) ?? "09:30",
         tripStartDate: data.startDate?.trim() || startDate,
         tripEndDate: data.endDate?.trim() || data.startDate?.trim() || startDate,
         transport: inferTripTransport(data.transport),

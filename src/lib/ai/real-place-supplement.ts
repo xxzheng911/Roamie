@@ -81,8 +81,7 @@ export function calculateDynamicStopCapacity(params: {
 
   const requiredMinimum = tripDays * 3;
   const fetchOversample = tripDays * 4;
-  const pacePreferred =
-    Math.round(tripDays * (paceMul + densityAdj)) + (tripDays >= 3 ? 1 : 0);
+  const pacePreferred = Math.round(tripDays * (paceMul + densityAdj)) + (tripDays >= 3 ? 1 : 0);
 
   // Soft acquisition target: at least days×3; allow up to days×4 oversampling.
   const preferredStops = Math.max(
@@ -230,6 +229,126 @@ function placeKey(place: {
   return name ? `name:${name}` : "";
 }
 
+const MEAL_INCLUDED_TYPES = ["restaurant", "food", "meal_takeaway"] as const;
+const MEAL_COMPATIBLE_TYPES = new Set<string>(MEAL_INCLUDED_TYPES);
+const MEAL_EXCLUDED_TYPES = new Set([
+  "supermarket",
+  "grocery_store",
+  "grocery_or_supermarket",
+  "convenience_store",
+  "department_store",
+  "shopping_mall",
+  "store",
+  "meal_delivery",
+]);
+
+export function isSelectedCombinationMealCandidate(place: {
+  id?: string | null;
+  googlePlaceId?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  primaryType?: string | null;
+  type?: string | null;
+  types?: string[] | null;
+  businessStatus?: string | null;
+}): boolean {
+  const id = (place.id ?? place.googlePlaceId ?? "").trim();
+  if (!isMappableGooglePlaceId(id) || place.lat == null || place.lng == null) return false;
+  if (place.businessStatus === "CLOSED_PERMANENTLY") return false;
+  const types = new Set(
+    [place.primaryType, place.type, ...(place.types ?? [])]
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  if ([...types].some((type) => MEAL_EXCLUDED_TYPES.has(type))) return false;
+  return [...types].some((type) => MEAL_COMPATIBLE_TYPES.has(type));
+}
+
+/** Meal acquisition is independent from scenic capacity and never uses the tourism gate. */
+export async function supplementMealsForSelectedCombinationItinerary(params: {
+  destination: string;
+  tripDays: number;
+  existingPlaces: ChatPlaceItem[];
+  lat: number;
+  lng: number;
+  locale: Locale;
+  searchPlaces: PlaceSearchFn;
+  mood?: string;
+  weather?: unknown;
+}): Promise<ChatPlaceItem[]> {
+  const target = Math.max(0, params.tripDays * 2);
+  const scenicTarget = calculateDynamicStopCapacity({
+    tripDays: params.tripDays,
+    selectedCombinationCount: 1,
+  }).preferredStops;
+  const existingMeals = params.existingPlaces.filter(isSelectedCombinationMealCandidate);
+  const used = new Set(params.existingPlaces.map(placeKey).filter(Boolean));
+  const added: ChatPlaceItem[] = [];
+  const needed = Math.max(0, target - existingMeals.length);
+  const queries = [
+    `${params.destination} 在地午餐 餐廳`,
+    `${params.destination} 晚餐 餐廳`,
+    `${params.destination} local restaurants`,
+  ];
+
+  for (const query of queries) {
+    if (added.length >= needed) break;
+    try {
+      const result = await params.searchPlaces({
+        data: {
+          query,
+          lat: params.lat,
+          lng: params.lng,
+          radius: 35_000,
+          mode: "text",
+          placesScreen: "chat",
+          placesCaller: "selected_combination_meal_supplement",
+          destinationName: params.destination,
+          searchMode: "destination",
+          includedTypes: [...MEAL_INCLUDED_TYPES],
+        },
+      });
+      for (const place of result.places ?? []) {
+        if (added.length >= needed) break;
+        if (!isSelectedCombinationMealCandidate(place)) continue;
+        const key = placeKey(place);
+        if (!key || used.has(key)) continue;
+        const item = mapPlaceResultToChatItem(place, {
+          mood: params.mood,
+          weather: params.weather as never,
+          locale: params.locale,
+          categoryIntent: "food",
+        });
+        used.add(key);
+        added.push(item);
+      }
+    } catch {
+      // Meal gaps remain observable and must not fail the whole itinerary.
+    }
+  }
+
+  const allMeals = [...existingMeals, ...added];
+  const cafeCount = allMeals.filter((place) =>
+    (place.types ?? []).some((type) => type === "cafe" || type === "coffee_shop"),
+  ).length;
+  const bakeryCount = allMeals.filter((place) => (place.types ?? []).includes("bakery")).length;
+  logAiPipeline(
+    "[MEAL_CANDIDATE_POOL_SUMMARY]",
+    `destination=${params.destination}`,
+    `restaurantCount=${allMeals.length}`,
+    `cafeCount=${cafeCount}`,
+    `bakeryCount=${bakeryCount}`,
+    `lunchCompatibleCount=${allMeals.length}`,
+    `dinnerCompatibleCount=${allMeals.length}`,
+    `unusedLunchCompatibleCount=${allMeals.length}`,
+    `unusedDinnerCompatibleCount=${allMeals.length}`,
+    `scenicPreferredStopsReached=${params.existingPlaces.length >= scenicTarget}`,
+    `mealRequirementsReached=${allMeals.length >= target}`,
+  );
+  return added;
+}
+
 /**
  * Search destination-scoped real Places to fill a shortfall after selected-combination
  * resolution + dedupe. Never invents synthetic names. Theme-scoped when profile given.
@@ -261,9 +380,7 @@ export async function supplementRealPlacesForItinerary(params: {
   });
   const minRequired = capacity.minimumViableStops;
   const target = capacity.preferredStops;
-  const needed =
-    params.needed ??
-    Math.max(0, target - params.existingPlaces.length);
+  const needed = params.needed ?? Math.max(0, target - params.existingPlaces.length);
 
   const selectedIds = params.selectedCombinationIds ?? [];
   const mode = selectedIds.length <= 1 ? "single" : "multiple";
@@ -286,12 +403,11 @@ export async function supplementRealPlacesForItinerary(params: {
     `uniqueMajorLandmarks=${params.uniqueMajorLandmarksBefore ?? params.existingPlaces.length}`,
   );
 
-  const themes =
-    params.themeProfile?.primaryThemes?.length
-      ? params.themeProfile.primaryThemes
-      : params.themes?.length
-        ? params.themes
-        : ["attraction", "culture", "market", "park", "food"];
+  const themes = params.themeProfile?.primaryThemes?.length
+    ? params.themeProfile.primaryThemes
+    : params.themes?.length
+      ? params.themes
+      : ["attraction", "culture", "market", "park", "food"];
 
   if (mode === "single" && selectedIds[0] != null) {
     logAiPipeline(
@@ -319,11 +435,7 @@ export async function supplementRealPlacesForItinerary(params: {
       "reason=already_sufficient",
     );
     if (mode === "single") {
-      logAiPipeline(
-        "[SINGLE_THEME_SUPPLEMENT_COMPLETED]",
-        "added=0",
-        "rejected=0",
-      );
+      logAiPipeline("[SINGLE_THEME_SUPPLEMENT_COMPLETED]", "added=0", "rejected=0");
     }
     return { added: [], failed: 0, needed: 0, rejected: 0 };
   }
@@ -439,17 +551,16 @@ export async function supplementRealPlacesForItinerary(params: {
           locale: params.locale,
         });
         used.add(key);
-        const preferIds =
-          params.selectedCombinationIds?.length
-            ? params.selectedCombinationIds
-            : undefined;
+        const preferIds = params.selectedCombinationIds?.length
+          ? params.selectedCombinationIds
+          : undefined;
         added.push({
           ...item,
-          matchedSelectedCombinationIds:
-            preferIds?.length ? preferIds : item.matchedSelectedCombinationIds,
+          matchedSelectedCombinationIds: preferIds?.length
+            ? preferIds
+            : item.matchedSelectedCombinationIds,
           sourceCombinationIds: preferIds?.length ? preferIds : item.sourceCombinationIds,
-          sourceCombinationId:
-            item.sourceCombinationId ?? preferIds?.[0],
+          sourceCombinationId: item.sourceCombinationId ?? preferIds?.[0],
         });
         logAiPipeline(
           "[FALLBACK_PLACE_ADDED]",
@@ -529,11 +640,7 @@ export function unwrapRawStop(raw: unknown): Record<string, unknown> | null {
     const nested = asRecord(root[key]);
     if (
       nested &&
-      (nested.googlePlaceId ||
-        nested.placeId ||
-        nested.placeName ||
-        nested.name ||
-        nested.title)
+      (nested.googlePlaceId || nested.placeId || nested.placeName || nested.name || nested.title)
     ) {
       return { ...root, ...nested };
     }
@@ -583,9 +690,7 @@ export function normalizeItineraryStop(
     return { ok: false, issue };
   }
 
-  const name = String(
-    unwrapped.placeName ?? unwrapped.name ?? unwrapped.title ?? "",
-  ).trim();
+  const name = String(unwrapped.placeName ?? unwrapped.name ?? unwrapped.title ?? "").trim();
   const googlePlaceId = String(
     unwrapped.googlePlaceId ?? unwrapped.placeId ?? unwrapped.id ?? "",
   ).trim();
@@ -607,11 +712,7 @@ export function normalizeItineraryStop(
   if (!date) missingFields.push("date");
   if (!time) missingFields.push("arrivalTime");
 
-  if (
-    googlePlaceId &&
-    !isMappableGooglePlaceId(googlePlaceId) &&
-    !/^ChIJ/.test(googlePlaceId)
-  ) {
+  if (googlePlaceId && !isMappableGooglePlaceId(googlePlaceId) && !/^ChIJ/.test(googlePlaceId)) {
     invalidFields.push("googlePlaceId");
   }
   if (
@@ -683,12 +784,8 @@ export function normalizeItineraryStop(
     rating: typeof unwrapped.rating === "number" ? unwrapped.rating : null,
     userRatingCount:
       typeof unwrapped.userRatingCount === "number" ? unwrapped.userRatingCount : null,
-    openStatusLabel: unwrapped.openStatusLabel
-      ? String(unwrapped.openStatusLabel)
-      : undefined,
-    todayHoursLabel: unwrapped.todayHoursLabel
-      ? String(unwrapped.todayHoursLabel)
-      : undefined,
+    openStatusLabel: unwrapped.openStatusLabel ? String(unwrapped.openStatusLabel) : undefined,
+    todayHoursLabel: unwrapped.todayHoursLabel ? String(unwrapped.todayHoursLabel) : undefined,
     placeSnapshotSource: "selected_place",
   };
 
@@ -799,9 +896,7 @@ export function validateItineraryPreSave(params: {
   }
 
   if (valid.length < params.tripDays && emptyNonFreeDays.length > 0) {
-    reasons.push(
-      `insufficient_real_places:got=${valid.length},need=${params.tripDays}`,
-    );
+    reasons.push(`insufficient_real_places:got=${valid.length},need=${params.tripDays}`);
   }
 
   const result: PreSaveValidationResult = {
@@ -827,9 +922,7 @@ export function validateItineraryPreSave(params: {
 }
 
 /** Keep for callers that map ChatPlaceItem → recommendation after supplement. */
-export function chatSupplementToRecommendation(
-  item: ChatPlaceItem,
-): RoamieRecommendationItem {
+export function chatSupplementToRecommendation(item: ChatPlaceItem): RoamieRecommendationItem {
   return normalizeRecommendationItem({
     name: item.name,
     placeName: item.placeName ?? item.name,

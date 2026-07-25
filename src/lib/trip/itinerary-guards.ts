@@ -22,11 +22,9 @@ import {
 } from "@/lib/ai/real-place-supplement";
 import { minEffectivePlacesPerDay } from "@/lib/ai/planner-day-route-assembly";
 
-export const ITINERARY_GENERATION_FAILED_MESSAGE =
-  "行程建立失敗，我再幫你重新整理一次。";
+export const ITINERARY_GENERATION_FAILED_MESSAGE = "行程建立失敗，我再幫你重新整理一次。";
 
-export const ITINERARY_PARTIAL_FAILURE_MESSAGE =
-  "行程建立失敗，是否改成列出必去景點？";
+export const ITINERARY_PARTIAL_FAILURE_MESSAGE = "行程建立失敗，是否改成列出必去景點？";
 
 export type ItineraryDayPlan = {
   day: number;
@@ -62,19 +60,12 @@ export type GenerateItineraryFailure = {
 
 export type GenerateItineraryResult = GenerateItinerarySuccess | GenerateItineraryFailure;
 
-const GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS = [
-  "data",
-  "result",
-  "payload",
-  "response",
-] as const;
+const GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS = ["data", "result", "payload", "response"] as const;
 
 // TanStack Start serializes server-function middleware output as
 // { result, error, context }. In the bundled/native boundary that transport
 // context can be retained inside the client middleware result once more.
-const GENERATE_ITINERARY_RESULT_FIXED_PATHS = [
-  ["result", "result"],
-] as const;
+const GENERATE_ITINERARY_RESULT_FIXED_PATHS = [["result", "result"]] as const;
 
 type GenerateItineraryNormalizedKind = "success" | "failure" | "invalid";
 
@@ -126,8 +117,9 @@ function makePlaceItineraryStop(
     lng: place.lng,
     address: place.address?.trim() || place.name,
     googlePlaceId: placeId || undefined,
-    placeType: place.type,
-    coordinateSource: placeId && place.lat != null && place.lng != null ? "google_places" : undefined,
+    placeType: place.primaryType ?? place.type,
+    coordinateSource:
+      placeId && place.lat != null && place.lng != null ? "google_places" : undefined,
     sourceCombinationId: place.sourceCombinationId,
     matchedCombinationIds: place.matchedCombinationIds,
     matchedSelectedCombinationIds: place.matchedSelectedCombinationIds,
@@ -137,7 +129,11 @@ function makePlaceItineraryStop(
     businessStatus: place.businessStatus,
     openStatusLabel: place.openStatusLabel,
     todayHoursLabel: place.todayHoursLabel,
-    types: place.type ? [place.type] : undefined,
+    types: place.types?.length
+      ? place.types
+      : place.primaryType || place.type
+        ? [place.primaryType || place.type]
+        : undefined,
     placeSnapshotSource: "selected_place",
   });
 }
@@ -162,9 +158,7 @@ function makeFillerItineraryStop(
   });
 }
 
-export function isGenerateItineraryFailure(
-  result: unknown,
-): result is GenerateItineraryFailure {
+export function isGenerateItineraryFailure(result: unknown): result is GenerateItineraryFailure {
   if (!result || typeof result !== "object") return false;
   const record = result as Record<string, unknown>;
   return record.success === false && typeof record.errorCode === "string";
@@ -219,23 +213,16 @@ export function describeGenerateItineraryRawShape(
   const knownEnvelopeKeys = GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS.filter(
     (key) => envelope && key in envelope,
   );
-  const firstKnownValue = knownEnvelopeKeys.length
-    ? envelope?.[knownEnvelopeKeys[0]]
-    : undefined;
+  const firstKnownValue = knownEnvelopeKeys.length ? envelope?.[knownEnvelopeKeys[0]] : undefined;
   const level1 = objectRecord(firstKnownValue);
   const matched = knownResultPath(raw);
   const matchedRecord = objectRecord(matched?.value);
   const matchedPath = matched?.path ?? "";
-  const successPath = matchedRecord && "success" in matchedRecord
-    ? `${matchedPath}.success`
-    : "";
-  const errorCodePath = matchedRecord && "errorCode" in matchedRecord
-    ? `${matchedPath}.errorCode`
-    : "";
+  const successPath = matchedRecord && "success" in matchedRecord ? `${matchedPath}.success` : "";
+  const errorCodePath =
+    matchedRecord && "errorCode" in matchedRecord ? `${matchedPath}.errorCode` : "";
   const trip = objectRecord(matchedRecord?.trip);
-  const payloadPath = trip && "payload" in trip
-    ? `${matchedPath}.trip.payload`
-    : "";
+  const payloadPath = trip && "payload" in trip ? `${matchedPath}.trip.payload` : "";
 
   return {
     rawType: raw === null ? "null" : typeof raw,
@@ -256,9 +243,7 @@ export function describeGenerateItineraryRawShape(
 }
 
 /** Normalize direct results plus explicitly supported transport-envelope paths. */
-export function normalizeGenerateItineraryResult(
-  raw: unknown,
-): GenerateItineraryResult | null {
+export function normalizeGenerateItineraryResult(raw: unknown): GenerateItineraryResult | null {
   const matched = knownResultPath(raw);
   if (!matched) return null;
   return matched.value as GenerateItineraryResult;
@@ -288,9 +273,7 @@ export function groupItineraryItemsByDay(
     buckets.set(date, list);
   }
 
-  const orderedDates = dateOrder.length
-    ? dateOrder
-    : [...buckets.keys()];
+  const orderedDates = dateOrder.length ? dateOrder : [...buckets.keys()];
 
   return orderedDates.map((date, index) => ({
     day: index + 1,
@@ -319,7 +302,11 @@ export function buildFallbackItineraryFromPlaces(
     [
       ...new Set(
         selectedPlaces
-          .flatMap((p) => p.matchedSelectedCombinationIds ?? (p.sourceCombinationId != null ? [p.sourceCombinationId] : []))
+          .flatMap(
+            (p) =>
+              p.matchedSelectedCombinationIds ??
+              (p.sourceCombinationId != null ? [p.sourceCombinationId] : []),
+          )
           .filter((id): id is number => typeof id === "number" && id > 0),
       ),
     ].sort((a, b) => a - b);
@@ -374,9 +361,7 @@ export function buildFallbackItineraryFromPlaces(
   const dates = listTripDates([], startDate, dayCount);
   const destLabel = destination?.trim() ? normalizeDestinationLabel(destination) : "";
   const stops = [...filled];
-  const occupied = new Set(
-    stops.map((s) => s.date?.trim()).filter(Boolean),
-  );
+  const occupied = new Set(stops.map((s) => s.date?.trim()).filter(Boolean));
 
   // Never invent synthetic / singleton fillers. Real-place supplement must run earlier.
   for (const date of dates) {
@@ -390,16 +375,13 @@ export function buildFallbackItineraryFromPlaces(
     );
     const spares = selectedPlaces.filter((p) => {
       const key =
-        p.googlePlaceId?.trim() ||
-        `${(p.placeName ?? p.name).replace(/\s+/g, "").toLowerCase()}`;
+        p.googlePlaceId?.trim() || `${(p.placeName ?? p.name).replace(/\s+/g, "").toLowerCase()}`;
       return key && !usedKeys.has(key);
     });
     // Only fill empty day with ≥ minPerDay unused places — never a singleton.
     if (spares.length >= minPerDay) {
       for (let i = 0; i < minPerDay; i += 1) {
-        stops.push(
-          makePlaceItineraryStop(spares[i]!, date, i === 0 ? "10:00" : "14:00"),
-        );
+        stops.push(makePlaceItineraryStop(spares[i]!, date, i === 0 ? "10:00" : "14:00"));
       }
       occupied.add(date);
       continue;
@@ -407,19 +389,14 @@ export function buildFallbackItineraryFromPlaces(
     logAiPipeline(
       "[DAY_FILLER_SKIPPED]",
       `date=${date}`,
-      selectedCombinationIds.length > 0 &&
-        !SELECTED_COMBINATION_FILLER_POLICY.allowSynthetic
+      selectedCombinationIds.length > 0 && !SELECTED_COMBINATION_FILLER_POLICY.allowSynthetic
         ? "reason=selected_combinations_forbid_synthetic_filler"
         : "reason=forbid_singleton_or_synthetic_empty_day_fill",
       `spare=${spares.length}`,
       `need=${minPerDay}`,
       destLabel ? `destination=${destLabel}` : "",
     );
-    logAiPipeline(
-      "[EMPTY_DAY_BLOCKED]",
-      `date=${date}`,
-      "reason=no_places_and_not_free_day",
-    );
+    logAiPipeline("[EMPTY_DAY_BLOCKED]", `date=${date}`, "reason=no_places_and_not_free_day");
   }
 
   if (stops.length < computeMinimumPlacesForTripDays(dayCount)) {
@@ -441,10 +418,7 @@ export function buildFallbackItineraryFromPlaces(
     resolvedPlaces: selectedPlaces,
   });
   if (!validation.ok) {
-    logAiPipeline(
-      "[ITINERARY_INTEGRITY_WARN]",
-      `reasons=${validation.reasons.join("|")}`,
-    );
+    logAiPipeline("[ITINERARY_INTEGRITY_WARN]", `reasons=${validation.reasons.join("|")}`);
   }
 
   const preSave = validateItineraryPreSave({
@@ -551,7 +525,11 @@ export function unwrapGeneratedTripPayload(result: unknown): RoamiePayloadV2 | n
     }
   }
 
-  if (record.itinerary && typeof record.itinerary === "object" && !Array.isArray(record.itinerary)) {
+  if (
+    record.itinerary &&
+    typeof record.itinerary === "object" &&
+    !Array.isArray(record.itinerary)
+  ) {
     return normalizeTripPayload(record.itinerary as Partial<RoamiePayloadV2>);
   }
 
