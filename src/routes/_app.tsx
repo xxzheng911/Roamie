@@ -12,29 +12,19 @@ import { cn } from "@/lib/utils";
 import { enterHomeLocationMode, leaveHomeLocationMode } from "@/lib/location-coordinator";
 import { setHomeRouteVisible } from "@/lib/home-route-active";
 import { syncRouteKeyboardMode } from "@/lib/route-keyboard-mode";
-import {
-  logPerfRouteChange,
-  logPerfRouteDuration,
-} from "@/lib/app-perf";
+import { logPerfRouteChange, logPerfRouteDuration } from "@/lib/app-perf";
 import { useScrollPerfMonitor } from "@/hooks/use-scroll-perf-monitor";
+import {
+  appContentWrapperClass,
+  isMainScrollLockedPath,
+  isTripDetailPath,
+  normalizeAppPath,
+} from "@/lib/app-scroll-contract";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: requireAppShellAccess,
   component: AppLayout,
 });
-
-function normalizeAppPath(pathname: string): string {
-  return pathname.replace(/\/+$/, "") || "/";
-}
-
-function isMainScrollLockedPath(pathname: string): boolean {
-  const path = normalizeAppPath(pathname);
-  return path === "/chat" || path === "/map" || path === "/plan";
-}
-
-function isTripDetailPath(pathname: string): boolean {
-  return /^\/saved\/[^/]+$/.test(normalizeAppPath(pathname));
-}
 
 function scrollPerfPageName(pathname: string): string | null {
   const path = normalizeAppPath(pathname);
@@ -144,7 +134,10 @@ function AppLayout() {
   useLayoutEffect(() => {
     document.documentElement.classList.toggle("map-route-active", pathname === "/map");
     document.documentElement.classList.toggle("chat-route-active", pathname === "/chat");
-    document.documentElement.classList.toggle("trip-detail-route-active", isTripDetailPath(pathname));
+    document.documentElement.classList.toggle(
+      "trip-detail-route-active",
+      isTripDetailPath(pathname),
+    );
 
     const main = document.querySelector("main.app-scroll");
     if (!(main instanceof HTMLElement)) return;
@@ -170,19 +163,14 @@ function AppLayout() {
         <main
           className={cn(
             "app-scroll flex min-h-0 flex-1 flex-col no-scrollbar pt-[var(--safe-area-top)]",
-            pathname === "/chat"
-              ? "pb-0"
-              : "pb-[var(--app-nav-total-height)]",
-            mainScrollLocked ? "min-h-0 flex-1 overflow-hidden" : "overflow-x-hidden overflow-y-auto",
+            pathname === "/chat" ? "pb-0" : "pb-[var(--app-nav-total-height)]",
+            mainScrollLocked
+              ? "min-h-0 flex-1 overflow-hidden"
+              : "overflow-x-hidden overflow-y-auto",
           )}
         >
           <AppErrorBoundary routeLabel="_app">
-            <div
-              className={cn(
-                "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
-                mainScrollLocked && "min-h-0",
-              )}
-            >
+            <div className={appContentWrapperClass(mainScrollLocked)}>
               <Outlet />
             </div>
           </AppErrorBoundary>

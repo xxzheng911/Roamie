@@ -64,6 +64,7 @@
     "verify:taichung-flow": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-taichung-new-flow.mjs",
     "verify:hsinchu-combos": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-hsinchu-combination-no-placeholders.mjs",
     "verify:place-map-flow": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-map-rate-limit-flow.mjs",
+    "verify:saved-scroll": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-saved-scroll-contract.mjs",
     "verify:chat-no-combo-cards": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-chat-no-combination-place-cards.mjs",
     "verify:rec-conversation-layer": "node scripts/verify-recommendation-conversation-layer.mjs",
     "verify:recommendation-refinement": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-refinement.mjs",
