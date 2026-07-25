@@ -18,10 +18,8 @@ import {
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
 import type { PlaceResult } from "@/lib/place-result";
 import { distanceMeters } from "@/lib/geo-distance";
-import {
-  isPlaceLocked,
-  type SelectedPlaceLock,
-} from "@/lib/ai/required-anchor-runtime";
+import { isPlaceLocked, type SelectedPlaceLock } from "@/lib/ai/required-anchor-runtime";
+import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
 
 export type DayCoveragePlanEntry = {
   time: string;
@@ -611,8 +609,74 @@ export function logItineraryFailureChain(chain: ItineraryFailureChain): void {
   );
 }
 
+function canonicalEntryIdentity(entry: DayCoveragePlanEntry): string {
+  const identity = resolveCanonicalPlaceIdentity({
+    id: entry.place.id,
+    googlePlaceId: entry.place.id,
+    name: entry.name,
+    placeName: entry.place.name,
+  });
+  return identity.canonicalPlaceId ? identity.identityKey : "";
+}
+
+function dayContainsIdentity(plan: DayCoveragePlan, identityKey: string): boolean {
+  return Boolean(
+    identityKey &&
+    plan.entries.some((candidate) => canonicalEntryIdentity(candidate) === identityKey),
+  );
+}
+
+function logRequiredPlaceCoverageSummary(params: {
+  plans: readonly DayCoveragePlan[];
+  lock: SelectedPlaceLock | null | undefined;
+  movedRequiredIds: ReadonlySet<string>;
+}): void {
+  if (!params.lock) return;
+
+  const occurrences = new Map<string, number>();
+  for (const plan of params.plans) {
+    for (const entry of plan.entries) {
+      const identityKey = canonicalEntryIdentity(entry);
+      if (identityKey && params.lock.placeIds.has(identityKey)) {
+        occurrences.set(identityKey, (occurrences.get(identityKey) ?? 0) + 1);
+      }
+    }
+  }
+
+  const requiredIds = [...params.lock.placeIds].sort();
+  const presentIds = requiredIds.filter((id) => (occurrences.get(id) ?? 0) > 0);
+  const missingRequiredIds = requiredIds.filter((id) => !occurrences.has(id));
+  const duplicateRequiredIds = requiredIds.filter((id) => (occurrences.get(id) ?? 0) > 1);
+  const requiredCount = params.lock.anchors.length || requiredIds.length;
+  const presentNameOnlyCount = params.lock.anchors.filter(
+    (anchor) =>
+      !anchor.placeId &&
+      params.plans.some((plan) =>
+        plan.entries.some((entry) =>
+          isLockedEntry(entry, {
+            names: [anchor.name],
+            normalizedNames: new Set([anchor.normalizedName]),
+            placeIds: new Set<string>(),
+            anchors: [anchor],
+          }),
+        ),
+      ),
+  ).length;
+
+  logAiPipeline(
+    "[REQUIRED_PLACE_COVERAGE_SUMMARY]",
+    `requiredCount=${requiredCount}`,
+    `presentCount=${presentIds.length + presentNameOnlyCount}`,
+    `missingRequiredIds=${missingRequiredIds.join(",")}`,
+    `duplicateRequiredIds=${duplicateRequiredIds.join(",")}`,
+    `movedRequiredCount=${params.movedRequiredIds.size}`,
+  );
+}
+
 /**
- * Move diversity violators to other days (do not drop locked / required anchors).
+ * Move diversity violators to other days. Required anchors may move, but are
+ * never removed or replaced; SelectedPlaceLock is an identity-preservation
+ * contract, not a fixed-day assignment contract.
  */
 export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
   plans: readonly T[];
@@ -624,6 +688,7 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
   const limits = resolveDailyDiversityLimits({ style: params.style });
   const plans = normalizeCompleteDayMap(clonePlans(params.plans), params.tripDays);
   let moved = 0;
+  const movedRequiredIds = new Set<string>();
 
   for (const plan of plans) {
     const kept: DayCoveragePlanEntry[] = [];
@@ -631,27 +696,6 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
     const overflow: DayCoveragePlanEntry[] = [];
 
     for (const entry of plan.entries) {
-      if (isLockedEntry(entry, params.lock)) {
-        const lockedCheck = wouldViolateDailyDiversity(keptPlaces, entry.place, limits);
-        if (!lockedCheck.ok) {
-          logAiPipeline(
-            "[REPAIR_DIVERSITY_MOVE]",
-            `fromDay=${plan.day}`,
-            "toDay=",
-            `placeId=${entry.place.id}`,
-            `placeName=${entry.place.localizedDisplayName ?? entry.name}`,
-            `family=${lockedCheck.category}`,
-            `beforeSummary=${formatDailyDiversityFamilySummary(keptPlaces)}`,
-            `afterSummary=${formatDailyDiversityFamilySummary([...keptPlaces, entry.place])}`,
-            "resolvedOverflow=false",
-            `repairRound=${params.telemetryRepairRound ?? 0}`,
-            "reason=locked",
-          );
-        }
-        kept.push(entry);
-        keptPlaces.push(entry.place);
-        continue;
-      }
       const check = wouldViolateDailyDiversity(keptPlaces, entry.place, limits);
       if (!check.ok) {
         overflow.push(entry);
@@ -663,27 +707,77 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
     plan.entries = kept;
 
     for (const entry of overflow) {
+      const required = isLockedEntry(entry, params.lock);
+      const identityKey = canonicalEntryIdentity(entry);
       const category = classifyDailyDiversityCategory(entry.place) as DailyDiversityCategory;
       const beforeCount =
         keptPlaces.filter((p) => classifyDailyDiversityCategory(p) === category).length + 1;
       const limit =
-        category in limits
-          ? limits[category as keyof typeof limits]
-          : Number.POSITIVE_INFINITY;
+        category in limits ? limits[category as keyof typeof limits] : Number.POSITIVE_INFINITY;
 
       let target: T | null = null;
+      if (required && !identityKey) {
+        plan.entries.push(entry);
+        keptPlaces.push(entry.place);
+        logAiPipeline(
+          "[REPAIR_DIVERSITY_MOVE]",
+          `fromDay=${plan.day}`,
+          "toDay=",
+          `placeId=${entry.place.id}`,
+          `placeName=${entry.place.localizedDisplayName ?? entry.name}`,
+          `family=${category}`,
+          "resolvedOverflow=false",
+          `repairRound=${params.telemetryRepairRound ?? 0}`,
+          "required=true",
+          "fixedDay=false",
+          "reason=missingIdentity",
+        );
+        continue;
+      }
       for (const other of plans) {
         if (other.day === plan.day) continue;
+        if (dayContainsIdentity(other, identityKey)) {
+          logAiPipeline(
+            "[REPAIR_DIVERSITY_MOVE]",
+            `fromDay=${plan.day}`,
+            `toDay=${other.day}`,
+            `placeId=${entry.place.id}`,
+            `placeName=${entry.place.localizedDisplayName ?? entry.name}`,
+            `family=${category}`,
+            "resolvedOverflow=false",
+            `repairRound=${params.telemetryRepairRound ?? 0}`,
+            `required=${required}`,
+            "fixedDay=false",
+            "reason=duplicateConflict",
+          );
+          continue;
+        }
         const otherPlaces = other.entries.map((e) => e.place);
-        if (wouldViolateDailyDiversity(otherPlaces, entry.place, limits).ok) {
-          // Prefer days without this category and with spare capacity.
-          if (
-            !target ||
-            other.entries.length < target.entries.length ||
-            !otherPlaces.some((p) => classifyDailyDiversityCategory(p) === category)
-          ) {
-            target = other;
-          }
+        if (!wouldViolateDailyDiversity(otherPlaces, entry.place, limits).ok) {
+          logAiPipeline(
+            "[REPAIR_DIVERSITY_MOVE]",
+            `fromDay=${plan.day}`,
+            `toDay=${other.day}`,
+            `placeId=${entry.place.id}`,
+            `placeName=${entry.place.localizedDisplayName ?? entry.name}`,
+            `family=${category}`,
+            `beforeSummary=${formatDailyDiversityFamilySummary(otherPlaces)}`,
+            `afterSummary=${formatDailyDiversityFamilySummary([...otherPlaces, entry.place])}`,
+            "resolvedOverflow=false",
+            `repairRound=${params.telemetryRepairRound ?? 0}`,
+            `required=${required}`,
+            "fixedDay=false",
+            "reason=recipientOverflow",
+          );
+          continue;
+        }
+        // Prefer days without this category and with spare capacity.
+        if (
+          !target ||
+          other.entries.length < target.entries.length ||
+          !otherPlaces.some((p) => classifyDailyDiversityCategory(p) === category)
+        ) {
+          target = other;
         }
       }
 
@@ -691,6 +785,7 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
         const targetBefore = [...target.entries];
         target.entries.push(entry);
         moved += 1;
+        if (required) movedRequiredIds.add(identityKey);
         const afterCount = target.entries.filter(
           (e) => classifyDailyDiversityCategory(e.place) === category,
         ).length;
@@ -705,8 +800,23 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
           `afterSummary=${formatDailyDiversityFamilySummary(target.entries.map((item) => item.place))}`,
           `resolvedOverflow=${afterCount <= limit}`,
           `repairRound=${params.telemetryRepairRound ?? 0}`,
-          "reason=",
+          `required=${required}`,
+          "fixedDay=false",
+          "reason=moved",
         );
+        if (required) {
+          logAiPipeline(
+            "[REQUIRED_PLACE_MOVE]",
+            `place=${entry.place.localizedDisplayName ?? entry.name}`,
+            `placeId=${entry.place.id}`,
+            `fromDay=${plan.day}`,
+            `toDay=${target.day}`,
+            `family=${category}`,
+            "reason=daily_diversity",
+            "required=true",
+            "fixedDay=false",
+          );
+        }
         logAiPipeline(
           "[DAILY_CATEGORY_HARD_GATE]",
           `day=${plan.day}`,
@@ -748,6 +858,8 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
           `afterSummary=${formatDailyDiversityFamilySummary(keptPlaces)}`,
           "resolvedOverflow=false",
           `repairRound=${params.telemetryRepairRound ?? 0}`,
+          `required=${required}`,
+          "fixedDay=false",
           "reason=noRecipient",
         );
         logAiPipeline(
@@ -779,6 +891,7 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
     }
   }
 
+  logRequiredPlaceCoverageSummary({ plans, lock: params.lock, movedRequiredIds });
   return { plans, moved };
 }
 
