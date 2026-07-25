@@ -81,6 +81,10 @@ import {
   resolveRepairRoundStopReason,
   shortRepairFingerprint,
 } from "@/lib/ai/itinerary-validator/repair-progress";
+import {
+  degradeDiversityFailureToWarning,
+  evaluateDiversityDegradationEvidence,
+} from "@/lib/ai/itinerary-validator/diversity-degradation";
 
 export type ItineraryReplanParams = {
   plans: ComposedDayPlan[];
@@ -1212,6 +1216,33 @@ export function replanUntilItineraryValid(
     stopReason = "max_rounds";
   }
 
+  if (!validation.pass && (noProgress || cycleDetected)) {
+    const evidence = evaluateDiversityDegradationEvidence({
+      plans,
+      validation,
+      pool: params.pool,
+      days: params.days,
+      style: params.style,
+      plannedDate: params.plannedDate,
+      repairStalled: noProgress,
+      cycleDetected,
+      lock: selectedLock,
+    });
+    if (evidence.eligible) {
+      validation = degradeDiversityFailureToWarning(validation);
+    }
+    logAiPipeline(
+      "[ITINERARY_DIVERSITY_DEGRADATION]",
+      `degradedRule=${evidence.degradedRule ?? ""}`,
+      `degradationReason=${evidence.degradationReason}`,
+      `candidatePoolExhausted=${evidence.candidatePoolExhausted}`,
+      `repairStalled=${evidence.repairStalled}`,
+      `cycleDetected=${evidence.cycleDetected}`,
+      `degradedDelivery=${evidence.eligible}`,
+      `deliveryAllowed=${validation.pass}`,
+    );
+  }
+
   if (!validation.pass && !hasHardBlockFailures(validation)) {
     const quality = evaluateMinimumAcceptableQuality(plans, validation, {
       days: params.days,
@@ -1268,7 +1299,7 @@ export function replanUntilItineraryValid(
   const hardFailures = validation.failedRules.filter((rule) =>
     hasHardBlockFailures({ ...validation, failedRules: [rule] }),
   );
-  if (validation.pass) stopReason = "success";
+  if (validation.pass && !noProgress && !cycleDetected) stopReason = "success";
   logAiPipeline(
     "[ITINERARY_FINAL_GATE]",
     `hardFailures=${hardFailures.map((rule) => rule.code).join(",") || "(none)"}`,
