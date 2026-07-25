@@ -1136,6 +1136,10 @@ export function refillMissingDaySlots(params: {
   days: number;
   style: TripStyleKey;
   plannedDate?: string;
+  /** Rate-limit fallback only: retain valid real partial days for graceful delivery. */
+  preservePartialDays?: boolean;
+  /** Rate-limit recovery only: never refill a stop that breaches an existing family cap. */
+  respectDiversityCaps?: boolean;
 }): ComposedDayPlan[] {
   const pool = dedupeCandidatePlaces(filterExcludedRetailPlaces(filterRealPlanningPlaces(params.pool)));
   const slotPools = buildItinerarySlotPools(pool);
@@ -1250,12 +1254,6 @@ export function refillMissingDaySlots(params: {
 
       if (!place?.name) return;
       const beforePlaces = entries.map((existing) => existing.place);
-      entries.push({
-        time: slot.time,
-        label: resolveEntryLabel(slot, place),
-        name: place.name,
-        place,
-      });
       const family = classifyDailyDiversityCategory(place);
       const limits = resolveDailyDiversityLimits({ style: params.style });
       const cap = family in limits
@@ -1264,6 +1262,19 @@ export function refillMissingDaySlots(params: {
       const beforeFamilyCount = beforePlaces.filter(
         (candidate) => classifyDailyDiversityCategory(candidate) === family,
       ).length;
+      if (
+        params.respectDiversityCaps &&
+        Number.isFinite(cap) &&
+        beforeFamilyCount + 1 > cap
+      ) {
+        return;
+      }
+      entries.push({
+        time: slot.time,
+        label: resolveEntryLabel(slot, place),
+        name: place.name,
+        place,
+      });
       logAiPipeline(
         "[DAY_SLOT_REFILL_APPLY]",
         `day=${plan.day}`,
@@ -1294,7 +1305,7 @@ export function refillMissingDaySlots(params: {
       );
     }
     // P1 Step 1: never leave a partial / singleton day after refill — empty is honest.
-    if (after > 0 && after < minPerDay) {
+    if (after > 0 && after < minPerDay && !params.preservePartialDays) {
       logAiPipeline(
         "[AI_PLANNER_CANDIDATE_INSUFFICIENT]",
         `day=${plan.day}`,

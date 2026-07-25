@@ -92,6 +92,7 @@ import {
 import {
   bindSessionCandidatePool,
   readCandidatePoolCache,
+  readSessionCandidatePool,
   shouldBlockNewPlacesCalls,
   writeCandidatePoolCache,
 } from "@/lib/ai/places-cost-cache";
@@ -234,6 +235,10 @@ import {
 } from "@/lib/ai/ai-multi-day-planner";
 import { expandPlacePoolUntilSufficient } from "@/lib/ai/place-pool-expansion";
 import { resolveTripPlaceId } from "@/lib/ai/ai-trip-place-allocator";
+import {
+  evaluateIncompletePayloadDegradation,
+  recoverInMemoryCandidatePool,
+} from "@/lib/ai/itinerary-candidate-recovery";
 
 export type DestinationPlaceSearchFn = (params: {
   label: string;
@@ -2891,6 +2896,71 @@ export async function generateTripPlanFromStyle(input: {
   };
 
   let finalRenderable = isItineraryRenderable(composedPlans, days, style);
+  const rateLimitedAtFinalization = shouldSkipPlanningPlacesApi();
+  if (!finalRenderable && rateLimitedAtFinalization) {
+    const sessionPool = readSessionCandidatePool({
+      sessionId: planningSessionId,
+      destination: label,
+    });
+    const cachedPool = readCandidatePoolCache(label);
+    const recovery = recoverInMemoryCandidatePool({
+      context: params.context,
+      scenicPlaces: places,
+      plannerPlaces: planningResult.places,
+      existingPlaces: [
+        ...(sessionPool?.places ?? []),
+        ...(cachedPool?.places ?? []),
+        ...bestFrozenPlaces,
+        ...flattenComposedDayPlanPlaces(composedPlans),
+        ...flattenComposedDayPlanPlaces(bestFrozenPlans),
+      ],
+    });
+    const recoveryPools = buildItinerarySlotPools(recovery.places);
+    logAiPipeline("[CANDIDATE_RECOVERY_SUMMARY]", {
+      rateLimited: true,
+      candidateRecovered: recovery.candidateRecovered,
+      recoveredBySource: recovery.recoveredBySource,
+      remainingAfterRecovery: {
+        breakfast: recoveryPools.breakfast,
+        attraction: recoveryPools.attraction,
+        lunch: recoveryPools.lunch,
+        cafe: recoveryPools.cafe,
+        dinner: recoveryPools.dinner,
+        evening: recoveryPools.evening,
+        total: recoveryPools.total,
+      },
+    });
+
+    if (recovery.places.length) {
+      const recoveryBase = plannerTotalPlaces(bestFrozenPlans) > plannerTotalPlaces(composedPlans)
+        ? bestFrozenPlans
+        : composedPlans;
+      composedPlans = refillMissingDaySlots({
+        plans: recoveryBase,
+        pool: recovery.places,
+        days,
+        style,
+        plannedDate: params.context.startDate,
+        preservePartialDays: true,
+        respectDiversityCaps: true,
+      });
+      bestFrozenPlaces = recovery.places;
+      planningResult = {
+        ...planningResult,
+        places: recovery.places,
+        composedPlans,
+        ranked: flattenComposedDayPlanPlaces(composedPlans),
+        buckets: composedDayPlansToBuckets(composedPlans),
+      };
+      finalRenderable = isItineraryRenderable(composedPlans, days, style);
+    } else {
+      logAiPipeline("[CANDIDATE_RECOVERY_EXHAUSTED]", {
+        rateLimited: true,
+        candidateRecovered: 0,
+      });
+    }
+  }
+
   const poolCountsForDeficit = buildItinerarySlotPools(
     bestFrozenPlaces.length ? bestFrozenPlaces : places,
   );
@@ -2984,7 +3054,7 @@ export async function generateTripPlanFromStyle(input: {
   const affectedDaysFinal = composedPlans
     .filter((p) => p.entries.length < minEffectivePlacesPerDay(paceHint))
     .map((p) => p.day);
-  const candidateInsufficientResult: CandidateInsufficientResult | undefined =
+  let candidateInsufficientResult: CandidateInsufficientResult | undefined =
     planningResult.candidateInsufficient ??
     (availableCanonicalFinal < requiredCanonicalFinal || affectedDaysFinal.length > 0
       ? {
@@ -2996,6 +3066,44 @@ export async function generateTripPlanFromStyle(input: {
           replanReasons: ["insufficient_candidates"],
         }
       : undefined);
+
+  const requiredPlaceIds = (params.context.offeredCombinations ?? [])
+    .flatMap((combination) => combination.places)
+    .flatMap((place) => place.isRequiredBySelection && place.googlePlaceId
+      ? [place.googlePlaceId]
+      : []);
+  const payloadDegradation = evaluateIncompletePayloadDegradation({
+    plans: composedPlans,
+    days,
+    requiredPlaceIds,
+  });
+  const gracefulDegradationAllowed =
+    rateLimitedAtFinalization &&
+    !finalRenderable &&
+    payloadDegradation.deliveryAllowed;
+  if (rateLimitedAtFinalization && !finalRenderable) {
+    logAiPipeline("[PAYLOAD_DEGRADATION_DECISION]", {
+      requiredSlots: payloadDegradation.requiredSlots,
+      optionalSlots: payloadDegradation.optionalSlots,
+      missingRequired: payloadDegradation.missingRequired,
+      missingOptional: payloadDegradation.missingOptional,
+      degraded: gracefulDegradationAllowed,
+      deliveryAllowed: gracefulDegradationAllowed,
+    });
+  }
+  if (gracefulDegradationAllowed) {
+    candidateInsufficientResult = undefined;
+    logAiPipeline("[CANDIDATE_RECOVERY_EXHAUSTED]", {
+      rateLimited: true,
+      action: "deliver_verified_partial_itinerary",
+    });
+  } else if (rateLimitedAtFinalization && !finalRenderable) {
+    logAiPipeline("[CANDIDATE_RECOVERY_EXHAUSTED]", {
+      rateLimited: true,
+      action: "retain_incomplete_failure",
+      missingRequired: payloadDegradation.missingRequired,
+    });
+  }
 
   if (candidateInsufficientResult) {
     logAiPipeline(
@@ -3014,7 +3122,7 @@ export async function generateTripPlanFromStyle(input: {
   let recommendations: RoamieRecommendationItem[] = [];
 
   const renderableAfterForce =
-    finalRenderable && !candidateInsufficientResult;
+    (finalRenderable || gracefulDegradationAllowed) && !candidateInsufficientResult;
   const totalAfterForce = finalTotalPlaces;
   if (renderableAfterForce && totalAfterForce > 0) {
     dayPlan = alignDayPlanToSession(
@@ -3176,7 +3284,7 @@ export async function generateTripPlanFromStyle(input: {
       // replan 可能已改寫 composedPlans — 若先前已產出 dayPlan，對齊最終計畫
       if (validation.pass && composedPlans.length) {
         const renderable = isItineraryRenderable(composedPlans, days, style);
-        if (renderable && !candidateInsufficientResult) {
+        if ((renderable || gracefulDegradationAllowed) && !candidateInsufficientResult) {
           dayPlan = alignDayPlanToSession(
             composedPlansToAiDayPlan({
               composedPlans,
