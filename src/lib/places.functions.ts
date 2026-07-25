@@ -46,6 +46,13 @@ import {
   isPlaceDetailsCacheComplete,
 } from "@/lib/unified-place-cache";
 import {
+  classifyPlaceDetailFailure,
+  inspectPlaceDetailResponseShape,
+  logPlaceDetailRequestFailure,
+  parseGooglePlaceDetailError,
+  type PlaceDetailRequestPath,
+} from "@/lib/place-detail-failure-telemetry";
+import {
   pushPlacesCallContext,
   popPlacesCallContext,
   recordPlacesHttpCall,
@@ -902,6 +909,7 @@ export async function fetchPlaceDetailsForScreenWithKey(
   apiKey: string,
   locale?: Locale,
   cacheScope?: { cityLabel?: string; country?: string; lat?: number; lng?: number },
+  telemetryOptions?: { requestPath?: PlaceDetailRequestPath },
 ): Promise<PlaceDetailsScreenResult | null> {
   const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, locale ?? "zh-TW", cacheScope);
   const cached = readUnifiedPlaceDetailsCache(cacheKey);
@@ -921,8 +929,10 @@ export async function fetchPlaceDetailsForScreenWithKey(
       screen: getPlacesCallContext().screen,
     });
 
+    let failureTelemetryLogged = false;
     try {
       const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
+      const requestPath = telemetryOptions?.requestPath ?? "server";
       const res = await fetch(placeDetailsUrl(placeId, languageCode), {
         headers: {
           "X-Goog-Api-Key": apiKey,
@@ -932,15 +942,124 @@ export async function fetchPlaceDetailsForScreenWithKey(
       });
       if (!res.ok) {
         const detail = await res.text().catch(() => "");
+        const googleError = parseGooglePlaceDetailError(detail);
+        logPlaceDetailRequestFailure({
+          placeId,
+          requestPath,
+          languageCode,
+          fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
+          cacheStatus: "miss",
+          serverAttempted: requestPath === "server",
+          clientFallbackAttempted: requestPath === "capacitor_client",
+          httpStatus: res.status,
+          httpOk: res.ok,
+          googleErrorCode: googleError.code,
+          googleErrorStatus: googleError.status,
+          googleErrorMessage: googleError.message,
+          parserResult: "parsed",
+          failureKind: classifyPlaceDetailFailure({
+            httpStatus: res.status,
+            googleErrorStatus: googleError.status,
+          }),
+          shape: inspectPlaceDetailResponseShape(null),
+        });
+        failureTelemetryLogged = true;
         console.warn("[Roamie Places] place details client HTTP", res.status, detail.slice(0, 200));
         if (res.status === 429 || res.status === 503) {
           throw new Error(`places_details_http_${res.status}`);
         }
         return null;
       }
-      const p = (await res.json()) as PlaceDetailsScreenRaw;
+      let p: PlaceDetailsScreenRaw;
+      try {
+        p = (await res.json()) as PlaceDetailsScreenRaw;
+      } catch (parseError) {
+        const exceptionName = parseError instanceof Error ? parseError.name : "UnknownError";
+        const exceptionMessage = parseError instanceof Error ? parseError.message : String(parseError);
+        logPlaceDetailRequestFailure({
+          placeId,
+          requestPath,
+          languageCode,
+          fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
+          cacheStatus: "miss",
+          serverAttempted: requestPath === "server",
+          clientFallbackAttempted: requestPath === "capacitor_client",
+          httpStatus: res.status,
+          httpOk: res.ok,
+          googleErrorCode: null,
+          googleErrorStatus: "",
+          googleErrorMessage: "",
+          parserResult: "failed",
+          failureKind: classifyPlaceDetailFailure({
+            httpStatus: res.status,
+            parserResult: "failed",
+            exceptionName,
+            exceptionMessage,
+          }),
+          exceptionName,
+          exceptionMessage,
+          shape: inspectPlaceDetailResponseShape(null),
+        });
+        failureTelemetryLogged = true;
+        throw parseError;
+      }
+      const responseShape = inspectPlaceDetailResponseShape(p);
+      if (
+        !responseShape.responsePlaceIdPresent ||
+        !responseShape.responseDisplayNamePresent ||
+        !responseShape.responseLocationPresent
+      ) {
+        const emptyResponse = Object.keys(p).length === 0;
+        logPlaceDetailRequestFailure({
+          placeId,
+          requestPath,
+          languageCode,
+          fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
+          cacheStatus: "miss",
+          serverAttempted: requestPath === "server",
+          clientFallbackAttempted: requestPath === "capacitor_client",
+          httpStatus: res.status,
+          httpOk: res.ok,
+          googleErrorCode: null,
+          googleErrorStatus: "",
+          googleErrorMessage: "",
+          parserResult: emptyResponse ? "empty_response" : "invalid_payload",
+          failureKind: emptyResponse ? "empty_response" : "invalid_payload",
+          shape: responseShape,
+        });
+        failureTelemetryLogged = true;
+      }
       return mapPlaceDetailsScreenRaw(p, locale);
     } catch (e) {
+      const exceptionName = e instanceof Error ? e.name : "UnknownError";
+      const exceptionMessage = e instanceof Error ? e.message : String(e);
+      if (!failureTelemetryLogged) {
+        const languageCode = localeToGoogleLanguageCode(locale ?? "zh-TW");
+        const requestPath = telemetryOptions?.requestPath ?? "server";
+        logPlaceDetailRequestFailure({
+          placeId,
+          requestPath,
+          languageCode,
+          fieldMask: PLACE_DETAILS_SCREEN_FIELD_MASK,
+          cacheStatus: "miss",
+          serverAttempted: requestPath === "server",
+          clientFallbackAttempted: requestPath === "capacitor_client",
+          httpStatus: 0,
+          httpOk: false,
+          googleErrorCode: null,
+          googleErrorStatus: "",
+          googleErrorMessage: "",
+          parserResult: "parsed",
+          failureKind: classifyPlaceDetailFailure({
+            httpStatus: 0,
+            exceptionName,
+            exceptionMessage,
+          }),
+          exceptionName,
+          exceptionMessage,
+          shape: inspectPlaceDetailResponseShape(null),
+        });
+      }
       console.warn("[Roamie Places] place details client failed", placeId, e);
       return null;
     }
@@ -960,7 +1079,9 @@ export async function fetchPlaceDetailsForScreen(
 ): Promise<PlaceDetailsScreenResult | null> {
   try {
     const apiKey = await getServerMapsKey();
-    return await fetchPlaceDetailsForScreenWithKey(placeId, apiKey, locale);
+    return await fetchPlaceDetailsForScreenWithKey(placeId, apiKey, locale, undefined, {
+      requestPath: "server",
+    });
   } catch (e) {
     console.warn("[Roamie Places] place details screen failed", placeId, e);
     return null;

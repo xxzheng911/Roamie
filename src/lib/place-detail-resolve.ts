@@ -12,6 +12,7 @@ import {
   resolvePlaceOpeningDisplay,
 } from "@/lib/normalized-opening-status";
 import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
+import type { PlaceDetailBoundaryTelemetry } from "@/lib/place-detail-failure-telemetry";
 import type { PlaceResult } from "@/lib/place-result";
 import {
   cachePlaceImages,
@@ -391,7 +392,11 @@ export async function fetchGooglePlaceDetailsForHandoff(
     locale: Locale,
   ) => Promise<PlaceDetailsScreenResult | null>,
   cacheScope?: { cityLabel?: string; country?: string; lat?: number; lng?: number },
-): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> {
+): Promise<{
+  place: PlaceDetailsScreenResult | null;
+  error: string | null;
+  boundaryTelemetry?: PlaceDetailBoundaryTelemetry;
+}> {
   const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, locale, cacheScope);
   const cached = readUnifiedPlaceDetailsCache(cacheKey);
   if (cached?.place) {
@@ -415,7 +420,28 @@ export async function fetchGooglePlaceDetailsForHandoff(
     }
   }
 
-  return server;
+  const serverErrorPresent = typeof server.error === "string" && server.error.length > 0;
+  return {
+    ...server,
+    boundaryTelemetry: {
+      cacheHit: false,
+      cachePlacePresent: false,
+      cacheEnvelopeValid: false,
+      serverAttempted: true,
+      serverPlacePresent: false,
+      serverErrorPresent,
+      serverErrorCode: serverErrorPresent ? (server.error ?? "") : "",
+      clientFallbackAttempted: Boolean(fetchClientDetails),
+      clientPlacePresent: false,
+      clientErrorPresent: false,
+      clientErrorCode: "",
+      firstNullErrorBoundary: serverErrorPresent
+        ? fetchClientDetails
+          ? "capacitor_client_null_result"
+          : "none"
+        : "server_result_null_error",
+    },
+  };
 }
 
 export function mergeFetchedPlace(

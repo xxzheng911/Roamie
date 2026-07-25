@@ -32,6 +32,7 @@ import {
   type PlaceDetailViewModel,
 } from "@/lib/place-detail-resolve";
 import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
+import { logPlaceDetailResultBoundary } from "@/lib/place-detail-failure-telemetry";
 import {
   fetchGooglePlaceDetailsForHandoffViaGateway,
   fetchPlaceDetailsForScreenWithKeyViaGateway,
@@ -253,7 +254,13 @@ function PlaceDetailPage() {
             ? async (id, loc) => {
                 const mapsKey = getGoogleMapsBrowserKey();
                 if (!mapsKey) return null;
-                return fetchPlaceDetailsForScreenWithKeyViaGateway(id, mapsKey, loc);
+                return fetchPlaceDetailsForScreenWithKeyViaGateway(
+                  id,
+                  mapsKey,
+                  loc,
+                  undefined,
+                  { requestPath: "capacitor_client" },
+                );
               }
             : undefined,
         );
@@ -263,7 +270,8 @@ function PlaceDetailPage() {
             DETAIL_REFRESH_TIMEOUT_MS,
           );
         });
-        const { place: fetched, error } = await Promise.race([fetchPromise, timeoutPromise]);
+        const result = await Promise.race([fetchPromise, timeoutPromise]);
+        const { place: fetched, error } = result;
         if (cancelled) return;
         if (fetched) {
           applyFetched(fetched, placeId);
@@ -276,6 +284,37 @@ function PlaceDetailPage() {
             `[PLACE_DETAIL_REMOTE_REFRESH] elapsedMs=${Math.round(performance.now() - refreshStarted)} success=true`,
           );
           return;
+        }
+        if ("boundaryTelemetry" in result && result.boundaryTelemetry) {
+          logPlaceDetailResultBoundary({
+            placeId,
+            telemetry: result.boundaryTelemetry,
+            finalError: error,
+            snapshotPresent: hasSnapshot,
+            baseDetailPresent: Boolean(base),
+          });
+        } else {
+          logPlaceDetailResultBoundary({
+            placeId,
+            telemetry: {
+              cacheHit: false,
+              cachePlacePresent: false,
+              cacheEnvelopeValid: false,
+              serverAttempted: true,
+              serverPlacePresent: false,
+              serverErrorPresent: Boolean(error),
+              serverErrorCode: error ?? "",
+              clientFallbackAttempted: detectPlatform().isCapacitor,
+              clientPlacePresent: false,
+              clientErrorPresent: false,
+              clientErrorCode: "",
+              firstNullErrorBoundary:
+                error === "detail_refresh_timeout" ? "ui_timeout_race" : "result_without_trace",
+            },
+            finalError: error,
+            snapshotPresent: hasSnapshot,
+            baseDetailPresent: Boolean(base),
+          });
         }
         logPlaceDetailFetchFailed(placeId, error ?? "unknown");
         logPlaceDetailFallbackUsed(error ?? "fetch_failed");
