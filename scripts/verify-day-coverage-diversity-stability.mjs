@@ -124,7 +124,7 @@ assert.ok(
   "locked entry stays on donor day",
 );
 
-// An empty recipient skips a cap-zero donor and accepts the next legal entry.
+// A valid monument is eligible for an empty recipient under the positive cap contract.
 const monument = {
   ...place("monument1", "monument"),
   types: ["monument"],
@@ -142,8 +142,8 @@ const emptyRecipientResult = ensureAllDaysCovered({
 });
 assert.equal(stopCount(emptyRecipientResult.plans), stopCount(emptyRecipientPlans));
 assert.ok(
-  emptyRecipientResult.plans[1].entries.some((item) => item.place.id === monument.id),
-  "cap-zero donor is not moved even when recipient is empty",
+  emptyRecipientResult.plans[2].entries.some((item) => item.place.id === monument.id),
+  "valid monument can move to an empty recipient",
 );
 
 // No eligible donor leaves the plan unchanged and never drops a stop.

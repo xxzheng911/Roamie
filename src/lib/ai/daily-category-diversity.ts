@@ -38,6 +38,13 @@ export type DailyDiversityLimits = {
   monument: number;
 };
 
+const UNLIMITED_DAILY_DIVERSITY_CATEGORIES = [
+  "restaurant",
+  "nightlife",
+  "attraction",
+  "other",
+] as const satisfies readonly DailyDiversityCategory[];
+
 const TELEMETRY_FAMILY_ORDER: DailyDiversityCategory[] = [
   "park_family",
   "museum_family",
@@ -83,8 +90,34 @@ const DEFAULT_LIMITS: DailyDiversityLimits = {
   /** museum + gallery combined via classify → museum */
   museum_family: 1,
   shopping: 1,
-  monument: 0,
+  /** Valid tourism monuments are allowed, but should not be stacked in one day. */
+  monument: 1,
 };
+
+function resolveCategoryLimit(
+  category: DailyDiversityCategory,
+  limits: DailyDiversityLimits,
+): number {
+  if (category in limits) {
+    return limits[category as keyof DailyDiversityLimits];
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+/** Verifies that every formal family is explicitly capped or explicitly unlimited. */
+export function validateDailyDiversityLimitContract(
+  limits: DailyDiversityLimits = DEFAULT_LIMITS,
+): { valid: boolean; invalidCategories: DailyDiversityCategory[] } {
+  const explicitlyUnlimited = new Set<DailyDiversityCategory>(
+    UNLIMITED_DAILY_DIVERSITY_CATEGORIES,
+  );
+  const invalidCategories = TELEMETRY_FAMILY_ORDER.filter((category) => {
+    if (explicitlyUnlimited.has(category)) return false;
+    const limit = resolveCategoryLimit(category, limits);
+    return !Number.isInteger(limit) || limit < 1;
+  });
+  return { valid: invalidCategories.length === 0, invalidCategories };
+}
 
 function placeBlob(place: PlaceResult): string {
   return [place.name, place.address, place.primaryType, ...(place.types ?? [])]
@@ -263,10 +296,7 @@ export function wouldViolateDailyDiversity(
   const caps = limits ?? DEFAULT_LIMITS;
   const category = classifyDailyDiversityCategory(place);
   const count = existing.filter((p) => classifyDailyDiversityCategory(p) === category).length;
-  const limit =
-    category in caps
-      ? caps[category as keyof DailyDiversityLimits]
-      : Number.POSITIVE_INFINITY;
+  const limit = resolveCategoryLimit(category, caps);
 
   if (Number.isFinite(limit) && count >= limit) {
     return {
@@ -336,10 +366,7 @@ export function summarizeDailyCategoryDiversity(
   }
   const violations: string[] = [];
   for (const [cat, count] of Object.entries(categoryCounts)) {
-    const limit =
-      cat in limits
-        ? limits[cat as keyof DailyDiversityLimits]
-        : Number.POSITIVE_INFINITY;
+    const limit = resolveCategoryLimit(cat as DailyDiversityCategory, limits);
     if (Number.isFinite(limit) && count > limit) {
       violations.push(`${cat}:${count}>${limit}`);
     }
@@ -357,10 +384,7 @@ export function summarizeDailyCategoryDiversity(
     for (const place of places) {
       const categoryFamily = classifyDailyDiversityCategory(place);
       seen[categoryFamily] = (seen[categoryFamily] ?? 0) + 1;
-      const limit =
-        categoryFamily in limits
-          ? limits[categoryFamily as keyof DailyDiversityLimits]
-          : Number.POSITIVE_INFINITY;
+      const limit = resolveCategoryLimit(categoryFamily, limits);
       if (Number.isFinite(limit) && seen[categoryFamily] > limit) {
         logAiPipeline(
           "[DAILY_CATEGORY_HARD_GATE]",
