@@ -84,7 +84,11 @@ import {
 import {
   degradeDiversityFailureToWarning,
   evaluateDiversityDegradationEvidence,
+  logDiversityDegradationDecision,
 } from "@/lib/ai/itinerary-validator/diversity-degradation";
+import {
+  classifyDailyDiversityCategory,
+} from "@/lib/ai/daily-category-diversity";
 
 export type ItineraryReplanParams = {
   plans: ComposedDayPlan[];
@@ -261,12 +265,14 @@ function repairDailyCategoryDiversity(
   days: number,
   style: TripStyleKey,
   lock: SelectedPlaceLock | null = null,
+  telemetryRepairRound = 0,
 ): ComposedDayPlan[] {
   const moved = repairDailyDiversityByMove({
     plans,
     tripDays: days,
     style,
     lock,
+    telemetryRepairRound,
   });
   // Coverage may have been disturbed by moves — re-cover empty days.
   const covered = ensureAllDaysCovered({
@@ -738,7 +744,7 @@ function applyAutoRepairPass(
   // Always strip low-value facilities + unify display names before other repairs.
   // Selected Place Lock: quality / diversity / replacement must not drop locked anchors.
   current = repairRemoveLowValueAndLocalize(current, days, lock);
-  current = repairDailyCategoryDiversity(current, days, style, lock);
+  current = repairDailyCategoryDiversity(current, days, style, lock, attempt);
   current = repairNonNavigableStops(current, mergedPool, days, lock);
   current = repairNightlifeTiming(current, days);
 
@@ -819,7 +825,7 @@ function applyAutoRepairPass(
   }
 
   // Final: diversity move + coverage + time dedupe
-  current = repairDailyCategoryDiversity(current, days, style, lock);
+  current = repairDailyCategoryDiversity(current, days, style, lock, attempt);
   current = repairEmptyDays(current, days, partialDays, lock);
   current = repairNightlifeTiming(current, days);
   current = normalizeCompleteDayMap(
@@ -1010,6 +1016,39 @@ export function replanUntilItineraryValid(
   const seenPlanSignatures = new Set<string>([
     buildItineraryPlanSignature(plans, selectedLock),
   ]);
+  const initiallyUsedIds = new Set(
+    plans.flatMap((plan) => plan.entries.map((entry) => entry.place.id.trim())),
+  );
+  const poolFamilies = new Map<string, { verified: number; unused: number; replaceable: number }>();
+  for (const candidate of params.pool) {
+    const family = classifyDailyDiversityCategory(candidate);
+    const summary = poolFamilies.get(family) ?? { verified: 0, unused: 0, replaceable: 0 };
+    const identity = checkStopNavigationIdentity(
+      {
+        placeName: candidate.name,
+        googlePlaceId: candidate.id,
+        lat: candidate.lat,
+        lng: candidate.lng,
+        coordinateSource: candidate.coordinateSource,
+        address: candidate.address,
+      },
+      { silent: true },
+    );
+    const verified = Boolean(candidate.id.trim()) && identity.ok && identity.useForDirections;
+    const unused = verified && !initiallyUsedIds.has(candidate.id.trim());
+    summary.verified += verified ? 1 : 0;
+    summary.unused += unused ? 1 : 0;
+    summary.replaceable += unused && evaluateTourismQuality(candidate).ok ? 1 : 0;
+    poolFamilies.set(family, summary);
+  }
+  logAiPipeline(
+    "[CANDIDATE_POOL_SUMMARY]",
+    `families=${[...poolFamilies.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([family, counts]) => `${family}:verified=${counts.verified},unused=${counts.unused},replaceable=${counts.replaceable}`)
+      .join("|") || "(none)"}`,
+    `poolSize=${params.pool.length}`,
+  );
 
   // missing_days is hard for delivery but MUST enter Auto Repair first.
   while (
@@ -1096,6 +1135,8 @@ export function replanUntilItineraryValid(
     validation = validateItineraryPlan({
       ...params.validatorInput,
       plans,
+      telemetryRepairRound: attempts,
+      telemetryValidatorRound: attempts,
     });
 
     const newDayCounts = dayCountsOfPlans(plans);
@@ -1162,6 +1203,8 @@ export function replanUntilItineraryValid(
         validation = validateItineraryPlan({
           ...params.validatorInput,
           plans,
+          telemetryRepairRound: attempts,
+          telemetryValidatorRound: attempts,
         });
         logAiPipeline(
           "[ITINERARY_REPLAN_OUTPUT]",
@@ -1228,6 +1271,7 @@ export function replanUntilItineraryValid(
       cycleDetected,
       lock: selectedLock,
     });
+    logDiversityDegradationDecision(evidence);
     if (evidence.eligible) {
       validation = degradeDiversityFailureToWarning(validation);
     }

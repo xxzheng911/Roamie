@@ -499,7 +499,12 @@ function runRules(input: ItineraryValidatorInput): {
     const diversity = summarizeDailyCategoryDiversity(
       plan.day,
       plan.entries.map((entry) => entry.place),
-      { style: input.style, userText: input.userText },
+      {
+        style: input.style,
+        userText: input.userText,
+        repairRound: input.telemetryRepairRound,
+        validatorRound: input.telemetryValidatorRound,
+      },
     );
     if (!diversity.gatePass) {
       pushFail(

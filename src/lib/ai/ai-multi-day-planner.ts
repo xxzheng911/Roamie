@@ -52,6 +52,11 @@ import {
   resolveNearbyExtensionDay,
   type PlannerPaceHint,
 } from "@/lib/ai/planner-day-route-assembly";
+import {
+  classifyDailyDiversityCategory,
+  formatDailyDiversityFamilySummary,
+  resolveDailyDiversityLimits,
+} from "@/lib/ai/daily-category-diversity";
 
 export const MAX_TRIP_DUPLICATE_RATE = 0.2;
 /** 進入 Planner 前：候選池每天至少 6 個（4 天 = 至少 24） */
@@ -1244,12 +1249,33 @@ export function refillMissingDaySlots(params: {
           : undefined);
 
       if (!place?.name) return;
+      const beforePlaces = entries.map((existing) => existing.place);
       entries.push({
         time: slot.time,
         label: resolveEntryLabel(slot, place),
         name: place.name,
         place,
       });
+      const family = classifyDailyDiversityCategory(place);
+      const limits = resolveDailyDiversityLimits({ style: params.style });
+      const cap = family in limits
+        ? limits[family as keyof typeof limits]
+        : Number.POSITIVE_INFINITY;
+      const beforeFamilyCount = beforePlaces.filter(
+        (candidate) => classifyDailyDiversityCategory(candidate) === family,
+      ).length;
+      logAiPipeline(
+        "[DAY_SLOT_REFILL_APPLY]",
+        `day=${plan.day}`,
+        `slot=${key}`,
+        `placeId=${place.id}`,
+        `placeName=${place.localizedDisplayName ?? place.name}`,
+        `family=${family}`,
+        `primaryType=${place.primaryType ?? ""}`,
+        `beforeSummary=${formatDailyDiversityFamilySummary(beforePlaces)}`,
+        `afterSummary=${formatDailyDiversityFamilySummary(entries.map((existing) => existing.place))}`,
+        `introducedOverflow=${Number.isFinite(cap) && beforeFamilyCount + 1 > cap}`,
+      );
     });
 
     const sorted = dedupeEntryTimes(entries);

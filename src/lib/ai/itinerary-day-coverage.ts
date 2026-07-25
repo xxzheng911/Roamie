@@ -10,6 +10,7 @@ import type { ComposedDayPlan, DayPlanEntry } from "@/lib/ai/ai-day-plan-source"
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   classifyDailyDiversityCategory,
+  formatDailyDiversityFamilySummary,
   resolveDailyDiversityLimits,
   wouldViolateDailyDiversity,
   type DailyDiversityCategory,
@@ -618,6 +619,7 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
   tripDays: number;
   style?: TripStyleKey;
   lock?: SelectedPlaceLock | null;
+  telemetryRepairRound?: number;
 }): { plans: T[]; moved: number } {
   const limits = resolveDailyDiversityLimits({ style: params.style });
   const plans = normalizeCompleteDayMap(clonePlans(params.plans), params.tripDays);
@@ -630,6 +632,22 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
 
     for (const entry of plan.entries) {
       if (isLockedEntry(entry, params.lock)) {
+        const lockedCheck = wouldViolateDailyDiversity(keptPlaces, entry.place, limits);
+        if (!lockedCheck.ok) {
+          logAiPipeline(
+            "[REPAIR_DIVERSITY_MOVE]",
+            `fromDay=${plan.day}`,
+            "toDay=",
+            `placeId=${entry.place.id}`,
+            `placeName=${entry.place.localizedDisplayName ?? entry.name}`,
+            `family=${lockedCheck.category}`,
+            `beforeSummary=${formatDailyDiversityFamilySummary(keptPlaces)}`,
+            `afterSummary=${formatDailyDiversityFamilySummary([...keptPlaces, entry.place])}`,
+            "resolvedOverflow=false",
+            `repairRound=${params.telemetryRepairRound ?? 0}`,
+            "reason=locked",
+          );
+        }
         kept.push(entry);
         keptPlaces.push(entry.place);
         continue;
@@ -670,11 +688,25 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
       }
 
       if (target) {
+        const targetBefore = [...target.entries];
         target.entries.push(entry);
         moved += 1;
         const afterCount = target.entries.filter(
           (e) => classifyDailyDiversityCategory(e.place) === category,
         ).length;
+        logAiPipeline(
+          "[REPAIR_DIVERSITY_MOVE]",
+          `fromDay=${plan.day}`,
+          `toDay=${target.day}`,
+          `placeId=${entry.place.id}`,
+          `placeName=${entry.place.localizedDisplayName ?? entry.name}`,
+          `family=${category}`,
+          `beforeSummary=${formatDailyDiversityFamilySummary(targetBefore.map((item) => item.place))}`,
+          `afterSummary=${formatDailyDiversityFamilySummary(target.entries.map((item) => item.place))}`,
+          `resolvedOverflow=${afterCount <= limit}`,
+          `repairRound=${params.telemetryRepairRound ?? 0}`,
+          "reason=",
+        );
         logAiPipeline(
           "[DAILY_CATEGORY_HARD_GATE]",
           `day=${plan.day}`,
@@ -705,6 +737,19 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
         // claim delivery success; the final hard gate will reject this plan.
         plan.entries.push(entry);
         keptPlaces.push(entry.place);
+        logAiPipeline(
+          "[REPAIR_DIVERSITY_MOVE]",
+          `fromDay=${plan.day}`,
+          "toDay=",
+          `placeId=${entry.place.id}`,
+          `placeName=${entry.place.localizedDisplayName ?? entry.name}`,
+          `family=${category}`,
+          `beforeSummary=${formatDailyDiversityFamilySummary(keptPlaces)}`,
+          `afterSummary=${formatDailyDiversityFamilySummary(keptPlaces)}`,
+          "resolvedOverflow=false",
+          `repairRound=${params.telemetryRepairRound ?? 0}`,
+          "reason=noRecipient",
+        );
         logAiPipeline(
           "[DAILY_DIVERSITY_REPAIR]",
           `day=${plan.day}`,

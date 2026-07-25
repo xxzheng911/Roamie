@@ -15,6 +15,7 @@ import { checkStopNavigationIdentity } from "@/lib/saved-trip/stop-navigation";
 import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
 import type { PlaceResult } from "@/lib/place-result";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 const MINIMAL_DEGRADABLE_FAMILY = "park_family";
 const MINIMAL_OVERFLOW_RE = /^park_family:2>1$/;
@@ -61,7 +62,27 @@ export type DiversityDegradationEvidence = {
   structureComplete: boolean;
   stopCount: number;
   replacementCandidateId: string | null;
+  candidatePoolChecked: boolean;
+  minimalOverflow: boolean;
+  failedRuleCount: number;
 };
+
+export function logDiversityDegradationDecision(
+  evidence: DiversityDegradationEvidence,
+): void {
+  logAiPipeline(
+    "[DIVERSITY_DEGRADATION_DECISION]",
+    `onlyRule=${evidence.failedRuleCount === 1}`,
+    `failedRuleCount=${evidence.failedRuleCount}`,
+    `candidatePoolChecked=${evidence.candidatePoolChecked}`,
+    `candidatePoolExhausted=${evidence.candidatePoolExhausted}`,
+    `repairStalled=${evidence.repairStalled}`,
+    `cycleDetected=${evidence.cycleDetected}`,
+    `minimalOverflow=${evidence.minimalOverflow}`,
+    `allowed=${evidence.eligible}`,
+    `reason=${evidence.degradationReason}`,
+  );
+}
 
 export function evaluateDiversityDegradationEvidence(params: {
   plans: readonly ComposedDayPlan[];
@@ -124,6 +145,9 @@ export function evaluateDiversityDegradationEvidence(params: {
       structureComplete,
       stopCount,
       replacementCandidateId: null,
+      candidatePoolChecked: false,
+      minimalOverflow: minimalViolation,
+      failedRuleCount: params.validation.failedRules.length,
     };
   }
 
@@ -145,6 +169,9 @@ export function evaluateDiversityDegradationEvidence(params: {
       structureComplete,
       stopCount,
       replacementCandidateId: null,
+      candidatePoolChecked: false,
+      minimalOverflow: minimalViolation,
+      failedRuleCount: params.validation.failedRules.length,
     };
   }
 
@@ -167,12 +194,27 @@ export function evaluateDiversityDegradationEvidence(params: {
   );
   const replacement = params.pool.find((candidate) => {
     const id = candidate.id.trim();
-    if (!id || usedIds.has(id)) return false;
-    if (classifyDailyDiversityCategory(candidate) === MINIMAL_DEGRADABLE_FAMILY) return false;
-    if (!evaluateTourismQuality(candidate).ok) return false;
+    const family = classifyDailyDiversityCategory(candidate);
+    const slotLabels = familyEntries
+      .map((familyEntry) => familyEntry.label || familyEntry.time)
+      .join("|");
+    const reject = (reason: string): false => {
+      logAiPipeline(
+        "[REPLACEMENT_REJECT]",
+        `placeId=${candidate.id}`,
+        `placeName=${candidate.localizedDisplayName ?? candidate.name}`,
+        `family=${family}`,
+        `slot=${slotLabels}`,
+        `reason=${reason}`,
+      );
+      return false;
+    };
+    if (!id || usedIds.has(id)) return reject("already_used");
+    if (family === MINIMAL_DEGRADABLE_FAMILY) return reject("wrong_family");
+    if (!evaluateTourismQuality(candidate).ok) return reject("tourism_quality");
     const identity = checkStopNavigationIdentity(stopNavigationFields(candidate), { silent: true });
-    if (!identity.ok || !identity.useForDirections || !identity.placeId) return false;
-    return familyEntries.some((familyEntry) => {
+    if (!identity.ok || !identity.useForDirections || !identity.placeId) return reject("navigation");
+    const slotChecks = familyEntries.map((familyEntry) => {
       const dayWithoutEntry = violationDay.entries
         .filter((entry) => entry !== familyEntry)
         .map((entry) => entry.place);
@@ -181,11 +223,21 @@ export function evaluateDiversityDegradationEvidence(params: {
         label: familyEntry.label,
         kind: classifyPlanPlaceKind(familyEntry.place),
       };
-      return (
-        canPlaceFillSlot(candidate, slot, params.plannedDate) &&
-        wouldViolateDailyDiversity(dayWithoutEntry, candidate, limits).ok
-      );
+      const slotOk = canPlaceFillSlot(candidate, slot, params.plannedDate);
+      const diversityOk = wouldViolateDailyDiversity(dayWithoutEntry, candidate, limits).ok;
+      return { familyEntry, slotOk, diversityOk };
     });
+    if (slotChecks.every((check) => !check.slotOk)) {
+      const closed = familyEntries.every(
+        (familyEntry) =>
+          isClearlyClosedAtSlot(candidate, params.plannedDate, familyEntry.time) === true,
+      );
+      return reject(closed ? "closed" : "wrong_slot");
+    }
+    if (!slotChecks.some((check) => check.slotOk && check.diversityOk)) {
+      return reject("diversity_cap");
+    }
+    return true;
   });
   const candidatePoolExhausted = !replacement;
   const eligible = noLegalDonor && candidatePoolExhausted;
@@ -205,6 +257,9 @@ export function evaluateDiversityDegradationEvidence(params: {
     structureComplete,
     stopCount,
     replacementCandidateId: replacement?.id ?? null,
+    candidatePoolChecked: true,
+    minimalOverflow: minimalViolation,
+    failedRuleCount: params.validation.failedRules.length,
   };
 }
 

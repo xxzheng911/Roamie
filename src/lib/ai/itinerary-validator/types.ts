@@ -173,6 +173,10 @@ export type ItineraryValidatorInput = {
   /** log 用：style | direct | selected_places | regen */
   creationPath?: "style" | "direct" | "selected_places" | "regen" | "chat_add";
   destination?: string;
+  /** Telemetry only; never affects validation rules. */
+  telemetryRepairRound?: number;
+  /** Telemetry only; never affects validation rules. */
+  telemetryValidatorRound?: number;
 };
 
 export type PersistenceDayCountsCompareInput = {

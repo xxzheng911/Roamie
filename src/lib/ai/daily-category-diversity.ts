@@ -38,6 +38,41 @@ export type DailyDiversityLimits = {
   monument: number;
 };
 
+const TELEMETRY_FAMILY_ORDER: DailyDiversityCategory[] = [
+  "park_family",
+  "museum_family",
+  "attraction",
+  "viewpoint_family",
+  "wildlife_family",
+  "market_family",
+  "shrine_temple",
+  "cafe",
+  "restaurant",
+  "shopping",
+  "nightlife",
+  "monument",
+  "other",
+];
+
+export function dailyDiversityFamilyCounts(
+  places: readonly PlaceResult[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const family of TELEMETRY_FAMILY_ORDER) counts[family] = 0;
+  for (const place of places) {
+    const family = classifyDailyDiversityCategory(place);
+    counts[family] = (counts[family] ?? 0) + 1;
+  }
+  return counts;
+}
+
+export function formatDailyDiversityFamilySummary(
+  places: readonly PlaceResult[],
+): string {
+  const counts = dailyDiversityFamilyCounts(places);
+  return TELEMETRY_FAMILY_ORDER.map((family) => `${family}=${counts[family] ?? 0}`).join(",");
+}
+
 const DEFAULT_LIMITS: DailyDiversityLimits = {
   park_family: 1,
   wildlife_family: 1,
@@ -278,7 +313,13 @@ export function applyDailyCategoryDiversity(
 export function summarizeDailyCategoryDiversity(
   day: number,
   places: PlaceResult[],
-  opts?: { style?: TripStyleKey; userText?: string; overrideReason?: string },
+  opts?: {
+    style?: TripStyleKey;
+    userText?: string;
+    overrideReason?: string;
+    repairRound?: number;
+    validatorRound?: number;
+  },
 ): {
   day: number;
   categoryCounts: Record<string, number>;
@@ -304,6 +345,13 @@ export function summarizeDailyCategoryDiversity(
     }
   }
   const gatePass = violations.length === 0 || Boolean(opts?.overrideReason);
+  logAiPipeline(
+    "[DAILY_CATEGORY_SUMMARY]",
+    `day=${day}`,
+    `families=${formatDailyDiversityFamilySummary(places)}`,
+    `repairRound=${opts?.repairRound ?? 0}`,
+    `validatorRound=${opts?.validatorRound ?? 0}`,
+  );
   if (!gatePass) {
     const seen: Record<string, number> = {};
     for (const place of places) {
@@ -328,6 +376,32 @@ export function summarizeDailyCategoryDiversity(
           "replacementCategoryFamily=",
         );
       }
+    }
+    for (const violation of violations) {
+      const match = /^([^:]+):(\d+)>(\d+)$/.exec(violation);
+      if (!match) continue;
+      const family = match[1] ?? "unknown";
+      const count = Number(match[2] ?? 0);
+      const cap = Number(match[3] ?? 0);
+      const familyPlaces = places.filter(
+        (place) => classifyDailyDiversityCategory(place) === family,
+      );
+      logAiPipeline(
+        "[DAILY_CATEGORY_VIOLATION]",
+        `day=${day}`,
+        `family=${family}`,
+        `count=${count}`,
+        `cap=${cap}`,
+        `overflow=${count}>${cap}`,
+        `violationMessage=${violation}`,
+        `overflowPlaceIds=${familyPlaces.map((place) => place.id).join("|")}`,
+        `overflowPlaceNames=${familyPlaces.map((place) => place.localizedDisplayName ?? place.name).join("|")}`,
+        `overflowPrimaryTypes=${familyPlaces.map((place) => place.primaryType ?? "").join("|")}`,
+        `overflowTypes=${familyPlaces.map((place) => (place.types ?? []).join(",")).join(";")}`,
+        `overflowCategories=${familyPlaces.map((place) => classifyDailyDiversityCategory(place)).join("|")}`,
+        `repairRound=${opts?.repairRound ?? 0}`,
+        `validatorRound=${opts?.validatorRound ?? 0}`,
+      );
     }
   }
   logAiPipeline(
