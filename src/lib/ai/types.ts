@@ -37,6 +37,8 @@ export const RoamieRecommendationItemSchema = z.object({
   matchedSelectedCombinationIds: z.array(z.number()).optional(),
   /** When expanded from a region candidate (e.g. 鎌倉 → 鶴岡八幡宮) */
   sourceRegionCandidate: z.string().optional(),
+  /** Explicit user/selection identity contract; optional supplements remain removable. */
+  isRequiredBySelection: z.boolean().optional(),
 });
 
 export const RoamieItineraryItemSchema = z.object({

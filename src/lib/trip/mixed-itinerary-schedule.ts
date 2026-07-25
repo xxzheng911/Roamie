@@ -18,10 +18,13 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { combinationIdsFromPlace } from "@/lib/ai/combination-provenance";
 import {
   applyPlannerRouteAndCapacityAssembly,
+  maxEffectivePlacesPerDay,
   minEffectivePlacesPerDay,
   type AssemblyDayPlan,
   type PlannerPaceHint,
 } from "@/lib/ai/planner-day-route-assembly";
+import { computeMinimumPerSelectedCombination } from "@/lib/ai/combination-itinerary-integrity";
+import { enforceGlobalFamilyFeasibility } from "@/lib/ai/global-family-feasibility";
 
 type PlaceBucket =
   | "attraction"
@@ -279,19 +282,9 @@ export function buildMixedItineraryWithDiagnostics(
   const scenicCandidates = mealContractEnabled
     ? annotated.filter((place) => !isMixedItineraryDiningCandidate(place))
     : annotated;
-  const quotaTarget = Math.max(dayCount * minPerDay, scenicCandidates.length);
-  const quotaPicked = selectedCombinationIds.length
-    ? selectPlacesWithCombinationQuota({
-        places: scenicCandidates,
-        selectedCombinationIds,
-        targetPlaceCount: quotaTarget,
-        destination: destLabel || destination || "",
-      })
-    : scenicCandidates;
-
   const seen = new Set<string>();
   const unique: RoamieRecommendationItem[] = [];
-  for (const place of quotaPicked) {
+  for (const place of scenicCandidates) {
     const key = placeKey(place);
     if (!key || seen.has(key)) continue;
     seen.add(key);
@@ -300,7 +293,49 @@ export function buildMixedItineraryWithDiagnostics(
 
   // Global main/sub + canonical landmark de-duplication BEFORE day assignment.
   const beforeDedupe = unique.length;
-  const landmarkKept = dedupeLandmarksForRecs(unique);
+  const dedupedScenic = dedupeLandmarksForRecs(unique);
+  const mealSlotsPerFullDay = mealContractEnabled ? 2 : 0;
+  const dailyScenicCapacity = Math.max(
+    minPerDay,
+    maxEffectivePlacesPerDay(pace) - mealSlotsPerFullDay,
+  );
+  const dailyScenicTarget = Math.min(minPerDay, dailyScenicCapacity);
+  const baseScenicTarget = dayCount * dailyScenicTarget;
+  const requiredScenicCount = dedupedScenic.filter((place) => place.isRequiredBySelection).length;
+  const minimumPerCombination = computeMinimumPerSelectedCombination(
+    baseScenicTarget,
+    selectedCombinationIds.length,
+  );
+  const boundedScenicTarget = Math.min(
+    dedupedScenic.length,
+    Math.max(
+      baseScenicTarget,
+      requiredScenicCount,
+      selectedCombinationIds.length * minimumPerCombination,
+    ),
+  );
+  const quotaPriority = selectedCombinationIds.length
+    ? selectPlacesWithCombinationQuota({
+        places: dedupedScenic,
+        selectedCombinationIds,
+        targetPlaceCount: boundedScenicTarget,
+        destination: destLabel || destination || "",
+      })
+    : dedupedScenic.slice(0, boundedScenicTarget);
+  const quotaPriorityIds = new Set(quotaPriority.map(placeKey));
+  const quotaOrdered = [
+    ...quotaPriority,
+    ...dedupedScenic.filter((place) => !quotaPriorityIds.has(placeKey(place))),
+  ];
+  const feasibleSelection = enforceGlobalFamilyFeasibility({
+    candidates: quotaOrdered,
+    dayCount,
+    targetCount: boundedScenicTarget,
+    selectedCombinationIds,
+    minimumPerCombination,
+    style: "mixed",
+  });
+  const landmarkKept = feasibleSelection.selected;
   const uniquePlaceIds = new Set(landmarkKept.map((p) => p.googlePlaceId?.trim()).filter(Boolean));
   const canonicalKeys = new Set(
     landmarkKept.map((p) => resolveCanonicalLandmarkKey(recToLandmarkPlace(p))),
@@ -308,8 +343,8 @@ export function buildMixedItineraryWithDiagnostics(
   logAiPipeline(
     "[GLOBAL_LANDMARK_DEDUPE_STATS]",
     `before=${beforeDedupe}`,
-    `after=${landmarkKept.length}`,
-    `merged=${beforeDedupe - landmarkKept.length}`,
+    `after=${dedupedScenic.length}`,
+    `merged=${beforeDedupe - dedupedScenic.length}`,
     `uniquePlaceIds=${uniquePlaceIds.size}`,
     `canonicalCount=${canonicalKeys.size}`,
   );
