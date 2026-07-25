@@ -254,6 +254,7 @@ function repairDailyCategoryDiversity(
   const covered = ensureAllDaysCovered({
     plans: moved.plans,
     tripDays: days,
+    style,
     lock,
     source: "daily_diversity_repair",
   });
@@ -686,10 +687,7 @@ function applyAutoRepairPass(
     ...pool,
   ]).places;
   const previousDayCounts = dayCountsOfPlans(current);
-  const needsCoverage =
-    reasonSet.has("replan_for_full_day_coverage") ||
-    previousDayCounts.some((c) => c === 0) ||
-    (failedDays?.length ?? 0) > 0;
+  const needsCoverage = shouldRepairDayCoverage(reasons, previousDayCounts);
 
   logAiPipeline(
     "[ITINERARY_AUTO_REPAIR_START]",
@@ -715,7 +713,7 @@ function applyAutoRepairPass(
     needsCoverage;
 
   // Step 0 — empty-day coverage BEFORE reorder/assembly (assembly used to re-empty Day N).
-  if (needsCoverage || attempt === 1) {
+  if (needsCoverage) {
     current = repairEmptyDays(current, days, partialDays, lock);
   }
 
@@ -822,6 +820,16 @@ function applyAutoRepairPass(
   );
 
   return current;
+}
+
+export function shouldRepairDayCoverage(
+  reasons: readonly string[],
+  dayCounts: readonly number[],
+): boolean {
+  return (
+    reasons.includes("replan_for_full_day_coverage") ||
+    dayCounts.some((count) => count === 0)
+  );
 }
 
 function softPassValidation(

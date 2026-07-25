@@ -224,19 +224,42 @@ function dayCentroid(entries: DayCoveragePlanEntry[]): { lat: number; lng: numbe
 
 function pickDonorEntry(
   donor: DayCoveragePlan,
-  targetDay: number,
+  recipient: DayCoveragePlan,
   emptyCentroid: { lat: number; lng: number } | null,
   lock: SelectedPlaceLock | null | undefined,
   donorFloor: number,
   nearbyGuard?: NearbyDayCoverageGuard | null,
-): { index: number; entry: DayCoveragePlanEntry } | null {
+  limits = resolveDailyDiversityLimits(),
+): {
+  index: number;
+  entry: DayCoveragePlanEntry;
+  diversityFamily: DailyDiversityCategory;
+  recipientCountBefore: number;
+  cap: number;
+} | null {
   if (donor.entries.length <= donorFloor) return null;
   let bestIdx = -1;
   let bestScore = Number.POSITIVE_INFINITY;
+  let bestDiversity = wouldViolateDailyDiversity([], donor.entries[0]!.place, limits);
   for (let i = donor.entries.length - 1; i >= 0; i -= 1) {
     const entry = donor.entries[i]!;
-    if (isLockedEntry(entry, lock)) continue;
-    if (!canMovePlaceToDay(entry, targetDay, nearbyGuard)) continue;
+    const diversity = wouldViolateDailyDiversity(
+      recipient.entries.map((candidate) => candidate.place),
+      entry.place,
+      limits,
+    );
+    if (isLockedEntry(entry, lock)) {
+      logDayCoverageMove(donor.day, recipient.day, entry, diversity, false, "locked");
+      continue;
+    }
+    if (!canMovePlaceToDay(entry, recipient.day, nearbyGuard)) {
+      logDayCoverageMove(donor.day, recipient.day, entry, diversity, false, "invalid_recipient");
+      continue;
+    }
+    if (!diversity.ok) {
+      logDayCoverageMove(donor.day, recipient.day, entry, diversity, false, "diversity_cap");
+      continue;
+    }
     // Prefer movable tourism stops; keep first stop as soft anchor when possible.
     if (i === 0 && donor.entries.length > donorFloor + 1) continue;
     let score = i; // later stops preferred
@@ -249,10 +272,38 @@ function pickDonorEntry(
     if (score < bestScore) {
       bestScore = score;
       bestIdx = i;
+      bestDiversity = diversity;
     }
   }
   if (bestIdx < 0) return null;
-  return { index: bestIdx, entry: donor.entries[bestIdx]! };
+  return {
+    index: bestIdx,
+    entry: donor.entries[bestIdx]!,
+    diversityFamily: bestDiversity.category,
+    recipientCountBefore: bestDiversity.count,
+    cap: bestDiversity.limit,
+  };
+}
+
+function logDayCoverageMove(
+  donorDay: number,
+  recipientDay: number,
+  entry: DayCoveragePlanEntry,
+  diversity: ReturnType<typeof wouldViolateDailyDiversity>,
+  moveAccepted: boolean,
+  rejectionReason: "" | "diversity_cap" | "locked" | "invalid_recipient" | "no_eligible_donor",
+): void {
+  logAiPipeline(
+    "[DAY_COVERAGE_MOVE]",
+    `donorDay=${donorDay}`,
+    `recipientDay=${recipientDay}`,
+    `placeId=${entry.place.id ?? ""}`,
+    `diversityFamily=${diversity.category}`,
+    `recipientCountBefore=${diversity.count}`,
+    `cap=${Number.isFinite(diversity.limit) ? diversity.limit : "unlimited"}`,
+    `moveAccepted=${moveAccepted}`,
+    `rejectionReason=${rejectionReason}`,
+  );
 }
 
 export type NearbyDayCoverageGuard = {
@@ -286,12 +337,14 @@ export function ensureAllDaysCovered<T extends DayCoveragePlan>(params: {
   partialDays?: readonly number[];
   freeDays?: readonly number[];
   maxPerDay?: number;
+  style?: TripStyleKey;
   lock?: SelectedPlaceLock | null;
   nearbyGuard?: NearbyDayCoverageGuard | null;
   /** Log tag prefix context */
   source?: string;
 }): { plans: T[]; changed: boolean; emptyDaysRemaining: number[] } {
   let plans = normalizeCompleteDayMap(clonePlans(params.plans), params.tripDays);
+  const diversityLimits = resolveDailyDiversityLimits({ style: params.style });
   const totalStops = plans.reduce((n, p) => n + p.entries.length, 0);
   const targets = resolveDayCoverageTargets({
     tripDays: params.tripDays,
@@ -367,16 +420,30 @@ export function ensureAllDaysCovered<T extends DayCoveragePlan>(params: {
 
       const pick = pickDonorEntry(
         donor,
-        emptyPlan.day,
+        emptyPlan,
         emptyCentroid,
         params.lock,
         peelFloor,
         params.nearbyGuard,
+        diversityLimits,
       );
       if (!pick) continue;
 
       donor.entries.splice(pick.index, 1);
       emptyPlan.entries.push(pick.entry);
+      logDayCoverageMove(
+        donor.day,
+        emptyPlan.day,
+        pick.entry,
+        {
+          ok: true,
+          category: pick.diversityFamily,
+          count: pick.recipientCountBefore,
+          limit: pick.cap,
+        },
+        true,
+        "",
+      );
       changed = true;
       moved = true;
 
@@ -429,15 +496,29 @@ export function ensureAllDaysCovered<T extends DayCoveragePlan>(params: {
     const heavyFloor = targets.find((t) => t.dayNumber === heavy.day)?.minimumStops ?? FULL_DAY_MIN_STOPS;
     const pick = pickDonorEntry(
       heavy,
-      light.plan.day,
+      light.plan,
       dayCentroid(light.plan.entries),
       params.lock,
       heavyFloor,
       params.nearbyGuard,
+      diversityLimits,
     );
     if (!pick) break;
     heavy.entries.splice(pick.index, 1);
     light.plan.entries.push(pick.entry);
+    logDayCoverageMove(
+      heavy.day,
+      light.plan.day,
+      pick.entry,
+      {
+        ok: true,
+        category: pick.diversityFamily,
+        count: pick.recipientCountBefore,
+        limit: pick.cap,
+      },
+      true,
+      "",
+    );
     changed = true;
   }
 
