@@ -75,6 +75,12 @@ import {
   type SelectedPlaceLock,
 } from "@/lib/ai/required-anchor-runtime";
 import { resolveNightlifeClassification } from "@/lib/ai/nightlife-classification";
+import {
+  assessRepairProgress,
+  buildItineraryPlanSignature,
+  resolveRepairRoundStopReason,
+  shortRepairFingerprint,
+} from "@/lib/ai/itinerary-validator/repair-progress";
 
 export type ItineraryReplanParams = {
   plans: ComposedDayPlan[];
@@ -113,6 +119,14 @@ export type ItineraryReplanOutcome = {
   plans: ComposedDayPlan[];
   validation: ItineraryValidationResult;
   attempts: number;
+  stopReason:
+    | "success"
+    | "max_rounds"
+    | "no_progress"
+    | "cycle_detected"
+    | "unrepaired_failure";
+  noProgress: boolean;
+  cycleDetected: boolean;
 };
 
 const DAYTIME_SLOTS = ["09:30", "10:30", "11:00", "14:00", "15:00", "16:00", "16:30"];
@@ -983,6 +997,15 @@ export function replanUntilItineraryValid(
   ) as ComposedDayPlan[];
   let validation = initial;
   let attempts = 0;
+  let stopReason: ItineraryReplanOutcome["stopReason"] = initial.pass
+    ? "success"
+    : "unrepaired_failure";
+  let noProgress = false;
+  let cycleDetected = false;
+  const selectedLock = lockFromValidatorInput(params.validatorInput);
+  const seenPlanSignatures = new Set<string>([
+    buildItineraryPlanSignature(plans, selectedLock),
+  ]);
 
   // missing_days is hard for delivery but MUST enter Auto Repair first.
   while (
@@ -1029,7 +1052,7 @@ export function replanUntilItineraryValid(
     );
 
     const before = plans;
-    const selectedLock = lockFromValidatorInput(params.validatorInput);
+    const validationBefore = validation;
     // Do not reuse a failed day map: coverage repair rebuilds from stops across days.
     plans = applyAutoRepairPass(
       plans,
@@ -1148,6 +1171,45 @@ export function replanUntilItineraryValid(
         );
       }
     }
+
+    const progress = assessRepairProgress({
+      plansBefore: before,
+      plansAfter: plans,
+      validationBefore,
+      validationAfter: validation,
+      seenPlanSignatures,
+      lock: selectedLock,
+    });
+    const roundStopReason = resolveRepairRoundStopReason(validation.pass, progress);
+    logAiPipeline(
+      "[ITINERARY_REPAIR_PROGRESS]",
+      `repairRound=${attempts}`,
+      `planSignatureBefore=${shortRepairFingerprint(progress.planSignatureBefore)}`,
+      `planSignatureAfter=${shortRepairFingerprint(progress.planSignatureAfter)}`,
+      `failureFingerprintBefore=${shortRepairFingerprint(progress.failureFingerprintBefore)}`,
+      `failureFingerprintAfter=${shortRepairFingerprint(progress.failureFingerprintAfter)}`,
+      `operationCount=${progress.operationCount}`,
+      `actualPlanChanged=${progress.actualPlanChanged}`,
+      `hardFailureImproved=${progress.hardFailureImproved}`,
+      `noProgress=${progress.noProgress}`,
+      `cycleDetected=${progress.cycleDetected}`,
+      `stopReason=${roundStopReason ?? "continue"}`,
+    );
+    if (roundStopReason) {
+      noProgress = roundStopReason === "no_progress";
+      cycleDetected = roundStopReason === "cycle_detected";
+      stopReason = roundStopReason;
+      break;
+    }
+    seenPlanSignatures.add(progress.planSignatureAfter);
+  }
+
+  if (
+    !validation.pass &&
+    stopReason === "unrepaired_failure" &&
+    attempts >= MAX_ITINERARY_VALIDATOR_REPLAN_ATTEMPTS
+  ) {
+    stopReason = "max_rounds";
   }
 
   if (!validation.pass && !hasHardBlockFailures(validation)) {
@@ -1206,6 +1268,7 @@ export function replanUntilItineraryValid(
   const hardFailures = validation.failedRules.filter((rule) =>
     hasHardBlockFailures({ ...validation, failedRules: [rule] }),
   );
+  if (validation.pass) stopReason = "success";
   logAiPipeline(
     "[ITINERARY_FINAL_GATE]",
     `hardFailures=${hardFailures.map((rule) => rule.code).join(",") || "(none)"}`,
@@ -1215,5 +1278,12 @@ export function replanUntilItineraryValid(
     `reason=${validation.pass ? "validated" : hardFailures.length ? "hard_failure" : "warnings_only"}`,
   );
 
-  return { plans, validation, attempts };
+  logAiPipeline(
+    "[ITINERARY_REPAIR_STOP]",
+    `repairRound=${attempts}`,
+    `stopReason=${stopReason}`,
+    `noProgress=${noProgress}`,
+    `cycleDetected=${cycleDetected}`,
+  );
+  return { plans, validation, attempts, stopReason, noProgress, cycleDetected };
 }
