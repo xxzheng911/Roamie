@@ -127,6 +127,70 @@ assert.ok(
   "enveloped validator failure does not enter payload unwrap failure path",
 );
 
+const transportValidatorFailureLogs = [];
+const captureTransportValidatorFailure = (...args) =>
+  transportValidatorFailureLogs.push(args.join(" "));
+console.log = captureTransportValidatorFailure;
+console.info = captureTransportValidatorFailure;
+console.warn = captureTransportValidatorFailure;
+console.error = captureTransportValidatorFailure;
+let transportValidatorFailure;
+try {
+  transportValidatorFailure = await createItineraryFromSession({
+    session: {
+      ...createEmptySession(),
+      selectedPlaces: places,
+      travelContext: { interests: [], selectedCombinationIds: [1, 2, 3] },
+    },
+    generateInput: {
+      destination: "台東",
+      days: 2,
+      selectedPlaces: places,
+    },
+    generateItineraryFn: async () => ({
+      result: {
+        result: {
+          success: false,
+          errorCode: "itinerary_validator_failed",
+          message: "validator failed",
+          failureReason: "validator_failed",
+          failedRules: ["daily_category_diversity"],
+          diagnostics: { affectedDays: [1], dayCount: 2, stopCount: 5 },
+        },
+        context: {},
+      },
+    }),
+  });
+} finally {
+  Object.assign(console, originalConsole);
+}
+assert.equal(transportValidatorFailure.ok, false);
+assert.ok(
+  transportValidatorFailureLogs.some(
+    (line) =>
+      line.includes("[GENERATE_ITINERARY_RAW_SHAPE]") &&
+      line.includes("successPath=result.result.success") &&
+      line.includes("errorCodePath=result.result.errorCode") &&
+      line.includes("normalizedKind=failure"),
+  ),
+  "transport result shape is safely reported",
+);
+assert.ok(
+  transportValidatorFailureLogs.some(
+    (line) =>
+      line.includes("[ITINERARY_FAILURE_CHAIN]") &&
+      line.includes('"dayCount":2') &&
+      line.includes('"stopCount":5') &&
+      line.includes("daily_category_diversity") &&
+      !line.includes("payload_incomplete"),
+  ),
+  "transport validator failure preserves diagnostics and taxonomy",
+);
+assert.ok(
+  !transportValidatorFailureLogs.some((line) => line.includes("[STOP_UNWRAP_INTERNAL]")),
+  "transport validator failure never enters payload unwrap",
+);
+
 const missingPayloadLogs = [];
 const captureMissingPayload = (...args) => missingPayloadLogs.push(args.join(" "));
 console.log = captureMissingPayload;

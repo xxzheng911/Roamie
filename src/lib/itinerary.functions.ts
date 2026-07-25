@@ -716,6 +716,14 @@ export const generateItinerary = createServerFn({ method: "POST" })
           success: false,
           errorCode: "itinerary_validator_failed",
           message: ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
+          failureReason: "validator_failed",
+          failedRules: validation.failedRules.map((rule) => rule.code),
+          diagnostics: {
+            affectedDays: validation.affectedDays,
+            dayCount: data.days,
+            stopCount: finalStops.length,
+            details: validation.failedRules.map((rule) => rule.message),
+          },
         };
       }
       const finalDayCounts = dayCountsOfPlans(

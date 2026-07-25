@@ -69,6 +69,28 @@ const GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS = [
   "response",
 ] as const;
 
+// TanStack Start serializes server-function middleware output as
+// { result, error, context }. In the bundled/native boundary that transport
+// context can be retained inside the client middleware result once more.
+const GENERATE_ITINERARY_RESULT_FIXED_PATHS = [
+  ["result", "result"],
+] as const;
+
+type GenerateItineraryNormalizedKind = "success" | "failure" | "invalid";
+
+export type GenerateItineraryRawShape = {
+  rawType: string;
+  isArray: boolean;
+  topLevelKeys: string[];
+  knownEnvelopeKeys: string[];
+  level1Keys: string[];
+  level2Keys: string[];
+  successPath: string;
+  errorCodePath: string;
+  payloadPath: string;
+  normalizedKind: GenerateItineraryNormalizedKind;
+};
+
 const FALLBACK_STOP_TIMES = ["09:30", "11:30", "14:30", "18:00"];
 
 const DAY_FILLER_TEMPLATES: { title: string; time: string; description: string }[] = [
@@ -154,23 +176,92 @@ function isGenerateItinerarySuccess(result: unknown): result is GenerateItinerar
   return record.success === true && Boolean(record.trip && typeof record.trip === "object");
 }
 
-/** Normalize the direct server result or one known transport-envelope layer. */
-export function normalizeGenerateItineraryResult(
-  raw: unknown,
-): GenerateItineraryResult | null {
-  if (isGenerateItineraryFailure(raw) || isGenerateItinerarySuccess(raw)) {
-    return raw;
-  }
-  if (!raw || typeof raw !== "object") return null;
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
 
-  const envelope = raw as Record<string, unknown>;
+function sortedKeys(value: unknown): string[] {
+  const record = objectRecord(value);
+  return record ? Object.keys(record).sort().slice(0, 24) : [];
+}
+
+function knownResultPath(raw: unknown): { path: string; value: unknown } | null {
+  if (isGenerateItineraryFailure(raw) || isGenerateItinerarySuccess(raw)) {
+    return { path: "$", value: raw };
+  }
+  const envelope = objectRecord(raw);
+  if (!envelope) return null;
+
   for (const key of GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS) {
     const candidate = envelope[key];
     if (isGenerateItineraryFailure(candidate) || isGenerateItinerarySuccess(candidate)) {
-      return candidate;
+      return { path: key, value: candidate };
+    }
+  }
+  for (const [first, second] of GENERATE_ITINERARY_RESULT_FIXED_PATHS) {
+    const level1 = objectRecord(envelope[first]);
+    const candidate = level1?.[second];
+    if (isGenerateItineraryFailure(candidate) || isGenerateItinerarySuccess(candidate)) {
+      return { path: `${first}.${second}`, value: candidate };
     }
   }
   return null;
+}
+
+/** Safe boundary telemetry: records shape and known paths, never values. */
+export function describeGenerateItineraryRawShape(
+  raw: unknown,
+  normalized: GenerateItineraryResult | null,
+): GenerateItineraryRawShape {
+  const envelope = objectRecord(raw);
+  const knownEnvelopeKeys = GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS.filter(
+    (key) => envelope && key in envelope,
+  );
+  const firstKnownValue = knownEnvelopeKeys.length
+    ? envelope?.[knownEnvelopeKeys[0]]
+    : undefined;
+  const level1 = objectRecord(firstKnownValue);
+  const matched = knownResultPath(raw);
+  const matchedRecord = objectRecord(matched?.value);
+  const matchedPath = matched?.path ?? "";
+  const successPath = matchedRecord && "success" in matchedRecord
+    ? `${matchedPath}.success`
+    : "";
+  const errorCodePath = matchedRecord && "errorCode" in matchedRecord
+    ? `${matchedPath}.errorCode`
+    : "";
+  const trip = objectRecord(matchedRecord?.trip);
+  const payloadPath = trip && "payload" in trip
+    ? `${matchedPath}.trip.payload`
+    : "";
+
+  return {
+    rawType: raw === null ? "null" : typeof raw,
+    isArray: Array.isArray(raw),
+    topLevelKeys: sortedKeys(raw),
+    knownEnvelopeKeys: [...knownEnvelopeKeys],
+    level1Keys: sortedKeys(firstKnownValue),
+    level2Keys: sortedKeys(level1?.result),
+    successPath,
+    errorCodePath,
+    payloadPath,
+    normalizedKind: isGenerateItineraryFailure(normalized)
+      ? "failure"
+      : isGenerateItinerarySuccess(normalized)
+        ? "success"
+        : "invalid",
+  };
+}
+
+/** Normalize direct results plus explicitly supported transport-envelope paths. */
+export function normalizeGenerateItineraryResult(
+  raw: unknown,
+): GenerateItineraryResult | null {
+  const matched = knownResultPath(raw);
+  if (!matched) return null;
+  return matched.value as GenerateItineraryResult;
 }
 
 export function groupItineraryItemsByDay(

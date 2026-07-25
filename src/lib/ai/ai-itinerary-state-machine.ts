@@ -18,6 +18,7 @@ import {
 import {
   buildFallbackItineraryFromPlaces,
   coalesceItineraryItems,
+  describeGenerateItineraryRawShape,
   hasCompleteItineraryPayload,
   hasValidItineraryStops,
   isGenerateItineraryFailure,
@@ -622,6 +623,20 @@ export async function createItineraryFromSession(params: {
     logAiItineraryCreate(generateInput.destination, selectedPlaces.length);
     const rawGenerateResult = await generateItineraryFn({ data: generateInput });
     const generateResult = normalizeGenerateItineraryResult(rawGenerateResult);
+    const rawShape = describeGenerateItineraryRawShape(rawGenerateResult, generateResult);
+    logAiPipeline(
+      "[GENERATE_ITINERARY_RAW_SHAPE]",
+      `rawType=${rawShape.rawType}`,
+      `isArray=${rawShape.isArray}`,
+      `topLevelKeys=${rawShape.topLevelKeys.join(",") || "(none)"}`,
+      `knownEnvelopeKeys=${rawShape.knownEnvelopeKeys.join(",") || "(none)"}`,
+      `level1Keys=${rawShape.level1Keys.join(",") || "(none)"}`,
+      `level2Keys=${rawShape.level2Keys.join(",") || "(none)"}`,
+      `successPath=${rawShape.successPath || "(none)"}`,
+      `errorCodePath=${rawShape.errorCodePath || "(none)"}`,
+      `payloadPath=${rawShape.payloadPath || "(none)"}`,
+      `normalizedKind=${rawShape.normalizedKind}`,
+    );
 
     if (isGenerateItineraryFailure(generateResult)) {
       if (generateResult.errorCode === "itinerary_validator_failed") {

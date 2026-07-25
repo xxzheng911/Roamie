@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  describeGenerateItineraryRawShape,
   isGenerateItineraryFailure,
   normalizeGenerateItineraryResult,
   unwrapGeneratedTripPayload,
@@ -43,6 +44,41 @@ for (const key of ["data", "result", "payload", "response"]) {
   assert.ok(isGenerateItineraryFailure(normalized), `${key} failure envelope`);
   assert.deepEqual(normalized.failedRules, ["daily_category_diversity"]);
 }
+
+const tanStackTransportEnvelope = {
+  result: {
+    result: validatorFailure,
+    error: undefined,
+    context: {},
+  },
+};
+const normalizedTransportFailure = normalizeGenerateItineraryResult(
+  tanStackTransportEnvelope,
+);
+assert.ok(isGenerateItineraryFailure(normalizedTransportFailure));
+assert.deepEqual(normalizedTransportFailure.failedRules, ["daily_category_diversity"]);
+assert.deepEqual(normalizedTransportFailure.diagnostics?.affectedDays, [2]);
+const transportFailureShape = describeGenerateItineraryRawShape(
+  tanStackTransportEnvelope,
+  normalizedTransportFailure,
+);
+assert.equal(transportFailureShape.successPath, "result.result.success");
+assert.equal(transportFailureShape.errorCodePath, "result.result.errorCode");
+assert.equal(transportFailureShape.normalizedKind, "failure");
+
+const normalizedTransportSuccess = normalizeGenerateItineraryResult({
+  result: { result: success, error: undefined, context: {} },
+});
+assert.equal(normalizedTransportSuccess?.success, true);
+assert.equal(unwrapGeneratedTripPayload(normalizedTransportSuccess)?.title, payload.title);
+
+assert.equal(
+  normalizeGenerateItineraryResult({
+    data: { foo: { result: validatorFailure } },
+  }),
+  null,
+  "normalization must only follow fixed whitelisted paths",
+);
 
 assert.equal(normalizeGenerateItineraryResult(success)?.success, true);
 assert.equal(
