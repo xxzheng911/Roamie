@@ -3,10 +3,7 @@
  * must expand to real landmark Places — never treat the region name as a stop.
  */
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
-import {
-  isKnownTouristCityLabel,
-  normalizeDestinationLabel,
-} from "@/lib/ai/trip-planning-context";
+import { isKnownTouristCityLabel, normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import type { PlaceSearchFn } from "@/lib/ai/chat-place-recommendation";
 import type { PlaceResult } from "@/lib/place-result";
@@ -29,8 +26,7 @@ import {
 const PLACE_SUFFIX_RE =
   /(寺|神社|宮|塔|城|公園|美術館|博物館|市場|商店街|駅|站|通|橋|園|館|堂|殿|碼頭|海滩|海灘|夜市|溫泉鄉)/;
 
-const REGION_TYPE_HINT =
-  /^(locality|administrative_area|political|colloquial_area|neighborhood)$/i;
+const REGION_TYPE_HINT = /^(locality|administrative_area|political|colloquial_area|neighborhood)$/i;
 
 export type RegionCandidateKind = "place" | "city_or_region";
 
@@ -132,8 +128,7 @@ export async function resolveRegionCandidate(params: {
   if (params.geocodeFn) {
     try {
       const geoQuery =
-        normalizeDestinationLabel(region) ===
-        normalizeDestinationLabel(params.destination)
+        normalizeDestinationLabel(region) === normalizeDestinationLabel(params.destination)
           ? region
           : `${region} ${params.destination}`;
       const geo = await params.geocodeFn({
@@ -227,7 +222,9 @@ export async function resolveRegionCandidate(params: {
         places.push({
           ...item,
           // Keep region origin for coverage / regenerate.
-          ...( { sourceRegionCandidate: region } as { sourceRegionCandidate?: string }),
+          sourceRegionCandidate: region,
+          destinationScope: "nearby_extension",
+          extensionDestination: region,
         });
       }
     } catch (e) {

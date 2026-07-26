@@ -37,6 +37,8 @@ export const RoamieRecommendationItemSchema = z.object({
   matchedSelectedCombinationIds: z.array(z.number()).optional(),
   /** When expanded from a region candidate (e.g. 鎌倉 → 鶴岡八幡宮) */
   sourceRegionCandidate: z.string().optional(),
+  destinationScope: z.enum(["primary", "nearby_extension"]).optional(),
+  extensionDestination: z.string().optional(),
   /** Explicit user/selection identity contract; optional supplements remain removable. */
   isRequiredBySelection: z.boolean().optional(),
 });
@@ -92,6 +94,8 @@ export const RoamieItineraryItemSchema = z.object({
   matchedCombinationIds: z.array(z.number()).optional(),
   matchedSelectedCombinationIds: z.array(z.number()).optional(),
   sourceRegionCandidate: z.string().optional(),
+  destinationScope: z.enum(["primary", "nearby_extension"]).optional(),
+  extensionDestination: z.string().optional(),
   /** Rich place snapshot for immediate detail render (stale-while-revalidate). */
   photoName: z.string().nullable().optional(),
   rating: z.number().nullable().optional(),
@@ -202,6 +206,8 @@ export function normalizeItineraryItem(
     matchedCombinationIds: raw.matchedCombinationIds,
     matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
     sourceRegionCandidate: raw.sourceRegionCandidate,
+    destinationScope: raw.destinationScope,
+    extensionDestination: raw.extensionDestination,
     photoName: raw.photoName,
     rating: raw.rating,
     userRatingCount: raw.userRatingCount,
@@ -280,6 +286,8 @@ export function normalizeRecommendationItem(
     matchedCombinationIds: raw.matchedCombinationIds,
     matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
     sourceRegionCandidate: raw.sourceRegionCandidate,
+    destinationScope: raw.destinationScope,
+    extensionDestination: raw.extensionDestination,
     localizedDisplayName: raw.localizedDisplayName ?? localized,
     originalName: raw.originalName,
     languageCode: raw.languageCode,

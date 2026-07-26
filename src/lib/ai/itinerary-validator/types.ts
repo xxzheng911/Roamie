@@ -110,6 +110,10 @@ export type NearbyExtensionCoverage = {
   daysByExtension: Record<string, number[]>;
   /** extension → place count on its primary concentrated day */
   concentratedCounts: Record<string, number>;
+  observedCounts: Record<string, number>;
+  matchedByProvenance: Record<string, number>;
+  matchedBySourceRegion: Record<string, number>;
+  matchedByTextFallback: Record<string, number>;
 };
 
 export type ItineraryValidationResult = {

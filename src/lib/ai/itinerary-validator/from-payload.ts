@@ -3,16 +3,17 @@
  * 刻意不 import ai-day-plan-source，避免循環依賴。
  */
 
-import type { ItineraryComposedDayPlanLike, ItineraryPlanEntryLike } from "@/lib/ai/itinerary-validator/types";
+import type {
+  ItineraryComposedDayPlanLike,
+  ItineraryPlanEntryLike,
+} from "@/lib/ai/itinerary-validator/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
+import { logNearbyProvenanceBoundary } from "@/lib/ai/nearby-provenance-telemetry";
 
 function itemToPlace(item: RoamieItineraryItem): PlaceResult {
-  const display =
-    (item.localizedDisplayName ?? "").trim() ||
-    item.placeName ||
-    item.title;
-  return {
+  const display = (item.localizedDisplayName ?? "").trim() || item.placeName || item.title;
+  const place: PlaceResult = {
     id: item.googlePlaceId?.trim() || item.placeName || item.title,
     name: display,
     address: item.address ?? null,
@@ -34,7 +35,16 @@ function itemToPlace(item: RoamieItineraryItem): PlaceResult {
     localizedDisplayName: item.localizedDisplayName ?? display,
     languageCode: item.languageCode ?? null,
     localizationSource: item.localizationSource ?? null,
-  } as PlaceResult;
+    destinationScope: item.destinationScope,
+    extensionDestination: item.extensionDestination,
+    sourceRegionCandidate: item.sourceRegionCandidate,
+  };
+  logNearbyProvenanceBoundary({
+    stage: "itinerary_item_to_validator_place",
+    placeId: place.id,
+    provenance: place,
+  });
+  return place;
 }
 
 function slotLabelFromItem(item: RoamieItineraryItem): string {
@@ -79,9 +89,7 @@ export function composedPlansFromItineraryItems(
   const byDay = new Map<number, ItineraryPlanEntryLike[]>();
   for (const item of items) {
     let day =
-      item.dayIndex != null && Number.isFinite(item.dayIndex)
-        ? Math.floor(item.dayIndex) + 1
-        : 0;
+      item.dayIndex != null && Number.isFinite(item.dayIndex) ? Math.floor(item.dayIndex) + 1 : 0;
     if (day < 1) {
       const date = item.date?.trim();
       if (date && dateOrder.length) {
@@ -141,10 +149,7 @@ export function applyComposedPlansToItineraryItems(
     return `name:${name.trim().toLowerCase().replace(/\s+/g, "")}`;
   };
   for (const item of items) {
-    const key = keyOf(
-      item.googlePlaceId ?? "",
-      item.placeName || item.title || "",
-    );
+    const key = keyOf(item.googlePlaceId ?? "", item.placeName || item.title || "");
     const list = byKey.get(key) ?? [];
     list.push(item);
     byKey.set(key, list);
@@ -157,15 +162,8 @@ export function applyComposedPlansToItineraryItems(
 
   const out: RoamieItineraryItem[] = [];
   for (const plan of [...plans].sort((a, b) => a.day - b.day)) {
-    const safeDay =
-      Number.isFinite(plan.day) && plan.day >= 1
-        ? Math.floor(plan.day)
-        : 1;
-    const date =
-      dateByDay.get(safeDay) ??
-      dateOrder[0] ??
-      startDate?.trim() ??
-      "";
+    const safeDay = Number.isFinite(plan.day) && plan.day >= 1 ? Math.floor(plan.day) : 1;
+    const date = dateByDay.get(safeDay) ?? dateOrder[0] ?? startDate?.trim() ?? "";
     for (const entry of plan.entries) {
       const place = entry.place;
       const key = keyOf(place.id ?? "", place.name ?? entry.name);
@@ -187,18 +185,12 @@ export function applyComposedPlansToItineraryItems(
           title: displayName,
           placeName: displayName,
           localizedDisplayName: displayName,
-          originalName:
-            place.originalName ??
-            base.originalName ??
-            base.placeName ??
-            entry.name,
+          originalName: place.originalName ?? base.originalName ?? base.placeName ?? entry.name,
           languageCode: place.languageCode ?? base.languageCode,
-          localizationSource:
-            place.localizationSource ?? base.localizationSource,
+          localizationSource: place.localizationSource ?? base.localizationSource,
         });
       } else {
-        const displayName =
-          place.localizedDisplayName?.trim() || place.name || entry.name;
+        const displayName = place.localizedDisplayName?.trim() || place.name || entry.name;
         out.push({
           date,
           time: entry.time || "10:00",
@@ -219,6 +211,9 @@ export function applyComposedPlansToItineraryItems(
           photoName: place.photoName ?? null,
           rating: place.rating ?? null,
           userRatingCount: place.userRatingCount ?? null,
+          destinationScope: place.destinationScope,
+          extensionDestination: place.extensionDestination,
+          sourceRegionCandidate: place.sourceRegionCandidate,
           placeSnapshotSource: "selected_place",
         });
       }

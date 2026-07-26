@@ -14,7 +14,10 @@ import {
   isNightMarketPlaceLocal,
   isProperRestaurantPlaceLocal,
 } from "@/lib/ai/itinerary-validator/place-checks";
-import { resolveCanonicalLandmarkKey, normalizeLandmarkNameForDedup } from "@/lib/ai/canonical-landmark";
+import {
+  resolveCanonicalLandmarkKey,
+  normalizeLandmarkNameForDedup,
+} from "@/lib/ai/canonical-landmark";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { isItineraryValidatorEnabled } from "@/lib/ai/itinerary-validator/feature-flag";
 import {
@@ -59,19 +62,27 @@ type ComposedDayPlan = {
   isIncomplete?: boolean;
 };
 
+type NearbyMatchMethod = "provenance" | "source_region" | "text_fallback";
+
 /** 近郊匹配（精簡版；不經 planner-day-route-assembly） */
-function placeMatchesNearbyExtension(
+function matchNearbyExtension(
   place: PlaceResult,
   extensions: string[],
-): string | null {
+): { extension: string; method: NearbyMatchMethod } | null {
   if (!extensions.length) return null;
-  if (
-    place.destinationScope === "nearby_extension" &&
-    place.extensionDestination
-  ) {
+  // An explicit primary tag is authoritative and must not be overridden by
+  // stale region text or a coincidental city token in the display fields.
+  if (place.destinationScope === "primary") return null;
+  if (place.destinationScope === "nearby_extension" && place.extensionDestination) {
     const tagged = normalizeDestinationLabel(place.extensionDestination);
     if (extensions.some((e) => normalizeDestinationLabel(e) === tagged)) {
-      return tagged;
+      return { extension: tagged, method: "provenance" };
+    }
+  }
+  if (place.sourceRegionCandidate) {
+    const sourceRegion = normalizeDestinationLabel(place.sourceRegionCandidate);
+    if (extensions.some((e) => normalizeDestinationLabel(e) === sourceRegion)) {
+      return { extension: sourceRegion, method: "source_region" };
     }
   }
   const blob = [place.name, place.address, ...(place.types ?? [])]
@@ -85,7 +96,9 @@ function placeMatchesNearbyExtension(
     if (label === "橫濱" || /yokohama|横浜|橫濱/i.test(ext)) {
       tokens.push("yokohama", "横浜", "橫濱", "よこはま");
     }
-    if (tokens.some((t) => t && blob.includes(t))) return label;
+    if (tokens.some((t) => t && blob.includes(t))) {
+      return { extension: label, method: "text_fallback" };
+    }
   }
   return null;
 }
@@ -131,9 +144,7 @@ export function getLastItineraryValidationResult(): ItineraryValidationResult | 
         ...lastResult,
         failedRules: [...lastResult.failedRules],
         warnings: [...lastResult.warnings],
-        nearbyCoverage: lastResult.nearbyCoverage
-          ? { ...lastResult.nearbyCoverage }
-          : undefined,
+        nearbyCoverage: lastResult.nearbyCoverage ? { ...lastResult.nearbyCoverage } : undefined,
       }
     : null;
 }
@@ -194,12 +205,11 @@ function logRule(
   pass: boolean,
   opts?: { day?: number; placeIds?: string[]; details?: string; affectedDays?: number[] },
 ): void {
-  const days =
-    opts?.affectedDays?.length
-      ? opts.affectedDays.join(",")
-      : opts?.day != null
-        ? String(opts.day)
-        : "";
+  const days = opts?.affectedDays?.length
+    ? opts.affectedDays.join(",")
+    : opts?.day != null
+      ? String(opts.day)
+      : "";
   logAiPipeline(
     "[ITINERARY_VALIDATOR_RULE]",
     `rule=${code}`,
@@ -307,30 +317,45 @@ function evaluateNearbyCoverage(
   plans: readonly import("@/lib/ai/itinerary-validator/types").ItineraryComposedDayPlanLike[],
   extensions: string[],
 ): NearbyExtensionCoverage {
-  const expected = [...new Set(extensions.map((e) => normalizeDestinationLabel(e)).filter(Boolean))];
+  const expected = [
+    ...new Set(extensions.map((e) => normalizeDestinationLabel(e)).filter(Boolean)),
+  ];
   const covered: string[] = [];
   const daysByExtension: Record<string, number[]> = {};
   const concentratedCounts: Record<string, number> = {};
+  const observedCounts: Record<string, number> = {};
+  const matchedByProvenance: Record<string, number> = {};
+  const matchedBySourceRegion: Record<string, number> = {};
+  const matchedByTextFallback: Record<string, number> = {};
   const affectedPlaceIds: string[] = [];
   const affectedDays = new Set<number>();
 
   for (const ext of expected) {
     const dayHits = new Map<number, string[]>();
+    matchedByProvenance[ext] = 0;
+    matchedBySourceRegion[ext] = 0;
+    matchedByTextFallback[ext] = 0;
     for (const plan of plans) {
       for (const entry of plan.entries) {
-        const matched = placeMatchesNearbyExtension(entry.place, [ext]);
+        const matched = matchNearbyExtension(entry.place, [ext]);
         if (!matched) continue;
+        if (matched.method === "provenance") matchedByProvenance[ext] += 1;
+        if (matched.method === "source_region") matchedBySourceRegion[ext] += 1;
+        if (matched.method === "text_fallback") matchedByTextFallback[ext] += 1;
         const ids = dayHits.get(plan.day) ?? [];
         const id = placeId(entry.place);
         if (id) {
           ids.push(id);
           affectedPlaceIds.push(id);
+        } else {
+          ids.push(`unidentified:${entry.name}`);
         }
         dayHits.set(plan.day, ids);
         affectedDays.add(plan.day);
       }
     }
     const days = [...dayHits.keys()].sort((a, b) => a - b);
+    observedCounts[ext] = [...dayHits.values()].reduce((sum, ids) => sum + ids.length, 0);
     daysByExtension[ext] = days;
     if (days.length === 0) {
       concentratedCounts[ext] = 0;
@@ -353,6 +378,10 @@ function evaluateNearbyCoverage(
     affectedPlaceIds: [...new Set(affectedPlaceIds)],
     daysByExtension,
     concentratedCounts,
+    observedCounts,
+    matchedByProvenance,
+    matchedBySourceRegion,
+    matchedByTextFallback,
   };
 }
 
@@ -469,11 +498,7 @@ function runRules(input: ItineraryValidatorInput): {
         undefined,
         [plan.day],
       );
-    } else if (
-      !input.slowTravel &&
-      !partialDays.has(plan.day) &&
-      count < TARGET_PLACES_FULL_DAY
-    ) {
+    } else if (!input.slowTravel && !partialDays.has(plan.day) && count < TARGET_PLACES_FULL_DAY) {
       pushWarn(
         warnings,
         "day_place_count",
@@ -678,13 +703,7 @@ function runRules(input: ItineraryValidatorInput): {
           isBarBistroPlaceLocal(entry.place) ||
           isNightMarketPlaceLocal(entry.place)
         ) {
-          pushFail(
-            failedRules,
-            "meal_slot_category",
-            `lunch_invalid:${entry.name}`,
-            plan.day,
-            ids,
-          );
+          pushFail(failedRules, "meal_slot_category", `lunch_invalid:${entry.name}`, plan.day, ids);
         }
       }
       if (DINNER_RE.test(entry.label)) {
@@ -704,7 +723,11 @@ function runRules(input: ItineraryValidatorInput): {
       }
 
       const nightlife = resolveNightlifeClassification(entry.place);
-      if (nightlife.isNightlife && nightlife.confidence >= 0.9 && nightlife.nightlifeSubtype !== "night_market") {
+      if (
+        nightlife.isNightlife &&
+        nightlife.confidence >= 0.9 &&
+        nightlife.nightlifeSubtype !== "night_market"
+      ) {
         if (minutes < 17 * 60) {
           pushFail(
             failedRules,
@@ -756,7 +779,13 @@ function runRules(input: ItineraryValidatorInput): {
         );
       }
       if (rejectedNames.has(normalizeName(entry.name))) {
-        pushFail(failedRules, "user_exclusions", `rejected_place_name:${entry.name}`, plan.day, ids);
+        pushFail(
+          failedRules,
+          "user_exclusions",
+          `rejected_place_name:${entry.name}`,
+          plan.day,
+          ids,
+        );
         logAiPipeline(
           "[ITINERARY_USER_EXCLUSION_CHECK]",
           `matched=rejected_name`,
@@ -764,7 +793,10 @@ function runRules(input: ItineraryValidatorInput): {
           `pass=false`,
         );
       }
-      if (exclusionKeywords.length && placeMatchesExcludedCategories(entry.place, exclusionKeywords)) {
+      if (
+        exclusionKeywords.length &&
+        placeMatchesExcludedCategories(entry.place, exclusionKeywords)
+      ) {
         pushFail(failedRules, "user_exclusions", `excluded_category:${entry.name}`, plan.day, ids);
         logAiPipeline(
           "[ITINERARY_USER_EXCLUSION_CHECK]",
@@ -923,6 +955,30 @@ function runRules(input: ItineraryValidatorInput): {
   if (extensions.length) {
     nearbyCoverage = evaluateNearbyCoverage(plans, extensions);
     const missing = nearbyCoverage.missingExtensions;
+    for (const ext of nearbyCoverage.expectedExtensions) {
+      const days = nearbyCoverage.daysByExtension[ext] ?? [];
+      const concentrated = nearbyCoverage.concentratedCounts[ext] ?? 0;
+      const failureReason = missing.includes(ext)
+        ? "missing_extension"
+        : days.length >= 3
+          ? "scattered_extension"
+          : concentrated > 0 && concentrated < NEARBY_CONCENTRATE_MIN
+            ? "insufficient_concentration"
+            : "";
+      logAiPipeline(
+        "[NEARBY_EXTENSION_COVERAGE_SUMMARY]",
+        `requestedExtension=${ext}`,
+        "required=true",
+        `observedCount=${nearbyCoverage.observedCounts[ext] ?? 0}`,
+        `matchedByProvenance=${nearbyCoverage.matchedByProvenance[ext] ?? 0}`,
+        `matchedBySourceRegion=${nearbyCoverage.matchedBySourceRegion[ext] ?? 0}`,
+        `matchedByTextFallback=${nearbyCoverage.matchedByTextFallback[ext] ?? 0}`,
+        `extensionPlaceIds=count:${nearbyCoverage.observedCounts[ext] ?? 0}`,
+        `missing=${missing.includes(ext)}`,
+        `scatteredDays=${days.join(",")}`,
+        `failureReason=${failureReason}`,
+      );
+    }
     logAiPipeline(
       "[ITINERARY_NEARBY_COVERAGE]",
       `expected=${nearbyCoverage.expectedExtensions.join(",")}`,
@@ -953,9 +1009,17 @@ function runRules(input: ItineraryValidatorInput): {
             days,
           );
         } else if (conc > 0 && conc < NEARBY_CONCENTRATE_MIN) {
-          pushWarn(warnings, "nearby_extension_coverage", `thin_extension_day:${ext}:count=${conc}`);
+          pushWarn(
+            warnings,
+            "nearby_extension_coverage",
+            `thin_extension_day:${ext}:count=${conc}`,
+          );
         } else if (conc > NEARBY_CONCENTRATE_MAX) {
-          pushWarn(warnings, "nearby_extension_coverage", `dense_extension_day:${ext}:count=${conc}`);
+          pushWarn(
+            warnings,
+            "nearby_extension_coverage",
+            `dense_extension_day:${ext}:count=${conc}`,
+          );
         } else {
           logRule("nearby_extension_coverage", true, {
             details: `ext=${ext},concentrated=${conc}`,
@@ -1137,8 +1201,7 @@ export function compareItineraryPersistenceDayCounts(
   input: PersistenceDayCountsCompareInput,
 ): PersistenceDayCountsCompareResult {
   const { plannerDayCounts, validatedDayCounts, persistedDayCounts, uiDayCounts } = input;
-  const same = (a: number[], b: number[]) =>
-    a.length === b.length && a.every((v, i) => v === b[i]);
+  const same = (a: number[], b: number[]) => a.length === b.length && a.every((v, i) => v === b[i]);
   const matched =
     same(plannerDayCounts, validatedDayCounts) &&
     same(validatedDayCounts, persistedDayCounts) &&
@@ -1179,11 +1242,7 @@ export function logItineraryDeliveryAllowed(
     `dayCounts=${dayCounts.join(",")}`,
     `nearbyCovered=${(result.nearbyCoverage?.coveredExtensions ?? []).join(",")}`,
   );
-  logAiPipeline(
-    "[ITINERARY_DELIVERY_RESULT]",
-    "success=true",
-    "failureReason=",
-  );
+  logAiPipeline("[ITINERARY_DELIVERY_RESULT]", "success=true", "failureReason=");
 }
 
 export function logItineraryDeliveryBlocked(
@@ -1194,10 +1253,8 @@ export function logItineraryDeliveryBlocked(
     payloadPresent?: boolean;
   },
 ): void {
-  const failed =
-    validation?.failedRules.map((r) => `${r.code}:${r.message}`).join("|") ?? "";
-  const warnings =
-    validation?.warnings.map((w) => `${w.code}:${w.message}`).join("|") ?? "";
+  const failed = validation?.failedRules.map((r) => `${r.code}:${r.message}`).join("|") ?? "";
+  const warnings = validation?.warnings.map((w) => `${w.code}:${w.message}`).join("|") ?? "";
   const score = validation?.score != null ? String(validation.score) : "";
   const affectedDays = validation?.affectedDays?.join(",") ?? "";
   const primary =
@@ -1291,8 +1348,7 @@ export function hasUnrepairableHardBlockFailures(
   const repairFirst = new Set<string>(REPAIR_FIRST_HARD_RULE_CODES);
   return result.failedRules.some(
     (r) =>
-      (HARD_BLOCK_RULE_CODES as readonly string[]).includes(r.code) &&
-      !repairFirst.has(r.code),
+      (HARD_BLOCK_RULE_CODES as readonly string[]).includes(r.code) && !repairFirst.has(r.code),
   );
 }
 

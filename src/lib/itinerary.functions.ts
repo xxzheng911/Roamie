@@ -79,6 +79,8 @@ const PlaceSchema = z
     matchedCombinationIds: z.array(z.number()).optional(),
     matchedSelectedCombinationIds: z.array(z.number()).optional(),
     sourceRegionCandidate: z.string().optional(),
+    destinationScope: z.enum(["primary", "nearby_extension"]).optional(),
+    extensionDestination: z.string().optional(),
     isRequiredBySelection: z.boolean().optional(),
     photoName: z.string().nullable().optional(),
     rating: z.number().nullable().optional(),
@@ -107,6 +109,8 @@ const PlaceSchema = z
     matchedCombinationIds: raw.matchedCombinationIds,
     matchedSelectedCombinationIds: raw.matchedSelectedCombinationIds,
     sourceRegionCandidate: raw.sourceRegionCandidate,
+    destinationScope: raw.destinationScope,
+    extensionDestination: raw.extensionDestination,
     isRequiredBySelection: raw.isRequiredBySelection,
     photoName: raw.photoName,
     rating: raw.rating,
@@ -493,6 +497,9 @@ export const generateItinerary = createServerFn({ method: "POST" })
           todayHoursLabel: item.todayHoursLabel ?? "",
           closingSoonNote: "",
           nextOpenHint: "",
+          destinationScope: item.destinationScope,
+          extensionDestination: item.extensionDestination,
+          sourceRegionCandidate: item.sourceRegionCandidate,
         }) as unknown as PlaceResult;
 
       const current = coalesceItineraryItems(ai.itinerary);

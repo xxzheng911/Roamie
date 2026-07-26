@@ -41,6 +41,8 @@ export type PlaceResult = {
   destinationScope?: "primary" | "nearby_extension";
   /** Normalized nearby city when destinationScope = nearby_extension */
   extensionDestination?: string;
+  /** Region-expansion origin retained as a secondary nearby provenance signal. */
+  sourceRegionCandidate?: string;
   /** Pre-localization / local-script name */
   originalName?: string | null;
   /** App-locale display name (UI should prefer this) */

@@ -122,6 +122,8 @@ function makeStop(
     matchedCombinationIds: place.matchedCombinationIds,
     matchedSelectedCombinationIds: place.matchedSelectedCombinationIds,
     sourceRegionCandidate: place.sourceRegionCandidate,
+    destinationScope: place.destinationScope,
+    extensionDestination: place.extensionDestination,
     photoName: place.photoName,
     rating: place.rating,
     userRatingCount: place.userRatingCount,
@@ -162,6 +164,9 @@ function recToLandmarkPlace(
     todayHoursLabel: item.todayHoursLabel ?? "",
     closingSoonNote: item.closingSoonNote ?? "",
     nextOpenHint: item.nextOpenHint ?? "",
+    destinationScope: item.destinationScope,
+    extensionDestination: item.extensionDestination,
+    sourceRegionCandidate: item.sourceRegionCandidate,
     __rec: item,
   } as unknown as PlaceResult & { __rec: RoamieRecommendationItem };
 }

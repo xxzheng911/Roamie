@@ -529,6 +529,9 @@ export function mapPlaceResultToChatItem(
     closingSoonNote: p.closingSoonNote || undefined,
     nextOpenHint: p.nextOpenHint || undefined,
     types: p.types?.length ? p.types : p.primaryType ? [p.primaryType] : undefined,
+    destinationScope: p.destinationScope,
+    extensionDestination: p.extensionDestination,
+    sourceRegionCandidate: p.sourceRegionCandidate,
   });
   return {
     ...base,
