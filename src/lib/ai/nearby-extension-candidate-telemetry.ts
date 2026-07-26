@@ -132,3 +132,67 @@ export function logNearbyExtensionCandidatePreservationDecision(params: {
     `replacementExtension=${params.replacementExtension ?? ""}`,
   );
 }
+
+export function logNearbyExtensionRecoveryTrigger(params: {
+  requestedExtension: string;
+  triggerReason: string;
+  rateLimitSignal: string;
+  searchCandidateCount: number;
+  recoveryAttempted: boolean;
+  generationRequestId?: string;
+}): void {
+  logAiPipeline(
+    "[NEARBY_EXTENSION_RECOVERY_TRIGGER]",
+    `requestedExtension=${params.requestedExtension}`,
+    `triggerReason=${params.triggerReason}`,
+    `rateLimitSignal=${params.rateLimitSignal}`,
+    `searchCandidateCount=${params.searchCandidateCount}`,
+    `recoveryAttempted=${params.recoveryAttempted}`,
+    "activePath=prepareDirectItinerarySession",
+    `generationRequestId=${params.generationRequestId ?? ""}`,
+  );
+}
+
+export function logNearbyExtensionRecoverySummary(params: {
+  requestedExtension: string;
+  sourceCounts: Readonly<Record<string, number>>;
+  totalRecoveredBeforeDedupe: number;
+  recoveredAfterDedupe: number;
+  verifiedCount: number;
+  minimumRequired: number;
+  provenanceCount: number;
+  sourceRegionCount: number;
+  textFallbackCount: number;
+  sufficient: boolean;
+  reason: string;
+}): void {
+  logAiPipeline(
+    "[NEARBY_EXTENSION_RECOVERY_SUMMARY]",
+    `requestedExtension=${params.requestedExtension}`,
+    `sourceCounts=${formatReasonSummary(params.sourceCounts)}`,
+    `totalRecoveredBeforeDedupe=${params.totalRecoveredBeforeDedupe}`,
+    `recoveredAfterDedupe=${params.recoveredAfterDedupe}`,
+    `verifiedCount=${params.verifiedCount}`,
+    `minimumRequired=${params.minimumRequired}`,
+    `provenanceCount=${params.provenanceCount}`,
+    `sourceRegionCount=${params.sourceRegionCount}`,
+    `textFallbackCount=${params.textFallbackCount}`,
+    `sufficient=${params.sufficient}`,
+    `reason=${params.reason}`,
+  );
+}
+
+export function logNearbyExtensionRecoveryReject(params: {
+  place: NearbyTelemetryPlace;
+  source: string;
+  reason: string;
+  extension: string;
+}): void {
+  logAiPipeline(
+    "[NEARBY_EXTENSION_RECOVERY_REJECT]",
+    `placeIdMasked=${maskPlaceId(placeId(params.place))}`,
+    `source=${params.source}`,
+    `reason=${params.reason}`,
+    `extension=${params.extension}`,
+  );
+}

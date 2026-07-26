@@ -21,6 +21,7 @@ import {
   resolveDestinationApproxCenter,
   type GeocodeDestinationFn,
 } from "@/lib/ai/destination-geocode";
+import { isPlacesRateProtectionActive } from "@/lib/ai/places-cost-cache";
 
 /** Landmark-ish suffixes — if present, treat as a concrete place, not a bare region. */
 const PLACE_SUFFIX_RE =
@@ -83,8 +84,25 @@ export type RegionExpansionResult = {
   telemetry: {
     rawCount: number;
     rejectionReasons: Record<string, number>;
+    fetchSignal: RegionCandidateFetchSignal;
   };
 };
+
+export type RegionCandidateFetchSignal =
+  | "success"
+  | "global_rate_protection"
+  | "request_cooldown"
+  | "query_cooldown"
+  | "provider_failure"
+  | "genuine_empty_result";
+
+function classifyFetchError(error: string | null | undefined): RegionCandidateFetchSignal | null {
+  if (!error) return null;
+  if (error === "places_rate_limited") return "global_rate_protection";
+  if (error === "request_cooldown") return "request_cooldown";
+  if (error === "query_cooldown") return "query_cooldown";
+  return "provider_failure";
+}
 
 const REGION_EXPAND_QUERIES = [
   (region: string, dest: string) => `${region} 景點 ${dest}`,
@@ -118,6 +136,7 @@ export async function resolveRegionCandidate(params: {
   const places: ChatPlaceItem[] = [];
   let rawCount = 0;
   const rejectionReasons: Record<string, number> = {};
+  let fetchSignal: RegionCandidateFetchSignal | null = null;
   const reject = (reason: string): void => {
     rejectionReasons[reason] = (rejectionReasons[reason] ?? 0) + 1;
   };
@@ -162,6 +181,11 @@ export async function resolveRegionCandidate(params: {
   const seen = new Set<string>();
   for (const buildQuery of REGION_EXPAND_QUERIES) {
     if (places.length >= maxPlaces) break;
+    if (isPlacesRateProtectionActive()) {
+      fetchSignal = "global_rate_protection";
+      reject("global_rate_protection");
+      break;
+    }
     const query = buildQuery(region, params.destination);
     try {
       const result = await params.searchPlaces({
@@ -188,6 +212,13 @@ export async function resolveRegionCandidate(params: {
           ],
         },
       });
+      const resultSignal = classifyFetchError(result.error);
+      if (resultSignal) {
+        fetchSignal = resultSignal;
+        reject(resultSignal);
+        if (resultSignal !== "provider_failure") break;
+        continue;
+      }
       rawCount += result.places?.length ?? 0;
       for (const place of result.places ?? []) {
         if (places.length >= maxPlaces) {
@@ -254,6 +285,7 @@ export async function resolveRegionCandidate(params: {
         });
       }
     } catch (e) {
+      fetchSignal = "provider_failure";
       reject("search_error");
       console.warn("[region_candidate_expand] search failed", region, e);
     }
@@ -272,7 +304,13 @@ export async function resolveRegionCandidate(params: {
     combinationId: params.combinationId,
     places,
     failed: places.length === 0,
-    telemetry: { rawCount, rejectionReasons },
+    telemetry: {
+      rawCount,
+      rejectionReasons,
+      fetchSignal: places.length
+        ? "success"
+        : (fetchSignal ?? (rawCount === 0 ? "genuine_empty_result" : "provider_failure")),
+    },
   };
 }
 

@@ -10,6 +10,8 @@ import { isRecEnginePlannerEnabled } from "@/lib/recommendation/engine/feature-f
 import {
   chatPlaceItemToPlaceResult,
   ingestResolvedPlacesIntoCandidatePool,
+  readCandidatePoolCache,
+  readSessionCandidatePool,
 } from "@/lib/ai/places-cost-cache";
 import {
   syncSessionPlaceMemory,
@@ -135,11 +137,20 @@ import {
   logNearbyExtensionMergeTelemetry,
   logNearbyExtensionPreservationDecision,
   logNearbyExtensionSearchTelemetry,
+  logNearbyExtensionRecoveryReject,
+  logNearbyExtensionRecoverySummary,
+  logNearbyExtensionRecoveryTrigger,
 } from "@/lib/ai/nearby-extension-candidate-telemetry";
 import {
   isVerifiedNearbyExtensionCandidate,
   selectBoundedCandidatesWithNearbyMinimum,
 } from "@/lib/ai/nearby-extension-preservation";
+import {
+  isNearbyRecoverySignal,
+  recoverNearbyExtensionCandidates,
+  type NearbyRecoverySource,
+} from "@/lib/ai/nearby-extension-recovery";
+import type { RegionCandidateFetchSignal } from "@/lib/ai/region-candidate-expand";
 
 export { INSUFFICIENT_ITINERARY_PLACES_MESSAGE };
 
@@ -159,11 +170,15 @@ async function fetchNearbyExtensionPlaces(params: {
   weather?: unknown;
   selectedCombinationIds?: number[];
   tripDays?: number;
-}): Promise<{ places: ChatPlaceItem[]; insufficient: string[] }> {
+}): Promise<{
+  places: ChatPlaceItem[];
+  insufficient: string[];
+  signals: ReadonlyMap<string, RegionCandidateFetchSignal>;
+}> {
   const extensions = [
     ...new Set(params.extensions.map((e) => normalizeDestinationLabel(e)).filter(Boolean)),
   ];
-  if (!extensions.length) return { places: [], insufficient: [] };
+  if (!extensions.length) return { places: [], insufficient: [], signals: new Map() };
 
   logNearbyExtensionContext({
     primary: params.primaryDestination,
@@ -174,6 +189,7 @@ async function fetchNearbyExtensionPlaces(params: {
 
   const collected: ChatPlaceItem[] = [];
   const insufficient: string[] = [];
+  const signals = new Map<string, RegionCandidateFetchSignal>();
   for (const ext of extensions) {
     const approx = resolveDestinationApproxCenter(ext);
     const searchLat = approx?.lat ?? params.lat;
@@ -194,6 +210,7 @@ async function fetchNearbyExtensionPlaces(params: {
       theme: "attraction",
       title: ext,
     });
+    signals.set(ext, result.telemetry.fetchSignal);
 
     const cleaned = result.places.map((p) => {
       const {
@@ -267,7 +284,7 @@ async function fetchNearbyExtensionPlaces(params: {
     collected.push(...matched);
   }
 
-  return { places: dedupeChatPlaces(collected), insufficient };
+  return { places: dedupeChatPlaces(collected), insufficient, signals };
 }
 
 export type ItineraryPlaceFailureCode =
@@ -1973,6 +1990,96 @@ async function mergeSessionPlacesWithFetch(params: {
       selectedCombinationIds: params.context.selectedCombinationIds,
       tripDays: params.days,
     });
+    const recoverySources: NearbyRecoverySource[] = [
+      { name: "session_selected", places: params.sessionPlaces },
+      { name: "partially_resolved", places: priorResolved },
+      { name: "resolved_combination", places: structuredSeedPlan.resolvedSeeds },
+      { name: "mapped_session", places: mappedSession },
+      { name: "mapped_combination", places: mappedCombo },
+      { name: "planner_candidate_pool", places: fetched },
+      { name: "current_merged_pool", places: merged },
+    ];
+    for (const extension of nearbyExtensions) {
+      const sessionPool = readSessionCandidatePool({
+        sessionId: params.sessionId,
+        destination: extension,
+      });
+      const destinationPool = readCandidatePoolCache(extension);
+      if (sessionPool?.places.length) {
+        recoverySources.push({
+          name: `session_candidate_cache:${extension}`,
+          places: sessionPool.places.map((place) =>
+            mapPlaceResultToChatItem(place, {
+              mood: params.context.mood,
+              weather: params.context.weather,
+              locale: params.locale,
+            }),
+          ),
+        });
+      }
+      if (destinationPool?.places.length) {
+        recoverySources.push({
+          name: `destination_candidate_cache:${extension}`,
+          places: destinationPool.places.map((place) =>
+            mapPlaceResultToChatItem(place, {
+              mood: params.context.mood,
+              weather: params.context.weather,
+              locale: params.locale,
+            }),
+          ),
+        });
+      }
+    }
+
+    const recovered: ChatPlaceItem[] = [];
+    for (const extension of nearbyExtensions) {
+      const signal = nearbyResult.signals.get(extension) ?? "genuine_empty_result";
+      const searchPlaces = nearbyResult.places.filter(
+        (place) => normalizeDestinationLabel(place.extensionDestination ?? "") === extension,
+      );
+      const shouldRecover =
+        isNearbyRecoverySignal(signal) && searchPlaces.length < NEARBY_EXTENSION_MIN_STOPS;
+      logNearbyExtensionRecoveryTrigger({
+        requestedExtension: extension,
+        triggerReason: shouldRecover ? "rate_or_cooldown" : "not_eligible",
+        rateLimitSignal: signal,
+        searchCandidateCount: searchPlaces.length,
+        recoveryAttempted: shouldRecover,
+        generationRequestId: params.generationRequestId,
+      });
+      if (!shouldRecover) continue;
+      const recovery = recoverNearbyExtensionCandidates({ extension, sources: recoverySources });
+      const sourceCounts: Record<string, number> = {};
+      const evidenceCounts = { provenance: 0, source_region: 0, text_fallback: 0 };
+      for (const candidate of recovery.candidates) {
+        sourceCounts[candidate.source] = (sourceCounts[candidate.source] ?? 0) + 1;
+        evidenceCounts[candidate.evidence] += 1;
+        recovered.push(candidate.place);
+      }
+      for (const rejected of recovery.rejected) {
+        logNearbyExtensionRecoveryReject({
+          place: rejected.place,
+          source: rejected.source,
+          reason: rejected.reason,
+          extension,
+        });
+      }
+      logNearbyExtensionRecoverySummary({
+        requestedExtension: extension,
+        sourceCounts,
+        totalRecoveredBeforeDedupe: recovery.matchedBeforeDedupe,
+        recoveredAfterDedupe: recovery.candidates.length,
+        verifiedCount: recovery.candidates.length,
+        minimumRequired: NEARBY_EXTENSION_MIN_STOPS,
+        provenanceCount: evidenceCounts.provenance,
+        sourceRegionCount: evidenceCounts.source_region,
+        textFallbackCount: evidenceCounts.text_fallback,
+        sufficient: searchPlaces.length + recovery.candidates.length >= NEARBY_EXTENSION_MIN_STOPS,
+        reason: recovery.candidates.length ? "memory_recovered" : "memory_exhausted",
+      });
+    }
+    if (recovered.length)
+      nearbyResult.places = dedupeChatPlaces([...nearbyResult.places, ...recovered]);
     const beforeMerge = merged.length;
     if (nearbyResult.places.length) {
       merged = dedupeChatPlaces([...merged, ...nearbyResult.places]);
