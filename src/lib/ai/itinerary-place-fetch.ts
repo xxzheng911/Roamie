@@ -130,6 +130,10 @@ import {
   NEARBY_EXTENSION_MIN_STOPS,
   NEARBY_EXTENSION_SEARCH_TARGET,
 } from "@/lib/ai/nearby-extension-requirements";
+import {
+  logNearbyExtensionMergeTelemetry,
+  logNearbyExtensionSearchTelemetry,
+} from "@/lib/ai/nearby-extension-candidate-telemetry";
 
 export { INSUFFICIENT_ITINERARY_PLACES_MESSAGE };
 
@@ -236,19 +240,12 @@ async function fetchNearbyExtensionPlaces(params: {
     });
     logNearbyExtensionPool(poolStatus);
 
-    logAiPipeline(
-      "[NEARBY_EXTENSION_SEARCH]",
-      `extension=${ext}`,
-      `primaryDestination=${params.primaryDestination}`,
-      `queryCount=4`,
-      `rawCount=${result.places.length}`,
-      `acceptedCount=${matched.length}`,
-      `canonicalCount=${matched.length}`,
-      `searchLat=${searchLat}`,
-      `searchLng=${searchLng}`,
-      `failed=${matched.length === 0}`,
-      `names=[${matched.map((p) => p.placeName ?? p.name).join("|")}]`,
-    );
+    logNearbyExtensionSearchTelemetry({
+      requestedExtension: ext,
+      rawCount: result.telemetry.rawCount,
+      acceptedPlaces: matched,
+      rejectionReasons: result.telemetry.rejectionReasons,
+    });
 
     if (!poolStatus.enough) {
       insufficient.push(ext);
@@ -1952,6 +1949,10 @@ async function mergeSessionPlacesWithFetch(params: {
   const nearbyExtensions = (params.context.nearbyExtensions ?? [])
     .map((e) => normalizeDestinationLabel(e))
     .filter(Boolean);
+  const nearbyMergeTelemetry = new Map<
+    string,
+    { beforeMerge: number; nearbyAdded: number; afterMerge: number }
+  >();
   if (nearbyExtensions.length) {
     const nearbyResult = await fetchNearbyExtensionPlaces({
       extensions: nearbyExtensions,
@@ -1966,9 +1967,19 @@ async function mergeSessionPlacesWithFetch(params: {
       selectedCombinationIds: params.context.selectedCombinationIds,
       tripDays: params.days,
     });
+    const beforeMerge = merged.length;
     if (nearbyResult.places.length) {
       merged = dedupeChatPlaces([...merged, ...nearbyResult.places]);
       fallbackCandidateCount += nearbyResult.places.length;
+    }
+    for (const extension of nearbyExtensions) {
+      nearbyMergeTelemetry.set(extension, {
+        beforeMerge,
+        nearbyAdded: nearbyResult.places.filter(
+          (place) => normalizeDestinationLabel(place.extensionDestination ?? "") === extension,
+        ).length,
+        afterMerge: merged.length,
+      });
     }
     if (nearbyResult.insufficient.length) {
       // Keep unresolved so UI / advice can surface — never silently drop the requirement.
@@ -1983,21 +1994,30 @@ async function mergeSessionPlacesWithFetch(params: {
         (e) => !nearbyExtensions.includes(normalizeDestinationLabel(e)),
       );
     }
-    logAiPipeline(
-      "[NEARBY_EXTENSION_MERGE]",
-      `extensions=[${nearbyExtensions.join(",")}]`,
-      `added=${nearbyResult.places.length}`,
-      `insufficient=[${nearbyResult.insufficient.join(",")}]`,
-      `merged=${merged.length}`,
-      `fetchTarget=${fetchTarget}`,
-    );
   }
 
   // 保留足夠 unique 候選供每日最低容量（不得截成 ≈ days 筆導致單點日）
-  merged = merged.slice(
-    0,
-    Math.max(fetchTarget, mappedSession.length || 1, params.days * 4, params.days * 3),
+  const calculatedCap = Math.max(
+    fetchTarget,
+    mappedSession.length || 1,
+    params.days * 4,
+    params.days * 3,
   );
+  merged = merged.slice(0, calculatedCap);
+  for (const extension of nearbyExtensions) {
+    const snapshot = nearbyMergeTelemetry.get(extension);
+    if (!snapshot) continue;
+    const remainingPlaces = merged.filter(
+      (place) => normalizeDestinationLabel(place.extensionDestination ?? "") === extension,
+    );
+    logNearbyExtensionMergeTelemetry({
+      requestedExtension: extension,
+      ...snapshot,
+      calculatedCap,
+      afterSlice: merged.length,
+      remainingPlaces,
+    });
+  }
 
   // Never truncate away places that represent a selected combination after coverage passed.
   if (effectiveAllowlist?.selectedCombinationIds.length) {

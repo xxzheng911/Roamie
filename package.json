@@ -68,6 +68,7 @@
     "verify:global-family-feasibility": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-global-family-feasibility.mjs",
     "verify:diversity-aware-seed": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-diversity-aware-seed-assignment.mjs",
     "verify:nearby-provenance": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-provenance-boundary.mjs",
+    "verify:nearby-candidate-telemetry": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-extension-candidate-telemetry.mjs",
     "verify:chat-no-combo-cards": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-chat-no-combination-place-cards.mjs",
     "verify:rec-conversation-layer": "node scripts/verify-recommendation-conversation-layer.mjs",
     "verify:recommendation-refinement": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-refinement.mjs",

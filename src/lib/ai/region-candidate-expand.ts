@@ -80,6 +80,10 @@ export type RegionExpansionResult = {
   combinationId: number;
   places: ChatPlaceItem[];
   failed: boolean;
+  telemetry: {
+    rawCount: number;
+    rejectionReasons: Record<string, number>;
+  };
 };
 
 const REGION_EXPAND_QUERIES = [
@@ -112,6 +116,11 @@ export async function resolveRegionCandidate(params: {
   const region = params.regionName.trim();
   const maxPlaces = params.maxPlaces ?? 3;
   const places: ChatPlaceItem[] = [];
+  let rawCount = 0;
+  const rejectionReasons: Record<string, number> = {};
+  const reject = (reason: string): void => {
+    rejectionReasons[reason] = (rejectionReasons[reason] ?? 0) + 1;
+  };
 
   logAiPipeline(
     "[COMBINATION_REGION_EXPANSION_STARTED]",
@@ -179,13 +188,29 @@ export async function resolveRegionCandidate(params: {
           ],
         },
       });
+      rawCount += result.places?.length ?? 0;
       for (const place of result.places ?? []) {
-        if (places.length >= maxPlaces) break;
-        if (!isMappableGooglePlaceId(place.id)) continue;
-        if (!isResolvedCorePlace({ ...place, destinationMatch: true })) continue;
-        if (detectSubPlaceType(place.name ?? "")) continue;
+        if (places.length >= maxPlaces) {
+          reject("target_reached");
+          continue;
+        }
+        if (!isMappableGooglePlaceId(place.id)) {
+          reject("invalid_place_id");
+          continue;
+        }
+        if (!isResolvedCorePlace({ ...place, destinationMatch: true })) {
+          reject("unresolved_core_place");
+          continue;
+        }
+        if (detectSubPlaceType(place.name ?? "")) {
+          reject("subplace");
+          continue;
+        }
         const key = place.id.trim();
-        if (!key || seen.has(key)) continue;
+        if (!key || seen.has(key)) {
+          reject("duplicate");
+          continue;
+        }
 
         const quality = validateCandidateIntent(
           {
@@ -202,6 +227,7 @@ export async function resolveRegionCandidate(params: {
           { center: { lat: searchLat, lng: searchLng }, requireTourismType: true },
         );
         if (!quality.ok) {
+          reject(`quality:${quality.reason ?? "quality"}`);
           logRejectedCandidate(
             { name: place.name ?? "", types: place.types ?? undefined },
             params.combinationId,
@@ -228,6 +254,7 @@ export async function resolveRegionCandidate(params: {
         });
       }
     } catch (e) {
+      reject("search_error");
       console.warn("[region_candidate_expand] search failed", region, e);
     }
   }
@@ -245,6 +272,7 @@ export async function resolveRegionCandidate(params: {
     combinationId: params.combinationId,
     places,
     failed: places.length === 0,
+    telemetry: { rawCount, rejectionReasons },
   };
 }
 
