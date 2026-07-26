@@ -26,9 +26,11 @@ import {
 } from "@/lib/ai/nearby-extension-requirements";
 import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
 import {
+  classifyDailyDiversityCategory,
   wouldViolateDailyDiversity,
   resolveDailyDiversityLimits,
 } from "@/lib/ai/daily-category-diversity";
+import { isMappableGooglePlaceId } from "@/lib/ai/map-named-places-to-google";
 import { resolvePlaceDisplayName } from "@/lib/place-display-name";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import {
@@ -106,6 +108,185 @@ function identityKeys(place: PlaceResult): string[] {
   const id = placeId(place);
   const canon = resolveCanonicalLandmarkKey(place);
   return [id, canon].filter(Boolean);
+}
+
+type NearbyDedicatedCandidateDecision = {
+  place: PlaceResult;
+  family: string;
+  decision: "accepted" | "rejected";
+  reason: "accepted" | "duplicate" | "recipient_overflow" | "invalid_identity" | "capacity";
+  familyCountBefore: number;
+  familyCountAfter: number;
+  cap: number;
+};
+
+export function selectNearbyDedicatedDayEntries(params: {
+  extension: string;
+  collectedEntries: readonly AssemblyDayPlanEntry[];
+  extensionPool: readonly PlaceResult[];
+  blockedIdentityKeys?: ReadonlySet<string>;
+  style?: TripStyleKey;
+  maximumStops?: number;
+}): {
+  entries: AssemblyDayPlanEntry[];
+  decisions: NearbyDedicatedCandidateDecision[];
+  verifiedCount: number;
+  sufficient: boolean;
+} {
+  const extension = normalizeDestinationLabel(params.extension);
+  const maximumStops = params.maximumStops ?? NEARBY_EXTENSION_MAX_STOPS;
+  const limits = resolveDailyDiversityLimits({ style: params.style });
+  const entries: AssemblyDayPlanEntry[] = [];
+  const decisions: NearbyDedicatedCandidateDecision[] = [];
+  const selectedKeys = new Set<string>();
+  const blockedKeys = params.blockedIdentityKeys ?? new Set<string>();
+  const candidates: AssemblyDayPlanEntry[] = [
+    ...params.collectedEntries,
+    ...params.extensionPool.map((place) => ({
+      time: "11:00",
+      label: "景點",
+      name: place.name,
+      place: {
+        ...place,
+        destinationScope: "nearby_extension" as const,
+        extensionDestination: extension,
+      },
+    })),
+  ];
+  const verifiedIds = new Set<string>();
+
+  for (const entry of candidates) {
+    const place = entry.place;
+    const id = (place.id ?? "").trim();
+    const family = classifyDailyDiversityCategory(place);
+    const familyCountBefore = entries.filter(
+      (selected) => classifyDailyDiversityCategory(selected.place) === family,
+    ).length;
+    const cap = family in limits
+      ? limits[family as keyof typeof limits]
+      : Number.POSITIVE_INFINITY;
+    const keys = identityKeys(place);
+    const validIdentity =
+      isMappableGooglePlaceId(id) &&
+      place.lat != null &&
+      place.lng != null &&
+      Number.isFinite(place.lat) &&
+      Number.isFinite(place.lng);
+    if (validIdentity) verifiedIds.add(id);
+
+    let reason: NearbyDedicatedCandidateDecision["reason"] = "accepted";
+    if (!validIdentity) reason = "invalid_identity";
+    else if (keys.some((key) => selectedKeys.has(key) || blockedKeys.has(key))) {
+      reason = "duplicate";
+    } else if (entries.length >= maximumStops) reason = "capacity";
+    else if (
+      !wouldViolateDailyDiversity(
+        entries.map((item) => item.place),
+        place,
+        limits,
+      ).ok
+    ) {
+      reason = "recipient_overflow";
+    }
+
+    if (reason !== "accepted") {
+      decisions.push({
+        place,
+        family,
+        decision: "rejected",
+        reason,
+        familyCountBefore,
+        familyCountAfter: familyCountBefore,
+        cap,
+      });
+      continue;
+    }
+
+    const accepted: AssemblyDayPlanEntry = {
+      ...entry,
+      place: {
+        ...place,
+        destinationScope: "nearby_extension",
+        extensionDestination: extension,
+      },
+    };
+    entries.push(accepted);
+    for (const key of keys) selectedKeys.add(key);
+    decisions.push({
+      place: accepted.place,
+      family,
+      decision: "accepted",
+      reason: "accepted",
+      familyCountBefore,
+      familyCountAfter: familyCountBefore + 1,
+      cap,
+    });
+  }
+
+  return {
+    entries,
+    decisions,
+    verifiedCount: verifiedIds.size,
+    sufficient: entries.length >= NEARBY_EXTENSION_MIN_STOPS,
+  };
+}
+
+function maskNearbyPlaceId(value: string): string {
+  const id = value.trim();
+  if (!id) return "";
+  return id.length <= 8 ? `${id.slice(0, 2)}***` : `${id.slice(0, 4)}***${id.slice(-3)}`;
+}
+
+function logNearbyDedicatedDaySelection(params: {
+  extension: string;
+  day: number;
+  selection: ReturnType<typeof selectNearbyDedicatedDayEntries>;
+  style?: TripStyleKey;
+}): void {
+  for (const decision of params.selection.decisions) {
+    if (decision.decision !== "rejected") continue;
+    logAiPipeline(
+      "[NEARBY_DEDICATED_DAY_ASSIGNMENT]",
+      `requestedExtension=${params.extension}`,
+      `day=${params.day}`,
+      `candidatePlaceIdMasked=${maskNearbyPlaceId(decision.place.id ?? "")}`,
+      `candidateName=${decision.place.localizedDisplayName ?? decision.place.name}`,
+      `family=${decision.family}`,
+      `decision=${decision.decision}`,
+      `reason=${decision.reason}`,
+      `familyCountBefore=${decision.familyCountBefore}`,
+      `familyCountAfter=${decision.familyCountAfter}`,
+      `cap=${Number.isFinite(decision.cap) ? decision.cap : "unlimited"}`,
+    );
+  }
+
+  const familyCounts = new Map<string, number>();
+  for (const entry of params.selection.entries) {
+    const family = classifyDailyDiversityCategory(entry.place);
+    familyCounts.set(family, (familyCounts.get(family) ?? 0) + 1);
+  }
+  const limits = resolveDailyDiversityLimits({ style: params.style });
+  const violations = [...familyCounts.entries()]
+    .filter(([family, count]) => {
+      const cap = family in limits
+        ? limits[family as keyof typeof limits]
+        : Number.POSITIVE_INFINITY;
+      return Number.isFinite(cap) && count > cap;
+    })
+    .map(([family, count]) => `${family}:${count}`);
+
+  logAiPipeline(
+    "[NEARBY_DEDICATED_DAY_SUMMARY]",
+    `requestedExtension=${params.extension}`,
+    `day=${params.day}`,
+    `verifiedCount=${params.selection.verifiedCount}`,
+    `acceptedCount=${params.selection.entries.length}`,
+    `rejectedCount=${params.selection.decisions.filter((item) => item.decision === "rejected").length}`,
+    `minimumRequired=${NEARBY_EXTENSION_MIN_STOPS}`,
+    `sufficient=${params.selection.sufficient}`,
+    `familyCounts=${[...familyCounts.entries()].map(([family, count]) => `${family}:${count}`).join("|") || "none"}`,
+    `violations=${violations.join("|") || "none"}`,
+  );
 }
 
 function extractAreaName(address: string): string {
@@ -480,6 +661,7 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
             const bucket = collectedByExt.get(matched) ?? [];
             bucket.push(entry);
             collectedByExt.set(matched, bucket);
+            for (const key of identityKeys(entry.place)) usedIds.delete(key);
             const id = entryPlaceId(entry);
             if (id) usedIds.delete(id);
           } else {
@@ -501,6 +683,7 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
           const bucket = collectedByExt.get(matched) ?? [];
           bucket.push(entry);
           collectedByExt.set(matched, bucket);
+          for (const key of identityKeys(entry.place)) usedIds.delete(key);
           const id = entryPlaceId(entry);
           if (id) usedIds.delete(id);
         } else {
@@ -519,36 +702,25 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
       const extPool = nearbyPool.filter(
         (p) => placeMatchesNearbyExtension(p, [ext]) === ext,
       );
-      const mergedNearby: AssemblyDayPlanEntry[] = [];
-      for (const entry of collectedByExt.get(ext) ?? []) {
+      const selection = selectNearbyDedicatedDayEntries({
+        extension: ext,
+        collectedEntries: collectedByExt.get(ext) ?? [],
+        extensionPool: extPool,
+        blockedIdentityKeys: usedIds,
+        style: params.style,
+      });
+      const mergedNearby = selection.entries;
+      for (const entry of mergedNearby) {
+        for (const key of identityKeys(entry.place)) usedIds.add(key);
         const id = entryPlaceId(entry);
-        if (!id || mergedNearby.some((e) => entryPlaceId(e) === id)) continue;
-        mergedNearby.push(entry);
-        usedIds.add(id);
+        if (id) usedIds.add(id);
       }
-      for (const place of extPool) {
-        if (mergedNearby.length >= NEARBY_EXTENSION_MAX_STOPS) break;
-        const id = placeId(place) || place.name;
-        if (!id || mergedNearby.some((e) => entryPlaceId(e) === id)) continue;
-        if (
-          identityKeys(place).some((k) => usedIds.has(k)) &&
-          !mergedNearby.some((e) => entryPlaceId(e) === id)
-        ) {
-          continue;
-        }
-        mergedNearby.push({
-          time: "11:00",
-          label: "景點",
-          name: place.name,
-          place: {
-            ...place,
-            destinationScope: "nearby_extension",
-            extensionDestination: ext,
-          },
-        });
-        for (const key of identityKeys(place)) usedIds.add(key);
-        usedIds.add(id);
-      }
+      logNearbyDedicatedDaySelection({
+        extension: ext,
+        day: assignedDay,
+        selection,
+        style: params.style,
+      });
 
       // Dedicated day: ONLY nearby stops — never pad with Tokyo primary places
       plans = plans.map((plan) =>
@@ -564,7 +736,7 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
       logNearbyExtensionPlannerResult({
         extension: ext,
         plannedStops: mergedNearby.length,
-        droppedStops: Math.max(0, extPool.length - mergedNearby.length),
+        droppedStops: Math.max(0, selection.verifiedCount - mergedNearby.length),
         dropReasons:
           mergedNearby.length < nearbyDayMin
             ? ["nearby_extension_insufficient"]

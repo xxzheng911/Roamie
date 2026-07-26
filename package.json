@@ -71,6 +71,7 @@
     "verify:nearby-candidate-telemetry": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-extension-candidate-telemetry.mjs",
     "verify:nearby-extension-preservation": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-extension-preservation.mjs",
     "verify:nearby-extension-recovery": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-extension-recovery.mjs",
+    "verify:nearby-dedicated-day-diversity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-dedicated-day-diversity.mjs",
     "verify:chat-no-combo-cards": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-chat-no-combination-place-cards.mjs",
     "verify:rec-conversation-layer": "node scripts/verify-recommendation-conversation-layer.mjs",
     "verify:recommendation-refinement": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-refinement.mjs",
