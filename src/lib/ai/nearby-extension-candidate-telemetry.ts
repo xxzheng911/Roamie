@@ -84,3 +84,51 @@ export function logNearbyExtensionMergeTelemetry(params: {
     `remainingNearbyExtensionDestination=[${params.remainingPlaces.map((place) => place.extensionDestination ?? "").join("|")}]`,
   );
 }
+
+export function logNearbyExtensionPreservationDecision(params: {
+  requestedExtension: string;
+  verifiedCount: number;
+  minimumRequired: number;
+  preservedCount: number;
+  rejectedCount: number;
+  replacementCount: number;
+  calculatedCap: number;
+  finalPoolCount: number;
+  sufficient: boolean;
+  reason: string;
+  stage: "post_merge" | "global_selection";
+}): void {
+  logAiPipeline(
+    "[NEARBY_EXTENSION_PRESERVATION_DECISION]",
+    `requestedExtension=${params.requestedExtension}`,
+    `verifiedCount=${params.verifiedCount}`,
+    `minimumRequired=${params.minimumRequired}`,
+    `preservedCount=${params.preservedCount}`,
+    `rejectedCount=${params.rejectedCount}`,
+    `replacementCount=${params.replacementCount}`,
+    `calculatedCap=${params.calculatedCap}`,
+    `finalPoolCount=${params.finalPoolCount}`,
+    `sufficient=${params.sufficient}`,
+    `reason=${params.reason}`,
+    `stage=${params.stage}`,
+  );
+}
+
+export function logNearbyExtensionCandidatePreservationDecision(params: {
+  place: NearbyTelemetryPlace;
+  extension: string;
+  stage: "post_merge" | "global_selection";
+  decision: "dropped_after_minimum" | "rejected_global_capacity";
+  reason: "bounded_cap" | "global_family_capacity";
+  replacementExtension?: string;
+}): void {
+  logAiPipeline(
+    "[NEARBY_EXTENSION_CANDIDATE_DECISION]",
+    `placeIdMasked=${maskPlaceId(placeId(params.place))}`,
+    `extension=${params.extension}`,
+    `stage=${params.stage}`,
+    `decision=${params.decision}`,
+    `reason=${params.reason}`,
+    `replacementExtension=${params.replacementExtension ?? ""}`,
+  );
+}

@@ -339,6 +339,7 @@ export function buildMixedItineraryWithDiagnostics(
     targetCount: boundedScenicTarget,
     selectedCombinationIds,
     minimumPerCombination,
+    nearbyExtensions,
     style: "mixed",
   });
   const landmarkKept = feasibleSelection.selected;

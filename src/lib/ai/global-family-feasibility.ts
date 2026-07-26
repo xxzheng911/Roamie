@@ -9,6 +9,15 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { isRealGooglePlanningPlace } from "@/lib/ai/planning-real-place";
 import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
+import { NEARBY_EXTENSION_MIN_STOPS } from "@/lib/ai/nearby-extension-requirements";
+import {
+  isVerifiedNearbyExtensionCandidate,
+  matchesNearbyExtension,
+} from "@/lib/ai/nearby-extension-preservation";
+import {
+  logNearbyExtensionCandidatePreservationDecision,
+  logNearbyExtensionPreservationDecision,
+} from "@/lib/ai/nearby-extension-candidate-telemetry";
 
 export type FamilyFeasibilityCandidate = RoamieRecommendationItem & {
   isRequiredBySelection?: boolean;
@@ -70,6 +79,7 @@ export function enforceGlobalFamilyFeasibility(params: {
   targetCount: number;
   selectedCombinationIds: number[];
   minimumPerCombination: number;
+  nearbyExtensions?: string[];
   style?: TripStyleKey;
 }): GlobalFamilyFeasibilityResult {
   const limits = resolveDailyDiversityLimits({ style: params.style });
@@ -81,6 +91,14 @@ export function enforceGlobalFamilyFeasibility(params: {
   const replacementPairs: Array<{
     rejected: FamilyFeasibilityCandidate;
     replacement: FamilyFeasibilityCandidate;
+  }> = [];
+  const nearbyDecisions: Array<{
+    requestedExtension: string;
+    verifiedCount: number;
+    preservedCount: number;
+    rejectedCount: number;
+    sufficient: boolean;
+    reason: string;
   }> = [];
   let globallyFeasible = true;
 
@@ -182,6 +200,52 @@ export function enforceGlobalFamilyFeasibility(params: {
     }
   }
 
+  // Preserve each requested extension independently, using another candidate
+  // from that same extension when global family capacity rejects an earlier one.
+  for (const extension of params.nearbyExtensions ?? []) {
+    const candidates = params.candidates.filter((candidate) =>
+      isVerifiedNearbyExtensionCandidate(candidate, extension),
+    );
+    const covered = () =>
+      selected.filter((candidate) => matchesNearbyExtension(candidate, extension)).length;
+    for (const candidate of candidates) {
+      if (covered() >= NEARBY_EXTENSION_MIN_STOPS) break;
+      if (selectedIds.has(candidateKey(candidate))) continue;
+      tryOptional(candidate);
+    }
+    const preservedCount = covered();
+    const rejectedCount = candidates.filter((candidate) =>
+      rejectedIds.has(candidateKey(candidate)),
+    ).length;
+    const sufficient =
+      candidates.length >= NEARBY_EXTENSION_MIN_STOPS &&
+      preservedCount >= NEARBY_EXTENSION_MIN_STOPS;
+    nearbyDecisions.push({
+      requestedExtension: extension,
+      verifiedCount: candidates.length,
+      preservedCount,
+      rejectedCount,
+      sufficient,
+      reason:
+        candidates.length === 0
+          ? "no_verified_candidates"
+          : sufficient
+            ? "preserved"
+            : "extension_infeasible",
+    });
+    for (const candidate of candidates) {
+      if (!rejectedIds.has(candidateKey(candidate))) continue;
+      logNearbyExtensionCandidatePreservationDecision({
+        place: candidate,
+        extension,
+        stage: "global_selection",
+        decision: "rejected_global_capacity",
+        reason: "global_family_capacity",
+        replacementExtension: sufficient ? extension : undefined,
+      });
+    }
+  }
+
   // Nearby evidence precedes general quality-ranked/supplement candidates.
   const remaining = params.candidates.filter(
     (candidate) => !selectedIds.has(candidateKey(candidate)),
@@ -193,6 +257,17 @@ export function enforceGlobalFamilyFeasibility(params: {
   for (const candidate of ordered) {
     if (selected.length >= params.targetCount) break;
     tryOptional(candidate);
+  }
+
+  for (const decision of nearbyDecisions) {
+    logNearbyExtensionPreservationDecision({
+      ...decision,
+      minimumRequired: NEARBY_EXTENSION_MIN_STOPS,
+      replacementCount: decision.sufficient ? decision.rejectedCount : 0,
+      calculatedCap: params.targetCount,
+      finalPoolCount: selected.length,
+      stage: "global_selection",
+    });
   }
 
   for (const pair of replacementPairs) {

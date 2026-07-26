@@ -131,9 +131,15 @@ import {
   NEARBY_EXTENSION_SEARCH_TARGET,
 } from "@/lib/ai/nearby-extension-requirements";
 import {
+  logNearbyExtensionCandidatePreservationDecision,
   logNearbyExtensionMergeTelemetry,
+  logNearbyExtensionPreservationDecision,
   logNearbyExtensionSearchTelemetry,
 } from "@/lib/ai/nearby-extension-candidate-telemetry";
+import {
+  isVerifiedNearbyExtensionCandidate,
+  selectBoundedCandidatesWithNearbyMinimum,
+} from "@/lib/ai/nearby-extension-preservation";
 
 export { INSUFFICIENT_ITINERARY_PLACES_MESSAGE };
 
@@ -2003,7 +2009,42 @@ async function mergeSessionPlacesWithFetch(params: {
     params.days * 4,
     params.days * 3,
   );
-  merged = merged.slice(0, calculatedCap);
+  const mergedBeforeBoundedSelection = merged;
+  const boundedSelection = selectBoundedCandidatesWithNearbyMinimum({
+    candidates: merged,
+    targetCount: calculatedCap,
+    selectedCombinationIds: effectiveAllowlist?.selectedCombinationIds ?? [],
+    nearbyExtensions,
+  });
+  merged = boundedSelection.selected;
+  const selectedNearbyIds = new Set(
+    merged.map((place) => place.googlePlaceId?.trim()).filter(Boolean),
+  );
+  for (const decision of boundedSelection.decisions) {
+    logNearbyExtensionPreservationDecision({
+      ...decision,
+      calculatedCap,
+      finalPoolCount: merged.length,
+      stage: "post_merge",
+    });
+    for (const place of mergedBeforeBoundedSelection) {
+      const id = place.googlePlaceId?.trim();
+      if (
+        !id ||
+        selectedNearbyIds.has(id) ||
+        !isVerifiedNearbyExtensionCandidate(place, decision.requestedExtension)
+      ) {
+        continue;
+      }
+      logNearbyExtensionCandidatePreservationDecision({
+        place,
+        extension: decision.requestedExtension,
+        stage: "post_merge",
+        decision: "dropped_after_minimum",
+        reason: "bounded_cap",
+      });
+    }
+  }
   for (const extension of nearbyExtensions) {
     const snapshot = nearbyMergeTelemetry.get(extension);
     if (!snapshot) continue;
@@ -2017,27 +2058,6 @@ async function mergeSessionPlacesWithFetch(params: {
       afterSlice: merged.length,
       remainingPlaces,
     });
-  }
-
-  // Never truncate away places that represent a selected combination after coverage passed.
-  if (effectiveAllowlist?.selectedCombinationIds.length) {
-    const keptKeys = new Set(
-      merged.map(
-        (p) =>
-          p.googlePlaceId?.trim() || `${(p.placeName ?? p.name).replace(/\s+/g, "").toLowerCase()}`,
-      ),
-    );
-    for (const place of [...mappedSession, ...mappedCombo]) {
-      const key =
-        place.googlePlaceId?.trim() ||
-        `${(place.placeName ?? place.name).replace(/\s+/g, "").toLowerCase()}`;
-      if (!key || keptKeys.has(key)) continue;
-      const ids = combinationIdsFromPlace(place);
-      if (ids.some((id) => effectiveAllowlist.selectedCombinationIds.includes(id))) {
-        merged.push(place);
-        keptKeys.add(key);
-      }
-    }
   }
 
   const stats = getPlacesApiCallStats();
