@@ -56,6 +56,7 @@ import {
   classifyDailyDiversityCategory,
   formatDailyDiversityFamilySummary,
   resolveDailyDiversityLimits,
+  wouldViolateDailyDiversity,
 } from "@/lib/ai/daily-category-diversity";
 
 export const MAX_TRIP_DUPLICATE_RATE = 0.2;
@@ -1138,12 +1139,13 @@ export function refillMissingDaySlots(params: {
   plannedDate?: string;
   /** Rate-limit fallback only: retain valid real partial days for graceful delivery. */
   preservePartialDays?: boolean;
-  /** Rate-limit recovery only: never refill a stop that breaches an existing family cap. */
+  /** @deprecated Diversity caps are always enforced during refill. */
   respectDiversityCaps?: boolean;
 }): ComposedDayPlan[] {
   const pool = dedupeCandidatePlaces(filterExcludedRetailPlaces(filterRealPlanningPlaces(params.pool)));
   const slotPools = buildItinerarySlotPools(pool);
   const template = resolveStyleDaySlotTemplate(params.style, 1);
+  const diversityLimits = resolveDailyDiversityLimits({ style: params.style });
   const allocator = new TripPlaceAllocator();
   seedTripAllocatorFromPlans(allocator, params.plans);
 
@@ -1177,6 +1179,20 @@ export function refillMissingDaySlots(params: {
     const missingKeys: string[] = [];
     const budget = emptyDayBudget();
     const theme = resolveDayTheme(params.style, plan.day - 1);
+    const diversityAttempted = new Set<string>();
+    const diversityRejected = new Set<string>();
+    let diversityAccepted = 0;
+
+    const diversityEligiblePool = (candidates: PlaceResult[]): PlaceResult[] => {
+      const dayPlaces = entries.map((existing) => existing.place);
+      return candidates.filter((candidate) => {
+        const identity = resolveTripPlaceId(candidate) || candidate.name;
+        if (identity) diversityAttempted.add(identity);
+        const check = wouldViolateDailyDiversity(dayPlaces, candidate, diversityLimits);
+        if (!check.ok && identity) diversityRejected.add(identity);
+        return check.ok;
+      });
+    };
 
     template.forEach((slot, index) => {
       let entry = byTime.get(slot.time);
@@ -1210,7 +1226,7 @@ export function refillMissingDaySlots(params: {
       const allowRepeat = unusedForSlot.length === 0 && pool.filter((candidate) => !allocator.isUsed(candidate)).length === 0;
       const place =
         pickPlaceForSlot({
-          pool: unusedForSlot.length ? unusedForSlot : slotPool,
+          pool: diversityEligiblePool(unusedForSlot.length ? unusedForSlot : slotPool),
           slot,
           theme,
           allocator,
@@ -1219,7 +1235,7 @@ export function refillMissingDaySlots(params: {
           plannedDate: params.plannedDate,
         }) ??
         pickPlaceForSlot({
-          pool: unusedForSlot.length ? unusedForSlot : slotPool,
+          pool: diversityEligiblePool(unusedForSlot.length ? unusedForSlot : slotPool),
           slot,
           theme,
           allocator,
@@ -1229,7 +1245,7 @@ export function refillMissingDaySlots(params: {
           relaxConstraints: true,
         }) ??
         pickPlaceForSlot({
-          pool: pool.filter((candidate) => !allocator.isUsed(candidate)),
+          pool: diversityEligiblePool(pool.filter((candidate) => !allocator.isUsed(candidate))),
           slot,
           theme,
           allocator,
@@ -1240,7 +1256,7 @@ export function refillMissingDaySlots(params: {
         }) ??
         (allowRepeat
           ? pickPlaceForSlot({
-              pool,
+              pool: diversityEligiblePool(pool),
               slot,
               theme,
               allocator,
@@ -1255,26 +1271,19 @@ export function refillMissingDaySlots(params: {
       if (!place?.name) return;
       const beforePlaces = entries.map((existing) => existing.place);
       const family = classifyDailyDiversityCategory(place);
-      const limits = resolveDailyDiversityLimits({ style: params.style });
-      const cap = family in limits
-        ? limits[family as keyof typeof limits]
+      const cap = family in diversityLimits
+        ? diversityLimits[family as keyof typeof diversityLimits]
         : Number.POSITIVE_INFINITY;
       const beforeFamilyCount = beforePlaces.filter(
         (candidate) => classifyDailyDiversityCategory(candidate) === family,
       ).length;
-      if (
-        params.respectDiversityCaps &&
-        Number.isFinite(cap) &&
-        beforeFamilyCount + 1 > cap
-      ) {
-        return;
-      }
       entries.push({
         time: slot.time,
         label: resolveEntryLabel(slot, place),
         name: place.name,
         place,
       });
+      diversityAccepted += 1;
       logAiPipeline(
         "[DAY_SLOT_REFILL_APPLY]",
         `day=${plan.day}`,
@@ -1290,6 +1299,28 @@ export function refillMissingDaySlots(params: {
     });
 
     const sorted = dedupeEntryTimes(entries);
+    const resultingFamilyCounts = new Map<string, number>();
+    for (const entry of sorted) {
+      const family = classifyDailyDiversityCategory(entry.place);
+      resultingFamilyCounts.set(family, (resultingFamilyCounts.get(family) ?? 0) + 1);
+    }
+    const capViolations = [...resultingFamilyCounts.entries()]
+      .filter(([family, count]) => {
+        const cap = family in diversityLimits
+          ? diversityLimits[family as keyof typeof diversityLimits]
+          : Number.POSITIVE_INFINITY;
+        return Number.isFinite(cap) && count > cap;
+      })
+      .map(([family, count]) => `${family}:${count}`);
+    logAiPipeline(
+      "[DAY_SLOT_REFILL_DIVERSITY_SUMMARY]",
+      `day=${plan.day}`,
+      `attempted=${diversityAttempted.size}`,
+      `accepted=${diversityAccepted}`,
+      `diversityRejected=${diversityRejected.size}`,
+      `resultingFamilyCounts=${formatDailyDiversityFamilySummary(sorted.map((entry) => entry.place))}`,
+      `capViolations=${capViolations.join("|") || "none"}`,
+    );
     const after = sorted.length;
     if (after < before && before >= minPerDay) {
       return plan;
