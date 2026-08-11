@@ -96,6 +96,62 @@ function canAcceptPlaceForDay(
   return null;
 }
 
+type AssemblyMoveSourcePath =
+  | "route_displaced_reinsertion"
+  | "phase_4_donor_move"
+  | "phase_5b_donor_move"
+  | "singleton_absorption";
+
+export function evaluateAssemblyRecipientDiversity(
+  entries: readonly AssemblyDayPlanEntry[],
+  place: PlaceResult,
+  style?: TripStyleKey,
+): {
+  accepted: boolean;
+  family: string;
+  currentCount: number;
+  cap: number;
+} {
+  const family = classifyDailyDiversityCategory(place);
+  const currentCount = entries.filter(
+    (entry) => classifyDailyDiversityCategory(entry.place) === family,
+  ).length;
+  const limits = resolveDailyDiversityLimits({ style });
+  const cap = family in limits
+    ? limits[family as keyof typeof limits]
+    : Number.POSITIVE_INFINITY;
+  return {
+    accepted: wouldViolateDailyDiversity(
+      entries.map((entry) => entry.place),
+      place,
+      limits,
+    ).ok,
+    family,
+    currentCount,
+    cap,
+  };
+}
+
+function logAssemblyRecipientDiversity(params: {
+  sourcePath: AssemblyMoveSourcePath;
+  place: PlaceResult;
+  fromDay: number;
+  targetDay: number;
+  decision: ReturnType<typeof evaluateAssemblyRecipientDiversity>;
+}): void {
+  logAiPipeline(
+    "[PLANNER_ASSEMBLY_DIVERSITY_MOVE]",
+    `sourcePath=${params.sourcePath}`,
+    `placeId=${placeId(params.place)}`,
+    `family=${params.decision.family}`,
+    `fromDay=${params.fromDay}`,
+    `targetDay=${params.targetDay}`,
+    `currentCount=${params.decision.currentCount}`,
+    `cap=${Number.isFinite(params.decision.cap) ? params.decision.cap : "unlimited"}`,
+    `decision=${params.decision.accepted ? "accepted" : "rejected"}`,
+  );
+}
+
 /** 本地 place id，避免經 allocator → day-plan-source 循環依賴 */
 function placeId(place: PlaceResult): string {
   const id = (place.id ?? "").trim();
@@ -759,7 +815,7 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
   // ── 2) 移出明顯跨區點：相對當日錨點過遠 → 改排其他天或跳過 ──
   // Dedicated nearby days are already pure; do not compare their stops against Tokyo anchors.
   {
-    const displaced: AssemblyDayPlanEntry[] = [];
+    const displaced: Array<{ entry: AssemblyDayPlanEntry; fromDay: number }> = [];
     plans = plans.map((plan) => {
       const diag = diagnosticsMap.get(plan.day)!;
       if (extensions.length && dedicatedNearbyDays.has(plan.day)) return plan;
@@ -779,14 +835,14 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
         if (extensions.length && placeMatchesNearbyExtension(entry.place, extensions)) {
           diag.skipped.push({ name: entry.name, reason: "nearby_reserved_other_day" });
           logSkip(plan.day, entry.name, "nearby_reserved_other_day");
-          displaced.push(entry);
+          displaced.push({ entry, fromDay: plan.day });
           usedIds.delete(entryPlaceId(entry));
           continue;
         }
         if (d > PLANNER_DAY_ANCHOR_RADIUS_M * 1.35) {
           diag.skipped.push({ name: entry.name, reason: "route_too_far" });
           logSkip(plan.day, entry.name, "route_too_far");
-          displaced.push(entry);
+          displaced.push({ entry, fromDay: plan.day });
           usedIds.delete(entryPlaceId(entry));
           continue;
         }
@@ -796,7 +852,8 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
     });
 
     // 將 displaced 依地理簇／錨點距離塞回適合的天（仍不重排推薦分數）
-    for (const entry of displaced) {
+    for (const displacedEntry of displaced) {
+      const { entry, fromDay: sourceDay } = displacedEntry;
       let bestDay = -1;
       let bestDist = Number.POSITIVE_INFINITY;
       for (const plan of plans) {
@@ -814,6 +871,21 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
               centroid,
             )
           : Number.POSITIVE_INFINITY;
+        const diversityDecision = evaluateAssemblyRecipientDiversity(
+          plan.entries,
+          entry.place,
+          params.style,
+        );
+        if (!diversityDecision.accepted) {
+          logAssemblyRecipientDiversity({
+            sourcePath: "route_displaced_reinsertion",
+            place: entry.place,
+            fromDay: sourceDay,
+            targetDay: plan.day,
+            decision: diversityDecision,
+          });
+          continue;
+        }
         if (d < bestDist && d <= PLANNER_DAY_ANCHOR_RADIUS_M) {
           bestDist = d;
           bestDay = plan.day;
@@ -827,7 +899,20 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
         if (plan.day !== bestDay) return plan;
         const id = entryPlaceId(entry);
         if (plan.entries.some((e) => entryPlaceId(e) === id)) return plan;
+        const diversityDecision = evaluateAssemblyRecipientDiversity(
+          plan.entries,
+          entry.place,
+          params.style,
+        );
+        if (!diversityDecision.accepted) return plan;
         usedIds.add(id);
+        logAssemblyRecipientDiversity({
+          sourcePath: "route_displaced_reinsertion",
+          place: entry.place,
+          fromDay: sourceDay,
+          targetDay: plan.day,
+          decision: diversityDecision,
+        });
         return { ...plan, entries: [...plan.entries, entry] };
       });
     }
@@ -954,22 +1039,46 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
     if (plan.entries.length >= need) continue;
     while (plan.entries.length < need) {
       const donorFloor = plan.entries.length === 0 ? 2 : dayMin;
-      const donor = plans
+      const donors = plans
         .filter((p) => p.day !== plan.day && p.entries.length > donorFloor)
-        .sort((a, b) => b.entries.length - a.entries.length)[0];
-      if (!donor) break;
-      const moved = donor.entries.pop();
-      if (!moved) break;
-      // 近郊規則：非近郊日不接收近郊點
-      if (
-        extensions.length &&
-        plan.day !== nearbyDay &&
-        placeMatchesNearbyExtension(moved.place, extensions)
-      ) {
-        donor.entries.push(moved);
-        break;
+        .sort((a, b) => b.entries.length - a.entries.length);
+      let selectedMove: {
+        donor: AssemblyDayPlan;
+        entry: AssemblyDayPlanEntry;
+      } | null = null;
+      for (const donor of donors) {
+        for (const entry of [...donor.entries].reverse()) {
+          if (
+            extensions.length &&
+            plan.day !== nearbyDay &&
+            placeMatchesNearbyExtension(entry.place, extensions)
+          ) {
+            continue;
+          }
+          const diversityDecision = evaluateAssemblyRecipientDiversity(
+            plan.entries,
+            entry.place,
+            params.style,
+          );
+          logAssemblyRecipientDiversity({
+            sourcePath: "phase_4_donor_move",
+            place: entry.place,
+            fromDay: donor.day,
+            targetDay: plan.day,
+            decision: diversityDecision,
+          });
+          if (!diversityDecision.accepted) continue;
+          selectedMove = { donor, entry };
+          break;
+        }
+        if (selectedMove) break;
       }
-      plan.entries.push(moved);
+      if (!selectedMove) break;
+      const selectedEntry = selectedMove.entry;
+      selectedMove.donor.entries = selectedMove.donor.entries.filter(
+        (entry) => entry !== selectedEntry,
+      );
+      plan.entries.push(selectedEntry);
       capacityFallbackTriggered = true;
       diagnosticsMap.get(plan.day)!.capacityFallbackTriggered = true;
     }
@@ -1016,14 +1125,30 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
       `placeCount=1`,
       "action=block_singleton_day",
     );
-    const lone = plan.entries.splice(0, plan.entries.length);
+    const lone = plan.entries[0];
+    const targets = [...plans]
+      .filter((p) => p.day !== plan.day && p.entries.length >= 1)
+      .sort((a, b) => a.entries.length - b.entries.length || a.day - b.day);
     const target =
-      [...plans]
-        .filter((p) => p.day !== plan.day && p.entries.length >= 1)
-        .sort((a, b) => a.entries.length - b.entries.length || a.day - b.day)[0] ?? null;
-    if (target) target.entries.push(...lone);
-    else {
-      plan.entries.push(...lone);
+      targets.find((candidate) => {
+        const diversityDecision = evaluateAssemblyRecipientDiversity(
+          candidate.entries,
+          lone.place,
+          params.style,
+        );
+        logAssemblyRecipientDiversity({
+          sourcePath: "singleton_absorption",
+          place: lone.place,
+          fromDay: plan.day,
+          targetDay: candidate.day,
+          decision: diversityDecision,
+        });
+        return diversityDecision.accepted;
+      }) ?? null;
+    if (target) {
+      plan.entries.splice(0, 1);
+      target.entries.push(lone);
+    } else {
       candidateInsufficient = true;
     }
   };
@@ -1077,7 +1202,7 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
       usedIds.add(id);
     }
     while (plan.entries.length < fillTarget) {
-      const donor = plans
+      const donors = plans
         .filter((p) => {
           if (p.day === plan.day) return false;
           // Allow peel down to coverage floor (2) so empty days can be filled.
@@ -1089,19 +1214,44 @@ export function applyPlannerRouteAndCapacityAssembly(params: {
                 : Math.min(dayMin, coverageMinPerDay);
           return p.entries.length > donorFloor;
         })
-        .sort((a, b) => b.entries.length - a.entries.length)[0];
-      if (!donor) break;
-      const moved = donor.entries.pop();
-      if (!moved) break;
-      if (
-        extensions.length &&
-        plan.day !== nearbyDay &&
-        placeMatchesNearbyExtension(moved.place, extensions)
-      ) {
-        donor.entries.push(moved);
-        break;
+        .sort((a, b) => b.entries.length - a.entries.length);
+      let selectedMove: {
+        donor: AssemblyDayPlan;
+        entry: AssemblyDayPlanEntry;
+      } | null = null;
+      for (const donor of donors) {
+        for (const entry of [...donor.entries].reverse()) {
+          if (
+            extensions.length &&
+            plan.day !== nearbyDay &&
+            placeMatchesNearbyExtension(entry.place, extensions)
+          ) {
+            continue;
+          }
+          const diversityDecision = evaluateAssemblyRecipientDiversity(
+            plan.entries,
+            entry.place,
+            params.style,
+          );
+          logAssemblyRecipientDiversity({
+            sourcePath: "phase_5b_donor_move",
+            place: entry.place,
+            fromDay: donor.day,
+            targetDay: plan.day,
+            decision: diversityDecision,
+          });
+          if (!diversityDecision.accepted) continue;
+          selectedMove = { donor, entry };
+          break;
+        }
+        if (selectedMove) break;
       }
-      plan.entries.push(moved);
+      if (!selectedMove) break;
+      const selectedEntry = selectedMove.entry;
+      selectedMove.donor.entries = selectedMove.donor.entries.filter(
+        (entry) => entry !== selectedEntry,
+      );
+      plan.entries.push(selectedEntry);
     }
   }
 
