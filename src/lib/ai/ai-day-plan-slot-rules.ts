@@ -33,6 +33,11 @@ import {
   resolvePlanningPlaceId,
 } from "@/lib/ai/planning-real-place";
 import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
+import {
+  classifyDailyDiversityCategory,
+  resolveDailyDiversityLimits,
+  wouldViolateDailyDiversity,
+} from "@/lib/ai/daily-category-diversity";
 
 export const EXCLUDED_RETAIL_RE =
   /公有市場|零售市場|傳統市場|黃昏市場|早市|菜市場|批發市場|批發商圈|魚市場|肉品市場|果菜市場|肉市場|農產品市場|農產品市集|第三公有|新民市場|中央市場|五金賣場|超市|量販|量販店|大賣場|生鮮超市|賣場|全聯|px\s*mart|家樂福|costco|carrefour|大潤發|愛買|hypermarket|wholesale|supermarket|grocery_store|grocery_or_supermarket|convenience_store|department_store|福利中心|福利量販|便利商店|7-eleven|7\s*eleven|familymart|family\s*mart|萊爾富|萬家福|停車場|停车场|parking|學校|学校|school|university|college|辦公大樓|办公大楼|office\s*building|corporate\s*office|meeting\s*point|集合點|集合点|walking\s*tour|route\s*meeting/i;
@@ -359,6 +364,7 @@ function supplementDayPlanEntries(params: {
 }): DayPlanEntry[] {
   const {
     entries,
+    day,
     pool,
     used,
     style,
@@ -370,6 +376,35 @@ function supplementDayPlanEntries(params: {
   const minPerDay = minEntriesPerDayForTripDays(totalDays);
   const maxPerDay = minPerDay;
   const result = [...entries];
+  const diversityLimits = resolveDailyDiversityLimits({ style });
+  const acceptsDiversity = (place: PlaceResult): boolean => {
+    const family = classifyDailyDiversityCategory(place);
+    const currentCount = result.filter(
+      (entry) => classifyDailyDiversityCategory(entry.place) === family,
+    ).length;
+    const cap = family in diversityLimits
+      ? diversityLimits[family as keyof typeof diversityLimits]
+      : Number.POSITIVE_INFINITY;
+    const accepted = wouldViolateDailyDiversity(
+      result.map((entry) => entry.place),
+      place,
+      diversityLimits,
+    ).ok;
+    if (!accepted) {
+      logAiPipeline(
+        "[REPLAN_DIVERSITY_MOVE]",
+        "repairPath=repair_day_plan_slots",
+        `placeId=${place.id}`,
+        `family=${family}`,
+        `fromDay=${day}`,
+        `targetDay=${day}`,
+        `currentCount=${currentCount}`,
+        `cap=${Number.isFinite(cap) ? cap : "unlimited"}`,
+        "decision=rejected",
+      );
+    }
+    return accepted;
+  };
   const scenicKinds: PlanPlaceKind[] =
     style === "slow_nature"
       ? ["nature", "attraction", "culture", "cafe"]
@@ -393,6 +428,7 @@ function supplementDayPlanEntries(params: {
           (kind === "market" && (placeKind === "market" || placeKind === "shopping")) ||
           (kind === "shopping" && (placeKind === "shopping" || placeKind === "market"));
         if (!kindOk) continue;
+        if (!acceptsDiversity(place)) continue;
         const fillerSlot: DayPlanSlot = {
           time: scenicFillerTimes(result.length),
           kind: placeKind,
@@ -462,6 +498,7 @@ function supplementDayPlanEntries(params: {
       const id = resolveTripPlaceId(place);
       if (!id || used.has(id) || !place.name?.trim() || isExcludedRetailPlace(place)) continue;
       if (!isMealSlotEligiblePlace(place)) continue;
+      if (!acceptsDiversity(place)) continue;
       if (slot.label === "晚餐" && !isProperRestaurantPlace(place) && !isNightMarketPlace(place)) continue;
       if (!canFillStructuredSlot(place, slot, { cafeCount: 0 }, classifyKind, plannedDate)) continue;
       picked = place;

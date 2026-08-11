@@ -74,6 +74,7 @@
     "verify:nearby-dedicated-day-diversity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-dedicated-day-diversity.mjs",
     "verify:refill-diversity-hard-guard": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-refill-diversity-hard-guard.mjs",
     "verify:planner-assembly-recipient-diversity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-planner-assembly-recipient-diversity.mjs",
+    "verify:replan-recipient-diversity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-replan-recipient-diversity.mjs",
     "verify:chat-no-combo-cards": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-chat-no-combination-place-cards.mjs",
     "verify:rec-conversation-layer": "node scripts/verify-recommendation-conversation-layer.mjs",
     "verify:recommendation-refinement": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-refinement.mjs",

@@ -229,13 +229,48 @@ export function redistributePlacesEvenly(params: {
   );
 
   const plans: ComposedDayPlan[] = [];
-  let poolIdx = 0;
+  const remaining = [...pool];
+  const diversityLimits = resolveDailyDiversityLimits({ style: params.style });
+  const loggedDiversityRejects = new Set<string>();
   for (let day = 1; day <= safeDays; day += 1) {
     const count = perDayCounts[day - 1] ?? 0;
     const entries: DayPlanEntry[] = [];
-    for (let i = 0; i < count && poolIdx < pool.length; i += 1) {
-      entries.push(entryFromPlace(pool[poolIdx]!, day, i, params.style));
-      poolIdx += 1;
+    for (let i = 0; i < count && remaining.length > 0; i += 1) {
+      const candidateIndex = remaining.findIndex((candidate) => {
+        const accepted = wouldViolateDailyDiversity(
+          entries.map((entry) => entry.place),
+          candidate,
+          diversityLimits,
+        ).ok;
+        if (!accepted) {
+          const family = classifyDailyDiversityCategory(candidate);
+          const key = `${day}:${resolveTripPlaceId(candidate) || candidate.name}`;
+          if (!loggedDiversityRejects.has(key)) {
+            loggedDiversityRejects.add(key);
+            const currentCount = entries.filter(
+              (entry) => classifyDailyDiversityCategory(entry.place) === family,
+            ).length;
+            const cap = family in diversityLimits
+              ? diversityLimits[family as keyof typeof diversityLimits]
+              : Number.POSITIVE_INFINITY;
+            logAiPipeline(
+              "[REPLAN_DIVERSITY_MOVE]",
+              "repairPath=repair_redistribute_across_days",
+              `placeId=${candidate.id}`,
+              `family=${family}`,
+              "fromDay=0",
+              `targetDay=${day}`,
+              `currentCount=${currentCount}`,
+              `cap=${Number.isFinite(cap) ? cap : "unlimited"}`,
+              "decision=rejected",
+            );
+          }
+        }
+        return accepted;
+      });
+      if (candidateIndex < 0) break;
+      const [candidate] = remaining.splice(candidateIndex, 1);
+      entries.push(entryFromPlace(candidate!, day, i, params.style));
     }
     plans.push({ day, entries });
   }
