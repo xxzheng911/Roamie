@@ -34,6 +34,22 @@ function estimateWalkMinutes(meters: number): number {
   return Math.max(1, Math.round(meters / 75));
 }
 
+export const WALK_FRIENDLY_MAX_METERS = 1200;
+export const WALK_FRIENDLY_MAX_MINUTES = 20;
+
+export function buildWalkingTransportHint(
+  distanceMeters: number,
+  walkingMinutes: number,
+): string {
+  if (
+    distanceMeters <= WALK_FRIENDLY_MAX_METERS &&
+    walkingMinutes <= WALK_FRIENDLY_MAX_MINUTES
+  ) {
+    return "距離不遠，適合步行前往。";
+  }
+  return "距離較遠，建議搭乘大眾運輸或其他交通方式前往。";
+}
+
 function estimateMotorcycleMinutes(meters: number, driveMin?: number): number {
   if (driveMin != null) return Math.max(2, Math.round(driveMin * 0.72));
   return Math.max(2, Math.round(meters / 400));
@@ -86,7 +102,7 @@ export function estimateTravelModesLocal(
       minutes: walkMin,
       distanceMeters,
       distanceLabel: distLabel,
-      hint: "適合順路散步看看附近。",
+      hint: buildWalkingTransportHint(distanceMeters, walkMin),
     },
     {
       id: "motorcycle",
