@@ -14,6 +14,7 @@ import { Route as TripRouteImport } from './routes/trip'
 import { Route as TravelPreferenceTestRouteImport } from './routes/travel-preference-test'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
 import { Route as TripInviteTokenRouteImport } from './routes/trip-invite.$token'
@@ -34,6 +35,7 @@ import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
 import { Route as AppSavedIndexRouteImport } from './routes/_app.saved.index'
+import { Route as ApiAdminDashboardRouteImport } from './routes/api/admin/dashboard'
 import { Route as AppSavedTripIdRouteImport } from './routes/_app.saved.$tripId'
 
 const WelcomeRoute = WelcomeRouteImport.update({
@@ -59,6 +61,11 @@ const OnboardingRoute = OnboardingRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppRoute = AppRouteImport.update({
@@ -160,6 +167,11 @@ const AppSavedIndexRoute = AppSavedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppSavedRoute,
 } as any)
+const ApiAdminDashboardRoute = ApiAdminDashboardRouteImport.update({
+  id: '/api/admin/dashboard',
+  path: '/api/admin/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppSavedTripIdRoute = AppSavedTripIdRouteImport.update({
   id: '/$tripId',
   path: '/$tripId',
@@ -168,6 +180,7 @@ const AppSavedTripIdRoute = AppSavedTripIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
+  '/admin': typeof AdminRoute
   '/login': typeof LoginRouteWithChildren
   '/onboarding': typeof OnboardingRoute
   '/travel-preference-test': typeof TravelPreferenceTestRoute
@@ -191,9 +204,11 @@ export interface FileRoutesByFullPath {
   '/login/legal': typeof LoginLegalRoute
   '/trip-invite/$token': typeof TripInviteTokenRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
+  '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/saved/': typeof AppSavedIndexRoute
 }
 export interface FileRoutesByTo {
+  '/admin': typeof AdminRoute
   '/login': typeof LoginRouteWithChildren
   '/onboarding': typeof OnboardingRoute
   '/travel-preference-test': typeof TravelPreferenceTestRoute
@@ -217,11 +232,13 @@ export interface FileRoutesByTo {
   '/trip-invite/$token': typeof TripInviteTokenRoute
   '/': typeof AppIndexRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
+  '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/saved': typeof AppSavedIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
+  '/admin': typeof AdminRoute
   '/login': typeof LoginRouteWithChildren
   '/onboarding': typeof OnboardingRoute
   '/travel-preference-test': typeof TravelPreferenceTestRoute
@@ -246,12 +263,14 @@ export interface FileRoutesById {
   '/trip-invite/$token': typeof TripInviteTokenRoute
   '/_app/': typeof AppIndexRoute
   '/_app/saved/$tripId': typeof AppSavedTripIdRoute
+  '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/_app/saved/': typeof AppSavedIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/admin'
     | '/login'
     | '/onboarding'
     | '/travel-preference-test'
@@ -275,9 +294,11 @@ export interface FileRouteTypes {
     | '/login/legal'
     | '/trip-invite/$token'
     | '/saved/$tripId'
+    | '/api/admin/dashboard'
     | '/saved/'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/admin'
     | '/login'
     | '/onboarding'
     | '/travel-preference-test'
@@ -301,10 +322,12 @@ export interface FileRouteTypes {
     | '/trip-invite/$token'
     | '/'
     | '/saved/$tripId'
+    | '/api/admin/dashboard'
     | '/saved'
   id:
     | '__root__'
     | '/_app'
+    | '/admin'
     | '/login'
     | '/onboarding'
     | '/travel-preference-test'
@@ -329,11 +352,13 @@ export interface FileRouteTypes {
     | '/trip-invite/$token'
     | '/_app/'
     | '/_app/saved/$tripId'
+    | '/api/admin/dashboard'
     | '/_app/saved/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  AdminRoute: typeof AdminRoute
   LoginRoute: typeof LoginRouteWithChildren
   OnboardingRoute: typeof OnboardingRoute
   TravelPreferenceTestRoute: typeof TravelPreferenceTestRoute
@@ -345,6 +370,7 @@ export interface RootRouteChildren {
   ApiRoamieRoute: typeof ApiRoamieRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   TripInviteTokenRoute: typeof TripInviteTokenRoute
+  ApiAdminDashboardRoute: typeof ApiAdminDashboardRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -382,6 +408,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app': {
@@ -524,6 +557,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSavedIndexRouteImport
       parentRoute: typeof AppSavedRoute
     }
+    '/api/admin/dashboard': {
+      id: '/api/admin/dashboard'
+      path: '/api/admin/dashboard'
+      fullPath: '/api/admin/dashboard'
+      preLoaderRoute: typeof ApiAdminDashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app/saved/$tripId': {
       id: '/_app/saved/$tripId'
       path: '/$tripId'
@@ -590,6 +630,7 @@ const LoginRouteWithChildren = LoginRoute._addFileChildren(LoginRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  AdminRoute: AdminRoute,
   LoginRoute: LoginRouteWithChildren,
   OnboardingRoute: OnboardingRoute,
   TravelPreferenceTestRoute: TravelPreferenceTestRoute,
@@ -601,6 +642,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRoamieRoute: ApiRoamieRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   TripInviteTokenRoute: TripInviteTokenRoute,
+  ApiAdminDashboardRoute: ApiAdminDashboardRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

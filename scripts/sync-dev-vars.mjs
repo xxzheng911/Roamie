@@ -23,6 +23,7 @@ const SERVER_KEYS = [
   "SUPABASE_URL",
   "SUPABASE_PUBLISHABLE_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
+  "ROAMIE_ADMIN_USER_IDS",
 ];
 
 function parseDotEnv(content) {

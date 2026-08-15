@@ -418,6 +418,15 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      admin_dashboard_phase1: {
+        Args: {
+          p_page?: number
+          p_page_size?: number
+          p_search?: string | null
+          p_sort?: string
+        }
+        Returns: Json
+      }
       credits_get_account: {
         Args: Record<string, never>
         Returns: Json
