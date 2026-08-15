@@ -29,6 +29,9 @@ export type PlaceRecommendationContinuation =
 export type PlaceRecommendationIntent = {
   destinationName?: string;
   resolvedSearchCity?: string;
+  destinationArea?: string;
+  destinationDisplayLabel?: string;
+  searchScope?: "city" | "area";
   countryCode?: string;
 
   primaryType: PlaceRecommendationPrimaryType;

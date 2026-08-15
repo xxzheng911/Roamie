@@ -20,6 +20,7 @@ import type {
   PlaceRecommendationIntent,
   PlaceRecommendationPrimaryType,
 } from "@/lib/ai/place-recommendation-intent/types";
+import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 
 const PRIMARY_PATTERNS: Array<{
   type: PlaceRecommendationPrimaryType;
@@ -211,7 +212,8 @@ export function parsePlaceRecommendationIntent(
   }
 
   const excludedFeatures = refinement?.excludedKeywords ?? [];
-  const destinationFromText = resolveDestinationFromText(t) ?? undefined;
+  const areaScope = resolveDestinationAreaScope(t);
+  const destinationFromText = areaScope?.displayLabel ?? resolveDestinationFromText(t) ?? undefined;
 
   const continuation = detectContinuation(
     t,
@@ -233,6 +235,10 @@ export function parsePlaceRecommendationIntent(
 
   const intent: PlaceRecommendationIntent = {
     destinationName: destinationFromText,
+    resolvedSearchCity: areaScope?.parentCity,
+    destinationArea: areaScope?.area,
+    destinationDisplayLabel: areaScope?.displayLabel,
+    searchScope: areaScope ? "area" : destinationFromText ? "city" : undefined,
     primaryType: resolvedPrimary === "indoor" && !indoorOnly ? "attraction" : resolvedPrimary,
     subtypes: [...new Set(allSubtypes)],
     mealSlot: refinement?.mealSlot,

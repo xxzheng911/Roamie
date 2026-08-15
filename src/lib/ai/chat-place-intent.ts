@@ -31,6 +31,7 @@ import {
   isCountryCityInquiryText,
   isFutureTripPlanningStatement,
 } from "@/lib/ai/trip-planning-context";
+import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 
 export type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 export {
@@ -171,6 +172,23 @@ export function mapCategoryIntentToNearbyIntent(
 }
 
 export function buildChatPlaceSearchAttempts(
+  intent: ChatPlaceCategoryIntent,
+  destination: string,
+  userText = "",
+): { primary: SearchAttempt[]; fallback: SearchAttempt[] } {
+  const areaScope = resolveDestinationAreaScope(destination);
+  if (areaScope) {
+    const areaAttempts = buildChatPlaceSearchAttemptsBase(intent, areaScope.displayLabel, userText);
+    const cityAttempts = buildChatPlaceSearchAttemptsBase(intent, areaScope.parentCity, userText);
+    return {
+      primary: areaAttempts.primary,
+      fallback: [...areaAttempts.fallback, ...cityAttempts.primary, ...cityAttempts.fallback],
+    };
+  }
+  return buildChatPlaceSearchAttemptsBase(intent, destination, userText);
+}
+
+function buildChatPlaceSearchAttemptsBase(
   intent: ChatPlaceCategoryIntent,
   destination: string,
   userText = "",

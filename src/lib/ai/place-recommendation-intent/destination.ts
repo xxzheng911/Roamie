@@ -19,10 +19,13 @@ import {
 import { resolveRegionPrimaryCity } from "@/lib/ai/shopping-search-scope";
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import type { PlaceRecommendationIntent } from "@/lib/ai/place-recommendation-intent/types";
+import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 
 export type ResolvedPlaceRecommendationDestination = {
   destinationDisplayName: string;
   resolvedSearchCity: string;
+  destinationArea?: string;
+  searchScope: "city" | "area";
   countryCode?: string;
   source:
     | "message"
@@ -49,7 +52,7 @@ export function resolvePlaceRecommendationDestination(params: {
   const { userText, session, context, parsed, allowDeviceLocation } = params;
 
   const fromMessage =
-    accept(parsed?.destinationName) ||
+    accept(parsed?.destinationDisplayLabel ?? parsed?.destinationName) ||
     accept(resolveDestinationFromText(userText));
   if (fromMessage) {
     return finalize(fromMessage, "message", session, parsed);
@@ -60,17 +63,20 @@ export function resolvePlaceRecommendationDestination(params: {
       session.activeRecommendationContext?.destinationName,
   );
   if (fromActive) {
+    const areaScope = resolveDestinationAreaScope(fromActive);
     const city =
       session.activeRecommendationContext?.resolvedSearchCity ||
       resolveRegionPrimaryCity(fromActive) ||
       fromActive;
     return {
-      destinationDisplayName: fromActive,
-      resolvedSearchCity: city,
+      destinationDisplayName: areaScope?.displayLabel ?? fromActive,
+      resolvedSearchCity: areaScope?.parentCity ?? city,
+      destinationArea: areaScope?.area,
       countryCode:
         session.activeRecommendationContext?.countryCode ||
         countryCodeFor(fromActive),
       source: "active_recommendation",
+      searchScope: areaScope ? "area" : "city",
     };
   }
 
@@ -109,6 +115,7 @@ export function resolvePlaceRecommendationDestination(params: {
         destinationDisplayName: city,
         resolvedSearchCity: city,
         source: "nearby_device",
+        searchScope: "city",
       };
     }
   }
@@ -128,6 +135,7 @@ function finalize(
   parsed?: PlaceRecommendationIntent | null,
 ): ResolvedPlaceRecommendationDestination {
   const label = normalizeDestinationLabel(display);
+  const areaScope = resolveDestinationAreaScope(parsed?.destinationDisplayLabel ?? label);
   const activeCity = session.activeRecommendationContext?.resolvedSearchCity;
   const activeDest = normalizeDestinationLabel(
     session.activeRecommendationContext?.destinationDisplayName ||
@@ -149,8 +157,10 @@ function finalize(
     resolveRegionPrimaryCity(label) ||
     label;
   return {
-    destinationDisplayName: label,
-    resolvedSearchCity,
+    destinationDisplayName: areaScope?.displayLabel ?? label,
+    resolvedSearchCity: areaScope?.parentCity ?? resolvedSearchCity,
+    destinationArea: areaScope?.area,
+    searchScope: areaScope ? "area" : "city",
     countryCode:
       parsed?.countryCode ||
       (canReuseActiveCity

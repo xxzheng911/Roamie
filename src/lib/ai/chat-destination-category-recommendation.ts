@@ -93,6 +93,7 @@ import {
   logPlaceRequirementParsed,
 } from "@/lib/ai/place-recommendation-intent";
 import { resolveRegionPrimaryCity } from "@/lib/ai/shopping-search-scope";
+import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { cuisineSearchTokens } from "@/lib/ai/recommendation-refinement/parser";
 import {
@@ -218,6 +219,7 @@ async function searchCategoryPlaces(params: {
   }
 
   const minResults = CHAT_DESTINATION_MIN_COUNT;
+  const destinationAreaScope = resolveDestinationAreaScope(destination);
   const searchExtras = searchContext
     ? { searchContext, intentCategory: intent }
     : undefined;
@@ -255,7 +257,11 @@ async function searchCategoryPlaces(params: {
         },
       },
     );
-    places = filterPlacesByDestinationGuard(places, destination, userText);
+    const destinationGuard =
+      isFallback && destinationAreaScope
+        ? destinationAreaScope.parentCity
+        : destination;
+    places = filterPlacesByDestinationGuard(places, destinationGuard, userText);
     if (diagnostics) {
       diagnostics.afterDestinationFilterCount += places.length;
     }

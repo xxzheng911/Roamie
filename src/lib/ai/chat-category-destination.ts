@@ -9,6 +9,7 @@ import {
   isPlaceRecommendationQuery,
 } from "@/lib/ai/chat-place-category-types";
 import { logChatPlaceDestination } from "@/lib/ai/chat-place-flow-log";
+import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 
 function acceptCategorySearchDestination(label: string | undefined): string | undefined {
   if (!label?.trim()) return undefined;
@@ -28,7 +29,10 @@ export function resolveDestinationForCategorySearch(
 ): string | undefined {
   // 1. Explicit city/region in this message wins over trip context
   if (userText?.trim()) {
-    const fromText = acceptCategorySearchDestination(resolveDestinationFromText(userText));
+    const areaScope = resolveDestinationAreaScope(userText);
+    const fromText = acceptCategorySearchDestination(
+      areaScope?.displayLabel ?? resolveDestinationFromText(userText),
+    );
     if (fromText) {
       logChatPlaceDestination(fromText, "user_text");
       return fromText;

@@ -21,6 +21,7 @@ import { resolveDestinationApproxCenter } from "@/lib/ai/destination-geocode";
 import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { parsePlaceRecommendationIntent } from "@/lib/ai/place-recommendation-intent/parse";
+import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 
 export type RecommendationSearchScopeSource =
   | "explicit_user_destination"
@@ -32,6 +33,8 @@ export type RecommendationSearchScopeSource =
 export type RecommendationSearchScope = {
   destinationName?: string;
   resolvedSearchCity?: string;
+  destinationArea?: string;
+  searchScope?: "city" | "area";
   latitude?: number;
   longitude?: number;
   source: RecommendationSearchScopeSource;
@@ -84,7 +87,8 @@ export function resolveRecommendationSearchScope(params: {
   const parsed = parsePlaceRecommendationIntent(userText);
 
   const fromMessage =
-    accept(parsed?.destinationName) || accept(resolveDestinationFromText(userText));
+    accept(parsed?.destinationDisplayLabel ?? parsed?.destinationName) ||
+    accept(resolveDestinationFromText(userText));
   if (fromMessage) {
     const scope = finalize(fromMessage, "explicit_user_destination", session, true);
     logRecommendationScopeResolved(scope);
@@ -176,6 +180,7 @@ function finalize(
   deviceLocationIgnored: boolean,
 ): RecommendationSearchScope {
   const label = normalizeDestinationLabel(display);
+  const areaScope = resolveDestinationAreaScope(label);
   const entity = resolveDestinationEntity(label);
   const approx = resolveDestinationApproxCenter(label);
   const activeCity =
@@ -190,8 +195,10 @@ function finalize(
     session.activeRecommendationContext?.longitude ??
     session.recommendationSession?.searchCentroid?.lng;
   return {
-    destinationName: label,
-    resolvedSearchCity,
+    destinationName: areaScope?.displayLabel ?? label,
+    resolvedSearchCity: areaScope?.parentCity ?? resolvedSearchCity,
+    destinationArea: areaScope?.area,
+    searchScope: areaScope ? "area" : "city",
     latitude: snapshotLat ?? approx?.lat,
     longitude: snapshotLng ?? approx?.lng,
     source,

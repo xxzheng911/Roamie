@@ -37,6 +37,13 @@ export type DestinationTravelProfile = {
   source: "curated" | "synthesized" | "discovered";
 };
 
+export type DestinationAreaScope = {
+  displayLabel: string;
+  parentCity: string;
+  area: string;
+  searchScope: "area";
+};
+
 /** Curated profiles — data only, not flow control. */
 const CURATED_PROFILES: Record<
   string,
@@ -236,6 +243,29 @@ const CURATED_PROFILES: Record<
     ],
   },
 };
+
+/** Resolve city + district from the existing curated destination profiles. */
+export function resolveDestinationAreaScope(input: string): DestinationAreaScope | null {
+  const compact = normalizeDestinationLabel(input).replace(/[\s,，、/／-]+/g, "");
+  if (!compact) return null;
+  const matches: DestinationAreaScope[] = [];
+  for (const [parentCity, profile] of Object.entries(CURATED_PROFILES)) {
+    if (!compact.includes(parentCity)) continue;
+    for (const area of profile.districts) {
+      const normalizedArea = normalizeDestinationLabel(area).replace(/\s+/g, "");
+      if (!normalizedArea || !compact.includes(normalizedArea)) continue;
+      matches.push({
+        displayLabel: `${parentCity}${normalizedArea}`,
+        parentCity,
+        area: normalizedArea,
+        searchScope: "area",
+      });
+    }
+  }
+  return matches.sort(
+    (a, b) => b.parentCity.length + b.area.length - (a.parentCity.length + a.area.length),
+  )[0] ?? null;
+}
 
 const THEME_TITLE_POOL = [
   "舊城文化組合",
