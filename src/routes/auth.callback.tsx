@@ -23,6 +23,7 @@ import {
 import { resolveSessionFromCallbackUrl } from "@/lib/auth-session-from-url";
 import { clearPendingCallbackPath } from "@/lib/auth-oauth-deep-link";
 import { clearAuthState, resetToLoginScreen } from "@/lib/clear-auth-state";
+import { consumeAdminReturn } from "@/lib/admin/admin-route-boundary";
 import {
   extractOAuthCodeFromPath,
   isOAuthCodeAlreadyConsumed,
@@ -53,10 +54,12 @@ function AuthCallback() {
   const handledRef = useRef(false);
 
   const finishAuthRedirect = async (step: string) => {
-    const next = guardStartupTarget(
-      await resolveAuthenticatedHomePath({ source: "auth-callback" }),
-      "auth-callback",
-    );
+    const next =
+      consumeAdminReturn() ??
+      guardStartupTarget(
+        await resolveAuthenticatedHomePath({ source: "auth-callback" }),
+        "auth-callback",
+      );
     await logStartupNavigationContext("auth-callback", next, { step });
     finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }), "auth-callback");
   };
@@ -115,13 +118,7 @@ function AuthCallback() {
 
     await getClientAuthSession();
 
-    const next = guardStartupTarget(
-      await resolveAuthenticatedHomePath({ source: "auth-callback" }),
-      "auth-callback",
-    );
-    logAuthSessionResult(true, { step: "navigate", next });
-    await logStartupNavigationContext("auth-callback", next, { step: "oauth_complete" });
-    finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }), "auth-callback");
+    await finishAuthRedirect("oauth_complete");
     clearPendingCallbackPath();
   };
 

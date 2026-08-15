@@ -7,6 +7,7 @@ import {
 } from "@/lib/startup-boot-state";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { guardStartupTarget } from "@/lib/startup-navigation";
+import { consumeAdminReturn } from "@/lib/admin/admin-route-boundary";
 
 type RouterNavigate = (opts: { to: string; replace?: boolean }) => void;
 
@@ -32,10 +33,13 @@ export async function navigateOnceAfterLogin(
 
   await loadOnboardingState();
 
-  const target = guardStartupTarget(
-    await resolveStartupPath({ hasSession: true, skipLog: true, source }),
-    source,
-  );
+  const adminReturn = consumeAdminReturn();
+  const target =
+    adminReturn ??
+    guardStartupTarget(
+      await resolveStartupPath({ hasSession: true, skipLog: true, source }),
+      source,
+    );
 
   const current = readBrowserPathname();
   if (shouldSkipStartupNavigation(current, target)) {

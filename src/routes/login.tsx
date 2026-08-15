@@ -41,6 +41,7 @@ import { isBootCompleted } from "@/lib/startup-boot-state";
 import { useAuth } from "@/hooks/use-auth";
 import { emitOAuthFlow, OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
+import { hasPendingAdminReturn } from "@/lib/admin/admin-route-boundary";
 
 const RoamieMascotFigure = lazy(() =>
   import("@/components/onboarding/RoamieMascotFigure").then((m) => ({
@@ -87,6 +88,7 @@ const APPLE_BUSY_TIMEOUT_MS = 90_000;
 export const Route = createFileRoute("/login")({
   beforeLoad: async () => {
     if (typeof window === "undefined") return;
+    if (hasPendingAdminReturn()) return;
     await loadOnboardingState();
     if (!isOnboardingCompletedSync()) {
       console.log("[ONBOARDING_GUARD] blocked home redirect", {

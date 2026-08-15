@@ -10,10 +10,14 @@ import { logAppRemountSource, shouldLogAppMounted } from "@/lib/startup-boot-sta
 import { detectPlatform } from "@/services/platform";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { logAppError } from "@/lib/log-error";
+import { isAdminAuthBoundaryRoute, isAdminRoute } from "@/lib/admin/admin-route-boundary";
 
 type Props = { children: ReactNode };
 
 export function App({ children }: Props) {
+  const isAdminBoundary = isAdminAuthBoundaryRoute(readBrowserPathname());
+  const isAdminPage = isAdminRoute(readBrowserPathname());
+
   useEffect(() => {
     logAppRemountSource("App");
 
@@ -34,6 +38,18 @@ export function App({ children }: Props) {
     logAppBoot("current route:", { path: readBrowserPathname() });
     void logAppBootSnapshot();
   }, []);
+
+  if (isAdminPage) {
+    return <AppErrorBoundary>{children}</AppErrorBoundary>;
+  }
+
+  if (isAdminBoundary) {
+    return (
+      <AppProviders>
+        <AppErrorBoundary>{children}</AppErrorBoundary>
+      </AppProviders>
+    );
+  }
 
   return (
     <OnboardingGate>

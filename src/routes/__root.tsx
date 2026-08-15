@@ -39,6 +39,7 @@ import { getWeather, getWeatherForecast, weatherTestConnection } from "@/lib/wea
 import { runApiBootstrap } from "@/services/apiBootstrap";
 import { isOnboardingCompletedSync, loadOnboardingState } from "@/lib/onboarding-storage";
 import { readBrowserPathname } from "@/lib/startup-path";
+import { isAdminAuthBoundaryRoute } from "@/lib/admin/admin-route-boundary";
 
 function NotFoundComponent() {
   return (
@@ -112,9 +113,10 @@ function RouterSsrManifestGuard() {
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   beforeLoad: async () => {
     if (typeof window === "undefined") return;
+    const path = readBrowserPathname().replace(/\/+$/, "") || "/";
+    if (isAdminAuthBoundaryRoute(path)) return;
     await loadOnboardingState();
     if (isOnboardingCompletedSync()) return;
-    const path = readBrowserPathname().replace(/\/+$/, "") || "/";
     if (path === "/welcome" || path === "/onboarding") return;
     if (path.startsWith("/auth/")) return;
     console.log("[ONBOARDING_GUARD] blocked home redirect", {

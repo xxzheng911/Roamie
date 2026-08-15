@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  LogIn,
   Search,
   ShieldCheck,
   Users,
@@ -16,6 +17,7 @@ import type {
   AdminDashboardData,
   AdminUserSort,
 } from "@/lib/admin/admin-analytics";
+import { stashAdminReturn } from "@/lib/admin/admin-route-boundary";
 
 export const Route = createFileRoute("/admin")({
   component: AdminDashboardPage,
@@ -24,6 +26,7 @@ export const Route = createFileRoute("/admin")({
 type LoadState =
   | { kind: "loading" }
   | { kind: "ready"; data: AdminDashboardData }
+  | { kind: "unauthenticated" }
   | { kind: "forbidden" }
   | { kind: "error"; message: string };
 
@@ -105,7 +108,7 @@ function AdminDashboardPage() {
     void (async () => {
       const session = await getClientAuthSession();
       if (!session?.access_token) {
-        if (!cancelled) void navigate({ to: "/login", replace: true });
+        if (!cancelled) setState({ kind: "unauthenticated" });
         return;
       }
       const params = new URLSearchParams({ sort, page: String(page) });
@@ -116,7 +119,7 @@ function AdminDashboardPage() {
       });
       if (cancelled) return;
       if (response.status === 401) {
-        void navigate({ to: "/login", replace: true });
+        setState({ kind: "unauthenticated" });
         return;
       }
       if (response.status === 403) {
@@ -147,15 +150,35 @@ function AdminDashboardPage() {
     [state],
   );
 
+  if (state.kind === "unauthenticated") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
+        <div className="max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <LogIn className="mx-auto h-10 w-10 text-slate-400" />
+          <h1 className="mt-4 text-xl font-semibold text-slate-950">請先登入 Roamie</h1>
+          <p className="mt-2 text-sm text-slate-500">請先登入 Roamie 後再開啟管理後台。</p>
+          <button
+            type="button"
+            onClick={() => {
+              stashAdminReturn();
+              void navigate({ to: "/login" });
+            }}
+            className="mt-6 rounded-md bg-slate-950 px-4 py-2 text-sm font-medium text-white"
+          >
+            前往登入
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   if (state.kind === "forbidden") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
         <div className="max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
           <ShieldCheck className="mx-auto h-10 w-10 text-slate-400" />
-          <h1 className="mt-4 text-xl font-semibold text-slate-950">403 · Admin access required</h1>
-          <p className="mt-2 text-sm text-slate-500">
-            This account is not authorized for Roamie Admin.
-          </p>
+          <h1 className="mt-4 text-xl font-semibold text-slate-950">403 · 此帳號沒有管理員權限</h1>
+          <p className="mt-2 text-sm text-slate-500">請使用已授權的 Roamie 管理員帳號。</p>
         </div>
       </main>
     );
@@ -165,8 +188,8 @@ function AdminDashboardPage() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
         <div className="max-w-md rounded-2xl border border-red-200 bg-white p-8 text-center shadow-sm">
-          <h1 className="text-xl font-semibold text-slate-950">Admin analytics unavailable</h1>
-          <p className="mt-2 text-sm text-slate-500">{state.message}</p>
+          <h1 className="text-xl font-semibold text-slate-950">Admin Dashboard 暫時無法載入</h1>
+          <p className="mt-2 text-sm text-slate-500">請稍後再試。</p>
         </div>
       </main>
     );
@@ -175,7 +198,7 @@ function AdminDashboardPage() {
   if (state.kind === "loading") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-100">
-        <p className="text-sm text-slate-500">Loading protected analytics…</p>
+        <p className="text-sm text-slate-500">Loading admin dashboard...</p>
       </main>
     );
   }
