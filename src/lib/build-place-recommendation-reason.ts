@@ -49,29 +49,25 @@ export type PlaceRecommendationContext = {
 };
 
 const SAFE_FALLBACK =
-  "這個地點距離你不遠，評價不錯，可以順路安排進今天行程。";
+  "這個地點類型符合目前的搜尋條件。";
 
 /** 各身分的主文案模板（禁止跨類型亂套） */
 const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
   bookstore: [
-    "這是一間書店，適合想安靜逛逛、找本書慢慢待著的時候。",
-    "書店氛圍通常比較安靜，適合翻書、歇腳、整理思緒。",
+    "這是一間書店，符合這次找書店的需求。",
   ],
   breakfast_shop: [
     "這是一間在地早餐店，適合早上順路吃點台式早餐再開始今天行程。",
     "早餐店節奏輕快，適合一早先填肚子、再出發逛。",
   ],
   cafe: [
-    "這間咖啡店氣氛偏安靜，很適合下午放空或坐著休息一下。",
-    "咖啡店適合帶本書或耳機，慢慢坐一會兒。",
+    "這是一間咖啡店，符合這次找咖啡廳的需求。",
   ],
   bakery: [
-    "這間烘焙坊適合買點心或下午茶，不必安排太久。",
-    "烘焙坊適合順路帶份點心，當行程中的小確幸。",
+    "這是一間烘焙坊，符合這次找烘焙店的需求。",
   ],
   dessert: [
-    "這裡是甜點類店家，適合下午茶或解解饞。",
-    "甜點店節奏輕鬆，適合走累了進來坐一下。",
+    "這是甜點類店家，符合這次找甜點的需求。",
   ],
   restaurant: [
     "這是一間餐廳，適合正餐或好好吃頓飯再繼續走。",
@@ -93,13 +89,10 @@ const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
     "可安排下午購物，雨天也適合。",
   ],
   tourist_attraction: [
-    "這是一處景點，適合順路繞進去看看、拍拍照。",
-    "景點適合排進行程中彈性的一站，不必趕。",
-    "適合拍照觀景，節奏可以自己掌握。",
+    "這是一處景點，類型符合這次推薦。",
   ],
   museum: [
-    "如果你喜歡慢慢看展或室內行程，這裡會是不錯的停留點。",
-    "博物館適合想躲太陽或下雨天，靜靜看一會兒。",
+    "這是一座博物館，類型符合這次推薦。",
   ],
   night_market: [
     "晚上氣氛不錯，很適合晚上散步、邊逛邊吃。",
@@ -110,8 +103,7 @@ const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
     "適合慢慢逛街放空，可以一次逛很多小店。",
   ],
   park: [
-    "這裡是公園或綠地，適合讓腳步慢下來、透透氣。",
-    "公園適合傍晚散步，把節奏放慢。",
+    "這是公園或綠地，類型符合這次推薦。",
   ],
   bar: [
     "這裡適合夜晚小坐，散步後來一杯剛好。",
@@ -121,19 +113,7 @@ const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
   unsupported: [SAFE_FALLBACK],
 };
 
-const IDENTITY_SCENE: Partial<Record<PlaceIdentity, string[]>> = {
-  bookstore: ["適合慢慢翻書", "適合找室內休息點"],
-  breakfast_shop: ["適合一早出發前", "不用排太久"],
-  night_market: ["晚上氣氛不錯", "很適合晚上散步", "可以一次逛很多攤"],
-  museum: ["適合室內待一陣子", "適合喜歡文化的人"],
-  park: ["綠意多、步調輕鬆", "適合傍晚"],
-  department_store: ["可以一次逛很多品牌", "適合購買伴手禮", "雨天也適合"],
-  shopping_mall: ["適合慢慢逛街", "可以一次逛很多品牌", "可安排下午購物"],
-  district: ["很適合順路探索", "適合購買伴手禮", "適合慢慢逛街"],
-  cafe: ["適合下午休息", "氣氛偏安靜"],
-  restaurant: ["適合午餐或晚餐", "推薦料理值得一試"],
-  tourist_attraction: ["適合拍照", "適合觀景"],
-};
+const IDENTITY_SCENE: Partial<Record<PlaceIdentity, string[]>> = {};
 
 const DISTRICT_STYLE_IDENTITIES: PlaceIdentity[] = [
   "district",
@@ -227,12 +207,6 @@ const PACE_PHRASE: Record<string, string> = {
   slow: "你偏好慢慢散步、不趕行程",
   medium: "你喜歡節奏剛好的探索",
   active: "你喜歡多看看、多走走",
-};
-
-const VIBE_PHRASE: Record<string, string> = {
-  quiet: "安靜、有質感",
-  either: "氛圍舒服、好待",
-  lively: "有生活感、熱鬧但不至於太擠",
 };
 
 function hashPick(seed: string, options: string[]): string {
@@ -450,7 +424,7 @@ function buildSafeReason(
     if (w) parts.push(w);
     return parts.join(". ");
   }
-  const parts: string[] = [];
+  const parts: string[] = ["這個地點類型符合目前的搜尋條件"];
   const dist = distancePhrase(ctx.distanceMeters);
   const rating = ratingPhrase(place.rating, place.userRatingCount);
   if (dist) parts.push(dist);
@@ -547,7 +521,6 @@ function buildReasonFromIdentity(
   }
 
   const pace = PACE_PHRASE[profile.pace ?? "medium"] ?? PACE_PHRASE.medium;
-  const vibe = VIBE_PHRASE[profile.vibe ?? "either"] ?? VIBE_PHRASE.either;
   const budget = BUDGET_MODE_LABELS[resolveBudgetMode(profile)];
   const interests = inferInterestTags(profile).filter((t) => interestMatchesIdentity(t, identity));
 
@@ -569,10 +542,10 @@ function buildReasonFromIdentity(
     );
   }
   if (profile.pace === "slow" && ["cafe", "bookstore", "park", "museum"].includes(identity)) {
-    templates.push(`${pace}，${intro.replace(/。$/, "")}，氛圍${vibe}。`);
+    templates.push(`${pace}，${intro.replace(/。$/, "")}。`);
   }
   if (profile.vibe === "quiet" && !["bar", "night_market"].includes(identity)) {
-    templates.push(`${intro.replace(/。$/, "")}，氛圍${vibe}${dist ? `，${dist}` : ""}。`);
+    templates.push(`${intro.replace(/。$/, "")}${dist ? `，${dist}` : ""}。`);
   }
   if (profile.budgetMode === "budget" && ["food_stall", "breakfast_shop", "night_market"].includes(identity)) {
     templates.push(`依照你的${budget}預算，這裡通常比精緻餐廳更輕鬆。`);

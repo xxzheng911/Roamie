@@ -29,6 +29,7 @@ import {
   mergeFetchedPlace,
   resolveGooglePlaceIdForDetail,
   resolvePlaceDetailHandoff,
+  hasCanonicalPlaceDetailReason,
   type PlaceDetailViewModel,
 } from "@/lib/place-detail-resolve";
 import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
@@ -116,6 +117,9 @@ function PlaceDetailPage() {
   useAvatar();
 
   const handoffRef = useRef(consumePlaceDetailHandoff());
+  const hasCanonicalReasonRef = useRef(
+    hasCanonicalPlaceDetailReason(handoffRef.current),
+  );
   const [place, setPlace] = useState<PlaceDetailViewModel | null>(() => {
     const handoff = resolvePlaceDetailHandoff(search, handoffRef.current);
     return handoff ? handoffToPlaceDetailData(handoff, locale) : null;
@@ -401,6 +405,7 @@ function PlaceDetailPage() {
   ]);
 
   useEffect(() => {
+    if (hasCanonicalReasonRef.current) return;
     setPlace((prev) => {
       if (!prev) return prev;
       const distM =

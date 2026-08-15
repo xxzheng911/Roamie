@@ -337,8 +337,11 @@ function pickEvidenceCode(
   ranked: PlaceReasonEvidence[],
   used: Set<PlaceReasonEvidenceCode>,
 ): PlaceReasonEvidenceCode {
-  const unused = ranked.find((item) => !used.has(item.code));
-  return unused?.code ?? ranked[0]?.code ?? "category_identity";
+  const primary = ranked.filter(
+    (item) => item.code !== "high_rating" && item.code !== "high_review_count",
+  );
+  const unused = primary.find((item) => !used.has(item.code));
+  return unused?.code ?? primary[0]?.code ?? "category_identity";
 }
 
 function renderEvidenceReason(
@@ -358,24 +361,15 @@ function renderEvidenceReason(
   let body: string;
   switch (code) {
     case "high_rating":
-      body =
-        locale === "zh-TW"
-          ? `Google 評分 ${place.rating!.toFixed(1)}`
-          : locale === "ja"
-            ? `Google評価${place.rating!.toFixed(1)}`
-            : locale === "ko"
-              ? `Google 평점 ${place.rating!.toFixed(1)}`
-              : `Google rating ${place.rating!.toFixed(1)}`;
-      break;
     case "high_review_count":
       body =
         locale === "zh-TW"
-          ? `已有 ${place.userRatingCount} 則評論，參考的人比較多`
+          ? `這是${label}，類型符合這次推薦`
           : locale === "ja"
-            ? `口コミ${place.userRatingCount}件で参考にしやすい`
+            ? `${label}で、今回の条件に合う`
             : locale === "ko"
-              ? `후기 ${place.userRatingCount}개로 참고하기 좋아요`
-              : `${place.userRatingCount} reviews — plenty of recent signal`;
+              ? `${label}라서 이번 추천 유형에 맞아요`
+              : `A ${label} that matches this search`;
       break;
     case "open_now":
       body = copy.openNow;

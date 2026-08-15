@@ -248,6 +248,14 @@ export function resolvePlaceDetailReason(
   );
 }
 
+export function hasCanonicalPlaceDetailReason(
+  handoff: PlaceDetailHandoff | null | undefined,
+): boolean {
+  if (!handoff) return false;
+  const explicit = handoff.snapshot?.reason?.trim() || handoff.reason?.trim();
+  return Boolean(explicit && !GENERIC_DETAIL_REASONS.has(explicit));
+}
+
 export function handoffToPlaceDetailData(
   handoff: PlaceDetailHandoff,
   locale: Locale = "zh-TW",

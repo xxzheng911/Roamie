@@ -4,6 +4,7 @@
  * 執行：npx vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-reason-diversity.mjs
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { buildPlaceRecommendationReason } from "../src/lib/build-place-recommendation-reason.ts";
 import {
   FORBIDDEN_REASON_INFERENCES,
@@ -12,6 +13,10 @@ import {
 } from "../src/lib/place-reason-diversity.ts";
 import { mapPlaceResultsToChatItems } from "../src/lib/chat-session.ts";
 import { buildUnifiedPlaceCards } from "../src/lib/unified-place-card.ts";
+import {
+  hasCanonicalPlaceDetailReason,
+  resolvePlaceDetailReason,
+} from "../src/lib/place-detail-resolve.ts";
 
 function test(name, fn) {
   try {
@@ -172,11 +177,11 @@ test("5 cafes in one batch use distinct evidence types", () => {
   );
   const codes = assigned.map((row) => row.evidenceCode);
   assert.deepEqual(codes, [
-    "high_rating",
-    "high_review_count",
+    "route_fit",
+    "open_now",
     "nearby",
     "late_hours",
-    "route_fit",
+    "category_identity",
   ]);
   assert.equal(new Set(codes).size, 5);
   for (const row of assigned) {
@@ -202,16 +207,16 @@ test("5 attractions in one batch use distinct evidence types", () => {
   );
   const codes = assigned.map((row) => row.evidenceCode);
   assert.deepEqual(codes, [
-    "high_rating",
-    "high_review_count",
+    "route_fit",
+    "open_now",
     "nearby",
     "late_hours",
-    "route_fit",
+    "category_identity",
   ]);
   assert.equal(new Set(codes).size, 5);
 });
 
-test("rating evidence conflict uses second-rank evidence for later places", () => {
+test("rating and review counts remain supporting evidence, never the reason body", () => {
   const places = [1, 2, 3, 4, 5].map((n) =>
     stubPlace({
       id: `rating-clash-${n}`,
@@ -224,14 +229,53 @@ test("rating evidence conflict uses second-rank evidence for later places", () =
   );
   const assigned = assignDiversePlaceReasons(places.map((place) => ({ place })));
   const codes = assigned.map((row) => row.evidenceCode);
-  assert.equal(codes[0], "high_rating");
-  assert.notEqual(codes[1], "high_rating");
-  assert.equal(new Set(codes.slice(0, 3)).size, 3);
-  assert.ok(codes.filter((code) => code === "high_rating").length < 5);
+  assert.equal(codes[0], "open_now");
+  assert.ok(codes.every((code) => code !== "high_rating" && code !== "high_review_count"));
+  assert.ok(assigned.every((row) => row.availableCodes.includes("high_rating")));
+  assert.ok(assigned.every((row) => !/^Google 評分/.test(row.reason)));
+  assert.ok(assigned.every((row) => !/^已有 \d+ 則評論/.test(row.reason)));
   assert.deepEqual(
     assigned.map((row) => row.placeId),
     places.map((p) => p.id),
   );
+});
+
+test("recommendation handoff reason is canonical for Chat, Home, and Explore detail", () => {
+  const reason = "營業至 21:00，時間比較彈性。";
+  const handoff = {
+    placeId: "ChIJcanonical",
+    name: "Canonical Cafe",
+    address: "台南市",
+    lat: 22.99,
+    lng: 120.2,
+    reason,
+    snapshot: { ...stubPlace({ id: "ChIJcanonical", name: "Canonical Cafe" }), reason },
+  };
+  assert.equal(hasCanonicalPlaceDetailReason(handoff), true);
+  assert.equal(resolvePlaceDetailReason(handoff, "zh-TW", handoff.snapshot), reason);
+
+  const routeSource = readFileSync(
+    new URL("../src/routes/_app.place.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(routeSource, /if \(hasCanonicalReasonRef\.current\) return;/);
+});
+
+test("direct detail without recommendation context still builds a grounded fallback", () => {
+  const handoff = {
+    placeId: "ChIJdirect",
+    name: "Direct Cafe",
+    address: "台南市",
+    lat: 22.99,
+    lng: 120.2,
+    category: "cafe",
+  };
+  const reason = resolvePlaceDetailReason(handoff);
+  assert.equal(hasCanonicalPlaceDetailReason(handoff), false);
+  assert.ok(reason.includes("咖啡"));
+  for (const unsupported of ["安靜", "插座", "招牌", "景觀很好", "人少", "適合拍照"]) {
+    assert.equal(reason.includes(unsupported), false);
+  }
 });
 
 test("open_now evidence conflict uses second-rank evidence for later places", () => {
@@ -313,7 +357,9 @@ test("Home/Explore batch cards keep order and attach diverse reasons", () => {
     CAFE_BATCH.map((p) => p.id),
   );
   const uniqueReasons = new Set(cards.map((card) => card.reason));
-  assert.equal(uniqueReasons.size, cards.length);
+  assert.ok(uniqueReasons.size >= 3, "available contextual evidence should remain diverse");
+  assert.ok(cards.every((card) => !/^Google 評分/.test(card.reason)));
+  assert.ok(cards.every((card) => !/^已有 \d+ 則評論/.test(card.reason)));
 });
 
 test("Chat batch mapper keeps order and attaches diverse reasons", () => {
