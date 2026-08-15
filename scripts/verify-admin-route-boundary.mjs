@@ -49,10 +49,10 @@ assert.match(app, /if \(isAdminBoundary\)/);
 assert.match(app, /<OnboardingGate>/, "ordinary app routes must retain onboarding");
 assert.match(loginRoute, /hasPendingAdminReturn\(\)/);
 assert.match(callbackRoute, /consumeAdminReturn\(\)/);
-assert.match(adminRoute, /Loading admin dashboard\.\.\./);
+assert.match(adminRoute, /載入中…/);
 assert.match(adminRoute, /請先登入 Roamie 後再開啟管理後台。/);
 assert.match(adminRoute, /此帳號沒有管理員權限/);
-assert.match(adminRoute, /Admin Dashboard 暫時無法載入/);
+assert.match(adminRoute, /管理後台暫時無法載入/);
 assert.match(adminRoute, /Authorization: `Bearer \$\{session\.access_token\}`/);
 
 console.info("[verify-admin-route-boundary] all checks passed");

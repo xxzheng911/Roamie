@@ -31,20 +31,20 @@ type LoadState =
   | { kind: "error"; message: string };
 
 const SORT_OPTIONS: Array<{ value: AdminUserSort; label: string }> = [
-  { value: "recently_active", label: "Recently Active" },
-  { value: "active_7d", label: "Most Active 7D" },
-  { value: "active_30d", label: "Most Active 30D" },
-  { value: "newest", label: "Newest" },
-  { value: "oldest", label: "Oldest" },
+  { value: "recently_active", label: "最近活躍" },
+  { value: "active_7d", label: "近 7 日最活躍" },
+  { value: "active_30d", label: "近 30 日最活躍" },
+  { value: "newest", label: "最新加入" },
+  { value: "oldest", label: "最早加入" },
 ];
 
 const UNAVAILABLE_ANALYTICS = [
-  "Chat Sessions",
-  "All Itinerary Generations",
-  "Itinerary Generation Success Rate",
-  "Popular Recommendation Categories",
-  "Place Card Clicks",
-  "Affiliate Click Funnel",
+  "對話工作階段",
+  "所有行程生成次數",
+  "行程生成成功率",
+  "熱門推薦類型",
+  "地點卡片點擊",
+  "聯盟導購點擊漏斗",
 ] as const;
 
 function formatDate(value: string | null): string {
@@ -52,17 +52,17 @@ function formatDate(value: string | null): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? "—"
-    : new Intl.DateTimeFormat("en", {
+    : new Intl.DateTimeFormat("zh-TW", {
         year: "numeric",
-        month: "short",
-        day: "2-digit",
+        month: "numeric",
+        day: "numeric",
         hour: "2-digit",
         minute: "2-digit",
       }).format(date);
 }
 
 function displayName(user: AdminActiveUser): string {
-  return user.displayName?.trim() || "Unnamed user";
+  return user.displayName?.trim() || "未命名使用者";
 }
 
 function KpiCard({ label, value, note }: { label: string; value: number; note?: string }) {
@@ -81,7 +81,7 @@ function UserLabel({ user }: { user: AdminActiveUser }) {
   return (
     <div className="min-w-0">
       <p className="truncate font-medium text-slate-900">{displayName(user)}</p>
-      <p className="truncate text-xs text-slate-500">{user.email ?? "No email"}</p>
+      <p className="truncate text-xs text-slate-500">{user.email ?? "無 Email"}</p>
     </div>
   );
 }
@@ -128,7 +128,7 @@ function AdminDashboardPage() {
       }
       const body = (await response.json()) as { dashboard?: AdminDashboardData; error?: string };
       if (!response.ok || !body.dashboard) {
-        setState({ kind: "error", message: body.error ?? "Admin analytics unavailable" });
+        setState({ kind: "error", message: body.error ?? "管理後台暫時無法載入" });
         return;
       }
       setState({ kind: "ready", data: body.dashboard });
@@ -136,7 +136,7 @@ function AdminDashboardPage() {
       if (!cancelled) {
         setState({
           kind: "error",
-          message: error instanceof Error ? error.message : "Admin analytics unavailable",
+          message: error instanceof Error ? error.message : "管理後台暫時無法載入",
         });
       }
     });
@@ -188,7 +188,7 @@ function AdminDashboardPage() {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
         <div className="max-w-md rounded-2xl border border-red-200 bg-white p-8 text-center shadow-sm">
-          <h1 className="text-xl font-semibold text-slate-950">Admin Dashboard 暫時無法載入</h1>
+          <h1 className="text-xl font-semibold text-slate-950">管理後台暫時無法載入</h1>
           <p className="mt-2 text-sm text-slate-500">請稍後再試。</p>
         </div>
       </main>
@@ -198,7 +198,7 @@ function AdminDashboardPage() {
   if (state.kind === "loading") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-100">
-        <p className="text-sm text-slate-500">Loading admin dashboard...</p>
+        <p className="text-sm text-slate-500">載入中…</p>
       </main>
     );
   }
@@ -213,11 +213,11 @@ function AdminDashboardPage() {
         <div className="mx-auto flex max-w-[1500px] items-center justify-between px-5 py-4 lg:px-8">
           <div>
             <div className="flex items-center gap-2 text-sm font-medium text-slate-500">
-              <ShieldCheck className="h-4 w-4" /> Roamie Operations
+              <ShieldCheck className="h-4 w-4" /> Roamie 營運後台
             </div>
-            <h1 className="mt-1 text-2xl font-semibold">Admin Dashboard</h1>
+            <h1 className="mt-1 text-2xl font-semibold">管理後台</h1>
           </div>
-          <p className="text-xs text-slate-400">Updated {formatDate(data.observedAt)}</p>
+          <p className="text-xs text-slate-400">更新時間：{formatDate(data.observedAt)}</p>
         </div>
       </header>
 
@@ -226,32 +226,32 @@ function AdminDashboardPage() {
           <div className="mb-3 flex items-center gap-2">
             <BarChart3 className="h-4 w-4 text-slate-500" />
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-600">
-              Overview
+              總覽
             </h2>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-            <KpiCard label="Total Users" value={summary.totalUsers} />
-            <KpiCard label="New Today" value={summary.newUsersToday} />
-            <KpiCard label="New 7D" value={summary.newUsers7d} />
-            <KpiCard label="New 30D" value={summary.newUsers30d} />
-            <KpiCard label="DAU" value={summary.dau} note="Unique product activity · 24h" />
-            <KpiCard label="WAU" value={summary.wau} note="Unique product activity · 7d" />
-            <KpiCard label="MAU" value={summary.mau} note="Unique product activity · 30d" />
-            <KpiCard label="User Chats Today" value={summary.userChatsToday} />
-            <KpiCard label="User Chats 7D" value={summary.userChats7d} />
-            <KpiCard label="Saved Trips Today" value={summary.savedTripsToday} />
-            <KpiCard label="Saved Trips 7D" value={summary.savedTrips7d} />
-            <KpiCard label="Saved Places 7D" value={summary.savedPlaces7d} />
-            <KpiCard label="Free Users" value={summary.freeUsers} />
+            <KpiCard label="總使用者" value={summary.totalUsers} />
+            <KpiCard label="今日新增" value={summary.newUsersToday} />
+            <KpiCard label="近 7 日新增" value={summary.newUsers7d} />
+            <KpiCard label="近 30 日新增" value={summary.newUsers30d} />
+            <KpiCard label="日活躍使用者" value={summary.dau} note="近 24 小時有產品操作的使用者" />
+            <KpiCard label="週活躍使用者" value={summary.wau} note="近 7 日有產品操作的使用者" />
+            <KpiCard label="月活躍使用者" value={summary.mau} note="近 30 日有產品操作的使用者" />
+            <KpiCard label="今日使用者對話" value={summary.userChatsToday} />
+            <KpiCard label="近 7 日使用者對話" value={summary.userChats7d} />
+            <KpiCard label="今日收藏行程" value={summary.savedTripsToday} />
+            <KpiCard label="近 7 日收藏行程" value={summary.savedTrips7d} />
+            <KpiCard label="近 7 日收藏地點" value={summary.savedPlaces7d} />
+            <KpiCard label="Free 使用者" value={summary.freeUsers} />
             <KpiCard
-              label="Plus Users"
+              label="Plus 使用者"
               value={summary.plusUsers}
-              note={`${plusPercent.toFixed(1)}% of users`}
+              note={`使用者佔比 ${plusPercent.toFixed(1)}%`}
             />
             <KpiCard
-              label="Committed Credits 7D"
+              label="近 7 日已使用 Credits"
               value={summary.committedCredits7d}
-              note="Production ledger only"
+              note="僅統計 Production 已完成扣點"
             />
           </div>
         </section>
@@ -260,9 +260,9 @@ function AdminDashboardPage() {
           <div className="flex flex-col gap-3 border-b border-slate-200 p-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-2">
               <Users className="h-4 w-4 text-slate-500" />
-              <h2 className="font-semibold">Active Users</h2>
+              <h2 className="font-semibold">活躍使用者</h2>
               <span className="text-xs text-slate-400">
-                {data.usersTotal.toLocaleString()} results
+                {data.usersTotal.toLocaleString("zh-TW")} 位使用者
               </span>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
@@ -271,7 +271,7 @@ function AdminDashboardPage() {
                 <input
                   value={searchInput}
                   onChange={(event) => setSearchInput(event.target.value)}
-                  placeholder="Search name, email, or UUID"
+                  placeholder="搜尋名稱、Email 或 UUID"
                   className="h-9 w-full rounded-md border border-slate-300 bg-white pl-9 pr-3 text-sm outline-none focus:border-slate-500 sm:w-72"
                 />
               </label>
@@ -296,16 +296,16 @@ function AdminDashboardPage() {
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                 <tr>
                   {[
-                    "Display Name / Email",
-                    "Joined",
-                    "Last Sign In",
-                    "Last Active",
-                    "Actions 7D",
-                    "Actions 30D",
-                    "User Chats",
-                    "Saved Trips",
-                    "Saved Places",
-                    "Plan",
+                    "顯示名稱 / Email",
+                    "加入時間",
+                    "最後登入",
+                    "最後活躍",
+                    "近 7 日操作",
+                    "近 30 日操作",
+                    "使用者對話",
+                    "收藏行程",
+                    "收藏地點",
+                    "方案",
                   ].map((label) => (
                     <th key={label} className="px-4 py-3 font-medium">
                       {label}
@@ -339,7 +339,7 @@ function AdminDashboardPage() {
                 {data.users.length === 0 ? (
                   <tr>
                     <td colSpan={10} className="px-4 py-10 text-center text-slate-400">
-                      No users found
+                      找不到符合條件的使用者
                     </td>
                   </tr>
                 ) : null}
@@ -348,7 +348,7 @@ function AdminDashboardPage() {
           </div>
           <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-sm">
             <span className="text-slate-500">
-              Page {page} of {totalPages}
+              第 {page} 頁，共 {totalPages} 頁
             </span>
             <div className="flex gap-2">
               <button
@@ -356,7 +356,7 @@ function AdminDashboardPage() {
                 onClick={() => setPage((value) => Math.max(1, value - 1))}
                 disabled={page <= 1}
                 className="rounded-md border border-slate-300 p-2 disabled:opacity-40"
-                aria-label="Previous page"
+                aria-label="上一頁"
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
@@ -365,7 +365,7 @@ function AdminDashboardPage() {
                 onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
                 disabled={page >= totalPages}
                 className="rounded-md border border-slate-300 p-2 disabled:opacity-40"
-                aria-label="Next page"
+                aria-label="下一頁"
               >
                 <ChevronRight className="h-4 w-4" />
               </button>
@@ -377,13 +377,13 @@ function AdminDashboardPage() {
           <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
               <Activity className="h-4 w-4 text-slate-500" />
-              <h2 className="font-semibold">Top Active Users</h2>
+              <h2 className="font-semibold">最活躍使用者</h2>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[700px] text-left text-sm">
                 <thead className="text-xs uppercase text-slate-400">
                   <tr>
-                    {["Rank", "User", "7D", "30D", "Chats", "Trips", "Places", "Last Active"].map(
+                    {["排名", "使用者", "近 7 日", "近 30 日", "對話", "行程", "地點", "最後活躍"].map(
                       (x) => (
                         <th key={x} className="pb-2 pr-3 font-medium">
                           {x}
@@ -415,15 +415,15 @@ function AdminDashboardPage() {
           <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
               <Database className="h-4 w-4 text-slate-500" />
-              <h2 className="font-semibold">Popular Saved Destinations</h2>
+              <h2 className="font-semibold">熱門收藏行程目的地</h2>
             </div>
             <table className="w-full text-left text-sm">
               <thead className="text-xs uppercase text-slate-400">
                 <tr>
-                  <th className="pb-2 font-medium">Destination</th>
-                  <th className="pb-2 font-medium">Saved Trips</th>
-                  <th className="pb-2 font-medium">Users</th>
-                  <th className="pb-2 font-medium">Last Saved</th>
+                  <th className="pb-2 font-medium">目的地</th>
+                  <th className="pb-2 font-medium">收藏行程</th>
+                  <th className="pb-2 font-medium">使用者</th>
+                  <th className="pb-2 font-medium">最後收藏</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -442,7 +442,7 @@ function AdminDashboardPage() {
 
         <div className="grid gap-6 lg:grid-cols-3">
           <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="font-semibold">Free / Plus Distribution</h2>
+            <h2 className="font-semibold">Free / Plus 使用者分布</h2>
             <dl className="mt-4 space-y-3 text-sm">
               <div className="flex justify-between">
                 <dt className="text-slate-500">Free</dt>
@@ -453,25 +453,25 @@ function AdminDashboardPage() {
                 <dd className="font-medium">{summary.plusUsers.toLocaleString()}</dd>
               </div>
               <div className="flex justify-between border-t border-slate-100 pt-3">
-                <dt className="text-slate-500">Plus %</dt>
+                <dt className="text-slate-500">Plus 佔比</dt>
                 <dd className="font-medium">{plusPercent.toFixed(1)}%</dd>
               </div>
             </dl>
           </section>
           <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="font-semibold">Credits Usage</h2>
-            <p className="mt-1 text-xs text-amber-700">Free / ledger-covered usage only</p>
+            <h2 className="font-semibold">Credits 使用量</h2>
+            <p className="mt-1 text-xs text-amber-700">僅包含 Free / 有 Credits 紀錄的使用量</p>
             <dl className="mt-4 space-y-3 text-sm">
               <div className="flex justify-between">
-                <dt className="text-slate-500">Today</dt>
+                <dt className="text-slate-500">今日</dt>
                 <dd>{summary.committedCreditsToday}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-slate-500">7D</dt>
+                <dt className="text-slate-500">近 7 日</dt>
                 <dd>{summary.committedCredits7d}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-slate-500">30D</dt>
+                <dt className="text-slate-500">近 30 日</dt>
                 <dd>{summary.committedCredits30d}</dd>
               </div>
               {data.creditBreakdown30d.map((row) => (
@@ -481,9 +481,9 @@ function AdminDashboardPage() {
                 >
                   <dt className="text-slate-500">
                     {row.featureType === "PLACE_RECOMMENDATION"
-                      ? "AI place recommendation"
+                      ? "AI 地點推薦"
                       : row.featureType === "ITINERARY_GENERATION"
-                        ? "Itinerary generation"
+                        ? "行程生成"
                         : row.featureType}
                   </dt>
                   <dd>{row.credits}</dd>
@@ -492,13 +492,13 @@ function AdminDashboardPage() {
             </dl>
           </section>
           <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="font-semibold">Analytics Not Yet Available</h2>
+            <h2 className="font-semibold">尚未提供的分析指標</h2>
             <ul className="mt-4 space-y-2 text-sm">
               {UNAVAILABLE_ANALYTICS.map((metric) => (
                 <li key={metric} className="flex items-center justify-between gap-3">
                   <span className="text-slate-600">{metric}</span>
                   <span className="rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-500">
-                    unavailable · analytics_source_missing
+                    尚未提供 · 尚無可靠資料來源
                   </span>
                 </li>
               ))}

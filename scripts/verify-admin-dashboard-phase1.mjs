@@ -128,8 +128,19 @@ assert.equal(destinations[0]?.uniqueUsers, 2, "canonical aliases must dedupe use
 
 assert.doesNotMatch(route, /SUPABASE_SERVICE_ROLE_KEY/);
 assert.doesNotMatch(route, /ROAMIE_ADMIN_USER_IDS/);
-assert.match(route, /Unnamed user/);
-assert.match(route, /analytics_source_missing/);
-assert.match(route, /Free \/ ledger-covered usage only/);
+assert.match(route, /Roamie 營運後台/);
+assert.match(route, /管理後台/);
+assert.match(route, /總使用者/);
+assert.match(route, /日活躍使用者/);
+assert.match(route, /活躍使用者/);
+assert.match(route, /顯示名稱 \/ Email/);
+assert.match(route, /近 7 日最活躍/);
+assert.match(route, /未命名使用者/);
+assert.match(route, /尚未提供 · 尚無可靠資料來源/);
+assert.match(route, /僅包含 Free \/ 有 Credits 紀錄的使用量/);
+assert.match(route, /Intl\.DateTimeFormat\("zh-TW"/);
+assert.doesNotMatch(route, /Intl\.DateTimeFormat\("en"/);
+assert.match(route, /AdminDashboardData/);
+assert.match(route, /body\.dashboard/);
 
 console.info("[verify-admin-dashboard] all checks passed");
