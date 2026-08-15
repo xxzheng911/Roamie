@@ -35,3 +35,6 @@ dist-ssr
 .env
 .env.local
 .dev.vars
+
+# Supabase CLI local cache (cli-latest, linked project, service versions)
+supabase/.temp/
