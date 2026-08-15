@@ -14,6 +14,7 @@
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "verify:pie-facade": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-pie-facade.mjs",
+    "verify:place-reason-diversity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-reason-diversity.mjs",
     "verify:pie-step-b-location-autocomplete": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-pie-step-b-location-autocomplete.mjs",
     "verify:pie-step-b-location-detail": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-pie-step-b-location-detail.mjs",
     "verify:pie-step-b-place-detail-complete": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-pie-step-b-place-detail-complete.mjs",

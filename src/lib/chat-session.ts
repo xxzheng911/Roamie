@@ -15,6 +15,7 @@ import {
   buildPlaceRecommendationReason,
   type UserProfileForReason,
 } from "@/lib/build-place-recommendation-reason";
+import { buildDiversePlaceRecommendationReasons } from "@/lib/place-reason-diversity";
 import {
   buildContextualMoodHandoffOpening,
   buildHandoffRoamiePayload,
@@ -450,45 +451,54 @@ export function placeDisplayName(p: ChatPlaceItem | RoamieRecommendationItem): s
   return ("placeName" in p && p.placeName) || p.name;
 }
 
+export type MapPlaceResultToChatItemCtx = {
+  mood?: string;
+  weather?: WeatherSummary | null;
+  userProfile?: UserProfileForReason | null;
+  categoryLabel?: string;
+  /** Locks recommendation description templates to this intent */
+  categoryIntent?: string;
+  distanceMeters?: number;
+  isSavedFavorite?: boolean;
+  currentTime?: Date;
+  locale?: Locale;
+  /** Precomputed reason; skips per-place template when set. */
+  reason?: string;
+};
+
+function safeWeatherForReason(weather?: WeatherSummary | null): WeatherSummary | null {
+  if (!weather) return null;
+  return {
+    ...weather,
+    condition: typeof weather.condition === "string" ? weather.condition : "",
+  };
+}
+
 export function mapPlaceResultToChatItem(
   p: PlaceResult,
-  ctx: {
-    mood?: string;
-    weather?: WeatherSummary | null;
-    userProfile?: UserProfileForReason | null;
-    categoryLabel?: string;
-    /** Locks recommendation description templates to this intent */
-    categoryIntent?: string;
-    distanceMeters?: number;
-    isSavedFavorite?: boolean;
-    currentTime?: Date;
-    locale?: Locale;
-  },
+  ctx: MapPlaceResultToChatItemCtx,
 ): ChatPlaceItem {
   const lat = p.lat ?? undefined;
   const lng = p.lng ?? undefined;
   const googleMapsUrl =
     lat != null && lng != null ? buildPlaceMapsUrl(lat, lng, p.name) : undefined;
-  const reason = buildPlaceRecommendationReason(
-    p,
-    ctx.userProfile ?? null,
-    // Incomplete weather objects (e.g. far-future trips) must not crash reason builders.
-    ctx.weather
-      ? {
-          ...ctx.weather,
-          condition: typeof ctx.weather.condition === "string" ? ctx.weather.condition : "",
-        }
-      : null,
-    ctx.currentTime,
-    {
-      mood: ctx.mood,
-      categoryLabel: ctx.categoryLabel,
-      categoryIntent: ctx.categoryIntent,
-      distanceMeters: ctx.distanceMeters,
-      isSavedFavorite: ctx.isSavedFavorite,
-    },
-    ctx.locale,
-  );
+  const reason =
+    ctx.reason?.trim() ||
+    buildPlaceRecommendationReason(
+      p,
+      ctx.userProfile ?? null,
+      // Incomplete weather objects (e.g. far-future trips) must not crash reason builders.
+      safeWeatherForReason(ctx.weather),
+      ctx.currentTime,
+      {
+        mood: ctx.mood,
+        categoryLabel: ctx.categoryLabel,
+        categoryIntent: ctx.categoryIntent,
+        distanceMeters: ctx.distanceMeters,
+        isSavedFavorite: ctx.isSavedFavorite,
+      },
+      ctx.locale,
+    );
   const { city, country } = parseCityCountryFromAddress(p.address);
   const locale = ctx.locale ?? effectiveAppLocale();
   const resolvedName = resolvePlaceDisplayName(
@@ -541,6 +551,40 @@ export function mapPlaceResultToChatItem(
     city,
     country,
   };
+}
+
+/**
+ * Chat recommendation batch mapper. Applies reason diversity, then reuses
+ * the per-place mapper. Order is preserved.
+ */
+export function mapPlaceResultsToChatItems(
+  entries: Array<{ place: PlaceResult; ctx: MapPlaceResultToChatItemCtx }>,
+): ChatPlaceItem[] {
+  if (entries.length === 0) return [];
+  const reasons = buildDiversePlaceRecommendationReasons(
+    entries.map(({ place, ctx }) => ({
+      place,
+      context: {
+        mood: ctx.mood,
+        categoryLabel: ctx.categoryLabel,
+        categoryIntent: ctx.categoryIntent,
+        distanceMeters: ctx.distanceMeters,
+        isSavedFavorite: ctx.isSavedFavorite,
+      },
+    })),
+    {
+      userProfile: entries[0]?.ctx.userProfile,
+      weather: safeWeatherForReason(entries[0]?.ctx.weather),
+      currentTime: entries[0]?.ctx.currentTime,
+      locale: entries[0]?.ctx.locale,
+    },
+  );
+  return entries.map((entry, index) =>
+    mapPlaceResultToChatItem(entry.place, {
+      ...entry.ctx,
+      reason: entry.ctx.reason?.trim() || reasons[index],
+    }),
+  );
 }
 
 export function roamieRecToChatItem(rec: RoamieRecommendationItem): ChatPlaceItem {

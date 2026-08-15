@@ -16,7 +16,7 @@ import {
   campingSearchAttempts,
   filterCampingPlaces,
 } from "@/lib/ai/activity-camping";
-import { mapPlaceResultToChatItem } from "@/lib/chat-session";
+import { mapPlaceResultsToChatItems } from "@/lib/chat-session";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import { distanceMeters } from "@/lib/map-explore";
@@ -1205,25 +1205,31 @@ export async function buildNearbyPlaceRecommendation(params: {
       throw new Error("places_empty");
     }
 
-    const recommendations: RoamieRecommendationItem[] = picks.map((p) => {
-      const distM =
-        p.lat != null && p.lng != null
-          ? distanceMeters({ lat, lng }, { lat: p.lat, lng: p.lng })
-          : undefined;
-      const isDistrict = districtPick.some((d) => d.id === p.id);
-      const item = mapPlaceResultToChatItem(p, {
-        mood: context.mood,
-        locale,
-        distanceMeters: distM,
-        categoryLabel: isDistrict ? FOOD_DISTRICT_CARD_TYPE : undefined,
-      });
-      if (mealIntent && !isDistrict) {
-        const desc = buildMealRecommendationDescription(p, mealIntent);
+    const recommendations: RoamieRecommendationItem[] = mapPlaceResultsToChatItems(
+      picks.map((p) => {
+        const distM =
+          p.lat != null && p.lng != null
+            ? distanceMeters({ lat, lng }, { lat: p.lat, lng: p.lng })
+            : undefined;
+        const isDistrict = districtPick.some((d) => d.id === p.id);
+        return {
+          place: p,
+          ctx: {
+            mood: context.mood,
+            locale,
+            distanceMeters: distM,
+            categoryLabel: isDistrict ? FOOD_DISTRICT_CARD_TYPE : undefined,
+          },
+        };
+      }),
+    ).map((item) => {
+      const isDistrict = districtPick.some((d) => d.id === item.googlePlaceId || d.id === item.placeId);
+      const source = picks.find((p) => p.id === item.googlePlaceId || p.id === item.placeId);
+      if (mealIntent && !isDistrict && source) {
+        const desc = buildMealRecommendationDescription(source, mealIntent);
         return { ...item, reason: desc, description: desc };
       }
-      return item;
-    }).map((item) =>
-      districtPick.some((d) => d.id === item.googlePlaceId || d.id === item.placeId)
+      return isDistrict
         ? {
             ...item,
             type: FOOD_DISTRICT_CARD_TYPE,
@@ -1231,8 +1237,8 @@ export async function buildNearbyPlaceRecommendation(params: {
               ? `${FOOD_DISTRICT_CARD_TYPE} · ${item.description}`
               : FOOD_DISTRICT_CARD_TYPE,
           }
-        : item,
-    );
+        : item;
+    });
 
     const summary = mealIntent
       ? sanitizeMealSummaryText(buildSummary(intent, picks, context, excluded), mealIntent.slot)

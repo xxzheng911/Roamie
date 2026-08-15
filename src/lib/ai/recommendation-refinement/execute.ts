@@ -6,7 +6,7 @@ import type { Locale } from "@/lib/i18n/types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { RoamieRecommendationItem, RoamiePayloadV2 } from "@/lib/ai/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
-import { mapPlaceResultToChatItem } from "@/lib/chat-session";
+import { mapPlaceResultsToChatItems } from "@/lib/chat-session";
 import {
   fetchPlacesWithSearchAttemptsMerged,
   type PlaceSearchFn,
@@ -165,19 +165,24 @@ export async function buildRecommendationRefinementResults(params: {
 
   const categoryIntent = recommendationIntentToCategoryIntent(recCtx.intent);
   const label = CHAT_PLACE_CATEGORY_LABELS[categoryIntent];
-  const recommendations = ranked.slice(0, TARGET_COUNT).map((place) => {
-    const distM =
-      place.lat != null && place.lng != null
-        ? distanceMeters({ lat: lat!, lng: lng! }, { lat: place.lat, lng: place.lng })
-        : undefined;
-    return mapPlaceResultToChatItem(place, {
-      mood: travelContext.mood,
-      locale,
-      distanceMeters: distM,
-      categoryLabel: label,
-      categoryIntent,
-    });
-  });
+  const recommendations = mapPlaceResultsToChatItems(
+    ranked.slice(0, TARGET_COUNT).map((place) => {
+      const distM =
+        place.lat != null && place.lng != null
+          ? distanceMeters({ lat: lat!, lng: lng! }, { lat: place.lat, lng: place.lng })
+          : undefined;
+      return {
+        place,
+        ctx: {
+          mood: travelContext.mood,
+          locale,
+          distanceMeters: distM,
+          categoryLabel: label,
+          categoryIntent,
+        },
+      };
+    }),
+  );
 
   const stats = {
     rawCount: raw.length,

@@ -1,7 +1,7 @@
 import { filterNonLodgingPlaces } from "@/lib/lodging-place-filter";
 import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { ChatPlanningSession, ChatPlaceItem } from "@/lib/chat-session";
-import { mapPlaceResultToChatItem } from "@/lib/chat-session";
+import { mapPlaceResultsToChatItems } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import { lowBudgetSearchQuery, buildBudgetRefinementSummary } from "@/lib/ai/budget-refinement";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
@@ -113,15 +113,16 @@ export function generateLocalRecommendationFallback(
       ? filterCampingPlaces(places)
       : filterNonLodgingPlaces(places);
 
-  const candidates: ChatPlaceItem[] = filteredPlaces
-    .slice(0, 5)
-    .map((p) =>
-    mapPlaceResultToChatItem(p, {
-      mood: ctx.mood,
-      weather: ctx.weather,
-      locale,
-      currentTime: new Date(),
-    }),
+  const candidates: ChatPlaceItem[] = mapPlaceResultsToChatItems(
+    filteredPlaces.slice(0, 5).map((p) => ({
+      place: p,
+      ctx: {
+        mood: ctx.mood,
+        weather: ctx.weather,
+        locale,
+        currentTime: new Date(),
+      },
+    })),
   );
 
   if (!candidates.length) {

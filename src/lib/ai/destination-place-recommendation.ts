@@ -41,7 +41,7 @@ import {
   buildWeatherAwareSearchAttempts,
   resolveWeatherScene,
 } from "@/lib/ai/weather-place-search";
-import { mapPlaceResultToChatItem } from "@/lib/chat-session";
+import { mapPlaceResultsToChatItems } from "@/lib/chat-session";
 import { shouldSkipPlanningPlacesApi } from "@/lib/ai/planning-candidate-pool";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { distanceMeters } from "@/lib/map-explore";
@@ -247,25 +247,32 @@ function placesToRecommendations(
           : categoryIntent === "attraction"
             ? "景點"
             : undefined;
-  return places.slice(0, RECOMMENDATION_COUNT).map((place) => {
-    const distM =
-      place.lat != null && place.lng != null
-        ? distanceMeters({ lat, lng }, { lat: place.lat, lng: place.lng })
-        : undefined;
-    const item = mapPlaceResultToChatItem(place, {
-      mood: context.mood,
-      locale,
-      distanceMeters: distM,
-      categoryLabel,
-      categoryIntent,
-    });
+  return mapPlaceResultsToChatItems(
+    places.slice(0, RECOMMENDATION_COUNT).map((place) => {
+      const distM =
+        place.lat != null && place.lng != null
+          ? distanceMeters({ lat, lng }, { lat: place.lat, lng: place.lng })
+          : undefined;
+      return {
+        place,
+        ctx: {
+          mood: context.mood,
+          locale,
+          distanceMeters: distM,
+          categoryLabel,
+          categoryIntent,
+        },
+      };
+    }),
+  ).map((item) => {
+    const place = places.find((p) => p.id === item.googlePlaceId || p.id === item.placeId);
     return {
       ...item,
-      types: place.types?.length
+      types: place?.types?.length
         ? place.types
-        : place.primaryType
+        : place?.primaryType
           ? [place.primaryType]
-          : undefined,
+          : item.types,
     } as RoamieRecommendationItem & { types?: string[] };
   });
 }

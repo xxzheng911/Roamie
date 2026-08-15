@@ -57,7 +57,7 @@ import {
 } from "@/lib/ai/chat-category-place-guard";
 import { classifyDestinationForPlaceSearch } from "@/lib/ai/landmark-place-strategy";
 import { filterPlacesForAttractionRecommendation } from "@/lib/ai/place-recommendation-rules";
-import { mapPlaceResultToChatItem } from "@/lib/chat-session";
+import { mapPlaceResultsToChatItems } from "@/lib/chat-session";
 import { distanceMeters } from "@/lib/map-explore";
 import { beginPlacesFlow, endPlacesFlow } from "@/lib/places-api-stats";
 import {
@@ -445,35 +445,44 @@ function placesToRecommendations(
   categoryIntent: ChatPlaceCategoryIntent,
   mealIntent?: ParsedMealIntent | null,
 ): RoamieRecommendationItem[] {
-  return places.map((place) => {
-    const distM =
-      place.lat != null && place.lng != null
-        ? distanceMeters({ lat, lng }, { lat: place.lat, lng: place.lng })
-        : undefined;
-    const item = mapPlaceResultToChatItem(place, {
-      mood: context.mood,
-      locale,
-      distanceMeters: distM,
-      categoryLabel,
-      categoryIntent,
-    });
-    const withTypes = {
-      ...item,
-      types: place.types?.length
-        ? place.types
-        : place.primaryType
-          ? [place.primaryType]
-          : undefined,
-    } as RoamieRecommendationItem & { types?: string[] };
-    if (mealIntent) {
+  return mapPlaceResultsToChatItems(
+    places.map((place) => {
+      const distM =
+        place.lat != null && place.lng != null
+          ? distanceMeters({ lat, lng }, { lat: place.lat, lng: place.lng })
+          : undefined;
       return {
-        ...withTypes,
-        reason: buildMealRecommendationDescription(place, mealIntent),
-        description: buildMealRecommendationDescription(place, mealIntent),
+        place,
+        ctx: {
+          mood: context.mood,
+          locale,
+          distanceMeters: distM,
+          categoryLabel,
+          categoryIntent,
+        },
       };
-    }
-    return withTypes;
-  }).map(dedupeRecommendationCopy);
+    }),
+  )
+    .map((item) => {
+      const place = places.find((p) => p.id === item.googlePlaceId || p.id === item.placeId);
+      const withTypes = {
+        ...item,
+        types: place?.types?.length
+          ? place.types
+          : place?.primaryType
+            ? [place.primaryType]
+            : item.types,
+      } as RoamieRecommendationItem & { types?: string[] };
+      if (mealIntent && place) {
+        return {
+          ...withTypes,
+          reason: buildMealRecommendationDescription(place, mealIntent),
+          description: buildMealRecommendationDescription(place, mealIntent),
+        };
+      }
+      return withTypes;
+    })
+    .map(dedupeRecommendationCopy);
 }
 
 function buildGroupedSummary(

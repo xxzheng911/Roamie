@@ -81,7 +81,7 @@ import {
 } from "@/lib/tabelog-reference";
 import { distanceMeters, savedPlacesNear } from "@/lib/map-explore";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
-import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
+import { buildUnifiedPlaceCard, buildUnifiedPlaceCards } from "@/lib/unified-place-card";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { getMockHomeNearbyPicks, getMockPlacesForCategory } from "@/lib/map-mock-places";
 import { withSearchTimeout } from "@/lib/search-timeout";
@@ -400,7 +400,7 @@ export function buildExploreCardsFromRawPlaces(
     ? []
     : savedPlacesNear(ctx.userLocation, ctx.saved, maxSavedDistance);
   const apiNames = new Set(rawPlaces.map((p) => p.name));
-  const savedCards: ExplorePlaceCard[] = nearbySaved
+  const savedItems = nearbySaved
     .filter((s) => !apiNames.has(s.name))
     .filter((s) =>
       matchesCategory(
@@ -408,31 +408,23 @@ export function buildExploreCardsFromRawPlaces(
         cat,
       ),
     )
-    .map((s) =>
-      buildUnifiedPlaceCard({
-        place: savedToPlaceResult(s),
-        categoryId: cat.id,
-        isSavedFavorite: true,
-        userLocation: ctx.userLocation,
-        weather: ctx.weather,
-        userProfile: ctx.reasonProfile,
-        locale: ctx.locale,
-      }),
-    );
-
-  const enriched: ExplorePlaceCard[] = [
-    ...savedCards,
-    ...filtered.map((p) =>
-      buildUnifiedPlaceCard({
-        place: p,
-        categoryId: cat.id,
-        userLocation: ctx.userLocation,
-        weather: ctx.weather,
-        userProfile: ctx.reasonProfile,
-        locale: ctx.locale,
-      }),
-    ),
-  ];
+    .map((s) => ({
+      place: savedToPlaceResult(s),
+      categoryId: cat.id,
+      isSavedFavorite: true as const,
+    }));
+  const enriched: ExplorePlaceCard[] = buildExploreBatchCards(
+    [
+      ...savedItems,
+      ...filtered.map((p) => ({ place: p, categoryId: cat.id })),
+    ],
+    {
+      userLocation: ctx.userLocation,
+      weather: ctx.weather,
+      reasonProfile: ctx.reasonProfile,
+      locale: ctx.locale,
+    },
+  );
 
   return ctx.forHome
     ? sortHomeNearbyPlacesWithContext(enriched, ctx.userLocation, {
@@ -471,6 +463,28 @@ function savedToPlaceResult(s: SavedPlace): PlaceResult {
     closingSoonNote: "",
     nextOpenHint: "",
   };
+}
+
+function buildExploreBatchCards(
+  items: Array<{ place: PlaceResult; categoryId: string; isSavedFavorite?: boolean }>,
+  ctx: {
+    userLocation: { lat: number; lng: number };
+    weather: WeatherSummary | null;
+    reasonProfile: UserProfileForReason | null;
+    locale: Locale;
+  },
+): ExplorePlaceCard[] {
+  return buildUnifiedPlaceCards(
+    items.map((item) => ({
+      place: item.place,
+      categoryId: item.categoryId,
+      isSavedFavorite: item.isSavedFavorite,
+      userLocation: ctx.userLocation,
+      weather: ctx.weather,
+      userProfile: ctx.reasonProfile,
+      locale: ctx.locale,
+    })),
+  );
 }
 
 const categorySearchInFlight = new Map<string, Promise<ExplorePlaceCard[]>>();
@@ -743,7 +757,7 @@ function warmMapCategoryCache(
     exploreCategoryMaxDistanceMeters(cat.id),
   );
   const apiNames = new Set(apiPlaces.map((p) => p.name));
-  const savedCards: ExplorePlaceCard[] = nearbySaved
+  const savedItems = nearbySaved
     .filter((s) => !apiNames.has(s.name))
     .filter((s) =>
       matchesCategory(
@@ -751,31 +765,24 @@ function warmMapCategoryCache(
         cat,
       ),
     )
-    .map((s) =>
-      buildUnifiedPlaceCard({
-        place: savedToPlaceResult(s),
-        categoryId: cat.id,
-        isSavedFavorite: true,
-        userLocation: ctx.userLocation,
-        weather: ctx.weather,
-        userProfile: ctx.reasonProfile,
-        locale: ctx.locale,
-      }),
-    );
+    .map((s) => ({
+      place: savedToPlaceResult(s),
+      categoryId: cat.id,
+      isSavedFavorite: true as const,
+    }));
 
-  const exploreCards: ExplorePlaceCard[] = [
-    ...savedCards,
-    ...exploreFiltered.map((p) =>
-      buildUnifiedPlaceCard({
-        place: p,
-        categoryId: cat.id,
-        userLocation: ctx.userLocation,
-        weather: ctx.weather,
-        userProfile: ctx.reasonProfile,
-        locale: ctx.locale,
-      }),
-    ),
-  ];
+  const exploreCards: ExplorePlaceCard[] = buildExploreBatchCards(
+    [
+      ...savedItems,
+      ...exploreFiltered.map((p) => ({ place: p, categoryId: cat.id })),
+    ],
+    {
+      userLocation: ctx.userLocation,
+      weather: ctx.weather,
+      reasonProfile: ctx.reasonProfile,
+      locale: ctx.locale,
+    },
+  );
 
   const sorted = sortExploreCategoryPlaces(
     exploreCards,
@@ -1153,7 +1160,7 @@ async function searchExploreCategoryPlacesInner(
 
   const nearbySaved = forHome ? [] : savedPlacesNear(userLocation, saved, maxSavedDistance);
   const apiNames = new Set(apiPlaces.map((p) => p.name));
-  const savedCards: ExplorePlaceCard[] = nearbySaved
+  const savedItems = nearbySaved
     .filter((s) => !apiNames.has(s.name))
     .filter((s) =>
       matchesCategory(
@@ -1161,43 +1168,32 @@ async function searchExploreCategoryPlacesInner(
         cat,
       ),
     )
-    .map((s) => {
-      const base = savedToPlaceResult(s);
-      return buildUnifiedPlaceCard({
-        place: base,
-        categoryId: cat.id,
-        isSavedFavorite: true,
-        userLocation,
-        weather,
-        userProfile: reasonProfile,
-        locale,
-      });
-    });
+    .map((s) => ({
+      place: savedToPlaceResult(s),
+      categoryId: cat.id,
+      isSavedFavorite: true as const,
+    }));
 
-  const enriched: ExplorePlaceCard[] = [
-    ...savedCards,
-    ...filtered.map((p) =>
-      buildUnifiedPlaceCard({
-        place: p,
-        categoryId: cat.id,
-        userLocation,
-        weather,
-        userProfile: reasonProfile,
-        locale,
-      }),
-    ),
-  ];
+  const enriched: ExplorePlaceCard[] = buildExploreBatchCards(
+    [
+      ...savedItems,
+      ...filtered.map((p) => ({ place: p, categoryId: cat.id })),
+    ],
+    {
+      userLocation,
+      weather,
+      reasonProfile,
+      locale,
+    },
+  );
 
   if (enriched.length === 0 && allowDemoPlaceFallback() && !forHome) {
-    const mocks = getMockPlacesForCategory(userLocation, cat).map((p) =>
-      buildUnifiedPlaceCard({
+    const mocks = buildExploreBatchCards(
+      getMockPlacesForCategory(userLocation, cat).map((p) => ({
         place: p,
         categoryId: cat.id,
-        userLocation,
-        weather,
-        userProfile: reasonProfile,
-        locale,
-      }),
+      })),
+      { userLocation, weather, reasonProfile, locale },
     );
     return forHome
       ? sortHomeNearbyPlacesWithContext(mocks, userLocation, {

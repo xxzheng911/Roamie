@@ -10,6 +10,7 @@ import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
 import type { Locale } from "@/lib/i18n/types";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { resolvePlaceCoverImageSync } from "@/services/placeImageService";
+import { buildDiversePlaceRecommendationReasons } from "@/lib/place-reason-diversity";
 
 export type UnifiedPlaceCard = ExplorePlaceCard & {
   categoryId?: string;
@@ -95,4 +96,39 @@ export function buildUnifiedPlaceCard(input: BuildUnifiedPlaceCardInput): Unifie
     coverImageUrl,
     distanceLabel,
   };
+}
+
+function unifiedCardDistanceMeters(input: BuildUnifiedPlaceCardInput): number | undefined {
+  const { place, userLocation } = input;
+  if (!userLocation || place.lat == null || place.lng == null) return undefined;
+  return distanceMeters(userLocation, { lat: place.lat, lng: place.lng });
+}
+
+/**
+ * Home / Explore batch enrichment. Applies reason diversity across the
+ * given list, then reuses the per-place card builder. Order is preserved.
+ */
+export function buildUnifiedPlaceCards(inputs: BuildUnifiedPlaceCardInput[]): UnifiedPlaceCard[] {
+  if (inputs.length === 0) return [];
+  const reasons = buildDiversePlaceRecommendationReasons(
+    inputs.map((input) => ({
+      place: input.place,
+      context: {
+        categoryLabel: resolvePlaceDisplayCategory(input.place),
+        distanceMeters: unifiedCardDistanceMeters(input),
+        isSavedFavorite: input.isSavedFavorite,
+      },
+    })),
+    {
+      userProfile: inputs[0]?.userProfile,
+      weather: inputs[0]?.weather,
+      locale: inputs[0]?.locale,
+    },
+  );
+  return inputs.map((input, index) =>
+    buildUnifiedPlaceCard({
+      ...input,
+      reason: input.reason?.trim() || reasons[index],
+    }),
+  );
 }

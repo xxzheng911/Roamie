@@ -43,7 +43,7 @@ import type { PlaceResult } from "@/lib/place-result";
 import { beginPlacesFlow, endPlacesFlow, placesStatsPayload } from "@/lib/places-api-stats";
 import { homeNearbySearchRadiusMeters } from "@/lib/search-radius";
 import { withSearchTimeout } from "@/lib/search-timeout";
-import { buildUnifiedPlaceCard } from "@/lib/unified-place-card";
+import { buildUnifiedPlaceCards } from "@/lib/unified-place-card";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import type { SavedPlace } from "@/lib/places-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -469,17 +469,18 @@ function buildHomeNearbyCards(
     period: HomeNearbyPeriod;
   },
 ): HomeNearbyPick[] {
-  return places.map((place) => {
-    const categoryId = inferHomePickCategoryId(place, ctx.period);
-    const card = buildUnifiedPlaceCard({
+  return buildUnifiedPlaceCards(
+    places.map((place) => ({
       place,
-      categoryId,
+      categoryId: inferHomePickCategoryId(place, ctx.period),
       userLocation: ctx.userLocation,
       weather: ctx.weather,
       userProfile: ctx.reasonProfile,
       locale: ctx.locale,
-    });
-    return mergePlaceRuntimeCache(place.id, {
+    })),
+  ).map((card) => {
+    const categoryId = inferHomePickCategoryId(card, ctx.period);
+    return mergePlaceRuntimeCache(card.id, {
       ...card,
       categoryId,
     }) as HomeNearbyPick;
