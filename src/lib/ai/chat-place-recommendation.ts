@@ -512,7 +512,7 @@ async function runPlaceSearch(
   attempt: SearchAttempt,
   caller = "chat.runPlaceSearch",
   extras?: PlaceSearchExtras & { radius?: number },
-): Promise<{ places: PlaceResult[]; error: string | null }> {
+): Promise<{ places: PlaceResult[]; error: string | null; rawCount: number }> {
   const ctxPayload = extras?.searchContext
     ? placesSearchContextPayload(extras.searchContext, extras.intentCategory)
     : {};
@@ -564,7 +564,7 @@ async function runPlaceSearch(
     skipRetail: skipRetail ? 1 : 0,
   });
   logChatPlacesRawCount(places.length);
-  return { places, error: result.error ?? null };
+  return { places, error: result.error ?? null, rawCount: rawPlaces.length };
 }
 
 /** 依序嘗試多組 query，回傳第一組有結果的 places */
@@ -620,16 +620,34 @@ export async function fetchPlacesWithSearchAttemptsMerged(
   locale: Locale,
   attempts: SearchAttempt[],
   caller = "chat.fetchPlacesWithSearchAttemptsMerged",
-  opts?: { minResults?: number; maxResults?: number; extras?: PlaceSearchExtras },
+  opts?: {
+    minResults?: number;
+    maxResults?: number;
+    extras?: PlaceSearchExtras;
+    onAttemptDiagnostics?: (diagnostics: {
+      attemptsVisited: number;
+      requestsSent: number;
+      rateLimitedBeforeRequest: boolean;
+      rawCount: number;
+    }) => void;
+  },
 ): Promise<PlaceResult[]> {
   const minResults = opts?.minResults ?? 3;
   const maxResults = opts?.maxResults ?? 24;
   const extras = opts?.extras;
   const seen = new Set<string>();
   const merged: PlaceResult[] = [];
+  let attemptsVisited = 0;
+  let requestsSent = 0;
+  let rateLimitedBeforeRequest = false;
+  let rawCount = 0;
 
   for (const attempt of attempts) {
-    if (isPlacesRateLimited()) break;
+    attemptsVisited += 1;
+    if (isPlacesRateLimited()) {
+      rateLimitedBeforeRequest = true;
+      break;
+    }
     if (attempt.mode === "text") {
       logChatTextSearchRequest(attempt.query);
     }
@@ -643,7 +661,8 @@ export async function fetchPlacesWithSearchAttemptsMerged(
       destinationName: extras?.searchContext?.destinationName,
     });
     try {
-      const { places, error } = await runPlaceSearch(
+      requestsSent += 1;
+      const { places, error, rawCount: attemptRawCount } = await runPlaceSearch(
         searchPlaces,
         lat,
         lng,
@@ -652,6 +671,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
         caller,
         extras,
       );
+      rawCount += attemptRawCount;
       if (notePlacesSearchRateLimit(error)) break;
       for (const place of places) {
         const id = (place.id ?? place.name ?? "").trim();
@@ -673,6 +693,12 @@ export async function fetchPlacesWithSearchAttemptsMerged(
     extras?.skipExcludedRetailFilter === true ||
     extras?.intentCategory === "shopping";
   const sliced = merged.slice(0, maxResults);
+  opts?.onAttemptDiagnostics?.({
+    attemptsVisited,
+    requestsSent,
+    rateLimitedBeforeRequest,
+    rawCount,
+  });
   return skipRetail ? sliced : filterExcludedRetailPlaces(sliced);
 }
 

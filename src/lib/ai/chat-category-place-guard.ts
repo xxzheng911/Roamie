@@ -29,6 +29,12 @@ const CAFE_TYPES = new Set([
 const CAFE_NAME_RE =
   /(?:咖啡|珈琲|カフェ|café|cafe|coffee|espresso|roaster|roastery|焙茶)/i;
 
+const CAFE_GENERIC_TYPES = new Set([
+  "establishment",
+  "point_of_interest",
+  "food",
+]);
+
 /**
  * Shopping Type Alias Mapping — accept by alias / substring metadata,
  * not only exact Google type strings.
@@ -274,6 +280,9 @@ export function isCafePlace(place: PlaceResult): boolean {
   ].filter(Boolean);
 
   if (types.some((t) => CAFE_TYPES.has(t))) return true;
+
+  // Specific non-cafe provider metadata is stronger than a cafe-like name.
+  if (types.some((t) => !CAFE_GENERIC_TYPES.has(t))) return false;
 
   const name = (place.name ?? "").trim();
   const address = (place.address ?? "").trim();

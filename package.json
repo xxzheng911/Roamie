@@ -83,6 +83,7 @@
     "verify:recommendation-scope-food-intent": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-scope-food-intent.mjs",
     "verify:recommendation-search-center": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-recommendation-search-center.mjs",
     "verify:cafe-place-recommendation-route": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-cafe-place-recommendation-route.mjs",
+    "verify:destination-category-place-search-telemetry": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-destination-category-place-search-telemetry.mjs",
     "verify:no-more-recommendations": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-no-more-recommendations-message.mjs",
     "verify:shopping-place-cards-session": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-shopping-place-cards-session.mjs",
     "verify:shopping-followup-query-queue": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-shopping-followup-query-queue.mjs",

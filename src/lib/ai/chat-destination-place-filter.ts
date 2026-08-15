@@ -139,6 +139,11 @@ export function isSubPlaceOfDestination(
   if (isExcludedInternalFacilityType(place)) return true;
   if (INTERNAL_SERVICE_NAME_RE.test(name)) return true;
 
+  // A city / administrative region / country is a search scope, not a parent
+  // venue. A legitimate business may include that scope in its own name
+  // without being an internal sub-place.
+  if (profile?.kind !== "landmark" && !profile?.parentLandmark) return false;
+
   const destNorm = normalizePlaceName(destination);
   const nameNorm = normalizePlaceName(name);
   if (!destNorm || !nameNorm.includes(destNorm)) return false;
@@ -159,6 +164,46 @@ export function isSubPlaceOfDestination(
     ) || /(店|餐|咖啡|小吃|賣|攤)/.test(name);
 
   return isMinorCommercial;
+}
+
+export type ChatCategoryBaseEligibilityRejectionReason =
+  | "missing_identity"
+  | "destination_subplace"
+  | "open_status"
+  | "school_or_office"
+  | "permanently_closed";
+
+export type ChatCategoryBaseEligibilityRejectionCounts = Record<
+  ChatCategoryBaseEligibilityRejectionReason,
+  number
+>;
+
+function createBaseEligibilityRejectionCounts(): ChatCategoryBaseEligibilityRejectionCounts {
+  return {
+    missing_identity: 0,
+    destination_subplace: 0,
+    open_status: 0,
+    school_or_office: 0,
+    permanently_closed: 0,
+  };
+}
+
+export function resolveChatCategoryBaseEligibilityRejection(
+  place: PlaceResult,
+  opts: {
+    destination: string;
+    profile?: DestinationPlaceSearchProfile;
+    requireOpenNow: boolean;
+  },
+): ChatCategoryBaseEligibilityRejectionReason | null {
+  if (!place.name?.trim() || !place.id?.trim()) return "missing_identity";
+  if (isSubPlaceOfDestination(place, opts.destination, opts.profile)) {
+    return "destination_subplace";
+  }
+  if (shouldDropForOpenStatus(place, opts.requireOpenNow)) return "open_status";
+  if (isSchoolOrOffice(place)) return "school_or_office";
+  if (isPermanentlyClosed(place)) return "permanently_closed";
+  return null;
 }
 
 function passesStrictTier(place: PlaceResult): boolean {
@@ -321,20 +366,32 @@ export function filterChatCategoryPlaces(
     profile?: DestinationPlaceSearchProfile;
     requireOpenNow?: boolean;
     userText?: string;
+    onDiagnostics?: (counts: {
+      afterCanonicalIdCount: number;
+      afterBaseEligibilityCount: number;
+      afterCategoryGuardCount: number;
+      afterQualityCount: number;
+      baseEligibilityRejections: ChatCategoryBaseEligibilityRejectionCounts;
+    }) => void;
   },
 ): PlaceResult[] {
   const requireOpenNow = opts.requireOpenNow ?? userRequiresOpenNow(opts.userText);
   const raw = dedupeByPlaceId(places);
   logChatPlacesRawCount(raw.length);
+  const afterCanonicalIdCount = raw.filter((place) => Boolean(place.id?.trim())).length;
 
+  const baseEligibilityRejections = createBaseEligibilityRejectionCounts();
   let eligible = raw.filter((place) => {
-    if (!place.name?.trim() || !place.id?.trim()) return false;
-    if (isSubPlaceOfDestination(place, opts.destination, opts.profile)) return false;
-    if (shouldDropForOpenStatus(place, requireOpenNow)) return false;
-    if (isSchoolOrOffice(place)) return false;
-    if (isPermanentlyClosed(place)) return false;
-    return true;
+    const reason = resolveChatCategoryBaseEligibilityRejection(place, {
+      destination: opts.destination,
+      profile: opts.profile,
+      requireOpenNow,
+    });
+    if (!reason) return true;
+    baseEligibilityRejections[reason] += 1;
+    return false;
   });
+  const afterBaseEligibilityCount = eligible.length;
 
   if (opts.intent === "cafe") {
     eligible = filterPlacesByCafeGuard(eligible);
@@ -343,6 +400,7 @@ export function filterChatCategoryPlaces(
   } else if (opts.intent === "restaurant") {
     eligible = eligible.filter((p) => isAcceptableRestaurantPlace(p));
   }
+  const afterCategoryGuardCount = eligible.length;
 
   const relaxed = eligible.filter(
     opts.intent === "restaurant"
@@ -372,6 +430,14 @@ export function filterChatCategoryPlaces(
   const final = picked
     .sort((a, b) => rankChatDestinationPlace(b) - rankChatDestinationPlace(a))
     .slice(0, poolCap);
+
+  opts.onDiagnostics?.({
+    afterCanonicalIdCount,
+    afterBaseEligibilityCount,
+    afterCategoryGuardCount,
+    afterQualityCount: final.length,
+    baseEligibilityRejections,
+  });
 
   logChatPlacesFinalCount(final.length);
   return final;

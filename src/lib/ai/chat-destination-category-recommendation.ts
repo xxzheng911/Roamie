@@ -100,6 +100,11 @@ import {
   logDestinationScopeBlocked,
   logUnexpectedPlacesCall,
 } from "@/lib/ai/destination-scope";
+import {
+  createDestinationCategoryPlaceSearchDiagnostics,
+  logDestinationCategoryPlaceSearchSummary,
+  type DestinationCategoryPlaceSearchDiagnostics,
+} from "@/lib/ai/destination-category-place-search-telemetry";
 
 const PER_GROUP_TARGET = 3;
 const SINGLE_INTENT_MAX = 6;
@@ -141,6 +146,7 @@ async function searchCategoryPlaces(params: {
   profile?: ReturnType<typeof classifyDestinationForPlaceSearch>;
   searchContext?: ChatPlaceSearchContext;
   mealIntent?: ParsedMealIntent | null;
+  diagnostics?: DestinationCategoryPlaceSearchDiagnostics;
 }): Promise<PlaceResult[]> {
   const {
     intent,
@@ -155,6 +161,7 @@ async function searchCategoryPlaces(params: {
     profile,
     searchContext,
     mealIntent,
+    diagnostics,
   } = params;
 
   const mealAttempts =
@@ -214,8 +221,14 @@ async function searchCategoryPlaces(params: {
   const searchExtras = searchContext
     ? { searchContext, intentCategory: intent }
     : undefined;
+  let rawCount = 0;
 
   const runSearch = async (attempts: typeof primary, isFallback: boolean) => {
+    for (const attempt of attempts) {
+      for (const type of attempt.includedTypes ?? []) {
+        diagnostics?.includedTypes.add(type);
+      }
+    }
     for (const attempt of attempts) {
       logChatPlaceQuery(intent, attempt.query, isFallback);
     }
@@ -232,10 +245,22 @@ async function searchCategoryPlaces(params: {
         minResults: intent === "shopping" ? 2 : minResults,
         maxResults: intent === "shopping" ? SHOPPING_RESULTS_PER_QUERY : 24,
         extras: searchExtras,
+        onAttemptDiagnostics: (round) => {
+          rawCount += round.rawCount;
+          if (!diagnostics) return;
+          diagnostics.attemptCount += round.attemptsVisited;
+          diagnostics.requestsSent += round.requestsSent;
+          diagnostics.rateLimitedBeforeRequest ||= round.rateLimitedBeforeRequest;
+          diagnostics.rawCount += round.rawCount;
+        },
       },
     );
     places = filterPlacesByDestinationGuard(places, destination, userText);
+    if (diagnostics) {
+      diagnostics.afterDestinationFilterCount += places.length;
+    }
     places = filterExcludedPlaceIds(places, excludePlaceIds);
+    if (diagnostics) diagnostics.afterExclusionCount += places.length;
     // Shopping / cafe use dedicated category guards — do not run attraction filters
     if (intent !== "cafe" && intent !== "shopping") {
       places = filterPlacesForAttractionRecommendation(places, {
@@ -250,6 +275,23 @@ async function searchCategoryPlaces(params: {
       destination,
       profile,
       userText,
+      onDiagnostics: (counts) => {
+        if (!diagnostics) return;
+        diagnostics.afterCanonicalIdCount += counts.afterCanonicalIdCount;
+        diagnostics.afterBaseEligibilityCount += counts.afterBaseEligibilityCount;
+        diagnostics.afterCategoryGuardCount += counts.afterCategoryGuardCount;
+        diagnostics.afterQualityCount += counts.afterQualityCount;
+        diagnostics.baseEligibilityRejections.missing_identity +=
+          counts.baseEligibilityRejections.missing_identity;
+        diagnostics.baseEligibilityRejections.destination_subplace +=
+          counts.baseEligibilityRejections.destination_subplace;
+        diagnostics.baseEligibilityRejections.open_status +=
+          counts.baseEligibilityRejections.open_status;
+        diagnostics.baseEligibilityRejections.school_or_office +=
+          counts.baseEligibilityRejections.school_or_office;
+        diagnostics.baseEligibilityRejections.permanently_closed +=
+          counts.baseEligibilityRejections.permanently_closed;
+      },
     });
     places = rankCategoryPlaces(places, lat, lng);
     if (mealIntent && intent === "restaurant") {
@@ -303,7 +345,6 @@ async function searchCategoryPlaces(params: {
     return out;
   };
 
-  let rawCount = 0;
   let places: PlaceResult[] = [];
 
   if (intent === "shopping" && shoppingSeed) {
@@ -314,7 +355,6 @@ async function searchCategoryPlaces(params: {
       const attempt = attempts[i]!;
       const isFallback = i >= shoppingSeed.primary.length;
       const round = await runSearch([attempt], isFallback);
-      rawCount += round.length;
       places = mergeUnique(places, round);
       logChatPlaceResults(intent, places.length);
     }
@@ -345,6 +385,18 @@ async function searchCategoryPlaces(params: {
   logChatPlaceResults(intent, places.length);
 
   if (places.length >= minResults) {
+    if (placeReq) {
+      logPlaceRecommendationSearchResult({
+        rawCount,
+        typeAccepted: places.length,
+        subtypeAccepted: placeReq.subtypes.length
+          ? places.filter((p) => placeMatchesCuisineRelevance(p, placeReq.subtypes)).length
+          : places.length,
+        qualityRejected: 0,
+        duplicateRejected: 0,
+        finalCount: places.length,
+      });
+    }
     return places;
   }
 
@@ -581,6 +633,7 @@ export async function buildDestinationCategoryRecommendations(params: {
     }> = [];
 
     for (const intent of searchIntents) {
+      const searchDiagnostics = createDestinationCategoryPlaceSearchDiagnostics(label, intent);
       let places = await searchCategoryPlaces({
         intent,
         destination: label,
@@ -594,6 +647,7 @@ export async function buildDestinationCategoryRecommendations(params: {
         profile,
         searchContext,
         mealIntent,
+        diagnostics: searchDiagnostics,
       });
 
       places = filterAlreadyRecommendedPlaces(places, {
@@ -639,6 +693,9 @@ export async function buildDestinationCategoryRecommendations(params: {
         intent,
         userText,
       );
+      searchDiagnostics.renderableCount = recommendations.length;
+      searchDiagnostics.finalRecommendationCount = recommendations.length;
+      logDestinationCategoryPlaceSearchSummary(searchDiagnostics);
 
       if (recommendations.length > 0) {
         logChatPlacesResponse(recommendations.length, `category_${intent}`);
