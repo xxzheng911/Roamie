@@ -5,6 +5,7 @@ import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
 import {
   CHAT_PLACE_CATEGORY_LABELS,
   buildChatPlaceSearchAttempts,
+  buildChatPlaceSearchAttemptsForScope,
   logChatPlaceCardsRendered,
   logChatPlaceContext,
   logChatPlaceFallback,
@@ -67,7 +68,10 @@ import {
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { buildNamedFallbackRecommendations } from "@/lib/ai/must-visit-places";
 import {
+  filterPlacesByDestinationArea,
+  filterPlacesByDestinationParentCity,
   filterPlacesByDestinationGuard,
+  matchPlaceToDestinationArea,
   type ChatPlaceSearchContext,
 } from "@/lib/ai/chat-place-search-context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
@@ -111,6 +115,38 @@ const PER_GROUP_TARGET = 3;
 const SINGLE_INTENT_MAX = 6;
 /** Larger pool so「還有嗎」can continue from cursor without re-search */
 const SINGLE_INTENT_POOL_MAX = 24;
+
+export type DestinationAreaSourceScope =
+  | "area_primary"
+  | "area_relaxed"
+  | "city_primary"
+  | "city_relaxed";
+
+export type DestinationAreaCandidate = {
+  place: PlaceResult;
+  sourceScope: DestinationAreaSourceScope;
+  sourceAttempt: string;
+  areaMatched: boolean;
+  parentCityMatched: boolean;
+};
+
+export function selectAreaFirstCandidates(
+  areaCandidates: DestinationAreaCandidate[],
+  cityCandidates: DestinationAreaCandidate[],
+  target: number,
+): DestinationAreaCandidate[] {
+  const seen = new Set<string>();
+  const selected: DestinationAreaCandidate[] = [];
+  const append = (candidate: DestinationAreaCandidate) => {
+    const identity = (candidate.place.id ?? candidate.place.name ?? "").trim();
+    if (!identity || seen.has(identity) || selected.length >= target) return;
+    seen.add(identity);
+    selected.push(candidate);
+  };
+  areaCandidates.forEach(append);
+  cityCandidates.forEach(append);
+  return selected;
+}
 
 function rankCategoryPlaces(
   places: PlaceResult[],
@@ -225,7 +261,12 @@ async function searchCategoryPlaces(params: {
     : undefined;
   let rawCount = 0;
 
-  const runSearch = async (attempts: typeof primary, isFallback: boolean) => {
+  const runSearch = async (
+    attempts: typeof primary,
+    isFallback: boolean,
+    guardScope?: "area" | "city",
+  ) => {
+    let roundRawCount = 0;
     for (const attempt of attempts) {
       for (const type of attempt.includedTypes ?? []) {
         diagnostics?.includedTypes.add(type);
@@ -249,6 +290,7 @@ async function searchCategoryPlaces(params: {
         extras: searchExtras,
         onAttemptDiagnostics: (round) => {
           rawCount += round.rawCount;
+          roundRawCount += round.rawCount;
           if (!diagnostics) return;
           diagnostics.attemptCount += round.attemptsVisited;
           diagnostics.requestsSent += round.requestsSent;
@@ -257,11 +299,17 @@ async function searchCategoryPlaces(params: {
         },
       },
     );
-    const destinationGuard =
-      isFallback && destinationAreaScope
-        ? destinationAreaScope.parentCity
-        : destination;
-    places = filterPlacesByDestinationGuard(places, destinationGuard, userText);
+    if (guardScope === "area" && destinationAreaScope) {
+      places = filterPlacesByDestinationArea(places, destinationAreaScope);
+    } else if (guardScope === "city" && destinationAreaScope) {
+      places = filterPlacesByDestinationParentCity(places, destinationAreaScope);
+    } else {
+      const destinationGuard =
+        isFallback && destinationAreaScope
+            ? destinationAreaScope.parentCity
+            : destination;
+      places = filterPlacesByDestinationGuard(places, destinationGuard, userText);
+    }
     if (diagnostics) {
       diagnostics.afterDestinationFilterCount += places.length;
     }
@@ -336,7 +384,7 @@ async function searchCategoryPlaces(params: {
       // Keep only cuisine matches — never substitute roast-duck / breakfast for sukiyaki.
       places = matched;
     }
-    return places;
+    return { places, rawCount: roundRawCount };
   };
 
   const mergeUnique = (base: PlaceResult[], more: PlaceResult[]): PlaceResult[] => {
@@ -361,7 +409,7 @@ async function searchCategoryPlaces(params: {
       const attempt = attempts[i]!;
       const isFallback = i >= shoppingSeed.primary.length;
       const round = await runSearch([attempt], isFallback);
-      places = mergeUnique(places, round);
+      places = mergeUnique(places, round.places);
       logChatPlaceResults(intent, places.length);
     }
     const byType: Record<string, number> = {};
@@ -387,7 +435,88 @@ async function searchCategoryPlaces(params: {
     return places;
   }
 
-  places = await runSearch(primary, false);
+  if (destinationAreaScope && intent !== "shopping" && !mealAttempts) {
+    const areaAttempts = buildChatPlaceSearchAttemptsForScope(
+      intent,
+      destinationAreaScope.displayLabel,
+      userText,
+    );
+    const cityAttempts = buildChatPlaceSearchAttemptsForScope(
+      intent,
+      destinationAreaScope.parentCity,
+      userText,
+    );
+    const tagCandidates = (
+      roundPlaces: PlaceResult[],
+      sourceScope: DestinationAreaSourceScope,
+      attempts: SearchAttempt[],
+    ): DestinationAreaCandidate[] =>
+      roundPlaces.map((place) => ({
+        place,
+        sourceScope,
+        sourceAttempt: attempts.map((attempt) => attempt.query).join("|"),
+        ...matchPlaceToDestinationArea(place, destinationAreaScope),
+      }));
+
+    const areaPrimary = await runSearch(areaAttempts.primary, false, "area");
+    const areaRelaxed =
+      areaPrimary.places.length < minResults && areaAttempts.fallback.length > 0
+        ? await runSearch(areaAttempts.fallback, true, "area")
+        : { places: [] as PlaceResult[], rawCount: 0 };
+    const areaCandidates = selectAreaFirstCandidates(
+      tagCandidates(areaPrimary.places, "area_primary", areaAttempts.primary),
+      tagCandidates(areaRelaxed.places, "area_relaxed", areaAttempts.fallback),
+      minResults,
+    );
+    const cityFallbackTriggered = areaCandidates.length < minResults;
+    const cityPrimary = cityFallbackTriggered
+      ? await runSearch(cityAttempts.primary, true, "city")
+      : { places: [] as PlaceResult[], rawCount: 0 };
+    const cityPrimaryCandidates = tagCandidates(
+      cityPrimary.places,
+      "city_primary",
+      cityAttempts.primary,
+    );
+    const cityRelaxed =
+      cityFallbackTriggered &&
+      areaCandidates.length + cityPrimaryCandidates.length < minResults &&
+      cityAttempts.fallback.length > 0
+        ? await runSearch(cityAttempts.fallback, true, "city")
+        : { places: [] as PlaceResult[], rawCount: 0 };
+    const cityCandidates = [
+      ...cityPrimaryCandidates,
+      ...tagCandidates(cityRelaxed.places, "city_relaxed", cityAttempts.fallback),
+    ];
+    const selected = selectAreaFirstCandidates(areaCandidates, cityCandidates, minResults);
+    logAiPipeline("[DESTINATION_AREA_SELECTION_SUMMARY]", {
+      input: destination,
+      parentCity: destinationAreaScope.parentCity,
+      area: destinationAreaScope.area,
+      areaPrimaryRawCount: areaPrimary.rawCount,
+      areaPrimaryUsableCount: areaPrimary.places.length,
+      areaRelaxedRawCount: areaRelaxed.rawCount,
+      areaRelaxedUsableCount: areaRelaxed.places.length,
+      cityFallbackTriggered,
+      cityPrimaryRawCount: cityPrimary.rawCount,
+      cityPrimaryUsableCount: cityPrimary.places.length,
+      cityRelaxedRawCount: cityRelaxed.rawCount,
+      cityRelaxedUsableCount: cityRelaxed.places.length,
+      finalCount: selected.length,
+      finalAreaMatchCount: selected.filter((candidate) => candidate.areaMatched).length,
+      finalCityFallbackCount: selected.filter((candidate) =>
+        candidate.sourceScope.startsWith("city_"),
+      ).length,
+      finalPlaces: selected.map((candidate) => ({
+        placeId: candidate.place.id,
+        sourceScope: candidate.sourceScope,
+        areaMatched: candidate.areaMatched,
+        parentCityMatched: candidate.parentCityMatched,
+      })),
+    });
+    return selected.map((candidate) => candidate.place);
+  }
+
+  places = (await runSearch(primary, false)).places;
   logChatPlaceResults(intent, places.length);
 
   if (places.length >= minResults) {
@@ -410,7 +539,7 @@ async function searchCategoryPlaces(params: {
     for (const attempt of fallback) {
       logChatPlaceFallback(intent, attempt.query);
     }
-    const fallbackPlaces = await runSearch(fallback, true);
+    const fallbackPlaces = (await runSearch(fallback, true)).places;
     logChatPlaceResults(intent, fallbackPlaces.length);
     if (fallbackPlaces.length > places.length) {
       places = fallbackPlaces;
@@ -419,7 +548,7 @@ async function searchCategoryPlaces(params: {
 
   if (places.length < minResults && intent === "cafe") {
     const relaxed = buildCafeRelaxedSearchAttempts(destination);
-    const more = await runSearch(relaxed, true);
+    const more = (await runSearch(relaxed, true)).places;
     if (more.length > places.length) {
       places = more;
     }

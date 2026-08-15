@@ -178,17 +178,25 @@ export function buildChatPlaceSearchAttempts(
 ): { primary: SearchAttempt[]; fallback: SearchAttempt[] } {
   const areaScope = resolveDestinationAreaScope(destination);
   if (areaScope) {
-    const areaAttempts = buildChatPlaceSearchAttemptsBase(intent, areaScope.displayLabel, userText);
-    const cityAttempts = buildChatPlaceSearchAttemptsBase(intent, areaScope.parentCity, userText);
+    const areaAttempts = buildChatPlaceSearchAttemptsForScope(
+      intent,
+      areaScope.displayLabel,
+      userText,
+    );
+    const cityAttempts = buildChatPlaceSearchAttemptsForScope(
+      intent,
+      areaScope.parentCity,
+      userText,
+    );
     return {
       primary: areaAttempts.primary,
       fallback: [...areaAttempts.fallback, ...cityAttempts.primary, ...cityAttempts.fallback],
     };
   }
-  return buildChatPlaceSearchAttemptsBase(intent, destination, userText);
+  return buildChatPlaceSearchAttemptsForScope(intent, destination, userText);
 }
 
-function buildChatPlaceSearchAttemptsBase(
+export function buildChatPlaceSearchAttemptsForScope(
   intent: ChatPlaceCategoryIntent,
   destination: string,
   userText = "",

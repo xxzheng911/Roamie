@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { resolveDestinationAreaScope } from "../src/lib/ai/destination-travel-profile.ts";
 import { parsePlaceRecommendationIntent } from "../src/lib/ai/place-recommendation-intent/parse.ts";
 import { buildChatPlaceSearchAttempts } from "../src/lib/ai/chat-place-intent.ts";
+import { matchPlaceToDestinationArea } from "../src/lib/ai/chat-place-search-context.ts";
+import {
+  selectAreaFirstCandidates,
+} from "../src/lib/ai/chat-destination-category-recommendation.ts";
 
 const fixtures = [
   ["台南安平有什麼咖啡廳推薦", "台南", "安平"],
@@ -41,6 +45,71 @@ const firstCityFallback = attempts.fallback.findIndex(
   (attempt) => attempt.query.includes("台南") && !attempt.query.includes("安平"),
 );
 assert.ok(firstCityFallback >= 0, "parent city fallback must exist after area attempts");
+
+const anpingScope = resolveDestinationAreaScope("台南安平");
+assert.ok(anpingScope);
+const place = (id, address) => ({ id, name: `Cafe ${id}`, address });
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("traditional", "台南市安平區安北路 1 號"), anpingScope),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("variant", "臺南市安平區安北路 2 號"), anpingScope),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(
+    place("english", "Anping District, Tainan City, Taiwan"),
+    anpingScope,
+  ),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("city", "台南市中西區正興街 3 號"), anpingScope),
+  { areaMatched: false, parentCityMatched: true },
+);
+
+const scoped = (id, sourceScope, areaMatched) => ({
+  place: place(id, areaMatched ? "台南市安平區" : "台南市中西區"),
+  sourceScope,
+  sourceAttempt: `${sourceScope} query`,
+  areaMatched,
+  parentCityMatched: true,
+});
+const twoAreaFiveCity = selectAreaFirstCandidates(
+  [scoped("area-1", "area_primary", true), scoped("area-2", "area_relaxed", true)],
+  Array.from({ length: 5 }, (_, index) => scoped(`city-${index}`, "city_primary", false)),
+  3,
+);
+assert.deepEqual(
+  twoAreaFiveCity.map((candidate) => candidate.place.id),
+  ["area-1", "area-2", "city-0"],
+);
+assert.deepEqual(
+  selectAreaFirstCandidates(
+    [
+      scoped("area-1", "area_primary", true),
+      scoped("area-2", "area_primary", true),
+      scoped("area-3", "area_relaxed", true),
+    ],
+    [scoped("city-1", "city_primary", false)],
+    3,
+  ).map((candidate) => candidate.sourceScope),
+  ["area_primary", "area_primary", "area_relaxed"],
+);
+assert.deepEqual(
+  selectAreaFirstCandidates(
+    [],
+    [
+      scoped("city-1", "city_primary", false),
+      scoped("city-2", "city_primary", false),
+      scoped("city-3", "city_relaxed", false),
+    ],
+    3,
+  ).map((candidate) => candidate.place.id),
+  ["city-1", "city-2", "city-3"],
+);
+assert.equal(twoAreaFiveCity[0].place.id, "area-1", "canonical Google identity changed");
 
 const canonicalPlace = { id: "ChIJcanonical", googlePlaceId: "ChIJcanonical" };
 assert.deepEqual(canonicalPlace, { id: "ChIJcanonical", googlePlaceId: "ChIJcanonical" });
