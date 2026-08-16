@@ -4,6 +4,7 @@
  */
 import type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
+import type { RecommendationSearchScope } from "@/lib/ai/conversation-recommendation-session";
 
 export type RecommendationIntent =
   | "restaurant"
@@ -33,6 +34,9 @@ export type ActiveRecommendationContext = {
   countryCode?: string;
 
   resolvedSearchCity?: string;
+  parentCity?: string;
+  area?: string;
+  searchScope?: RecommendationSearchScope;
   latitude?: number;
   longitude?: number;
   radius?: number;

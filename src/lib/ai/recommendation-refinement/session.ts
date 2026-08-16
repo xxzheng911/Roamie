@@ -60,6 +60,9 @@ export function ensureActiveRecommendationContext(
     }>;
     usedQueries?: string[];
     resolvedSearchCity?: string;
+    parentCity?: string;
+    area?: string;
+    searchScope?: import("@/lib/ai/conversation-recommendation-session").RecommendationSearchScope;
     latitude?: number;
     longitude?: number;
     radius?: number;
@@ -98,6 +101,9 @@ export function ensureActiveRecommendationContext(
         existing.resolvedSearchCity ||
         params.resolvedSearchCity ||
         scope.activeSearchCity,
+      parentCity: existing.parentCity ?? params.parentCity,
+      area: existing.area ?? params.area,
+      searchScope: existing.searchScope ?? params.searchScope,
       latitude: existing.latitude ?? params.latitude ?? scope.searchCentroid.lat,
       longitude: existing.longitude ?? params.longitude ?? scope.searchCentroid.lng,
       radius: existing.radius ?? params.radius ?? scope.searchRadius,
@@ -117,6 +123,9 @@ export function ensureActiveRecommendationContext(
     destinationKey: entity?.name ?? params.destination,
     countryCode: entity?.country,
     resolvedSearchCity: params.resolvedSearchCity ?? scope.activeSearchCity,
+    parentCity: params.parentCity,
+    area: params.area,
+    searchScope: params.searchScope,
     latitude: params.latitude ?? scope.searchCentroid.lat,
     longitude: params.longitude ?? scope.searchCentroid.lng,
     radius: params.radius ?? scope.searchRadius,
@@ -145,6 +154,9 @@ export function applyRefinementPatchToSession(
           places: session.recommendedPlaces,
           usedQueries: session.recommendationSession?.usedQueries,
           resolvedSearchCity: session.recommendationSession?.activeSearchCity,
+          parentCity: session.recommendationSession?.parentCity,
+          area: session.recommendationSession?.area,
+          searchScope: session.recommendationSession?.searchScope,
           latitude: session.recommendationSession?.searchCentroid?.lat,
           longitude: session.recommendationSession?.searchCentroid?.lng,
           radius: session.recommendationSession?.searchRadius,
@@ -209,6 +221,9 @@ export function restoreActiveRecommendationContextFromWorkspace(params: {
         destinationName: rec.destination,
         destinationDisplayName: rec.searchRegionLabel ?? rec.destination,
         resolvedSearchCity: rec.activeSearchCity,
+        parentCity: rec.parentCity,
+        area: rec.area,
+        searchScope: rec.searchScope,
         latitude: rec.searchCentroid?.lat,
         longitude: rec.searchCentroid?.lng,
         radius: rec.searchRadius,

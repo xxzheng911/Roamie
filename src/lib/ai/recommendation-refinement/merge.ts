@@ -58,6 +58,9 @@ export function createActiveRecommendationContext(params: {
   destinationKey?: string;
   countryCode?: string;
   resolvedSearchCity?: string;
+  parentCity?: string;
+  area?: string;
+  searchScope?: import("@/lib/ai/conversation-recommendation-session").RecommendationSearchScope;
   latitude?: number;
   longitude?: number;
   radius?: number;
@@ -76,6 +79,9 @@ export function createActiveRecommendationContext(params: {
     destinationKey: params.destinationKey,
     countryCode: params.countryCode,
     resolvedSearchCity: params.resolvedSearchCity?.trim() || undefined,
+    parentCity: params.parentCity?.trim() || undefined,
+    area: params.area?.trim() || undefined,
+    searchScope: params.searchScope,
     latitude: params.latitude,
     longitude: params.longitude,
     radius: params.radius,

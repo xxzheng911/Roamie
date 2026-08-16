@@ -18,6 +18,7 @@ import {
 } from "../src/lib/ai/recommendation-refinement/index.ts";
 import { resolveChatIntent } from "../src/lib/ai/chat-dining-flow.ts";
 import { shouldUpsertDraftWorkspace } from "../src/lib/conversation-workspace/sync.ts";
+import { createRecommendationSession } from "../src/lib/ai/conversation-recommendation-session.ts";
 
 function baseRestaurantSession(overrides = {}) {
   const ctx = createActiveRecommendationContext({
@@ -235,6 +236,53 @@ console.log("=== recommendation refinement acceptance ===\n");
   assert.equal(isMoreRecommendationResultsText("還有嗎"), true);
   assert.ok(cuisineSearchTokens("sukiyaki").some((t) => /壽喜|すき|sukiyaki/i.test(t)));
   console.log("  ✓ helpers: more-results + cuisine tokens");
+}
+
+// Structured area scope must survive session persistence and continuation restore.
+{
+  const { session: recommendationSession } = createRecommendationSession({
+    destination: "台北信義",
+    parentCity: "台北",
+    area: "信義",
+    searchScope: "area",
+    topic: "restaurant",
+    pool: [],
+    activeSearchCity: "台北",
+  });
+  assert.equal(recommendationSession.parentCity, "台北");
+  assert.equal(recommendationSession.area, "信義");
+  assert.equal(recommendationSession.searchScope, "area");
+
+  const restored = restoreActiveRecommendationContextFromWorkspace({
+    session: {
+      ...baseRestaurantSession(),
+      activeRecommendationContext: undefined,
+      recommendationSession,
+    },
+  });
+  const ctx = restored.activeRecommendationContext;
+  assert.equal(ctx?.parentCity, "台北");
+  assert.equal(ctx?.area, "信義");
+  assert.equal(ctx?.searchScope, "area");
+  assert.ok(
+    buildRefinementSearchAttempts(ctx, `${ctx.parentCity}${ctx.area}`).every((attempt) =>
+      attempt.query.includes("台北信義"),
+    ),
+  );
+
+  const replacement = createActiveRecommendationContext({
+    destinationName: "高雄鼓山",
+    resolvedSearchCity: "高雄",
+    parentCity: "高雄",
+    area: "鼓山",
+    searchScope: "area",
+    intent: "restaurant",
+  });
+  assert.deepEqual(
+    [replacement.parentCity, replacement.area, replacement.searchScope],
+    ["高雄", "鼓山", "area"],
+  );
+  console.log("  ✓ structured area scope persists, restores, and replaces explicitly");
 }
 
   // Extra: attraction / nightlife refinements

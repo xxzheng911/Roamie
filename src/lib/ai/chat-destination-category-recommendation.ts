@@ -112,43 +112,17 @@ import {
 } from "@/lib/ai/destination-category-place-search-telemetry";
 import { resolveChatShortcutContext } from "@/lib/ai/chat-intent";
 import { logShortcutRecommendationSummary } from "@/lib/ai/shortcut-recommendation-telemetry";
+import {
+  selectAreaFirstCandidates,
+  type DestinationAreaCandidate,
+  type DestinationAreaSourceScope,
+} from "@/lib/ai/destination-area-selection";
+export { selectAreaFirstCandidates } from "@/lib/ai/destination-area-selection";
 
 const PER_GROUP_TARGET = 3;
 const SINGLE_INTENT_MAX = 6;
 /** Larger pool so「還有嗎」can continue from cursor without re-search */
 const SINGLE_INTENT_POOL_MAX = 24;
-
-export type DestinationAreaSourceScope =
-  | "area_primary"
-  | "area_relaxed"
-  | "city_primary"
-  | "city_relaxed";
-
-export type DestinationAreaCandidate = {
-  place: PlaceResult;
-  sourceScope: DestinationAreaSourceScope;
-  sourceAttempt: string;
-  areaMatched: boolean;
-  parentCityMatched: boolean;
-};
-
-export function selectAreaFirstCandidates(
-  areaCandidates: DestinationAreaCandidate[],
-  cityCandidates: DestinationAreaCandidate[],
-  target: number,
-): DestinationAreaCandidate[] {
-  const seen = new Set<string>();
-  const selected: DestinationAreaCandidate[] = [];
-  const append = (candidate: DestinationAreaCandidate) => {
-    const identity = (candidate.place.id ?? candidate.place.name ?? "").trim();
-    if (!identity || seen.has(identity) || selected.length >= target) return;
-    seen.add(identity);
-    selected.push(candidate);
-  };
-  areaCandidates.forEach(append);
-  cityCandidates.forEach(append);
-  return selected;
-}
 
 function rankCategoryPlaces(
   places: PlaceResult[],

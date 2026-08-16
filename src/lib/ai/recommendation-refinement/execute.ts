@@ -27,6 +27,11 @@ import {
 import type { ActiveRecommendationContext } from "@/lib/ai/recommendation-refinement/types";
 import { recommendationIntentToCategoryIntent } from "@/lib/ai/recommendation-refinement/types";
 import { cuisineSearchTokens } from "@/lib/ai/recommendation-refinement/parser";
+import {
+  matchPlaceToDestinationArea,
+} from "@/lib/ai/chat-place-search-context";
+import type { DestinationAreaScope } from "@/lib/ai/destination-travel-profile";
+import { selectAreaFirstCandidates } from "@/lib/ai/destination-area-selection";
 
 const TARGET_COUNT = 6;
 
@@ -35,7 +40,6 @@ function buildSummary(
   recommendations: RoamieRecommendationItem[],
 ): string {
   const dest = ctx.destinationDisplayName ?? ctx.destinationName;
-  const city = ctx.resolvedSearchCity ? `（${ctx.resolvedSearchCity}）` : "";
   const categoryIntent = recommendationIntentToCategoryIntent(ctx.intent);
   const heading = `${CHAT_PLACE_CATEGORY_LABELS[categoryIntent]}推薦：`;
   const constraints: string[] = [];
@@ -55,7 +59,7 @@ function buildSummary(
     )
     .join("\n");
   return [
-    `在${dest}${city}，依你補充的條件再幫你找：`,
+    `在${dest}，依你補充的條件再幫你找：`,
     constraintLine,
     "",
     heading,
@@ -90,14 +94,20 @@ export async function buildRecommendationRefinementResults(params: {
   };
 } | null> {
   const { context: recCtx, travelContext, locale, searchPlaces, geocodeFn } = params;
+  const areaSearchLabel =
+    recCtx.searchScope === "area" && recCtx.area
+      ? `${recCtx.parentCity ?? ""}${recCtx.area}`.trim()
+      : "";
   const city =
+    areaSearchLabel ||
     recCtx.resolvedSearchCity?.trim() ||
     recCtx.destinationName.trim() ||
     travelContext.destination?.trim() ||
     "";
   if (!city) return null;
 
-  const attempts = buildRefinementSearchAttempts(recCtx);
+  const attempts = buildRefinementSearchAttempts(recCtx, city);
+  const executedAttempts: typeof attempts = [];
   const queries = attempts.map((a) => a.query);
   logRefinementSearchStart(recCtx, queries);
 
@@ -122,15 +132,97 @@ export async function buildRecommendationRefinementResults(params: {
   }
   if (lat == null || lng == null) return null;
 
-  const raw = await fetchPlacesWithSearchAttemptsMerged(
-    searchPlaces,
-    lat,
-    lng,
-    locale,
-    attempts,
-    "chat.recommendationRefinement",
-    { minResults: 3, maxResults: 24 },
-  );
+  const runAttempts = async (
+    phaseAttempts: typeof attempts,
+    source: string,
+  ) => {
+    if (!phaseAttempts.length) return [];
+    executedAttempts.push(...phaseAttempts);
+    return fetchPlacesWithSearchAttemptsMerged(
+      searchPlaces,
+      lat!,
+      lng!,
+      locale,
+      phaseAttempts,
+      source,
+      { minResults: 3, maxResults: 24 },
+    );
+  };
+
+  let raw: Awaited<ReturnType<typeof runAttempts>>;
+
+  if (recCtx.searchScope === "area" && recCtx.area && recCtx.parentCity) {
+    const areaScope: DestinationAreaScope = {
+      parentCity: recCtx.parentCity,
+      area: recCtx.area,
+      displayLabel: `${recCtx.parentCity}${recCtx.area}`,
+      searchScope: "area",
+    };
+    const areaPrimary = await runAttempts(
+      attempts.slice(0, 1),
+      "chat.recommendationRefinement.areaPrimary",
+    );
+    let areaMatches = areaPrimary.filter(
+      (place) => matchPlaceToDestinationArea(place, areaScope).areaMatched,
+    );
+    if (
+      filterPlacesByRecommendationContext(areaMatches, recCtx).accepted.length < TARGET_COUNT &&
+      attempts.length > 1
+    ) {
+      const areaRelaxed = await runAttempts(
+        attempts.slice(1),
+        "chat.recommendationRefinement.areaRelaxed",
+      );
+      const seen = new Set(areaMatches.map((place) => place.id).filter(Boolean));
+      areaMatches = [
+        ...areaMatches,
+        ...areaRelaxed.filter((place) => {
+          const id = place.id?.trim();
+          if (!matchPlaceToDestinationArea(place, areaScope).areaMatched) return false;
+          if (id && seen.has(id)) return false;
+          if (id) seen.add(id);
+          return true;
+        }),
+      ];
+    }
+    if (filterPlacesByRecommendationContext(areaMatches, recCtx).accepted.length < TARGET_COUNT) {
+      const cityAttempts = buildRefinementSearchAttempts(recCtx, recCtx.parentCity);
+      const cityPrimary = await runAttempts(
+        cityAttempts.slice(0, 1),
+        "chat.recommendationRefinement.cityPrimary",
+      );
+      const cityPrimaryUsable = filterPlacesByRecommendationContext(cityPrimary, recCtx).accepted;
+      const cityRelaxed =
+        areaMatches.length + cityPrimaryUsable.length < TARGET_COUNT
+          ? await runAttempts(
+              cityAttempts.slice(1),
+              "chat.recommendationRefinement.cityRelaxed",
+            )
+          : [];
+      const cityRaw = [...cityPrimary, ...cityRelaxed];
+      const areaCandidates = areaMatches.map((place) => ({
+        place,
+        sourceScope: "area_primary" as const,
+        sourceAttempt: executedAttempts.map((attempt) => attempt.query).join("|"),
+        ...matchPlaceToDestinationArea(place, areaScope),
+      }));
+      const cityCandidates = cityRaw
+        .map((place) => ({
+          place,
+          sourceScope: "city_primary" as const,
+          sourceAttempt: cityAttempts.map((attempt) => attempt.query).join("|"),
+          ...matchPlaceToDestinationArea(place, areaScope),
+        }))
+        .filter((candidate) => candidate.parentCityMatched);
+      raw = selectAreaFirstCandidates(areaCandidates, cityCandidates, 24).map(
+        (candidate) => candidate.place,
+      );
+    } else {
+      raw = areaMatches;
+    }
+  } else {
+    raw = await runAttempts(attempts, "chat.recommendationRefinement");
+  }
 
   const excludeSet = new Set(
     recCtx.previousPlaceIds.map((id) => id.trim()).filter(Boolean),
@@ -212,7 +304,7 @@ export async function buildRecommendationRefinementResults(params: {
     summary,
     recommendations,
     payload,
-    usedQueries: queries,
+    usedQueries: executedAttempts.map((attempt) => attempt.query),
     stats,
   };
 }

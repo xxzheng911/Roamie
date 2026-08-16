@@ -312,8 +312,9 @@ export function filterRecommendationsByExcludedKeywords(
 
 export function buildRefinementSearchAttempts(
   ctx: ActiveRecommendationContext,
+  searchLabelOverride?: string,
 ): SearchAttempt[] {
-  const city = searchCity(ctx);
+  const city = searchLabelOverride?.trim() || searchCity(ctx);
   const cityEn = cityEnglish(city);
   const attempts: SearchAttempt[] = [];
 

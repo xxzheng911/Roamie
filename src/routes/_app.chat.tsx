@@ -4000,6 +4000,9 @@ function Chat() {
           nextQueryCursor: shoppingSeed?.nextQueryCursor,
           recommendationPage: 0,
           activeSearchCity: shoppingScope?.activeSearchCity,
+          parentCity: validatedAreaScope?.parentCity,
+          area: validatedAreaScope?.area,
+          searchScope: validatedAreaScope ? "area" : "city",
           searchRegionLabel: shoppingScope?.searchRegionLabel ?? destination,
           searchCentroid: snapshotCentroid,
           searchRadius: snapshotRadius,
@@ -4077,6 +4080,9 @@ function Chat() {
               recSession.activeSearchCity ??
               resolveRegionPrimaryCity(destination) ??
               destination,
+            parentCity: validatedAreaScope?.parentCity,
+            area: validatedAreaScope?.area,
+            searchScope: validatedAreaScope ? "area" : "city",
             latitude: snapshotCentroid?.lat ?? shoppingScope?.searchCentroid?.lat ?? recSession.searchCentroid?.lat,
             longitude:
               snapshotCentroid?.lng ??
@@ -4297,6 +4303,9 @@ function Chat() {
             places: sessionForSearch.recommendedPlaces,
             usedQueries: sessionForSearch.recommendationSession?.usedQueries,
             resolvedSearchCity: sessionForSearch.recommendationSession?.activeSearchCity,
+            parentCity: sessionForSearch.recommendationSession?.parentCity,
+            area: sessionForSearch.recommendationSession?.area,
+            searchScope: sessionForSearch.recommendationSession?.searchScope,
             latitude: sessionForSearch.recommendationSession?.searchCentroid?.lat,
             longitude: sessionForSearch.recommendationSession?.searchCentroid?.lng,
             radius: sessionForSearch.recommendationSession?.searchRadius,
@@ -4391,6 +4400,9 @@ function Chat() {
           batchSize: RECOMMENDATION_BATCH_SIZE,
           usedQueries: [...(activeRec.usedQueries ?? []), ...result.usedQueries],
           activeSearchCity: activeRec.resolvedSearchCity,
+          parentCity: activeRec.parentCity,
+          area: activeRec.area,
+          searchScope: activeRec.searchScope,
           searchRegionLabel: activeRec.destinationDisplayName ?? activeRec.destinationName,
           searchCentroid:
             activeRec.latitude != null && activeRec.longitude != null

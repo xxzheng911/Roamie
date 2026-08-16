@@ -13,6 +13,8 @@ import type { ShoppingCoverageState } from "@/lib/ai/shopping-query-queue";
 
 export const RECOMMENDATION_BATCH_SIZE = 4;
 
+export type RecommendationSearchScope = "area" | "city";
+
 function shoppingCanonicalKey(place: {
   name?: string | null;
   placeName?: string | null;
@@ -28,6 +30,9 @@ function shoppingCanonicalKey(place: {
 export type ConversationRecommendationSession = {
   sessionId: string;
   destination: string;
+  parentCity?: string;
+  area?: string;
+  searchScope?: RecommendationSearchScope;
   /** Active recommendation topic (shopping / cafe / attraction …) */
   topic: ChatPlaceCategoryIntent;
   returnedPlaceIds: string[];
@@ -95,6 +100,9 @@ export function createRecommendationSession(params: {
   nextQueryCursor?: number;
   recommendationPage?: number;
   activeSearchCity?: string;
+  parentCity?: string;
+  area?: string;
+  searchScope?: RecommendationSearchScope;
   searchRegionLabel?: string;
   searchCentroid?: { lat: number; lng: number };
   searchRadius?: number;
@@ -116,6 +124,9 @@ export function createRecommendationSession(params: {
     session: {
       sessionId: `rec_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       destination: params.destination.trim(),
+      parentCity: params.parentCity?.trim() || undefined,
+      area: params.area?.trim() || undefined,
+      searchScope: params.searchScope,
       topic: params.topic,
       returnedPlaceIds,
       returnedCanonicalKeys,
