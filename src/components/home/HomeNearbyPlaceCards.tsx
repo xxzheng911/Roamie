@@ -7,6 +7,7 @@ import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
 import { placeOpeningStatusLabel } from "@/lib/normalized-opening-status";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import type { HomeNearbyRenderState } from "@/lib/home-nearby-log";
+import { resolveHomeNearbyViewState } from "@/lib/home-nearby-view-state";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/hooks/use-i18n";
@@ -253,14 +254,13 @@ export function HomeNearbyPlaceCards({
   const anchor = userLocation ?? { lat: 0, lng: 0 };
   const canShowDistance = userLocation != null;
   const goodForNow = t("place.goodForNow");
-  const showSkeleton =
-    places.length === 0 &&
-    !showSlowEmpty &&
-    (loading || renderState === "loading");
-  const showEmpty =
-    places.length === 0 &&
-    !showSkeleton &&
-    (renderState === "empty" || renderState === "error" || Boolean(showSlowEmpty));
+  const viewState = resolveHomeNearbyViewState({
+    placeCount: places.length,
+    loading,
+    renderState,
+  });
+  const showSkeleton = viewState === "loading";
+  const showEmpty = viewState === "empty" || viewState === "error";
 
   const cardDisplays = useMemo(() => {
     return places.map((place, index) =>

@@ -17,6 +17,7 @@
     "verify:place-reason-diversity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-reason-diversity.mjs",
     "verify:shortcut-category-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-shortcut-category-fidelity.mjs",
     "verify:destination-area-scope": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-destination-area-scope.mjs",
+    "verify:home-nearby-loading-state": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-nearby-loading-state.mjs",
     "verify:transport-copy-consistency": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-transport-copy-consistency.mjs",
     "verify:general-recommendation-opening-hours": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-general-recommendation-opening-hours.mjs",
     "verify:pie-step-b-location-autocomplete": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-pie-step-b-location-autocomplete.mjs",
