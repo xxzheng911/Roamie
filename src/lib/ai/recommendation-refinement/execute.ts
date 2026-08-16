@@ -32,6 +32,7 @@ import {
 } from "@/lib/ai/chat-place-search-context";
 import type { DestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 import { selectAreaFirstCandidates } from "@/lib/ai/destination-area-selection";
+import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 
 const TARGET_COUNT = 6;
 
@@ -78,6 +79,7 @@ export async function buildRecommendationRefinementResults(params: {
   searchPlaces: PlaceSearchFn;
   geocodeFn: GeocodeDestinationFn;
   session?: ChatPlanningSession;
+  userProfile?: UserProfileForReason | null;
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -93,7 +95,7 @@ export async function buildRecommendationRefinementResults(params: {
     finalCount: number;
   };
 } | null> {
-  const { context: recCtx, travelContext, locale, searchPlaces, geocodeFn } = params;
+  const { context: recCtx, travelContext, locale, searchPlaces, geocodeFn, userProfile } = params;
   const areaSearchLabel =
     recCtx.searchScope === "area" && recCtx.area
       ? `${recCtx.parentCity ?? ""}${recCtx.area}`.trim()
@@ -274,6 +276,7 @@ export async function buildRecommendationRefinementResults(params: {
           distanceMeters: distM,
           categoryLabel: label,
           categoryIntent,
+          userProfile,
         },
       };
     }),

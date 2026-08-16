@@ -59,6 +59,7 @@ import {
 import { classifyDestinationForPlaceSearch } from "@/lib/ai/landmark-place-strategy";
 import { filterPlacesForAttractionRecommendation } from "@/lib/ai/place-recommendation-rules";
 import { mapPlaceResultsToChatItems } from "@/lib/chat-session";
+import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import { distanceMeters } from "@/lib/map-explore";
 import { beginPlacesFlow, endPlacesFlow } from "@/lib/places-api-stats";
 import {
@@ -557,6 +558,7 @@ function placesToRecommendations(
   categoryLabel: string,
   categoryIntent: ChatPlaceCategoryIntent,
   mealIntent?: ParsedMealIntent | null,
+  userProfile?: UserProfileForReason | null,
 ): RoamieRecommendationItem[] {
   return mapPlaceResultsToChatItems(
     places.map((place) => {
@@ -573,6 +575,7 @@ function placesToRecommendations(
           distanceMeters: distM,
           categoryLabel,
           categoryIntent,
+          userProfile,
         },
       };
     }),
@@ -641,6 +644,7 @@ export async function buildDestinationCategoryRecommendations(params: {
   excludePlaceIds?: string[];
   rejectedPlaceNames?: string[];
   session?: ChatPlanningSession;
+  userProfile?: UserProfileForReason | null;
 }): Promise<{
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -658,6 +662,7 @@ export async function buildDestinationCategoryRecommendations(params: {
     excludePlaceIds = [],
     rejectedPlaceNames = [],
     session,
+    userProfile,
   } = params;
   const label = normalizeDestinationLabel(destination);
   const mealIntent = parseMealIntentFromText(userText);
@@ -809,6 +814,7 @@ export async function buildDestinationCategoryRecommendations(params: {
               categoryLabel,
               intent,
               mealIntent,
+              userProfile,
             )
           : [];
       recommendations = filterRecommendationsForCategoryRender(

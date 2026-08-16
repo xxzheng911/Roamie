@@ -5,7 +5,10 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { buildPlaceRecommendationReason } from "../src/lib/build-place-recommendation-reason.ts";
+import {
+  buildPlaceRecommendationReason,
+  userProfileForReasonFrom,
+} from "../src/lib/build-place-recommendation-reason.ts";
 import {
   collectPlaceReasonEvidence,
   FORBIDDEN_REASON_INFERENCES,
@@ -240,6 +243,35 @@ test("rating and review counts remain supporting evidence, never the reason body
     assigned.map((row) => row.placeId),
     places.map((p) => p.id),
   );
+});
+
+test("rating and review count together form grounded popularity evidence", () => {
+  const [assigned] = assignDiversePlaceReasons([
+    {
+      place: stubPlace({
+        id: "popular-cafe",
+        name: "人氣咖啡",
+        primaryType: "cafe",
+        types: ["cafe", "coffee_shop"],
+        rating: 4.7,
+        userRatingCount: 1000,
+      }),
+    },
+  ]);
+  assert.equal(assigned.evidenceCode, "popularity");
+  assert.match(assigned.reason, /咖啡.*評價與討論度|評價與討論度.*咖啡/);
+  assert.equal(assigned.reason.includes("4.7"), false);
+  assert.equal(assigned.reason.includes("1000"), false);
+});
+
+test("rating-only and review-count-only cannot become visible reason bodies", () => {
+  const assigned = assignDiversePlaceReasons([
+    { place: stubPlace({ id: "rating-only", rating: 4.8, userRatingCount: 10 }) },
+    { place: stubPlace({ id: "reviews-only", rating: 3.8, userRatingCount: 1000 }) },
+  ]);
+  assert.ok(assigned.every((row) => row.evidenceCode === "grounded_neutral"));
+  assert.ok(assigned.every((row) => !row.reason.includes("Google 評分")));
+  assert.ok(assigned.every((row) => !/\d+ 則評論/.test(row.reason)));
 });
 
 test("recommendation handoff reason is canonical for Chat, Home, and Explore detail", () => {
@@ -493,6 +525,62 @@ test("completed Plus profile remains valid preference evidence", () => {
     userProfile: { onboarded: true, interests: ["咖啡"] },
   });
   assert.equal(evidence.some((item) => item.code === "preference_fit"), true);
+});
+
+test("Plus quiz personalization requires entitlement, completion, and place evidence", () => {
+  const prefs = { onboarded: true, interests: ["咖啡"] };
+  const freeProfile = userProfileForReasonFrom(prefs, { hasPlusAccess: false });
+  const incompleteProfile = userProfileForReasonFrom(
+    { onboarded: false, interests: ["咖啡"] },
+    { hasPlusAccess: true },
+  );
+  const plusProfile = userProfileForReasonFrom(prefs, { hasPlusAccess: true });
+  const cafe = stubPlace({ id: "plus-cafe", primaryType: "cafe", types: ["cafe"] });
+  const clothing = stubPlace({
+    id: "plus-clothing",
+    primaryType: "clothing_store",
+    types: ["clothing_store"],
+  });
+
+  assert.equal(
+    collectPlaceReasonEvidence(cafe, {}, { userProfile: freeProfile }).some(
+      (item) => item.code === "preference_fit",
+    ),
+    false,
+  );
+  assert.equal(
+    collectPlaceReasonEvidence(cafe, {}, { userProfile: incompleteProfile }).some(
+      (item) => item.code === "preference_fit",
+    ),
+    false,
+  );
+  assert.equal(
+    collectPlaceReasonEvidence(clothing, {}, { userProfile: plusProfile }).some(
+      (item) => item.code === "preference_fit",
+    ),
+    false,
+  );
+  assert.equal(
+    collectPlaceReasonEvidence(cafe, {}, { userProfile: plusProfile }).some(
+      (item) => item.code === "preference_fit",
+    ),
+    true,
+  );
+});
+
+test("Chat initial and continuation mappings receive the shared reason profile", () => {
+  const initialSource = readFileSync(
+    new URL("../src/lib/ai/chat-destination-category-recommendation.ts", import.meta.url),
+    "utf8",
+  );
+  const continuationSource = readFileSync(
+    new URL("../src/lib/ai/recommendation-refinement/execute.ts", import.meta.url),
+    "utf8",
+  );
+  const routeSource = readFileSync(new URL("../src/routes/_app.chat.tsx", import.meta.url), "utf8");
+  assert.match(initialSource, /userProfile\?: UserProfileForReason/);
+  assert.match(continuationSource, /userProfile\?: UserProfileForReason/);
+  assert.equal((routeSource.match(/userProfileForReasonFrom\(/g) ?? []).length >= 2, true);
 });
 
 console.info("\n[verify:place-reason-diversity] all passed");

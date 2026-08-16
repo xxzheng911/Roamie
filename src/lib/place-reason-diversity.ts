@@ -29,6 +29,7 @@ import { getPlaceReasonCopy } from "@/lib/i18n/place-reason-copy";
 export const PLACE_REASON_EVIDENCE_CODES = [
   "high_rating",
   "high_review_count",
+  "popularity",
   "open_now",
   "late_hours",
   "nearby",
@@ -249,7 +250,6 @@ function hasPreferenceFit(
   const mood = (ctx.mood ?? "").trim();
   if (mood && isGroundedPreferenceEvidenceSource(ctx.preferenceEvidenceSource)) return true;
   if (!hasCompletedTravelQuiz(profile) || !profile) return false;
-  if (profile.mood?.trim()) return true;
   const interests = profile.interests ?? [];
   return interests.some((interest) => interestMatchesIdentity(interest, identity));
 }
@@ -279,6 +279,18 @@ export function collectPlaceReasonEvidence(
     evidence.push({
       code: "high_review_count",
       score: 600 + Math.min(40, Math.log10(place.userRatingCount) * 10),
+    });
+  }
+
+  if (
+    place.rating != null &&
+    place.rating >= HIGH_RATING_MIN &&
+    place.userRatingCount != null &&
+    place.userRatingCount >= HIGH_REVIEW_COUNT_MIN
+  ) {
+    evidence.push({
+      code: "popularity",
+      score: 650 + Math.min(40, Math.log10(place.userRatingCount) * 10),
     });
   }
 
@@ -369,6 +381,16 @@ function renderEvidenceReason(
             : locale === "ko"
               ? "확인 가능한 정보가 적어 선택 후보로 먼저 보여드려요"
               : "There is limited verified detail, so consider this as an option";
+      break;
+    case "popularity":
+      body =
+        locale === "zh-TW"
+          ? `在這一帶屬於評價與討論度都較高的${label}選擇`
+          : locale === "ja"
+            ? `このエリアで評価と注目度の高い${label}の選択肢`
+            : locale === "ko"
+              ? `이 지역에서 평가와 관심도가 높은 ${label} 선택지예요`
+              : `A ${label} option with strong ratings and local interest`;
       break;
     case "open_now":
       body = copy.openNow;
@@ -480,12 +502,12 @@ function renderEvidenceReason(
     default:
       body =
         locale === "zh-TW"
-          ? "目前可確認的資訊較少，先提供你作為選擇參考"
+          ? "先依地點資料提供你參考"
           : locale === "ja"
-            ? "確認できる情報が少ないため、候補として参考にしてください"
+            ? "確認できる場所情報をもとに候補として紹介します"
             : locale === "ko"
-              ? "확인 가능한 정보가 적어 선택 후보로 먼저 보여드려요"
-              : "There is limited verified detail, so consider this as an option";
+              ? "확인된 장소 정보를 바탕으로 참고할 선택지로 보여드려요"
+              : "Included as an option based on the available place data";
       break;
   }
 

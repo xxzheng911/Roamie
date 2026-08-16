@@ -146,6 +146,7 @@ import {
   parseTripIntentFromText,
 } from "@/lib/recommendation/trip-intent";
 import { resolveBudgetMode } from "@/lib/preferences-storage";
+import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
 import {
   loadChatSession,
   saveChatSession,
@@ -3930,6 +3931,9 @@ function Chat() {
             excludePlaceIds,
             rejectedPlaceNames,
             session: activeSession,
+            userProfile: userProfileForReasonFrom(activeSession.preferences, {
+              hasPlusAccess,
+            }),
           });
 
         if (!recommendations.length) {
@@ -4362,6 +4366,9 @@ function Chat() {
           searchPlaces: searchNearbyPlaces,
           geocodeFn: geocodeLocationFn,
           session: sessionForSearch,
+          userProfile: userProfileForReasonFrom(sessionForSearch.preferences, {
+            hasPlusAccess,
+          }),
         });
         if (!result?.recommendations.length) {
           await settleCreditsOperation(placeCreditsHandle, false);

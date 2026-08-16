@@ -65,7 +65,7 @@ export type PlaceRecommendationContext = {
 };
 
 const SAFE_FALLBACK =
-  "目前可確認的資訊較少，先提供你作為選擇參考。";
+  "先依地點資料提供你參考。";
 
 /** 各身分的主文案模板（禁止跨類型亂套） */
 const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
@@ -279,10 +279,8 @@ function adjustIntroForDistance(intro: string, meters?: number): string {
 }
 
 function ratingPhrase(rating: number | null, count: number | null): string | null {
-  if (rating == null || rating < 4) return null;
-  if (count != null && count >= 80) return `評價 ${rating.toFixed(1)} 分、口碑不錯`;
-  if (rating >= 4.3) return "評價不錯";
-  return null;
+  if (rating == null || rating < 4.3 || count == null || count < 80) return null;
+  return "在這一帶評價與討論度都較高";
 }
 
 function weatherConditionKey(weather?: WeatherSummary | null): string {
@@ -384,10 +382,10 @@ function ratingPhraseIntl(
   rating: number,
   count: number | null,
 ): string | null {
-  const copy = getPlaceReasonCopy(locale);
-  if (rating < 4) return null;
-  if (count != null && count >= 80) return copy.ratingHigh(rating, count);
-  return locale === "en" ? "Well rated" : copy.ratingHigh(rating, count ?? 0);
+  if (rating < 4.3 || count == null || count < 80) return null;
+  if (locale === "ja") return "このエリアで評価と注目度が高い";
+  if (locale === "ko") return "이 지역에서 평가와 관심도가 높아요";
+  return "Strong ratings and local interest in this area";
 }
 
 function weatherSupplementIntl(
