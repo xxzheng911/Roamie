@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { resolveDestinationAreaScope } from "../src/lib/ai/destination-travel-profile.ts";
+import {
+  extractGenericDestinationAreaCandidate,
+  locationValidatesDestinationArea,
+  resolveDestinationAreaScope,
+  resolveValidatedDestinationAreaScope,
+} from "../src/lib/ai/destination-travel-profile.ts";
 import { parsePlaceRecommendationIntent } from "../src/lib/ai/place-recommendation-intent/parse.ts";
 import { buildChatPlaceSearchAttempts } from "../src/lib/ai/chat-place-intent.ts";
 import { matchPlaceToDestinationArea } from "../src/lib/ai/chat-place-search-context.ts";
@@ -32,6 +37,85 @@ for (const [text, parentCity, area] of fixtures) {
   assert.equal(parsed?.resolvedSearchCity, parentCity);
   assert.equal(parsed?.destinationArea, area);
 }
+
+const genericFixtures = [
+  ["高雄鼓山有什麼咖啡廳推薦", "高雄", "鼓山"],
+  ["高雄前金有什麼咖啡廳推薦", "高雄", "前金"],
+  ["高雄前鎮有什麼咖啡廳推薦", "高雄", "前鎮"],
+  ["高雄三民有什麼咖啡廳推薦", "高雄", "三民"],
+  ["台南東區有什麼咖啡廳推薦", "台南", "東區"],
+  ["台北大安有什麼咖啡廳推薦", "台北", "大安"],
+];
+for (const [text, parentCity, area] of genericFixtures) {
+  const candidate = extractGenericDestinationAreaCandidate(text);
+  assert.ok(candidate, text);
+  assert.equal(candidate.parentCity, parentCity);
+  assert.equal(candidate.area, area);
+}
+
+const gushanCandidate = extractGenericDestinationAreaCandidate("高雄鼓山有什麼咖啡廳推薦");
+assert.ok(gushanCandidate);
+assert.equal(
+  locationValidatesDestinationArea(gushanCandidate, {
+    placeId: "mock:gushan",
+    country: "台灣",
+    city: "高雄市",
+    region: "鼓山區",
+    lat: 22.65,
+    lng: 120.27,
+    formattedName: "鼓山區",
+    displayLabel: "高雄市鼓山區",
+    address: "台灣高雄市鼓山區",
+  }),
+  true,
+);
+assert.equal(
+  locationValidatesDestinationArea(gushanCandidate, {
+    placeId: "mock:wrong",
+    country: "台灣",
+    city: "高雄市",
+    region: "苓雅區",
+    lat: 22.62,
+    lng: 120.31,
+    formattedName: "苓雅區",
+    displayLabel: "高雄市苓雅區",
+    address: "台灣高雄市苓雅區",
+  }),
+  false,
+  "unvalidated fragments must not become fake areas",
+);
+
+const validatedGushan = await resolveValidatedDestinationAreaScope({
+  input: "高雄鼓山有什麼咖啡廳推薦",
+  locale: "zh-TW",
+  geocodeFn: async ({ data }) => {
+    assert.equal(data.query, "高雄鼓山");
+    assert.equal(data.placesFallback, false);
+    return {
+    location: {
+      placeId: "mock:gushan-provider",
+      country: "台灣",
+      city: "高雄市",
+      region: "鼓山區",
+      lat: 22.65,
+      lng: 120.27,
+      formattedName: "高雄市鼓山區",
+      displayLabel: "高雄市鼓山區",
+      address: "台灣高雄市鼓山區",
+      timezone: undefined,
+      utcOffsetMinutes: null,
+    },
+    error: null,
+    };
+  },
+});
+assert.deepEqual(validatedGushan, {
+  displayLabel: "高雄鼓山",
+  parentCity: "高雄",
+  area: "鼓山",
+  searchScope: "area",
+});
+assert.deepEqual(resolveDestinationAreaScope("高雄鼓山"), validatedGushan);
 
 const attempts = buildChatPlaceSearchAttempts(
   "cafe",

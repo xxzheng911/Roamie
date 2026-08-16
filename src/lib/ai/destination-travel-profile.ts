@@ -3,7 +3,14 @@
  * Flow logic never branches on city names; this module is pure destination DATA + synthesis.
  * Never invents destination+category placeholder place names.
  */
-import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
+import {
+  normalizeDestinationLabel,
+  resolveDestinationFromText,
+} from "@/lib/ai/trip-planning-context";
+import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
+import { lockDestinationCoordinatesFromGeocode } from "@/lib/ai/resolved-destination-scope";
+import type { Locale } from "@/lib/i18n/types";
+import type { TripLocation } from "@/lib/location/types";
 import { getMustVisitPlacesForDestination } from "@/lib/ai/must-visit-places";
 import { getLocalLifeCityFallbackNames } from "@/lib/ai/ai-local-life-rules";
 import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
@@ -43,6 +50,12 @@ export type DestinationAreaScope = {
   area: string;
   searchScope: "area";
 };
+
+const validatedAreaScopes = new Map<string, DestinationAreaScope>();
+
+function areaScopeKey(input: string): string {
+  return normalizeDestinationLabel(input).replace(/[\s,，、/／-]+/g, "");
+}
 
 /** Curated profiles — data only, not flow control. */
 const CURATED_PROFILES: Record<
@@ -248,6 +261,8 @@ const CURATED_PROFILES: Record<
 export function resolveDestinationAreaScope(input: string): DestinationAreaScope | null {
   const compact = normalizeDestinationLabel(input).replace(/[\s,，、/／-]+/g, "");
   if (!compact) return null;
+  const validated = validatedAreaScopes.get(compact);
+  if (validated) return validated;
   const matches: DestinationAreaScope[] = [];
   for (const [parentCity, profile] of Object.entries(CURATED_PROFILES)) {
     if (!compact.includes(parentCity)) continue;
@@ -265,6 +280,117 @@ export function resolveDestinationAreaScope(input: string): DestinationAreaScope
   return matches.sort(
     (a, b) => b.parentCity.length + b.area.length - (a.parentCity.length + a.area.length),
   )[0] ?? null;
+}
+
+export type DestinationAreaCandidate = {
+  displayLabel: string;
+  parentCity: string;
+  area: string;
+};
+
+const AREA_QUERY_STOP =
+  /(?:有什麼|有甚麼|有什么|推薦|推荐|咖啡|餐廳|餐厅|景點|景点|地點|地点|哪裡|哪里|可以|適合|适合|嗎|吗|呢|吧|？|\?|$)/;
+const INVALID_AREA_FRAGMENT = /^(?:附近|周邊|周边|市區|市区|當地|当地|這裡|这里|那裡|那里)$/;
+
+/** Extract only a possible city-tail area. This does not make it trusted. */
+export function extractGenericDestinationAreaCandidate(
+  input: string,
+): DestinationAreaCandidate | null {
+  const existing = resolveDestinationAreaScope(input);
+  if (existing) return existing;
+  const normalized = normalizeDestinationLabel(input);
+  const parentCity = resolveDestinationFromText(input);
+  if (!parentCity) return null;
+  const cityIndex = normalized.indexOf(parentCity);
+  if (cityIndex < 0) return null;
+  const afterCity = normalized.slice(cityIndex + parentCity.length);
+  const rawFragment = afterCity.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
+  const area = rawFragment
+    .replace(/^[市縣县]/, "")
+    .replace(/^(?:的|之)/, "")
+    .replace(/[\s,，、/／-]+/g, "")
+    .replace(/(?:有|想找|找|想看)$/g, "");
+  if (
+    area.length < 2 ||
+    area.length > 8 ||
+    INVALID_AREA_FRAGMENT.test(area) ||
+    !/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]+$/u.test(area)
+  ) {
+    return null;
+  }
+  return {
+    displayLabel: `${parentCity}${area}`,
+    parentCity,
+    area,
+  };
+}
+
+export function locationValidatesDestinationArea(
+  candidate: DestinationAreaCandidate,
+  location: TripLocation | null,
+): boolean {
+  if (!location) return false;
+  const blob = areaScopeKey(
+    [
+      location.city,
+      location.region,
+      location.formattedName,
+      location.displayLabel,
+      location.address,
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+  const area = areaScopeKey(candidate.area).replace(/[區区]$/, "");
+  const city = areaScopeKey(candidate.parentCity).replace(/[市縣县]$/, "");
+  return Boolean(
+    location.placeId &&
+      area &&
+      city &&
+      blob.includes(area) &&
+      blob.includes(city),
+  );
+}
+
+/** Curated scopes are immediate; generic fragments require provider evidence. */
+export async function resolveValidatedDestinationAreaScope(params: {
+  input: string;
+  locale: Locale;
+  geocodeFn: GeocodeDestinationFn;
+}): Promise<DestinationAreaScope | null> {
+  const curated = resolveDestinationAreaScope(params.input);
+  if (curated) return curated;
+  const candidate = extractGenericDestinationAreaCandidate(params.input);
+  if (!candidate) return null;
+  let result: Awaited<ReturnType<GeocodeDestinationFn>>;
+  try {
+    result = await params.geocodeFn({
+      data: {
+        query: candidate.displayLabel,
+        destinationName: candidate.displayLabel,
+        locale: params.locale,
+        language: params.locale,
+        disableLocaleRegionBias: true,
+        placesFallback: false,
+      },
+    });
+  } catch {
+    return null;
+  }
+  const location = result.location;
+  if (!locationValidatesDestinationArea(candidate, location)) return null;
+  const validated: DestinationAreaScope = {
+    ...candidate,
+    searchScope: "area",
+  };
+  validatedAreaScopes.set(areaScopeKey(validated.displayLabel), validated);
+  lockDestinationCoordinatesFromGeocode({
+    destination: validated.displayLabel,
+    lat: location!.lat,
+    lng: location!.lng,
+    country: location!.country,
+  });
+  return validated;
 }
 
 const THEME_TITLE_POOL = [

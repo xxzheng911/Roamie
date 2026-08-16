@@ -287,6 +287,7 @@ import {
   buildMoreDestinationRecommendations,
 } from "@/lib/ai/destination-place-recommendation";
 import { buildDestinationCategoryRecommendations } from "@/lib/ai/chat-destination-category-recommendation";
+import { resolveValidatedDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { coerceTravelDestination } from "@/lib/ai/trip-planning-context";
 import {
@@ -3885,9 +3886,19 @@ function Chat() {
     ): Promise<boolean> => {
       const merged = mergeTravelContext(activeSession, userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, activeSession);
-      const destination = resolveDestinationForCategorySearch(placeCtx, merged.session, userText);
+      const baseDestination = resolveDestinationForCategorySearch(
+        placeCtx,
+        merged.session,
+        userText,
+      );
       const intents = parseChatPlaceIntents(userText);
-      if (!destination || !intents.length) return false;
+      if (!baseDestination || !intents.length) return false;
+      const validatedAreaScope = await resolveValidatedDestinationAreaScope({
+        input: userText,
+        locale,
+        geocodeFn: geocodeLocationFn,
+      });
+      const destination = validatedAreaScope?.displayLabel ?? baseDestination;
 
       const excludePlaceIds = opts?.excludePlaceIds ?? collectExcludePlaceIds(activeSession);
       const rejectedPlaceNames = opts?.rejectedPlaceNames ?? activeSession.rejectedPlaceNames;
