@@ -42,6 +42,7 @@ import {
   filterPlacesByExclusion,
 } from "@/lib/ai/recommendation-exclusion";
 import { buildRefreshRecommendationSummary } from "@/lib/ai/chat-recommendation-refresh";
+import { resolvePresentableMoodTag, shouldDisplayMoodPresentation } from "@/lib/ai/mood-presentation";
 import {
   attractionTypeRankScore,
   buildAttractionRefreshSearchAttempts,
@@ -433,7 +434,7 @@ function buildSummary(
     return buildCampingRecommendationSummary(picks, ctx);
   }
 
-  const mood = ctx.mood;
+  const mood = shouldDisplayMoodPresentation(undefined, ctx) ? ctx.mood : undefined;
   if (!mood) {
     return [
       "附近這幾個地方可以先看看：",
@@ -1267,7 +1268,7 @@ export async function buildNearbyPlaceRecommendation(params: {
           version: 2,
           title: "Roamie 推薦",
           summary,
-          moodTag: context.mood ?? "",
+          moodTag: resolvePresentableMoodTag(undefined, context),
           recommendations: [],
           itinerary: [],
           generatedAt: new Date().toISOString(),
@@ -1324,7 +1325,7 @@ export async function buildNearbyPlaceRecommendation(params: {
       version: 2,
       title: "Roamie 推薦",
       summary,
-      moodTag: context.mood ?? "",
+      moodTag: resolvePresentableMoodTag(undefined, context),
       recommendations,
       itinerary: [],
       generatedAt: new Date().toISOString(),

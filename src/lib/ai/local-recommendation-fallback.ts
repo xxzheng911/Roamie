@@ -11,6 +11,7 @@ import {
   filterCampingPlaces,
 } from "@/lib/ai/activity-camping";
 import { logTravelContext } from "@/lib/ai/travel-context";
+import { resolvePresentableMoodTag, shouldDisplayMoodPresentation } from "@/lib/ai/mood-presentation";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 
@@ -33,7 +34,12 @@ function moodSearchQuery(mood: string, ctx?: CanonicalTravelContext): string {
   return "tourist attraction cafe restaurant park museum";
 }
 
-function buildSummary(ctx: CanonicalTravelContext, placeCount: number, places: PlaceResult[] = []): string {
+function buildSummary(
+  ctx: CanonicalTravelContext,
+  placeCount: number,
+  places: PlaceResult[] = [],
+  session?: ChatPlanningSession,
+): string {
   if (ctx.budgetPreference === "low" || ctx.tripPurpose === "refine_recommendations") {
     return buildBudgetRefinementSummary(ctx, places.slice(0, placeCount));
   }
@@ -45,7 +51,7 @@ function buildSummary(ctx: CanonicalTravelContext, placeCount: number, places: P
     return buildCampingIntroReply(ctx);
   }
 
-  const mood = ctx.mood;
+  const mood = shouldDisplayMoodPresentation(session, ctx) ? ctx.mood : undefined;
   const dest = ctx.destination ?? ctx.currentLocation ?? "附近";
   const month = ctx.travelMonth ? `${ctx.travelMonth}的` : "";
   const companion = ctx.companion ? `跟${ctx.companion}` : "你";
@@ -134,7 +140,7 @@ export function generateLocalRecommendationFallback(
       payload: {
         title: "Roamie 推薦",
         summary,
-        moodTag: ctx.mood ?? session.selectedMood ?? "",
+        moodTag: resolvePresentableMoodTag(session, ctx),
         recommendations: [],
         itinerary: [],
       },
@@ -142,8 +148,8 @@ export function generateLocalRecommendationFallback(
     };
   }
 
-  const summary = buildSummary(ctx, candidates.length, places);
-  const moodTag = ctx.mood ?? session.selectedMood ?? "";
+  const summary = buildSummary(ctx, candidates.length, places, session);
+  const moodTag = resolvePresentableMoodTag(session, ctx);
 
   const payload: RoamiePayloadV2 = {
     title: moodTag ? `${moodTag} 推薦` : "Roamie 推薦",

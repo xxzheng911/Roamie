@@ -7,17 +7,7 @@ import {
   tripStyleDisplayTag,
   type TripStyleKey,
 } from "@/lib/ai/ai-trip-style";
-
-/** 目的地快捷分類標籤 — 行程規劃中不可覆蓋風格標籤 */
-const DESTINATION_SHORTCUT_TAGS = new Set([
-  "動漫購物",
-  "美食咖啡",
-  "經典景點",
-  "美食文化",
-  "自然風光",
-  "商圈購物",
-  "城市散策",
-]);
+import { resolvePresentableMoodTag, shouldDisplayMoodPresentation } from "@/lib/ai/mood-presentation";
 
 export function logAiStyleTagResolved(label: string, style: TripStyleKey): void {
   logAiPipeline("[AI_STYLE_TAG_RESOLVED]", `label=${label}`, `style=${style}`);
@@ -52,18 +42,12 @@ export function resolveRecommendationStyleTag(
   }
 
   if (!inPlanning && !travel.mustVisitGenerated) {
-    if (session.fromMoodCard || session.fromMoodFlow) {
-      const mood = session.selectedMood?.trim() || session.mood?.trim();
-      if (mood && !DESTINATION_SHORTCUT_TAGS.has(mood)) {
+    if (shouldDisplayMoodPresentation(session, travel)) {
+      const mood = resolvePresentableMoodTag(session, travel);
+      if (mood) {
         logAiTagContextSource("moodCard");
         return mood;
       }
-    }
-
-    const mood = session.selectedMood?.trim() || travel.mood?.trim() || session.mood?.trim();
-    if (mood && !DESTINATION_SHORTCUT_TAGS.has(mood)) {
-      logAiTagContextSource("sessionMood");
-      return mood;
     }
   }
 

@@ -77,6 +77,7 @@ import {
 } from "@/lib/ai/chat-place-search-context";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
+import { resolvePresentableMoodTag } from "@/lib/ai/mood-presentation";
 import { ingestResolvedPlacesIntoCandidatePool } from "@/lib/ai/places-cost-cache";
 import {
   buildMealRecommendationDescription,
@@ -690,7 +691,7 @@ export async function buildDestinationCategoryRecommendations(params: {
       payload: {
         title: "Roamie 推薦",
         summary,
-        moodTag: context.mood ?? "",
+        moodTag: resolvePresentableMoodTag(undefined, context),
         recommendations: [],
         itinerary: [],
       },
@@ -898,7 +899,9 @@ export async function buildDestinationCategoryRecommendations(params: {
       version: 2,
       title: "Roamie 推薦",
       summary,
-      moodTag: session ? resolveRecommendationStyleTag(session, context) : (context.mood ?? ""),
+      moodTag: session
+        ? resolveRecommendationStyleTag(session, context) || resolvePresentableMoodTag(session, context)
+        : resolvePresentableMoodTag(undefined, context),
       recommendations: allRecommendations,
       itinerary: [],
       generatedAt: new Date().toISOString(),

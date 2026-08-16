@@ -44,7 +44,8 @@ export type RecommendationPreferenceEvidenceSource =
   | "PLUS_PROFILE"
   | "CATEGORY_DERIVED"
   | "AI_INFERRED"
-  | "SYSTEM_SYNTHESIZED";
+  | "SYSTEM_SYNTHESIZED"
+  | "HOME_MOOD_ENTRY";
 
 export type DistanceEvidenceSource =
   | "USER_LOCATION"
@@ -58,7 +59,12 @@ export type DistanceEvidenceSource =
 export function isGroundedPreferenceEvidenceSource(
   source: RecommendationPreferenceEvidenceSource | undefined,
 ): boolean {
-  return source === "USER_MESSAGE" || source === "SESSION_CONTEXT" || source === "PLUS_PROFILE";
+  return (
+    source === "USER_MESSAGE" ||
+    source === "SESSION_CONTEXT" ||
+    source === "PLUS_PROFILE" ||
+    source === "HOME_MOOD_ENTRY"
+  );
 }
 
 export type PlaceRecommendationContext = {

@@ -671,10 +671,12 @@ export function parseTravelContextFromText(
 
   const parsedMood = preset?.mood ?? moodHint ?? parseVibe(t);
   const inheritedMoodEvidenceSource: CanonicalTravelContext["moodEvidenceSource"] | undefined =
-    session.selectedMood
-      ? "SESSION_CONTEXT"
-      : session.travelContext?.moodEvidenceSource ??
-        (moodHint ? "SYSTEM_SYNTHESIZED" : undefined);
+    session.homeMoodShortcutEntry || session.fromMoodFlow || session.fromMoodCard
+      ? "HOME_MOOD_ENTRY"
+      : session.selectedMood
+        ? "SESSION_CONTEXT"
+        : session.travelContext?.moodEvidenceSource ??
+          (moodHint ? "SYSTEM_SYNTHESIZED" : undefined);
   const base: Partial<CanonicalTravelContext> = {
     currentLocation: session.location?.city,
     travelMonth: parseMonth(t),
