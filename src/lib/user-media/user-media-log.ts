@@ -1,4 +1,5 @@
 /** Perf / diagnostic logs for user media loading. */
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 
 const loggedOnce = new Set<string>();
 
@@ -15,7 +16,11 @@ export function logUserMedia(
   const parts = Object.entries(fields)
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}=${v}`);
-  console.info(`[${tag}]`, ...parts);
+  if (tag.endsWith("_FAILED") || tag.endsWith("_ERROR")) {
+    console.warn(`[${tag}]`, ...parts);
+    return;
+  }
+  devVerboseInfo(`[${tag}]`, ...parts);
 }
 
 export function resetUserMediaLogOnce(): void {

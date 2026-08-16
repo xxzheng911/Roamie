@@ -1,3 +1,5 @@
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
+
 /** Sanitize values before localStorage / Capacitor Preferences writes. */
 export function sanitizeForJsonStorage<T>(value: T): T | null {
   if (value === undefined) return null;
@@ -12,7 +14,7 @@ export const NATIVE_TRAVEL_PREF_MAX_BYTES = 4_096;
 export const LOCAL_TRAVEL_PREF_MAX_BYTES = 32_768;
 
 export function logTravelPrefCacheWrite(key: string, payload: string): void {
-  console.info("[TRAVEL_PREF_CACHE_WRITE]", {
+  devVerboseInfo("[TRAVEL_PREF_CACHE_WRITE]", {
     key,
     hasValue: payload.length > 0,
     valueSize: payload.length,
