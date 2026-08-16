@@ -463,7 +463,9 @@ async function searchCategoryPlaces(params: {
       ...cityPrimaryCandidates,
       ...tagCandidates(cityRelaxed.places, "city_relaxed", cityAttempts.fallback),
     ];
-    const selected = selectAreaFirstCandidates(areaCandidates, cityCandidates, minResults);
+    const selected = selectAreaFirstCandidates(areaCandidates, cityCandidates, minResults, {
+      explicitAreaConstraint: true,
+    });
     logAiPipeline("[DESTINATION_AREA_SELECTION_SUMMARY]", {
       input: destination,
       parentCity: destinationAreaScope.parentCity,

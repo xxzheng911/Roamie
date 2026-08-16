@@ -195,6 +195,34 @@ assert.deepEqual(
 );
 assert.equal(twoAreaFiveCity[0].place.id, "area-1", "canonical Google identity changed");
 
+const explicitAreaOnly = selectAreaFirstCandidates(
+  [
+    scoped("area-1", "area_primary", true),
+    scoped("wrong-area", "area_primary", false),
+  ],
+  [
+    scoped("city-1", "city_primary", false),
+    scoped("city-2", "city_relaxed", false),
+  ],
+  4,
+  { explicitAreaConstraint: true },
+);
+assert.deepEqual(
+  explicitAreaOnly.map((candidate) => candidate.place.id),
+  ["area-1"],
+  "explicit area must remain the hard final card scope even below target",
+);
+assert.deepEqual(
+  selectAreaFirstCandidates(
+    [],
+    [scoped("city-1", "city_primary", false)],
+    4,
+    { explicitAreaConstraint: true },
+  ),
+  [],
+  "an exhausted explicit area must not silently fall back to city-wide cards",
+);
+
 const canonicalPlace = { id: "ChIJcanonical", googlePlaceId: "ChIJcanonical" };
 assert.deepEqual(canonicalPlace, { id: "ChIJcanonical", googlePlaceId: "ChIJcanonical" });
 

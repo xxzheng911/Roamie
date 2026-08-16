@@ -18,6 +18,7 @@ export function selectAreaFirstCandidates(
   areaCandidates: DestinationAreaCandidate[],
   cityCandidates: DestinationAreaCandidate[],
   target: number,
+  options: { explicitAreaConstraint?: boolean } = {},
 ): DestinationAreaCandidate[] {
   const seen = new Set<string>();
   const selected: DestinationAreaCandidate[] = [];
@@ -27,7 +28,9 @@ export function selectAreaFirstCandidates(
     seen.add(identity);
     selected.push(candidate);
   };
-  areaCandidates.forEach(append);
-  cityCandidates.forEach(append);
+  areaCandidates
+    .filter((candidate) => !options.explicitAreaConstraint || candidate.areaMatched)
+    .forEach(append);
+  if (!options.explicitAreaConstraint) cityCandidates.forEach(append);
   return selected;
 }

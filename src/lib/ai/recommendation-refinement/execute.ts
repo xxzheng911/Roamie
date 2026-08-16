@@ -214,7 +214,9 @@ export async function buildRecommendationRefinementResults(params: {
           ...matchPlaceToDestinationArea(place, areaScope),
         }))
         .filter((candidate) => candidate.parentCityMatched);
-      raw = selectAreaFirstCandidates(areaCandidates, cityCandidates, 24).map(
+      raw = selectAreaFirstCandidates(areaCandidates, cityCandidates, 24, {
+        explicitAreaConstraint: true,
+      }).map(
         (candidate) => candidate.place,
       );
     } else {
