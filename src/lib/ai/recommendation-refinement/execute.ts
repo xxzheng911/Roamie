@@ -175,6 +175,7 @@ export async function buildRecommendationRefinementResults(params: {
         place,
         ctx: {
           mood: travelContext.mood,
+          preferenceEvidenceSource: travelContext.moodEvidenceSource,
           locale,
           distanceMeters: distM,
           categoryLabel: label,

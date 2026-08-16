@@ -1288,6 +1288,7 @@ export async function buildNearbyPlaceRecommendation(params: {
           place: p,
           ctx: {
             mood: context.mood,
+            preferenceEvidenceSource: context.moodEvidenceSource,
             locale,
             distanceMeters: distM,
             categoryLabel: isDistrict ? FOOD_DISTRICT_CARD_TYPE : undefined,

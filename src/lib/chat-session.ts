@@ -455,6 +455,7 @@ export function placeDisplayName(p: ChatPlaceItem | RoamieRecommendationItem): s
 
 export type MapPlaceResultToChatItemCtx = {
   mood?: string;
+  preferenceEvidenceSource?: import("@/lib/build-place-recommendation-reason").RecommendationPreferenceEvidenceSource;
   weather?: WeatherSummary | null;
   userProfile?: UserProfileForReason | null;
   categoryLabel?: string;
@@ -494,6 +495,7 @@ export function mapPlaceResultToChatItem(
       ctx.currentTime,
       {
         mood: ctx.mood,
+        preferenceEvidenceSource: ctx.preferenceEvidenceSource,
         categoryLabel: ctx.categoryLabel,
         categoryIntent: ctx.categoryIntent,
         distanceMeters: ctx.distanceMeters,
@@ -568,6 +570,7 @@ export function mapPlaceResultsToChatItems(
       place,
       context: {
         mood: ctx.mood,
+        preferenceEvidenceSource: ctx.preferenceEvidenceSource,
         categoryLabel: ctx.categoryLabel,
         categoryIntent: ctx.categoryIntent,
         distanceMeters: ctx.distanceMeters,

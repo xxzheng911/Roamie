@@ -15,6 +15,7 @@ import type { Locale } from "@/lib/i18n/types";
 import {
   buildPlaceRecommendationReason,
   hasCompletedTravelQuiz,
+  isGroundedPreferenceEvidenceSource,
   resolveIdentityForReason,
   type PlaceRecommendationContext,
   type UserProfileForReason,
@@ -246,9 +247,10 @@ function hasPreferenceFit(
   profile: UserProfileForReason | null | undefined,
   ctx: PlaceReasonEvidenceContext,
 ): boolean {
-  const mood = (ctx.mood ?? profile?.mood ?? "").trim();
-  if (mood) return true;
+  const mood = (ctx.mood ?? "").trim();
+  if (mood && isGroundedPreferenceEvidenceSource(ctx.preferenceEvidenceSource)) return true;
   if (!hasCompletedTravelQuiz(profile) || !profile) return false;
+  if (profile.mood?.trim()) return true;
   const interests = profile.interests ?? [];
   return interests.some((interest) => interestMatchesIdentity(interest, identity));
 }
@@ -356,7 +358,13 @@ function renderEvidenceReason(
   const label = categoryLabel(identity, place, locale);
   const weatherKind = weatherFitKind(shared.weather, identity);
   const closeMinutes = parseCloseMinutes(place, resolveDate(shared.currentTime));
-  const mood = (ctx.mood ?? shared.userProfile?.mood ?? "").trim();
+  const contextMood = isGroundedPreferenceEvidenceSource(ctx.preferenceEvidenceSource)
+    ? ctx.mood
+    : undefined;
+  const profileMood = hasCompletedTravelQuiz(shared.userProfile)
+    ? shared.userProfile?.mood
+    : undefined;
+  const mood = (contextMood ?? profileMood ?? "").trim();
 
   let body: string;
   switch (code) {

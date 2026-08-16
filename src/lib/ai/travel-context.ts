@@ -92,6 +92,8 @@ export type CanonicalTravelContext = {
   suggestedStartDate?: string;
   days?: number;
   mood?: string;
+  /** Whether mood can ground outward-facing personalization copy. */
+  moodEvidenceSource?: import("@/lib/build-place-recommendation-reason").RecommendationPreferenceEvidenceSource;
   companion?: string;
   interests: string[];
   transportMode?: string;
@@ -366,6 +368,19 @@ function parseVibe(text: string, mood?: string, opts?: { skipFlexibleVibe?: bool
   if (mood && MOOD_PRESETS[mood]?.vibe) return MOOD_PRESETS[mood].vibe;
   if (mood) return mood;
   return undefined;
+}
+
+export function resolveMoodEvidenceSource(
+  text: string,
+  mood: string | undefined,
+  inheritedSource?: CanonicalTravelContext["moodEvidenceSource"],
+): CanonicalTravelContext["moodEvidenceSource"] {
+  if (!mood) return undefined;
+  if (inheritedSource) return inheritedSource;
+  if (/(?:我|今天|現在)?\s*(?:想|想要|想喝|想吃|喜歡|偏好|心情)|放鬆|放空/.test(text)) {
+    return "USER_MESSAGE";
+  }
+  return "CATEGORY_DERIVED";
 }
 
 function parseSetting(text: string, mood?: string): string | undefined {
@@ -654,6 +669,12 @@ export function parseTravelContextFromText(
   const endFromText = dateRange.endDate;
   const daysFromText = dateRange.days ?? parseDays(t);
 
+  const parsedMood = preset?.mood ?? moodHint ?? parseVibe(t);
+  const inheritedMoodEvidenceSource: CanonicalTravelContext["moodEvidenceSource"] | undefined =
+    session.selectedMood
+      ? "SESSION_CONTEXT"
+      : session.travelContext?.moodEvidenceSource ??
+        (moodHint ? "SYSTEM_SYNTHESIZED" : undefined);
   const base: Partial<CanonicalTravelContext> = {
     currentLocation: session.location?.city,
     travelMonth: parseMonth(t),
@@ -661,7 +682,8 @@ export function parseTravelContextFromText(
     ...(startFromText ? { startDate: startFromText } : {}),
     ...(endFromText ? { endDate: endFromText } : {}),
     ...(daysFromText != null ? { days: daysFromText } : {}),
-    mood: preset?.mood ?? moodHint ?? parseVibe(t),
+    mood: parsedMood,
+    moodEvidenceSource: resolveMoodEvidenceSource(t, parsedMood, inheritedMoodEvidenceSource),
     companion: parseCompanion(t) ?? session.discovery?.companionship,
     interests: parseInterests(t, moodHint),
     transportMode: parseTransport(t) ?? session.transportation,

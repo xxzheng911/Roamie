@@ -38,6 +38,20 @@ export type PlaceRecommendationIntent =
   | "bar"
   | "indoor";
 
+export type RecommendationPreferenceEvidenceSource =
+  | "USER_MESSAGE"
+  | "SESSION_CONTEXT"
+  | "PLUS_PROFILE"
+  | "CATEGORY_DERIVED"
+  | "AI_INFERRED"
+  | "SYSTEM_SYNTHESIZED";
+
+export function isGroundedPreferenceEvidenceSource(
+  source: RecommendationPreferenceEvidenceSource | undefined,
+): boolean {
+  return source === "USER_MESSAGE" || source === "SESSION_CONTEXT" || source === "PLUS_PROFILE";
+}
+
 export type PlaceRecommendationContext = {
   /** 僅供相容；優先使用 categoryIntent */
   categoryLabel?: string;
@@ -45,6 +59,8 @@ export type PlaceRecommendationContext = {
   categoryIntent?: PlaceRecommendationIntent | string;
   distanceMeters?: number;
   mood?: string;
+  /** Provenance for outward-facing personalization claims. */
+  preferenceEvidenceSource?: RecommendationPreferenceEvidenceSource;
   isSavedFavorite?: boolean;
 };
 
@@ -564,7 +580,9 @@ function buildReasonFromIdentity(
     weatherSupplement(weather, identity),
     omitGeneric ? null : hoursSupplement(place),
     timeSupplement(identity, hour),
-    ctx.mood ? `呼應你「${ctx.mood}」的心情` : null,
+    ctx.mood && isGroundedPreferenceEvidenceSource(ctx.preferenceEvidenceSource)
+      ? `呼應你「${ctx.mood}」的心情`
+      : null,
   ]);
 }
 
@@ -603,9 +621,12 @@ export function buildPlaceRecommendationReason(
   locale?: Locale,
 ): string {
   const ctx = context ?? {};
+  const groundedContextMood = isGroundedPreferenceEvidenceSource(ctx.preferenceEvidenceSource)
+    ? ctx.mood
+    : undefined;
   const profile: UserProfileForReason = {
     ...userProfile,
-    mood: ctx.mood ?? userProfile?.mood,
+    mood: groundedContextMood ?? userProfile?.mood,
   };
   const hour =
     currentTime instanceof Date

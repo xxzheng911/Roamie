@@ -592,6 +592,7 @@ function placesToRecommendations(
         place,
         ctx: {
           mood: context.mood,
+          preferenceEvidenceSource: context.moodEvidenceSource,
           locale,
           distanceMeters: distM,
           categoryLabel,

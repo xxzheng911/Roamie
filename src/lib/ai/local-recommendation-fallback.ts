@@ -118,6 +118,7 @@ export function generateLocalRecommendationFallback(
       place: p,
       ctx: {
         mood: ctx.mood,
+        preferenceEvidenceSource: ctx.moodEvidenceSource,
         weather: ctx.weather,
         locale,
         currentTime: new Date(),

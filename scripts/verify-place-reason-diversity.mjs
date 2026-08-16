@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { buildPlaceRecommendationReason } from "../src/lib/build-place-recommendation-reason.ts";
 import {
+  collectPlaceReasonEvidence,
   FORBIDDEN_REASON_INFERENCES,
   assignDiversePlaceReasons,
   buildDiversePlaceRecommendationReasons,
@@ -17,6 +18,7 @@ import {
   hasCanonicalPlaceDetailReason,
   resolvePlaceDetailReason,
 } from "../src/lib/place-detail-resolve.ts";
+import { resolveMoodEvidenceSource } from "../src/lib/ai/travel-context.ts";
 
 function test(name, fn) {
   try {
@@ -398,6 +400,71 @@ test("diversity engine failure falls back to per-place builder", () => {
   ]);
   assert.equal(reasons.length, 2);
   assert.ok(reasons.every((reason) => typeof reason === "string" && reason.trim()));
+});
+
+test("category-derived mood cannot become preference evidence", () => {
+  const place = stubPlace({ id: "category-derived", name: "Category Cafe" });
+  const evidence = collectPlaceReasonEvidence(place, {
+    mood: "美食咖啡",
+    preferenceEvidenceSource: "CATEGORY_DERIVED",
+    categoryIntent: "cafe",
+  });
+  assert.equal(evidence.some((item) => item.code === "preference_fit"), false);
+
+  const reason = buildPlaceRecommendationReason(place, null, null, undefined, {
+    mood: "美食咖啡",
+    preferenceEvidenceSource: "CATEGORY_DERIVED",
+    categoryIntent: "cafe",
+  });
+  assert.doesNotMatch(reason, /呼應你.*美食咖啡|符合你的偏好|你應該會喜歡/);
+});
+
+test("travel context distinguishes category routing from explicit mood evidence", () => {
+  assert.equal(
+    resolveMoodEvidenceSource("台南有什麼咖啡廳推薦", "美食咖啡"),
+    "CATEGORY_DERIVED",
+  );
+  assert.equal(
+    resolveMoodEvidenceSource("今天想喝咖啡", "美食咖啡"),
+    "USER_MESSAGE",
+  );
+  assert.equal(
+    resolveMoodEvidenceSource("今天想放鬆", "放鬆"),
+    "USER_MESSAGE",
+  );
+  assert.equal(
+    resolveMoodEvidenceSource("還有嗎", "美食咖啡", "CATEGORY_DERIVED"),
+    "CATEGORY_DERIVED",
+  );
+});
+
+test("explicit user and session mood may ground preference evidence", () => {
+  const place = stubPlace({ id: "user-grounded", name: "Grounded Cafe" });
+  for (const preferenceEvidenceSource of ["USER_MESSAGE", "SESSION_CONTEXT"]) {
+    const evidence = collectPlaceReasonEvidence(place, {
+      mood: "今天想放鬆",
+      preferenceEvidenceSource,
+      categoryIntent: "cafe",
+    });
+    assert.equal(evidence.some((item) => item.code === "preference_fit"), true);
+  }
+});
+
+test("AI-inferred mood is not personalization evidence", () => {
+  const place = stubPlace({ id: "ai-inferred", name: "Inferred Cafe" });
+  const evidence = collectPlaceReasonEvidence(place, {
+    mood: "悠閒",
+    preferenceEvidenceSource: "AI_INFERRED",
+  });
+  assert.equal(evidence.some((item) => item.code === "preference_fit"), false);
+});
+
+test("completed Plus profile remains valid preference evidence", () => {
+  const place = stubPlace({ id: "plus-grounded", name: "Plus Cafe" });
+  const evidence = collectPlaceReasonEvidence(place, {}, {
+    userProfile: { onboarded: true, interests: ["咖啡"] },
+  });
+  assert.equal(evidence.some((item) => item.code === "preference_fit"), true);
 });
 
 console.info("\n[verify:place-reason-diversity] all passed");
