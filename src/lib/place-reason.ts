@@ -62,7 +62,7 @@ function distanceHint(meters?: number): string | null {
   if (meters === undefined) return null;
   if (meters < 800) return "距離你目前位置很近";
   if (meters < 2500) return "走路或短程交通就能到";
-  if (meters < 8000) return "不算遠，適合順路過去";
+  if (meters < 8000) return `直線距離約 ${(meters / 1000).toFixed(1)} 公里`;
   return null;
 }
 

@@ -35,7 +35,7 @@ export const PLACE_REASON_EVIDENCE_CODES = [
   "weather_fit",
   "preference_fit",
   "route_fit",
-  "category_identity",
+  "grounded_neutral",
 ] as const;
 
 export type PlaceReasonEvidenceCode = (typeof PLACE_REASON_EVIDENCE_CODES)[number];
@@ -83,7 +83,6 @@ export type AssignedPlaceReason = {
 };
 
 const NEARBY_MAX_M = 800;
-const ROUTE_FIT_MAX_M = 5000;
 const HIGH_RATING_MIN = 4.3;
 const HIGH_REVIEW_COUNT_MIN = 80;
 const LATE_CLOSE_MINUTES = 21 * 60;
@@ -304,18 +303,10 @@ export function collectPlaceReasonEvidence(
       code: "nearby",
       score: 700 + Math.max(0, (NEARBY_MAX_M - distance) / 10),
     });
-  } else if (
-    ctx.alongRoute === true ||
-    place.destinationScope === "nearby_extension" ||
-    (distance != null && distance >= NEARBY_MAX_M && distance < ROUTE_FIT_MAX_M)
-  ) {
-    const distBonus =
-      distance != null && distance >= NEARBY_MAX_M && distance < ROUTE_FIT_MAX_M
-        ? (ROUTE_FIT_MAX_M - distance) / 100
-        : 0;
+  } else if (ctx.alongRoute === true) {
     evidence.push({
       code: "route_fit",
-      score: 200 + distBonus + (place.destinationScope === "nearby_extension" || ctx.alongRoute ? 30 : 0),
+      score: 230,
     });
   }
 
@@ -328,7 +319,7 @@ export function collectPlaceReasonEvidence(
   }
 
   evidence.push({
-    code: "category_identity",
+    code: "grounded_neutral",
     score: identity === "generic" || identity === "unsupported" ? 5 : 10,
   });
 
@@ -343,7 +334,7 @@ function pickEvidenceCode(
     (item) => item.code !== "high_rating" && item.code !== "high_review_count",
   );
   const unused = primary.find((item) => !used.has(item.code));
-  return unused?.code ?? primary[0]?.code ?? "category_identity";
+  return unused?.code ?? primary[0]?.code ?? "grounded_neutral";
 }
 
 function renderEvidenceReason(
@@ -372,12 +363,12 @@ function renderEvidenceReason(
     case "high_review_count":
       body =
         locale === "zh-TW"
-          ? `這是${label}，類型符合這次推薦`
+          ? "目前可確認的資訊較少，先提供你作為選擇參考"
           : locale === "ja"
-            ? `${label}で、今回の条件に合う`
+            ? "確認できる情報が少ないため、候補として参考にしてください"
             : locale === "ko"
-              ? `${label}라서 이번 추천 유형에 맞아요`
-              : `A ${label} that matches this search`;
+              ? "확인 가능한 정보가 적어 선택 후보로 먼저 보여드려요"
+              : "There is limited verified detail, so consider this as an option";
       break;
     case "open_now":
       body = copy.openNow;
@@ -476,36 +467,25 @@ function renderEvidenceReason(
       }
       break;
     case "route_fit":
-      if (place.destinationScope === "nearby_extension" || ctx.alongRoute) {
-        body =
-          locale === "zh-TW"
-            ? "在你行程延伸的附近，適合順路安排"
-            : locale === "ja"
-              ? "行程の延長線上で寄りやすい"
-              : locale === "ko"
-                ? "일정 동선 근처라 들르기 좋아요"
-                : "Along your extended route — easy to fold in";
-      } else {
-        body =
-          locale === "zh-TW"
-            ? "不算遠，適合順路過去"
-            : locale === "ja"
-              ? "遠くなく、ついでに寄りやすい"
-              : locale === "ko"
-                ? "너무 멀지 않아 들르기 좋아요"
-                : "Not far — easy to stop by";
-      }
+      body =
+        locale === "zh-TW"
+          ? "位於已確認的行程動線上，方便一併安排"
+          : locale === "ja"
+            ? "確認済みの行程ルート上にあり、組み込みやすい"
+            : locale === "ko"
+              ? "확인된 일정 동선에 있어 함께 넣기 좋아요"
+              : "On the confirmed route, so it is easy to include";
       break;
-    case "category_identity":
+    case "grounded_neutral":
     default:
       body =
         locale === "zh-TW"
-          ? `這是${label}，類型符合這次推薦`
+          ? "目前可確認的資訊較少，先提供你作為選擇參考"
           : locale === "ja"
-            ? `${label}で、今回の条件に合う`
+            ? "確認できる情報が少ないため、候補として参考にしてください"
             : locale === "ko"
-              ? `${label}라서 이번 추천 유형에 맞아요`
-              : `A ${label} that matches this search`;
+              ? "확인 가능한 정보가 적어 선택 후보로 먼저 보여드려요"
+              : "There is limited verified detail, so consider this as an option";
       break;
   }
 
@@ -539,16 +519,9 @@ export function assignDiversePlaceReasons(
     } catch {
       return {
         placeId: place.id,
-        evidenceCode: "category_identity" as const,
-        reason: buildPlaceRecommendationReason(
-          place,
-          shared.userProfile ?? null,
-          shared.weather,
-          shared.currentTime,
-          ctx,
-          shared.locale,
-        ),
-        availableCodes: ["category_identity"],
+        evidenceCode: "grounded_neutral" as const,
+        reason: renderEvidenceReason(place, "grounded_neutral", ctx, shared),
+        availableCodes: ["grounded_neutral"],
       };
     }
   });

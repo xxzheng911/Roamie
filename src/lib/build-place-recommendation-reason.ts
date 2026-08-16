@@ -65,25 +65,25 @@ export type PlaceRecommendationContext = {
 };
 
 const SAFE_FALLBACK =
-  "這個地點類型符合目前的搜尋條件。";
+  "目前可確認的資訊較少，先提供你作為選擇參考。";
 
 /** 各身分的主文案模板（禁止跨類型亂套） */
 const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
   bookstore: [
-    "這是一間書店，符合這次找書店的需求。",
+    SAFE_FALLBACK,
   ],
   breakfast_shop: [
     "這是一間在地早餐店，適合早上順路吃點台式早餐再開始今天行程。",
     "早餐店節奏輕快，適合一早先填肚子、再出發逛。",
   ],
   cafe: [
-    "這是一間咖啡店，符合這次找咖啡廳的需求。",
+    SAFE_FALLBACK,
   ],
   bakery: [
-    "這是一間烘焙坊，符合這次找烘焙店的需求。",
+    SAFE_FALLBACK,
   ],
   dessert: [
-    "這是甜點類店家，符合這次找甜點的需求。",
+    SAFE_FALLBACK,
   ],
   restaurant: [
     "這是一間餐廳，適合正餐或好好吃頓飯再繼續走。",
@@ -105,10 +105,10 @@ const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
     "可安排下午購物，雨天也適合。",
   ],
   tourist_attraction: [
-    "這是一處景點，類型符合這次推薦。",
+    SAFE_FALLBACK,
   ],
   museum: [
-    "這是一座博物館，類型符合這次推薦。",
+    SAFE_FALLBACK,
   ],
   night_market: [
     "晚上氣氛不錯，很適合晚上散步、邊逛邊吃。",
@@ -119,7 +119,7 @@ const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
     "適合慢慢逛街放空，可以一次逛很多小店。",
   ],
   park: [
-    "這是公園或綠地，類型符合這次推薦。",
+    SAFE_FALLBACK,
   ],
   bar: [
     "這裡適合夜晚小坐，散步後來一杯剛好。",
@@ -264,7 +264,7 @@ function distancePhrase(meters?: number): string | null {
   if (meters === undefined) return null;
   if (meters < 600) return "距離你很近";
   if (meters < 1800) return "走路或短程就能到";
-  if (meters < 5000) return "不算遠，適合順路過去";
+  if (meters < 5000) return `直線距離約 ${(meters / 1000).toFixed(1)} 公里`;
   if (meters < 15_000) return "稍遠一點，但值得專程安排";
   return "距離較遠，建議安排交通再前往";
 }
@@ -440,11 +440,9 @@ function buildSafeReason(
     if (w) parts.push(w);
     return parts.join(". ");
   }
-  const parts: string[] = ["這個地點類型符合目前的搜尋條件"];
+  const parts: string[] = [SAFE_FALLBACK.replace(/。$/, "")];
   const dist = distancePhrase(ctx.distanceMeters);
-  const rating = ratingPhrase(place.rating, place.userRatingCount);
   if (dist) parts.push(dist);
-  if (rating) parts.push(rating);
   const w = weatherSupplement(weather);
   if (w) parts.push(w);
   const h = hoursSupplement(place);
@@ -454,7 +452,7 @@ function buildSafeReason(
   if (ctx.distanceMeters != null && ctx.distanceMeters >= 8000) {
     return `${lead}，建議安排交通後再前往。`;
   }
-  return `${lead}，可以順路安排進今天行程。`;
+  return `${lead}。`;
 }
 
 function appendSupplements(

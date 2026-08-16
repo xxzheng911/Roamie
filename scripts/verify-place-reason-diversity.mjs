@@ -179,13 +179,13 @@ test("5 cafes in one batch use distinct evidence types", () => {
   );
   const codes = assigned.map((row) => row.evidenceCode);
   assert.deepEqual(codes, [
-    "route_fit",
+    "grounded_neutral",
     "open_now",
     "nearby",
     "late_hours",
-    "category_identity",
+    "grounded_neutral",
   ]);
-  assert.equal(new Set(codes).size, 5);
+  assert.equal(new Set(codes).size, 4);
   for (const row of assigned) {
     assert.ok(row.reason.trim().length > 0);
     for (const banned of FORBIDDEN_REASON_INFERENCES) {
@@ -209,13 +209,13 @@ test("5 attractions in one batch use distinct evidence types", () => {
   );
   const codes = assigned.map((row) => row.evidenceCode);
   assert.deepEqual(codes, [
-    "route_fit",
+    "grounded_neutral",
     "open_now",
     "nearby",
     "late_hours",
-    "category_identity",
+    "grounded_neutral",
   ]);
-  assert.equal(new Set(codes).size, 5);
+  assert.equal(new Set(codes).size, 4);
 });
 
 test("rating and review counts remain supporting evidence, never the reason body", () => {
@@ -274,7 +274,8 @@ test("direct detail without recommendation context still builds a grounded fallb
   };
   const reason = resolvePlaceDetailReason(handoff);
   assert.equal(hasCanonicalPlaceDetailReason(handoff), false);
-  assert.ok(reason.includes("咖啡"));
+  assert.ok(reason.trim().length > 0);
+  assert.equal(reason.includes("類型符合"), false);
   for (const unsupported of ["安靜", "插座", "招牌", "景觀很好", "人少", "適合拍照"]) {
     assert.equal(reason.includes(unsupported), false);
   }
@@ -292,7 +293,7 @@ test("open_now evidence conflict uses second-rank evidence for later places", ()
   const assigned = assignDiversePlaceReasons(places.map((place) => ({ place })));
   const codes = assigned.map((row) => row.evidenceCode);
   assert.equal(codes[0], "open_now");
-  assert.equal(codes[1], "category_identity");
+  assert.equal(codes[1], "grounded_neutral");
   assert.ok(codes.filter((code) => code === "open_now").length < 5);
   assert.deepEqual(
     assigned.map((row) => row.placeId),
@@ -300,7 +301,7 @@ test("open_now evidence conflict uses second-rank evidence for later places", ()
   );
 });
 
-test("insufficient evidence falls back to category_identity without dropping places", () => {
+test("insufficient evidence uses grounded neutral copy without dropping places", () => {
   const places = [1, 2, 3].map((n) =>
     stubPlace({
       id: `sparse-${n}`,
@@ -309,12 +310,39 @@ test("insufficient evidence falls back to category_identity without dropping pla
   );
   const assigned = assignDiversePlaceReasons(places.map((place) => ({ place })));
   assert.equal(assigned.length, 3);
-  assert.ok(assigned.every((row) => row.evidenceCode === "category_identity"));
-  assert.ok(assigned.every((row) => row.reason.includes("咖啡")));
+  assert.ok(assigned.every((row) => row.evidenceCode === "grounded_neutral"));
+  assert.ok(assigned.every((row) => !row.reason.includes("類型符合")));
   assert.deepEqual(
     assigned.map((row) => row.placeId),
     places.map((p) => p.id),
   );
+});
+
+test("straight-line distance never becomes route_fit", () => {
+  const place = stubPlace({ id: "straight-line", name: "兩公里咖啡" });
+  const [assigned] = assignDiversePlaceReasons([
+    { place, context: { distanceMeters: 2000 } },
+  ]);
+  assert.notEqual(assigned.evidenceCode, "route_fit");
+  assert.equal(assigned.reason.includes("順路"), false);
+});
+
+test("verified alongRoute evidence may use route_fit", () => {
+  const place = stubPlace({ id: "real-route", name: "沿線咖啡" });
+  const [assigned] = assignDiversePlaceReasons([
+    { place, context: { distanceMeters: 2000, alongRoute: true } },
+  ]);
+  assert.equal(assigned.evidenceCode, "route_fit");
+  assert.match(assigned.reason, /確認的行程動線/);
+});
+
+test("direct detail fallback does not expose category tautology", () => {
+  const place = stubPlace({ id: "direct-neutral", name: "資料有限咖啡" });
+  const reason = buildPlaceRecommendationReason(place, null, null, undefined, {
+    categoryIntent: "cafe",
+  });
+  assert.equal(reason.includes("符合這次找咖啡廳"), false);
+  assert.equal(reason.includes("類型符合"), false);
 });
 
 test("single place skips batch diversity and matches buildPlaceRecommendationReason", () => {
@@ -380,7 +408,7 @@ test("Chat batch mapper keeps order and attaches diverse reasons", () => {
     CAFE_BATCH.map((p) => p.id),
   );
   const uniqueReasons = new Set(items.map((item) => item.reason));
-  assert.equal(uniqueReasons.size, items.length);
+  assert.ok(uniqueReasons.size >= 3, "reason diversity must not invent unsupported evidence");
 });
 
 test("diversity engine failure falls back to per-place builder", () => {
