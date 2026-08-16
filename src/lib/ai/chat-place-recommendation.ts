@@ -13,8 +13,13 @@ import {
 } from "@/lib/ai/chat-intent";
 import {
   isPlaceEligibleForShortcutScene,
+  RELAX_WALK_EXCLUDED_TYPES,
   RELAX_WALK_INCLUDED_TYPES,
 } from "@/lib/ai/shortcut-category-fidelity";
+import {
+  logShortcutRecommendationSummary,
+  type ShortcutRecommendationDiagnostics,
+} from "@/lib/ai/shortcut-recommendation-telemetry";
 import { foodPreferenceSearchQuery } from "@/lib/ai/chat-dining-flow";
 import {
   buildCampingRecommendationSummary,
@@ -733,6 +738,7 @@ function applyNearbyPlaceFilters(
     strictCafeGuard: boolean;
     placeDetailNearby?: boolean;
     tripAddPlace?: boolean;
+    shortcutDiagnostics?: ShortcutRecommendationDiagnostics;
   },
 ): PlaceResult[] {
   if (params.placeDetailNearby) {
@@ -771,8 +777,17 @@ function applyNearbyPlaceFilters(
       params.userText,
     );
   }
+  if (params.shortcutDiagnostics) {
+    params.shortcutDiagnostics.afterDestinationOrNearbyScopeCount = working.length;
+  }
   working = filterPlacesByExclusion(working, params.excluded);
   working = filterExcludedPlaceIds(working, params.excludePlaceIds);
+  if (params.shortcutDiagnostics) {
+    params.shortcutDiagnostics.afterExclusionCount = working.length;
+    params.shortcutDiagnostics.afterCanonicalIdCount = working.filter((place) =>
+      Boolean((place.id ?? "").trim()),
+    ).length;
+  }
   if (params.intent !== "restaurant" && !isFoodIntentText(params.userText ?? "")) {
     working = filterPlacesForAttractionRecommendation(working, {
       allowParks: params.allowParks,
@@ -787,6 +802,9 @@ function applyNearbyPlaceFilters(
   }
   const shortcutScene = resolveChatShortcutContext(params.userText ?? "")?.scene;
   working = working.filter((place) => isPlaceEligibleForShortcutScene(place, shortcutScene));
+  if (params.shortcutDiagnostics) {
+    params.shortcutDiagnostics.afterCategoryGuardCount = working.length;
+  }
   if (params.intent === "camping") {
     working = filterCampingPlaces(working);
   }
@@ -801,6 +819,9 @@ function applyNearbyPlaceFilters(
   working = filterPlacesByNearbyDistance(working, params.lat, params.lng, params.maxDistanceKm);
   if (params.tripAddPlace) {
     working = filterPlacesForTripAddPlaceRecommendation(working, params.intent);
+  }
+  if (params.shortcutDiagnostics) {
+    params.shortcutDiagnostics.afterQualityCount = working.length;
   }
   return working;
 }
@@ -829,6 +850,7 @@ export async function fetchNearbyPlacesForIntent(
     maxDistanceKm?: number;
     tripAddPlace?: boolean;
     nearbyGroups?: string[][];
+    shortcutDiagnostics?: ShortcutRecommendationDiagnostics;
   },
 ): Promise<PlaceResult[]> {
   const run = async (): Promise<PlaceResult[]> =>
@@ -958,7 +980,7 @@ async function fetchNearbyPlacesForIntentInner(
     const seen = new Set<string>();
     let places: PlaceResult[] = [];
     for (const attempt of searchAttempts) {
-      const { places: batch, error } = await runPlaceSearch(
+      const { places: batch, error, rawCount: attemptRawCount } = await runPlaceSearch(
         searchPlaces,
         lat,
         lng,
@@ -975,6 +997,11 @@ async function fetchNearbyPlacesForIntentInner(
       );
       if (error) lastError = error;
       lastRawCount = Math.max(lastRawCount, batch.length);
+      if (opts?.shortcutDiagnostics) {
+        opts.shortcutDiagnostics.attemptCount += 1;
+        opts.shortcutDiagnostics.requestsSent += 1;
+        opts.shortcutDiagnostics.rawCount += attemptRawCount;
+      }
       for (const place of batch) {
         const id = (place.id ?? place.name ?? "").trim();
         if (!id || seen.has(id)) continue;
@@ -1001,6 +1028,7 @@ async function fetchNearbyPlacesForIntentInner(
       strictCafeGuard,
       placeDetailNearby: opts?.placeDetailNearby,
       tripAddPlace: isTripAddPlace,
+      shortcutDiagnostics: opts?.shortcutDiagnostics,
     });
 
     logAiPipeline("[CHAT_PLACES_FILTERED_COUNT]", {
@@ -1113,7 +1141,7 @@ export async function buildNearbyPlaceRecommendation(params: {
   focusPlaceId?: string;
   /** 行程加點等需保留較多候選時使用（預設 5） */
   maxResults?: number;
-}): Promise<{ summary: string; payload: RoamiePayloadV2; recommendations: RoamieRecommendationItem[] }> {
+}): Promise<{ summary: string; payload: RoamiePayloadV2; recommendations: RoamieRecommendationItem[]; shortcutDiagnostics?: ShortcutRecommendationDiagnostics }> {
   const flow = beginPlacesFlow("chat_once");
   try {
     const {
@@ -1137,6 +1165,30 @@ export async function buildNearbyPlaceRecommendation(params: {
       hasPlusAccess,
     } = params;
     const pickCount = params.maxResults ?? RECOMMENDATION_COUNT;
+    const shortcut = resolveChatShortcutContext(userText);
+    const shortcutAttempt = shortcut
+      ? nearbySearchAttemptForIntent(intent, foodPreference, context, userText)
+      : null;
+    const shortcutDiagnostics: ShortcutRecommendationDiagnostics | undefined = shortcut
+      ? {
+          shortcut,
+          searchScope: searchContext?.searchMode ?? "nearby",
+          includedTypes: shortcutAttempt?.includedTypes ?? [],
+          excludedTypes:
+            shortcut.scene === "relax_walk" ? [...RELAX_WALK_EXCLUDED_TYPES] : [],
+          attemptCount: 0,
+          requestsSent: 0,
+          rawCount: 0,
+          afterDestinationOrNearbyScopeCount: 0,
+          afterExclusionCount: 0,
+          afterCanonicalIdCount: 0,
+          afterCategoryGuardCount: 0,
+          afterQualityCount: 0,
+          afterAlreadyRecommendedCount: 0,
+          renderableCount: 0,
+          finalCardCount: 0,
+        }
+      : undefined;
     const excluded =
       excludedCategories ??
       context.excludedCategories ??
@@ -1169,6 +1221,7 @@ export async function buildNearbyPlaceRecommendation(params: {
         placeDetailNearby: params.placeDetailNearby,
         focusPlaceId: params.focusPlaceId,
         maxResults: params.maxResults,
+        shortcutDiagnostics,
       },
     );
     places = filterAlreadyRecommendedPlaces(places, {
@@ -1176,6 +1229,9 @@ export async function buildNearbyPlaceRecommendation(params: {
       rejectedNames: rejectedPlaceNames,
       blockedCoreNames: coreBlock,
     });
+    if (shortcutDiagnostics) {
+      shortcutDiagnostics.afterAlreadyRecommendedCount = places.length;
+    }
 
     let foodDistricts: PlaceResult[] = [];
     const mealIntent = parseMealIntentFromText(userText);
@@ -1215,8 +1271,9 @@ export async function buildNearbyPlaceRecommendation(params: {
           recommendations: [],
           itinerary: [],
           generatedAt: new Date().toISOString(),
-        }, recommendations: [] };
+        }, recommendations: [], shortcutDiagnostics };
       }
+      if (shortcutDiagnostics) logShortcutRecommendationSummary(shortcutDiagnostics);
       throw new Error("places_empty");
     }
 
@@ -1254,6 +1311,7 @@ export async function buildNearbyPlaceRecommendation(params: {
           }
         : item;
     });
+    if (shortcutDiagnostics) shortcutDiagnostics.renderableCount = recommendations.length;
 
     const summary = mealIntent
       ? sanitizeMealSummaryText(buildSummary(intent, picks, context, excluded), mealIntent.slot)
@@ -1271,7 +1329,7 @@ export async function buildNearbyPlaceRecommendation(params: {
       generatedAt: new Date().toISOString(),
     };
 
-    return { summary, payload, recommendations };
+    return { summary, payload, recommendations, shortcutDiagnostics };
   } finally {
     endPlacesFlow(flow);
   }

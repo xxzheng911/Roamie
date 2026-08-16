@@ -5,6 +5,9 @@ import {
   RELAX_WALK_INCLUDED_TYPES,
 } from "../src/lib/ai/shortcut-category-fidelity.ts";
 import { recommendationToPlaceSnapshot } from "../src/lib/recommendation-place-handoff.ts";
+import {
+  resolveShortcutRecommendationFailureStage,
+} from "../src/lib/ai/shortcut-recommendation-telemetry.ts";
 
 const session = { phase: "INITIAL", selectedPlaces: [], recommendedPlaces: [] };
 
@@ -70,5 +73,36 @@ const snapshot = recommendationToPlaceSnapshot(recommendation);
 assert.equal(snapshot.primaryType, "museum");
 assert.deepEqual(snapshot.types, recommendation.types);
 assert.notEqual(snapshot.displayCategory, recommendation.type, "display category is canonical");
+
+const telemetryBase = {
+  shortcut: quiet.shortcutContext,
+  searchScope: "nearby",
+  includedTypes: ["cafe", "coffee_shop", "bakery"],
+  excludedTypes: [],
+  attemptCount: 1,
+  requestsSent: 1,
+  rawCount: 3,
+  afterDestinationOrNearbyScopeCount: 3,
+  afterExclusionCount: 3,
+  afterCanonicalIdCount: 3,
+  afterCategoryGuardCount: 3,
+  afterQualityCount: 3,
+  afterAlreadyRecommendedCount: 0,
+  renderableCount: 0,
+  finalCardCount: 0,
+};
+assert.equal(
+  resolveShortcutRecommendationFailureStage(telemetryBase),
+  "already_recommended_empty",
+);
+assert.equal(
+  resolveShortcutRecommendationFailureStage({
+    ...telemetryBase,
+    afterAlreadyRecommendedCount: 3,
+    renderableCount: 3,
+    finalCardCount: 3,
+  }),
+  "success",
+);
 
 console.info("[verify:shortcut-category-fidelity] all passed");

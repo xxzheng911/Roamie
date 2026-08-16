@@ -254,7 +254,12 @@ import {
   inferNearbyIntentFromContext,
   isNearbyPlaceIntent,
   sessionHasLocation,
+  resolveChatShortcutContext,
 } from "@/lib/ai/chat-intent";
+import {
+  logShortcutRecommendationRequestNotSent,
+  logShortcutRecommendationSummary,
+} from "@/lib/ai/shortcut-recommendation-telemetry";
 import {
   buildCampingIntroReply,
   campingSearchAttempts,
@@ -2767,7 +2772,7 @@ function Chat() {
       let placeCreditsHandle: CreditsOperationHandle | null = placeCreditsGate.handle;
 
       try {
-        const { summary, payload } = await buildNearbyPlaceRecommendation({
+        const { summary, payload, shortcutDiagnostics } = await buildNearbyPlaceRecommendation({
           intent,
           lat,
           lng,
@@ -2818,6 +2823,11 @@ function Chat() {
             summary,
             payload.recommendations ?? [],
           );
+        if (shortcutDiagnostics) {
+          shortcutDiagnostics.renderableCount = payload.recommendations?.length ?? 0;
+          shortcutDiagnostics.finalCardCount = filteredRecs.length;
+          logShortcutRecommendationSummary(shortcutDiagnostics);
+        }
         const syncedSummary =
           filteredRecs.length > 0
             ? buildSummaryForRecommendations(
@@ -6535,6 +6545,18 @@ function Chat() {
           !shouldFetchNearbyPlaces(nearbyIntent, nextSession, trimmed) ||
           !sessionHasLocation(nextSession)
         ) {
+          const shortcut = resolveChatShortcutContext(trimmed);
+          if (shortcut) {
+            logShortcutRecommendationRequestNotSent(
+              shortcut,
+              "nearby",
+              shortcut.scene === "quiet_cafe"
+                ? ["cafe", "coffee_shop", "bakery"]
+                : shortcut.scene === "relax_walk"
+                  ? ["tourist_attraction", "park", "museum", "art_gallery"]
+                  : ["museum", "shopping_mall", "cafe", "book_store", "tourist_attraction"],
+            );
+          }
           return false;
         }
         setStreaming(true);

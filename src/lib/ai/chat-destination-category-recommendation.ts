@@ -110,6 +110,8 @@ import {
   logDestinationCategoryPlaceSearchSummary,
   type DestinationCategoryPlaceSearchDiagnostics,
 } from "@/lib/ai/destination-category-place-search-telemetry";
+import { resolveChatShortcutContext } from "@/lib/ai/chat-intent";
+import { logShortcutRecommendationSummary } from "@/lib/ai/shortcut-recommendation-telemetry";
 
 const PER_GROUP_TARGET = 3;
 const SINGLE_INTENT_MAX = 6;
@@ -840,6 +842,26 @@ export async function buildDestinationCategoryRecommendations(params: {
       searchDiagnostics.renderableCount = recommendations.length;
       searchDiagnostics.finalRecommendationCount = recommendations.length;
       logDestinationCategoryPlaceSearchSummary(searchDiagnostics);
+      const shortcut = resolveChatShortcutContext(userText);
+      if (shortcut) {
+        logShortcutRecommendationSummary({
+          shortcut,
+          searchScope: "destination",
+          includedTypes: [...searchDiagnostics.includedTypes].sort(),
+          excludedTypes: [],
+          attemptCount: searchDiagnostics.attemptCount,
+          requestsSent: searchDiagnostics.requestsSent,
+          rawCount: searchDiagnostics.rawCount,
+          afterDestinationOrNearbyScopeCount: searchDiagnostics.afterDestinationFilterCount,
+          afterExclusionCount: searchDiagnostics.afterExclusionCount,
+          afterCanonicalIdCount: searchDiagnostics.afterCanonicalIdCount,
+          afterCategoryGuardCount: searchDiagnostics.afterCategoryGuardCount,
+          afterQualityCount: searchDiagnostics.afterQualityCount,
+          afterAlreadyRecommendedCount: places.length,
+          renderableCount: searchDiagnostics.renderableCount,
+          finalCardCount: searchDiagnostics.finalRecommendationCount,
+        });
+      }
 
       if (recommendations.length > 0) {
         logChatPlacesResponse(recommendations.length, `category_${intent}`);
