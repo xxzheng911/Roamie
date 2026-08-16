@@ -27,6 +27,10 @@ import {
 import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 import { isExplicitDeviceNearbyRequest } from "@/lib/ai/recommendation-search-scope";
 import type { DestinationAreaScope } from "@/lib/ai/destination-travel-profile";
+import {
+  evidenceIncludesArea,
+  evidenceIncludesParentCity,
+} from "@/lib/ai/destination-area-aliases";
 
 export type ChatPlaceSearchMode = "destination" | "nearby";
 
@@ -88,58 +92,16 @@ export type DestinationAreaMatch = {
   parentCityMatched: boolean;
 };
 
-const AREA_ADDRESS_ALIASES: Record<string, string[]> = {
-  安平: ["Anping"],
-};
-
-function normalizeRegionEvidence(value: string): string {
-  return value
-    .normalize("NFKC")
-    .trim()
-    .replace(/臺/g, "台")
-    .replace(/[\s,，、/／.·'’\-]+/g, "")
-    .toLowerCase();
-}
-
-function areaEvidenceAliases(area: string): string[] {
-  const normalized = normalizeDestinationLabel(area).trim();
-  const stem = normalized.replace(/(?:區|区|District)$/i, "").trim();
-  return [...new Set([
-    normalized,
-    stem,
-    `${stem}區`,
-    `${stem}区`,
-    `${stem} District`,
-    ...(AREA_ADDRESS_ALIASES[stem] ?? []),
-    ...(AREA_ADDRESS_ALIASES[stem] ?? []).map((alias) => `${alias} District`),
-  ].filter(Boolean))];
-}
-
-function parentCityEvidenceAliases(parentCity: string): string[] {
-  const normalized = normalizeDestinationLabel(parentCity).trim();
-  const aliases = [
-    normalized,
-    normalized.replace(/台/g, "臺"),
-    normalized.replace(/臺/g, "台"),
-    EN_CITY_NAMES[normalized],
-    EN_CITY_NAMES[normalized.replace(/臺/g, "台")],
-  ];
-  return [...new Set(aliases.filter((alias): alias is string => Boolean(alias)))];
-}
-
 /** Match structured city + area evidence without treating distance or the place name as area proof. */
 export function matchPlaceToDestinationArea(
   place: PlaceResult,
   scope: DestinationAreaScope,
 ): DestinationAreaMatch {
-  const address = normalizeRegionEvidence(place.address ?? "");
-  const parentCityMatched = parentCityEvidenceAliases(scope.parentCity).some((marker) =>
-    address.includes(normalizeRegionEvidence(marker)),
-  );
-  const areaMatched = areaEvidenceAliases(scope.area).some((alias) =>
-    address.includes(normalizeRegionEvidence(alias)),
-  );
-  return { areaMatched, parentCityMatched };
+  const address = place.address ?? "";
+  return {
+    areaMatched: evidenceIncludesArea(address, scope.area),
+    parentCityMatched: evidenceIncludesParentCity(address, scope.parentCity),
+  };
 }
 
 export function filterPlacesByDestinationArea(

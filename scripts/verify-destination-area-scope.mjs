@@ -350,6 +350,37 @@ assert.deepEqual(validatedShibuya, {
   searchScope: "area",
 });
 
+const validatedShibuyaJa = await resolveValidatedDestinationAreaScope({
+  input: "澀谷有什麼咖啡廳",
+  locale: "zh-TW",
+  geocodeFn: async () => ({
+    location: {
+      placeId: "mock:shibuya-ja-provider",
+      country: "日本",
+      city: "東京",
+      region: "東京都",
+      district: "渋谷区",
+      sublocality: "渋谷区",
+      lat: 35.66,
+      lng: 139.7,
+      formattedName: "渋谷区",
+      displayLabel: "東京都渋谷区",
+      address: "日本東京都渋谷区",
+    },
+    error: null,
+  }),
+});
+assert.deepEqual(
+  validatedShibuyaJa,
+  {
+    displayLabel: "東京澀谷",
+    parentCity: "東京",
+    area: "澀谷",
+    searchScope: "area",
+  },
+  "Japanese 渋谷区 must uniquely confirm Traditional 澀谷 without a Tokyo special case",
+);
+
 assert.equal(
   await resolveValidatedDestinationAreaScope({
     input: "XX有什麼咖啡廳",
@@ -419,6 +450,79 @@ assert.deepEqual(
 assert.deepEqual(
   matchPlaceToDestinationArea(place("city", "台南市中西區正興街 3 號"), anpingScope),
   { areaMatched: false, parentCityMatched: true },
+);
+
+const shibuyaScope = resolveDestinationAreaScope("東京澀谷");
+assert.ok(shibuyaScope);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("shibuya-zh", "東京都澀谷區道玄坂 1-1"), shibuyaScope),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("shibuya-ja", "東京都渋谷区道玄坂 1-1"), shibuyaScope),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(
+    place("shibuya-en", "1-1 Dogenzaka, Shibuya City, Tokyo, Japan"),
+    shibuyaScope,
+  ),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("shibuya-ku", "東京都渋谷区神南 1-1"), shibuyaScope),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("shinjuku", "東京都新宿区西新宿 1-1"), shibuyaScope),
+  { areaMatched: false, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("minato", "東京都港区六本木 1-1"), shibuyaScope),
+  { areaMatched: false, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("meguro", "東京都目黒区中目黒 1-1"), shibuyaScope),
+  { areaMatched: false, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("setagaya", "東京都世田谷区三軒茶屋 1-1"), shibuyaScope),
+  { areaMatched: false, parentCityMatched: true },
+);
+
+const shinjukuScope = resolveDestinationAreaScope("東京新宿");
+assert.ok(shinjukuScope);
+assert.deepEqual(
+  matchPlaceToDestinationArea(
+    place("shinjuku-en", "1-1 Nishishinjuku, Shinjuku City, Tokyo, Japan"),
+    shinjukuScope,
+  ),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("shinjuku-other-ward", "東京都渋谷区道玄坂 1-1"), shinjukuScope),
+  { areaMatched: false, parentCityMatched: true },
+);
+
+assert.equal(
+  locationValidatesDestinationArea(
+    { displayLabel: "東京澀谷", parentCity: "東京", area: "澀谷" },
+    {
+      placeId: "mock:shibuya-ja",
+      country: "日本",
+      city: "Tokyo",
+      region: "Tokyo",
+      district: "Shibuya City",
+      sublocality: "渋谷区",
+      lat: 35.66,
+      lng: 139.7,
+      formattedName: "Shibuya City",
+      displayLabel: "Shibuya City, Tokyo",
+      address: "Tokyo, Shibuya City, Japan",
+    },
+  ),
+  true,
+  "Japanese/English Shibuya evidence must validate Traditional 澀谷",
 );
 
 const scoped = (id, sourceScope, areaMatched) => ({

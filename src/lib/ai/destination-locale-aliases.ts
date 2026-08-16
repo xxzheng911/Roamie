@@ -138,3 +138,11 @@ export function applyCityLocaleAlias(label: string): string {
   }
   return raw;
 }
+
+export function cityLocaleEvidenceAliases(label: string): string[] {
+  const canonical = applyCityLocaleAlias(label);
+  const aliases = Object.entries(CITY_LOCALE_ALIASES)
+    .filter(([, zh]) => zh === canonical)
+    .map(([alias]) => alias);
+  return [...new Set([canonical, ...aliases])];
+}

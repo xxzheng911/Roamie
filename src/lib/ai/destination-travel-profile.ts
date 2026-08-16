@@ -28,6 +28,13 @@ import {
   logDestinationContextInvalid,
   resolvePlanningDestination,
 } from "@/lib/ai/resolved-trip-destination";
+import {
+  administrativeLabelsMatch,
+  applyAreaLocaleAlias,
+  evidenceIncludesArea,
+  evidenceIncludesParentCity,
+  stripAdministrativeSuffix,
+} from "@/lib/ai/destination-area-aliases";
 
 export type DestinationTravelTheme = {
   /** Combination title shown to user */
@@ -398,34 +405,26 @@ export function locationValidatesDestinationArea(
   location: TripLocation | null,
 ): boolean {
   if (!location) return false;
-  const blob = areaScopeKey(
-    [
-      location.city,
-      location.region,
-      location.district,
-      location.sublocality,
-      location.formattedName,
-      location.displayLabel,
-      location.address,
-    ]
-      .filter(Boolean)
-      .join(" "),
-  );
-  const area = areaScopeKey(candidate.area).replace(/[區区]$/, "");
-  const city = areaScopeKey(candidate.parentCity).replace(/[市縣县]$/, "");
+  const blob = [
+    location.city,
+    location.region,
+    location.district,
+    location.sublocality,
+    location.formattedName,
+    location.displayLabel,
+    location.address,
+  ]
+    .filter(Boolean)
+    .join(" ");
   return Boolean(
     location.placeId &&
-      area &&
-      city &&
-      blob.includes(area) &&
-      blob.includes(city),
+      evidenceIncludesArea(blob, candidate.area) &&
+      evidenceIncludesParentCity(blob, candidate.parentCity),
   );
 }
 
 function normalizedAdministrativeLabel(value: string | undefined): string {
-  return normalizeDestinationLabel(value ?? "")
-    .replace(/[\s,，、/／-]+/g, "")
-    .replace(/(?:市|縣|县|區|区|鎮|镇|鄉|乡|町)$/u, "");
+  return stripAdministrativeSuffix(applyAreaLocaleAlias(value ?? ""));
 }
 
 function destinationAreaCandidateFromProvider(
@@ -438,11 +437,13 @@ function destinationAreaCandidateFromProvider(
   const providerAreas = [location.district, location.sublocality, location.city]
     .map(normalizedAdministrativeLabel)
     .filter(Boolean);
-  if (!expectedArea || !providerAreas.some((area) => area === expectedArea)) return null;
+  if (!expectedArea || !providerAreas.some((area) => administrativeLabelsMatch(area, expectedArea))) {
+    return null;
+  }
 
   const parentCity = [location.city, location.region]
     .map(normalizedAdministrativeLabel)
-    .find((label) => Boolean(label && label !== expectedArea));
+    .find((label) => Boolean(label && !administrativeLabelsMatch(label, expectedArea)));
   if (!parentCity) return null;
 
   return {
