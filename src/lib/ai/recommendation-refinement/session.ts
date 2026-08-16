@@ -82,8 +82,12 @@ export function ensureActiveRecommendationContext(
   const entity = resolveDestinationEntity(params.destination);
   const placeIds = (params.places ?? []).map(placeIdOf).filter(Boolean);
   const canonicalKeys = (params.places ?? []).map(canonicalKeyOf).filter((k) => k && k !== "n:");
+  const destinationChanged =
+    Boolean(existing?.destinationName) &&
+    normalizePlaceName(existing?.destinationDisplayName ?? existing?.destinationName ?? "") !==
+      normalizePlaceName(params.destination);
 
-  if (existing && existing.intent === intent) {
+  if (existing && existing.intent === intent && !destinationChanged) {
     // Same intent — refresh geo if missing, append places
     const withGeo: ActiveRecommendationContext = {
       ...existing,

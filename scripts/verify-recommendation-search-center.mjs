@@ -18,6 +18,7 @@ import { isNearbyPlaceIntent } from "../src/lib/ai/chat-intent.ts";
 import { shouldFetchNearbyPlaces } from "../src/lib/ai/chat-dining-flow.ts";
 import { resolveChatIntentArbitration } from "../src/lib/ai/recommendation-refinement/arbitrate.ts";
 import { resolveDestinationApproxCenter } from "../src/lib/ai/destination-geocode.ts";
+import { ensureActiveRecommendationContext } from "../src/lib/ai/recommendation-refinement/session.ts";
 
 const KAOHSIUNG = { lat: 22.6399, lng: 120.2935 };
 const HOKKAIDO = resolveDestinationApproxCenter("北海道") ?? {
@@ -234,6 +235,118 @@ check("Case 4: 有大阪的嗎 → destination 大阪", () => {
   assert.equal(center?.destination, "大阪");
   assert.equal(center?.deviceLocationUsed, false);
   assert.ok(Math.abs((center?.latitude ?? 0) - KAOHSIUNG.lat) > 1);
+});
+
+check("Case 4b: explicit destination replaces stale context and centroid", () => {
+  const previous = shoppingSession({
+    activeCategoryIntent: "cafe",
+    recommendationSession: {
+      ...shoppingSession().recommendationSession,
+      destination: "台南安平",
+      topic: "cafe",
+      pool: [{ name: "安平咖啡", googlePlaceId: "anping_1" }],
+      cursor: 1,
+      exhausted: true,
+      searchCentroid: { lat: 22.9997, lng: 120.1608 },
+    },
+    activeRecommendationContext: {
+      ...shoppingSession().activeRecommendationContext,
+      destinationName: "台南安平",
+      destinationDisplayName: "台南安平",
+      resolvedSearchCity: "台南",
+      latitude: 22.9997,
+      longitude: 120.1608,
+      intent: "cafe",
+      exhausted: true,
+    },
+  });
+  const scope = resolveRecommendationSearchScope({
+    userText: "高雄鹽埕有什麼咖啡廳推薦",
+    session: previous,
+    context: previous.travelContext,
+  });
+  assert.equal(scope?.source, "explicit_user_destination");
+  assert.equal(scope?.destinationName, "高雄鹽埕");
+  assert.equal(scope?.resolvedSearchCity, "高雄");
+  assert.equal(scope?.destinationArea, "鹽埕");
+  assert.notEqual(scope?.latitude, previous.activeRecommendationContext.latitude);
+  assert.notEqual(scope?.longitude, previous.activeRecommendationContext.longitude);
+
+  const next = ensureActiveRecommendationContext(previous, {
+    destination: "高雄鹽埕",
+    intent: "cafe",
+    places: [{ name: "鹽埕咖啡", googlePlaceId: "yancheng_1" }],
+    resolvedSearchCity: "高雄",
+    latitude: scope?.latitude,
+    longitude: scope?.longitude,
+  });
+  assert.equal(next.destinationName, "高雄鹽埕");
+  assert.equal(next.resolvedSearchCity, "高雄");
+  assert.deepEqual(next.previousPlaceIds, ["yancheng_1"]);
+  assert.notEqual(next.exhausted, true);
+});
+
+check("Case 4c: same-city area replacement does not retain the old area", () => {
+  const previous = shoppingSession({
+    activeCategoryIntent: "cafe",
+    activeRecommendationContext: {
+      ...shoppingSession().activeRecommendationContext,
+      destinationName: "台南安平",
+      destinationDisplayName: "台南安平",
+      resolvedSearchCity: "台南",
+      latitude: 22.9997,
+      longitude: 120.1608,
+      intent: "cafe",
+      exhausted: true,
+    },
+  });
+  const scope = resolveRecommendationSearchScope({
+    userText: "台南中西區有什麼咖啡廳推薦",
+    session: previous,
+    context: previous.travelContext,
+  });
+  assert.equal(scope?.destinationName, "台南中西區");
+  assert.equal(scope?.resolvedSearchCity, "台南");
+  assert.equal(scope?.destinationArea, "中西區");
+  assert.notEqual(scope?.latitude, previous.activeRecommendationContext.latitude);
+});
+
+check("Case 4d: continuation keeps the existing recommendation scope", () => {
+  const session = shoppingSession();
+  const scope = resolveRecommendationSearchScope({
+    userText: "還有嗎",
+    session,
+    context: session.travelContext,
+  });
+  assert.equal(scope?.source, "conversation_trip_destination");
+  assert.equal(scope?.destinationName, "北海道");
+  assert.equal(scope?.latitude, HOKKAIDO.lat);
+  assert.equal(scope?.longitude, HOKKAIDO.lng);
+});
+
+check("Case 4e: cross-country area replacement rebuilds scope", () => {
+  const previous = shoppingSession({
+    activeCategoryIntent: "cafe",
+    activeRecommendationContext: {
+      ...shoppingSession().activeRecommendationContext,
+      destinationName: "台南安平",
+      destinationDisplayName: "台南安平",
+      resolvedSearchCity: "台南",
+      latitude: 22.9997,
+      longitude: 120.1608,
+      intent: "cafe",
+    },
+  });
+  const scope = resolveRecommendationSearchScope({
+    userText: "東京上野有什麼咖啳推薦",
+    session: previous,
+    context: previous.travelContext,
+  });
+  assert.equal(scope?.destinationName, "東京上野");
+  assert.equal(scope?.resolvedSearchCity, "東京");
+  assert.equal(scope?.destinationArea, "上野");
+  assert.notEqual(scope?.latitude, previous.activeRecommendationContext.latitude);
+  assert.notEqual(scope?.longitude, previous.activeRecommendationContext.longitude);
 });
 
 // Case 5: isNearbyPlaceIntent is defined (no ReferenceError) + scope runtime

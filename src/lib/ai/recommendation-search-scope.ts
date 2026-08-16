@@ -85,8 +85,10 @@ export function resolveRecommendationSearchScope(params: {
 }): RecommendationSearchScope | null {
   const { userText, session, context } = params;
   const parsed = parsePlaceRecommendationIntent(userText);
+  const explicitAreaScope = resolveDestinationAreaScope(userText);
 
   const fromMessage =
+    explicitAreaScope?.displayLabel ||
     accept(parsed?.destinationDisplayLabel ?? parsed?.destinationName) ||
     accept(resolveDestinationFromText(userText));
   if (fromMessage) {
@@ -194,13 +196,14 @@ function finalize(
   const snapshotLng =
     session.activeRecommendationContext?.longitude ??
     session.recommendationSession?.searchCentroid?.lng;
+  const canReuseSnapshot = source !== "explicit_user_destination";
   return {
     destinationName: areaScope?.displayLabel ?? label,
     resolvedSearchCity: areaScope?.parentCity ?? resolvedSearchCity,
     destinationArea: areaScope?.area,
     searchScope: areaScope ? "area" : "city",
-    latitude: snapshotLat ?? approx?.lat,
-    longitude: snapshotLng ?? approx?.lng,
+    latitude: (canReuseSnapshot ? snapshotLat : undefined) ?? approx?.lat,
+    longitude: (canReuseSnapshot ? snapshotLng : undefined) ?? approx?.lng,
     source,
     deviceLocationIgnored,
     ...(entity.country ? {} : {}),
