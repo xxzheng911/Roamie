@@ -13,6 +13,10 @@ import {
 import { resolveChatIntentArbitration } from "../src/lib/ai/recommendation-refinement/arbitrate.ts";
 import { createActiveRecommendationContext } from "../src/lib/ai/recommendation-refinement/merge.ts";
 import { detectChatIntent } from "../src/lib/ai/chat-intent.ts";
+import {
+  buildMorePlacesContinuationAttempts,
+  planMorePlacesContinuationSearch,
+} from "../src/lib/ai/destination-place-recommendation.ts";
 
 const CONTINUE_PHRASES = [
   "還有嗎",
@@ -23,6 +27,11 @@ const CONTINUE_PHRASES = [
   "再給我更多",
   "附近還有嗎",
   "還有其他咖啡廳嗎",
+  "有其他的嗎",
+  "還有其他推薦嗎",
+  "還有別的嗎",
+  "其他呢",
+  "再來幾個",
 ];
 
 const NON_CONTINUE = [
@@ -105,5 +114,55 @@ for (const phrase of NON_CONTINUE) {
   );
 }
 console.log("  ✓ non-continue phrases rejected");
+
+const cafeAttempts = buildMorePlacesContinuationAttempts("台南安平", "cafe");
+assert.ok(cafeAttempts.length >= 2, "cafe continuation has expandable strategies");
+assert.ok(
+  cafeAttempts.every((attempt) =>
+    (attempt.includedTypes ?? []).every((type) => type === "cafe" || type === "coffee_shop"),
+  ),
+  "cafe continuation never uses attraction/restaurant candidates",
+);
+assert.ok(cafeAttempts.every((attempt) => /咖啡|coffee|cafe/i.test(attempt.query)));
+
+const restaurantAttempts = buildMorePlacesContinuationAttempts("高雄鹽埕", "restaurant");
+assert.ok(restaurantAttempts.length >= 2);
+assert.ok(
+  restaurantAttempts.every((attempt) =>
+    (attempt.includedTypes ?? []).every((type) => type === "restaurant"),
+  ),
+);
+console.log("  ✓ continuation strategies preserve category fidelity");
+
+const firstPlan = planMorePlacesContinuationSearch({
+  destination: "台南安平",
+  category: "cafe",
+});
+assert.equal(firstPlan.remainingStrategyCount, cafeAttempts.length);
+const firstAttempt = firstPlan.attempts[0];
+const firstAttemptId = [
+  firstAttempt.mode,
+  firstAttempt.query.trim().toLocaleLowerCase(),
+  [...(firstAttempt.includedTypes ?? [])].sort().join(","),
+].join("|");
+const secondPlan = planMorePlacesContinuationSearch({
+  destination: "台南安平",
+  category: "cafe",
+  usedAttemptIds: [firstAttemptId],
+});
+assert.equal(secondPlan.remainingStrategyCount, cafeAttempts.length - 1);
+assert.ok(secondPlan.attempts.length > 0, "one empty strategy must not imply no-more");
+const exhaustedPlan = planMorePlacesContinuationSearch({
+  destination: "台南安平",
+  category: "cafe",
+  usedAttemptIds: cafeAttempts.map((attempt) => [
+    attempt.mode,
+    attempt.query.trim().toLocaleLowerCase(),
+    [...(attempt.includedTypes ?? [])].sort().join(","),
+  ].join("|")),
+});
+assert.equal(exhaustedPlan.remainingStrategyCount, 0);
+assert.deepEqual(exhaustedPlan.attempts, []);
+console.log("  ✓ no-more requires all category strategies to be exhausted");
 
 console.log("\nverify-continue-recommendation-intent: ok");

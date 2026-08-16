@@ -3620,6 +3620,31 @@ function Chat() {
           RECOMMENDATION_BATCH_SIZE,
         );
         if (continued.batch.length) {
+          logAiPipeline(
+            "[RECOMMENDATION_CONTINUATION_SUMMARY]",
+            `message=${userText}`,
+            "continuationDetected=true",
+            "explicitDestinationDetected=false",
+            "destinationChanged=false",
+            `destination=${activeSession.recommendationSession.destination}`,
+            `area=${activeSession.recommendationSession.searchRegionLabel ?? activeSession.recommendationSession.destination}`,
+            `category=${activeCategory}`,
+            "scene=",
+            `storedPoolCount=${Math.max(0, activeSession.recommendationSession.pool.length - activeSession.recommendationSession.cursor)}`,
+            "usedStoredPool=true",
+            "newSearchTriggered=false",
+            `searchRound=${activeSession.recommendationSession.continuationSearchRound ?? 0}`,
+            "attemptCount=0",
+            "remainingStrategyCount=",
+            "rawCount=0",
+            "afterScopeCount=0",
+            "afterCategoryCount=0",
+            "afterDedupeCount=0",
+            `renderableCount=${continued.batch.length}`,
+            `finalCount=${continued.batch.length}`,
+            `exhausted=${continued.exhausted}`,
+            `exhaustedReason=${continued.exhausted ? "stored_pool_exhausted" : ""}`,
+          );
           const summary = buildContinueRecommendationSummary(activeCategory, continued.batch);
           return renderMorePlacesReply(
             summary,

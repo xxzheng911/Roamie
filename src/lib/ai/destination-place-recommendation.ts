@@ -68,6 +68,7 @@ import {
   filterExcludedPlaceIds,
 } from "@/lib/place-planning-memory";
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
 import {
   excludeUsedPlacesFromFollowUp,
@@ -88,6 +89,7 @@ import {
   CHAT_DESTINATION_MIN_COUNT,
   CHAT_DESTINATION_TARGET_COUNT,
   filterChatDestinationPlaces,
+  filterChatCategoryPlaces,
   filterChatPlanningPlaces,
 } from "@/lib/ai/chat-destination-place-filter";
 import {
@@ -508,6 +510,13 @@ async function searchDestinationPlaces(params: {
   /** Seed shared Candidate Pool after successful Places resolution */
   sessionId?: string | null;
   countryCode?: string;
+  categoryIntent?: ChatPlaceCategoryIntent;
+  disableAutomaticSupplement?: boolean;
+  onDiagnostics?: (counts: {
+    rawCount: number;
+    afterScopeCount: number;
+    afterCategoryCount: number;
+  }) => void;
 }): Promise<PlaceResult[]> {
   const {
     label,
@@ -529,6 +538,9 @@ async function searchDestinationPlaces(params: {
     radius,
     sessionId,
     countryCode,
+    categoryIntent,
+    disableAutomaticSupplement = false,
+    onDiagnostics,
   } = params;
 
   const searchExtras = searchContext
@@ -556,16 +568,32 @@ async function searchDestinationPlaces(params: {
       caller,
       { minResults: CHAT_DESTINATION_MIN_COUNT, maxResults: mergeMax, extras: searchExtras },
     );
+    const rawCount = places.length;
     places = filterPlacesByDestinationGuard(places, label, userText);
     places = filterExcludedPlaceIds(places, excludePlaceIds);
-    const allowParks = userWantsParkRecommendations(userText ?? "", context);
-    places = filterPlacesForAttractionRecommendation(places, {
-      allowParks,
-      profile,
-      parentLandmark: profile?.parentLandmark,
-      blockedPlaceIds: excludePlaceIds,
-    });
+    const afterScopeCount = places.length;
+    if (categoryIntent && !planningMode) {
+      places = filterChatCategoryPlaces(places, {
+        intent: categoryIntent,
+        destination: label,
+        profile,
+        userText,
+      });
+    } else {
+      const allowParks = userWantsParkRecommendations(userText ?? "", context);
+      places = filterPlacesForAttractionRecommendation(places, {
+        allowParks,
+        profile,
+        parentLandmark: profile?.parentLandmark,
+        blockedPlaceIds: excludePlaceIds,
+      });
+    }
     if (planningMode) {
+      onDiagnostics?.({
+        rawCount,
+        afterScopeCount,
+        afterCategoryCount: places.length,
+      });
       return filterChatPlanningPlaces(places, {
         destination: label,
         profile,
@@ -573,6 +601,19 @@ async function searchDestinationPlaces(params: {
         targetCount: planningTargetCount,
       });
     }
+    if (categoryIntent) {
+      onDiagnostics?.({
+        rawCount,
+        afterScopeCount,
+        afterCategoryCount: places.length,
+      });
+      return places;
+    }
+    onDiagnostics?.({
+      rawCount,
+      afterScopeCount,
+      afterCategoryCount: places.length,
+    });
     return filterChatDestinationPlaces(places, {
       destination: label,
       profile,
@@ -582,7 +623,11 @@ async function searchDestinationPlaces(params: {
 
   let filtered = await mergeAndFilter(attempts);
 
-  if (filtered.length < CHAT_DESTINATION_MIN_COUNT && !shouldSkipPlanningPlacesApi()) {
+  if (
+    !disableAutomaticSupplement &&
+    filtered.length < CHAT_DESTINATION_MIN_COUNT &&
+    !shouldSkipPlanningPlacesApi()
+  ) {
     const supplementAttempts = buildDestinationTextSearchAttempts(label).filter(
       (attempt) => !attempts.some((a) => a.query === attempt.query),
     );
@@ -599,7 +644,11 @@ async function searchDestinationPlaces(params: {
     }
   }
 
-  if (filtered.length < CHAT_DESTINATION_MIN_COUNT && !shouldSkipPlanningPlacesApi()) {
+  if (
+    !disableAutomaticSupplement &&
+    filtered.length < CHAT_DESTINATION_MIN_COUNT &&
+    !shouldSkipPlanningPlacesApi()
+  ) {
     const englishFallback = buildDestinationEnglishFallbackQueries(label);
     const more = await mergeAndFilter(englishFallback);
     const seen = new Set(filtered.map((p) => p.id));
@@ -1360,7 +1409,7 @@ function resolveMorePlacesCategoryPreference(
   context: CanonicalTravelContext,
   activeChatIntent?: string | null,
   activeCategoryIntent?: string | null,
-): string {
+): ChatPlaceCategoryIntent {
   const category = activeCategoryIntent ?? activeChatIntent;
   if (category === "cafe") return "cafe";
   if (category === "restaurant") return "restaurant";
@@ -1379,53 +1428,38 @@ function resolveMorePlacesCategoryPreference(
   return "attraction";
 }
 
-function buildMorePlacesPrimaryAttempts(destination: string, category: string): SearchAttempt[] {
+function buildMorePlacesFallbackQueries(
+  destination: string,
+  category: ChatPlaceCategoryIntent,
+): SearchAttempt[] {
   const label = normalizeDestinationLabel(destination);
+  const en = EN_CITY_NAMES[label] ?? label;
   if (category === "cafe") {
-    return [{ query: `${label} 咖啡廳`, mode: "text", includedTypes: ["cafe", "coffee_shop"] }];
+    return [
+      { query: `${label} coffee shop`, mode: "text", includedTypes: ["coffee_shop", "cafe"] },
+      { query: `${label} specialty coffee`, mode: "text", includedTypes: ["coffee_shop", "cafe"] },
+      { query: `${en} cafe`, mode: "text", includedTypes: ["cafe", "coffee_shop"] },
+    ];
   }
   if (category === "restaurant") {
-    return [{ query: `${label} 美食`, mode: "text", includedTypes: ["restaurant"] }];
-  }
-  if (category === "shopping") {
     return [
-      {
-        query: `${label} shopping street`,
-        mode: "text",
-        includedTypes: ["shopping_mall", "department_store", "store"],
-      },
-      {
-        query: `${label} 商店街`,
-        mode: "text",
-        includedTypes: ["shopping_mall", "department_store", "store"],
-      },
-      {
-        query: `${label} outlet`,
-        mode: "text",
-        includedTypes: ["shopping_mall", "department_store"],
-      },
-      {
-        query: `${label} 百貨`,
-        mode: "text",
-        includedTypes: ["department_store", "shopping_mall"],
-      },
+      { query: `${label} 餐廳`, mode: "text", includedTypes: ["restaurant"] },
+      { query: `${label} 在地美食`, mode: "text", includedTypes: ["restaurant"] },
+      { query: `${en} restaurants`, mode: "text", includedTypes: ["restaurant"] },
     ];
+  }
+  if (category === "night_market") {
+    return [{ query: `${label} 夜市`, mode: "text", includedTypes: ["market"] }];
+  }
+  if (category === "bar") {
+    return [{ query: `${label} 酒吧`, mode: "text", includedTypes: ["bar"] }];
   }
   if (category === "indoor") {
     return [
-      {
-        query: `${label} 室內景點`,
-        mode: "text",
-        includedTypes: ["museum", "shopping_mall", "art_gallery"],
-      },
+      { query: `${label} 博物館`, mode: "text", includedTypes: ["museum", "art_gallery"] },
+      { query: `${en} indoor attractions`, mode: "text", includedTypes: ["museum", "art_gallery"] },
     ];
   }
-  return [{ query: `${label} 必去景點`, mode: "text", includedTypes: ["tourist_attraction"] }];
-}
-
-function buildMorePlacesFallbackQueries(destination: string): SearchAttempt[] {
-  const label = normalizeDestinationLabel(destination);
-  const en = EN_CITY_NAMES[label] ?? label;
   return [
     { query: `${label} 景點`, mode: "text", includedTypes: ["tourist_attraction"] },
     {
@@ -1433,11 +1467,46 @@ function buildMorePlacesFallbackQueries(destination: string): SearchAttempt[] {
       mode: "text",
       includedTypes: ["museum", "shopping_mall", "art_gallery"],
     },
-    { query: `${label} 美食`, mode: "text", includedTypes: ["restaurant"] },
-    { query: `${label} 咖啡廳`, mode: "text", includedTypes: ["cafe", "coffee_shop"] },
     { query: `${en} attractions`, mode: "text", includedTypes: ["tourist_attraction"] },
     { query: `${en} hidden gems`, mode: "text", includedTypes: ["tourist_attraction"] },
   ];
+}
+
+function continuationAttemptId(attempt: SearchAttempt): string {
+  return [
+    attempt.mode,
+    attempt.query.trim().toLocaleLowerCase(),
+    [...(attempt.includedTypes ?? [])].sort().join(","),
+  ].join("|");
+}
+
+export function buildMorePlacesContinuationAttempts(
+  destination: string,
+  category: ChatPlaceCategoryIntent,
+): SearchAttempt[] {
+  const seen = new Set<string>();
+  return buildMorePlacesFallbackQueries(destination, category).filter((attempt) => {
+    const id = continuationAttemptId(attempt);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+export function planMorePlacesContinuationSearch(params: {
+  destination: string;
+  category: ChatPlaceCategoryIntent;
+  usedAttemptIds?: string[];
+}): {
+  attempts: SearchAttempt[];
+  remainingStrategyCount: number;
+} {
+  const used = new Set(params.usedAttemptIds ?? []);
+  const attempts = buildMorePlacesContinuationAttempts(
+    params.destination,
+    params.category,
+  ).filter((attempt) => !used.has(continuationAttemptId(attempt)));
+  return { attempts, remainingStrategyCount: attempts.length };
 }
 
 export async function buildMoreDestinationRecommendations(params: {
@@ -1629,12 +1698,18 @@ export async function buildMoreDestinationRecommendations(params: {
       }
       if (poolPlaces.length) {
         const cuisine = extractCuisineKeywordFromText(userText);
-        const fromPool = filterCandidatePoolPlaces({
+        const fromPoolRaw = filterCandidatePoolPlaces({
           places: poolPlaces,
           category,
           cuisineKeyword: cuisine,
           excludePlaceIds,
           limit: RECOMMENDATION_COUNT * 3,
+        });
+        const fromPool = filterChatCategoryPlaces(fromPoolRaw, {
+          intent: category,
+          destination: label,
+          profile: searchProfile,
+          userText,
         });
         let next = filterAlreadyRecommendedPlaces(fromPool, {
           rejectedNames: rejectedPlaceNames,
@@ -2094,56 +2169,102 @@ export async function buildMoreDestinationRecommendations(params: {
       });
       logChatMorePlacesFetchCount(fetchCount);
     } else {
-      const primaryAttempts = styleFollowUp && tripStyle
-        ? buildTripStyleSupplementAttempts(label, tripStyle, 0)
-        : buildMorePlacesPrimaryAttempts(label, category);
-      places = await searchDestinationPlaces({ ...searchParams, attempts: primaryAttempts });
-      places = filterExcludedPlaceIds(places, excludePlaceIds);
-      filtered = filterAlreadyRecommendedPlaces(places, {
-        rejectedNames: rejectedPlaceNames,
-        blockedCoreNames: [
-          ...(usedPlaces?.usedPlaceNames ?? []),
-          ...(searchProfile.parentLandmark ? [searchProfile.parentLandmark] : []),
-        ],
-      });
-      if (usedPlaces) {
-        filtered = excludeUsedPlacesFromFollowUp(filtered, usedPlaces);
-      }
-      fetchCount = places.length;
-      logChatMorePlacesFetchCount(places.length);
+      const allAttempts = styleFollowUp && tripStyle && category === "attraction"
+        ? [
+            ...buildTripStyleSupplementAttempts(label, tripStyle, 0),
+            ...buildTripStyleSupplementAttempts(label, tripStyle, 1),
+          ]
+        : buildMorePlacesContinuationAttempts(label, category);
+      const usedAttemptIds = new Set(activeRecSession?.continuationUsedAttemptIds ?? []);
+      const remainingAttempts = styleFollowUp && tripStyle && category === "attraction"
+        ? allAttempts.filter(
+            (attempt) => !usedAttemptIds.has(continuationAttemptId(attempt)),
+          )
+        : planMorePlacesContinuationSearch({
+            destination: label,
+            category,
+            usedAttemptIds: [...usedAttemptIds],
+          }).attempts;
+      const seen = new Set<string>();
+      let executedAttemptCount = 0;
+      let rawCount = 0;
+      let afterScopeCount = 0;
+      let afterCategoryCount = 0;
 
-      if (filtered.length < CHAT_DESTINATION_MIN_COUNT) {
-        const fallbackAttempts = styleFollowUp && tripStyle
-          ? buildTripStyleSupplementAttempts(label, tripStyle, 1).filter(
-              (attempt) => !primaryAttempts.some((a) => a.query === attempt.query),
-            )
-          : buildMorePlacesFallbackQueries(label).filter(
-              (attempt) => !primaryAttempts.some((a) => a.query === attempt.query),
-            );
-        for (const attempt of fallbackAttempts) {
-          if (filtered.length >= CHAT_DESTINATION_MIN_COUNT) break;
-          const more = await searchDestinationPlaces({ ...searchParams, attempts: [attempt] });
-          let moreFiltered = filterExcludedPlaceIds(more, excludePlaceIds);
-          moreFiltered = filterAlreadyRecommendedPlaces(moreFiltered, {
-            rejectedNames: rejectedPlaceNames,
-            blockedCoreNames: [
-              ...(usedPlaces?.usedPlaceNames ?? []),
-              ...(searchProfile.parentLandmark ? [searchProfile.parentLandmark] : []),
-            ],
-          });
-          if (usedPlaces) {
-            moreFiltered = excludeUsedPlacesFromFollowUp(moreFiltered, usedPlaces);
-          }
-          const seen = new Set(filtered.map((p) => p.id));
-          for (const place of moreFiltered) {
-            if (!seen.has(place.id)) {
-              seen.add(place.id);
-              filtered.push(place);
-            }
-          }
-          fetchCount += more.length;
+      for (const attempt of remainingAttempts) {
+        if (filtered.length >= CHAT_DESTINATION_MIN_COUNT) break;
+        executedAttemptCount += 1;
+        usedAttemptIds.add(continuationAttemptId(attempt));
+        const found = await searchDestinationPlaces({
+          ...searchParams,
+          attempts: [attempt],
+          categoryIntent: category,
+          disableAutomaticSupplement: true,
+          onDiagnostics: (counts) => {
+            rawCount += counts.rawCount;
+            afterScopeCount += counts.afterScopeCount;
+            afterCategoryCount += counts.afterCategoryCount;
+          },
+        });
+        fetchCount += found.length;
+        let next = filterExcludedPlaceIds(found, excludePlaceIds);
+        next = filterAlreadyRecommendedPlaces(next, {
+          rejectedNames: rejectedPlaceNames,
+          blockedCoreNames: [
+            ...(usedPlaces?.usedPlaceNames ?? []),
+            ...(searchProfile.parentLandmark ? [searchProfile.parentLandmark] : []),
+          ],
+        });
+        if (usedPlaces) next = excludeUsedPlacesFromFollowUp(next, usedPlaces);
+        for (const place of next) {
+          if (seen.has(place.id)) continue;
+          seen.add(place.id);
+          places.push(place);
+          filtered.push(place);
         }
       }
+
+      const remainingStrategyCount = allAttempts.filter(
+        (attempt) => !usedAttemptIds.has(continuationAttemptId(attempt)),
+      ).length;
+      const exhausted = remainingStrategyCount === 0 && filtered.length === 0;
+      if (activeRecSession && activeRecSession.topic === category) {
+        shoppingSessionPatch = {
+          ...activeRecSession,
+          continuationSearchRound:
+            (activeRecSession.continuationSearchRound ?? 0) + 1,
+          continuationUsedAttemptIds: [...usedAttemptIds],
+          exhausted,
+          exhaustedAt: exhausted ? new Date().toISOString() : undefined,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      logAiPipeline(
+        "[RECOMMENDATION_CONTINUATION_SUMMARY]",
+        `message=${userText}`,
+        "continuationDetected=true",
+        "explicitDestinationDetected=false",
+        "destinationChanged=false",
+        `destination=${label}`,
+        `area=${activeRecSession?.searchRegionLabel ?? label}`,
+        `category=${category}`,
+        `scene=${scene}`,
+        `storedPoolCount=${Math.max(0, (activeRecSession?.pool.length ?? 0) - (activeRecSession?.cursor ?? 0))}`,
+        "usedStoredPool=false",
+        "newSearchTriggered=true",
+        `searchRound=${(activeRecSession?.continuationSearchRound ?? 0) + 1}`,
+        `attemptCount=${executedAttemptCount}`,
+        `remainingStrategyCount=${remainingStrategyCount}`,
+        `rawCount=${rawCount}`,
+        `afterScopeCount=${afterScopeCount}`,
+        `afterCategoryCount=${afterCategoryCount}`,
+        `afterDedupeCount=${filtered.length}`,
+        `renderableCount=${filtered.length}`,
+        `finalCount=${Math.min(filtered.length, RECOMMENDATION_COUNT)}`,
+        `exhausted=${exhausted}`,
+        `exhaustedReason=${exhausted ? "all_category_strategies_exhausted" : ""}`,
+      );
+      logChatMorePlacesFetchCount(fetchCount);
     }
 
     if (category !== "shopping") {
@@ -2239,6 +2360,11 @@ export async function buildMoreDestinationRecommendations(params: {
         }
         recommendations = displayRecs;
       } else {
+        recommendations = filterRecommendationsForCategoryRender(
+          recommendations,
+          category,
+          userText,
+        );
         logChatPlacesResponse(recommendations.length, "places_api");
         logChatPlaceCardsRendered(recommendations.length);
       }

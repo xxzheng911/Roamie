@@ -47,6 +47,10 @@ export type ConversationRecommendationSession = {
   recommendationPage?: number;
   /** True when shopping query queue is exhausted and no more new places */
   exhausted?: boolean;
+  /** Non-shopping continuation search round. */
+  continuationSearchRound?: number;
+  /** Stable IDs of category-correct continuation attempts already executed. */
+  continuationUsedAttemptIds?: string[];
   /** ISO timestamp when shopping follow-up was marked exhausted */
   exhaustedAt?: string;
   /** City used as Places query prefix (e.g. 札幌 when destination is 北海道) */
