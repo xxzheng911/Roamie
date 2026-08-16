@@ -40,6 +40,28 @@ import {
 import { isTripAddPlaceSession } from "@/lib/trip/trip-add-place-session";
 import { shouldSuppressChatPlaceCards } from "@/lib/ai/chat-suppress-place-cards";
 import { isPlaceEligibleForShortcutScene } from "@/lib/ai/shortcut-category-fidelity";
+import { resolveRecommendationTimePolicy } from "@/lib/ai/recommendation-time-sensitivity";
+
+function isRecommendationFollowup(session: ChatPlanningSession, userText: string): boolean {
+  return (
+    /^(?:還有嗎|還有呢|再來|更多|換一批)[？?！!。\s]*$/u.test(userText.trim()) ||
+    session.travelContext?.tripPurpose === "more_place_recommendations" ||
+    session.travelContext?.tripPurpose === "refresh_recommendations"
+  );
+}
+
+function filterChatRecommendationsByTimePolicy(
+  items: RoamieRecommendationItem[],
+  session: ChatPlanningSession,
+  userText: string,
+  baseMode: "GENERAL_CHAT" | "LIVE_NEARBY" = "GENERAL_CHAT",
+): RoamieRecommendationItem[] {
+  return filterRecommendationItemsForDisplay(
+    items,
+    resolveRecommendationTimePolicy(userText, baseMode),
+    { followup: isRecommendationFollowup(session, userText) },
+  );
+}
 
 function applyShortcutSceneFidelity(
   items: RoamieRecommendationItem[],
@@ -247,7 +269,7 @@ export function recommendationsForChatDisplay(
       return nearbyCategoryRecommendations(working, "restaurant", userText);
     }
 
-    const filtered = filterRecommendationItemsForDisplay(working);
+    const filtered = filterChatRecommendationsByTimePolicy(working, session, userText);
     const count = Math.min(filtered.length, 5);
     logChatPlaceCardRender(count, session.activeChatIntent ?? "mood");
     devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count });
@@ -326,7 +348,12 @@ export function recommendationsForChatDisplay(
     if (session.activeChatIntent === "restaurant" || isFoodIntentText(userText)) {
       return nearbyCategoryRecommendations(working, "restaurant", userText);
     }
-    const filtered = filterRecommendationItemsForDisplay(working);
+    const filtered = filterChatRecommendationsByTimePolicy(
+      working,
+      session,
+      userText,
+      "LIVE_NEARBY",
+    );
     let nearbyFiltered = filtered;
     if (!shouldSkipDestinationRenderGuard(session, userText)) {
       const destination = session.travelContext?.destination?.trim();
@@ -357,7 +384,7 @@ export function recommendationsForChatDisplay(
   }
 
   const { maxCount } = mergeBoundsForStage(stage);
-  let filtered = filterRecommendationItemsForDisplay(working).slice(0, maxCount);
+  let filtered = filterChatRecommendationsByTimePolicy(working, session, userText).slice(0, maxCount);
   const destination = session.travelContext?.destination?.trim();
   const categoryIntents = parseChatPlaceIntents(userText);
   if (categoryIntents.length === 1) {

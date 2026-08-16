@@ -21,6 +21,11 @@ import type { PlusPreferenceRankingContext } from "@/lib/plus-preference-ranking
 import { plusPreferenceRankPenalty } from "@/lib/plus-preference-ranking";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { weatherRankingBoost } from "@/lib/weather/weather-place-ranking";
+import {
+  GENERAL_CHAT_TIME_POLICY,
+  type RecommendationTimePolicy,
+} from "@/lib/ai/recommendation-time-sensitivity";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 
 export { isLateNightMode } from "@/lib/filter-available-places";
 
@@ -268,24 +273,42 @@ export function sortRecommendationItemsForDisplay<T extends RecommendationDispla
 /** 客戶端顯示前二次過濾（依 enrich 後欄位）並以營業狀態排序 */
 export function filterRecommendationItemsForDisplay<T extends RecommendationDisplayItem>(
   items: T[],
+  policy: RecommendationTimePolicy = GENERAL_CHAT_TIME_POLICY,
+  telemetry?: { followup?: boolean },
 ): T[] {
   const filtered = items.filter((item) => {
     const recommendable = isRecommendablePlace(
       recommendationToRecommendableInput(item),
       "ai_recommend",
-      { logDrop: false },
+      { logDrop: false, requireOpenNow: policy.requireOpenNow },
     );
     if (!recommendable.ok) return false;
     if (isLodgingPlace({ name: item.name, primaryType: item.type, types: item.type ? [item.type] : null })) {
       return false;
     }
-    if (item.openStatusLabel === "目前未營業" && !item.nextOpenHint?.trim()) {
+    if (
+      policy.requireOpenNow &&
+      item.openStatusLabel === "目前未營業" &&
+      !item.nextOpenHint?.trim()
+    ) {
       return false;
     }
-    if (isTimePeriodMismatch(item.name, item.type, new Date())) {
+    if (policy.timeSensitive && isTimePeriodMismatch(item.name, item.type, new Date())) {
       return false;
     }
     return true;
   });
-  return sortRecommendationItemsForDisplay(filtered);
+  const result = sortRecommendationItemsForDisplay(filtered);
+  devVerboseInfo("[RECOMMENDATION_OPEN_HOURS_POLICY]", {
+    recommendationMode: policy.mode,
+    timeSensitive: policy.timeSensitive,
+    requireOpenNow: policy.requireOpenNow,
+    openNowUsedForRanking: policy.useOpenNowForRanking,
+    openNowUsedForFiltering: policy.requireOpenNow,
+    beforeOpenHoursCount: items.length,
+    afterOpenHoursCount: result.length,
+    finalCount: result.length,
+    followup: telemetry?.followup === true,
+  });
+  return result;
 }

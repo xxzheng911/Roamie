@@ -370,8 +370,11 @@ export function isRecommendablePlace(
 
   if (place.isSavedFavorite && context !== "home_nearby") {
     if (!name) return fail("missing_name");
-    if (biz === "CLOSED_PERMANENTLY" || biz === "CLOSED_TEMPORARILY") return fail("closed_business");
-    if (openNow === false) return fail("closed_now");
+    if (biz === "CLOSED_PERMANENTLY") return fail("closed_business");
+    if (biz === "CLOSED_TEMPORARILY" && options?.requireOpenNow !== false) {
+      return fail("closed_business");
+    }
+    if (openNow === false && options?.requireOpenNow !== false) return fail("closed_now");
     return { ok: true };
   }
 
@@ -411,8 +414,19 @@ export function isRecommendablePlace(
   }
 
   if (biz === "CLOSED_PERMANENTLY") return fail("closed_permanently");
-  if (biz === "CLOSED_TEMPORARILY") return fail("closed_temporarily");
-  if (biz && biz !== "OPERATIONAL") return fail("non_operational");
+  if (
+    biz === "CLOSED_TEMPORARILY" &&
+    !(context === "ai_recommend" && options?.requireOpenNow === false)
+  ) {
+    return fail("closed_temporarily");
+  }
+  if (
+    biz &&
+    biz !== "OPERATIONAL" &&
+    !(context === "ai_recommend" && options?.requireOpenNow === false && biz === "CLOSED_TEMPORARILY")
+  ) {
+    return fail("non_operational");
+  }
 
   if (!hasExplicitCategory(place) && !cityMode && !exploreRelaxed) return fail("missing_category");
 
@@ -460,7 +474,19 @@ export function isRecommendablePlace(
   if (reviewCount < minReviews) return fail("insufficient_reviews");
   if (rating < minRating) return fail("low_rating");
 
-  if (openNow === false) return fail("closed_now");
+  // General chat recommendations may surface otherwise eligible places even
+  // when current opening state is closed or unknown. Permanent closure was
+  // rejected above; time-sensitive callers opt back into the strict checks.
+  if (context === "ai_recommend" && options?.requireOpenNow === false) {
+    return { ok: true };
+  }
+
+  if (
+    openNow === false &&
+    !(context === "ai_recommend" && options?.requireOpenNow === false)
+  ) {
+    return fail("closed_now");
+  }
 
   if (context === "home_nearby") {
     if (options?.homeOpenTier === "unknown_fallback") {
