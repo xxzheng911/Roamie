@@ -3899,7 +3899,16 @@ function Chat() {
         geocodeFn: geocodeLocationFn,
       });
       // An explicit district-only label must not silently inherit an older session destination.
-      if (provisionalArea && !validatedAreaScope) return false;
+      if (provisionalArea && !validatedAreaScope) {
+        setMsgs([
+          ...conversation,
+          {
+            role: "assistant",
+            content: `你指的是哪個城市的${provisionalArea.areaCandidate}？`,
+          },
+        ]);
+        return true;
+      }
       const baseDestination = resolveDestinationForCategorySearch(
         placeCtx,
         merged.session,

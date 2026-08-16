@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   extractGenericDestinationAreaCandidate,
   extractProvisionalDestinationAreaCandidate,
@@ -221,6 +222,12 @@ assert.equal(
   extractProvisionalDestinationAreaCandidate("新北有什麼咖啡廳推薦"),
   null,
   "city-wide destination must keep its existing path",
+);
+const chatSource = readFileSync(new URL("../src/routes/_app.chat.tsx", import.meta.url), "utf8");
+assert.match(
+  chatSource,
+  /if \(provisionalArea && !validatedAreaScope\)[\s\S]*你指的是哪個城市的\$\{provisionalArea\.areaCandidate\}[\s\S]*return true;/,
+  "an unresolved explicit district must be handled before stale-session fallback",
 );
 
 const attempts = buildChatPlaceSearchAttempts(
