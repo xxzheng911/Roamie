@@ -8,6 +8,7 @@ import {
   setPlaceDetailHandoff,
   type PlaceDetailHandoff,
 } from "@/lib/place-detail-handoff";
+import { resolvePlaceDisplayCategory } from "@/lib/unified-place-card";
 
 /** 依推薦類型對應探索地圖分類 tab */
 function inferExploreCategoryId(type: string): string {
@@ -27,6 +28,17 @@ export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): Ho
   const id = rec.googlePlaceId?.trim() || `rec-${encodeURIComponent(name)}`;
   const categoryId = inferExploreCategoryId(rec.type);
   const photoName = rec.photoName ?? null;
+  const primaryType = rec.primaryType?.trim() || rec.type?.trim() || null;
+  const types = rec.types?.filter((type) => type.trim().length > 0) ?? [];
+  const placeTypeMetadata = {
+    id,
+    name,
+    address: rec.address?.trim() || null,
+    lat: rec.lat,
+    lng: rec.lng,
+    primaryType,
+    types,
+  };
 
   return {
     id,
@@ -37,8 +49,8 @@ export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): Ho
     rating: rec.rating ?? null,
     userRatingCount: rec.userRatingCount ?? null,
     photoName,
-    primaryType: rec.type || null,
-    types: rec.type ? [rec.type] : null,
+    primaryType,
+    types: types.length > 0 ? types : primaryType ? [primaryType] : null,
     businessStatus: null,
     openStatus: "unknown",
     openStatusLabel: rec.openStatusLabel ?? "",
@@ -47,7 +59,7 @@ export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): Ho
     nextOpenHint: rec.nextOpenHint ?? "",
     reason: rec.reason?.trim() || rec.description?.trim() || "",
     categoryId,
-    displayCategory: rec.type,
+    displayCategory: resolvePlaceDisplayCategory(placeTypeMetadata),
     coverImageUrl: photoName
       ? sanitizePlaceImageUrl(buildPlacePhotoUrl(photoName, 600) ?? null, { maxWidth: 600 })
       : undefined,

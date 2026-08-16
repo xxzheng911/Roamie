@@ -8,8 +8,13 @@ import {
 import { isPlacesRateLimited } from "@/lib/places-api-guard";
 import {
   chatResponseModeForIntent,
+  resolveChatShortcutContext,
   type NearbyPlaceIntent,
 } from "@/lib/ai/chat-intent";
+import {
+  isPlaceEligibleForShortcutScene,
+  RELAX_WALK_INCLUDED_TYPES,
+} from "@/lib/ai/shortcut-category-fidelity";
 import { foodPreferenceSearchQuery } from "@/lib/ai/chat-dining-flow";
 import {
   buildCampingRecommendationSummary,
@@ -165,6 +170,7 @@ function nearbySearchAttemptForIntent(
   }
 
   const moodBlob = `${context?.mood ?? ""} ${context?.setting ?? ""} ${context?.tripPurpose ?? ""}`;
+  const shortcut = resolveChatShortcutContext(userText ?? "");
 
   if (context?.budgetPreference === "low" || context?.tripPurpose === "refine_recommendations") {
     return lowBudgetSearchQuery(intent, moodBlob);
@@ -203,6 +209,13 @@ function nearbySearchAttemptForIntent(
       query: "室內 景點",
       mode: "nearby",
       includedTypes: ["museum", "shopping_mall", "cafe", "book_store", "tourist_attraction"],
+    };
+  }
+  if (shortcut?.scene === "relax_walk") {
+    return {
+      query: "公園 散步 藝術中心 河岸",
+      mode: "nearby",
+      includedTypes: [...RELAX_WALK_INCLUDED_TYPES],
     };
   }
   if (/(累|疲|放鬆|放空|輕鬆|療癒)/.test(moodBlob)) {
@@ -772,6 +785,8 @@ function applyNearbyPlaceFilters(
           : params.destinationProfile?.parentLandmark,
     });
   }
+  const shortcutScene = resolveChatShortcutContext(params.userText ?? "")?.scene;
+  working = working.filter((place) => isPlaceEligibleForShortcutScene(place, shortcutScene));
   if (params.intent === "camping") {
     working = filterCampingPlaces(working);
   }

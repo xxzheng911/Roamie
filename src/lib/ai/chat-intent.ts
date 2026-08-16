@@ -68,6 +68,16 @@ export type ChatIntent =
 
 export type NearbyPlaceIntent = Extract<ChatIntent, "restaurant" | "cafe" | "attraction" | "camping">;
 
+export type ChatShortcutScene = "quiet_cafe" | "relax_walk" | "rainy_indoor";
+
+export type ChatShortcutContext = {
+  shortcutId: "quiet_cafe" | "relax_walk" | "rainy_indoor";
+  shortcutLabel: string;
+  categoryIntent: NearbyPlaceIntent;
+  mood: "quiet" | "relax" | "rainy";
+  scene: ChatShortcutScene;
+};
+
 /**
  * Intent Router — 優先序：
  * 1. 最佳旅行時間（BEST_TRAVEL_TIME_INTENT）
@@ -255,15 +265,52 @@ export function chatResponseModeForIntent(intent: ChatIntent): string {
 
 const QUICK_CHIP_PRESETS: Record<
   string,
-  { mood: string; activeChatIntent?: NearbyPlaceIntent; fromMoodFlow?: boolean }
+  { mood: string; activeChatIntent?: NearbyPlaceIntent; fromMoodFlow?: boolean; shortcutContext?: ChatShortcutContext }
 > = {
   我今天有點累: { mood: "放鬆", activeChatIntent: "attraction", fromMoodFlow: true },
-  "想找安靜的咖啡廳": { mood: "找咖啡", activeChatIntent: "cafe", fromMoodFlow: true },
-  "下雨天可以去哪": { mood: "下雨天", activeChatIntent: "attraction", fromMoodFlow: true },
-  今天想放鬆走走: { mood: "放鬆", activeChatIntent: "attraction", fromMoodFlow: true },
+  "想找安靜的咖啡廳": {
+    mood: "安靜",
+    activeChatIntent: "cafe",
+    fromMoodFlow: true,
+    shortcutContext: {
+      shortcutId: "quiet_cafe",
+      shortcutLabel: "想找安靜的咖啡廳",
+      categoryIntent: "cafe",
+      mood: "quiet",
+      scene: "quiet_cafe",
+    },
+  },
+  "下雨天可以去哪": {
+    mood: "下雨天",
+    activeChatIntent: "attraction",
+    fromMoodFlow: true,
+    shortcutContext: {
+      shortcutId: "rainy_indoor",
+      shortcutLabel: "下雨天可以去哪",
+      categoryIntent: "attraction",
+      mood: "rainy",
+      scene: "rainy_indoor",
+    },
+  },
+  今天想放鬆走走: {
+    mood: "放鬆",
+    activeChatIntent: "attraction",
+    fromMoodFlow: true,
+    shortcutContext: {
+      shortcutId: "relax_walk",
+      shortcutLabel: "今天想放鬆走走",
+      categoryIntent: "attraction",
+      mood: "relax",
+      scene: "relax_walk",
+    },
+  },
   想探索新地方: { mood: "探索", activeChatIntent: "attraction", fromMoodFlow: true },
   主要是想拍照: { mood: "拍照", activeChatIntent: "attraction", fromMoodFlow: true },
 };
+
+export function resolveChatShortcutContext(text: string): ChatShortcutContext | null {
+  return QUICK_CHIP_PRESETS[text.trim()]?.shortcutContext ?? null;
+}
 
 export function applyQuickChipContext(
   text: string,
@@ -277,6 +324,7 @@ export function applyQuickChipContext(
     activeChatIntent: preset.activeChatIntent ?? session.activeChatIntent,
     fromMoodFlow: preset.fromMoodFlow ?? session.fromMoodFlow,
     selectedMood: preset.mood,
+    shortcutContext: preset.shortcutContext ?? session.shortcutContext,
   };
 }
 

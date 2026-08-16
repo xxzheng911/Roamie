@@ -184,6 +184,8 @@ export type ChatPlanningSession = {
   tripCompanionCount?: number;
   /** 進行中的聊聊地點意圖（餐廳 / 咖啡 / 景點） */
   activeChatIntent?: import("@/lib/ai/chat-intent").ChatIntent;
+  /** Structured semantics for fixed recommendation shortcuts. */
+  shortcutContext?: import("@/lib/ai/chat-intent").ChatShortcutContext;
   /**
    * Category recommendation topic (shopping / cafe / …).
    * Source of truth for continueRecommendation — do not collapse shopping → attraction.

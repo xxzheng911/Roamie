@@ -39,6 +39,16 @@ import {
 } from "@/lib/ai/chat-place-flow-log";
 import { isTripAddPlaceSession } from "@/lib/trip/trip-add-place-session";
 import { shouldSuppressChatPlaceCards } from "@/lib/ai/chat-suppress-place-cards";
+import { isPlaceEligibleForShortcutScene } from "@/lib/ai/shortcut-category-fidelity";
+
+function applyShortcutSceneFidelity(
+  items: RoamieRecommendationItem[],
+  session: ChatPlanningSession,
+): RoamieRecommendationItem[] {
+  return items.filter((item) =>
+    isPlaceEligibleForShortcutScene(item, session.shortcutContext?.scene),
+  );
+}
 
 /** 將摘要中的地點數量改為與實際渲染張數一致 */
 export function alignChatRecommendationCount(summary: string, count: number): string {
@@ -211,7 +221,7 @@ export function recommendationsForChatDisplay(
   }
 
   if (session.fromMoodFlow || session.fromMoodCard || session.homeMoodShortcutEntry) {
-    let working = list;
+    let working = applyShortcutSceneFidelity(list, session);
     if (
       session.travelContext?.budgetPreference === "low" ||
       session.travelContext?.tripPurpose === "refine_recommendations"
@@ -296,7 +306,7 @@ export function recommendationsForChatDisplay(
   }
 
   if (session.activeChatIntent && isNearbyPlaceIntent(session.activeChatIntent)) {
-    let working = list;
+    let working = applyShortcutSceneFidelity(list, session);
     if (
       session.travelContext?.budgetPreference === "low" ||
       session.travelContext?.tripPurpose === "refine_recommendations"
