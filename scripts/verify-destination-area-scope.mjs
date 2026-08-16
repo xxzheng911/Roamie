@@ -223,11 +223,166 @@ assert.equal(
   null,
   "city-wide destination must keep its existing path",
 );
+
+const geographicLabelFixtures = [
+  ["埔里有什麼咖啡廳推薦嗎", "埔里"],
+  ["埔里有什麼咖啡廳", "埔里"],
+  ["埔里推薦咖啡廳", "埔里"],
+  ["想找埔里的咖啡廳", "埔里"],
+  ["澀谷有什麼咖啡廳", "澀谷"],
+  ["澀谷有推薦餐廳嗎", "澀谷"],
+  ["羅東有什麼咖啡廳", "羅東"],
+  ["上野有什麼景點", "上野"],
+];
+for (const [text, label] of geographicLabelFixtures) {
+  const provisional = extractProvisionalDestinationAreaCandidate(text);
+  assert.ok(provisional, text);
+  assert.equal(provisional.rawLabel, label, text);
+  assert.equal(provisional.validationStatus, "pending_provider");
+  assert.equal(provisional.parentCity, undefined);
+}
+
+assert.equal(
+  extractProvisionalDestinationAreaCandidate("有什麼咖啡廳推薦"),
+  null,
+  "category-only asks must not invent a geographic candidate",
+);
+assert.equal(
+  extractProvisionalDestinationAreaCandidate("安靜一點的咖啡廳"),
+  null,
+  "refinement language must not be sent to the geocoder",
+);
+assert.equal(
+  extractProvisionalDestinationAreaCandidate("完全不是地點的文字"),
+  null,
+  "non-place leftover text must not become a geographic candidate",
+);
+
+let puliGeocodeQuery = "";
+const validatedPuli = await resolveValidatedDestinationAreaScope({
+  input: "埔里有什麼咖啡廳推薦嗎",
+  locale: "zh-TW",
+  geocodeFn: async ({ data }) => {
+    puliGeocodeQuery = data.query;
+    return {
+      location: {
+        placeId: "mock:puli",
+        country: "台灣",
+        city: "埔里鎮",
+        region: "南投縣",
+        district: "埔里鎮",
+        lat: 23.97,
+        lng: 120.97,
+        formattedName: "台灣・埔里鎮",
+        displayLabel: "南投縣埔里鎮",
+        address: "台灣南投縣埔里鎮",
+      },
+      error: null,
+    };
+  },
+});
+assert.equal(puliGeocodeQuery, "埔里", "埔里 must be geocoded without a parent-city whitelist");
+assert.deepEqual(validatedPuli, {
+  displayLabel: "南投埔里",
+  parentCity: "南投",
+  area: "埔里",
+  searchScope: "area",
+});
+
+const puliLocalityOnly = await resolveValidatedDestinationAreaScope({
+  input: "埔里有什麼咖啡廳",
+  locale: "zh-TW",
+  geocodeFn: async () => ({
+    location: {
+      placeId: "mock:puli-locality",
+      country: "台灣",
+      city: "埔里鎮",
+      region: "南投縣",
+      lat: 23.97,
+      lng: 120.97,
+      formattedName: "埔里鎮",
+      displayLabel: "埔里鎮",
+      address: "台灣南投縣埔里鎮",
+    },
+    error: null,
+  }),
+});
+assert.deepEqual(
+  puliLocalityOnly,
+  {
+    displayLabel: "南投埔里",
+    parentCity: "南投",
+    area: "埔里",
+    searchScope: "area",
+  },
+  "township locality evidence must count as the geographic entity",
+);
+
+let shibuyaQuery = "";
+const validatedShibuya = await resolveValidatedDestinationAreaScope({
+  input: "澀谷有什麼咖啡廳",
+  locale: "zh-TW",
+  geocodeFn: async ({ data }) => {
+    shibuyaQuery = data.query;
+    return {
+      location: {
+        placeId: "mock:shibuya",
+        country: "日本",
+        city: "東京",
+        region: "東京都",
+        district: "澀谷區",
+        sublocality: "澀谷區",
+        lat: 35.66,
+        lng: 139.7,
+        formattedName: "日本・澀谷區",
+        displayLabel: "東京都澀谷區",
+        address: "日本東京都澀谷區",
+      },
+      error: null,
+    };
+  },
+});
+assert.equal(shibuyaQuery, "澀谷");
+assert.deepEqual(validatedShibuya, {
+  displayLabel: "東京澀谷",
+  parentCity: "東京",
+  area: "澀谷",
+  searchScope: "area",
+});
+
+assert.equal(
+  await resolveValidatedDestinationAreaScope({
+    input: "XX有什麼咖啡廳",
+    locale: "zh-TW",
+    geocodeFn: async () => ({
+      location: {
+        placeId: "mock:ambiguous-xx",
+        country: "台灣",
+        city: "",
+        region: "XX",
+        district: "XX",
+        lat: 25,
+        lng: 121,
+        formattedName: "XX",
+        displayLabel: "XX",
+      },
+      error: null,
+    }),
+  }),
+  null,
+  "ambiguous geographic labels must not guess a parent region",
+);
+
 const chatSource = readFileSync(new URL("../src/routes/_app.chat.tsx", import.meta.url), "utf8");
 assert.match(
   chatSource,
-  /if \(provisionalArea && !validatedAreaScope\)[\s\S]*你指的是哪個城市的\$\{provisionalArea\.areaCandidate\}[\s\S]*return true;/,
-  "an unresolved explicit district must be handled before stale-session fallback",
+  /if \(provisionalArea && !validatedAreaScope\)[\s\S]*你指的是哪個地區的\$\{provisionalArea\.areaCandidate\}[\s\S]*return true;/,
+  "an unresolved explicit geographic label must be handled before stale-session fallback",
+);
+assert.match(
+  chatSource,
+  /arbitration\.route === "NEW_RECOMMENDATION"[\s\S]*pushDestinationCategoryPlaceRecommendation/,
+  "NEW_RECOMMENDATION must still attempt destination category search when destination is unresolved",
 );
 
 const attempts = buildChatPlaceSearchAttempts(

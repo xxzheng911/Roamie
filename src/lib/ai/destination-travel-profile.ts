@@ -288,6 +288,11 @@ export type DestinationAreaCandidate = {
   area: string;
 };
 
+/**
+ * Untrusted geographic phrase extracted from a Place/category query.
+ * Not limited to "district": township / sublocality / neighborhood are allowed.
+ * Never trusted until provider validation; parentCity is intentionally absent.
+ */
 export type ProvisionalDestinationAreaCandidate = {
   rawLabel: string;
   areaCandidate: string;
@@ -296,37 +301,63 @@ export type ProvisionalDestinationAreaCandidate = {
 };
 
 const AREA_QUERY_STOP =
-  /(?:有什麼|有甚麼|有什么|推薦|推荐|咖啡|餐廳|餐厅|景點|景点|地點|地点|哪裡|哪里|可以|適合|适合|嗎|吗|呢|吧|？|\?|$)/;
+  /(?:有什麼|有甚麼|有什么|有沒有|有没有|推薦|推荐|咖啡廳|咖啡店|咖啡|餐廳|餐厅|景點|景点|地點|地点|哪裡|哪里|可以|適合|适合|嗎|吗|呢|吧|？|\?|$)/;
+const PLACE_CATEGORY_TOKEN =
+  /(?:咖啡廳|咖啡店|咖啡館|咖啡馆|咖啡|餐廳|餐馆|餐館|美食|景點|景点|地點|地点|購物|逛街|酒吧|夜市|室內|室内|拉麵店|拉麵|拉面)/g;
 const INVALID_AREA_FRAGMENT = /^(?:附近|周邊|周边|市區|市区|當地|当地|這裡|这里|那裡|那里)$/;
 const INVALID_DISTRICT_ONLY_FRAGMENT =
-  /^(?:想找|找|想看|推薦|推荐|請推薦|请推荐|有推薦|有推荐|哪裡|哪里|什麼|什么)$/;
+  /^(?:想找|找|想看|推薦|推荐|請推薦|请推荐|有推薦|有推荐|哪裡|哪里|什麼|什么|有)$/;
+const INVALID_GEOGRAPHIC_FRAGMENT =
+  /^(?:附近|周邊|周边|市區|市区|當地|当地|這裡|这里|那裡|那里|完全不是|安靜一點|安静一点|熱鬧一點|热闹一点)$/;
+const INVALID_GEOGRAPHIC_SUBSTRING =
+  /(?:安靜|安静|熱鬧|热闹|便宜|高級|高级|不限時|不限时|更多|其他|還有|还有|一點|一点|一些|更好|插座|甜點|甜点)/;
+const GEOGRAPHIC_WANT_RE =
+  /(?:想找|找|想看)([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]{2,12})的/u;
 
-/** Extract an untrusted district-only label for provider validation. */
+function looksLikeGeographicLabel(label: string): boolean {
+  return (
+    label.length >= 2 &&
+    label.length <= 12 &&
+    !INVALID_AREA_FRAGMENT.test(label) &&
+    !INVALID_DISTRICT_ONLY_FRAGMENT.test(label) &&
+    !INVALID_GEOGRAPHIC_FRAGMENT.test(label) &&
+    !INVALID_GEOGRAPHIC_SUBSTRING.test(label) &&
+    /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]+$/u.test(label)
+  );
+}
+
+function extractRawGeographicLabel(input: string): string {
+  const normalized = normalizeDestinationLabel(input);
+  const fromWant = normalized.match(GEOGRAPHIC_WANT_RE)?.[1]?.trim() ?? "";
+  const rawLabel = (fromWant || normalized.split(AREA_QUERY_STOP)[0] || "").trim();
+  return rawLabel
+    .replace(/^(?:請問|请问|想找|想看|找)/, "")
+    .replace(PLACE_CATEGORY_TOKEN, "")
+    .replace(/[的之]$/g, "")
+    .replace(/(?:有|想找|找|想看)$/g, "")
+    .replace(/[\s,，、/／-]+/g, "");
+}
+
+/**
+ * Extract an untrusted geographic label for provider validation.
+ * Does not require KNOWN_CITIES / curated district / city+district format.
+ */
 export function extractProvisionalDestinationAreaCandidate(
   input: string,
 ): ProvisionalDestinationAreaCandidate | null {
   if (resolveDestinationAreaScope(input) || resolveDestinationFromText(input)) return null;
-  const normalized = normalizeDestinationLabel(input);
-  const rawLabel = normalized.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
-  const areaCandidate = rawLabel
-    .replace(/^(?:請問|请问)/, "")
-    .replace(/(?:有|想找|找|想看)$/g, "")
-    .replace(/[\s,，、/／-]+/g, "");
-  if (
-    areaCandidate.length < 2 ||
-    areaCandidate.length > 12 ||
-    INVALID_AREA_FRAGMENT.test(areaCandidate) ||
-    INVALID_DISTRICT_ONLY_FRAGMENT.test(areaCandidate) ||
-    !/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]+$/u.test(areaCandidate)
-  ) {
-    return null;
-  }
+  const areaCandidate = extractRawGeographicLabel(input);
+  if (!looksLikeGeographicLabel(areaCandidate)) return null;
   return {
     rawLabel: areaCandidate,
     areaCandidate,
     parentCity: undefined,
     validationStatus: "pending_provider",
   };
+}
+
+export function hasPendingProviderGeographicCandidate(input: string): boolean {
+  return extractProvisionalDestinationAreaCandidate(input) != null;
 }
 
 /** Extract only a possible city-tail area. This does not make it trusted. */
@@ -394,7 +425,7 @@ export function locationValidatesDestinationArea(
 function normalizedAdministrativeLabel(value: string | undefined): string {
   return normalizeDestinationLabel(value ?? "")
     .replace(/[\s,，、/／-]+/g, "")
-    .replace(/(?:市|縣|县|區|区)$/u, "");
+    .replace(/(?:市|縣|县|區|区|鎮|镇|鄉|乡|町)$/u, "");
 }
 
 function destinationAreaCandidateFromProvider(
@@ -403,7 +434,8 @@ function destinationAreaCandidateFromProvider(
 ): DestinationAreaCandidate | null {
   if (!location?.placeId) return null;
   const expectedArea = normalizedAdministrativeLabel(provisional.areaCandidate);
-  const providerAreas = [location.district, location.sublocality]
+  // Locality / township (埔里鎮) may live in city rather than district.
+  const providerAreas = [location.district, location.sublocality, location.city]
     .map(normalizedAdministrativeLabel)
     .filter(Boolean);
   if (!expectedArea || !providerAreas.some((area) => area === expectedArea)) return null;

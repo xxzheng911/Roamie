@@ -9,7 +9,10 @@ import {
   isPlaceRecommendationQuery,
 } from "@/lib/ai/chat-place-category-types";
 import { logChatPlaceDestination } from "@/lib/ai/chat-place-flow-log";
-import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
+import {
+  extractProvisionalDestinationAreaCandidate,
+  resolveDestinationAreaScope,
+} from "@/lib/ai/destination-travel-profile";
 
 function acceptCategorySearchDestination(label: string | undefined): string | undefined {
   if (!label?.trim()) return undefined;
@@ -36,6 +39,10 @@ export function resolveDestinationForCategorySearch(
     if (fromText) {
       logChatPlaceDestination(fromText, "user_text");
       return fromText;
+    }
+    // Explicit unresolved geographic label must not inherit a stale session destination.
+    if (extractProvisionalDestinationAreaCandidate(userText)) {
+      return undefined;
     }
   }
 
@@ -68,7 +75,10 @@ export function isDestinationCategoryPlaceRequest(
 ): boolean {
   const t = userText.trim();
   if (!t || !hasCategoryPlaceQuery(t)) return false;
-  return Boolean(resolveDestinationForCategorySearch(ctx, session, t));
+  return Boolean(
+    resolveDestinationForCategorySearch(ctx, session, t) ||
+      extractProvisionalDestinationAreaCandidate(t),
+  );
 }
 
 /** 類別地點推薦 intent（含無目的地時仍鎖定類別，但需另問目的地） */

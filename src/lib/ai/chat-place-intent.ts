@@ -31,7 +31,10 @@ import {
   isCountryCityInquiryText,
   isFutureTripPlanningStatement,
 } from "@/lib/ai/trip-planning-context";
-import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
+import {
+  extractProvisionalDestinationAreaCandidate,
+  resolveDestinationAreaScope,
+} from "@/lib/ai/destination-travel-profile";
 
 export type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 export {
@@ -109,7 +112,10 @@ export function shouldFetchDestinationCategoryPlaces(
   if (!hasCategoryPlaceQuery(t)) return false;
 
   const destination = resolveDestinationForCategorySearch(ctx, session, t);
-  if (!destination) return false;
+  const pendingGeographic = destination
+    ? null
+    : extractProvisionalDestinationAreaCandidate(t);
+  if (!destination && !pendingGeographic) return false;
 
   if (
     /\d+\s*天/.test(t) &&
@@ -119,27 +125,32 @@ export function shouldFetchDestinationCategoryPlaces(
     return false;
   }
 
-  const scopeGate = evaluateDestinationScopeGate({
-    destination,
-    destinationType: ctx.destinationType,
-    countryCode: ctx.destinationCountry,
-    requestedIntent: "place_recommendation",
-  });
-  if (scopeGate.placesCallBlocked) {
-    logDestinationScopeBlocked(scopeGate);
-    logUnexpectedPlacesCall({
-      trigger: "shouldFetchDestinationCategoryPlaces",
-      intent: "place_recommendation",
-      destinationType: scopeGate.destinationType,
-      scopePrecision: scopeGate.scopePrecision,
-      callPath: "chat-place-intent.shouldFetchDestinationCategoryPlaces",
+  if (destination) {
+    const scopeGate = evaluateDestinationScopeGate({
+      destination,
+      destinationType: ctx.destinationType,
+      countryCode: ctx.destinationCountry,
+      requestedIntent: "place_recommendation",
     });
-    return false;
+    if (scopeGate.placesCallBlocked) {
+      logDestinationScopeBlocked(scopeGate);
+      logUnexpectedPlacesCall({
+        trigger: "shouldFetchDestinationCategoryPlaces",
+        intent: "place_recommendation",
+        destinationType: scopeGate.destinationType,
+        scopePrecision: scopeGate.scopePrecision,
+        callPath: "chat-place-intent.shouldFetchDestinationCategoryPlaces",
+      });
+      return false;
+    }
   }
 
   const intents = parseChatPlaceIntents(t);
   if (intents.length) {
-    logChatPlaceRecommendationTriggered(destination, intents[0]!);
+    logChatPlaceRecommendationTriggered(
+      destination ?? `pending:${pendingGeographic!.rawLabel}`,
+      intents[0]!,
+    );
   }
 
   return true;

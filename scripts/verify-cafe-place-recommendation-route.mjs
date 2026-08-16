@@ -25,6 +25,8 @@ import {
 } from "../src/lib/ai/trip-planning-context.ts";
 import { mergeTravelContext } from "../src/lib/ai/travel-context.ts";
 import { isComboItineraryQuery } from "../src/lib/ai/chat-category-place-guard.ts";
+import { extractProvisionalDestinationAreaCandidate } from "../src/lib/ai/destination-travel-profile.ts";
+import { resolveDestinationForCategorySearch } from "../src/lib/ai/chat-category-destination.ts";
 
 function baseSession(overrides = {}) {
   return {
@@ -140,6 +142,53 @@ for (const [i, c] of CAFE_CASES.entries()) {
     );
     console.log(`  ✓ trip planning preserved: ${msg}`);
   }
+}
+
+{
+  const emptyCtx = { interests: [] };
+  const emptySession = baseSession();
+  const puli = "埔里有什麼咖啡廳推薦嗎";
+  assert.equal(extractProvisionalDestinationAreaCandidate(puli)?.rawLabel, "埔里");
+  assert.equal(resolveDestinationForCategorySearch(emptyCtx, emptySession, puli), undefined);
+  assert.equal(
+    shouldFetchDestinationCategoryPlaces(puli, emptyCtx, emptySession),
+    true,
+    "unresolved geographic + cafe intent must enter destination category search",
+  );
+  assert.equal(
+    shouldFetchDestinationCategoryPlaces("板橋有什麼咖啡廳", emptyCtx, emptySession),
+    true,
+  );
+  assert.equal(
+    shouldFetchDestinationCategoryPlaces("西屯有什麼咖啡廳", emptyCtx, emptySession),
+    true,
+  );
+  assert.equal(
+    shouldFetchDestinationCategoryPlaces("澀谷有什麼咖啡廳", emptyCtx, emptySession),
+    true,
+  );
+  assert.equal(
+    shouldFetchDestinationCategoryPlaces("有什麼咖啡廳推薦", emptyCtx, emptySession),
+    false,
+    "category-only asks without geography keep the current-location / session contract",
+  );
+
+  const stale = baseSession({
+    travelContext: { destination: "台南東區", interests: [] },
+    activeRecommendationContext: {
+      intent: "cafe",
+      destinationName: "台南東區",
+      destinationDisplayName: "台南東區",
+      places: [],
+    },
+  });
+  assert.equal(
+    resolveDestinationForCategorySearch(stale.travelContext, stale, puli),
+    undefined,
+    "埔里 must not inherit 台南東區",
+  );
+  assert.equal(shouldFetchDestinationCategoryPlaces(puli, stale.travelContext, stale), true);
+  console.log("  ✓ generic geographic labels enter cafe place search without city whitelist");
 }
 
 console.log("\nverify-cafe-place-recommendation-route: ok");

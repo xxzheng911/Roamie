@@ -3904,7 +3904,7 @@ function Chat() {
           ...conversation,
           {
             role: "assistant",
-            content: `你指的是哪個城市的${provisionalArea.areaCandidate}？`,
+            content: `你指的是哪個地區的${provisionalArea.areaCandidate}？`,
           },
         ]);
         return true;
@@ -6249,6 +6249,15 @@ function Chat() {
         const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
         setMsgs(next);
         setText("");
+        const arbitration = resolveChatIntentArbitration(trimmed, nextSession);
+        if (arbitration.route === "NEW_RECOMMENDATION") {
+          const appliedNew = await pushDestinationCategoryPlaceRecommendation(
+            { ...nextSession, travelContext: refreshedPlaceCtx },
+            trimmed,
+            next,
+          );
+          if (appliedNew) return;
+        }
         const applied = await pushRecommendationRefinement(nextSession, trimmed, next);
         if (applied) return;
         // Refinement search failed — stay on recommendation path (do not open combinations).
