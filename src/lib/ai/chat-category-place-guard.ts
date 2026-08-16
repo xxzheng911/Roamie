@@ -567,8 +567,8 @@ export function passesRestaurantRenderGuard(
     {
       name: item.placeName ?? item.name,
       address: item.address,
-      primaryType: item.type,
-      types: item.type ? [item.type] : [],
+      primaryType: item.primaryType ?? item.type,
+      types: item.types?.length ? item.types : item.type ? [item.type] : [],
     },
     userText,
   );
