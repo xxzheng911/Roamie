@@ -288,9 +288,46 @@ export type DestinationAreaCandidate = {
   area: string;
 };
 
+export type ProvisionalDestinationAreaCandidate = {
+  rawLabel: string;
+  areaCandidate: string;
+  parentCity: undefined;
+  validationStatus: "pending_provider";
+};
+
 const AREA_QUERY_STOP =
   /(?:有什麼|有甚麼|有什么|推薦|推荐|咖啡|餐廳|餐厅|景點|景点|地點|地点|哪裡|哪里|可以|適合|适合|嗎|吗|呢|吧|？|\?|$)/;
 const INVALID_AREA_FRAGMENT = /^(?:附近|周邊|周边|市區|市区|當地|当地|這裡|这里|那裡|那里)$/;
+const INVALID_DISTRICT_ONLY_FRAGMENT =
+  /^(?:想找|找|想看|推薦|推荐|請推薦|请推荐|有推薦|有推荐|哪裡|哪里|什麼|什么)$/;
+
+/** Extract an untrusted district-only label for provider validation. */
+export function extractProvisionalDestinationAreaCandidate(
+  input: string,
+): ProvisionalDestinationAreaCandidate | null {
+  if (resolveDestinationAreaScope(input) || resolveDestinationFromText(input)) return null;
+  const normalized = normalizeDestinationLabel(input);
+  const rawLabel = normalized.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
+  const areaCandidate = rawLabel
+    .replace(/^(?:請問|请问)/, "")
+    .replace(/(?:有|想找|找|想看)$/g, "")
+    .replace(/[\s,，、/／-]+/g, "");
+  if (
+    areaCandidate.length < 2 ||
+    areaCandidate.length > 12 ||
+    INVALID_AREA_FRAGMENT.test(areaCandidate) ||
+    INVALID_DISTRICT_ONLY_FRAGMENT.test(areaCandidate) ||
+    !/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]+$/u.test(areaCandidate)
+  ) {
+    return null;
+  }
+  return {
+    rawLabel: areaCandidate,
+    areaCandidate,
+    parentCity: undefined,
+    validationStatus: "pending_provider",
+  };
+}
 
 /** Extract only a possible city-tail area. This does not make it trusted. */
 export function extractGenericDestinationAreaCandidate(
@@ -354,6 +391,35 @@ export function locationValidatesDestinationArea(
   );
 }
 
+function normalizedAdministrativeLabel(value: string | undefined): string {
+  return normalizeDestinationLabel(value ?? "")
+    .replace(/[\s,，、/／-]+/g, "")
+    .replace(/(?:市|縣|县|區|区)$/u, "");
+}
+
+function destinationAreaCandidateFromProvider(
+  provisional: ProvisionalDestinationAreaCandidate,
+  location: TripLocation | null,
+): DestinationAreaCandidate | null {
+  if (!location?.placeId) return null;
+  const expectedArea = normalizedAdministrativeLabel(provisional.areaCandidate);
+  const providerAreas = [location.district, location.sublocality]
+    .map(normalizedAdministrativeLabel)
+    .filter(Boolean);
+  if (!expectedArea || !providerAreas.some((area) => area === expectedArea)) return null;
+
+  const parentCity = [location.city, location.region]
+    .map(normalizedAdministrativeLabel)
+    .find((label) => Boolean(label && label !== expectedArea));
+  if (!parentCity) return null;
+
+  return {
+    displayLabel: `${parentCity}${expectedArea}`,
+    parentCity,
+    area: expectedArea,
+  };
+}
+
 /** Curated scopes are immediate; generic fragments require provider evidence. */
 export async function resolveValidatedDestinationAreaScope(params: {
   input: string;
@@ -362,14 +428,18 @@ export async function resolveValidatedDestinationAreaScope(params: {
 }): Promise<DestinationAreaScope | null> {
   const curated = resolveDestinationAreaScope(params.input);
   if (curated) return curated;
-  const candidate = extractGenericDestinationAreaCandidate(params.input);
-  if (!candidate) return null;
+  const genericCandidate = extractGenericDestinationAreaCandidate(params.input);
+  const provisionalCandidate = genericCandidate
+    ? null
+    : extractProvisionalDestinationAreaCandidate(params.input);
+  if (!genericCandidate && !provisionalCandidate) return null;
+  const geocodeTarget = genericCandidate?.displayLabel ?? provisionalCandidate!.rawLabel;
   let result: Awaited<ReturnType<GeocodeDestinationFn>>;
   try {
     result = await params.geocodeFn({
       data: {
-        query: candidate.displayLabel,
-        destinationName: candidate.displayLabel,
+        query: geocodeTarget,
+        destinationName: geocodeTarget,
         locale: params.locale,
         language: params.locale,
         disableLocaleRegionBias: true,
@@ -380,6 +450,11 @@ export async function resolveValidatedDestinationAreaScope(params: {
     return null;
   }
   const location = result.location;
+  const candidate = genericCandidate ?? destinationAreaCandidateFromProvider(
+    provisionalCandidate!,
+    location,
+  );
+  if (!candidate) return null;
   if (!locationValidatesDestinationArea(candidate, location)) return null;
   const validated: DestinationAreaScope = {
     ...candidate,

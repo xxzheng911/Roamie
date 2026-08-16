@@ -288,7 +288,10 @@ import {
   buildMoreDestinationRecommendations,
 } from "@/lib/ai/destination-place-recommendation";
 import { buildDestinationCategoryRecommendations } from "@/lib/ai/chat-destination-category-recommendation";
-import { resolveValidatedDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
+import {
+  extractProvisionalDestinationAreaCandidate,
+  resolveValidatedDestinationAreaScope,
+} from "@/lib/ai/destination-travel-profile";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { coerceTravelDestination } from "@/lib/ai/trip-planning-context";
 import {
@@ -3887,18 +3890,22 @@ function Chat() {
     ): Promise<boolean> => {
       const merged = mergeTravelContext(activeSession, userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, activeSession);
-      const baseDestination = resolveDestinationForCategorySearch(
-        placeCtx,
-        merged.session,
-        userText,
-      );
       const intents = parseChatPlaceIntents(userText);
-      if (!baseDestination || !intents.length) return false;
+      if (!intents.length) return false;
+      const provisionalArea = extractProvisionalDestinationAreaCandidate(userText);
       const validatedAreaScope = await resolveValidatedDestinationAreaScope({
         input: userText,
         locale,
         geocodeFn: geocodeLocationFn,
       });
+      // An explicit district-only label must not silently inherit an older session destination.
+      if (provisionalArea && !validatedAreaScope) return false;
+      const baseDestination = resolveDestinationForCategorySearch(
+        placeCtx,
+        merged.session,
+        userText,
+      );
+      if (!baseDestination && !validatedAreaScope) return false;
       const destination = validatedAreaScope?.displayLabel ?? baseDestination;
 
       const excludePlaceIds = opts?.excludePlaceIds ?? collectExcludePlaceIds(activeSession);

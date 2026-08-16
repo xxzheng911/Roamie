@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import {
   extractGenericDestinationAreaCandidate,
+  extractProvisionalDestinationAreaCandidate,
   locationValidatesDestinationArea,
   resolveDestinationAreaScope,
   resolveValidatedDestinationAreaScope,
@@ -141,6 +142,86 @@ assert.deepEqual(validatedGushan, {
   searchScope: "area",
 });
 assert.deepEqual(resolveDestinationAreaScope("高雄鼓山"), validatedGushan);
+
+const districtOnlyFixtures = [
+  ["板橋有什麼咖啡廳推薦", "新北市", "板橋區", "新北板橋"],
+  ["西屯有什麼咖啡廳推薦", "台中市", "西屯區", "台中西屯"],
+  ["鼓山有什麼咖啡廳推薦", "高雄市", "鼓山區", "高雄鼓山"],
+  ["安平有什麼景點推薦", "台南市", "安平區", "台南安平"],
+];
+for (const [text, city, district, displayLabel] of districtOnlyFixtures) {
+  const provisional = extractProvisionalDestinationAreaCandidate(text);
+  assert.ok(provisional, text);
+  assert.equal(provisional.validationStatus, "pending_provider");
+  let query = "";
+  const validated = await resolveValidatedDestinationAreaScope({
+    input: text,
+    locale: "zh-TW",
+    geocodeFn: async ({ data }) => {
+      query = data.query;
+      return {
+        location: {
+          placeId: `mock:${district}`,
+          country: "台灣",
+          city,
+          region: city,
+          district,
+          sublocality: district,
+          lat: 25,
+          lng: 121,
+          formattedName: district,
+          displayLabel: `${city}${district}`,
+          address: `台灣${city}${district}`,
+        },
+        error: null,
+      };
+    },
+  });
+  assert.equal(query, provisional.rawLabel, "provider must geocode the original district label");
+  assert.deepEqual(validated, {
+    displayLabel,
+    parentCity: displayLabel.slice(0, 2),
+    area: displayLabel.slice(2),
+    searchScope: "area",
+  });
+}
+
+assert.equal(
+  await resolveValidatedDestinationAreaScope({
+    input: "板橋有什麼咖啡廳推薦",
+    locale: "zh-TW",
+    geocodeFn: async () => ({
+      location: {
+        placeId: "mock:ambiguous",
+        country: "台灣",
+        city: "",
+        region: "板橋區",
+        district: "板橋區",
+        lat: 25,
+        lng: 121,
+        formattedName: "板橋區",
+        displayLabel: "板橋區",
+      },
+      error: null,
+    }),
+  }),
+  null,
+  "district-only validation must not guess a parent city",
+);
+assert.equal(
+  await resolveValidatedDestinationAreaScope({
+    input: "板橋有什麼咖啡廳推薦",
+    locale: "zh-TW",
+    geocodeFn: async () => ({ location: null, error: "not_found" }),
+  }),
+  null,
+  "provider failure must not create a fake area",
+);
+assert.equal(
+  extractProvisionalDestinationAreaCandidate("新北有什麼咖啡廳推薦"),
+  null,
+  "city-wide destination must keep its existing path",
+);
 
 const attempts = buildChatPlaceSearchAttempts(
   "cafe",
