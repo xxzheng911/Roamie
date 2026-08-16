@@ -462,6 +462,8 @@ export type MapPlaceResultToChatItemCtx = {
   /** Locks recommendation description templates to this intent */
   categoryIntent?: string;
   distanceMeters?: number;
+  distanceSource?: import("@/lib/build-place-recommendation-reason").DistanceEvidenceSource;
+  hasWalkingRouteEvidence?: boolean;
   isSavedFavorite?: boolean;
   currentTime?: Date;
   locale?: Locale;
@@ -499,6 +501,8 @@ export function mapPlaceResultToChatItem(
         categoryLabel: ctx.categoryLabel,
         categoryIntent: ctx.categoryIntent,
         distanceMeters: ctx.distanceMeters,
+        distanceSource: ctx.distanceSource,
+        hasWalkingRouteEvidence: ctx.hasWalkingRouteEvidence,
         isSavedFavorite: ctx.isSavedFavorite,
       },
       ctx.locale,
@@ -574,6 +578,8 @@ export function mapPlaceResultsToChatItems(
         categoryLabel: ctx.categoryLabel,
         categoryIntent: ctx.categoryIntent,
         distanceMeters: ctx.distanceMeters,
+        distanceSource: ctx.distanceSource,
+        hasWalkingRouteEvidence: ctx.hasWalkingRouteEvidence,
         isSavedFavorite: ctx.isSavedFavorite,
       },
     })),

@@ -310,7 +310,9 @@ export function collectPlaceReasonEvidence(
   }
 
   const distance = ctx.distanceMeters;
-  if (distance != null && distance >= 0 && distance < NEARBY_MAX_M) {
+  const userProximity =
+    ctx.distanceSource === "USER_LOCATION" || ctx.distanceSource === "NAVIGATION_ORIGIN";
+  if (userProximity && distance != null && distance >= 0 && distance < NEARBY_MAX_M) {
     evidence.push({
       code: "nearby",
       score: 700 + Math.max(0, (NEARBY_MAX_M - distance) / 10),
@@ -421,16 +423,26 @@ function renderEvidenceReason(
       if (ctx.distanceMeters != null && ctx.distanceMeters < 600) {
         body =
           locale === "zh-TW"
-            ? "距離你很近，步行就能到"
+            ? ctx.hasWalkingRouteEvidence
+              ? "距離你很近，已有步行路線可前往"
+              : "距離你很近"
             : locale === "ja"
-              ? "すぐ近くで歩いて行ける"
+              ? ctx.hasWalkingRouteEvidence
+                ? "すぐ近くで徒歩ルートがある"
+                : "すぐ近く"
               : locale === "ko"
-                ? "아주 가까워서 걸어갈 수 있어요"
-                : "Very close — an easy walk";
+                ? ctx.hasWalkingRouteEvidence
+                  ? "아주 가까워서 도보 경로가 있어요"
+                  : "아주 가까워요"
+                : ctx.hasWalkingRouteEvidence
+                  ? "Very close, with a verified walking route"
+                  : "Very close";
       } else if (ctx.distanceMeters != null) {
         body =
           locale === "zh-TW"
-            ? `步行約 ${Math.round(ctx.distanceMeters)} 公尺`
+            ? ctx.hasWalkingRouteEvidence
+              ? `已有步行路線，距離約 ${Math.round(ctx.distanceMeters)} 公尺`
+              : `距離你約 ${Math.round(ctx.distanceMeters)} 公尺`
             : copy.distanceM(Math.round(ctx.distanceMeters));
       } else {
         body =

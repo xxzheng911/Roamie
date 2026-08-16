@@ -274,6 +274,7 @@ export async function buildRecommendationRefinementResults(params: {
           preferenceEvidenceSource: travelContext.moodEvidenceSource,
           locale,
           distanceMeters: distM,
+          distanceSource: "SEARCH_CENTER",
           categoryLabel: label,
           categoryIntent,
           userProfile,

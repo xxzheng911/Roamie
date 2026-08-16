@@ -1,6 +1,7 @@
 import type { WeatherSummary } from "@/lib/weather-types";
 import {
   generatePlaceReason,
+  type DistanceEvidenceSource,
   type UserProfileForReason,
 } from "@/lib/build-place-recommendation-reason";
 
@@ -12,6 +13,8 @@ export type ReasonContext = {
   searchQuery?: string;
   /** Distance from user in meters, if known */
   distanceMeters?: number;
+  distanceSource?: DistanceEvidenceSource;
+  hasWalkingRouteEvidence?: boolean;
   hour?: number;
 };
 
@@ -58,10 +61,16 @@ function moodHint(mood?: string): string | null {
   return `呼應你「${mood}」的心情`;
 }
 
-function distanceHint(meters?: number): string | null {
+function distanceHint(ctx: ReasonContext): string | null {
+  const meters = ctx.distanceMeters;
   if (meters === undefined) return null;
+  if (ctx.distanceSource !== "USER_LOCATION" && ctx.distanceSource !== "NAVIGATION_ORIGIN") {
+    return null;
+  }
   if (meters < 800) return "距離你目前位置很近";
-  if (meters < 2500) return "走路或短程交通就能到";
+  if (meters < 2500) {
+    return ctx.hasWalkingRouteEvidence ? "有正式步行路線可前往" : "距離你目前位置不遠";
+  }
   if (meters < 8000) return `直線距離約 ${(meters / 1000).toFixed(1)} 公里`;
   return null;
 }
@@ -105,6 +114,8 @@ export function buildTemplateReason(
       mood: ctx.mood,
       categoryLabel: ctx.categoryLabel,
       distanceMeters: ctx.distanceMeters,
+      distanceSource: ctx.distanceSource,
+      hasWalkingRouteEvidence: ctx.hasWalkingRouteEvidence,
     },
   });
 }

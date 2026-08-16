@@ -46,6 +46,15 @@ export type RecommendationPreferenceEvidenceSource =
   | "AI_INFERRED"
   | "SYSTEM_SYNTHESIZED";
 
+export type DistanceEvidenceSource =
+  | "USER_LOCATION"
+  | "NAVIGATION_ORIGIN"
+  | "DESTINATION_CENTER"
+  | "AREA_CENTER"
+  | "SEARCH_CENTER"
+  | "ROUTE"
+  | "UNKNOWN";
+
 export function isGroundedPreferenceEvidenceSource(
   source: RecommendationPreferenceEvidenceSource | undefined,
 ): boolean {
@@ -58,6 +67,10 @@ export type PlaceRecommendationContext = {
   /** Active recommendation intent — locks description templates */
   categoryIntent?: PlaceRecommendationIntent | string;
   distanceMeters?: number;
+  /** Origin of distanceMeters; required for outward-facing proximity claims. */
+  distanceSource?: DistanceEvidenceSource;
+  /** True only when a walking route/duration was actually resolved. */
+  hasWalkingRouteEvidence?: boolean;
   mood?: string;
   /** Provenance for outward-facing personalization claims. */
   preferenceEvidenceSource?: RecommendationPreferenceEvidenceSource;
@@ -260,10 +273,18 @@ function inferInterestTags(profile: UserProfileForReason): string[] {
   return tags;
 }
 
-function distancePhrase(meters?: number): string | null {
+function hasUserProximityEvidence(ctx: PlaceRecommendationContext): boolean {
+  return ctx.distanceSource === "USER_LOCATION" || ctx.distanceSource === "NAVIGATION_ORIGIN";
+}
+
+function distancePhrase(ctx: PlaceRecommendationContext): string | null {
+  const meters = ctx.distanceMeters;
   if (meters === undefined) return null;
+  if (!hasUserProximityEvidence(ctx) && ctx.distanceSource !== "ROUTE") return null;
   if (meters < 600) return "距離你很近";
-  if (meters < 1800) return "走路或短程就能到";
+  if (meters < 1800) {
+    return ctx.hasWalkingRouteEvidence ? "有正式步行路線可前往" : "距離你目前位置不遠";
+  }
   if (meters < 5000) return `直線距離約 ${(meters / 1000).toFixed(1)} 公里`;
   if (meters < 15_000) return "稍遠一點，但值得專程安排";
   return "距離較遠，建議安排交通再前往";
@@ -439,7 +460,7 @@ function buildSafeReason(
     return parts.join(". ");
   }
   const parts: string[] = [SAFE_FALLBACK.replace(/。$/, "")];
-  const dist = distancePhrase(ctx.distanceMeters);
+  const dist = distancePhrase(ctx);
   if (dist) parts.push(dist);
   const w = weatherSupplement(weather);
   if (w) parts.push(w);
@@ -447,7 +468,7 @@ function buildSafeReason(
   if (h) parts.push(h);
   if (parts.length === 0) return SAFE_FALLBACK;
   const lead = parts.slice(0, 2).join("，");
-  if (ctx.distanceMeters != null && ctx.distanceMeters >= 8000) {
+  if (hasUserProximityEvidence(ctx) && ctx.distanceMeters != null && ctx.distanceMeters >= 8000) {
     return `${lead}，建議安排交通後再前往。`;
   }
   return `${lead}。`;
@@ -491,7 +512,10 @@ function buildReasonFromIdentity(
       IDENTITY_INTROS[identity] ?? [copy.safeFallback],
     );
     const parts: string[] = [intro];
-    if (ctx.distanceMeters != null) {
+    if (
+      ctx.distanceMeters != null &&
+      (hasUserProximityEvidence(ctx) || ctx.distanceSource === "ROUTE")
+    ) {
       if (ctx.distanceMeters < 1000) parts.push(copy.distanceM(ctx.distanceMeters));
       else parts.push(copy.distanceKm((ctx.distanceMeters / 1000).toFixed(1)));
     }
@@ -506,12 +530,16 @@ function buildReasonFromIdentity(
     return parts.filter(Boolean).join(resolvedLocale === "ja" ? "。" : ". ");
   }
 
+  const outwardDistance =
+    hasUserProximityEvidence(ctx) || ctx.distanceSource === "ROUTE"
+      ? ctx.distanceMeters
+      : undefined;
   const intro = adjustIntroForDistance(
     hashPick(seed, IDENTITY_INTROS[identity] ?? [SAFE_FALLBACK]),
-    ctx.distanceMeters,
+    outwardDistance,
   );
   const scene = hashPick(seed, IDENTITY_SCENE[identity] ?? []);
-  const dist = distancePhrase(ctx.distanceMeters);
+  const dist = distancePhrase(ctx);
   const rating = ratingPhrase(place.rating, place.userRatingCount);
 
   if (!personalized || !profile?.onboarded) {

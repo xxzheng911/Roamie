@@ -166,7 +166,7 @@ const ATTRACTION_DISTANCES = {
 function toItems(places, distances) {
   return places.map((place) => ({
     place,
-    context: { distanceMeters: distances[place.id] },
+    context: { distanceMeters: distances[place.id], distanceSource: "USER_LOCATION" },
   }));
 }
 
@@ -359,6 +359,43 @@ test("straight-line distance never becomes route_fit", () => {
   assert.equal(assigned.reason.includes("順路"), false);
 });
 
+test("search-center and area-centroid distance cannot become user proximity", () => {
+  for (const distanceSource of ["SEARCH_CENTER", "DESTINATION_CENTER", "AREA_CENTER"]) {
+    const place = stubPlace({ id: `scope-${distanceSource}`, name: "範圍中心咖啡" });
+    const [assigned] = assignDiversePlaceReasons([
+      { place, context: { distanceMeters: 300, distanceSource } },
+    ]);
+    assert.notEqual(assigned.evidenceCode, "nearby");
+    assert.equal(/距離你|步行就能到/.test(assigned.reason), false);
+  }
+});
+
+test("user GPS proximity does not promise walking without route evidence", () => {
+  const place = stubPlace({ id: "gps-near", name: "GPS 附近咖啡" });
+  const [assigned] = assignDiversePlaceReasons([
+    { place, context: { distanceMeters: 300, distanceSource: "USER_LOCATION" } },
+  ]);
+  assert.equal(assigned.evidenceCode, "nearby");
+  assert.match(assigned.reason, /距離你很近/);
+  assert.equal(/步行就能到|步行路線/.test(assigned.reason), false);
+});
+
+test("verified walking evidence may add walking wording", () => {
+  const place = stubPlace({ id: "walk-near", name: "步行附近咖啡" });
+  const [assigned] = assignDiversePlaceReasons([
+    {
+      place,
+      context: {
+        distanceMeters: 300,
+        distanceSource: "NAVIGATION_ORIGIN",
+        hasWalkingRouteEvidence: true,
+      },
+    },
+  ]);
+  assert.equal(assigned.evidenceCode, "nearby");
+  assert.match(assigned.reason, /步行路線/);
+});
+
 test("verified alongRoute evidence may use route_fit", () => {
   const place = stubPlace({ id: "real-route", name: "沿線咖啡" });
   const [assigned] = assignDiversePlaceReasons([
@@ -431,6 +468,7 @@ test("Chat batch mapper keeps order and attaches diverse reasons", () => {
       ctx: {
         locale: "zh-TW",
         distanceMeters: CAFE_DISTANCES[place.id],
+        distanceSource: "USER_LOCATION",
         categoryIntent: "cafe",
       },
     })),

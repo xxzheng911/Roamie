@@ -573,6 +573,7 @@ function placesToRecommendations(
           preferenceEvidenceSource: context.moodEvidenceSource,
           locale,
           distanceMeters: distM,
+          distanceSource: "DESTINATION_CENTER",
           categoryLabel,
           categoryIntent,
           userProfile,
