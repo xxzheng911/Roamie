@@ -15,6 +15,7 @@
     "preview": "vite preview",
     "verify:pie-facade": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-pie-facade.mjs",
     "verify:place-reason-diversity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-reason-diversity.mjs",
+    "verify:place-display-name-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-display-name-fidelity.mjs",
     "verify:shortcut-category-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-shortcut-category-fidelity.mjs",
     "verify:destination-area-scope": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-destination-area-scope.mjs",
     "verify:home-nearby-loading-state": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-nearby-loading-state.mjs",

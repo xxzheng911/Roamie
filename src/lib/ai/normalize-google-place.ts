@@ -136,6 +136,8 @@ export function normalizeGooglePlace(
       originalName: name,
       placeId: id || options?.existing?.id || undefined,
       canonicalPlaceId: id || options?.existing?.id || undefined,
+      primaryType,
+      types,
     },
     locale,
   );

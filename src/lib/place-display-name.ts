@@ -378,16 +378,6 @@ function logPlaceLocalizationFallback(entry: PlaceLocalizationFallbackLog): void
   );
 }
 
-function extractCjkSegment(name: string): string | null {
-  if (!HAS_CJK_RE.test(name) || !HAS_LATIN_RE.test(name)) return null;
-  const cjkParts = name.match(
-    /[\u4e00-\u9fff\u3400-\u4dbf]+(?:[\u4e00-\u9fff\u3400-\u4dbf\s]*)*/g,
-  );
-  if (!cjkParts?.length) return null;
-  const joined = cjkParts.join("").replace(/\s+/g, "").trim();
-  return joined.length >= 2 ? joined : null;
-}
-
 function detectEnglishName(raw: PlaceNameResolveInput, originalName: string): string {
   return pickFirstNonEmpty(
     raw.englishName,
@@ -550,26 +540,16 @@ export function resolvePlaceDisplayName(
       });
     }
 
-    // Current name already Traditional Chinese (API requested zh-TW)
+    // Current name already contains Traditional Chinese (API requested zh-TW).
+    // A mixed-script Google display name is still one canonical place name: the
+    // CJK portion may only be a branch/city suffix (for example
+    // "ONIBUS COFFEE 台中").  Without an independent provider field proving that
+    // the CJK segment is the complete business name, preserve the full string.
     if (
       looksTraditionalChinese(originalName) &&
       !HAS_KANA_RE.test(originalName) &&
       !hasForeignLocalScript(originalName, "zh-TW")
     ) {
-      const cjkOnly = extractCjkSegment(originalName);
-      if (cjkOnly && cjkOnly !== originalName) {
-        return remember({
-          originalName,
-          englishName,
-          localizedDisplayName: cjkOnly,
-          languageCode: "zh-TW",
-          localizationSource: "verified_zh",
-          translationConfidence: 0.95,
-          placeId,
-          canonicalPlaceId,
-          translationPolicy: "locale_passthrough",
-        });
-      }
       return remember({
         originalName,
         englishName,
