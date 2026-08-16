@@ -217,6 +217,11 @@ export type ChatPlanningSession = {
   tripPlanningContext?: import("@/lib/ai/trip-planning-context").TripPlanningContext;
   /** 上一輪 AI 問題的待選選項 */
   pendingQuestion?: import("@/lib/ai/destination-pending-question").PendingQuestion;
+  /**
+   * Place/category geographic clarification (e.g. 澀谷 → 哪個地區).
+   * Originating intent must survive the parent-city answer.
+   */
+  pendingClarification?: import("@/lib/ai/destination-geographic-clarification").PendingGeographicClarification;
   /** 上一輪助理完整回覆（用於恢復遺失的 pendingQuestion） */
   lastAssistantReply?: string;
   /** 本輪剛解析到的選項回覆（用於推進下一步） */

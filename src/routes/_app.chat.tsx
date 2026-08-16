@@ -292,6 +292,11 @@ import {
   extractProvisionalDestinationAreaCandidate,
   resolveValidatedDestinationAreaScope,
 } from "@/lib/ai/destination-travel-profile";
+import {
+  buildPendingGeographicClarification,
+  isPlaceClarificationTripPlanningOverride,
+  restorePlaceIntentAfterGeographicClarification,
+} from "@/lib/ai/destination-geographic-clarification";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { coerceTravelDestination } from "@/lib/ai/trip-planning-context";
 import {
@@ -3900,13 +3905,28 @@ function Chat() {
       });
       // An explicit district-only label must not silently inherit an older session destination.
       if (provisionalArea && !validatedAreaScope) {
-        setMsgs([
+        const clarificationMsgs: ChatMsg[] = [
           ...conversation,
           {
             role: "assistant",
             content: `你指的是哪個地區的${provisionalArea.areaCandidate}？`,
           },
-        ]);
+        ];
+        setMsgs(clarificationMsgs);
+        persistSession(
+          {
+            ...merged.session,
+            pendingClarification: buildPendingGeographicClarification({
+              rawGeographicLabel: provisionalArea.areaCandidate,
+              categoryIntent: intents[0]!,
+              originalUserText: userText,
+            }),
+            activeCategoryIntent: intents[0],
+            pendingQuestion: undefined,
+            lastAssistantReply: `你指的是哪個地區的${provisionalArea.areaCandidate}？`,
+          },
+          clarificationMsgs,
+        );
         return true;
       }
       const baseDestination = resolveDestinationForCategorySearch(
@@ -4157,6 +4177,7 @@ function Chat() {
           // Stay on place recommendation without flipping into device-nearby explore.
           conversationMode: "destination_planning",
           phase: "recommend",
+          pendingClarification: undefined,
           pendingQuestion: preserveCombinationPending,
           tripPlanningContext: activeSession.tripPlanningContext
             ? {
@@ -4258,6 +4279,7 @@ function Chat() {
           syncSessionPlaceMemory({
             ...sessionWithRecs,
             recommendedPlaces: recs,
+            pendingClarification: undefined,
             pendingQuestion: preserveCombinationPending,
           }),
           nextMsgs,
@@ -5763,6 +5785,60 @@ function Chat() {
       .reverse()
       .find((m) => m.role === "assistant" && m.content?.trim())?.content;
     nextSession = prepareSessionForUserTurn(nextSession, lastAssistantReply);
+
+    const pendingGeographic = nextSession.pendingClarification;
+    if (pendingGeographic?.kind === "destination_area") {
+      if (isPlaceClarificationTripPlanningOverride(trimmed)) {
+        nextSession = { ...nextSession, pendingClarification: undefined };
+      } else {
+        const restored = restorePlaceIntentAfterGeographicClarification(
+          pendingGeographic,
+          trimmed,
+        );
+        const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+        setMsgs(next);
+        setText("");
+        if (restored) {
+          const sessionForRec: ChatPlanningSession = {
+            ...nextSession,
+            pendingClarification: undefined,
+            activeCategoryIntent: restored.categoryIntent,
+          };
+          persistSession(sessionForRec, next);
+          const applied = await pushDestinationCategoryPlaceRecommendation(
+            sessionForRec,
+            restored.restoredUserText,
+            next,
+          );
+          if (applied) return;
+          const fallbackApplied = await applyLocalFallback(
+            sessionForRec,
+            restored.restoredUserText,
+            next,
+            "destination_category_places_failed",
+          );
+          if (fallbackApplied) return;
+          setMsgs([
+            ...next,
+            {
+              role: "assistant",
+              content: `目前在${restored.destinationLabel}暫時找不到符合的地點，可以換個描述或稍後再試。`,
+            },
+          ]);
+          return;
+        }
+        const reaskMsgs: ChatMsg[] = [
+          ...next,
+          {
+            role: "assistant",
+            content: `你指的是哪個地區的${pendingGeographic.rawGeographicLabel}？`,
+          },
+        ];
+        setMsgs(reaskMsgs);
+        persistSession(nextSession, reaskMsgs);
+        return;
+      }
+    }
 
     if (isReplanIntent(trimmed)) {
       nextSession = resetChatPlanningForReplan(nextSession, "user_replan_intent");
