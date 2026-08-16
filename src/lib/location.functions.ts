@@ -149,6 +149,24 @@ function resolveRegion(components: AddressComponent[] | undefined): string | und
   return admin2 || undefined;
 }
 
+function resolveDistrict(components: AddressComponent[] | undefined): string | undefined {
+  return (
+    componentText(components, "administrative_area_level_3") ||
+    componentText(components, "sublocality_level_1") ||
+    componentText(components, "sublocality") ||
+    undefined
+  );
+}
+
+function resolveSublocality(components: AddressComponent[] | undefined): string | undefined {
+  return (
+    componentText(components, "sublocality_level_1") ||
+    componentText(components, "sublocality") ||
+    componentText(components, "neighborhood") ||
+    undefined
+  );
+}
+
 function rawToTripLocation(raw: RawPlaceDetails, placeId: string): TripLocation | null {
   const types = [...(raw.types ?? []), ...(raw.primaryType ? [raw.primaryType] : [])];
   if (!isGeographicPlaceTypes(types)) return null;
@@ -162,6 +180,8 @@ function rawToTripLocation(raw: RawPlaceDetails, placeId: string): TripLocation 
   const country = componentText(raw.addressComponents, "country") || displayName;
   const city = resolveCity(raw.addressComponents, displayName);
   const region = resolveRegion(raw.addressComponents);
+  const district = resolveDistrict(raw.addressComponents);
+  const sublocality = resolveSublocality(raw.addressComponents);
   const utcOffsetMinutes = raw.utcOffsetMinutes ?? null;
   const formattedName = buildFormattedName(country, city, displayName);
 
@@ -172,6 +192,8 @@ function rawToTripLocation(raw: RawPlaceDetails, placeId: string): TripLocation 
     country: country || city,
     city: city || country || displayName,
     region,
+    district,
+    sublocality,
     lat: lat as number,
     lng: lng as number,
     formattedName,
@@ -243,6 +265,16 @@ function legacyGeocodeToTripLocation(
   );
   const region =
     legacyComponentText(result.address_components, "administrative_area_level_1") || undefined;
+  const district =
+    legacyComponentText(result.address_components, "administrative_area_level_3") ||
+    legacyComponentText(result.address_components, "sublocality_level_1") ||
+    legacyComponentText(result.address_components, "sublocality") ||
+    undefined;
+  const sublocality =
+    legacyComponentText(result.address_components, "sublocality_level_1") ||
+    legacyComponentText(result.address_components, "sublocality") ||
+    legacyComponentText(result.address_components, "neighborhood") ||
+    undefined;
   const formattedName = buildFormattedName(country, city, city || country);
   // Soft-accept: never drop valid city/prefecture coords for label heuristics.
   if (!opts?.softAcceptCoords && isRejectedTripLocationLabel(formattedName)) return null;
@@ -254,6 +286,8 @@ function legacyGeocodeToTripLocation(
     country: country || city,
     city: city || country,
     region,
+    district,
+    sublocality,
     lat: lat as number,
     lng: lng as number,
     formattedName,

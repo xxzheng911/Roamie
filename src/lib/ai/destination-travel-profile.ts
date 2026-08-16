@@ -334,6 +334,8 @@ export function locationValidatesDestinationArea(
     [
       location.city,
       location.region,
+      location.district,
+      location.sublocality,
       location.formattedName,
       location.displayLabel,
       location.address,

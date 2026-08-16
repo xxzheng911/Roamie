@@ -45,6 +45,11 @@ const genericFixtures = [
   ["高雄三民有什麼咖啡廳推薦", "高雄", "三民"],
   ["台南東區有什麼咖啡廳推薦", "台南", "東區"],
   ["台北大安有什麼咖啡廳推薦", "台北", "大安"],
+  ["台中西屯區有什麼咖啡廳推薦", "台中", "西屯區"],
+  ["台中北屯區有什麼咖啡廳推薦", "台中", "北屯區"],
+  ["台中南屯區有什麼咖啡廳推薦", "台中", "南屯區"],
+  ["台北信義區有什麼咖啡廳推薦", "台北", "信義"],
+  ["高雄鼓山區有什麼咖啡廳推薦", "高雄", "鼓山區"],
 ];
 for (const [text, parentCity, area] of genericFixtures) {
   const candidate = extractGenericDestinationAreaCandidate(text);
@@ -68,6 +73,26 @@ assert.equal(
     address: "台灣高雄市鼓山區",
   }),
   true,
+);
+
+const xitunCandidate = extractGenericDestinationAreaCandidate("台中西屯區有什麼咖啡廳推薦");
+assert.ok(xitunCandidate);
+assert.equal(
+  locationValidatesDestinationArea(xitunCandidate, {
+    placeId: "mock:xitun-structured",
+    country: "台灣",
+    city: "台中市",
+    region: "台中市",
+    district: "西屯區",
+    sublocality: "西屯區",
+    lat: 24.18,
+    lng: 120.64,
+    formattedName: "Taichung",
+    displayLabel: "Taichung",
+    address: "Taiwan",
+  }),
+  true,
+  "structured district evidence must validate without formatted-address substring dependence",
 );
 assert.equal(
   locationValidatesDestinationArea(gushanCandidate, {
@@ -211,6 +236,16 @@ assert.deepEqual(
   explicitAreaOnly.map((candidate) => candidate.place.id),
   ["area-1"],
   "explicit area must remain the hard final card scope even below target",
+);
+assert.deepEqual(
+  selectAreaFirstCandidates(
+    [{ ...scoped("wrong-parent", "area_primary", true), parentCityMatched: false }],
+    [],
+    4,
+    { explicitAreaConstraint: true },
+  ),
+  [],
+  "explicit area hard scope requires both district and parent-city evidence",
 );
 assert.deepEqual(
   selectAreaFirstCandidates(

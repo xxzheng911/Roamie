@@ -5,6 +5,10 @@ export type TripLocation = {
   city: string;
   /** 縣市 / 一級或二級行政區 */
   region?: string;
+  /** Provider-verified district / third-level administrative area. */
+  district?: string;
+  /** Provider-verified sublocality / neighborhood evidence. */
+  sublocality?: string;
   lat: number;
   lng: number;
   /** 顯示用，例如 日本・大阪 */

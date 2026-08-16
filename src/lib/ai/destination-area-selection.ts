@@ -29,7 +29,11 @@ export function selectAreaFirstCandidates(
     selected.push(candidate);
   };
   areaCandidates
-    .filter((candidate) => !options.explicitAreaConstraint || candidate.areaMatched)
+    .filter(
+      (candidate) =>
+        !options.explicitAreaConstraint ||
+        (candidate.areaMatched && candidate.parentCityMatched),
+    )
     .forEach(append);
   if (!options.explicitAreaConstraint) cityCandidates.forEach(append);
   return selected;
