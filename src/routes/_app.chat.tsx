@@ -301,6 +301,13 @@ import {
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { coerceTravelDestination } from "@/lib/ai/trip-planning-context";
 import {
+  filterRecommendationsForExplicitDestinationScope,
+  isolateSessionToExplicitDestination,
+  logDestinationRecommendationFallbackSummary,
+  resolveExplicitDestinationFallbackScope,
+  shouldBlockCrossScopeRecommendationFallback,
+} from "@/lib/ai/destination-recommendation-fallback-scope";
+import {
   mapCategoryIntentToNearbyIntent,
   parseChatPlaceIntents,
   resolveDestinationForCategorySearch,
@@ -4666,28 +4673,79 @@ function Chat() {
         return false;
       }
 
+      const mergedForScope = mergeTravelContext(activeSession, activeUserText);
+      const explicitScope = resolveExplicitDestinationFallbackScope({
+        userText: activeUserText,
+        session: activeSession,
+        context: mergedForScope.context,
+      });
+      const scopedSession = explicitScope
+        ? isolateSessionToExplicitDestination(activeSession, explicitScope)
+        : activeSession;
+
+      if (explicitScope && reason === "destination_category_places_failed") {
+        logDestinationRecommendationFallbackSummary({
+          destination: explicitScope.destination,
+          sourcePath: "local-recommendation-fallback",
+          fallbackDestination: scopedSession.travelContext?.destination,
+          accepted: false,
+          reason: "explicit_destination_builder_empty",
+        });
+        return false;
+      }
+
+      if (
+        explicitScope &&
+        shouldBlockCrossScopeRecommendationFallback({
+          explicit: explicitScope,
+          sourcePath: "old_recommendation_session",
+          fallbackDestination:
+            activeSession.recommendationSession?.destination ||
+            activeSession.activeRecommendationContext?.destinationName ||
+            activeSession.travelContext?.destination,
+        })
+      ) {
+        logDestinationRecommendationFallbackSummary({
+          destination: explicitScope.destination,
+          sourcePath: "old_recommendation_session",
+          fallbackDestination:
+            activeSession.recommendationSession?.destination ||
+            activeSession.activeRecommendationContext?.destinationName,
+          accepted: false,
+          reason: "old_session_destination",
+        });
+      }
+
       // Continue recommendation must stay on destination snapshot — never GPS nearby.
       if (
-        (activeSession.activeRecommendationContext ||
-          activeSession.recommendationSession ||
-          resolveActiveCategoryIntent(activeSession)) &&
+        (scopedSession.activeRecommendationContext ||
+          scopedSession.recommendationSession ||
+          resolveActiveCategoryIntent(scopedSession)) &&
         (matchesContinueRecommendationGrammar(activeUserText) ||
           isMorePlaceRecommendationsIntent(activeUserText) ||
           isRefreshRecommendationsRequest(activeUserText)) &&
         !isExplicitDeviceNearbyRequest(activeUserText)
       ) {
         const dest =
-          activeSession.activeRecommendationContext?.destinationName ||
-          activeSession.recommendationSession?.destination ||
-          activeSession.travelContext?.destination ||
-          activeSession.tripPlanningContext?.destination;
-        if (dest?.trim()) {
-          const arbitration = resolveChatIntentArbitration(activeUserText, activeSession);
+          scopedSession.activeRecommendationContext?.destinationName ||
+          scopedSession.recommendationSession?.destination ||
+          scopedSession.travelContext?.destination ||
+          scopedSession.tripPlanningContext?.destination;
+        if (
+          dest?.trim() &&
+          (!explicitScope ||
+            !shouldBlockCrossScopeRecommendationFallback({
+              explicit: explicitScope,
+              sourcePath: "recommendation-refinement-fallback",
+              fallbackDestination: dest,
+            }))
+        ) {
+          const arbitration = resolveChatIntentArbitration(activeUserText, scopedSession);
           logContinueRecommendationResolved({
             route: arbitration.route,
             category: String(
-              resolveActiveCategoryIntent(activeSession) ??
-                activeSession.activeRecommendationContext?.intent ??
+              resolveActiveCategoryIntent(scopedSession) ??
+                scopedSession.activeRecommendationContext?.intent ??
                 "",
             ),
             destination: dest,
@@ -4697,7 +4755,7 @@ function Chat() {
             arbitration.route === "RECOMMENDATION_REFINEMENT"
           ) {
             const refined = await pushRecommendationRefinement(
-              activeSession,
+              scopedSession,
               activeUserText,
               conversation,
             );
@@ -4705,9 +4763,9 @@ function Chat() {
           }
           const more = await pushMorePlaceRecommendations(
             {
-              ...activeSession,
+              ...scopedSession,
               travelContext: {
-                ...(activeSession.travelContext ?? { interests: [] }),
+                ...(scopedSession.travelContext ?? { interests: [] }),
                 destination: dest,
                 tripPurpose: "more_place_recommendations",
               },
@@ -4741,39 +4799,81 @@ function Chat() {
         }
       }
 
-      const mergedForAdvice = mergeTravelContext(activeSession, activeUserText);
+      const mergedForAdvice = mergeTravelContext(scopedSession, activeUserText);
 
-      if (shouldFetchDestinationPlaces(activeUserText, mergedForAdvice.context, activeSession)) {
-        const applied = await pushDestinationPlaceRecommendation(
-          activeSession,
-          activeUserText,
-          conversation,
-        );
-        if (applied) return true;
+      if (shouldFetchDestinationPlaces(activeUserText, mergedForAdvice.context, scopedSession)) {
+        const destForPlaces =
+          mergedForAdvice.context.destination ||
+          scopedSession.travelContext?.destination;
+        if (
+          explicitScope &&
+          shouldBlockCrossScopeRecommendationFallback({
+            explicit: explicitScope,
+            sourcePath: "generic-chat-fallback",
+            fallbackDestination: destForPlaces,
+          })
+        ) {
+          logDestinationRecommendationFallbackSummary({
+            destination: explicitScope.destination,
+            sourcePath: "generic-chat-fallback",
+            fallbackDestination: destForPlaces,
+            accepted: false,
+            reason: "cross_scope_destination",
+          });
+        } else {
+          const applied = await pushDestinationPlaceRecommendation(
+            scopedSession,
+            activeUserText,
+            conversation,
+          );
+          if (applied) return true;
+        }
       }
 
       if (
-        shouldFetchDestinationCategoryPlaces(activeUserText, mergedForAdvice.context, activeSession)
+        shouldFetchDestinationCategoryPlaces(activeUserText, mergedForAdvice.context, scopedSession)
       ) {
-        const applied = await pushDestinationCategoryPlaceRecommendation(
-          activeSession,
+        const destForCategory = resolveDestinationForCategorySearch(
+          mergedForAdvice.context,
+          scopedSession,
           activeUserText,
-          conversation,
         );
-        if (applied) return true;
+        if (
+          explicitScope &&
+          shouldBlockCrossScopeRecommendationFallback({
+            explicit: explicitScope,
+            sourcePath: "destination-category-retry",
+            fallbackDestination: destForCategory,
+          })
+        ) {
+          logDestinationRecommendationFallbackSummary({
+            destination: explicitScope.destination,
+            sourcePath: "destination-category-retry",
+            fallbackDestination: destForCategory,
+            accepted: false,
+            reason: "cross_scope_destination",
+          });
+        } else {
+          const applied = await pushDestinationCategoryPlaceRecommendation(
+            scopedSession,
+            activeUserText,
+            conversation,
+          );
+          if (applied) return true;
+        }
       }
 
       const planningTurn = resolvePlanningFallbackTurn(
         activeUserText,
-        activeSession,
-        activeSession.travelContext ?? { interests: [] },
+        scopedSession,
+        scopedSession.travelContext ?? { interests: [] },
       );
       if (
         planningTurn.advice.reply &&
         !shouldBlockPlanningFallbackForCategoryQuery(
           activeUserText,
           mergedForAdvice.context,
-          activeSession,
+          scopedSession,
         )
       ) {
         const trimmedConversation = conversation.filter(
@@ -4794,7 +4894,7 @@ function Chat() {
         !shouldBlockPlanningFallbackForCategoryQuery(
           activeUserText,
           mergedForAdvice.context,
-          activeSession,
+          scopedSession,
         )
       ) {
         const offline = buildPlanningOfflineReply(
@@ -4821,6 +4921,15 @@ function Chat() {
         mergedForAdvice.context,
       );
       if (adviceTurn.advice.reply) {
+        if (explicitScope && hasCategoryPlaceQuery(activeUserText)) {
+          logDestinationRecommendationFallbackSummary({
+            destination: explicitScope.destination,
+            sourcePath: "generic-chat-fallback",
+            fallbackDestination: mergedForAdvice.context.destination,
+            accepted: false,
+            reason: "generic_chat_blocked",
+          });
+        } else {
         const trimmedConversation = conversation.filter(
           (m, i) => !(i === conversation.length - 1 && m.role === "assistant" && !m.content),
         );
@@ -4832,25 +4941,34 @@ function Chat() {
         );
         setPartial({});
         return true;
+        }
       }
 
-      const intent = resolveChatIntent(activeUserText, activeSession);
+      const intent = resolveChatIntent(activeUserText, scopedSession);
       if (
         isNearbyPlaceIntent(intent) &&
-        shouldFetchNearbyPlaces(intent, activeSession, activeUserText)
+        shouldFetchNearbyPlaces(intent, scopedSession, activeUserText)
       ) {
         // Never cover trip destination with device GPS for place-category asks.
-        const destForScope = resolveDestinationForCategorySearch(
-          mergedForAdvice.context,
-          activeSession,
-          activeUserText,
-        );
-        if (destForScope && !isExplicitDeviceNearbyRequest(activeUserText)) {
-          // Destination continue / category → do not enter GPS nearby branch.
+        const destForScope =
+          explicitScope?.destination ||
+          resolveDestinationForCategorySearch(
+            mergedForAdvice.context,
+            scopedSession,
+            activeUserText,
+          );
+        if (explicitScope && !isExplicitDeviceNearbyRequest(activeUserText)) {
+          logDestinationRecommendationFallbackSummary({
+            destination: explicitScope.destination,
+            sourcePath: "current-location-nearby",
+            fallbackDestination: destForScope,
+            accepted: false,
+            reason: "current_location_blocked",
+          });
           console.warn(
             "[RECOMMENDATION_GPS_OVERRIDE_BLOCKED]",
-            `destination=${destForScope}`,
-            "reason=destination_scope_active",
+            `destination=${explicitScope.destination}`,
+            "reason=explicit_destination_scope_active",
           );
           return false;
         }
@@ -4865,7 +4983,7 @@ function Chat() {
           }
         }
         const applied = await pushNearbyPlaceRecommendation(
-          activeSession,
+          scopedSession,
           activeUserText,
           conversation,
           intent,
@@ -4874,27 +4992,37 @@ function Chat() {
       }
 
       if (
-        activeSession.activeChatIntent &&
-        isNearbyPlaceIntent(activeSession.activeChatIntent) &&
-        (activeSession.foodPreference || isFoodPreferenceReply(activeUserText))
+        scopedSession.activeChatIntent &&
+        isNearbyPlaceIntent(scopedSession.activeChatIntent) &&
+        (scopedSession.foodPreference || isFoodPreferenceReply(activeUserText))
       ) {
-        const applied = await pushNearbyPlaceRecommendation(
-          activeSession,
-          activeUserText,
-          conversation,
-          activeSession.activeChatIntent,
-        );
-        if (applied) return true;
+        if (explicitScope && !isExplicitDeviceNearbyRequest(activeUserText)) {
+          logDestinationRecommendationFallbackSummary({
+            destination: explicitScope.destination,
+            sourcePath: "current-location-nearby",
+            fallbackDestination: explicitScope.destination,
+            accepted: false,
+            reason: "current_location_blocked",
+          });
+        } else {
+          const applied = await pushNearbyPlaceRecommendation(
+            scopedSession,
+            activeUserText,
+            conversation,
+            scopedSession.activeChatIntent,
+          );
+          if (applied) return true;
+        }
       }
 
-      const { context } = mergeTravelContext(activeSession, activeUserText);
+      const { context } = mergeTravelContext(scopedSession, activeUserText);
       let placeResults: Awaited<ReturnType<typeof searchNearbyPlaces>>["places"] = [];
-      const deviceSession = await resolveChatLocation(activeSession);
+      const deviceSession = await resolveChatLocation(scopedSession);
       const deviceLat = deviceSession.location?.lat;
       const deviceLng = deviceSession.location?.lng;
       const searchCtx = await resolveChatPlaceSearchContext({
         context,
-        session: activeSession,
+        session: scopedSession,
         userText: activeUserText,
         locale,
         geocodeFn: geocodeLocationFn,
@@ -4927,20 +5055,49 @@ function Chat() {
         lng = deviceLng;
       }
 
-      const resolvedIntent = resolveChatIntent(activeUserText, activeSession);
+      if (explicitScope && searchCtx.searchMode !== "destination") {
+        logDestinationRecommendationFallbackSummary({
+          destination: explicitScope.destination,
+          sourcePath: "current-location-nearby",
+          fallbackDestination: searchCtx.destinationName,
+          accepted: false,
+          reason: "current_location_blocked",
+        });
+        return false;
+      }
+      if (
+        explicitScope &&
+        searchCtx.destinationName &&
+        shouldBlockCrossScopeRecommendationFallback({
+          explicit: explicitScope,
+          sourcePath: "local-recommendation-fallback",
+          fallbackDestination: searchCtx.destinationName,
+        })
+      ) {
+        logDestinationRecommendationFallbackSummary({
+          destination: explicitScope.destination,
+          sourcePath: "local-recommendation-fallback",
+          fallbackDestination: searchCtx.destinationName,
+          accepted: false,
+          reason: "cross_scope_destination",
+        });
+        return false;
+      }
+
+      const resolvedIntent = resolveChatIntent(activeUserText, scopedSession);
       const isRestaurantFlow =
-        activeSession.activeChatIntent === "restaurant" ||
+        scopedSession.activeChatIntent === "restaurant" ||
         resolvedIntent === "restaurant" ||
         isFoodIntentText(activeUserText);
       const isCampingFlow =
-        activeSession.activeChatIntent === "camping" ||
+        scopedSession.activeChatIntent === "camping" ||
         resolvedIntent === "camping" ||
         context.activity === "camping";
       const searchPayload = placesSearchContextPayload(searchCtx);
 
       if (lat != null && lng != null) {
         const attempts = isRestaurantFlow
-          ? restaurantSearchFallbackQueries(activeSession.foodPreference, activeUserText)
+          ? restaurantSearchFallbackQueries(scopedSession.foodPreference, activeUserText)
           : isCampingFlow
             ? campingSearchAttempts()
             : [{ query: fallbackSearchQuery(context), mode: "text" as const }];
@@ -4966,15 +5123,17 @@ function Chat() {
             });
             placeResults = fallback.places ?? [];
             if (
-              searchCtx.searchMode === "destination" &&
-              searchCtx.destinationName &&
-              placeResults.length > 0
+              (searchCtx.searchMode === "destination" && searchCtx.destinationName) ||
+              explicitScope
             ) {
-              placeResults = filterPlacesByDestinationGuard(
-                placeResults,
-                searchCtx.destinationName,
-                activeUserText,
-              );
+              const guardDest = explicitScope?.destination ?? searchCtx.destinationName;
+              if (guardDest && placeResults.length > 0) {
+                placeResults = filterPlacesByDestinationGuard(
+                  placeResults,
+                  guardDest,
+                  activeUserText,
+                );
+              }
             }
             if (isCampingFlow) {
               placeResults = filterCampingPlaces(placeResults);
@@ -4992,7 +5151,7 @@ function Chat() {
       }
 
       if (isCampingFlow && !placeResults.length) {
-        const intro = buildCampingIntroReply(context, activeSession);
+        const intro = buildCampingIntroReply(context, scopedSession);
         setMsgs((prev) => {
           const trimmedPrev = prev.filter(
             (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
@@ -5000,7 +5159,7 @@ function Chat() {
           return [...trimmedPrev, { role: "assistant", content: intro }];
         });
         persistSession({
-          ...activeSession,
+          ...scopedSession,
           activeChatIntent: "camping",
           phase: "discover",
           travelContext: {
@@ -5016,7 +5175,7 @@ function Chat() {
       if (isRestaurantFlow && !placeResults.length) {
         if (
           hasCategoryPlaceQuery(activeUserText) &&
-          resolveDestinationForCategorySearch(context, activeSession, activeUserText)
+          resolveDestinationForCategorySearch(context, scopedSession, activeUserText)
         ) {
           return false;
         }
@@ -5034,7 +5193,7 @@ function Chat() {
               roamie: {
                 title: "Roamie 推薦",
                 summary: emptySummary,
-                moodTag: activeSession.mood ?? "",
+                moodTag: scopedSession.mood ?? "",
                 recommendations: [],
                 itinerary: [],
               },
@@ -5046,15 +5205,15 @@ function Chat() {
 
       const { summary, payload } = generateLocalRecommendationFallback({
         context,
-        session: activeSession,
+        session: scopedSession,
         locale,
         places: placeResults ?? [],
       });
       const sessionForDisplay: ChatPlanningSession = {
-        ...activeSession,
+        ...scopedSession,
         activeChatIntent: isCampingFlow
           ? "camping"
-          : (activeSession.activeChatIntent ?? "restaurant"),
+          : (scopedSession.activeChatIntent ?? "restaurant"),
         phase: "recommend",
         travelContext: context,
       };
@@ -5072,16 +5231,29 @@ function Chat() {
             ? (payload.recommendations ?? [])
             : filteredRecs
       ) as ChatPlaceItem[];
-      if (!recs.length) {
+      const scopedRecs = explicitScope
+        ? (filterRecommendationsForExplicitDestinationScope(recs, explicitScope) as ChatPlaceItem[])
+        : recs;
+      if (explicitScope && recs.length && !scopedRecs.length) {
+        logDestinationRecommendationFallbackSummary({
+          destination: explicitScope.destination,
+          sourcePath: "local-recommendation-fallback",
+          fallbackDestination: context.destination,
+          candidatePlaceId: recs[0]?.googlePlaceId,
+          accepted: false,
+          reason: "cross_scope_place",
+        });
+      }
+      if (!scopedRecs.length) {
         if (
           hasCategoryPlaceQuery(activeUserText) &&
-          resolveDestinationForCategorySearch(context, activeSession, activeUserText)
+          resolveDestinationForCategorySearch(context, scopedSession, activeUserText)
         ) {
           return false;
         }
         return false;
       }
-      logChatUiReceivedCards(recs.length);
+      logChatUiReceivedCards(scopedRecs.length);
       setMsgs((prev) => {
         const trimmedPrev = prev.filter(
           (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
@@ -5094,18 +5266,18 @@ function Chat() {
             roamie: {
               ...payload,
               summary: displaySummary,
-              recommendations: recs,
+              recommendations: scopedRecs,
             },
           },
         ];
       });
       const nextSession = syncSessionPlaceMemory({
         ...sessionForDisplay,
-        recommendedPlaces: recs,
+        recommendedPlaces: scopedRecs,
       });
       persistSession(nextSession);
       setPartial({});
-      return recs.length > 0;
+      return scopedRecs.length > 0;
     },
     [
       locale,
@@ -5818,11 +5990,24 @@ function Chat() {
         setMsgs(next);
         setText("");
         if (restored) {
-          const sessionForRec: ChatPlanningSession = {
-            ...nextSession,
-            pendingClarification: undefined,
-            activeCategoryIntent: restored.categoryIntent,
-          };
+          const explicitScope = resolveExplicitDestinationFallbackScope({
+            userText: restored.restoredUserText,
+            session: nextSession,
+            restored,
+          });
+          const sessionForRec: ChatPlanningSession = isolateSessionToExplicitDestination(
+            {
+              ...nextSession,
+              pendingClarification: undefined,
+              activeCategoryIntent: restored.categoryIntent,
+            },
+            explicitScope ?? {
+              destination: restored.destinationLabel,
+              parentCity: restored.parentCity,
+              area: restored.area,
+              searchScope: restored.searchScope,
+            },
+          );
           persistSession(sessionForRec, next);
           const applied = await pushDestinationCategoryPlaceRecommendation(
             sessionForRec,
@@ -5830,20 +6015,24 @@ function Chat() {
             next,
           );
           if (applied) return;
-          const fallbackApplied = await applyLocalFallback(
-            sessionForRec,
-            restored.restoredUserText,
-            next,
-            "destination_category_places_failed",
-          );
-          if (fallbackApplied) return;
-          setMsgs([
+          logDestinationRecommendationFallbackSummary({
+            destination: restored.destinationLabel,
+            sourcePath: "local-recommendation-fallback",
+            fallbackDestination:
+              nextSession.recommendationSession?.destination ||
+              nextSession.travelContext?.destination,
+            accepted: false,
+            reason: "explicit_destination_builder_empty",
+          });
+          const emptyMsgs: ChatMsg[] = [
             ...next,
             {
               role: "assistant",
               content: `目前在${restored.destinationLabel}暫時找不到符合的地點，可以換個描述或稍後再試。`,
             },
-          ]);
+          ];
+          setMsgs(emptyMsgs);
+          persistSession(sessionForRec, emptyMsgs);
           return;
         }
         const reaskMsgs: ChatMsg[] = [
@@ -6316,24 +6505,26 @@ function Chat() {
           next,
         );
         if (applied) return;
-        const fallbackApplied = await applyLocalFallback(
-          nextSession,
-          trimmed,
-          next,
-          "destination_category_places_failed",
-        );
-        if (fallbackApplied) return;
+        logDestinationRecommendationFallbackSummary({
+          destination:
+            resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed) ?? dest,
+          sourcePath: "local-recommendation-fallback",
+          fallbackDestination:
+            nextSession.recommendationSession?.destination ||
+            nextSession.travelContext?.destination,
+          accepted: false,
+          reason: "explicit_destination_builder_empty",
+        });
 
-        const hasCardsInConversation = next.some(
-          (m) => m.role === "assistant" && (m.roamie?.recommendations?.length ?? 0) > 0,
-        );
-        if (hasCardsInConversation) return;
-
+        const destLabel =
+          resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed) ??
+          dest ??
+          "這個目的地";
         setMsgs((prev) => [
           ...prev,
           {
             role: "assistant",
-            content: `目前在${resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed) ?? "這個目的地"}暫時找不到符合的地點，可以換個描述或稍後再試。`,
+            content: `目前在${destLabel}暫時找不到符合的地點，可以換個描述或稍後再試。`,
           },
         ]);
         return;
