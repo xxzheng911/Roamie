@@ -264,8 +264,20 @@ const CURATED_PROFILES: Record<
   },
 };
 
-/** Resolve city + district from the existing curated destination profiles. */
-export function resolveDestinationAreaScope(input: string): DestinationAreaScope | null {
+function toDestinationAreaScope(candidate: DestinationAreaCandidate): DestinationAreaScope {
+  return {
+    displayLabel: candidate.displayLabel,
+    parentCity: candidate.parentCity,
+    area: candidate.area,
+    searchScope: "area",
+  };
+}
+
+/**
+ * Curated profile districts + provider-validated cache only.
+ * Explicit city-tail areas (台中東區) are not curated — see resolveDestinationAreaScope.
+ */
+function resolveCuratedOrCachedDestinationAreaScope(input: string): DestinationAreaScope | null {
   const compact = normalizeDestinationLabel(input).replace(/[\s,，、/／-]+/g, "");
   if (!compact) return null;
   const validated = validatedAreaScopes.get(compact);
@@ -287,6 +299,18 @@ export function resolveDestinationAreaScope(input: string): DestinationAreaScope
   return matches.sort(
     (a, b) => b.parentCity.length + b.area.length - (a.parentCity.length + a.area.length),
   )[0] ?? null;
+}
+
+/**
+ * Resolve city + district from curated profiles, validated cache, or an explicit
+ * parent-city + area tail in the same utterance (台中東區 / 台南東區).
+ * Same-named districts stay bound to the parent city already present in the text.
+ */
+export function resolveDestinationAreaScope(input: string): DestinationAreaScope | null {
+  const curated = resolveCuratedOrCachedDestinationAreaScope(input);
+  if (curated) return curated;
+  const generic = extractCityTailAreaCandidate(input);
+  return generic ? toDestinationAreaScope(generic) : null;
 }
 
 export type DestinationAreaCandidate = {
@@ -352,7 +376,9 @@ function extractRawGeographicLabel(input: string): string {
 export function extractProvisionalDestinationAreaCandidate(
   input: string,
 ): ProvisionalDestinationAreaCandidate | null {
-  if (resolveDestinationAreaScope(input) || resolveDestinationFromText(input)) return null;
+  if (resolveCuratedOrCachedDestinationAreaScope(input) || resolveDestinationFromText(input)) {
+    return null;
+  }
   const areaCandidate = extractRawGeographicLabel(input);
   if (!looksLikeGeographicLabel(areaCandidate)) return null;
   return {
@@ -368,28 +394,24 @@ export function hasPendingProviderGeographicCandidate(input: string): boolean {
 }
 
 /** Extract only a possible city-tail area. This does not make it trusted. */
-export function extractGenericDestinationAreaCandidate(
-  input: string,
-): DestinationAreaCandidate | null {
-  const existing = resolveDestinationAreaScope(input);
-  if (existing) return existing;
+function extractCityTailAreaCandidate(input: string): DestinationAreaCandidate | null {
   const normalized = normalizeDestinationLabel(input);
   const parentCity = resolveDestinationFromText(input);
   if (!parentCity) return null;
   const cityIndex = normalized.indexOf(parentCity);
   if (cityIndex < 0) return null;
   const afterCity = normalized.slice(cityIndex + parentCity.length);
-  const rawFragment = afterCity.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
+  const strippedPrefix = afterCity.replace(/^[市縣县]/, "").replace(/^(?:的|之)/, "");
+  // 「高雄有安靜咖啡廳」is a city-wide query, not parentCity + area.
+  if (/^有/.test(strippedPrefix)) return null;
+  const rawFragment = strippedPrefix.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
   const area = rawFragment
-    .replace(/^[市縣县]/, "")
-    .replace(/^(?:的|之)/, "")
     .replace(/[\s,，、/／-]+/g, "")
     .replace(/(?:有|想找|找|想看)$/g, "");
   if (
     area.length < 2 ||
     area.length > 8 ||
-    INVALID_AREA_FRAGMENT.test(area) ||
-    !/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]+$/u.test(area)
+    !looksLikeGeographicLabel(area)
   ) {
     return null;
   }
@@ -398,6 +420,14 @@ export function extractGenericDestinationAreaCandidate(
     parentCity,
     area,
   };
+}
+
+export function extractGenericDestinationAreaCandidate(
+  input: string,
+): DestinationAreaCandidate | null {
+  const existing = resolveCuratedOrCachedDestinationAreaScope(input);
+  if (existing) return existing;
+  return extractCityTailAreaCandidate(input);
 }
 
 export function locationValidatesDestinationArea(
@@ -459,7 +489,7 @@ export async function resolveValidatedDestinationAreaScope(params: {
   locale: Locale;
   geocodeFn: GeocodeDestinationFn;
 }): Promise<DestinationAreaScope | null> {
-  const curated = resolveDestinationAreaScope(params.input);
+  const curated = resolveCuratedOrCachedDestinationAreaScope(params.input);
   if (curated) return curated;
   const genericCandidate = extractGenericDestinationAreaCandidate(params.input);
   const provisionalCandidate = genericCandidate

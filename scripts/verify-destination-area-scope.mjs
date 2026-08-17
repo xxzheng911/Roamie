@@ -14,6 +14,13 @@ import { matchPlaceToDestinationArea } from "../src/lib/ai/chat-place-search-con
 import {
   selectAreaFirstCandidates,
 } from "../src/lib/ai/chat-destination-category-recommendation.ts";
+import { resolveDestinationForCategorySearch } from "../src/lib/ai/chat-category-destination.ts";
+import { mergeTravelContext } from "../src/lib/ai/travel-context.ts";
+import {
+  continueRecommendation,
+  createRecommendationSession,
+  DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE,
+} from "../src/lib/ai/conversation-recommendation-session.ts";
 
 const fixtures = [
   ["台南安平有什麼咖啡廳推薦", "台南", "安平"],
@@ -634,5 +641,234 @@ console.log("  ✓ explicit area session pool keeps all usable candidates (no mi
 
 const canonicalPlace = { id: "ChIJcanonical", googlePlaceId: "ChIJcanonical" };
 assert.deepEqual(canonicalPlace, { id: "ChIJcanonical", googlePlaceId: "ChIJcanonical" });
+
+const emptyCategorySession = {
+  recommendedPlaces: [],
+  selectedPlaces: [],
+  phase: "discover",
+  discovery: {},
+  updatedAt: "",
+};
+const emptyCategoryCtx = { interests: [] };
+
+const explicitCityDistrictFixtures = [
+  ["台中東區有什麼咖啡廳推薦嗎", "台中", "東區"],
+  ["台南東區有什麼咖啡廳推薦嗎", "台南", "東區"],
+  ["嘉義東區有什麼咖啡廳推薦嗎", "嘉義", "東區"],
+  ["新竹東區有什麼咖啡廳推薦嗎", "新竹", "東區"],
+];
+for (const [text, parentCity, area] of explicitCityDistrictFixtures) {
+  const generic = extractGenericDestinationAreaCandidate(text);
+  assert.ok(generic, text);
+  assert.equal(generic.parentCity, parentCity, text);
+  assert.equal(generic.area, area, text);
+  const scope = resolveDestinationAreaScope(text);
+  assert.ok(scope, `${text} must keep explicit city+district before Places`);
+  assert.equal(scope.parentCity, parentCity);
+  assert.equal(scope.area, area);
+  assert.equal(scope.searchScope, "area");
+  assert.equal(scope.displayLabel, `${parentCity}${area}`);
+  const parsed = parsePlaceRecommendationIntent(text);
+  assert.equal(parsed?.destinationName, `${parentCity}${area}`);
+  assert.equal(parsed?.destinationDisplayLabel, `${parentCity}${area}`);
+  assert.equal(parsed?.resolvedSearchCity, parentCity);
+  assert.equal(parsed?.destinationArea, area);
+  assert.equal(parsed?.searchScope, "area");
+  assert.equal(
+    resolveDestinationForCategorySearch(emptyCategoryCtx, emptyCategorySession, text),
+    `${parentCity}${area}`,
+  );
+}
+assert.notEqual(
+  resolveDestinationAreaScope("台中東區")?.parentCity,
+  resolveDestinationAreaScope("台南東區")?.parentCity,
+  "same-named 東區 must stay bound to the parent city in the utterance",
+);
+assert.equal(resolveDestinationAreaScope("嘉義東區")?.parentCity, "嘉義");
+assert.notEqual(resolveDestinationAreaScope("嘉義東區")?.parentCity, "台中");
+assert.notEqual(resolveDestinationAreaScope("嘉義東區")?.parentCity, "台南");
+
+assert.equal(resolveDestinationAreaScope("高雄有安靜咖啡廳嗎"), null);
+assert.equal(
+  extractGenericDestinationAreaCandidate("高雄有安靜咖啡廳嗎"),
+  null,
+  "city + 有 + modifier is not an explicit district",
+);
+const cityWideTaichung = parsePlaceRecommendationIntent("台中有什麼咖啡廳推薦嗎");
+assert.equal(resolveDestinationAreaScope("台中有什麼咖啡廳推薦嗎"), null);
+assert.equal(cityWideTaichung?.destinationName, "台中");
+assert.equal(cityWideTaichung?.searchScope, "city");
+assert.equal(cityWideTaichung?.destinationArea, undefined);
+assert.equal(
+  resolveDestinationForCategorySearch(
+    emptyCategoryCtx,
+    emptyCategorySession,
+    "台中有什麼咖啡廳推薦嗎",
+  ),
+  "台中",
+);
+
+assert.ok(extractProvisionalDestinationAreaCandidate("西屯有什麼咖啡廳"));
+assert.equal(resolveDestinationAreaScope("西屯有什麼咖啡廳"), null);
+assert.ok(resolveDestinationAreaScope("東京新宿有什麼咖啡廳推薦"));
+assert.equal(resolveDestinationAreaScope("東京新宿")?.parentCity, "東京");
+assert.equal(resolveDestinationAreaScope("東京新宿")?.area, "新宿");
+
+const taichungEastCandidate = extractGenericDestinationAreaCandidate(
+  "台中東區有什麼咖啡廳推薦嗎",
+);
+assert.ok(taichungEastCandidate);
+assert.equal(
+  locationValidatesDestinationArea(taichungEastCandidate, {
+    placeId: "mock:taichung-east",
+    country: "台灣",
+    city: "臺中市",
+    region: "臺中市",
+    lat: 24.137,
+    lng: 120.698,
+    formattedName: "臺中市東區",
+    displayLabel: "臺中市東區",
+    address: "台灣臺中市東區",
+  }),
+  true,
+  "臺中市東區 provider evidence must validate 台中/東區 without a city whitelist",
+);
+
+const validatedTaichungEast = await resolveValidatedDestinationAreaScope({
+  input: "台中東區有什麼咖啡廳推薦嗎",
+  locale: "zh-TW",
+  geocodeFn: async ({ data }) => {
+    assert.equal(data.query, "台中東區");
+    return {
+      location: {
+        placeId: "mock:taichung-east-provider",
+        country: "台灣",
+        city: "臺中市",
+        region: "臺中市",
+        district: "東區",
+        lat: 24.137,
+        lng: 120.698,
+        formattedName: "臺中市東區",
+        displayLabel: "臺中市東區",
+        address: "台灣臺中市東區",
+      },
+      error: null,
+    };
+  },
+});
+assert.deepEqual(validatedTaichungEast, {
+  displayLabel: "台中東區",
+  parentCity: "台中",
+  area: "東區",
+  searchScope: "area",
+});
+
+const taichungEastPlaceScope = resolveDestinationAreaScope("台中東區");
+assert.ok(taichungEastPlaceScope);
+assert.deepEqual(
+  matchPlaceToDestinationArea(
+    place("east", "台中市東區復興路4段1號"),
+    taichungEastPlaceScope,
+  ),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(
+    place("west", "台中市西區民生路100號"),
+    taichungEastPlaceScope,
+  ),
+  { areaMatched: false, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(
+    place("xitun", "台中市西屯區台灣大道3段"),
+    taichungEastPlaceScope,
+  ),
+  { areaMatched: false, parentCityMatched: true },
+);
+
+const tainanEastPlaceScope = resolveDestinationAreaScope("台南東區");
+assert.ok(tainanEastPlaceScope);
+assert.deepEqual(
+  matchPlaceToDestinationArea(
+    place("tainan-east", "台南市東區中華東路3段"),
+    tainanEastPlaceScope,
+  ),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(
+    place("taichung-east-wrong-parent", "台中市東區復興路4段1號"),
+    tainanEastPlaceScope,
+  ),
+  { areaMatched: true, parentCityMatched: false },
+);
+
+const eastAttempts = buildChatPlaceSearchAttempts(
+  "cafe",
+  "台中東區",
+  "台中東區有什麼咖啡廳推薦嗎",
+);
+assert.ok(eastAttempts.primary.every((attempt) => attempt.query.includes("台中東區")));
+assert.ok(
+  eastAttempts.fallback.some(
+    (attempt) => attempt.query.includes("台中") && !attempt.query.includes("東區"),
+  ),
+);
+
+const mergedEast = mergeTravelContext(
+  {
+    recommendedPlaces: [],
+    selectedPlaces: [],
+    phase: "discover",
+    discovery: {},
+    updatedAt: new Date().toISOString(),
+    travelContext: { interests: [] },
+  },
+  "台中東區有什麼咖啡廳推薦嗎",
+);
+assert.equal(mergedEast.context.destination, "台中東區");
+assert.notEqual(mergedEast.context.destination, "台中");
+
+assert.match(
+  chatSource,
+  /persistedAreaScope[\s\S]*parentCity: persistedAreaScope\?\.parentCity/,
+  "recommendation session must persist structured area even if geocode validation misses",
+);
+
+const eastPool = Array.from({ length: 6 }, (_, index) => ({
+  name: `東區咖啡 ${index + 1}`,
+  googlePlaceId: `ChIJtaichung_east_${index + 1}`,
+  address: "台中市東區復興路4段1號",
+}));
+const eastSession = createRecommendationSession({
+  destination: "台中東區",
+  parentCity: "台中",
+  area: "東區",
+  searchScope: "area",
+  topic: "cafe",
+  pool: eastPool,
+  batchSize: DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE,
+});
+assert.equal(eastSession.session.destination, "台中東區");
+assert.equal(eastSession.session.parentCity, "台中");
+assert.equal(eastSession.session.area, "東區");
+assert.equal(eastSession.session.searchScope, "area");
+const eastMore = continueRecommendation(eastSession.session);
+assert.equal(eastMore.session.destination, "台中東區");
+assert.equal(eastMore.session.parentCity, "台中");
+assert.equal(eastMore.session.area, "東區");
+assert.equal(eastMore.session.searchScope, "area");
+assert.notEqual(eastMore.session.destination, "台中");
+
+const curatedSource = readFileSync(
+  new URL("../src/lib/ai/destination-travel-profile.ts", import.meta.url),
+  "utf8",
+);
+assert.equal(
+  /台中:[\s\S]*?districts:\s*\[[^\]]*東區/.test(curatedSource),
+  false,
+  "must not add 東區 to the Taichung district whitelist",
+);
 
 console.info("verify-destination-area-scope: ok");

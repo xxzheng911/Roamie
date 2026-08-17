@@ -290,4 +290,59 @@ console.log("\n=== Tokyo Shibuya cafe continuation pool + provider parity ===\n"
   console.log("  ✓ cafe search center is not the Shinjuku shopping fallback");
 }
 
+console.log("\n=== 台中東區 continuation keeps area scope ===\n");
+{
+  const usable = Array.from({ length: 6 }, (_, index) => ({
+    name: `東區咖啡 ${index + 1}`,
+    googlePlaceId: `ChIJtaichung_east_${index + 1}`,
+    address: "台中市東區復興路4段1號",
+  }));
+  const { session, batch } = createRecommendationSession({
+    destination: "台中東區",
+    parentCity: "台中",
+    area: "東區",
+    searchScope: "area",
+    topic: "cafe",
+    pool: usable,
+    batchSize: DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE,
+  });
+  assert.equal(session.destination, "台中東區");
+  assert.equal(session.parentCity, "台中");
+  assert.equal(session.area, "東區");
+  assert.equal(session.searchScope, "area");
+  assert.equal(batch.length, 3);
+  const firstMore = continueRecommendation(session);
+  assert.equal(firstMore.session.destination, "台中東區");
+  assert.equal(firstMore.session.parentCity, "台中");
+  assert.equal(firstMore.session.area, "東區");
+  assert.equal(firstMore.session.searchScope, "area");
+  assert.notEqual(firstMore.session.destination, "台中");
+  assert.equal(firstMore.batch.length, 3);
+  console.log("  ✓ 台中東區 還有嗎 keeps parentCity/area/searchScope");
+}
+
+console.log("\n=== Tokyo Shinjuku continuation pool ===\n");
+{
+  const usable = Array.from({ length: 6 }, (_, index) => ({
+    name: `新宿咖啡 ${index + 1}`,
+    googlePlaceId: `ChIJshinjuku_cafe_${index + 1}`,
+    address: "東京都新宿区西新宿1-1",
+  }));
+  const { session } = createRecommendationSession({
+    destination: "東京新宿",
+    parentCity: "東京",
+    area: "新宿",
+    searchScope: "area",
+    topic: "cafe",
+    pool: usable,
+    batchSize: DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE,
+  });
+  const firstMore = continueRecommendation(session);
+  assert.equal(firstMore.batch.length, 3);
+  assert.equal(firstMore.session.searchScope, "area");
+  assert.equal(firstMore.session.area, "新宿");
+  assert.equal(firstMore.session.parentCity, "東京");
+  console.log("  ✓ 東京新宿 stored pool continuation still works");
+}
+
 console.log("\nverify-continue-recommendation-intent: ok");

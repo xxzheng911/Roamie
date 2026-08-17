@@ -188,7 +188,28 @@ for (const [i, c] of CAFE_CASES.entries()) {
     "埔里 must not inherit 台南東區",
   );
   assert.equal(shouldFetchDestinationCategoryPlaces(puli, stale.travelContext, stale), true);
+
+  const eastText = "台中東區有什麼咖啡廳推薦嗎";
+  const eastMerged = mergeTravelContext(emptySession, eastText);
+  const eastParsed = parsePlaceRecommendationIntent(eastText);
+  assert.equal(eastParsed?.destinationName, "台中東區");
+  assert.equal(eastParsed?.destinationArea, "東區");
+  assert.equal(eastParsed?.searchScope, "area");
+  assert.equal(eastMerged.context.destination, "台中東區");
+  assert.equal(
+    resolveDestinationForCategorySearch(emptyCtx, emptySession, eastText),
+    "台中東區",
+  );
+  assert.equal(
+    shouldFetchDestinationCategoryPlaces(eastText, emptyCtx, emptySession),
+    true,
+  );
+  assert.equal(
+    resolveDestinationForCategorySearch(emptyCtx, emptySession, "台南有什麼咖啡廳推薦嗎"),
+    "台南",
+  );
   console.log("  ✓ generic geographic labels enter cafe place search without city whitelist");
+  console.log("  ✓ 台中東區 keeps city+district scope in cafe place search");
 }
 
 console.log("\nverify-cafe-place-recommendation-route: ok");

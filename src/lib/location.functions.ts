@@ -149,11 +149,18 @@ function resolveRegion(components: AddressComponent[] | undefined): string | und
   return admin2 || undefined;
 }
 
+function looksLikeAdminDistrictLabel(label: string): boolean {
+  const t = label.trim();
+  return t.length >= 2 && /(?:區|区|鎮|镇|鄉|乡|町)$/.test(t) && !/(?:市|縣|县|都|府)$/.test(t);
+}
+
 function resolveDistrict(components: AddressComponent[] | undefined): string | undefined {
+  const admin2 = componentText(components, "administrative_area_level_2");
   return (
     componentText(components, "administrative_area_level_3") ||
     componentText(components, "sublocality_level_1") ||
     componentText(components, "sublocality") ||
+    (looksLikeAdminDistrictLabel(admin2) ? admin2 : undefined) ||
     undefined
   );
 }
@@ -269,6 +276,11 @@ function legacyGeocodeToTripLocation(
     legacyComponentText(result.address_components, "administrative_area_level_3") ||
     legacyComponentText(result.address_components, "sublocality_level_1") ||
     legacyComponentText(result.address_components, "sublocality") ||
+    (looksLikeAdminDistrictLabel(
+      legacyComponentText(result.address_components, "administrative_area_level_2"),
+    )
+      ? legacyComponentText(result.address_components, "administrative_area_level_2")
+      : undefined) ||
     undefined;
   const sublocality =
     legacyComponentText(result.address_components, "sublocality_level_1") ||
@@ -296,6 +308,16 @@ function legacyGeocodeToTripLocation(
     timezone: undefined,
     utcOffsetMinutes: null,
   };
+}
+
+function compactGeocodeHint(value: string): string {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/臺/g, "台")
+    .replace(/[\s,，、/／.·'’-]+/g, "")
+    .replace(/(?:市|縣|县)/g, "");
 }
 
 function pickBestGeocodeResult(
@@ -337,11 +359,28 @@ function pickBestGeocodeResult(
       r.address_components,
       "administrative_area_level_1",
     ).toLowerCase();
+    const admin2 = legacyComponentText(
+      r.address_components,
+      "administrative_area_level_2",
+    ).toLowerCase();
     const formatted = (r.formatted_address ?? "").toLowerCase();
     if (destHint) {
       if (locality.includes(destHint) || destHint.includes(locality.slice(0, 2))) s += 20;
       if (admin1.includes(destHint)) s += 10;
       if (formatted.includes(destHint)) s += 5;
+      const compactDest = compactGeocodeHint(destHint);
+      const compactFormatted = compactGeocodeHint(formatted);
+      const compactAdmin2 = compactGeocodeHint(admin2);
+      if (compactDest.length >= 2) {
+        if (compactFormatted === compactDest || compactFormatted.includes(compactDest)) s += 40;
+        if (
+          compactAdmin2.length >= 2 &&
+          compactDest.includes(compactAdmin2) &&
+          compactDest !== compactAdmin2
+        ) {
+          s += 35;
+        }
+      }
       // Prefer city locality over prefecture-only when names collide (熊本).
       if (types.includes("locality") && /city|市/.test(formatted)) s += 15;
     }

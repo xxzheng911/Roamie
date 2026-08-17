@@ -25,6 +25,7 @@ import {
   parseDestinationAdvicePurpose,
 } from "@/lib/ai/destination-advice";
 import { isPlaceDetailChatActive } from "@/lib/ai/place-detail-chat";
+import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { finalizePlanningContextAuthority } from "@/lib/ai/planning-context-authority";
 import {
@@ -444,7 +445,7 @@ function parseDestinationFromTurn(
   skipDestParse: boolean,
 ): string | undefined {
   if (skipDestParse) return undefined;
-  return resolveDestinationFromText(text);
+  return resolveDestinationAreaScope(text)?.displayLabel ?? resolveDestinationFromText(text);
 }
 
 function mergeDestinationFields(
@@ -877,12 +878,20 @@ export function mergeTravelContext(
     if (destMerge.destination) {
       let label = coerceTravelDestination(destMerge.destination);
       if (label) {
-        const sanitized = sanitizeDestinationForGeocode(label);
-        label = coerceTravelDestination(sanitized) ?? label;
-        destMerge = {
-          ...mergeDestinationFields(prev, sanitized || label),
-          destination: label,
-        };
+        const explicitArea = resolveDestinationAreaScope(label);
+        if (explicitArea) {
+          destMerge = {
+            ...mergeDestinationFields(prev, explicitArea.displayLabel),
+            destination: explicitArea.displayLabel,
+          };
+        } else {
+          const sanitized = sanitizeDestinationForGeocode(label);
+          label = coerceTravelDestination(sanitized) ?? label;
+          destMerge = {
+            ...mergeDestinationFields(prev, sanitized || label),
+            destination: label,
+          };
+        }
       } else {
         destMerge = mergeDestinationFields(
           prev,

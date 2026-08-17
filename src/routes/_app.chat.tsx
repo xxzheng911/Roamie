@@ -290,6 +290,7 @@ import {
 import { buildDestinationCategoryRecommendations } from "@/lib/ai/chat-destination-category-recommendation";
 import {
   extractProvisionalDestinationAreaCandidate,
+  resolveDestinationAreaScope,
   resolveValidatedDestinationAreaScope,
 } from "@/lib/ai/destination-travel-profile";
 import {
@@ -3937,6 +3938,10 @@ function Chat() {
       );
       if (!baseDestination && !validatedAreaScope) return false;
       const destination = validatedAreaScope?.displayLabel ?? baseDestination;
+      const persistedAreaScope =
+        validatedAreaScope ??
+        (destination ? resolveDestinationAreaScope(destination) : null) ??
+        resolveDestinationAreaScope(userText);
 
       const excludePlaceIds = opts?.excludePlaceIds ?? collectExcludePlaceIds(activeSession);
       const rejectedPlaceNames = opts?.rejectedPlaceNames ?? activeSession.rejectedPlaceNames;
@@ -4045,9 +4050,9 @@ function Chat() {
           nextQueryCursor: shoppingSeed?.nextQueryCursor,
           recommendationPage: 0,
           activeSearchCity: shoppingScope?.activeSearchCity,
-          parentCity: validatedAreaScope?.parentCity,
-          area: validatedAreaScope?.area,
-          searchScope: validatedAreaScope ? "area" : "city",
+          parentCity: persistedAreaScope?.parentCity,
+          area: persistedAreaScope?.area,
+          searchScope: persistedAreaScope ? "area" : "city",
           searchRegionLabel: shoppingScope?.searchRegionLabel ?? destination,
           searchCentroid: snapshotCentroid,
           searchRadius: snapshotRadius,
@@ -4125,9 +4130,9 @@ function Chat() {
               recSession.activeSearchCity ??
               resolveRegionPrimaryCity(destination) ??
               destination,
-            parentCity: validatedAreaScope?.parentCity,
-            area: validatedAreaScope?.area,
-            searchScope: validatedAreaScope ? "area" : "city",
+            parentCity: persistedAreaScope?.parentCity,
+            area: persistedAreaScope?.area,
+            searchScope: persistedAreaScope ? "area" : "city",
             latitude: snapshotCentroid?.lat ?? shoppingScope?.searchCentroid?.lat ?? recSession.searchCentroid?.lat,
             longitude:
               snapshotCentroid?.lng ??

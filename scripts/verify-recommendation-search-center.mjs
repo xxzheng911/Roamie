@@ -408,6 +408,36 @@ check("Case 6: Tokyo Shibuya cafe must not inherit Shinjuku shopping centroid", 
   assert.equal(missing.longitude, undefined);
 });
 
+check("Case 7: 台中東區 explicit district stays area-scoped", () => {
+  const scope = resolveRecommendationSearchScope({
+    userText: "台中東區有什麼咖啡廳推薦嗎",
+    session: {
+      recommendedPlaces: [],
+      selectedPlaces: [],
+      phase: "discover",
+      discovery: {},
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  assert.ok(scope);
+  assert.equal(scope.destinationName, "台中東區");
+  assert.equal(scope.destinationArea, "東區");
+  assert.equal(scope.resolvedSearchCity, "台中");
+  assert.equal(scope.searchScope, "area");
+  const cityWide = resolveRecommendationSearchScope({
+    userText: "台中有什麼咖啡廳推薦嗎",
+    session: {
+      recommendedPlaces: [],
+      selectedPlaces: [],
+      phase: "discover",
+      discovery: {},
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  assert.equal(cityWide?.destinationName, "台中");
+  assert.equal(cityWide?.searchScope, "city");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log("verify-recommendation-search-center: ok (no Places API)");
