@@ -815,7 +815,7 @@ export async function buildDestinationCategoryRecommendations(params: {
           sessionId:
             session?.planningSessionId?.trim() ||
             session?.conversationId?.trim() ||
-            "chat_default",
+            undefined,
           destination: label,
           countryCode: entity.country ?? undefined,
           places,
@@ -878,17 +878,19 @@ export async function buildDestinationCategoryRecommendations(params: {
     // Full pool returned; chat layer paginates via ConversationRecommendationSession
     let allRecommendations = groups.flatMap((g) => g.recommendations);
     logDestinationTextSearchResult(allRecommendations.length);
+    let namedFallbackText: string | null = null;
 
     const primaryIntent = searchIntents[0] ?? lockedIntent;
     if (allRecommendations.length === 0 && shouldUseNamedMustVisitFallback(primaryIntent)) {
       const named = buildNamedFallbackRecommendations(label);
       if (named.length > 0) {
         logChatPlaceFallback(primaryIntent, "named_template");
-        groups.push({
-          intent: primaryIntent,
-          recommendations: named.slice(0, SINGLE_INTENT_MAX),
-        });
-        allRecommendations = named.slice(0, SINGLE_INTENT_MAX);
+        const lines = named
+          .slice(0, SINGLE_INTENT_MAX)
+          .map((rec, index) => `${index + 1}. ${rec.name}${rec.reason ? ` — ${rec.reason}` : ""}`);
+        namedFallbackText = [lines.join("\n"), "", "想加進行程的話，跟我說你最想先排哪幾個。"].join(
+          "\n",
+        );
       }
     }
 
@@ -908,6 +910,9 @@ export async function buildDestinationCategoryRecommendations(params: {
             : `目前在${label}暫時找不到符合的地點，可以換個描述或稍後再試。`;
     if (mealIntent) {
       summary = sanitizeMealSummaryText(summary, mealIntent.slot);
+    }
+    if (!allRecommendations.length && namedFallbackText) {
+      summary = [summary, "", namedFallbackText].join("\n");
     }
     if (allRecommendations.length > 0) {
       logChatPlaceCardsRendered(allRecommendations.length, intents);

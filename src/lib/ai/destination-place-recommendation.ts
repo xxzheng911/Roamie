@@ -672,7 +672,7 @@ async function searchDestinationPlaces(params: {
   logDestinationTextSearchResult(filtered.length);
   if (filtered.length) {
     ingestResolvedPlacesIntoCandidatePool({
-      sessionId: sessionId ?? "chat_default",
+      sessionId: sessionId?.trim() || undefined,
       destination: label,
       countryCode: countryCode ?? searchContext?.destinationCountry ?? undefined,
       places: filtered,
@@ -825,7 +825,7 @@ export async function buildAlternativeDestinationRecommendations(params: {
       userText,
       profile: searchProfile,
       searchContext,
-      sessionId: "chat_default",
+      sessionId: undefined,
       countryCode: altEntity.country ?? undefined,
     });
 
@@ -979,8 +979,7 @@ export async function buildDestinationMustVisitRecommendation(params: {
   const poolSessionId =
     planningSessionId?.trim() ||
     session?.planningSessionId?.trim() ||
-    session?.conversationId?.trim() ||
-    "chat_default";
+    session?.conversationId?.trim();
   const boundSearchDestinationPlaces: DestinationPlaceSearchFn = (searchParams) =>
     searchDestinationPlaces({
       ...searchParams,
@@ -1665,8 +1664,7 @@ export async function buildMoreDestinationRecommendations(params: {
       sessionId:
         session?.planningSessionId?.trim() ||
         session?.conversationId?.trim() ||
-        activeRecSession?.sessionId ||
-        "chat_default",
+        activeRecSession?.sessionId,
       countryCode: entity.country ?? undefined,
     };
 
@@ -1692,17 +1690,18 @@ export async function buildMoreDestinationRecommendations(params: {
       const sessionId =
         session?.planningSessionId ??
         session?.conversationId ??
-        activeRecSession?.sessionId ??
-        "chat_default";
-      ensureSessionDestination(sessionId, label);
-      const sessionPool = readSessionCandidatePool({
-        sessionId,
-        destination: label,
-      });
+        activeRecSession?.sessionId;
+      if (sessionId) ensureSessionDestination(sessionId, label);
+      const sessionPool = sessionId
+        ? readSessionCandidatePool({
+            sessionId,
+            destination: label,
+          })
+        : null;
       let poolPlaces = sessionPool?.places ?? [];
       if (!poolPlaces.length) {
         const hit = readCandidatePoolCache(label, entity.country ?? undefined);
-        if (hit?.places.length) {
+        if (hit?.places.length && sessionId) {
           bindSessionCandidatePool({
             sessionId,
             destination: label,

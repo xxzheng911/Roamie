@@ -18,7 +18,7 @@ export type SessionCandidatePool = {
 const sessionPools = new Map<string, SessionCandidatePool>();
 
 function sessionKey(sessionId: string): string {
-  return (sessionId || "default").trim() || "default";
+  return sessionId.trim();
 }
 
 export function bindSessionCandidatePool(params: {
@@ -28,8 +28,13 @@ export function bindSessionCandidatePool(params: {
   poolResult?: CandidatePoolResult;
 }): SessionCandidatePool {
   const destination = normalizeDestinationLabel(params.destination);
+  const rawSessionId = params.sessionId?.trim();
+  const scopedSessionId =
+    rawSessionId && rawSessionId !== "chat_default" && rawSessionId !== "default"
+      ? rawSessionId
+      : `ephemeral-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const entry: SessionCandidatePool = {
-    sessionId: sessionKey(params.sessionId),
+    sessionId: sessionKey(scopedSessionId),
     destination,
     places: params.places,
     poolResult: params.poolResult,
@@ -43,7 +48,9 @@ export function readSessionCandidatePool(params: {
   sessionId?: string | null;
   destination: string;
 }): SessionCandidatePool | null {
-  const sid = sessionKey(params.sessionId ?? "default");
+  const rawSessionId = params.sessionId?.trim();
+  if (!rawSessionId) return null;
+  const sid = sessionKey(rawSessionId);
   const entry = sessionPools.get(sid);
   if (!entry) return null;
   const dest = normalizeDestinationLabel(params.destination);
@@ -62,7 +69,9 @@ export function clearSessionCandidatePool(sessionId?: string): void {
     sessionPools.clear();
     return;
   }
-  sessionPools.delete(sessionKey(sessionId));
+  const sid = sessionId.trim();
+  if (!sid) return;
+  sessionPools.delete(sessionKey(sid));
 }
 
 /** When destination changes mid-chat, drop prior session pool. */
@@ -70,7 +79,9 @@ export function ensureSessionDestination(
   sessionId: string | null | undefined,
   destination: string,
 ): void {
-  const sid = sessionKey(sessionId ?? "default");
+  const sidRaw = sessionId?.trim();
+  if (!sidRaw) return;
+  const sid = sessionKey(sidRaw);
   const entry = sessionPools.get(sid);
   if (!entry) return;
   const dest = normalizeDestinationLabel(destination);

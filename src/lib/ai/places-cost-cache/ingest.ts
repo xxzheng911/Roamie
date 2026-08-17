@@ -44,10 +44,10 @@ export function ingestResolvedPlacesIntoCandidatePool(params: {
     return { places: [], added: 0, total: 0 };
   }
 
-  const sessionId = (params.sessionId ?? "chat_default").trim() || "chat_default";
-  ensureSessionDestination(sessionId, destination);
+  const sessionId = params.sessionId?.trim() || null;
+  if (sessionId) ensureSessionDestination(sessionId, destination);
 
-  const sessionPool = readSessionCandidatePool({ sessionId, destination });
+  const sessionPool = sessionId ? readSessionCandidatePool({ sessionId, destination }) : null;
   const layer2 = readCandidatePoolCache(destination, params.countryCode);
   const prior = dedupeCandidatePlaces([
     ...(sessionPool?.places ?? []),
@@ -64,17 +64,19 @@ export function ingestResolvedPlacesIntoCandidatePool(params: {
     poolResult: layer2?.poolResult ?? sessionPool?.poolResult,
     searchRequestCount: layer2?.searchRequestCount ?? 0,
   });
-  bindSessionCandidatePool({
-    sessionId,
-    destination,
-    places: merged,
-    poolResult: layer2?.poolResult ?? sessionPool?.poolResult,
-  });
+  if (sessionId) {
+    bindSessionCandidatePool({
+      sessionId,
+      destination,
+      places: merged,
+      poolResult: layer2?.poolResult ?? sessionPool?.poolResult,
+    });
+  }
 
   logCandidatePoolIngest({
     source,
     destination,
-    sessionId,
+    sessionId: sessionId ?? "none",
     added: addedPlaces.length,
     total: merged.length,
   });
