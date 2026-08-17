@@ -315,6 +315,8 @@ import {
   isContinueRecommendationRequest,
   resolveActiveCategoryIntent,
   RECOMMENDATION_BATCH_SIZE,
+  DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE,
+  defaultRecommendationDisplayBatchSize,
   isUsableSearchCentroid,
 } from "@/lib/ai/conversation-recommendation-session";
 import {
@@ -3628,7 +3630,6 @@ function Chat() {
       ) {
         const continued = continueRecommendation(
           activeSession.recommendationSession,
-          RECOMMENDATION_BATCH_SIZE,
         );
         if (continued.batch.length) {
           logAiPipeline(
@@ -3761,7 +3762,6 @@ function Chat() {
             const extended = extendRecommendationPool(
               nextRecSession,
               recommendations,
-              RECOMMENDATION_BATCH_SIZE,
             );
             nextRecSession = extended.session;
             if (extended.batch.length) {
@@ -3783,7 +3783,7 @@ function Chat() {
               destination,
               topic: activeCategory,
               pool: recommendations,
-              batchSize: RECOMMENDATION_BATCH_SIZE,
+              batchSize: defaultRecommendationDisplayBatchSize(activeCategory),
             });
             nextRecSession = created.session;
             const contSummary = buildContinueRecommendationSummary(activeCategory, created.batch);
@@ -4012,6 +4012,10 @@ function Chat() {
               )
             : null;
         // Shopping: split FULL validated pool → display(4) + reserve(rest) before UI render.
+        const displayBatchSize =
+          categoryIntent === "shopping"
+            ? SHOPPING_DISPLAY_LIMIT
+            : DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE;
         const shoppingSplit =
           categoryIntent === "shopping"
             ? buildShoppingDisplayAndReserveFromPool(
@@ -4023,7 +4027,7 @@ function Chat() {
           categoryIntent === "shopping"
             ? buildShoppingCoverageState({
                 destination,
-                places: shoppingSplit?.displayed ?? recommendations.slice(0, RECOMMENDATION_BATCH_SIZE),
+                places: shoppingSplit?.displayed ?? recommendations.slice(0, displayBatchSize),
                 coveredClusters: shoppingScope?.geoClusterLabel
                   ? [shoppingScope.geoClusterLabel]
                   : [],
@@ -4036,8 +4040,7 @@ function Chat() {
           destination,
           topic: categoryIntent,
           pool: recommendations,
-          batchSize:
-            categoryIntent === "shopping" ? SHOPPING_DISPLAY_LIMIT : RECOMMENDATION_BATCH_SIZE,
+          batchSize: displayBatchSize,
           usedQueries: shoppingSeed?.usedQueries ?? usedQueries,
           nextQueryCursor: shoppingSeed?.nextQueryCursor,
           recommendationPage: 0,
@@ -4070,9 +4073,9 @@ function Chat() {
           });
         }
         // Text + place cards must share the same final batch (atomic commit).
-        const batchRecs = batch.length ? batch : recommendations.slice(0, RECOMMENDATION_BATCH_SIZE);
+        const batchRecs = batch.length ? batch : recommendations.slice(0, displayBatchSize);
         const alignedSummary =
-          categoryIntent === "shopping" || recommendations.length > RECOMMENDATION_BATCH_SIZE
+          categoryIntent === "shopping" || recommendations.length > displayBatchSize
             ? (() => {
                 const list = batchRecs
                   .map(
@@ -4115,7 +4118,7 @@ function Chat() {
           {
             destination,
             intent: categoryIntent,
-            places: batch.length ? batch : recommendations.slice(0, RECOMMENDATION_BATCH_SIZE),
+            places: batch.length ? batch : recommendations.slice(0, displayBatchSize),
             usedQueries: shoppingSeed?.usedQueries ?? recSession.usedQueries,
             resolvedSearchCity:
               shoppingScope?.activeSearchCity ??
@@ -4450,7 +4453,7 @@ function Chat() {
           destination: activeRec.destinationName,
           topic: categoryIntent,
           pool: result.recommendations,
-          batchSize: RECOMMENDATION_BATCH_SIZE,
+          batchSize: defaultRecommendationDisplayBatchSize(categoryIntent),
           usedQueries: [...(activeRec.usedQueries ?? []), ...result.usedQueries],
           activeSearchCity: activeRec.resolvedSearchCity,
           parentCity: activeRec.parentCity,
@@ -4464,7 +4467,9 @@ function Chat() {
           searchRadius: activeRec.radius,
         });
 
-        const batchRecs = batch.length ? batch : result.recommendations.slice(0, RECOMMENDATION_BATCH_SIZE);
+        const batchRecs = batch.length
+          ? batch
+          : result.recommendations.slice(0, defaultRecommendationDisplayBatchSize(categoryIntent));
         let nextSession: ChatPlanningSession = {
           ...sessionForSearch,
           activeCategoryIntent: categoryIntent,

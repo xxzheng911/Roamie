@@ -11,7 +11,30 @@ import { normalizePlaceName } from "@/lib/place-planning-memory";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { ShoppingCoverageState } from "@/lib/ai/shopping-query-queue";
 
+/** Generic / shopping fallback. Not the destination-category UI contract. */
 export const RECOMMENDATION_BATCH_SIZE = 4;
+
+/** Destination-category UI cards per turn (cafe / restaurant / attraction). Independent of session pool size. */
+export const DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE = 3;
+
+export function defaultRecommendationDisplayBatchSize(
+  topic: ChatPlaceCategoryIntent,
+): number {
+  return topic === "shopping"
+    ? RECOMMENDATION_BATCH_SIZE
+    : DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE;
+}
+
+export function resolveRecommendationDisplayBatchSize(
+  session: Pick<ConversationRecommendationSession, "topic" | "displayBatchSize">,
+  override?: number,
+): number {
+  if (override != null && override > 0) return override;
+  if (session.displayBatchSize != null && session.displayBatchSize > 0) {
+    return session.displayBatchSize;
+  }
+  return defaultRecommendationDisplayBatchSize(session.topic);
+}
 
 export function isUsableSearchCentroid(
   centroid?: { lat?: number | null; lng?: number | null } | null,
@@ -64,6 +87,8 @@ export type ConversationRecommendationSession = {
   pool: RoamieRecommendationItem[];
   /** Next index into `pool` to return */
   cursor: number;
+  /** UI cards per turn — independent of `pool.length`. */
+  displayBatchSize?: number;
   /** Shopping query strings already used */
   usedQueries?: string[];
   /** Next Shopping Query Queue page index */
@@ -132,7 +157,8 @@ export function createRecommendationSession(params: {
   shoppingCoverage?: ShoppingCoverageState;
 }): { session: ConversationRecommendationSession; batch: RoamieRecommendationItem[] } {
   const now = new Date().toISOString();
-  const batchSize = params.batchSize ?? RECOMMENDATION_BATCH_SIZE;
+  const batchSize =
+    params.batchSize ?? defaultRecommendationDisplayBatchSize(params.topic);
   const pool = dedupePool(params.pool);
   const batch = pool.slice(0, batchSize);
   const reserve =
@@ -152,6 +178,7 @@ export function createRecommendationSession(params: {
       returnedCanonicalKeys,
       pool,
       cursor: batch.length,
+      displayBatchSize: batchSize,
       usedQueries: params.usedQueries ?? [],
       nextQueryCursor: params.nextQueryCursor ?? (params.topic === "shopping" ? 0 : 0),
       recommendationPage: params.recommendationPage ?? 0,
@@ -187,7 +214,7 @@ function dedupePool(items: RoamieRecommendationItem[]): RoamieRecommendationItem
 /** Continue from cursor — no re-search when pool still has items. */
 export function continueRecommendation(
   session: ConversationRecommendationSession,
-  batchSize = RECOMMENDATION_BATCH_SIZE,
+  batchSize = resolveRecommendationDisplayBatchSize(session),
 ): {
   session: ConversationRecommendationSession;
   batch: RoamieRecommendationItem[];
@@ -236,7 +263,7 @@ export function switchRecommendationTopic(params: {
 export function extendRecommendationPool(
   session: ConversationRecommendationSession,
   more: RoamieRecommendationItem[],
-  batchSize = RECOMMENDATION_BATCH_SIZE,
+  batchSize = resolveRecommendationDisplayBatchSize(session),
 ): {
   session: ConversationRecommendationSession;
   batch: RoamieRecommendationItem[];

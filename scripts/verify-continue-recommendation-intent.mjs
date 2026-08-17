@@ -12,7 +12,7 @@ import {
   createRecommendationSession,
   continueRecommendation,
   remainingRecommendationPoolCount,
-  RECOMMENDATION_BATCH_SIZE,
+  DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE,
   isUsableSearchCentroid,
 } from "../src/lib/ai/conversation-recommendation-session.ts";
 import { resolveChatIntentArbitration } from "../src/lib/ai/recommendation-refinement/arbitrate.ts";
@@ -187,26 +187,40 @@ console.log("\n=== Tokyo Shibuya cafe continuation pool + provider parity ===\n"
     searchScope: "area",
     topic: "cafe",
     pool: usable,
-    batchSize: RECOMMENDATION_BATCH_SIZE,
+    batchSize: DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE,
     searchCentroid: { lat: 35.658, lng: 139.7016 },
     usedQueries: ["東京澀谷 coffee shop", "東京澀谷 cafe"],
   });
   assert.equal(session.pool.length, 6, "initial session retains all usable candidates");
-  assert.equal(batch.length, 4, "first display is the session batch, not the full pool");
-  assert.equal(remainingRecommendationPoolCount(session), 2);
-  assert.equal(session.cursor, 4);
+  assert.equal(session.displayBatchSize, 3, "display batch is independent of pool size");
+  assert.equal(batch.length, 3, "first round still renders 3 cards");
+  assert.equal(remainingRecommendationPoolCount(session), 3);
+  assert.equal(session.cursor, 3);
+  assert.notEqual(
+    session.pool.length,
+    session.displayBatchSize,
+    "session pool size and UI display batch size must stay decoupled",
+  );
 
-  const firstMore = continueRecommendation(session, RECOMMENDATION_BATCH_SIZE);
-  assert.equal(firstMore.batch.length, 2, "還有嗎 consumes remaining stored candidates");
+  const implicit = createRecommendationSession({
+    destination: "東京澀谷",
+    topic: "cafe",
+    pool: usable,
+  });
+  assert.equal(implicit.batch.length, DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE);
+  assert.equal(implicit.session.pool.length, 6);
+
+  const firstMore = continueRecommendation(session);
+  assert.equal(firstMore.batch.length, 3, "還有嗎 consumes the remaining stored 3");
   assert.deepEqual(
     firstMore.batch.map((item) => item.googlePlaceId),
-    ["ChIJshibuya_cafe_5", "ChIJshibuya_cafe_6"],
+    ["ChIJshibuya_cafe_4", "ChIJshibuya_cafe_5", "ChIJshibuya_cafe_6"],
   );
   assert.equal(firstMore.exhausted, true);
   assert.equal(remainingRecommendationPoolCount(firstMore.session), 0);
   console.log("  ✓ first 還有嗎 consumes remaining stored pool (no Places required)");
 
-  const secondMore = continueRecommendation(firstMore.session, RECOMMENDATION_BATCH_SIZE);
+  const secondMore = continueRecommendation(firstMore.session);
   assert.equal(secondMore.batch.length, 0);
   assert.equal(secondMore.exhausted, true);
   console.log("  ✓ second 還有嗎 finds stored pool exhausted");
