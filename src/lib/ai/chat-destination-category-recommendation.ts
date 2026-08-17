@@ -211,16 +211,21 @@ async function searchCategoryPlaces(params: {
       : buildChatPlaceSearchAttempts(intent, destination, userText);
 
   const placeReq = parsePlaceRecommendationIntent(userText);
+  const destinationAreaScope = resolveDestinationAreaScope(destination);
+  const resolvedSearchCity =
+    destinationAreaScope?.parentCity ??
+    resolveRegionPrimaryCity(destination) ??
+    destination;
   if (placeReq) {
     logPlaceRequirementParsed({
       ...placeReq,
       destinationName: placeReq.destinationName ?? destination,
-      resolvedSearchCity: resolveRegionPrimaryCity(destination) ?? destination,
+      resolvedSearchCity,
     });
     logPlaceRecommendationSearchStart(
       {
         destination,
-        resolvedSearchCity: resolveRegionPrimaryCity(destination) ?? destination,
+        resolvedSearchCity,
         primaryType: placeReq.primaryType,
         subtypes: placeReq.subtypes,
         preferredFeatures: placeReq.preferredFeatures,
@@ -233,7 +238,6 @@ async function searchCategoryPlaces(params: {
   }
 
   const minResults = CHAT_DESTINATION_MIN_COUNT;
-  const destinationAreaScope = resolveDestinationAreaScope(destination);
   const searchExtras = searchContext
     ? { searchContext, intentCategory: intent }
     : undefined;
@@ -752,13 +756,16 @@ export async function buildDestinationCategoryRecommendations(params: {
     }
 
     const entity = resolveDestinationEntity(label);
+    const areaScope = resolveDestinationAreaScope(label);
     const searchContext: ChatPlaceSearchContext = {
       searchMode: "destination",
       destinationName: label,
       destinationLatLng: textOnlyDestinationSearch ? null : { lat, lng },
       textOnlyDestinationSearch,
       destinationCountry: entity.country,
-      destinationCity: entity.type === "city" ? label : undefined,
+      destinationCity:
+        areaScope?.parentCity ??
+        (entity.type === "city" ? label : undefined),
     };
 
     const profile = classifyDestinationForPlaceSearch(label, geocoded);

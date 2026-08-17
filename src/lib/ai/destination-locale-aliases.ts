@@ -61,6 +61,8 @@ const CITY_LOCALE_ALIASES: Record<string, string> = {
   // Taiwan
   taipei: "台北",
   "taipei city": "台北",
+  "new taipei": "新北",
+  "new taipei city": "新北",
   kaohsiung: "高雄",
   "kaohsiung city": "高雄",
   taichung: "台中",

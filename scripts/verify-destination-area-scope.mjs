@@ -10,7 +10,7 @@ import {
 } from "../src/lib/ai/destination-travel-profile.ts";
 import { parsePlaceRecommendationIntent } from "../src/lib/ai/place-recommendation-intent/parse.ts";
 import { buildChatPlaceSearchAttempts } from "../src/lib/ai/chat-place-intent.ts";
-import { matchPlaceToDestinationArea } from "../src/lib/ai/chat-place-search-context.ts";
+import { matchPlaceToDestinationArea, filterPlacesByDestinationGuard, buildDestinationGuardProfile } from "../src/lib/ai/chat-place-search-context.ts";
 import {
   selectAreaFirstCandidates,
 } from "../src/lib/ai/chat-destination-category-recommendation.ts";
@@ -869,6 +869,61 @@ assert.equal(
   /台中:[\s\S]*?districts:\s*\[[^\]]*東區/.test(curatedSource),
   false,
   "must not add 東區 to the Taichung district whitelist",
+);
+
+const banqiaoQuery = "新北板橋有什麼咖啡廳推薦嗎";
+const banqiaoScope = resolveDestinationAreaScope(banqiaoQuery);
+assert.deepEqual(banqiaoScope, {
+  displayLabel: "新北板橋",
+  parentCity: "新北",
+  area: "板橋",
+  searchScope: "area",
+});
+const banqiaoParsed = parsePlaceRecommendationIntent(banqiaoQuery);
+assert.equal(banqiaoParsed?.destinationName, "新北板橋");
+assert.equal(banqiaoParsed?.resolvedSearchCity, "新北");
+assert.equal(banqiaoParsed?.destinationArea, "板橋");
+assert.equal(banqiaoParsed?.searchScope, "area");
+assert.notEqual(banqiaoParsed?.resolvedSearchCity, "新北板橋");
+
+assert.deepEqual(
+  matchPlaceToDestinationArea(place("banqiao-zh", "新北市板橋區文化路一段188號"), banqiaoScope),
+  { areaMatched: true, parentCityMatched: true },
+);
+assert.deepEqual(
+  matchPlaceToDestinationArea(
+    place("banqiao-en", "188 Sec. 1, Wenhua Rd, Banqiao District, New Taipei City, Taiwan"),
+    banqiaoScope,
+  ),
+  { areaMatched: true, parentCityMatched: true },
+  "New Taipei English evidence must confirm parentCity=新北",
+);
+
+const banqiaoGuard = buildDestinationGuardProfile("新北板橋");
+assert.ok(banqiaoGuard.acceptMarkers.includes("新北"));
+assert.ok(banqiaoGuard.acceptMarkers.includes("板橋"));
+assert.equal(
+  filterPlacesByDestinationGuard(
+    [place("banqiao-zh", "新北市板橋區文化路一段188號")],
+    "新北板橋",
+  ).length,
+  1,
+  "city destination guard must not require concatenated 新北板橋 inside 新北市板橋區",
+);
+
+const fengshanScope = resolveDestinationAreaScope("高雄鳳山有什麼咖啡廳推薦嗎");
+assert.equal(fengshanScope?.parentCity, "高雄");
+assert.equal(fengshanScope?.area, "鳳山");
+assert.equal(parsePlaceRecommendationIntent("高雄鳳山有什麼咖啡廳推薦嗎")?.resolvedSearchCity, "高雄");
+
+const categorySource = readFileSync(
+  new URL("../src/lib/ai/chat-destination-category-recommendation.ts", import.meta.url),
+  "utf8",
+);
+assert.match(
+  categorySource,
+  /destinationAreaScope\?\.parentCity \?\?/,
+  "PLACE_RECOMMENDATION_SEARCH_START must use structured parentCity as resolvedSearchCity",
 );
 
 console.info("verify-destination-area-scope: ok");

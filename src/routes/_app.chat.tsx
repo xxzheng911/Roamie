@@ -4128,6 +4128,7 @@ function Chat() {
             resolvedSearchCity:
               shoppingScope?.activeSearchCity ??
               recSession.activeSearchCity ??
+              persistedAreaScope?.parentCity ??
               resolveRegionPrimaryCity(destination) ??
               destination,
             parentCity: persistedAreaScope?.parentCity,

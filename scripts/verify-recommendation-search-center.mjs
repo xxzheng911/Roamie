@@ -438,6 +438,24 @@ check("Case 7: 台中東區 explicit district stays area-scoped", () => {
   assert.equal(cityWide?.searchScope, "city");
 });
 
+check("Case 8: 新北板橋 resolvedCity stays parent city 新北", () => {
+  const scope = resolveRecommendationSearchScope({
+    userText: "新北板橋有什麼咖啡廳推薦嗎",
+    session: {
+      recommendedPlaces: [],
+      selectedPlaces: [],
+      phase: "discover",
+      discovery: {},
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  assert.ok(scope);
+  assert.equal(scope.destinationName, "新北板橋");
+  assert.equal(scope.destinationArea, "板橋");
+  assert.equal(scope.resolvedSearchCity, "新北");
+  assert.equal(scope.searchScope, "area");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log("verify-recommendation-search-center: ok (no Places API)");

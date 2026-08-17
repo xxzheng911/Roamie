@@ -26,10 +26,15 @@ import {
 } from "@/lib/ai/chat-place-flow-log";
 import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 import { isExplicitDeviceNearbyRequest } from "@/lib/ai/recommendation-search-scope";
-import type { DestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 import {
+  resolveDestinationAreaScope,
+  type DestinationAreaScope,
+} from "@/lib/ai/destination-travel-profile";
+import {
+  areaEvidenceAliases,
   evidenceIncludesArea,
   evidenceIncludesParentCity,
+  parentCityEvidenceAliases,
 } from "@/lib/ai/destination-area-aliases";
 
 export type ChatPlaceSearchMode = "destination" | "nearby";
@@ -157,8 +162,20 @@ export function buildDestinationGuardProfile(destination: string): DestinationGu
   const label = normalizeDestinationLabel(destination);
   const entity = resolveDestinationEntity(label);
   const en = EN_CITY_NAMES[label];
+  const areaScope = resolveDestinationAreaScope(label);
   const acceptMarkers = new Set<string>([label]);
   if (en) acceptMarkers.add(en);
+  if (areaScope) {
+    acceptMarkers.add(areaScope.parentCity);
+    acceptMarkers.add(areaScope.area);
+    acceptMarkers.add(areaScope.displayLabel);
+    for (const alias of parentCityEvidenceAliases(areaScope.parentCity)) {
+      acceptMarkers.add(alias);
+    }
+    for (const alias of areaEvidenceAliases(areaScope.area)) {
+      acceptMarkers.add(alias);
+    }
+  }
 
   const country = entity.country;
   if (country) {
