@@ -17,6 +17,16 @@ import {
 import { resolveDestinationForCategorySearch } from "../src/lib/ai/chat-category-destination.ts";
 import { mergeTravelContext } from "../src/lib/ai/travel-context.ts";
 import {
+  coerceTravelDestination,
+} from "../src/lib/ai/trip-planning-context.ts";
+import { resolveDestinationEntity } from "../src/lib/ai/destination-entity.ts";
+import {
+  evaluateDestinationScopeGate,
+  isCountryLevelDestination,
+} from "../src/lib/ai/destination-scope.ts";
+import { sanitizeDestinationForGeocode } from "../src/lib/ai/itinerary-entity-extraction.ts";
+import { resolvePlaceRecommendationDestination } from "../src/lib/ai/place-recommendation-intent/destination.ts";
+import {
   continueRecommendation,
   createRecommendationSession,
   DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE,
@@ -925,5 +935,325 @@ assert.match(
   /destinationAreaScope\?\.parentCity \?\?/,
   "PLACE_RECOMMENDATION_SEARCH_START must use structured parentCity as resolvedSearchCity",
 );
+
+const regionTownshipFixtures = [
+  ["屏東恆春有什麼餐廳推薦嗎", "屏東", "恆春", "restaurant"],
+  ["宜蘭羅東有什麼咖啡廳", "宜蘭", "羅東", "cafe"],
+  ["南投埔里有什麼餐廳", "南投", "埔里", "restaurant"],
+  ["花蓮吉安有什麼咖啡廳", "花蓮", "吉安", "cafe"],
+  ["台東池上有什麼餐廳", "台東", "池上", "restaurant"],
+];
+for (const [text, parentCity, area] of regionTownshipFixtures) {
+  const generic = extractGenericDestinationAreaCandidate(text);
+  assert.ok(generic, `${text} must split known parent + geographic tail`);
+  assert.equal(generic.parentCity, parentCity, text);
+  assert.equal(generic.area, area, text);
+  assert.equal(generic.displayLabel, `${parentCity}${area}`, text);
+  assert.equal(generic.validationStatus, "pending_provider", text);
+  assert.equal(
+    extractProvisionalDestinationAreaCandidate(text),
+    null,
+    `${text} must not treat the whole phrase as an unknown pending label`,
+  );
+  const scope = resolveDestinationAreaScope(text);
+  assert.ok(scope, text);
+  assert.equal(scope.parentCity, parentCity);
+  assert.equal(scope.area, area);
+  assert.equal(scope.searchScope, "area");
+  assert.equal(scope.displayLabel, `${parentCity}${area}`);
+  const parsed = parsePlaceRecommendationIntent(text);
+  assert.equal(parsed?.destinationDisplayLabel, `${parentCity}${area}`);
+  assert.equal(parsed?.resolvedSearchCity, parentCity);
+  assert.equal(parsed?.destinationArea, area);
+  assert.equal(parsed?.searchScope, "area");
+  assert.equal(
+    resolveDestinationForCategorySearch(emptyCategoryCtx, emptyCategorySession, text),
+    `${parentCity}${area}`,
+  );
+}
+
+assert.equal(
+  /屏東\s*:\s*[\[{"'].*恆春/.test(curatedSource),
+  false,
+  "must not add a 屏東→恆春 parent-child whitelist",
+);
+assert.equal(
+  /宜蘭\s*:\s*[\[{"'].*羅東/.test(curatedSource),
+  false,
+  "must not add an 宜蘭→羅東 parent-child whitelist",
+);
+
+const validatedHengchun = await resolveValidatedDestinationAreaScope({
+  input: "屏東恆春有什麼餐廳推薦嗎",
+  locale: "zh-TW",
+  geocodeFn: async ({ data }) => {
+    assert.equal(data.query, "屏東恆春", "provider must geocode the full parent+tail phrase");
+    assert.equal(data.placesFallback, false);
+    return {
+      location: {
+        placeId: "mock:hengchun",
+        country: "台灣",
+        city: "恆春鎮",
+        region: "屏東縣",
+        district: "恆春鎮",
+        sublocality: "恆春鎮",
+        lat: 22.004,
+        lng: 120.744,
+        formattedName: "屏東縣恆春鎮",
+        displayLabel: "屏東縣恆春鎮",
+        address: "台灣屏東縣恆春鎮",
+      },
+      error: null,
+    };
+  },
+});
+assert.deepEqual(validatedHengchun, {
+  displayLabel: "屏東恆春",
+  parentCity: "屏東",
+  area: "恆春",
+  searchScope: "area",
+});
+
+const regionTownshipProvider = {
+  屏東恆春: { city: "恆春鎮", region: "屏東縣", district: "恆春鎮" },
+  宜蘭羅東: { city: "羅東鎮", region: "宜蘭縣", district: "羅東鎮" },
+  南投埔里: { city: "埔里鎮", region: "南投縣", district: "埔里鎮" },
+  花蓮吉安: { city: "吉安鄉", region: "花蓮縣", district: "吉安鄉" },
+  台東池上: { city: "池上鄉", region: "台東縣", district: "池上鄉" },
+};
+for (const [text, parentCity, area] of regionTownshipFixtures) {
+  const displayLabel = `${parentCity}${area}`;
+  const provider = regionTownshipProvider[displayLabel];
+  const validated = await resolveValidatedDestinationAreaScope({
+    input: text,
+    locale: "zh-TW",
+    geocodeFn: async ({ data }) => {
+      assert.equal(data.query, displayLabel);
+      return {
+        location: {
+          placeId: `mock:${displayLabel}`,
+          country: "台灣",
+          city: provider.city,
+          region: provider.region,
+          district: provider.district,
+          lat: 23,
+          lng: 121,
+          formattedName: `${provider.region}${provider.district}`,
+          displayLabel: `${provider.region}${provider.district}`,
+          address: `台灣${provider.region}${provider.district}`,
+        },
+        error: null,
+      };
+    },
+  });
+  assert.deepEqual(validated, {
+    displayLabel,
+    parentCity,
+    area,
+    searchScope: "area",
+  });
+}
+
+assert.equal(
+  await resolveValidatedDestinationAreaScope({
+    input: "屏東恆春有什麼餐廳推薦嗎",
+    locale: "zh-TW",
+    geocodeFn: async () => ({ location: null, error: "not_found" }),
+  }),
+  null,
+  "unconfirmed parent-child must not become a trusted area",
+);
+
+const hengchunOnly = extractProvisionalDestinationAreaCandidate("恆春有什麼餐廳");
+assert.ok(hengchunOnly, "district-only 恆春 must still try provider resolution");
+assert.equal(hengchunOnly.rawLabel, "恆春");
+assert.equal(hengchunOnly.parentCity, undefined);
+const validatedHengchunOnly = await resolveValidatedDestinationAreaScope({
+  input: "恆春有什麼餐廳",
+  locale: "zh-TW",
+  geocodeFn: async ({ data }) => {
+    assert.equal(data.query, "恆春");
+    return {
+      location: {
+        placeId: "mock:hengchun-only",
+        country: "台灣",
+        city: "恆春鎮",
+        region: "屏東縣",
+        district: "恆春鎮",
+        lat: 22.004,
+        lng: 120.744,
+        formattedName: "屏東縣恆春鎮",
+        displayLabel: "屏東縣恆春鎮",
+        address: "台灣屏東縣恆春鎮",
+      },
+      error: null,
+    };
+  },
+});
+assert.deepEqual(validatedHengchunOnly, {
+  displayLabel: "屏東恆春",
+  parentCity: "屏東",
+  area: "恆春",
+  searchScope: "area",
+});
+
+assert.equal(resolveDestinationAreaScope("台中西屯")?.parentCity, "台中");
+assert.equal(resolveDestinationAreaScope("台中西屯")?.area, "西屯");
+assert.equal(resolveDestinationAreaScope("台中東區")?.area, "東區");
+assert.equal(resolveDestinationAreaScope("高雄鼓山")?.area, "鼓山");
+assert.equal(resolveDestinationAreaScope("新北板橋")?.area, "板橋");
+assert.equal(resolveDestinationAreaScope("東京澀谷")?.area, "澀谷");
+assert.equal(resolveDestinationAreaScope("東京新宿")?.area, "新宿");
+
+const emptyAreaSession = {
+  recommendedPlaces: [],
+  selectedPlaces: [],
+  phase: "discover",
+  discovery: {},
+  updatedAt: "",
+};
+const emptyAreaCtx = { interests: [] };
+
+const tokyoWardFixtures = [
+  ["東京千代田有什麼餐廳推薦嗎", "東京", "千代田", "restaurant"],
+  ["東京中央有什麼咖啡廳推薦嗎", "東京", "中央", "cafe"],
+  ["東京台東有什麼餐廳推薦嗎", "東京", "台東", "restaurant"],
+  ["東京文京有什麼咖啡廳推薦嗎", "東京", "文京", "cafe"],
+  ["東京品川有什麼餐廳推薦嗎", "東京", "品川", "restaurant"],
+  ["東京目黑有什麼咖啡廳推薦嗎", "東京", "目黑", "cafe"],
+  ["東京港有什麼餐廳推薦嗎", "東京", "港", "restaurant"],
+];
+for (const [text, parentCity, area] of tokyoWardFixtures) {
+  const displayLabel = `${parentCity}${area}`;
+  const generic = extractGenericDestinationAreaCandidate(text);
+  assert.ok(generic, `${text} must split known parent + geographic tail`);
+  assert.equal(generic.parentCity, parentCity, text);
+  assert.equal(generic.area, area, text);
+  const scope = resolveDestinationAreaScope(text);
+  assert.ok(scope, text);
+  assert.equal(scope.displayLabel, displayLabel);
+  assert.equal(scope.parentCity, parentCity);
+  assert.equal(scope.area, area);
+  assert.equal(scope.searchScope, "area");
+  assert.equal(coerceTravelDestination(displayLabel), displayLabel, text);
+  const entity = resolveDestinationEntity(displayLabel);
+  assert.notEqual(entity.type, "country", `${displayLabel} must not infer country`);
+  assert.equal(entity.type, "district", text);
+  assert.equal(entity.country, "日本", text);
+  assert.equal(isCountryLevelDestination(displayLabel), false, text);
+  const gate = evaluateDestinationScopeGate({ destination: displayLabel });
+  assert.equal(gate.placesCallBlocked, false, text);
+  assert.notEqual(gate.scopePrecision, "country", text);
+  assert.equal(sanitizeDestinationForGeocode(displayLabel), displayLabel, text);
+  const parsed = parsePlaceRecommendationIntent(text);
+  assert.equal(parsed?.destinationName, displayLabel);
+  assert.equal(parsed?.destinationDisplayLabel, displayLabel);
+  assert.equal(parsed?.resolvedSearchCity, parentCity);
+  assert.equal(parsed?.destinationArea, area);
+  assert.equal(parsed?.searchScope, "area");
+  assert.equal(
+    resolveDestinationForCategorySearch(emptyAreaCtx, emptyAreaSession, text),
+    displayLabel,
+    text,
+  );
+  const attempts = buildChatPlaceSearchAttempts(
+    area === "中央" || area === "文京" || area === "目黑" ? "cafe" : "restaurant",
+    displayLabel,
+    text,
+  );
+  assert.ok(
+    attempts.primary.some((attempt) => attempt.query.includes(displayLabel)),
+    `${text} primary queries must use area destination`,
+  );
+  assert.equal(
+    attempts.primary.some((attempt) => attempt.query === `${parentCity} restaurant`),
+    false,
+    `${text} must not start with city-wide ${parentCity} restaurant`,
+  );
+}
+
+const chiyodaQuery = "東京千代田有什麼餐廳推薦嗎";
+const chiyodaMerged = mergeTravelContext(emptyAreaSession, chiyodaQuery);
+assert.equal(chiyodaMerged.context.destination, "東京千代田");
+assert.equal(chiyodaMerged.context.destinationCountry, "日本");
+assert.notEqual(chiyodaMerged.context.destinationType, "country");
+const chiyodaPlaceDest = resolvePlaceRecommendationDestination({
+  userText: chiyodaQuery,
+  session: chiyodaMerged.session,
+  context: chiyodaMerged.context,
+  parsed: parsePlaceRecommendationIntent(chiyodaQuery),
+});
+assert.equal(chiyodaPlaceDest?.destinationDisplayName, "東京千代田");
+assert.equal(chiyodaPlaceDest?.resolvedSearchCity, "東京");
+assert.equal(chiyodaPlaceDest?.destinationArea, "千代田");
+assert.equal(chiyodaPlaceDest?.searchScope, "area");
+
+assert.equal(
+  locationValidatesDestinationArea(extractGenericDestinationAreaCandidate(chiyodaQuery), {
+    placeId: "mock:chiyoda-zh",
+    country: "日本",
+    city: "東京",
+    region: "東京都",
+    district: "千代田区",
+    sublocality: "千代田区",
+    lat: 35.694,
+    lng: 139.753,
+    formattedName: "東京都千代田区",
+    displayLabel: "東京都千代田区",
+    address: "日本東京都千代田区",
+  }),
+  true,
+  "zh-TW 千代田区 evidence must validate without a Chiyoda alias",
+);
+assert.equal(
+  locationValidatesDestinationArea(extractGenericDestinationAreaCandidate(chiyodaQuery), {
+    placeId: "mock:chiyoda-en",
+    country: "日本",
+    city: "Chiyoda City",
+    region: "Tokyo",
+    district: "Chiyoda",
+    sublocality: "Chiyoda",
+    lat: 35.694,
+    lng: 139.753,
+    formattedName: "Chiyoda City, Tokyo",
+    displayLabel: "Chiyoda City, Tokyo",
+    address: "Chiyoda City, Tokyo, Japan",
+  }),
+  false,
+  "English Chiyoda must not require a ward-specific alias table",
+);
+
+const tokyoCityWideText = "東京有什麼餐廳推薦嗎";
+assert.equal(resolveDestinationAreaScope(tokyoCityWideText), null);
+assert.equal(extractGenericDestinationAreaCandidate(tokyoCityWideText), null);
+const tokyoCityWide = parsePlaceRecommendationIntent(tokyoCityWideText);
+assert.equal(tokyoCityWide?.destinationName, "東京");
+assert.equal(tokyoCityWide?.searchScope, "city");
+assert.equal(tokyoCityWide?.destinationArea, undefined);
+assert.equal(
+  resolveDestinationForCategorySearch(emptyAreaCtx, emptyAreaSession, tokyoCityWideText),
+  "東京",
+);
+const tokyoCityEntity = resolveDestinationEntity("東京");
+assert.equal(tokyoCityEntity.type, "city");
+assert.equal(tokyoCityEntity.country, "日本");
+
+const existingAreaRegression = [
+  ["東京澀谷有什麼咖啡廳推薦", "東京", "澀谷"],
+  ["東京新宿有什麼咖啡廳推薦", "東京", "新宿"],
+  ["新北三重有什麼餐廳推薦嗎", "新北", "三重"],
+  ["新北板橋有什麼咖啡廳推薦", "新北", "板橋"],
+  ["台中西屯有什麼咖啡廳推薦", "台中", "西屯"],
+  ["台中東區有什麼咖啡廳推薦嗎", "台中", "東區"],
+  ["高雄鼓山有什麼咖啡廳推薦", "高雄", "鼓山"],
+  ["花蓮玉里有什麼咖啡廳推薦嗎", "花蓮", "玉里"],
+];
+for (const [text, parentCity, area] of existingAreaRegression) {
+  const scope = resolveDestinationAreaScope(text);
+  assert.ok(scope, text);
+  assert.equal(scope.parentCity, parentCity, text);
+  assert.equal(scope.area, area, text);
+  assert.equal(scope.searchScope, "area", text);
+}
 
 console.info("verify-destination-area-scope: ok");

@@ -3,7 +3,8 @@ import { resetPostAuthRedirect } from "@/lib/auth-post-redirect";
 import { resetPostLoginNavigation } from "@/lib/login-navigation";
 import { clearPendingCallbackPath, OAUTH_PENDING_CALLBACK_KEY } from "@/lib/auth-oauth-deep-link";
 import { clearOAuthCodeConsumedMarker } from "@/lib/oauth-callback-guard";
-import { clearAuthMemoryCache } from "@/lib/supabase-auth-storage";
+import { AUTH_RESTORE_TIMEOUT } from "@/lib/auth-restore";
+import { clearAuthMemoryCache, clearPersistedAuthSession } from "@/lib/supabase-auth-storage";
 import { clearCompanionModeSelection } from "@/lib/companion-mode-storage";
 import { supabase } from "@/lib/supabase";
 import { detectPlatform } from "@/services/platform";
@@ -13,7 +14,7 @@ import { clearTravelPrefResultCache } from "@/lib/travel-pref-result-cache";
 
 const SUPABASE_AUTH_STORAGE_KEY = "roamie-auth";
 const PREF_PREFIX = "roamie.supabase.auth.";
-const NATIVE_CLEAR_TIMEOUT_MS = 3_000;
+const NATIVE_CLEAR_TIMEOUT_MS = AUTH_RESTORE_TIMEOUT.nativeClearMs;
 
 /** 本機未登入時的暫存資料（舊稱 guest cache；正式流程 OAuth 失敗時會清除） */
 const LOCAL_DEVICE_CACHE_KEYS = [
@@ -130,6 +131,7 @@ async function clearAuthStateAsync(): Promise<void> {
   try {
     await Promise.race([
       (async () => {
+        await clearPersistedAuthSession();
         await supabase.auth.signOut({ scope: "local" });
         await clearNativePreferencesAuthKeys();
       })(),

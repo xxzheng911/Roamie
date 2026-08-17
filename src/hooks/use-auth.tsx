@@ -13,8 +13,13 @@ import { supabase } from "@/lib/supabase";
 import { hasOAuthCallbackParams } from "@/lib/auth-oauth";
 import { logAuthDebug } from "@/lib/auth-debug";
 import { logAuthBoot } from "@/lib/auth-boot-log";
+import { AUTH_RESTORE_TIMEOUT } from "@/lib/auth-restore";
 import { clearAuthState } from "@/lib/clear-auth-state";
-import { getClientAuthSession, updateClientAuthSessionCache } from "@/lib/auth-session";
+import {
+  getClientAuthSession,
+  markClientAuthSessionSettledUnauthenticated,
+  updateClientAuthSessionCache,
+} from "@/lib/auth-session";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";
 import { detectPlatform } from "@/services/platform";
 import { isLoginColdStartPath, readBrowserPathname } from "@/lib/startup-path";
@@ -95,7 +100,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!cancelled) applySession(s);
       } catch (e) {
         logAppError("[auth] getSession failed", e);
-        if (!cancelled) finishLoading();
+        markClientAuthSessionSettledUnauthenticated();
+        if (!cancelled) applySession(null);
       }
     };
 
@@ -123,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     void init();
 
-    const fallbackMs = hasOAuthCallbackParams() ? 12_000 : 2_500;
+    const fallbackMs = hasOAuthCallbackParams() ? AUTH_RESTORE_TIMEOUT.nativeMs : 2_500;
     const fallback = window.setTimeout(finishLoading, fallbackMs);
 
     return () => {
@@ -135,9 +141,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     setSession(null);
-    const { invalidateClientAuthSessionCache } = await import("@/lib/auth-session");
     const { resetWarmSupabaseAuthStorage } = await import("@/lib/supabase-auth-storage");
-    invalidateClientAuthSessionCache();
+    markClientAuthSessionSettledUnauthenticated();
     resetWarmSupabaseAuthStorage();
     await clearAuthState({ reason: "user-sign-out" });
   }, []);

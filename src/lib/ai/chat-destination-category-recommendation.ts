@@ -83,7 +83,7 @@ import {
   buildMealRecommendationDescription,
   buildMealSearchAttempts,
   filterPlacesForMealIntent,
-  parseMealIntentFromText,
+  resolveExplicitMealIntent,
   sanitizeMealSummaryText,
   sanitizeMealReasonText,
   type ParsedMealIntent,
@@ -333,9 +333,12 @@ async function searchCategoryPlaces(params: {
       },
     });
     places = rankCategoryPlaces(places, lat, lng);
+    // Generic restaurant already passed the official category/quality contract.
+    // Meal-hours selection is itinerary-grade and only runs for an explicit slot.
     if (mealIntent && intent === "restaurant") {
       places = filterPlacesForMealIntent(places, mealIntent);
     }
+    if (diagnostics) diagnostics.afterMealFilterCount += places.length;
     // Subtype validation (e.g. sukiyaki) — never pad with unrelated restaurants
     if (intent === "restaurant" && placeReq?.subtypes.length) {
       const matched = places.filter(
@@ -511,6 +514,10 @@ async function searchCategoryPlaces(params: {
 
   if (places.length >= minResults) {
     if (placeReq) {
+      // typeAccepted is leftover place count after searchCategoryPlaces
+      // filters (destination/category/quality/optional explicit meal). It is
+      // not a Google types[] taxonomy classifier and must not be compared
+      // directly to afterCategoryGuardCount.
       logPlaceRecommendationSearchResult({
         rawCount,
         typeAccepted: places.length,
@@ -672,7 +679,7 @@ export async function buildDestinationCategoryRecommendations(params: {
     userProfile,
   } = params;
   const label = normalizeDestinationLabel(destination);
-  const mealIntent = parseMealIntentFromText(userText);
+  const mealIntent = resolveExplicitMealIntent(userText);
 
   const scopeGate = evaluateDestinationScopeGate({
     destination: label,
@@ -831,6 +838,7 @@ export async function buildDestinationCategoryRecommendations(params: {
               userProfile,
             )
           : [];
+      searchDiagnostics.afterMappedRecommendationCount = recommendations.length;
       recommendations = filterRecommendationsForCategoryRender(
         recommendations,
         intent,

@@ -51,7 +51,12 @@ export function resolvePlaceRecommendationDestination(params: {
 }): ResolvedPlaceRecommendationDestination | null {
   const { userText, session, context, parsed, allowDeviceLocation } = params;
 
+  const explicitAreaLabel =
+    parsed?.searchScope === "area"
+      ? parsed.destinationDisplayLabel ?? parsed.destinationName
+      : undefined;
   const fromMessage =
+    (explicitAreaLabel?.trim() || undefined) ||
     accept(parsed?.destinationDisplayLabel ?? parsed?.destinationName) ||
     accept(resolveDestinationFromText(userText));
   if (fromMessage) {

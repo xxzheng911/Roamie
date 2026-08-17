@@ -21,6 +21,18 @@ export type ParsedMealIntent = {
   city?: string;
 };
 
+/** True only when the user named a meal slot — not a generic 餐廳/美食 recommendation. */
+export function isExplicitMealSlotText(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/宵夜|深夜|late\s*night/i.test(t)) return true;
+  if (/晚餐|晚飯|dinner|晚上吃/.test(t)) return true;
+  if (/下午茶|甜點/.test(t) && !/餐廳/.test(t)) return true;
+  if (/早餐|早午餐|brunch/i.test(t)) return true;
+  if (/中午|午餐|午飯|lunch|12點|12:00|12：00/.test(t)) return true;
+  return false;
+}
+
 const NIGHT_VENUE_RE =
   /bar|bistro|pub|lounge|cocktail|rooftop|roof\s*·|屋面|餐酒館|酒吧|夜店|居酒|眺吧|夜景餐廳|night\s*view|sky\s*bar|lounge|屋頂酒吧|餐酒/i;
 
@@ -103,9 +115,6 @@ export function parseMealIntentFromText(
   } else if (/中午|午餐|午飯|lunch|12點|12:00|12：00/.test(t)) {
     slot = "lunch";
     targetTime = "12:00";
-  } else if (/餐廳|美食|吃/.test(t)) {
-    slot = "lunch";
-    targetTime = "12:00";
   }
 
   if (!slot) return null;
@@ -119,6 +128,19 @@ export function parseMealIntentFromText(
   const intent: ParsedMealIntent = { slot, targetDate, targetTime, city };
   logAiMealIntentParsed(intent);
   return intent;
+}
+
+/**
+ * Meal-slot search / hours filter is itinerary-grade.
+ * Generic「有什麼餐廳推薦」must keep the restaurant category contract
+ * that already passed quality — do not infer lunch.
+ */
+export function resolveExplicitMealIntent(
+  text: string,
+  refDate = new Date(),
+): ParsedMealIntent | null {
+  if (!isExplicitMealSlotText(text)) return null;
+  return parseMealIntentFromText(text, refDate);
 }
 
 export function validateMealRecommendationSlot(

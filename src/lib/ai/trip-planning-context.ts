@@ -111,6 +111,44 @@ export function isKnownTouristCityLabel(name: string): boolean {
   return KNOWN_CITIES.test(n) || KNOWN_TOURIST_CITIES.test(n);
 }
 
+export type KnownParentAreaSplit = {
+  parentCity: string;
+  area: string;
+};
+
+const STRUCTURED_AREA_TAIL_RE =
+  /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]+$/u;
+const INVALID_STRUCTURED_AREA_TAIL =
+  /^(?:附近|周邊|周边|市區|市区|當地|当地|這裡|这里|那裡|那里|有|的|之)$/;
+const INVALID_STRUCTURED_AREA_SUBSTRING =
+  /(?:安靜|安静|熱鬧|热闹|便宜|高級|高级|不限時|不限时|更多|其他|還有|还有|一點|一点|一些|更好|插座|甜點|甜点)/;
+
+/**
+ * Known parent city/county/region + adjacent geographic tail.
+ * City-wide labels have no tail. One-character tails (東京港) are allowed;
+ * they stay untrusted until provider validation.
+ */
+export function splitKnownParentAreaLabel(input: string): KnownParentAreaSplit | null {
+  const compact = normalizeDestinationLabel(input).replace(/[\s,，、/／-]+/g, "");
+  if (!compact) return null;
+  const maxLen = Math.min(8, compact.length - 1);
+  for (let len = maxLen; len >= 2; len -= 1) {
+    const prefix = compact.slice(0, len);
+    const parentCity = normalizeDestinationLabel(prefix);
+    if (!isKnownTouristCityLabel(parentCity)) continue;
+    const area = compact
+      .slice(len)
+      .replace(/^[市縣县都府]/, "")
+      .replace(/^(?:的|之)/, "");
+    if (!area || area.length > 8) continue;
+    if (/^有/.test(area) || INVALID_STRUCTURED_AREA_TAIL.test(area)) continue;
+    if (INVALID_STRUCTURED_AREA_SUBSTRING.test(area)) continue;
+    if (!STRUCTURED_AREA_TAIL_RE.test(area)) continue;
+    return { parentCity, area };
+  }
+  return null;
+}
+
 export function isKnownScenicLabel(name: string): boolean {
   const n = normalizeDestinationLabel(name);
   return KNOWN_SCENIC_SPOTS.test(n);
@@ -456,6 +494,7 @@ export function isValidParsedDestinationLabel(name: string): boolean {
   if (/(?:下個月|下个月|下月|這個月|这个月|想去|想要|幫我|帮我|安排|規劃|规划|你可以|可以|幾天|天數|天数)/.test(n)) {
     return false;
   }
+  if (splitKnownParentAreaLabel(n)) return true;
   if (
     n.length > 4 &&
     !isKnownTouristCityLabel(n) &&

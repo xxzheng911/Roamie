@@ -2,6 +2,7 @@ import {
   isKnownCountryLabel,
   isKnownTouristCityLabel,
   normalizeDestinationLabel,
+  splitKnownParentAreaLabel,
 } from "@/lib/ai/trip-planning-context";
 import {
   resolveDestinationEntity,
@@ -21,9 +22,11 @@ export type DestinationScopeFields = {
 export function isCountryLevelDestination(name: string | null | undefined): boolean {
   if (!name?.trim()) return false;
   const label = normalizeDestinationLabel(name);
+  if (splitKnownParentAreaLabel(label)) return false;
   const entity = resolveDestinationEntity(label);
   // City-states are valid Places destinations (city label == country label).
   if (entity.type === "city_state") return false;
+  if (entity.type === "district" || entity.type === "administrative_area") return false;
   if (isKnownTouristCityLabel(label) && !isKnownCountryLabel(label)) return false;
   if (isKnownCountryLabel(label) && !isKnownTouristCityLabel(label)) return true;
   return entity.type === "country";
@@ -40,6 +43,8 @@ export function canDiscoverDestinationPlaces(name: string | null | undefined): b
   return (
     entity.type === "city" ||
     entity.type === "city_state" ||
+    entity.type === "district" ||
+    entity.type === "administrative_area" ||
     entity.type === "region" ||
     entity.type === "island" ||
     entity.type === "state" ||
@@ -96,6 +101,17 @@ export function resolveDestinationScopeFields(
       destinationCountry: country,
       destinationRegion: undefined,
       destinationCity: undefined,
+    };
+  }
+
+  if (entity.type === "district" || entity.type === "administrative_area") {
+    const split = splitKnownParentAreaLabel(label);
+    return {
+      destinationName: label,
+      destinationType: entity.type,
+      destinationCountry: country,
+      destinationCity: split?.parentCity ?? label,
+      destinationRegion: split?.area,
     };
   }
 
@@ -164,11 +180,19 @@ export function evaluateDestinationScopeGate(params: {
     ? normalizeDestinationLabel(params.destination)
     : "";
   const entity = destination ? resolveDestinationEntity(destination) : null;
-  const destinationType = (params.destinationType ??
-    entity?.type ??
-    "unknown") as DestinationEntityType | "unknown";
+  const structuredArea = destination ? splitKnownParentAreaLabel(destination) : null;
+  const destinationType = (
+    entity?.type === "district" ||
+    entity?.type === "administrative_area" ||
+    structuredArea
+      ? (entity?.type === "administrative_area" ? "administrative_area" : "district")
+      : (params.destinationType ?? entity?.type ?? "unknown")
+  ) as DestinationEntityType | "unknown";
   const countryLevel =
     destinationType !== "city_state" &&
+    destinationType !== "district" &&
+    destinationType !== "administrative_area" &&
+    !structuredArea &&
     (destinationType === "country" ||
       (destination ? isCountryLevelDestination(destination) : false));
   const scopePrecision = countryLevel

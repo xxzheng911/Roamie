@@ -3,6 +3,7 @@ import {
   isKnownTouristCityLabel,
   isKnownScenicLabel,
   isKnownCountryLabel,
+  splitKnownParentAreaLabel,
 } from "@/lib/ai/trip-planning-context";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
@@ -816,6 +817,7 @@ function inferType(name: string): DestinationEntityType {
   if (isTravelRegionLabel(name)) return "region";
   if (/^(北海道|九州|四國|本州)$/.test(name)) return "region";
   if (isKnownTouristCityLabel(name)) return "city";
+  if (splitKnownParentAreaLabel(name)) return "district";
   if (isKnownScenicLabel(name)) return "attraction";
   if (/(山|湖|瀑布|國家公園|国家公园|寺|廟|庙)/.test(name)) return "attraction";
   if (/(島|岛)/.test(name)) return "island";
@@ -830,6 +832,10 @@ function inferCountry(name: string, type: DestinationEntityType): string | undef
   const registered = getEntityByNameMap().get(name);
   if (registered?.country) return registered.country;
   if (PARENT_COUNTRY_HINTS[name]) return PARENT_COUNTRY_HINTS[name];
+  const split = splitKnownParentAreaLabel(name);
+  if (split && PARENT_COUNTRY_HINTS[split.parentCity]) {
+    return PARENT_COUNTRY_HINTS[split.parentCity];
+  }
   if (type === "country" || type === "city_state") return name;
   return undefined;
 }

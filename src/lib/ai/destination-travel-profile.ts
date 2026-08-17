@@ -6,6 +6,7 @@
 import {
   normalizeDestinationLabel,
   resolveDestinationFromText,
+  splitKnownParentAreaLabel,
 } from "@/lib/ai/trip-planning-context";
 import type { GeocodeDestinationFn } from "@/lib/ai/destination-geocode";
 import { lockDestinationCoordinatesFromGeocode } from "@/lib/ai/resolved-destination-scope";
@@ -317,6 +318,8 @@ export type DestinationAreaCandidate = {
   displayLabel: string;
   parentCity: string;
   area: string;
+  /** Set when the parent+tail split is untrusted until provider geocode. */
+  validationStatus?: "pending_provider";
 };
 
 /**
@@ -347,7 +350,7 @@ const GEOGRAPHIC_WANT_RE =
 
 function looksLikeGeographicLabel(label: string): boolean {
   return (
-    label.length >= 2 &&
+    label.length >= 1 &&
     label.length <= 12 &&
     !INVALID_AREA_FRAGMENT.test(label) &&
     !INVALID_DISTRICT_ONLY_FRAGMENT.test(label) &&
@@ -372,11 +375,16 @@ function extractRawGeographicLabel(input: string): string {
 /**
  * Extract an untrusted geographic label for provider validation.
  * Does not require KNOWN_CITIES / curated district / city+district format.
+ * Known parent + adjacent tail is a structured candidate, not a whole-phrase pending label.
  */
 export function extractProvisionalDestinationAreaCandidate(
   input: string,
 ): ProvisionalDestinationAreaCandidate | null {
-  if (resolveCuratedOrCachedDestinationAreaScope(input) || resolveDestinationFromText(input)) {
+  if (
+    resolveCuratedOrCachedDestinationAreaScope(input) ||
+    extractCityTailAreaCandidate(input) ||
+    resolveDestinationFromText(input)
+  ) {
     return null;
   }
   const areaCandidate = extractRawGeographicLabel(input);
@@ -393,23 +401,52 @@ export function hasPendingProviderGeographicCandidate(input: string): boolean {
   return extractProvisionalDestinationAreaCandidate(input) != null;
 }
 
-/** Extract only a possible city-tail area. This does not make it trusted. */
-function extractCityTailAreaCandidate(input: string): DestinationAreaCandidate | null {
-  const normalized = normalizeDestinationLabel(input);
-  const parentCity = resolveDestinationFromText(input);
-  if (!parentCity) return null;
-  const cityIndex = normalized.indexOf(parentCity);
-  if (cityIndex < 0) return null;
-  const afterCity = normalized.slice(cityIndex + parentCity.length);
-  const strippedPrefix = afterCity.replace(/^[市縣县]/, "").replace(/^(?:的|之)/, "");
+/**
+ * Longest known city/county/region prefix of a compact geographic phrase.
+ * Requires a remaining tail — city-wide labels are not parent+area.
+ * One-character tails are allowed (東京港); they stay untrusted until provider validation.
+ */
+function matchKnownParentPrefix(compact: string): string | null {
+  return splitKnownParentAreaLabel(compact)?.parentCity ?? null;
+}
+
+function areaTailAfterParent(afterCity: string, alreadyCompact: boolean): string {
+  const strippedPrefix = afterCity
+    .replace(/^[市縣县都府]/, "")
+    .replace(/^(?:的|之)/, "");
   // 「高雄有安靜咖啡廳」is a city-wide query, not parentCity + area.
-  if (/^有/.test(strippedPrefix)) return null;
-  const rawFragment = strippedPrefix.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
-  const area = rawFragment
+  if (/^有/.test(strippedPrefix)) return "";
+  const rawFragment = alreadyCompact
+    ? strippedPrefix
+    : strippedPrefix.split(AREA_QUERY_STOP)[0]?.trim() ?? "";
+  return rawFragment
     .replace(/[\s,，、/／-]+/g, "")
     .replace(/(?:有|想找|找|想看)$/g, "");
+}
+
+/**
+ * Known/resolved parent + adjacent geographic tail.
+ * Tail need not include 區/鄉/鎮/市/District/City (屏東恆春, 宜蘭羅東).
+ * This does not make the pair trusted.
+ */
+function extractCityTailAreaCandidate(input: string): DestinationAreaCandidate | null {
+  const normalized = normalizeDestinationLabel(input);
+  const compactGeo = extractRawGeographicLabel(input);
+  // Prefer a known parent PREFIX of the geographic phrase so 「台東池上」
+  // keeps 台東 even when the tail is also a known scenic label.
+  const parentFromGeo = compactGeo ? matchKnownParentPrefix(compactGeo) : null;
+  const parentCity = parentFromGeo ?? resolveDestinationFromText(input);
+  if (!parentCity) return null;
+  const haystack =
+    compactGeo && compactGeo.includes(parentCity) ? compactGeo : normalized;
+  const cityIndex = haystack.indexOf(parentCity);
+  if (cityIndex < 0) return null;
+  const area = areaTailAfterParent(
+    haystack.slice(cityIndex + parentCity.length),
+    haystack === compactGeo,
+  );
   if (
-    area.length < 2 ||
+    area.length < 1 ||
     area.length > 8 ||
     !looksLikeGeographicLabel(area)
   ) {
@@ -419,9 +456,14 @@ function extractCityTailAreaCandidate(input: string): DestinationAreaCandidate |
     displayLabel: `${parentCity}${area}`,
     parentCity,
     area,
+    validationStatus: "pending_provider",
   };
 }
 
+/**
+ * Structured parent + tail when a known city/county/region is followed by
+ * an adjacent geographic fragment (台中西屯, 屏東恆春). Not a parent→child map.
+ */
 export function extractGenericDestinationAreaCandidate(
   input: string,
 ): DestinationAreaCandidate | null {
@@ -520,7 +562,9 @@ export async function resolveValidatedDestinationAreaScope(params: {
   if (!candidate) return null;
   if (!locationValidatesDestinationArea(candidate, location)) return null;
   const validated: DestinationAreaScope = {
-    ...candidate,
+    displayLabel: candidate.displayLabel,
+    parentCity: candidate.parentCity,
+    area: candidate.area,
     searchScope: "area",
   };
   validatedAreaScopes.set(areaScopeKey(validated.displayLabel), validated);

@@ -147,7 +147,12 @@ function createCapacitorAuthStorage(): SupportedStorage {
     removeItem: async (key: string) => {
       memoryCache.delete(key);
       removeLocal(key);
-      schedulePreferencesPersist(key, null);
+      if (key === SUPABASE_STORAGE_KEY) {
+        await persistToPreferences(key, null);
+        logAuthStorageDebug("session.removed", { key });
+      } else {
+        schedulePreferencesPersist(key, null);
+      }
     },
   };
 }
@@ -171,20 +176,71 @@ async function hydrateSessionFromPreferences(key: string): Promise<boolean> {
 
 /** Call after Capacitor bridge is up (app init / login mount / cold-start routing). */
 let warmSupabaseAuthStorageDone = false;
+let warmSupabaseAuthStorageInFlight: Promise<void> | null = null;
 
 export function resetWarmSupabaseAuthStorage(): void {
   warmSupabaseAuthStorageDone = false;
+  warmSupabaseAuthStorageInFlight = null;
 }
 
 export async function warmSupabaseAuthStorage(): Promise<void> {
   if (!isNativeCapacitor()) return;
   if (warmSupabaseAuthStorageDone) return;
-  warmSupabaseAuthStorageDone = true;
-  const hydrated = await hydrateSessionFromPreferences(SUPABASE_STORAGE_KEY);
-  if (hydrated) {
-    logAuthBoot("session-hydrated-from-preferences");
+  if (warmSupabaseAuthStorageInFlight) return warmSupabaseAuthStorageInFlight;
+
+  warmSupabaseAuthStorageInFlight = (async () => {
+    try {
+      const hydrated = await hydrateSessionFromPreferences(SUPABASE_STORAGE_KEY);
+      if (hydrated) {
+        logAuthBoot("session-hydrated-from-preferences");
+      }
+      await restoreOAuthPkceVerifier();
+      warmSupabaseAuthStorageDone = true;
+    } catch (e) {
+      warmSupabaseAuthStorageInFlight = null;
+      throw e;
+    }
+  })();
+
+  return warmSupabaseAuthStorageInFlight;
+}
+
+const PERSISTED_AUTH_KEYS = [
+  SUPABASE_STORAGE_KEY,
+  SUPABASE_PKCE_VERIFIER_KEY,
+  `${SUPABASE_STORAGE_KEY}-user`,
+] as const;
+
+/**
+ * Awaited native+web auth blob cleanup. Use after restore timeout / missing session.
+ * PKCE setItem stays fire-and-forget; this path must not leave Preferences stale.
+ */
+export async function clearPersistedAuthSession(): Promise<void> {
+  for (const key of PERSISTED_AUTH_KEYS) {
+    memoryCache.delete(key);
+    removeLocal(key);
   }
-  await restoreOAuthPkceVerifier();
+  clearAuthMemoryCache();
+
+  if (!isNativeCapacitor() && !detectPlatform().isCapacitor) {
+    resetWarmSupabaseAuthStorage();
+    logAuthStorageDebug("session.cleared", { native: false });
+    return;
+  }
+
+  const ready = await ensurePreferencesBridge();
+  if (ready) {
+    try {
+      await Promise.all(
+        PERSISTED_AUTH_KEYS.map((key) => Preferences.remove({ key: prefKey(key) })),
+      );
+    } catch (e) {
+      console.warn("[auth-storage] Preferences clear failed", e);
+    }
+  }
+
+  resetWarmSupabaseAuthStorage();
+  logAuthStorageDebug("session.cleared", { native: true, bridgeReady: ready });
 }
 
 /** 開啟 OAuth 瀏覽器前：把 PKCE verifier 寫入 localStorage + Preferences（避免 ASWeb 回來後 memory 被清） */

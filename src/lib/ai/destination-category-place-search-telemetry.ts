@@ -9,6 +9,7 @@ export type DestinationCategoryPlaceSearchFailureStage =
   | "base_eligibility_empty"
   | "category_guard_empty"
   | "quality_filter_empty"
+  | "meal_filter_empty"
   | "render_guard_empty"
   | "success";
 
@@ -26,6 +27,8 @@ export type DestinationCategoryPlaceSearchDiagnostics = {
   afterBaseEligibilityCount: number;
   afterCategoryGuardCount: number;
   afterQualityCount: number;
+  afterMealFilterCount: number;
+  afterMappedRecommendationCount: number;
   renderableCount: number;
   finalRecommendationCount: number;
   baseEligibilityRejections: {
@@ -55,6 +58,8 @@ export function createDestinationCategoryPlaceSearchDiagnostics(
     afterBaseEligibilityCount: 0,
     afterCategoryGuardCount: 0,
     afterQualityCount: 0,
+    afterMealFilterCount: 0,
+    afterMappedRecommendationCount: 0,
     renderableCount: 0,
     finalRecommendationCount: 0,
     baseEligibilityRejections: {
@@ -87,6 +92,10 @@ export function resolveDestinationCategoryPlaceSearchFailureStage(
   }
   if (diagnostics.afterCategoryGuardCount === 0) return "category_guard_empty";
   if (diagnostics.afterQualityCount === 0) return "quality_filter_empty";
+  if (diagnostics.afterMealFilterCount === 0) return "meal_filter_empty";
+  if (diagnostics.afterMappedRecommendationCount === 0) {
+    return "render_guard_empty";
+  }
   if (diagnostics.renderableCount === 0) return "render_guard_empty";
   return "success";
 }
@@ -109,6 +118,8 @@ export function logDestinationCategoryPlaceSearchSummary(
     `afterBaseEligibilityCount=${diagnostics.afterBaseEligibilityCount}`,
     `afterCategoryGuardCount=${diagnostics.afterCategoryGuardCount}`,
     `afterQualityCount=${diagnostics.afterQualityCount}`,
+    `afterMealFilterCount=${diagnostics.afterMealFilterCount}`,
+    `afterMappedRecommendationCount=${diagnostics.afterMappedRecommendationCount}`,
     `renderableCount=${diagnostics.renderableCount}`,
     `finalRecommendationCount=${diagnostics.finalRecommendationCount}`,
     `baseEligibilityRejections=${Object.entries(diagnostics.baseEligibilityRejections)

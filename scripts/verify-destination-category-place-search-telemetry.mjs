@@ -25,6 +25,8 @@ function fixture(overrides) {
       afterBaseEligibilityCount: 3,
       afterCategoryGuardCount: 3,
       afterQualityCount: 3,
+      afterMealFilterCount: 3,
+      afterMappedRecommendationCount: 3,
       renderableCount: 3,
       finalRecommendationCount: 3,
     },
@@ -93,9 +95,25 @@ assert.equal(
 );
 assert.equal(
   resolveDestinationCategoryPlaceSearchFailureStage(
-    fixture({ afterQualityCount: 0 }),
+    fixture({ afterQualityCount: 0, afterMealFilterCount: 0 }),
   ),
   "quality_filter_empty",
+);
+assert.equal(
+  resolveDestinationCategoryPlaceSearchFailureStage(
+    fixture({ afterMealFilterCount: 0, renderableCount: 0, finalRecommendationCount: 0 }),
+  ),
+  "meal_filter_empty",
+);
+assert.equal(
+  resolveDestinationCategoryPlaceSearchFailureStage(
+    fixture({
+      afterMappedRecommendationCount: 0,
+      renderableCount: 0,
+      finalRecommendationCount: 0,
+    }),
+  ),
+  "render_guard_empty",
 );
 assert.equal(
   resolveDestinationCategoryPlaceSearchFailureStage(

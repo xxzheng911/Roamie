@@ -1,11 +1,14 @@
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import {
+  logAuthRestoreSettled,
   logAuthSessionFound,
   logAuthSessionMissing,
 } from "@/lib/auth-boot-log";
+import { authRestoreTimeoutMs } from "@/lib/auth-restore";
 import { hasLikelyPersistedSession } from "@/lib/startup-route";
 import {
+  clearPersistedAuthSession,
   readHydratedAuthSessionRaw,
   warmSupabaseAuthStorage,
 } from "@/lib/supabase-auth-storage";
@@ -19,17 +22,6 @@ export function isAuthSessionMissingError(
   return /auth session missing|session missing|not authenticated|invalid jwt/i.test(
     msg,
   );
-}
-
-function authSessionTimeoutMs(): number {
-  if (typeof window === "undefined") return 4_000;
-  const cap = (
-    window as Window & {
-      Capacitor?: { isNativePlatform?: () => boolean };
-    }
-  ).Capacitor;
-  // WKWebView + localStorage 在冷啟動常較慢；過短會誤判未登入並刷 warn
-  return cap?.isNativePlatform?.() ? 12_000 : 4_000;
 }
 
 type GetClientAuthSessionOptions = {
@@ -46,6 +38,11 @@ export function invalidateClientAuthSessionCache(): void {
   cachedClientSessionAt = 0;
 }
 
+export function markClientAuthSessionSettledUnauthenticated(): void {
+  cachedClientSession = null;
+  cachedClientSessionAt = Date.now();
+}
+
 /** AuthProvider / sign-in 成功後同步快取，避免 gate 讀到過期的 null */
 export function updateClientAuthSessionCache(session: Session | null): void {
   if (session?.user) {
@@ -53,6 +50,9 @@ export function updateClientAuthSessionCache(session: Session | null): void {
     cachedClientSessionAt = Date.now();
     return;
   }
+  // INITIAL_SESSION null must not cache unauthenticated before restore finishes,
+  // and must not undo a settled unauthenticated restore.
+  if (cachedClientSession === null) return;
   invalidateClientAuthSessionCache();
 }
 
@@ -62,14 +62,19 @@ async function readClientAuthSessionOnce(timeoutMs: number): Promise<Session | n
   try {
     return await Promise.race([
       (async () => {
-        const { data, error } = await supabase.auth.getSession();
-        if (error) {
-          if (!isAuthSessionMissingError(error)) {
-            console.warn("[auth-session] getSession", error.message);
+        try {
+          const { data, error } = await supabase.auth.getSession();
+          if (error) {
+            if (!isAuthSessionMissingError(error)) {
+              console.warn("[auth-session] getSession", error.message);
+            }
+            return null;
           }
+          return data.session ?? null;
+        } catch (e) {
+          console.warn("[auth-session] getSession threw", e);
           return null;
         }
-        return data.session ?? null;
       })(),
       new Promise<null>((resolve) => {
         timer = setTimeout(() => {
@@ -85,6 +90,61 @@ async function readClientAuthSessionOnce(timeoutMs: number): Promise<Session | n
   }
 }
 
+async function settleUnauthenticatedRestore(detail: {
+  hadPersistedHint: boolean;
+  reason: string;
+}): Promise<null> {
+  logAuthSessionMissing({
+    hadPersistedHint: detail.hadPersistedHint,
+    reason: detail.reason,
+  });
+  if (detail.hadPersistedHint) {
+    await clearPersistedAuthSession();
+  }
+  markClientAuthSessionSettledUnauthenticated();
+  logAuthRestoreSettled({
+    outcome: "unauthenticated",
+    reason: detail.reason,
+    hadPersistedHint: detail.hadPersistedHint,
+    clearedPersistedAuth: detail.hadPersistedHint,
+  });
+  return null;
+}
+
+let restoreInFlight: Promise<Session | null> | null = null;
+
+async function restoreClientAuthSession(
+  options?: GetClientAuthSessionOptions,
+): Promise<Session | null> {
+  const isNative = typeof window !== "undefined" && detectPlatform().isCapacitor;
+  const timeoutMs = options?.timeoutMs ?? authRestoreTimeoutMs(isNative);
+
+  if (typeof window !== "undefined" && isNative && !options?.skipWarm) {
+    await warmSupabaseAuthStorage();
+  }
+
+  const hadPersistedHint = hasLikelyPersistedSession();
+  const session = await readClientAuthSessionOnce(timeoutMs);
+  if (session?.user) {
+    logAuthSessionFound({
+      userId: session.user.id,
+      provider: session.user.app_metadata?.provider ?? null,
+    });
+    cachedClientSession = session;
+    cachedClientSessionAt = Date.now();
+    logAuthRestoreSettled({
+      outcome: "authenticated",
+      userId: session.user.id,
+    });
+    return session;
+  }
+
+  return settleUnauthenticatedRestore({
+    hadPersistedHint,
+    reason: hadPersistedHint ? "restore-failed-or-timeout" : "no-persisted-session",
+  });
+}
+
 /** 讀取本機持久化 session（不呼叫 Auth server，避免 Auth session missing） */
 export async function getClientAuthSession(
   options?: GetClientAuthSessionOptions,
@@ -98,50 +158,12 @@ export async function getClientAuthSession(
     return cachedClientSession;
   }
 
-  const timeoutMs = options?.timeoutMs ?? authSessionTimeoutMs();
+  if (restoreInFlight) return restoreInFlight;
 
-  if (typeof window !== "undefined" && detectPlatform().isCapacitor && !options?.skipWarm) {
-    await warmSupabaseAuthStorage();
-  }
-
-  const session = await readClientAuthSessionOnce(timeoutMs);
-  if (session?.user) {
-    logAuthSessionFound({
-      userId: session.user.id,
-      provider: session.user.app_metadata?.provider ?? null,
-    });
-    cachedClientSession = session;
-    cachedClientSessionAt = Date.now();
-    return session;
-  }
-
-  if (typeof window !== "undefined" && detectPlatform().isCapacitor && hasLikelyPersistedSession()) {
-    await warmSupabaseAuthStorage();
-    const retry = await readClientAuthSessionOnce(Math.max(timeoutMs, 12_000));
-    if (retry?.user) {
-      logAuthSessionFound({
-        userId: retry.user.id,
-        provider: retry.user.app_metadata?.provider ?? null,
-        retry: true,
-      });
-      cachedClientSession = retry;
-      cachedClientSessionAt = Date.now();
-      return retry;
-    }
-  }
-
-  const hadPersistedHint = hasLikelyPersistedSession();
-  logAuthSessionMissing({
-    hadPersistedHint,
+  restoreInFlight = restoreClientAuthSession(options).finally(() => {
+    restoreInFlight = null;
   });
-  // 勿快取 timeout 造成的 false negative；本機仍有 token 時下次應重試
-  if (!hadPersistedHint) {
-    cachedClientSession = null;
-    cachedClientSessionAt = Date.now();
-  } else {
-    cachedClientSession = undefined;
-  }
-  return null;
+  return restoreInFlight;
 }
 
 /** 同步讀取本機已 hydrate 的 user id（不發網路、不 await auth bridge） */

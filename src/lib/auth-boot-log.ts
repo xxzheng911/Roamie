@@ -21,6 +21,10 @@ export function logAuthSessionMissing(detail?: AuthBootDetail): void {
   console.info("[AUTH_SESSION_MISSING]", detail ?? {});
 }
 
+export function logAuthRestoreSettled(detail?: AuthBootDetail): void {
+  console.info("[AUTH_RESTORE_SETTLED]", detail ?? {});
+}
+
 export function logProfileLoad(detail?: AuthBootDetail): void {
   console.info("[PROFILE_LOAD]", detail ?? {});
 }

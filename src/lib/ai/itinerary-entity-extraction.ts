@@ -7,6 +7,7 @@ import {
   isKnownTouristCityLabel,
   isValidParsedDestinationLabel,
   normalizeDestinationLabel,
+  splitKnownParentAreaLabel,
 } from "@/lib/ai/trip-planning-context";
 
 export type ItineraryEntityExtraction = {
@@ -127,11 +128,14 @@ export function sanitizeDestinationForGeocode(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return trimmed;
 
+  const normalized = normalizeDestinationLabel(trimmed);
+  if (splitKnownParentAreaLabel(normalized)) return normalized;
+
   const direct = acceptItineraryDestination(trimmed);
   if (direct) return direct;
 
-  if (isKnownTouristCityLabel(normalizeDestinationLabel(trimmed))) {
-    return normalizeDestinationLabel(trimmed);
+  if (isKnownTouristCityLabel(normalized)) {
+    return normalized;
   }
 
   const extracted = extractItineraryDestinationFromText(trimmed);

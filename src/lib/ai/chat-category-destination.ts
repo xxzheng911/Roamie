@@ -33,9 +33,11 @@ export function resolveDestinationForCategorySearch(
   // 1. Explicit city/region in this message wins over trip context
   if (userText?.trim()) {
     const areaScope = resolveDestinationAreaScope(userText);
-    const fromText = acceptCategorySearchDestination(
-      areaScope?.displayLabel ?? resolveDestinationFromText(userText),
-    );
+    if (areaScope) {
+      logChatPlaceDestination(areaScope.displayLabel, "user_text");
+      return areaScope.displayLabel;
+    }
+    const fromText = acceptCategorySearchDestination(resolveDestinationFromText(userText));
     if (fromText) {
       logChatPlaceDestination(fromText, "user_text");
       return fromText;

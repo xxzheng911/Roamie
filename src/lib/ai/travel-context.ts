@@ -893,10 +893,18 @@ export function mergeTravelContext(
           };
         }
       } else {
-        destMerge = mergeDestinationFields(
-          prev,
-          coerceTravelDestination(prevDest) ?? coerceTravelDestination(sessionDest),
-        );
+        const explicitArea = resolveDestinationAreaScope(destMerge.destination);
+        if (explicitArea) {
+          destMerge = {
+            ...mergeDestinationFields(prev, explicitArea.displayLabel),
+            destination: explicitArea.displayLabel,
+          };
+        } else {
+          destMerge = mergeDestinationFields(
+            prev,
+            coerceTravelDestination(prevDest) ?? coerceTravelDestination(sessionDest),
+          );
+        }
       }
     }
 

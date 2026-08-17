@@ -6,7 +6,7 @@ import { foodPreferenceSearchQuery } from "@/lib/ai/chat-dining-flow";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   buildMealSearchAttempts,
-  parseMealIntentFromText,
+  resolveExplicitMealIntent,
 } from "@/lib/ai/meal-intent-parser";
 import { recommendationTypeMetadataFromItem } from "@/lib/ai/recommendation-place-type-metadata";
 
@@ -310,7 +310,7 @@ export function buildFoodSearchAttempts(
   userText = "",
   cityLabel?: string,
 ): SearchAttempt[] {
-  const mealIntent = parseMealIntentFromText(userText);
+  const mealIntent = resolveExplicitMealIntent(userText);
   if (mealIntent && cityLabel?.trim()) {
     return buildMealSearchAttempts(cityLabel, mealIntent.slot);
   }

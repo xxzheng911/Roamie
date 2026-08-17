@@ -97,7 +97,7 @@ import {
 import {
   buildMealRecommendationDescription,
   filterPlacesForMealIntent,
-  parseMealIntentFromText,
+  resolveExplicitMealIntent,
   sanitizeMealSummaryText,
 } from "@/lib/ai/meal-intent-parser";
 import type { ChatPlaceSearchContext } from "@/lib/ai/chat-place-search-context";
@@ -1239,7 +1239,7 @@ export async function buildNearbyPlaceRecommendation(params: {
     }
 
     let foodDistricts: PlaceResult[] = [];
-    const mealIntent = parseMealIntentFromText(userText);
+    const mealIntent = resolveExplicitMealIntent(userText);
     if (intent === "restaurant" || isFoodIntentText(userText)) {
       const split = filterPlacesForFoodIntent(places, userText);
       places = split.restaurants;
