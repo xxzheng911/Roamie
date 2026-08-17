@@ -26,6 +26,11 @@ export const FOOD_ALLOWED_TYPES = [
   "pub",
   "wine_bar",
   "night_club",
+  // Table A food venues that do not end with *_restaurant
+  "steak_house",
+  "sandwich_shop",
+  "diner",
+  "tea_house",
 ] as const;
 
 /** Delivery / catering / supplier — not visit-worthy restaurants */

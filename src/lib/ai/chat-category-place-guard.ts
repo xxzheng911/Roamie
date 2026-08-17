@@ -640,6 +640,19 @@ export function passesRestaurantRenderGuard(
   return evaluateRestaurantRenderGuard(item, userText).allowed;
 }
 
+export function countRestaurantRenderRejectionReasons(
+  items: RoamieRecommendationItem[],
+  userText = "",
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    const verdict = evaluateRestaurantRenderGuard(item, userText);
+    const key = verdict.allowed ? "allowed" : verdict.reason;
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export function filterRecommendationsForCategoryRender(
   items: RoamieRecommendationItem[],
   intent: ChatPlaceCategoryIntent,

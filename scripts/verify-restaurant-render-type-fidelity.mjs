@@ -60,13 +60,25 @@ assert.equal(
   passesRestaurantRenderGuard(
     place({
       type: "point_of_interest",
-      primaryType: "taiwanese_restaurant",
-      types: ["taiwanese_restaurant", "point_of_interest", "establishment"],
+      primaryType: "steak_house",
+      types: ["steak_house", "point_of_interest", "establishment"],
     }),
     "餐廳推薦",
   ),
   true,
-  "taiwanese_restaurant subtype must survive POI-only extra types",
+  "Google steak_house must survive without parent restaurant type",
+);
+assert.equal(
+  passesRestaurantRenderGuard(
+    place({
+      type: "point_of_interest",
+      primaryType: "diner",
+      types: ["diner"],
+    }),
+    "餐廳推薦",
+  ),
+  true,
+  "Google diner must survive as a restaurant venue",
 );
 assert.equal(
   passesRestaurantRenderGuard(

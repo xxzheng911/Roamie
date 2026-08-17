@@ -10,6 +10,7 @@ import {
   cuisineSearchTokens,
   shoppingTypeSearchTokens,
 } from "@/lib/ai/recommendation-refinement/parser";
+import { evaluateFoodPlace } from "@/lib/ai/chat-food-filter";
 
 const RESTAURANT_INCLUDED = ["restaurant", "japanese_restaurant", "food"];
 const RESTAURANT_EXCLUDED_TYPES = new Set([
@@ -200,6 +201,9 @@ export function isAcceptableRestaurantPlace(place: {
     return false;
   }
   if (rating == null && reviews < RESTAURANT_MIN_REVIEWS) return false;
+
+  const food = evaluateFoodPlace(place);
+  if (!food.allowed || food.isDistrict) return false;
 
   return true;
 }
