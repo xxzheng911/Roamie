@@ -54,6 +54,16 @@ function accept(label: string | undefined | null): string | undefined {
   return coerceTravelDestination(label) ?? undefined;
 }
 
+function destinationsShareIdentity(
+  left: string | undefined | null,
+  right: string | undefined | null,
+): boolean {
+  const normalizedLeft = accept(left);
+  const normalizedRight = accept(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  return normalizeDestinationLabel(normalizedLeft) === normalizeDestinationLabel(normalizedRight);
+}
+
 export function logRecommendationScopeResolved(scope: RecommendationSearchScope): void {
   logAiPipeline(
     "[RECOMMENDATION_SCOPE_RESOLVED]",
@@ -196,7 +206,13 @@ function finalize(
   const snapshotLng =
     session.activeRecommendationContext?.longitude ??
     session.recommendationSession?.searchCentroid?.lng;
-  const canReuseSnapshot = source !== "explicit_user_destination";
+  const snapshotDestination =
+    session.activeRecommendationContext?.destinationDisplayName ??
+    session.activeRecommendationContext?.destinationName ??
+    session.recommendationSession?.destination;
+  const canReuseSnapshot =
+    source !== "explicit_user_destination" &&
+    destinationsShareIdentity(snapshotDestination, label);
   return {
     destinationName: areaScope?.displayLabel ?? label,
     resolvedSearchCity: areaScope?.parentCity ?? resolvedSearchCity,
@@ -362,8 +378,12 @@ export function resolveRecommendationSearchCenter(params: {
     accept(recSession?.destination);
   const snapshotLat = snapshot?.latitude ?? recSession?.searchCentroid?.lat;
   const snapshotLng = snapshot?.longitude ?? recSession?.searchCentroid?.lng;
+  const currentDestination =
+    accept(params.destinationName) || accept(fromMessageScope?.destinationName) || accept(context?.destination);
+  const snapshotMatchesCurrent =
+    !currentDestination || destinationsShareIdentity(snapshotDest, currentDestination);
 
-  if (snapshotDest && hasCoords(snapshotLat, snapshotLng)) {
+  if (snapshotDest && snapshotMatchesCurrent && hasCoords(snapshotLat, snapshotLng)) {
     const center: RecommendationSearchCenter = {
       mode: "destination",
       latitude: snapshotLat as number,
