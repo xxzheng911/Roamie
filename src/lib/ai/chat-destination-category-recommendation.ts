@@ -162,7 +162,7 @@ async function searchCategoryPlaces(params: {
   searchContext?: ChatPlaceSearchContext;
   mealIntent?: ParsedMealIntent | null;
   diagnostics?: DestinationCategoryPlaceSearchDiagnostics;
-}): Promise<PlaceResult[]> {
+}): Promise<{ places: PlaceResult[]; usedQueries: string[] }> {
   const {
     intent,
     destination,
@@ -238,6 +238,7 @@ async function searchCategoryPlaces(params: {
     ? { searchContext, intentCategory: intent }
     : undefined;
   let rawCount = 0;
+  const usedQueries: string[] = [];
 
   const runSearch = async (
     attempts: typeof primary,
@@ -269,6 +270,7 @@ async function searchCategoryPlaces(params: {
         onAttemptDiagnostics: (round) => {
           rawCount += round.rawCount;
           roundRawCount += round.rawCount;
+          usedQueries.push(...round.usedQueries);
           if (!diagnostics) return;
           diagnostics.attemptCount += round.attemptsVisited;
           diagnostics.requestsSent += round.requestsSent;
@@ -410,7 +412,7 @@ async function searchCategoryPlaces(params: {
         ? { [shoppingScope.geoClusterLabel]: places.length }
         : {},
     });
-    return places;
+    return { places, usedQueries };
   }
 
   if (destinationAreaScope && intent !== "shopping" && !mealAttempts) {
@@ -441,12 +443,15 @@ async function searchCategoryPlaces(params: {
       areaPrimary.places.length < minResults && areaAttempts.fallback.length > 0
         ? await runSearch(areaAttempts.fallback, true, "area")
         : { places: [] as PlaceResult[], rawCount: 0 };
-    const areaCandidates = selectAreaFirstCandidates(
-      tagCandidates(areaPrimary.places, "area_primary", areaAttempts.primary),
-      tagCandidates(areaRelaxed.places, "area_relaxed", areaAttempts.fallback),
-      minResults,
-    );
-    const cityFallbackTriggered = areaCandidates.length < minResults;
+    const areaTagged = [
+      ...tagCandidates(areaPrimary.places, "area_primary", areaAttempts.primary),
+      ...tagCandidates(areaRelaxed.places, "area_relaxed", areaAttempts.fallback),
+    ];
+    const areaMatchedCount = areaTagged.filter(
+      (candidate) => candidate.areaMatched && candidate.parentCityMatched,
+    ).length;
+    // minResults only gates city fallback — never truncate the stored session pool.
+    const cityFallbackTriggered = areaMatchedCount < minResults;
     const cityPrimary = cityFallbackTriggered
       ? await runSearch(cityAttempts.primary, true, "city")
       : { places: [] as PlaceResult[], rawCount: 0 };
@@ -457,7 +462,7 @@ async function searchCategoryPlaces(params: {
     );
     const cityRelaxed =
       cityFallbackTriggered &&
-      areaCandidates.length + cityPrimaryCandidates.length < minResults &&
+      areaMatchedCount + cityPrimaryCandidates.length < minResults &&
       cityAttempts.fallback.length > 0
         ? await runSearch(cityAttempts.fallback, true, "city")
         : { places: [] as PlaceResult[], rawCount: 0 };
@@ -465,7 +470,7 @@ async function searchCategoryPlaces(params: {
       ...cityPrimaryCandidates,
       ...tagCandidates(cityRelaxed.places, "city_relaxed", cityAttempts.fallback),
     ];
-    const selected = selectAreaFirstCandidates(areaCandidates, cityCandidates, minResults, {
+    const selected = selectAreaFirstCandidates(areaTagged, cityCandidates, SINGLE_INTENT_POOL_MAX, {
       explicitAreaConstraint: true,
     });
     logAiPipeline("[DESTINATION_AREA_SELECTION_SUMMARY]", {
@@ -493,7 +498,7 @@ async function searchCategoryPlaces(params: {
         parentCityMatched: candidate.parentCityMatched,
       })),
     });
-    return selected.map((candidate) => candidate.place);
+    return { places: selected.map((candidate) => candidate.place), usedQueries };
   }
 
   places = (await runSearch(primary, false)).places;
@@ -512,7 +517,7 @@ async function searchCategoryPlaces(params: {
         finalCount: places.length,
       });
     }
-    return places;
+    return { places, usedQueries };
   }
 
   if (fallback.length > 0) {
@@ -547,7 +552,7 @@ async function searchCategoryPlaces(params: {
     });
   }
 
-  return places;
+  return { places, usedQueries };
 }
 
 function placesToRecommendations(
@@ -652,6 +657,8 @@ export async function buildDestinationCategoryRecommendations(params: {
   recommendations: RoamieRecommendationItem[];
   payload: RoamiePayloadV2;
   contextPatch: Partial<CanonicalTravelContext>;
+  searchCentroid?: { lat: number; lng: number };
+  usedQueries: string[];
 }> {
   const {
     destination,
@@ -701,6 +708,7 @@ export async function buildDestinationCategoryRecommendations(params: {
         destinationCountry: label,
         tripPurpose: "destination_selection",
       },
+      usedQueries: [],
     };
   }
 
@@ -757,6 +765,7 @@ export async function buildDestinationCategoryRecommendations(params: {
     const perGroupMax =
       searchIntents.length > 1 ? PER_GROUP_TARGET : SINGLE_INTENT_POOL_MAX;
     const seenIds = new Set<string>();
+    const usedQueries: string[] = [];
     const groups: Array<{
       intent: ChatPlaceCategoryIntent;
       recommendations: RoamieRecommendationItem[];
@@ -764,7 +773,7 @@ export async function buildDestinationCategoryRecommendations(params: {
 
     for (const intent of searchIntents) {
       const searchDiagnostics = createDestinationCategoryPlaceSearchDiagnostics(label, intent);
-      let places = await searchCategoryPlaces({
+      const searched = await searchCategoryPlaces({
         intent,
         destination: label,
         lat,
@@ -779,6 +788,8 @@ export async function buildDestinationCategoryRecommendations(params: {
         mealIntent,
         diagnostics: searchDiagnostics,
       });
+      let places = searched.places;
+      usedQueries.push(...searched.usedQueries);
 
       places = filterAlreadyRecommendedPlaces(places, {
         rejectedNames: rejectedPlaceNames,
@@ -917,6 +928,8 @@ export async function buildDestinationCategoryRecommendations(params: {
         conversationState: "discover",
         planningStage: "recommendations_generated",
       },
+      searchCentroid: textOnlyDestinationSearch ? undefined : { lat, lng },
+      usedQueries,
     };
   } finally {
     endPlacesFlow(flow);

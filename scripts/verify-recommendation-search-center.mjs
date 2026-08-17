@@ -369,6 +369,45 @@ check("Case 5: isNearbyPlaceIntent defined; shopping refresh ≠ attraction GPS"
   assert.equal(restored, "shopping");
 });
 
+check("Case 6: Tokyo Shibuya cafe must not inherit Shinjuku shopping centroid", () => {
+  const next = ensureActiveRecommendationContext(
+    {
+      recommendedPlaces: [],
+      selectedPlaces: [],
+      phase: "recommend",
+    },
+    {
+      destination: "東京澀谷",
+      intent: "cafe",
+      parentCity: "東京",
+      area: "澀谷",
+      searchScope: "area",
+      latitude: 35.6581,
+      longitude: 139.7016,
+    },
+  );
+  assert.ok(Math.abs(next.latitude - 35.6581) < 0.001);
+  assert.ok(Math.abs(next.longitude - 139.7016) < 0.001);
+  assert.ok(Math.abs(next.latitude - 35.6896) > 0.02, "must not snap to Shinjuku cluster");
+
+  const missing = ensureActiveRecommendationContext(
+    {
+      recommendedPlaces: [],
+      selectedPlaces: [],
+      phase: "recommend",
+    },
+    {
+      destination: "東京澀谷",
+      intent: "cafe",
+      parentCity: "東京",
+      area: "澀谷",
+      searchScope: "area",
+    },
+  );
+  assert.equal(missing.latitude, undefined);
+  assert.equal(missing.longitude, undefined);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log("verify-recommendation-search-center: ok (no Places API)");

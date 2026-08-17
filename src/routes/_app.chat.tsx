@@ -315,6 +315,7 @@ import {
   isContinueRecommendationRequest,
   resolveActiveCategoryIntent,
   RECOMMENDATION_BATCH_SIZE,
+  isUsableSearchCentroid,
 } from "@/lib/ai/conversation-recommendation-session";
 import {
   buildInitialShoppingSearchAttempts,
@@ -3955,7 +3956,7 @@ function Chat() {
 
       setStreaming(true);
       try {
-        const { summary, recommendations, payload, contextPatch } =
+        const { summary, recommendations, payload, contextPatch, searchCentroid, usedQueries } =
           await buildDestinationCategoryRecommendations({
             destination,
             intents,
@@ -3992,9 +3993,10 @@ function Chat() {
             ? resolveDestinationEntity(destination)
             : null;
         // Always resolve a destination search centroid for the Recommendation Snapshot
-        // so「有其他的嗎」can restore anchor without re-reading device GPS.
+        // so「有其他的嗎」can restore the same geocoded area center — never a shopping cluster.
         const snapshotCentroid =
-          shoppingScope?.searchCentroid ??
+          (isUsableSearchCentroid(searchCentroid) ? searchCentroid : undefined) ??
+          (categoryIntent === "shopping" ? shoppingScope?.searchCentroid : undefined) ??
           (() => {
             const approx = resolveDestinationApproxCenter(destination);
             return approx ? { lat: approx.lat, lng: approx.lng } : undefined;
@@ -4036,7 +4038,7 @@ function Chat() {
           pool: recommendations,
           batchSize:
             categoryIntent === "shopping" ? SHOPPING_DISPLAY_LIMIT : RECOMMENDATION_BATCH_SIZE,
-          usedQueries: shoppingSeed?.usedQueries,
+          usedQueries: shoppingSeed?.usedQueries ?? usedQueries,
           nextQueryCursor: shoppingSeed?.nextQueryCursor,
           recommendationPage: 0,
           activeSearchCity: shoppingScope?.activeSearchCity,
@@ -4357,6 +4359,12 @@ function Chat() {
 
       const recCtx = sessionForSearch.activeRecommendationContext;
       if (!recCtx) return false;
+
+      if (arbitration.route === "MORE_RECOMMENDATIONS") {
+        // Bare「還有嗎」must consume the stored session pool / destination-category
+        // continuation search — not the refinement Places contract.
+        return false;
+      }
 
       const snapshotCategory = recommendationIntentToCategoryIntent(recCtx.intent);
       const restoredCategory = restoreContinueRecommendationCategory({
@@ -6333,6 +6341,29 @@ function Chat() {
             next,
           );
           if (appliedNew) return;
+        }
+        if (arbitration.route === "MORE_RECOMMENDATIONS") {
+          const destForMore =
+            nextSession.activeRecommendationContext?.destinationName ||
+            nextSession.recommendationSession?.destination ||
+            nextSession.travelContext?.destination ||
+            nextSession.tripPlanningContext?.destination ||
+            nextSession.tripDestination?.city;
+          if (destForMore?.trim()) {
+            const appliedMore = await pushMorePlaceRecommendations(
+              {
+                ...nextSession,
+                travelContext: {
+                  ...refreshedPlaceCtx,
+                  destination: destForMore,
+                  tripPurpose: "more_place_recommendations",
+                },
+              },
+              trimmed,
+              next,
+            );
+            if (appliedMore) return;
+          }
         }
         const applied = await pushRecommendationRefinement(nextSession, trimmed, next);
         if (applied) return;

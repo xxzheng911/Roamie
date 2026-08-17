@@ -648,6 +648,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
       requestsSent: number;
       rateLimitedBeforeRequest: boolean;
       rawCount: number;
+      usedQueries: string[];
     }) => void;
   },
 ): Promise<PlaceResult[]> {
@@ -660,6 +661,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
   let requestsSent = 0;
   let rateLimitedBeforeRequest = false;
   let rawCount = 0;
+  const usedQueries: string[] = [];
 
   for (const attempt of attempts) {
     attemptsVisited += 1;
@@ -681,6 +683,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
     });
     try {
       requestsSent += 1;
+      if (attempt.query.trim()) usedQueries.push(attempt.query.trim());
       const { places, error, rawCount: attemptRawCount } = await runPlaceSearch(
         searchPlaces,
         lat,
@@ -717,6 +720,7 @@ export async function fetchPlacesWithSearchAttemptsMerged(
     requestsSent,
     rateLimitedBeforeRequest,
     rawCount,
+    usedQueries,
   });
   return skipRetail ? sliced : filterExcludedRetailPlaces(sliced);
 }

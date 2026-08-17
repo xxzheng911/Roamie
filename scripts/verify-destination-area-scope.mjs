@@ -605,6 +605,33 @@ assert.deepEqual(
   "an exhausted explicit area must not silently fall back to city-wide cards",
 );
 
+const sixUsableShibuya = selectAreaFirstCandidates(
+  Array.from({ length: 6 }, (_, index) =>
+    scoped(`shibuya-cafe-${index + 1}`, "area_primary", true),
+  ),
+  [scoped("shinjuku-1", "city_primary", false), scoped("minato-1", "city_primary", false)],
+  24,
+  { explicitAreaConstraint: true },
+);
+assert.equal(sixUsableShibuya.length, 6, "area pool must retain all usable area-matched candidates");
+assert.deepEqual(
+  sixUsableShibuya.map((candidate) => candidate.place.id),
+  [
+    "shibuya-cafe-1",
+    "shibuya-cafe-2",
+    "shibuya-cafe-3",
+    "shibuya-cafe-4",
+    "shibuya-cafe-5",
+    "shibuya-cafe-6",
+  ],
+);
+assert.equal(
+  sixUsableShibuya.every((candidate) => candidate.areaMatched),
+  true,
+  "retained pool must stay inside the requested area",
+);
+console.log("  ✓ explicit area session pool keeps all usable candidates (no minResults truncation)");
+
 const canonicalPlace = { id: "ChIJcanonical", googlePlaceId: "ChIJcanonical" };
 assert.deepEqual(canonicalPlace, { id: "ChIJcanonical", googlePlaceId: "ChIJcanonical" });
 

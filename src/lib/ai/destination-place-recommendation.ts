@@ -63,6 +63,8 @@ import {
 } from "@/lib/ai/place-recommendation-rules";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
+import { resolveDestinationAreaScope } from "@/lib/ai/destination-travel-profile";
+import { buildCafeSearchAttempts } from "@/lib/ai/chat-cafe-search";
 import {
   filterAlreadyRecommendedPlaces,
   filterExcludedPlaceIds,
@@ -98,6 +100,7 @@ import {
 } from "@/lib/ai/chat-category-place-guard";
 import {
   patchShoppingRecommendationSession,
+  isUsableSearchCentroid,
   type ConversationRecommendationSession,
 } from "@/lib/ai/conversation-recommendation-session";
 import {
@@ -153,6 +156,7 @@ import {
 import {
   buildDestinationEnglishFallbackQueries,
   filterPlacesByDestinationGuard,
+  filterPlacesByDestinationArea,
   placesSearchContextPayload,
   type ChatPlaceSearchContext,
 } from "@/lib/ai/chat-place-search-context";
@@ -1435,11 +1439,8 @@ function buildMorePlacesFallbackQueries(
   const label = normalizeDestinationLabel(destination);
   const en = EN_CITY_NAMES[label] ?? label;
   if (category === "cafe") {
-    return [
-      { query: `${label} coffee shop`, mode: "text", includedTypes: ["coffee_shop", "cafe"] },
-      { query: `${label} specialty coffee`, mode: "text", includedTypes: ["coffee_shop", "cafe"] },
-      { query: `${en} cafe`, mode: "text", includedTypes: ["cafe", "coffee_shop"] },
-    ];
+    const { primary, fallback } = buildCafeSearchAttempts(destination);
+    return [...primary, ...fallback];
   }
   if (category === "restaurant") {
     return [
@@ -1497,15 +1498,23 @@ export function planMorePlacesContinuationSearch(params: {
   destination: string;
   category: ChatPlaceCategoryIntent;
   usedAttemptIds?: string[];
+  usedQueries?: string[];
 }): {
   attempts: SearchAttempt[];
   remainingStrategyCount: number;
 } {
   const used = new Set(params.usedAttemptIds ?? []);
+  const usedQueries = new Set(
+    (params.usedQueries ?? []).map((query) => query.trim().toLocaleLowerCase()).filter(Boolean),
+  );
   const attempts = buildMorePlacesContinuationAttempts(
     params.destination,
     params.category,
-  ).filter((attempt) => !used.has(continuationAttemptId(attempt)));
+  ).filter((attempt) => {
+    if (used.has(continuationAttemptId(attempt))) return false;
+    if (usedQueries.has(attempt.query.trim().toLocaleLowerCase())) return false;
+    return true;
+  });
   return { attempts, remainingStrategyCount: attempts.length };
 }
 
@@ -1576,11 +1585,14 @@ export async function buildMoreDestinationRecommendations(params: {
 
   const flow = beginPlacesFlow("chat_more_place_recommendations");
   try {
-    const geocoded = await geocodeDestinationWithFallback({
-      destination: label,
-      locale,
-      geocodeFn,
-    });
+    const storedCentroid = activeRecSession?.searchCentroid;
+    const geocoded = isUsableSearchCentroid(storedCentroid)
+      ? { lat: storedCentroid.lat, lng: storedCentroid.lng }
+      : await geocodeDestinationWithFallback({
+          destination: label,
+          locale,
+          geocodeFn,
+        });
     const searchProfile = classifyDestinationForPlaceSearch(label, geocoded);
 
     let lat: number;
@@ -2169,21 +2181,36 @@ export async function buildMoreDestinationRecommendations(params: {
       });
       logChatMorePlacesFetchCount(fetchCount);
     } else {
+      const areaScope =
+        activeRecSession?.searchScope === "area" &&
+        activeRecSession.parentCity &&
+        activeRecSession.area
+          ? resolveDestinationAreaScope(
+              `${activeRecSession.parentCity}${activeRecSession.area}`,
+            ) ?? {
+              parentCity: activeRecSession.parentCity,
+              area: activeRecSession.area,
+              displayLabel: `${activeRecSession.parentCity}${activeRecSession.area}`,
+              searchScope: "area" as const,
+            }
+          : resolveDestinationAreaScope(label);
+      const continuationDestination = areaScope?.displayLabel ?? label;
       const allAttempts = styleFollowUp && tripStyle && category === "attraction"
         ? [
             ...buildTripStyleSupplementAttempts(label, tripStyle, 0),
             ...buildTripStyleSupplementAttempts(label, tripStyle, 1),
           ]
-        : buildMorePlacesContinuationAttempts(label, category);
+        : buildMorePlacesContinuationAttempts(continuationDestination, category);
       const usedAttemptIds = new Set(activeRecSession?.continuationUsedAttemptIds ?? []);
       const remainingAttempts = styleFollowUp && tripStyle && category === "attraction"
         ? allAttempts.filter(
             (attempt) => !usedAttemptIds.has(continuationAttemptId(attempt)),
           )
         : planMorePlacesContinuationSearch({
-            destination: label,
+            destination: continuationDestination,
             category,
             usedAttemptIds: [...usedAttemptIds],
+            usedQueries: activeRecSession?.usedQueries,
           }).attempts;
       const seen = new Set<string>();
       let executedAttemptCount = 0;
@@ -2208,6 +2235,9 @@ export async function buildMoreDestinationRecommendations(params: {
         });
         fetchCount += found.length;
         let next = filterExcludedPlaceIds(found, excludePlaceIds);
+        if (areaScope) {
+          next = filterPlacesByDestinationArea(next, areaScope);
+        }
         next = filterAlreadyRecommendedPlaces(next, {
           rejectedNames: rejectedPlaceNames,
           blockedCoreNames: [
@@ -2224,9 +2254,13 @@ export async function buildMoreDestinationRecommendations(params: {
         }
       }
 
-      const remainingStrategyCount = allAttempts.filter(
-        (attempt) => !usedAttemptIds.has(continuationAttemptId(attempt)),
-      ).length;
+      const remainingStrategyCount = allAttempts.filter((attempt) => {
+        if (usedAttemptIds.has(continuationAttemptId(attempt))) return false;
+        const query = attempt.query.trim().toLocaleLowerCase();
+        return !(activeRecSession?.usedQueries ?? []).some(
+          (used) => used.trim().toLocaleLowerCase() === query,
+        );
+      }).length;
       const exhausted = remainingStrategyCount === 0 && filtered.length === 0;
       if (activeRecSession && activeRecSession.topic === category) {
         shoppingSessionPatch = {
@@ -2234,6 +2268,12 @@ export async function buildMoreDestinationRecommendations(params: {
           continuationSearchRound:
             (activeRecSession.continuationSearchRound ?? 0) + 1,
           continuationUsedAttemptIds: [...usedAttemptIds],
+          usedQueries: [
+            ...new Set([
+              ...(activeRecSession.usedQueries ?? []),
+              ...remainingAttempts.slice(0, executedAttemptCount).map((attempt) => attempt.query),
+            ]),
+          ],
           exhausted,
           exhaustedAt: exhausted ? new Date().toISOString() : undefined,
           updatedAt: new Date().toISOString(),

@@ -81,7 +81,10 @@ export function ensureActiveRecommendationContext(
       ? params.intent
       : categoryIntentToRecommendationIntent(params.intent as ChatPlaceCategoryIntent);
 
-  const scope = resolveShoppingSearchScope({ destination: params.destination });
+  const scope =
+    intent === "shopping"
+      ? resolveShoppingSearchScope({ destination: params.destination })
+      : null;
   const entity = resolveDestinationEntity(params.destination);
   const placeIds = (params.places ?? []).map(placeIdOf).filter(Boolean);
   const canonicalKeys = (params.places ?? []).map(canonicalKeyOf).filter((k) => k && k !== "n:");
@@ -100,13 +103,13 @@ export function ensureActiveRecommendationContext(
       resolvedSearchCity:
         existing.resolvedSearchCity ||
         params.resolvedSearchCity ||
-        scope.activeSearchCity,
+        scope?.activeSearchCity,
       parentCity: existing.parentCity ?? params.parentCity,
       area: existing.area ?? params.area,
       searchScope: existing.searchScope ?? params.searchScope,
-      latitude: existing.latitude ?? params.latitude ?? scope.searchCentroid.lat,
-      longitude: existing.longitude ?? params.longitude ?? scope.searchCentroid.lng,
-      radius: existing.radius ?? params.radius ?? scope.searchRadius,
+      latitude: existing.latitude ?? params.latitude ?? scope?.searchCentroid.lat,
+      longitude: existing.longitude ?? params.longitude ?? scope?.searchCentroid.lng,
+      radius: existing.radius ?? params.radius ?? scope?.searchRadius,
       countryCode: existing.countryCode ?? entity?.country,
     };
     if (!placeIds.length) return withGeo;
@@ -122,13 +125,13 @@ export function ensureActiveRecommendationContext(
     destinationDisplayName: params.destination,
     destinationKey: entity?.name ?? params.destination,
     countryCode: entity?.country,
-    resolvedSearchCity: params.resolvedSearchCity ?? scope.activeSearchCity,
+    resolvedSearchCity: params.resolvedSearchCity ?? scope?.activeSearchCity,
     parentCity: params.parentCity,
     area: params.area,
     searchScope: params.searchScope,
-    latitude: params.latitude ?? scope.searchCentroid.lat,
-    longitude: params.longitude ?? scope.searchCentroid.lng,
-    radius: params.radius ?? scope.searchRadius,
+    latitude: params.latitude ?? scope?.searchCentroid.lat,
+    longitude: params.longitude ?? scope?.searchCentroid.lng,
+    radius: params.radius ?? scope?.searchRadius,
     intent,
     placeIds,
     canonicalKeys,

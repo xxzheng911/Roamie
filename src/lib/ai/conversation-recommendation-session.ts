@@ -13,6 +13,26 @@ import type { ShoppingCoverageState } from "@/lib/ai/shopping-query-queue";
 
 export const RECOMMENDATION_BATCH_SIZE = 4;
 
+export function isUsableSearchCentroid(
+  centroid?: { lat?: number | null; lng?: number | null } | null,
+): centroid is { lat: number; lng: number } {
+  return (
+    centroid != null &&
+    typeof centroid.lat === "number" &&
+    typeof centroid.lng === "number" &&
+    Number.isFinite(centroid.lat) &&
+    Number.isFinite(centroid.lng) &&
+    !(centroid.lat === 0 && centroid.lng === 0)
+  );
+}
+
+export function remainingRecommendationPoolCount(
+  session: ConversationRecommendationSession | null | undefined,
+): number {
+  if (!session) return 0;
+  return Math.max(0, session.pool.length - session.cursor);
+}
+
 export type RecommendationSearchScope = "area" | "city";
 
 function shoppingCanonicalKey(place: {

@@ -29,10 +29,14 @@ import { recommendationIntentToCategoryIntent } from "@/lib/ai/recommendation-re
 import { cuisineSearchTokens } from "@/lib/ai/recommendation-refinement/parser";
 import {
   matchPlaceToDestinationArea,
+  type ChatPlaceSearchContext,
 } from "@/lib/ai/chat-place-search-context";
 import type { DestinationAreaScope } from "@/lib/ai/destination-travel-profile";
 import { selectAreaFirstCandidates } from "@/lib/ai/destination-area-selection";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
+import { isUsableSearchCentroid } from "@/lib/ai/conversation-recommendation-session";
+import { buildCafeSearchAttempts } from "@/lib/ai/chat-cafe-search";
+import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 
 const TARGET_COUNT = 6;
 
@@ -108,14 +112,38 @@ export async function buildRecommendationRefinementResults(params: {
     "";
   if (!city) return null;
 
-  const attempts = buildRefinementSearchAttempts(recCtx, city);
+  const cafeConstraints =
+    recCtx.intent === "cafe" &&
+    Boolean(
+      recCtx.quietOnly ||
+        recCtx.atmosphere?.length ||
+        recCtx.preferredKeywords?.length,
+    );
+  const cafeBuilt =
+    recCtx.intent === "cafe" && !cafeConstraints
+      ? buildCafeSearchAttempts(city)
+      : null;
+  const usedQuerySet = new Set(
+    (recCtx.usedQueries ?? []).map((query) => query.trim().toLocaleLowerCase()).filter(Boolean),
+  );
+  const unused = (
+    attempts: ReturnType<typeof buildRefinementSearchAttempts>,
+  ) =>
+    attempts.filter(
+      (attempt) => !usedQuerySet.has(attempt.query.trim().toLocaleLowerCase()),
+    );
+  const attempts = unused(
+    cafeBuilt
+      ? [...cafeBuilt.primary, ...cafeBuilt.fallback]
+      : buildRefinementSearchAttempts(recCtx, city),
+  );
   const executedAttempts: typeof attempts = [];
   const queries = attempts.map((a) => a.query);
   logRefinementSearchStart(recCtx, queries);
 
   let lat = recCtx.latitude;
   let lng = recCtx.longitude;
-  if (lat == null || lng == null) {
+  if (!isUsableSearchCentroid({ lat, lng })) {
     const geo = await geocodeDestinationWithFallback({
       destination: city,
       locale,
@@ -132,7 +160,19 @@ export async function buildRecommendationRefinementResults(params: {
       }
     }
   }
-  if (lat == null || lng == null) return null;
+  if (!isUsableSearchCentroid({ lat, lng })) return null;
+
+  const entity = resolveDestinationEntity(recCtx.destinationName || city);
+  const searchContext: ChatPlaceSearchContext = {
+    searchMode: "destination",
+    destinationName: recCtx.destinationName || city,
+    destinationLatLng: { lat, lng },
+    destinationCountry: recCtx.countryCode ?? entity.country,
+    destinationCity:
+      recCtx.resolvedSearchCity ??
+      recCtx.parentCity ??
+      (entity.type === "city" ? recCtx.destinationName : undefined),
+  };
 
   const runAttempts = async (
     phaseAttempts: typeof attempts,
@@ -147,7 +187,14 @@ export async function buildRecommendationRefinementResults(params: {
       locale,
       phaseAttempts,
       source,
-      { minResults: 3, maxResults: 24 },
+      {
+        minResults: 3,
+        maxResults: 24,
+        extras: {
+          searchContext,
+          intentCategory: recCtx.intent,
+        },
+      },
     );
   };
 
@@ -160,8 +207,14 @@ export async function buildRecommendationRefinementResults(params: {
       displayLabel: `${recCtx.parentCity}${recCtx.area}`,
       searchScope: "area",
     };
+    const areaPrimaryAttempts = cafeBuilt
+      ? unused(cafeBuilt.primary)
+      : attempts.slice(0, 1);
+    const areaRelaxedAttempts = cafeBuilt
+      ? unused(cafeBuilt.fallback)
+      : attempts.slice(1);
     const areaPrimary = await runAttempts(
-      attempts.slice(0, 1),
+      areaPrimaryAttempts,
       "chat.recommendationRefinement.areaPrimary",
     );
     let areaMatches = areaPrimary.filter(
@@ -169,10 +222,10 @@ export async function buildRecommendationRefinementResults(params: {
     );
     if (
       filterPlacesByRecommendationContext(areaMatches, recCtx).accepted.length < TARGET_COUNT &&
-      attempts.length > 1
+      areaRelaxedAttempts.length > 0
     ) {
       const areaRelaxed = await runAttempts(
-        attempts.slice(1),
+        areaRelaxedAttempts,
         "chat.recommendationRefinement.areaRelaxed",
       );
       const seen = new Set(areaMatches.map((place) => place.id).filter(Boolean));
