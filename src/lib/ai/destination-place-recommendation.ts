@@ -105,6 +105,11 @@ import {
   type ConversationRecommendationSession,
 } from "@/lib/ai/conversation-recommendation-session";
 import {
+  filterContinuationByShownIdentity,
+  shownRecommendationIdentitiesFromSession,
+  storedPoolPlaceIdsFromSession,
+} from "@/lib/ai/recommendation-continuation-dedupe";
+import {
   SHOPPING_FOLLOWUP_MIN_NEW,
   SHOPPING_RESULTS_PER_QUERY,
   shoppingCanonicalKey,
@@ -1671,6 +1676,11 @@ export async function buildMoreDestinationRecommendations(params: {
     for (const id of excludePlaceIds) {
       if (id) excludedCanonicalKeys.add(`id:${id}`);
     }
+    const shownIdentities = shownRecommendationIdentitiesFromSession(
+      activeRecSession,
+      excludePlaceIds,
+    );
+    const storedPoolPlaceIds = storedPoolPlaceIdsFromSession(activeRecSession);
 
     let places: PlaceResult[] = [];
     let filtered: PlaceResult[] = [];
@@ -1719,13 +1729,19 @@ export async function buildMoreDestinationRecommendations(params: {
         });
         let next = filterAlreadyRecommendedPlaces(fromPool, {
           rejectedNames: rejectedPlaceNames,
-          blockedCoreNames: [
-            ...(usedPlaces?.usedPlaceNames ?? []),
-            ...(searchProfile.parentLandmark ? [searchProfile.parentLandmark] : []),
-          ],
+          blockedCoreNames: searchProfile.parentLandmark
+            ? [searchProfile.parentLandmark]
+            : [],
         });
-        if (usedPlaces) {
+        if (category === "shopping" && usedPlaces) {
           next = excludeUsedPlacesFromFollowUp(next, usedPlaces);
+        } else {
+          next = filterContinuationByShownIdentity(next, {
+            shownPlaceIds: shownIdentities.placeIds,
+            shownCanonicalKeys: shownIdentities.canonicalKeys,
+            merelySearchedPlaceIds: fromPoolRaw.map((place) => place.id),
+            storedPoolPlaceIds,
+          }).kept;
         }
         if (next.length >= Math.min(2, RECOMMENDATION_COUNT)) {
           places = next;
@@ -2211,6 +2227,11 @@ export async function buildMoreDestinationRecommendations(params: {
       let rawCount = 0;
       let afterScopeCount = 0;
       let afterCategoryCount = 0;
+      let afterDedupeMatchedByPlaceId = 0;
+      let afterDedupeMatchedByCanonicalKey = 0;
+      let afterDedupeMatchedAgainstDisplayed = 0;
+      let afterDedupeMatchedAgainstMerelySearched = 0;
+      let afterDedupeMatchedAgainstStoredPool = 0;
 
       for (const attempt of remainingAttempts) {
         if (filtered.length >= CHAT_DESTINATION_MIN_COUNT) break;
@@ -2234,12 +2255,23 @@ export async function buildMoreDestinationRecommendations(params: {
         }
         next = filterAlreadyRecommendedPlaces(next, {
           rejectedNames: rejectedPlaceNames,
-          blockedCoreNames: [
-            ...(usedPlaces?.usedPlaceNames ?? []),
-            ...(searchProfile.parentLandmark ? [searchProfile.parentLandmark] : []),
-          ],
+          blockedCoreNames: searchProfile.parentLandmark
+            ? [searchProfile.parentLandmark]
+            : [],
         });
-        if (usedPlaces) next = excludeUsedPlacesFromFollowUp(next, usedPlaces);
+        const deduped = filterContinuationByShownIdentity(next, {
+          shownPlaceIds: shownIdentities.placeIds,
+          shownCanonicalKeys: shownIdentities.canonicalKeys,
+          merelySearchedPlaceIds: found.map((place) => place.id),
+          storedPoolPlaceIds,
+        });
+        afterDedupeMatchedByPlaceId += deduped.breakdown.matchedByPlaceId;
+        afterDedupeMatchedByCanonicalKey += deduped.breakdown.matchedByCanonicalKey;
+        afterDedupeMatchedAgainstDisplayed += deduped.breakdown.matchedAgainstDisplayed;
+        afterDedupeMatchedAgainstMerelySearched +=
+          deduped.breakdown.matchedAgainstMerelySearched;
+        afterDedupeMatchedAgainstStoredPool += deduped.breakdown.matchedAgainstStoredPool;
+        next = deduped.kept;
         for (const place of next) {
           if (seen.has(place.id)) continue;
           seen.add(place.id);
@@ -2280,7 +2312,10 @@ export async function buildMoreDestinationRecommendations(params: {
         "explicitDestinationDetected=false",
         "destinationChanged=false",
         `destination=${label}`,
-        `area=${activeRecSession?.searchRegionLabel ?? label}`,
+        `parentCity=${activeRecSession?.parentCity ?? ""}`,
+        `area=${activeRecSession?.area ?? ""}`,
+        `searchScope=${activeRecSession?.searchScope ?? ""}`,
+        `searchRegionLabel=${activeRecSession?.searchRegionLabel ?? label}`,
         `category=${category}`,
         `scene=${scene}`,
         `storedPoolCount=${Math.max(0, (activeRecSession?.pool.length ?? 0) - (activeRecSession?.cursor ?? 0))}`,
@@ -2293,6 +2328,12 @@ export async function buildMoreDestinationRecommendations(params: {
         `afterScopeCount=${afterScopeCount}`,
         `afterCategoryCount=${afterCategoryCount}`,
         `afterDedupeCount=${filtered.length}`,
+        `dedupeMatchedByPlaceId=${afterDedupeMatchedByPlaceId}`,
+        `dedupeMatchedByCanonicalKey=${afterDedupeMatchedByCanonicalKey}`,
+        `dedupeMatchedAgainstDisplayed=${afterDedupeMatchedAgainstDisplayed}`,
+        `dedupeMatchedAgainstMerelySearched=${afterDedupeMatchedAgainstMerelySearched}`,
+        `dedupeMatchedAgainstStoredPool=${afterDedupeMatchedAgainstStoredPool}`,
+        `shownIdentityCount=${shownIdentities.placeIds.length}`,
         `renderableCount=${filtered.length}`,
         `finalCount=${Math.min(filtered.length, RECOMMENDATION_COUNT)}`,
         `exhausted=${exhausted}`,

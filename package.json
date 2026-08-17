@@ -19,6 +19,7 @@
     "verify:shortcut-category-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-shortcut-category-fidelity.mjs",
     "verify:restaurant-render-type-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-restaurant-render-type-fidelity.mjs",
     "verify:restaurant-render-metadata-roundtrip": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-restaurant-render-metadata-roundtrip.mjs",
+    "verify:continuation-dedupe-visibility": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-continuation-dedupe-visibility.mjs",
     "verify:explicit-destination-fallback-isolation": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-explicit-destination-fallback-isolation.mjs",
     "verify:destination-area-scope": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-destination-area-scope.mjs",
     "verify:clarification-intent-restoration": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-clarification-intent-restoration.mjs",
