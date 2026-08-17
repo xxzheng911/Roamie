@@ -114,6 +114,7 @@ import {
 } from "@/lib/ai/destination-category-place-search-telemetry";
 import { resolveChatShortcutContext } from "@/lib/ai/chat-intent";
 import { logShortcutRecommendationSummary } from "@/lib/ai/shortcut-recommendation-telemetry";
+import { applyRecommendationPlaceTypeMetadata } from "@/lib/ai/recommendation-place-type-metadata";
 import {
   selectAreaFirstCandidates,
   type DestinationAreaCandidate,
@@ -593,14 +594,7 @@ function placesToRecommendations(
   )
     .map((item) => {
       const place = places.find((p) => p.id === item.googlePlaceId || p.id === item.placeId);
-      const withTypes = {
-        ...item,
-        types: place?.types?.length
-          ? place.types
-          : place?.primaryType
-            ? [place.primaryType]
-            : item.types,
-      } as RoamieRecommendationItem & { types?: string[] };
+      const withTypes = applyRecommendationPlaceTypeMetadata(item, place);
       if (mealIntent && place) {
         return {
           ...withTypes,

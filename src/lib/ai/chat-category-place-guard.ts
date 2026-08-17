@@ -18,6 +18,8 @@ import {
   isFoodIntentText,
 } from "@/lib/ai/chat-food-filter";
 import { logShoppingCategoryRejected } from "@/lib/ai/shopping-query-queue";
+import { recommendationTypeMetadataFromItem } from "@/lib/ai/recommendation-place-type-metadata";
+import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 
 const CAFE_TYPES = new Set([
   "cafe",
@@ -550,38 +552,92 @@ export function passesCafeRenderGuard(item: RoamieRecommendationItem): boolean {
   return ok;
 }
 
-export function passesRestaurantRenderGuard(
+export type RestaurantRenderGuardVerdict = {
+  allowed: boolean;
+  reason: string;
+};
+
+export function evaluateRestaurantRenderGuard(
   item: RoamieRecommendationItem,
   userText = "",
-): boolean {
+): RestaurantRenderGuardVerdict {
   if (isComboItineraryRecommendation(item)) {
-    logChatWrongCategoryRejected(item.name ?? "unknown", "combo_itinerary");
-    return false;
+    return { allowed: false, reason: "combo_itinerary" };
   }
   if (!isRealPlaceCard(item)) {
-    logChatWrongCategoryRejected(item.name ?? "unknown", "missing_place_id");
-    return false;
+    return { allowed: false, reason: "missing_place_id" };
   }
 
+  const metadata = recommendationTypeMetadataFromItem(item);
   const verdict = evaluateFoodPlace(
     {
       name: item.placeName ?? item.name,
       address: item.address,
-      primaryType: item.primaryType ?? item.type,
-      types: item.types?.length ? item.types : item.type ? [item.type] : [],
+      primaryType: metadata.primaryType ?? item.type,
+      types: metadata.types,
     },
     userText,
   );
 
   if (verdict.isDistrict) {
-    return item.type === FOOD_DISTRICT_CARD_TYPE;
+    return item.type === FOOD_DISTRICT_CARD_TYPE
+      ? { allowed: true, reason: "food_district" }
+      : { allowed: false, reason: "food_district_not_card" };
   }
 
   if (!verdict.allowed) {
-    logChatWrongCategoryRejected(item.name ?? "unknown", verdict.reason);
-    return false;
+    return { allowed: false, reason: verdict.reason };
   }
-  return true;
+  return { allowed: true, reason: verdict.reason };
+}
+
+function logRestaurantRenderRejectionSummary(
+  items: RoamieRecommendationItem[],
+  userText: string,
+): RoamieRecommendationItem[] {
+  const accepted: RoamieRecommendationItem[] = [];
+  const candidates: Array<{
+    placeId: string;
+    primaryType: string;
+    types: string;
+    reason: string;
+  }> = [];
+
+  for (const item of items) {
+    const verdict = evaluateRestaurantRenderGuard(item, userText);
+    const metadata = recommendationTypeMetadataFromItem(item);
+    const placeId = placeCardId(item);
+    candidates.push({
+      placeId: placeId || "none",
+      primaryType: metadata.primaryType ?? item.type ?? "",
+      types: metadata.types.join(",") || "none",
+      reason: verdict.reason,
+    });
+    if (!verdict.allowed) {
+      logChatWrongCategoryRejected(item.name ?? "unknown", verdict.reason);
+      continue;
+    }
+    accepted.push(item);
+  }
+
+  logAiPipeline(
+    "[RESTAURANT_RENDER_REJECTION_SUMMARY]",
+    `inputCount=${items.length}`,
+    `finalCount=${accepted.length}`,
+    ...candidates.map(
+      (row) =>
+        `candidate={placeId=${row.placeId} primaryType=${row.primaryType} types=${row.types} reason=${row.reason}}`,
+    ),
+  );
+
+  return accepted;
+}
+
+export function passesRestaurantRenderGuard(
+  item: RoamieRecommendationItem,
+  userText = "",
+): boolean {
+  return evaluateRestaurantRenderGuard(item, userText).allowed;
 }
 
 export function filterRecommendationsForCategoryRender(
@@ -599,7 +655,7 @@ export function filterRecommendationsForCategoryRender(
       : intent === "shopping"
         ? items.filter((item) => passesShoppingRenderGuard(item, userText))
         : intent === "restaurant" || isFoodIntentText(userText)
-          ? items.filter((item) => passesRestaurantRenderGuard(item, userText))
+          ? logRestaurantRenderRejectionSummary(items, userText)
           : CATEGORY_ONLY_INTENTS.has(intent)
             ? items.filter((item) => {
                 if (isComboItineraryRecommendation(item)) {

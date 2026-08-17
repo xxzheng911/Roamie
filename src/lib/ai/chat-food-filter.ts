@@ -8,6 +8,7 @@ import {
   buildMealSearchAttempts,
   parseMealIntentFromText,
 } from "@/lib/ai/meal-intent-parser";
+import { recommendationTypeMetadataFromItem } from "@/lib/ai/recommendation-place-type-metadata";
 
 /** Google types allowed for food / restaurant chat recommendations */
 export const FOOD_ALLOWED_TYPES = [
@@ -122,8 +123,13 @@ function placeTypes(place: {
   ].filter(Boolean);
 }
 
+function isRestaurantTypeToken(t: string): boolean {
+  return t === "restaurant" || t.endsWith("_restaurant");
+}
+
 function hasAllowedFoodType(types: string[], allowBar: boolean): boolean {
   return types.some((t) => {
+    if (isRestaurantTypeToken(t)) return true;
     if (FOOD_ALLOWED_SET.has(t)) {
       if (!allowBar && (t === "bar" || t === "pub" || t === "wine_bar" || t === "night_club")) {
         return false;
@@ -148,8 +154,7 @@ export function isFoodDistrictPlace(place: {
 
   const hasRestaurantLikeType = types.some(
     (t) =>
-      t === "restaurant" ||
-      t === "fast_food_restaurant" ||
+      isRestaurantTypeToken(t) ||
       t === "meal_takeaway" ||
       t === "cafe" ||
       t === "bakery",
@@ -259,12 +264,13 @@ export function filterRecommendationItemsForFoodIntent(
   userText = "",
 ): RoamieRecommendationItem[] {
   return items.filter((item) => {
+    const metadata = recommendationTypeMetadataFromItem(item);
     const verdict = evaluateFoodPlace(
       {
         name: item.placeName ?? item.name,
         address: item.address,
-        primaryType: item.type,
-        types: item.type ? [item.type] : [],
+        primaryType: metadata.primaryType ?? item.type,
+        types: metadata.types,
       },
       userText,
     );

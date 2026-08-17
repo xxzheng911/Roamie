@@ -3,6 +3,7 @@ import {
   type RoamiePayloadV2,
   type RoamieRecommendationItem,
 } from "@/lib/ai/types";
+import { recommendationTypeMetadataFromPlace } from "@/lib/ai/recommendation-place-type-metadata";
 import type { RoamieLocation } from "@/lib/ai/context";
 import type { TripLocation } from "@/lib/location/types";
 import type { Locale } from "@/lib/i18n/types";
@@ -527,13 +528,14 @@ export function mapPlaceResultToChatItem(
     locale,
   );
   const displayName = resolvedName.localizedDisplayName || p.name;
+  const typeMetadata = recommendationTypeMetadataFromPlace(p);
   const base = normalizeRecommendationItem({
     name: displayName,
     placeName: displayName,
     localizedDisplayName: displayName,
     originalName: resolvedName.originalName || p.originalName || p.name,
-    type: p.primaryType ?? "地點",
-    primaryType: p.primaryType,
+    type: typeMetadata.primaryType ?? p.primaryType ?? "地點",
+    primaryType: typeMetadata.primaryType,
     description: p.address ?? "附近推薦",
     reason,
     reasonSource: "template",
@@ -551,7 +553,7 @@ export function mapPlaceResultToChatItem(
     todayHoursLabel: p.todayHoursLabel || undefined,
     closingSoonNote: p.closingSoonNote || undefined,
     nextOpenHint: p.nextOpenHint || undefined,
-    types: p.types?.length ? p.types : p.primaryType ? [p.primaryType] : undefined,
+    types: typeMetadata.types,
     destinationScope: p.destinationScope,
     extensionDestination: p.extensionDestination,
     sourceRegionCandidate: p.sourceRegionCandidate,

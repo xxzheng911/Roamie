@@ -98,6 +98,7 @@ import {
   filterPlacesByShoppingGuard,
   filterRecommendationsForCategoryRender,
 } from "@/lib/ai/chat-category-place-guard";
+import { applyRecommendationPlaceTypeMetadata } from "@/lib/ai/recommendation-place-type-metadata";
 import {
   patchShoppingRecommendationSession,
   isUsableSearchCentroid,
@@ -273,14 +274,7 @@ function placesToRecommendations(
     }),
   ).map((item) => {
     const place = places.find((p) => p.id === item.googlePlaceId || p.id === item.placeId);
-    return {
-      ...item,
-      types: place?.types?.length
-        ? place.types
-        : place?.primaryType
-          ? [place.primaryType]
-          : item.types,
-    } as RoamieRecommendationItem & { types?: string[] };
+    return applyRecommendationPlaceTypeMetadata(item, place);
   });
 }
 
