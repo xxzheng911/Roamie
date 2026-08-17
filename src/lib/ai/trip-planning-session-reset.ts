@@ -561,6 +561,7 @@ function applyCommonSessionShell(
   },
 ): ChatPlanningSession {
   const {
+    reason,
     newSessionId,
     travelContext,
     tripDestination,
@@ -569,6 +570,10 @@ function applyCommonSessionShell(
     rangeFromText,
     daysFromText,
   } = opts;
+  const clearRecommendationState =
+    isDestinationResetReason(reason) ||
+    reason === "phase_done_new_trip" ||
+    reason === "new_trip_requirements";
 
   return {
     ...session,
@@ -616,6 +621,12 @@ function applyCommonSessionShell(
     preferredArea: incoming ?? undefined,
     askedClarifyKeys: undefined,
     activeChatIntent: undefined,
+    activeCategoryIntent: clearRecommendationState ? undefined : session.activeCategoryIntent,
+    activeRecommendationContext: clearRecommendationState
+      ? undefined
+      : session.activeRecommendationContext,
+    recommendationSession: clearRecommendationState ? undefined : session.recommendationSession,
+    foodPreference: clearRecommendationState ? undefined : session.foodPreference,
   };
 }
 

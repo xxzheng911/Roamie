@@ -25,6 +25,15 @@ function isIsoDate(value?: string | null): value is string {
   return Boolean(value?.trim() && /^\d{4}-\d{2}-\d{2}$/.test(value.trim()));
 }
 
+function inclusiveDaysBetween(startIso: string, endIso: string): number {
+  const start = new Date(`${startIso}T12:00:00`);
+  const end = new Date(`${endIso}T12:00:00`);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return 1;
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const diff = Math.floor((end.getTime() - start.getTime()) / msPerDay) + 1;
+  return Math.max(1, diff);
+}
+
 function yearForMonth(monthNum: number, refDate = new Date()): number {
   const year = refDate.getFullYear();
   // If the month already passed this year, prefer next year.
@@ -61,10 +70,13 @@ export function resolveSuggestedTripDates(params: {
     const end = isIsoDate(fromText.endDate)
       ? fromText.endDate
       : addDaysIso(start, (fromText.days ?? safeDays) - 1);
+    const days = isIsoDate(fromText.endDate)
+      ? inclusiveDaysBetween(start, end)
+      : (fromText.days ?? safeDays);
     return {
       startDate: start,
       endDate: end,
-      days: fromText.days ?? safeDays,
+      days,
       source: "user_date",
     };
   }
@@ -74,10 +86,11 @@ export function resolveSuggestedTripDates(params: {
     const end = isIsoDate(params.endDate)
       ? params.endDate
       : addDaysIso(start, safeDays - 1);
+    const days = isIsoDate(params.endDate) ? inclusiveDaysBetween(start, end) : safeDays;
     return {
       startDate: start,
       endDate: end,
-      days: safeDays,
+      days,
       source: "user_date",
     };
   }

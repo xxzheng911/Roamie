@@ -78,11 +78,19 @@ function RecommendationsPage() {
 
   const handleOpenPlaceDetail = useCallback(
     (rec: RoamieRecommendationItem) => {
+      if (!rec.googlePlaceId?.trim()) {
+        toast.message("此建議尚未完成地點驗證，暫時無法開啟地圖詳情");
+        return;
+      }
       if (rec.lat == null || rec.lng == null) {
         toast.message("此地點尚無座標，暫時無法開啟地圖詳情");
         return;
       }
-      openRecommendationOnMap(rec);
+      const snapshot = openRecommendationOnMap(rec);
+      if (!snapshot) {
+        toast.message("此建議尚未完成地點驗證，暫時無法開啟地圖詳情");
+        return;
+      }
       navigate({ to: "/map" });
     },
     [navigate],

@@ -2801,6 +2801,7 @@ function Chat() {
       const excludePlaceIds = opts?.excludePlaceIds ?? collectExcludePlaceIds(sessionForSave);
       const blockedCoreNames = opts?.blockedCoreNames ?? collectBlockedCoreNames(sessionForSave);
 
+      if (!ensureSubscriptionHydratedForCredits(conversation)) return true;
       const placeCreditsGate = await beginPlaceRecommendationCredits({
         hasPlusAccess,
         metadata: { path: "nearby", intent },
@@ -2949,6 +2950,7 @@ function Chat() {
       geocodeLocationFn,
       fetchPlaceDetailsForFocus,
       hasPlusAccess,
+      ensureSubscriptionHydratedForCredits,
     ],
   );
 
@@ -3029,6 +3031,7 @@ function Chat() {
       }
       setPlanningRenderInProgress(true, flowSessionId);
 
+      if (!ensureSubscriptionHydratedForCredits(conversation)) return true;
       const placeCreditsGate = await beginPlaceRecommendationCredits({
         hasPlusAccess,
         metadata: { path: "destination_places", destination },
@@ -3083,27 +3086,32 @@ function Chat() {
         contextPatch: Partial<CanonicalTravelContext>,
         dayPlan?: AiDayPlan,
       ) => {
-        const alignedDayPlan = (() => {
-          const incoming = dayPlan ? alignDayPlanToSession(dayPlan, flowSessionId) : undefined;
-          if (incoming?.items.length) return incoming;
+        const incomingDayPlan = (() => {
+          if (dayPlan?.items.length) return dayPlan;
           const frozen = getFrozenPlanningDayPlan(flowSessionId);
-          return frozen ? alignDayPlanToSession(frozen, flowSessionId) : undefined;
+          return frozen?.items.length ? frozen : undefined;
         })();
+        const incomingPlanSessionId = incomingDayPlan?.planningSessionId;
 
         logAiPushPlaceCardsSession(
-          alignedDayPlan?.planningSessionId ?? flowSessionId,
+          incomingPlanSessionId ?? flowSessionId,
           flowSessionId,
         );
 
         if (
-          alignedDayPlan &&
-          alignedDayPlan.planningSessionId !== flowSessionId &&
-          isStalePlanningSession(sessionForPlan, alignedDayPlan.planningSessionId, flowSessionId)
+          incomingDayPlan &&
+          incomingPlanSessionId &&
+          incomingPlanSessionId !== flowSessionId &&
+          isStalePlanningSession(sessionForPlan, incomingPlanSessionId, flowSessionId)
         ) {
-          logAiPlaceCardsSkipStale(alignedDayPlan.planningSessionId, flowSessionId);
+          logAiPlaceCardsSkipStale(incomingPlanSessionId, flowSessionId);
           logAiStaleRecommendationsBlocked();
           return false;
         }
+        const alignedDayPlan =
+          incomingDayPlan && incomingPlanSessionId
+            ? alignDayPlanToSession(incomingDayPlan, flowSessionId)
+            : undefined;
 
         const sessionWithRecs: ChatPlanningSession = {
           ...sessionForPlan,
@@ -3129,12 +3137,6 @@ function Chat() {
 
         recs = dedupePlaceCardsForRender(recs) as ChatPlaceItem[];
         const itineraryRender = Boolean(alignedDayPlan || stylePlanTurn);
-        if (!recs.length && !itineraryRender) {
-          const namedFallback = buildNamedFallbackRecommendations(destination);
-          if (namedFallback.length) {
-            recs = namedFallback as ChatPlaceItem[];
-          }
-        }
         if (!recs.length && !displaySummary.trim()) {
           logAiRenderBlocked(
             "empty_recommendations",
@@ -3371,14 +3373,14 @@ function Chat() {
           title: "必去推薦",
           summary,
           moodTag: resolveRecommendationStyleTag(sessionForPlan, placeCtx) || placeCtx.mood || "",
-          recommendations: namedRecs,
+          recommendations: [],
           itinerary: [],
           generatedAt: new Date().toISOString(),
         };
         if (!namedRecs.length) {
           console.warn("[CHAT_RENDER_BLOCKED]", "reason=no_real_places");
         }
-        return renderDestinationReply(summary, namedRecs, payload, {
+        return renderDestinationReply(summary, [], payload, {
           destination: label,
           mustVisitGenerated: true,
           tripPurpose: "must_visit_places",
@@ -3397,6 +3399,7 @@ function Chat() {
       fetchWeather,
       scrollToPlaceCardsStart,
       hasPlusAccess,
+      ensureSubscriptionHydratedForCredits,
     ],
   );
   pushDestinationPlaceRecommendationRef.current = pushDestinationPlaceRecommendation;
@@ -3416,6 +3419,7 @@ function Chat() {
         activeSession.tripDestination?.city?.trim();
       if (!destination) return false;
 
+      if (!ensureSubscriptionHydratedForCredits(conversation)) return true;
       const placeCreditsGate = await beginPlaceRecommendationCredits({
         hasPlusAccess,
         metadata: { path: "more_places", destination },
@@ -3917,7 +3921,15 @@ function Chat() {
         });
       }
     },
-    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, fetchWeather, hasPlusAccess],
+    [
+      locale,
+      persistSession,
+      searchNearbyPlaces,
+      geocodeLocationFn,
+      fetchWeather,
+      hasPlusAccess,
+      ensureSubscriptionHydratedForCredits,
+    ],
   );
 
   const pushDestinationCategoryPlaceRecommendation = useCallback(
@@ -3978,6 +3990,7 @@ function Chat() {
       const excludePlaceIds = opts?.excludePlaceIds ?? collectExcludePlaceIds(activeSession);
       const rejectedPlaceNames = opts?.rejectedPlaceNames ?? activeSession.rejectedPlaceNames;
 
+      if (!ensureSubscriptionHydratedForCredits(conversation)) return true;
       const placeCreditsGate = await beginPlaceRecommendationCredits({
         hasPlusAccess,
         metadata: { path: "destination_category", destination, intents },
@@ -4351,7 +4364,14 @@ function Chat() {
         setStreaming(false);
       }
     },
-    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, hasPlusAccess],
+    [
+      locale,
+      persistSession,
+      searchNearbyPlaces,
+      geocodeLocationFn,
+      hasPlusAccess,
+      ensureSubscriptionHydratedForCredits,
+    ],
   );
 
   const pushRecommendationRefinement = useCallback(
@@ -4430,6 +4450,7 @@ function Chat() {
       const merged = mergeTravelContext(sessionForSearch, userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, sessionForSearch);
 
+      if (!ensureSubscriptionHydratedForCredits(conversation)) return true;
       const placeCreditsGate = await beginPlaceRecommendationCredits({
         hasPlusAccess,
         metadata: { path: "refinement", destination: recCtx.destinationName },
@@ -4585,7 +4606,14 @@ function Chat() {
         setStreaming(false);
       }
     },
-    [locale, persistSession, searchNearbyPlaces, geocodeLocationFn, hasPlusAccess],
+    [
+      locale,
+      persistSession,
+      searchNearbyPlaces,
+      geocodeLocationFn,
+      hasPlusAccess,
+      ensureSubscriptionHydratedForCredits,
+    ],
   );
 
   const pushAlternativeDestinationPlaceRecommendation = useCallback(
@@ -5658,12 +5686,20 @@ function Chat() {
 
   const handleOpenPlaceDetail = (rec: RoamieRecommendationItem) => {
     markShortcutEngaged();
+    if (!rec.googlePlaceId?.trim()) {
+      toast.message("此建議尚未完成地點驗證，暫時無法開啟詳情");
+      return;
+    }
     if (rec.lat == null || rec.lng == null) {
       toast.message("此地點尚無座標，暫時無法開啟地點詳情");
       return;
     }
     preserveChatUiForPlaceDetail(msgsRef.current, messagesRef.current?.scrollTop ?? 0);
     const handoff = openRecommendationPlaceDetail(rec);
+    if (!handoff) {
+      toast.message("此建議尚未完成地點驗證，暫時無法開啟詳情");
+      return;
+    }
     void navigate({
       to: "/place",
       search: {
@@ -7271,7 +7307,9 @@ function Chat() {
     if (!canGenerateItinerary(activeSession) || generating) return;
 
     let itinCreditsHandle: CreditsOperationHandle | null = creditsHandleOverride ?? null;
+    let itinerarySucceeded = false;
     if (!itinCreditsHandle) {
+      if (!ensureSubscriptionHydratedForCredits(activeMsgs)) return;
       const itinGate = await beginItineraryGenerationCredits({
         hasPlusAccess,
         metadata: { path: "handleGenerateItinerary" },
@@ -7322,11 +7360,33 @@ function Chat() {
         userText: lastUserText,
       });
       logAiCreateTripDates(tripDates);
+      const effectiveTripDays = Math.max(1, tripDates.days || tripDays || 1);
+      if (
+        workingSession.tripDays !== effectiveTripDays ||
+        workingSession.travelContext?.days !== effectiveTripDays ||
+        (tripDates.startDate && workingSession.travelContext?.startDate !== tripDates.startDate) ||
+        (tripDates.endDate && workingSession.travelContext?.endDate !== tripDates.endDate)
+      ) {
+        workingSession = {
+          ...workingSession,
+          tripDays: effectiveTripDays,
+          tripStartDate: tripDates.startDate ?? workingSession.tripStartDate,
+          tripEndDate: tripDates.endDate ?? workingSession.tripEndDate,
+          travelContext: workingSession.travelContext
+            ? {
+                ...workingSession.travelContext,
+                days: effectiveTripDays,
+                startDate: tripDates.startDate ?? workingSession.travelContext.startDate,
+                endDate: tripDates.endDate ?? workingSession.travelContext.endDate,
+              }
+            : workingSession.travelContext,
+        };
+      }
 
       if (
         places.length < 1 &&
         !dayPlan?.items.length &&
-        tripDays > 0 &&
+        effectiveTripDays > 0 &&
         destination !== "目前位置"
       ) {
         const prepared = await prepareDirectItinerarySession({
@@ -7334,7 +7394,7 @@ function Chat() {
           context: {
             ...(workingSession.travelContext ?? { interests: [] }),
             destination,
-            days: tripDays,
+            days: effectiveTripDays,
           },
           locale,
           searchPlaces: searchNearbyPlaces,
@@ -7413,13 +7473,13 @@ function Chat() {
           session: { ...workingSession, aiItineraryState: "SUCCESS", phase: "generating" },
           payload: {
             version: 2,
-            title: `${destination} ${tripDays} 天`,
-            summary: `依你選的 ${dayPlan.items.length} 個地點排成 ${tripDays} 天行程。`,
+            title: `${destination} ${effectiveTripDays} 天`,
+            summary: `依你選的 ${dayPlan.items.length} 個地點排成 ${effectiveTripDays} 天行程。`,
             moodTag: workingSession.mood ?? "",
             recommendations,
             itinerary: itineraryItems,
             destination,
-            days: tripDays,
+            days: effectiveTripDays,
             dayPlan,
             itineraryDays,
             tripSettings: {
@@ -7434,7 +7494,7 @@ function Chat() {
       } else {
         const generateInput = {
           destination,
-          days: tripDays,
+          days: effectiveTripDays,
           budget,
         style: resolvePlannerStyleKey(
           workingSession.tripStyles ||
@@ -7576,7 +7636,7 @@ function Chat() {
       });
       draftPayload = attachCoreTripToPayload(draftPayload, coreDraft);
       devVerboseInfo("[CORE_TRIP] created", "draft");
-      logItinerarySavePayloadReady(destination, tripDays, itineraryStops.length);
+      logItinerarySavePayloadReady(destination, effectiveTripDays, itineraryStops.length);
       logItinerarySaveStart();
       try {
         saveDraftTrip(draftPayload);
@@ -7601,7 +7661,7 @@ function Chat() {
         "[ITINERARY_RESULT_TRACE]",
         "plannerSuccess=true",
         "itineraryPresent=true",
-        `dayCount=${tripDays}`,
+        `dayCount=${effectiveTripDays}`,
         `stopCount=${itineraryStops.length}`,
         "persistenceAttempted=true",
         "persistenceSuccess=true",
@@ -7627,12 +7687,9 @@ function Chat() {
       ]);
 
       logTripNav("ChatGeneratedItinerary", saved.id);
-      await settleCreditsOperation(itinCreditsHandle, true);
-      itinCreditsHandle = null;
+      itinerarySucceeded = true;
       navigate(tripDetailNavigateOptions(saved.id));
     } catch (e) {
-      await settleCreditsOperation(itinCreditsHandle, false);
-      itinCreditsHandle = null;
       const reason = e instanceof Error ? e.message : String(e);
       console.warn("[ITINERARY_GENERATE]", e);
       logItinerarySaveFailed(reason);
@@ -7657,6 +7714,8 @@ function Chat() {
       ]);
       // Keep a single error surface — chat card only (no duplicate toast).
     } finally {
+      await settleCreditsOperation(itinCreditsHandle, itinerarySucceeded);
+      itinCreditsHandle = null;
       setGenerating(false);
     }
   };
@@ -7680,6 +7739,10 @@ function Chat() {
     activeGenerationRequestIdRef.current = generationRequestId;
     const contextWithRequest = { ...context, generationRequestId };
 
+    if (!ensureSubscriptionHydratedForCredits(conversation)) {
+      activeGenerationRequestIdRef.current = null;
+      return;
+    }
     const itinGate = await beginItineraryGenerationCredits({
       hasPlusAccess,
       requestId: generationRequestId,

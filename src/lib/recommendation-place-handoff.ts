@@ -23,9 +23,10 @@ function inferExploreCategoryId(type: string): string {
 }
 
 /** 將聊天／推薦頁的地點轉成地圖詳情 handoff（含完整 snapshot，避免重搜對不到） */
-export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): HomeNearbyPick {
+export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): HomeNearbyPick | null {
   const name = rec.placeName?.trim() || rec.name.trim();
-  const id = rec.googlePlaceId?.trim() || `rec-${encodeURIComponent(name)}`;
+  const id = rec.googlePlaceId?.trim();
+  if (!id) return null;
   const categoryId = inferExploreCategoryId(rec.type);
   const photoName = rec.photoName ?? null;
   const primaryType = rec.primaryType?.trim() || rec.type?.trim() || null;
@@ -67,8 +68,9 @@ export function recommendationToPlaceSnapshot(rec: RoamieRecommendationItem): Ho
 }
 
 /** 探索地圖：寫入 map handoff 並由呼叫端 navigate 至 /map */
-export function openRecommendationOnMap(rec: RoamieRecommendationItem): HomeNearbyPick {
+export function openRecommendationOnMap(rec: RoamieRecommendationItem): HomeNearbyPick | null {
   const snapshot = recommendationToPlaceSnapshot(rec);
+  if (!snapshot) return null;
   setMapExploreHandoff({
     categoryId: snapshot.categoryId,
     placeId: snapshot.id,
@@ -80,8 +82,10 @@ export function openRecommendationOnMap(rec: RoamieRecommendationItem): HomeNear
 /** 聊聊／推薦卡：寫入 place detail handoff（不觸發探索地圖 selectedPlace） */
 export function openRecommendationPlaceDetail(
   rec: RoamieRecommendationItem,
-): PlaceDetailHandoff {
-  const handoff = pickToPlaceDetailHandoff(recommendationToPlaceSnapshot(rec));
+): PlaceDetailHandoff | null {
+  const snapshot = recommendationToPlaceSnapshot(rec);
+  if (!snapshot) return null;
+  const handoff = pickToPlaceDetailHandoff(snapshot);
   setPlaceDetailHandoff(handoff);
   return handoff;
 }
