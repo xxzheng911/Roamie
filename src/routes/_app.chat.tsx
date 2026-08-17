@@ -620,7 +620,7 @@ async function getAiPreferences() {
 function Chat() {
   const { t, locale } = useI18n();
   const travelPrefStatus = useTravelPrefStatus();
-  const { hasPlusAccess } = useAccess();
+  const { hasPlusAccess, subscriptionHydrated } = useAccess();
   const { openAddToTrip } = useAddToTrip();
   const search = Route.useSearch();
   const navigate = useNavigate();
@@ -663,6 +663,28 @@ function Chat() {
   const suppressPlaceCards = useMemo(
     () => shouldSuppressChatPlaceCards(session, { generating }),
     [session, generating],
+  );
+  const ensureSubscriptionHydratedForCredits = useCallback(
+    (conversation?: ChatMsg[]): boolean => {
+      if (subscriptionHydrated) return true;
+      const pendingMessage = "正在同步會員與額度狀態，請稍候再試。";
+      if (conversation) {
+        setMsgs((prev) => {
+          const base = prev.length === conversation.length ? conversation : prev;
+          if (base.length > 0) {
+            const last = base[base.length - 1];
+            if (last?.role === "assistant" && last.content === pendingMessage) {
+              return base;
+            }
+          }
+          return [...base, { role: "assistant", content: pendingMessage }];
+        });
+      } else {
+        toast.message(pendingMessage);
+      }
+      return false;
+    },
+    [subscriptionHydrated],
   );
   const chatBackNavigation = useMemo(() => {
     const tripCtx = session.tripAddPlaceContext;
