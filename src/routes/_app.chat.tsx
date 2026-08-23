@@ -251,16 +251,26 @@ import {
 } from "@/lib/ai/travel-context";
 import {
   applyQuickChipContext,
+  buildStructuredShortcutContext,
   detectChatIntent,
   inferNearbyIntentFromContext,
   isNearbyPlaceIntent,
+  moodLabelForShortcutMode,
+  resolveNormalizedShortcutRequestFromText,
   sessionHasLocation,
   resolveChatShortcutContext,
+  resolveNearbyShortcutScene,
 } from "@/lib/ai/chat-intent";
 import {
   logShortcutRecommendationRequestNotSent,
   logShortcutRecommendationSummary,
 } from "@/lib/ai/shortcut-recommendation-telemetry";
+import {
+  logRtResponseBranch,
+  logRtContinuationBranch,
+  logShortcutRuntime,
+  type RtShortcutSource,
+} from "@/lib/ai/shortcut-runtime-diag";
 import {
   buildCampingIntroReply,
   campingSearchAttempts,
@@ -485,7 +495,11 @@ import {
 import { resolveConversationDestination } from "@/lib/ai/ai-chat-conversation-state";
 import { buildWeatherAwarePlaceIntro, resolveWeatherScene } from "@/lib/ai/weather-place-search";
 import { placesStatsPayload } from "@/lib/places-api-stats";
-import { resolveChatLocation } from "@/lib/ai/resolve-chat-location";
+import {
+  resolveChatLocation,
+  resolveNearbyRecommendationScope,
+} from "@/lib/ai/resolve-chat-location";
+import { getEffectiveLocationSnapshot } from "@/lib/effective-location";
 import {
   filterPlacesByDestinationGuard,
   placesSearchContextPayload,
@@ -794,6 +808,17 @@ function Chat() {
   const restoredWorkspaceIdRef = useRef<string | null>(null);
   const autoPromptHandledRef = useRef(false);
   const homeMoodShortcutEngagedRef = useRef(false);
+  const initialRestoreSettledRef = useRef(false);
+  const nearbyPushRuntimeRef = useRef<{
+    returned: boolean;
+    reason: string;
+    candidateCount: number;
+    renderableCount: number;
+    finalCount: number;
+    scope: string;
+    deviceLocationAvailable: boolean;
+    deviceLocationUsed: boolean;
+  } | null>(null);
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const discoveringLoadingAnimRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const discoveringLoadingRequestIdRef = useRef<string | null>(null);
@@ -804,6 +829,37 @@ function Chat() {
   } | null>(null);
 
   const partialScrollKey = `${partial.summary?.length ?? 0}:${partial.recommendations?.length ?? 0}`;
+
+  const logRtNearbyPush = useCallback((payload: {
+    returned: boolean;
+    reason: string;
+    candidateCount: number;
+    renderableCount: number;
+    finalCount: number;
+    scope: string;
+    deviceLocationAvailable: boolean;
+    deviceLocationUsed: boolean;
+  }) => {
+    nearbyPushRuntimeRef.current = payload;
+    logShortcutRuntime("[RT_NEARBY_PUSH]", payload);
+  }, []);
+
+  const logRtNoMoreReason = useCallback((payload: {
+    caller: string;
+    route: string;
+    followup: boolean;
+    hasActiveRecommendationContext: boolean;
+    reason: string;
+  }) => {
+    logShortcutRuntime("[RT_NO_MORE_REASON]", {
+      caller: payload.caller,
+      route: payload.route,
+      followup: payload.followup,
+      hasActiveRecommendationContext: payload.hasActiveRecommendationContext,
+      nearbyPushReturned: nearbyPushRuntimeRef.current?.returned ?? "",
+      reason: payload.reason,
+    });
+  }, []);
 
   useScrollPerfMonitor("chat", messagesRef);
 
@@ -1242,6 +1298,14 @@ function Chat() {
         if (!turn.advice.triggerItineraryGeneration) {
           setStreaming(false);
         }
+        const pendingType = turn.advice.pendingQuestion?.type ?? "";
+        if (pendingType === "ask_days" || pendingType === "duration_choice") {
+          logRtResponseBranch("trip_duration_question");
+        } else if (pendingType === "region_choice") {
+          logRtResponseBranch("destination_clarification");
+        } else {
+          logRtResponseBranch("other");
+        }
       }
       if (turn.advice.triggerItineraryGeneration) {
         const planRequestId = `plan_${Date.now().toString(36)}`;
@@ -1420,6 +1484,7 @@ function Chat() {
   useEffect(() => {
     if (
       hydrating ||
+      !initialRestoreSettledRef.current ||
       session.fromMoodFlow ||
       session.fromMoodCard ||
       session.fromPlusHome ||
@@ -1429,8 +1494,13 @@ function Chat() {
     }
     setMsgs((prev) => {
       if (prev.length === 0) return [greetingMsg];
-      if (prev.length === 1 && prev[0].role === "assistant" && !prev[0].roamie) {
-        return [greetingMsg];
+      if (
+        prev.length === 1 &&
+        prev[0].role === "assistant" &&
+        !prev[0].roamie &&
+        prev[0].content !== greetingMsg.content
+      ) {
+        logAiPipeline("[NEARBY_FALLBACK]", "reason=handoff_overwritten_prevented");
       }
       return prev;
     });
@@ -1489,6 +1559,8 @@ function Chat() {
 
   useEffect(() => {
     let cancelled = false;
+    initialRestoreSettledRef.current = false;
+    setHydrating(true);
     (async () => {
       try {
         const uiCache = consumeChatUiCache();
@@ -1615,13 +1687,12 @@ function Chat() {
         if (search.from !== "trip_add_place" && moodId && homeShortcutEntry) {
           const moodLabel = t(`home.moods.${moodId}`);
           const moodPrompt = search.prompt?.trim() || t(`home.moodPrompts.${moodId}`);
-          let moodSession = beginHomeMoodShortcutSession(session, moodLabel);
+          let moodSession = beginHomeMoodShortcutSession(session, moodLabel, moodId);
           const bundle = await buildClientContextBundle(fetchWeather);
           moodSession = {
             ...moodSession,
             location: bundle.location,
             weather: bundle.weather,
-            activeChatIntent: "attraction",
             phase: "recommend",
           };
           const mergedMood = mergeTravelContext(moodSession, moodPrompt);
@@ -1638,6 +1709,7 @@ function Chat() {
             selectedMood: moodLabel,
             fromMoodCard: true,
             fromMoodFlow: search.from === "mood" ? true : session.fromMoodFlow,
+            activeChatIntent: moodId === "coffee" ? "cafe" : "attraction",
           };
           if (search.from === "mood") {
             const bundle = await buildClientContextBundle(fetchWeather);
@@ -1646,7 +1718,7 @@ function Chat() {
               location: bundle.location,
               weather: bundle.weather,
               fromMoodFlow: true,
-              activeChatIntent: "attraction",
+              activeChatIntent: moodId === "coffee" ? "cafe" : "attraction",
               phase: "recommend",
             };
           }
@@ -1708,7 +1780,7 @@ function Chat() {
 
         if (shouldRunHandoff && handoffKey) {
           handoffStartedRef.current = handoffKey;
-          setMsgs([]);
+          setMsgs([greetingMsg]);
           await runRecommendationHandoff(current);
         } else {
           const shouldRunTripAddPlaceHandoff =
@@ -1747,7 +1819,7 @@ function Chat() {
             !planHandoffStartedRef.current
           ) {
             planHandoffStartedRef.current = true;
-            setMsgs([]);
+            setMsgs([greetingMsg]);
             await runPlanFormHandoff(current);
           } else if (
             current.fromPlusHome &&
@@ -1849,6 +1921,7 @@ function Chat() {
           ]);
         }
       } finally {
+        initialRestoreSettledRef.current = true;
         if (!cancelled) setHydrating(false);
       }
     })();
@@ -1871,7 +1944,7 @@ function Chat() {
     const prompt = search.prompt?.trim();
     if (!prompt || autoPromptHandledRef.current) return;
     autoPromptHandledRef.current = true;
-    void send(prompt, { source: "auto" });
+    void send(prompt, { source: search.from === "mood" ? "home_mood" : "auto" });
     void navigate({
       to: "/chat",
       search: {
@@ -2600,7 +2673,12 @@ function Chat() {
       },
     ): Promise<boolean> => {
       const merged = mergeTravelContext(activeSession, userText);
+      logAiPipeline("[NEARBY_INTENT]", `intent=${intent}`, `userText=${userText.slice(0, 80)}`);
       let workingSession = merged.session;
+      let sessionForSaveBase = workingSession;
+      let rtScope = "none";
+      let rtDeviceLocationAvailable = false;
+      let rtDeviceLocationUsed = false;
       const placeDetailActive = isPlaceDetailChatActive(workingSession);
       if (placeDetailActive) {
         workingSession = await ensurePlaceDetailFocusCoordinates(
@@ -2621,11 +2699,22 @@ function Chat() {
         const nearbyCenter = resolveNearbySearchCenter(workingSession, userText);
         if (!nearbyCenter) {
           console.warn("[CHAT_PLACES_REQUEST] skipped reason=place_detail_missing_coords");
+          logRtNearbyPush({
+            returned: false,
+            reason: "missing_location",
+            candidateCount: 0,
+            renderableCount: 0,
+            finalCount: 0,
+            scope: "explicit_place",
+            deviceLocationAvailable: false,
+            deviceLocationUsed: false,
+          });
           return false;
         }
         lat = nearbyCenter.lat;
         lng = nearbyCenter.lng;
         nearbyCenterLabel = nearbyCenter.basePlaceName;
+        sessionForSaveBase = workingSession;
         searchCtx = {
           searchMode: "nearby",
           deviceLatLng: { lat, lng },
@@ -2634,12 +2723,26 @@ function Chat() {
           isNearbyPlaceIntent: true,
           scope: "explicit_place",
         });
-      } else {
-        const preferDestination = !isExplicitDeviceNearbyRequest(userText);
-        // Only fetch device GPS when explicitly searching current location.
-        const deviceSession = preferDestination
-          ? workingSession
-          : await resolveChatLocation(workingSession);
+        logShortcutRuntime("[RT_NEARBY_SCOPE]", {
+          isNearbyIntent: true,
+          scope: "explicit_place",
+          deviceLocationAvailable: false,
+          deviceLocationUsed: false,
+          routeMode: "explicit_place",
+        });
+        rtScope = "explicit_place";
+        rtDeviceLocationAvailable = false;
+        rtDeviceLocationUsed = false;
+        } else {
+        const structuredNearbyShortcut =
+          workingSession.normalizedShortcutRequest?.structured === true &&
+          workingSession.normalizedShortcutRequest?.intent === "nearby_recommendation";
+        const shouldResolveCurrentLocation =
+          isExplicitDeviceNearbyRequest(userText) || structuredNearbyShortcut;
+        const deviceSession = shouldResolveCurrentLocation
+          ? await resolveChatLocation(workingSession)
+          : workingSession;
+        sessionForSaveBase = deviceSession;
         searchCtx = await resolveChatPlaceSearchContext({
           context: merged.context,
           session: deviceSession,
@@ -2647,14 +2750,14 @@ function Chat() {
           locale,
           geocodeFn: geocodeLocationFn,
           deviceLatLng:
-            !preferDestination &&
+            shouldResolveCurrentLocation &&
             deviceSession.location?.lat != null &&
             deviceSession.location?.lng != null
               ? { lat: deviceSession.location.lat, lng: deviceSession.location.lng }
               : null,
         });
 
-        const searchCenter = resolveRecommendationSearchCenter({
+        const searchCenterRaw = resolveRecommendationSearchCenter({
           userText,
           session: deviceSession,
           context: merged.context,
@@ -2665,6 +2768,21 @@ function Chat() {
               ? { lat: deviceSession.location.lat, lng: deviceSession.location.lng }
               : null,
         });
+        const shortcutGpsReady =
+          structuredNearbyShortcut &&
+          deviceSession.location?.lat != null &&
+          deviceSession.location?.lng != null;
+        const searchCenter = shortcutGpsReady
+          ? {
+              mode: "current_location" as const,
+              latitude: deviceSession.location!.lat,
+              longitude: deviceSession.location!.lng,
+              label: deviceSession.location?.city,
+              source: "explicit_current_location" as const,
+              deviceLocationAvailable: true,
+              deviceLocationUsed: true,
+            }
+          : searchCenterRaw;
 
         const isDeviceNearbyScope =
           searchCenter?.mode === "current_location" ||
@@ -2674,6 +2792,19 @@ function Chat() {
           isNearbyPlaceIntent: Boolean(isDeviceNearbyScope),
           scope: searchCenter?.mode ?? searchCtx.searchMode,
         });
+        logShortcutRuntime("[RT_NEARBY_SCOPE]", {
+          isNearbyIntent: true,
+          scope: searchCenter?.mode ?? searchCtx.searchMode,
+          deviceLocationAvailable: Boolean(searchCenter?.deviceLocationAvailable) ||
+            (deviceSession.location?.lat != null && deviceSession.location?.lng != null),
+          deviceLocationUsed: Boolean(searchCenter?.deviceLocationUsed),
+          routeMode: searchCenter?.mode ?? searchCtx.searchMode,
+        });
+        rtScope = String(searchCenter?.mode ?? searchCtx.searchMode);
+        rtDeviceLocationAvailable =
+          Boolean(searchCenter?.deviceLocationAvailable) ||
+          (deviceSession.location?.lat != null && deviceSession.location?.lng != null);
+        rtDeviceLocationUsed = Boolean(searchCenter?.deviceLocationUsed);
 
         if (searchCenter) {
           if (
@@ -2693,6 +2824,16 @@ function Chat() {
               console.warn(
                 "[CHAT_PLACES_REQUEST] skipped reason=destination_scope_gps_override_blocked",
               );
+              logRtNearbyPush({
+                returned: false,
+                reason: "missing_location",
+                candidateCount: 0,
+                renderableCount: 0,
+                finalCount: 0,
+                scope: rtScope,
+                deviceLocationAvailable: rtDeviceLocationAvailable,
+                deviceLocationUsed: rtDeviceLocationUsed,
+              });
               return false;
             }
           } else {
@@ -2726,6 +2867,16 @@ function Chat() {
             console.warn(
               "[CHAT_PLACES_REQUEST] skipped reason=destination_coords_unavailable",
             );
+            logRtNearbyPush({
+              returned: false,
+              reason: "missing_location",
+              candidateCount: 0,
+              renderableCount: 0,
+              finalCount: 0,
+              scope: rtScope,
+              deviceLocationAvailable: rtDeviceLocationAvailable,
+              deviceLocationUsed: rtDeviceLocationUsed,
+            });
             return false;
           }
         } else if (isExplicitDeviceNearbyRequest(userText)) {
@@ -2741,6 +2892,16 @@ function Chat() {
         } else {
           // No destination and not explicit device nearby — do not invent GPS center
           console.warn("[CHAT_PLACES_REQUEST] skipped reason=no_search_center");
+          logRtNearbyPush({
+            returned: false,
+            reason: "missing_location",
+            candidateCount: 0,
+            renderableCount: 0,
+            finalCount: 0,
+            scope: rtScope,
+            deviceLocationAvailable: rtDeviceLocationAvailable,
+            deviceLocationUsed: rtDeviceLocationUsed,
+          });
           return false;
         }
 
@@ -2763,15 +2924,66 @@ function Chat() {
             lat = searchCtx.destinationLatLng.lat;
             lng = searchCtx.destinationLatLng.lng;
           } else {
+            logRtNearbyPush({
+              returned: false,
+              reason: "missing_location",
+              candidateCount: 0,
+              renderableCount: 0,
+              finalCount: 0,
+              scope: rtScope,
+              deviceLocationAvailable: rtDeviceLocationAvailable,
+              deviceLocationUsed: rtDeviceLocationUsed,
+            });
             return false;
           }
         }
       }
 
       if (lat == null || lng == null) {
+        logAiPipeline("[NEARBY_FALLBACK]", "reason=missing_location");
         console.warn("[CHAT_PLACES_REQUEST] skipped reason=no_location");
+        logShortcutRuntime("[RT_NEARBY_RESULT]", {
+          followup: matchesContinueRecommendationGrammar(userText) ? 1 : 0,
+          batch: (activeSession.recommendationSession?.recommendationPage ?? 0),
+          raw: 0,
+          renderable: 0,
+          final: 0,
+          fallbackReason: "missing_location",
+        });
+        logRtNearbyPush({
+          returned: false,
+          reason: "missing_location",
+          candidateCount: 0,
+          renderableCount: 0,
+          finalCount: 0,
+          scope: rtScope,
+          deviceLocationAvailable: rtDeviceLocationAvailable,
+          deviceLocationUsed: rtDeviceLocationUsed,
+        });
         return false;
       }
+      const nearbyFollowup =
+        matchesContinueRecommendationGrammar(userText) ||
+        (activeSession.normalizedShortcutRequest?.structured === true &&
+          activeSession.normalizedShortcutRequest.intent === "nearby_recommendation" &&
+          (userText.trim() === "不喜歡" || userText.trim() === "不喜欢"))
+          ? 1
+          : 0;
+      const nearbyBatch =
+        (activeSession.recommendationSession?.recommendationPage ?? 0) +
+        (nearbyFollowup ? 1 : 0);
+      const nearbyExcludedCount =
+        opts?.excludePlaceIds?.length ?? collectExcludePlaceIds(activeSession, conversation).length;
+      logAiPipeline(
+        "[NEARBY_CONTEXT]",
+        `followup=${nearbyFollowup}`,
+        `batch=${nearbyBatch}`,
+        `excludedCount=${nearbyExcludedCount}`,
+        `mode=${searchCtx.searchMode}`,
+        `destination=${searchCtx.destinationName ?? ""}`,
+        `lat=${lat.toFixed(4)}`,
+        `lng=${lng.toFixed(4)}`,
+      );
 
       const requestCheck = assertDestinationRequestNotUsingGps({
         searchMode: searchCtx.searchMode === "destination" ? "destination" : "current_location",
@@ -2786,6 +2998,16 @@ function Chat() {
       });
       if (!requestCheck.ok) {
         console.warn(`[CHAT_PLACES_REQUEST] skipped reason=${requestCheck.reason}`);
+        logRtNearbyPush({
+          returned: false,
+          reason: "other",
+          candidateCount: 0,
+          renderableCount: 0,
+          finalCount: 0,
+          scope: rtScope,
+          deviceLocationAvailable: rtDeviceLocationAvailable,
+          deviceLocationUsed: rtDeviceLocationUsed,
+        });
         return false;
       }
 
@@ -2797,11 +3019,43 @@ function Chat() {
         lng,
       });
 
-      const sessionForSave = merged.session;
+      const sessionForSave = sessionForSaveBase;
       const excludePlaceIds = opts?.excludePlaceIds ?? collectExcludePlaceIds(sessionForSave);
       const blockedCoreNames = opts?.blockedCoreNames ?? collectBlockedCoreNames(sessionForSave);
+      const continuationScene = resolveNearbyShortcutScene(userText, sessionForSave);
+      if (nearbyFollowup) {
+        logShortcutRuntime("[RT_CONTINUATION_CONTEXT]", {
+          shortcutScene: continuationScene ?? "",
+          intent,
+          scope: rtScope,
+          previousRecommendedCount:
+            sessionForSave.activeRecommendationContext?.previousPlaceIds.length ??
+            sessionForSave.recommendedPlaceIds?.length ??
+            sessionForSave.recommendedPlaces.length,
+          exclusionCount: excludePlaceIds.length,
+        });
+        logShortcutRuntime("[RT_CONTINUATION_FETCH]", {
+          willFetch: true,
+          reason: "structured_nearby_continuation",
+          scene: continuationScene ?? "",
+          scope: rtScope,
+          exclusionCount: excludePlaceIds.length,
+        });
+      }
 
-      if (!ensureSubscriptionHydratedForCredits(conversation)) return true;
+      if (!ensureSubscriptionHydratedForCredits(conversation)) {
+        logRtNearbyPush({
+          returned: true,
+          reason: "other",
+          candidateCount: 0,
+          renderableCount: 0,
+          finalCount: 0,
+          scope: rtScope,
+          deviceLocationAvailable: rtDeviceLocationAvailable,
+          deviceLocationUsed: rtDeviceLocationUsed,
+        });
+        return true;
+      }
       const placeCreditsGate = await beginPlaceRecommendationCredits({
         hasPlusAccess,
         metadata: { path: "nearby", intent },
@@ -2810,6 +3064,16 @@ function Chat() {
         setMsgs((prev) => {
           const base = prev.length === conversation.length ? conversation : prev;
           return [...base, { role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE }];
+        });
+        logRtNearbyPush({
+          returned: true,
+          reason: "other",
+          candidateCount: 0,
+          renderableCount: 0,
+          finalCount: 0,
+          scope: rtScope,
+          deviceLocationAvailable: rtDeviceLocationAvailable,
+          deviceLocationUsed: rtDeviceLocationUsed,
         });
         return true;
       }
@@ -2849,10 +3113,21 @@ function Chat() {
           focusPlaceId:
             workingSession.placeDetailFocus?.placeId ??
             workingSession.placeDetailFocus?.googlePlaceId,
+          shortcutScene: continuationScene,
+          fetchPlaceDetails: async (placeId) => {
+            const result = await fetchPlaceDetailsFn({ data: { placeId, locale } });
+            return result.place;
+          },
         });
         const sessionWithIntent: ChatPlanningSession = {
           ...sessionForSave,
           activeChatIntent: intent,
+          activeCategoryIntent:
+            intent === "restaurant"
+              ? "restaurant"
+              : intent === "cafe"
+                ? "cafe"
+                : "attraction",
           phase: "recommend",
           travelContext: {
             ...merged.context,
@@ -2860,15 +3135,130 @@ function Chat() {
               sessionForSave.excludedCategories ?? merged.context.excludedCategories,
           },
         };
+        const sessionWithNearbyContext: ChatPlanningSession = {
+          ...sessionWithIntent,
+          activeRecommendationContext: ensureActiveRecommendationContext(sessionWithIntent, {
+            destination:
+              searchCtx.destinationName ??
+              nearbyCenterLabel ??
+              sessionForSave.location?.city ??
+              merged.context.destination ??
+              "附近",
+            intent:
+              intent === "restaurant"
+                ? "restaurant"
+                : intent === "cafe"
+                  ? "cafe"
+                  : "attraction",
+            latitude: lat,
+            longitude: lng,
+            resolvedSearchCity: searchCtx.destinationName ?? sessionForSave.location?.city,
+            searchScope: searchCtx.searchMode === "nearby" ? "current_location" : "city",
+            shortcutScene: continuationScene ?? undefined,
+          }),
+        };
+        if (nearbyFollowup) {
+          logShortcutRuntime("[RT_CONTINUATION_HANDOFF]", {
+            scene: continuationScene ?? "",
+            searchReturnedCount:
+              shortcutDiagnostics?.searchReturnedCount ?? payload.recommendations?.length ?? 0,
+            callerReceivedCount: payload.recommendations?.length ?? 0,
+            rawStatsCount: shortcutDiagnostics?.rawCount ?? 0,
+            candidateArrayCount: payload.recommendations?.length ?? 0,
+            fallbackReason: (payload.recommendations?.length ?? 0) ? "" : "build_returned_empty",
+          });
+          logShortcutRuntime("[RT_CONTINUATION_STAGE]", {
+            stage: "before_display_policy",
+            count: payload.recommendations?.length ?? 0,
+            previousIdCount: excludePlaceIds.length,
+            currentCandidateIdsAddedToMemory: 0,
+          });
+        }
         const { summary: displaySummary, recommendations: filteredRecs } =
           finalizeChatRecommendationDisplay(
-            sessionWithIntent,
+            sessionWithNearbyContext,
             userText,
             summary,
             payload.recommendations ?? [],
           );
+        if (nearbyFollowup) {
+          logShortcutRuntime("[RT_CONTINUATION_STAGE]", {
+            stage: "after_display_policy",
+            count: filteredRecs.length,
+            previousIdCount: excludePlaceIds.length,
+            currentCandidateIdsAddedToMemory: 0,
+          });
+          const finalIds = new Set(
+            filteredRecs.map((item) => item.googlePlaceId ?? item.placeId ?? item.id ?? ""),
+          );
+          for (const item of payload.recommendations ?? []) {
+            const itemId = item.googlePlaceId ?? item.placeId ?? item.id ?? "";
+            if (finalIds.has(itemId)) continue;
+            logShortcutRuntime("[RT_CONTINUATION_DROP]", {
+              stage: "display_policy",
+              placeName: item.name ?? item.placeName ?? "",
+              placeId: itemId,
+              identityKey: itemId ? `google:${itemId}` : "",
+              reason: "display_policy_rejected",
+              matchedPreviousIdentity: "",
+            });
+          }
+          logShortcutRuntime("[RT_CONTINUATION_STAGE]", {
+            stage: "after_final_pick",
+            count: filteredRecs.length,
+            previousIdCount: excludePlaceIds.length,
+            currentCandidateIdsAddedToMemory: 0,
+          });
+        }
+        logAiPipeline(
+          "[NEARBY_CANDIDATES]",
+          `raw=${payload.recommendations?.length ?? 0}`,
+          `renderable=${filteredRecs.length}`,
+          `intent=${intent}`,
+        );
+        logShortcutRuntime("[RT_NEARBY_RESULT]", {
+          followup: nearbyFollowup,
+          batch: nearbyBatch,
+          raw: payload.recommendations?.length ?? 0,
+          renderable: filteredRecs.length,
+          final: filteredRecs.length,
+          fallbackReason: filteredRecs.length
+            ? ""
+            : (payload.recommendations ?? []).length > 0
+              ? "not_renderable"
+              : shortcutDiagnostics?.afterAlreadyRecommendedCount === 0
+                ? "all_excluded_previous"
+                : shortcutDiagnostics?.afterCanonicalIdCount === 0
+                  ? "canonical_invalid"
+                  : shortcutDiagnostics?.afterCategoryGuardCount === 0
+                    ? "category_filtered"
+                    : shortcutDiagnostics?.afterQualityCount === 0
+                      ? "quality_filtered"
+                      : "search_exhausted",
+        });
+        if (nearbyFollowup) {
+          const fallbackReason = filteredRecs.length
+            ? ""
+            : (payload.recommendations ?? []).length > 0
+              ? "not_renderable"
+              : shortcutDiagnostics?.afterAlreadyRecommendedCount === 0
+                ? "all_excluded_previous"
+                : shortcutDiagnostics?.afterCategoryGuardCount === 0
+                  ? "category_filtered"
+                  : "search_exhausted";
+          logShortcutRuntime("[RT_CONTINUATION_RESULT]", {
+            rawCount: shortcutDiagnostics?.rawCount ?? payload.recommendations?.length ?? 0,
+            filteredCount:
+              shortcutDiagnostics?.afterExclusionCount ?? payload.recommendations?.length ?? 0,
+            sceneCandidateCount:
+              shortcutDiagnostics?.afterCategoryGuardCount ?? payload.recommendations?.length ?? 0,
+            renderableCount: filteredRecs.length,
+            finalCount: filteredRecs.length,
+            fallbackReason,
+          });
+        }
         if (shortcutDiagnostics) {
-          shortcutDiagnostics.renderableCount = payload.recommendations?.length ?? 0;
+          shortcutDiagnostics.renderableCount = filteredRecs.length;
           shortcutDiagnostics.finalCardCount = filteredRecs.length;
           logShortcutRecommendationSummary(shortcutDiagnostics);
         }
@@ -2879,6 +3269,7 @@ function Chat() {
                 filteredRecs,
                 merged.context,
                 sessionForSave.excludedCategories ?? merged.context.excludedCategories,
+                resolveNearbyShortcutScene(userText, sessionForSave),
               )
             : displaySummary;
         devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: filteredRecs.length });
@@ -2886,7 +3277,7 @@ function Chat() {
         if (!filteredRecs.length) {
           await settleCreditsOperation(placeCreditsHandle, false);
           placeCreditsHandle = null;
-          if ((payload.recommendations ?? []).length === 0 && summary.trim()) {
+          if (!nearbyFollowup && (payload.recommendations ?? []).length === 0 && summary.trim()) {
             setMsgs((prev) => {
               const trimmedPrev = prev.filter(
                 (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
@@ -2896,9 +3287,49 @@ function Chat() {
             });
             persistSession(sessionWithIntent);
             setPartial({});
+            logAiPipeline("[NEARBY_FINAL]", "status=summary_only");
+            logRtResponseBranch("other");
+            logRtNearbyPush({
+              returned: true,
+              reason: "no_candidates",
+              candidateCount: payload.recommendations?.length ?? 0,
+              renderableCount: 0,
+              finalCount: 0,
+              scope: rtScope,
+              deviceLocationAvailable: rtDeviceLocationAvailable,
+              deviceLocationUsed: rtDeviceLocationUsed,
+            });
             return true;
           }
           console.warn("[CHAT_PLACE_CARD_RENDER] count=0 after_filter");
+          const fallbackReason =
+            (payload.recommendations?.length ?? 0) > 0
+              ? "not_renderable"
+              : shortcutDiagnostics?.afterAlreadyRecommendedCount === 0
+                ? "all_excluded_previous"
+                : shortcutDiagnostics?.afterCanonicalIdCount === 0
+                  ? "canonical_invalid"
+                  : shortcutDiagnostics?.afterCategoryGuardCount === 0
+                    ? "category_filtered"
+                    : shortcutDiagnostics?.afterQualityCount === 0
+                      ? "quality_filtered"
+                      : "search_exhausted";
+          logAiPipeline("[NEARBY_FALLBACK]", `reason=${fallbackReason}`);
+          logRtNearbyPush({
+            returned: false,
+            reason:
+              fallbackReason === "search_exhausted"
+                ? "no_candidates"
+                : fallbackReason === "not_renderable"
+                  ? "display_filtered_zero"
+                  : "not_renderable",
+            candidateCount: payload.recommendations?.length ?? 0,
+            renderableCount: filteredRecs.length,
+            finalCount: filteredRecs.length,
+            scope: rtScope,
+            deviceLocationAvailable: rtDeviceLocationAvailable,
+            deviceLocationUsed: rtDeviceLocationUsed,
+          });
           return false;
         }
 
@@ -2922,12 +3353,40 @@ function Chat() {
         });
 
         const recs = filteredRecs as ChatPlaceItem[];
+        const sessionWithCommittedNearbyContext: ChatPlanningSession = {
+          ...sessionWithNearbyContext,
+          activeRecommendationContext: ensureActiveRecommendationContext(sessionWithNearbyContext, {
+            destination:
+              searchCtx.destinationName ??
+              nearbyCenterLabel ??
+              sessionForSave.location?.city ??
+              merged.context.destination ??
+              "附近",
+            intent:
+              intent === "restaurant" ? "restaurant" : intent === "cafe" ? "cafe" : "attraction",
+            places: recs,
+            latitude: lat,
+            longitude: lng,
+            resolvedSearchCity: searchCtx.destinationName ?? sessionForSave.location?.city,
+            searchScope: searchCtx.searchMode === "nearby" ? "current_location" : "city",
+            shortcutScene: continuationScene ?? undefined,
+          }),
+        };
         persistSession(
           syncSessionPlaceMemory({
-            ...sessionWithIntent,
+            ...sessionWithCommittedNearbyContext,
             recommendedPlaces: recs,
           }),
         );
+        if (nearbyFollowup) {
+          logShortcutRuntime("[RT_CONTINUATION_STAGE]", {
+            stage: "after_final_pick",
+            count: recs.length,
+            previousIdCount: excludePlaceIds.length,
+            currentCandidateIdsAddedToMemory: recs.length,
+            memoryCommit: true,
+          });
+        }
         await settleCreditsOperation(placeCreditsHandle, true);
         placeCreditsHandle = null;
         devVerboseInfo(
@@ -2935,15 +3394,62 @@ function Chat() {
           `count=${recs.length}`,
           `excluded=${excludePlaceIds.length}`,
         );
+        logAiPipeline("[NEARBY_FINAL]", `count=${recs.length}`, `intent=${intent}`);
+        logRtResponseBranch("nearby_cards");
+        if (nearbyFollowup) logRtContinuationBranch("nearby_cards");
         setPartial({});
+        logRtNearbyPush({
+          returned: true,
+          reason: "other",
+          candidateCount: payload.recommendations?.length ?? 0,
+          renderableCount: filteredRecs.length,
+          finalCount: recs.length,
+          scope: rtScope,
+          deviceLocationAvailable: rtDeviceLocationAvailable,
+          deviceLocationUsed: rtDeviceLocationUsed,
+        });
         return true;
       } catch (e) {
         await settleCreditsOperation(placeCreditsHandle, false);
         console.warn("[CHAT_PLACES_REQUEST] failed", e instanceof Error ? e.message : String(e));
+        const fallbackReason =
+          e instanceof Error && e.message === "places_empty"
+            ? "search_exhausted"
+            : "provider_zero";
+        logAiPipeline("[NEARBY_FALLBACK]", `reason=${fallbackReason}`);
+        logShortcutRuntime("[RT_NEARBY_RESULT]", {
+          followup: nearbyFollowup,
+          batch: nearbyBatch,
+          raw: 0,
+          renderable: 0,
+          final: 0,
+          fallbackReason,
+        });
+        if (nearbyFollowup) {
+          logShortcutRuntime("[RT_CONTINUATION_RESULT]", {
+            rawCount: 0,
+            filteredCount: 0,
+            sceneCandidateCount: 0,
+            renderableCount: 0,
+            finalCount: 0,
+            fallbackReason,
+          });
+        }
+        logRtNearbyPush({
+          returned: false,
+          reason: fallbackReason === "provider_zero" ? "provider_zero" : "no_candidates",
+          candidateCount: 0,
+          renderableCount: 0,
+          finalCount: 0,
+          scope: rtScope,
+          deviceLocationAvailable: rtDeviceLocationAvailable,
+          deviceLocationUsed: rtDeviceLocationUsed,
+        });
         return false;
       }
     },
     [
+      logRtNearbyPush,
       locale,
       persistSession,
       searchNearbyPlaces,
@@ -3392,6 +3898,7 @@ function Chat() {
       }
     },
     [
+      logRtNoMoreReason,
       locale,
       persistSession,
       searchNearbyPlaces,
@@ -3891,6 +4398,15 @@ function Chat() {
           { role: "assistant" as const, content: noMoreCopy },
         ];
         setMsgs(exhaustedMsgs);
+        logRtNoMoreReason({
+          caller: "pushMorePlaceRecommendations",
+          route: "MORE_RECOMMENDATIONS",
+          followup: true,
+          hasActiveRecommendationContext: Boolean(
+            sessionWithUsed.activeRecommendationContext || sessionWithUsed.recommendationSession,
+          ),
+          reason: "continuation_exhausted",
+        });
         persistSession(
           {
             ...sessionWithUsed,
@@ -3906,6 +4422,7 @@ function Chat() {
           exhaustedMsgs,
         );
         await settlePlaceCredits(false);
+        logRtResponseBranch("no_more");
         return true;
       } catch (error) {
         loadingFinalizeReason = "error";
@@ -3922,6 +4439,7 @@ function Chat() {
       }
     },
     [
+      logRtNoMoreReason,
       locale,
       persistSession,
       searchNearbyPlaces,
@@ -3941,6 +4459,20 @@ function Chat() {
     ): Promise<boolean> => {
       const merged = mergeTravelContext(activeSession, userText);
       const placeCtx = mergeContextForPlaceFetch(merged.context, activeSession);
+      const shortcutNearby =
+        merged.session.normalizedShortcutRequest?.structured === true &&
+        merged.session.normalizedShortcutRequest.intent === "nearby_recommendation" &&
+        merged.session.normalizedShortcutRequest.mode === "rainy";
+      if (shortcutNearby) {
+        logShortcutRuntime("[RT_RAINY_ROUTE]", {
+          structured: true,
+          shortcutMode: "rainy",
+          destinationCategorySkipped: true,
+          genericPlaceRouteSkipped: true,
+          scope: "current_location",
+        });
+        return false;
+      }
       const intents = parseChatPlaceIntents(userText);
       if (!intents.length) return false;
       const provisionalArea = extractProvisionalDestinationAreaCandidate(userText);
@@ -3951,6 +4483,12 @@ function Chat() {
       });
       // An explicit district-only label must not silently inherit an older session destination.
       if (provisionalArea && !validatedAreaScope) {
+        logShortcutRuntime("[RT_RAINY_ROUTE]", {
+          diverted: true,
+          blockedFunction: "pushDestinationCategoryPlaceRecommendation",
+          reason: "provisional_geographic_clarification",
+          areaCandidate: provisionalArea.areaCandidate,
+        });
         const clarificationMsgs: ChatMsg[] = [
           ...conversation,
           {
@@ -4489,6 +5027,13 @@ function Chat() {
             },
           ];
           setMsgs(noMoreMsgs);
+          logRtNoMoreReason({
+            caller: "pushRecommendationRefinement",
+            route: "RECOMMENDATION_REFINEMENT",
+            followup: false,
+            hasActiveRecommendationContext: Boolean(sessionForSearch.activeRecommendationContext),
+            reason: "no_candidates",
+          });
           persistSession(
             {
               ...sessionForSearch,
@@ -4501,6 +5046,7 @@ function Chat() {
             },
             noMoreMsgs,
           );
+          logRtResponseBranch("no_more");
           return true;
         }
 
@@ -5752,9 +6298,33 @@ function Chat() {
     });
   };
 
-  const send = async (overrideText?: string, opts?: { source?: "user" | "auto" }) => {
+  const send = async (
+    overrideText?: string,
+    opts?: { source?: "user" | "auto" | "chat_shortcut" | "home_mood" },
+  ) => {
     const trimmed = (overrideText ?? text).trim();
     if (!trimmed || streaming || generating) return;
+
+    const rtSource: RtShortcutSource =
+      opts?.source === "home_mood"
+        ? "home_mood"
+        : opts?.source === "chat_shortcut"
+          ? "chat_shortcut"
+          : "free_text";
+    const rtNormalizedPreview =
+      opts?.source === "chat_shortcut"
+        ? resolveNormalizedShortcutRequestFromText(trimmed, "chat_shortcut")
+        : opts?.source === "home_mood"
+          ? (session.normalizedShortcutRequest ??
+            resolveNormalizedShortcutRequestFromText(trimmed, "home_mood"))
+          : null;
+    logShortcutRuntime("[RT_SHORTCUT_INPUT]", {
+      source: rtSource,
+      text: trimmed.slice(0, 80),
+      hasNormalizedRequest: Boolean(rtNormalizedPreview),
+      mode: rtNormalizedPreview?.mode ?? "",
+      intent: rtNormalizedPreview?.intent ?? "",
+    });
 
     // Refresh destination recommendations — keep dest/dates, clear discovery cache only.
     const wantsRefreshRecommendations =
@@ -6026,12 +6596,112 @@ function Chat() {
     }
 
     let nextSession = applyTripIntentToSession(trimmed, session);
+    const normalizedShortcutFromTurn = (() => {
+      if (opts?.source === "chat_shortcut") {
+        return resolveNormalizedShortcutRequestFromText(trimmed, "chat_shortcut");
+      }
+      if (opts?.source === "home_mood") {
+        return (
+          session.normalizedShortcutRequest ??
+          resolveNormalizedShortcutRequestFromText(trimmed, "home_mood")
+        );
+      }
+      return null;
+    })();
     if (opts?.source !== "auto") {
       markShortcutEngaged();
       nextSession = markHomeMoodShortcutEngaged(nextSession);
     }
     nextSession = applyQuickChipContext(trimmed, nextSession);
     nextSession = applyDiningContextFromText(trimmed, nextSession);
+    if (normalizedShortcutFromTurn) {
+      const shortcutContext = buildStructuredShortcutContext(
+        normalizedShortcutFromTurn.mode,
+        trimmed,
+      );
+      const modeMood = moodLabelForShortcutMode(normalizedShortcutFromTurn.mode);
+      const modeTripPurpose =
+        normalizedShortcutFromTurn.mode === "coffee"
+          ? "cafe"
+          : normalizedShortcutFromTurn.mode === "rainy"
+            ? "rainy_day"
+            : normalizedShortcutFromTurn.mode === "late_night"
+              ? "night_walk"
+              : normalizedShortcutFromTurn.mode === "sea"
+                ? "coastal"
+                : "relax";
+      const modeSetting =
+        normalizedShortcutFromTurn.mode === "coffee" || normalizedShortcutFromTurn.mode === "rainy"
+          ? "室內"
+          : normalizedShortcutFromTurn.mode === "relax"
+            ? "either"
+            : "室外";
+      const modeInterests =
+        normalizedShortcutFromTurn.mode === "coffee"
+          ? ["咖啡", normalizedShortcutFromTurn.modifiers?.quiet ? "安靜" : ""]
+          : normalizedShortcutFromTurn.mode === "rainy"
+            ? ["室內", "避雨"]
+            : normalizedShortcutFromTurn.mode === "late_night"
+              ? ["夜景", "散步"]
+              : normalizedShortcutFromTurn.mode === "sea"
+                ? ["海邊", "散步"]
+                : ["放鬆", "慢步"];
+      nextSession = {
+        ...nextSession,
+        shortcutContext,
+        normalizedShortcutRequest: normalizedShortcutFromTurn,
+        fromMoodFlow:
+          normalizedShortcutFromTurn.source === "chat_shortcut"
+            ? true
+            : nextSession.fromMoodFlow,
+        homeMoodShortcutEntry:
+          normalizedShortcutFromTurn.source === "home_mood"
+            ? true
+            : nextSession.homeMoodShortcutEntry,
+        activeChatIntent:
+          normalizedShortcutFromTurn.mode === "coffee" ? "cafe" : "attraction",
+        // New shortcut request must not consume stale continuation snapshot.
+        recommendationSession: undefined,
+        activeRecommendationContext: undefined,
+        pendingQuestion: undefined,
+        adviceSelectionThisTurn: undefined,
+        lastResolvedPendingQuestion: undefined,
+        pendingClarification: undefined,
+        conversationMode: undefined,
+        chatPlanningState: "idle",
+        tripPlanningContext: {
+          ...(nextSession.tripPlanningContext ?? { selectedPlaces: [] }),
+          selectedPlaces: [],
+          intent: "general",
+        },
+        travelContext: {
+          ...(nextSession.travelContext ?? { interests: [] }),
+          mood: modeMood,
+          setting: modeSetting,
+          tripPurpose: modeTripPurpose,
+          interests: [
+            ...new Set([
+              ...((nextSession.travelContext?.interests as string[] | undefined) ?? []),
+              ...modeInterests.filter(Boolean),
+            ]),
+          ],
+        },
+      };
+      logAiPipeline(
+        "[SHORTCUT_NORMALIZED]",
+        `source=${normalizedShortcutFromTurn.source}`,
+        `mode=${normalizedShortcutFromTurn.mode}`,
+        `intent=${normalizedShortcutFromTurn.intent}`,
+        "structured=true",
+      );
+    }
+    logShortcutRuntime("[RT_SHORTCUT_NORMALIZED]", {
+      source: normalizedShortcutFromTurn?.source ?? rtSource,
+      mode: normalizedShortcutFromTurn?.mode ?? "",
+      intent: normalizedShortcutFromTurn?.intent ?? "",
+      quiet: Boolean(normalizedShortcutFromTurn?.modifiers?.quiet),
+      structured: Boolean(normalizedShortcutFromTurn?.structured),
+    });
 
     const lastAssistantReply = [...msgs]
       .reverse()
@@ -6039,7 +6709,10 @@ function Chat() {
     nextSession = prepareSessionForUserTurn(nextSession, lastAssistantReply);
 
     const pendingGeographic = nextSession.pendingClarification;
-    if (pendingGeographic?.kind === "destination_area") {
+    const nearbyShortcutTurn =
+      nextSession.normalizedShortcutRequest?.structured === true &&
+      nextSession.normalizedShortcutRequest.intent === "nearby_recommendation";
+    if (pendingGeographic?.kind === "destination_area" && !nearbyShortcutTurn) {
       if (isPlaceClarificationTripPlanningOverride(trimmed)) {
         nextSession = { ...nextSession, pendingClarification: undefined };
       } else {
@@ -6105,6 +6778,7 @@ function Chat() {
         ];
         setMsgs(reaskMsgs);
         persistSession(nextSession, reaskMsgs);
+        logRtResponseBranch("destination_clarification");
         return;
       }
     }
@@ -6124,6 +6798,37 @@ function Chat() {
     const planningMerge = mergeTripPlanningContext(trimmed, nextSession, merged.context);
     nextSession = planningMerge.session;
     const conversationMode = resolveConversationMode(trimmed, nextSession);
+
+    const rtArbitration = resolveChatIntentArbitration(trimmed, nextSession);
+    const rtIntent = resolveChatIntent(trimmed, nextSession);
+    const rtNearbyIntent = inferNearbyIntentFromContext(merged.context, trimmed, nextSession);
+    logShortcutRuntime("[RT_INTENT_RESULT]", {
+      resolvedIntent: rtIntent,
+      resolvedRoute: rtArbitration.route,
+      reason: rtArbitration.reason,
+      planningState: nextSession.chatPlanningState ?? nextSession.conversationMode ?? "",
+      activeRecommendationIntent:
+        nextSession.activeRecommendationContext?.intent ?? nextSession.activeCategoryIntent ?? "",
+    });
+    const rtStructuredNearby =
+      nextSession.normalizedShortcutRequest?.structured === true &&
+      nextSession.normalizedShortcutRequest?.intent === "nearby_recommendation";
+    if (rtStructuredNearby) {
+      nextSession = await resolveChatLocation(nextSession);
+    }
+    const rtNearbyScope = resolveNearbyRecommendationScope(
+      nextSession,
+      merged.context.destination,
+    );
+    logShortcutRuntime("[RT_NEARBY_SCOPE]", {
+      isNearbyIntent: isNearbyPlaceIntent(rtIntent) || Boolean(rtNearbyIntent),
+      scope: rtNearbyScope.scope,
+      deviceLocationAvailable: rtNearbyScope.deviceLocationAvailable,
+      deviceLocationUsed:
+        (isNearbyPlaceIntent(rtIntent) || Boolean(rtNearbyIntent)) &&
+        rtNearbyScope.deviceLocationUsed,
+      routeMode: conversationMode ?? "",
+    });
 
     const destCandidate =
       merged.context.destination?.trim() ||
@@ -6288,7 +6993,109 @@ function Chat() {
         return;
       }
 
-      if (shouldRefetchPlaces(trimmed, nextSession, merged.context, msgs)) {
+      const structuredShortcutNegativeFeedback =
+        nextSession.normalizedShortcutRequest?.structured === true &&
+        nextSession.normalizedShortcutRequest.intent === "nearby_recommendation" &&
+        (trimmed === "不喜歡" || trimmed === "不喜欢");
+      if (
+        shouldRefetchPlaces(trimmed, nextSession, merged.context, msgs) ||
+        structuredShortcutNegativeFeedback
+      ) {
+        const continuationArbitration = resolveChatIntentArbitration(trimmed, nextSession);
+        const continueNearbyIntent = resolveRefreshNearbyIntent(
+          nextSession,
+          nextSession.travelContext ?? merged.context,
+        );
+        const continuationFollowup =
+          matchesContinueRecommendationGrammar(trimmed) || structuredShortcutNegativeFeedback;
+        const continuationScene =
+          nextSession.activeRecommendationContext?.shortcutScene ??
+          resolveNearbyShortcutScene(trimmed, nextSession);
+        logShortcutRuntime("[RT_CONTINUATION_INPUT]", {
+          text: trimmed,
+          resolvedRoute: continuationArbitration.route,
+          followup: continuationFollowup,
+          previousIntent:
+            nextSession.activeRecommendationContext?.intent ??
+            resolveActiveCategoryIntent(nextSession) ??
+            "",
+          shortcutScene: continuationScene ?? "",
+          scope:
+            nextSession.activeRecommendationContext?.searchScope ??
+            (sessionHasLocation(nextSession) ? "current_location" : ""),
+          activeContext: Boolean(nextSession.activeRecommendationContext),
+        });
+        const hasDestinationSnapshot = Boolean(
+          nextSession.activeRecommendationContext?.destinationName?.trim() ||
+            nextSession.recommendationSession?.destination?.trim() ||
+            nextSession.travelContext?.destination?.trim() ||
+            nextSession.tripPlanningContext?.destination?.trim() ||
+            nextSession.tripDestination?.city?.trim(),
+        );
+        const isCurrentLocationShortcutSession =
+          nextSession.normalizedShortcutRequest?.structured === true &&
+          nextSession.normalizedShortcutRequest?.intent === "nearby_recommendation" &&
+          Boolean(continuationScene) &&
+          sessionHasLocation(nextSession);
+        if (
+          continueNearbyIntent &&
+          (!hasDestinationSnapshot || isCurrentLocationShortcutSession) &&
+          sessionHasLocation(nextSession)
+        ) {
+          const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+          setMsgs(next);
+          setText("");
+          logAiPipeline(
+            "[NEARBY_CONTEXT]",
+            `followup=1`,
+            `intent=${continueNearbyIntent}`,
+            `lat=${nextSession.location?.lat ?? ""}`,
+            `lng=${nextSession.location?.lng ?? ""}`,
+          );
+          setStreaming(true);
+          try {
+            const applied = await pushNearbyPlaceRecommendation(
+              {
+                ...nextSession,
+                travelContext: {
+                  ...(nextSession.travelContext ?? merged.context),
+                  tripPurpose: "more_place_recommendations",
+                },
+              },
+              trimmed,
+              next,
+              continueNearbyIntent,
+              {
+                excludePlaceIds: collectExcludePlaceIds(nextSession, msgs),
+                rejectedPlaceNames: nextSession.rejectedPlaceNames,
+                blockedCoreNames: collectBlockedCoreNames(nextSession, msgs),
+                userText: trimmed,
+                cityLabel: nextSession.location?.city ?? undefined,
+              },
+            );
+            if (applied) return;
+          } finally {
+            setStreaming(false);
+          }
+          if (isCurrentLocationShortcutSession) {
+            logRtNoMoreReason({
+              caller: "send.refetch.structured_nearby_continuation",
+              route: continuationArbitration.route,
+              followup: continuationFollowup,
+              hasActiveRecommendationContext: Boolean(nextSession.activeRecommendationContext),
+              reason: "continuation_exhausted",
+            });
+            logRtResponseBranch("no_more");
+            logRtContinuationBranch("no_more");
+            const noMoreMsgs = [
+              ...next,
+              { role: "assistant" as const, content: NO_MORE_RECOMMENDATIONS_MESSAGE },
+            ];
+            setMsgs(noMoreMsgs);
+            persistSession(nextSession, noMoreMsgs);
+            return;
+          }
+        }
         // Continue recommendations must reuse ActiveRecommendationContext / Snapshot
         // whenever present — not only when refinement slots (cuisine/budget) are set.
         if (
@@ -6362,6 +7169,15 @@ function Chat() {
             ...next,
             { role: "assistant" as const, content: noMoreCopy },
           ];
+          logRtNoMoreReason({
+            caller: "send.refetch.active_context",
+            route: "MORE_RECOMMENDATIONS",
+            followup: true,
+            hasActiveRecommendationContext: Boolean(
+              nextSession.activeRecommendationContext || nextSession.recommendationSession,
+            ),
+            reason: "continuation_exhausted",
+          });
           setMsgs(noMoreMsgs);
           persistSession(
             {
@@ -6374,6 +7190,7 @@ function Chat() {
             },
             noMoreMsgs,
           );
+          logRtResponseBranch("no_more");
           return;
         }
         nextSession = applyRefreshRecommendationSession(trimmed, nextSession);
@@ -6439,6 +7256,15 @@ function Chat() {
             ...next,
             { role: "assistant" as const, content: noMoreCopy },
           ];
+          logRtNoMoreReason({
+            caller: "send.refetch.preserved_session",
+            route: "MORE_RECOMMENDATIONS",
+            followup: true,
+            hasActiveRecommendationContext: Boolean(
+              nextSession.activeRecommendationContext || nextSession.recommendationSession,
+            ),
+            reason: "continuation_exhausted",
+          });
           setMsgs(noMoreMsgs);
           persistSession(
             {
@@ -6448,6 +7274,7 @@ function Chat() {
             },
             noMoreMsgs,
           );
+          logRtResponseBranch("no_more");
           return;
         }
 
@@ -6482,7 +7309,30 @@ function Chat() {
           }
         }
 
+        if (!sessionHasLocation(nextSession) && !refreshCtx.destination?.trim()) {
+          logAiPipeline("[NEARBY_FALLBACK]", "reason=followup_context_missing");
+          setMsgs([
+            ...next,
+            {
+              role: "assistant",
+              content: "我可以繼續幫你找，先告訴我你想從哪個地區開始。",
+            },
+          ]);
+          logRtResponseBranch("destination_clarification");
+          return;
+        }
+
         logChatMorePlacesNoResultAllowed(true);
+        logRtNoMoreReason({
+          caller: "send.refetch.final_fallback",
+          route: "MORE_RECOMMENDATIONS",
+          followup: true,
+          hasActiveRecommendationContext: Boolean(
+            nextSession.activeRecommendationContext || nextSession.recommendationSession,
+          ),
+          reason: "nearby_push_failed",
+        });
+        logRtResponseBranch("no_more");
         setMsgs([...next, { role: "assistant", content: NO_MORE_RECOMMENDATIONS_MESSAGE }]);
         return;
       }
@@ -6598,6 +7448,94 @@ function Chat() {
         setText("");
         const arbitration = resolveChatIntentArbitration(trimmed, nextSession);
         if (arbitration.route === "NEW_RECOMMENDATION") {
+          const structuredNearbyShortcut =
+            nextSession.normalizedShortcutRequest?.structured === true &&
+            nextSession.normalizedShortcutRequest?.intent === "nearby_recommendation";
+          if (structuredNearbyShortcut) {
+            nextSession = await resolveChatLocation(nextSession);
+            persistSession(nextSession);
+            const nearbyScope = resolveNearbyRecommendationScope(
+              nextSession,
+              refreshedPlaceCtx.destination,
+            );
+            const effective = getEffectiveLocationSnapshot();
+            logShortcutRuntime("[RT_NEARBY_SCOPE]", {
+              isNearbyIntent: true,
+              scope: nearbyScope.scope,
+              deviceLocationAvailable: nearbyScope.deviceLocationAvailable,
+              deviceLocationUsed: nearbyScope.deviceLocationUsed,
+              routeMode: conversationMode ?? "",
+            });
+            const resolvedIntent = resolveChatIntent(trimmed, nextSession);
+            const nearbyIntent = isNearbyPlaceIntent(resolvedIntent)
+              ? resolvedIntent
+              : inferNearbyIntentFromContext(
+                  nextSession.travelContext ?? merged.context,
+                  trimmed,
+                  nextSession,
+                );
+            const willCall =
+              Boolean(nearbyIntent) &&
+              nearbyScope.scope === "current_location" &&
+              nearbyScope.deviceLocationAvailable;
+            const pushCallReason = willCall
+              ? "location_ready"
+              : !nearbyScope.deviceLocationAvailable
+                ? "missing_location"
+                : nearbyScope.hasExplicitDestination
+                  ? "explicit_destination"
+                  : "missing_nearby_intent";
+            logShortcutRuntime("[RT_NEARBY_PUSH_CALL]", {
+              willCall,
+              reason: pushCallReason,
+              scope: nearbyScope.scope,
+              latPresent: nextSession.location?.lat != null,
+              lngPresent: nextSession.location?.lng != null,
+              locationSource: effective?.source ?? (nearbyScope.deviceLocationAvailable ? "session" : ""),
+            });
+            if (willCall && nearbyIntent) {
+              setStreaming(true);
+              try {
+                const appliedNearby = await pushNearbyPlaceRecommendation(
+                  nextSession,
+                  trimmed,
+                  next,
+                  nearbyIntent,
+                );
+                if (appliedNearby) return;
+              } finally {
+                setStreaming(false);
+              }
+              logRtResponseBranch("other");
+              setMsgs([
+                ...next,
+                { role: "assistant", content: t("home.nearbySlowEmpty") },
+              ]);
+              persistSession(nextSession);
+              return;
+            }
+            if (!nearbyScope.deviceLocationAvailable) {
+              logAiPipeline("[NEARBY_FALLBACK]", "reason=missing_location");
+              logRtResponseBranch("destination_clarification");
+              setMsgs([
+                ...next,
+                {
+                  role: "assistant",
+                  content:
+                    "我可以幫你找附近推薦，先告訴我你現在在哪個地區或城市。",
+                },
+              ]);
+              persistSession(nextSession);
+              return;
+            }
+            logRtResponseBranch("other");
+            setMsgs([
+              ...next,
+              { role: "assistant", content: t("home.nearbySlowEmpty") },
+            ]);
+            persistSession(nextSession);
+            return;
+          }
           const appliedNew = await pushDestinationCategoryPlaceRecommendation(
             { ...nextSession, travelContext: refreshedPlaceCtx },
             trimmed,
@@ -6630,7 +7568,61 @@ function Chat() {
         }
         const applied = await pushRecommendationRefinement(nextSession, trimmed, next);
         if (applied) return;
-        // Refinement search failed — stay on recommendation path (do not open combinations).
+        const firstTurnNewRecommendation =
+          arbitration.route === "NEW_RECOMMENDATION" &&
+          !matchesContinueRecommendationGrammar(trimmed) &&
+          !nextSession.activeRecommendationContext &&
+          !nextSession.recommendationSession;
+        if (firstTurnNewRecommendation) {
+          const destLabel =
+            resolveDestinationForCategorySearch(refreshedPlaceCtx, nextSession, trimmed) ??
+            refreshedPlaceCtx.destination?.trim() ??
+            "";
+          if (destLabel) {
+            logRtResponseBranch("other");
+            setMsgs([
+              ...next,
+              {
+                role: "assistant",
+                content: `目前在${destLabel}暫時找不到符合的地點，可以換個描述或稍後再試。`,
+              },
+            ]);
+            persistSession(nextSession);
+            return;
+          }
+          if (!sessionHasLocation(nextSession)) {
+            logAiPipeline("[NEARBY_FALLBACK]", "reason=missing_location");
+            logRtResponseBranch("destination_clarification");
+            setMsgs([
+              ...next,
+              {
+                role: "assistant",
+                content:
+                  "我可以幫你找附近推薦，先告訴我你現在在哪個地區或城市。",
+              },
+            ]);
+            persistSession(nextSession);
+            return;
+          }
+          logRtResponseBranch("other");
+          setMsgs([
+            ...next,
+            { role: "assistant", content: t("home.nearbySlowEmpty") },
+          ]);
+          persistSession(nextSession);
+          return;
+        }
+        // Continuation / exhausted recommendation only — never first-turn NEW_RECOMMENDATION.
+        logRtNoMoreReason({
+          caller: "send.refinement.route",
+          route: arbitration.route,
+          followup: matchesContinueRecommendationGrammar(trimmed),
+          hasActiveRecommendationContext: Boolean(
+            nextSession.activeRecommendationContext || nextSession.recommendationSession,
+          ),
+          reason: "nearby_push_failed",
+        });
+        logRtResponseBranch("no_more");
         setMsgs([
           ...next,
           {
@@ -6740,6 +7732,7 @@ function Chat() {
                   "destination_selected_duration_missing",
                 ),
               );
+              logRtResponseBranch("trip_duration_question");
               return;
             }
           }
@@ -6824,6 +7817,7 @@ function Chat() {
                 "missing_trip_duration",
               ),
             );
+            logRtResponseBranch("trip_duration_question");
             return;
           }
           const discoveryFailure = getLastCombinationDiscoveryFailure();
@@ -6965,6 +7959,30 @@ function Chat() {
       }
 
       const route = resolveChatRoute(trimmed, merged.context, nextSession, locale, intent);
+      if (normalizedShortcutFromTurn) {
+        logAiPipeline("[SHORTCUT_ROUTE]", `route=${route.mode}`);
+      }
+      logShortcutRuntime("[RT_NEARBY_SCOPE]", {
+        isNearbyIntent: isNearbyPlaceIntent(intent) || Boolean(inferredNearbyIntent),
+        scope:
+          merged.context.destination?.trim() ||
+          nextSession.travelContext?.destination?.trim() ||
+          nextSession.tripDestination?.city?.trim()
+            ? "destination"
+            : sessionHasLocation(nextSession)
+              ? "current_location"
+              : "none",
+        deviceLocationAvailable: sessionHasLocation(nextSession),
+        deviceLocationUsed:
+          (isNearbyPlaceIntent(intent) || Boolean(inferredNearbyIntent)) &&
+          sessionHasLocation(nextSession) &&
+          !(
+            merged.context.destination?.trim() ||
+            nextSession.travelContext?.destination?.trim() ||
+            nextSession.tripDestination?.city?.trim()
+          ),
+        routeMode: route.mode,
+      });
       const tripIntent = parseTripIntentFromText(trimmed, nextSession);
 
       if (
@@ -6991,10 +8009,7 @@ function Chat() {
       const tryNearbyRecommendation = async (
         nearbyIntent: import("@/lib/ai/chat-intent").NearbyPlaceIntent,
       ): Promise<boolean> => {
-        if (
-          !shouldFetchNearbyPlaces(nearbyIntent, nextSession, trimmed) ||
-          !sessionHasLocation(nextSession)
-        ) {
+        if (!shouldFetchNearbyPlaces(nearbyIntent, nextSession, trimmed)) {
           const shortcut = resolveChatShortcutContext(trimmed);
           if (shortcut) {
             logShortcutRecommendationRequestNotSent(
@@ -7018,6 +8033,27 @@ function Chat() {
             nearbyIntent,
           );
           if (applied) return true;
+          const noKnownLocation =
+            !sessionHasLocation(nextSession) &&
+            !(
+              nextSession.travelContext?.destination?.trim() ||
+              nextSession.activeRecommendationContext?.destinationName?.trim() ||
+              nextSession.recommendationSession?.destination?.trim() ||
+              nextSession.tripPlanningContext?.destination?.trim() ||
+              nextSession.tripDestination?.city?.trim()
+            );
+          if (noKnownLocation) {
+            logAiPipeline("[NEARBY_FALLBACK]", "reason=missing_location");
+            logRtResponseBranch("destination_clarification");
+            setMsgs([
+              ...next,
+              {
+                role: "assistant",
+                content: "我可以幫你找附近推薦，先告訴我你現在在哪個地區或城市。",
+              },
+            ]);
+            return true;
+          }
           return await applyLocalFallback(nextSession, trimmed, next, "places_empty");
         } finally {
           setStreaming(false);
@@ -7081,8 +8117,20 @@ function Chat() {
           setMsgs([...next, { role: "assistant", content: question }]);
           return;
         }
-        if (inferredNearbyIntent && conversationMode !== "destination_planning") {
-          const applied = await tryNearbyRecommendation(inferredNearbyIntent);
+        const nearbyIntentForClarify =
+          inferredNearbyIntent ??
+          (nextSession.activeChatIntent && isNearbyPlaceIntent(nextSession.activeChatIntent)
+            ? nextSession.activeChatIntent
+            : null);
+        const shouldBypassLocationClarify =
+          route.missingKey === "destination" &&
+          nearbyIntentForClarify != null &&
+          sessionHasLocation(nextSession);
+        if (
+          nearbyIntentForClarify &&
+          (conversationMode !== "destination_planning" || shouldBypassLocationClarify)
+        ) {
+          const applied = await tryNearbyRecommendation(nearbyIntentForClarify);
           if (applied) return;
         }
         nextSession = markAskedClarifyKey(nextSession, route.missingKey);
@@ -7090,6 +8138,9 @@ function Chat() {
           ...nextSession,
           pendingQuestion: route.pendingQuestion,
         });
+        logRtResponseBranch(
+          route.missingKey === "destination" ? "destination_clarification" : "other",
+        );
         setMsgs([...next, { role: "assistant", content: route.question }]);
         return;
       }
@@ -7172,6 +8223,16 @@ function Chat() {
         }
 
         if (!isBudgetRefinementText(trimmed)) {
+          logRtNoMoreReason({
+            caller: "send.refinement.budget",
+            route: "RECOMMENDATION_REFINEMENT",
+            followup: false,
+            hasActiveRecommendationContext: Boolean(
+              nextSession.activeRecommendationContext || nextSession.recommendationSession,
+            ),
+            reason: "nearby_push_failed",
+          });
+          logRtResponseBranch("no_more");
           setMsgs([...next, { role: "assistant", content: NO_MORE_RECOMMENDATIONS_MESSAGE }]);
           return;
         }
@@ -7252,6 +8313,7 @@ function Chat() {
       }
 
       await streamChat(next, { phase: route.chatPhase, userText: trimmed }, nextSession);
+      logRtResponseBranch("general_chat");
     } catch (error) {
       logAppError("CHAT_STATE_MACHINE_ERROR", error);
       console.warn(
@@ -8116,7 +9178,7 @@ function Chat() {
             inputRef={inputRef}
             generating={generating}
             streaming={streaming}
-            onChipSend={(s) => void send(s)}
+            onChipSend={(s) => void send(s, { source: "chat_shortcut" })}
             actionChips={actionChips}
           />
         </div>

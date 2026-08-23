@@ -22,14 +22,25 @@ assert.deepEqual(quiet.shortcutContext, {
 assert.equal(
   isPlaceEligibleForShortcutScene({ primaryType: "cafe", types: ["cafe"] }, "quiet_cafe"),
   true,
-  "quiet is a preference, not a hard evidence filter",
+);
+assert.equal(
+  isPlaceEligibleForShortcutScene({ primaryType: "museum", name: "佛光緣美術館" }, "quiet_cafe"),
+  false,
+);
+assert.equal(
+  isPlaceEligibleForShortcutScene({ primaryType: "tourist_attraction", name: "光雕橋" }, "quiet_cafe"),
+  false,
+);
+assert.equal(
+  isPlaceEligibleForShortcutScene({ primaryType: "park", name: "凹子底森林公園" }, "quiet_cafe"),
+  false,
 );
 
 const relax = applyQuickChipContext("今天想放鬆走走", session);
 assert.equal(relax.shortcutContext?.scene, "relax_walk");
 assert.deepEqual([...RELAX_WALK_INCLUDED_TYPES], [
-  "tourist_attraction",
   "park",
+  "garden",
   "museum",
   "art_gallery",
 ]);

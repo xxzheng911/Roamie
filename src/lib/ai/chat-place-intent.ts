@@ -3,6 +3,7 @@ import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { SearchAttempt } from "@/lib/ai/chat-place-recommendation";
 import { buildCafeSearchAttempts } from "@/lib/ai/chat-cafe-search";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { logShortcutRuntime } from "@/lib/ai/shortcut-runtime-diag";
 import {
   hasCategoryPlaceQuery,
   type ChatPlaceCategoryIntent,
@@ -111,7 +112,23 @@ export function shouldFetchDestinationCategoryPlaces(
   if (isFutureTripPlanningStatement(t) || isCountryCityInquiryText(t)) return false;
   if (!hasCategoryPlaceQuery(t)) return false;
 
+  const rainyNearbyShortcut =
+    session.normalizedShortcutRequest?.structured === true &&
+    session.normalizedShortcutRequest.intent === "nearby_recommendation" &&
+    session.normalizedShortcutRequest.mode === "rainy";
   const destination = resolveDestinationForCategorySearch(ctx, session, t);
+  // Nearby shortcuts must never enter destination-category geographic clarification,
+  // even if a leftover trip destination is still on the session.
+  if (rainyNearbyShortcut) {
+    logShortcutRuntime("[RT_RAINY_ROUTE]", {
+      structured: true,
+      shortcutMode: "rainy",
+      destinationCategorySkipped: true,
+      genericPlaceRouteSkipped: true,
+      scope: "current_location",
+    });
+    return false;
+  }
   const pendingGeographic = destination
     ? null
     : extractProvisionalDestinationAreaCandidate(t);

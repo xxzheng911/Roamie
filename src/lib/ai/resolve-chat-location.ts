@@ -1,8 +1,48 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
-import { getEffectiveLocationSnapshot } from "@/lib/effective-location";
+import { ensureEffectiveLocationBootstrap, getEffectiveLocationSnapshot } from "@/lib/effective-location";
 import { requestDeviceLocation } from "@/lib/device-location";
 import { isAppActiveForLocation } from "@/lib/location-app-gate";
+
+export type NearbyRecommendationScope = "destination" | "current_location" | "none";
+
+/** Recompute nearby vs destination scope from the latest session snapshot. */
+export function resolveNearbyRecommendationScope(
+  session: ChatPlanningSession,
+  extraDestination?: string,
+): {
+  scope: NearbyRecommendationScope;
+  hasExplicitDestination: boolean;
+  deviceLocationAvailable: boolean;
+  deviceLocationUsed: boolean;
+} {
+  const isNearbyShortcut =
+    session.normalizedShortcutRequest?.structured === true &&
+    session.normalizedShortcutRequest.intent === "nearby_recommendation";
+  const hasExplicitDestination = isNearbyShortcut
+    ? false
+    : Boolean(
+        extraDestination?.trim() ||
+          session.travelContext?.destination?.trim() ||
+          session.tripPlanningContext?.destination?.trim() ||
+          session.tripDestination?.city?.trim(),
+      );
+  const lat = session.location?.lat;
+  const lng = session.location?.lng;
+  const deviceLocationAvailable =
+    lat != null && lng != null && (Math.abs(lat) > 0.001 || Math.abs(lng) > 0.001);
+  const scope: NearbyRecommendationScope = hasExplicitDestination
+    ? "destination"
+    : deviceLocationAvailable
+      ? "current_location"
+      : "none";
+  return {
+    scope,
+    hasExplicitDestination,
+    deviceLocationAvailable,
+    deviceLocationUsed: deviceLocationAvailable && !hasExplicitDestination,
+  };
+}
 
 /** 聊聊推薦用定位：session → effective-location → device GPS（僅前景、非必須） */
 export async function resolveChatLocation(
@@ -32,6 +72,29 @@ export async function resolveChatLocation(
         city: effective.city,
       },
     };
+  }
+
+  // Chat shortcut may race ahead of location bootstrap; wait once for the
+  // same effective-location source used by Home before falling back.
+  try {
+    const bootstrapped = await ensureEffectiveLocationBootstrap();
+    if (bootstrapped?.lat != null && bootstrapped?.lng != null) {
+      devVerboseInfo(
+        `[CHAT_LOCATION] lat=${bootstrapped.lat} lng=${bootstrapped.lng} source=${bootstrapped.source} fallback=${bootstrapped.isFallback}`,
+      );
+      return {
+        ...session,
+        location: {
+          lat: bootstrapped.lat,
+          lng: bootstrapped.lng,
+          city: bootstrapped.city,
+        },
+      };
+    }
+  } catch (e) {
+    console.warn(
+      `[CHAT_LOCATION] bootstrap_unavailable message=${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 
   if (!isAppActiveForLocation()) {

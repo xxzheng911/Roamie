@@ -20,6 +20,7 @@ const inFlightMap = new Map<string, Promise<PlacesSearchResult>>();
 const failedKeyUntil = new Map<string, number>();
 const clientFallbackAttempted = new Set<string>();
 const skipLogAt = new Map<string, number>();
+const lastCacheStatus = new Map<string, "hit" | "miss" | "inflight">();
 const SKIP_LOG_THROTTLE_MS = 30_000;
 
 function nearbyGroupsKey(groups?: string[][]): string {
@@ -58,6 +59,10 @@ export function buildPlacesSearchKey(
   const query = (scope?.query ?? data.query ?? "").trim();
   const mode = scope?.mode ?? data.mode;
   return `${base}|${radius}|${mode}|${query}|${types}|${groups}`;
+}
+
+export function readPlacesSearchCacheStatus(key: string): "hit" | "miss" | "inflight" | "unknown" {
+  return lastCacheStatus.get(key) ?? "unknown";
 }
 
 function isFailedKey(key: string, now = Date.now()): boolean {
@@ -110,14 +115,17 @@ export function getPlacesSearchCachedOrRun(
 
   const cached = readUnifiedPlaceSearchCache(key, { ignoreCache: forceRefresh });
   if (cached && cached.places.length > 0) {
+    lastCacheStatus.set(key, "hit");
     logPlacesCacheHit(key);
     return Promise.resolve(cached);
   }
 
   logPlacesCacheMiss(key);
+  lastCacheStatus.set(key, "miss");
 
   const inflight = inFlightMap.get(key);
   if (inflight) {
+    lastCacheStatus.set(key, "inflight");
     logPlacesDedupePending(key);
     return inflight;
   }

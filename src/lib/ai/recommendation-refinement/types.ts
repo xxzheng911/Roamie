@@ -5,6 +5,7 @@
 import type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { RecommendationSearchScope } from "@/lib/ai/conversation-recommendation-session";
+import type { ChatShortcutScene } from "@/lib/ai/chat-intent";
 
 export type RecommendationIntent =
   | "restaurant"
@@ -37,6 +38,8 @@ export type ActiveRecommendationContext = {
   parentCity?: string;
   area?: string;
   searchScope?: RecommendationSearchScope;
+  /** Structured Nearby scene retained across continuation turns. */
+  shortcutScene?: ChatShortcutScene;
   latitude?: number;
   longitude?: number;
   radius?: number;

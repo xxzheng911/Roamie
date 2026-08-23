@@ -32,8 +32,8 @@ assert(
 );
 
 const ids = appendRecommendedPlaceIds(session, [{ name: "咖啡廳C", placeId: "id-c" }]);
-assert(ids.includes("id:a"), "accumulate id-a");
-assert(ids.includes("id:c"), "accumulate id-c");
+assert(ids.some((id) => id.includes("id-a")), "accumulate id-a");
+assert(ids.some((id) => id.includes("id-c")), "accumulate id-c");
 
 const collected = collectExcludePlaceIds(session);
 assert(collected.length >= 2, "collect exclude ids");

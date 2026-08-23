@@ -1184,7 +1184,9 @@ export function missingContextKeys(
       ctx.interests.length > 0 ||
       session.mood?.trim() ||
       session.fromMoodFlow ||
-      session.fromMoodCard,
+      session.fromMoodCard ||
+      session.homeMoodShortcutEntry ||
+      session.shortcutContext,
   );
 
   if (hasGps && hasMoodContext && intent !== "trip_planning" && !hasRemoteDestination(ctx, session)) {

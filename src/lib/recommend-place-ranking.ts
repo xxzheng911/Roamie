@@ -3,6 +3,7 @@ import type { PlaceAvailability, PlaceHoursData } from "@/lib/filter-available-p
 import {
   isRecommendablePlace,
   recommendationToRecommendableInput,
+  type RecommendablePlaceContext,
 } from "@/lib/is-recommendable-place";
 import { isLodgingPlace } from "@/lib/lodging-place-filter";
 import {
@@ -274,16 +275,41 @@ export function sortRecommendationItemsForDisplay<T extends RecommendationDispla
 export function filterRecommendationItemsForDisplay<T extends RecommendationDisplayItem>(
   items: T[],
   policy: RecommendationTimePolicy = GENERAL_CHAT_TIME_POLICY,
-  telemetry?: { followup?: boolean },
+  telemetry?: {
+    followup?: boolean;
+    onRecommendableDrop?: (item: T, reason: string) => void;
+    recommendableContext?: RecommendablePlaceContext;
+    onDecision?: (item: T, accepted: boolean, reason: string, predicate: string) => void;
+  },
 ): T[] {
+  const droppedRecommendableReasons = new Map<string, number>();
+  let droppedByRecommendable = 0;
+  let droppedByLodging = 0;
+  let droppedByRequireOpenNow = 0;
+  let droppedByTimeMismatch = 0;
+
   const filtered = items.filter((item) => {
     const recommendable = isRecommendablePlace(
       recommendationToRecommendableInput(item),
-      "ai_recommend",
+      telemetry?.recommendableContext ?? "ai_recommend",
       { logDrop: false, requireOpenNow: policy.requireOpenNow },
     );
-    if (!recommendable.ok) return false;
+    if (!recommendable.ok) {
+      droppedByRecommendable += 1;
+      const reason = recommendable.reason ?? "unknown";
+      droppedRecommendableReasons.set(reason, (droppedRecommendableReasons.get(reason) ?? 0) + 1);
+      telemetry?.onRecommendableDrop?.(item, reason);
+      telemetry?.onDecision?.(
+        item,
+        false,
+        reason,
+        `isRecommendablePlace(${telemetry?.recommendableContext ?? "ai_recommend"})`,
+      );
+      return false;
+    }
     if (isLodgingPlace({ name: item.name, primaryType: item.type, types: item.type ? [item.type] : null })) {
+      droppedByLodging += 1;
+      telemetry?.onDecision?.(item, false, "lodging", "isLodgingPlace");
       return false;
     }
     if (
@@ -291,14 +317,42 @@ export function filterRecommendationItemsForDisplay<T extends RecommendationDisp
       item.openStatusLabel === "目前未營業" &&
       !item.nextOpenHint?.trim()
     ) {
+      droppedByRequireOpenNow += 1;
+      telemetry?.onDecision?.(item, false, "closed_without_next_open", "requireOpenNow");
       return false;
     }
     if (policy.timeSensitive && isTimePeriodMismatch(item.name, item.type, new Date())) {
+      droppedByTimeMismatch += 1;
+      telemetry?.onDecision?.(item, false, "time_period_mismatch", "isTimePeriodMismatch");
       return false;
     }
+    telemetry?.onDecision?.(item, true, "accepted", "display_policy");
     return true;
   });
   const result = sortRecommendationItemsForDisplay(filtered);
+  const recommendableDropReasons = [...droppedRecommendableReasons.entries()]
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(",");
+  const droppedByOpenHours = droppedByRequireOpenNow + droppedByTimeMismatch;
+
+  devVerboseInfo("[RECOMMENDATION_DISPLAY_POLICY]", {
+    recommendationMode: policy.mode,
+    timeSensitive: policy.timeSensitive,
+    requireOpenNow: policy.requireOpenNow,
+    openNowUsedForRanking: policy.useOpenNowForRanking,
+    openNowUsedForFiltering: policy.requireOpenNow,
+    beforeDisplayPolicyCount: items.length,
+    afterDisplayPolicyCount: result.length,
+    droppedByRecommendable,
+    droppedByLodging,
+    droppedByRequireOpenNow,
+    droppedByTimeMismatch,
+    droppedByOpenHours,
+    recommendableDropReasons,
+    finalCount: result.length,
+    followup: telemetry?.followup === true,
+  });
+  // Backward-compatible mirror for existing runtime parsers.
   devVerboseInfo("[RECOMMENDATION_OPEN_HOURS_POLICY]", {
     recommendationMode: policy.mode,
     timeSensitive: policy.timeSensitive,
@@ -306,7 +360,9 @@ export function filterRecommendationItemsForDisplay<T extends RecommendationDisp
     openNowUsedForRanking: policy.useOpenNowForRanking,
     openNowUsedForFiltering: policy.requireOpenNow,
     beforeOpenHoursCount: items.length,
-    afterOpenHoursCount: result.length,
+    afterOpenHoursCount: items.length - droppedByOpenHours,
+    droppedByOpenHours,
+    stage: "display_policy",
     finalCount: result.length,
     followup: telemetry?.followup === true,
   });

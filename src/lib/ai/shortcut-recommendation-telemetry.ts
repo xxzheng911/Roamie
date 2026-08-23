@@ -28,6 +28,7 @@ export type ShortcutRecommendationDiagnostics = {
   afterAlreadyRecommendedCount: number;
   renderableCount: number;
   finalCardCount: number;
+  searchReturnedCount?: number;
   requestNotSent?: boolean;
 };
 

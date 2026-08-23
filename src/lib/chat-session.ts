@@ -187,6 +187,8 @@ export type ChatPlanningSession = {
   activeChatIntent?: import("@/lib/ai/chat-intent").ChatIntent;
   /** Structured semantics for fixed recommendation shortcuts. */
   shortcutContext?: import("@/lib/ai/chat-intent").ChatShortcutContext;
+  /** Canonical shortcut contract shared by Home + Chat chips. */
+  normalizedShortcutRequest?: import("@/lib/ai/chat-intent").NormalizedShortcutRequest;
   /**
    * Category recommendation topic (shopping / cafe / …).
    * Source of truth for continueRecommendation — do not collapse shopping → attraction.

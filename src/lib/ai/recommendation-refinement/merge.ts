@@ -64,6 +64,7 @@ export function createActiveRecommendationContext(params: {
   latitude?: number;
   longitude?: number;
   radius?: number;
+  shortcutScene?: import("@/lib/ai/chat-intent").ChatShortcutScene;
   intent: RecommendationIntent;
   category?: string;
   subcategory?: string;
@@ -85,6 +86,7 @@ export function createActiveRecommendationContext(params: {
     latitude: params.latitude,
     longitude: params.longitude,
     radius: params.radius,
+    shortcutScene: params.shortcutScene,
     intent: params.intent,
     category: params.category ?? recommendationIntentToCategoryIntent(params.intent),
     subcategory: params.subcategory,

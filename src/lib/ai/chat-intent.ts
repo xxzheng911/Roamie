@@ -69,6 +69,16 @@ export type ChatIntent =
 export type NearbyPlaceIntent = Extract<ChatIntent, "restaurant" | "cafe" | "attraction" | "camping">;
 
 export type ChatShortcutScene = "quiet_cafe" | "relax_walk" | "rainy_indoor";
+export type NormalizedShortcutSource = "home_mood" | "chat_shortcut";
+export type NormalizedShortcutRequest = {
+  source: NormalizedShortcutSource;
+  intent: "nearby_recommendation";
+  mode: StructuredShortcutMode;
+  modifiers?: {
+    quiet?: boolean;
+  };
+  structured: true;
+};
 
 export type ChatShortcutContext = {
   shortcutId: "quiet_cafe" | "relax_walk" | "rainy_indoor";
@@ -76,6 +86,21 @@ export type ChatShortcutContext = {
   categoryIntent: NearbyPlaceIntent;
   mood: "quiet" | "relax" | "rainy";
   scene: ChatShortcutScene;
+};
+
+export type StructuredShortcutMode =
+  | "coffee"
+  | "rainy"
+  | "relax"
+  | "late_night"
+  | "sea";
+
+const SHORTCUT_MODE_MOOD_LABEL: Record<StructuredShortcutMode, string> = {
+  coffee: "找咖啡",
+  rainy: "下雨天",
+  relax: "放鬆",
+  late_night: "深夜散步",
+  sea: "看海",
 };
 
 /**
@@ -90,6 +115,16 @@ export type ChatShortcutContext = {
 export function detectChatIntent(text: string): ChatIntent {
   const t = text.trim();
   if (!t) return "general";
+
+  const shortcutChip = QUICK_CHIP_PRESETS[t]?.shortcutContext;
+  if (shortcutChip) return shortcutChip.categoryIntent;
+  if (/^(?:想找安靜的咖啡廳|找咖啡|咖啡廳坐坐)$/i.test(t)) return "cafe";
+  if (/^(?:下雨天可以去哪|下雨天)$/i.test(t) || /下雨天可以去哪/.test(t)) {
+    return "attraction";
+  }
+  if (/^(?:今天想放鬆走走|想放空)$/i.test(t) || /今天想放鬆走走/.test(t)) {
+    return "attraction";
+  }
 
   if (isMoodNearbyRelaxationRequest(t) && !isFoodIntentText(t)) return "attraction";
   if (isCreateItineraryIntent(t)) return "create_itinerary";
@@ -159,7 +194,13 @@ export function detectChatIntent(text: string): ChatIntent {
     return "trip_planning";
   }
 
-  if (/(天氣|會下雨|氣溫|溫度|下雨嗎)/.test(t)) return "weather";
+  if (
+    /(天氣|會下雨|氣溫|溫度|下雨嗎)/.test(t) &&
+    resolveStructuredShortcutMode(t) !== "rainy" &&
+    !/(下雨天可以去哪|雨天可以去哪)/.test(t)
+  ) {
+    return "weather";
+  }
   if (/(穿搭|穿什麼|服裝|搭配)/.test(t)) return "outfit";
   if (/(怎麼去|交通|搭車|捷運路線|公車路線)/.test(t) && !/(餐廳|吃飯|聚餐)/.test(t)) {
     return "transit";
@@ -193,7 +234,6 @@ export function detectChatIntent(text: string): ChatIntent {
   ) {
     return "attraction";
   }
-
   if (
     /(景點|去哪玩|好玩的|推薦.*地方|附近.*逛|散步路線|夜景|博物館|展覽)/.test(t) &&
     /(推薦|有沒有|建議|找|想去)/.test(t) &&
@@ -308,8 +348,138 @@ const QUICK_CHIP_PRESETS: Record<
   主要是想拍照: { mood: "拍照", activeChatIntent: "attraction", fromMoodFlow: true },
 };
 
+const SHORTCUT_TEXT_HINTS: Array<{ mode: StructuredShortcutMode; re: RegExp }> = [
+  { mode: "coffee", re: /(?:想找安靜的咖啡廳|找咖啡|咖啡廳坐坐|安靜.*咖啡|quiet.*cafe)/i },
+  { mode: "rainy", re: /(?:下雨天可以去哪|下雨天|雨天)/i },
+  { mode: "late_night", re: /(?:深夜散步|夜間散步|晚上散步|late\s*night)/i },
+  { mode: "sea", re: /(?:看海|海邊|海景|seaside|beach|waterfront)/i },
+  { mode: "relax", re: /(?:今天想放鬆走走|想放空|輕鬆行程|放鬆走走|慢慢走走)/i },
+];
+
+export function buildStructuredShortcutContext(
+  mode: StructuredShortcutMode,
+  shortcutLabel: string,
+): ChatShortcutContext {
+  if (mode === "coffee") {
+    return {
+      shortcutId: "quiet_cafe",
+      shortcutLabel,
+      categoryIntent: "cafe",
+      mood: "quiet",
+      scene: "quiet_cafe",
+    };
+  }
+  if (mode === "rainy") {
+    return {
+      shortcutId: "rainy_indoor",
+      shortcutLabel,
+      categoryIntent: "attraction",
+      mood: "rainy",
+      scene: "rainy_indoor",
+    };
+  }
+  if (mode === "late_night") {
+    return {
+      shortcutId: "relax_walk",
+      shortcutLabel,
+      categoryIntent: "attraction",
+      mood: "relax",
+      scene: "relax_walk",
+    };
+  }
+  if (mode === "sea") {
+    return {
+      shortcutId: "relax_walk",
+      shortcutLabel,
+      categoryIntent: "attraction",
+      mood: "relax",
+      scene: "relax_walk",
+    };
+  }
+  return {
+    shortcutId: "relax_walk",
+    shortcutLabel,
+    categoryIntent: "attraction",
+    mood: "relax",
+    scene: "relax_walk",
+  };
+}
+
+export function resolveStructuredShortcutMode(text: string): StructuredShortcutMode | null {
+  const t = text.trim();
+  if (!t) return null;
+  const preset = QUICK_CHIP_PRESETS[t]?.shortcutContext;
+  if (preset?.scene === "quiet_cafe") return "coffee";
+  if (preset?.scene === "rainy_indoor") return "rainy";
+  if (preset?.scene === "relax_walk") return "relax";
+  for (const hint of SHORTCUT_TEXT_HINTS) {
+    if (hint.re.test(t)) return hint.mode;
+  }
+  return null;
+}
+
 export function resolveChatShortcutContext(text: string): ChatShortcutContext | null {
-  return QUICK_CHIP_PRESETS[text.trim()]?.shortcutContext ?? null;
+  const exact = QUICK_CHIP_PRESETS[text.trim()]?.shortcutContext;
+  if (exact) return exact;
+  const mode = resolveStructuredShortcutMode(text);
+  return mode ? buildStructuredShortcutContext(mode, text.trim()) : null;
+}
+
+export function buildNormalizedShortcutRequest(
+  mode: StructuredShortcutMode,
+  source: NormalizedShortcutSource,
+  text?: string,
+): NormalizedShortcutRequest {
+  const isQuietCoffee = mode === "coffee" && /安靜|安静|quiet/i.test(text ?? "");
+  return {
+    source,
+    intent: "nearby_recommendation",
+    mode,
+    modifiers: isQuietCoffee ? { quiet: true } : undefined,
+    structured: true,
+  };
+}
+
+export function resolveNormalizedShortcutRequestFromText(
+  text: string,
+  source: NormalizedShortcutSource = "chat_shortcut",
+): NormalizedShortcutRequest | null {
+  const mode = resolveStructuredShortcutMode(text);
+  if (!mode) return null;
+  return buildNormalizedShortcutRequest(mode, source, text);
+}
+
+export function moodLabelForShortcutMode(mode: StructuredShortcutMode): string {
+  return SHORTCUT_MODE_MOOD_LABEL[mode];
+}
+
+/** Resolve Nearby shortcut scene from session + text. Never fall back to shared attraction scene. */
+export function resolveNearbyShortcutScene(
+  text: string,
+  session?: {
+    shortcutContext?: ChatShortcutContext | null;
+    normalizedShortcutRequest?: NormalizedShortcutRequest | null;
+  } | null,
+): ChatShortcutScene | null {
+  if (session?.shortcutContext?.scene) return session.shortcutContext.scene;
+  const fromText = resolveChatShortcutContext(text)?.scene;
+  if (fromText) return fromText;
+  const mode = session?.normalizedShortcutRequest?.mode;
+  if (mode === "coffee") return "quiet_cafe";
+  if (mode === "rainy") return "rainy_indoor";
+  if (mode === "relax" || mode === "late_night" || mode === "sea") return "relax_walk";
+  return null;
+}
+
+export function isStructuredNearbyShortcut(
+  session?: {
+    normalizedShortcutRequest?: NormalizedShortcutRequest | null;
+  } | null,
+): boolean {
+  return (
+    session?.normalizedShortcutRequest?.structured === true &&
+    session.normalizedShortcutRequest.intent === "nearby_recommendation"
+  );
 }
 
 export function applyQuickChipContext(
@@ -317,7 +487,22 @@ export function applyQuickChipContext(
   session: ChatPlanningSession,
 ): ChatPlanningSession {
   const preset = QUICK_CHIP_PRESETS[text.trim()];
-  if (!preset) return session;
+  if (!preset) {
+    const shortcutContext = resolveChatShortcutContext(text);
+    if (!shortcutContext) return session;
+    const normalized = resolveNormalizedShortcutRequestFromText(text, "chat_shortcut");
+    const mood = normalized ? moodLabelForShortcutMode(normalized.mode) : "放鬆";
+    return {
+      ...session,
+      mood: session.mood || mood,
+      activeChatIntent: shortcutContext.categoryIntent,
+      fromMoodFlow: true,
+      selectedMood: session.selectedMood || mood,
+      shortcutContext,
+      normalizedShortcutRequest: normalized ?? session.normalizedShortcutRequest,
+    };
+  }
+  const normalized = resolveNormalizedShortcutRequestFromText(text, "chat_shortcut");
   return {
     ...session,
     mood: preset.mood,
@@ -325,6 +510,7 @@ export function applyQuickChipContext(
     fromMoodFlow: preset.fromMoodFlow ?? session.fromMoodFlow,
     selectedMood: preset.mood,
     shortcutContext: preset.shortcutContext ?? session.shortcutContext,
+    normalizedShortcutRequest: normalized ?? session.normalizedShortcutRequest,
   };
 }
 
@@ -346,6 +532,22 @@ export function inferNearbyIntentFromContext(
   if (isPlaceDetailChatActive(session)) return null;
 
   if (isFoodIntentText(text)) return "restaurant";
+
+  const shortcut =
+    resolveChatShortcutContext(text) ??
+    session.shortcutContext ??
+    (session.normalizedShortcutRequest
+      ? buildStructuredShortcutContext(session.normalizedShortcutRequest.mode, text)
+      : null);
+  if (shortcut?.categoryIntent && resolveStructuredShortcutMode(text)) {
+    return shortcut.categoryIntent;
+  }
+  if (
+    shortcut?.categoryIntent &&
+    (session.fromMoodFlow || session.fromMoodCard || session.normalizedShortcutRequest)
+  ) {
+    return shortcut.categoryIntent;
+  }
 
   if (isTripAddPlaceChat(session)) {
     if (isTripMealRequest(text)) return "restaurant";

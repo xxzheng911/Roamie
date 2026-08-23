@@ -23,6 +23,8 @@ import {
   detectChatIntent,
   inferNearbyIntentFromContext,
   isNearbyPlaceIntent,
+  resolveStructuredShortcutMode,
+  moodLabelForShortcutMode,
   sessionHasLocation,
   type ChatIntent,
   type NearbyPlaceIntent,
@@ -123,6 +125,30 @@ function resolveSessionRecommendationIntent(
 export function resolveChatIntent(text: string, session: ChatPlanningSession): ChatIntent {
   const categoryIntents = parseChatPlaceIntents(text);
   const travelCtx = session.travelContext ?? { interests: [] };
+  const normalizedShortcut = session.normalizedShortcutRequest;
+  const fromStructuredShortcut = Boolean(normalizedShortcut?.structured);
+  const hasHardTripPlanningSignal =
+    /(?:\d+\s*天|\d+\s*天\s*\d+\s*夜|一日遊|一日游|二天一夜|兩天一夜|三天兩夜|四天以上|幾天|几天|日期|出發|何時|什么时候)/.test(
+      text,
+    );
+  const hasShortcutDisplayPlanningVerbs =
+    /(?:安排|規劃|规划|行程|方向)/.test(text) &&
+    resolveStructuredShortcutMode(text) != null;
+
+  // Structured shortcut payload takes precedence over free-text planning verbs.
+  if (
+    fromStructuredShortcut &&
+    normalizedShortcut &&
+    !hasHardTripPlanningSignal &&
+    (session.homeMoodShortcutEngaged !== true || hasShortcutDisplayPlanningVerbs)
+  ) {
+    if (normalizedShortcut.mode === "coffee") return "cafe";
+    if (normalizedShortcut.mode === "rainy") return "attraction";
+    if (normalizedShortcut.mode === "late_night") return "attraction";
+    if (normalizedShortcut.mode === "sea") return "attraction";
+    if (normalizedShortcut.mode === "relax") return "attraction";
+    return session.shortcutContext?.categoryIntent ?? "attraction";
+  }
 
   // Active recommendation refinement must beat sticky destination_planning.
   if (hasActiveRecommendationContext(session)) {
@@ -233,6 +259,18 @@ export function resolveChatIntent(text: string, session: ChatPlanningSession): C
   }
 
   const detected = detectChatIntent(text);
+  // Guard rails: normalized shortcut intent must stay nearby unless user explicitly enters trip planning.
+  if (
+    normalizedShortcut &&
+    normalizedShortcut.structured &&
+    !hasHardTripPlanningSignal &&
+    (session.homeMoodShortcutEngaged !== true ||
+      text.trim() === moodLabelForShortcutMode(normalizedShortcut.mode) ||
+      resolveStructuredShortcutMode(text) != null)
+  ) {
+    if (normalizedShortcut.mode === "coffee") return "cafe";
+    return "attraction";
+  }
   if (detected === "create_itinerary") return "create_itinerary";
   if (detected === "best_travel_time") return "best_travel_time";
   if (detected === "destination_advice" || detected === "trip_planning") return detected;
@@ -332,7 +370,15 @@ export function shouldFetchNearbyPlaces(
     session,
     text,
   );
-  if (categoryDest && hasCategoryPlaceQuery(text) && !isExplicitDeviceNearbyRequest(text)) {
+  const nearbyShortcut =
+    session.normalizedShortcutRequest?.structured === true &&
+    session.normalizedShortcutRequest.intent === "nearby_recommendation";
+  if (
+    categoryDest &&
+    hasCategoryPlaceQuery(text) &&
+    !isExplicitDeviceNearbyRequest(text) &&
+    !nearbyShortcut
+  ) {
     return false;
   }
 

@@ -56,7 +56,7 @@ export function remainingRecommendationPoolCount(
   return Math.max(0, session.pool.length - session.cursor);
 }
 
-export type RecommendationSearchScope = "area" | "city";
+export type RecommendationSearchScope = "area" | "city" | "current_location";
 
 function shoppingCanonicalKey(place: {
   name?: string | null;

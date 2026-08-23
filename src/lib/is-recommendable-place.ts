@@ -2,6 +2,7 @@ import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
 import { isLodgingPlace } from "@/lib/lodging-place-filter";
 import { isLowValueCityExplorePlace } from "@/lib/explore-city-tourist-filter";
+import { recommendationTypeMetadataFromItem } from "@/lib/ai/recommendation-place-type-metadata";
 
 export type RecommendablePlaceContext =
   | "home_nearby"
@@ -554,7 +555,11 @@ export function recommendationToRecommendableInput(
   rec: {
     name: string;
     type?: string;
+    primaryType?: string;
+    types?: string[] | null;
     googlePlaceId?: string;
+    placeId?: string;
+    id?: string;
     rating?: number | null;
     userRatingCount?: number | null;
     businessStatus?: string | null;
@@ -569,16 +574,22 @@ export function recommendationToRecommendableInput(
   if (!openStatus && rec.openStatusLabel?.includes("營業中")) openStatus = "open";
   if (!openStatus && rec.openStatusLabel?.includes("未營業")) openStatus = "closed_now";
 
+  const typeMetadata = recommendationTypeMetadataFromItem({
+    primaryType: rec.primaryType,
+    types: rec.types,
+    type: rec.type,
+  });
+
   return {
-    id: rec.googlePlaceId,
-    placeId: rec.googlePlaceId,
+    id: rec.googlePlaceId ?? rec.placeId ?? rec.id,
+    placeId: rec.googlePlaceId ?? rec.placeId ?? rec.id,
     name: rec.name,
     businessStatus: availability?.businessStatus ?? rec.businessStatus ?? null,
     openStatus,
     rating: rec.rating ?? null,
     userRatingCount: rec.userRatingCount ?? null,
-    primaryType: rec.type ?? null,
-    types: rec.type ? [rec.type] : null,
+    primaryType: typeMetadata.primaryType,
+    types: typeMetadata.types.length > 0 ? typeMetadata.types : null,
   };
 }
 

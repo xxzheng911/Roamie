@@ -19,11 +19,46 @@ export type PlaceLike = {
   name: string;
   placeName?: string;
   placeId?: string;
+  googlePlaceId?: string;
+  canonicalPlaceId?: string;
+  id?: string;
   address?: string;
   type?: string;
   lat?: number | null;
   lng?: number | null;
 };
+
+export function exactCanonicalIdentityMatch(
+  candidate: PlaceLike,
+  previous: PlaceLike,
+): string | null {
+  const candidateIdentity = resolveCanonicalPlaceIdentity(candidate);
+  const previousIdentity = resolveCanonicalPlaceIdentity(previous);
+  if (!candidateIdentity.identityKey || !previousIdentity.identityKey) return null;
+  if (candidateIdentity.identityKey !== previousIdentity.identityKey) return null;
+
+  // Never let an entirely generic/missing fallback identity collapse unrelated places.
+  if (
+    candidateIdentity.source === "deterministic_fallback" &&
+    candidateIdentity.identityKey.includes("name=missing") &&
+    candidateIdentity.identityKey.includes("address=missing") &&
+    candidateIdentity.identityKey.includes("coords=missing,missing")
+  ) {
+    return null;
+  }
+  return candidateIdentity.identityKey;
+}
+
+/** Structured Nearby continuation excludes exact place identity only. */
+export function filterExactPreviouslyRecommendedPlaces<T extends PlaceLike>(
+  candidates: T[],
+  previous: PlaceLike[],
+): T[] {
+  if (!previous.length) return dedupePlaces(candidates);
+  return dedupePlaces(candidates).filter(
+    (candidate) => !previous.some((item) => exactCanonicalIdentityMatch(candidate, item)),
+  );
+}
 
 /**
  * Core place-name normalization — same landmark under different附属 names collapses
@@ -200,6 +235,32 @@ export function filterExcludedPlaceIds<T extends PlaceLike>(
     }).filter(Boolean),
   );
   return candidates.filter((p) => !block.has(placeIdentityKey(p)));
+}
+
+/**
+ * Structured Nearby continuation uses canonical identity keys end-to-end.
+ * Unlike the legacy generic exclusion helper, already-namespaced keys must not
+ * be wrapped as `id:<key>` or they can never match a candidate identity.
+ */
+export function filterExactExcludedPlaceIdentities<T extends PlaceLike>(
+  candidates: T[],
+  excludeIds: string[],
+): T[] {
+  if (!excludeIds.length) return dedupePlaces(candidates);
+  const namespaces = ["google:", "canonical:", "saved:", "fallback:"];
+  const block = new Set(
+    excludeIds
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => {
+        if (namespaces.some((prefix) => value.startsWith(prefix))) return value;
+        const rawId = value.startsWith("id:") ? value.slice(3) : value;
+        return resolveCanonicalPlaceIdentity({ id: rawId, name: "" }).identityKey;
+      }),
+  );
+  return dedupePlaces(candidates).filter(
+    (candidate) => !block.has(resolveCanonicalPlaceIdentity(candidate).identityKey),
+  );
 }
 
 export function collectRecommendedNormalizedNames(

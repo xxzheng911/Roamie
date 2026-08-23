@@ -4,7 +4,7 @@ import {
   resolveConversationStage,
   stageAllowsPlaceCards,
 } from "@/lib/ai/conversation-stage";
-import { isNearbyPlaceIntent } from "@/lib/ai/chat-intent";
+import { isNearbyPlaceIntent, resolveNearbyShortcutScene } from "@/lib/ai/chat-intent";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { filterRecommendationItemsForDisplay } from "@/lib/recommend-place-ranking";
 import { refineRecommendationItemsForBudget } from "@/lib/ai/budget-refinement";
@@ -41,6 +41,7 @@ import { isTripAddPlaceSession } from "@/lib/trip/trip-add-place-session";
 import { shouldSuppressChatPlaceCards } from "@/lib/ai/chat-suppress-place-cards";
 import { isPlaceEligibleForShortcutScene } from "@/lib/ai/shortcut-category-fidelity";
 import { resolveRecommendationTimePolicy } from "@/lib/ai/recommendation-time-sensitivity";
+import { logShortcutRuntime } from "@/lib/ai/shortcut-runtime-diag";
 
 function isRecommendationFollowup(session: ChatPlanningSession, userText: string): boolean {
   return (
@@ -56,20 +57,87 @@ function filterChatRecommendationsByTimePolicy(
   userText: string,
   baseMode: "GENERAL_CHAT" | "LIVE_NEARBY" = "GENERAL_CHAT",
 ): RoamieRecommendationItem[] {
-  return filterRecommendationItemsForDisplay(
-    items,
-    resolveRecommendationTimePolicy(userText, baseMode),
-    { followup: isRecommendationFollowup(session, userText) },
+  const scene = resolveNearbyShortcutScene(userText, session);
+  const policy = resolveRecommendationTimePolicy(userText, baseMode);
+  const structuredRelaxOrRainyContinuation = Boolean(
+    (session.activeRecommendationContext?.previousPlaceIds.length ?? 0) > 0 &&
+      (scene === "relax_walk" || scene === "rainy_indoor"),
   );
+  const decisionReasons = new Map<string, number>();
+  if (structuredRelaxOrRainyContinuation) {
+    for (const item of items) {
+      logShortcutRuntime("[RT_CONTINUATION_DISPLAY_INPUT]", {
+        scene: scene ?? "",
+        placeName: item.name,
+        placeId: item.googlePlaceId ?? item.placeId ?? "",
+        primaryType: item.primaryType ?? item.type ?? "",
+        types: item.types ?? [],
+        rating: item.rating ?? null,
+        userRatingCount: item.userRatingCount ?? null,
+        recommendationMode: policy.mode,
+        hasPhoto: Boolean(item.photoName),
+        hasLocation: item.lat != null && item.lng != null,
+      });
+    }
+  }
+  const result = filterRecommendationItemsForDisplay(
+    items,
+    policy,
+    {
+      followup: isRecommendationFollowup(session, userText),
+      recommendableContext: structuredRelaxOrRainyContinuation ? "chat_nearby" : "ai_recommend",
+      onDecision: structuredRelaxOrRainyContinuation
+        ? (item, accepted, reason, predicate) => {
+            if (!accepted) {
+              const key = `${predicate}:${reason}`;
+              decisionReasons.set(key, (decisionReasons.get(key) ?? 0) + 1);
+            }
+            logShortcutRuntime("[RT_CONTINUATION_DISPLAY_DECISION]", {
+              scene: scene ?? "",
+              placeName: item.name,
+              accepted,
+              reason,
+              predicate,
+              recommendationMode: policy.mode,
+            });
+          }
+        : undefined,
+      onRecommendableDrop:
+        scene === "relax_walk"
+          ? (item, dropReason) => {
+              logShortcutRuntime("[RT_RELAX_DISPLAY_DROP]", {
+                placeName: item.name,
+                placeId: item.googlePlaceId ?? "",
+                rating: item.rating ?? "",
+                userRatingCount: item.userRatingCount ?? "",
+                dropReason,
+              });
+            }
+          : undefined,
+    },
+  );
+  if (structuredRelaxOrRainyContinuation) {
+    logShortcutRuntime("[RT_CONTINUATION_FINAL_PICK]", {
+      scene: scene ?? "",
+      inputCount: items.length,
+      acceptedCount: result.length,
+      droppedCount: items.length - result.length,
+      dropReasons: [...decisionReasons.entries()]
+        .map(([reason, count]) => `${reason}:${count}`)
+        .join(","),
+    });
+  }
+  return result;
 }
 
 function applyShortcutSceneFidelity(
   items: RoamieRecommendationItem[],
   session: ChatPlanningSession,
+  userText = "",
 ): RoamieRecommendationItem[] {
-  return items.filter((item) =>
-    isPlaceEligibleForShortcutScene(item, session.shortcutContext?.scene),
-  );
+  const scene = resolveNearbyShortcutScene(userText, session);
+  if (!scene) return items;
+  return items.filter((item) => isPlaceEligibleForShortcutScene(item, scene));
 }
 
 /** 將摘要中的地點數量改為與實際渲染張數一致 */
@@ -243,7 +311,7 @@ export function recommendationsForChatDisplay(
   }
 
   if (session.fromMoodFlow || session.fromMoodCard || session.homeMoodShortcutEntry) {
-    let working = applyShortcutSceneFidelity(list, session);
+    let working = applyShortcutSceneFidelity(list, session, userText);
     if (
       session.travelContext?.budgetPreference === "low" ||
       session.travelContext?.tripPurpose === "refine_recommendations"
@@ -328,7 +396,7 @@ export function recommendationsForChatDisplay(
   }
 
   if (session.activeChatIntent && isNearbyPlaceIntent(session.activeChatIntent)) {
-    let working = applyShortcutSceneFidelity(list, session);
+    let working = applyShortcutSceneFidelity(list, session, userText);
     if (
       session.travelContext?.budgetPreference === "low" ||
       session.travelContext?.tripPurpose === "refine_recommendations"

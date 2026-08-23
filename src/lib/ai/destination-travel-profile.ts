@@ -356,6 +356,7 @@ function looksLikeGeographicLabel(label: string): boolean {
     !INVALID_DISTRICT_ONLY_FRAGMENT.test(label) &&
     !INVALID_GEOGRAPHIC_FRAGMENT.test(label) &&
     !INVALID_GEOGRAPHIC_SUBSTRING.test(label) &&
+    !/(?:下雨天|雨天|下雨|放鬆走走|放鬆|放空|想放空|咖啡廳|咖啡店)/.test(label) &&
     /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]+$/u.test(label)
   );
 }
