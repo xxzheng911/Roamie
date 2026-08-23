@@ -681,7 +681,7 @@ function Home() {
         },
       });
       saveChatSession(
-        beginHomeMoodShortcutSession(createEmptySession(), moodLabel),
+        beginHomeMoodShortcutSession(createEmptySession(), moodLabel, next),
       );
     } catch (error) {
       console.error(

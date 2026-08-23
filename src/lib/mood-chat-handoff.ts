@@ -175,7 +175,7 @@ export function buildContextualMoodHandoffOpening(session: ChatPlanningSession):
       .map((p) => placeDisplayName(p))
       .slice(0, 4)
       .join("、");
-    return `剛剛你選了深夜散步，我先幫你保留幾個適合夜晚走走的地方（${names}）。\n\n接下來可以再接夜景、深夜咖啡廳，或順路的宵夜，把路線串成一小段舒服的夜間散步。${closedNote ? `\n\n${closedNote}` : ""}\n\n${PLANNING_FOLLOWUP}`;
+    return `剛剛你選了夜晚散策，我先幫你保留幾個適合夜晚走走的地方（${names}）。\n\n接下來可以再接夜景、深夜咖啡廳，或順路的宵夜，把路線串成一小段舒服的夜間散步。${closedNote ? `\n\n${closedNote}` : ""}\n\n${PLANNING_FOLLOWUP}`;
   }
 
   const candidates = session.recommendedPlaces.map((p) => placeDisplayName(p)).slice(0, 4).join("、");

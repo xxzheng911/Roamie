@@ -407,12 +407,6 @@ export function buildExclusionInsufficientSummary(
 ): string {
   const ack = buildExclusionAcknowledgment(excludedCategories);
   const lead = ack ?? "好，我會依你的排除條件幫你找。";
-  console.info(
-    "[RT_REFINEMENT_COPY]",
-    `copyKey=exclusion_insufficient_${intent}`,
-    "source=buildExclusionInsufficientSummary",
-    `reason=excluded_categories_with_zero_candidates:${(excludedCategories ?? []).join(",")}`,
-  );
   if (intent === "cafe") {
     return `${lead}\n\n目前附近符合條件的咖啡廳比較少，我可以改找甜點、輕食或安靜的簡餐店。`;
   }

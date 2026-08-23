@@ -461,6 +461,14 @@ export function resolveNearbyShortcutScene(
     normalizedShortcutRequest?: NormalizedShortcutRequest | null;
   } | null,
 ): ChatShortcutScene | null {
+  if (
+    session?.normalizedShortcutRequest?.source === "home_mood" &&
+    (session.normalizedShortcutRequest.mode === "late_night" ||
+      session.normalizedShortcutRequest.mode === "sea")
+  ) {
+    // These Home profiles own their search/ranking contract and are not Chat Relax.
+    return null;
+  }
   if (session?.shortcutContext?.scene) return session.shortcutContext.scene;
   const fromText = resolveChatShortcutContext(text)?.scene;
   if (fromText) return fromText;

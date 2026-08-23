@@ -98,13 +98,77 @@ function ratingTier(rating: number | null | undefined, reviews: number | null | 
 function periodBoost(place: RankablePlace, period: HomeTimePeriod): number {
   const pick = place as HomeNearbyPickPlace;
   if (period === "late_night") {
-    if (matchesNightPreferredPlace(pick)) return -4;
+    const tier = homeLateNightRecommendationTier(place);
+    if (tier === 1) return -12;
+    if (tier === 2) return -8;
+    if (tier === 3) return -4;
+    if (matchesNightPreferredPlace(pick)) return -2;
     if (/博物|美術|公園|書店|hotel|lodging|library/i.test(place.name ?? "")) return 8;
     return 0;
   }
   if (matchesDayPreferredPlace(pick)) return -3;
   if (/酒吧|宵夜|居酒|深夜|night|pub/i.test(place.name ?? "")) return 4;
   return 0;
+}
+
+function lateNightPlaceText(place: RankablePlace): string {
+  return `${place.name ?? ""} ${place.primaryType ?? ""} ${(place.types ?? []).join(" ")}`.toLowerCase();
+}
+
+/** Home 夜晚散策專用分級；Google type 優先，名稱只補 cuisine／夜景語意。 */
+export function homeLateNightRecommendationTier(place: RankablePlace): 1 | 2 | 3 | 4 {
+  const text = lateNightPlaceText(place);
+  if (
+    /餐酒|居酒|日式小酒館|深夜咖啡|酒吧|酒館|bistro|izakaya|cocktail|\bbar\b|\bpub\b|coffee_shop|night_cafe/.test(
+      text,
+    )
+  ) {
+    return 1;
+  }
+  if (
+    /宵夜|深夜食堂|late[_\s-]*night[_\s-]*food|拉[麵面]|ramen|串[燒烧]|yakitori|燒肉|烧肉|焼肉|yakiniku|火鍋|火锅|hot[_\s-]*pot|hotpot|barbecue_restaurant/.test(
+      text,
+    )
+  ) {
+    return 2;
+  }
+  if (
+    /夜景|河岸|河濱|港邊|港灣|碼頭|展望台|觀景台|夜市|night[_\s-]*market|night[_\s-]*view|waterfront|harbou?r|pier|observation/.test(
+      text,
+    )
+  ) {
+    return 3;
+  }
+  return 4;
+}
+
+function homeLateNightDiversityBucket(place: RankablePlace): string {
+  const text = lateNightPlaceText(place);
+  if (/深夜咖啡|coffee_shop|\bcafe\b|咖啡/.test(text)) return "late_cafe";
+  if (/餐酒|居酒|酒吧|酒館|bistro|izakaya|cocktail|\bbar\b|\bpub\b/.test(text)) return "night_drinks";
+  if (/拉[麵面]|ramen/.test(text)) return "ramen";
+  if (/串[燒烧]|yakitori/.test(text)) return "yakitori";
+  if (/燒肉|烧肉|焼肉|yakiniku|barbecue_restaurant/.test(text)) return "yakiniku";
+  if (/火鍋|火锅|hot[_\s-]*pot|hotpot/.test(text)) return "hot_pot";
+  if (homeLateNightRecommendationTier(place) === 3) return "night_scenic";
+  return "late_food";
+}
+
+function diversifyHomeLateNightPicks<T extends RankablePlace>(places: T[]): T[] {
+  const output: T[] = [];
+  const deferred: T[] = [];
+  const counts = new Map<string, number>();
+  for (const place of places) {
+    const bucket = homeLateNightDiversityBucket(place);
+    const count = counts.get(bucket) ?? 0;
+    if (count >= 2) {
+      deferred.push(place);
+      continue;
+    }
+    counts.set(bucket, count + 1);
+    output.push(place);
+  }
+  return [...output, ...deferred];
 }
 
 function weatherBoostWithRainOverride(
@@ -141,7 +205,7 @@ export function sortHomeNearbyPlacesWithContext<T extends RankablePlace>(
   const period =
     options?.period ?? homeNearbyPeriodFromHour(localHourInTimeZone(at, tz));
 
-  return [...places].sort((a, b) => {
+  const ranked = [...places].sort((a, b) => {
     const openA = openStatusSortRank(a.openStatus);
     const openB = openStatusSortRank(b.openStatus);
     if (openA !== openB) return openA - openB;
@@ -182,6 +246,16 @@ export function sortHomeNearbyPlacesWithContext<T extends RankablePlace>(
 
     return 0;
   });
+  if (period !== "late_night") return ranked;
+
+  const byAvailability = new Map<number, T[]>();
+  for (const place of ranked) {
+    const rank = openStatusSortRank(place.openStatus);
+    byAvailability.set(rank, [...(byAvailability.get(rank) ?? []), place]);
+  }
+  return [...byAvailability.keys()]
+    .sort((a, b) => a - b)
+    .flatMap((rank) => diversifyHomeLateNightPicks(byAvailability.get(rank) ?? []));
 }
 
 /** 探索地圖：依分類調整排序（美食重評價、夜晚重 openNow） */

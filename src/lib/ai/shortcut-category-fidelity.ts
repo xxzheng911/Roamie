@@ -8,7 +8,6 @@ import {
   selectShortcutSceneCandidates,
 } from "@/lib/ai/nearby-shortcut-ranking";
 import { resolveResidentialPlace } from "@/lib/ai/residential-place";
-import { logShortcutRuntime } from "@/lib/ai/shortcut-runtime-diag";
 
 export const RELAX_WALK_INCLUDED_TYPES = [
   "park",
@@ -110,18 +109,6 @@ export function filterPlacesForShortcutScene<T extends PlaceTypeMetadata>(
     }
     const residential = resolveResidentialPlace(place);
     if (residential.residential) {
-      logShortcutRuntime("[RT_RESIDENTIAL_FILTER]", {
-        placeName: place.name ?? "",
-        placeId: place.id ?? "",
-        primaryType: place.primaryType ?? "",
-        types: place.types ?? [],
-        inferredCategory: classifyNearbyShortcutPlaceKind(place),
-        residentialDetected: true,
-        residentialSource: residential.source,
-        residentialMatchedValue: residential.matchedValue,
-        rejected: true,
-        scene,
-      });
       return false;
     }
     return isPlaceEligibleForShortcutScene(place, scene);

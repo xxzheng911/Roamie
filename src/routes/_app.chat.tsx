@@ -234,6 +234,13 @@ import {
   shouldDiscardHomeMoodShortcutSession,
 } from "@/lib/home-mood-shortcut-session";
 import {
+  isolateHomeShortcutFromPlanning,
+  isolateHomeSeaShortcutFromPlanning,
+  isStructuredHomeNearbyShortcut,
+  isStructuredHomeSeaShortcut,
+  resolveHomeShortcutSearchProfile,
+} from "@/lib/ai/home-shortcut-handoff";
+import {
   mergeTripPlanningContext,
   resolveConversationMode,
   formatTripPlanningContextForAi,
@@ -267,7 +274,6 @@ import {
 } from "@/lib/ai/shortcut-recommendation-telemetry";
 import {
   logRtResponseBranch,
-  logRtContinuationBranch,
   logShortcutRuntime,
   type RtShortcutSource,
 } from "@/lib/ai/shortcut-runtime-diag";
@@ -353,11 +359,12 @@ import {
   SHOPPING_FOLLOWUP_MIN_NEW,
   SHOPPING_NO_MORE_RECOMMENDATIONS_MESSAGE,
 } from "@/lib/ai/shopping-query-queue";
-import { resolveShoppingSearchScope, resolveRegionPrimaryCity } from "@/lib/ai/shopping-search-scope";
-import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import {
-  parsePlaceRecommendationIntent,
-} from "@/lib/ai/place-recommendation-intent";
+  resolveShoppingSearchScope,
+  resolveRegionPrimaryCity,
+} from "@/lib/ai/shopping-search-scope";
+import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
+import { parsePlaceRecommendationIntent } from "@/lib/ai/place-recommendation-intent";
 import {
   assertDestinationRequestNotUsingGps,
   isExplicitDeviceNearbyRequest,
@@ -542,7 +549,10 @@ import {
 import { beginPlacesGenerationSession } from "@/lib/places-api-guard";
 import { resetPlacesRateLimitEncountered } from "@/lib/places-classic-landmark-cache";
 import { clearResolvedDestinationScope } from "@/lib/ai/resolved-destination-scope";
-import { clearDestinationGeocodeCache, resolveDestinationApproxCenter } from "@/lib/ai/destination-geocode";
+import {
+  clearDestinationGeocodeCache,
+  resolveDestinationApproxCenter,
+} from "@/lib/ai/destination-geocode";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   isPlanningTurnActive,
@@ -830,36 +840,42 @@ function Chat() {
 
   const partialScrollKey = `${partial.summary?.length ?? 0}:${partial.recommendations?.length ?? 0}`;
 
-  const logRtNearbyPush = useCallback((payload: {
-    returned: boolean;
-    reason: string;
-    candidateCount: number;
-    renderableCount: number;
-    finalCount: number;
-    scope: string;
-    deviceLocationAvailable: boolean;
-    deviceLocationUsed: boolean;
-  }) => {
-    nearbyPushRuntimeRef.current = payload;
-    logShortcutRuntime("[RT_NEARBY_PUSH]", payload);
-  }, []);
+  const logRtNearbyPush = useCallback(
+    (payload: {
+      returned: boolean;
+      reason: string;
+      candidateCount: number;
+      renderableCount: number;
+      finalCount: number;
+      scope: string;
+      deviceLocationAvailable: boolean;
+      deviceLocationUsed: boolean;
+    }) => {
+      nearbyPushRuntimeRef.current = payload;
+      logShortcutRuntime("[RT_NEARBY_PUSH]", payload);
+    },
+    [],
+  );
 
-  const logRtNoMoreReason = useCallback((payload: {
-    caller: string;
-    route: string;
-    followup: boolean;
-    hasActiveRecommendationContext: boolean;
-    reason: string;
-  }) => {
-    logShortcutRuntime("[RT_NO_MORE_REASON]", {
-      caller: payload.caller,
-      route: payload.route,
-      followup: payload.followup,
-      hasActiveRecommendationContext: payload.hasActiveRecommendationContext,
-      nearbyPushReturned: nearbyPushRuntimeRef.current?.returned ?? "",
-      reason: payload.reason,
-    });
-  }, []);
+  const logRtNoMoreReason = useCallback(
+    (payload: {
+      caller: string;
+      route: string;
+      followup: boolean;
+      hasActiveRecommendationContext: boolean;
+      reason: string;
+    }) => {
+      logShortcutRuntime("[RT_NO_MORE_REASON]", {
+        caller: payload.caller,
+        route: payload.route,
+        followup: payload.followup,
+        hasActiveRecommendationContext: payload.hasActiveRecommendationContext,
+        nearbyPushReturned: nearbyPushRuntimeRef.current?.returned ?? "",
+        reason: payload.reason,
+      });
+    },
+    [],
+  );
 
   useScrollPerfMonitor("chat", messagesRef);
 
@@ -1005,8 +1021,7 @@ function Chat() {
             session.travelContext?.destinationCountry ??
             session.tripDestination?.country,
           offeredDestinationOptions:
-            context.offeredDestinationOptions ??
-            session.travelContext?.offeredDestinationOptions,
+            context.offeredDestinationOptions ?? session.travelContext?.offeredDestinationOptions,
         });
         return;
       }
@@ -1030,11 +1045,13 @@ function Chat() {
           session.travelContext?.destinationCountry ??
           session.tripDestination?.country,
         offeredDestinationOptions:
-          context.offeredDestinationOptions ??
-          session.travelContext?.offeredDestinationOptions,
+          context.offeredDestinationOptions ?? session.travelContext?.offeredDestinationOptions,
       });
       if (!ready.ok) {
-        if (ready.destinationResolutionFailed || ready.failureReason === "destination_resolution_failed") {
+        if (
+          ready.destinationResolutionFailed ||
+          ready.failureReason === "destination_resolution_failed"
+        ) {
           logAiPipeline(
             "[COMBINATION_DISCOVERY_FAILED]",
             `destination=${label}`,
@@ -2672,7 +2689,13 @@ function Chat() {
         cityLabel?: string;
       },
     ): Promise<boolean> => {
-      const merged = mergeTravelContext(activeSession, userText);
+      const structuredHomeShortcut = isStructuredHomeNearbyShortcut(activeSession);
+      const merged = structuredHomeShortcut
+        ? {
+            context: activeSession.travelContext ?? { interests: [] },
+            session: activeSession,
+          }
+        : mergeTravelContext(activeSession, userText);
       logAiPipeline("[NEARBY_INTENT]", `intent=${intent}`, `userText=${userText.slice(0, 80)}`);
       let workingSession = merged.session;
       let sessionForSaveBase = workingSession;
@@ -2733,7 +2756,7 @@ function Chat() {
         rtScope = "explicit_place";
         rtDeviceLocationAvailable = false;
         rtDeviceLocationUsed = false;
-        } else {
+      } else {
         const structuredNearbyShortcut =
           workingSession.normalizedShortcutRequest?.structured === true &&
           workingSession.normalizedShortcutRequest?.intent === "nearby_recommendation";
@@ -2795,7 +2818,8 @@ function Chat() {
         logShortcutRuntime("[RT_NEARBY_SCOPE]", {
           isNearbyIntent: true,
           scope: searchCenter?.mode ?? searchCtx.searchMode,
-          deviceLocationAvailable: Boolean(searchCenter?.deviceLocationAvailable) ||
+          deviceLocationAvailable:
+            Boolean(searchCenter?.deviceLocationAvailable) ||
             (deviceSession.location?.lat != null && deviceSession.location?.lng != null),
           deviceLocationUsed: Boolean(searchCenter?.deviceLocationUsed),
           routeMode: searchCenter?.mode ?? searchCtx.searchMode,
@@ -2807,10 +2831,7 @@ function Chat() {
         rtDeviceLocationUsed = Boolean(searchCenter?.deviceLocationUsed);
 
         if (searchCenter) {
-          if (
-            searchCtx.searchMode === "destination" &&
-            searchCenter.deviceLocationUsed
-          ) {
+          if (searchCtx.searchMode === "destination" && searchCenter.deviceLocationUsed) {
             logRecommendationGpsOverrideBlocked({
               destination: searchCtx.destinationName ?? searchCenter.destination ?? "",
               reason: "destination_scope_active",
@@ -2864,9 +2885,7 @@ function Chat() {
             lng = 0;
             nearbyCenterLabel = searchCtx.destinationName;
           } else {
-            console.warn(
-              "[CHAT_PLACES_REQUEST] skipped reason=destination_coords_unavailable",
-            );
+            console.warn("[CHAT_PLACES_REQUEST] skipped reason=destination_coords_unavailable");
             logRtNearbyPush({
               returned: false,
               reason: "missing_location",
@@ -2944,7 +2963,7 @@ function Chat() {
         console.warn("[CHAT_PLACES_REQUEST] skipped reason=no_location");
         logShortcutRuntime("[RT_NEARBY_RESULT]", {
           followup: matchesContinueRecommendationGrammar(userText) ? 1 : 0,
-          batch: (activeSession.recommendationSession?.recommendationPage ?? 0),
+          batch: activeSession.recommendationSession?.recommendationPage ?? 0,
           raw: 0,
           renderable: 0,
           final: 0,
@@ -2970,8 +2989,7 @@ function Chat() {
           ? 1
           : 0;
       const nearbyBatch =
-        (activeSession.recommendationSession?.recommendationPage ?? 0) +
-        (nearbyFollowup ? 1 : 0);
+        (activeSession.recommendationSession?.recommendationPage ?? 0) + (nearbyFollowup ? 1 : 0);
       const nearbyExcludedCount =
         opts?.excludePlaceIds?.length ?? collectExcludePlaceIds(activeSession, conversation).length;
       logAiPipeline(
@@ -2988,10 +3006,7 @@ function Chat() {
       const requestCheck = assertDestinationRequestNotUsingGps({
         searchMode: searchCtx.searchMode === "destination" ? "destination" : "current_location",
         center: { latitude: lat, longitude: lng },
-        centerSource:
-          searchCtx.searchMode === "destination"
-            ? "destination_anchor"
-            : "gps",
+        centerSource: searchCtx.searchMode === "destination" ? "destination_anchor" : "gps",
         destination: searchCtx.destinationName,
         category: intent,
         radiusMeters: 1500,
@@ -3114,6 +3129,7 @@ function Chat() {
             workingSession.placeDetailFocus?.placeId ??
             workingSession.placeDetailFocus?.googlePlaceId,
           shortcutScene: continuationScene,
+          searchProfile: resolveHomeShortcutSearchProfile(sessionForSave),
           fetchPlaceDetails: async (placeId) => {
             const result = await fetchPlaceDetailsFn({ data: { placeId, locale } });
             return result.place;
@@ -3123,11 +3139,7 @@ function Chat() {
           ...sessionForSave,
           activeChatIntent: intent,
           activeCategoryIntent:
-            intent === "restaurant"
-              ? "restaurant"
-              : intent === "cafe"
-                ? "cafe"
-                : "attraction",
+            intent === "restaurant" ? "restaurant" : intent === "cafe" ? "cafe" : "attraction",
           phase: "recommend",
           travelContext: {
             ...merged.context,
@@ -3145,16 +3157,15 @@ function Chat() {
               merged.context.destination ??
               "附近",
             intent:
-              intent === "restaurant"
-                ? "restaurant"
-                : intent === "cafe"
-                  ? "cafe"
-                  : "attraction",
+              intent === "restaurant" ? "restaurant" : intent === "cafe" ? "cafe" : "attraction",
             latitude: lat,
             longitude: lng,
             resolvedSearchCity: searchCtx.destinationName ?? sessionForSave.location?.city,
             searchScope: searchCtx.searchMode === "nearby" ? "current_location" : "city",
             shortcutScene: continuationScene ?? undefined,
+            shortcutSource: sessionForSave.normalizedShortcutRequest?.source,
+            shortcutMode: sessionForSave.normalizedShortcutRequest?.mode,
+            searchProfile: resolveHomeShortcutSearchProfile(sessionForSave) ?? undefined,
           }),
         };
         if (nearbyFollowup) {
@@ -3270,6 +3281,7 @@ function Chat() {
                 merged.context,
                 sessionForSave.excludedCategories ?? merged.context.excludedCategories,
                 resolveNearbyShortcutScene(userText, sessionForSave),
+                resolveHomeShortcutSearchProfile(sessionForSave),
               )
             : displaySummary;
         devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: filteredRecs.length });
@@ -3370,6 +3382,9 @@ function Chat() {
             resolvedSearchCity: searchCtx.destinationName ?? sessionForSave.location?.city,
             searchScope: searchCtx.searchMode === "nearby" ? "current_location" : "city",
             shortcutScene: continuationScene ?? undefined,
+            shortcutSource: sessionForSave.normalizedShortcutRequest?.source,
+            shortcutMode: sessionForSave.normalizedShortcutRequest?.mode,
+            searchProfile: resolveHomeShortcutSearchProfile(sessionForSave) ?? undefined,
           }),
         };
         persistSession(
@@ -3396,7 +3411,6 @@ function Chat() {
         );
         logAiPipeline("[NEARBY_FINAL]", `count=${recs.length}`, `intent=${intent}`);
         logRtResponseBranch("nearby_cards");
-        if (nearbyFollowup) logRtContinuationBranch("nearby_cards");
         setPartial({});
         logRtNearbyPush({
           returned: true,
@@ -3413,9 +3427,7 @@ function Chat() {
         await settleCreditsOperation(placeCreditsHandle, false);
         console.warn("[CHAT_PLACES_REQUEST] failed", e instanceof Error ? e.message : String(e));
         const fallbackReason =
-          e instanceof Error && e.message === "places_empty"
-            ? "search_exhausted"
-            : "provider_zero";
+          e instanceof Error && e.message === "places_empty" ? "search_exhausted" : "provider_zero";
         logAiPipeline("[NEARBY_FALLBACK]", `reason=${fallbackReason}`);
         logShortcutRuntime("[RT_NEARBY_RESULT]", {
           followup: nearbyFollowup,
@@ -3599,10 +3611,7 @@ function Chat() {
         })();
         const incomingPlanSessionId = incomingDayPlan?.planningSessionId;
 
-        logAiPushPlaceCardsSession(
-          incomingPlanSessionId ?? flowSessionId,
-          flowSessionId,
-        );
+        logAiPushPlaceCardsSession(incomingPlanSessionId ?? flowSessionId, flowSessionId);
 
         if (
           incomingDayPlan &&
@@ -4084,10 +4093,7 @@ function Chat() {
         });
 
         // Already exhausted + general「還有嗎」→ guide subtype, do not re-hit same queries.
-        if (
-          shoppingSessionForSearch.exhausted &&
-          shoppingSubtype === "general"
-        ) {
+        if (shoppingSessionForSearch.exhausted && shoppingSubtype === "general") {
           const exhaustedCopy = buildShoppingExhaustedFollowupMessage(
             shoppingSessionForSearch.activeSearchCity ??
               shoppingSessionForSearch.destination ??
@@ -4095,8 +4101,7 @@ function Chat() {
           );
           const exhaustedMsgs = [
             ...conversation.filter(
-              (m, i) =>
-                !(i === conversation.length - 1 && m.role === "assistant" && !m.content),
+              (m, i) => !(i === conversation.length - 1 && m.role === "assistant" && !m.content),
             ),
             { role: "assistant" as const, content: exhaustedCopy },
           ];
@@ -4169,9 +4174,7 @@ function Chat() {
         activeCategory &&
         activeSession.recommendationSession.topic === activeCategory
       ) {
-        const continued = continueRecommendation(
-          activeSession.recommendationSession,
-        );
+        const continued = continueRecommendation(activeSession.recommendationSession);
         if (continued.batch.length) {
           logAiPipeline(
             "[RECOMMENDATION_CONTINUATION_SUMMARY]",
@@ -4232,17 +4235,10 @@ function Chat() {
       try {
         const excludeForSearch = [
           ...excludePlaceIds,
-          ...shoppingReservePrefetch
-            .map((r) => r.googlePlaceId ?? "")
-            .filter(Boolean),
+          ...shoppingReservePrefetch.map((r) => r.googlePlaceId ?? "").filter(Boolean),
         ];
-        const {
-          summary,
-          recommendations,
-          payload,
-          contextPatch,
-          recommendationSessionPatch,
-        } = await buildMoreDestinationRecommendations({
+        const { summary, recommendations, payload, contextPatch, recommendationSessionPatch } =
+          await buildMoreDestinationRecommendations({
             destination,
             userText,
             context: { ...placeCtx, destination, tripPurpose: "more_place_recommendations" },
@@ -4268,9 +4264,7 @@ function Chat() {
         let shoppingMerged = recommendations;
         if (activeCategory === "shopping" && shoppingReservePrefetch.length) {
           const seen = new Set(
-            shoppingReservePrefetch
-              .map((r) => r.googlePlaceId ?? "")
-              .filter(Boolean),
+            shoppingReservePrefetch.map((r) => r.googlePlaceId ?? "").filter(Boolean),
           );
           shoppingMerged = [...shoppingReservePrefetch];
           for (const rec of recommendations) {
@@ -4283,12 +4277,13 @@ function Chat() {
         }
 
         if (activeCategory && shoppingMerged.length) {
-          if (activeCategory === "shopping" && (recommendationSessionPatch || shoppingReservePrefetch.length)) {
-            nextRecSession = recommendationSessionPatch ?? shoppingSessionForSearch ?? nextRecSession;
-            const contSummary = buildContinueRecommendationSummary(
-              "shopping",
-              shoppingMerged,
-            );
+          if (
+            activeCategory === "shopping" &&
+            (recommendationSessionPatch || shoppingReservePrefetch.length)
+          ) {
+            nextRecSession =
+              recommendationSessionPatch ?? shoppingSessionForSearch ?? nextRecSession;
+            const contSummary = buildContinueRecommendationSummary("shopping", shoppingMerged);
             loadingFinalizeReason = "success";
             return renderMorePlacesReply(
               contSummary,
@@ -4303,10 +4298,7 @@ function Chat() {
             nextRecSession.topic === activeCategory &&
             nextRecSession.cursor >= nextRecSession.pool.length
           ) {
-            const extended = extendRecommendationPool(
-              nextRecSession,
-              recommendations,
-            );
+            const extended = extendRecommendationPool(nextRecSession, recommendations);
             nextRecSession = extended.session;
             if (extended.batch.length) {
               const contSummary = buildContinueRecommendationSummary(
@@ -4358,9 +4350,7 @@ function Chat() {
         loadingFinalizeReason = "no_results";
         logChatMorePlacesNoResultAllowed(true);
         const shoppingRecForNoMore =
-          recommendationSessionPatch ??
-          nextRecSession ??
-          activeSession.recommendationSession;
+          recommendationSessionPatch ?? nextRecSession ?? activeSession.recommendationSession;
         const shoppingAlreadyExhausted =
           activeCategory === "shopping" && Boolean(shoppingRecForNoMore?.exhausted);
         const shoppingNowExhausted =
@@ -4577,9 +4567,7 @@ function Chat() {
               })
             : null;
         const destinationEntity =
-          categoryIntent === "shopping"
-            ? resolveDestinationEntity(destination)
-            : null;
+          categoryIntent === "shopping" ? resolveDestinationEntity(destination) : null;
         // Always resolve a destination search centroid for the Recommendation Snapshot
         // so「有其他的嗎」can restore the same geocoded area center — never a shopping cluster.
         const snapshotCentroid =
@@ -4606,10 +4594,7 @@ function Chat() {
             : DESTINATION_CATEGORY_DISPLAY_BATCH_SIZE;
         const shoppingSplit =
           categoryIntent === "shopping"
-            ? buildShoppingDisplayAndReserveFromPool(
-                recommendations,
-                SHOPPING_DISPLAY_LIMIT,
-              )
+            ? buildShoppingDisplayAndReserveFromPool(recommendations, SHOPPING_DISPLAY_LIMIT)
             : null;
         const shoppingCoverage =
           categoryIntent === "shopping"
@@ -4717,7 +4702,10 @@ function Chat() {
             parentCity: persistedAreaScope?.parentCity,
             area: persistedAreaScope?.area,
             searchScope: persistedAreaScope ? "area" : "city",
-            latitude: snapshotCentroid?.lat ?? shoppingScope?.searchCentroid?.lat ?? recSession.searchCentroid?.lat,
+            latitude:
+              snapshotCentroid?.lat ??
+              shoppingScope?.searchCentroid?.lat ??
+              recSession.searchCentroid?.lat,
             longitude:
               snapshotCentroid?.lng ??
               shoppingScope?.searchCentroid?.lng ??
@@ -4797,12 +4785,7 @@ function Chat() {
         };
 
         const { summary: displaySummary, recommendations: filteredRecs } =
-          finalizeChatRecommendationDisplay(
-            sessionWithRecs,
-            userText,
-            alignedSummary,
-            batchRecs,
-          );
+          finalizeChatRecommendationDisplay(sessionWithRecs, userText, alignedSummary, batchRecs);
 
         // Shopping: text list + cards must stay on the same gated batch.
         const recs = (
@@ -4975,7 +4958,8 @@ function Chat() {
       if (restoredCategory !== snapshotCategory) {
         sessionForSearch = {
           ...sessionForSearch,
-          activeCategoryIntent: restoredCategory as import("@/lib/ai/chat-place-category-types").ChatPlaceCategoryIntent,
+          activeCategoryIntent:
+            restoredCategory as import("@/lib/ai/chat-place-category-types").ChatPlaceCategoryIntent,
           activeRecommendationContext: {
             ...recCtx,
             intent: categoryIntentToRecommendationIntent(
@@ -5402,8 +5386,7 @@ function Chat() {
 
       if (shouldFetchDestinationPlaces(activeUserText, mergedForAdvice.context, scopedSession)) {
         const destForPlaces =
-          mergedForAdvice.context.destination ||
-          scopedSession.travelContext?.destination;
+          mergedForAdvice.context.destination || scopedSession.travelContext?.destination;
         if (
           explicitScope &&
           shouldBlockCrossScopeRecommendationFallback({
@@ -5529,17 +5512,17 @@ function Chat() {
             reason: "generic_chat_blocked",
           });
         } else {
-        const trimmedConversation = conversation.filter(
-          (m, i) => !(i === conversation.length - 1 && m.role === "assistant" && !m.content),
-        );
-        await completeAdviceTurn(
-          adviceTurn,
-          mergedForAdvice.session,
-          mergedForAdvice.context,
-          trimmedConversation,
-        );
-        setPartial({});
-        return true;
+          const trimmedConversation = conversation.filter(
+            (m, i) => !(i === conversation.length - 1 && m.role === "assistant" && !m.content),
+          );
+          await completeAdviceTurn(
+            adviceTurn,
+            mergedForAdvice.session,
+            mergedForAdvice.context,
+            trimmedConversation,
+          );
+          setPartial({});
+          return true;
         }
       }
 
@@ -6201,8 +6184,7 @@ function Chat() {
                 fallbackMerged.context,
                 fallbackMerged.session,
                 activeUserText,
-              ) ??
-              resolveChatConnectionFallbackMessage(e),
+              ) ?? resolveChatConnectionFallbackMessage(e),
           };
           setMsgs((prev) => {
             const trimmedPrev = prev.filter(
@@ -6596,6 +6578,8 @@ function Chat() {
     }
 
     let nextSession = applyTripIntentToSession(trimmed, session);
+    const planningStateBeforeHomeIsolation =
+      nextSession.chatPlanningState ?? nextSession.conversationMode ?? "";
     const normalizedShortcutFromTurn = (() => {
       if (opts?.source === "chat_shortcut") {
         return resolveNormalizedShortcutRequestFromText(trimmed, "chat_shortcut");
@@ -6615,11 +6599,18 @@ function Chat() {
     nextSession = applyQuickChipContext(trimmed, nextSession);
     nextSession = applyDiningContextFromText(trimmed, nextSession);
     if (normalizedShortcutFromTurn) {
-      const shortcutContext = buildStructuredShortcutContext(
-        normalizedShortcutFromTurn.mode,
-        trimmed,
-      );
-      const modeMood = moodLabelForShortcutMode(normalizedShortcutFromTurn.mode);
+      const homeProfileOwnsScene =
+        normalizedShortcutFromTurn.source === "home_mood" &&
+        (normalizedShortcutFromTurn.mode === "late_night" ||
+          normalizedShortcutFromTurn.mode === "sea");
+      const shortcutContext = homeProfileOwnsScene
+        ? undefined
+        : buildStructuredShortcutContext(normalizedShortcutFromTurn.mode, trimmed);
+      const modeMood =
+        normalizedShortcutFromTurn.source === "home_mood" &&
+        normalizedShortcutFromTurn.mode === "late_night"
+          ? "夜晚散策"
+          : moodLabelForShortcutMode(normalizedShortcutFromTurn.mode);
       const modeTripPurpose =
         normalizedShortcutFromTurn.mode === "coffee"
           ? "cafe"
@@ -6651,15 +6642,13 @@ function Chat() {
         shortcutContext,
         normalizedShortcutRequest: normalizedShortcutFromTurn,
         fromMoodFlow:
-          normalizedShortcutFromTurn.source === "chat_shortcut"
-            ? true
-            : nextSession.fromMoodFlow,
+          normalizedShortcutFromTurn.source === "chat_shortcut" ? true : nextSession.fromMoodFlow,
         homeMoodShortcutEntry:
           normalizedShortcutFromTurn.source === "home_mood"
             ? true
             : nextSession.homeMoodShortcutEntry,
-        activeChatIntent:
-          normalizedShortcutFromTurn.mode === "coffee" ? "cafe" : "attraction",
+        activeChatIntent: normalizedShortcutFromTurn.mode === "coffee" ? "cafe" : "attraction",
+        activeCategoryIntent: normalizedShortcutFromTurn.mode === "coffee" ? "cafe" : "attraction",
         // New shortcut request must not consume stale continuation snapshot.
         recommendationSession: undefined,
         activeRecommendationContext: undefined,
@@ -6703,10 +6692,20 @@ function Chat() {
       structured: Boolean(normalizedShortcutFromTurn?.structured),
     });
 
+    const structuredHomeNearbyTurn =
+      opts?.source === "home_mood" && isStructuredHomeNearbyShortcut(nextSession);
+    const structuredHomeSeaTurn = isStructuredHomeSeaShortcut(nextSession);
+    if (structuredHomeNearbyTurn) {
+      nextSession = structuredHomeSeaTurn
+        ? isolateHomeSeaShortcutFromPlanning(nextSession)
+        : isolateHomeShortcutFromPlanning(nextSession);
+    }
     const lastAssistantReply = [...msgs]
       .reverse()
       .find((m) => m.role === "assistant" && m.content?.trim())?.content;
-    nextSession = prepareSessionForUserTurn(nextSession, lastAssistantReply);
+    if (!structuredHomeNearbyTurn) {
+      nextSession = prepareSessionForUserTurn(nextSession, lastAssistantReply);
+    }
 
     const pendingGeographic = nextSession.pendingClarification;
     const nearbyShortcutTurn =
@@ -6716,10 +6715,7 @@ function Chat() {
       if (isPlaceClarificationTripPlanningOverride(trimmed)) {
         nextSession = { ...nextSession, pendingClarification: undefined };
       } else {
-        const restored = restorePlaceIntentAfterGeographicClarification(
-          pendingGeographic,
-          trimmed,
-        );
+        const restored = restorePlaceIntentAfterGeographicClarification(pendingGeographic, trimmed);
         const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
         setMsgs(next);
         setText("");
@@ -6787,7 +6783,12 @@ function Chat() {
       nextSession = resetChatPlanningForReplan(nextSession, "user_replan_intent");
     }
 
-    const merged = mergeTravelContext(nextSession, trimmed, lastAssistantReply);
+    const merged = structuredHomeNearbyTurn
+      ? {
+          context: nextSession.travelContext ?? { interests: [] },
+          session: nextSession,
+        }
+      : mergeTravelContext(nextSession, trimmed, lastAssistantReply);
     nextSession = merged.session;
     if (isBudgetRefinementText(trimmed)) {
       nextSession = applyBudgetRefinementToSession(trimmed, {
@@ -6795,9 +6796,19 @@ function Chat() {
         travelContext: merged.context,
       });
     }
-    const planningMerge = mergeTripPlanningContext(trimmed, nextSession, merged.context);
+    const planningMerge = structuredHomeNearbyTurn
+      ? {
+          context: nextSession.tripPlanningContext ?? {
+            selectedPlaces: [],
+            intent: "mood_recommend" as const,
+          },
+          session: nextSession,
+        }
+      : mergeTripPlanningContext(trimmed, nextSession, merged.context);
     nextSession = planningMerge.session;
-    const conversationMode = resolveConversationMode(trimmed, nextSession);
+    const conversationMode = structuredHomeNearbyTurn
+      ? "mood_recommend"
+      : resolveConversationMode(trimmed, nextSession);
 
     const rtArbitration = resolveChatIntentArbitration(trimmed, nextSession);
     const rtIntent = resolveChatIntent(trimmed, nextSession);
@@ -6816,16 +6827,14 @@ function Chat() {
     if (rtStructuredNearby) {
       nextSession = await resolveChatLocation(nextSession);
     }
-    const rtNearbyScope = resolveNearbyRecommendationScope(
-      nextSession,
-      merged.context.destination,
-    );
+    const rtNearbyScope = resolveNearbyRecommendationScope(nextSession, merged.context.destination);
     logShortcutRuntime("[RT_NEARBY_SCOPE]", {
-      isNearbyIntent: isNearbyPlaceIntent(rtIntent) || Boolean(rtNearbyIntent),
+      isNearbyIntent:
+        rtStructuredNearby || isNearbyPlaceIntent(rtIntent) || Boolean(rtNearbyIntent),
       scope: rtNearbyScope.scope,
       deviceLocationAvailable: rtNearbyScope.deviceLocationAvailable,
       deviceLocationUsed:
-        (isNearbyPlaceIntent(rtIntent) || Boolean(rtNearbyIntent)) &&
+        (rtStructuredNearby || isNearbyPlaceIntent(rtIntent) || Boolean(rtNearbyIntent)) &&
         rtNearbyScope.deviceLocationUsed,
       routeMode: conversationMode ?? "",
     });
@@ -6845,9 +6854,13 @@ function Chat() {
       }
     }
 
-    nextSession = extractPlanningHintsFromText(trimmed, nextSession);
+    if (!structuredHomeNearbyTurn) {
+      nextSession = extractPlanningHintsFromText(trimmed, nextSession);
+    }
     nextSession = extractDiscoveryFromText(trimmed, nextSession);
-    nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
+    if (!structuredHomeNearbyTurn) {
+      nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
+    }
 
     const styleReselect = isStyleReselectTurn(trimmed, nextSession, merged.context);
     if (styleReselect) {
@@ -7027,15 +7040,19 @@ function Chat() {
         });
         const hasDestinationSnapshot = Boolean(
           nextSession.activeRecommendationContext?.destinationName?.trim() ||
-            nextSession.recommendationSession?.destination?.trim() ||
-            nextSession.travelContext?.destination?.trim() ||
-            nextSession.tripPlanningContext?.destination?.trim() ||
-            nextSession.tripDestination?.city?.trim(),
+          nextSession.recommendationSession?.destination?.trim() ||
+          nextSession.travelContext?.destination?.trim() ||
+          nextSession.tripPlanningContext?.destination?.trim() ||
+          nextSession.tripDestination?.city?.trim(),
         );
         const isCurrentLocationShortcutSession =
           nextSession.normalizedShortcutRequest?.structured === true &&
           nextSession.normalizedShortcutRequest?.intent === "nearby_recommendation" &&
-          Boolean(continuationScene) &&
+          Boolean(
+            continuationScene ||
+            nextSession.activeRecommendationContext?.searchProfile ||
+            resolveHomeShortcutSearchProfile(nextSession),
+          ) &&
           sessionHasLocation(nextSession);
         if (
           continueNearbyIntent &&
@@ -7086,7 +7103,6 @@ function Chat() {
               reason: "continuation_exhausted",
             });
             logRtResponseBranch("no_more");
-            logRtContinuationBranch("no_more");
             const noMoreMsgs = [
               ...next,
               { role: "assistant" as const, content: NO_MORE_RECOMMENDATIONS_MESSAGE },
@@ -7165,10 +7181,7 @@ function Chat() {
             activeCategoryOnRefresh === "shopping"
               ? SHOPPING_NO_MORE_RECOMMENDATIONS_MESSAGE
               : NO_MORE_RECOMMENDATIONS_MESSAGE;
-          const noMoreMsgs = [
-            ...next,
-            { role: "assistant" as const, content: noMoreCopy },
-          ];
+          const noMoreMsgs = [...next, { role: "assistant" as const, content: noMoreCopy }];
           logRtNoMoreReason({
             caller: "send.refetch.active_context",
             route: "MORE_RECOMMENDATIONS",
@@ -7252,10 +7265,7 @@ function Chat() {
             activeCategoryOnRefresh === "shopping"
               ? SHOPPING_NO_MORE_RECOMMENDATIONS_MESSAGE
               : NO_MORE_RECOMMENDATIONS_MESSAGE;
-          const noMoreMsgs = [
-            ...next,
-            { role: "assistant" as const, content: noMoreCopy },
-          ];
+          const noMoreMsgs = [...next, { role: "assistant" as const, content: noMoreCopy }];
           logRtNoMoreReason({
             caller: "send.refetch.preserved_session",
             route: "MORE_RECOMMENDATIONS",
@@ -7467,13 +7477,19 @@ function Chat() {
               routeMode: conversationMode ?? "",
             });
             const resolvedIntent = resolveChatIntent(trimmed, nextSession);
-            const nearbyIntent = isNearbyPlaceIntent(resolvedIntent)
-              ? resolvedIntent
-              : inferNearbyIntentFromContext(
-                  nextSession.travelContext ?? merged.context,
-                  trimmed,
-                  nextSession,
-                );
+            const homeMode = nextSession.normalizedShortcutRequest?.mode;
+            const nearbyIntent =
+              nextSession.normalizedShortcutRequest?.source === "home_mood"
+                ? homeMode === "coffee"
+                  ? "cafe"
+                  : "attraction"
+                : isNearbyPlaceIntent(resolvedIntent)
+                  ? resolvedIntent
+                  : inferNearbyIntentFromContext(
+                      nextSession.travelContext ?? merged.context,
+                      trimmed,
+                      nextSession,
+                    );
             const willCall =
               Boolean(nearbyIntent) &&
               nearbyScope.scope === "current_location" &&
@@ -7485,13 +7501,34 @@ function Chat() {
                 : nearbyScope.hasExplicitDestination
                   ? "explicit_destination"
                   : "missing_nearby_intent";
+            const homeSearchProfile = resolveHomeShortcutSearchProfile(nextSession);
+            logShortcutRuntime("[RT_HOME_SHORTCUT_RESOLVED]", {
+              source: nextSession.normalizedShortcutRequest?.source ?? "",
+              mode: nextSession.normalizedShortcutRequest?.mode ?? "",
+              structured: Boolean(nextSession.normalizedShortcutRequest?.structured),
+              shortcutScene: resolveNearbyShortcutScene(trimmed, nextSession) ?? "",
+              intent: nearbyIntent ?? nextSession.normalizedShortcutRequest?.intent ?? "",
+              resolvedRoute: arbitration.route,
+              scope: nearbyScope.scope,
+              routeMode: conversationMode ?? "",
+              searchProfile: homeSearchProfile ?? "chat_nearby",
+              planningStateBefore: planningStateBeforeHomeIsolation,
+              planningStateAfterIsolation:
+                nextSession.chatPlanningState ?? nextSession.conversationMode ?? "",
+              activeRecommendationIntent:
+                nextSession.activeRecommendationContext?.intent ??
+                nextSession.activeCategoryIntent ??
+                "",
+              interceptedBy: "",
+            });
             logShortcutRuntime("[RT_NEARBY_PUSH_CALL]", {
               willCall,
               reason: pushCallReason,
               scope: nearbyScope.scope,
               latPresent: nextSession.location?.lat != null,
               lngPresent: nextSession.location?.lng != null,
-              locationSource: effective?.source ?? (nearbyScope.deviceLocationAvailable ? "session" : ""),
+              locationSource:
+                effective?.source ?? (nearbyScope.deviceLocationAvailable ? "session" : ""),
             });
             if (willCall && nearbyIntent) {
               setStreaming(true);
@@ -7507,10 +7544,7 @@ function Chat() {
                 setStreaming(false);
               }
               logRtResponseBranch("other");
-              setMsgs([
-                ...next,
-                { role: "assistant", content: t("home.nearbySlowEmpty") },
-              ]);
+              setMsgs([...next, { role: "assistant", content: t("home.nearbySlowEmpty") }]);
               persistSession(nextSession);
               return;
             }
@@ -7521,18 +7555,14 @@ function Chat() {
                 ...next,
                 {
                   role: "assistant",
-                  content:
-                    "我可以幫你找附近推薦，先告訴我你現在在哪個地區或城市。",
+                  content: "我可以幫你找附近推薦，先告訴我你現在在哪個地區或城市。",
                 },
               ]);
               persistSession(nextSession);
               return;
             }
             logRtResponseBranch("other");
-            setMsgs([
-              ...next,
-              { role: "assistant", content: t("home.nearbySlowEmpty") },
-            ]);
+            setMsgs([...next, { role: "assistant", content: t("home.nearbySlowEmpty") }]);
             persistSession(nextSession);
             return;
           }
@@ -7597,18 +7627,14 @@ function Chat() {
               ...next,
               {
                 role: "assistant",
-                content:
-                  "我可以幫你找附近推薦，先告訴我你現在在哪個地區或城市。",
+                content: "我可以幫你找附近推薦，先告訴我你現在在哪個地區或城市。",
               },
             ]);
             persistSession(nextSession);
             return;
           }
           logRtResponseBranch("other");
-          setMsgs([
-            ...next,
-            { role: "assistant", content: t("home.nearbySlowEmpty") },
-          ]);
+          setMsgs([...next, { role: "assistant", content: t("home.nearbySlowEmpty") }]);
           persistSession(nextSession);
           return;
         }
@@ -7682,9 +7708,7 @@ function Chat() {
               !hasValidTripDuration(durationFields))
           ) {
             const destLabel =
-              planningCtx.destination?.trim() ||
-              nextSession.tripDestination?.city?.trim() ||
-              "";
+              planningCtx.destination?.trim() || nextSession.tripDestination?.city?.trim() || "";
             if (destLabel && !isCountryLevelDestination(destLabel)) {
               logTripDurationGuard({
                 tripDays: validDays ?? null,
@@ -7700,8 +7724,7 @@ function Chat() {
               });
               const dateAsk = buildDateAndDurationQuestionReply(
                 destLabel,
-                planningCtx.destinationCountry ??
-                  nextSession.travelContext?.destinationCountry,
+                planningCtx.destinationCountry ?? nextSession.travelContext?.destinationCountry,
                 {
                   context: planningCtx,
                   userText: trimmed,
@@ -7737,19 +7760,21 @@ function Chat() {
             }
           }
 
-          if (canEnterCombinationDiscovery({
-            destination: planningCtx.destination,
-            destinationType: planningCtx.destinationType,
-            destinationCountry: planningCtx.destinationCountry,
-            destinationCity: planningCtx.destinationCity,
-            destinationCountryCode: planningCtx.destinationCountryCode,
-            destinationCoordinates: planningCtx.destinationCoordinates,
-            destinationScopeId: planningCtx.destinationScopeId,
-            ...durationFields,
-            days: validDays,
-            pendingQuestion: nextSession.pendingQuestion,
-            session: nextSession,
-          })) {
+          if (
+            canEnterCombinationDiscovery({
+              destination: planningCtx.destination,
+              destinationType: planningCtx.destinationType,
+              destinationCountry: planningCtx.destinationCountry,
+              destinationCity: planningCtx.destinationCity,
+              destinationCountryCode: planningCtx.destinationCountryCode,
+              destinationCoordinates: planningCtx.destinationCoordinates,
+              destinationScopeId: planningCtx.destinationScopeId,
+              ...durationFields,
+              days: validDays,
+              pendingQuestion: nextSession.pendingQuestion,
+              session: nextSession,
+            })
+          ) {
             await prepareDestinationCombinations(planningCtx, nextSession);
           }
           const earlyPlanningTurn = processAdviceTurn(trimmed, nextSession, planningCtx);
@@ -7778,7 +7803,12 @@ function Chat() {
           const days = resolveValidTripDays(
             tripDurationFieldsFromContext(planningCtx, nextSession),
           );
-          if (!hasValidTripDuration({ days, ...tripDurationFieldsFromContext(planningCtx, nextSession) })) {
+          if (
+            !hasValidTripDuration({
+              days,
+              ...tripDurationFieldsFromContext(planningCtx, nextSession),
+            })
+          ) {
             logTripDurationGuard({
               tripDays: days ?? null,
               startDate: planningCtx.startDate,
@@ -8498,15 +8528,11 @@ function Chat() {
 
       if (dayPlan?.items.length) {
         const rawItineraryItems = buildItineraryFromDayPlan(dayPlan, tripDates);
-        const { applyItineraryLocalizationGate } = await import(
-          "@/lib/ai/itinerary-localization-gate"
-        );
-        const { buildLegMinutesFromPlaces } = await import(
-          "@/lib/ai/estimate-place-visit-duration"
-        );
-        const { resolvePlannerPaceFromProfile } = await import(
-          "@/lib/ai/required-anchor-runtime"
-        );
+        const { applyItineraryLocalizationGate } =
+          await import("@/lib/ai/itinerary-localization-gate");
+        const { buildLegMinutesFromPlaces } =
+          await import("@/lib/ai/estimate-place-visit-duration");
+        const { resolvePlannerPaceFromProfile } = await import("@/lib/ai/required-anchor-runtime");
         const gated = applyItineraryLocalizationGate(rawItineraryItems, {
           softPassEnglish: true,
         });
@@ -8519,8 +8545,7 @@ function Chat() {
         const recommendations = dayPlanToRecommendations(dayPlan);
         const pace = resolvePlannerPaceFromProfile({
           style: resolvePlannerStyleKey(
-            workingSession.tripStyles ||
-              (workingSession.pace === "排滿" ? "緊湊" : "慢旅行"),
+            workingSession.tripStyles || (workingSession.pace === "排滿" ? "緊湊" : "慢旅行"),
           ),
           quizPace:
             workingSession.pace === "慢旅" || workingSession.pace === "慢旅行"
@@ -8558,34 +8583,36 @@ function Chat() {
           destination,
           days: effectiveTripDays,
           budget,
-        style: resolvePlannerStyleKey(
-          workingSession.tripStyles ||
-            (workingSession.pace === "排滿" ? "緊湊" : "慢旅行"),
-        ),
-        mood: workingSession.mood ?? "",
-        interests: buildConversationSummary(workingSession, activeMsgs),
-        conversationSummary: buildConversationSummary(workingSession, activeMsgs),
-        startDate: startDate || today,
-        endDate: endDate || startDate || today,
-        origin: workingSession.tripOrigin
-          ? formatTripLocationLabel(workingSession.tripOrigin)
-          : (bundle.location.city ?? ""),
-        travelers: workingSession.tripCompanionCount ?? 1,
-        transport: workingSession.transportation ?? "",
-        selectedPlaces: places.map((p) => ({
-          ...p,
-          googlePlaceId: p.googlePlaceId ?? p.placeId,
-        })),
-        selectedCombinationIds: workingSession.travelContext?.selectedCombinationIds ?? [],
-        nearbyExtensions: workingSession.travelContext?.nearbyExtensions ?? [],
-        excludedCategories: workingSession.excludedCategories ?? workingSession.travelContext?.excludedCategories ?? [],
-        preferences: prefs,
-        location: bundle.location,
-        weather: bundle.weather,
-        time: workingSession.startTime || bundle.time,
-        fashionStyle: fashionStyle ?? "",
-        locale,
-      };
+          style: resolvePlannerStyleKey(
+            workingSession.tripStyles || (workingSession.pace === "排滿" ? "緊湊" : "慢旅行"),
+          ),
+          mood: workingSession.mood ?? "",
+          interests: buildConversationSummary(workingSession, activeMsgs),
+          conversationSummary: buildConversationSummary(workingSession, activeMsgs),
+          startDate: startDate || today,
+          endDate: endDate || startDate || today,
+          origin: workingSession.tripOrigin
+            ? formatTripLocationLabel(workingSession.tripOrigin)
+            : (bundle.location.city ?? ""),
+          travelers: workingSession.tripCompanionCount ?? 1,
+          transport: workingSession.transportation ?? "",
+          selectedPlaces: places.map((p) => ({
+            ...p,
+            googlePlaceId: p.googlePlaceId ?? p.placeId,
+          })),
+          selectedCombinationIds: workingSession.travelContext?.selectedCombinationIds ?? [],
+          nearbyExtensions: workingSession.travelContext?.nearbyExtensions ?? [],
+          excludedCategories:
+            workingSession.excludedCategories ??
+            workingSession.travelContext?.excludedCategories ??
+            [],
+          preferences: prefs,
+          location: bundle.location,
+          weather: bundle.weather,
+          time: workingSession.startTime || bundle.time,
+          fashionStyle: fashionStyle ?? "",
+          locale,
+        };
 
         logAiState("BUILDING_ITINERARY", `places=${places.length}`);
         createResult = await createItineraryFromSession({
@@ -8660,14 +8687,13 @@ function Chat() {
           ...itinerary.tripSettings,
           tripStartDate: tripDates.hasExplicitDates ? startDate : undefined,
           tripEndDate: tripDates.hasExplicitDates ? endDate : undefined,
-          transport:
-            /開車|自駕|租車|drive/i.test(workingSession.transportation ?? "")
-              ? "drive"
-              : workingSession.transportation === "大眾運輸"
-                ? "transit"
-                : workingSession.transportation === "機車"
-                  ? "scooter"
-                  : "walk",
+          transport: /開車|自駕|租車|drive/i.test(workingSession.transportation ?? "")
+            ? "drive"
+            : workingSession.transportation === "大眾運輸"
+              ? "transit"
+              : workingSession.transportation === "機車"
+                ? "scooter"
+                : "walk",
           transitLegs: Object.fromEntries(
             routeLegs.map((leg, idx) => [
               `${itineraryStops[idx]?.placeName ?? idx}→${itineraryStops[idx + 1]?.placeName ?? idx + 1}`,
@@ -8841,9 +8867,7 @@ function Chat() {
         await settleCreditsOperation(itinCreditsHandle, false);
         itinCreditsHandle = null;
         logItineraryFailureReason(
-          prepared.diagnostics
-            ? JSON.stringify(prepared.diagnostics)
-            : prepared.failureReason,
+          prepared.diagnostics ? JSON.stringify(prepared.diagnostics) : prepared.failureReason,
         );
         setGenerating(false);
         setStreaming(false);

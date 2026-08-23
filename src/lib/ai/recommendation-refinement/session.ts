@@ -67,6 +67,9 @@ export function ensureActiveRecommendationContext(
     longitude?: number;
     radius?: number;
     shortcutScene?: import("@/lib/ai/chat-intent").ChatShortcutScene;
+    shortcutSource?: import("@/lib/ai/chat-intent").NormalizedShortcutSource;
+    shortcutMode?: import("@/lib/ai/chat-intent").StructuredShortcutMode;
+    searchProfile?: "home_late_night" | "home_sea";
   },
 ): ActiveRecommendationContext {
   const existing = session.activeRecommendationContext;
@@ -112,6 +115,9 @@ export function ensureActiveRecommendationContext(
       longitude: existing.longitude ?? params.longitude ?? scope?.searchCentroid.lng,
       radius: existing.radius ?? params.radius ?? scope?.searchRadius,
       shortcutScene: existing.shortcutScene ?? params.shortcutScene,
+      shortcutSource: existing.shortcutSource ?? params.shortcutSource,
+      shortcutMode: existing.shortcutMode ?? params.shortcutMode,
+      searchProfile: existing.searchProfile ?? params.searchProfile,
       countryCode: existing.countryCode ?? entity?.country,
     };
     if (!placeIds.length) return withGeo;
@@ -135,6 +141,9 @@ export function ensureActiveRecommendationContext(
     longitude: params.longitude ?? scope?.searchCentroid.lng,
     radius: params.radius ?? scope?.searchRadius,
     shortcutScene: params.shortcutScene,
+    shortcutSource: params.shortcutSource,
+    shortcutMode: params.shortcutMode,
+    searchProfile: params.searchProfile,
     intent,
     placeIds,
     canonicalKeys,

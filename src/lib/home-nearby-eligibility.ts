@@ -142,6 +142,9 @@ const DAY_PREFERRED_TYPES = new Set([
 const NIGHT_NAME_RE =
   /居酒|酒吧|餐酒|宵夜|深夜|拉麵|ramen|焼肉|烧肉|yakiniku|火鍋|hotpot|串燒|yakitori|izakaya|bar|pub|night|燒肉|火鍋/i;
 
+const NIGHT_SCENIC_NAME_RE =
+  /夜景|河岸|河濱|港邊|港灣|碼頭|展望台|觀景台|夜市|night\s*view|waterfront|harbou?r|pier|observation/i;
+
 const DAY_NAME_RE =
   /咖啡|cafe|餐廳|餐館|小吃|景點|博物|美術|百貨|商場|市集|market|mall|gallery|museum|書店|book/i;
 
@@ -265,7 +268,7 @@ export function passesPermanentHomeNearbyRules(place: HomeNearbyPickPlace): bool
 export function matchesNightPreferredPlace(place: HomeNearbyPickPlace): boolean {
   const types = normalizeTypes(place);
   if (types.some((t) => NIGHT_PREFERRED_TYPES.has(t))) return true;
-  return NIGHT_NAME_RE.test(place.name ?? "");
+  return NIGHT_NAME_RE.test(place.name ?? "") || NIGHT_SCENIC_NAME_RE.test(place.name ?? "");
 }
 
 export function matchesDayPreferredPlace(place: HomeNearbyPickPlace): boolean {

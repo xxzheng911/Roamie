@@ -139,7 +139,11 @@ export function resolveChatIntentArbitration(
   if (
     session.normalizedShortcutRequest?.structured &&
     !matchesContinueRecommendationGrammar(t) &&
-    (session.homeMoodShortcutEngaged !== true || resolveStructuredShortcutMode(t) != null) &&
+    ((session.normalizedShortcutRequest.source === "home_mood" &&
+      (session.normalizedShortcutRequest.mode === "late_night" ||
+        session.normalizedShortcutRequest.mode === "sea")) ||
+      session.homeMoodShortcutEngaged !== true ||
+      resolveStructuredShortcutMode(t) != null) &&
     !/(?:\d+\s*天|\d+\s*天\s*\d+\s*夜|一日遊|一日游|二天一夜|兩天一夜|三天兩夜|四天以上|幾天|几天|日期|出發|何時|什么时候)/.test(
       t,
     )

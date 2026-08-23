@@ -36,6 +36,7 @@ import {
   extractProvisionalDestinationAreaCandidate,
   resolveDestinationAreaScope,
 } from "@/lib/ai/destination-travel-profile";
+import { isStructuredHomeNearbyShortcut } from "@/lib/ai/home-shortcut-handoff";
 
 export type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 export {
@@ -116,9 +117,11 @@ export function shouldFetchDestinationCategoryPlaces(
     session.normalizedShortcutRequest?.structured === true &&
     session.normalizedShortcutRequest.intent === "nearby_recommendation" &&
     session.normalizedShortcutRequest.mode === "rainy";
+  const structuredHomeNearbyShortcut = isStructuredHomeNearbyShortcut(session);
   const destination = resolveDestinationForCategorySearch(ctx, session, t);
   // Nearby shortcuts must never enter destination-category geographic clarification,
   // even if a leftover trip destination is still on the session.
+  if (structuredHomeNearbyShortcut) return false;
   if (rainyNearbyShortcut) {
     logShortcutRuntime("[RT_RAINY_ROUTE]", {
       structured: true,

@@ -18,6 +18,7 @@
     "verify:place-display-name-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-display-name-fidelity.mjs",
     "verify:shortcut-category-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-shortcut-category-fidelity.mjs",
     "verify:nearby-shortcut-ranking": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-shortcut-ranking.mjs",
+    "verify:home-shortcut-handoff": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-shortcut-handoff.mjs",
     "verify:restaurant-render-type-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-restaurant-render-type-fidelity.mjs",
     "verify:restaurant-render-metadata-roundtrip": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-restaurant-render-metadata-roundtrip.mjs",
     "verify:taichung-east-restaurant-quality-handoff": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-taichung-east-restaurant-quality-handoff.mjs",

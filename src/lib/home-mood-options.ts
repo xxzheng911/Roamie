@@ -22,6 +22,7 @@ const LEGACY_MOOD_LABEL_TO_ID: Record<string, HomeMoodId> = {
   一個人: "solo",
   下雨天: "rainy",
   深夜散步: "lateNight",
+  夜晚散策: "lateNight",
   找咖啡: "coffee",
   看海: "sea",
 };

@@ -61,12 +61,20 @@ export type SearchPlacesInput = {
   locale?: Locale;
   categoryId?: string;
   placesCaller?: string;
-  placesScreen?: "home" | "explore" | "chat" | "ai_recommend" | "itinerary" | "plan" | "place_detail" | "unknown";
+  placesScreen?:
+    | "home"
+    | "explore"
+    | "chat"
+    | "ai_recommend"
+    | "itinerary"
+    | "plan"
+    | "place_detail"
+    | "unknown";
 };
 
-export type SearchPlacesFn = (
-  args: { data: SearchPlacesInput },
-) => Promise<{ places: PlaceResult[]; error: string | null }>;
+export type SearchPlacesFn = (args: {
+  data: SearchPlacesInput;
+}) => Promise<{ places: PlaceResult[]; error: string | null }>;
 
 type ExplorePlaceCard = PlaceResult & {
   reason: string;
@@ -80,12 +88,12 @@ export type HomeNearbyPick = ExplorePlaceCard & {
   distanceLabel?: string;
 };
 
-type HomeSearchWave = {
+export type HomeSearchWave = {
   id: string;
   query: string;
   mode: "text" | "nearby" | "multi";
-  includedTypes?: string[];
-  nearbyGroups?: string[][];
+  includedTypes?: readonly string[];
+  nearbyGroups?: readonly (readonly string[])[];
 };
 
 const HOME_GENERIC_FALLBACK_TYPES = [
@@ -101,10 +109,7 @@ const LATE_NIGHT_WAVES: HomeSearchWave[] = [
     id: "night_bar",
     query: "居酒屋 酒吧 宵夜 餐酒",
     mode: "multi",
-    nearbyGroups: [
-      HOME_NEARBY_CATEGORY_TYPES.night_bar,
-      ["restaurant", "meal_takeaway"],
-    ],
+    nearbyGroups: [HOME_NEARBY_CATEGORY_TYPES.night_bar, ["restaurant", "meal_takeaway"]],
   },
   {
     id: "night_food",
@@ -119,6 +124,46 @@ const LATE_NIGHT_WAVES: HomeSearchWave[] = [
     includedTypes: [...HOME_NEARBY_CATEGORY_TYPES.night_cafe],
   },
 ];
+
+/** Shared by Home Nearby and the Home late-night Chat shortcut. */
+export function homeLateNightSearchAttempts(): Array<{
+  id: string;
+  query: string;
+  mode: "text" | "nearby" | "multi";
+  includedTypes?: string[];
+  nearbyGroups?: string[][];
+}> {
+  return LATE_NIGHT_WAVES.map((wave) => ({
+    ...wave,
+    includedTypes: wave.includedTypes ? [...wave.includedTypes] : undefined,
+    nearbyGroups: wave.nearbyGroups?.map((group) => [...group]),
+  }));
+}
+
+/** Closed-only continuation recall: text variants preserve the three Late Night families. */
+export function homeLateNightOpenExpansionAttempts(): Array<{
+  id: string;
+  query: string;
+  mode: "text";
+}> {
+  return [
+    {
+      id: "night_bar",
+      query: "居酒屋 酒吧 餐酒館 深夜營業",
+      mode: "text",
+    },
+    {
+      id: "night_food",
+      query: "宵夜 深夜食堂 拉麵 燒肉 火鍋 串燒",
+      mode: "text",
+    },
+    {
+      id: "night_cafe",
+      query: "深夜咖啡 24小時咖啡 夜間甜點",
+      mode: "text",
+    },
+  ];
+}
 
 const DAY_WAVES: HomeSearchWave[] = [
   {
@@ -338,13 +383,11 @@ async function runHomeSearchWave(
   return primary.places;
 }
 
-async function runHomePopularFallback(
-  ctx: {
-    userLocation: { lat: number; lng: number };
-    locale: Locale;
-    searchPlacesFn: SearchPlacesFn;
-  },
-): Promise<PlaceResult[]> {
+async function runHomePopularFallback(ctx: {
+  userLocation: { lat: number; lng: number };
+  locale: Locale;
+  searchPlacesFn: SearchPlacesFn;
+}): Promise<PlaceResult[]> {
   const types = sanitizeNearbyTypes([...HOME_POPULAR_NEARBY_TYPES]);
   if (types.length === 0) return [];
 
@@ -382,13 +425,11 @@ async function runHomePopularFallback(
   return text.places;
 }
 
-async function runHomeGenericTypeFallback(
-  ctx: {
-    userLocation: { lat: number; lng: number };
-    locale: Locale;
-    searchPlacesFn: SearchPlacesFn;
-  },
-): Promise<PlaceResult[]> {
+async function runHomeGenericTypeFallback(ctx: {
+  userLocation: { lat: number; lng: number };
+  locale: Locale;
+  searchPlacesFn: SearchPlacesFn;
+}): Promise<PlaceResult[]> {
   const types = sanitizeNearbyTypes([...HOME_GENERIC_FALLBACK_TYPES]);
   let merged: PlaceResult[] = [];
   const typesToTry = types.slice(0, HOME_GENERIC_FALLBACK_MAX_TYPES);
@@ -431,18 +472,13 @@ function placeTypesLabel(place: PlaceResult): string {
   return [...types].join("|") || "none";
 }
 
-function inferHomePickCategoryId(
-  place: PlaceResult,
-  period: HomeNearbyPeriod,
-): string {
+function inferHomePickCategoryId(place: PlaceResult, period: HomeNearbyPeriod): string {
   if (period === "late_night") {
     if (matchesNightPreferredPlace(place)) return "night";
     return "food";
   }
   const types = new Set(
-    [place.primaryType, ...(place.types ?? [])]
-      .filter(Boolean)
-      .map((t) => String(t).toLowerCase()),
+    [place.primaryType, ...(place.types ?? [])].filter(Boolean).map((t) => String(t).toLowerCase()),
   );
   if ([...types].some((t) => ["cafe", "coffee_shop", "bakery", "dessert_shop"].includes(t))) {
     return "coffee";
@@ -625,84 +661,80 @@ async function loadHomeNearbyPicksInner(
 
   const flow = beginPlacesFlow("home_cold");
   try {
-  let partialEmitted = false;
-  const emitPartialFromApiPlaces = (places: PlaceResult[]) => {
-    if (partialEmitted || !options?.onPartialPicks) return;
-    const early = finalizeHomeNearbyPicks(
-      places,
-      ctx,
-      period,
-      at,
-      timeZone,
-      {
+    let partialEmitted = false;
+    const emitPartialFromApiPlaces = (places: PlaceResult[]) => {
+      if (partialEmitted || !options?.onPartialPicks) return;
+      const early = finalizeHomeNearbyPicks(places, ctx, period, at, timeZone, {
         ...pickOptions,
         minResults: HOME_FIRST_BATCH_MIN,
-      },
-    );
-    if (early.length < HOME_FIRST_BATCH_MIN) return;
-    partialEmitted = true;
-    options.onPartialPicks(early, "first_batch");
-  };
+      });
+      if (early.length < HOME_FIRST_BATCH_MIN) return;
+      partialEmitted = true;
+      options.onPartialPicks(early, "first_batch");
+    };
 
-  let apiPlaces = await fetchHomeNearbyWaves(waves, ctx, pickOptions, {
-    onFirstBatch: emitPartialFromApiPlaces,
-  });
+    let apiPlaces = await fetchHomeNearbyWaves(waves, ctx, pickOptions, {
+      onFirstBatch: emitPartialFromApiPlaces,
+    });
 
-  if (apiPlaces.length === 0) {
-    try {
-      apiPlaces = await runHomePopularFallback(ctx);
-    } catch (e) {
-      logHomeNearbyRequestError("popular_fallback_failed", e instanceof Error ? e.message : String(e));
+    if (apiPlaces.length === 0) {
+      try {
+        apiPlaces = await runHomePopularFallback(ctx);
+      } catch (e) {
+        logHomeNearbyRequestError(
+          "popular_fallback_failed",
+          e instanceof Error ? e.message : String(e),
+        );
+      }
     }
-  }
 
-  if (apiPlaces.length === 0) {
-    try {
-      apiPlaces = await runHomeGenericTypeFallback(ctx);
-    } catch (e) {
-      logHomeNearbyRequestError("generic_fallback_failed", e instanceof Error ? e.message : String(e));
+    if (apiPlaces.length === 0) {
+      try {
+        apiPlaces = await runHomeGenericTypeFallback(ctx);
+      } catch (e) {
+        logHomeNearbyRequestError(
+          "generic_fallback_failed",
+          e instanceof Error ? e.message : String(e),
+        );
+      }
     }
-  }
 
-  const rawCount = apiPlaces.length;
+    const rawCount = apiPlaces.length;
 
-  const sorted = finalizeHomeNearbyPicks(apiPlaces, ctx, period, at, timeZone, pickOptions);
+    const sorted = finalizeHomeNearbyPicks(apiPlaces, ctx, period, at, timeZone, pickOptions);
 
-  writeHomeNearbyResultsCache(cacheKey, sorted);
-  logHomeNearbyRequestSuccess(rawCount, sorted.length);
+    writeHomeNearbyResultsCache(cacheKey, sorted);
+    logHomeNearbyRequestSuccess(rawCount, sorted.length);
 
-  if (sorted.length > 0) {
-    options?.onPartialPicks?.(sorted, "enriched");
+    if (sorted.length > 0) {
+      options?.onPartialPicks?.(sorted, "enriched");
+      logHomeNearbyDataReady({
+        count: sorted.length,
+        lat: ctx.userLocation.lat,
+        lng: ctx.userLocation.lng,
+        locationKey: ctx.locationKey,
+        sample: sorted.slice(0, 3).map((p) => p.name),
+        categories: waves.map((w) => w.id),
+        fromMock: false,
+        cacheKey,
+      });
+      return sorted;
+    }
+
     logHomeNearbyDataReady({
-      count: sorted.length,
+      count: 0,
       lat: ctx.userLocation.lat,
       lng: ctx.userLocation.lng,
       locationKey: ctx.locationKey,
-      sample: sorted.slice(0, 3).map((p) => p.name),
+      sample: [],
       categories: waves.map((w) => w.id),
       fromMock: false,
+      error: apiPlaces.length > 0 ? "filtered_empty" : "no_results",
       cacheKey,
     });
     return sorted;
-  }
-
-  logHomeNearbyDataReady({
-    count: 0,
-    lat: ctx.userLocation.lat,
-    lng: ctx.userLocation.lng,
-    locationKey: ctx.locationKey,
-    sample: [],
-    categories: waves.map((w) => w.id),
-    fromMock: false,
-    error: apiPlaces.length > 0 ? "filtered_empty" : "no_results",
-    cacheKey,
-  });
-  return sorted;
   } catch (e) {
-    logHomeNearbyRequestError(
-      "load_failed",
-      e instanceof Error ? e.message : String(e),
-    );
+    logHomeNearbyRequestError("load_failed", e instanceof Error ? e.message : String(e));
     throw e;
   } finally {
     endPlacesFlow(flow);

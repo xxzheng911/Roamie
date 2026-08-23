@@ -41,7 +41,7 @@ import { isTripAddPlaceSession } from "@/lib/trip/trip-add-place-session";
 import { shouldSuppressChatPlaceCards } from "@/lib/ai/chat-suppress-place-cards";
 import { isPlaceEligibleForShortcutScene } from "@/lib/ai/shortcut-category-fidelity";
 import { resolveRecommendationTimePolicy } from "@/lib/ai/recommendation-time-sensitivity";
-import { logShortcutRuntime } from "@/lib/ai/shortcut-runtime-diag";
+import { resolveHomeShortcutSearchProfile } from "@/lib/ai/home-shortcut-handoff";
 
 function isRecommendationFollowup(session: ChatPlanningSession, userText: string): boolean {
   return (
@@ -63,70 +63,23 @@ function filterChatRecommendationsByTimePolicy(
     (session.activeRecommendationContext?.previousPlaceIds.length ?? 0) > 0 &&
       (scene === "relax_walk" || scene === "rainy_indoor"),
   );
-  const decisionReasons = new Map<string, number>();
-  if (structuredRelaxOrRainyContinuation) {
-    for (const item of items) {
-      logShortcutRuntime("[RT_CONTINUATION_DISPLAY_INPUT]", {
-        scene: scene ?? "",
-        placeName: item.name,
-        placeId: item.googlePlaceId ?? item.placeId ?? "",
-        primaryType: item.primaryType ?? item.type ?? "",
-        types: item.types ?? [],
-        rating: item.rating ?? null,
-        userRatingCount: item.userRatingCount ?? null,
-        recommendationMode: policy.mode,
-        hasPhoto: Boolean(item.photoName),
-        hasLocation: item.lat != null && item.lng != null,
-      });
-    }
-  }
+  const homeSearchProfile = resolveHomeShortcutSearchProfile(session);
+  const homeNearbySelectionComplete = Boolean(
+    homeSearchProfile &&
+      (session.activeRecommendationContext?.shortcutSource === "home_mood" ||
+        session.normalizedShortcutRequest?.source === "home_mood"),
+  );
   const result = filterRecommendationItemsForDisplay(
     items,
     policy,
     {
       followup: isRecommendationFollowup(session, userText),
-      recommendableContext: structuredRelaxOrRainyContinuation ? "chat_nearby" : "ai_recommend",
-      onDecision: structuredRelaxOrRainyContinuation
-        ? (item, accepted, reason, predicate) => {
-            if (!accepted) {
-              const key = `${predicate}:${reason}`;
-              decisionReasons.set(key, (decisionReasons.get(key) ?? 0) + 1);
-            }
-            logShortcutRuntime("[RT_CONTINUATION_DISPLAY_DECISION]", {
-              scene: scene ?? "",
-              placeName: item.name,
-              accepted,
-              reason,
-              predicate,
-              recommendationMode: policy.mode,
-            });
-          }
-        : undefined,
-      onRecommendableDrop:
-        scene === "relax_walk"
-          ? (item, dropReason) => {
-              logShortcutRuntime("[RT_RELAX_DISPLAY_DROP]", {
-                placeName: item.name,
-                placeId: item.googlePlaceId ?? "",
-                rating: item.rating ?? "",
-                userRatingCount: item.userRatingCount ?? "",
-                dropReason,
-              });
-            }
-          : undefined,
+      recommendableContext:
+        structuredRelaxOrRainyContinuation || homeNearbySelectionComplete
+          ? "chat_nearby"
+          : "ai_recommend",
     },
   );
-  if (structuredRelaxOrRainyContinuation) {
-    logShortcutRuntime("[RT_CONTINUATION_FINAL_PICK]", {
-      scene: scene ?? "",
-      inputCount: items.length,
-      acceptedCount: result.length,
-      droppedCount: items.length - result.length,
-      dropReasons: [...decisionReasons.entries()]
-        .map(([reason, count]) => `${reason}:${count}`)
-        .join(","),
-    });
-  }
   return result;
 }
 
@@ -135,6 +88,12 @@ function applyShortcutSceneFidelity(
   session: ChatPlanningSession,
   userText = "",
 ): RoamieRecommendationItem[] {
+  if (
+    resolveHomeShortcutSearchProfile(session) === "home_late_night" ||
+    resolveHomeShortcutSearchProfile(session) === "home_sea"
+  ) {
+    return items;
+  }
   const scene = resolveNearbyShortcutScene(userText, session);
   if (!scene) return items;
   return items.filter((item) => isPlaceEligibleForShortcutScene(item, scene));
@@ -337,7 +296,11 @@ export function recommendationsForChatDisplay(
       return nearbyCategoryRecommendations(working, "restaurant", userText);
     }
 
-    const filtered = filterChatRecommendationsByTimePolicy(working, session, userText);
+    const filtered = filterChatRecommendationsByTimePolicy(
+      working,
+      session,
+      userText,
+    );
     const count = Math.min(filtered.length, 5);
     logChatPlaceCardRender(count, session.activeChatIntent ?? "mood");
     devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count });

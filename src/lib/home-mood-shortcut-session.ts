@@ -5,6 +5,13 @@ import {
   loadChatSession,
   type ChatPlanningSession,
 } from "@/lib/chat-session";
+import type { HomeMoodId } from "@/lib/home-mood-options";
+import {
+  buildStructuredShortcutContext,
+  buildNormalizedShortcutRequest,
+  type ChatShortcutContext,
+  type StructuredShortcutMode,
+} from "@/lib/ai/chat-intent";
 
 export function isHomeMoodShortcutSearch(search: {
   from?: string;
@@ -25,14 +32,41 @@ export function shouldDiscardHomeMoodShortcutSession(session: ChatPlanningSessio
 export function beginHomeMoodShortcutSession(
   session: ChatPlanningSession,
   moodLabel: string,
+  moodId?: HomeMoodId | null,
 ): ChatPlanningSession {
+  const activeChatIntent = moodId === "coffee" ? "cafe" : "attraction";
+  const shortcutMode: StructuredShortcutMode | null =
+    moodId === "coffee"
+      ? "coffee"
+      : moodId === "rainy"
+        ? "rainy"
+        : moodId === "relax"
+          ? "relax"
+          : moodId === "lateNight"
+            ? "late_night"
+            : moodId === "sea"
+              ? "sea"
+              : null;
+  const homeProfileOwnsScene = shortcutMode === "late_night" || shortcutMode === "sea";
+  const shortcutContext: ChatShortcutContext | undefined =
+    shortcutMode && !homeProfileOwnsScene
+      ? buildStructuredShortcutContext(shortcutMode, moodLabel)
+      : undefined;
+  const normalizedShortcutRequest = shortcutMode
+    ? buildNormalizedShortcutRequest(shortcutMode, "home_mood", moodLabel)
+    : undefined;
   return {
     ...session,
     mood: moodLabel,
     selectedMood: moodLabel,
     fromMoodCard: true,
     fromMoodFlow: true,
-    activeChatIntent: "attraction",
+    activeChatIntent,
+    shortcutContext: homeProfileOwnsScene
+      ? undefined
+      : (shortcutContext ?? session.shortcutContext),
+    normalizedShortcutRequest:
+      normalizedShortcutRequest ?? session.normalizedShortcutRequest,
     homeMoodShortcutEntry: true,
     homeMoodShortcutEngaged: false,
   };
