@@ -60,6 +60,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
 /// 原生 Xcode log（不依賴 WKWebView console 轉發）
 enum RoamieBundledWebProbe {
+    private static func firstCapture(_ pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range), match.numberOfRanges > 1 else {
+            return nil
+        }
+        guard let capture = Range(match.range(at: 1), in: text) else { return nil }
+        return String(text[capture])
+    }
+
     static func logPackagedIndexHtml() {
         guard let indexPath = Bundle.main.path(forResource: "index", ofType: "html", inDirectory: "public") else {
             RoamieNativeLog.critical("⚡️ [Roamie] BUNDLED_INDEX_MISSING — public/index.html 不在 App bundle")
@@ -80,6 +90,17 @@ enum RoamieBundledWebProbe {
                     RoamieNativeLog.debug("⚡️ [Roamie] BUNDLED_INDEX entry=index-\(rest[..<end])")
                 }
             }
+            let runtimeBuildTime =
+                firstCapture("buildTime:\\s*\\\"([^\\\"]+)\\\"", in: html) ??
+                firstCapture("meta name=\\\"roamie-build\\\" content=\\\"([^\\\"]+)\\\"", in: html) ??
+                "unknown"
+            let runtimeDebugMarker = firstCapture("buildDebug:\\s*\\\"([^\\\"]+)\\\"", in: html) ?? "unknown"
+            let runtimeEntry = firstCapture("INDEX_HTML_BEFORE_MODULE bootstrap=\\\\./assets/capacitor-bootstrap\\\\.js app=\\\\./assets/([^\\\"]+)\\\"", in: html) ??
+                firstCapture("<script type=\\\"module\\\" src=\\\"\\\\./assets/([^\\\"]+)\\\"", in: html) ??
+                "unknown"
+            RoamieNativeLog.critical(
+                "[APP_RUNTIME_BUILD] buildTime=\(runtimeBuildTime) debugMarker=\(runtimeDebugMarker) bundledEntry=\(runtimeEntry)"
+            )
             if html.contains("Ultra minimal HTML test") {
                 if html.contains("roamie-probe\" content=\"INDEX_HTML_LOADED\"") {
                     RoamieNativeLog.debug("⚡️ [Roamie] BUNDLED_INDEX mode=ultra-minimal-html probe=meta INDEX_HTML_LOADED (zero script)")
@@ -135,12 +156,17 @@ class PortraitBridgeViewController: CAPBridgeViewController {
     override open func webViewConfiguration(for instanceConfiguration: InstanceConfiguration) -> WKWebViewConfiguration {
         let config = super.webViewConfiguration(for: instanceConfiguration)
         RoamieWebKitMitigation.apply(to: config, instanceConfiguration: instanceConfiguration)
+        RoamieRuntimeBridgeAudit.logConfigure(config)
         return config
     }
 
     override open func webView(with frame: CGRect, configuration: WKWebViewConfiguration) -> WKWebView {
+        // Capacitor has already replaced userContentController with WebViewDelegationHandler's UCC.
+        // Install diagnostics on that live UCC (incoming / webView UCC B), not the earlier configure-time UCC A.
+        RoamieWebKitMitigation.installRuntimeDiagnostics(on: configuration)
         let webView = RoamieWKWebView(frame: frame, configuration: configuration)
         RoamieWebKitMitigation.configureWebView(webView)
+        RoamieRuntimeBridgeAudit.logWebViewCreated(webView, incoming: configuration)
         return webView
     }
 
@@ -307,6 +333,13 @@ class PortraitBridgeViewController: CAPBridgeViewController {
             let indexExists = FileManager.default.fileExists(atPath: indexPath)
             RoamieNativeLog.debug("⚡️ [Roamie] BRIDGE appLocation=\(bridge.config.appLocation.path)")
             RoamieNativeLog.debug("⚡️ [Roamie] BRIDGE startURL=\(startURL.absoluteString) indexPath=\(indexPath) indexExists=\(indexExists)")
+            let currentURL = webView?.url?.absoluteString ?? "(nil)"
+            RoamieRuntimeBridgeAudit.logRuntimeURL(
+                webView: webView,
+                startURL: startURL,
+                currentURL: currentURL,
+                indexExists: indexExists
+            )
         }
         guard let webView = webView else { return }
         if let capBridge = bridge as? CapacitorBridge {

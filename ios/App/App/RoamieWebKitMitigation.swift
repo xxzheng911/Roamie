@@ -36,6 +36,72 @@ enum RoamieNativeLog {
     }
 }
 
+/// One-shot WKUserScript / WKScriptMessageHandler lifecycle identities for device logs.
+enum RoamieRuntimeBridgeAudit {
+    static let handlerName = "roamieRuntimeScript"
+
+    private static var configureConfigId: ObjectIdentifier?
+    private static var configureUccId: ObjectIdentifier?
+    private static var registeredUccId: ObjectIdentifier?
+    private static var createdWebViewId: ObjectIdentifier?
+
+    static func objectId(_ object: AnyObject) -> String {
+        String(UInt(bitPattern: ObjectIdentifier(object)), radix: 16)
+    }
+
+    static func markHandlerRegistered(on userContentController: WKUserContentController) {
+        registeredUccId = ObjectIdentifier(userContentController)
+    }
+
+    static func logConfigure(_ configuration: WKWebViewConfiguration) {
+        configureConfigId = ObjectIdentifier(configuration)
+        configureUccId = ObjectIdentifier(configuration.userContentController)
+        RoamieNativeLog.critical(
+            "[RUNTIME_BRIDGE_CONFIGURE] \(describe(configuration)) enabled=\(RoamieWebKitMitigation.isEnabled) ios26=\(RoamieWebKitMitigation.isIOS26OrNewer)"
+        )
+    }
+
+    static func logWebViewCreated(_ webView: WKWebView, incoming: WKWebViewConfiguration) {
+        createdWebViewId = ObjectIdentifier(webView)
+        let incomingConfigId = ObjectIdentifier(incoming)
+        let incomingUccId = ObjectIdentifier(incoming.userContentController)
+        let liveUccId = ObjectIdentifier(webView.configuration.userContentController)
+        let configIdMatch = configureConfigId == incomingConfigId
+        let uccIdMatch = configureUccId == incomingUccId
+        let liveUccMatch = incomingUccId == liveUccId
+        RoamieNativeLog.critical(
+            "[RUNTIME_WEBVIEW_CREATED] webViewId=\(objectId(webView)) webViewClass=\(String(describing: type(of: webView))) " +
+                "configId=\(objectId(incoming)) webViewConfigId=\(objectId(webView.configuration)) " +
+                "\(describe(incoming)) incomingUccId=\(objectId(incoming.userContentController)) " +
+                "webViewUccId=\(objectId(webView.configuration.userContentController)) " +
+                "configIdMatch=\(configIdMatch) uccIdMatch=\(uccIdMatch) webViewUccSameAsIncoming=\(liveUccMatch)"
+        )
+    }
+
+    static func logRuntimeURL(webView: WKWebView?, startURL: URL, currentURL: String, indexExists: Bool) {
+        let webViewId = webView.map { objectId($0) } ?? "(nil)"
+        let webViewClass = webView.map { String(describing: type(of: $0)) } ?? "(nil)"
+        let webViewIdMatch: String
+        if let webView, let createdWebViewId {
+            webViewIdMatch = String(createdWebViewId == ObjectIdentifier(webView))
+        } else {
+            webViewIdMatch = "false"
+        }
+        RoamieNativeLog.critical(
+            "[WEBVIEW_RUNTIME_URL] startURL=\(startURL.absoluteString) currentURL=\(currentURL) indexExists=\(indexExists) " +
+                "webViewId=\(webViewId) webViewClass=\(webViewClass) webViewIdMatch=\(webViewIdMatch)"
+        )
+    }
+
+    private static func describe(_ configuration: WKWebViewConfiguration) -> String {
+        let ucc = configuration.userContentController
+        let handlerRegistered = registeredUccId == ObjectIdentifier(ucc)
+        let probeScriptPresent = ucc.userScripts.contains { $0.source.contains("\"probe\"") }
+        return "configId=\(objectId(configuration)) uccId=\(objectId(ucc)) userScripts.count=\(ucc.userScripts.count) " +
+            "messageHandlerRegistered=\(handlerRegistered) probeScriptPresent=\(probeScriptPresent) handlerName=\(handlerName)"
+    }
+}
+
 /// WebKit mitigations for iOS 26+ device-context / CARenderServer compositor failures.
 enum RoamieWebKitMitigation {
     private static let cream = UIColor(red: 253 / 255, green: 245 / 255, blue: 234 / 255, alpha: 1)
@@ -220,12 +286,15 @@ enum RoamieWebKitMitigation {
                 configuration.preferences.isTextInteractionEnabled = true
             }
             registerSnapshotScriptHandler(on: configuration)
+            installRuntimeDiagnostics(on: configuration)
         }
 
         logApplied()
     }
 
     private static var snapshotScriptHandlerRegistered = false
+    /// Per-UCC install guard. Capacitor replaces the UCC after `webViewConfiguration(for:)`, so a global bool would skip the real controller.
+    private static var runtimeDiagnosticsInstalledUccIds = Set<ObjectIdentifier>()
 
     /// JS → native: refresh WINDOW_MIRROR after SPA route / auth UI changes (no live compositor restore).
     private static func registerSnapshotScriptHandler(on configuration: WKWebViewConfiguration) {
@@ -233,6 +302,122 @@ enum RoamieWebKitMitigation {
         configuration.userContentController.add(RoamieSnapshotScriptBridge.shared, name: "roamieSnapshot")
         snapshotScriptHandlerRegistered = true
     }
+
+    /// Append runtime diagnostic handler + atDocumentStart probe onto Capacitor's live UCC.
+    /// Does not replace `configuration.userContentController` (must keep Capacitor `bridge`).
+    /// Idempotent per `WKUserContentController` instance.
+    static func installRuntimeDiagnostics(on configuration: WKWebViewConfiguration) {
+        installRuntimeDiagnostics(on: configuration.userContentController)
+    }
+
+    static func installRuntimeDiagnostics(on userContentController: WKUserContentController) {
+        guard isEnabled, isIOS26OrNewer else { return }
+
+        let uccId = ObjectIdentifier(userContentController)
+        guard !runtimeDiagnosticsInstalledUccIds.contains(uccId) else { return }
+
+        userContentController.add(RoamieRuntimeScriptBridge.shared, name: RoamieRuntimeBridgeAudit.handlerName)
+
+        let probeAlreadyPresent = userContentController.userScripts.contains { $0.source.contains("\"probe\"") }
+        if !probeAlreadyPresent {
+            userContentController.addUserScript(
+                WKUserScript(
+                    source: runtimeScriptObserverSource,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true
+                )
+            )
+        }
+
+        RoamieRuntimeBridgeAudit.markHandlerRegistered(on: userContentController)
+        runtimeDiagnosticsInstalledUccIds.insert(uccId)
+    }
+
+    /// Layer 1: atDocumentStart probe. Layer 2: document.scripts src dump. Layer 3: PerformanceObserver(script).
+    private static let runtimeScriptObserverSource = """
+    (function () {
+      try {
+        window.webkit.messageHandlers.roamieRuntimeScript.postMessage({
+          type: "probe",
+          href: String(location.href || "")
+        });
+      } catch (_) {}
+      if (window.__ROAMIE_RUNTIME_SCRIPT_PROBE__ === true) return;
+      window.__ROAMIE_RUNTIME_SCRIPT_PROBE__ = true;
+      var seenSrc = Object.create(null);
+      var seenResource = Object.create(null);
+      function handler() {
+        return window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.roamieRuntimeScript;
+      }
+      function emitScriptSrc(raw) {
+        try {
+          var url = String(raw || "");
+          if (!url || seenSrc[url]) return;
+          seenSrc[url] = 1;
+          var h = handler();
+          if (h && typeof h.postMessage === "function") {
+            h.postMessage({ type: "script_src", src: url });
+          }
+        } catch (_) {}
+      }
+      function emitResourceScript(raw) {
+        try {
+          var url = String(raw || "");
+          if (!url || seenResource[url]) return;
+          seenResource[url] = 1;
+          var h = handler();
+          if (h && typeof h.postMessage === "function") {
+            h.postMessage({ type: "resource_script", name: url });
+          }
+        } catch (_) {}
+      }
+      function scanDocumentScripts(layer) {
+        var urls = [];
+        try {
+          var scripts = document.scripts || [];
+          for (var i = 0; i < scripts.length; i += 1) {
+            var src = scripts[i] && scripts[i].src;
+            if (src) {
+              urls.push(String(src));
+              emitScriptSrc(src);
+            }
+          }
+        } catch (_) {}
+        try {
+          var h = handler();
+          if (h && typeof h.postMessage === "function") {
+            h.postMessage({ type: "scripts", layer: String(layer || ""), urls: urls });
+          }
+        } catch (_) {}
+      }
+      function armScriptScan() {
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", function () {
+            scanDocumentScripts("domcontentloaded");
+          }, { once: true });
+        } else {
+          scanDocumentScripts("ready");
+        }
+        setTimeout(function () {
+          scanDocumentScripts("timeout0");
+        }, 0);
+      }
+      armScriptScan();
+      if (typeof PerformanceObserver === "function") {
+        try {
+          var observer = new PerformanceObserver(function (list) {
+            var entries = list.getEntries() || [];
+            for (var i = 0; i < entries.length; i += 1) {
+              var e = entries[i];
+              if (!e) continue;
+              if (e.initiatorType === "script") emitResourceScript(e.name || "");
+            }
+          });
+          observer.observe({ type: "resource", buffered: true });
+        } catch (_) {}
+      }
+    })();
+    """
 
     /// Alternate WKWebViewConfiguration for off-screen recovery WebView (second process path).
     static func applyRecoveryConfiguration(to configuration: WKWebViewConfiguration) {
@@ -1572,6 +1757,80 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
     }
 }
 
+@objc final class RoamieRuntimeScriptBridge: NSObject, WKScriptMessageHandler {
+    static let shared = RoamieRuntimeScriptBridge()
+    private var emittedScriptSrc = Set<String>()
+    private var emittedResourceScript = Set<String>()
+
+    private override init() {
+        super.init()
+        RoamieNativeLog.critical(
+            "[RUNTIME_BRIDGE_HANDLER_ALIVE] owner=RoamieRuntimeScriptBridge.shared retain=singleton handlerName=\(RoamieRuntimeBridgeAudit.handlerName)"
+        )
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == RoamieRuntimeBridgeAudit.handlerName else { return }
+
+        if let body = message.body as? [String: Any] {
+            let type = body["type"] as? String
+            if type == "probe" {
+                let href = body["href"] as? String ?? "(nil)"
+                RoamieNativeLog.critical("[RUNTIME_DOCUMENT_PROBE] href=\(href)")
+                return
+            }
+            if type == "script_src", let src = body["src"] as? String {
+                emitScriptSrc(src)
+                return
+            }
+            if type == "resource_script", let name = body["name"] as? String {
+                emitResourceScript(name)
+                return
+            }
+            if type == "scripts" {
+                let layer = body["layer"] as? String ?? "?"
+                let urls = body["urls"] as? [String] ?? []
+                for raw in urls {
+                    emitScriptSrc(raw)
+                }
+                RoamieNativeLog.critical("[RUNTIME_SCRIPT] layer=scripts scan=\(layer) total=\(urls.count)")
+                return
+            }
+            if type == "resource", let url = body["url"] as? String {
+                emitResourceScript(url)
+                return
+            }
+            if let url = body["url"] as? String {
+                emitScriptSrc(url)
+                return
+            }
+            if let src = body["src"] as? String {
+                emitScriptSrc(src)
+                return
+            }
+            return
+        }
+
+        if let body = message.body as? String {
+            emitScriptSrc(body)
+        }
+    }
+
+    private func emitScriptSrc(_ raw: String) {
+        let scriptURL = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !scriptURL.isEmpty else { return }
+        guard emittedScriptSrc.insert(scriptURL).inserted else { return }
+        RoamieNativeLog.critical("[RUNTIME_SCRIPT_SRC] src=\(scriptURL)")
+    }
+
+    private func emitResourceScript(_ raw: String) {
+        let scriptURL = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !scriptURL.isEmpty else { return }
+        guard emittedResourceScript.insert(scriptURL).inserted else { return }
+        RoamieNativeLog.critical("[RUNTIME_RESOURCE_SCRIPT] name=\(scriptURL)")
+    }
+}
+
 /// Legacy shim — prefer RoamieCompositorFallback directly.
 enum RoamieWebSnapshotFallback {
     static func stopPeriodicRefresh() {
@@ -1584,6 +1843,8 @@ enum RoamieWebSnapshotFallback {
 }
 
 enum RoamieWKNavLog {
+    private static var emittedRuntimeScripts = Set<String>()
+
     static func nav(_ label: String, webView: WKWebView) {
         let url = webView.url?.absoluteString ?? "(nil)"
         RoamieNativeLog.debug(
@@ -1594,6 +1855,13 @@ enum RoamieWKNavLog {
     static func action(_ navigationAction: WKNavigationAction) {
         let req = navigationAction.request.url?.absoluteString ?? "(nil)"
         RoamieNativeLog.debug("⚡️ [Roamie] WK_NAV action type=\(navigationAction.navigationType.rawValue) req=\(req)")
+        guard req != "(nil)" else { return }
+        guard req.contains("/assets/") else { return }
+        guard req.contains("index-") || req.contains("_app.chat-") || req.contains("capacitor-bootstrap") else {
+            return
+        }
+        guard emittedRuntimeScripts.insert(req).inserted else { return }
+        RoamieNativeLog.critical("[RUNTIME_SCRIPT] \(req)")
     }
 
     static func error(_ label: String, _ error: Error, webView: WKWebView) {
