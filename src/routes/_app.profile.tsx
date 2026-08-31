@@ -112,7 +112,7 @@ function Profile() {
     setPreview: setCoverPreview,
     syncFromProfile: syncCoverFromProfile,
   } = useCover();
-  const { hasPlusAccess } = useAccess();
+  const { hasPlusAccess, subscriptionHydrated } = useAccess();
   const [travelDrafts, setTravelDrafts] = useState(() =>
     hasPlusAccess ? listConversationWorkspaces(userId) : [],
   );
@@ -138,6 +138,9 @@ function Profile() {
   const hasPersistedMedia = Boolean(
     readPersistedAvatarUrl(userId) || readPersistedCoverUrl(userId),
   );
+  const coldStartMountedAtRef = useRef(Date.now());
+  const firstMeaningfulRenderLoggedRef = useRef(false);
+  const remoteHydrationAttemptRef = useRef(0);
   const [loading, setLoading] = useState(() => !initialProfile && !hasPersistedMedia);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -167,6 +170,35 @@ function Profile() {
   const quizDoneToastShown = useRef(false);
   const profileSnapshotRef = useRef<UserProfile | null>(initialProfile);
   const profileApplyFingerprintRef = useRef("");
+
+  useEffect(() => {
+    console.info("[PROFILE_COLD_START_MOUNT]", {
+      timestamp: coldStartMountedAtRef.current,
+      hasLocalSnapshot: Boolean(initialProfile),
+      authKnown: !authLoading,
+      userKnown: Boolean(userId),
+    });
+  }, []);
+
+  useEffect(() => {
+    console.info("[PROFILE_RENDER_GATE]", {
+      authHydrating: authLoading,
+      subscriptionHydrating: subscriptionHydrated !== true,
+      profileHydrating: loading,
+      preferencesHydrating: Boolean(userId && !isPreferencesRemoteHydrated(userId)),
+      personalityHydrating: Boolean(userId && loading && !onboarded),
+      blockingReason: "none",
+    });
+  }, [authLoading, subscriptionHydrated, loading, userId, onboarded]);
+
+  useEffect(() => {
+    if (firstMeaningfulRenderLoggedRef.current) return;
+    firstMeaningfulRenderLoggedRef.current = true;
+    console.info("[PROFILE_FIRST_MEANINGFUL_RENDER]", {
+      elapsedMs: Date.now() - coldStartMountedAtRef.current,
+      source: initialProfile ? "local_snapshot" : "default_shell",
+    });
+  }, []);
 
   const revokeCoverPreview = useCallback(() => {
     if (coverPreviewRef.current) {
@@ -469,6 +501,9 @@ function Profile() {
       }
     }
     if (!hadCache) setLoading(true);
+    const hydrationAttempt = ++remoteHydrationAttemptRef.current;
+    const hydrationStartedAt = Date.now();
+    let hydrationSuccess = false;
     console.info("[profile] loading", { userId, force: options?.force ?? false });
     try {
       if (userId) await ensureUserProfile();
@@ -485,6 +520,7 @@ function Profile() {
         });
       }
       console.info("[PROFILE] loaded");
+      hydrationSuccess = true;
     } catch (e) {
       if (e instanceof Error && isAuthSessionMissingError(e.message)) return;
       console.error("[profile] refresh failed", e);
@@ -511,6 +547,13 @@ function Profile() {
       toast.error(msg || t("profile.loadFailed"));
     } finally {
       setLoading(false);
+      if (hydrationAttempt === remoteHydrationAttemptRef.current) {
+        console.info("[PROFILE_REMOTE_HYDRATION_SETTLED]", {
+          elapsedMs: Date.now() - hydrationStartedAt,
+          success: hydrationSuccess,
+          source: "remote_profile",
+        });
+      }
     }
   }, [userId, userEmail, locale, t, loadProfile, applyProfileToState, hasPlusAccess]);
 
@@ -556,22 +599,6 @@ function Profile() {
       logPerfProfileLoadSkip("same_user");
     }
   }, [authLoading, userId, session, navigate, refresh, applyProfileToState, locale]);
-
-  if (authLoading) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-5 py-16">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  if (userId && loading && !profileSnapshotRef.current) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-5 py-16">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
 
   const devMode = isDeveloperBuildEnabled();
   const showPlusPersona = hasPlusAccess && onboarded;

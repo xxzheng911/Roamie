@@ -5,7 +5,6 @@ import {
   type PlaceIdentity,
 } from "@/lib/place-identity";
 import {
-  BUDGET_MODE_LABELS,
   resolveBudgetMode,
   type BudgetMode,
   type TravelPreferences,
@@ -13,8 +12,10 @@ import {
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { Locale } from "@/lib/i18n/types";
 import { getPlaceReasonCopy, reasonIdentityIntro } from "@/lib/i18n/place-reason-copy";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 
 export type UserProfileForReason = {
+  profileTier?: "free" | "plus";
   onboarded?: boolean;
   pace?: TravelPreferences["pace"];
   vibe?: TravelPreferences["vibe"];
@@ -50,6 +51,7 @@ export type RecommendationPreferenceEvidenceSource =
 export type DistanceEvidenceSource =
   | "USER_LOCATION"
   | "NAVIGATION_ORIGIN"
+  | "CLARIFICATION_GEOCODE"
   | "DESTINATION_CENTER"
   | "AREA_CENTER"
   | "SEARCH_CENTER"
@@ -83,27 +85,18 @@ export type PlaceRecommendationContext = {
   isSavedFavorite?: boolean;
 };
 
-const SAFE_FALLBACK =
-  "先依地點資料提供你參考。";
+const SAFE_FALLBACK = "先依地點資料提供你參考。";
 
 /** 各身分的主文案模板（禁止跨類型亂套） */
 const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
-  bookstore: [
-    SAFE_FALLBACK,
-  ],
+  bookstore: ["這是一間書店，可列入這次的書店選擇。"],
   breakfast_shop: [
     "這是一間在地早餐店，適合早上順路吃點台式早餐再開始今天行程。",
     "早餐店節奏輕快，適合一早先填肚子、再出發逛。",
   ],
-  cafe: [
-    SAFE_FALLBACK,
-  ],
-  bakery: [
-    SAFE_FALLBACK,
-  ],
-  dessert: [
-    SAFE_FALLBACK,
-  ],
+  cafe: ["這是一間咖啡店，可列入這次的咖啡廳選擇。"],
+  bakery: ["這是一間烘焙店，可列入這次的烘焙選擇。"],
+  dessert: ["這是一間甜點店，可列入這次的甜點選擇。"],
   restaurant: [
     "這是一間餐廳，適合正餐或好好吃頓飯再繼續走。",
     "餐廳選擇適合把肚子填飽，當行程的中繼站。",
@@ -123,27 +116,15 @@ const IDENTITY_INTROS: Record<PlaceIdentity, string[]> = {
     "適合購買伴手禮，室內逛起來節奏比較舒服。",
     "可安排下午購物，雨天也適合。",
   ],
-  tourist_attraction: [
-    SAFE_FALLBACK,
-  ],
-  museum: [
-    SAFE_FALLBACK,
-  ],
+  tourist_attraction: ["這是一個景點，可列入這次的景點選擇。"],
+  museum: ["這是一座博物館，可列入這次的室內景點選擇。"],
   night_market: [
     "晚上氣氛不錯，很適合晚上散步、邊逛邊吃。",
     "可以一次逛很多攤，適合慢慢逛街放空。",
   ],
-  district: [
-    "很適合順路探索，適合不趕時間繞一圈。",
-    "適合慢慢逛街放空，可以一次逛很多小店。",
-  ],
-  park: [
-    SAFE_FALLBACK,
-  ],
-  bar: [
-    "這裡適合夜晚小坐，散步後來一杯剛好。",
-    "酒吧氛圍偏夜晚，適合行程尾聲放鬆一下。",
-  ],
+  district: ["很適合順路探索，適合不趕時間繞一圈。", "適合慢慢逛街放空，可以一次逛很多小店。"],
+  park: ["這是一座公園，可列入這次的公園或散步類型選擇。"],
+  bar: ["這裡適合夜晚小坐，散步後來一杯剛好。", "酒吧氛圍偏夜晚，適合行程尾聲放鬆一下。"],
   generic: [SAFE_FALLBACK],
   unsupported: [SAFE_FALLBACK],
 };
@@ -157,10 +138,7 @@ const DISTRICT_STYLE_IDENTITIES: PlaceIdentity[] = [
   "night_market",
 ];
 
-function isDistrictStyleReason(
-  identity: PlaceIdentity,
-  ctx?: PlaceRecommendationContext,
-): boolean {
+function isDistrictStyleReason(identity: PlaceIdentity, ctx?: PlaceRecommendationContext): boolean {
   const intent = resolveReasonIntent(ctx);
   return (
     DISTRICT_STYLE_IDENTITIES.includes(identity) ||
@@ -252,7 +230,7 @@ function hashPick(seed: string, options: string[]): string {
 }
 
 export function hasCompletedTravelQuiz(profile: UserProfileForReason | null | undefined): boolean {
-  return Boolean(profile?.onboarded);
+  return profile?.profileTier === "plus" && profile.onboarded === true;
 }
 
 function inferInterestTags(profile: UserProfileForReason): string[] {
@@ -280,13 +258,16 @@ function inferInterestTags(profile: UserProfileForReason): string[] {
 }
 
 function hasUserProximityEvidence(ctx: PlaceRecommendationContext): boolean {
-  return ctx.distanceSource === "USER_LOCATION" || ctx.distanceSource === "NAVIGATION_ORIGIN";
+  return ctx.distanceSource === "USER_LOCATION";
 }
 
 function distancePhrase(ctx: PlaceRecommendationContext): string | null {
   const meters = ctx.distanceMeters;
   if (meters === undefined) return null;
-  if (!hasUserProximityEvidence(ctx) && ctx.distanceSource !== "ROUTE") return null;
+  if (ctx.distanceSource === "ROUTE") {
+    return ctx.hasWalkingRouteEvidence ? "已有正式路線可前往" : "位於這次行程動線附近";
+  }
+  if (!hasUserProximityEvidence(ctx)) return null;
   if (meters < 600) return "距離你很近";
   if (meters < 1800) {
     return ctx.hasWalkingRouteEvidence ? "有正式步行路線可前往" : "距離你目前位置不遠";
@@ -314,7 +295,10 @@ function weatherConditionKey(weather?: WeatherSummary | null): string {
   return typeof weather?.condition === "string" ? weather.condition.trim().toLowerCase() : "";
 }
 
-function weatherSupplement(weather?: WeatherSummary | null, identity?: PlaceIdentity): string | null {
+function weatherSupplement(
+  weather?: WeatherSummary | null,
+  identity?: PlaceIdentity,
+): string | null {
   if (!weather) return null;
   const cond = weatherConditionKey(weather);
   const precip = weather.precipProbability ?? 0;
@@ -341,7 +325,11 @@ function hoursSupplement(place: PlaceResult): string | null {
   if (/待確認|休息中|未營業/.test(statusLabel)) return null;
   if (place.openStatus === "closed") return "目前未營業，出發前建議先確認時間";
   if (place.closingSoonNote) return place.closingSoonNote;
-  if (place.openStatus === "open" && place.todayHoursLabel && !place.todayHoursLabel.includes("待確認")) {
+  if (
+    place.openStatus === "open" &&
+    place.todayHoursLabel &&
+    !place.todayHoursLabel.includes("待確認")
+  ) {
     return "營業中，現在出發剛好";
   }
   return null;
@@ -404,11 +392,7 @@ function interestMatchesIdentity(interest: string, identity: PlaceIdentity): boo
   return false;
 }
 
-function ratingPhraseIntl(
-  locale: Locale,
-  rating: number,
-  count: number | null,
-): string | null {
+function ratingPhraseIntl(locale: Locale, rating: number, count: number | null): string | null {
   if (rating < 4.3 || count == null || count < 80) return null;
   if (locale === "ja") return "このエリアで評価と注目度が高い";
   if (locale === "ko") return "이 지역에서 평가와 관심도가 높아요";
@@ -480,11 +464,7 @@ function buildSafeReason(
   return `${lead}。`;
 }
 
-function appendSupplements(
-  main: string,
-  extras: Array<string | null>,
-  maxExtras = 1,
-): string {
+function appendSupplements(main: string, extras: Array<string | null>, maxExtras = 1): string {
   const picked = extras.filter(Boolean).slice(0, maxExtras) as string[];
   if (picked.length === 0) return main.endsWith("。") ? main : `${main}。`;
   const suffix = picked.join("，");
@@ -567,7 +547,6 @@ function buildReasonFromIdentity(
   }
 
   const pace = PACE_PHRASE[profile.pace ?? "medium"] ?? PACE_PHRASE.medium;
-  const budget = BUDGET_MODE_LABELS[resolveBudgetMode(profile)];
   const interests = inferInterestTags(profile).filter((t) => interestMatchesIdentity(t, identity));
 
   const templates: string[] = [intro];
@@ -593,14 +572,14 @@ function buildReasonFromIdentity(
   if (profile.vibe === "quiet" && !["bar", "night_market"].includes(identity)) {
     templates.push(`${intro.replace(/。$/, "")}${dist ? `，${dist}` : ""}。`);
   }
-  if (profile.budgetMode === "budget" && ["food_stall", "breakfast_shop", "night_market"].includes(identity)) {
-    templates.push(`依照你的${budget}預算，這裡通常比精緻餐廳更輕鬆。`);
-  }
+  // Budget and avoid remain ranking-only until verified price/crowd evidence exists.
 
   const omitGeneric = isDistrictStyleReason(identity, ctx);
   templates.push(
     omitGeneric
-      ? (scene ? `${intro.replace(/。$/, "")}，${scene}。` : intro)
+      ? scene
+        ? `${intro.replace(/。$/, "")}，${scene}。`
+        : intro
       : `${intro}${dist ? `，${dist}` : ""}${rating ? `，${rating}` : ""}。`,
     scene && !omitGeneric ? `${intro.replace(/。$/, "")}，${scene}。` : intro,
   );
@@ -610,9 +589,8 @@ function buildReasonFromIdentity(
     weatherSupplement(weather, identity),
     omitGeneric ? null : hoursSupplement(place),
     timeSupplement(identity, hour),
-    ctx.mood && isGroundedPreferenceEvidenceSource(ctx.preferenceEvidenceSource)
-      ? `呼應你「${ctx.mood}」的心情`
-      : null,
+    // Mood guides selection but is not a Place fact or primary recommendation reason.
+    null,
   ]);
 }
 
@@ -668,16 +646,63 @@ export function buildPlaceRecommendationReason(
   const identity = resolveIdentityForReason(place, ctx);
   const copy = getPlaceReasonCopy(locale);
 
+  const logResolved = (reason: string, source: "template" | "fallback"): string => {
+    devVerboseInfo("[RECOMMENDATION_REASON_RESOLVED]", {
+      placeId: place.id,
+      reasonSource: source,
+      primaryEvidence: source === "template" ? "identity" : "none",
+      availableEvidence: identity === "generic" || identity === "unsupported" ? [] : ["identity"],
+      identity,
+      categoryIntent: ctx.categoryIntent ?? "",
+      fallbackUsed: source === "fallback",
+      fallbackReason:
+        source === "fallback"
+          ? identity === "unsupported"
+            ? "unsupported_place"
+            : "missing_place_identity"
+          : "",
+      profileTier: profile.profileTier ?? "free",
+      profileOnboarded: profile.onboarded === true,
+      preferenceEvidenceUsed: false,
+      preferenceEvidenceSource: "",
+      preferenceField: "",
+      personalityTypeUsed: false,
+      personalitySummaryUsed: false,
+      aiReasonValidated: false,
+      aiReasonRejectedClaim: "",
+      restoredFromCache: false,
+      distanceSource: ctx.distanceSource ?? "UNKNOWN",
+      distanceMeters: ctx.distanceMeters ?? null,
+      proximityWordingAllowed: ctx.distanceSource === "USER_LOCATION",
+    });
+    return reason;
+  };
+
   if (ctx.isSavedFavorite) {
     if (!hasCompletedTravelQuiz(profile)) {
-      return `${copy.savedNearbyLead}${copy.safeFallback}`;
+      return logResolved(`${copy.savedNearbyLead}${copy.safeFallback}`, "fallback");
     }
-    const body = buildReasonFromIdentity(place, identity, profile, ctx, weather, hour, true, locale);
-    return `${copy.savedNearbyLead}${body.replace(/^這[^，。]+[，。]/, "")}`;
+    const body = buildReasonFromIdentity(
+      place,
+      identity,
+      profile,
+      ctx,
+      weather,
+      hour,
+      true,
+      locale,
+    );
+    return logResolved(
+      `${copy.savedNearbyLead}${body.replace(/^這[^，。]+[，。]/, "")}`,
+      identity === "generic" || identity === "unsupported" ? "fallback" : "template",
+    );
   }
 
   const personalized = hasCompletedTravelQuiz(profile);
-  return buildReasonFromIdentity(place, identity, profile, ctx, weather, hour, personalized, locale);
+  return logResolved(
+    buildReasonFromIdentity(place, identity, profile, ctx, weather, hour, personalized, locale),
+    identity === "generic" || identity === "unsupported" ? "fallback" : "template",
+  );
 }
 
 /** 從完整 profile + prefs 組裝理由用資料（prefs 未載入時安全 fallback） */
@@ -695,6 +720,7 @@ export function userProfileForReasonFrom(
   const safe = prefs ?? {};
   const plusPersonalized = extras?.hasPlusAccess === true && Boolean(safe.onboarded);
   return {
+    profileTier: extras?.hasPlusAccess === true ? "plus" : "free",
     onboarded: plusPersonalized,
     pace: plusPersonalized ? safe.pace : undefined,
     vibe: plusPersonalized ? safe.vibe : undefined,

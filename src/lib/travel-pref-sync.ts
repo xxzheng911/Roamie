@@ -15,6 +15,11 @@ const RETRY_DELAY_MS = 30_000;
 
 type SyncKind = "prefs" | "quiz";
 
+export type TravelPrefSyncTrigger =
+  | "user_initiated_save"
+  | "boot_pending_sync"
+  | "passive_background_retry";
+
 type SyncSlot = {
   inflight: Promise<void> | null;
   lastAttemptAt: number;
@@ -31,6 +36,19 @@ function isTimeoutError(error: unknown): boolean {
   const row = serializePreferencesSyncError(error);
   const message = String(row.message ?? "");
   return /timeout/i.test(message);
+}
+
+export function classifyTravelPrefSyncTrigger(source: string): TravelPrefSyncTrigger {
+  if (source === "travel-quiz-save") return "user_initiated_save";
+  if (source === "boot-pending-sync") return "boot_pending_sync";
+  return "passive_background_retry";
+}
+
+export function shouldShowTravelPrefDeferredSyncToast(
+  source: string,
+  error: unknown,
+): boolean {
+  return classifyTravelPrefSyncTrigger(source) === "user_initiated_save" && isTimeoutError(error);
 }
 
 function scheduleRetry(kind: SyncKind, source: string, run: () => Promise<void>): void {
@@ -66,10 +84,11 @@ async function runBackgroundTravelPrefSync(
       slot.retryUsed = false;
     })
     .catch((error) => {
-      if (isTimeoutError(error)) {
+      const trigger = classifyTravelPrefSyncTrigger(source);
+      if (shouldShowTravelPrefDeferredSyncToast(source, error)) {
         toast.message("已暫存，稍後同步");
       }
-      logPreferencesSyncFailure(`${kind} background sync`, error, { source });
+      logPreferencesSyncFailure(`${kind} background sync`, error, { source, trigger });
       if (allowRetry) {
         scheduleRetry(kind, source, run);
       }

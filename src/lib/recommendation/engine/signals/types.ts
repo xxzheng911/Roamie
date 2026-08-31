@@ -4,6 +4,7 @@
  */
 
 import type { WeightFactorKey } from "@/lib/recommendation/engine/profiles";
+import type { PersonalizationContextV1 } from "@/lib/personalization/types";
 
 export type PersonalizationSource = "memory" | "dna";
 
@@ -28,4 +29,5 @@ export type PreferenceSignal = {
 export type PersonalizationBundle = {
   weightSuggestions: WeightSuggestion[];
   preferenceSignals: PreferenceSignal[];
+  effectivePreferenceContext?: PersonalizationContextV1;
 };

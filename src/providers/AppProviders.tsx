@@ -22,6 +22,7 @@ import {
 } from "@/lib/conversation-workspace/storage";
 import { pushConversationWorkspacesRemote } from "@/lib/conversation-workspace/remote-sync";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
+import { clearPersonalizedChatCaches } from "@/lib/clear-auth-state";
 
 type Props = { children: ReactNode };
 
@@ -78,6 +79,7 @@ function BootCacheHydrator() {
       // Only wipe media when switching between two real users, or on logout.
       // Never wipe on null→user (first session resolve) — that retriggers seed loops.
       if ((prev && userId && prev !== userId) || (prev && !userId)) {
+        clearPersonalizedChatCaches();
         resetAppBootCachesForUserChange();
       }
     }

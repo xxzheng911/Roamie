@@ -73,7 +73,7 @@ const PlaceSchema = z
     googleMapsUrl: z.string().optional(),
     placeName: z.string().optional(),
     googlePlaceId: z.string().optional(),
-    reasonSource: z.enum(["template", "ai"]).optional(),
+    reasonSource: z.enum(["template", "ai", "evidence", "fallback"]).optional(),
     sourceCombinationId: z.number().optional(),
     sourceCombinationIds: z.array(z.number()).optional(),
     matchedCombinationIds: z.array(z.number()).optional(),

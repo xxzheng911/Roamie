@@ -78,6 +78,7 @@ function plusPreferenceBoost(
 ): number {
   if (!plus?.reasonProfile) return 0;
   const ctx = buildPlusPreferenceRankingContext({
+    surface: "homeNearby",
     profile: plus.reasonProfile,
     savedPlaces: plus.savedPlaces,
     explicitAvoidKeywords: plus.explicitAvoidKeywords,

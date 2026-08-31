@@ -9,10 +9,7 @@ import { preparePlacesFirstContext } from "@/lib/recommendation/pipeline.server"
 import { buildRuleBasedRecommendSummary } from "@/lib/recommendation/fallback-summary";
 import { ROAMIE_JSON_SCHEMA, normalizeRoamieResponse, type RoamieResponse } from "./types";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
-import {
-  mergeBoundsForStage,
-  stageAllowsPlacesFirst,
-} from "@/lib/ai/conversation-stage";
+import { mergeBoundsForStage, stageAllowsPlacesFirst } from "@/lib/ai/conversation-stage";
 
 const PlaceItemSchema = z
   .object({
@@ -26,7 +23,7 @@ const PlaceItemSchema = z
     lng: z.number().nullable().optional(),
     googleMapsUrl: z.string().optional(),
     placeName: z.string().optional(),
-    reasonSource: z.enum(["template", "ai"]).optional(),
+    reasonSource: z.enum(["template", "ai", "evidence", "fallback"]).optional(),
   })
   .transform((raw) => ({
     name: raw.name,
@@ -156,18 +153,25 @@ function shouldUsePlacesFirst(ctx: RoamieRequestContext): boolean {
 }
 
 function mergeOptionsForContext(ctx: RoamieRequestContext) {
+  const profile = {
+    profileTier: ctx.planTier ?? "free",
+    profileOnboarded: ctx.planTier === "plus" && ctx.preferences?.onboarded === true,
+  } as const;
   if (ctx.conversationStage) {
-    return mergeBoundsForStage(ctx.conversationStage);
+    return { ...mergeBoundsForStage(ctx.conversationStage), ...profile };
   }
   if (ctx.mode === "chat") {
-    return { minCount: 2, maxCount: 4 };
+    return { minCount: 2, maxCount: 4, ...profile };
   }
-  return { minCount: 3, maxCount: 5 };
+  return { minCount: 3, maxCount: 5, ...profile };
 }
 
 async function withPlacesFirstPrep(ctx: RoamieRequestContext) {
   if (!shouldUsePlacesFirst(ctx)) {
-    return { ctx, candidates: [] as Awaited<ReturnType<typeof preparePlacesFirstContext>>["candidates"] };
+    return {
+      ctx,
+      candidates: [] as Awaited<ReturnType<typeof preparePlacesFirstContext>>["candidates"],
+    };
   }
   return preparePlacesFirstContext(ctx);
 }
@@ -176,15 +180,18 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
   const prep = await withPlacesFirstPrep(ctx);
   ctx = prep.ctx;
   const apiKey = getOpenAIKey();
-  logAiPipeline("[Roamie AI] call", { mode: ctx.mode, hasKey: !!apiKey, keyPrefix: apiKey.slice(0, 7) });
+  logAiPipeline("[Roamie AI] call", {
+    mode: ctx.mode,
+    hasKey: !!apiKey,
+    keyPrefix: apiKey.slice(0, 7),
+  });
   const system = buildSystemPrompt(ctx);
   const user = buildUserMessage(ctx);
   const lateNightRecommend =
     ctx.mode === "recommend" &&
     ctx.lateNightMode &&
     /深夜散步|夜晚探索|深夜|想放空/.test(ctx.mood ?? ctx.selectedMood ?? "");
-  const maxTokens =
-    ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
+  const maxTokens = ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -228,8 +235,7 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
       ...parsed,
       recommendations: [],
       summary:
-        parsed.summary?.trim() ||
-        buildRuleBasedRecommendSummary(ctx, prep.candidates.length === 0),
+        parsed.summary?.trim() || buildRuleBasedRecommendSummary(ctx, prep.candidates.length === 0),
     };
   }
 
@@ -260,8 +266,7 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
           ctx.mode === "recommend" &&
           ctx.lateNightMode &&
           /深夜散步|夜晚探索|深夜|想放空/.test(ctx.mood ?? ctx.selectedMood ?? "");
-        const maxTokens =
-          ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
+        const maxTokens = ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
 
         const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
@@ -383,4 +388,3 @@ export function validateAssembledJson(raw: string): RoamieResponse {
   if (!trimmed) throw new Error("AI 沒有回應，請再試一次。");
   return normalizeRoamieResponse(JSON.parse(trimmed) as Record<string, unknown>);
 }
-

@@ -117,9 +117,7 @@ function PlaceDetailPage() {
   useAvatar();
 
   const handoffRef = useRef(consumePlaceDetailHandoff());
-  const hasCanonicalReasonRef = useRef(
-    hasCanonicalPlaceDetailReason(handoffRef.current),
-  );
+  const hasCanonicalReasonRef = useRef(hasCanonicalPlaceDetailReason(handoffRef.current));
   const [place, setPlace] = useState<PlaceDetailViewModel | null>(() => {
     const handoff = resolvePlaceDetailHandoff(search, handoffRef.current);
     return handoff ? handoffToPlaceDetailData(handoff, locale) : null;
@@ -155,6 +153,7 @@ function PlaceDetailPage() {
     return null;
   }, [search.returnTo, search.originLat, search.originLng]);
   const navigationOrigin = tripPlanningOrigin ?? userLocation;
+  const [hasResolvedUserLocation, setHasResolvedUserLocation] = useState(false);
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [reasonProfile, setReasonProfile] = useState(() => userProfileForReasonFrom({}));
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
@@ -258,13 +257,9 @@ function PlaceDetailPage() {
             ? async (id, loc) => {
                 const mapsKey = getGoogleMapsBrowserKey();
                 if (!mapsKey) return null;
-                return fetchPlaceDetailsForScreenWithKeyViaGateway(
-                  id,
-                  mapsKey,
-                  loc,
-                  undefined,
-                  { requestPath: "capacitor_client" },
-                );
+                return fetchPlaceDetailsForScreenWithKeyViaGateway(id, mapsKey, loc, undefined, {
+                  requestPath: "capacitor_client",
+                });
               }
             : undefined,
         );
@@ -351,6 +346,7 @@ function PlaceDetailPage() {
     let cancelled = false;
     if (tripPlanningOrigin) {
       setUserLocation(tripPlanningOrigin);
+      setHasResolvedUserLocation(false);
     } else {
       void import("@/lib/location-app-gate")
         .then(({ waitForAppActiveForLocation }) =>
@@ -359,6 +355,7 @@ function PlaceDetailPage() {
             return requestDeviceLocation().then((loc) => {
               if (cancelled || !loc) return;
               setUserLocation({ lat: loc.lat, lng: loc.lng });
+              setHasResolvedUserLocation(true);
             });
           }),
         )
@@ -417,12 +414,28 @@ function PlaceDetailPage() {
         reasonProfile,
         weather,
         undefined,
-        { distanceMeters: distM },
+        {
+          distanceMeters: distM,
+          distanceSource: tripPlanningOrigin
+            ? "NAVIGATION_ORIGIN"
+            : hasResolvedUserLocation
+              ? "USER_LOCATION"
+              : undefined,
+        },
         locale,
       );
       return prev.reason !== nextReason ? { ...prev, reason: nextReason } : prev;
     });
-  }, [place?.id, weather, reasonProfile, locale, navigationOrigin.lat, navigationOrigin.lng]);
+  }, [
+    place?.id,
+    weather,
+    reasonProfile,
+    locale,
+    navigationOrigin.lat,
+    navigationOrigin.lng,
+    tripPlanningOrigin,
+    hasResolvedUserLocation,
+  ]);
 
   const destination =
     place?.lat != null && place.lng != null ? { lat: place.lat, lng: place.lng } : null;

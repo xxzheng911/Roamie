@@ -1,7 +1,6 @@
-import {
-  buildPlaceRecommendationReason,
-  type PlaceRecommendationContext,
-  type UserProfileForReason,
+import type {
+  PlaceRecommendationContext,
+  UserProfileForReason,
 } from "@/lib/build-place-recommendation-reason";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import type { ExplorePlaceCard } from "@/lib/explore-category-search";
@@ -27,11 +26,24 @@ export type BuildUnifiedPlaceCardInput = {
   categoryId?: string;
   isSavedFavorite?: boolean;
   userLocation?: { lat: number; lng: number } | null;
+  distanceSource?: PlaceRecommendationContext["distanceSource"];
   weather?: WeatherSummary | null;
   userProfile?: UserProfileForReason | null;
   locale?: Locale;
   photoWidth?: number;
 };
+
+function categoryIntentFromCardCategory(categoryId?: string): string | undefined {
+  if (categoryId === "coffee") return "cafe";
+  if (categoryId === "food") return "restaurant";
+  if (categoryId === "sight" || categoryId === "park" || categoryId === "walking") {
+    return "attraction";
+  }
+  if (categoryId === "district") return "shopping";
+  if (categoryId === "indoor" || categoryId === "rainy") return "indoor";
+  if (categoryId === "night") return "bar";
+  return undefined;
+}
 
 /** 同一地點的封面圖：僅 Google 照片（同步）；Unsplash fallback 由 PlaceImage 元件處理 */
 export function resolvePlaceCoverImage(
@@ -75,13 +87,18 @@ export function buildUnifiedPlaceCard(input: BuildUnifiedPlaceCardInput): Unifie
 
   const context: PlaceRecommendationContext = {
     categoryLabel: resolvePlaceDisplayCategory(place),
+    categoryIntent: categoryIntentFromCardCategory(categoryId),
     distanceMeters: distM,
+    distanceSource: distM != null ? (input.distanceSource ?? "USER_LOCATION") : undefined,
     isSavedFavorite,
   };
 
   const reason =
     input.reason?.trim() ||
-    buildPlaceRecommendationReason(place, userProfile ?? null, weather, undefined, context, locale);
+    buildDiversePlaceRecommendationReasons(
+      [{ place, context }],
+      { userProfile: userProfile ?? null, weather, locale },
+    )[0];
 
   const displayCategory = resolvePlaceDisplayCategory(place);
   const coverImageUrl = resolvePlaceCoverImage(place, { categoryId, photoWidth });
@@ -115,7 +132,12 @@ export function buildUnifiedPlaceCards(inputs: BuildUnifiedPlaceCardInput[]): Un
       place: input.place,
       context: {
         categoryLabel: resolvePlaceDisplayCategory(input.place),
+        categoryIntent: categoryIntentFromCardCategory(input.categoryId),
         distanceMeters: unifiedCardDistanceMeters(input),
+        distanceSource:
+          unifiedCardDistanceMeters(input) != null
+            ? (input.distanceSource ?? "USER_LOCATION")
+            : undefined,
         isSavedFavorite: input.isSavedFavorite,
       },
     })),

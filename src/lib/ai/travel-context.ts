@@ -65,9 +65,11 @@ import {
   logDestinationSearchScopeUpdated,
 } from "@/lib/ai/destination-scope";
 import { maybeResetForNewTripPlanning } from "@/lib/ai/trip-planning-session-reset";
+import { updateSessionPreferenceFromExplicitText } from "@/lib/personalization/resolve-effective-preference";
 
 /** Canonical travel context — merged on every user turn */
 export type CanonicalTravelContext = {
+  sessionPreference?: import("@/lib/personalization/types").SessionPreferenceV1;
   destination?: string;
   /** 國家層級目的地（城市選定後保留） */
   destinationCountry?: string;
@@ -1088,14 +1090,21 @@ export function mergeTravelContext(
       pendingSelection.contextPatch.startDate
         ? enrichTripDatesInContext(userText, merged, workingSession)
         : {};
+    const resolvedSessionPreference = updateSessionPreferenceFromExplicitText(
+      workingSession.sessionPreference ?? prev.sessionPreference,
+      userText,
+      `turn_${Date.now().toString(36)}`,
+    );
     const mergedWithDates: CanonicalTravelContext = {
       ...merged,
       ...datePatch,
+      sessionPreference: resolvedSessionPreference,
     };
 
     const nextSession: ChatPlanningSession = {
       ...workingSession,
       travelContext: mergedWithDates,
+      sessionPreference: resolvedSessionPreference,
       discovery,
       mood: mergedWithDates.mood ?? workingSession.mood,
       tripDays: inheritTripBoundFields

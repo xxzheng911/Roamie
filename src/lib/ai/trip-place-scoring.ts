@@ -15,6 +15,9 @@ import {
   buildPlusPreferenceRankingContext,
   type PlusPreferenceRankingContext,
 } from "@/lib/plus-preference-ranking";
+import { buildPersonalizationContextV1 } from "@/lib/personalization/resolve-effective-preference";
+import { scorePersonalization } from "@/lib/personalization/score";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import { distanceMeters } from "@/lib/map-explore";
@@ -444,6 +447,33 @@ export function scoreTripPlaceWithBreakdown(
     scoreBreakdown.rating +
     scoreBreakdown.route +
     scoreBreakdown.hours;
+  const plannerPersonalization = input.plusContext
+    ? scorePersonalization(
+        place,
+        buildPersonalizationContextV1({
+          surface: "planner",
+          profile: input.plusContext.profile,
+          sessionPreference: input.plusContext.sessionPreference,
+          explicitCurrentRequest: {
+            categoryExclude: input.plusContext.explicitAvoidKeywords,
+            interests: input.plusContext.explicitPreferKeywords,
+          },
+        }),
+      )
+    : null;
+  devVerboseInfo("[PLUS_PERSONALIZATION_PLANNER]", {
+    destination: input.context?.destination ?? "",
+    dayIndex: -1,
+    candidatePlaceId: place.id,
+    paceFit: plannerPersonalization?.paceFitScore ?? 0,
+    interestFit: plannerPersonalization?.interestFitScore ?? 0,
+    vibeFit: plannerPersonalization?.vibeFitScore ?? 0,
+    travelStyleFit: plannerPersonalization?.travelStyleFitScore ?? 0,
+    avoidPenalty: plannerPersonalization?.avoidPenalty ?? 0,
+    basePlannerScore: score,
+    personalizationScore: plannerPersonalization?.totalPersonalizationScore ?? 0,
+    finalPlannerScore: score,
+  });
   return { score, scoreBreakdown };
 }
 
@@ -475,7 +505,9 @@ export function buildTripPlaceScoringContext(input: {
     context: input.context,
     plusContext: profile
       ? buildPlusPreferenceRankingContext({
+          surface: "planner",
           profile,
+          sessionPreference: input.context?.sessionPreference,
           explicitAvoidKeywords: buildExplicitAvoidKeywords(input.context?.excludedCategories),
         })
       : null,

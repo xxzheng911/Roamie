@@ -17,7 +17,7 @@ export const RoamieRecommendationItemSchema = z.object({
   lng: z.number().nullable(),
   googleMapsUrl: z.string(),
   placeName: z.string(),
-  reasonSource: z.enum(["template", "ai"]),
+  reasonSource: z.enum(["template", "ai", "evidence", "fallback"]),
   googlePlaceId: z.string().optional(),
   photoName: z.string().nullable().optional(),
   rating: z.number().nullable().optional(),
@@ -309,7 +309,7 @@ const RECOMMENDATION_ITEM_SCHEMA = {
     lng: { type: ["number", "null"], description: "經度；未知則 null" },
     googleMapsUrl: { type: "string", description: "Google Maps 連結；無則空字串" },
     placeName: { type: "string", description: "顯示名稱，通常與 name 相同" },
-    reasonSource: { type: "string", enum: ["template", "ai"] },
+    reasonSource: { type: "string", enum: ["template", "ai", "evidence", "fallback"] },
   },
   required: [
     "name",

@@ -25,6 +25,7 @@ import { scoreCandidatesWithProfile } from "@/lib/recommendation/engine/score-wi
 import { buildDnaPersonalization } from "@/lib/recommendation/engine/signals/from-dna";
 import { buildMemoryPersonalization } from "@/lib/recommendation/engine/signals/from-memory";
 import type { PersonalizationBundle } from "@/lib/recommendation/engine/signals/types";
+import { buildPersonalizationContextV1 } from "@/lib/personalization/resolve-effective-preference";
 import type { NormalizeInput } from "@/lib/recommendation/engine/stages/normalize";
 import {
   attachScoreBreakdown,
@@ -121,6 +122,7 @@ function buildPersonalizationBundle(
   return {
     weightSuggestions: [...memory.suggestions, ...dna.suggestions],
     preferenceSignals: [...memory.signals, ...dna.signals],
+    effectivePreferenceContext: buildPersonalizationContextV1({ surface: "explore", profile }),
   };
 }
 

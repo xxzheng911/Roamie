@@ -69,4 +69,6 @@ export type PlaceResult = {
     | "geocode"
     | "unknown"
     | null;
+  /** Verified non-Places evidence available to reason claim validation. */
+  reasonClaimEvidence?: Array<"quiet_ambience" | "low_crowd" | "seating_dwell" | "price">;
 };

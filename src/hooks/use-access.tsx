@@ -32,6 +32,7 @@ import {
 } from "@/lib/access/subscription-canonical";
 import { getUserPlanProfile } from "@/lib/plan-tier/storage";
 import { reconcileStaleTierLocks, syncMockPlanTierToProfile } from "@/lib/plan-tier/sync-mock-tier";
+import { clearPersonalizedChatCaches } from "@/lib/clear-auth-state";
 
 type AccessCtx = AccessSnapshot & {
   refresh: () => void;
@@ -54,6 +55,7 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   );
   const syncGenerationRef = useRef(0);
   const userIdRef = useRef(userId);
+  const lastResolvedTierRef = useRef<"free" | "plus" | null>(null);
   userIdRef.current = userId;
 
   const snapshot = useMemo(
@@ -67,6 +69,14 @@ export function AccessProvider({ children }: { children: ReactNode }) {
       `[SUBSCRIPTION_STATE_RENDER] status=${status} source=${snapshot.subscriptionSource ?? canonical.source} hydrated=${snapshot.subscriptionHydrated ?? canonical.hydrated} version=${canonical.version}`,
     );
   }, [snapshot.hasPlusAccess, snapshot.subscriptionSource, snapshot.subscriptionHydrated, canonical]);
+
+  useEffect(() => {
+    if (!snapshot.subscriptionHydrated) return;
+    const tier = snapshot.hasPlusAccess ? "plus" : "free";
+    const previous = lastResolvedTierRef.current;
+    if (previous && previous !== tier) clearPersonalizedChatCaches();
+    lastResolvedTierRef.current = tier;
+  }, [snapshot.hasPlusAccess, snapshot.subscriptionHydrated]);
 
   const hydrateFromSupabase = useCallback(async (uid: string) => {
     const generation = ++syncGenerationRef.current;

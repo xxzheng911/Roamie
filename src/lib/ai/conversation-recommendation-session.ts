@@ -10,6 +10,11 @@ import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommen
 import { normalizePlaceName } from "@/lib/place-planning-memory";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { ShoppingCoverageState } from "@/lib/ai/shopping-query-queue";
+import type { PersonalizationSnapshotV1 } from "@/lib/personalization/types";
+import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import { personalizationSnapshotInvalidationReason } from "@/lib/personalization/resolve-effective-preference";
+import type { PersonalizationContextV1 } from "@/lib/personalization/types";
+import type { NearbyGeographicScopeAuthority } from "@/lib/ai/nearby-geographic-scope";
 
 /** Generic / shopping fallback. Not the destination-category UI contract. */
 export const RECOMMENDATION_BATCH_SIZE = 4;
@@ -56,7 +61,7 @@ export function remainingRecommendationPoolCount(
   return Math.max(0, session.pool.length - session.cursor);
 }
 
-export type RecommendationSearchScope = "area" | "city" | "current_location";
+export type RecommendationSearchScope = "area" | "city" | "district" | "current_location";
 
 function shoppingCanonicalKey(place: {
   name?: string | null;
@@ -116,6 +121,8 @@ export type ConversationRecommendationSession = {
   shoppingCoverage?: ShoppingCoverageState;
   createdAt: string;
   updatedAt: string;
+  personalizationSnapshot?: PersonalizationSnapshotV1;
+  geographicScope?: NearbyGeographicScopeAuthority;
 };
 
 export type ConversationRecommendationContext = {
@@ -155,6 +162,8 @@ export function createRecommendationSession(params: {
   geoClusterLabel?: string;
   shoppingCandidateReserve?: RoamieRecommendationItem[];
   shoppingCoverage?: ShoppingCoverageState;
+  personalizationSnapshot?: PersonalizationSnapshotV1;
+  geographicScope?: NearbyGeographicScopeAuthority;
 }): { session: ConversationRecommendationSession; batch: RoamieRecommendationItem[] } {
   const now = new Date().toISOString();
   const batchSize =
@@ -192,6 +201,8 @@ export function createRecommendationSession(params: {
       shoppingCandidateReserve:
         params.topic === "shopping" ? dedupePool(reserve) : undefined,
       shoppingCoverage: params.shoppingCoverage,
+      personalizationSnapshot: params.personalizationSnapshot,
+      geographicScope: params.geographicScope,
       createdAt: now,
       updatedAt: now,
     },
@@ -215,12 +226,52 @@ function dedupePool(items: RoamieRecommendationItem[]): RoamieRecommendationItem
 export function continueRecommendation(
   session: ConversationRecommendationSession,
   batchSize = resolveRecommendationDisplayBatchSize(session),
+  currentPersonalization?: PersonalizationContextV1,
 ): {
   session: ConversationRecommendationSession;
   batch: RoamieRecommendationItem[];
   exhausted: boolean;
 } {
+  const invalidationReason =
+    session.personalizationSnapshot && currentPersonalization
+      ? personalizationSnapshotInvalidationReason(session.personalizationSnapshot, currentPersonalization)
+      : null;
+  if (invalidationReason) {
+    const invalidated = {
+      ...session,
+      pool: session.pool.slice(0, session.cursor),
+      exhausted: true,
+      updatedAt: new Date().toISOString(),
+    };
+    devVerboseInfo("[PLUS_PERSONALIZATION_CONTINUATION]", {
+      sessionId: session.sessionId,
+      contractVersion: session.personalizationSnapshot?.contractVersion ?? "",
+      poolCount: session.pool.length,
+      cursor: session.cursor,
+      profileTier: currentPersonalization.profileTier,
+      profileVersion: currentPersonalization.profileVersion ?? "",
+      sessionPreferenceVersion: currentPersonalization.sessionPreferenceVersion,
+      snapshotReused: false,
+      snapshotInvalidated: true,
+      invalidationReason,
+      displayedPlaceIds: session.returnedPlaceIds,
+    });
+    return { session: invalidated, batch: [], exhausted: true };
+  }
   const start = session.cursor;
+  devVerboseInfo("[PLUS_PERSONALIZATION_CONTINUATION]", {
+    sessionId: session.sessionId,
+    contractVersion: session.personalizationSnapshot?.contractVersion ?? "",
+    poolCount: session.pool.length,
+    cursor: session.cursor,
+    profileTier: session.personalizationSnapshot?.profileTier ?? "free",
+    profileVersion: session.personalizationSnapshot?.profileVersion ?? "",
+    sessionPreferenceVersion: session.personalizationSnapshot?.sessionPreferenceVersion ?? 0,
+    snapshotReused: Boolean(session.personalizationSnapshot),
+    snapshotInvalidated: false,
+    invalidationReason: "",
+    displayedPlaceIds: session.returnedPlaceIds,
+  });
   const batch = session.pool.slice(start, start + batchSize);
   if (!batch.length) {
     return { session, batch: [], exhausted: true };

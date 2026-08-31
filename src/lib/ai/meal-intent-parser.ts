@@ -278,6 +278,22 @@ export function buildMealRecommendationDescription(
   return "適合用餐";
 }
 
+/**
+ * Meal copy is card metadata, not recommendation-reason authority.
+ * Preserve a grounded reason produced by the evidence/template pipeline;
+ * only use the meal label when that pipeline produced no renderable text.
+ */
+export function preserveMealRecommendationReason(
+  reason: string | null | undefined,
+  place: PlaceResult,
+  intent: ParsedMealIntent,
+): string {
+  const groundedReason = reason?.trim();
+  return groundedReason
+    ? sanitizeMealReasonText(groundedReason, intent.slot)
+    : buildMealRecommendationDescription(place, intent);
+}
+
 export function sanitizeMealSummaryText(summary: string, slot: MealSlot): string {
   if (slot !== "lunch") return summary;
   return summary

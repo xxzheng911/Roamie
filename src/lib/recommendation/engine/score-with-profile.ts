@@ -15,6 +15,7 @@ import {
   preferenceFactorScores,
 } from "@/lib/recommendation/engine/signals/merge";
 import type { PersonalizationBundle } from "@/lib/recommendation/engine/signals/types";
+import { scorePersonalization } from "@/lib/personalization/score";
 import {
   attachScoreBreakdown,
   type RecommendationCandidate,
@@ -108,7 +109,10 @@ export function scoreCandidatesWithProfile(
       dna: pref.dna,
     };
 
-    const score = weightedSum(parts, weights);
+    const unifiedPersonalization = bundle?.effectivePreferenceContext
+      ? scorePersonalization(candidate, bundle.effectivePreferenceContext)
+      : null;
+    const score = weightedSum(parts, weights) + (unifiedPersonalization?.totalPersonalizationScore ?? 0) / 100;
     const scoreBreakdown: Record<string, number> = {
       open: parts.open ?? 0,
       distance: parts.distance ?? 0,
@@ -116,6 +120,7 @@ export function scoreCandidatesWithProfile(
       reviews: parts.reviews ?? 0,
       memory: parts.memory ?? 0,
       dna: parts.dna ?? 0,
+      personalization: unifiedPersonalization?.totalPersonalizationScore ?? 0,
     };
     for (const key of Object.keys(weights) as WeightFactorKey[]) {
       if (

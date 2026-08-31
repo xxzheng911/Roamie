@@ -43,7 +43,7 @@ function isTripMealRequest(text: string): boolean {
   return isFoodIntentText(text);
 }
 
-function userExplicitlyWantsNearbyPlaces(text: string): boolean {
+export function userExplicitlyWantsNearbyPlaces(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   return /(附近|這一帶|这一带|現在|今天|當下|我這邊|我附近|離我|離這裡|离这里)/.test(t);
@@ -531,6 +531,12 @@ export function inferNearbyIntentFromContext(
   const destination = resolveDestinationForCategorySearch(ctx, session, text);
   const categoryIntents = parseChatPlaceIntents(text);
   if (destination && categoryIntents.length > 0) {
+    return mapCategoryIntentToNearbyIntent(categoryIntents[0]!);
+  }
+
+  // Explicit Nearby scope owns the category even when no destination has been
+  // resolved yet (for example nightlife categories awaiting a location answer).
+  if (userExplicitlyWantsNearbyPlaces(text) && categoryIntents.length > 0) {
     return mapCategoryIntentToNearbyIntent(categoryIntents[0]!);
   }
 

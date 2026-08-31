@@ -35,6 +35,28 @@ const OAUTH_TRANSIENT_SESSION_KEYS = [
   OAUTH_PENDING_CALLBACK_KEY,
 ] as const;
 
+const PERSONALIZED_CHAT_CACHE_KEYS = [
+  "roamie:chat-planning",
+  "roamie:chat-ui-cache",
+  "roamie:recommendation-latest",
+  "roamie:conversation-workspace:active",
+  "roamie:conversation-workspace:ephemeral",
+] as const;
+
+/** Invalidate rendered recommendation text when auth identity or tier ownership changes. */
+export function clearPersonalizedChatCaches(): void {
+  if (typeof window === "undefined") return;
+  for (const storage of [localStorage, sessionStorage]) {
+    for (const key of PERSONALIZED_CHAT_CACHE_KEYS) {
+      try {
+        storage.removeItem(key);
+      } catch {
+        // ignore unavailable storage
+      }
+    }
+  }
+}
+
 export function logAuthFlowMarker(marker: string, detail?: Record<string, unknown>): void {
   if (detail && Object.keys(detail).length > 0) {
     console.info(marker, detail);
@@ -115,6 +137,7 @@ export function clearAuthStateSync(options: ClearAuthStateOptions = {}): void {
   clearProfileSessionCache();
   resetAppBootCachesForUserChange();
   clearTravelPrefResultCache();
+  clearPersonalizedChatCaches();
   clearWebStorageAuthKeys();
   clearLocalDeviceCaches();
   clearPendingCallbackPath();

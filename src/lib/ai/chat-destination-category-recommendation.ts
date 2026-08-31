@@ -81,6 +81,7 @@ import { resolvePresentableMoodTag } from "@/lib/ai/mood-presentation";
 import { ingestResolvedPlacesIntoCandidatePool } from "@/lib/ai/places-cost-cache";
 import {
   buildMealRecommendationDescription,
+  preserveMealRecommendationReason,
   buildMealSearchAttempts,
   filterPlacesForMealIntent,
   resolveExplicitMealIntent,
@@ -603,10 +604,11 @@ function placesToRecommendations(
       const place = places.find((p) => p.id === item.googlePlaceId || p.id === item.placeId);
       const withTypes = applyRecommendationPlaceTypeMetadata(item, place);
       if (mealIntent && place) {
+        const description = buildMealRecommendationDescription(place, mealIntent);
         return {
           ...withTypes,
-          reason: buildMealRecommendationDescription(place, mealIntent),
-          description: buildMealRecommendationDescription(place, mealIntent),
+          reason: preserveMealRecommendationReason(withTypes.reason, place, mealIntent),
+          description,
         };
       }
       return withTypes;

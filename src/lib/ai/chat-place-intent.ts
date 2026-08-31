@@ -196,7 +196,9 @@ export function mapCategoryIntentToNearbyIntent(
   intent: ChatPlaceCategoryIntent,
 ): "cafe" | "restaurant" | "attraction" {
   if (intent === "cafe") return "cafe";
-  if (intent === "restaurant") return "restaurant";
+  // Generic Nearby has no separate bar provider intent. Nightlife food/drink
+  // categories use the restaurant candidate pool and retain their query text.
+  if (intent === "restaurant" || intent === "bar") return "restaurant";
   // Keep shopping/night_market/bar out of attraction-only nearby when possible —
   // activeCategoryIntent on session is the source of truth for continue.
   return "attraction";

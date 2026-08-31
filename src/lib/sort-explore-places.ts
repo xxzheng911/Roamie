@@ -48,7 +48,7 @@ function interestBoost(
   place: SortablePlace,
   profile: UserProfileForReason | null | undefined,
 ): number {
-  const ctx = buildPlusPreferenceRankingContext({ profile });
+  const ctx = buildPlusPreferenceRankingContext({ profile, surface: "explore" });
   return scorePlusPreferenceMatch(place, ctx);
 }
 

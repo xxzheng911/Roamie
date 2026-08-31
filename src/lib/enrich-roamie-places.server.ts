@@ -133,6 +133,7 @@ async function enrichRecommendations(
   const plusCtx =
     ctx.planTier === "plus"
       ? buildPlusPreferenceRankingContext({
+          surface: "destination",
           profile: userProfileForReasonFrom(ctx.preferences, {
             hasPlusAccess: true,
             travelStyle: ctx.longTermMemory?.travelStyle,

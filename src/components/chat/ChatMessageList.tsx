@@ -155,7 +155,7 @@ export const ChatMessageList = memo(function ChatMessageList({
     [msgs, rowProps.suppressPlaceCards, rowProps.generating],
   );
 
-  if (hydrating) {
+  if (hydrating && msgs.length === 0) {
     return (
       <div className="flex justify-center pt-4">
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />

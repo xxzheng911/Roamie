@@ -8,9 +8,13 @@ import {
   type PlaceIdentity,
   type PlaceIdentityInput,
 } from "@/lib/place-identity";
+import { buildPersonalizationContextV1 } from "@/lib/personalization/resolve-effective-preference";
+import { scorePersonalization } from "@/lib/personalization/score";
+import type { PersonalizationSurface, SessionPreferenceV1 } from "@/lib/personalization/types";
 
-export type PlusRankablePlace = PlaceIdentityInput & {
+export type PlusRankablePlace = Omit<PlaceIdentityInput, "address" | "name"> & {
   name?: string | null;
+  address?: string | null;
   rating?: number | null;
   userRatingCount?: number | null;
   isSavedFavorite?: boolean;
@@ -27,6 +31,9 @@ export type PlusPreferenceRankingContext = {
   explicitPreferKeywords?: string[];
   mood?: string | null;
   setting?: string | null;
+  surface?: PersonalizationSurface;
+  sessionPreference?: SessionPreferenceV1 | null;
+  profileVersion?: string;
 };
 
 const QUIET_IDENTITIES: PlaceIdentity[] = [
@@ -176,6 +183,9 @@ export function buildPlusPreferenceRankingContext(input: {
   explicitPreferKeywords?: string[];
   mood?: string | null;
   setting?: string | null;
+  surface?: PersonalizationSurface;
+  sessionPreference?: SessionPreferenceV1 | null;
+  profileVersion?: string;
 }): PlusPreferenceRankingContext {
   const categories = [
     ...new Set(
@@ -193,6 +203,9 @@ export function buildPlusPreferenceRankingContext(input: {
     explicitPreferKeywords: input.explicitPreferKeywords,
     mood: input.mood,
     setting: input.setting,
+    surface: input.surface,
+    sessionPreference: input.sessionPreference,
+    profileVersion: input.profileVersion,
   };
 }
 
@@ -204,110 +217,20 @@ export function scorePlusPreferenceMatch(
   place: PlusRankablePlace,
   ctx: PlusPreferenceRankingContext | null | undefined,
 ): number {
-  if (!isPlusQuizPersonalizationActive(ctx)) return 0;
-
-  const profile = ctx!.profile!;
-  const identity = resolvePlaceIdentity(place);
-  const blob = placeBlob(place);
-  let score = 0;
-
-  const explicitAvoid = ctx?.explicitAvoidKeywords ?? [];
-  const explicitPrefer = ctx?.explicitPreferKeywords ?? [];
-  if (explicitAvoid.length && includesAny(blob, explicitAvoid)) {
-    score -= 80;
-  }
-  if (explicitPrefer.length && includesAny(blob, explicitPrefer)) {
-    score += 50;
-  }
-
-  const moodBlob = `${ctx?.mood ?? ""} ${ctx?.setting ?? ""}`.toLowerCase();
-  if (/室內|下雨|雨天|雨/.test(moodBlob) || ctx?.setting === "indoor") {
-    if (identityIn(["museum", "cafe", "bookstore", "shopping_mall", "department_store"], identity)) {
-      score += 12;
-    }
-    if (identityIn(["park", "tourist_attraction"], identity) && /雨/.test(moodBlob)) {
-      score -= 8;
-    }
-  }
-  if (/室外|戶外|散步|走走/.test(moodBlob) || ctx?.setting === "outdoor") {
-    if (identityIn(["park", "district", "tourist_attraction", "night_market"], identity)) {
-      score += 10;
-    }
-  }
-
-  if (profile.pace === "slow") {
-    if (identityIn(SLOW_IDENTITIES, identity)) score += 14;
-    if (identityIn(["shopping_mall", "department_store"], identity)) score -= 4;
-  } else if (profile.pace === "active") {
-    if (identityIn(ACTIVE_IDENTITIES, identity)) score += 12;
-  }
-
-  if (profile.vibe === "quiet") {
-    if (identityIn(QUIET_IDENTITIES, identity)) score += 14;
-    if (identityIn(["bar", "night_market"], identity)) score -= 10;
-  } else if (profile.vibe === "lively") {
-    if (identityIn(LIVELY_IDENTITIES, identity)) score += 12;
-  }
-
-  const budget = budgetModeFromProfile(profile);
-  if (budget === "budget") {
-    if (identityIn(BUDGET_IDENTITIES, identity)) score += 12;
-    if (identityIn(LUXURY_IDENTITIES, identity)) score -= 8;
-  } else if (budget === "quality") {
-    if (identityIn(QUALITY_IDENTITIES, identity)) score += 10;
-  } else if (budget === "luxury") {
-    if (identityIn(LUXURY_IDENTITIES, identity)) score += 12;
-    if (identityIn(BUDGET_IDENTITIES, identity)) score -= 6;
-  }
-
-  if (matchesQuizAvoid(profile, AVOID_CROWDS_LABELS, ["人潮", "擠", "吵"])) {
-    if (identityIn(CROWDED_IDENTITIES, identity)) score -= 16;
-    if ((place.userRatingCount ?? 0) > 800) score -= 6;
-  }
-  if (matchesQuizAvoid(profile, AVOID_PACKED_LABELS, ["行程", "太滿"])) {
-    if (identityIn(["tourist_attraction", "shopping_mall"], identity)) score -= 8;
-  }
-  if (matchesQuizAvoid(profile, AVOID_OVERLOAD_LABELS, ["資訊", "選擇"])) {
-    if (identityIn(SLOW_IDENTITIES, identity)) score += 8;
-    if (identityIn(["shopping_mall", "department_store"], identity)) score -= 6;
-  }
-
-  const styleBlob = [
-    profile.travelStyle,
-    profile.personalityType,
-    profile.personalitySummary,
-    ...(profile.interests ?? []),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  if (/咖啡|甜點|下午茶/.test(styleBlob) && identityIn(["cafe", "bakery", "dessert"], identity)) {
-    score += 10;
-  }
-  if (/美食|吃|小吃/.test(styleBlob) && identityIn(["food_stall", "night_market", "restaurant", "breakfast_shop"], identity)) {
-    score += 8;
-  }
-  if (/文化|藝術|書|展覽|博物/.test(styleBlob) && identityIn(["museum", "bookstore"], identity)) {
-    score += 10;
-  }
-  if (/自然|公園|散步|戶外/.test(styleBlob) && identityIn(["park", "tourist_attraction"], identity)) {
-    score += 8;
-  }
-  if (/逛|購物/.test(styleBlob) && identityIn(["district", "shopping_mall", "department_store"], identity)) {
-    score += 6;
-  }
-
-  for (const cat of ctx?.savedPlaceCategories ?? []) {
-    const c = cat.toLowerCase();
-    if (c && (blob.includes(c) || identityDisplayLabel(identity).includes(cat))) {
-      score += 6;
-      break;
-    }
-  }
-  if (place.isSavedFavorite) score += 10;
-
-  return score;
+  if (!ctx) return 0;
+  const personalization = buildPersonalizationContextV1({
+    surface: ctx.surface ?? "destination",
+    profile: ctx.profile,
+    sessionPreference: ctx.sessionPreference,
+    profileVersion: ctx.profileVersion,
+    explicitCurrentRequest: {
+      interests: ctx.explicitPreferKeywords,
+      categoryExclude: ctx.explicitAvoidKeywords,
+      mood: ctx.mood ?? undefined,
+    },
+  });
+  const score = scorePersonalization(place, personalization, { log: true }).totalPersonalizationScore;
+  return score + (place.isSavedFavorite ? 4 : 0);
 }
 
 /** rankScore 愈小愈優先（recommend-place-ranking 用） */

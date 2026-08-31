@@ -75,7 +75,7 @@ export type ChatPlaceItem = RoamieRecommendationItem & {
   country?: string;
   photoName?: string | null;
   rating?: number | null;
-  reasonSource?: "template" | "ai";
+  reasonSource?: "template" | "ai" | "evidence" | "fallback";
   distanceMeters?: number | null;
   distanceLabel?: string;
 };
@@ -99,6 +99,8 @@ export type ChatPlanningSession = {
   selectedCategory?: string;
   discovery?: ChatDiscovery;
   preferences?: TravelPreferences;
+  /** Explicit, temporary preferences for this chat/trip; never written back to Plus profile. */
+  sessionPreference?: import("@/lib/personalization/types").SessionPreferenceV1;
   location?: RoamieLocation;
   weather?: WeatherSummary | null;
   recommendedPlaces: ChatPlaceItem[];
@@ -225,6 +227,8 @@ export type ChatPlanningSession = {
    * Originating intent must survive the parent-city answer.
    */
   pendingClarification?: import("@/lib/ai/destination-geographic-clarification").PendingGeographicClarification;
+  /** Missing-GPS Nearby request awaiting a geographic answer. */
+  pendingNearbyLocationRequest?: import("@/lib/ai/nearby-location-clarification").PendingNearbyLocationRequest;
   /** 上一輪助理完整回覆（用於恢復遺失的 pendingQuestion） */
   lastAssistantReply?: string;
   /** 本輪剛解析到的選項回覆（用於推進下一步） */
@@ -540,6 +544,8 @@ export function mapPlaceResultToChatItem(
     primaryType: typeMetadata.primaryType,
     description: p.address ?? "附近推薦",
     reason,
+    // Legacy local-card mapper retains template for compatibility; detailed
+    // evidence/fallback provenance is emitted by the reason resolver telemetry.
     reasonSource: "template",
     estimatedTime: "1-2 小時",
     address: p.address ?? "",
