@@ -857,6 +857,7 @@ export function validateItineraryPreSave(params: {
   startDate: string;
   stops: unknown[];
   freeDayDates?: string[];
+  placeAuthority?: "selected_only";
 }): PreSaveValidationResult {
   const { valid, invalid } = normalizeItineraryStops(params.stops);
   const reasons: string[] = [];
@@ -883,7 +884,7 @@ export function validateItineraryPreSave(params: {
     const date = dates[i]!;
     if (freeDays.has(date)) continue;
     const dayStops = valid.filter((s) => (s.date?.trim() || dates[0]) === date);
-    if (!dayStops.length) {
+    if (!dayStops.length && params.placeAuthority !== "selected_only") {
       emptyNonFreeDays.push(i + 1);
       logAiPipeline(
         "[EMPTY_DAY_BLOCKED]",
@@ -895,7 +896,11 @@ export function validateItineraryPreSave(params: {
     }
   }
 
-  if (valid.length < params.tripDays && emptyNonFreeDays.length > 0) {
+  if (
+    params.placeAuthority !== "selected_only" &&
+    valid.length < params.tripDays &&
+    emptyNonFreeDays.length > 0
+  ) {
     reasons.push(`insufficient_real_places:got=${valid.length},need=${params.tripDays}`);
   }
 

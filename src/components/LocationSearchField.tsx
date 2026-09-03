@@ -57,6 +57,7 @@ export function LocationSearchField({
   const { t, locale } = useI18n();
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
+  const [composing, setComposing] = useState(false);
   const [suggestions, setSuggestions] = useState<LocationSuggestion[]>([]);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -85,12 +86,12 @@ export function LocationSearchField({
   const runSearch = useCallback(
     async (q: string) => {
       const trimmed = q.trim();
-      logTripPlace(fieldRole, "search", { query: trimmed, mode: searchMode });
       if (trimmed.length < 2) {
         setSuggestions([]);
         setSearchError(null);
         return;
       }
+      logTripPlace(fieldRole, "search", { query: trimmed, mode: searchMode });
       const gen = ++searchGenRef.current;
       setSearching(true);
       setSearchError(null);
@@ -138,21 +139,25 @@ export function LocationSearchField({
   );
 
   useEffect(() => {
-    if (!focused) return;
+    if (!focused || composing) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => void runSearch(query), 300);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, focused, runSearch]);
+  }, [query, focused, composing, runSearch]);
 
   const commitLocation = useCallback(
     (location: TripLocation) => {
+      // Invalidate autocomplete that began before this committed Place result.
+      // Its late response must not restore suggestions/searching state.
+      searchGenRef.current += 1;
       const labelText = formatTripLocationLabel(location);
       committedLabelRef.current = labelText;
       setQuery(labelText);
       setFocused(false);
       setSuggestions([]);
+      setSearching(false);
       setSearchError(null);
       sessionTokenRef.current = createPlacesSessionToken();
       onChange(location);
@@ -274,6 +279,11 @@ export function LocationSearchField({
               onChange(null);
             }
           }}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={(e) => {
+            setComposing(false);
+            setQuery(e.currentTarget.value);
+          }}
           onFocus={() => {
             if (blurCloseRef.current) clearTimeout(blurCloseRef.current);
             setFocused(true);
@@ -292,6 +302,8 @@ export function LocationSearchField({
           placeholder={placeholder}
           disabled={disabled}
           autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
           enterKeyHint="search"
           className="w-full rounded-2xl border border-border bg-card py-3 pl-11 pr-10 text-[15px] focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
         />

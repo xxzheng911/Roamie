@@ -176,6 +176,8 @@ export type ItineraryValidatorInput = {
   };
   /** log 用：style | direct | selected_places | regen */
   creationPath?: "style" | "direct" | "selected_places" | "regen" | "chat_add";
+  /** Selected places are authoritative; sparse days must not trigger auto-plan density gates. */
+  placeAuthority?: "selected_only";
   destination?: string;
   /** Telemetry only; never affects validation rules. */
   telemetryRepairRound?: number;

@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { Sparkles, ChevronRight, Search, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, startTransition } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, startTransition, useSyncExternalStore } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { HomeTripCard } from "@/components/home/HomeTripCard";
@@ -40,7 +40,11 @@ import {
   readHomeSessionNearbyMeta,
   writeHomeSessionNearbyPicks,
 } from "@/lib/home-session-cache";
-import { logHomeRefreshBackground, logHomeRenderFromCache } from "@/lib/home-persistent-cache";
+import {
+  logHomeRefreshBackground,
+  logHomeRenderFromCache,
+  readPersistedHomeLocation,
+} from "@/lib/home-persistent-cache";
 import {
   getHomeNearbyLoadInFlight,
   homeNearbyLoadKey,
@@ -89,7 +93,7 @@ import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences, readCachedPreferencesSync, isPreferencesRemoteHydrated } from "@/lib/preferences-storage";
 import { getTravelPrefStatusSync, mergePreferencesWithTravelPrefStatus } from "@/lib/travel-pref-status";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
-import { isHomeRouteVisible } from "@/lib/home-route-active";
+import { isHomeRouteVisible, subscribeHomeRouteVisible } from "@/lib/home-route-active";
 import { logPerfEffectRun } from "@/lib/app-perf";
 import { buildDailyPrepAdvice } from "@/lib/recommendation/daily-prep-advice";
 import { HomeOutfitCard } from "@/components/home/HomeOutfitCard";
@@ -119,6 +123,7 @@ export const Route = createFileRoute("/_app/")({
 });
 
 function Home() {
+  const coldStartAtRef = useRef(Date.now());
   const { t, locale } = useI18n();
   const { hasPlusAccess } = useAccess();
   const { openAddToTrip } = useAddToTrip();
@@ -140,12 +145,29 @@ function Home() {
     reload: reloadWeather,
   } = useHomeWeather(locale);
   const effectiveLocation = useEffectiveLocation();
-  const sessionNearbyBoot = useMemo(() => readHomeSessionNearbyMeta(), []);
-  const [nearbyPicks, setNearbyPicks] = useState<HomeNearbyPick[]>(() => sessionNearbyBoot.picks);
-  const [nearbyRenderState, setNearbyRenderState] = useState<HomeNearbyRenderState>(() =>
-    sessionNearbyBoot.picks.length > 0 ? "cached" : "loading",
+  const homeRouteVisible = useSyncExternalStore(
+    subscribeHomeRouteVisible,
+    isHomeRouteVisible,
+    isHomeRouteVisible,
   );
-  const [nearbyLoading, setNearbyLoading] = useState(() => sessionNearbyBoot.picks.length === 0);
+  const sessionNearbyBoot = useMemo(() => {
+    const cachedLocation = readPersistedHomeLocation(Date.now(), { allowStale: true });
+    return readHomeSessionNearbyMeta(
+      Date.now(),
+      cachedLocation ? { lat: cachedLocation.lat, lng: cachedLocation.lng } : null,
+    );
+  }, []);
+  const safeSessionNearbyBootPicks = useMemo(
+    () => (sessionNearbyBoot.displayFresh ? sessionNearbyBoot.picks : []),
+    [sessionNearbyBoot],
+  );
+  const [nearbyPicks, setNearbyPicks] = useState<HomeNearbyPick[]>(() => safeSessionNearbyBootPicks);
+  const [nearbyRenderState, setNearbyRenderState] = useState<HomeNearbyRenderState>(() =>
+    safeSessionNearbyBootPicks.length > 0 ? "cached" : "loading",
+  );
+  const [nearbyLoading, setNearbyLoading] = useState(() => safeSessionNearbyBootPicks.length === 0);
+  const nearbyPicksRef = useRef(nearbyPicks);
+  nearbyPicksRef.current = nearbyPicks;
   const [nearbySlowLoad, setNearbySlowLoad] = useState(false);
   const [selectedMood, setSelectedMood] = useState<HomeMoodId | null>(null);
   const homeMoods = useMemo(
@@ -272,7 +294,7 @@ function Home() {
     return () => unsub();
   }, [router, resetHomeMoodUi]);
 
-  const hasNearbyPicksRef = useRef(sessionNearbyBoot.picks.length > 0);
+  const hasNearbyPicksRef = useRef(safeSessionNearbyBootPicks.length > 0);
   const prevNearbyEffectDepsRef = useRef<{ loadKey: string | null; ready: boolean }>({
     loadKey: null,
     ready: false,
@@ -287,28 +309,52 @@ function Home() {
   }, []);
 
   useLayoutEffect(() => {
-    if (sessionNearbyBoot.picks.length > 0) {
+    console.info("[HOME_NEARBY_COLD_START]", {
+      timestamp: new Date().toISOString(),
+      elapsedMs: Date.now() - coldStartAtRef.current,
+      cachedCount: safeSessionNearbyBootPicks.length,
+    });
+    console.info("[HOME_NEARBY_HYDRATION_START]", {
+      timestamp: new Date().toISOString(),
+      elapsedMs: Date.now() - coldStartAtRef.current,
+    });
+    if (safeSessionNearbyBootPicks.length > 0) {
       if (sessionNearbyBoot.loadKey) {
-        writeHomeNearbyResultsCache(sessionNearbyBoot.loadKey, sessionNearbyBoot.picks);
+        writeHomeNearbyResultsCache(sessionNearbyBoot.loadKey, safeSessionNearbyBootPicks);
       }
       publishHomeNearbyCache(
-        sessionNearbyBoot.picks,
+        safeSessionNearbyBootPicks,
         sessionNearbyBoot.loadKey,
         sessionNearbyBoot.lat != null && sessionNearbyBoot.lng != null
           ? { lat: sessionNearbyBoot.lat, lng: sessionNearbyBoot.lng }
           : null,
       );
       beginHomeNearbyPerfLoad({ hasCache: true, locationSource: "disk" });
-      logHomeNearbyCacheHit(sessionNearbyBoot.picks.length, sessionNearbyBoot.ageMs ?? 0);
-      logHomeNearbyCacheRendered(sessionNearbyBoot.picks.length);
-      logHomeNearbyFirstCardRendered(sessionNearbyBoot.picks.length);
+      logHomeNearbyCacheHit(safeSessionNearbyBootPicks.length, sessionNearbyBoot.ageMs ?? 0);
+      logHomeNearbyCacheRendered(safeSessionNearbyBootPicks.length);
+      logHomeNearbyFirstCardRendered(safeSessionNearbyBootPicks.length);
       logHomeRenderFromCache("places");
       logHomeNearbyRender("cached");
+      console.info("[HOME_NEARBY_CACHE_HIT]", {
+        geographicScope: sessionNearbyBoot.loadKey,
+        candidateCount: safeSessionNearbyBootPicks.length,
+      });
+      console.info("[HOME_NEARBY_RENDER_READY]", {
+        source: "cache",
+        finalCardCount: safeSessionNearbyBootPicks.length,
+        elapsedMs: Date.now() - coldStartAtRef.current,
+      });
     } else {
       beginHomeNearbyPerfLoad({ hasCache: false, locationSource: "unknown" });
       logHomeNearbyRender("loading");
+      console.info("[HOME_NEARBY_CACHE_MISS]", { reason: "no_safe_persisted_cards" });
     }
-  }, [sessionNearbyBoot.ageMs, sessionNearbyBoot.loadKey, sessionNearbyBoot.picks, sessionNearbyBoot.lat, sessionNearbyBoot.lng]);
+    console.info("[HOME_NEARBY_HYDRATION_DONE]", {
+      timestamp: new Date().toISOString(),
+      elapsedMs: Date.now() - coldStartAtRef.current,
+      finalCardCount: safeSessionNearbyBootPicks.length,
+    });
+  }, [sessionNearbyBoot.ageMs, sessionNearbyBoot.loadKey, safeSessionNearbyBootPicks, sessionNearbyBoot.lat, sessionNearbyBoot.lng]);
 
   useEffect(() => {
     if (nearbyPicks.length > 0 || nearbyRenderState === "empty" || nearbyRenderState === "error") {
@@ -350,6 +396,15 @@ function Home() {
     [],
   );
 
+  useEffect(() => {
+    if (!effectiveLocation?.isReadyForPlaces) return;
+    console.info("[HOME_NEARBY_LOCATION_SOURCE]", {
+      source: effectiveLocation.source === "gps" ? "fresh" : "cached",
+      geographicScope: effectiveLocation.locationKey,
+      elapsedMs: Date.now() - coldStartAtRef.current,
+    });
+  }, [effectiveLocation?.isReadyForPlaces, effectiveLocation?.locationKey, effectiveLocation?.source]);
+
   const restoreNearbyFromCache = useCallback(
     (loadKey: string): boolean => {
       const loc = effectiveLocationRef.current;
@@ -361,6 +416,11 @@ function Home() {
         hasNearbyPicksRef.current = true;
         publishHomeNearbyCache(moduleMeta.picks, loadKey, coords);
         setNearbyLoading(false);
+        console.info("[HOME_NEARBY_LOADING_CLEAR]", {
+          reason: "module_cache_hit",
+          geographicScope: loadKey,
+          finalCardCount: moduleMeta.picks.length,
+        });
         setNearbyRenderStateLogged("cached");
         logHomeNearbyCacheHit(moduleMeta.picks.length, moduleMeta.ageMs);
         logHomeNearbyCacheRendered(moduleMeta.picks.length);
@@ -375,6 +435,11 @@ function Home() {
         hasNearbyPicksRef.current = true;
         publishHomeNearbyCache(sessionMeta.picks, sessionMeta.loadKey ?? loadKey, coords);
         setNearbyLoading(false);
+        console.info("[HOME_NEARBY_LOADING_CLEAR]", {
+          reason: "session_cache_hit",
+          geographicScope: sessionMeta.loadKey ?? loadKey,
+          finalCardCount: sessionMeta.picks.length,
+        });
         setNearbyRenderStateLogged("cached");
         logHomeNearbyCacheHit(sessionMeta.picks.length, sessionMeta.ageMs ?? 0);
         logHomeNearbyCacheRendered(sessionMeta.picks.length);
@@ -407,6 +472,16 @@ function Home() {
     });
     if (!eff?.isReadyForPlaces) {
       console.info("[HOME_NEARBY_ABORT]", { reason: "not_ready", caller: caller ?? null });
+      console.info("[HOME_NEARBY_LOCATION_SOURCE]", {
+        source: "unavailable",
+        geographicScope: null,
+        elapsedMs: Date.now() - coldStartAtRef.current,
+      });
+      console.info("[HOME_NEARBY_REQUEST_ABORT]", {
+        reason: "location_not_ready",
+        requestId: "not_dispatched",
+        elapsedMs: Date.now() - coldStartAtRef.current,
+      });
       return;
     }
 
@@ -421,7 +496,7 @@ function Home() {
     const sessionLoadKey = readHomeSessionNearbyLoadKey();
     const hadPicksBeforeFetch = hasNearbyPicksRef.current;
 
-    beginHomeNearbyPerfLoad({
+    const perfSession = beginHomeNearbyPerfLoad({
       hasCache: hadPicksBeforeFetch,
       locationSource: locationSourceForPerf(eff),
     });
@@ -442,8 +517,13 @@ function Home() {
         reason: "existing_or_completed",
       });
       logHomeNearbyRequestSkipped("fresh_cache");
-      restoreNearbyFromCache(loadKey);
-      return;
+      if (restoreNearbyFromCache(loadKey)) return;
+      // A completion marker without renderable data must never strand initial loading.
+      invalidateHomeNearbyLoadKey(loadKey);
+      console.info("[HOME_NEARBY_CACHE_MISS]", {
+        reason: "policy_marker_without_renderable_cache",
+        geographicScope: loadKey,
+      });
     }
 
     if (!forceRefresh) {
@@ -507,6 +587,13 @@ function Home() {
           logHomeNearbySearchReady(picks.length);
           logHomeNearbyFirstCardRendered(picks.length);
           firstCardLoggedRef.current = true;
+          console.info("[HOME_NEARBY_RENDER_READY]", {
+            requestId: perfSession.requestId,
+            geographicScope: loadKey,
+            candidateCount: picks.length,
+            finalCardCount: picks.length,
+            elapsedMs: Date.now() - perfSession.startedAt,
+          });
           prefetchPlaceCoverUrls(
             picks.slice(0, 5).map((p) => ({
               placeId: p.id,
@@ -545,6 +632,12 @@ function Home() {
         bucket: periodKey,
         source: caller ?? "unknown",
         forceRefresh,
+      });
+      console.info("[HOME_NEARBY_REQUEST_DISPATCH]", {
+        timestamp: new Date().toISOString(),
+        elapsedMs: Date.now() - perfSession.startedAt,
+        requestId: perfSession.requestId,
+        geographicScope: loadKey,
       });
       markHomeNearbyLoad(loadKey);
       logHomeNearbyLoadOnce({
@@ -620,6 +713,12 @@ function Home() {
         console.warn("[Roamie Home] nearby picks failed", e);
         const reason = e instanceof Error ? e.message : String(e);
         logHomeNearbyRequestError("home_load_failed", reason);
+        console.info("[HOME_NEARBY_REQUEST_ERROR]", {
+          elapsedMs: Date.now() - perfSession.startedAt,
+          requestId: perfSession.requestId,
+          geographicScope: loadKey,
+          error: reason,
+        });
         logHomeNearbyRefreshFailed(reason, hasNearbyPicksRef.current);
         markHomeNearbyRefreshFailed();
         // 有舊資料絕不清空；僅從未成功過才進 error
@@ -632,7 +731,21 @@ function Home() {
         nearbyRetryInflightRef.current = false;
         if (!background || hasNearbyPicksRef.current) {
           setNearbyLoading(false);
+          console.info("[HOME_NEARBY_LOADING_CLEAR]", {
+            requestId: perfSession.requestId,
+            geographicScope: loadKey,
+            reason: "request_settled",
+            elapsedMs: Date.now() - perfSession.startedAt,
+          });
         }
+        console.info("[HOME_NEARBY_REQUEST_DONE]", {
+          timestamp: new Date().toISOString(),
+          elapsedMs: Date.now() - perfSession.startedAt,
+          requestId: perfSession.requestId,
+          geographicScope: loadKey,
+          candidateCount: resultCount,
+          finalCardCount: hasNearbyPicksRef.current ? nearbyPicksRef.current.length : 0,
+        });
       }
     };
 
@@ -713,7 +826,7 @@ function Home() {
       : null;
 
   useLayoutEffect(() => {
-    if (!isHomeRouteVisible()) return;
+    if (!homeRouteVisible) return;
 
     const prev = prevNearbyEffectDepsRef.current;
     const loadKeyChanged = prev.loadKey !== nearbyLoadKey;
@@ -749,8 +862,12 @@ function Home() {
         reason: "policy_skip",
       });
       logHomeNearbyRequestSkipped("same_key");
-      restoreNearbyFromCache(nearbyLoadKey);
-      void loadNearbyPicks("nearby_effect_bg", effectiveLocation, { background: true });
+      const restored = restoreNearbyFromCache(nearbyLoadKey);
+      void loadNearbyPicks(
+        restored ? "nearby_effect_bg" : "nearby_effect_recover",
+        effectiveLocation,
+        { background: restored },
+      );
       return;
     }
 
@@ -760,6 +877,7 @@ function Home() {
     });
   }, [
     nearbyLoadKey,
+    homeRouteVisible,
     effectiveLocation?.isReadyForPlaces,
     effectiveLocation?.locationKey,
     loadNearbyPicks,

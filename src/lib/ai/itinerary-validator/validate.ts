@@ -43,6 +43,8 @@ import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
 import { distanceMeters } from "@/lib/geo-distance";
 import { isLodgingPlace } from "@/lib/lodging-place-filter";
+import { isExplicitCampingPlace } from "@/lib/camping-place-classification";
+import { collectPlaceTypes } from "@/lib/place-identity";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import type { PlaceResult } from "@/lib/place-result";
 import { summarizeDailyCategoryDiversity } from "@/lib/ai/daily-category-diversity";
@@ -401,6 +403,7 @@ function runRules(input: ItineraryValidatorInput): {
   const lockedIds = new Set((input.lockedPlaceIds ?? []).map((id) => id.trim()).filter(Boolean));
   const exclusionKeywords = resolveExclusionKeywords(input);
   const partialDays = new Set(input.partialDays ?? []);
+  const selectedOnly = input.placeAuthority === "selected_only";
   const intents = input.intents ?? {};
 
   logAiPipeline(
@@ -458,11 +461,14 @@ function runRules(input: ItineraryValidatorInput): {
       pushFail(failedRules, "missing_days", `missing_day:${day}`, day, undefined, [day]);
     }
   }
-  const emptyDayNums = plans.filter((p) => p.entries.length === 0).map((p) => p.day);
+  const emptyDayNums = selectedOnly
+    ? []
+    : plans.filter((p) => p.entries.length === 0).map((p) => p.day);
   for (const day of emptyDayNums) {
     pushFail(failedRules, "missing_days", `empty_day_plan:${day}`, day, undefined, [day]);
   }
   if (
+    !selectedOnly &&
     requestedDays > 1 &&
     plans.filter((p) => p.entries.length > 0).length === 1 &&
     plans.some((p) => p.day === 1 && p.entries.length > 0)
@@ -480,7 +486,14 @@ function runRules(input: ItineraryValidatorInput): {
     if (count === 0) {
       continue;
     }
-    if (count === 1 && !partialDays.has(plan.day)) {
+    if (selectedOnly && count < TARGET_PLACES_FULL_DAY) {
+      pushWarn(
+        warnings,
+        "day_place_count",
+        `selected_only_sparse_day:${plan.day}:${count}`,
+        plan.day,
+      );
+    } else if (count === 1 && !partialDays.has(plan.day)) {
       pushFail(
         failedRules,
         "day_place_count",
@@ -825,7 +838,24 @@ function runRules(input: ItineraryValidatorInput): {
       if (isForbiddenTransitAttraction(entry.place, input.userText)) {
         pushFail(failedRules, "unsuitable_place", `transit_station:${entry.name}`, plan.day, ids);
       }
-      if (isLodgingPlace(entry.place) && !/住宿|飯店|hotel|旅館/i.test(input.userText ?? "")) {
+      const normalizedTypes = collectPlaceTypes(entry.place);
+      const rawTypes = [entry.place.primaryType, ...(entry.place.types ?? [])].filter(Boolean);
+      const isCamping = isExplicitCampingPlace(entry.place);
+      const isLodging = isLodgingPlace(entry.place);
+      const hasLodgingIntent = /住宿|飯店|hotel|旅館/i.test(input.userText ?? "");
+      const rejectLodging = isLodging && !isCamping && !hasLodgingIntent;
+      logAiPipeline(
+        "[ITINERARY_UNSUITABLE_PLACE_CLASSIFICATION]",
+        `placeId=${id ?? ""}`,
+        `name=${entry.name}`,
+        `rawTypes=${rawTypes.join("|")}`,
+        `normalizedTypes=${normalizedTypes.join("|")}`,
+        `isCampingPlace=${isCamping}`,
+        `isLodging=${isLodging}`,
+        `suitabilityDecision=${rejectLodging ? "reject" : "allow"}`,
+        `decisionReason=${rejectLodging ? "lodging_as_stop" : isCamping && isLodging ? "explicit_campground_exception" : isLodging && hasLodgingIntent ? "explicit_lodging_intent" : "not_lodging"}`,
+      );
+      if (rejectLodging) {
         pushFail(failedRules, "unsuitable_place", `lodging_as_stop:${entry.name}`, plan.day, ids);
       }
       if (isOfficeOrResidential(entry.place)) {

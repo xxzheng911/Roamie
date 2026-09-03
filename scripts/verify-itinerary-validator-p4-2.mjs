@@ -21,6 +21,7 @@ import {
 import { replanUntilItineraryValid, evaluateMinimumAcceptableQuality } from "../src/lib/ai/itinerary-validator/replan.ts";
 import { isRecEngineValidatorEnabled } from "../src/lib/recommendation/engine/index.ts";
 import { isPiePlannerSearchEnabled } from "../src/lib/pie/feature-flag-planner-search.ts";
+import { isExplicitCampingPlace } from "../src/lib/camping-place-classification.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
@@ -553,6 +554,57 @@ test("validator version present", () => {
     ITINERARY_VALIDATOR_VERSION.includes("auto-repair") ||
       ITINERARY_VALIDATOR_VERSION.includes("p4.2"),
   );
+});
+
+test("campground + lodging remains a suitable itinerary stop", () => {
+  setItineraryValidatorEnabledOverride(true);
+  for (const campingType of ["campground", "rv_park"]) {
+    const camping = place({
+      id: `camp-${campingType}`,
+      name: campingType === "campground" ? "佳南美地露營區" : "Hsinchu RV Park",
+      primaryType: campingType,
+      types: [campingType, "lodging", "point_of_interest"],
+    });
+    const result = validateItineraryPlan({
+      plans: [{ day: 1, entries: [entry("10:00", "露營", camping)] }],
+      requestedDays: 1,
+      creationPath: "selected_places",
+      placeAuthority: "selected_only",
+    });
+    assert.equal(result.failedRules.some((rule) => rule.message.startsWith("lodging_as_stop:")), false);
+    assert.equal(result.pass, true, JSON.stringify(result.failedRules));
+  }
+});
+
+test("hotel and lodging-only places remain unsuitable", () => {
+  setItineraryValidatorEnabledOverride(true);
+  for (const lodging of [
+    place({ id: "hotel", name: "Test Hotel", primaryType: "hotel", types: ["hotel", "lodging"] }),
+    place({ id: "guest-house", name: "山景民宿", primaryType: "lodging", types: ["lodging"] }),
+  ]) {
+    const result = validateItineraryPlan({
+      plans: [{ day: 1, entries: [entry("10:00", "景點", lodging)] }],
+      requestedDays: 1,
+    });
+    assert.ok(result.failedRules.some((rule) => rule.message.startsWith("lodging_as_stop:")));
+  }
+});
+
+test("camping family text does not make a park or camping shop an explicit campground", () => {
+  assert.equal(isExplicitCampingPlace(place({ id: "park", name: "普通公園", primaryType: "park", types: ["park"] })), false);
+  assert.equal(isExplicitCampingPlace(place({ id: "shop", name: "露營用品店", primaryType: "sporting_goods_store", types: ["store", "sporting_goods_store"] })), false);
+});
+
+test("two selected places across two days retain campground and only warn for sparse days", () => {
+  setItineraryValidatorEnabledOverride(true);
+  const plans = [
+    { day: 1, entries: [entry("10:00", "露營", place({ id: "camp-a", name: "佳南美地露營區", primaryType: "campground", types: ["campground", "lodging"] }))] },
+    { day: 2, entries: [entry("10:00", "景點", place({ id: "museum-a", name: "新竹市立博物館", primaryType: "museum", types: ["museum", "tourist_attraction"] }))] },
+  ];
+  const result = validateItineraryPlan({ plans, requestedDays: 2, creationPath: "selected_places", placeAuthority: "selected_only" });
+  assert.equal(result.pass, true, JSON.stringify(result.failedRules));
+  assert.equal(plans.flatMap((day) => day.entries).length, 2);
+  assert.ok(result.warnings.some((warning) => warning.message.includes("sparse_day")));
 });
 
 setItineraryValidatorEnabledOverride(null);

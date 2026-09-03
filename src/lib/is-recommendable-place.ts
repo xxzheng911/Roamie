@@ -3,6 +3,7 @@ import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
 import { isLodgingPlace } from "@/lib/lodging-place-filter";
 import { isLowValueCityExplorePlace } from "@/lib/explore-city-tourist-filter";
 import { recommendationTypeMetadataFromItem } from "@/lib/ai/recommendation-place-type-metadata";
+import { isExplicitFamilyPlace } from "@/lib/family-place-classification";
 
 export type RecommendablePlaceContext =
   | "home_nearby"
@@ -82,6 +83,10 @@ const TRAVEL_FRIENDLY_TYPES = new Set([
   "bookstore",
   "plaza",
   "town_square",
+  "campground",
+  "rv_park",
+  "childrens_camp",
+  "camping_cabin",
 ]);
 
 const SCHOOL_OFFICE_TYPES = new Set([
@@ -350,6 +355,8 @@ export function isRecommendablePlace(
     requireOpenNow?: boolean;
     /** 住宿導購或使用者明確找住宿時允許飯店 */
     allowLodging?: boolean;
+    /** Selection family lane: only explicit Google family types bypass the generic travel-friendly gate. */
+    allowExplicitFamilyPlace?: boolean;
   },
 ): RecommendablePlaceResult {
   const name = (place.name ?? "").trim();
@@ -438,7 +445,9 @@ export function isRecommendablePlace(
     }
   }
 
-  if (!passesTravelFriendlyGate(place) && !cityMode && !exploreRelaxed) {
+  const explicitFamilyBypass =
+    options?.allowExplicitFamilyPlace === true && isExplicitFamilyPlace(place);
+  if (!passesTravelFriendlyGate(place) && !explicitFamilyBypass && !cityMode && !exploreRelaxed) {
     return fail("not_travel_friendly");
   }
 

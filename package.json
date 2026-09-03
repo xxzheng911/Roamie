@@ -71,6 +71,7 @@
     "verify:directions-fallback": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-directions-fallback.mjs",
     "verify:conversation-workspace-persist": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-conversation-workspace-persist.mjs",
     "verify:chat-session-lifecycle": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-chat-session-lifecycle.mjs",
+    "verify:planning-selection": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-planning-selection-mode.mjs",
     "verify:p0-runtime-stabilization": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p0-runtime-stabilization.mjs",
     "verify:credits": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-credits.mjs",
     "verify:location": "npx vite-node scripts/verify-location-logic.mjs",

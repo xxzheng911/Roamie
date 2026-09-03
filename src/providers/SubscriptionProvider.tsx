@@ -37,6 +37,11 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    console.info("[APP_BOOT_STAGE]", {
+      stage: "subscription_start",
+      elapsedMs: Math.round(performance.now()),
+      route: typeof location !== "undefined" ? location.pathname : "",
+    });
     try {
       const [nextStatus, nextUsage] = await Promise.all([
         adapter.getStatus(),
@@ -46,6 +51,11 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       setUsage(nextUsage);
     } finally {
       setLoading(false);
+      console.info("[APP_BOOT_STAGE]", {
+        stage: "subscription_done",
+        elapsedMs: Math.round(performance.now()),
+        route: typeof location !== "undefined" ? location.pathname : "",
+      });
     }
   }, [adapter]);
 

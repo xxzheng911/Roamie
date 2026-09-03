@@ -1,15 +1,10 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { PlaceResult } from "@/lib/place-result";
+import { isExplicitCampingPlace } from "@/lib/camping-place-classification";
 
 const CAMPING_REQUEST_RE =
   /(露營|營區|營地|campground|campsite|camping|glamping|豪華露營|野營|車宿)/i;
-
-const CAMPING_PLACE_RE =
-  /(露營|營區|營地|campground|campsite|camping|glamping|豪華露營|野營|車宿|camp)/i;
-
-const NON_CAMPING_PLACE_RE =
-  /(愛河|河濱|步道|公園|廣場|plaza|park$|步道|河岸|散步)/i;
 
 export function isCampingRequestText(text: string): boolean {
   return CAMPING_REQUEST_RE.test(text.trim());
@@ -21,10 +16,11 @@ export function isCampingPlace(place: {
   description?: string;
   types?: string[];
 }): boolean {
-  const blob = `${place.name ?? ""} ${place.type ?? ""} ${place.description ?? ""} ${(place.types ?? []).join(" ")}`;
-  if (CAMPING_PLACE_RE.test(blob)) return true;
-  if (NON_CAMPING_PLACE_RE.test(blob)) return false;
-  return (place.types ?? []).some((type) => /campground|rv_park/i.test(type));
+  return isExplicitCampingPlace({
+    name: place.name,
+    primaryType: place.type,
+    types: place.types,
+  });
 }
 
 export function filterCampingPlaces<T extends PlaceResult>(places: T[]): T[] {

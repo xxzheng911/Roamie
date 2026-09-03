@@ -9,10 +9,7 @@ import { DayOutfitCard } from "@/components/DayOutfitCard";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { filterRecommendationItemsForDisplay } from "@/lib/recommend-place-ranking";
-import {
-  logChatUiReceivedCards,
-  logChatUiRenderedCards,
-} from "@/lib/ai/chat-place-flow-log";
+import { logChatUiReceivedCards, logChatUiRenderedCards } from "@/lib/ai/chat-place-flow-log";
 import { displayNameForPlaceLike } from "@/lib/place-display-name";
 
 function ItineraryByDate({
@@ -63,34 +60,32 @@ function ItineraryByDate({
           outfitByDate.get(dateKey) ??
           (outfitAdvice?.days.length === 1 ? outfitAdvice.days[0] : undefined);
         return (
-        <section key={dateKey}>
-          <p className="mb-2 font-display text-sm text-foreground/90">{dateKey}</p>
-          {outfit && <DayOutfitCard advice={outfit} className="mb-3" compact />}
-          <div className="space-y-2">
-            {groups.get(dateKey)!.map((item, i) => (
-              <article
-                key={`${dateKey}-${item.time}-${i}`}
-                className="rounded-2xl border border-border bg-card p-3"
-              >
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span className="font-medium">{item.time}</span>
-                  <span>{displayNameForPlaceLike(item)}</span>
-                </div>
-                <h4 className="mt-1 text-[15px] font-medium">
-                  {displayNameForPlaceLike(item)}
-                </h4>
-                <p className="mt-1 text-sm text-muted-foreground">{item.description}</p>
-                <PlaceNavButtons
-                  lat={item.lat}
-                  lng={item.lng}
-                  placeName={displayNameForPlaceLike(item)}
-                  compact
-                  className="mt-2"
-                />
-              </article>
-            ))}
-          </div>
-        </section>
+          <section key={dateKey}>
+            <p className="mb-2 font-display text-sm text-foreground/90">{dateKey}</p>
+            {outfit && <DayOutfitCard advice={outfit} className="mb-3" compact />}
+            <div className="space-y-2">
+              {groups.get(dateKey)!.map((item, i) => (
+                <article
+                  key={`${dateKey}-${item.time}-${i}`}
+                  className="rounded-2xl border border-border bg-card p-3"
+                >
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span className="font-medium">{item.time}</span>
+                    <span>{displayNameForPlaceLike(item)}</span>
+                  </div>
+                  <h4 className="mt-1 text-[15px] font-medium">{displayNameForPlaceLike(item)}</h4>
+                  <p className="mt-1 text-sm text-muted-foreground">{item.description}</p>
+                  <PlaceNavButtons
+                    lat={item.lat}
+                    lng={item.lng}
+                    placeName={displayNameForPlaceLike(item)}
+                    compact
+                    className="mt-2"
+                  />
+                </article>
+              ))}
+            </div>
+          </section>
         );
       })}
     </div>
@@ -126,6 +121,8 @@ type Props = {
   recommendationsPreFiltered?: boolean;
   /** 使用者與推薦卡互動（收藏、路線、加入行程等） */
   onRecommendationEngage?: () => void;
+  /** Planning Selection Mode only renders a reversible selection action. */
+  selectionMode?: boolean;
 };
 
 /** AI 聊天推薦地點卡 — 獨立於行程／探索／首頁附近卡片 */
@@ -151,6 +148,7 @@ export function RoamieResponseView({
   viewMapLabel = "查看地圖",
   recommendationsPreFiltered = false,
   onRecommendationEngage,
+  selectionMode = false,
 }: Props) {
   const summary = data.summary?.trim();
   const recs = recommendationsPreFiltered
@@ -269,14 +267,18 @@ export function RoamieResponseView({
                   >
                     {r.placeName ?? r.name}
                   </h4>
-                  <div className="flex shrink-0 items-center gap-1" onClick={stopBubble} onKeyDown={stopBubble}>
+                  <div
+                    className="flex shrink-0 items-center gap-1"
+                    onClick={stopBubble}
+                    onKeyDown={stopBubble}
+                  >
                     {ext.rating != null && (
                       <span className="inline-flex items-center gap-0.5 rounded-full bg-card px-2 py-0.5 text-[10px] text-muted-foreground">
                         <Star className="h-3 w-3 fill-clay text-clay" />
                         {ext.rating.toFixed(1)}
                       </span>
                     )}
-                    {onSavePlace && (
+                    {onSavePlace && !selectionMode && (
                       <button
                         type="button"
                         onClick={(e) => {
@@ -293,7 +295,9 @@ export function RoamieResponseView({
                         ) : (
                           <Heart
                             className={`h-3.5 w-3.5 ${
-                              savedPlaceNames?.has(r.name) ? "fill-clay text-clay" : "text-muted-foreground"
+                              savedPlaceNames?.has(r.name)
+                                ? "fill-clay text-clay"
+                                : "text-muted-foreground"
                             }`}
                           />
                         )}
@@ -318,7 +322,11 @@ export function RoamieResponseView({
                     <span className="text-left">{r.address}</span>
                   </p>
                 )}
-                <div className="mt-3 flex flex-col gap-2" onClick={stopBubble} onKeyDown={stopBubble}>
+                <div
+                  className="mt-3 flex flex-col gap-2"
+                  onClick={stopBubble}
+                  onKeyDown={stopBubble}
+                >
                   <div className="flex gap-2">
                     {onAddToTrip && (
                       <button
@@ -329,8 +337,8 @@ export function RoamieResponseView({
                         }}
                         className="inline-flex flex-1 items-center justify-center gap-1 rounded-full bg-foreground px-3 py-2 text-[11px] font-medium text-background"
                       >
-                        <Plus className="h-3 w-3" />
-                        {addToTripLabel}
+                        {!(selectionMode && isPicked) && <Plus className="h-3 w-3" />}
+                        {selectionMode && isPicked ? "✓ 已加入" : addToTripLabel}
                       </button>
                     )}
                     {onSelectPlace && !pickMode && !onAddToTrip && (
@@ -343,17 +351,19 @@ export function RoamieResponseView({
                         {addToTripLabel}
                       </button>
                     )}
-                    <PlaceNavButtons
-                      lat={r.lat}
-                      lng={r.lng}
-                      address={r.address}
-                      placeName={r.placeName ?? r.name}
-                      routeOnly
-                      className="flex-1"
-                      onAction={onRecommendationEngage}
-                    />
+                    {!selectionMode && (
+                      <PlaceNavButtons
+                        lat={r.lat}
+                        lng={r.lng}
+                        address={r.address}
+                        placeName={r.placeName ?? r.name}
+                        routeOnly
+                        className="flex-1"
+                        onAction={onRecommendationEngage}
+                      />
+                    )}
                   </div>
-                  {onDiscussPlace && !pickMode && (
+                  {onDiscussPlace && !pickMode && !selectionMode && (
                     <button
                       type="button"
                       onClick={() => {

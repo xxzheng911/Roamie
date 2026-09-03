@@ -49,6 +49,11 @@ export const getRouter = () => {
     defaultPendingComponent: BootAwareRoutePending,
     defaultPendingMinMs: 0,
   });
+  console.info("[APP_BOOT_STAGE]", {
+    stage: "router_ready",
+    elapsedMs: Math.round(performance.now()),
+    route: typeof location !== "undefined" ? location.pathname : "",
+  });
 
   try {
     normalizeRouterSsrManifest(router);

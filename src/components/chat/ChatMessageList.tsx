@@ -16,12 +16,13 @@ type RowProps = {
   /** Destination itinerary planning: never render place / candidate cards. */
   suppressPlaceCards?: boolean;
   partial: Partial<RoamieResponse>;
-  selectedNames: string[];
+  selectedNames: Set<string>;
   savedNames: Set<string>;
   savingName: string | null;
   addToTripLabel: string;
   discussPlaceLabel: string;
   viewMapLabel: string;
+  selectionMode?: boolean;
   onRecommendationEngage: () => void;
   onSavePlace: (rec: RoamieRecommendationItem) => void;
   onAddToTrip: (rec: RoamieRecommendationItem) => void;
@@ -43,6 +44,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   addToTripLabel,
   discussPlaceLabel,
   viewMapLabel,
+  selectionMode = false,
   onRecommendationEngage,
   onSavePlace,
   onAddToTrip,
@@ -51,9 +53,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
 }: RowProps) {
   const hideCards = generating || suppressPlaceCards;
   const showStreamingPartial = streaming && isLast && partial.summary;
-  const structuredRecs = hideCards
-    ? []
-    : resolveTripAddPlaceMessageRecommendations(m);
+  const structuredRecs = hideCards ? [] : resolveTripAddPlaceMessageRecommendations(m);
   const roamieFromMsg =
     m.roamie && structuredRecs.length
       ? { ...m.roamie, recommendations: structuredRecs, summary: m.roamie.summary ?? m.content }
@@ -70,10 +70,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
     !hideCards &&
     ((m.structuredPlaces?.length ?? 0) > 0 || (roamieData?.recommendations?.length ?? 0) > 0);
 
-  const textContent =
-    m.content ||
-    (hideCards ? m.roamie?.summary : undefined) ||
-    "";
+  const textContent = m.content || (hideCards ? m.roamie?.summary : undefined) || "";
 
   return (
     <div
@@ -82,7 +79,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
       data-chat-message-role={m.role}
       className={`flex animate-rise ${m.role === "user" ? "justify-end" : "justify-start gap-2.5"}`}
     >
-      {m.role === "assistant" ? <RoamieAssistantAvatar className="h-8 w-8 shrink-0 self-end" /> : null}
+      {m.role === "assistant" ? (
+        <RoamieAssistantAvatar className="h-8 w-8 shrink-0 self-end" />
+      ) : null}
       <div
         className={cn(
           "rounded-3xl px-4 py-3",
@@ -113,6 +112,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
             addToTripLabel={addToTripLabel}
             discussPlaceLabel={discussPlaceLabel}
             viewMapLabel={viewMapLabel}
+            selectionMode={selectionMode}
           />
         ) : (
           <p className="whitespace-pre-wrap text-[15px] leading-relaxed">
@@ -147,9 +147,10 @@ export const ChatMessageList = memo(function ChatMessageList({
     () =>
       msgs.map((m, i) => {
         // Stable keys: avoid content (dots) so loading/list rows do not remount.
-        const recCount = rowProps.suppressPlaceCards || rowProps.generating
-          ? 0
-          : (m.structuredPlaces?.length ?? m.roamie?.recommendations?.length ?? 0);
+        const recCount =
+          rowProps.suppressPlaceCards || rowProps.generating
+            ? 0
+            : (m.structuredPlaces?.length ?? m.roamie?.recommendations?.length ?? 0);
         return `${m.role}:${i}:${recCount}`;
       }),
     [msgs, rowProps.suppressPlaceCards, rowProps.generating],

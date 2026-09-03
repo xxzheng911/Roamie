@@ -418,7 +418,10 @@ function buildLocalItineraryPayload(
   logItineraryDaysBuilt(generateInput.days, builtStops.length);
   logAiItineraryBuild(builtStops.length, generateInput.days);
 
-  if (selectedPlaces.length < computeMinimumPlacesForTripDays(generateInput.days, comboIds.length || 1)) {
+  if (
+    generateInput.placeAuthority !== "selected_only" &&
+    selectedPlaces.length < computeMinimumPlacesForTripDays(generateInput.days, comboIds.length || 1)
+  ) {
     logAiPipeline(
       "[INSUFFICIENT_REAL_PLACES_DETECTED]",
       `tripDays=${generateInput.days}`,
@@ -437,6 +440,7 @@ function buildLocalItineraryPayload(
     selectedCombinationIds: comboIds,
     days: grouped,
     resolvedPlaces: selectedPlaces,
+    placeAuthority: generateInput.placeAuthority,
   });
   if (!integrity.ok) {
     logAiPipeline(
@@ -481,6 +485,7 @@ function buildLocalItineraryPayload(
       creationPath: (comboIds.length ? "selected_places" : "direct") as
         | "selected_places"
         | "direct",
+      placeAuthority: generateInput.placeAuthority,
     };
     let validation = validateItineraryPlan({
       plans: composed,
@@ -572,6 +577,10 @@ function buildLocalItineraryPayload(
     localPayload,
     generateInput.days,
     startDate,
+    {
+      placeAuthority: generateInput.placeAuthority,
+      requiredPlaceCount: selectedPlaces.length,
+    },
   );
   logItineraryValidationResult(
     valid,
@@ -636,6 +645,26 @@ export async function createItineraryFromSession(params: {
       `errorCodePath=${rawShape.errorCodePath || "(none)"}`,
       `payloadPath=${rawShape.payloadPath || "(none)"}`,
       `normalizedKind=${rawShape.normalizedKind}`,
+    );
+    logAiPipeline(
+      "[ITINERARY_RAW_RESULT]",
+      `resultType=${rawShape.rawType}`,
+      `normalizedKind=${rawShape.normalizedKind}`,
+      `payloadPresent=${Boolean(rawShape.payloadPath)}`,
+      `daysPresent=${rawShape.tripKeys.includes("days")}`,
+      `dayCount=${rawShape.tripItineraryDayCount}`,
+      `stopsCount=${rawShape.payloadStopCount}`,
+    );
+    logAiPipeline(
+      "[ITINERARY_UNWRAP_INPUT]",
+      `topLevelKeys=${rawShape.topLevelKeys.join(",") || "(none)"}`,
+      `level1Keys=${rawShape.level1Keys.join(",") || "(none)"}`,
+      `level2Keys=${rawShape.level2Keys.join(",") || "(none)"}`,
+      `tripKeys=${rawShape.tripKeys.join(",") || "(none)"}`,
+      `payloadKeys=${rawShape.tripPayloadKeys.join(",") || "(none)"}`,
+      `payloadPresent=${Boolean(rawShape.payloadPath)}`,
+      `itineraryPresent=${rawShape.tripItineraryIsArray || rawShape.payloadItineraryIsArray}`,
+      `directResultPresent=${rawShape.successPath.startsWith("$.")}`,
     );
 
     if (isGenerateItineraryFailure(generateResult)) {
@@ -728,7 +757,10 @@ export async function createItineraryFromSession(params: {
       generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
     if (
       !payload ||
-      !hasCompleteItineraryPayload(payload, generateInput.days, startDate)
+      !hasCompleteItineraryPayload(payload, generateInput.days, startDate, {
+        placeAuthority: generateInput.placeAuthority,
+        requiredPlaceCount: selectedPlaces.length,
+      })
     ) {
       const localPayload = buildLocalItineraryPayload(
         generateInput,
@@ -784,7 +816,7 @@ export async function createItineraryFromSession(params: {
         }
       }
       const reason =
-        selectedPlaces.length <
+        generateInput.placeAuthority !== "selected_only" && selectedPlaces.length <
         computeMinimumPlacesForTripDays(
           generateInput.days,
           selectedCombinationIds.length || 1,
@@ -809,6 +841,23 @@ export async function createItineraryFromSession(params: {
       logItineraryFailureReason(reason);
       // Keep internal unwrap diagnostics off the user-facing failure path.
       if (!payload || reason === "payload_incomplete") {
+        const missingFields = !generateResult
+          ? ["recognized_generation_result"]
+          : !payload
+            ? ["trip.payload"]
+            : [
+                ...(payload.destination?.trim() ? [] : ["destination"]),
+                ...(payload.days ? [] : ["days"]),
+                ...(coalesceItineraryItems(payload.itinerary).length ? [] : ["itinerary.stops"]),
+              ];
+        logAiPipeline(
+          "[ITINERARY_UNWRAP_FAILURE]",
+          `missingFields=${missingFields.join(",") || "complete_payload_validation"}`,
+          "expectedShape={success:true,trip:{destination,days,payload:{itinerary}}}",
+          `actualTopLevelKeys=${rawShape.topLevelKeys.join(",") || "(none)"}`,
+          `actualSuccessPath=${rawShape.successPath || "(none)"}`,
+          `actualPayloadPath=${rawShape.payloadPath || "(none)"}`,
+        );
         logAiPipeline(
           "[STOP_UNWRAP_INTERNAL]",
           "reason=stop_unwrap_failed",
@@ -857,6 +906,7 @@ export async function createItineraryFromSession(params: {
         creationPath: (selectedCombinationIds.length ? "selected_places" : "direct") as
           | "selected_places"
           | "direct",
+        placeAuthority: generateInput.placeAuthority,
       };
       let validation = validateItineraryPlan({
         plans: composed,

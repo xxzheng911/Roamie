@@ -85,10 +85,29 @@ export async function hydrateAppBootCachesAsync(
     return hydrateTravelPrefResultOnBoot(resolvedUserId, { allowRepeatLog: false });
   }
 
+  console.info("[APP_BOOT_STAGE]", {
+    stage: "workspace_restore_start",
+    elapsedMs: Math.round(performance.now()),
+    route: typeof location !== "undefined" ? location.pathname : "",
+    userPresent: Boolean(resolvedUserId),
+  });
   await purgeLegacyTravelPrefCachesOnce(resolvedUserId);
   await restoreTravelPrefFromNativePersist(resolvedUserId);
   // Preferences → localStorage for travel drafts (critical on iOS 26 nonPersistent WK)
-  await hydrateConversationWorkspaces(resolvedUserId);
+  try {
+    await hydrateConversationWorkspaces(resolvedUserId);
+  } catch (error) {
+    // Workspace restore is never an App-shell render authority.
+    console.warn("[WORKSPACE_RESTORE_FAIL_OPEN]", {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+  console.info("[APP_BOOT_STAGE]", {
+    stage: "workspace_restore_done",
+    elapsedMs: Math.round(performance.now()),
+    route: typeof location !== "undefined" ? location.pathname : "",
+    userPresent: Boolean(resolvedUserId),
+  });
   if (resolvedUserId) {
     void mergeRemoteConversationWorkspaces(resolvedUserId).catch(() => {
       /* offline / schema — keep local */

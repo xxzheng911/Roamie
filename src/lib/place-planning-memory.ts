@@ -454,6 +454,77 @@ export function preparePlacesForItineraryBuild(
   return out;
 }
 
+/**
+ * Explicit client → planner boundary for authoritative places.
+ *
+ * ChatPlaceItem is a card/session model and intentionally contains fields that
+ * are not part of the itinerary server-function input schema.  Do not spread a
+ * chat card across that boundary: native/server-function serialization can
+ * preserve nullable legacy metadata which the strict planner validator rejects.
+ */
+export function buildPlannerRequiredAnchors(
+  places: ChatPlaceItem[],
+  destination: string,
+  requiredBySelection = false,
+): RoamieRecommendationItem[] {
+  return preparePlacesForItineraryBuild(places, destination).map((place) => {
+    const googlePlaceId = place.googlePlaceId?.trim() || place.placeId?.trim() || undefined;
+    const types = Array.isArray(place.types)
+      ? place.types.filter((type): type is string => typeof type === "string" && Boolean(type.trim()))
+      : undefined;
+    const numericArray = (value: unknown): number[] | undefined => {
+      if (!Array.isArray(value)) return undefined;
+      const valid = value.filter((item): item is number => Number.isFinite(item));
+      return valid.length ? valid : undefined;
+    };
+    return {
+      name: place.name,
+      type: typeof place.type === "string" ? place.type : "地點",
+      primaryType: typeof place.primaryType === "string" ? place.primaryType : null,
+      types,
+      description: typeof place.description === "string" ? place.description : "",
+      reason: typeof place.reason === "string" ? place.reason : "",
+      estimatedTime: typeof place.estimatedTime === "string" ? place.estimatedTime : "1-2 小時",
+      address: typeof place.address === "string" ? place.address : "",
+      lat: Number.isFinite(place.lat) ? place.lat : null,
+      lng: Number.isFinite(place.lng) ? place.lng : null,
+      googleMapsUrl: typeof place.googleMapsUrl === "string" ? place.googleMapsUrl : "",
+      placeName: typeof place.placeName === "string" ? place.placeName : place.name,
+      googlePlaceId,
+      reasonSource:
+        place.reasonSource === "ai" ||
+        place.reasonSource === "evidence" ||
+        place.reasonSource === "fallback"
+          ? place.reasonSource
+          : "template",
+      sourceCombinationId: Number.isFinite(place.sourceCombinationId)
+        ? place.sourceCombinationId
+        : undefined,
+      sourceCombinationIds: numericArray(place.sourceCombinationIds),
+      matchedCombinationIds: numericArray(place.matchedCombinationIds),
+      matchedSelectedCombinationIds: numericArray(place.matchedSelectedCombinationIds),
+      sourceRegionCandidate:
+        typeof place.sourceRegionCandidate === "string" ? place.sourceRegionCandidate : undefined,
+      destinationScope:
+        place.destinationScope === "primary" || place.destinationScope === "nearby_extension"
+          ? place.destinationScope
+          : undefined,
+      extensionDestination:
+        typeof place.extensionDestination === "string" ? place.extensionDestination : undefined,
+      isRequiredBySelection: requiredBySelection || place.isRequiredBySelection === true,
+      photoName: typeof place.photoName === "string" ? place.photoName : null,
+      rating: Number.isFinite(place.rating) ? place.rating : null,
+      userRatingCount: Number.isFinite(place.userRatingCount) ? place.userRatingCount : null,
+      businessStatus:
+        typeof place.businessStatus === "string" ? place.businessStatus : null,
+      openStatusLabel:
+        typeof place.openStatusLabel === "string" ? place.openStatusLabel : undefined,
+      todayHoursLabel:
+        typeof place.todayHoursLabel === "string" ? place.todayHoursLabel : undefined,
+    };
+  });
+}
+
 export function canBuildItineraryFromPlaceCount(count: number): boolean {
   return count >= 1;
 }

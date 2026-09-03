@@ -216,6 +216,11 @@ function RootComponent() {
     });
     markBootPhase("root:layoutEffect");
     markAppReady();
+    console.info("[APP_BOOT_STAGE]", {
+      stage: "app_render_ready",
+      elapsedMs: Math.round(performance.now()),
+      route: typeof location !== "undefined" ? location.pathname : "",
+    });
     const platform = detectPlatform();
     if (!(platform.isCapacitor && platform.isIOS)) {
       scheduleIosSnapshotRefreshBurst("root-ready");

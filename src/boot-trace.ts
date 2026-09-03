@@ -6,6 +6,11 @@ import { mountImmediateBootShell } from "@/lib/immediate-boot-shell";
 bootDiagnosticLog("MAIN_TSX_LOADED");
 logAppBundleVersion("main");
 console.log("[APP_BOOT] boot-trace loaded");
+console.info("[APP_BOOT_STAGE]", {
+  stage: "native_boot",
+  elapsedMs: Math.round(performance.now()),
+  route: typeof location !== "undefined" ? location.pathname : "",
+});
 mountImmediateBootShell();
 
 function bootMark(phase: string, extra?: Record<string, unknown>) {

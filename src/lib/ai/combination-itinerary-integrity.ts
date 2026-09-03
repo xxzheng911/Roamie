@@ -603,6 +603,7 @@ export function validateGeneratedItinerary(params: {
   resolvedPlaces: RoamieRecommendationItem[];
   destination?: string;
   allowUnselectedExclusive?: string[];
+  placeAuthority?: "selected_only";
 }): GeneratedItineraryValidation {
   const reasons: string[] = [];
   const { tripDays, selectedCombinationIds, days, resolvedPlaces } = params;
@@ -614,6 +615,7 @@ export function validateGeneratedItinerary(params: {
 
   for (let i = 0; i < days.length; i += 1) {
     if (!days[i]?.places.length) {
+      if (params.placeAuthority === "selected_only") continue;
       const isFree = Boolean(
         (days[i] as { isFreeDay?: boolean } | undefined)?.isFreeDay,
       );
@@ -685,7 +687,7 @@ export function validateGeneratedItinerary(params: {
     }
   }
 
-  if (itineraryPlaces.length < tripDays) {
+  if (params.placeAuthority !== "selected_only" && itineraryPlaces.length < tripDays) {
     reasons.push(
       `insufficient_real_places:got=${itineraryPlaces.length},need_at_least=${tripDays}`,
     );
@@ -1065,6 +1067,7 @@ export function validateFinalItineraryIntegrity(params: {
   tripDays: number;
   startDate: string;
   destination?: string;
+  placeAuthority?: "selected_only";
 }): FinalItineraryIntegrityResult {
   const reasons: string[] = [];
   const {
@@ -1177,6 +1180,7 @@ export function validateFinalItineraryIntegrity(params: {
     days: groupStopsByTripDays(scheduledStops, tripDays, startDate),
     resolvedPlaces,
     destination,
+    placeAuthority: params.placeAuthority,
   });
   reasons.push(...base.reasons);
 

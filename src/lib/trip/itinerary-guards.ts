@@ -80,6 +80,12 @@ export type GenerateItineraryRawShape = {
   errorCodePath: string;
   payloadPath: string;
   normalizedKind: GenerateItineraryNormalizedKind;
+  tripKeys: string[];
+  tripPayloadKeys: string[];
+  tripItineraryIsArray: boolean;
+  tripItineraryDayCount: number;
+  payloadItineraryIsArray: boolean;
+  payloadStopCount: number;
 };
 
 const FALLBACK_STOP_TIMES = ["09:30", "11:30", "14:30", "18:00"];
@@ -225,6 +231,9 @@ export function describeGenerateItineraryRawShape(
   const errorCodePath =
     matchedRecord && "errorCode" in matchedRecord ? `${matchedPath}.errorCode` : "";
   const trip = objectRecord(matchedRecord?.trip);
+  const tripPayload = objectRecord(trip?.payload);
+  const tripItinerary = trip?.itinerary;
+  const payloadItinerary = tripPayload?.itinerary;
   const payloadPath = trip && "payload" in trip ? `${matchedPath}.trip.payload` : "";
 
   return {
@@ -242,6 +251,12 @@ export function describeGenerateItineraryRawShape(
       : isGenerateItinerarySuccess(normalized)
         ? "success"
         : "invalid",
+    tripKeys: sortedKeys(trip),
+    tripPayloadKeys: sortedKeys(tripPayload),
+    tripItineraryIsArray: Array.isArray(tripItinerary),
+    tripItineraryDayCount: Array.isArray(tripItinerary) ? tripItinerary.length : 0,
+    payloadItineraryIsArray: Array.isArray(payloadItinerary),
+    payloadStopCount: Array.isArray(payloadItinerary) ? payloadItinerary.length : 0,
   };
 }
 
@@ -595,12 +610,14 @@ export function hasCompleteItineraryPayload(
   payload: Pick<RoamiePayloadV2, "itinerary">,
   tripDays: number,
   startDate: string,
+  options?: { placeAuthority?: "selected_only"; requiredPlaceCount?: number },
 ): boolean {
   const items = coalesceItineraryItems(payload.itinerary);
   const preSave = validateItineraryPreSave({
     tripDays,
     startDate,
     stops: items,
+    placeAuthority: options?.placeAuthority,
   });
   if (!preSave.ok) {
     logAiPipeline(
@@ -610,7 +627,11 @@ export function hasCompleteItineraryPayload(
     );
     return false;
   }
-  return hasValidItineraryStops(payload, computeMinimumPlacesForTripDays(tripDays));
+  const minimumStops =
+    options?.placeAuthority === "selected_only"
+      ? Math.max(1, options.requiredPlaceCount ?? 1)
+      : computeMinimumPlacesForTripDays(tripDays);
+  return hasValidItineraryStops(payload, minimumStops);
 }
 
 export function formatItineraryUserError(error: unknown): string {

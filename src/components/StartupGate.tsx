@@ -60,7 +60,7 @@ export function StartupGate({ children }: Props) {
   return (
     <>
       {slow && !hasUi && !hasExternalBootSplash() ? (
-        <div className="fixed inset-0 z-[2147483645]">
+        <div data-loading-owner="startup-gate" className="fixed inset-0 z-[2147483645]">
           <RoamieRoutePending />
         </div>
       ) : null}

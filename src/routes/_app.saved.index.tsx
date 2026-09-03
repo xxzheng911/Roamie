@@ -1,8 +1,8 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { Plus, Loader2, Trash2, Heart, Route as RouteIcon, Share2 } from "lucide-react";
 import { useAddToTrip } from "@/hooks/use-add-to-trip";
 import { tripPlaceFromSavedPlace } from "@/lib/trip/trip-place-input";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useI18n } from "@/hooks/use-i18n";
 import { SavedTripCard } from "@/components/saved/SavedTripCard";
@@ -32,6 +32,8 @@ import {
   resolveSavedPlaceGooglePlaceId,
   savedPlaceToHandoff,
 } from "@/lib/saved-place-utils";
+import { useAuth } from "@/hooks/use-auth";
+import { useSubscription } from "@/providers/SubscriptionProvider";
 
 type SavedSearch = { tab?: string };
 
@@ -93,7 +95,12 @@ function Saved() {
   const { t } = useI18n();
   const tt = t as unknown as (key: string, params?: Record<string, unknown>) => string;
   const navigate = useNavigate();
+  const routeLocation = useLocation();
   const { openAddToTrip } = useAddToTrip();
+  const { user, session: authSession, loading: authLoading } = useAuth();
+  const { loading: subscriptionLoading } = useSubscription();
+  const routeStartedAtRef = useRef(Date.now());
+  const requestSequenceRef = useRef(0);
   const search = Route.useSearch();
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
   const initialTrips = readSavedTripsSnapshot();
@@ -101,6 +108,7 @@ function Saved() {
     readSavedPlacesSnapshot().length > 0
       ? readSavedPlacesSnapshot()
       : readPlacesLocalCacheSync();
+  const hasCachedAtMountRef = useRef(initialTrips.length > 0 || initialPlaces.length > 0);
   const [trips, setTrips] = useState<CoreTrip[]>(() => initialTrips);
   const [places, setPlaces] = useState<SavedPlace[]>(() => initialPlaces);
   const [loading, setLoading] = useState(
@@ -115,8 +123,19 @@ function Saved() {
   const [removingPlace, setRemovingPlace] = useState(false);
   const [openingPlaceId, setOpeningPlaceId] = useState<string | null>(null);
 
+  const authUserId = user?.id ?? null;
+  const sessionPresent = Boolean(authSession);
   const refresh = useCallback((opts?: { background?: boolean }) => {
+    const requestId = `favorites_${Date.now().toString(36)}_${++requestSequenceRef.current}`;
+    const elapsedMs = () => Date.now() - routeStartedAtRef.current;
     if (!opts?.background) setLoading(true);
+    console.info("[FAVORITES_DATA_REQUEST_START]", {
+      elapsedMs: elapsedMs(),
+      route: "/saved",
+      userPresent: Boolean(authUserId),
+      sessionPresent,
+      requestId,
+    });
     Promise.allSettled([listCoreTrips(), listPlaces()])
       .then(([tripsResult, placesResult]) => {
         if (tripsResult.status === "fulfilled") {
@@ -144,13 +163,103 @@ function Saved() {
               : t("saved.loadFailed"),
           );
         }
+        const failed = [tripsResult, placesResult].filter(
+          (result) => result.status === "rejected",
+        );
+        console.info("[FAVORITES_DATA_REQUEST_DONE]", {
+          elapsedMs: elapsedMs(),
+          route: "/saved",
+          userPresent: Boolean(authUserId),
+          sessionPresent,
+          requestId,
+          count:
+            (tripsResult.status === "fulfilled" ? tripsResult.value.length : 0) +
+            (placesResult.status === "fulfilled" ? placesResult.value.length : 0),
+        });
+        if (failed.length) {
+          console.warn("[FAVORITES_DATA_REQUEST_ERROR]", {
+            elapsedMs: elapsedMs(),
+            route: "/saved",
+            userPresent: Boolean(authUserId),
+            sessionPresent,
+            requestId,
+            failureCount: failed.length,
+          });
+        }
       })
-      .finally(() => setLoading(false));
-  }, [t]);
+      .finally(() => {
+        setLoading(false);
+        console.info("[FAVORITES_LOADING_CLEAR]", {
+          elapsedMs: elapsedMs(),
+          route: "/saved",
+          userPresent: Boolean(authUserId),
+          sessionPresent,
+          requestId,
+        });
+      });
+  }, [authUserId, sessionPresent, t]);
 
   useEffect(() => {
-    const hasCached = initialTrips.length > 0 || initialPlaces.length > 0;
-    refresh({ background: hasCached });
+    const elapsedMs = Date.now() - routeStartedAtRef.current;
+    console.info("[FAVORITES_ROUTE_MOUNT]", {
+      elapsedMs,
+      route: "/saved",
+      userPresent: Boolean(user),
+      sessionPresent: Boolean(authSession),
+      requestId: "mount",
+    });
+    console.info("[FAVORITES_HYDRATION_START]", {
+      elapsedMs,
+      route: "/saved",
+      userPresent: Boolean(user),
+      sessionPresent: Boolean(authSession),
+      requestId: "mount",
+    });
+  }, []);
+
+  useEffect(() => {
+    console.info("[FAVORITES_AUTH_STATE]", {
+      elapsedMs: Date.now() - routeStartedAtRef.current,
+      route: "/saved",
+      userPresent: Boolean(user),
+      sessionPresent: Boolean(authSession),
+      requestId: "auth",
+      state: authLoading ? "loading" : user ? "authenticated" : "anonymous",
+    });
+  }, [authLoading, authSession, user]);
+
+  useEffect(() => {
+    console.info("[FAVORITES_SUBSCRIPTION_STATE]", {
+      elapsedMs: Date.now() - routeStartedAtRef.current,
+      route: "/saved",
+      userPresent: Boolean(user),
+      sessionPresent: Boolean(authSession),
+      requestId: "subscription",
+      state: subscriptionLoading ? "loading" : "ready",
+    });
+  }, [authSession, subscriptionLoading, user]);
+
+  useEffect(() => {
+    const blockingDependencies = loading ? ["favorites_data_request"] : [];
+    console.info("[ROUTE_LOADING_STATE]", {
+      route: "/saved",
+      loading,
+      reason: loading ? "favorites_data_request_pending" : "render_ready",
+      blockingDependencies,
+    });
+    if (!loading) {
+      console.info("[FAVORITES_RENDER_READY]", {
+        elapsedMs: Date.now() - routeStartedAtRef.current,
+        route: "/saved",
+        userPresent: Boolean(user),
+        sessionPresent: Boolean(authSession),
+        requestId: "render",
+      });
+    }
+  }, [authSession, loading, user]);
+
+  useEffect(() => {
+    refresh({ background: hasCachedAtMountRef.current });
     const onRefresh = () => refresh({ background: true });
     window.addEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
     window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
@@ -230,6 +339,46 @@ function Saved() {
   );
 
   const hasAny = trips.length > 0 || places.length > 0;
+  const routeVisible = routeLocation.pathname.replace(/\/+$/, "") === "/saved";
+  const renderBranch = loading
+    ? "loading"
+    : tab === "trips"
+      ? trips.length > 0
+        ? "content"
+        : "empty"
+      : places.length > 0
+        ? "content"
+        : "empty";
+
+  useEffect(() => {
+    console.info("[FAVORITES_RENDER_BRANCH]", {
+      branch: renderBranch,
+      loading,
+      tripsCount: trips.length,
+      placesCount: places.length,
+      authReady: !authLoading,
+      sessionReady: Boolean(authSession),
+      routeVisible,
+    });
+    const frame = requestAnimationFrame(() => {
+      const localSpinnerVisible = Boolean(
+        document.querySelector('[data-loading-owner="favorites-route"]'),
+      );
+      const routePendingVisible = Boolean(
+        document.querySelector('[data-loading-owner="router-pending"]'),
+      );
+      const startupPendingVisible = Boolean(
+        document.querySelector('[data-loading-owner="startup-gate"]'),
+      );
+      console.info("[FAVORITES_VISIBLE_LOADING_OWNER]", {
+        routeVisible,
+        localSpinnerVisible,
+        routePendingVisible,
+        startupPendingVisible,
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [authLoading, authSession, loading, places.length, renderBranch, routeVisible, trips.length]);
 
   return (
     <div className="px-5 pb-6 pt-3">
@@ -271,7 +420,7 @@ function Saved() {
       </div>
 
       {loading ? (
-        <div className="flex justify-center py-20">
+        <div data-loading-owner="favorites-route" className="flex justify-center py-20">
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
       ) : tab === "trips" ? (

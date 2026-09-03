@@ -1,13 +1,10 @@
 import { useEffect } from "react";
 import { Link } from "@tanstack/react-router";
-import { Loader2, Send } from "lucide-react";
+import { Loader2, RotateCcw, Send, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { logChatComposerRender } from "@/lib/chat-keyboard-layout";
 import { isChatKeyboardDebugEnabled, logChatKeyboardDebug } from "@/lib/chat-keyboard-debug";
-import {
-  CHAT_SHORTCUT_PLAN_LABEL,
-  CHAT_SHORTCUT_SEND_CHIPS,
-} from "@/lib/chat-shortcut-chips";
+import { CHAT_SHORTCUT_PLAN_LABEL, CHAT_SHORTCUT_SEND_CHIPS } from "@/lib/chat-shortcut-chips";
 
 export type ChatComposerProps = {
   text: string;
@@ -24,6 +21,8 @@ export type ChatComposerProps = {
   onChipSend: (text: string) => void;
   /** Primary action chips shown ahead of default mood shortcuts (e.g. 重新生成). */
   actionChips?: string[];
+  /** Render only mode-scoped actions, without the general Chat shortcuts. */
+  actionChipsOnly?: boolean;
 };
 
 function ShortcutChips({
@@ -32,9 +31,10 @@ function ShortcutChips({
   streaming,
   onChipSend,
   actionChips = [],
+  actionChipsOnly = false,
 }: Pick<
   ChatComposerProps,
-  "keyboardOpen" | "generating" | "streaming" | "onChipSend" | "actionChips"
+  "keyboardOpen" | "generating" | "streaming" | "onChipSend" | "actionChips" | "actionChipsOnly"
 >) {
   const chipClass = cn(
     "shrink-0 rounded-full border border-border bg-card text-foreground/80 disabled:opacity-50",
@@ -42,41 +42,48 @@ function ShortcutChips({
   );
 
   return (
-    <div className={cn("mb-2 flex gap-2 overflow-x-auto no-scrollbar")}>
-      {actionChips.map((label) => (
-        <button
-          key={`action:${label}`}
-          type="button"
-          onClick={() => onChipSend(label)}
-          disabled={streaming || generating}
+    <div className={cn("mb-2 flex gap-2 overflow-x-auto no-scrollbar", actionChipsOnly && "justify-center")}>
+      {actionChips.map((label) => {
+        const ActionIcon = label === "生成行程" ? Sparkles : label === "再推薦一些" ? RotateCcw : null;
+        return (
+          <button
+            key={`action:${label}`}
+            type="button"
+            onClick={() => onChipSend(label)}
+            disabled={streaming || generating}
+            className={cn(
+              chipClass,
+              "inline-flex items-center gap-1.5 border-primary/40 bg-primary/10 font-medium text-primary",
+            )}
+          >
+            {ActionIcon ? <ActionIcon aria-hidden="true" className="h-3.5 w-3.5" /> : null}
+            {label}
+          </button>
+        );
+      })}
+      {!actionChipsOnly && (
+        <Link
+          to="/plan"
           className={cn(
-            chipClass,
-            "border-primary/40 bg-primary/10 font-medium text-primary",
+            "shrink-0 rounded-full border border-dashed border-border bg-card/80 text-muted-foreground",
+            keyboardOpen ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-xs",
           )}
         >
-          {label}
-        </button>
-      ))}
-      <Link
-        to="/plan"
-        className={cn(
-          "shrink-0 rounded-full border border-dashed border-border bg-card/80 text-muted-foreground",
-          keyboardOpen ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-xs",
-        )}
-      >
-        {CHAT_SHORTCUT_PLAN_LABEL}
-      </Link>
-      {CHAT_SHORTCUT_SEND_CHIPS.map((label) => (
-        <button
-          key={label}
-          type="button"
-          onClick={() => onChipSend(label)}
-          disabled={streaming || generating}
-          className={chipClass}
-        >
-          {label}
-        </button>
-      ))}
+          {CHAT_SHORTCUT_PLAN_LABEL}
+        </Link>
+      )}
+      {!actionChipsOnly &&
+        CHAT_SHORTCUT_SEND_CHIPS.map((label) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => onChipSend(label)}
+            disabled={streaming || generating}
+            className={chipClass}
+          >
+            {label}
+          </button>
+        ))}
     </div>
   );
 }

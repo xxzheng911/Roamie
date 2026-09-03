@@ -17,7 +17,7 @@ import {
   resolveChatEntrySource,
   TRAVEL_DRAFTS_ROUTE,
 } from "@/lib/chat-navigation";
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { ROAMIE_BUILD_DEBUG } from "@/lib/app-bundle-version";
 import { supabase } from "@/integrations/supabase/client";
@@ -102,7 +102,7 @@ import { getPreferences } from "@/lib/preferences-storage";
 import { getUserProfile } from "@/lib/profile-storage";
 import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
 import { generateItinerary } from "@/lib/itinerary.functions";
-import { confirmSaveTrip } from "@/lib/itinerary-storage";
+import { confirmSaveTrip, updateTripMeta } from "@/lib/itinerary-storage";
 import { clearDraftTrip, loadDraftTrip, saveDraftTrip } from "@/lib/trip-draft-storage";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import {
@@ -112,6 +112,7 @@ import {
 } from "@/lib/trip/itinerary-guards";
 import { getRecommendation } from "@/lib/recommendation-storage";
 import { inferDestinationFromPlaces } from "@/lib/itinerary-source";
+import { buildPlannerRequiredAnchors } from "@/lib/place-planning-memory";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import {
   finalizeChatRecommendationDisplay,
@@ -198,7 +199,25 @@ import {
   markPlanHandoffComplete,
 } from "@/lib/plan-trip-handoff";
 import { clearPlanFormDraft } from "@/lib/plan-form-draft-storage";
+import {
+  fetchPlanningSelectionRecommendations,
+  isPlanningSelectionContinuation,
+  isPlanningSelectionMode,
+  preparePlanningSelectionForGenerate,
+  resolvePlanningSelectionPlaces,
+  togglePlanningSelectionPlace,
+} from "@/lib/planning-selection";
+import {
+  applyPlanningSelectionDateAuthority,
+  logPlanningSelectionDateAuthority,
+  logPlanningSelectionDateMismatch,
+  resolvePlanningSelectionDateAuthority,
+} from "@/lib/planning-selection-date-authority";
 import { buildContextBundleForTrip } from "@/lib/fetch-context";
+import {
+  logPlanningSelectionHandoffLoading,
+  logPlanningSelectionHandoffStage,
+} from "@/lib/planning-selection-handoff-log";
 import { formatTripLocationLabel } from "@/lib/location/format";
 import { useI18n } from "@/hooks/use-i18n";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
@@ -619,7 +638,7 @@ import {
 import { getTripLegsWithDurations, travelLabelToRoutesMode } from "@/services/routesService";
 import { generateOutfitSuggestion, normalizeWeather } from "@/services/weatherService";
 import { attachCoreTripToPayload, toCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
-import { getTripCoverImage } from "@/services/placeImageService";
+import { getImmediateTripCoverImage, getTripCoverImage } from "@/services/placeImageService";
 
 type ChatSearch = {
   from?: string;
@@ -702,9 +721,20 @@ function Chat() {
   ]);
   const msgsRef = useRef<ChatMsg[]>([]);
   const [session, setSession] = useState<ChatPlanningSession>(() => loadChatSession());
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
   const [text, setText] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [selectionGenerationStatus, setSelectionGenerationStatus] = useState<string | null>(null);
+  const selectionLoadingPaintRef = useRef<{
+    startedAt: number;
+    selectedCount: number;
+    tripDays: number;
+    logged: boolean;
+  } | null>(null);
+  const selectionRecommendationInFlightRef = useRef(false);
+  const selectionGenerateInFlightRef = useRef(false);
   const activeGenerationRequestIdRef = useRef<string | null>(null);
   const lastFailureGenerationRequestIdRef = useRef<string | null>(null);
   const lastGenerationTriggerMessageIdRef = useRef<string | null>(null);
@@ -712,6 +742,21 @@ function Chat() {
     () => shouldSuppressChatPlaceCards(session, { generating }),
     [session, generating],
   );
+  useLayoutEffect(() => {
+    const timing = selectionLoadingPaintRef.current;
+    if (!generating || !selectionGenerationStatus || !timing || timing.logged) return;
+    timing.logged = true;
+    const now = Date.now();
+    console.info("[PLANNING_SELECTION_GENERATION_TIMING]", {
+      stage: "loading_visible",
+      elapsedMs: now - timing.startedAt,
+      stageDurationMs: now - timing.startedAt,
+      selectedCount: timing.selectedCount,
+      tripDays: timing.tripDays,
+      success: true,
+      failureReason: "",
+    });
+  }, [generating, selectionGenerationStatus]);
   const ensureSubscriptionHydratedForCredits = useCallback(
     (conversation?: ChatMsg[]): boolean => {
       if (subscriptionHydrated) return true;
@@ -792,6 +837,33 @@ function Chat() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [chatBackNavigation.entrySource]);
   const [hydrating, setHydrating] = useState(true);
+  const chatRouteStartedAtRef = useRef(Date.now());
+  useEffect(() => {
+    const current = loadChatSession();
+    const trace = current.planningSelectionHandoffTrace;
+    if (!trace || search.from !== "plan-ai") return;
+    logPlanningSelectionHandoffStage("chat_mount", trace, {
+      sessionId: current.planningSelection?.id,
+    });
+    logPlanningSelectionHandoffLoading(trace, true, "chat_hydration", "chat_session_hydration");
+    // This is a mount boundary diagnostic; the persisted trace is consumed by
+    // the normal session hydration below, not by an event-only side channel.
+  }, []);
+  useEffect(() => {
+    const blockingDependencies = [
+      ...(hydrating ? ["chat_session_hydration"] : []),
+      ...(generating ? ["itinerary_generation"] : []),
+      ...(streaming ? ["chat_response_stream"] : []),
+    ];
+    console.info("[ROUTE_LOADING_STATE]", {
+      route: "/chat",
+      loading: blockingDependencies.length > 0,
+      reason: blockingDependencies[0] ?? "render_ready",
+      blockingDependencies,
+      elapsedMs: Date.now() - chatRouteStartedAtRef.current,
+      subscriptionHydrated,
+    });
+  }, [generating, hydrating, streaming, subscriptionHydrated]);
   const [lastFailed, setLastFailed] = useState<ChatMsg[] | null>(null);
   const [partial, setPartial] = useState<Partial<RoamieResponse>>({});
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
@@ -818,10 +890,15 @@ function Chat() {
     bottomAnchorRef,
   });
   const keyboardVisible = messengerLayout.keyboardOpen;
+  const selectionMode = isPlanningSelectionMode(session);
   const showShortcutChips = true;
   const actionChips = useMemo(() => {
     const options = session.pendingQuestion?.options ?? [];
     const chips: string[] = [];
+    if (selectionMode) {
+      chips.push("生成行程", "再推薦一些");
+      return chips;
+    }
     if (
       options.includes("重新生成") ||
       session.aiItineraryState === "FAILED" ||
@@ -831,7 +908,27 @@ function Chat() {
     }
     if (options.includes("幫我生成")) chips.push("幫我生成");
     return chips;
-  }, [session.pendingQuestion?.options, session.aiItineraryState, session.chatPlanningState]);
+  }, [
+    selectionMode,
+    session.pendingQuestion?.options,
+    session.aiItineraryState,
+    session.chatPlanningState,
+  ]);
+  useEffect(() => {
+    if (!selectionMode) return;
+    devVerboseInfo("[PLANNING_SELECTION_SHORTCUTS]", {
+      visible: showShortcutChips,
+      actions: actionChips,
+      selectedPlaceIdsCount: session.planningSelection?.selectedPlaceIds.length ?? 0,
+      shownPlaceIdsCount: session.planningSelection?.shownPlaceIds.length ?? 0,
+    });
+  }, [
+    selectionMode,
+    showShortcutChips,
+    actionChips,
+    session.planningSelection?.selectedPlaceIds.length,
+    session.planningSelection?.shownPlaceIds.length,
+  ]);
   const abortRef = useRef<AbortController | null>(null);
   const handoffStartedRef = useRef<string | null>(null);
   const planHandoffStartedRef = useRef(false);
@@ -1249,8 +1346,15 @@ function Chat() {
         userId: readCachedAuthenticatedUserIdSync(),
       });
       sessionToSave = attachWorkspaceIdsToSession(next, workspace);
+      sessionRef.current = sessionToSave;
       setSession(sessionToSave);
       saveChatSession(sessionToSave);
+      if (sessionToSave.planningSelection?.mode === "planning_selection") {
+        devVerboseInfo("[PLANNING_SELECTION_PERSIST]", {
+          sessionId: sessionToSave.planningSelection.id,
+          selectedCount: resolvePlanningSelectionPlaces(sessionToSave).length,
+        });
+      }
       if (sessionToSave.homeMoodShortcutEngaged) {
         homeMoodShortcutEngagedRef.current = true;
       }
@@ -1860,7 +1964,18 @@ function Chat() {
             !planHandoffStartedRef.current
           ) {
             planHandoffStartedRef.current = true;
+            const selectionTrace = current.planningSelectionHandoffTrace;
+            if (selectionTrace) {
+              logPlanningSelectionHandoffStage("handoff_consume_start", selectionTrace, {
+                sessionId: current.planningSelection?.id,
+              });
+            }
             setMsgs([greetingMsg]);
+            if (selectionTrace) {
+              logPlanningSelectionHandoffStage("handoff_consume_done", selectionTrace, {
+                sessionId: current.planningSelection?.id,
+              });
+            }
             await runPlanFormHandoff(current);
           } else if (
             current.fromPlusHome &&
@@ -2377,7 +2492,20 @@ function Chat() {
 
   const runPlanFormHandoff = useCallback(
     async (handoffSession: ChatPlanningSession) => {
+      const selectionTrace = handoffSession.planningSelectionHandoffTrace;
+      let selectionLoadingCleared = false;
       setStreaming(true);
+      if (selectionTrace) {
+        logPlanningSelectionHandoffStage("initial_recommendation_start", selectionTrace, {
+          sessionId: handoffSession.planningSelection?.id,
+        });
+        logPlanningSelectionHandoffLoading(
+          selectionTrace,
+          true,
+          "initial_recommendation",
+          "places_recommendation",
+        );
+      }
       try {
         const { data: authSession } = await supabase.auth.getSession();
         const token = authSession.session?.access_token;
@@ -2387,7 +2515,9 @@ function Chat() {
           return;
         }
 
-        const bundle = await buildContextBundleForTrip(dest, fetchWeather);
+        const bundle = await buildContextBundleForTrip(dest, fetchWeather, {
+          weatherBlocking: !isPlanningSelectionMode(handoffSession),
+        });
         const prefs = await getAiPreferences();
         const syncedHandoff = syncSessionPlaceMemory({
           ...handoffSession,
@@ -2400,6 +2530,66 @@ function Chat() {
         ]
           .filter(Boolean)
           .join("\n\n");
+
+        if (isPlanningSelectionMode(syncedHandoff)) {
+          if (!ensureSubscriptionHydratedForCredits()) return;
+          const creditsGate = await beginPlaceRecommendationCredits({
+            hasPlusAccess,
+            metadata: { path: "planning_selection_initial" },
+          });
+          if (creditsGate.blocked) {
+            setMsgs([{ role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE }]);
+            return;
+          }
+          let creditsHandle: CreditsOperationHandle | null = creditsGate.handle;
+          let delivered = false;
+          try {
+            const selectionResult = await fetchPlanningSelectionRecommendations({
+              session: syncedHandoff,
+              searchPlaces: searchNearbyPlaces,
+              locale,
+              userProfile: userProfileForReasonFrom(prefs, {
+                mood: syncedHandoff.mood,
+                hasPlusAccess,
+              }),
+            });
+            const summary = selectionResult.places.length
+              ? `我依照你選的「${selectionResult.session.planningSelection?.styles.join("、")}」先找了這些地點。喜歡的就按「＋ 加入這地點」，也可以叫我再推薦一些。`
+              : "目前這批沒有找到合適地點，你可以按「再推薦一些」換一批。";
+            const nextSession = markPlanHandoffComplete(selectionResult.session);
+            setMsgs([
+              {
+                role: "assistant",
+                content: summary,
+                roamie: { summary, recommendations: selectionResult.places, itinerary: [] },
+              },
+            ]);
+            if (selectionTrace) {
+              logPlanningSelectionHandoffStage("initial_recommendation_done", selectionTrace, {
+                sessionId: selectionResult.session.planningSelection?.id,
+              });
+              logPlanningSelectionHandoffStage("selection_first_render", selectionTrace, {
+                sessionId: selectionResult.session.planningSelection?.id,
+              });
+            }
+            persistSession(nextSession);
+            delivered = selectionResult.places.length > 0;
+          } finally {
+            // Credit settlement keeps its existing authority, but its remote
+            // refresh is not a first-card render dependency.
+            setStreaming(false);
+            selectionLoadingCleared = true;
+            if (selectionTrace) {
+              logPlanningSelectionHandoffStage("handoff_loading_clear", selectionTrace, {
+                sessionId: handoffSession.planningSelection?.id,
+              });
+              logPlanningSelectionHandoffLoading(selectionTrace, false, "cards_settled", null);
+            }
+            await settleCreditsOperation(creditsHandle, delivered);
+            creditsHandle = null;
+          }
+          return;
+        }
 
         const req = toRoamieRequest("chat", bundle, {
           mood: syncedHandoff.mood,
@@ -2490,11 +2680,39 @@ function Chat() {
         );
         persistSession(nextSession);
         devVerboseInfo("[Roamie] plan handoff ok", formatTripLocationLabel(dest));
+      } catch (error) {
+        if (selectionTrace && !selectionLoadingCleared) {
+          const failureReason = error instanceof Error ? error.message : String(error);
+          logPlanningSelectionHandoffStage("initial_recommendation_done", selectionTrace, {
+            success: false,
+            failureReason,
+            sessionId: handoffSession.planningSelection?.id,
+          });
+          const fallback = "推薦結果整理失敗，請再試一次。";
+          setMsgs([{ role: "assistant", content: fallback }]);
+          persistSession(markPlanHandoffComplete(handoffSession));
+          console.error("[PLANNING_SELECTION_INITIAL_RECOMMENDATION_FAILED]", error);
+          return;
+        }
+        throw error;
       } finally {
         setStreaming(false);
+        if (selectionTrace) {
+          logPlanningSelectionHandoffStage("handoff_loading_clear", selectionTrace, {
+            sessionId: handoffSession.planningSelection?.id,
+          });
+          logPlanningSelectionHandoffLoading(selectionTrace, false, "settled", null);
+        }
       }
     },
-    [fetchWeather, persistSession, locale],
+    [
+      fetchWeather,
+      persistSession,
+      locale,
+      searchNearbyPlaces,
+      hasPlusAccess,
+      ensureSubscriptionHydratedForCredits,
+    ],
   );
 
   const runTripAddPlaceHandoff = useCallback(
@@ -2725,18 +2943,19 @@ function Chat() {
       const structuredHomeShortcut = isStructuredHomeNearbyShortcut(activeSession);
       const authoritativeCenter = opts?.authoritativeSearchCenter;
       const geographicScope =
-        authoritativeCenter?.geographicScope ?? activeSession.recommendationSession?.geographicScope;
+        authoritativeCenter?.geographicScope ??
+        activeSession.recommendationSession?.geographicScope;
       const merged = authoritativeCenter
         ? {
             context: activeSession.travelContext ?? { interests: [] },
             session: activeSession,
           }
         : structuredHomeShortcut
-        ? {
-            context: activeSession.travelContext ?? { interests: [] },
-            session: activeSession,
-          }
-        : mergeTravelContext(activeSession, userText);
+          ? {
+              context: activeSession.travelContext ?? { interests: [] },
+              session: activeSession,
+            }
+          : mergeTravelContext(activeSession, userText);
       logAiPipeline("[NEARBY_INTENT]", `intent=${intent}`, `userText=${userText.slice(0, 80)}`);
       let workingSession = merged.session;
       let sessionForSaveBase = workingSession;
@@ -2905,9 +3124,10 @@ function Chat() {
           deviceLocationUsed: Boolean(searchCenter?.deviceLocationUsed),
           routeMode: searchCenter?.mode ?? searchCtx.searchMode,
         });
-        rtScope = geographicScope?.entityType === "district"
-          ? "clarification_district"
-          : String(searchCenter?.mode ?? searchCtx.searchMode);
+        rtScope =
+          geographicScope?.entityType === "district"
+            ? "clarification_district"
+            : String(searchCenter?.mode ?? searchCtx.searchMode);
         rtDeviceLocationAvailable =
           Boolean(searchCenter?.deviceLocationAvailable) ||
           (deviceSession.location?.lat != null && deviceSession.location?.lng != null);
@@ -3071,7 +3291,9 @@ function Chat() {
       }
       logAiPipeline("[NEARBY_SEARCH_CENTER_AUTHORITY]", {
         position: "before_fetch",
-        source: authoritativeCenter?.source ?? (searchCtx.searchMode === "destination" ? "destination" : "session_or_device"),
+        source:
+          authoritativeCenter?.source ??
+          (searchCtx.searchMode === "destination" ? "destination" : "session_or_device"),
         lat,
         lng,
         displayLabel: authoritativeCenter?.displayLabel ?? nearbyCenterLabel ?? "",
@@ -3593,9 +3815,7 @@ function Chat() {
           searchCentroid: { lat, lng },
           personalizationSnapshot: buildPersonalizationSnapshotV1(
             continuationPersonalization,
-            orderedContinuationPool
-              .map((item) => nearbyRecommendationId(item))
-              .filter(Boolean),
+            orderedContinuationPool.map((item) => nearbyRecommendationId(item)).filter(Boolean),
           ),
           geographicScope,
         });
@@ -3613,9 +3833,7 @@ function Chat() {
         logAiPipeline("[GENERIC_NEARBY_POOL_COMMIT_RESULT]", {
           committed: shouldCommitGenericNearbyPool,
           storedPoolCount: shouldCommitGenericNearbyPool ? continuationSession.pool.length : 0,
-          remainingCount: shouldCommitGenericNearbyPool
-            ? renderableContinuationPool.length
-            : 0,
+          remainingCount: shouldCommitGenericNearbyPool ? renderableContinuationPool.length : 0,
           sessionCreated: shouldCommitGenericNearbyPool,
         });
         nearbyProcessingStage = "session_commit";
@@ -6599,6 +6817,123 @@ function Chat() {
     const trimmed = rawText.trim();
     if (!trimmed || streaming || generating) return;
 
+    if (
+      isPlanningSelectionMode(sessionRef.current) &&
+      /^(?:生成行程|生成完整行程|幫我生成)$/.test(trimmed)
+    ) {
+      if (selectionGenerateInFlightRef.current) return;
+      const currentSession = sessionRef.current;
+      const selection = currentSession.planningSelection!;
+      const preparedSelection = preparePlanningSelectionForGenerate(currentSession);
+      const selectedPlaces = preparedSelection.requiredPlaces;
+      devVerboseInfo("[PLANNING_SELECTION_GENERATE_CLICK]", {
+        sessionId: selection.id,
+        selectedIdsCount: selection.selectedPlaceIds.length,
+        selectedPayloadCount: selectedPlaces.length,
+        shownCount: selection.shownPlaceIds.length,
+      });
+      if (selection.selectedPlaceIds.length > 0 && selectedPlaces.length === 0) {
+        devVerboseInfo("[SELECTION_PLACE_RESOLUTION_MISMATCH]", {
+          sessionId: selection.id,
+          selectedIdsCount: selection.selectedPlaceIds.length,
+          selectedPayloadCount: 0,
+        });
+      }
+      const conversation: ChatMsg[] = [...msgsRef.current, { role: "user", content: trimmed }];
+      setMsgs(conversation);
+      setText("");
+      if (selectedPlaces.length === 0) {
+        devVerboseInfo("[PLANNING_SELECTION_GENERATE_BLOCKED]", {
+          sessionId: selection.id,
+          reason: "no_selected_payload",
+        });
+        setMsgs([
+          ...conversation,
+          { role: "assistant", content: "請先從推薦卡加入至少一個想去的地點，再生成行程。" },
+        ]);
+        return;
+      }
+      selectionGenerateInFlightRef.current = true;
+      const readySession = preparedSelection.session;
+      logPlanningSelectionDateAuthority(
+        "generate_click",
+        resolvePlanningSelectionDateAuthority(readySession),
+        selection.id,
+      );
+      devVerboseInfo("[PLANNING_SELECTION_GENERATE_RESOLVE]", {
+        sessionId: selection.id,
+        requiredPlaces: selectedPlaces.length,
+        canonicalPlaceIds: selectedPlaces.map(
+          (place) => place.googlePlaceId?.trim() || place.placeId?.trim() || `(name:${place.name})`,
+        ),
+      });
+      persistSession(readySession, conversation);
+      try {
+        await handleGenerateItinerary(readySession, conversation);
+      } finally {
+        selectionGenerateInFlightRef.current = false;
+      }
+      return;
+    }
+
+    if (isPlanningSelectionMode(session) && isPlanningSelectionContinuation(trimmed)) {
+      if (selectionRecommendationInFlightRef.current) return;
+      selectionRecommendationInFlightRef.current = true;
+      const conversation: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+      setMsgs(conversation);
+      setText("");
+      setStreaming(true);
+      let creditsHandle: CreditsOperationHandle | null = null;
+      let delivered = false;
+      try {
+        if (!ensureSubscriptionHydratedForCredits(conversation)) return;
+        const creditsGate = await beginPlaceRecommendationCredits({
+          hasPlusAccess,
+          metadata: { path: "planning_selection_continuation" },
+        });
+        if (creditsGate.blocked) {
+          setMsgs([
+            ...conversation,
+            { role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE },
+          ]);
+          return;
+        }
+        creditsHandle = creditsGate.handle;
+        const [prefs, profile] = await Promise.all([getAiPreferences(), getUserProfile()]);
+        const result = await fetchPlanningSelectionRecommendations({
+          session,
+          searchPlaces: searchNearbyPlaces,
+          locale,
+          userProfile: userProfileForReasonFrom(prefs, {
+            travelStyle: profile.travelStyle,
+            personalityType: profile.personalityType,
+            personalitySummary: profile.personalitySummary,
+            mood: session.mood,
+            hasPlusAccess,
+          }),
+        });
+        const summary = result.places.length
+          ? "再幫你找了一批不同的地點；前面看過和已選的都不會重複。"
+          : "目前選擇的風格暫時沒有更多新地點了；你可以先從已推薦的地點中挑選。";
+        setMsgs([
+          ...conversation,
+          {
+            role: "assistant",
+            content: summary,
+            roamie: { summary, recommendations: result.places, itinerary: [] },
+          },
+        ]);
+        persistSession(result.session);
+        delivered = result.places.length > 0;
+      } finally {
+        await settleCreditsOperation(creditsHandle, delivered);
+        creditsHandle = null;
+        selectionRecommendationInFlightRef.current = false;
+        setStreaming(false);
+      }
+      return;
+    }
+
     const legacyNearbyClarification =
       session.pendingClarification?.kind === "destination_area" &&
       userExplicitlyWantsNearbyPlaces(session.pendingClarification.originalUserText ?? "")
@@ -6781,20 +7116,14 @@ function Chat() {
             }
             if (nearbyPushRuntimeRef.current?.reason === "center_mismatch") {
               logAiPipeline("[NEARBY_FAILURE_REASON]", { reason: "search_center_mismatch" });
-              setMsgs([
-                ...next,
-                { role: "assistant", content: "位置資訊同步失敗，請再試一次。" },
-              ]);
+              setMsgs([...next, { role: "assistant", content: "位置資訊同步失敗，請再試一次。" }]);
               return;
             }
             if (nearbyPushRuntimeRef.current?.reason === "recommendation_processing_failure") {
               logAiPipeline("[NEARBY_FAILURE_REASON]", {
                 reason: "recommendation_processing_failure",
               });
-              setMsgs([
-                ...next,
-                { role: "assistant", content: "推薦結果整理失敗，請再試一次。" },
-              ]);
+              setMsgs([...next, { role: "assistant", content: "推薦結果整理失敗，請再試一次。" }]);
               return;
             }
             logAiPipeline("[NEARBY_FAILURE_REASON]", { reason: "genuine_zero_results" });
@@ -8205,8 +8534,7 @@ function Chat() {
           if (!sessionHasLocation(nextSession)) {
             logAiPipeline("[NEARBY_FALLBACK]", "reason=missing_location");
             logRtResponseBranch("destination_clarification");
-            const pendingNearbyIntent =
-              earlyRouteAuthority === "nearby" ? earlyNearbyIntent : null;
+            const pendingNearbyIntent = earlyRouteAuthority === "nearby" ? earlyNearbyIntent : null;
             const pendingSession = pendingNearbyIntent
               ? {
                   ...nextSession,
@@ -8240,10 +8568,7 @@ function Chat() {
                 categoryLabel: clarificationCopy.categoryLabel,
                 renderedCopy: clarificationCopy.renderedCopy,
               });
-              setMsgs([
-                ...next,
-                { role: "assistant", content: clarificationCopy.renderedCopy },
-              ]);
+              setMsgs([...next, { role: "assistant", content: clarificationCopy.renderedCopy }]);
               return;
             }
             setMsgs([
@@ -8798,10 +9123,7 @@ function Chat() {
             logAiPipeline("[NEARBY_FAILURE_REASON]", {
               reason: "recommendation_processing_failure",
             });
-            setMsgs([
-              ...next,
-              { role: "assistant", content: "推薦結果整理失敗，請再試一次。" },
-            ]);
+            setMsgs([...next, { role: "assistant", content: "推薦結果整理失敗，請再試一次。" }]);
             return true;
           }
           logAiPipeline("[NEARBY_FAILURE_REASON]", { reason: "genuine_zero_results" });
@@ -9127,14 +9449,95 @@ function Chat() {
     msgsOverride?: ChatMsg[],
     creditsHandleOverride?: CreditsOperationHandle | null,
   ) => {
-    const activeSession = sessionOverride ?? session;
+    let activeSession = sessionOverride ?? sessionRef.current;
+    const selectionStartedAt = Date.now();
+    const selectionSessionId = activeSession.planningSelection?.id ?? "(not-selection)";
+    const selectionDestination =
+      activeSession.tripDestination?.displayLabel ??
+      activeSession.tripDestination?.city ??
+      activeSession.travelContext?.destination ??
+      "";
+    const selectionSelectedCount = isPlanningSelectionMode(activeSession)
+      ? resolvePlanningSelectionPlaces(activeSession).length
+      : 0;
+    const selectionTripDays = activeSession.tripDays ?? activeSession.travelContext?.days ?? 1;
+    let selectionLastTimingAt = selectionStartedAt;
+    const logSelectionTiming = (stage: string, success = true, failureReason = "") => {
+      if (!isPlanningSelectionMode(activeSession)) return;
+      const now = Date.now();
+      console.info("[PLANNING_SELECTION_GENERATION_TIMING]", {
+        stage,
+        elapsedMs: now - selectionStartedAt,
+        stageDurationMs: now - selectionLastTimingAt,
+        selectedCount: selectionSelectedCount,
+        tripDays: selectionTripDays,
+        success,
+        failureReason,
+      });
+      selectionLastTimingAt = now;
+    };
+    let selectionGenerateStage = "generate_click";
+    const logSelectionStage = (stage: string, success: boolean, failureReason = "") => {
+      if (!isPlanningSelectionMode(activeSession)) return;
+      selectionGenerateStage = stage;
+      console.info("[PLANNING_SELECTION_GENERATE_STAGE]", {
+        stage,
+        sessionId: selectionSessionId,
+        elapsedMs: Date.now() - selectionStartedAt,
+        selectedCount: selectionSelectedCount,
+        destination: selectionDestination,
+        success,
+        failureReason,
+      });
+    };
+    logSelectionStage("generate_click", true);
+    logSelectionTiming("generate_click");
+    if (isPlanningSelectionMode(activeSession) && !generating) {
+      selectionLoadingPaintRef.current = {
+        startedAt: selectionStartedAt,
+        selectedCount: selectionSelectedCount,
+        tripDays: selectionTripDays,
+        logged: false,
+      };
+      setGenerating(true);
+      setSelectionGenerationStatus("正在整理你選的地點…");
+    }
+    if (isPlanningSelectionMode(activeSession)) {
+      const selectedPlaces = resolvePlanningSelectionPlaces(activeSession);
+      activeSession = {
+        ...activeSession,
+        selectedPlaces,
+        plannedStops: selectedPlaces,
+        planningSelection: { ...activeSession.planningSelection!, selectedPlaces },
+      };
+      logSelectionStage(
+        "selection_resolved",
+        selectedPlaces.length > 0,
+        selectedPlaces.length ? "" : "no_selected_places",
+      );
+      logSelectionTiming(
+        "selected_places_resolved",
+        selectedPlaces.length > 0,
+        selectedPlaces.length ? "" : "no_selected_places",
+      );
+    }
     const activeMsgs = msgsOverride ?? msgs;
-    if (!canGenerateItinerary(activeSession) || generating) return;
+    if (!canGenerateItinerary(activeSession) || generating) {
+      if (isPlanningSelectionMode(activeSession) && !generating) {
+        setGenerating(false);
+        setSelectionGenerationStatus(null);
+      }
+      return;
+    }
 
     let itinCreditsHandle: CreditsOperationHandle | null = creditsHandleOverride ?? null;
     let itinerarySucceeded = false;
     if (!itinCreditsHandle) {
-      if (!ensureSubscriptionHydratedForCredits(activeMsgs)) return;
+      if (!ensureSubscriptionHydratedForCredits(activeMsgs)) {
+        setGenerating(false);
+        setSelectionGenerationStatus(null);
+        return;
+      }
       const itinGate = await beginItineraryGenerationCredits({
         hasPlusAccess,
         metadata: { path: "handleGenerateItinerary" },
@@ -9144,22 +9547,62 @@ function Chat() {
           ...prev,
           { role: "assistant", content: INSUFFICIENT_CREDITS_ITINERARY_MESSAGE },
         ]);
+        setGenerating(false);
+        setSelectionGenerationStatus(null);
         return;
       }
       itinCreditsHandle = itinGate.handle;
     }
+    if (isPlanningSelectionMode(activeSession)) {
+      console.info("[PLANNING_SELECTION_CREDITS_READY]", {
+        sessionId: selectionSessionId,
+        elapsedMs: Date.now() - selectionStartedAt,
+        selectedCount: selectionSelectedCount,
+        destination: selectionDestination,
+        reserved: Boolean(itinCreditsHandle),
+      });
+      logSelectionStage("credits_reserved", true);
+    }
 
-    setGenerating(true);
+    if (!isPlanningSelectionMode(activeSession)) setGenerating(true);
     logAiState("CREATING_TRIP");
     persistSession({ ...activeSession, phase: "generating", aiItineraryState: "CREATING_TRIP" });
 
     try {
+      logSelectionStage("trip_context_start", true);
+      logSelectionStage("start_place_resolve_start", true);
+      logSelectionStage(
+        "start_place_resolve_done",
+        true,
+        activeSession.tripOrigin ? "resolved_from_session" : "optional_not_provided",
+      );
+      logSelectionStage("destination_resolve_start", true);
+      logSelectionStage(
+        "destination_resolve_done",
+        Boolean(activeSession.tripDestination || activeSession.travelContext?.destination),
+        activeSession.tripDestination || activeSession.travelContext?.destination
+          ? "resolved_from_generate_snapshot"
+          : "destination_missing_from_snapshot",
+      );
+      logSelectionStage("weather_start", true);
       const bundle = activeSession.tripDestination
-        ? await buildContextBundleForTrip(activeSession.tripDestination, fetchWeather)
+        ? await buildContextBundleForTrip(activeSession.tripDestination, fetchWeather, {
+            weatherBlocking: !isPlanningSelectionMode(activeSession),
+          })
         : await buildClientContextBundle(fetchWeather);
-      const [prefs, profile] = await Promise.all([getAiPreferences(), getUserProfile()]);
+      logSelectionStage(
+        "weather_done",
+        true,
+        bundle.weather ? "weather_available" : "weather_unavailable_optional",
+      );
+      logSelectionStage("trip_context_done", true, "context_ready");
+      logSelectionStage("session_prepare_start", true);
+      const selectionModeForPrepare = isPlanningSelectionMode(activeSession);
+      const [prefs, profile] = selectionModeForPrepare
+        ? [bundle.preferences, null]
+        : await Promise.all([getAiPreferences(), getUserProfile()]);
       const fashionStyle = resolveFashionStyle({
-        travelStyle: profile.travelStyle,
+        travelStyle: profile?.travelStyle,
         interests: prefs.interests,
         style: activeSession.tripStyles || (activeSession.pace === "排滿" ? "緊湊" : "慢旅行"),
       });
@@ -9178,12 +9621,31 @@ function Chat() {
       const destination = sanitizeDestinationForGeocode(rawDestination);
       const dayPlan = workingSession.currentDayPlan;
       const lastUserText = [...activeMsgs].reverse().find((m) => m.role === "user")?.content ?? "";
-      const tripDates = resolveTripCreateDates({
-        context: workingSession.travelContext ?? { interests: [] },
-        session: workingSession,
-        days: tripDays,
-        userText: lastUserText,
-      });
+      const selectionDateAuthority = isPlanningSelectionMode(workingSession)
+        ? resolvePlanningSelectionDateAuthority(workingSession)
+        : null;
+      const tripDates = selectionDateAuthority
+        ? {
+            startDate: selectionDateAuthority.startDate,
+            endDate: selectionDateAuthority.endDate,
+            days: selectionDateAuthority.tripDays,
+            dayDates: selectionDateAuthority.dayDates,
+            hasExplicitDates: true,
+            source: selectionDateAuthority.source,
+          }
+        : resolveTripCreateDates({
+            context: workingSession.travelContext ?? { interests: [] },
+            session: workingSession,
+            days: tripDays,
+            userText: lastUserText,
+          });
+      if (isPlanningSelectionMode(workingSession)) {
+        logPlanningSelectionDateAuthority(
+          "planner_input",
+          selectionDateAuthority,
+          workingSession.planningSelection?.id,
+        );
+      }
       logAiCreateTripDates(tripDates);
       const effectiveTripDays = Math.max(1, tripDates.days || tripDays || 1);
       if (
@@ -9312,6 +9774,31 @@ function Chat() {
           generateResult: { success: true },
         };
       } else {
+        const selectionMode = isPlanningSelectionMode(workingSession);
+        const requiredAnchors = buildPlannerRequiredAnchors(places, destination, selectionMode);
+        const requiredAnchorIds = requiredAnchors.map(
+          (place) => place.googlePlaceId?.trim() || `(name:${place.name})`,
+        );
+        logSelectionStage(
+          "session_prepare_done",
+          requiredAnchors.length > 0,
+          requiredAnchors.length ? "" : "required_anchor_adapter_empty",
+        );
+        console.info("[PLANNING_SELECTION_PLANNER_INPUT]", {
+          destination,
+          startDate: startDate || today,
+          endDate: endDate || startDate || today,
+          tripDays: effectiveTripDays,
+          requiredPlaceCount: requiredAnchors.length,
+          requiredPlaceIds: requiredAnchorIds,
+          requiredPlaceNames: requiredAnchors.map((place) => place.name),
+          combinationInputPresent: Boolean(
+            workingSession.travelContext?.selectedCombinationIds?.length,
+          ),
+          optionsInputPresent: Boolean(workingSession.travelContext?.nearbyExtensions?.length),
+          generationEntryPoint: "createItineraryFromSession",
+          selectionMode,
+        });
         const generateInput = {
           destination,
           days: effectiveTripDays,
@@ -9329,9 +9816,12 @@ function Chat() {
             : (bundle.location.city ?? ""),
           travelers: workingSession.tripCompanionCount ?? 1,
           transport: workingSession.transportation ?? "",
-          selectedPlaces: places.map((p) => ({
-            ...p,
-            googlePlaceId: p.googlePlaceId ?? p.placeId,
+          placeAuthority: selectionMode ? ("selected_only" as const) : undefined,
+          // InputSchema's transform keeps `types` as an explicit (possibly
+          // undefined) field, so mirror that exact planner boundary shape.
+          selectedPlaces: requiredAnchors.map((anchor) => ({
+            ...anchor,
+            types: anchor.types,
           })),
           selectedCombinationIds: workingSession.travelContext?.selectedCombinationIds ?? [],
           nearbyExtensions: workingSession.travelContext?.nearbyExtensions ?? [],
@@ -9345,14 +9835,30 @@ function Chat() {
           time: workingSession.startTime || bundle.time,
           fashionStyle: fashionStyle ?? "",
           locale,
+          generationStartedAt: selectionMode ? selectionStartedAt : undefined,
+          generationTimingId: selectionMode ? selectionSessionId : undefined,
         };
 
         logAiState("BUILDING_ITINERARY", `places=${places.length}`);
+        logSelectionStage("planner_handoff_start", true);
+        logSelectionTiming("planner_input_ready");
+        setSelectionGenerationStatus("正在安排每天的順序…");
+        logSelectionTiming("server_request_start");
+        logPlanningSelectionDateAuthority(
+          "server_request",
+          selectionDateAuthority,
+          workingSession.planningSelection?.id,
+        );
         createResult = await createItineraryFromSession({
           session: workingSession,
           generateInput,
           generateItineraryFn: generate,
         });
+        logSelectionTiming(
+          "server_response_received",
+          createResult.ok,
+          createResult.ok ? "" : createResult.message,
+        );
       }
 
       if (!createResult.ok) {
@@ -9365,29 +9871,33 @@ function Chat() {
         return;
       }
 
-      const itinerary = createResult.payload;
+      let itinerary = createResult.payload;
+      if (selectionDateAuthority) {
+        logPlanningSelectionDateMismatch(
+          "server_result",
+          selectionDateAuthority,
+          itinerary,
+          workingSession.planningSelection?.id,
+        );
+        itinerary = applyPlanningSelectionDateAuthority(itinerary, selectionDateAuthority);
+        logPlanningSelectionDateAuthority(
+          "server_result",
+          selectionDateAuthority,
+          workingSession.planningSelection?.id,
+        );
+      }
+      if (isPlanningSelectionMode(activeSession)) {
+        setSelectionGenerationStatus("正在確認路線與行程…");
+      }
 
       const itineraryStops = coalesceItineraryItems(itinerary.itinerary);
       logItineraryItemsCoalesced(itineraryStops.length);
       const legPlaces = itineraryStops
         .filter((p) => p.lat != null && p.lng != null)
         .map((p) => ({ lat: p.lat as number, lng: p.lng as number }));
-      // Directions soft-fail: ZERO_RESULTS / route errors must never block Persistence.
-      let routeLegs: Awaited<ReturnType<typeof getTripLegsWithDurations>> = [];
-      try {
-        routeLegs = await getTripLegsWithDurations(
-          legPlaces,
-          travelLabelToRoutesMode(workingSession.transportation ?? "步行"),
-        );
-      } catch (routeError) {
-        console.debug(
-          "[ROUTE_DURATION]",
-          "status=empty_legs",
-          `message=${routeError instanceof Error ? routeError.message : String(routeError)}`,
-          "soft=skip_legs_continue_save",
-        );
-        routeLegs = [];
-      }
+      // Directions and remote cover are recoverable enrichment. Persist the
+      // authoritative itinerary first, then enrich the same saved row in background.
+      const routeLegs: Awaited<ReturnType<typeof getTripLegsWithDurations>> = [];
       const weatherSummary = bundle.weather
         ? `${bundle.weather.city} ${bundle.weather.condition} ${bundle.weather.tempC ?? ""}C`
         : "天氣資料暫不可用";
@@ -9402,13 +9912,9 @@ function Chat() {
             normalizeWeather(bundle.weather),
           )
         : "";
-      const cover = await getTripCoverImage({
-        destination,
-        mood: workingSession.mood ?? "",
-        moodTag: workingSession.mood ?? "",
-        title: itinerary.title,
-      });
+      const cover = getImmediateTripCoverImage();
 
+      logSelectionTiming("stored_itinerary_start");
       let draftPayload: RoamiePayloadV2 = {
         ...itinerary,
         itinerary: itineraryStops,
@@ -9469,8 +9975,30 @@ function Chat() {
         logItineraryFailureReason(`draft_save:${reason}`);
         throw saveError;
       }
+      logSelectionTiming("stored_itinerary_done");
+      logPlanningSelectionDateAuthority(
+        "stored_itinerary",
+        selectionDateAuthority,
+        workingSession.planningSelection?.id,
+      );
 
-      const saved = await confirmSaveTrip(draftPayload, "chat");
+      if (isPlanningSelectionMode(activeSession)) {
+        setSelectionGenerationStatus("快完成了…");
+      }
+      logSelectionTiming("save_start");
+      const saved = await confirmSaveTrip(draftPayload, "chat", {
+        coverMeta: {
+          cover_image: cover.url,
+          cover_source: cover.source,
+          cover_query: cover.query,
+        },
+      });
+      logSelectionTiming("save_done");
+      logPlanningSelectionDateAuthority(
+        "render_model",
+        selectionDateAuthority,
+        workingSession.planningSelection?.id,
+      );
       clearDraftTrip();
       if (workingSession.fromPlanAi || workingSession.planAiMode) {
         clearPlanFormDraft();
@@ -9489,29 +10017,87 @@ function Chat() {
         "finalFailureReason=",
       );
 
-      persistSession(
-        clearPlanningSessionState(
-          {
-            ...workingSession,
-            phase: "done",
-            aiItineraryState: "SUCCESS",
-            draftTrip: undefined,
-            lastGeneratedTripId: saved.id,
-          },
-          "trip_created",
-        ),
-      );
-
-      setMsgs((prev) => [
-        ...prev,
-        { role: "assistant", content: AI_ITINERARY_SUCCESS_REDIRECT_MESSAGE },
-      ]);
-
       logTripNav("ChatGeneratedItinerary", saved.id);
       itinerarySucceeded = true;
-      navigate(tripDetailNavigateOptions(saved.id));
+      // Credit commit is authoritative, not optional enrichment. Settle exactly
+      // once before leaving Chat; failure paths still roll back in finally.
+      await settleCreditsOperation(itinCreditsHandle, true);
+      itinCreditsHandle = null;
+      logSelectionTiming("credits_committed");
+      logSelectionTiming("navigation_start");
+      const navigation = navigate(tripDetailNavigateOptions(saved.id));
+      await Promise.resolve(navigation);
+      logSelectionTiming("navigation_done");
+
+      // Chat/workspace cleanup is not required for itinerary detail first paint.
+      window.setTimeout(() => {
+        persistSession(
+          clearPlanningSessionState(
+            {
+              ...workingSession,
+              phase: "done",
+              aiItineraryState: "SUCCESS",
+              draftTrip: undefined,
+              lastGeneratedTripId: saved.id,
+            },
+            "trip_created",
+          ),
+        );
+      }, 0);
+
+      // Enrich the already-authoritatively-saved row without holding navigation.
+      void Promise.allSettled([
+        getTripLegsWithDurations(
+          legPlaces,
+          travelLabelToRoutesMode(workingSession.transportation ?? "步行"),
+        ),
+        getTripCoverImage({
+          destination,
+          mood: workingSession.mood ?? "",
+          moodTag: workingSession.mood ?? "",
+          title: itinerary.title,
+        }),
+      ])
+        .then(async ([legsResult, coverResult]) => {
+          const enrichedLegs = legsResult.status === "fulfilled" ? legsResult.value : [];
+          const enrichedCover = coverResult.status === "fulfilled" ? coverResult.value : cover;
+          const persistedPayload = saved.payload as RoamiePayloadV2;
+          const enrichedPayload: RoamiePayloadV2 = {
+            ...persistedPayload,
+            aiGeneratedCoverImageUrl: enrichedCover.url,
+            tripSettings: {
+              ...persistedPayload.tripSettings,
+              transitLegs: Object.fromEntries(
+                enrichedLegs.map((leg, idx) => [
+                  `${itineraryStops[idx]?.placeName ?? idx}→${itineraryStops[idx + 1]?.placeName ?? idx + 1}`,
+                  {
+                    headline: `${leg.distanceMeters}m`,
+                    durationMinutes: leg.durationMinutes,
+                    distanceMeters: leg.distanceMeters,
+                  },
+                ]),
+              ),
+            },
+          };
+          await updateTripMeta(
+            saved.id,
+            {
+              cover_image: enrichedCover.url,
+              cover_source: enrichedCover.source,
+              cover_query: enrichedCover.query,
+            },
+            enrichedPayload,
+          );
+        })
+        .catch((error) => {
+          console.debug("[ITINERARY_BACKGROUND_ENRICHMENT]", {
+            success: false,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        });
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
+      logSelectionStage(selectionGenerateStage, false, reason);
       console.warn("[ITINERARY_GENERATE]", e);
       logItinerarySaveFailed(reason);
       logItineraryFailureReason(`generate_exception:${reason}`);
@@ -9535,9 +10121,23 @@ function Chat() {
       ]);
       // Keep a single error surface — chat card only (no duplicate toast).
     } finally {
+      // Render settlement is local; credits still settle through the existing
+      // authority and never change Selection pricing/entitlement semantics.
+      setGenerating(false);
+      setSelectionGenerationStatus(null);
       await settleCreditsOperation(itinCreditsHandle, itinerarySucceeded);
       itinCreditsHandle = null;
-      setGenerating(false);
+      if (isPlanningSelectionMode(activeSession)) {
+        console.info("[PLANNING_SELECTION_GENERATE_SETTLED]", {
+          sessionId: selectionSessionId,
+          elapsedMs: Date.now() - selectionStartedAt,
+          selectedCount: selectionSelectedCount,
+          destination: selectionDestination,
+          success: itinerarySucceeded,
+          creditsSettled: true,
+          loadingCleared: true,
+        });
+      }
     }
   };
 
@@ -9794,7 +10394,7 @@ function Chat() {
             <p className="text-[15px] font-medium leading-tight">Roamie</p>
             <p className="truncate text-[11px] text-muted-foreground">
               {generating
-                ? t("chat.statusGenerating")
+                ? (selectionGenerationStatus ?? t("chat.statusGenerating"))
                 : streaming
                   ? t("chat.statusStreaming")
                   : session.selectedPlaces.length
@@ -9873,15 +10473,28 @@ function Chat() {
             selectedNames={selectedNames}
             savedNames={savedNames}
             savingName={savingName}
-            addToTripLabel={session.fromTripAddPlace ? "加入此行程" : t("chat.addToTrip")}
+            addToTripLabel={
+              selectionMode
+                ? "加入這地點"
+                : session.fromTripAddPlace
+                  ? "加入此行程"
+                  : t("chat.addToTrip")
+            }
             discussPlaceLabel={t("trip.discussPlace")}
             viewMapLabel={t("chat.viewMap")}
+            selectionMode={selectionMode}
             onRecommendationEngage={markShortcutEngaged}
             onSavePlace={(rec) => {
               void handleSavePlace(rec);
             }}
             onAddToTrip={(rec) => {
-              void handleAddToTripFromChat(rec);
+              if (selectionMode) {
+                persistSession(
+                  togglePlanningSelectionPlace(sessionRef.current, roamieRecToChatItem(rec)),
+                );
+              } else {
+                void handleAddToTripFromChat(rec);
+              }
             }}
             onOpenPlaceDetail={handleOpenPlaceDetail}
             onDiscussPlace={(rec) => {
@@ -9937,6 +10550,7 @@ function Chat() {
             streaming={streaming}
             onChipSend={(s) => void send(s, { source: "chat_shortcut" })}
             actionChips={actionChips}
+            actionChipsOnly={selectionMode}
           />
         </div>
       </div>

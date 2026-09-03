@@ -24,7 +24,11 @@ import { preparePlanTripSession } from "@/lib/plan-trip-handoff";
 import { buildPlanFormTripPayload } from "@/lib/plan-form-trip-payload";
 import { confirmSaveTrip } from "@/lib/itinerary-storage";
 import { logTripNav, tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
-import { savePlanFormDraft, loadPlanFormDraft, clearPlanFormDraft } from "@/lib/plan-form-draft-storage";
+import {
+  savePlanFormDraft,
+  loadPlanFormDraft,
+  clearPlanFormDraft,
+} from "@/lib/plan-form-draft-storage";
 import { normalizePlanTravelStyles } from "@/lib/plan-travel-style";
 import { saveChatSession, clearChatSession } from "@/lib/chat-session";
 import { clearChatHistory } from "@/lib/chat-history";
@@ -33,15 +37,22 @@ import { getWeather } from "@/lib/weather.functions";
 import { resolveTripStop } from "@/lib/trip-stop-search.functions";
 import {
   getPreferences,
+  readCachedPreferencesSync,
   savePreferences,
+  syncPreferencesToSupabase,
   resolveBudgetMode,
   type BudgetMode,
 } from "@/lib/preferences-storage";
-import {
-  loadItinerarySource,
-  type ItinerarySourceContext,
-} from "@/lib/itinerary-source";
+import { loadItinerarySource, type ItinerarySourceContext } from "@/lib/itinerary-source";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
+import {
+  createPlanningSelectionHandoffTrace,
+  logPlanningSelectionHandoffBuildStage,
+  logPlanningSelectionHandoffLoading,
+  logPlanningSelectionHandoffStage,
+  type PlanningSelectionHandoffTrace,
+} from "@/lib/planning-selection-handoff-log";
+import { listTripDates } from "@/lib/outfit/group-by-date";
 
 type PlanSearch = {
   mood?: string;
@@ -188,15 +199,15 @@ function PlanPage() {
       if (role === "start") setOrigin(patched);
       return patched;
     } catch (error) {
-      console.error("[PLACES_DETAILS] error=", error instanceof Error ? error.message : String(error));
+      console.error(
+        "[PLACES_DETAILS] error=",
+        error instanceof Error ? error.message : String(error),
+      );
       return loc;
     }
   };
 
-  const saveCurrentDraft = (
-    dest: TripLocation | null,
-    start: TripLocation | null,
-  ) => {
+  const saveCurrentDraft = (dest: TripLocation | null, start: TripLocation | null) => {
     savePlanFormDraft({
       destination: dest,
       origin: start,
@@ -217,11 +228,27 @@ function PlanPage() {
     tripDays: number;
   };
 
-  const resolvePlanFormForSubmit = async (): Promise<ResolvedPlanForm | null> => {
+  const resolvePlanFormForSubmit = async (
+    handoffTrace?: PlanningSelectionHandoffTrace,
+  ): Promise<ResolvedPlanForm | null> => {
+    if (handoffTrace) {
+      logPlanningSelectionHandoffStage("start_place_resolve_start", handoffTrace);
+      logPlanningSelectionHandoffStage("destination_resolve_start", handoffTrace);
+    }
     const [resolvedDestination, resolvedOrigin] = await Promise.all([
       ensureLocationHasCoords(destination, "destination"),
       ensureLocationHasCoords(origin, "start"),
     ]);
+    if (handoffTrace) {
+      logPlanningSelectionHandoffStage("start_place_resolve_done", handoffTrace, {
+        success: Boolean(resolvedOrigin),
+        failureReason: resolvedOrigin ? "" : "start_place_unresolved",
+      });
+      logPlanningSelectionHandoffStage("destination_resolve_done", handoffTrace, {
+        success: Boolean(resolvedDestination),
+        failureReason: resolvedDestination ? "" : "destination_unresolved",
+      });
+    }
     if (resolvedDestination) setDestination(resolvedDestination);
     if (resolvedOrigin) setOrigin(resolvedOrigin);
     if (!validateTripPlaces(resolvedDestination, resolvedOrigin)) return null;
@@ -285,23 +312,132 @@ function PlanPage() {
   };
 
   const startPlanChat = async (planAiMode: boolean) => {
-    const resolved = await resolvePlanFormForSubmit();
-    if (!resolved) return;
+    // Selection click feedback must be the first synchronous state transition.
+    if (planAiMode) setLoading(true);
+    const normalizedStyles = normalizePlanTravelStyles(styles, styleOptions);
+    if (planAiMode) {
+      const formTripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : 2;
+      console.info("[PLANNING_SELECTION_DATE_AUTHORITY]", {
+        stage: "plan_form",
+        sessionId: "",
+        startDate: startDate || null,
+        endDate: endDate || null,
+        tripDays: formTripDays,
+        dayDates: startDate ? listTripDates([], startDate, formTripDays) : [],
+        source: "plan_form",
+      });
+    }
+    const handoffTrace = planAiMode
+      ? createPlanningSelectionHandoffTrace({
+          destination: destination ? formatTripLocationLabel(destination) : "",
+          startPlace: origin ? formatTripLocationLabel(origin) : "",
+          selectedStyles: normalizedStyles,
+          tripDays: startDate && endDate ? daysBetweenDates(startDate, endDate) : 2,
+        })
+      : null;
+    if (handoffTrace) logPlanningSelectionHandoffStage("arrange_click", handoffTrace);
+    let resolved;
+    try {
+      resolved = await resolvePlanFormForSubmit(handoffTrace ?? undefined);
+    } catch (error) {
+      if (planAiMode) setLoading(false);
+      throw error;
+    }
+    if (!resolved) {
+      if (planAiMode) setLoading(false);
+      return;
+    }
 
     const { dest, start, tripDays } = resolved;
+    if (handoffTrace) logPlanningSelectionHandoffStage("form_context_resolved", handoffTrace);
 
-    setLoading(true);
+    if (!planAiMode) setLoading(true);
+    if (handoffTrace) {
+      logPlanningSelectionHandoffLoading(handoffTrace, true, "handoff_preparing", "handoff_build");
+      logPlanningSelectionHandoffStage("handoff_build_start", handoffTrace);
+    }
     try {
-      const [bundle, prefs] = await Promise.all([
-        buildContextBundleForTrip(dest, fetchWeather),
-        getPreferences(),
-      ]);
       const effectiveBudgetMode = budgetMode;
-      await savePreferences({ ...prefs, budgetMode: effectiveBudgetMode });
+      let prefs;
+      if (handoffTrace) {
+        logPlanningSelectionHandoffBuildStage(
+          "preferences_read",
+          "start",
+          handoffTrace,
+          "local_preferences_snapshot",
+        );
+        prefs = { ...readCachedPreferencesSync(), budgetMode: effectiveBudgetMode };
+        logPlanningSelectionHandoffBuildStage(
+          "preferences_read",
+          "done",
+          handoffTrace,
+          "local_preferences_snapshot",
+        );
+        logPlanningSelectionHandoffBuildStage(
+          "context_bundle",
+          "start",
+          handoffTrace,
+          "destination_context",
+        );
+        logPlanningSelectionHandoffBuildStage(
+          "weather_background_dispatch",
+          "start",
+          handoffTrace,
+          "optional_weather_enrichment",
+        );
+      } else {
+        prefs = await getPreferences();
+      }
+      const bundle = await buildContextBundleForTrip(dest, fetchWeather, {
+        weatherBlocking: !planAiMode,
+        ...(planAiMode ? { preferences: prefs } : {}),
+      });
+      if (handoffTrace) {
+        logPlanningSelectionHandoffBuildStage(
+          "weather_background_dispatch",
+          "done",
+          handoffTrace,
+          "optional_weather_enrichment",
+        );
+        logPlanningSelectionHandoffBuildStage(
+          "context_bundle",
+          "done",
+          handoffTrace,
+          "destination_context",
+        );
+        logPlanningSelectionHandoffBuildStage(
+          "preferences_save",
+          "start",
+          handoffTrace,
+          "optional_remote_preferences_persist",
+        );
+        void syncPreferencesToSupabase(prefs, {
+          timeoutMs: 15_000,
+          source: "planning_selection_handoff",
+        })
+          .then(() => {
+            logPlanningSelectionHandoffBuildStage(
+              "preferences_save",
+              "done",
+              handoffTrace,
+              "optional_remote_preferences_persist",
+            );
+          })
+          .catch((error) => {
+            const failureReason = error instanceof Error ? error.message : String(error);
+            logPlanningSelectionHandoffBuildStage(
+              "preferences_save",
+              /timeout/i.test(failureReason) ? "timeout" : "error",
+              handoffTrace,
+              "optional_remote_preferences_persist",
+              failureReason,
+            );
+          });
+      } else {
+        await savePreferences({ ...prefs, budgetMode: effectiveBudgetMode });
+      }
 
       const mergedPlaces = selectedPlaces.length > 0 ? selectedPlaces : [];
-      const normalizedStyles = normalizePlanTravelStyles(styles, styleOptions);
-
       const destRef = tripLocationToPlaceRef(dest);
       const startRef = tripLocationToPlaceRef(start);
       logTripPlace("destination", "saved", destRef);
@@ -319,8 +455,14 @@ function PlanPage() {
       saveCurrentDraft(dest, start);
 
       clearChatSession();
-      await clearChatHistory();
-      const session = preparePlanTripSession(
+      // Remote history cleanup is housekeeping. It must not hold navigation or
+      // the initial Selection recommendation open.
+      void clearChatHistory().catch((error) => {
+        console.warn("[PLANNING_SELECTION_HISTORY_CLEAR_FAILED]", error);
+      });
+      if (handoffTrace)
+        logPlanningSelectionHandoffStage("selection_session_create_start", handoffTrace);
+      const preparedSession = preparePlanTripSession(
         {
           destination: dest,
           origin: start,
@@ -340,17 +482,48 @@ function PlanPage() {
         prefs,
         { planAiMode, localeStyleOptions: styleOptions },
       );
+      const session = handoffTrace
+        ? { ...preparedSession, planningSelectionHandoffTrace: handoffTrace }
+        : preparedSession;
+      if (handoffTrace) {
+        logPlanningSelectionHandoffStage("selection_session_create_done", handoffTrace, {
+          sessionId: session.planningSelection?.id,
+        });
+        logPlanningSelectionHandoffStage("handoff_build_done", handoffTrace, {
+          sessionId: session.planningSelection?.id,
+        });
+        logPlanningSelectionHandoffStage("handoff_persist_start", handoffTrace, {
+          sessionId: session.planningSelection?.id,
+        });
+      }
       saveChatSession(session);
-      navigate({
+      if (handoffTrace) {
+        logPlanningSelectionHandoffStage("handoff_persist_done", handoffTrace, {
+          sessionId: session.planningSelection?.id,
+        });
+        logPlanningSelectionHandoffStage("chat_navigation_start", handoffTrace, {
+          sessionId: session.planningSelection?.id,
+        });
+        logPlanningSelectionHandoffLoading(handoffTrace, true, "chat_navigation", "router");
+      }
+      await navigate({
         to: "/chat",
         search: { from: planAiMode ? "plan-ai" : "plan" },
       });
+      if (handoffTrace) {
+        logPlanningSelectionHandoffStage("chat_navigation_done", handoffTrace, {
+          sessionId: session.planningSelection?.id,
+        });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : t("plan.submitFailed");
       console.error("[Roamie AI] plan failed", err);
       toast.error(msg);
     } finally {
       setLoading(false);
+      if (handoffTrace) {
+        logPlanningSelectionHandoffLoading(handoffTrace, false, "plan_route_settled", null);
+      }
     }
   };
 
@@ -369,7 +542,10 @@ function PlanPage() {
       </header>
 
       <div className="plan-page-scroll min-h-0 flex-1 overflow-y-auto overscroll-y-contain no-scrollbar">
-        <form onSubmit={handleCreateTripDirect} className="space-y-6 px-5 pt-5 pb-[max(2rem,env(safe-area-inset-bottom))]">
+        <form
+          onSubmit={handleCreateTripDirect}
+          className="space-y-6 px-5 pt-5 pb-[max(2rem,env(safe-area-inset-bottom))]"
+        >
           {sourceLoading ? (
             <div className="flex items-center gap-2 rounded-2xl bg-secondary/80 px-4 py-3 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />

@@ -133,6 +133,8 @@ const InputSchema = z.object({
   origin: z.string().max(120).optional().default(""),
   travelers: z.number().int().min(1).max(20).optional(),
   transport: z.string().max(120).optional().default(""),
+  /** User-selected places are the complete/authoritative place pool. */
+  placeAuthority: z.enum(["selected_only"]).optional(),
   selectedPlaces: z.array(PlaceSchema).max(70).optional().default([]),
   selectedCombinationIds: z.array(z.number().int().positive()).max(10).optional().default([]),
   nearbyExtensions: z.array(z.string().max(80)).max(10).optional().default([]),
@@ -144,6 +146,8 @@ const InputSchema = z.object({
   /** 穿搭風格（文青、韓系、極簡等），來自個人檔案 */
   fashionStyle: z.string().max(80).optional().default(""),
   locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
+  generationStartedAt: z.number().int().positive().optional(),
+  generationTimingId: z.string().max(120).optional(),
 });
 
 function inferTripTransport(transport?: string): TripTransportMode {
@@ -301,6 +305,22 @@ export type Itinerary = {
 export const generateItinerary = createServerFn({ method: "POST" })
   .inputValidator((input) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<GenerateItineraryResult> => {
+    let timingLastAt = Date.now();
+    const logGenerationTiming = (stage: string, success = true, failureReason = "") => {
+      if (data.placeAuthority !== "selected_only") return;
+      const now = Date.now();
+      console.info("[PLANNING_SELECTION_GENERATION_TIMING]", {
+        stage,
+        elapsedMs: data.generationStartedAt ? now - data.generationStartedAt : 0,
+        stageDurationMs: now - timingLastAt,
+        selectedCount: data.selectedPlaces.length,
+        tripDays: data.days,
+        success,
+        failureReason,
+        timingId: data.generationTimingId ?? "",
+      });
+      timingLastAt = now;
+    };
     const [{ callRoamieAI }, { buildTransitLegsForItinerary }, { openWeatherGetForecast }] =
       await Promise.all([
         import("@/lib/ai/service.server"),
@@ -320,7 +340,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       };
     }
 
-    if (selectedPlaces.length < data.days) {
+    if (data.placeAuthority !== "selected_only" && selectedPlaces.length < data.days) {
       logAiPipeline(
         "[INSUFFICIENT_REAL_PLACES_DETECTED]",
         `tripDays=${data.days}`,
@@ -354,6 +374,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       `selectedPlaces=${selectedPlaces.length}`,
       `selectedCombinationIds=${selectedCombinationIds.join(",")}`,
     );
+    logGenerationTiming("route_day_assembly_start");
 
     let ai: RoamiePayloadV2 | null = null;
     let usedDeterministic = false;
@@ -375,6 +396,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         days: groupStopsByTripDays(builtItems, data.days, startDate),
         resolvedPlaces: selectedPlaces,
         destination: data.destination,
+        placeAuthority: data.placeAuthority,
       });
       if (coverageCheck.ok || builtItems.length >= selectedCombinationIds.length) {
         ai = buildFallbackTripPayload(data, builtItems, selectedPlaces);
@@ -434,6 +456,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
               days: groupStopsByTripDays(enrichedItinerary, data.days, startDate),
               resolvedPlaces: selectedPlaces,
               destination: data.destination,
+              placeAuthority: data.placeAuthority,
             });
             if (!aiCoverage.ok && selectedCombinationIds.length > 0) {
               logAiPipeline(
@@ -571,6 +594,52 @@ export const generateItinerary = createServerFn({ method: "POST" })
       ),
     });
     const selectedLock = buildSelectedPlaceLock({ anchors: requiredAnchors });
+    if (data.placeAuthority === "selected_only") {
+      const originalStopCount = finalStops.length;
+      const selectedNames = new Set(
+        selectedPlaces.map((place) => (place.placeName ?? place.name).trim().toLowerCase()),
+      );
+      const selectedIds = new Set(
+        selectedPlaces.map((place) => place.googlePlaceId?.trim()).filter(Boolean),
+      );
+      const authoritativeStops = finalStops.filter((stop) => {
+        const id = stop.googlePlaceId?.trim();
+        const name = (stop.placeName ?? stop.title).trim().toLowerCase();
+        return Boolean((id && selectedIds.has(id)) || selectedNames.has(name));
+      });
+      const deliveredIds = new Set(
+        authoritativeStops.map((stop) => stop.googlePlaceId?.trim()).filter(Boolean),
+      );
+      const deliveredNames = new Set(
+        authoritativeStops.map((stop) => (stop.placeName ?? stop.title).trim().toLowerCase()),
+      );
+      const missingSelected = selectedPlaces.some((place) => {
+        const id = place.googlePlaceId?.trim();
+        const name = (place.placeName ?? place.name).trim().toLowerCase();
+        return !((id && deliveredIds.has(id)) || deliveredNames.has(name));
+      });
+      if (missingSelected) {
+        finalStops = buildItineraryFromSelectedPlaces(
+          selectedPlaces,
+          data.days,
+          startDate,
+          data.destination,
+          selectedCombinationIds,
+        );
+        ai = { ...ai, itinerary: finalStops };
+      } else {
+        finalStops = authoritativeStops;
+        ai = { ...ai, itinerary: finalStops };
+      }
+      logAiPipeline(
+        "[SELECTION_PLACE_AUTHORITY_APPLIED]",
+        `selected=${selectedPlaces.length}`,
+        `scheduled=${finalStops.length}`,
+        `removedUnselected=${Math.max(0, originalStopCount - authoritativeStops.length)}`,
+        `rebuiltForMissing=${missingSelected}`,
+      );
+    }
+    logGenerationTiming("route_day_assembly_done");
     const integrity = validateFinalItineraryIntegrity({
       selectedCombinationIds,
       sessionSelectedCombinationIds: selectedCombinationIds,
@@ -580,6 +649,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       tripDays: data.days,
       startDate,
       destination: data.destination,
+      placeAuthority: data.placeAuthority,
     });
     const recommendationIntegrity = recommendationIntegrityCheck({
       selectedPlaces: requiredPlaceNames,
@@ -638,6 +708,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
 
     // P4.2：Itinerary Validator — direct / selected_places 建立路徑
     if (isItineraryValidatorEnabled()) {
+      logGenerationTiming("validator_start");
       const composed = composedPlansFromItineraryItems(finalStops, data.days, startDate);
       const plannerDayCounts = dayCountsOfPlans(composed);
       const styleKey = resolvePlannerStyleKey(data.style);
@@ -659,6 +730,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         userText: [data.interests, data.conversationSummary].filter(Boolean).join("\n"),
         destination: data.destination,
         creationPath: creationPath as ItineraryValidatorInput["creationPath"],
+        placeAuthority: data.placeAuthority,
         lockedPlaceIds: [...selectedLock.placeIds],
         lockedPlaceNames: selectedLock.names,
       };
@@ -705,6 +777,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         }
       }
       if (shouldBlockItineraryDelivery(validation)) {
+        logGenerationTiming("validator_done", false, "validator_failed");
         logItineraryDeliveryBlocked("validator_failed", validation);
         return {
           success: false,
@@ -720,6 +793,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           },
         };
       }
+      logGenerationTiming("validator_done");
       const finalDayCounts = dayCountsOfPlans(
         composedPlansFromItineraryItems(finalStops, data.days, startDate),
       );
@@ -739,12 +813,14 @@ export const generateItinerary = createServerFn({ method: "POST" })
       }
       logItineraryDeliveryAllowed(validation, finalDayCounts);
     } else {
+      logGenerationTiming("validator_start");
       logAiPipeline(
         "[ITINERARY_PLANNER_RESULT]",
         `success=true`,
         `stopCount=${finalStops.length}`,
         `path=${usedDeterministic ? "deterministic" : "ai"}`,
       );
+      logGenerationTiming("validator_done");
     }
 
     logAiPipeline(
@@ -763,7 +839,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
     const lng = data.location?.lng;
 
     let outfitAdvice: RoamiePayloadV2["outfitAdvice"];
-    if (lat != null && lng != null) {
+    if (data.placeAuthority !== "selected_only" && lat != null && lng != null) {
       try {
         const forecast = await openWeatherGetForecast(lat, lng, data.days);
         outfitAdvice = await buildOutfitAdviceForTrip({
@@ -782,6 +858,9 @@ export const generateItinerary = createServerFn({ method: "POST" })
 
     let tripSettings: RoamiePayloadV2["tripSettings"];
     try {
+      if (data.placeAuthority === "selected_only") {
+        throw new Error("selection_optional_transit_deferred");
+      }
       const weatherHint = data.weather as {
         condition?: string;
         precipProbability?: number;
@@ -840,7 +919,16 @@ export const generateItinerary = createServerFn({ method: "POST" })
         transportTips: transit.transportTips,
       };
     } catch (e) {
-      console.warn("[Roamie] transit legs skipped on generate", e);
+      if (data.placeAuthority === "selected_only") {
+        logAiPipeline(
+          "[ITINERARY_OPTIONAL_ENRICHMENT_DEFERRED]",
+          "weatherForecast=true",
+          "outfitAdvice=true",
+          "transitLegs=true",
+        );
+      } else {
+        console.warn("[Roamie] transit legs skipped on generate", e);
+      }
     }
 
     const gated = applyItineraryLocalizationGate(coalesceItineraryItems(ai.itinerary), {

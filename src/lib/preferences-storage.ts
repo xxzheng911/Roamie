@@ -325,7 +325,7 @@ export function readCachedPreferencesSync(): TravelPreferences {
     prefsCache?.userId === userId &&
     Date.now() - prefsCache.at < PREFS_CACHE_TTL_MS
   ) {
-    return mergeTravelPreferences(prefsCache.prefs, local);
+    return compactTravelPreferences(mergeTravelPreferences(prefsCache.prefs, local));
   }
   return local;
 }

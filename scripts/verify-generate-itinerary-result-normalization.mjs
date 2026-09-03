@@ -65,12 +65,20 @@ const transportFailureShape = describeGenerateItineraryRawShape(
 assert.equal(transportFailureShape.successPath, "result.result.success");
 assert.equal(transportFailureShape.errorCodePath, "result.result.errorCode");
 assert.equal(transportFailureShape.normalizedKind, "failure");
+assert.deepEqual(transportFailureShape.tripKeys, []);
 
 const normalizedTransportSuccess = normalizeGenerateItineraryResult({
   result: { result: success, error: undefined, context: {} },
 });
 assert.equal(normalizedTransportSuccess?.success, true);
 assert.equal(unwrapGeneratedTripPayload(normalizedTransportSuccess)?.title, payload.title);
+const transportSuccessShape = describeGenerateItineraryRawShape(
+  { result: { result: success, error: undefined, context: {} } },
+  normalizedTransportSuccess,
+);
+assert.equal(transportSuccessShape.payloadPath, "result.result.trip.payload");
+assert.equal(transportSuccessShape.tripItineraryIsArray, true);
+assert.equal(transportSuccessShape.payloadItineraryIsArray, true);
 
 assert.equal(
   normalizeGenerateItineraryResult({

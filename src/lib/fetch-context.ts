@@ -1,4 +1,5 @@
 import { getPreferences } from "@/lib/preferences-storage";
+import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { RoamieLocation, RoamieRequestContext } from "@/lib/ai/context";
 import type { RoamieAIMode } from "@/lib/ai/context";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -100,22 +101,38 @@ export async function buildContextBundleForTrip(
     weather: WeatherSummary | null;
     error: string | null;
   }>,
+  options?: { weatherBlocking?: boolean; preferences?: TravelPreferences },
 ): Promise<ClientContextBundle> {
   const locale = resolveLocaleSync();
-  const preferences = await getPreferences();
+  const preferences = options?.preferences ?? (await getPreferences());
   const location = tripLocationToRoamie(destination);
 
-  let weather: WeatherSummary | null = null;
-  try {
-    const r = await fetchWeatherFn({ data: { lat: location.lat, lng: location.lng, locale } });
-    console.info("[Weather] api response (trip)", { error: r.error, hasWeather: Boolean(r.weather) });
-    if (!r.error) weather = r.weather;
-    if (weather) {
-      location.city =
-        destination.formattedName || destination.displayLabel || destination.city || weather.city;
+  const loadWeather = async (): Promise<WeatherSummary | null> => {
+    try {
+      const r = await fetchWeatherFn({ data: { lat: location.lat, lng: location.lng, locale } });
+      console.info("[Weather] api response (trip)", {
+        error: r.error,
+        hasWeather: Boolean(r.weather),
+      });
+      const weather = r.error ? null : r.weather;
+      if (weather) {
+        location.city =
+          destination.formattedName || destination.displayLabel || destination.city || weather.city;
+      }
+      return weather;
+    } catch (e) {
+      console.error("[Weather] api exception (trip):", e);
+      return null;
     }
-  } catch (e) {
-    console.error("[Weather] api exception (trip):", e);
+  };
+
+  // Selection already has authoritative destination/places. Weather is
+  // enrichment and must not hold the planner handoff open.
+  let weather: WeatherSummary | null = null;
+  if (options?.weatherBlocking === false) {
+    void loadWeather();
+  } else {
+    weather = await loadWeather();
   }
 
   return {

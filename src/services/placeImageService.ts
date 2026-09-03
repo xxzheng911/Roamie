@@ -72,6 +72,15 @@ export type TripCoverInput = {
   category?: string | null;
 };
 
+/** Synchronous bundled cover for persistence-critical paths; remote enrichment may follow. */
+export function getImmediateTripCoverImage(): {
+  url: string;
+  source: ImageSource;
+  query: null;
+} {
+  return { url: roamieDefaultCover, source: "roamie", query: null };
+}
+
 const TAIWAN_CITIES = [
   "台北", "新北", "桃園", "台中", "台南", "高雄", "基隆", "新竹", "苗栗", "彰化",
   "南投", "雲林", "嘉義", "屏東", "宜蘭", "花蓮", "台東", "澎湖", "金門", "連江",

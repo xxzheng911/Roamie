@@ -10,11 +10,7 @@
  * Only `none` may render the default Roamie avatar.
  */
 import { profileMediaPath } from "@/lib/profile-media-storage";
-import {
-  readCachedProfile,
-  readLastCachedProfileUserId,
-  writeCachedProfile,
-} from "@/lib/profile-persisted-cache";
+import { readCachedProfile, writeCachedProfile } from "@/lib/profile-persisted-cache";
 import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
 import {
   buildUserMediaCacheKey,
@@ -198,11 +194,7 @@ async function hydrateFromDisk(
 export function seedUserMediaFromPersistedSync(userId?: string | null): UserMediaSnapshot {
   if (typeof window === "undefined") return snapshot;
 
-  const resolved =
-    userId?.trim() ||
-    readCachedAuthenticatedUserIdSync() ||
-    readLastCachedProfileUserId() ||
-    null;
+  const resolved = userId?.trim() || readCachedAuthenticatedUserIdSync() || null;
   const seedKey = resolved ?? "__anon__";
 
   // Already seeded for this identity — do not setSnapshot / log again.
@@ -236,8 +228,7 @@ export function seedUserMediaFromPersistedSync(userId?: string | null): UserMedi
   const persisted = readCachedProfile(resolved, { quiet: true });
   const avatarUrl = stableMediaUrl(persisted?.avatarUrl);
   const coverUrl = stableMediaUrl(persisted?.coverImageUrl);
-  const knownCustom =
-    persisted?.hasCustomAvatar === true || Boolean(avatarUrl);
+  const knownCustom = persisted?.hasCustomAvatar === true || Boolean(avatarUrl);
   const knownNone = persisted?.hasCustomAvatar === false && !avatarUrl;
   const avatarVersion = versionOf(persisted?.avatarUpdatedAt ?? persisted?.profileUpdatedAt);
   const coverVersion = versionOf(persisted?.profileUpdatedAt ?? persisted?.avatarUpdatedAt);
@@ -260,8 +251,7 @@ export function seedUserMediaFromPersistedSync(userId?: string | null): UserMedi
     // Custom known without local blob → pending placeholder (not default).
     // None confirmed → ready for default. Unknown → not ready.
     isAvatarReady:
-      avatarStatus === "none" ||
-      (snapshot.userId === resolved && Boolean(snapshot.avatarLocalUri)),
+      avatarStatus === "none" || (snapshot.userId === resolved && Boolean(snapshot.avatarLocalUri)),
     isCoverReady: !coverUrl || (snapshot.userId === resolved && Boolean(snapshot.coverLocalUri)),
     lastValidatedAt: null,
     hydratedAt: snapshot.hydratedAt ?? performance.now(),
@@ -275,15 +265,12 @@ export function seedUserMediaFromPersistedSync(userId?: string | null): UserMedi
 /**
  * Cold-boot hydrate: paint from IndexedDB + persisted metadata without waiting for profile API.
  */
-export async function hydrateUserMediaFromCache(userId?: string | null): Promise<UserMediaSnapshot> {
+export async function hydrateUserMediaFromCache(
+  userId?: string | null,
+): Promise<UserMediaSnapshot> {
   seedUserMediaFromPersistedSync(userId);
 
-  const resolved =
-    userId?.trim() ||
-    readCachedAuthenticatedUserIdSync() ||
-    readLastCachedProfileUserId() ||
-    snapshot.userId ||
-    null;
+  const resolved = userId?.trim() || readCachedAuthenticatedUserIdSync() || null;
   const hydrateKey = resolved ?? "__anon__";
   if (hydrateInflight?.key === hydrateKey) {
     return hydrateInflight.promise;
@@ -298,9 +285,7 @@ export async function hydrateUserMediaFromCache(userId?: string | null): Promise
   }
 }
 
-async function runHydrateUserMediaFromCache(
-  resolved: string | null,
-): Promise<UserMediaSnapshot> {
+async function runHydrateUserMediaFromCache(resolved: string | null): Promise<UserMediaSnapshot> {
   const t0 = performance.now();
   if (!resolved) {
     // Stay unknown — never show default while session user is unresolved.
@@ -314,8 +299,7 @@ async function runHydrateUserMediaFromCache(
   }
 
   // Same-user hydrate must never clear a good memory/disk paint first.
-  const keepLocalAvatar =
-    snapshot.userId === resolved && Boolean(snapshot.avatarLocalUri);
+  const keepLocalAvatar = snapshot.userId === resolved && Boolean(snapshot.avatarLocalUri);
 
   const persisted = readCachedProfile(resolved, { quiet: true });
   const avatarUrl = stableMediaUrl(persisted?.avatarUrl) ?? snapshot.avatarUrl;
@@ -369,10 +353,7 @@ async function runHydrateUserMediaFromCache(
     Boolean(avatarUrl || avatarHit || persisted?.hasCustomAvatar === true) ||
     (keepLocalAvatar && snapshot.avatarStatus === "custom");
   const confirmedNone =
-    !hasCustom &&
-    persisted?.hasCustomAvatar === false &&
-    !avatarUrl &&
-    !avatarHit;
+    !hasCustom && persisted?.hasCustomAvatar === false && !avatarUrl && !avatarHit;
 
   const avatarStatus: AvatarPresence = hasCustom
     ? "custom"
@@ -382,17 +363,19 @@ async function runHydrateUserMediaFromCache(
         ? "custom"
         : "unknown";
 
-  const nextLocalUri =
-    avatarHit?.uri ?? (keepLocalAvatar ? snapshot.avatarLocalUri : null);
+  const nextLocalUri = avatarHit?.uri ?? (keepLocalAvatar ? snapshot.avatarLocalUri : null);
 
   setSnapshot({
     userId: resolved,
     avatarUrl: avatarHit?.remoteUrl ?? avatarUrl ?? (keepLocalAvatar ? snapshot.avatarUrl : null),
     avatarCacheKey:
-      avatarHit?.cacheKey ?? preferredAvatarKey ?? (keepLocalAvatar ? snapshot.avatarCacheKey : null),
+      avatarHit?.cacheKey ??
+      preferredAvatarKey ??
+      (keepLocalAvatar ? snapshot.avatarCacheKey : null),
     avatarLocalUri: nextLocalUri,
     avatarVersion:
-      avatarHit?.version ?? (avatarUrl ? avatarVersion : keepLocalAvatar ? snapshot.avatarVersion : null),
+      avatarHit?.version ??
+      (avatarUrl ? avatarVersion : keepLocalAvatar ? snapshot.avatarVersion : null),
     coverUrl: coverHit?.remoteUrl ?? coverUrl,
     coverCacheKey: coverHit?.cacheKey ?? preferredCoverKey,
     coverLocalUri: coverHit?.uri ?? null,
@@ -401,7 +384,10 @@ async function runHydrateUserMediaFromCache(
     hasCustomAvatar: avatarStatus === "custom" ? true : avatarStatus === "none" ? false : null,
     hasCustomCover: Boolean(coverUrl || coverHit),
     // Ready for default only when confirmed none. Custom without blob stays not-default.
-    isAvatarReady: avatarStatus === "none" || Boolean(nextLocalUri) || Boolean(avatarUrl && avatarStatus === "custom"),
+    isAvatarReady:
+      avatarStatus === "none" ||
+      Boolean(nextLocalUri) ||
+      Boolean(avatarUrl && avatarStatus === "custom"),
     isCoverReady: Boolean(coverHit) || !coverUrl,
     lastValidatedAt: null,
     hydratedAt: snapshot.hydratedAt ?? t0,
@@ -519,10 +505,7 @@ export async function ensureRemoteMediaCached(params: {
   const task = (async () => {
     try {
       const raw = await fetchBlob(stable);
-      const display = await downscaleImageBlob(
-        raw,
-        displayMaxEdgeForKind(params.kind),
-      );
+      const display = await downscaleImageBlob(raw, displayMaxEdgeForKind(params.kind));
       await writeUserMediaDisk({
         cacheKey,
         userId: params.userId,
@@ -575,8 +558,7 @@ function applyKindReady(
 ): void {
   const started = loadStartedAt.get(params.userId);
   const elapsed =
-    params.elapsedMs ??
-    (started != null ? Math.round(performance.now() - started) : undefined);
+    params.elapsedMs ?? (started != null ? Math.round(performance.now() - started) : undefined);
 
   if (kind === "avatar") {
     const prevKey = snapshot.avatarCacheKey;
@@ -651,12 +633,8 @@ export async function validateUserMediaRemote(params: {
   const avatarVersion = versionOf(params.avatarUpdatedAt ?? params.profileUpdatedAt);
   const coverVersion = versionOf(params.profileUpdatedAt ?? params.avatarUpdatedAt);
 
-  const nextAvatarKey = avatarUrl
-    ? avatarCacheKeyFor(params.userId, avatarVersion)
-    : null;
-  const nextCoverKey = coverUrl
-    ? coverCacheKeyFor(params.userId, coverVersion)
-    : null;
+  const nextAvatarKey = avatarUrl ? avatarCacheKeyFor(params.userId, avatarVersion) : null;
+  const nextCoverKey = coverUrl ? coverCacheKeyFor(params.userId, coverVersion) : null;
 
   // Skip duplicate validate bursts (AvatarProvider + CoverProvider both refresh).
   if (
@@ -698,9 +676,7 @@ export async function validateUserMediaRemote(params: {
     snapshot.avatarCacheKey === nextAvatarKey &&
     Boolean(snapshot.avatarLocalUri);
   const coverSame =
-    Boolean(coverUrl) &&
-    snapshot.coverCacheKey === nextCoverKey &&
-    Boolean(snapshot.coverLocalUri);
+    Boolean(coverUrl) && snapshot.coverCacheKey === nextCoverKey && Boolean(snapshot.coverLocalUri);
 
   if (!avatarUrl) {
     if (params.confirmAvatarRemoved || (!hadCustom && !snapshot.avatarLocalUri)) {
@@ -817,10 +793,7 @@ export async function applyLocalUserMediaBlob(params: {
 }): Promise<string> {
   const version = params.version ?? String(Date.now());
   const stable = stableMediaUrl(params.remoteUrl) ?? params.remoteUrl;
-  const display = await downscaleImageBlob(
-    params.blob,
-    displayMaxEdgeForKind(params.kind),
-  );
+  const display = await downscaleImageBlob(params.blob, displayMaxEdgeForKind(params.kind));
   const cacheKey = buildUserMediaCacheKey({
     userId: params.userId,
     kind: params.kind,

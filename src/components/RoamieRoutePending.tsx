@@ -2,6 +2,7 @@
 export function RoamieRoutePending() {
   return (
     <div
+      data-loading-owner="router-pending"
       className="roamie-splash roamie-splash--boot-cream"
       role="status"
       aria-live="polite"

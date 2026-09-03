@@ -110,6 +110,11 @@ export type SearchPlacesInput = {
   cacheCity?: string;
   cachePlaceId?: string;
   cacheDestination?: string;
+  destinationName?: string;
+  searchMode?: "destination" | "nearby";
+  skipLocationBias?: boolean;
+  intentCategory?: string;
+  planningSelectionStyle?: string;
 };
 
 export type SearchPlacesFn = (

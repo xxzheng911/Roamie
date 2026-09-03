@@ -12,15 +12,17 @@ import { formatTripLocationLabel } from "@/lib/location/format";
 import { tripLocationToRoamie } from "@/lib/location/to-roamie";
 import type { TripLocation } from "@/lib/location/types";
 import { syncSessionPlaceMemory } from "@/lib/place-planning-memory";
-import {
-  buildTravelStyleAiContext,
-  normalizePlanTravelStyles,
-} from "@/lib/plan-travel-style";
+import { buildTravelStyleAiContext, normalizePlanTravelStyles } from "@/lib/plan-travel-style";
 import {
   isValidTripPlaceRef,
   logTripPlace,
   tripLocationToPlaceRef,
 } from "@/lib/trip/trip-place-ref";
+import { createPlanningSelectionSession } from "@/lib/planning-selection";
+import {
+  logPlanningSelectionDateAuthority,
+  resolvePlanningSelectionDateAuthority,
+} from "@/lib/planning-selection-date-authority";
 
 export type PlanTripFormInput = {
   destination: TripLocation;
@@ -97,7 +99,10 @@ export function buildPlanTripInitialContext(
   return lines.filter(Boolean).join("\n");
 }
 
-export { buildPlanTripHandoffOpening, buildPlanAiHandoffOpening } from "@/lib/i18n/plan-handoff-copy";
+export {
+  buildPlanTripHandoffOpening,
+  buildPlanAiHandoffOpening,
+} from "@/lib/i18n/plan-handoff-copy";
 
 export function preparePlanTripSession(
   form: PlanTripFormInput,
@@ -145,6 +150,30 @@ export function preparePlanTripSession(
     fromPlanForm: true,
     fromPlanAi: planAiMode,
     planAiMode,
+    planningSelection: planAiMode
+      ? createPlanningSelectionSession({
+          styles: normalizePlanTravelStyles(
+            form.normalizedStyles?.length ? form.normalizedStyles : form.styles,
+            options?.localeStyleOptions ?? form.styles,
+          ),
+          destination: {
+            name: destRef.name,
+            lat: destRef.lat,
+            lng: destRef.lng,
+            administrativeNames: [
+              form.destination.city,
+              form.destination.region,
+              form.destination.formattedName,
+              form.destination.address,
+            ].filter((name): name is string => Boolean(name?.trim())),
+          },
+          dateAuthority: {
+            startDate: form.startDate,
+            endDate: form.endDate,
+            tripDays: form.days,
+          },
+        })
+      : undefined,
     pendingHandoff: true,
     travelDate:
       form.startDate && form.endDate
@@ -165,12 +194,18 @@ export function preparePlanTripSession(
     updatedAt: new Date().toISOString(),
   };
 
+  if (planAiMode) {
+    const authority = resolvePlanningSelectionDateAuthority(base);
+    const sessionId = base.planningSelection?.id;
+    logPlanningSelectionDateAuthority("handoff_build", authority, sessionId);
+    logPlanningSelectionDateAuthority("chat_session", authority, sessionId);
+    logPlanningSelectionDateAuthority("selection_session", authority, sessionId);
+  }
+
   return syncSessionPlaceMemory(base);
 }
 
-export function markPlanHandoffComplete(
-  session: ChatPlanningSession,
-): ChatPlanningSession {
+export function markPlanHandoffComplete(session: ChatPlanningSession): ChatPlanningSession {
   return {
     ...session,
     pendingHandoff: false,

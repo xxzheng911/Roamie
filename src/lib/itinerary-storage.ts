@@ -209,11 +209,14 @@ function payloadTitleForSave(
   return { ...payload, title: autoTitle };
 }
 
-async function persistItinerary(itinerary: Itinerary | RoamiePayloadV2): Promise<StoredItinerary> {
+async function persistItinerary(
+  itinerary: Itinerary | RoamiePayloadV2,
+  options?: { coverMeta?: TripCoverMeta },
+): Promise<StoredItinerary> {
   const withTitle = withAutoTitle(itinerary);
   const userId = await getAuthenticatedUserId();
   const mood = isRoamiePayloadV2(withTitle) ? withTitle.moodTag : (withTitle as Itinerary).mood;
-  const coverMeta = await resolveCoverForSave(withTitle);
+  const coverMeta = options?.coverMeta ?? await resolveCoverForSave(withTitle);
   const autoTitle = isRoamiePayloadV2(withTitle) ? withTitle.title : (withTitle as Itinerary).title;
 
   if (userId) {
@@ -258,8 +261,9 @@ function afterTripMutation(result: StoredItinerary | null): StoredItinerary | nu
 export async function confirmSaveTrip(
   itinerary: Itinerary | RoamiePayloadV2,
   source: "chat" | "plan" = "chat",
+  options?: { coverMeta?: TripCoverMeta },
 ): Promise<StoredItinerary> {
-  const saved = await persistItinerary(tagUserSavedTrip(itinerary, source));
+  const saved = await persistItinerary(tagUserSavedTrip(itinerary, source), options);
   broadcastTripsChanged();
   return saved;
 }

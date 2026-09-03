@@ -105,6 +105,7 @@ const ExploreSearchInput = z.object({
   searchMode: z.enum(["destination", "nearby"]).optional(),
   skipLocationBias: z.boolean().optional(),
   intentCategory: z.string().max(32).optional(),
+  planningSelectionStyle: z.string().max(32).optional(),
 });
 
 type RawPlace = RawPlaceHours;
@@ -124,6 +125,7 @@ function mapRawPlaces(
     screen?: PlacesScreen;
     locale?: Locale;
     intentCategory?: string;
+    planningSelectionStyle?: string;
     searchMode?: string;
   },
 ): PlaceResult[] {
@@ -174,9 +176,15 @@ function mapRawPlaces(
       if (options?.screen === "explore") return true;
       if (isChat) {
         const recContext = chatNearbyRelaxed ? "chat_nearby" : "chat_destination_recommend";
+        const types = place.types ?? [];
+        const allowVerifiedCampingLodging =
+          options?.intentCategory === "camping" &&
+          (types.includes("campground") || types.includes("rv_park"));
+        const allowExplicitFamilyPlace = options?.intentCategory === "family";
         return isRecommendablePlace(
           placeResultToRecommendableInput(place),
           recContext,
+          { allowLodging: allowVerifiedCampingLodging, allowExplicitFamilyPlace },
         ).ok;
       }
       return isRecommendablePlace(placeResultToRecommendableInput(place), "explore_map").ok;
@@ -230,12 +238,13 @@ async function postPlaces(
     destinationName?: string;
     searchMode?: string;
     intentCategory?: string;
+    planningSelectionStyle?: string;
   },
 ): Promise<{ places: RawPlace[]; error: string | null; nextPageToken?: string }> {
   const circle =
-    (body.locationRestriction as { circle?: { center?: { latitude?: number; longitude?: number } } })
+    (body.locationRestriction as { circle?: { center?: { latitude?: number; longitude?: number }; radius?: number } })
       ?.circle ??
-    (body.locationBias as { circle?: { center?: { latitude?: number; longitude?: number } } })
+    (body.locationBias as { circle?: { center?: { latitude?: number; longitude?: number }; radius?: number } })
       ?.circle;
   const httpKey = buildPlacesHttpKey(callType, {
     lat: circle?.center?.latitude,
@@ -249,7 +258,9 @@ async function postPlaces(
     skipBias: body.skipLocationBias === true ? "1" : undefined,
   });
 
-  const guarded = await runPlacesApiDeduped(httpKey, callType, async () => {
+  let guarded: { places: RawPlace[]; error: string | null; nextPageToken?: string } | null;
+  try {
+    guarded = await runPlacesApiDeduped(httpKey, callType, async () => {
     recordPlacesHttpCall(callType, {
       functionName: "postPlaces",
       requestKey: httpKey,
@@ -291,7 +302,27 @@ async function postPlaces(
       error: null as string | null,
       nextPageToken: json.nextPageToken,
     };
-  });
+    });
+  } catch (error) {
+    if (stats?.caller === "planning_selection_lane") {
+      devVerboseInfo("[PLANNING_SELECTION_PLACES_RAW]", {
+        style: stats.planningSelectionStyle ?? "",
+        family: stats.intentCategory ?? stats.category ?? "",
+        query: typeof body.textQuery === "string" ? body.textQuery : "",
+        destinationText: stats.destinationName ?? "",
+        centerLat: circle?.center?.latitude ?? null,
+        centerLng: circle?.center?.longitude ?? null,
+        radius: circle?.radius ?? null,
+        spatialContract: body.locationRestriction ? "locationRestriction" : body.locationBias ? "locationBias" : "none",
+        rawResultCount: 0,
+        apiSuccess: false,
+        error: error instanceof Error ? error.message : String(error),
+        returnedTypeSummary: {},
+        returnedAdministrativeAreaSummary: {},
+      });
+    }
+    throw error;
+  }
 
   if (guarded === null) {
     if (stats?.screen === "chat") {
@@ -303,6 +334,37 @@ async function postPlaces(
     }
     // Soft-fail: never throw — callers must degrade to existing places / skip nearby.
     return { places: [], error: "places_rate_limited" };
+  }
+  if (stats?.caller === "planning_selection_lane") {
+    const places = guarded.places ?? [];
+    const typeSummary = places.reduce<Record<string, number>>((summary, place) => {
+      for (const type of place.types ?? []) summary[type] = (summary[type] ?? 0) + 1;
+      return summary;
+    }, {});
+    const administrativeAreaSummary = places.reduce<Record<string, number>>((summary, place) => {
+      const address = place.formattedAddress ?? place.shortFormattedAddress ?? "unknown";
+      const area =
+        address.match(/(?:台灣)?([^,\d]{2,8}(?:縣|市|都|府|道))/)?.[1] ??
+        address.match(/\b([A-Za-z][A-Za-z .'-]{1,30}(?:Prefecture|County|City)|Tokyo)\b/i)?.[1] ??
+        "unknown";
+      summary[area] = (summary[area] ?? 0) + 1;
+      return summary;
+    }, {});
+    devVerboseInfo("[PLANNING_SELECTION_PLACES_RAW]", {
+      style: stats.planningSelectionStyle ?? "",
+      family: stats.intentCategory ?? stats.category ?? "",
+      query: typeof body.textQuery === "string" ? body.textQuery : "",
+      destinationText: stats.destinationName ?? "",
+      centerLat: circle?.center?.latitude ?? null,
+      centerLng: circle?.center?.longitude ?? null,
+      radius: circle?.radius ?? null,
+      spatialContract: body.locationRestriction ? "locationRestriction" : body.locationBias ? "locationBias" : "none",
+      rawResultCount: places.length,
+      apiSuccess: !guarded.error,
+      error: guarded.error,
+      returnedTypeSummary: typeSummary,
+      returnedAdministrativeAreaSummary: administrativeAreaSummary,
+    });
   }
   return guarded;
 }
@@ -322,6 +384,7 @@ type PlacesSearchStats = {
   destinationName?: string;
   searchMode?: string;
   intentCategory?: string;
+  planningSelectionStyle?: string;
 };
 
 function buildSearchStats(
@@ -334,6 +397,7 @@ function buildSearchStats(
     destinationName: data.destinationName,
     searchMode: data.searchMode,
     intentCategory: data.intentCategory,
+    planningSelectionStyle: data.planningSelectionStyle,
   };
 }
 

@@ -33,6 +33,18 @@ type ExternalProps = CommonProps & {
 
 export type ProfileAvatarProps = SelfProps | ExternalProps;
 
+const avatarRenderStartedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+let avatarFirstRenderSnapshotLogged = false;
+
+function logAvatarRenderStage(stage: string, detail?: Record<string, unknown>) {
+  const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+  console.info("[AVATAR_RENDER_STAGE]", {
+    stage,
+    elapsedMs: Math.round(now - avatarRenderStartedAt),
+    ...detail,
+  });
+}
+
 function AvatarImageNode({
   src,
   alt,
@@ -41,6 +53,7 @@ function AvatarImageNode({
   imgClassName,
   /** Stable identity — prefer cache key so signed/?v= URL changes don't remount */
   stableKey,
+  source,
 }: {
   src: string;
   alt: string;
@@ -48,7 +61,14 @@ function AvatarImageNode({
   className?: string;
   imgClassName?: string;
   stableKey?: string;
+  source?: "memory" | "local" | "remote" | "default";
 }) {
+  const loggedStart = useRef(false);
+  useLayoutEffect(() => {
+    if (loggedStart.current) return;
+    loggedStart.current = true;
+    logAvatarRenderStage("image_decode_start", { source: source ?? "remote" });
+  }, [source]);
   return (
     <img
       key={stableKey ?? "avatar"}
@@ -58,18 +78,17 @@ function AvatarImageNode({
       fetchPriority={priority ? "high" : "auto"}
       decoding="async"
       draggable={false}
+      onLoad={() => {
+        logAvatarRenderStage("image_decode_done", { source: source ?? "remote" });
+        logAvatarRenderStage("avatar_render_ready", { source: source ?? "remote" });
+      }}
+      onError={() => logAvatarRenderStage("image_decode_error", { source: source ?? "remote" })}
       className={cn("h-full w-full object-cover", imgClassName, className)}
     />
   );
 }
 
-function NeutralAvatarPlaceholder({
-  className,
-  alt,
-}: {
-  className?: string;
-  alt?: string;
-}) {
+function NeutralAvatarPlaceholder({ className, alt }: { className?: string; alt?: string }) {
   return (
     <div
       className={cn("h-full w-full bg-secondary", className)}
@@ -80,7 +99,13 @@ function NeutralAvatarPlaceholder({
 }
 
 function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false }: SelfProps) {
-  const { avatarDisplaySrc, avatarPending, showAvatarDefault } = useAvatar();
+  const {
+    avatarDisplaySrc,
+    avatarDisplaySource,
+    avatarPending,
+    showAvatarDefault,
+    firstRenderSnapshot,
+  } = useAvatar();
   const media = useUserMediaStore();
   const stableKey = media.avatarCacheKey ?? "self-avatar";
   const loggedFirstRender = useRef(false);
@@ -88,6 +113,10 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
   useLayoutEffect(() => {
     if (loggedFirstRender.current) return;
     loggedFirstRender.current = true;
+    logAvatarRenderStage("component_mount", {
+      cacheStatus: media.avatarLocalUri ? "local_hit" : media.avatarUrl ? "memory_hit" : "miss",
+    });
+    logAvatarRenderStage("user_identity_ready", { ready: Boolean(media.userId) });
     const elapsedMs =
       media.hydratedAt != null ? Math.round(performance.now() - media.hydratedAt) : null;
     let source: "memory" | "disk" | "neutral" | "default" | "remote";
@@ -106,14 +135,19 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
       avatarStatus: media.avatarStatus,
       hasCustomAvatar: media.hasCustomAvatar,
     });
-    if (source === "default" && media.avatarStatus !== "none") {
-      logUserMedia("HOME_AVATAR_DEFAULT_BLOCKED", {
-        reason: "custom_avatar_status_unknown",
-        avatarStatus: media.avatarStatus,
-      });
-    } else if (!avatarDisplaySrc && media.avatarStatus === "unknown") {
-      logUserMedia("HOME_AVATAR_DEFAULT_BLOCKED", {
-        reason: "custom_avatar_status_unknown",
+    if (!avatarFirstRenderSnapshotLogged) {
+      avatarFirstRenderSnapshotLogged = true;
+      const renderBranch = avatarDisplaySrc
+        ? avatarDisplaySource === "remote_custom"
+          ? "remote_custom"
+          : "cached_custom"
+        : showAvatarDefault
+          ? "verified_default"
+          : "neutral_pending";
+      console.info("[AVATAR_FIRST_RENDER_SNAPSHOT]", {
+        route: typeof location !== "undefined" ? location.pathname : "",
+        ...firstRenderSnapshot,
+        renderBranch,
       });
     }
   }, [
@@ -123,8 +157,25 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
     media.avatarUrl,
     media.hasCustomAvatar,
     media.hydratedAt,
+    media.userId,
+    avatarDisplaySource,
+    firstRenderSnapshot,
     showAvatarDefault,
   ]);
+
+  useLayoutEffect(() => {
+    const renderBranch = avatarDisplaySrc
+      ? avatarDisplaySource === "remote_custom"
+        ? "remote_custom"
+        : "cached_custom"
+      : showAvatarDefault
+        ? "default_verified"
+        : "neutral_pending";
+    logAvatarRenderStage("render_branch", {
+      renderBranch,
+      avatarStatus: media.avatarStatus,
+    });
+  }, [avatarDisplaySource, avatarDisplaySrc, media.avatarStatus, showAvatarDefault]);
 
   if (avatarDisplaySrc) {
     return (
@@ -135,11 +186,13 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
         className={className}
         imgClassName={imgClassName}
         stableKey={stableKey}
+        source={media.avatarLocalUri ? "local" : "remote"}
       />
     );
   }
 
-  // unknown / custom without bytes → neutral placeholder (never default).
+  // Unknown/custom-without-bytes is neutral. Bundled default exclusively means
+  // the provider has verified that this user has no custom avatar.
   if (
     avatarPending ||
     media.avatarStatus === "unknown" ||
@@ -158,6 +211,7 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
         className={className}
         imgClassName={imgClassName}
         stableKey="default-avatar"
+        source="default"
       />
     );
   }
@@ -177,8 +231,7 @@ function ProfileAvatarExternal({
   showDefault = false,
   displaySrc,
 }: ExternalProps) {
-  const resolved =
-    displaySrc ?? resolveAvatarDisplayUrl(avatarUrl, avatarUpdatedAt);
+  const resolved = displaySrc ?? resolveAvatarDisplayUrl(avatarUrl, avatarUpdatedAt);
 
   if (resolved) {
     return (

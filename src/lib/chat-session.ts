@@ -36,6 +36,7 @@ import { isDestinationAdviceActive } from "@/lib/ai/trip-planning-context";
 import { isFlexiblePreferenceReply } from "@/lib/ai/destination-advice";
 import { resolvePlaceDisplayName } from "@/lib/place-display-name";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { compactTravelPreferences } from "@/lib/travel-pref-compact";
 
 export {
   buildContextualMoodHandoffOpening,
@@ -46,6 +47,92 @@ export {
 export type { MoodFlowHandoffInput };
 
 const SESSION_KEY = "roamie:chat-planning";
+const DISPOSABLE_SESSION_KEYS = [
+  "roamie:chat-ui-cache",
+  "roamie:plan-form-draft",
+  "roamie:home-mood-ui",
+] as const;
+let memoryChatSession: ChatPlanningSession | null = null;
+
+function utf8Bytes(value: string): number {
+  return typeof TextEncoder !== "undefined" ? new TextEncoder().encode(value).byteLength : value.length;
+}
+
+function clearDisposableChatSessionCaches(): string[] {
+  if (typeof sessionStorage === "undefined") return [];
+  const removed: string[] = [];
+  for (const key of DISPOSABLE_SESSION_KEYS) {
+    if (sessionStorage.getItem(key) == null) continue;
+    sessionStorage.removeItem(key);
+    removed.push(key);
+  }
+  for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+    const key = sessionStorage.key(index);
+    if (!key?.startsWith(REC_PICKS_PREFIX)) continue;
+    sessionStorage.removeItem(key);
+    removed.push(key);
+  }
+  return removed;
+}
+
+function sessionStorageInventory(): Array<{ key: string; bytes: number }> {
+  if (typeof sessionStorage === "undefined") return [];
+  const entries: Array<{ key: string; bytes: number }> = [];
+  for (let index = 0; index < sessionStorage.length; index += 1) {
+    const key = sessionStorage.key(index);
+    if (!key) continue;
+    entries.push({ key, bytes: utf8Bytes(sessionStorage.getItem(key) ?? "") });
+  }
+  return entries.sort((a, b) => b.bytes - a.bytes);
+}
+
+function storageInventory(storage: Storage): Array<{ key: string; bytes: number }> {
+  const entries: Array<{ key: string; bytes: number }> = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (!key) continue;
+    entries.push({ key, bytes: utf8Bytes(storage.getItem(key) ?? "") });
+  }
+  return entries.sort((a, b) => b.bytes - a.bytes);
+}
+
+function valueShape(value: unknown): { arrayLength?: number; objectCount?: number } {
+  if (Array.isArray(value)) return { arrayLength: value.length };
+  if (value && typeof value === "object") {
+    return { objectCount: Object.keys(value as Record<string, unknown>).length };
+  }
+  return {};
+}
+
+function serializedBytes(value: unknown): number {
+  try {
+    return utf8Bytes(JSON.stringify(value) ?? "");
+  } catch {
+    return -1;
+  }
+}
+
+function payloadBreakdown(session: ChatPlanningSession) {
+  const topLevel = Object.entries(session)
+    .map(([path, value]) => ({ path, bytes: serializedBytes(value), ...valueShape(value) }))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 20);
+  const nestedLargest = topLevel.slice(0, 3).flatMap((parent) => {
+    const value = (session as Record<string, unknown>)[parent.path];
+    if (!value || typeof value !== "object") return [];
+    // Bound diagnostics for corrupted objects with millions of numeric keys.
+    return Object.entries(value as Record<string, unknown>)
+      .slice(0, 500)
+      .map(([key, child]) => ({
+        path: `${parent.path}.${key}`,
+        bytes: serializedBytes(child),
+        ...valueShape(child),
+      }))
+      .sort((a, b) => b.bytes - a.bytes)
+      .slice(0, 20);
+  });
+  return { topLevel, nestedLargest };
+}
 
 export type ChatPhase =
   | "discover"
@@ -177,6 +264,10 @@ export type ChatPlanningSession = {
   /** 「讓 Roamie 替我安排」AI 行程規劃模式 */
   fromPlanAi?: boolean;
   planAiMode?: boolean;
+  /** 「讓 Roamie 替我安排」的獨立選點 session。 */
+  planningSelection?: import("@/lib/planning-selection").PlanningSelectionSession;
+  /** Plan → Chat Selection handoff diagnostics; not a persistence authority. */
+  planningSelectionHandoffTrace?: import("@/lib/planning-selection-handoff-log").PlanningSelectionHandoffTrace;
   /** 規劃表單開場已完成 */
   planHandoffDone?: boolean;
   tripStartDate?: string;
@@ -436,6 +527,7 @@ export function isUserConfirmingItinerary(text: string): boolean {
 
 export function loadChatSession(): ChatPlanningSession {
   if (typeof window === "undefined") return createEmptySession();
+  if (memoryChatSession) return syncSessionPlaceMemory(memoryChatSession);
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
     if (!raw) return createEmptySession();
@@ -450,14 +542,104 @@ export function loadChatSession(): ChatPlanningSession {
 
 export function saveChatSession(session: ChatPlanningSession): void {
   if (typeof window === "undefined") return;
-  sessionStorage.setItem(
-    SESSION_KEY,
-    JSON.stringify({ ...session, updatedAt: new Date().toISOString() }),
+  const memorySession = { ...session, updatedAt: new Date().toISOString() };
+  memoryChatSession = memorySession;
+  // Preferences are a small schema. Persisting unknown/numeric-key baggage here
+  // previously allowed a corrupted in-memory preference snapshot to inflate a
+  // Selection handoff into tens of MB.
+  const persisted = {
+    ...memorySession,
+    preferences: memorySession.preferences
+      ? compactTravelPreferences(memorySession.preferences)
+      : undefined,
+  };
+  const rawBreakdown = payloadBreakdown(memorySession);
+  const payload = JSON.stringify(persisted);
+  const trace = session.planningSelectionHandoffTrace;
+  const planningSelectionPayload = JSON.stringify(session.planningSelection ?? null);
+  const messagesPayload = JSON.stringify([]);
+  const selectedPayload = JSON.stringify(session.planningSelection?.selectedPlaces ?? []);
+  const shownPayload = JSON.stringify(session.planningSelection?.shownPlaceIds ?? []);
+  const candidatePoolsPayload = JSON.stringify(
+    session.planningSelection?.lanes.flatMap((lane) => lane.candidatePool ?? []) ?? [],
   );
+  if (session.planningSelection) {
+    const sessionInventory = storageInventory(sessionStorage);
+    const localInventory = storageInventory(localStorage);
+    console.info("[CHAT_SESSION_PAYLOAD_BREAKDOWN]", {
+      totalBytes: utf8Bytes(payload),
+      topLevel: rawBreakdown.topLevel,
+      nestedLargest: rawBreakdown.nestedLargest,
+      durablePreferencesBytes: serializedBytes(persisted.preferences),
+    });
+    console.info("[CHAT_STORAGE_FOOTPRINT]", {
+      sessionStorageTotalBytes: sessionInventory.reduce((sum, item) => sum + item.bytes, 0),
+      localStorageTotalBytes: localInventory.reduce((sum, item) => sum + item.bytes, 0),
+      sessionStorageLargestKeys: sessionInventory.slice(0, 12),
+      localStorageLargestKeys: localInventory.slice(0, 12),
+    });
+    if (utf8Bytes(payload) > 512 * 1024) {
+      console.warn("[CHAT_SESSION_PAYLOAD_BUDGET_EXCEEDED]", {
+        payloadBytes: utf8Bytes(payload),
+        budgetBytes: 512 * 1024,
+      });
+    }
+  }
+  const logWrite = (status: "start" | "done" | "error", error?: unknown) => {
+    if (!trace) return;
+    console.info("[PLANNING_SELECTION_HANDOFF_PERSIST_STAGE]", {
+      stage: "chat_session_local_write",
+      status,
+      target: "sessionStorage",
+      payloadBytes: utf8Bytes(payload),
+      storageKey: SESSION_KEY,
+      elapsedMs: Date.now() - trace.startedAt,
+      errorName: error instanceof Error ? error.name : "",
+      errorMessage: error instanceof Error ? error.message : error ? String(error) : "",
+      planningSelectionBytes: utf8Bytes(planningSelectionPayload),
+      workspaceSnapshotBytes: 0,
+      messagesBytes: utf8Bytes(messagesPayload),
+      selectedPlacesBytes: utf8Bytes(selectedPayload),
+      shownPlacesBytes: utf8Bytes(shownPayload),
+      candidatePoolsBytes: utf8Bytes(candidatePoolsPayload),
+    });
+  };
+
+  logWrite("start");
+  try {
+    sessionStorage.setItem(SESSION_KEY, payload);
+    logWrite("done");
+  } catch (firstError) {
+    logWrite("error", firstError);
+    const inventoryBeforeCleanup = sessionStorageInventory();
+    const removedKeys = clearDisposableChatSessionCaches();
+    console.warn("[CHAT_SESSION_STORAGE_RECOVERY]", {
+      storageKey: SESSION_KEY,
+      payloadBytes: utf8Bytes(payload),
+      removedKeys,
+      totalBytesBeforeCleanup: inventoryBeforeCleanup.reduce((sum, item) => sum + item.bytes, 0),
+      largestKeysBeforeCleanup: inventoryBeforeCleanup.slice(0, 12),
+      fallback: "memory",
+    });
+    try {
+      sessionStorage.setItem(SESSION_KEY, payload);
+      logWrite("done");
+    } catch (retryError) {
+      // The in-memory session is authoritative for this SPA navigation. Chat
+      // hydration reads it before sessionStorage, so quota cannot drop handoff.
+      console.warn("[CHAT_SESSION_MEMORY_FALLBACK]", {
+        storageKey: SESSION_KEY,
+        payloadBytes: utf8Bytes(payload),
+        errorName: retryError instanceof Error ? retryError.name : "",
+        errorMessage: retryError instanceof Error ? retryError.message : String(retryError),
+      });
+    }
+  }
 }
 
 export function clearChatSession(): void {
   if (typeof window === "undefined") return;
+  memoryChatSession = null;
   sessionStorage.removeItem(SESSION_KEY);
 }
 
@@ -760,6 +942,7 @@ export function extractPlanningHintsFromText(
 
 export function canGenerateItinerary(session: ChatPlanningSession): boolean {
   const hasPlaces = session.selectedPlaces.length >= 1;
+  if (session.planningSelection?.mode === "planning_selection" && !hasPlaces) return false;
   const hasDestinationPlan =
     (session.tripDays ?? 0) > 0 &&
     Boolean(

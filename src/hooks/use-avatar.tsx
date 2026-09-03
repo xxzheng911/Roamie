@@ -18,6 +18,7 @@ import {
   avatarRevisionFromUpdatedAt,
   isCachedAvatarNewerThan,
   readCachedProfile,
+  resolveAvatarDisplayUrl,
   writeCachedProfile,
   type CachedProfile,
 } from "@/lib/profile-persisted-cache";
@@ -27,6 +28,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useUserMediaStore } from "@/hooks/use-user-media-store";
 import {
   hydrateUserMediaFromCache,
+  getUserMediaSnapshot,
   seedUserMediaFromPersistedSync,
   validateUserMediaRemote,
 } from "@/lib/user-media/user-media-store";
@@ -36,9 +38,21 @@ type AvatarCtx = {
   displayName: string;
   profileMediaLoaded: boolean;
   avatarDisplaySrc: string | null;
+  avatarDisplaySource: "memory_custom" | "persisted_custom" | "remote_custom" | "none";
+  hasCachedCustomEvidence: boolean;
   avatarPending: boolean;
   showAvatarDefault: boolean;
   avatarSrc: string | null;
+  firstRenderSnapshot: {
+    userIdentityKnown: boolean;
+    avatarStatus: "unknown" | "custom" | "none";
+    hasMemoryCustom: boolean;
+    hasPersistedCustomMetadata: boolean;
+    hasPersistedCustomImage: boolean;
+    hasCachedCustomUrl: boolean;
+    authReady: boolean;
+    profileReady: boolean;
+  };
   refresh: () => Promise<void>;
   syncFromProfile: (url: string | null) => void;
   setPreview: (url: string | null) => void;
@@ -47,14 +61,23 @@ type AvatarCtx = {
 const Ctx = createContext<AvatarCtx | null>(null);
 
 function bootCachedProfile(userId?: string | null): CachedProfile | null {
-  return readCachedProfile(userId ?? readCachedAuthenticatedUserIdSync(), { quiet: true });
+  const confirmedOwner = userId ?? readCachedAuthenticatedUserIdSync();
+  return confirmedOwner ? readCachedProfile(confirmedOwner, { quiet: true }) : null;
 }
 
 export function AvatarProvider({ children }: { children: ReactNode }) {
   const { user, loading: authLoading } = useAuth();
   const userId = user?.id;
   const bootUserId = userId ?? readCachedAuthenticatedUserIdSync();
+  // This initializer runs before useUserMediaStore's first snapshot read. It is
+  // the synchronous first-frame authority; effects only hydrate disk/remote data.
+  useState(() => seedUserMediaFromPersistedSync(bootUserId));
   const media = useUserMediaStore();
+  const persistedProfile = bootCachedProfile(bootUserId);
+  const persistedAvatarSrc = resolveAvatarDisplayUrl(
+    persistedProfile?.avatarUrl,
+    persistedProfile?.avatarUpdatedAt ?? persistedProfile?.profileUpdatedAt,
+  );
 
   const [displayName, setDisplayName] = useState(
     () => bootCachedProfile(bootUserId)?.displayName ?? "",
@@ -81,30 +104,87 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
   const skipProfileFetch = shouldUseLightStartupShell(pathname, Boolean(user), authLoading);
 
   useLayoutEffect(() => {
+    console.info("[AVATAR_RENDER_STAGE]", {
+      stage: media.avatarUrl || media.avatarLocalUri ? "memory_custom_hit" : "memory_custom_miss",
+      elapsedMs: 0,
+    });
     seedUserMediaFromPersistedSync(bootUserId);
-    void hydrateUserMediaFromCache(bootUserId);
+    const seededMedia = getUserMediaSnapshot();
+    console.info("[AVATAR_RENDER_STAGE]", {
+      stage:
+        seededMedia.avatarLocalUri || seededMedia.avatarUrl
+          ? "local_cache_hit"
+          : "local_cache_miss",
+      elapsedMs: 0,
+    });
+    console.info("[AVATAR_RENDER_STAGE]", {
+      stage: "profile_snapshot_available",
+      elapsedMs: 0,
+      available: Boolean(bootCachedProfile(bootUserId)),
+    });
+    const persisted = bootCachedProfile(bootUserId);
+    console.info("[AVATAR_RENDER_STAGE]", {
+      stage:
+        persisted?.avatarUrl || persisted?.hasCustomAvatar
+          ? "persisted_custom_hit"
+          : "persisted_custom_miss",
+      elapsedMs: 0,
+    });
+    const localStartedAt = performance.now();
+    void hydrateUserMediaFromCache(bootUserId).finally(() => {
+      const hydratedMedia = getUserMediaSnapshot();
+      console.info("[AVATAR_RENDER_STAGE]", {
+        stage:
+          hydratedMedia.avatarLocalUri || hydratedMedia.avatarUrl
+            ? "local_cache_hit"
+            : "local_cache_miss",
+        elapsedMs: Math.round(performance.now() - localStartedAt),
+      });
+    });
+    // Cache hydration is keyed by identity; media updates must not restart it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootUserId]);
 
-  const syncFromProfile = useCallback((url: string | null) => {
-    const next = url?.trim() || null;
-    if (!next || !userId) return;
-    void validateUserMediaRemote({
-      userId,
-      avatarUrl: next,
-      coverUrl: media.coverUrl,
-      avatarUpdatedAt: media.avatarVersion
-        ? new Date(Number(media.avatarVersion) || Date.now()).toISOString()
-        : null,
-      profileUpdatedAt: media.coverVersion
-        ? new Date(Number(media.coverVersion) || Date.now()).toISOString()
-        : null,
-    });
-  }, [media.avatarVersion, media.coverUrl, media.coverVersion, userId]);
+  const syncFromProfile = useCallback(
+    (url: string | null) => {
+      const next = url?.trim() || null;
+      if (!next || !userId) return;
+      void validateUserMediaRemote({
+        userId,
+        avatarUrl: next,
+        coverUrl: media.coverUrl,
+        avatarUpdatedAt: media.avatarVersion
+          ? new Date(Number(media.avatarVersion) || Date.now()).toISOString()
+          : null,
+        profileUpdatedAt: media.coverVersion
+          ? new Date(Number(media.coverVersion) || Date.now()).toISOString()
+          : null,
+      });
+    },
+    [media.avatarVersion, media.coverUrl, media.coverVersion, userId],
+  );
 
   const refresh = useCallback(async () => {
     if (!userId) return;
+    const profileStartedAt = Date.now();
     const cachedBeforeFetch = readCachedProfile(userId);
+    console.info("[APP_BOOT_STAGE]", {
+      stage: "profile_start",
+      timestamp: new Date(profileStartedAt).toISOString(),
+      elapsedMs: 0,
+      userId,
+    });
     console.info("[PROFILE_SUPABASE_REFRESH_START]", { userId });
+    console.info("[AVATAR_RENDER_STAGE]", {
+      stage: "remote_fetch_start",
+      elapsedMs: 0,
+      userId,
+    });
+    console.info("[AVATAR_RENDER_STAGE]", {
+      stage: "remote_refresh_start",
+      elapsedMs: 0,
+      userId,
+    });
     try {
       const profile = await getUserProfile(undefined, { force: true });
       if (
@@ -137,6 +217,22 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
       /* keep cached image */
     } finally {
       setMetadataLoaded(true);
+      console.info("[APP_BOOT_STAGE]", {
+        stage: "profile_done",
+        timestamp: new Date().toISOString(),
+        elapsedMs: Date.now() - profileStartedAt,
+        userId,
+      });
+      console.info("[AVATAR_RENDER_STAGE]", {
+        stage: "remote_fetch_done",
+        elapsedMs: Date.now() - profileStartedAt,
+        userId,
+      });
+      console.info("[AVATAR_RENDER_STAGE]", {
+        stage: "remote_refresh_done",
+        elapsedMs: Date.now() - profileStartedAt,
+        userId,
+      });
     }
   }, [setPreview, userId]);
 
@@ -159,6 +255,15 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     if (cached?.displayName) setDisplayName(cached.displayName);
     if (cached) setMetadataLoaded(true);
   }, [userId]);
+
+  useEffect(() => {
+    console.info("[AVATAR_RENDER_STAGE]", {
+      stage: "profile_custom_state",
+      elapsedMs: 0,
+      avatarStatus: media.avatarStatus,
+      hasCustomAvatar: media.hasCustomAvatar,
+    });
+  }, [media.avatarStatus, media.hasCustomAvatar]);
 
   useEffect(() => {
     const onUpdate = (e: Event) => {
@@ -208,21 +313,39 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh, skipProfileFetch, userId, authLoading]);
 
+  const mediaOwnerMatches = Boolean(bootUserId && media.userId === bootUserId);
+  const effectiveAvatarStatus =
+    persistedAvatarSrc || persistedProfile?.hasCustomAvatar === true
+      ? "custom"
+      : mediaOwnerMatches
+        ? media.avatarStatus
+        : "unknown";
   const avatarDisplaySrc =
     preview ??
-    media.avatarLocalUri ??
-    (media.avatarStatus === "custom" || media.hasCustomAvatar === true || media.avatarUrl
+    (mediaOwnerMatches ? media.avatarLocalUri : null) ??
+    persistedAvatarSrc ??
+    (mediaOwnerMatches &&
+    (media.avatarStatus === "custom" || media.hasCustomAvatar === true || media.avatarUrl)
       ? media.avatarUrl
       : null);
+  const avatarDisplaySource: AvatarCtx["avatarDisplaySource"] =
+    preview || (mediaOwnerMatches && media.avatarLocalUri)
+      ? "memory_custom"
+      : persistedAvatarSrc
+        ? "persisted_custom"
+        : mediaOwnerMatches && media.avatarUrl
+          ? "remote_custom"
+          : "none";
 
   const avatarPending =
     !preview &&
-    media.avatarStatus !== "none" &&
-    !media.avatarLocalUri &&
-    !media.avatarUrl;
+    (!mediaOwnerMatches || media.avatarStatus !== "none") &&
+    !(mediaOwnerMatches && media.avatarLocalUri) &&
+    !(mediaOwnerMatches && media.avatarUrl);
 
   // Only confirmed absence may show the bundled default.
   const showAvatarDefault =
+    mediaOwnerMatches &&
     media.avatarStatus === "none" &&
     !preview &&
     !media.avatarUrl &&
@@ -230,29 +353,56 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
 
   const ctx = useMemo(
     () => ({
-      avatarUrl: media.avatarUrl,
+      avatarUrl: mediaOwnerMatches ? media.avatarUrl : null,
       displayName,
       profileMediaLoaded: metadataLoaded || media.isAvatarReady || media.avatarStatus !== "unknown",
       avatarDisplaySrc,
+      avatarDisplaySource,
+      hasCachedCustomEvidence: Boolean(
+        persistedAvatarSrc ||
+        persistedProfile?.hasCustomAvatar ||
+        (mediaOwnerMatches && media.avatarLocalUri) ||
+        (mediaOwnerMatches && media.avatarUrl) ||
+        (mediaOwnerMatches && media.hasCustomAvatar),
+      ),
       avatarPending:
         avatarPending ||
-        (media.avatarStatus === "custom" && !avatarDisplaySrc) ||
-        (media.avatarStatus === "unknown" && !avatarDisplaySrc),
+        (effectiveAvatarStatus === "custom" && !avatarDisplaySrc) ||
+        (effectiveAvatarStatus === "unknown" && !avatarDisplaySrc),
       showAvatarDefault,
       // Never expose default as a silent fallback while status is unknown/custom.
       avatarSrc: showAvatarDefault ? defaultAvatar : avatarDisplaySrc,
+      firstRenderSnapshot: {
+        userIdentityKnown: Boolean(bootUserId),
+        avatarStatus: effectiveAvatarStatus,
+        hasMemoryCustom: Boolean(mediaOwnerMatches && (media.avatarLocalUri || media.avatarUrl)),
+        hasPersistedCustomMetadata: persistedProfile?.hasCustomAvatar === true,
+        hasPersistedCustomImage: Boolean(mediaOwnerMatches && media.avatarLocalUri),
+        hasCachedCustomUrl: Boolean(persistedAvatarSrc),
+        authReady: !authLoading,
+        profileReady: metadataLoaded,
+      },
       refresh,
       syncFromProfile,
       setPreview,
     }),
     [
       avatarDisplaySrc,
+      avatarDisplaySource,
       avatarPending,
       displayName,
+      effectiveAvatarStatus,
+      authLoading,
+      bootUserId,
       media.avatarStatus,
+      media.avatarLocalUri,
       media.avatarUrl,
+      media.hasCustomAvatar,
       media.isAvatarReady,
+      mediaOwnerMatches,
       metadataLoaded,
+      persistedAvatarSrc,
+      persistedProfile?.hasCustomAvatar,
       refresh,
       setPreview,
       showAvatarDefault,

@@ -86,8 +86,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     const init = async () => {
+      console.info("[APP_BOOT_STAGE]", {
+        stage: "auth_restore_start",
+        elapsedMs: Math.round(performance.now()),
+        route: readBrowserPathname(),
+      });
       if (hasOAuthCallbackParams()) {
         finishLoading();
+        console.info("[APP_BOOT_STAGE]", {
+          stage: "auth_restore_done",
+          elapsedMs: Math.round(performance.now()),
+          route: readBrowserPathname(),
+          authenticated: Boolean(readCachedAuthenticatedUserIdSync()),
+          outcome: "oauth_callback_deferred",
+        });
         return;
       }
 
@@ -97,11 +109,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await warmSupabaseAuthStorage();
         }
         const s = await getClientAuthSession();
-        if (!cancelled) applySession(s);
+        if (!cancelled) {
+          applySession(s);
+          console.info("[APP_BOOT_STAGE]", {
+            stage: "auth_restore_done",
+            elapsedMs: Math.round(performance.now()),
+            route: readBrowserPathname(),
+            authenticated: Boolean(s?.user),
+          });
+        }
       } catch (e) {
         logAppError("[auth] getSession failed", e);
         markClientAuthSessionSettledUnauthenticated();
-        if (!cancelled) applySession(null);
+        if (!cancelled) {
+          applySession(null);
+          console.info("[APP_BOOT_STAGE]", {
+            stage: "auth_restore_done",
+            elapsedMs: Math.round(performance.now()),
+            route: readBrowserPathname(),
+            authenticated: false,
+            failureReason: e instanceof Error ? e.message : String(e),
+          });
+        }
       }
     };
 
