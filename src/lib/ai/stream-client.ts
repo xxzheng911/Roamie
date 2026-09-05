@@ -63,6 +63,37 @@ function streamFailureMessage(code: ChatStreamFailureCode): string {
   return "AI 沒有回應，請再試一次。";
 }
 
+async function notifyStreamCancellation(
+  endpoint: string,
+  ctx: RoamieRequestContext,
+  token: string | undefined,
+  requestId: string,
+): Promise<void> {
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "X-Roamie-Request-Id": requestId,
+        "X-Roamie-Cancel": "true",
+      },
+      body: JSON.stringify(ctx),
+    });
+    console.info("[CHAT_API_CLIENT_CANCEL]", {
+      requestId,
+      status: response.status,
+      acknowledged: response.ok,
+    });
+  } catch {
+    console.info("[CHAT_API_CLIENT_CANCEL]", {
+      requestId,
+      status: 0,
+      acknowledged: false,
+    });
+  }
+}
+
 export async function streamRoamieAI(
   ctx: RoamieRequestContext,
   handlers: StreamRoamieHandlers,
@@ -103,6 +134,9 @@ export async function streamRoamieAI(
   } catch (error) {
     const aborted = options?.signal?.aborted || (error instanceof Error && error.name === "AbortError");
     const code: ChatStreamFailureCode = aborted ? "stream_aborted" : "network_error";
+    if (aborted) {
+      await notifyStreamCancellation(endpoint, enriched, options?.token, requestId);
+    }
     console.info("[CHAT_API_CLIENT_RESPONSE]", {
       requestId, status: 0, ok: false, contentType: "", contentLength: null,
       rawBytesReceived: 0, deltaEventCount: 0, finalEventCount: 0,
@@ -162,66 +196,84 @@ export async function streamRoamieAI(
   let doneEventCount = 0;
   let parseErrorCount = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    rawBytesReceived += value?.byteLength ?? 0;
-    buf += decoder.decode(value, { stream: true });
-    buf = buf.replace(/\r\n/g, "\n");
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      rawBytesReceived += value?.byteLength ?? 0;
+      buf += decoder.decode(value, { stream: true });
+      buf = buf.replace(/\r\n/g, "\n");
 
-    let eventEnd: number;
-    while ((eventEnd = buf.indexOf("\n\n")) !== -1) {
-      const block = buf.slice(0, eventEnd);
-      buf = buf.slice(eventEnd + 2);
+      let eventEnd: number;
+      while ((eventEnd = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, eventEnd);
+        buf = buf.slice(eventEnd + 2);
 
-      let eventType = "message";
-      let data = "";
-      for (const line of block.split("\n")) {
-        if (line.startsWith("event: ")) eventType = line.slice(7).trim();
-        if (line.startsWith("data: ")) data = line.slice(6);
-      }
-
-      if (eventType === "error") {
-        errorEventCount += 1;
-        try {
-          const payload = JSON.parse(data) as { error?: string; code?: string; status?: number };
-          console.error("[Roamie AI] stream SSE error", payload);
-          handlers.onError?.(payload.error ?? "AI 服務暫時無法使用");
-        } catch {
-          console.error("[Roamie AI] stream SSE error (unparseable)", data);
-          handlers.onError?.("AI 服務暫時無法使用");
+        let eventType = "message";
+        let data = "";
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+          if (line.startsWith("data: ")) data = line.slice(6);
         }
-        console.info("[CHAT_API_CLIENT_RESPONSE]", {
-          requestId, status: resp.status, ok: true, contentType, contentLength,
-          rawBytesReceived, deltaEventCount, finalEventCount, errorEventCount,
-          doneEventCount, failureCode: "provider_error",
-        });
-        return null;
-      }
 
-      if (eventType === "delta") {
-        deltaEventCount += 1;
-        try {
-          const { delta } = JSON.parse(data) as { delta?: string };
-          if (delta) {
-            assembled += delta;
-            handlers.onPartial?.(parsePartialRoamieJson(assembled));
+        if (eventType === "error") {
+          errorEventCount += 1;
+          try {
+            const payload = JSON.parse(data) as { error?: string; code?: string; status?: number };
+            console.error("[Roamie AI] stream SSE error", payload);
+            handlers.onError?.(payload.error ?? "AI 服務暫時無法使用");
+          } catch {
+            console.error("[Roamie AI] stream SSE error (unparseable)", data);
+            handlers.onError?.("AI 服務暫時無法使用");
           }
-        } catch {
-          parseErrorCount += 1;
+          console.info("[CHAT_API_CLIENT_RESPONSE]", {
+            requestId, status: resp.status, ok: true, contentType, contentLength,
+            rawBytesReceived, deltaEventCount, finalEventCount, errorEventCount,
+            doneEventCount, failureCode: "provider_error",
+          });
+          return null;
         }
-      }
 
-      if (eventType === "final") {
-        finalEventCount += 1;
-        try {
-          finalFromServer = normalizeRoamieResponse(JSON.parse(data) as Record<string, unknown>);
-        } catch {
-          parseErrorCount += 1;
+        if (eventType === "delta") {
+          deltaEventCount += 1;
+          try {
+            const { delta } = JSON.parse(data) as { delta?: string };
+            if (delta) {
+              assembled += delta;
+              handlers.onPartial?.(parsePartialRoamieJson(assembled));
+            }
+          } catch {
+            parseErrorCount += 1;
+          }
         }
+
+        if (eventType === "final") {
+          finalEventCount += 1;
+          try {
+            finalFromServer = normalizeRoamieResponse(JSON.parse(data) as Record<string, unknown>);
+          } catch {
+            parseErrorCount += 1;
+          }
+        }
+        if (eventType === "done") doneEventCount += 1;
       }
-      if (eventType === "done") doneEventCount += 1;
     }
+  } catch (error) {
+    const aborted =
+      options?.signal?.aborted || (error instanceof Error && error.name === "AbortError");
+    if (!aborted) throw error;
+    await notifyStreamCancellation(endpoint, enriched, options?.token, requestId);
+    console.info("[CHAT_API_CLIENT_RESPONSE]", {
+      requestId, status: resp.status, ok: false, contentType, contentLength,
+      rawBytesReceived, deltaEventCount, finalEventCount, errorEventCount,
+      doneEventCount, failureCode: "stream_aborted",
+    });
+    throw new ChatStreamError(
+      "stream_aborted",
+      streamFailureMessage("stream_aborted"),
+      resp.status,
+      requestId,
+    );
   }
 
   const failureCode: ChatStreamFailureCode | undefined =

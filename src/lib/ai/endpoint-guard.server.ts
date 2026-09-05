@@ -111,3 +111,21 @@ export async function settleServerCredits(
   });
   if (error) console.error("[AI_CREDITS_SETTLE]", fn, error.message);
 }
+
+export async function rollbackServerCreditsByRequest(
+  auth: AuthenticatedAiRequest,
+  featureType: CreditsFeatureType,
+  requestId: string,
+): Promise<boolean> {
+  if (auth.hasPlusAccess) return true;
+  const idempotencyKey = `server:${auth.userId}:${featureType}:${requestId}`;
+  const { data, error } = await auth.client.rpc("credits_rollback", {
+    p_ledger_id: null,
+    p_idempotency_key: idempotencyKey,
+  });
+  if (error) {
+    console.error("[AI_CREDITS_CANCEL]", error.message);
+    return false;
+  }
+  return Boolean((data as { ok?: boolean } | null)?.ok);
+}

@@ -6,6 +6,7 @@ import { AI_RATE_LIMITS, checkRateLimit } from "@/lib/rate-limit.server";
 import {
   requireAuthenticatedAiRequest,
   reserveServerCredits,
+  rollbackServerCreditsByRequest,
   settleServerCredits,
 } from "@/lib/ai/endpoint-guard.server";
 import { analyticsOperationEventId } from "@/lib/analytics/events";
@@ -65,6 +66,25 @@ export const Route = createFileRoute("/api/roamie")({
         const tier = auth.hasPlusAccess ? "plus" : "free";
         console.info("[CHAT_API_REQUEST]", { requestId: operationId, authenticated: true, tier, route: "/api/roamie" });
         ctx = applyTierToAiContext(ctx, tier);
+        const featureType =
+          ctx.mode === "itinerary" ? "ITINERARY_GENERATION" : "PLACE_RECOMMENDATION";
+
+        if (request.headers.get("x-roamie-cancel") === "true") {
+          const rolledBack = await rollbackServerCreditsByRequest(
+            auth,
+            featureType,
+            operationId,
+          );
+          console.info("[CHAT_CREDIT_LIFECYCLE]", {
+            requestId: operationId,
+            tier,
+            reserved: false,
+            committed: false,
+            rolledBack,
+            failureReason: "client_abort",
+          });
+          return new Response(null, { status: rolledBack ? 204 : 503 });
+        }
 
         const rateKey = auth?.userId ?? request.headers.get("cf-connecting-ip") ?? "anon";
         const minuteLimit = checkRateLimit(
@@ -83,7 +103,7 @@ export const Route = createFileRoute("/api/roamie")({
         }
         const credits = await reserveServerCredits(
           auth,
-          ctx.mode === "itinerary" ? "ITINERARY_GENERATION" : "PLACE_RECOMMENDATION",
+          featureType,
           request,
         );
         if (credits.response || !credits.reservation) {

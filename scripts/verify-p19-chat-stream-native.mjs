@@ -43,6 +43,8 @@ test("client distinguishes HTTP, content type, empty stream, parse and abort fai
   assert.match(source, /rawBytesReceived/);
   assert.match(source, /deltaEventCount/);
   assert.match(source, /finalEventCount/);
+  assert.match(source, /X-Roamie-Cancel/);
+  assert.match(source, /notifyStreamCancellation/);
 });
 
 test("server propagates abort, has deadlines, structured empty-stream error and credit lifecycle", () => {
@@ -64,6 +66,7 @@ test("server propagates abort, has deadlines, structured empty-stream error and 
   assert.match(route, /\[CHAT_CREDIT_LIFECYCLE\]/);
   assert.match(route, /settleCredits\(false, "client_abort"\)/);
   assert.match(route, /onComplete:\s*async/);
+  assert.match(route, /rollbackServerCreditsByRequest/);
   assert.match(route, /parsed\.protocol === "capacitor:" && parsed\.hostname === "localhost"/);
   assert.match(
     itineraryRoute,
@@ -77,6 +80,7 @@ test("trusted Capacitor API origin gets narrow preflight/CORS support", () => {
   assert.match(source, /request\.method === "OPTIONS"/);
   assert.match(source, /Access-Control-Allow-Origin/);
   assert.match(source, /Authorization, Content-Type, X-Roamie-Request-Id, X-Roamie-Stream/);
+  assert.match(source, /X-Roamie-Cancel/);
 });
 
 test("production public env contract requires native API origin", () => {

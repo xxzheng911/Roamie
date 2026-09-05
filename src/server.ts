@@ -22,7 +22,7 @@ function withNativeApiCors(request: Request, response: Response): Response {
   headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   headers.set(
     "Access-Control-Allow-Headers",
-    "Authorization, Content-Type, X-Roamie-Request-Id, X-Roamie-Stream",
+    "Authorization, Content-Type, X-Roamie-Request-Id, X-Roamie-Stream, X-Roamie-Cancel",
   );
   headers.set("Vary", "Origin");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
