@@ -34,6 +34,7 @@ type Props = {
   label: string;
   value: TripLocation | null;
   onChange: (loc: TripLocation | null) => void;
+  onQueryChange?: (query: string) => void;
   placeholder: string;
   disabled?: boolean;
   required?: boolean;
@@ -47,6 +48,7 @@ export function LocationSearchField({
   label,
   value,
   onChange,
+  onQueryChange,
   placeholder,
   disabled,
   required,
@@ -266,6 +268,7 @@ export function LocationSearchField({
           onChange={(e) => {
             const next = e.target.value;
             setQuery(next);
+            onQueryChange?.(next);
             setSearchError(null);
             if (!next.trim()) {
               committedLabelRef.current = null;

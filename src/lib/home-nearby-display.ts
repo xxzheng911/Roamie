@@ -3,6 +3,7 @@ import {
   type HomeNearbyPickPlace,
 } from "@/lib/home-nearby-eligibility";
 import type { HomeNearbyPick } from "@/lib/home-nearby-search";
+import { mergePlaceRuntimeCache } from "@/lib/place-runtime-cache";
 
 export { isVerifiedGooglePlaceId } from "@/lib/home-nearby-eligibility";
 
@@ -39,5 +40,7 @@ export function sanitizeHomeNearbyPicksForDisplay(
   picks: HomeNearbyPick[],
   options?: { logDrop?: boolean },
 ): HomeNearbyPick[] {
-  return picks.filter((p) => isHomeNearbyDisplayPlace(p, options));
+  return picks
+    .map((place) => mergePlaceRuntimeCache(place.id, place))
+    .filter((p) => isHomeNearbyDisplayPlace(p, options));
 }

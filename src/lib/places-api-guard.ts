@@ -60,6 +60,28 @@ const callStats = {
 
 const loggedKeys = new Set<string>();
 
+export type PlacesRequestOwner = {
+  requestId: string;
+  surface: "chat_place_focus" | "home_nearby" | "home_shortcut" | "explore" | "selection" | "planner" | "other";
+  priority: "foreground" | "background";
+  requestType: "searchNearby" | "searchText" | "details";
+};
+
+function logPlacesRequestOwner(
+  owner: PlacesRequestOwner | undefined,
+  state: { deduped: boolean; blocked: boolean; blockedReason?: string; providerProtectionActive?: boolean },
+): void {
+  if (!owner) return;
+  console.info("[PLACES_REQUEST_OWNER]", { ...owner, ...state });
+  console.info("[PLACES_RATE_LIMIT_STATE]", {
+    callsInWindow: recentCallAt.length,
+    inflightCount: activeCount,
+    cooldownActive: generationCooldownUntil > Date.now(),
+    providerProtectionActive: state.providerProtectionActive ?? false,
+    triggeringSurface: owner.surface,
+  });
+}
+
 function logOnce(key: string, line: string): void {
   if (loggedKeys.has(key)) return;
   loggedKeys.add(key);
@@ -370,6 +392,7 @@ export async function runPlacesApiDeduped<T>(
   key: string,
   type: string,
   runner: () => Promise<T>,
+  owner?: PlacesRequestOwner,
 ): Promise<T | null> {
   const now = Date.now();
 
@@ -377,6 +400,7 @@ export async function runPlacesApiDeduped<T>(
   try {
     const { shouldBlockNewPlacesCalls } = await import("@/lib/ai/places-cost-cache");
     if (shouldBlockNewPlacesCalls({ query: key, logSkip: true })) {
+      logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "provider_protection", providerProtectionActive: true });
       return null;
     }
   } catch {
@@ -386,12 +410,14 @@ export async function runPlacesApiDeduped<T>(
   const keyBlockedUntil = blockedUntilByKey.get(key) ?? 0;
   if (now < keyBlockedUntil) {
     logPlacesRequestSkipped(key, keyBlockedUntil);
+    logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "request_cooldown" });
     return null;
   }
 
   const inflight = pending.get(key);
   if (inflight) {
     logPlacesDedupePending(key);
+    logPlacesRequestOwner(owner, { deduped: true, blocked: false });
     return inflight as Promise<T>;
   }
 
@@ -408,6 +434,7 @@ export async function runPlacesApiDeduped<T>(
         query: key,
         cooldownMs: PLACES_QUERY_COOLDOWN_MS,
       });
+      logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "query_cooldown" });
       return null;
     }
   } catch {
@@ -421,11 +448,13 @@ export async function runPlacesApiDeduped<T>(
       blockedUntilByKey.set(key, until);
       logPlacesRateLimitBlocked(key, until);
       notePlacesRateLimited({ attemptIndex: 0, requestKey: key });
+      logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "rate_window" });
       return null;
     }
 
     await acquireConcurrencySlot();
     try {
+      logPlacesRequestOwner(owner, { deduped: false, blocked: false });
       logPlacesApiCall(type, key);
       bumpCallStat(type);
       recordPlacesApiCall();

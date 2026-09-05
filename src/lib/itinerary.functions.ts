@@ -355,6 +355,23 @@ export const generateItinerary = createServerFn({ method: "POST" })
       };
     }
 
+    const analyticsOperationId =
+      data.generationTimingId?.trim() ||
+      data.generationStartedAt?.toString() ||
+      crypto.randomUUID();
+    const { analyticsOperationEventId } = await import("@/lib/analytics/events");
+    const { recordAnalyticsEventServer } = await import("@/lib/analytics/record.server");
+    const recordGenerationOutcome = async (success: boolean, failureCode?: string) =>
+      recordAnalyticsEventServer({
+        eventId: analyticsOperationEventId(analyticsOperationId, success ? "succeeded" : "failed"),
+        eventName: success ? "itinerary_generation_succeeded" : "itinerary_generation_failed",
+        failureCode,
+      });
+    await recordAnalyticsEventServer({
+      eventId: analyticsOperationEventId(analyticsOperationId, "started"),
+      eventName: "itinerary_generation_started",
+    });
+
     const interestsText = [data.interests, data.conversationSummary].filter(Boolean).join("\n\n");
     const startDate = data.startDate?.trim() || new Date().toISOString().slice(0, 10);
     const selectedCombinationIds = data.selectedCombinationIds ?? [];
@@ -698,6 +715,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           `reasons=${critical.join("|") || recommendationIntegrity.reasons.join("|")}`,
           `coveragePercent=${recommendationIntegrity.coveragePercent}`,
         );
+        await recordGenerationOutcome(false, "itinerary_integrity_failed");
         return {
           success: false,
           errorCode: "itinerary_integrity_failed",
@@ -779,6 +797,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       if (shouldBlockItineraryDelivery(validation)) {
         logGenerationTiming("validator_done", false, "validator_failed");
         logItineraryDeliveryBlocked("validator_failed", validation);
+        await recordGenerationOutcome(false, "itinerary_validator_failed");
         return {
           success: false,
           errorCode: "itinerary_validator_failed",
@@ -805,6 +824,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       });
       if (!compare.matched) {
         logItineraryDeliveryBlocked("persistence_mismatch", validation);
+        await recordGenerationOutcome(false, "persistence_mismatch");
         return {
           success: false,
           errorCode: "persistence_mismatch",
@@ -964,6 +984,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       itinerary: itineraryItems,
     };
 
+    await recordGenerationOutcome(true);
     return {
       success: true,
       trip: {

@@ -294,7 +294,11 @@ test("recommendation handoff reason is canonical for Chat, Home, and Explore det
     new URL("../src/routes/_app.place.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(routeSource, /if \(hasCanonicalReasonRef\.current\) return;/);
+  assert.match(
+    routeSource,
+    /mergeFetchedPlace\(base, fetched, locale, hasCanonicalReasonRef\.current\)/,
+  );
+  assert.doesNotMatch(routeSource, /buildPlaceRecommendationReason\(/);
 });
 
 test("direct detail without recommendation context still builds a grounded fallback", () => {
@@ -659,16 +663,24 @@ test("slow pace and quiet vibe render compatibility, not unsupported place facts
   assert.doesNotMatch(assigned[0].reason, /這裡很安靜|適合久坐|人少|價格親民|便宜/);
 });
 
-test("Free and incomplete profiles fail selector defense-in-depth", () => {
+test("Free profiles are rejected while partial Plus profiles use only present evidence", () => {
   const place = stubPlace({ id: "tier-defense", primaryType: "cafe", types: ["cafe"] });
   for (const userProfile of [
     { profileTier: "free", onboarded: true, interests: ["咖啡"] },
-    { profileTier: "plus", onboarded: false, interests: ["咖啡"] },
     { onboarded: true, interests: ["咖啡"] },
   ]) {
     const evidence = collectPlaceReasonEvidence(place, {}, { userProfile });
     assert.equal(evidence.some((item) => item.code.startsWith("preference_fit_")), false);
   }
+  const partialPlus = collectPlaceReasonEvidence(place, {}, {
+    userProfile: { profileTier: "plus", onboarded: false, interests: ["咖啡"] },
+  });
+  assert.equal(
+    partialPlus.some(
+      (item) => item.code === "preference_fit_interest" && item.preferenceField === "interests",
+    ),
+    true,
+  );
 });
 
 test("AI personality claim validator rejects unsupported facts and accepts verified claims", () => {

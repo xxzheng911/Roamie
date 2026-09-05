@@ -2,6 +2,7 @@ import type { NormalizedOpeningStatusValue } from "@/lib/normalized-opening-stat
 import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 
 export type PlaceRuntimeCacheEntry = {
+  businessStatus?: string | null;
   openNow?: boolean | null;
   normalizedOpeningStatus?: NormalizedOpeningStatusValue;
   normalizedOpeningLabel?: string;
@@ -71,6 +72,7 @@ export function mergePlaceRuntimeCache<T extends Record<string, unknown>>(
   if (!cached) return place;
   return {
     ...place,
+    ...(cached.businessStatus !== undefined ? { businessStatus: cached.businessStatus } : {}),
     ...(cached.openNow !== undefined ? { openNow: cached.openNow } : {}),
     ...(cached.normalizedOpeningStatus
       ? { normalizedOpeningStatus: cached.normalizedOpeningStatus }
@@ -108,6 +110,7 @@ export function cachePlaceImages(
 export function cachePlaceOpeningFromResult(
   place: {
     id?: string | null;
+    businessStatus?: string | null;
     openNow?: boolean | null;
     normalizedOpeningStatus?: NormalizedOpeningStatusValue;
     normalizedOpeningLabel?: string;
@@ -122,6 +125,7 @@ export function cachePlaceOpeningFromResult(
   const id = place.id?.trim();
   if (!id) return;
   writePlaceRuntimeCache(id, {
+    businessStatus: place.businessStatus,
     openNow: place.openNow,
     normalizedOpeningStatus: place.normalizedOpeningStatus,
     normalizedOpeningLabel: place.normalizedOpeningLabel,

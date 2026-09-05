@@ -617,13 +617,21 @@ export function pickExploreCitySuggestion(
 
   if (cityCandidates.length > 0) {
     const picked = cityCandidates.sort((a, b) => (b.distanceMeters ?? 0) - (a.distanceMeters ?? 0))[0]!;
-    console.info("[EXPLORE_CITY_GEOCODE]", `label=${picked.label}`, `placeId=${picked.placeId ?? ""}`);
+    console.info(
+      "[EXPLORE_CITY_GEOCODE]",
+      `hasLabel=${Boolean(picked.label)}`,
+      `hasPlaceId=${Boolean(picked.placeId)}`,
+    );
     return picked;
   }
 
   const picked = pickPrimarySuggestion(trimmed, suggestions);
   if (picked) {
-    console.info("[EXPLORE_CITY_GEOCODE]", `fallbackLabel=${picked.label}`, `placeId=${picked.placeId ?? ""}`);
+    console.info(
+      "[EXPLORE_CITY_GEOCODE]",
+      `hasFallbackLabel=${Boolean(picked.label)}`,
+      `hasPlaceId=${Boolean(picked.placeId)}`,
+    );
   }
   return picked;
 }
@@ -637,8 +645,12 @@ export async function fetchExploreCityBootstrapPlaces(params: {
 }): Promise<PlaceResult[]> {
   const { cityLabel, cityCenter, locale, searchPlacesFn } = params;
   const label = normalizeDestinationLabel(cityLabel);
-  console.info("[EXPLORE_POPULAR_PLACES_FETCH]", `city=${label}`, `lat=${cityCenter.lat}`, `lng=${cityCenter.lng}`);
-  console.info("[EXPLORE_DESTINATION_COORDS]", `lat=${cityCenter.lat}`, `lng=${cityCenter.lng}`);
+  console.info(
+    "[EXPLORE_POPULAR_PLACES_FETCH]",
+    `hasCity=${Boolean(label)}`,
+    `locationBucket=${cityCenter.lat.toFixed(2)},${cityCenter.lng.toFixed(2)}`,
+  );
+  console.info("[EXPLORE_DESTINATION_COORDS]", `locationBucket=${cityCenter.lat.toFixed(2)},${cityCenter.lng.toFixed(2)}`);
 
   const merged = new Map<string, PlaceResult>();
 
@@ -651,7 +663,11 @@ export async function fetchExploreCityBootstrapPlaces(params: {
   }
 
   const final = [...merged.values()];
-  console.info("[EXPLORE_FINAL_RECOMMENDATIONS]", `city=${label}`, `count=${final.length}`);
+  console.info(
+    "[EXPLORE_FINAL_RECOMMENDATIONS]",
+    `hasCity=${Boolean(label)}`,
+    `count=${final.length}`,
+  );
   return final;
 }
 

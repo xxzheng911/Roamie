@@ -1,13 +1,10 @@
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
-import {
-  geocodeForwardUrl,
-  placeDetailsUrl,
-  placesAutocompleteUrl,
-} from "@/lib/google-maps-api";
+import { geocodeForwardUrl, placeDetailsUrl, placesAutocompleteUrl } from "@/lib/google-maps-api";
 import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
 import { localeToGeocodeRegion, localeToGoogleLanguageCode } from "@/lib/i18n/places-language";
 import type { Locale } from "@/lib/i18n/types";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
+import { readCachedPlaceResultById } from "@/lib/unified-place-cache";
 
 const PLACE_COORDS_MASK = "location";
 
@@ -18,7 +15,11 @@ function normalizePlaceId(raw: string): string {
 /** 依地名推斷 geocode region，避免 zh-TW 預設 tw 把東京地點偏到台灣 */
 function geocodeRegionForQuery(query: string, locale: Locale): string | undefined {
   const q = query;
-  if (/東京|大阪|京都|日本|横濱|横浜|神戸|奈良|札幌|福岡|沖繩|沖縄|淺草|上野|新宿|澀谷|银座|銀座|隅田/i.test(q)) {
+  if (
+    /東京|大阪|京都|日本|横濱|横浜|神戸|奈良|札幌|福岡|沖繩|沖縄|淺草|上野|新宿|澀谷|银座|銀座|隅田/i.test(
+      q,
+    )
+  ) {
     return "jp";
   }
   if (/首爾|首爾|韓國|釜山|明洞|弘大|濟州/i.test(q)) {
@@ -50,7 +51,12 @@ function geocodeQueriesForItem(item: RoamieItineraryItem): string[] {
   push(name);
   if (address && name && !address.includes(name)) push(`${address} ${name}`);
   if (name.includes("・")) push(name.replace(/[·・]/g, " "));
-  if (/東京|大阪|京都|淺草|上野|隅田|雷門|阿美橫|涩谷|渋谷|新宿|银座|銀座/i.test(`${address} ${name}`) && name) {
+  if (
+    /東京|大阪|京都|淺草|上野|隅田|雷門|阿美橫|涩谷|渋谷|新宿|银座|銀座/i.test(
+      `${address} ${name}`,
+    ) &&
+    name
+  ) {
     const bare = name.replace(/^東京\s*/, "");
     push(`日本 ${bare}`);
     push(`東京都 ${bare}`);
@@ -145,8 +151,7 @@ async function autocompleteTextToCoordsClient(
       headers: {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask":
-          "suggestions.placePrediction.placeId,suggestions.placePrediction.text",
+        "X-Goog-FieldMask": "suggestions.placePrediction.placeId,suggestions.placePrediction.text",
       },
       body: JSON.stringify({
         input: query.trim(),
@@ -216,12 +221,7 @@ export async function resolveTripStopCoords(
   item: RoamieItineraryItem,
   deps: ResolveTripStopCoordsDeps,
 ): Promise<{ lat: number; lng: number } | null> {
-  if (
-    item.lat != null &&
-    item.lng != null &&
-    !Number.isNaN(item.lat) &&
-    !Number.isNaN(item.lng)
-  ) {
+  if (item.lat != null && item.lng != null && !Number.isNaN(item.lat) && !Number.isNaN(item.lng)) {
     return { lat: item.lat, lng: item.lng };
   }
 
@@ -229,6 +229,10 @@ export async function resolveTripStopCoords(
   const placeId = item.googlePlaceId?.trim();
 
   if (placeId) {
+    const cached = readCachedPlaceResultById(placeId, deps.locale, {}, "anchor_v1");
+    if (cached?.lat != null && cached.lng != null) {
+      return { lat: cached.lat, lng: cached.lng };
+    }
     if (preferClient) {
       const coords = await fetchPlaceCoordsClient(placeId, deps.locale);
       if (coords) return coords;

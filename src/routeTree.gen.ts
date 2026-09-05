@@ -35,6 +35,7 @@ import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
 import { Route as AppSavedIndexRouteImport } from './routes/_app.saved.index'
+import { Route as ApiAnalyticsEventsRouteImport } from './routes/api/analytics/events'
 import { Route as ApiAdminDashboardRouteImport } from './routes/api/admin/dashboard'
 import { Route as AppSavedTripIdRouteImport } from './routes/_app.saved.$tripId'
 
@@ -167,6 +168,11 @@ const AppSavedIndexRoute = AppSavedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppSavedRoute,
 } as any)
+const ApiAnalyticsEventsRoute = ApiAnalyticsEventsRouteImport.update({
+  id: '/api/analytics/events',
+  path: '/api/analytics/events',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAdminDashboardRoute = ApiAdminDashboardRouteImport.update({
   id: '/api/admin/dashboard',
   path: '/api/admin/dashboard',
@@ -205,6 +211,7 @@ export interface FileRoutesByFullPath {
   '/trip-invite/$token': typeof TripInviteTokenRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
+  '/api/analytics/events': typeof ApiAnalyticsEventsRoute
   '/saved/': typeof AppSavedIndexRoute
 }
 export interface FileRoutesByTo {
@@ -233,6 +240,7 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
+  '/api/analytics/events': typeof ApiAnalyticsEventsRoute
   '/saved': typeof AppSavedIndexRoute
 }
 export interface FileRoutesById {
@@ -264,6 +272,7 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/saved/$tripId': typeof AppSavedTripIdRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
+  '/api/analytics/events': typeof ApiAnalyticsEventsRoute
   '/_app/saved/': typeof AppSavedIndexRoute
 }
 export interface FileRouteTypes {
@@ -295,6 +304,7 @@ export interface FileRouteTypes {
     | '/trip-invite/$token'
     | '/saved/$tripId'
     | '/api/admin/dashboard'
+    | '/api/analytics/events'
     | '/saved/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -323,6 +333,7 @@ export interface FileRouteTypes {
     | '/'
     | '/saved/$tripId'
     | '/api/admin/dashboard'
+    | '/api/analytics/events'
     | '/saved'
   id:
     | '__root__'
@@ -353,6 +364,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/saved/$tripId'
     | '/api/admin/dashboard'
+    | '/api/analytics/events'
     | '/_app/saved/'
   fileRoutesById: FileRoutesById
 }
@@ -371,6 +383,7 @@ export interface RootRouteChildren {
   AuthCallbackRoute: typeof AuthCallbackRoute
   TripInviteTokenRoute: typeof TripInviteTokenRoute
   ApiAdminDashboardRoute: typeof ApiAdminDashboardRoute
+  ApiAnalyticsEventsRoute: typeof ApiAnalyticsEventsRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -557,6 +570,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSavedIndexRouteImport
       parentRoute: typeof AppSavedRoute
     }
+    '/api/analytics/events': {
+      id: '/api/analytics/events'
+      path: '/api/analytics/events'
+      fullPath: '/api/analytics/events'
+      preLoaderRoute: typeof ApiAnalyticsEventsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/admin/dashboard': {
       id: '/api/admin/dashboard'
       path: '/api/admin/dashboard'
@@ -643,6 +663,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthCallbackRoute: AuthCallbackRoute,
   TripInviteTokenRoute: TripInviteTokenRoute,
   ApiAdminDashboardRoute: ApiAdminDashboardRoute,
+  ApiAnalyticsEventsRoute: ApiAnalyticsEventsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

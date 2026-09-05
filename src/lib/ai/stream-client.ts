@@ -1,6 +1,7 @@
 import { parsePartialRoamieJson } from "./parse-partial";
 import type { RoamieRequestContext } from "./context";
 import { normalizeRoamieResponse, type RoamieResponse as RoamieResponseType } from "./types";
+import { apiEndpointDiagnostic, isApiUrlError, resolveApiUrl } from "@/lib/api-url";
 async function withResolvedPlanTier(ctx: RoamieRequestContext): Promise<RoamieRequestContext> {
   const { applyTierToAiContext } = await import("@/lib/access/context");
   const { resolveEffectivePlanTierWithProfile } = await import("@/lib/access/resolve");
@@ -32,24 +33,90 @@ export type StreamRoamieHandlers = {
   onError?: (message: string) => void;
 };
 
+export type ChatStreamFailureCode =
+  | "native_api_origin_missing"
+  | "native_api_origin_invalid"
+  | "network_error"
+  | "http_error"
+  | "unexpected_content_type"
+  | "empty_stream"
+  | "stream_parse_error"
+  | "stream_aborted"
+  | "provider_error";
+
+export class ChatStreamError extends Error {
+  constructor(
+    readonly code: ChatStreamFailureCode,
+    message: string,
+    readonly status?: number,
+    readonly requestId?: string,
+  ) {
+    super(message);
+    this.name = "ChatStreamError";
+  }
+}
+
+function streamFailureMessage(code: ChatStreamFailureCode): string {
+  if (code.startsWith("native_api_origin")) return "App 服務位址尚未正確設定。";
+  if (code === "stream_aborted") return "AI 回應逾時，請再試一次。";
+  if (code === "provider_error") return "AI 服務暫時無法使用。";
+  return "AI 沒有回應，請再試一次。";
+}
+
 export async function streamRoamieAI(
   ctx: RoamieRequestContext,
   handlers: StreamRoamieHandlers,
-  options?: { token?: string; signal?: AbortSignal },
+  options?: { token?: string; signal?: AbortSignal; requestId?: string },
 ): Promise<RoamieResponseType | null> {
   const enriched = await withResolvedPlanTier(ctx);
-  const resp = await fetch("/api/roamie", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
-    },
-    body: JSON.stringify(enriched),
-    signal: options?.signal,
+  const requestId = options?.requestId ?? crypto.randomUUID();
+  let endpoint: string;
+  try {
+    endpoint = resolveApiUrl("/api/roamie");
+  } catch (error) {
+    const code: ChatStreamFailureCode =
+      isApiUrlError(error) && error.code === "native_api_origin_missing"
+        ? "native_api_origin_missing"
+        : "native_api_origin_invalid";
+    throw new ChatStreamError(code, streamFailureMessage(code), undefined, requestId);
+  }
+  const endpointDiagnostic = apiEndpointDiagnostic(endpoint);
+  console.info("[CHAT_API_CLIENT_REQUEST]", {
+    requestId,
+    transport: endpoint.startsWith("/") ? "web" : "capacitor",
+    ...endpointDiagnostic,
+    route: "/api/roamie",
   });
 
-  if (!resp.ok || !resp.body) {
+  let resp: Response;
+  try {
+    resp = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
+        "X-Roamie-Request-Id": requestId,
+      },
+      body: JSON.stringify(enriched),
+      signal: options?.signal,
+    });
+  } catch (error) {
+    const aborted = options?.signal?.aborted || (error instanceof Error && error.name === "AbortError");
+    const code: ChatStreamFailureCode = aborted ? "stream_aborted" : "network_error";
+    console.info("[CHAT_API_CLIENT_RESPONSE]", {
+      requestId, status: 0, ok: false, contentType: "", contentLength: null,
+      rawBytesReceived: 0, deltaEventCount: 0, finalEventCount: 0,
+      errorEventCount: 0, doneEventCount: 0, failureCode: code,
+    });
+    throw new ChatStreamError(code, streamFailureMessage(code), undefined, requestId);
+  }
+
+  const contentType = resp.headers.get("content-type") ?? "";
+  const contentLength = resp.headers.get("content-length");
+
+  if (!resp.ok) {
     let errMsg = "AI 服務暫時無法使用";
+    let failureCode = "http_error";
     try {
       const j = (await resp.json()) as { error?: string; code?: string; status?: number };
       console.error("[Roamie AI] stream HTTP error", {
@@ -58,11 +125,29 @@ export async function streamRoamieAI(
         error: j.error,
       });
       if (j.error) errMsg = j.error;
+      failureCode = j.code ?? j.error ?? failureCode;
     } catch {
       console.error("[Roamie AI] stream HTTP error", { status: resp.status });
     }
+    console.info("[CHAT_API_CLIENT_RESPONSE]", {
+      requestId, status: resp.status, ok: false, contentType, contentLength,
+      rawBytesReceived: 0, deltaEventCount: 0, finalEventCount: 0,
+      errorEventCount: 0, doneEventCount: 0, failureCode,
+    });
     handlers.onError?.(errMsg);
     return null;
+  }
+
+  if (!contentType.toLowerCase().includes("text/event-stream")) {
+    console.info("[CHAT_API_CLIENT_RESPONSE]", {
+      requestId, status: resp.status, ok: true, contentType, contentLength,
+      rawBytesReceived: 0, deltaEventCount: 0, finalEventCount: 0,
+      errorEventCount: 0, doneEventCount: 0, failureCode: "unexpected_content_type",
+    });
+    throw new ChatStreamError("unexpected_content_type", streamFailureMessage("unexpected_content_type"), resp.status, requestId);
+  }
+  if (!resp.body) {
+    throw new ChatStreamError("empty_stream", streamFailureMessage("empty_stream"), resp.status, requestId);
   }
 
   const reader = resp.body.getReader();
@@ -70,11 +155,19 @@ export async function streamRoamieAI(
   let buf = "";
   let assembled = "";
   let finalFromServer: RoamieResponseType | null = null;
+  let rawBytesReceived = 0;
+  let deltaEventCount = 0;
+  let finalEventCount = 0;
+  let errorEventCount = 0;
+  let doneEventCount = 0;
+  let parseErrorCount = 0;
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    rawBytesReceived += value?.byteLength ?? 0;
     buf += decoder.decode(value, { stream: true });
+    buf = buf.replace(/\r\n/g, "\n");
 
     let eventEnd: number;
     while ((eventEnd = buf.indexOf("\n\n")) !== -1) {
@@ -89,6 +182,7 @@ export async function streamRoamieAI(
       }
 
       if (eventType === "error") {
+        errorEventCount += 1;
         try {
           const payload = JSON.parse(data) as { error?: string; code?: string; status?: number };
           console.error("[Roamie AI] stream SSE error", payload);
@@ -97,10 +191,16 @@ export async function streamRoamieAI(
           console.error("[Roamie AI] stream SSE error (unparseable)", data);
           handlers.onError?.("AI 服務暫時無法使用");
         }
+        console.info("[CHAT_API_CLIENT_RESPONSE]", {
+          requestId, status: resp.status, ok: true, contentType, contentLength,
+          rawBytesReceived, deltaEventCount, finalEventCount, errorEventCount,
+          doneEventCount, failureCode: "provider_error",
+        });
         return null;
       }
 
       if (eventType === "delta") {
+        deltaEventCount += 1;
         try {
           const { delta } = JSON.parse(data) as { delta?: string };
           if (delta) {
@@ -108,18 +208,35 @@ export async function streamRoamieAI(
             handlers.onPartial?.(parsePartialRoamieJson(assembled));
           }
         } catch {
-          /* ignore */
+          parseErrorCount += 1;
         }
       }
 
       if (eventType === "final") {
+        finalEventCount += 1;
         try {
           finalFromServer = normalizeRoamieResponse(JSON.parse(data) as Record<string, unknown>);
         } catch {
-          /* ignore */
+          parseErrorCount += 1;
         }
       }
+      if (eventType === "done") doneEventCount += 1;
     }
+  }
+
+  const failureCode: ChatStreamFailureCode | undefined =
+    !finalFromServer && !assembled.trim()
+      ? "empty_stream"
+      : parseErrorCount > 0 && !finalFromServer
+        ? "stream_parse_error"
+        : undefined;
+  console.info("[CHAT_API_CLIENT_RESPONSE]", {
+    requestId, status: resp.status, ok: true, contentType, contentLength,
+    rawBytesReceived, deltaEventCount, finalEventCount, errorEventCount,
+    doneEventCount, failureCode,
+  });
+  if (failureCode) {
+    throw new ChatStreamError(failureCode, streamFailureMessage(failureCode), resp.status, requestId);
   }
 
   try {
@@ -135,15 +252,16 @@ export async function streamRoamieAI(
 /** Non-streaming recommend / itinerary */
 export async function fetchRoamieAI(
   ctx: RoamieRequestContext,
-  options?: { token?: string },
+  options?: { token?: string; requestId?: string },
 ): Promise<RoamieResponseType> {
   const enriched = await withResolvedPlanTier(ctx);
-  const resp = await fetch("/api/roamie", {
+  const resp = await fetch(resolveApiUrl("/api/roamie"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Roamie-Stream": "false",
       ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      "X-Roamie-Request-Id": options?.requestId ?? crypto.randomUUID(),
     },
     body: JSON.stringify(enriched),
   });

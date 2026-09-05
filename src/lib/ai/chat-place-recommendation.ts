@@ -40,6 +40,7 @@ import {
 } from "@/lib/ai/activity-camping";
 import { mapPlaceResultsToChatItems } from "@/lib/chat-session";
 import type { Locale } from "@/lib/i18n/types";
+import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 import type { PlaceResult } from "@/lib/place-result";
 import { filterPlacesByNearbyGeographicScope } from "@/lib/ai/nearby-geographic-scope";
 import { distanceMeters } from "@/lib/map-explore";
@@ -192,6 +193,15 @@ export type PlaceSearchExtras = {
 const RECOMMENDATION_COUNT = 5;
 
 type NearbyRejectAudit = Record<string, number>;
+
+export type PlaceFocusNearbyDiagnostics = {
+  rawCount: number;
+  operationalCount: number;
+  geographicCount: number;
+  preDedupeCount: number;
+  dedupedCount: number;
+  finalCount: number;
+};
 
 function recordNearbyDrop(
   audit: NearbyRejectAudit | undefined,
@@ -896,10 +906,7 @@ function applyNearbyPlaceFilters(
   if (params.placeDetailNearby) {
     let working = filterPlacesByExclusion(ranked, params.excluded);
     working = filterExcludedPlaceIds(working, params.excludePlaceIds);
-    working = working.filter((place) => {
-      const biz = (place.businessStatus ?? "").trim().toUpperCase();
-      return biz !== "CLOSED_PERMANENTLY";
-    });
+    working = working.filter(isPlaceOperationalForRecommendation);
     working = filterPlacesByNearbyDistance(working, params.lat, params.lng, params.maxDistanceKm);
     return working;
   }
@@ -1054,6 +1061,7 @@ export async function fetchNearbyPlacesForIntent(
       selectedAuthority: "nearby";
     };
     geographicScope?: import("@/lib/ai/nearby-geographic-scope").NearbyGeographicScopeAuthority;
+    placeFocusDiagnostics?: PlaceFocusNearbyDiagnostics;
   },
 ): Promise<PlaceResult[]> {
   const run = async (): Promise<PlaceResult[]> =>
@@ -1112,6 +1120,7 @@ async function fetchNearbyPlacesForIntentInner(
       selectedAuthority: "nearby";
     };
     geographicScope?: import("@/lib/ai/nearby-geographic-scope").NearbyGeographicScopeAuthority;
+    placeFocusDiagnostics?: PlaceFocusNearbyDiagnostics;
   },
 ): Promise<PlaceResult[]> {
   const excluded = context?.excludedCategories ?? [];
@@ -1135,7 +1144,9 @@ async function fetchNearbyPlacesForIntentInner(
   const homeLateNightProfile = opts?.searchProfile === "home_late_night";
   const homeSeaProfile = opts?.searchProfile === "home_sea";
   const homeSpecialProfile = homeLateNightProfile || homeSeaProfile;
-  const shortcutScene = homeSpecialProfile
+  const shortcutScene = opts?.placeDetailNearby
+    ? null
+    : homeSpecialProfile
     ? null
     : (opts?.shortcutScene ?? resolveChatShortcutContext(opts?.userText ?? "")?.scene ?? null);
   const poolTarget = homeSpecialProfile
@@ -1283,6 +1294,8 @@ async function fetchNearbyPlacesForIntentInner(
           attempt,
           isTripAddPlace
             ? "chat.fetchNearbyPlacesForIntent.trip_add_place"
+            : opts?.placeDetailNearby
+              ? "chat.fetchNearbyPlacesForIntent.place_focus"
             : "chat.fetchNearbyPlacesForIntent",
           {
             ...searchExtras,
@@ -1356,6 +1369,37 @@ async function fetchNearbyPlacesForIntentInner(
       places,
       opts?.geographicScope,
     );
+    if (opts?.placeFocusDiagnostics) {
+      const operational = scopeEligiblePlaces.filter(isPlaceOperationalForRecommendation);
+      const geographic = filterPlacesByNearbyDistance(
+        operational,
+        lat,
+        lng,
+        maxDistanceKm,
+      );
+      const preDedupe = filterPlacesByExclusion(geographic, excluded);
+      const deduped = filterExcludedPlaceIds(preDedupe, excludePlaceIds);
+      opts.placeFocusDiagnostics.rawCount = Math.max(
+        opts.placeFocusDiagnostics.rawCount,
+        places.length,
+      );
+      opts.placeFocusDiagnostics.operationalCount = Math.max(
+        opts.placeFocusDiagnostics.operationalCount,
+        operational.length,
+      );
+      opts.placeFocusDiagnostics.geographicCount = Math.max(
+        opts.placeFocusDiagnostics.geographicCount,
+        geographic.length,
+      );
+      opts.placeFocusDiagnostics.preDedupeCount = Math.max(
+        opts.placeFocusDiagnostics.preDedupeCount,
+        preDedupe.length,
+      );
+      opts.placeFocusDiagnostics.dedupedCount = Math.max(
+        opts.placeFocusDiagnostics.dedupedCount,
+        deduped.length,
+      );
+    }
     lastRawPlaces = scopeEligiblePlaces;
     logAiPipeline("[NEARBY_RAW_COUNT]", {
       count: places.length,
@@ -1569,6 +1613,7 @@ async function fetchNearbyPlacesForIntentInner(
   logAiPipeline(
     `[CHAT_PLACES_SUCCESS] count=${best.length} excluded=${excluded.length} deduped=${excludePlaceIds.length}`,
   );
+  if (opts?.placeFocusDiagnostics) opts.placeFocusDiagnostics.finalCount = best.length;
   logAiPipeline("[NEARBY_REJECT_REASONS]", nearbyRejectAudit);
   if (best.length === 0 && continuationProviderRaw === 0 && lastError) {
     throw new Error(`places_search_failed:${lastError}`);
@@ -1668,6 +1713,7 @@ export async function buildNearbyPlaceRecommendation(params: {
     selectedAuthority: "nearby";
   };
   geographicScope?: import("@/lib/ai/nearby-geographic-scope").NearbyGeographicScopeAuthority;
+  placeFocusDiagnostics?: PlaceFocusNearbyDiagnostics;
   fetchPlaceDetails?: (
     placeId: string,
   ) => Promise<(PlaceResult & { photoNames?: string[] | null }) | null>;
@@ -1702,7 +1748,7 @@ export async function buildNearbyPlaceRecommendation(params: {
       hasPlusAccess,
     } = params;
     const pickCount = params.maxResults ?? RECOMMENDATION_COUNT;
-    const shortcut = params.searchProfile
+    const shortcut = params.placeDetailNearby || params.searchProfile
       ? null
       : (resolveChatShortcutContext(userText) ??
         (params.shortcutScene
@@ -1769,10 +1815,11 @@ export async function buildNearbyPlaceRecommendation(params: {
         focusPlaceId: params.focusPlaceId,
         maxResults: params.maxResults,
         shortcutDiagnostics,
-        shortcutScene: params.shortcutScene,
+        shortcutScene: params.placeDetailNearby ? null : params.shortcutScene,
         searchProfile: params.searchProfile,
         searchCenterAuthority: params.searchCenterAuthority,
         geographicScope: params.geographicScope,
+        placeFocusDiagnostics: params.placeFocusDiagnostics,
       },
     );
     const isShortcutContinuation = Boolean(

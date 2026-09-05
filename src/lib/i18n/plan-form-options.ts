@@ -36,16 +36,30 @@ export function getPlanBudgetOptions(locale: Locale): PlanBudgetOption[] {
   }
 }
 
-export function getPlanTransportOptions(locale: Locale): string[] {
+export type PlanTransportOption = { value: string; label: string };
+
+export function getPlanTransportOptions(locale: Locale): PlanTransportOption[] {
   switch (locale) {
     case "en":
-      return ["Public transit", "Mostly walking", "Self-drive", "Taxi / rideshare", "Cycling"];
+      return ["Public transit", "Mostly walking", "Self-drive", "Taxi / rideshare", "Cycling"].map(
+        (value) => ({ value, label: value }),
+      );
     case "ja":
-      return ["公共交通", "徒歩中心", "レンタカー", "タクシー・配車", "自転車"];
+      return ["公共交通", "徒歩中心", "レンタカー", "タクシー・配車", "自転車"].map(
+        (value) => ({ value, label: value }),
+      );
     case "ko":
-      return ["대중교통", "도보 위주", "렌터카", "택시·호출", "자전거"];
+      return ["대중교통", "도보 위주", "렌터카", "택시·호출", "자전거"].map(
+        (value) => ({ value, label: value }),
+      );
     default:
-      return ["大眾運輸", "步行為主", "租車自駕", "計程車/共乘", "單車"];
+      return [
+        { value: "大眾運輸", label: "大眾運輸" },
+        { value: "步行為主", label: "步行" },
+        { value: "租車自駕", label: "開車" },
+        { value: "計程車/共乘", label: "計程車/共乘" },
+        { value: "單車", label: "單車" },
+      ];
   }
 }
 

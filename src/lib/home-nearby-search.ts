@@ -4,6 +4,7 @@ import {
   isVerifiedGooglePlaceId,
   localHourInTimeZone,
   matchesNightPreferredPlace,
+  homeNearbyHardExclusionReason,
   type HomeNearbyPeriod,
 } from "@/lib/home-nearby-eligibility";
 import {
@@ -29,6 +30,7 @@ import {
   logHomeNearbyCacheHit,
   logHomeNearbyCacheMiss,
   logHomeNearbyFilterDrop,
+  logHomeNearbyOperationalDiagnostic,
   logHomeNearbyRequestError,
   logHomeNearbyRequestSuccess,
 } from "@/lib/home-nearby-log";
@@ -49,6 +51,7 @@ import type { SavedPlace } from "@/lib/places-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { prioritizeWeatherAwareHomeWaves } from "@/lib/ai/weather-place-search";
 import { noteHomeNearbyPlacesSearchCall } from "@/lib/home-nearby-perf";
+import { placeOperationalEligibility } from "@/lib/place-operational-eligibility";
 
 export type SearchPlacesInput = {
   lat: number;
@@ -544,6 +547,25 @@ function finalizeHomeNearbyPicks(
     timeZone: string;
   },
 ): HomeNearbyPick[] {
+  for (const place of apiPlaces) {
+    const operational = placeOperationalEligibility(place);
+    logHomeNearbyOperationalDiagnostic({
+      canonicalPlaceId: place.id,
+      businessStatus: operational.businessStatus ?? "missing",
+      openStatus: place.openStatus ?? "unknown",
+      statusSource: operational.statusSource,
+      cacheCapability: "search_v1",
+      cacheAgeBucket: "current_home_load",
+      operationalEligible: operational.eligible,
+      currentOpenEligible:
+        place.openStatus === "open" || place.openStatus === "closing_soon",
+      factualSource: "search",
+    });
+    const hardReason = homeNearbyHardExclusionReason(place);
+    if (hardReason) {
+      logHomeNearbyFilterDrop(place.name ?? "unknown", placeTypesLabel(place), hardReason);
+    }
+  }
   let selected = selectHomeNearbyPicks(apiPlaces, pickOptions).filter((p) =>
     isVerifiedGooglePlaceId(p.id),
   );

@@ -27,6 +27,16 @@ export type PlaceDetailHandoff = {
   category?: string | null;
   categoryId?: string;
   reason?: string;
+  reasonSource?: "template" | "ai" | "evidence" | "fallback";
+  recommendationSource?:
+    | "explore"
+    | "map"
+    | "place_detail"
+    | "chat"
+    | "home"
+    | "selection"
+    | "favorites"
+    | "unknown";
   openNow?: boolean | null;
   normalizedOpeningStatus?: NormalizedOpeningStatusValue;
   normalizedOpeningLabel?: string;

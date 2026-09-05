@@ -233,7 +233,7 @@ export const resolveTripStop = createServerFn({ method: "POST" })
         lat,
         lng,
         placeType: identityDisplayLabel(resolvePlaceIdentity(place)),
-        googleMapsUrl: buildPlaceMapsUrl(name, lat, lng),
+        googleMapsUrl: buildPlaceMapsUrl(lat, lng, name),
         photoName: place.photoName,
         rating: place.rating,
       },

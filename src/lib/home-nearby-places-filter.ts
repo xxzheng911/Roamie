@@ -3,6 +3,7 @@ import type { PlaceResult } from "@/lib/place-result";
 import { HOME_NEARBY_MAX_DISTANCE_M } from "@/lib/search-radius";
 import {
   homeNearbyPeriodFromHour,
+  homeNearbyHardExclusionReason,
   localHourInTimeZone,
   passesHomeNearbyHardExclusions,
   passesHomeNearbyLastResort,
@@ -66,7 +67,7 @@ export function selectHomeNearbyUltimateFallback<T extends HomeNearbyFilterPlace
       continue;
     }
     if (!passesHomeNearbyHardExclusions(place)) {
-      options?.onDrop?.(place, "hard_exclusion");
+      options?.onDrop?.(place, homeNearbyHardExclusionReason(place) ?? "other");
       continue;
     }
     seen.add(id);

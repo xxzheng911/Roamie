@@ -1,7 +1,5 @@
-import { distanceMeters } from "@/lib/map-explore";
 import type { NavigateOptions } from "@tanstack/react-router";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
-import { buildPlaceRecommendationReason } from "@/lib/build-place-recommendation-reason";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import type { Locale } from "@/lib/i18n/types";
 import {
@@ -17,6 +15,10 @@ import {
   type TripDetailViewState,
 } from "@/lib/trip/trip-detail-view-state";
 import { persistTripDetailSelectedDay } from "@/lib/trip/trip-detail-selected-day";
+import {
+  logItineraryReasonPersistence,
+  logRecommendationReasonHandoff,
+} from "@/lib/trip/recommendation-reason-persistence-log";
 
 function inferExploreCategoryId(place: PlaceResult): string {
   const hay = [
@@ -76,21 +78,15 @@ export function itineraryItemToPlaceHandoff(
   item: RoamieItineraryItem,
   locale: Locale = "zh-TW",
 ): PlaceDetailHandoff {
+  void locale;
   const googlePlaceId = item.googlePlaceId?.trim() ?? "";
   const resolvedGooglePlaceId = isGooglePlaceId(googlePlaceId) ? googlePlaceId : "";
   const place = itineraryItemToPlaceResult(item, resolvedGooglePlaceId);
-  const reason = buildPlaceRecommendationReason(
-    place,
-    null,
-    null,
-    undefined,
-    undefined,
-    locale,
-  );
+  const reason = item.recommendationReason?.trim() || undefined;
   const categoryId = inferExploreCategoryId(place);
   const snapshot: HomeNearbyPick = {
     ...place,
-    reason,
+    reason: reason ?? "",
     categoryId,
     displayCategory: resolvePlaceDisplayCategory(place),
   };
@@ -105,6 +101,8 @@ export function itineraryItemToPlaceHandoff(
     category: place.primaryType,
     categoryId,
     reason,
+    reasonSource: item.recommendationReasonSource,
+    recommendationSource: item.recommendationSource,
     rating: place.rating,
     userRatingCount: place.userRatingCount,
     photoName: place.photoName,
@@ -131,29 +129,21 @@ export function openTripItineraryPlaceDetail(
   const previous = opts?.previousItem;
   const originLat = previous?.lat ?? item.lat ?? undefined;
   const originLng = previous?.lng ?? item.lng ?? undefined;
-  if (
-    previous?.lat != null &&
-    previous?.lng != null &&
-    item.lat != null &&
-    item.lng != null
-  ) {
-    const place = itineraryItemToPlaceResult(
-      item,
-      handoff.googlePlaceId?.trim() || "",
-    );
-    const distM = distanceMeters(
-      { lat: previous.lat, lng: previous.lng },
-      { lat: item.lat, lng: item.lng },
-    );
-    handoff.reason = buildPlaceRecommendationReason(
-      place,
-      null,
-      null,
-      undefined,
-      { distanceMeters: distM },
-      locale,
-    );
-  }
+  logRecommendationReasonHandoff({
+    surface: item.recommendationSource ?? "unknown",
+    canonicalPlaceId: item.googlePlaceId,
+    hasReason: Boolean(item.recommendationReason),
+    reasonSource: item.recommendationReasonSource,
+    target: "trip_to_detail",
+  });
+  logItineraryReasonPersistence({
+    canonicalPlaceId: item.googlePlaceId,
+    stored: Boolean(item.recommendationReason),
+    hydrated: true,
+    source: item.recommendationSource,
+    fallbackUsed: !item.recommendationReason,
+    dropStage: "",
+  });
   setPlaceDetailHandoff(handoff);
   const placeId = handoff.googlePlaceId || handoff.placeId || item.googlePlaceId || "";
   const snapshotAvailable = Boolean(

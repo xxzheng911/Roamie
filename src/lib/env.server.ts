@@ -23,12 +23,7 @@ export function getOpenAIKey(): string {
 
   const apiKey = resolved.value;
   if (isPlaceholderSecret(apiKey)) {
-    console.error(
-      "[Roamie AI] OPENAI_API_KEY is a placeholder from",
-      resolved.source,
-      "prefix:",
-      apiKey.slice(0, 10) + "…",
-    );
+    console.error("[Roamie AI] OPENAI_API_KEY is a placeholder from", resolved.source);
     throw new Error(
       "OPENAI_API_KEY 仍是佔位符。請更新 .env 後執行 npm run sync:env 並重啟 npm run dev。",
     );
@@ -38,7 +33,7 @@ export function getOpenAIKey(): string {
     throw new Error("OPENAI_API_KEY 格式不正確，應以 sk- 開頭");
   }
 
-  console.info("[Roamie AI] OPENAI_API_KEY loaded from", resolved.source, "prefix:", apiKey.slice(0, 12) + "…");
+  console.info("[Roamie AI] OPENAI_API_KEY loaded from", resolved.source);
   return apiKey;
 }
 

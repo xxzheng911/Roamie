@@ -19,6 +19,7 @@ import { formatSessionMemoryForPrompt } from "@/lib/ai/memory/session-memory";
 import { formatLongTermMemoryForPrompt } from "@/lib/ai/memory/long-term-memory";
 import { conversationStageLabel } from "@/lib/ai/conversation-stage";
 import { formatPlusPreferenceForAiPrompt } from "@/lib/plus-preference-ranking";
+import { budgetModeToPlannerTier } from "@/lib/budget-context";
 
 export type RoamieLocation = {
   lat: number;
@@ -166,9 +167,6 @@ export function formatPreferences(
   if (!isPlus) {
     return "（Free 模式：依位置、天氣與對話內容推薦，不使用旅行偏好測驗結果）";
   }
-  if (!prefs.onboarded) {
-    return "（Plus 尚未完成旅行偏好測驗；可先依位置、天氣與對話內容提供一般 Plus 推薦）";
-  }
   const plusBlock = formatPlusPreferenceForAiPrompt(prefs, {
     hasPlusAccess: true,
     travelStyle: opts?.travelStyle,
@@ -181,7 +179,7 @@ export function formatPreferences(
   if (prefs.pace) parts.push(`步調：${paceLabel[prefs.pace] ?? prefs.pace}`);
   if (prefs.vibe) parts.push(`氛圍：${vibeLabel[prefs.vibe] ?? prefs.vibe}`);
   const bm = resolveBudgetMode(prefs);
-  parts.push(`預算模式：${BUDGET_MODE_LABELS[bm]}（餐飲/咖啡/景點/住宿需符合此範圍）`);
+  if (prefs.budgetMode || prefs.budget) parts.push(`消費風格偏好：${BUDGET_MODE_LABELS[bm]}（僅作排序傾向，不代表已知價格）`);
   if (prefs.avoid?.length) parts.push(`想避開：${prefs.avoid.join("、")}`);
   if (prefs.personalitySummary) parts.push(`測驗摘要：${prefs.personalitySummary}`);
   if (prefs.interests?.length) parts.push(`興趣：${prefs.interests.join("、")}`);
@@ -273,16 +271,19 @@ export function formatPlanningHints(hints?: ChatPlanningHints): string {
 }
 
 export function buildContextBlock(ctx: RoamieRequestContext): string {
+  const personalizationRelevant = isPersonalizationRelevant(ctx);
   const lines = [
     formatTemporalWeatherBlock(ctx.weather, ctx.time),
     `【心情】${ctx.mood?.trim() || "（未指定，請從對話推測）"}`,
-    `【旅行偏好】${formatPreferences(ctx.preferences, {
-      planTier: ctx.planTier,
-      travelStyle: ctx.longTermMemory?.travelStyle,
-      personalityType: ctx.longTermMemory?.personalityType ?? ctx.preferences?.personalityType,
-      personalitySummary:
-        ctx.longTermMemory?.personalitySummary ?? ctx.preferences?.personalitySummary,
-    })}`,
+    personalizationRelevant
+      ? `【旅行偏好】${formatPreferences(ctx.preferences, {
+          planTier: ctx.planTier,
+          travelStyle: ctx.longTermMemory?.travelStyle,
+          personalityType: ctx.longTermMemory?.personalityType ?? ctx.preferences?.personalityType,
+          personalitySummary:
+            ctx.longTermMemory?.personalitySummary ?? ctx.preferences?.personalitySummary,
+        })}`
+      : "【旅行偏好】（本題為事實查詢，不套用個人化偏好）",
     `【位置】${formatLocation(ctx.location)}`,
     `【天氣摘要】${formatWeather(ctx.weather)}`,
   ];
@@ -299,7 +300,7 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
   if (ctx.sessionMemory) {
     lines.push(`【本輪工作記憶（temporary）】\n${formatSessionMemoryForPrompt(ctx.sessionMemory)}`);
   }
-  if (ctx.longTermMemory) {
+  if (personalizationRelevant && ctx.longTermMemory) {
     lines.push(`【長期記憶（Plus）】\n${formatLongTermMemoryForPrompt(ctx.longTermMemory)}`);
   }
   if (ctx.focusedPlace)
@@ -376,10 +377,24 @@ export function buildContextBlock(ctx: RoamieRequestContext): string {
   return lines.join("\n");
 }
 
+export type PersonalizationRelevance = "recommendation" | "planning" | "compare" | "factual";
+
+export function classifyPersonalizationRelevance(ctx: RoamieRequestContext): PersonalizationRelevance {
+  if (ctx.mode === "recommend") return "recommendation";
+  if (ctx.mode === "itinerary") return "planning";
+  const text = `${ctx.chatInput ?? ""} ${ctx.lastUserIntent ?? ""}`.trim();
+  if (/(?:哪(?:一|間|個).*(?:適合我|比較好)|比較適合|幫我選|A\s*(?:跟|和|或|vs\.?)\s*B)/i.test(text)) return "compare";
+  if (/(?:推薦|附近.*(?:去哪|有什麼|吃什麼)|適合我|想找|哪裡好玩|咖啡|餐廳|酒吧)/i.test(text)) return "recommendation";
+  if (/(?:排行程|規劃|行程|幫我排|安排.*(?:天|旅行)|怎麼玩)/i.test(text)) return "planning";
+  return "factual";
+}
+
+export function isPersonalizationRelevant(ctx: RoamieRequestContext): boolean {
+  return classifyPersonalizationRelevance(ctx) !== "factual";
+}
+
 export function budgetModeToItineraryTier(
   mode: ReturnType<typeof resolveBudgetMode>,
 ): "low" | "medium" | "high" {
-  if (mode === "budget") return "low";
-  if (mode === "luxury") return "high";
-  return "medium";
+  return budgetModeToPlannerTier(mode);
 }

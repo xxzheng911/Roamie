@@ -36,6 +36,20 @@ export function logHomeNearbyFilterDrop(placeName: string, types: string, reason
   );
 }
 
+export function logHomeNearbyOperationalDiagnostic(args: {
+  canonicalPlaceId: string;
+  businessStatus: string;
+  openStatus: string;
+  statusSource: string;
+  cacheCapability: string;
+  cacheAgeBucket: string;
+  operationalEligible: boolean;
+  currentOpenEligible: boolean;
+  factualSource: "search" | "runtime_cache" | "persisted_home" | "detail_refresh";
+}): void {
+  console.info("[HOME_NEARBY_OPERATIONAL_DIAGNOSTIC]", args);
+}
+
 export function logHomeNearbyRender(state: HomeNearbyRenderState): void {
   console.info(`[HOME_NEARBY_RENDER] state=${state}`);
 }

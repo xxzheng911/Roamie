@@ -1,4 +1,5 @@
 import type { PlaceResult } from "@/lib/place-result";
+import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 import type { DestinationPlaceSearchProfile } from "@/lib/ai/landmark-place-strategy";
 import {
   isExcludedInternalFacilityType,
@@ -114,10 +115,7 @@ function isTravelRelatedType(place: PlaceResult): boolean {
 }
 
 function isPermanentlyClosed(place: PlaceResult): boolean {
-  const biz = (place.businessStatus ?? "").trim().toUpperCase();
-  // Only permanent closure is a hard exclude. Temporary / today-closed must not
-  // drop places when the trip is on a future date.
-  return biz === "CLOSED_PERMANENTLY";
+  return !isPlaceOperationalForRecommendation(place);
 }
 
 function userRequiresOpenNow(userText?: string): boolean {

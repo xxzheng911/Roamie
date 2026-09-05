@@ -28,12 +28,10 @@ import {
   writeSavedTripsSnapshot,
 } from "@/lib/saved-list-snapshot";
 import { setPlaceDetailHandoff } from "@/lib/place-detail-handoff";
-import {
-  resolveSavedPlaceGooglePlaceId,
-  savedPlaceToHandoff,
-} from "@/lib/saved-place-utils";
+import { resolveSavedPlaceGooglePlaceId, savedPlaceToHandoff } from "@/lib/saved-place-utils";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubscription } from "@/providers/SubscriptionProvider";
+import { recordAnalyticsEvent } from "@/lib/analytics/record";
 
 type SavedSearch = { tab?: string };
 
@@ -105,9 +103,7 @@ function Saved() {
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
   const initialTrips = readSavedTripsSnapshot();
   const initialPlaces =
-    readSavedPlacesSnapshot().length > 0
-      ? readSavedPlacesSnapshot()
-      : readPlacesLocalCacheSync();
+    readSavedPlacesSnapshot().length > 0 ? readSavedPlacesSnapshot() : readPlacesLocalCacheSync();
   const hasCachedAtMountRef = useRef(initialTrips.length > 0 || initialPlaces.length > 0);
   const [trips, setTrips] = useState<CoreTrip[]>(() => initialTrips);
   const [places, setPlaces] = useState<SavedPlace[]>(() => initialPlaces);
@@ -115,9 +111,11 @@ function Saved() {
     () => initialTrips.length === 0 && initialPlaces.length === 0,
   );
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
-  const [shareTarget, setShareTarget] = useState<{ id: string; title: string; isOwner: boolean } | null>(
-    null,
-  );
+  const [shareTarget, setShareTarget] = useState<{
+    id: string;
+    title: string;
+    isOwner: boolean;
+  } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [removePlaceTarget, setRemovePlaceTarget] = useState<SavedPlace | null>(null);
   const [removingPlace, setRemovingPlace] = useState(false);
@@ -125,79 +123,84 @@ function Saved() {
 
   const authUserId = user?.id ?? null;
   const sessionPresent = Boolean(authSession);
-  const refresh = useCallback((opts?: { background?: boolean }) => {
-    const requestId = `favorites_${Date.now().toString(36)}_${++requestSequenceRef.current}`;
-    const elapsedMs = () => Date.now() - routeStartedAtRef.current;
-    if (!opts?.background) setLoading(true);
-    console.info("[FAVORITES_DATA_REQUEST_START]", {
-      elapsedMs: elapsedMs(),
-      route: "/saved",
-      userPresent: Boolean(authUserId),
-      sessionPresent,
-      requestId,
-    });
-    Promise.allSettled([listCoreTrips(), listPlaces()])
-      .then(([tripsResult, placesResult]) => {
-        if (tripsResult.status === "fulfilled") {
-          setTrips(tripsResult.value);
-          writeSavedTripsSnapshot(tripsResult.value);
-        } else if (isMissingTableError(tripsResult.reason)) {
-          setTrips([]);
-          writeSavedTripsSnapshot([]);
-        } else if (!opts?.background) {
-          toast.error(
-            tripsResult.reason instanceof Error ? tripsResult.reason.message : t("saved.loadFailed"),
-          );
-        }
+  const refresh = useCallback(
+    (opts?: { background?: boolean }) => {
+      const requestId = `favorites_${Date.now().toString(36)}_${++requestSequenceRef.current}`;
+      const elapsedMs = () => Date.now() - routeStartedAtRef.current;
+      if (!opts?.background) setLoading(true);
+      console.info("[FAVORITES_DATA_REQUEST_START]", {
+        elapsedMs: elapsedMs(),
+        route: "/saved",
+        userPresent: Boolean(authUserId),
+        sessionPresent,
+        requestId,
+      });
+      Promise.allSettled([listCoreTrips(), listPlaces()])
+        .then(([tripsResult, placesResult]) => {
+          if (tripsResult.status === "fulfilled") {
+            setTrips(tripsResult.value);
+            writeSavedTripsSnapshot(tripsResult.value);
+          } else if (isMissingTableError(tripsResult.reason)) {
+            setTrips([]);
+            writeSavedTripsSnapshot([]);
+          } else if (!opts?.background) {
+            toast.error(
+              tripsResult.reason instanceof Error
+                ? tripsResult.reason.message
+                : t("saved.loadFailed"),
+            );
+          }
 
-        if (placesResult.status === "fulfilled") {
-          setPlaces(placesResult.value);
-          writeSavedPlacesSnapshot(placesResult.value);
-        } else if (isMissingTableError(placesResult.reason)) {
-          setPlaces([]);
-          writeSavedPlacesSnapshot([]);
-        } else if (!opts?.background) {
-          toast.error(
-            placesResult.reason instanceof Error
-              ? placesResult.reason.message
-              : t("saved.loadFailed"),
+          if (placesResult.status === "fulfilled") {
+            setPlaces(placesResult.value);
+            writeSavedPlacesSnapshot(placesResult.value);
+          } else if (isMissingTableError(placesResult.reason)) {
+            setPlaces([]);
+            writeSavedPlacesSnapshot([]);
+          } else if (!opts?.background) {
+            toast.error(
+              placesResult.reason instanceof Error
+                ? placesResult.reason.message
+                : t("saved.loadFailed"),
+            );
+          }
+          const failed = [tripsResult, placesResult].filter(
+            (result) => result.status === "rejected",
           );
-        }
-        const failed = [tripsResult, placesResult].filter(
-          (result) => result.status === "rejected",
-        );
-        console.info("[FAVORITES_DATA_REQUEST_DONE]", {
-          elapsedMs: elapsedMs(),
-          route: "/saved",
-          userPresent: Boolean(authUserId),
-          sessionPresent,
-          requestId,
-          count:
-            (tripsResult.status === "fulfilled" ? tripsResult.value.length : 0) +
-            (placesResult.status === "fulfilled" ? placesResult.value.length : 0),
-        });
-        if (failed.length) {
-          console.warn("[FAVORITES_DATA_REQUEST_ERROR]", {
+          console.info("[FAVORITES_DATA_REQUEST_DONE]", {
             elapsedMs: elapsedMs(),
             route: "/saved",
             userPresent: Boolean(authUserId),
             sessionPresent,
             requestId,
-            failureCount: failed.length,
+            count:
+              (tripsResult.status === "fulfilled" ? tripsResult.value.length : 0) +
+              (placesResult.status === "fulfilled" ? placesResult.value.length : 0),
           });
-        }
-      })
-      .finally(() => {
-        setLoading(false);
-        console.info("[FAVORITES_LOADING_CLEAR]", {
-          elapsedMs: elapsedMs(),
-          route: "/saved",
-          userPresent: Boolean(authUserId),
-          sessionPresent,
-          requestId,
+          if (failed.length) {
+            console.warn("[FAVORITES_DATA_REQUEST_ERROR]", {
+              elapsedMs: elapsedMs(),
+              route: "/saved",
+              userPresent: Boolean(authUserId),
+              sessionPresent,
+              requestId,
+              failureCount: failed.length,
+            });
+          }
+        })
+        .finally(() => {
+          setLoading(false);
+          console.info("[FAVORITES_LOADING_CLEAR]", {
+            elapsedMs: elapsedMs(),
+            route: "/saved",
+            userPresent: Boolean(authUserId),
+            sessionPresent,
+            requestId,
+          });
         });
-      });
-  }, [authUserId, sessionPresent, t]);
+    },
+    [authUserId, sessionPresent, t],
+  );
 
   useEffect(() => {
     const elapsedMs = Date.now() - routeStartedAtRef.current;
@@ -317,6 +320,12 @@ function Saved() {
     async (place: SavedPlace) => {
       setOpeningPlaceId(place.id);
       try {
+        recordAnalyticsEvent({
+          eventId: crypto.randomUUID(),
+          eventName: "place_card_opened",
+          placeId: resolveSavedPlaceGooglePlaceId(place) ?? place.id,
+          surface: "favorites",
+        });
         const handoff = savedPlaceToHandoff(place);
         setPlaceDetailHandoff(handoff);
         const googlePlaceId = resolveSavedPlaceGooglePlaceId(place);
@@ -501,7 +510,7 @@ function Saved() {
               <div className="flex shrink-0 flex-col gap-1">
                 <button
                   type="button"
-                  onClick={() => openAddToTrip(tripPlaceFromSavedPlace(p))}
+                  onClick={() => openAddToTrip(tripPlaceFromSavedPlace(p), "favorites")}
                   className="flex h-9 w-9 items-center justify-center rounded-full bg-foreground text-background"
                   aria-label={t("chat.addToTrip")}
                 >

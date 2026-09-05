@@ -1,7 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { parseRoamieRequest, streamRoamieAI } from "@/lib/ai/service.server";
+import {
+  requireAuthenticatedAiRequest,
+  reserveServerCredits,
+  settleServerCredits,
+} from "@/lib/ai/endpoint-guard.server";
 
 const BodySchema = z.object({
   messages: z
@@ -15,9 +19,7 @@ const BodySchema = z.object({
     .max(40),
   preferences: z.record(z.unknown()).optional(),
   mood: z.string().optional(),
-  location: z
-    .object({ lat: z.number(), lng: z.number(), city: z.string().optional() })
-    .optional(),
+  location: z.object({ lat: z.number(), lng: z.number(), city: z.string().optional() }).optional(),
   weather: z.record(z.unknown()).nullable().optional(),
   time: z.string().optional(),
 });
@@ -30,19 +32,6 @@ function isAllowedOrigin(request: Request): boolean {
   } catch {
     return false;
   }
-}
-
-async function resolveUser(authHeader: string | null) {
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  const url = process.env.SUPABASE_URL!;
-  const key = process.env.SUPABASE_PUBLISHABLE_KEY!;
-  const client = createClient(url, key, {
-    global: { headers: { Authorization: authHeader } },
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const { data, error } = await client.auth.getUser();
-  if (error || !data.user) return null;
-  return { userId: data.user.id, client };
 }
 
 export const Route = createFileRoute("/api/chat")({
@@ -79,14 +68,27 @@ export const Route = createFileRoute("/api/chat")({
         });
 
         try {
-          const auth = await resolveUser(request.headers.get("authorization"));
+          const auth = await requireAuthenticatedAiRequest(request);
+          if (!auth) return Response.json({ error: "Unauthorized" }, { status: 401 });
+          const credits = await reserveServerCredits(auth, "PLACE_RECOMMENDATION", request);
+          if (credits.response || !credits.reservation) return credits.response!;
+          const reservation = credits.reservation;
+          request.signal.addEventListener(
+            "abort",
+            () => void settleServerCredits(auth, reservation, false),
+            { once: true },
+          );
           const { stream: bodyStream, getAssembled } = streamRoamieAI(ctx);
 
           (async () => {
             try {
               if (!auth) return;
               const raw = await getAssembled();
-              if (!raw.trim() || !lastUser) return;
+              if (!raw.trim() || !lastUser) {
+                await settleServerCredits(auth, reservation, false);
+                return;
+              }
+              await settleServerCredits(auth, reservation, true);
               await auth.client.from("chat_messages").insert({
                 user_id: auth.userId,
                 role: "user",
@@ -98,6 +100,7 @@ export const Route = createFileRoute("/api/chat")({
                 content: raw.trim(),
               });
             } catch (e) {
+              await settleServerCredits(auth, reservation, false);
               console.error("chat persist failed:", e);
             }
           })();

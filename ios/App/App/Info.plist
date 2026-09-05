@@ -54,8 +54,6 @@
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Roamie uses your location to recommend nearby places and personalized trips.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Roamie uses your location to recommend nearby places and personalized trips.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Roamie uses the camera so you can take trip photos and update your profile picture.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

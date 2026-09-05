@@ -1,5 +1,7 @@
 import { normalizeHomeMoodId, type HomeMoodId } from "@/lib/home-mood-options";
 
+export const HOME_MOOD_MORE_ROUTE = "/map" as const;
+
 /** 僅供首頁 UI 短暫選取；不應作為長期心情紀錄或聊聊上下文來源 */
 const HOME_MOOD_UI_KEY = "roamie:home-mood";
 

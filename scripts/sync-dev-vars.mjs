@@ -3,7 +3,7 @@
  * Syncs server secrets from .env → .dev.vars for Cloudflare Vite local dev.
  * Wrangler/Miniflare reads .dev.vars; stale dist/server/.dev.vars can override until rebuild.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +11,15 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const envPath = resolve(root, ".env");
 const devVarsPath = resolve(root, ".dev.vars");
 const distDevVarsPath = resolve(root, "dist/server/.dev.vars");
+
+if (!process.argv.includes("--local-dev")) {
+  console.error("[sync-dev-vars] Refusing to copy secrets outside an explicit local-dev run.");
+  process.exit(1);
+}
+
+// Remove the artifact created by older versions of this script. Production output
+// must never contain Wrangler's local secret file.
+if (existsSync(distDevVarsPath)) rmSync(distDevVarsPath);
 
 const SERVER_KEYS = [
   "OPENAI_API_KEY",
@@ -35,10 +44,7 @@ function parseDotEnv(content) {
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq).trim();
     let val = trimmed.slice(eq + 1).trim();
-    if (
-      (val.startsWith('"') && val.endsWith('"')) ||
-      (val.startsWith("'") && val.endsWith("'"))
-    ) {
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
     out[key] = val;
@@ -73,14 +79,8 @@ const body = lines.join("\n") + "\n";
 writeFileSync(devVarsPath, body, "utf8");
 console.info("[sync-dev-vars] Wrote", devVarsPath, `(${lines.length} keys)`);
 
-if (existsSync(resolve(root, "dist/server"))) {
-  mkdirSync(dirname(distDevVarsPath), { recursive: true });
-  writeFileSync(distDevVarsPath, body, "utf8");
-  console.info("[sync-dev-vars] Updated", distDevVarsPath);
-}
-
 if (parsed.OPENAI_API_KEY?.startsWith("sk-") && !parsed.OPENAI_API_KEY.includes("xxxx")) {
-  console.info("[sync-dev-vars] OPENAI_API_KEY ok:", parsed.OPENAI_API_KEY.slice(0, 12) + "…");
+  console.info("[sync-dev-vars] OPENAI_API_KEY is configured");
 } else {
   console.warn("[sync-dev-vars] OPENAI_API_KEY missing or still looks like a placeholder");
 }

@@ -14,9 +14,12 @@ import type { UserProfileForReason } from "@/lib/build-place-recommendation-reas
 import type { WeatherSummary } from "@/lib/weather-types";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import { distanceMeters } from "@/lib/map-explore";
+import {
+  logRecommendationDistanceEvidence,
+  resolveRecommendationDistanceEvidence,
+} from "@/lib/recommendation-distance-evidence";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import {
-  buildSelectedPlaceDistanceLabel,
   isPinnableSearchSelection,
   normalizeExplorePlaceId,
 } from "@/lib/explore-selected-place";
@@ -99,7 +102,7 @@ function placeLiteToResult(place: PlaceLite, types?: string[] | null): PlaceResu
 export function mapSearchCardFromPlaceLite(
   place: PlaceLite,
   opts: {
-    userLocation: { lat: number; lng: number };
+    userLocation: { lat: number; lng: number } | null;
     weather: WeatherSummary | null;
     reasonProfile: UserProfileForReason | null;
     locale: Locale;
@@ -111,6 +114,7 @@ export function mapSearchCardFromPlaceLite(
     place: base,
     categoryId: "all",
     userLocation: opts.userLocation,
+    distanceSource: opts.userLocation ? "USER_LOCATION" : undefined,
     weather: opts.weather,
     userProfile: opts.reasonProfile,
     locale: opts.locale,
@@ -127,22 +131,27 @@ function normalizeGooglePlaceId(raw: string): string {
   return normalizeExplorePlaceId(raw);
 }
 
-function mapDetailsToSearchCard(
+export function mapDetailsToSearchCard(
   place: PlaceDetailsScreenResult | PlaceResult,
   opts: {
-    userLocation: { lat: number; lng: number };
+    userLocation: { lat: number; lng: number } | null;
     weather: WeatherSummary | null;
     reasonProfile: UserProfileForReason | null;
     locale: Locale;
-    distanceLabel: string;
   },
 ): ExploreMapSearchCard | null {
   if (place.lat == null || place.lng == null) return null;
-  const origin = { lat: place.lat, lng: place.lng };
+  const evidence = resolveRecommendationDistanceEvidence(place, opts.userLocation);
+  logRecommendationDistanceEvidence({
+    canonicalPlaceId: place.id,
+    evidence,
+    surface: "explore_search",
+  });
   const card = buildUnifiedPlaceCard({
     place,
     categoryId: "all",
-    userLocation: origin,
+    userLocation: opts.userLocation,
+    distanceSource: opts.userLocation ? "USER_LOCATION" : undefined,
     weather: opts.weather,
     userProfile: opts.reasonProfile,
     locale: opts.locale,
@@ -155,7 +164,7 @@ function mapDetailsToSearchCard(
   return {
     ...card,
     googleMapsUrl: item.googleMapsUrl,
-    distanceLabel: opts.distanceLabel,
+    distanceLabel: evidence.distanceLabel,
     displayCategory: identityDisplayLabel(resolvePlaceIdentity(place), place),
     coverImageUrl: place.photoName
       ? (preferJpegPngImageUrl(buildPlacePhotoUrl(place.photoName, 600) ?? null) ?? undefined)
@@ -170,7 +179,7 @@ export async function resolveExploreSelectedPlacePin(
   options: {
     locale: Locale;
     resolveFn: ResolveFn;
-    userLocation: { lat: number; lng: number };
+    userLocation: { lat: number; lng: number } | null;
     weather: WeatherSummary | null;
     reasonProfile: UserProfileForReason | null;
     fetchPlaceDetailsFn?: (args: {
@@ -191,7 +200,6 @@ export async function resolveExploreSelectedPlacePin(
     return null;
   }
 
-  const distanceLabel = buildSelectedPlaceDistanceLabel(options.locale);
   let details: PlaceDetailsScreenResult | PlaceResult | null = null;
 
   const browserKey = getGoogleMapsBrowserKey();
@@ -209,7 +217,7 @@ export async function resolveExploreSelectedPlacePin(
   }
 
   if (details?.lat != null && details.lng != null) {
-    const card = mapDetailsToSearchCard(details, { ...options, distanceLabel });
+    const card = mapDetailsToSearchCard(details, options);
     if (!card) return null;
     const label = suggestion.label?.trim();
     return {
@@ -227,7 +235,7 @@ export async function resolveExploreSelectedPlacePin(
     ...card,
     id: placeId,
     name: label || card.name,
-    distanceLabel,
+    distanceLabel: options.userLocation ? card.distanceLabel : undefined,
     isSelectedExplorePin: true,
     coverImageUrl:
       preferJpegPngImageUrl(card.coverImageUrl ?? null) ??
@@ -242,7 +250,7 @@ export async function resolveExploreMapSuggestion(
   options: {
     locale: Locale;
     resolveFn: ResolveFn;
-    userLocation: { lat: number; lng: number };
+    userLocation: { lat: number; lng: number } | null;
     weather: WeatherSummary | null;
     reasonProfile: UserProfileForReason | null;
   },

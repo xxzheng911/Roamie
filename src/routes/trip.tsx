@@ -232,11 +232,9 @@ function Trip() {
     if (!trip || !isRoamiePayloadV2(trip.payload)) return;
     const payload = trip.payload;
     try {
-      const [bundle, prefs, profile] = await Promise.all([
-        buildClientContextBundle(fetchWeather),
-        getPreferences(),
-        getUserProfile(),
-      ]);
+      const bundle = await buildClientContextBundle(fetchWeather);
+      const prefs = bundle.preferences;
+      const profile = await getUserProfile();
       const fashionStyle = resolveFashionStyle({
         travelStyle: profile.travelStyle,
         interests: prefs.interests,

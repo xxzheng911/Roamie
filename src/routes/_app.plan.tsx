@@ -38,8 +38,6 @@ import { resolveTripStop } from "@/lib/trip-stop-search.functions";
 import {
   getPreferences,
   readCachedPreferencesSync,
-  savePreferences,
-  syncPreferencesToSupabase,
   resolveBudgetMode,
   type BudgetMode,
 } from "@/lib/preferences-storage";
@@ -53,6 +51,11 @@ import {
   type PlanningSelectionHandoffTrace,
 } from "@/lib/planning-selection-handoff-log";
 import { listTripDates } from "@/lib/outfit/group-by-date";
+import {
+  logPlanDepartureAuthority,
+  logPlanSubmitValidation,
+  resolvePlanDepartureState,
+} from "@/lib/plan-departure-authority";
 
 type PlanSearch = {
   mood?: string;
@@ -91,6 +94,7 @@ function PlanPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [origin, setOrigin] = useState<TripLocation | null>(null);
+  const [originText, setOriginText] = useState("");
   const [travelers, setTravelers] = useState(1);
   const [travelersCustom, setTravelersCustom] = useState(false);
   const [transport, setTransport] = useState("");
@@ -102,20 +106,31 @@ function PlanPage() {
 
   const validateTripPlaces = (dest: TripLocation | null, start: TripLocation | null): boolean => {
     const destRef = dest ? tripLocationToPlaceRef(dest) : null;
+    const destinationValid = isValidTripPlaceRef(destRef);
+    const departureState = resolvePlanDepartureState(originText, start);
     if (!isValidTripPlaceRef(destRef)) {
       logTripPlace("destination", "validation", { reason: "missing_destination" });
       toast.error(t("plan.selectPlaceFromList"));
+      logPlanSubmitValidation({ destinationValid, departureState, blocked: true, blockedReason: "destination_unresolved" });
+      return false;
+    }
+    if (departureState === "text_unresolved") {
+      logTripPlace("start", "validation", { reason: "text_unresolved" });
+      toast.error(t("plan.pickPlaceFromResults"));
+      logPlanDepartureAuthority({ departureText: originText, selectedDeparture: start, source: "stale_rejected" });
+      logPlanSubmitValidation({ destinationValid, departureState, blocked: true, blockedReason: "departure_text_unresolved" });
       return false;
     }
     if (!start) {
-      logTripPlace("start", "validation", { reason: "missing_start" });
-      toast.error(t("plan.pickPlaceFromResults"));
-      return false;
+      logPlanDepartureAuthority({ departureText: originText, selectedDeparture: start, source: "none" });
+      logPlanSubmitValidation({ destinationValid, departureState, blocked: false });
+      return true;
     }
     const startRef = tripLocationToPlaceRef(start);
     if (!isValidTripPlaceRef(startRef)) {
       logTripPlace("start", "validation", { reason: "invalid_start" });
       toast.error(t("plan.selectPlaceFromList"));
+      logPlanSubmitValidation({ destinationValid, departureState, blocked: true, blockedReason: "departure_invalid" });
       return false;
     }
     if (
@@ -125,8 +140,11 @@ function PlanPage() {
     ) {
       logTripPlace("destination", "validation", { reason: "same_as_start" });
       toast.error(t("plan.samePlace"));
+      logPlanSubmitValidation({ destinationValid, departureState, blocked: true, blockedReason: "same_place" });
       return false;
     }
+    logPlanDepartureAuthority({ departureText: originText, selectedDeparture: start, source: "user_selection" });
+    logPlanSubmitValidation({ destinationValid, departureState, blocked: false });
     return true;
   };
 
@@ -224,7 +242,7 @@ function PlanPage() {
 
   type ResolvedPlanForm = {
     dest: TripLocation;
-    start: TripLocation;
+    start: TripLocation | null;
     tripDays: number;
   };
 
@@ -240,9 +258,10 @@ function PlanPage() {
       ensureLocationHasCoords(origin, "start"),
     ]);
     if (handoffTrace) {
+      const departureState = resolvePlanDepartureState(originText, resolvedOrigin);
       logPlanningSelectionHandoffStage("start_place_resolve_done", handoffTrace, {
-        success: Boolean(resolvedOrigin),
-        failureReason: resolvedOrigin ? "" : "start_place_unresolved",
+        success: departureState !== "text_unresolved",
+        failureReason: departureState === "text_unresolved" ? "start_place_unresolved" : "",
       });
       logPlanningSelectionHandoffStage("destination_resolve_done", handoffTrace, {
         success: Boolean(resolvedDestination),
@@ -263,7 +282,7 @@ function PlanPage() {
     const tripDays = startDate && endDate ? daysBetweenDates(startDate, endDate) : 2;
     return {
       dest: resolvedDestination!,
-      start: resolvedOrigin!,
+      start: resolvedOrigin,
       tripDays,
     };
   };
@@ -366,7 +385,7 @@ function PlanPage() {
           handoffTrace,
           "local_preferences_snapshot",
         );
-        prefs = { ...readCachedPreferencesSync(), budgetMode: effectiveBudgetMode };
+        prefs = readCachedPreferencesSync();
         logPlanningSelectionHandoffBuildStage(
           "preferences_read",
           "done",
@@ -390,7 +409,7 @@ function PlanPage() {
       }
       const bundle = await buildContextBundleForTrip(dest, fetchWeather, {
         weatherBlocking: !planAiMode,
-        ...(planAiMode ? { preferences: prefs } : {}),
+        preferences: prefs,
       });
       if (handoffTrace) {
         logPlanningSelectionHandoffBuildStage(
@@ -405,47 +424,17 @@ function PlanPage() {
           handoffTrace,
           "destination_context",
         );
-        logPlanningSelectionHandoffBuildStage(
-          "preferences_save",
-          "start",
-          handoffTrace,
-          "optional_remote_preferences_persist",
-        );
-        void syncPreferencesToSupabase(prefs, {
-          timeoutMs: 15_000,
-          source: "planning_selection_handoff",
-        })
-          .then(() => {
-            logPlanningSelectionHandoffBuildStage(
-              "preferences_save",
-              "done",
-              handoffTrace,
-              "optional_remote_preferences_persist",
-            );
-          })
-          .catch((error) => {
-            const failureReason = error instanceof Error ? error.message : String(error);
-            logPlanningSelectionHandoffBuildStage(
-              "preferences_save",
-              /timeout/i.test(failureReason) ? "timeout" : "error",
-              handoffTrace,
-              "optional_remote_preferences_persist",
-              failureReason,
-            );
-          });
-      } else {
-        await savePreferences({ ...prefs, budgetMode: effectiveBudgetMode });
       }
 
       const mergedPlaces = selectedPlaces.length > 0 ? selectedPlaces : [];
       const destRef = tripLocationToPlaceRef(dest);
-      const startRef = tripLocationToPlaceRef(start);
+      const startRef = start ? tripLocationToPlaceRef(start) : null;
       logTripPlace("destination", "saved", destRef);
-      logTripPlace("start", "saved", startRef);
+      if (startRef) logTripPlace("start", "saved", startRef);
       console.info("[Roamie AI] plan submit → chat", {
         destination: destRef.name,
         destinationPlaceId: destRef.placeId,
-        startPlaceId: startRef.placeId,
+        startPlaceId: startRef?.placeId ?? null,
         travelers,
         days: tripDays,
         places: mergedPlaces.length,
@@ -585,9 +574,9 @@ function PlanPage() {
             fieldRole="start"
             searchMode="place"
             label={t("plan.origin")}
-            required
             value={origin}
             onChange={setOrigin}
+            onQueryChange={setOriginText}
             placeholder={t("plan.originPlaceholder")}
             disabled={loading}
             onFocusInput={scrollInputAboveKeyboard}
@@ -696,20 +685,22 @@ function PlanPage() {
 
           <section>
             <label className="text-sm font-medium">{t("plan.transport")}</label>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {transportOptions.map((t) => (
+            <div className="-mx-1 mt-2 flex max-w-full gap-1 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {transportOptions.map((option) => (
                 <button
-                  key={t}
+                  key={option.value}
                   type="button"
-                  onClick={() => setTransport(transport === t ? "" : t)}
+                  onClick={() =>
+                    setTransport(transport === option.value ? "" : option.value)
+                  }
                   disabled={loading}
-                  className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
-                    transport === t
+                  className={`min-h-9 shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1.5 text-xs transition ${
+                    transport === option.value
                       ? "border-foreground bg-foreground text-background"
                       : "border-border bg-card"
                   }`}
                 >
-                  {t}
+                  {option.label}
                 </button>
               ))}
             </div>

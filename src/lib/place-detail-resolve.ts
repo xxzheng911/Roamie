@@ -4,13 +4,10 @@ import {
   isGooglePlaceId,
   latLngFallbackPlaceId,
 } from "@/lib/place-detail-handoff";
-import { buildPlaceRecommendationReason } from "@/lib/build-place-recommendation-reason";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { preferJpegPngImageUrl, sanitizePlaceImageUrl } from "@/lib/safe-image-url";
 import type { Locale } from "@/lib/i18n/types";
-import {
-  resolvePlaceOpeningDisplay,
-} from "@/lib/normalized-opening-status";
+import { resolvePlaceOpeningDisplay } from "@/lib/normalized-opening-status";
 import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
 import type { PlaceDetailBoundaryTelemetry } from "@/lib/place-detail-failure-telemetry";
 import type { PlaceResult } from "@/lib/place-result";
@@ -79,9 +76,7 @@ export function extractGooglePhotoReference(urlOrName: string): string | null {
 function isGooglePlacePhotoSource(url: string): boolean {
   const s = url.trim();
   return (
-    s.startsWith("places/") ||
-    s.includes("places.googleapis.com") ||
-    s.includes("/api/place-photo")
+    s.startsWith("places/") || s.includes("places.googleapis.com") || s.includes("/api/place-photo")
   );
 }
 
@@ -113,10 +108,7 @@ export function buildPlaceImageUrls(place: PlaceImageSources): string[] {
     .map((name) => buildPlacePhotoUrl(name, 800))
     .filter((u): u is string => Boolean(u));
 
-  const cover =
-    place.coverImageUrl?.trim() ||
-    cached?.coverImageUrl?.trim() ||
-    null;
+  const cover = place.coverImageUrl?.trim() || cached?.coverImageUrl?.trim() || null;
 
   if (fromNames.length > 0) {
     return dedupePlaceImageUrls(fromNames);
@@ -195,38 +187,43 @@ const GENERIC_DETAIL_REASONS = new Set([
   "지금 가기 좋아요",
 ]);
 
-function handoffToPlaceResult(
+export type PlaceDetailReasonSource =
+  | "recommendation_session"
+  | "review_evidence"
+  | "place_metadata_fallback";
+
+export function buildPlaceMetadataReason(
+  place: Pick<PlaceResult, "rating" | "userRatingCount" | "openStatusLabel" | "todayHoursLabel">,
+): string {
+  const facts: string[] = [];
+  if (place.rating != null) {
+    facts.push(
+      place.userRatingCount != null && place.userRatingCount > 0
+        ? `目前 Google 評分 ${place.rating.toFixed(1)}（${place.userRatingCount} 則評價）`
+        : `目前 Google 評分 ${place.rating.toFixed(1)}`,
+    );
+  }
+  const hours = place.todayHoursLabel?.trim() || place.openStatusLabel?.trim();
+  if (hours && !/待確認|unknown/i.test(hours)) facts.push(hours);
+  if (facts.length > 0) return `${facts.join("，")}。`;
+  return "目前可確認的地點資訊有限，請以 Google Maps 的最新資訊為準。";
+}
+
+export function resolvePlaceDetailReasonWithSource(
   handoff: PlaceDetailHandoff,
   snap?: PlaceDetailHandoff["snapshot"],
-): PlaceResult {
-  if (snap) {
-    return {
-      ...snap,
-      id: snap.id || handoff.placeId,
-      name: snap.name || handoff.name,
-      address: snap.address ?? handoff.address,
-      lat: snap.lat ?? handoff.lat,
-      lng: snap.lng ?? handoff.lng,
-    };
+): { reason: string; source: PlaceDetailReasonSource } {
+  const explicit = snap?.reason?.trim() || handoff.reason?.trim();
+  if (explicit && !GENERIC_DETAIL_REASONS.has(explicit)) {
+    return { reason: explicit, source: "recommendation_session" };
   }
-  return {
-    id: handoff.placeId,
-    name: handoff.name,
-    address: handoff.address,
-    lat: handoff.lat,
-    lng: handoff.lng,
+  const metadata = snap ?? {
     rating: handoff.rating ?? null,
     userRatingCount: handoff.userRatingCount ?? null,
-    photoName: handoff.photoName ?? null,
-    primaryType: handoff.category ?? null,
-    types: handoff.category ? [handoff.category] : null,
-    businessStatus: null,
-    openStatus: "unknown",
     openStatusLabel: handoff.openStatusLabel ?? handoff.normalizedOpeningLabel ?? "",
     todayHoursLabel: "",
-    closingSoonNote: "",
-    nextOpenHint: "",
   };
+  return { reason: buildPlaceMetadataReason(metadata), source: "place_metadata_fallback" };
 }
 
 export function resolvePlaceDetailReason(
@@ -234,18 +231,8 @@ export function resolvePlaceDetailReason(
   locale: Locale = "zh-TW",
   snap?: PlaceDetailHandoff["snapshot"],
 ): string {
-  const explicit = snap?.reason?.trim() || handoff.reason?.trim();
-  if (explicit && !GENERIC_DETAIL_REASONS.has(explicit)) {
-    return explicit;
-  }
-  return buildPlaceRecommendationReason(
-    handoffToPlaceResult(handoff, snap),
-    null,
-    null,
-    undefined,
-    undefined,
-    locale,
-  );
+  void locale;
+  return resolvePlaceDetailReasonWithSource(handoff, snap).reason;
 }
 
 export function hasCanonicalPlaceDetailReason(
@@ -273,18 +260,11 @@ export function handoffToPlaceDetailData(
         handoff.fallbackImageUrl ??
         undefined,
       generatedImageUrl:
-        snap.generatedImageUrl ??
-        handoff.generatedImageUrl ??
-        handoff.fallbackImageUrl ??
-        null,
+        snap.generatedImageUrl ?? handoff.generatedImageUrl ?? handoff.fallbackImageUrl ?? null,
       fallbackImageUrl:
-        snap.fallbackImageUrl ??
-        handoff.fallbackImageUrl ??
-        handoff.generatedImageUrl ??
-        null,
+        snap.fallbackImageUrl ?? handoff.fallbackImageUrl ?? handoff.generatedImageUrl ?? null,
       openNow: snap.openNow ?? handoff.openNow ?? null,
-      normalizedOpeningStatus:
-        snap.normalizedOpeningStatus ?? handoff.normalizedOpeningStatus,
+      normalizedOpeningStatus: snap.normalizedOpeningStatus ?? handoff.normalizedOpeningStatus,
       reason: resolvePlaceDetailReason(handoff, locale, snap),
       website: null,
       phone: null,
@@ -346,9 +326,7 @@ export async function resolveGooglePlaceIdForDetail(
   if (!name) return null;
 
   const center =
-    handoff.lat != null && handoff.lng != null
-      ? { lat: handoff.lat, lng: handoff.lng }
-      : undefined;
+    handoff.lat != null && handoff.lng != null ? { lat: handoff.lat, lng: handoff.lng } : undefined;
 
   const queries = [
     handoff.address?.trim() ? `${name} ${handoff.address.trim()}` : null,
@@ -405,7 +383,7 @@ export async function fetchGooglePlaceDetailsForHandoff(
   error: string | null;
   boundaryTelemetry?: PlaceDetailBoundaryTelemetry;
 }> {
-  const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, locale, cacheScope);
+  const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, locale, cacheScope, "screen_v1");
   const cached = readUnifiedPlaceDetailsCache(cacheKey);
   if (cached?.place) {
     return { place: cached.place, error: null };
@@ -456,9 +434,9 @@ export function mergeFetchedPlace(
   base: PlaceDetailViewModel,
   fetched: PlaceDetailsScreenResult,
   locale: Locale = "zh-TW",
+  preserveRecommendationReason = true,
 ): PlaceDetailViewModel {
-  const hasCoords =
-    (fetched.lat ?? base.lat) != null && (fetched.lng ?? base.lng) != null;
+  const hasCoords = (fetched.lat ?? base.lat) != null && (fetched.lng ?? base.lng) != null;
   const resolvedAddress = resolvePlaceDisplayAddress(
     {
       formattedAddress: fetched.googleFormattedAddress,
@@ -472,11 +450,7 @@ export function mergeFetchedPlace(
     ? (buildPlacePhotoUrl(fetched.photoName, 800) ?? null)
     : null;
   const coverImageUrl =
-    googleCover ??
-    base.coverImageUrl ??
-    base.generatedImageUrl ??
-    base.fallbackImageUrl ??
-    null;
+    googleCover ?? base.coverImageUrl ?? base.generatedImageUrl ?? base.fallbackImageUrl ?? null;
   const generatedImageUrl = base.generatedImageUrl ?? base.fallbackImageUrl ?? null;
   const merged: PlaceDetailViewModel = {
     ...base,
@@ -486,7 +460,7 @@ export function mergeFetchedPlace(
     address: resolvedAddress,
     lat: fetched.lat ?? base.lat,
     lng: fetched.lng ?? base.lng,
-    reason: base.reason,
+    reason: preserveRecommendationReason ? base.reason : buildPlaceMetadataReason(fetched),
     website: fetched.website,
     phone: fetched.phone,
     coverImageUrl: coverImageUrl ?? undefined,
@@ -494,10 +468,8 @@ export function mergeFetchedPlace(
     fallbackImageUrl: generatedImageUrl,
     photoNames: fetched.photoNames ?? base.photoNames,
     openNow: fetched.openNow ?? base.openNow ?? null,
-    normalizedOpeningStatus:
-      fetched.normalizedOpeningStatus ?? base.normalizedOpeningStatus,
-    normalizedOpeningSource:
-      fetched.normalizedOpeningSource ?? base.normalizedOpeningSource,
+    normalizedOpeningStatus: fetched.normalizedOpeningStatus ?? base.normalizedOpeningStatus,
+    normalizedOpeningSource: fetched.normalizedOpeningSource ?? base.normalizedOpeningSource,
   };
 
   const opening = resolvePlaceOpeningDisplay(merged);

@@ -18,6 +18,7 @@ import { clearAuthState } from "@/lib/clear-auth-state";
 import {
   getClientAuthSession,
   markClientAuthSessionSettledUnauthenticated,
+  readCachedAuthenticatedUserIdSync,
   updateClientAuthSessionCache,
 } from "@/lib/auth-session";
 import { warmSupabaseAuthStorage } from "@/lib/supabase-auth-storage";

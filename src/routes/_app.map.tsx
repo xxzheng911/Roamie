@@ -43,6 +43,7 @@ import {
 import { pickExploreCitySuggestion } from "@/lib/explore-city-popular-places";
 import { listPlaces, toggleSavePlace, type SavedPlace } from "@/lib/places-storage";
 import { searchPlaces } from "@/lib/places.functions";
+import { recordAnalyticsEvent } from "@/lib/analytics/record";
 import { getPlaceDetailsServerFnViaGateway as fetchExplorePlaceDetails } from "@/lib/pie/places-gateway";
 import { createUnifiedSearchPlacesFn } from "@/lib/places-search-unified";
 import { beginPlacesFlow, endPlacesFlow, placesStatsPayload } from "@/lib/places-api-stats";
@@ -50,6 +51,7 @@ import type { PlaceResult } from "@/lib/place-result";
 import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
+import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { buildPlaceImageUrls } from "@/lib/place-detail-resolve";
 import { getWeather } from "@/lib/weather.functions";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -125,6 +127,8 @@ import {
   type ExploreRecommendMode,
 } from "@/lib/explore-recommend-mode";
 import { buildPlaceDetailTicketOffers } from "@/lib/affiliate/affiliate-links";
+import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
+import { isGooglePlaceId } from "@/lib/place-detail-handoff";
 import {
   isPinnableSearchSelection,
   logExploreSearchSelect,
@@ -139,6 +143,7 @@ import type { Locale } from "@/lib/i18n/types";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
 import { captureMapLayoutHeight, resetMapSearchKeyboardMode } from "@/lib/map-search-keyboard";
 import { normalizedLocationKey } from "@/lib/location-key";
+import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 import {
   buildExploreSessionKey,
   buildMapPlacesCacheKey,
@@ -215,14 +220,7 @@ function sortMapCards(
   sortContext?: ExplorePlacesSortContext,
 ): MapPlaceCard[] {
   // R0：經 Recommendation Engine Explore Adapter（Flag OFF = 直呼舊 sortExplorePlaces）
-  return sortExplorePlacesViaRecEngine(
-    cards,
-    origin,
-    profile,
-    weather,
-    categoryId,
-    sortContext,
-  );
+  return sortExplorePlacesViaRecEngine(cards, origin, profile, weather, categoryId, sortContext);
 }
 
 function finalizeMapResults(
@@ -235,12 +233,15 @@ function finalizeMapResults(
   locationKey: string,
   cityLabel?: string | null,
 ): MapPlaceCard[] {
-  const nearbyOnly = stripPrimaryFromNearby(primary, cards);
+  const eligiblePrimary = primary && isPlaceOperationalForRecommendation(primary) ? primary : null;
+  const nearbyOnly = stripPrimaryFromNearby(eligiblePrimary, cards).filter(
+    isPlaceOperationalForRecommendation,
+  );
   const sortContext = resolveExploreMapFoodSortContext(categoryId, origin, cityLabel);
   const sorted = sortMapCards(nearbyOnly, origin, profile, categoryId, weather, sortContext);
-  const merged = mergeExploreRecommendations(primary, sorted);
-  if (primary) {
-    logExplorePrimaryPlacePinned(primary.name, 0);
+  const merged = mergeExploreRecommendations(eligiblePrimary, sorted);
+  if (eligiblePrimary) {
+    logExplorePrimaryPlacePinned(eligiblePrimary.name, 0);
   }
   logExploreFinalRecommendations(
     merged.map((c) => c.name),
@@ -253,11 +254,16 @@ function finalizeMapResults(
 function normalizeExploreMapCard(card: ExplorePlaceCard, locale: Locale): MapPlaceCard {
   const hoursLabel = simplifyExploreOpeningLabel(card);
   const name = localizePlaceDisplayName(card.name, locale);
-  const displayCategory = localizePlaceDisplayName(card.displayCategory ?? "", locale);
+  const rawCategory = card.displayCategory?.trim();
+  const authoritativeCategory =
+    rawCategory && rawCategory.toLowerCase() !== "unknown"
+      ? rawCategory
+      : identityDisplayLabel(resolvePlaceIdentity(card), card);
+  const displayCategory = localizePlaceDisplayName(authoritativeCategory, locale);
   return {
     ...card,
     name,
-    displayCategory: displayCategory || card.displayCategory,
+    displayCategory: displayCategory || authoritativeCategory,
     openStatusLabel: hoursLabel,
     normalizedOpeningLabel: hoursLabel,
     todayHoursLabel: "",
@@ -275,9 +281,18 @@ function exploreCardsToMapCards(
   },
 ): MapPlaceCard[] {
   return cards.map((p) => {
+    const recommendation = buildUnifiedPlaceCard({
+      place: p,
+      reason: p.reason,
+      categoryId: (p as HomeNearbyPick).categoryId,
+      isSavedFavorite: p.isSavedFavorite,
+      weather: opts.weather,
+      userProfile: opts.reasonProfile,
+      locale: opts.locale,
+    });
     const item = mapPlaceResultToChatItem(p, opts);
     const cover = (p as HomeNearbyPick).coverImageUrl;
-    const normalized = normalizeExploreMapCard(p, opts.locale);
+    const normalized = normalizeExploreMapCard(recommendation, opts.locale);
     return {
       ...normalized,
       coverImageUrl: cover
@@ -623,10 +638,8 @@ function MapView() {
     let cancelled = false;
     const loadReasonProfile = async () => {
       try {
-        const [profile, prefs] = await Promise.all([
-          getUserProfile().catch(() => null),
-          getPreferences(),
-        ]);
+        const prefs = await getPreferences();
+        const profile = await getUserProfile().catch(() => null);
         if (cancelled) return;
         setReasonProfile(
           userProfileForReasonFrom(profile?.prefs ?? prefs, {
@@ -1336,12 +1349,15 @@ function MapView() {
       : null;
 
   const navigation = usePlaceNavigation({
-    origin: userLocation,
+    origin: hasDeviceLocation || effectiveLocation?.source === "remembered" ? userLocation : null,
     destination: selectedDestination,
     weather,
     profile: reasonProfile,
     enabled: !!selectedPlace && isMapDetailOpen(sheetMode),
   });
+
+  const reliableUserLocation =
+    hasDeviceLocation || effectiveLocation?.source === "remembered" ? userLocation : null;
 
   const userLocationPin = useMemo(() => {
     if (!hasDeviceLocation) return null;
@@ -1425,7 +1441,7 @@ function MapView() {
   }, [sheetMode, applyEffectiveLocationToMap]);
 
   const handlePlaceSelect = useCallback(
-    (index: number) => {
+    (index: number, analyticsSurface: "explore" | "map" = "explore") => {
       const place = displayResults[index];
       if (!place) return;
 
@@ -1441,8 +1457,16 @@ function MapView() {
         clearExploreSelectionState();
         return;
       }
+      recordAnalyticsEvent({
+        eventId: crypto.randomUUID(),
+        eventName: "place_card_opened",
+        placeId: place.id,
+        surface: analyticsSurface,
+      });
 
-      const distM = distanceMeters(userLocation, { lat: place.lat, lng: place.lng });
+      const distM = reliableUserLocation
+        ? distanceMeters(reliableUserLocation, { lat: place.lat, lng: place.lng })
+        : undefined;
       const reason =
         place.reason?.trim() ||
         generatePlaceReason(place, reasonProfile, {
@@ -1451,6 +1475,7 @@ function MapView() {
           context: {
             categoryLabel: place.displayCategory,
             distanceMeters: distM,
+            distanceSource: distM != null ? "USER_LOCATION" : undefined,
           },
         });
 
@@ -1462,7 +1487,7 @@ function MapView() {
     },
     [
       displayResults,
-      userLocation,
+      reliableUserLocation,
       reasonProfile,
       weather,
       focusMapOnPlace,
@@ -1534,14 +1559,16 @@ function MapView() {
 
   const openInChat = (p: MapPlaceCard) => {
     const distM =
-      p.lat != null && p.lng != null
-        ? distanceMeters(userLocation, { lat: p.lat, lng: p.lng })
+      reliableUserLocation && p.lat != null && p.lng != null
+        ? distanceMeters(reliableUserLocation, { lat: p.lat, lng: p.lng })
         : undefined;
     const item = mapPlaceResultToChatItem(p, {
       weather,
       userProfile: reasonProfile,
       categoryLabel: getExploreCategoryDisplayLabel(p),
       distanceMeters: distM,
+      distanceSource: distM != null ? "USER_LOCATION" : undefined,
+      reason: p.reason,
       locale,
     });
     const base = loadChatSession();
@@ -1628,7 +1655,7 @@ function MapView() {
         ? await resolveExplorePrimaryPlace(item, {
             locale,
             resolveFn: resolveTripStopFn,
-            userLocation,
+            userLocation: reliableUserLocation,
             weather,
             reasonProfile,
             fetchPlaceDetailsFn: fetchExplorePlaceDetailsFn,
@@ -1641,7 +1668,7 @@ function MapView() {
           await resolveExploreMapSuggestion(item, {
             locale,
             resolveFn: resolveTripStopFn,
-            userLocation,
+            userLocation: reliableUserLocation,
             weather,
             reasonProfile,
           })
@@ -1812,7 +1839,7 @@ function MapView() {
       locale,
       cat.id,
       resolveTripStopFn,
-      userLocation,
+      reliableUserLocation,
       weather,
       reasonProfile,
       focusMapOnPlace,
@@ -1899,7 +1926,7 @@ function MapView() {
       const withCoords = displayResults.filter((p) => p.lat != null && p.lng != null);
       const p = withCoords[markerIdx];
       if (!p) return;
-      handlePlaceSelect(displayResults.indexOf(p));
+      handlePlaceSelect(displayResults.indexOf(p), "map");
     },
     [displayResults, handlePlaceSelect],
   );
@@ -2028,7 +2055,7 @@ function MapView() {
                 highlightIndex={selectedPlaceIndex}
                 busyId={busy}
                 savedNames={savedNames}
-                userLocation={{ lat: recommendCenter.lat, lng: recommendCenter.lng }}
+                userLocation={reliableUserLocation}
                 formatDistance={formatDistanceLabel}
                 distanceMeters={distanceMeters}
                 imageUrl={(photoName) =>
@@ -2038,7 +2065,7 @@ function MapView() {
                 }
                 onSelect={handlePlaceSelect}
                 onToggleSave={(p) => void handleToggleSave(p)}
-                onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p))}
+                onAddToTrip={(p) => openAddToTrip(tripPlaceFromPlaceResult(p), "explore")}
                 addToTripLabel={t("chat.addToTrip")}
               />
             </div>
@@ -2047,10 +2074,12 @@ function MapView() {
                 place={selectedPlace}
                 imageUrls={buildPlaceImageUrls(selectedPlace)}
                 distanceLabel={
-                  selectedPlace.lat != null && selectedPlace.lng != null
+                  (hasDeviceLocation || effectiveLocation?.source === "remembered") &&
+                  selectedPlace.lat != null &&
+                  selectedPlace.lng != null
                     ? formatDistanceLabel(
                         distanceMeters(
-                          { lat: recommendCenter.lat, lng: recommendCenter.lng },
+                          reliableUserLocation!,
                           {
                             lat: selectedPlace.lat,
                             lng: selectedPlace.lng,
@@ -2068,10 +2097,20 @@ function MapView() {
                 onSelectTransportMode={navigation.setSelectedMode}
                 onNavigate={handleNavigateFromDetail}
                 onToggleSave={() => void handleToggleSave(selectedPlace)}
-                onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(selectedPlace))}
+                onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(selectedPlace), "map")}
                 addToTripLabel={t("chat.addToTrip")}
                 saveLabel="收藏"
                 onOpenChat={() => openInChat(selectedPlace)}
+                googleMapsExternalUrl={
+                  selectedPlace.lat != null && selectedPlace.lng != null
+                    ? buildPlaceMapsUrl(
+                        selectedPlace.lat,
+                        selectedPlace.lng,
+                        selectedPlace.name,
+                        isGooglePlaceId(selectedPlace.id) ? selectedPlace.id : null,
+                      )
+                    : null
+                }
                 ticketOffers={selectedPlaceTicketOffers}
               />
             )}

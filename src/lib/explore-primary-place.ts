@@ -12,6 +12,10 @@ import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { isPinnableSearchSelection, normalizeExplorePlaceId } from "@/lib/explore-selected-place";
 import { resolveExploreMapSuggestion, type ExploreMapSearchCard } from "@/lib/explore-map-search";
+import {
+  logRecommendationDistanceEvidence,
+  resolveRecommendationDistanceEvidence,
+} from "@/lib/recommendation-distance-evidence";
 
 export type ExplorePrimaryPlaceCard = ExploreMapSearchCard & {
   isPrimaryExplorePlace: true;
@@ -74,7 +78,7 @@ export function mergeExploreRecommendations<T extends { id: string }>(
 function mapDetailsToPrimaryCard(
   place: PlaceDetailsScreenResult | PlaceResult,
   opts: {
-    userLocation: { lat: number; lng: number };
+    userLocation: { lat: number; lng: number } | null;
     weather: WeatherSummary | null;
     reasonProfile: UserProfileForReason | null;
     locale: Locale;
@@ -83,11 +87,17 @@ function mapDetailsToPrimaryCard(
   },
 ): ExplorePrimaryPlaceCard | null {
   if (place.lat == null || place.lng == null) return null;
-  const origin = { lat: place.lat, lng: place.lng };
+  const evidence = resolveRecommendationDistanceEvidence(place, opts.userLocation);
+  logRecommendationDistanceEvidence({
+    canonicalPlaceId: opts.placeId,
+    evidence,
+    surface: "explore_primary",
+  });
   const card = buildUnifiedPlaceCard({
     place,
     categoryId: "all",
-    userLocation: origin,
+    userLocation: opts.userLocation,
+    distanceSource: opts.userLocation ? "USER_LOCATION" : undefined,
     weather: opts.weather,
     userProfile: opts.reasonProfile,
     locale: opts.locale,
@@ -120,7 +130,7 @@ export async function resolveExplorePrimaryPlace(
   options: {
     locale: Locale;
     resolveFn: ResolveFn;
-    userLocation: { lat: number; lng: number };
+    userLocation: { lat: number; lng: number } | null;
     weather: WeatherSummary | null;
     reasonProfile: UserProfileForReason | null;
     fetchPlaceDetailsFn?: FetchPlaceDetailsFn;

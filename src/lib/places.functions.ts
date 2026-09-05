@@ -44,6 +44,10 @@ import {
   readUnifiedPlaceDetailsCache,
   writeUnifiedPlaceDetailsCache,
   isPlaceDetailsCacheComplete,
+  getUnifiedPlaceCacheOrFetch,
+  UNIFIED_PLACE_INTRO_CACHE_TTL_MS,
+  mergePlaceFactualFields,
+  readCachedPlaceResultById,
 } from "@/lib/unified-place-cache";
 import {
   classifyPlaceDetailFailure,
@@ -181,11 +185,10 @@ function mapRawPlaces(
           options?.intentCategory === "camping" &&
           (types.includes("campground") || types.includes("rv_park"));
         const allowExplicitFamilyPlace = options?.intentCategory === "family";
-        return isRecommendablePlace(
-          placeResultToRecommendableInput(place),
-          recContext,
-          { allowLodging: allowVerifiedCampingLodging, allowExplicitFamilyPlace },
-        ).ok;
+        return isRecommendablePlace(placeResultToRecommendableInput(place), recContext, {
+          allowLodging: allowVerifiedCampingLodging,
+          allowExplicitFamilyPlace,
+        }).ok;
       }
       return isRecommendablePlace(placeResultToRecommendableInput(place), "explore_map").ok;
     });
@@ -242,10 +245,16 @@ async function postPlaces(
   },
 ): Promise<{ places: RawPlace[]; error: string | null; nextPageToken?: string }> {
   const circle =
-    (body.locationRestriction as { circle?: { center?: { latitude?: number; longitude?: number }; radius?: number } })
-      ?.circle ??
-    (body.locationBias as { circle?: { center?: { latitude?: number; longitude?: number }; radius?: number } })
-      ?.circle;
+    (
+      body.locationRestriction as {
+        circle?: { center?: { latitude?: number; longitude?: number }; radius?: number };
+      }
+    )?.circle ??
+    (
+      body.locationBias as {
+        circle?: { center?: { latitude?: number; longitude?: number }; radius?: number };
+      }
+    )?.circle;
   const httpKey = buildPlacesHttpKey(callType, {
     lat: circle?.center?.latitude,
     lng: circle?.center?.longitude,
@@ -259,49 +268,70 @@ async function postPlaces(
   });
 
   let guarded: { places: RawPlace[]; error: string | null; nextPageToken?: string } | null;
+  const ownerRequestId = Array.from(httpKey).reduce(
+    (hash, character) => Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0,
+    2166136261,
+  ).toString(36);
+  const ownerSurface =
+    stats?.caller === "loadHomeNearbyPicks"
+      ? "home_nearby"
+      : stats?.caller === "planning_selection_lane"
+        ? "selection"
+        : stats?.screen === "explore"
+          ? "explore"
+          : stats?.screen === "chat"
+            ? stats?.caller?.includes("place_focus") ? "chat_place_focus" : "other"
+            : stats?.screen === "itinerary" || stats?.screen === "plan"
+              ? "planner"
+              : "other";
   try {
     guarded = await runPlacesApiDeduped(httpKey, callType, async () => {
-    recordPlacesHttpCall(callType, {
-      functionName: "postPlaces",
-      requestKey: httpKey,
-      caller: stats?.caller,
-      screen: stats?.screen,
-      category: stats?.category,
-    });
+      recordPlacesHttpCall(callType, {
+        functionName: "postPlaces",
+        requestKey: httpKey,
+        caller: stats?.caller,
+        screen: stats?.screen,
+        category: stats?.category,
+      });
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": apiKey,
-        "X-Goog-FieldMask": PLACES_FIELD_MASK,
-      },
-      body: JSON.stringify(body),
-    });
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": PLACES_FIELD_MASK,
+        },
+        body: JSON.stringify(body),
+      });
 
-    if (!res.ok) {
-      const text = await res.text();
-      const detail = parseGoogleError(text);
-      console.error("[Roamie Places] request failed", res.status, url, detail);
-      if (res.status === 429 || res.status === 503) {
-        // Let the shared Places queue retry with exponential backoff.
-        throw new Error(`places_http_${res.status}:${detail}`);
+      if (!res.ok) {
+        const text = await res.text();
+        const detail = parseGoogleError(text);
+        console.error("[Roamie Places] request failed", res.status, url, detail);
+        if (res.status === 429 || res.status === 503) {
+          // Let the shared Places queue retry with exponential backoff.
+          throw new Error(`places_http_${res.status}:${detail}`);
+        }
+        if (stats?.screen === "chat") {
+          console.warn("[CHAT_NEARBY_ERROR]", {
+            message: `Google Places API ${res.status}: ${detail}`,
+            rawResponse: text.slice(0, 500),
+          });
+        }
+        return { places: [] as RawPlace[], error: `Google Places API ${res.status}: ${detail}` };
       }
-      if (stats?.screen === "chat") {
-        console.warn("[CHAT_NEARBY_ERROR]", {
-          message: `Google Places API ${res.status}: ${detail}`,
-          rawResponse: text.slice(0, 500),
-        });
-      }
-      return { places: [] as RawPlace[], error: `Google Places API ${res.status}: ${detail}` };
-    }
 
-    const json = (await res.json()) as { places?: RawPlace[]; nextPageToken?: string };
-    return {
-      places: json.places ?? [],
-      error: null as string | null,
-      nextPageToken: json.nextPageToken,
-    };
+      const json = (await res.json()) as { places?: RawPlace[]; nextPageToken?: string };
+      return {
+        places: json.places ?? [],
+        error: null as string | null,
+        nextPageToken: json.nextPageToken,
+      };
+    }, {
+      requestId: `places_${ownerRequestId}`,
+      surface: ownerSurface,
+      priority: ownerSurface === "home_nearby" ? "background" : "foreground",
+      requestType: callType === "nearby" ? "searchNearby" : "searchText",
     });
   } catch (error) {
     if (stats?.caller === "planning_selection_lane") {
@@ -313,7 +343,11 @@ async function postPlaces(
         centerLat: circle?.center?.latitude ?? null,
         centerLng: circle?.center?.longitude ?? null,
         radius: circle?.radius ?? null,
-        spatialContract: body.locationRestriction ? "locationRestriction" : body.locationBias ? "locationBias" : "none",
+        spatialContract: body.locationRestriction
+          ? "locationRestriction"
+          : body.locationBias
+            ? "locationBias"
+            : "none",
         rawResultCount: 0,
         apiSuccess: false,
         error: error instanceof Error ? error.message : String(error),
@@ -358,7 +392,11 @@ async function postPlaces(
       centerLat: circle?.center?.latitude ?? null,
       centerLng: circle?.center?.longitude ?? null,
       radius: circle?.radius ?? null,
-      spatialContract: body.locationRestriction ? "locationRestriction" : body.locationBias ? "locationBias" : "none",
+      spatialContract: body.locationRestriction
+        ? "locationRestriction"
+        : body.locationBias
+          ? "locationBias"
+          : "none",
       rawResultCount: places.length,
       apiSuccess: !guarded.error,
       error: guarded.error,
@@ -387,9 +425,7 @@ type PlacesSearchStats = {
   planningSelectionStyle?: string;
 };
 
-function buildSearchStats(
-  data: z.infer<typeof ExploreSearchInput>,
-): PlacesSearchStats {
+function buildSearchStats(data: z.infer<typeof ExploreSearchInput>): PlacesSearchStats {
   return {
     caller: data.placesCaller ?? "executeExploreSearch",
     screen: data.placesScreen ?? "unknown",
@@ -431,7 +467,15 @@ async function searchText(
     stats,
   );
   if (error) return { places: [], error };
-  return { places: mapRawPlaces(raw, { screen: stats?.screen, locale: userLocale, intentCategory: stats?.intentCategory, searchMode: stats?.searchMode }), error: null };
+  return {
+    places: mapRawPlaces(raw, {
+      screen: stats?.screen,
+      locale: userLocale,
+      intentCategory: stats?.intentCategory,
+      searchMode: stats?.searchMode,
+    }),
+    error: null,
+  };
 }
 
 async function searchNearby(
@@ -463,13 +507,11 @@ async function searchNearby(
     if (regionCode) body.regionCode = regionCode;
     if (pageToken) body.pageToken = pageToken;
 
-    const { places: raw, error, nextPageToken } = await postPlaces(
-      placesSearchNearbyUrl(),
-      body,
-      apiKey,
-      "nearby",
-      stats,
-    );
+    const {
+      places: raw,
+      error,
+      nextPageToken,
+    } = await postPlaces(placesSearchNearbyUrl(), body, apiKey, "nearby", stats);
     if (error) {
       lastError = error;
       if (allRaw.length === 0) return { places: [], error };
@@ -665,13 +707,7 @@ export async function lookupPlacesHoursBatch(
 
     const hours = await runAiHoursLookupDeduped(requestKey, async () => {
       logAiPlaceBatchLookup({ name: item.name, placeId, cacheHit: false });
-      const result = await lookupPlaceHoursFromRaw(
-        item.name,
-        lat,
-        lng,
-        item.address,
-        lookupStats,
-      );
+      const result = await lookupPlaceHoursFromRaw(item.name, lat, lng, item.address, lookupStats);
       if (!result) return null;
       if (result.placeId) {
         setAiHoursCacheByPlaceId(result.placeId, result.hours);
@@ -820,7 +856,7 @@ type PlaceDetailsRaw = RawPlace & {
   reviews?: Array<{ text?: { text?: string } }>;
 };
 
-export async function fetchPlaceDetailsForIntro(
+async function fetchPlaceDetailsForIntroNetwork(
   placeId: string,
   locale?: Locale,
 ): Promise<{
@@ -887,6 +923,27 @@ export async function fetchPlaceDetailsForIntro(
     console.warn("[Roamie Places] place details failed", placeId, e);
     return null;
   }
+}
+
+export async function fetchPlaceDetailsForIntro(
+  placeId: string,
+  locale?: Locale,
+): Promise<{
+  place: PlaceResult;
+  editorialSummary: string | null;
+  reviewSnippets: string[];
+} | null> {
+  const normalizedLocale = locale ?? "zh-TW";
+  const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, normalizedLocale, {}, "intro_v1");
+  return getUnifiedPlaceCacheOrFetch(
+    cacheKey,
+    () => fetchPlaceDetailsForIntroNetwork(placeId, locale),
+    {
+      ttlMs: UNIFIED_PLACE_INTRO_CACHE_TTL_MS,
+      shouldCache: (result) => Boolean(result?.place?.id),
+      validate: (result) => Boolean(result?.place?.id),
+    },
+  );
 }
 
 export type PlaceDetailsScreenResult = PlaceResult & {
@@ -975,7 +1032,12 @@ export async function fetchPlaceDetailsForScreenWithKey(
   cacheScope?: { cityLabel?: string; country?: string; lat?: number; lng?: number },
   telemetryOptions?: { requestPath?: PlaceDetailRequestPath },
 ): Promise<PlaceDetailsScreenResult | null> {
-  const cacheKey = buildUnifiedPlaceDetailsCacheKey(placeId, locale ?? "zh-TW", cacheScope);
+  const cacheKey = buildUnifiedPlaceDetailsCacheKey(
+    placeId,
+    locale ?? "zh-TW",
+    cacheScope,
+    "screen_v1",
+  );
   const cached = readUnifiedPlaceDetailsCache(cacheKey);
   if (cached?.place) {
     logPlacesCacheHit(cacheKey);
@@ -1039,7 +1101,8 @@ export async function fetchPlaceDetailsForScreenWithKey(
         p = (await res.json()) as PlaceDetailsScreenRaw;
       } catch (parseError) {
         const exceptionName = parseError instanceof Error ? parseError.name : "UnknownError";
-        const exceptionMessage = parseError instanceof Error ? parseError.message : String(parseError);
+        const exceptionMessage =
+          parseError instanceof Error ? parseError.message : String(parseError);
         logPlaceDetailRequestFailure({
           placeId,
           requestPath,
@@ -1129,10 +1192,11 @@ export async function fetchPlaceDetailsForScreenWithKey(
     }
   });
 
-  if (guarded && isPlaceDetailsCacheComplete(guarded)) {
-    writeUnifiedPlaceDetailsCache(cacheKey, guarded, null);
-  } else if (guarded) {
-    writeUnifiedPlaceDetailsCache(cacheKey, guarded, null);
+  if (guarded) {
+    const lowerCapability = readCachedPlaceResultById(placeId, locale ?? "zh-TW");
+    const merged = mergePlaceFactualFields(lowerCapability, guarded);
+    writeUnifiedPlaceDetailsCache(cacheKey, merged, null);
+    return merged;
   }
   return guarded;
 }

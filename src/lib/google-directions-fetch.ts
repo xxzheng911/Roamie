@@ -206,7 +206,7 @@ export async function fetchGoogleDirectionsRoute(
     });
   }
 
-  if (mode === "transit" && (verbose || shouldLogDirectionsDebug())) {
+  if (mode === "transit" && verbose) {
     console.info(
       `[TRANSIT_INPUT] origin=${originStr} destination=${destinationStr} originType=${originType} destinationType=${destinationType} placeId=origin:${logPlaceIds?.originPlaceId ?? origin.placeId ?? "none"} destination:${logPlaceIds?.destinationPlaceId ?? destination.placeId ?? "none"}`,
     );

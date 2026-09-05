@@ -219,7 +219,7 @@ function RecommendationsPage() {
           onTogglePick={handleTogglePick}
           onOpenPlaceDetail={handleOpenPlaceDetail}
           onSavePlace={handleSavePlace}
-          onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec))}
+          onAddToTrip={(rec) => openAddToTrip(tripPlaceFromRecommendation(rec), "selection")}
           addToTripLabel={t("chat.addToTrip")}
           viewMapLabel={t("chat.viewMap")}
           savingPlaceName={savingName}

@@ -89,6 +89,8 @@ import { placesStatsPayload, type PlacesScreen } from "@/lib/places-api-stats";
 
 export type ExplorePlaceCard = PlaceResult & {
   reason: string;
+  displayCategory?: string;
+  categoryId?: string;
   isSavedFavorite?: boolean;
 };
 

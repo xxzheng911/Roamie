@@ -15,7 +15,7 @@ type Props = {
   placeName: string;
   originLabel?: string;
   modes: TravelModeEstimate[];
-  selectedMode: TravelModeId;
+  selectedMode: TravelModeId | null;
   onSelectMode: (mode: TravelModeId) => void;
   loading: boolean;
   aiTip: string;

@@ -2,9 +2,18 @@ import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 
 export type LatLng = { lat: number; lng: number };
 
-export function buildPlaceMapsUrl(lat: number, lng: number, placeName?: string): string {
-  const q = placeName ? encodeURIComponent(placeName) : `${lat},${lng}`;
-  return `https://www.google.com/maps/search/?api=1&query=${q}&query_place_id=&center=${lat}%2C${lng}`;
+export function buildPlaceMapsUrl(
+  lat: number,
+  lng: number,
+  placeName?: string,
+  googlePlaceId?: string | null,
+): string {
+  const params = new URLSearchParams({
+    api: "1",
+    query: placeName?.trim() || `${lat},${lng}`,
+  });
+  if (googlePlaceId?.trim()) params.set("query_place_id", googlePlaceId.trim());
+  return `https://www.google.com/maps/search/?${params.toString()}`;
 }
 
 export function buildDirectionsUrl(

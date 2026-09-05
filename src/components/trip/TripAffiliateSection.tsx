@@ -1,15 +1,13 @@
 import { ExternalLink } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { openAffiliateUrl } from "@/lib/affiliate/affiliate-links";
 import { cn } from "@/lib/utils";
+import { recordAnalyticsEvent } from "@/lib/analytics/record";
 
 type SectionKind = "hotel" | "flight" | "ticket" | "package";
 
-const SECTION_META: Record<
-  SectionKind,
-  { emoji: string; title: string; subtitle?: string }
-> = {
+const SECTION_META: Record<SectionKind, { emoji: string; title: string; subtitle?: string }> = {
   hotel: { emoji: "🏨", title: "住宿推薦", subtitle: "到第三方平台自行選擇住宿" },
   flight: { emoji: "✈️", title: "機票推薦", subtitle: "到 Trip.com 搜尋合適航班" },
   package: { emoji: "🧳", title: "套裝行程", subtitle: "到 Trip.com 查看套裝行程" },
@@ -27,8 +25,18 @@ type Props = {
 const OPEN_RESET_MS = 800;
 
 export function TripAffiliateSection({ kind, offers, className, compact }: Props) {
-  const visible = offers.filter((o) => o.enabled && o.url);
+  const visible = useMemo(() => offers.filter((o) => o.enabled && o.url), [offers]);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const impressionId = useRef(crypto.randomUUID());
+  useEffect(() => {
+    for (const offer of visible)
+      recordAnalyticsEvent({
+        eventId: `${impressionId.current}:${offer.provider}:${offer.kind}`,
+        eventName: "affiliate_cta_impression",
+        provider: offer.provider === "trip" ? "tripcom" : offer.provider,
+        surface: "itinerary",
+      });
+  }, [visible]);
   if (visible.length === 0) return null;
 
   const meta = SECTION_META[kind];
@@ -73,6 +81,8 @@ export function TripAffiliateSection({ kind, offers, className, compact }: Props
                   checkIn: offer.checkIn,
                   checkOut: offer.checkOut,
                   adults: offer.adults,
+                  surface: "itinerary",
+                  eventId: crypto.randomUUID(),
                 }).finally(() => {
                   window.setTimeout(() => setOpeningKey(null), OPEN_RESET_MS);
                 });

@@ -14,6 +14,7 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
 import type { QualityRejectReason } from "@/lib/ai/candidate-pool/types";
 import { evaluateTourismQuality } from "@/lib/ai/tourism-quality-gate";
+import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 
 /** Soft popularity floor — stricter than nothing, softer than legacy 4.0/100 */
 const MIN_RATING = 3.8;
@@ -74,11 +75,6 @@ function placeTypes(place: PlaceResult): Set<string> {
   return out;
 }
 
-function isPermanentlyClosed(place: PlaceResult): boolean {
-  const biz = (place.businessStatus ?? "").trim().toUpperCase();
-  return biz === "CLOSED_PERMANENTLY";
-}
-
 function isResidentialPlace(place: PlaceResult): boolean {
   const types = placeTypes(place);
   const meaningful = [...types].filter((t) => !RESIDENTIAL_TYPES.has(t));
@@ -113,7 +109,7 @@ export function qualityRejectReason(
   opts?: { style?: TripStyleKey; userText?: string; seenBrands?: Set<string> },
 ): QualityRejectReason | null {
   if (!place.name?.trim() || !place.id?.trim()) return "missing_identity";
-  if (isPermanentlyClosed(place)) return "permanently_closed";
+  if (!isPlaceOperationalForRecommendation(place)) return "permanently_closed";
   if (isBurialOrFuneralPlace(place)) return "burial";
 
   // Unified Tourism Quality Gate (drinking fountains, city halls, ordinary parks…)

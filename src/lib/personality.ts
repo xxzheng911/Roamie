@@ -94,7 +94,7 @@ export function buildCompanionSummary(prefs: TravelPreferences): string {
 
   const budgetNote =
     budget === "budget"
-      ? "我會優先幫你找平價、在地、不踩雷的選擇"
+      ? "我會把消費安排較輕鬆的旅行方式放在前面，但不會把地點類別當成實際價格"
       : budget === "luxury"
         ? "我也會記得你想好好享受、少一點將就"
         : budget === "quality"

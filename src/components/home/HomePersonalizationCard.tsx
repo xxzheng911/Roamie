@@ -6,7 +6,10 @@ import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import { useAccess } from "@/hooks/use-access";
 import { useI18n } from "@/hooks/use-i18n";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
-import { buildHomePlusInsight } from "@/lib/home-personalization-insight";
+import {
+  buildHomePlusInsight,
+  resolveHomePlusCopySource,
+} from "@/lib/home-personalization-insight";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { SavedPlace } from "@/lib/places-storage";
@@ -72,6 +75,22 @@ export function HomePersonalizationCard({
       }),
     [savedPlaces, prefs, selectedMood, weather, nearbyPicks, latestTripTitle, chatSession, locale],
   );
+
+  useEffect(() => {
+    if (!hasPlusAccess) return;
+    console.info(
+      `[PLUS_CENTER_COPY_SOURCE] ${resolveHomePlusCopySource({
+        savedPlaces,
+        prefs,
+        selectedMood,
+        weather,
+        nearbyPicks,
+        latestTripTitle,
+        chatSession,
+        locale,
+      })}`,
+    );
+  }, [hasPlusAccess, savedPlaces, prefs, selectedMood, weather, nearbyPicks, latestTripTitle, chatSession, locale]);
 
   const handleUpgradePlus = () => {
     upgradeToPlus();

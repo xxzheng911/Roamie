@@ -154,7 +154,7 @@ export const getWeather = createServerFn({ method: "POST" })
     console.info("[WEATHER_SERVICE_VERSION] v-runtime-fallback-001");
     console.info("[WEATHER_FETCH] start");
     console.info("[WEATHER_FETCH] keyLoaded=", hasOpenWeatherApiKey());
-    console.info("[WEATHER_FETCH] latLng=", `${data.lat},${data.lng}`);
+    console.info("[WEATHER_FETCH] locationBucket=", `${data.lat.toFixed(2)},${data.lng.toFixed(2)}`);
     try {
       const openWeatherUrl =
         `https://api.openweathermap.org/data/3.0/onecall?lat=${data.lat}&lon=${data.lng}` +
@@ -188,6 +188,13 @@ export const getWeather = createServerFn({ method: "POST" })
       try {
         const city = await reverseGeocodeCity(data.lat, data.lng, data.locale).catch(() => "");
         const meteo = await fetchOpenMeteoCurrentFallback(data.lat, data.lng);
+        const { buildWeatherRecommendation } = await import("@/lib/weather-scene");
+        const productRecommendation = buildWeatherRecommendation({
+          tempC: meteo.tempC,
+          feelsLikeC: meteo.tempC,
+          condition: openMeteoCodeToCondition(meteo.weatherCode),
+          isDaytime: meteo.isDay,
+        });
         const summary: WeatherSummary = {
           city: city || "目前位置",
           tempC: meteo.tempC,
@@ -202,8 +209,9 @@ export const getWeather = createServerFn({ method: "POST" })
           uvi: null,
           sunrise: null,
           sunset: null,
-          recommendation: meteo.isDay ? "outdoor" : "evening",
-          recommendationText: "已使用備援天氣來源。",
+          recommendation: productRecommendation.rec,
+          recommendationText: productRecommendation.text,
+          scene: productRecommendation.scene,
           source: "open-meteo-fallback",
           fetchedAt: new Date().toISOString(),
           available: true,

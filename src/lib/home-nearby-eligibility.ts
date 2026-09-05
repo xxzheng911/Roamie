@@ -1,5 +1,6 @@
 import type { PlaceOpenStatus } from "@/lib/filter-available-places";
 import type { PlaceResult } from "@/lib/place-result";
+import { placeOperationalEligibility } from "@/lib/place-operational-eligibility";
 
 /** 首頁只接受真實 Google place_id，排除 mock / saved 假 id */
 export function isVerifiedGooglePlaceId(id: string | null | undefined): boolean {
@@ -188,13 +189,14 @@ function isOpenUnknown(place: HomeNearbyPickPlace): boolean {
   return place.openStatus == null || place.openStatus === "unknown";
 }
 
-function isClosedNow(place: HomeNearbyPickPlace): boolean {
-  return (
-    place.openStatus === "closed_now" ||
-    place.openStatus === "permanently_closed" ||
-    place.openStatus === "temporarily_closed"
-  );
-}
+export type HomeNearbyHardExclusionReason =
+  | "invalid_place_id"
+  | "invalid_identity"
+  | "prohibited_name"
+  | "prohibited_type"
+  | "permanently_closed"
+  | "temporarily_closed"
+  | "generic_store_excluded";
 
 export function hasPermanentExcludedType(place: HomeNearbyPickPlace): boolean {
   return normalizeTypes(place).some((t) => PERMANENT_EXCLUDED_TYPES.has(t));
@@ -241,23 +243,28 @@ export function isGenericNonTravelStore(place: HomeNearbyPickPlace): boolean {
 }
 
 /** 永久硬排除：非旅遊／基礎設施／已打烊 */
-export function passesHomeNearbyHardExclusions(place: HomeNearbyPickPlace): boolean {
-  if (!isVerifiedGooglePlaceId(place.id)) return false;
+export function homeNearbyHardExclusionReason(
+  place: HomeNearbyPickPlace,
+): HomeNearbyHardExclusionReason | null {
+  if (!isVerifiedGooglePlaceId(place.id)) return "invalid_place_id";
 
   const name = (place.name ?? "").trim();
-  if (!name || name === "Unknown") return false;
-  if (LODGING_NAME_RE.test(name)) return false;
-  if (hasExcludedNameKeyword(place)) return false;
+  if (!name || name === "Unknown") return "invalid_identity";
+  if (LODGING_NAME_RE.test(name) || hasExcludedNameKeyword(place)) return "prohibited_name";
+  const operational = placeOperationalEligibility(place);
+  if (!operational.eligible) {
+    const status = operational.businessStatus ?? place.openStatus ?? "";
+    return String(status).toUpperCase().includes("TEMPORAR")
+      ? "temporarily_closed"
+      : "permanently_closed";
+  }
+  if (hasPermanentExcludedType(place)) return "prohibited_type";
+  if (isGenericNonTravelStore(place)) return "generic_store_excluded";
+  return null;
+}
 
-  const biz = (place.businessStatus ?? "").trim().toUpperCase();
-  if (biz === "CLOSED_PERMANENTLY" || biz === "CLOSED_TEMPORARILY") return false;
-  // 允許 businessStatus 空值 / unknown — 不因非 OPERATIONAL 字串排除
-
-  if (isClosedNow(place)) return false;
-  if (hasPermanentExcludedType(place)) return false;
-  if (isGenericNonTravelStore(place)) return false;
-
-  return true;
+export function passesHomeNearbyHardExclusions(place: HomeNearbyPickPlace): boolean {
+  return homeNearbyHardExclusionReason(place) === null;
 }
 
 /** @deprecated 請改用 passesHomeNearbyHardExclusions */
@@ -345,7 +352,6 @@ export function passesHomeNearbyLevel4(
   period: HomeNearbyPeriod,
 ): boolean {
   if (!passesHomeNearbyHardExclusions(place)) return false;
-  if (isClosedNow(place)) return false;
   if (hasZeroRatingAndReviews(place)) return false;
   if (!hasUsableRatingSignal(place)) return false;
   return passesRecommendedTypeGate(place, period);
@@ -354,7 +360,6 @@ export function passesHomeNearbyLevel4(
 /** 最後手段：僅在更高層級完全不足時使用；仍排除 0 評分 0 評論 */
 export function passesHomeNearbyLastResort(place: HomeNearbyPickPlace): boolean {
   if (!passesHomeNearbyHardExclusions(place)) return false;
-  if (isClosedNow(place)) return false;
   if (hasZeroRatingAndReviews(place)) return false;
   return hasHomeRecommendedType(place) || MERCHANT_NAME_RE.test(place.name ?? "");
 }

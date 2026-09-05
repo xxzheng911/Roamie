@@ -115,16 +115,13 @@ export function preparePlanTripSession(
     logTripPlace("destination", "validation", { reason: "handoff_invalid_destination" });
     throw new Error("目的地資料不完整，請重新從搜尋結果選擇");
   }
-  if (!form.origin) {
-    logTripPlace("start", "validation", { reason: "handoff_missing_start" });
-    throw new Error("請選擇出發地");
-  }
-  const startRef = tripLocationToPlaceRef(form.origin);
-  if (!isValidTripPlaceRef(startRef)) {
+  const startRef = form.origin ? tripLocationToPlaceRef(form.origin) : null;
+  if (form.origin && !isValidTripPlaceRef(startRef)) {
     logTripPlace("start", "validation", { reason: "handoff_invalid_start" });
     throw new Error("出發地資料不完整，請重新從搜尋結果選擇");
   }
   if (
+    startRef &&
     destRef.placeId === startRef.placeId &&
     Math.abs(destRef.lat - startRef.lat) < 1e-6 &&
     Math.abs(destRef.lng - startRef.lng) < 1e-6

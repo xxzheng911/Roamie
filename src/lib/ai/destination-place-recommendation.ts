@@ -1,5 +1,6 @@
 import { unwrapWeatherResult } from "@/lib/ai/unwrap-weather-result";
 import type { Locale } from "@/lib/i18n/types";
+import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 import type { PlaceResult } from "@/lib/place-result";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
@@ -485,11 +486,11 @@ async function searchShoppingCategoryAttempts(params: {
   // loop so SHOPPING_QUERY_DIAG can report rejectedCategory accurately.
   let places = filterPlacesByDestinationGuard(merged, params.city, params.userText);
   places = filterExcludedPlaceIds(places, params.excludePlaceIds ?? []);
-  places = places.filter((place) => {
-    if (!place.name?.trim() || !place.id?.trim()) return false;
-    const biz = (place.businessStatus ?? "").trim().toUpperCase();
-    return biz !== "CLOSED_PERMANENTLY";
-  });
+  places = places.filter(
+    (place) =>
+      Boolean(place.name?.trim() && place.id?.trim()) &&
+      isPlaceOperationalForRecommendation(place),
+  );
   return { places, rawPlaces: merged, perQuery, rateLimited, timedOut, budget };
 }
 

@@ -387,7 +387,8 @@ assert.match(
   "pre-planner failure settles credits and loading in the existing finally",
 );
 assert.match(chatRoute, /weatherBlocking:\s*!isPlanningSelectionMode\(activeSession\)/);
-assert.match(chatRoute, /selectionModeForPrepare\s*\?\s*\[bundle\.preferences, null\]/);
+assert.match(chatRoute, /let prefs = bundle\.preferences/);
+assert.match(chatRoute, /if \(!selectionModeForPrepare\)\s*\{[\s\S]*prefs = await getAiPreferences\(\)/);
 assert.match(chatRoute, /SELECTION_PLACE_RESOLUTION_MISMATCH/);
 const placesFunctions = readFileSync(
   new URL("../src/lib/places.functions.ts", import.meta.url),

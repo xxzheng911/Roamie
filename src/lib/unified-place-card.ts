@@ -10,6 +10,7 @@ import type { Locale } from "@/lib/i18n/types";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { resolvePlaceCoverImageSync } from "@/services/placeImageService";
 import { buildDiversePlaceRecommendationReasons } from "@/lib/place-reason-diversity";
+import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 
 export type UnifiedPlaceCard = ExplorePlaceCard & {
   categoryId?: string;
@@ -126,9 +127,12 @@ function unifiedCardDistanceMeters(input: BuildUnifiedPlaceCardInput): number | 
  * given list, then reuses the per-place card builder. Order is preserved.
  */
 export function buildUnifiedPlaceCards(inputs: BuildUnifiedPlaceCardInput[]): UnifiedPlaceCard[] {
-  if (inputs.length === 0) return [];
+  const eligibleInputs = inputs.filter((input) =>
+    isPlaceOperationalForRecommendation(input.place),
+  );
+  if (eligibleInputs.length === 0) return [];
   const reasons = buildDiversePlaceRecommendationReasons(
-    inputs.map((input) => ({
+    eligibleInputs.map((input) => ({
       place: input.place,
       context: {
         categoryLabel: resolvePlaceDisplayCategory(input.place),
@@ -142,12 +146,12 @@ export function buildUnifiedPlaceCards(inputs: BuildUnifiedPlaceCardInput[]): Un
       },
     })),
     {
-      userProfile: inputs[0]?.userProfile,
-      weather: inputs[0]?.weather,
-      locale: inputs[0]?.locale,
+      userProfile: eligibleInputs[0]?.userProfile,
+      weather: eligibleInputs[0]?.weather,
+      locale: eligibleInputs[0]?.locale,
     },
   );
-  return inputs.map((input, index) =>
+  return eligibleInputs.map((input, index) =>
     buildUnifiedPlaceCard({
       ...input,
       reason: input.reason?.trim() || reasons[index],

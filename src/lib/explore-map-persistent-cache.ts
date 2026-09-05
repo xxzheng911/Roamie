@@ -125,7 +125,24 @@ export function writeExploreMapPersistedCache<T>(
   places: T[],
   error: string | null,
 ): void {
-  writeUnifiedPlaceSearchCache(scopeKey, places as import("@/lib/place-result").PlaceResult[], error);
+  // Persist only factual Place fields. Recommendation reason/category/profile context
+  // belongs to the current user/session and is rebuilt by the Explore card adapter.
+  const factualPlaces = places.map((place) => {
+    const record = place as Record<string, unknown>;
+    const {
+      reason: _reason,
+      displayCategory: _displayCategory,
+      categoryId: _categoryId,
+      isSavedFavorite: _isSavedFavorite,
+      distanceLabel: _distanceLabel,
+      distanceSource: _distanceSource,
+      distanceFromUser: _distanceFromUser,
+      coverImageUrl: _coverImageUrl,
+      ...factual
+    } = record;
+    return factual as import("@/lib/place-result").PlaceResult;
+  });
+  writeUnifiedPlaceSearchCache(scopeKey, factualPlaces, error);
 }
 
 export function clearExploreMapPersistedCache(scopeKey: string): void {

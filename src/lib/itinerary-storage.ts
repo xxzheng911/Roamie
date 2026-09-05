@@ -13,6 +13,10 @@ import {
 import { resolveTripTitle } from "@/lib/trip/trip-title";
 import { resolveDisplayTitle, titleFieldsFromStored } from "@/lib/saved-trip/display";
 import type { Database } from "@/integrations/supabase/types";
+import {
+  readOwnedPersonalizedCache,
+  wrapPersonalizedCache,
+} from "@/lib/personalized-cache-envelope";
 
 type SavedTripRowUpdate = Database["public"]["Tables"]["saved_trips"]["Update"];
 
@@ -159,19 +163,29 @@ function requireStoredItinerary(input: unknown, payloadOverride?: unknown): Stor
   return itinerary;
 }
 
-function readGuest(): StoredItinerary[] {
+function readGuest(userId: string): StoredItinerary[] {
   if (typeof window === "undefined") return [];
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(GUEST_KEY) || "[]");
+    const parsed: unknown = readOwnedPersonalizedCache<StoredItinerary[]>(
+      localStorage.getItem(GUEST_KEY),
+      userId,
+    );
     return normalizeStoredItineraryList(parsed);
   } catch {
     return [];
   }
 }
 
-function writeGuest(list: StoredItinerary[]) {
+function writeGuest(userId: string, list: StoredItinerary[]) {
   if (typeof window === "undefined") return;
-  localStorage.setItem(GUEST_KEY, JSON.stringify(list));
+  try {
+    localStorage.setItem(GUEST_KEY, JSON.stringify(wrapPersonalizedCache(userId, list)));
+  } catch (error) {
+    console.warn("[ITINERARY_CACHE_WRITE_FAILED]", {
+      reason: error instanceof Error ? error.name : "storage_error",
+      fallback: "remote_authority",
+    });
+  }
 }
 
 const TRIP_SELECT =
@@ -216,7 +230,7 @@ async function persistItinerary(
   const withTitle = withAutoTitle(itinerary);
   const userId = await getAuthenticatedUserId();
   const mood = isRoamiePayloadV2(withTitle) ? withTitle.moodTag : (withTitle as Itinerary).mood;
-  const coverMeta = options?.coverMeta ?? await resolveCoverForSave(withTitle);
+  const coverMeta = options?.coverMeta ?? (await resolveCoverForSave(withTitle));
   const autoTitle = isRoamiePayloadV2(withTitle) ? withTitle.title : (withTitle as Itinerary).title;
 
   if (userId) {
@@ -431,8 +445,11 @@ export async function deleteItinerary(id: string): Promise<void> {
       .eq("user_id", userId);
     if (error) {
       if (isMissingTableError(error)) {
-        const prev = readGuest();
-        writeGuest(prev.filter((t) => t.id !== id));
+        const prev = readGuest(userId);
+        writeGuest(
+          userId,
+          prev.filter((t) => t.id !== id),
+        );
         broadcastTripsChanged();
         return;
       }
@@ -442,10 +459,11 @@ export async function deleteItinerary(id: string): Promise<void> {
     return;
   }
 
-  const prevGuest = readGuest();
+  if (!userId) throw new Error("請先登入");
+  const prevGuest = readGuest(userId);
   const nextGuest = prevGuest.filter((t) => t.id !== id);
   if (nextGuest.length !== prevGuest.length) {
-    writeGuest(nextGuest);
+    writeGuest(userId, nextGuest);
     broadcastTripsChanged();
     return;
   }

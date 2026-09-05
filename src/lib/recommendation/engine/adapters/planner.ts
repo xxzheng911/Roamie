@@ -31,6 +31,7 @@ import {
 import { runRecommendationPipeline } from "@/lib/recommendation/engine/pipeline";
 import { scoreCandidatesWithProfile } from "@/lib/recommendation/engine/score-with-profile";
 import type { NormalizeInput } from "@/lib/recommendation/engine/stages/normalize";
+import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 import { isRecEngineValidatorEnabled } from "@/lib/recommendation/engine/feature-flag-validator";
 import {
   getLastRecommendationValidationSummary,
@@ -61,11 +62,6 @@ function placeToNormalizeInput(place: PlaceResult): NormalizeInput {
   };
 }
 
-function isPermanentlyClosedPlace(place: PlaceResult): boolean {
-  const biz = (place.businessStatus ?? "").trim().toUpperCase();
-  return biz === "CLOSED_PERMANENTLY";
-}
-
 /**
  * P2.1 / AI 接線 Step 1：僅硬約束過濾（不去排序、不依 rating 重排池）。
  * trip-place-scoring 的「preferred rating pool」不再使用。
@@ -78,7 +74,7 @@ export function applyPlannerHardConstraints(
   const constrained = retailFiltered.filter(
     (place) =>
       Boolean(place.name?.trim()) &&
-      !isPermanentlyClosedPlace(place) &&
+      isPlaceOperationalForRecommendation(place) &&
       !isBurialOrFuneralPlace(place),
   );
   // placeId 去重 + canonical landmark 去重（約束，非推薦重排／不加權重）

@@ -19,6 +19,19 @@ export type HomePersonalizationInsightInput = {
   locale?: Locale;
 };
 
+export type HomePlusCopySource = "profile" | "recent_intent" | "combined" | "fallback";
+
+export function resolveHomePlusCopySource(input: HomePersonalizationInsightInput): HomePlusCopySource {
+  const hasProfile = Boolean(
+    input.prefs?.pace || input.prefs?.vibe || input.prefs?.interests?.length || input.prefs?.avoid?.length,
+  );
+  const hasRecent = Boolean(recentChatHint(input.chatSession) || input.savedPlaces.length);
+  if (hasProfile && hasRecent) return "combined";
+  if (hasProfile) return "profile";
+  if (hasRecent) return "recent_intent";
+  return "fallback";
+}
+
 function topSavedCategories(saved: SavedPlace[], limit = 2): string[] {
   const counts = new Map<string, number>();
   for (const p of saved) {
@@ -65,6 +78,27 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
   const hour = new Date().getHours();
   const evening = hour >= 18 || hour < 5;
 
+  const paceLabel = prefs?.pace ? formatTravelPaceLabel(locale, prefs.pace) : "";
+  const vibeLabel = prefs?.vibe ? formatTravelVibeLabel(locale, prefs.vibe) : "";
+  const interests = (prefs?.interests ?? []).map((item) => item.trim()).filter(Boolean).slice(0, 2);
+  const avoids = (prefs?.avoid ?? []).map((item) => item.trim()).filter(Boolean).slice(0, 2);
+
+  if (chatHint && (paceLabel || vibeLabel || interests.length || avoids.length)) {
+    const profileFacts = [
+      paceLabel ? `${paceLabel}的步調` : "",
+      vibeLabel ? `${vibeLabel}的氛圍` : "",
+      interests.length ? `你喜歡的${interests.join("、")}` : "",
+      avoids.length ? `避開${avoids.join("、")}` : "",
+    ].filter(Boolean);
+    return `你最近提到「${chatHint}」。我會依照${profileFacts.join("、")}來安排今天的建議。`;
+  }
+
+  if (interests.length || avoids.length) {
+    const liked = interests.length ? `優先找${interests.join("、")}` : "";
+    const avoided = avoids.length ? `避開${avoids.join("、")}` : "";
+    return `我記得你希望${[liked, avoided].filter(Boolean).join("，並")}，今天的推薦會照這些條件篩選。`;
+  }
+
   if (selectedMood && savedCats.length) {
     return `你選了「${selectedMood}」，又常收藏${savedCats.join("、")}類地點——今天很適合照這個節奏慢慢走。`;
   }
@@ -82,12 +116,10 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
   }
 
   if (chatHint) {
-    return `照你最近的對話「${chatHint}」，我會用比較像旅伴的方式，陪你慢慢收斂今天的路線。`;
+    return `你最近提到「${chatHint}」。今天可以從這個明確需求繼續找地點、調整路線。`;
   }
 
   if (prefs?.vibe && prefs.pace) {
-    const paceLabel = formatTravelPaceLabel(locale, prefs.pace);
-    const vibeLabel = formatTravelVibeLabel(locale, prefs.vibe);
     if (paceLabel && vibeLabel) {
       return t(locale, "home.plusInsightPaceVibe", { pace: paceLabel, vibe: vibeLabel });
     }

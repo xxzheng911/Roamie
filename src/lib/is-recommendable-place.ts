@@ -4,6 +4,7 @@ import { isLodgingPlace } from "@/lib/lodging-place-filter";
 import { isLowValueCityExplorePlace } from "@/lib/explore-city-tourist-filter";
 import { recommendationTypeMetadataFromItem } from "@/lib/ai/recommendation-place-type-metadata";
 import { isExplicitFamilyPlace } from "@/lib/family-place-classification";
+import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 
 export type RecommendablePlaceContext =
   | "home_nearby"
@@ -370,6 +371,8 @@ export function isRecommendablePlace(
     }
     return { ok: false, reason };
   };
+
+  if (!isPlaceOperationalForRecommendation(place)) return fail("non_operational");
 
   const cityMode = context === "explore_map_city";
   const exploreRelaxed =

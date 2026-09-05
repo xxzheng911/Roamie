@@ -12,6 +12,10 @@ import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
+import {
+  logExploreDistanceDisplay,
+  resolveRecommendationDistanceEvidence,
+} from "@/lib/recommendation-distance-evidence";
 
 export type MapPlaceCard = PlaceResult & {
   reason: string;
@@ -36,10 +40,10 @@ function cardDistanceLabel(
   computed: string,
   formatDistance: (meters: number) => string,
   distFn: (from: { lat: number; lng: number }, to: { lat: number; lng: number }) => number,
-  userLocation: { lat: number; lng: number },
+  userLocation: { lat: number; lng: number } | null,
 ): string {
   if (place.isPrimaryExplorePlace || place.isSelectedExplorePin) {
-    return place.lat != null && place.lng != null
+    return userLocation && place.lat != null && place.lng != null
       ? formatDistance(distFn(userLocation, { lat: place.lat, lng: place.lng }))
       : "";
   }
@@ -60,7 +64,7 @@ type Props = {
   highlightIndex: number | null;
   busyId: string | null;
   savedNames: Set<string>;
-  userLocation: { lat: number; lng: number };
+  userLocation: { lat: number; lng: number } | null;
   formatDistance: (meters: number) => string;
   distanceMeters: (
     from: { lat: number; lng: number },
@@ -100,6 +104,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
     ref,
   ) {
     const scrollRef = useRef<HTMLDivElement>(null);
+    const loggedDistanceDisplaysRef = useRef(new Set<string>());
     useScrollPerfMonitor("map-cards", scrollRef);
     const dragScrollRef = useRef<{
       active: boolean;
@@ -205,8 +210,9 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
               const isSaved = savedNames.has(p.name);
               const isBusy = busyId === p.id;
               const coverUrl = p.coverImageUrl ?? imageUrl(p.photoName) ?? null;
+              const evidence = resolveRecommendationDistanceEvidence(p, userLocation);
               const computedDist =
-                p.lat != null && p.lng != null
+                userLocation && p.lat != null && p.lng != null
                   ? formatDistance(distFn(userLocation, { lat: p.lat, lng: p.lng }))
                   : "";
               const distLabel = cardDistanceLabel(
@@ -216,6 +222,16 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                 distFn,
                 userLocation,
               );
+              const distanceLogKey = `${p.id}:${evidence.distanceSource}:${Math.round(evidence.distanceMeters ?? -1)}:${Boolean(distLabel)}`;
+              if (!loggedDistanceDisplaysRef.current.has(distanceLogKey)) {
+                loggedDistanceDisplaysRef.current.add(distanceLogKey);
+                logExploreDistanceDisplay({
+                  canonicalPlaceId: p.id,
+                  evidence,
+                  displayed: Boolean(distLabel),
+                  fallbackReason: distLabel ? undefined : "reliable_user_location_unavailable",
+                });
+              }
               const typeLabel =
                 p.displayCategory ?? identityDisplayLabel(resolvePlaceIdentity(p), p);
               const isLast = i === places.length - 1;

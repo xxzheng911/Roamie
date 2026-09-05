@@ -35,6 +35,54 @@ export type PlaceDetailFollowUpIntent =
   | "view_route"
   | "continue_chat";
 
+export type PlaceFocusNearbyFailureReason =
+  | "missing_anchor"
+  | "missing_coords"
+  | "provider_error"
+  | "raw_zero"
+  | "operational_filtered"
+  | "geographic_filtered"
+  | "deduped_exhausted"
+  | "display_filtered"
+  | "processing_error";
+
+export type PlaceFocusNearbyResult = {
+  applied: boolean;
+  failureReason?: PlaceFocusNearbyFailureReason;
+  counts: import("@/lib/ai/chat-place-recommendation").PlaceFocusNearbyDiagnostics;
+};
+
+export function resolvePlaceFocusNearbyResult(
+  applied: boolean,
+  runtime: {
+    reason?: string;
+    finalCount?: number;
+    placeFocusDiagnostics?: import("@/lib/ai/chat-place-recommendation").PlaceFocusNearbyDiagnostics;
+  } | null,
+): PlaceFocusNearbyResult {
+  const counts = runtime?.placeFocusDiagnostics ?? {
+    rawCount: 0,
+    operationalCount: 0,
+    geographicCount: 0,
+    preDedupeCount: 0,
+    dedupedCount: 0,
+    finalCount: runtime?.finalCount ?? 0,
+  };
+  if (applied && (runtime?.finalCount ?? counts.finalCount) > 0) return { applied: true, counts };
+  let failureReason: PlaceFocusNearbyFailureReason;
+  if (runtime?.reason === "missing_anchor") failureReason = "missing_anchor";
+  else if (runtime?.reason === "missing_location") failureReason = "missing_coords";
+  else if (runtime?.reason === "provider_zero") failureReason = "provider_error";
+  else if (runtime?.reason === "recommendation_processing_failure") {
+    failureReason = "processing_error";
+  } else if (counts.rawCount === 0) failureReason = "raw_zero";
+  else if (counts.operationalCount === 0) failureReason = "operational_filtered";
+  else if (counts.geographicCount === 0) failureReason = "geographic_filtered";
+  else if (counts.dedupedCount === 0) failureReason = "deduped_exhausted";
+  else failureReason = "display_filtered";
+  return { applied: false, failureReason, counts };
+}
+
 export function isPlaceDetailChatActive(session: ChatPlanningSession): boolean {
   return Boolean(session.placeDetailFocus);
 }
@@ -60,16 +108,101 @@ export function enterPlaceDetailChat(
     displayName: place.displayName?.trim() || placeDisplayName(place),
     placeName: place.placeName?.trim() || place.displayName?.trim() || place.name,
   };
+  const anchorPlaceId = (focus.googlePlaceId ?? focus.placeId ?? focus.id ?? "").trim();
+  const scopeId = buildPlaceFocusScopeId(anchorPlaceId, undefined, session);
   logChatContextPlace(focus);
   return {
     ...session,
     placeDetailFocus: focus,
     selectedPlaceFromMood: focus,
+    placeFocusRecommendationScope: {
+      scopeId,
+      anchorPlaceId,
+      conversationId: session.conversationId ?? session.workspaceId,
+      shownPlaceIds: [],
+    },
+    recommendationSession: undefined,
+    activeRecommendationContext: undefined,
+    recommendedPlaceIds: undefined,
+    recommendedNormalizedNames: undefined,
+    usedPlaceIds: undefined,
+    usedPlaceNames: undefined,
+    usedAreaKeys: undefined,
+    recommendedPlaces: [],
+    rejectedPlaceNames: undefined,
     previousConversationMode: previousMode,
     conversationMode: "place_focus",
     phase: "followup",
     activeChatIntent: undefined,
     foodPreference: undefined,
+  };
+}
+
+export function buildPlaceFocusScopeId(
+  anchorPlaceId: string,
+  category: NearbyPlaceIntent | undefined,
+  session: Pick<ChatPlanningSession, "conversationId" | "workspaceId">,
+): string {
+  const conversation = session.conversationId ?? session.workspaceId ?? "local";
+  return `place_focus:${anchorPlaceId || "unknown"}:${category ?? "pending"}:${conversation}`;
+}
+
+export function ensurePlaceFocusRecommendationScope(
+  session: ChatPlanningSession,
+  category: NearbyPlaceIntent,
+): ChatPlanningSession {
+  const anchor = session.placeDetailFocus;
+  const anchorPlaceId = (anchor?.googlePlaceId ?? anchor?.placeId ?? anchor?.id ?? "").trim();
+  const scopeId = buildPlaceFocusScopeId(anchorPlaceId, category, session);
+  if (session.placeFocusRecommendationScope?.scopeId === scopeId) return session;
+  return {
+    ...session,
+    placeFocusRecommendationScope: {
+      scopeId,
+      anchorPlaceId,
+      requestedCategory: category,
+      conversationId: session.conversationId ?? session.workspaceId,
+      shownPlaceIds: [],
+    },
+    recommendationSession: undefined,
+    activeRecommendationContext: undefined,
+    recommendedPlaceIds: undefined,
+    recommendedNormalizedNames: undefined,
+    usedPlaceIds: undefined,
+    usedPlaceNames: undefined,
+    usedAreaKeys: undefined,
+    recommendedPlaces: [],
+    rejectedPlaceNames: undefined,
+  };
+}
+
+export function collectPlaceFocusExcludePlaceIds(session: ChatPlanningSession): string[] {
+  const scope = session.placeFocusRecommendationScope;
+  const ids = new Set<string>();
+  const add = (place?: ChatPlaceItem | null) => {
+    const id = (place?.googlePlaceId ?? place?.placeId ?? place?.id ?? "").trim();
+    if (id) ids.add(id);
+  };
+  add(session.placeDetailFocus);
+  session.selectedPlaces.forEach(add);
+  session.plannedStops?.forEach(add);
+  scope?.shownPlaceIds.forEach((id) => id.trim() && ids.add(id.trim()));
+  return [...ids];
+}
+
+export function commitPlaceFocusShownIds(
+  session: ChatPlanningSession,
+  category: NearbyPlaceIntent,
+  shownPlaceIds: string[],
+): ChatPlanningSession {
+  const scoped = ensurePlaceFocusRecommendationScope(session, category);
+  const scope = scoped.placeFocusRecommendationScope!;
+  return {
+    ...scoped,
+    placeFocusRecommendationScope: {
+      ...scope,
+      shownPlaceIds: [...new Set([...scope.shownPlaceIds, ...shownPlaceIds].filter(Boolean))],
+    },
   };
 }
 
@@ -103,20 +236,6 @@ function moodFitLine(name: string, mood: string): string {
   return `「${name}」值得停下來感受一下，我們可以從這裡往下細排。`;
 }
 
-function followUpSuggestions(mood: string): string {
-  const lines = [
-    "接下來你可以跟我說：",
-    "· 加入行程",
-    "· 找附近咖啡廳",
-    "· 找附近宵夜",
-    "· 查看路線",
-  ];
-  if (/深夜散步|夜景/.test(mood)) {
-    lines.push("· 附近還能散步去哪");
-  }
-  return lines.join("\n");
-}
-
 export function buildPlaceDetailReply(
   place: ChatPlaceItem,
   session: ChatPlanningSession,
@@ -135,7 +254,7 @@ export function buildPlaceDetailReply(
   lines.push(
     `如果你要把它放進今晚行程，我會建議停留 ${duration}，後面可以接一間附近咖啡廳或宵夜店。`,
     "",
-    followUpSuggestions(mood),
+    "你還想怎麼安排呢？",
   );
 
   return lines.join("\n");
@@ -260,6 +379,20 @@ export function sessionWithPlaceDetailSearchCenter(
   };
 }
 
+/** Place-focus nearby must bypass generic context merging so the anchor authority is retained. */
+export function preparePlaceDetailNearbySession(
+  session: ChatPlanningSession,
+  intent: NearbyPlaceIntent,
+): ChatPlanningSession {
+  return {
+    ...ensurePlaceFocusRecommendationScope(sessionWithPlaceDetailSearchCenter(session), intent),
+    activeChatIntent: intent,
+    activeCategoryIntent:
+      intent === "restaurant" ? "restaurant" : intent === "cafe" ? "cafe" : "attraction",
+    phase: "recommend",
+  };
+}
+
 export function buildPlaceDetailFollowUpReply(
   intent: PlaceDetailFollowUpIntent,
   session: ChatPlanningSession,
@@ -276,7 +409,7 @@ export function buildPlaceDetailFollowUpReply(
     case "nearby_cafe":
       return `好，我以「${name}」為中心幫你找附近咖啡廳。`;
     case "nearby_late_snack":
-      return `好，我以「${name}」為中心幫你找附近宵夜或小吃。`;
+      return `好，我以「${name}」為中心幫你找附近餐廳。`;
     default:
       return null;
   }

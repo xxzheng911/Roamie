@@ -251,7 +251,9 @@ const CAPACITOR_EARLY_ERROR_LOG = `<script>
       return;
     }
     var loc = (e.filename || "") + ":" + (e.lineno || 0) + ":" + (e.colno || 0);
-    roamieLog("APP_INIT_ERROR", err || msg, loc);
+    var phase = (window.__ROAMIE_BOOT__ && window.__ROAMIE_BOOT__.phase) || "";
+    var started = /^(html|html-shell|dom-shell|minimal-static|bootstrap-shell|app-bundle|boot-trace)$/.test(phase);
+    roamieLog(started ? "APP_INIT_ERROR" : "APP_RUNTIME_ERROR", err || msg, loc);
   }, true);
   window.addEventListener("unhandledrejection", function(e) {
     roamieLog("APP_UNHANDLED_REJECTION", e.reason, "promise");
@@ -813,10 +815,11 @@ const stylesheet = findMainStylesheet();
 const supabaseUrl = readEnv("VITE_SUPABASE_URL");
 const supabaseKey = readEnv("VITE_SUPABASE_PUBLISHABLE_KEY");
 if (!supabaseUrl || !supabaseKey) {
-  console.warn(
-    "[capacitor-prepare] WARNING: VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY missing — " +
-      "TestFlight build will start in guest-safe mode until .env is present at build time.",
+  console.error(
+    "[capacitor-prepare] Missing required public client environment variable: " +
+      "VITE_SUPABASE_URL or VITE_SUPABASE_PUBLISHABLE_KEY",
   );
+  process.exit(1);
 }
 
 const bootstrapEntry = writeCapacitorBootstrapLoader(clientEntry);

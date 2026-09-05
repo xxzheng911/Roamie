@@ -35,12 +35,12 @@ test("handleGenerateItinerary tracks single settle state", () => {
 test("success path marks succeeded before navigate", () => {
   assert.match(
     handleGenerateSection,
-    /itinerarySucceeded = true;\s*navigate\(tripDetailNavigateOptions\(saved\.id\)\);/,
+    /itinerarySucceeded = true;[\s\S]*?settleCreditsOperation\(itinCreditsHandle, true\);[\s\S]*?navigate\(tripDetailNavigateOptions\(saved\.id\)\)/,
   );
 });
 
-test("no direct settle true/false inside success-catch branches", () => {
-  assert.doesNotMatch(handleGenerateSection, /settleCreditsOperation\(itinCreditsHandle,\s*true\)/);
+test("success commit clears handle before finally and failure has no direct duplicate settle", () => {
+  assert.match(handleGenerateSection, /settleCreditsOperation\(itinCreditsHandle, true\);\s*itinCreditsHandle = null;/);
   assert.doesNotMatch(
     handleGenerateSection,
     /settleCreditsOperation\(itinCreditsHandle,\s*false\)/,

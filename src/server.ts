@@ -8,6 +8,26 @@ type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
 };
 
+const NATIVE_APP_ORIGIN = "capacitor://localhost";
+
+function isTrustedNativeApiRequest(request: Request): boolean {
+  if (new URL(request.url).pathname.startsWith("/api/") === false) return false;
+  return request.headers.get("origin") === NATIVE_APP_ORIGIN;
+}
+
+function withNativeApiCors(request: Request, response: Response): Response {
+  if (!isTrustedNativeApiRequest(request)) return response;
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", NATIVE_APP_ORIGIN);
+  headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  headers.set(
+    "Access-Control-Allow-Headers",
+    "Authorization, Content-Type, X-Roamie-Request-Id, X-Roamie-Stream",
+  );
+  headers.set("Vary", "Origin");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 let serverEntryPromise: Promise<ServerEntry> | undefined;
 
 async function getServerEntry(): Promise<ServerEntry> {
@@ -71,9 +91,12 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      if (request.method === "OPTIONS" && isTrustedNativeApiRequest(request)) {
+        return withNativeApiCors(request, new Response(null, { status: 204 }));
+      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
-      return await normalizeCatastrophicSsrResponse(response);
+      return withNativeApiCors(request, await normalizeCatastrophicSsrResponse(response));
     } catch (error) {
       logAppError("SSR_FETCH_ERROR", error);
       return brandedErrorResponse(error);

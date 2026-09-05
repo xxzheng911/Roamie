@@ -157,6 +157,38 @@ function nearbyCategoryRecommendations(
   return cards;
 }
 
+function placeFocusCategoryRecommendations(
+  items: RoamieRecommendationItem[],
+  intent: ChatPlaceCategoryIntent,
+  userText = "",
+): RoamieRecommendationItem[] {
+  const working = filterRecommendationsForCategoryRender(items, intent, userText);
+  const keptIds = new Set(working.map((item) => item.googlePlaceId ?? item.placeName));
+  for (const item of items) {
+    const canonicalPlaceId = item.googlePlaceId ?? item.placeName;
+    if (!keptIds.has(canonicalPlaceId)) {
+      devVerboseInfo("[PLACE_FOCUS_DISPLAY_DROP]", {
+        canonicalPlaceId,
+        primaryType: item.primaryType ?? item.types?.[0] ?? "unknown",
+        requestedCategory: intent,
+        dropReason: "category_incompatible",
+      });
+    }
+  }
+  const cards = working.slice(0, 6);
+  devVerboseInfo("[PLACE_FOCUS_DISPLAY_FILTER_STAGE]", {
+    stage: "category_render_guard",
+    inputCount: items.length,
+    removedCount: items.length - working.length,
+    outputCount: cards.length,
+    requestedCategory: intent,
+    appliedPolicy: "place_focus_category_authority",
+  });
+  logChatRenderModeLocked("PLACE_CARDS_ONLY");
+  logChatPlaceCardRender(cards.length, intent);
+  return cards;
+}
+
 function resolveCategoryDisplayIntent(
   session: ChatPlanningSession,
   userText: string,
@@ -269,6 +301,26 @@ export function recommendationsForChatDisplay(
     return [];
   }
 
+  // Active place-focus is the current authority even when legacy Home/mood flags remain.
+  if (isPlaceDetailChatActive(session)) {
+    const requestedCategory = session.placeFocusRecommendationScope?.requestedCategory;
+    const nearbyIntent =
+      (requestedCategory === "cafe" || requestedCategory === "restaurant" || requestedCategory === "attraction"
+        ? requestedCategory
+        : null) ??
+      resolvePlaceDetailNearbyIntent(userText) ??
+      (session.activeChatIntent === "cafe"
+        ? "cafe"
+        : session.activeChatIntent === "restaurant"
+          ? "restaurant"
+          : session.activeChatIntent === "attraction"
+            ? "attraction"
+            : null);
+    if (nearbyIntent) return placeFocusCategoryRecommendations(list, nearbyIntent, userText);
+    const followUp = parsePlaceDetailFollowUp(userText);
+    if (followUp !== "nearby_cafe" && followUp !== "nearby_late_snack") return [];
+  }
+
   if (session.fromMoodFlow || session.fromMoodCard || session.homeMoodShortcutEntry) {
     let working = applyShortcutSceneFidelity(list, session, userText);
     if (
@@ -306,31 +358,6 @@ export function recommendationsForChatDisplay(
     devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count });
     devVerboseInfo("[CHAT_PLACE_CARD_LIMIT]", { limit: 5 });
     return filtered.slice(0, 5);
-  }
-
-  if (isPlaceDetailChatActive(session)) {
-    const nearbyIntent =
-      resolvePlaceDetailNearbyIntent(userText) ??
-      (session.activeChatIntent === "cafe"
-        ? "cafe"
-        : session.activeChatIntent === "restaurant"
-          ? "restaurant"
-          : session.activeChatIntent === "attraction"
-            ? "attraction"
-            : null);
-    if (nearbyIntent === "cafe") {
-      return nearbyCategoryRecommendations(list, "cafe", userText);
-    }
-    if (nearbyIntent === "restaurant") {
-      return nearbyCategoryRecommendations(list, "restaurant", userText);
-    }
-    if (nearbyIntent === "attraction") {
-      return list.slice(0, 6);
-    }
-    const followUp = parsePlaceDetailFollowUp(userText);
-    if (followUp !== "nearby_cafe" && followUp !== "nearby_late_snack") {
-      return [];
-    }
   }
 
   if (isDestinationCategoryPlaceDisplay(session, userText)) {

@@ -65,7 +65,15 @@ function writeListRaw(
       return;
     }
   }
-  localStorage.setItem(listStorageKey(userId), JSON.stringify(items));
+  try {
+    localStorage.setItem(listStorageKey(userId), JSON.stringify(items));
+  } catch (error) {
+    console.warn("[WORKSPACE_SAVE_FAILED]", {
+      target: "local_list",
+      reason: error instanceof Error ? error.name : "storage_error",
+      fallback: "memory_native",
+    });
+  }
 }
 
 function readBlobRaw(
@@ -115,7 +123,11 @@ function applyBundleToLocal(
   writeListRaw(bundle.list ?? [], userId);
   memoryListByUser.set(userScopeKey(userId), bundle.list ?? []);
   if (bundle.activeWorkspaceId) {
-    localStorage.setItem(ACTIVE_KEY, bundle.activeWorkspaceId);
+    try {
+      localStorage.setItem(ACTIVE_KEY, bundle.activeWorkspaceId);
+    } catch {
+      /* native bundle remains authoritative */
+    }
   }
 }
 
@@ -442,7 +454,11 @@ export function setActiveWorkspaceId(workspaceId: string | null): void {
     localStorage.removeItem(ACTIVE_KEY);
     return;
   }
-  localStorage.setItem(ACTIVE_KEY, workspaceId);
+  try {
+    localStorage.setItem(ACTIVE_KEY, workspaceId);
+  } catch {
+    /* navigation can continue without the optional local active marker */
+  }
 }
 
 /** Free: ephemeral only (sessionStorage), never listed on profile. */

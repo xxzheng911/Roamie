@@ -10,6 +10,7 @@ import {
   MapPin,
   MessageCircle,
   Navigation,
+  ExternalLink,
   Star,
   TrainFront,
 } from "lucide-react";
@@ -30,6 +31,7 @@ import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
 import { TabelogExternalLink } from "@/components/TabelogExternalLink";
 import { PlaceActionRow } from "@/components/PlaceActionRow";
+import { openExternal } from "@/lib/maps-navigation";
 
 function TransportModeIcon({ mode }: { mode: TravelModeId }) {
   const cls = "h-4 w-4 shrink-0 text-muted-foreground";
@@ -62,7 +64,7 @@ type Props = {
   transportModes: TravelModeEstimate[];
   transportLoading: boolean;
   transportTip: string;
-  selectedTransportMode: TravelModeId;
+  selectedTransportMode: TravelModeId | null;
   onSelectTransportMode: (mode: TravelModeId) => void;
   onNavigate: () => void;
   onToggleSave: () => void;
@@ -72,6 +74,7 @@ type Props = {
   addToTripLabel?: string;
   ticketOffers?: AffiliateLinkOffer[];
   tabelogExternalUrl?: string | null;
+  googleMapsExternalUrl?: string | null;
   tabelogLinkLabel?: string;
 };
 
@@ -94,6 +97,7 @@ export function PlaceDetailSheet({
   addToTripLabel = "加入行程",
   ticketOffers,
   tabelogExternalUrl,
+  googleMapsExternalUrl,
   tabelogLinkLabel = "在 Tabelog 查看",
 }: Props) {
   const [photoIdx, setPhotoIdx] = useState(0);
@@ -123,7 +127,9 @@ export function PlaceDetailSheet({
   };
 
   const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place), place);
-  const navButtonLabel = `導航・${TRAVEL_MODE_LABEL[selectedTransportMode]}`;
+  const navButtonLabel = selectedTransportMode
+    ? `導航・${TRAVEL_MODE_LABEL[selectedTransportMode]}`
+    : "開始導航";
   const openingLine = resolvePlaceDetailOpeningLine(place);
 
   return (
@@ -238,8 +244,8 @@ export function PlaceDetailSheet({
           </p>
         )}
 
-        {(place.phone || place.website || tabelogExternalUrl) && (
-          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+        {(place.phone || place.website || googleMapsExternalUrl || tabelogExternalUrl) && (
+          <div className="mt-2 flex min-w-0 flex-wrap gap-2 text-xs">
             {place.phone ? (
               <a
                 href={`tel:${place.phone.replace(/\s/g, "")}`}
@@ -258,6 +264,16 @@ export function PlaceDetailSheet({
                 官網
               </a>
             ) : null}
+            {googleMapsExternalUrl ? (
+              <button
+                type="button"
+                onClick={() => void openExternal(googleMapsExternalUrl)}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-card px-3 py-1 text-foreground"
+              >
+                <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
+                <span>在 Google Maps 查看</span>
+              </button>
+            ) : null}
             {tabelogExternalUrl ? (
               <TabelogExternalLink href={tabelogExternalUrl} label={tabelogLinkLabel} />
             ) : null}
@@ -271,14 +287,15 @@ export function PlaceDetailSheet({
 
         <div className="mt-4">
           <p className="text-xs font-medium text-muted-foreground">交通方式</p>
-          {transportTip && (
-            <p className="mt-1 text-xs leading-relaxed text-foreground/80">{transportTip}</p>
-          )}
           <div className="mt-2 space-y-2">
             {transportLoading && transportModes.length === 0 ? (
               <div className="flex justify-center py-4">
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
               </div>
+            ) : transportModes.length === 0 ? (
+              <p className="rounded-2xl border border-border/60 bg-card/40 px-3.5 py-3 text-sm text-muted-foreground">
+                無法取得目前位置，暫時不能估算交通時間與距離。
+              </p>
             ) : (
               transportModes.map((m) => {
                 const isSelected = selectedTransportMode === m.id;
@@ -288,8 +305,9 @@ export function PlaceDetailSheet({
                     type="button"
                     data-no-sheet-drag
                     onClick={() => onSelectTransportMode(m.id)}
+                    disabled={m.available === false}
                     className={cn(
-                      "w-full rounded-2xl border px-3.5 py-2.5 text-left transition active:scale-[0.99]",
+                      "w-full rounded-2xl border px-3.5 py-2.5 text-left transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60",
                       isSelected
                         ? "border-clay bg-clay/12 shadow-soft ring-1 ring-clay/30"
                         : "border-border/60 bg-card/40 hover:border-clay/25 hover:bg-card/70",
@@ -313,7 +331,7 @@ export function PlaceDetailSheet({
                       )}
                     </div>
                     <p className="mt-1 text-sm text-foreground">
-                      {m.minutes} 分鐘
+                      {m.available === false ? "不提供估計" : `${m.minutes} 分鐘`}
                       <span className="text-muted-foreground"> ・ {m.distanceLabel}</span>
                       {m.costLabel && (
                         <span className="text-muted-foreground"> ・ {m.costLabel}</span>

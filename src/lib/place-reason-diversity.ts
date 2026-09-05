@@ -267,7 +267,19 @@ function interestMatchesIdentity(interest: string, identity: PlaceIdentity): boo
 }
 
 function profileEvidenceAllowed(profile: UserProfileForReason | null | undefined): boolean {
-  return profile?.profileTier === "plus" && profile.onboarded === true;
+  return (
+    profile?.profileTier === "plus" &&
+    Boolean(
+      profile.pace ||
+        profile.vibe ||
+        profile.budgetMode ||
+        profile.travelStyle ||
+        profile.personalityType ||
+        profile.personalitySummary ||
+        profile.interests?.length ||
+        profile.avoid?.length,
+    )
+  );
 }
 
 function textPreferenceMatchesIdentity(value: string | undefined, identity: PlaceIdentity): boolean {

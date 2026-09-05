@@ -25,7 +25,7 @@ assert.equal(
     [{ ...base, businessStatus: "CLOSED_TEMPORARILY", openStatusLabel: "目前未營業" }],
     general,
   ).length,
-  1,
+  0,
 );
 assert.equal(
   filterRecommendationItemsForDisplay(

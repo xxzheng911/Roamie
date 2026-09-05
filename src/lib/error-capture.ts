@@ -27,7 +27,9 @@ if (typeof globalThis.addEventListener === "function") {
     const err = errEvent.error ?? errEvent.message;
     record(err);
     if (!isBenignWebKitNoise(err, { source: "globalThis.error" })) {
-      logAppError("APP_INIT_ERROR", err, {
+      const phase = typeof window !== "undefined" ? window.__ROAMIE_BOOT__?.phase ?? "" : "";
+      const startup = /^(html|html-shell|dom-shell|minimal-static|bootstrap-shell|app-bundle|boot-trace)$/.test(phase);
+      logAppError(startup ? "APP_INIT_ERROR" : "APP_RUNTIME_ERROR", err, {
         source: "globalThis.error",
         filename: errEvent.filename,
         lineno: errEvent.lineno,

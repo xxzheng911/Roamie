@@ -208,7 +208,7 @@ export async function unifiedResolveTripStop(
             lng,
             googlePlaceId: effectivePlaceId,
             placeType: identityDisplayLabel(resolvePlaceIdentity(placeResult)),
-            googleMapsUrl: buildPlaceMapsUrl(name, lat, lng),
+            googleMapsUrl: buildPlaceMapsUrl(lat, lng, name),
             photoName: placeResult.photoName,
             rating: placeResult.rating,
           },

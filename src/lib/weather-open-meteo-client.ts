@@ -1,5 +1,6 @@
 import type { Locale } from "@/lib/i18n/types";
 import type { WeatherSummary } from "@/lib/weather-types";
+import { buildWeatherRecommendation } from "@/lib/weather-scene";
 
 function openMeteoCodeToCondition(code: number | null): string {
   if (code == null) return "多雲";
@@ -64,6 +65,12 @@ export async function fetchOpenMeteoCurrentWeather(
     weatherCode: json.current?.weather_code ?? null,
     isDay: (json.current?.is_day ?? 1) === 1,
   };
+  const productRecommendation = buildWeatherRecommendation({
+    tempC: meteo.tempC,
+    feelsLikeC: meteo.tempC,
+    condition: openMeteoCodeToCondition(meteo.weatherCode),
+    isDaytime: meteo.isDay,
+  });
 
   const summary: WeatherSummary = {
     city,
@@ -79,8 +86,9 @@ export async function fetchOpenMeteoCurrentWeather(
     uvi: null,
     sunrise: null,
     sunset: null,
-    recommendation: meteo.isDay ? "outdoor" : "evening",
-    recommendationText: "已使用備援天氣來源。",
+    recommendation: productRecommendation.rec,
+    recommendationText: productRecommendation.text,
+    scene: productRecommendation.scene,
     source: "open-meteo-fallback",
     fetchedAt: new Date().toISOString(),
     available: meteo.tempC != null,

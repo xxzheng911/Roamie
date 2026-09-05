@@ -2,6 +2,7 @@ import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { PlaceResult } from "@/lib/place-result";
+import { parseExplicitBudgetConstraint } from "@/lib/budget-context";
 
 export type BudgetPreference = "low" | "medium" | "high";
 
@@ -19,10 +20,11 @@ export function isBudgetRefinementText(text: string): boolean {
 }
 
 export function parseBudgetPreferenceFromText(text: string): BudgetPreference | undefined {
-  const t = text.trim();
-  if (!t) return undefined;
-  if (BUDGET_REFINEMENT_RE.test(t)) return "low";
-  if (/(奢華|高級|premium|luxury|不差錢|預算高)/i.test(t)) return "high";
+  const explicit = parseExplicitBudgetConstraint(text);
+  if (!explicit || explicit.unrestricted) return undefined;
+  if (explicit.mode === "budget") return "low";
+  if (explicit.mode === "luxury") return "high";
+  if (explicit.mode === "standard" || explicit.mode === "quality") return "medium";
   return undefined;
 }
 
@@ -44,7 +46,12 @@ export function applyBudgetRefinementToContext(
   text: string,
   prev: CanonicalTravelContext,
 ): Partial<CanonicalTravelContext> {
+  const explicit = parseExplicitBudgetConstraint(text);
+  if (!explicit) return {};
   const preference = parseBudgetPreferenceFromText(text);
+  if (explicit.unrestricted) {
+    return { budgetPreference: undefined, priceSensitivity: false };
+  }
   if (!preference) return {};
 
   return {
@@ -60,20 +67,15 @@ export function applyBudgetRefinementToSession(
   text: string,
   session: ChatPlanningSession,
 ): ChatPlanningSession {
+  const explicit = parseExplicitBudgetConstraint(text);
+  if (!explicit) return session;
   const preference = parseBudgetPreferenceFromText(text);
-  if (!preference) return session;
-
-  const avoidTypes = new Set(session.avoidTypes ?? []);
-  if (preference === "low") {
-    avoidTypes.add("高價位");
-    avoidTypes.add("需要門票");
-    avoidTypes.add("高消費酒吧");
-  }
 
   return {
     ...session,
-    budget: preference === "low" ? "低預算" : session.budget,
-    avoidTypes: [...avoidTypes],
+    // Explicit request budget is request-scoped. The trip budget remains unchanged.
+    budget: session.budget,
+    avoidTypes: session.avoidTypes,
     phase: session.recommendedPlaces.length > 0 ? "followup" : session.phase,
     travelContext: {
       ...(session.travelContext ?? { interests: [] }),
@@ -82,12 +84,12 @@ export function applyBudgetRefinementToSession(
   };
 }
 
-function placeBudgetBlob(place: { name?: string; type?: string; description?: string; types?: string[] }): string {
+function placeBudgetBlob(place: { name?: string; type?: string; description?: string; types?: string[] | null }): string {
   return `${place.name ?? ""} ${place.type ?? ""} ${place.description ?? ""} ${(place.types ?? []).join(" ")}`;
 }
 
 export function budgetPenaltyForPlace(
-  place: { name?: string; type?: string; description?: string; types?: string[] },
+  place: { name?: string; type?: string; description?: string; types?: string[] | null },
   preference?: BudgetPreference,
 ): number {
   if (preference !== "low") return 0;
@@ -98,7 +100,7 @@ export function budgetPenaltyForPlace(
 }
 
 export function isExpensivePlace(
-  place: { name?: string; type?: string; description?: string; types?: string[] },
+  place: { name?: string; type?: string; description?: string; types?: string[] | null },
   preference?: BudgetPreference,
 ): boolean {
   if (preference !== "low") return false;
@@ -109,9 +111,7 @@ export function refineRecommendationItemsForBudget(
   items: RoamieRecommendationItem[],
   preference: BudgetPreference = "low",
 ): RoamieRecommendationItem[] {
-  const affordable = items.filter((item) => !isExpensivePlace(item, preference));
-  const pool = affordable.length >= 2 ? affordable : items;
-  return [...pool].sort(
+  return [...items].sort(
     (a, b) => budgetPenaltyForPlace(a, preference) - budgetPenaltyForPlace(b, preference),
   );
 }
@@ -120,9 +120,7 @@ export function refinePlaceResultsForBudget(
   places: PlaceResult[],
   preference: BudgetPreference = "low",
 ): PlaceResult[] {
-  const affordable = places.filter((place) => !isExpensivePlace(place, preference));
-  const pool = affordable.length >= 2 ? affordable : places;
-  return [...pool].sort(
+  return [...places].sort(
     (a, b) => budgetPenaltyForPlace(a, preference) - budgetPenaltyForPlace(b, preference),
   );
 }
@@ -139,8 +137,8 @@ export function buildBudgetRefinementSummary(
     .join("\n");
 
   return [
-    `${moodLead}懂，你想找比較省預算、不太需要門票或低消的選擇。`,
-    "那我會優先幫你看免費景點、河岸散步、公園、市集，或平價咖啡店。",
+    `${moodLead}懂，你想讓這次的消費安排輕鬆一些。`,
+    "在沒有可靠價格資料時，我會把較符合這種旅行方式的地點優先排列，不把類別當成實際價格。",
     picks.length ? "這幾個會比剛剛推薦更適合：" : "附近暫時沒找到更合適的低預算選項，可以換個描述我再幫你找。",
     picks.length ? "" : undefined,
     picks.length ? list : undefined,

@@ -167,6 +167,14 @@ export type ChatPlaceItem = RoamieRecommendationItem & {
   distanceLabel?: string;
 };
 
+export type PlaceFocusRecommendationScope = {
+  scopeId: string;
+  anchorPlaceId: string;
+  requestedCategory?: import("@/lib/ai/chat-intent").NearbyPlaceIntent;
+  conversationId?: string;
+  shownPlaceIds: string[];
+};
+
 /** 規劃用標準地點欄位（地圖、導航、行程） */
 export type SelectedPlaceRecord = {
   name: string;
@@ -338,6 +346,8 @@ export type ChatPlanningSession = {
   conversationMode?: import("@/lib/ai/trip-planning-context").ChatConversationMode;
   /** 「跟 Roamie 聊這裡」焦點地點 */
   placeDetailFocus?: ChatPlaceItem;
+  /** Transient recommendation memory scoped to one active place anchor + category. */
+  placeFocusRecommendationScope?: PlaceFocusRecommendationScope;
   /** 進入 place detail 前的對話模式 */
   previousConversationMode?: import("@/lib/ai/trip-planning-context").ChatConversationMode;
   /** 行程內頁 → 請 Roamie 推薦下一個地點 */

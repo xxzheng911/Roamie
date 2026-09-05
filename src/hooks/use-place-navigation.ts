@@ -5,7 +5,6 @@ import type { UserProfileForReason } from "@/lib/build-place-recommendation-reas
 import {
   applyRecommendedMode,
   estimateTravelModesLocal,
-  getDefaultTransportMode,
   mergeTravelDurations,
   recommendTransportMode,
   TAXI_NAV_TOAST,
@@ -26,8 +25,10 @@ const MODE_TO_GOOGLE: Record<TravelModeId, "walking" | "driving" | "transit"> = 
   taxi: "driving",
 };
 
+export const INITIAL_PLACE_TRANSPORT_MODE: TravelModeId | null = null;
+
 type Args = {
-  origin: LatLng;
+  origin: LatLng | null;
   destination: LatLng | null;
   weather?: WeatherSummary | null;
   profile?: UserProfileForReason | null;
@@ -43,52 +44,49 @@ export function usePlaceNavigation({
 }: Args) {
   const fetchDurations = useServerFn(fetchPlaceTravelDurations);
   const [modes, setModes] = useState<TravelModeEstimate[]>([]);
-  const [selectedMode, setSelectedModeState] = useState<TravelModeId>("walk");
+  const [selectedMode, setSelectedModeState] = useState<TravelModeId | null>(
+    INITIAL_PLACE_TRANSPORT_MODE,
+  );
   const [loading, setLoading] = useState(false);
   const [aiTip, setAiTip] = useState("");
-  const userPickedRef = useRef(false);
   const destinationKeyRef = useRef<string | null>(null);
 
   const distM = useMemo(() => {
-    if (!destination) return 0;
+    if (!origin || !destination) return 0;
     return distanceMeters(origin, destination);
   }, [origin, destination]);
 
   const inTaiwan = useMemo(
-    () => isTaiwanCoordinates(origin.lat, origin.lng),
-    [origin.lat, origin.lng],
+    () => Boolean(origin && isTaiwanCoordinates(origin.lat, origin.lng)),
+    [origin?.lat, origin?.lng],
   );
 
   const applyDefaultSelection = useCallback(
     (nextModes: TravelModeEstimate[], dist: number) => {
       const hour = new Date().getHours();
       const ctx = { weather, hour, profile, distanceMeters: dist, inTaiwan };
-      const defaultId = getDefaultTransportMode(ctx);
       const rec = recommendTransportMode(nextModes, ctx);
       setModes(applyRecommendedMode(nextModes, rec.modeId));
-      if (!userPickedRef.current) {
-        setSelectedModeState(defaultId);
-      }
       setAiTip(rec.tip);
     },
     [weather, profile, inTaiwan],
   );
 
   const setSelectedMode = useCallback((mode: TravelModeId) => {
-    userPickedRef.current = true;
     setSelectedModeState(mode);
   }, []);
 
   useEffect(() => {
-    if (!enabled || !destination) {
+    if (!enabled || !origin || !destination) {
       setModes([]);
+      setSelectedModeState(null);
       return;
     }
 
     const destKey = `${destination.lat},${destination.lng}`;
     if (destinationKeyRef.current !== destKey) {
       destinationKeyRef.current = destKey;
-      userPickedRef.current = false;
+      setSelectedModeState(null);
     }
 
     let cancelled = false;
@@ -125,15 +123,15 @@ export function usePlaceNavigation({
     enabled,
     destination?.lat,
     destination?.lng,
-    origin.lat,
-    origin.lng,
+    origin?.lat,
+    origin?.lng,
     distM,
     applyDefaultSelection,
     fetchDurations,
   ]);
 
   const startNavigation = useCallback(() => {
-    if (!destination) return;
+    if (!origin || !destination || !selectedMode) return;
     if (selectedMode === "taxi") {
       toast.message(TAXI_NAV_TOAST, { duration: 5000 });
     }
@@ -144,7 +142,7 @@ export function usePlaceNavigation({
     openExternal(url);
   }, [destination, origin, selectedMode]);
 
-  const selectedModeLabel = TRAVEL_MODE_LABEL[selectedMode];
+  const selectedModeLabel = selectedMode ? TRAVEL_MODE_LABEL[selectedMode] : null;
 
   return {
     modes,

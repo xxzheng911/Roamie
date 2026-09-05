@@ -38,15 +38,6 @@ const SORT_OPTIONS: Array<{ value: AdminUserSort; label: string }> = [
   { value: "oldest", label: "最早加入" },
 ];
 
-const UNAVAILABLE_ANALYTICS = [
-  "對話工作階段",
-  "所有行程生成次數",
-  "行程生成成功率",
-  "熱門推薦類型",
-  "地點卡片點擊",
-  "聯盟導購點擊漏斗",
-] as const;
-
 function formatDate(value: string | null): string {
   if (!value) return "—";
   const date = new Date(value);
@@ -113,7 +104,8 @@ function AdminDashboardPage() {
       }
       const params = new URLSearchParams({ sort, page: String(page) });
       if (search) params.set("search", search);
-      const response = await fetch(`/api/admin/dashboard?${params.toString()}`, {
+      const { resolveApiUrl } = await import("@/lib/api-url");
+      const response = await fetch(resolveApiUrl(`/api/admin/dashboard?${params.toString()}`), {
         headers: { Authorization: `Bearer ${session.access_token}` },
         cache: "no-store",
       });
@@ -225,9 +217,7 @@ function AdminDashboardPage() {
         <section>
           <div className="mb-3 flex items-center gap-2">
             <BarChart3 className="h-4 w-4 text-slate-500" />
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-600">
-              總覽
-            </h2>
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-600">總覽</h2>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
             <KpiCard label="總使用者" value={summary.totalUsers} />
@@ -383,13 +373,20 @@ function AdminDashboardPage() {
               <table className="w-full min-w-[700px] text-left text-sm">
                 <thead className="text-xs uppercase text-slate-400">
                   <tr>
-                    {["排名", "使用者", "近 7 日", "近 30 日", "對話", "行程", "地點", "最後活躍"].map(
-                      (x) => (
-                        <th key={x} className="pb-2 pr-3 font-medium">
-                          {x}
-                        </th>
-                      ),
-                    )}
+                    {[
+                      "排名",
+                      "使用者",
+                      "近 7 日",
+                      "近 30 日",
+                      "對話",
+                      "行程",
+                      "地點",
+                      "最後活躍",
+                    ].map((x) => (
+                      <th key={x} className="pb-2 pr-3 font-medium">
+                        {x}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -492,17 +489,56 @@ function AdminDashboardPage() {
             </dl>
           </section>
           <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="font-semibold">尚未提供的分析指標</h2>
-            <ul className="mt-4 space-y-2 text-sm">
-              {UNAVAILABLE_ANALYTICS.map((metric) => (
-                <li key={metric} className="flex items-center justify-between gap-3">
-                  <span className="text-slate-600">{metric}</span>
-                  <span className="rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-500">
-                    尚未提供 · 尚無可靠資料來源
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <h2 className="font-semibold">分析指標 · 近 30 日</h2>
+            {!data.analytics ? (
+              <p className="mt-4 text-sm text-amber-700">暫時無法取得</p>
+            ) : (
+              <>
+                <p className="mt-1 text-xs text-slate-400">
+                  自 {formatDate(data.analytics.trackingStartedAt)} 起統計
+                </p>
+                <dl className="mt-4 space-y-3 text-sm">
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">對話工作階段</dt>
+                    <dd>{data.analytics.chatSessions.toLocaleString()}</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">所有行程生成次數</dt>
+                    <dd>{data.analytics.itineraryAttempts.toLocaleString()}</dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">行程生成成功率</dt>
+                    <dd>
+                      {data.analytics.itinerarySuccessRate.toFixed(1)}%（
+                      {data.analytics.itinerarySuccesses} / {data.analytics.itineraryFailures}{" "}
+                      failed）
+                    </dd>
+                  </div>
+                  <div className="flex justify-between gap-4">
+                    <dt className="text-slate-500">熱門推薦類型</dt>
+                    <dd className="text-right">
+                      {data.analytics.popularRecommendationFamilies
+                        .map((x) => x.family)
+                        .join(" / ") || "0"}
+                    </dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">地點卡片點擊</dt>
+                    <dd>
+                      {data.analytics.placeCardClicks.toLocaleString()}（
+                      {data.analytics.uniqueClickedPlaces} places）
+                    </dd>
+                  </div>
+                  <div className="flex justify-between">
+                    <dt className="text-slate-500">聯盟導購點擊漏斗</dt>
+                    <dd>
+                      {data.analytics.affiliateClicks} / {data.analytics.affiliateImpressions} ·{" "}
+                      {data.analytics.affiliateCtr.toFixed(1)}%
+                    </dd>
+                  </div>
+                </dl>
+              </>
+            )}
           </section>
         </div>
       </div>

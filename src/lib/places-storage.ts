@@ -1,5 +1,9 @@
 import { supabase } from "@/integrations/supabase/client";
-import { getAuthenticatedUserId } from "@/lib/auth-session";
+import { getAuthenticatedUserId, readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
+import {
+  readOwnedPersonalizedCache,
+  wrapPersonalizedCache,
+} from "@/lib/personalized-cache-envelope";
 import { isMissingTableError } from "@/lib/supabase-errors";
 
 const GUEST_KEY = "roamie:places";
@@ -45,7 +49,7 @@ function readLocalCache(userId: string | null): SavedPlace[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(localCacheKey(userId));
-    return raw ? (JSON.parse(raw) as SavedPlace[]) : [];
+    return readOwnedPersonalizedCache<SavedPlace[]>(raw, userId) ?? [];
   } catch {
     return [];
   }
@@ -53,12 +57,19 @@ function readLocalCache(userId: string | null): SavedPlace[] {
 
 /** 同步讀取本地收藏快取（啟動／返回收藏頁時先顯示） */
 export function readPlacesLocalCacheSync(): SavedPlace[] {
-  return mergePlacesByIdOrName(readLocalCache(null));
+  return mergePlacesByIdOrName(readLocalCache(readCachedAuthenticatedUserIdSync()));
 }
 
 function writeLocalCache(userId: string | null, list: SavedPlace[]): void {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(localCacheKey(userId), JSON.stringify(list));
+  if (typeof window === "undefined" || !userId) return;
+  try {
+    localStorage.setItem(localCacheKey(userId), JSON.stringify(wrapPersonalizedCache(userId, list)));
+  } catch (error) {
+    console.warn("[PLACES_CACHE_WRITE_FAILED]", {
+      reason: error instanceof Error ? error.name : "storage_error",
+      fallback: "remote_authority",
+    });
+  }
 }
 
 function mergePlacesByIdOrName(...groups: SavedPlace[][]): SavedPlace[] {
@@ -97,18 +108,17 @@ async function listPlacesInternal(): Promise<SavedPlace[]> {
       .order("created_at", { ascending: false });
     if (error) {
       if (isMissingTableError(error)) return [];
-      const local = mergePlacesByIdOrName(readLocalCache(userId), readLocalCache(null));
+      const local = mergePlacesByIdOrName(readLocalCache(userId));
       console.warn("[SAVED_PLACES] remote failed, using local cache", error.message);
       console.info("[SAVED_PLACES] loaded count=", local.length);
       return local;
     }
     const rows = (data ?? []) as SavedPlace[];
     writeLocalCache(userId, rows);
-    writeLocalCache(null, rows);
     console.info("[SAVED_PLACES] loaded count=", rows.length);
     return rows;
   }
-  const local = readLocalCache(null);
+  const local: SavedPlace[] = [];
   console.info("[SAVED_PLACES] loaded count=", local.length);
   return local;
 }
@@ -153,9 +163,8 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
       throw new Error(error.message);
     }
     const remotePlace = data as SavedPlace;
-    const merged = mergePlacesByIdOrName([remotePlace], readLocalCache(userId), readLocalCache(null));
+    const merged = mergePlacesByIdOrName([remotePlace], readLocalCache(userId));
     writeLocalCache(userId, merged);
-    writeLocalCache(null, merged);
     console.info("[FAVORITE_PLACE] saved to remote");
     console.info("[FAVORITE_PLACE] saved to store");
     emitSavedPlacesChanged();
@@ -177,8 +186,8 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
     metadata: input.metadata ?? {},
     created_at: new Date().toISOString(),
   };
-  const local = readLocalCache(null);
-  writeLocalCache(null, [place, ...local.filter((p) => p.name !== place.name)]);
+  const local: SavedPlace[] = [];
+  writeLocalCache(userId, [place, ...local.filter((p) => p.name !== place.name)]);
   console.info("[FAVORITE_PLACE] saved to store");
   emitSavedPlacesChanged();
   return place;
@@ -187,8 +196,6 @@ export async function savePlace(input: NewPlace): Promise<SavedPlace> {
 function removePlaceFromLocalCaches(id: string, name?: string): void {
   const filter = (list: SavedPlace[]) =>
     list.filter((p) => p.id !== id && (!name || p.name !== name));
-
-  writeLocalCache(null, filter(readLocalCache(null)));
 
   void resolveStableUserId().then((userId) => {
     if (!userId) return;

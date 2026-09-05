@@ -87,8 +87,8 @@ export function sessionPreferenceLayer(session?: SessionPreferenceV1 | null): Pr
 }
 
 export function profilePreferenceLayer(profile?: UserProfileForReason | null): PreferenceLayer | null {
-  if (profile?.profileTier !== "plus" || profile.onboarded !== true) return null;
-  return {
+  if (profile?.profileTier !== "plus") return null;
+  const layer: PreferenceLayer = {
     interests: profile.interests,
     pace: profile.pace,
     vibe: profile.vibe,
@@ -96,6 +96,7 @@ export function profilePreferenceLayer(profile?: UserProfileForReason | null): P
     travelStyle: profile.travelStyle,
     budgetMode: profile.budgetMode,
   };
+  return Object.values(layer).some(populated) ? layer : null;
 }
 
 export function buildPersonalizationContextV1(input: {

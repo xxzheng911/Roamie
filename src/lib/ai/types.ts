@@ -107,6 +107,13 @@ export const RoamieItineraryItemSchema = z.object({
   phone: z.string().optional(),
   types: z.array(z.string()).optional(),
   placeSnapshotSource: z.enum(["selected_place", "places_details", "handoff"]).optional(),
+  /** User-owned snapshot from the recommendation that was manually added to this trip. */
+  recommendationReason: z.string().optional(),
+  recommendationReasonSource: z.enum(["template", "ai", "evidence", "fallback"]).optional(),
+  recommendationSource: z
+    .enum(["explore", "map", "place_detail", "chat", "home", "selection", "favorites", "unknown"])
+    .optional(),
+  recommendationReasonVersion: z.literal(1).optional(),
 });
 
 export const RoamieResponseSchema = z.object({
@@ -218,6 +225,10 @@ export function normalizeItineraryItem(
     phone: raw.phone,
     types: raw.types,
     placeSnapshotSource: raw.placeSnapshotSource,
+    recommendationReason: raw.recommendationReason,
+    recommendationReasonSource: raw.recommendationReasonSource,
+    recommendationSource: raw.recommendationSource,
+    recommendationReasonVersion: raw.recommendationReasonVersion,
   };
 }
 

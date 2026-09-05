@@ -250,7 +250,7 @@ export function formatPlusPreferenceForAiPrompt(
     hasPlusAccess?: boolean;
   },
 ): string | null {
-  if (!extras?.hasPlusAccess || !prefs?.onboarded) return null;
+  if (!extras?.hasPlusAccess || !prefs) return null;
 
   const parts: string[] = [];
   if (extras.personalityType || prefs.personalityType) {
@@ -266,7 +266,7 @@ export function formatPlusPreferenceForAiPrompt(
       `氛圍：${prefs.vibe === "quiet" ? "安靜" : prefs.vibe === "lively" ? "有生活感" : "彈性"}`,
     );
   }
-  parts.push(`預算：${resolveBudgetMode(prefs)}`);
+  if (prefs.budgetMode || prefs.budget) parts.push(`消費風格偏好：${resolveBudgetMode(prefs)}`);
   if (prefs.avoid?.length) {
     const avoidLabels =
       prefs.avoid[0] === "crowds"

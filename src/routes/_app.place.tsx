@@ -30,6 +30,7 @@ import {
   resolveGooglePlaceIdForDetail,
   resolvePlaceDetailHandoff,
   hasCanonicalPlaceDetailReason,
+  resolvePlaceDetailReasonWithSource,
   type PlaceDetailViewModel,
 } from "@/lib/place-detail-resolve";
 import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
@@ -42,8 +43,11 @@ import {
 import { getGoogleMapsBrowserKey } from "@/lib/google-maps-client";
 import { detectPlatform } from "@/services/platform";
 import { distanceMeters, formatDistanceLabel } from "@/lib/map-explore";
-import { requestDeviceLocation } from "@/lib/device-location";
-import { TAIPEI_CENTER } from "@/lib/geo";
+import {
+  getLastKnownDeviceCoords,
+  getSessionDeviceLocation,
+  requestDeviceLocation,
+} from "@/lib/device-location";
 import { listPlaces, toggleSavePlace } from "@/lib/places-storage";
 import { tripDetailNavigateOptions } from "@/lib/trip/trip-detail-nav";
 import { readTripDetailSelectedDay } from "@/lib/trip/trip-detail-selected-day";
@@ -53,10 +57,7 @@ import {
   mapPlaceResultToChatItem,
   saveChatSession,
 } from "@/lib/chat-session";
-import {
-  buildPlaceRecommendationReason,
-  userProfileForReasonFrom,
-} from "@/lib/build-place-recommendation-reason";
+import { userProfileForReasonFrom } from "@/lib/build-place-recommendation-reason";
 import { getUserProfile } from "@/lib/profile-storage";
 import { getPreferences } from "@/lib/preferences-storage";
 import {
@@ -71,6 +72,10 @@ import { buildNewSavedPlaceInput } from "@/lib/saved-place-utils";
 import { resolveTabelogPlaceExternalUrl } from "@/lib/tabelog-reference";
 import { buildPlaceDetailTicketOffers } from "@/lib/affiliate/affiliate-links";
 import { tripPlaceFromPlaceResult } from "@/lib/trip/trip-place-input";
+import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
+import { isGooglePlaceId } from "@/lib/place-detail-handoff";
+import { resolvePlaceDetailTransportOrigin } from "@/lib/place-detail-transport-origin";
+import { enterPlaceDetailChat } from "@/lib/ai/place-detail-chat";
 
 const searchSchema = z.object({
   placeId: z.string().optional(),
@@ -139,21 +144,11 @@ function PlaceDetailPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [usedFallback, setUsedFallback] = useState(false);
-  const [userLocation, setUserLocation] = useState(TAIPEI_CENTER);
-  const tripPlanningOrigin = useMemo(() => {
-    if (
-      search.returnTo === "trip" &&
-      search.originLat != null &&
-      search.originLng != null &&
-      Number.isFinite(search.originLat) &&
-      Number.isFinite(search.originLng)
-    ) {
-      return { lat: search.originLat, lng: search.originLng };
-    }
-    return null;
-  }, [search.returnTo, search.originLat, search.originLng]);
-  const navigationOrigin = tripPlanningOrigin ?? userLocation;
-  const [hasResolvedUserLocation, setHasResolvedUserLocation] = useState(false);
+  const [navigationOrigin, setNavigationOrigin] = useState(() => {
+    const session = getSessionDeviceLocation();
+    if (session && !session.usedFallback) return { lat: session.lat, lng: session.lng };
+    return getLastKnownDeviceCoords();
+  });
   const [weather, setWeather] = useState<WeatherSummary | null>(null);
   const [reasonProfile, setReasonProfile] = useState(() => userProfileForReasonFrom({}));
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
@@ -162,6 +157,11 @@ function PlaceDetailPage() {
   useEffect(() => {
     logPlaceDetailScreenMounted();
     const handoff = resolvePlaceDetailHandoff(search, handoffRef.current);
+    if (handoff) {
+      console.info(
+        `[PLACE_DETAIL_REASON_SOURCE] ${resolvePlaceDetailReasonWithSource(handoff, handoff.snapshot).source}`,
+      );
+    }
     logPlaceDetailParamsReceived({ search, handoff });
     if (search.returnTo === "trip" && search.tripId) {
       const dayIndex =
@@ -215,7 +215,7 @@ function PlaceDetailPage() {
 
     const applyFetched = (fetched: PlaceDetailsScreenResult, resolvedPlaceId: string) => {
       logPlaceDetailFetchSuccess(resolvedPlaceId);
-      setPlace(mergeFetchedPlace(base, fetched, locale));
+      setPlace(mergeFetchedPlace(base, fetched, locale, hasCanonicalReasonRef.current));
       setFetchError(null);
       setUsedFallback(false);
     };
@@ -344,23 +344,22 @@ function PlaceDetailPage() {
 
   useEffect(() => {
     let cancelled = false;
-    if (tripPlanningOrigin) {
-      setUserLocation(tripPlanningOrigin);
-      setHasResolvedUserLocation(false);
-    } else {
-      void import("@/lib/location-app-gate")
+    void import("@/lib/location-app-gate")
         .then(({ waitForAppActiveForLocation }) =>
           waitForAppActiveForLocation().then((active) => {
             if (!active || cancelled) return;
             return requestDeviceLocation().then((loc) => {
               if (cancelled || !loc) return;
-              setUserLocation({ lat: loc.lat, lng: loc.lng });
-              setHasResolvedUserLocation(true);
+              const resolved = resolvePlaceDetailTransportOrigin({
+                live: loc,
+                cached: getLastKnownDeviceCoords(),
+              });
+              setNavigationOrigin(resolved.origin);
+              console.info(`[PLACE_DETAIL_TRANSPORT_ORIGIN] ${resolved.source}`);
             });
           }),
         )
         .catch(() => {});
-    }
     void Promise.all([
       getUserProfile(locale).catch(() => null),
       getPreferences().catch(() => ({}) as Awaited<ReturnType<typeof getPreferences>>),
@@ -378,8 +377,9 @@ function PlaceDetailPage() {
           }),
         );
         setSavedNames(new Set(saved.map((s) => s.name)));
-        const lat = place?.lat ?? navigationOrigin.lat;
-        const lng = place?.lng ?? navigationOrigin.lng;
+        const lat = place?.lat ?? navigationOrigin?.lat;
+        const lng = place?.lng ?? navigationOrigin?.lng;
+        if (lat == null || lng == null) return null;
         return fetchWeatherFn({ data: { lat, lng, locale } });
       })
       .then((w) => {
@@ -394,47 +394,10 @@ function PlaceDetailPage() {
     locale,
     place?.lat,
     place?.lng,
-    navigationOrigin.lat,
-    navigationOrigin.lng,
-    tripPlanningOrigin,
+    navigationOrigin?.lat,
+    navigationOrigin?.lng,
     fetchWeatherFn,
     hasPlusAccess,
-  ]);
-
-  useEffect(() => {
-    if (hasCanonicalReasonRef.current) return;
-    setPlace((prev) => {
-      if (!prev) return prev;
-      const distM =
-        prev.lat != null && prev.lng != null
-          ? distanceMeters(navigationOrigin, { lat: prev.lat, lng: prev.lng })
-          : undefined;
-      const nextReason = buildPlaceRecommendationReason(
-        prev,
-        reasonProfile,
-        weather,
-        undefined,
-        {
-          distanceMeters: distM,
-          distanceSource: tripPlanningOrigin
-            ? "NAVIGATION_ORIGIN"
-            : hasResolvedUserLocation
-              ? "USER_LOCATION"
-              : undefined,
-        },
-        locale,
-      );
-      return prev.reason !== nextReason ? { ...prev, reason: nextReason } : prev;
-    });
-  }, [
-    place?.id,
-    weather,
-    reasonProfile,
-    locale,
-    navigationOrigin.lat,
-    navigationOrigin.lng,
-    tripPlanningOrigin,
-    hasResolvedUserLocation,
   ]);
 
   const destination =
@@ -478,6 +441,7 @@ function PlaceDetailPage() {
 
   const distanceLabel = useMemo(() => {
     if (!place || place.lat == null || place.lng == null) return null;
+    if (!navigationOrigin) return null;
     return formatDistanceLabel(
       distanceMeters(navigationOrigin, { lat: place.lat, lng: place.lng }),
     );
@@ -488,20 +452,31 @@ function PlaceDetailPage() {
     const cityLabel =
       place.lat != null && place.lng != null
         ? inferExploreCityLabel(place.lat, place.lng, place.address)
-        : inferExploreCityLabel(userLocation.lat, userLocation.lng, place.address);
-    return resolveTabelogPlaceExternalUrl({
+        : inferExploreCityLabel(0, 0, place.address);
+    const url = resolveTabelogPlaceExternalUrl({
       cityLabel,
       address: place.address,
       place,
     });
-  }, [place, userLocation.lat, userLocation.lng]);
+    console.info(`[PLACE_DETAIL_TABELOG_LINK] ${url ? "exact_name_search" : "unavailable"}`);
+    return url;
+  }, [place]);
+
+  const placeGoogleMapsUrl = useMemo(() => {
+    if (!place || place.lat == null || place.lng == null) return null;
+    const placeId = isGooglePlaceId(place.id) ? place.id : null;
+    console.info(
+      `[PLACE_DETAIL_MAP_LINK] ${placeId ? "google_place_id" : "latlng_search"}`,
+    );
+    return buildPlaceMapsUrl(place.lat, place.lng, place.name, placeId);
+  }, [place]);
 
   const placeTicketOffers = useMemo(() => {
     if (!place) return [];
     const cityLabel =
       place.lat != null && place.lng != null
         ? inferExploreCityLabel(place.lat, place.lng, place.address)
-        : inferExploreCityLabel(userLocation.lat, userLocation.lng, place.address);
+        : inferExploreCityLabel(0, 0, place.address);
     return buildPlaceDetailTicketOffers(
       {
         name: place.name,
@@ -512,7 +487,7 @@ function PlaceDetailPage() {
       },
       { destinationLabel: cityLabel, locale },
     );
-  }, [place, userLocation.lat, userLocation.lng, locale]);
+  }, [place, locale]);
 
   const handleBack = useCallback(() => {
     if (search.returnTo === "chat") {
@@ -590,7 +565,7 @@ function PlaceDetailPage() {
   const handleOpenChat = () => {
     if (!place) return;
     const distM =
-      place.lat != null && place.lng != null
+      navigationOrigin && place.lat != null && place.lng != null
         ? distanceMeters(navigationOrigin, { lat: place.lat, lng: place.lng })
         : undefined;
     const item = mapPlaceResultToChatItem(place, {
@@ -599,7 +574,8 @@ function PlaceDetailPage() {
       distanceMeters: distM,
       locale,
     });
-    saveChatSession(addSelectedPlace({ ...loadChatSession(), phase: "followup" }, item));
+    const selected = addSelectedPlace({ ...loadChatSession(), phase: "followup" }, item);
+    saveChatSession(enterPlaceDetailChat(selected, item));
     navigate({ to: "/chat", search: { from: "map" } });
     toast.message(`已帶入「${place.name}」，到聊聊繼續問 Roamie`);
   };
@@ -675,11 +651,12 @@ function PlaceDetailPage() {
             onSelectTransportMode={navigation.setSelectedMode}
             onNavigate={handleNavigate}
             onToggleSave={() => void handleToggleSave()}
-            onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(place))}
+            onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(place), "place_detail")}
             addToTripLabel={t("chat.addToTrip")}
             saveLabel="收藏"
             onOpenChat={handleOpenChat}
             tabelogExternalUrl={placeTabelogUrl}
+            googleMapsExternalUrl={placeGoogleMapsUrl}
             ticketOffers={placeTicketOffers}
           />
         </>

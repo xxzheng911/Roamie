@@ -6,6 +6,10 @@ import type { PlaceDetailsScreenResult } from "@/lib/places.functions";
 
 /** 統一 Place Cache TTL：24 小時 */
 export const UNIFIED_PLACE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+export const UNIFIED_PLACE_INTRO_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+export const UNIFIED_PLACE_SCREEN_CACHE_TTL_MS = 30 * 60 * 1000;
+
+export type PlaceDetailsCapability = "search_v1" | "anchor_v1" | "screen_v1" | "intro_v1";
 
 const STORAGE_PREFIX = "roamie:unified-place:v1:";
 const MAX_PERSISTED_ENTRIES = 120;
@@ -56,7 +60,9 @@ function normalizeCategory(raw?: string | null): string {
 }
 
 function normalizeLanguage(raw?: string | null): string {
-  return (raw ?? "zh-TW").trim() || "zh-TW";
+  const value = (raw ?? "zh-TW").trim().replace(/_/g, "-");
+  const [language, region] = value.split("-");
+  return `${language.toLowerCase()}${region ? `-${region.toUpperCase()}` : ""}`;
 }
 
 /** 從座標／標籤推斷 country + city */
@@ -72,10 +78,7 @@ export function inferPlaceCacheLocation(parts: UnifiedPlaceCacheScope): {
         : "_";
 
   const label =
-    parts.city?.trim() ||
-    parts.cityLabel?.trim() ||
-    parts.destinationName?.trim() ||
-    "";
+    parts.city?.trim() || parts.cityLabel?.trim() || parts.destinationName?.trim() || "";
   const city = label
     ? normalizeDestinationLabel(label)
     : parts.lat != null && parts.lng != null
@@ -98,22 +101,33 @@ export function buildUnifiedPlaceCacheKey(parts: UnifiedPlaceCacheScope): string
     return `${country}|${city}|${placeId}|${category}|${language}`;
   }
   const geo =
-    parts.lat != null && parts.lng != null
-      ? normalizedLocationKey(parts.lat, parts.lng)
-      : "geo";
+    parts.lat != null && parts.lng != null ? normalizedLocationKey(parts.lat, parts.lng) : "geo";
   return `${country}|${city}|${geo}|${category}|${language}`;
 }
 
 export function buildUnifiedPlaceDetailsCacheKey(
   placeId: string,
   language: string,
-  scope: Omit<UnifiedPlaceCacheScope, "placeId" | "category" | "language"> = {},
+  _scope: Omit<UnifiedPlaceCacheScope, "placeId" | "category" | "language"> = {},
+  capability: PlaceDetailsCapability = "screen_v1",
 ): string {
-  return buildUnifiedPlaceCacheKey({
-    ...scope,
-    placeId,
-    category: "detail",
-    language,
+  const canonicalPlaceId = normalizePlaceId(placeId);
+  return `details|${canonicalPlaceId}|${normalizeLanguage(language)}|${capability}`;
+}
+
+function logPlaceCacheAccess(
+  key: string,
+  result: "hit" | "miss" | "stale" | "inflight_join",
+  cacheLayer: string,
+): void {
+  if (!key.startsWith("details|")) return;
+  const [, id, locale, capability] = key.split("|");
+  console.info("[PLACE_CACHE_ACCESS]", {
+    canonicalPlaceId: id.slice(0, 12),
+    capability,
+    locale,
+    cacheLayer,
+    result,
   });
 }
 
@@ -125,15 +139,19 @@ function canUseLocalStorage(): boolean {
   return typeof localStorage !== "undefined";
 }
 
-function readPersisted<T>(key: string): CacheEnvelope<T> | null {
+function readPersisted<T>(
+  key: string,
+  ttlMs = UNIFIED_PLACE_CACHE_TTL_MS,
+): CacheEnvelope<T> | null {
   if (!canUseLocalStorage()) return null;
   try {
     const raw = localStorage.getItem(storageKey(key));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CacheEnvelope<T>;
     if (!parsed?.at) return null;
-    if (Date.now() - parsed.at > UNIFIED_PLACE_CACHE_TTL_MS) {
+    if (Date.now() - parsed.at > ttlMs) {
       localStorage.removeItem(storageKey(key));
+      logPlaceCacheAccess(key, "stale", "persistent");
       return null;
     }
     return parsed;
@@ -179,6 +197,7 @@ export function readUnifiedPlaceCache<T>(
   options?: {
     ignoreCache?: boolean;
     validate?: (data: T) => boolean;
+    ttlMs?: number;
   },
 ): T | null {
   if (options?.ignoreCache) {
@@ -188,15 +207,22 @@ export function readUnifiedPlaceCache<T>(
 
   const now = Date.now();
   const mem = memory.get(key) as CacheEnvelope<T> | undefined;
-  if (mem && now - mem.at <= UNIFIED_PLACE_CACHE_TTL_MS) {
-    if (!options?.validate || options.validate(mem.data)) return mem.data;
+  const ttlMs = options?.ttlMs ?? UNIFIED_PLACE_CACHE_TTL_MS;
+  if (mem && now - mem.at <= ttlMs) {
+    if (!options?.validate || options.validate(mem.data)) {
+      logPlaceCacheAccess(key, "hit", "memory");
+      return mem.data;
+    }
     memory.delete(key);
   } else if (mem) {
     memory.delete(key);
   }
 
-  const persisted = readPersisted<T>(key);
-  if (!persisted) return null;
+  const persisted = readPersisted<T>(key, ttlMs);
+  if (!persisted) {
+    logPlaceCacheAccess(key, "miss", "persistent");
+    return null;
+  }
   if (options?.validate && !options.validate(persisted.data)) {
     invalidateUnifiedPlaceCache(key);
     return null;
@@ -228,6 +254,7 @@ export async function getUnifiedPlaceCacheOrFetch<T>(
     forceRefresh?: boolean;
     shouldCache?: (data: T) => boolean;
     validate?: (data: T) => boolean;
+    ttlMs?: number;
   },
 ): Promise<T> {
   if (options?.forceRefresh) {
@@ -237,11 +264,15 @@ export async function getUnifiedPlaceCacheOrFetch<T>(
   const cached = readUnifiedPlaceCache<T>(key, {
     ignoreCache: options?.forceRefresh,
     validate: options?.validate,
+    ttlMs: options?.ttlMs,
   });
   if (cached !== null) return cached;
 
   const pending = inflight.get(key) as Promise<T> | undefined;
-  if (pending) return pending;
+  if (pending) {
+    logPlaceCacheAccess(key, "inflight_join", "memory");
+    return pending;
+  }
 
   const promise = fetcher()
     .then((data) => {
@@ -274,8 +305,7 @@ export function isPlaceDetailsCacheComplete(
   const hasRating = place.rating != null || (place.userRatingCount ?? 0) > 0;
   const screen = place as PlaceDetailsScreenResult;
   const hasPhoto =
-    !!place.photoName?.trim() ||
-    (Array.isArray(screen.photoNames) && screen.photoNames.length > 0);
+    !!place.photoName?.trim() || (Array.isArray(screen.photoNames) && screen.photoNames.length > 0);
   return hasRating && hasPhoto;
 }
 
@@ -319,6 +349,7 @@ export function readUnifiedPlaceDetailsCache(
 ): UnifiedPlaceDetailsCacheEntry | null {
   return readUnifiedPlaceCache<UnifiedPlaceDetailsCacheEntry>(key, {
     ignoreCache: options?.ignoreCache,
+    ttlMs: key.endsWith("|screen_v1") ? UNIFIED_PLACE_SCREEN_CACHE_TTL_MS : undefined,
     validate: (entry) => !entry.place || isPlaceDetailsMinimallyCacheable(entry.place),
   });
 }
@@ -332,6 +363,25 @@ export function writeUnifiedPlaceDetailsCache(
   writeUnifiedPlaceCache(key, { place, error });
 }
 
+/** Enrichment wins, except that an empty response must not erase known factual identity fields. */
+export function mergePlaceFactualFields<T extends PlaceResult>(
+  existing: PlaceResult | null,
+  enriched: T,
+): T {
+  if (!existing) return enriched;
+  return {
+    ...existing,
+    ...enriched,
+    id: enriched.id?.trim() || existing.id,
+    name: enriched.name?.trim() || existing.name,
+    lat: enriched.lat ?? existing.lat,
+    lng: enriched.lng ?? existing.lng,
+    address: enriched.address?.trim() || existing.address,
+    types: enriched.types?.length ? enriched.types : existing.types,
+    businessStatus: enriched.businessStatus ?? existing.businessStatus,
+  } as T;
+}
+
 /** 依 placeId 索引單一地點（供 AI／聊天／行程共用詳情） */
 export function cachePlaceResultById(
   place: PlaceResult,
@@ -339,7 +389,7 @@ export function cachePlaceResultById(
   scope: Omit<UnifiedPlaceCacheScope, "placeId" | "language"> = {},
 ): void {
   if (!place.id) return;
-  const key = buildUnifiedPlaceDetailsCacheKey(place.id, language, scope);
+  const key = buildUnifiedPlaceDetailsCacheKey(place.id, language, scope, "search_v1");
   writeUnifiedPlaceCache(key, { place: place as PlaceDetailsScreenResult, error: null });
 }
 
@@ -347,8 +397,19 @@ export function readCachedPlaceResultById(
   placeId: string,
   language: string,
   scope: Omit<UnifiedPlaceCacheScope, "placeId" | "language"> = {},
+  capability: Exclude<PlaceDetailsCapability, "intro_v1"> = "search_v1",
 ): PlaceResult | null {
-  const key = buildUnifiedPlaceDetailsCacheKey(placeId, language, scope);
-  const hit = readUnifiedPlaceDetailsCache(key);
-  return hit?.place ?? null;
+  const candidates: PlaceDetailsCapability[] =
+    capability === "screen_v1"
+      ? ["screen_v1"]
+      : capability === "anchor_v1"
+        ? ["screen_v1", "anchor_v1"]
+        : ["screen_v1", "anchor_v1", "search_v1"];
+  for (const candidate of candidates) {
+    const hit = readUnifiedPlaceDetailsCache(
+      buildUnifiedPlaceDetailsCacheKey(placeId, language, scope, candidate),
+    );
+    if (hit?.place) return hit.place;
+  }
+  return null;
 }

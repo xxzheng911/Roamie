@@ -57,7 +57,95 @@ export type AdminDashboardData = {
   topUsers: AdminActiveUser[];
   popularDestinations: PopularDestination[];
   creditBreakdown30d: CreditFeatureUsage[];
+  analytics: AdminAnalyticsV1 | null;
 };
+
+export type AdminAnalyticsV1 = {
+  observedAt: string;
+  period: "today" | "7d" | "30d" | "all";
+  trackingStartedAt: string;
+  chatSessions: number;
+  itineraryAttempts: number;
+  itinerarySuccesses: number;
+  itineraryFailures: number;
+  itinerarySuccessRate: number;
+  popularRecommendationFamilies: Array<{ family: string; count: number }>;
+  placeCardClicks: number;
+  uniqueClickedPlaces: number;
+  placeClickSurfaces: Array<{ surface: string; count: number }>;
+  affiliateImpressions: number;
+  affiliateClicks: number;
+  affiliateOpenSuccesses: number;
+  affiliateCtr: number;
+  affiliateByProvider: Array<{
+    provider: string;
+    impressions: number;
+    clicks: number;
+    opens: number;
+  }>;
+};
+
+export function normalizeAdminAnalyticsV1(value: unknown): AdminAnalyticsV1 | null {
+  const row = objectValue(value);
+  const observedAt = stringValue(row.observedAt);
+  const trackingStartedAt = stringValue(row.trackingStartedAt);
+  const period =
+    row.period === "today" || row.period === "7d" || row.period === "all" ? row.period : "30d";
+  if (!observedAt || !trackingStartedAt) return null;
+  const list = (input: unknown, a: string, b: string) =>
+    Array.isArray(input)
+      ? input.flatMap((item) => {
+          const x = objectValue(item);
+          const key = stringValue(x[a]);
+          return key ? [{ [a]: key, [b]: numberValue(x[b]) }] : [];
+        })
+      : [];
+  return {
+    observedAt,
+    period,
+    trackingStartedAt,
+    chatSessions: numberValue(row.chatSessions),
+    itineraryAttempts: numberValue(row.itineraryAttempts),
+    itinerarySuccesses: numberValue(row.itinerarySuccesses),
+    itineraryFailures: numberValue(row.itineraryFailures),
+    itinerarySuccessRate: numberValue(row.itinerarySuccessRate),
+    popularRecommendationFamilies: list(
+      row.popularRecommendationFamilies,
+      "recommendation_family",
+      "requested_count",
+    ).map((x) => ({
+      family: x.recommendation_family as string,
+      count: x.requested_count as number,
+    })),
+    placeCardClicks: numberValue(row.placeCardClicks),
+    uniqueClickedPlaces: numberValue(row.uniqueClickedPlaces),
+    placeClickSurfaces: list(row.placeClickSurfaces, "surface", "click_count").map((x) => ({
+      surface: x.surface as string,
+      count: x.click_count as number,
+    })),
+    affiliateImpressions: numberValue(row.affiliateImpressions),
+    affiliateClicks: numberValue(row.affiliateClicks),
+    affiliateOpenSuccesses: numberValue(row.affiliateOpenSuccesses),
+    affiliateCtr: numberValue(row.affiliateCtr),
+    affiliateByProvider: Array.isArray(row.affiliateByProvider)
+      ? row.affiliateByProvider
+          .map((x) => objectValue(x))
+          .flatMap((x) => {
+            const provider = stringValue(x.provider);
+            return provider
+              ? [
+                  {
+                    provider,
+                    impressions: numberValue(x.impressions),
+                    clicks: numberValue(x.clicks),
+                    opens: numberValue(x.opens),
+                  },
+                ]
+              : [];
+          })
+      : [],
+  };
+}
 
 type JsonObject = Record<string, unknown>;
 
@@ -165,9 +253,13 @@ export function aggregatePopularDestinations(value: unknown): PopularDestination
     .slice(0, 20);
 }
 
-export function normalizeAdminDashboardData(value: unknown): AdminDashboardData | null {
+export function normalizeAdminDashboardData(
+  value: unknown,
+  analyticsValue?: unknown,
+): AdminDashboardData | null {
   const root = objectValue(value);
   const observedAt = stringValue(root.observedAt);
+  const analytics = normalizeAdminAnalyticsV1(analyticsValue);
   if (!observedAt || !root.summary) return null;
   const creditBreakdown30d = Array.isArray(root.creditBreakdown30d)
     ? root.creditBreakdown30d.flatMap((item): CreditFeatureUsage[] => {
@@ -184,5 +276,6 @@ export function normalizeAdminDashboardData(value: unknown): AdminDashboardData 
     topUsers: parseUsers(root.topUsers),
     popularDestinations: aggregatePopularDestinations(root.rawDestinations),
     creditBreakdown30d,
+    analytics,
   };
 }

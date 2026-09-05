@@ -243,7 +243,13 @@ export async function callRoamieAI(ctx: RoamieRequestContext): Promise<RoamieRes
 }
 
 /** Stream raw JSON text chunks (OpenAI SSE). */
-export function streamRoamieAI(initialCtx: RoamieRequestContext): {
+export const CHAT_STREAM_FIRST_BYTE_TIMEOUT_MS = 25_000;
+export const CHAT_STREAM_OVERALL_TIMEOUT_MS = 55_000;
+
+export function streamRoamieAI(
+  initialCtx: RoamieRequestContext,
+  options?: { signal?: AbortSignal; requestId?: string },
+): {
   stream: ReadableStream<Uint8Array>;
   getAssembled: () => Promise<string>;
 } {
@@ -256,6 +262,30 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
+      const requestId = options?.requestId ?? crypto.randomUUID();
+      const startedAt = Date.now();
+      const upstreamAbort = new AbortController();
+      let firstByteReceived = false;
+      let providerStatus = 0;
+      let timeoutReason = "";
+      const abortFromClient = () => upstreamAbort.abort(options?.signal?.reason);
+      options?.signal?.addEventListener("abort", abortFromClient, { once: true });
+      const overallTimer = setTimeout(() => {
+        timeoutReason = "overall_timeout";
+        upstreamAbort.abort(new Error(timeoutReason));
+      }, CHAT_STREAM_OVERALL_TIMEOUT_MS);
+      const firstByteTimer = setTimeout(() => {
+        if (!firstByteReceived) {
+          timeoutReason = "first_byte_timeout";
+          upstreamAbort.abort(new Error(timeoutReason));
+        }
+      }, CHAT_STREAM_FIRST_BYTE_TIMEOUT_MS);
+      let bytesWritten = 0;
+      const enqueue = (text: string) => {
+        const encoded = encoder.encode(text);
+        bytesWritten += encoded.byteLength;
+        controller.enqueue(encoded);
+      };
       try {
         const prep = await withPlacesFirstPrep(initialCtx);
         let ctx = prep.ctx;
@@ -268,6 +298,7 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
           /深夜散步|夜晚探索|深夜|想放空/.test(ctx.mood ?? ctx.selectedMood ?? "");
         const maxTokens = ctx.mode === "itinerary" ? 2800 : lateNightRecommend ? 1400 : 900;
 
+        console.info("[CHAT_API_OPENAI]", { requestId, started: true, firstByteReceived: false, completed: false, aborted: false, durationMs: 0, providerStatus: 0 });
         const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -292,17 +323,17 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
               },
             },
           }),
+          signal: upstreamAbort.signal,
         });
+        providerStatus = upstream.status;
 
         if (!upstream.ok || !upstream.body) {
           const detail = await mapOpenAIError(upstream);
-          controller.enqueue(
-            encoder.encode(
-              `event: error\ndata: ${JSON.stringify({ error: detail.message, code: detail.code, status: detail.status })}\n\n`,
-            ),
-          );
+          enqueue(`event: error\ndata: ${JSON.stringify({ error: detail.message, code: detail.code, status: detail.status })}\n\n`);
           controller.close();
           resolveAssembly("");
+          console.info("[CHAT_API_OPENAI]", { requestId, started: true, firstByteReceived, completed: true, aborted: false, durationMs: Date.now() - startedAt, providerStatus });
+          console.info("[CHAT_API_RESPONSE]", { requestId, status: 200, contentType: "text/event-stream", bytesWritten, streamClosedNormally: true, failureReason: detail.code ?? "provider_error" });
           return;
         }
 
@@ -313,6 +344,11 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          if (!firstByteReceived) {
+            firstByteReceived = true;
+            clearTimeout(firstByteTimer);
+            console.info("[CHAT_API_OPENAI]", { requestId, started: true, firstByteReceived: true, completed: false, aborted: false, durationMs: Date.now() - startedAt, providerStatus });
+          }
           buf += decoder.decode(value, { stream: true });
           let idx: number;
           while ((idx = buf.indexOf("\n")) !== -1) {
@@ -327,9 +363,7 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
               const delta = parsed.choices?.[0]?.delta?.content;
               if (delta) {
                 assembled += delta;
-                controller.enqueue(
-                  encoder.encode(`event: delta\ndata: ${JSON.stringify({ delta })}\n\n`),
-                );
+                enqueue(`event: delta\ndata: ${JSON.stringify({ delta })}\n\n`);
               }
             } catch {
               /* partial line */
@@ -358,24 +392,38 @@ export function streamRoamieAI(initialCtx: RoamieRequestContext): {
             }
             const enriched = await enrichRoamieResponse(parsed, ctx);
             finalPayload = JSON.stringify(enriched);
-            controller.enqueue(
-              encoder.encode(`event: final\ndata: ${JSON.stringify(enriched)}\n\n`),
-            );
+            enqueue(`event: final\ndata: ${JSON.stringify(enriched)}\n\n`);
           } catch (e) {
             console.warn("[Roamie AI] enrich after stream failed", e);
           }
         }
 
-        controller.enqueue(encoder.encode(`event: done\ndata: {}\n\n`));
+        if (!assembled.trim()) {
+          enqueue(`event: error\ndata: ${JSON.stringify({ error: "AI 服務未回傳內容。", code: "provider_empty_stream" })}\n\n`);
+        } else {
+          enqueue(`event: done\ndata: {}\n\n`);
+        }
         controller.close();
         resolveAssembly(finalPayload);
+        console.info("[CHAT_API_OPENAI]", { requestId, started: true, firstByteReceived, completed: true, aborted: false, durationMs: Date.now() - startedAt, providerStatus });
+        console.info("[CHAT_API_RESPONSE]", { requestId, status: 200, contentType: "text/event-stream", bytesWritten, streamClosedNormally: true, failureReason: assembled.trim() ? "" : "provider_empty_stream" });
       } catch (e) {
-        const msg = e instanceof Error ? e.message : "AI 服務暫時無法使用";
-        controller.enqueue(
-          encoder.encode(`event: error\ndata: ${JSON.stringify({ error: msg })}\n\n`),
-        );
-        controller.close();
+        const aborted = upstreamAbort.signal.aborted;
+        const code = timeoutReason || (options?.signal?.aborted ? "client_abort" : "provider_error");
+        const msg = aborted ? "AI 回應逾時，請再試一次。" : e instanceof Error ? e.message : "AI 服務暫時無法使用";
+        try {
+          enqueue(`event: error\ndata: ${JSON.stringify({ error: msg, code })}\n\n`);
+          controller.close();
+        } catch {
+          // Client may already have disconnected; credit settlement still observes empty assembly.
+        }
         resolveAssembly("");
+        console.info("[CHAT_API_OPENAI]", { requestId, started: true, firstByteReceived, completed: false, aborted, durationMs: Date.now() - startedAt, providerStatus });
+        console.info("[CHAT_API_RESPONSE]", { requestId, status: 200, contentType: "text/event-stream", bytesWritten, streamClosedNormally: !options?.signal?.aborted, failureReason: code });
+      } finally {
+        clearTimeout(firstByteTimer);
+        clearTimeout(overallTimer);
+        options?.signal?.removeEventListener("abort", abortFromClient);
       }
     },
   });

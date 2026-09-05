@@ -208,9 +208,8 @@ export function resolvePlaceDetailOpeningLine(
   >,
 ): string {
   const biz = (place.businessStatus ?? "").trim().toUpperCase();
-  if (biz === "CLOSED_PERMANENTLY" || biz === "CLOSED_TEMPORARILY") {
-    return "營業資訊暫缺";
-  }
+  if (biz === "CLOSED_PERMANENTLY") return "已停止營業";
+  if (biz === "CLOSED_TEMPORARILY") return "暫停營業";
 
   const openNow = place.openNow ?? null;
   const hasGoogleHours =
