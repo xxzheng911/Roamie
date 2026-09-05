@@ -178,24 +178,20 @@ export const Route = createFileRoute("/api/roamie")({
         }
 
         try {
-          const { stream: bodyStream, getAssembled } = streamRoamieAI(ctx, {
+          const { stream: bodyStream } = streamRoamieAI(ctx, {
             signal: request.signal,
             requestId: operationId,
-          });
-
-          (async () => {
-            try {
-              if (!auth) return;
-              const raw = await getAssembled();
-              if (!raw.trim()) {
-                await settleCredits(false, "empty_response");
+            onComplete: async ({ assembled: raw, success, failureReason }) => {
+              if (!success || !raw.trim()) {
+                const resolvedFailure = failureReason || "empty_response";
+                await settleCredits(false, resolvedFailure);
                 if (ctx.mode === "itinerary")
                   await recordAnalyticsEventServer(
                     {
                       eventId: analyticsOperationEventId(operationId, "failed"),
                       eventName: "itinerary_generation_failed",
                       tier,
-                      failureCode: "empty_response",
+                      failureCode: resolvedFailure,
                     },
                     auth.userId,
                   );
@@ -231,21 +227,8 @@ export const Route = createFileRoute("/api/roamie")({
                 role: "assistant",
                 content: raw.trim(),
               });
-            } catch (e) {
-              await settleCredits(false, "stream_failed");
-              if (ctx.mode === "itinerary")
-                await recordAnalyticsEventServer(
-                  {
-                    eventId: analyticsOperationEventId(operationId, "failed"),
-                    eventName: "itinerary_generation_failed",
-                    tier,
-                    failureCode: "stream_failed",
-                  },
-                  auth.userId,
-                );
-              console.error("roamie persist failed:", e);
-            }
-          })();
+            },
+          });
 
           return new Response(bodyStream, {
             status: 200,

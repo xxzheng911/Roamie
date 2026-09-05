@@ -248,7 +248,15 @@ export const CHAT_STREAM_OVERALL_TIMEOUT_MS = 55_000;
 
 export function streamRoamieAI(
   initialCtx: RoamieRequestContext,
-  options?: { signal?: AbortSignal; requestId?: string },
+  options?: {
+    signal?: AbortSignal;
+    requestId?: string;
+    onComplete?: (result: {
+      assembled: string;
+      success: boolean;
+      failureReason: string;
+    }) => Promise<void> | void;
+  },
 ): {
   stream: ReadableStream<Uint8Array>;
   getAssembled: () => Promise<string>;
@@ -264,6 +272,21 @@ export function streamRoamieAI(
       const encoder = new TextEncoder();
       const requestId = options?.requestId ?? crypto.randomUUID();
       const startedAt = Date.now();
+      let completionCalled = false;
+      const complete = async (
+        result: { assembled: string; success: boolean; failureReason: string },
+      ) => {
+        if (completionCalled) return;
+        completionCalled = true;
+        try {
+          await options?.onComplete?.(result);
+        } catch (error) {
+          console.error(
+            "[CHAT_STREAM_COMPLETION] failed",
+            error instanceof Error ? error.message : "unknown_error",
+          );
+        }
+      };
       const upstreamAbort = new AbortController();
       let firstByteReceived = false;
       let providerStatus = 0;
@@ -330,6 +353,11 @@ export function streamRoamieAI(
         if (!upstream.ok || !upstream.body) {
           const detail = await mapOpenAIError(upstream);
           enqueue(`event: error\ndata: ${JSON.stringify({ error: detail.message, code: detail.code, status: detail.status })}\n\n`);
+          await complete({
+            assembled: "",
+            success: false,
+            failureReason: detail.code ?? "provider_error",
+          });
           controller.close();
           resolveAssembly("");
           console.info("[CHAT_API_OPENAI]", { requestId, started: true, firstByteReceived, completed: true, aborted: false, durationMs: Date.now() - startedAt, providerStatus });
@@ -403,6 +431,11 @@ export function streamRoamieAI(
         } else {
           enqueue(`event: done\ndata: {}\n\n`);
         }
+        await complete({
+          assembled: finalPayload,
+          success: Boolean(assembled.trim()),
+          failureReason: assembled.trim() ? "" : "empty_response",
+        });
         controller.close();
         resolveAssembly(finalPayload);
         console.info("[CHAT_API_OPENAI]", { requestId, started: true, firstByteReceived, completed: true, aborted: false, durationMs: Date.now() - startedAt, providerStatus });
@@ -411,6 +444,7 @@ export function streamRoamieAI(
         const aborted = upstreamAbort.signal.aborted;
         const code = timeoutReason || (options?.signal?.aborted ? "client_abort" : "provider_error");
         const msg = aborted ? "AI 回應逾時，請再試一次。" : e instanceof Error ? e.message : "AI 服務暫時無法使用";
+        await complete({ assembled: "", success: false, failureReason: code });
         try {
           enqueue(`event: error\ndata: ${JSON.stringify({ error: msg, code })}\n\n`);
           controller.close();
