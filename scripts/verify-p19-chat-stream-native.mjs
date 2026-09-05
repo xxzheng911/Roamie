@@ -48,6 +48,10 @@ test("client distinguishes HTTP, content type, empty stream, parse and abort fai
 test("server propagates abort, has deadlines, structured empty-stream error and credit lifecycle", () => {
   const service = readFileSync(new URL("../src/lib/ai/service.server.ts", import.meta.url), "utf8");
   const route = readFileSync(new URL("../src/routes/api/roamie.ts", import.meta.url), "utf8");
+  const itineraryRoute = readFileSync(
+    new URL("../src/routes/api/generate-itinerary.ts", import.meta.url),
+    "utf8",
+  );
   assert.match(service, /CHAT_STREAM_FIRST_BYTE_TIMEOUT_MS = 25_000/);
   assert.match(service, /CHAT_STREAM_OVERALL_TIMEOUT_MS = 55_000/);
   assert.match(service, /signal: upstreamAbort\.signal/);
@@ -58,6 +62,10 @@ test("server propagates abort, has deadlines, structured empty-stream error and 
   assert.match(route, /\[CHAT_CREDIT_LIFECYCLE\]/);
   assert.match(route, /settleCredits\(false, "client_abort"\)/);
   assert.match(route, /parsed\.protocol === "capacitor:" && parsed\.hostname === "localhost"/);
+  assert.match(
+    itineraryRoute,
+    /parsed\.protocol === "capacitor:" && parsed\.hostname === "localhost"/,
+  );
 });
 
 test("trusted Capacitor API origin gets narrow preflight/CORS support", () => {

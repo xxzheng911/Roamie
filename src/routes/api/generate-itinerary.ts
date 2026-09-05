@@ -12,7 +12,9 @@ function isAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get("origin") ?? request.headers.get("referer");
   if (!origin) return true;
   try {
-    return new URL(request.url).host === new URL(origin).host;
+    const parsed = new URL(origin);
+    if (parsed.protocol === "capacitor:" && parsed.hostname === "localhost") return true;
+    return new URL(request.url).host === parsed.host;
   } catch {
     return false;
   }
