@@ -266,6 +266,7 @@ export function streamRoamieAI(
   const assemblyDone = new Promise<string>((res) => {
     resolveAssembly = res;
   });
+  let cancelActiveStream: ((reason: unknown) => Promise<void>) | undefined;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -288,6 +289,14 @@ export function streamRoamieAI(
         }
       };
       const upstreamAbort = new AbortController();
+      cancelActiveStream = async (reason: unknown) => {
+        upstreamAbort.abort(reason);
+        await complete({
+          assembled: "",
+          success: false,
+          failureReason: "client_abort",
+        });
+      };
       let firstByteReceived = false;
       let providerStatus = 0;
       let timeoutReason = "";
@@ -458,7 +467,11 @@ export function streamRoamieAI(
         clearTimeout(firstByteTimer);
         clearTimeout(overallTimer);
         options?.signal?.removeEventListener("abort", abortFromClient);
+        cancelActiveStream = undefined;
       }
+    },
+    async cancel(reason) {
+      await cancelActiveStream?.(reason);
     },
   });
 

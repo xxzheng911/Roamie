@@ -59,6 +59,7 @@ test("server propagates abort, has deadlines, structured empty-stream error and 
   assert.match(service, /\[CHAT_API_OPENAI\]/);
   assert.match(service, /\[CHAT_API_RESPONSE\]/);
   assert.match(service, /await complete\([\s\S]*controller\.close\(\)/);
+  assert.match(service, /async cancel\(reason\)[\s\S]*cancelActiveStream/);
   assert.match(route, /\[CHAT_API_REQUEST\]/);
   assert.match(route, /\[CHAT_CREDIT_LIFECYCLE\]/);
   assert.match(route, /settleCredits\(false, "client_abort"\)/);
