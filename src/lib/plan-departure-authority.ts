@@ -1,24 +1,26 @@
 import type { TripLocation } from "@/lib/location/types";
 
-export type PlanDepartureState = "absent" | "selected" | "text_unresolved";
+export type PlanDepartureState = "omitted" | "selected" | "text_unresolved";
 
 export function resolvePlanDepartureState(
   departureText: string | null | undefined,
   selectedDeparture: TripLocation | null | undefined,
 ): PlanDepartureState {
-  if (selectedDeparture) return "selected";
-  return departureText?.trim() ? "text_unresolved" : "absent";
+  if (!departureText?.trim()) return "omitted";
+  return selectedDeparture ? "selected" : "text_unresolved";
 }
 
 export function logPlanDepartureAuthority(input: {
   departureText?: string | null;
   selectedDeparture?: TripLocation | null;
-  source: "user_selection" | "none" | "stale_rejected";
+  source: "user_selection" | "visible_empty" | "stale_rejected";
 }): PlanDepartureState {
   const normalizedState = resolvePlanDepartureState(input.departureText, input.selectedDeparture);
   console.info("[PLAN_DEPARTURE_AUTHORITY]", {
-    hasDepartureText: Boolean(input.departureText?.trim()),
+    visibleTextLength: input.departureText?.length ?? 0,
+    trimmedTextLength: input.departureText?.trim().length ?? 0,
     hasSelectedDeparture: Boolean(input.selectedDeparture),
+    selectedPlaceId: input.selectedDeparture?.placeId?.trim() ?? "",
     normalizedState,
     source: input.source,
   });

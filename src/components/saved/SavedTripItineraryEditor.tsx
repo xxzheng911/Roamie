@@ -2,8 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
+  Bookmark,
   Camera,
   Loader2,
+  Map as MapIcon,
   Pencil,
   Plus,
   Sparkles,
@@ -520,7 +522,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     [initial, tripTitle, savedOutfitFields],
   );
 
-  const { cancelPending, markSynced } = useDebouncedTripSave(stored.id, payload, true, {
+  const { cancelPending, markSynced, saveNow } = useDebouncedTripSave(stored.id, payload, true, {
     onSaved: (next) => {
       if (ignoreRealtimeUntilRef) {
         ignoreRealtimeUntilRef.current = Date.now() + 2500;
@@ -1846,9 +1848,6 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           </button>
         )}
 
-        {tripView.summary ? (
-          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{tripView.summary}</p>
-        ) : null}
       </header>
 
       <div className="px-5 pt-3">
@@ -2103,12 +2102,13 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
             <div className="mt-6 space-y-3">
               {addMenuDayIndex === activeDay.dayNumber - 1 ? (
                 <div className="space-y-2 rounded-2xl border border-border bg-card/80 p-3">
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-3 gap-1.5">
                     <button
                       type="button"
                       onClick={() => setSavedPlacesOpen(true)}
-                      className="rounded-full border border-border bg-background px-3 py-2.5 text-xs font-medium"
+                      className="inline-flex min-w-0 items-center justify-center gap-0.5 whitespace-nowrap rounded-full border border-border bg-background px-1 py-2.5 text-[10px] font-medium sm:gap-1 sm:px-2 sm:text-xs"
                     >
+                      <Bookmark className="h-3 w-3 shrink-0" />
                       從收藏新增
                     </button>
                     <button
@@ -2136,10 +2136,28 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                           },
                         });
                       }}
-                      className="inline-flex items-center justify-center gap-1 rounded-full border border-border bg-background px-3 py-2.5 text-xs font-medium"
+                      className="inline-flex min-w-0 items-center justify-center gap-0.5 whitespace-nowrap rounded-full border border-border bg-background px-1 py-2.5 text-[10px] font-medium sm:gap-1 sm:px-2 sm:text-xs"
                     >
                       <Sparkles className="h-3 w-3" />
                       請 Roamie 推薦
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        persistTripDetailSelectedDay(stored.id, safeDayIndex);
+                        setAddMenuDayIndex(null);
+                        try {
+                          await saveNow();
+                        } catch {
+                          toast.error("行程儲存失敗，請稍後再試");
+                          return;
+                        }
+                        void navigate({ to: "/map" });
+                      }}
+                      className="inline-flex min-w-0 items-center justify-center gap-0.5 whitespace-nowrap rounded-full border border-border bg-background px-1 py-2.5 text-[10px] font-medium sm:gap-1 sm:px-2 sm:text-xs"
+                    >
+                      <MapIcon className="h-3 w-3 shrink-0" />
+                      去探索看看
                     </button>
                   </div>
                   <button

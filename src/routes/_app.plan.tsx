@@ -121,12 +121,12 @@ function PlanPage() {
       logPlanSubmitValidation({ destinationValid, departureState, blocked: true, blockedReason: "departure_text_unresolved" });
       return false;
     }
-    if (!start) {
-      logPlanDepartureAuthority({ departureText: originText, selectedDeparture: start, source: "none" });
+    if (departureState === "omitted") {
+      logPlanDepartureAuthority({ departureText: originText, selectedDeparture: start, source: "visible_empty" });
       logPlanSubmitValidation({ destinationValid, departureState, blocked: false });
       return true;
     }
-    const startRef = tripLocationToPlaceRef(start);
+    const startRef = tripLocationToPlaceRef(start!);
     if (!isValidTripPlaceRef(startRef)) {
       logTripPlace("start", "validation", { reason: "invalid_start" });
       toast.error(t("plan.selectPlaceFromList"));
@@ -253,9 +253,11 @@ function PlanPage() {
       logPlanningSelectionHandoffStage("start_place_resolve_start", handoffTrace);
       logPlanningSelectionHandoffStage("destination_resolve_start", handoffTrace);
     }
+    const departureBeforeResolve = resolvePlanDepartureState(originText, origin);
+    if (departureBeforeResolve === "omitted" && origin) setOrigin(null);
     const [resolvedDestination, resolvedOrigin] = await Promise.all([
       ensureLocationHasCoords(destination, "destination"),
-      ensureLocationHasCoords(origin, "start"),
+      ensureLocationHasCoords(departureBeforeResolve === "omitted" ? null : origin, "start"),
     ]);
     if (handoffTrace) {
       const departureState = resolvePlanDepartureState(originText, resolvedOrigin);

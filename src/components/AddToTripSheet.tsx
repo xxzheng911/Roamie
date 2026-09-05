@@ -5,9 +5,9 @@ import { useI18n } from "@/hooks/use-i18n";
 import { listItineraries, type StoredItinerary } from "@/lib/itinerary-storage";
 import { loadDraftTrip } from "@/lib/trip-draft-storage";
 import { getPayloadItinerary } from "@/lib/trip/append-place-to-trip";
-import { listTripDateKeys } from "@/lib/trip/trip-stop-mutations";
 import { isRoamiePayloadV2 } from "@/lib/ai/types";
 import type { TripPlaceInput } from "@/lib/trip/trip-place-input";
+import { resolveTripDateOptions } from "@/lib/trip/trip-date-options";
 import { RoamieDatePicker } from "@/components/pickers";
 import { cn } from "@/lib/utils";
 
@@ -48,16 +48,10 @@ export function AddToTripSheet({ open, onOpenChange, place, busy, onConfirm }: P
   const dateOptions = useMemo(() => {
     if (target === "draft") {
       const draft = loadDraftTrip();
-      const items = draft?.itinerary ?? [];
-      const start = draft?.tripSettings?.tripStartDate ?? new Date().toISOString().slice(0, 10);
-      return listTripDateKeys(items, start);
-    }
-    if (selectedTrip && isRoamiePayloadV2(selectedTrip.payload)) {
-      const start = selectedTrip.payload.tripSettings?.tripStartDate;
-      return listTripDateKeys(selectedTrip.payload.itinerary ?? [], start);
+      return draft ? resolveTripDateOptions(draft) : [new Date().toISOString().slice(0, 10)];
     }
     if (selectedTrip) {
-      return listTripDateKeys(getPayloadItinerary(selectedTrip.payload));
+      return resolveTripDateOptions(selectedTrip.payload);
     }
     return [new Date().toISOString().slice(0, 10)];
   }, [target, selectedTrip, open]);
@@ -93,7 +87,7 @@ export function AddToTripSheet({ open, onOpenChange, place, busy, onConfirm }: P
     if (draft) {
       setTarget("draft");
       const start = draft.tripSettings?.tripStartDate ?? new Date().toISOString().slice(0, 10);
-      setDate(listTripDateKeys(draft.itinerary ?? [], start)[0] ?? start);
+      setDate(resolveTripDateOptions(draft)[0] ?? start);
     } else {
       setTarget("new");
       setDate(new Date().toISOString().slice(0, 10));

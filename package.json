@@ -19,6 +19,7 @@
     "verify:p19-chat-stream-native": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p19-chat-stream-native.mjs",
     "verify:p20-recommendation-distance": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p20-recommendation-distance.mjs",
     "verify:p21-add-to-trip-runtime": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p21-add-to-trip-runtime.mjs",
+    "verify:add-to-trip-empty-days": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-add-to-trip-empty-days.mjs",
     "verify:p22-recommendation-reason-persistence": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p22-recommendation-reason-persistence.mjs",
     "verify:p23-optional-departure": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p23-optional-departure.mjs",
     "verify:rc-storage-isolation": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-rc-storage-isolation.mjs",

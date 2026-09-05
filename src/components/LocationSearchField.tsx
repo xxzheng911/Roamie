@@ -67,6 +67,7 @@ export function LocationSearchField({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blurCloseRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchGenRef = useRef(0);
+  const interactionGenRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const committedLabelRef = useRef<string | null>(null);
   const sessionTokenRef = useRef(createPlacesSessionToken());
@@ -78,12 +79,20 @@ export function LocationSearchField({
     if (value) {
       const labelText = formatTripLocationLabel(value);
       setQuery(labelText);
+      onQueryChange?.(labelText);
       committedLabelRef.current = labelText;
     } else if (!focused) {
       setQuery("");
+      onQueryChange?.("");
       committedLabelRef.current = null;
+      searchGenRef.current += 1;
+      interactionGenRef.current += 1;
+      setSuggestions([]);
+      setSearching(false);
+      setSearchError(null);
+      setResolvingId(null);
     }
-  }, [value, focused]);
+  }, [value, focused, onQueryChange]);
 
   const runSearch = useCallback(
     async (q: string) => {
@@ -157,6 +166,7 @@ export function LocationSearchField({
       const labelText = formatTripLocationLabel(location);
       committedLabelRef.current = labelText;
       setQuery(labelText);
+      onQueryChange?.(labelText);
       setFocused(false);
       setSuggestions([]);
       setSearching(false);
@@ -165,10 +175,11 @@ export function LocationSearchField({
       onChange(location);
       logTripPlace(fieldRole, "saved", tripLocationToPlaceRef(location));
     },
-    [fieldRole, onChange],
+    [fieldRole, onChange, onQueryChange],
   );
 
   const handleSelect = async (item: PlaceSearchResultItem) => {
+    const interactionGen = ++interactionGenRef.current;
     console.info("[PLACE_SELECT] rawPrediction=", JSON.stringify(item));
     console.info("[PLACE_SELECT] placeId=", item.placeId ?? "");
     console.info(
@@ -192,9 +203,11 @@ export function LocationSearchField({
         },
       });
       if (error && !place) {
+        if (interactionGen !== interactionGenRef.current) return;
         setSearchError(PLACE_API_ERROR_MESSAGE);
         return;
       }
+      if (interactionGen !== interactionGenRef.current) return;
       if (!place) {
         setSearchError(t("location.resolveFailed"));
         return;
@@ -271,10 +284,15 @@ export function LocationSearchField({
             onQueryChange?.(next);
             setSearchError(null);
             if (!next.trim()) {
+              searchGenRef.current += 1;
+              interactionGenRef.current += 1;
+              if (debounceRef.current) clearTimeout(debounceRef.current);
               committedLabelRef.current = null;
               sessionTokenRef.current = createPlacesSessionToken();
               onChange(null);
               setSuggestions([]);
+              setSearching(false);
+              setResolvingId(null);
               return;
             }
             if (value && committedLabelRef.current && next !== committedLabelRef.current) {
