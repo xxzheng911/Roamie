@@ -44,6 +44,53 @@ for (const column of ["cover_image_url", "trip_data"]) {
   );
 }
 
+const earliestSavedPlaces = "20260519210835_d992c893-6abe-4280-a756-cc0aa5b7be52.sql";
+for (const column of [
+  "category",
+  "city",
+  "notes",
+  "mood_tag",
+  "cover_image",
+  "metadata",
+  "updated_at",
+]) {
+  assert.match(
+    sql[earliestSavedPlaces],
+    new RegExp(`\\b${column}\\s+`, "i"),
+    `${earliestSavedPlaces}: expected fresh saved_places.${column}`,
+  );
+  position(
+    savedCollections,
+    new RegExp(`ALTER TABLE public\\.saved_places ADD COLUMN IF NOT EXISTS ${column}\\b`, "i"),
+    `final-schema guard for saved_places.${column}`,
+  );
+}
+
+assert.doesNotMatch(
+  sql[earliestSavedPlaces],
+  /\bphoto_url\s+/i,
+  `${earliestSavedPlaces}: photo_url must remain an optional legacy source`,
+);
+assert.doesNotMatch(
+  sql[savedCollections],
+  /ALTER TABLE public\.saved_places ADD COLUMN IF NOT EXISTS photo_url\b/i,
+  `${savedCollections}: optional legacy photo_url must not be added permanently`,
+);
+const photoCatalogGuard = position(
+  savedCollections,
+  /information_schema\.columns[\s\S]*?column_name\s*=\s*'photo_url'/i,
+  "catalog guard for optional saved_places.photo_url",
+);
+const photoBackfill = position(
+  savedCollections,
+  /EXECUTE\s+\$backfill\$[\s\S]*?SET cover_image = photo_url/i,
+  "guarded saved_places.photo_url backfill",
+);
+assert.ok(
+  photoCatalogGuard < photoBackfill,
+  `${savedCollections}: photo_url must be catalog-guarded before its backfill`,
+);
+
 for (const file of files) {
   const statements = [...sql[file].matchAll(/CREATE POLICY\s+(?:"([^"]+)"|(\w+))/gi)];
   for (const statement of statements) {

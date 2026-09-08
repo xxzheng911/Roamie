@@ -59,9 +59,24 @@ ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS cover_image text;
 ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE public.saved_places ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 
-UPDATE public.saved_places
-SET cover_image = photo_url
-WHERE cover_image IS NULL AND photo_url IS NOT NULL;
+-- photo_url is an optional legacy source column. The earliest fresh schema did
+-- not include it, so only run this compatibility backfill when it is present.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'saved_places'
+      AND column_name = 'photo_url'
+  ) THEN
+    EXECUTE $backfill$
+      UPDATE public.saved_places
+      SET cover_image = photo_url
+      WHERE cover_image IS NULL AND photo_url IS NOT NULL
+    $backfill$;
+  END IF;
+END $$;
 
 ALTER TABLE public.saved_places ENABLE ROW LEVEL SECURITY;
 
