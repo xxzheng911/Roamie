@@ -1,17 +1,33 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { requireGoogleMapsServerKey } from "@/lib/google-maps.server";
 import { recordPlacesHttpCall } from "@/lib/places-api-stats";
+import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
+
+const PHOTO_RESOURCE = /^places\/[A-Za-z0-9_-]{1,192}\/photos\/[A-Za-z0-9_-]{1,256}$/;
+const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+const UPSTREAM_TIMEOUT_MS = 8_000;
 
 /** Proxy Google Place photos when VITE_GOOGLE_MAPS_API_KEY is absent in native bundle. */
 export const Route = createFileRoute("/api/place-photo")({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+        const rate = checkRateLimit(
+          `photo:${ip}:minute`,
+          SECURITY_RATE_LIMITS.photoPerMinute,
+          60_000,
+        );
+        if (!rate.allowed)
+          return new Response(null, {
+            status: 429,
+            headers: { "Retry-After": String(rate.retryAfterSec) },
+          });
         const url = new URL(request.url);
         const photo = url.searchParams.get("photo")?.trim();
         const maxW = Math.min(1600, Math.max(120, Number(url.searchParams.get("w") ?? 480) || 480));
 
-        if (!photo || !photo.startsWith("places/")) {
+        if (!photo || photo.length > 480 || !PHOTO_RESOURCE.test(photo)) {
           return new Response("Invalid photo", { status: 400 });
         }
 
@@ -24,12 +40,18 @@ export const Route = createFileRoute("/api/place-photo")({
             caller: "place-photo.proxy",
             screen: "unknown",
           });
-          const res = await fetch(mediaUrl, { redirect: "follow" });
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+          const res = await fetch(mediaUrl, { redirect: "follow", signal: controller.signal });
+          clearTimeout(timeout);
           if (!res.ok) {
-            console.warn("[place-photo] upstream failed", res.status, photo);
+            console.warn("[place-photo] upstream failed", { status: res.status });
             return new Response(null, { status: 502 });
           }
+          const declaredLength = Number(res.headers.get("content-length") ?? 0);
+          if (declaredLength > MAX_PHOTO_BYTES) return new Response(null, { status: 502 });
           const body = await res.arrayBuffer();
+          if (body.byteLength > MAX_PHOTO_BYTES) return new Response(null, { status: 502 });
           const contentType = res.headers.get("content-type") ?? "image/jpeg";
           const isWebpBody =
             body.byteLength >= 12 &&
@@ -47,18 +69,19 @@ export const Route = createFileRoute("/api/place-photo")({
               );
             })();
           if (contentType.includes("webp") || isWebpBody) {
-            console.warn("[place-photo] rejected webp upstream", photo);
+            console.warn("[place-photo] rejected webp upstream");
             return new Response(null, { status: 415 });
           }
           return new Response(body, {
             status: 200,
             headers: {
               "content-type": contentType.includes("png") ? contentType : "image/jpeg",
-              "cache-control": "public, max-age=86400",
+              "cache-control":
+                "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400",
             },
           });
         } catch (e) {
-          console.error("[place-photo] error", e);
+          console.error("[place-photo] error", e instanceof Error ? e.name : "unknown_error");
           return new Response(null, { status: 500 });
         }
       },

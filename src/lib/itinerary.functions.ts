@@ -1,5 +1,6 @@
-import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { createServerFn } from "@tanstack/react-start";
+import { requireItineraryCredits } from "@/integrations/supabase/security-middleware";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type {
   RoamiePayloadV2,
@@ -497,8 +498,9 @@ export type Itinerary = {
 };
 
 export const generateItinerary = createServerFn({ method: "POST" })
+  .middleware([requireItineraryCredits])
   .inputValidator((input) => InputSchema.parse(input))
-  .handler(async ({ data }): Promise<GenerateItineraryResult> => {
+  .handler(async ({ data, context }) => {
     const generationId = data.generationId ?? data.generationTimingId ?? "";
     console.info("[ITINERARY_SERVER_REQUEST]", {
       generationId,
@@ -515,7 +517,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       endDatePresent: Boolean(data.endDate?.trim()),
       source: "explicit_days",
     });
-    const finish = (result: GenerateItineraryResult): GenerateItineraryResult => {
+    const finish = async (result: GenerateItineraryResult): Promise<GenerateItineraryResult> => {
       const trip = result.success ? result.trip : undefined;
       const failure = result.success ? undefined : result;
       console.info("[ITINERARY_SERVER_RESULT]", {
@@ -530,6 +532,16 @@ export const generateItinerary = createServerFn({ method: "POST" })
         payloadPresent: Boolean(trip?.payload),
         transport: "tanstack_createServerFn",
       });
+      if (!context.itineraryCreditReservation.plusBypass) {
+        const { error: settlementError } = await context.supabase.rpc(
+          result.success ? "credits_commit" : "credits_rollback",
+          {
+            p_ledger_id: context.itineraryCreditReservation.ledgerId,
+            p_idempotency_key: context.itineraryCreditReservation.idempotencyKey,
+          },
+        );
+        if (settlementError) throw new Error("Credit settlement failed");
+      }
       return result;
     };
     let timingLastAt = Date.now();
@@ -688,9 +700,10 @@ export const generateItinerary = createServerFn({ method: "POST" })
     const serverDeliverablePool = buildDeliverableItineraryCandidatePool(
       selectedPlaces.map((candidate) => ({
         candidate,
-        sourceType: candidate.isRequiredBySelection === false
-          ? ("supplemental_pool" as const)
-          : ("legacy_selected_places" as const),
+        sourceType:
+          candidate.isRequiredBySelection === false
+            ? ("supplemental_pool" as const)
+            : ("legacy_selected_places" as const),
       })),
       data.destination,
     );

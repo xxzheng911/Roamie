@@ -9,6 +9,12 @@ CREATE TABLE IF NOT EXISTS public.saved_trips (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- CREATE TABLE IF NOT EXISTS does not add columns when an earlier migration
+-- already created the table. Ensure legacy source columns exist before the
+-- backfill statements below read them during a fresh migration replay.
+ALTER TABLE public.saved_trips ADD COLUMN IF NOT EXISTS cover_image_url text;
+ALTER TABLE public.saved_trips ADD COLUMN IF NOT EXISTS trip_data jsonb DEFAULT '{}'::jsonb;
+
 ALTER TABLE public.saved_trips ADD COLUMN IF NOT EXISTS mood text;
 ALTER TABLE public.saved_trips ADD COLUMN IF NOT EXISTS cover_image text;
 ALTER TABLE public.saved_trips ADD COLUMN IF NOT EXISTS payload jsonb DEFAULT '{}'::jsonb;

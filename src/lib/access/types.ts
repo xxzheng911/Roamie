@@ -19,8 +19,11 @@ export type AccessSnapshot = {
   devPlusMode: boolean;
   /** Dev/testing subscription switch state */
   devSubscriptionMode: SubscriptionState;
-  /** Supabase profiles：plan_tier=plus 且訂閱有效 */
+  /** Backward-compatible alias for the authoritative resolved entitlement. */
   subscriptionPlusActive: boolean;
+  plusEntitlementSource: import("@/lib/plan-tier/entitlement").PlusEntitlementSource;
+  plusEntitlementActiveSources: import("@/lib/plan-tier/entitlement").PlusEntitlementSource[];
+  plusEntitlementExpiresAt: string | null;
   /** Tier sent to AI prompts */
   effectiveTier: SubscriptionState;
   developerUnlocked: boolean;

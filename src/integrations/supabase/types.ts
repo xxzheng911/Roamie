@@ -233,6 +233,54 @@ export type Database = {
         }
         Relationships: []
       }
+      user_plus_entitlements: {
+        Row: {
+          id: string
+          user_id: string
+          source: string
+          starts_at: string
+          expires_at: string | null
+          revoked_at: string | null
+          granted_at: string
+          granted_by: string | null
+          reason: string | null
+          revoked_by: string | null
+          revocation_reason: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          source: string
+          starts_at?: string
+          expires_at?: string | null
+          revoked_at?: string | null
+          granted_at?: string
+          granted_by?: string | null
+          reason?: string | null
+          revoked_by?: string | null
+          revocation_reason?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          source?: string
+          starts_at?: string
+          expires_at?: string | null
+          revoked_at?: string | null
+          granted_at?: string
+          granted_by?: string | null
+          reason?: string | null
+          revoked_by?: string | null
+          revocation_reason?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       saved_places: {
         Row: {
           address: string | null
@@ -418,6 +466,29 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      resolve_user_plus_entitlement: {
+        Args: { p_user_id: string }
+        Returns: Json
+      }
+      admin_grant_plus_entitlement: {
+        Args: {
+          p_user_id: string
+          p_source: string
+          p_expires_at?: string | null
+          p_reason?: string | null
+          p_granted_by?: string | null
+          p_starts_at?: string
+        }
+        Returns: string
+      }
+      admin_revoke_plus_entitlement: {
+        Args: {
+          p_entitlement_id: string
+          p_reason?: string | null
+          p_revoked_by?: string | null
+        }
+        Returns: boolean
+      }
       admin_dashboard_phase1: {
         Args: {
           p_page?: number
@@ -483,10 +554,6 @@ export type Database = {
           user_id: string
           display_name: string | null
           avatar_url: string | null
-          email: string | null
-          full_name: string | null
-          username: string | null
-          profile_updated_at: string | null
         }[]
       }
       get_trip_invite_by_token: {

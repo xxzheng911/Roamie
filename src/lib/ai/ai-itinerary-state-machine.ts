@@ -31,6 +31,8 @@ import {
   validateGeneratedItinerary,
   type GenerateItineraryResult,
 } from "@/lib/trip/itinerary-guards";
+import { INSUFFICIENT_CREDITS_ITINERARY_MESSAGE } from "@/lib/credits";
+import { isInsufficientCreditsError } from "@/lib/credits/errors";
 import { INSUFFICIENT_ITINERARY_PLACES_MESSAGE } from "@/lib/ai/generic-place-label";
 import {
   isItineraryValidatorEnabled,
@@ -694,6 +696,15 @@ export async function createItineraryFromSession(params: {
       transport: generationTransport,
       invoke: () => generateItineraryFn({ data: generateInput }),
     });
+    if (isInsufficientCreditsError(rawGenerateResult)) {
+      return {
+        ok: false,
+        state: "FAILED",
+        message: INSUFFICIENT_CREDITS_ITINERARY_MESSAGE,
+        session: { ...session, aiItineraryState: "FAILED", phase: "ready" },
+        offerMustVisit: false,
+      };
+    }
     const invocationFailureReason = classifyGenerateItineraryInvocationResult(rawGenerateResult);
     if (invocationFailureReason) {
       logItineraryFailureReason(invocationFailureReason);
@@ -1168,6 +1179,15 @@ export async function createItineraryFromSession(params: {
       generateResult,
     };
   } catch (error) {
+    if (isInsufficientCreditsError(error)) {
+      return {
+        ok: false,
+        state: "FAILED",
+        message: INSUFFICIENT_CREDITS_ITINERARY_MESSAGE,
+        session: { ...session, aiItineraryState: "FAILED", phase: "ready" },
+        offerMustVisit: false,
+      };
+    }
     const reason = error instanceof Error ? error.message : String(error);
     const localPayload = buildLocalItineraryPayload(
       generateInput,

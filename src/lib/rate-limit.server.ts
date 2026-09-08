@@ -1,17 +1,11 @@
-/**
- * Server-side rate limit helper (Cloudflare Workers / edge compatible stub).
- * Wire to KV / Durable Objects in production.
- */
+/** Per-isolate development/advisory limiter. Production security is enforced by
+ * Cloudflare WAF Rate Limiting rules; this must never be treated as durable. */
 
 export type RateLimitResult = { allowed: true } | { allowed: false; retryAfterSec: number };
 
 const buckets = new Map<string, { count: number; resetAt: number }>();
 
-export function checkRateLimit(
-  key: string,
-  limit: number,
-  windowMs: number,
-): RateLimitResult {
+export function checkRateLimit(key: string, limit: number, windowMs: number): RateLimitResult {
   const now = Date.now();
   const bucket = buckets.get(key);
   if (!bucket || bucket.resetAt <= now) {
@@ -30,4 +24,12 @@ export const AI_RATE_LIMITS = {
   chatPerMinute: 8,
   chatPerDay: 120,
   itineraryPerDay: 10,
+} as const;
+
+export const SECURITY_RATE_LIMITS = {
+  serverFunctionPerMinute: 60,
+  chatPerMinute: 8,
+  itineraryPerMinute: 3,
+  photoPerMinute: 120,
+  adminPerMinute: 30,
 } as const;

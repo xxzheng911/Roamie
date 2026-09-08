@@ -69,11 +69,20 @@ test("personalized envelope rejects account switch and legacy naked payload", ()
   assert.equal(readOwnedPersonalizedCache(JSON.stringify([{ reason: "legacy" }]), "user-a"), null);
 });
 
-test("all AI HTTP routes require auth and server credit reservation", () => {
+test("all AI HTTP routes require auth and exactly one server credit authority", () => {
   for (const file of ["roamie.ts", "chat.ts", "generate-itinerary.ts"]) {
     const source = readFileSync(new URL(`../src/routes/api/${file}`, import.meta.url), "utf8");
     assert.match(source, /requireAuthenticatedAiRequest\(request\)/);
-    assert.match(source, /reserveServerCredits\(/);
     assert.match(source, /status:\s*401/);
+    if (file === "generate-itinerary.ts") {
+      assert.doesNotMatch(source, /reserveServerCredits\(/);
+      const serverFn = readFileSync(
+        new URL("../src/lib/itinerary.functions.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(serverFn, /\.middleware\(\[requireItineraryCredits\]\)/);
+    } else {
+      assert.match(source, /reserveServerCredits\(/);
+    }
   }
 });

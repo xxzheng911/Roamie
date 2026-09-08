@@ -241,10 +241,8 @@ import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import { generateItineraryViaNativeApi } from "@/lib/ai/itinerary-transport";
 import { useAccess } from "@/hooks/use-access";
 import {
-  beginItineraryGenerationCredits,
   beginPlaceRecommendationCredits,
   fetchCreditAccount,
-  INSUFFICIENT_CREDITS_ITINERARY_MESSAGE,
   INSUFFICIENT_CREDITS_PLACE_MESSAGE,
   isCreditsFeatureEnabled,
   resolveCreditsGreeting,
@@ -9904,7 +9902,6 @@ function Chat() {
   const handleGenerateItinerary = async (
     sessionOverride?: ChatPlanningSession,
     msgsOverride?: ChatMsg[],
-    creditsHandleOverride?: CreditsOperationHandle | null,
   ) => {
     let activeSession = sessionOverride ?? sessionRef.current;
     const selectionStartedAt = Date.now();
@@ -9981,10 +9978,7 @@ function Chat() {
     const activeMsgs = msgsOverride ?? msgs;
     const assistantCandidates = extractLatestShownCandidatesFromMsgs(activeMsgs);
     const generationWorkspace = activeSession.workspaceId
-      ? loadConversationWorkspace(
-          activeSession.workspaceId,
-          readCachedAuthenticatedUserIdSync(),
-        )
+      ? loadConversationWorkspace(activeSession.workspaceId, readCachedAuthenticatedUserIdSync())
       : null;
     const generationCandidateContext = resolvePlanningCandidateContextForGeneration({
       session: activeSession,
@@ -9995,9 +9989,7 @@ function Chat() {
     if (generationCandidateContext.candidates.length) {
       activeSession = {
         ...activeSession,
-        activeShownCandidates: snapshotPlanningCandidates(
-          generationCandidateContext.candidates,
-        ),
+        activeShownCandidates: snapshotPlanningCandidates(generationCandidateContext.candidates),
       };
     }
     if (!canGenerateItinerary(activeSession) || generating) {
@@ -10008,29 +10000,10 @@ function Chat() {
       return;
     }
 
-    let itinCreditsHandle: CreditsOperationHandle | null = creditsHandleOverride ?? null;
+    // Itinerary credits are reserved and settled exactly once by the authenticated
+    // server-function boundary. Client state must never become billing authority.
+    let itinCreditsHandle: CreditsOperationHandle | null = null;
     let itinerarySucceeded = false;
-    if (!itinCreditsHandle) {
-      if (!ensureSubscriptionHydratedForCredits(activeMsgs)) {
-        setGenerating(false);
-        setSelectionGenerationStatus(null);
-        return;
-      }
-      const itinGate = await beginItineraryGenerationCredits({
-        hasPlusAccess,
-        metadata: { path: "handleGenerateItinerary" },
-      });
-      if (itinGate.blocked) {
-        setMsgs((prev) => [
-          ...prev,
-          { role: "assistant", content: INSUFFICIENT_CREDITS_ITINERARY_MESSAGE },
-        ]);
-        setGenerating(false);
-        setSelectionGenerationStatus(null);
-        return;
-      }
-      itinCreditsHandle = itinGate.handle;
-    }
     if (isPlanningSelectionMode(activeSession)) {
       console.info("[PLANNING_SELECTION_CREDITS_READY]", {
         sessionId: selectionSessionId,
@@ -10092,10 +10065,7 @@ function Chat() {
       let places = filterPlanningRejectedPlaces(
         isPlanningSelectionMode(workingSession)
           ? selectedTripPlaces
-          : [
-              ...selectedTripPlaces,
-              ...generationCandidateContext.candidates,
-            ],
+          : [...selectedTripPlaces, ...generationCandidateContext.candidates],
         workingSession,
       );
       const tripDays = workingSession.tripDays ?? 1;
@@ -10451,9 +10421,7 @@ function Chat() {
         logSelectionStage(
           "session_prepare_done",
           requiredAnchors.length > 0 || !selectionMode,
-          requiredAnchors.length || !selectionMode
-            ? ""
-            : "required_anchor_adapter_empty",
+          requiredAnchors.length || !selectionMode ? "" : "required_anchor_adapter_empty",
         );
         console.info("[PLANNING_SELECTION_PLANNER_PREPARE]", {
           generationId,
@@ -10558,11 +10526,7 @@ function Chat() {
             blocked: true,
             failureReason: "required_capacity_overflow",
           });
-          logSelectionTiming(
-            "server_request_blocked",
-            false,
-            "required_capacity_overflow",
-          );
+          logSelectionTiming("server_request_blocked", false, "required_capacity_overflow");
           setMsgs((prev) => [
             ...prev,
             { role: "assistant", content: REQUIRED_CAPACITY_OVERFLOW_USER_MESSAGE },
@@ -10945,24 +10909,7 @@ function Chat() {
     activeGenerationRequestIdRef.current = generationRequestId;
     const contextWithRequest = { ...context, generationRequestId };
 
-    if (!ensureSubscriptionHydratedForCredits(conversation)) {
-      activeGenerationRequestIdRef.current = null;
-      return;
-    }
-    const itinGate = await beginItineraryGenerationCredits({
-      hasPlusAccess,
-      requestId: generationRequestId,
-      metadata: { path: "direct_itinerary" },
-    });
-    if (itinGate.blocked) {
-      activeGenerationRequestIdRef.current = null;
-      setMsgs([
-        ...conversation,
-        { role: "assistant", content: INSUFFICIENT_CREDITS_ITINERARY_MESSAGE },
-      ]);
-      return;
-    }
-    let itinCreditsHandle: CreditsOperationHandle | null = itinGate.handle;
+    let itinCreditsHandle: CreditsOperationHandle | null = null;
 
     setStreaming(true);
     setGenerating(true);
@@ -11025,7 +10972,7 @@ function Chat() {
         return;
       }
       persistSession(prepared.session);
-      await handleGenerateItinerary(prepared.session, conversation, itinCreditsHandle);
+      await handleGenerateItinerary(prepared.session, conversation);
       itinCreditsHandle = null;
       lastFailureGenerationRequestIdRef.current = null;
     } catch (e) {

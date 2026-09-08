@@ -184,7 +184,7 @@ export function attachCoreTripToPayload(payload: RoamiePayloadV2, coreTrip: Core
       weatherSummary: coreTrip.weatherSummary,
       outfitSuggestion: coreTrip.outfitSuggestion,
       aiGeneratedCoverImageUrl: coreTrip.aiGeneratedCoverImageUrl,
-    } as unknown as Record<string, unknown>,
+    },
   };
 }
 

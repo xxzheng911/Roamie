@@ -630,7 +630,8 @@ assert.equal(
 const source = await import("node:fs").then((fs) =>
   fs.readFileSync("src/routes/_app.chat.tsx", "utf8"),
 );
-assert.match(source, /beginItineraryGenerationCredits/);
+assert.doesNotMatch(source, /beginItineraryGenerationCredits/);
+assert.match(source, /generateItinerary/);
 assert.match(source, /PLANNING_RECOVERY/);
 assert.match(source, /logPlanningParseFailure/);
 assert.match(source, /\[CHAT_SEND_ERROR\]/);

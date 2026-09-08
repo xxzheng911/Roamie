@@ -32,6 +32,7 @@ import { resolveSavedPlaceGooglePlaceId, savedPlaceToHandoff } from "@/lib/saved
 import { useAuth } from "@/hooks/use-auth";
 import { useSubscription } from "@/providers/SubscriptionProvider";
 import { recordAnalyticsEvent } from "@/lib/analytics/record";
+import { createLatestRequestGuard } from "@/lib/latest-request-guard";
 
 type SavedSearch = { tab?: string };
 
@@ -98,7 +99,7 @@ function Saved() {
   const { user, session: authSession, loading: authLoading } = useAuth();
   const { loading: subscriptionLoading } = useSubscription();
   const routeStartedAtRef = useRef(Date.now());
-  const requestSequenceRef = useRef(0);
+  const requestGuardRef = useRef(createLatestRequestGuard());
   const search = Route.useSearch();
   const [tab, setTab] = useState<Tab>(search.tab === "places" ? "places" : "trips");
   const initialTrips = readSavedTripsSnapshot();
@@ -125,7 +126,8 @@ function Saved() {
   const sessionPresent = Boolean(authSession);
   const refresh = useCallback(
     (opts?: { background?: boolean }) => {
-      const requestId = `favorites_${Date.now().toString(36)}_${++requestSequenceRef.current}`;
+      const requestToken = requestGuardRef.current.begin(authUserId ?? "anonymous");
+      const requestId = `favorites_${Date.now().toString(36)}_${requestToken.sequence}`;
       const elapsedMs = () => Date.now() - routeStartedAtRef.current;
       if (!opts?.background) setLoading(true);
       console.info("[FAVORITES_DATA_REQUEST_START]", {
@@ -137,6 +139,7 @@ function Saved() {
       });
       Promise.allSettled([listCoreTrips(), listPlaces()])
         .then(([tripsResult, placesResult]) => {
+          if (!requestGuardRef.current.isCurrent(requestToken)) return;
           if (tripsResult.status === "fulfilled") {
             setTrips(tripsResult.value);
             writeSavedTripsSnapshot(tripsResult.value);
@@ -189,6 +192,7 @@ function Saved() {
           }
         })
         .finally(() => {
+          if (!requestGuardRef.current.isCurrent(requestToken)) return;
           setLoading(false);
           console.info("[FAVORITES_LOADING_CLEAR]", {
             elapsedMs: elapsedMs(),
@@ -262,11 +266,13 @@ function Saved() {
   }, [authSession, loading, user]);
 
   useEffect(() => {
+    const requestGuard = requestGuardRef.current;
     refresh({ background: hasCachedAtMountRef.current });
     const onRefresh = () => refresh({ background: true });
     window.addEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
     window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
     return () => {
+      requestGuard.invalidate();
       window.removeEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
       window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
     };

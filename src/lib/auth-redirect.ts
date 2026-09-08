@@ -45,8 +45,7 @@ export function isOAuthDeepLinkUrl(url: string): boolean {
   try {
     const u = new URL(url);
     if (u.protocol === `${APP_SCHEME}:`) {
-      if (u.hostname === "trip-invite") return false;
-      return u.hostname === "auth" || u.pathname.includes("callback");
+      return u.hostname === "auth" && u.pathname === "/callback";
     }
     if (u.href.startsWith(OAUTH_DEEP_LINK_REDIRECT)) return true;
 
@@ -58,7 +57,16 @@ export function isOAuthDeepLinkUrl(url: string): boolean {
       }
     }
 
-    return u.pathname === AUTH_CALLBACK_PATH || u.pathname.endsWith(AUTH_CALLBACK_PATH);
+    const configured = readOptionalWebAuthCallback();
+    if (configured) {
+      const allowed = new URL(configured);
+      if (u.origin === allowed.origin && u.pathname === allowed.pathname) return true;
+    }
+    if (import.meta.env.DEV) {
+      const dev = new URL(LOCAL_DEV_AUTH_CALLBACK);
+      return u.origin === dev.origin && u.pathname === dev.pathname;
+    }
+    return false;
   } catch {
     return false;
   }

@@ -25,12 +25,7 @@ const ctx = {
 
 const pending = pendingQuestionForItineraryAction("曼谷", "泰國");
 
-const phrases = [
-  "你幫我排完整5天行程",
-  "幫我排完整5天",
-  "直接排",
-  "A",
-];
+const phrases = ["你幫我排完整5天行程", "幫我排完整5天", "直接排", "A"];
 
 for (const phrase of phrases) {
   assert.equal(parseItineraryPlanModeIntent(phrase), "full_itinerary", phrase);
@@ -43,11 +38,8 @@ assert.equal(selected, "full_itinerary");
 
 const next = buildNextStepAfterAdviceSelection(selected, pending, ctx);
 assert.ok(next.reply);
-assert.match(next.reply, /曼谷 5 天節奏/);
-assert.match(next.reply, /Day 1：市區寺廟與河岸/);
-assert.match(next.reply, /大皇宮＋玉佛寺/);
-assert.match(next.reply, /Day 5：補買伴手禮與輕鬆收尾/);
-assert.match(next.reply, /早中晚順序/);
+assert.match(next.reply, /曼谷.*5 天行程/);
+assert.match(next.reply, /實際景點/);
 assert.doesNotMatch(next.reply, /full_itinerary/);
 assert.doesNotMatch(next.reply, /你這趟大概幾天/);
 

@@ -13,8 +13,10 @@ import {
   type SubscriptionStatus,
   type UserPlanProfile,
 } from "./types";
+import { FREE_PLUS_ENTITLEMENT, parsePlusEntitlementSnapshot } from "./entitlement";
 
-const PLAN_SELECT = "plan_tier, subscription_status, subscription_provider, plus_available, ai_preferences";
+const PLAN_SELECT =
+  "plan_tier, subscription_status, subscription_provider, plus_available, ai_preferences";
 
 function introFromAiPreferences(aiPreferences: unknown): boolean {
   if (!aiPreferences || typeof aiPreferences !== "object") return false;
@@ -27,8 +29,19 @@ function companionTierFromAiPreferences(aiPreferences: unknown): PlanTier | null
   return raw === "plus" ? "plus" : raw === "free" ? "free" : null;
 }
 
-function parsePlanRow(row: Record<string, unknown> | null | undefined): UserPlanProfile {
-  if (!row) return { ...DEFAULT_USER_PLAN };
+function parsePlanRow(
+  row: Record<string, unknown> | null | undefined,
+  entitlement = FREE_PLUS_ENTITLEMENT,
+): UserPlanProfile {
+  if (!row) {
+    return {
+      ...DEFAULT_USER_PLAN,
+      hasPlus: entitlement.hasPlus,
+      effectiveSource: entitlement.effectiveSource,
+      activeSources: entitlement.activeSources,
+      entitlementExpiresAt: entitlement.expiresAt,
+    };
+  }
   const tier = row.plan_tier === "plus" ? "plus" : "free";
   const status = row.subscription_status as SubscriptionStatus;
   const provider = row.subscription_provider as SubscriptionProvider;
@@ -36,10 +49,13 @@ function parsePlanRow(row: Record<string, unknown> | null | undefined): UserPlan
     planTier: tier,
     subscriptionStatus:
       status === "active" || status === "trialing" || status === "expired" ? status : "inactive",
-    subscriptionProvider:
-      provider === "revenuecat" || provider === "app_store" ? provider : "none",
+    subscriptionProvider: provider === "revenuecat" || provider === "app_store" ? provider : "none",
     plusAvailable: Boolean(row.plus_available),
     introCompleted: introFromAiPreferences(row.ai_preferences),
+    hasPlus: entitlement.hasPlus,
+    effectiveSource: entitlement.effectiveSource,
+    activeSources: entitlement.activeSources,
+    entitlementExpiresAt: entitlement.expiresAt,
   };
 }
 
@@ -47,12 +63,19 @@ export async function getUserPlanProfile(userId?: string): Promise<UserPlanProfi
   const uid = userId ?? (await getAuthenticatedUserId());
   if (!uid) return { ...DEFAULT_USER_PLAN };
 
-  const { data, error } = await supabase.from("profiles").select(PLAN_SELECT).eq("id", uid).maybeSingle();
-  if (error) {
-    console.warn("[plan-tier] fetch failed, using defaults", error.message);
+  const [{ data, error }, { data: entitlementData, error: entitlementError }] = await Promise.all([
+    supabase.from("profiles").select(PLAN_SELECT).eq("id", uid).maybeSingle(),
+    supabase.rpc("resolve_user_plus_entitlement", { p_user_id: uid }),
+  ]);
+  if (error || entitlementError) {
+    console.warn(
+      "[plan-tier] fetch failed, using defaults",
+      error?.message ?? entitlementError?.message,
+    );
     return { ...DEFAULT_USER_PLAN };
   }
-  return parsePlanRow(data as Record<string, unknown> | null);
+  const entitlement = parsePlusEntitlementSnapshot(entitlementData);
+  return parsePlanRow(data as Record<string, unknown> | null, entitlement);
 }
 
 export async function isIntroCompleted(userId?: string): Promise<boolean> {
@@ -126,10 +149,7 @@ export async function resolveEffectivePlanTier(): Promise<PlanTier> {
   }
 
   const plan = await getUserPlanProfile();
-  if (plan.planTier === "plus" && (plan.subscriptionStatus === "active" || plan.subscriptionStatus === "trialing")) {
-    return "plus";
-  }
-  return "free";
+  return plan.hasPlus ? "plus" : "free";
 }
 
 export {

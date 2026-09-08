@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { RoutesTravelMode } from "@/lib/routes/types";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
 const LatLngSchema = z.object({
   lat: z.number().min(-90).max(90),
@@ -10,6 +11,7 @@ const LatLngSchema = z.object({
 const TravelModeSchema = z.enum(["WALK", "DRIVE", "TRANSIT", "BICYCLE", "TWO_WHEELER"]);
 
 export const routesComputeDuration = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) =>
     z
       .object({
@@ -22,15 +24,11 @@ export const routesComputeDuration = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const { getRouteDuration } = await import("@/lib/google-routes.server");
-    return getRouteDuration(
-      data.origin,
-      data.destination,
-      data.travelMode,
-      data.departureTime,
-    );
+    return getRouteDuration(data.origin, data.destination, data.travelMode, data.departureTime);
   });
 
 export const routesComputeDistance = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) =>
     z
       .object({
@@ -46,6 +44,7 @@ export const routesComputeDistance = createServerFn({ method: "POST" })
   });
 
 export const routesComputeTripLegs = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) =>
     z
       .object({
@@ -60,6 +59,7 @@ export const routesComputeTripLegs = createServerFn({ method: "POST" })
   });
 
 export const routesComputeLegEstimates = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) =>
     z
       .object({
@@ -71,11 +71,7 @@ export const routesComputeLegEstimates = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { fetchLegDurationsFromRoutes } = await import("@/lib/google-routes.server");
     const estimates = await fetchLegDurationsFromRoutes(data.origin, data.destination);
-    if (
-      estimates.walk == null &&
-      estimates.drive == null &&
-      estimates.transit == null
-    ) {
+    if (estimates.walk == null && estimates.drive == null && estimates.transit == null) {
       return {
         ok: false as const,
         statusCode: 0,
@@ -85,9 +81,11 @@ export const routesComputeLegEstimates = createServerFn({ method: "POST" })
     return { ok: true as const, data: estimates };
   });
 
-export const routesTestConnection = createServerFn({ method: "POST" }).handler(async () => {
-  const { testRoutesApiConnection } = await import("@/lib/google-routes.server");
-  return testRoutesApiConnection();
-});
+export const routesTestConnection = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async () => {
+    const { testRoutesApiConnection } = await import("@/lib/google-routes.server");
+    return testRoutesApiConnection();
+  });
 
 export type { RoutesTravelMode };

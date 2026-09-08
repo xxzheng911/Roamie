@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { CreditsFeatureType } from "@/lib/credits/constants";
 import { CREDITS_COSTS } from "@/lib/credits/constants";
+import { parsePlusEntitlementSnapshot } from "@/lib/plan-tier/entitlement";
 
 type AuthenticatedAiRequest = {
   userId: string;
@@ -29,15 +30,13 @@ export async function requireAuthenticatedAiRequest(
   });
   const { data, error } = await client.auth.getUser();
   if (error || !data.user) return null;
-  const { data: profile } = await client
-    .from("profiles")
-    .select("plan_tier, subscription_status")
-    .eq("id", data.user.id)
-    .maybeSingle();
-  const row = profile as { plan_tier?: string; subscription_status?: string } | null;
-  const hasPlusAccess =
-    row?.plan_tier === "plus" &&
-    (row.subscription_status === "active" || row.subscription_status === "trialing");
+  const { data: entitlementData, error: entitlementError } = await client.rpc(
+    "resolve_user_plus_entitlement",
+    { p_user_id: data.user.id },
+  );
+  const hasPlusAccess = entitlementError
+    ? false
+    : parsePlusEntitlementSnapshot(entitlementData).hasPlus;
   return { userId: data.user.id, email: data.user.email ?? null, client, hasPlusAccess };
 }
 

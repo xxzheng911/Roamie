@@ -10,6 +10,10 @@ export type UserPlanProfile = {
   subscriptionProvider: SubscriptionProvider;
   plusAvailable: boolean;
   introCompleted: boolean;
+  hasPlus: boolean;
+  effectiveSource: import("./entitlement").PlusEntitlementSource;
+  activeSources: import("./entitlement").PlusEntitlementSource[];
+  entitlementExpiresAt: string | null;
 };
 
 export const DEFAULT_USER_PLAN: UserPlanProfile = {
@@ -18,4 +22,8 @@ export const DEFAULT_USER_PLAN: UserPlanProfile = {
   subscriptionProvider: "none",
   plusAvailable: false,
   introCompleted: false,
+  hasPlus: false,
+  effectiveSource: "none",
+  activeSources: [],
+  entitlementExpiresAt: null,
 };

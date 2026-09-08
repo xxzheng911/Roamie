@@ -46,17 +46,37 @@ assert.equal(
   false,
 );
 
-for (const type of ["zoo", "aquarium", "amusement_park", "amusement_center", "playground", "indoor_playground"]) {
+for (const type of [
+  "zoo",
+  "aquarium",
+  "amusement_park",
+  "amusement_center",
+  "playground",
+  "indoor_playground",
+]) {
   const classification = classifyFamilyPlace(basePlace(`family-${type}`, "親子場所", type));
   assert.equal(classification.explicitFamilyIdentity, true, type);
   assert.equal(classification.eligible, true, type);
-  assert.equal(isPlaceEligibleForSelectionFamily(basePlace(`family-${type}`, "親子場所", type), "family"), true, type);
+  assert.equal(
+    isPlaceEligibleForSelectionFamily(basePlace(`family-${type}`, "親子場所", type), "family"),
+    true,
+    type,
+  );
 }
 assert.equal(classifyFamilyPlace(basePlace("plain-park", "中央公園", "park")).eligible, false);
-assert.equal(classifyFamilyPlace(basePlace("plain-museum", "地方歷史博物館", "museum")).eligible, false);
-assert.equal(classifyFamilyPlace(basePlace("family-park", "屏東公園共融式遊戲場", "park")).eligible, true);
+assert.equal(
+  classifyFamilyPlace(basePlace("plain-museum", "地方歷史博物館", "museum")).eligible,
+  false,
+);
+assert.equal(
+  classifyFamilyPlace(basePlace("family-park", "屏東公園共融式遊戲場", "park")).eligible,
+  true,
+);
 assert.equal(classifyFamilyPlace(basePlace("science", "兒童科學館", "museum")).eligible, true);
-assert.equal(classifyFamilyPlace(basePlace("mall", "一般購物中心", "shopping_mall")).eligible, false);
+assert.equal(
+  classifyFamilyPlace(basePlace("mall", "一般購物中心", "shopping_mall")).eligible,
+  false,
+);
 
 const explicitFamilyVenue = basePlace("family-gate", "親子室內遊樂場", "indoor_playground");
 assert.equal(
@@ -91,10 +111,22 @@ assert.equal(
 );
 
 const pingtungScope = { name: "屏東", administrativeNames: ["屏東縣", "Pingtung County"] };
-assert.equal(matchDestinationAdministrativeScope({ address: "944屏東縣車城鄉後灣路2號" }, pingtungScope).match, true);
-assert.equal(matchDestinationAdministrativeScope({ address: "928屏東縣東港鎮船頭路" }, pingtungScope).match, true);
-assert.equal(matchDestinationAdministrativeScope({ address: "946屏東縣恆春鎮" }, pingtungScope).match, true);
-assert.equal(matchDestinationAdministrativeScope({ address: "高雄市苓雅區" }, pingtungScope).match, false);
+assert.equal(
+  matchDestinationAdministrativeScope({ address: "944屏東縣車城鄉後灣路2號" }, pingtungScope).match,
+  true,
+);
+assert.equal(
+  matchDestinationAdministrativeScope({ address: "928屏東縣東港鎮船頭路" }, pingtungScope).match,
+  true,
+);
+assert.equal(
+  matchDestinationAdministrativeScope({ address: "946屏東縣恆春鎮" }, pingtungScope).match,
+  true,
+);
+assert.equal(
+  matchDestinationAdministrativeScope({ address: "高雄市苓雅區" }, pingtungScope).match,
+  false,
+);
 assert.equal(matchDestinationAdministrativeScope({ address: null }, pingtungScope).match, false);
 assert.equal(
   isPlaceEligibleForSelectionFamily(basePlace("camp", "森林露營區", "park"), "camping"),
@@ -182,16 +214,29 @@ assert.equal(oneAnchor[0].isRequiredBySelection, true);
 assert.equal(oneAnchor[0].types, undefined, "nullable card metadata is schema-safe");
 assert.deepEqual(oneAnchor[0].matchedCombinationIds, [1, 2]);
 const multiSelected = togglePlanningSelectionPlace(selected, first.places[1]);
-assert.equal(resolvePlanningSelectionPlaces(multiSelected).length, 2, "multiple selections persist");
+assert.equal(
+  resolvePlanningSelectionPlaces(multiSelected).length,
+  2,
+  "multiple selections persist",
+);
 const fourAnchors = buildPlannerRequiredAnchors(
-  [first.places[0], first.places[1], first.places[2], basePlace("city-1", "城市地標", "tourist_attraction")],
+  [
+    first.places[0],
+    first.places[1],
+    first.places[2],
+    basePlace("city-1", "城市地標", "tourist_attraction"),
+  ],
   "台北",
   true,
 );
 assert.equal(fourAnchors.length, 4, "four selected places remain four required anchors");
 assert.equal(new Set(fourAnchors.map((place) => place.googlePlaceId)).size, 4);
 const oneRemaining = togglePlanningSelectionPlace(multiSelected, first.places[0]);
-assert.equal(resolvePlanningSelectionPlaces(oneRemaining).length, 1, "cancelling one selection keeps the other");
+assert.equal(
+  resolvePlanningSelectionPlaces(oneRemaining).length,
+  1,
+  "cancelling one selection keeps the other",
+);
 const unselected = togglePlanningSelectionPlace(selected, first.places[0]);
 assert.equal(unselected.selectedPlaces.length, 0);
 assert.equal(
@@ -281,9 +326,8 @@ const cafeCampingExhausted = await fetchPlanningSelectionRecommendations({
       : { places: [basePlace("ordinary-park", "中央公園", "park")], error: null },
 });
 assert.equal(
-  cafeCampingExhausted.session.planningSelection.lanes.find(
-    (lane) => lane.family === "camping",
-  )?.exhausted,
+  cafeCampingExhausted.session.planningSelection.lanes.find((lane) => lane.family === "camping")
+    ?.exhausted,
   true,
   "camping exhausts only after all six fallback queries yield no legitimate candidate",
 );
@@ -298,7 +342,9 @@ const multiTurnSearch = async ({ data }) => {
   if (data.categoryId === "camping") {
     campingSequence += 1;
     return {
-      places: [basePlace(`camp-multi-${campingSequence}`, `山林露營區 ${campingSequence}`, "campground")],
+      places: [
+        basePlace(`camp-multi-${campingSequence}`, `山林露營區 ${campingSequence}`, "campground"),
+      ],
       error: null,
     };
   }
@@ -328,7 +374,7 @@ const multiSecond = await fetchPlanningSelectionRecommendations({
 });
 assert(
   (multiSecond.session.planningSelection.shownFamilyCounts.food ?? 0) -
-      (multiSecond.session.planningSelection.shownFamilyCounts.camping ?? 0) <
+    (multiSecond.session.planningSelection.shownFamilyCounts.camping ?? 0) <
     4,
   "deficit-aware continuation reduces the underrepresented camping family gap",
 );
@@ -359,7 +405,7 @@ assert.match(composer, /actionChipsOnly\s*&&\s*"justify-center"/);
 assert.match(composer, /Sparkles/);
 assert.match(composer, /RotateCcw/);
 assert.match(chatRoute, /PLANNING_SELECTION_GENERATE_CLICK/);
-assert.match(chatRoute, /PLANNING_SELECTION_PLANNER_INPUT/);
+assert.match(chatRoute, /PLANNING_SELECTION_PLANNER_PREPARE/);
 assert.match(chatRoute, /buildPlannerRequiredAnchors/);
 for (const stage of [
   "generate_click",
@@ -388,7 +434,10 @@ assert.match(
 );
 assert.match(chatRoute, /weatherBlocking:\s*!isPlanningSelectionMode\(activeSession\)/);
 assert.match(chatRoute, /let prefs = bundle\.preferences/);
-assert.match(chatRoute, /if \(!selectionModeForPrepare\)\s*\{[\s\S]*prefs = await getAiPreferences\(\)/);
+assert.match(
+  chatRoute,
+  /if \(!selectionModeForPrepare\)\s*\{[\s\S]*prefs = await getAiPreferences\(\)/,
+);
 assert.match(chatRoute, /SELECTION_PLACE_RESOLUTION_MISMATCH/);
 const placesFunctions = readFileSync(
   new URL("../src/lib/places.functions.ts", import.meta.url),
@@ -399,7 +448,10 @@ assert.match(placesFunctions, /allowVerifiedCampingLodging/);
 
 const selectionInitialCredits = chatRoute.slice(
   chatRoute.indexOf("if (isPlanningSelectionMode(syncedHandoff))"),
-  chatRoute.indexOf("const req = toRoamieRequest", chatRoute.indexOf('metadata: { path: "planning_selection_initial" }')),
+  chatRoute.indexOf(
+    "const req = toRoamieRequest",
+    chatRoute.indexOf('metadata: { path: "planning_selection_initial" }'),
+  ),
 );
 assert.match(selectionInitialCredits, /beginPlaceRecommendationCredits/);
 assert.match(selectionInitialCredits, /INSUFFICIENT_CREDITS_PLACE_MESSAGE/);
@@ -407,7 +459,10 @@ assert.match(selectionInitialCredits, /settleCreditsOperation\(creditsHandle, de
 
 const selectionContinuationCredits = chatRoute.slice(
   chatRoute.indexOf("if (isPlanningSelectionMode(session) && isPlanningSelectionContinuation"),
-  chatRoute.indexOf("const legacyNearbyClarification", chatRoute.indexOf("if (isPlanningSelectionMode(session) && isPlanningSelectionContinuation")),
+  chatRoute.indexOf(
+    "const legacyNearbyClarification",
+    chatRoute.indexOf("if (isPlanningSelectionMode(session) && isPlanningSelectionContinuation"),
+  ),
 );
 assert.match(selectionContinuationCredits, /ensureSubscriptionHydratedForCredits/);
 assert.match(selectionContinuationCredits, /beginPlaceRecommendationCredits/);
@@ -417,11 +472,14 @@ assert.match(selectionContinuationCredits, /selectionRecommendationInFlightRef/)
 
 const selectionGenerateCredits = chatRoute.slice(
   chatRoute.indexOf("const handleGenerateItinerary = async"),
-  chatRoute.indexOf("runDirectItineraryRef.current", chatRoute.indexOf("const handleGenerateItinerary = async")),
+  chatRoute.indexOf(
+    "runDirectItineraryRef.current",
+    chatRoute.indexOf("const handleGenerateItinerary = async"),
+  ),
 );
-assert.match(selectionGenerateCredits, /beginItineraryGenerationCredits/);
-assert.match(selectionGenerateCredits, /INSUFFICIENT_CREDITS_ITINERARY_MESSAGE/);
-assert.match(selectionGenerateCredits, /settleCreditsOperation\(itinCreditsHandle, itinerarySucceeded\)/);
+assert.doesNotMatch(selectionGenerateCredits, /beginItineraryGenerationCredits/);
+assert.match(selectionGenerateCredits, /generateItinerary/);
+assert.match(selectionGenerateCredits, /server-function boundary/);
 assert.match(chatRoute, /selectionGenerateInFlightRef\.current/);
 assert.doesNotMatch(chatRoute, /Selection Mode 額度不足|Roamie 安排點數/);
 

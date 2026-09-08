@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { GenerateOutfitSuggestionResult } from "@/lib/outfit/generate-trip-outfit.server";
+import { requireSupabasePlus } from "@/integrations/supabase/security-middleware";
 
 const ItemSchema = z.object({
   date: z.string(),
@@ -26,6 +27,7 @@ const InputSchema = z.object({
 });
 
 export const generateTripOutfitSuggestion = createServerFn({ method: "POST" })
+  .middleware([requireSupabasePlus])
   .inputValidator((input) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<GenerateOutfitSuggestionResult> => {
     const { generateOutfitSuggestion } = await import("@/lib/outfit/generate-trip-outfit.server");

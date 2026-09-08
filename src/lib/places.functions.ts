@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import {
@@ -268,10 +269,12 @@ async function postPlaces(
   });
 
   let guarded: { places: RawPlace[]; error: string | null; nextPageToken?: string } | null;
-  const ownerRequestId = Array.from(httpKey).reduce(
-    (hash, character) => Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0,
-    2166136261,
-  ).toString(36);
+  const ownerRequestId = Array.from(httpKey)
+    .reduce(
+      (hash, character) => Math.imul(hash ^ character.charCodeAt(0), 16777619) >>> 0,
+      2166136261,
+    )
+    .toString(36);
   const ownerSurface =
     stats?.caller === "loadHomeNearbyPicks"
       ? "home_nearby"
@@ -280,59 +283,66 @@ async function postPlaces(
         : stats?.screen === "explore"
           ? "explore"
           : stats?.screen === "chat"
-            ? stats?.caller?.includes("place_focus") ? "chat_place_focus" : "other"
+            ? stats?.caller?.includes("place_focus")
+              ? "chat_place_focus"
+              : "other"
             : stats?.screen === "itinerary" || stats?.screen === "plan"
               ? "planner"
               : "other";
   try {
-    guarded = await runPlacesApiDeduped(httpKey, callType, async () => {
-      recordPlacesHttpCall(callType, {
-        functionName: "postPlaces",
-        requestKey: httpKey,
-        caller: stats?.caller,
-        screen: stats?.screen,
-        category: stats?.category,
-      });
+    guarded = await runPlacesApiDeduped(
+      httpKey,
+      callType,
+      async () => {
+        recordPlacesHttpCall(callType, {
+          functionName: "postPlaces",
+          requestKey: httpKey,
+          caller: stats?.caller,
+          screen: stats?.screen,
+          category: stats?.category,
+        });
 
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": apiKey,
-          "X-Goog-FieldMask": PLACES_FIELD_MASK,
-        },
-        body: JSON.stringify(body),
-      });
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": apiKey,
+            "X-Goog-FieldMask": PLACES_FIELD_MASK,
+          },
+          body: JSON.stringify(body),
+        });
 
-      if (!res.ok) {
-        const text = await res.text();
-        const detail = parseGoogleError(text);
-        console.error("[Roamie Places] request failed", res.status, url, detail);
-        if (res.status === 429 || res.status === 503) {
-          // Let the shared Places queue retry with exponential backoff.
-          throw new Error(`places_http_${res.status}:${detail}`);
+        if (!res.ok) {
+          const text = await res.text();
+          const detail = parseGoogleError(text);
+          console.error("[Roamie Places] request failed", res.status, url, detail);
+          if (res.status === 429 || res.status === 503) {
+            // Let the shared Places queue retry with exponential backoff.
+            throw new Error(`places_http_${res.status}:${detail}`);
+          }
+          if (stats?.screen === "chat") {
+            console.warn("[CHAT_NEARBY_ERROR]", {
+              message: `Google Places API ${res.status}: ${detail}`,
+              rawResponse: text.slice(0, 500),
+            });
+          }
+          return { places: [] as RawPlace[], error: `Google Places API ${res.status}: ${detail}` };
         }
-        if (stats?.screen === "chat") {
-          console.warn("[CHAT_NEARBY_ERROR]", {
-            message: `Google Places API ${res.status}: ${detail}`,
-            rawResponse: text.slice(0, 500),
-          });
-        }
-        return { places: [] as RawPlace[], error: `Google Places API ${res.status}: ${detail}` };
-      }
 
-      const json = (await res.json()) as { places?: RawPlace[]; nextPageToken?: string };
-      return {
-        places: json.places ?? [],
-        error: null as string | null,
-        nextPageToken: json.nextPageToken,
-      };
-    }, {
-      requestId: `places_${ownerRequestId}`,
-      surface: ownerSurface,
-      priority: ownerSurface === "home_nearby" ? "background" : "foreground",
-      requestType: callType === "nearby" ? "searchNearby" : "searchText",
-    });
+        const json = (await res.json()) as { places?: RawPlace[]; nextPageToken?: string };
+        return {
+          places: json.places ?? [],
+          error: null as string | null,
+          nextPageToken: json.nextPageToken,
+        };
+      },
+      {
+        requestId: `places_${ownerRequestId}`,
+        surface: ownerSurface,
+        priority: ownerSurface === "home_nearby" ? "background" : "foreground",
+        requestType: callType === "nearby" ? "searchNearby" : "searchText",
+      },
+    );
   } catch (error) {
     if (stats?.caller === "planning_selection_lane") {
       devVerboseInfo("[PLANNING_SELECTION_PLACES_RAW]", {
@@ -846,6 +856,7 @@ export async function executeExploreSearch(
 }
 
 export const searchPlaces = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) => ExploreSearchInput.parse(input))
   .handler(async ({ data }): Promise<{ places: PlaceResult[]; error: string | null }> => {
     return executeExploreSearch(data);
@@ -1222,6 +1233,7 @@ const PlaceDetailsInput = z.object({
 });
 
 export const getPlaceDetails = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) => PlaceDetailsInput.parse(input))
   .handler(
     async ({ data }): Promise<{ place: PlaceDetailsScreenResult | null; error: string | null }> => {

@@ -36,12 +36,16 @@ let listenerAttached = false;
 async function navigateToTripInvite(token: string, source: string): Promise<void> {
   stashTripInviteToken(token);
   const path = tripInvitePathFromToken(token);
-  console.info("[TRIP_INVITE] deep link", { source, path });
+  console.info("[TRIP_INVITE] deep link", {
+    source,
+    tokenPresent: true,
+    tokenLength: token.length,
+  });
   try {
     const { navigateOAuthAppPath } = await import("@/lib/oauth-app-navigate");
     await navigateOAuthAppPath(path);
   } catch (error) {
-    logAppError("TRIP_INVITE_NAV", error, { source, path });
+    logAppError("TRIP_INVITE_NAV", error, { source, tokenPresent: true });
     if (typeof window !== "undefined") {
       window.location.href = path;
     }

@@ -1,7 +1,4 @@
-import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { markCompanionModeSelected } from "@/lib/companion-mode-storage";
-import { ensureUserProfile } from "@/lib/ensure-user-profile";
-import { supabase } from "@/lib/supabase";
 import {
   broadcastAccessChange,
   clearTestModeOverride,
@@ -42,43 +39,8 @@ export function applyLocalMockPlanTier(tier: PlanTier): void {
 }
 
 export async function syncMockPlanTierToProfile(tier: PlanTier): Promise<void> {
-  const userId = await getAuthenticatedUserId();
-  if (!userId) return;
-
-  try {
-    await ensureUserProfile(userId);
-
-    const { data, error: readError } = await supabase
-      .from("profiles")
-      .select("ai_preferences")
-      .eq("id", userId)
-      .maybeSingle();
-    if (readError) throw new Error(readError.message);
-
-    const prev =
-      data?.ai_preferences && typeof data.ai_preferences === "object"
-        ? (data.ai_preferences as Record<string, unknown>)
-        : {};
-
-    const subscriptionStatus = tier === "plus" ? "active" : "inactive";
-
-    const { error } = await supabase
-      .from("profiles")
-      .update({
-        plan_tier: tier,
-        subscription_status: subscriptionStatus,
-        subscription_provider: "none",
-        ai_preferences: {
-          ...prev,
-          intro_completed: true,
-          companion_mode: tier,
-        } as never,
-      })
-      .eq("id", userId);
-    if (error) throw new Error(error.message);
-  } catch (e) {
-    console.warn("[plan-tier] sync mock tier to profile failed", e);
-  }
+  if (!isDeveloperBuildEnabled()) return;
+  console.info("[plan-tier] mock tier remains device-local", { tier });
 }
 
 export async function applyMockPlanTier(tier: PlanTier): Promise<void> {

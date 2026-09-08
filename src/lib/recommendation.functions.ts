@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 import { coerceLocale } from "@/lib/i18n/resolve-locale";
 import { buildPlaceIntroFromFacts } from "@/lib/recommendation/place-intro";
@@ -24,6 +25,7 @@ const Input = z.object({
 });
 
 export const getPlaceIntro = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) => Input.parse(input))
   .handler(async ({ data }): Promise<{ intro: PlaceIntroPayload | null; error: string | null }> => {
     try {

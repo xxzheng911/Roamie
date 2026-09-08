@@ -17,11 +17,13 @@ ON CONFLICT (id) DO UPDATE SET
   allowed_mime_types = EXCLUDED.allowed_mime_types;
 
 -- Public read
+DROP POLICY IF EXISTS "profile_media_public_read" ON storage.objects;
 CREATE POLICY "profile_media_public_read"
 ON storage.objects FOR SELECT
 USING (bucket_id = 'profile-media');
 
 -- Authenticated users manage own folder: {user_id}/avatar.jpg | cover.jpg
+DROP POLICY IF EXISTS "profile_media_insert_own" ON storage.objects;
 CREATE POLICY "profile_media_insert_own"
 ON storage.objects FOR INSERT
 TO authenticated
@@ -30,6 +32,7 @@ WITH CHECK (
   AND auth.uid()::text = (storage.foldername(name))[1]
 );
 
+DROP POLICY IF EXISTS "profile_media_update_own" ON storage.objects;
 CREATE POLICY "profile_media_update_own"
 ON storage.objects FOR UPDATE
 TO authenticated
@@ -38,6 +41,7 @@ USING (
   AND auth.uid()::text = (storage.foldername(name))[1]
 );
 
+DROP POLICY IF EXISTS "profile_media_delete_own" ON storage.objects;
 CREATE POLICY "profile_media_delete_own"
 ON storage.objects FOR DELETE
 TO authenticated

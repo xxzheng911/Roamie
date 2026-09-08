@@ -66,7 +66,7 @@ async function navigateToCallbackPath(path: string, source: string, rawUrl: stri
 
   logAuthDebug("oauth.deep_link", {
     source,
-    rawUrl,
+    callbackUrlAccepted: true,
     path,
     target: typeof window !== "undefined" ? `${window.location.origin}${path}` : path,
   });
@@ -93,11 +93,11 @@ async function navigateToCallbackPath(path: string, source: string, rawUrl: stri
         clearPendingCallbackPath();
       }
     } catch (e) {
-      logAuthError("oauth.deep_link_navigate", e, { source, rawUrl, path, next });
+      logAuthError("oauth.deep_link_navigate", e, { source, path });
       try {
         window.location.replace(next);
       } catch (replaceError) {
-        logAuthError("oauth.deep_link_history", replaceError, { source, rawUrl, path, next });
+        logAuthError("oauth.deep_link_history", replaceError, { source, path });
       }
     }
   })();

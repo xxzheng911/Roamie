@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { AdminAuthError, requireAdminFromRequest } from "@/lib/admin/admin-auth.server";
 import { loadAdminDashboard } from "@/lib/admin/admin-dashboard.server";
+import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 
 const QuerySchema = z.object({
   search: z.string().max(200).optional(),
@@ -27,7 +28,13 @@ export const Route = createFileRoute("/api/admin/dashboard")({
     handlers: {
       GET: async ({ request }) => {
         try {
-          await requireAdminFromRequest(request);
+          const admin = await requireAdminFromRequest(request);
+          const rate = checkRateLimit(
+            `admin:${admin.userId}:minute`,
+            SECURITY_RATE_LIMITS.adminPerMinute,
+            60_000,
+          );
+          if (!rate.allowed) return json({ error: "rate_limited" }, 429);
           const url = new URL(request.url);
           const query = QuerySchema.parse({
             search: url.searchParams.get("search") || undefined,

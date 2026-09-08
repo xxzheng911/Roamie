@@ -1,19 +1,16 @@
 import { isDeveloperBuildEnabled } from "@/lib/access/developer";
 import { readMockSubscriptionTier, readTestModeOverride } from "@/lib/access/storage";
 import type { SubscriptionState, TestModeOverride } from "@/lib/access/types";
+import { FREE_PLUS_ENTITLEMENT, type PlusEntitlementSnapshot } from "@/lib/plan-tier/entitlement";
 
-export type SubscriptionStateSource =
-  | "initial"
-  | "supabase"
-  | "dev_override"
-  | "optimistic";
+export type SubscriptionStateSource = "initial" | "supabase" | "dev_override" | "optimistic";
 
 /** 單一訂閱狀態來源 — AccessProvider 持有此結構 */
 export type CanonicalSubscriptionState = {
   tier: SubscriptionState;
   source: SubscriptionStateSource;
-  /** Supabase profiles.plan_tier=plus 且 active/trialing */
-  profilePlusActive: boolean;
+  /** Server/Supabase resolver output; the client never recomputes entitlement. */
+  entitlement: PlusEntitlementSnapshot;
   /** 僅 dev/debug：localStorage test-mode-override */
   devOverride: TestModeOverride;
   /** 遞增版本；較舊的非同步回寫一律忽略 */
@@ -27,7 +24,7 @@ export function createInitialCanonicalState(): CanonicalSubscriptionState {
   const state: CanonicalSubscriptionState = {
     tier: "free",
     source: "initial",
-    profilePlusActive: false,
+    entitlement: { ...FREE_PLUS_ENTITLEMENT },
     devOverride,
     version: 0,
     hydrated: false,
@@ -40,7 +37,7 @@ export function serializeCanonical(state: CanonicalSubscriptionState): string {
   return JSON.stringify({
     tier: state.tier,
     source: state.source,
-    profilePlusActive: state.profilePlusActive,
+    entitlement: state.entitlement,
     devOverride: state.devOverride,
     version: state.version,
     hydrated: state.hydrated,
@@ -62,7 +59,7 @@ export function resolveHasPlusAccess(state: CanonicalSubscriptionState): boolean
 
   if (!state.hydrated) return false;
 
-  if (state.profilePlusActive) return true;
+  if (state.entitlement.hasPlus) return true;
 
   return false;
 }
@@ -80,20 +77,17 @@ export function applyOptimisticTier(
     ...prev,
     tier,
     source: "optimistic",
-    profilePlusActive: tier === "plus",
     devOverride: readTestModeOverride(),
     version: nextVersion,
     hydrated: true,
   };
-  console.info(
-    `[SUBSCRIPTION_STATE_OPTIMISTIC_UPDATE] tier=${tier} version=${nextVersion}`,
-  );
+  console.info(`[SUBSCRIPTION_STATE_OPTIMISTIC_UPDATE] tier=${tier} version=${nextVersion}`);
   return next;
 }
 
 export function applySupabaseProfile(
   prev: CanonicalSubscriptionState,
-  profilePlusActive: boolean,
+  entitlement: PlusEntitlementSnapshot,
   syncVersion: number,
 ): CanonicalSubscriptionState {
   if (prev.source === "optimistic" && syncVersion <= prev.version) {
@@ -103,32 +97,32 @@ export function applySupabaseProfile(
     return prev;
   }
 
-  if (prev.source === "optimistic" && prev.tier === "free" && profilePlusActive) {
+  if (prev.source === "optimistic" && prev.tier === "free" && entitlement.hasPlus) {
     console.info(
       `[SUBSCRIPTION_STATE_STALE_IGNORED] reason=optimistic_free_pending_sync syncVersion=${syncVersion}`,
     );
     return prev;
   }
 
-  if (prev.source === "optimistic" && prev.tier === "plus" && !profilePlusActive) {
+  if (prev.source === "optimistic" && prev.tier === "plus" && !entitlement.hasPlus) {
     console.info(
       `[SUBSCRIPTION_STATE_STALE_IGNORED] reason=optimistic_plus_pending_sync syncVersion=${syncVersion}`,
     );
     return prev;
   }
 
-  const tier: SubscriptionState = profilePlusActive ? "plus" : "free";
+  const tier: SubscriptionState = entitlement.hasPlus ? "plus" : "free";
   const next: CanonicalSubscriptionState = {
     ...prev,
     tier,
     source: "supabase",
-    profilePlusActive,
+    entitlement,
     devOverride: readTestModeOverride(),
     version: Math.max(prev.version, syncVersion),
     hydrated: true,
   };
   console.info(
-    `[SUBSCRIPTION_STATE_SUPABASE_SYNC] profilePlusActive=${profilePlusActive} tier=${tier} version=${next.version}`,
+    `[SUBSCRIPTION_STATE_SUPABASE_SYNC] hasPlus=${entitlement.hasPlus} source=${entitlement.effectiveSource} tier=${tier} version=${next.version}`,
   );
   return next;
 }
@@ -144,7 +138,7 @@ export function applyDevOverrideFromStorage(
       ? "plus"
       : devOverride === "force-free"
         ? "free"
-        : prev.profilePlusActive
+        : prev.entitlement.hasPlus
           ? "plus"
           : "free";
 
@@ -156,16 +150,6 @@ export function applyDevOverrideFromStorage(
     version: prev.version + 1,
     hydrated: true,
   };
-}
-
-export function isProfileSubscriptionPlus(plan: {
-  planTier: string;
-  subscriptionStatus: string;
-}): boolean {
-  return (
-    plan.planTier === "plus" &&
-    (plan.subscriptionStatus === "active" || plan.subscriptionStatus === "trialing")
-  );
 }
 
 /** dev/debug 面板用：mock localStorage tier */

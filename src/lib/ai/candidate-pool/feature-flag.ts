@@ -55,6 +55,7 @@ function readEnvFlag(): boolean | null {
 
 function readStorageFlag(): boolean | null {
   try {
+    if (!canUseRuntimeDebugOverrides()) return null;
     if (typeof localStorage === "undefined") return null;
     return parseTruthy(localStorage.getItem(CANDIDATE_POOL_STORAGE_KEY));
   } catch {
@@ -86,6 +87,7 @@ export function setCandidatePoolEnabledOverride(enabled: boolean | null): void {
 
 export function setCandidatePoolStorageFlag(enabled: boolean | null): void {
   try {
+    if (!canUseRuntimeDebugOverrides()) return;
     if (typeof localStorage === "undefined") return;
     if (enabled == null) {
       localStorage.removeItem(CANDIDATE_POOL_STORAGE_KEY);
@@ -96,3 +98,4 @@ export function setCandidatePoolStorageFlag(enabled: boolean | null): void {
     /* ignore */
   }
 }
+import { canUseRuntimeDebugOverrides } from "@/lib/runtime-debug-overrides";

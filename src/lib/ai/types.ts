@@ -153,6 +153,30 @@ export type TripPlanSettings = {
   coverImagePositionY?: number;
 };
 
+export type StoredCoreTripSnapshot = {
+  id: string;
+  destinationPlace: { name: string; placeId?: string } | null;
+  originPlace: { name: string; placeId?: string } | null;
+  startDate: string;
+  endDate: string;
+  days: number;
+  transportMode: string;
+  places: Array<{
+    placeId: string;
+    name: string;
+    address: string;
+    lat: number | null;
+    lng: number | null;
+    arrivalTime: string;
+    duration: string;
+    transportMode: string;
+    pointToPointDuration: string;
+  }>;
+  weatherSummary: string;
+  outfitSuggestion: string;
+  aiGeneratedCoverImageUrl: string | null;
+};
+
 /** New-format payload stored in saved_trips.payload */
 export type RoamiePayloadV2 = RoamieResponse &
   TripOutfitSuggestionFields & {
@@ -169,7 +193,7 @@ export type RoamiePayloadV2 = RoamieResponse &
     outfitAdvice?: OutfitAdvicePayload;
     weatherSummary?: string;
     outfitSuggestion?: string;
-    coreTrip?: Record<string, unknown>;
+    coreTrip?: StoredCoreTripSnapshot;
     /** true = 使用者已確認儲存至收藏 */
     userSaved?: boolean;
     source?: "chat" | "plan" | "mood_recommendation";

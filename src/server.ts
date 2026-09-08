@@ -25,7 +25,28 @@ function withNativeApiCors(request: Request, response: Response): Response {
     "Authorization, Content-Type, X-Roamie-Request-Id, X-Roamie-Stream, X-Roamie-Cancel",
   );
   headers.set("Vary", "Origin");
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function withSecurityHeaders(request: Request, response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  headers.set("X-Frame-Options", "DENY");
+  headers.set("Content-Security-Policy", "frame-ancestors 'none'");
+  headers.set("Permissions-Policy", "camera=(self), geolocation=(self), microphone=()");
+  if (new URL(request.url).protocol === "https:") {
+    headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 let serverEntryPromise: Promise<ServerEntry> | undefined;
@@ -33,7 +54,7 @@ let serverEntryPromise: Promise<ServerEntry> | undefined;
 async function getServerEntry(): Promise<ServerEntry> {
   if (!serverEntryPromise) {
     serverEntryPromise = import("@tanstack/react-start/server-entry").then(
-      (m) => ((m as { default?: ServerEntry }).default ?? (m as unknown as ServerEntry)),
+      (m) => (m as { default?: ServerEntry }).default ?? (m as unknown as ServerEntry),
     );
   }
   return serverEntryPromise;
@@ -96,10 +117,13 @@ export default {
       }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
-      return withNativeApiCors(request, await normalizeCatastrophicSsrResponse(response));
+      return withSecurityHeaders(
+        request,
+        withNativeApiCors(request, await normalizeCatastrophicSsrResponse(response)),
+      );
     } catch (error) {
       logAppError("SSR_FETCH_ERROR", error);
-      return brandedErrorResponse(error);
+      return withSecurityHeaders(request, brandedErrorResponse(error));
     }
   },
 };

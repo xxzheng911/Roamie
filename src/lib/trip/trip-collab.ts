@@ -1,8 +1,16 @@
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { APP_SCHEME } from "@/constants/app";
-import { isMissingTableError, formatTripCollabError, TRIP_INVITE_CREATE_FAILED_MESSAGE } from "@/lib/supabase-errors";
-import { copyTextToClipboard, type CopyTextResult, COPY_MANUAL_HINT } from "@/lib/copy-to-clipboard";
+import {
+  isMissingTableError,
+  formatTripCollabError,
+  TRIP_INVITE_CREATE_FAILED_MESSAGE,
+} from "@/lib/supabase-errors";
+import {
+  copyTextToClipboard,
+  type CopyTextResult,
+  COPY_MANUAL_HINT,
+} from "@/lib/copy-to-clipboard";
 import type { TripMemberProfileFields } from "@/lib/trip/collab-member-display";
 
 export type TripMemberProfile = TripMemberProfileFields;
@@ -22,10 +30,6 @@ type TripMemberPublicProfileRow = {
   user_id: string;
   display_name: string | null;
   avatar_url: string | null;
-  email: string | null;
-  full_name: string | null;
-  username: string | null;
-  profile_updated_at: string | null;
 };
 
 type TripMemberJoinedRow = {
@@ -113,10 +117,6 @@ function profileFromRpcRow(row: TripMemberPublicProfileRow): TripMemberProfile {
   return {
     display_name: row.display_name,
     avatar_url: row.avatar_url,
-    email: row.email,
-    full_name: row.full_name,
-    username: row.username,
-    profile_updated_at: row.profile_updated_at,
   };
 }
 
@@ -228,10 +228,9 @@ async function fetchTripMemberProfilesViaRpc(
 ): Promise<Map<string, TripMemberProfile>> {
   const map = new Map<string, TripMemberProfile>();
 
-  const { data: rpcRows, error: rpcError } = await supabase.rpc(
-    "get_trip_member_public_profiles",
-    { p_trip_id: tripId },
-  );
+  const { data: rpcRows, error: rpcError } = await supabase.rpc("get_trip_member_public_profiles", {
+    p_trip_id: tripId,
+  });
 
   if (rpcError) {
     console.warn("[TRIP_COLLAB] get_trip_member_public_profiles failed", rpcError.message);
@@ -287,7 +286,7 @@ async function attachProfilesToMembers(
   if (members.length === 0) return members;
 
   const userIds = members.map((m) => m.user_id);
-  let profileMap = await fetchTripMemberProfilesViaRpc(tripId);
+  const profileMap = await fetchTripMemberProfilesViaRpc(tripId);
 
   const missingAfterRpc = userIds.filter((id) => !profileMap.has(id));
   if (missingAfterRpc.length > 0) {
@@ -364,7 +363,9 @@ export async function createTripInvite(tripId: string): Promise<TripInviteRow> {
 
 export async function acceptTripInvite(token: string): Promise<string> {
   const userId = await getAuthenticatedUserId();
-  console.info(`[TRIP_INVITE_ACCEPT_START] userId=${userId ?? "(none)"} token=${token.slice(0, 8)}…`);
+  console.info(
+    `[TRIP_INVITE_ACCEPT_START] userPresent=${Boolean(userId)} tokenPresent=${Boolean(token)} tokenLength=${token.length}`,
+  );
 
   const { data, error } = await supabase.rpc("accept_trip_invite", {
     invite_token: token,

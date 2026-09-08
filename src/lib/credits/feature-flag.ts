@@ -50,6 +50,7 @@ function readEnvFlag(): boolean | null {
 
 function readStorageFlag(): boolean | null {
   try {
+    if (!canUseRuntimeDebugOverrides()) return null;
     if (typeof localStorage === "undefined") return null;
     return parseTruthy(localStorage.getItem(CREDITS_FEATURE_STORAGE_KEY));
   } catch {
@@ -81,6 +82,7 @@ export function setCreditsFeatureEnabledOverride(enabled: boolean | null): void 
 
 export function setCreditsFeatureStorageFlag(enabled: boolean | null): void {
   try {
+    if (!canUseRuntimeDebugOverrides()) return;
     if (typeof localStorage === "undefined") return;
     if (enabled == null) {
       localStorage.removeItem(CREDITS_FEATURE_STORAGE_KEY);
@@ -91,3 +93,4 @@ export function setCreditsFeatureStorageFlag(enabled: boolean | null): void {
     /* ignore */
   }
 }
+import { canUseRuntimeDebugOverrides } from "@/lib/runtime-debug-overrides";

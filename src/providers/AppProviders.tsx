@@ -12,14 +12,9 @@ import { SubscriptionProvider } from "@/providers/SubscriptionProvider";
 import { assertClientEnv } from "@/constants/env";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { isSupabaseConfigured } from "@/integrations/supabase/client";
-import {
-  readBrowserPathname,
-  shouldUseLightStartupShell,
-} from "@/lib/startup-path";
+import { readBrowserPathname, shouldUseLightStartupShell } from "@/lib/startup-path";
 import { hydrateAppBootCachesAsync, resetAppBootCachesForUserChange } from "@/lib/app-boot-cache";
-import {
-  flushConversationWorkspacesToNative,
-} from "@/lib/conversation-workspace/storage";
+import { flushConversationWorkspacesToNative } from "@/lib/conversation-workspace/storage";
 import { pushConversationWorkspacesRemote } from "@/lib/conversation-workspace/remote-sync";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import { clearPersonalizedChatCaches } from "@/lib/clear-auth-state";
@@ -33,11 +28,11 @@ function bootPhase(phase: string, detail?: string): void {
 /** Plus / 加入行程等僅在已登入主殼層需要；登入頁不載入以縮小冷啟動 bundle */
 function AuthenticatedShellProviders({ children }: { children: ReactNode }) {
   return (
-    <SubscriptionProvider>
-      <AccessProvider>
+    <AccessProvider>
+      <SubscriptionProvider>
         <AddToTripProvider>{children}</AddToTripProvider>
-      </AccessProvider>
-    </SubscriptionProvider>
+      </SubscriptionProvider>
+    </AccessProvider>
   );
 }
 

@@ -130,9 +130,9 @@ test("override / stale rollback / environment migration", () => {
 test("chat wires batch billing helpers (not per-card)", () => {
   const chat = read("src/routes/_app.chat.tsx");
   assert.match(chat, /beginPlaceRecommendationCredits/);
-  assert.match(chat, /beginItineraryGenerationCredits/);
+  assert.doesNotMatch(chat, /beginItineraryGenerationCredits/);
+  assert.match(read("src/lib/itinerary.functions.ts"), /requireItineraryCredits/);
   assert.match(chat, /settleCreditsOperation/);
-  assert.match(chat, /INSUFFICIENT_CREDITS_ITINERARY_MESSAGE/);
   // Ensure we do not introduce per-place charge loops in credits module
   const ops = read("src/lib/credits/operations.ts");
   assert.match(ops, /billing_unit: "recommendation_batch"/);

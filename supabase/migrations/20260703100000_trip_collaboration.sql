@@ -161,6 +161,9 @@ GRANT EXECUTE ON FUNCTION public.accept_trip_invite(text) TO authenticated;
 DROP POLICY IF EXISTS "saved_trips_select_own" ON public.saved_trips;
 DROP POLICY IF EXISTS "saved_trips_update_own" ON public.saved_trips;
 DROP POLICY IF EXISTS "saved_trips_delete_own" ON public.saved_trips;
+DROP POLICY IF EXISTS "saved_trips_select_member" ON public.saved_trips;
+DROP POLICY IF EXISTS "saved_trips_update_member" ON public.saved_trips;
+DROP POLICY IF EXISTS "saved_trips_delete_owner" ON public.saved_trips;
 
 CREATE POLICY "saved_trips_select_member" ON public.saved_trips
   FOR SELECT TO authenticated
@@ -190,6 +193,7 @@ CREATE POLICY "saved_trips_delete_owner" ON public.saved_trips
 -- ---------------------------------------------------------------------------
 ALTER TABLE public.trip_members ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "trip_members_select" ON public.trip_members;
 CREATE POLICY "trip_members_select" ON public.trip_members
   FOR SELECT TO authenticated
   USING (
@@ -198,12 +202,14 @@ CREATE POLICY "trip_members_select" ON public.trip_members
     OR public.is_trip_owner(trip_id)
   );
 
+DROP POLICY IF EXISTS "trip_members_insert_owner" ON public.trip_members;
 CREATE POLICY "trip_members_insert_owner" ON public.trip_members
   FOR INSERT TO authenticated
   WITH CHECK (
     public.is_trip_owner(trip_id) OR (user_id = auth.uid() AND is_owner = false)
   );
 
+DROP POLICY IF EXISTS "trip_members_delete_owner" ON public.trip_members;
 CREATE POLICY "trip_members_delete_owner" ON public.trip_members
   FOR DELETE TO authenticated
   USING (
@@ -211,6 +217,7 @@ CREATE POLICY "trip_members_delete_owner" ON public.trip_members
     OR (user_id = auth.uid() AND NOT is_owner)
   );
 
+DROP POLICY IF EXISTS "trip_members_update_owner" ON public.trip_members;
 CREATE POLICY "trip_members_update_owner" ON public.trip_members
   FOR UPDATE TO authenticated
   USING (public.is_trip_owner(trip_id))
@@ -221,6 +228,7 @@ CREATE POLICY "trip_members_update_owner" ON public.trip_members
 -- ---------------------------------------------------------------------------
 ALTER TABLE public.trip_invites ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "trip_invites_select" ON public.trip_invites;
 CREATE POLICY "trip_invites_select" ON public.trip_invites
   FOR SELECT TO authenticated
   USING (
@@ -229,10 +237,12 @@ CREATE POLICY "trip_invites_select" ON public.trip_invites
     OR invitee_user_id = auth.uid()
   );
 
+DROP POLICY IF EXISTS "trip_invites_insert_owner" ON public.trip_invites;
 CREATE POLICY "trip_invites_insert_owner" ON public.trip_invites
   FOR INSERT TO authenticated
   WITH CHECK (public.is_trip_owner(trip_id) AND inviter_id = auth.uid());
 
+DROP POLICY IF EXISTS "trip_invites_update_owner" ON public.trip_invites;
 CREATE POLICY "trip_invites_update_owner" ON public.trip_invites
   FOR UPDATE TO authenticated
   USING (public.is_trip_owner(trip_id) OR inviter_id = auth.uid())

@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 import { geocodeForwardUrl, placesAutocompleteUrl, placeDetailsUrl } from "@/lib/google-maps-api";
 import { formatTripLocationLabel, timezoneLabelFromOffset } from "@/lib/location/format";
@@ -262,8 +263,9 @@ function legacyGeocodeToTripLocation(
 
   const countryRaw = legacyComponentText(result.address_components, "country");
   const countryCode =
-    result.address_components?.find((c) => c.types?.includes("country"))?.short_name?.toUpperCase() ??
-    extracted?.countryCode;
+    result.address_components
+      ?.find((c) => c.types?.includes("country"))
+      ?.short_name?.toUpperCase() ?? extracted?.countryCode;
   const normalizedCountry = normalizeCountryReference(countryRaw, countryCode);
   const country = normalizedCountry.country || countryRaw;
   const city = legacyResolveCity(
@@ -495,6 +497,7 @@ function prefersGeocodeFirst(query: string): boolean {
 }
 
 export const searchTripLocations = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) => AutocompleteInput.parse(input))
   .handler(
     async ({ data }): Promise<{ suggestions: LocationSuggestion[]; error: string | null }> => {
@@ -651,7 +654,11 @@ async function resolveViaPlacesAutocompleteDetails(params: {
 
   const runAutocomplete = async (
     includedPrimaryTypes?: string[],
-  ): Promise<{ suggestions: AutocompleteSuggestion[]; httpStatus: number; error: GeocodeFailureCode | null }> => {
+  ): Promise<{
+    suggestions: AutocompleteSuggestion[];
+    httpStatus: number;
+    error: GeocodeFailureCode | null;
+  }> => {
     const autocompleteBody: Record<string, unknown> = {
       input: query,
       languageCode: language,
@@ -717,7 +724,10 @@ async function resolveViaPlacesAutocompleteDetails(params: {
       return { suggestions: [], httpStatus: autoRes.status, error: code };
     }
 
-    let autoJson: { suggestions?: AutocompleteSuggestion[]; error?: { message?: string; status?: string } };
+    let autoJson: {
+      suggestions?: AutocompleteSuggestion[];
+      error?: { message?: string; status?: string };
+    };
     try {
       autoJson = (await autoRes.json()) as typeof autoJson;
     } catch {
@@ -763,7 +773,8 @@ async function resolveViaPlacesAutocompleteDetails(params: {
     return { location: null, error: auto.error };
   }
 
-  const placeId = auto.suggestions.find((s) => s.placePrediction?.placeId)?.placePrediction?.placeId;
+  const placeId = auto.suggestions.find((s) => s.placePrediction?.placeId)?.placePrediction
+    ?.placeId;
   if (!placeId) {
     return { location: null, error: "places_autocomplete_empty" };
   }
@@ -891,6 +902,7 @@ async function resolveViaPlacesAutocompleteDetails(params: {
  * even when Server stdout is not visible in Xcode.
  */
 export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) => GeocodeTextInput.parse(input))
   .handler(
     async ({
@@ -900,341 +912,341 @@ export const geocodeTripLocationFromText = createServerFn({ method: "POST" })
       error: string | null;
       providerResult: DestinationProviderResult;
     }> => {
-    const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
-    const apiKey = requireGoogleMapsServerKey();
-    const userLocale: Locale = data.locale
-      ? coerceLocale(data.locale)
-      : data.language
-        ? coerceLocale(data.language)
-        : "zh-TW";
-    const language = localeToGoogleLanguageCode(userLocale);
-    const region =
-      data.region?.trim().toLowerCase() ||
-      data.countryCode?.trim().toLowerCase() ||
-      (data.disableLocaleRegionBias ? undefined : localeToGeocodeRegion(userLocale));
-    const query = data.query.trim();
-    const destinationName = data.destinationName?.trim() || query;
-    const allowPlacesFallback = data.placesFallback !== false;
-    if (!query) {
-      const providerResult: DestinationProviderResult = {
-        ok: false,
-        status: "INVALID_REQUEST",
-        provider: "geocode",
-        rawResultCount: 0,
-        parsedResultCount: 0,
-        failureReason: "geocode_invalid_request",
-        query,
-      };
-      return { location: null, error: "geocode_invalid_request", providerResult };
-    }
-
-    const requestId = newDestinationProviderRequestId();
-    const geocodeStarted = Date.now();
-    logDestinationProviderRequest({
-      requestId,
-      destination: destinationName,
-      normalizedDestination: destinationName,
-      countryCode: data.countryCode,
-      provider: "geocode",
-      query,
-      requestPath: "geocodeTripLocationFromText",
-      platform: "server",
-    });
-    logDestinationServerRequest({
-      provider: "geocode",
-      endpoint: "maps/api/geocode/json",
-      query,
-      language,
-      region,
-      requestId,
-      transport: "server",
-    });
-
-    const finish = (
-      location: TripLocation | null,
-      error: string | null,
-      providerResult: DestinationProviderResult,
-    ) => ({ location, error, providerResult });
-
-    const runPlacesFallback = async (priorError: string | null) => {
-      if (!allowPlacesFallback) {
-        return finish(null, priorError, {
+      const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");
+      const apiKey = requireGoogleMapsServerKey();
+      const userLocale: Locale = data.locale
+        ? coerceLocale(data.locale)
+        : data.language
+          ? coerceLocale(data.language)
+          : "zh-TW";
+      const language = localeToGoogleLanguageCode(userLocale);
+      const region =
+        data.region?.trim().toLowerCase() ||
+        data.countryCode?.trim().toLowerCase() ||
+        (data.disableLocaleRegionBias ? undefined : localeToGeocodeRegion(userLocale));
+      const query = data.query.trim();
+      const destinationName = data.destinationName?.trim() || query;
+      const allowPlacesFallback = data.placesFallback !== false;
+      if (!query) {
+        const providerResult: DestinationProviderResult = {
           ok: false,
-          status: priorError ?? "ZERO_RESULTS",
+          status: "INVALID_REQUEST",
           provider: "geocode",
           rawResultCount: 0,
           parsedResultCount: 0,
-          failureReason: priorError ?? "geocode_zero_results",
+          failureReason: "geocode_invalid_request",
           query,
-        });
+        };
+        return { location: null, error: "geocode_invalid_request", providerResult };
       }
-      const placesFallback = await resolveViaPlacesAutocompleteDetails({
+
+      const requestId = newDestinationProviderRequestId();
+      const geocodeStarted = Date.now();
+      logDestinationProviderRequest({
+        requestId,
+        destination: destinationName,
+        normalizedDestination: destinationName,
+        countryCode: data.countryCode,
+        provider: "geocode",
         query,
-        apiKey,
+        requestPath: "geocodeTripLocationFromText",
+        platform: "server",
+      });
+      logDestinationServerRequest({
+        provider: "geocode",
+        endpoint: "maps/api/geocode/json",
+        query,
         language,
-        regionCode: region,
+        region,
         requestId,
+        transport: "server",
       });
-      if (placesFallback.location) {
-        const providerResult = tripLocationToProviderResult(placesFallback.location, {
-          provider: "places_autocomplete",
+
+      const finish = (
+        location: TripLocation | null,
+        error: string | null,
+        providerResult: DestinationProviderResult,
+      ) => ({ location, error, providerResult });
+
+      const runPlacesFallback = async (priorError: string | null) => {
+        if (!allowPlacesFallback) {
+          return finish(null, priorError, {
+            ok: false,
+            status: priorError ?? "ZERO_RESULTS",
+            provider: "geocode",
+            rawResultCount: 0,
+            parsedResultCount: 0,
+            failureReason: priorError ?? "geocode_zero_results",
+            query,
+          });
+        }
+        const placesFallback = await resolveViaPlacesAutocompleteDetails({
           query,
-          httpStatus: 200,
-          apiStatus: "OK",
-          sourceShape: "places_details",
+          apiKey,
+          language,
+          regionCode: region,
+          requestId,
         });
-        return finish(placesFallback.location, null, providerResult);
-      }
-      const failureReason = placesFallback.error ?? priorError ?? "places_autocomplete_empty";
-      return finish(null, failureReason, {
-        ok: false,
-        status: failureReason,
-        provider: "places_autocomplete",
-        rawResultCount: 0,
-        parsedResultCount: 0,
-        failureReason,
-        query,
-      });
-    };
-
-    let res: Response;
-    try {
-      res = await fetch(geocodeForwardUrl(query, apiKey, { language, region }));
-    } catch (error) {
-      logProviderResponse({
-        requestId,
-        provider: "geocode",
-        query,
-        httpStatus: 0,
-        rawResultCount: 0,
-        parsedCandidateCount: 0,
-        responseShape: "network_error",
-        errorCode: "geocode_network_error",
-        errorMessage: error instanceof Error ? error.message : String(error),
-        elapsedMs: Date.now() - geocodeStarted,
-      });
-      console.warn(
-        "[GEOCODE_FAILURE_DETAIL]",
-        `code=geocode_network_error`,
-        `query=${query}`,
-        `message=${error instanceof Error ? error.message : String(error)}`,
-      );
-      return runPlacesFallback("geocode_network_error");
-    }
-
-    if (!res.ok) {
-      const code: GeocodeFailureCode =
-        res.status === 429 || res.status === 503
-          ? "geocode_over_query_limit"
-          : res.status === 401 || res.status === 403
-            ? "geocode_request_denied"
-            : "geocode_network_error";
-      console.warn(
-        "[GEOCODE_FAILURE_DETAIL]",
-        `code=${code}`,
-        `httpStatus=${res.status}`,
-        `query=${query}`,
-      );
-      logProviderResponse({
-        requestId,
-        provider: "geocode",
-        query,
-        httpStatus: res.status,
-        rawResultCount: 0,
-        parsedCandidateCount: 0,
-        responseShape: "http_error",
-        errorCode: code,
-        elapsedMs: Date.now() - geocodeStarted,
-      });
-      // Hard stop on billing / permission / rate-limit — do not burn Autocomplete.
-      if (code === "geocode_over_query_limit" || code === "geocode_request_denied") {
-        return finish(null, code, {
+        if (placesFallback.location) {
+          const providerResult = tripLocationToProviderResult(placesFallback.location, {
+            provider: "places_autocomplete",
+            query,
+            httpStatus: 200,
+            apiStatus: "OK",
+            sourceShape: "places_details",
+          });
+          return finish(placesFallback.location, null, providerResult);
+        }
+        const failureReason = placesFallback.error ?? priorError ?? "places_autocomplete_empty";
+        return finish(null, failureReason, {
           ok: false,
-          status: code,
-          provider: "geocode",
+          status: failureReason,
+          provider: "places_autocomplete",
           rawResultCount: 0,
           parsedResultCount: 0,
-          failureReason: code,
-          httpStatus: res.status,
+          failureReason,
           query,
         });
-      }
-      return runPlacesFallback(code);
-    }
+      };
 
-    let json: {
-      status?: string;
-      error_message?: string;
-      results?: LegacyGeocodeResult[];
-    };
-    try {
-      json = (await res.json()) as typeof json;
-    } catch {
-      console.warn(
-        "[GEOCODE_FAILURE_DETAIL]",
-        "code=geocode_decode_error",
-        `httpStatus=${res.status}`,
-        `query=${query}`,
-      );
+      let res: Response;
+      try {
+        res = await fetch(geocodeForwardUrl(query, apiKey, { language, region }));
+      } catch (error) {
+        logProviderResponse({
+          requestId,
+          provider: "geocode",
+          query,
+          httpStatus: 0,
+          rawResultCount: 0,
+          parsedCandidateCount: 0,
+          responseShape: "network_error",
+          errorCode: "geocode_network_error",
+          errorMessage: error instanceof Error ? error.message : String(error),
+          elapsedMs: Date.now() - geocodeStarted,
+        });
+        console.warn(
+          "[GEOCODE_FAILURE_DETAIL]",
+          `code=geocode_network_error`,
+          `query=${query}`,
+          `message=${error instanceof Error ? error.message : String(error)}`,
+        );
+        return runPlacesFallback("geocode_network_error");
+      }
+
+      if (!res.ok) {
+        const code: GeocodeFailureCode =
+          res.status === 429 || res.status === 503
+            ? "geocode_over_query_limit"
+            : res.status === 401 || res.status === 403
+              ? "geocode_request_denied"
+              : "geocode_network_error";
+        console.warn(
+          "[GEOCODE_FAILURE_DETAIL]",
+          `code=${code}`,
+          `httpStatus=${res.status}`,
+          `query=${query}`,
+        );
+        logProviderResponse({
+          requestId,
+          provider: "geocode",
+          query,
+          httpStatus: res.status,
+          rawResultCount: 0,
+          parsedCandidateCount: 0,
+          responseShape: "http_error",
+          errorCode: code,
+          elapsedMs: Date.now() - geocodeStarted,
+        });
+        // Hard stop on billing / permission / rate-limit — do not burn Autocomplete.
+        if (code === "geocode_over_query_limit" || code === "geocode_request_denied") {
+          return finish(null, code, {
+            ok: false,
+            status: code,
+            provider: "geocode",
+            rawResultCount: 0,
+            parsedResultCount: 0,
+            failureReason: code,
+            httpStatus: res.status,
+            query,
+          });
+        }
+        return runPlacesFallback(code);
+      }
+
+      let json: {
+        status?: string;
+        error_message?: string;
+        results?: LegacyGeocodeResult[];
+      };
+      try {
+        json = (await res.json()) as typeof json;
+      } catch {
+        console.warn(
+          "[GEOCODE_FAILURE_DETAIL]",
+          "code=geocode_decode_error",
+          `httpStatus=${res.status}`,
+          `query=${query}`,
+        );
+        logProviderResponse({
+          requestId,
+          provider: "geocode",
+          query,
+          httpStatus: res.status,
+          rawResultCount: 0,
+          parsedCandidateCount: 0,
+          responseShape: "decode_error",
+          errorCode: "geocode_decode_error",
+          elapsedMs: Date.now() - geocodeStarted,
+        });
+        return runPlacesFallback("geocode_decode_error");
+      }
+
+      const extracted = extractCoordinatesFromProviderResponse(json);
+      const statusCode = mapGeocodeApiStatus(json.status);
       logProviderResponse({
         requestId,
         provider: "geocode",
         query,
         httpStatus: res.status,
-        rawResultCount: 0,
-        parsedCandidateCount: 0,
-        responseShape: "decode_error",
-        errorCode: "geocode_decode_error",
+        rawResultCount: extracted.rawResultCount,
+        parsedCandidateCount: extracted.candidates.length,
+        responseShape: extracted.responseShape,
+        rawStatus: json.status ?? "",
+        errorCode: statusCode ?? undefined,
+        errorMessage: json.error_message,
+        hasGeometry: extracted.candidates.length > 0,
         elapsedMs: Date.now() - geocodeStarted,
       });
-      return runPlacesFallback("geocode_decode_error");
-    }
-
-    const extracted = extractCoordinatesFromProviderResponse(json);
-    const statusCode = mapGeocodeApiStatus(json.status);
-    logProviderResponse({
-      requestId,
-      provider: "geocode",
-      query,
-      httpStatus: res.status,
-      rawResultCount: extracted.rawResultCount,
-      parsedCandidateCount: extracted.candidates.length,
-      responseShape: extracted.responseShape,
-      rawStatus: json.status ?? "",
-      errorCode: statusCode ?? undefined,
-      errorMessage: json.error_message,
-      hasGeometry: extracted.candidates.length > 0,
-      elapsedMs: Date.now() - geocodeStarted,
-    });
-    logDestinationServerResponse({
-      provider: "geocode",
-      httpStatus: res.status,
-      googleStatus: json.status,
-      resultCount: extracted.rawResultCount,
-      errorMessage: json.error_message,
-      requestId,
-      elapsedMs: Date.now() - geocodeStarted,
-    });
-
-    const results = json.results ?? [];
-
-    // Soft-accept: any finite WGS84 coords are valid anchors (city / prefecture / locality).
-    if (extracted.candidates.length > 0) {
-      const preferredCountryCode = data.countryCode?.trim().toUpperCase() || undefined;
-      const destHint = query.split(/[,，]/)[0]?.trim() ?? query;
-      const picked =
-        results.length > 0
-          ? pickBestGeocodeResult(results, {
-              preferredCountryCode,
-              destinationHint: destHint,
-            })
-          : null;
-      let location = picked
-        ? legacyGeocodeToTripLocation(picked, { softAcceptCoords: true })
-        : null;
-      if (!location) {
-        const c = extracted.candidates[0]!;
-        if (isValidAnchorCoordinate(c.latitude, c.longitude)) {
-          const normalized = normalizeCountryReference(c.country, c.countryCode);
-          location = {
-            placeId: c.placeId ?? `geocode:${c.latitude},${c.longitude}`,
-            country: normalized.country || c.country || c.name || destHint,
-            city: c.name || destHint,
-            lat: c.latitude,
-            lng: c.longitude,
-            formattedName: c.formattedAddress || c.name || destHint,
-            displayLabel: c.formattedAddress || c.name || destHint,
-            address: c.formattedAddress,
-            timezone: undefined,
-            utcOffsetMinutes: null,
-          } satisfies TripLocation;
-        }
-      }
-
-      if (location && isValidAnchorCoordinate(location.lat, location.lng)) {
-        for (const c of extracted.candidates.slice(0, 5)) {
-          logAiPipeline(
-            "[DESTINATION_ANCHOR_CANDIDATE]",
-            `name=${c.name ?? location.city}`,
-            `placeId=${c.placeId ?? location.placeId}`,
-            `country=${c.country ?? location.country}`,
-            `latitude=${c.latitude}`,
-            `longitude=${c.longitude}`,
-            `types=${(c.types ?? []).join("|")}`,
-            `accepted=${c.latitude === location.lat && c.longitude === location.lng}`,
-            `rejectReason=${c.latitude === location.lat && c.longitude === location.lng ? "none" : "not_picked"}`,
-            `provider=geocode`,
-            `sourceShape=${c.sourceShape}`,
-          );
-        }
-        const providerResult = tripLocationToProviderResult(location, {
-          provider: "geocode",
-          query,
-          rawResultCount: extracted.rawResultCount,
-          httpStatus: res.status,
-          apiStatus: json.status ?? "OK",
-          sourceShape: "geocode_results",
-        });
-        return finish(location, null, providerResult);
-      }
-    }
-
-    if (statusCode) {
-      console.warn(
-        "[GEOCODE_FAILURE_DETAIL]",
-        `code=${statusCode}`,
-        `httpStatus=${res.status}`,
-        `rawStatus=${json.status ?? ""}`,
-        `query=${query}`,
-        json.error_message ? `error_message=${json.error_message}` : "",
-      );
-    } else if (!results.length) {
-      console.warn(
-        "[GEOCODE_FAILURE_DETAIL]",
-        "code=geocode_zero_results",
-        `httpStatus=${res.status}`,
-        `rawStatus=${json.status ?? "OK"}`,
-        `query=${query}`,
-      );
-    } else {
-      console.warn(
-        "[GEOCODE_FAILURE_DETAIL]",
-        "code=geocode_filtered_non_geographic",
-        `httpStatus=${res.status}`,
-        `rawStatus=${json.status ?? "OK"}`,
-        `query=${query}`,
-        `rawResultCount=${results.length}`,
-      );
-    }
-
-    // Hard stop: rate limit / permission — do not continue to Autocomplete.
-    if (
-      statusCode === "geocode_over_query_limit" ||
-      statusCode === "geocode_request_denied" ||
-      statusCode === "geocode_auth_error"
-    ) {
-      return finish(null, statusCode, {
-        ok: false,
-        status: json.status ?? statusCode,
+      logDestinationServerResponse({
         provider: "geocode",
-        rawResultCount: extracted.rawResultCount,
-        parsedResultCount: 0,
-        failureReason: statusCode,
         httpStatus: res.status,
-        query,
-        sourceShape: extracted.responseShape,
+        googleStatus: json.status,
+        resultCount: extracted.rawResultCount,
+        errorMessage: json.error_message,
+        requestId,
+        elapsedMs: Date.now() - geocodeStarted,
       });
-    }
 
-    // Geocode empty / filtered → Places Autocomplete + Details (when enabled).
-    return runPlacesFallback(
-      statusCode ??
-        (results.length ? "geocode_filtered_non_geographic" : "geocode_zero_results"),
-    );
-  },
+      const results = json.results ?? [];
+
+      // Soft-accept: any finite WGS84 coords are valid anchors (city / prefecture / locality).
+      if (extracted.candidates.length > 0) {
+        const preferredCountryCode = data.countryCode?.trim().toUpperCase() || undefined;
+        const destHint = query.split(/[,，]/)[0]?.trim() ?? query;
+        const picked =
+          results.length > 0
+            ? pickBestGeocodeResult(results, {
+                preferredCountryCode,
+                destinationHint: destHint,
+              })
+            : null;
+        let location = picked
+          ? legacyGeocodeToTripLocation(picked, { softAcceptCoords: true })
+          : null;
+        if (!location) {
+          const c = extracted.candidates[0]!;
+          if (isValidAnchorCoordinate(c.latitude, c.longitude)) {
+            const normalized = normalizeCountryReference(c.country, c.countryCode);
+            location = {
+              placeId: c.placeId ?? `geocode:${c.latitude},${c.longitude}`,
+              country: normalized.country || c.country || c.name || destHint,
+              city: c.name || destHint,
+              lat: c.latitude,
+              lng: c.longitude,
+              formattedName: c.formattedAddress || c.name || destHint,
+              displayLabel: c.formattedAddress || c.name || destHint,
+              address: c.formattedAddress,
+              timezone: undefined,
+              utcOffsetMinutes: null,
+            } satisfies TripLocation;
+          }
+        }
+
+        if (location && isValidAnchorCoordinate(location.lat, location.lng)) {
+          for (const c of extracted.candidates.slice(0, 5)) {
+            logAiPipeline(
+              "[DESTINATION_ANCHOR_CANDIDATE]",
+              `name=${c.name ?? location.city}`,
+              `placeId=${c.placeId ?? location.placeId}`,
+              `country=${c.country ?? location.country}`,
+              `latitude=${c.latitude}`,
+              `longitude=${c.longitude}`,
+              `types=${(c.types ?? []).join("|")}`,
+              `accepted=${c.latitude === location.lat && c.longitude === location.lng}`,
+              `rejectReason=${c.latitude === location.lat && c.longitude === location.lng ? "none" : "not_picked"}`,
+              `provider=geocode`,
+              `sourceShape=${c.sourceShape}`,
+            );
+          }
+          const providerResult = tripLocationToProviderResult(location, {
+            provider: "geocode",
+            query,
+            rawResultCount: extracted.rawResultCount,
+            httpStatus: res.status,
+            apiStatus: json.status ?? "OK",
+            sourceShape: "geocode_results",
+          });
+          return finish(location, null, providerResult);
+        }
+      }
+
+      if (statusCode) {
+        console.warn(
+          "[GEOCODE_FAILURE_DETAIL]",
+          `code=${statusCode}`,
+          `httpStatus=${res.status}`,
+          `rawStatus=${json.status ?? ""}`,
+          `query=${query}`,
+          json.error_message ? `error_message=${json.error_message}` : "",
+        );
+      } else if (!results.length) {
+        console.warn(
+          "[GEOCODE_FAILURE_DETAIL]",
+          "code=geocode_zero_results",
+          `httpStatus=${res.status}`,
+          `rawStatus=${json.status ?? "OK"}`,
+          `query=${query}`,
+        );
+      } else {
+        console.warn(
+          "[GEOCODE_FAILURE_DETAIL]",
+          "code=geocode_filtered_non_geographic",
+          `httpStatus=${res.status}`,
+          `rawStatus=${json.status ?? "OK"}`,
+          `query=${query}`,
+          `rawResultCount=${results.length}`,
+        );
+      }
+
+      // Hard stop: rate limit / permission — do not continue to Autocomplete.
+      if (
+        statusCode === "geocode_over_query_limit" ||
+        statusCode === "geocode_request_denied" ||
+        statusCode === "geocode_auth_error"
+      ) {
+        return finish(null, statusCode, {
+          ok: false,
+          status: json.status ?? statusCode,
+          provider: "geocode",
+          rawResultCount: extracted.rawResultCount,
+          parsedResultCount: 0,
+          failureReason: statusCode,
+          httpStatus: res.status,
+          query,
+          sourceShape: extracted.responseShape,
+        });
+      }
+
+      // Geocode empty / filtered → Places Autocomplete + Details (when enabled).
+      return runPlacesFallback(
+        statusCode ?? (results.length ? "geocode_filtered_non_geographic" : "geocode_zero_results"),
+      );
+    },
   );
 
 export const resolveTripLocation = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) => ResolveInput.parse(input))
   .handler(async ({ data }): Promise<{ location: TripLocation | null; error: string | null }> => {
     const { requireGoogleMapsServerKey } = await import("@/lib/google-maps.server");

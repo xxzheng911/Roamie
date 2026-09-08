@@ -15,6 +15,7 @@ import type {
   SubscriptionStatus,
   UsageCounters,
 } from "@/services/subscription/types";
+import { useAccess } from "@/hooks/use-access";
 
 type SubscriptionCtx = {
   status: SubscriptionStatus;
@@ -30,6 +31,7 @@ type SubscriptionCtx = {
 const Ctx = createContext<SubscriptionCtx | null>(null);
 
 export function SubscriptionProvider({ children }: { children: ReactNode }) {
+  const { hasPlusAccess, refresh: refreshAccess } = useAccess();
   const adapter = useMemo(() => createSubscriptionAdapter(), []);
   const [status, setStatus] = useState<SubscriptionStatus | null>(null);
   const [usage, setUsage] = useState<UsageCounters>(() => readLocalUsage());
@@ -43,10 +45,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       route: typeof location !== "undefined" ? location.pathname : "",
     });
     try {
-      const [nextStatus, nextUsage] = await Promise.all([
-        adapter.getStatus(),
-        adapter.getUsage(),
-      ]);
+      const [nextStatus, nextUsage] = await Promise.all([adapter.getStatus(), adapter.getUsage()]);
       setStatus(nextStatus);
       setUsage(nextUsage);
     } finally {
@@ -65,10 +64,17 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
 
   const checkFeature = useCallback(
     (feature: SubscriptionFeature): FeatureGateResult => {
-      if (!status) return { allowed: true };
-      return canUseFeature(status, usage, feature);
+      const authoritativeStatus: SubscriptionStatus = {
+        tier: hasPlusAccess ? "plus" : "free",
+        isActive: true,
+        expiresAt: null,
+        productId: null,
+        willRenew: false,
+        source: "local",
+      };
+      return canUseFeature(authoritativeStatus, usage, feature);
     },
-    [status, usage],
+    [hasPlusAccess, usage],
   );
 
   const recordUsage = useCallback((feature: SubscriptionFeature) => {
@@ -79,18 +85,27 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     async (productId: string) => {
       const next = await adapter.purchase(productId);
       setStatus(next);
+      refreshAccess();
     },
-    [adapter],
+    [adapter, refreshAccess],
   );
 
   const restore = useCallback(async () => {
     const next = await adapter.restore();
     setStatus(next);
-  }, [adapter]);
+    refreshAccess();
+  }, [adapter, refreshAccess]);
 
   const value = useMemo(
     () => ({
-      status: status ?? { tier: "free", isActive: true, expiresAt: null, productId: null, willRenew: false, source: "local" as const },
+      status: status ?? {
+        tier: "free",
+        isActive: true,
+        expiresAt: null,
+        productId: null,
+        willRenew: false,
+        source: "local" as const,
+      },
       usage,
       loading,
       checkFeature,

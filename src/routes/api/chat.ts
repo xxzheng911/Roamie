@@ -6,6 +6,7 @@ import {
   reserveServerCredits,
   settleServerCredits,
 } from "@/lib/ai/endpoint-guard.server";
+import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 
 const BodySchema = z.object({
   messages: z
@@ -70,6 +71,16 @@ export const Route = createFileRoute("/api/chat")({
         try {
           const auth = await requireAuthenticatedAiRequest(request);
           if (!auth) return Response.json({ error: "Unauthorized" }, { status: 401 });
+          const rate = checkRateLimit(
+            `chat:${auth.userId}:minute`,
+            SECURITY_RATE_LIMITS.chatPerMinute,
+            60_000,
+          );
+          if (!rate.allowed)
+            return Response.json(
+              { error: "rate_limited" },
+              { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
+            );
           const credits = await reserveServerCredits(auth, "PLACE_RECOMMENDATION", request);
           if (credits.response || !credits.reservation) return credits.response!;
           const reservation = credits.reservation;
@@ -113,8 +124,13 @@ export const Route = createFileRoute("/api/chat")({
             },
           });
         } catch (e) {
-          const message = e instanceof Error ? e.message : "AI 服務暫時無法使用";
-          return new Response(JSON.stringify({ error: message }), {
+          const requestId =
+            request.headers.get("x-roamie-request-id")?.trim() || crypto.randomUUID();
+          console.error("[CHAT_API_ERROR]", {
+            requestId,
+            error: e instanceof Error ? e.message : "unknown_error",
+          });
+          return new Response(JSON.stringify({ error: "service_unavailable", requestId }), {
             status: 500,
             headers: { "Content-Type": "application/json" },
           });

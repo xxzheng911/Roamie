@@ -1,7 +1,7 @@
 import type { PlanTier } from "@/lib/plan-tier/types";
 import { getUserPlanProfile } from "@/lib/plan-tier/storage";
 import type { AccessSnapshot, SubscriptionState, TestModeOverride, UserRole } from "./types";
-import { canShowDeveloperTools, isDeveloperAccount } from "./developer";
+import { canShowDeveloperTools, isDeveloperAccount, isDeveloperBuildEnabled } from "./developer";
 import {
   readMockSubscriptionTier,
   readTestModeOverride,
@@ -28,7 +28,7 @@ function resolveEffectiveTier(
 }
 
 export type BuildAccessSnapshotOptions = {
-  /** profiles.plan_tier === 'plus' 且 subscription_status 為 active/trialing */
+  /** Authoritative resolver result (legacy option name retained for test helpers). */
   profilePlusActive?: boolean;
 };
 
@@ -70,6 +70,9 @@ export function buildAccessSnapshot(
     devPlusMode,
     devSubscriptionMode,
     subscriptionPlusActive,
+    plusEntitlementSource: subscriptionPlusActive ? "app_store" : "none",
+    plusEntitlementActiveSources: subscriptionPlusActive ? ["app_store"] : [],
+    plusEntitlementExpiresAt: null,
     effectiveTier,
     developerUnlocked,
     canShowDeveloperTools: canShowDeveloperTools(email),
@@ -85,7 +88,7 @@ export function buildAccessSnapshotFromCanonical(
   const testModeOverride = canonical.devOverride;
   const developerUnlocked = isDeveloperAccount(email);
   const userRole: UserRole = developerUnlocked ? "developer" : "user";
-  const subscriptionPlusActive = canonical.profilePlusActive;
+  const subscriptionPlusActive = canonical.entitlement.hasPlus;
   const devPlusMode = testModeOverride === "force-plus";
   const hasPlusAccess = resolveHasPlusAccess(canonical);
   const effectiveTier = resolveTierFromCanonical(canonical);
@@ -105,6 +108,9 @@ export function buildAccessSnapshotFromCanonical(
     devPlusMode,
     devSubscriptionMode,
     subscriptionPlusActive,
+    plusEntitlementSource: canonical.entitlement.effectiveSource,
+    plusEntitlementActiveSources: canonical.entitlement.activeSources,
+    plusEntitlementExpiresAt: canonical.entitlement.expiresAt,
     effectiveTier,
     developerUnlocked,
     canShowDeveloperTools: canShowDeveloperTools(email),
@@ -115,6 +121,7 @@ export function buildAccessSnapshotFromCanonical(
 
 /** Sync client read — used before AI requests */
 export function resolveClientEffectiveTier(email?: string | null): PlanTier {
+  if (!isDeveloperBuildEnabled()) return "free";
   return buildAccessSnapshot(email).effectiveTier;
 }
 
@@ -123,17 +130,12 @@ export async function resolveEffectivePlanTierWithProfile(
   email?: string | null,
 ): Promise<PlanTier> {
   const snapshot = buildAccessSnapshot(email);
-  if (snapshot.developerUnlocked) return snapshot.effectiveTier;
+  if (isDeveloperBuildEnabled() && snapshot.developerUnlocked) return snapshot.effectiveTier;
 
   const plan = await getUserPlanProfile();
-  if (
-    plan.planTier === "plus" &&
-    (plan.subscriptionStatus === "active" || plan.subscriptionStatus === "trialing")
-  ) {
-    return "plus";
-  }
+  if (plan.hasPlus) return "plus";
 
-  return snapshot.effectiveTier;
+  return "free";
 }
 
 export function setMockSubscriptionTier(tier: SubscriptionState): void {

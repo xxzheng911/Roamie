@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 import type { LegDurationEstimate } from "@/lib/routes/types";
 
@@ -10,6 +11,7 @@ const InputSchema = z.object({
 });
 
 export const fetchPlaceTravelDurations = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) => InputSchema.parse(input))
   .handler(
     async ({ data }): Promise<{ durations: LegDurationEstimate | null; error: string | null }> => {

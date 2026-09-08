@@ -1,5 +1,4 @@
 import { getClientAuthSession } from "@/lib/auth-session";
-import { buildAccessSnapshot } from "@/lib/access";
 import { getUserPlanProfile } from "@/lib/plan-tier/storage";
 import { isPersonaTypeLabel, PERSONA_TYPE_LABELS } from "@/lib/personality";
 import type { TravelPreferences } from "@/lib/preferences-storage";
@@ -7,26 +6,20 @@ import type { UserProfile } from "@/lib/profile-storage";
 
 export async function resolveProfileHasPlusAccess(): Promise<boolean> {
   const session = await getClientAuthSession();
-  const email = session?.user?.email ?? null;
   const userId = session?.user?.id ?? null;
   let profilePlusActive = false;
   if (userId) {
     try {
       const plan = await getUserPlanProfile(userId);
-      profilePlusActive =
-        plan.planTier === "plus" &&
-        (plan.subscriptionStatus === "active" || plan.subscriptionStatus === "trialing");
+      profilePlusActive = plan.hasPlus;
     } catch {
       profilePlusActive = false;
     }
   }
-  return buildAccessSnapshot(email, { profilePlusActive }).hasPlusAccess;
+  return profilePlusActive;
 }
 
-export function shouldExposePlusPersona(
-  hasPlusAccess: boolean,
-  prefs: TravelPreferences,
-): boolean {
+export function shouldExposePlusPersona(hasPlusAccess: boolean, prefs: TravelPreferences): boolean {
   return hasPlusAccess && Boolean(prefs.onboarded);
 }
 
@@ -57,10 +50,7 @@ const EMPTY_PERSONA = {
   personalityImpression: "",
 } as const;
 
-export function gatePlusPersonaFields(
-  profile: UserProfile,
-  hasPlusAccess: boolean,
-): UserProfile {
+export function gatePlusPersonaFields(profile: UserProfile, hasPlusAccess: boolean): UserProfile {
   if (shouldExposePlusPersona(hasPlusAccess, profile.prefs)) return profile;
   return { ...profile, ...EMPTY_PERSONA };
 }

@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { z } from "zod";
 import { KAOHSIUNG_COORDS } from "@/lib/api/constants";
 import { geocodeReverseUrl } from "@/lib/google-maps-api";
@@ -69,7 +70,10 @@ async function reverseGeocodeCity(lat: number, lng: number, locale?: string): Pr
   return reverseGeocodeBigDataCloud(lat, lng);
 }
 
-async function fetchOpenMeteoCurrentFallback(lat: number, lng: number): Promise<{
+async function fetchOpenMeteoCurrentFallback(
+  lat: number,
+  lng: number,
+): Promise<{
   tempC: number | null;
   windKmh: number | null;
   weatherCode: number | null;
@@ -126,6 +130,7 @@ const ForecastInput = z.object({
 });
 
 export const getWeatherForecast = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) => ForecastInput.parse(input))
   .handler(async ({ data }): Promise<WeatherForecastResult> => {
     try {
@@ -148,13 +153,17 @@ export const getWeatherForecast = createServerFn({ method: "POST" })
   });
 
 export const getWeather = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
   .inputValidator((input) => Input.parse(input))
   .handler(async ({ data }): Promise<{ weather: WeatherSummary | null; error: string | null }> => {
     const { hasOpenWeatherApiKey } = await import("@/lib/openweather-key-resolve.server");
     console.info("[WEATHER_SERVICE_VERSION] v-runtime-fallback-001");
     console.info("[WEATHER_FETCH] start");
     console.info("[WEATHER_FETCH] keyLoaded=", hasOpenWeatherApiKey());
-    console.info("[WEATHER_FETCH] locationBucket=", `${data.lat.toFixed(2)},${data.lng.toFixed(2)}`);
+    console.info(
+      "[WEATHER_FETCH] locationBucket=",
+      `${data.lat.toFixed(2)},${data.lng.toFixed(2)}`,
+    );
     try {
       const openWeatherUrl =
         `https://api.openweathermap.org/data/3.0/onecall?lat=${data.lat}&lon=${data.lng}` +
@@ -220,7 +229,8 @@ export const getWeather = createServerFn({ method: "POST" })
         console.info("[WEATHER_FETCH] final result=", JSON.stringify(summary));
         return { weather: summary, error: null };
       } catch (fallbackErr) {
-        const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        const fallbackMsg =
+          fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
         console.error("[WEATHER_FETCH] fallback_error=", fallbackMsg);
         const fallback = buildUnavailableWeatherSummary();
         console.info("[WEATHER_FETCH] final result=", JSON.stringify(fallback));
@@ -230,26 +240,28 @@ export const getWeather = createServerFn({ method: "POST" })
   });
 
 /** dev / 連線測試：高雄市天氣 */
-export const weatherTestConnection = createServerFn({ method: "POST" }).handler(async () => {
-  const { lat, lng } = KAOHSIUNG_COORDS;
-  try {
-    const { openWeatherGetCurrent, openWeatherGetForecast } =
-      await import("@/lib/weather/openweather.server");
-    const [summary, forecast] = await Promise.all([
-      openWeatherGetCurrent(lat, lng, "高雄"),
-      openWeatherGetForecast(lat, lng, 3),
-    ]);
-    const today = forecast[0];
-    return {
-      ok: true as const,
-      city: summary.city,
-      temperature: summary.tempC,
-      description: summary.condition,
-      rainProbability: today?.precipProbability ?? summary.precipProbability ?? null,
-    };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "OpenWeather test failed";
-    console.error("[Weather] test connection failed:", msg);
-    return { ok: false as const, statusCode: 0, message: msg };
-  }
-});
+export const weatherTestConnection = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async () => {
+    const { lat, lng } = KAOHSIUNG_COORDS;
+    try {
+      const { openWeatherGetCurrent, openWeatherGetForecast } =
+        await import("@/lib/weather/openweather.server");
+      const [summary, forecast] = await Promise.all([
+        openWeatherGetCurrent(lat, lng, "高雄"),
+        openWeatherGetForecast(lat, lng, 3),
+      ]);
+      const today = forecast[0];
+      return {
+        ok: true as const,
+        city: summary.city,
+        temperature: summary.tempC,
+        description: summary.condition,
+        rainProbability: today?.precipProbability ?? summary.precipProbability ?? null,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "OpenWeather test failed";
+      console.error("[Weather] test connection failed:", msg);
+      return { ok: false as const, statusCode: 0, message: msg };
+    }
+  });

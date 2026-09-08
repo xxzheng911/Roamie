@@ -52,6 +52,7 @@ function readEnvFlag(): boolean | null {
 
 function readStorageFlag(): boolean | null {
   try {
+    if (!canUseRuntimeDebugOverrides()) return null;
     if (typeof localStorage === "undefined") return null;
     return parseTruthy(localStorage.getItem(REC_ENGINE_VALIDATOR_STORAGE_KEY));
   } catch {
@@ -85,6 +86,7 @@ export function setRecEngineValidatorEnabledOverride(enabled: boolean | null): v
 
 export function setRecEngineValidatorStorageFlag(enabled: boolean | null): void {
   try {
+    if (!canUseRuntimeDebugOverrides()) return;
     if (typeof localStorage === "undefined") return;
     if (enabled == null) {
       localStorage.removeItem(REC_ENGINE_VALIDATOR_STORAGE_KEY);
@@ -95,3 +97,4 @@ export function setRecEngineValidatorStorageFlag(enabled: boolean | null): void 
     /* ignore */
   }
 }
+import { canUseRuntimeDebugOverrides } from "@/lib/runtime-debug-overrides";
