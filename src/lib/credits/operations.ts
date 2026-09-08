@@ -9,7 +9,7 @@ export const INSUFFICIENT_CREDITS_PLACE_MESSAGE =
   "本月 AI 額度不足，無法取得新的地點推薦。升級 Plus 即可不限次數使用 AI 推薦。";
 
 export const INSUFFICIENT_CREDITS_ITINERARY_MESSAGE =
-  "本月 AI 額度不足，無法生成完整行程（需要 7 Credits）。升級 Plus 即可不限次數規劃旅程。";
+  "本月 AI 額度不足，暫時無法生成完整行程。升級 Plus 即可享有更多行程規劃額度。";
 
 export async function beginPlaceRecommendationCredits(opts: {
   hasPlusAccess: boolean;
