@@ -8,6 +8,9 @@ import { parsePlusEntitlementSnapshot } from "../src/lib/plan-tier/entitlement.t
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(join(root, path), "utf8");
 const migration = read("supabase/migrations/20260909090000_plus_entitlement_authority.sql");
+const resolverAuthority = read(
+  "supabase/migrations/20260909110000_plus_entitlement_resolver_authority.sql",
+);
 
 function test(name, fn) {
   fn();
@@ -78,6 +81,37 @@ test("migration defines active, expiry, revocation, and precedence contracts", (
   assert.ok(migration.indexOf("v_admin_active THEN") < migration.indexOf("v_promo_active THEN"));
   assert.ok(
     migration.indexOf("v_promo_active THEN") < migration.indexOf("v_subscription_active THEN"),
+  );
+});
+
+test("resolver uses JWT authority and denies cross-user authenticated access", () => {
+  assert.match(resolverAuthority, /SECURITY DEFINER/);
+  assert.match(resolverAuthority, /SET search_path = public, auth/);
+  assert.match(resolverAuthority, /v_role text := COALESCE\(auth\.role\(\), ''\)/);
+  assert.match(resolverAuthority, /IF v_role <> 'service_role'/);
+  assert.match(resolverAuthority, /auth\.uid\(\) IS NULL/);
+  assert.match(resolverAuthority, /auth\.uid\(\) IS DISTINCT FROM p_user_id/);
+  assert.match(resolverAuthority, /ERRCODE = '42501'/);
+  assert.doesNotMatch(resolverAuthority, /session_user|current_user/);
+});
+
+test("resolver authority migration preserves Plus OR and source precedence", () => {
+  assert.match(resolverAuthority, /v_subscription_active OR v_admin_active OR v_promo_active/);
+  assert.ok(
+    resolverAuthority.indexOf("v_admin_active THEN") <
+      resolverAuthority.indexOf("v_promo_active THEN"),
+  );
+  assert.ok(
+    resolverAuthority.indexOf("v_promo_active THEN") <
+      resolverAuthority.indexOf("v_subscription_active THEN"),
+  );
+  assert.match(
+    resolverAuthority,
+    /REVOKE ALL ON FUNCTION public\.resolve_user_plus_entitlement\(uuid\)[\s\S]*FROM PUBLIC, anon, authenticated, service_role/,
+  );
+  assert.match(
+    resolverAuthority,
+    /GRANT EXECUTE ON FUNCTION public\.resolve_user_plus_entitlement\(uuid\)[\s\S]*TO authenticated, service_role/,
   );
 });
 

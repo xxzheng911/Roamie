@@ -4,7 +4,30 @@ import { readFileSync } from "node:fs";
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const migration = read("supabase/migrations/20260909100000_security_remediation.sql");
 const entitlement = read("supabase/migrations/20260909090000_plus_entitlement_authority.sql");
+const resolverAuthority = read(
+  "supabase/migrations/20260909110000_plus_entitlement_resolver_authority.sql",
+);
 const staging = read("scripts/staging-security-verification.sql");
+
+assert.match(staging, /pg_temp\.assert_true\(\s*p_value boolean, p_test_name text\s*\)/);
+assert.match(
+  staging,
+  /pg_temp\.expect_sqlstate\(\s*p_statement text, p_expected_state text, p_test_name text\s*\)/,
+);
+assert.equal(
+  (staging.match(/VALUES \(p_test_name\)/g) ?? []).length,
+  2,
+  "both PL/pgSQL helpers must insert the parameter, not an ambiguous column name",
+);
+assert.doesNotMatch(staging, /VALUES \(test_name\)/);
+assert.doesNotMatch(staging, /assert_true\(value boolean, test_name text\)/);
+assert.match(
+  staging,
+  /request\.jwt\.claim\.role', 'service_role'[\s\S]*SET LOCAL ROLE service_role;[\s\S]*PERFORM public\.credits_ensure_account\(a\);[\s\S]*RESET ROLE;/,
+);
+assert.doesNotMatch(resolverAuthority, /session_user|current_user/);
+assert.match(resolverAuthority, /auth\.uid\(\) IS NULL/);
+assert.match(resolverAuthority, /auth\.uid\(\) IS DISTINCT FROM p_user_id/);
 
 assert.match(migration, /REVOKE INSERT ON public\.trip_members FROM anon, authenticated/);
 assert.doesNotMatch(migration, /user_id = auth\.uid\(\) AND is_owner = false/);
@@ -33,15 +56,16 @@ for (const sql of [entitlement, migration]) {
   );
 }
 for (const requiredCase of [
-  "A resolves B",
-  "A grants Plus",
+  "A cannot resolve B entitlement",
+  "authenticated cannot grant Plus",
   "expired invite",
   "cancelled invite",
-  "owner immutable",
-  "public profile fields only",
-  "debug credit RPC",
-  "B cleans A credits",
-  "active reservation retained",
+  "saved trip owner is immutable",
+  "collaborator public profile exposes only minimal fields",
+  "authenticated cannot execute credits debug RPC",
+  "B cannot run cross-user stale cleanup",
+  "active reservation remains reserved",
+  "ROLLBACK_COMPLETE",
 ]) {
   assert.match(staging, new RegExp(requiredCase));
 }

@@ -7,7 +7,7 @@ const files = readdirSync(migrationDirectory)
   .filter((file) => file.endsWith(".sql"))
   .sort();
 
-assert.equal(files.length, 25, "expected the complete 25-migration release chain");
+assert.equal(files.length, 26, "expected the complete 26-migration release chain");
 
 const versions = files.map((file) => file.split("_", 1)[0]);
 assert.equal(new Set(versions).size, versions.length, "migration versions must be unique");
@@ -117,6 +117,7 @@ const requiredOrder = [
   ["20260909090000", "CREATE TABLE IF NOT EXISTS public.user_plus_entitlements"],
   ["20260909090000", "CREATE OR REPLACE FUNCTION public.resolve_user_plus_entitlement"],
   ["20260909100000", "CREATE OR REPLACE FUNCTION public.protect_saved_trip_owner"],
+  ["20260909110000", "CREATE OR REPLACE FUNCTION public.resolve_user_plus_entitlement"],
 ];
 
 let previousIndex = -1;

@@ -1,66 +1,395 @@
--- STAGING ONLY. Replace every variable with disposable staging fixtures.
--- Run with psql as a DB administrator. All mutations roll back.
-\set ON_ERROR_STOP on
-\set user_a '00000000-0000-0000-0000-000000000001'
-\set user_b '00000000-0000-0000-0000-000000000002'
-\set admin_user '00000000-0000-0000-0000-000000000003'
-\set trip_a '00000000-0000-0000-0000-000000000010'
-\set pending_invite 'REPLACE_PENDING_TOKEN_AT_LEAST_20_CHARS'
-\set expired_invite 'REPLACE_EXPIRED_TOKEN_AT_LEAST_20_CHARS'
-\set cancelled_invite 'REPLACE_CANCELLED_TOKEN_AT_LEAST_20_CHARS'
+-- ROAMIE STAGING DYNAMIC SECURITY VERIFICATION -- STAGING PREVIEW BRANCH ONLY
+-- Execute as one complete batch. Every fixture mutation is rolled back.
+-- Requires migration 20260909110000_plus_entitlement_resolver_authority.
 
 BEGIN;
-CREATE OR REPLACE FUNCTION pg_temp.assert_true(value boolean, message text)
-RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-  IF NOT COALESCE(value, false) THEN RAISE EXCEPTION 'assertion failed: %', message; END IF;
-END $$;
-CREATE OR REPLACE FUNCTION pg_temp.expect_denied(statement text, message text)
+
+CREATE TEMP TABLE security_test_context (
+  user_a uuid NOT NULL, user_b uuid NOT NULL, trip_a uuid NOT NULL,
+  pending_invite_1 text NOT NULL, pending_invite_2 text NOT NULL,
+  expired_invite text NOT NULL, cancelled_invite text NOT NULL,
+  active_ledger uuid NOT NULL, stale_ledger uuid NOT NULL
+) ON COMMIT DROP;
+
+INSERT INTO security_test_context SELECT
+  gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
+  'stg_' || replace(gen_random_uuid()::text, '-', ''),
+  'stg_' || replace(gen_random_uuid()::text, '-', ''),
+  'stg_' || replace(gen_random_uuid()::text, '-', ''),
+  'stg_' || replace(gen_random_uuid()::text, '-', ''),
+  gen_random_uuid(), gen_random_uuid();
+
+CREATE TEMP TABLE security_test_results (
+  test_name text PRIMARY KEY, passed boolean NOT NULL DEFAULT true
+) ON COMMIT DROP;
+
+GRANT SELECT ON TABLE pg_temp.security_test_context TO anon, authenticated, service_role;
+GRANT SELECT, INSERT ON TABLE pg_temp.security_test_results TO anon, authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION pg_temp.assert_true(
+  p_value boolean, p_test_name text
+)
 RETURNS void LANGUAGE plpgsql SECURITY INVOKER AS $$
 BEGIN
-  EXECUTE statement;
-  RAISE EXCEPTION 'expected denial: %', message;
-EXCEPTION WHEN insufficient_privilege THEN NULL;
-  WHEN raise_exception THEN
-    IF SQLERRM LIKE 'expected denial:%' THEN RAISE; END IF;
-END $$;
+  IF NOT COALESCE(p_value, false) THEN
+    RAISE EXCEPTION 'assertion failed: %', p_test_name;
+  END IF;
+  INSERT INTO pg_temp.security_test_results(test_name) VALUES (p_test_name)
+  ON CONFLICT (test_name) DO NOTHING;
+END;
+$$;
 
--- Authenticated A: own resolve succeeds; cross-user/admin/profile authority is denied.
-SET LOCAL ROLE authenticated;
-SELECT set_config('request.jwt.claims', json_build_object('sub', :'user_a', 'role', 'authenticated')::text, true);
-SELECT pg_temp.assert_true(public.resolve_user_plus_entitlement(:'user_a'::uuid) ? 'has_plus', 'A resolves A');
-SELECT pg_temp.expect_denied(format('SELECT public.resolve_user_plus_entitlement(%L::uuid)', :'user_b'), 'A resolves B');
-SELECT pg_temp.expect_denied(format('SELECT public.admin_grant_plus_entitlement(%L::uuid,%L)', :'user_a', 'admin_grant'), 'A grants Plus');
-SELECT pg_temp.expect_denied('SELECT public.admin_revoke_plus_entitlement(gen_random_uuid())', 'A revokes Plus');
-SELECT pg_temp.expect_denied(format('UPDATE public.profiles SET plan_tier=%L WHERE id=%L::uuid', 'plus', :'user_a'), 'A edits subscription');
+CREATE OR REPLACE FUNCTION pg_temp.expect_sqlstate(
+  p_statement text, p_expected_state text, p_test_name text
+)
+RETURNS void LANGUAGE plpgsql SECURITY INVOKER AS $$
+DECLARE actual_state text; actual_message text;
+BEGIN
+  BEGIN
+    EXECUTE p_statement;
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS
+      actual_state = RETURNED_SQLSTATE, actual_message = MESSAGE_TEXT;
+    IF actual_state = p_expected_state THEN
+      INSERT INTO pg_temp.security_test_results(test_name) VALUES (p_test_name)
+      ON CONFLICT (test_name) DO NOTHING;
+      RETURN;
+    END IF;
+    RAISE EXCEPTION 'test "%" expected SQLSTATE %, got %: %',
+      p_test_name, p_expected_state, actual_state, actual_message;
+  END;
+  RAISE EXCEPTION 'test "%" expected SQLSTATE %, but statement succeeded',
+    p_test_name, p_expected_state;
+END;
+$$;
 
--- Authenticated B: direct membership, invalid invites, owner takeover, private profile and debug credits are denied.
-SELECT set_config('request.jwt.claims', json_build_object('sub', :'user_b', 'role', 'authenticated')::text, true);
-SELECT pg_temp.expect_denied(format('INSERT INTO public.trip_members(trip_id,user_id,is_owner,status) VALUES (%L::uuid,%L::uuid,false,%L)', :'trip_a', :'user_b', 'accepted'), 'membership without invite');
-SELECT pg_temp.expect_denied(format('SELECT public.accept_trip_invite(%L)', :'expired_invite'), 'expired invite');
-SELECT pg_temp.expect_denied(format('SELECT public.accept_trip_invite(%L)', :'cancelled_invite'), 'cancelled invite');
-SELECT pg_temp.assert_true(public.accept_trip_invite(:'pending_invite') = :'trip_a'::uuid, 'valid invite');
-SELECT pg_temp.assert_true((SELECT count(*) = 1 FROM public.trip_members WHERE trip_id=:'trip_a'::uuid AND user_id=:'user_b'::uuid), 'membership dedupe');
-UPDATE public.saved_trips SET updated_at=now() WHERE id=:'trip_a'::uuid;
-SELECT pg_temp.expect_denied(format('UPDATE public.saved_trips SET user_id=%L::uuid WHERE id=%L::uuid', :'user_b', :'trip_a'), 'owner immutable');
-SELECT pg_temp.assert_true(NOT EXISTS (
-  SELECT 1 FROM jsonb_object_keys(COALESCE((SELECT to_jsonb(p) FROM public.get_trip_member_public_profiles(:'trip_a'::uuid) p LIMIT 1),'{}'::jsonb)) key
-  WHERE key NOT IN ('user_id','display_name','avatar_url')), 'public profile fields only');
-SELECT pg_temp.assert_true(NOT EXISTS (SELECT 1 FROM public.profiles WHERE id=:'user_a'::uuid), 'B cannot read A profile');
-SELECT pg_temp.expect_denied('SELECT public.credits_debug_reset()', 'debug credit RPC');
-SELECT pg_temp.expect_denied(format('SELECT public.credits_release_stale_reservations(%L::uuid, interval %L)', :'user_a', '5 minutes'), 'B cleans A credits');
-SELECT public.credits_release_my_stale_reservations();
+-- Transaction-local Auth users. The auth trigger creates their profiles.
+INSERT INTO auth.users (id, email)
+SELECT user_a, 'security-a-' || replace(user_a::text, '-', '') || '@example.invalid'
+FROM pg_temp.security_test_context
+UNION ALL
+SELECT user_b, 'security-b-' || replace(user_b::text, '-', '') || '@example.invalid'
+FROM pg_temp.security_test_context;
 
--- Service role: grant/revoke and global cleanup succeed; active reservations remain active.
-RESET ROLE;
+-- Defensive profiles in case the auth trigger is disabled.
+INSERT INTO public.profiles (id, display_name)
+SELECT user_a, 'Security Test A' FROM pg_temp.security_test_context
+UNION ALL
+SELECT user_b, 'Security Test B' FROM pg_temp.security_test_context
+ON CONFLICT (id) DO NOTHING;
+
+UPDATE public.profiles SET
+  plan_tier = 'free', subscription_status = 'inactive',
+  subscription_provider = 'none', plus_available = false
+WHERE id IN (
+  SELECT user_a FROM pg_temp.security_test_context
+  UNION ALL SELECT user_b FROM pg_temp.security_test_context
+);
+
+DELETE FROM public.user_plus_entitlements WHERE user_id IN (
+  SELECT user_a FROM pg_temp.security_test_context
+  UNION ALL SELECT user_b FROM pg_temp.security_test_context
+);
+
+-- Trip and invite fixtures.
+INSERT INTO public.saved_trips (id, user_id, title, payload)
+SELECT trip_a, user_a, '__staging_security_verification__', '{}'::jsonb
+FROM pg_temp.security_test_context;
+
+INSERT INTO public.trip_invites
+  (trip_id, inviter_id, invitee_email, token, status, expires_at)
+SELECT trip_a, user_a, 'security-verification@example.invalid',
+  pending_invite_1, 'pending', now() + interval '1 day'
+FROM pg_temp.security_test_context
+UNION ALL
+SELECT trip_a, user_a, 'security-verification@example.invalid',
+  pending_invite_2, 'pending', now() + interval '1 day'
+FROM pg_temp.security_test_context
+UNION ALL
+SELECT trip_a, user_a, 'security-verification@example.invalid',
+  expired_invite, 'pending', now() - interval '1 day'
+FROM pg_temp.security_test_context
+UNION ALL
+SELECT trip_a, user_a, 'security-verification@example.invalid',
+  cancelled_invite, 'cancelled', now() + interval '1 day'
+FROM pg_temp.security_test_context;
+
+-- Credit fixtures: A has one active reservation; B has one stale reservation.
+SELECT set_config('request.jwt.claims',
+  jsonb_build_object('role', 'service_role')::text, true);
+SELECT set_config('request.jwt.claim.sub', '', true);
+SELECT set_config('request.jwt.claim.role', 'service_role', true);
 SET LOCAL ROLE service_role;
-SELECT set_config('request.jwt.claims', json_build_object('sub', :'admin_user', 'role', 'service_role')::text, true);
-SELECT public.admin_grant_plus_entitlement(:'user_a'::uuid,'admin_grant',NULL,'staging verification',:'admin_user'::uuid);
-SELECT pg_temp.assert_true((public.resolve_user_plus_entitlement(:'user_a'::uuid)->>'has_plus')::boolean, 'admin Plus active');
-SELECT pg_temp.assert_true(public.resolve_user_plus_entitlement(:'user_a'::uuid)->>'effective_source'='admin_grant', 'admin precedence');
-SELECT pg_temp.assert_true(public.credits_release_stale_reservations(:'user_a'::uuid, interval '5 minutes') >= 0, 'global cleanup');
+
+DO $$
+DECLARE a uuid; b uuid;
+BEGIN
+  SELECT user_a, user_b INTO a, b FROM pg_temp.security_test_context;
+  PERFORM public.credits_ensure_account(a);
+  PERFORM public.credits_ensure_account(b);
+END;
+$$;
+
+RESET ROLE;
+SELECT set_config('request.jwt.claims', '{}', true);
+SELECT set_config('request.jwt.claim.sub', '', true);
+SELECT set_config('request.jwt.claim.role', '', true);
+
+INSERT INTO public.credit_ledger
+  (id, user_id, feature_type, amount, status, request_id,
+   idempotency_key, metadata, environment, created_at)
+SELECT active_ledger, user_a, 'PLACE_RECOMMENDATION', 1, 'reserved',
+  '__staging_security_active__',
+  '__staging_security_active_' || active_ledger::text,
+  '{}'::jsonb, 'production', now()
+FROM pg_temp.security_test_context
+UNION ALL
+SELECT stale_ledger, user_b, 'PLACE_RECOMMENDATION', 1, 'reserved',
+  '__staging_security_stale__',
+  '__staging_security_stale_' || stale_ledger::text,
+  '{}'::jsonb, 'production', now() - interval '10 minutes'
+FROM pg_temp.security_test_context;
+
+UPDATE public.credit_accounts AS account
+SET reserved_credits = account.reserved_credits + 1
+WHERE account.user_id IN (
+  SELECT user_a FROM pg_temp.security_test_context
+  UNION ALL SELECT user_b FROM pg_temp.security_test_context
+);
+
+-- ANON
+SELECT set_config('request.jwt.claims', jsonb_build_object('role', 'anon')::text, true);
+SELECT set_config('request.jwt.claim.sub', '', true);
+SELECT set_config('request.jwt.claim.role', 'anon', true);
+SET LOCAL ROLE anon;
+
+SELECT pg_temp.expect_sqlstate(
+  format('SELECT public.resolve_user_plus_entitlement(%L::uuid)',
+    (SELECT user_a::text FROM pg_temp.security_test_context)),
+  '42501', 'anon cannot resolve entitlement'
+);
+RESET ROLE;
+
+-- AUTHENTICATED USER A
+SELECT set_config('request.jwt.claims', jsonb_build_object(
+  'sub', (SELECT user_a FROM pg_temp.security_test_context),
+  'role', 'authenticated')::text, true);
+SELECT set_config('request.jwt.claim.sub',
+  (SELECT user_a::text FROM pg_temp.security_test_context), true);
+SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+SET LOCAL ROLE authenticated;
+
+SELECT pg_temp.assert_true(
+  public.resolve_user_plus_entitlement(
+    (SELECT user_a FROM pg_temp.security_test_context)) ? 'has_plus',
+  'A resolves own entitlement'
+);
+SELECT pg_temp.expect_sqlstate(
+  format('SELECT public.resolve_user_plus_entitlement(%L::uuid)',
+    (SELECT user_b::text FROM pg_temp.security_test_context)),
+  '42501', 'A cannot resolve B entitlement'
+);
+SELECT pg_temp.expect_sqlstate(
+  format('SELECT public.admin_grant_plus_entitlement(%L::uuid, %L)',
+    (SELECT user_a::text FROM pg_temp.security_test_context), 'admin_grant'),
+  '42501', 'authenticated cannot grant Plus'
+);
+SELECT pg_temp.expect_sqlstate(
+  'SELECT public.admin_revoke_plus_entitlement(gen_random_uuid())',
+  '42501', 'authenticated cannot revoke Plus'
+);
+SELECT pg_temp.expect_sqlstate(
+  format('UPDATE public.profiles SET plan_tier = %L WHERE id = %L::uuid',
+    'plus', (SELECT user_a::text FROM pg_temp.security_test_context)),
+  '42501', 'authenticated cannot modify protected subscription columns'
+);
+SELECT pg_temp.assert_true(
+  public.credits_release_my_stale_reservations() = 0,
+  'self cleanup does not remove active reservation'
+);
+RESET ROLE;
+
+-- AUTHENTICATED USER B
+SELECT set_config('request.jwt.claims', jsonb_build_object(
+  'sub', (SELECT user_b FROM pg_temp.security_test_context),
+  'role', 'authenticated')::text, true);
+SELECT set_config('request.jwt.claim.sub',
+  (SELECT user_b::text FROM pg_temp.security_test_context), true);
+SELECT set_config('request.jwt.claim.role', 'authenticated', true);
+SET LOCAL ROLE authenticated;
+
+SELECT pg_temp.expect_sqlstate(
+  format('INSERT INTO public.trip_members
+    (trip_id,user_id,is_owner,status) VALUES (%L::uuid,%L::uuid,false,%L)',
+    (SELECT trip_a::text FROM pg_temp.security_test_context),
+    (SELECT user_b::text FROM pg_temp.security_test_context), 'accepted'),
+  '42501', 'B cannot self-enroll without invite'
+);
+SELECT pg_temp.expect_sqlstate(
+  format('SELECT public.accept_trip_invite(%L)',
+    (SELECT expired_invite FROM pg_temp.security_test_context)),
+  '42501', 'expired invite is rejected'
+);
+SELECT pg_temp.expect_sqlstate(
+  format('SELECT public.accept_trip_invite(%L)',
+    (SELECT cancelled_invite FROM pg_temp.security_test_context)),
+  '42501', 'cancelled invite is rejected'
+);
+SELECT pg_temp.assert_true(
+  public.accept_trip_invite(
+    (SELECT pending_invite_1 FROM pg_temp.security_test_context)) =
+    (SELECT trip_a FROM pg_temp.security_test_context),
+  'valid invite is accepted'
+);
+SELECT pg_temp.assert_true(
+  public.accept_trip_invite(
+    (SELECT pending_invite_2 FROM pg_temp.security_test_context)) =
+    (SELECT trip_a FROM pg_temp.security_test_context),
+  'second valid invite is accepted idempotently'
+);
+SELECT pg_temp.assert_true((
+  SELECT count(*) = 1 FROM public.trip_members
+  WHERE trip_id = (SELECT trip_a FROM pg_temp.security_test_context)
+    AND user_id = (SELECT user_b FROM pg_temp.security_test_context)
+), 'membership is deduplicated');
+
+UPDATE public.saved_trips
+SET description = '__staging_collaborator_update__'
+WHERE id = (SELECT trip_a FROM pg_temp.security_test_context);
+
+SELECT pg_temp.assert_true((
+  SELECT description = '__staging_collaborator_update__'
+  FROM public.saved_trips
+  WHERE id = (SELECT trip_a FROM pg_temp.security_test_context)
+), 'collaborator can update permitted trip content');
+
+SELECT pg_temp.expect_sqlstate(
+  format('UPDATE public.saved_trips SET user_id=%L::uuid WHERE id=%L::uuid',
+    (SELECT user_b::text FROM pg_temp.security_test_context),
+    (SELECT trip_a::text FROM pg_temp.security_test_context)),
+  '42501', 'saved trip owner is immutable'
+);
+SELECT pg_temp.assert_true((
+  SELECT count(*) = 2 FROM public.get_trip_member_public_profiles(
+    (SELECT trip_a FROM pg_temp.security_test_context))
+), 'collaborator public profile RPC returns accepted members');
 SELECT pg_temp.assert_true(NOT EXISTS (
-  SELECT 1 FROM public.credit_ledger WHERE user_id=:'user_a'::uuid AND status='rolled_back'
-  AND rolled_back_at >= now()-interval '10 seconds' AND created_at >= now()-interval '5 minutes'), 'active reservation retained');
+  SELECT 1 FROM public.get_trip_member_public_profiles(
+    (SELECT trip_a FROM pg_temp.security_test_context)) AS profile
+  CROSS JOIN LATERAL jsonb_object_keys(to_jsonb(profile)) AS key
+  WHERE key NOT IN ('user_id','display_name','avatar_url')
+), 'collaborator public profile exposes only minimal fields');
+SELECT pg_temp.assert_true(NOT EXISTS (
+  SELECT 1 FROM public.profiles
+  WHERE id = (SELECT user_a FROM pg_temp.security_test_context)
+), 'B cannot directly read A private profile');
+SELECT pg_temp.expect_sqlstate(
+  'SELECT public.credits_debug_reset()', '42501',
+  'authenticated cannot execute credits debug RPC'
+);
+SELECT pg_temp.expect_sqlstate(
+  format('SELECT public.credits_release_stale_reservations(%L::uuid,interval %L)',
+    (SELECT user_a::text FROM pg_temp.security_test_context), '5 minutes'),
+  '42501', 'B cannot run cross-user stale cleanup'
+);
+RESET ROLE;
+
+-- SERVICE ROLE
+SELECT set_config('request.jwt.claims',
+  jsonb_build_object('role', 'service_role')::text, true);
+SELECT set_config('request.jwt.claim.sub', '', true);
+SELECT set_config('request.jwt.claim.role', 'service_role', true);
+SET LOCAL ROLE service_role;
+
+SELECT public.admin_grant_plus_entitlement(
+  (SELECT user_a FROM pg_temp.security_test_context),
+  'admin_grant', NULL, '__staging_security_verification__', NULL
+);
+SELECT pg_temp.assert_true((
+  public.resolve_user_plus_entitlement(
+    (SELECT user_a FROM pg_temp.security_test_context))->>'has_plus'
+)::boolean, 'service role permanent Plus grant is active');
+SELECT pg_temp.assert_true(
+  public.resolve_user_plus_entitlement(
+    (SELECT user_a FROM pg_temp.security_test_context))->>'effective_source' = 'admin_grant',
+  'admin grant has expected Plus precedence'
+);
+SELECT pg_temp.assert_true(
+  public.credits_release_stale_reservations(
+    (SELECT user_b FROM pg_temp.security_test_context), interval '5 minutes') = 1,
+  'service role global cleanup releases stale reservation'
+);
+SELECT pg_temp.assert_true(public.admin_revoke_plus_entitlement((
+  SELECT id FROM public.user_plus_entitlements
+  WHERE user_id = (SELECT user_a FROM pg_temp.security_test_context)
+    AND source = 'admin_grant' AND revoked_at IS NULL
+  ORDER BY granted_at DESC LIMIT 1
+), '__staging_security_verification_revoke__', NULL),
+  'service role can revoke Plus grant'
+);
+SELECT pg_temp.assert_true(NOT (
+  public.resolve_user_plus_entitlement(
+    (SELECT user_a FROM pg_temp.security_test_context))->>'has_plus'
+)::boolean, 'revoked admin grant no longer grants Plus');
+RESET ROLE;
+
+SELECT set_config('request.jwt.claims', '{}', true);
+SELECT set_config('request.jwt.claim.sub', '', true);
+SELECT set_config('request.jwt.claim.role', '', true);
+
+-- Exact ledger outcome assertions as the SQL Editor administrator.
+SELECT pg_temp.assert_true(EXISTS (
+  SELECT 1 FROM public.credit_ledger
+  WHERE id = (SELECT active_ledger FROM pg_temp.security_test_context)
+    AND status = 'reserved' AND rolled_back_at IS NULL
+), 'active reservation remains reserved');
+SELECT pg_temp.assert_true(EXISTS (
+  SELECT 1 FROM public.credit_ledger
+  WHERE id = (SELECT stale_ledger FROM pg_temp.security_test_context)
+    AND status = 'rolled_back'
+), 'stale reservation was rolled back');
+
+DO $$
+DECLARE assertion_count integer;
+BEGIN
+  SELECT count(*) INTO assertion_count FROM pg_temp.security_test_results;
+  IF assertion_count <> 27 THEN
+    RAISE EXCEPTION 'expected 27 completed security assertions, got %', assertion_count;
+  END IF;
+END;
+$$;
+
+SELECT test_name, passed FROM pg_temp.security_test_results ORDER BY test_name;
+SELECT jsonb_build_object(
+  'status','PASS', 'assertionCount',count(*), 'transactionWillRollback',true
+) AS staging_security_verification
+FROM pg_temp.security_test_results;
 
 ROLLBACK;
+
+-- This result appears only after ROLLBACK. Every count must be zero.
+SELECT jsonb_build_object(
+  'status', 'ROLLBACK_COMPLETE',
+  'authUsersRemaining', (
+    SELECT count(*) FROM auth.users
+    WHERE email LIKE 'security-a-%@example.invalid'
+       OR email LIKE 'security-b-%@example.invalid'
+  ),
+  'tripsRemaining', (
+    SELECT count(*) FROM public.saved_trips
+    WHERE title = '__staging_security_verification__'
+  ),
+  'invitesRemaining', (
+    SELECT count(*) FROM public.trip_invites
+    WHERE invitee_email = 'security-verification@example.invalid'
+  ),
+  'entitlementsRemaining', (
+    SELECT count(*) FROM public.user_plus_entitlements
+    WHERE reason = '__staging_security_verification__'
+       OR revocation_reason = '__staging_security_verification_revoke__'
+  ),
+  'creditRowsRemaining', (
+    SELECT count(*) FROM public.credit_ledger
+    WHERE request_id IN ('__staging_security_active__','__staging_security_stale__')
+  )
+) AS rollback_verification;
