@@ -7,6 +7,9 @@ const entitlement = read("supabase/migrations/20260909090000_plus_entitlement_au
 const resolverAuthority = read(
   "supabase/migrations/20260909110000_plus_entitlement_resolver_authority.sql",
 );
+const profileAuthority = read(
+  "supabase/migrations/20260909120000_profile_subscription_authority_guard.sql",
+);
 const staging = read("scripts/staging-security-verification.sql");
 
 assert.match(staging, /pg_temp\.assert_true\(\s*p_value boolean, p_test_name text\s*\)/);
@@ -16,8 +19,8 @@ assert.match(
 );
 assert.equal(
   (staging.match(/VALUES \(p_test_name\)/g) ?? []).length,
-  2,
-  "both PL/pgSQL helpers must insert the parameter, not an ambiguous column name",
+  3,
+  "all PL/pgSQL helpers must insert the parameter, not an ambiguous column name",
 );
 assert.doesNotMatch(staging, /VALUES \(test_name\)/);
 assert.doesNotMatch(staging, /assert_true\(value boolean, test_name text\)/);
@@ -28,6 +31,34 @@ assert.match(
 assert.doesNotMatch(resolverAuthority, /session_user|current_user/);
 assert.match(resolverAuthority, /auth\.uid\(\) IS NULL/);
 assert.match(resolverAuthority, /auth\.uid\(\) IS DISTINCT FROM p_user_id/);
+assert.match(profileAuthority, /SECURITY INVOKER/);
+assert.match(profileAuthority, /SET search_path = public, auth/);
+assert.match(
+  profileAuthority,
+  /v_privileged boolean := COALESCE\(auth\.role\(\), ''\) = 'service_role'/,
+);
+assert.doesNotMatch(profileAuthority, /session_user|current_user|postgres|supabase_admin/);
+for (const field of [
+  "plan_tier",
+  "subscription_status",
+  "subscription_provider",
+  "plus_available",
+]) {
+  assert.match(profileAuthority, new RegExp(`NEW\\.${field}`));
+}
+assert.match(
+  profileAuthority,
+  /profiles_protect_subscription_columns[\s\S]*protect_profile_subscription_columns/,
+);
+for (const dynamicCase of [
+  "anon cannot update profile",
+  "authenticated can update normal profile fields",
+  "authenticated cannot modify protected subscription columns",
+  "service role can update protected subscription columns",
+]) {
+  assert.match(staging, new RegExp(dynamicCase));
+}
+assert.match(staging, /expected 30 completed security assertions/);
 
 assert.match(migration, /REVOKE INSERT ON public\.trip_members FROM anon, authenticated/);
 assert.doesNotMatch(migration, /user_id = auth\.uid\(\) AND is_owner = false/);

@@ -1,6 +1,6 @@
 -- ROAMIE STAGING DYNAMIC SECURITY VERIFICATION -- STAGING PREVIEW BRANCH ONLY
 -- Execute as one complete batch. Every fixture mutation is rolled back.
--- Requires migration 20260909110000_plus_entitlement_resolver_authority.
+-- Requires migration 20260909120000_profile_subscription_authority_guard.
 
 BEGIN;
 
@@ -60,6 +60,33 @@ BEGIN
   END;
   RAISE EXCEPTION 'test "%" expected SQLSTATE %, but statement succeeded',
     p_test_name, p_expected_state;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION pg_temp.expect_denied_or_zero_rows(
+  p_statement text, p_test_name text
+)
+RETURNS void LANGUAGE plpgsql SECURITY INVOKER AS $$
+DECLARE
+  v_row_count bigint;
+  v_sqlstate text;
+BEGIN
+  BEGIN
+    EXECUTE p_statement;
+    GET DIAGNOSTICS v_row_count = ROW_COUNT;
+    IF v_row_count <> 0 THEN
+      RAISE EXCEPTION 'test "%" unexpectedly changed % row(s)',
+        p_test_name, v_row_count;
+    END IF;
+  EXCEPTION WHEN insufficient_privilege THEN
+    GET STACKED DIAGNOSTICS v_sqlstate = RETURNED_SQLSTATE;
+    IF v_sqlstate <> '42501' THEN
+      RAISE;
+    END IF;
+  END;
+
+  INSERT INTO pg_temp.security_test_results(test_name) VALUES (p_test_name)
+  ON CONFLICT (test_name) DO NOTHING;
 END;
 $$;
 
@@ -168,6 +195,12 @@ SELECT pg_temp.expect_sqlstate(
     (SELECT user_a::text FROM pg_temp.security_test_context)),
   '42501', 'anon cannot resolve entitlement'
 );
+SELECT pg_temp.expect_denied_or_zero_rows(
+  format('UPDATE public.profiles SET display_name=%L WHERE id=%L::uuid',
+    '__anon_profile_update_must_not_persist__',
+    (SELECT user_a::text FROM pg_temp.security_test_context)),
+  'anon cannot update profile'
+);
 RESET ROLE;
 
 -- AUTHENTICATED USER A
@@ -203,6 +236,14 @@ SELECT pg_temp.expect_sqlstate(
     'plus', (SELECT user_a::text FROM pg_temp.security_test_context)),
   '42501', 'authenticated cannot modify protected subscription columns'
 );
+UPDATE public.profiles
+SET display_name = 'Security Test A Normal Update'
+WHERE id = (SELECT user_a FROM pg_temp.security_test_context);
+SELECT pg_temp.assert_true((
+  SELECT display_name = 'Security Test A Normal Update'
+  FROM public.profiles
+  WHERE id = (SELECT user_a FROM pg_temp.security_test_context)
+), 'authenticated can update normal profile fields');
 SELECT pg_temp.assert_true(
   public.credits_release_my_stale_reservations() = 0,
   'self cleanup does not remove active reservation'
@@ -301,6 +342,18 @@ SELECT set_config('request.jwt.claim.sub', '', true);
 SELECT set_config('request.jwt.claim.role', 'service_role', true);
 SET LOCAL ROLE service_role;
 
+UPDATE public.profiles
+SET plus_available = true
+WHERE id = (SELECT user_a FROM pg_temp.security_test_context);
+SELECT pg_temp.assert_true((
+  SELECT plus_available
+  FROM public.profiles
+  WHERE id = (SELECT user_a FROM pg_temp.security_test_context)
+), 'service role can update protected subscription columns');
+UPDATE public.profiles
+SET plus_available = false
+WHERE id = (SELECT user_a FROM pg_temp.security_test_context);
+
 SELECT public.admin_grant_plus_entitlement(
   (SELECT user_a FROM pg_temp.security_test_context),
   'admin_grant', NULL, '__staging_security_verification__', NULL
@@ -353,8 +406,8 @@ DO $$
 DECLARE assertion_count integer;
 BEGIN
   SELECT count(*) INTO assertion_count FROM pg_temp.security_test_results;
-  IF assertion_count <> 27 THEN
-    RAISE EXCEPTION 'expected 27 completed security assertions, got %', assertion_count;
+  IF assertion_count <> 30 THEN
+    RAISE EXCEPTION 'expected 30 completed security assertions, got %', assertion_count;
   END IF;
 END;
 $$;
@@ -374,6 +427,15 @@ SELECT jsonb_build_object(
     SELECT count(*) FROM auth.users
     WHERE email LIKE 'security-a-%@example.invalid'
        OR email LIKE 'security-b-%@example.invalid'
+  ),
+  'profilesRemaining', (
+    SELECT count(*) FROM public.profiles
+    WHERE display_name IN (
+      'Security Test A',
+      'Security Test B',
+      'Security Test A Normal Update',
+      '__anon_profile_update_must_not_persist__'
+    )
   ),
   'tripsRemaining', (
     SELECT count(*) FROM public.saved_trips
