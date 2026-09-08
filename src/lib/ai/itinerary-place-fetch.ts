@@ -3,6 +3,7 @@ import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { ChatPlaceItem, ChatPlanningSession } from "@/lib/chat-session";
 import type { ChatMsg } from "@/lib/chat-history";
+import { filterPlanningRejectedPlaces } from "@/lib/ai/planning-conversation-constraints";
 import { mapPlaceResultToChatItem } from "@/lib/chat-session";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { wrapPlannerPlaceSearchViaGateway } from "@/lib/pie/planner-search";
@@ -2379,7 +2380,10 @@ export async function prepareDirectItinerarySession(params: {
 
   const syncedSession = syncSessionPlaceMemory(session);
   const { places: rawSessionPlaces, source } = resolveItineraryPlaceSources(syncedSession, msgs);
-  let sessionPlaces = preparePlacesForItineraryBuild(rawSessionPlaces, label);
+  let sessionPlaces = preparePlacesForItineraryBuild(
+    filterPlanningRejectedPlaces(rawSessionPlaces, syncedSession),
+    label,
+  );
 
   // Recommendation → Planner: seed Candidate Pool from chat cards before Places mapping
   {

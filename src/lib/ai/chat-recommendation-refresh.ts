@@ -27,6 +27,10 @@ import {
   type RecommendationIntent,
 } from "@/lib/ai/recommendation-refinement/types";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import {
+  dayPlanToChatPlaces,
+  type AiDayPlan,
+} from "@/lib/ai/ai-day-plan-source";
 
 export const CHAT_STATE_MACHINE_RECOVERY_MESSAGE =
   "我剛剛整理時卡住了，我再幫你重新推薦一次。";
@@ -138,6 +142,27 @@ export function extractRecommendedFromMsgs(msgs: ChatMsg[]): ReturnType<typeof r
     if (m.role === "assistant" && m.roamie?.recommendations?.length) {
       return m.roamie.recommendations.map((rec) => roamieRecToChatItem(rec));
     }
+  }
+  return [];
+}
+
+/** Last assistant-rendered place set; authority for the next referential user turn. */
+export function extractLatestShownCandidatesFromMsgs(
+  msgs: ChatMsg[],
+): ReturnType<typeof roamieRecToChatItem>[] {
+  for (let index = msgs.length - 1; index >= 0; index -= 1) {
+    const message = msgs[index];
+    if (message.role !== "assistant") continue;
+    if (message.planningCandidateContext?.candidates.length) {
+      return message.planningCandidateContext.candidates;
+    }
+    if (message.roamie?.recommendations?.length) {
+      return message.roamie.recommendations.map((recommendation) =>
+        roamieRecToChatItem(recommendation),
+      );
+    }
+    const dayPlan = (message.roamie as { dayPlan?: AiDayPlan } | undefined)?.dayPlan;
+    if (dayPlan?.items.length) return dayPlanToChatPlaces(dayPlan);
   }
   return [];
 }
@@ -283,7 +308,17 @@ export function collectExcludePlaceIds(session: ChatPlanningSession, msgs?: Chat
   const fromSelected = extractPlaceIds(session.selectedPlaces ?? []);
   const fromMsgs = extractPlaceIds(extractAllRecommendedFromMsgs(msgs ?? []));
   const fromStops = extractPlaceIds(session.plannedStops ?? []);
-  return [...new Set([...fromSession, ...fromPlaces, ...fromSelected, ...fromMsgs, ...fromStops])];
+  const rejected = session.planningConstraints?.rejectedCandidateIds ?? [];
+  return [
+    ...new Set([
+      ...fromSession,
+      ...fromPlaces,
+      ...fromSelected,
+      ...fromMsgs,
+      ...fromStops,
+      ...rejected,
+    ]),
+  ];
 }
 
 /** 切換行程風格時：只排除相同 Google place_id，不因名稱或 fallback id 擋住新風格 */

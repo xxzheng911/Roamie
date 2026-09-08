@@ -148,10 +148,14 @@ export type ItineraryComposedDayPlanLike = {
 export type ItineraryValidatorInput = {
   plans: readonly ItineraryComposedDayPlanLike[];
   requestedDays: number;
+  generationId?: string;
+  validationStage?: "initial" | `replan_${number}` | "final";
   style?: import("@/lib/ai/ai-trip-style").TripStyleKey;
   plannedDate?: string;
   endDate?: string;
   excludePlaceIds?: readonly string[];
+  /** Metadata for explicit place exclusions; used only to prove parent→descendant venue relations. */
+  excludedPlaces?: readonly import("@/lib/place-result").PlaceResult[];
   rejectedPlaceNames?: readonly string[];
   lockedPlaceIds?: readonly string[];
   /** Selected combination / user-locked place names — never remove or replace. */

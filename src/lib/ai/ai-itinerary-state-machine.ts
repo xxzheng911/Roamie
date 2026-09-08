@@ -18,12 +18,15 @@ import {
 import {
   buildFallbackItineraryFromPlaces,
   coalesceItineraryItems,
+  describeItineraryClientPayloadShape,
   describeGenerateItineraryRawShape,
   hasCompleteItineraryPayload,
   hasValidItineraryStops,
   isGenerateItineraryFailure,
+  missingGenerateItineraryResultFields,
   ITINERARY_GENERATION_FAILED_MESSAGE,
   normalizeGenerateItineraryResult,
+  validateCompleteItineraryPayload,
   unwrapGeneratedTripPayload,
   validateGeneratedItinerary,
   type GenerateItineraryResult,
@@ -47,11 +50,12 @@ import { replanUntilItineraryValid } from "@/lib/ai/itinerary-validator/replan";
 import { logItineraryFailureChain } from "@/lib/ai/itinerary-day-coverage";
 import type { ItineraryInput } from "@/lib/itinerary.functions";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
-import type { PlaceResult } from "@/lib/place-result";
 import {
-  resolvePlannerStyleKey,
-  type ComposedDayPlan,
-} from "@/lib/ai/ai-day-plan-source";
+  classifyGenerateItineraryInvocationResult,
+  invokeGenerateItinerary,
+} from "@/lib/ai/itinerary-generation-invocation";
+import type { PlaceResult } from "@/lib/place-result";
+import { resolvePlannerStyleKey, type ComposedDayPlan } from "@/lib/ai/ai-day-plan-source";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import {
   logItineraryBuildSource,
@@ -76,6 +80,12 @@ import {
   logNearbyExtensionPersistence,
   logNearbyExtensionUiCompare,
 } from "@/lib/ai/nearby-extension-requirements";
+import {
+  hasUndeliverableRequiredIdentity,
+  logPlanningRequiredAnchorHandoff,
+  logPlanningRequiredIdentityHandoff,
+  resolvePlanningRequiredAnchorHandoff,
+} from "@/lib/ai/planning-required-anchor-handoff";
 
 export type AiItineraryState =
   | "COLLECTING"
@@ -86,11 +96,9 @@ export type AiItineraryState =
   | "SUCCESS"
   | "FAILED";
 
-export const AI_ITINERARY_FAILED_OFFER_MESSAGE =
-  "行程建立失敗，是否改成列出必去景點？";
+export const AI_ITINERARY_FAILED_OFFER_MESSAGE = "行程建立失敗，是否改成列出必去景點？";
 
-export const AI_ITINERARY_SUCCESS_REDIRECT_MESSAGE =
-  "行程已建立，正在帶你前往";
+export const AI_ITINERARY_SUCCESS_REDIRECT_MESSAGE = "行程已建立，正在帶你前往";
 
 export function logAiState(state: AiItineraryState, detail?: string): void {
   logAiPipeline("[AI_STATE]", `state=${state}`, detail ? `detail=${detail}` : "");
@@ -101,11 +109,7 @@ export function logAiItineraryBuild(stops: number, days: number): void {
 }
 
 export function logAiItineraryCreate(destination: string, placeCount: number): void {
-  logAiPipeline(
-    "[AI_ITINERARY_CREATE]",
-    `destination=${destination}`,
-    `places=${placeCount}`,
-  );
+  logAiPipeline("[AI_ITINERARY_CREATE]", `destination=${destination}`, `places=${placeCount}`);
 }
 
 export function logAiItinerarySuccess(tripId?: string): void {
@@ -149,9 +153,7 @@ export async function prepareDirectItineraryFlow(params: {
     context.destination?.trim() ||
     session.tripDestination?.displayLabel?.trim() ||
     session.tripDestination?.city?.trim();
-  const destination = rawDestination
-    ? sanitizeDestinationForGeocode(rawDestination)
-    : undefined;
+  const destination = rawDestination ? sanitizeDestinationForGeocode(rawDestination) : undefined;
   const days = context.days ?? session.tripDays;
 
   if (!destination || !days) {
@@ -177,16 +179,12 @@ export async function prepareDirectItineraryFlow(params: {
   const sessionPlaces = preparePlacesForItineraryBuild(rawSessionPlaces, label);
 
   logItineraryBuildSource(source, sessionPlaces.length);
-  if (
-    source === "recommendedPlaces" ||
-    source === "plannedStops" ||
-    source === "renderedCards"
-  ) {
+  if (source === "recommendedPlaces" || source === "plannedStops" || source === "renderedCards") {
     logItineraryUsedRecommendedPlaces(sessionPlaces.length);
   }
 
   const requireCombos = contextRequiresCombinationSelection(params.context);
-  if (requireCombos && !(params.context.selectedCombinationIds?.length)) {
+  if (requireCombos && !params.context.selectedCombinationIds?.length) {
     logAiPipeline(
       "[ITINERARY_INPUT_VALIDATION_FAILED]",
       "field=selectedCombinationIds",
@@ -197,8 +195,7 @@ export async function prepareDirectItineraryFlow(params: {
     return {
       ok: false,
       state: "FAILED",
-      message:
-        "我還需要你確認想用哪些組合，才能幫你生成行程。回覆組合編號，或回「都不錯」全選。",
+      message: "我還需要你確認想用哪些組合，才能幫你生成行程。回覆組合編號，或回「都不錯」全選。",
       failureReason: "missing_combination_selection",
       diagnostics: null,
       session: {
@@ -226,8 +223,7 @@ export async function prepareDirectItineraryFlow(params: {
   const prepared = await prepareDirectItinerarySession({ ...params, msgs });
   if (!prepared.ok) {
     const failCode =
-      prepared.failure?.code ??
-      (prepared.apiEmpty ? "places_api_empty" : "insufficient_places");
+      prepared.failure?.code ?? (prepared.apiEmpty ? "places_api_empty" : "insufficient_places");
     if (!canBuildItineraryFromPlaceCount(sessionPlaces.length)) {
       logAiItineraryFailed(failCode);
       logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", failCode);
@@ -245,9 +241,7 @@ export async function prepareDirectItineraryFlow(params: {
         aiItineraryState: "FAILED",
         chatPlanningState: "generationFailed",
         // Keep any successfully mapped places so regenerate can resume.
-        selectedPlaces: partial?.length
-          ? partial
-          : session.selectedPlaces,
+        selectedPlaces: partial?.length ? partial : session.selectedPlaces,
         pendingQuestion: {
           type: "activity_choice",
           options: ["重新生成", "must_visit_places", "daily_recommendations"],
@@ -264,8 +258,7 @@ export async function prepareDirectItineraryFlow(params: {
                 resolvedCandidates: prepared.failure.resolvedCandidates,
                 retryCount: prepared.failure.retryCount,
                 searchRetryCount: prepared.failure.searchRetryCount,
-                candidateRegenerationCount:
-                  prepared.failure.candidateRegenerationCount,
+                candidateRegenerationCount: prepared.failure.candidateRegenerationCount,
                 detailRetryCount: prepared.failure.detailRetryCount,
                 fallbackCandidateCount: prepared.failure.fallbackCandidateCount,
                 generationRequestId: prepared.failure.generationRequestId,
@@ -275,8 +268,7 @@ export async function prepareDirectItineraryFlow(params: {
             ? partial
             : params.context.partiallyResolvedPlaces,
           generationRequestId:
-            prepared.failure?.generationRequestId ??
-            params.context.generationRequestId,
+            prepared.failure?.generationRequestId ?? params.context.generationRequestId,
         },
       },
       offerMustVisit: false,
@@ -366,8 +358,7 @@ function buildLocalItineraryPayload(
   selectedCombinationIds: number[] = [],
   nearbyExtensions: string[] = [],
 ): RoamiePayloadV2 | null {
-  const startDate =
-    generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
+  const startDate = generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
   const comboIds =
     selectedCombinationIds.length > 0
       ? selectedCombinationIds
@@ -420,7 +411,8 @@ function buildLocalItineraryPayload(
 
   if (
     generateInput.placeAuthority !== "selected_only" &&
-    selectedPlaces.length < computeMinimumPlacesForTripDays(generateInput.days, comboIds.length || 1)
+    selectedPlaces.length <
+      computeMinimumPlacesForTripDays(generateInput.days, comboIds.length || 1)
   ) {
     logAiPipeline(
       "[INSUFFICIENT_REAL_PLACES_DETECTED]",
@@ -443,10 +435,7 @@ function buildLocalItineraryPayload(
     placeAuthority: generateInput.placeAuthority,
   });
   if (!integrity.ok) {
-    logAiPipeline(
-      "[ITINERARY_INTEGRITY_FAILED]",
-      `reasons=${integrity.reasons.join("|")}`,
-    );
+    logAiPipeline("[ITINERARY_INTEGRITY_FAILED]", `reasons=${integrity.reasons.join("|")}`);
     logItineraryValidationResult(false, integrity.reasons.join("|"));
     // Never navigate with blank non-free days or missing combination coverage.
     if (
@@ -465,11 +454,7 @@ function buildLocalItineraryPayload(
 
   // P4.2：本地 fallback 建立路徑同樣經過 Itinerary Validator + Auto Repair
   if (isItineraryValidatorEnabled()) {
-    let composed = composedPlansFromItineraryItems(
-      builtStops,
-      generateInput.days,
-      startDate,
-    );
+    let composed = composedPlansFromItineraryItems(builtStops, generateInput.days, startDate);
     const styleKey = resolvePlannerStyleKey(generateInput.style);
     const validatorInputBase = {
       requestedDays: generateInput.days,
@@ -525,16 +510,8 @@ function buildLocalItineraryPayload(
       );
       validation = replanned.validation;
       if (replanned.plans.length) {
-        builtStops = applyComposedPlansToItineraryItems(
-          builtStops,
-          replanned.plans,
-          startDate,
-        );
-        composed = composedPlansFromItineraryItems(
-          builtStops,
-          generateInput.days,
-          startDate,
-        );
+        builtStops = applyComposedPlansToItineraryItems(builtStops, replanned.plans, startDate);
+        composed = composedPlansFromItineraryItems(builtStops, generateInput.days, startDate);
       }
     }
     const counts = dayCountsOfPlans(composed);
@@ -573,19 +550,11 @@ function buildLocalItineraryPayload(
     days: generateInput.days,
     generatedAt: new Date().toISOString(),
   };
-  const valid = hasCompleteItineraryPayload(
-    localPayload,
-    generateInput.days,
-    startDate,
-    {
-      placeAuthority: generateInput.placeAuthority,
-      requiredPlaceCount: selectedPlaces.length,
-    },
-  );
-  logItineraryValidationResult(
-    valid,
-    valid ? undefined : "local_payload_invalid",
-  );
+  const valid = hasCompleteItineraryPayload(localPayload, generateInput.days, startDate, {
+    placeAuthority: generateInput.placeAuthority,
+    requiredPlaceCount: selectedPlaces.length,
+  });
+  logItineraryValidationResult(valid, valid ? undefined : "local_payload_invalid");
   if (!valid) return null;
   return unwrapGeneratedTripPayload({
     success: true,
@@ -598,16 +567,92 @@ export async function createItineraryFromSession(params: {
   session: ChatPlanningSession;
   generateInput: ItineraryInput;
   generateItineraryFn: (args: { data: ItineraryInput }) => Promise<unknown>;
+  generationTransport?: string;
 }): Promise<DirectItineraryCreateResult> {
-  const { session, generateInput, generateItineraryFn } = params;
-  const selectedPlaces = generateInput.selectedPlaces ?? [];
-  const selectedCombinationIds =
-    session.travelContext?.selectedCombinationIds ?? [];
+  const {
+    session,
+    generateInput: requestedGenerateInput,
+    generateItineraryFn,
+    generationTransport = "tanstack_useServerFn",
+  } = params;
+  const generationId =
+    requestedGenerateInput.generationId?.trim() ||
+    requestedGenerateInput.generationTimingId?.trim() ||
+    crypto.randomUUID();
+  const requiredAnchorHandoff = resolvePlanningRequiredAnchorHandoff({
+    session,
+    candidateRequiredPlaces: requestedGenerateInput.selectedPlaces,
+    selectionMode: requestedGenerateInput.placeAuthority === "selected_only",
+    additionalExcludedPlaceIds: requestedGenerateInput.excludedPlaceIds,
+  });
+  logPlanningRequiredAnchorHandoff(requiredAnchorHandoff, generationId);
+  const generateInput: ItineraryInput = {
+    ...requestedGenerateInput,
+    generationId,
+    selectedPlaces: [
+      ...requiredAnchorHandoff.requiredPlaces.map((place) => ({
+        ...place,
+        isRequiredBySelection: true,
+      })),
+      ...(requestedGenerateInput.placeAuthority === "selected_only"
+        ? []
+        : requiredAnchorHandoff.supplementalPlaces.map((place) => ({
+            ...place,
+            isRequiredBySelection: false,
+          }))),
+    ],
+    excludedPlaceIds: requiredAnchorHandoff.excludedPlaceIds,
+  };
+  const excludedPlaceIds = new Set(generateInput.excludedPlaceIds ?? []);
+  const plannerPlaces = (generateInput.selectedPlaces ?? []).filter((place) => {
+    const id = place.googlePlaceId?.trim();
+    return !id || !excludedPlaceIds.has(id);
+  });
+  const selectedPlaces = plannerPlaces.filter((place) => place.isRequiredBySelection !== false);
+  logPlanningRequiredIdentityHandoff("native_request", selectedPlaces, generationId);
+  if (hasUndeliverableRequiredIdentity(selectedPlaces)) {
+    logAiItineraryFailed("required_identity_unavailable");
+    logAiPipeline(
+      "[ITINERARY_SAVE_FAILED_REASON]",
+      "required_identity_unavailable",
+      "serverRequestStarted=false",
+    );
+    return {
+      ok: false,
+      state: "FAILED",
+      message: "部分已選地點目前無法確認地圖身分，請重新整理候選後再選一次。",
+      session: {
+        ...session,
+        aiItineraryState: "FAILED",
+        phase: "ready",
+        planningConstraints: session.planningConstraints
+          ? { ...session.planningConstraints, clarificationRequired: true }
+          : session.planningConstraints,
+      },
+      offerMustVisit: false,
+    };
+  }
+  const selectedCombinationIds = session.travelContext?.selectedCombinationIds ?? [];
   const nearbyExtensions = session.travelContext?.nearbyExtensions ?? [];
+  const localFallbackMinimum = computeMinimumPlacesForTripDays(
+    generateInput.days,
+    selectedCombinationIds.length || 1,
+  );
+  const supplementalPlaces = requiredAnchorHandoff.supplementalPlaces.filter((place) => {
+    const id = place.googlePlaceId?.trim();
+    return !id || !excludedPlaceIds.has(id);
+  });
+  const localFallbackPlaces =
+    selectedPlaces.length >= localFallbackMinimum
+      ? selectedPlaces
+      : [
+          ...selectedPlaces,
+          ...supplementalPlaces.slice(0, Math.max(0, localFallbackMinimum - selectedPlaces.length)),
+        ];
 
-  if (selectedPlaces.length < 1) {
+  if (plannerPlaces.length < 1) {
     logAiItineraryFailed("no_selected_places");
-    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "no places");
+    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "no planner candidates");
     logAiState("FAILED", "no_selected_places");
     return {
       ok: false,
@@ -630,11 +675,67 @@ export async function createItineraryFromSession(params: {
   try {
     logAiState("CREATING_TRIP");
     logAiItineraryCreate(generateInput.destination, selectedPlaces.length);
-    const rawGenerateResult = await generateItineraryFn({ data: generateInput });
+    console.info("[PLANNING_SELECTION_PLANNER_INPUT]", {
+      generationId,
+      destination: generateInput.destination,
+      startDate: generateInput.startDate?.trim() || "",
+      endDate: generateInput.endDate?.trim() || "",
+      tripDays: generateInput.days,
+      requiredPlaceCount: selectedPlaces.length,
+      requiredPlaceIdentityCount: selectedPlaces.length,
+      excludedPlaceCount: generateInput.excludedPlaceIds?.length ?? 0,
+      supplementalCandidateCount: supplementalPlaces.length,
+      plannerCandidateCount: plannerPlaces.length,
+      generationEntryPoint: "createItineraryFromSession",
+      selectionMode: generateInput.placeAuthority === "selected_only",
+    });
+    const rawGenerateResult = await invokeGenerateItinerary({
+      generationId,
+      transport: generationTransport,
+      invoke: () => generateItineraryFn({ data: generateInput }),
+    });
+    const invocationFailureReason = classifyGenerateItineraryInvocationResult(rawGenerateResult);
+    if (invocationFailureReason) {
+      logItineraryFailureReason(invocationFailureReason);
+      logAiItineraryFailed(invocationFailureReason);
+      logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", invocationFailureReason);
+      logAiState("FAILED", invocationFailureReason);
+      return {
+        ok: false,
+        state: "FAILED",
+        message: ITINERARY_GENERATION_FAILED_MESSAGE,
+        session: { ...session, aiItineraryState: "FAILED", phase: "ready" },
+        offerMustVisit: false,
+      };
+    }
     const generateResult = normalizeGenerateItineraryResult(rawGenerateResult);
     const rawShape = describeGenerateItineraryRawShape(rawGenerateResult, generateResult);
+    const normalizeMissingFieldCodes = missingGenerateItineraryResultFields(rawGenerateResult);
+    console.info("[ITINERARY_RESPONSE_SHAPE]", {
+      generationId,
+      topLevelKeys: rawShape.topLevelKeys,
+      resultKeys: rawShape.resultKeys,
+      nestedResultKeys: rawShape.nestedResultKeys,
+      envelopeDepth: rawShape.transportEnvelopeDepth,
+      successPresent: rawShape.successPresent,
+      successDiscriminant: rawShape.successDiscriminant,
+      tripPresent: rawShape.tripPresent,
+      payloadPresent: rawShape.payloadPresent,
+    });
+    console.info("[ITINERARY_PAYLOAD_VALIDATION]", {
+      generationId,
+      stage: "normalize_generate_result",
+      validationScope: "generate_result_envelope_only",
+      valid: Boolean(generateResult),
+      missingFieldCodes: generateResult ? [] : normalizeMissingFieldCodes,
+      tripDays: generateInput.days,
+      outputDayCount: rawShape.tripItineraryDayCount,
+      requiredAnchorCount: selectedPlaces.length,
+      excludedCount: generateInput.excludedPlaceIds?.length ?? 0,
+    });
     logAiPipeline(
       "[GENERATE_ITINERARY_RAW_SHAPE]",
+      `generationId=${generationId}`,
       `rawType=${rawShape.rawType}`,
       `isArray=${rawShape.isArray}`,
       `topLevelKeys=${rawShape.topLevelKeys.join(",") || "(none)"}`,
@@ -648,6 +749,7 @@ export async function createItineraryFromSession(params: {
     );
     logAiPipeline(
       "[ITINERARY_RAW_RESULT]",
+      `generationId=${generationId}`,
       `resultType=${rawShape.rawType}`,
       `normalizedKind=${rawShape.normalizedKind}`,
       `payloadPresent=${Boolean(rawShape.payloadPath)}`,
@@ -657,6 +759,7 @@ export async function createItineraryFromSession(params: {
     );
     logAiPipeline(
       "[ITINERARY_UNWRAP_INPUT]",
+      `generationId=${generationId}`,
       `topLevelKeys=${rawShape.topLevelKeys.join(",") || "(none)"}`,
       `level1Keys=${rawShape.level1Keys.join(",") || "(none)"}`,
       `level2Keys=${rawShape.level2Keys.join(",") || "(none)"}`,
@@ -669,6 +772,27 @@ export async function createItineraryFromSession(params: {
 
     if (isGenerateItineraryFailure(generateResult)) {
       if (generateResult.errorCode === "itinerary_validator_failed") {
+        const diagnostics = generateResult.diagnostics;
+        console.info("[ITINERARY_VALIDATOR_RESULT]", {
+          generationId,
+          valid: false,
+          errorCode: generateResult.errorCode,
+          failureReason: generateResult.failureReason ?? "",
+          failedRules: generateResult.failedRules ?? [],
+          failedRuleCount: generateResult.failedRules?.length ?? 0,
+          inputDayCount: diagnostics?.inputDayCount ?? generateInput.days,
+          outputDayCount: diagnostics?.outputDayCount ?? 0,
+          requiredAnchorCount: diagnostics?.requiredAnchorCount ?? selectedPlaces.length,
+          requiredAnchorSatisfiedCount: diagnostics?.requiredAnchorSatisfiedCount ?? 0,
+          missingRequiredAnchorCount: diagnostics?.missingRequiredAnchorCount ?? 0,
+          excludedCount: diagnostics?.excludedCount ?? generateInput.excludedPlaceIds?.length ?? 0,
+          excludedViolationCount: diagnostics?.excludedViolationCount ?? 0,
+          duplicateCount: diagnostics?.duplicateCount ?? 0,
+          invalidPlaceCount: diagnostics?.invalidPlaceCount ?? 0,
+          invalidDayCount: diagnostics?.invalidDayCount ?? 0,
+          routeViolationCount: diagnostics?.routeViolationCount ?? 0,
+          capacityViolationCount: diagnostics?.capacityViolationCount ?? 0,
+        });
         logItineraryFailureChain({
           primary: "itinerary_validator_failed",
           validator: generateResult.failureReason ?? "validator_failed",
@@ -681,10 +805,7 @@ export async function createItineraryFromSession(params: {
         });
         logItineraryFailureReason("itinerary_validator_failed");
         logAiItineraryFailed("validator_failed");
-        logAiPipeline(
-          "[ITINERARY_SAVE_FAILED_REASON]",
-          "itinerary_validator_failed",
-        );
+        logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "itinerary_validator_failed");
         logAiState("FAILED", "itinerary_validator_failed");
         return {
           ok: false,
@@ -700,7 +821,7 @@ export async function createItineraryFromSession(params: {
       }
       const localPayload = buildLocalItineraryPayload(
         generateInput,
-        selectedPlaces,
+        localFallbackPlaces,
         selectedCombinationIds,
         nearbyExtensions,
       );
@@ -752,19 +873,82 @@ export async function createItineraryFromSession(params: {
       };
     }
 
+    const rawTripPayload = generateResult.success ? generateResult.trip.payload : null;
+    const clientPayloadShape = describeItineraryClientPayloadShape(
+      rawTripPayload,
+      generateInput.days,
+      generateInput.startDate,
+      generateInput.endDate,
+    );
+    console.info("[ITINERARY_CLIENT_PAYLOAD_SHAPE]", {
+      generationId,
+      ...clientPayloadShape,
+    });
     let payload = unwrapGeneratedTripPayload(generateResult);
-    const startDate =
-      generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
-    if (
-      !payload ||
-      !hasCompleteItineraryPayload(payload, generateInput.days, startDate, {
-        placeAuthority: generateInput.placeAuthority,
-        requiredPlaceCount: selectedPlaces.length,
-      })
-    ) {
+    const startDate = generateInput.startDate?.trim() || new Date().toISOString().slice(0, 10);
+    const unwrappedStops = payload ? coalesceItineraryItems(payload.itinerary) : [];
+    const outputDayCount = new Set(
+      unwrappedStops.map((stop) => stop.dayIndex ?? stop.date?.trim()).filter((day) => day != null),
+    ).size;
+    const completeness = validateCompleteItineraryPayload(payload, generateInput.days, startDate, {
+      placeAuthority: generateInput.placeAuthority,
+      requiredPlaceCount: selectedPlaces.length,
+      generationId,
+      destination: generateInput.destination,
+    });
+    const payloadComplete = completeness.valid;
+    if (completeness.normalizedPayload) payload = completeness.normalizedPayload;
+    const payloadMissingFieldCodes = !generateResult
+      ? normalizeMissingFieldCodes
+      : !payload
+        ? ["trip.payload"]
+        : [
+            ...(payload.destination?.trim() ? [] : ["trip.payload.destination"]),
+            ...(payload.days ? [] : ["trip.payload.days"]),
+            ...(unwrappedStops.length ? [] : ["trip.payload.itinerary"]),
+            ...completeness.missingFieldCodes.map((code) => `trip.payload.${code}`),
+          ];
+    console.info("[ITINERARY_PAYLOAD_VALIDATION]", {
+      generationId,
+      stage: "trip_payload_unwrap",
+      validationScope: "canonical_stored_itinerary_payload",
+      valid: payloadComplete,
+      missingFieldCodes: payloadMissingFieldCodes,
+      tripDays: generateInput.days,
+      outputDayCount,
+      requiredAnchorCount: selectedPlaces.length,
+      excludedCount: generateInput.excludedPlaceIds?.length ?? 0,
+    });
+    console.info("[ITINERARY_CLIENT_PERSISTENCE]", {
+      generationId,
+      normalized: Boolean(completeness.normalizedPayload),
+      valid: payloadComplete,
+      saved: false,
+      navigationStarted: false,
+    });
+    const exclusionViolations = payload
+      ? coalesceItineraryItems(payload.itinerary).filter((stop) => {
+          const id = stop.googlePlaceId?.trim();
+          return Boolean(id && excludedPlaceIds.has(id));
+        })
+      : [];
+    if (exclusionViolations.length) {
+      payload = buildLocalItineraryPayload(
+        generateInput,
+        localFallbackPlaces,
+        selectedCombinationIds,
+        nearbyExtensions,
+      );
+      logAiPipeline(
+        "[PLANNING_EXCLUSION_INVARIANT]",
+        `violations=${exclusionViolations.length}`,
+        `rebuilt=${Boolean(payload)}`,
+      );
+    }
+    if (!payload || !payloadComplete) {
       const localPayload = buildLocalItineraryPayload(
         generateInput,
-        selectedPlaces,
+        localFallbackPlaces,
         selectedCombinationIds,
         nearbyExtensions,
       );
@@ -787,14 +971,13 @@ export async function createItineraryFromSession(params: {
         };
       }
       const stops = payload ? coalesceItineraryItems(payload.itinerary) : [];
-      const validStopRatio =
-        selectedPlaces.length > 0 ? stops.length / selectedPlaces.length : 0;
+      const validStopRatio = selectedPlaces.length > 0 ? stops.length / selectedPlaces.length : 0;
       // stop_unwrap_failed is an internal schema issue — never surface to users.
       // Prefer local salvage when ≥80% stops already look usable.
       if (validStopRatio >= 0.8 && stops.length >= generateInput.days) {
         const salvage = buildLocalItineraryPayload(
           generateInput,
-          selectedPlaces,
+          localFallbackPlaces,
           selectedCombinationIds,
           nearbyExtensions,
         );
@@ -815,23 +998,11 @@ export async function createItineraryFromSession(params: {
           };
         }
       }
-      const reason =
-        generateInput.placeAuthority !== "selected_only" && selectedPlaces.length <
-        computeMinimumPlacesForTripDays(
-          generateInput.days,
-          selectedCombinationIds.length || 1,
-        )
-          ? "insufficient_real_places"
-          : stops.length > 0 && stops.length < generateInput.days
-            ? "empty_non_free_day"
-            : !payload
-              ? "payload_incomplete"
-              : "invalid_stops_after_unwrap";
+      const reason = !payload ? "payload_incomplete" : "itinerary_payload_invalid";
       // Preserve root-cause chain — payload_incomplete is often terminal, not primary.
       logItineraryFailureChain({
-        primary: stops.length > 0 && stops.length < generateInput.days
-          ? "empty_non_free_day"
-          : reason,
+        primary:
+          stops.length > 0 && stops.length < generateInput.days ? "empty_non_free_day" : reason,
         validator: undefined,
         persistence: reason === "payload_incomplete" ? "payload_incomplete" : undefined,
         payloadPresent: Boolean(payload),
@@ -841,28 +1012,17 @@ export async function createItineraryFromSession(params: {
       logItineraryFailureReason(reason);
       // Keep internal unwrap diagnostics off the user-facing failure path.
       if (!payload || reason === "payload_incomplete") {
-        const missingFields = !generateResult
-          ? ["recognized_generation_result"]
-          : !payload
-            ? ["trip.payload"]
-            : [
-                ...(payload.destination?.trim() ? [] : ["destination"]),
-                ...(payload.days ? [] : ["days"]),
-                ...(coalesceItineraryItems(payload.itinerary).length ? [] : ["itinerary.stops"]),
-              ];
+        const missingFields = payloadMissingFieldCodes;
         logAiPipeline(
           "[ITINERARY_UNWRAP_FAILURE]",
+          `generationId=${generationId}`,
           `missingFields=${missingFields.join(",") || "complete_payload_validation"}`,
           "expectedShape={success:true,trip:{destination,days,payload:{itinerary}}}",
           `actualTopLevelKeys=${rawShape.topLevelKeys.join(",") || "(none)"}`,
           `actualSuccessPath=${rawShape.successPath || "(none)"}`,
           `actualPayloadPath=${rawShape.payloadPath || "(none)"}`,
         );
-        logAiPipeline(
-          "[STOP_UNWRAP_INTERNAL]",
-          "reason=stop_unwrap_failed",
-          "userVisible=false",
-        );
+        logAiPipeline("[STOP_UNWRAP_INTERNAL]", "reason=stop_unwrap_failed", "userVisible=false");
       }
       logAiItineraryFailed(reason);
       logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", reason);
@@ -886,11 +1046,7 @@ export async function createItineraryFromSession(params: {
     // P4.2：API 成功路徑最終閘門 — 再驗一次；soft 失敗走 Auto Repair，勿直接 Fail
     if (isItineraryValidatorEnabled()) {
       let items = coalesceItineraryItems(payload.itinerary);
-      let composed = composedPlansFromItineraryItems(
-        items,
-        generateInput.days,
-        startDate,
-      );
+      let composed = composedPlansFromItineraryItems(items, generateInput.days, startDate);
       const styleKey = resolvePlannerStyleKey(generateInput.style);
       const validatorInputBase = {
         requestedDays: generateInput.days,
@@ -948,11 +1104,7 @@ export async function createItineraryFromSession(params: {
         if (replanned.plans.length) {
           items = applyComposedPlansToItineraryItems(items, replanned.plans, startDate);
           payload = { ...payload, itinerary: items };
-          composed = composedPlansFromItineraryItems(
-            items,
-            generateInput.days,
-            startDate,
-          );
+          composed = composedPlansFromItineraryItems(items, generateInput.days, startDate);
         }
       }
       const counts = dayCountsOfPlans(composed);
@@ -1019,7 +1171,7 @@ export async function createItineraryFromSession(params: {
     const reason = error instanceof Error ? error.message : String(error);
     const localPayload = buildLocalItineraryPayload(
       generateInput,
-      selectedPlaces,
+      localFallbackPlaces,
       selectedCombinationIds,
       nearbyExtensions,
     );
@@ -1061,9 +1213,7 @@ function coalesceStops(payload: RoamiePayloadV2): unknown[] {
   return Array.isArray(payload.itinerary) ? payload.itinerary : [];
 }
 
-export function sessionAfterItineraryFailure(
-  session: ChatPlanningSession,
-): ChatPlanningSession {
+export function sessionAfterItineraryFailure(session: ChatPlanningSession): ChatPlanningSession {
   return {
     ...session,
     aiItineraryState: "FAILED",

@@ -281,7 +281,7 @@ export function useMessengerChatLayout(params: {
   recomputeLayoutRef.current = recomputeLayout;
 
   const scrollToMessage = useCallback(
-    (target: MessengerScrollTarget): boolean => {
+    (target: MessengerScrollTarget, trigger: string): boolean => {
       const messagesEl = messagesRef.current;
       if (!messagesEl) {
         devVerboseInfo("[CHAT_SCROLL_FAILED]", "reason=no_messages_el");
@@ -297,6 +297,12 @@ export function useMessengerChatLayout(params: {
           );
           return false;
         }
+        console.info("[CHAT_AUTOSCROLL]", {
+          trigger,
+          target: target.placeCards ? "recommendation_group" : "message",
+          scrollTop: messagesEl.scrollTop,
+          scrollHeight: messagesEl.scrollHeight,
+        });
         el.scrollIntoView({ block: target.position ?? "start", behavior: "auto" });
         return true;
       };
@@ -308,9 +314,6 @@ export function useMessengerChatLayout(params: {
       scrollToBottomRafRef.current = requestAnimationFrame(() => {
         scrollToBottomRafRef.current = null;
         performScroll();
-        window.setTimeout(() => {
-          performScroll();
-        }, 75);
       });
       return true;
     },
@@ -320,7 +323,7 @@ export function useMessengerChatLayout(params: {
   const scrollToUserMessage = useCallback(
     (index: number, id?: string) => {
       devVerboseInfo("[CHAT_SCROLL_TO_USER_MESSAGE]", `index=${index}`);
-      return scrollToMessage({ index, id, position: "start" });
+      return scrollToMessage({ index, id, position: "start" }, "user_message");
     },
     [scrollToMessage],
   );
@@ -328,15 +331,15 @@ export function useMessengerChatLayout(params: {
   const scrollToAiMessageStart = useCallback(
     (index: number, id?: string) => {
       devVerboseInfo("[CHAT_SCROLL_TO_AI_MESSAGE_START]", `index=${index}`);
-      return scrollToMessage({ index, id, position: "start" });
+      return scrollToMessage({ index, id, position: "start" }, "assistant_message");
     },
     [scrollToMessage],
   );
 
   const scrollToPlaceCardsStart = useCallback(
-    (index: number, id?: string) => {
+    (index: number, id?: string, trigger = "recommendations_ready") => {
       devVerboseInfo("[CHAT_SCROLL_TO_PLACE_CARDS_START]", `index=${index}`);
-      return scrollToMessage({ index, id, position: "start", placeCards: true });
+      return scrollToMessage({ index, id, position: "start", placeCards: true }, trigger);
     },
     [scrollToMessage],
   );
@@ -371,6 +374,12 @@ export function useMessengerChatLayout(params: {
       if (scrollToBottomRafRef.current != null) return;
       scrollToBottomRafRef.current = requestAnimationFrame(() => {
         scrollToBottomRafRef.current = null;
+        console.info("[CHAT_AUTOSCROLL]", {
+          trigger: reason,
+          target: "bottom",
+          scrollTop: messagesEl.scrollTop,
+          scrollHeight: messagesEl.scrollHeight,
+        });
         anchorEl.scrollIntoView({ block: "end", behavior: "auto" });
       });
     },

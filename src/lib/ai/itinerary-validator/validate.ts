@@ -35,9 +35,7 @@ import {
   type PersistenceDayCountsCompareResult,
 } from "@/lib/ai/itinerary-validator/types";
 import {
-  parseExcludedCategoriesFromText,
   placeMatchesExcludedCategories,
-  extractUserAuthoredExclusionText,
 } from "@/lib/ai/recommendation-exclusion";
 import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 import { isBurialOrFuneralPlace } from "@/lib/burial-place-filter";
@@ -47,8 +45,13 @@ import { isExplicitCampingPlace } from "@/lib/camping-place-classification";
 import { collectPlaceTypes } from "@/lib/place-identity";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import type { PlaceResult } from "@/lib/place-result";
-import { summarizeDailyCategoryDiversity } from "@/lib/ai/daily-category-diversity";
+import {
+  classifyDailyDiversityCategory,
+  summarizeDailyCategoryDiversity,
+} from "@/lib/ai/daily-category-diversity";
 import { resolveNightlifeClassification } from "@/lib/ai/nightlife-classification";
+import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
+import { isExcludedByPlaceOrAncestor } from "@/lib/ai/venue-hierarchy-relation";
 
 /** 本地結構型別 — 避免 import ai-day-plan-source 觸發循環依賴 */
 type DayPlanEntry = {
@@ -130,10 +133,6 @@ const NEARBY_CONCENTRATE_MAX = 4;
 const FAIL_PENALTY = 8;
 const WARN_PENALTY = 2;
 
-const SHOPPING_EXCLUDE_RE = /不要購物|不要逛街|不要商場|不要百貨|別推薦購物/;
-const CHAIN_EXCLUDE_RE = /不要連鎖|不要連鎖店|別給連鎖|避免連鎖/;
-const PARK_EXCLUDE_RE = /不要公園|不要戶外|別推薦公園/;
-
 let lastResult: ItineraryValidationResult | null = null;
 let validationTelemetry = new WeakMap<
   ItineraryValidationResult,
@@ -168,6 +167,15 @@ function placeId(place: PlaceResult): string {
 
 function normalizeName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function exclusionStopHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function stayMinutes(entry: DayPlanEntry): number {
@@ -252,22 +260,10 @@ function hardMinForDay(day: number, input: ItineraryValidatorInput): number {
   return HARD_MIN_PLACES_FULL_DAY;
 }
 
-function resolveExclusionKeywords(input: ItineraryValidatorInput): string[] {
-  const fromSession = [...(input.excludedCategories ?? [])];
-  const fromText = input.userText ? parseExcludedCategoriesFromText(input.userText) : [];
-  const extra: string[] = [];
-  // Only scan user-authored exclusion text — never AI conversation prose.
-  const t = input.userText ? extractUserAuthoredExclusionText(input.userText) : "";
-  if (t && SHOPPING_EXCLUDE_RE.test(t)) {
-    extra.push("購物", "商場", "百貨", "shopping", "mall", "outlet");
-  }
-  if (t && CHAIN_EXCLUDE_RE.test(t)) {
-    extra.push("連鎖", "chain", "starbucks", "mcdonald", "便利商店");
-  }
-  if (t && PARK_EXCLUDE_RE.test(t) && !fromText.some((k) => /公園|park/i.test(k))) {
-    extra.push("公園", "park");
-  }
-  return [...new Set([...fromSession, ...fromText, ...extra].map((s) => s.trim()).filter(Boolean))];
+function resolveStructuredExclusions(input: ItineraryValidatorInput): string[] {
+  // P47.1 authority boundary: the validator verifies structured planning state.
+  // Raw user/conversation text must never create new exclusion authority here.
+  return [...new Set((input.excludedCategories ?? []).map((value) => value.trim()).filter(Boolean))];
 }
 
 function isParkPlace(place: PlaceResult): boolean {
@@ -397,11 +393,15 @@ function runRules(input: ItineraryValidatorInput): {
   const plans = [...input.plans].sort((a, b) => a.day - b.day);
   const requestedDays = Math.max(1, input.requestedDays);
   const excludeIds = new Set((input.excludePlaceIds ?? []).map((id) => id.trim()).filter(Boolean));
+  const excludedIdList = [...excludeIds];
+  const excludedCanonicalKeys = excludedIdList.map((id) =>
+    resolveCanonicalPlaceIdentity({ id }).identityKey,
+  );
   const rejectedNames = new Set(
     (input.rejectedPlaceNames ?? []).map(normalizeName).filter(Boolean),
   );
   const lockedIds = new Set((input.lockedPlaceIds ?? []).map((id) => id.trim()).filter(Boolean));
-  const exclusionKeywords = resolveExclusionKeywords(input);
+  const exclusionKeywords = resolveStructuredExclusions(input);
   const partialDays = new Set(input.partialDays ?? []);
   const selectedOnly = input.placeAuthority === "selected_only";
   const intents = input.intents ?? {};
@@ -412,7 +412,7 @@ function runRules(input: ItineraryValidatorInput): {
     `memoryExclusions=${(input.rejectedPlaceNames ?? []).join("|") || "none"}`,
     `parsedKeywords=${exclusionKeywords.join("|") || "none"}`,
     `excludePlaceIds=${[...excludeIds].join("|") || "none"}`,
-    `userTextHasTrigger=${Boolean(extractUserAuthoredExclusionText(input.userText ?? ""))}`,
+    "validatorTextInferenceUsed=false",
   );
 
   // ——— days_date_consistency ———
@@ -544,17 +544,100 @@ function runRules(input: ItineraryValidatorInput): {
         validatorRound: input.telemetryValidatorRound,
       },
     );
-    if (!diversity.gatePass) {
+    const lockedCanonicalIds = new Set(
+      [...lockedIds]
+        .map((id) => resolveCanonicalPlaceIdentity({ id }).identityKey)
+        .filter(Boolean),
+    );
+    const lockedNames = new Set((input.lockedPlaceNames ?? []).map(normalizeName).filter(Boolean));
+    const requiredEntries = plan.entries.filter((entry) => {
+      const identity = resolveCanonicalPlaceIdentity(entry.place).identityKey;
+      const name = normalizeName(entry.name || entry.place.name || "");
+      return Boolean(
+        (identity && lockedCanonicalIds.has(identity)) ||
+          (name && lockedNames.has(name)),
+      );
+    });
+    const requiredFamilyCounts: Record<string, number> = {};
+    for (const entry of requiredEntries) {
+      const family = classifyDailyDiversityCategory(entry.place);
+      requiredFamilyCounts[family] = (requiredFamilyCounts[family] ?? 0) + 1;
+    }
+    const violatingFamilies = diversity.violations.flatMap((violation) => {
+      const match = /^([^:]+):(\d+)>(\d+)$/.exec(violation);
+      if (!match) return [];
+      const family = match[1];
+      const totalFamilyCount = Number(match[2]);
+      const familyLimit = Number(match[3]);
+      const requiredFamilyCount = requiredFamilyCounts[family] ?? 0;
+      const supplementalFamilyCount = Math.max(0, totalFamilyCount - requiredFamilyCount);
+      const provenance = requiredFamilyCount > familyLimit
+        ? supplementalFamilyCount > 0
+          ? "mixed"
+          : "required_only"
+        : "supplemental_caused";
+      return [{
+        family,
+        requiredFamilyCount,
+        supplementalFamilyCount,
+        totalFamilyCount,
+        familyLimit,
+        provenance,
+        requiredOverrideApplied: provenance === "required_only",
+        supplementalRepairAttempted:
+          provenance !== "required_only" && (input.telemetryRepairRound ?? 0) > 0,
+        supplementalRepairSucceeded: false,
+        blockingRuleEmitted: provenance !== "required_only",
+        warningEmitted: provenance === "required_only",
+      }];
+    });
+    const blockingViolations = diversity.violations.filter((_, index) =>
+      violatingFamilies[index]?.provenance !== "required_only",
+    );
+    const requiredOnlyViolations = diversity.violations.filter((_, index) =>
+      violatingFamilies[index]?.provenance === "required_only",
+    );
+    if (blockingViolations.length > 0) {
       pushFail(
         failedRules,
         "daily_category_diversity",
-        diversity.violations.join("|"),
+        blockingViolations.join("|"),
         plan.day,
         plan.entries.map((entry) => placeId(entry.place)).filter(Boolean),
       );
-    } else {
+    }
+    if (requiredOnlyViolations.length > 0) {
+      pushWarn(
+        warnings,
+        "daily_category_diversity",
+        `daily_category_diversity_required_override:${requiredOnlyViolations.join("|")}`,
+        plan.day,
+      );
+    }
+    if (diversity.gatePass) {
       logRule("daily_category_diversity", true, { day: plan.day });
     }
+    const violationCausedByRequiredOnly =
+      violatingFamilies.length > 0 &&
+      violatingFamilies.every(({ provenance }) => provenance === "required_only");
+    const violationCausedAfterSupplemental = violatingFamilies.some(
+      ({ provenance }) => provenance !== "required_only",
+    );
+    console.info("[ITINERARY_DAILY_DIVERSITY]", {
+      generationId: input.generationId ?? "",
+      stage: input.validationStage ?? "initial",
+      dayIndex: plan.day,
+      totalStopCount: plan.entries.length,
+      requiredStopCount: requiredEntries.length,
+      supplementalStopCount: Math.max(0, plan.entries.length - requiredEntries.length),
+      categoryFamilyCounts: diversity.categoryCounts,
+      categoryFamilyLimits: diversity.categoryLimits,
+      violatingFamilyCount: violatingFamilies.length,
+      violatingFamilies,
+      violationCausedByRequiredOnly,
+      violationCausedAfterSupplemental,
+      ruleEmitted: blockingViolations.length > 0,
+    });
   }
 
   // ——— place_duplicate ———
@@ -662,7 +745,7 @@ function runRules(input: ItineraryValidatorInput): {
     if (!scheduledIds.has(lockedId)) {
       pushFail(
         failedRules,
-        "day_capacity_pace_lock",
+        "persistence_mismatch",
         `locked_place_missing:${lockedId}`,
         undefined,
         [lockedId],
@@ -782,23 +865,55 @@ function runRules(input: ItineraryValidatorInput): {
         );
       }
 
-      if (id && excludeIds.has(id)) {
-        pushFail(failedRules, "user_exclusions", `excluded_place_id:${entry.name}`, plan.day, ids);
+      const exclusionReasons: string[] = [];
+      let matchedExcludedIndex: number | null = null;
+      let parentVenueMatched = false;
+      let excludedAncestorIndex: number | null = null;
+      let hierarchyEvidence = "none";
+      let parentChildRole = "standalone";
+      const exactIdIndex = id ? excludedIdList.indexOf(id) : -1;
+      const canonicalKey = resolveCanonicalPlaceIdentity({
+        id: entry.place.id,
+        googlePlaceId: entry.place.googlePlaceId,
+        name: entry.name,
+        address: entry.place.address,
+        lat: entry.place.lat,
+        lng: entry.place.lng,
+      }).identityKey;
+      const canonicalIndex = excludedCanonicalKeys.indexOf(canonicalKey);
+      if (exactIdIndex >= 0) {
+        exclusionReasons.push("place_id");
+        matchedExcludedIndex = exactIdIndex;
         logAiPipeline(
           "[ITINERARY_USER_EXCLUSION_CHECK]",
           `matched=place_id`,
           `place=${entry.name}`,
           `pass=false`,
         );
+      } else if (canonicalIndex >= 0) {
+        exclusionReasons.push("canonical_identity");
+        matchedExcludedIndex = canonicalIndex;
       }
-      if (rejectedNames.has(normalizeName(entry.name))) {
-        pushFail(
-          failedRules,
-          "user_exclusions",
-          `rejected_place_name:${entry.name}`,
-          plan.day,
-          ids,
+      if (exclusionReasons.length === 0 && input.excludedPlaces?.length) {
+        const hierarchyDecision = isExcludedByPlaceOrAncestor(
+          entry.place,
+          excludedIdList,
+          input.excludedPlaces,
         );
+        if (hierarchyDecision.excluded && hierarchyDecision.matchReason === "ancestor_excluded") {
+          exclusionReasons.push("ancestor_excluded");
+          matchedExcludedIndex = hierarchyDecision.matchedExcludedIndex;
+          parentVenueMatched = hierarchyDecision.parentVenueMatched;
+          excludedAncestorIndex = hierarchyDecision.excludedAncestorIndex;
+          hierarchyEvidence = hierarchyDecision.hierarchyEvidence;
+          parentChildRole = hierarchyDecision.parentChildRole;
+        }
+      }
+      const rejectedNameList = [...rejectedNames];
+      const rejectedNameIndex = rejectedNameList.indexOf(normalizeName(entry.name));
+      if (rejectedNameIndex >= 0) {
+        exclusionReasons.push("name");
+        matchedExcludedIndex ??= rejectedNameIndex;
         logAiPipeline(
           "[ITINERARY_USER_EXCLUSION_CHECK]",
           `matched=rejected_name`,
@@ -810,13 +925,36 @@ function runRules(input: ItineraryValidatorInput): {
         exclusionKeywords.length &&
         placeMatchesExcludedCategories(entry.place, exclusionKeywords)
       ) {
-        pushFail(failedRules, "user_exclusions", `excluded_category:${entry.name}`, plan.day, ids);
+        exclusionReasons.push("category");
         logAiPipeline(
           "[ITINERARY_USER_EXCLUSION_CHECK]",
           `matched=category`,
           `place=${entry.name}`,
           `keywords=${exclusionKeywords.join("|")}`,
           `pass=false`,
+        );
+      }
+      if (input.validationStage === "final") {
+        console.info("[ITINERARY_EXCLUSION_MATCH_DECISION]", {
+          generationId: input.generationId ?? "",
+          stopHash: exclusionStopHash(canonicalKey || `${plan.day}:${entry.name}`),
+          excludedCandidateCount: Math.max(excludedIdList.length, rejectedNameList.length),
+          matched: exclusionReasons.length > 0,
+          matchReasons: [...new Set(exclusionReasons)],
+          matchedExcludedIndex,
+          parentVenueMatched,
+          excludedAncestorIndex,
+          hierarchyEvidence,
+          parentChildRole,
+        });
+      }
+      if (exclusionReasons.length) {
+        pushFail(
+          failedRules,
+          "user_exclusions",
+          `excluded_stop:${[...new Set(exclusionReasons)].join("+")}`,
+          plan.day,
+          ids,
         );
       }
 
@@ -1165,9 +1303,32 @@ export function validateItineraryPlan(input: ItineraryValidatorInput): Itinerary
   );
 
   const { failedRules, warnings, nearbyCoverage } = runRules(input);
+  const hierarchyExclusionCount = input.plans.reduce(
+    (count, plan) =>
+      count + plan.entries.filter((entry) => {
+        const decision = isExcludedByPlaceOrAncestor(
+          entry.place,
+          input.excludePlaceIds ?? [],
+          input.excludedPlaces ?? [],
+        );
+        return decision.excluded && decision.matchReason === "ancestor_excluded";
+      }).length,
+    0,
+  );
 
   // Safety net: never fail user_exclusions when no exclusion signal exists.
-  const exclusionKeywords = resolveExclusionKeywords(input);
+  const exclusionKeywords = resolveStructuredExclusions(input);
+  console.info("[ITINERARY_EXCLUSION_AUTHORITY]", {
+    generationId: input.generationId ?? "",
+    explicitPlaceCount: input.excludePlaceIds?.length ?? 0,
+    explicitCategoryCount: exclusionKeywords.length,
+    hierarchyExclusionCount,
+    aliasCount: input.rejectedPlaceNames?.length ?? 0,
+    correlated: Boolean(input.generationId),
+    correlationUnavailable: !input.generationId,
+    legacyTextFallbackUsed: false,
+    validatorTextInferenceUsed: false,
+  });
   const hasExclusionSignal =
     exclusionKeywords.length > 0 ||
     (input.excludePlaceIds?.length ?? 0) > 0 ||
@@ -1175,6 +1336,49 @@ export function validateItineraryPlan(input: ItineraryValidatorInput): Itinerary
   const cleanedFails = hasExclusionSignal
     ? failedRules
     : failedRules.filter((r) => r.code !== "user_exclusions");
+
+  const exclusionRules = cleanedFails.filter((rule) => rule.code === "user_exclusions");
+  console.info("[ITINERARY_EXCLUSION_VALIDATION]", {
+    generationId: input.generationId ?? "",
+    stage: input.validationStage ?? "initial",
+    excludedInputCount:
+      (input.excludePlaceIds?.length ?? 0) +
+      (input.rejectedPlaceNames?.length ?? 0) +
+      (input.excludedCategories?.length ?? 0),
+    excludedViolationCount: new Set(
+      exclusionRules.flatMap((rule) => rule.placeIds ?? []).filter(Boolean),
+    ).size || exclusionRules.length,
+    violatingStopCount: new Set(
+      exclusionRules.map((rule) => `${rule.day ?? 0}:${rule.placeIds?.[0] ?? rule.message}`),
+    ).size,
+    ruleEmitted: exclusionRules.length > 0,
+  });
+  const requiredNames = new Set((input.lockedPlaceNames ?? []).map(normalizeName).filter(Boolean));
+  for (const plan of input.plans) {
+    const requiredCount = plan.entries.filter((entry) =>
+      requiredNames.has(normalizeName(entry.name || entry.place.name || "")),
+    ).length;
+    const mealCount = plan.entries.filter((entry) =>
+      /breakfast|lunch|dinner|meal|早餐|午餐|晚餐|用餐/i.test(entry.label),
+    ).length;
+    const capacityRules = cleanedFails.filter(
+      (rule) => rule.code === "day_capacity_pace_lock" && rule.day === plan.day,
+    );
+    const paceCapacity = input.slowTravel ? HARD_MIN_PLACES_SLOW + 3 : null;
+    console.info("[ITINERARY_DAY_CAPACITY]", {
+      generationId: input.generationId ?? "",
+      stage: input.validationStage ?? "initial",
+      dayIndex: plan.day,
+      requiredCount,
+      supplementalCount: Math.max(0, plan.entries.length - requiredCount - mealCount),
+      mealCount,
+      totalStopCount: plan.entries.length,
+      hardCapacity: null,
+      paceCapacity,
+      overflowCount: paceCapacity == null ? 0 : Math.max(0, plan.entries.length - paceCapacity),
+      capacityRuleCount: capacityRules.length,
+    });
+  }
   if (!hasExclusionSignal && failedRules.some((r) => r.code === "user_exclusions")) {
     logAiPipeline(
       "[ITINERARY_USER_EXCLUSION_CHECK]",

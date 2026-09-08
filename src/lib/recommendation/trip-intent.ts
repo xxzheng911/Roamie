@@ -149,6 +149,11 @@ function parseTripDays(text: string): number | undefined {
   return parseDayCountFromText(text);
 }
 
+function isDurationLikeDestinationLabel(value: string | undefined): boolean {
+  const label = value?.trim() ?? "";
+  return Boolean(label && /(天|日|晚|夜)/.test(label) && parseTripDays(label) != null);
+}
+
 function parseMonthHint(text: string): string | undefined {
   const m = text.match(/(\d{1,2})\s*月/);
   if (!m) return undefined;
@@ -356,7 +361,7 @@ function finalizeTripIntent(intent: TripIntent, session: ChatPlanningSession): T
   const localDayReady = hasVibe && hasCompanionship && hasSetting;
   const nearbyReady =
     (hasGpsAnchor && hasVibe && hasCompanionship) ||
-    (moodFlow && hasGpsAnchor && moodLabel);
+    Boolean(moodFlow && hasGpsAnchor && moodLabel);
 
   const readyForRecommendations =
     session.selectedPlaces.length > 0 ||
@@ -420,8 +425,14 @@ export function applyTripIntentToSession(
     if (intent.constraints.includes("怕人多")) avoid.add("人多吵雜");
 
     const skipDestParse = isMoodRecommendationSession(session);
-    const destCity = skipDestParse ? undefined : intent.destinationCity?.trim();
-    const destArea = skipDestParse ? undefined : intent.destinationArea?.trim();
+    const parsedDestCity = skipDestParse ? undefined : intent.destinationCity?.trim();
+    const parsedDestArea = skipDestParse ? undefined : intent.destinationArea?.trim();
+    const destCity = isDurationLikeDestinationLabel(parsedDestCity)
+      ? undefined
+      : parsedDestCity;
+    const destArea = isDurationLikeDestinationLabel(parsedDestArea)
+      ? undefined
+      : parsedDestArea;
     const destLabel = destCity || destArea;
 
   const nextLocation =

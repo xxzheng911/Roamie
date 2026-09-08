@@ -2,6 +2,7 @@ import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import {
   applyAdviceResultToSession,
+  persistPlanningShownCandidateContext,
   resolveDestinationAdvice,
   type DestinationAdviceResult,
 } from "@/lib/ai/destination-advice";
@@ -32,7 +33,10 @@ export function processAdviceTurn(
   context: CanonicalTravelContext,
   messageId?: string,
 ): ChatTurnResult {
-  const advice = resolveDestinationAdvice(context, session, userText);
+  const advice = persistPlanningShownCandidateContext(
+    resolveDestinationAdvice(context, session, userText),
+    session,
+  );
   const sessionWithAdvice = applyAdviceResultToSession(session, advice);
   const unified = sessionToUnifiedContext({
     ...sessionWithAdvice,

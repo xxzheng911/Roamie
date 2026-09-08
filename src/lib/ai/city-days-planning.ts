@@ -2,10 +2,11 @@ import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { PendingQuestion } from "@/lib/ai/destination-pending-question";
+import type { PlanningShownCandidate } from "@/lib/chat-session";
 import { enrichPendingQuestion } from "@/lib/ai/chat-conversation-state";
 import { pendingQuestionForCombinationChoice } from "@/lib/ai/destination-pending-question";
 import { buildWeatherAwarePlanningReply } from "@/lib/ai/weather-planning-reply";
-import { buildDestinationCombinationSuggestionsReply } from "@/lib/ai/destination-combination-suggestions";
+import { buildDestinationCombinationSuggestionPayload } from "@/lib/ai/destination-combination-suggestions";
 import { buildScenicMonthPlanningResult } from "@/lib/ai/scenic-month-reply";
 import { parseMonthNumber } from "@/lib/ai/season-response-guardrail";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
@@ -50,7 +51,10 @@ export function buildDateAndDurationQuestionReply(
     blockedLegacyTemplate?: string;
     previousPendingType?: string;
   },
-): { reply: string; pendingQuestion: PendingQuestion } {
+): {
+  reply: string;
+  pendingQuestion: PendingQuestion;
+} {
   const label = normalizeDestinationLabel(destination);
   const monthNum = parseMonthNumber(options?.context?.travelMonth);
   const hasMonth = monthNum != null;
@@ -113,7 +117,12 @@ export function buildCityDaysConfirmedReply(
     weather?: WeatherSummary | null;
     context?: CanonicalTravelContext;
   },
-): { reply: string; pendingQuestion: PendingQuestion } {
+): {
+  reply: string;
+  pendingQuestion: PendingQuestion;
+  contextPatch?: Partial<CanonicalTravelContext>;
+  planningShownCandidates?: PlanningShownCandidate[];
+} {
   const label = normalizeDestinationLabel(destination);
   const startDate = options?.context?.startDate;
   const endDate = options?.context?.endDate;
@@ -137,15 +146,24 @@ export function buildCityDaysConfirmedReply(
     );
   }
 
-  const comboReply = buildDestinationCombinationSuggestionsReply(label, days, {
+  const suggestion = buildDestinationCombinationSuggestionPayload(label, days, {
     startDate: hasExactDate ? startDate : undefined,
     endDate: hasExactDate ? endDate : undefined,
     weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
   });
-  if (comboReply) {
+  if (suggestion) {
     return {
-      reply: comboReply,
+      reply: suggestion.displayText,
       pendingQuestion: pendingQuestionForCombinationChoice(label, destinationCountry),
+      contextPatch: {
+        destination: label,
+        days,
+        tripPurpose: "combination_suggestions_offered",
+        conversationState: "awaiting_preference",
+        planningStage: "recommendations_generated",
+        offeredCombinations: suggestion.offeredCombinations,
+      },
+      planningShownCandidates: suggestion.shownCandidates,
     };
   }
 

@@ -56,5 +56,38 @@ export function parseDayCountFromText(text: string): number | undefined {
     if (n) return n;
   }
 
+  const english = text.match(/\b(\d+)\s*(?:-\s*)?days?\b/i);
+  if (english?.[1]) {
+    return Math.min(30, Math.max(1, Number.parseInt(english[1], 10)));
+  }
+
   return undefined;
+}
+
+const DESTINATION_DURATION_SUFFIX_RE =
+  /(?:\s*(?:[一二三四五六七八九十两兩]|\d+)\s*(?:天|日)|\s+(?:for\s+)?\d+\s+days?|\s+\d+\s*-\s*day\s+trip)\s*$/i;
+
+export type DestinationDurationNormalization = {
+  destinationLabel: string;
+  canonicalDestination: string;
+  tripDays?: number;
+  durationRemoved: boolean;
+};
+
+/** Strip only an explicit number + duration-unit suffix; bare numeric place names remain intact. */
+export function normalizeDestinationAndDuration(
+  destinationRaw: string,
+  sourceText = destinationRaw,
+  canonicalize: (label: string) => string = (label) => label,
+): DestinationDurationNormalization {
+  const raw = destinationRaw.trim();
+  const suffix = raw.match(DESTINATION_DURATION_SUFFIX_RE)?.[0];
+  const destinationLabel = suffix ? raw.slice(0, -suffix.length).trim() : raw;
+  const tripDays = parseDayCountFromText(suffix ?? sourceText);
+  return {
+    destinationLabel,
+    canonicalDestination: canonicalize(destinationLabel),
+    tripDays,
+    durationRemoved: Boolean(suffix),
+  };
 }

@@ -22,7 +22,10 @@ import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
 import { isGenericDestinationPlaceholder } from "@/lib/ai/generic-place-label";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { distanceMeters } from "@/lib/map-explore";
-import { shouldSkipPlanningPlacesApi, waitIfPlacesRateLimited } from "@/lib/ai/planning-candidate-pool";
+import {
+  shouldSkipPlanningPlacesApi,
+  waitIfPlacesRateLimited,
+} from "@/lib/ai/planning-candidate-pool";
 import {
   readCombinationCache,
   writeCombinationCache,
@@ -51,11 +54,11 @@ import {
   countryCodeForCountryName,
 } from "@/lib/ai/resolved-destination-scope";
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
+import { resolveDestinationAnchor, type DestinationAnchor } from "@/lib/ai/destination-anchor";
 import {
-  resolveDestinationAnchor,
-  type DestinationAnchor,
-} from "@/lib/ai/destination-anchor";
-import { beginPlacesGenerationSession, getActivePlacesGenerationRequestId } from "@/lib/places-api-guard";
+  beginPlacesGenerationSession,
+  getActivePlacesGenerationRequestId,
+} from "@/lib/places-api-guard";
 import {
   buildDestinationDiscoveryQueries,
   buildDestinationSearchAreas,
@@ -67,6 +70,7 @@ import {
   assignSoftThemeSlot,
   categoryThemeSearchQueries,
   includedTypesForTheme,
+  inspectCoastAuthority,
   logCombinationCategoryCounts,
   logCombinationFoodGap,
   MIN_TYPED_COMBO_PLACES,
@@ -91,6 +95,8 @@ import {
   localizeCombinationThemeTitle,
 } from "@/lib/ai/combination-theme-titles";
 import { classifyDailyDiversityCategory } from "@/lib/ai/daily-category-diversity";
+import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
+import { resolvePlaceCategoryFamily } from "@/lib/ai/place-category-family";
 
 /** Soft ceiling — stop discovery rather than hang forever on rate limits. */
 const COMBINATION_DISCOVERY_TIMEOUT_MS = 45_000;
@@ -106,6 +112,8 @@ export type CombinationPlaceCandidate = {
   types: string[];
   primaryType?: string | null;
   rating?: number | null;
+  userRatingCount?: number | null;
+  businessStatus?: string | null;
   /** Coarse category from Google types + name signals (category contract). */
   normalizedCategory?: NormalizedPlaceCategory;
   /** Combination id this place was validated into (1-based when offered). */
@@ -121,6 +129,8 @@ export type CombinationPlaceCandidate = {
   englishName?: string;
   localizationStatus?: "complete" | "partial" | "fallback";
   isReadableFallback?: boolean;
+  /** Privacy-safe diagnostic provenance only; never semantic authority. */
+  sourceQueryLane?: PlanningDiscoveryQueryLane;
 };
 
 export type StructuredCombinationOption = {
@@ -186,8 +196,7 @@ function setDiscoveryFailure(
   return null;
 }
 
-export const INSUFFICIENT_COMBINATION_PLACES_MESSAGE =
-  "目前暫時無法取得景點資料。";
+export const INSUFFICIENT_COMBINATION_PLACES_MESSAGE = "目前暫時無法取得景點資料。";
 
 /**
  * User-facing failure copy. Keeps root reasons in logs via getLastCombinationDiscoveryFailure.
@@ -210,10 +219,7 @@ export function buildDestinationRecommendationFailedMessage(
   ) {
     return `目前暫時無法確認${label}的國家範圍，請稍後再試一次。`;
   }
-  if (
-    blob.includes("anchor_type_rejected") ||
-    blob.includes("destination_anchor_invalid")
-  ) {
+  if (blob.includes("anchor_type_rejected") || blob.includes("destination_anchor_invalid")) {
     return `目前暫時無法確認${label}的目的地類型，請稍後再試或換個寫法。`;
   }
   if (
@@ -231,16 +237,10 @@ export function buildDestinationRecommendationFailedMessage(
     blob.includes("places_autocomplete_empty") ||
     blob.includes("places_details_empty")
   ) {
-    if (
-      blob.includes("geocode_request_denied") ||
-      blob.includes("REQUEST_DENIED")
-    ) {
+    if (blob.includes("geocode_request_denied") || blob.includes("REQUEST_DENIED")) {
       return `目前無法解析${label}的位置（地圖服務授權失敗：REQUEST_DENIED），請稍後再試或換一個城市名稱。`;
     }
-    if (
-      blob.includes("geocode_over_query_limit") ||
-      blob.includes("geocode_rate_limited")
-    ) {
+    if (blob.includes("geocode_over_query_limit") || blob.includes("geocode_rate_limited")) {
       return `目前地圖查詢過於頻繁，暫時無法取得${label}的位置，請稍後再試一次。`;
     }
     if (blob.includes("geocode_network_error")) {
@@ -263,10 +263,7 @@ export function buildDestinationRecommendationFailedMessage(
   ) {
     return `目前暫時無法確認${label}的目的地範圍，請稍後再試或換個寫法。`;
   }
-  if (
-    blob.includes("place_discovery_failed") ||
-    blob.includes("places_no_results")
-  ) {
+  if (blob.includes("place_discovery_failed") || blob.includes("places_no_results")) {
     return `目前暫時無法取得${label}的景點資料。\n\n你可以點「重新整理推薦」再試一次。`;
   }
   if (
@@ -301,6 +298,175 @@ const TARGET_PLACES_PER_COMBO = PRIMARY_PLACES_PER_COMBO + FALLBACK_PLACES_PER_C
 const MAX_TOP_UP_THEME_ATTEMPTS = 4;
 const MAX_DISTANCE_FROM_CENTER_M = 55_000;
 
+export type PlanningDiscoveryQueryLane =
+  | "candidate_pool_seed"
+  | "generic_attraction"
+  | "must_see"
+  | "museum"
+  | "art"
+  | "park"
+  | "night_market"
+  | "old_street"
+  | "tourist_attraction"
+  | "historic_landmark"
+  | "market"
+  | "nature"
+  | "theme_topup"
+  | "nearby_attraction"
+  | "other";
+
+type DiscoveryQueryLaneRecord = {
+  lane: PlanningDiscoveryQueryLane;
+  phase: "core_semantic" | "category_enrichment" | "generic_topup";
+  coreLane: boolean;
+  executed: boolean;
+  skippedReason: string;
+  resultCount: number;
+  uniqueAddedCount: number;
+  cumulativeUniqueCount: number;
+  capReachedAfterLane: boolean;
+  reservedBudgetBefore: number;
+  remainingBudget: number;
+  capBlocked: boolean;
+};
+
+const INITIAL_DISCOVERY_CANDIDATE_CAP = 18;
+
+function discoveryLanePriority(lane: PlanningDiscoveryQueryLane): number {
+  if (lane === "must_see") return 0;
+  if (lane === "tourist_attraction" || lane === "historic_landmark") return 1;
+  if (lane === "nature") return 2;
+  if (lane === "museum" || lane === "art") return 3;
+  if (lane === "market" || lane === "night_market" || lane === "old_street") return 4;
+  if (lane === "park") return 5;
+  if (lane === "generic_attraction") return 6;
+  return 7;
+}
+
+function discoveryLanePhase(lane: PlanningDiscoveryQueryLane): DiscoveryQueryLaneRecord["phase"] {
+  const priority = discoveryLanePriority(lane);
+  if (priority <= 2) return "core_semantic";
+  if (priority <= 5) return "category_enrichment";
+  return "generic_topup";
+}
+
+function isCoreDiscoveryLane(lane: PlanningDiscoveryQueryLane): boolean {
+  return discoveryLanePhase(lane) === "core_semantic";
+}
+
+function discoveryLaneDiagnosticContext(
+  lane: PlanningDiscoveryQueryLane,
+  cumulativeUniqueCountBefore: number,
+  capBlocked: boolean,
+  cap = INITIAL_DISCOVERY_CANDIDATE_CAP,
+  cumulativeUniqueCountAfter = cumulativeUniqueCountBefore,
+): Pick<
+  DiscoveryQueryLaneRecord,
+  "phase" | "coreLane" | "reservedBudgetBefore" | "remainingBudget" | "capBlocked"
+> {
+  return {
+    phase: discoveryLanePhase(lane),
+    coreLane: isCoreDiscoveryLane(lane),
+    reservedBudgetBefore: Math.max(0, cap - cumulativeUniqueCountBefore),
+    remainingBudget: Math.max(0, cap - cumulativeUniqueCountAfter),
+    capBlocked,
+  };
+}
+
+export function orderPlanningDiscoveryQueryLanes<T extends { query: string }>(items: T[]): T[] {
+  return items
+    .map((item, inputIndex) => ({ item, inputIndex }))
+    .sort((a, b) => {
+      const priorityDelta =
+        discoveryLanePriority(queryLaneForSemanticQuery(a.item.query)) -
+        discoveryLanePriority(queryLaneForSemanticQuery(b.item.query));
+      return priorityDelta || a.inputIndex - b.inputIndex;
+    })
+    .map(({ item }) => item);
+}
+
+function queryLaneForSemanticQuery(query: string): PlanningDiscoveryQueryLane {
+  if (/必去/.test(query)) return "must_see";
+  if (/tourist\s+attractions?/i.test(query)) return "tourist_attraction";
+  if (/historic\s+landmark|歷史地標/i.test(query)) return "historic_landmark";
+  if (/博物館|museum/i.test(query)) return "museum";
+  if (/美術館|art\s+gallery/i.test(query)) return "art";
+  if (/夜市|night\s+market/i.test(query)) return "night_market";
+  if (/老街|old\s+street|old\s+town/i.test(query)) return "old_street";
+  if (/公園|\bpark\b/i.test(query)) return "park";
+  if (/市場|\bmarket\b/i.test(query)) return "market";
+  if (/自然|nature|scenic|beach|waterfall/i.test(query)) return "nature";
+  if (/景點|attraction/i.test(query)) return "generic_attraction";
+  return "other";
+}
+
+function anonymousRawCandidateHash(place: PlaceResult): string {
+  const value = place.id?.trim() || place.name?.trim() || "unknown";
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function rawCandidateKey(place: PlaceResult): string {
+  return (place.id ?? place.name ?? "").trim().toLowerCase();
+}
+
+export function buildDiscoveryQueryLaneTraceFixture(
+  lanes: Array<{
+    lane: PlanningDiscoveryQueryLane;
+    resultCount: number;
+    uniqueAddedCount?: number;
+  }>,
+  cap: number,
+): DiscoveryQueryLaneRecord[] {
+  const ordered = [...lanes].sort(
+    (a, b) => discoveryLanePriority(a.lane) - discoveryLanePriority(b.lane),
+  );
+  let cumulativeUniqueCount = 0;
+  let capped = false;
+  return ordered.map((item) => {
+    const phase = discoveryLanePhase(item.lane);
+    const coreLane = isCoreDiscoveryLane(item.lane);
+    const reservedBudgetBefore = Math.max(0, cap - cumulativeUniqueCount);
+    if (capped) {
+      return {
+        lane: item.lane,
+        phase,
+        coreLane,
+        executed: false,
+        skippedReason: "candidate_cap_reached",
+        resultCount: 0,
+        uniqueAddedCount: 0,
+        cumulativeUniqueCount,
+        capReachedAfterLane: false,
+        reservedBudgetBefore,
+        remainingBudget: 0,
+        capBlocked: true,
+      };
+    }
+    const uniqueAddedCount = item.uniqueAddedCount ?? item.resultCount;
+    cumulativeUniqueCount += uniqueAddedCount;
+    capped = cumulativeUniqueCount >= cap;
+    return {
+      lane: item.lane,
+      phase,
+      coreLane,
+      executed: true,
+      skippedReason: "",
+      resultCount: item.resultCount,
+      uniqueAddedCount,
+      cumulativeUniqueCount,
+      capReachedAfterLane: capped,
+      reservedBudgetBefore,
+      remainingBudget: Math.max(0, cap - cumulativeUniqueCount),
+      capBlocked: false,
+    };
+  });
+}
+
 const NON_ATTRACTION_NAME_RE =
   /停車場|停車格|便利商店|超商|加油站|銀行|診所|醫院|藥局|學校|派出所|戶政|地政|公所|清潔隊|垃圾|回收|長照|殯儀|宅配|物流|協會|學會|創價|辦公室|總部|股份有限|有限公司|企業社|私人會所|會員中心/;
 
@@ -333,8 +499,7 @@ const THEME_DEFS: Array<{
     key: "coast",
     title: "海岸夕陽組合",
     typeHint: /marina|beach|natural_feature|park/i,
-    nameHint:
-      /漁港|海岸|海灘|濱海|濕地|碼頭|天梯|漁會|港|beach|beach club|sunset|海岸線/,
+    nameHint: /漁港|海岸|海灘|濱海|濕地|碼頭|天梯|漁會|港|beach|beach club|sunset|海岸線/,
   },
   {
     key: "cafe",
@@ -492,7 +657,8 @@ export function getCachedDiscoveredCombinations(
       });
     }
     if (opts?.skipLocalizationGate) return layered;
-    return localizeCachedCombinations(layered, locale);
+    const localized = localizeCachedCombinations(layered, locale);
+    return localized ? enforcePlanningCombinationComposition(localized) : null;
   }
 
   const key = normalizeDestinationLabel(destination);
@@ -529,7 +695,8 @@ export function getCachedDiscoveredCombinations(
     });
   }
   if (opts?.skipLocalizationGate) return cached.combinations;
-  return localizeCachedCombinations(cached.combinations, locale);
+  const localized = localizeCachedCombinations(cached.combinations, locale);
+  return localized ? enforcePlanningCombinationComposition(localized) : null;
 }
 
 export function setCachedDiscoveredCombinations(
@@ -576,8 +743,7 @@ export function resolveDestinationForCombinations(
 ): DestinationResolution {
   const displayName = normalizeDestinationLabel(destination);
   const searchAreas = resolveDestinationSearchAreas(displayName, country);
-  const coords =
-    coordinates ?? resolveDestinationApproxCenter(displayName, country) ?? null;
+  const coords = coordinates ?? resolveDestinationApproxCenter(displayName, country) ?? null;
 
   logAiPipeline(
     "[DESTINATION_RESOLVED]",
@@ -598,10 +764,7 @@ export function resolveDestinationForCombinations(
 function placeNameOf(place: PlaceResult): string {
   // Prefer localizedDisplayName only — never silently prefer raw English.
   return (
-    place.localizedDisplayName?.trim() ||
-    place.name?.trim() ||
-    place.originalName?.trim() ||
-    ""
+    place.localizedDisplayName?.trim() || place.name?.trim() || place.originalName?.trim() || ""
   );
 }
 
@@ -624,8 +787,7 @@ function resolveCandidateDisplayName(
       placeId: place.id,
       canonicalPlaceId: place.id,
       englishName:
-        place.localizationSource === "english" ||
-        place.localizationSource === "english_fallback"
+        place.localizationSource === "english" || place.localizationSource === "english_fallback"
           ? place.name
           : undefined,
       types: place.types,
@@ -708,12 +870,21 @@ function isViewpointLikeCandidate(place: CombinationPlaceCandidate): boolean {
  */
 function splitPrimaryFallback(
   pool: CombinationPlaceCandidate[],
+  semanticFamily?: string,
 ): {
   primary: CombinationPlaceCandidate[];
   fallback: CombinationPlaceCandidate[];
   all: CombinationPlaceCandidate[];
 } {
-  const sorted = [...pool].sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+  const sorted = [...pool].sort((a, b) => {
+    if (semanticFamily === "attraction") {
+      return (
+        computeCombinationProminenceScore(b, semanticFamily).prominenceScore -
+        computeCombinationProminenceScore(a, semanticFamily).prominenceScore
+      );
+    }
+    return (b.rating ?? 0) - (a.rating ?? 0);
+  });
   const primary: CombinationPlaceCandidate[] = [];
   const deferredViewpoints: CombinationPlaceCandidate[] = [];
   let viewpointInPrimary = 0;
@@ -824,6 +995,8 @@ function toCandidate(
     types: place.types ?? [],
     primaryType: place.primaryType,
     rating: place.rating,
+    userRatingCount: place.userRatingCount,
+    businessStatus: place.businessStatus,
     normalizedCategory,
   };
 
@@ -851,6 +1024,10 @@ function toCandidate(
 }
 
 function assignThemeKey(candidate: CombinationPlaceCandidate): string {
+  return resolvePrimarySemanticFamily(candidate).resolvedPrimaryTheme;
+}
+
+function previousFirstMatchedTheme(candidate: CombinationPlaceCandidate): string {
   const blob = `${candidate.name} ${candidate.types.join(" ")} ${candidate.primaryType ?? ""}`;
   for (const theme of THEME_DEFS) {
     if (theme.typeHint.test(blob) || theme.nameHint.test(candidate.name)) {
@@ -858,6 +1035,187 @@ function assignThemeKey(candidate: CombinationPlaceCandidate): string {
     }
   }
   return "attraction";
+}
+
+type SemanticAuthorityFamily =
+  | "attraction"
+  | "historic"
+  | "culture"
+  | "nature"
+  | "coast"
+  | "food"
+  | "cafe"
+  | "shopping"
+  | "market";
+
+type SemanticAuthorityTier = "none" | "weak" | "supporting" | "core" | "primary";
+
+function authorityTier(score: number): SemanticAuthorityTier {
+  if (score >= 90) return "primary";
+  if (score >= 70) return "core";
+  if (score >= 40) return "supporting";
+  return score > 0 ? "weak" : "none";
+}
+
+/** Resolve one primary family from place-level semantic authority, never query provenance. */
+export function resolvePrimarySemanticFamily(candidate: CombinationPlaceCandidate): {
+  resolvedPrimaryTheme: SemanticAuthorityFamily;
+  previousFirstMatchedTheme: string;
+  authorityOverrideApplied: boolean;
+  authorityScores: Record<SemanticAuthorityFamily, SemanticAuthorityTier>;
+} {
+  const types = combinationTypes(candidate);
+  const primary = candidate.primaryType?.trim().toLowerCase() ?? "";
+  const name = candidate.name;
+  const coast = inspectCoastAuthority(candidate);
+  const explicitLandmark = [...types].some((type) => EXPLICIT_LANDMARK_TYPES.has(type));
+  const majorLandmarkName =
+    /地標|紀念堂|紀念碑|塔|城堡|宮殿|landmark|tower|castle|palace|monument/i.test(name);
+  const templeCore =
+    types.has("place_of_worship") ||
+    types.has("church") ||
+    types.has("hindu_temple") ||
+    types.has("buddhist_temple") ||
+    types.has("shinto_shrine") ||
+    /寺|廟|神社|教堂|temple|shrine|church/i.test(name);
+  const museumCore =
+    primary === "museum" ||
+    primary === "art_gallery" ||
+    types.has("museum") ||
+    types.has("art_gallery");
+  const natureCore =
+    /^(?:park|national_park|garden|hiking_area|natural_feature|mountain|waterfall)$/.test(primary) ||
+    /山|步道|森林|瀑布|公園|mountain|trail|forest|waterfall|garden/i.test(name);
+  const shoppingCore = /shopping_mall|department_store|store|market/.test(primary);
+  const foodCore = /restaurant|food|meal_takeaway|bakery/.test(primary);
+  const cafeCore = /cafe|coffee_shop|tea_house|dessert_shop/.test(primary);
+
+  const scores: Record<SemanticAuthorityFamily, number> = {
+    attraction:
+      explicitLandmark
+        ? 100
+        : types.has("tourist_attraction") && majorLandmarkName
+          ? 92
+          : types.has("tourist_attraction")
+            ? 48
+            : types.has("point_of_interest")
+              ? 20
+              : 0,
+    historic: templeCore
+      ? 110
+      : types.has("historical_landmark") && /歷史|古蹟|遺產|heritage|historic/i.test(name)
+        ? 108
+        : types.has("historical_landmark")
+          ? 76
+          : /古蹟|歷史街區|老街|heritage|historic district/i.test(name)
+            ? 82
+            : 0,
+    culture: museumCore
+      ? 108
+      : types.has("cultural_landmark") && /文化|藝文|博物|美術|cultural|museum|gallery/i.test(name)
+        ? 90
+        : types.has("cultural_landmark")
+          ? 68
+          : 0,
+    nature: natureCore
+      ? 106
+      : [...types].some((type) => /park|garden|hiking|natural|waterfall/.test(type))
+        ? 65
+        : /觀景|viewpoint|scenic/i.test(name)
+          ? 30
+          : 0,
+    coast: coast.coastAuthorityPresent ? 106 : 0,
+    food: foodCore ? 96 : [...types].some((type) => /restaurant|food|bakery/.test(type)) ? 70 : 0,
+    cafe: cafeCore ? 97 : types.has("cafe") || types.has("coffee_shop") ? 75 : 0,
+    shopping: shoppingCore
+      ? 105
+      : [...types].some((type) => /shopping_mall|department_store|clothing_store|store/.test(type))
+        ? 60
+        : 0,
+    market:
+      primary === "market" || primary === "night_market"
+        ? 98
+        : types.has("market") || types.has("night_market")
+          ? 80
+          : 0,
+  };
+  const familyOrder: SemanticAuthorityFamily[] = [
+    "coast",
+    "historic",
+    "culture",
+    "nature",
+    "cafe",
+    "food",
+    "shopping",
+    "market",
+    "attraction",
+  ];
+  const resolvedPrimaryTheme = familyOrder.reduce((best, family) =>
+    scores[family] > scores[best] ? family : best,
+  "attraction");
+  const previous = previousFirstMatchedTheme(candidate);
+  return {
+    resolvedPrimaryTheme,
+    previousFirstMatchedTheme: previous,
+    authorityOverrideApplied: resolvedPrimaryTheme !== previous,
+    authorityScores: Object.fromEntries(
+      Object.entries(scores).map(([family, score]) => [family, authorityTier(score)]),
+    ) as Record<SemanticAuthorityFamily, SemanticAuthorityTier>,
+  };
+}
+
+export function inspectCombinationThemeAssignment(candidate: CombinationPlaceCandidate): {
+  assignedTheme: string;
+  competingThemeSignals: string[];
+  attractionAuthorityPresent: boolean;
+  historicAuthorityPresent: boolean;
+  cultureAuthorityPresent: boolean;
+  natureAuthorityPresent: boolean;
+  shoppingAuthorityPresent: boolean;
+  multiSemantic: boolean;
+  firstMatchedTheme: string;
+  resolvedPrimaryTheme: string;
+  previousFirstMatchedTheme: string;
+  authorityOverrideApplied: boolean;
+  authorityScores: Record<SemanticAuthorityFamily, SemanticAuthorityTier>;
+} {
+  const blob = `${candidate.name} ${candidate.types.join(" ")} ${candidate.primaryType ?? ""}`;
+  const competingThemeSignals = THEME_DEFS.filter(
+    (theme) => theme.typeHint.test(blob) || theme.nameHint.test(candidate.name),
+  ).map((theme) => theme.key);
+  const types = combinationTypes(candidate);
+  const attractionAuthorityPresent =
+    types.has("tourist_attraction") ||
+    [...types].some((type) => EXPLICIT_LANDMARK_TYPES.has(type));
+  const historicAuthorityPresent = competingThemeSignals.includes("historic");
+  const cultureAuthorityPresent = competingThemeSignals.includes("culture");
+  const natureAuthorityPresent = competingThemeSignals.includes("nature");
+  const shoppingAuthorityPresent =
+    competingThemeSignals.includes("shopping") || competingThemeSignals.includes("market");
+  const authority = resolvePrimarySemanticFamily(candidate);
+  const assignedTheme = authority.resolvedPrimaryTheme;
+  const authorityCount = [
+    attractionAuthorityPresent,
+    historicAuthorityPresent,
+    cultureAuthorityPresent,
+    natureAuthorityPresent,
+    shoppingAuthorityPresent,
+  ].filter(Boolean).length;
+  return {
+    assignedTheme,
+    competingThemeSignals,
+    attractionAuthorityPresent,
+    historicAuthorityPresent,
+    cultureAuthorityPresent,
+    natureAuthorityPresent,
+    shoppingAuthorityPresent,
+    multiSemantic: authorityCount > 1,
+    firstMatchedTheme: authority.previousFirstMatchedTheme,
+    resolvedPrimaryTheme: authority.resolvedPrimaryTheme,
+    previousFirstMatchedTheme: authority.previousFirstMatchedTheme,
+    authorityOverrideApplied: authority.authorityOverrideApplied,
+    authorityScores: authority.authorityScores,
+  };
 }
 
 function jaccardOverlap(a: string[], b: string[]): number {
@@ -1065,6 +1423,20 @@ function filterPoolByCategoryContract(
       title,
       combinationId,
     });
+    if (resolveCombinationThemeKey(themeKey, title) === "coast") {
+      const coast = inspectCoastAuthority(place);
+      console.info("[PLANNING_COMBINATION_CANDIDATE_DECISION]", {
+        candidateHash: combinationCandidateHash(place),
+        semanticFamily: "coast",
+        coastAuthorityPresent: coast.coastAuthorityPresent,
+        coastEvidenceType: coast.coastEvidenceType,
+        semanticContractPassed: check.valid,
+        eligible: check.valid,
+        finalRank: null,
+        selected: false,
+        dropReason: check.valid ? "" : "coast_authority_missing",
+      });
+    }
     if (!check.valid) {
       rejectedCount += 1;
       continue;
@@ -1086,13 +1458,417 @@ function filterPoolByCategoryContract(
   return validated;
 }
 
+/** Shared per-place admission boundary for normal, leftover and directed groups. */
+export function filterCandidatesForProposedCombinationTheme(
+  pool: CombinationPlaceCandidate[],
+  themeKey: string,
+  title = "",
+  combinationId = "diagnostic",
+): CombinationPlaceCandidate[] {
+  return filterPoolByCategoryContract(pool, themeKey, title, combinationId);
+}
+
 function minPlacesForTheme(themeKey: string, title?: string): number {
   return themeRequiresCategoryContract(themeKey, title)
     ? MIN_TYPED_COMBO_PLACES
     : MIN_PLACES_PER_COMBO;
 }
 
-function buildCombinationsFromCandidates(
+type CompositionDropReason =
+  | "category_mismatch"
+  | "coast_authority_missing"
+  | "coast_category_mismatch"
+  | "venue_duplicate"
+  | "child_place"
+  | "unsuitable"
+  | "ranking_excluded";
+
+type CombinationParentChildRole = "parent" | "child" | "standalone";
+
+const DESTINATION_CHILD_PLACE_RE =
+  /觀景台|展望台|阻尼|風阻尼|紀念品|禮品店|映池|景觀池|裝飾池|gift\s*shop|observation\s*(?:deck|component)|internal\s*(?:exhibit|feature|plaza|observation\s*component)|decorative\s*pond|館內|樓內|店內|入口|出口|售票處|服務台|ticket(?:ing)?\s*(?:office|counter)/i;
+const STORE_NAME_RE = /旗艦店|門市|專賣店|(?:^|\s)(?:store|shop|boutique|outlet)(?:\s|$)/i;
+const UNSUITABLE_COMBINATION_TYPES = new Set([
+  "clothing_store",
+  "shoe_store",
+  "store",
+  "convenience_store",
+  "office",
+  "corporate_office",
+  "service_establishment",
+  "car_repair",
+  "real_estate_agency",
+]);
+
+const EXPLICIT_LANDMARK_TYPES = new Set([
+  "landmark",
+  "cultural_landmark",
+  "historical_landmark",
+  "monument",
+  "castle",
+  "palace",
+]);
+
+function combinationTypes(candidate: CombinationPlaceCandidate): Set<string> {
+  return new Set(
+    [candidate.primaryType, ...(candidate.types ?? [])]
+      .map((type) => type?.trim().toLowerCase())
+      .filter((type): type is string => Boolean(type)),
+  );
+}
+
+function hasStrongLandmarkEvidence(candidate: CombinationPlaceCandidate): boolean {
+  const types = combinationTypes(candidate);
+  if ([...types].some((type) => EXPLICIT_LANDMARK_TYPES.has(type))) return true;
+  return (
+    types.has("tourist_attraction") &&
+    /地標|紀念堂|紀念碑|塔|城|宮|神社|寺|廟|landmark|tower|castle|palace|shrine|temple|monument/i.test(
+      candidate.name,
+    )
+  );
+}
+
+function combinationParentChildRole(
+  candidate: CombinationPlaceCandidate,
+): CombinationParentChildRole {
+  if (DESTINATION_CHILD_PLACE_RE.test(candidate.name)) return "child";
+  return hasStrongLandmarkEvidence(candidate) ? "parent" : "standalone";
+}
+
+/** Lower tier is better. The contract is destination-agnostic and evidence-driven. */
+function combinationLandmarkTier(
+  candidate: CombinationPlaceCandidate,
+  semanticFamily: string,
+): number {
+  const role = combinationParentChildRole(candidate);
+  if (role === "child") return 6;
+  const types = combinationTypes(candidate);
+  const name = candidate.name;
+  if (hasStrongLandmarkEvidence(candidate)) return 1;
+  if (
+    types.has("historical_landmark") ||
+    types.has("cultural_landmark") ||
+    types.has("place_of_worship") ||
+    /古蹟|歷史|文化資產|heritage|historic/i.test(name)
+  )
+    return 2;
+  if (
+    types.has("museum") ||
+    types.has("art_gallery") ||
+    types.has("monument") ||
+    /博物館|美術館|紀念館|museum|gallery|monument/i.test(name)
+  )
+    return 3;
+  if (types.has("park") || types.has("national_park") || /公園|大型公園|park/i.test(name)) return 4;
+  if (/廣場|步行街|散步道|plaza|promenade/i.test(name)) return 5;
+  return semanticFamily === "attraction" && types.has("tourist_attraction") ? 5 : 6;
+}
+
+export function computeCombinationProminenceScore(
+  candidate: CombinationPlaceCandidate,
+  semanticFamily: string,
+): {
+  prominenceScore: number;
+  popularityScore: number;
+  landmarkTier: number;
+  parentChildRole: CombinationParentChildRole;
+} {
+  const parentChildRole = combinationParentChildRole(candidate);
+  const landmarkTier = combinationLandmarkTier(candidate, semanticFamily);
+  const popularityScore =
+    Math.max(0, candidate.rating ?? 0) * 20 +
+    Math.log1p(Math.max(0, candidate.userRatingCount ?? 0)) * 25;
+  const semanticFidelity = combinationCategoryEligible(candidate, semanticFamily) ? 200 : 0;
+  const parentAuthority =
+    parentChildRole === "parent" ? 1_000 : parentChildRole === "child" ? -2_000 : 0;
+  return {
+    prominenceScore:
+      (7 - landmarkTier) * 10_000 + popularityScore + semanticFidelity + parentAuthority,
+    popularityScore,
+    landmarkTier,
+    parentChildRole,
+  };
+}
+
+function combinationCandidateHash(candidate: CombinationPlaceCandidate): string {
+  const value = candidate.googlePlaceId?.trim() || candidate.name;
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function logAttractionCandidateLifecycle(
+  candidate: CombinationPlaceCandidate,
+  state: {
+    rawPresent?: boolean;
+    sanitizedPresent?: boolean;
+    categoryContractPassed?: boolean;
+    primaryOrFallback?: "primary" | "fallback" | "none";
+    shortlistIncluded?: boolean;
+    compositionIncluded?: boolean;
+    finalSelected?: boolean;
+    dropReason?: string;
+  },
+): void {
+  const assignment = inspectCombinationThemeAssignment(candidate);
+  if (!assignment.attractionAuthorityPresent) return;
+  const score = computeCombinationProminenceScore(candidate, "attraction");
+  console.info("[PLANNING_ATTRACTION_CANDIDATE_LIFECYCLE]", {
+    candidateHash: combinationCandidateHash(candidate),
+    rawPresent: state.rawPresent ?? true,
+    sanitizedPresent: state.sanitizedPresent ?? true,
+    assignedTheme: assignment.assignedTheme,
+    attractionAuthorityPresent: true,
+    multiSemantic: assignment.multiSemantic,
+    firstMatchedTheme: assignment.firstMatchedTheme,
+    authorityScores: assignment.authorityScores,
+    resolvedPrimaryTheme: assignment.resolvedPrimaryTheme,
+    previousFirstMatchedTheme: assignment.previousFirstMatchedTheme,
+    authorityOverrideApplied: assignment.authorityOverrideApplied,
+    categoryContractPassed: state.categoryContractPassed ?? false,
+    primaryOrFallback: state.primaryOrFallback ?? "none",
+    shortlistIncluded: state.shortlistIncluded ?? false,
+    compositionIncluded: state.compositionIncluded ?? false,
+    finalSelected: state.finalSelected ?? false,
+    dropReason: state.dropReason ?? "",
+    landmarkTier: score.landmarkTier,
+    prominenceScore: Math.round(score.prominenceScore * 100) / 100,
+    userRatingCountPresent: candidate.userRatingCount != null,
+    sourceQueryLane: candidate.sourceQueryLane ?? "other",
+  });
+}
+
+function combinationCategoryEligible(
+  candidate: CombinationPlaceCandidate,
+  semanticFamily: string,
+): boolean {
+  const types = combinationTypes(candidate);
+  const name = candidate.name;
+  const strongLandmarkEvidence = hasStrongLandmarkEvidence(candidate);
+  if (
+    semanticFamily !== "shopping" &&
+    semanticFamily !== "market" &&
+    ([...types].some((type) => UNSUITABLE_COMBINATION_TYPES.has(type)) ||
+      (STORE_NAME_RE.test(name) && !strongLandmarkEvidence))
+  ) {
+    return false;
+  }
+  if (semanticFamily === "nature") {
+    return (
+      [...types].some((type) =>
+        /park|natural|hiking|garden|scenic|tourist_attraction/.test(type),
+      ) || /公園|步道|山|湖|河岸|海岸|garden|park|trail|mount|scenic/i.test(name)
+    );
+  }
+  if (semanticFamily === "historic" || semanticFamily === "culture") {
+    return (
+      [...types].some((type) =>
+        /museum|historic|cultural|place_of_worship|tourist_attraction|monument/.test(type),
+      ) || /古蹟|歷史|文化|文物|眷村|寺|廟|宮|城|heritage|historic|museum|temple|shrine/i.test(name)
+    );
+  }
+  if (semanticFamily === "attraction") {
+    return (
+      [...types].some((type) =>
+        /tourist_attraction|museum|monument|landmark|park|place_of_worship/.test(type),
+      ) || /地標|紀念堂|博物館|美術館|寺|廟|塔|城|landmark|museum|temple|palace|castle/i.test(name)
+    );
+  }
+  return validatePlaceForCombination(candidate, semanticFamily).valid;
+}
+
+function compositionClusterCollision(
+  candidate: CombinationPlaceCandidate,
+  selected: readonly CombinationPlaceCandidate[],
+): boolean {
+  if (!candidate.coordinates) return false;
+  const candidateNature = /山|步道|公園|trail|park|mount|boulder|巨石/i.test(candidate.name);
+  const candidateHeritage = /村|文化|文物|heritage|historic|village|museum/i.test(candidate.name);
+  return selected.some((other) => {
+    if (!other.coordinates) return false;
+    const meters = distanceMeters(candidate.coordinates!, other.coordinates);
+    const otherNature = /山|步道|公園|trail|park|mount|boulder|巨石/i.test(other.name);
+    const otherHeritage = /村|文化|文物|heritage|historic|village|museum/i.test(other.name);
+    const normalized = normalizePlaceCandidateName(candidate.name).normalized;
+    const otherNormalized = normalizePlaceCandidateName(other.name).normalized;
+    const sharedCore =
+      normalized.length >= 2 &&
+      otherNormalized.length >= 2 &&
+      (normalized.includes(otherNormalized) || otherNormalized.includes(normalized));
+    const candidateAddress = candidate.address?.trim() ?? "";
+    const sameAddress = Boolean(
+      candidateAddress.length >= 8 &&
+      /\d/.test(candidateAddress) &&
+      candidateAddress === other.address?.trim(),
+    );
+    return (
+      (sharedCore && meters <= 700) ||
+      (sameAddress && meters <= 250) ||
+      (candidateNature && otherNature && meters <= 700) ||
+      (candidateHeritage && otherHeritage && meters <= 180)
+    );
+  });
+}
+
+/** Final destination-level composition gate; never performs discovery. */
+export function enforcePlanningCombinationComposition(
+  combinations: StructuredCombinationOption[],
+): StructuredCombinationOption[] {
+  const globallySelected: CombinationPlaceCandidate[] = [];
+  return combinations.flatMap((combo, groupIndex) => {
+    const semanticFamily = resolveCombinationThemeKey(combo.theme, combo.title);
+    const input = combo.placeCandidates;
+    console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
+      stage: "composition_input",
+      semanticFamily,
+      compositionInputCount: input.length,
+    });
+    const selected: CombinationPlaceCandidate[] = [];
+    const reasons: Record<CompositionDropReason, number> = {
+      category_mismatch: 0,
+      coast_authority_missing: 0,
+      coast_category_mismatch: 0,
+      venue_duplicate: 0,
+      child_place: 0,
+      unsuitable: 0,
+      ranking_excluded: 0,
+    };
+    const rankedInput = input
+      .map((candidate, inputIndex) => ({
+        candidate,
+        inputIndex,
+        score: computeCombinationProminenceScore(candidate, semanticFamily),
+      }))
+      .sort(
+        (a, b) => b.score.prominenceScore - a.score.prominenceScore || a.inputIndex - b.inputIndex,
+      );
+    const decisions = new Map<
+      CombinationPlaceCandidate,
+      {
+        dropReason: CompositionDropReason | null;
+        venuePrimary: boolean;
+        finalRank: number | null;
+        selected: boolean;
+      }
+    >();
+    for (const { candidate } of rankedInput) {
+      let dropReason: CompositionDropReason | null = null;
+      const types = [...combinationTypes(candidate)];
+      if (
+        candidate.businessStatus === "CLOSED_PERMANENTLY" ||
+        types.some((type) => UNSUITABLE_COMBINATION_TYPES.has(type)) ||
+        (semanticFamily !== "shopping" &&
+          semanticFamily !== "market" &&
+          STORE_NAME_RE.test(candidate.name) &&
+          !hasStrongLandmarkEvidence(candidate))
+      ) {
+        dropReason = "unsuitable";
+      } else if (DESTINATION_CHILD_PLACE_RE.test(candidate.name)) {
+        dropReason = "child_place";
+      } else if (
+        semanticFamily === "coast" &&
+        !inspectCoastAuthority(candidate).coastAuthorityPresent
+      ) {
+        dropReason = "coast_authority_missing";
+      } else if (!combinationCategoryEligible(candidate, semanticFamily)) {
+        dropReason = semanticFamily === "coast" ? "coast_category_mismatch" : "category_mismatch";
+      } else if (compositionClusterCollision(candidate, [...globallySelected, ...selected])) {
+        dropReason = "venue_duplicate";
+      }
+      if (dropReason) reasons[dropReason] += 1;
+      else selected.push(candidate);
+      decisions.set(candidate, {
+        dropReason,
+        venuePrimary: !dropReason,
+        finalRank: null,
+        selected: false,
+      });
+    }
+    const deliverable = selected.slice(0, PRIMARY_PLACES_PER_COMBO);
+    selected.forEach((candidate, index) => {
+      const decision = decisions.get(candidate)!;
+      decision.finalRank = index + 1;
+      decision.selected = index < PRIMARY_PLACES_PER_COMBO;
+      if (!decision.selected) {
+        decision.dropReason = "ranking_excluded";
+        reasons.ranking_excluded += 1;
+      }
+    });
+    for (const candidate of input) {
+      const decision = decisions.get(candidate)!;
+      const score = computeCombinationProminenceScore(candidate, semanticFamily);
+      const coast = inspectCoastAuthority(candidate);
+      console.info("[PLANNING_COMBINATION_CANDIDATE_DECISION]", {
+        candidateHash: combinationCandidateHash(candidate),
+        semanticFamily,
+        categoryFamily:
+          candidate.normalizedCategory ??
+          resolvePlaceCategoryFamily({
+            name: candidate.name,
+            primaryType: candidate.primaryType,
+            types: candidate.types,
+          } as import("@/lib/place-result").PlaceResult),
+        prominenceScore: Math.round(score.prominenceScore * 100) / 100,
+        landmarkTier: score.landmarkTier,
+        popularityScore: Math.round(score.popularityScore * 100) / 100,
+        parentChildRole: score.parentChildRole,
+        venuePrimary: decision.venuePrimary,
+        eligible: !decision.dropReason || decision.dropReason === "ranking_excluded",
+        finalRank: decision.finalRank,
+        selected: decision.selected,
+        dropReason: decision.dropReason ?? "",
+        clusterCollision: decision.dropReason === "venue_duplicate",
+        coastAuthorityPresent: coast.coastAuthorityPresent,
+        coastEvidenceType: coast.coastEvidenceType,
+        semanticContractPassed:
+          decision.dropReason !== "category_mismatch" &&
+          decision.dropReason !== "coast_authority_missing" &&
+          decision.dropReason !== "coast_category_mismatch",
+      });
+      logAttractionCandidateLifecycle(candidate, {
+        categoryContractPassed:
+          decision.dropReason !== "category_mismatch" &&
+          decision.dropReason !== "coast_category_mismatch",
+        shortlistIncluded: true,
+        compositionIncluded: !decision.dropReason || decision.dropReason === "ranking_excluded",
+        finalSelected: decision.selected,
+        dropReason: decision.dropReason ?? "",
+      });
+    }
+    globallySelected.push(...deliverable);
+    console.info("[PLANNING_COMBINATION_COMPOSITION]", {
+      groupIndex,
+      semanticFamily,
+      inputCandidateCount: input.length,
+      eligibleCount: selected.length,
+      selectedCount: deliverable.length,
+      categoryMismatchDropped: reasons.category_mismatch,
+      venueDuplicateDropped: reasons.venue_duplicate,
+      childPlaceDropped: reasons.child_place,
+      unsuitableDropped: reasons.unsuitable,
+      rankingExcluded: reasons.ranking_excluded,
+      coastAuthorityDropped: reasons.coast_authority_missing,
+      semanticContractDropped:
+        reasons.category_mismatch +
+        reasons.coast_category_mismatch +
+        reasons.coast_authority_missing,
+    });
+    if (deliverable.length < 2) return [];
+    return [
+      {
+        ...combo,
+        placeCandidates: selected,
+        primaryCandidates: deliverable,
+        fallbackCandidates: selected.slice(PRIMARY_PLACES_PER_COMBO),
+      },
+    ];
+  });
+}
+
+export function buildCombinationsFromCandidates(
   destination: string,
   candidates: CombinationPlaceCandidate[],
 ): StructuredCombinationOption[] {
@@ -1100,9 +1876,41 @@ function buildCombinationsFromCandidates(
   for (const theme of THEME_DEFS) byTheme.set(theme.key, []);
 
   for (const candidate of candidates) {
-    const key = assignThemeKey(candidate);
+    const assignment = inspectCombinationThemeAssignment(candidate);
+    const key = assignment.assignedTheme;
     const list = byTheme.get(key) ?? byTheme.get("attraction")!;
     list.push(candidate);
+    console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
+      candidateHash: combinationCandidateHash(candidate),
+      assignedTheme: assignment.assignedTheme,
+      competingThemeSignals: assignment.competingThemeSignals,
+      attractionAuthorityPresent: assignment.attractionAuthorityPresent,
+      historicAuthorityPresent: assignment.historicAuthorityPresent,
+      cultureAuthorityPresent: assignment.cultureAuthorityPresent,
+      natureAuthorityPresent: assignment.natureAuthorityPresent,
+      shoppingAuthorityPresent: assignment.shoppingAuthorityPresent,
+      multiSemantic: assignment.multiSemantic,
+      firstMatchedTheme: assignment.firstMatchedTheme,
+      authorityScores: assignment.authorityScores,
+      resolvedPrimaryTheme: assignment.resolvedPrimaryTheme,
+      previousFirstMatchedTheme: assignment.previousFirstMatchedTheme,
+      authorityOverrideApplied: assignment.authorityOverrideApplied,
+    });
+    console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+      candidateHash: combinationCandidateHash(candidate),
+      admissionStage: `${key}_bucket`,
+      dropped: false,
+      dropReason: "",
+    });
+    logAttractionCandidateLifecycle(candidate, {
+      categoryContractPassed: false,
+      dropReason:
+        assignment.authorityOverrideApplied && key === "attraction"
+          ? "semantic_authority_override"
+          : key === "attraction"
+            ? ""
+            : `primary_semantic_family:${key}`,
+    });
   }
 
   // Prefer themes with enough places; top up from leftovers.
@@ -1121,15 +1929,88 @@ function buildCombinationsFromCandidates(
       (p) => !used.has(p.name.replace(/\s+/g, "").toLowerCase()),
     );
     const combinationId = `${normalizeDestinationLabel(destination)}:${theme.key}:${combos.length + 1}`;
-    const validated = filterPoolByCategoryContract(
-      pool,
-      theme.key,
-      theme.title,
-      combinationId,
-    );
+    const validated = filterPoolByCategoryContract(pool, theme.key, theme.title, combinationId);
+    const validatedHashes = new Set(validated.map(combinationCandidateHash));
+    for (const candidate of pool) {
+      const categoryContractPassed = validatedHashes.has(combinationCandidateHash(candidate));
+      logAttractionCandidateLifecycle(candidate, {
+        categoryContractPassed,
+        dropReason: categoryContractPassed ? "" : "category_contract_rejected",
+      });
+      if (categoryContractPassed) continue;
+      console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+        candidateHash: combinationCandidateHash(candidate),
+        admissionStage: "category_contract",
+        dropped: true,
+        dropReason: "category_contract_rejected",
+      });
+    }
     const minPlaces = minPlacesForTheme(theme.key, theme.title);
-    if (validated.length < minPlaces) continue;
-    const { primary, fallback, all } = splitPrimaryFallback(validated);
+    if (validated.length < minPlaces) {
+      console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
+        stage: "pre_shortlist",
+        semanticFamily: theme.key,
+        rawCandidateCount: candidates.length,
+        assignedCount: pool.length,
+        primaryCount: 0,
+        fallbackCount: 0,
+        postCategoryContractCount: validated.length,
+        compositionInputCount: 0,
+      });
+      continue;
+    }
+    const { primary, fallback, all } = splitPrimaryFallback(validated, theme.key);
+    for (const candidate of primary) {
+      console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+        candidateHash: combinationCandidateHash(candidate),
+        admissionStage: "primary",
+        dropped: false,
+        dropReason: "",
+      });
+      logAttractionCandidateLifecycle(candidate, {
+        categoryContractPassed: true,
+        primaryOrFallback: "primary",
+        shortlistIncluded: true,
+      });
+    }
+    for (const candidate of fallback) {
+      console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+        candidateHash: combinationCandidateHash(candidate),
+        admissionStage: "fallback",
+        dropped: false,
+        dropReason: "",
+      });
+      logAttractionCandidateLifecycle(candidate, {
+        categoryContractPassed: true,
+        primaryOrFallback: "fallback",
+        shortlistIncluded: true,
+      });
+    }
+    const shortlisted = new Set(all);
+    for (const candidate of validated) {
+      if (shortlisted.has(candidate)) continue;
+      console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+        candidateHash: combinationCandidateHash(candidate),
+        admissionStage: "shortlist",
+        dropped: true,
+        dropReason: "bucket_shortlist_cap",
+      });
+      logAttractionCandidateLifecycle(candidate, {
+        categoryContractPassed: true,
+        shortlistIncluded: false,
+        dropReason: "bucket_shortlist_cap",
+      });
+    }
+    console.info("[PLANNING_COMBINATION_BUCKET_BUILD]", {
+      stage: "pre_shortlist",
+      semanticFamily: theme.key,
+      rawCandidateCount: candidates.length,
+      assignedCount: pool.length,
+      primaryCount: primary.length,
+      fallbackCount: fallback.length,
+      postCategoryContractCount: validated.length,
+      compositionInputCount: all.length,
+    });
     if (all.length < minPlaces) continue;
     for (const p of all) used.add(p.name.replace(/\s+/g, "").toLowerCase());
     const categories = all
@@ -1153,18 +2034,24 @@ function buildCombinationsFromCandidates(
   }
 
   // Chunk remaining candidates into extra theme groups up to MAX_COMBINATIONS.
-  const leftover = candidates.filter(
-    (p) => !used.has(p.name.replace(/\s+/g, "").toLowerCase()),
-  );
+  const leftover = candidates.filter((p) => !used.has(p.name.replace(/\s+/g, "").toLowerCase()));
   let idx = 0;
   const usedTitles = new Set(combos.map((c) => c.title));
   while (combos.length < MAX_COMBINATIONS && leftover.length - idx >= MIN_PLACES_PER_COMBO) {
     const chunk = leftover.slice(idx, idx + TARGET_PLACES_PER_COMBO);
     idx += TARGET_PLACES_PER_COMBO;
     if (chunk.length < MIN_PLACES_PER_COMBO) break;
-    const { primary, fallback, all } = splitPrimaryFallback(chunk);
+    const proposedTheme = assignThemeKey(chunk[0]!);
+    const validatedChunk = filterPoolByCategoryContract(
+      chunk,
+      proposedTheme,
+      THEME_DEFS.find((theme) => theme.key === proposedTheme)?.title ?? "",
+      `${normalizeDestinationLabel(destination)}:extra:${combos.length + 1}`,
+    );
+    if (validatedChunk.length < minPlacesForTheme(proposedTheme)) continue;
+    const { primary, fallback, all } = splitPrimaryFallback(validatedChunk, proposedTheme);
     for (const p of all) used.add(p.name.replace(/\s+/g, "").toLowerCase());
-    const themeKey = assignThemeKey(all[0]!);
+    const themeKey = proposedTheme;
     const themeMeta = THEME_DEFS.find((t) => t.key === themeKey) ?? THEME_DEFS[0]!;
     const title = deriveCombinationThemeTitle(all, {
       baseTitle: themeMeta.title,
@@ -1255,11 +2142,12 @@ function buildSoftCombinationsFromPlaces(
       rejectedCount,
     });
 
-    const minPlaces =
-      themeRequiresCategoryContract(slot.themeKey) ? MIN_TYPED_COMBO_PLACES : MIN_PLACES_PER_COMBO;
+    const minPlaces = themeRequiresCategoryContract(slot.themeKey)
+      ? MIN_TYPED_COMBO_PLACES
+      : MIN_PLACES_PER_COMBO;
     if (validated.length < minPlaces) continue;
 
-    const { primary, fallback, all } = splitPrimaryFallback(validated);
+    const { primary, fallback, all } = splitPrimaryFallback(validated, slot.themeKey);
     const categories = all
       .map((p) => p.normalizedCategory)
       .filter((c): c is NormalizedPlaceCategory => Boolean(c));
@@ -1275,11 +2163,9 @@ function buildSoftCombinationsFromPlaces(
   }
 
   // Remaining untyped places → classic attraction combo (no food/shopping labels).
-  const leftover = usable.filter(
-    (p) => !used.has(p.name.replace(/\s+/g, "").toLowerCase()),
-  );
+  const leftover = usable.filter((p) => !used.has(p.name.replace(/\s+/g, "").toLowerCase()));
   if (combos.length < MAX_COMBINATIONS && leftover.length >= MIN_PLACES_PER_COMBO) {
-    const { primary, fallback, all } = splitPrimaryFallback(leftover);
+    const { primary, fallback, all } = splitPrimaryFallback(leftover, "attraction");
     combos.push({
       combinationId: `${normalizeDestinationLabel(destination)}:soft:attraction`,
       title: "經典景點組合",
@@ -1559,7 +2445,19 @@ export async function searchPlacesForThemeDirections(params: {
     const raw: PlaceResult[] = [];
     const seen = new Set<string>();
     for (const query of uniqueQueries) {
-      if (raw.length >= 12 || Date.now() > deadlineAt) break;
+      if (raw.length >= 12 || Date.now() > deadlineAt) {
+        console.info("[PLANNING_DISCOVERY_QUERY_LANES]", {
+          lane: "theme_topup",
+          ...discoveryLaneDiagnosticContext("theme_topup", raw.length, raw.length >= 12, 12),
+          executed: false,
+          skippedReason: raw.length >= 12 ? "candidate_cap_reached" : "deadline_reached",
+          resultCount: 0,
+          uniqueAddedCount: 0,
+          cumulativeUniqueCount: raw.length,
+          capReachedAfterLane: false,
+        });
+        continue;
+      }
       const cooldown = await waitIfPlacesRateLimited({
         generationRequestId,
         maxWaitMs: Math.min(8_000, Math.max(0, deadlineAt - Date.now())),
@@ -1573,6 +2471,7 @@ export async function searchPlacesForThemeDirections(params: {
         break;
       }
       try {
+        const uniqueCountBeforeLane = raw.length;
         const result = await searchPlaces({
           data: {
             query,
@@ -1588,18 +2487,47 @@ export async function searchPlacesForThemeDirections(params: {
             locale,
           },
         });
+        let uniqueAddedCount = 0;
         for (const place of result.places ?? []) {
           const key = (place.id ?? place.name ?? "").trim().toLowerCase();
           if (!key || seen.has(key)) continue;
           seen.add(key);
           raw.push(place);
+          uniqueAddedCount += 1;
         }
+        console.info("[PLANNING_DISCOVERY_QUERY_LANES]", {
+          lane: "theme_topup",
+          ...discoveryLaneDiagnosticContext(
+            "theme_topup",
+            uniqueCountBeforeLane,
+            false,
+            12,
+            raw.length,
+          ),
+          executed: true,
+          skippedReason: "",
+          resultCount: result.places?.length ?? 0,
+          uniqueAddedCount,
+          cumulativeUniqueCount: raw.length,
+          capReachedAfterLane: raw.length >= 12,
+        });
       } catch {
-        // continue other queries for this theme only
+        console.info("[PLANNING_DISCOVERY_QUERY_LANES]", {
+          lane: "theme_topup",
+          ...discoveryLaneDiagnosticContext("theme_topup", raw.length, false, 12),
+          executed: true,
+          skippedReason: "request_failed",
+          resultCount: 0,
+          uniqueAddedCount: 0,
+          cumulativeUniqueCount: raw.length,
+          capReachedAfterLane: false,
+        });
       }
     }
 
-    const scoped = candidatesFromPlaces(destination, raw, { lat, lng }, locale).filter((c) => {
+    const scoped = candidatesFromPlaces(destination, raw, { lat, lng }, locale)
+      .map((candidate) => ({ ...candidate, sourceQueryLane: "theme_topup" as const }))
+      .filter((c) => {
       const key = c.name.replace(/\s+/g, "").toLowerCase();
       if (usedKeys.has(key) || (c.googlePlaceId && usedPlaceIds.has(c.googlePlaceId))) return false;
       // A top-up group must be Places-backed and navigable. Existing minimum
@@ -1614,7 +2542,7 @@ export async function searchPlacesForThemeDirections(params: {
         return false;
       }
       return true;
-    });
+      });
 
     const combinationId = `${normalizeDestinationLabel(destination)}:theme:${direction.combinationId}`;
     const themeKey = resolveCombinationThemeKey(direction.themeKey, direction.title);
@@ -1632,15 +2560,16 @@ export async function searchPlacesForThemeDirections(params: {
       `resolvedCount=${candidates.length}`,
     );
 
-    const minPlaces = existingCombinations.length > 0
-      ? Math.max(MIN_PLACES_PER_COMBO, minPlacesForTheme(themeKey, direction.title))
-      : minPlacesForTheme(themeKey, direction.title);
+    const minPlaces =
+      existingCombinations.length > 0
+        ? Math.max(MIN_PLACES_PER_COMBO, minPlacesForTheme(themeKey, direction.title))
+        : minPlacesForTheme(themeKey, direction.title);
     if (candidates.length < minPlaces) {
       // Per-combo failure: skip this theme only — do not wipe other ready combos.
       continue;
     }
 
-    const { primary, fallback, all } = splitPrimaryFallback(candidates);
+    const { primary, fallback, all } = splitPrimaryFallback(candidates, themeKey);
     for (const p of all) {
       usedKeys.add(p.name.replace(/\s+/g, "").toLowerCase());
       if (p.googlePlaceId) usedPlaceIds.add(p.googlePlaceId);
@@ -1727,13 +2656,7 @@ export function mergeVerifiedCombinationTopUp(
       const id = place.googlePlaceId?.trim();
       const nameKey = place.name.replace(/\s+/g, "").toLowerCase();
       const syntheticId = /^(?:name|synthetic|generated|fallback):/i.test(id ?? "");
-      if (
-        !id ||
-        syntheticId ||
-        !place.coordinates ||
-        usedIds.has(id) ||
-        usedNames.has(nameKey)
-      ) {
+      if (!id || syntheticId || !place.coordinates || usedIds.has(id) || usedNames.has(nameKey)) {
         return false;
       }
       return validateCandidateIntent(
@@ -1753,14 +2676,13 @@ export function mergeVerifiedCombinationTopUp(
       ).ok;
     });
     if (
-      verified.length <
-      Math.max(MIN_PLACES_PER_COMBO, minPlacesForTheme(themeKey, combo.title))
+      verified.length < Math.max(MIN_PLACES_PER_COMBO, minPlacesForTheme(themeKey, combo.title))
     ) {
       sawValidationFailure = true;
       continue;
     }
 
-    const { primary, fallback, all } = splitPrimaryFallback(verified);
+    const { primary, fallback, all } = splitPrimaryFallback(verified, themeKey);
     const added: StructuredCombinationOption = {
       ...combo,
       theme: themeKey,
@@ -1779,16 +2701,10 @@ export function mergeVerifiedCombinationTopUp(
     }));
     const knownNames = new Set(
       validationCopy.flatMap((candidateCombo) =>
-        candidateCombo.placeCandidates.map((place) =>
-          place.name.replace(/\s+/g, "").toLowerCase(),
-        ),
+        candidateCombo.placeCandidates.map((place) => place.name.replace(/\s+/g, "").toLowerCase()),
       ),
     );
-    const finalValidation = validateCombinationOptions(
-      validationCopy,
-      destination,
-      knownNames,
-    );
+    const finalValidation = validateCombinationOptions(validationCopy, destination, knownNames);
     if (!finalValidation.ok || validationCopy.length < result.length + 1) {
       sawValidationFailure = true;
       continue;
@@ -1826,10 +2742,8 @@ function candidatesFromPlaces(
     if (!candidate) continue;
     if (
       candidate.coordinates &&
-      distanceMeters(
-        center,
-        { lat: candidate.coordinates.lat, lng: candidate.coordinates.lng },
-      ) > MAX_DISTANCE_FROM_CENTER_M * 1.5
+      distanceMeters(center, { lat: candidate.coordinates.lat, lng: candidate.coordinates.lng }) >
+        MAX_DISTANCE_FROM_CENTER_M * 1.5
     ) {
       continue;
     }
@@ -1850,9 +2764,7 @@ function finalizeCombinationsFromCandidates(
     return null;
   }
 
-  const known = new Set(
-    candidates.map((c) => c.name.replace(/\s+/g, "").toLowerCase()),
-  );
+  const known = new Set(candidates.map((c) => c.name.replace(/\s+/g, "").toLowerCase()));
   const districts = new Set(
     candidates.map((c) => c.district).filter((d): d is string => Boolean(d)),
   );
@@ -1886,12 +2798,7 @@ function finalizeCombinationsFromCandidates(
   // Accept 2+ typed groups; theme-direction search can still top up later.
   if (combinations.length < MIN_COMBINATIONS) return null;
 
-  validation = validateCombinationOptions(
-    combinations,
-    destination,
-    known,
-    generationRequestId,
-  );
+  validation = validateCombinationOptions(combinations, destination, known, generationRequestId);
   if (validation.ok) return combinations;
   // Soft combos from real Places — accept unless names are generic placeholders.
   if (!validation.genericPlaceNames.length && combinations.length >= 2) {
@@ -1910,7 +2817,11 @@ async function searchAreaPlaces(params: {
   generationRequestId: string;
   deadlineAt: number;
   locale?: Locale;
-}): Promise<PlaceResult[]> {
+}): Promise<{
+  places: PlaceResult[];
+  queryLanes: DiscoveryQueryLaneRecord[];
+  sourceLaneByCandidateKey: Map<string, PlanningDiscoveryQueryLane>;
+}> {
   const {
     area,
     destination,
@@ -1922,24 +2833,62 @@ async function searchAreaPlaces(params: {
     deadlineAt,
     locale = effectiveAppLocale(),
   } = params;
-  const queries = buildDestinationDiscoveryQueries({
-    destination,
-    country,
-    area,
-  });
+  const queries = orderPlanningDiscoveryQueryLanes(
+    buildDestinationDiscoveryQueries({ destination, country, area }).map((query) => ({ query })),
+  ).map((item) => item.query);
 
   const out: PlaceResult[] = [];
   const seen = new Set<string>();
+  const queryLanes: DiscoveryQueryLaneRecord[] = [];
+  const sourceLaneByCandidateKey = new Map<string, PlanningDiscoveryQueryLane>();
 
   for (const query of queries) {
-    if (out.length >= 18) break;
-    if (Date.now() > deadlineAt) break;
+    const lane = queryLaneForSemanticQuery(query);
+    if (out.length >= 18) {
+      queryLanes.push({
+        lane,
+        ...discoveryLaneDiagnosticContext(lane, out.length, true),
+        executed: false,
+        skippedReason: "candidate_cap_reached",
+        resultCount: 0,
+        uniqueAddedCount: 0,
+        cumulativeUniqueCount: out.length,
+        capReachedAfterLane: false,
+      });
+      continue;
+    }
+    if (Date.now() > deadlineAt) {
+      queryLanes.push({
+        lane,
+        ...discoveryLaneDiagnosticContext(lane, out.length, false),
+        executed: false,
+        skippedReason: "deadline_reached",
+        resultCount: 0,
+        uniqueAddedCount: 0,
+        cumulativeUniqueCount: out.length,
+        capReachedAfterLane: false,
+      });
+      continue;
+    }
     const cooldown = await waitIfPlacesRateLimited({
       generationRequestId,
       maxWaitMs: Math.min(8_000, Math.max(0, deadlineAt - Date.now())),
     });
-    if (cooldown !== "ready") break;
+    if (cooldown !== "ready") {
+      queryLanes.push({
+        lane,
+        ...discoveryLaneDiagnosticContext(lane, out.length, false),
+        executed: false,
+        skippedReason: "rate_limited",
+        resultCount: 0,
+        uniqueAddedCount: 0,
+        cumulativeUniqueCount: out.length,
+        capReachedAfterLane: false,
+      });
+      continue;
+    }
     try {
+      const uniqueCountBeforeLane = out.length;
       const result = await searchPlaces({
         data: {
           query,
@@ -1970,14 +2919,42 @@ async function searchAreaPlaces(params: {
           locale,
         },
       });
+      let uniqueAddedCount = 0;
       for (const place of result.places ?? []) {
-        const key = (place.id ?? place.name ?? "").trim().toLowerCase();
+        const key = rawCandidateKey(place);
         if (!key || seen.has(key)) continue;
         seen.add(key);
         out.push(place);
+        uniqueAddedCount += 1;
+        sourceLaneByCandidateKey.set(key, lane);
       }
+      queryLanes.push({
+        lane,
+        ...discoveryLaneDiagnosticContext(
+          lane,
+          uniqueCountBeforeLane,
+          false,
+          INITIAL_DISCOVERY_CANDIDATE_CAP,
+          out.length,
+        ),
+        executed: true,
+        skippedReason: "",
+        resultCount: result.places?.length ?? 0,
+        uniqueAddedCount,
+        cumulativeUniqueCount: out.length,
+        capReachedAfterLane: out.length >= 18,
+      });
     } catch {
-      // continue other queries
+      queryLanes.push({
+        lane,
+        ...discoveryLaneDiagnosticContext(lane, out.length, false),
+        executed: true,
+        skippedReason: "request_failed",
+        resultCount: 0,
+        uniqueAddedCount: 0,
+        cumulativeUniqueCount: out.length,
+        capReachedAfterLane: false,
+      });
     }
   }
 
@@ -1999,18 +2976,51 @@ async function searchAreaPlaces(params: {
           locale,
         },
       });
+      let uniqueAddedCount = 0;
       for (const place of nearby.places ?? []) {
-        const key = (place.id ?? place.name ?? "").trim().toLowerCase();
+        const key = rawCandidateKey(place);
         if (!key || seen.has(key)) continue;
         seen.add(key);
         out.push(place);
+        uniqueAddedCount += 1;
+        sourceLaneByCandidateKey.set(key, "nearby_attraction");
       }
+      queryLanes.push({
+        lane: "nearby_attraction",
+        ...discoveryLaneDiagnosticContext("nearby_attraction", out.length, false),
+        executed: true,
+        skippedReason: "",
+        resultCount: nearby.places?.length ?? 0,
+        uniqueAddedCount,
+        cumulativeUniqueCount: out.length,
+        capReachedAfterLane: false,
+      });
     } catch {
-      // ignore
+      queryLanes.push({
+        lane: "nearby_attraction",
+        ...discoveryLaneDiagnosticContext("nearby_attraction", out.length, false),
+        executed: true,
+        skippedReason: "request_failed",
+        resultCount: 0,
+        uniqueAddedCount: 0,
+        cumulativeUniqueCount: out.length,
+        capReachedAfterLane: false,
+      });
     }
+  } else {
+    queryLanes.push({
+      lane: "nearby_attraction",
+      ...discoveryLaneDiagnosticContext("nearby_attraction", out.length, false),
+      executed: false,
+      skippedReason: "deadline_reached",
+      resultCount: 0,
+      uniqueAddedCount: 0,
+      cumulativeUniqueCount: out.length,
+      capReachedAfterLane: false,
+    });
   }
 
-  return out;
+  return { places: out, queryLanes, sourceLaneByCandidateKey };
 }
 
 /**
@@ -2031,7 +3041,9 @@ export async function discoverDestinationCombinations(params: {
   /** Places Autocomplete / Place Details city center */
   placesGeometry?: { lat: number; lng: number } | null;
   /** Previous-round country→city options for Destination Anchor matching */
-  offeredDestinationOptions?: import("@/lib/ai/destination-anchor").DestinationOptionMetadata[] | null;
+  offeredDestinationOptions?:
+    | import("@/lib/ai/destination-anchor").DestinationOptionMetadata[]
+    | null;
   /** Chat / planning session — reuse Recommendation Candidate Pool */
   sessionId?: string | null;
 }): Promise<StructuredCombinationOption[] | null> {
@@ -2046,8 +3058,7 @@ export async function discoverDestinationCombinations(params: {
 
   let country = resolveDestinationCountryLabel(label, params.destinationCountry);
   const generationRequestId =
-    params.generationRequestId?.trim() ||
-    `combo_${label}_${Date.now().toString(36)}`;
+    params.generationRequestId?.trim() || `combo_${label}_${Date.now().toString(36)}`;
   beginPlacesGenerationSession(generationRequestId);
 
   const startedAt = Date.now();
@@ -2265,6 +3276,8 @@ export async function discoverDestinationCombinations(params: {
   );
 
   const rawPlaces: PlaceResult[] = [];
+  const discoveryQueryLanes: DiscoveryQueryLaneRecord[] = [];
+  const sourceLaneByCandidateKey = new Map<string, PlanningDiscoveryQueryLane>();
 
   // Seed from shared Candidate Pool (chat recommendations / prior planner) — 0 Places
   {
@@ -2280,6 +3293,10 @@ export async function discoverDestinationCombinations(params: {
     }
     if (poolPlaces.length) {
       rawPlaces.push(...poolPlaces);
+      for (const place of poolPlaces) {
+        const key = rawCandidateKey(place);
+        if (key) sourceLaneByCandidateKey.set(key, "candidate_pool_seed");
+      }
       logPlacesSearchSkipped({
         reason: "candidate_pool_seed_combination",
         destination: label,
@@ -2323,7 +3340,11 @@ export async function discoverDestinationCombinations(params: {
       deadlineAt,
       locale,
     });
-    rawPlaces.push(...batch);
+    rawPlaces.push(...batch.places);
+    discoveryQueryLanes.push(...batch.queryLanes);
+    for (const [key, lane] of batch.sourceLaneByCandidateKey) {
+      if (!sourceLaneByCandidateKey.has(key)) sourceLaneByCandidateKey.set(key, lane);
+    }
     if (rawPlaces.length >= 24) break;
   }
 
@@ -2347,7 +3368,11 @@ export async function discoverDestinationCombinations(params: {
         deadlineAt,
         locale,
       });
-      rawPlaces.push(...batch);
+      rawPlaces.push(...batch.places);
+      discoveryQueryLanes.push(...batch.queryLanes);
+      for (const [key, lane] of batch.sourceLaneByCandidateKey) {
+        if (!sourceLaneByCandidateKey.has(key)) sourceLaneByCandidateKey.set(key, lane);
+      }
     }
   }
 
@@ -2376,6 +3401,94 @@ export async function discoverDestinationCombinations(params: {
   }
 
   let candidates = candidatesFromPlaces(label, rawPlaces, { lat, lng }, locale);
+  for (const candidate of candidates) {
+    const sourcePlace = rawPlaces.find(
+      (place) =>
+        (candidate.googlePlaceId && place.id?.trim() === candidate.googlePlaceId) ||
+        (place.name ?? "").replace(/\s+/g, "").toLowerCase() ===
+          candidate.name.replace(/\s+/g, "").toLowerCase(),
+    );
+    if (sourcePlace) {
+      candidate.sourceQueryLane =
+        sourceLaneByCandidateKey.get(rawCandidateKey(sourcePlace)) ?? "other";
+    }
+  }
+
+  for (const record of discoveryQueryLanes) {
+    console.info("[PLANNING_DISCOVERY_QUERY_LANES]", record);
+  }
+
+  const uniqueRaw = new Map<string, PlaceResult>();
+  for (const place of rawPlaces) {
+    const key = rawCandidateKey(place);
+    if (key && !uniqueRaw.has(key)) uniqueRaw.set(key, place);
+  }
+  const acceptedGoogleIds = new Set(
+    candidates
+      .map((candidate) => candidate.googlePlaceId?.trim())
+      .filter((id): id is string => Boolean(id)),
+  );
+  const acceptedNameKeys = new Set(
+    candidates.map((candidate) => candidate.name.replace(/\s+/g, "").toLowerCase()),
+  );
+  console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+    destinationScopePresent: Boolean(finalized),
+    queryLaneCountAttempted: discoveryQueryLanes.filter((lane) => lane.executed).length,
+    queryLaneCountSkipped: discoveryQueryLanes.filter((lane) => !lane.executed).length,
+    rawCandidateCount: rawPlaces.length,
+    uniqueCandidateCount: uniqueRaw.size,
+    validGoogleIdCount: [...uniqueRaw.values()].filter((place) =>
+      isHardGooglePlaceId(place.id?.trim()),
+    ).length,
+    operationalCount: [...uniqueRaw.values()].filter(
+      (place) => place.businessStatus === "OPERATIONAL",
+    ).length,
+    travelEligibleCount: candidates.length,
+  });
+  for (const [key, place] of uniqueRaw) {
+    const admitted =
+      (place.id && acceptedGoogleIds.has(place.id.trim())) ||
+      acceptedNameKeys.has((place.name ?? "").replace(/\s+/g, "").toLowerCase());
+    const candidateDiagnostic = {
+      candidateHash: anonymousRawCandidateHash(place),
+      sourceQueryLane: sourceLaneByCandidateKey.get(key) ?? "other",
+      googleTypesFamily: resolvePlaceCategoryFamily(place),
+      primaryTypeFamily: resolvePlaceCategoryFamily({
+        ...place,
+        types: place.primaryType ? [place.primaryType] : [],
+      }),
+      ratingPresent: place.rating != null,
+      userRatingCountPresent: place.userRatingCount != null,
+    };
+    console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+      ...candidateDiagnostic,
+      admissionStage: "raw",
+      dropped: false,
+      dropReason: "",
+    });
+    console.info("[PLANNING_GROUNDED_CANDIDATE_POOL]", {
+      ...candidateDiagnostic,
+      admissionStage: admitted ? "sanitized" : "sanitization_rejected",
+      dropped: !admitted,
+      dropReason: admitted ? "" : "candidate_sanitization_rejected",
+    });
+    const diagnosticCandidate: CombinationPlaceCandidate = {
+      name: place.name ?? "",
+      googlePlaceId: place.id?.trim() || undefined,
+      types: place.types ?? [],
+      primaryType: place.primaryType,
+      address: place.address,
+      rating: place.rating,
+      userRatingCount: place.userRatingCount,
+      businessStatus: place.businessStatus,
+      sourceQueryLane: sourceLaneByCandidateKey.get(key) ?? "other",
+    };
+    logAttractionCandidateLifecycle(diagnosticCandidate, {
+      rawPresent: true,
+      sanitizedPresent: admitted,
+      dropReason: admitted ? "" : "candidate_sanitization_rejected",
+    });
+  }
 
   const districts = new Set(
     candidates.map((c) => c.district).filter((d): d is string => Boolean(d)),
@@ -2428,11 +3541,7 @@ export async function discoverDestinationCombinations(params: {
     `nightlife=${themeCounts.nightlife}`,
   );
 
-  let combinations = finalizeCombinationsFromCandidates(
-    label,
-    candidates,
-    generationRequestId,
-  );
+  let combinations = finalizeCombinationsFromCandidates(label, candidates, generationRequestId);
 
   // Fallback Discovery: do not hard-fail on sparse themes.
   if (!combinations && !timedOut()) {
@@ -2461,11 +3570,7 @@ export async function discoverDestinationCombinations(params: {
       });
       const mergedPlaces = [...rawPlaces, ...fallbackPlaces];
       candidates = candidatesFromPlaces(label, mergedPlaces, { lat, lng }, locale);
-      combinations = finalizeCombinationsFromCandidates(
-        label,
-        candidates,
-        generationRequestId,
-      );
+      combinations = finalizeCombinationsFromCandidates(label, candidates, generationRequestId);
       if (combinations?.length) {
         logAiPipeline(
           "[COMBINATION_FALLBACK_SUCCESS]",
@@ -2514,9 +3619,10 @@ export async function discoverDestinationCombinations(params: {
       degradedReason = themed.stopReason ?? merged.degradedReason;
     } else {
       // Preserve the pre-existing minimum-recovery contract for <2 groups.
-      combinations = themed.combinations.length >= MIN_COMBINATIONS
-        ? themed.combinations.slice(0, PREFERRED_COMBINATIONS)
-        : combinations;
+      combinations =
+        themed.combinations.length >= MIN_COMBINATIONS
+          ? themed.combinations.slice(0, PREFERRED_COMBINATIONS)
+          : combinations;
       topUpResultCount = Math.max(0, (combinations?.length ?? 0) - initialCombinationCount);
       degradedReason = themed.stopReason;
     }
@@ -2538,14 +3644,15 @@ export async function discoverDestinationCombinations(params: {
     `topUpResultCount=${topUpResultCount}`,
     `finalCombinationCount=${finalTopUpCombinationCount}`,
     `degradedDelivery=${degradedDelivery}`,
-    `degradedReason=${degradedDelivery ? degradedReason ?? "insufficient_verified_candidates" : ""}`,
+    `degradedReason=${degradedDelivery ? (degradedReason ?? "insufficient_verified_candidates") : ""}`,
   );
 
   // Drop any combo that still lacks enough real places (typed food/shopping may show with 2).
   if (combinations?.length) {
+    combinations = enforcePlanningCombinationComposition(combinations);
     combinations = combinations.filter((c) => {
       const count = (c.primaryCandidates ?? c.placeCandidates).length;
-      return count >= minPlacesForTheme(c.theme, c.title);
+      return count >= 2;
     });
     if (combinations.length < 2) {
       combinations = null;
@@ -2634,11 +3741,7 @@ export async function discoverDestinationCombinations(params: {
   for (let i = 0; i < combinations.length; i += 1) {
     const combo = combinations[i]!;
     const count = (combo.primaryCandidates ?? combo.placeCandidates).length;
-    logAiPipeline(
-      "[COMBINATION_READY]",
-      `combinationId=${i + 1}`,
-      `realPlaceCount=${count}`,
-    );
+    logAiPipeline("[COMBINATION_READY]", `combinationId=${i + 1}`, `realPlaceCount=${count}`);
   }
   logAiPipeline(
     "[STYLE_COMBINATION_GENERATED]",
@@ -2661,23 +3764,19 @@ export function structuredCombinationsToTitlesPlaces(
   return combinations.map((combo) => {
     const title = isMechanicalCombinationTitle(combo.title)
       ? deriveCombinationThemeTitle(
-          combo.primaryCandidates?.length
-            ? combo.primaryCandidates
-            : combo.placeCandidates,
+          combo.primaryCandidates?.length ? combo.primaryCandidates : combo.placeCandidates,
           { baseTitle: combo.title },
         )
       : localizeCombinationThemeTitle(combo.title);
     // Reply surfaces effectiveDisplayName (繁中 → English readable fallback).
-    const places = (combo.primaryCandidates?.length
-      ? combo.primaryCandidates
-      : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO)
+    const places = (
+      combo.primaryCandidates?.length
+        ? combo.primaryCandidates
+        : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO)
     )
       .map(
         (p) =>
-          p.effectiveDisplayName?.trim() ||
-          p.localizedDisplayName?.trim() ||
-          p.name?.trim() ||
-          "",
+          p.effectiveDisplayName?.trim() || p.localizedDisplayName?.trim() || p.name?.trim() || "",
       )
       .filter(Boolean);
     return { title, places };
@@ -2693,11 +3792,7 @@ export function getStructuredCombinationByIndex(
   return cached[combinationId1Based - 1] ?? null;
 }
 
-export {
-  PRIMARY_PLACES_PER_COMBO,
-  FALLBACK_PLACES_PER_COMBO,
-  TARGET_PLACES_PER_COMBO,
-};
+export { PRIMARY_PLACES_PER_COMBO, FALLBACK_PLACES_PER_COMBO, TARGET_PLACES_PER_COMBO };
 
 /**
  * Ensure combinations are ready for a destination.
@@ -2713,7 +3808,9 @@ export async function ensureDestinationCombinationsReady(params: {
   destinationCountry?: string | null;
   contextCoordinates?: { lat: number; lng: number } | null;
   placesGeometry?: { lat: number; lng: number } | null;
-  offeredDestinationOptions?: import("@/lib/ai/destination-anchor").DestinationOptionMetadata[] | null;
+  offeredDestinationOptions?:
+    | import("@/lib/ai/destination-anchor").DestinationOptionMetadata[]
+    | null;
 }): Promise<{
   ok: boolean;
   combinations: StructuredCombinationOption[];
@@ -2744,9 +3841,8 @@ export async function ensureDestinationCombinationsReady(params: {
   }
 
   // Lazy import to avoid circular dependency with destination-travel-profile
-  const { getDestinationCombinations, dropGenericCombinationLabel } = await import(
-    "@/lib/ai/destination-combination-suggestions"
-  );
+  const { getDestinationCombinations, dropGenericCombinationLabel } =
+    await import("@/lib/ai/destination-combination-suggestions");
   // Curated/local named places only — theme fallback no longer returns fake places.
   const local = getDestinationCombinations(label);
   const strongLocal = local.filter(
@@ -2820,21 +3916,34 @@ export async function ensureDestinationCombinationsReady(params: {
         fallbackCandidates: filtered.slice(PRIMARY_PLACES_PER_COMBO),
       });
     }
-    if (contracted.length >= MIN_COMBINATIONS) {
-      const gatedLocal = applyCombinationLocalizationGate(contracted, {
+    const groundedContracted = contracted.filter((combo) => {
+      const primary = combo.primaryCandidates?.length
+        ? combo.primaryCandidates
+        : combo.placeCandidates.slice(0, PRIMARY_PLACES_PER_COMBO);
+      return (
+        primary.length >= 2 && primary.every((place) => isHardGooglePlaceId(place.googlePlaceId))
+      );
+    });
+    if (groundedContracted.length >= MIN_COMBINATIONS) {
+      const gatedLocal = applyCombinationLocalizationGate(groundedContracted, {
         locale,
         minPlacesPerCombo: 2,
         minCombinations: MIN_COMBINATIONS,
         preferredCombinations: PREFERRED_COMBINATIONS,
       });
       // Deliver when Repair Gate kept ≥ MIN real-place combos (English fallback OK).
-      if (gatedLocal.tripCombinationDeliveryPass || gatedLocal.combinations.length >= MIN_COMBINATIONS) {
+      if (
+        gatedLocal.tripCombinationDeliveryPass ||
+        gatedLocal.combinations.length >= MIN_COMBINATIONS
+      ) {
         const localized = gatedLocal.combinations as StructuredCombinationOption[];
         setCachedDiscoveredCombinations(label, localized);
         return { ok: true, combinations: localized, source: "curated_or_local" };
       }
     }
-    // Curated seeds failed food/shopping contracts — fall through to Places discovery.
+    // A curated label is a search seed, not a selectable candidate. If it has
+    // no grounded identity, continue through the existing Places discovery
+    // below instead of caching a name-only option as ready.
   }
 
   const discovered = await discoverDestinationCombinations(params);

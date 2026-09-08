@@ -97,8 +97,13 @@ export const SUB_PLACE_PATTERNS: SubPlacePattern[] = [
   // --- Generic inner facilities / precinct fillers (園內設施・綠園道附屬) ---
   {
     type: "inner_facility",
-    re: /園內設施|园内设施|園區設施|园区设施|園區內|园区内|園內|园内/,
-    strip: /園內設施|园内设施|園區設施|园区设施|園區內|园区内|園內|园内/,
+    re: /園內設施|园内设施|園區設施|园区设施|園區內|园区内|園內|园内|風阻尼球|风阻尼球|阻尼球|內部展覽|内部展览|館內展覽|馆内展览|internal\s*exhibit|tuned\s*mass\s*damper/,
+    strip: /園內設施|园内设施|園區設施|园区设施|園區內|园区内|園內|园内|風阻尼球|风阻尼球|阻尼球|內部展覽|内部展览|館內展覽|馆内展览|internal\s*exhibit|tuned\s*mass\s*damper/,
+  },
+  {
+    type: "inner_facility",
+    re: /紀念品店|纪念品店|禮品店|礼品店|gift\s*shop|souvenir\s*shop/,
+    strip: /紀念品店|纪念品店|禮品店|礼品店|gift\s*shop|souvenir\s*shop/,
   },
 ];
 

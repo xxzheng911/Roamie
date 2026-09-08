@@ -5,6 +5,11 @@ import type { NormalizedOpeningSource } from "@/lib/normalized-opening-status";
 /** 探索 / 地圖推薦地點（client-safe，不含 server 依賴） */
 export type PlaceResult = {
   id: string;
+  /** Server planner provenance; never substitute the generic planner id at delivery. */
+  googlePlaceId?: string | null;
+  /** Stable in-memory candidate identity used across repair/replan. */
+  plannerProvenanceKey?: string;
+  sourceCandidateIndex?: number;
   name: string;
   address: string | null;
   lat: number | null;

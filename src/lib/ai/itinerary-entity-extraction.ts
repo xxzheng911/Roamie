@@ -1,4 +1,4 @@
-import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
+import { normalizeDestinationAndDuration, parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { isMoodNearbyRelaxationRequest } from "@/lib/mood-nearby-intent";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
@@ -44,8 +44,9 @@ const DESTINATION_NOISE_IN_LABEL =
 
 function acceptItineraryDestination(candidate: string | undefined): string | undefined {
   if (!candidate) return undefined;
+  const durationNormalized = normalizeDestinationAndDuration(candidate);
   const normalized = normalizeDestinationLabel(
-    candidate.replace(/(?:走走|逛逛|玩玩|玩)$/, "").trim(),
+    durationNormalized.destinationLabel.replace(/(?:走走|逛逛|玩玩|玩)$/, "").trim(),
   );
   if (!normalized || !isValidParsedDestinationLabel(normalized)) return undefined;
   if (DESTINATION_NOISE_IN_LABEL.test(normalized)) return undefined;

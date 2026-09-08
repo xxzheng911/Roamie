@@ -36,9 +36,24 @@ export const Route = createFileRoute("/api/generate-itinerary")({
         const credits = await reserveServerCredits(auth, "ITINERARY_GENERATION", request);
         if (credits.response || !credits.reservation) return credits.response!;
         const reservation = credits.reservation;
+        const operationId =
+          request.headers.get("x-roamie-request-id")?.trim() || crypto.randomUUID();
+        let correlatedGenerationId = operationId;
         request.signal.addEventListener(
           "abort",
-          () => void settleServerCredits(auth, reservation, false),
+          () => {
+            console.info("[ITINERARY_SERVER_RESULT]", {
+              generationId: correlatedGenerationId,
+              successDiscriminant: false,
+              errorCode: "request_aborted",
+              failureReason: "abort",
+              failedRuleCount: 0,
+              tripPresent: false,
+              payloadPresent: false,
+              transport: "https_api",
+            });
+            void settleServerCredits(auth, reservation, false);
+          },
           { once: true },
         );
         let payload: unknown;
@@ -52,10 +67,27 @@ export const Route = createFileRoute("/api/generate-itinerary")({
           });
         }
 
-        const operationId =
-          request.headers.get("x-roamie-request-id")?.trim() || crypto.randomUUID();
         if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+          correlatedGenerationId =
+            typeof (payload as Record<string, unknown>).generationId === "string"
+              ? ((payload as Record<string, unknown>).generationId as string)
+              : operationId;
           payload = { ...(payload as Record<string, unknown>), generationTimingId: operationId };
+          const requestBody = payload as Record<string, unknown>;
+          console.info("[ITINERARY_DAYS_AUTHORITY]", {
+            generationId: correlatedGenerationId,
+            stage: "api_request",
+            explicitDays: typeof requestBody.days === "number" ? requestBody.days : null,
+            derivedDays: null,
+            effectiveDays: typeof requestBody.days === "number" ? requestBody.days : null,
+            startDatePresent: Boolean(
+              typeof requestBody.startDate === "string" && requestBody.startDate.trim(),
+            ),
+            endDatePresent: Boolean(
+              typeof requestBody.endDate === "string" && requestBody.endDate.trim(),
+            ),
+            source: typeof requestBody.days === "number" ? "explicit_days" : "none",
+          });
         }
         await recordAnalyticsEventServer(
           {
@@ -101,6 +133,19 @@ export const Route = createFileRoute("/api/generate-itinerary")({
           );
           const message = e instanceof Error ? e.message : "AI 服務暫時無法使用。";
           const status = /OPENAI_API_KEY/i.test(message) ? 500 : 400;
+          console.info("[ITINERARY_SERVER_RESULT]", {
+            generationId:
+              payload && typeof payload === "object" && !Array.isArray(payload)
+                ? ((payload as Record<string, unknown>).generationId ?? operationId)
+                : operationId,
+            successDiscriminant: false,
+            errorCode: "server_error",
+            failureReason: "exception",
+            failedRuleCount: 0,
+            tripPresent: false,
+            payloadPresent: false,
+            transport: "https_api",
+          });
           console.error("[generate-itinerary] failed:", e);
           return new Response(JSON.stringify({ error: message }), {
             status,

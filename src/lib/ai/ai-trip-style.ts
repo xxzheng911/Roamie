@@ -1,10 +1,10 @@
-import type { ChatPlanningSession } from "@/lib/chat-session";
+import type { ChatPlanningSession, PlanningShownCandidate } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { PendingQuestion } from "@/lib/ai/destination-pending-question";
 import { enrichPendingQuestion } from "@/lib/ai/chat-conversation-state";
 import {
-  buildDestinationCombinationSuggestionsReply,
+  buildDestinationCombinationSuggestionPayload,
   pendingOptionTitlesForCombinations,
 } from "@/lib/ai/destination-combination-suggestions";
 import {
@@ -444,6 +444,7 @@ export function buildAskTripStyleAdviceResult(
   reply: string;
   pendingQuestion: PendingQuestion;
   contextPatch: Partial<CanonicalTravelContext>;
+  planningShownCandidates?: PlanningShownCandidate[];
 } {
   // Legacy style selection retired — upgrade to New Trip Conversation combinations.
   const destination = resolveConversationDestination(ctx, session)!;
@@ -454,12 +455,12 @@ export function buildAskTripStyleAdviceResult(
     /^\d{4}-\d{2}-\d{2}$/.test(ctx.startDate!.trim()) &&
     Boolean(ctx.endDate) &&
     /^\d{4}-\d{2}-\d{2}$/.test(ctx.endDate!.trim());
-  const reply =
-    buildDestinationCombinationSuggestionsReply(label, days, {
-      startDate: hasExactDate ? ctx.startDate : undefined,
-      endDate: hasExactDate ? ctx.endDate : undefined,
-      weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
-    }) ?? buildAskTripStyleReply(ctx, session, userText);
+  const suggestion = buildDestinationCombinationSuggestionPayload(label, days, {
+    startDate: hasExactDate ? ctx.startDate : undefined,
+    endDate: hasExactDate ? ctx.endDate : undefined,
+    weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
+  });
+  const reply = suggestion?.displayText ?? buildAskTripStyleReply(ctx, session, userText);
 
   const comboOptions = pendingOptionTitlesForCombinations(label);
   return {
@@ -480,7 +481,9 @@ export function buildAskTripStyleAdviceResult(
       conversationState: "awaiting_preference",
       mustVisitGenerated: true,
       planningStage: "recommendations_generated",
+      offeredCombinations: suggestion?.offeredCombinations,
     },
+    planningShownCandidates: suggestion?.shownCandidates,
   };
 }
 

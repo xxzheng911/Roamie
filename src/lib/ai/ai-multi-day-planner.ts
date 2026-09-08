@@ -48,10 +48,12 @@ import { filterRealPlanningPlaces } from "@/lib/ai/planning-real-place";
 import {
   applyPlannerRouteAndCapacityAssembly,
   buildDayPreferredPools,
+  placeDistanceM,
   passesDayRouteConstraint,
   resolveNearbyExtensionDay,
   type PlannerPaceHint,
 } from "@/lib/ai/planner-day-route-assembly";
+import { applyFinalDayRouteOrdering } from "@/lib/ai/final-day-route-ordering";
 import {
   classifyDailyDiversityCategory,
   formatDailyDiversityFamilySummary,
@@ -236,7 +238,7 @@ export function redistributePlacesEvenly(params: {
     const count = perDayCounts[day - 1] ?? 0;
     const entries: DayPlanEntry[] = [];
     for (let i = 0; i < count && remaining.length > 0; i += 1) {
-      const candidateIndex = remaining.findIndex((candidate) => {
+      const eligibleCandidates = remaining.map((candidate, candidateIndex) => ({ candidate, candidateIndex })).filter(({ candidate }) => {
         const accepted = wouldViolateDailyDiversity(
           entries.map((entry) => entry.place),
           candidate,
@@ -268,6 +270,19 @@ export function redistributePlacesEvenly(params: {
         }
         return accepted;
       });
+      eligibleCandidates.sort((left, right) => {
+        if (!entries.length) return left.candidateIndex - right.candidateIndex;
+        const nearest = (candidate: PlaceResult): number => Math.min(
+          ...entries.map((entry) => {
+            if (candidate.lat == null || candidate.lng == null || entry.place.lat == null || entry.place.lng == null) {
+              return Number.POSITIVE_INFINITY;
+            }
+            return placeDistanceM(candidate, entry.place);
+          }),
+        );
+        return nearest(left.candidate) - nearest(right.candidate) || left.candidateIndex - right.candidateIndex;
+      });
+      const candidateIndex = eligibleCandidates[0]?.candidateIndex ?? -1;
       if (candidateIndex < 0) break;
       const [candidate] = remaining.splice(candidateIndex, 1);
       entries.push(entryFromPlace(candidate!, day, i, params.style));
@@ -1159,6 +1174,10 @@ export function ensureDayPlansMeetMinimum(params: {
     pool,
     days: params.days,
     style: params.style,
+    plannedDate: params.plannedDate,
+  });
+  current = applyFinalDayRouteOrdering(current, {
+    stage: "post_supplemental_fill",
     plannedDate: params.plannedDate,
   });
 

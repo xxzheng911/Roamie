@@ -10,11 +10,14 @@ import type {
 import type { PlaceResult } from "@/lib/place-result";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
 import { logNearbyProvenanceBoundary } from "@/lib/ai/nearby-provenance-telemetry";
+import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
+import { createDeliverableItineraryStop } from "@/lib/ai/itinerary-deliverable-stop";
 
 function itemToPlace(item: RoamieItineraryItem): PlaceResult {
   const display = (item.localizedDisplayName ?? "").trim() || item.placeName || item.title;
   const place: PlaceResult = {
     id: item.googlePlaceId?.trim() || item.placeName || item.title,
+    googlePlaceId: isHardGooglePlaceId(item.googlePlaceId) ? item.googlePlaceId!.trim() : null,
     name: display,
     address: item.address ?? null,
     lat: item.lat ?? null,
@@ -191,30 +194,26 @@ export function applyComposedPlansToItineraryItems(
         });
       } else {
         const displayName = place.localizedDisplayName?.trim() || place.name || entry.name;
-        out.push({
+        const inserted = createDeliverableItineraryStop(
+          {
+            ...place,
+            name: displayName,
+            placeName: displayName,
+            googlePlaceId:
+              (isHardGooglePlaceId(place.googlePlaceId) && place.googlePlaceId!.trim()) ||
+              (isHardGooglePlaceId(place.id) ? place.id.trim() : null),
+          },
           date,
-          time: entry.time || "10:00",
-          title: displayName,
-          description: "",
-          placeName: displayName,
+          entry.time || "10:00",
+          false,
+        );
+        out.push({
+          ...inserted,
+          dayIndex: safeDay - 1,
           localizedDisplayName: displayName,
           originalName: place.originalName ?? place.name ?? entry.name,
           languageCode: place.languageCode ?? undefined,
           localizationSource: place.localizationSource ?? undefined,
-          lat: place.lat ?? null,
-          lng: place.lng ?? null,
-          address: place.address ?? entry.name,
-          googlePlaceId: place.id || undefined,
-          placeType: place.primaryType ?? undefined,
-          types: place.types ?? undefined,
-          dayIndex: safeDay - 1,
-          photoName: place.photoName ?? null,
-          rating: place.rating ?? null,
-          userRatingCount: place.userRatingCount ?? null,
-          destinationScope: place.destinationScope,
-          extensionDestination: place.extensionDestination,
-          sourceRegionCandidate: place.sourceRegionCandidate,
-          placeSnapshotSource: "selected_place",
         });
       }
     }

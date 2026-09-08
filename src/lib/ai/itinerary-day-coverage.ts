@@ -716,6 +716,7 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
         category in limits ? limits[category as keyof typeof limits] : Number.POSITIVE_INFINITY;
 
       let target: T | null = null;
+      let targetDistance = Number.POSITIVE_INFINITY;
       if (required && !identityKey) {
         plan.entries.push(entry);
         keptPlaces.push(entry.place);
@@ -771,13 +772,27 @@ export function repairDailyDiversityByMove<T extends DayCoveragePlan>(params: {
           );
           continue;
         }
-        // Prefer days without this category and with spare capacity.
+        const geographicDistance = entry.place.lat != null && entry.place.lng != null
+          ? Math.min(
+              ...other.entries
+                .filter((candidate) => candidate.place.lat != null && candidate.place.lng != null)
+                .map((candidate) => distanceMeters(
+                  { lat: entry.place.lat!, lng: entry.place.lng! },
+                  { lat: candidate.place.lat!, lng: candidate.place.lng! },
+                )),
+            )
+          : Number.POSITIVE_INFINITY;
+        // Geography first; diversity/load are deterministic tie-breaks.
         if (
           !target ||
-          other.entries.length < target.entries.length ||
-          !otherPlaces.some((p) => classifyDailyDiversityCategory(p) === category)
+          geographicDistance < targetDistance ||
+          (geographicDistance === targetDistance && other.entries.length < target.entries.length) ||
+          (geographicDistance === targetDistance &&
+            other.entries.length === target.entries.length &&
+            !otherPlaces.some((p) => classifyDailyDiversityCategory(p) === category))
         ) {
           target = other;
+          targetDistance = geographicDistance;
         }
       }
 

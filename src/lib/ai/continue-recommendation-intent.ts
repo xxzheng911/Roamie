@@ -7,7 +7,6 @@
  * Grammar (slots, order flexible):
  *   [geo]? [more_marker]+ [request_verb]? [quantity]? [category]? [particle]?
  */
-import { parseChatPlaceIntents } from "@/lib/ai/chat-place-intent";
 import type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 
 const GEO_RE = /附近|這一帶|这一带|這邊|这边|附近的|順路|顺路/;
@@ -21,6 +20,10 @@ const REQUEST_VERB_RE =
 const QUANTITY_RE = /幾個|几个|一些|一點|一点|一批|幾間|几间|幾家|几家|別的|别的/;
 
 const PARTICLE_RE = /[嗎么呢呀啊嘛喔哦喲哟哇咧吧]+$/;
+
+/** Lexical-only by design: the full place parser calls this continue grammar. */
+const CONTINUE_CATEGORY_RE =
+  /咖啡|café|cafe|餐廳|美食|吃飯|拉麵|拉面|壽司|寿司|燒肉|烧肉|火鍋|商圈|購物|百貨|商場|mall|outlet|景點|美術館|博物館|museum|夜市|酒吧|居酒屋|宵夜|室內|雨天/i;
 
 const REJECT_BATCH_RE =
   /不要這些|不要这几个|不要這幾個|不想要這些|不想要这些|不喜歡這些|不喜欢这些|換掉這些|换掉这些|不要重複|不要重复|換一批|换一批/;
@@ -62,7 +65,7 @@ export function matchesContinueRecommendationGrammar(text: string): boolean {
   const hasGeo = GEO_RE.test(t);
   const hasVerb = REQUEST_VERB_RE.test(t);
   const hasQty = QUANTITY_RE.test(t);
-  const hasCategory = parseChatPlaceIntents(t).length > 0;
+  const hasCategory = CONTINUE_CATEGORY_RE.test(t);
 
   // 「還有推薦嗎」「再給我更多」「附近還有嗎」「還有其他咖啡廳嗎」
   if (hasVerb || hasQty || hasGeo || hasCategory) return true;
@@ -86,5 +89,13 @@ export function continueRecommendationMentionedCategory(
   text: string,
 ): ChatPlaceCategoryIntent | null {
   if (!matchesContinueRecommendationGrammar(text)) return null;
-  return parseChatPlaceIntents(text)[0] ?? null;
+  const t = text.trim();
+  if (/咖啡|café|cafe/i.test(t)) return "cafe";
+  if (/餐廳|美食|吃飯|拉麵|拉面|壽司|寿司|燒肉|烧肉|火鍋/.test(t)) return "restaurant";
+  if (/商圈|購物|百貨|商場|mall|outlet/i.test(t)) return "shopping";
+  if (/夜市/.test(t)) return "night_market";
+  if (/酒吧|居酒屋|宵夜/.test(t)) return "bar";
+  if (/室內|雨天/.test(t)) return "indoor";
+  if (/景點|美術館|博物館|museum/i.test(t)) return "attraction";
+  return null;
 }

@@ -627,6 +627,124 @@ export type StopNormalizationIssue = {
   rawStop?: unknown;
 };
 
+export type ItineraryClientEntryFailureReason =
+  | "missing_identity"
+  | "non_google_identity"
+  | "saved_prefix_not_normalized"
+  | "canonical_prefix_not_navigable"
+  | "invalid_coordinates"
+  | "missing_name"
+  | "generic_name"
+  | "invalid_day_index"
+  | "malformed_types"
+  | "burial_funeral"
+  | "missing_address"
+  | "missing_date"
+  | "missing_time"
+  | "other";
+
+export type ItineraryClientEntryValidation = {
+  entryIndex: number;
+  dayIndex: number | null;
+  valid: boolean;
+  failureReasons: ItineraryClientEntryFailureReason[];
+  hasGooglePlaceId: boolean;
+  hasCanonicalIdentity: boolean;
+  hasLat: boolean;
+  hasLng: boolean;
+  coordinatesValid: boolean;
+  hasPlaceName: boolean;
+  hasTitle: boolean;
+  hasDayIndex: boolean;
+  hasTime: boolean;
+  hasTypes: boolean;
+  identityPrefixType: "google" | "saved" | "canonical" | "synthetic" | "missing" | "unknown";
+};
+
+function isGoogleIdentity(value: string): boolean {
+  return Boolean(value && (isMappableGooglePlaceId(value) || /^ChIJ/.test(value)));
+}
+
+function identityPrefixType(value: string): ItineraryClientEntryValidation["identityPrefixType"] {
+  if (!value) return "missing";
+  if (value.startsWith("saved:")) return "saved";
+  if (value.startsWith("canonical:")) return "canonical";
+  if (value.startsWith("google:")) return "google";
+  if (/^(synthetic:|internal:|fallback:|approx:)/.test(value)) return "synthetic";
+  return isGoogleIdentity(value) ? "google" : "unknown";
+}
+
+/** Only unwrap namespaces whose payload independently validates as a Google ID. */
+function canonicalGooglePlaceId(value: string): string {
+  if (isGoogleIdentity(value)) return value;
+  for (const prefix of ["saved:", "google:", "canonical:"] as const) {
+    if (!value.startsWith(prefix)) continue;
+    const candidate = value.slice(prefix.length).trim();
+    return isGoogleIdentity(candidate) ? candidate : value;
+  }
+  return value;
+}
+
+export function assessItineraryClientEntry(
+  raw: unknown,
+  entryIndex: number,
+  tripDays: number,
+  destination?: string,
+): ItineraryClientEntryValidation {
+  const entry = unwrapRawStop(raw);
+  if (!entry) {
+    return {
+      entryIndex, dayIndex: null, valid: false, failureReasons: ["other"],
+      hasGooglePlaceId: false, hasCanonicalIdentity: false, hasLat: false, hasLng: false,
+      coordinatesValid: false, hasPlaceName: false, hasTitle: false, hasDayIndex: false,
+      hasTime: false, hasTypes: false, identityPrefixType: "missing",
+    };
+  }
+  const rawId = typeof (entry.googlePlaceId ?? entry.placeId ?? entry.id) === "string"
+    ? String(entry.googlePlaceId ?? entry.placeId ?? entry.id).trim()
+    : "";
+  const canonicalId = canonicalGooglePlaceId(rawId);
+  const prefix = identityPrefixType(rawId);
+  const latValue = entry.lat ?? entry.latitude;
+  const lngValue = entry.lng ?? entry.longitude;
+  const lat = typeof latValue === "number" ? latValue : typeof latValue === "string" && latValue.trim() ? Number(latValue) : Number.NaN;
+  const lng = typeof lngValue === "number" ? lngValue : typeof lngValue === "string" && lngValue.trim() ? Number(lngValue) : Number.NaN;
+  const coordinatesValid = Number.isFinite(lat) && Number.isFinite(lng) && (Math.abs(lat) > 0.001 || Math.abs(lng) > 0.001);
+  const name = typeof (entry.placeName ?? entry.name ?? entry.title) === "string"
+    ? String(entry.placeName ?? entry.name ?? entry.title).trim()
+    : "";
+  const dayIndex = typeof entry.dayIndex === "number" && Number.isInteger(entry.dayIndex) ? entry.dayIndex : null;
+  const reasons: ItineraryClientEntryFailureReason[] = [];
+  if (!rawId) reasons.push("missing_identity");
+  else if (!isGoogleIdentity(canonicalId)) {
+    reasons.push(prefix === "canonical" ? "canonical_prefix_not_navigable" : "non_google_identity");
+  } else if (prefix === "saved" && canonicalId === rawId) reasons.push("saved_prefix_not_normalized");
+  if (!coordinatesValid) reasons.push("invalid_coordinates");
+  if (!name) reasons.push("missing_name");
+  if (entry.dayIndex != null && (dayIndex == null || dayIndex < 0 || dayIndex >= tripDays)) reasons.push("invalid_day_index");
+  if (entry.types != null && !(typeof entry.types === "string" || (Array.isArray(entry.types) && entry.types.every((type) => typeof type === "string")))) reasons.push("malformed_types");
+  if (typeof entry.address !== "string" || !entry.address.trim()) reasons.push("missing_address");
+  if (typeof entry.date !== "string" || !entry.date.trim()) reasons.push("missing_date");
+  if (typeof (entry.time ?? entry.arrivalTime) !== "string" || !String(entry.time ?? entry.arrivalTime).trim()) reasons.push("missing_time");
+  return {
+    entryIndex,
+    dayIndex,
+    valid: reasons.length === 0,
+    failureReasons: [...new Set(reasons)],
+    hasGooglePlaceId: isGoogleIdentity(canonicalId),
+    hasCanonicalIdentity: Boolean(rawId || (typeof entry.canonicalPlaceId === "string" && entry.canonicalPlaceId.trim())),
+    hasLat: latValue !== null && latValue !== undefined,
+    hasLng: lngValue !== null && lngValue !== undefined,
+    coordinatesValid,
+    hasPlaceName: typeof entry.placeName === "string" && entry.placeName.trim().length > 0,
+    hasTitle: typeof entry.title === "string" && entry.title.trim().length > 0,
+    hasDayIndex: entry.dayIndex !== null && entry.dayIndex !== undefined,
+    hasTime: typeof (entry.time ?? entry.arrivalTime) === "string" && String(entry.time ?? entry.arrivalTime).trim().length > 0,
+    hasTypes: entry.types !== null && entry.types !== undefined,
+    identityPrefixType: prefix,
+  };
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -691,9 +809,12 @@ export function normalizeItineraryStop(
   }
 
   const name = String(unwrapped.placeName ?? unwrapped.name ?? unwrapped.title ?? "").trim();
-  const googlePlaceId = String(
+  const rawGooglePlaceId = String(
     unwrapped.googlePlaceId ?? unwrapped.placeId ?? unwrapped.id ?? "",
   ).trim();
+  // Planner locks use `saved:` as an internal identity namespace. It must not
+  // cross the StoredItinerary boundary as part of the navigable Google ID.
+  const googlePlaceId = canonicalGooglePlaceId(rawGooglePlaceId);
   const latRaw = unwrapped.lat ?? unwrapped.latitude;
   const lngRaw = unwrapped.lng ?? unwrapped.longitude;
   const lat = typeof latRaw === "number" ? latRaw : Number(latRaw);
@@ -752,9 +873,11 @@ export function normalizeItineraryStop(
   }
 
   const types = Array.isArray(unwrapped.types)
-    ? unwrapped.types.map(String)
-    : unwrapped.placeType
-      ? [String(unwrapped.placeType)]
+    ? unwrapped.types.filter((type): type is string => typeof type === "string")
+    : typeof unwrapped.types === "string"
+      ? [unwrapped.types]
+      : typeof unwrapped.placeType === "string"
+        ? [unwrapped.placeType]
       : [];
   const sourceCombinationIds = Array.isArray(unwrapped.matchedSelectedCombinationIds)
     ? (unwrapped.matchedSelectedCombinationIds as number[])

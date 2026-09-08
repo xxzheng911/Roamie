@@ -1,19 +1,14 @@
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import { normalizeRecommendationItem } from "@/lib/ai/types";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
-import {
-  isKnownTouristCityLabel,
-  normalizeDestinationLabel,
-} from "@/lib/ai/trip-planning-context";
+import { isKnownTouristCityLabel, normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import {
   buildDynamicDestinationCombinations,
   hasDynamicDestinationCombinations,
 } from "@/lib/ai/destination-travel-profile";
 import { isCountryLevelDestination } from "@/lib/ai/destination-scope";
 import { isForbiddenTransitAttraction } from "@/lib/ai/transit-station-filter";
-import {
-  isGenericDestinationPlaceholder,
-} from "@/lib/ai/generic-place-label";
+import { isGenericDestinationPlaceholder } from "@/lib/ai/generic-place-label";
 import {
   isLikelyPlaceName,
   normalizePlaceCandidateName,
@@ -43,11 +38,75 @@ import {
 } from "@/lib/ai/combination-theme-titles";
 import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { resolvePlaceDisplayName } from "@/lib/place-display-name";
+import type { PlanningShownCandidate } from "@/lib/chat-session";
+import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
 
 export type DestinationCombination = {
   title: string;
   places: string[];
 };
+
+export type DestinationCombinationSuggestionPayload = {
+  displayText: string;
+  offeredCombinations: NonNullable<
+    import("@/lib/ai/travel-context").CanonicalTravelContext["offeredCombinations"]
+  >;
+  shownCandidates: PlanningShownCandidate[];
+};
+
+export function buildPlanningShownCandidatesFromOfferedCombinations(
+  destination: string,
+  offeredCombinations: DestinationCombinationSuggestionPayload["offeredCombinations"],
+): PlanningShownCandidate[] {
+  const label = normalizeDestinationLabel(destination);
+  const normalizeKey = (value: string | undefined) =>
+    (value ?? "").trim().toLocaleLowerCase().replace(/\s+/g, "");
+  let flatIndex = 0;
+  return offeredCombinations.flatMap((group, groupIndex) =>
+    group.places.map((candidate) => {
+      const displayName = candidate.localizedDisplayName || candidate.name;
+      const canonicalId = candidate.googlePlaceId ?? candidate.candidateId ?? `name:${displayName}`;
+      const normalizedAliases = [displayName, candidate.name, candidate.originalName]
+        .map(normalizeKey)
+        .filter((alias, index, all) => Boolean(alias) && all.indexOf(alias) === index);
+      const snapshot: PlanningShownCandidate = {
+        name: displayName,
+        placeName: displayName,
+        type: candidate.normalizedCategory ?? candidate.primaryType ?? "tourist_attraction",
+        primaryType: candidate.primaryType ?? null,
+        description: "",
+        reason: "",
+        estimatedTime: "",
+        address: candidate.address ?? "",
+        lat: candidate.latitude ?? null,
+        lng: candidate.longitude ?? null,
+        googleMapsUrl: candidate.googlePlaceId
+          ? `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(candidate.googlePlaceId)}`
+          : "",
+        reasonSource: "template",
+        googlePlaceId: candidate.googlePlaceId,
+        placeId: canonicalId,
+        displayName,
+        rating: candidate.rating ?? null,
+        canonicalId,
+        plannerProvenanceKey:
+          candidate.plannerProvenanceKey ??
+          (isHardGooglePlaceId(candidate.googlePlaceId)
+            ? `google:${candidate.googlePlaceId!.trim()}`
+            : `candidate:${candidate.sourceCandidateIndex ?? flatIndex}`),
+        sourceCandidateIndex: candidate.sourceCandidateIndex ?? flatIndex,
+        normalizedAliases,
+        source: "planning_suggestion",
+        groupId: `planning_suggestion:${label}:${group.id}`,
+        groupTitle: group.title,
+        groupIndex,
+        itemIndex: flatIndex,
+      };
+      flatIndex += 1;
+      return snapshot;
+    }),
+  );
+}
 
 export type { ThemeSearchDirection };
 
@@ -103,19 +162,12 @@ export function isThemeCategoryLabel(value: string): boolean {
   return THEME_CATEGORY_LABELS.has(n) || THEME_CATEGORY_LABELS.has(value.trim());
 }
 
-export function dropGenericCombinationLabel(
-  value: string,
-  reason = "not_a_real_place",
-): boolean {
+export function dropGenericCombinationLabel(value: string, reason = "not_a_real_place"): boolean {
   const trimmed = value.trim();
   // Exact category keywords only — do not substring-match (e.g. keep「暹羅商圈」).
   const dropped = isThemeCategoryLabel(trimmed) || !isLikelyPlaceName(trimmed).ok;
   if (dropped) {
-    logAiPipeline(
-      "[COMBINATION_GENERIC_LABEL_DROPPED]",
-      `value=${value}`,
-      `reason=${reason}`,
-    );
+    logAiPipeline("[COMBINATION_GENERIC_LABEL_DROPPED]", `value=${value}`, `reason=${reason}`);
   }
   return dropped;
 }
@@ -178,13 +230,14 @@ export function isThemeFallbackCombinationTitle(
   title: string,
   countryHint?: string | null,
 ): boolean {
-  return buildThemeSearchDirections(destination, countryHint).some(
-    (c) => c.title === title,
-  );
+  return buildThemeSearchDirections(destination, countryHint).some((c) => c.title === title);
 }
 
 export function logChatDestinationScopeLock(destination: string): void {
-  logAiPipeline("[CHAT_DESTINATION_SCOPE_LOCK]", `destination=${normalizeDestinationLabel(destination)}`);
+  logAiPipeline(
+    "[CHAT_DESTINATION_SCOPE_LOCK]",
+    `destination=${normalizeDestinationLabel(destination)}`,
+  );
 }
 
 export function isSuggestionInDestinationScope(
@@ -221,10 +274,9 @@ export function isSuggestionInDestinationScope(
   return true;
 }
 
-export function filterSuggestionsByDestinationScope<T extends { name?: string; placeName?: string }>(
-  suggestions: T[],
-  destination: string,
-): T[] {
+export function filterSuggestionsByDestinationScope<
+  T extends { name?: string; placeName?: string },
+>(suggestions: T[], destination: string): T[] {
   logChatDestinationScopeLock(destination);
   return suggestions.filter((item) => {
     const name = (item.placeName ?? item.name ?? "").trim();
@@ -347,10 +399,7 @@ export function getDestinationCombinations(
         (isNearbyRegionThemeTitle(combo.title) && combo.places.length >= 1),
     );
 
-  const validation = validateCombinationOptions(
-    toStructuredForValidation(label, combos),
-    label,
-  );
+  const validation = validateCombinationOptions(toStructuredForValidation(label, combos), label);
   if (validation.ok) return combos;
   if (combos.length >= 3 && !validation.genericPlaceNames.length) {
     return combos;
@@ -375,9 +424,9 @@ export function flattenDestinationCombinationPlaces(destination: string): string
 }
 
 /** Persist combination options as structured session data (never text-only). */
-export function buildOfferedCombinationsForSession(destination: string): NonNullable<
-  import("@/lib/ai/travel-context").CanonicalTravelContext["offeredCombinations"]
-> {
+export function buildOfferedCombinationsForSession(
+  destination: string,
+): NonNullable<import("@/lib/ai/travel-context").CanonicalTravelContext["offeredCombinations"]> {
   const label = normalizeDestinationLabel(destination);
   const cached = getCachedDiscoveredCombinations(label);
   const locale = effectiveAppLocale();
@@ -402,9 +451,7 @@ export function buildOfferedCombinationsForSession(destination: string): NonNull
           );
           return {
             candidateId:
-              c.searchCandidateId ??
-              c.googlePlaceId ??
-              `name:${resolved.localizedDisplayName}`,
+              c.searchCandidateId ?? c.googlePlaceId ?? `name:${resolved.localizedDisplayName}`,
             originalName: resolved.originalName,
             name: resolved.localizedDisplayName,
             localizedDisplayName: resolved.localizedDisplayName,
@@ -477,7 +524,7 @@ function formatTravelDateRangeLine(
   return null;
 }
 
-export function buildDestinationCombinationSuggestionsReply(
+export function buildDestinationCombinationSuggestionPayload(
   destination: string,
   days: number,
   opts?: {
@@ -492,14 +539,16 @@ export function buildDestinationCombinationSuggestionsReply(
      */
     forceCombinations?: DestinationCombination[];
   },
-): string | null {
+): DestinationCombinationSuggestionPayload | null {
   const label = normalizeDestinationLabel(destination);
   const locale = effectiveAppLocale();
   const usedTitles = new Set<string>();
-  const combos = (opts?.forceCombinations?.length
-    ? opts.forceCombinations
-    : getDestinationCombinations(label, { tripDays: days })
-  ).map((c) => {
+  const offeredSource = buildOfferedCombinationsForSession(label);
+  const combos = (
+    opts?.forceCombinations?.length
+      ? opts.forceCombinations
+      : getDestinationCombinations(label, { tripDays: days })
+  ).map((c, sourceIndex) => {
     const places = localizeCombinationPlaceNames([...c.places], locale);
     const title = isMechanicalCombinationTitle(c.title)
       ? deriveCombinationThemeTitle(
@@ -508,7 +557,7 @@ export function buildDestinationCombinationSuggestionsReply(
         )
       : localizeCombinationThemeTitle(c.title, locale);
     usedTitles.add(title);
-    return { title, places };
+    return { title, places, sourceIndex };
   });
   if (!combos.length) return null;
 
@@ -542,17 +591,14 @@ export function buildDestinationCombinationSuggestionsReply(
   // Never fail solely because some names are English fallback (partial localization).
   // Nearby-region themes may list 1 city on medium-length trips.
   const displayCombos = combos.filter(
-    (c) =>
-      c.places.length >= 3 ||
-      (isNearbyRegionThemeTitle(c.title) && c.places.length >= 1),
+    (c) => c.places.length >= 3 || (isNearbyRegionThemeTitle(c.title) && c.places.length >= 1),
   );
   const softDisplay =
     displayCombos.length >= 3
       ? displayCombos
       : combos.filter(
           (c) =>
-            c.places.length >= 2 ||
-            (isNearbyRegionThemeTitle(c.title) && c.places.length >= 1),
+            c.places.length >= 2 || (isNearbyRegionThemeTitle(c.title) && c.places.length >= 1),
         );
   // Absolute floor: deliver ≥2 usable combinations when real places exist.
   if (softDisplay.length < 2) {
@@ -570,21 +616,74 @@ export function buildDestinationCombinationSuggestionsReply(
 
   logChatDestinationScopeLock(label);
 
-  const dateLine = formatTravelDateRangeLine(
-    opts?.startDate,
-    opts?.endDate,
-    opts?.tentativeDates,
-  );
+  const dateLine = formatTravelDateRangeLine(opts?.startDate, opts?.endDate, opts?.tentativeDates);
 
+  const normalizeKey = (value: string | undefined) =>
+    (value ?? "").trim().toLocaleLowerCase().replace(/\s+/g, "");
+  const displayedOfferedCombinations = softDisplay.flatMap((combo, groupIndex) => {
+    const sourceGroup = offeredSource[combo.sourceIndex];
+    const groupId = groupIndex + 1;
+    const places = combo.places.flatMap((name, sourceCandidateIndex) => {
+      const key = normalizeKey(name);
+      const sourcePlace = sourceGroup?.places.find((candidate) =>
+        [candidate.name, candidate.originalName, candidate.localizedDisplayName].some(
+          (alias) => normalizeKey(alias) === key,
+        ),
+      );
+      // A raw label is not a selectable itinerary candidate. Discovery has
+      // already run for this flow; never promote a name-only fallback.
+      if (!sourcePlace || !isHardGooglePlaceId(sourcePlace.googlePlaceId)) return [];
+      const resolvedName = resolvePlaceDisplayName(name, locale);
+      return [
+        {
+          candidateId: sourcePlace.googlePlaceId,
+          plannerProvenanceKey: `google:${sourcePlace.googlePlaceId!.trim()}`,
+          sourceCandidateIndex,
+          originalName: sourcePlace.originalName ?? resolvedName.originalName,
+          name: sourcePlace.name ?? resolvedName.localizedDisplayName,
+          localizedDisplayName:
+            sourcePlace.localizedDisplayName ?? resolvedName.localizedDisplayName,
+          languageCode: sourcePlace.languageCode ?? resolvedName.languageCode,
+          localizationSource: sourcePlace.localizationSource ?? resolvedName.localizationSource,
+          searchQuery:
+            sourcePlace.searchQuery ??
+            `${resolvedName.originalName || resolvedName.localizedDisplayName} ${label}`,
+          destination: sourcePlace.destination ?? label,
+          sourceCombinationId: groupId,
+          isRequiredBySelection: false,
+          googlePlaceId: sourcePlace.googlePlaceId,
+          latitude: sourcePlace.latitude,
+          longitude: sourcePlace.longitude,
+          address: sourcePlace.address,
+          types: sourcePlace.types,
+          primaryType: sourcePlace.primaryType,
+          normalizedCategory: sourcePlace.normalizedCategory,
+          combinationId: sourcePlace.combinationId ?? groupId,
+          rating: sourcePlace.rating,
+          resolutionStatus: "resolved" as const,
+        },
+      ];
+    });
+    if (places.length < 2) return [];
+    return [
+      {
+        id: groupId,
+        title: combo.title,
+        places,
+      },
+    ];
+  });
+
+  if (displayedOfferedCombinations.length < 2) return null;
   const header = [
     opts?.weatherLine?.trim() || `好，我先記下 ${label} ${days} 天的行程方向。`,
     "",
     `以下是${label}的建議組合搭配，你可以選一組或多組混搭：`,
     "",
-    ...softDisplay.map((combo, index) => {
-      // places already passed localizeCombinationPlaceNames (deliverable, may be English fallback).
-      return `${index + 1}. ${combo.title}：${combo.places.join("、")}`;
-    }),
+    ...displayedOfferedCombinations.map(
+      (combo, index) =>
+        `${index + 1}. ${combo.title}：${combo.places.map((place) => place.localizedDisplayName || place.name).join("、")}`,
+    ),
     "",
     ...(dateLine ? [dateLine, ""] : []),
     "回覆你比較有興趣的組合，我來幫你生成行程。",
@@ -595,12 +694,29 @@ export function buildDestinationCombinationSuggestionsReply(
     `destination=${label}`,
     `tripDays=${days}`,
     `combinationBuiltCount=${combos.length}`,
-    `combinationDeliveredCount=${softDisplay.length}`,
+    `combinationDeliveredCount=${displayedOfferedCombinations.length}`,
     "deliveryPass=true",
     "failureReason=",
   );
 
-  return header.join("\n");
+  const shownCandidates = buildPlanningShownCandidatesFromOfferedCombinations(
+    label,
+    displayedOfferedCombinations,
+  );
+
+  return {
+    displayText: header.join("\n"),
+    offeredCombinations: displayedOfferedCombinations,
+    shownCandidates,
+  };
+}
+
+export function buildDestinationCombinationSuggestionsReply(
+  destination: string,
+  days: number,
+  opts?: Parameters<typeof buildDestinationCombinationSuggestionPayload>[2],
+): string | null {
+  return buildDestinationCombinationSuggestionPayload(destination, days, opts)?.displayText ?? null;
 }
 
 export function pendingOptionTitlesForCombinations(destination: string): string[] {
@@ -628,7 +744,9 @@ const ORDINAL_TO_INDEX: Record<string, number> = {
 
 function parseOrdinalCombinationIndices(text: string, combinationCount: number): number[] {
   const indices = new Set<number>();
-  for (const match of text.matchAll(/第\s*([一二三四五六七八九十壹貳叁參肆伍\d]{1,2})\s*(?:個|組|個組合)?/g)) {
+  for (const match of text.matchAll(
+    /第\s*([一二三四五六七八九十壹貳叁參肆伍\d]{1,2})\s*(?:個|組|個組合)?/g,
+  )) {
     const token = match[1] ?? "";
     if (/^\d{1,2}$/.test(token)) {
       const index = Number(token) - 1;
@@ -641,7 +759,9 @@ function parseOrdinalCombinationIndices(text: string, combinationCount: number):
     }
   }
   // Soft forms:「第二和第三」「二跟三」without 第 on every token
-  for (const match of text.matchAll(/(?:^|[和跟與、,，\s])([一二三四五六七八九十])(?:組|個)?(?=$|[和跟與、,，\s天])/g)) {
+  for (const match of text.matchAll(
+    /(?:^|[和跟與、,，\s])([一二三四五六七八九十])(?:組|個)?(?=$|[和跟與、,，\s天])/g,
+  )) {
     const index = ORDINAL_TO_INDEX[match[1]!]!;
     if (index != null && index >= 0 && index < combinationCount) indices.add(index);
   }
@@ -689,10 +809,7 @@ function parseCombinationRangeValues(text: string): number[] {
   return values;
 }
 
-export function parseCombinationSelectionIndices(
-  text: string,
-  combinationCount: number,
-): number[] {
+export function parseCombinationSelectionIndices(text: string, combinationCount: number): number[] {
   const t = text.trim();
   if (!t || combinationCount <= 0) return [];
 
@@ -954,10 +1071,7 @@ export function buildCombinationAllowlistFromTitles(
   });
   if (!indexes.length) return null;
 
-  return buildCombinationSelectionAllowlist(
-    label,
-    indexes.map((i) => String(i + 1)).join("、"),
-  );
+  return buildCombinationSelectionAllowlist(label, indexes.map((i) => String(i + 1)).join("、"));
 }
 
 export function isPlaceNameInCombinationAllowlist(
@@ -993,9 +1107,7 @@ export function buildCombinationRecommendations(
   const label = normalizeDestinationLabel(destination);
   const combos = getDestinationCombinations(label);
   const items: RoamieRecommendationItem[] = [];
-  const selectedIndexes = allowlist
-    ? new Set(allowlist.selectedCombinationIndexes)
-    : null;
+  const selectedIndexes = allowlist ? new Set(allowlist.selectedCombinationIndexes) : null;
 
   for (let index = 0; index < combos.length; index += 1) {
     if (selectedIndexes && !selectedIndexes.has(index)) continue;
@@ -1003,10 +1115,7 @@ export function buildCombinationRecommendations(
     for (const place of combo.places) {
       if (!isSuggestionInDestinationScope(place, label)) continue;
       if (isForbiddenTransitAttraction({ name: place })) continue;
-      if (
-        allowlist &&
-        !isPlaceNameInCombinationAllowlist(place, allowlist)
-      ) {
+      if (allowlist && !isPlaceNameInCombinationAllowlist(place, allowlist)) {
         continue;
       }
       items.push(
@@ -1021,9 +1130,7 @@ export function buildCombinationRecommendations(
           address: label,
           sourceCombinationId: index + 1,
           matchedCombinationIds: [index + 1],
-          matchedSelectedCombinationIds: allowlist
-            ? [index + 1]
-            : undefined,
+          matchedSelectedCombinationIds: allowlist ? [index + 1] : undefined,
         }),
       );
     }
@@ -1072,11 +1179,11 @@ export function hasDestinationPlanningBasics(ctx: {
 }): boolean {
   return Boolean(
     ctx.destination?.trim() &&
-      hasValidTripDuration({
-        days: ctx.days,
-        tripDays: ctx.tripDays,
-        startDate: ctx.startDate,
-        endDate: ctx.endDate,
-      }),
+    hasValidTripDuration({
+      days: ctx.days,
+      tripDays: ctx.tripDays,
+      startDate: ctx.startDate,
+      endDate: ctx.endDate,
+    }),
   );
 }

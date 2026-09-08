@@ -17,10 +17,14 @@ import {
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import {
   computeMinimumPlacesForTripDays,
+  assessItineraryClientEntry,
+  normalizeItineraryStops,
   SELECTED_COMBINATION_FILLER_POLICY,
   validateItineraryPreSave,
 } from "@/lib/ai/real-place-supplement";
 import { minEffectivePlacesPerDay } from "@/lib/ai/planner-day-route-assembly";
+import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
+import { createDeliverableItineraryStop } from "@/lib/ai/itinerary-deliverable-stop";
 
 export const ITINERARY_GENERATION_FAILED_MESSAGE = "行程建立失敗，我再幫你重新整理一次。";
 
@@ -55,6 +59,18 @@ export type GenerateItineraryFailure = {
     dayCount?: number;
     stopCount?: number;
     details?: string[];
+    inputDayCount?: number;
+    outputDayCount?: number;
+    requiredAnchorCount?: number;
+    requiredAnchorSatisfiedCount?: number;
+    missingRequiredAnchorCount?: number;
+    excludedCount?: number;
+    excludedViolationCount?: number;
+    duplicateCount?: number;
+    invalidPlaceCount?: number;
+    invalidDayCount?: number;
+    routeViolationCount?: number;
+    capacityViolationCount?: number;
   };
 };
 
@@ -65,7 +81,7 @@ const GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS = ["data", "result", "payload", "r
 // TanStack Start serializes server-function middleware output as
 // { result, error, context }. In the bundled/native boundary that transport
 // context can be retained inside the client middleware result once more.
-const GENERATE_ITINERARY_RESULT_FIXED_PATHS = [["result", "result"]] as const;
+const MAX_GENERATE_ITINERARY_TRANSPORT_DEPTH = 4;
 
 type GenerateItineraryNormalizedKind = "success" | "failure" | "invalid";
 
@@ -76,6 +92,13 @@ export type GenerateItineraryRawShape = {
   knownEnvelopeKeys: string[];
   level1Keys: string[];
   level2Keys: string[];
+  resultKeys: string[];
+  nestedResultKeys: string[];
+  transportEnvelopeDepth: number;
+  successDiscriminant: "true" | "false" | "missing";
+  successPresent: boolean;
+  tripPresent: boolean;
+  payloadPresent: boolean;
   successPath: string;
   errorCodePath: string;
   payloadPath: string;
@@ -105,46 +128,13 @@ function dayIndexForPlace(placeIndex: number, placeCount: number, dayCount: numb
   return Math.min(Math.floor((placeIndex * dayCount) / placeCount), dayCount - 1);
 }
 
-function makePlaceItineraryStop(
+export function candidateToDeliverableItineraryStop(
   place: RoamieRecommendationItem,
   date: string,
   time: string,
+  requireDeliverableIdentity = false,
 ): RoamieItineraryItem {
-  const placeId =
-    place.googlePlaceId?.trim() ||
-    (place as RoamieRecommendationItem & { placeId?: string }).placeId?.trim();
-  return normalizeItineraryItem({
-    date,
-    time,
-    title: place.name,
-    placeName: place.placeName ?? place.name,
-    description: place.description || place.reason || "",
-    lat: place.lat,
-    lng: place.lng,
-    address: place.address?.trim() || place.name,
-    googlePlaceId: placeId || undefined,
-    placeType: place.primaryType ?? place.type,
-    coordinateSource:
-      placeId && place.lat != null && place.lng != null ? "google_places" : undefined,
-    sourceCombinationId: place.sourceCombinationId,
-    matchedCombinationIds: place.matchedCombinationIds,
-    matchedSelectedCombinationIds: place.matchedSelectedCombinationIds,
-    sourceRegionCandidate: place.sourceRegionCandidate,
-    destinationScope: place.destinationScope,
-    extensionDestination: place.extensionDestination,
-    photoName: place.photoName,
-    rating: place.rating,
-    userRatingCount: place.userRatingCount,
-    businessStatus: place.businessStatus,
-    openStatusLabel: place.openStatusLabel,
-    todayHoursLabel: place.todayHoursLabel,
-    types: place.types?.length
-      ? place.types
-      : place.primaryType || place.type
-        ? [place.primaryType || place.type]
-        : undefined,
-    placeSnapshotSource: "selected_place",
-  });
+  return createDeliverableItineraryStop(place, date, time, requireDeliverableIdentity);
 }
 
 function makeFillerItineraryStop(
@@ -190,27 +180,46 @@ function sortedKeys(value: unknown): string[] {
   return record ? Object.keys(record).sort().slice(0, 24) : [];
 }
 
-function knownResultPath(raw: unknown): { path: string; value: unknown } | null {
-  if (isGenerateItineraryFailure(raw) || isGenerateItinerarySuccess(raw)) {
-    return { path: "$", value: raw };
-  }
-  const envelope = objectRecord(raw);
-  if (!envelope) return null;
-
-  for (const key of GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS) {
-    const candidate = envelope[key];
-    if (isGenerateItineraryFailure(candidate) || isGenerateItinerarySuccess(candidate)) {
-      return { path: key, value: candidate };
-    }
-  }
-  for (const [first, second] of GENERATE_ITINERARY_RESULT_FIXED_PATHS) {
-    const level1 = objectRecord(envelope[first]);
-    const candidate = level1?.[second];
-    if (isGenerateItineraryFailure(candidate) || isGenerateItinerarySuccess(candidate)) {
-      return { path: `${first}.${second}`, value: candidate };
+function discriminatedResultPath(raw: unknown): {
+  path: string;
+  value: Record<string, unknown>;
+  depth: number;
+} | null {
+  const root = objectRecord(raw);
+  if (!root) return null;
+  const queue = [{ path: "$", value: root, depth: 0 }];
+  const visited = new Set<Record<string, unknown>>();
+  while (queue.length) {
+    const candidate = queue.shift()!;
+    if (visited.has(candidate.value)) continue;
+    visited.add(candidate.value);
+    if (typeof candidate.value.success === "boolean") return candidate;
+    if (candidate.depth >= MAX_GENERATE_ITINERARY_TRANSPORT_DEPTH) continue;
+    const keys = candidate.depth === 0 ? GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS : ["result"];
+    for (const key of keys) {
+      const nested = objectRecord(candidate.value[key]);
+      if (nested) {
+        queue.push({
+          path: candidate.path === "$" ? key : `${candidate.path}.${key}`,
+          value: nested,
+          depth: candidate.depth + 1,
+        });
+      }
     }
   }
   return null;
+}
+
+function knownResultPath(raw: unknown): { path: string; value: unknown; depth: number } | null {
+  const candidate = discriminatedResultPath(raw);
+  if (!candidate) return null;
+  if (
+    !isGenerateItineraryFailure(candidate.value) &&
+    !isGenerateItinerarySuccess(candidate.value)
+  ) {
+    return null;
+  }
+  return candidate;
 }
 
 /** Safe boundary telemetry: records shape and known paths, never values. */
@@ -225,6 +234,7 @@ export function describeGenerateItineraryRawShape(
   const firstKnownValue = knownEnvelopeKeys.length ? envelope?.[knownEnvelopeKeys[0]] : undefined;
   const level1 = objectRecord(firstKnownValue);
   const matched = knownResultPath(raw);
+  const discriminated = discriminatedResultPath(raw);
   const matchedRecord = objectRecord(matched?.value);
   const matchedPath = matched?.path ?? "";
   const successPath = matchedRecord && "success" in matchedRecord ? `${matchedPath}.success` : "";
@@ -235,6 +245,10 @@ export function describeGenerateItineraryRawShape(
   const tripItinerary = trip?.itinerary;
   const payloadItinerary = tripPayload?.itinerary;
   const payloadPath = trip && "payload" in trip ? `${matchedPath}.trip.payload` : "";
+  const result = objectRecord(envelope?.result);
+  const nestedResult = objectRecord(result?.result);
+  const discriminatedTrip = objectRecord(discriminated?.value.trip);
+  const discriminatedPayload = objectRecord(discriminatedTrip?.payload);
 
   return {
     rawType: raw === null ? "null" : typeof raw,
@@ -243,6 +257,18 @@ export function describeGenerateItineraryRawShape(
     knownEnvelopeKeys: [...knownEnvelopeKeys],
     level1Keys: sortedKeys(firstKnownValue),
     level2Keys: sortedKeys(level1?.result),
+    resultKeys: sortedKeys(result),
+    nestedResultKeys: sortedKeys(nestedResult),
+    transportEnvelopeDepth: discriminated?.depth ?? 0,
+    successDiscriminant:
+      discriminated?.value.success === true
+        ? "true"
+        : discriminated?.value.success === false
+          ? "false"
+          : "missing",
+    successPresent: typeof discriminated?.value.success === "boolean",
+    tripPresent: Boolean(discriminatedTrip),
+    payloadPresent: Boolean(discriminatedPayload),
     successPath,
     errorCodePath,
     payloadPath,
@@ -265,6 +291,30 @@ export function normalizeGenerateItineraryResult(raw: unknown): GenerateItinerar
   const matched = knownResultPath(raw);
   if (!matched) return null;
   return matched.value as GenerateItineraryResult;
+}
+
+/** Reports the concrete contract fields missing at the generation transport boundary. */
+export function missingGenerateItineraryResultFields(raw: unknown): string[] {
+  const candidate = discriminatedResultPath(raw);
+  if (!candidate) return ["success"];
+  const prefix = candidate.path === "$" ? "" : `${candidate.path}.`;
+  if (candidate.value.success === false) {
+    return [
+      ...(typeof candidate.value.errorCode === "string" ? [] : [`${prefix}errorCode`]),
+      ...(typeof candidate.value.message === "string" ? [] : [`${prefix}message`]),
+    ];
+  }
+  const trip = objectRecord(candidate.value.trip);
+  if (!trip) return [`${prefix}trip`];
+  const payload = objectRecord(trip.payload);
+  if (!payload) return [`${prefix}trip.payload`];
+  return [
+    ...(typeof trip.destination === "string" && trip.destination.trim()
+      ? []
+      : [`${prefix}trip.destination`]),
+    ...(typeof trip.days === "number" && trip.days > 0 ? [] : [`${prefix}trip.days`]),
+    ...(Array.isArray(payload.itinerary) ? [] : [`${prefix}trip.payload.itinerary`]),
+  ];
 }
 
 export function groupItineraryItemsByDay(
@@ -310,6 +360,7 @@ export function buildFallbackItineraryFromPlaces(
     selectedCombinationIds?: number[];
     nearbyExtensions?: string[];
     pace?: "slow" | "medium" | "active";
+    requireDeliverableCandidates?: boolean;
   },
 ): RoamieItineraryItem[] {
   const dayCount = Math.max(days, 1);
@@ -371,7 +422,13 @@ export function buildFallbackItineraryFromPlaces(
     days: dayCount,
     startDate,
     sparePlaces: selectedPlaces,
-    makeStop: (place, date, time) => makePlaceItineraryStop(place, date, time),
+    makeStop: (place, date, time) =>
+      candidateToDeliverableItineraryStop(
+        place,
+        date,
+        time,
+        opts?.requireDeliverableCandidates,
+      ),
     minPerDay,
     forbidSingletonFill: true,
   });
@@ -399,7 +456,14 @@ export function buildFallbackItineraryFromPlaces(
     // Only fill empty day with ≥ minPerDay unused places — never a singleton.
     if (spares.length >= minPerDay) {
       for (let i = 0; i < minPerDay; i += 1) {
-        stops.push(makePlaceItineraryStop(spares[i]!, date, i === 0 ? "10:00" : "14:00"));
+        stops.push(
+          candidateToDeliverableItineraryStop(
+            spares[i]!,
+            date,
+            i === 0 ? "10:00" : "14:00",
+            opts?.requireDeliverableCandidates,
+          ),
+        );
       }
       occupied.add(date);
       continue;
@@ -475,10 +539,11 @@ export function buildFallbackItineraryFromPlaces(
     const date = dates[dayIdx] ?? startDate;
     dayOccupied[dayIdx] = true;
     legacyStops.push(
-      makePlaceItineraryStop(
+      candidateToDeliverableItineraryStop(
         place,
         date,
         FALLBACK_STOP_TIMES[idx % FALLBACK_STOP_TIMES.length] ?? "09:30",
+        opts?.requireDeliverableCandidates,
       ),
     );
   });
@@ -529,6 +594,173 @@ export function normalizeTripPayload(
   } as RoamiePayloadV2;
 }
 
+/** Single raw-server → canonical StoredItinerary payload boundary. */
+export function normalizeStoredItineraryPayload(rawPayload: unknown): RoamiePayloadV2 | null {
+  if (!rawPayload || typeof rawPayload !== "object" || Array.isArray(rawPayload)) return null;
+  const record = rawPayload as Partial<RoamiePayloadV2> & Record<string, unknown>;
+  if (!Array.isArray(record.itinerary)) return null;
+  return normalizeTripPayload(record);
+}
+
+export type ItineraryPayloadShape = {
+  payloadTopLevelKeys: string[];
+  itineraryPresent: boolean;
+  itineraryType: "array" | "object" | "missing" | "other";
+  itineraryArrayLength: number;
+  itineraryDaysLength: number;
+  dayContainerShape: "flat_stops" | "day_containers" | "empty_array" | "unsupported";
+  perDayEntryCounts: number[];
+  perDayKeySets: string[][];
+  firstEntryKeySet: string[];
+  tripDays: number;
+  startDatePresent: boolean;
+  endDatePresent: boolean;
+};
+
+const safeKeys = (value: unknown): string[] =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? Object.keys(value as Record<string, unknown>).sort()
+    : [];
+
+/** Privacy-safe structural description; never includes itinerary values. */
+export function describeItineraryClientPayloadShape(
+  payload: unknown,
+  tripDays: number,
+  startDate?: string,
+  endDate?: string,
+): ItineraryPayloadShape {
+  const record = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : null;
+  const itinerary = record?.itinerary;
+  const array = Array.isArray(itinerary) ? itinerary : [];
+  const dayContainers = array.length > 0 && array.every((value) => {
+    const candidate = value && typeof value === "object" ? value as Record<string, unknown> : null;
+    return Boolean(candidate && Array.isArray(candidate.stops));
+  });
+  const shape: ItineraryPayloadShape["dayContainerShape"] = !Array.isArray(itinerary)
+    ? "unsupported"
+    : array.length === 0
+      ? "empty_array"
+      : dayContainers
+        ? "day_containers"
+        : "flat_stops";
+  const dayKeys = dayContainers ? array.map(safeKeys) : [];
+  const entries = dayContainers
+    ? array.flatMap((day) => ((day as Record<string, unknown>).stops as unknown[]))
+    : array;
+  const expectedDates = startDate?.trim() ? listTripDates([], startDate.trim(), tripDays) : [];
+  const counts = dayContainers
+    ? array.map((day) => ((day as Record<string, unknown>).stops as unknown[]).length)
+    : Array.from({ length: Math.max(0, tripDays) }, (_, index) =>
+        array.filter((stop) => {
+          const candidate = stop && typeof stop === "object" ? stop as Record<string, unknown> : null;
+          if (candidate?.dayIndex === index) return true;
+          return Boolean(expectedDates[index] && candidate?.date === expectedDates[index]);
+        }).length,
+      );
+  return {
+    payloadTopLevelKeys: safeKeys(payload),
+    itineraryPresent: Boolean(record && "itinerary" in record),
+    itineraryType: Array.isArray(itinerary)
+      ? "array"
+      : itinerary == null
+        ? "missing"
+        : typeof itinerary === "object"
+          ? "object"
+          : "other",
+    itineraryArrayLength: array.length,
+    itineraryDaysLength: dayContainers ? array.length : counts.filter((count) => count > 0).length,
+    dayContainerShape: shape,
+    perDayEntryCounts: counts,
+    perDayKeySets: dayKeys,
+    firstEntryKeySet: safeKeys(entries[0]),
+    tripDays,
+    startDatePresent: Boolean(startDate?.trim()),
+    endDatePresent: Boolean(endDate?.trim()),
+  };
+}
+
+export type CompleteItineraryPayloadValidation = {
+  valid: boolean;
+  missingFieldCodes: string[];
+  normalizedPayload: RoamiePayloadV2 | null;
+  perDayEntryCounts: number[];
+};
+
+/** Canonical client boundary: normalize once, then apply the existing strict gate. */
+export function validateCompleteItineraryPayload(
+  rawPayload: unknown,
+  tripDays: number,
+  startDate: string,
+  options?: {
+    placeAuthority?: "selected_only";
+    requiredPlaceCount?: number;
+    generationId?: string;
+    destination?: string;
+  },
+): CompleteItineraryPayloadValidation {
+  if (!rawPayload || typeof rawPayload !== "object" || Array.isArray(rawPayload)) {
+    return { valid: false, missingFieldCodes: ["itinerary.payload_missing"], normalizedPayload: null, perDayEntryCounts: [] };
+  }
+  const record = rawPayload as Partial<RoamiePayloadV2> & Record<string, unknown>;
+  if (!("itinerary" in record)) {
+    return { valid: false, missingFieldCodes: ["itinerary.missing"], normalizedPayload: null, perDayEntryCounts: [] };
+  }
+  if (!Array.isArray(record.itinerary)) {
+    return { valid: false, missingFieldCodes: ["itinerary.not_array"], normalizedPayload: null, perDayEntryCounts: [] };
+  }
+  const shallowNormalizedPayload = normalizeStoredItineraryPayload(record)!;
+  const rawStops = coalesceItineraryItems(shallowNormalizedPayload.itinerary);
+  const entryAssessments = rawStops.map((entry, index) =>
+    assessItineraryClientEntry(entry, index, tripDays, options?.destination),
+  );
+  if (options?.generationId) {
+    for (const assessment of entryAssessments) {
+      console.info("[ITINERARY_CLIENT_ENTRY_VALIDATION]", {
+        generationId: options.generationId,
+        ...assessment,
+      });
+    }
+  }
+  const normalizedStops = normalizeItineraryStops(rawStops);
+  const normalizedPayload: RoamiePayloadV2 = {
+    ...shallowNormalizedPayload,
+    itinerary: normalizedStops.valid,
+  };
+  const stops = normalizedPayload.itinerary;
+  if (!stops.length) {
+    return { valid: false, missingFieldCodes: ["itinerary.day_entries_missing"], normalizedPayload, perDayEntryCounts: Array(Math.max(0, tripDays)).fill(0) };
+  }
+  const preSave = validateItineraryPreSave({
+    tripDays,
+    startDate,
+    stops,
+    placeAuthority: options?.placeAuthority,
+  });
+  const codes = new Set<string>();
+  for (const assessment of entryAssessments) {
+    for (const reason of assessment.failureReasons) {
+      codes.add(`itinerary.entry.${reason}`);
+    }
+  }
+  if (preSave.emptyNonFreeDays.length) codes.add("itinerary.day_empty");
+  if (preSave.reasons.some((reason) => reason.startsWith("insufficient_real_places"))) {
+    codes.add("itinerary.day_count_mismatch");
+  }
+  const minimumStops = options?.placeAuthority === "selected_only"
+    ? Math.max(1, options.requiredPlaceCount ?? 1)
+    : computeMinimumPlacesForTripDays(tripDays);
+  if (!hasValidItineraryStops(normalizedPayload, minimumStops)) codes.add("itinerary.entry_invalid");
+  const shape = describeItineraryClientPayloadShape(normalizedPayload, tripDays, startDate);
+  return {
+    valid: preSave.ok && codes.size === 0,
+    missingFieldCodes: [...codes],
+    normalizedPayload,
+    perDayEntryCounts: shape.perDayEntryCounts,
+  };
+}
+
 /** 解析 generateItinerary 回傳 — 支援 success/trip、{ itinerary } 或直接 payload */
 export function unwrapGeneratedTripPayload(result: unknown): RoamiePayloadV2 | null {
   if (!result || typeof result !== "object") return null;
@@ -539,7 +771,7 @@ export function unwrapGeneratedTripPayload(result: unknown): RoamiePayloadV2 | n
   if (record.success === true && record.trip && typeof record.trip === "object") {
     const trip = record.trip as Record<string, unknown>;
     if (trip.payload && typeof trip.payload === "object") {
-      return normalizeTripPayload(trip.payload as Partial<RoamiePayloadV2>);
+      return normalizeStoredItineraryPayload(trip.payload);
     }
   }
 
@@ -548,11 +780,11 @@ export function unwrapGeneratedTripPayload(result: unknown): RoamiePayloadV2 | n
     typeof record.itinerary === "object" &&
     !Array.isArray(record.itinerary)
   ) {
-    return normalizeTripPayload(record.itinerary as Partial<RoamiePayloadV2>);
+    return normalizeStoredItineraryPayload(record.itinerary);
   }
 
   if ("summary" in record || "title" in record || record.version === 2) {
-    return normalizeTripPayload(record as Partial<RoamiePayloadV2>);
+    return normalizeStoredItineraryPayload(record);
   }
 
   return null;
@@ -610,28 +842,14 @@ export function hasCompleteItineraryPayload(
   payload: Pick<RoamiePayloadV2, "itinerary">,
   tripDays: number,
   startDate: string,
-  options?: { placeAuthority?: "selected_only"; requiredPlaceCount?: number },
+  options?: {
+    placeAuthority?: "selected_only";
+    requiredPlaceCount?: number;
+    generationId?: string;
+    destination?: string;
+  },
 ): boolean {
-  const items = coalesceItineraryItems(payload.itinerary);
-  const preSave = validateItineraryPreSave({
-    tripDays,
-    startDate,
-    stops: items,
-    placeAuthority: options?.placeAuthority,
-  });
-  if (!preSave.ok) {
-    logAiPipeline(
-      "[ITINERARY_VALIDATION_RESULT]",
-      "invalid",
-      `detail=${preSave.reasons.join("|")}`,
-    );
-    return false;
-  }
-  const minimumStops =
-    options?.placeAuthority === "selected_only"
-      ? Math.max(1, options.requiredPlaceCount ?? 1)
-      : computeMinimumPlacesForTripDays(tripDays);
-  return hasValidItineraryStops(payload, minimumStops);
+  return validateCompleteItineraryPayload(payload, tripDays, startDate, options).valid;
 }
 
 export function formatItineraryUserError(error: unknown): string {

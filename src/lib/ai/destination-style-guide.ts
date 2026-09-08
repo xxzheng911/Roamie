@@ -4,9 +4,7 @@ import {
   normalizeDestinationLabel,
 } from "@/lib/ai/trip-planning-context";
 import {
-  buildDestinationCombinationSuggestionsReply,
   getDestinationCombinations,
-  hasDestinationCombinations,
   isSuggestionInDestinationScope,
 } from "@/lib/ai/destination-combination-suggestions";
 
@@ -113,13 +111,6 @@ export function buildDestinationStyleChoiceQuestion(
   const daysLabel = opts?.days ? ` ${opts.days} 天` : "";
   const monthLabel = opts?.month ? `（${opts.month}）` : "";
 
-  if (hasDestinationCombinations(label) && opts?.days) {
-    const comboReply = buildDestinationCombinationSuggestionsReply(label, opts.days, {
-      weatherLine: `好，我先幫你抓${label}${daysLabel}${monthLabel}的方向。`,
-    });
-    if (comboReply) return comboReply;
-  }
-
   return [
     `好，我先幫你抓${label}${daysLabel}${monthLabel}的方向。`,
     "你想要偏向：",
@@ -135,18 +126,6 @@ export function buildDefaultRoutesReply(
 ): { reply: string; durationOptions: string[] } {
   const label = normalizeDestinationLabel(destination);
   const guide = getDestinationStyleGuide(label);
-
-  if (hasDestinationCombinations(label)) {
-    const days = 5;
-    const comboReply =
-      buildDestinationCombinationSuggestionsReply(label, days, {
-        weatherLine: `如果都可以，我會依${label}的建議組合幫你抓方向。`,
-      }) ?? "";
-    return {
-      reply: comboReply,
-      durationOptions: guide.durationOptions ?? DEFAULT_GUIDE.durationOptions!,
-    };
-  }
 
   const routeList = guide.hotRoutes
     .filter((route) => isSuggestionInDestinationScope(route, label))

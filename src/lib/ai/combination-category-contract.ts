@@ -286,6 +286,68 @@ const NATURE_FORBIDDEN = new Set([
   "parking",
 ]);
 
+export type CoastEvidenceType =
+  | "type:beach"
+  | "type:marina"
+  | "type:harbor"
+  | "type:pier"
+  | "type:wharf"
+  | "type:waterfront"
+  | "type:coast"
+  | "type:seaside"
+  | "type:bay"
+  | "type:riverfront"
+  | "type:riverside"
+  | "type:lakefront"
+  | "type:boardwalk"
+  | "name:waterfront"
+  | "none";
+
+const COAST_AUTHORITY_TYPES = [
+  "beach",
+  "marina",
+  "harbor",
+  "harbour",
+  "pier",
+  "wharf",
+  "waterfront",
+  "coast",
+  "seaside",
+  "bay",
+  "riverfront",
+  "riverside",
+  "lakefront",
+  "boardwalk",
+] as const;
+
+const COAST_AUTHORITY_NAME_RE =
+  /海岸|海灘|濱海|海濱|漁港|港灣|碼頭|河濱|河岸|湖濱|湖岸|灣區|水岸|海邊|海堤|beach|marina|harbou?r|pier|wharf|waterfront|coast|seaside|bay|riverfront|riverside|lakefront|boardwalk/i;
+
+/** Place-level coast evidence. Search/query provenance never counts. */
+export function inspectCoastAuthority(place: PlaceCategoryInput): {
+  coastAuthorityPresent: boolean;
+  coastEvidenceType: CoastEvidenceType;
+} {
+  const types = new Set(collectTypes(place));
+  for (const type of COAST_AUTHORITY_TYPES) {
+    if (types.has(type)) {
+      return {
+        coastAuthorityPresent: true,
+        coastEvidenceType: `type:${type === "harbour" ? "harbor" : type}` as CoastEvidenceType,
+      };
+    }
+  }
+  const blob = `${place.name ?? ""} ${place.address ?? ""}`;
+  if (COAST_AUTHORITY_NAME_RE.test(blob)) {
+    return { coastAuthorityPresent: true, coastEvidenceType: "name:waterfront" };
+  }
+  return { coastAuthorityPresent: false, coastEvidenceType: "none" };
+}
+
+export function hasCoastAuthority(place: PlaceCategoryInput): boolean {
+  return inspectCoastAuthority(place).coastAuthorityPresent;
+}
+
 const CONTRACTS: Record<string, CategoryContract> = {
   food: {
     themeKey: "food",
@@ -865,6 +927,24 @@ export function validatePlaceForCombination(
   const name = place.name?.trim() ?? "";
   const matchedTypes: string[] = [];
 
+  if (themeKey === "coast") {
+    const coast = inspectCoastAuthority(place);
+    const result: PlaceCategoryValidation = coast.coastAuthorityPresent
+      ? {
+          valid: true,
+          normalizedCategory: "coast",
+          matchedTypes: coast.coastEvidenceType === "none" ? types : [coast.coastEvidenceType],
+        }
+      : {
+          valid: false,
+          normalizedCategory,
+          matchedTypes: types,
+          rejectReason: "coast_authority_missing",
+        };
+    logCategoryValidation(opts?.combinationId, themeKey, place, result);
+    return result;
+  }
+
   const contract = CONTRACTS[themeKey];
   // Themes without a strict contract (attraction/culture/…) — soft allow, still block transit noise.
   if (!contract) {
@@ -1255,7 +1335,14 @@ export const MIN_TYPED_COMBO_PLACES = 2;
 /** Themes that require category-contract validation. */
 export function themeRequiresCategoryContract(themeKey: string, title?: string): boolean {
   const key = resolveCombinationThemeKey(themeKey, title);
-  return key === "food" || key === "shopping" || key === "cafe" || key === "market" || key === "nature";
+  return (
+    key === "food" ||
+    key === "shopping" ||
+    key === "cafe" ||
+    key === "market" ||
+    key === "nature" ||
+    key === "coast"
+  );
 }
 
 /** Search queries for typed combination refill (destination-agnostic). */

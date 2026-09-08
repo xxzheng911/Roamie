@@ -54,7 +54,10 @@ import {
   parseBudgetPreferenceFromText,
 } from "@/lib/ai/budget-refinement";
 import { applyDestinationPendingSelection } from "@/lib/ai/destination-pending-question";
-import { prepareSessionForUserTurn, logConversationStateUpdate } from "@/lib/ai/chat-conversation-state";
+import {
+  prepareSessionForUserTurn,
+  logConversationStateUpdate,
+} from "@/lib/ai/chat-conversation-state";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 import { parseItineraryPlanModeIntent } from "@/lib/ai/itinerary-planning";
 import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
@@ -135,6 +138,9 @@ export type CanonicalTravelContext = {
     title: string;
     places: Array<{
       candidateId?: string;
+      /** Stable planner identity copied from the grounded discovery candidate. */
+      plannerProvenanceKey?: string;
+      sourceCandidateIndex?: number;
       originalName?: string;
       name: string;
       /** App-locale display name — UI / chat must prefer this over name/raw. */
@@ -183,7 +189,7 @@ export type CanonicalTravelContext = {
    * Regenerate reuses these instead of re-querying all candidates.
    */
   partiallyResolvedPlaces?: import("@/lib/chat-session").ChatPlaceItem[];
-  /** Failed combination ids from last mapping attempt */  
+  /** Failed combination ids from last mapping attempt */
   failedCombinationIds?: number[];
   /** 排除菜系／類型關鍵字（含同義詞） */
   excludedCategories?: string[];
@@ -250,12 +256,42 @@ const MOOD_PRESETS: Record<
   string,
   Partial<Pick<CanonicalTravelContext, "mood" | "vibe" | "setting" | "tripPurpose" | "interests">>
 > = {
-  深夜散步: { mood: "深夜散步", vibe: "探索", setting: "室外", tripPurpose: "night_walk", interests: ["夜景", "散步"] },
-  下雨天: { mood: "下雨天", vibe: "放鬆", setting: "室內", tripPurpose: "rainy_day", interests: ["室內", "咖啡"] },
-  找咖啡: { mood: "找咖啡", vibe: "放鬆", setting: "室內", tripPurpose: "cafe", interests: ["咖啡", "安靜"] },
-  想放空: { mood: "想放空", vibe: "放鬆", setting: "either", tripPurpose: "relax", interests: ["療癒", "慢步"] },
+  深夜散步: {
+    mood: "深夜散步",
+    vibe: "探索",
+    setting: "室外",
+    tripPurpose: "night_walk",
+    interests: ["夜景", "散步"],
+  },
+  下雨天: {
+    mood: "下雨天",
+    vibe: "放鬆",
+    setting: "室內",
+    tripPurpose: "rainy_day",
+    interests: ["室內", "咖啡"],
+  },
+  找咖啡: {
+    mood: "找咖啡",
+    vibe: "放鬆",
+    setting: "室內",
+    tripPurpose: "cafe",
+    interests: ["咖啡", "安靜"],
+  },
+  想放空: {
+    mood: "想放空",
+    vibe: "放鬆",
+    setting: "either",
+    tripPurpose: "relax",
+    interests: ["療癒", "慢步"],
+  },
   一個人: { mood: "一個人", vibe: "探索", companion: "一個人", interests: ["獨處"] },
-  看海: { mood: "看海", vibe: "放鬆", setting: "室外", tripPurpose: "coastal", interests: ["海邊", "散步"] },
+  看海: {
+    mood: "看海",
+    vibe: "放鬆",
+    setting: "室外",
+    tripPurpose: "coastal",
+    interests: ["海邊", "散步"],
+  },
 };
 
 const KNOWN_CITIES =
@@ -352,7 +388,11 @@ function parseBudget(text: string): string | undefined {
   return undefined;
 }
 
-function parseVibe(text: string, mood?: string, opts?: { skipFlexibleVibe?: boolean }): string | undefined {
+function parseVibe(
+  text: string,
+  mood?: string,
+  opts?: { skipFlexibleVibe?: boolean },
+): string | undefined {
   if (/^1[\.、)]?$/.test(text.trim()) || /(經典|地標)/.test(text)) return "經典景點";
   if (/^2[\.、)]?$/.test(text.trim()) || /(美食|咖啡)/.test(text)) return "美食咖啡";
   if (/^3[\.、)]?$/.test(text.trim()) || /(動漫|購物)/.test(text)) return "動漫購物";
@@ -442,10 +482,7 @@ function parseTravelConstraints(text: string): Partial<CanonicalTravelContext> {
   return patch;
 }
 
-function parseDestinationFromTurn(
-  text: string,
-  skipDestParse: boolean,
-): string | undefined {
+function parseDestinationFromTurn(text: string, skipDestParse: boolean): string | undefined {
   if (skipDestParse) return undefined;
   return resolveDestinationAreaScope(text)?.displayLabel ?? resolveDestinationFromText(text);
 }
@@ -455,11 +492,7 @@ function mergeDestinationFields(
   newlyParsed?: string,
 ): Pick<
   CanonicalTravelContext,
-  | "destination"
-  | "destinationCountry"
-  | "destinationType"
-  | "destinationCity"
-  | "destinationRegion"
+  "destination" | "destinationCountry" | "destinationType" | "destinationCity" | "destinationRegion"
 > {
   if (!newlyParsed) {
     return {
@@ -649,16 +682,18 @@ export function parseTravelContextFromText(
       travelMonth: prev?.travelMonth,
       days: prev?.days ?? session.tripDays,
       tripPurpose: prev?.tripPurpose ?? session.travelContext?.tripPurpose,
-      vibe: adviceActive ? prev?.vibe : prev?.vibe ?? session.discovery?.vibe ?? preset?.vibe ?? "放鬆",
+      vibe: adviceActive
+        ? prev?.vibe
+        : (prev?.vibe ?? session.discovery?.vibe ?? preset?.vibe ?? "放鬆"),
       setting: prev?.setting ?? session.discovery?.setting ?? preset?.setting ?? "either",
-      mood: adviceActive ? prev?.mood : prev?.mood ?? preset?.mood ?? moodHint,
+      mood: adviceActive ? prev?.mood : (prev?.mood ?? preset?.mood ?? moodHint),
     };
   }
 
   const tripPurpose = isBudgetRefinementText(t)
     ? "refine_recommendations"
-    : resolveTripPurposeFromText(t, session.travelContext?.tripPurpose) ??
-      parseDestinationAdvicePurpose(t);
+    : (resolveTripPurposeFromText(t, session.travelContext?.tripPurpose) ??
+      parseDestinationAdvicePurpose(t));
 
   const budgetRefinement = isBudgetRefinementText(t)
     ? applyBudgetRefinementToContext(t, session.travelContext ?? { interests: [] })
@@ -678,8 +713,8 @@ export function parseTravelContextFromText(
       ? "HOME_MOOD_ENTRY"
       : session.selectedMood
         ? "SESSION_CONTEXT"
-        : session.travelContext?.moodEvidenceSource ??
-          (moodHint ? "SYSTEM_SYNTHESIZED" : undefined);
+        : (session.travelContext?.moodEvidenceSource ??
+          (moodHint ? "SYSTEM_SYNTHESIZED" : undefined));
   const base: Partial<CanonicalTravelContext> = {
     currentLocation: session.location?.city,
     travelMonth: parseMonth(t),
@@ -700,9 +735,7 @@ export function parseTravelContextFromText(
     setting: parseSetting(t, moodHint) ?? session.discovery?.setting,
     ...parseTravelConstraints(t),
     ...budgetRefinement,
-    ...(daysFromText && startFromText && endFromText
-      ? { planningDaysConfirmed: true }
-      : {}),
+    ...(daysFromText && startFromText && endFromText ? { planningDaysConfirmed: true } : {}),
   };
 
   if (newlyParsedDest) {
@@ -852,10 +885,7 @@ export function mergeTravelContext(
     let destMerge: ReturnType<typeof mergeDestinationFields> = pendingSelection.selectedOption
       ? mergeDestinationFields(
           prev,
-          pickValidContextValue(
-            pendingSelection.contextPatch.destination,
-            prevDest ?? sessionDest,
-          ),
+          pickValidContextValue(pendingSelection.contextPatch.destination, prevDest ?? sessionDest),
         )
       : parsedDest
         ? mergeDestinationFields(prev, parsedDest)
@@ -910,17 +940,12 @@ export function mergeTravelContext(
       }
     }
 
-    const prevDestNorm = prevDest
-      ? normalizeDestinationLabel(prevDest)
-      : undefined;
+    const prevDestNorm = prevDest ? normalizeDestinationLabel(prevDest) : undefined;
     const nextDestNorm = destMerge.destination
       ? normalizeDestinationLabel(destMerge.destination)
       : undefined;
     const destinationSwitched = Boolean(
-      prevDestNorm &&
-        nextDestNorm &&
-        prevDestNorm !== nextDestNorm &&
-        !tripReset.didReset,
+      prevDestNorm && nextDestNorm && prevDestNorm !== nextDestNorm && !tripReset.didReset,
     );
 
     // After a destination switch (or explicit new-trip reset), never inherit
@@ -940,16 +965,14 @@ export function mergeTravelContext(
       currentLocation: workingSession.location?.city ?? prev.currentLocation,
       mood: parsed.mood ?? preset?.mood ?? prev.mood ?? moodKey,
       vibe: parsed.vibe ?? preset?.vibe ?? prev.vibe ?? workingSession.discovery?.vibe,
-      setting: parsed.setting ?? preset?.setting ?? prev.setting ?? workingSession.discovery?.setting,
-      companion:
-        parsed.companion ??
-        prev.companion ??
-        workingSession.discovery?.companionship,
+      setting:
+        parsed.setting ?? preset?.setting ?? prev.setting ?? workingSession.discovery?.setting,
+      companion: parsed.companion ?? prev.companion ?? workingSession.discovery?.companionship,
       days:
         itineraryExtracted?.days ??
         pendingSelection.contextPatch.days ??
         (inheritTripBoundFields
-          ? pickValidContextValue(parsed.days, prev.days) ?? workingSession.tripDays
+          ? (pickValidContextValue(parsed.days, prev.days) ?? workingSession.tripDays)
           : parsed.days),
       travelMonth: inheritTripBoundFields
         ? pickValidContextValue(parsed.travelMonth, prev.travelMonth)
@@ -958,24 +981,23 @@ export function mergeTravelContext(
         ? pickValidContextValue(parsed.travelYear, prev.travelYear)
         : parsed.travelYear,
       startDate: inheritTripBoundFields
-        ? pendingSelection.contextPatch.startDate ??
+        ? (pendingSelection.contextPatch.startDate ??
           parsed.startDate ??
           prev.startDate ??
-          workingSession.tripStartDate
-        : pendingSelection.contextPatch.startDate ?? parsed.startDate,
+          workingSession.tripStartDate)
+        : (pendingSelection.contextPatch.startDate ?? parsed.startDate),
       endDate: inheritTripBoundFields
-        ? pendingSelection.contextPatch.endDate ??
+        ? (pendingSelection.contextPatch.endDate ??
           parsed.endDate ??
           prev.endDate ??
-          workingSession.tripEndDate
-        : pendingSelection.contextPatch.endDate ?? parsed.endDate,
+          workingSession.tripEndDate)
+        : (pendingSelection.contextPatch.endDate ?? parsed.endDate),
       suggestedStartDate: inheritTripBoundFields ? prev.suggestedStartDate : undefined,
       planningDaysConfirmed: inheritTripBoundFields
-        ? pendingSelection.contextPatch.planningDaysConfirmed ??
+        ? (pendingSelection.contextPatch.planningDaysConfirmed ??
           parsed.planningDaysConfirmed ??
-          prev.planningDaysConfirmed
-        : pendingSelection.contextPatch.planningDaysConfirmed ??
-          parsed.planningDaysConfirmed,
+          prev.planningDaysConfirmed)
+        : (pendingSelection.contextPatch.planningDaysConfirmed ?? parsed.planningDaysConfirmed),
       transportMode: parsed.transportMode ?? prev.transportMode ?? workingSession.transportation,
       budgetLevel: parsed.budgetLevel ?? prev.budgetLevel ?? workingSession.budget,
       travelStyle:
@@ -984,76 +1006,73 @@ export function mergeTravelContext(
         prev.travelStyle ??
         workingSession.tripStyles,
       weather: inheritTripBoundFields
-        ? workingSession.weather ?? prev.weather ?? null
-        : workingSession.weather ?? null,
+        ? (workingSession.weather ?? prev.weather ?? null)
+        : (workingSession.weather ?? null),
       interests: uniqStrings([...prev.interests, ...(parsed.interests ?? [])]),
       tripPurpose:
         pendingSelection.contextPatch.tripPurpose ??
         parsed.tripPurpose ??
         chatContextIntentToTripPurpose(currentIntent) ??
         preset?.tripPurpose ??
-        (currentIntent === "general_chat" && inheritTripBoundFields
-          ? prev.tripPurpose
-          : undefined),
+        (currentIntent === "general_chat" && inheritTripBoundFields ? prev.tripPurpose : undefined),
       lastIntent: currentIntent,
       destinationCities: inheritTripBoundFields
-        ? pendingSelection.contextPatch.destinationCities ?? prev.destinationCities
+        ? (pendingSelection.contextPatch.destinationCities ?? prev.destinationCities)
         : pendingSelection.contextPatch.destinationCities,
       selectedTripStyle: inheritTripBoundFields
-        ? pendingSelection.contextPatch.selectedTripStyle ?? prev.selectedTripStyle
+        ? (pendingSelection.contextPatch.selectedTripStyle ?? prev.selectedTripStyle)
         : pendingSelection.contextPatch.selectedTripStyle,
       selectedCombinationIds: inheritTripBoundFields
-        ? pendingSelection.contextPatch.selectedCombinationIds ?? prev.selectedCombinationIds
-        : pendingSelection.contextPatch.selectedCombinationIds ?? [],
+        ? (pendingSelection.contextPatch.selectedCombinationIds ?? prev.selectedCombinationIds)
+        : (pendingSelection.contextPatch.selectedCombinationIds ?? []),
       selectedCombinationPlaceNames: inheritTripBoundFields
-        ? pendingSelection.contextPatch.selectedCombinationPlaceNames ??
-          prev.selectedCombinationPlaceNames
+        ? (pendingSelection.contextPatch.selectedCombinationPlaceNames ??
+          prev.selectedCombinationPlaceNames)
         : pendingSelection.contextPatch.selectedCombinationPlaceNames,
       excludedCombinationPlaceNames: inheritTripBoundFields
-        ? pendingSelection.contextPatch.excludedCombinationPlaceNames ??
-          prev.excludedCombinationPlaceNames
+        ? (pendingSelection.contextPatch.excludedCombinationPlaceNames ??
+          prev.excludedCombinationPlaceNames)
         : pendingSelection.contextPatch.excludedCombinationPlaceNames,
       nearbyExtensions: inheritTripBoundFields
-        ? pendingSelection.contextPatch.nearbyExtensions ??
+        ? (pendingSelection.contextPatch.nearbyExtensions ??
           parsed.nearbyExtensions ??
-          prev.nearbyExtensions
-        : pendingSelection.contextPatch.nearbyExtensions ?? parsed.nearbyExtensions,
+          prev.nearbyExtensions)
+        : (pendingSelection.contextPatch.nearbyExtensions ?? parsed.nearbyExtensions),
       unresolvedNearbyExtensions: inheritTripBoundFields
-        ? pendingSelection.contextPatch.unresolvedNearbyExtensions ??
+        ? (pendingSelection.contextPatch.unresolvedNearbyExtensions ??
           parsed.unresolvedNearbyExtensions ??
-          prev.unresolvedNearbyExtensions
-        : pendingSelection.contextPatch.unresolvedNearbyExtensions ??
-          parsed.unresolvedNearbyExtensions,
+          prev.unresolvedNearbyExtensions)
+        : (pendingSelection.contextPatch.unresolvedNearbyExtensions ??
+          parsed.unresolvedNearbyExtensions),
       selectionSource: inheritTripBoundFields
-        ? pendingSelection.contextPatch.selectionSource ?? prev.selectionSource
+        ? (pendingSelection.contextPatch.selectionSource ?? prev.selectionSource)
         : pendingSelection.contextPatch.selectionSource,
       offeredCombinations: inheritTripBoundFields ? prev.offeredCombinations : undefined,
       offeredDestinationOptions: inheritTripBoundFields
-        ? pendingSelection.contextPatch.offeredDestinationOptions ??
-          prev.offeredDestinationOptions
+        ? (pendingSelection.contextPatch.offeredDestinationOptions ??
+          prev.offeredDestinationOptions)
         : pendingSelection.contextPatch.offeredDestinationOptions,
       generationRequestId: inheritTripBoundFields
-        ? pendingSelection.contextPatch.generationRequestId ?? prev.generationRequestId
+        ? (pendingSelection.contextPatch.generationRequestId ?? prev.generationRequestId)
         : pendingSelection.contextPatch.generationRequestId,
       lastItineraryFailure: inheritTripBoundFields
-        ? pendingSelection.contextPatch.lastItineraryFailure ?? prev.lastItineraryFailure
+        ? (pendingSelection.contextPatch.lastItineraryFailure ?? prev.lastItineraryFailure)
         : undefined,
       partiallyResolvedPlaces: inheritTripBoundFields
-        ? pendingSelection.contextPatch.partiallyResolvedPlaces ?? prev.partiallyResolvedPlaces
+        ? (pendingSelection.contextPatch.partiallyResolvedPlaces ?? prev.partiallyResolvedPlaces)
         : undefined,
       failedCombinationIds: inheritTripBoundFields
-        ? pendingSelection.contextPatch.failedCombinationIds ?? prev.failedCombinationIds
+        ? (pendingSelection.contextPatch.failedCombinationIds ?? prev.failedCombinationIds)
         : undefined,
-      selectedInterests:
-        pendingSelection.contextPatch.selectedInterests ?? prev.selectedInterests,
+      selectedInterests: pendingSelection.contextPatch.selectedInterests ?? prev.selectedInterests,
       mustVisitGenerated: inheritTripBoundFields
-        ? pendingSelection.contextPatch.mustVisitGenerated ?? prev.mustVisitGenerated
+        ? (pendingSelection.contextPatch.mustVisitGenerated ?? prev.mustVisitGenerated)
         : false,
       conversationState: inheritTripBoundFields
-        ? pendingSelection.contextPatch.conversationState ?? prev.conversationState
-        : pendingSelection.contextPatch.conversationState ?? "awaiting_days",
+        ? (pendingSelection.contextPatch.conversationState ?? prev.conversationState)
+        : (pendingSelection.contextPatch.conversationState ?? "awaiting_days"),
       selectedPlanMode: inheritTripBoundFields
-        ? pendingSelection.contextPatch.selectedPlanMode ?? prev.selectedPlanMode
+        ? (pendingSelection.contextPatch.selectedPlanMode ?? prev.selectedPlanMode)
         : pendingSelection.contextPatch.selectedPlanMode,
       planningStage: inheritTripBoundFields ? prev.planningStage : undefined,
       planningTripStyle: inheritTripBoundFields ? prev.planningTripStyle : undefined,
@@ -1069,8 +1088,7 @@ export function mergeTravelContext(
     const discovery = { ...workingSession.discovery };
     if (merged.vibe && !discovery.vibe) discovery.vibe = merged.vibe;
     if (merged.companion && !discovery.companionship) {
-      discovery.companionship =
-        merged.companion === "女友" ? "情侶" : merged.companion;
+      discovery.companionship = merged.companion === "女友" ? "情侶" : merged.companion;
     }
     if (merged.setting && !discovery.setting) discovery.setting = merged.setting;
 
@@ -1108,22 +1126,22 @@ export function mergeTravelContext(
       discovery,
       mood: mergedWithDates.mood ?? workingSession.mood,
       tripDays: inheritTripBoundFields
-        ? mergedWithDates.days ?? workingSession.tripDays
+        ? (mergedWithDates.days ?? workingSession.tripDays)
         : mergedWithDates.days,
       travelDate: inheritTripBoundFields
-        ? mergedWithDates.startDate ?? workingSession.travelDate
+        ? (mergedWithDates.startDate ?? workingSession.travelDate)
         : mergedWithDates.startDate,
       tripStartDate: inheritTripBoundFields
-        ? mergedWithDates.startDate ?? workingSession.tripStartDate
+        ? (mergedWithDates.startDate ?? workingSession.tripStartDate)
         : mergedWithDates.startDate,
       tripEndDate: inheritTripBoundFields
-        ? mergedWithDates.endDate ?? workingSession.tripEndDate
+        ? (mergedWithDates.endDate ?? workingSession.tripEndDate)
         : mergedWithDates.endDate,
       transportation: merged.transportMode ?? workingSession.transportation,
       budget: merged.budgetLevel ?? workingSession.budget,
       preferredArea: skipDestParse
         ? workingSession.preferredArea
-        : mergedWithDates.destination ?? workingSession.preferredArea,
+        : (mergedWithDates.destination ?? workingSession.preferredArea),
       ...(inheritTripBoundFields ? {} : { weather: workingSession.weather }),
     };
 
@@ -1189,16 +1207,21 @@ export function missingContextKeys(
   const hasDestination = Boolean(ctx.destination?.trim() || session.tripDestination);
   const hasMoodContext = Boolean(
     ctx.mood?.trim() ||
-      ctx.vibe?.trim() ||
-      ctx.interests.length > 0 ||
-      session.mood?.trim() ||
-      session.fromMoodFlow ||
-      session.fromMoodCard ||
-      session.homeMoodShortcutEntry ||
-      session.shortcutContext,
+    ctx.vibe?.trim() ||
+    ctx.interests.length > 0 ||
+    session.mood?.trim() ||
+    session.fromMoodFlow ||
+    session.fromMoodCard ||
+    session.homeMoodShortcutEntry ||
+    session.shortcutContext,
   );
 
-  if (hasGps && hasMoodContext && intent !== "trip_planning" && !hasRemoteDestination(ctx, session)) {
+  if (
+    hasGps &&
+    hasMoodContext &&
+    intent !== "trip_planning" &&
+    !hasRemoteDestination(ctx, session)
+  ) {
     return [];
   }
 
@@ -1224,7 +1247,8 @@ export function missingContextKeys(
   const missing: TripIntentMissingKey[] = [];
   const hasMoodFlow = session.fromMoodCard || session.fromMoodFlow || Boolean(ctx.mood);
 
-  if (!hasDestination && !hasGps && !session.fromPlanForm && !session.fromPlanAi) missing.push("destination");
+  if (!hasDestination && !hasGps && !session.fromPlanForm && !session.fromPlanAi)
+    missing.push("destination");
   if (!ctx.vibe && !ctx.mood) missing.push("vibe");
 
   const hasCompanion = Boolean(ctx.companion?.trim() || session.discovery?.companionship?.trim());
@@ -1274,19 +1298,17 @@ export function isReadyForRecommendation(
     (Math.abs(session.location.lat) > 0.001 || Math.abs(session.location.lng) > 0.001);
   const hasMoodContext = Boolean(
     ctx.mood?.trim() ||
-      ctx.vibe?.trim() ||
-      ctx.interests.length > 0 ||
-      session.mood?.trim() ||
-      session.fromMoodFlow ||
-      session.fromMoodCard,
+    ctx.vibe?.trim() ||
+    ctx.interests.length > 0 ||
+    session.mood?.trim() ||
+    session.fromMoodFlow ||
+    session.fromMoodCard,
   );
   if (hasGps && hasMoodContext) return true;
 
   const missing = missingContextKeys(ctx, session, intent);
   const hasTripPlan = Boolean(
-    ctx.destination &&
-      (ctx.mood || ctx.vibe) &&
-      (ctx.companion || ctx.days),
+    ctx.destination && (ctx.mood || ctx.vibe) && (ctx.companion || ctx.days),
   );
   const hasNearbyMood =
     Boolean(ctx.mood) &&

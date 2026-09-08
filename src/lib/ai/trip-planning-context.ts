@@ -16,6 +16,7 @@ import { isComboItineraryQuery } from "@/lib/ai/chat-category-place-guard";
 import { extractItineraryDestinationFromText } from "@/lib/ai/itinerary-entity-extraction";
 import { enrichTripDatesInContext } from "@/lib/ai/ai-trip-style";
 import { applyCityLocaleAlias } from "@/lib/ai/destination-locale-aliases";
+import { normalizeDestinationAndDuration } from "@/lib/parse-chinese-duration";
 
 /** A 附近探索 | B 目的地規劃 | C 特定地點 | D 心情推薦 */
 export type ChatConversationMode =
@@ -100,7 +101,8 @@ const DESTINATION_ALIASES: Record<string, string> = {
 };
 
 export function normalizeDestinationLabel(name: string): string {
-  const stripped = normalizeCityLabel(name.trim()).replace(/\s+city$/i, "").trim();
+  const durationNormalized = normalizeDestinationAndDuration(name);
+  const stripped = normalizeCityLabel(durationNormalized.destinationLabel).replace(/\s+city$/i, "").trim();
   const aliased = DESTINATION_ALIASES[stripped] ?? DESTINATION_ALIASES[stripped.toLowerCase()];
   if (aliased) return aliased;
   return applyCityLocaleAlias(stripped);
@@ -233,6 +235,14 @@ function matchLeadingKnownDestination(text: string): string | undefined {
 export function parseLeadingDestinationLabel(text: string): string | undefined {
   const t = text.trim();
   if (!t) return undefined;
+
+  const englishDuration = t.match(
+    /^([A-Za-z][A-Za-z .'-]{1,40}?)\s+(?:for\s+)?\d+\s*(?:-\s*)?days?(?:\s+trip)?$/i,
+  );
+  if (englishDuration?.[1]) {
+    const label = normalizeDestinationLabel(englishDuration[1]);
+    if (isValidParsedDestinationLabel(label)) return label;
+  }
 
   if (/(幾月|哪個月|什麼時候|什麼去|什么去|何时|何時|最佳|好玩|比較好|比较好)/.test(t)) {
     const prefix = matchLeadingKnownDestination(t);

@@ -31,8 +31,12 @@ import {
 import { dedupeByCanonicalLandmark } from "@/lib/ai/canonical-landmark";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { applyPlannerRouteAndCapacityAssembly } from "@/lib/ai/planner-day-route-assembly";
+import { applyFinalDayRouteOrdering } from "@/lib/ai/final-day-route-ordering";
+import { repairCrossDayGeographicCohesion } from "@/lib/ai/cross-day-geographic-cohesion";
 import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
 import type { PlaceResult } from "@/lib/place-result";
+import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
+import { isDeliverableItineraryCandidate } from "@/lib/ai/itinerary-deliverable-candidate";
 import { distanceMeters } from "@/lib/geo-distance";
 import { isClearlyClosedAtSlot } from "@/lib/ai/itinerary-validator/place-checks";
 import {
@@ -93,6 +97,7 @@ import {
 } from "@/lib/ai/daily-category-diversity";
 
 export type ItineraryReplanParams = {
+  generationId?: string;
   plans: ComposedDayPlan[];
   pool: PlaceResult[];
   days: number;
@@ -100,6 +105,8 @@ export type ItineraryReplanParams = {
   plannedDate?: string;
   nearbyExtensions?: string[];
   validatorInput: Omit<ItineraryValidatorInput, "plans">;
+  /** Eligible conversational anchors that must survive local assembly/repair. */
+  requiredPlaces?: readonly PlaceResult[];
 };
 
 function lockFromValidatorInput(
@@ -137,6 +144,9 @@ export type ItineraryReplanOutcome = {
     | "unrepaired_failure";
   noProgress: boolean;
   cycleDetected: boolean;
+  requiredCount: number;
+  requiredSatisfiedCount: number;
+  requiredCoverageComplete: boolean;
 };
 
 const DAYTIME_SLOTS = ["09:30", "10:30", "11:00", "14:00", "15:00", "16:00", "16:30"];
@@ -215,6 +225,176 @@ function formatMinutes(total: number): string {
 
 function placeIdOf(place: PlaceResult): string {
   return (place.id ?? "").trim() || (place.name ?? "").trim().toLowerCase();
+}
+
+function normalizedPlaceName(place: Pick<PlaceResult, "name">): string {
+  return (place.name ?? "").normalize("NFKC").trim().toLowerCase();
+}
+
+function sameRequiredPlace(left: PlaceResult, right: PlaceResult): boolean {
+  const leftId = left.id?.trim();
+  const rightId = right.id?.trim();
+  if (leftId && rightId && leftId === rightId) return true;
+  const leftName = normalizedPlaceName(left);
+  return Boolean(leftName && leftName === normalizedPlaceName(right));
+}
+
+export type RequiredCoverageState = {
+  requiredCount: number;
+  requiredSatisfiedCount: number;
+  missingRequired: PlaceResult[];
+  complete: boolean;
+};
+
+export function classifyRequiredIdentityAvailability(
+  requiredPlaces: readonly PlaceResult[] = [],
+): { unavailableCount: number; failureReason: "required_identity_unavailable" | "none" } {
+  const unavailableCount = requiredPlaces.filter(
+    (place) => !isHardGooglePlaceId(place.googlePlaceId),
+  ).length;
+  return {
+    unavailableCount,
+    failureReason: unavailableCount > 0 ? "required_identity_unavailable" : "none",
+  };
+}
+
+export function evaluateRequiredPlaceCoverage(
+  plans: readonly ComposedDayPlan[],
+  requiredPlaces: readonly PlaceResult[] = [],
+): RequiredCoverageState {
+  const uniqueRequired = requiredPlaces.filter(
+    (place, index, all) =>
+      all.findIndex((candidate) => candidate === place || sameRequiredPlace(candidate, place)) === index,
+  );
+  const present = plans.flatMap((plan) => plan.entries.map((entry) => entry.place));
+  const missingRequired = uniqueRequired.filter(
+    (required) => !present.some((candidate) => sameRequiredPlace(candidate, required)),
+  );
+  return {
+    requiredCount: uniqueRequired.length,
+    requiredSatisfiedCount: uniqueRequired.length - missingRequired.length,
+    missingRequired,
+    complete: missingRequired.length === 0,
+  };
+}
+
+/**
+ * Deterministic required-first repair. It never calls AI/Places. Missing anchors
+ * replace supplemental entries before growing a day, so route capacity is stable.
+ */
+export function repairRequiredPlaceCoverage(params: {
+  plans: readonly ComposedDayPlan[];
+  requiredPlaces?: readonly PlaceResult[];
+  days: number;
+  generationId?: string;
+}): {
+  plans: ComposedDayPlan[];
+  insertedCount: number;
+  replacedSupplementalCount: number;
+  blockedRequiredCount: number;
+  failureReasonCounts: Record<string, number>;
+} {
+  const requiredPlaces = params.requiredPlaces ?? [];
+  const plans = ensureAllDayPlansExist(
+    params.plans.map((plan) => ({ ...plan, entries: [...plan.entries] })),
+    params.days,
+  );
+  let insertedCount = 0;
+  let replacedSupplementalCount = 0;
+  let blockedRequiredCount = 0;
+  const failureReasonCounts: Record<string, number> = {};
+
+  for (const required of evaluateRequiredPlaceCoverage(plans, requiredPlaces).missingRequired) {
+    const requiredIndex = requiredPlaces.findIndex(
+      (candidate) => candidate === required || sameRequiredPlace(candidate, required),
+    );
+    const sourceGoogleIdPresent = isHardGooglePlaceId(required.googlePlaceId);
+    const sourceProvenancePresent = Boolean(required.plannerProvenanceKey?.trim());
+    if (!sourceGoogleIdPresent) {
+      const failureReason = "required_missing_google_identity";
+      blockedRequiredCount += 1;
+      failureReasonCounts[failureReason] = (failureReasonCounts[failureReason] ?? 0) + 1;
+      console.info("[ITINERARY_REQUIRED_REPAIR_IDENTITY]", {
+        generationId: params.generationId ?? "",
+        requiredIndex,
+        sourceGoogleIdPresent,
+        sourceProvenancePresent,
+        outputGoogleIdPresent: false,
+        constructor: "shared_strict_deliverable",
+        inserted: false,
+        failureReason,
+      });
+      continue;
+    }
+    const orderedDays = [...plans].sort((left, right) => {
+      const affinity = (plan: ComposedDayPlan): number => {
+        if (required.lat == null || required.lng == null) return Number.POSITIVE_INFINITY;
+        const located = plan.entries.filter((entry) => entry.place.lat != null && entry.place.lng != null);
+        if (!located.length) return Number.POSITIVE_INFINITY;
+        const center = located.reduce(
+          (sum, entry) => ({ lat: sum.lat + entry.place.lat!, lng: sum.lng + entry.place.lng! }),
+          { lat: 0, lng: 0 },
+        );
+        return distanceMeters(
+          { lat: required.lat, lng: required.lng },
+          { lat: center.lat / located.length, lng: center.lng / located.length },
+        );
+      };
+      const affinityDifference = affinity(left) - affinity(right);
+      if (Number.isFinite(affinityDifference) && affinityDifference !== 0) return affinityDifference;
+      const requiredOnLeft = left.entries.filter((entry) =>
+        requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
+      ).length;
+      const requiredOnRight = right.entries.filter((entry) =>
+        requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
+      ).length;
+      return requiredOnLeft - requiredOnRight || right.entries.length - left.entries.length || left.day - right.day;
+    });
+    const target = orderedDays.find((plan) =>
+      plan.entries.some((entry) =>
+        !requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
+      ),
+    ) ?? orderedDays[0];
+    if (!target) continue;
+    const replaceIndex = [...target.entries]
+      .map((entry, index) => ({ entry, index }))
+      .reverse()
+      .find(({ entry }) =>
+        !requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
+      )?.index;
+    const replacement: DayPlanEntry = {
+      time: replaceIndex == null ? DAYTIME_SLOTS[target.entries.length % DAYTIME_SLOTS.length]! : target.entries[replaceIndex]!.time,
+      label: required.primaryType ?? required.types?.[0] ?? "景點",
+      name: required.name,
+      // Atomic candidate replacement: never mix the displaced supplemental's identity.
+      place: { ...required, googlePlaceId: required.googlePlaceId!.trim() },
+    };
+    if (replaceIndex == null) {
+      target.entries.push(replacement);
+    } else {
+      target.entries[replaceIndex] = replacement;
+      replacedSupplementalCount += 1;
+    }
+    insertedCount += 1;
+    console.info("[ITINERARY_REQUIRED_REPAIR_IDENTITY]", {
+      generationId: params.generationId ?? "",
+      requiredIndex,
+      sourceGoogleIdPresent,
+      sourceProvenancePresent,
+      outputGoogleIdPresent: isHardGooglePlaceId(replacement.place.googlePlaceId),
+      constructor: "shared_strict_deliverable",
+      inserted: true,
+      failureReason: "",
+    });
+  }
+
+  return {
+    plans,
+    insertedCount,
+    replacedSupplementalCount,
+    blockedRequiredCount,
+    failureReasonCounts,
+  };
 }
 
 function primaryTypeOf(place: PlaceResult): string {
@@ -317,14 +497,44 @@ function repairRemoveLowValueAndLocalize(
   return current;
 }
 
-/** Enforce daily category diversity — move violators to other days (do not drop). */
+/** Enforce daily category diversity without sacrificing required anchors. */
 function repairDailyCategoryDiversity(
   plans: ComposedDayPlan[],
+  pool: PlaceResult[],
   days: number,
   style: TripStyleKey,
   lock: SelectedPlaceLock | null = null,
   telemetryRepairRound = 0,
+  partialDays?: readonly number[],
+  generationId?: string,
 ): ComposedDayPlan[] {
+  const limits = resolveDailyDiversityLimits({ style });
+  const beforeViolations = plans.flatMap((plan) => {
+    const families = new Set(plan.entries.map((entry) => classifyDailyDiversityCategory(entry.place)));
+    return [...families].flatMap((family) => {
+      if (!(family in limits)) return [];
+      const familyLimit = limits[family as keyof typeof limits];
+      const totalFamilyCount = plan.entries.filter(
+        (entry) => classifyDailyDiversityCategory(entry.place) === family,
+      ).length;
+      if (totalFamilyCount <= familyLimit) return [];
+      const requiredFamilyCount = plan.entries.filter(
+        (entry) => isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
+      ).length;
+      const supplementalFamilyCount = Math.max(0, totalFamilyCount - requiredFamilyCount);
+      return [{
+        dayIndex: plan.day,
+        family,
+        familyLimit,
+        requiredFamilyCount,
+        supplementalFamilyCount,
+        totalFamilyCount,
+        provenance: requiredFamilyCount > familyLimit
+          ? supplementalFamilyCount > 0 ? "mixed" as const : "required_only" as const
+          : "supplemental_caused" as const,
+      }];
+    });
+  });
   const moved = repairDailyDiversityByMove({
     plans,
     tripDays: days,
@@ -340,13 +550,104 @@ function repairDailyCategoryDiversity(
     lock,
     source: "daily_diversity_repair",
   });
+  const repaired = asComposedDayPlans(covered.plans);
+  const usedIds = new Set(
+    repaired.flatMap((plan) => plan.entries.map((entry) => placeIdOf(entry.place))).filter(Boolean),
+  );
+  const partialDaySet = new Set(partialDays ?? []);
+  let replaced = 0;
+  let dropped = 0;
+
+  for (const plan of repaired) {
+    const families = new Set(
+      plan.entries.map((entry) => classifyDailyDiversityCategory(entry.place)),
+    );
+    for (const family of families) {
+      if (!(family in limits)) continue;
+      const familyLimit = limits[family as keyof typeof limits];
+      const requiredFamilyCount = plan.entries.filter(
+        (entry) => isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
+      ).length;
+      const allowedCount = Math.max(familyLimit, requiredFamilyCount);
+      const beforeViolation = beforeViolations.find(
+        (item) => item.dayIndex === plan.day && item.family === family,
+      );
+
+      while (plan.entries.filter(
+        (entry) => classifyDailyDiversityCategory(entry.place) === family,
+      ).length > allowedCount) {
+        const offendingIndex = plan.entries.findLastIndex(
+          (entry) => !isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
+        );
+        if (offendingIndex < 0) break;
+        const offending = plan.entries[offendingIndex]!;
+        const withoutOffending = plan.entries.filter((_, index) => index !== offendingIndex);
+        const replacement = pool.find((candidate) => {
+          const candidateId = placeIdOf(candidate);
+          return Boolean(
+            candidateId &&
+              !usedIds.has(candidateId) &&
+              evaluateTourismQuality(candidate).ok &&
+              classifyPlanPlaceKind(candidate) === classifyPlanPlaceKind(offending.place) &&
+              isClearlyClosedAtSlot(candidate, plannedDate, offending.time) !== true &&
+              wouldViolateDailyDiversity(
+                withoutOffending.map((entry) => entry.place),
+                candidate,
+                limits,
+              ).ok
+          );
+        });
+        if (replacement) {
+          const oldId = placeIdOf(offending.place);
+          if (oldId) usedIds.delete(oldId);
+          const replacementId = placeIdOf(replacement);
+          if (replacementId) usedIds.add(replacementId);
+          plan.entries[offendingIndex] = { ...offending, name: replacement.name, place: replacement };
+          replaced += 1;
+          continue;
+        }
+        const hardMinimum = partialDaySet.has(plan.day) ? 1 : SOFT_PASS_MIN_PLACES_PER_FULL_DAY;
+        if (plan.entries.length - 1 < hardMinimum) break;
+        const [removed] = plan.entries.splice(offendingIndex, 1);
+        const removedId = removed ? placeIdOf(removed.place) : "";
+        if (removedId) usedIds.delete(removedId);
+        dropped += 1;
+      }
+
+      const totalFamilyCount = plan.entries.filter(
+        (entry) => classifyDailyDiversityCategory(entry.place) === family,
+      ).length;
+      const supplementalFamilyCount = Math.max(0, totalFamilyCount - requiredFamilyCount);
+      if (!beforeViolation) continue;
+      console.info("[ITINERARY_DAILY_DIVERSITY]", {
+        generationId: generationId ?? "",
+        stage: `repair_${telemetryRepairRound}`,
+        dayIndex: plan.day,
+        violatingFamilies: [{
+          family,
+          requiredFamilyCount: beforeViolation.requiredFamilyCount,
+          supplementalFamilyCount: beforeViolation.supplementalFamilyCount,
+          totalFamilyCount: beforeViolation.totalFamilyCount,
+          familyLimit,
+          provenance: beforeViolation.provenance,
+          requiredOverrideApplied:
+            beforeViolation.requiredFamilyCount > familyLimit && supplementalFamilyCount === 0,
+          supplementalRepairAttempted: beforeViolation.supplementalFamilyCount > 0,
+          supplementalRepairSucceeded: totalFamilyCount <= allowedCount,
+          blockingRuleEmitted: totalFamilyCount > allowedCount,
+          warningEmitted: requiredFamilyCount > familyLimit && supplementalFamilyCount === 0,
+        }],
+      });
+    }
+  }
   logAiPipeline(
     "[ITINERARY_AUTO_REPAIR]",
     "step=daily_category_diversity",
     `moved=${moved.moved}`,
-    `dropped=0`,
+    `replaced=${replaced}`,
+    `dropped=${dropped}`,
   );
-  return asComposedDayPlans(covered.plans);
+  return repaired;
 }
 
 /** Peel from heaviest days into empty days until minimum coverage. */
@@ -856,6 +1157,7 @@ function applyAutoRepairPass(
   reasons: string[],
   nearbyExtensions: string[] | undefined,
   attempt: number,
+  generationId?: string,
   lock: SelectedPlaceLock | null = null,
   partialDays?: readonly number[],
   failedDays?: readonly number[],
@@ -903,7 +1205,22 @@ function applyAutoRepairPass(
   // Always strip low-value facilities + unify display names before other repairs.
   // Selected Place Lock: quality / diversity / replacement must not drop locked anchors.
   current = repairRemoveLowValueAndLocalize(current, days, lock);
-  current = repairDailyCategoryDiversity(current, days, style, lock, attempt);
+  current = repairDailyCategoryDiversity(
+    current,
+    mergedPool,
+    days,
+    style,
+    lock,
+    attempt,
+    partialDays,
+    generationId,
+  );
+  current = repairCrossDayGeographicCohesion(current, {
+    generationId,
+    stage: "post_diversity_move",
+    plannedDate,
+    logDiagnostics: false,
+  });
   current = repairNonNavigableStops(current, mergedPool, days, style, lock);
   current = repairNightlifeTiming(current, days);
 
@@ -958,6 +1275,11 @@ function applyAutoRepairPass(
       days,
       plannedDate,
     );
+    current = applyFinalDayRouteOrdering(current, {
+      generationId,
+      stage: "post_supplemental_fill",
+      plannedDate,
+    });
   }
 
   // Step 4 — redistribute across days (force when coverage failed)
@@ -973,6 +1295,17 @@ function applyAutoRepairPass(
       lock,
     );
     current = repairEmptyDays(current, days, partialDays, lock);
+    current = repairCrossDayGeographicCohesion(current, {
+      generationId,
+      stage: "post_redistribution",
+      plannedDate,
+      logDiagnostics: false,
+    });
+    current = applyFinalDayRouteOrdering(current, {
+      generationId,
+      stage: "post_redistribution",
+      plannedDate,
+    });
   }
 
   if (reasonSet.has("replan_for_nearby_extension_coverage")) {
@@ -992,7 +1325,16 @@ function applyAutoRepairPass(
   }
 
   // Final: diversity move + coverage + time dedupe
-  current = repairDailyCategoryDiversity(current, days, style, lock, attempt);
+  current = repairDailyCategoryDiversity(
+    current,
+    mergedPool,
+    days,
+    style,
+    lock,
+    attempt,
+    partialDays,
+    generationId,
+  );
   current = repairEmptyDays(current, days, partialDays, lock);
   current = repairNightlifeTiming(current, days);
   current = normalizeCompleteDayMap(
@@ -1167,6 +1509,39 @@ export function replanUntilItineraryValid(
   initial: ItineraryValidationResult,
 ): ItineraryReplanOutcome {
   const originalPlans = params.plans;
+  const destination = params.validatorInput.destination ?? "";
+  const requiredPlaces = params.requiredPlaces ?? [];
+  const candidateAdmission = params.pool.map((candidate) => {
+    const candidateSource = requiredPlaces.some((required) =>
+      sameRequiredPlace(required, candidate),
+    ) ? "required" as const : "supplemental" as const;
+    const decision = isDeliverableItineraryCandidate(candidate as never, destination);
+    return { candidate, candidateSource, decision };
+  });
+  const deliverablePool = candidateAdmission
+    .filter(({ decision }) => decision.deliverable)
+    .map(({ candidate }) => candidate);
+  for (const candidateSource of ["required", "supplemental"] as const) {
+    const input = candidateAdmission.filter((item) => item.candidateSource === candidateSource);
+    const rejectionReasonCounts = input.reduce<Record<string, number>>((counts, item) => {
+      if (!item.decision.deliverable) {
+        const reason = candidateSource === "required" && item.decision.reason === "missing_google_identity"
+          ? "required_missing_google_identity"
+          : item.decision.reason ?? "other";
+        counts[reason] = (counts[reason] ?? 0) + 1;
+      }
+      return counts;
+    }, {});
+    console.info("[ITINERARY_REPLAN_CANDIDATE_ADMISSION]", {
+      generationId: params.generationId ?? "",
+      branch: "all_replan_insertion_paths",
+      candidateSource,
+      inputCount: input.length,
+      deliverableCount: input.filter((item) => item.decision.deliverable).length,
+      rejectedCount: input.filter((item) => !item.decision.deliverable).length,
+      rejectionReasonCounts,
+    });
+  }
   const originalStopCount = originalPlans.reduce((n, p) => n + p.entries.length, 0);
   let plans = normalizeCompleteDayMap(
     ensureAllDayPlansExist(params.plans, params.days),
@@ -1179,6 +1554,7 @@ export function replanUntilItineraryValid(
     : "unrepaired_failure";
   let noProgress = false;
   let cycleDetected = false;
+  let requiredCoverage = evaluateRequiredPlaceCoverage(plans, params.requiredPlaces);
   const selectedLock = lockFromValidatorInput(params.validatorInput);
   const seenPlanSignatures = new Set<string>([
     buildItineraryPlanSignature(plans, selectedLock),
@@ -1187,7 +1563,7 @@ export function replanUntilItineraryValid(
     plans.flatMap((plan) => plan.entries.map((entry) => entry.place.id.trim())),
   );
   const poolFamilies = new Map<string, { verified: number; unused: number; replaceable: number }>();
-  for (const candidate of params.pool) {
+  for (const candidate of deliverablePool) {
     const family = classifyDailyDiversityCategory(candidate);
     const summary = poolFamilies.get(family) ?? { verified: 0, unused: 0, replaceable: 0 };
     const identity = checkStopNavigationIdentity(
@@ -1214,14 +1590,14 @@ export function replanUntilItineraryValid(
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([family, counts]) => `${family}:verified=${counts.verified},unused=${counts.unused},replaceable=${counts.replaceable}`)
       .join("|") || "(none)"}`,
-    `poolSize=${params.pool.length}`,
+    `poolSize=${deliverablePool.length}`,
   );
 
   // missing_days is hard for delivery but MUST enter Auto Repair first.
   while (
-    !validation.pass &&
+    (!validation.pass || !requiredCoverage.complete) &&
     validation.path === "validator" &&
-    !hasUnrepairableHardBlockFailures(validation) &&
+    (!hasUnrepairableHardBlockFailures(validation) || !requiredCoverage.complete) &&
     attempts < MAX_ITINERARY_VALIDATOR_REPLAN_ATTEMPTS
   ) {
     attempts += 1;
@@ -1248,7 +1624,7 @@ export function replanUntilItineraryValid(
       `previousDayCounts=${previousDayCounts.join(",")}`,
       `failedRules=${validation.failedRules.map((r) => r.code).join(",")}`,
       `failedDays=${failedDays.join(",") || "(none)"}`,
-      `candidateCount=${params.pool.length}`,
+      `candidateCount=${deliverablePool.length}`,
       `lockedPlaceCount=${lockedCount}`,
       `redistributionRequired=${redistributionRequired}`,
     );
@@ -1256,17 +1632,18 @@ export function replanUntilItineraryValid(
       "[ITINERARY_REPLAN_START]",
       `attempt=${attempts}`,
       `reasons=${validation.replanReasons.join("|")}`,
-      `poolSize=${params.pool.length}`,
+      `poolSize=${deliverablePool.length}`,
       "placesSearch=false",
       "mode=auto_repair",
     );
 
     const before = plans;
     const validationBefore = validation;
+    const requiredCoverageBefore = requiredCoverage;
     // Do not reuse a failed day map: coverage repair rebuilds from stops across days.
     plans = applyAutoRepairPass(
       plans,
-      params.pool,
+      deliverablePool,
       params.days,
       params.style,
       params.plannedDate,
@@ -1280,6 +1657,7 @@ export function replanUntilItineraryValid(
           ],
       params.nearbyExtensions,
       attempts,
+      params.generationId,
       selectedLock,
       params.validatorInput.partialDays,
       failedDays,
@@ -1299,14 +1677,81 @@ export function replanUntilItineraryValid(
       );
     }
 
+    const requiredRepair = repairRequiredPlaceCoverage({
+      plans,
+      requiredPlaces: params.requiredPlaces,
+      days: params.days,
+      generationId: params.generationId,
+    });
+    plans = requiredRepair.plans;
+    plans = repairCrossDayGeographicCohesion(plans, {
+      generationId: params.generationId,
+      stage: "post_required_repair",
+      plannedDate: params.plannedDate,
+    });
+    plans = applyFinalDayRouteOrdering(plans, {
+      generationId: params.generationId,
+      stage: "post_required_repair",
+      plannedDate: params.plannedDate,
+    });
+    plans = applyFinalDayRouteOrdering(plans, {
+      generationId: params.generationId,
+      stage: "post_replan",
+      plannedDate: params.plannedDate,
+    });
+    requiredCoverage = evaluateRequiredPlaceCoverage(plans, params.requiredPlaces);
+
     validation = validateItineraryPlan({
       ...params.validatorInput,
       plans,
+      generationId: params.generationId,
+      validationStage: `replan_${attempts}`,
       telemetryRepairRound: attempts,
       telemetryValidatorRound: attempts,
     });
 
     const newDayCounts = dayCountsOfPlans(plans);
+    const beforeIds = new Set(
+      before.flatMap((plan) => plan.entries.map((entry) => placeIdOf(entry.place))).filter(Boolean),
+    );
+    const insertedCount = plans
+      .flatMap((plan) => plan.entries)
+      .filter((entry) => !beforeIds.has(placeIdOf(entry.place))).length;
+    console.info("[ITINERARY_REPLAN_ATTEMPT]", {
+      generationId: params.generationId ?? "",
+      attempt: attempts,
+      failedRulesBefore: validationBefore.failedRules.map((rule) => rule.code),
+      dayCountBefore: before.length,
+      populatedDayCountBefore: before.filter((plan) => plan.entries.length > 0).length,
+      dayPlaceCountsBefore: previousDayCounts,
+      candidatePoolCount: deliverablePool.length,
+      supplementalAvailable: deliverablePool.filter((place) => !beforeIds.has(placeIdOf(place))).length,
+      insertedCount,
+      requiredCountBefore: requiredCoverageBefore.requiredCount,
+      requiredSatisfiedBefore: requiredCoverageBefore.requiredSatisfiedCount,
+      missingRequiredBefore: requiredCoverageBefore.missingRequired.length,
+      requiredInsertedCount: requiredRepair.insertedCount,
+      requiredCountAfter: requiredCoverage.requiredCount,
+      requiredSatisfiedAfter: requiredCoverage.requiredSatisfiedCount,
+      missingRequiredAfter: requiredCoverage.missingRequired.length,
+      completionBlockedByRequiredCoverage: validation.pass && !requiredCoverage.complete,
+      dayCountAfter: plans.length,
+      populatedDayCountAfter: plans.filter((plan) => plan.entries.length > 0).length,
+      failedRulesAfter: validation.failedRules.map((rule) => rule.code),
+    });
+    const rejectedMissingGoogle = candidateAdmission.filter(
+      ({ decision }) => !decision.deliverable && decision.reason === "missing_google_identity",
+    );
+    console.info("[ITINERARY_REPLAN_INSERTION]", {
+      generationId: params.generationId ?? "",
+      branch: "auto_repair_pass",
+      attemptedCount: insertedCount + rejectedMissingGoogle.length,
+      insertedCount,
+      missingGoogleRejectedCount: rejectedMissingGoogle.length,
+      internalIdentityRejectedCount: rejectedMissingGoogle.filter(({ candidate }) =>
+        Boolean(candidate.googlePlaceId?.trim() || candidate.id?.trim()),
+      ).length,
+    });
     const remainingEmptyDays = newDayCounts
       .map((c, i) => (c === 0 ? i + 1 : 0))
       .filter((d) => d > 0);
@@ -1347,7 +1792,7 @@ export function replanUntilItineraryValid(
     ) {
       const mergedPool = dedupeByCanonicalLandmark([
         ...flattenComposedDayPlanPlaces(plans),
-        ...params.pool,
+        ...deliverablePool,
       ]).places;
       if (mergedPool.length >= params.days) {
         logAiPipeline(
@@ -1380,9 +1825,21 @@ export function replanUntilItineraryValid(
           params.validatorInput.partialDays,
           selectedLock,
         );
+        plans = repairCrossDayGeographicCohesion(plans, {
+          generationId: params.generationId,
+          stage: "post_redistribution",
+          plannedDate: params.plannedDate,
+        });
+        plans = applyFinalDayRouteOrdering(plans, {
+          generationId: params.generationId,
+          stage: "post_redistribution",
+          plannedDate: params.plannedDate,
+        });
         validation = validateItineraryPlan({
           ...params.validatorInput,
           plans,
+          generationId: params.generationId,
+          validationStage: `replan_${attempts}`,
           telemetryRepairRound: attempts,
           telemetryValidatorRound: attempts,
         });
@@ -1399,6 +1856,10 @@ export function replanUntilItineraryValid(
       }
     }
 
+    // Any redistribution must preserve the required lock; recalculate before
+    // deciding whether this repair round may complete.
+    requiredCoverage = evaluateRequiredPlaceCoverage(plans, params.requiredPlaces);
+
     const progress = assessRepairProgress({
       plansBefore: before,
       plansAfter: plans,
@@ -1407,7 +1868,12 @@ export function replanUntilItineraryValid(
       seenPlanSignatures,
       lock: selectedLock,
     });
-    const roundStopReason = resolveRepairRoundStopReason(validation.pass, progress);
+    const completionSatisfied = validation.pass && requiredCoverage.complete;
+    const roundStopReason = completionSatisfied
+      ? "success"
+      : requiredCoverage.complete
+        ? resolveRepairRoundStopReason(validation.pass, progress)
+        : null;
     logAiPipeline(
       "[ITINERARY_REPAIR_PROGRESS]",
       `repairRound=${attempts}`,
@@ -1432,7 +1898,7 @@ export function replanUntilItineraryValid(
   }
 
   if (
-    !validation.pass &&
+    (!validation.pass || !requiredCoverage.complete) &&
     stopReason === "unrepaired_failure" &&
     attempts >= MAX_ITINERARY_VALIDATOR_REPLAN_ATTEMPTS
   ) {
@@ -1443,7 +1909,7 @@ export function replanUntilItineraryValid(
     const evidence = evaluateDiversityDegradationEvidence({
       plans,
       validation,
-      pool: params.pool,
+      pool: deliverablePool,
       days: params.days,
       style: params.style,
       plannedDate: params.plannedDate,
@@ -1467,7 +1933,7 @@ export function replanUntilItineraryValid(
     );
   }
 
-  if (!validation.pass && !hasHardBlockFailures(validation)) {
+  if (!validation.pass && requiredCoverage.complete && !hasHardBlockFailures(validation)) {
     const quality = evaluateMinimumAcceptableQuality(plans, validation, {
       days: params.days,
       partialDays: params.validatorInput.partialDays,
@@ -1516,21 +1982,24 @@ export function replanUntilItineraryValid(
     destination: params.validatorInput.destination ?? "",
     days: params.days,
     plans,
-    candidatePool: params.pool,
+    candidatePool: deliverablePool,
   });
   logItineraryQualitySummary(summary);
 
   const hardFailures = validation.failedRules.filter((rule) =>
     hasHardBlockFailures({ ...validation, failedRules: [rule] }),
   );
-  if (validation.pass && !noProgress && !cycleDetected) stopReason = "success";
+  if (validation.pass && requiredCoverage.complete && !noProgress && !cycleDetected) stopReason = "success";
+  if (!requiredCoverage.complete && attempts >= MAX_ITINERARY_VALIDATOR_REPLAN_ATTEMPTS) {
+    stopReason = "max_rounds";
+  }
   logAiPipeline(
     "[ITINERARY_FINAL_GATE]",
     `hardFailures=${hardFailures.map((rule) => rule.code).join(",") || "(none)"}`,
     `warnings=${validation.warnings.map((warning) => warning.code).join(",") || "(none)"}`,
     `repairAttempts=${attempts}`,
-    `deliveryAllowed=${validation.pass || hardFailures.length === 0}`,
-    `reason=${validation.pass ? "validated" : hardFailures.length ? "hard_failure" : "warnings_only"}`,
+    `deliveryAllowed=${requiredCoverage.complete && (validation.pass || hardFailures.length === 0)}`,
+    `reason=${!requiredCoverage.complete ? "required_anchor_coverage_mismatch" : validation.pass ? "validated" : hardFailures.length ? "hard_failure" : "warnings_only"}`,
   );
 
   logAiPipeline(
@@ -1540,5 +2009,15 @@ export function replanUntilItineraryValid(
     `noProgress=${noProgress}`,
     `cycleDetected=${cycleDetected}`,
   );
-  return { plans, validation, attempts, stopReason, noProgress, cycleDetected };
+  return {
+    plans,
+    validation,
+    attempts,
+    stopReason,
+    noProgress,
+    cycleDetected,
+    requiredCount: requiredCoverage.requiredCount,
+    requiredSatisfiedCount: requiredCoverage.requiredSatisfiedCount,
+    requiredCoverageComplete: requiredCoverage.complete,
+  };
 }

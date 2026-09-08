@@ -226,15 +226,20 @@ export function filterExcludedPlaceIds<T extends PlaceLike>(
   excludeIds: string[],
 ): T[] {
   if (!excludeIds.length) return candidates;
-  const block = new Set(
-    excludeIds.map((id) => {
-      const t = id.trim();
-      if (!t) return "";
-      if (t.startsWith("id:") || t.startsWith("na:") || t.startsWith("n:")) return t;
-      return `id:${t}`;
-    }).filter(Boolean),
-  );
-  return candidates.filter((p) => !block.has(placeIdentityKey(p)));
+  const canonicalKeys = new Set<string>();
+  const rawIds = new Set<string>();
+  for (const value of excludeIds) {
+    const id = value.trim();
+    if (!id) continue;
+    if (/^(?:google|saved|canonical|fallback|id|na|n):/.test(id)) canonicalKeys.add(id);
+    else rawIds.add(id);
+  }
+  return candidates.filter((place) => {
+    if (canonicalKeys.has(placeIdentityKey(place))) return false;
+    return ![place.canonicalPlaceId, place.googlePlaceId, place.placeId, place.id].some(
+      (id) => Boolean(id?.trim() && rawIds.has(id.trim())),
+    );
+  });
 }
 
 /**
@@ -467,7 +472,36 @@ export function buildPlannerRequiredAnchors(
   destination: string,
   requiredBySelection = false,
 ): RoamieRecommendationItem[] {
-  return preparePlacesForItineraryBuild(places, destination).map((place) => {
+  const prepared = preparePlacesForItineraryBuild(places, destination);
+  const preparedKeys = new Set(
+    prepared.map((place) => resolveCanonicalPlaceIdentity(place).identityKey),
+  );
+  const explicitSurfaceRecovered = requiredBySelection
+    ? places.flatMap((raw) => {
+        const normalized = normalizePlaceForItineraryBuild(raw, destination);
+        const name = (normalized.placeName ?? normalized.name).trim();
+        const status = (normalized.businessStatus ?? "").toUpperCase();
+        const hasIdentity = Boolean(normalized.placeId?.trim() || normalized.googlePlaceId?.trim());
+        const hasCoordinates =
+          Number.isFinite(normalized.lat) &&
+          Number.isFinite(normalized.lng) &&
+          (Math.abs(normalized.lat ?? 0) > 0.001 || Math.abs(normalized.lng ?? 0) > 0.001);
+        const allowedExplicitCategory = /商圈|夜市|shopping\s*(?:district|area)|night\s*market/i.test(name);
+        const key = resolveCanonicalPlaceIdentity(normalized).identityKey;
+        if (
+          !allowedExplicitCategory ||
+          (!hasIdentity && !hasCoordinates) ||
+          status === "CLOSED_TEMPORARILY" ||
+          status === "CLOSED_PERMANENTLY" ||
+          preparedKeys.has(key)
+        ) {
+          return [];
+        }
+        preparedKeys.add(key);
+        return [normalized];
+      })
+    : [];
+  return [...prepared, ...explicitSurfaceRecovered].map((place) => {
     const googlePlaceId = place.googlePlaceId?.trim() || place.placeId?.trim() || undefined;
     const types = Array.isArray(place.types)
       ? place.types.filter((type): type is string => typeof type === "string" && Boolean(type.trim()))
@@ -523,6 +557,58 @@ export function buildPlannerRequiredAnchors(
         typeof place.todayHoursLabel === "string" ? place.todayHoursLabel : undefined,
     };
   });
+}
+
+export type RequiredAnchorRejectionReason =
+  | "duplicate"
+  | "closed_temporarily"
+  | "closed_permanently"
+  | "invalid_identity"
+  | "invalid_coordinates"
+  | "unsuitable"
+  | "other_operational";
+
+export function auditPlannerRequiredAnchorEligibility(
+  places: ChatPlaceItem[],
+  destination: string,
+): { inputRequiredCount: number; eligibleRequiredCount: number; rejectedRequiredCount: number; rejectionReasonCounts: Record<string, number> } {
+  const eligible = buildPlannerRequiredAnchors(places, destination, true);
+  const eligibleKeys = new Set(eligible.map((place) => resolveCanonicalPlaceIdentity(place).identityKey));
+  const seen = new Set<string>();
+  const rejectionReasonCounts: Record<string, number> = {};
+  const add = (reason: RequiredAnchorRejectionReason) => {
+    rejectionReasonCounts[reason] = (rejectionReasonCounts[reason] ?? 0) + 1;
+  };
+  for (const raw of places) {
+    const normalized = normalizePlaceForItineraryBuild(raw, destination);
+    const key = resolveCanonicalPlaceIdentity(normalized).identityKey;
+    if (eligibleKeys.has(key) && !seen.has(key)) {
+      seen.add(key);
+      continue;
+    }
+    const status = (raw.businessStatus ?? "").toUpperCase();
+    if (status === "CLOSED_TEMPORARILY") add("closed_temporarily");
+    else if (status === "CLOSED_PERMANENTLY") add("closed_permanently");
+    else if (seen.has(key)) add("duplicate");
+    else {
+      const hasIdentity = Boolean(normalized.placeId?.trim() || normalized.googlePlaceId?.trim());
+      const hasCoordinates =
+        Number.isFinite(normalized.lat) &&
+        Number.isFinite(normalized.lng) &&
+        (Math.abs(normalized.lat ?? 0) > 0.001 || Math.abs(normalized.lng ?? 0) > 0.001);
+      if (!hasIdentity && !hasCoordinates) add("invalid_identity");
+      else if (!hasCoordinates && !hasIdentity) add("invalid_coordinates");
+      else if (!isValidItineraryStopPlace(normalized, destination)) add("unsuitable");
+      else add("other_operational");
+    }
+    seen.add(key);
+  }
+  return {
+    inputRequiredCount: places.length,
+    eligibleRequiredCount: eligible.length,
+    rejectedRequiredCount: Math.max(0, places.length - eligible.length),
+    rejectionReasonCounts,
+  };
 }
 
 export function canBuildItineraryFromPlaceCount(count: number): boolean {

@@ -5,12 +5,22 @@ import { normalizeRoamieResponse, type RoamieResponse } from "@/lib/ai/types";
 const GUEST_KEY = "roamie:chat";
 
 export type ChatMsg = {
+  /** Stable UI identity; legacy persisted messages fall back to role + list position. */
+  id?: string;
   role: "user" | "assistant";
   content: string;
   /** Parsed AI JSON for assistant messages when available */
   roamie?: Partial<RoamieResponse>;
   /** 行程加點：結構化地點卡（與 roamie.recommendations 同步） */
   structuredPlaces?: import("@/lib/trip/trip-add-place-render").TripAddPlaceStructuredPlace[];
+  /**
+   * Plain authority for planning choices rendered as prose rather than cards.
+   * Legacy persisted messages may omit this field.
+   */
+  planningCandidateContext?: {
+    source: "planning_suggestion";
+    candidates: import("@/lib/chat-session").PlanningShownCandidate[];
+  };
 };
 
 function parseAssistantContent(content: string): { content: string; roamie?: Partial<RoamieResponse> } {

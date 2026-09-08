@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   describeGenerateItineraryRawShape,
   isGenerateItineraryFailure,
+  missingGenerateItineraryResultFields,
   normalizeGenerateItineraryResult,
   unwrapGeneratedTripPayload,
 } from "../src/lib/trip/itinerary-guards.ts";
@@ -52,9 +53,7 @@ const tanStackTransportEnvelope = {
     context: {},
   },
 };
-const normalizedTransportFailure = normalizeGenerateItineraryResult(
-  tanStackTransportEnvelope,
-);
+const normalizedTransportFailure = normalizeGenerateItineraryResult(tanStackTransportEnvelope);
 assert.ok(isGenerateItineraryFailure(normalizedTransportFailure));
 assert.deepEqual(normalizedTransportFailure.failedRules, ["daily_category_diversity"]);
 assert.deepEqual(normalizedTransportFailure.diagnostics?.affectedDays, [2]);
@@ -80,6 +79,20 @@ assert.equal(transportSuccessShape.payloadPath, "result.result.trip.payload");
 assert.equal(transportSuccessShape.tripItineraryIsArray, true);
 assert.equal(transportSuccessShape.payloadItineraryIsArray, true);
 
+const nativeNestedEnvelope = {
+  result: { result: { result: success, context: {} }, context: {} },
+};
+const normalizedNativeSuccess = normalizeGenerateItineraryResult(nativeNestedEnvelope);
+assert.equal(normalizedNativeSuccess?.success, true);
+const nativeShape = describeGenerateItineraryRawShape(
+  nativeNestedEnvelope,
+  normalizedNativeSuccess,
+);
+assert.equal(nativeShape.transportEnvelopeDepth, 3);
+assert.equal(nativeShape.successDiscriminant, "true");
+assert.equal(nativeShape.tripPresent, true);
+assert.equal(nativeShape.payloadPresent, true);
+
 assert.equal(
   normalizeGenerateItineraryResult({
     data: { foo: { result: validatorFailure } },
@@ -95,6 +108,19 @@ assert.equal(
 );
 assert.equal(normalizeGenerateItineraryResult({ success: true }), null);
 assert.equal(normalizeGenerateItineraryResult({ status: "error" }), null);
+assert.deepEqual(missingGenerateItineraryResultFields({ success: true }), ["trip"]);
+assert.deepEqual(
+  missingGenerateItineraryResultFields({ result: { result: { success: true, trip: {} } } }),
+  ["result.result.trip.payload"],
+);
+assert.deepEqual(
+  missingGenerateItineraryResultFields({ result: { result: { result: { success: true } } } }),
+  ["result.result.result.trip"],
+);
+assert.deepEqual(
+  missingGenerateItineraryResultFields({ data: { success: false, errorCode: "failed" } }),
+  ["data.message"],
+);
 
 const otherFailure = normalizeGenerateItineraryResult({
   result: {

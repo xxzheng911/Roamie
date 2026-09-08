@@ -84,36 +84,55 @@ export function isGenericPlaceLabel(name: string, destination?: string): boolean
   );
 }
 
-export function isValidItineraryStopPlace(
-  place: {
-    name?: string;
-    placeName?: string;
-    placeId?: string;
-    googlePlaceId?: string;
-    address?: string | null;
-    lat?: number | null;
-    lng?: number | null;
-    id?: string;
-    primaryType?: string | null;
-    types?: string[] | null;
-  },
+export type InvalidItineraryStopReason =
+  | "invalid_identity"
+  | "invalid_coordinates"
+  | "generic_name"
+  | "burial_funeral"
+  | "other";
+
+type ItineraryStopPlaceLike = {
+  name?: string;
+  placeName?: string;
+  placeId?: string;
+  googlePlaceId?: string;
+  address?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  id?: string;
+  primaryType?: string | null;
+  types?: string[] | null;
+};
+
+/** Privacy-safe reason for the same predicate used by the final itinerary gate. */
+export function invalidItineraryStopReason(
+  place: ItineraryStopPlaceLike,
   destination?: string,
-): boolean {
+): InvalidItineraryStopReason | null {
   const name = (place.placeName ?? place.name ?? "").trim();
-  if (!name || isGenericPlaceLabel(name, destination)) return false;
-  if (!isLikelyPlaceName(name).ok) return false;
-  if (isBurialOrFuneralPlace(place)) return false;
+  if (!name || isGenericPlaceLabel(name, destination) || !isLikelyPlaceName(name).ok) {
+    return "generic_name";
+  }
+  if (isBurialOrFuneralPlace(place)) return "burial_funeral";
 
   const placeId = (place.placeId ?? place.googlePlaceId ?? place.id ?? "").trim();
-  const lat = place.lat;
-  const lng = place.lng;
-  const hasCoords =
-    lat != null &&
-    lng != null &&
-    (Math.abs(lat) > 0.001 || Math.abs(lng) > 0.001);
+  if (placeId) return null;
 
-  // 必填：名稱 + (placeId 或有效座標)。address / rating / photo 皆可 fallback。
-  return Boolean(placeId) || hasCoords;
+  const latProvided = place.lat != null;
+  const lngProvided = place.lng != null;
+  const validCoordinates =
+    place.lat != null &&
+    place.lng != null &&
+    (Math.abs(place.lat ?? 0) > 0.001 || Math.abs(place.lng ?? 0) > 0.001);
+  if (validCoordinates) return null;
+  return latProvided || lngProvided ? "invalid_coordinates" : "invalid_identity";
+}
+
+export function isValidItineraryStopPlace(
+  place: ItineraryStopPlaceLike,
+  destination?: string,
+): boolean {
+  return invalidItineraryStopReason(place, destination) == null;
 }
 
 export const INSUFFICIENT_ITINERARY_PLACES_MESSAGE =

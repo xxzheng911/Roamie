@@ -4,6 +4,7 @@ import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { normalizeCorePlaceName, normalizePlaceName } from "@/lib/place-planning-memory";
 import { resolveTripPlaceId } from "@/lib/ai/ai-trip-place-allocator";
 import { clusterAndDedupeLandmarks } from "@/lib/ai/landmark-cluster";
+import { detectSubPlaceType } from "@/lib/ai/landmark-keywords";
 
 const LANDMARK_COMPLEX_RE =
   /文化園區|文創園區|創意園區|產業園區|國家森林遊樂區|國家風景區|森林遊樂區|遊樂區|主題公園|theme\s*park|national\s*park|風景區|文化公園|historic\s*site|世界遺產|園邸|御苑|離宮|皇居|宮殿|城堡|城跡|城址|城公園|別墅庭園|manor|palace|castle|gardens|imperial\s*palace|villa\s*garden/i;
@@ -41,7 +42,7 @@ function isLikelyChildSubPlace(name: string, parentKey: string): boolean {
   if (!norm || !parentKey) return false;
   if (norm === parentKey) return false;
   if (!norm.includes(parentKey) && !parentKey.includes(norm)) return false;
-  if (CHILD_SUBPLACE_MARKERS.test(name)) return true;
+  if (CHILD_SUBPLACE_MARKERS.test(name) || detectSubPlaceType(name)) return true;
   if (name.includes(" - ") || name.includes("－") || name.includes("—")) return true;
   return norm.length < parentKey.length;
 }
@@ -53,7 +54,7 @@ function scoreLandmarkRepresentative(place: PlaceResult, parentKey: string): num
 
   if (norm === parentKey) score += 100;
   if (LANDMARK_COMPLEX_RE.test(name)) score += 50;
-  if (CHILD_SUBPLACE_MARKERS.test(name)) score -= 40;
+  if (CHILD_SUBPLACE_MARKERS.test(name) || detectSubPlaceType(name)) score -= 40;
   if (/[-–—]/.test(name)) score -= 20;
   score += Math.min(name.length, 30);
 
@@ -179,6 +180,7 @@ export function dedupeParentLandmarkPlaces(places: PlaceResult[]): PlaceResult[]
             distanceMeters(coords, parentCoords) <= MAX_NESTED_LANDMARK_METERS;
           const childLike =
             CHILD_SUBPLACE_MARKERS.test(place.name ?? "") ||
+            Boolean(detectSubPlaceType(place.name ?? "")) ||
             detectChildByAddress(place, parent);
           if (near && childLike) {
             dominatedByComplex = true;
@@ -252,19 +254,24 @@ export function collapseParentLandmarkCandidates<T extends ParentCollapseNameCan
     nextOpenHint: "",
   }));
   const collapsedPlaces = dedupeParentLandmarkPlaces(asPlaces);
+  const survivedIds = new Set(collapsedPlaces.map((p) => p.id).filter(Boolean));
   const survivedKeys = new Set(
     collapsedPlaces.map((p) => normalizePlaceName(p.name ?? "")).filter(Boolean),
   );
   const afterPass1: T[] = [];
-  for (const candidate of working) {
+  for (const [candidateIndex, candidate] of working.entries()) {
     const key = normalizePlaceName(candidate.name);
-    if (survivedKeys.has(key)) {
+    const candidateId = (candidate.googlePlaceId ?? `combo-collapse-${candidateIndex}`).trim();
+    if (survivedIds.has(candidateId)) {
       afterPass1.push(candidate);
       continue;
     }
     const winner =
       afterPass1[0] ??
-      working.find((c) => survivedKeys.has(normalizePlaceName(c.name))) ??
+      working.find((c, index) =>
+        survivedIds.has((c.googlePlaceId ?? `combo-collapse-${index}`).trim()) ||
+        survivedKeys.has(normalizePlaceName(c.name)),
+      ) ??
       candidate;
     dropped.push({
       dropped: candidate,
@@ -284,7 +291,7 @@ export function collapseParentLandmarkCandidates<T extends ParentCollapseNameCan
   // Pass 2: sibling child-marker cluster when no complex parent remains
   // (e.g. 觀稼樓 + 津渡橋 + 方鑑齋 without 林本源園邸).
   const hasComplexParent = working.some((c) => LANDMARK_COMPLEX_RE.test(c.name));
-  const childOnly = working.filter((c) => CHILD_SUBPLACE_MARKERS.test(c.name));
+  const childOnly = working.filter((c) => CHILD_SUBPLACE_MARKERS.test(c.name) || detectSubPlaceType(c.name));
   if (!hasComplexParent && childOnly.length >= 2) {
     const scored = [...childOnly].sort((a, b) => {
       const sa =
@@ -327,5 +334,3 @@ export function collapseParentLandmarkCandidates<T extends ParentCollapseNameCan
   if (!working.length) return { kept: [...candidates], dropped: [] };
   return { kept: working, dropped };
 }
-
-

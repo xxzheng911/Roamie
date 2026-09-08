@@ -18,15 +18,52 @@ assert(
 );
 
 const places = [
-  { name: "國立臺東美術館", placeName: "國立臺東美術館", googlePlaceId: "p1", lat: 22.76, lng: 121.14 },
-  { name: "小野柳", placeName: "小野柳", googlePlaceId: "p2", lat: 22.77, lng: 121.15 },
-  { name: "初鹿牧場", placeName: "初鹿牧場", googlePlaceId: "p3", lat: 22.78, lng: 121.16 },
-  { name: "台東觀光夜市", placeName: "台東觀光夜市", googlePlaceId: "p4", lat: 22.75, lng: 121.13 },
-  { name: "鯉魚山", placeName: "鯉魚山", googlePlaceId: "p5", lat: 22.74, lng: 121.12 },
+  {
+    name: "國立臺東美術館",
+    placeName: "國立臺東美術館",
+    googlePlaceId: "ChIJTaitungMuseumP25",
+    address: "台東市浙江路350號",
+    lat: 22.76,
+    lng: 121.14,
+  },
+  {
+    name: "小野柳",
+    placeName: "小野柳",
+    googlePlaceId: "ChIJXiaoyeliuP25",
+    address: "台東市松江路一段500號",
+    lat: 22.77,
+    lng: 121.15,
+  },
+  {
+    name: "初鹿牧場",
+    placeName: "初鹿牧場",
+    googlePlaceId: "ChIJChuluRanchP25",
+    address: "卑南鄉明峰村牧場1號",
+    lat: 22.78,
+    lng: 121.16,
+  },
+  {
+    name: "台東觀光夜市",
+    placeName: "台東觀光夜市",
+    googlePlaceId: "ChIJTaitungNightMarketP25",
+    address: "台東市正氣路",
+    lat: 22.75,
+    lng: 121.13,
+  },
+  {
+    name: "鯉魚山",
+    placeName: "鯉魚山",
+    googlePlaceId: "ChIJLiyuMountainP25",
+    address: "台東市博愛路",
+    lat: 22.74,
+    lng: 121.12,
+  },
 ];
 
-const built = buildFallbackItineraryFromPlaces(places, 2, "2026-07-01");
-assert(built.length === 5, "builds itinerary from 5 places without geocode");
+const built = buildFallbackItineraryFromPlaces(places, 2, "2026-07-01", "台東", {
+  pace: "slow",
+});
+assert(built.length >= 4, "builds a viable two-day itinerary without geocode");
 
 const session = createEmptySession();
 assert(session.aiItineraryState == null, "empty session has no ai itinerary state");
@@ -41,7 +78,12 @@ const originalConsole = {
   warn: console.warn,
   error: console.error,
 };
-const captureValidatorFailure = (...args) => validatorFailureLogs.push(args.join(" "));
+const captureValidatorFailure = (...args) =>
+  validatorFailureLogs.push(
+    args
+      .map((arg) => (arg && typeof arg === "object" ? JSON.stringify(arg) : String(arg)))
+      .join(" "),
+  );
 console.log = captureValidatorFailure;
 console.info = captureValidatorFailure;
 console.warn = captureValidatorFailure;
@@ -58,11 +100,28 @@ try {
       destination: "台東",
       days: 2,
       selectedPlaces: places,
+      placeAuthority: "selected_only",
     },
     generateItineraryFn: async () => ({
       success: false,
       errorCode: "itinerary_validator_failed",
       message: "daily_category_diversity",
+      failureReason: "validator_failed",
+      failedRules: ["daily_category_diversity", "missing_days"],
+      diagnostics: {
+        inputDayCount: 2,
+        outputDayCount: 1,
+        requiredAnchorCount: 5,
+        requiredAnchorSatisfiedCount: 4,
+        missingRequiredAnchorCount: 1,
+        excludedCount: 1,
+        excludedViolationCount: 0,
+        duplicateCount: 0,
+        invalidPlaceCount: 0,
+        invalidDayCount: 1,
+        routeViolationCount: 0,
+        capacityViolationCount: 0,
+      },
     }),
   });
 } finally {
@@ -77,6 +136,13 @@ assert.match(validatorChain, /"primary":"itinerary_validator_failed"/);
 assert.match(validatorChain, /"validator":"validator_failed"/);
 assert.match(validatorChain, /"payloadPresent":false/);
 assert.doesNotMatch(validatorChain, /payload_incomplete/);
+const validatorResultDiagnostic = validatorFailureLogs.find((line) =>
+  line.includes("[ITINERARY_VALIDATOR_RESULT]"),
+);
+assert.ok(validatorResultDiagnostic, "validator failure emits privacy-safe client diagnostic");
+assert.match(validatorResultDiagnostic, /"failedRules":\["daily_category_diversity","missing_days"\]/);
+assert.match(validatorResultDiagnostic, /"missingRequiredAnchorCount":1/);
+assert.doesNotMatch(validatorResultDiagnostic, /國立臺東美術館|台東市浙江路|ChIJ/);
 
 const envelopedValidatorFailureLogs = [];
 const captureEnvelopedValidatorFailure = (...args) =>
@@ -97,6 +163,7 @@ try {
       destination: "台東",
       days: 2,
       selectedPlaces: places,
+      placeAuthority: "selected_only",
     },
     generateItineraryFn: async () => ({
       data: {
@@ -146,6 +213,7 @@ try {
       destination: "台東",
       days: 2,
       selectedPlaces: places,
+      placeAuthority: "selected_only",
     },
     generateItineraryFn: async () => ({
       result: {
@@ -192,7 +260,12 @@ assert.ok(
 );
 
 const missingPayloadLogs = [];
-const captureMissingPayload = (...args) => missingPayloadLogs.push(args.join(" "));
+const captureMissingPayload = (...args) =>
+  missingPayloadLogs.push(
+    args
+      .map((arg) => (arg && typeof arg === "object" ? JSON.stringify(arg) : String(arg)))
+      .join(" "),
+  );
 console.log = captureMissingPayload;
 console.info = captureMissingPayload;
 console.warn = captureMissingPayload;
@@ -204,11 +277,19 @@ try {
       ...createEmptySession(),
       selectedPlaces: places,
       travelContext: { interests: [], selectedCombinationIds: [1, 3] },
+      planningConstraints: {
+        acceptedCandidateIds: places.map((place) => place.googlePlaceId),
+        rejectedCandidateIds: [],
+        mustIncludePlaces: [],
+        excludedPlaces: [],
+        clarificationRequired: false,
+      },
     },
     generateInput: {
       destination: "台東",
       days: 6,
       selectedPlaces: places,
+      generationId: "p25-missing-payload-test",
     },
     generateItineraryFn: async () => ({
       success: true,
@@ -231,6 +312,28 @@ assert.ok(
     (line) => line.includes("[ITINERARY_FAILURE_REASON]") && line.includes("payload_incomplete"),
   ),
   "genuinely missing success payload remains payload_incomplete",
+);
+assert.ok(
+  missingPayloadLogs.some(
+    (line) =>
+      line.includes("[ITINERARY_RESPONSE_SHAPE]") &&
+      line.includes('"generationId":"p25-missing-payload-test"') &&
+      line.includes('"successDiscriminant":"true"') &&
+      line.includes('"tripPresent":true') &&
+      line.includes('"payloadPresent":false'),
+  ),
+  "safe production response shape evidence is emitted",
+);
+assert.ok(
+  missingPayloadLogs.some(
+    (line) =>
+      line.includes("[ITINERARY_PAYLOAD_VALIDATION]") &&
+      line.includes('"stage":"trip_payload_unwrap"') &&
+      line.includes('"valid":false') &&
+      line.includes('"missingFieldCodes":["trip.payload"]') &&
+      line.includes('"requiredAnchorCount":5'),
+  ),
+  "payload validation emits concrete missing field codes",
 );
 
 console.log("verify-ai-itinerary-state-machine: ok");

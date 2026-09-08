@@ -101,7 +101,7 @@ import {
 import { getPreferences } from "@/lib/preferences-storage";
 import { getUserProfile } from "@/lib/profile-storage";
 import { resolveFashionStyle } from "@/lib/outfit/resolve-style";
-import { generateItinerary } from "@/lib/itinerary.functions";
+import { generateItinerary, type ItineraryInput } from "@/lib/itinerary.functions";
 import { confirmSaveTrip, updateTripMeta } from "@/lib/itinerary-storage";
 import { clearDraftTrip, loadDraftTrip, saveDraftTrip } from "@/lib/trip-draft-storage";
 import type { RoamiePayloadV2 } from "@/lib/ai/types";
@@ -112,7 +112,10 @@ import {
 } from "@/lib/trip/itinerary-guards";
 import { getRecommendation } from "@/lib/recommendation-storage";
 import { inferDestinationFromPlaces } from "@/lib/itinerary-source";
-import { buildPlannerRequiredAnchors } from "@/lib/place-planning-memory";
+import {
+  auditPlannerRequiredAnchorEligibility,
+  buildPlannerRequiredAnchors,
+} from "@/lib/place-planning-memory";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import { parseExplicitBudgetConstraint, resolveBudgetContext } from "@/lib/budget-context";
 import type { BudgetMode } from "@/lib/preferences-storage";
@@ -229,6 +232,8 @@ import { formatTripLocationLabel } from "@/lib/location/format";
 import { useI18n } from "@/hooks/use-i18n";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import { resolveChatConnectionFallbackMessage } from "@/lib/user-facing-error";
+import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
+import { generateItineraryViaNativeApi } from "@/lib/ai/itinerary-transport";
 import { useAccess } from "@/hooks/use-access";
 import {
   beginItineraryGenerationCredits,
@@ -451,6 +456,7 @@ import {
   collectExcludePlaceIds,
   collectHardDuplicatePlaceIds,
   extractRecommendedFromMsgs,
+  extractLatestShownCandidatesFromMsgs,
   isMorePlaceRecommendationsIntent,
   isRefreshRecommendationsRequest,
   logChatMorePlacesExcludeIds,
@@ -534,7 +540,11 @@ import {
   logChatRenderPlaceList,
   shouldUseItineraryMode,
 } from "@/lib/ai/chat-itinerary-mode";
-import { parseAskTripStyleSelection, type TripStyleKey } from "@/lib/ai/ai-trip-style";
+import {
+  CHAT_DAY_PLAN_MAX_PER_DAY,
+  parseAskTripStyleSelection,
+  type TripStyleKey,
+} from "@/lib/ai/ai-trip-style";
 import {
   logAiRenderBlocked,
   logAiRenderItineraryStart,
@@ -562,8 +572,8 @@ import {
 import { markAskedClarifyKey, resolveChatRoute } from "@/lib/ai/chat-router";
 import {
   applyAdviceResultToSession,
-  resolveDestinationAdvice,
   adviceToAssistantChatMsg,
+  logPlanningSuggestionEmit,
 } from "@/lib/ai/destination-advice";
 import {
   buildDestinationRecommendationFailedMessage,
@@ -628,6 +638,31 @@ import {
 import { prefetchDestinationWeather } from "@/lib/ai/destination-weather-prefetch";
 import { buildPlanningOfflineReply } from "@/lib/ai/chat-turn-engine";
 import {
+  applyPlanningConstraintDelta,
+  disambiguatePlanningDestinationEntity,
+  filterPlanningRejectedPlaces,
+  logPlanningCandidateContext,
+  logPlanningConstraintDiagnostics,
+  logPlanningExclusionPropagation,
+  logPlanningParseFailure,
+  logPlanningParseStage,
+  logPlanningStateInvariant,
+  parsePlanningConstraintDelta,
+  planningRejectedCandidateIds,
+  resolvePlanningCandidateContext,
+  resolvePlanningContextRequirement,
+  snapshotPlanningCandidates,
+  type PlanningConstraintDelta,
+  type PlanningParseStage,
+} from "@/lib/ai/planning-conversation-constraints";
+import {
+  assessPlanningRequiredCapacity,
+  logPlanningRequiredIdentityHandoff,
+  REQUIRED_CAPACITY_OVERFLOW_USER_MESSAGE,
+  resolvePlanningCandidateContextForGeneration,
+  resolvePlanningRequiredAnchorHandoff,
+} from "@/lib/ai/planning-required-anchor-handoff";
+import {
   isDestinationPlanningSession,
   isGenericFallbackReply,
   prepareSessionForUserTurn,
@@ -646,6 +681,11 @@ import { getTripLegsWithDurations, travelLabelToRoutesMode } from "@/services/ro
 import { generateOutfitSuggestion, normalizeWeather } from "@/services/weatherService";
 import { attachCoreTripToPayload, toCoreTrip, type CoreTrip } from "@/lib/trip/core-trip";
 import { getImmediateTripCoverImage, getTripCoverImage } from "@/services/placeImageService";
+import {
+  claimChatAutoScrollTarget,
+  resolveChatShortcutRenderBranch,
+  stableChatMessageKey,
+} from "@/lib/chat-render-stability";
 
 type ChatSearch = {
   from?: string;
@@ -884,6 +924,7 @@ function Chat() {
   const composerRef = useRef<HTMLDivElement>(null);
   const prevStreamingRef = useRef(false);
   const prevMsgsLengthRef = useRef(0);
+  const lastAutoScrollTargetRef = useRef("");
   const pendingScrollTopRef = useRef<number | null>(null);
   const {
     metrics: messengerLayout,
@@ -969,6 +1010,50 @@ function Chat() {
   } | null>(null);
 
   const partialScrollKey = `${partial.summary?.length ?? 0}:${partial.recommendations?.length ?? 0}`;
+  const recommendationCount = msgs.reduce(
+    (count, message) =>
+      count + (message.structuredPlaces?.length ?? message.roamie?.recommendations?.length ?? 0),
+    0,
+  );
+  const recommendationSessionId = session.recommendationSession?.sessionId ?? "";
+  const shortcutLoading = Boolean(chatLoading);
+  const recommendationLoading = Boolean(streaming && recommendationCount === 0);
+  const shortcutRenderBranch = resolveChatShortcutRenderBranch({
+    hydrating,
+    messageCount: msgs.length,
+    loading: shortcutLoading,
+    recommendationLoading,
+    recommendationCount,
+  });
+
+  useEffect(() => {
+    console.info("[CHAT_SHORTCUT_RENDER_STATE]", {
+      messageCount: msgs.length,
+      loading: shortcutLoading,
+      recommendationLoading,
+      recommendationCount,
+      recommendationSessionId,
+      renderBranch: shortcutRenderBranch,
+    });
+  }, [
+    msgs.length,
+    recommendationCount,
+    recommendationLoading,
+    recommendationSessionId,
+    shortcutLoading,
+    shortcutRenderBranch,
+  ]);
+
+  const scrollToRecommendationOnce = useCallback(
+    (lastIndex: number, message: ChatMsg, trigger: string) => {
+      const groupKey = stableChatMessageKey(message, lastIndex);
+      const targetKey = `${groupKey}:recommendations`;
+      if (!claimChatAutoScrollTarget(lastAutoScrollTargetRef.current, targetKey)) return;
+      lastAutoScrollTargetRef.current = targetKey;
+      scrollToPlaceCardsStart(lastIndex, message.id, trigger);
+    },
+    [scrollToPlaceCardsStart],
+  );
 
   const logRtNearbyPush = useCallback(
     (payload: {
@@ -1015,8 +1100,14 @@ function Chat() {
     // Dots-only loading must not re-scroll the list every animation frame.
     if (chatLoading) return;
     const lastIndex = msgs.length - 1;
-    if (lastIndex >= 0 && msgs[lastIndex]?.role === "assistant") {
-      scrollToAiMessageStart(lastIndex, msgs[lastIndex]?.id);
+    const last = msgs[lastIndex];
+    if (
+      lastIndex >= 0 &&
+      last?.role === "assistant" &&
+      (last.roamie?.recommendations?.length ?? 0) === 0 &&
+      (last.structuredPlaces?.length ?? 0) === 0
+    ) {
+      scrollToAiMessageStart(lastIndex, last.id);
     }
   }, [hydrating, streaming, partialScrollKey, msgs, chatLoading, scrollToAiMessageStart]);
 
@@ -1033,14 +1124,13 @@ function Chat() {
       if (last?.role === "user") {
         scrollToUserMessage(lastIndex, last.id);
       } else if (last?.role === "assistant") {
-        scrollToAiMessageStart(lastIndex, last.id);
         if (
           (last.roamie?.recommendations?.length ?? 0) > 0 ||
           (last.structuredPlaces?.length ?? 0) > 0
         ) {
-          requestAnimationFrame(() => {
-            scrollToPlaceCardsStart(lastIndex, last.id);
-          });
+          scrollToRecommendationOnce(lastIndex, last, "assistant_recommendations_added");
+        } else {
+          scrollToAiMessageStart(lastIndex, last.id);
         }
       }
     }
@@ -1051,7 +1141,7 @@ function Chat() {
     msgs.length,
     scrollToUserMessage,
     scrollToAiMessageStart,
-    scrollToPlaceCardsStart,
+    scrollToRecommendationOnce,
   ]);
 
   useEffect(() => {
@@ -1061,21 +1151,18 @@ function Chat() {
       const lastIndex = msgs.length - 1;
       const last = msgs[lastIndex];
       if (last?.role === "assistant") {
-        scrollToAiMessageStart(lastIndex, last.id);
         if (
           (last.roamie?.recommendations?.length ?? 0) > 0 ||
           (last.structuredPlaces?.length ?? 0) > 0
         ) {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              scrollToPlaceCardsStart(lastIndex, last.id);
-            });
-          });
+          scrollToRecommendationOnce(lastIndex, last, "streaming_complete");
+        } else {
+          scrollToAiMessageStart(lastIndex, last.id);
         }
       }
     }
     prevStreamingRef.current = streaming;
-  }, [hydrating, streaming, msgs, scrollToAiMessageStart, scrollToPlaceCardsStart]);
+  }, [hydrating, streaming, msgs, scrollToAiMessageStart, scrollToRecommendationOnce]);
   const [clearing, setClearing] = useState(false);
   const fetchWeather = useServerFn(getWeather);
   const geocodeLocationFn = useServerFn(geocodeTripLocationFromText);
@@ -1339,7 +1426,17 @@ function Chat() {
     },
     [fetchPlaceDetailsFn, locale, searchNearbyPlaces],
   );
-  const generate = useServerFn(generateItinerary);
+  const generateServerFn = useServerFn(generateItinerary);
+  const generate = useCallback(
+    async ({ data }: { data: ItineraryInput }) => {
+      if (!isCapacitorNativeShell()) return generateServerFn({ data });
+      const { data: authSession } = await supabase.auth.getSession();
+      return generateItineraryViaNativeApi(data, {
+        token: authSession.session?.access_token,
+      });
+    },
+    [generateServerFn],
+  );
 
   const selectedNames = useMemo(
     () => new Set(session.selectedPlaces.map((p) => p.name)),
@@ -1347,15 +1444,51 @@ function Chat() {
   );
 
   const persistSession = useCallback(
-    (next: ChatPlanningSession, messagesForWorkspace?: ChatMsg[]) => {
-      let sessionToSave = next;
+    (
+      next: ChatPlanningSession,
+      messagesForWorkspace?: ChatMsg[],
+      planningSuggestionEntryPoint?: import("@/lib/ai/destination-advice").PlanningSuggestionEntryPoint,
+    ) => {
+      const persistenceMessages = messagesForWorkspace ?? msgsRef.current;
+      const renderedCandidates = extractLatestShownCandidatesFromMsgs(persistenceMessages);
+      const candidateAuthority = renderedCandidates.length
+        ? renderedCandidates
+        : next.recommendedPlaces.length
+          ? next.recommendedPlaces
+          : next.activeShownCandidates;
+      const activeShownCandidates = candidateAuthority?.length
+        ? snapshotPlanningCandidates(candidateAuthority)
+        : next.activeShownCandidates;
+      const candidateSource =
+        activeShownCandidates?.[0]?.source ??
+        (renderedCandidates.length
+          ? "recommendation_cards"
+          : next.recommendedPlaces.length
+            ? "recommendation_cards"
+            : "none");
+      console.info("[PLANNING_CANDIDATE_CONTEXT_WRITE]", {
+        shownCandidateCount: activeShownCandidates?.length ?? 0,
+        persistedCandidateCount: activeShownCandidates?.length ?? 0,
+        source: candidateSource,
+        ...(planningSuggestionEntryPoint ? { entryPoint: planningSuggestionEntryPoint } : {}),
+      });
+      logPlanningParseStage({
+        stage: "persist",
+        candidateCount: activeShownCandidates?.length ?? 0,
+        clauseCount: 0,
+        entityCount: 0,
+      });
+      let sessionToSave: ChatPlanningSession = {
+        ...next,
+        activeShownCandidates,
+      };
       const workspace = upsertDraftWorkspaceFromSession({
-        session: next,
-        messages: messagesForWorkspace ?? msgsRef.current,
+        session: sessionToSave,
+        messages: persistenceMessages,
         hasPlusAccess,
         userId: readCachedAuthenticatedUserIdSync(),
       });
-      sessionToSave = attachWorkspaceIdsToSession(next, workspace);
+      sessionToSave = attachWorkspaceIdsToSession(sessionToSave, workspace);
       sessionRef.current = sessionToSave;
       setSession(sessionToSave);
       saveChatSession(sessionToSave);
@@ -1373,7 +1506,7 @@ function Chat() {
   );
 
   const persistPlanningAdviceTurn = useCallback(
-    (turn: ChatTurnResult, baseSession: ChatPlanningSession) => {
+    (turn: ChatTurnResult, baseSession: ChatPlanningSession, messagesForWorkspace?: ChatMsg[]) => {
       const recs = turn.advice.recommendations?.map(roamieRecToChatItem) ?? [];
       let nextSession = applyAdviceResultToSession(
         {
@@ -1404,7 +1537,8 @@ function Chat() {
       } else if (turn.advice.triggerPlaceRecommendations) {
         nextSession = withChatPlanningState(nextSession, "generatingPlan", "trip_style_selected");
       }
-      persistSession(nextSession);
+      persistSession(nextSession, messagesForWorkspace, turn.advice.planningSuggestionEntryPoint);
+      logPlanningSuggestionEmit(turn.advice, true);
       return nextSession;
     },
     [persistSession],
@@ -1440,7 +1574,6 @@ function Chat() {
       conversation: ChatMsg[],
     ) => {
       stopDiscoveringLoadingAnimation("success");
-      const updated = persistPlanningAdviceTurn(turn, baseSession);
       const userText = [...conversation].reverse().find((m) => m.role === "user")?.content ?? "";
       const conversationBase = stripDiscoveringLoadingMessage(conversation);
       const withReply: ChatMsg[] = turn.advice.triggerPlaceRecommendations
@@ -1448,6 +1581,7 @@ function Chat() {
         : turn.advice.triggerItineraryGeneration
           ? conversationBase
           : [...conversationBase, adviceToAssistantChatMsg(turn.advice)];
+      const updated = persistPlanningAdviceTurn(turn, baseSession, withReply);
       if (!turn.advice.triggerPlaceRecommendations) {
         setMsgs(withReply);
         if (!turn.advice.triggerItineraryGeneration) {
@@ -2955,7 +3089,9 @@ function Chat() {
       const authoritativeCenter = opts?.authoritativeSearchCenter;
       const geographicScope =
         authoritativeCenter?.geographicScope ??
-        (activePlaceDetailContext ? undefined : activeSession.recommendationSession?.geographicScope);
+        (activePlaceDetailContext
+          ? undefined
+          : activeSession.recommendationSession?.geographicScope);
       const merged = activePlaceDetailContext
         ? {
             context: activeSession.travelContext ?? { interests: [] },
@@ -3506,10 +3642,7 @@ function Chat() {
             rejectedPlaceNames: opts?.rejectedPlaceNames ?? sessionForSave.rejectedPlaceNames,
             priorRecommended: placeDetailActive
               ? []
-              : [
-                  ...sessionForSave.recommendedPlaces,
-                  ...extractRecommendedFromMsgs(conversation),
-                ],
+              : [...sessionForSave.recommendedPlaces, ...extractRecommendedFromMsgs(conversation)],
             blockedCoreNames,
             userText: userText,
             cityLabel: placeDetailActive
@@ -7514,8 +7647,7 @@ function Chat() {
         const scopeId = nextSession.placeFocusRecommendationScope?.scopeId ?? "";
         console.info("[PLACE_FOCUS_CONTEXT]", {
           hasAnchorPlaceId: Boolean(
-            nextSession.placeDetailFocus?.googlePlaceId ??
-              nextSession.placeDetailFocus?.placeId,
+            nextSession.placeDetailFocus?.googlePlaceId ?? nextSession.placeDetailFocus?.placeId,
           ),
           hasValidLatLng: hasValidPlaceCoordinates(nextSession.placeDetailFocus),
           centerSource: "placeDetailFocus",
@@ -7553,10 +7685,7 @@ function Chat() {
             operationalCount: counts.operationalCount,
             geographicCount: counts.geographicCount,
             preDedupeCount: counts.preDedupeCount,
-            duplicateRemovedCount: Math.max(
-              0,
-              counts.preDedupeCount - counts.dedupedCount,
-            ),
+            duplicateRemovedCount: Math.max(0, counts.preDedupeCount - counts.dedupedCount),
             finalCount: runtime?.finalCount ?? 0,
           });
           console.info("[PLACE_FOCUS_NEARBY_SESSION]", {
@@ -7597,6 +7726,8 @@ function Chat() {
     }
 
     let nextSession = applyTripIntentToSession(trimmed, session);
+    let planningConstraintTurn: PlanningConstraintDelta | null = null;
+    let unresolvedPlanningCandidateContext = false;
     const planningStateBeforeHomeIsolation =
       nextSession.chatPlanningState ?? nextSession.conversationMode ?? "";
     const normalizedShortcutFromTurn = (() => {
@@ -7879,6 +8010,144 @@ function Chat() {
     nextSession = extractDiscoveryFromText(trimmed, nextSession);
     if (!structuredHomeNearbyTurn) {
       nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
+      let parseStage: PlanningParseStage = "prepare_context";
+      try {
+        const renderedCandidates = extractLatestShownCandidatesFromMsgs(msgs);
+        const candidateContext = resolvePlanningCandidateContext(nextSession, renderedCandidates);
+        const shownCandidates = candidateContext.candidates;
+        logPlanningCandidateContext({
+          shownCandidateCount: shownCandidates.length,
+          persistedCandidateCount: candidateContext.persistedCandidateCount,
+          activeContextAvailable: shownCandidates.length > 0,
+          source: candidateContext.source,
+        });
+        planningConstraintTurn = parsePlanningConstraintDelta({
+          text: trimmed,
+          shownCandidates,
+          authoritativeDestination:
+            nextSession.travelContext?.destination ?? merged.context.destination ?? destCandidate,
+          activePlace:
+            nextSession.placeDetailFocus ??
+            (shownCandidates.length === 1 ? shownCandidates[0] : undefined),
+          onStage: (stage) => {
+            parseStage = stage;
+          },
+        });
+        planningConstraintTurn = disambiguatePlanningDestinationEntity({
+          delta: planningConstraintTurn,
+          destination: destCandidate,
+        });
+        const contextRequirement = resolvePlanningContextRequirement({
+          text: trimmed,
+          delta: planningConstraintTurn,
+          candidateCount: shownCandidates.length,
+          destinationDetected: Boolean(destCandidate),
+          durationOrDateDetected: Boolean(
+            merged.context.days || merged.context.startDate || merged.context.endDate,
+          ),
+        });
+        parseStage = "apply_delta";
+        unresolvedPlanningCandidateContext =
+          contextRequirement.requiresCandidateContext && shownCandidates.length === 0;
+        if (!unresolvedPlanningCandidateContext) {
+          nextSession = applyPlanningConstraintDelta(
+            nextSession,
+            planningConstraintTurn,
+            shownCandidates,
+          );
+        }
+        const planningState = nextSession.travelContext?.conversationState ?? "";
+        if (!logPlanningStateInvariant(planningState, shownCandidates.length)) {
+          nextSession = {
+            ...nextSession,
+            travelContext: nextSession.travelContext
+              ? { ...nextSession.travelContext, conversationState: "awaiting_preference" }
+              : nextSession.travelContext,
+          };
+        }
+        if (unresolvedPlanningCandidateContext && nextSession.planningConstraints) {
+          nextSession = {
+            ...nextSession,
+            planningConstraints: {
+              ...nextSession.planningConstraints,
+              clarificationRequired: true,
+            },
+          };
+        }
+        logPlanningConstraintDiagnostics(planningConstraintTurn, nextSession, {
+          candidateCount: shownCandidates.length,
+        });
+        logPlanningExclusionPropagation({
+          parsedExcludeCount: planningConstraintTurn.excludedPlaces?.length ?? 0,
+          sessionExcludeCount: planningRejectedCandidateIds(nextSession).length,
+          plannerExcludeCount: 0,
+          finalViolationCount: 0,
+        });
+      } catch (error) {
+        const errorType = error instanceof Error ? error.name : typeof error;
+        stopDiscoveringLoadingAnimation("failure");
+        setStreaming(false);
+        setGenerating(false);
+        const failedConversation: ChatMsg[] = [
+          ...msgs,
+          { role: "user", content: trimmed },
+          { role: "assistant", content: "這次的行程調整沒有完成，請再送一次。" },
+        ];
+        setMsgs(failedConversation);
+        setText("");
+        persistSession(nextSession, failedConversation);
+        logPlanningParseFailure({
+          stage: parseStage,
+          errorType,
+          recursiveGuardTriggered: false,
+          settled: true,
+        });
+        console.error("[CHAT_SEND_ERROR]", {
+          phase: "planning_constraint_parsing",
+          errorType,
+          settled: true,
+        });
+        logAppError("APP_RUNTIME_ERROR", error, {
+          phase: "planning_constraint_parsing",
+          stage: parseStage,
+          settled: true,
+        });
+        return;
+      }
+    }
+
+    if (unresolvedPlanningCandidateContext && planningConstraintTurn) {
+      markShortcutEngaged();
+      const repeatedMissingContextClarification = msgs
+        .at(-1)
+        ?.content.includes("你是指剛剛那組推薦地點嗎");
+      const clarificationConversation: ChatMsg[] = [
+        ...msgs,
+        { role: "user", content: trimmed },
+        {
+          role: "assistant",
+          content: repeatedMissingContextClarification
+            ? "目前找不到上一組推薦內容，請重新提供目的地與天數，我會重新整理選項。"
+            : "你是指剛剛那組推薦地點嗎？我可以保留其他地點並排除你不要的。",
+        },
+      ];
+      setMsgs(clarificationConversation);
+      setText("");
+      scrollToUserMessage(clarificationConversation.length - 2);
+      console.info("[PLANNING_RECOVERY]", {
+        reason: "candidate_context_missing",
+        existingCandidateCount: 0,
+        discoveryAttempted: false,
+        discoveryAddedCount: 0,
+        clarificationUsed: !repeatedMissingContextClarification,
+        repeatedClarificationBlocked: Boolean(repeatedMissingContextClarification),
+        unresolvedAcceptRemaining: planningConstraintTurn.acceptRemainingCandidates,
+        generationContinued: false,
+      });
+      persistSession(nextSession, clarificationConversation);
+      setStreaming(false);
+      setGenerating(false);
+      return;
     }
 
     const styleReselect = isStyleReselectTurn(trimmed, nextSession, merged.context);
@@ -7925,7 +8194,10 @@ function Chat() {
     }
 
     try {
-      if (isAddAllToTripIntent(trimmed)) {
+      if (
+        isAddAllToTripIntent(trimmed) ||
+        planningConstraintTurn?.acceptRemainingCandidates === true
+      ) {
         markShortcutEngaged();
         const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
         setMsgs(next);
@@ -7933,6 +8205,46 @@ function Chat() {
         scrollToUserMessage(next.length - 1);
 
         logAiCreateTripStart();
+        if (planningConstraintTurn?.acceptRemainingCandidates) {
+          const conversationalContext = {
+            ...(nextSession.travelContext ?? merged.context),
+            destination: nextSession.travelContext?.destination ?? merged.context.destination,
+            days: nextSession.tripDays ?? merged.context.days,
+            tripPurpose: "create_itinerary",
+            selectedCombinationIds: [],
+            offeredCombinations: undefined,
+            selectionSource: undefined,
+          };
+          const conversationalSession = {
+            ...nextSession,
+            phase: "ready" as const,
+            travelContext: conversationalContext,
+          };
+          const excludedCount = planningConstraintTurn.excludedPlaces?.length ?? 0;
+          const acknowledgment: ChatMsg = {
+            role: "assistant",
+            content: excludedCount
+              ? "好，我會拿掉你排除的地點，保留其他剛才的候選，再用符合條件的真實地點補足行程。"
+              : "好，我會保留你接受的地點作為必去點，再補足並安排完整行程。",
+          };
+          const generationConversation = [...next, acknowledgment];
+          setMsgs(generationConversation);
+          console.info("[PLANNING_RECOVERY]", {
+            reason: "accepted_candidates_as_required_anchors",
+            existingCandidateCount: conversationalSession.selectedPlaces.length,
+            discoveryAttempted: true,
+            discoveryAddedCount: 0,
+            clarificationUsed: false,
+            generationContinued: true,
+          });
+          persistSession(conversationalSession);
+          await runDirectItineraryRef.current(
+            conversationalSession,
+            conversationalContext,
+            generationConversation,
+          );
+          return;
+        }
         const prepared = prepareSessionForCreateTripFromRecommendations(
           nextSession,
           merged.context,
@@ -9543,7 +9855,9 @@ function Chat() {
         "[CHAT_STATE_MACHINE_ERROR]",
         error instanceof Error ? error.message : String(error),
       );
+      stopDiscoveringLoadingAnimation("failure");
       setStreaming(false);
+      setGenerating(false);
 
       const errorConversation: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
       try {
@@ -9660,6 +9974,27 @@ function Chat() {
       );
     }
     const activeMsgs = msgsOverride ?? msgs;
+    const assistantCandidates = extractLatestShownCandidatesFromMsgs(activeMsgs);
+    const generationWorkspace = activeSession.workspaceId
+      ? loadConversationWorkspace(
+          activeSession.workspaceId,
+          readCachedAuthenticatedUserIdSync(),
+        )
+      : null;
+    const generationCandidateContext = resolvePlanningCandidateContextForGeneration({
+      session: activeSession,
+      assistantCandidates,
+      persistedSession: sessionRef.current,
+      workspace: generationWorkspace,
+    });
+    if (generationCandidateContext.candidates.length) {
+      activeSession = {
+        ...activeSession,
+        activeShownCandidates: snapshotPlanningCandidates(
+          generationCandidateContext.candidates,
+        ),
+      };
+    }
     if (!canGenerateItinerary(activeSession) || generating) {
       if (isPlanningSelectionMode(activeSession) && !generating) {
         setGenerating(false);
@@ -9748,8 +10083,16 @@ function Chat() {
         style: activeSession.tripStyles || (activeSession.pace === "排滿" ? "緊湊" : "慢旅行"),
       });
       let workingSession = activeSession;
-      let places = buildTripFromSelectedPlaces(workingSession);
-      const today = new Date().toISOString().slice(0, 10);
+      const selectedTripPlaces = buildTripFromSelectedPlaces(workingSession);
+      let places = filterPlanningRejectedPlaces(
+        isPlanningSelectionMode(workingSession)
+          ? selectedTripPlaces
+          : [
+              ...selectedTripPlaces,
+              ...generationCandidateContext.candidates,
+            ],
+        workingSession,
+      );
       const tripDays = workingSession.tripDays ?? 1;
       const rawDestination =
         (workingSession.tripDestination
@@ -9762,6 +10105,7 @@ function Chat() {
       const destination = sanitizeDestinationForGeocode(rawDestination);
       const dayPlan = workingSession.currentDayPlan;
       const lastUserText = [...activeMsgs].reverse().find((m) => m.role === "user")?.content ?? "";
+      const generationId = crypto.randomUUID();
       const selectionDateAuthority = isPlanningSelectionMode(workingSession)
         ? resolvePlanningSelectionDateAuthority(workingSession)
         : null;
@@ -9789,6 +10133,20 @@ function Chat() {
       }
       logAiCreateTripDates(tripDates);
       const effectiveTripDays = Math.max(1, tripDates.days || tripDays || 1);
+      console.info("[ITINERARY_DAYS_AUTHORITY]", {
+        generationId,
+        stage: "session",
+        explicitDays: workingSession.tripDays ?? null,
+        derivedDays: tripDates.hasExplicitDates ? tripDates.days : null,
+        effectiveDays: effectiveTripDays,
+        startDatePresent: Boolean(tripDates.startDate),
+        endDatePresent: Boolean(tripDates.endDate),
+        source: workingSession.tripDays
+          ? "explicit_days"
+          : tripDates.hasExplicitDates
+            ? "dates"
+            : "none",
+      });
       if (
         workingSession.tripDays !== effectiveTripDays ||
         workingSession.travelContext?.days !== effectiveTripDays ||
@@ -9852,7 +10210,10 @@ function Chat() {
           return;
         }
         workingSession = prepared.session;
-        places = buildTripFromSelectedPlaces(workingSession);
+        places = filterPlanningRejectedPlaces(
+          buildTripFromSelectedPlaces(workingSession),
+          workingSession,
+        );
         persistSession(workingSession);
       }
 
@@ -9927,23 +10288,118 @@ function Chat() {
         };
       } else {
         const selectionMode = isPlanningSelectionMode(workingSession);
-        const requiredAnchors = buildPlannerRequiredAnchors(places, destination, selectionMode);
+        const rejectedCandidateIds = planningRejectedCandidateIds(workingSession);
+        const excludedPlaceMetadata = rejectedCandidateIds.flatMap((excludedId) => {
+          const match = generationCandidateContext.candidates.find(
+            (candidate) => candidate.googlePlaceId?.trim() === excludedId,
+          );
+          return match ? [match] : [];
+        });
+        const requiredAnchorHandoff = resolvePlanningRequiredAnchorHandoff({
+          session: workingSession,
+          candidateRequiredPlaces: filterPlanningRejectedPlaces(places, workingSession),
+          selectionMode,
+          additionalExcludedPlaceIds: rejectedCandidateIds,
+        });
+        logPlanningRequiredIdentityHandoff(
+          "shown_candidate",
+          requiredAnchorHandoff.requiredPlaces,
+          generationId,
+          {
+            shownCandidateCount: workingSession.activeShownCandidates?.length ?? 0,
+            acceptedCandidateCount: requiredAnchorHandoff.acceptedCount,
+            requiredCandidateCount: requiredAnchorHandoff.finalRequiredCount,
+          },
+        );
+        logPlanningRequiredIdentityHandoff(
+          "accepted_resolution",
+          requiredAnchorHandoff.requiredPlaces,
+          generationId,
+          {
+            shownCandidateCount: workingSession.activeShownCandidates?.length ?? 0,
+            acceptedCandidateCount: requiredAnchorHandoff.acceptedCount,
+            requiredCandidateCount: requiredAnchorHandoff.finalRequiredCount,
+          },
+        );
+        const requiredAnchors = buildPlannerRequiredAnchors(
+          requiredAnchorHandoff.requiredPlaces,
+          destination,
+          true,
+        );
+        logPlanningRequiredIdentityHandoff("planner_handoff", requiredAnchors, generationId, {
+          shownCandidateCount: workingSession.activeShownCandidates?.length ?? 0,
+          acceptedCandidateCount: requiredAnchorHandoff.acceptedCount,
+          requiredCandidateCount: requiredAnchors.length,
+        });
+        const supplementalAnchors = selectionMode
+          ? []
+          : buildPlannerRequiredAnchors(
+              requiredAnchorHandoff.supplementalPlaces,
+              destination,
+              false,
+            ).map((place) => ({ ...place, isRequiredBySelection: false }));
+        const supplementalRejectedCount = Math.max(
+          0,
+          requiredAnchorHandoff.supplementalPlaces.length - supplementalAnchors.length,
+        );
+        console.info("[PLANNING_SUPPLEMENTAL_HANDOFF]", {
+          generationId,
+          shownCandidateCount: generationCandidateContext.candidates.length,
+          requiredCandidateCount: requiredAnchors.length,
+          excludedCandidateCount: requiredAnchorHandoff.excludedCount,
+          supplementalInputCount: requiredAnchorHandoff.supplementalPlaces.length,
+          supplementalEligibleCount: supplementalAnchors.length,
+          supplementalRejectedCount,
+          source: generationCandidateContext.source,
+        });
+        console.info("[PLANNING_GENERATION_CANDIDATE_AUTHORITY]", {
+          generationId,
+          requiredCount: requiredAnchors.length,
+          supplementalCount: supplementalAnchors.length,
+          excludedCount: requiredAnchorHandoff.excludedCount,
+          activeContextAvailable: generationCandidateContext.activeContextAvailable,
+          recoveryUsed: generationCandidateContext.recoveryUsed,
+        });
+        const requiredAdapterRejectedCount = Math.max(
+          0,
+          requiredAnchorHandoff.requiredPlaces.length - requiredAnchors.length,
+        );
+        const requiredEligibility = auditPlannerRequiredAnchorEligibility(
+          requiredAnchorHandoff.requiredPlaces,
+          destination,
+        );
+        console.info("[ITINERARY_REQUIRED_ANCHOR_ELIGIBILITY]", {
+          generationId,
+          ...requiredEligibility,
+        });
         const requiredAnchorIds = requiredAnchors.map(
           (place) => place.googlePlaceId?.trim() || `(name:${place.name})`,
         );
         logSelectionStage(
           "session_prepare_done",
-          requiredAnchors.length > 0,
-          requiredAnchors.length ? "" : "required_anchor_adapter_empty",
+          requiredAnchors.length > 0 || !selectionMode,
+          requiredAnchors.length || !selectionMode
+            ? ""
+            : "required_anchor_adapter_empty",
         );
-        console.info("[PLANNING_SELECTION_PLANNER_INPUT]", {
+        console.info("[PLANNING_SELECTION_PLANNER_PREPARE]", {
+          generationId,
           destination,
-          startDate: startDate || today,
-          endDate: endDate || startDate || today,
+          startDate,
+          endDate,
           tripDays: effectiveTripDays,
           requiredPlaceCount: requiredAnchors.length,
-          requiredPlaceIds: requiredAnchorIds,
-          requiredPlaceNames: requiredAnchors.map((place) => place.name),
+          ...(import.meta.env.DEV
+            ? {
+                requiredPlaceIds: requiredAnchorIds,
+                requiredPlaceNames: requiredAnchors.map((place) => place.name),
+              }
+            : {}),
+          requiredPlaceIdentityCount: requiredAnchorIds.length,
+          supplementalCandidateCount: requiredAnchorHandoff.supplementalPlaces.length,
+          eligibleSupplementalCount: supplementalAnchors.length,
+          requiredAdapterRejectedCount,
+          anchorRejectedReasonCounts: requiredEligibility.rejectionReasonCounts,
           combinationInputPresent: Boolean(
             workingSession.travelContext?.selectedCombinationIds?.length,
           ),
@@ -9961,8 +10417,8 @@ function Chat() {
           mood: workingSession.mood ?? "",
           interests: buildConversationSummary(workingSession, activeMsgs),
           conversationSummary: buildConversationSummary(workingSession, activeMsgs),
-          startDate: startDate || today,
-          endDate: endDate || startDate || today,
+          startDate,
+          endDate,
           origin: workingSession.tripOrigin
             ? formatTripLocationLabel(workingSession.tripOrigin)
             : (bundle.location.city ?? ""),
@@ -9971,9 +10427,10 @@ function Chat() {
           placeAuthority: selectionMode ? ("selected_only" as const) : undefined,
           // InputSchema's transform keeps `types` as an explicit (possibly
           // undefined) field, so mirror that exact planner boundary shape.
-          selectedPlaces: requiredAnchors.map((anchor) => ({
+          selectedPlaces: [...requiredAnchors, ...supplementalAnchors].map((anchor) => ({
             ...anchor,
             types: anchor.types,
+            googlePlaceId: anchor.googlePlaceId,
           })),
           selectedCombinationIds: workingSession.travelContext?.selectedCombinationIds ?? [],
           nearbyExtensions: workingSession.travelContext?.nearbyExtensions ?? [],
@@ -9981,6 +10438,8 @@ function Chat() {
             workingSession.excludedCategories ??
             workingSession.travelContext?.excludedCategories ??
             [],
+          excludedPlaceIds: rejectedCandidateIds,
+          excludedPlaces: excludedPlaceMetadata,
           preferences: prefs,
           location: bundle.location,
           weather: bundle.weather,
@@ -9989,22 +10448,70 @@ function Chat() {
           locale,
           generationStartedAt: selectionMode ? selectionStartedAt : undefined,
           generationTimingId: selectionMode ? selectionSessionId : undefined,
+          generationId,
         };
+        console.info("[ITINERARY_DAYS_AUTHORITY]", {
+          generationId,
+          stage: "planner_input",
+          explicitDays: generateInput.days,
+          derivedDays: tripDates.hasExplicitDates ? tripDates.days : null,
+          effectiveDays: generateInput.days,
+          startDatePresent: Boolean(generateInput.startDate),
+          endDatePresent: Boolean(generateInput.endDate),
+          source: "explicit_days",
+        });
+        logPlanningExclusionPropagation({
+          parsedExcludeCount: workingSession.planningConstraints?.excludedPlaces.length ?? 0,
+          sessionExcludeCount: rejectedCandidateIds.length,
+          plannerExcludeCount: generateInput.excludedPlaceIds.length,
+          finalViolationCount: 0,
+        });
 
         logAiState("BUILDING_ITINERARY", `places=${places.length}`);
         logSelectionStage("planner_handoff_start", true);
         logSelectionTiming("planner_input_ready");
         setSelectionGenerationStatus("正在安排每天的順序…");
-        logSelectionTiming("server_request_start");
-        logPlanningSelectionDateAuthority(
-          "server_request",
-          selectionDateAuthority,
-          workingSession.planningSelection?.id,
+        const requiredCapacity = assessPlanningRequiredCapacity(
+          requiredAnchors.length,
+          effectiveTripDays,
+          CHAT_DAY_PLAN_MAX_PER_DAY,
         );
+        if (requiredCapacity.overflow) {
+          console.info("[PLANNING_REQUIRED_CAPACITY_PREFLIGHT]", {
+            generationId,
+            tripDays: effectiveTripDays,
+            requiredCount: requiredCapacity.requiredCount,
+            hardCapacity: requiredCapacity.hardCapacity,
+            blocked: true,
+            failureReason: "required_capacity_overflow",
+          });
+          logSelectionTiming(
+            "server_request_blocked",
+            false,
+            "required_capacity_overflow",
+          );
+          setMsgs((prev) => [
+            ...prev,
+            { role: "assistant", content: REQUIRED_CAPACITY_OVERFLOW_USER_MESSAGE },
+          ]);
+          persistSession(workingSession);
+          return;
+        }
+        logSelectionTiming("server_request_start");
+        if (selectionDateAuthority) {
+          logPlanningSelectionDateAuthority(
+            "server_request",
+            selectionDateAuthority,
+            workingSession.planningSelection?.id,
+          );
+        }
         createResult = await createItineraryFromSession({
           session: workingSession,
           generateInput,
           generateItineraryFn: generate,
+          generationTransport: isCapacitorNativeShell()
+            ? "capacitor_https"
+            : "tanstack_useServerFn",
         });
         logSelectionTiming(
           "server_response_received",
@@ -10024,6 +10531,31 @@ function Chat() {
       }
 
       let itinerary = createResult.payload;
+      const finalRejectedIds = new Set(planningRejectedCandidateIds(workingSession));
+      const rawFinalStops = coalesceItineraryItems(itinerary.itinerary);
+      const finalViolations = rawFinalStops.filter((stop) => {
+        const id = stop.googlePlaceId?.trim();
+        return Boolean(id && finalRejectedIds.has(id));
+      });
+      if (finalViolations.length) {
+        itinerary = {
+          ...itinerary,
+          itinerary: rawFinalStops.filter((stop) => {
+            const id = stop.googlePlaceId?.trim();
+            return !id || !finalRejectedIds.has(id);
+          }),
+          recommendations: itinerary.recommendations?.filter((place) => {
+            const id = place.googlePlaceId?.trim();
+            return !id || !finalRejectedIds.has(id);
+          }),
+        };
+      }
+      logPlanningExclusionPropagation({
+        parsedExcludeCount: workingSession.planningConstraints?.excludedPlaces.length ?? 0,
+        sessionExcludeCount: finalRejectedIds.size,
+        plannerExcludeCount: finalRejectedIds.size,
+        finalViolationCount: finalViolations.length,
+      });
       if (selectionDateAuthority) {
         logPlanningSelectionDateMismatch(
           "server_result",
@@ -10117,6 +10649,14 @@ function Chat() {
       devVerboseInfo("[CORE_TRIP] created", "draft");
       logItinerarySavePayloadReady(destination, effectiveTripDays, itineraryStops.length);
       logItinerarySaveStart();
+      console.info("[ITINERARY_GENERATION_BOUNDARY]", {
+        generationId,
+        stage: "stored_itinerary_validation",
+        destination: draftPayload.destination ?? destination,
+        tripDays: draftPayload.days ?? effectiveTripDays,
+        itineraryStopCount: coalesceItineraryItems(draftPayload.itinerary).length,
+        success: true,
+      });
       try {
         saveDraftTrip(draftPayload);
         logItinerarySaveSuccess("draft");
@@ -10158,6 +10698,13 @@ function Chat() {
       logItinerarySaveSuccess(saved.id);
       logAiItinerarySuccess(saved.id);
       logAiCreateTripSuccess(saved.id);
+      console.info("[ITINERARY_CLIENT_PERSISTENCE]", {
+        generationId,
+        normalized: true,
+        valid: true,
+        saved: true,
+        navigationStarted: false,
+      });
       logAiPipeline(
         "[ITINERARY_RESULT_TRACE]",
         "plannerSuccess=true",
@@ -10170,6 +10717,19 @@ function Chat() {
       );
 
       logTripNav("ChatGeneratedItinerary", saved.id);
+      console.info("[ITINERARY_CLIENT_PERSISTENCE]", {
+        generationId,
+        normalized: true,
+        valid: true,
+        saved: true,
+        navigationStarted: true,
+      });
+      console.info("[ITINERARY_GENERATION_BOUNDARY]", {
+        generationId,
+        stage: "navigation",
+        tripId: saved.id,
+        success: true,
+      });
       itinerarySucceeded = true;
       // Credit commit is authoritative, not optional enrichment. Settle exactly
       // once before leaving Chat; failure paths still roll back in finally.
@@ -10635,6 +11195,7 @@ function Chat() {
             discussPlaceLabel={t("trip.discussPlace")}
             viewMapLabel={t("chat.viewMap")}
             selectionMode={selectionMode}
+            recommendationSessionId={recommendationSessionId}
             onRecommendationEngage={markShortcutEngaged}
             onSavePlace={(rec) => {
               void handleSavePlace(rec);

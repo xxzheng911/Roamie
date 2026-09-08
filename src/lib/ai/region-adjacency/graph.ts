@@ -33,6 +33,10 @@ export type RegionNode = {
   aliases?: string[];
   countryCode: string;
   adminArea?: string;
+  /** Administrative spellings that identify this node as a city-level locality. */
+  administrativeAliases?: string[];
+  /** District/ward names whose authoritative parent is this city node. */
+  districtAliases?: string[];
   center?: { lat: number; lng: number };
   hierarchy: RegionHierarchy;
 };
@@ -56,6 +60,8 @@ export const REGION_NODES: readonly RegionNode[] = [
     aliases: ["Tokyo", "東京都"],
     countryCode: "JP",
     adminArea: "東京都",
+    administrativeAliases: ["Tokyo-to", "Tokyo Metropolis"],
+    districtAliases: ["Shinjuku-ku", "新宿区", "Shibuya-ku", "渋谷区"],
     center: { lat: 35.6762, lng: 139.6503 },
     hierarchy: {
       metroArea: "tokyo_metro",
@@ -68,6 +74,7 @@ export const REGION_NODES: readonly RegionNode[] = [
     aliases: ["横浜", "Yokohama"],
     countryCode: "JP",
     adminArea: "神奈川県",
+    administrativeAliases: ["横浜市", "Yokohama-shi", "Yokohama City"],
     center: { lat: 35.4437, lng: 139.638 },
     hierarchy: {
       metroArea: "tokyo_metro",
@@ -142,6 +149,8 @@ export const REGION_NODES: readonly RegionNode[] = [
     aliases: ["Osaka", "大阪府"],
     countryCode: "JP",
     adminArea: "大阪府",
+    administrativeAliases: ["大阪市", "Osaka-shi", "Osaka City"],
+    districtAliases: ["Kita-ku", "北区", "Chuo-ku", "中央区", "Naniwa-ku", "浪速区"],
     center: { lat: 34.6937, lng: 135.5023 },
     hierarchy: {
       metroArea: "keihanshin",
@@ -154,6 +163,8 @@ export const REGION_NODES: readonly RegionNode[] = [
     aliases: ["Kyoto", "京都府"],
     countryCode: "JP",
     adminArea: "京都府",
+    administrativeAliases: ["京都市", "Kyoto-shi", "Kyoto City"],
+    districtAliases: ["Nakagyo-ku", "中京区", "Higashiyama-ku", "東山区", "Shimogyo-ku", "下京区"],
     center: { lat: 35.0116, lng: 135.7681 },
     hierarchy: {
       metroArea: "keihanshin",
@@ -327,6 +338,14 @@ export const REGION_NODES: readonly RegionNode[] = [
     aliases: ["臺北", "Taipei"],
     countryCode: "TW",
     adminArea: "台北市",
+    administrativeAliases: ["臺北市", "Taipei City"],
+    districtAliases: [
+      "中正區", "大同區", "中山區", "松山區", "大安區", "萬華區", "万华区", "信義區", "信义区",
+      "士林區", "北投區", "內湖區", "内湖区", "南港區", "文山區",
+      "Zhongzheng District", "Datong District", "Zhongshan District", "Songshan District",
+      "Daan District", "Da'an District", "Wanhua District", "Xinyi District", "Shilin District",
+      "Beitou District", "Neihu District", "Nangang District", "Wenshan District",
+    ],
     center: { lat: 25.033, lng: 121.5654 },
     hierarchy: {
       metroArea: "taipei_metro",
@@ -375,11 +394,37 @@ export const REGION_NODES: readonly RegionNode[] = [
     aliases: ["臺中", "Taichung"],
     countryCode: "TW",
     adminArea: "台中市",
+    administrativeAliases: ["臺中市", "Taichung City"],
     center: { lat: 24.1477, lng: 120.6736 },
     hierarchy: {
       metroArea: "taichung_metro",
       livingCircle: "taichung_living",
       touristZone: "taichung_urban",
+    },
+  },
+  {
+    id: "台南",
+    aliases: ["臺南", "Tainan"],
+    countryCode: "TW",
+    adminArea: "台南市",
+    administrativeAliases: ["臺南市", "Tainan City"],
+    hierarchy: {
+      metroArea: "tainan_metro",
+      livingCircle: "tainan_living",
+      touristZone: "tainan_urban",
+    },
+  },
+  {
+    id: "高雄",
+    aliases: ["Kaohsiung"],
+    countryCode: "TW",
+    adminArea: "高雄市",
+    administrativeAliases: ["Kaohsiung City"],
+    districtAliases: ["苓雅區", "鼓山區", "左營區", "Lingya District", "Gushan District", "Zuoying District"],
+    hierarchy: {
+      metroArea: "kaohsiung_metro",
+      livingCircle: "kaohsiung_living",
+      touristZone: "kaohsiung_urban",
     },
   },
   {
@@ -412,6 +457,8 @@ export const REGION_NODES: readonly RegionNode[] = [
     aliases: ["서울", "Seoul"],
     countryCode: "KR",
     adminArea: "서울",
+    administrativeAliases: ["Seoul Special City", "서울특별시"],
+    districtAliases: ["Gangnam-gu", "강남구"],
     center: { lat: 37.5665, lng: 126.978 },
     hierarchy: {
       metroArea: "seoul_metro",
@@ -424,11 +471,39 @@ export const REGION_NODES: readonly RegionNode[] = [
     aliases: ["Incheon", "인천"],
     countryCode: "KR",
     adminArea: "인천",
+    administrativeAliases: ["Incheon Metropolitan City", "인천광역시"],
     center: { lat: 37.4563, lng: 126.7052 },
     hierarchy: {
       metroArea: "seoul_metro",
       livingCircle: "seoul_living",
       touristZone: "seoul_urban",
+    },
+  },
+  {
+    id: "釜山",
+    aliases: ["Busan", "부산"],
+    countryCode: "KR",
+    adminArea: "부산",
+    administrativeAliases: ["Busan Metropolitan City", "부산광역시"],
+    districtAliases: ["Haeundae-gu", "해운대구"],
+    center: { lat: 35.1796, lng: 129.0756 },
+    hierarchy: {
+      metroArea: "busan_metro",
+      livingCircle: "busan_living",
+      touristZone: "busan_urban",
+    },
+  },
+  {
+    id: "大邱",
+    aliases: ["Daegu", "대구"],
+    countryCode: "KR",
+    adminArea: "대구",
+    administrativeAliases: ["Daegu Metropolitan City", "대구광역시"],
+    center: { lat: 35.8714, lng: 128.6014 },
+    hierarchy: {
+      metroArea: "daegu_metro",
+      livingCircle: "daegu_living",
+      touristZone: "daegu_urban",
     },
   },
   {

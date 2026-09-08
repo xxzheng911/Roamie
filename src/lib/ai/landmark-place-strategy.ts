@@ -117,7 +117,9 @@ function normalizeMatchText(text: string): string {
   return text.trim().toLowerCase().replace(/\s+/g, "");
 }
 
-function placeTypes(place: PlaceLike & { types?: string[] | null; primaryType?: string | null }): string[] {
+function placeTypes(
+  place: PlaceLike & { types?: string[] | null; primaryType?: string | null },
+): string[] {
   const out = new Set<string>();
   const primary = (place.primaryType ?? "").trim().toLowerCase();
   if (primary) out.add(primary);
@@ -246,13 +248,28 @@ export function isInternalSubPlaceOfLandmark(placeName: string, parentLandmark: 
     placeNorm.includes(parentNorm) ||
     (parentCore.length >= 2 && placeNorm.includes(parentCore));
 
-  if (!containsParent) return false;
+  // A shortened child label may omit the parent's city/name prefix. Numeric or
+  // distinctive Latin tokens still provide a generic identity bridge; callers
+  // apply this together with the internal marker (and, in candidate clustering,
+  // spatial proximity).
+  const parentTokens = parentNorm.match(/[a-z]{3,}|\d{2,}/g) ?? [];
+  const shortenedChildMatch = parentTokens.some((token) => placeNorm.includes(token));
 
-  if (INTERNAL_FACILITY_MARKERS.some((m) => place.includes(m) || placeNorm.includes(normalizeMatchText(m)))) {
+  if (!containsParent && !shortenedChildMatch) return false;
+
+  if (
+    INTERNAL_FACILITY_MARKERS.some(
+      (m) => place.includes(m) || placeNorm.includes(normalizeMatchText(m)),
+    )
+  ) {
     return true;
   }
 
-  if (/國家森林遊樂區|國家風景區|森林遊樂區|國家公園|自然風景區|national park|forest recreation/i.test(place)) {
+  if (
+    /國家森林遊樂區|國家風景區|森林遊樂區|國家公園|自然風景區|national park|forest recreation/i.test(
+      place,
+    )
+  ) {
     return true;
   }
 
@@ -273,7 +290,11 @@ export function buildCityAttractionSearchAttempts(city: string): SearchAttempt[]
     { query: `${label} 室內景點`, mode: "text", includedTypes: ["museum", "shopping_mall"] },
     { query: `${label} 夜市`, mode: "text", includedTypes: ["tourist_attraction", "market"] },
     { query: `${label} 美術館`, mode: "text", includedTypes: ["museum", "art_gallery"] },
-    { query: `${label} 商圈`, mode: "text", includedTypes: ["shopping_mall", "tourist_attraction"] },
+    {
+      query: `${label} 商圈`,
+      mode: "text",
+      includedTypes: ["shopping_mall", "tourist_attraction"],
+    },
     { query: `${label} popular attractions`, mode: "text", includedTypes: ["tourist_attraction"] },
   ];
 }
@@ -287,7 +308,11 @@ export function buildLandmarkCompanionSearchAttempts(
     { query: `${landmark} 周邊景點`, mode: "text", includedTypes: ["tourist_attraction"] },
     { query: `${landmark} 附近景點`, mode: "text", includedTypes: ["tourist_attraction"] },
     { query: `attractions near ${landmark}`, mode: "text", includedTypes: ["tourist_attraction"] },
-    { query: `${landmark} nearby attractions`, mode: "text", includedTypes: ["tourist_attraction"] },
+    {
+      query: `${landmark} nearby attractions`,
+      mode: "text",
+      includedTypes: ["tourist_attraction"],
+    },
     {
       query: `${landmark} day trip`,
       mode: "text",
@@ -308,7 +333,12 @@ export function buildDestinationPlaceSearchAttempts(params: {
   templateAttempts?: SearchAttempt[];
   textOnlyFallback?: SearchAttempt[];
 }): SearchAttempt[] {
-  const { profile, weatherAwareAttempts = [], templateAttempts = [], textOnlyFallback = [] } = params;
+  const {
+    profile,
+    weatherAwareAttempts = [],
+    templateAttempts = [],
+    textOnlyFallback = [],
+  } = params;
 
   if (profile.kind === "landmark") {
     return [
@@ -359,10 +389,7 @@ export function filterPlacesForLandmarkCompanionRecommendation<T extends PlaceLi
 ): T[] {
   const parent = opts.parentLandmark ?? opts.profile?.parentLandmark;
   const blockedCores = new Set(
-    [
-      ...(opts.blockedCoreNames ?? []),
-      ...(parent ? [parent, normalizePlaceName(parent)] : []),
-    ]
+    [...(opts.blockedCoreNames ?? []), ...(parent ? [parent, normalizePlaceName(parent)] : [])]
       .map((n) => normalizePlaceName(n))
       .filter(Boolean),
   );

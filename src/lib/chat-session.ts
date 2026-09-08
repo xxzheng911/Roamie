@@ -55,7 +55,9 @@ const DISPOSABLE_SESSION_KEYS = [
 let memoryChatSession: ChatPlanningSession | null = null;
 
 function utf8Bytes(value: string): number {
-  return typeof TextEncoder !== "undefined" ? new TextEncoder().encode(value).byteLength : value.length;
+  return typeof TextEncoder !== "undefined"
+    ? new TextEncoder().encode(value).byteLength
+    : value.length;
 }
 
 function clearDisposableChatSessionCaches(): string[] {
@@ -167,6 +169,28 @@ export type ChatPlaceItem = RoamieRecommendationItem & {
   distanceLabel?: string;
 };
 
+export type PlanningShownCandidateSource =
+  | "planning_suggestion"
+  | "recommendation_cards"
+  | "day_plan";
+
+/**
+ * Minimal plain snapshot for a place the assistant presented as a conversational
+ * choice. Group metadata keeps references such as「第一組不要」grounded without
+ * retaining discovery/runtime object graphs.
+ */
+export type PlanningShownCandidate = ChatPlaceItem & {
+  canonicalId: string;
+  plannerProvenanceKey: string;
+  sourceCandidateIndex: number;
+  normalizedAliases: string[];
+  source: PlanningShownCandidateSource;
+  groupId?: string;
+  groupTitle?: string;
+  groupIndex?: number;
+  itemIndex?: number;
+};
+
 export type PlaceFocusRecommendationScope = {
   scopeId: string;
   anchorPlaceId: string;
@@ -199,6 +223,11 @@ export type ChatPlanningSession = {
   location?: RoamieLocation;
   weather?: WeatherSummary | null;
   recommendedPlaces: ChatPlaceItem[];
+  /**
+   * Last place set actually shown as a reply target. This conversational
+   * reference authority survives recommendation/planning loading-state resets.
+   */
+  activeShownCandidates?: PlanningShownCandidate[];
   /** 本段聊天已推薦過的地點 id（placeId 或 name key），用於排除重複 */
   recommendedPlaceIds?: string[];
   /** 已推薦過的核心地點名稱（normalizePlaceName） */
@@ -253,6 +282,8 @@ export type ChatPlanningSession = {
   preferredArea?: string;
   /** 明確拒絕的地點名稱 */
   rejectedPlaceNames?: string[];
+  /** Current-trip conversational constraints; persisted with this planning session only. */
+  planningConstraints?: import("@/lib/ai/planning-conversation-constraints").PlanningConversationConstraints;
   /** 最後一則使用者訊息（規劃用） */
   lastUserIntent?: string;
   /** AI 直接排行程狀態機（COLLECTING → … → SUCCESS | FAILED） */

@@ -2,9 +2,10 @@ import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import {
-  buildDestinationCombinationSuggestionsReply,
+  buildDestinationCombinationSuggestionPayload,
   hasDestinationCombinations,
 } from "@/lib/ai/destination-combination-suggestions";
+import type { PlanningShownCandidate } from "@/lib/chat-session";
 import {
   buildDestinationRecommendationFailedMessage,
   REFRESH_DESTINATION_RECOMMENDATIONS_OPTION,
@@ -49,7 +50,12 @@ export function buildWeatherAwarePlanningReply(params: {
   context?: CanonicalTravelContext;
   destinationCountry?: string;
   preferNextStepQuestion?: boolean;
-}): { reply: string; pendingQuestion: PendingQuestion } {
+}): {
+  reply: string;
+  pendingQuestion: PendingQuestion;
+  contextPatch?: Partial<CanonicalTravelContext>;
+  planningShownCandidates?: PlanningShownCandidate[];
+} {
   const label = normalizeDestinationLabel(params.destination);
   const days = params.days;
   const startDate = params.context?.startDate;
@@ -61,18 +67,27 @@ export function buildWeatherAwarePlanningReply(params: {
     /^\d{4}-\d{2}-\d{2}$/.test(endDate!.trim());
 
   if (hasDestinationCombinations(label)) {
-    const comboReply = buildDestinationCombinationSuggestionsReply(label, days, {
+    const suggestion = buildDestinationCombinationSuggestionPayload(label, days, {
       weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
       startDate: hasExactDate ? startDate : undefined,
       endDate: hasExactDate ? endDate : undefined,
     });
-    if (comboReply) {
+    if (suggestion) {
       return {
-        reply: comboReply,
+        reply: suggestion.displayText,
         pendingQuestion: pendingQuestionForCombinationChoice(
           label,
           params.destinationCountry,
         ),
+        contextPatch: {
+          destination: label,
+          days,
+          tripPurpose: "combination_suggestions_offered",
+          conversationState: "awaiting_preference",
+          planningStage: "recommendations_generated",
+          offeredCombinations: suggestion.offeredCombinations,
+        },
+        planningShownCandidates: suggestion.shownCandidates,
       };
     }
   }

@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import type { ChatMsg } from "@/lib/chat-history";
 import type { RoamieResponse, RoamieRecommendationItem } from "@/lib/ai/types";
@@ -6,6 +6,7 @@ import { resolveTripAddPlaceMessageRecommendations } from "@/lib/trip/trip-add-p
 import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
 import { RoamieResponseView } from "@/components/RoamieResponseView";
 import { cn } from "@/lib/utils";
+import { stableChatMessageKey } from "@/lib/chat-render-stability";
 
 type RowProps = {
   message: ChatMsg;
@@ -23,6 +24,8 @@ type RowProps = {
   discussPlaceLabel: string;
   viewMapLabel: string;
   selectionMode?: boolean;
+  recommendationSessionId?: string;
+  groupKey: string;
   onRecommendationEngage: () => void;
   onSavePlace: (rec: RoamieRecommendationItem) => void;
   onAddToTrip: (rec: RoamieRecommendationItem) => void;
@@ -45,6 +48,8 @@ const ChatMessageRow = memo(function ChatMessageRow({
   discussPlaceLabel,
   viewMapLabel,
   selectionMode = false,
+  recommendationSessionId = "",
+  groupKey,
   onRecommendationEngage,
   onSavePlace,
   onAddToTrip,
@@ -69,6 +74,41 @@ const ChatMessageRow = memo(function ChatMessageRow({
   const hasPlaceCards =
     !hideCards &&
     ((m.structuredPlaces?.length ?? 0) > 0 || (roamieData?.recommendations?.length ?? 0) > 0);
+  const cardCount = hasPlaceCards
+    ? (m.structuredPlaces?.length ?? roamieData?.recommendations?.length ?? 0)
+    : 0;
+  const cardCountRef = useRef(cardCount);
+  cardCountRef.current = cardCount;
+  const recommendationSessionIdRef = useRef(recommendationSessionId);
+  recommendationSessionIdRef.current = recommendationSessionId;
+
+  useEffect(() => {
+    if (m.role !== "assistant") return;
+    console.info("[CHAT_RECOMMENDATION_MOUNT]", {
+      sessionId: recommendationSessionIdRef.current,
+      groupKey,
+      cardCount: cardCountRef.current,
+      reason: "message_row_mount",
+    });
+    return () => {
+      console.info("[CHAT_RECOMMENDATION_MOUNT]", {
+        sessionId: recommendationSessionIdRef.current,
+        groupKey,
+        cardCount: cardCountRef.current,
+        reason: "message_row_unmount",
+      });
+    };
+  }, [groupKey, m.role]);
+
+  useEffect(() => {
+    if (cardCount <= 0) return;
+    console.info("[CHAT_RECOMMENDATION_MOUNT]", {
+      sessionId: recommendationSessionId,
+      groupKey,
+      cardCount,
+      reason: "recommendations_ready",
+    });
+  }, [cardCount, groupKey, recommendationSessionId]);
 
   const textContent = m.content || (hideCards ? m.roamie?.summary : undefined) || "";
 
@@ -130,7 +170,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   );
 });
 
-type ListProps = Omit<RowProps, "message" | "index" | "isLast"> & {
+type ListProps = Omit<RowProps, "message" | "index" | "isLast" | "groupKey"> & {
   msgs: ChatMsg[];
   hydrating: boolean;
   /** Independent of msgs — dots-only loading bubble (no remount / scroll thrash). */
@@ -143,18 +183,7 @@ export const ChatMessageList = memo(function ChatMessageList({
   loadingIndicator = null,
   ...rowProps
 }: ListProps) {
-  const stableKeys = useMemo(
-    () =>
-      msgs.map((m, i) => {
-        // Stable keys: avoid content (dots) so loading/list rows do not remount.
-        const recCount =
-          rowProps.suppressPlaceCards || rowProps.generating
-            ? 0
-            : (m.structuredPlaces?.length ?? m.roamie?.recommendations?.length ?? 0);
-        return `${m.role}:${i}:${recCount}`;
-      }),
-    [msgs, rowProps.suppressPlaceCards, rowProps.generating],
-  );
+  const stableKeys = useMemo(() => msgs.map((m, i) => stableChatMessageKey(m, i)), [msgs]);
 
   if (hydrating && msgs.length === 0) {
     return (
@@ -177,6 +206,7 @@ export const ChatMessageList = memo(function ChatMessageList({
           message={m}
           index={i}
           isLast={i === msgs.length - 1 && !loadingIndicator}
+          groupKey={stableKeys[i]!}
           {...rowProps}
         />
       ))}
@@ -186,6 +216,7 @@ export const ChatMessageList = memo(function ChatMessageList({
           message={{ role: "assistant", content: loadingText }}
           index={msgs.length}
           isLast
+          groupKey={`loading:${loadingIndicator.requestId}`}
           {...rowProps}
           streaming={false}
         />

@@ -264,6 +264,7 @@ test("Case C: user exclusions hotpot/italian fail when present", () => {
     plans: [day],
     requestedDays: 1,
     userText: "不要火鍋、不要義式",
+    excludedCategories: ["火鍋", "義式"],
   });
   assert.equal(result.pass, false);
   assert.ok(result.failedRules.some((r) => r.code === "user_exclusions"));
