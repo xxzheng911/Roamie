@@ -116,6 +116,11 @@ import {
   auditPlannerRequiredAnchorEligibility,
   buildPlannerRequiredAnchors,
 } from "@/lib/place-planning-memory";
+import { buildDeliverableItineraryCandidatePool } from "@/lib/ai/itinerary-deliverable-candidate";
+import {
+  resolveItineraryCandidateCapacityTarget,
+  resolveItineraryCandidateExpansionDecision,
+} from "@/lib/ai/real-place-supplement";
 import { budgetModeToItineraryTier } from "@/lib/ai/context";
 import { parseExplicitBudgetConstraint, resolveBudgetContext } from "@/lib/budget-context";
 import type { BudgetMode } from "@/lib/preferences-storage";
@@ -603,7 +608,7 @@ import {
   isCountryLevelDestination,
   logCountryLevelPlacesBlocked,
 } from "@/lib/ai/destination-scope";
-import { beginPlacesGenerationSession } from "@/lib/places-api-guard";
+import { beginPlacesGenerationSession, getPlacesApiCallStats } from "@/lib/places-api-guard";
 import { resetPlacesRateLimitEncountered } from "@/lib/places-classic-landmark-cache";
 import { clearResolvedDestinationScope } from "@/lib/ai/resolved-destination-scope";
 import {
@@ -10169,12 +10174,39 @@ function Chat() {
         };
       }
 
-      if (
-        places.length < 1 &&
-        !dayPlan?.items.length &&
-        effectiveTripDays > 0 &&
-        destination !== "目前位置"
-      ) {
+      const capacityTarget = resolveItineraryCandidateCapacityTarget(effectiveTripDays);
+      const rawCandidateCountBeforeExpansion = places.length;
+      const capacityHandoff = resolvePlanningRequiredAnchorHandoff({
+        session: workingSession,
+        candidateRequiredPlaces: places,
+        selectionMode: selectionModeForPrepare,
+        additionalExcludedPlaceIds: planningRejectedCandidateIds(workingSession),
+      });
+      const capacityCandidates = buildPlannerRequiredAnchors(places, destination, false);
+      const capacityPoolBefore = buildDeliverableItineraryCandidatePool(
+        capacityCandidates.map((candidate) => ({
+          candidate,
+          sourceType: "recommendation_candidate" as const,
+        })),
+        destination,
+      );
+      const expansionDecision = resolveItineraryCandidateExpansionDecision({
+        deliverableCandidateCount: capacityPoolBefore.deliverableCount,
+        capacityTarget,
+        selectedOnly: selectionModeForPrepare,
+        hasDayPlan: Boolean(dayPlan?.items.length),
+        destinationResolved: effectiveTripDays > 0 && destination !== "目前位置",
+      });
+      const expansionNeeded = expansionDecision.needed;
+      const expansionAttempted = expansionDecision.attempted;
+      let expansionAddedCount = 0;
+      const placesRequestCount = () => {
+        const stats = getPlacesApiCallStats();
+        return stats.text + stats.nearby + stats.details + stats.photo + stats.other;
+      };
+      const placesRequestCountBeforeExpansion = placesRequestCount();
+
+      if (expansionAttempted) {
         const prepared = await prepareDirectItinerarySession({
           session: workingSession,
           context: {
@@ -10214,8 +10246,49 @@ function Chat() {
           buildTripFromSelectedPlaces(workingSession),
           workingSession,
         );
+        const capacityPoolAfter = buildDeliverableItineraryCandidatePool(
+          buildPlannerRequiredAnchors(places, destination, false).map((candidate) => ({
+            candidate,
+            sourceType: "recommendation_candidate" as const,
+          })),
+          destination,
+        );
+        expansionAddedCount = Math.max(
+          0,
+          capacityPoolAfter.deliverableCount - capacityPoolBefore.deliverableCount,
+        );
         persistSession(workingSession);
       }
+
+      const finalCapacityPool = buildDeliverableItineraryCandidatePool(
+        buildPlannerRequiredAnchors(places, destination, false).map((candidate) => ({
+          candidate,
+          sourceType: "recommendation_candidate" as const,
+        })),
+        destination,
+      );
+      const placesRequestCountAfterExpansion = placesRequestCount();
+      console.info("[ITINERARY_CANDIDATE_CAPACITY]", {
+        generationId,
+        tripDays: effectiveTripDays,
+        requiredCount: capacityHandoff.requiredPlaces.length,
+        supplementalSeedCount: capacityHandoff.supplementalPlaces.length,
+        rawCandidateCount: rawCandidateCountBeforeExpansion,
+        deliverableCandidateCount: capacityPoolBefore.deliverableCount,
+        hardMinimum: capacityTarget.hardMinimum,
+        preferredTarget: capacityTarget.preferredTarget,
+        expansionNeeded,
+        expansionAttempted,
+        expansionAddedCount,
+        finalDeliverableCount: finalCapacityPool.deliverableCount,
+        expansionSkippedReason: expansionDecision.skippedReason,
+        placesRequestCountBeforeExpansion,
+        placesRequestCountAfterExpansion,
+        placesRequestDelta: Math.max(
+          0,
+          placesRequestCountAfterExpansion - placesRequestCountBeforeExpansion,
+        ),
+      });
 
       const startDate = tripDates.startDate ?? "";
       const endDate = tripDates.endDate ?? "";

@@ -58,7 +58,9 @@ const shouldShowExtra = [
 let failed = 0;
 
 for (const [name, extra] of shouldShow) {
-  const place = { placeName: name, ...extra };
+  // A recognizable attraction name is search-keyword evidence, not commerce
+  // authority. These positive fixtures explicitly model a provider product.
+  const place = { placeName: name, ticketingAvailable: true, ...extra };
   const decision = shouldShowTicketAffiliate(place);
   if (!decision.show) {
     console.error(`FAIL should show: ${name} → ${decision.reason}`);
@@ -69,7 +71,7 @@ for (const [name, extra] of shouldShow) {
 }
 
 for (const [name, extra] of shouldShowExtra) {
-  const place = { placeName: name, ...extra };
+  const place = { placeName: name, guidedTourAvailable: true, ...extra };
   const decision = shouldShowTicketAffiliate(place);
   if (!decision.show) {
     console.error(`FAIL should show extra: ${name} → ${decision.reason}`);

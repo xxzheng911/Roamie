@@ -3,7 +3,10 @@ import type {
   ChatPlanningSession,
   PlanningShownCandidate,
 } from "@/lib/chat-session";
-import { placeMatchesExcludedCategories } from "@/lib/ai/recommendation-exclusion";
+import {
+  parseExcludedCategoriesFromText,
+  placeMatchesExcludedCategories,
+} from "@/lib/ai/recommendation-exclusion";
 import {
   destinationAdministrativeAliases,
   normalizeAdministrativeAlias,
@@ -107,7 +110,6 @@ const CUISINE_HINTS = [
   "台菜",
   "夜市美食",
 ];
-const CATEGORY_HINTS = ["夜市", "寺廟", "逛街", "購物", "咖啡廳", "古蹟", "老街", "展覽"];
 const EXPERIENCE_HINTS = ["夜景", "看海", "海邊", "展覽", "古蹟", "老街", "在地", "必去"];
 
 function unique(values: Iterable<string>): string[] {
@@ -224,7 +226,10 @@ function normalized(value: string): string {
   return value.toLocaleLowerCase().replace(/[\s市縣区區\-—_・·]/g, "");
 }
 
-function destinationPrefixAliases(place: ChatPlaceItem, destination?: string): Array<{
+function destinationPrefixAliases(
+  place: ChatPlaceItem,
+  destination?: string,
+): Array<{
   value: string;
   destinationAliasUsed: string;
 }> {
@@ -377,14 +382,21 @@ function mentionedCandidates(
   if (groupMention) return groupMention;
   const compact = normalized(text);
   const contextualToken = normalized(
-    text.replace(/不要|不用|拿掉|排除|去過|去过|不想|除了|還要去|还要去|想去|必去|加入|加進去|加进去/g, ""),
+    text.replace(
+      /不要|不用|拿掉|排除|去過|去过|不想|除了|還要去|还要去|想去|必去|加入|加進去|加进去/g,
+      "",
+    ),
   );
   const dynamicCandidateIndexes = new Set(
     shown.flatMap((place, candidateIndex) =>
       destinationPrefixAliases(place, destination).some(({ value }) => {
         const alias = normalized(value);
-        return Boolean(contextualToken && (alias === contextualToken || alias.startsWith(contextualToken)));
-      }) ? [candidateIndex] : [],
+        return Boolean(
+          contextualToken && (alias === contextualToken || alias.startsWith(contextualToken)),
+        );
+      })
+        ? [candidateIndex]
+        : [],
     ),
   );
   const table: Record<string, number> = {
@@ -422,7 +434,9 @@ function mentionedCandidates(
   }
   const aliasOwners = new Map<string, number>();
   for (const place of shown) {
-    const dynamic = new Set(destinationPrefixAliases(place, destination).map(({ value }) => normalized(value)));
+    const dynamic = new Set(
+      destinationPrefixAliases(place, destination).map(({ value }) => normalized(value)),
+    );
     for (const alias of aliases(place, destination)
       .map(normalized)
       .filter((value) => value.length >= 2 || dynamic.has(value))) {
@@ -437,10 +451,7 @@ function mentionedCandidates(
     const staticMatch = aliases(place)
       .map(normalized)
       .find(
-        (alias) =>
-          alias.length >= 2 &&
-          aliasOwners.get(alias) === 1 &&
-          compact.includes(alias),
+        (alias) => alias.length >= 2 && aliasOwners.get(alias) === 1 && compact.includes(alias),
       );
     const contextualDynamicMatch =
       dynamicCandidateIndexes.size === 1 && dynamicCandidateIndexes.has(candidateIndex)
@@ -450,7 +461,8 @@ function mentionedCandidates(
           })
         : undefined;
     const matchedAlias =
-      staticMatch ?? (contextualDynamicMatch ? normalized(contextualDynamicMatch.value) : undefined);
+      staticMatch ??
+      (contextualDynamicMatch ? normalized(contextualDynamicMatch.value) : undefined);
     if (!matchedAlias) return;
     places.push(place);
     matches.push({
@@ -461,7 +473,8 @@ function mentionedCandidates(
       canonicalIdPresent: Boolean(place.googlePlaceId ?? place.placeId),
     });
     const dynamicMatch =
-      contextualDynamicMatch ?? dynamicAliases.find(({ value }) => normalized(value) === matchedAlias);
+      contextualDynamicMatch ??
+      dynamicAliases.find(({ value }) => normalized(value) === matchedAlias);
     if (dynamicMatch) {
       console.info("[PLANNING_CONTEXT_ALIAS_MATCH]", {
         destinationAliasUsed: normalizeAdministrativeAlias(dynamicMatch.destinationAliasUsed),
@@ -473,10 +486,13 @@ function mentionedCandidates(
     }
   });
   if (!places.length && destination) {
-    const possible = shown.flatMap((place) => destinationPrefixAliases(place, destination))
+    const possible = shown
+      .flatMap((place) => destinationPrefixAliases(place, destination))
       .filter(({ value }) => {
         const alias = normalized(value);
-        return Boolean(contextualToken && (alias === contextualToken || alias.startsWith(contextualToken)));
+        return Boolean(
+          contextualToken && (alias === contextualToken || alias.startsWith(contextualToken)),
+        );
       });
     if (dynamicCandidateIndexes.size > 1) {
       console.info("[PLANNING_CONTEXT_ALIAS_MATCH]", {
@@ -628,9 +644,7 @@ export function parsePlanningConstraintDelta(params: {
   const categoryOnlyNegativeText = negativeClauses
     .filter((_, index) => (negativeMentions[index]?.places.length ?? 0) === 0)
     .join(" ");
-  const excludedPlaceTypes = CATEGORY_HINTS.filter((category) =>
-    categoryOnlyNegativeText.includes(category),
-  );
+  const excludedPlaceTypes = parseExcludedCategoriesFromText(categoryOnlyNegativeText);
   if (/觀光|观光/.test(categoryOnlyNegativeText)) excludedPlaceTypes.push("touristy");
   const cuisinePreferences =
     !negative &&
@@ -859,6 +873,13 @@ export function logPlanningConstraintDiagnostics(
     acceptedCount: state.acceptedCandidateIds.length,
     unresolvedEntityCount: state.unresolvedEntities.length,
     clarificationRequired,
+  });
+  console.info("[PLANNING_EXCLUSION_AUTHORITY]", {
+    explicitPlaceCount: delta.excludedPlaces?.length ?? 0,
+    explicitCategoryCount: delta.excludedPlaceTypes?.length ?? 0,
+    keywordCategoryCount: delta.excludedPlaceTypes?.length ?? 0,
+    acceptRemaining: delta.acceptRemainingCandidates,
+    normalizedCategoryFamilies: delta.excludedPlaceTypes ?? [],
   });
   for (const match of delta.entityMatches ?? []) {
     console.info("[PLANNING_ENTITY_MATCH]", match);

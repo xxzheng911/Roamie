@@ -97,6 +97,7 @@ import {
 import { classifyDailyDiversityCategory } from "@/lib/ai/daily-category-diversity";
 import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
 import { resolvePlaceCategoryFamily } from "@/lib/ai/place-category-family";
+import { logAffiliateFactualEvidenceLifecycle } from "@/lib/affiliate/factual-evidence-lifecycle";
 
 /** Soft ceiling — stop discovery rather than hang forever on rate limits. */
 const COMBINATION_DISCOVERY_TIMEOUT_MS = 45_000;
@@ -3446,6 +3447,7 @@ export async function discoverDestinationCombinations(params: {
     travelEligibleCount: candidates.length,
   });
   for (const [key, place] of uniqueRaw) {
+    logAffiliateFactualEvidenceLifecycle("raw_candidate", place);
     const admitted =
       (place.id && acceptedGoogleIds.has(place.id.trim())) ||
       acceptedNameKeys.has((place.name ?? "").replace(/\s+/g, "").toLowerCase());

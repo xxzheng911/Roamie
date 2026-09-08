@@ -1,7 +1,10 @@
 import type { RoamieItineraryItem, RoamiePayloadV2 } from "@/lib/ai/types";
 import type { TripAffiliateContext } from "@/lib/affiliate/affiliate-types";
 import { PLACE_TYPE_CATEGORY_MAP } from "@/lib/affiliate/place-type-category-map";
-import { shouldShowTicketAffiliate } from "@/lib/affiliate/ticket-affiliate-eligibility";
+import {
+  buildAffiliatePlaceEvidence,
+  shouldShowTicketAffiliate,
+} from "@/lib/affiliate/ticket-affiliate-eligibility";
 import {
   affiliateDebugInfo,
   logAffiliateSummary,
@@ -11,12 +14,20 @@ import type { TripLocation } from "@/lib/location/types";
 
 export type AffiliatePlaceInput = Pick<
   RoamieItineraryItem,
-  "placeType" | "title" | "placeName" | "description" | "notes"
+  | "placeType"
+  | "title"
+  | "placeName"
+  | "description"
+  | "notes"
+  | "rating"
+  | "userRatingCount"
 > & {
   googleTypes?: string[] | null;
   category?: string | null;
   /** AI itinerary / recommendation tags */
   tags?: string[] | null;
+  types?: string[] | null;
+  googlePlaceId?: string | null;
 };
 
 const COUNTRY_ALIASES: Record<string, string> = {
@@ -182,13 +193,17 @@ export type TicketAffiliateDecision = {
 export function resolveTicketAffiliateEligibility(
   place: AffiliatePlaceInput,
 ): TicketAffiliateDecision {
-  const decision = shouldShowTicketAffiliate({
+  const decision = shouldShowTicketAffiliate(buildAffiliatePlaceEvidence({
+    googlePlaceId: place.googlePlaceId,
     placeName: place.placeName,
     title: place.title,
     placeType: place.placeType,
     category: place.category,
-    types: place.googleTypes ?? undefined,
-  });
+    types: place.types ?? undefined,
+    googleTypes: place.googleTypes ?? undefined,
+    rating: place.rating,
+    userRatingCount: place.userRatingCount,
+  }));
   return {
     eligible: decision.show,
     reason: decision.reason,
@@ -196,9 +211,20 @@ export function resolveTicketAffiliateEligibility(
 }
 
 export function isTicketEligiblePlace(
-  item: Pick<RoamieItineraryItem, "placeType" | "title" | "placeName" | "description" | "notes"> & {
+  item: Pick<
+    RoamieItineraryItem,
+    | "placeType"
+    | "title"
+    | "placeName"
+    | "description"
+    | "notes"
+    | "rating"
+    | "userRatingCount"
+  > & {
     category?: string | null;
     googleTypes?: string[] | null;
+    types?: string[] | null;
+    googlePlaceId?: string | null;
   },
 ): boolean {
   return resolveTicketAffiliateEligibility(item).eligible;

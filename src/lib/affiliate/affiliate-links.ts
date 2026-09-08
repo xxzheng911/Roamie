@@ -50,9 +50,12 @@ import {
 } from "@/lib/affiliate/kkday-affiliate-url";
 import type { TicketAffiliatePlaceInput } from "@/lib/affiliate/ticket-affiliate-eligibility";
 import {
+  buildAffiliatePlaceEvidence,
+  resolveTicketAffiliateProviderMode,
   resolveTicketAffiliateTripContext,
   shouldShowTicketAffiliate,
 } from "@/lib/affiliate/ticket-affiliate-eligibility";
+import { resolveAffiliateReviewCountEvidenceState } from "@/lib/affiliate/factual-evidence-lifecycle";
 import { resolveAgodaStayDates, resolveTripStayDates } from "@/lib/affiliate/trip-affiliate-dates";
 import type { TripLocation } from "@/lib/location/types";
 import type { Locale } from "@/lib/i18n/types";
@@ -287,7 +290,8 @@ export function buildTicketAffiliateOffers(
   ctx?: PlaceTicketAffiliateContext,
 ): AffiliateLinkOffer[] {
   const ticketCtx = resolveTicketAffiliateTripContext(ctx?.tripCtx);
-  const decision = shouldShowTicketAffiliate(place, {
+  const evidence = buildAffiliatePlaceEvidence(place);
+  const decision = shouldShowTicketAffiliate(evidence, {
     destinationLabel: ctx?.destinationLabel,
     destinationCountry: ticketCtx?.destinationCountry,
     travelDate: ctx?.tripCtx?.startDate,
@@ -310,21 +314,117 @@ export function buildTicketAffiliateOffers(
     destinationLocation: ctx?.destinationLocation,
     locale: ctx?.locale,
   };
+  const klookMode = resolveTicketAffiliateProviderMode(decision, "klook");
+  const kkdayMode = resolveTicketAffiliateProviderMode(decision, "kkday");
 
-  return [
-    offer("klook", "activity_ticket", "Klook", buildKlookUrl(q, env, ctx?.locale), {
+  const offers = [
+    offer("klook", "activity_ticket", resolveTicketAffiliateOfferLabel("klook", klookMode, decision.commerceType), buildKlookUrl(q, env, ctx?.locale), {
       destination,
-      placeName: placeDisplayName(place),
+      placeName: placeDisplayName(evidence),
       keyword: q,
       disabledReason: "missing_klook_env",
     }),
-    offer("kkday", "activity_ticket", "KKday", buildKkdayUrl(kkdayInput, env), {
+    offer("kkday", "activity_ticket", resolveTicketAffiliateOfferLabel("kkday", kkdayMode, decision.commerceType), buildKkdayUrl(kkdayInput, env), {
       destination,
-      placeName: placeDisplayName(place),
+      placeName: placeDisplayName(evidence),
       keyword: q,
       disabledReason: "missing_kkday_env",
     }),
-  ].filter((o) => o.enabled);
+  ].filter((o) => {
+    if (!o.enabled) return false;
+    return resolveTicketAffiliateProviderMode(
+      decision,
+      o.provider as "klook" | "kkday",
+    ) !== "hidden";
+  });
+  return offers;
+}
+
+export function resolveTicketAffiliateOfferLabel(
+  provider: "klook" | "kkday",
+  mode: ReturnType<typeof resolveTicketAffiliateProviderMode>,
+  commerceType: ReturnType<typeof shouldShowTicketAffiliate>["commerceType"],
+): string {
+  const providerLabel = provider === "klook" ? "Klook" : "KKday";
+  if (mode === "exact_product") return providerLabel;
+  if (commerceType === "experience" || commerceType === "tour" || commerceType === "activity") {
+    return `在 ${providerLabel} 搜尋體驗`;
+  }
+  if (commerceType === "transport") return `在 ${providerLabel} 搜尋交通票券`;
+  return `在 ${providerLabel} 搜尋票券`;
+}
+
+export function affiliatePlaceHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function logAffiliateCtaEligibility(
+  place: TicketAffiliatePlaceInput,
+  surface: "itinerary" | "detail",
+  decision: ReturnType<typeof shouldShowTicketAffiliate>,
+  offers: AffiliateLinkOffer[],
+): void {
+  console.info("[AFFILIATE_CTA_ELIGIBILITY]", {
+    placeHash: affiliatePlaceHash(place.googlePlaceId?.trim() || placeDisplayName(place)),
+    surface,
+    eligible: decision.eligible,
+    commerceType: decision.commerceType,
+    confidence: decision.confidence,
+    evidenceTypes: decision.evidenceTypes,
+    exactProviderEvidence: decision.exactProviderEvidence,
+    providerSearchFallbackAllowed: decision.providerSearchFallbackAllowed,
+    tourismAuthorityPresent: decision.tourismAuthorityPresent,
+    majorLandmarkEvidence: decision.majorLandmarkEvidence,
+    experienceFallbackAllowed: decision.experienceFallbackAllowed,
+    culturalOrReligiousAuthorityPresent: decision.culturalOrReligiousAuthorityPresent,
+    reviewCountEvidenceState: resolveAffiliateReviewCountEvidenceState(place),
+    majorLandmarkEvidenceSources: decision.majorLandmarkEvidenceSources,
+    culturalFallbackDecisionReason: decision.culturalFallbackDecisionReason,
+    primaryTypePresent: Boolean(place.primaryType?.trim()),
+    typesPresent: Boolean(place.types?.length),
+    ratingPresent: place.rating != null,
+    userRatingCountPresent: place.userRatingCount != null,
+    businessStatusPresent: Boolean(place.businessStatus?.trim()),
+    admissionEvidencePresent:
+      place.admissionRequired === true ||
+      place.ticketingAvailable === true ||
+      place.guidedTourAvailable === true ||
+      place.activityAvailable === true ||
+      place.transportPassAvailable === true,
+    providerEvidencePresent: decision.exactProviderEvidence,
+    klookShown: offers.some((offer) => offer.provider === "klook" && offer.enabled),
+    kkdayShown: offers.some((offer) => offer.provider === "kkday" && offer.enabled),
+    genericTicketCtaShown:
+      decision.providerSearchFallbackAllowed && offers.some((offer) => offer.enabled),
+    renderedCtaMode: !offers.some((offer) => offer.enabled)
+      ? "hidden"
+      : decision.exactProviderEvidence
+        ? "exact_product"
+        : decision.commerceType === "experience" ||
+            decision.commerceType === "tour" ||
+            decision.commerceType === "activity"
+          ? "experience_search"
+          : "ticket_search",
+    metadataCompletenessScore: [
+      Boolean(place.primaryType?.trim()),
+      Boolean(place.types?.length),
+      place.rating != null,
+      place.userRatingCount != null,
+      Boolean(place.googlePlaceId?.trim()),
+    ].filter(Boolean).length,
+    missingEvidenceFields: [
+      !place.primaryType?.trim() ? "primary_type" : null,
+      !place.types?.length ? "types" : null,
+      place.rating == null ? "rating" : null,
+      place.userRatingCount == null ? "user_rating_count" : null,
+      !place.googlePlaceId?.trim() ? "identity" : null,
+    ].filter(Boolean),
+  });
 }
 
 function placeDisplayName(place: TicketAffiliatePlaceInput): string {
@@ -335,23 +435,30 @@ export function buildPlaceTicketOffers(
   item: Parameters<typeof isTicketEligiblePlace>[0],
   ctx?: PlaceTicketAffiliateContext,
 ): AffiliateLinkOffer[] {
-  const place: TicketAffiliatePlaceInput = {
+  const place = buildAffiliatePlaceEvidence({
+    googlePlaceId: item.googlePlaceId,
     placeName: item.placeName,
     title: item.title,
     placeType: item.placeType,
     category: item.category,
-    types: item.googleTypes ?? undefined,
-    primaryType: item.googleTypes?.[0] ?? item.placeType ?? undefined,
-  };
+    types: item.types ?? undefined,
+    googleTypes: item.googleTypes ?? undefined,
+    primaryType: item.types?.[0] ?? item.googleTypes?.[0] ?? item.placeType ?? undefined,
+    rating: item.rating,
+    userRatingCount: item.userRatingCount,
+    businessStatus: item.businessStatus,
+  });
   const decision = shouldShowTicketAffiliate(place, {
     destinationLabel: ctx?.destinationLabel,
     tripCtx: ctx?.tripCtx,
   });
   if (!decision.show) {
+    logAffiliateCtaEligibility(place, "itinerary", decision, []);
     logPlaceAffiliateRuleCheck(item, [], ctx?.tripCtx);
     return [];
   }
   const offers = buildTicketAffiliateOffers(place, ctx);
+  logAffiliateCtaEligibility(place, "itinerary", decision, offers);
   logPlaceAffiliateRuleCheck(item, offers, ctx?.tripCtx);
   return offers;
 }
@@ -373,11 +480,20 @@ export function logPlaceDetailAffiliateRender(input: {
 export function buildPlaceDetailTicketOffers(
   place: {
     name?: string | null;
+    id?: string | null;
+    googlePlaceId?: string | null;
     primaryType?: string | null;
     types?: string[] | null;
     category?: string | null;
     rating?: number | null;
     userRatingCount?: number | null;
+    businessStatus?: string | null;
+    admissionRequired?: boolean | null;
+    ticketingAvailable?: boolean | null;
+    guidedTourAvailable?: boolean | null;
+    activityAvailable?: boolean | null;
+    transportPassAvailable?: boolean | null;
+    affiliateProductProviders?: Array<"klook" | "kkday"> | null;
   },
   ctx?: PlaceTicketAffiliateContext,
 ): AffiliateLinkOffer[] {
@@ -387,14 +503,23 @@ export function buildPlaceDetailTicketOffers(
     ...(place.primaryType ? [place.primaryType] : []),
   ].join(",");
 
-  const ticketPlace: TicketAffiliatePlaceInput = {
+  const ticketPlace = buildAffiliatePlaceEvidence({
+    id: place.id,
+    googlePlaceId: place.googlePlaceId,
     name: place.name,
     primaryType: place.primaryType,
     types: place.types,
     category: place.category,
     rating: place.rating,
     userRatingCount: place.userRatingCount,
-  };
+    businessStatus: place.businessStatus,
+    admissionRequired: place.admissionRequired,
+    ticketingAvailable: place.ticketingAvailable,
+    guidedTourAvailable: place.guidedTourAvailable,
+    activityAvailable: place.activityAvailable,
+    transportPassAvailable: place.transportPassAvailable,
+    affiliateProductProviders: place.affiliateProductProviders,
+  });
 
   const decision = shouldShowTicketAffiliate(ticketPlace, {
     destinationLabel: ctx?.destinationLabel,
@@ -402,6 +527,7 @@ export function buildPlaceDetailTicketOffers(
   });
 
   if (!decision.show) {
+    logAffiliateCtaEligibility(ticketPlace, "detail", decision, []);
     logPlaceAffiliateRuleCheck(
       {
         placeName: placeName,
@@ -425,6 +551,7 @@ export function buildPlaceDetailTicketOffers(
   }
 
   const offers = buildTicketAffiliateOffers(ticketPlace, ctx);
+  logAffiliateCtaEligibility(ticketPlace, "detail", decision, offers);
   logPlaceAffiliateRuleCheck(
     {
       placeName,

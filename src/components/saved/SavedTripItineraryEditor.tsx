@@ -106,6 +106,7 @@ import { listTripDates } from "@/lib/outfit/group-by-date";
 import { resolveTripDestination } from "@/lib/outfit/trip-outfit-context";
 import { useTripOutfitSuggestion } from "@/hooks/use-trip-outfit-suggestion";
 import {
+  affiliatePlaceHash,
   buildFlightAffiliateOffers,
   buildHotelAffiliateOffers,
   buildPlaceTicketOffers,
@@ -114,6 +115,7 @@ import {
 import { buildTripAffiliateContext, parseTripTravelers, type AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { TripRemoveDayConfirmDialog } from "@/components/saved/TripRemoveDayConfirmDialog";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
+import { logAffiliateFactualEvidenceLifecycle } from "@/lib/affiliate/factual-evidence-lifecycle";
 import { useI18n } from "@/hooks/use-i18n";
 import { geocodeTripLocationFromText } from "@/lib/location.functions";
 import { resolveTripStop } from "@/lib/trip-stop-search.functions";
@@ -663,8 +665,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     [payload.destinationLocation, initial.destinationLocation, directionsLocationContext],
   );
 
-  const placeTicketOffersByKey = useMemo(() => {
-    const map = new Map<string, AffiliateLinkOffer[]>();
+  const placeTicketOffersByItem = useMemo(() => {
+    const map = new Map<RoamieItineraryItem, AffiliateLinkOffer[]>();
     const ticketCtx = {
       destinationLabel: affiliateDestinationLabel,
       destinationLocation: payload.destinationLocation ?? initial.destinationLocation ?? null,
@@ -672,7 +674,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       tripCtx: affiliateTripCtx,
     };
     for (const item of items) {
-      map.set(placeAffiliateKey(item), buildPlaceTicketOffers(item, ticketCtx));
+      logAffiliateFactualEvidenceLifecycle("stored_itinerary", item);
+      logAffiliateFactualEvidenceLifecycle("itinerary_ui", item);
+      map.set(item, buildPlaceTicketOffers(item, ticketCtx));
     }
     return map;
   }, [
@@ -2068,11 +2072,30 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                           )
                         }
                       />
-                      <TripAffiliateSection
-                        kind="ticket"
-                        offers={placeTicketOffersByKey.get(placeAffiliateKey(item)) ?? []}
-                        compact
-                      />
+                      {(() => {
+                        const offers = placeTicketOffersByItem.get(item) ?? [];
+                        if (offers.length === 0) return null;
+                        const renderedCtaMode = offers.some((offer) =>
+                          offer.label.includes("搜尋體驗"),
+                        )
+                          ? "experience_search"
+                          : offers.some((offer) => offer.label.includes("搜尋"))
+                            ? "ticket_search"
+                            : "exact_product";
+                        return (
+                          <TripAffiliateSection
+                            kind="ticket"
+                            offers={offers}
+                            compact
+                            surface="itinerary"
+                            placeHash={affiliatePlaceHash(
+                              item.googlePlaceId?.trim() || item.placeName || item.title,
+                            )}
+                            eligible
+                            renderedCtaMode={renderedCtaMode}
+                          />
+                        );
+                      })()}
                     </div>
                   );
                 })}

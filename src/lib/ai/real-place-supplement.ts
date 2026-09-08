@@ -56,6 +56,68 @@ export type SelectedThemeProfile = {
   combinationThemes: Record<number, string>;
 };
 
+export type ItineraryCandidateCapacityTarget = {
+  hardMinimum: number;
+  preferredTarget: number;
+  oversampleTarget: number;
+  fullDayCount: number;
+  partialDayCount: number;
+};
+
+export type ItineraryCandidateExpansionDecision = {
+  needed: boolean;
+  attempted: boolean;
+  skippedReason:
+    | "none"
+    | "selected_only"
+    | "capacity_sufficient"
+    | "day_plan_authority"
+    | "destination_unresolved";
+};
+
+/**
+ * Single capacity authority shared by acquisition, rebuild, and delivery.
+ * A full day needs two deliverable stops; three is the acquisition target.
+ * Explicit arrival/departure partial days retain the existing one-stop floor.
+ */
+export function resolveItineraryCandidateCapacityTarget(
+  days: number,
+  partialDays: readonly number[] = [],
+  pace: "relaxed" | "moderate" | "packed" = "moderate",
+): ItineraryCandidateCapacityTarget {
+  const safeDays = Math.max(1, Math.floor(days));
+  const validPartialDays = new Set(
+    partialDays.filter((day) => Number.isInteger(day) && day >= 1 && day <= safeDays),
+  );
+  const partialDayCount = validPartialDays.size;
+  const fullDayCount = safeDays - partialDayCount;
+  const hardMinimum = fullDayCount * 2 + partialDayCount;
+  const pacePreferredPerFullDay = pace === "relaxed" ? 2 : pace === "packed" ? 4 : 3;
+  const preferredTarget = Math.max(
+    hardMinimum,
+    fullDayCount * pacePreferredPerFullDay + partialDayCount,
+  );
+  const oversampleTarget = Math.max(preferredTarget, fullDayCount * 4 + partialDayCount * 2);
+  return { hardMinimum, preferredTarget, oversampleTarget, fullDayCount, partialDayCount };
+}
+
+export function resolveItineraryCandidateExpansionDecision(params: {
+  deliverableCandidateCount: number;
+  capacityTarget: ItineraryCandidateCapacityTarget;
+  selectedOnly: boolean;
+  hasDayPlan: boolean;
+  destinationResolved: boolean;
+}): ItineraryCandidateExpansionDecision {
+  const needed = params.deliverableCandidateCount < params.capacityTarget.hardMinimum;
+  if (!needed) return { needed, attempted: false, skippedReason: "capacity_sufficient" };
+  if (params.selectedOnly) return { needed, attempted: false, skippedReason: "selected_only" };
+  if (params.hasDayPlan) return { needed, attempted: false, skippedReason: "day_plan_authority" };
+  if (!params.destinationResolved) {
+    return { needed, attempted: false, skippedReason: "destination_unresolved" };
+  }
+  return { needed, attempted: true, skippedReason: "none" };
+}
+
 /**
  * Dynamic stop capacity.
  *
@@ -79,8 +141,9 @@ export function calculateDynamicStopCapacity(params: {
   const paceMul = pace === "relaxed" ? 1.6 : pace === "packed" ? 2.4 : 2.0;
   const densityAdj = density === "sparse" ? -0.25 : density === "dense" ? 0.25 : 0;
 
-  const requiredMinimum = tripDays * 3;
-  const fetchOversample = tripDays * 4;
+  const target = resolveItineraryCandidateCapacityTarget(tripDays, [], pace);
+  const requiredMinimum = target.preferredTarget;
+  const fetchOversample = target.oversampleTarget;
   const pacePreferred = Math.round(tripDays * (paceMul + densityAdj)) + (tripDays >= 3 ? 1 : 0);
 
   // Soft acquisition target: at least days×3; allow up to days×4 oversampling.
@@ -90,18 +153,9 @@ export function calculateDynamicStopCapacity(params: {
     Math.min(Math.max(pacePreferred, requiredMinimum), fetchOversample),
   );
 
-  // Single-select: lean floor (~55% of requiredMinimum, not of oversampled preferred).
-  // Multi-select: one real place per combo is enough for viability.
-  const minimumViableStops =
-    selectedCombinationCount <= 1
-      ? Math.max(
-          1,
-          Math.min(
-            preferredStops,
-            Math.max(tripDays > 1 ? 2 : 1, Math.ceil(requiredMinimum * 0.55)),
-          ),
-        )
-      : Math.max(selectedCombinationCount, Math.min(tripDays, selectedCombinationCount));
+  // Delivery/rebuild capacity must use the same full-day hard floor as the
+  // final validator. Combination count may raise, but never lower, the floor.
+  const minimumViableStops = Math.max(target.hardMinimum, selectedCombinationCount);
 
   const maximumStops = Math.max(
     preferredStops + 2,
@@ -895,7 +949,10 @@ export function normalizeItineraryStop(
     lng,
     address,
     googlePlaceId,
-    placeType: types[0],
+    placeType:
+      (typeof unwrapped.placeType === "string" && unwrapped.placeType.trim()) ||
+      (typeof unwrapped.primaryType === "string" && unwrapped.primaryType.trim()) ||
+      types[0],
     types,
     dayIndex: typeof unwrapped.dayIndex === "number" ? unwrapped.dayIndex : undefined,
     sourceCombinationId: sourceCombinationIds[0],
@@ -907,6 +964,8 @@ export function normalizeItineraryStop(
     rating: typeof unwrapped.rating === "number" ? unwrapped.rating : null,
     userRatingCount:
       typeof unwrapped.userRatingCount === "number" ? unwrapped.userRatingCount : null,
+    businessStatus:
+      typeof unwrapped.businessStatus === "string" ? unwrapped.businessStatus : null,
     openStatusLabel: unwrapped.openStatusLabel ? String(unwrapped.openStatusLabel) : undefined,
     todayHoursLabel: unwrapped.todayHoursLabel ? String(unwrapped.todayHoursLabel) : undefined,
     placeSnapshotSource: "selected_place",

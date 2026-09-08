@@ -19,10 +19,7 @@ import {
   flattenComposedDayPlanPlaces,
   resolveEntryLabel,
 } from "@/lib/ai/ai-day-plan-source";
-import {
-  dedupeEntryTimes,
-  repairDayPlanSlots,
-} from "@/lib/ai/ai-day-plan-slot-rules";
+import { dedupeEntryTimes, repairDayPlanSlots } from "@/lib/ai/ai-day-plan-slot-rules";
 import {
   redistributePlacesEvenly,
   repairTripDuplicatePlaces,
@@ -37,6 +34,7 @@ import type { TripStyleKey } from "@/lib/ai/ai-trip-style";
 import type { PlaceResult } from "@/lib/place-result";
 import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
 import { isDeliverableItineraryCandidate } from "@/lib/ai/itinerary-deliverable-candidate";
+import { placeMatchesExcludedCategories } from "@/lib/ai/recommendation-exclusion";
 import { distanceMeters } from "@/lib/geo-distance";
 import { isClearlyClosedAtSlot } from "@/lib/ai/itinerary-validator/place-checks";
 import {
@@ -136,12 +134,7 @@ export type ItineraryReplanOutcome = {
   plans: ComposedDayPlan[];
   validation: ItineraryValidationResult;
   attempts: number;
-  stopReason:
-    | "success"
-    | "max_rounds"
-    | "no_progress"
-    | "cycle_detected"
-    | "unrepaired_failure";
+  stopReason: "success" | "max_rounds" | "no_progress" | "cycle_detected" | "unrepaired_failure";
   noProgress: boolean;
   cycleDetected: boolean;
   requiredCount: number;
@@ -174,9 +167,7 @@ function evaluateReplanDiversity(
     ).ok,
     family,
     currentCount,
-    cap: family in limits
-      ? limits[family as keyof typeof limits]
-      : Number.POSITIVE_INFINITY,
+    cap: family in limits ? limits[family as keyof typeof limits] : Number.POSITIVE_INFINITY,
   };
 }
 
@@ -198,12 +189,8 @@ function logReplanDiversityMove(params: {
     `currentCount=${params.decision.currentCount}`,
     `cap=${Number.isFinite(params.decision.cap) ? params.decision.cap : "unlimited"}`,
     `decision=${params.decision.accepted ? "accepted" : "rejected"}`,
-    params.replacedPlaceId != null
-      ? `replacedPlaceId=${params.replacedPlaceId}`
-      : "",
-    params.replacedPlaceId != null
-      ? `replacementPlaceId=${params.place.id}`
-      : "",
+    params.replacedPlaceId != null ? `replacedPlaceId=${params.replacedPlaceId}` : "",
+    params.replacedPlaceId != null ? `replacementPlaceId=${params.place.id}` : "",
   );
 }
 const EVENING_MINUTES = 19 * 60;
@@ -246,9 +233,10 @@ export type RequiredCoverageState = {
   complete: boolean;
 };
 
-export function classifyRequiredIdentityAvailability(
-  requiredPlaces: readonly PlaceResult[] = [],
-): { unavailableCount: number; failureReason: "required_identity_unavailable" | "none" } {
+export function classifyRequiredIdentityAvailability(requiredPlaces: readonly PlaceResult[] = []): {
+  unavailableCount: number;
+  failureReason: "required_identity_unavailable" | "none";
+} {
   const unavailableCount = requiredPlaces.filter(
     (place) => !isHardGooglePlaceId(place.googlePlaceId),
   ).length;
@@ -264,7 +252,8 @@ export function evaluateRequiredPlaceCoverage(
 ): RequiredCoverageState {
   const uniqueRequired = requiredPlaces.filter(
     (place, index, all) =>
-      all.findIndex((candidate) => candidate === place || sameRequiredPlace(candidate, place)) === index,
+      all.findIndex((candidate) => candidate === place || sameRequiredPlace(candidate, place)) ===
+      index,
   );
   const present = plans.flatMap((plan) => plan.entries.map((entry) => entry.place));
   const missingRequired = uniqueRequired.filter(
@@ -329,7 +318,9 @@ export function repairRequiredPlaceCoverage(params: {
     const orderedDays = [...plans].sort((left, right) => {
       const affinity = (plan: ComposedDayPlan): number => {
         if (required.lat == null || required.lng == null) return Number.POSITIVE_INFINITY;
-        const located = plan.entries.filter((entry) => entry.place.lat != null && entry.place.lng != null);
+        const located = plan.entries.filter(
+          (entry) => entry.place.lat != null && entry.place.lng != null,
+        );
         if (!located.length) return Number.POSITIVE_INFINITY;
         const center = located.reduce(
           (sum, entry) => ({ lat: sum.lat + entry.place.lat!, lng: sum.lng + entry.place.lng! }),
@@ -341,29 +332,39 @@ export function repairRequiredPlaceCoverage(params: {
         );
       };
       const affinityDifference = affinity(left) - affinity(right);
-      if (Number.isFinite(affinityDifference) && affinityDifference !== 0) return affinityDifference;
+      if (Number.isFinite(affinityDifference) && affinityDifference !== 0)
+        return affinityDifference;
       const requiredOnLeft = left.entries.filter((entry) =>
         requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
       ).length;
       const requiredOnRight = right.entries.filter((entry) =>
         requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
       ).length;
-      return requiredOnLeft - requiredOnRight || right.entries.length - left.entries.length || left.day - right.day;
+      return (
+        requiredOnLeft - requiredOnRight ||
+        right.entries.length - left.entries.length ||
+        left.day - right.day
+      );
     });
-    const target = orderedDays.find((plan) =>
-      plan.entries.some((entry) =>
-        !requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
-      ),
-    ) ?? orderedDays[0];
+    const target =
+      orderedDays.find((plan) =>
+        plan.entries.some(
+          (entry) => !requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
+        ),
+      ) ?? orderedDays[0];
     if (!target) continue;
     const replaceIndex = [...target.entries]
       .map((entry, index) => ({ entry, index }))
       .reverse()
-      .find(({ entry }) =>
-        !requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
+      .find(
+        ({ entry }) =>
+          !requiredPlaces.some((candidate) => sameRequiredPlace(entry.place, candidate)),
       )?.index;
     const replacement: DayPlanEntry = {
-      time: replaceIndex == null ? DAYTIME_SLOTS[target.entries.length % DAYTIME_SLOTS.length]! : target.entries[replaceIndex]!.time,
+      time:
+        replaceIndex == null
+          ? DAYTIME_SLOTS[target.entries.length % DAYTIME_SLOTS.length]!
+          : target.entries[replaceIndex]!.time,
       label: required.primaryType ?? required.types?.[0] ?? "景點",
       name: required.name,
       // Atomic candidate replacement: never mix the displaced supplemental's identity.
@@ -402,9 +403,7 @@ function primaryTypeOf(place: PlaceResult): string {
 }
 
 function isDaytimeOnlyPlace(place: PlaceResult): boolean {
-  const blob = [place.name, place.primaryType, ...(place.types ?? [])]
-    .filter(Boolean)
-    .join(" ");
+  const blob = [place.name, place.primaryType, ...(place.types ?? [])].filter(Boolean).join(" ");
   return MUSEUM_CULTURE_RE.test(blob);
 }
 
@@ -431,12 +430,10 @@ function repairReorderSameDay(
       style,
       nearbyExtensions,
     });
-    current = ensureAllDayPlansExist(assembled.plans as ComposedDayPlan[], days).map(
-      (plan) => ({
-        ...plan,
-        entries: dedupeEntryTimes(plan.entries),
-      }),
-    );
+    current = ensureAllDayPlansExist(assembled.plans as ComposedDayPlan[], days).map((plan) => ({
+      ...plan,
+      entries: dedupeEntryTimes(plan.entries),
+    }));
   } catch {
     /* keep current */
   }
@@ -510,7 +507,9 @@ function repairDailyCategoryDiversity(
 ): ComposedDayPlan[] {
   const limits = resolveDailyDiversityLimits({ style });
   const beforeViolations = plans.flatMap((plan) => {
-    const families = new Set(plan.entries.map((entry) => classifyDailyDiversityCategory(entry.place)));
+    const families = new Set(
+      plan.entries.map((entry) => classifyDailyDiversityCategory(entry.place)),
+    );
     return [...families].flatMap((family) => {
       if (!(family in limits)) return [];
       const familyLimit = limits[family as keyof typeof limits];
@@ -519,20 +518,26 @@ function repairDailyCategoryDiversity(
       ).length;
       if (totalFamilyCount <= familyLimit) return [];
       const requiredFamilyCount = plan.entries.filter(
-        (entry) => isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
+        (entry) =>
+          isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
       ).length;
       const supplementalFamilyCount = Math.max(0, totalFamilyCount - requiredFamilyCount);
-      return [{
-        dayIndex: plan.day,
-        family,
-        familyLimit,
-        requiredFamilyCount,
-        supplementalFamilyCount,
-        totalFamilyCount,
-        provenance: requiredFamilyCount > familyLimit
-          ? supplementalFamilyCount > 0 ? "mixed" as const : "required_only" as const
-          : "supplemental_caused" as const,
-      }];
+      return [
+        {
+          dayIndex: plan.day,
+          family,
+          familyLimit,
+          requiredFamilyCount,
+          supplementalFamilyCount,
+          totalFamilyCount,
+          provenance:
+            requiredFamilyCount > familyLimit
+              ? supplementalFamilyCount > 0
+                ? ("mixed" as const)
+                : ("required_only" as const)
+              : ("supplemental_caused" as const),
+        },
+      ];
     });
   });
   const moved = repairDailyDiversityByMove({
@@ -566,18 +571,21 @@ function repairDailyCategoryDiversity(
       if (!(family in limits)) continue;
       const familyLimit = limits[family as keyof typeof limits];
       const requiredFamilyCount = plan.entries.filter(
-        (entry) => isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
+        (entry) =>
+          isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
       ).length;
       const allowedCount = Math.max(familyLimit, requiredFamilyCount);
       const beforeViolation = beforeViolations.find(
         (item) => item.dayIndex === plan.day && item.family === family,
       );
 
-      while (plan.entries.filter(
-        (entry) => classifyDailyDiversityCategory(entry.place) === family,
-      ).length > allowedCount) {
+      while (
+        plan.entries.filter((entry) => classifyDailyDiversityCategory(entry.place) === family)
+          .length > allowedCount
+      ) {
         const offendingIndex = plan.entries.findLastIndex(
-          (entry) => !isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
+          (entry) =>
+            !isLockedEntry(entry, lock) && classifyDailyDiversityCategory(entry.place) === family,
         );
         if (offendingIndex < 0) break;
         const offending = plan.entries[offendingIndex]!;
@@ -586,15 +594,15 @@ function repairDailyCategoryDiversity(
           const candidateId = placeIdOf(candidate);
           return Boolean(
             candidateId &&
-              !usedIds.has(candidateId) &&
-              evaluateTourismQuality(candidate).ok &&
-              classifyPlanPlaceKind(candidate) === classifyPlanPlaceKind(offending.place) &&
-              isClearlyClosedAtSlot(candidate, plannedDate, offending.time) !== true &&
-              wouldViolateDailyDiversity(
-                withoutOffending.map((entry) => entry.place),
-                candidate,
-                limits,
-              ).ok
+            !usedIds.has(candidateId) &&
+            evaluateTourismQuality(candidate).ok &&
+            classifyPlanPlaceKind(candidate) === classifyPlanPlaceKind(offending.place) &&
+            isClearlyClosedAtSlot(candidate, plannedDate, offending.time) !== true &&
+            wouldViolateDailyDiversity(
+              withoutOffending.map((entry) => entry.place),
+              candidate,
+              limits,
+            ).ok,
           );
         });
         if (replacement) {
@@ -602,7 +610,11 @@ function repairDailyCategoryDiversity(
           if (oldId) usedIds.delete(oldId);
           const replacementId = placeIdOf(replacement);
           if (replacementId) usedIds.add(replacementId);
-          plan.entries[offendingIndex] = { ...offending, name: replacement.name, place: replacement };
+          plan.entries[offendingIndex] = {
+            ...offending,
+            name: replacement.name,
+            place: replacement,
+          };
           replaced += 1;
           continue;
         }
@@ -623,20 +635,22 @@ function repairDailyCategoryDiversity(
         generationId: generationId ?? "",
         stage: `repair_${telemetryRepairRound}`,
         dayIndex: plan.day,
-        violatingFamilies: [{
-          family,
-          requiredFamilyCount: beforeViolation.requiredFamilyCount,
-          supplementalFamilyCount: beforeViolation.supplementalFamilyCount,
-          totalFamilyCount: beforeViolation.totalFamilyCount,
-          familyLimit,
-          provenance: beforeViolation.provenance,
-          requiredOverrideApplied:
-            beforeViolation.requiredFamilyCount > familyLimit && supplementalFamilyCount === 0,
-          supplementalRepairAttempted: beforeViolation.supplementalFamilyCount > 0,
-          supplementalRepairSucceeded: totalFamilyCount <= allowedCount,
-          blockingRuleEmitted: totalFamilyCount > allowedCount,
-          warningEmitted: requiredFamilyCount > familyLimit && supplementalFamilyCount === 0,
-        }],
+        violatingFamilies: [
+          {
+            family,
+            requiredFamilyCount: beforeViolation.requiredFamilyCount,
+            supplementalFamilyCount: beforeViolation.supplementalFamilyCount,
+            totalFamilyCount: beforeViolation.totalFamilyCount,
+            familyLimit,
+            provenance: beforeViolation.provenance,
+            requiredOverrideApplied:
+              beforeViolation.requiredFamilyCount > familyLimit && supplementalFamilyCount === 0,
+            supplementalRepairAttempted: beforeViolation.supplementalFamilyCount > 0,
+            supplementalRepairSucceeded: totalFamilyCount <= allowedCount,
+            blockingRuleEmitted: totalFamilyCount > allowedCount,
+            warningEmitted: requiredFamilyCount > familyLimit && supplementalFamilyCount === 0,
+          },
+        ],
       });
     }
   }
@@ -706,19 +720,11 @@ export function repairLongRouteLegs(
       }
       const a = prev.place;
       const b = curr.place;
-      if (
-        a.lat == null ||
-        a.lng == null ||
-        b.lat == null ||
-        b.lng == null
-      ) {
+      if (a.lat == null || a.lng == null || b.lat == null || b.lng == null) {
         stay.push(curr);
         continue;
       }
-      const dist = distanceMeters(
-        { lat: a.lat, lng: a.lng },
-        { lat: b.lat, lng: b.lng },
-      );
+      const dist = distanceMeters({ lat: a.lat, lng: a.lng }, { lat: b.lat, lng: b.lng });
       if (dist > LONG_LEG_REPAIR_M) {
         toMove.push(curr);
       } else {
@@ -740,11 +746,7 @@ export function repairLongRouteLegs(
           { lat: entry.place.lat, lng: entry.place.lng },
           { lat: anchor.lat, lng: anchor.lng },
         );
-        const diversityDecision = evaluateReplanDiversity(
-          other.entries,
-          entry.place,
-          style,
-        );
+        const diversityDecision = evaluateReplanDiversity(other.entries, entry.place, style);
         if (!diversityDecision.accepted) {
           logReplanDiversityMove({
             repairPath: "repair_long_route_legs",
@@ -761,11 +763,7 @@ export function repairLongRouteLegs(
         }
       }
       if (bestDay) {
-        const diversityDecision = evaluateReplanDiversity(
-          bestDay.entries,
-          entry.place,
-          style,
-        );
+        const diversityDecision = evaluateReplanDiversity(bestDay.entries, entry.place, style);
         bestDay.entries.push(entry);
         logReplanDiversityMove({
           repairPath: "repair_long_route_legs",
@@ -780,11 +778,7 @@ export function repairLongRouteLegs(
     }
   }
 
-  logAiPipeline(
-    "[ITINERARY_AUTO_REPAIR]",
-    "step=repair_long_route_legs",
-    `moved=${moved}`,
-  );
+  logAiPipeline("[ITINERARY_AUTO_REPAIR]", "step=repair_long_route_legs", `moved=${moved}`);
   return current;
 }
 
@@ -810,29 +804,28 @@ export function repairNonNavigableStops(
   let replaced = 0;
   const current = ensureAllDayPlansExist(plans, days).map((plan) => {
     const entries = plan.entries.map((entry) => {
-      const identity = checkStopNavigationIdentity({
-        placeName: entry.name,
-        title: entry.name,
-        localizedDisplayName: entry.place.localizedDisplayName,
-        googlePlaceId: entry.place.id,
-        lat: entry.place.lat,
-        lng: entry.place.lng,
-        navigationLatitude: entry.place.navigationLatitude,
-        navigationLongitude: entry.place.navigationLongitude,
-        coordinateSource: entry.place.coordinateSource,
-        address: entry.place.address,
-      }, { silent: true });
+      const identity = checkStopNavigationIdentity(
+        {
+          placeName: entry.name,
+          title: entry.name,
+          localizedDisplayName: entry.place.localizedDisplayName,
+          googlePlaceId: entry.place.id,
+          lat: entry.place.lat,
+          lng: entry.place.lng,
+          navigationLatitude: entry.place.navigationLatitude,
+          navigationLongitude: entry.place.navigationLongitude,
+          coordinateSource: entry.place.coordinateSource,
+          address: entry.place.address,
+        },
+        { silent: true },
+      );
       if (identity.useForDirections && identity.placeId) return entry;
       // Selected Place Lock: never silently replace user-chosen anchors.
       if (isLockedEntry(entry, lock)) return entry;
 
       const recipientEntries = plan.entries.filter((candidate) => candidate !== entry);
       const legalPool = pool.filter((candidate) => {
-        const decision = evaluateReplanDiversity(
-          recipientEntries,
-          candidate,
-          style,
-        );
+        const decision = evaluateReplanDiversity(recipientEntries, candidate, style);
         if (!decision.accepted) {
           logReplanDiversityMove({
             repairPath: "repair_non_navigable_stops",
@@ -927,10 +920,7 @@ function repairMoveEveningToDaytime(plans: ComposedDayPlan[], days: number): Com
 }
 
 /** Move only high-confidence, type-backed nightlife to an evening slot. */
-export function repairNightlifeTiming(
-  plans: ComposedDayPlan[],
-  days: number,
-): ComposedDayPlan[] {
+export function repairNightlifeTiming(plans: ComposedDayPlan[], days: number): ComposedDayPlan[] {
   return ensureAllDayPlansExist(plans, days).map((plan) => {
     const used = new Set(plan.entries.map((entry) => parseMinutes(entry.time)));
     const entries = plan.entries.map((entry) => {
@@ -998,11 +988,7 @@ export function repairReplaceClosedPlaces(
   plannedDate?: string,
   lock: SelectedPlaceLock | null = null,
 ): ComposedDayPlan[] {
-  const used = new Set(
-    flattenComposedDayPlanPlaces(plans)
-      .map(placeIdOf)
-      .filter(Boolean),
-  );
+  const used = new Set(flattenComposedDayPlanPlaces(plans).map(placeIdOf).filter(Boolean));
   const candidates = pool.filter((p) => {
     const id = placeIdOf(p);
     return id && !used.has(id);
@@ -1024,11 +1010,7 @@ export function repairReplaceClosedPlaces(
         if (cand.lat == null || cand.lng == null) continue;
         if (!similarType(entry.place, cand)) continue;
         if (isClearlyClosedAtSlot(cand, plannedDate, entry.time) === true) continue;
-        const diversityDecision = evaluateReplanDiversity(
-          recipientEntries,
-          cand,
-          style,
-        );
+        const diversityDecision = evaluateReplanDiversity(recipientEntries, cand, style);
         if (!diversityDecision.accepted) {
           logReplanDiversityMove({
             repairPath: "repair_replace_closed_places",
@@ -1114,9 +1096,7 @@ export function repairRedistributeAcrossDays(
     const candidateIds = new Set(
       flattenComposedDayPlanPlaces(candidatePlans).map(placeIdOf).filter(Boolean),
     );
-    return requiredEntries.every((entry) =>
-      candidateIds.has(placeIdOf(entry.place)),
-    );
+    return requiredEntries.every((entry) => candidateIds.has(placeIdOf(entry.place)));
   };
 
   let current = ensureDayPlansMeetMinimum({
@@ -1189,8 +1169,7 @@ function applyAutoRepairPass(
     reasonSet.size === 0 ||
     [...reasonSet].some((r) => r.includes("timeline") || r.includes("route"));
   const softHours =
-    reasonSet.has("replan_for_open_hours") ||
-    reasonSet.has("replan_meal_or_nightlife_slots");
+    reasonSet.has("replan_for_open_hours") || reasonSet.has("replan_meal_or_nightlife_slots");
   const softBalance =
     reasonSet.has("replan_for_multi_day_balance") ||
     reasonSet.has("replan_for_day_capacity") ||
@@ -1258,14 +1237,7 @@ function applyAutoRepairPass(
 
   // Step 3 — replace closed / hours conflict
   if (softHours || attempt >= 2) {
-    current = repairReplaceClosedPlaces(
-      current,
-      mergedPool,
-      days,
-      style,
-      plannedDate,
-      lock,
-    );
+    current = repairReplaceClosedPlaces(current, mergedPool, days, style, plannedDate, lock);
     current = repairDayPlanSlots(
       current,
       mergedPool,
@@ -1359,10 +1331,7 @@ export function shouldRepairDayCoverage(
   reasons: readonly string[],
   dayCounts: readonly number[],
 ): boolean {
-  return (
-    reasons.includes("replan_for_full_day_coverage") ||
-    dayCounts.some((count) => count === 0)
-  );
+  return reasons.includes("replan_for_full_day_coverage") || dayCounts.some((count) => count === 0);
 }
 
 function softPassValidation(
@@ -1423,9 +1392,7 @@ export function evaluateMinimumAcceptableQuality(
     }
   }
   if (
-    validation.failedRules.some(
-      (r) => r.code === "missing_days" || r.code === "day_place_count",
-    )
+    validation.failedRules.some((r) => r.code === "missing_days" || r.code === "day_place_count")
   ) {
     dayStructureOk = false;
     if (!reasons.some((r) => r.startsWith("day_structure:"))) {
@@ -1455,18 +1422,13 @@ export function evaluateMinimumAcceptableQuality(
     validation.warnings.some(
       (w) =>
         w.code === "business_hours_cover" &&
-        (w.message.startsWith("not_open_at_slot:") ||
-          w.message.includes("not_open_at_slot:")),
+        (w.message.startsWith("not_open_at_slot:") || w.message.includes("not_open_at_slot:")),
     );
   const noObviousHoursConflict = !obviousHours;
   if (!noObviousHoursConflict) reasons.push("hours:not_open_at_slot");
 
   const ok =
-    dayStructureOk &&
-    preferencesOk &&
-    noDuplicates &&
-    noObviousHoursConflict &&
-    noLowValue;
+    dayStructureOk && preferencesOk && noDuplicates && noObviousHoursConflict && noLowValue;
 
   logAiPipeline(
     "[ITINERARY_SOFT_PASS_QUALITY]",
@@ -1491,9 +1453,7 @@ export function evaluateMinimumAcceptableQuality(
 }
 
 /** Soft-pass 可容忍的殘餘規則（品質門檻已過時） */
-function remainingFailsAreSoftPassTolerated(
-  validation: ItineraryValidationResult,
-): boolean {
+function remainingFailsAreSoftPassTolerated(validation: ItineraryValidationResult): boolean {
   if (!validation.failedRules.length) return true;
   return validation.failedRules.every((r) =>
     (SOFT_REPAIRABLE_RULE_CODES as readonly string[]).includes(r.code),
@@ -1514,9 +1474,21 @@ export function replanUntilItineraryValid(
   const candidateAdmission = params.pool.map((candidate) => {
     const candidateSource = requiredPlaces.some((required) =>
       sameRequiredPlace(required, candidate),
-    ) ? "required" as const : "supplemental" as const;
+    )
+      ? ("required" as const)
+      : ("supplemental" as const);
     const decision = isDeliverableItineraryCandidate(candidate as never, destination);
-    return { candidate, candidateSource, decision };
+    const categoryExcluded = placeMatchesExcludedCategories(
+      candidate,
+      params.validatorInput.excludedCategories,
+    );
+    return {
+      candidate,
+      candidateSource,
+      decision: categoryExcluded
+        ? { ...decision, deliverable: false, reason: "explicit_category_excluded" }
+        : decision,
+    };
   });
   const deliverablePool = candidateAdmission
     .filter(({ decision }) => decision.deliverable)
@@ -1525,9 +1497,10 @@ export function replanUntilItineraryValid(
     const input = candidateAdmission.filter((item) => item.candidateSource === candidateSource);
     const rejectionReasonCounts = input.reduce<Record<string, number>>((counts, item) => {
       if (!item.decision.deliverable) {
-        const reason = candidateSource === "required" && item.decision.reason === "missing_google_identity"
-          ? "required_missing_google_identity"
-          : item.decision.reason ?? "other";
+        const reason =
+          candidateSource === "required" && item.decision.reason === "missing_google_identity"
+            ? "required_missing_google_identity"
+            : (item.decision.reason ?? "other");
         counts[reason] = (counts[reason] ?? 0) + 1;
       }
       return counts;
@@ -1556,9 +1529,7 @@ export function replanUntilItineraryValid(
   let cycleDetected = false;
   let requiredCoverage = evaluateRequiredPlaceCoverage(plans, params.requiredPlaces);
   const selectedLock = lockFromValidatorInput(params.validatorInput);
-  const seenPlanSignatures = new Set<string>([
-    buildItineraryPlanSignature(plans, selectedLock),
-  ]);
+  const seenPlanSignatures = new Set<string>([buildItineraryPlanSignature(plans, selectedLock)]);
   const initiallyUsedIds = new Set(
     plans.flatMap((plan) => plan.entries.map((entry) => entry.place.id.trim())),
   );
@@ -1586,10 +1557,15 @@ export function replanUntilItineraryValid(
   }
   logAiPipeline(
     "[CANDIDATE_POOL_SUMMARY]",
-    `families=${[...poolFamilies.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([family, counts]) => `${family}:verified=${counts.verified},unused=${counts.unused},replaceable=${counts.replaceable}`)
-      .join("|") || "(none)"}`,
+    `families=${
+      [...poolFamilies.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(
+          ([family, counts]) =>
+            `${family}:verified=${counts.verified},unused=${counts.unused},replaceable=${counts.replaceable}`,
+        )
+        .join("|") || "(none)"
+    }`,
     `poolSize=${deliverablePool.length}`,
   );
 
@@ -1669,12 +1645,7 @@ export function replanUntilItineraryValid(
       partialDays: params.validatorInput.partialDays,
     });
     if (!coverageGate.allDaysCovered) {
-      plans = repairEmptyDays(
-        plans,
-        params.days,
-        params.validatorInput.partialDays,
-        selectedLock,
-      );
+      plans = repairEmptyDays(plans, params.days, params.validatorInput.partialDays, selectedLock);
     }
 
     const requiredRepair = repairRequiredPlaceCoverage({
@@ -1725,7 +1696,8 @@ export function replanUntilItineraryValid(
       populatedDayCountBefore: before.filter((plan) => plan.entries.length > 0).length,
       dayPlaceCountsBefore: previousDayCounts,
       candidatePoolCount: deliverablePool.length,
-      supplementalAvailable: deliverablePool.filter((place) => !beforeIds.has(placeIdOf(place))).length,
+      supplementalAvailable: deliverablePool.filter((place) => !beforeIds.has(placeIdOf(place)))
+        .length,
       insertedCount,
       requiredCountBefore: requiredCoverageBefore.requiredCount,
       requiredSatisfiedBefore: requiredCoverageBefore.requiredSatisfiedCount,
@@ -1812,11 +1784,7 @@ export function replanUntilItineraryValid(
         const redistributedIds = new Set(
           flattenComposedDayPlanPlaces(redistributed).map(placeIdOf).filter(Boolean),
         );
-        if (
-          requiredEntries.every((entry) =>
-            redistributedIds.has(placeIdOf(entry.place)),
-          )
-        ) {
+        if (requiredEntries.every((entry) => redistributedIds.has(placeIdOf(entry.place)))) {
           plans = redistributed;
         }
         plans = repairEmptyDays(
@@ -1847,10 +1815,12 @@ export function replanUntilItineraryValid(
           "[ITINERARY_REPLAN_OUTPUT]",
           `newDayCounts=${dayCountsOfPlans(plans).join(",")}`,
           `movedPlaces=force_redistribute`,
-          `remainingEmptyDays=${dayCountsOfPlans(plans)
-            .map((c, i) => (c === 0 ? i + 1 : 0))
-            .filter((d) => d > 0)
-            .join(",") || "(none)"}`,
+          `remainingEmptyDays=${
+            dayCountsOfPlans(plans)
+              .map((c, i) => (c === 0 ? i + 1 : 0))
+              .filter((d) => d > 0)
+              .join(",") || "(none)"
+          }`,
           `validatorPass=${validation.pass}`,
         );
       }
@@ -1989,7 +1959,8 @@ export function replanUntilItineraryValid(
   const hardFailures = validation.failedRules.filter((rule) =>
     hasHardBlockFailures({ ...validation, failedRules: [rule] }),
   );
-  if (validation.pass && requiredCoverage.complete && !noProgress && !cycleDetected) stopReason = "success";
+  if (validation.pass && requiredCoverage.complete && !noProgress && !cycleDetected)
+    stopReason = "success";
   if (!requiredCoverage.complete && attempts >= MAX_ITINERARY_VALIDATOR_REPLAN_ATTEMPTS) {
     stopReason = "max_rounds";
   }

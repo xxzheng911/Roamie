@@ -27,9 +27,11 @@ import {
   preparePlacesForItineraryBuild,
 } from "@/lib/place-planning-memory";
 import type { PlaceResult } from "@/lib/place-result";
+import { placeMatchesExcludedCategories } from "@/lib/ai/recommendation-exclusion";
 import { dedupeLandmarkItems } from "@/lib/ai/landmark-cluster";
 import { validateCrossDayGeographicAllocation } from "@/lib/ai/geographic-clustering";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { logAffiliateFactualEvidenceLifecycle } from "@/lib/affiliate/factual-evidence-lifecycle";
 import {
   validateFinalItineraryIntegrity,
   validateGeneratedItinerary,
@@ -86,6 +88,7 @@ import {
 } from "@/lib/ai/final-day-route-ordering";
 import { repairCrossDayGeographicCohesion } from "@/lib/ai/cross-day-geographic-cohesion";
 import { isExcludedByPlaceOrAncestor } from "@/lib/ai/venue-hierarchy-relation";
+import { resolveItineraryCandidateCapacityTarget } from "@/lib/ai/real-place-supplement";
 
 type GeographicScopeResult = "in_scope" | "out_of_scope" | "unknown";
 
@@ -97,7 +100,11 @@ export type ItineraryGeographicScopeDecision = {
   destinationNormalized: string;
   candidateCityNormalized: string;
   candidateDistrictNormalized: string;
-  evidenceSource: "destination_alias" | "formatted_address_city" | "formatted_address_district" | "none";
+  evidenceSource:
+    | "destination_alias"
+    | "formatted_address_city"
+    | "formatted_address_district"
+    | "none";
   decision: GeographicScopeResult;
   mismatchReason: "city_match" | "city_mismatch" | "destination_unknown" | "no_reliable_locality";
 };
@@ -170,7 +177,7 @@ function stopMatchesRequired(
   const requiredName = (required.placeName ?? required.name).trim().toLowerCase();
   return Boolean(
     (requiredId && stop.googlePlaceId?.trim() === requiredId) ||
-      (stop.placeName ?? stop.title).trim().toLowerCase() === requiredName,
+    (stop.placeName ?? stop.title).trim().toLowerCase() === requiredName,
   );
 }
 
@@ -581,7 +588,19 @@ export const generateItinerary = createServerFn({ method: "POST" })
       data.placeAuthority === "selected_only"
         ? []
         : inputPlaces.filter((place) => place.isRequiredBySelection === false);
-    const filterExcluded = (place: RoamieRecommendationItem) => !exclusionDecision(place).excluded;
+    const filterExcluded = (place: RoamieRecommendationItem) =>
+      !exclusionDecision(place).excluded &&
+      !placeMatchesExcludedCategories(
+        {
+          name: place.placeName ?? place.name,
+          address: place.address ?? null,
+          type: place.type,
+          description: place.description,
+          primaryType: place.primaryType ?? place.type ?? null,
+          types: place.types ?? (place.type ? [place.type] : null),
+        },
+        data.excludedCategories,
+      );
     // Explicitly accepted required anchors use the Planner surface. Do not run
     // them through the generic Home/Explore recommendation-label gate again.
     const requiredBeforeExclusion = buildPlannerRequiredAnchors(
@@ -594,16 +613,23 @@ export const generateItinerary = createServerFn({ method: "POST" })
       inputSupplementalCandidates,
       data.destination,
     ).filter(filterExcluded);
-    const requiredRejectedCount = Math.max(0, inputRequiredPlaces.length - requiredSelectedPlaces.length);
+    const requiredRejectedCount = Math.max(
+      0,
+      inputRequiredPlaces.length - requiredSelectedPlaces.length,
+    );
     const requiredRejectionReasonCounts: Record<string, number> = {};
     const acceptedRequiredKeys = new Set(
-      requiredSelectedPlaces.map((place) =>
-        place.googlePlaceId?.trim() || `${(place.placeName ?? place.name).trim().toLowerCase()}@${place.address ?? ""}`,
+      requiredSelectedPlaces.map(
+        (place) =>
+          place.googlePlaceId?.trim() ||
+          `${(place.placeName ?? place.name).trim().toLowerCase()}@${place.address ?? ""}`,
       ),
     );
     const seenRequiredKeys = new Set<string>();
     for (const place of inputRequiredPlaces) {
-      const key = place.googlePlaceId?.trim() || `${(place.placeName ?? place.name).trim().toLowerCase()}@${place.address ?? ""}`;
+      const key =
+        place.googlePlaceId?.trim() ||
+        `${(place.placeName ?? place.name).trim().toLowerCase()}@${place.address ?? ""}`;
       if (acceptedRequiredKeys.has(key) && !seenRequiredKeys.has(key)) {
         seenRequiredKeys.add(key);
         continue;
@@ -612,13 +638,15 @@ export const generateItinerary = createServerFn({ method: "POST" })
       const status = (place.businessStatus ?? "").toUpperCase();
       const hasIdentity = Boolean(place.googlePlaceId?.trim());
       const hasCoordinates =
-        Number.isFinite(place.lat) && Number.isFinite(place.lng) &&
+        Number.isFinite(place.lat) &&
+        Number.isFinite(place.lng) &&
         (Math.abs(place.lat ?? 0) > 0.001 || Math.abs(place.lng ?? 0) > 0.001);
       if (seenRequiredKeys.has(key)) reason = "duplicate";
       else if (exclusionDecision(place).excluded) reason = "excluded";
       else if (status === "CLOSED_TEMPORARILY") reason = "closed_temporarily";
       else if (status === "CLOSED_PERMANENTLY") reason = "closed_permanently";
-      else if ((place.lat != null || place.lng != null) && !hasCoordinates && !hasIdentity) reason = "invalid_coordinates";
+      else if ((place.lat != null || place.lng != null) && !hasCoordinates && !hasIdentity)
+        reason = "invalid_coordinates";
       else if (!hasIdentity && !hasCoordinates) reason = "invalid_identity";
       else if (!isValidItineraryStopPlace(place, data.destination)) reason = "unsuitable_type";
       requiredRejectionReasonCounts[reason] = (requiredRejectionReasonCounts[reason] ?? 0) + 1;
@@ -653,7 +681,45 @@ export const generateItinerary = createServerFn({ method: "POST" })
       .filter(({ scope }) => scope !== "out_of_scope")
       .map(({ place }) => place);
     const selectedPlaces = [...requiredSelectedPlaces, ...supplementalPlaces];
-    const stopOrigins = new Map<string, "initial_ai" | "required_repair" | "supplemental_repair" | "replan" | "deterministic_rebuild" | "preserved" | "unknown">();
+    for (const place of selectedPlaces) {
+      logAffiliateFactualEvidenceLifecycle("server_input", place, generationId);
+    }
+    const serverCapacityTarget = resolveItineraryCandidateCapacityTarget(data.days);
+    const serverDeliverablePool = buildDeliverableItineraryCandidatePool(
+      selectedPlaces.map((candidate) => ({
+        candidate,
+        sourceType: candidate.isRequiredBySelection === false
+          ? ("supplemental_pool" as const)
+          : ("legacy_selected_places" as const),
+      })),
+      data.destination,
+    );
+    console.info("[ITINERARY_CANDIDATE_CAPACITY]", {
+      generationId,
+      stage: "server_input",
+      tripDays: data.days,
+      requiredCount: requiredSelectedPlaces.length,
+      supplementalSeedCount: supplementalPlaces.length,
+      rawCandidateCount: inputPlaces.length,
+      deliverableCandidateCount: serverDeliverablePool.deliverableCount,
+      hardMinimum: serverCapacityTarget.hardMinimum,
+      preferredTarget: serverCapacityTarget.preferredTarget,
+      expansionNeeded: serverDeliverablePool.deliverableCount < serverCapacityTarget.hardMinimum,
+      expansionAttempted: false,
+      expansionAddedCount: 0,
+      finalDeliverableCount: serverDeliverablePool.deliverableCount,
+      expansionSkippedReason: "client_preflight_authority",
+    });
+    const stopOrigins = new Map<
+      string,
+      | "initial_ai"
+      | "required_repair"
+      | "supplemental_repair"
+      | "replan"
+      | "deterministic_rebuild"
+      | "preserved"
+      | "unknown"
+    >();
     const logAssemblyStage = (stage: string, stops: readonly RoamieItineraryItem[]) => {
       const plans = composedPlansFromItineraryItems(stops, data.days, data.startDate);
       const identityCounts = itineraryIdentityCounts(stops, selectedPlaces);
@@ -684,7 +750,9 @@ export const generateItinerary = createServerFn({ method: "POST" })
           anonymousStopHash: stopHash,
           createdBy: stopOrigins.get(stopHash) ?? "unknown",
           googlePlaceIdPresent: lookup.reason === "already_google",
-          canonicalIdentityPresent: Boolean(stop.googlePlaceId?.trim() || stop.placeName?.trim() || stop.title.trim()),
+          canonicalIdentityPresent: Boolean(
+            stop.googlePlaceId?.trim() || stop.placeName?.trim() || stop.title.trim(),
+          ),
           sourceCandidateIndexPresent: lookup.candidateIndex != null,
           provenanceKeyPresent: lookup.candidate != null,
         });
@@ -693,8 +761,10 @@ export const generateItinerary = createServerFn({ method: "POST" })
     console.info("[ITINERARY_SUPPLEMENT_SCOPE_FILTER]", {
       generationId,
       inputSupplementalCount: inputSupplementalPlaces.length,
-      inScopeSupplementalCount: supplementalScope.filter(({ scope }) => scope === "in_scope").length,
-      droppedOutOfScopeCount: supplementalScope.filter(({ scope }) => scope === "out_of_scope").length,
+      inScopeSupplementalCount: supplementalScope.filter(({ scope }) => scope === "in_scope")
+        .length,
+      droppedOutOfScopeCount: supplementalScope.filter(({ scope }) => scope === "out_of_scope")
+        .length,
       unknownScopeCount: supplementalScope.filter(({ scope }) => scope === "unknown").length,
     });
 
@@ -850,14 +920,18 @@ export const generateItinerary = createServerFn({ method: "POST" })
           console.info("[ITINERARY_IDENTITY_LOOKUP]", {
             generationId,
             stage: "initial_normalization",
-            inputMissingCount: initialIdentityRecovery.restoredFromCandidatePoolCount + initialIdentityRecovery.unrecoverableCount,
+            inputMissingCount:
+              initialIdentityRecovery.restoredFromCandidatePoolCount +
+              initialIdentityRecovery.unrecoverableCount,
             canonicalMatchCount: initialIdentityRecovery.lookupReasonCounts.canonical_identity ?? 0,
             sourceKeyMatchCount: initialIdentityRecovery.lookupReasonCounts.source_key ?? 0,
             nameAddressMatchCount: initialIdentityRecovery.lookupReasonCounts.name_address ?? 0,
-            nameCoordinateMatchCount: initialIdentityRecovery.lookupReasonCounts.name_coordinate ?? 0,
+            nameCoordinateMatchCount:
+              initialIdentityRecovery.lookupReasonCounts.name_coordinate ?? 0,
             ambiguousCount: initialIdentityRecovery.lookupReasonCounts.ambiguous ?? 0,
             noMatchCount: initialIdentityRecovery.lookupReasonCounts.no_match ?? 0,
-            sourceCandidateMissingGoogleIdCount: initialIdentityRecovery.lookupReasonCounts.source_candidate_missing_google_id ?? 0,
+            sourceCandidateMissingGoogleIdCount:
+              initialIdentityRecovery.lookupReasonCounts.source_candidate_missing_google_id ?? 0,
           });
           const enrichedItinerary = enrichItineraryFromSelectedPlaces(
             rawItinerary,
@@ -1019,14 +1093,11 @@ export const generateItinerary = createServerFn({ method: "POST" })
           }),
         });
       }
-      const routedPlans = applyFinalDayRouteOrdering(
-        composedPlans,
-        {
-          generationId,
-          stage,
-          plannedDate: startDate,
-        },
-      );
+      const routedPlans = applyFinalDayRouteOrdering(composedPlans, {
+        generationId,
+        stage,
+        plannedDate: startDate,
+      });
       finalStops = applyComposedPlansToItineraryItems(finalStops, routedPlans, startDate);
       ai = { ...ai!, itinerary: finalStops };
     };
@@ -1034,28 +1105,29 @@ export const generateItinerary = createServerFn({ method: "POST" })
     let requiredCoverageAfterReplanStops = [...finalStops];
     let requiredCoverageAfterRebuildStops = [...finalStops];
     let requiredCoverageRebuildAttempted = false;
-    const exclusionViolations = finalStops.filter((stop) =>
-      isExcludedByPlaceOrAncestor(
-        {
-          googlePlaceId: stop.googlePlaceId,
-          name: stop.placeName ?? stop.title,
-          address: stop.address ?? null,
-          lat: stop.lat ?? null,
-          lng: stop.lng ?? null,
-          primaryType: stop.placeType ?? null,
-          types: stop.types ?? null,
-        },
-        [...excludedPlaceIds],
-        explicitExcludedPlaces.map((excluded) => ({
-          googlePlaceId: excluded.googlePlaceId,
-          name: excluded.placeName ?? excluded.name,
-          address: excluded.address ?? null,
-          lat: excluded.lat ?? null,
-          lng: excluded.lng ?? null,
-          primaryType: excluded.primaryType ?? excluded.type ?? null,
-          types: excluded.types ?? (excluded.type ? [excluded.type] : null),
-        })),
-      ).excluded,
+    const exclusionViolations = finalStops.filter(
+      (stop) =>
+        isExcludedByPlaceOrAncestor(
+          {
+            googlePlaceId: stop.googlePlaceId,
+            name: stop.placeName ?? stop.title,
+            address: stop.address ?? null,
+            lat: stop.lat ?? null,
+            lng: stop.lng ?? null,
+            primaryType: stop.placeType ?? null,
+            types: stop.types ?? null,
+          },
+          [...excludedPlaceIds],
+          explicitExcludedPlaces.map((excluded) => ({
+            googlePlaceId: excluded.googlePlaceId,
+            name: excluded.placeName ?? excluded.name,
+            address: excluded.address ?? null,
+            lat: excluded.lat ?? null,
+            lng: excluded.lng ?? null,
+            primaryType: excluded.primaryType ?? excluded.type ?? null,
+            types: excluded.types ?? (excluded.type ? [excluded.type] : null),
+          })),
+        ).excluded,
     );
     if (exclusionViolations.length) {
       const rebuilt = buildItineraryFromSelectedPlaces(
@@ -1096,9 +1168,9 @@ export const generateItinerary = createServerFn({ method: "POST" })
       rating: place.rating ?? null,
       userRatingCount: place.userRatingCount ?? null,
       photoName: place.photoName ?? null,
-      primaryType: place.type ?? null,
-      types: place.type ? [place.type] : null,
-      businessStatus: null,
+      primaryType: place.primaryType ?? place.type ?? null,
+      types: place.types?.length ? place.types : place.type ? [place.type] : null,
+      businessStatus: place.businessStatus ?? null,
       openStatus: "unknown",
       openStatusLabel: "",
       todayHoursLabel: "",
@@ -1116,7 +1188,11 @@ export const generateItinerary = createServerFn({ method: "POST" })
         generationId: data.generationId,
       });
       if (repairedInitial.insertedCount > 0) {
-        finalStops = applyComposedPlansToItineraryItems(finalStops, repairedInitial.plans, startDate);
+        finalStops = applyComposedPlansToItineraryItems(
+          finalStops,
+          repairedInitial.plans,
+          startDate,
+        );
         ai = { ...ai, itinerary: finalStops };
       }
       routeFinalStops("post_required_repair");
@@ -1331,15 +1407,36 @@ export const generateItinerary = createServerFn({ method: "POST" })
         ...delivery.reasons.filter((r) => r.startsWith("missing_") || r.startsWith("coverage")),
       ];
       if (critical.length || !recommendationIntegrity.ok) {
+        const capacityTarget = resolveItineraryCandidateCapacityTarget(data.days);
+        const plans = composedPlansFromItineraryItems(finalStops, data.days, startDate);
+        const capacityFailure = critical.some((reason) =>
+          reason.startsWith("insufficient_real_places"),
+        );
+        const failureReason = capacityFailure
+          ? "insufficient_deliverable_capacity"
+          : "selected_combination_integrity_failed";
         logAiPipeline(
           "[ITINERARY_INTEGRITY_BLOCKED_SAVE]",
           `reasons=${critical.join("|") || recommendationIntegrity.reasons.join("|")}`,
           `coveragePercent=${recommendationIntegrity.coveragePercent}`,
         );
+        console.info("[ITINERARY_INTEGRITY_FAILURE]", {
+          generationId,
+          failedStage: "selected_combination_pre_validator",
+          failureReason,
+          dynamicMinimumViableStopCount: capacityTarget.hardMinimum,
+          validatorMinimumRequiredStopCount: capacityTarget.hardMinimum,
+          finalStopCount: finalStops.length,
+          populatedDayCount: plans.filter((plan) => plan.entries.length > 0).length,
+          emptyDayCount: plans.filter((plan) => plan.entries.length === 0).length,
+          insufficientCapacity: capacityFailure,
+        });
         await recordGenerationOutcome(false, "itinerary_integrity_failed");
         return finish({
           success: false,
           errorCode: "itinerary_integrity_failed",
+          failureReason,
+          failedRules: capacityFailure ? ["day_place_count"] : undefined,
           message: INSUFFICIENT_ITINERARY_PLACES_MESSAGE,
         });
       }
@@ -1348,10 +1445,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
     // Explicit duration remains authoritative even when dates are absent. Repair
     // an assembly that lost every stop/day before entering the strict validator.
     const preValidatorPlans = composedPlansFromItineraryItems(finalStops, data.days, startDate);
-    if (
-      finalStops.length === 0 ||
-      preValidatorPlans.some((plan) => plan.entries.length === 0)
-    ) {
+    if (finalStops.length === 0 || preValidatorPlans.some((plan) => plan.entries.length === 0)) {
       const rebuilt = buildItineraryFromSelectedPlaces(
         selectedPlaces,
         data.days,
@@ -1434,7 +1528,10 @@ export const generateItinerary = createServerFn({ method: "POST" })
       });
       requiredCoverageAfterReplanStops = [...finalStops];
       requiredCoverageAfterRebuildStops = [...finalStops];
-      const logDayPlaceCounts = (currentValidation: typeof validation, currentPlans: typeof composed) => {
+      const logDayPlaceCounts = (
+        currentValidation: typeof validation,
+        currentPlans: typeof composed,
+      ) => {
         const failedDays = new Set(
           currentValidation.failedRules
             .filter((rule) => rule.code === "day_place_count")
@@ -1493,8 +1590,12 @@ export const generateItinerary = createServerFn({ method: "POST" })
         const supplementalPoolIds = new Set(
           supplementalPlaces.map((place) => (place.googlePlaceId ?? place.name).trim()),
         );
-        const requiredInsertedCount = newlyInsertedIds.filter((id) => requiredPoolIds.has(id)).length;
-        const supplementalInsertedCount = newlyInsertedIds.filter((id) => supplementalPoolIds.has(id)).length;
+        const requiredInsertedCount = newlyInsertedIds.filter((id) =>
+          requiredPoolIds.has(id),
+        ).length;
+        const supplementalInsertedCount = newlyInsertedIds.filter((id) =>
+          supplementalPoolIds.has(id),
+        ).length;
         console.info("[ITINERARY_SUPPLEMENT_RECOVERY]", {
           generationId,
           inputSupplementalCount: inputSupplementalCandidates.length,
@@ -1504,7 +1605,10 @@ export const generateItinerary = createServerFn({ method: "POST" })
           supplementalInsertedCount,
           insertedCount: supplementalInsertedCount,
           rejectedCount: Math.max(0, supplementalPlaces.length - supplementalInsertedCount),
-          rejectionReasonCounts: supplementalInsertedCount < supplementalPlaces.length ? { not_inserted: supplementalPlaces.length - supplementalInsertedCount } : {},
+          rejectionReasonCounts:
+            supplementalInsertedCount < supplementalPlaces.length
+              ? { not_inserted: supplementalPlaces.length - supplementalInsertedCount }
+              : {},
           finalDayPlaceCounts: replannedCounts,
         });
         if (replanned.plans.length) {
@@ -1532,11 +1636,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         const postReplanMissingDays = validation.failedRules.some(
           (rule) => rule.code === "missing_days",
         );
-        if (
-          postReplanMissingRequired.length ||
-          postReplanMissingDays ||
-          finalStops.length === 0
-        ) {
+        if (postReplanMissingRequired.length || postReplanMissingDays || finalStops.length === 0) {
           requiredCoverageRebuildAttempted = true;
           const sourcedRebuildInput = [
             ...requiredSelectedPlaces.map((candidate) => ({
@@ -1545,7 +1645,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
             })),
             ...supplementalPlaces.map((candidate) => ({
               candidate,
-              sourceType: (candidate.destinationScope === "nearby_extension" || candidate.extensionDestination
+              sourceType: (candidate.destinationScope === "nearby_extension" ||
+              candidate.extensionDestination
                 ? "extension_pool"
                 : "supplemental_pool") as ItineraryCandidateSourceType,
             })),
@@ -1554,8 +1655,12 @@ export const generateItinerary = createServerFn({ method: "POST" })
             sourcedRebuildInput,
             data.destination,
           );
-          for (const sourceType of [...new Set(sourcedRebuildInput.map((item) => item.sourceType))]) {
-            const sourceCandidates = sourcedRebuildInput.filter((item) => item.sourceType === sourceType);
+          for (const sourceType of [
+            ...new Set(sourcedRebuildInput.map((item) => item.sourceType)),
+          ]) {
+            const sourceCandidates = sourcedRebuildInput.filter(
+              (item) => item.sourceType === sourceType,
+            );
             const eligibleDeliverableCount = deliverablePool.eligible.filter(
               (item) => item.sourceType === sourceType,
             ).length;
@@ -1566,9 +1671,10 @@ export const generateItinerary = createServerFn({ method: "POST" })
               googleIdentityCount: sourceCandidates.filter((item) =>
                 isHardGooglePlaceId(item.candidate.googlePlaceId),
               ).length,
-              missingGoogleIdentityCount: sourceCandidates.length - sourceCandidates.filter((item) =>
-                isHardGooglePlaceId(item.candidate.googlePlaceId),
-              ).length,
+              missingGoogleIdentityCount:
+                sourceCandidates.length -
+                sourceCandidates.filter((item) => isHardGooglePlaceId(item.candidate.googlePlaceId))
+                  .length,
               eligibleDeliverableCount,
             });
           }
@@ -1640,13 +1746,19 @@ export const generateItinerary = createServerFn({ method: "POST" })
             populatedDayCount: currentPlans.filter((plan) => plan.entries.length > 0).length,
             requiredCoverageCount: coverageCount(finalStops),
             blockingFailedRuleCount: currentValidation.failedRules.length,
-            totalValidEntryCount: currentPlans.reduce((count, plan) => count + plan.entries.length, 0),
+            totalValidEntryCount: currentPlans.reduce(
+              (count, plan) => count + plan.entries.length,
+              0,
+            ),
           };
           const rebuiltQuality: ItineraryDeliveryQuality = {
             populatedDayCount: rebuiltPlans.filter((plan) => plan.entries.length > 0).length,
             requiredCoverageCount: coverageCount(rebuiltStops),
             blockingFailedRuleCount: rebuiltValidation.failedRules.length,
-            totalValidEntryCount: rebuiltPlans.reduce((count, plan) => count + plan.entries.length, 0),
+            totalValidEntryCount: rebuiltPlans.reduce(
+              (count, plan) => count + plan.entries.length,
+              0,
+            ),
           };
           const rebuildAccepted =
             !insufficientDeliverableCapacity &&
@@ -1698,8 +1810,10 @@ export const generateItinerary = createServerFn({ method: "POST" })
         console.info("[ITINERARY_DELIVERY_IDENTITY]", {
           generationId,
           totalStopCount: finalStops.length,
-          googleIdentityCount: itineraryIdentityCounts(finalStops, selectedPlaces).googleIdentityCount,
-          missingIdentityCount: itineraryIdentityCounts(finalStops, selectedPlaces).missingIdentityCount,
+          googleIdentityCount: itineraryIdentityCounts(finalStops, selectedPlaces)
+            .googleIdentityCount,
+          missingIdentityCount: itineraryIdentityCounts(finalStops, selectedPlaces)
+            .missingIdentityCount,
           unrecoverableCount: requiredIdentityUnavailableCount,
           failureReason: "required_identity_unavailable",
         });
@@ -1736,7 +1850,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
       }
       console.info("[ITINERARY_IDENTITY_RECOVERY]", {
         generationId,
-        internalOnlyCount: itineraryIdentityCounts(finalStops, selectedPlaces).internalOnlyIdentityCount,
+        internalOnlyCount: itineraryIdentityCounts(finalStops, selectedPlaces)
+          .internalOnlyIdentityCount,
         recoveredFromCandidatePoolCount: identityRecovery.restoredFromCandidatePoolCount,
         replacedFromSupplementalPoolCount: identityRecovery.replacedFromSupplementalPoolCount,
         unrecoverableCount: identityRecovery.unrecoverableCount,
@@ -1745,14 +1860,18 @@ export const generateItinerary = createServerFn({ method: "POST" })
       console.info("[ITINERARY_IDENTITY_LOOKUP]", {
         generationId,
         stage: "pre_validator_recovery",
-        inputMissingCount: identityRecovery.restoredFromCandidatePoolCount + identityRecovery.replacedFromSupplementalPoolCount + identityRecovery.unrecoverableCount,
+        inputMissingCount:
+          identityRecovery.restoredFromCandidatePoolCount +
+          identityRecovery.replacedFromSupplementalPoolCount +
+          identityRecovery.unrecoverableCount,
         canonicalMatchCount: identityRecovery.lookupReasonCounts.canonical_identity ?? 0,
         sourceKeyMatchCount: identityRecovery.lookupReasonCounts.source_key ?? 0,
         nameAddressMatchCount: identityRecovery.lookupReasonCounts.name_address ?? 0,
         nameCoordinateMatchCount: identityRecovery.lookupReasonCounts.name_coordinate ?? 0,
         ambiguousCount: identityRecovery.lookupReasonCounts.ambiguous ?? 0,
         noMatchCount: identityRecovery.lookupReasonCounts.no_match ?? 0,
-        sourceCandidateMissingGoogleIdCount: identityRecovery.lookupReasonCounts.source_candidate_missing_google_id ?? 0,
+        sourceCandidateMissingGoogleIdCount:
+          identityRecovery.lookupReasonCounts.source_candidate_missing_google_id ?? 0,
       });
       logAssemblyStage("pre_validator", finalStops);
       if (identityRecovery.unrecoverableCount > 0) {
@@ -1833,7 +1952,10 @@ export const generateItinerary = createServerFn({ method: "POST" })
         eligibleRequiredCount: requiredSelectedPlaces.length,
         satisfiedRequiredCount,
         missingRequiredCount: Math.max(0, requiredSelectedPlaces.length - satisfiedRequiredCount),
-        droppedDuringAssemblyCount: Math.max(0, requiredSelectedPlaces.length - satisfiedRequiredCount),
+        droppedDuringAssemblyCount: Math.max(
+          0,
+          requiredSelectedPlaces.length - satisfiedRequiredCount,
+        ),
       });
       if (satisfiedRequiredCount !== requiredSelectedPlaces.length) {
         validation = {
@@ -1858,20 +1980,33 @@ export const generateItinerary = createServerFn({ method: "POST" })
         );
         const finalIdentitySet = new Set(finalIdentities);
         const requiredIdentities = requiredSelectedPlaces.map((place) =>
-          (place.googlePlaceId?.trim() || place.placeName?.trim() || place.name.trim()).toLowerCase(),
+          (
+            place.googlePlaceId?.trim() ||
+            place.placeName?.trim() ||
+            place.name.trim()
+          ).toLowerCase(),
         );
         const requiredAnchorSatisfiedCount = requiredIdentities.filter((identity) =>
           finalIdentitySet.has(identity),
         ).length;
         console.info("[ITINERARY_REQUIRED_ANCHOR_COVERAGE]", {
           generationId,
-          clientRequiredCount: data.selectedPlaces.filter((place) => place.isRequiredBySelection !== false).length,
+          clientRequiredCount: data.selectedPlaces.filter(
+            (place) => place.isRequiredBySelection !== false,
+          ).length,
           serverInputRequiredCount: requiredSelectedPlaces.length,
           plannerRequiredCount: requiredIdentities.length,
           generatedSatisfiedCount: requiredAnchorSatisfiedCount,
           missingCount: Math.max(0, requiredIdentities.length - requiredAnchorSatisfiedCount),
-          droppedBeforePlannerCount: Math.max(0, data.selectedPlaces.filter((place) => place.isRequiredBySelection !== false).length - requiredSelectedPlaces.length),
-          droppedDuringAssemblyCount: Math.max(0, requiredIdentities.length - requiredAnchorSatisfiedCount),
+          droppedBeforePlannerCount: Math.max(
+            0,
+            data.selectedPlaces.filter((place) => place.isRequiredBySelection !== false).length -
+              requiredSelectedPlaces.length,
+          ),
+          droppedDuringAssemblyCount: Math.max(
+            0,
+            requiredIdentities.length - requiredAnchorSatisfiedCount,
+          ),
         });
         const failedRuleCodes = validation.failedRules.map((rule) => rule.code);
         const finalExclusionRules = validation.failedRules.filter(
@@ -1879,9 +2014,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         );
         const excludedViolationKeys = new Set(
           finalExclusionRules.flatMap((rule) =>
-            rule.placeIds?.length
-              ? rule.placeIds
-              : [`${rule.day ?? 0}:${rule.message}`],
+            rule.placeIds?.length ? rule.placeIds : [`${rule.day ?? 0}:${rule.message}`],
           ),
         );
         const capacityOnlyFailure =
@@ -1917,8 +2050,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
                 .filter((rule) => rule.code === "missing_days")
                 .flatMap((rule) => (rule.day == null ? [] : [rule.day])),
             ).size,
-            routeViolationCount: failedRuleCodes.filter((code) =>
-              code === "route_travel_time" || code === "route_backtrack",
+            routeViolationCount: failedRuleCodes.filter(
+              (code) => code === "route_travel_time" || code === "route_backtrack",
             ).length,
             capacityViolationCount: failedRuleCodes.filter(
               (code) => code === "day_capacity_pace_lock",
@@ -1963,6 +2096,9 @@ export const generateItinerary = createServerFn({ method: "POST" })
       supplementalCandidates: supplementalPlaces,
     });
     finalStops = deliveryIdentityRecovery.items;
+    for (const stop of finalStops) {
+      logAffiliateFactualEvidenceLifecycle("pre_persistence", stop, generationId);
+    }
     ai = { ...ai, itinerary: finalStops };
     const deliveryIdentityCounts = itineraryIdentityCounts(finalStops, selectedPlaces);
     console.info("[ITINERARY_IDENTITY_RECOVERY]", {
@@ -1970,8 +2106,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       stage: "pre_delivery",
       internalOnlyCount: deliveryIdentityCounts.internalOnlyIdentityCount,
       recoveredFromCandidatePoolCount: deliveryIdentityRecovery.restoredFromCandidatePoolCount,
-      replacedFromSupplementalPoolCount:
-        deliveryIdentityRecovery.replacedFromSupplementalPoolCount,
+      replacedFromSupplementalPoolCount: deliveryIdentityRecovery.replacedFromSupplementalPoolCount,
       unrecoverableCount: deliveryIdentityRecovery.unrecoverableCount,
     });
     console.info("[ITINERARY_IDENTITY_PROPAGATION]", {
@@ -2004,7 +2139,8 @@ export const generateItinerary = createServerFn({ method: "POST" })
         failedRules: ["delivery_identity"],
         diagnostics: {
           stopCount: finalStops.length,
-          invalidPlaceCount: deliveryIdentityCounts.totalStopCount - deliveryIdentityCounts.googleIdentityCount,
+          invalidPlaceCount:
+            deliveryIdentityCounts.totalStopCount - deliveryIdentityCounts.googleIdentityCount,
           ...deliveryIdentityCounts,
         },
       });

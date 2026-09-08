@@ -29,6 +29,7 @@ import type { PlaceResult } from "@/lib/place-result";
 import { displayNameForPlaceLike } from "@/lib/place-display-name";
 import type { AffiliateLinkOffer } from "@/lib/affiliate/affiliate-types";
 import { TripAffiliateSection } from "@/components/trip/TripAffiliateSection";
+import { affiliatePlaceHash } from "@/lib/affiliate/affiliate-links";
 import { TabelogExternalLink } from "@/components/TabelogExternalLink";
 import { PlaceActionRow } from "@/components/PlaceActionRow";
 import { openExternal } from "@/lib/maps-navigation";
@@ -349,7 +350,15 @@ export function PlaceDetailSheet({
         </div>
 
         {ticketOffers && ticketOffers.length > 0 ? (
-          <TripAffiliateSection kind="ticket" offers={ticketOffers} className="mt-4" />
+          <TripAffiliateSection
+            kind="ticket"
+            offers={ticketOffers}
+            className="mt-4"
+            surface="detail"
+            placeHash={affiliatePlaceHash(place.googlePlaceId?.trim() || place.placeName || place.name)}
+            eligible
+            renderedCtaMode={ticketOffers.some((offer) => offer.label.includes("搜尋體驗")) ? "experience_search" : ticketOffers.some((offer) => offer.label.includes("搜尋")) ? "ticket_search" : "exact_product"}
+          />
         ) : null}
 
         <PlaceActionRow

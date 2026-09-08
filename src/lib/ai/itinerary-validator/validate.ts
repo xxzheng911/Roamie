@@ -34,6 +34,7 @@ import {
   type PersistenceDayCountsCompareInput,
   type PersistenceDayCountsCompareResult,
 } from "@/lib/ai/itinerary-validator/types";
+import { resolveItineraryCandidateCapacityTarget } from "@/lib/ai/real-place-supplement";
 import {
   placeMatchesExcludedCategories,
 } from "@/lib/ai/recommendation-exclusion";
@@ -255,9 +256,11 @@ function pushWarn(
 
 function hardMinForDay(day: number, input: ItineraryValidatorInput): number {
   const partial = new Set(input.partialDays ?? []);
-  if (partial.has(day)) return HARD_MIN_PLACES_PARTIAL;
-  if (input.slowTravel) return HARD_MIN_PLACES_SLOW;
-  return HARD_MIN_PLACES_FULL_DAY;
+  return resolveItineraryCandidateCapacityTarget(
+    1,
+    partial.has(day) ? [1] : [],
+    input.slowTravel ? "relaxed" : "moderate",
+  ).hardMinimum;
 }
 
 function resolveStructuredExclusions(input: ItineraryValidatorInput): string[] {

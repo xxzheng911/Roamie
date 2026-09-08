@@ -10,6 +10,7 @@
  * localizationCoverage is a display-quality metric — not combo life/death.
  */
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { logAffiliateFactualEvidenceLifecycle } from "@/lib/affiliate/factual-evidence-lifecycle";
 import {
   deriveCombinationThemeTitle,
   isMechanicalCombinationTitle,
@@ -63,6 +64,8 @@ export type GateCombinationPlaceCandidate = {
   types: string[];
   primaryType?: string | null;
   rating?: number | null;
+  userRatingCount?: number | null;
+  businessStatus?: string | null;
   normalizedCategory?: string;
   combinationId?: string;
 } & CombinationPlaceLocalizationFields;
@@ -366,7 +369,7 @@ function localizeCandidate(
     reason: complete.ok ? "localized" : (deliverable.reason ?? "readable_fallback"),
   });
 
-  return {
+  const localizedCandidate = {
     name: display,
     localizedDisplayName: display,
     effectiveDisplayName: display,
@@ -389,9 +392,13 @@ function localizeCandidate(
     types: candidate.types ?? [],
     primaryType: candidate.primaryType,
     rating: candidate.rating,
+    userRatingCount: candidate.userRatingCount,
+    businessStatus: candidate.businessStatus,
     normalizedCategory: candidate.normalizedCategory,
     combinationId: candidate.combinationId,
   };
+  logAffiliateFactualEvidenceLifecycle("post_localization", localizedCandidate);
+  return localizedCandidate;
 }
 
 /**
@@ -594,6 +601,8 @@ export function applyCombinationLocalizationGate(
       types: p.types,
       primaryType: p.primaryType,
       rating: p.rating,
+      userRatingCount: p.userRatingCount,
+      businessStatus: p.businessStatus,
       normalizedCategory: p.normalizedCategory,
       combinationId: p.combinationId,
       localizedDisplayName: p.localizedDisplayName,

@@ -42,9 +42,9 @@ check("3-day single-select dynamic capacity: preferred≥days×3 with oversample
     selectedCombinationCount: 1,
   });
   assert.equal(cap.preferredStops, 9, "soft fetch target = days×3");
-  assert.equal(cap.minimumViableStops, 5);
+  assert.equal(cap.minimumViableStops, 6);
   assert.ok(cap.maximumStops >= 11);
-  assert.equal(computeMinimumPlacesForTripDays(3, 1), 5);
+  assert.equal(computeMinimumPlacesForTripDays(3, 1), 6);
 });
 
 check("6-day preferred covers Planner requiredMinimum (18) with days×4 oversample", () => {
@@ -57,18 +57,18 @@ check("6-day preferred covers Planner requiredMinimum (18) with days×4 oversamp
   assert.ok(cap.preferredStops > 12, "must not clamp at legacy tripDays+6=12");
 });
 
-check("multi-select viability floors at combo count; preferred still days×3", () => {
+check("multi-select viability keeps the validator hard floor; preferred still days×3", () => {
   const cap = calculateDynamicStopCapacity({
     tripDays: 3,
     selectedCombinationCount: 3,
   });
-  assert.equal(cap.minimumViableStops, 3);
+  assert.equal(cap.minimumViableStops, 6);
   assert.equal(cap.preferredStops, 9, "fetch target still days×3");
 });
 
 check("compact mode when between minimumViable and preferred", () => {
   const cap = calculateDynamicStopCapacity({ tripDays: 3, selectedCombinationCount: 1 });
-  const compact = evaluateTotalRealPlaceValidation(5, cap);
+  const compact = evaluateTotalRealPlaceValidation(6, cap);
   assert.equal(compact.result, "compact");
   assert.equal(compact.compactItineraryMode, true);
   const pass = evaluateTotalRealPlaceValidation(9, cap);

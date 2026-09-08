@@ -25,17 +25,19 @@ const entry = (candidate, offset) => ({
   name: candidate.name,
   place: candidate,
 });
-const validate = (places, exclusions = {}) => validateItineraryPlan({
-  plans: [{ day: 1, entries: places.map(entry) }],
-  requestedDays: 1,
-  destination: "台中",
-  style: "mixed",
-  creationPath: "direct",
-  generationId: "p47-regression",
-  validationStage: "final",
-  ...exclusions,
-});
-const exclusionRules = (result) => result.failedRules.filter((rule) => rule.code === "user_exclusions");
+const validate = (places, exclusions = {}) =>
+  validateItineraryPlan({
+    plans: [{ day: 1, entries: places.map(entry) }],
+    requestedDays: 1,
+    destination: "台中",
+    style: "mixed",
+    creationPath: "direct",
+    generationId: "p47-regression",
+    validationStage: "final",
+    ...exclusions,
+  });
+const exclusionRules = (result) =>
+  result.failedRules.filter((rule) => rule.code === "user_exclusions");
 
 const rainbow = place("ChIJP47RainbowVillage", "彩虹眷村", "cultural_landmark");
 const miyahara = place("ChIJP47Miyahara", "宮原眼科");
@@ -47,15 +49,24 @@ const caseA = validate([rainbow, miyahara, calligraphy], {
 });
 assert.equal(exclusionRules(caseA).length, 1);
 
-const museums = [0, 1, 2].map((index) => place(`ChIJP47Museum${index}`, `Museum ${index}`, "museum"));
+const museums = [0, 1, 2].map((index) =>
+  place(`ChIJP47Museum${index}`, `Museum ${index}`, "museum"),
+);
 const caseB = validate(museums, { excludedCategories: ["museum"] });
 assert.equal(exclusionRules(caseB).length, 3);
 
-const attractions = [0, 1, 2].map((index) => place(`ChIJP47Attraction${index}`, `Attraction ${index}`));
+const attractions = [0, 1, 2].map((index) =>
+  place(`ChIJP47Attraction${index}`, `Attraction ${index}`),
+);
 const caseC = validate(attractions, { excludePlaceIds: [attractions[0].id] });
 assert.equal(exclusionRules(caseC).length, 1);
 
-const localizedAlias = { ...rainbow, id: `places/${rainbow.id}`, googlePlaceId: `places/${rainbow.id}`, name: "Rainbow Village" };
+const localizedAlias = {
+  ...rainbow,
+  id: `places/${rainbow.id}`,
+  googlePlaceId: `places/${rainbow.id}`,
+  name: "Rainbow Village",
+};
 const caseD = validate([localizedAlias, miyahara, calligraphy], { excludePlaceIds: [rainbow.id] });
 assert.equal(exclusionRules(caseD).length, 1);
 assert.equal(exclusionRules(caseD)[0].message.includes("canonical_identity"), true);
@@ -92,20 +103,27 @@ const productionLike = validate([rainbow, ...attractions], {
 });
 assert.equal(exclusionRules(productionLike).length, 1);
 
-const shownPark = { ...place("ChIJP47CentralPark", "中央公園", "park"), placeId: "ChIJP47CentralPark" };
+const shownPark = {
+  ...place("ChIJP47CentralPark", "中央公園", "park"),
+  placeId: "ChIJP47CentralPark",
+};
 const delta = parsePlanningConstraintDelta({ text: "排除中央公園", shownCandidates: [shownPark] });
 assert.equal(delta.excludedPlaces.length, 1);
 assert.deepEqual(delta.excludedPlaceTypes, []);
-const session = applyPlanningConstraintDelta({
-  selectedPlaces: [shownPark],
-  recommendedPlaces: [shownPark],
-  planningConstraints: undefined,
-  travelContext: { interests: [] },
-}, delta, [shownPark]);
+const session = applyPlanningConstraintDelta(
+  {
+    selectedPlaces: [shownPark],
+    recommendedPlaces: [shownPark],
+    planningConstraints: undefined,
+    travelContext: { interests: [] },
+  },
+  delta,
+  [shownPark],
+);
 assert.deepEqual(session.excludedCategories, []);
 
 const categoryDelta = parsePlanningConstraintDelta({ text: "不要夜市", shownCandidates: [] });
-assert.deepEqual(categoryDelta.excludedPlaceTypes, ["夜市"]);
+assert.deepEqual(categoryDelta.excludedPlaceTypes, ["market_category"]);
 
 console.log("P47 exclusion authority: PASS", {
   placeExclusionViolations: exclusionRules(caseA).length,

@@ -40,6 +40,7 @@ import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { resolvePlaceDisplayName } from "@/lib/place-display-name";
 import type { PlanningShownCandidate } from "@/lib/chat-session";
 import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
+import { logAffiliateFactualEvidenceLifecycle } from "@/lib/affiliate/factual-evidence-lifecycle";
 
 export type DestinationCombination = {
   title: string;
@@ -88,6 +89,9 @@ export function buildPlanningShownCandidatesFromOfferedCombinations(
         placeId: canonicalId,
         displayName,
         rating: candidate.rating ?? null,
+        userRatingCount: candidate.userRatingCount ?? null,
+        businessStatus: candidate.businessStatus ?? null,
+        types: candidate.types,
         canonicalId,
         plannerProvenanceKey:
           candidate.plannerProvenanceKey ??
@@ -102,6 +106,7 @@ export function buildPlanningShownCandidatesFromOfferedCombinations(
         groupIndex,
         itemIndex: flatIndex,
       };
+      logAffiliateFactualEvidenceLifecycle("planning_candidate", snapshot);
       flatIndex += 1;
       return snapshot;
     }),
@@ -449,7 +454,7 @@ export function buildOfferedCombinationsForSession(
             },
             locale,
           );
-          return {
+          const offeredPlace = {
             candidateId:
               c.searchCandidateId ?? c.googlePlaceId ?? `name:${resolved.localizedDisplayName}`,
             originalName: resolved.originalName,
@@ -470,12 +475,16 @@ export function buildOfferedCombinationsForSession(
             normalizedCategory: c.normalizedCategory,
             combinationId: c.combinationId ?? index + 1,
             rating: c.rating,
+            userRatingCount: c.userRatingCount,
+            businessStatus: c.businessStatus,
             resolutionStatus: (c.googlePlaceId ? "resolved" : "named") as
               | "named"
               | "resolved"
               | "unresolved"
               | "pending",
           };
+          logAffiliateFactualEvidenceLifecycle("offered_combination", offeredPlace);
+          return offeredPlace;
         }),
       };
     });
@@ -660,6 +669,8 @@ export function buildDestinationCombinationSuggestionPayload(
           normalizedCategory: sourcePlace.normalizedCategory,
           combinationId: sourcePlace.combinationId ?? groupId,
           rating: sourcePlace.rating,
+          userRatingCount: sourcePlace.userRatingCount,
+          businessStatus: sourcePlace.businessStatus,
           resolutionStatus: "resolved" as const,
         },
       ];

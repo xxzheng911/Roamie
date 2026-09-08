@@ -18,15 +18,65 @@ export type ExclusionCategoryId =
   | "outdoor"
   | "expensive"
   | "queue"
-  | "far";
+  | "far"
+  | "church"
+  | "shrine_temple"
+  | "market"
+  | "museum_family"
+  | "park_family"
+  | "shopping"
+  | "wildlife_family";
 
 type ExclusionCategoryDef = {
   id: ExclusionCategoryId;
   labels: string[];
   keywords: string[];
+  authorityKeywords?: string[];
 };
 
 const EXCLUSION_CATEGORIES: ExclusionCategoryDef[] = [
+  {
+    id: "church",
+    labels: ["教會", "教堂"],
+    keywords: ["教會", "教堂", "church", "chapel", "cathedral"],
+    authorityKeywords: ["church_category"],
+  },
+  {
+    id: "shrine_temple",
+    labels: ["寺廟", "神社"],
+    keywords: ["寺廟", "寺庙", "神社", "shrine", "temple"],
+    authorityKeywords: ["shrine_temple_category"],
+  },
+  {
+    id: "market",
+    labels: ["夜市"],
+    keywords: ["夜市", "night market", "night_market"],
+    authorityKeywords: ["market_category"],
+  },
+  {
+    id: "museum_family",
+    labels: ["博物館", "美術館"],
+    keywords: ["博物館", "博物馆", "美術館", "美术馆", "museum", "art gallery"],
+    authorityKeywords: ["museum_category"],
+  },
+  {
+    id: "park_family",
+    labels: ["公園"],
+    keywords: ["公園", "公园", "park"],
+    authorityKeywords: ["park_category"],
+  },
+  {
+    id: "shopping",
+    labels: ["商場", "百貨"],
+    keywords: ["商場", "商场", "百貨", "百货", "shopping mall", "department store"],
+    authorityKeywords: ["shopping_category"],
+  },
+  {
+    id: "wildlife_family",
+    labels: ["動物園", "水族館"],
+    keywords: ["動物園", "动物园", "水族館", "水族馆", "zoo", "aquarium"],
+    authorityKeywords: ["wildlife_category"],
+  },
   {
     id: "hotpot",
     labels: ["火鍋"],
@@ -107,8 +157,7 @@ const EXCLUSION_CATEGORIES: ExclusionCategoryDef[] = [
 const EXCLUSION_TRIGGER_RE =
   /(?:不要|不喜歡|不太喜歡|不想吃|不太想吃|避免|排除|先不要|不要推薦|不考慮|不想)/;
 
-const EXCLUSION_LIFT_RE =
-  /(?:也可以|沒關係|没关系|沒問題|没问题|行|ok|OK|能接受|可以接受)/;
+const EXCLUSION_LIFT_RE = /(?:也可以|沒關係|没关系|沒問題|没问题|行|ok|OK|能接受|可以接受)/;
 
 export function isExclusionReply(text: string): boolean {
   const t = text.trim();
@@ -166,8 +215,7 @@ export function expandExcludedKeywords(categoryIds: Iterable<ExclusionCategoryId
   for (const id of categoryIds) {
     const cat = EXCLUSION_CATEGORIES.find((c) => c.id === id);
     if (!cat) continue;
-    for (const label of cat.labels) keywords.add(label);
-    for (const kw of cat.keywords) keywords.add(kw);
+    for (const kw of cat.authorityKeywords ?? [...cat.labels, ...cat.keywords]) keywords.add(kw);
   }
   return [...keywords];
 }
@@ -199,7 +247,11 @@ export function extractUserAuthoredExclusionText(text: string): string {
       continue;
     }
     // Keep bare user content / structured session fields that are not AI prose.
-    if (/^(心情|selectedMood|已選地點|今天想|旅伴|室內外|必去|交通|預算|節奏|日期|時間)[：:]/.test(trimmed)) {
+    if (
+      /^(心情|selectedMood|已選地點|今天想|旅伴|室內外|必去|交通|預算|節奏|日期|時間)[：:]/.test(
+        trimmed,
+      )
+    ) {
       continue;
     }
     userLines.push(trimmed);
@@ -262,7 +314,9 @@ export function applyExclusionToSession(
 
   const travelContext = {
     ...(session.travelContext ?? { interests: [] }),
-    excludedCategories: excludedCategories.length ? excludedCategories : session.travelContext?.excludedCategories,
+    excludedCategories: excludedCategories.length
+      ? excludedCategories
+      : session.travelContext?.excludedCategories,
   };
 
   return {
@@ -327,6 +381,32 @@ export function exclusionKeywordMatchesPlace(
   const name = (place.name ?? "").toLowerCase();
   const blob = placeTextBlob(place);
 
+  if (kw === "church_category") {
+    return types.some((type) => ["church", "chapel", "cathedral"].includes(type));
+  }
+  if (kw === "shrine_temple_category") {
+    return types.some((type) =>
+      ["shrine", "shinto_shrine", "temple", "hindu_temple", "buddhist_temple", "mosque"].includes(
+        type,
+      ),
+    );
+  }
+  if (kw === "market_category") {
+    return types.some((type) => ["night_market", "market"].includes(type));
+  }
+  if (kw === "museum_category") {
+    return types.some((type) => ["museum", "art_gallery"].includes(type));
+  }
+  if (kw === "park_category") {
+    return types.some((type) => ["park", "national_park", "state_park", "garden"].includes(type));
+  }
+  if (kw === "shopping_category") {
+    return types.some((type) => ["shopping_mall", "department_store"].includes(type));
+  }
+  if (kw === "wildlife_category") {
+    return types.some((type) => ["zoo", "aquarium", "wildlife_park"].includes(type));
+  }
+
   if (kw === "park" || kw === "公園") {
     if (types.some((t) => NON_PARK_COMPOUND_TYPES.has(t))) {
       // amusement_park etc. — only match if name clearly is a city park
@@ -364,7 +444,10 @@ export function placeMatchesExcludedCategories(
   return excludedCategories.some((kw) => exclusionKeywordMatchesPlace(kw, place));
 }
 
-export function filterPlacesByExclusion<T extends PlaceResult>(places: T[], excluded?: string[]): T[] {
+export function filterPlacesByExclusion<T extends PlaceResult>(
+  places: T[],
+  excluded?: string[],
+): T[] {
   if (!excluded?.length) return places;
   return places.filter((p) => !placeMatchesExcludedCategories(p, excluded));
 }
@@ -381,7 +464,11 @@ export function exclusionDisplayLabels(excludedCategories: string[] | undefined)
   if (!excludedCategories?.length) return [];
   const labels = new Set<string>();
   for (const cat of EXCLUSION_CATEGORIES) {
-    if (cat.keywords.some((kw) => excludedCategories.some((e) => e.toLowerCase() === kw.toLowerCase()))) {
+    if (
+      cat.keywords.some((kw) =>
+        excludedCategories.some((e) => e.toLowerCase() === kw.toLowerCase()),
+      )
+    ) {
       labels.add(cat.labels[0] ?? cat.id);
     }
   }
@@ -391,7 +478,9 @@ export function exclusionDisplayLabels(excludedCategories: string[] | undefined)
   return [...labels];
 }
 
-export function buildExclusionAcknowledgment(excludedCategories: string[] | undefined): string | null {
+export function buildExclusionAcknowledgment(
+  excludedCategories: string[] | undefined,
+): string | null {
   const labels = exclusionDisplayLabels(excludedCategories);
   if (!labels.length) return null;
   if (labels.length === 1) {
@@ -420,5 +509,7 @@ export function resolveExcludedCategories(
   session: ChatPlanningSession,
   contextExcluded?: string[],
 ): string[] {
-  return contextExcluded ?? session.excludedCategories ?? session.travelContext?.excludedCategories ?? [];
+  return (
+    contextExcluded ?? session.excludedCategories ?? session.travelContext?.excludedCategories ?? []
+  );
 }

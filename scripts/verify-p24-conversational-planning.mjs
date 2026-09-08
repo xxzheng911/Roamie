@@ -594,8 +594,8 @@ for (const [text, expected] of [
   assert(parse(text).cuisinePreferences.includes(expected), text);
 assert(parse("第一次去台北有什麼必去").attractionPreferences.includes("必去"));
 assert(parse("想看夜景").attractionPreferences.includes("夜景"));
-assert(parse("不要夜市").excludedPlaceTypes.includes("夜市"));
-assert(parse("不要寺廟").excludedPlaceTypes.includes("寺廟"));
+assert(parse("不要夜市").excludedPlaceTypes.includes("market_category"));
+assert(parse("不要寺廟").excludedPlaceTypes.includes("shrine_temple_category"));
 assert(parse("不要太觀光").excludedPlaceTypes.includes("touristy"));
 assert.equal(parse("不要排太趕").pace, "relaxed");
 assert.equal(parse("不是兩天，是三天").correctedDays, 3);

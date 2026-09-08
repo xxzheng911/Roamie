@@ -7,6 +7,7 @@ import {
 } from "@/lib/affiliate/place-type-category-map";
 
 export type TicketAffiliatePlaceInput = {
+  googlePlaceId?: string | null;
   name?: string | null;
   title?: string | null;
   placeName?: string | null;
@@ -16,7 +17,53 @@ export type TicketAffiliatePlaceInput = {
   category?: string | null;
   rating?: number | null;
   userRatingCount?: number | null;
+  businessStatus?: string | null;
+  admissionRequired?: boolean | null;
+  ticketingAvailable?: boolean | null;
+  guidedTourAvailable?: boolean | null;
+  activityAvailable?: boolean | null;
+  transportPassAvailable?: boolean | null;
+  affiliateProductProviders?: Array<"klook" | "kkday"> | null;
 };
+
+export type AffiliatePlaceEvidenceInput = TicketAffiliatePlaceInput & {
+  id?: string | null;
+  googleTypes?: string[] | null;
+};
+
+/** Canonical factual evidence boundary shared by every affiliate surface. */
+export function buildAffiliatePlaceEvidence(
+  place: AffiliatePlaceEvidenceInput,
+): TicketAffiliatePlaceInput {
+  const types = [...new Set([...(place.types ?? []), ...(place.googleTypes ?? [])])]
+    .map((type) => type.trim().toLowerCase())
+    .filter(Boolean);
+  const primaryType =
+    place.primaryType?.trim().toLowerCase() ||
+    types[0] ||
+    place.placeType?.trim().toLowerCase() ||
+    null;
+
+  return {
+    googlePlaceId: place.googlePlaceId?.trim() || place.id?.trim() || null,
+    name: place.name,
+    title: place.title,
+    placeName: place.placeName,
+    primaryType,
+    types,
+    placeType: place.placeType,
+    category: place.category,
+    rating: place.rating,
+    userRatingCount: place.userRatingCount,
+    businessStatus: place.businessStatus,
+    admissionRequired: place.admissionRequired,
+    ticketingAvailable: place.ticketingAvailable,
+    guidedTourAvailable: place.guidedTourAvailable,
+    activityAvailable: place.activityAvailable,
+    transportPassAvailable: place.transportPassAvailable,
+    affiliateProductProviders: place.affiliateProductProviders,
+  };
+}
 
 export type TicketAffiliateTripContext = {
   destinationLabel?: string;
@@ -29,7 +76,45 @@ export type TicketAffiliateDecision = {
   show: boolean;
   reason: string;
   searchKeyword: string;
+  eligible: boolean;
+  commerceType: "ticket" | "experience" | "transport" | "tour" | "activity" | "unknown";
+  confidence: "strong" | "supported" | "weak" | "none";
+  evidenceTypes: string[];
+  supportedProviders: Array<"klook" | "kkday">;
+  exactProviderEvidence: boolean;
+  providerSearchFallbackAllowed: boolean;
+  tourismAuthorityPresent: boolean;
+  majorLandmarkEvidence: boolean;
+  experienceFallbackAllowed: boolean;
+  culturalOrReligiousAuthorityPresent: boolean;
+  majorLandmarkEvidenceSources: Array<
+    | "google_type"
+    | "tourism_authority"
+    | "parent_role"
+    | "landmark_tier"
+    | "prominence"
+    | "review_count"
+  >;
+  culturalFallbackDecisionReason:
+    | "supported_multi_evidence"
+    | "insufficient_tourism_authority"
+    | "ordinary_religious_site"
+    | "child_venue"
+    | "insufficient_landmark_evidence"
+    | "not_applicable";
 };
+
+export type TicketAffiliateProviderMode = "exact_product" | "search_fallback" | "hidden";
+
+export function resolveTicketAffiliateProviderMode(
+  decision: TicketAffiliateDecision,
+  provider: "klook" | "kkday",
+): TicketAffiliateProviderMode {
+  if (!decision.show) return "hidden";
+  if (decision.supportedProviders.includes(provider)) return "exact_product";
+  if (decision.providerSearchFallbackAllowed) return "search_fallback";
+  return "hidden";
+}
 
 const POI_MIN_RATING = 4.0;
 const POI_MIN_REVIEWS = 200;
@@ -197,21 +282,29 @@ const FAMOUS_LANDMARK_KEYWORDS = [
 const STRONG_ATTRACTION_TYPES = new Set([
   "amusement_park",
   "theme_park",
-  "museum",
   "aquarium",
   "zoo",
-  "art_gallery",
   "observation_deck",
-  "landmark",
-  "historical_landmark",
-  "historical_place",
-  "cultural_landmark",
-  "cultural_center",
-  "monument",
+  "cable_car",
+  "immersive_exhibition",
+]);
+
+const ADMISSION_DEPENDENT_TYPES = new Set([
+  "museum",
+  "art_gallery",
   "planetarium",
   "performing_arts_theater",
   "exhibition",
+  "cultural_center",
+]);
+
+const EXPERIENCE_TYPES = new Set([
   "experience",
+  "tour",
+  "tour_operator",
+  "cruise",
+  "boat_tour",
+  "workshop",
 ]);
 
 const CONDITIONAL_ATTRACTION_TYPES = new Set([
@@ -223,6 +316,21 @@ const CONDITIONAL_ATTRACTION_TYPES = new Set([
   "stadium",
   "district",
   "market",
+]);
+
+const RELIGIOUS_SITE_TYPES = new Set([
+  "place_of_worship",
+  "church",
+  "hindu_temple",
+  "mosque",
+  "synagogue",
+]);
+
+const CULTURAL_LANDMARK_TYPES = new Set([
+  "cultural_landmark",
+  "historical_landmark",
+  "historical_place",
+  "heritage_site",
 ]);
 
 const FOOD_RETAIL_LODGING_TYPES = new Set([
@@ -296,7 +404,10 @@ function placeDisplayName(place: TicketAffiliatePlaceInput): string {
 function resolvePrimaryType(place: TicketAffiliatePlaceInput): string {
   const primary = (place.primaryType ?? "").trim().toLowerCase();
   if (primary) return primary;
-  const first = (place.types ?? []).find((t) => t?.trim())?.trim().toLowerCase();
+  const first = (place.types ?? [])
+    .find((t) => t?.trim())
+    ?.trim()
+    .toLowerCase();
   return first ?? "";
 }
 
@@ -367,10 +478,7 @@ function hasHardExcludedType(types: string[]): boolean {
   return types.some((t) => HARD_EXCLUDED_TYPES.has(t));
 }
 
-function isFoodRetailLodgingDominant(
-  place: TicketAffiliatePlaceInput,
-  types: string[],
-): boolean {
+function isFoodRetailLodgingDominant(place: TicketAffiliatePlaceInput, types: string[]): boolean {
   const name = placeDisplayName(place);
   const primary = resolvePrimaryType(place);
   const category = place.category?.trim() ?? "";
@@ -400,9 +508,7 @@ function isFoodRetailLodgingDominant(
 
 function tripDestination(tripContext?: TicketAffiliateTripContext): string {
   return (
-    tripContext?.destinationLabel?.trim() ||
-    tripContext?.tripCtx?.destinationLabel?.trim() ||
-    ""
+    tripContext?.destinationLabel?.trim() || tripContext?.tripCtx?.destinationLabel?.trim() || ""
   );
 }
 
@@ -474,7 +580,11 @@ function hasPopularitySignal(place: TicketAffiliatePlaceInput, types: string[]):
   const strong = hasStrongAttractionType(types);
 
   if (rating == null || reviews == null) {
-    return strong || isAttractionAffiliateCategory(place.category) || isAttractionAffiliateCategory(place.placeType);
+    return (
+      strong ||
+      isAttractionAffiliateCategory(place.category) ||
+      isAttractionAffiliateCategory(place.placeType)
+    );
   }
 
   if (strong) {
@@ -492,7 +602,7 @@ function isGenericLocalPark(name: string, types: string[]): boolean {
   return /公園|公园|\bpark\b|\bgarden\b/i.test(name);
 }
 
-export function shouldShowTicketAffiliate(
+export function resolveAffiliateCommerceEligibility(
   place: TicketAffiliatePlaceInput,
   tripContext?: TicketAffiliateTripContext,
 ): TicketAffiliateDecision {
@@ -501,13 +611,89 @@ export function shouldShowTicketAffiliate(
   const destination = tripDestination(tripContext);
   const searchKeyword = buildTicketAffiliateSearchKeyword(place, tripContext);
   const categoryLabel = place.category?.trim() || place.placeType?.trim() || "";
+  const tourismAuthorityPresent =
+    types.includes("tourist_attraction") ||
+    types.some((type) => CULTURAL_LANDMARK_TYPES.has(type));
+  const culturalOrReligiousAuthorityPresent = types.some(
+    (type) => CULTURAL_LANDMARK_TYPES.has(type) || RELIGIOUS_SITE_TYPES.has(type),
+  );
+  const ratingEvidence = place.rating != null && place.rating >= 4.2;
+  const reviewCountEvidence = place.userRatingCount != null && place.userRatingCount >= 1000;
+  const explicitCulturalLandmarkType = types.some((type) => CULTURAL_LANDMARK_TYPES.has(type));
+  const religiousTourismAuthority =
+    types.some((type) => RELIGIOUS_SITE_TYPES.has(type)) && types.includes("tourist_attraction");
+  const nonChildVenue = !types.some((type) =>
+    ["store", "gift_shop", "souvenir_store", "shopping_mall", "point_of_interest_feature"].includes(type),
+  );
+  const majorLandmarkEvidenceSources: TicketAffiliateDecision["majorLandmarkEvidenceSources"] = [
+    ...(explicitCulturalLandmarkType ? (["google_type"] as const) : []),
+    ...(tourismAuthorityPresent ? (["tourism_authority"] as const) : []),
+    ...(nonChildVenue ? (["parent_role"] as const) : []),
+    ...(ratingEvidence ? (["prominence"] as const) : []),
+    ...(reviewCountEvidence ? (["review_count"] as const) : []),
+  ];
+  const majorLandmarkEvidence =
+    culturalOrReligiousAuthorityPresent &&
+    tourismAuthorityPresent &&
+    nonChildVenue &&
+    ratingEvidence &&
+    (explicitCulturalLandmarkType || religiousTourismAuthority);
+  const culturalFallbackDecisionReason: TicketAffiliateDecision["culturalFallbackDecisionReason"] =
+    !culturalOrReligiousAuthorityPresent
+      ? "not_applicable"
+      : !tourismAuthorityPresent
+        ? "insufficient_tourism_authority"
+        : !nonChildVenue
+          ? "child_venue"
+          : !explicitCulturalLandmarkType && !religiousTourismAuthority
+            ? "ordinary_religious_site"
+            : !ratingEvidence
+              ? "insufficient_landmark_evidence"
+              : "supported_multi_evidence";
 
-  const logDecision = (show: boolean, reason: string): TicketAffiliateDecision => {
+  const logDecision = (
+    eligible: boolean,
+    reason: string,
+    commerceType: TicketAffiliateDecision["commerceType"] = "unknown",
+    confidence: TicketAffiliateDecision["confidence"] = "none",
+    evidenceTypes: string[] = [],
+  ): TicketAffiliateDecision => {
+    const supportedProviders = [...new Set(place.affiliateProductProviders ?? [])].filter(
+      (provider): provider is "klook" | "kkday" => provider === "klook" || provider === "kkday",
+    );
+    const exactProviderEvidence = supportedProviders.length > 0;
+    const experienceFallbackAllowed =
+      eligible &&
+      confidence === "supported" &&
+      commerceType === "experience" &&
+      majorLandmarkEvidence;
+    const providerSearchFallbackAllowed =
+      eligible &&
+      !exactProviderEvidence &&
+      (confidence === "strong" || experienceFallbackAllowed);
+    const show = eligible && confidence !== "weak" && confidence !== "none";
     // Detail only when DEBUG_AFFILIATE; consolidated summary/skip is emitted by display-rules callers.
     affiliateDebugInfo(
       `[TICKET_AFFILIATE_DECISION] placeName=${name} types=${types.join(",")} category=${categoryLabel} destination=${destination} show=${String(show)} reason=${reason} searchKeyword=${searchKeyword}`,
     );
-    return { show, reason, searchKeyword };
+    return {
+      show,
+      reason,
+      searchKeyword,
+      eligible,
+      commerceType,
+      confidence,
+      evidenceTypes,
+      supportedProviders,
+      exactProviderEvidence,
+      providerSearchFallbackAllowed,
+      tourismAuthorityPresent,
+      majorLandmarkEvidence,
+      experienceFallbackAllowed,
+      culturalOrReligiousAuthorityPresent,
+      majorLandmarkEvidenceSources,
+      culturalFallbackDecisionReason,
+    };
   };
 
   if (!name) {
@@ -522,16 +708,49 @@ export function shouldShowTicketAffiliate(
     return logDecision(false, "excluded_generic_park");
   }
 
-  if (hasHardExcludedType(types) && !hasStrongAttractionType(types) && !hasConditionalAttractionType(types)) {
+  if (
+    hasHardExcludedType(types) &&
+    !hasStrongAttractionType(types) &&
+    !hasConditionalAttractionType(types)
+  ) {
     return logDecision(false, "excluded_default_type");
   }
 
-  if (isFamousLandmarkName(name)) {
-    return logDecision(true, "famous_landmark_whitelist");
+  const explicitTicketEvidence =
+    place.admissionRequired === true || place.ticketingAvailable === true;
+  const explicitTourEvidence = place.guidedTourAvailable === true;
+  const explicitActivityEvidence = place.activityAvailable === true;
+  const explicitTransportEvidence = place.transportPassAvailable === true;
+  if (explicitTransportEvidence)
+    return logDecision(true, "explicit_transport_product", "transport", "strong", [
+      "transport_product",
+    ]);
+  if (explicitTourEvidence)
+    return logDecision(true, "explicit_guided_tour", "tour", "strong", ["guided_tour"]);
+  if (explicitActivityEvidence)
+    return logDecision(true, "explicit_activity", "activity", "strong", ["activity"]);
+  if (explicitTicketEvidence)
+    return logDecision(true, "explicit_admission_ticket", "ticket", "strong", ["admission_ticket"]);
+  if (types.some((type) => EXPERIENCE_TYPES.has(type))) {
+    return logDecision(true, "experience_type", "experience", "strong", ["experience_type"]);
   }
-
-  if (hasTourismKeyword(name)) {
-    return logDecision(true, "tourism_keyword");
+  if (hasStrongAttractionType(types)) {
+    return logDecision(true, "ticketed_attraction_type", "ticket", "strong", [
+      "ticketed_attraction_type",
+    ]);
+  }
+  if (majorLandmarkEvidence) {
+    return logDecision(true, "major_cultural_experience_discovery", "experience", "supported", [
+      "tourism_authority",
+      "cultural_or_religious_authority",
+      "multi_evidence_landmark_authority",
+      ...(reviewCountEvidence ? ["major_popularity"] : []),
+    ]);
+  }
+  if (types.some((type) => ADMISSION_DEPENDENT_TYPES.has(type))) {
+    return logDecision(false, "admission_evidence_required", "ticket", "weak", [
+      "admission_dependent_type",
+    ]);
   }
 
   // Ordinary night markets are free-entry and rarely sell tickets — hide by default.
@@ -540,26 +759,38 @@ export function shouldShowTicketAffiliate(
     if (/夜市|night\s*market/i.test(name)) {
       return logDecision(false, "excluded_general_night_market");
     }
-    return logDecision(true, "tourist_market_keyword");
+    return logDecision(false, "market_product_evidence_required", "tour", "weak", [
+      "tourist_market",
+    ]);
   }
 
-  if (isAttractionAffiliateCategory(categoryLabel)) {
-    return logDecision(true, "attraction_category_label");
+  if (
+    isFamousLandmarkName(name) ||
+    hasTourismKeyword(name) ||
+    isAttractionAffiliateCategory(categoryLabel)
+  ) {
+    return logDecision(false, "generic_attraction_without_commerce_evidence", "unknown", "weak", [
+      "generic_attraction",
+    ]);
   }
 
-  if (hasStrongAttractionType(types)) {
-    return logDecision(true, "strong_attraction_type");
-  }
-
-  if (hasConditionalAttractionType(types) && hasPopularitySignal(place, types)) {
-    return logDecision(true, "conditional_type_with_popularity");
-  }
-
-  if (types.includes("point_of_interest") && (hasTourismKeyword(name) || isFamousLandmarkName(name))) {
-    return logDecision(true, "poi_with_tourism_keyword");
+  if (
+    hasConditionalAttractionType(types) ||
+    types.includes("point_of_interest") ||
+    hasPopularitySignal(place, types)
+  ) {
+    return logDecision(false, "weak_attraction_evidence", "unknown", "weak", ["weak_attraction"]);
   }
 
   return logDecision(false, "not_ticketable");
+}
+
+/** Backward-compatible display gate; all surfaces share the commerce resolver. */
+export function shouldShowTicketAffiliate(
+  place: TicketAffiliatePlaceInput,
+  tripContext?: TicketAffiliateTripContext,
+): TicketAffiliateDecision {
+  return resolveAffiliateCommerceEligibility(place, tripContext);
 }
 
 export function resolveTicketAffiliateTripContext(

@@ -20,11 +20,26 @@ type Props = {
   className?: string;
   /** 地點卡片下方：精簡樣式 */
   compact?: boolean;
+  surface?: "itinerary" | "detail";
+  placeHash?: string;
+  eligibilityResolved?: boolean;
+  eligible?: boolean;
+  renderedCtaMode?: "exact_product" | "ticket_search" | "experience_search" | "hidden";
 };
 
 const OPEN_RESET_MS = 800;
 
-export function TripAffiliateSection({ kind, offers, className, compact }: Props) {
+export function TripAffiliateSection({
+  kind,
+  offers,
+  className,
+  compact,
+  surface,
+  placeHash,
+  eligibilityResolved = true,
+  eligible,
+  renderedCtaMode,
+}: Props) {
   const visible = useMemo(() => offers.filter((o) => o.enabled && o.url), [offers]);
   const [openingKey, setOpeningKey] = useState<string | null>(null);
   const impressionId = useRef(crypto.randomUUID());
@@ -37,6 +52,20 @@ export function TripAffiliateSection({ kind, offers, className, compact }: Props
         surface: "itinerary",
       });
   }, [visible]);
+  useEffect(() => {
+    if (!surface || !placeHash) return;
+    console.info("[AFFILIATE_RENDER_DECISION]", {
+      placeHash,
+      surface,
+      eligibilityResolved,
+      eligible: eligible ?? visible.length > 0,
+      renderedCtaMode: renderedCtaMode ?? (visible.length > 0 ? "exact_product" : "hidden"),
+      offerCount: visible.length,
+      sectionInvoked: true,
+      sectionRendered: visible.length > 0,
+      hiddenReason: visible.length > 0 ? "none" : "no_offers",
+    });
+  }, [eligible, eligibilityResolved, placeHash, renderedCtaMode, surface, visible.length]);
   if (visible.length === 0) return null;
 
   const meta = SECTION_META[kind];
@@ -57,7 +86,16 @@ export function TripAffiliateSection({ kind, offers, className, compact }: Props
       {meta.subtitle && !compact ? (
         <p className="mt-1 text-xs text-muted-foreground">{meta.subtitle}</p>
       ) : null}
-      <div className={cn("flex flex-wrap gap-2", compact ? "mt-2" : "mt-3")}>
+      <div
+        data-affiliate-layout={kind === "ticket" ? "provider-search-grid" : "provider-row"}
+        className={cn(
+          kind === "ticket"
+            ? "grid w-full gap-2"
+            : "flex flex-wrap gap-2",
+          kind === "ticket" && (visible.length > 1 ? "grid-cols-2" : "grid-cols-1"),
+          compact ? "mt-2" : "mt-3",
+        )}
+      >
         {visible.map((offer) => {
           const offerKey = `${offer.provider}-${offer.kind}`;
           const isOpening = openingKey === offerKey;
@@ -88,12 +126,16 @@ export function TripAffiliateSection({ kind, offers, className, compact }: Props
                 });
               }}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full border border-border bg-background font-medium transition active:scale-[0.98] disabled:opacity-60",
-                compact ? "px-3 py-1.5 text-xs" : "px-4 py-2 text-sm",
+                "inline-flex items-center justify-center gap-1.5 rounded-full border border-border bg-background font-medium transition active:scale-[0.98] disabled:opacity-60",
+                kind === "ticket" && "w-full px-2 text-xs",
+                kind !== "ticket" && (compact ? "px-3" : "px-4"),
+                compact ? "py-1.5 text-xs" : "py-2 text-sm",
               )}
             >
-              {offer.label}
-              <ExternalLink className={compact ? "h-3 w-3 opacity-60" : "h-3.5 w-3.5 opacity-60"} />
+              <span className={cn(kind === "ticket" && "min-w-0 text-center leading-tight whitespace-normal")}>
+                {offer.label}
+              </span>
+              <ExternalLink className={cn("shrink-0 opacity-60", compact ? "h-3 w-3" : "h-3.5 w-3.5")} />
             </button>
           );
         })}

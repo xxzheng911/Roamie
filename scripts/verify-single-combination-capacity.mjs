@@ -111,7 +111,7 @@ check("花蓮 3d select 4 — single mode capacity + compact pass", () => {
     tripDays: 3,
     selectedCombinationIds: ids,
   });
-  assert.equal(plan.minimumViableStops, 5);
+  assert.equal(plan.minimumViableStops, 6);
   assert.equal(plan.preferredStops, 9);
   assert.equal(plan.minimumRepresentativePerCombination, 1);
 
@@ -125,13 +125,14 @@ check("花蓮 3d select 4 — single mode capacity + compact pass", () => {
   assert.ok(profile.primaryThemes.includes("harbor"));
   assert.ok(profile.primaryThemes.includes("sunset"));
 
-  // Simulate: 2 original harbor candidates + same-theme supplement → 5 (compact viable)
+  // Simulate: 2 original harbor candidates + same-theme supplement → 6 (compact viable)
   const places = [
     mockPlace("花蓮港景觀橋", 4, 1, "花蓮"),
     mockPlace("花蓮港燈塔", 4, 2, "花蓮"),
     mockPlace("七星潭", 4, 3, "花蓮"),
     mockPlace("北濱公園", 4, 4, "花蓮"),
     mockPlace("鹽寮蔚藍海岸", 4, 5, "花蓮"),
+    mockPlace("石梯坪", 4, 6, "花蓮"),
   ];
 
   const stamped = ensureCombinationProvenanceOnPlaces(places, "花蓮", ids);
@@ -184,14 +185,14 @@ check("single select with 2 places fails before supplement (below minimumViable)
   assert.equal(integrity.failureCode, "total_real_place_count_insufficient");
 });
 
-check("single select with 5 places passes compact (fetch preferred=days×3, viable floor leaner)", () => {
+check("single select with 6 places passes compact (fetch preferred=days×3, validator-aligned floor)", () => {
   const plan = planSelectedCombinationCapacity({
     tripDays: 3,
     selectedCombinationIds: [1],
   });
   assert.equal(plan.preferredStops, 9);
-  assert.equal(plan.minimumViableStops, 5);
-  const places = Array.from({ length: 5 }, (_, i) =>
+  assert.equal(plan.minimumViableStops, 6);
+  const places = Array.from({ length: 6 }, (_, i) =>
     mockPlace(`景點${i}`, 1, i, "台北"),
   );
   const integrity = validateSelectedCombinationIntegrity({
@@ -203,7 +204,7 @@ check("single select with 5 places passes compact (fetch preferred=days×3, viab
     capacityPlan: plan,
   });
   assert.equal(integrity.ok, true, integrity.reasons.join("|"));
-  const v = evaluateTotalRealPlaceValidation(5, plan.dynamicCapacity);
+  const v = evaluateTotalRealPlaceValidation(6, plan.dynamicCapacity);
   assert.equal(v.result, "compact");
 });
 

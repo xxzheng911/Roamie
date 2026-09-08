@@ -161,6 +161,8 @@ export type CanonicalTravelContext = {
       normalizedCategory?: string;
       combinationId?: string | number;
       rating?: number | null;
+      userRatingCount?: number | null;
+      businessStatus?: string | null;
       resolutionStatus: "named" | "resolved" | "unresolved" | "pending";
     }>;
   }>;
