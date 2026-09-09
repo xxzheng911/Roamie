@@ -1,8 +1,7 @@
-import { useState } from "react";
 import { Sparkles, ChevronRight } from "lucide-react";
 import { useI18n } from "@/hooks/use-i18n";
 import { useAccess } from "@/hooks/use-access";
-import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
+import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
 import { Link } from "@tanstack/react-router";
 
 export type QuizCtaOrigin = "home" | "profile" | "chat";
@@ -43,18 +42,14 @@ function QuizCtaContent({
 export function PreferenceQuizCta({ origin, variant = "card", className }: Props) {
   const { t } = useI18n();
   const { hasPlusAccess } = useAccess();
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const { openRevenueCatPaywall } = usePlusUpgrade();
 
   const badge = t("quizCta.badge");
   const title = t("quizCta.title");
   const desc = t("quizCta.desc");
   const button = t("quizCta.button");
 
-  const upgradeDialog = (
-    <PlusUpgradeDialog open={upgradeOpen} onOpenChange={setUpgradeOpen} feature="quiz" />
-  );
-
-  const openUpgrade = () => setUpgradeOpen(true);
+  const openUpgrade = () => openRevenueCatPaywall();
 
   if (variant === "banner") {
     const inner = (
@@ -83,7 +78,6 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
           >
             {inner}
           </button>
-          {upgradeDialog}
         </>
       );
     }
@@ -122,7 +116,6 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
             </button>
           )}
         </div>
-        {upgradeDialog}
       </>
     );
   }
@@ -152,7 +145,6 @@ export function PreferenceQuizCta({ origin, variant = "card", className }: Props
         >
           {cardBody}
         </button>
-        {upgradeDialog}
       </>
     );
   }

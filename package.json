@@ -128,6 +128,7 @@
     "verify:credits": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-credits.mjs",
     "verify:plus-entitlement": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-entitlement-authority.mjs",
     "verify:revenuecat-subscription": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-revenuecat-subscription.mjs",
+    "verify:plus-purchase-ui": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-purchase-ui.mjs",
     "verify:security-remediation": "node scripts/verify-security-remediation.mjs",
     "verify:migration-replay-safety": "node scripts/verify-migration-replay-safety.mjs",
     "verify:location": "npx vite-node scripts/verify-location-logic.mjs",

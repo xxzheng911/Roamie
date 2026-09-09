@@ -6,6 +6,7 @@ const ALLOWED_API_PATHS = new Set([
   "/api/analytics/events",
   "/api/place-photo",
   "/api/admin/dashboard",
+  "/api/subscription/sync",
 ]);
 
 export class ApiUrlError extends Error {
@@ -55,7 +56,13 @@ export function resolveApiUrl(
   return new URL(path, `${origin.origin}/`).toString();
 }
 
-export function apiEndpointDiagnostic(url: string): { endpointScheme: string; endpointHost: string } {
-  const parsed = new URL(url, typeof window === "undefined" ? "https://localhost" : window.location.origin);
+export function apiEndpointDiagnostic(url: string): {
+  endpointScheme: string;
+  endpointHost: string;
+} {
+  const parsed = new URL(
+    url,
+    typeof window === "undefined" ? "https://localhost" : window.location.origin,
+  );
   return { endpointScheme: parsed.protocol.replace(":", ""), endpointHost: parsed.host };
 }

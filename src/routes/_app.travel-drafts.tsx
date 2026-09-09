@@ -11,10 +11,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
 import { useAccess } from "@/hooks/use-access";
 import { useAuth } from "@/hooks/use-auth";
 import { useI18n } from "@/hooks/use-i18n";
+import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
 import {
   deleteConversationWorkspace,
   hydrateConversationWorkspaces,
@@ -35,13 +35,13 @@ function TravelDraftsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { hasPlusAccess, subscriptionHydrated } = useAccess();
+  const { openRevenueCatPaywall } = usePlusUpgrade();
   const userId = user?.id ?? null;
   const scrollRef = useRef<HTMLElement | null>(null);
   const scrollTopRef = useRef(0);
 
   const [drafts, setDrafts] = useState<ConversationWorkspaceListItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const applyList = useCallback(
@@ -73,7 +73,7 @@ function TravelDraftsPage() {
     if (!subscriptionHydrated) return;
     if (!hasPlusAccess) {
       setLoading(false);
-      setUpgradeOpen(true);
+      openRevenueCatPaywall({ onClose: () => void navigate({ to: "/profile" }) });
       return;
     }
     let cancelled = false;
@@ -104,7 +104,7 @@ function TravelDraftsPage() {
     return () => {
       cancelled = true;
     };
-  }, [hasPlusAccess, subscriptionHydrated, applyList, userId]);
+  }, [hasPlusAccess, subscriptionHydrated, applyList, userId, navigate, openRevenueCatPaywall]);
 
   const confirmDelete = () => {
     if (!deleteId) return;
@@ -176,14 +176,6 @@ function TravelDraftsPage() {
           <h1 className="font-display text-lg">{t("trip.travelDraft")}</h1>
         </header>
         <p className="text-sm text-muted-foreground">{t("trip.travelDraftPlusOnly")}</p>
-        <PlusUpgradeDialog
-          open={upgradeOpen}
-          onOpenChange={(open) => {
-            setUpgradeOpen(open);
-            if (!open) void navigate({ to: "/profile" });
-          }}
-          feature="general"
-        />
       </div>
     );
   }

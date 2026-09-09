@@ -1,8 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { HeartHandshake, Sparkles } from "lucide-react";
-import { toast } from "sonner";
-import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import { useAccess } from "@/hooks/use-access";
 import { useI18n } from "@/hooks/use-i18n";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
@@ -16,12 +14,7 @@ import type { SavedPlace } from "@/lib/places-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
 
-const FREE_FEATURE_TAGS = [
-  "長期旅行記憶",
-  "收藏地點推薦",
-  "更深層 AI 對話",
-  "個人化行程規劃",
-] as const;
+const FREE_FEATURE_TAGS = ["長期旅行記憶", "個人化推薦", "無限 AI 對話"] as const;
 
 type Props = {
   prefs?: TravelPreferences | null;
@@ -46,13 +39,8 @@ export function HomePersonalizationCard({
 }: Props) {
   const navigate = useNavigate();
   const { locale } = useI18n();
-  const {
-    hasPlusAccess,
-    subscriptionSource,
-    subscriptionHydrated,
-    disablePlusTestMode,
-  } = useAccess();
-  const { upgradeToPlus, comingSoonOpen, setComingSoonOpen } = usePlusUpgrade();
+  const { hasPlusAccess, subscriptionSource, subscriptionHydrated } = useAccess();
+  const { upgradeToPlus } = usePlusUpgrade();
 
   useEffect(() => {
     const status = hasPlusAccess ? "plus" : "free";
@@ -90,14 +78,20 @@ export function HomePersonalizationCard({
         locale,
       })}`,
     );
-  }, [hasPlusAccess, savedPlaces, prefs, selectedMood, weather, nearbyPicks, latestTripTitle, chatSession, locale]);
+  }, [
+    hasPlusAccess,
+    savedPlaces,
+    prefs,
+    selectedMood,
+    weather,
+    nearbyPicks,
+    latestTripTitle,
+    chatSession,
+    locale,
+  ]);
 
   const handleUpgradePlus = () => {
     upgradeToPlus();
-  };
-
-  const handleDismissUpgrade = () => {
-    toast.message("沒問題，你隨時可以再升級 Plus");
   };
 
   const handleStartPlusJourney = () => {
@@ -105,11 +99,6 @@ export function HomePersonalizationCard({
       to: "/plan",
       search: selectedMood ? { mood: selectedMood } : {},
     });
-  };
-
-  const handleReturnFree = () => {
-    disablePlusTestMode();
-    toast.message("已切換回 Free 模式");
   };
 
   if (!subscriptionHydrated) {
@@ -134,27 +123,18 @@ export function HomePersonalizationCard({
               <Sparkles className="h-5 w-5 text-clay" />
             </span>
             <div className="min-w-0 flex-1">
-              <h3 className="font-display text-[19px] leading-snug">
-                Roamie 正在記住你的旅行節奏
-              </h3>
+              <h3 className="font-display text-[19px] leading-snug">Roamie 正在記住你的旅行節奏</h3>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{plusInsight}</p>
-              <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                <button
-                  type="button"
-                  onClick={handleStartPlusJourney}
-                  className="rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
-                >
-                  開始規劃我的旅程
-                </button>
-                <button
-                  type="button"
-                  onClick={handleReturnFree}
-                  className="rounded-full border border-border bg-card/80 px-5 py-2.5 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-                >
-                  返回 Free 模式
-                </button>
-              </div>
             </div>
+          </div>
+          <div className="mt-4 flex w-full justify-center">
+            <button
+              type="button"
+              onClick={handleStartPlusJourney}
+              className="mx-auto w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
+            >
+              開始規劃我的旅程
+            </button>
           </div>
         </div>
       </section>
@@ -171,7 +151,7 @@ export function HomePersonalizationCard({
           <div className="min-w-0 flex-1">
             <h3 className="font-display text-[19px] leading-snug">讓 Roamie 更懂你</h3>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              讓 AI 記住你的旅行偏好、收藏地點與旅遊習慣，獲得更貼近你的行程推薦。
+              記住你的旅行偏好，讓每次推薦更貼近你。
             </p>
             <ul className="mt-3 flex flex-wrap gap-1.5">
               {FREE_FEATURE_TAGS.map((tag) => (
@@ -183,26 +163,18 @@ export function HomePersonalizationCard({
                 </li>
               ))}
             </ul>
-            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            <div className="mt-4">
               <button
                 type="button"
                 onClick={handleUpgradePlus}
-                className="rounded-full bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
+                className="w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
               >
-                立即升級 Plus
-              </button>
-              <button
-                type="button"
-                onClick={handleDismissUpgrade}
-                className="rounded-full border border-border bg-background px-5 py-2.5 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-              >
-                稍後再說
+                升級 Plus
               </button>
             </div>
           </div>
         </div>
       </div>
-      <PlusComingSoonDialog open={comingSoonOpen} onOpenChange={setComingSoonOpen} />
     </section>
   );
 }

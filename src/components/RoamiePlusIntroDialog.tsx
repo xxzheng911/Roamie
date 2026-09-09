@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { Sparkles } from "lucide-react";
+import { Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -25,41 +25,10 @@ type Props = {
   onUpgraded?: () => void;
 };
 
-const FEATURE_COPY: Record<NonNullable<Props["feature"]>, { title: string; body: string }> = {
-  general: {
-    title: "Roamie Plus",
-    body: "Plus 讓 Roamie 長期記住你的旅行風格、收藏與互動，在對話與推薦中提供更深入的個人化。免費版仍可正常使用 AI 對話、天氣與附近推薦。",
-  },
-  quiz: {
-    title: "旅行性格測驗 — Plus",
-    body: "完成測驗後，Roamie 會記住你的旅行風格，並在每次推薦時融入你的偏好。",
-  },
-  memory: {
-    title: "Roamie 長期旅行記憶",
-    body: "Plus 會記住你收藏過的地點、常選的類型與互動紀錄，讓推薦越來越懂你。",
-  },
-  personalized: {
-    title: "Plus 個人化推薦",
-    body: "依照你的心情、時間、天氣與收藏偏好，Roamie 會整理更適合你的去處。",
-  },
-};
-
-const PLUS_FEATURES = [
-  "長期記住旅行偏好與收藏",
-  "更深度的個人化推薦",
-  "旅行性格測驗與記憶設定",
-  "情境式對話與行程整理",
-] as const;
-
 /**
  * Plus 功能介紹 + TestFlight 測試模式切換（不接真實付款）。
  */
-export function RoamiePlusIntroDialog({
-  open,
-  onOpenChange,
-  feature = "general",
-  onUpgraded,
-}: Props) {
+export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props) {
   const {
     isPlusUser,
     devPlusMode,
@@ -69,7 +38,6 @@ export function RoamiePlusIntroDialog({
   } = useAccess();
   const { packages, offeringsLoading, error, loadOfferings, purchase, restore } = useSubscription();
   const [busyPackage, setBusyPackage] = useState<string | null>(null);
-  const copy = FEATURE_COPY[feature];
   const showTestControls = isDeveloperBuildEnabled() || canShowDeveloperTools;
 
   useEffect(() => {
@@ -131,12 +99,19 @@ export function RoamiePlusIntroDialog({
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent className="max-w-[min(100%,22rem)] rounded-3xl border-border">
+        <AlertDialogCancel
+          aria-label="關閉"
+          className="absolute right-4 top-4 mt-0 h-8 w-8 rounded-full border-0 bg-transparent p-0 text-muted-foreground shadow-none hover:bg-secondary"
+        >
+          <X className="h-4 w-4" aria-hidden="true" />
+          <span className="sr-only">關閉</span>
+        </AlertDialogCancel>
         <AlertDialogHeader>
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent">
             <Sparkles className="h-6 w-6 text-clay" />
           </div>
           <AlertDialogTitle className="text-center font-display text-xl leading-snug">
-            {isPlusUser ? "Roamie Plus 已啟用" : copy.title}
+            {isPlusUser ? "Roamie Plus 已啟用" : "升級 Roamie Plus"}
           </AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className="space-y-3 text-left text-sm leading-relaxed text-muted-foreground">
@@ -168,17 +143,7 @@ export function RoamiePlusIntroDialog({
                   </button>
                 </>
               ) : (
-                <>
-                  <p>{copy.body}</p>
-                  <ul className="space-y-1.5 text-xs">
-                    {PLUS_FEATURES.map((line) => (
-                      <li key={line} className="flex gap-2">
-                        <span className="text-clay">·</span>
-                        <span>{line}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </>
+                <p>讓 Roamie 記住你的旅行偏好，提供更貼近你的推薦與行程。</p>
               )}
             </div>
           </AlertDialogDescription>
@@ -230,7 +195,17 @@ export function RoamiePlusIntroDialog({
                 </AlertDialogAction>
               ))}
               {error ? (
-                <p className="text-center text-xs text-destructive">目前無法載入訂閱方案</p>
+                <div className="space-y-2 text-center">
+                  <p className="text-xs text-destructive">目前無法載入訂閱方案</p>
+                  <button
+                    type="button"
+                    className="text-sm font-medium underline"
+                    disabled={offeringsLoading || busyPackage !== null}
+                    onClick={() => void loadOfferings()}
+                  >
+                    重新載入方案
+                  </button>
+                </div>
               ) : null}
               <button
                 type="button"
@@ -240,12 +215,6 @@ export function RoamiePlusIntroDialog({
               >
                 恢復購買
               </button>
-              <AlertDialogCancel
-                className="mt-0 w-full rounded-full border border-border bg-card py-3 text-sm font-medium text-foreground"
-                onClick={() => onOpenChange(false)}
-              >
-                繼續使用免費版
-              </AlertDialogCancel>
             </>
           )}
         </AlertDialogFooter>

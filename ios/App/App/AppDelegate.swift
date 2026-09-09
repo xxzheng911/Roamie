@@ -1,6 +1,42 @@
 import UIKit
 import WebKit
 import Capacitor
+import StoreKit
+
+@objc(SubscriptionManagementPlugin)
+final class SubscriptionManagementPlugin: CAPPlugin, CAPBridgedPlugin {
+    let identifier = "SubscriptionManagementPlugin"
+    let jsName = "SubscriptionManagement"
+    let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "showManageSubscriptions", returnType: CAPPluginReturnPromise)
+    ]
+
+    @objc func showManageSubscriptions(_ call: CAPPluginCall) {
+        guard #available(iOS 15.0, *) else {
+            call.reject("StoreKit subscription management is unavailable")
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            let activeScene = self?.bridge?.viewController?.view.window?.windowScene
+                ?? UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .first { $0.activationState == .foregroundActive }
+
+            guard let activeScene else {
+                call.reject("No active window scene")
+                return
+            }
+
+            do {
+                try await AppStore.showManageSubscriptions(in: activeScene)
+                call.resolve()
+            } catch {
+                call.reject("Unable to show subscription management")
+            }
+        }
+    }
+}
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -327,6 +363,7 @@ class PortraitBridgeViewController: CAPBridgeViewController {
 
     override open func capacitorDidLoad() {
         super.capacitorDidLoad()
+        bridge?.registerPluginInstance(SubscriptionManagementPlugin())
         if let bridge = bridge {
             let startURL = bridge.config.appStartServerURL
             let indexPath = bridge.config.appStartFileURL.path

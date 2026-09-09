@@ -2,7 +2,6 @@ import { Lock, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useAccess } from "@/hooks/use-access";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
-import { PlusComingSoonDialog } from "@/components/PlusComingSoonDialog";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import type { SavedPlace } from "@/lib/places-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
@@ -74,7 +73,7 @@ export function HomePlusPersonalization({
   className,
 }: Props) {
   const { hasPlusAccess } = useAccess();
-  const { upgradeToPlus, comingSoonOpen, setComingSoonOpen } = usePlusUpgrade();
+  const { upgradeToPlus } = usePlusUpgrade();
 
   const moodLine = useMemo(
     () => inferMoodLine(weather, selectedMood, prefs),
@@ -110,7 +109,6 @@ export function HomePlusPersonalization({
             </span>
           </span>
         </button>
-        <PlusComingSoonDialog open={comingSoonOpen} onOpenChange={setComingSoonOpen} />
       </section>
     );
   }

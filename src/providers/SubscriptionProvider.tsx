@@ -19,7 +19,15 @@ import type {
   UsageCounters,
 } from "@/services/subscription/types";
 import { useAuth } from "@/hooks/use-auth";
-import { syncRevenueCatEntitlementWithServer } from "@/lib/subscription/revenuecat-sync";
+import {
+  syncRevenueCatEntitlementInBackground,
+  syncRevenueCatEntitlementWithServer,
+} from "@/lib/subscription/revenuecat-sync";
+import {
+  SUBSCRIPTION_HYDRATION_TIMEOUT_MS,
+  SUBSCRIPTION_OFFERINGS_TIMEOUT_MS,
+  withSubscriptionTimeout,
+} from "@/lib/subscription/async-timeout";
 
 type SubscriptionCtx = {
   status: SubscriptionStatus | null;
@@ -59,7 +67,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     if (!user?.id) return;
     const generation = generationRef.current;
-    const next = await adapter.getStatus();
+    const next = await adapter.getStatus(user.id);
     if (generation !== generationRef.current) return;
     setStatus(next);
     setUsage(await adapter.getUsage());
@@ -80,20 +88,32 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     }
     setLoading(true);
     setError(null);
+    const hydrationTimeout = setTimeout(() => {
+      if (cancelled || generation !== generationRef.current) return;
+      setStatus(
+        (current) =>
+          current ?? {
+            ...UNKNOWN_SUBSCRIPTION_STATUS,
+            source: adapter.id === "revenuecat" ? "revenuecat" : "local",
+          },
+      );
+      setLoading(false);
+      console.warn("[REVENUECAT_STATE]", { event: "hydration_timeout", fallback: "free" });
+    }, SUBSCRIPTION_HYDRATION_TIMEOUT_MS);
     void (async () => {
       try {
         await adapter.configure(user.id);
         removeListener = await adapter.addStatusListener((next) => {
           if (generation !== generationRef.current) return;
           setStatus(next);
-          if (adapter.id === "revenuecat") void syncRevenueCatEntitlementWithServer();
-        });
+          if (adapter.id === "revenuecat") syncRevenueCatEntitlementInBackground();
+        }, user.id);
         if (cancelled) {
           removeListener();
           removeListener = undefined;
           return;
         }
-        const next = await adapter.getStatus();
+        const next = await adapter.getStatus(user.id);
         if (generation !== generationRef.current) return;
         setStatus(next);
         if (adapter.id === "revenuecat") await syncRevenueCatEntitlementWithServer();
@@ -101,12 +121,14 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         if (generation === generationRef.current)
           setError(cause instanceof Error ? cause.message : "subscription_unavailable");
       } finally {
+        clearTimeout(hydrationTimeout);
         if (generation === generationRef.current) setLoading(false);
       }
     })();
     return () => {
       cancelled = true;
       generationRef.current += 1;
+      clearTimeout(hydrationTimeout);
       removeListener?.();
     };
   }, [adapter, authLoading, user?.id]);
@@ -115,31 +137,40 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     setOfferingsLoading(true);
     setError(null);
     try {
-      setPackages(await adapter.getPackages());
+      if (!user?.id) throw new Error("revenuecat_user_id_missing");
+      setPackages(
+        await withSubscriptionTimeout(
+          adapter.getPackages(user.id),
+          SUBSCRIPTION_OFFERINGS_TIMEOUT_MS,
+          "offerings_timeout",
+        ),
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "offerings_unavailable");
     } finally {
       setOfferingsLoading(false);
     }
-  }, [adapter]);
+  }, [adapter, user?.id]);
   const purchase = useCallback(
     async (packageId: string) => {
       setError(null);
-      const result = await adapter.purchase(packageId);
+      if (!user?.id) throw new Error("revenuecat_user_id_missing");
+      const result = await adapter.purchase(packageId, user.id);
       setStatus(result.status);
       if (result.outcome === "success" && adapter.id === "revenuecat")
         await syncRevenueCatEntitlementWithServer();
       return result;
     },
-    [adapter],
+    [adapter, user?.id],
   );
   const restore = useCallback(async () => {
     setError(null);
-    const result = await adapter.restore();
+    if (!user?.id) throw new Error("revenuecat_user_id_missing");
+    const result = await adapter.restore(user.id);
     setStatus(result.status);
     if (adapter.id === "revenuecat") await syncRevenueCatEntitlementWithServer();
     return result;
-  }, [adapter]);
+  }, [adapter, user?.id]);
   const checkFeature = useCallback(
     (feature: SubscriptionFeature): FeatureGateResult =>
       canUseFeature(status ?? UNKNOWN_SUBSCRIPTION_STATUS, usage, feature),

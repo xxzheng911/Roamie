@@ -9,6 +9,7 @@ import { PlatformProvider } from "@/providers/PlatformProvider";
 import { AccessProvider } from "@/hooks/use-access";
 import { AddToTripProvider } from "@/hooks/use-add-to-trip";
 import { SubscriptionProvider } from "@/providers/SubscriptionProvider";
+import { PlusPurchaseProvider } from "@/providers/PlusPurchaseProvider";
 import { assertClientEnv } from "@/constants/env";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { isSupabaseConfigured } from "@/integrations/supabase/client";
@@ -30,7 +31,9 @@ function AuthenticatedShellProviders({ children }: { children: ReactNode }) {
   return (
     <SubscriptionProvider>
       <AccessProvider>
-        <AddToTripProvider>{children}</AddToTripProvider>
+        <PlusPurchaseProvider>
+          <AddToTripProvider>{children}</AddToTripProvider>
+        </PlusPurchaseProvider>
       </AccessProvider>
     </SubscriptionProvider>
   );
@@ -43,7 +46,10 @@ function AuthenticatedShellProviders({ children }: { children: ReactNode }) {
 function ProviderGate({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   const pathname = readBrowserPathname();
-  const light = shouldUseLightStartupShell(pathname, Boolean(user), loading);
+  // Welcome contains the formal Plus purchase entry and therefore needs the
+  // canonical subscription/access/purchase provider chain.
+  const light =
+    pathname !== "/welcome" && shouldUseLightStartupShell(pathname, Boolean(user), loading);
   const phase = light ? "providers:light" : "providers:authed-shell";
   const detail = `u=${Boolean(user)} l=${loading ? 1 : 0}`;
   const lastPhaseRef = useRef<string>("");

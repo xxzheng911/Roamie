@@ -18,6 +18,8 @@ import { useAccess } from "@/hooks/use-access";
 import { useI18n } from "@/hooks/use-i18n";
 import type { AuthProviderKind } from "@/lib/auth-provider";
 import { LOCALE_LABELS } from "@/lib/i18n/types";
+import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
+import { tryNativeSubscriptionManagement } from "@/lib/subscription/subscription-management-native";
 import {
   isNotificationApiAvailable,
   isNotificationGrantedAsync,
@@ -40,10 +42,7 @@ export const Route = createFileRoute("/_app/settings")({
   component: SettingsPage,
 });
 
-function providerLabel(
-  provider: AuthProviderKind | null,
-  t: (key: string) => string,
-): string {
+function providerLabel(provider: AuthProviderKind | null, t: (key: string) => string): string {
   if (provider === "google") return t("settings.providerGoogle");
   if (provider === "apple") return t("settings.providerApple");
   if (provider === "email") return t("settings.providerEmail");
@@ -57,6 +56,8 @@ function SettingsPage() {
   const [signingOut, setSigningOut] = useState(false);
   const {
     effectiveTier,
+    hasPlusAccess,
+    plusEntitlementActiveSources,
     canShowDeveloperTools,
     refresh: refreshAccess,
   } = useAccess();
@@ -66,6 +67,7 @@ function SettingsPage() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [savingNotif, setSavingNotif] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
+  const [cancelSubscriptionDialogOpen, setCancelSubscriptionDialogOpen] = useState(false);
   const devMode = isDeveloperBuildEnabled();
 
   const loadSettings = useCallback(async () => {
@@ -193,9 +195,13 @@ function SettingsPage() {
     }
   };
 
-  const notifLabel = notificationsEnabled
-    ? t("settings.notificationsOn")
-    : t("settings.notificationsOff");
+  const handleManageSubscription = async () => {
+    if (await tryNativeSubscriptionManagement()) return;
+    await openSubscriptionManagement();
+  };
+
+  const canManageAppleSubscription =
+    hasPlusAccess && plusEntitlementActiveSources.includes("app_store");
 
   if (authLoading) {
     return (
@@ -222,29 +228,25 @@ function SettingsPage() {
         <p className="border-b border-border px-6 py-2.5 text-[15px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
           {t("settings.account")}
         </p>
-        <div className="flex items-center justify-between gap-3 px-8 py-3">
-          <p className="text-[15px]">{t("settings.loginMethod")}</p>
-          <p className="text-sm text-muted-foreground">
+        <div className="grid min-h-12 grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-3 px-6 py-3.5">
+          <p className="text-[15px] leading-5">{t("settings.loginMethod")}</p>
+          <p className="justify-self-end text-[15px] leading-5 text-muted-foreground">
             {loading ? t("common.dash") : providerLabel(authProvider, t)}
           </p>
         </div>
       </section>
 
       <section className="mt-5 overflow-hidden rounded-3xl border border-border bg-card">
-        <p className="border-b border-border px-6 py-2.5 text-[15px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-          {t("settings.notifications")}
-        </p>
-        <div className="flex items-center justify-between gap-3 px-8 py-3">
-          <div>
-            <p className="text-[15px]">{t("settings.notificationsLabel")}</p>
-            <p className="mt-0.5 text-sm text-muted-foreground">{notifLabel}</p>
+        <div className="grid min-h-12 grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-3 px-6 py-3.5">
+          <p className="text-[15px] leading-5">{t("settings.notificationsLabel")}</p>
+          <div className="justify-self-end">
+            <Switch
+              checked={notificationsEnabled}
+              disabled={savingNotif || loading}
+              onCheckedChange={(checked) => void handleNotifications(checked)}
+              aria-label={t("settings.notificationsLabel")}
+            />
           </div>
-          <Switch
-            checked={notificationsEnabled}
-            disabled={savingNotif || loading}
-            onCheckedChange={(checked) => void handleNotifications(checked)}
-            aria-label={t("settings.notificationsLabel")}
-          />
         </div>
       </section>
 
@@ -252,10 +254,12 @@ function SettingsPage() {
         <button
           type="button"
           onClick={() => toast.message(t("settings.languageDeviceHint"))}
-          className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left"
+          className="grid min-h-12 w-full grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-3 px-6 py-3.5 text-left"
         >
-          <p className="text-[15px]">{t("settings.languageLabel")}</p>
-          <p className="text-sm text-muted-foreground">{LOCALE_LABELS[locale]}</p>
+          <p className="text-[15px] leading-5">{t("settings.languageLabel")}</p>
+          <p className="justify-self-end text-[15px] leading-5 text-muted-foreground">
+            {LOCALE_LABELS[locale]}
+          </p>
         </button>
       </section>
 
@@ -308,14 +312,56 @@ function SettingsPage() {
         Roamie · {effectiveTier}
       </button>
 
-      <button
-        type="button"
-        onClick={handleSignOut}
-        disabled={signingOut}
-        className="mt-8 w-full rounded-full border border-border bg-card py-3.5 text-[15px] text-foreground disabled:opacity-50"
+      <div className="mt-8 flex flex-col items-center gap-2.5">
+        <button
+          type="button"
+          onClick={handleSignOut}
+          disabled={signingOut}
+          className="w-full rounded-full border border-border bg-card py-3.5 text-[15px] text-foreground disabled:opacity-50"
+        >
+          {signingOut ? t("profile.saving") : t("settings.signOutAccount")}
+        </button>
+
+        {canManageAppleSubscription ? (
+          <button
+            type="button"
+            onClick={() => setCancelSubscriptionDialogOpen(true)}
+            className="px-2 py-1 text-center text-sm leading-5 text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            取消訂閱
+          </button>
+        ) : null}
+      </div>
+
+      <AlertDialog
+        open={cancelSubscriptionDialogOpen}
+        onOpenChange={setCancelSubscriptionDialogOpen}
       >
-        {signingOut ? t("profile.saving") : t("settings.signOutAccount")}
-      </button>
+        <AlertDialogContent className="mx-auto max-w-[calc(100%-2rem)] rounded-2xl sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>確定要取消 Roamie Plus 嗎？</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2 text-left leading-relaxed">
+              <span className="block">
+                取消後，Plus 功能仍可使用至目前訂閱期限結束。之後將自動回到 Free 方案。
+              </span>
+              <span className="block">
+                你的旅行偏好、收藏與既有資料不會被刪除，之後也可以隨時重新訂閱。
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
+            <AlertDialogCancel className="mt-0 w-full rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground">
+              繼續使用 Plus
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="w-full rounded-full border border-border bg-card text-muted-foreground hover:bg-secondary hover:text-foreground"
+              onClick={() => void handleManageSubscription()}
+            >
+              前往取消訂閱
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -51,7 +51,7 @@ import {
   hydrateConversationWorkspaces,
   listConversationWorkspaces,
 } from "@/lib/conversation-workspace";
-import { PlusUpgradeDialog } from "@/components/PlusUpgradeDialog";
+import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
 import {
   readProfileSessionCache,
   shouldSkipProfileNetworkLoad,
@@ -113,6 +113,7 @@ function Profile() {
     syncFromProfile: syncCoverFromProfile,
   } = useCover();
   const { hasPlusAccess, subscriptionHydrated } = useAccess();
+  const { openRevenueCatPaywall } = usePlusUpgrade();
   const [travelDrafts, setTravelDrafts] = useState(() =>
     hasPlusAccess ? listConversationWorkspaces(userId) : [],
   );
@@ -160,7 +161,6 @@ function Profile() {
   const [companionSummary, setCompanionSummary] = useState("");
   const [onboarded, setOnboarded] = useState(() => !!initialProfile?.prefs.onboarded);
   const [quizSyncing, setQuizSyncing] = useState(false);
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [pace, setPace] = useState("");
   const [vibe, setVibe] = useState("");
   const [budgetLabel, setBudgetLabel] = useState("—");
@@ -958,9 +958,13 @@ function Profile() {
           <Sparkles className="h-3.5 w-3.5 text-clay" />
           Plus 旅行偏好測驗
         </div>
-        <p className="mt-2 font-display text-[18px] leading-snug">讓 Roamie 更懂你的旅行偏好</p>
+        <p className="mt-2 font-display text-[18px] leading-snug">
+          讓 Roamie 更懂你的旅行偏好
+        </p>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          完成幾個小問題，之後推薦地點與行程時會更貼近你。
+          {hasPlusAccess
+            ? "完成幾個小問題，之後推薦地點與行程時會更貼近你。"
+            : "完成測驗並獲得更貼近你的行程及地點推薦"}
         </p>
         {hasPlusAccess ? (
           <button
@@ -969,7 +973,7 @@ function Profile() {
               console.info("[TRAVEL_PREF_TEST] start");
               void navigate({ to: "/travel-preference-test", search: { from: "profile" } });
             }}
-            className="mt-4 w-full rounded-full bg-primary py-3 text-sm text-primary-foreground"
+            className="mt-4 w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground"
           >
             {quizCompleted ? "重新測驗" : "開始測驗"}
           </button>
@@ -978,9 +982,9 @@ function Profile() {
             type="button"
             onClick={() => {
               console.info("[TRAVEL_PREF_TEST] start");
-              setUpgradeOpen(true);
+              openRevenueCatPaywall();
             }}
-            className="mt-4 w-full rounded-full bg-primary py-3 text-sm text-primary-foreground"
+            className="mt-4 w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground"
           >
             升級 Plus 解鎖
           </button>
@@ -1071,8 +1075,6 @@ function Profile() {
           {t("settings.signOutAccount")}
         </button>
       ) : null}
-      <PlusUpgradeDialog open={upgradeOpen} onOpenChange={setUpgradeOpen} feature="quiz" />
-
       <div aria-hidden className="h-6 shrink-0" />
     </div>
   );

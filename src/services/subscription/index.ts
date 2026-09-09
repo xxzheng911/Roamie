@@ -3,6 +3,7 @@ import type { CustomerInfo, PurchasesPackage } from "@revenuecat/purchases-capac
 import { clientEnv } from "@/constants/env";
 import { REVENUECAT_ENTITLEMENT_ID } from "@/constants/subscription";
 import { defaultFreeStatus, readLocalUsage } from "@/services/subscription/tiers";
+import { createSubscriptionConfigurationAuthority } from "./configuration-authority";
 import type {
   SubscriptionActionResult,
   SubscriptionAdapter,
@@ -45,9 +46,28 @@ function mapPackage(pkg: PurchasesPackage): SubscriptionPackage {
 let configured = false;
 let configuredUserId: string | null = null;
 let packages = new Map<string, PurchasesPackage>();
-async function purchasesPlugin() {
-  return (await import("@revenuecat/purchases-capacitor")).Purchases;
+function purchasesModule() {
+  return import("@revenuecat/purchases-capacitor");
 }
+
+const configurationAuthority = createSubscriptionConfigurationAuthority(async (userId) => {
+  const apiKey =
+    Capacitor.getPlatform() === "ios"
+      ? clientEnv.revenueCatAppleKey
+      : clientEnv.revenueCatGoogleKey;
+  if (!apiKey) throw new Error("revenuecat_public_sdk_key_missing");
+
+  const { Purchases } = await purchasesModule();
+  if (!configured) {
+    await Purchases.configure({ apiKey, appUserID: userId });
+    configured = true;
+  } else if (configuredUserId !== userId) {
+    if (configuredUserId) await Purchases.logOut();
+    await Purchases.logIn({ appUserID: userId });
+  }
+  configuredUserId = userId;
+  console.info("[REVENUECAT_STATE]", { event: "configured", appUserIdBound: true });
+});
 
 export const localSubscriptionAdapter: SubscriptionAdapter = {
   id: "local",
@@ -77,33 +97,26 @@ export const localSubscriptionAdapter: SubscriptionAdapter = {
 export const revenueCatAdapter: SubscriptionAdapter = {
   id: "revenuecat",
   async configure(userId) {
-    const apiKey =
-      Capacitor.getPlatform() === "ios"
-        ? clientEnv.revenueCatAppleKey
-        : clientEnv.revenueCatGoogleKey;
-    if (!apiKey) throw new Error("revenuecat_public_sdk_key_missing");
-    const Purchases = await purchasesPlugin();
-    if (!configured) {
-      await Purchases.configure({ apiKey, appUserID: userId });
-      configured = true;
-    } else if (configuredUserId !== userId) {
-      if (configuredUserId) await Purchases.logOut();
-      await Purchases.logIn({ appUserID: userId });
-    }
-    configuredUserId = userId;
-    console.info("[REVENUECAT_STATE]", { event: "configured", appUserIdBound: true });
+    await configurationAuthority.ensureConfigured(userId);
   },
   async logOut() {
-    if (!configured || !configuredUserId) return;
-    await (await purchasesPlugin()).logOut();
-    configuredUserId = null;
+    await configurationAuthority.clearConfiguredIdentity(async () => {
+      if (!configured || !configuredUserId) return;
+      const { Purchases } = await purchasesModule();
+      await Purchases.logOut();
+      configuredUserId = null;
+    });
     packages.clear();
   },
-  async getStatus() {
-    return statusFromCustomerInfo((await (await purchasesPlugin()).getCustomerInfo()).customerInfo);
+  async getStatus(userId) {
+    await configurationAuthority.ensureConfigured(userId);
+    const { Purchases } = await purchasesModule();
+    return statusFromCustomerInfo((await Purchases.getCustomerInfo()).customerInfo);
   },
-  async getPackages() {
-    const offerings = await (await purchasesPlugin()).getOfferings();
+  async getPackages(userId) {
+    await configurationAuthority.ensureConfigured(userId);
+    const { Purchases } = await purchasesModule();
+    const offerings = await Purchases.getOfferings();
     const available = offerings.current?.availablePackages ?? [];
     packages = new Map(available.map((pkg) => [pkg.identifier, pkg]));
     console.info("[REVENUECAT_STATE]", {
@@ -115,27 +128,32 @@ export const revenueCatAdapter: SubscriptionAdapter = {
   async getUsage() {
     return readLocalUsage();
   },
-  async purchase(packageId): Promise<SubscriptionActionResult> {
+  async purchase(packageId, userId): Promise<SubscriptionActionResult> {
+    await configurationAuthority.ensureConfigured(userId);
     const pkg = packages.get(packageId);
     if (!pkg) throw new Error("revenuecat_package_not_loaded");
     try {
-      const result = await (await purchasesPlugin()).purchasePackage({ aPackage: pkg });
+      const { Purchases } = await purchasesModule();
+      const result = await Purchases.purchasePackage({ aPackage: pkg });
       return { outcome: "success", status: statusFromCustomerInfo(result.customerInfo) };
     } catch (error) {
       const purchaseError = error as PurchasesError;
       if (purchaseError.userCancelled)
-        return { outcome: "cancelled", status: await revenueCatAdapter.getStatus() };
+        return { outcome: "cancelled", status: await revenueCatAdapter.getStatus(userId) };
       if (String(purchaseError.code).toLowerCase().includes("payment_pending"))
-        return { outcome: "pending", status: await revenueCatAdapter.getStatus() };
+        return { outcome: "pending", status: await revenueCatAdapter.getStatus(userId) };
       throw error;
     }
   },
-  async restore() {
-    const result = await (await purchasesPlugin()).restorePurchases();
+  async restore(userId) {
+    await configurationAuthority.ensureConfigured(userId);
+    const { Purchases } = await purchasesModule();
+    const result = await Purchases.restorePurchases();
     return { outcome: "success", status: statusFromCustomerInfo(result.customerInfo) };
   },
-  async addStatusListener(listener) {
-    const Purchases = await purchasesPlugin();
+  async addStatusListener(listener, userId) {
+    await configurationAuthority.ensureConfigured(userId);
+    const { Purchases } = await purchasesModule();
     const listenerId = await Purchases.addCustomerInfoUpdateListener((info) =>
       listener(statusFromCustomerInfo(info)),
     );

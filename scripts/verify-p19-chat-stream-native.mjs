@@ -12,6 +12,13 @@ test("native API uses validated HTTPS production origin", () => {
     resolveApiUrl("/api/roamie", { native: true, origin: "https://roamie.example" }),
     "https://roamie.example/api/roamie",
   );
+  assert.equal(
+    resolveApiUrl("/api/subscription/sync", {
+      native: true,
+      origin: "https://roamie.tw",
+    }),
+    "https://roamie.tw/api/subscription/sync",
+  );
 });
 
 test("native missing or unsafe origin fails fast and never produces capacitor API URL", () => {
@@ -19,11 +26,20 @@ test("native missing or unsafe origin fails fast and never produces capacitor AP
     () => resolveApiUrl("/api/roamie", { native: true, origin: "" }),
     (error) => error instanceof ApiUrlError && error.code === "native_api_origin_missing",
   );
-  for (const origin of ["capacitor://localhost", "file:///tmp/app", "javascript:alert(1)", "http://example.com"]) {
+  for (const origin of [
+    "capacitor://localhost",
+    "file:///tmp/app",
+    "javascript:alert(1)",
+    "http://example.com",
+  ]) {
     assert.throws(() => validatePublicApiOrigin(origin));
   }
   assert.equal(
-    resolveApiUrl("/api/roamie", { native: true, origin: "http://localhost:3000", allowLocalHttp: true }),
+    resolveApiUrl("/api/roamie", {
+      native: true,
+      origin: "http://localhost:3000",
+      allowLocalHttp: true,
+    }),
     "http://localhost:3000/api/roamie",
   );
 });
@@ -36,9 +52,16 @@ test("only repository-owned API paths can be resolved", () => {
 test("client distinguishes HTTP, content type, empty stream, parse and abort failures", () => {
   const source = readFileSync(new URL("../src/lib/ai/stream-client.ts", import.meta.url), "utf8");
   for (const code of [
-    "native_api_origin_missing", "network_error", "http_error", "unexpected_content_type",
-    "empty_stream", "stream_parse_error", "stream_aborted", "provider_error",
-  ]) assert.match(source, new RegExp(`\\"${code}\\"`));
+    "native_api_origin_missing",
+    "network_error",
+    "http_error",
+    "unexpected_content_type",
+    "empty_stream",
+    "stream_parse_error",
+    "stream_aborted",
+    "provider_error",
+  ])
+    assert.match(source, new RegExp(`\\"${code}\\"`));
   assert.match(source, /text\/event-stream/);
   assert.match(source, /rawBytesReceived/);
   assert.match(source, /deltaEventCount/);

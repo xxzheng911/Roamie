@@ -46,12 +46,15 @@ export type SubscriptionAdapter = {
   id: string;
   configure(userId: string): Promise<void>;
   logOut(): Promise<void>;
-  getStatus(): Promise<SubscriptionStatus>;
-  getPackages(): Promise<SubscriptionPackage[]>;
+  getStatus(userId: string): Promise<SubscriptionStatus>;
+  getPackages(userId: string): Promise<SubscriptionPackage[]>;
   getUsage(): Promise<UsageCounters>;
-  purchase(packageId: string): Promise<SubscriptionActionResult>;
-  restore(): Promise<SubscriptionActionResult>;
-  addStatusListener(listener: (status: SubscriptionStatus) => void): Promise<() => void>;
+  purchase(packageId: string, userId: string): Promise<SubscriptionActionResult>;
+  restore(userId: string): Promise<SubscriptionActionResult>;
+  addStatusListener(
+    listener: (status: SubscriptionStatus) => void,
+    userId: string,
+  ): Promise<() => void>;
   sync(): Promise<void>;
 };
 

@@ -4,6 +4,7 @@ import { ArrowRight, Crown, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { MobileFrame } from "@/components/MobileFrame";
 import { useAccessOptional } from "@/hooks/use-access";
+import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
 import { useIosInteractiveRoute } from "@/hooks/use-ios-interactive-route";
 import { markIntroCompleted } from "@/lib/plan-tier";
 import { applyLocalMockPlanTier, syncMockPlanTierToProfile } from "@/lib/plan-tier/sync-mock-tier";
@@ -14,15 +15,10 @@ import {
   logSkipOnboarding,
 } from "@/lib/onboarding-storage";
 import { resolveStartupPath } from "@/lib/post-auth-navigation";
-import {
-  guardStartupTarget,
-  logStartupNavigationContext,
-} from "@/lib/startup-navigation";
+import { guardStartupTarget, logStartupNavigationContext } from "@/lib/startup-navigation";
 import { logNavSkipSameRoute, shouldSkipStartupNavigation } from "@/lib/startup-boot-state";
 import { readBrowserPathname } from "@/lib/startup-path";
-import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
 import { resetOnboardingState } from "@/lib/onboarding-storage";
-import { clientEnv } from "@/constants/env";
 import { AnalyticsEvents } from "@/constants/analytics-events";
 import { trackEvent } from "@/services/analytics";
 
@@ -64,7 +60,7 @@ function Welcome() {
   const navigate = useNavigate();
   useIosInteractiveRoute("welcome");
   const access = useAccessOptional();
-  const canShowDeveloperTools = access?.canShowDeveloperTools ?? import.meta.env.DEV;
+  const { openRevenueCatPaywall } = usePlusUpgrade();
   const [step, setStep] = useState(0);
   const [finishing, setFinishing] = useState(false);
   const isTierStep = step >= INTRO_STEPS.length;
@@ -89,19 +85,11 @@ function Welcome() {
 
     try {
       if (tier === "plus") {
-        const billingConfigured = Boolean(clientEnv.revenueCatAppleKey || clientEnv.revenueCatGoogleKey);
-        const shouldBypassBilling =
-          import.meta.env.DEV || canShowDeveloperTools || !clientEnv.billingEnabled || !billingConfigured;
-        if (shouldBypassBilling) {
-          if (access) {
-            access.enablePlusTestMode();
-          } else {
-            applyLocalMockPlanTier("plus");
-            void syncMockPlanTierToProfile("plus");
-          }
-        } else {
-          void openSubscriptionManagement();
-        }
+        await markIntroCompleted(tier);
+        trackEvent(AnalyticsEvents.INTRO_COMPLETED, { tier_choice: tier });
+        openRevenueCatPaywall();
+        setFinishing(false);
+        return;
       } else if (access) {
         access.disablePlusTestMode();
       } else {
@@ -178,7 +166,9 @@ function Welcome() {
           <>
             <div className="welcome-tier-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain no-scrollbar">
               <div className="animate-rise px-8 pb-[max(2rem,env(safe-area-inset-bottom,0px))] pt-[max(1.5rem,var(--safe-area-top))]">
-                <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">陪伴方式</p>
+                <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">
+                  陪伴方式
+                </p>
                 <h1 className="mt-3 font-display text-[26px] leading-snug">
                   選擇適合你的旅行陪伴方式
                 </h1>
