@@ -52,6 +52,7 @@ export const SERVER_ONLY_ENV_KEYS = Object.freeze([
   "GOOGLE_MAPS_API_KEY",
   "GOOGLE_PLACES_SERVER_API_KEY",
   "OPENWEATHER_API_KEY",
+  "REVENUECAT_SECRET_API_KEY",
 ]);
 
 export function selectPublicClientEnv(source, existing = process.env) {

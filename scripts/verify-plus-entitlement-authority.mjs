@@ -160,7 +160,7 @@ test("subscription refresh cannot delete or mutate grant rows", () => {
     subscription + provider,
     /user_plus_entitlements|admin_revoke_plus_entitlement/,
   );
-  assert.match(provider, /refreshAccess\(\)/);
+  assert.match(provider, /syncRevenueCatEntitlementWithServer\(\)/);
 });
 
 test("credits and admin dashboard consume the authoritative resolver", () => {

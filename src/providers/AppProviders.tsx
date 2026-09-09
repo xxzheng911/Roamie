@@ -28,11 +28,11 @@ function bootPhase(phase: string, detail?: string): void {
 /** Plus / 加入行程等僅在已登入主殼層需要；登入頁不載入以縮小冷啟動 bundle */
 function AuthenticatedShellProviders({ children }: { children: ReactNode }) {
   return (
-    <AccessProvider>
-      <SubscriptionProvider>
+    <SubscriptionProvider>
+      <AccessProvider>
         <AddToTripProvider>{children}</AddToTripProvider>
-      </SubscriptionProvider>
-    </AccessProvider>
+      </AccessProvider>
+    </SubscriptionProvider>
   );
 }
 

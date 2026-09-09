@@ -8,6 +8,7 @@ export const SUBSCRIPTION_PRODUCT_IDS = {
 
 /** Entitlement identifier in RevenueCat */
 export const PREMIUM_ENTITLEMENT_ID = "premium";
+export const REVENUECAT_ENTITLEMENT_ID = PREMIUM_ENTITLEMENT_ID;
 
 /** Free-tier daily limits (legacy scaffolding — AI Credits Runtime supersedes for place/itinerary) */
 export const FREE_TIER_LIMITS = {

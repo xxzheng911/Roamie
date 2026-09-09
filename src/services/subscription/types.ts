@@ -21,6 +21,20 @@ export type SubscriptionStatus = {
   source: "local" | "revenuecat" | "stripe";
 };
 
+export type SubscriptionPackage = {
+  identifier: string;
+  productId: string;
+  title: string;
+  description: string;
+  priceString: string;
+  period: "monthly" | "yearly" | "other";
+};
+
+export type SubscriptionActionResult =
+  | { outcome: "success"; status: SubscriptionStatus }
+  | { outcome: "cancelled"; status: SubscriptionStatus }
+  | { outcome: "pending"; status: SubscriptionStatus };
+
 export type UsageCounters = {
   aiChatsToday: number;
   itineraryGenerationsToday: number;
@@ -30,10 +44,14 @@ export type UsageCounters = {
 
 export type SubscriptionAdapter = {
   id: string;
+  configure(userId: string): Promise<void>;
+  logOut(): Promise<void>;
   getStatus(): Promise<SubscriptionStatus>;
+  getPackages(): Promise<SubscriptionPackage[]>;
   getUsage(): Promise<UsageCounters>;
-  purchase(productId: string): Promise<SubscriptionStatus>;
-  restore(): Promise<SubscriptionStatus>;
+  purchase(packageId: string): Promise<SubscriptionActionResult>;
+  restore(): Promise<SubscriptionActionResult>;
+  addStatusListener(listener: (status: SubscriptionStatus) => void): Promise<() => void>;
   sync(): Promise<void>;
 };
 

@@ -32,6 +32,11 @@ import {
 import { getUserPlanProfile } from "@/lib/plan-tier/storage";
 import { reconcileStaleTierLocks } from "@/lib/plan-tier/sync-mock-tier";
 import { clearPersonalizedChatCaches } from "@/lib/clear-auth-state";
+import { useSubscription } from "@/providers/SubscriptionProvider";
+import {
+  isRevenueCatPlusActive,
+  resolveCanonicalPlusAccess,
+} from "@/lib/subscription/canonical-plus";
 
 type AccessCtx = AccessSnapshot & {
   refresh: () => void;
@@ -46,6 +51,7 @@ const Ctx = createContext<AccessCtx | null>(null);
 
 export function AccessProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
+  const { status: revenueCatStatus, loading: revenueCatLoading } = useSubscription();
   const email = user?.email ?? null;
   const userId = user?.id ?? null;
 
@@ -57,10 +63,27 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   const lastResolvedTierRef = useRef<"free" | "plus" | null>(null);
   userIdRef.current = userId;
 
-  const snapshot = useMemo(
-    () => buildAccessSnapshotFromCanonical(email, canonical),
-    [email, canonical],
-  );
+  const snapshot = useMemo(() => {
+    const base = buildAccessSnapshotFromCanonical(email, canonical);
+    const revenueCatActive = isRevenueCatPlusActive(revenueCatStatus);
+    const hasPlusAccess = resolveCanonicalPlusAccess(base.hasPlusAccess, revenueCatStatus);
+    return {
+      ...base,
+      hasPlusAccess,
+      isPlusUser: hasPlusAccess,
+      subscriptionPlusActive: hasPlusAccess,
+      effectiveTier: hasPlusAccess ? ("plus" as const) : ("free" as const),
+      plusEntitlementSource: revenueCatActive ? ("app_store" as const) : base.plusEntitlementSource,
+      plusEntitlementActiveSources:
+        revenueCatActive && !base.plusEntitlementActiveSources.includes("app_store")
+          ? [...base.plusEntitlementActiveSources, "app_store" as const]
+          : base.plusEntitlementActiveSources,
+      plusEntitlementExpiresAt: revenueCatActive
+        ? revenueCatStatus.expiresAt
+        : base.plusEntitlementExpiresAt,
+      subscriptionHydrated: base.subscriptionHydrated && !revenueCatLoading,
+    };
+  }, [email, canonical, revenueCatStatus, revenueCatLoading]);
 
   useEffect(() => {
     const status = snapshot.hasPlusAccess ? "plus" : "free";

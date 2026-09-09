@@ -35,6 +35,7 @@ import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
 import { Route as AppSavedIndexRouteImport } from './routes/_app.saved.index'
+import { Route as ApiSubscriptionSyncRouteImport } from './routes/api/subscription/sync'
 import { Route as ApiAnalyticsEventsRouteImport } from './routes/api/analytics/events'
 import { Route as ApiAdminDashboardRouteImport } from './routes/api/admin/dashboard'
 import { Route as AppSavedTripIdRouteImport } from './routes/_app.saved.$tripId'
@@ -168,6 +169,11 @@ const AppSavedIndexRoute = AppSavedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppSavedRoute,
 } as any)
+const ApiSubscriptionSyncRoute = ApiSubscriptionSyncRouteImport.update({
+  id: '/api/subscription/sync',
+  path: '/api/subscription/sync',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAnalyticsEventsRoute = ApiAnalyticsEventsRouteImport.update({
   id: '/api/analytics/events',
   path: '/api/analytics/events',
@@ -212,6 +218,7 @@ export interface FileRoutesByFullPath {
   '/saved/$tripId': typeof AppSavedTripIdRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/api/analytics/events': typeof ApiAnalyticsEventsRoute
+  '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
   '/saved/': typeof AppSavedIndexRoute
 }
 export interface FileRoutesByTo {
@@ -241,6 +248,7 @@ export interface FileRoutesByTo {
   '/saved/$tripId': typeof AppSavedTripIdRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/api/analytics/events': typeof ApiAnalyticsEventsRoute
+  '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
   '/saved': typeof AppSavedIndexRoute
 }
 export interface FileRoutesById {
@@ -273,6 +281,7 @@ export interface FileRoutesById {
   '/_app/saved/$tripId': typeof AppSavedTripIdRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/api/analytics/events': typeof ApiAnalyticsEventsRoute
+  '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
   '/_app/saved/': typeof AppSavedIndexRoute
 }
 export interface FileRouteTypes {
@@ -305,6 +314,7 @@ export interface FileRouteTypes {
     | '/saved/$tripId'
     | '/api/admin/dashboard'
     | '/api/analytics/events'
+    | '/api/subscription/sync'
     | '/saved/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -334,6 +344,7 @@ export interface FileRouteTypes {
     | '/saved/$tripId'
     | '/api/admin/dashboard'
     | '/api/analytics/events'
+    | '/api/subscription/sync'
     | '/saved'
   id:
     | '__root__'
@@ -365,6 +376,7 @@ export interface FileRouteTypes {
     | '/_app/saved/$tripId'
     | '/api/admin/dashboard'
     | '/api/analytics/events'
+    | '/api/subscription/sync'
     | '/_app/saved/'
   fileRoutesById: FileRoutesById
 }
@@ -384,6 +396,7 @@ export interface RootRouteChildren {
   TripInviteTokenRoute: typeof TripInviteTokenRoute
   ApiAdminDashboardRoute: typeof ApiAdminDashboardRoute
   ApiAnalyticsEventsRoute: typeof ApiAnalyticsEventsRoute
+  ApiSubscriptionSyncRoute: typeof ApiSubscriptionSyncRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -570,6 +583,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSavedIndexRouteImport
       parentRoute: typeof AppSavedRoute
     }
+    '/api/subscription/sync': {
+      id: '/api/subscription/sync'
+      path: '/api/subscription/sync'
+      fullPath: '/api/subscription/sync'
+      preLoaderRoute: typeof ApiSubscriptionSyncRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/analytics/events': {
       id: '/api/analytics/events'
       path: '/api/analytics/events'
@@ -664,6 +684,7 @@ const rootRouteChildren: RootRouteChildren = {
   TripInviteTokenRoute: TripInviteTokenRoute,
   ApiAdminDashboardRoute: ApiAdminDashboardRoute,
   ApiAnalyticsEventsRoute: ApiAnalyticsEventsRoute,
+  ApiSubscriptionSyncRoute: ApiSubscriptionSyncRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

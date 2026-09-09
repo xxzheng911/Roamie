@@ -12,6 +12,7 @@ const clientSecretNamePatterns = [
   /\bSUPABASE_SERVICE_ROLE_KEY\b/g,
   /\bOPENAI_API_KEY\s*=/g,
   /\bGOOGLE_MAPS_API_KEY\s*=/g,
+  /\bREVENUECAT_SECRET_API_KEY\s*=/g,
 ];
 const failures = [];
 
