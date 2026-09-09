@@ -2,10 +2,19 @@ import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { logAppError } from "@/lib/log-error";
+import {
+  createRoamieServerRequestContext,
+  type CloudflareExecutionContext,
+  type CloudflareRuntimeEnv,
+  type RoamieServerRequestContext,
+} from "@/lib/server-request-context";
 import { renderErrorPageFromUnknown } from "./lib/error-page";
 
 type ServerEntry = {
-  fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
+  fetch: (
+    request: Request,
+    options: { context: RoamieServerRequestContext },
+  ) => Promise<Response> | Response;
 };
 
 const NATIVE_APP_ORIGIN = "capacitor://localhost";
@@ -110,13 +119,15 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 }
 
 export default {
-  async fetch(request: Request, env: unknown, ctx: unknown) {
+  async fetch(request: Request, env: CloudflareRuntimeEnv, ctx: CloudflareExecutionContext) {
     try {
       if (request.method === "OPTIONS" && isTrustedNativeApiRequest(request)) {
         return withNativeApiCors(request, new Response(null, { status: 204 }));
       }
       const handler = await getServerEntry();
-      const response = await handler.fetch(request, env, ctx);
+      const response = await handler.fetch(request, {
+        context: createRoamieServerRequestContext(env, ctx),
+      });
       return withSecurityHeaders(
         request,
         withNativeApiCors(request, await normalizeCatastrophicSsrResponse(response)),

@@ -14,6 +14,7 @@
     "verify:release-artifacts": "node scripts/verify-release-artifacts.mjs",
     "verify:production-client-env": "node --test scripts/verify-production-client-env.mjs",
     "verify:place-photo-proxy": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-photo-proxy.mjs",
+    "verify:google-maps-server-key": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-google-maps-server-key.mjs",
     "verify:p12-p16-regressions": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p12-p16-regressions.mjs",
     "verify:p17-place-focus-nearby": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p17-place-focus-nearby.mjs",
     "verify:p18-place-focus-home-status": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p18-place-focus-home-status.mjs",
