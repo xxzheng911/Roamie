@@ -35,6 +35,7 @@ import {
   resolveDestinationForCategorySearch,
 } from "@/lib/ai/chat-place-intent";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { resolveExplicitNearbyIntent } from "@/lib/ai/nearby-location-clarification";
 import { isCreateItineraryIntent } from "@/lib/ai/chat-context-intent";
 import { isBestTravelTimeIntent } from "@/lib/ai/best-travel-time-intent";
 import {
@@ -123,6 +124,8 @@ function resolveSessionRecommendationIntent(
 }
 
 export function resolveChatIntent(text: string, session: ChatPlanningSession): ChatIntent {
+  const explicitNearby = resolveExplicitNearbyIntent(text);
+  if (explicitNearby) return explicitNearby.intent;
   const categoryIntents = parseChatPlaceIntents(text);
   const travelCtx = session.travelContext ?? { interests: [] };
   const normalizedShortcut = session.normalizedShortcutRequest;
@@ -132,8 +135,7 @@ export function resolveChatIntent(text: string, session: ChatPlanningSession): C
       text,
     );
   const hasShortcutDisplayPlanningVerbs =
-    /(?:安排|規劃|规划|行程|方向)/.test(text) &&
-    resolveStructuredShortcutMode(text) != null;
+    /(?:安排|規劃|规划|行程|方向)/.test(text) && resolveStructuredShortcutMode(text) != null;
 
   // Structured shortcut payload takes precedence over free-text planning verbs.
   if (
@@ -290,9 +292,7 @@ export function resolveChatIntent(text: string, session: ChatPlanningSession): C
   const active = session.activeChatIntent;
   if (active && isNearbyPlaceIntent(active)) {
     if (isExclusionReply(text) || isExclusionLiftReply(text)) return active;
-    if (
-      /(還有嗎|還有沒有|再推薦|換其他|換一批|提供其他|其他推薦|不要這些)/.test(text.trim())
-    ) {
+    if (/(還有嗎|還有沒有|再推薦|換其他|換一批|提供其他|其他推薦|不要這些)/.test(text.trim())) {
       return active;
     }
     if (isFoodPreferenceReply(text) || isRestaurantFollowUp(text, active)) {
@@ -324,11 +324,14 @@ export function shouldAskRestaurantCuisine(
   if (userText?.trim() && isFoodIntentText(userText) && !isFoodPreferenceReply(userText)) {
     return false;
   }
-  if (userText?.trim() && resolveDestinationForCategorySearch(
-    session.travelContext ?? { interests: [] },
-    session,
-    userText,
-  )) {
+  if (
+    userText?.trim() &&
+    resolveDestinationForCategorySearch(
+      session.travelContext ?? { interests: [] },
+      session,
+      userText,
+    )
+  ) {
     return false;
   }
   return session.activeChatIntent === "restaurant" && !session.foodPreference;
@@ -398,11 +401,9 @@ export function shouldFetchNearbyPlaces(
   if (isNearbyPlaceIntent(intent)) return true;
 
   if (!sessionHasLocation(session)) return false;
-  return inferNearbyIntentFromContext(
-    session.travelContext ?? { interests: [] },
-    text,
-    session,
-  ) != null;
+  return (
+    inferNearbyIntentFromContext(session.travelContext ?? { interests: [] }, text, session) != null
+  );
 }
 
 export function restaurantCuisineQuestion(): string {

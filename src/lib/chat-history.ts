@@ -9,6 +9,8 @@ export type ChatMsg = {
   id?: string;
   role: "user" | "assistant";
   content: string;
+  /** Anonymous runtime correlation only; never persisted as user content. */
+  recommendationRequestId?: string;
   /** Parsed AI JSON for assistant messages when available */
   roamie?: Partial<RoamieResponse>;
   /** 行程加點：結構化地點卡（與 roamie.recommendations 同步） */
@@ -23,7 +25,10 @@ export type ChatMsg = {
   };
 };
 
-function parseAssistantContent(content: string): { content: string; roamie?: Partial<RoamieResponse> } {
+function parseAssistantContent(content: string): {
+  content: string;
+  roamie?: Partial<RoamieResponse>;
+} {
   const trimmed = content.trim();
   if (!trimmed.startsWith("{")) return { content: trimmed };
   try {
@@ -46,16 +51,14 @@ export async function loadChatHistory(limit = 30): Promise<ChatMsg[]> {
     console.error(error);
     return [];
   }
-  return (data ?? [])
-    .reverse()
-    .map((r) => {
-      const role = r.role as "user" | "assistant";
-      if (role === "assistant") {
-        const parsed = parseAssistantContent(r.content);
-        return { role, content: parsed.content, roamie: parsed.roamie };
-      }
-      return { role, content: r.content };
-    });
+  return (data ?? []).reverse().map((r) => {
+    const role = r.role as "user" | "assistant";
+    if (role === "assistant") {
+      const parsed = parseAssistantContent(r.content);
+      return { role, content: parsed.content, roamie: parsed.roamie };
+    }
+    return { role, content: r.content };
+  });
 }
 
 export async function clearChatHistory(): Promise<void> {

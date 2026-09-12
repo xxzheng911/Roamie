@@ -24,6 +24,7 @@ export type HomeNearbyPickPlace = Pick<
   | "types"
   | "lat"
   | "lng"
+  | "regularOpeningHours"
 >;
 
 /** 21:00 ～ 05:00 */
@@ -111,13 +112,11 @@ const HOME_RECOMMENDED_TYPES = new Set([
 
 const NIGHT_PREFERRED_TYPES = new Set([
   "bar",
+  "pub",
+  "wine_bar",
+  "cocktail_bar",
+  "izakaya",
   "night_club",
-  "restaurant",
-  "meal_takeaway",
-  "fast_food_restaurant",
-  "cafe",
-  "coffee_shop",
-  "bakery",
 ]);
 
 const DAY_PREFERRED_TYPES = new Set([
@@ -140,8 +139,18 @@ const DAY_PREFERRED_TYPES = new Set([
   "monument",
 ]);
 
-const NIGHT_NAME_RE =
-  /居酒|酒吧|餐酒|宵夜|深夜|拉麵|ramen|焼肉|烧肉|yakiniku|火鍋|hotpot|串燒|yakitori|izakaya|bar|pub|night|燒肉|火鍋/i;
+const NIGHT_STRONG_NAME_RE =
+  /居酒|酒吧|餐酒|宵夜|深夜|izakaya|\bbar\b|\bpub\b|late[\s-]?night|after[\s-]?hours/i;
+
+const NIGHT_COMPATIBLE_TYPES = new Set([
+  "cafe",
+  "coffee_shop",
+  "bakery",
+  "dessert_shop",
+  "restaurant",
+  "meal_takeaway",
+  "fast_food_restaurant",
+]);
 
 const NIGHT_SCENIC_NAME_RE =
   /夜景|河岸|河濱|港邊|港灣|碼頭|展望台|觀景台|夜市|night\s*view|waterfront|harbou?r|pier|observation/i;
@@ -196,7 +205,38 @@ export type HomeNearbyHardExclusionReason =
   | "prohibited_type"
   | "permanently_closed"
   | "temporarily_closed"
+  | "suspicious_stale_listing"
   | "generic_store_excluded";
+
+export type HomeNearbyPoiHealth = {
+  identityQuality: "credible" | "thin";
+  staleEvidence: boolean;
+  accepted: boolean;
+  dropReason: "" | "suspicious_stale_listing";
+};
+
+/**
+ * Conservative Home-only health gate. Unknown hours remain valid when the
+ * listing has credible factual evidence; only the combined thin/stale shape
+ * is suppressed (for example a one-character venue with no ratings or hours).
+ */
+export function resolveHomeNearbyPoiHealth(place: HomeNearbyPickPlace): HomeNearbyPoiHealth {
+  const compactName = (place.name ?? "").replace(/[\s\p{P}\p{S}]/gu, "");
+  const identityQuality = compactName.length <= 2 ? "thin" : "credible";
+  const hoursUnknown = place.openStatus == null || place.openStatus === "unknown";
+  const hasHoursEvidence = Boolean(place.regularOpeningHours) || place.openNow != null;
+  const staleEvidence =
+    identityQuality === "thin" &&
+    hoursUnknown &&
+    !hasHoursEvidence &&
+    !hasUsableRatingSignal(place);
+  return {
+    identityQuality,
+    staleEvidence,
+    accepted: !staleEvidence,
+    dropReason: staleEvidence ? "suspicious_stale_listing" : "",
+  };
+}
 
 export function hasPermanentExcludedType(place: HomeNearbyPickPlace): boolean {
   return normalizeTypes(place).some((t) => PERMANENT_EXCLUDED_TYPES.has(t));
@@ -234,11 +274,7 @@ export function isGenericNonTravelStore(place: HomeNearbyPickPlace): boolean {
   const types = normalizeTypes(place);
   if (types.length === 0) return true;
   return types.every(
-    (t) =>
-      GENERIC_STORE_TYPES.has(t) ||
-      VAGUE_ONLY_TYPES.has(t) ||
-      t === "food" ||
-      t === "store",
+    (t) => GENERIC_STORE_TYPES.has(t) || VAGUE_ONLY_TYPES.has(t) || t === "food" || t === "store",
   );
 }
 
@@ -258,6 +294,8 @@ export function homeNearbyHardExclusionReason(
       ? "temporarily_closed"
       : "permanently_closed";
   }
+  const health = resolveHomeNearbyPoiHealth(place);
+  if (!health.accepted) return health.dropReason;
   if (hasPermanentExcludedType(place)) return "prohibited_type";
   if (isGenericNonTravelStore(place)) return "generic_store_excluded";
   return null;
@@ -273,9 +311,22 @@ export function passesPermanentHomeNearbyRules(place: HomeNearbyPickPlace): bool
 }
 
 export function matchesNightPreferredPlace(place: HomeNearbyPickPlace): boolean {
+  return matchesStrongLateNightPlace(place) || matchesStageTwoLateNightPlace(place);
+}
+
+/** Stage 1: intrinsic nightlife venue or explicit strong late-night semantics. */
+export function matchesStrongLateNightPlace(place: HomeNearbyPickPlace): boolean {
   const types = normalizeTypes(place);
   if (types.some((t) => NIGHT_PREFERRED_TYPES.has(t))) return true;
-  return NIGHT_NAME_RE.test(place.name ?? "") || NIGHT_SCENIC_NAME_RE.test(place.name ?? "");
+  return NIGHT_STRONG_NAME_RE.test(place.name ?? "");
+}
+
+/** Stage 2: night-scenic or compatible food/cafe venue with explicit night evidence. */
+export function matchesStageTwoLateNightPlace(place: HomeNearbyPickPlace): boolean {
+  const name = place.name ?? "";
+  if (NIGHT_SCENIC_NAME_RE.test(name)) return true;
+  const types = normalizeTypes(place);
+  return types.some((type) => NIGHT_COMPATIBLE_TYPES.has(type)) && NIGHT_STRONG_NAME_RE.test(name);
 }
 
 export function matchesDayPreferredPlace(place: HomeNearbyPickPlace): boolean {
@@ -298,10 +349,7 @@ function matchesPeriodPreference(place: HomeNearbyPickPlace, period: HomeNearbyP
     : matchesDayPreferredPlace(place);
 }
 
-function passesRecommendedTypeGate(
-  place: HomeNearbyPickPlace,
-  period: HomeNearbyPeriod,
-): boolean {
+function passesRecommendedTypeGate(place: HomeNearbyPickPlace, period: HomeNearbyPeriod): boolean {
   return hasHomeRecommendedType(place) && matchesPeriodPreference(place, period);
 }
 
@@ -352,6 +400,7 @@ export function passesHomeNearbyLevel4(
   period: HomeNearbyPeriod,
 ): boolean {
   if (!passesHomeNearbyHardExclusions(place)) return false;
+  if (period === "late_night" && !isOpenNow(place) && !isOpenUnknown(place)) return false;
   if (hasZeroRatingAndReviews(place)) return false;
   if (!hasUsableRatingSignal(place)) return false;
   return passesRecommendedTypeGate(place, period);

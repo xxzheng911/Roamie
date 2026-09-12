@@ -36,6 +36,7 @@ import {
 } from "@/lib/ai/place-recommendation-intent";
 import { resolveStructuredShortcutMode } from "@/lib/ai/chat-intent";
 import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
+import { resolveExplicitNearbyIntent } from "@/lib/ai/nearby-location-clarification";
 
 const EXPLICIT_NEW_TRIP_RE =
   /(?:幫我排成|帮我排成|幫我規劃|帮我规划|幫我安排|帮我安排|建立新行程|创建新行程|重新規劃行程|重新规划行程|排成\s*\d+\s*天|規劃\s*\d+\s*天|规划\s*\d+\s*天|幫我排成行程|帮我排成行程|幫我規劃三天|帮我规划三天|排成三天行程|把.*排進.*行程|排進六天|排进六天|加進.*行程|加入行程)/i;
@@ -101,15 +102,10 @@ export function resolveChatIntentArbitration(
   const activeCtx = getActiveRecommendationContext(session);
   const activeIntent = resolveActiveIntent(session);
   const tripPlanningState =
-    opts?.tripPlanningState ??
-    session.chatPlanningState ??
-    session.conversationMode ??
-    "";
+    opts?.tripPlanningState ?? session.chatPlanningState ?? session.conversationMode ?? "";
   const pendingType = session.pendingQuestion?.type ?? "";
   const planningState =
-    pendingType === "combination_choice"
-      ? "awaiting_combination_selection"
-      : tripPlanningState;
+    pendingType === "combination_choice" ? "awaiting_combination_selection" : tripPlanningState;
 
   const log = (
     route: ChatIntentArbitrationRoute,
@@ -153,6 +149,14 @@ export function resolveChatIntentArbitration(
     return log("NEW_RECOMMENDATION", "structured_shortcut_precedence", {
       detectedPrimaryType: primaryType,
       detectedSubtypes: mode,
+    });
+  }
+
+  const explicitNearby = resolveExplicitNearbyIntent(t);
+  if (explicitNearby) {
+    return log("NEW_RECOMMENDATION", "explicit_nearby_precedence", {
+      detectedPrimaryType: explicitNearby.intent,
+      detectedSubtypes: explicitNearby.canonicalKeyword,
     });
   }
 
@@ -206,15 +210,11 @@ export function resolveChatIntentArbitration(
     if (activeCtx || activeIntent) {
       const refinement = parseRecommendationRefinement(t, activeIntent ?? activeCtx?.intent);
       if (refinement && !refinement.isMoreResults && parsed?.continuation === "refinement") {
-        return log(
-          "RECOMMENDATION_REFINEMENT",
-          "explicit_place_intent_overrides_pending_state",
-          {
-            refinement,
-            detectedPrimaryType: parsed.primaryType,
-            detectedSubtypes: parsed.subtypes.join(","),
-          },
-        );
+        return log("RECOMMENDATION_REFINEMENT", "explicit_place_intent_overrides_pending_state", {
+          refinement,
+          detectedPrimaryType: parsed.primaryType,
+          detectedSubtypes: parsed.subtypes.join(","),
+        });
       }
       if (
         (refinement?.isMoreResults ||

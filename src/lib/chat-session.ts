@@ -326,6 +326,41 @@ export type ChatPlanningSession = {
    * Source of truth for continueRecommendation — do not collapse shopping → attraction.
    */
   activeCategoryIntent?: import("@/lib/ai/chat-place-category-types").ChatPlaceCategoryIntent;
+  /** Raw noun phrase from an explicit current-location query such as「附近有沒有老宅咖啡」. */
+  explicitNearbyKeyword?: string;
+  /** Canonical category/keyword paired with the current Nearby session. */
+  canonicalNearbyKeyword?: string;
+  /** Specific semantic family retained across Nearby clarification/continuation. */
+  nearbySemanticFamily?: import("@/lib/ai/nearby-location-clarification").NearbySemanticFamily;
+  /** Session-authoritative Nearby center; never inferred from trip-planning destination. */
+  nearbyLocationAuthority?: {
+    displayLabel: string;
+    district?: string;
+    lat: number;
+    lng: number;
+    source: "explicit" | "clarification" | "device";
+    geographicScope?: import("@/lib/ai/nearby-geographic-scope").NearbyGeographicScopeAuthority;
+  };
+  /** Canonical Nearby continuation snapshot; generic intent/planning parsers may not override it. */
+  nearbyContinuationSnapshot?: {
+    originType: "home_mood" | "explicit_nearby";
+    mode?: string;
+    searchProfile?: "home_late_night" | "home_sea";
+    rawKeyword?: string;
+    canonicalKeyword?: string;
+    semanticFamily?: import("@/lib/ai/nearby-location-clarification").NearbySemanticFamily;
+    locationAuthority?: ChatPlanningSession["nearbyLocationAuthority"];
+    district?: string;
+    lat: number;
+    lng: number;
+    exposureIds: string[];
+    shownPlaceIds: string[];
+    continuationRound: number;
+    executedSearchLanes?: string[];
+    executedQueries?: string[];
+    executedRadii?: number[];
+    stage?: number;
+  };
   /** Accumulated travel intents in this conversation (Travel Intent += Shopping / Cafe) */
   travelIntents?: import("@/lib/ai/chat-place-category-types").ChatPlaceCategoryIntent[];
   /** Paginated recommendation session (pool + cursor) */
@@ -946,7 +981,7 @@ export function extractPlanningHintsFromText(
   text: string,
   session: ChatPlanningSession,
 ): ChatPlanningSession {
-  let next = extractDiscoveryFromText(text, session);
+  const next = extractDiscoveryFromText(text, session);
   const t = text.trim();
 
   const transportMatch = t.match(/(開車|走路|步行|捷運|公車|地鐵|騎車|單車|計程車|Uber)/);

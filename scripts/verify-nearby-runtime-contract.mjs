@@ -24,6 +24,11 @@ import {
   createRecommendationSession,
 } from "../src/lib/ai/conversation-recommendation-session.ts";
 import { createEmptySession } from "../src/lib/chat-session.ts";
+import { executeExploreSearch } from "../src/lib/places.functions.ts";
+import {
+  resolveChatRecommendationCardCount,
+  stableChatMessageKey,
+} from "../src/lib/chat-render-stability.ts";
 
 const context = {
   interests: [],
@@ -164,23 +169,17 @@ assert.deepEqual(
     originalSearchMode: "location_clarification",
   },
 );
-const breakfastPending = createPendingNearbyLocationRequest(
-  "restaurant",
-  "我想找附近早餐店",
-);
+const breakfastPending = createPendingNearbyLocationRequest("restaurant", "我想找附近早餐店");
 assert.equal(breakfastPending.queryCategory, "早餐店");
 assert.equal(breakfastPending.subtype, "breakfast");
 assert.equal(breakfastPending.mealSlot, "breakfast");
-const lateNightPending = createPendingNearbyLocationRequest(
-  "restaurant",
-  "我想找附近宵夜店",
-);
+const lateNightPending = createPendingNearbyLocationRequest("restaurant", "我想找附近宵夜店");
 assert.equal(lateNightPending.mealSlot, "late_night");
 assert.equal(lateNightPending.originalQuery, "我想找附近宵夜店");
-assert.deepEqual(
-  buildNearbyLocationClarificationCopy("我想找附近早餐店", "restaurant"),
-  { categoryLabel: "早餐店", renderedCopy: "你是指哪個地區的呢？" },
-);
+assert.deepEqual(buildNearbyLocationClarificationCopy("我想找附近早餐店", "restaurant"), {
+  categoryLabel: "早餐店",
+  renderedCopy: "你是指哪個地區的呢？",
+});
 assert.equal(
   buildNearbyLocationClarificationCopy("想找附近居酒屋", "restaurant").categoryLabel,
   "居酒屋",
@@ -318,7 +317,7 @@ assert.match(
 );
 assert.match(
   chatRouteSource,
-  /const merged = authoritativeCenter[\s\S]*?context: activeSession\.travelContext[\s\S]*?session: activeSession/,
+  /const merged = activePlaceDetailContext[\s\S]*?: authoritativeCenter[\s\S]*?context: activeSession\.travelContext[\s\S]*?session: activeSession[\s\S]*?: structuredHomeShortcut/,
   "authoritative pending resume must bypass a fresh travel-context merge",
 );
 assert.match(
@@ -436,10 +435,12 @@ await assert.rejects(
   "provider failure must not be represented as genuine zero results",
 );
 
-const nearbyPoolPlaces = Array.from({ length: 8 }, (_, index) => ({
-  ...validRestaurant(`nearby-pool-${index + 1}`, `附近餐廳 ${index + 1}`),
+const nearbyPoolPlaces = Array.from({ length: 25 }, (_, index) => ({
+  ...validRestaurant(`nearby-pool-${index + 1}`, `早午餐店 ${index + 1}`),
   lat: origin.lat + (index + 1) * 0.0001,
   lng: origin.lng + (index + 1) * 0.0001,
+  todayHoursLabel: "",
+  openStatusLabel: "",
 }));
 const nearbyFirstTurn = await buildNearbyPlaceRecommendation({
   intent: "restaurant",
@@ -447,9 +448,28 @@ const nearbyFirstTurn = await buildNearbyPlaceRecommendation({
   lng: origin.lng,
   locale: "zh-TW",
   context,
-  userText: "想看附近餐廳",
+  userText: "附近找 早午餐店",
   searchPlaces: async () => ({ places: nearbyPoolPlaces, error: null }),
+  diagnosticRequestId: "nearby-final-selection",
 });
+assert.equal(
+  nearbyFirstTurn.recommendations.length,
+  5,
+  "25 canonically admitted Nearby candidates must select exactly the target five",
+);
+assert.equal(
+  resolveChatRecommendationCardCount({ hidden: false, recommendationCount: 5 }),
+  5,
+  "client card mount authority must preserve all five received recommendations",
+);
+assert.equal(
+  stableChatMessageKey(
+    { role: "assistant", content: "recommendations", recommendationRequestId: "nearby-five" },
+    3,
+  ),
+  "assistant:3",
+  "diagnostic correlation must not alter or collapse the stable message group key",
+);
 assert.ok(
   nearbyFirstTurn.continuationRecommendations.length > nearbyFirstTurn.recommendations.length,
   "Generic Nearby must preserve eligible candidates beyond the first displayed batch",
@@ -477,5 +497,205 @@ assert.equal(
   false,
   "Nearby stored-pool continuation must not repeat the first displayed Place IDs",
 );
+
+const originalFetch = globalThis.fetch;
+const originalConsoleInfo = console.info;
+const providerLogs = [];
+console.info = (...args) => {
+  providerLogs.push(args);
+};
+globalThis.fetch = async () =>
+  new Response(
+    JSON.stringify({
+      places: Array.from({ length: 5 }, (_, index) => ({
+        id: `places/provider-diag-${index}`,
+        displayName: { text: `早午餐 ${index}` },
+        formattedAddress: `高雄市左營區測試路${index}號`,
+        location: { latitude: 22.6877 + index * 0.0001, longitude: 120.2916 },
+        rating: 4.5,
+        userRatingCount: 100,
+        primaryType: "restaurant",
+        types: ["restaurant"],
+        businessStatus: index < 2 ? "OPERATIONAL" : "CLOSED_PERMANENTLY",
+      })),
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+try {
+  await executeExploreSearch(
+    {
+      query: "高雄左營 早午餐店",
+      lat: 22.6877358,
+      lng: 120.2916524,
+      radius: 2500,
+      mode: "text",
+      locale: "zh-TW",
+      placesCaller: "chat.fetchNearbyPlacesForIntent",
+      placesScreen: "chat",
+      searchMode: "nearby",
+      intentCategory: "restaurant",
+      placesLane: "brunch_primary",
+      placesRound: 0,
+      placesScopeSource: "clarified_location",
+    },
+    { apiKey: "regression-only-key" },
+  );
+} finally {
+  globalThis.fetch = originalFetch;
+  console.info = originalConsoleInfo;
+}
+const providerRequest = providerLogs.find(([tag]) => tag === "[PLACES_PROVIDER_REQUEST]")?.[1];
+const providerResult = providerLogs.find(([tag]) => tag === "[PLACES_PROVIDER_RESULT]")?.[1];
+const providerMapping = providerLogs.find(([tag]) => tag === "[PLACES_PROVIDER_MAPPING]")?.[1];
+assert.ok(providerRequest, "canonical provider boundary must log request");
+assert.ok(providerResult, "canonical provider boundary must log raw response");
+assert.ok(providerMapping, "canonical provider boundary must log mapping result");
+assert.equal(providerRequest.requestId, providerResult.requestId);
+assert.equal(providerResult.requestId, providerMapping.requestId);
+assert.equal(providerResult.providerRawCount, 5);
+assert.equal(providerMapping.mappedCount, 2);
+assert.equal(providerMapping.mappingRejectedCount, 3);
+assert.equal(providerRequest.scopeSource, "clarified_location");
+assert.equal(JSON.stringify(providerLogs).includes("regression-only-key"), false);
+
+async function captureProviderDiagnostics(query, response) {
+  const logs = [];
+  const savedFetch = globalThis.fetch;
+  const savedConsoleInfo = console.info;
+  globalThis.fetch = async () => response;
+  console.info = (...args) => logs.push(args);
+  try {
+    await executeExploreSearch(
+      {
+        query,
+        lat: 22.6877358,
+        lng: 120.2916524,
+        radius: 2500,
+        mode: "text",
+        locale: "zh-TW",
+        placesCaller: "chat.fetchNearbyPlacesForIntent",
+        placesScreen: "chat",
+        searchMode: "nearby",
+        intentCategory: "restaurant",
+        placesLane: query,
+        placesRound: 0,
+        placesScopeSource: "clarified_location",
+      },
+      { apiKey: "regression-only-key" },
+    );
+  } finally {
+    globalThis.fetch = savedFetch;
+    console.info = savedConsoleInfo;
+  }
+  return logs;
+}
+
+const zeroLogs = await captureProviderDiagnostics(
+  "provider-zero-results-regression",
+  new Response(JSON.stringify({ places: [] }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  }),
+);
+const zeroResult = zeroLogs.find(([tag]) => tag === "[PLACES_PROVIDER_RESULT]")?.[1];
+assert.equal(zeroResult?.providerRawCount, 0);
+assert.equal(zeroResult?.failureReason, "provider_zero_results");
+
+const invalidLogs = await captureProviderDiagnostics(
+  "provider-invalid-argument-regression",
+  new Response(
+    JSON.stringify({ error: { status: "INVALID_ARGUMENT", message: "invalid request" } }),
+    { status: 400, headers: { "Content-Type": "application/json" } },
+  ),
+);
+const invalidResult = invalidLogs.find(([tag]) => tag === "[PLACES_PROVIDER_RESULT]")?.[1];
+assert.equal(invalidResult?.httpStatus, 400);
+assert.equal(invalidResult?.providerStatus, "INVALID_ARGUMENT");
+assert.equal(invalidResult?.failureReason, "provider_invalid_request");
+assert.equal(JSON.stringify(invalidLogs).includes("regression-only-key"), false);
+
+const criticalNearbyLogs = [];
+const savedCriticalConsoleInfo = console.info;
+console.info = (...args) => criticalNearbyLogs.push(args);
+try {
+  await fetchNearbyPlacesForIntent(
+    "restaurant",
+    origin.lat,
+    origin.lng,
+    "zh-TW",
+    async () => ({ places: [validRestaurant("diagnostic-success", "附近餐廳")], error: null }),
+    undefined,
+    context,
+    [],
+    { userText: "附近餐廳", diagnosticRequestId: "recommendation-success" },
+  );
+  await assert.rejects(
+    fetchNearbyPlacesForIntent(
+      "restaurant",
+      origin.lat,
+      origin.lng,
+      "zh-TW",
+      async () => ({ places: [], error: "diagnostic_provider_failure" }),
+      undefined,
+      context,
+      [],
+      { userText: "附近餐廳", diagnosticRequestId: "recommendation-zero" },
+    ),
+    /places_search_failed/,
+  );
+} finally {
+  console.info = savedCriticalConsoleInfo;
+}
+const successFunnels = criticalNearbyLogs.filter(
+  ([tag, payload]) =>
+    tag === "[NEARBY_CANDIDATE_FUNNEL]" &&
+    payload?.recommendationRequestId === "recommendation-success",
+);
+const zeroFinalize = criticalNearbyLogs.find(
+  ([tag, payload]) =>
+    tag === "[RECOMMENDATION_BATCH_FINALIZE]" &&
+    payload?.recommendationRequestId === "recommendation-zero",
+)?.[1];
+assert.ok(successFunnels.length > 0, "successful Nearby must emit its candidate funnel");
+assert.equal(
+  zeroFinalize?.finalCount,
+  0,
+  "failed/zero Nearby must finalize diagnostics before throw",
+);
+assert.equal(JSON.stringify(criticalNearbyLogs).includes("apiKey"), false);
+assert.equal(JSON.stringify(criticalNearbyLogs).includes("userToken"), false);
+
+assert.match(
+  chatRouteSource,
+  /console\.info\("\[RECOMMENDATION_CONTINUATION_AUTHORITY\]"/,
+  "continuation authority must use an ungated runtime diagnostic",
+);
+assert.match(chatRouteSource, /console\.info\("\[NEARBY_RESPONSE_ASSEMBLY\]"/);
+assert.match(chatRouteSource, /console\.info\("\[NEARBY_CLIENT_RECEIVE\]"/);
+const chatRecommendationSource = fs.readFileSync(
+  new URL("../src/lib/ai/chat-place-recommendation.ts", import.meta.url),
+  "utf8",
+);
+assert.match(chatRecommendationSource, /console\.info\("\[NEARBY_FINAL_SELECTION\]"/);
+const chatMessageListSource = fs.readFileSync(
+  new URL("../src/components/chat/ChatMessageList.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(chatMessageListSource, /recommendationRequestId: m\.recommendationRequestId/);
+const exploreCategorySource = fs.readFileSync(
+  new URL("../src/lib/explore-category-search.ts", import.meta.url),
+  "utf8",
+);
+assert.equal(
+  (exploreCategorySource.match(/console\.info\("\[EXPLORE_ALL_HYDRATION\]"/g) ?? []).length,
+  2,
+  "Explore All hydration must emit start and finalized diagnostics",
+);
+const exploreRouteSource = fs.readFileSync(
+  new URL("../src/routes/_app.map.tsx", import.meta.url),
+  "utf8",
+);
+assert.match(exploreRouteSource, /console\.info\("\[EXPLORE_CATEGORY_AUTHORITY\]"/);
+assert.match(exploreRouteSource, /console\.info\("\[EXPLORE_ALL_HYDRATION_ENTRY\]"/);
 
 console.log("verify:nearby-runtime-contract passed");

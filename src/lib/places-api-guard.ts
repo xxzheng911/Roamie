@@ -62,14 +62,28 @@ const loggedKeys = new Set<string>();
 
 export type PlacesRequestOwner = {
   requestId: string;
-  surface: "chat_place_focus" | "home_nearby" | "home_shortcut" | "explore" | "selection" | "planner" | "other";
+  surface:
+    | "chat"
+    | "chat_place_focus"
+    | "home_nearby"
+    | "home_shortcut"
+    | "explore"
+    | "selection"
+    | "planner"
+    | "other";
   priority: "foreground" | "background";
   requestType: "searchNearby" | "searchText" | "details";
+  lane?: string;
 };
 
 function logPlacesRequestOwner(
   owner: PlacesRequestOwner | undefined,
-  state: { deduped: boolean; blocked: boolean; blockedReason?: string; providerProtectionActive?: boolean },
+  state: {
+    deduped: boolean;
+    blocked: boolean;
+    blockedReason?: string;
+    providerProtectionActive?: boolean;
+  },
 ): void {
   if (!owner) return;
   console.info("[PLACES_REQUEST_OWNER]", { ...owner, ...state });
@@ -79,6 +93,14 @@ function logPlacesRequestOwner(
     cooldownActive: generationCooldownUntil > Date.now(),
     providerProtectionActive: state.providerProtectionActive ?? false,
     triggeringSurface: owner.surface,
+  });
+  console.info("[PLACES_REQUEST_WINDOW_CONTEXT]", {
+    requestId: owner.requestId,
+    surface: owner.surface,
+    requestType: owner.requestType,
+    lane: owner.lane ?? "",
+    priority: owner.priority,
+    callsInWindow: recentCallAt.length,
   });
 }
 
@@ -400,7 +422,12 @@ export async function runPlacesApiDeduped<T>(
   try {
     const { shouldBlockNewPlacesCalls } = await import("@/lib/ai/places-cost-cache");
     if (shouldBlockNewPlacesCalls({ query: key, logSkip: true })) {
-      logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "provider_protection", providerProtectionActive: true });
+      logPlacesRequestOwner(owner, {
+        deduped: false,
+        blocked: true,
+        blockedReason: "provider_protection",
+        providerProtectionActive: true,
+      });
       return null;
     }
   } catch {
@@ -410,7 +437,11 @@ export async function runPlacesApiDeduped<T>(
   const keyBlockedUntil = blockedUntilByKey.get(key) ?? 0;
   if (now < keyBlockedUntil) {
     logPlacesRequestSkipped(key, keyBlockedUntil);
-    logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "request_cooldown" });
+    logPlacesRequestOwner(owner, {
+      deduped: false,
+      blocked: true,
+      blockedReason: "request_cooldown",
+    });
     return null;
   }
 
@@ -423,18 +454,19 @@ export async function runPlacesApiDeduped<T>(
 
   // 5s same-query cooldown (after in-flight share so concurrent callers still join)
   try {
-    const {
-      isPlacesQueryOnCooldown,
-      logPlacesSearchSkipped,
-      PLACES_QUERY_COOLDOWN_MS,
-    } = await import("@/lib/ai/places-cost-cache");
+    const { isPlacesQueryOnCooldown, logPlacesSearchSkipped, PLACES_QUERY_COOLDOWN_MS } =
+      await import("@/lib/ai/places-cost-cache");
     if (isPlacesQueryOnCooldown(key)) {
       logPlacesSearchSkipped({
         reason: "query_cooldown",
         query: key,
         cooldownMs: PLACES_QUERY_COOLDOWN_MS,
       });
-      logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "query_cooldown" });
+      logPlacesRequestOwner(owner, {
+        deduped: false,
+        blocked: true,
+        blockedReason: "query_cooldown",
+      });
       return null;
     }
   } catch {
@@ -492,10 +524,7 @@ export async function runPlacesApiDeduped<T>(
           }
           if (attempt >= MAX_RETRIES || !canRetryPlacesRequest(`${key}:throw`)) {
             if (isRate) {
-              logOnce(
-                `retry_limit:${key}`,
-                `[PLACES_RETRY_LIMIT_REACHED] requestKey=${key}`,
-              );
+              logOnce(`retry_limit:${key}`, `[PLACES_RETRY_LIMIT_REACHED] requestKey=${key}`);
             }
             break;
           }

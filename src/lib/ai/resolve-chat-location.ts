@@ -1,6 +1,9 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
-import { ensureEffectiveLocationBootstrap, getEffectiveLocationSnapshot } from "@/lib/effective-location";
+import {
+  ensureEffectiveLocationBootstrap,
+  getEffectiveLocationSnapshot,
+} from "@/lib/effective-location";
 import { requestDeviceLocation } from "@/lib/device-location";
 import { isAppActiveForLocation } from "@/lib/location-app-gate";
 
@@ -10,6 +13,7 @@ export type NearbyRecommendationScope = "destination" | "current_location" | "no
 export function resolveNearbyRecommendationScope(
   session: ChatPlanningSession,
   extraDestination?: string,
+  options?: { explicitNearbyRequest?: boolean },
 ): {
   scope: NearbyRecommendationScope;
   hasExplicitDestination: boolean;
@@ -19,16 +23,17 @@ export function resolveNearbyRecommendationScope(
   const isNearbyShortcut =
     session.normalizedShortcutRequest?.structured === true &&
     session.normalizedShortcutRequest.intent === "nearby_recommendation";
-  const hasExplicitDestination = isNearbyShortcut
+  const nearbyOwnsScope = isNearbyShortcut || options?.explicitNearbyRequest === true;
+  const hasExplicitDestination = nearbyOwnsScope
     ? false
     : Boolean(
         extraDestination?.trim() ||
-          session.travelContext?.destination?.trim() ||
-          session.tripPlanningContext?.destination?.trim() ||
-          session.tripDestination?.city?.trim(),
+        session.travelContext?.destination?.trim() ||
+        session.tripPlanningContext?.destination?.trim() ||
+        session.tripDestination?.city?.trim(),
       );
-  const lat = session.location?.lat;
-  const lng = session.location?.lng;
+  const lat = session.nearbyLocationAuthority?.lat ?? session.location?.lat;
+  const lng = session.nearbyLocationAuthority?.lng ?? session.location?.lng;
   const deviceLocationAvailable =
     lat != null && lng != null && (Math.abs(lat) > 0.001 || Math.abs(lng) > 0.001);
   const scope: NearbyRecommendationScope = hasExplicitDestination
@@ -47,8 +52,17 @@ export function resolveNearbyRecommendationScope(
 /** 聊聊推薦用定位：session → effective-location → device GPS（僅前景、非必須） */
 export async function resolveChatLocation(
   session: ChatPlanningSession,
+  options?: { requireNearbyAuthority?: boolean },
 ): Promise<ChatPlanningSession> {
+  const authority = session.nearbyLocationAuthority;
+  if (options?.requireNearbyAuthority && authority) {
+    return {
+      ...session,
+      location: { lat: authority.lat, lng: authority.lng, city: authority.displayLabel },
+    };
+  }
   if (
+    !options?.requireNearbyAuthority &&
     session.location?.lat != null &&
     session.location?.lng != null &&
     (Math.abs(session.location.lat) > 0.001 || Math.abs(session.location.lng) > 0.001)
@@ -60,7 +74,12 @@ export async function resolveChatLocation(
   }
 
   const effective = getEffectiveLocationSnapshot();
-  if (effective?.lat != null && effective?.lng != null) {
+  if (
+    !options?.requireNearbyAuthority &&
+    effective?.lat != null &&
+    effective?.lng != null &&
+    !effective.isFallback
+  ) {
     devVerboseInfo(
       `[CHAT_LOCATION] lat=${effective.lat} lng=${effective.lng} source=${effective.source} fallback=${effective.isFallback}`,
     );
@@ -78,7 +97,12 @@ export async function resolveChatLocation(
   // same effective-location source used by Home before falling back.
   try {
     const bootstrapped = await ensureEffectiveLocationBootstrap();
-    if (bootstrapped?.lat != null && bootstrapped?.lng != null) {
+    if (
+      !options?.requireNearbyAuthority &&
+      bootstrapped?.lat != null &&
+      bootstrapped?.lng != null &&
+      !bootstrapped.isFallback
+    ) {
       devVerboseInfo(
         `[CHAT_LOCATION] lat=${bootstrapped.lat} lng=${bootstrapped.lng} source=${bootstrapped.source} fallback=${bootstrapped.isFallback}`,
       );
@@ -104,7 +128,7 @@ export async function resolveChatLocation(
 
   try {
     const device = await requestDeviceLocation();
-    if (device.lat != null && device.lng != null) {
+    if (device.lat != null && device.lng != null && !device.usedFallback) {
       devVerboseInfo(
         `[CHAT_LOCATION] lat=${device.lat} lng=${device.lng} source=device fallback=${device.usedFallback}`,
       );
@@ -114,6 +138,12 @@ export async function resolveChatLocation(
           lat: device.lat,
           lng: device.lng,
           city: device.city ?? session.location?.city ?? "",
+        },
+        nearbyLocationAuthority: {
+          displayLabel: device.city ?? session.location?.city ?? "",
+          lat: device.lat,
+          lng: device.lng,
+          source: "device",
         },
       };
     }

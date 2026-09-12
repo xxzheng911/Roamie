@@ -11,6 +11,9 @@ import {
   passesHomeNearbyLevel2,
   passesHomeNearbyLevel3,
   passesHomeNearbyLevel4,
+  matchesNightPreferredPlace,
+  matchesStageTwoLateNightPlace,
+  matchesStrongLateNightPlace,
   type HomeNearbyPeriod,
 } from "@/lib/home-nearby-eligibility";
 
@@ -181,7 +184,14 @@ function selectByLevels<T extends HomeNearbyFilterPlace>(
       pickFromPool(
         pool,
         picked,
-        (p) => passesHomeNearbyLastResort(p),
+        (p) =>
+          passesHomeNearbyLastResort(p) &&
+          (period !== "late_night" ||
+            (matchesNightPreferredPlace(p) &&
+              (p.openStatus === "open" ||
+                p.openStatus === "closing_soon" ||
+                p.openStatus === "unknown" ||
+                p.openStatus == null))),
         options.maxResults - result.length,
       ),
     );
@@ -217,6 +227,26 @@ export function selectHomeNearbyPicks<T extends HomeNearbyFilterPlace>(
     options?.origin,
     options?.maxDistanceM,
   );
+
+  if (period === "late_night") {
+    const stageOne = selectByLevels(pool.filter(matchesStrongLateNightPlace), period, {
+      minResults,
+      maxResults,
+      includeLastResort: true,
+    });
+    if (stageOne.length >= minResults) return stageOne;
+    const stageOneIds = new Set(stageOne.map((place) => place.id));
+    const stageTwo = selectByLevels(
+      pool.filter((place) => !stageOneIds.has(place.id) && matchesStageTwoLateNightPlace(place)),
+      period,
+      {
+        minResults: Math.max(1, minResults - stageOne.length),
+        maxResults,
+        includeLastResort: true,
+      },
+    );
+    return [...stageOne, ...stageTwo].slice(0, maxResults);
+  }
 
   return selectByLevels(pool, period, {
     minResults,

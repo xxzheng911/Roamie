@@ -6,7 +6,10 @@ import { resolveTripAddPlaceMessageRecommendations } from "@/lib/trip/trip-add-p
 import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
 import { RoamieResponseView } from "@/components/RoamieResponseView";
 import { cn } from "@/lib/utils";
-import { stableChatMessageKey } from "@/lib/chat-render-stability";
+import {
+  resolveChatRecommendationCardCount,
+  stableChatMessageKey,
+} from "@/lib/chat-render-stability";
 
 type RowProps = {
   message: ChatMsg;
@@ -74,9 +77,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
   const hasPlaceCards =
     !hideCards &&
     ((m.structuredPlaces?.length ?? 0) > 0 || (roamieData?.recommendations?.length ?? 0) > 0);
-  const cardCount = hasPlaceCards
-    ? (m.structuredPlaces?.length ?? roamieData?.recommendations?.length ?? 0)
-    : 0;
+  const cardCount = resolveChatRecommendationCardCount({
+    hidden: !hasPlaceCards,
+    structuredCount: m.structuredPlaces?.length,
+    recommendationCount: roamieData?.recommendations?.length,
+  });
   const cardCountRef = useRef(cardCount);
   cardCountRef.current = cardCount;
   const recommendationSessionIdRef = useRef(recommendationSessionId);
@@ -85,6 +90,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   useEffect(() => {
     if (m.role !== "assistant") return;
     console.info("[CHAT_RECOMMENDATION_MOUNT]", {
+      recommendationRequestId: m.recommendationRequestId ?? "",
       sessionId: recommendationSessionIdRef.current,
       groupKey,
       cardCount: cardCountRef.current,
@@ -92,6 +98,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
     });
     return () => {
       console.info("[CHAT_RECOMMENDATION_MOUNT]", {
+        recommendationRequestId: m.recommendationRequestId ?? "",
         sessionId: recommendationSessionIdRef.current,
         groupKey,
         cardCount: cardCountRef.current,
@@ -103,6 +110,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   useEffect(() => {
     if (cardCount <= 0) return;
     console.info("[CHAT_RECOMMENDATION_MOUNT]", {
+      recommendationRequestId: m.recommendationRequestId ?? "",
       sessionId: recommendationSessionId,
       groupKey,
       cardCount,

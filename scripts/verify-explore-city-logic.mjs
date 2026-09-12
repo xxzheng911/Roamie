@@ -27,6 +27,7 @@ import {
 } from "../src/lib/explore-places-eligibility.ts";
 import { buildCityCategoryFetchQueries } from "../src/lib/explore-city-category-queries.ts";
 import { exploreTimeBucket } from "../src/lib/explore-time-bucket.ts";
+import { resolveExploreAllHydrationPlan } from "../src/lib/explore-category-search.ts";
 
 const TOKYO_CENTER = { lat: 35.6764, lng: 139.65 };
 
@@ -70,10 +71,7 @@ test("東京都正規化為東京", () => {
 });
 
 test("東京座標推斷城市名", () => {
-  assert.equal(
-    inferExploreCityLabel(TOKYO_CENTER.lat, TOKYO_CENTER.lng, "東京都"),
-    "東京",
-  );
+  assert.equal(inferExploreCityLabel(TOKYO_CENTER.lat, TOKYO_CENTER.lng, "東京都"), "東京");
   assert.equal(inferExploreCityLabel(TOKYO_CENTER.lat, TOKYO_CENTER.lng, null), "東京");
 });
 
@@ -116,6 +114,58 @@ test("全部 tab 合併至少 8 個、至多 20 個", () => {
   });
   assert.ok(merged.length >= 8, `expected >= 8, got ${merged.length}`);
   assert.ok(merged.length <= 20, `expected <= 20, got ${merged.length}`);
+});
+
+test("全部 tab 保留各分類完整聯集，不再套 per-category quota", () => {
+  const categories = ["coffee", "food", "sight"];
+  const cardsByCategory = Object.fromEntries(
+    categories.map((categoryId, categoryIndex) => [
+      categoryId,
+      Array.from({ length: 5 }, (_, index) =>
+        mockPlace(
+          `${categoryId}-${index}`,
+          categoryId,
+          35.65 + categoryIndex * 0.01 + index * 0.001,
+          139.68 + index * 0.001,
+        ),
+      ),
+    ]),
+  );
+  const merged = mergeExploreAllCategoryResults(cardsByCategory, {
+    origin: TOKYO_CENTER,
+    timeBucket: "day",
+    cityMode: true,
+  });
+  assert.equal(merged.length, 15);
+  for (const categoryId of categories) {
+    assert.equal(merged.filter((place) => place.categoryId === categoryId).length, 5);
+  }
+});
+
+test("全部 tab 以 canonical Google Place ID 去重", () => {
+  const shared = { ...mockPlace("Shared", "coffee", 35.67, 139.7), id: "ChIJ-shared" };
+  const merged = mergeExploreAllCategoryResults(
+    {
+      coffee: [shared],
+      food: [{ ...shared, categoryId: "food" }],
+    },
+    { origin: TOKYO_CENTER, timeBucket: "day", cityMode: true },
+  );
+  assert.equal(merged.length, 1);
+});
+
+test("全部 tab cold start hydrates every required category and reuses cache/in-flight", () => {
+  const cold = resolveExploreAllHydrationPlan([], []);
+  assert.deepEqual(cold.categoriesToAwait, cold.requiredCategories);
+  assert.deepEqual(cold.missingCategories, cold.requiredCategories);
+
+  const warm = resolveExploreAllHydrationPlan(["coffee"], ["food"]);
+  assert.deepEqual(warm.cachedCategories, ["coffee"]);
+  assert.deepEqual(warm.inFlightCategories, ["food"]);
+  assert.equal(warm.missingCategories.includes("coffee"), false);
+  assert.equal(warm.missingCategories.includes("food"), false);
+  assert.equal(warm.categoriesToAwait.includes("coffee"), false);
+  assert.equal(warm.categoriesToAwait.includes("food"), true);
 });
 
 test("排除石碑、橋跡、靈場等低價值城市標記", async () => {
@@ -298,10 +348,7 @@ test("東京美食 relaxed rating 門檻", () => {
     nextOpenHint: "",
   };
   assert.equal(passesCityRelaxedRating(ichiran), true);
-  assert.equal(
-    classifyExploreMapQualityTier(ichiran, "food", { cityMode: true }),
-    2,
-  );
+  assert.equal(classifyExploreMapQualityTier(ichiran, "food", { cityMode: true }), 2);
   const filtered = filterCityExploreCategoryPlaces([ichiran], "food");
   assert.ok(filtered.length >= 1, "Ichiran should pass food relaxed filter");
   assert.equal(

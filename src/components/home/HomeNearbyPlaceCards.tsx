@@ -4,7 +4,7 @@ import { PlaceCoverImage } from "@/components/media/PlaceCoverImage";
 import { PlaceImage } from "@/components/media/PlaceImage";
 import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
-import { placeOpeningStatusLabel } from "@/lib/normalized-opening-status";
+import { homeNearbyOpeningBadgeLabel } from "@/lib/home-nearby-display";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import type { HomeNearbyRenderState } from "@/lib/home-nearby-log";
 import { resolveHomeNearbyViewState } from "@/lib/home-nearby-view-state";
@@ -82,7 +82,7 @@ function buildCardDisplay(
         : "";
     rating = `${place.rating.toFixed(1)}${count}`;
   }
-  const hours = placeOpeningStatusLabel(place, locale);
+  const hours = homeNearbyOpeningBadgeLabel(place, locale);
   const vibe = place.reason?.trim() || typeName || goodForNow;
 
   return {
@@ -121,7 +121,10 @@ const HomeNearbyCardItem = memo(function HomeNearbyCardItem({
   return (
     <article
       role="listitem"
-      className={cn("home-nearby-card-item relative text-left", isLast && "home-nearby-card-item--last")}
+      className={cn(
+        "home-nearby-card-item relative text-left",
+        isLast && "home-nearby-card-item--last",
+      )}
     >
       <button
         type="button"
@@ -221,7 +224,9 @@ const HomeNearbyCardItem = memo(function HomeNearbyCardItem({
         </div>
 
         <div className="mt-2 px-0.5">
-          <p className="line-clamp-1 font-display text-[15px] leading-snug text-foreground">{p.name}</p>
+          <p className="line-clamp-1 font-display text-[15px] leading-snug text-foreground">
+            {p.name}
+          </p>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
             {[typeName, distance].filter(Boolean).join(" · ")}
           </p>

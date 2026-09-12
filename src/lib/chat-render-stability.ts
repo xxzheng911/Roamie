@@ -12,6 +12,15 @@ export function stableChatMessageKey(message: ChatMsg, index: number): string {
   return message.id?.trim() || `${message.role}:${index}`;
 }
 
+export function resolveChatRecommendationCardCount(input: {
+  hidden: boolean;
+  structuredCount?: number;
+  recommendationCount?: number;
+}): number {
+  if (input.hidden) return 0;
+  return input.structuredCount ?? input.recommendationCount ?? 0;
+}
+
 export function claimChatAutoScrollTarget(previousTarget: string, nextTarget: string): boolean {
   return Boolean(nextTarget) && previousTarget !== nextTarget;
 }

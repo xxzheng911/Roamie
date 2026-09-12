@@ -70,6 +70,7 @@
     "verify:place-display-name-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-display-name-fidelity.mjs",
     "verify:shortcut-category-fidelity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-shortcut-category-fidelity.mjs",
     "verify:nearby-shortcut-ranking": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-nearby-shortcut-ranking.mjs",
+    "verify:place-recommendation-authority": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-recommendation-authority.mjs",
     "verify:home-shortcut-handoff": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-shortcut-handoff.mjs",
     "verify:cold-start-nonblocking": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-cold-start-nonblocking.mjs",
     "verify:profile-cold-start-sync-contract": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-profile-cold-start-sync-contract.mjs",

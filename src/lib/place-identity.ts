@@ -26,10 +26,7 @@ export type PlaceIdentity =
   | "generic"
   | "unsupported";
 
-export type PlaceIdentityInput = Pick<
-  PlaceResult,
-  "primaryType" | "name" | "address"
-> & {
+export type PlaceIdentityInput = Pick<PlaceResult, "primaryType" | "name" | "address"> & {
   types?: string[] | null;
 };
 
@@ -101,6 +98,23 @@ const RETAIL_SHOPPING_TYPES = [
 const RETAIL_SHOPPING_NAME_RE =
   /(?:商店街|百貨|outlet|アウトレット|商場|購物中心|地下街|デパート|ショッピングモール|複合商業|商業施設|ファッションビル|3coins|スリーコインズ|無印|muji|daiso|ダイソー|loft|ハンズ|francfranc|狸小路|parco|大丸|三越|イオン|aeon)/i;
 
+const SPECIFIC_FOOD_TYPES = [
+  "cafe",
+  "coffee_shop",
+  "bakery",
+  "dessert_shop",
+  "ice_cream_shop",
+  "restaurant",
+  "meal_takeaway",
+  "meal_delivery",
+  "fast_food_restaurant",
+  "food_stall",
+  "street_food",
+  "snack_bar",
+  "food_truck",
+  "vendor",
+] as const;
+
 function normalizeType(type: string): string {
   return type.trim().toLowerCase().replace(/\s+/g, "_");
 }
@@ -136,6 +150,9 @@ function hasExactType(types: string[], candidates: readonly string[]): boolean {
 }
 
 function isRetailShoppingPlace(place: PlaceIdentityInput, types: string[]): boolean {
+  // A containing venue can leak shopping_mall/store into a child POI. A concrete
+  // culinary type is the place's display identity and must outrank that generic parent type.
+  if (hasExactType(types, SPECIFIC_FOOD_TYPES)) return false;
   if (hasExactType(types, RETAIL_SHOPPING_TYPES)) return true;
   return RETAIL_SHOPPING_NAME_RE.test(placeBlob(place));
 }
@@ -147,12 +164,33 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
 
   if (isBlacklisted(types)) return "unsupported";
 
-  // Retail / shopping BEFORE food — Google often tags variety stores with "food"
+  if (hasExactType(types, ["food_stall", "street_food", "snack_bar", "food_truck", "vendor"])) {
+    return "food_stall";
+  }
+  if (hasExactType(types, ["cafe", "coffee_shop"])) return "cafe";
+  if (hasExactType(types, ["bakery"])) return "bakery";
+  if (hasExactType(types, ["dessert_shop", "ice_cream_shop", "confectionery"])) {
+    return "dessert";
+  }
+  if (hasExactType(types, ["bar", "wine_bar", "night_club", "pub", "cocktail_bar"])) {
+    return "bar";
+  }
+  if (
+    hasExactType(types, ["restaurant", "meal_takeaway", "meal_delivery", "fast_food_restaurant"])
+  ) {
+    return "restaurant";
+  }
+
+  // Generic parent/venue types only win after concrete child-place identity.
   if (isRetailShoppingPlace(place, types)) {
     if (/書店|書局|誠品|金石堂|茉莉|書屋/i.test(name) || hasExactType(types, ["book_store"])) {
       return "bookstore";
     }
-    if (/百貨|三越|新光|遠百|大遠百|SOGO|夢時代|漢神|大立|義享|Outlet|OUTLET|デパート|department/i.test(name)) {
+    if (
+      /百貨|三越|新光|遠百|大遠百|SOGO|夢時代|漢神|大立|義享|Outlet|OUTLET|デパート|department/i.test(
+        name,
+      )
+    ) {
       return "department_store";
     }
     if (hasExactType(types, ["department_store"])) return "department_store";
@@ -228,8 +266,11 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
   ) {
     if (!EXPLICIT_FOOD_NAME_RE.test(blob)) return "bar";
   }
-  if (hasAnyType(types, ["park", "national_park", "botanical_garden", "hiking_area"])) return "park";
-  if (hasAnyType(types, ["tourist_attraction", "historical_landmark", "monument", "cultural_center"])) {
+  if (hasAnyType(types, ["park", "national_park", "botanical_garden", "hiking_area"]))
+    return "park";
+  if (
+    hasAnyType(types, ["tourist_attraction", "historical_landmark", "monument", "cultural_center"])
+  ) {
     if (hasAnyType(types, ["book_store", "bookstore"])) return "bookstore";
     if (/書/i.test(name)) return "bookstore";
     if (RETAIL_SHOPPING_NAME_RE.test(blob)) return "district";
@@ -262,10 +303,7 @@ export function resolvePlaceIdentity(place: PlaceIdentityInput): PlaceIdentity {
   return "generic";
 }
 
-export function identityDisplayLabel(
-  identity: PlaceIdentity,
-  place?: PlaceIdentityInput,
-): string {
+export function identityDisplayLabel(identity: PlaceIdentity, place?: PlaceIdentityInput): string {
   const blob = place ? placeBlob(place) : "";
   if (place) {
     if (identity === "food_stall" || identity === "restaurant") {
@@ -279,7 +317,7 @@ export function identityDisplayLabel(
   const labels: Record<PlaceIdentity, string> = {
     bookstore: "書店",
     breakfast_shop: "早餐",
-    cafe: "咖啡",
+    cafe: "咖啡廳",
     bakery: "烘焙",
     dessert: "甜點",
     restaurant: "美食",

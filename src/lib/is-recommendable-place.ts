@@ -27,6 +27,8 @@ export type RecommendablePlaceInput = {
   userRatingCount?: number | null;
   primaryType?: string | null;
   types?: string[] | null;
+  lat?: number | null;
+  lng?: number | null;
   categoryId?: string | null;
   isSavedFavorite?: boolean;
   explicitConvenienceSearch?: boolean;
@@ -43,8 +45,7 @@ const CLOSED_NAME_RE =
 const NIGHT_MARKET_NAME_RE =
   /夜市|市集|商圈|觀光商場|傳統市場|菜市場|night\s*market|bazaar|flea\s*market/i;
 
-const ADDRESS_LIKE_NAME_RE =
-  /^[\d\s\-]+(?:號|弄|巷|街|路|段)?$|^\d+$|^台灣\d|^Taiwan,?\s*\d/i;
+const ADDRESS_LIKE_NAME_RE = /^[\d\s-]+(?:號|弄|巷|街|路|段)?$|^\d+$|^台灣\d|^Taiwan,?\s*\d/i;
 
 const FOOD_TYPE_RE =
   /^(restaurant|food|meal_takeaway|meal_delivery|food_store|fast_food_restaurant|cafe|coffee_shop|bakery|ice_cream_shop|bar|pub|night_club)$/;
@@ -236,6 +237,28 @@ function isAddressLikeMarker(name: string): boolean {
   return false;
 }
 
+const STRONG_LATE_NIGHT_TYPES = new Set([
+  "bar",
+  "pub",
+  "cocktail_bar",
+  "wine_bar",
+  "izakaya",
+  "night_club",
+]);
+
+export function hasStrongLateNightBusinessIdentity(place: RecommendablePlaceInput): boolean {
+  const hasCoordinates =
+    Number.isFinite(place.lat) &&
+    Number.isFinite(place.lng) &&
+    (Math.abs(place.lat ?? 0) > 0.001 || Math.abs(place.lng ?? 0) > 0.001);
+  return Boolean(
+    resolvePlaceId(place) &&
+    hasCoordinates &&
+    normalizeBiz(place.businessStatus) === "OPERATIONAL" &&
+    allTypes(place).some((type) => STRONG_LATE_NIGHT_TYPES.has(type)),
+  );
+}
+
 function isCityPopularCandidate(place: RecommendablePlaceInput): boolean {
   const name = (place.name ?? "").trim();
   const reviewCount = place.userRatingCount ?? 0;
@@ -248,9 +271,7 @@ function isPureGeographicMarker(place: RecommendablePlaceInput): boolean {
   const types = allTypes(place);
   if (types.length === 0) return false;
 
-  const hasBusinessType = types.some(
-    (t) => TRAVEL_FRIENDLY_TYPES.has(t) || FOOD_TYPE_RE.test(t),
-  );
+  const hasBusinessType = types.some((t) => TRAVEL_FRIENDLY_TYPES.has(t) || FOOD_TYPE_RE.test(t));
   if (hasBusinessType) return false;
 
   // Bare point_of_interest / establishment (common Places payloads) are NOT
@@ -418,6 +439,7 @@ export function isRecommendablePlace(
   if (
     isAddressLikeMarker(name) &&
     !isNightMarketStyle(place) &&
+    !hasStrongLateNightBusinessIdentity(place) &&
     !cityMode &&
     !exploreRelaxed
   ) {
@@ -434,7 +456,11 @@ export function isRecommendablePlace(
   if (
     biz &&
     biz !== "OPERATIONAL" &&
-    !(context === "ai_recommend" && options?.requireOpenNow === false && biz === "CLOSED_TEMPORARILY")
+    !(
+      context === "ai_recommend" &&
+      options?.requireOpenNow === false &&
+      biz === "CLOSED_TEMPORARILY"
+    )
   ) {
     return fail("non_operational");
   }
@@ -494,10 +520,7 @@ export function isRecommendablePlace(
     return { ok: true };
   }
 
-  if (
-    openNow === false &&
-    !(context === "ai_recommend" && options?.requireOpenNow === false)
-  ) {
+  if (openNow === false && !(context === "ai_recommend" && options?.requireOpenNow === false)) {
     return fail("closed_now");
   }
 
@@ -514,10 +537,10 @@ export function isRecommendablePlace(
   if (openNow == null) {
     const allowUnknownOpen =
       cityMode ||
-      (isNightMarketStyle(place) &&
-        (context === "home_nearby" || context === "explore_map"));
+      (isNightMarketStyle(place) && (context === "home_nearby" || context === "explore_map"));
     if (!allowUnknownOpen) return fail("open_unknown");
-    if (!cityMode && reviewCount < NIGHT_MARKET_MIN_REVIEWS) return fail("night_market_low_reviews");
+    if (!cityMode && reviewCount < NIGHT_MARKET_MIN_REVIEWS)
+      return fail("night_market_low_reviews");
   }
 
   return { ok: true };
@@ -546,8 +569,13 @@ export function placeResultToRecommendableInput(
     userRatingCount: number | null;
     primaryType: string | null;
     types?: string[] | null;
+    lat?: number | null;
+    lng?: number | null;
   },
-  extra?: Pick<RecommendablePlaceInput, "categoryId" | "isSavedFavorite" | "explicitConvenienceSearch">,
+  extra?: Pick<
+    RecommendablePlaceInput,
+    "categoryId" | "isSavedFavorite" | "explicitConvenienceSearch"
+  >,
 ): RecommendablePlaceInput {
   return {
     id: place.id,
@@ -559,6 +587,8 @@ export function placeResultToRecommendableInput(
     userRatingCount: place.userRatingCount,
     primaryType: place.primaryType,
     types: place.types,
+    lat: place.lat,
+    lng: place.lng,
     ...extra,
   };
 }

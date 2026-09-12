@@ -35,6 +35,7 @@ import {
   normalizeNearbyClarificationQuery,
   NEARBY_CLARIFICATION_CONTRACT_VERSION,
   resolveChatRouteAuthority,
+  resolveExplicitNearbyIntent,
   shouldAllowNearbyDispatch,
   shouldResolveNearbyCurrentLocation,
 } from "@/lib/ai/nearby-location-clarification";
@@ -285,12 +286,14 @@ import {
   isStructuredHomeNearbyShortcut,
   isStructuredHomeSeaShortcut,
   resolveHomeShortcutSearchProfile,
+  hasNearbyContinuationAuthority,
 } from "@/lib/ai/home-shortcut-handoff";
 import {
   mergeTripPlanningContext,
   resolveConversationMode,
   formatTripPlanningContextForAi,
   normalizeDestinationLabel,
+  splitKnownParentAreaLabel,
 } from "@/lib/ai/trip-planning-context";
 import {
   buildTravelContext,
@@ -341,6 +344,9 @@ import {
 import {
   buildNearbyPlaceRecommendation,
   buildSummaryForRecommendations,
+  canonicalizeExplicitNearbyKeyword,
+  extractExplicitNearbyKeyword,
+  resolveExplicitNearbyKeywordForTurn,
   restaurantSearchFallbackQueries,
 } from "@/lib/ai/chat-place-recommendation";
 import { filterPlacesForFoodIntent, isFoodIntentText } from "@/lib/ai/chat-food-filter";
@@ -2868,12 +2874,14 @@ function Chat() {
       if (!ctx) return;
       setStreaming(true);
       try {
-        let { summary, recommendations, recommendationSession } =
-          await fetchTripAddPlaceRecommendations({
-            ctx,
-            searchPlaces: searchNearbyPlaces,
-            locale,
-          });
+        const tripAddResult = await fetchTripAddPlaceRecommendations({
+          ctx,
+          searchPlaces: searchNearbyPlaces,
+          locale,
+        });
+        const summary = tripAddResult.summary;
+        let recommendations = tripAddResult.recommendations;
+        let recommendationSession = tripAddResult.recommendationSession;
         if (!recommendations.length) {
           recommendations = await enrichTripAddPlaceRecommendationsFromSummary({
             summary,
@@ -2887,8 +2895,14 @@ function Chat() {
           recommendations,
           recommendationSession,
         );
-        let { summary: displaySummary, recommendations: filteredRecs } =
-          finalizeChatRecommendationDisplay(sessionWithRecs, "", summary, recommendations);
+        const finalized = finalizeChatRecommendationDisplay(
+          sessionWithRecs,
+          "",
+          summary,
+          recommendations,
+        );
+        const displaySummary = finalized.summary;
+        let filteredRecs = finalized.recommendations;
         if (!filteredRecs.length && recommendations.length) {
           filteredRecs = recommendations.slice(0, 5);
         }
@@ -3092,6 +3106,7 @@ function Chat() {
       const authoritativeCenter = opts?.authoritativeSearchCenter;
       const geographicScope =
         authoritativeCenter?.geographicScope ??
+        activeSession.nearbyLocationAuthority?.geographicScope ??
         (activePlaceDetailContext
           ? undefined
           : activeSession.recommendationSession?.geographicScope);
@@ -3184,7 +3199,9 @@ function Chat() {
             }));
         const hadSessionLocation = hasUsableNearbyCoordinates(workingSession.location);
         const deviceSession = shouldResolveCurrentLocation
-          ? await resolveChatLocation(workingSession)
+          ? await resolveChatLocation(workingSession, {
+              requireNearbyAuthority: userExplicitlyWantsNearbyPlaces(userText),
+            })
           : workingSession;
         const resolvedLocation = hasUsableNearbyCoordinates(deviceSession.location);
         logAiPipeline("[NEARBY_LOCATION_SOURCE]", {
@@ -3240,6 +3257,7 @@ function Chat() {
           userExplicitlyWantsNearbyPlaces(userText) &&
           deviceSession.location?.lat != null &&
           deviceSession.location?.lng != null;
+        const persistedNearbyAuthority = deviceSession.nearbyLocationAuthority;
         const searchCenter = authoritativeCenter
           ? {
               mode: "current_location" as const,
@@ -3250,17 +3268,32 @@ function Chat() {
               deviceLocationAvailable: true,
               deviceLocationUsed: false,
             }
-          : shortcutGpsReady || explicitNearbyGpsReady
+          : persistedNearbyAuthority
             ? {
                 mode: "current_location" as const,
-                latitude: deviceSession.location!.lat,
-                longitude: deviceSession.location!.lng,
-                label: deviceSession.location?.city,
-                source: "explicit_current_location" as const,
+                latitude: persistedNearbyAuthority.lat,
+                longitude: persistedNearbyAuthority.lng,
+                label: persistedNearbyAuthority.displayLabel,
+                source:
+                  persistedNearbyAuthority.source === "clarification"
+                    ? ("clarified_location" as const)
+                    : persistedNearbyAuthority.source === "explicit"
+                      ? ("explicit_location" as const)
+                      : ("current_device_location" as const),
                 deviceLocationAvailable: true,
-                deviceLocationUsed: true,
+                deviceLocationUsed: persistedNearbyAuthority.source === "device",
               }
-            : searchCenterRaw;
+            : shortcutGpsReady || explicitNearbyGpsReady
+              ? {
+                  mode: "current_location" as const,
+                  latitude: deviceSession.location!.lat,
+                  longitude: deviceSession.location!.lng,
+                  label: deviceSession.location?.city,
+                  source: "explicit_current_location" as const,
+                  deviceLocationAvailable: true,
+                  deviceLocationUsed: true,
+                }
+              : searchCenterRaw;
 
         const isDeviceNearbyScope =
           searchCenter?.mode === "current_location" ||
@@ -3277,7 +3310,14 @@ function Chat() {
             Boolean(searchCenter?.deviceLocationAvailable) ||
             (deviceSession.location?.lat != null && deviceSession.location?.lng != null),
           deviceLocationUsed: Boolean(searchCenter?.deviceLocationUsed),
-          routeMode: searchCenter?.mode ?? searchCtx.searchMode,
+          routeMode:
+            searchCenter?.source === "clarified_location"
+              ? "clarified_location"
+              : searchCenter?.source === "explicit_location"
+                ? "explicit_location"
+                : searchCenter?.mode === "current_location"
+                  ? "current_device_location"
+                  : (searchCenter?.mode ?? searchCtx.searchMode),
         });
         rtScope =
           geographicScope?.entityType === "district"
@@ -3616,6 +3656,22 @@ function Chat() {
         return true;
       }
       let placeCreditsHandle: CreditsOperationHandle | null = placeCreditsGate.handle;
+      const nearbyDiagnosticRequestId =
+        placeCreditsGate.handle?.requestId ?? `nearby_${Date.now().toString(36)}`;
+      if (nearbyFollowup) {
+        console.info("[RECOMMENDATION_CONTINUATION_AUTHORITY]", {
+          recommendationRequestId: nearbyDiagnosticRequestId,
+          phase: "request",
+          originType: activeSession.nearbyContinuationSnapshot?.originType ?? "",
+          mode: activeSession.nearbyContinuationSnapshot?.mode ?? "",
+          searchProfile: activeSession.nearbyContinuationSnapshot?.searchProfile ?? "",
+          rawKeyword: activeSession.nearbyContinuationSnapshot?.rawKeyword ?? "",
+          semanticFamily: activeSession.nearbyContinuationSnapshot?.semanticFamily ?? "",
+          district: activeSession.nearbyContinuationSnapshot?.district ?? "",
+          round: nearbyBatch,
+          shownCount: activeSession.nearbyContinuationSnapshot?.shownPlaceIds.length ?? 0,
+        });
+      }
       let nearbyProviderCompleted = false;
       let nearbyProcessingStage = "provider";
       const placeFocusDiagnostics = placeDetailActive
@@ -3628,6 +3684,7 @@ function Chat() {
             finalCount: 0,
           }
         : undefined;
+      const nearbySearchExecution: Array<{ lane: string; query: string; radius: number }> = [];
 
       try {
         const { summary, payload, continuationRecommendations, shortcutDiagnostics } =
@@ -3647,7 +3704,13 @@ function Chat() {
               ? []
               : [...sessionForSave.recommendedPlaces, ...extractRecommendedFromMsgs(conversation)],
             blockedCoreNames,
-            userText: userText,
+            userText: (() => {
+              const keyword = resolveExplicitNearbyKeywordForTurn(
+                userText,
+                nearbyFollowup ? sessionForSave.explicitNearbyKeyword : undefined,
+              );
+              return keyword ? `附近找 ${keyword}` : userText;
+            })(),
             cityLabel: placeDetailActive
               ? workingSession.placeDetailFocus?.city ||
                 workingSession.placeDetailFocus?.country ||
@@ -3672,6 +3735,11 @@ function Chat() {
               const result = await fetchPlaceDetailsFn({ data: { placeId, locale } });
               return result.place;
             },
+            continuationRound: nearbyFollowup
+              ? (sessionForSave.nearbyContinuationSnapshot?.continuationRound ?? 0) + 1
+              : 0,
+            onSearchExecution: (execution) => nearbySearchExecution.push(execution),
+            diagnosticRequestId: nearbyDiagnosticRequestId,
           });
         nearbyProviderCompleted = true;
         nearbyProcessingStage = "recommendation_processing";
@@ -3681,6 +3749,37 @@ function Chat() {
           activeChatIntent: intent,
           activeCategoryIntent:
             intent === "restaurant" ? "restaurant" : intent === "cafe" ? "cafe" : "attraction",
+          explicitNearbyKeyword:
+            resolveExplicitNearbyKeywordForTurn(
+              userText,
+              nearbyFollowup ? sessionForSave.explicitNearbyKeyword : undefined,
+            ) ?? undefined,
+          canonicalNearbyKeyword: (() => {
+            const keyword = resolveExplicitNearbyKeywordForTurn(
+              userText,
+              nearbyFollowup ? sessionForSave.canonicalNearbyKeyword : undefined,
+            );
+            return keyword ? canonicalizeExplicitNearbyKeyword(keyword) : undefined;
+          })(),
+          nearbySemanticFamily: (() => {
+            const keyword = resolveExplicitNearbyKeywordForTurn(
+              userText,
+              nearbyFollowup ? sessionForSave.canonicalNearbyKeyword : undefined,
+            );
+            return keyword
+              ? resolveExplicitNearbyIntent(`附近${keyword}`)?.semanticFamily
+              : undefined;
+          })(),
+          nearbyLocationAuthority:
+            sessionForSave.nearbyLocationAuthority ??
+            (lat != null && lng != null
+              ? {
+                  displayLabel: nearbyCenterLabel ?? sessionForSave.location?.city ?? "",
+                  lat,
+                  lng,
+                  source: "device" as const,
+                }
+              : undefined),
           phase: "recommend",
           travelContext: {
             ...merged.context,
@@ -3785,6 +3884,7 @@ function Chat() {
           });
         }
         logShortcutRuntime("[RT_NEARBY_RESULT]", {
+          recommendationRequestId: nearbyDiagnosticRequestId,
           followup: nearbyFollowup,
           batch: nearbyBatch,
           raw: payload.recommendations?.length ?? 0,
@@ -3913,11 +4013,23 @@ function Chat() {
             (m, i) => !(i === prev.length - 1 && m.role === "assistant" && !m.content),
           );
           const base = trimmedPrev.length === conversation.length ? conversation : trimmedPrev;
+          const existingCards = base.reduce(
+            (count, message) => count + (message.roamie?.recommendations?.length ?? 0),
+            0,
+          );
+          console.info("[NEARBY_CLIENT_RECEIVE]", {
+            recommendationRequestId: nearbyDiagnosticRequestId,
+            receivedCards: filteredRecs.length,
+            sessionId: sessionWithNearbyContext.recommendationSession?.sessionId ?? "",
+            existingCards,
+            afterMergeCards: existingCards + filteredRecs.length,
+          });
           return [
             ...base,
             {
               role: "assistant",
               content: syncedSummary,
+              recommendationRequestId: nearbyDiagnosticRequestId,
               roamie: {
                 ...payload,
                 summary: syncedSummary,
@@ -3925,6 +4037,16 @@ function Chat() {
               },
             },
           ];
+        });
+
+        console.info("[NEARBY_RESPONSE_ASSEMBLY]", {
+          recommendationRequestId: nearbyDiagnosticRequestId,
+          selectedCount: payload.recommendations?.length ?? 0,
+          responseCardCount: filteredRecs.length,
+          sessionId: sessionWithNearbyContext.recommendationSession?.sessionId ?? "",
+          branch: nearbyFollowup ? "continuation" : "initial",
+          hasMessagePayload: Boolean(syncedSummary),
+          hasRecommendationPayload: filteredRecs.length > 0,
         });
 
         const recs = filteredRecs as ChatPlaceItem[];
@@ -4059,9 +4181,70 @@ function Chat() {
               recs.map((item) => nearbyRecommendationId(item)).filter(Boolean),
             )
           : sessionWithCommittedNearbyContextBase;
+        const shownPlaceIds = recs.map((item) => nearbyRecommendationId(item)).filter(Boolean);
+        const previousSnapshot = sessionForSave.nearbyContinuationSnapshot;
+        const nearbyContinuationSnapshot: NonNullable<
+          ChatPlanningSession["nearbyContinuationSnapshot"]
+        > = {
+          originType: homeSearchProfile ? "home_mood" : "explicit_nearby",
+          mode: sessionForSave.normalizedShortcutRequest?.mode ?? previousSnapshot?.mode,
+          searchProfile: homeSearchProfile ?? previousSnapshot?.searchProfile,
+          rawKeyword: sessionWithIntent.explicitNearbyKeyword ?? previousSnapshot?.rawKeyword,
+          canonicalKeyword:
+            sessionWithIntent.canonicalNearbyKeyword ?? previousSnapshot?.canonicalKeyword,
+          semanticFamily:
+            sessionWithIntent.nearbySemanticFamily ?? previousSnapshot?.semanticFamily,
+          locationAuthority:
+            sessionWithIntent.nearbyLocationAuthority ?? previousSnapshot?.locationAuthority,
+          district:
+            sessionWithIntent.nearbyLocationAuthority?.district ?? previousSnapshot?.district,
+          lat,
+          lng,
+          exposureIds: [
+            ...new Set([
+              ...(previousSnapshot?.exposureIds ?? []),
+              ...excludePlaceIds,
+              ...shownPlaceIds,
+            ]),
+          ],
+          shownPlaceIds,
+          continuationRound: (previousSnapshot?.continuationRound ?? 0) + (nearbyFollowup ? 1 : 0),
+          executedSearchLanes: [
+            ...new Set([
+              ...(previousSnapshot?.executedSearchLanes ?? []),
+              ...nearbySearchExecution.map((execution) => execution.lane),
+            ]),
+          ],
+          executedQueries: [
+            ...new Set([
+              ...(previousSnapshot?.executedQueries ?? []),
+              ...nearbySearchExecution.map((execution) => execution.query),
+            ]),
+          ],
+          executedRadii: [
+            ...new Set([
+              ...(previousSnapshot?.executedRadii ?? []),
+              ...nearbySearchExecution.map((execution) => execution.radius),
+            ]),
+          ],
+          stage: homeSearchProfile === "home_late_night" ? (nearbyFollowup ? 2 : 1) : undefined,
+        };
+        console.info("[RECOMMENDATION_CONTINUATION_AUTHORITY]", {
+          recommendationRequestId: nearbyDiagnosticRequestId,
+          phase: "persisted",
+          originType: nearbyContinuationSnapshot.originType,
+          mode: nearbyContinuationSnapshot.mode ?? "",
+          searchProfile: nearbyContinuationSnapshot.searchProfile ?? "",
+          rawKeyword: nearbyContinuationSnapshot.rawKeyword ?? "",
+          semanticFamily: nearbyContinuationSnapshot.semanticFamily ?? "",
+          district: nearbyContinuationSnapshot.district ?? "",
+          round: nearbyContinuationSnapshot.continuationRound,
+          shownCount: nearbyContinuationSnapshot.shownPlaceIds.length,
+        });
         persistSession(
           syncSessionPlaceMemory({
             ...sessionWithCommittedNearbyContext,
+            nearbyContinuationSnapshot,
             recommendedPlaces: recs,
           }),
         );
@@ -4121,6 +4304,7 @@ function Chat() {
           processingStage: nearbyProcessingStage,
         });
         logShortcutRuntime("[RT_NEARBY_RESULT]", {
+          recommendationRequestId: nearbyDiagnosticRequestId,
           followup: nearbyFollowup,
           batch: nearbyBatch,
           raw: 0,
@@ -6753,13 +6937,14 @@ function Chat() {
         );
         const activeSession = sessionOverride ?? session;
         const followUpIntent = parsePlaceDetailFollowUp(opts?.userText ?? "");
-        let { summary: displaySummary, recommendations: displayRecs } =
-          finalizeChatRecommendationDisplay(
-            activeSession,
-            opts?.userText ?? "",
-            full.summary ?? "",
-            full.recommendations ?? [],
-          );
+        const finalized = finalizeChatRecommendationDisplay(
+          activeSession,
+          opts?.userText ?? "",
+          full.summary ?? "",
+          full.recommendations ?? [],
+        );
+        const displaySummary = finalized.summary;
+        let displayRecs = finalized.recommendations;
         if (
           isPlaceDetailChatActive(activeSession) &&
           followUpIntent !== "nearby_cafe" &&
@@ -7247,6 +7432,27 @@ function Chat() {
         if (location) {
           const displayLabel =
             location.displayLabel || location.formattedName || location.address || location.city;
+          const resolvedEntity = resolveDestinationEntity(trimmed);
+          const clarifiedArea = splitKnownParentAreaLabel(trimmed)?.area;
+          const inferredDistrict =
+            location.district ??
+            (resolvedEntity.type === "district" && clarifiedArea
+              ? /(?:區|区|구|군)$/.test(clarifiedArea)
+                ? clarifiedArea
+                : resolvedEntity.country === "台灣"
+                  ? `${clarifiedArea}區`
+                  : resolvedEntity.country === "日本"
+                    ? `${clarifiedArea}区`
+                    : clarifiedArea
+              : undefined);
+          const geographicScope = createClarificationGeographicScope({
+            entityType: resolvedEntity?.type ?? "administrative_area",
+            displayLabel,
+            country: resolvedEntity?.country,
+            administrativeArea: location.region,
+            locality: location.city,
+            district: inferredDistrict,
+          });
           const resumedSession: ChatPlanningSession = {
             ...session,
             location: {
@@ -7254,6 +7460,19 @@ function Chat() {
               lng: location.lng,
               city: displayLabel,
             },
+            nearbyLocationAuthority: {
+              displayLabel,
+              district: geographicScope.requestedDistrict,
+              lat: location.lat,
+              lng: location.lng,
+              source: "clarification",
+              geographicScope,
+            },
+            explicitNearbyKeyword:
+              pendingNearbyLocation.rawExplicitKeyword ?? pendingNearbyLocation.queryCategory,
+            canonicalNearbyKeyword:
+              pendingNearbyLocation.canonicalKeyword ?? pendingNearbyLocation.queryCategory,
+            nearbySemanticFamily: pendingNearbyLocation.semanticFamily,
             activeChatIntent: pendingNearbyLocation.intent,
             activeCategoryIntent: pendingNearbyLocation.category,
             pendingNearbyLocationRequest: undefined,
@@ -7265,6 +7484,11 @@ function Chat() {
             originalIntent: pendingNearbyLocation.intent,
             originalCategory: pendingNearbyLocation.category,
             originalQuery: pendingNearbyLocation.originalUserText,
+            rawKeyword:
+              pendingNearbyLocation.rawExplicitKeyword ?? pendingNearbyLocation.queryCategory,
+            canonicalKeyword:
+              pendingNearbyLocation.canonicalKeyword ?? pendingNearbyLocation.queryCategory,
+            semanticFamily: pendingNearbyLocation.semanticFamily ?? "",
             locationAnswer: trimmed,
             resolvedLat: location.lat,
             resolvedLng: location.lng,
@@ -7284,6 +7508,22 @@ function Chat() {
             resolverPath,
             failureReason: "",
           });
+          logAiPipeline("[NEARBY_KEYWORD_AUTHORITY]", {
+            rawKeyword:
+              pendingNearbyLocation.rawExplicitKeyword ?? pendingNearbyLocation.queryCategory,
+            canonicalKeyword:
+              pendingNearbyLocation.canonicalKeyword ?? pendingNearbyLocation.queryCategory,
+          });
+          logAiPipeline("[NEARBY_LOCATION_AUTHORITY]", {
+            scope: displayLabel,
+            source: "clarified_location",
+            district: geographicScope.requestedDistrict ?? "",
+            hasCoordinates: true,
+          });
+          logAiPipeline("[NEARBY_LOCATION_REUSE]", {
+            reused: false,
+            reason: "clarification_resolved",
+          });
           logAiPipeline("[CHAT_ROUTE_AUTHORITY]", {
             nearbyIntent: pendingNearbyLocation.intent,
             pendingNearbyLocationRequest: true,
@@ -7301,12 +7541,6 @@ function Chat() {
           persistSession(resumedSession, next);
           setStreaming(true);
           try {
-            const resolvedEntity = resolveDestinationEntity(trimmed);
-            const geographicScope = createClarificationGeographicScope({
-              entityType: resolvedEntity?.type ?? "administrative_area",
-              displayLabel,
-              country: resolvedEntity?.country,
-            });
             const authoritativeSearchCenter = {
               lat: location.lat,
               lng: location.lng,
@@ -7420,6 +7654,31 @@ function Chat() {
       mode: rtNormalizedPreview?.mode ?? "",
       intent: rtNormalizedPreview?.intent ?? "",
     });
+    const structuredShortcutOwnsTurn = Boolean(rtNormalizedPreview?.structured);
+    const parsedExplicitNearbyAuthority = resolveExplicitNearbyIntent(trimmed);
+    const explicitNearbyAuthority = structuredShortcutOwnsTurn
+      ? null
+      : parsedExplicitNearbyAuthority;
+    logAiPipeline("[EXPLICIT_NEARBY_KEYWORD_AUTHORITY]", {
+      source: rtSource,
+      rawKeyword: parsedExplicitNearbyAuthority?.rawKeyword ?? "",
+      canonicalKeyword: parsedExplicitNearbyAuthority?.canonicalKeyword ?? "",
+      semanticFamily: parsedExplicitNearbyAuthority?.semanticFamily ?? "",
+      accepted: Boolean(explicitNearbyAuthority),
+      rejectReason:
+        structuredShortcutOwnsTurn && parsedExplicitNearbyAuthority
+          ? "structured_shortcut_authority"
+          : parsedExplicitNearbyAuthority
+            ? ""
+            : "not_explicit_keyword",
+    });
+    if (structuredShortcutOwnsTurn) {
+      logAiPipeline("[SHORTCUT_INTENT_PRECEDENCE]", {
+        source: rtNormalizedPreview?.source ?? rtSource,
+        mode: rtNormalizedPreview?.mode ?? "",
+        explicitNearbySuppressed: Boolean(parsedExplicitNearbyAuthority),
+      });
+    }
 
     // Refresh destination recommendations — keep dest/dates, clear discovery cache only.
     const wantsRefreshRecommendations =
@@ -7728,7 +7987,15 @@ function Chat() {
       return;
     }
 
-    let nextSession = applyTripIntentToSession(trimmed, session);
+    let nextSession = explicitNearbyAuthority
+      ? {
+          ...session,
+          explicitNearbyKeyword: explicitNearbyAuthority.rawKeyword,
+          canonicalNearbyKeyword: explicitNearbyAuthority.canonicalKeyword,
+          nearbySemanticFamily: explicitNearbyAuthority.semanticFamily,
+          activeChatIntent: explicitNearbyAuthority.intent,
+        }
+      : applyTripIntentToSession(trimmed, session);
     let planningConstraintTurn: PlanningConstraintDelta | null = null;
     let unresolvedPlanningCandidateContext = false;
     const planningStateBeforeHomeIsolation =
@@ -7936,12 +8203,33 @@ function Chat() {
       nextSession = resetChatPlanningForReplan(nextSession, "user_replan_intent");
     }
 
-    const merged = structuredHomeNearbyTurn
-      ? {
-          context: nextSession.travelContext ?? { interests: [] },
-          session: nextSession,
-        }
-      : mergeTravelContext(nextSession, trimmed, lastAssistantReply);
+    const explicitNearbyKeywordForTurn = explicitNearbyAuthority?.rawKeyword ?? null;
+    const explicitNearbyTurn = explicitNearbyAuthority != null;
+    const existingTravelContext = nextSession.travelContext ?? { interests: [] };
+    const nearbyKeywordOwnsDestination =
+      explicitNearbyTurn &&
+      [explicitNearbyAuthority.rawKeyword, explicitNearbyAuthority.canonicalKeyword].includes(
+        existingTravelContext.destination?.trim() ?? "",
+      );
+    if (nearbyKeywordOwnsDestination) {
+      console.warn("[NEARBY_AUTHORITY_VIOLATION]", {
+        reason: "keyword_reused_as_destination",
+        geocodeBlocked: true,
+      });
+      nextSession = {
+        ...nextSession,
+        travelContext: { ...existingTravelContext, destination: undefined },
+      };
+    }
+    const merged =
+      structuredHomeNearbyTurn || explicitNearbyTurn
+        ? {
+            context: explicitNearbyTurn
+              ? { ...(nextSession.travelContext ?? { interests: [] }), destination: undefined }
+              : (nextSession.travelContext ?? { interests: [] }),
+            session: nextSession,
+          }
+        : mergeTravelContext(nextSession, trimmed, lastAssistantReply);
     nextSession = merged.session;
     if (isBudgetRefinementText(trimmed)) {
       nextSession = applyBudgetRefinementToSession(trimmed, {
@@ -7949,15 +8237,16 @@ function Chat() {
         travelContext: merged.context,
       });
     }
-    const planningMerge = structuredHomeNearbyTurn
-      ? {
-          context: nextSession.tripPlanningContext ?? {
-            selectedPlaces: [],
-            intent: "mood_recommend" as const,
-          },
-          session: nextSession,
-        }
-      : mergeTripPlanningContext(trimmed, nextSession, merged.context);
+    const planningMerge =
+      structuredHomeNearbyTurn || explicitNearbyTurn
+        ? {
+            context: nextSession.tripPlanningContext ?? {
+              selectedPlaces: [],
+              intent: "mood_recommend" as const,
+            },
+            session: nextSession,
+          }
+        : mergeTripPlanningContext(trimmed, nextSession, merged.context);
     nextSession = planningMerge.session;
     const conversationMode = structuredHomeNearbyTurn
       ? "mood_recommend"
@@ -7980,7 +8269,42 @@ function Chat() {
     if (rtStructuredNearby) {
       nextSession = await resolveChatLocation(nextSession);
     }
-    const rtNearbyScope = resolveNearbyRecommendationScope(nextSession, merged.context.destination);
+    const rtNearbyScope = resolveNearbyRecommendationScope(
+      nextSession,
+      merged.context.destination,
+      {
+        explicitNearbyRequest: explicitNearbyTurn,
+      },
+    );
+    if (explicitNearbyKeywordForTurn) {
+      const canonicalKeyword = canonicalizeExplicitNearbyKeyword(explicitNearbyKeywordForTurn);
+      nextSession = {
+        ...nextSession,
+        explicitNearbyKeyword: explicitNearbyKeywordForTurn,
+        canonicalNearbyKeyword: canonicalKeyword,
+        nearbySemanticFamily: explicitNearbyAuthority?.semanticFamily,
+      };
+      logAiPipeline("[NEARBY_KEYWORD_AUTHORITY]", {
+        rawKeyword: explicitNearbyKeywordForTurn,
+        canonicalKeyword,
+      });
+      logAiPipeline("[NEARBY_LOCATION_AUTHORITY]", {
+        scope: nextSession.nearbyLocationAuthority?.displayLabel ?? "",
+        source:
+          nextSession.nearbyLocationAuthority?.source ??
+          (rtNearbyScope.deviceLocationAvailable ? "device" : "none"),
+        district: nextSession.nearbyLocationAuthority?.district ?? "",
+        hasCoordinates: rtNearbyScope.deviceLocationAvailable,
+      });
+      logAiPipeline("[NEARBY_LOCATION_REUSE]", {
+        reused: Boolean(nextSession.nearbyLocationAuthority),
+        reason: nextSession.nearbyLocationAuthority
+          ? "session_authoritative_scope"
+          : rtNearbyScope.deviceLocationAvailable
+            ? "device_location"
+            : "missing_scope",
+      });
+    }
     logShortcutRuntime("[RT_NEARBY_SCOPE]", {
       isNearbyIntent:
         rtStructuredNearby || isNearbyPlaceIntent(rtIntent) || Boolean(rtNearbyIntent),
@@ -7992,10 +8316,11 @@ function Chat() {
       routeMode: conversationMode ?? "",
     });
 
-    const destCandidate =
-      merged.context.destination?.trim() ||
-      nextSession.tripDestination?.displayLabel?.trim() ||
-      nextSession.tripDestination?.city?.trim();
+    const destCandidate = explicitNearbyTurn
+      ? undefined
+      : merged.context.destination?.trim() ||
+        nextSession.tripDestination?.displayLabel?.trim() ||
+        nextSession.tripDestination?.city?.trim();
     const isTripStyleSelection =
       nextSession.pendingQuestion?.type === "ask_trip_style" ||
       parseAskTripStyleSelection(trimmed) != null;
@@ -8007,11 +8332,11 @@ function Chat() {
       }
     }
 
-    if (!structuredHomeNearbyTurn) {
+    if (!structuredHomeNearbyTurn && !explicitNearbyTurn) {
       nextSession = extractPlanningHintsFromText(trimmed, nextSession);
     }
     nextSession = extractDiscoveryFromText(trimmed, nextSession);
-    if (!structuredHomeNearbyTurn) {
+    if (!structuredHomeNearbyTurn && !explicitNearbyTurn) {
       nextSession = extractChatPlanningContextFromText(trimmed, nextSession);
       let parseStage: PlanningParseStage = "prepare_context";
       try {
@@ -8380,18 +8705,12 @@ function Chat() {
           nextSession.tripDestination?.city?.trim(),
         );
         const isCurrentLocationShortcutSession =
-          nextSession.normalizedShortcutRequest?.structured === true &&
-          nextSession.normalizedShortcutRequest?.intent === "nearby_recommendation" &&
-          Boolean(
-            continuationScene ||
-            nextSession.activeRecommendationContext?.searchProfile ||
-            resolveHomeShortcutSearchProfile(nextSession),
-          ) &&
-          sessionHasLocation(nextSession);
+          hasNearbyContinuationAuthority(nextSession) &&
+          (sessionHasLocation(nextSession) || Boolean(nextSession.nearbyLocationAuthority));
         if (
           continueNearbyIntent &&
           (!hasDestinationSnapshot || isCurrentLocationShortcutSession) &&
-          sessionHasLocation(nextSession)
+          (sessionHasLocation(nextSession) || Boolean(nextSession.nearbyLocationAuthority))
         ) {
           const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
           setMsgs(next);
@@ -8831,6 +9150,7 @@ function Chat() {
             const nearbyScope = resolveNearbyRecommendationScope(
               nextSession,
               refreshedPlaceCtx.destination,
+              { explicitNearbyRequest: true },
             );
             const effective = getEffectiveLocationSnapshot();
             logShortcutRuntime("[RT_NEARBY_SCOPE]", {
@@ -9415,7 +9735,10 @@ function Chat() {
           intent !== "trip_planning") ||
         inferredNearbyIntent
       ) {
-        nextSession = await resolveChatLocation(nextSession);
+        nextSession = await resolveChatLocation(nextSession, {
+          requireNearbyAuthority:
+            selectedRouteAuthority === "nearby" && userExplicitlyWantsNearbyPlaces(trimmed),
+        });
       }
 
       if (inferredNearbyIntent && !nextSession.activeChatIntent) {

@@ -540,6 +540,17 @@ function MapView() {
   }, [searchSelectedCenter]);
 
   useEffect(() => {
+    console.info("[EXPLORE_CATEGORY_AUTHORITY]", {
+      uiLabel: cat.label,
+      selectedCategory: cat.id,
+      selectedPlaceType: selectedPlaceTypeLabel ?? "unknown",
+      mode: cityRecommendMode,
+      isAll: cat.id === "all",
+      hydrationEligible: cat.id === "all" && !query.trim(),
+    });
+  }, [cat.id, cat.label, cityRecommendMode, query, selectedPlaceTypeLabel]);
+
+  useEffect(() => {
     primaryPlaceRef.current = primaryPlace;
   }, [primaryPlace]);
 
@@ -707,12 +718,21 @@ function MapView() {
     prevQueryRef.current = query;
     prevCatIdRef.current = cat.id;
 
-    if (
-      lastMapSearchSessionRef.current === sessionKey &&
-      !queryDirty &&
-      !catDirty &&
-      !forceRefresh
-    ) {
+    const unchangedSession =
+      lastMapSearchSessionRef.current === sessionKey && !queryDirty && !catDirty && !forceRefresh;
+    if (cat.id === "all") {
+      const aggregateCacheHit = Boolean(readMapPlacesCache(cacheKey)?.places.length);
+      console.info("[EXPLORE_ALL_HYDRATION_ENTRY]", {
+        selectedCategory: cat.id,
+        scopeKey: locationKey,
+        cacheHit: aggregateCacheHit,
+        aggregateCacheHit,
+        willHydrate: !unchangedSession,
+        skipReason: unchangedSession ? "unchanged_session" : "none",
+      });
+    }
+
+    if (unchangedSession) {
       return;
     }
 
@@ -755,7 +775,7 @@ function MapView() {
       if (cachedHit?.places.length) {
         lastMapSearchSessionRef.current = sessionKey;
         applyCachedResults(cachedHit.places as MapPlaceCard[], cachedHit.error);
-        return;
+        if (cat.id !== "all") return;
       }
 
       if (cat.id !== "all") {
@@ -794,7 +814,12 @@ function MapView() {
             return;
           }
         }
-      } else if (!skipCacheForPrimarySearch && !forceRefresh && cityRecommendMode !== "city") {
+      } else if (
+        !cachedHit?.places.length &&
+        !skipCacheForPrimarySearch &&
+        !forceRefresh &&
+        cityRecommendMode !== "city"
+      ) {
         // 與首頁共用附近快取，避免同定位再刷一輪 Places
         const shared = readSharedNearbyPlaces({
           loadKey: homeNearbyLoadKey(center.lat, center.lng, homeNearbyLoadPeriodKey(), locale),
@@ -810,7 +835,6 @@ function MapView() {
             null,
           );
           console.info("[EXPLORE_SHARED_NEARBY_HIT]", { count: shared.length });
-          return;
         }
       }
     }
@@ -873,31 +897,33 @@ function MapView() {
             }
             const cachedBefore = readMapPlacesCache(cacheKey, { ignoreCache: forceRefresh });
             fromCache = cachedBefore !== null;
+            const runCategorySearch = async () => {
+              const cards = await searchExploreCategoryPlaces(cat, {
+                userLocation: center,
+                weather: weatherRef.current,
+                locale,
+                reasonProfile: reasonProfileRef.current,
+                saved: savedRef.current,
+                searchPlacesFn,
+                forHome: false,
+                recommendMode: cityRecommendMode,
+                cityLabel: inferExploreCityLabel(
+                  center.lat,
+                  center.lng,
+                  searchSelectedCenter?.label,
+                ),
+                cityPlaceId: searchSelectedCenter?.placeId,
+              });
+              const mapped = exploreCardsToMapCards(cards, cardOpts);
+              return { places: mapped, error: null };
+            };
             const entry = await withSearchTimeout(
-              getMapPlacesCachedOrRun(
-                cacheKey,
-                async () => {
-                  const cards = await searchExploreCategoryPlaces(cat, {
-                    userLocation: center,
-                    weather: weatherRef.current,
-                    locale,
-                    reasonProfile: reasonProfileRef.current,
-                    saved: savedRef.current,
-                    searchPlacesFn,
-                    forHome: false,
-                    recommendMode: cityRecommendMode,
-                    cityLabel: inferExploreCityLabel(
-                      center.lat,
-                      center.lng,
-                      searchSelectedCenter?.label,
-                    ),
-                    cityPlaceId: searchSelectedCenter?.placeId,
-                  });
-                  const mapped = exploreCardsToMapCards(cards, cardOpts);
-                  return { places: mapped, error: null };
-                },
-                { silent: true, forceRefresh },
-              ),
+              cat.id === "all"
+                ? runCategorySearch()
+                : getMapPlacesCachedOrRun(cacheKey, runCategorySearch, {
+                    silent: true,
+                    forceRefresh,
+                  }),
               cityRecommendMode === "city" ? 45_000 : 20_000,
             );
             enriched = exploreCardsToMapCards(entry.places as ExplorePlaceCard[], cardOpts);
@@ -2078,13 +2104,10 @@ function MapView() {
                   selectedPlace.lat != null &&
                   selectedPlace.lng != null
                     ? formatDistanceLabel(
-                        distanceMeters(
-                          reliableUserLocation!,
-                          {
-                            lat: selectedPlace.lat,
-                            lng: selectedPlace.lng,
-                          },
-                        ),
+                        distanceMeters(reliableUserLocation!, {
+                          lat: selectedPlace.lat,
+                          lng: selectedPlace.lng,
+                        }),
                       )
                     : null
                 }

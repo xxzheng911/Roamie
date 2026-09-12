@@ -4,8 +4,30 @@ import {
 } from "@/lib/home-nearby-eligibility";
 import type { HomeNearbyPick } from "@/lib/home-nearby-search";
 import { mergePlaceRuntimeCache } from "@/lib/place-runtime-cache";
+import { placeOpeningStatusLabel } from "@/lib/normalized-opening-status";
+import type { Locale } from "@/lib/i18n/types";
 
 export { isVerifiedGooglePlaceId } from "@/lib/home-nearby-eligibility";
+
+/** Home only shows an opening badge when current hours evidence is explicit. */
+export function homeNearbyOpeningBadgeLabel(
+  place: Pick<
+    HomeNearbyPick,
+    | "openNow"
+    | "normalizedOpeningStatus"
+    | "normalizedOpeningLabel"
+    | "openStatus"
+    | "openStatusLabel"
+  >,
+  locale: Locale,
+): string {
+  const reliable =
+    place.openNow === true ||
+    place.openNow === false ||
+    place.normalizedOpeningStatus === "open" ||
+    place.normalizedOpeningStatus === "closed";
+  return reliable ? placeOpeningStatusLabel(place, locale) : "";
+}
 
 /** 首頁顯示：永久排除（允許 unknown open / 無評分 / 無照片） */
 export function isHomeNearbyDisplayPlace(

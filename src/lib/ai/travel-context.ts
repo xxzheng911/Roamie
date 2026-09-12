@@ -3,7 +3,11 @@ import type { TripIntentMissingKey } from "@/lib/recommendation/trip-intent";
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
-import { isNearbyPlaceIntent, type ChatIntent } from "@/lib/ai/chat-intent";
+import {
+  isNearbyPlaceIntent,
+  userExplicitlyWantsNearbyPlaces,
+  type ChatIntent,
+} from "@/lib/ai/chat-intent";
 import {
   hasRemoteDestination,
   isCountryCityInquiryText,
@@ -395,10 +399,10 @@ function parseVibe(
   mood?: string,
   opts?: { skipFlexibleVibe?: boolean },
 ): string | undefined {
-  if (/^1[\.、)]?$/.test(text.trim()) || /(經典|地標)/.test(text)) return "經典景點";
-  if (/^2[\.、)]?$/.test(text.trim()) || /(美食|咖啡)/.test(text)) return "美食咖啡";
-  if (/^3[\.、)]?$/.test(text.trim()) || /(動漫|購物)/.test(text)) return "動漫購物";
-  if (/^4[\.、)]?$/.test(text.trim()) || /(慢步|散策)/.test(text)) return "慢步調散策";
+  if (/^1[.、)]?$/.test(text.trim()) || /(經典|地標)/.test(text)) return "經典景點";
+  if (/^2[.、)]?$/.test(text.trim()) || /(美食|咖啡)/.test(text)) return "美食咖啡";
+  if (/^3[.、)]?$/.test(text.trim()) || /(動漫|購物)/.test(text)) return "動漫購物";
+  if (/^4[.、)]?$/.test(text.trim()) || /(慢步|散策)/.test(text)) return "慢步調散策";
   if (/(經典|地標|必去景點)/.test(text)) return "經典景點";
   if (/(美食|咖啡|吃貨|小吃)/.test(text)) return "美食咖啡";
   if (/(動漫|購物|逛街|血拼)/.test(text)) return "動漫購物";
@@ -667,7 +671,12 @@ export function parseTravelContextFromText(
   }
   const moodHint = session.selectedMood ?? session.mood;
   const preset = moodHint ? MOOD_PRESETS[moodHint] : undefined;
-  const skipDestParse = isMoodRecommendationSession(session) && !hasCategoryPlaceQuery(t);
+  // A current-location category request owns a keyword, not a trip destination.
+  // In particular, nouns such as 餐酒館 / 居酒屋 / 咖啡廳 must never be
+  // promoted into destination authority before Nearby routing runs.
+  const skipDestParse =
+    (isMoodRecommendationSession(session) && !hasCategoryPlaceQuery(t)) ||
+    userExplicitlyWantsNearbyPlaces(t);
   const adviceActive = isDestinationAdviceActive(session);
   const skipFlexibleVibe =
     adviceActive ||
@@ -853,7 +862,7 @@ export function mergeTravelContext(
         /要去|想去|旅行|旅遊|旅游|[\u4e00-\u9fff]{2,8}/.test(userText)) &&
       (Boolean(prev.days) ||
         Boolean(prev.startDate) ||
-        /\d{1,2}\s*[\/\-月]\s*\d{1,2}/.test(userText) ||
+        /\d{1,2}\s*[/\-月]\s*\d{1,2}/.test(userText) ||
         /(?:\d+|[一二三四五六七八九十兩两]+)\s*天/.test(userText))
         ? "trip_planning"
         : currentIntentRaw;
@@ -879,7 +888,7 @@ export function mergeTravelContext(
     const prevDest = isValidContextValue(prev.destination) ? prev.destination : undefined;
     const sessionDest = resolveSessionDestination(workingSession);
 
-    let itineraryExtracted =
+    const itineraryExtracted =
       currentIntent === "create_itinerary" && (!hasPendingState || explicitPendingTransition)
         ? extractItineraryEntitiesFromText(userText)
         : undefined;

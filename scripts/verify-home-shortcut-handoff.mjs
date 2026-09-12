@@ -4,6 +4,7 @@ import { createEmptySession } from "../src/lib/chat-session.ts";
 import { beginHomeMoodShortcutSession } from "../src/lib/home-mood-shortcut-session.ts";
 import { shouldFetchDestinationCategoryPlaces } from "../src/lib/ai/chat-place-intent.ts";
 import {
+  hasNearbyContinuationAuthority,
   isolateHomeShortcutFromPlanning,
   isStructuredHomeNearbyShortcut,
   resolveHomeShortcutSearchProfile,
@@ -27,9 +28,7 @@ import {
   rankHomeSeaCandidates,
 } from "../src/lib/home-sea-ranking.ts";
 import { homeLateNightSearchAttempts } from "../src/lib/home-nearby-search.ts";
-import {
-  selectHomeNearbyPicks,
-} from "../src/lib/home-nearby-places-filter.ts";
+import { selectHomeNearbyPicks } from "../src/lib/home-nearby-places-filter.ts";
 import {
   homeLateNightRecommendationTier,
   sortHomeNearbyPlacesWithContext,
@@ -49,6 +48,36 @@ assert.equal(
   false,
   "Home Coffee must bypass pending destination/category interception",
 );
+
+const retainedLateNight = {
+  ...createEmptySession(),
+  normalizedShortcutRequest: undefined,
+  nearbyContinuationSnapshot: {
+    originType: "home_mood",
+    mode: "late_night",
+    searchProfile: "home_late_night",
+    lat: 22.63,
+    lng: 120.3,
+    exposureIds: ["shown-1"],
+    shownPlaceIds: ["shown-1"],
+    continuationRound: 1,
+    stage: 2,
+  },
+};
+assert.equal(hasNearbyContinuationAuthority(retainedLateNight), true);
+assert.equal(resolveHomeShortcutSearchProfile(retainedLateNight), "home_late_night");
+
+const retainedClarifiedNearby = {
+  ...createEmptySession(),
+  nearbyLocationAuthority: {
+    displayLabel: "高雄左營",
+    district: "左營區",
+    lat: 22.6877,
+    lng: 120.2917,
+    source: "clarification",
+  },
+};
+assert.equal(hasNearbyContinuationAuthority(retainedClarifiedNearby), true);
 
 const lateNightRankFixtures = [
   ["餐酒館 A", "restaurant", ["restaurant"]],
@@ -476,6 +505,8 @@ assert.deepEqual(lateNightWaveCalls, [
   "居酒屋 酒吧 宵夜 餐酒",
   "宵夜 拉麵 燒肉 火鍋 串燒",
   "深夜咖啡 甜點",
+  "居酒屋 酒吧 餐酒館 深夜營業",
+  "宵夜 深夜食堂 拉麵 燒肉 火鍋 串燒",
 ]);
 assert.deepEqual(
   secondNightResults.map((place) => place.id),
@@ -565,15 +596,11 @@ assert.deepEqual(
 assert.deepEqual([...new Set(expansionRadii)], [2_500, 5_000]);
 assert.deepEqual(
   expansionRequests.filter((request) => request.radius === 5_000).map((request) => request.mode),
-  ["text", "text", "text"],
+  ["text", "text"],
 );
 assert.deepEqual(
   expansionRequests.filter((request) => request.radius === 5_000).map((request) => request.query),
-  [
-    "居酒屋 酒吧 餐酒館 深夜營業",
-    "宵夜 深夜食堂 拉麵 燒肉 火鍋 串燒",
-    "深夜咖啡 24小時咖啡 夜間甜點",
-  ],
+  ["居酒屋 酒吧 餐酒館 深夜營業", "宵夜 深夜食堂 拉麵 燒肉 火鍋 串燒"],
 );
 const exhaustedRadii = [];
 const exhaustedLateNightResults = await fetchNearbyPlacesForIntent(
@@ -607,10 +634,7 @@ const newClosedResults = await fetchNearbyPlacesForIntent(
   120.3,
   "zh-TW",
   async ({ data }) => ({
-    places:
-      data.radius > 2_500
-        ? newClosedCandidates
-        : closedNightCandidates,
+    places: data.radius > 2_500 ? newClosedCandidates : closedNightCandidates,
     error: null,
   }),
   undefined,
@@ -634,9 +658,7 @@ const previousOpenResults = await fetchNearbyPlacesForIntent(
   "zh-TW",
   async ({ data }) => ({
     places:
-      data.radius > 2_500
-        ? [...closedNightCandidates, previousOnlyOpen]
-        : closedNightCandidates,
+      data.radius > 2_500 ? [...closedNightCandidates, previousOnlyOpen] : closedNightCandidates,
     error: null,
   }),
   undefined,
@@ -675,7 +697,7 @@ const nonClosedResults = await fetchNearbyPlacesForIntent(
   },
 );
 assert.equal(nonClosedResults.length, 0);
-assert.deepEqual([...new Set(nonClosedRadii)], [2_500]);
+assert.deepEqual([...new Set(nonClosedRadii)], [2_500, 5_000]);
 
 const chatRelax = resolveNormalizedShortcutRequestFromText("今天想放鬆走走", "chat_shortcut");
 const chatRainy = resolveNormalizedShortcutRequestFromText("下雨天去哪裡", "chat_shortcut");
@@ -700,10 +722,13 @@ assert.match(
   /if \(!structuredHomeNearbyTurn\) \{\s*nextSession = prepareSessionForUserTurn/,
   "Home structured turns must not recover Planner pending state from assistant copy",
 );
-assert.match(chatRouteSource, /const merged = structuredHomeNearbyTurn\s*\?/);
 assert.match(
   chatRouteSource,
-  /if \(!structuredHomeNearbyTurn\) \{\s*nextSession = extractPlanningHintsFromText/,
+  /const merged =\s*structuredHomeNearbyTurn \|\| explicitNearbyTurn\s*\?/,
+);
+assert.match(
+  chatRouteSource,
+  /if \(!structuredHomeNearbyTurn && !explicitNearbyTurn\) \{\s*nextSession = extractPlanningHintsFromText/,
 );
 assert.match(chatRouteSource, /searchProfile: resolveHomeShortcutSearchProfile\(sessionForSave\)/);
 assert.match(chatRouteSource, /searchProfile: resolveHomeShortcutSearchProfile\(sessionForSave\)/);

@@ -26,6 +26,12 @@ import {
 } from "@/lib/ai/nearby-shortcut-ranking";
 import { logShortcutRuntime } from "@/lib/ai/shortcut-runtime-diag";
 import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
+import {
+  canonicalizeExplicitNearbyKeyword,
+  extractExplicitNearbyKeyword,
+  nearbySemanticFamilyForKeyword,
+  type NearbySemanticFamily,
+} from "@/lib/ai/nearby-location-clarification";
 import { buildPlacesSearchKey, readPlacesSearchCacheStatus } from "@/lib/places-search-dedupe";
 import { resolveCanonicalPlaceIdentity } from "@/lib/place-canonical-identity";
 import {
@@ -42,7 +48,11 @@ import { mapPlaceResultsToChatItems } from "@/lib/chat-session";
 import type { Locale } from "@/lib/i18n/types";
 import { isPlaceOperationalForRecommendation } from "@/lib/place-operational-eligibility";
 import type { PlaceResult } from "@/lib/place-result";
-import { filterPlacesByNearbyGeographicScope } from "@/lib/ai/nearby-geographic-scope";
+import {
+  enrichNearbyDistrictCandidates,
+  filterPlacesByNearbyGeographicScope,
+  placeDistrict,
+} from "@/lib/ai/nearby-geographic-scope";
 import { distanceMeters } from "@/lib/map-explore";
 import {
   budgetPenaltyForPlace,
@@ -110,7 +120,6 @@ import {
 import {
   buildMealRecommendationDescription,
   preserveMealRecommendationReason,
-  filterPlacesForMealIntent,
   resolveExplicitMealIntent,
   sanitizeMealSummaryText,
 } from "@/lib/ai/meal-intent-parser";
@@ -139,7 +148,19 @@ import {
   homeLateNightSearchAttempts,
 } from "@/lib/home-nearby-search";
 import { HOME_NEARBY_MIN_DISPLAY, selectHomeNearbyPicks } from "@/lib/home-nearby-places-filter";
-import { homeNearbySearchRadiusMeters, searchRadiusMeters } from "@/lib/search-radius";
+import {
+  matchesStageTwoLateNightPlace,
+  matchesStrongLateNightPlace,
+} from "@/lib/home-nearby-eligibility";
+import {
+  isRecommendablePlace,
+  placeResultToRecommendableInput,
+} from "@/lib/is-recommendable-place";
+import {
+  HOME_NEARBY_MAX_DISTANCE_M,
+  homeNearbySearchRadiusMeters,
+  searchRadiusMeters,
+} from "@/lib/search-radius";
 import type { HomeShortcutSearchProfile } from "@/lib/ai/home-shortcut-handoff";
 import {
   filterHomeSeaCandidates,
@@ -147,6 +168,7 @@ import {
   HOME_SEA_SEARCH_ATTEMPTS,
   rankHomeSeaCandidates,
 } from "@/lib/home-sea-ranking";
+import { CHAT_PLACES_SEARCH_TIMEOUT_MS, withSearchTimeout } from "@/lib/search-timeout";
 
 export type PlaceSearchData = {
   query: string;
@@ -173,6 +195,10 @@ export type PlaceSearchData = {
   cacheDestination?: string;
   cacheCity?: string;
   cacheCountry?: string;
+  placesLane?: string;
+  placesRound?: number;
+  placesScopeSource?: "clarified_location" | "current_device_location" | "explicit_location";
+  placesRecommendationRequestId?: string;
 };
 
 export type PlaceSearchFn = (args: {
@@ -188,11 +214,178 @@ export type PlaceSearchExtras = {
    * day-plan scenic slots, not Shopping Intent discovery.
    */
   skipExcludedRetailFilter?: boolean;
+  placesLane?: string;
+  placesRound?: number;
+  placesScopeSource?: "clarified_location" | "current_device_location" | "explicit_location";
+  placesRecommendationRequestId?: string;
 };
 
 const RECOMMENDATION_COUNT = 5;
 
+/** Budgeted in actual Google calls: the Stage 1 multi lane costs two calls. */
+export const LATE_NIGHT_STAGE_ONE_PROVIDER_BUDGET = 4;
+export const LATE_NIGHT_STAGE_TWO_PROVIDER_BUDGET = 2;
+export const LATE_NIGHT_TOTAL_PROVIDER_BUDGET = 6;
+export const LATE_NIGHT_ORCHESTRATION_TIMEOUT_MS = 20_000;
+
+export function estimatedPlacesProviderCalls(attempt: SearchAttempt): number {
+  return attempt.mode === "multi" ? Math.max(1, attempt.nearbyGroups?.length ?? 0) : 1;
+}
+
+export function boundedLateNightStageTwoAttempts(
+  deficit: number,
+): ReturnType<typeof homeLateNightOpenExpansionAttempts> {
+  if (deficit <= 0) return [];
+  return homeLateNightOpenExpansionAttempts().slice(
+    0,
+    Math.min(LATE_NIGHT_STAGE_TWO_PROVIDER_BUDGET, deficit),
+  );
+}
+
 type NearbyRejectAudit = Record<string, number>;
+
+export function buildLateNightCandidateFunnel(
+  places: PlaceResult[],
+  options?: { origin?: { lat: number; lng: number }; maxDistanceM?: number },
+) {
+  const validIdentity = places.filter(
+    (place) =>
+      Boolean(place.id?.trim()) && Number.isFinite(place.lat) && Number.isFinite(place.lng),
+  );
+  const operational = validIdentity.filter(isPlaceOperationalForRecommendation);
+  const strongSemantic = operational.filter(matchesStrongLateNightPlace);
+  const unknownHours = operational.filter(
+    (place) => place.openNow == null && place.openStatus === "unknown",
+  );
+  const open = operational.filter(
+    (place) =>
+      place.openNow === true || place.openStatus === "open" || place.openStatus === "closing_soon",
+  );
+  const semanticEligible = operational.filter(
+    (place) => matchesStrongLateNightPlace(place) || matchesStageTwoLateNightPlace(place),
+  );
+  const qualityRejected = semanticEligible.filter(
+    (place) =>
+      !isRecommendablePlace(placeResultToRecommendableInput(place), "chat_nearby", {
+        logDrop: false,
+      }).ok,
+  );
+  const distanceRejected = semanticEligible.filter((place) => {
+    if (!options?.origin || place.lat == null || place.lng == null) return false;
+    return (
+      distanceMeters(options.origin, { lat: place.lat, lng: place.lng }) >
+      (options.maxDistanceM ?? HOME_NEARBY_MAX_DISTANCE_M)
+    );
+  });
+  const identityKeys = new Set<string>();
+  let duplicate = 0;
+  for (const place of operational) {
+    const key = resolveCanonicalPlaceIdentity(place).identityKey;
+    if (identityKeys.has(key)) duplicate += 1;
+    else identityKeys.add(key);
+  }
+  return {
+    rawCount: places.length,
+    validIdentityCount: validIdentity.length,
+    operationalCount: operational.length,
+    strongSemanticCount: strongSemantic.length,
+    unknownHoursCount: unknownHours.length,
+    openCount: open.length,
+    qualityRejectedCount: qualityRejected.length,
+    eligibleCount: semanticEligible.length - qualityRejected.length - distanceRejected.length,
+    distanceRejectedCount: distanceRejected.length,
+    dropReasons: {
+      closed: validIdentity.length - operational.length,
+      address_like_marker: qualityRejected.filter(
+        (place) =>
+          isRecommendablePlace(placeResultToRecommendableInput(place), "chat_nearby", {
+            logDrop: false,
+          }).reason === "address_like_marker",
+      ).length,
+      excluded_category: 0,
+      weak_night_semantics: operational.length - semanticEligible.length,
+      duplicate,
+      invalid_identity: places.length - validIdentity.length,
+    },
+  };
+}
+
+export { canonicalizeExplicitNearbyKeyword, extractExplicitNearbyKeyword };
+
+export function matchesExplicitNearbyKeyword(place: PlaceResult, keyword: string): boolean {
+  const needle = keyword.trim().toLowerCase();
+  if (!needle) return true;
+  const haystack =
+    `${place.name ?? ""} ${place.primaryType ?? ""} ${(place.types ?? []).join(" ")}`.toLowerCase();
+  const semanticTypes: Array<[RegExp, RegExp]> = [
+    [/早午餐|brunch/i, /早午餐|brunch|breakfast_and_brunch/],
+    [/素食|蔬食|純素|纯素|vegan|vegetarian/i, /素食|蔬食|純素|纯素|vegan|vegetarian/],
+    [/咖啡|coffee|cafe/i, /咖啡|coffee|cafe/],
+    [/夜市|小吃|攤販|street food/i, /夜市|小吃|攤|market|food_stall|street_food|snack/],
+    [
+      /酒吧|居酒屋|餐酒館|pub|bar|gastropub/i,
+      /酒吧|居酒|餐酒|pub|bar|izakaya|gastropub|night_club|cocktail|wine_bar/,
+    ],
+    [/甜點|蛋糕|烘焙|dessert|bakery/i, /甜點|蛋糕|烘焙|dessert|bakery/],
+  ];
+  const authority = semanticTypes.find(([pattern]) => pattern.test(needle));
+  if (authority && authority[1].test(haystack)) return true;
+  const tokens = needle.split(/[\s、，,／/]+/).filter((token) => token.length >= 2);
+  return tokens.length > 0 && tokens.some((token) => haystack.includes(token));
+}
+
+export function matchesExplicitNearbyKeywordWithProviderEvidence(
+  place: PlaceResult,
+  keyword: string,
+  providerLanes: ReadonlySet<string> | undefined,
+): boolean {
+  if (matchesExplicitNearbyKeyword(place, keyword)) return true;
+  if (!/早午餐|brunch/i.test(keyword)) return false;
+  const hasStrongBrunchQueryEvidence =
+    providerLanes?.has("brunch_primary") || providerLanes?.has("brunch_bilingual");
+  return hasStrongBrunchQueryEvidence && matchesNearbySemanticFamily(place, "food");
+}
+
+function explicitNearbyKeywordForDiagnostics(userText: string, places: PlaceResult[]): number {
+  const keyword = extractExplicitNearbyKeyword(userText);
+  if (!keyword) return places.length;
+  const family = nearbySemanticFamilyForKeyword(keyword);
+  return places.filter(
+    (place) =>
+      matchesExplicitNearbyKeyword(place, keyword) && matchesNearbySemanticFamily(place, family),
+  ).length;
+}
+
+export function matchesNearbySemanticFamily(
+  place: PlaceResult,
+  family: NearbySemanticFamily,
+): boolean {
+  const evidence = `${place.name ?? ""} ${place.primaryType ?? ""} ${(place.types ?? []).join(" ")}`;
+  if (family === "nightlife") {
+    return /酒吧|居酒|餐酒|pub|\bbar\b|cocktail|wine_bar|night_club|izakaya|gastropub/i.test(
+      evidence,
+    );
+  }
+  if (family === "cafe") return /咖啡|coffee|cafe/i.test(evidence);
+  if (family === "food")
+    return /餐|食|restaurant|food|meal|breakfast|vegan|vegetarian/i.test(evidence);
+  return true;
+}
+
+export function resolveExplicitNearbyKeywordForTurn(
+  text: string,
+  previousKeyword?: string,
+): string | null {
+  return (
+    extractExplicitNearbyKeyword(text) ??
+    (matchesContinueRecommendationGrammar(text) ? previousKeyword?.trim() || null : null)
+  );
+}
+
+export function buildExplicitNearbySearchAttempt(text: string): SearchAttempt | null {
+  const keyword = extractExplicitNearbyKeyword(text);
+  return keyword ? { query: keyword, mode: "text" } : null;
+}
 
 export type PlaceFocusNearbyDiagnostics = {
   rawCount: number;
@@ -220,6 +413,8 @@ function nearbySearchAttemptForIntent(
   userText?: string,
   opts?: { placeDetailNearby?: boolean; shortcutScene?: ChatShortcutScene | null },
 ): SearchAttempt {
+  const explicitAttempt = buildExplicitNearbySearchAttempt(userText ?? "");
+  if (explicitAttempt) return explicitAttempt;
   if (opts?.placeDetailNearby) {
     return placeDetailNearbySearchAttempts(intent)[0]!;
   }
@@ -570,13 +765,7 @@ function buildSummary(
       return `附近有 ${picks.length} 間我覺得不錯的選擇：`;
     }
     const lead = exclusionAck ?? "看起來你想找個地方放鬆一下 ☕";
-    return [
-      lead,
-      "",
-      "附近有幾間我覺得不錯的選擇：",
-      "",
-      list,
-    ].join("\n");
+    return [lead, "", "附近有幾間我覺得不錯的選擇：", "", list].join("\n");
   }
 
   if (intent === "restaurant") {
@@ -593,41 +782,21 @@ function buildSummary(
 
   const mood = shouldDisplayMoodPresentation(undefined, ctx) ? ctx.mood : undefined;
   if (!mood) {
-    return [
-      "附近這幾個地方可以先看看：",
-      "",
-      list,
-    ].join("\n");
+    return ["附近這幾個地方可以先看看：", "", list].join("\n");
   }
   if (/(下雨|雨天)/.test(mood) || ctx.setting === "室內") {
-    return [
-      "下雨天也想出門走走對吧？",
-      "",
-      `${weather}附近這幾個地方比較適合待在室內：`,
-      "",
-      list,
-    ]
+    return ["下雨天也想出門走走對吧？", "", `${weather}附近這幾個地方比較適合待在室內：`, "", list]
       .filter(Boolean)
       .join("\n");
   }
 
   if (/(累|疲|放鬆|放空)/.test(mood)) {
-    return [
-      "今天想放空一下對吧？",
-      "",
-      `${weather}附近有幾個適合慢慢走的地方：`,
-      "",
-      list,
-    ]
+    return ["今天想放空一下對吧？", "", `${weather}附近有幾個適合慢慢走的地方：`, "", list]
       .filter(Boolean)
       .join("\n");
   }
 
-  return [
-    `依「${mood}」的心情，附近這幾個地方可以先看看：`,
-    "",
-    list,
-  ].join("\n");
+  return [`依「${mood}」的心情，附近這幾個地方可以先看看：`, "", list].join("\n");
 }
 
 export function buildHomeSeaRecommendationDescription(place: PlaceResult): string {
@@ -648,6 +817,55 @@ export type SearchAttempt = {
   includedTypes?: string[];
   nearbyGroups?: string[][];
 };
+
+export type NearbySearchExecution = {
+  lane: string;
+  query: string;
+  radius: number;
+};
+
+export function explicitNearbyCapacitySearchAttempts(
+  keyword: string,
+  continuationRound = 0,
+): SearchAttempt[] | null {
+  if (!/早午餐|brunch/i.test(keyword)) return null;
+  const initial: SearchAttempt[] = [
+    { id: "brunch_primary", query: keyword, mode: "text", includedTypes: ["restaurant", "cafe"] },
+    {
+      id: "brunch_bilingual",
+      query: "brunch",
+      mode: "text",
+      includedTypes: ["restaurant", "cafe"],
+    },
+    {
+      id: "brunch_breakfast",
+      query: "早餐 早午餐",
+      mode: "text",
+      includedTypes: ["restaurant", "cafe", "bakery"],
+    },
+  ];
+  const continuation: SearchAttempt[] = [
+    {
+      id: "brunch_cafe",
+      query: "cafe brunch",
+      mode: "text",
+      includedTypes: ["cafe", "restaurant"],
+    },
+    {
+      id: "brunch_weekend",
+      query: "週末早午餐",
+      mode: "text",
+      includedTypes: ["restaurant", "cafe"],
+    },
+    {
+      id: "brunch_breakfast_cafe",
+      query: "早餐 咖啡 早午餐",
+      mode: "text",
+      includedTypes: ["cafe", "bakery", "restaurant"],
+    },
+  ];
+  return continuationRound > 0 ? continuation : initial;
+}
 
 function placeDetailNearbySearchAttempts(intent: NearbyPlaceIntent): SearchAttempt[] {
   if (intent === "cafe") {
@@ -691,7 +909,7 @@ async function runPlaceSearch(
   locale: Locale,
   attempt: SearchAttempt,
   caller = "chat.runPlaceSearch",
-  extras?: PlaceSearchExtras & { radius?: number },
+  extras?: PlaceSearchExtras & { radius?: number; timeoutMs?: number },
 ): Promise<{ places: PlaceResult[]; error: string | null; rawCount: number; cacheStatus: string }> {
   const ctxPayload = extras?.searchContext
     ? placesSearchContextPayload(extras.searchContext, extras.intentCategory)
@@ -721,9 +939,17 @@ async function runPlaceSearch(
     ...ctxPayload,
     intentCategory: extras?.intentCategory ?? ctxPayload.intentCategory,
     searchMode: ctxPayload.searchMode ?? "nearby",
+    placesLane: extras?.placesLane ?? attempt.id ?? `${attempt.mode}_search`,
+    placesRound: extras?.placesRound ?? 0,
+    placesScopeSource: extras?.placesScopeSource,
+    placesRecommendationRequestId: extras?.placesRecommendationRequestId,
   };
   const cacheKey = buildPlacesSearchKey(requestData);
-  const result = await searchPlaces({ data: requestData });
+  const searchPromise = searchPlaces({ data: requestData });
+  const result =
+    extras?.timeoutMs == null
+      ? await searchPromise
+      : await withSearchTimeout(searchPromise, extras.timeoutMs, "places_search_attempt_timeout");
   const cacheStatus = readPlacesSearchCacheStatus(cacheKey);
   const skipRetail =
     extras?.skipExcludedRetailFilter === true || extras?.intentCategory === "shopping";
@@ -1062,6 +1288,10 @@ export async function fetchNearbyPlacesForIntent(
     };
     geographicScope?: import("@/lib/ai/nearby-geographic-scope").NearbyGeographicScopeAuthority;
     placeFocusDiagnostics?: PlaceFocusNearbyDiagnostics;
+    fetchPlaceDetails?: (placeId: string) => Promise<PlaceResult | null>;
+    continuationRound?: number;
+    onSearchExecution?: (execution: NearbySearchExecution) => void;
+    diagnosticRequestId?: string;
   },
 ): Promise<PlaceResult[]> {
   const run = async (): Promise<PlaceResult[]> =>
@@ -1121,6 +1351,7 @@ async function fetchNearbyPlacesForIntentInner(
     };
     geographicScope?: import("@/lib/ai/nearby-geographic-scope").NearbyGeographicScopeAuthority;
     placeFocusDiagnostics?: PlaceFocusNearbyDiagnostics;
+    diagnosticRequestId?: string;
   },
 ): Promise<PlaceResult[]> {
   const excluded = context?.excludedCategories ?? [];
@@ -1147,14 +1378,18 @@ async function fetchNearbyPlacesForIntentInner(
   const shortcutScene = opts?.placeDetailNearby
     ? null
     : homeSpecialProfile
-    ? null
-    : (opts?.shortcutScene ?? resolveChatShortcutContext(opts?.userText ?? "")?.scene ?? null);
+      ? null
+      : (opts?.shortcutScene ?? resolveChatShortcutContext(opts?.userText ?? "")?.scene ?? null);
   const poolTarget = homeSpecialProfile
     ? Math.max(HOME_NEARBY_MIN_DISPLAY, targetCount)
     : shortcutScene
       ? SHORTCUT_CANDIDATE_POOL_TARGET
       : targetCount;
 
+  const explicitCapacityAttempts = explicitNearbyCapacitySearchAttempts(
+    extractExplicitNearbyKeyword(opts?.userText ?? "") ?? "",
+    opts?.continuationRound ?? 0,
+  );
   const searchAttempts: SearchAttempt[] = homeSeaProfile
     ? HOME_SEA_SEARCH_ATTEMPTS
     : homeLateNightProfile
@@ -1163,26 +1398,35 @@ async function fetchNearbyPlacesForIntentInner(
         ? placeDetailNearbySearchAttempts(intent)
         : isTripAddPlace && opts?.nearbyGroups?.length
           ? [{ query: "", mode: "multi", nearbyGroups: opts.nearbyGroups }]
-          : intent === "restaurant"
-            ? restaurantSearchFallbackQueries(foodPreference, opts?.userText ?? "", opts?.cityLabel)
-            : intent === "camping"
-              ? campingSearchAttempts()
-              : shortcutScene
-                ? nearbySearchAttemptsForShortcutScene(shortcutScene)
-                : isRefresh
-                  ? buildAttractionRefreshSearchAttempts(opts?.cityLabel, destinationProfile)
-                  : nearbySearchAttemptsForIntent(intent, foodPreference, context, opts?.userText, {
-                      placeDetailNearby: opts?.placeDetailNearby,
-                      shortcutScene,
-                    });
+          : explicitCapacityAttempts
+            ? explicitCapacityAttempts
+            : intent === "restaurant"
+              ? restaurantSearchFallbackQueries(
+                  foodPreference,
+                  opts?.userText ?? "",
+                  opts?.cityLabel,
+                )
+              : intent === "camping"
+                ? campingSearchAttempts()
+                : shortcutScene
+                  ? nearbySearchAttemptsForShortcutScene(shortcutScene)
+                  : isRefresh
+                    ? buildAttractionRefreshSearchAttempts(opts?.cityLabel, destinationProfile)
+                    : nearbySearchAttemptsForIntent(
+                        intent,
+                        foodPreference,
+                        context,
+                        opts?.userText,
+                        {
+                          placeDetailNearby: opts?.placeDetailNearby,
+                          shortcutScene,
+                        },
+                      );
 
-  const homeLateNightContinuationText =
-    matchesContinueRecommendationGrammar(opts?.userText ?? "") ||
-    opts?.userText?.trim() === "不喜歡" ||
-    opts?.userText?.trim() === "不喜欢";
-  const homeLateNightContinuationRadiusSteps = homeLateNightContinuationText
-    ? [homeNearbySearchRadiusMeters(), searchRadiusMeters("default")]
-    : [homeNearbySearchRadiusMeters()];
+  const homeLateNightContinuationRadiusSteps = [
+    homeNearbySearchRadiusMeters(),
+    searchRadiusMeters("default"),
+  ];
   const radiusSteps =
     opts?.radiusSteps ??
     (homeSpecialProfile
@@ -1205,10 +1449,7 @@ async function fetchNearbyPlacesForIntentInner(
       pendingResume: true,
       originalQuery: expected.originalQuery,
     });
-    if (
-      Math.abs(lat - expected.lat) > 0.000001 ||
-      Math.abs(lng - expected.lng) > 0.000001
-    ) {
+    if (Math.abs(lat - expected.lat) > 0.000001 || Math.abs(lng - expected.lng) > 0.000001) {
       logAiPipeline("[NEARBY_SEARCH_CENTER_MISMATCH]", {
         expectedLat: expected.lat,
         expectedLng: expected.lng,
@@ -1262,25 +1503,108 @@ async function fetchNearbyPlacesForIntentInner(
   let continuationMapped = 0;
   const continuationUniqueBefore = new Set<string>();
   const continuationUniqueAfterExclusion = new Set<string>();
+  const providerLanesByIdentity = new Map<string, Set<string>>();
   let shouldExpandHomeLateNight = false;
+  const accumulatedLateNightCandidates: PlaceResult[] = [];
+  const accumulatedLateNightIds = new Set<string>();
   const nearbyRejectAudit: NearbyRejectAudit = {};
+  const lateNightStartedAt = Date.now();
+  let lateNightEstimatedProviderCalls = 0;
+  const attemptedSearchKeys = new Set<string>();
+  let lateNightFinalizeReason = "search_exhausted";
 
   for (let stepIndex = 0; stepIndex < radiusSteps.length; stepIndex++) {
     const radius = radiusSteps[stepIndex]!;
     const attemptsForStep =
-      homeLateNightProfile && isShortcutContinuation && stepIndex > 0
-        ? homeLateNightOpenExpansionAttempts()
+      homeLateNightProfile && stepIndex > 0
+        ? boundedLateNightStageTwoAttempts(Math.max(0, poolTarget - best.length))
         : searchAttempts;
+    const stageProviderBudget =
+      stepIndex === 0 ? LATE_NIGHT_STAGE_ONE_PROVIDER_BUDGET : LATE_NIGHT_STAGE_TWO_PROVIDER_BUDGET;
+    let stageEstimatedProviderCalls = 0;
+    let stageProviderRawCount = 0;
+    let stageMappedCount = 0;
+    if (homeLateNightProfile) {
+      logAiPipeline("[LATE_NIGHT_SEARCH_BUDGET]", {
+        stage: stepIndex === 0 ? 1 : 2,
+        laneCount: attemptsForStep.length,
+        stageProviderBudget,
+        totalProviderBudget: LATE_NIGHT_TOTAL_PROVIDER_BUDGET,
+        providerCallsUsed: lateNightEstimatedProviderCalls,
+        candidateDeficit: Math.max(0, poolTarget - best.length),
+      });
+    }
     logChatNearbyRequest({ center: { lat, lng }, radius, category: intent });
     const maxDistanceKm = opts?.maxDistanceKm ?? maxDistanceKmForIntent(intent, stepIndex);
     const strictCafeGuard = stepIndex === 0 && !opts?.placeDetailNearby;
 
     const seen = new Set<string>();
-    const places: PlaceResult[] = [];
+    let places: PlaceResult[] = [];
     for (let attemptIndex = 0; attemptIndex < attemptsForStep.length; attemptIndex++) {
       const attempt = attemptsForStep[attemptIndex]!;
+      const searchKey = JSON.stringify({
+        query: attempt.query,
+        mode: attempt.mode,
+        includedTypes: attempt.includedTypes ?? [],
+        nearbyGroups: attempt.nearbyGroups ?? [],
+        radius,
+      });
+      if (attemptedSearchKeys.has(searchKey)) continue;
+      attemptedSearchKeys.add(searchKey);
+      const estimatedProviderCalls = estimatedPlacesProviderCalls(attempt);
+      if (
+        homeLateNightProfile &&
+        (stageEstimatedProviderCalls + estimatedProviderCalls > stageProviderBudget ||
+          lateNightEstimatedProviderCalls + estimatedProviderCalls >
+            LATE_NIGHT_TOTAL_PROVIDER_BUDGET)
+      ) {
+        lateNightFinalizeReason = "provider_budget_exhausted";
+        continue;
+      }
+      const remainingMs = LATE_NIGHT_ORCHESTRATION_TIMEOUT_MS - (Date.now() - lateNightStartedAt);
+      if (homeLateNightProfile && remainingMs <= 0) {
+        lateNightFinalizeReason = "orchestration_timeout";
+        break;
+      }
+      if (homeLateNightProfile) {
+        stageEstimatedProviderCalls += estimatedProviderCalls;
+        lateNightEstimatedProviderCalls += estimatedProviderCalls;
+      }
       continuationAttemptCount += 1;
       try {
+        const effectiveAttempt =
+          opts?.geographicScope?.entityType === "district" &&
+          attempt.mode === "text" &&
+          attempt.query.trim()
+            ? {
+                ...attempt,
+                query: `${opts.geographicScope.displayLabel} ${attempt.query}`.trim(),
+              }
+            : attempt;
+        const scopeSource = opts?.searchCenterAuthority
+          ? opts.searchCenterAuthority.source === "clarification_geocode"
+            ? "clarified_location"
+            : opts.searchCenterAuthority.source
+          : opts?.searchContext?.searchMode === "destination"
+            ? "explicit"
+            : "device";
+        logAiPipeline("[PLACES_SEARCH_AUTHORITY]", {
+          rawKeyword: extractExplicitNearbyKeyword(opts?.userText ?? "") ?? attempt.query,
+          canonicalKeyword: canonicalizeExplicitNearbyKeyword(
+            extractExplicitNearbyKeyword(opts?.userText ?? "") ?? attempt.query,
+          ),
+          scopeSource,
+          centerLat: lat,
+          centerLng: lng,
+          district:
+            opts?.geographicScope?.entityType === "district"
+              ? opts.geographicScope.displayLabel
+              : "",
+          radius,
+          requestType: attempt.mode,
+          query: effectiveAttempt.query || "(nearby)",
+          stage: homeLateNightProfile ? (stepIndex === 0 ? 1 : 2) : 0,
+        });
         const {
           places: batch,
           error,
@@ -1291,24 +1615,68 @@ async function fetchNearbyPlacesForIntentInner(
           lat,
           lng,
           locale,
-          attempt,
+          effectiveAttempt,
           isTripAddPlace
             ? "chat.fetchNearbyPlacesForIntent.trip_add_place"
             : opts?.placeDetailNearby
               ? "chat.fetchNearbyPlacesForIntent.place_focus"
-            : "chat.fetchNearbyPlacesForIntent",
+              : "chat.fetchNearbyPlacesForIntent",
           {
             ...searchExtras,
             radius,
             intentCategory: intent,
+            placesLane: attempt.id ?? `${attempt.mode}_${attemptIndex + 1}`,
+            placesRound: opts?.continuationRound ?? 0,
+            placesScopeSource: opts?.searchCenterAuthority
+              ? "clarified_location"
+              : opts?.searchContext?.searchMode === "destination"
+                ? "explicit_location"
+                : "current_device_location",
+            placesRecommendationRequestId: opts?.diagnosticRequestId,
+            timeoutMs: homeLateNightProfile
+              ? Math.max(1, Math.min(CHAT_PLACES_SEARCH_TIMEOUT_MS, remainingMs))
+              : undefined,
           },
         );
         if (error) lastError = error;
         lastRawCount = Math.max(lastRawCount, batch.length);
         continuationProviderRaw += attemptRawCount;
         continuationMapped += batch.length;
+        stageProviderRawCount += attemptRawCount;
+        stageMappedCount += batch.length;
+        const laneSemanticEligible = explicitNearbyKeywordForDiagnostics(
+          opts?.userText ?? "",
+          batch,
+        );
+        opts?.onSearchExecution?.({
+          lane: attempt.id ?? `${attempt.mode}_${attemptIndex + 1}`,
+          query: effectiveAttempt.query,
+          radius,
+        });
+        logAiPipeline("[NEARBY_SEARCH_LANE]", {
+          round: opts?.continuationRound ?? 0,
+          lane: attempt.id ?? `${attempt.mode}_${attemptIndex + 1}`,
+          query: effectiveAttempt.query || "(nearby)",
+          radius,
+          alreadyExecuted: false,
+          providerRaw: attemptRawCount,
+          semanticEligible: laneSemanticEligible,
+          districtEligible:
+            opts?.geographicScope?.entityType === "district"
+              ? batch.filter(
+                  (place) => placeDistrict(place) === opts.geographicScope?.requestedDistrict,
+                ).length
+              : laneSemanticEligible,
+          newAfterExposure: batch.filter(
+            (place) => !excludePlaceIds.includes(resolveCanonicalPlaceIdentity(place).identityKey),
+          ).length,
+        });
         for (const place of batch) {
-          continuationUniqueBefore.add(resolveCanonicalPlaceIdentity(place).identityKey);
+          const identityKey = resolveCanonicalPlaceIdentity(place).identityKey;
+          continuationUniqueBefore.add(identityKey);
+          const lanes = providerLanesByIdentity.get(identityKey) ?? new Set<string>();
+          lanes.add(attempt.id ?? `${attempt.mode}_${attemptIndex + 1}`);
+          providerLanesByIdentity.set(identityKey, lanes);
         }
         if (isShortcutContinuation) {
           logShortcutRuntime("[RT_CONTINUATION_SEARCH_ATTEMPT]", {
@@ -1339,7 +1707,9 @@ async function fetchNearbyPlacesForIntentInner(
           seen.add(id);
           places.push(place);
         }
-        if (!homeSpecialProfile && places.length >= poolTarget) break;
+        // Raw provider count is not admission capacity. Explicit keyword lanes must
+        // finish their bounded semantic set before deciding that the batch is full.
+        if (!homeSpecialProfile && !explicitCapacityAttempts && places.length >= poolTarget) break;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         lastError = message;
@@ -1364,19 +1734,28 @@ async function fetchNearbyPlacesForIntentInner(
         logChatPlacesError(error, `query=${attempt.query}`);
       }
     }
-    // Geographic authority is hard eligibility, so this runs before scoring and selection.
-    const scopeEligiblePlaces = filterPlacesByNearbyGeographicScope(
+    const explicitNearbyKeyword = extractExplicitNearbyKeyword(opts?.userText ?? "");
+    const semanticFamily = explicitNearbyKeyword
+      ? nearbySemanticFamilyForKeyword(explicitNearbyKeyword)
+      : null;
+    const districtBefore = places.filter((place) => Boolean(placeDistrict(place))).length;
+    const districtEnrichment = await enrichNearbyDistrictCandidates({
       places,
-      opts?.geographicScope,
-    );
+      scope: opts?.geographicScope,
+      targetCount: poolTarget,
+      fetchPlaceDetails: opts?.fetchPlaceDetails,
+      isPromising: (place) =>
+        isPlaceOperationalForRecommendation(place) &&
+        (!explicitNearbyKeyword ||
+          (matchesExplicitNearbyKeyword(place, explicitNearbyKeyword) &&
+            matchesNearbySemanticFamily(place, semanticFamily ?? "food"))),
+    });
+    places = districtEnrichment.places;
+    // Geographic authority is hard eligibility, so this runs before scoring and selection.
+    const scopeEligiblePlaces = filterPlacesByNearbyGeographicScope(places, opts?.geographicScope);
     if (opts?.placeFocusDiagnostics) {
       const operational = scopeEligiblePlaces.filter(isPlaceOperationalForRecommendation);
-      const geographic = filterPlacesByNearbyDistance(
-        operational,
-        lat,
-        lng,
-        maxDistanceKm,
-      );
+      const geographic = filterPlacesByNearbyDistance(operational, lat, lng, maxDistanceKm);
       const preDedupe = filterPlacesByExclusion(geographic, excluded);
       const deduped = filterExcludedPlaceIds(preDedupe, excludePlaceIds);
       opts.placeFocusDiagnostics.rawCount = Math.max(
@@ -1408,7 +1787,7 @@ async function fetchNearbyPlacesForIntentInner(
       stepIndex,
     });
 
-    const afterPreviousExclusion = (
+    let afterPreviousExclusion = (
       isShortcutContinuation
         ? filterExactExcludedPlaceIdentities(
             filterPlacesByExclusion(scopeEligiblePlaces, excluded),
@@ -1419,6 +1798,97 @@ async function fetchNearbyPlacesForIntentInner(
             excludePlaceIds,
           )
     ) as PlaceResult[];
+    const beforeKeywordAdmission = afterPreviousExclusion;
+    if (explicitNearbyKeyword) {
+      afterPreviousExclusion = afterPreviousExclusion.filter((place, candidateIndex) => {
+        const identityKey = resolveCanonicalPlaceIdentity(place).identityKey;
+        const providerLanes = providerLanesByIdentity.get(identityKey);
+        const keywordMatch = matchesExplicitNearbyKeywordWithProviderEvidence(
+          place,
+          explicitNearbyKeyword,
+          providerLanes,
+        );
+        const familyMatch = matchesNearbySemanticFamily(place, semanticFamily ?? "food");
+        const accepted = keywordMatch && familyMatch;
+        logAiPipeline("[CANDIDATE_KEYWORD_MATCH]", {
+          candidate: candidateIndex,
+          requiredFamily: semanticFamily ?? "food",
+          candidateFamilies: familyMatch ? (semanticFamily ?? "food") : "other",
+          accepted,
+          reason: accepted
+            ? providerLanes?.has("brunch_primary") || providerLanes?.has("brunch_bilingual")
+              ? "provider_query_and_family_match"
+              : "keyword_family_match"
+            : familyMatch
+              ? "keyword_mismatch"
+              : "family_mismatch",
+        });
+        console.info("[NEARBY_KEYWORD_MATCH]", {
+          rawKeyword: explicitNearbyKeyword,
+          candidate: candidateIndex,
+          evidence: accepted
+            ? "keyword_and_family"
+            : keywordMatch
+              ? "keyword_only"
+              : familyMatch
+                ? "family_only"
+                : "none",
+          accepted,
+          providerQueryMatchEvidence: providerLanes ? [...providerLanes] : [],
+        });
+        return accepted;
+      });
+      logAiPipeline("[NEARBY_CATEGORY_AUTHORITY]", {
+        rawKeyword: explicitNearbyKeyword,
+        semanticFamily: semanticFamily ?? "food",
+        providerPrimaryType: intent,
+        providerQuery: explicitNearbyKeyword,
+        finalFamily: semanticFamily ?? "food",
+      });
+    }
+    console.info("[NEARBY_CANDIDATE_FUNNEL]", {
+      recommendationRequestId: opts?.diagnosticRequestId ?? "",
+      providerRawCount: continuationProviderRaw,
+      mappedCount: continuationMapped,
+      dedupedCount: places.length,
+      keywordMatchedCount: explicitNearbyKeyword
+        ? places.filter((place) => {
+            const identityKey = resolveCanonicalPlaceIdentity(place).identityKey;
+            return (
+              matchesExplicitNearbyKeywordWithProviderEvidence(
+                place,
+                explicitNearbyKeyword,
+                providerLanesByIdentity.get(identityKey),
+              ) && matchesNearbySemanticFamily(place, semanticFamily ?? "food")
+            );
+          }).length
+        : places.length,
+      keywordRejectedCount: Math.max(
+        0,
+        beforeKeywordAdmission.length - afterPreviousExclusion.length,
+      ),
+      operationalEligibleCount: places.filter(isPlaceOperationalForRecommendation).length,
+      operationalRejectedCount: places.filter(
+        (place) => !isPlaceOperationalForRecommendation(place),
+      ).length,
+      districtKnownCount: places.filter((place) => Boolean(placeDistrict(place))).length,
+      districtUnknownCount: places.filter((place) => !placeDistrict(place)).length,
+      districtMatchedCount: scopeEligiblePlaces.length,
+      districtRejectedCount: Math.max(0, places.length - scopeEligiblePlaces.length),
+      districtEnrichmentRequested: districtEnrichment.requestedCount,
+      districtEnrichedCount: districtEnrichment.resolvedCount,
+      districtStillUnknownCount: districtEnrichment.unresolvedCount,
+      districtKnownBeforeEnrichment: districtBefore,
+      exposureRejectedCount: Math.max(
+        0,
+        scopeEligiblePlaces.length - beforeKeywordAdmission.length,
+      ),
+      finalEligibleCount: afterPreviousExclusion.length,
+      eligibilityCount: afterPreviousExclusion.length,
+      exposureRemainingCount: afterPreviousExclusion.length,
+      renderableCount: 0,
+      finalizeReason: "candidate_filtering",
+    });
     for (const place of afterPreviousExclusion) {
       continuationUniqueAfterExclusion.add(resolveCanonicalPlaceIdentity(place).identityKey);
     }
@@ -1448,25 +1918,31 @@ async function fetchNearbyPlacesForIntentInner(
       }
     }
 
-    const homeLateNightSelectionInput =
-      homeLateNightProfile && isShortcutContinuation && stepIndex > 0
-        ? afterPreviousExclusion.filter(
-            (place) => place.openStatus === "open" || place.openStatus === "closing_soon",
-          )
-        : afterPreviousExclusion;
+    const homeLateNightSelectionInput = homeLateNightProfile
+      ? (() => {
+          for (const place of afterPreviousExclusion) {
+            // Unknown opening evidence is not closed. Semantic and quality
+            // admission below remain authoritative for final display.
+            const identity = resolveCanonicalPlaceIdentity(place).identityKey;
+            if (!identity || accumulatedLateNightIds.has(identity)) continue;
+            accumulatedLateNightIds.add(identity);
+            accumulatedLateNightCandidates.push(place);
+          }
+          return accumulatedLateNightCandidates;
+        })()
+      : afterPreviousExclusion;
     const filtered = homeSeaProfile
       ? filterHomeSeaCandidates(afterPreviousExclusion)
       : homeLateNightProfile
         ? selectHomeNearbyPicks(homeLateNightSelectionInput, {
             origin: { lat, lng },
-            maxDistanceM:
-              homeLateNightProfile && isShortcutContinuation && stepIndex > 0 ? radius : undefined,
+            maxDistanceM: homeLateNightProfile && stepIndex > 0 ? radius : undefined,
             minResults: HOME_NEARBY_MIN_DISPLAY,
             maxResults: targetCount,
             period: "late_night",
             timeZone: "Asia/Taipei",
           })
-        : applyNearbyPlaceFilters(places, {
+        : applyNearbyPlaceFilters(scopeEligiblePlaces, {
             intent,
             lat,
             lng,
@@ -1494,6 +1970,67 @@ async function fetchNearbyPlacesForIntentInner(
         : shortcutScene
           ? rankPlaces(filtered, lat, lng, context, plusCtx, shortcutScene)
           : rankPlaces(filtered, lat, lng, context, plusCtx, null);
+    console.info("[NEARBY_CANDIDATE_FUNNEL]", {
+      recommendationRequestId: opts?.diagnosticRequestId ?? "",
+      providerRawCount: continuationProviderRaw,
+      mappedCount: continuationMapped,
+      dedupedCount: places.length,
+      keywordMatchedCount: explicitNearbyKeyword
+        ? places.filter((place) => {
+            const identityKey = resolveCanonicalPlaceIdentity(place).identityKey;
+            return (
+              matchesExplicitNearbyKeywordWithProviderEvidence(
+                place,
+                explicitNearbyKeyword,
+                providerLanesByIdentity.get(identityKey),
+              ) && matchesNearbySemanticFamily(place, semanticFamily ?? "food")
+            );
+          }).length
+        : places.length,
+      keywordRejectedCount: Math.max(
+        0,
+        beforeKeywordAdmission.length - afterPreviousExclusion.length,
+      ),
+      operationalEligibleCount: places.filter(isPlaceOperationalForRecommendation).length,
+      operationalRejectedCount: places.filter(
+        (place) => !isPlaceOperationalForRecommendation(place),
+      ).length,
+      districtKnownCount: places.filter((place) => Boolean(placeDistrict(place))).length,
+      districtUnknownCount: places.filter((place) => !placeDistrict(place)).length,
+      districtEnrichedCount: districtEnrichment.resolvedCount,
+      districtMatchedCount: scopeEligiblePlaces.length,
+      districtRejectedCount: Math.max(0, places.length - scopeEligiblePlaces.length),
+      exposureRejectedCount: Math.max(
+        0,
+        scopeEligiblePlaces.length - beforeKeywordAdmission.length,
+      ),
+      finalEligibleCount: filtered.length,
+      eligibilityCount: filtered.length,
+      exposureRemainingCount: afterPreviousExclusion.length,
+      renderableCount: ranked.length,
+      finalizeReason: ranked.length >= poolTarget ? "target_reached" : "bounded_search_continues",
+    });
+    if (homeLateNightProfile) {
+      const funnel = buildLateNightCandidateFunnel(scopeEligiblePlaces, {
+        origin: { lat, lng },
+        maxDistanceM: stepIndex > 0 ? radius : HOME_NEARBY_MAX_DISTANCE_M,
+      });
+      logAiPipeline("[LATE_NIGHT_CANDIDATE_FUNNEL]", {
+        stage: stepIndex === 0 ? 1 : 2,
+        providerRawCount: stageProviderRawCount,
+        mappedCount: stageMappedCount,
+        providerMappingRejectedCount: Math.max(0, stageProviderRawCount - stageMappedCount),
+        ...funnel,
+        // The selector is the final display authority (rating signal, hard
+        // exclusions, distance and semantic levels), so this diagnostic must
+        // report its result rather than a looser semantic-only estimate.
+        eligibleCount: ranked.length,
+      });
+      logAiPipeline("[LATE_NIGHT_FALLBACK_STAGE]", {
+        stage: stepIndex === 0 ? 1 : 2,
+        candidateCount: ranked.length,
+      });
+    }
     if (homeLateNightProfile && isShortcutContinuation) {
       const closedNowRejectedCount = afterPreviousExclusion.filter(
         (place) =>
@@ -1522,17 +2059,29 @@ async function fetchNearbyPlacesForIntentInner(
     if (ranked.length > best.length) {
       best = ranked;
     }
-    if (
-      homeLateNightProfile &&
-      isShortcutContinuation &&
-      stepIndex === 0 &&
-      radiusSteps.length > 1
-    ) {
-      if (shouldExpandHomeLateNight) continue;
+    if (homeLateNightProfile && stepIndex === 0 && radiusSteps.length > 1) {
+      if (ranked.length < HOME_NEARBY_MIN_DISPLAY || shouldExpandHomeLateNight) continue;
+      lateNightFinalizeReason = "stage_one_sufficient";
       break;
     }
-    if (best.length >= poolTarget) break;
+    if (best.length >= poolTarget) {
+      lateNightFinalizeReason = "target_reached";
+      break;
+    }
     if (opts?.placeDetailNearby && places.length === 0 && stepIndex >= 1) break;
+  }
+
+  if (homeLateNightProfile) {
+    logAiPipeline("[PLACES_RESULT_ACCUMULATOR]", {
+      stage: "final",
+      requestCount: lateNightEstimatedProviderCalls,
+      rawCount: continuationProviderRaw,
+      eligibleCount: best.length,
+      finalRenderableCount: best.length,
+      elapsedMs: Date.now() - lateNightStartedAt,
+      timeoutMs: LATE_NIGHT_ORCHESTRATION_TIMEOUT_MS,
+      finalizeReason: lateNightFinalizeReason,
+    });
   }
 
   if (context?.budgetPreference === "low" && !opts?.placeDetailNearby) {
@@ -1615,9 +2164,40 @@ async function fetchNearbyPlacesForIntentInner(
   );
   if (opts?.placeFocusDiagnostics) opts.placeFocusDiagnostics.finalCount = best.length;
   logAiPipeline("[NEARBY_REJECT_REASONS]", nearbyRejectAudit);
+  console.info("[RECOMMENDATION_BATCH_FINALIZE]", {
+    recommendationRequestId: opts?.diagnosticRequestId ?? "",
+    targetCount: poolTarget,
+    rawCount: continuationProviderRaw,
+    mappedCount: continuationMapped,
+    keywordEligible: continuationUniqueAfterExclusion.size,
+    districtEligible: best.length,
+    operationalEligible: best.filter(isPlaceOperationalForRecommendation).length,
+    exposureEligible: best.length,
+    finalCount: best.length,
+    finalizeReason:
+      best.length >= poolTarget
+        ? "target_reached"
+        : lastError
+          ? "provider_error"
+          : "bounded_search_exhausted",
+  });
   if (best.length === 0 && continuationProviderRaw === 0 && lastError) {
     throw new Error(`places_search_failed:${lastError}`);
   }
+  logAiPipeline("[NEARBY_SEARCH_CAPACITY]", {
+    target: poolTarget,
+    availableNew: best.length,
+    remainingLanes:
+      explicitCapacityAttempts && (opts?.continuationRound ?? 0) === 0 && best.length < poolTarget
+        ? 3
+        : 0,
+    finalizeReason:
+      best.length >= poolTarget
+        ? "target_reached"
+        : explicitCapacityAttempts && (opts?.continuationRound ?? 0) === 0
+          ? "bounded_initial_lanes_underfilled"
+          : "bounded_compatible_lanes_exhausted",
+  });
   logChatNearbyResponse({
     status: best.length > 0 ? "ok" : lastError ? "error" : "empty",
     count: best.length,
@@ -1655,13 +2235,7 @@ export function buildSummaryForRecommendations(
       return `附近有 ${count} 間我覺得不錯的選擇：`;
     }
     const lead = exclusionAck ?? "看起來你想找個地方放鬆一下 ☕";
-    return [
-      lead,
-      "",
-      `附近有 ${count} 間我覺得不錯的選擇：`,
-      "",
-      list,
-    ].join("\n");
+    return [lead, "", `附近有 ${count} 間我覺得不錯的選擇：`, "", list].join("\n");
   }
 
   if (intent === "restaurant") {
@@ -1672,11 +2246,7 @@ export function buildSummaryForRecommendations(
     return [lead, "", list].join("\n");
   }
 
-  return [
-    `附近找到 ${count} 個值得先看看的地方：`,
-    "",
-    list,
-  ].join("\n");
+  return [`附近找到 ${count} 個值得先看看的地方：`, "", list].join("\n");
 }
 
 export async function buildNearbyPlaceRecommendation(params: {
@@ -1717,6 +2287,9 @@ export async function buildNearbyPlaceRecommendation(params: {
   fetchPlaceDetails?: (
     placeId: string,
   ) => Promise<(PlaceResult & { photoNames?: string[] | null }) | null>;
+  continuationRound?: number;
+  onSearchExecution?: (execution: NearbySearchExecution) => void;
+  diagnosticRequestId?: string;
 }): Promise<{
   summary: string;
   payload: RoamiePayloadV2;
@@ -1748,19 +2321,20 @@ export async function buildNearbyPlaceRecommendation(params: {
       hasPlusAccess,
     } = params;
     const pickCount = params.maxResults ?? RECOMMENDATION_COUNT;
-    const shortcut = params.placeDetailNearby || params.searchProfile
-      ? null
-      : (resolveChatShortcutContext(userText) ??
-        (params.shortcutScene
-          ? buildStructuredShortcutContext(
-              params.shortcutScene === "quiet_cafe"
-                ? "coffee"
-                : params.shortcutScene === "rainy_indoor"
-                  ? "rainy"
-                  : "relax",
-              userText,
-            )
-          : null));
+    const shortcut =
+      params.placeDetailNearby || params.searchProfile
+        ? null
+        : (resolveChatShortcutContext(userText) ??
+          (params.shortcutScene
+            ? buildStructuredShortcutContext(
+                params.shortcutScene === "quiet_cafe"
+                  ? "coffee"
+                  : params.shortcutScene === "rainy_indoor"
+                    ? "rainy"
+                    : "relax",
+                userText,
+              )
+            : null));
     const shortcutAttempt = shortcut
       ? nearbySearchAttemptForIntent(intent, foodPreference, context, userText, {
           shortcutScene: shortcut.scene,
@@ -1819,6 +2393,10 @@ export async function buildNearbyPlaceRecommendation(params: {
         searchProfile: params.searchProfile,
         searchCenterAuthority: params.searchCenterAuthority,
         geographicScope: params.geographicScope,
+        fetchPlaceDetails: params.fetchPlaceDetails,
+        continuationRound: params.continuationRound,
+        onSearchExecution: params.onSearchExecution,
+        diagnosticRequestId: params.diagnosticRequestId,
         placeFocusDiagnostics: params.placeFocusDiagnostics,
       },
     );
@@ -1918,9 +2496,10 @@ export async function buildNearbyPlaceRecommendation(params: {
       const split = filterPlacesForFoodIntent(places, userText);
       places = split.restaurants;
       foodDistricts = split.districts;
-      if (mealIntent) {
-        places = filterPlacesForMealIntent(places, mealIntent);
-      }
+      // `fetchNearbyPlacesForIntent` is the canonical Nearby admission authority.
+      // Do not run the destination-meal opening-hours gate a second time here:
+      // provider candidates may legitimately have unknown summary hours and have
+      // already passed Nearby keyword/district/business-status eligibility.
     }
 
     const restaurantPicks = places.slice(0, pickCount);
@@ -2014,6 +2593,15 @@ export async function buildNearbyPlaceRecommendation(params: {
       picks = enrichedPicks;
     }
 
+    console.info("[NEARBY_FINAL_SELECTION]", {
+      recommendationRequestId: params.diagnosticRequestId ?? "",
+      targetCount: pickCount,
+      inputRenderableCount: places.length + foodDistricts.length,
+      selectedCount: picks.length,
+      selectedPlaceIds: picks.map((place) => place.id).filter(Boolean),
+      selectionReason: picks.length >= pickCount ? "target_reached" : "eligible_pool_exhausted",
+    });
+
     if (!picks.length) {
       if (excluded.length) {
         const summary = buildExclusionInsufficientSummary(
@@ -2061,10 +2649,9 @@ export async function buildNearbyPlaceRecommendation(params: {
               preferenceEvidenceSource: context.moodEvidenceSource,
               locale,
               distanceMeters: distM,
-              distanceSource:
-                params.searchCenterAuthority
-                  ? "CLARIFICATION_GEOCODE"
-                  : searchContext?.searchMode === "destination"
+              distanceSource: params.searchCenterAuthority
+                ? "CLARIFICATION_GEOCODE"
+                : searchContext?.searchMode === "destination"
                   ? "DESTINATION_CENTER"
                   : "USER_LOCATION",
               categoryIntent:

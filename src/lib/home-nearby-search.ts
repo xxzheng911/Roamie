@@ -5,6 +5,7 @@ import {
   localHourInTimeZone,
   matchesNightPreferredPlace,
   homeNearbyHardExclusionReason,
+  resolveHomeNearbyPoiHealth,
   type HomeNearbyPeriod,
 } from "@/lib/home-nearby-eligibility";
 import {
@@ -16,7 +17,7 @@ import {
   selectHomeNearbyUltimateFallback,
 } from "@/lib/home-nearby-places-filter";
 import { sortHomeNearbyPlacesWithContext } from "@/lib/home-nearby-ranking";
-import { mergePlaceRuntimeCache } from "@/lib/place-runtime-cache";
+import { mergePlaceRuntimeCache, readPlaceRuntimeCache } from "@/lib/place-runtime-cache";
 import { logHomeNearbyDataReady } from "@/lib/places-diagnostics";
 import {
   getHomeNearbyLoadInFlight,
@@ -519,11 +520,33 @@ function buildHomeNearbyCards(
     })),
   ).map((card) => {
     const categoryId = inferHomePickCategoryId(card, ctx.period);
-    return mergePlaceRuntimeCache(card.id, {
+    const merged = mergePlaceRuntimeCache(card.id, {
       ...card,
       categoryId,
     }) as HomeNearbyPick;
+    // This load is current provider evidence. Runtime cache may fill images,
+    // but must never overwrite current business/opening authority.
+    return applyFreshHomeNearbyStatusAuthority(merged, card);
   });
+}
+
+export function applyFreshHomeNearbyStatusAuthority<T extends PlaceResult>(
+  merged: T,
+  fresh: PlaceResult,
+): T {
+  return {
+    ...merged,
+    businessStatus: fresh.businessStatus,
+    openNow: fresh.openNow,
+    openStatus: fresh.openStatus,
+    openStatusLabel: fresh.openStatusLabel,
+    normalizedOpeningStatus: fresh.normalizedOpeningStatus,
+    normalizedOpeningLabel: fresh.normalizedOpeningLabel,
+    normalizedOpeningSource: fresh.normalizedOpeningSource,
+    todayHoursLabel: fresh.todayHoursLabel,
+    closingSoonNote: fresh.closingSoonNote,
+    nextOpenHint: fresh.nextOpenHint,
+  };
 }
 
 function finalizeHomeNearbyPicks(
@@ -549,6 +572,8 @@ function finalizeHomeNearbyPicks(
 ): HomeNearbyPick[] {
   for (const place of apiPlaces) {
     const operational = placeOperationalEligibility(place);
+    const health = resolveHomeNearbyPoiHealth(place);
+    const cached = readPlaceRuntimeCache(place.id);
     logHomeNearbyOperationalDiagnostic({
       canonicalPlaceId: place.id,
       businessStatus: operational.businessStatus ?? "missing",
@@ -557,9 +582,29 @@ function finalizeHomeNearbyPicks(
       cacheCapability: "search_v1",
       cacheAgeBucket: "current_home_load",
       operationalEligible: operational.eligible,
-      currentOpenEligible:
-        place.openStatus === "open" || place.openStatus === "closing_soon",
+      currentOpenEligible: place.openStatus === "open" || place.openStatus === "closing_soon",
       factualSource: "search",
+    });
+    console.info("[HOME_NEARBY_BUSINESS_STATUS]", {
+      placeId: place.id,
+      businessStatus: operational.businessStatus ?? "missing",
+      openNow: place.openNow ?? null,
+      statusSource: operational.statusSource,
+      cacheAge: cached ? Math.max(0, Date.now() - cached.at) : null,
+      accepted: operational.eligible,
+      dropReason: operational.eligible ? "" : homeNearbyHardExclusionReason(place),
+    });
+    console.info("[HOME_NEARBY_POI_HEALTH]", {
+      placeId: place.id,
+      businessStatus: operational.businessStatus ?? "missing",
+      openNow: place.openNow ?? null,
+      hasOpeningHours: Boolean(place.regularOpeningHours) || place.openNow != null,
+      rating: place.rating ?? null,
+      reviewCount: place.userRatingCount ?? null,
+      identityQuality: health.identityQuality,
+      staleEvidence: health.staleEvidence,
+      accepted: health.accepted,
+      dropReason: health.dropReason,
     });
     const hardReason = homeNearbyHardExclusionReason(place);
     if (hardReason) {
@@ -580,7 +625,18 @@ function finalizeHomeNearbyPicks(
   }
 
   if (selected.length < HOME_NEARBY_ULTIMATE_MIN && apiPlaces.length > 0) {
-    selected = selectHomeNearbyUltimateFallback(apiPlaces, {
+    const ultimatePool =
+      period === "late_night"
+        ? apiPlaces.filter(
+            (place) =>
+              matchesNightPreferredPlace(place) &&
+              (place.openStatus === "open" ||
+                place.openStatus === "closing_soon" ||
+                place.openStatus === "unknown" ||
+                place.openStatus == null),
+          )
+        : apiPlaces;
+    selected = selectHomeNearbyUltimateFallback(ultimatePool, {
       origin: ctx.userLocation,
       minResults: HOME_NEARBY_ULTIMATE_MIN,
       maxResults: HOME_NEARBY_TARGET_COUNT,

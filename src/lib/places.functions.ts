@@ -111,6 +111,12 @@ const ExploreSearchInput = z.object({
   skipLocationBias: z.boolean().optional(),
   intentCategory: z.string().max(32).optional(),
   planningSelectionStyle: z.string().max(32).optional(),
+  placesLane: z.string().max(64).optional(),
+  placesRound: z.number().int().min(0).max(100).optional(),
+  placesScopeSource: z
+    .enum(["clarified_location", "current_device_location", "explicit_location"])
+    .optional(),
+  placesRecommendationRequestId: z.string().max(128).optional(),
 });
 
 type RawPlace = RawPlaceHours;
@@ -235,16 +241,14 @@ async function postPlaces(
   body: Record<string, unknown>,
   apiKey: string,
   callType: "nearby" | "text",
-  stats?: {
-    caller: string;
-    screen: PlacesScreen;
-    category?: string;
-    destinationName?: string;
-    searchMode?: string;
-    intentCategory?: string;
-    planningSelectionStyle?: string;
-  },
-): Promise<{ places: RawPlace[]; error: string | null; nextPageToken?: string }> {
+  stats?: PlacesSearchStats,
+): Promise<{
+  places: RawPlace[];
+  error: string | null;
+  nextPageToken?: string;
+  requestId: string;
+}> {
+  const providerStartedAt = Date.now();
   const circle =
     (
       body.locationRestriction as {
@@ -285,7 +289,7 @@ async function postPlaces(
           : stats?.screen === "chat"
             ? stats?.caller?.includes("place_focus")
               ? "chat_place_focus"
-              : "other"
+              : "chat"
             : stats?.screen === "itinerary" || stats?.screen === "plan"
               ? "planner"
               : "other";
@@ -301,20 +305,71 @@ async function postPlaces(
           screen: stats?.screen,
           category: stats?.category,
         });
-
-        const res = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": apiKey,
-            "X-Goog-FieldMask": PLACES_FIELD_MASK,
-          },
-          body: JSON.stringify(body),
+        console.info("[PLACES_PROVIDER_REQUEST]", {
+          requestId: `places_${ownerRequestId}`,
+          recommendationRequestId: stats?.recommendationRequestId ?? "",
+          round: stats?.round ?? 0,
+          lane: stats?.lane ?? callType,
+          requestType: callType === "nearby" ? "searchNearby" : "searchText",
+          query: typeof body.textQuery === "string" ? body.textQuery : "",
+          scopeSource: stats?.scopeSource ?? "unknown",
+          centerLat: circle?.center?.latitude ?? null,
+          centerLng: circle?.center?.longitude ?? null,
+          radius: circle?.radius ?? null,
+          locationBias: body.locationBias ? "circle" : "none",
+          locationRestriction: body.locationRestriction ? "circle" : "none",
+          includedTypes: Array.isArray(body.includedTypes) ? body.includedTypes : [],
+          language: typeof body.languageCode === "string" ? body.languageCode : "",
+          region: typeof body.regionCode === "string" ? body.regionCode : "",
         });
+
+        let res: Response;
+        try {
+          res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Goog-Api-Key": apiKey,
+              "X-Goog-FieldMask": PLACES_FIELD_MASK,
+            },
+            body: JSON.stringify(body),
+          });
+        } catch (error) {
+          console.info("[PLACES_PROVIDER_RESULT]", {
+            requestId: `places_${ownerRequestId}`,
+            recommendationRequestId: stats?.recommendationRequestId ?? "",
+            lane: stats?.lane ?? callType,
+            httpStatus: 0,
+            providerStatus: "FETCH_ERROR",
+            providerRawCount: 0,
+            elapsedMs: Date.now() - providerStartedAt,
+            failureReason:
+              error instanceof DOMException && error.name === "AbortError"
+                ? "provider_timeout"
+                : "provider_http_error",
+          });
+          throw error;
+        }
 
         if (!res.ok) {
           const text = await res.text();
           const detail = parseGoogleError(text);
+          console.info("[PLACES_PROVIDER_RESULT]", {
+            requestId: `places_${ownerRequestId}`,
+            recommendationRequestId: stats?.recommendationRequestId ?? "",
+            lane: stats?.lane ?? callType,
+            httpStatus: res.status,
+            providerStatus: detail.split(":", 1)[0] || "http_error",
+            providerRawCount: 0,
+            mappedCount: 0,
+            elapsedMs: Date.now() - providerStartedAt,
+            failureReason:
+              res.status === 400
+                ? "provider_invalid_request"
+                : res.status === 408
+                  ? "provider_timeout"
+                  : "provider_http_error",
+          });
           console.error("[Roamie Places] request failed", res.status, url, detail);
           if (res.status === 429 || res.status === 503) {
             // Let the shared Places queue retry with exponential backoff.
@@ -330,6 +385,17 @@ async function postPlaces(
         }
 
         const json = (await res.json()) as { places?: RawPlace[]; nextPageToken?: string };
+        console.info("[PLACES_PROVIDER_RESULT]", {
+          requestId: `places_${ownerRequestId}`,
+          recommendationRequestId: stats?.recommendationRequestId ?? "",
+          lane: stats?.lane ?? callType,
+          httpStatus: res.status,
+          providerStatus: "OK",
+          providerRawCount: json.places?.length ?? 0,
+          mappedCount: "pending_mapping",
+          elapsedMs: Date.now() - providerStartedAt,
+          failureReason: json.places?.length ? "none" : "provider_zero_results",
+        });
         return {
           places: json.places ?? [],
           error: null as string | null,
@@ -341,6 +407,7 @@ async function postPlaces(
         surface: ownerSurface,
         priority: ownerSurface === "home_nearby" ? "background" : "foreground",
         requestType: callType === "nearby" ? "searchNearby" : "searchText",
+        lane: stats?.lane,
       },
     );
   } catch (error) {
@@ -377,7 +444,7 @@ async function postPlaces(
       });
     }
     // Soft-fail: never throw — callers must degrade to existing places / skip nearby.
-    return { places: [], error: "places_rate_limited" };
+    return { places: [], error: "places_rate_limited", requestId: `places_${ownerRequestId}` };
   }
   if (stats?.caller === "planning_selection_lane") {
     const places = guarded.places ?? [];
@@ -414,7 +481,7 @@ async function postPlaces(
       returnedAdministrativeAreaSummary: administrativeAreaSummary,
     });
   }
-  return guarded;
+  return { ...guarded, requestId: `places_${ownerRequestId}` };
 }
 
 function exploreLocale(lat: number, lng: number, userLocale?: Locale) {
@@ -433,6 +500,10 @@ type PlacesSearchStats = {
   searchMode?: string;
   intentCategory?: string;
   planningSelectionStyle?: string;
+  lane?: string;
+  round?: number;
+  scopeSource?: string;
+  recommendationRequestId?: string;
 };
 
 function buildSearchStats(data: z.infer<typeof ExploreSearchInput>): PlacesSearchStats {
@@ -444,6 +515,10 @@ function buildSearchStats(data: z.infer<typeof ExploreSearchInput>): PlacesSearc
     searchMode: data.searchMode,
     intentCategory: data.intentCategory,
     planningSelectionStyle: data.planningSelectionStyle,
+    lane: data.placesLane,
+    round: data.placesRound,
+    scopeSource: data.placesScopeSource,
+    recommendationRequestId: data.placesRecommendationRequestId,
   };
 }
 
@@ -469,21 +544,40 @@ async function searchText(
   }
   if (regionCode) body.regionCode = regionCode;
 
-  const { places: raw, error } = await postPlaces(
-    placesSearchTextUrl(),
-    body,
-    apiKey,
-    "text",
-    stats,
-  );
-  if (error) return { places: [], error };
+  const {
+    places: raw,
+    error,
+    requestId,
+  } = await postPlaces(placesSearchTextUrl(), body, apiKey, "text", stats);
+  if (error) {
+    console.info("[PLACES_PROVIDER_MAPPING]", {
+      requestId,
+      recommendationRequestId: stats?.recommendationRequestId ?? "",
+      lane: stats?.lane ?? "text_search",
+      providerRawCount: raw.length,
+      mappedCount: 0,
+      mappingRejectedCount: raw.length,
+      mappingFailureReason: "provider_error",
+    });
+    return { places: [], error };
+  }
+  const mapped = mapRawPlaces(raw, {
+    screen: stats?.screen,
+    locale: userLocale,
+    intentCategory: stats?.intentCategory,
+    searchMode: stats?.searchMode,
+  });
+  console.info("[PLACES_PROVIDER_MAPPING]", {
+    requestId,
+    recommendationRequestId: stats?.recommendationRequestId ?? "",
+    lane: stats?.lane ?? "text_search",
+    providerRawCount: raw.length,
+    mappedCount: mapped.length,
+    mappingRejectedCount: Math.max(0, raw.length - mapped.length),
+    mappingFailureReason: raw.length > 0 && mapped.length === 0 ? "all_rejected" : "none",
+  });
   return {
-    places: mapRawPlaces(raw, {
-      screen: stats?.screen,
-      locale: userLocale,
-      intentCategory: stats?.intentCategory,
-      searchMode: stats?.searchMode,
-    }),
+    places: mapped,
     error: null,
   };
 }

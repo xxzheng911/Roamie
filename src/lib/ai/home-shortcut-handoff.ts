@@ -2,22 +2,22 @@ import type { ChatPlanningSession } from "@/lib/chat-session";
 
 export type HomeShortcutSearchProfile = "home_late_night" | "home_sea";
 
-export function isStructuredHomeNearbyShortcut(
-  session: ChatPlanningSession,
-): boolean {
+export function isStructuredHomeNearbyShortcut(session: ChatPlanningSession): boolean {
   const request = session.normalizedShortcutRequest;
   return Boolean(
     session.homeMoodShortcutEntry &&
-      request?.source === "home_mood" &&
-      request.structured === true &&
-      request.intent === "nearby_recommendation",
+    request?.source === "home_mood" &&
+    request.structured === true &&
+    request.intent === "nearby_recommendation",
   );
 }
 
 export function resolveHomeShortcutSearchProfile(
   session: ChatPlanningSession,
 ): HomeShortcutSearchProfile | null {
-  const retainedProfile = session.activeRecommendationContext?.searchProfile;
+  const retainedProfile =
+    session.nearbyContinuationSnapshot?.searchProfile ??
+    session.activeRecommendationContext?.searchProfile;
   if (retainedProfile === "home_late_night" || retainedProfile === "home_sea") {
     return retainedProfile;
   }
@@ -27,17 +27,30 @@ export function resolveHomeShortcutSearchProfile(
   return null;
 }
 
+/**
+ * A persisted Nearby result is the continuation authority even after the
+ * one-turn structured shortcut payload has been consumed.  Clarified areas
+ * may have a destination-like display label, but remain Nearby searches.
+ */
+export function hasNearbyContinuationAuthority(session: ChatPlanningSession): boolean {
+  const context = session.activeRecommendationContext;
+  return Boolean(
+    session.nearbyLocationAuthority ||
+    session.nearbyContinuationSnapshot ||
+    context?.searchProfile ||
+    context?.shortcutSource === "home_mood" ||
+    context?.searchScope === "current_location",
+  );
+}
+
 export function isStructuredHomeSeaShortcut(session: ChatPlanningSession): boolean {
   return (
-    isStructuredHomeNearbyShortcut(session) &&
-    session.normalizedShortcutRequest?.mode === "sea"
+    isStructuredHomeNearbyShortcut(session) && session.normalizedShortcutRequest?.mode === "sea"
   );
 }
 
 /** A Home Nearby shortcut starts a recommendation turn, never a pending Planner turn. */
-export function isolateHomeShortcutFromPlanning(
-  session: ChatPlanningSession,
-): ChatPlanningSession {
+export function isolateHomeShortcutFromPlanning(session: ChatPlanningSession): ChatPlanningSession {
   if (!isStructuredHomeNearbyShortcut(session)) return session;
   const travelContext = session.travelContext
     ? {
@@ -60,8 +73,7 @@ export function isolateHomeShortcutFromPlanning(
     ...session,
     activeRecommendationContext: undefined,
     recommendationSession: undefined,
-    activeChatIntent:
-      session.normalizedShortcutRequest?.mode === "coffee" ? "cafe" : "attraction",
+    activeChatIntent: session.normalizedShortcutRequest?.mode === "coffee" ? "cafe" : "attraction",
     activeCategoryIntent:
       session.normalizedShortcutRequest?.mode === "coffee" ? "cafe" : "attraction",
     pendingQuestion: undefined,

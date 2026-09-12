@@ -5,6 +5,8 @@ import type { TripLocation } from "@/lib/location/types";
 export const NEARBY_LOCATION_CLARIFICATION_COPY = "你是指哪個地區的呢？";
 export const NEARBY_CLARIFICATION_CONTRACT_VERSION = "nearby-clarification-v2";
 
+export type NearbySemanticFamily = "nightlife" | "cafe" | "food" | "attraction";
+
 export type PendingNearbyLocationRequest = {
   intent: NearbyPlaceIntent;
   category: "restaurant" | "cafe" | "attraction";
@@ -15,6 +17,9 @@ export type PendingNearbyLocationRequest = {
   originalAuthority: "nearby";
   originalSearchMode: "location_clarification";
   queryCategory: string;
+  rawExplicitKeyword?: string;
+  canonicalKeyword?: string;
+  semanticFamily?: NearbySemanticFamily;
   subtype?: string;
   mealSlot?: "breakfast" | "lunch" | "dinner" | "late_night";
   createdAt: string;
@@ -60,21 +65,94 @@ export function createPendingNearbyLocationRequest(
   originalUserText: string,
 ): PendingNearbyLocationRequest {
   const originalQuery = originalUserText.trim();
-  const semantics = resolveNearbyClarificationSemantics(originalQuery, intent);
+  const explicitNearby = resolveExplicitNearbyIntent(originalQuery);
+  const authoritativeIntent = explicitNearby?.intent ?? intent;
+  const semantics = resolveNearbyClarificationSemantics(originalQuery, authoritativeIntent);
+  const rawExplicitKeyword = explicitNearby?.rawKeyword;
+  const canonicalKeyword = explicitNearby?.canonicalKeyword;
   return {
-    intent,
-    category: intent === "cafe" ? "cafe" : intent === "restaurant" ? "restaurant" : "attraction",
+    intent: authoritativeIntent,
+    category:
+      authoritativeIntent === "cafe"
+        ? "cafe"
+        : authoritativeIntent === "restaurant"
+          ? "restaurant"
+          : "attraction",
     originalUserText: originalQuery,
     originalQuery,
-    nearbyIntent: intent,
+    nearbyIntent: authoritativeIntent,
     requestedScope: "nearby",
     originalAuthority: "nearby",
     originalSearchMode: "location_clarification",
-    queryCategory: semantics.categoryLabel,
+    queryCategory: canonicalKeyword ?? semantics.categoryLabel,
+    rawExplicitKeyword: rawExplicitKeyword ?? semantics.categoryLabel,
+    canonicalKeyword: canonicalKeyword ?? semantics.categoryLabel,
+    semanticFamily:
+      explicitNearby?.semanticFamily ?? nearbySemanticFamilyForKeyword(semantics.categoryLabel),
     subtype: semantics.subtype,
     mealSlot: semantics.mealSlot,
     createdAt: new Date().toISOString(),
   };
+}
+
+export function extractExplicitNearbyKeyword(text: string): string | null {
+  const normalized = text.trim().replace(/[？?!！。]+$/g, "");
+  const marker = normalized.match(/(?:附近|這附近|这附近|我附近)/);
+  if (!marker?.index && marker?.index !== 0) return null;
+  const keyword = normalized
+    .slice(marker.index + marker[0].length)
+    .replace(/^(?:有沒有|有没有|有什麼|有什么|想找|找|的)\s*/, "")
+    .replace(/\s*(?:推薦|推荐|呢|嗎|吗)$/i, "")
+    .trim();
+  return keyword &&
+    !/^(?:適合去哪裡|适合去哪里|哪裡可以去|哪里可以去|有什麼地方|有什么地方|推薦一下|推荐一下|有什麼|有什么|走走|地方|地點|地点|景點|景点|還有|还有|還有嗎|还有吗|其他|別的|别的)$/.test(
+      keyword,
+    )
+    ? keyword
+    : null;
+}
+
+export function canonicalizeExplicitNearbyKeyword(keyword: string): string {
+  const value = keyword.trim();
+  if (/餐酒|bistro/i.test(value)) return "餐酒館";
+  if (/居酒|izakaya/i.test(value)) return "居酒屋";
+  if (/早餐|breakfast/i.test(value)) return "早餐店";
+  if (/咖啡|coffee|cafe/i.test(value)) return "咖啡廳";
+  if (/素食|蔬食|vegan|vegetarian/i.test(value)) return "素食餐廳";
+  if (/酒吧|pub|bar/i.test(value)) return "酒吧";
+  return value;
+}
+
+export function resolveExplicitNearbyIntent(text: string): {
+  rawKeyword: string;
+  canonicalKeyword: string;
+  intent: NearbyPlaceIntent;
+  semanticFamily: NearbySemanticFamily;
+} | null {
+  if (!userExplicitlyWantsNearbyPlaces(text)) return null;
+  const rawKeyword = extractExplicitNearbyKeyword(text);
+  if (!rawKeyword) return null;
+  const canonicalKeyword = canonicalizeExplicitNearbyKeyword(rawKeyword);
+  const intent: NearbyPlaceIntent = /咖啡|coffee|cafe/i.test(canonicalKeyword)
+    ? "cafe"
+    : /餐|食|酒|bar|pub|早餐|宵夜|拉麵|燒肉|火鍋|素食|蔬食/i.test(canonicalKeyword)
+      ? "restaurant"
+      : "attraction";
+  return {
+    rawKeyword,
+    canonicalKeyword,
+    intent,
+    semanticFamily: nearbySemanticFamilyForKeyword(canonicalKeyword),
+  };
+}
+
+export function nearbySemanticFamilyForKeyword(keyword: string): NearbySemanticFamily {
+  if (/酒吧|居酒屋|餐酒館|pub|cocktail\s*bar|wine\s*bar|gastropub|izakaya|\bbar\b/i.test(keyword)) {
+    return "nightlife";
+  }
+  if (/咖啡|coffee|cafe/i.test(keyword)) return "cafe";
+  if (/餐|食|早餐|宵夜|拉麵|燒肉|火鍋|素食|蔬食/i.test(keyword)) return "food";
+  return "attraction";
 }
 
 export function resolveNearbyClarificationSemantics(
@@ -106,7 +184,11 @@ export function buildNearbyLocationClarificationCopy(
 }
 
 export function normalizeNearbyClarificationQuery(rawQuery: string): string {
-  return rawQuery.normalize("NFKC").replace(/[,，、；;]+/g, " ").replace(/\s+/g, " ").trim();
+  return rawQuery
+    .normalize("NFKC")
+    .replace(/[,，、；;]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function isUsableNearbyClarificationLocation(
@@ -119,9 +201,9 @@ export function isUsableNearbyClarificationLocation(
     location?.city?.trim();
   return Boolean(
     hasUsableNearbyCoordinates(location) &&
-      displayLabel &&
-      !location?.placeId?.startsWith("approx:") &&
-      !location?.placeId?.startsWith("scope:"),
+    displayLabel &&
+    !location?.placeId?.startsWith("approx:") &&
+    !location?.placeId?.startsWith("scope:"),
   );
 }
 
