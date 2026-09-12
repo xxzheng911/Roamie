@@ -81,7 +81,11 @@ function clearWebStorageAuthKeys(): void {
       for (let i = 0; i < storage.length; i++) {
         const key = storage.key(i);
         if (!key) continue;
-        if (shouldRemove(key) || key.startsWith("roamie:preferences:") || key.startsWith("roamie:travel-pref-result:")) {
+        if (
+          shouldRemove(key) ||
+          key.startsWith("roamie:preferences:") ||
+          key.startsWith("roamie:travel-pref-result:")
+        ) {
           keys.push(key);
         }
       }
@@ -165,6 +169,62 @@ async function clearAuthStateAsync(): Promise<void> {
   } catch (e) {
     console.warn("[Clear Auth State] async cleanup failed", e);
   }
+}
+
+const DELETED_ACCOUNT_LOCAL_PREFIXES = [
+  "roamie:conversation-workspace",
+  "roamie:recommendation",
+  "roamie:saved-",
+  "roamie:home-",
+  "roamie:profile-",
+  "roamie:user-profile",
+  "roamie:travel-pref",
+  "roamie:preferences",
+  "roamie:places",
+  "roamie:itineraries",
+  "roamie:chat",
+  "roamie:draft-trip",
+  "roamie:plan-form-draft",
+] as const;
+
+/** Clears personal state only after the trusted server confirms account deletion. */
+export async function clearDeletedAccountLocalData(userId: string): Promise<void> {
+  // Account deletion clears identity-owned state, not the device-level first-run flag.
+  // Keeping onboarding completed makes the post-delete and subsequent cold-start
+  // unauthenticated authority resolve to /login rather than /welcome.
+  clearAuthStateSync({ reason: "account-deleted", clearCompanionMode: false });
+  if (typeof window !== "undefined") {
+    for (const storage of [localStorage, sessionStorage]) {
+      const keys: string[] = [];
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (
+          key &&
+          (key.includes(userId) ||
+            DELETED_ACCOUNT_LOCAL_PREFIXES.some((prefix) => key.startsWith(prefix)))
+        )
+          keys.push(key);
+      }
+      keys.forEach((key) => storage.removeItem(key));
+    }
+  }
+  try {
+    const { keys } = await Preferences.keys();
+    const personal = keys.filter(
+      (key) =>
+        key.includes(userId) ||
+        key.startsWith(PREF_PREFIX) ||
+        key.startsWith("roamie.conversation-workspace") ||
+        key.startsWith("roamie.travel-pref"),
+    );
+    await Promise.all(personal.map((key) => Preferences.remove({ key })));
+  } catch (error) {
+    console.warn(
+      "[Account Deletion] native cache cleanup failed",
+      error instanceof Error ? error.name : "unknown",
+    );
+  }
+  await clearAuthStateAsync();
 }
 
 /**

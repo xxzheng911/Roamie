@@ -30,6 +30,7 @@ export const clientEnv = {
    */
   billingEnabled: readVite("VITE_BILLING_ENABLED") === "1",
   /** Deployment environment */
+  deployEnvironment: readVite("VITE_DEPLOY_ENV") ?? "production",
   mode: import.meta.env.MODE as "development" | "production" | "test",
   isDev: import.meta.env.DEV,
   isProd: import.meta.env.PROD,

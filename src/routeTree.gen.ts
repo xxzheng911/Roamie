@@ -38,6 +38,7 @@ import { Route as AppSavedIndexRouteImport } from './routes/_app.saved.index'
 import { Route as ApiSubscriptionSyncRouteImport } from './routes/api/subscription/sync'
 import { Route as ApiAnalyticsEventsRouteImport } from './routes/api/analytics/events'
 import { Route as ApiAdminDashboardRouteImport } from './routes/api/admin/dashboard'
+import { Route as ApiAccountDeleteRouteImport } from './routes/api/account/delete'
 import { Route as AppSavedTripIdRouteImport } from './routes/_app.saved.$tripId'
 
 const WelcomeRoute = WelcomeRouteImport.update({
@@ -184,6 +185,11 @@ const ApiAdminDashboardRoute = ApiAdminDashboardRouteImport.update({
   path: '/api/admin/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAccountDeleteRoute = ApiAccountDeleteRouteImport.update({
+  id: '/api/account/delete',
+  path: '/api/account/delete',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppSavedTripIdRoute = AppSavedTripIdRouteImport.update({
   id: '/$tripId',
   path: '/$tripId',
@@ -216,6 +222,7 @@ export interface FileRoutesByFullPath {
   '/login/legal': typeof LoginLegalRoute
   '/trip-invite/$token': typeof TripInviteTokenRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
+  '/api/account/delete': typeof ApiAccountDeleteRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/api/analytics/events': typeof ApiAnalyticsEventsRoute
   '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
@@ -246,6 +253,7 @@ export interface FileRoutesByTo {
   '/trip-invite/$token': typeof TripInviteTokenRoute
   '/': typeof AppIndexRoute
   '/saved/$tripId': typeof AppSavedTripIdRoute
+  '/api/account/delete': typeof ApiAccountDeleteRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/api/analytics/events': typeof ApiAnalyticsEventsRoute
   '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
@@ -279,6 +287,7 @@ export interface FileRoutesById {
   '/trip-invite/$token': typeof TripInviteTokenRoute
   '/_app/': typeof AppIndexRoute
   '/_app/saved/$tripId': typeof AppSavedTripIdRoute
+  '/api/account/delete': typeof ApiAccountDeleteRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/api/analytics/events': typeof ApiAnalyticsEventsRoute
   '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
@@ -312,6 +321,7 @@ export interface FileRouteTypes {
     | '/login/legal'
     | '/trip-invite/$token'
     | '/saved/$tripId'
+    | '/api/account/delete'
     | '/api/admin/dashboard'
     | '/api/analytics/events'
     | '/api/subscription/sync'
@@ -342,6 +352,7 @@ export interface FileRouteTypes {
     | '/trip-invite/$token'
     | '/'
     | '/saved/$tripId'
+    | '/api/account/delete'
     | '/api/admin/dashboard'
     | '/api/analytics/events'
     | '/api/subscription/sync'
@@ -374,6 +385,7 @@ export interface FileRouteTypes {
     | '/trip-invite/$token'
     | '/_app/'
     | '/_app/saved/$tripId'
+    | '/api/account/delete'
     | '/api/admin/dashboard'
     | '/api/analytics/events'
     | '/api/subscription/sync'
@@ -394,6 +406,7 @@ export interface RootRouteChildren {
   ApiRoamieRoute: typeof ApiRoamieRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   TripInviteTokenRoute: typeof TripInviteTokenRoute
+  ApiAccountDeleteRoute: typeof ApiAccountDeleteRoute
   ApiAdminDashboardRoute: typeof ApiAdminDashboardRoute
   ApiAnalyticsEventsRoute: typeof ApiAnalyticsEventsRoute
   ApiSubscriptionSyncRoute: typeof ApiSubscriptionSyncRoute
@@ -604,6 +617,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAdminDashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/account/delete': {
+      id: '/api/account/delete'
+      path: '/api/account/delete'
+      fullPath: '/api/account/delete'
+      preLoaderRoute: typeof ApiAccountDeleteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app/saved/$tripId': {
       id: '/_app/saved/$tripId'
       path: '/$tripId'
@@ -682,6 +702,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRoamieRoute: ApiRoamieRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   TripInviteTokenRoute: TripInviteTokenRoute,
+  ApiAccountDeleteRoute: ApiAccountDeleteRoute,
   ApiAdminDashboardRoute: ApiAdminDashboardRoute,
   ApiAnalyticsEventsRoute: ApiAnalyticsEventsRoute,
   ApiSubscriptionSyncRoute: ApiSubscriptionSyncRoute,

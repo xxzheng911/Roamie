@@ -16,20 +16,23 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { useAccess } from "@/hooks/use-access";
 import { useI18n } from "@/hooks/use-i18n";
-import type { AuthProviderKind } from "@/lib/auth-provider";
+import {
+  resolveAuthProvider,
+  resolveAuthProviderForDisplay,
+  type AuthProviderKind,
+} from "@/lib/auth-provider";
 import { LOCALE_LABELS } from "@/lib/i18n/types";
 import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
 import { tryNativeSubscriptionManagement } from "@/lib/subscription/subscription-management-native";
+import { deleteCurrentAccount } from "@/lib/account-deletion/account-deletion";
+import { clearDeletedAccountLocalData } from "@/lib/clear-auth-state";
+import { clearRevenueCatIdentityAfterAccountDeletion } from "@/services/subscription";
 import {
   isNotificationApiAvailable,
   isNotificationGrantedAsync,
   requestNotificationPermission,
 } from "@/lib/notification-permission";
-import {
-  getProfileNotificationsEnabled,
-  getUserProfile,
-  saveProfileNotifications,
-} from "@/lib/profile-storage";
+import { getProfileNotificationsEnabled, saveProfileNotifications } from "@/lib/profile-storage";
 import { isDeveloperBuildEnabled, unlockDeveloperMode } from "@/lib/access/developer";
 import { ACCESS_CHANGED_EVENT } from "@/lib/access/events";
 import {
@@ -51,7 +54,7 @@ function providerLabel(provider: AuthProviderKind | null, t: (key: string) => st
 
 function SettingsPage() {
   const { t, locale } = useI18n();
-  const { signOut, loading: authLoading } = useAuth();
+  const { user, signOut, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const [signingOut, setSigningOut] = useState(false);
   const {
@@ -63,21 +66,27 @@ function SettingsPage() {
   } = useAccess();
   const [devTapCount, setDevTapCount] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [authProvider, setAuthProvider] = useState<AuthProviderKind | null>(null);
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [savingNotif, setSavingNotif] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
   const [cancelSubscriptionDialogOpen, setCancelSubscriptionDialogOpen] = useState(false);
+  const [deleteAccountDialogOpen, setDeleteAccountDialogOpen] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [deletionRequestId, setDeletionRequestId] = useState<string | null>(null);
   const devMode = isDeveloperBuildEnabled();
 
+  useEffect(() => {
+    if (import.meta.env.VITE_DEPLOY_ENV === "staging") {
+      console.info("ACCOUNT_DELETION_RUNTIME_VERSION", {
+        version: "20260913-google-amr-preflight-v1",
+      });
+    }
+  }, []);
+
   const loadSettings = useCallback(async () => {
-    const [profile, notifPref] = await Promise.all([
-      getUserProfile(locale),
-      getProfileNotificationsEnabled(),
-    ]);
-    setAuthProvider(profile.authProvider);
+    const notifPref = await getProfileNotificationsEnabled();
     setNotificationsEnabled(notifPref);
-  }, [locale]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -202,6 +211,73 @@ function SettingsPage() {
 
   const canManageAppleSubscription =
     hasPlusAccess && plusEntitlementActiveSources.includes("app_store");
+  const displayAuthProvider = user ? resolveAuthProviderForDisplay(user) : null;
+
+  const handleDeleteAccount = async () => {
+    const deletionProvider = user ? resolveAuthProvider(user) : null;
+    console.info("ACCOUNT_DELETION_UI_ACTION", {
+      stage: "clicked",
+      provider: deletionProvider ?? "unknown",
+      hasSession: Boolean(user?.id),
+      isDeleting: deletingAccount,
+    });
+    if (!user?.id || !deletionProvider) {
+      console.info("ACCOUNT_DELETION_UI_ACTION", {
+        stage: "blocked",
+        reason: "authenticated_session_missing",
+        provider: deletionProvider ?? "unknown",
+        hasSession: false,
+        isDeleting: deletingAccount,
+      });
+      toast.error("登入狀態已失效，請重新登入後再刪除帳號。");
+      return;
+    }
+    if (deletingAccount) {
+      console.info("ACCOUNT_DELETION_UI_ACTION", {
+        stage: "blocked",
+        reason: "deletion_in_progress",
+        provider: deletionProvider,
+        hasSession: true,
+        isDeleting: true,
+      });
+      return;
+    }
+    setDeletingAccount(true);
+    const requestId = deletionRequestId ?? crypto.randomUUID();
+    setDeletionRequestId(requestId);
+    try {
+      const result = await deleteCurrentAccount(deletionProvider, requestId);
+      if (!result.ok) {
+        console.info("ACCOUNT_DELETION_UI_ACTION", {
+          stage: "blocked",
+          reason: result.code,
+          provider: deletionProvider,
+          hasSession: result.code !== "account_deletion_unauthorized",
+          isDeleting: true,
+        });
+        if (result.cancelled) return;
+        if (result.code === "recent_auth_required") {
+          toast.error("為了保護帳號，請先登出並重新登入，再立即刪除帳號。");
+          return;
+        }
+        toast.error(
+          result.code.includes("storage")
+            ? "媒體資料刪除失敗，請重試。帳號尚未刪除。"
+            : "帳號刪除失敗，請稍後重試。",
+        );
+        return;
+      }
+      setDeleteAccountDialogOpen(false);
+      await clearRevenueCatIdentityAfterAccountDeletion().catch(() => undefined);
+      await clearDeletedAccountLocalData(user.id);
+      toast.success("Roamie 帳號已永久刪除");
+      await navigate({ to: "/login", replace: true });
+    } catch {
+      toast.error("帳號刪除失敗，請確認網路後重試。帳號尚未刪除。");
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
 
   if (authLoading) {
     return (
@@ -231,7 +307,7 @@ function SettingsPage() {
         <div className="grid min-h-12 grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-3 px-6 py-3.5">
           <p className="text-[15px] leading-5">{t("settings.loginMethod")}</p>
           <p className="justify-self-end text-[15px] leading-5 text-muted-foreground">
-            {loading ? t("common.dash") : providerLabel(authProvider, t)}
+            {loading ? t("common.dash") : providerLabel(displayAuthProvider, t)}
           </p>
         </div>
       </section>
@@ -331,6 +407,16 @@ function SettingsPage() {
             取消訂閱
           </button>
         ) : null}
+
+        {user ? (
+          <button
+            type="button"
+            onClick={() => setDeleteAccountDialogOpen(true)}
+            className="px-2 py-1 text-center text-sm leading-5 text-destructive underline-offset-4 hover:underline"
+          >
+            刪除帳號
+          </button>
+        ) : null}
       </div>
 
       <AlertDialog
@@ -358,6 +444,49 @@ function SettingsPage() {
               onClick={() => void handleManageSubscription()}
             >
               前往取消訂閱
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={deleteAccountDialogOpen} onOpenChange={setDeleteAccountDialogOpen}>
+        <AlertDialogContent className="mx-auto max-w-[calc(100%-2rem)] rounded-2xl sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>確定要刪除帳號嗎？</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-3 text-left leading-relaxed">
+              <span className="block">
+                此操作無法復原。刪除後，你的已儲存行程、收藏、聊天紀錄、旅行偏好與帳號資料將被永久刪除。
+              </span>
+              {canManageAppleSubscription ? (
+                <span className="block">
+                  刪除 Roamie 帳號不會自動取消你的 App Store 訂閱。若不希望後續續訂，請先前往 Apple
+                  管理訂閱。
+                </span>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {canManageAppleSubscription ? (
+            <button
+              type="button"
+              className="w-full text-center text-sm text-muted-foreground underline"
+              onClick={() => void handleManageSubscription()}
+            >
+              管理訂閱
+            </button>
+          ) : null}
+          <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
+            <AlertDialogCancel className="mt-0 w-full rounded-full" disabled={deletingAccount}>
+              保留我的帳號
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="w-full rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deletingAccount}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDeleteAccount();
+              }}
+            >
+              {deletingAccount ? "正在永久刪除…" : "永久刪除帳號"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

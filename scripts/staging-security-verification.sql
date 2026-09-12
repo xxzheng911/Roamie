@@ -1,6 +1,6 @@
 -- ROAMIE STAGING DYNAMIC SECURITY VERIFICATION -- STAGING PREVIEW BRANCH ONLY
 -- Execute as one complete batch. Every fixture mutation is rolled back.
--- Requires migration 20260909120000_profile_subscription_authority_guard.
+-- Requires migration 20260913130000_profiles_authenticated_table_grants.
 
 BEGIN;
 
@@ -91,12 +91,31 @@ END;
 $$;
 
 -- Transaction-local Auth users. The auth trigger creates their profiles.
-INSERT INTO auth.users (id, email)
-SELECT user_a, 'security-a-' || replace(user_a::text, '-', '') || '@example.invalid'
+INSERT INTO auth.users (id, email, raw_app_meta_data)
+SELECT user_a, 'security-a-' || replace(user_a::text, '-', '') || '@example.invalid',
+  '{"provider":"google"}'::jsonb
 FROM pg_temp.security_test_context
 UNION ALL
-SELECT user_b, 'security-b-' || replace(user_b::text, '-', '') || '@example.invalid'
+SELECT user_b, 'security-b-' || replace(user_b::text, '-', '') || '@example.invalid',
+  '{"provider":"apple"}'::jsonb
 FROM pg_temp.security_test_context;
+
+SELECT pg_temp.assert_true((
+  SELECT count(*) = 2
+  FROM public.profiles
+  WHERE id IN (
+    SELECT user_a FROM pg_temp.security_test_context
+    UNION ALL SELECT user_b FROM pg_temp.security_test_context
+  )
+), 'Google and Apple signup trigger bootstraps profiles');
+
+SELECT pg_temp.assert_true(
+  has_table_privilege('authenticated', 'public.profiles', 'SELECT')
+  AND has_table_privilege('authenticated', 'public.profiles', 'INSERT')
+  AND has_table_privilege('authenticated', 'public.profiles', 'UPDATE')
+  AND NOT has_table_privilege('authenticated', 'public.profiles', 'DELETE'),
+  'authenticated profile table privileges are least privilege'
+);
 
 -- Defensive profiles in case the auth trigger is disabled.
 INSERT INTO public.profiles (id, display_name)
@@ -406,8 +425,8 @@ DO $$
 DECLARE assertion_count integer;
 BEGIN
   SELECT count(*) INTO assertion_count FROM pg_temp.security_test_results;
-  IF assertion_count <> 30 THEN
-    RAISE EXCEPTION 'expected 30 completed security assertions, got %', assertion_count;
+  IF assertion_count <> 32 THEN
+    RAISE EXCEPTION 'expected 32 completed security assertions, got %', assertion_count;
   END IF;
 END;
 $$;

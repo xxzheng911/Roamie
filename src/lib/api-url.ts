@@ -7,6 +7,7 @@ const ALLOWED_API_PATHS = new Set([
   "/api/place-photo",
   "/api/admin/dashboard",
   "/api/subscription/sync",
+  "/api/account/delete",
 ]);
 
 export class ApiUrlError extends Error {

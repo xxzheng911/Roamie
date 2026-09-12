@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef } from "react";
-import defaultAvatar from "@/assets/roamie-default-avatar.png";
 import { useAvatar } from "@/hooks/use-avatar";
 import { useUserMediaStore } from "@/hooks/use-user-media-store";
+import { DEFAULT_USER_AVATAR } from "@/lib/default-avatar";
 import {
   avatarRevisionFromUpdatedAt,
   resolveAvatarDisplayUrl,
@@ -205,7 +205,7 @@ function ProfileAvatarSelf({ className, imgClassName, alt = "", priority = false
   if (showAvatarDefault) {
     return (
       <AvatarImageNode
-        src={defaultAvatar}
+        src={DEFAULT_USER_AVATAR}
         alt={alt}
         priority={priority}
         className={className}
@@ -249,7 +249,7 @@ function ProfileAvatarExternal({
   if (showDefault && !pending) {
     return (
       <AvatarImageNode
-        src={defaultAvatar}
+        src={DEFAULT_USER_AVATAR}
         alt={alt}
         priority={priority}
         className={className}

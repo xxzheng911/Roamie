@@ -86,12 +86,13 @@ export function TripAffiliateSection({
       {meta.subtitle && !compact ? (
         <p className="mt-1 text-xs text-muted-foreground">{meta.subtitle}</p>
       ) : null}
+      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+        透過部分連結完成預訂時，Roamie可能獲得合作佣金，不影響你的價格。
+      </p>
       <div
         data-affiliate-layout={kind === "ticket" ? "provider-search-grid" : "provider-row"}
         className={cn(
-          kind === "ticket"
-            ? "grid w-full gap-2"
-            : "flex flex-wrap gap-2",
+          kind === "ticket" ? "grid w-full gap-2" : "flex flex-wrap gap-2",
           kind === "ticket" && (visible.length > 1 ? "grid-cols-2" : "grid-cols-1"),
           compact ? "mt-2" : "mt-3",
         )}
@@ -132,10 +133,16 @@ export function TripAffiliateSection({
                 compact ? "py-1.5 text-xs" : "py-2 text-sm",
               )}
             >
-              <span className={cn(kind === "ticket" && "min-w-0 text-center leading-tight whitespace-normal")}>
+              <span
+                className={cn(
+                  kind === "ticket" && "min-w-0 text-center leading-tight whitespace-normal",
+                )}
+              >
                 {offer.label}
               </span>
-              <ExternalLink className={cn("shrink-0 opacity-60", compact ? "h-3 w-3" : "h-3.5 w-3.5")} />
+              <ExternalLink
+                className={cn("shrink-0 opacity-60", compact ? "h-3 w-3" : "h-3.5 w-3.5")}
+              />
             </button>
           );
         })}

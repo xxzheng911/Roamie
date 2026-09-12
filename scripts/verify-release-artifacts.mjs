@@ -5,14 +5,16 @@ import { basename, join, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const roots = [resolve(root, "dist"), resolve(root, "ios/App/App/public")].filter(existsSync);
 const forbiddenFiles = new Set([".env", ".env.local", ".dev.vars"]);
-const secretValuePatterns = [
-  /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g,
-];
+const secretValuePatterns = [/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g];
 const clientSecretNamePatterns = [
   /\bSUPABASE_SERVICE_ROLE_KEY\b/g,
   /\bOPENAI_API_KEY\s*=/g,
   /\bGOOGLE_MAPS_API_KEY\s*=/g,
   /\bREVENUECAT_SECRET_API_KEY\s*=/g,
+  /\bREVENUECAT_V2_SECRET_API_KEY\s*=/g,
+  /\bREVENUECAT_PROJECT_ID\s*=/g,
+  /\bAPPLE_PRIVATE_KEY\b/g,
+  /-----BEGIN PRIVATE KEY-----/g,
 ];
 const failures = [];
 
@@ -22,7 +24,8 @@ function scanJwtRoles(path, text) {
     try {
       const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
       // Supabase anon JWTs are public client credentials. Privileged/unknown JWTs are not.
-      if (payload.role !== "anon") failures.push(`${path}: forbidden JWT role ${payload.role ?? "unknown"}`);
+      if (payload.role !== "anon")
+        failures.push(`${path}: forbidden JWT role ${payload.role ?? "unknown"}`);
     } catch {
       failures.push(`${path}: malformed or unknown JWT credential`);
     }

@@ -171,3 +171,8 @@ export function createSubscriptionAdapter(): SubscriptionAdapter {
     ? revenueCatAdapter
     : localSubscriptionAdapter;
 }
+
+/** Called only after the server confirms that the Roamie account was deleted. */
+export async function clearRevenueCatIdentityAfterAccountDeletion(): Promise<void> {
+  await revenueCatAdapter.logOut();
+}

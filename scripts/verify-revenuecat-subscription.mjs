@@ -83,6 +83,8 @@ assert.match(
   /api\.revenuecat\.com\/v1\/subscribers/,
   "server verifies subscriber directly with RevenueCat",
 );
+assert.match(server, /readEnv\(env, "REVENUECAT_SECRET_API_KEY"\)/);
+assert.doesNotMatch(server, /REVENUECAT_V2_SECRET_API_KEY/);
 assert.doesNotMatch(route, /isPlus/, "client spoofed isPlus is not accepted by sync endpoint");
 assert.match(
   server,

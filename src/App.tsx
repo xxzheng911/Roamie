@@ -17,6 +17,16 @@ type Props = { children: ReactNode };
 export function App({ children }: Props) {
   const isAdminBoundary = isAdminAuthBoundaryRoute(readBrowserPathname());
   const isAdminPage = isAdminRoute(readBrowserPathname());
+  const stagingBadge =
+    import.meta.env.VITE_DEPLOY_ENV === "staging" ? (
+      <div
+        aria-label="Staging build"
+        className="pointer-events-none fixed right-3 z-[10000] rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold tracking-wider text-black shadow-sm"
+        style={{ top: "calc(env(safe-area-inset-top, 0px) + 4px)" }}
+      >
+        STAGING
+      </div>
+    ) : null;
 
   useEffect(() => {
     logAppRemountSource("App");
@@ -40,13 +50,21 @@ export function App({ children }: Props) {
   }, []);
 
   if (isAdminPage) {
-    return <AppErrorBoundary>{children}</AppErrorBoundary>;
+    return (
+      <AppErrorBoundary>
+        {stagingBadge}
+        {children}
+      </AppErrorBoundary>
+    );
   }
 
   if (isAdminBoundary) {
     return (
       <AppProviders>
-        <AppErrorBoundary>{children}</AppErrorBoundary>
+        <AppErrorBoundary>
+          {stagingBadge}
+          {children}
+        </AppErrorBoundary>
       </AppProviders>
     );
   }
@@ -54,7 +72,10 @@ export function App({ children }: Props) {
   return (
     <OnboardingGate>
       <AppProviders>
-        <AppErrorBoundary>{children}</AppErrorBoundary>
+        <AppErrorBoundary>
+          {stagingBadge}
+          {children}
+        </AppErrorBoundary>
       </AppProviders>
     </OnboardingGate>
   );

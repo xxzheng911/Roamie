@@ -1,4 +1,5 @@
 import type { Session } from "@supabase/supabase-js";
+import { registerPlugin } from "@capacitor/core";
 import { APP_BUNDLE_ID } from "@/constants/app";
 import { createAppleSignInNonce } from "@/lib/auth-nonce";
 import { assertSupabaseConfiguredForAuth } from "@/lib/supabase-project-url";
@@ -17,6 +18,20 @@ export type AppleNativeSignInResult =
   | { ok: true; session: Session }
   | { ok: false; message: string; cancelled?: boolean };
 
+export type AppleDeletionReauthenticationResult =
+  | { ok: true; identityToken: string; authorizationCode: string }
+  | { ok: false; message: string; cancelled?: boolean };
+
+type SecureAppleSignInPlugin = {
+  authorize(options: {
+    clientId: string;
+    scopes: string;
+    nonce: string;
+  }): Promise<{ identityToken?: string; authorizationCode?: string }>;
+};
+
+const SecureAppleSignIn = registerPlugin<SecureAppleSignInPlugin>("SecureAppleSignIn");
+
 export function canUseNativeAppleSignIn(): boolean {
   if (typeof window === "undefined") return false;
   const info = detectPlatform();
@@ -31,11 +46,29 @@ function isUserCancelled(error: unknown): boolean {
     logAuthDebug("apple.native.cancelled_code_1001", debug);
     return true;
   }
-  return (
-    /cancel/i.test(msg) ||
-    /user canceled/i.test(msg) ||
-    /authorization failed/i.test(msg)
-  );
+  return /cancel/i.test(msg) || /user canceled/i.test(msg) || /authorization failed/i.test(msg);
+}
+
+/** One-shot recent authentication for account deletion. Credentials are never persisted. */
+export async function reauthenticateAppleForAccountDeletion(): Promise<AppleDeletionReauthenticationResult> {
+  if (!canUseNativeAppleSignIn()) return { ok: false, message: "目前裝置不支援原生 Apple 登入" };
+  try {
+    const { hashed } = await createAppleSignInNonce();
+    const result = await SecureAppleSignIn.authorize({
+      clientId: APP_BUNDLE_ID,
+      scopes: "email name",
+      nonce: hashed,
+    });
+    const identityToken = result.identityToken;
+    const authorizationCode = result.authorizationCode;
+    if (!identityToken || !authorizationCode)
+      return { ok: false, message: "Apple 未提供刪除帳號所需的重新認證資料" };
+    return { ok: true, identityToken, authorizationCode };
+  } catch (error) {
+    if (isUserCancelled(error)) return { ok: false, message: "已取消登入", cancelled: true };
+    logAuthError("apple.accountDeletionReauth", error);
+    return { ok: false, message: "無法完成 Apple 重新認證，請稍後再試" };
+  }
 }
 
 /**
@@ -45,12 +78,6 @@ function isUserCancelled(error: unknown): boolean {
 export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> {
   if (!canUseNativeAppleSignIn()) {
     return { ok: false, message: "目前裝置不支援原生 Apple 登入" };
-  }
-
-  const mod = await import("@capacitor-community/apple-sign-in").catch(() => null);
-  const SignInWithApple = mod?.SignInWithApple;
-  if (!SignInWithApple) {
-    return { ok: false, message: "Apple 登入模組尚未就緒（請確認 iOS 原生插件已安裝）" };
   }
 
   const configError = assertSupabaseConfiguredForAuth();
@@ -66,18 +93,17 @@ export async function signInWithAppleNative(): Promise<AppleNativeSignInResult> 
   try {
     const { raw: rawNonce, hashed: hashedNonce } = await createAppleSignInNonce();
 
-    const appleResult = await SignInWithApple.authorize({
+    const appleResult = await SecureAppleSignIn.authorize({
       clientId: APP_BUNDLE_ID,
-      redirectURI: "",
       scopes: "email name",
       nonce: hashedNonce,
     });
 
     logAuthDebug("apple.native.authorized", {
-      hasIdentityToken: Boolean(appleResult.response?.identityToken),
+      hasIdentityToken: Boolean(appleResult.identityToken),
     });
 
-    const identityToken = appleResult.response?.identityToken;
+    const identityToken = appleResult.identityToken;
     if (!identityToken) {
       logAuthSessionResult(false, { provider: "apple", reason: "no_identity_token" });
       return { ok: false, message: "Apple 未回傳 identity token" };

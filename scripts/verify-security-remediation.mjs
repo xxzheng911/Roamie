@@ -10,6 +10,9 @@ const resolverAuthority = read(
 const profileAuthority = read(
   "supabase/migrations/20260909120000_profile_subscription_authority_guard.sql",
 );
+const profileGrants = read(
+  "supabase/migrations/20260913130000_profiles_authenticated_table_grants.sql",
+);
 const staging = read("scripts/staging-security-verification.sql");
 
 assert.match(staging, /pg_temp\.assert_true\(\s*p_value boolean, p_test_name text\s*\)/);
@@ -38,6 +41,22 @@ assert.match(
   /v_privileged boolean := COALESCE\(auth\.role\(\), ''\) = 'service_role'/,
 );
 assert.doesNotMatch(profileAuthority, /session_user|current_user|postgres|supabase_admin/);
+assert.match(
+  profileGrants,
+  /REVOKE ALL ON TABLE public\.profiles FROM PUBLIC, anon/,
+);
+assert.match(
+  profileGrants,
+  /REVOKE DELETE ON TABLE public\.profiles FROM authenticated/,
+);
+assert.match(
+  profileGrants,
+  /GRANT SELECT, INSERT, UPDATE ON TABLE public\.profiles TO authenticated/,
+);
+assert.doesNotMatch(
+  profileGrants,
+  /GRANT[^;]*DELETE[^;]*TO authenticated/,
+);
 for (const field of [
   "plan_tier",
   "subscription_status",
@@ -51,6 +70,8 @@ assert.match(
   /profiles_protect_subscription_columns[\s\S]*protect_profile_subscription_columns/,
 );
 for (const dynamicCase of [
+  "Google and Apple signup trigger bootstraps profiles",
+  "authenticated profile table privileges are least privilege",
   "anon cannot update profile",
   "authenticated can update normal profile fields",
   "authenticated cannot modify protected subscription columns",
@@ -58,7 +79,7 @@ for (const dynamicCase of [
 ]) {
   assert.match(staging, new RegExp(dynamicCase));
 }
-assert.match(staging, /expected 30 completed security assertions/);
+assert.match(staging, /expected 32 completed security assertions/);
 
 assert.match(migration, /REVOKE INSERT ON public\.trip_members FROM anon, authenticated/);
 assert.doesNotMatch(migration, /user_id = auth\.uid\(\) AND is_owner = false/);

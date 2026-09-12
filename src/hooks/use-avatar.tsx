@@ -8,8 +8,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import defaultAvatar from "@/assets/roamie-default-avatar.png";
 import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
+import { DEFAULT_USER_AVATAR } from "@/lib/default-avatar";
 import { getUserProfile } from "@/lib/profile-storage";
 import { AVATAR_UPDATED_EVENT, type AvatarUpdatedDetail } from "@/lib/avatar-events";
 import { isSameMediaUrl } from "@/lib/media-display-url";
@@ -371,7 +371,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
         (effectiveAvatarStatus === "unknown" && !avatarDisplaySrc),
       showAvatarDefault,
       // Never expose default as a silent fallback while status is unknown/custom.
-      avatarSrc: showAvatarDefault ? defaultAvatar : avatarDisplaySrc,
+      avatarSrc: showAvatarDefault ? DEFAULT_USER_AVATAR : avatarDisplaySrc,
       firstRenderSnapshot: {
         userIdentityKnown: Boolean(bootUserId),
         avatarStatus: effectiveAvatarStatus,

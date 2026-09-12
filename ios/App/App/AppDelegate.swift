@@ -2,6 +2,85 @@ import UIKit
 import WebKit
 import Capacitor
 import StoreKit
+import AuthenticationServices
+
+@objc(SecureAppleSignInPlugin)
+final class SecureAppleSignInPlugin: CAPPlugin, CAPBridgedPlugin, ASAuthorizationControllerDelegate {
+    let identifier = "SecureAppleSignInPlugin"
+    let jsName = "SecureAppleSignIn"
+    let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "authorize", returnType: CAPPluginReturnPromise)
+    ]
+
+    private var activeCallbackId: String?
+
+    @objc func authorize(_ call: CAPPluginCall) {
+        guard activeCallbackId == nil else {
+            call.reject("Apple reauthentication already in progress")
+            return
+        }
+        let request = ASAuthorizationAppleIDProvider().createRequest()
+        request.nonce = call.getString("nonce")
+        let scopes = call.getString("scopes") ?? ""
+        var requestedScopes: [ASAuthorization.Scope] = []
+        if scopes.contains("email") { requestedScopes.append(.email) }
+        if scopes.contains("name") { requestedScopes.append(.fullName) }
+        request.requestedScopes = requestedScopes
+
+        activeCallbackId = call.callbackId
+        bridge?.saveCall(call)
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.performRequests()
+    }
+
+    func authorizationController(
+        controller: ASAuthorizationController,
+        didCompleteWithAuthorization authorization: ASAuthorization
+    ) {
+        guard
+            let callbackId = activeCallbackId,
+            let call = bridge?.savedCall(withID: callbackId),
+            let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+            let identityTokenData = credential.identityToken,
+            let authorizationCodeData = credential.authorizationCode,
+            let identityToken = String(data: identityTokenData, encoding: .utf8),
+            let authorizationCode = String(data: authorizationCodeData, encoding: .utf8)
+        else {
+            finishWithError("Apple reauthentication credentials unavailable")
+            return
+        }
+
+        // Capacitor Debug normally logs the first 256 bytes of every native response.
+        // Suppress only this credential-bearing bridge response.
+        let previousLoggingState = CAPLog.enableLogging
+        CAPLog.enableLogging = false
+        call.resolve([
+            "identityToken": identityToken,
+            "authorizationCode": authorizationCode
+        ])
+        CAPLog.enableLogging = previousLoggingState
+        bridge?.releaseCall(call)
+        activeCallbackId = nil
+    }
+
+    func authorizationController(
+        controller: ASAuthorizationController,
+        didCompleteWithError error: Error
+    ) {
+        finishWithError(error.localizedDescription)
+    }
+
+    private func finishWithError(_ message: String) {
+        guard
+            let callbackId = activeCallbackId,
+            let call = bridge?.savedCall(withID: callbackId)
+        else { return }
+        call.reject(message)
+        bridge?.releaseCall(call)
+        activeCallbackId = nil
+    }
+}
 
 @objc(SubscriptionManagementPlugin)
 final class SubscriptionManagementPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -364,6 +443,7 @@ class PortraitBridgeViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         super.capacitorDidLoad()
         bridge?.registerPluginInstance(SubscriptionManagementPlugin())
+        bridge?.registerPluginInstance(SecureAppleSignInPlugin())
         if let bridge = bridge {
             let startURL = bridge.config.appStartServerURL
             let indexPath = bridge.config.appStartFileURL.path

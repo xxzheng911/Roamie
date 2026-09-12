@@ -1,7 +1,7 @@
-import defaultTraveler from "@/assets/roamie-traveler.jpg";
+import { DEFAULT_USER_AVATAR } from "@/lib/default-avatar";
 
 /** 使用者定位 marker 預設頭像（bundled，一定存在） */
-export const DEFAULT_USER_MARKER_AVATAR = defaultTraveler;
+export const DEFAULT_USER_MARKER_AVATAR = DEFAULT_USER_AVATAR;
 
 /** 安全解析大頭貼 URL，避免 undefined / 空字串導致 marker 異常 */
 export function resolveUserMarkerAvatarSrc(src?: string | null): string {
