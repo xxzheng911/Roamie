@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import { resolveHomePersonalizationVariant } from "../src/lib/home-personalization-visibility.ts";
+import {
+  buildHomePlusInsight,
+  resolveHomeSessionPlusInsight,
+} from "../src/lib/home-personalization-insight.ts";
 
 const access = fs.readFileSync("src/hooks/use-access.tsx", "utf8");
 const card = fs.readFileSync("src/components/home/HomePersonalizationCard.tsx", "utf8");
@@ -49,6 +53,64 @@ test("returning Plus remains on the Plus variant", () => {
 });
 
 test("Plus personalization data changes copy without selecting a different card branch", () => {
-  assert.equal((card.match(/buildHomePlusInsight\(/g) ?? []).length, 1);
+  assert.match(card, /resolveHomeSessionPlusInsight\(/);
   assert.match(card, /if \(variant === "plus"\)[\s\S]*\{plusInsight\}/);
+});
+
+test("late nearby, weather, and trip hydration cannot replace a displayed session insight", () => {
+  const sessionKey = `stable-${crypto.randomUUID()}`;
+  const savedFirst = resolveHomeSessionPlusInsight(sessionKey, true, {
+    savedPlaces: [
+      {
+        id: "saved-1",
+        name: "M",
+        category: "mountain_peak",
+        address: null,
+        city: null,
+        lat: null,
+        lng: null,
+        notes: null,
+        mood_tag: null,
+        cover_image: null,
+        image_url: null,
+        image_source: null,
+        metadata: { primaryType: "mountain_peak", types: ["mountain_peak"] },
+        created_at: "2026-09-14T00:00:00Z",
+      },
+    ],
+  });
+  const hydratedLater = resolveHomeSessionPlusInsight(sessionKey, true, {
+    savedPlaces: [],
+    nearbyPicks: [{ id: "cafe", name: "Cafe", primaryType: "cafe" }],
+    weather: { available: true, condition: "雨" },
+    latestTripTitle: "高雄散步",
+  });
+  assert.equal(hydratedLater, savedFirst);
+});
+
+test("raw Google taxonomy never reaches rendered insight copy", () => {
+  const insight = buildHomePlusInsight({
+    savedPlaces: ["mountain_peak", "amusement_center", "ramen_restaurant"].map(
+      (category, index) => ({
+        id: `saved-${index}`,
+        name: `Place ${index}`,
+        category,
+        address: null,
+        city: null,
+        lat: null,
+        lng: null,
+        notes: null,
+        mood_tag: null,
+        cover_image: null,
+        image_url: null,
+        image_source: null,
+        metadata: { primaryType: category, types: [category] },
+        created_at: "2026-09-14T00:00:00Z",
+      }),
+    ),
+  });
+  assert.doesNotMatch(
+    insight,
+    /mountain_peak|amusement_center|ramen_restaurant|tourist_attraction/,
+  );
 });

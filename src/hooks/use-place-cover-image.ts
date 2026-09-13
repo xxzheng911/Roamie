@@ -25,9 +25,11 @@ type Options = PlaceImageInput & {
  * 地點封面：img src = Google Places photo URL；僅 onError 時 fallback 本地圖。
  */
 export function usePlaceCoverImage(options: Options): {
-  src: string;
+  src: string | null;
+  onLoad: () => void;
   onError: () => void;
   loading: boolean;
+  failed: boolean;
 } {
   const { url, photoName, maxWidth, photoWidth, enabled = true, ...placeInput } = options;
   const width = maxWidth ?? photoWidth ?? 600;
@@ -59,13 +61,15 @@ export function usePlaceCoverImage(options: Options): {
     return null;
   }, [enabled, url, photoName, width, persistedImageKey]);
 
-  const [src, setSrc] = useState(() => fallback);
+  const [src, setSrc] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(enabled && (photoName || primaryUrl)));
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     failedRef.current = false;
+    setFailed(false);
     if (!enabled) {
-      setSrc(fallback);
+      setSrc(null);
       setLoading(false);
       return;
     }
@@ -73,6 +77,7 @@ export function usePlaceCoverImage(options: Options): {
       photoName?.trim() || (primaryUrl?.includes("/api/place-photo") ? primaryUrl : null);
     if (photoResource) {
       let cancelled = false;
+      setSrc(null);
       setLoading(true);
       void getSignedPlacePhotoUrl(photoResource, width).then((signed) => {
         if (cancelled) return;
@@ -80,8 +85,11 @@ export function usePlaceCoverImage(options: Options): {
           if (persistedImageKey) setCachedImage(persistedImageKey, signed);
           setSrc(signed);
           logPerfImageLoad("place-cover", 1, "google");
-        } else setSrc(fallback);
-        setLoading(false);
+        } else {
+          setSrc(fallback);
+          setFailed(true);
+          setLoading(false);
+        }
       });
       return () => {
         cancelled = true;
@@ -89,12 +97,16 @@ export function usePlaceCoverImage(options: Options): {
     }
     if (primaryUrl) {
       setSrc(primaryUrl);
-      setLoading(false);
+      setLoading(true);
       return;
     }
     setSrc(fallback);
     setLoading(false);
   }, [enabled, fallback, photoName, primaryUrl, persistedImageKey, width]);
+
+  const onLoad = useCallback(() => {
+    setLoading(false);
+  }, []);
 
   const onError = useCallback(() => {
     if (failedRef.current) return;
@@ -102,8 +114,9 @@ export function usePlaceCoverImage(options: Options): {
     if (primaryUrl) markImageLoadFailed(primaryUrl);
     markImageLoadFailed(src);
     setSrc(fallback);
+    setFailed(true);
     setLoading(false);
   }, [fallback, primaryUrl, src]);
 
-  return { src, onError, loading };
+  return { src, onLoad, onError, loading, failed };
 }

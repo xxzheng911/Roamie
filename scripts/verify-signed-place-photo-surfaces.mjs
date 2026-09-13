@@ -55,18 +55,27 @@ assert.equal(itineraryItem.rating, 4.7);
 const cover = fs.readFileSync("src/components/media/PlaceCoverImage.tsx", "utf8");
 const placeImage = fs.readFileSync("src/components/media/PlaceImage.tsx", "utf8");
 const safeImage = fs.readFileSync("src/components/media/SafeImage.tsx", "utf8");
+const coverHook = fs.readFileSync("src/hooks/use-place-cover-image.ts", "utf8");
 const favorite = fs.readFileSync("src/components/saved/SavedPlaceCoverThumb.tsx", "utf8");
 const tripCard = fs.readFileSync("src/components/saved/TripPlaceCard.tsx", "utf8");
 const detail = fs.readFileSync("src/components/map/PlaceDetailSheet.tsx", "utf8");
+const fadeIn = fs.readFileSync("src/components/media/FadeInImage.tsx", "utf8");
+const savedRoute = fs.readFileSync("src/routes/_app.saved.index.tsx", "utf8");
 
 assert.match(cover, /!shouldLoad[\s\S]*animate-pulse/);
 assert.doesNotMatch(cover, /!shouldLoad[\s\S]{0,240}<img/);
 assert.match(placeImage, /!shouldLoad[\s\S]*animate-pulse/);
+assert.match(coverHook, /useState<string \| null>\(null\)/);
+assert.match(coverHook, /const onLoad[\s\S]*setLoading\(false\)/);
+assert.match(fadeIn, /!src[\s\S]*loading\s*\? null/);
+assert.match(fadeIn, /!loading && fallbackSrc/);
 assert.match(safeImage, /setResolvingSignature\(true\)/);
 assert.match(safeImage, /signed[\s\S]*setResolvingSignature\(false\)/);
 assert.match(favorite, /resolveSavedPlacePhotoResource/);
 assert.match(favorite, /<PlaceImage/);
 assert.match(tripCard, /<PlaceImage/);
 assert.match(detail, /fetchPriority=.*high/);
+assert.match(savedRoute, /\{p\.address \|\| ""\}/);
+assert.doesNotMatch(savedRoute, /\[p\.category, p\.city, p\.address\]/);
 
 console.log("Signed place photo surface regression: PASS");

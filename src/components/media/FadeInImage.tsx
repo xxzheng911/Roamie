@@ -58,9 +58,11 @@ export function FadeInImage({
     if (!src) {
       setLoaded(false);
       setDisplaySrc(
-        fallbackSrc
-          ? (resolvePlaceImageUrl(fallbackSrc) ?? getLocalPlaceImageFallback())
-          : null,
+        loading
+          ? null
+          : fallbackSrc
+            ? (resolvePlaceImageUrl(fallbackSrc) ?? getLocalPlaceImageFallback())
+            : null,
       );
       setUsedFallback(false);
       prevStable.current = "";
@@ -80,9 +82,7 @@ export function FadeInImage({
     prevStable.current = nextStable;
 
     const safeSrc =
-      src.startsWith("blob:") || src.startsWith("data:")
-        ? src
-        : resolvePlaceImageUrl(src);
+      src.startsWith("blob:") || src.startsWith("data:") ? src : resolvePlaceImageUrl(src);
     if (!safeSrc || isImageLoadFailed(safeSrc)) {
       const safeFallback =
         resolvePlaceImageUrl(fallbackSrc ?? null) ?? getLocalPlaceImageFallback();
@@ -100,7 +100,7 @@ export function FadeInImage({
     setDisplaySrc(safeSrc);
     setUsedFallback(false);
     setLoaded(loadedSrcCache.has(nextStable) || loadedSrcCache.has(safeSrc));
-  }, [src, fallbackSrc]);
+  }, [src, fallbackSrc, loading]);
 
   return (
     <div className={cn("relative overflow-hidden bg-secondary", className)}>
@@ -146,7 +146,7 @@ export function FadeInImage({
             imgClassName,
           )}
         />
-      ) : fallbackSrc ? (
+      ) : !loading && fallbackSrc ? (
         <img
           src={preferJpegPngImageUrl(fallbackSrc) ?? fallbackSrc}
           alt={alt}

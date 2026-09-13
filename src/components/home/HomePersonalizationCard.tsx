@@ -1,11 +1,13 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { HeartHandshake, Sparkles } from "lucide-react";
 import { useAccess } from "@/hooks/use-access";
+import { useAuth } from "@/hooks/use-auth";
 import { useI18n } from "@/hooks/use-i18n";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
 import {
-  buildHomePlusInsight,
+  readHomeSessionPlusInsight,
+  resolveHomeSessionPlusInsight,
   resolveHomePlusCopySource,
 } from "@/lib/home-personalization-insight";
 import { resolveHomePersonalizationVariant } from "@/lib/home-personalization-visibility";
@@ -25,6 +27,7 @@ type Props = {
   selectedMood?: string | null;
   latestTripTitle?: string | null;
   chatSession?: ChatPlanningSession | null;
+  personalizationReady?: boolean;
   className?: string;
 };
 
@@ -36,14 +39,21 @@ export function HomePersonalizationCard({
   selectedMood,
   latestTripTitle,
   chatSession = null,
+  personalizationReady = false,
   className,
 }: Props) {
   const navigate = useNavigate();
   const { locale } = useI18n();
   const { hasPlusAccess, subscriptionSource, entitlementDisplayStable } = useAccess();
+  const { user } = useAuth();
   const { upgradeToPlus } = usePlusUpgrade();
+  const sessionKey = user?.id ?? null;
+  const [plusInsight, setPlusInsight] = useState<string | null>(() =>
+    readHomeSessionPlusInsight(sessionKey),
+  );
+  const plusInsightReady = !hasPlusAccess || plusInsight !== null;
   const variant = resolveHomePersonalizationVariant(
-    entitlementDisplayStable === true,
+    entitlementDisplayStable === true && plusInsightReady,
     hasPlusAccess,
   );
 
@@ -54,9 +64,23 @@ export function HomePersonalizationCard({
     );
   }, [hasPlusAccess, subscriptionSource, entitlementDisplayStable]);
 
-  const plusInsight = useMemo(
-    () =>
-      buildHomePlusInsight({
+  useEffect(() => {
+    const cached = readHomeSessionPlusInsight(sessionKey);
+    setPlusInsight(cached);
+  }, [sessionKey]);
+
+  useEffect(() => {
+    if (
+      !sessionKey ||
+      !hasPlusAccess ||
+      entitlementDisplayStable !== true ||
+      !personalizationReady ||
+      plusInsight
+    ) {
+      return;
+    }
+    setPlusInsight(
+      resolveHomeSessionPlusInsight(sessionKey, true, {
         savedPlaces,
         prefs,
         selectedMood,
@@ -66,8 +90,22 @@ export function HomePersonalizationCard({
         chatSession,
         locale,
       }),
-    [savedPlaces, prefs, selectedMood, weather, nearbyPicks, latestTripTitle, chatSession, locale],
-  );
+    );
+  }, [
+    sessionKey,
+    hasPlusAccess,
+    entitlementDisplayStable,
+    personalizationReady,
+    savedPlaces,
+    prefs,
+    selectedMood,
+    weather,
+    nearbyPicks,
+    latestTripTitle,
+    chatSession,
+    locale,
+    plusInsight,
+  ]);
 
   useEffect(() => {
     if (!hasPlusAccess) return;

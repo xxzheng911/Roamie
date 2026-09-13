@@ -33,7 +33,7 @@ export function PlaceCoverImage({
     rootMargin: "80px",
   });
   const shouldLoad = priority || !lazy || inView;
-  const { src, onError, loading } = usePlaceCoverImage({
+  const { src, onLoad, onError, loading } = usePlaceCoverImage({
     url,
     photoName,
     maxWidth,
@@ -58,6 +58,7 @@ export function PlaceCoverImage({
               fetchPriority={priority ? "high" : "auto"}
               decoding="async"
               draggable={false}
+              onLoad={onLoad}
               onError={onError}
               className={cn("h-full w-full object-cover", loading && "opacity-0", imgClassName)}
             />

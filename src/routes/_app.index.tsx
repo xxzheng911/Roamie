@@ -200,13 +200,16 @@ function Home() {
   const homeChatSession = useMemo(() => loadChatSession(), []);
   const [aiLoading, setAiLoading] = useState(false);
   const [latestTrip, setLatestTrip] = useState<CoreTrip | null>(null);
+  const [latestTripHydrated, setLatestTripHydrated] = useState(false);
   const [prefs, setPrefs] = useState<Awaited<ReturnType<typeof getPreferences>> | null>(() => {
     const status = mergePreferencesWithTravelPrefStatus(readCachedPreferencesSync());
     if (status.onboarded) return status;
     const cached = readCachedPreferencesSync();
     return Object.keys(cached).length > 0 ? cached : null;
   });
+  const [prefsHydrated, setPrefsHydrated] = useState(() => isPreferencesRemoteHydrated());
   const [savedPlaces, setSavedPlaces] = useState<Awaited<ReturnType<typeof listPlaces>>>([]);
+  const [savedPlacesHydrated, setSavedPlacesHydrated] = useState(false);
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [saveBusyId, setSaveBusyId] = useState<string | null>(null);
   const [navigatingPlaceId, setNavigatingPlaceId] = useState<string | null>(null);
@@ -243,6 +246,7 @@ function Home() {
 
   useEffect(() => {
     if (prefsHydratedRef.current && prefs?.onboarded) {
+      setPrefsHydrated(true);
       return;
     }
     if (isPreferencesRemoteHydrated()) {
@@ -251,6 +255,7 @@ function Home() {
         setPrefs((prev) => prev ?? cached);
         prefsHydratedRef.current = true;
       }
+      setPrefsHydrated(true);
       return;
     }
     const applyPrefs = (next: Awaited<ReturnType<typeof getPreferences>>) => {
@@ -284,9 +289,28 @@ function Home() {
         applyPrefs(p);
         prefsHydratedRef.current = true;
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setPrefsHydrated(true));
     window.addEventListener(PREFS_UPDATED_EVENT, onPrefs);
     return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void listPlaces()
+      .catch((error) => (isMissingTableError(error) ? [] : Promise.reject(error)))
+      .then((saved) => {
+        if (!active) return;
+        setSavedPlaces(saved);
+        setSavedNames(new Set(saved.map((place) => place.name)));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setSavedPlacesHydrated(true);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   const applyNearbyPicksIfChanged = useCallback((next: HomeNearbyPick[]) => {
@@ -990,7 +1014,8 @@ function Home() {
         if (latestTripIdRef.current === null) return;
         latestTripIdRef.current = null;
         setLatestTrip(null);
-      });
+      })
+      .finally(() => setLatestTripHydrated(true));
   }, []);
 
   useEffect(() => {
@@ -1231,6 +1256,14 @@ function Home() {
         selectedMood={selectedMoodLabel}
         latestTripTitle={latestTrip?.displayTitle ?? null}
         chatSession={homeChatSession}
+        personalizationReady={
+          prefsHydrated &&
+          savedPlacesHydrated &&
+          latestTripHydrated &&
+          weatherStatus !== "loading" &&
+          !nearbyLoading &&
+          nearbyRenderState !== "loading"
+        }
       />
     </div>
   );

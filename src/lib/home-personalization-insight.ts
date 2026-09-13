@@ -21,9 +21,35 @@ export type HomePersonalizationInsightInput = {
 
 export type HomePlusCopySource = "profile" | "recent_intent" | "combined" | "fallback";
 
-export function resolveHomePlusCopySource(input: HomePersonalizationInsightInput): HomePlusCopySource {
+const homeSessionInsights = new Map<string, string>();
+
+export function readHomeSessionPlusInsight(sessionKey: string | null): string | null {
+  return sessionKey ? (homeSessionInsights.get(sessionKey) ?? null) : null;
+}
+
+export function writeHomeSessionPlusInsight(sessionKey: string, insight: string): string {
+  homeSessionInsights.set(sessionKey, insight);
+  return insight;
+}
+
+export function resolveHomeSessionPlusInsight(
+  sessionKey: string,
+  ready: boolean,
+  input: HomePersonalizationInsightInput,
+): string | null {
+  const existing = readHomeSessionPlusInsight(sessionKey);
+  if (existing || !ready) return existing;
+  return writeHomeSessionPlusInsight(sessionKey, buildHomePlusInsight(input));
+}
+
+export function resolveHomePlusCopySource(
+  input: HomePersonalizationInsightInput,
+): HomePlusCopySource {
   const hasProfile = Boolean(
-    input.prefs?.pace || input.prefs?.vibe || input.prefs?.interests?.length || input.prefs?.avoid?.length,
+    input.prefs?.pace ||
+    input.prefs?.vibe ||
+    input.prefs?.interests?.length ||
+    input.prefs?.avoid?.length,
   );
   const hasRecent = Boolean(recentChatHint(input.chatSession) || input.savedPlaces.length);
   if (hasProfile && hasRecent) return "combined";
@@ -35,7 +61,17 @@ export function resolveHomePlusCopySource(input: HomePersonalizationInsightInput
 function topSavedCategories(saved: SavedPlace[], limit = 2): string[] {
   const counts = new Map<string, number>();
   for (const p of saved) {
-    const key = p.category?.trim() || "地點";
+    const metadata = p.metadata ?? {};
+    const types = Array.isArray(metadata.types)
+      ? metadata.types.filter((value): value is string => typeof value === "string")
+      : [];
+    const displayLabel = getExploreCategoryDisplayLabel({
+      name: p.name,
+      address: p.address,
+      primaryType: typeof metadata.primaryType === "string" ? metadata.primaryType : p.category,
+      types,
+    });
+    const key = displayLabel === "其他" ? "地點" : displayLabel;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return [...counts.entries()]
@@ -71,7 +107,12 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
 
   const savedCats = topSavedCategories(savedPlaces);
   const nearbyTypes = [
-    ...new Set(nearbyPicks.slice(0, 5).map((p) => getExploreCategoryDisplayLabel(p)).filter(Boolean)),
+    ...new Set(
+      nearbyPicks
+        .slice(0, 5)
+        .map((p) => getExploreCategoryDisplayLabel(p))
+        .filter(Boolean),
+    ),
   ].slice(0, 2);
   const chatHint = recentChatHint(chatSession);
   const rainy = weather?.condition?.includes("雨");
@@ -80,8 +121,14 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
 
   const paceLabel = prefs?.pace ? formatTravelPaceLabel(locale, prefs.pace) : "";
   const vibeLabel = prefs?.vibe ? formatTravelVibeLabel(locale, prefs.vibe) : "";
-  const interests = (prefs?.interests ?? []).map((item) => item.trim()).filter(Boolean).slice(0, 2);
-  const avoids = (prefs?.avoid ?? []).map((item) => item.trim()).filter(Boolean).slice(0, 2);
+  const interests = (prefs?.interests ?? [])
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 2);
+  const avoids = (prefs?.avoid ?? [])
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 2);
 
   if (chatHint && (paceLabel || vibeLabel || interests.length || avoids.length)) {
     const profileFacts = [

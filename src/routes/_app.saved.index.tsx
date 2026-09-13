@@ -508,9 +508,7 @@ function Saved() {
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[15px] font-medium">{p.name}</p>
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {[p.category, p.city, p.address].filter(Boolean).join(" · ")}
-                  </p>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">{p.address || ""}</p>
                 </div>
               </button>
               <div className="flex shrink-0 flex-col gap-1">
