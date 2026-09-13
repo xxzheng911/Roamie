@@ -19,7 +19,7 @@ const Event = z.object({
   transferred_from: z.array(z.string().max(256)).max(100).optional(),
   transferred_to: z.array(z.string().max(256)).max(100).optional(),
   entitlement_id: z.string().nullable().optional(),
-  entitlement_ids: z.array(z.string()).optional(),
+  entitlement_ids: z.array(z.string()).nullish(),
   product_id: z.string().nullable().optional(),
   new_product_id: z.string().nullable().optional(),
   purchased_at_ms: z.number().int().nullable().optional(),

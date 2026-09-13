@@ -74,6 +74,46 @@ const invoke = async (overrides = {}) =>
     },
   );
 
+const malformed = await handleRevenueCatWebhook(
+  new Request("https://roamie.tw/api/subscription/webhook", {
+    method: "POST",
+    headers: { authorization: "Bearer expected", "content-type": "application/json" },
+    body: JSON.stringify({ api_version: "1.0", event: { type: "TEST" } }),
+  }),
+  {
+    REVENUECAT_WEBHOOK_AUTHORIZATION: "Bearer expected",
+    REVENUECAT_WEBHOOK_APP_ID: "app-test",
+  },
+);
+assert.equal(malformed.status, 400);
+assert.deepEqual(await malformed.json(), { error: "webhook_payload_invalid" });
+
+const wrongApp = await invoke({ app_id: "app-other" });
+assert.equal(wrongApp.status, 422);
+assert.deepEqual(await wrongApp.json(), { error: "webhook_app_mismatch" });
+
+const persistedBeforeTest = persisted.length;
+const testEvent = await invoke({
+  id: "event-test",
+  type: "TEST",
+  app_user_id: "$RCAnonymousID:test-dashboard-customer",
+  original_app_user_id: "$RCAnonymousID:test-dashboard-customer",
+  aliases: [],
+  entitlement_id: null,
+  entitlement_ids: null,
+  product_id: null,
+  new_product_id: null,
+  purchased_at_ms: null,
+  expiration_at_ms: null,
+  grace_period_expiration_at_ms: null,
+  cancel_reason: null,
+  store: null,
+  environment: "SANDBOX",
+});
+assert.equal(testEvent.status, 200);
+assert.deepEqual(await testEvent.json(), { received: true, ignored: "unsupported_event" });
+assert.equal(persisted.length, persistedBeforeTest);
+
 assert.equal((await invoke()).status, 200);
 assert.equal(persisted.at(-1).status, "active");
 assert.equal(persisted.at(-1).userId, userId);
@@ -95,14 +135,34 @@ assert.equal(persisted.at(-1).status, "billing_issue");
 const invalidIdentity = await invoke({ app_user_id: "not-a-supabase-user" });
 assert.equal(invalidIdentity.status, 422);
 
+const unknownUser = await handleRevenueCatWebhook(
+  new Request("https://roamie.tw/api/subscription/webhook", {
+    method: "POST",
+    headers: { authorization: "Bearer expected", "content-type": "application/json" },
+    body: JSON.stringify(validEvent({ id: "event-unknown-user" })),
+  }),
+  {
+    REVENUECAT_WEBHOOK_AUTHORIZATION: "Bearer expected",
+    REVENUECAT_WEBHOOK_APP_ID: "app-test",
+  },
+  {
+    persist: async () => ({ processed: false, applied: false, reason: "unknown_user" }),
+    sync: async () => ({ active: false, expiresAt: null }),
+  },
+);
+assert.equal(unknownUser.status, 200);
+assert.deepEqual(await unknownUser.json(), {
+  received: true,
+  processed: false,
+  applied: false,
+  reason: "unknown_user",
+});
+
 assert.equal(revenueCatStatusFor("INITIAL_PURCHASE"), "active");
 assert.equal(revenueCatStatusFor("RENEWAL"), "active");
 assert.equal(revenueCatStatusFor("CANCELLATION", "UNSUBSCRIBE"), "cancelled");
 assert.equal(revenueCatStatusFor("CANCELLATION", "CUSTOMER_SUPPORT", 4_000, 5_000), "revoked");
-assert.equal(
-  revenueCatStatusFor("CANCELLATION", "CUSTOMER_SUPPORT", 6_000, 5_000),
-  "cancelled",
-);
+assert.equal(revenueCatStatusFor("CANCELLATION", "CUSTOMER_SUPPORT", 6_000, 5_000), "cancelled");
 assert.equal(revenueCatStatusFor("EXPIRATION"), "expired");
 assert.equal(revenueCatStatusFor("BILLING_ISSUE"), "billing_issue");
 assert.match(webhook, /REVENUECAT_WEBHOOK_AUTHORIZATION/);
