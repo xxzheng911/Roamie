@@ -8,5 +8,5 @@ function normalizePath(pathname: string): string {
  */
 export function isPublicOnboardingBypassPath(pathname: string): boolean {
   const path = normalizePath(pathname);
-  return path === "/support" || path === "/login/legal";
+  return path === "/support" || path === "/privacy" || path === "/login/legal";
 }

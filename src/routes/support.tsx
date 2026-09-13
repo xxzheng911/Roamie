@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ROAMIE_CONTACT_EMAIL } from "@/constants/contact";
 
-const PRIVACY_POLICY_URL = "/login/legal?doc=privacy";
+const PRIVACY_POLICY_URL = "/privacy";
 
 export const Route = createFileRoute("/support")({
   head: () => ({

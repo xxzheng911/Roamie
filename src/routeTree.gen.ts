@@ -13,6 +13,7 @@ import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as TripRouteImport } from './routes/trip'
 import { Route as TravelPreferenceTestRouteImport } from './routes/travel-preference-test'
 import { Route as SupportRouteImport } from './routes/support'
+import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AdminRouteImport } from './routes/admin'
@@ -62,6 +63,11 @@ const TravelPreferenceTestRoute = TravelPreferenceTestRouteImport.update({
 const SupportRoute = SupportRouteImport.update({
   id: '/support',
   path: '/support',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OnboardingRoute = OnboardingRouteImport.update({
@@ -219,6 +225,7 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/login': typeof LoginRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/privacy': typeof PrivacyRoute
   '/support': typeof SupportRoute
   '/travel-preference-test': typeof TravelPreferenceTestRoute
   '/trip': typeof TripRoute
@@ -253,6 +260,7 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/login': typeof LoginRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/privacy': typeof PrivacyRoute
   '/support': typeof SupportRoute
   '/travel-preference-test': typeof TravelPreferenceTestRoute
   '/trip': typeof TripRoute
@@ -289,6 +297,7 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/login': typeof LoginRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/privacy': typeof PrivacyRoute
   '/support': typeof SupportRoute
   '/travel-preference-test': typeof TravelPreferenceTestRoute
   '/trip': typeof TripRoute
@@ -327,6 +336,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/login'
     | '/onboarding'
+    | '/privacy'
     | '/support'
     | '/travel-preference-test'
     | '/trip'
@@ -361,6 +371,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/login'
     | '/onboarding'
+    | '/privacy'
     | '/support'
     | '/travel-preference-test'
     | '/trip'
@@ -396,6 +407,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/login'
     | '/onboarding'
+    | '/privacy'
     | '/support'
     | '/travel-preference-test'
     | '/trip'
@@ -433,6 +445,7 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   LoginRoute: typeof LoginRouteWithChildren
   OnboardingRoute: typeof OnboardingRoute
+  PrivacyRoute: typeof PrivacyRoute
   SupportRoute: typeof SupportRoute
   TravelPreferenceTestRoute: typeof TravelPreferenceTestRoute
   TripRoute: typeof TripRoute
@@ -478,6 +491,13 @@ declare module '@tanstack/react-router' {
       path: '/support'
       fullPath: '/support'
       preLoaderRoute: typeof SupportRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/onboarding': {
@@ -764,6 +784,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   LoginRoute: LoginRouteWithChildren,
   OnboardingRoute: OnboardingRoute,
+  PrivacyRoute: PrivacyRoute,
   SupportRoute: SupportRoute,
   TravelPreferenceTestRoute: TravelPreferenceTestRoute,
   TripRoute: TripRoute,
