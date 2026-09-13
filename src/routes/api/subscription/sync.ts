@@ -14,6 +14,7 @@ export const Route = createFileRoute("/api/subscription/sync")({
             synced: true,
             active: result.active,
             expiresAt: result.expiresAt,
+            lifecyclePersisted: result.lifecyclePersisted,
           });
         } catch (error) {
           const code = error instanceof Error ? error.message : "subscription_sync_failed";

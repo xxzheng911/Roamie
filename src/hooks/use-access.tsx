@@ -51,7 +51,11 @@ const Ctx = createContext<AccessCtx | null>(null);
 
 export function AccessProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const { status: revenueCatStatus, loading: revenueCatLoading } = useSubscription();
+  const {
+    status: revenueCatStatus,
+    loading: revenueCatLoading,
+    canonicalRevision,
+  } = useSubscription();
   const email = user?.email ?? null;
   const userId = user?.id ?? null;
 
@@ -168,7 +172,7 @@ export function AccessProvider({ children }: { children: ReactNode }) {
     setCanonicalUserId(null);
     if (revenueCatLoading) return;
     void hydrateFromSupabase(userId);
-  }, [userId, revenueCatLoading, hydrateFromSupabase]);
+  }, [userId, revenueCatLoading, canonicalRevision, hydrateFromSupabase]);
 
   const refresh = useCallback(() => {
     setCanonical((prev) => applyDevOverrideFromStorage(prev));

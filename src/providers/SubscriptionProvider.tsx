@@ -20,6 +20,8 @@ import type {
 } from "@/services/subscription/types";
 import { useAuth } from "@/hooks/use-auth";
 import {
+  isCanonicalRestoreConfirmed,
+  syncRevenueCatEntitlementAfterRestore,
   syncRevenueCatEntitlementInBackground,
   syncRevenueCatEntitlementWithServer,
 } from "@/lib/subscription/revenuecat-sync";
@@ -42,6 +44,7 @@ type SubscriptionCtx = {
   loadOfferings: () => Promise<void>;
   purchase: (packageId: string) => Promise<SubscriptionActionResult>;
   restore: () => Promise<SubscriptionActionResult>;
+  canonicalRevision: number;
 };
 const Ctx = createContext<SubscriptionCtx | null>(null);
 const UNKNOWN_SUBSCRIPTION_STATUS: SubscriptionStatus = {
@@ -62,6 +65,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [offeringsLoading, setOfferingsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [canonicalRevision, setCanonicalRevision] = useState(0);
   const generationRef = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -168,7 +172,23 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     if (!user?.id) throw new Error("revenuecat_user_id_missing");
     const result = await adapter.restore(user.id);
     setStatus(result.status);
-    if (adapter.id === "revenuecat") await syncRevenueCatEntitlementWithServer();
+    if (adapter.id === "revenuecat") {
+      const canonical = result.status.isActive
+        ? await syncRevenueCatEntitlementAfterRestore()
+        : await syncRevenueCatEntitlementWithServer();
+      if (result.status.isActive && !isCanonicalRestoreConfirmed(true, canonical)) {
+        throw new Error("subscription_canonical_sync_failed");
+      }
+      if (!canonical.ok) throw new Error("subscription_canonical_sync_failed");
+      setCanonicalRevision((revision) => revision + 1);
+      console.info("[REVENUECAT_CANONICAL_SYNC]", {
+        requestAttempted: true,
+        httpOk: canonical.ok,
+        responseActive: canonical.active === true,
+        lifecyclePersisted: canonical.lifecyclePersisted === true,
+        canonicalRevisionPublished: true,
+      });
+    }
     return result;
   }, [adapter, user?.id]);
   const checkFeature = useCallback(
@@ -194,6 +214,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       loadOfferings,
       purchase,
       restore,
+      canonicalRevision,
     }),
     [
       status,
@@ -208,6 +229,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       loadOfferings,
       purchase,
       restore,
+      canonicalRevision,
     ],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

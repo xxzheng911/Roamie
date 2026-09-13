@@ -58,7 +58,7 @@ assert.match(
 );
 assert.match(clientSync, /void sync\(\)\.catch/);
 assert.match(clientSync, /event: "server_sync_failed"/);
-assert.match(clientSync, /if \(!token\) return false/);
+assert.match(clientSync, /subscription_session_missing/);
 assert.match(clientSync, /Authorization: `Bearer \$\{token\}`/);
 
 const backgroundDiagnostics = [];

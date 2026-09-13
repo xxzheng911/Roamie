@@ -41,8 +41,8 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
   const { packages, offeringsLoading, error, loadOfferings, purchase, restore } = useSubscription();
   const [busyPackage, setBusyPackage] = useState<string | null>(null);
   const [legalDoc, setLegalDoc] = useState<"privacy" | "terms" | null>(null);
-  const showTestControls = import.meta.env.DEV &&
-    (isDeveloperBuildEnabled() || canShowDeveloperTools);
+  const showTestControls =
+    import.meta.env.DEV && (isDeveloperBuildEnabled() || canShowDeveloperTools);
 
   useEffect(() => {
     if (open && !isPlusUser) void loadOfferings();
@@ -80,8 +80,12 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
         onUpgraded?.();
         onOpenChange(false);
       } else toast.message("找不到可恢復的 Plus 訂閱");
-    } catch {
-      toast.error("恢復購買失敗，請稍後再試");
+    } catch (error) {
+      toast.error(
+        error instanceof Error && error.message === "subscription_canonical_sync_failed"
+          ? "訂閱已找到，但同步失敗，請稍後再試"
+          : "恢復購買失敗，請稍後再試",
+      );
     } finally {
       setBusyPackage(null);
     }

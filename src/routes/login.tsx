@@ -28,10 +28,7 @@ import {
   setIosLegalOverlayOpen,
   setIosSnapshotLiveInteractionForced,
 } from "@/lib/ios-snapshot-bridge";
-import {
-  isPostLoginNavigationCommitted,
-  navigateOnceAfterLogin,
-} from "@/lib/login-navigation";
+import { isPostLoginNavigationCommitted, navigateOnceAfterLogin } from "@/lib/login-navigation";
 import { readStashedTripInviteToken } from "@/lib/trip/trip-collab";
 import { tripInvitePathFromToken } from "@/lib/trip/trip-invite-deep-link";
 import { detectPlatform } from "@/services/platform";
@@ -42,6 +39,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { emitOAuthFlow, OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/auth-debug";
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
 import { hasPendingAdminReturn } from "@/lib/admin/admin-route-boundary";
+import { shouldIgnoreLoginFailure } from "@/lib/auth-login-attempt";
 
 const RoamieMascotFigure = lazy(() =>
   import("@/components/onboarding/RoamieMascotFigure").then((m) => ({
@@ -112,6 +110,8 @@ function Login() {
   const [legalOpen, setLegalOpen] = useState<"terms" | "privacy" | null>(null);
   const redirectedRef = useRef(false);
   const oauthBusyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const authAttemptRef = useRef(0);
+  const authSucceededRef = useRef(false);
 
   const clearOAuthBusyTimer = () => {
     if (oauthBusyTimerRef.current != null) {
@@ -120,14 +120,41 @@ function Login() {
     }
   };
 
-  const startOAuthBusyTimer = (ms = OAUTH_BUSY_TIMEOUT_MS, message?: string) => {
+  const setAttemptErrorIfCurrent = async (attempt: number, message: string) => {
+    const session = await getClientAuthSession();
+    if (
+      shouldIgnoreLoginFailure({
+        attempt,
+        currentAttempt: authAttemptRef.current,
+        succeeded: authSucceededRef.current,
+        hasSession: Boolean(session?.user),
+      })
+    )
+      return;
+    setAuthError(message);
+  };
+
+  const startOAuthBusyTimer = (attempt: number, ms = OAUTH_BUSY_TIMEOUT_MS, message?: string) => {
     clearOAuthBusyTimer();
     oauthBusyTimerRef.current = window.setTimeout(() => {
       oauthBusyTimerRef.current = null;
-      setBusy(null);
-      setAuthError(
-        message ?? "登入逾時，請再試一次。若已看到 Google 登入完成，請關閉瀏覽器視窗後重試。",
-      );
+      void (async () => {
+        if (attempt !== authAttemptRef.current || authSucceededRef.current) return;
+        const session = await getClientAuthSession();
+        if (
+          shouldIgnoreLoginFailure({
+            attempt,
+            currentAttempt: authAttemptRef.current,
+            succeeded: authSucceededRef.current,
+            hasSession: Boolean(session?.user),
+          })
+        )
+          return;
+        setBusy(null);
+        setAuthError(
+          message ?? "登入逾時，請再試一次。若已看到 Google 登入完成，請關閉瀏覽器視窗後重試。",
+        );
+      })();
     }, ms);
   };
   const closeLegal = () => {
@@ -161,6 +188,12 @@ function Login() {
   useEffect(() => {
     if (loading || redirectedRef.current) return;
     if (!user) return;
+    authSucceededRef.current = true;
+    authAttemptRef.current += 1;
+    clearOAuthBusyTimer();
+    setBusy(null);
+    setAuthError(null);
+    setFailedProvider(null);
     if (isPostLoginNavigationCommitted()) {
       redirectedRef.current = true;
       return;
@@ -196,10 +229,23 @@ function Login() {
         return;
       }
       if (detail.phase === "error") {
+        const attempt = authAttemptRef.current;
         clearOAuthBusyTimer();
         setBusy(null);
-        void clearAuthState({ reason: "oauth-flow-error" });
-        setAuthError(detail.message);
+        void (async () => {
+          const session = await getClientAuthSession();
+          if (
+            shouldIgnoreLoginFailure({
+              attempt,
+              currentAttempt: authAttemptRef.current,
+              succeeded: authSucceededRef.current,
+              hasSession: Boolean(session?.user),
+            })
+          )
+            return;
+          await clearAuthState({ reason: "oauth-flow-error" });
+          await setAttemptErrorIfCurrent(attempt, detail.message);
+        })();
       }
     };
     const onNativeCancelled = () => {
@@ -208,10 +254,11 @@ function Login() {
       emitOAuthFlow({ phase: "cancelled" });
     };
     const onNativeError = (e: Event) => {
+      const attempt = authAttemptRef.current;
       clearOAuthBusyTimer();
       setBusy(null);
       const detail = (e as CustomEvent<{ message?: string }>).detail;
-      setAuthError(detail?.message ?? "無法開啟 Google 登入視窗");
+      void setAttemptErrorIfCurrent(attempt, detail?.message ?? "無法開啟 Google 登入視窗");
     };
 
     window.addEventListener(OAUTH_FLOW_EVENT, onOAuthFlow);
@@ -260,6 +307,9 @@ function Login() {
   }, []);
 
   const signIn = async (provider: OAuthProvider) => {
+    const attempt = authAttemptRef.current + 1;
+    authAttemptRef.current = attempt;
+    authSucceededRef.current = false;
     if (provider === "google") {
       logGoogleOAuthMarker("clicked");
     }
@@ -288,9 +338,10 @@ function Login() {
     setIosLegalOverlayOpen(false);
     setBusy(provider);
     if (provider === "google") {
-      startOAuthBusyTimer();
+      startOAuthBusyTimer(attempt);
     } else if (provider === "apple") {
       startOAuthBusyTimer(
+        attempt,
         APPLE_BUSY_TIMEOUT_MS,
         "Apple 登入逾時，請再試一次。若已完成 Face ID，請稍候或重新開啟 App。",
       );
@@ -307,6 +358,7 @@ function Login() {
     try {
       const result = await signInWithProvider(provider);
       if (!result.ok) {
+        if (attempt !== authAttemptRef.current || authSucceededRef.current) return;
         clearOAuthBusyTimer();
         setBusy(null);
         if (result.cancelled) return;
@@ -318,7 +370,11 @@ function Login() {
           { message: result.message || "" },
           DEFAULT_SIGN_IN_MESSAGE,
         );
-        if (/requested path is invalid|redirect url|nonces?\s*mismatch|pkce/i.test(result.message ?? "")) {
+        if (
+          /requested path is invalid|redirect url|nonces?\s*mismatch|pkce/i.test(
+            result.message ?? "",
+          )
+        ) {
           console.info("[AUTH_SIGN_IN_ERROR]", { provider, message: result.message });
           msg = DEFAULT_SIGN_IN_MESSAGE;
         }
@@ -330,6 +386,8 @@ function Login() {
 
       const { canUseNativeAppleSignIn } = await import("@/lib/auth-apple-native");
       if (provider === "apple" && canUseNativeAppleSignIn()) {
+        if (attempt !== authAttemptRef.current) return;
+        authSucceededRef.current = true;
         clearOAuthBusyTimer();
         setBusy(null);
         setIosLegalOverlayOpen(false);
@@ -354,6 +412,7 @@ function Login() {
 
       /* Google / Web Apple：等待 deep link → /auth/callback；busy 直到 browser 關閉或 callback */
     } catch (e) {
+      if (attempt !== authAttemptRef.current || authSucceededRef.current) return;
       console.error("[auth] sign-in threw", e);
       clearOAuthBusyTimer();
       setBusy(null);

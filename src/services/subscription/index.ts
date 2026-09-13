@@ -1,9 +1,9 @@
 import { Capacitor } from "@capacitor/core";
 import type { CustomerInfo, PurchasesPackage } from "@revenuecat/purchases-capacitor";
 import { clientEnv } from "@/constants/env";
-import { REVENUECAT_ENTITLEMENT_ID } from "@/constants/subscription";
 import { defaultFreeStatus, readLocalUsage } from "@/services/subscription/tiers";
 import { createSubscriptionConfigurationAuthority } from "./configuration-authority";
+import { statusFromRevenueCatCustomerInfo } from "./revenuecat-customer-info";
 import type {
   SubscriptionActionResult,
   SubscriptionAdapter,
@@ -14,17 +14,7 @@ import type {
 type PurchasesError = Error & { userCancelled?: boolean; code?: string | number };
 
 export function statusFromCustomerInfo(info: CustomerInfo): SubscriptionStatus {
-  const entitlement = info.entitlements.active[REVENUECAT_ENTITLEMENT_ID];
-  return entitlement
-    ? {
-        tier: "plus",
-        isActive: true,
-        expiresAt: entitlement.expirationDate ?? null,
-        productId: entitlement.productIdentifier ?? null,
-        willRenew: entitlement.willRenew,
-        source: "revenuecat",
-      }
-    : { ...defaultFreeStatus(), source: "revenuecat" };
+  return statusFromRevenueCatCustomerInfo(info);
 }
 
 function mapPackage(pkg: PurchasesPackage): SubscriptionPackage {
@@ -46,8 +36,19 @@ function mapPackage(pkg: PurchasesPackage): SubscriptionPackage {
 let configured = false;
 let configuredUserId: string | null = null;
 let packages = new Map<string, PurchasesPackage>();
+let storePurchasesReconciledUserId: string | null = null;
 function purchasesModule() {
   return import("@revenuecat/purchases-capacitor");
+}
+
+export async function reconcileStorePurchasesForIdentity(
+  userId: string,
+  syncPurchases: () => Promise<void>,
+): Promise<boolean> {
+  if (Capacitor.getPlatform() !== "ios" || storePurchasesReconciledUserId === userId) return false;
+  await syncPurchases();
+  storePurchasesReconciledUserId = userId;
+  return true;
 }
 
 const configurationAuthority = createSubscriptionConfigurationAuthority(async (userId) => {
@@ -66,6 +67,12 @@ const configurationAuthority = createSubscriptionConfigurationAuthority(async (u
     await Purchases.logIn({ appUserID: userId });
   }
   configuredUserId = userId;
+  try {
+    await reconcileStorePurchasesForIdentity(userId, () => Purchases.syncPurchases());
+  } catch {
+    // Keep RevenueCat usable and leave the explicit Restore Purchases action available.
+    console.warn("[REVENUECAT_STATE]", { event: "store_reconciliation_failed" });
+  }
   console.info("[REVENUECAT_STATE]", { event: "configured", appUserIdBound: true });
 });
 
@@ -149,7 +156,17 @@ export const revenueCatAdapter: SubscriptionAdapter = {
     await configurationAuthority.ensureConfigured(userId);
     const { Purchases } = await purchasesModule();
     const result = await Purchases.restorePurchases();
-    return { outcome: "success", status: statusFromCustomerInfo(result.customerInfo) };
+    const status = statusFromCustomerInfo(result.customerInfo);
+    if (status.isActive) await Purchases.syncPurchases();
+    const currentIdentity = await Purchases.getAppUserID();
+    console.info("[REVENUECAT_RESTORE_AUTHORITY]", {
+      activePremium: status.isActive,
+      hasProduct: Boolean(status.productId),
+      hasExpiration: Boolean(status.expiresAt),
+      currentIdentityMatchesSupabase: currentIdentity.appUserID === userId,
+      originalIdentityMatchesCurrent: result.customerInfo.originalAppUserId === userId,
+    });
+    return { outcome: "success", status };
   },
   async addStatusListener(listener, userId) {
     await configurationAuthority.ensureConfigured(userId);

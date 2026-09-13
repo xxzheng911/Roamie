@@ -15,7 +15,7 @@ type RevenueCatSubscriber = {
 export async function syncRevenueCatSubscription(
   userId: string,
   env: CloudflareRuntimeEnv,
-): Promise<{ active: boolean; expiresAt: string | null }> {
+): Promise<{ active: boolean; expiresAt: string | null; lifecyclePersisted: boolean }> {
   const revenueCatKey = readSubscriptionServerEnv(env, "REVENUECAT_SECRET_API_KEY");
   if (!revenueCatKey) throw new Error("subscription_sync_configuration_missing");
 
@@ -32,7 +32,7 @@ export async function syncRevenueCatSubscription(
   const expiresAt = entitlement?.expires_date ?? null;
   const active = Boolean(entitlement && (!expiresAt || Date.parse(expiresAt) > Date.now()));
 
-  await persistRevenueCatLifecycle(env, {
+  const lifecycle = await persistRevenueCatLifecycle(env, {
     eventId: `sync:${crypto.randomUUID()}`,
     userId,
     eventType: "FOREGROUND_SYNC",
@@ -44,5 +44,10 @@ export async function syncRevenueCatSubscription(
     expirationAt: expiresAt ? new Date(expiresAt) : null,
     store: "APP_STORE",
   });
-  return { active, expiresAt };
+  return {
+    active,
+    expiresAt,
+    lifecyclePersisted:
+      lifecycle.processed && (lifecycle.applied || lifecycle.reason === "duplicate"),
+  };
 }
