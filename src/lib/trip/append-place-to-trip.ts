@@ -1,8 +1,4 @@
-import {
-  isRoamiePayloadV2,
-  type RoamieItineraryItem,
-  type RoamiePayloadV2,
-} from "@/lib/ai/types";
+import { isRoamiePayloadV2, type RoamieItineraryItem, type RoamiePayloadV2 } from "@/lib/ai/types";
 import { confirmSaveTrip, getItinerary, updateItinerary } from "@/lib/itinerary-storage";
 import { isValidUuid } from "@/lib/uuid";
 import { loadDraftTrip, saveDraftTrip } from "@/lib/trip-draft-storage";
@@ -10,6 +6,7 @@ import { insertStopOnDate } from "@/lib/trip/trip-stop-mutations";
 import { tripPlaceToItineraryItem, type TripPlaceInput } from "@/lib/trip/trip-place-input";
 import { tagUserSavedTrip } from "@/lib/saved-collection";
 import { generateTripTitle } from "@/lib/trip/trip-title";
+import { resolveTripDayNumberForDate } from "@/lib/trip/trip-date-options";
 
 export type AppendPlaceTarget =
   | { kind: "draft" }
@@ -28,7 +25,7 @@ export async function appendPlaceToTrip(
   target: AppendPlaceTarget,
   place: TripPlaceInput,
   options: AppendPlaceOptions,
-): Promise<{ tripId: string; isDraft: boolean }> {
+): Promise<{ tripId: string; isDraft: boolean; selectedDate: string; selectedDay: number }> {
   const stop = tripPlaceToItineraryItem(place, {
     date: options.date,
     time: options.time,
@@ -60,7 +57,7 @@ export async function appendPlaceToTrip(
       "plan",
     );
     const saved = await confirmSaveTrip(payload, "plan");
-    return { tripId: saved.id, isDraft: false };
+    return { tripId: saved.id, isDraft: false, selectedDate: options.date, selectedDay: 1 };
   }
 
   if (target.kind === "draft") {
@@ -81,7 +78,7 @@ export async function appendPlaceToTrip(
       afterPlaceName: options.afterPlaceName,
     });
     saveDraftTrip({ ...base, itinerary, recommendations: [] });
-    return { tripId: "draft", isDraft: true };
+    return { tripId: "draft", isDraft: true, selectedDate: options.date, selectedDay: 1 };
   }
 
   if (target.kind === "trip") {
@@ -93,7 +90,7 @@ export async function appendPlaceToTrip(
   const stored = await getItinerary(target.tripId);
   if (!stored) throw new Error("找不到這趟行程");
 
-  let payload = stored.payload;
+  const payload = stored.payload;
   if (!isRoamiePayloadV2(payload)) {
     throw new Error("此行程格式較舊，請先從聊天重新產生行程");
   }
@@ -104,8 +101,14 @@ export async function appendPlaceToTrip(
     afterPlaceName: options.afterPlaceName,
   });
 
-  await updateItinerary(target.tripId, { ...payload, itinerary, recommendations: [] });
-  return { tripId: target.tripId, isDraft: false };
+  const nextPayload = { ...payload, itinerary, recommendations: [] };
+  await updateItinerary(target.tripId, nextPayload);
+  return {
+    tripId: target.tripId,
+    isDraft: false,
+    selectedDate: options.date,
+    selectedDay: resolveTripDayNumberForDate(nextPayload, options.date),
+  };
 }
 
 export function getPayloadItinerary(payload: unknown): RoamieItineraryItem[] {

@@ -179,6 +179,7 @@ function RecommendationsPage() {
           photoName: rec.photoName,
           rating: rec.rating,
           userRatingCount: rec.userRatingCount,
+          businessStatus: rec.businessStatus,
         }),
       );
       setSavedNames((prev) => {

@@ -28,7 +28,8 @@ for (const phrase of [
   "合作佣金",
 ])
   assert.match(legal, new RegExp(phrase));
-assert.match(affiliate, /Roamie可能獲得合作佣金，不影響你的價格/);
+assert.match(legal, /Roamie可能獲得合作佣金，不影響你的價格/);
+assert.match(affiliate, /hidesInlineAffiliateDisclosure/);
 assert.doesNotMatch(`${legal}\n${paywall}\n${affiliate}`, /contect@roamie\.tw/i);
 
 console.log("Legal and subscription disclosures: PASS");

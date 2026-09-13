@@ -1,6 +1,5 @@
 import { ArrowRightLeft, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 import { TripLocationCard } from "@/components/saved/TripLocationCard";
-import { PlaceImage } from "@/components/media/PlaceImage";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
 import { estimatePlaceVisitDuration } from "@/lib/ai/estimate-place-visit-duration";
 import { displayNameForPlaceLike } from "@/lib/place-display-name";
@@ -64,18 +63,6 @@ export function TripPlaceCard({
 
   return (
     <article className="relative rounded-3xl border border-border bg-card p-4 shadow-soft">
-      <PlaceImage
-        placeId={item.googlePlaceId}
-        name={placeName}
-        photoName={item.photoName}
-        primaryType={item.placeType}
-        types={item.types}
-        photoWidth={600}
-        alt={placeName}
-        className="mb-4 aspect-[16/9] w-full overflow-hidden rounded-2xl bg-secondary"
-        imgClassName="h-full w-full object-cover"
-        lazy
-      />
       <div className="flex items-start justify-between gap-3">
         {onOpenPlaceDetail ? (
           <button

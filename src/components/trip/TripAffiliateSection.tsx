@@ -69,6 +69,8 @@ export function TripAffiliateSection({
   if (visible.length === 0) return null;
 
   const meta = SECTION_META[kind];
+  const isTripBookingSection = surface === "itinerary" && (kind === "flight" || kind === "hotel");
+  const hidesInlineAffiliateDisclosure = kind === "ticket" || isTripBookingSection;
 
   return (
     <section
@@ -83,12 +85,14 @@ export function TripAffiliateSection({
       <p className={cn("font-medium text-foreground", compact ? "text-xs" : "text-sm")}>
         <span aria-hidden>{meta.emoji}</span> {meta.title}
       </p>
-      {meta.subtitle && !compact ? (
+      {meta.subtitle && !compact && !isTripBookingSection ? (
         <p className="mt-1 text-xs text-muted-foreground">{meta.subtitle}</p>
       ) : null}
-      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-        透過部分連結完成預訂時，Roamie可能獲得合作佣金，不影響你的價格。
-      </p>
+      {!hidesInlineAffiliateDisclosure ? (
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+          透過部分連結完成預訂時，Roamie可能獲得合作佣金，不影響你的價格。
+        </p>
+      ) : null}
       <div
         data-affiliate-layout={kind === "ticket" ? "provider-search-grid" : "provider-row"}
         className={cn(

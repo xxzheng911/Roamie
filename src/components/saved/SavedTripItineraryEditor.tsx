@@ -154,6 +154,8 @@ function inferTripDates(
 }
 
 function placeAffiliateKey(item: RoamieItineraryItem): string {
+  const googlePlaceId = item.googlePlaceId?.trim();
+  if (googlePlaceId) return `google:${googlePlaceId}`;
   return `${item.placeType ?? ""}|${item.title}|${item.placeName ?? ""}|${item.description ?? ""}`;
 }
 
@@ -333,13 +335,13 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     return repairItineraryLocalizedNames(seed, { tripId: stored.id }).items;
   });
   const [activeDayIndex, setActiveDayIndex] = useState(() => {
-    if (restoredView != null) {
-      console.info(`[TRIP_DETAIL_RESTORE_DAY] dayIndex=${restoredView.activeDayIndex}`);
-      return restoredView.activeDayIndex;
-    }
     if (initialDay != null && initialDay > 0) {
       initialDayConsumedRef.current = true;
       return initialDay - 1;
+    }
+    if (restoredView != null) {
+      console.info(`[TRIP_DETAIL_RESTORE_DAY] dayIndex=${restoredView.activeDayIndex}`);
+      return restoredView.activeDayIndex;
     }
     return 0;
   });
@@ -410,13 +412,6 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
 
   useEffect(() => {
     if (initialDay == null || initialDay <= 0) return;
-    if (restoredView != null) {
-      if (!dayResetBlockedLoggedRef.current) {
-        dayResetBlockedLoggedRef.current = true;
-        console.info("[TRIP_DETAIL_DAY_RESET_BLOCKED]");
-      }
-      return;
-    }
     if (initialDayConsumedRef.current) {
       if (!dayResetBlockedLoggedRef.current) {
         dayResetBlockedLoggedRef.current = true;
@@ -665,8 +660,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     [payload.destinationLocation, initial.destinationLocation, directionsLocationContext],
   );
 
-  const placeTicketOffersByItem = useMemo(() => {
-    const map = new Map<RoamieItineraryItem, AffiliateLinkOffer[]>();
+  const placeTicketOffersByKey = useMemo(() => {
+    const map = new Map<string, AffiliateLinkOffer[]>();
     const ticketCtx = {
       destinationLabel: affiliateDestinationLabel,
       destinationLocation: payload.destinationLocation ?? initial.destinationLocation ?? null,
@@ -676,7 +671,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     for (const item of items) {
       logAffiliateFactualEvidenceLifecycle("stored_itinerary", item);
       logAffiliateFactualEvidenceLifecycle("itinerary_ui", item);
-      map.set(item, buildPlaceTicketOffers(item, ticketCtx));
+      map.set(placeAffiliateKey(item), buildPlaceTicketOffers(item, ticketCtx));
     }
     return map;
   }, [
@@ -2073,7 +2068,8 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                         }
                       />
                       {(() => {
-                        const offers = placeTicketOffersByItem.get(item) ?? [];
+                        const offers =
+                          placeTicketOffersByKey.get(placeAffiliateKey(item)) ?? [];
                         if (offers.length === 0) return null;
                         const renderedCtaMode = offers.some((offer) =>
                           offer.label.includes("搜尋體驗"),
@@ -2212,8 +2208,16 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
 
         {hotelAffiliateOffers.length > 0 || flightAffiliateOffers.length > 0 ? (
           <div className="mt-6 space-y-3 border-t border-border pt-4">
-            <TripAffiliateSection kind="flight" offers={flightAffiliateOffers} />
-            <TripAffiliateSection kind="hotel" offers={hotelAffiliateOffers} />
+            <TripAffiliateSection
+              kind="flight"
+              offers={flightAffiliateOffers}
+              surface="itinerary"
+            />
+            <TripAffiliateSection
+              kind="hotel"
+              offers={hotelAffiliateOffers}
+              surface="itinerary"
+            />
           </div>
         ) : null}
       </div>

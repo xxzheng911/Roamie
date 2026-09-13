@@ -73,7 +73,19 @@ assert.match(safeImage, /setResolvingSignature\(true\)/);
 assert.match(safeImage, /signed[\s\S]*setResolvingSignature\(false\)/);
 assert.match(favorite, /resolveSavedPlacePhotoResource/);
 assert.match(favorite, /<PlaceImage/);
-assert.match(tripCard, /<PlaceImage/);
+// The editable itinerary card keeps its established compact layout. It must
+// not invoke the generic PlaceImage fallback chain (Google -> Unsplash/scene),
+// which can misrepresent a generated image as a real place photo.
+assert.doesNotMatch(tripCard, /PlaceImage|getPlaceImage|Unsplash|generatedImage/);
+assert.match(
+  tripCard,
+  /<article className="relative rounded-3xl border border-border bg-card p-4 shadow-soft">\s*<div className="flex items-start justify-between gap-3">/,
+);
+assert.match(tripCard, /<TripLocationCard/);
+assert.match(tripCard, /aria-label="上移"/);
+assert.match(tripCard, /aria-label="下移"/);
+assert.match(tripCard, /aria-label="跨天移動"/);
+assert.match(tripCard, /aria-label="刪除地點"/);
 assert.match(detail, /fetchPriority=.*high/);
 assert.match(savedRoute, /\{p\.address \|\| ""\}/);
 assert.doesNotMatch(savedRoute, /\[p\.category, p\.city, p\.address\]/);

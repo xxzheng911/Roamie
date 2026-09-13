@@ -31,3 +31,12 @@ export function resolveTripDateOptions(payload: RoamiePayloadV2 | Itinerary): st
 
   return [new Date().toISOString().slice(0, 10)];
 }
+
+/** Calendar date is the stable authority for post-add itinerary navigation. */
+export function resolveTripDayNumberForDate(
+  payload: RoamiePayloadV2 | Itinerary,
+  selectedDate: string,
+): number {
+  const dayIndex = resolveTripDateOptions(payload).indexOf(selectedDate.trim());
+  return dayIndex >= 0 ? dayIndex + 1 : 1;
+}

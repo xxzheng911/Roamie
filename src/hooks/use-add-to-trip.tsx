@@ -55,9 +55,10 @@ export function AddToTripProvider({ children }: { children: ReactNode }) {
       setSourceSurface(surface);
       setSheetOpen(true);
     } catch (error) {
-      const normalizationError = error instanceof InvalidTripPlaceInputError
-        ? error
-        : new InvalidTripPlaceInputError("input", "unexpected_normalization_error");
+      const normalizationError =
+        error instanceof InvalidTripPlaceInputError
+          ? error
+          : new InvalidTripPlaceInputError("input", "unexpected_normalization_error");
       logAddToTripInputNormalization({ surface, raw: p, error: normalizationError });
       console.error("[ADD_TO_TRIP_ERROR]", {
         surface,
@@ -120,7 +121,7 @@ export function AddToTripProvider({ children }: { children: ReactNode }) {
           navigate({ to: "/trip", search: { draft: "1" } });
         } else {
           logTripNav("AddToTrip", result.tripId);
-          navigate(tripDetailNavigateOptions(result.tripId));
+          navigate(tripDetailNavigateOptions(result.tripId, { day: result.selectedDay }));
         }
       } catch (e) {
         console.error("[ADD_TO_TRIP_ERROR]", {

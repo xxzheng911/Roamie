@@ -988,6 +988,7 @@ function Home() {
           photoName: pick.photoName,
           rating: pick.rating,
           userRatingCount: pick.userRatingCount,
+          businessStatus: pick.businessStatus,
           coverImageUrl: pick.coverImageUrl,
         }),
       );

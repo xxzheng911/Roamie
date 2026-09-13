@@ -3,7 +3,7 @@ import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/typ
 import { normalizeItineraryItem } from "@/lib/ai/types";
 import type { PlaceResult } from "@/lib/place-result";
 import type { SavedPlace } from "@/lib/places-storage";
-import { readSavedPlaceMetadata } from "@/lib/saved-place-utils";
+import { readSavedPlaceMetadata, resolveSavedPlaceCanonicalName } from "@/lib/saved-place-utils";
 import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
 import { isGooglePlaceId } from "@/lib/place-detail-handoff";
 import {
@@ -36,6 +36,9 @@ export type TripPlaceInput = {
   googleMapsUrl?: string;
   photoName?: string | null;
   rating?: number | null;
+  userRatingCount?: number | null;
+  businessStatus?: string | null;
+  types?: string[];
   localizedDisplayName?: string;
   navigationLatitude?: number | null;
   navigationLongitude?: number | null;
@@ -133,6 +136,11 @@ export function normalizeTripPlaceInput(value: unknown): TripPlaceInput {
   const recommendationReason = normalizedRecommendationReason(
     input.recommendationReason ?? input.reason,
   );
+  const types = Array.isArray(input.types)
+    ? input.types.filter(
+        (type): type is string => typeof type === "string" && type.trim().length > 0,
+      )
+    : undefined;
 
   const deterministicId = `trip-place:${name.trim().toLocaleLowerCase().replace(/\s+/g, "-")}:${lat ?? "na"}:${lng ?? "na"}`;
   return {
@@ -151,7 +159,13 @@ export function normalizeTripPlaceInput(value: unknown): TripPlaceInput {
       (lat != null && lng != null ? buildPlaceMapsUrl(lat, lng, name, googlePlaceId) : undefined),
     photoName: normalizedText(input.photoName) ?? null,
     rating: typeof input.rating === "number" && Number.isFinite(input.rating) ? input.rating : null,
-    localizedDisplayName: normalizedText(input.localizedDisplayName),
+    userRatingCount:
+      typeof input.userRatingCount === "number" && Number.isFinite(input.userRatingCount)
+        ? input.userRatingCount
+        : null,
+    businessStatus: normalizedText(input.businessStatus) ?? null,
+    types,
+    localizedDisplayName: normalizedText(input.localizedDisplayName) ?? name,
     navigationLatitude: normalizedCoordinate(input.navigationLatitude, "lat"),
     navigationLongitude: normalizedCoordinate(input.navigationLongitude, "lng"),
     coordinateSource: input.coordinateSource as TripPlaceInput["coordinateSource"],
@@ -202,6 +216,9 @@ export function tripPlaceFromRecommendation(rec: RoamieRecommendationItem): Trip
     googleMapsUrl: rec.googleMapsUrl,
     photoName: rec.photoName ?? null,
     rating: rec.rating ?? null,
+    userRatingCount: rec.userRatingCount ?? null,
+    businessStatus: rec.businessStatus ?? null,
+    types: rec.types,
     recommendationReason: rec.reason,
     recommendationReasonSource: rec.reasonSource,
   });
@@ -223,7 +240,7 @@ export function tripPlaceFromPlaceResult(place: PlaceResult): TripPlaceInput {
     lng: place.lng,
     googlePlaceId: isGooglePlaceId(place.id) ? place.id : undefined,
     canonicalPlaceId: place.id,
-    placeType: typeLabel,
+    placeType: place.primaryType ?? typeLabel,
     description: "",
     googleMapsUrl:
       displayName && place.lat != null && place.lng != null
@@ -236,6 +253,9 @@ export function tripPlaceFromPlaceResult(place: PlaceResult): TripPlaceInput {
         : undefined,
     photoName: place.photoName,
     rating: place.rating,
+    userRatingCount: place.userRatingCount,
+    businessStatus: place.businessStatus,
+    types: place.types ?? undefined,
     navigationLatitude: place.navigationLatitude ?? undefined,
     navigationLongitude: place.navigationLongitude ?? undefined,
     coordinateSource: place.coordinateSource ?? undefined,
@@ -247,10 +267,11 @@ export function tripPlaceFromPlaceResult(place: PlaceResult): TripPlaceInput {
 
 export function tripPlaceFromSavedPlace(place: SavedPlace): TripPlaceInput {
   const meta = readSavedPlaceMetadata(place);
+  const canonicalName = resolveSavedPlaceCanonicalName(place);
   return normalizeTripPlaceInput({
-    name: place.name,
-    placeName: place.name,
-    title: place.name,
+    name: canonicalName,
+    placeName: canonicalName,
+    title: canonicalName,
     address: place.address ?? "",
     lat: place.lat ?? null,
     lng: place.lng ?? null,
@@ -260,10 +281,13 @@ export function tripPlaceFromSavedPlace(place: SavedPlace): TripPlaceInput {
     description: place.notes ?? "",
     googleMapsUrl:
       place.lat != null && place.lng != null
-        ? buildPlaceMapsUrl(place.lat, place.lng, normalizedText(place.name), meta.googlePlaceId)
+        ? buildPlaceMapsUrl(place.lat, place.lng, canonicalName, meta.googlePlaceId)
         : undefined,
     photoName: meta.photoName ?? null,
     rating: meta.rating ?? null,
+    userRatingCount: meta.userRatingCount ?? null,
+    businessStatus: meta.businessStatus ?? null,
+    types: meta.types,
   });
 }
 
@@ -284,6 +308,9 @@ export function tripPlaceToItineraryItem(
     placeType: place.placeType,
     photoName: place.photoName ?? null,
     rating: place.rating ?? null,
+    userRatingCount: place.userRatingCount ?? null,
+    businessStatus: place.businessStatus ?? null,
+    types: place.types,
     notes: opts.notes ?? "",
     localizedDisplayName: place.localizedDisplayName,
     navigationLatitude: place.navigationLatitude,

@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { buildPlaceMapsUrl } from "../src/lib/maps-navigation.ts";
+import { resolveTripDayNumberForDate } from "../src/lib/trip/trip-date-options.ts";
+import { tripDetailNavigateOptions } from "../src/lib/trip/trip-detail-nav.ts";
 import {
   InvalidTripPlaceInputError,
   normalizeTripPlaceInput,
   tripPlaceFromPlaceResult,
   tripPlaceFromSavedPlace,
+  tripPlaceToItineraryItem,
 } from "../src/lib/trip/trip-place-input.ts";
 
 const googleId = "ChIJN1t_tDeuEmsRUsoyG83frY4";
@@ -75,6 +78,77 @@ test("legacy saved place remains compatible", () => {
   assert.equal(result.placeType, "park");
 });
 
+test("favorite canonical name survives normalization and JSON hydration", () => {
+  const favorite = tripPlaceFromSavedPlace({
+    name: "Favorite Place",
+    address: "Saved address",
+    lat: 1,
+    lng: 2,
+    category: "observation_deck",
+    metadata: {
+      googlePlaceId: googleId,
+      types: ["observation_deck", "tourist_attraction"],
+      rating: 4.6,
+      userRatingCount: 3000,
+      businessStatus: "OPERATIONAL",
+    },
+  });
+  const hydrated = JSON.parse(
+    JSON.stringify(tripPlaceToItineraryItem(favorite, { date: "2026-09-14" })),
+  );
+  assert.equal(hydrated.localizedDisplayName, "Favorite Place");
+  assert.equal(hydrated.googlePlaceId, googleId);
+  assert.deepEqual(hydrated.types, ["observation_deck", "tourist_attraction"]);
+  assert.equal(hydrated.userRatingCount, 3000);
+  assert.equal(hydrated.businessStatus, "OPERATIONAL");
+});
+
+test("favorite add-to-trip date remains the navigation authority", () => {
+  const payload = {
+    version: 2,
+    title: "Three day trip",
+    summary: "",
+    moodTag: "",
+    recommendations: [],
+    itinerary: [],
+    days: 3,
+    generatedAt: "2026-09-14T00:00:00.000Z",
+    tripSettings: {
+      startTime: "10:00",
+      transport: "walk",
+      legMinutes: {},
+      tripStartDate: "2026-10-01",
+      tripEndDate: "2026-10-03",
+    },
+  };
+  const day = resolveTripDayNumberForDate(payload, "2026-10-03");
+  assert.equal(day, 3);
+  assert.deepEqual(tripDetailNavigateOptions(googleId, { day }).search, { day: 3 });
+});
+
+test("legacy favorite names fall back through metadata without using category", () => {
+  const fromTitle = tripPlaceFromSavedPlace({
+    name: "",
+    category: "mountain_peak",
+    address: null,
+    lat: 1,
+    lng: 2,
+    metadata: { title: "Legacy Saved Title" },
+  });
+  assert.equal(fromTitle.localizedDisplayName, "Legacy Saved Title");
+
+  const fromMetadataName = tripPlaceFromSavedPlace({
+    name: "",
+    category: "tourist_attraction",
+    address: null,
+    lat: 1,
+    lng: 2,
+    metadata: { placeName: "Metadata Place Name" },
+  });
+  assert.equal(fromMetadataName.localizedDisplayName, "Metadata Place Name");
+  assert.notEqual(fromMetadataName.localizedDisplayName, "tourist_attraction");
+});
+
 test("invalid input rejects before itinerary mutation", () => {
   assert.throws(
     () => normalizeTripPlaceInput({ name: { unexpected: true }, lat: 1, lng: 2 }),
@@ -104,4 +178,23 @@ test("post-start interaction errors are classified as runtime, not startup", () 
     assert.match(source, /APP_RUNTIME_ERROR/);
     assert.match(source, /started \? \"APP_INIT_ERROR\" : \"APP_RUNTIME_ERROR\"/);
   }
+});
+
+test("shared add-to-trip navigation forwards selected calendar day", () => {
+  const providerSource = readFileSync(
+    new URL("../src/hooks/use-add-to-trip.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    providerSource,
+    /tripDetailNavigateOptions\(result\.tripId,\s*\{ day: result\.selectedDay \}\)/,
+  );
+
+  const editorSource = readFileSync(
+    new URL("../src/components/saved/SavedTripItineraryEditor.tsx", import.meta.url),
+    "utf8",
+  );
+  const initialDayBranch = editorSource.indexOf("if (initialDay != null && initialDay > 0)");
+  const restoredViewBranch = editorSource.indexOf("if (restoredView != null)", initialDayBranch);
+  assert.ok(initialDayBranch >= 0 && restoredViewBranch > initialDayBranch);
 });

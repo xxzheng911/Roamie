@@ -7,6 +7,10 @@ import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import { getPlaceImage } from "@/services/placeImageService";
 
 export type SavedPlaceMetadata = {
+  name?: string;
+  title?: string;
+  placeName?: string;
+  displayName?: string;
   placeId?: string;
   googlePlaceId?: string;
   photoName?: string;
@@ -15,6 +19,7 @@ export type SavedPlaceMetadata = {
   types?: string[];
   rating?: number | null;
   userRatingCount?: number | null;
+  businessStatus?: string | null;
   phone?: string | null;
   website?: string | null;
 };
@@ -45,6 +50,10 @@ export function readSavedPlaceMetadata(place: SavedPlace): SavedPlaceMetadata {
     : undefined;
 
   return {
+    name: asString("name"),
+    title: asString("title"),
+    placeName: asString("placeName") ?? asString("place_name"),
+    displayName: asString("displayName") ?? asString("display_name"),
     placeId,
     googlePlaceId: placeId,
     photoName,
@@ -53,9 +62,23 @@ export function readSavedPlaceMetadata(place: SavedPlace): SavedPlaceMetadata {
     types,
     rating: asNumber("rating") ?? null,
     userRatingCount: asNumber("userRatingCount") ?? asNumber("user_rating_count") ?? null,
+    businessStatus: asString("businessStatus") ?? asString("business_status") ?? null,
     phone: asString("phone") ?? null,
     website: asString("website") ?? null,
   };
+}
+
+/** Canonical saved-place display identity, including legacy metadata shapes. */
+export function resolveSavedPlaceCanonicalName(place: SavedPlace): string {
+  const meta = readSavedPlaceMetadata(place);
+  return (
+    (typeof place.name === "string" ? place.name.trim() : "") ||
+    meta.displayName ||
+    meta.placeName ||
+    meta.name ||
+    meta.title ||
+    "收藏地點"
+  );
 }
 
 export function resolveSavedPlaceGooglePlaceId(place: SavedPlace): string | undefined {
@@ -186,6 +209,7 @@ export function buildNewSavedPlaceInput(input: {
   types?: string[] | null;
   rating?: number | null;
   userRatingCount?: number | null;
+  businessStatus?: string | null;
   phone?: string | null;
   website?: string | null;
   coverImageUrl?: string | null;
@@ -207,6 +231,7 @@ export function buildNewSavedPlaceInput(input: {
   if (input.types?.length) metadata.types = input.types;
   if (input.rating != null) metadata.rating = input.rating;
   if (input.userRatingCount != null) metadata.userRatingCount = input.userRatingCount;
+  if (input.businessStatus?.trim()) metadata.businessStatus = input.businessStatus.trim();
   if (input.phone?.trim()) metadata.phone = input.phone.trim();
   if (input.website?.trim()) metadata.website = input.website.trim();
 

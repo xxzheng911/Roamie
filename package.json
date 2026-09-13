@@ -61,6 +61,7 @@
     "verify:p525-cultural-evidence-parity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p525-cultural-evidence-parity.mjs",
     "verify:p527-affiliate-layout-lifecycle": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p527-affiliate-layout-lifecycle.mjs",
     "verify:p528-cultural-authority": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p528-cultural-authority.mjs",
+    "verify:p529-natural-landmark-affiliate": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p529-natural-landmark-affiliate.mjs",
     "verify:p531-long-trip-capacity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p531-long-trip-capacity.mjs",
     "verify:rc-storage-isolation": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-rc-storage-isolation.mjs",
     "verify:release-readiness": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-release-readiness.mjs",

@@ -318,6 +318,15 @@ const CONDITIONAL_ATTRACTION_TYPES = new Set([
   "market",
 ]);
 
+const MAJOR_NATURAL_DESTINATION_TYPES = new Set([
+  "mountain_peak",
+  "national_park",
+  "natural_feature",
+  "scenic_area",
+]);
+
+const SELF_EVIDENT_NATURAL_DESTINATION_TYPES = new Set(["mountain_peak", "national_park"]);
+
 const RELIGIOUS_SITE_TYPES = new Set([
   "place_of_worship",
   "church",
@@ -612,18 +621,28 @@ export function resolveAffiliateCommerceEligibility(
   const searchKeyword = buildTicketAffiliateSearchKeyword(place, tripContext);
   const categoryLabel = place.category?.trim() || place.placeType?.trim() || "";
   const tourismAuthorityPresent =
-    types.includes("tourist_attraction") ||
-    types.some((type) => CULTURAL_LANDMARK_TYPES.has(type));
+    types.includes("tourist_attraction") || types.some((type) => CULTURAL_LANDMARK_TYPES.has(type));
   const culturalOrReligiousAuthorityPresent = types.some(
     (type) => CULTURAL_LANDMARK_TYPES.has(type) || RELIGIOUS_SITE_TYPES.has(type),
   );
   const ratingEvidence = place.rating != null && place.rating >= 4.2;
   const reviewCountEvidence = place.userRatingCount != null && place.userRatingCount >= 1000;
+  const hasNaturalDestinationType = types.some((type) => MAJOR_NATURAL_DESTINATION_TYPES.has(type));
+  const hasSelfEvidentNaturalDestinationType = types.some((type) =>
+    SELF_EVIDENT_NATURAL_DESTINATION_TYPES.has(type),
+  );
+  const majorNaturalDestinationEvidence =
+    hasNaturalDestinationType &&
+    (hasSelfEvidentNaturalDestinationType || types.includes("tourist_attraction")) &&
+    ratingEvidence &&
+    reviewCountEvidence;
   const explicitCulturalLandmarkType = types.some((type) => CULTURAL_LANDMARK_TYPES.has(type));
   const religiousTourismAuthority =
     types.some((type) => RELIGIOUS_SITE_TYPES.has(type)) && types.includes("tourist_attraction");
   const nonChildVenue = !types.some((type) =>
-    ["store", "gift_shop", "souvenir_store", "shopping_mall", "point_of_interest_feature"].includes(type),
+    ["store", "gift_shop", "souvenir_store", "shopping_mall", "point_of_interest_feature"].includes(
+      type,
+    ),
   );
   const majorLandmarkEvidenceSources: TicketAffiliateDecision["majorLandmarkEvidenceSources"] = [
     ...(explicitCulturalLandmarkType ? (["google_type"] as const) : []),
@@ -666,11 +685,9 @@ export function resolveAffiliateCommerceEligibility(
       eligible &&
       confidence === "supported" &&
       commerceType === "experience" &&
-      majorLandmarkEvidence;
+      (majorLandmarkEvidence || majorNaturalDestinationEvidence);
     const providerSearchFallbackAllowed =
-      eligible &&
-      !exactProviderEvidence &&
-      (confidence === "strong" || experienceFallbackAllowed);
+      eligible && !exactProviderEvidence && (confidence === "strong" || experienceFallbackAllowed);
     const show = eligible && confidence !== "weak" && confidence !== "none";
     // Detail only when DEBUG_AFFILIATE; consolidated summary/skip is emitted by display-rules callers.
     affiliateDebugInfo(
@@ -746,6 +763,15 @@ export function resolveAffiliateCommerceEligibility(
       "multi_evidence_landmark_authority",
       ...(reviewCountEvidence ? ["major_popularity"] : []),
     ]);
+  }
+  if (majorNaturalDestinationEvidence) {
+    return logDecision(
+      true,
+      "major_natural_destination_experience_discovery",
+      "experience",
+      "supported",
+      ["natural_destination_type", "tourism_authority", "major_popularity"],
+    );
   }
   if (types.some((type) => ADMISSION_DEPENDENT_TYPES.has(type))) {
     return logDecision(false, "admission_evidence_required", "ticket", "weak", [

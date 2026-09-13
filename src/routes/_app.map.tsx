@@ -1622,6 +1622,7 @@ function MapView() {
           photoName: p.photoName,
           rating: p.rating,
           userRatingCount: p.userRatingCount,
+          businessStatus: p.businessStatus,
         }),
       );
       toast.success(didSave ? t("map.saved") : t("map.unsaved"));

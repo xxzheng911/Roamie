@@ -479,11 +479,14 @@ function PlaceDetailPage() {
         : inferExploreCityLabel(0, 0, place.address);
     return buildPlaceDetailTicketOffers(
       {
+        id: place.id,
+        googlePlaceId: isGooglePlaceId(place.id) ? place.id : null,
         name: place.name,
         primaryType: place.primaryType,
         types: place.types,
         rating: place.rating,
         userRatingCount: place.userRatingCount,
+        businessStatus: place.businessStatus,
       },
       { destinationLabel: cityLabel, locale },
     );
@@ -545,6 +548,7 @@ function PlaceDetailPage() {
           photoName: place.photoName,
           rating: place.rating,
           userRatingCount: place.userRatingCount,
+          businessStatus: place.businessStatus,
           coverImageUrl: imageUrls[0] ?? null,
         }),
       );
