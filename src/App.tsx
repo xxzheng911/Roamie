@@ -2,6 +2,7 @@
  * App shell（TanStack Start 以 __root + AppProviders 組裝；此檔供明確對應 App 進入點）。
  */
 import { type ReactNode, useEffect } from "react";
+import { useRouterState } from "@tanstack/react-router";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { OnboardingGate } from "@/components/OnboardingGate";
 import { AppProviders } from "@/providers/AppProviders";
@@ -11,12 +12,15 @@ import { detectPlatform } from "@/services/platform";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { logAppError } from "@/lib/log-error";
 import { isAdminAuthBoundaryRoute, isAdminRoute } from "@/lib/admin/admin-route-boundary";
+import { isPublicOnboardingBypassPath } from "@/lib/public-routes";
 
 type Props = { children: ReactNode };
 
 export function App({ children }: Props) {
-  const isAdminBoundary = isAdminAuthBoundaryRoute(readBrowserPathname());
-  const isAdminPage = isAdminRoute(readBrowserPathname());
+  const currentPath =
+    useRouterState({ select: (state) => state.location.pathname }).replace(/\/+$/, "") || "/";
+  const isAdminBoundary = isAdminAuthBoundaryRoute(currentPath);
+  const isAdminPage = isAdminRoute(currentPath);
   const stagingBadge =
     import.meta.env.VITE_DEPLOY_ENV === "staging" ? (
       <div
@@ -56,6 +60,10 @@ export function App({ children }: Props) {
         {children}
       </AppErrorBoundary>
     );
+  }
+
+  if (isPublicOnboardingBypassPath(currentPath)) {
+    return <AppErrorBoundary>{children}</AppErrorBoundary>;
   }
 
   if (isAdminBoundary) {

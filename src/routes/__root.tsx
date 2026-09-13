@@ -40,6 +40,7 @@ import { runApiBootstrap } from "@/services/apiBootstrap";
 import { isOnboardingCompletedSync, loadOnboardingState } from "@/lib/onboarding-storage";
 import { readBrowserPathname } from "@/lib/startup-path";
 import { isAdminAuthBoundaryRoute } from "@/lib/admin/admin-route-boundary";
+import { isPublicOnboardingBypassPath } from "@/lib/public-routes";
 
 function NotFoundComponent() {
   return (
@@ -118,6 +119,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     await loadOnboardingState();
     if (isOnboardingCompletedSync()) return;
     if (path === "/welcome" || path === "/onboarding") return;
+    if (isPublicOnboardingBypassPath(path)) return;
     if (path.startsWith("/auth/")) return;
     console.log("[ONBOARDING_GUARD] blocked home redirect", {
       source: "root-beforeLoad",

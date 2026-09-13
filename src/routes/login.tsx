@@ -40,6 +40,7 @@ import { emitOAuthFlow, OAUTH_FLOW_EVENT, type OAuthFlowDetail } from "@/lib/aut
 import { navigateOAuthAppPath } from "@/lib/oauth-app-navigate";
 import { hasPendingAdminReturn } from "@/lib/admin/admin-route-boundary";
 import { shouldIgnoreLoginFailure } from "@/lib/auth-login-attempt";
+import { isPublicOnboardingBypassPath } from "@/lib/public-routes";
 
 const RoamieMascotFigure = lazy(() =>
   import("@/components/onboarding/RoamieMascotFigure").then((m) => ({
@@ -86,6 +87,8 @@ const APPLE_BUSY_TIMEOUT_MS = 90_000;
 export const Route = createFileRoute("/login")({
   beforeLoad: async () => {
     if (typeof window === "undefined") return;
+    const path = window.location.pathname.replace(/\/+$/, "") || "/";
+    if (isPublicOnboardingBypassPath(path)) return;
     if (hasPendingAdminReturn()) return;
     await loadOnboardingState();
     if (!isOnboardingCompletedSync()) {
