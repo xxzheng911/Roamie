@@ -11,7 +11,7 @@ import { RoamieRoutePending } from "@/components/RoamieRoutePending";
 import { hasExternalBootSplash } from "@/lib/boot-splash";
 import { normalizeCapacitorEntryPath } from "@/lib/capacitor-entry-path";
 import { logAppError } from "@/lib/log-error";
-import { requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
+import { requestIosRouteSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
 import { normalizeRouterSsrManifest } from "@/lib/ssr-manifest";
 import { logRouterCreate } from "@/lib/startup-boot-state";
 import { routeTree } from "./routeTree.gen";
@@ -73,7 +73,19 @@ export const getRouter = () => {
       ) {
         return;
       }
-      requestIosSnapshotRefresh("route", { force: true });
+      requestIosRouteSnapshotRefresh(path);
+      if (import.meta.env.DEV) {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            console.debug("[APP_SURFACE_RUNTIME]", {
+              route: path,
+              shellCount: document.querySelectorAll(".mobile-frame-inner").length,
+              chatSurfaceCount: document.querySelectorAll(".messenger-chat-root").length,
+              bottomNavCount: document.querySelectorAll(".bottom-nav").length,
+            });
+          });
+        });
+      }
     });
   }
 

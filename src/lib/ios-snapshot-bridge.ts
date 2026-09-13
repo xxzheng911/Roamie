@@ -97,6 +97,20 @@ export function requestIosSnapshotRefresh(reason = "spa", options?: { force?: bo
   postToNative({ reason, force: options?.force === true });
 }
 
+/**
+ * Route resolution can happen before WKWebView has committed the replacement surface.
+ * Wait two paint frames, then let native replace the previous-route mirror even when
+ * the new route contains less visual content (for example Home -> Chat).
+ */
+export function requestIosRouteSnapshotRefresh(reason = "route"): void {
+  if (typeof window === "undefined") return;
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      requestIosSnapshotRefresh(`route:${reason}`, { force: true });
+    });
+  });
+}
+
 /** 等 React 首屏（Login 按鈕等）後再 ping native */
 export function scheduleIosSnapshotRefreshBurst(reason = "app-ready"): void {
   // Native already schedules boot catch-up captures. Keep this JS burst small

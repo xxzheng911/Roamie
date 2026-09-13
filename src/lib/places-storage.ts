@@ -5,6 +5,7 @@ import {
   wrapPersonalizedCache,
 } from "@/lib/personalized-cache-envelope";
 import { isMissingTableError } from "@/lib/supabase-errors";
+import { isNetworkFailureError } from "@/lib/user-facing-error";
 
 const GUEST_KEY = "roamie:places";
 
@@ -102,12 +103,14 @@ async function resolveStableUserId(): Promise<string | null> {
 async function listPlacesInternal(): Promise<SavedPlace[]> {
   const userId = await resolveStableUserId();
   if (userId) {
-    const { data, error } = await supabase
+    const result = await supabase
       .from("saved_places")
       .select("*")
       .order("created_at", { ascending: false });
+    const { data, error } = result;
     if (error) {
       if (isMissingTableError(error)) return [];
+      if (isNetworkFailureError(error)) throw error;
       const local = mergePlacesByIdOrName(readLocalCache(userId));
       console.warn("[SAVED_PLACES] remote failed, using local cache", error.message);
       console.info("[SAVED_PLACES] loaded count=", local.length);

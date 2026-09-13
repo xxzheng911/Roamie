@@ -1031,7 +1031,7 @@ enum RoamieCompositorFallback {
     }
 
     /// SPA / auth UI refresh — rate-limited, does not count toward nav capture cap, never restores live compositor.
-    static func requestSpaSnapshotRefresh(force: Bool = false) {
+    static func requestSpaSnapshotRefresh(force: Bool = false, reason: String = "spa_ui") {
         guard isActive, usesSnapshotRenderer, boundWebView != nil else { return }
         guard mode == .snapshotRenderer || mode == .booting else { return }
         if isMirrorRefreshPaused(), !legalOverlayOpen {
@@ -1062,9 +1062,9 @@ enum RoamieCompositorFallback {
                 return
             }
             lastSpaCaptureAt = Date()
-            captureSnapshot(label: "spa_ui", countsTowardCap: false) { image in
+            captureSnapshot(label: reason, countsTowardCap: false) { image in
                 if let image, imageHasMeaningfulContent(image) {
-                    activateSnapshotRenderer(reason: "spa_ui", snapshot: image)
+                    activateSnapshotRenderer(reason: reason, snapshot: image)
                 }
             }
         }
@@ -1302,7 +1302,8 @@ enum RoamieCompositorFallback {
         guard liveInteractionDepth == 0 || legalOverlayOpen else { return }
 
         let newScore = imageContentScore(snapshot)
-        if let existing = lastMirrorImage() {
+        let isResolvedRouteSnapshot = reason.hasPrefix("route:")
+        if !isResolvedRouteSnapshot, let existing = lastMirrorImage() {
             let oldScore = imageContentScore(existing)
             if newScore < max(8, Int(Double(oldScore) * 0.55)) {
                 RoamieNativeLog.debug(
@@ -1746,13 +1747,16 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
         }
 
         let force: Bool
+        let reason: String
         if let body = message.body as? [String: Any] {
             force = (body["force"] as? Bool) == true
+            reason = (body["reason"] as? String) ?? "spa_ui"
         } else {
             force = false
+            reason = "spa_ui"
         }
         DispatchQueue.main.async {
-            RoamieCompositorFallback.requestSpaSnapshotRefresh(force: force)
+            RoamieCompositorFallback.requestSpaSnapshotRefresh(force: force, reason: reason)
         }
     }
 }

@@ -1,4 +1,5 @@
 import { devVerboseInfo } from "@/lib/dev-verbose-log";
+import { shouldRetryPlacesFailure } from "@/lib/network-connectivity";
 
 /** Places API 快取 TTL 與節流常數（全 app 共用） */
 export const PLACES_SEARCH_CACHE_TTL_MS = 20 * 60 * 1000;
@@ -217,12 +218,14 @@ export function notePlacesRateLimited(opts?: {
       (activeGenerationRequestId ? ` generationRequestId=${activeGenerationRequestId}` : ""),
   );
   // Cost protection: stop new Places + no retry — force Candidate Pool / caches
-  void import("@/lib/ai/places-cost-cache/rate-protection").then((m) => {
-    m.activatePlacesRateProtection({
-      reason: "PLACES_RATE_LIMIT_BLOCKED",
-      ttlMs: Math.max(wait, 30_000),
-    });
-  });
+  void import("@/lib/ai/places-cost-cache/rate-protection")
+    .then((m) => {
+      m.activatePlacesRateProtection({
+        reason: "PLACES_RATE_LIMIT_BLOCKED",
+        ttlMs: Math.max(wait, 30_000),
+      });
+    })
+    .catch(() => {});
 }
 
 export async function waitForPlacesGenerationCooldown(): Promise<void> {
@@ -241,12 +244,16 @@ export function beginPlacesGenerationSession(generationRequestId: string): void 
   retryCount.clear();
   loggedKeys.clear();
   // New user submission must not inherit prior sticky rate-limit skips.
-  void import("@/lib/places-classic-landmark-cache").then((m) => {
-    m.resetPlacesRateLimitEncountered();
-  });
-  void import("@/lib/ai/places-cost-cache/rate-protection").then((m) => {
-    m.clearPlacesRateProtection();
-  });
+  void import("@/lib/places-classic-landmark-cache")
+    .then((m) => {
+      m.resetPlacesRateLimitEncountered();
+    })
+    .catch(() => {});
+  void import("@/lib/ai/places-cost-cache/rate-protection")
+    .then((m) => {
+      m.clearPlacesRateProtection();
+    })
+    .catch(() => {});
 }
 
 export function getActivePlacesGenerationRequestId(): string | null {
@@ -490,9 +497,11 @@ export async function runPlacesApiDeduped<T>(
       logPlacesApiCall(type, key);
       bumpCallStat(type);
       recordPlacesApiCall();
-      void import("@/lib/ai/places-cost-cache").then((m) => {
-        m.notePlacesQueryCooldown(key);
-      });
+      void import("@/lib/ai/places-cost-cache")
+        .then((m) => {
+          m.notePlacesQueryCooldown(key);
+        })
+        .catch(() => {});
 
       let lastError: unknown;
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
@@ -504,6 +513,7 @@ export async function runPlacesApiDeduped<T>(
           return result;
         } catch (error) {
           lastError = error;
+          if (!shouldRetryPlacesFailure(error)) break;
           const msg = error instanceof Error ? error.message : String(error);
           const isRate =
             /429|503|places_http_429|places_http_503|places_details_http_429|rate.?limit/i.test(

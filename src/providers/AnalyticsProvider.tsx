@@ -15,7 +15,9 @@ const Ctx = createContext<AnalyticsCtx | null>(null);
 export function AnalyticsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const run = () => {
-      void getAnalyticsService().init();
+      void getAnalyticsService().init().catch(() => {
+        // Analytics transport is never application bootstrap authority.
+      });
       getAnalyticsService().track(AnalyticsEvents.APP_OPEN);
     };
     if (typeof requestIdleCallback === "function") {

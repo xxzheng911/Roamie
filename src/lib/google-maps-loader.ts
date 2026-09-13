@@ -17,6 +17,24 @@ export type GoogleMapsApi = typeof google.maps;
 
 let loadPromise: Promise<GoogleMapsApi> | null = null;
 
+export class GoogleMapsNetworkError extends Error {
+  readonly code = "google_maps_network_unavailable";
+
+  constructor(message = "目前沒有網路連線，無法載入 Google 地圖") {
+    super(message);
+    this.name = "GoogleMapsNetworkError";
+  }
+}
+
+export function isGoogleMapsNetworkError(error: unknown): boolean {
+  return (
+    error instanceof GoogleMapsNetworkError ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { code?: unknown }).code === "google_maps_network_unavailable")
+  );
+}
+
 function waitForImportLibrary(timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now();
@@ -41,13 +59,18 @@ function waitForImportLibrary(timeoutMs: number): Promise<void> {
 }
 
 function injectMapsScript(): Promise<void> {
+  if (navigator.onLine === false) {
+    return Promise.reject(new GoogleMapsNetworkError());
+  }
   const key = getGoogleMapsBrowserKey();
   if (!key) {
     return Promise.reject(new Error(getGoogleMapsBrowserKeyError() ?? "缺少 API 金鑰"));
   }
 
   const src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&loading=async&v=weekly`;
-  const existing = document.querySelector<HTMLScriptElement>('script[data-roamie-maps="1"]');
+  const existing = document.querySelector<HTMLScriptElement>(
+    'script[data-roamie-maps="1"]:not([data-roamie-maps-state="failed"])',
+  );
 
   if (existing) {
     logMapsOnce("script-reuse", "重用既有 script tag");
@@ -59,21 +82,31 @@ function injectMapsScript(): Promise<void> {
     logMapsOnce("script-inject", "注入 script", { src: src.replace(key, "***") });
     const s = document.createElement("script");
     s.dataset.roamieMaps = "1";
+    s.dataset.roamieMapsState = "loading";
     s.src = src;
     s.async = true;
     s.defer = true;
     s.onload = () => {
+      s.dataset.roamieMapsState = "loaded";
       logMapsOnce("script-onload", "script onload", {
         hasGoogle: !!window.google,
         hasMaps: !!window.google?.maps,
       });
-      waitForImportLibrary(20_000).then(resolve).catch(reject);
+      waitForImportLibrary(20_000).then(resolve).catch((error) => {
+        s.dataset.roamieMapsState = "failed";
+        s.remove();
+        reject(error);
+      });
     };
     s.onerror = () => {
+      s.dataset.roamieMapsState = "failed";
+      s.remove();
       reject(
-        new Error(
-          "無法載入 Google Maps script。請檢查網路、CSP，或 API 金鑰是否啟用 Maps JavaScript API。",
-        ),
+        navigator.onLine === false
+          ? new GoogleMapsNetworkError()
+          : new Error(
+              "無法載入 Google Maps script。請檢查網路、CSP，或 API 金鑰是否啟用 Maps JavaScript API。",
+            ),
       );
     };
     document.head.appendChild(s);
@@ -81,7 +114,9 @@ function injectMapsScript(): Promise<void> {
 }
 
 /** Load Maps JS API via importLibrary (recommended async loader). */
-export async function loadGoogleMapsApi(): Promise<GoogleMapsApi> {
+export async function loadGoogleMapsApi(
+  retryAfterNetworkRecovery = true,
+): Promise<GoogleMapsApi> {
   if (typeof window === "undefined") {
     throw new Error("SSR 環境無法載入地圖");
   }
@@ -118,7 +153,14 @@ export async function loadGoogleMapsApi(): Promise<GoogleMapsApi> {
       return window.google!.maps;
     })().catch((err) => {
       loadPromise = null;
-      console.error(LOG, "載入失敗", err);
+      if (isGoogleMapsNetworkError(err)) {
+        console.warn("[EXPLORE_MAP_UNAVAILABLE] recoverable=true reason=network_unavailable");
+        if (retryAfterNetworkRecovery && navigator.onLine !== false) {
+          return loadGoogleMapsApi(false);
+        }
+      } else {
+        console.error(LOG, "載入失敗", err);
+      }
       throw err;
     });
   }

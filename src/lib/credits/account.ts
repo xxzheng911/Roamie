@@ -49,15 +49,25 @@ export function setCachedCreditAccount(account: CreditAccount | null): void {
 }
 
 export async function fetchCreditAccount(): Promise<CreditAccount | null> {
-  const { data, error } = await supabase.rpc("credits_get_account");
-  if (error) {
-    console.warn("[CREDITS_GET_ACCOUNT]", error.message);
+  try {
+    const { data, error } = await supabase.rpc("credits_get_account");
+    if (error) {
+      console.warn("[CREDITS_GET_ACCOUNT]", error.message);
+      return memorySnapshot;
+    }
+    if (!data) return memorySnapshot;
+    const account = mapAccount(data as RpcAccountPayload);
+    memorySnapshot = account;
+    return account;
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.warn("[CREDITS_GET_ACCOUNT]", {
+        recoverable: true,
+        reason: error instanceof Error ? error.name : "network_error",
+      });
+    }
     return memorySnapshot;
   }
-  if (!data) return memorySnapshot;
-  const account = mapAccount(data as RpcAccountPayload);
-  memorySnapshot = account;
-  return account;
 }
 
 /** Usable = effective available − effective reserved (Override preferred by server). */

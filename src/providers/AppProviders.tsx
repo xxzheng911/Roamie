@@ -85,7 +85,9 @@ function BootCacheHydrator() {
       }
     }
     lastUserIdRef.current = userId;
-    void hydrateAppBootCachesAsync(userId);
+    void hydrateAppBootCachesAsync(userId).catch(() => {
+      // Offline boot-cache hydration is recoverable and never app-shell authority.
+    });
   }, [loading, user?.id]);
 
   // Persist travel drafts when app backgrounds (WK localStorage may be non-durable)

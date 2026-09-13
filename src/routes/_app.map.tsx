@@ -136,7 +136,8 @@ import {
   normalizeExplorePlaceId,
 } from "@/lib/explore-selected-place";
 import { logMapNearbyReady } from "@/lib/places-diagnostics";
-import { resolveExploreSearchUserMessage } from "@/lib/user-facing-error";
+import { isNetworkFailureError, resolveExploreSearchUserMessage } from "@/lib/user-facing-error";
+import { isBrowserOnline, subscribeBrowserConnectivity } from "@/lib/network-connectivity";
 import { resolveUserMarkerAvatarSrc } from "@/lib/map-user-location-marker";
 import { useI18n } from "@/hooks/use-i18n";
 import type { Locale } from "@/lib/i18n/types";
@@ -410,6 +411,8 @@ function MapView() {
   const [results, setResults] = useState<MapPlaceCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [networkOnline, setNetworkOnline] = useState(isBrowserOnline);
+  const offlineWarningShownRef = useRef(false);
   const [sheetMode, setSheetMode] = useState<MapExploreSheetMode>("list");
   const [selectedPlace, setSelectedPlace] = useState<MapPlaceCard | null>(null);
   const [selectedPlaceIndex, setSelectedPlaceIndex] = useState<number | null>(null);
@@ -436,6 +439,27 @@ function MapView() {
   const exploreHandoffRef = useRef<MapExploreHandoff | null>(null);
   const restoredExploreSearchRef = useRef(false);
   const effectiveLocation = useEffectiveLocation();
+
+  useEffect(
+    () =>
+      subscribeBrowserConnectivity((online) => {
+        setNetworkOnline(online);
+        if (online) {
+          offlineWarningShownRef.current = false;
+          mapErrorToastedRef.current = false;
+          setMapUnavailable(false);
+          setSearchTrigger((value) => value + 1);
+        } else {
+          searchRequestIdRef.current += 1;
+          exploreSearchRequestRef.current += 1;
+          setLoading(false);
+          setSearchingPlaces(false);
+          setMapUnavailable(true);
+          setError(t("map.offline"));
+        }
+      }),
+    [t],
+  );
 
   const clearExploreSelectionState = useCallback(() => {
     setSelectedPlace(null);
@@ -630,7 +654,7 @@ function MapView() {
       toast.message(t("map.mapLoadFallback"), { duration: 5000 });
       console.warn("[Roamie Map]", message);
     }
-  }, []);
+  }, [t]);
 
   const refreshSaved = () => {
     listPlaces()
@@ -733,6 +757,16 @@ function MapView() {
     }
 
     if (unchangedSession) {
+      return;
+    }
+
+    if (!networkOnline) {
+      setLoading(false);
+      setError(t("map.offline"));
+      if (!offlineWarningShownRef.current) {
+        offlineWarningShownRef.current = true;
+        console.warn("[EXPLORE_NETWORK_UNAVAILABLE] recoverable=true");
+      }
       return;
     }
 
@@ -1088,6 +1122,16 @@ function MapView() {
 
       void runSearch()
         .catch((e) => {
+          if (isNetworkFailureError(e)) {
+            setNetworkOnline(false);
+            setError(t("map.offline"));
+            setResults([]);
+            if (!offlineWarningShownRef.current) {
+              offlineWarningShownRef.current = true;
+              console.warn("[EXPLORE_NETWORK_UNAVAILABLE] recoverable=true");
+            }
+            return;
+          }
           const msg = resolveExploreSearchUserMessage(e, t("map.searchFailed"));
           const note = t("map.demoPlacesNote");
           if (query.trim()) {
@@ -1126,11 +1170,19 @@ function MapView() {
     searchSelectedCenter?.label,
     searchSelectedCenter?.placeId,
     cityRecommendMode,
+    networkOnline,
+    t,
   ]);
 
   useEffect(() => {
     if (!geoReady || !effectiveLocation?.isReadyForPlaces) return;
     if (!searchDropdownOpen) return;
+    if (!networkOnline) {
+      setSearchingPlaces(false);
+      setSearchSuggestions([]);
+      setError(t("map.offline"));
+      return;
+    }
     const trimmed = query.trim();
     if (!trimmed) {
       setSearchSuggestions([]);
@@ -1189,6 +1241,12 @@ function MapView() {
         }
       })().catch((e) => {
         if (requestId !== exploreSearchRequestRef.current) return;
+        if (isNetworkFailureError(e)) {
+          setNetworkOnline(false);
+          setSearchingPlaces(false);
+          setError(t("map.offline"));
+          return;
+        }
         const msg = e instanceof Error ? e.message : t("map.searchFailed");
         console.warn(`[EXPLORE_SEARCH_ERROR] status=exception message=${msg}`);
         setSearchingPlaces(false);
@@ -1207,6 +1265,7 @@ function MapView() {
     resolveTripStopFn,
     weather,
     reasonProfile,
+    networkOnline,
     t,
     exploreSearchRevision,
     searchDropdownOpen,
@@ -1962,7 +2021,7 @@ function MapView() {
     <div className="map-page relative -mt-[var(--safe-area-top)] h-[calc(100%+var(--safe-area-top))] min-h-0 w-full overflow-hidden bg-cream">
       {/* 地圖層：全屏背景，GoogleMap 僅在此 render 一次 */}
       <div className="map-stage absolute inset-0 z-0 overflow-hidden">
-        {geoReady && !mapUnavailable ? (
+        {geoReady && networkOnline && !mapUnavailable ? (
           <GoogleMapBackground
             center={mapCenter}
             zoom={mapZoom}

@@ -11,6 +11,8 @@ import { detectPlatform } from "@/services/platform";
 import { clearProfileSessionCache } from "@/lib/profile-session-cache";
 import { resetAppBootCachesForUserChange } from "@/lib/app-boot-cache";
 import { clearTravelPrefResultCache } from "@/lib/travel-pref-result-cache";
+import { isHomeTripSummarySnapshotKey } from "@/lib/home-trip-snapshot";
+import { isSavedListSnapshotKey } from "@/lib/saved-list-snapshot";
 
 const SUPABASE_AUTH_STORAGE_KEY = "roamie-auth";
 const PREF_PREFIX = "roamie.supabase.auth.";
@@ -83,6 +85,8 @@ function clearWebStorageAuthKeys(): void {
         if (!key) continue;
         if (
           shouldRemove(key) ||
+          isHomeTripSummarySnapshotKey(key) ||
+          isSavedListSnapshotKey(key) ||
           key.startsWith("roamie:preferences:") ||
           key.startsWith("roamie:travel-pref-result:")
         ) {
@@ -103,7 +107,11 @@ async function clearNativePreferencesAuthKeys(): Promise<void> {
   try {
     const { keys } = await Preferences.keys();
     const authKeys = keys.filter(
-      (key) => key.startsWith(PREF_PREFIX) || key === `${PREF_PREFIX}${SUPABASE_AUTH_STORAGE_KEY}`,
+      (key) =>
+        key.startsWith(PREF_PREFIX) ||
+        key === `${PREF_PREFIX}${SUPABASE_AUTH_STORAGE_KEY}` ||
+        isHomeTripSummarySnapshotKey(key) ||
+        isSavedListSnapshotKey(key),
     );
     await Promise.all(authKeys.map((key) => Preferences.remove({ key })));
   } catch (e) {
@@ -215,7 +223,9 @@ export async function clearDeletedAccountLocalData(userId: string): Promise<void
         key.includes(userId) ||
         key.startsWith(PREF_PREFIX) ||
         key.startsWith("roamie.conversation-workspace") ||
-        key.startsWith("roamie.travel-pref"),
+        key.startsWith("roamie.travel-pref") ||
+        isHomeTripSummarySnapshotKey(key) ||
+        isSavedListSnapshotKey(key),
     );
     await Promise.all(personal.map((key) => Preferences.remove({ key })));
   } catch (error) {

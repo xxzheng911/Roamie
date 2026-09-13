@@ -2,7 +2,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getGoogleMapsBrowserKeyError } from "@/lib/google-maps-client";
 import { logMapsOnce } from "@/lib/google-maps-init-log";
-import { loadGoogleMapsApi, triggerMapResize } from "@/lib/google-maps-loader";
+import {
+  isGoogleMapsNetworkError,
+  loadGoogleMapsApi,
+  triggerMapResize,
+} from "@/lib/google-maps-loader";
 import {
   createRoamieUserLocationOverlay,
   ROAMIE_USER_LOCATION_LABEL,
@@ -90,8 +94,8 @@ export function GoogleMap({
   }, []);
 
   const reportError = useCallback(
-    (message: string) => {
-      console.error(LOG, message);
+    (message: string, recoverable = false) => {
+      if (!recoverable) console.error(LOG, message);
       setLoadError(message);
       if (!reportedErrorRef.current) {
         reportedErrorRef.current = true;
@@ -175,7 +179,7 @@ export function GoogleMap({
       return true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : "無法載入 Google 地圖";
-      reportError(msg);
+      reportError(msg, isGoogleMapsNetworkError(e));
       return true;
     }
   }, [reportError]);

@@ -242,6 +242,9 @@ const CAPACITOR_EARLY_ERROR_LOG = `<script>
   }
   window.addEventListener("error", function(e) {
     if (e.target && e.target.tagName === "SCRIPT") {
+      if (e.target.dataset && e.target.dataset.roamieMaps === "1" && navigator.onLine === false) {
+        return;
+      }
       roamieLog("APP_SCRIPT_LOAD_ERROR", e.message || "script failed", e.filename || "script");
       return;
     }

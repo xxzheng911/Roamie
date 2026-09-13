@@ -11410,7 +11410,7 @@ function Chat() {
   return (
     <div
       ref={pageRef}
-      className="messenger-chat-root chat-page relative flex min-h-0 flex-1 flex-col overflow-hidden"
+      className="messenger-chat-root chat-page relative isolate flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background"
     >
       <header
         ref={headerRef}

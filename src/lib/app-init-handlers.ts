@@ -79,6 +79,14 @@ function installAppInitHandlersCore(): void {
   window.addEventListener(
     "error",
     (event) => {
+      const scriptTarget = event.target as HTMLScriptElement | null;
+      if (
+        scriptTarget?.tagName === "SCRIPT" &&
+        scriptTarget.dataset.roamieMaps === "1" &&
+        navigator.onLine === false
+      ) {
+        return;
+      }
       const err = (event as ErrorEvent).error ?? event.message;
       const extra = {
         source: "window.error",

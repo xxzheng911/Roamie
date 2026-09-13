@@ -24,6 +24,7 @@ import {
 import {
   readSavedPlacesSnapshot,
   readSavedTripsSnapshot,
+  hydrateSavedListSnapshot,
   writeSavedPlacesSnapshot,
   writeSavedTripsSnapshot,
 } from "@/lib/saved-list-snapshot";
@@ -108,6 +109,10 @@ function Saved() {
   const hasCachedAtMountRef = useRef(initialTrips.length > 0 || initialPlaces.length > 0);
   const [trips, setTrips] = useState<CoreTrip[]>(() => initialTrips);
   const [places, setPlaces] = useState<SavedPlace[]>(() => initialPlaces);
+  const tripsRef = useRef(trips);
+  const placesRef = useRef(places);
+  tripsRef.current = trips;
+  placesRef.current = places;
   const [loading, setLoading] = useState(
     () => initialTrips.length === 0 && initialPlaces.length === 0,
   );
@@ -142,10 +147,10 @@ function Saved() {
           if (!requestGuardRef.current.isCurrent(requestToken)) return;
           if (tripsResult.status === "fulfilled") {
             setTrips(tripsResult.value);
-            writeSavedTripsSnapshot(tripsResult.value);
+            writeSavedTripsSnapshot(tripsResult.value, authUserId);
           } else if (isMissingTableError(tripsResult.reason)) {
             setTrips([]);
-            writeSavedTripsSnapshot([]);
+            writeSavedTripsSnapshot([], authUserId);
           } else if (!opts?.background) {
             toast.error(
               tripsResult.reason instanceof Error
@@ -156,10 +161,10 @@ function Saved() {
 
           if (placesResult.status === "fulfilled") {
             setPlaces(placesResult.value);
-            writeSavedPlacesSnapshot(placesResult.value);
+            writeSavedPlacesSnapshot(placesResult.value, authUserId);
           } else if (isMissingTableError(placesResult.reason)) {
             setPlaces([]);
-            writeSavedPlacesSnapshot([]);
+            writeSavedPlacesSnapshot([], authUserId);
           } else if (!opts?.background) {
             toast.error(
               placesResult.reason instanceof Error
@@ -189,6 +194,17 @@ function Saved() {
               requestId,
               failureCount: failed.length,
             });
+            if (import.meta.env.DEV) {
+              console.info("[FAVORITES_OFFLINE_SNAPSHOT]", {
+                placesFound: placesRef.current.length,
+                tripsFound: tripsRef.current.length,
+                source: "retained_state",
+                applied: placesRef.current.length > 0 || tripsRef.current.length > 0,
+                canonicalNetworkError: true,
+                cleared: false,
+                clearReason: null,
+              });
+            }
           }
         })
         .finally(() => {
@@ -266,17 +282,46 @@ function Saved() {
   }, [authSession, loading, user]);
 
   useEffect(() => {
+    if (authLoading) return;
     const requestGuard = requestGuardRef.current;
-    refresh({ background: hasCachedAtMountRef.current });
+    if (!authUserId) {
+      setTrips([]);
+      setPlaces([]);
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    const hydrateThenRefresh = async () => {
+      const cached = await hydrateSavedListSnapshot(authUserId);
+      if (!active) return;
+      if (cached.trips.length > 0) setTrips(cached.trips);
+      if (cached.places.length > 0) setPlaces(cached.places);
+      const applied = cached.trips.length > 0 || cached.places.length > 0;
+      hasCachedAtMountRef.current = applied;
+      if (import.meta.env.DEV) {
+        console.info("[FAVORITES_OFFLINE_SNAPSHOT]", {
+          placesFound: cached.places.length,
+          tripsFound: cached.trips.length,
+          source: cached.source,
+          applied,
+          canonicalNetworkError: false,
+          cleared: false,
+          clearReason: null,
+        });
+      }
+      refresh({ background: applied });
+    };
+    void hydrateThenRefresh().catch(() => refresh({ background: hasCachedAtMountRef.current }));
     const onRefresh = () => refresh({ background: true });
     window.addEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
     window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
     return () => {
+      active = false;
       requestGuard.invalidate();
       window.removeEventListener(SAVED_PLACES_CHANGED_EVENT, onRefresh);
       window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
     };
-  }, [refresh]);
+  }, [authLoading, authUserId, refresh]);
 
   useEffect(() => {
     if (search.tab === "places") setTab("places");
@@ -290,7 +335,7 @@ function Saved() {
       toast.success(t("saved.deleted"));
       setTrips((prev) => {
         const next = prev.filter((trip) => trip.id !== deleteTarget.id);
-        writeSavedTripsSnapshot(next);
+        writeSavedTripsSnapshot(next, authUserId);
         return next;
       });
       setDeleteTarget(null);
@@ -311,7 +356,7 @@ function Saved() {
         const next = prev.filter(
           (p) => p.id !== removePlaceTarget.id && p.name !== removePlaceTarget.name,
         );
-        writeSavedPlacesSnapshot(next);
+        writeSavedPlacesSnapshot(next, authUserId);
         return next;
       });
       setRemovePlaceTarget(null);

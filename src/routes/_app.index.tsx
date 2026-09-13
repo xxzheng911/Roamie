@@ -132,6 +132,13 @@ import { clearHomeMoodUiSelection, HOME_MOOD_MORE_ROUTE } from "@/lib/home-mood"
 import { beginHomeMoodShortcutSession } from "@/lib/home-mood-shortcut-session";
 import { HOME_MOOD_EMOJI, HOME_MOOD_SHORTCUT_IDS, type HomeMoodId } from "@/lib/home-mood-options";
 import { saveChatSession, createEmptySession, loadChatSession } from "@/lib/chat-session";
+import { useAuth } from "@/hooks/use-auth";
+import { resolveHomeTripHydrationAction } from "@/lib/home-trip-hydration";
+import {
+  clearHomeTripSummarySnapshot,
+  readHomeTripSummarySnapshotResult,
+  writeHomeTripSummarySnapshot,
+} from "@/lib/home-trip-snapshot";
 
 export const Route = createFileRoute("/_app/")({
   component: Home,
@@ -141,6 +148,7 @@ function Home() {
   const coldStartAtRef = useRef(Date.now());
   const { t, locale } = useI18n();
   const { hasPlusAccess } = useAccess();
+  const { user: authenticatedUser, loading: authLoading } = useAuth();
   const { openAddToTrip } = useAddToTrip();
   const navigate = useNavigate();
   const router = useRouter();
@@ -724,13 +732,17 @@ function Home() {
               console.warn("[Roamie Home] listPlaces failed, using empty", e);
               return [] as Awaited<ReturnType<typeof listPlaces>>;
             }),
-          ]).then(([prefs, saved]) => {
-            if (background) return;
-            const mergedPrefs = mergePreferencesWithTravelPrefStatus(prefs);
-            setPrefs(mergedPrefs);
-            setSavedPlaces(saved);
-            setSavedNames(new Set(saved.map((s) => s.name)));
-          });
+          ])
+            .then(([prefs, saved]) => {
+              if (background) return;
+              const mergedPrefs = mergePreferencesWithTravelPrefStatus(prefs);
+              setPrefs(mergedPrefs);
+              setSavedPlaces(saved);
+              setSavedNames(new Set(saved.map((s) => s.name)));
+            })
+            .catch(() => {
+              // Offline background personalization is never Home render authority.
+            });
 
           const picks = sanitizeHomeNearbyPicksForDisplay(
             await loadHomeNearbyPicks(
@@ -1002,29 +1014,108 @@ function Home() {
   };
 
   const latestTripIdRef = useRef<string | null>(null);
+  const latestTripLoadGenerationRef = useRef(0);
 
-  const refreshLatestTrip = useCallback(() => {
-    void getLatestCoreTrip()
-      .then((view) => {
+  const refreshLatestTrip = useCallback((userId: string) => {
+    const generation = ++latestTripLoadGenerationRef.current;
+    void (async () => {
+      const cachedResult = await readHomeTripSummarySnapshotResult(userId);
+      const cached = cachedResult.trip;
+      if (generation !== latestTripLoadGenerationRef.current) return;
+      if (import.meta.env.DEV) {
+        console.info("[HOME_TRIP_SNAPSHOT]", {
+          found: Boolean(cached),
+          source: cachedResult.source,
+          applied: Boolean(cached),
+          cleared: false,
+          clearReason: null,
+          canonicalFetchAttempted: true,
+          canonicalFetchNetworkError: false,
+        });
+      }
+      if (cached) {
+        latestTripIdRef.current = cached.id;
+        setLatestTrip(cached);
+      }
+
+      try {
+        const view = await getLatestCoreTrip();
+        if (generation !== latestTripLoadGenerationRef.current) return;
         const nextId = view?.id ?? null;
-        if (nextId === latestTripIdRef.current) return;
         latestTripIdRef.current = nextId;
         setLatestTrip(view);
-      })
-      .catch(() => {
-        if (latestTripIdRef.current === null) return;
-        latestTripIdRef.current = null;
-        setLatestTrip(null);
-      })
-      .finally(() => setLatestTripHydrated(true));
+        if (view) {
+          const written = await writeHomeTripSummarySnapshot(userId, view);
+          if (import.meta.env.DEV) {
+            console.info("[HOME_TRIP_SNAPSHOT]", {
+              found: true,
+              source: written.preferences
+                ? "preferences"
+                : written.localStorage
+                  ? "localStorage"
+                  : "none",
+              applied: true,
+              cleared: false,
+              clearReason: null,
+              canonicalFetchAttempted: true,
+              canonicalFetchNetworkError: false,
+            });
+          }
+        } else {
+          await clearHomeTripSummarySnapshot(userId);
+          if (import.meta.env.DEV) {
+            console.info("[HOME_TRIP_SNAPSHOT]", {
+              found: false,
+              source: "none",
+              applied: false,
+              cleared: true,
+              clearReason: "canonical_no_trip",
+              canonicalFetchAttempted: true,
+              canonicalFetchNetworkError: false,
+            });
+          }
+        }
+      } catch (error) {
+        // A network failure is not evidence that the user's saved trip was deleted.
+        // Keep the same-user durable snapshot until Supabase can answer canonically.
+        if (import.meta.env.DEV) {
+          console.info("[HOME_TRIP_SNAPSHOT]", {
+            found: Boolean(cached),
+            source: cachedResult.source,
+            applied: Boolean(cached),
+            cleared: false,
+            clearReason: null,
+            canonicalFetchAttempted: true,
+            canonicalFetchNetworkError:
+              error instanceof TypeError ||
+              (error instanceof Error && /load failed|failed to fetch|network/i.test(error.message)),
+          });
+        }
+      } finally {
+        if (generation === latestTripLoadGenerationRef.current) setLatestTripHydrated(true);
+      }
+    })();
   }, []);
 
   useEffect(() => {
-    refreshLatestTrip();
-    const onRefresh = () => refreshLatestTrip();
+    const userId = authenticatedUser?.id;
+    const action = resolveHomeTripHydrationAction(authLoading, userId);
+    if (action === "wait") return;
+    if (action === "clear") {
+      latestTripLoadGenerationRef.current += 1;
+      latestTripIdRef.current = null;
+      setLatestTrip(null);
+      setLatestTripHydrated(true);
+      return;
+    }
+    if (!userId) return;
+
+    setLatestTripHydrated(false);
+    refreshLatestTrip(userId);
+    const onRefresh = () => refreshLatestTrip(userId);
     window.addEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
     return () => window.removeEventListener(SAVED_TRIPS_CHANGED_EVENT, onRefresh);
-  }, [refreshLatestTrip]);
+  }, [authLoading, authenticatedUser?.id, refreshLatestTrip]);
 
   useEffect(() => {
     const onRuntimeCache = (event: Event) => {
