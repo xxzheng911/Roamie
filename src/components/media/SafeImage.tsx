@@ -1,10 +1,9 @@
 import { useEffect, useState, type ImgHTMLAttributes } from "react";
 import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-cache";
-import {
-  getLocalPlaceImageFallback,
-  resolvePlaceImageUrl,
-} from "@/lib/safe-image-url";
+import { getLocalPlaceImageFallback, resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { cn } from "@/lib/utils";
+import { extractGooglePlacePhotoName } from "@/lib/safe-image-url";
+import { getSignedPlacePhotoUrl } from "@/services/signed-place-photo";
 
 type Props = ImgHTMLAttributes<HTMLImageElement> & {
   fallbackSrc?: string | null;
@@ -16,7 +15,9 @@ export function SafeImage({ src, fallbackSrc, onError, className, maxWidth, ...r
   const fallback =
     resolvePlaceImageUrl(fallbackSrc ?? null, { maxWidth }) ?? getLocalPlaceImageFallback();
 
-  const primary = resolvePlaceImageUrl(typeof src === "string" ? src : null, { maxWidth });
+  const rawSrc = typeof src === "string" ? src : null;
+  const requiresSignature = Boolean(rawSrc && extractGooglePlacePhotoName(rawSrc));
+  const primary = requiresSignature ? null : resolvePlaceImageUrl(rawSrc, { maxWidth });
 
   const initialSrc =
     primary && !isImageLoadFailed(primary)
@@ -30,6 +31,23 @@ export function SafeImage({ src, fallbackSrc, onError, className, maxWidth, ...r
 
   useEffect(() => {
     const safePrimary = resolvePlaceImageUrl(typeof src === "string" ? src : null, { maxWidth });
+    const photoName = typeof src === "string" ? extractGooglePlacePhotoName(src) : null;
+    if (photoName) {
+      let cancelled = false;
+      void getSignedPlacePhotoUrl(photoName, maxWidth ?? 600).then((signed) => {
+        if (cancelled) return;
+        if (signed && !isImageLoadFailed(signed)) {
+          setDisplaySrc(signed);
+          setUsedFallback(false);
+        } else {
+          setDisplaySrc(fallback);
+          setUsedFallback(true);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (safePrimary && !isImageLoadFailed(safePrimary)) {
       setDisplaySrc(safePrimary);
       setUsedFallback(false);

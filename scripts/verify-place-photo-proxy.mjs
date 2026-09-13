@@ -4,6 +4,7 @@ import {
   handlePlacePhotoRequest,
   validatePhotoResource,
 } from "../src/routes/api/place-photo.ts";
+import { signPlacePhoto } from "../src/lib/place-photo-signature.server.ts";
 
 const key = "AIza" + "x".repeat(35);
 const shortResource = "places/ChIJ_short/photos/short_photo";
@@ -12,9 +13,13 @@ const opaqueSpecialCharacters = ".~%+-=_:@!$&'(),;[]";
 const opaqueResource = `places/opaque-place~id/photos/${`${opaqueSpecialCharacters}Az09`.repeat(40)}`;
 let upstreamCalls = 0;
 
-function requestFor(photo, suffix = "") {
+const signingEnv = { PLACE_PHOTO_SIGNING_SECRET: "test-signing-secret-at-least-32-bytes" };
+process.env.PLACE_PHOTO_SIGNING_SECRET = signingEnv.PLACE_PHOTO_SIGNING_SECRET;
+
+async function requestFor(photo, suffix = "") {
+  const token = await signPlacePhoto(signingEnv, photo, 600);
   return new Request(
-    `https://roamie.tw/api/place-photo?photo=${encodeURIComponent(photo)}&w=600${suffix}`,
+    `https://roamie.tw/api/place-photo?photo=${encodeURIComponent(photo)}&w=600&expires=${token.expires}&signature=${token.signature}${suffix}`,
     { headers: { "cf-connecting-ip": `198.51.100.${upstreamCalls + 1}` } },
   );
 }
@@ -33,6 +38,12 @@ function dependencies(fetchImpl, timeoutMs = 8_000) {
 
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+const anonymous = await handlePlacePhotoRequest(
+  new Request(`https://roamie.tw/api/place-photo?photo=${encodeURIComponent(shortResource)}&w=600`),
+  dependencies(async () => new Response(jpeg)),
+  signingEnv,
+);
+assert.equal(anonymous.status, 401, "unsigned requests must be rejected before Google fetch");
 
 for (const resource of [longResource, shortResource, opaqueResource]) {
   const encoded = encodeURIComponent(resource);
@@ -44,7 +55,7 @@ for (const resource of [longResource, shortResource, opaqueResource]) {
     "opaque URI-safe characters are valid",
   );
   const response = await handlePlacePhotoRequest(
-    requestFor(resource),
+    await requestFor(resource),
     dependencies(async (url) => {
       assert.ok(url instanceof URL);
       assert.equal(url.origin, "https://places.googleapis.com");
@@ -81,7 +92,7 @@ const invalidResources = [
 for (const resource of invalidResources) {
   const before = upstreamCalls;
   const response = await handlePlacePhotoRequest(
-    requestFor(resource),
+    await requestFor(resource),
     dependencies(async () => new Response(jpeg)),
   );
   assert.equal(response.status, 400, `${JSON.stringify(resource)} should be rejected`);
@@ -103,14 +114,14 @@ assert.equal(controlDiagnostic.firstInvalidCharacterCodePoint, 1);
 assert.equal(controlDiagnostic.invalidCharacterCategory, "control");
 
 const pngResponse = await handlePlacePhotoRequest(
-  requestFor(shortResource),
+  await requestFor(shortResource),
   dependencies(async () => new Response(png, { headers: { "content-type": "image/png" } })),
 );
 assert.equal(pngResponse.status, 200);
 assert.equal(pngResponse.headers.get("content-type"), "image/png");
 
 const timeoutResponse = await handlePlacePhotoRequest(
-  requestFor(shortResource),
+  await requestFor(shortResource),
   dependencies(
     async (_url, init) =>
       new Promise((_resolve, reject) => {
@@ -131,7 +142,7 @@ assert.equal(timeoutResponse.headers.get("x-roamie-photo-upstream-url-valid"), "
 assert.equal(timeoutResponse.headers.get("x-roamie-photo-upstream-path-segment-count"), "6");
 
 const oversizedResponse = await handlePlacePhotoRequest(
-  requestFor(shortResource),
+  await requestFor(shortResource),
   dependencies(
     async () =>
       new Response(jpeg, {
@@ -143,7 +154,7 @@ assert.equal(oversizedResponse.status, 502, "responses above 8 MB must remain re
 assert.equal(oversizedResponse.headers.get("x-roamie-photo-failure-stage"), "response_size");
 
 const oversizedBodyResponse = await handlePlacePhotoRequest(
-  requestFor(shortResource),
+  await requestFor(shortResource),
   dependencies(
     async () =>
       new Response(new Uint8Array(8 * 1024 * 1024 + 1), {
@@ -155,7 +166,7 @@ assert.equal(oversizedBodyResponse.status, 502, "undeclared bodies above 8 MB mu
 
 const secretSentinel = "AIza-secret-must-not-leak";
 const resourceSentinel = "places/private/photos/private-resource";
-const keyFailure = await handlePlacePhotoRequest(requestFor(resourceSentinel), {
+const keyFailure = await handlePlacePhotoRequest(await requestFor(resourceSentinel), {
   ...dependencies(async () => new Response(jpeg)),
   resolveServerKey: () => ({ key: null, source: "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY" }),
 });
@@ -171,7 +182,7 @@ assert.doesNotMatch(serializedFailure, new RegExp(secretSentinel));
 assert.doesNotMatch(serializedFailure, new RegExp(resourceSentinel));
 
 const upstreamFailure = await handlePlacePhotoRequest(
-  requestFor(shortResource),
+  await requestFor(shortResource),
   dependencies(async () => new Response("forbidden", { status: 403 })),
 );
 assert.equal(upstreamFailure.status, 502);
@@ -179,13 +190,13 @@ assert.equal(upstreamFailure.headers.get("x-roamie-photo-failure-stage"), "upstr
 assert.equal(upstreamFailure.headers.get("x-roamie-photo-upstream-status"), "403");
 
 const successfulHeaders = await handlePlacePhotoRequest(
-  requestFor(shortResource),
+  await requestFor(shortResource),
   dependencies(async () => new Response(jpeg, { headers: { "content-type": "image/jpeg" } })),
 );
 assert.equal(successfulHeaders.headers.get("x-roamie-photo-failure-stage"), null);
 assert.equal(successfulHeaders.headers.get("x-roamie-photo-key-source"), null);
 
-const receiverSensitiveResponse = await handlePlacePhotoRequest(requestFor(opaqueResource), {
+const receiverSensitiveResponse = await handlePlacePhotoRequest(await requestFor(opaqueResource), {
   ...dependencies(async () => new Response(jpeg, { headers: { "content-type": "image/jpeg" } })),
   fetch: async function (url) {
     assert.equal(this, undefined, "native fetch dependency must be invoked without a receiver");

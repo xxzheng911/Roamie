@@ -6,6 +6,7 @@ import {
 import { recordPlacesHttpCall } from "@/lib/places-api-stats";
 import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 import type { CloudflareRuntimeEnv } from "@/lib/server-request-context";
+import { verifyPlacePhotoSignature } from "@/lib/place-photo-signature.server";
 
 const MAX_PHOTO_RESOURCE_LENGTH = 2_048;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
@@ -259,6 +260,12 @@ export async function handlePlacePhotoRequest(
       headers: { "X-Roamie-Photo-Validation": diagnostic.reason },
     });
   }
+  const expires = Number(url.searchParams.get("expires"));
+  const signature = url.searchParams.get("signature") ?? "";
+  if (!(await verifyPlacePhotoSignature(runtimeEnv, photo!, maxW, expires, signature))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const validPhoto = photo!;
 
   let keySource: GoogleMapsServerKeySource = "none";
   let key: string;
@@ -273,7 +280,7 @@ export async function handlePlacePhotoRequest(
 
   let upstreamPath: string;
   try {
-    upstreamPath = buildPlacePhotoUpstreamPath(photo);
+    upstreamPath = buildPlacePhotoUpstreamPath(validPhoto);
   } catch (error) {
     return photoFailureResponse(500, "upstream_url_build", keySource, {
       error,
@@ -299,7 +306,7 @@ export async function handlePlacePhotoRequest(
   try {
     dependencies.recordHttpCall("photo", {
       functionName: "place-photo.proxy",
-      requestKey: photo,
+      requestKey: validPhoto,
       caller: "place-photo.proxy",
       screen: "unknown",
     });
@@ -374,7 +381,8 @@ export async function handlePlacePhotoRequest(
       status: 200,
       headers: {
         "content-type": contentType.includes("png") ? contentType : "image/jpeg",
-        "cache-control": "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400",
+        // A cached response must never outlive the ten-minute signed URL.
+        "cache-control": "public, max-age=300, s-maxage=540",
       },
     });
   } catch (error) {
@@ -388,7 +396,11 @@ export const Route = createFileRoute("/api/place-photo")({
   server: {
     handlers: {
       GET: async ({ request, context }) =>
-        handlePlacePhotoRequest(request, DEFAULT_DEPENDENCIES, context.cloudflareEnv),
+        handlePlacePhotoRequest(
+          request,
+          DEFAULT_DEPENDENCIES,
+          (context as { cloudflareEnv?: CloudflareRuntimeEnv } | undefined)?.cloudflareEnv,
+        ),
     },
   },
 });

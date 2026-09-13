@@ -35,7 +35,9 @@ import { Route as AppMapRouteImport } from './routes/_app.map'
 import { Route as AppDeveloperRouteImport } from './routes/_app.developer'
 import { Route as AppChatRouteImport } from './routes/_app.chat'
 import { Route as AppSavedIndexRouteImport } from './routes/_app.saved.index'
+import { Route as ApiSubscriptionWebhookRouteImport } from './routes/api/subscription/webhook'
 import { Route as ApiSubscriptionSyncRouteImport } from './routes/api/subscription/sync'
+import { Route as ApiPlacePhotoSignRouteImport } from './routes/api/place-photo/sign'
 import { Route as ApiAnalyticsEventsRouteImport } from './routes/api/analytics/events'
 import { Route as ApiAdminDashboardRouteImport } from './routes/api/admin/dashboard'
 import { Route as ApiAccountDeleteRouteImport } from './routes/api/account/delete'
@@ -170,10 +172,20 @@ const AppSavedIndexRoute = AppSavedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppSavedRoute,
 } as any)
+const ApiSubscriptionWebhookRoute = ApiSubscriptionWebhookRouteImport.update({
+  id: '/api/subscription/webhook',
+  path: '/api/subscription/webhook',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiSubscriptionSyncRoute = ApiSubscriptionSyncRouteImport.update({
   id: '/api/subscription/sync',
   path: '/api/subscription/sync',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPlacePhotoSignRoute = ApiPlacePhotoSignRouteImport.update({
+  id: '/sign',
+  path: '/sign',
+  getParentRoute: () => ApiPlacePhotoRoute,
 } as any)
 const ApiAnalyticsEventsRoute = ApiAnalyticsEventsRouteImport.update({
   id: '/api/analytics/events',
@@ -216,7 +228,7 @@ export interface FileRoutesByFullPath {
   '/travel-drafts': typeof AppTravelDraftsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
-  '/api/place-photo': typeof ApiPlacePhotoRoute
+  '/api/place-photo': typeof ApiPlacePhotoRouteWithChildren
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
@@ -225,7 +237,9 @@ export interface FileRoutesByFullPath {
   '/api/account/delete': typeof ApiAccountDeleteRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/api/analytics/events': typeof ApiAnalyticsEventsRoute
+  '/api/place-photo/sign': typeof ApiPlacePhotoSignRoute
   '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
+  '/api/subscription/webhook': typeof ApiSubscriptionWebhookRoute
   '/saved/': typeof AppSavedIndexRoute
 }
 export interface FileRoutesByTo {
@@ -246,7 +260,7 @@ export interface FileRoutesByTo {
   '/travel-drafts': typeof AppTravelDraftsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
-  '/api/place-photo': typeof ApiPlacePhotoRoute
+  '/api/place-photo': typeof ApiPlacePhotoRouteWithChildren
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
@@ -256,7 +270,9 @@ export interface FileRoutesByTo {
   '/api/account/delete': typeof ApiAccountDeleteRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/api/analytics/events': typeof ApiAnalyticsEventsRoute
+  '/api/place-photo/sign': typeof ApiPlacePhotoSignRoute
   '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
+  '/api/subscription/webhook': typeof ApiSubscriptionWebhookRoute
   '/saved': typeof AppSavedIndexRoute
 }
 export interface FileRoutesById {
@@ -280,7 +296,7 @@ export interface FileRoutesById {
   '/_app/travel-drafts': typeof AppTravelDraftsRoute
   '/api/chat': typeof ApiChatRoute
   '/api/generate-itinerary': typeof ApiGenerateItineraryRoute
-  '/api/place-photo': typeof ApiPlacePhotoRoute
+  '/api/place-photo': typeof ApiPlacePhotoRouteWithChildren
   '/api/roamie': typeof ApiRoamieRoute
   '/auth/callback': typeof AuthCallbackRoute
   '/login/legal': typeof LoginLegalRoute
@@ -290,7 +306,9 @@ export interface FileRoutesById {
   '/api/account/delete': typeof ApiAccountDeleteRoute
   '/api/admin/dashboard': typeof ApiAdminDashboardRoute
   '/api/analytics/events': typeof ApiAnalyticsEventsRoute
+  '/api/place-photo/sign': typeof ApiPlacePhotoSignRoute
   '/api/subscription/sync': typeof ApiSubscriptionSyncRoute
+  '/api/subscription/webhook': typeof ApiSubscriptionWebhookRoute
   '/_app/saved/': typeof AppSavedIndexRoute
 }
 export interface FileRouteTypes {
@@ -324,7 +342,9 @@ export interface FileRouteTypes {
     | '/api/account/delete'
     | '/api/admin/dashboard'
     | '/api/analytics/events'
+    | '/api/place-photo/sign'
     | '/api/subscription/sync'
+    | '/api/subscription/webhook'
     | '/saved/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -355,7 +375,9 @@ export interface FileRouteTypes {
     | '/api/account/delete'
     | '/api/admin/dashboard'
     | '/api/analytics/events'
+    | '/api/place-photo/sign'
     | '/api/subscription/sync'
+    | '/api/subscription/webhook'
     | '/saved'
   id:
     | '__root__'
@@ -388,7 +410,9 @@ export interface FileRouteTypes {
     | '/api/account/delete'
     | '/api/admin/dashboard'
     | '/api/analytics/events'
+    | '/api/place-photo/sign'
     | '/api/subscription/sync'
+    | '/api/subscription/webhook'
     | '/_app/saved/'
   fileRoutesById: FileRoutesById
 }
@@ -402,7 +426,7 @@ export interface RootRouteChildren {
   WelcomeRoute: typeof WelcomeRoute
   ApiChatRoute: typeof ApiChatRoute
   ApiGenerateItineraryRoute: typeof ApiGenerateItineraryRoute
-  ApiPlacePhotoRoute: typeof ApiPlacePhotoRoute
+  ApiPlacePhotoRoute: typeof ApiPlacePhotoRouteWithChildren
   ApiRoamieRoute: typeof ApiRoamieRoute
   AuthCallbackRoute: typeof AuthCallbackRoute
   TripInviteTokenRoute: typeof TripInviteTokenRoute
@@ -410,6 +434,7 @@ export interface RootRouteChildren {
   ApiAdminDashboardRoute: typeof ApiAdminDashboardRoute
   ApiAnalyticsEventsRoute: typeof ApiAnalyticsEventsRoute
   ApiSubscriptionSyncRoute: typeof ApiSubscriptionSyncRoute
+  ApiSubscriptionWebhookRoute: typeof ApiSubscriptionWebhookRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -596,12 +621,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSavedIndexRouteImport
       parentRoute: typeof AppSavedRoute
     }
+    '/api/subscription/webhook': {
+      id: '/api/subscription/webhook'
+      path: '/api/subscription/webhook'
+      fullPath: '/api/subscription/webhook'
+      preLoaderRoute: typeof ApiSubscriptionWebhookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/subscription/sync': {
       id: '/api/subscription/sync'
       path: '/api/subscription/sync'
       fullPath: '/api/subscription/sync'
       preLoaderRoute: typeof ApiSubscriptionSyncRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/place-photo/sign': {
+      id: '/api/place-photo/sign'
+      path: '/sign'
+      fullPath: '/api/place-photo/sign'
+      preLoaderRoute: typeof ApiPlacePhotoSignRouteImport
+      parentRoute: typeof ApiPlacePhotoRoute
     }
     '/api/analytics/events': {
       id: '/api/analytics/events'
@@ -688,6 +727,18 @@ const LoginRouteChildren: LoginRouteChildren = {
 
 const LoginRouteWithChildren = LoginRoute._addFileChildren(LoginRouteChildren)
 
+interface ApiPlacePhotoRouteChildren {
+  ApiPlacePhotoSignRoute: typeof ApiPlacePhotoSignRoute
+}
+
+const ApiPlacePhotoRouteChildren: ApiPlacePhotoRouteChildren = {
+  ApiPlacePhotoSignRoute: ApiPlacePhotoSignRoute,
+}
+
+const ApiPlacePhotoRouteWithChildren = ApiPlacePhotoRoute._addFileChildren(
+  ApiPlacePhotoRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   AdminRoute: AdminRoute,
@@ -698,7 +749,7 @@ const rootRouteChildren: RootRouteChildren = {
   WelcomeRoute: WelcomeRoute,
   ApiChatRoute: ApiChatRoute,
   ApiGenerateItineraryRoute: ApiGenerateItineraryRoute,
-  ApiPlacePhotoRoute: ApiPlacePhotoRoute,
+  ApiPlacePhotoRoute: ApiPlacePhotoRouteWithChildren,
   ApiRoamieRoute: ApiRoamieRoute,
   AuthCallbackRoute: AuthCallbackRoute,
   TripInviteTokenRoute: TripInviteTokenRoute,
@@ -706,6 +757,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAdminDashboardRoute: ApiAdminDashboardRoute,
   ApiAnalyticsEventsRoute: ApiAnalyticsEventsRoute,
   ApiSubscriptionSyncRoute: ApiSubscriptionSyncRoute,
+  ApiSubscriptionWebhookRoute: ApiSubscriptionWebhookRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -33,6 +33,10 @@ assert.equal(resolveCanonicalPlusAccess(false, null), false, "unknown does not c
 const provider = fs.readFileSync("src/providers/SubscriptionProvider.tsx", "utf8");
 const route = fs.readFileSync("src/routes/api/subscription/sync.ts", "utf8");
 const server = fs.readFileSync("src/lib/subscription/revenuecat-sync.server.ts", "utf8");
+const lifecycleServer = fs.readFileSync(
+  "src/lib/subscription/revenuecat-lifecycle.server.ts",
+  "utf8",
+);
 const access = fs.readFileSync("src/hooks/use-access.tsx", "utf8");
 const adapter = fs.readFileSync("src/services/subscription/index.ts", "utf8");
 const purchaseProvider = fs.readFileSync("src/providers/PlusPurchaseProvider.tsx", "utf8");
@@ -83,11 +87,11 @@ assert.match(
   /api\.revenuecat\.com\/v1\/subscribers/,
   "server verifies subscriber directly with RevenueCat",
 );
-assert.match(server, /readEnv\(env, "REVENUECAT_SECRET_API_KEY"\)/);
+assert.match(server, /readSubscriptionServerEnv\(env, "REVENUECAT_SECRET_API_KEY"\)/);
 assert.doesNotMatch(server, /REVENUECAT_V2_SECRET_API_KEY/);
 assert.doesNotMatch(route, /isPlus/, "client spoofed isPlus is not accepted by sync endpoint");
 assert.match(
-  server,
+  lifecycleServer,
   /SUPABASE_SERVICE_ROLE_KEY/,
   "protected subscription mirror uses server authority",
 );

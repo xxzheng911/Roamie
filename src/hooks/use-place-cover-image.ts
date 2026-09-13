@@ -3,9 +3,16 @@ import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { logPerfImageLoad } from "@/lib/app-perf";
-import { cacheKey, getCachedImage, getRememberedPhotoUrl, rememberPhotoUrl, setCachedImage } from "@/services/image-cache";
+import {
+  cacheKey,
+  getCachedImage,
+  getRememberedPhotoUrl,
+  rememberPhotoUrl,
+  setCachedImage,
+} from "@/services/image-cache";
 import { getRoamieDefaultImage } from "@/services/placeImageService";
 import type { PlaceImageInput } from "@/services/placeImageService";
+import { getSignedPlacePhotoUrl } from "@/services/signed-place-photo";
 
 type Options = PlaceImageInput & {
   url?: string | null;
@@ -52,8 +59,8 @@ export function usePlaceCoverImage(options: Options): {
     return null;
   }, [enabled, url, photoName, width, persistedImageKey]);
 
-  const [src, setSrc] = useState(() => primaryUrl ?? fallback);
-  const [loading, setLoading] = useState(false);
+  const [src, setSrc] = useState(() => fallback);
+  const [loading, setLoading] = useState(Boolean(enabled && (photoName || primaryUrl)));
 
   useEffect(() => {
     failedRef.current = false;
@@ -62,18 +69,32 @@ export function usePlaceCoverImage(options: Options): {
       setLoading(false);
       return;
     }
+    const photoResource =
+      photoName?.trim() || (primaryUrl?.includes("/api/place-photo") ? primaryUrl : null);
+    if (photoResource) {
+      let cancelled = false;
+      setLoading(true);
+      void getSignedPlacePhotoUrl(photoResource, width).then((signed) => {
+        if (cancelled) return;
+        if (signed) {
+          if (persistedImageKey) setCachedImage(persistedImageKey, signed);
+          setSrc(signed);
+          logPerfImageLoad("place-cover", 1, "google");
+        } else setSrc(fallback);
+        setLoading(false);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (primaryUrl) {
-      if (persistedImageKey) setCachedImage(persistedImageKey, primaryUrl);
       setSrc(primaryUrl);
       setLoading(false);
-      if (!failedRef.current) {
-        logPerfImageLoad("place-cover", 1, "google");
-      }
       return;
     }
     setSrc(fallback);
     setLoading(false);
-  }, [enabled, fallback, primaryUrl, persistedImageKey]);
+  }, [enabled, fallback, photoName, primaryUrl, persistedImageKey, width]);
 
   const onError = useCallback(() => {
     if (failedRef.current) return;

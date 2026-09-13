@@ -1,6 +1,5 @@
 import { API_CACHE_TTL_MS } from "@/lib/api/constants";
 import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
-import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 
 const MEMORY = new Map<string, string>();
 const LS_KEY = "roamie:image-cache";
@@ -112,10 +111,19 @@ export function prefetchPlaceCoverUrls(
     let url = item.url?.trim() || null;
     const photo = item.photoName?.trim();
     if (!url && photo) {
-      url =
-        getRememberedPhotoUrl(photo, HOME_COVER_PREFETCH_WIDTH) ||
-        preferJpegPngImageUrl(buildPlacePhotoUrl(photo, HOME_COVER_PREFETCH_WIDTH));
-      if (url && photo) rememberPhotoUrl(photo, HOME_COVER_PREFETCH_WIDTH, url);
+      const remembered = getRememberedPhotoUrl(photo, HOME_COVER_PREFETCH_WIDTH);
+      if (remembered) url = remembered;
+      else {
+        void import("@/services/signed-place-photo").then(async ({ getSignedPlacePhotoUrl }) => {
+          const signed = await getSignedPlacePhotoUrl(photo, HOME_COVER_PREFETCH_WIDTH);
+          if (!signed) return;
+          rememberPhotoUrl(photo, HOME_COVER_PREFETCH_WIDTH, signed);
+          if (item.placeId?.trim())
+            setCachedImage(cacheKey("home-place-cover", item.placeId.trim()), signed);
+          await prefetchImageUrl(signed);
+        });
+        continue;
+      }
     }
     if (!url) continue;
     if (item.placeId?.trim()) {
