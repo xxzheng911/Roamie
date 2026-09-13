@@ -1,7 +1,6 @@
 import { useRef, type ImgHTMLAttributes } from "react";
 import { useInViewport } from "@/hooks/use-in-viewport";
 import { usePlaceCoverImage } from "@/hooks/use-place-cover-image";
-import { getRoamieDefaultImage } from "@/services/placeImageService";
 import type { PlaceImageInput } from "@/services/placeImageService";
 import { cn } from "@/lib/utils";
 
@@ -34,8 +33,6 @@ export function PlaceCoverImage({
     rootMargin: "80px",
   });
   const shouldLoad = priority || !lazy || inView;
-  const placeholder = getRoamieDefaultImage(placeInput.categoryId ?? placeInput.category);
-
   const { src, onError, loading } = usePlaceCoverImage({
     url,
     photoName,
@@ -47,28 +44,24 @@ export function PlaceCoverImage({
   return (
     <div ref={containerRef} className={cn("relative overflow-hidden bg-secondary", className)}>
       {!shouldLoad ? (
-        <img
-          src={placeholder}
-          alt=""
-          aria-hidden
-          draggable={false}
-          className={cn("h-full w-full object-cover opacity-70", imgClassName)}
-        />
+        <div className="absolute inset-0 animate-pulse bg-secondary/80" aria-hidden />
       ) : (
         <>
           {loading ? (
             <div className="absolute inset-0 animate-pulse bg-secondary/80" aria-hidden />
           ) : null}
-          <img
-            src={src}
-            alt={alt}
-            loading={priority ? "eager" : "lazy"}
-            fetchPriority={priority ? "high" : "auto"}
-            decoding="async"
-            draggable={false}
-            onError={onError}
-            className={cn("h-full w-full object-cover", loading && "opacity-0", imgClassName)}
-          />
+          {src ? (
+            <img
+              src={src}
+              alt={alt}
+              loading={priority ? "eager" : "lazy"}
+              fetchPriority={priority ? "high" : "auto"}
+              decoding="async"
+              draggable={false}
+              onError={onError}
+              className={cn("h-full w-full object-cover", loading && "opacity-0", imgClassName)}
+            />
+          ) : null}
         </>
       )}
     </div>

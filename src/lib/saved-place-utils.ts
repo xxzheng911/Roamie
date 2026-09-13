@@ -1,7 +1,7 @@
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import type { PlaceDetailHandoff } from "@/lib/place-detail-handoff";
 import { isGooglePlaceId, latLngFallbackPlaceId } from "@/lib/place-detail-handoff";
-import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
+import { extractGooglePlacePhotoName, preferJpegPngImageUrl } from "@/lib/safe-image-url";
 import type { NewPlace, SavedPlace } from "@/lib/places-storage";
 import { pickPlaceSceneFallback } from "@/lib/place-scene-fallback";
 import { getPlaceImage } from "@/services/placeImageService";
@@ -31,10 +31,7 @@ export function readSavedPlaceMetadata(place: SavedPlace): SavedPlaceMetadata {
   };
 
   const placeId =
-    asString("placeId") ??
-    asString("googlePlaceId") ??
-    asString("google_place_id") ??
-    undefined;
+    asString("placeId") ?? asString("googlePlaceId") ?? asString("google_place_id") ?? undefined;
   const photoName =
     asString("photoName") ??
     asString("photo_name") ??
@@ -68,6 +65,17 @@ export function resolveSavedPlaceGooglePlaceId(place: SavedPlace): string | unde
   return undefined;
 }
 
+/** Canonical long-lived photo identity; signed URLs are deliberately never persisted. */
+export function resolveSavedPlacePhotoResource(place: SavedPlace): string | null {
+  const metadataPhoto = readSavedPlaceMetadata(place).photoName?.trim();
+  if (metadataPhoto) return metadataPhoto;
+  for (const candidate of [place.cover_image, place.image_url]) {
+    const recovered = candidate ? extractGooglePlacePhotoName(candidate) : null;
+    if (recovered) return recovered;
+  }
+  return null;
+}
+
 /** 同步解析收藏地點封面（Google photo → 已存 URL → Roamie 情境圖） */
 export function resolveSavedPlaceCoverImageSync(
   place: SavedPlace,
@@ -75,9 +83,10 @@ export function resolveSavedPlaceCoverImageSync(
 ): string {
   const meta = readSavedPlaceMetadata(place);
   const width = options?.photoWidth ?? 600;
+  const photoResource = resolveSavedPlacePhotoResource(place);
 
-  const fromPhotoName = meta.photoName
-    ? preferJpegPngImageUrl(buildPlacePhotoUrl(meta.photoName, width))
+  const fromPhotoName = photoResource
+    ? preferJpegPngImageUrl(buildPlacePhotoUrl(photoResource, width))
     : null;
   if (fromPhotoName) return fromPhotoName;
 
@@ -101,20 +110,21 @@ export async function resolveSavedPlaceCoverImage(
   const meta = readSavedPlaceMetadata(place);
   const googlePlaceId = resolveSavedPlaceGooglePlaceId(place);
 
-  if (meta.photoName || googlePlaceId) {
+  const photoResource = resolveSavedPlacePhotoResource(place);
+  if (photoResource || googlePlaceId) {
     try {
       const resolved = await getPlaceImage(
         {
           placeId: googlePlaceId ?? meta.placeId,
           name: place.name,
-          photoName: meta.photoName,
+          photoName: photoResource,
           primaryType: meta.primaryType ?? place.category,
           types: meta.types ?? (place.category ? [place.category] : null),
           category: place.category ?? undefined,
           city: place.city,
           photoWidth: options?.photoWidth ?? 600,
         },
-        { skipGoogle: !meta.photoName && !googlePlaceId },
+        { skipGoogle: !photoResource && !googlePlaceId },
       );
       if (resolved.url) return resolved.url;
     } catch {

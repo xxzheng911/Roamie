@@ -1,11 +1,8 @@
-import { useEffect, useState } from "react";
-import { MapPin } from "lucide-react";
 import {
-  resolveSavedPlaceCoverImage,
-  resolveSavedPlaceCoverImageSync,
+  resolveSavedPlaceGooglePlaceId,
+  resolveSavedPlacePhotoResource,
 } from "@/lib/saved-place-utils";
-import { preferJpegPngImageUrl } from "@/lib/safe-image-url";
-import { SafeImage } from "@/components/media/SafeImage";
+import { PlaceImage } from "@/components/media/PlaceImage";
 import type { SavedPlace } from "@/lib/places-storage";
 
 type Props = {
@@ -15,42 +12,21 @@ type Props = {
 };
 
 export function SavedPlaceCoverThumb({ place, className, alt }: Props) {
-  const syncFallback = resolveSavedPlaceCoverImageSync(place, { photoWidth: 256 });
-  const [src, setSrc] = useState(() => preferJpegPngImageUrl(syncFallback));
-
-  useEffect(() => {
-    let cancelled = false;
-    const sync = preferJpegPngImageUrl(resolveSavedPlaceCoverImageSync(place, { photoWidth: 256 }));
-    setSrc(sync);
-
-    void resolveSavedPlaceCoverImage(place, { photoWidth: 256 }).then((url) => {
-      if (!cancelled) setSrc(preferJpegPngImageUrl(url));
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [place]);
-
-  if (!src) {
-    return (
-      <div className={className}>
-        <div className="flex h-full w-full items-center justify-center bg-secondary">
-          <MapPin className="h-5 w-5 text-muted-foreground" />
-        </div>
-      </div>
-    );
-  }
+  const photoName = resolveSavedPlacePhotoResource(place);
+  const placeId = resolveSavedPlaceGooglePlaceId(place);
 
   return (
-    <div className={className}>
-      <SafeImage
-        src={src}
-        fallbackSrc={syncFallback}
-        alt={alt ?? place.name}
-        className="h-full w-full object-cover"
-        loading="lazy"
-      />
-    </div>
+    <PlaceImage
+      placeId={placeId}
+      name={place.name}
+      photoName={photoName}
+      primaryType={place.category}
+      category={place.category ?? undefined}
+      photoWidth={256}
+      alt={alt ?? place.name}
+      className={className}
+      imgClassName="h-full w-full object-cover"
+      lazy
+    />
   );
 }

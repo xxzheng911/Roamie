@@ -15,6 +15,7 @@
     "verify:production-client-env": "node --test scripts/verify-production-client-env.mjs",
     "verify:place-photo-proxy": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-photo-proxy.mjs",
     "verify:place-photo-security": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-photo-security.mjs",
+    "verify:signed-place-photo-surfaces": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-signed-place-photo-surfaces.mjs",
     "verify:revenuecat-webhook": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-revenuecat-webhook.mjs",
     "verify:google-maps-server-key": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-google-maps-server-key.mjs",
     "verify:p12-p16-regressions": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p12-p16-regressions.mjs",

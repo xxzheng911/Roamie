@@ -46,10 +46,7 @@ export type TripPlaceInput = {
   recommendationReasonVersion?: 1;
 };
 
-const GENERIC_REASONS = new Set([
-  "依地點資料提供你參考。",
-  "先依地點資料提供你參考。",
-]);
+const GENERIC_REASONS = new Set(["依地點資料提供你參考。", "先依地點資料提供你參考。"]);
 
 function normalizedRecommendationReason(value: unknown): string | undefined {
   const reason = normalizedText(value);
@@ -119,8 +116,12 @@ export function normalizeTripPlaceInput(value: unknown): TripPlaceInput {
     normalizedText(input.placeId) ??
     normalizedText(input.id) ??
     rawGoogleId;
-  const googlePlaceId = rawGoogleId && isGooglePlaceId(rawGoogleId) ? rawGoogleId :
-    canonicalPlaceId && isGooglePlaceId(canonicalPlaceId) ? canonicalPlaceId : undefined;
+  const googlePlaceId =
+    rawGoogleId && isGooglePlaceId(rawGoogleId)
+      ? rawGoogleId
+      : canonicalPlaceId && isGooglePlaceId(canonicalPlaceId)
+        ? canonicalPlaceId
+        : undefined;
   const address = normalizedText(input.address) ?? "";
   const placeType =
     normalizedText(input.placeType) ??
@@ -146,20 +147,20 @@ export function normalizeTripPlaceInput(value: unknown): TripPlaceInput {
     placeType,
     description,
     googleMapsUrl:
-      googleMapsUrl ?? (lat != null && lng != null ? buildPlaceMapsUrl(lat, lng, name, googlePlaceId) : undefined),
+      googleMapsUrl ??
+      (lat != null && lng != null ? buildPlaceMapsUrl(lat, lng, name, googlePlaceId) : undefined),
     photoName: normalizedText(input.photoName) ?? null,
-    rating:
-      typeof input.rating === "number" && Number.isFinite(input.rating) ? input.rating : null,
+    rating: typeof input.rating === "number" && Number.isFinite(input.rating) ? input.rating : null,
     localizedDisplayName: normalizedText(input.localizedDisplayName),
     navigationLatitude: normalizedCoordinate(input.navigationLatitude, "lat"),
     navigationLongitude: normalizedCoordinate(input.navigationLongitude, "lng"),
     coordinateSource: input.coordinateSource as TripPlaceInput["coordinateSource"],
     recommendationReason,
     recommendationReasonSource: recommendationReason
-      ? input.recommendationReasonSource as TripPlaceInput["recommendationReasonSource"]
+      ? (input.recommendationReasonSource as TripPlaceInput["recommendationReasonSource"])
       : undefined,
     recommendationSource: recommendationReason
-      ? input.recommendationSource as AddToTripSurface
+      ? (input.recommendationSource as AddToTripSurface)
       : undefined,
     recommendationReasonVersion: recommendationReason ? 1 : undefined,
   };
@@ -171,7 +172,8 @@ export function logAddToTripInputNormalization(input: {
   normalized?: TripPlaceInput;
   error?: InvalidTripPlaceInputError;
 }): void {
-  const raw = input.raw && typeof input.raw === "object" ? input.raw as Record<string, unknown> : {};
+  const raw =
+    input.raw && typeof input.raw === "object" ? (input.raw as Record<string, unknown>) : {};
   console.info("[ADD_TO_TRIP_INPUT_NORMALIZATION]", {
     surface: input.surface,
     hasGooglePlaceId: Boolean(input.normalized?.googlePlaceId),
@@ -225,7 +227,12 @@ export function tripPlaceFromPlaceResult(place: PlaceResult): TripPlaceInput {
     description: "",
     googleMapsUrl:
       displayName && place.lat != null && place.lng != null
-        ? buildPlaceMapsUrl(place.lat, place.lng, displayName, isGooglePlaceId(place.id) ? place.id : undefined)
+        ? buildPlaceMapsUrl(
+            place.lat,
+            place.lng,
+            displayName,
+            isGooglePlaceId(place.id) ? place.id : undefined,
+          )
         : undefined,
     photoName: place.photoName,
     rating: place.rating,
@@ -275,15 +282,15 @@ export function tripPlaceToItineraryItem(
     lng: place.lng,
     googlePlaceId: place.googlePlaceId,
     placeType: place.placeType,
+    photoName: place.photoName ?? null,
+    rating: place.rating ?? null,
     notes: opts.notes ?? "",
     localizedDisplayName: place.localizedDisplayName,
     navigationLatitude: place.navigationLatitude,
     navigationLongitude: place.navigationLongitude,
     coordinateSource:
       place.coordinateSource ??
-      (place.googlePlaceId && place.lat != null && place.lng != null
-        ? "google_places"
-        : undefined),
+      (place.googlePlaceId && place.lat != null && place.lng != null ? "google_places" : undefined),
     recommendationReason: place.recommendationReason,
     recommendationReasonSource: place.recommendationReasonSource,
     recommendationSource: place.recommendationSource,
@@ -302,7 +309,8 @@ export function tripPlaceToItineraryItem(
     hydrated: false,
     source: item.recommendationSource,
     fallbackUsed: false,
-    dropStage: place.recommendationReason && !item.recommendationReason ? "itinerary_normalize" : undefined,
+    dropStage:
+      place.recommendationReason && !item.recommendationReason ? "itinerary_normalize" : undefined,
   });
   return item;
 }

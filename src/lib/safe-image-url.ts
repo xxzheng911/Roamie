@@ -3,6 +3,7 @@ import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
 import { isImageLoadFailed } from "@/lib/image-url-failure-cache";
 
 const GOOGLE_PLACE_PHOTO_NAME_RE = /(places\/[^/?#]+\/photos\/[^/?#]+)/i;
+const GOOGLE_PLACE_PHOTO_RESOURCE_RE = /^places\/[^/?#]+\/photos\/[^/?#]+$/i;
 
 /** 僅明確 WebP（Google Places URL 無副檔名，不可猜測） */
 export function isWebpImageUrl(url: string | null | undefined): boolean {
@@ -22,8 +23,20 @@ export function hasRemotePlacePhotoApi(): boolean {
 }
 
 export function extractGooglePlacePhotoName(url: string): string | null {
-  const match = url.match(GOOGLE_PLACE_PHOTO_NAME_RE);
-  return match?.[1] ?? null;
+  const trimmed = url.trim();
+  const direct = trimmed.match(GOOGLE_PLACE_PHOTO_NAME_RE)?.[1];
+  if (direct && GOOGLE_PLACE_PHOTO_RESOURCE_RE.test(direct)) return direct;
+
+  try {
+    const encoded = new URL(trimmed, "https://roamie.invalid").searchParams.get("photo");
+    if (!encoded) return null;
+    const decodedByUrl = encoded.trim();
+    if (GOOGLE_PLACE_PHOTO_RESOURCE_RE.test(decodedByUrl)) return decodedByUrl;
+    const decoded = decodeURIComponent(decodedByUrl).trim();
+    return GOOGLE_PLACE_PHOTO_RESOURCE_RE.test(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
 }
 
 export function buildPlacePhotoProxyUrl(photoName: string, maxWidth = 600): string {
@@ -48,7 +61,8 @@ export function proxyGooglePlacePhotoUrl(url: string, maxWidth = 600): string | 
   if (!photoName) return null;
   try {
     const parsed = new URL(url, "https://localhost");
-    const w = parsed.searchParams.get("maxWidthPx") ?? parsed.searchParams.get("w") ?? String(maxWidth);
+    const w =
+      parsed.searchParams.get("maxWidthPx") ?? parsed.searchParams.get("w") ?? String(maxWidth);
     const width = Math.min(1600, Math.max(120, Number(w) || maxWidth));
     return buildPlacePhotoProxyUrl(photoName, width);
   } catch {
@@ -106,7 +120,11 @@ export function resolvePlaceImageUrl(
     /* ignore malformed URLs */
   }
 
-  if (isRelativePlacePhotoProxy(candidate) && isCapacitorNativeShell() && !hasRemotePlacePhotoApi()) {
+  if (
+    isRelativePlacePhotoProxy(candidate) &&
+    isCapacitorNativeShell() &&
+    !hasRemotePlacePhotoApi()
+  ) {
     return null;
   }
 
@@ -144,11 +162,7 @@ export function resolveSafeImageSrc(
   fallback?: string | null,
   options?: { maxWidth?: number },
 ): string | null {
-  return (
-    resolvePlaceImageUrl(primary, options) ??
-    resolvePlaceImageUrl(fallback, options) ??
-    null
-  );
+  return resolvePlaceImageUrl(primary, options) ?? resolvePlaceImageUrl(fallback, options) ?? null;
 }
 
 export function filterSafeImageUrls(urls: string[]): string[] {

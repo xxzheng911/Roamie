@@ -82,8 +82,26 @@ export function getImmediateTripCoverImage(): {
 }
 
 const TAIWAN_CITIES = [
-  "台北", "新北", "桃園", "台中", "台南", "高雄", "基隆", "新竹", "苗栗", "彰化",
-  "南投", "雲林", "嘉義", "屏東", "宜蘭", "花蓮", "台東", "澎湖", "金門", "連江",
+  "台北",
+  "新北",
+  "桃園",
+  "台中",
+  "台南",
+  "高雄",
+  "基隆",
+  "新竹",
+  "苗栗",
+  "彰化",
+  "南投",
+  "雲林",
+  "嘉義",
+  "屏東",
+  "宜蘭",
+  "花蓮",
+  "台東",
+  "澎湖",
+  "金門",
+  "連江",
 ];
 
 const JP_CITIES = ["東京", "大阪", "京都", "札幌", "福岡", "名古屋", "橫濱", "神戶", "沖繩"];
@@ -182,7 +200,8 @@ export function buildTripCoverQueries(trip: TripCoverInput): string[] {
   if (title && title.length <= 12) queries.push(`${title} travel`);
   if (/咖啡/.test(mood + title + dest)) queries.push(`${city || "taiwan"} coffee travel`);
   if (/散步|老街/.test(mood + title + dest)) queries.push(`${city || "taiwan"} street walk travel`);
-  if (/夜景|night/i.test(mood + title + dest)) queries.push(`${city || "city"} night travel aesthetic`);
+  if (/夜景|night/i.test(mood + title + dest))
+    queries.push(`${city || "city"} night travel aesthetic`);
   if (/森林|放空|forest/i.test(mood + title + dest)) queries.push("forest travel soft aesthetic");
   if (/海|beach/i.test(mood + title + dest)) queries.push("beach travel soft aesthetic");
 
@@ -239,7 +258,19 @@ export async function getPlaceImage(
   return placeImageRequestCache.getOrFetch(key, async () => {
     const width = input.photoWidth ?? 600;
     if (!options?.skipGoogle) {
-      const fromGoogle = resolveGooglePlacePhoto(input.photoName, width);
+      let canonicalPhotoName = input.photoName?.trim() || null;
+      if (!canonicalPhotoName && input.placeId?.trim()) {
+        try {
+          const { getPlaceDetailsServerFnViaGateway } = await import("@/lib/pie/places-gateway");
+          const detail = await getPlaceDetailsServerFnViaGateway({
+            data: { placeId: input.placeId.trim() },
+          });
+          canonicalPhotoName = detail.place?.photoName?.trim() || null;
+        } catch {
+          canonicalPhotoName = null;
+        }
+      }
+      const fromGoogle = resolveGooglePlacePhoto(canonicalPhotoName, width);
       if (fromGoogle) {
         if (input.placeId?.trim()) {
           cachePlaceImages(input.placeId, { coverImageUrl: fromGoogle });
@@ -251,7 +282,8 @@ export async function getPlaceImage(
     const queries = buildPlaceUnsplashQueries(input);
     const unsplash = await searchUnsplashWithQueries(queries);
     if (unsplash) {
-      const safeUrl = preferJpegPngImageUrl(unsplash.url) ?? getRoamieDefaultImage(normalizeCategory(input));
+      const safeUrl =
+        preferJpegPngImageUrl(unsplash.url) ?? getRoamieDefaultImage(normalizeCategory(input));
       if (input.placeId?.trim()) {
         cachePlaceImages(input.placeId, {
           generatedImageUrl: safeUrl,

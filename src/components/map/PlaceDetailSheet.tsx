@@ -136,12 +136,14 @@ export function PlaceDetailSheet({
   return (
     <div className="flex flex-col" data-no-sheet-drag>
       <div className="relative mx-5 mt-1 aspect-[16/10] overflow-hidden rounded-3xl bg-secondary shadow-soft">
-                            {photos.length > 0 ? (
+        {photos.length > 0 ? (
           <>
             <SafeImage
               key={photos[photoIdx]}
               src={photos[photoIdx]}
               fallbackSrc={undefined}
+              loading={photoIdx === 0 ? "eager" : "lazy"}
+              fetchPriority={photoIdx === 0 ? "high" : "auto"}
               alt={place.name}
               className="h-full w-full object-cover touch-pan-y"
               draggable={false}
@@ -216,9 +218,7 @@ export function PlaceDetailSheet({
 
       <div className="px-5 pb-6 pt-4">
         <div className="flex items-start justify-between gap-3">
-          <h2 className="font-display text-xl leading-tight">
-            {displayNameForPlaceLike(place)}
-          </h2>
+          <h2 className="font-display text-xl leading-tight">{displayNameForPlaceLike(place)}</h2>
           {place.rating != null && (
             <span className="flex shrink-0 items-center gap-1 rounded-full bg-card px-2.5 py-1 text-sm shadow-soft">
               <Star className="h-3.5 w-3.5 fill-clay text-clay" />
@@ -345,7 +345,9 @@ export function PlaceDetailSheet({
             )}
           </div>
           {selectedTransportMode === "transit" && (
-            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{TRANSIT_MVP_NOTICE}</p>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {TRANSIT_MVP_NOTICE}
+            </p>
           )}
         </div>
 
@@ -355,9 +357,17 @@ export function PlaceDetailSheet({
             offers={ticketOffers}
             className="mt-4"
             surface="detail"
-            placeHash={affiliatePlaceHash(place.googlePlaceId?.trim() || place.placeName || place.name)}
+            placeHash={affiliatePlaceHash(
+              place.googlePlaceId?.trim() || place.placeName || place.name,
+            )}
             eligible
-            renderedCtaMode={ticketOffers.some((offer) => offer.label.includes("搜尋體驗")) ? "experience_search" : ticketOffers.some((offer) => offer.label.includes("搜尋")) ? "ticket_search" : "exact_product"}
+            renderedCtaMode={
+              ticketOffers.some((offer) => offer.label.includes("搜尋體驗"))
+                ? "experience_search"
+                : ticketOffers.some((offer) => offer.label.includes("搜尋"))
+                  ? "ticket_search"
+                  : "exact_product"
+            }
           />
         ) : null}
 
@@ -386,21 +396,14 @@ export function PlaceDetailSheet({
           onClick={onOpenChat}
           className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-full border border-border bg-card py-3 text-sm transition active:scale-[0.99]"
         >
-          <MessageCircle className="h-4 w-4" />
-          和 Roamie 聊這裡
+          <MessageCircle className="h-4 w-4" />和 Roamie 聊這裡
         </button>
       </div>
     </div>
   );
 }
 
-export function ExploreSubpageHeader({
-  title,
-  onBack,
-}: {
-  title: string;
-  onBack: () => void;
-}) {
+export function ExploreSubpageHeader({ title, onBack }: { title: string; onBack: () => void }) {
   return (
     <div className="flex items-center gap-2 px-5 pb-1 pt-0" data-no-sheet-drag>
       <button

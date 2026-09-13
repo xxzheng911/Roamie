@@ -50,14 +50,7 @@ export function PlaceImage({
   return (
     <div ref={containerRef} className={cn("relative h-full w-full", className)}>
       {!shouldLoad ? (
-        <FadeInImage
-          src={null}
-          fallbackSrc={fallbackSrc}
-          alt={alt}
-          loading={false}
-          className="h-full w-full"
-          imgClassName={imgClassName}
-        />
+        <div className="absolute inset-0 animate-pulse bg-secondary/80" aria-hidden />
       ) : (
         <FadeInImage
           src={safeUrl}

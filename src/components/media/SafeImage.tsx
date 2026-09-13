@@ -11,7 +11,15 @@ type Props = ImgHTMLAttributes<HTMLImageElement> & {
 };
 
 /** Google / 遠端 URL 直載；僅 onError 時 fallback，不 preemptive 攔截 Google photo */
-export function SafeImage({ src, fallbackSrc, onError, className, maxWidth, ...rest }: Props) {
+export function SafeImage({
+  src,
+  fallbackSrc,
+  onError,
+  className,
+  maxWidth,
+  loading = "lazy",
+  ...rest
+}: Props) {
   const fallback =
     resolvePlaceImageUrl(fallbackSrc ?? null, { maxWidth }) ?? getLocalPlaceImageFallback();
 
@@ -20,20 +28,20 @@ export function SafeImage({ src, fallbackSrc, onError, className, maxWidth, ...r
   const primary = requiresSignature ? null : resolvePlaceImageUrl(rawSrc, { maxWidth });
 
   const initialSrc =
-    primary && !isImageLoadFailed(primary)
-      ? primary
-      : !isImageLoadFailed(fallback)
-        ? fallback
-        : fallback;
+    primary && !isImageLoadFailed(primary) ? primary : requiresSignature ? null : fallback;
 
-  const [displaySrc, setDisplaySrc] = useState(initialSrc);
-  const [usedFallback, setUsedFallback] = useState(!primary || isImageLoadFailed(primary));
+  const [displaySrc, setDisplaySrc] = useState<string | null>(initialSrc);
+  const [usedFallback, setUsedFallback] = useState(!requiresSignature && !primary);
+  const [resolvingSignature, setResolvingSignature] = useState(requiresSignature);
 
   useEffect(() => {
     const safePrimary = resolvePlaceImageUrl(typeof src === "string" ? src : null, { maxWidth });
     const photoName = typeof src === "string" ? extractGooglePlacePhotoName(src) : null;
     if (photoName) {
       let cancelled = false;
+      setDisplaySrc(null);
+      setUsedFallback(false);
+      setResolvingSignature(true);
       void getSignedPlacePhotoUrl(photoName, maxWidth ?? 600).then((signed) => {
         if (cancelled) return;
         if (signed && !isImageLoadFailed(signed)) {
@@ -43,6 +51,7 @@ export function SafeImage({ src, fallbackSrc, onError, className, maxWidth, ...r
           setDisplaySrc(fallback);
           setUsedFallback(true);
         }
+        setResolvingSignature(false);
       });
       return () => {
         cancelled = true;
@@ -51,19 +60,21 @@ export function SafeImage({ src, fallbackSrc, onError, className, maxWidth, ...r
     if (safePrimary && !isImageLoadFailed(safePrimary)) {
       setDisplaySrc(safePrimary);
       setUsedFallback(false);
+      setResolvingSignature(false);
       return;
     }
     setDisplaySrc(fallback);
     setUsedFallback(true);
+    setResolvingSignature(false);
   }, [src, fallback, maxWidth]);
 
   return (
     <img
       {...rest}
-      src={displaySrc}
-      loading="lazy"
+      src={displaySrc ?? undefined}
+      loading={loading}
       decoding="async"
-      className={cn(className)}
+      className={cn(resolvingSignature && "opacity-0", className)}
       onError={(event) => {
         markImageLoadFailed(displaySrc);
         if (!usedFallback && displaySrc !== fallback && !isImageLoadFailed(fallback)) {
