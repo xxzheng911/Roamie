@@ -32,4 +32,6 @@ export type AccessSnapshot = {
   subscriptionSource?: import("./subscription-canonical").SubscriptionStateSource;
   /** 是否已完成 Supabase hydrate */
   subscriptionHydrated?: boolean;
+  /** UI may render a final tier only after all canonical sources settle for this user. */
+  entitlementDisplayStable?: boolean;
 };

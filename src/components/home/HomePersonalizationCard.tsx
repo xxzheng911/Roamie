@@ -8,6 +8,7 @@ import {
   buildHomePlusInsight,
   resolveHomePlusCopySource,
 } from "@/lib/home-personalization-insight";
+import { resolveHomePersonalizationVariant } from "@/lib/home-personalization-visibility";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { SavedPlace } from "@/lib/places-storage";
@@ -39,15 +40,19 @@ export function HomePersonalizationCard({
 }: Props) {
   const navigate = useNavigate();
   const { locale } = useI18n();
-  const { hasPlusAccess, subscriptionSource, subscriptionHydrated } = useAccess();
+  const { hasPlusAccess, subscriptionSource, entitlementDisplayStable } = useAccess();
   const { upgradeToPlus } = usePlusUpgrade();
+  const variant = resolveHomePersonalizationVariant(
+    entitlementDisplayStable === true,
+    hasPlusAccess,
+  );
 
   useEffect(() => {
     const status = hasPlusAccess ? "plus" : "free";
     console.info(
-      `[SUBSCRIPTION_STATE_RENDER] component=HomePersonalizationCard status=${status} source=${subscriptionSource ?? "unknown"} hydrated=${subscriptionHydrated ?? false}`,
+      `[SUBSCRIPTION_STATE_RENDER] component=HomePersonalizationCard status=${status} source=${subscriptionSource ?? "unknown"} hydrated=${entitlementDisplayStable ?? false}`,
     );
-  }, [hasPlusAccess, subscriptionSource, subscriptionHydrated]);
+  }, [hasPlusAccess, subscriptionSource, entitlementDisplayStable]);
 
   const plusInsight = useMemo(
     () =>
@@ -101,7 +106,7 @@ export function HomePersonalizationCard({
     });
   };
 
-  if (!subscriptionHydrated) {
+  if (variant === "skeleton") {
     return (
       <section className={className}>
         <div className="rounded-3xl border border-border bg-card/70 p-5 shadow-soft">
@@ -111,7 +116,7 @@ export function HomePersonalizationCard({
     );
   }
 
-  if (hasPlusAccess) {
+  if (variant === "plus") {
     return (
       <section className={className}>
         <div className="rounded-3xl border border-clay/25 bg-gradient-to-br from-accent/50 via-card to-secondary/40 p-5 shadow-soft">

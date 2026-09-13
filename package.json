@@ -88,6 +88,7 @@
     "verify:clarification-intent-restoration": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-clarification-intent-restoration.mjs",
     "verify:mood-presentation-provenance": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-mood-presentation-provenance.mjs",
     "verify:home-nearby-loading-state": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-nearby-loading-state.mjs",
+    "verify:home-personalization-entitlement-ui": "node scripts/verify-home-personalization-entitlement-ui.mjs",
     "verify:production-lifecycle-logging": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-production-lifecycle-logging.mjs",
     "verify:transport-copy-consistency": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-transport-copy-consistency.mjs",
     "verify:place-detail-device-regressions": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-place-detail-device-regressions.mjs",

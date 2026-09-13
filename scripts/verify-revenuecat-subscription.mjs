@@ -74,7 +74,7 @@ assert.deepEqual(backgroundDiagnostics, [
 ]);
 assert.match(
   access,
-  /base\.subscriptionHydrated && !revenueCatLoading/,
+  /canonicalUserId === userId[\s\S]*base\.subscriptionHydrated === true[\s\S]*!revenueCatLoading/,
   "unknown hydration is not presented as settled Free",
 );
 assert.match(

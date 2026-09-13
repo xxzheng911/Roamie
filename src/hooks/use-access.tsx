@@ -58,6 +58,7 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   const [canonical, setCanonical] = useState<CanonicalSubscriptionState>(() =>
     createInitialCanonicalState(),
   );
+  const [canonicalUserId, setCanonicalUserId] = useState<string | null>(null);
   const syncGenerationRef = useRef(0);
   const userIdRef = useRef(userId);
   const lastResolvedTierRef = useRef<"free" | "plus" | null>(null);
@@ -67,6 +68,11 @@ export function AccessProvider({ children }: { children: ReactNode }) {
     const base = buildAccessSnapshotFromCanonical(email, canonical);
     const revenueCatActive = isRevenueCatPlusActive(revenueCatStatus);
     const hasPlusAccess = resolveCanonicalPlusAccess(base.hasPlusAccess, revenueCatStatus);
+    const entitlementDisplayStable =
+      Boolean(userId) &&
+      canonicalUserId === userId &&
+      base.subscriptionHydrated === true &&
+      !revenueCatLoading;
     return {
       ...base,
       hasPlusAccess,
@@ -81,9 +87,10 @@ export function AccessProvider({ children }: { children: ReactNode }) {
       plusEntitlementExpiresAt: revenueCatActive
         ? revenueCatStatus.expiresAt
         : base.plusEntitlementExpiresAt,
-      subscriptionHydrated: base.subscriptionHydrated && !revenueCatLoading,
+      subscriptionHydrated: entitlementDisplayStable,
+      entitlementDisplayStable,
     };
-  }, [email, canonical, revenueCatStatus, revenueCatLoading]);
+  }, [email, canonical, canonicalUserId, revenueCatStatus, revenueCatLoading, userId]);
 
   useEffect(() => {
     const status = snapshot.hasPlusAccess ? "plus" : "free";
@@ -128,6 +135,7 @@ export function AccessProvider({ children }: { children: ReactNode }) {
           syncVersion,
         );
       });
+      setCanonicalUserId(uid);
     } catch {
       if (generation !== syncGenerationRef.current) return;
       setCanonical((prev) =>
@@ -142,6 +150,7 @@ export function AccessProvider({ children }: { children: ReactNode }) {
           generation,
         ),
       );
+      setCanonicalUserId(uid);
     }
   }, []);
 
@@ -152,11 +161,14 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!userId) {
       syncGenerationRef.current += 1;
+      setCanonicalUserId(null);
       setCanonical(createInitialCanonicalState());
       return;
     }
+    setCanonicalUserId(null);
+    if (revenueCatLoading) return;
     void hydrateFromSupabase(userId);
-  }, [userId, hydrateFromSupabase]);
+  }, [userId, revenueCatLoading, hydrateFromSupabase]);
 
   const refresh = useCallback(() => {
     setCanonical((prev) => applyDevOverrideFromStorage(prev));

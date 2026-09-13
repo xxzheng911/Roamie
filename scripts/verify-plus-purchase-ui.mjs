@@ -38,8 +38,8 @@ const geolocationPlugin = read(
   "node_modules/@capacitor/geolocation/ios/Sources/GeolocationPlugin/GeolocationPlugin.swift",
 );
 
-assert.match(home, /if \(!subscriptionHydrated\)/);
-assert.match(home, /if \(hasPlusAccess\)/);
+assert.match(home, /if \(variant === "skeleton"\)/);
+assert.match(home, /if \(variant === "plus"\)/);
 assert.match(home, /讓 Roamie 更懂你/);
 assert.match(home, /記住你的旅行偏好，讓每次推薦更貼近你。/);
 assert.match(home, /"長期旅行記憶"/);
