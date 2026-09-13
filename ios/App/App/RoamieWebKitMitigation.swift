@@ -56,7 +56,7 @@ enum RoamieRuntimeBridgeAudit {
     static func logConfigure(_ configuration: WKWebViewConfiguration) {
         configureConfigId = ObjectIdentifier(configuration)
         configureUccId = ObjectIdentifier(configuration.userContentController)
-        RoamieNativeLog.critical(
+        RoamieNativeLog.debug(
             "[RUNTIME_BRIDGE_CONFIGURE] \(describe(configuration)) enabled=\(RoamieWebKitMitigation.isEnabled) ios26=\(RoamieWebKitMitigation.isIOS26OrNewer)"
         )
     }
@@ -69,7 +69,7 @@ enum RoamieRuntimeBridgeAudit {
         let configIdMatch = configureConfigId == incomingConfigId
         let uccIdMatch = configureUccId == incomingUccId
         let liveUccMatch = incomingUccId == liveUccId
-        RoamieNativeLog.critical(
+        RoamieNativeLog.debug(
             "[RUNTIME_WEBVIEW_CREATED] webViewId=\(objectId(webView)) webViewClass=\(String(describing: type(of: webView))) " +
                 "configId=\(objectId(incoming)) webViewConfigId=\(objectId(webView.configuration)) " +
                 "\(describe(incoming)) incomingUccId=\(objectId(incoming.userContentController)) " +
@@ -87,7 +87,7 @@ enum RoamieRuntimeBridgeAudit {
         } else {
             webViewIdMatch = "false"
         }
-        RoamieNativeLog.critical(
+        RoamieNativeLog.debug(
             "[WEBVIEW_RUNTIME_URL] startURL=\(startURL.absoluteString) currentURL=\(currentURL) indexExists=\(indexExists) " +
                 "webViewId=\(webViewId) webViewClass=\(webViewClass) webViewIdMatch=\(webViewIdMatch)"
         )
@@ -895,10 +895,10 @@ enum RoamieCompositorFallback {
         guard isActive, usesSnapshotRenderer, let webView = boundWebView else { return }
         legalOverlayOpen = open
         if open {
-            RoamieNativeLog.critical("⚡️ [Roamie] LEGAL overlay open")
+            RoamieNativeLog.debug("⚡️ [Roamie] LEGAL overlay open")
             requestSpaSnapshotRefresh(force: true)
         } else {
-            RoamieNativeLog.critical("⚡️ [Roamie] LEGAL overlay closed")
+            RoamieNativeLog.debug("⚡️ [Roamie] LEGAL overlay closed")
             webView.scrollView.isScrollEnabled = true
             webView.scrollView.bounces = true
         }
@@ -917,7 +917,7 @@ enum RoamieCompositorFallback {
         elevateWebViewHostForInput(webView)
 
         requestSpaSnapshotRefresh(force: true)
-        RoamieNativeLog.critical("⚡️ [Roamie] INTERACTION reset (mirror under webView, depth=0)")
+        RoamieNativeLog.debug("⚡️ [Roamie] INTERACTION reset (mirror under webView, depth=0)")
     }
 
     /// Pause WINDOW_MIRROR capture during login / OAuth (avoids stale splash + WebContent churn).
@@ -938,7 +938,7 @@ enum RoamieCompositorFallback {
             window.viewWithTag(windowMirrorTag)?.isHidden = true
         }
         applyLiveInteractionVisuals(webView)
-        RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_OPEN live WebView (mirror paused 120s)")
+        RoamieNativeLog.debug("⚡️ [Roamie] OAUTH_OPEN live WebView (mirror paused 120s)")
     }
 
     /// OAuth browser closed — stay on live WebView; do not refresh mirror to a stale boot/login frame.
@@ -954,7 +954,7 @@ enum RoamieCompositorFallback {
             window.viewWithTag(windowMirrorTag)?.isHidden = true
         }
         applyLiveInteractionVisuals(webView)
-        RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_RETURN live WebView (mirror refresh paused 90s)")
+        RoamieNativeLog.debug("⚡️ [Roamie] OAUTH_RETURN live WebView (mirror refresh paused 90s)")
     }
 
     private static func isMirrorRefreshPaused() -> Bool {
@@ -1002,7 +1002,7 @@ enum RoamieCompositorFallback {
             }
             elevateWebViewHostForInput(webView)
             scheduleLiveInteractionReapply(webView)
-            RoamieNativeLog.critical("⚡️ [Roamie] INTERACTION mode=live depth=\(liveInteractionDepth) (mirror hidden, webView elevated)")
+            RoamieNativeLog.debug("⚡️ [Roamie] INTERACTION mode=live depth=\(liveInteractionDepth) (mirror hidden, webView elevated)")
             return
         }
 
@@ -1017,7 +1017,7 @@ enum RoamieCompositorFallback {
         if !isMirrorRefreshPaused() {
             requestSpaSnapshotRefresh(force: true)
         }
-        RoamieNativeLog.critical("⚡️ [Roamie] INTERACTION mode=mirror depth=\(liveInteractionDepth)")
+        RoamieNativeLog.debug("⚡️ [Roamie] INTERACTION mode=mirror depth=\(liveInteractionDepth)")
     }
 
     private static func scheduleLiveInteractionReapply(_ webView: WKWebView) {
@@ -1110,7 +1110,7 @@ enum RoamieCompositorFallback {
     private static func logOnce(_ key: String, _ message: String) {
         guard !loggedOnce.contains(key) else { return }
         loggedOnce.insert(key)
-        RoamieNativeLog.debug(message)
+        RoamieNativeLog.critical(message)
     }
 
     private static func logState(_ message: String) {
@@ -1120,7 +1120,7 @@ enum RoamieCompositorFallback {
     private static func logCriticalOnce(_ key: String, _ message: String) {
         guard !loggedOnce.contains(key) else { return }
         loggedOnce.insert(key)
-        RoamieNativeLog.critical(message)
+        RoamieNativeLog.debug(message)
     }
 
     private static func cancelPendingEvaluations() {
@@ -1604,7 +1604,7 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
                     notifyJsFailure("missing_callback_url")
                     return
                 }
-                RoamieNativeLog.critical("⚡️ [Roamie] OPEN_URL scheme=roamie url=\(callbackURL.absoluteString)")
+                RoamieNativeLog.debug("⚡️ [Roamie] OPEN_URL scheme=roamie")
                 deliverCallbackToWebView(callbackURL.absoluteString)
             }
 
@@ -1613,7 +1613,7 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
             activeSession = session
 
             if session.start() {
-                RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_SESSION started (ASWebAuthenticationSession)")
+                RoamieNativeLog.debug("⚡️ [Roamie] OAUTH_SESSION started (ASWebAuthenticationSession)")
                 notifyJsStarted()
                 return
             }
@@ -1659,7 +1659,7 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
         safari.modalPresentationStyle = .fullScreen
         safariFallback = safari
         presenter.present(safari, animated: true) {
-            RoamieNativeLog.critical("⚡️ [Roamie] OAUTH_SAFARI presented")
+            RoamieNativeLog.debug("⚡️ [Roamie] OAUTH_SAFARI presented")
         }
         return true
     }
@@ -1764,7 +1764,7 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
 
     private override init() {
         super.init()
-        RoamieNativeLog.critical(
+        RoamieNativeLog.debug(
             "[RUNTIME_BRIDGE_HANDLER_ALIVE] owner=RoamieRuntimeScriptBridge.shared retain=singleton handlerName=\(RoamieRuntimeBridgeAudit.handlerName)"
         )
     }
@@ -1776,7 +1776,7 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
             let type = body["type"] as? String
             if type == "probe" {
                 let href = body["href"] as? String ?? "(nil)"
-                RoamieNativeLog.critical("[RUNTIME_DOCUMENT_PROBE] href=\(href)")
+                RoamieNativeLog.debug("[RUNTIME_DOCUMENT_PROBE] href=\(href)")
                 return
             }
             if type == "script_src", let src = body["src"] as? String {
@@ -1793,7 +1793,7 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
                 for raw in urls {
                     emitScriptSrc(raw)
                 }
-                RoamieNativeLog.critical("[RUNTIME_SCRIPT] layer=scripts scan=\(layer) total=\(urls.count)")
+                RoamieNativeLog.debug("[RUNTIME_SCRIPT] layer=scripts scan=\(layer) total=\(urls.count)")
                 return
             }
             if type == "resource", let url = body["url"] as? String {
@@ -1820,14 +1820,14 @@ final class RoamieOAuthPresenter: NSObject, ASWebAuthenticationPresentationConte
         let scriptURL = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !scriptURL.isEmpty else { return }
         guard emittedScriptSrc.insert(scriptURL).inserted else { return }
-        RoamieNativeLog.critical("[RUNTIME_SCRIPT_SRC] src=\(scriptURL)")
+        RoamieNativeLog.debug("[RUNTIME_SCRIPT_SRC] src=\(scriptURL)")
     }
 
     private func emitResourceScript(_ raw: String) {
         let scriptURL = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !scriptURL.isEmpty else { return }
         guard emittedResourceScript.insert(scriptURL).inserted else { return }
-        RoamieNativeLog.critical("[RUNTIME_RESOURCE_SCRIPT] name=\(scriptURL)")
+        RoamieNativeLog.debug("[RUNTIME_RESOURCE_SCRIPT] name=\(scriptURL)")
     }
 }
 
@@ -1861,7 +1861,7 @@ enum RoamieWKNavLog {
             return
         }
         guard emittedRuntimeScripts.insert(req).inserted else { return }
-        RoamieNativeLog.critical("[RUNTIME_SCRIPT] \(req)")
+        RoamieNativeLog.debug("[RUNTIME_SCRIPT] \(req)")
     }
 
     static func error(_ label: String, _ error: Error, webView: WKWebView) {

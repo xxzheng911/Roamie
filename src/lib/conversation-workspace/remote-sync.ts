@@ -35,9 +35,7 @@ function compactWorkspace(ws: ConversationWorkspace): ConversationWorkspace {
   };
 }
 
-export async function pushConversationWorkspacesRemote(
-  userId: string,
-): Promise<boolean> {
+export async function pushConversationWorkspacesRemote(userId: string): Promise<boolean> {
   if (!userId || !isSupabaseConfigured()) return false;
   try {
     const all = listConversationWorkspaces(userId);
@@ -76,18 +74,16 @@ export async function pushConversationWorkspacesRemote(
       data?.ai_preferences && typeof data.ai_preferences === "object"
         ? (data.ai_preferences as Record<string, unknown>)
         : {};
-    const { error } = await supabase
-      .from("profiles")
-      .upsert(
-        {
-          id: userId,
-          ai_preferences: {
-            ...prefs,
-            [REMOTE_KEY]: bundle,
-          } as never,
-        },
-        { onConflict: "id" },
-      );
+    const { error } = await supabase.from("profiles").upsert(
+      {
+        id: userId,
+        ai_preferences: {
+          ...prefs,
+          [REMOTE_KEY]: bundle,
+        } as never,
+      },
+      { onConflict: "id" },
+    );
     if (error) {
       console.warn("[WORKSPACE_SAVE_FAILED]", {
         target: "remote",
@@ -125,7 +121,6 @@ export async function pullConversationWorkspacesRemote(
     if (error) {
       console.warn("[WORKSPACE_REMOTE_LOAD]", {
         count: 0,
-        userId,
         error: error.message,
       });
       return null;
@@ -154,7 +149,6 @@ export async function pullConversationWorkspacesRemote(
   } catch (e) {
     console.warn("[WORKSPACE_REMOTE_LOAD]", {
       count: 0,
-      userId,
       error: e instanceof Error ? e.message : String(e),
     });
     return null;
@@ -162,9 +156,7 @@ export async function pullConversationWorkspacesRemote(
 }
 
 /** Merge remote into local without wiping local when remote is empty/failed. */
-export async function mergeRemoteConversationWorkspaces(
-  userId: string,
-): Promise<number> {
+export async function mergeRemoteConversationWorkspaces(userId: string): Promise<number> {
   const remote = await pullConversationWorkspacesRemote(userId);
   if (!remote?.list?.length) return 0;
   let merged = 0;
