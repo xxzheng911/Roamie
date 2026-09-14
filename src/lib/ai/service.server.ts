@@ -10,6 +10,7 @@ import { buildRuleBasedRecommendSummary } from "@/lib/recommendation/fallback-su
 import { ROAMIE_JSON_SCHEMA, normalizeRoamieResponse, type RoamieResponse } from "./types";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { mergeBoundsForStage, stageAllowsPlacesFirst } from "@/lib/ai/conversation-stage";
+import { MAX_ITINERARY_DAYS, MIN_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
 
 const PlaceItemSchema = z
   .object({
@@ -39,7 +40,7 @@ const PlaceItemSchema = z
     reasonSource: raw.reasonSource ?? "template",
   }));
 
-const RequestSchema = z.object({
+export const RequestSchema = z.object({
   mode: z.enum(["chat", "recommend", "itinerary"]),
   mood: z.string().max(120).optional(),
   preferences: z.record(z.unknown()).optional(),
@@ -114,7 +115,7 @@ const RequestSchema = z.object({
   itineraryRequest: z
     .object({
       destination: z.string().min(1).max(100),
-      days: z.number().int().min(1).max(14),
+      days: z.number().int().min(MIN_ITINERARY_DAYS).max(MAX_ITINERARY_DAYS),
       budget: z.enum(["low", "medium", "high"]),
       style: z.string().max(120).optional(),
       mood: z.string().max(120).optional(),

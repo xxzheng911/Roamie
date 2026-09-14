@@ -9,6 +9,7 @@ import { resolveLocaleSync } from "@/lib/i18n/resolve-locale";
 import type { Locale } from "@/lib/i18n/types";
 import { requestDeviceLocation } from "@/lib/device-location";
 import { rememberLastSearchLocation } from "@/lib/last-search-location";
+import { computeInclusiveItineraryDays } from "@/lib/ai/itinerary-days";
 
 type WeatherFetchInput = { lat: number; lng: number; locale?: Locale };
 
@@ -161,9 +162,5 @@ export function toRoamieRequest(
 
 /** Inclusive day count between ISO date strings (YYYY-MM-DD). */
 export function daysBetweenDates(startDate: string, endDate: string): number {
-  const s = new Date(`${startDate}T12:00:00`);
-  const e = new Date(`${endDate}T12:00:00`);
-  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return 1;
-  const diff = Math.round((e.getTime() - s.getTime()) / 86400000) + 1;
-  return Math.max(1, Math.min(14, diff));
+  return computeInclusiveItineraryDays(startDate, endDate) ?? 1;
 }

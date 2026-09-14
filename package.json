@@ -63,6 +63,8 @@
     "verify:p528-cultural-authority": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p528-cultural-authority.mjs",
     "verify:p529-natural-landmark-affiliate": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p529-natural-landmark-affiliate.mjs",
     "verify:p531-long-trip-capacity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-p531-long-trip-capacity.mjs",
+    "verify:itinerary-long-trip-duration": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-long-trip-duration-contract.mjs",
+    "verify:itinerary-selected-places-capacity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-selected-places-capacity.mjs",
     "verify:rc-storage-isolation": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-rc-storage-isolation.mjs",
     "verify:release-readiness": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-release-readiness.mjs",
     "verify:admin-analytics-v1": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-admin-analytics-v1.mjs",

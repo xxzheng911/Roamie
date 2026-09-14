@@ -90,6 +90,11 @@ import {
 import { repairCrossDayGeographicCohesion } from "@/lib/ai/cross-day-geographic-cohesion";
 import { isExcludedByPlaceOrAncestor } from "@/lib/ai/venue-hierarchy-relation";
 import { resolveItineraryCandidateCapacityTarget } from "@/lib/ai/real-place-supplement";
+import {
+  MAX_ITINERARY_DAYS,
+  MAX_ITINERARY_SELECTED_PLACES,
+  MIN_ITINERARY_DAYS,
+} from "@/lib/ai/itinerary-days";
 
 type GeographicScopeResult = "in_scope" | "out_of_scope" | "unknown";
 
@@ -308,9 +313,9 @@ const PlaceSchema = z
     todayHoursLabel: raw.todayHoursLabel,
   }));
 
-const InputSchema = z.object({
+export const InputSchema = z.object({
   destination: z.string().min(1).max(100),
-  days: z.number().int().min(1).max(14),
+  days: z.number().int().min(MIN_ITINERARY_DAYS).max(MAX_ITINERARY_DAYS),
   budget: z.enum(["low", "medium", "high"]).default("medium"),
   style: z.string().max(120).optional().default(""),
   mood: z.string().max(120).optional().default(""),
@@ -323,7 +328,7 @@ const InputSchema = z.object({
   transport: z.string().max(120).optional().default(""),
   /** User-selected places are the complete/authoritative place pool. */
   placeAuthority: z.enum(["selected_only"]).optional(),
-  selectedPlaces: z.array(PlaceSchema).max(70).optional().default([]),
+  selectedPlaces: z.array(PlaceSchema).max(MAX_ITINERARY_SELECTED_PLACES).optional().default([]),
   selectedCombinationIds: z.array(z.number().int().positive()).max(10).optional().default([]),
   nearbyExtensions: z.array(z.string().max(80)).max(10).optional().default([]),
   excludedCategories: z.array(z.string().max(40)).max(30).optional().default([]),

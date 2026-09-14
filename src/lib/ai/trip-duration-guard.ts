@@ -21,9 +21,17 @@ import {
   type PlanningDestinationInput,
   type ResolvedTripDestination,
 } from "@/lib/ai/resolved-trip-destination";
+import {
+  computeInclusiveItineraryDays,
+  isValidItineraryDayCount,
+  MAX_ITINERARY_DAYS,
+  MIN_ITINERARY_DAYS,
+} from "@/lib/ai/itinerary-days";
 
-/** Inclusive upper bound for a single trip planning session. */
-export const MAX_VALID_TRIP_DAYS = 30;
+export { MAX_ITINERARY_DAYS, MIN_ITINERARY_DAYS };
+
+/** Inclusive upper bound for a single trip planning session. Alias of MAX_ITINERARY_DAYS. */
+export const MAX_VALID_TRIP_DAYS = MAX_ITINERARY_DAYS;
 
 export type TripDurationFields = {
   tripDays?: number | null;
@@ -84,20 +92,7 @@ function inferInclusiveTripDays(
   startDate?: string | null,
   endDate?: string | null,
 ): number | undefined {
-  const start = startDate?.trim();
-  const end = endDate?.trim();
-  if (!start || !end) return undefined;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
-    return undefined;
-  }
-  const startMs = Date.parse(`${start}T00:00:00`);
-  const endMs = Date.parse(`${end}T00:00:00`);
-  if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs < startMs) return undefined;
-  const dayMs = 24 * 60 * 60 * 1000;
-  return Math.min(
-    MAX_VALID_TRIP_DAYS,
-    Math.max(1, Math.round((endMs - startMs) / dayMs) + 1),
-  );
+  return computeInclusiveItineraryDays(startDate, endDate);
 }
 
 /**
@@ -115,11 +110,11 @@ export function resolveValidTripDays(context: TripDurationFields): number | unde
   const direct = coerceFiniteDays(context.tripDays ?? context.days);
   if (direct != null) {
     const days = Math.trunc(direct);
-    if (days >= 1 && days <= MAX_VALID_TRIP_DAYS) return days;
+    if (isValidItineraryDayCount(days)) return days;
   }
 
   const fromRange = inferInclusiveTripDays(context.startDate, context.endDate);
-  if (fromRange != null && fromRange >= 1 && fromRange <= MAX_VALID_TRIP_DAYS) {
+  if (fromRange != null && isValidItineraryDayCount(fromRange)) {
     return fromRange;
   }
 

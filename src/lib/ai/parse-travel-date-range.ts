@@ -1,3 +1,5 @@
+import { computeInclusiveItineraryDays } from "@/lib/ai/itinerary-days";
+
 /** Parse date ranges like 11/15~11/16 or 2026-11-15~11-16 into ISO dates and day count. */
 export function parseTravelDateRangeFromText(
   text: string,
@@ -19,12 +21,8 @@ export function parseTravelDateRangeFromText(
   const endIso = toIsoDate(end.year, end.month, end.day);
   if (!startIso || !endIso) return {};
 
-  const startMs = Date.parse(`${startIso}T00:00:00`);
-  const endMs = Date.parse(`${endIso}T00:00:00`);
-  if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs < startMs) return {};
-
-  const dayMs = 24 * 60 * 60 * 1000;
-  const days = Math.min(30, Math.max(1, Math.round((endMs - startMs) / dayMs) + 1));
+  const days = computeInclusiveItineraryDays(startIso, endIso);
+  if (days == null) return {};
 
   return { startDate: startIso, endDate: endIso, days };
 }

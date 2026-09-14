@@ -25,8 +25,22 @@ import {
 import { minEffectivePlacesPerDay } from "@/lib/ai/planner-day-route-assembly";
 import { isHardGooglePlaceId } from "@/lib/ai/planning-place-id";
 import { createDeliverableItineraryStop } from "@/lib/ai/itinerary-deliverable-stop";
+import {
+  isValidItineraryDayCount,
+  MAX_ITINERARY_DAYS,
+} from "@/lib/ai/itinerary-days";
+import { ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE } from "@/lib/ai/itinerary-validator/types";
+import { INSUFFICIENT_CREDITS_ERROR_CODE } from "@/lib/credits/errors";
+import { INSUFFICIENT_CREDITS_ITINERARY_MESSAGE } from "@/lib/credits/operations";
 
 export const ITINERARY_GENERATION_FAILED_MESSAGE = "行程建立失敗，我再幫你重新整理一次。";
+
+export const INVALID_TRIP_DURATION_ERROR_CODE = "invalid_trip_duration";
+
+export const INVALID_TRIP_DURATION_MESSAGE = `單次行程目前最多規劃 ${MAX_ITINERARY_DAYS} 天，請把日期縮短後再試一次。`;
+
+export const COMBINATION_CANDIDATE_SHORTAGE_MESSAGE =
+  "部分已選組合目前無法取得足夠的真實地點。";
 
 export const ITINERARY_PARTIAL_FAILURE_MESSAGE = "行程建立失敗，是否改成列出必去景點？";
 
@@ -75,6 +89,167 @@ export type GenerateItineraryFailure = {
 };
 
 export type GenerateItineraryResult = GenerateItinerarySuccess | GenerateItineraryFailure;
+
+export type ItineraryGenerationFailureClass =
+  | "invalid_trip_duration"
+  | "insufficient_real_places"
+  | "insufficient_candidate_capacity"
+  | "itinerary_validator_failed"
+  | "server_generation_failed"
+  | "unauthorized"
+  | "credits_insufficient"
+  | "unknown_generation_failure";
+
+export function invalidItineraryDurationFailure(
+  days: unknown,
+): GenerateItineraryFailure | null {
+  if (isValidItineraryDayCount(days)) return null;
+  return {
+    success: false,
+    errorCode: INVALID_TRIP_DURATION_ERROR_CODE,
+    failureReason: INVALID_TRIP_DURATION_ERROR_CODE,
+    message: INVALID_TRIP_DURATION_MESSAGE,
+  };
+}
+
+const COMBINATION_SHORTAGE_CODES = new Set([
+  "combination_uncovered",
+  "combination_coverage_insufficient",
+]);
+
+const INSUFFICIENT_PLACE_CODES = new Set([
+  "insufficient_places",
+  "insufficient_real_places",
+  "insufficient_resolved_places",
+  "total_real_place_count_insufficient",
+  "total_place_count_insufficient",
+  "no_candidate_places",
+  "places_api_empty",
+  "final_allocation_insufficient",
+]);
+
+const CAPACITY_SHORTAGE_CODES = new Set([
+  "insufficient_candidate_capacity",
+  "insufficient_deliverable_capacity",
+]);
+
+export function classifyItineraryGenerationFailure(failure: {
+  errorCode?: string | null;
+  failureReason?: string | null;
+  message?: string | null;
+}): { classification: ItineraryGenerationFailureClass; userMessage: string } {
+  const errorCode = failure.errorCode?.trim() || "";
+  const failureReason = failure.failureReason?.trim() || "";
+  const message = failure.message?.trim() || "";
+  const haystack = `${errorCode} ${failureReason} ${message}`.toLowerCase();
+
+  if (
+    errorCode === INVALID_TRIP_DURATION_ERROR_CODE ||
+    failureReason === INVALID_TRIP_DURATION_ERROR_CODE
+  ) {
+    return {
+      classification: "invalid_trip_duration",
+      userMessage: INVALID_TRIP_DURATION_MESSAGE,
+    };
+  }
+
+  if (
+    errorCode === INSUFFICIENT_CREDITS_ERROR_CODE ||
+    haystack.includes("insufficient_credits")
+  ) {
+    return {
+      classification: "credits_insufficient",
+      userMessage: INSUFFICIENT_CREDITS_ITINERARY_MESSAGE,
+    };
+  }
+
+  if (/^unauthorized$/i.test(errorCode) || haystack.includes("unauthorized")) {
+    return {
+      classification: "unauthorized",
+      userMessage: message || "請先登入後再試一次。",
+    };
+  }
+
+  if (
+    errorCode === "itinerary_validator_failed" ||
+    errorCode === "persistence_mismatch" ||
+    failureReason === "validator_failed"
+  ) {
+    return {
+      classification: "itinerary_validator_failed",
+      userMessage: ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE,
+    };
+  }
+
+  if (
+    COMBINATION_SHORTAGE_CODES.has(errorCode) ||
+    /已選組合目前無法取得足夠的真實地點|這個主題找到的可用真實地點不足/.test(message)
+  ) {
+    return {
+      classification: "insufficient_real_places",
+      userMessage: message || COMBINATION_CANDIDATE_SHORTAGE_MESSAGE,
+    };
+  }
+
+  if (
+    CAPACITY_SHORTAGE_CODES.has(errorCode) ||
+    failureReason === "insufficient_deliverable_capacity" ||
+    haystack.includes("insufficient_candidate_capacity") ||
+    haystack.includes("insufficient_deliverable_capacity")
+  ) {
+    return {
+      classification: "insufficient_candidate_capacity",
+      userMessage: message && message !== ITINERARY_GENERATION_FAILED_MESSAGE
+        ? message
+        : INSUFFICIENT_ITINERARY_PLACES_MESSAGE,
+    };
+  }
+
+  if (
+    INSUFFICIENT_PLACE_CODES.has(errorCode) ||
+    /empty_non_free_day|insufficient_real_places/.test(haystack) ||
+    message === INSUFFICIENT_ITINERARY_PLACES_MESSAGE ||
+    /找不到足夠/.test(message)
+  ) {
+    return {
+      classification: "insufficient_real_places",
+      userMessage: message && message !== ITINERARY_GENERATION_FAILED_MESSAGE
+        ? message
+        : INSUFFICIENT_ITINERARY_PLACES_MESSAGE,
+    };
+  }
+
+  if (
+    errorCode === "generation_unavailable" ||
+    errorCode === "server_error" ||
+    errorCode === "server_generation_failed"
+  ) {
+    return {
+      classification: "server_generation_failed",
+      userMessage: ITINERARY_GENERATION_FAILED_MESSAGE,
+    };
+  }
+
+  if (message && message !== ITINERARY_GENERATION_FAILED_MESSAGE) {
+    return {
+      classification: "unknown_generation_failure",
+      userMessage: message,
+    };
+  }
+
+  return {
+    classification: "unknown_generation_failure",
+    userMessage: ITINERARY_GENERATION_FAILED_MESSAGE,
+  };
+}
+
+export function itineraryFailureUserMessage(failure: {
+  errorCode?: string | null;
+  failureReason?: string | null;
+  message?: string | null;
+}): string {
+  return classifyItineraryGenerationFailure(failure).userMessage;
+}
 
 const GENERATE_ITINERARY_RESULT_ENVELOPE_KEYS = ["data", "result", "payload", "response"] as const;
 
@@ -865,15 +1040,7 @@ export function formatItineraryUserError(error: unknown): string {
   ) {
     return ITINERARY_GENERATION_FAILED_MESSAGE;
   }
-  if (
-    message.includes(INSUFFICIENT_ITINERARY_PLACES_MESSAGE) ||
-    /找不到足夠/.test(message) ||
-    /insufficient/i.test(message)
-  ) {
-    return "目前還沒找到足夠的實際地點，我再幫你換一批。";
-  }
-  if (message.trim()) return message;
-  return ITINERARY_GENERATION_FAILED_MESSAGE;
+  return classifyItineraryGenerationFailure({ message }).userMessage;
 }
 
 export class ItineraryGenerationError extends Error {

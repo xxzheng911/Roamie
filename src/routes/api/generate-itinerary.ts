@@ -5,6 +5,11 @@ import { analyticsOperationEventId } from "@/lib/analytics/events";
 import { recordAnalyticsEventServer } from "@/lib/analytics/record.server";
 import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 import { INSUFFICIENT_CREDITS_ERROR_CODE, isInsufficientCreditsError } from "@/lib/credits/errors";
+import {
+  invalidItineraryDurationFailure,
+  itineraryFailureUserMessage,
+} from "@/lib/trip/itinerary-guards";
+import { isItineraryDurationValidationError } from "@/lib/ai/itinerary-days";
 
 function isAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get("origin") ?? request.headers.get("referer");
@@ -77,6 +82,23 @@ export const Route = createFileRoute("/api/generate-itinerary")({
               : operationId;
           payload = { ...(payload as Record<string, unknown>), generationTimingId: operationId };
           const requestBody = payload as Record<string, unknown>;
+          const durationFailure = invalidItineraryDurationFailure(requestBody.days);
+          if (durationFailure) {
+            console.info("[ITINERARY_SERVER_RESULT]", {
+              generationId: correlatedGenerationId,
+              successDiscriminant: false,
+              errorCode: durationFailure.errorCode,
+              failureReason: durationFailure.failureReason,
+              failedRuleCount: 0,
+              tripPresent: false,
+              payloadPresent: false,
+              transport: "https_api",
+            });
+            return new Response(JSON.stringify(durationFailure), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
           console.info("[ITINERARY_DAYS_AUTHORITY]", {
             generationId: correlatedGenerationId,
             stage: "api_request",
@@ -124,39 +146,85 @@ export const Route = createFileRoute("/api/generate-itinerary")({
           });
         } catch (e) {
           const insufficientCredits = isInsufficientCreditsError(e);
+          const durationError = isItineraryDurationValidationError(e);
+          const classified = durationError
+            ? invalidItineraryDurationFailure(Number.NaN)!
+            : insufficientCredits
+              ? null
+              : {
+                  success: false as const,
+                  errorCode: "generation_unavailable",
+                  failureReason: "exception",
+                  message: itineraryFailureUserMessage({
+                    errorCode: "generation_unavailable",
+                    message: e instanceof Error ? e.message : String(e),
+                  }),
+                };
           await recordAnalyticsEventServer(
             {
               eventId: analyticsOperationEventId(operationId, "failed"),
               eventName: "itinerary_generation_failed",
               tier: auth.hasPlusAccess ? "plus" : "free",
-              failureCode: insufficientCredits ? INSUFFICIENT_CREDITS_ERROR_CODE : "server_error",
+              failureCode: insufficientCredits
+                ? INSUFFICIENT_CREDITS_ERROR_CODE
+                : durationError
+                  ? classified!.errorCode
+                  : "server_error",
             },
             auth.userId,
           );
-          const status = insufficientCredits ? 402 : 500;
+          if (insufficientCredits) {
+            return new Response(
+              JSON.stringify({
+                error: INSUFFICIENT_CREDITS_ERROR_CODE,
+                requestId: operationId,
+              }),
+              {
+                status: 402,
+                headers: { "Content-Type": "application/json" },
+              },
+            );
+          }
+          if (durationError && classified) {
+            console.info("[ITINERARY_SERVER_RESULT]", {
+              generationId:
+                payload && typeof payload === "object" && !Array.isArray(payload)
+                  ? ((payload as Record<string, unknown>).generationId ?? operationId)
+                  : operationId,
+              successDiscriminant: false,
+              errorCode: classified.errorCode,
+              failureReason: classified.failureReason,
+              failedRuleCount: 0,
+              tripPresent: false,
+              payloadPresent: false,
+              transport: "https_api",
+            });
+            return new Response(JSON.stringify(classified), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
           console.info("[ITINERARY_SERVER_RESULT]", {
             generationId:
               payload && typeof payload === "object" && !Array.isArray(payload)
                 ? ((payload as Record<string, unknown>).generationId ?? operationId)
                 : operationId,
             successDiscriminant: false,
-            errorCode: insufficientCredits ? INSUFFICIENT_CREDITS_ERROR_CODE : "server_error",
-            failureReason: insufficientCredits ? "insufficient_credits" : "exception",
+            errorCode: "server_error",
+            failureReason: "exception",
             failedRuleCount: 0,
             tripPresent: false,
             payloadPresent: false,
             transport: "https_api",
           });
-          if (!insufficientCredits) console.error("[generate-itinerary] failed:", e);
+          console.error("[generate-itinerary] failed:", e);
           return new Response(
             JSON.stringify({
-              error: insufficientCredits
-                ? INSUFFICIENT_CREDITS_ERROR_CODE
-                : "generation_unavailable",
+              error: "generation_unavailable",
               requestId: operationId,
             }),
             {
-              status,
+              status: 500,
               headers: { "Content-Type": "application/json" },
             },
           );

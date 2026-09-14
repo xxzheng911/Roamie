@@ -1,3 +1,5 @@
+import { MIN_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
+
 const CN_DAY_MAP: Record<string, number> = {
   一: 1,
   二: 2,
@@ -24,6 +26,11 @@ function normalizeDurationText(text: string): string {
     .replace(/\s+/g, "");
 }
 
+function boundedParsedDayCount(value: number): number | undefined {
+  if (!Number.isFinite(value) || value < MIN_ITINERARY_DAYS) return undefined;
+  return Math.trunc(value);
+}
+
 /**
  * 解析「5 天」「五天」「3日」「大概3天」「5天4夜」「4晚」等天數。
  * 不含裸數字（裸數字須依 pendingQuestion 語境解析）。
@@ -35,7 +42,7 @@ export function parseDayCountFromText(text: string): number | undefined {
   // 5天4夜 / 五天四夜 — prefer day count
   const dayNight = t.match(/(\d+)\s*天\s*\d+\s*夜/);
   if (dayNight) {
-    return Math.min(30, Math.max(1, Number.parseInt(dayNight[1]!, 10)));
+    return boundedParsedDayCount(Number.parseInt(dayNight[1]!, 10));
   }
   const cnDayNight = t.match(/([一二三四五六七八九十两兩])\s*天\s*[一二三四五六七八九十两兩]?\s*夜/);
   if (cnDayNight?.[1] && CN_DAY_MAP[cnDayNight[1]]) {
@@ -45,7 +52,7 @@ export function parseDayCountFromText(text: string): number | undefined {
   // Soft hedges: 大概3天 / 差不多3天 / 三天左右 / 3天吧
   const digit = t.match(/(?:大概|差不多|約|大约)?(\d+)\s*(?:天|日|晚)(?:左右|吧)?/);
   if (digit) {
-    return Math.min(30, Math.max(1, Number.parseInt(digit[1]!, 10)));
+    return boundedParsedDayCount(Number.parseInt(digit[1]!, 10));
   }
 
   const cn = t.match(
@@ -58,7 +65,7 @@ export function parseDayCountFromText(text: string): number | undefined {
 
   const english = text.match(/\b(\d+)\s*(?:-\s*)?days?\b/i);
   if (english?.[1]) {
-    return Math.min(30, Math.max(1, Number.parseInt(english[1], 10)));
+    return boundedParsedDayCount(Number.parseInt(english[1], 10));
   }
 
   return undefined;

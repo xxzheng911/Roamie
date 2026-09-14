@@ -2,6 +2,7 @@
  * Concurrency-limited place-mapping queue for itinerary generation.
  * Never Promise.all() the full candidate list — max 2 in flight, with batch gaps.
  */
+import { resolveItineraryCandidateCapacityTarget } from "@/lib/ai/real-place-supplement";
 
 const MAP_CONCURRENCY = 2;
 const BATCH_GAP_MS = 400;
@@ -89,16 +90,21 @@ export function rateLimitBackoffMs(attemptIndex: number, retryAfterMs?: number):
   return jitter(base);
 }
 
-/** First-round Places candidate cap before mapping (6 days → 24). */
+/**
+ * First-round Places candidate cap before mapping.
+ * Latency-bounded first batch (historical 12–24 window). Long trips continue
+ * via reserve backfill and theme-scoped supplement until resolvedTarget.
+ */
 export function computeFirstRoundPlaceMapCap(days: number): number {
   return Math.min(Math.max(days * 4, 12), 24);
 }
 
 /**
- * Soft fetch target after mapping — capacity scales with trip days.
- * P1 Step 1：requiredMinimum = days×3；fetchTarget 以 days×4 oversampling 保留去重空間。
+ * Soft fetch / expansion target after mapping.
+ * Authority: resolveItineraryCandidateCapacityTarget — never below hardMinimum.
+ * Oversample (days×4) keeps dedupe headroom; the old 30 cap starved 16-day trips.
  */
 export function computeItineraryResolvedTarget(days: number): number {
-  const safe = Math.max(1, days);
-  return Math.min(Math.max(safe * 4, safe * 3), 30);
+  const target = resolveItineraryCandidateCapacityTarget(days);
+  return Math.max(target.hardMinimum, target.oversampleTarget);
 }

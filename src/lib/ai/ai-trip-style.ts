@@ -23,6 +23,7 @@ import {
 } from "@/lib/ai/ai-chat-conversation-state";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { isComboItineraryQuery } from "@/lib/ai/chat-category-place-guard";
+import { computeInclusiveItineraryDays } from "@/lib/ai/itinerary-days";
 
 export type TripStyleKey = "classic_landmarks" | "local_life" | "slow_nature" | "mixed";
 
@@ -204,16 +205,7 @@ export function inferDaysFromDateRange(
   startDate?: string | null,
   endDate?: string | null,
 ): number | undefined {
-  const start = startDate?.trim();
-  const end = endDate?.trim();
-  if (!start || !end) return undefined;
-
-  const startMs = Date.parse(`${start}T00:00:00`);
-  const endMs = Date.parse(`${end}T00:00:00`);
-  if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs < startMs) return undefined;
-
-  const dayMs = 24 * 60 * 60 * 1000;
-  return Math.min(30, Math.max(1, Math.round((endMs - startMs) / dayMs) + 1));
+  return computeInclusiveItineraryDays(startDate, endDate);
 }
 
 /** Resolve trip days from explicit count or a complete start/end date range. */

@@ -1,6 +1,7 @@
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { parseTravelDateRangeFromText } from "@/lib/ai/parse-travel-date-range";
+import { isValidItineraryDayCount, MAX_ITINERARY_DAYS } from "@/lib/ai/itinerary-days";
 
 /** Minimal pending shape — avoids circular import with destination-pending-question. */
 export type BareNumberPendingQuestion = {
@@ -183,7 +184,7 @@ export function resolveBareNumberByPendingQuestion(
     context.pendingQuestion?.conversationState === "awaiting_days";
 
   if (askingDays) {
-    if (value >= 1 && value <= 30) {
+    if (isValidItineraryDayCount(value)) {
       return {
         value,
         resolvedAs: "tripDays",
@@ -324,8 +325,8 @@ export function parseTripDaysFromPendingReply(
     return { clarificationReply: resolution.clarificationReply };
   }
 
-  // Bare integer ≥ 31 while asking days — do not auto-resolve.
-  if (bare > 30) {
+  // Bare integer above the itinerary duration contract — do not auto-resolve.
+  if (bare > MAX_ITINERARY_DAYS) {
     return {
       clarificationReply: `你回的「${bare}」比較像日期或別的數字。這趟大概想玩幾天？例如回「5天」或「8/15-8/17」。`,
     };

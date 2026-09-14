@@ -25,6 +25,9 @@ import {
   isGenerateItineraryFailure,
   missingGenerateItineraryResultFields,
   ITINERARY_GENERATION_FAILED_MESSAGE,
+  INVALID_TRIP_DURATION_ERROR_CODE,
+  invalidItineraryDurationFailure,
+  itineraryFailureUserMessage,
   normalizeGenerateItineraryResult,
   validateCompleteItineraryPayload,
   unwrapGeneratedTripPayload,
@@ -33,6 +36,7 @@ import {
 } from "@/lib/trip/itinerary-guards";
 import { INSUFFICIENT_CREDITS_ITINERARY_MESSAGE } from "@/lib/credits";
 import { isInsufficientCreditsError } from "@/lib/credits/errors";
+import { isItineraryDurationValidationError } from "@/lib/ai/itinerary-days";
 import { INSUFFICIENT_ITINERARY_PLACES_MESSAGE } from "@/lib/ai/generic-place-label";
 import {
   isItineraryValidatorEnabled,
@@ -581,6 +585,20 @@ export async function createItineraryFromSession(params: {
     requestedGenerateInput.generationId?.trim() ||
     requestedGenerateInput.generationTimingId?.trim() ||
     crypto.randomUUID();
+  const durationFailure = invalidItineraryDurationFailure(requestedGenerateInput.days);
+  if (durationFailure) {
+    logItineraryFailureReason(durationFailure.errorCode);
+    logAiItineraryFailed(durationFailure.errorCode);
+    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", durationFailure.errorCode);
+    logAiState("FAILED", durationFailure.errorCode);
+    return {
+      ok: false,
+      state: "FAILED",
+      message: durationFailure.message,
+      session: { ...session, aiItineraryState: "FAILED", phase: "ready" },
+      offerMustVisit: false,
+    };
+  }
   const requiredAnchorHandoff = resolvePlanningRequiredAnchorHandoff({
     session,
     candidateRequiredPlaces: requestedGenerateInput.selectedPlaces,
@@ -830,12 +848,16 @@ export async function createItineraryFromSession(params: {
           offerMustVisit: false,
         };
       }
-      const localPayload = buildLocalItineraryPayload(
-        generateInput,
-        localFallbackPlaces,
-        selectedCombinationIds,
-        nearbyExtensions,
-      );
+      const skipLocalFallback =
+        generateResult.errorCode === INVALID_TRIP_DURATION_ERROR_CODE;
+      const localPayload = skipLocalFallback
+        ? null
+        : buildLocalItineraryPayload(
+            generateInput,
+            localFallbackPlaces,
+            selectedCombinationIds,
+            nearbyExtensions,
+          );
       if (localPayload) {
         logAiPipeline(
           "[AI_RUNTIME_PATH]",
@@ -866,15 +888,12 @@ export async function createItineraryFromSession(params: {
       });
       logItineraryFailureReason(preservedFailureReason);
       logAiItineraryFailed(preservedFailureReason);
-      logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", "itinerary validation failed");
+      logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", preservedFailureReason);
       logAiState("FAILED", preservedFailureReason);
       return {
         ok: false,
         state: "FAILED",
-        message:
-          generateResult.errorCode === "persistence_mismatch"
-            ? ITINERARY_VALIDATOR_BLOCKED_USER_MESSAGE
-            : ITINERARY_GENERATION_FAILED_MESSAGE,
+        message: itineraryFailureUserMessage(generateResult),
         session: {
           ...session,
           aiItineraryState: "FAILED",
@@ -1041,10 +1060,11 @@ export async function createItineraryFromSession(params: {
       return {
         ok: false,
         state: "FAILED",
-        message:
-          reason === "insufficient_real_places"
-            ? INSUFFICIENT_ITINERARY_PLACES_MESSAGE
-            : ITINERARY_GENERATION_FAILED_MESSAGE,
+        message: itineraryFailureUserMessage({
+          errorCode: reason,
+          failureReason: reason,
+          message: reason,
+        }),
         session: {
           ...session,
           aiItineraryState: "FAILED",
@@ -1189,12 +1209,23 @@ export async function createItineraryFromSession(params: {
       };
     }
     const reason = error instanceof Error ? error.message : String(error);
-    const localPayload = buildLocalItineraryPayload(
-      generateInput,
-      localFallbackPlaces,
-      selectedCombinationIds,
-      nearbyExtensions,
-    );
+    const durationError = isItineraryDurationValidationError(error);
+    const classifiedException = durationError
+      ? invalidItineraryDurationFailure(Number.NaN)!
+      : {
+          success: false as const,
+          errorCode: "exception",
+          failureReason: reason,
+          message: reason,
+        };
+    const localPayload = durationError
+      ? null
+      : buildLocalItineraryPayload(
+          generateInput,
+          localFallbackPlaces,
+          selectedCombinationIds,
+          nearbyExtensions,
+        );
     if (localPayload) {
       logAiItinerarySuccess();
       logAiState("SUCCESS", "local_build_after_exception");
@@ -1203,22 +1234,18 @@ export async function createItineraryFromSession(params: {
         state: "SUCCESS",
         session: { ...session, aiItineraryState: "SUCCESS", phase: "generating" },
         payload: localPayload,
-        generateResult: {
-          success: false,
-          errorCode: "exception",
-          message: reason,
-        },
+        generateResult: classifiedException,
       };
     }
     logItinerarySaveFailed(reason);
-    logItineraryFailureReason(`exception:${reason}`);
-    logAiItineraryFailed(reason);
-    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", reason);
-    logAiState("FAILED", reason);
+    logItineraryFailureReason(`exception:${classifiedException.errorCode}`);
+    logAiItineraryFailed(classifiedException.errorCode);
+    logAiPipeline("[ITINERARY_SAVE_FAILED_REASON]", classifiedException.errorCode);
+    logAiState("FAILED", classifiedException.errorCode);
     return {
       ok: false,
       state: "FAILED",
-      message: ITINERARY_GENERATION_FAILED_MESSAGE,
+      message: itineraryFailureUserMessage(classifiedException),
       session: {
         ...session,
         aiItineraryState: "FAILED",

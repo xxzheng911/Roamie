@@ -81,6 +81,10 @@ const partialSixDay = resolveItineraryCandidateCapacityTarget(6, [1, 6]);
 assert.equal(partialSixDay.hardMinimum, 10);
 assert.equal(partialSixDay.preferredTarget, 14);
 
+const sixteenDay = resolveItineraryCandidateCapacityTarget(16);
+assert.equal(sixteenDay.hardMinimum, 32);
+assert.equal(sixteenDay.preferredTarget, 48);
+
 console.log("P53.1 long-trip candidate capacity: PASS", {
   sixDay,
   expansionCases: "8/9 seed attempted; 10/11 insufficient; 12/14 sufficient",
