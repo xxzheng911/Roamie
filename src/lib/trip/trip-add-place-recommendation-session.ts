@@ -6,7 +6,8 @@ import {
 import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { loadChatSession, roamieRecToChatItem, createEmptySession, type ChatPlaceItem } from "@/lib/chat-session";
-import { alignChatRecommendationCount } from "@/lib/chat-display-recommendations";
+import { getTripAddPlaceCopy } from "@/lib/i18n/trip-add-place-copy";
+import type { Locale } from "@/lib/i18n/types";
 import { isAffirmativeReply } from "@/lib/ai/chat-conversation-state";
 import { placeIdentityKey, normalizePlaceName } from "@/lib/place-planning-memory";
 import type { TripAddPlaceContext, TripAddPlaceFollowUpIntent } from "@/lib/trip/trip-add-place-session";
@@ -518,42 +519,16 @@ export function rejectLastShownBatch(
   return { ...recSession, rejectedPlaceIds, shownPlaceIds };
 }
 
-function areaLabel(ctx: TripAddPlaceContext): string {
-  const names = ctx.currentPlaces.map((p) => p.name).filter(Boolean);
-  if (names.length > 0) return `${names.join("和")}周邊`;
-  return ctx.destination;
-}
-
 export function buildTripAddPlaceBatchSummary(
-  ctx: TripAddPlaceContext,
+  _ctx: TripAddPlaceContext,
   recommendations: RoamieRecommendationItem[],
-  opts?: { isFollowUp?: boolean; intent?: TripAddPlaceFollowUpIntent },
+  opts?: { isFollowUp?: boolean; intent?: TripAddPlaceFollowUpIntent; locale?: Locale },
 ): string {
-  const dayLabel = `第 ${ctx.selectedDay} 天`;
-  const area = areaLabel(ctx);
-  const intent = opts?.intent ?? "attraction";
-
   if (!recommendations.length) {
     return TRIP_ADD_PLACE_EXHAUSTED_MESSAGE;
   }
-
-  const list = recommendations.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
-  const lead = opts?.isFollowUp
-    ? intent === "cafe"
-      ? `如果${dayLabel}在${area}，再幫你找這幾間順路的咖啡廳：`
-      : intent === "restaurant"
-        ? `如果${dayLabel}在${area}，再推薦這幾間順路餐廳：`
-        : `如果${dayLabel}在${area}，再推薦這幾個順路景點：`
-    : intent === "cafe"
-      ? `如果${dayLabel}在${area}，這幾間咖啡廳順路又不會太趕：`
-      : intent === "restaurant"
-        ? `如果${dayLabel}在${area}，這幾間餐廳順路又不會太趕：`
-        : `如果${dayLabel}在${area}，這幾個景點順路又不會太趕：`;
-
-  return alignChatRecommendationCount(
-    [lead, "", list, "", "想加入行程的話，直接點卡片就可以。"].join("\n"),
-    recommendations.length,
-  );
+  const copy = getTripAddPlaceCopy(opts?.locale);
+  return opts?.isFollowUp ? copy.continuation : copy.opening;
 }
 
 export function extractLastBatchPlaceIds(msgs: import("@/lib/chat-history").ChatMsg[]): string[] {
@@ -598,6 +573,7 @@ export function resolveTripAddPlaceMoreTurn(
   userText: string,
   session: ChatPlanningSession,
   msgs: import("@/lib/chat-history").ChatMsg[],
+  locale?: Locale,
 ): {
   summary: string;
   recommendations: RoamieRecommendationItem[];
@@ -639,7 +615,8 @@ export function resolveTripAddPlaceMoreTurn(
   }
 
   const summary = buildTripAddPlaceBatchSummary(ctx, batch, {
-    isFollowUp: updatedRecSession.batchIndex > 2,
+    isFollowUp: true,
+    locale,
     intent: updatedRecSession.intent,
   });
 

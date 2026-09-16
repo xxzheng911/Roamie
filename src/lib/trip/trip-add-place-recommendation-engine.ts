@@ -335,10 +335,12 @@ function turnFromBatch(
   batch: RoamieRecommendationItem[],
   recSession: TripAddPlaceRecommendationSession,
   isFollowUp: boolean,
+  locale: Locale,
 ): TripAddPlaceLocalTurnResult {
   const ctx = session.tripAddPlaceContext!;
   const summary = buildTripAddPlaceBatchSummary(ctx, batch, {
     isFollowUp,
+    locale,
     intent: recSession.intent,
   });
   const recs = batch.map(roamieRecToChatItem) as ChatPlaceItem[];
@@ -385,7 +387,7 @@ export async function runTripAddPlaceRecommendationEngine(params: {
   if (wantsExpand) {
     session = await expandSearchRadius(session, searchPlaces, locale, true);
     logTripAddPlaceSessionState("after_expand_radius", session);
-    const expandTurn = resolveTripAddPlaceMoreTurn("再推薦", session, msgs);
+    const expandTurn = resolveTripAddPlaceMoreTurn("再推薦", session, msgs, locale);
     if (expandTurn?.recommendations.length) {
       return {
         summary: expandTurn.summary,
@@ -396,7 +398,7 @@ export async function runTripAddPlaceRecommendationEngine(params: {
   }
 
   if (wantsMore || wantsExpand) {
-    const turn = resolveTripAddPlaceMoreTurn(userText, session, msgs);
+    const turn = resolveTripAddPlaceMoreTurn(userText, session, msgs, locale);
     if (turn?.recommendations.length) {
       return {
         summary: turn.summary,
@@ -407,7 +409,7 @@ export async function runTripAddPlaceRecommendationEngine(params: {
 
     if (!wantsExpand && turn && !turn.recommendations.length) {
       const expanded = await expandSearchRadius(session, searchPlaces, locale, false);
-      const afterExpand = resolveTripAddPlaceMoreTurn("再推薦", expanded, msgs);
+      const afterExpand = resolveTripAddPlaceMoreTurn("再推薦", expanded, msgs, locale);
       if (afterExpand?.recommendations.length) {
         return {
           summary: afterExpand.summary,
@@ -452,7 +454,7 @@ export async function runTripAddPlaceRecommendationEngine(params: {
           intent: resolveIntent(session),
           searchRadiusStep: session.tripAddPlaceRecommendationSession?.searchRadiusStep,
         });
-        const afterRefetch = resolveTripAddPlaceMoreTurn("再推薦", rebuilt, msgs);
+        const afterRefetch = resolveTripAddPlaceMoreTurn("再推薦", rebuilt, msgs, locale);
         if (afterRefetch?.recommendations.length) {
           return {
             summary: afterRefetch.summary,
@@ -498,7 +500,8 @@ export async function runTripAddPlaceRecommendationEngine(params: {
           { ...session, activeChatIntent: followUp },
           batch,
           updatedRec,
-          updatedRec.batchIndex > 2,
+          updatedRec.batchIndex > 1,
+          locale,
         );
       }
     }
@@ -509,11 +512,11 @@ export async function runTripAddPlaceRecommendationEngine(params: {
         intent: followUp,
         firstBatch,
       });
-      return turnFromBatch(session, firstBatch, recSession, false);
+      return turnFromBatch(session, firstBatch, recSession, false, locale);
     }
     if (rec && step < TRIP_ADD_PLACE_RADIUS_STEPS_M.length - 1) {
       const expanded = await expandSearchRadius(session, searchPlaces, locale, true);
-      const retry = resolveTripAddPlaceMoreTurn("再推薦", expanded, msgs);
+      const retry = resolveTripAddPlaceMoreTurn("再推薦", expanded, msgs, locale);
       if (retry?.recommendations.length) {
         return {
           summary: retry.summary,
@@ -534,12 +537,12 @@ export async function runTripAddPlaceRecommendationEngine(params: {
     if (remaining.length > 0) {
       const { batch, session: updatedRec } = takeNextTripAddPlaceBatch(synced, ctx);
       if (batch.length) {
-        return turnFromBatch(session, batch, updatedRec, updatedRec.batchIndex > 2);
+        return turnFromBatch(session, batch, updatedRec, updatedRec.batchIndex > 1, locale);
       }
     }
   }
 
-  const retryMore = resolveTripAddPlaceMoreTurn("還有嗎", session, msgs);
+  const retryMore = resolveTripAddPlaceMoreTurn("還有嗎", session, msgs, locale);
   if (retryMore?.recommendations.length) {
     return {
       summary: retryMore.summary,
@@ -549,7 +552,7 @@ export async function runTripAddPlaceRecommendationEngine(params: {
   }
 
   const expanded = await expandSearchRadius(session, searchPlaces, locale, true);
-  const afterExpand = resolveTripAddPlaceMoreTurn("再推薦", expanded, msgs);
+  const afterExpand = resolveTripAddPlaceMoreTurn("再推薦", expanded, msgs, locale);
   if (afterExpand?.recommendations.length) {
     return {
       summary: afterExpand.summary,

@@ -21,7 +21,7 @@ import { syncSessionPlaceMemory } from "@/lib/place-planning-memory";
 import { resolveTripDestination } from "@/lib/outfit/trip-outfit-context";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { Locale } from "@/lib/i18n/types";
-import { alignChatRecommendationCount } from "@/lib/chat-display-recommendations";
+import { getTripAddPlaceCopy } from "@/lib/i18n/trip-add-place-copy";
 import {
   buildTripAddPlaceDedupRegistry,
   createTripAddPlaceDedupRegistry,
@@ -197,19 +197,8 @@ export function buildTripAddPlaceInitialContext(ctx: TripAddPlaceContext): strin
   return lines.filter(Boolean).join("\n");
 }
 
-export function buildTripAddPlaceOpening(ctx: TripAddPlaceContext): string {
-  const dayLabel = `第 ${ctx.selectedDay} 天`;
-  const names = ctx.currentPlaces.map((p) => p.name).filter(Boolean);
-  const lead =
-    names.length > 0
-      ? `我看到你目前${dayLabel}已經排了${names.join("和")}。`
-      : `我看到你正在規劃${dayLabel}的行程。`;
-
-  return [
-    lead,
-    "如果要再加一個地點，我會建議找附近、順路、不會讓行程太趕的地方。",
-    "你想要我偏向咖啡休息、景點散步，還是晚餐安排？",
-  ].join("\n");
+export function buildTripAddPlaceOpening(_ctx: TripAddPlaceContext, locale?: Locale): string {
+  return getTripAddPlaceCopy(locale).opening;
 }
 
 export function writeTripAddPlaceHandoff(ctx: TripAddPlaceContext): void {
@@ -581,10 +570,10 @@ export async function fetchTripAddPlaceRecommendations(params: {
   locale: Locale;
 }): Promise<TripAddPlaceRecommendationsResult> {
   const { ctx, searchPlaces, locale } = params;
-  const opening = buildTripAddPlaceOpening(ctx);
+  const copy = getTripAddPlaceCopy(locale);
   const anchor = recommendationAnchor(ctx);
   if (!anchor) {
-    return { summary: opening, recommendations: [], recommendationSession: null, allCandidates: [] };
+    return { summary: copy.missingContext, recommendations: [], recommendationSession: null, allCandidates: [] };
   }
 
   const allCandidates = await fetchTripAddPlaceCandidatePool({
@@ -603,7 +592,7 @@ export async function fetchTripAddPlaceRecommendations(params: {
   );
   const cards = uniquePool.slice(0, TRIP_ADD_PLACE_BATCH_SIZE);
   if (!cards.length) {
-    return { summary: opening, recommendations: [], recommendationSession: null, allCandidates: uniquePool };
+    return { summary: copy.empty, recommendations: [], recommendationSession: null, allCandidates: uniquePool };
   }
 
   const recommendationSession = createTripAddPlaceRecommendationSession({
@@ -613,15 +602,10 @@ export async function fetchTripAddPlaceRecommendations(params: {
     firstBatch: cards,
   });
 
-  const summary = buildTripAddPlaceBatchSummary(ctx, cards, { intent: "attraction" });
-  const withOpening = [
-    opening,
-    "",
-    summary,
-  ].join("\n");
+  const summary = buildTripAddPlaceBatchSummary(ctx, cards, { intent: "attraction", locale });
 
   return {
-    summary: alignChatRecommendationCount(withOpening, cards.length),
+    summary,
     recommendations: cards,
     recommendationSession,
     allCandidates: uniquePool,
