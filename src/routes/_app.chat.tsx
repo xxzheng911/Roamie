@@ -153,7 +153,7 @@ import {
   preparePlaceDetailNearbySession,
   type FetchPlaceDetailsForFocusFn,
 } from "@/lib/ai/place-detail-chat";
-import { buildPlaceMapsUrl } from "@/lib/maps-navigation";
+import { buildPlaceMapsUrl, openExternal } from "@/lib/maps-navigation";
 import {
   clearChatUiCache,
   consumeChatUiCache,
@@ -7884,7 +7884,7 @@ function Chat() {
       if (followUp === "view_route" && session.placeDetailFocus) {
         const focus = session.placeDetailFocus;
         if (focus.lat != null && focus.lng != null) {
-          window.open(buildPlaceMapsUrl(focus.lat, focus.lng, focus.name), "_blank", "noopener");
+          void openExternal(buildPlaceMapsUrl(focus.lat, focus.lng, focus.name));
         }
         const reply =
           buildPlaceDetailFollowUpReply("view_route", session) ??

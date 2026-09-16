@@ -58,6 +58,8 @@ let browserListenerAttached = false;
 let oauthReturnClosingBrowser = false;
 
 const OAUTH_BROWSER_OPEN_TIMEOUT_MS = 12_000;
+/** Capacitor Browser fallback must present from the bridge VC, never fullscreen tmpWindow. */
+export const OAUTH_BROWSER_PRESENTATION_STYLE = "popover" as const;
 
 async function openOAuthBrowser(url: string, provider: OAuthProvider): Promise<void> {
   logAuthDebug("oauth.browser.open.start", { provider, native: canUseIosNativeOAuth() });
@@ -85,7 +87,7 @@ async function openOAuthBrowser(url: string, provider: OAuthProvider): Promise<v
   }
 
   await Promise.race([
-    Browser.open({ url, presentationStyle: "fullscreen" }),
+    Browser.open({ url, presentationStyle: OAUTH_BROWSER_PRESENTATION_STYLE }),
     new Promise<never>((_, reject) => {
       window.setTimeout(
         () => reject(new Error("oauth_browser_open_timeout")),

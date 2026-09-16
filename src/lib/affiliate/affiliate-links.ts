@@ -1,4 +1,4 @@
-import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
+import { openExternalUrl } from "@/lib/open-external-url";
 import type {
   AffiliateLinkOffer,
   AffiliateOfferKind,
@@ -574,7 +574,7 @@ export function buildPlaceDetailTicketOffers(
   return offers;
 }
 
-/** 開啟聯盟外連：Capacitor Browser 優先，否則 window.open */
+/** 開啟聯盟外連：scene-safe system open on native, window.open on web */
 const AFFILIATE_OPEN_DEBOUNCE_MS = 800;
 
 let affiliateOpenInFlight = false;
@@ -634,19 +634,17 @@ export async function openAffiliateUrl(url: string, ctx?: AffiliateClickContext)
   });
 
   try {
-    if (isCapacitorNativeShell()) {
-      const { Browser } = await import("@capacitor/browser");
-      await Browser.open({ url: openUrl, presentationStyle: "fullscreen" });
+    const opened = await openExternalUrl(openUrl);
+    if (opened) {
       recordAnalyticsEvent({
         eventId: clickEventId,
         eventName: "affiliate_outbound_open_succeeded",
         provider: ctx?.provider,
         surface: ctx?.surface,
       });
-      return;
     }
   } catch (e) {
-    console.warn("[Affiliate] Capacitor Browser failed, fallback to window.open", e);
+    console.warn("[Affiliate] outbound open failed", e);
   } finally {
     if (typeof window !== "undefined") {
       window.setTimeout(() => {
@@ -655,17 +653,6 @@ export async function openAffiliateUrl(url: string, ctx?: AffiliateClickContext)
     } else {
       affiliateOpenInFlight = false;
     }
-  }
-
-  if (typeof window !== "undefined") {
-    const opened = window.open(openUrl, "_blank", "noopener,noreferrer");
-    if (opened)
-      recordAnalyticsEvent({
-        eventId: clickEventId,
-        eventName: "affiliate_outbound_open_succeeded",
-        provider: ctx?.provider,
-        surface: ctx?.surface,
-      });
   }
 }
 

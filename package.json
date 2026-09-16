@@ -149,6 +149,7 @@
     "verify:account-deletion-env-guard": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-account-deletion-env-guard.mjs",
     "verify:default-avatar-authority": "node scripts/verify-default-avatar-authority.mjs",
     "verify:avatar-remove": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-avatar-remove.mjs",
+    "verify:scene-safe-outbound": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-scene-safe-outbound.mjs",
     "verify:legal-subscription-disclosures": "node scripts/verify-legal-subscription-disclosures.mjs",
     "verify:account-deletion-apple-identity": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-account-deletion-apple-identity.mjs",
     "verify:account-deletion-recent-auth": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-account-deletion-recent-auth.mjs",

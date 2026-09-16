@@ -1,4 +1,4 @@
-import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
+import { openExternalUrl } from "@/lib/open-external-url";
 
 export type LatLng = { lat: number; lng: number };
 
@@ -39,22 +39,7 @@ export function buildDirectionsUrlFromQuery(query: string, origin?: LatLng): str
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
-/** Capacitor：Browser.open 開 Safari / Google Maps；Web 才用 window.open */
+/** Maps / navigation outbound: scene-safe system open on native, window.open on web. */
 export async function openExternal(url: string): Promise<void> {
-  const trimmed = url.trim();
-  if (!trimmed) return;
-
-  if (isCapacitorNativeShell()) {
-    try {
-      const { Browser } = await import("@capacitor/browser");
-      await Browser.open({ url: trimmed, presentationStyle: "fullscreen" });
-      return;
-    } catch (e) {
-      console.warn("[maps-navigation] Capacitor Browser.open failed", e);
-    }
-  }
-
-  if (typeof window !== "undefined") {
-    window.open(trimmed, "_blank", "noopener,noreferrer");
-  }
+  await openExternalUrl(url);
 }

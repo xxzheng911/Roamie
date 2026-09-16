@@ -123,7 +123,8 @@ assert.doesNotMatch(welcome, /openSubscriptionManagement|apps\.apple\.com\/accou
 assert.match(home, /usePlusUpgrade/);
 assert.match(profile, /usePlusUpgrade/);
 assert.match(management, /apps\.apple\.com\/account\/subscriptions/);
-assert.match(management, /Browser\.open\(\{ url \}\)/);
+assert.match(management, /openExternalUrl/);
+assert.doesNotMatch(management, /Browser\.open/);
 assert.doesNotMatch(management, /Plugins\?\.App\?\.openUrl|Capacitor App\.openUrl/);
 assert.match(nativeManagement, /registerPlugin<SubscriptionManagementPlugin>/);
 assert.match(nativeManagement, /SubscriptionManagement\.showManageSubscriptions\(\)/);

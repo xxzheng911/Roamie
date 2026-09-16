@@ -1,3 +1,6 @@
+import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
+import { openExternalUrl } from "@/lib/open-external-url";
+
 type MobilePlatform = "ios" | "android" | "other";
 
 function detectMobilePlatform(): MobilePlatform {
@@ -23,18 +26,6 @@ function navigateTo(url: string): boolean {
   }
 }
 
-async function tryCapacitorBrowser(url: string): Promise<boolean> {
-  if (!window.Capacitor?.isNativePlatform?.()) return false;
-  try {
-    const { Browser } = await import("@capacitor/browser");
-    await Browser.open({ url });
-    return true;
-  } catch (e) {
-    console.info("[Roamie] Capacitor Browser.open failed", url, e);
-    return false;
-  }
-}
-
 /** 開啟系統「管理訂閱」頁（iOS App Store / Android Play） */
 export async function openSubscriptionManagement(): Promise<boolean> {
   if (typeof window === "undefined") return false;
@@ -47,6 +38,9 @@ export async function openSubscriptionManagement(): Promise<boolean> {
         ? "https://play.google.com/store/account/subscriptions"
         : "https://apps.apple.com/account/subscriptions";
 
-  if (await tryCapacitorBrowser(url)) return true;
+  if (isCapacitorNativeShell()) {
+    const opened = await openExternalUrl(url);
+    if (opened) return true;
+  }
   return navigateTo(url);
 }

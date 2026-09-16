@@ -15,6 +15,8 @@ import {
 import { fetchPlaceTravelDurations } from "@/lib/place-navigation.functions";
 import { buildDirectionsUrl, openExternal, type LatLng } from "@/lib/maps-navigation";
 import { distanceMeters, isTaiwanCoordinates } from "@/lib/map-explore";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { t } from "@/lib/i18n/translate";
 import type { WeatherSummary } from "@/lib/weather-types";
 
 const MODE_TO_GOOGLE: Record<TravelModeId, "walking" | "driving" | "transit"> = {
@@ -24,6 +26,26 @@ const MODE_TO_GOOGLE: Record<TravelModeId, "walking" | "driving" | "transit"> = 
   transit: "transit",
   taxi: "driving",
 };
+
+/** Destination-only when origin or mode is missing. Never invents a travel mode. */
+export function resolveNavigationDirectionsUrl(params: {
+  destination: LatLng | null;
+  origin?: LatLng | null;
+  selectedMode?: TravelModeId | null;
+}): string | null {
+  const { destination, origin, selectedMode } = params;
+  if (!destination) return null;
+  if (origin && selectedMode) {
+    return buildDirectionsUrl(destination, {
+      origin,
+      travelMode: MODE_TO_GOOGLE[selectedMode],
+    });
+  }
+  if (selectedMode) {
+    return buildDirectionsUrl(destination, { travelMode: MODE_TO_GOOGLE[selectedMode] });
+  }
+  return buildDirectionsUrl(destination);
+}
 
 export const INITIAL_PLACE_TRANSPORT_MODE: TravelModeId | null = null;
 
@@ -131,15 +153,19 @@ export function usePlaceNavigation({
   ]);
 
   const startNavigation = useCallback(() => {
-    if (!origin || !destination || !selectedMode) return;
+    const url = resolveNavigationDirectionsUrl({
+      destination,
+      origin,
+      selectedMode,
+    });
+    if (!url) {
+      toast.message(t(effectiveAppLocale(), "map.noCoordsRoute"));
+      return;
+    }
     if (selectedMode === "taxi") {
       toast.message(TAXI_NAV_TOAST, { duration: 5000 });
     }
-    const url = buildDirectionsUrl(destination, {
-      origin,
-      travelMode: MODE_TO_GOOGLE[selectedMode],
-    });
-    openExternal(url);
+    void openExternal(url);
   }, [destination, origin, selectedMode]);
 
   const selectedModeLabel = selectedMode ? TRAVEL_MODE_LABEL[selectedMode] : null;
