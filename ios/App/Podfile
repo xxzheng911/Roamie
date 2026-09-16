@@ -86,8 +86,115 @@ def enforce_ios_deployment_target(installer, version)
   end
 end
 
+# Xcode 27 / Swift 6.4 synthesizes a memberwise init(stringRepresentation:) for
+# PaywallColor unless a designated init lives in the primary struct body.
+# Keep RevenueCat 5.51.1 and apply the same move as purchases-ios PR #6949.
+PAYWALL_COLOR_DESIGNATED_INIT_SIGNATURE = 'private init(stringRepresentation: String, underlyingColor: (any Sendable)?)'
+PAYWALL_COLOR_UNPATCHED_STRUCT_TAIL = <<~'SWIFT'.freeze
+    // Only available from iOS 13
+    fileprivate var _underlyingColor: (any Sendable)?
+
+}
+SWIFT
+PAYWALL_COLOR_PATCHED_STRUCT_TAIL = <<~'SWIFT'.freeze
+    // Only available from iOS 13
+    fileprivate var _underlyingColor: (any Sendable)?
+
+    /// "Designated" initializer
+    private init(stringRepresentation: String, underlyingColor: (any Sendable)?) {
+        self.stringRepresentation = stringRepresentation
+        self._underlyingColor = underlyingColor
+    }
+}
+SWIFT
+PAYWALL_COLOR_UNPATCHED_EXTENSION_TAIL = <<~'SWIFT'.freeze
+    #endif
+
+    /// "Designated" initializer
+    private init(stringRepresentation: String, underlyingColor: (any Sendable)?) {
+        self.stringRepresentation = stringRepresentation
+        self._underlyingColor = underlyingColor
+    }
+
+}
+
+// MARK: - Errors
+SWIFT
+PAYWALL_COLOR_PATCHED_EXTENSION_TAIL = <<~'SWIFT'.freeze
+    #endif
+
+}
+
+// MARK: - Errors
+SWIFT
+
+def paywall_color_init_in_primary_struct?(contents)
+  primary = contents.split('// MARK: - Public constructors', 2).first
+  return false if primary.nil?
+  primary.include?(PAYWALL_COLOR_DESIGNATED_INIT_SIGNATURE)
+end
+
+def patch_revenuecat_paywall_color_for_xcode27(installer)
+  paywall_color = File.join(
+    installer.sandbox.pod_dir('RevenueCat').to_s,
+    'Sources',
+    'Paywalls',
+    'PaywallColor.swift'
+  )
+  unless File.exist?(paywall_color)
+    raise "[Roamie] RevenueCat PaywallColor.swift not found at #{paywall_color}"
+  end
+
+  contents = File.read(paywall_color)
+  in_primary = paywall_color_init_in_primary_struct?(contents)
+  remainder = contents.split('// MARK: - Public constructors', 2)[1]
+  if remainder.nil?
+    raise "[Roamie] PaywallColor.swift is missing '// MARK: - Public constructors'; refusing to patch unknown source."
+  end
+  in_extension = remainder.include?(PAYWALL_COLOR_DESIGNATED_INIT_SIGNATURE)
+  occurrence_count = contents.scan(PAYWALL_COLOR_DESIGNATED_INIT_SIGNATURE).length
+
+  if in_primary && !in_extension && occurrence_count == 1
+    Pod::UI.puts '[Roamie] PaywallColor Xcode 27 patch already applied; skipping.'
+    return
+  end
+
+  unless !in_primary && in_extension && occurrence_count == 1
+    raise "[Roamie] PaywallColor.swift is not the expected RevenueCat 5.51.1 layout " \
+          "(primary=#{in_primary}, extension=#{in_extension}, count=#{occurrence_count}). " \
+          "Refusing to patch unknown source."
+  end
+
+  unless contents.include?(PAYWALL_COLOR_UNPATCHED_STRUCT_TAIL)
+    raise '[Roamie] PaywallColor.swift primary struct tail did not match the expected 5.51.1 pattern; refusing to patch.'
+  end
+  unless contents.include?(PAYWALL_COLOR_UNPATCHED_EXTENSION_TAIL)
+    raise '[Roamie] PaywallColor.swift private extension tail did not match the expected 5.51.1 pattern; refusing to patch.'
+  end
+
+  patched = contents.sub(PAYWALL_COLOR_UNPATCHED_STRUCT_TAIL, PAYWALL_COLOR_PATCHED_STRUCT_TAIL)
+  patched = patched.sub(PAYWALL_COLOR_UNPATCHED_EXTENSION_TAIL, PAYWALL_COLOR_PATCHED_EXTENSION_TAIL)
+
+  unless paywall_color_init_in_primary_struct?(patched)
+    raise '[Roamie] PaywallColor.swift patch failed: designated init is still missing from the primary struct.'
+  end
+  patched_remainder = patched.split('// MARK: - Public constructors', 2)[1]
+  if patched_remainder.include?(PAYWALL_COLOR_DESIGNATED_INIT_SIGNATURE)
+    raise '[Roamie] PaywallColor.swift patch failed: designated init is still present outside the primary struct.'
+  end
+  if patched.scan(PAYWALL_COLOR_DESIGNATED_INIT_SIGNATURE).length != 1
+    raise '[Roamie] PaywallColor.swift patch failed: designated init occurrence count is not 1.'
+  end
+
+  File.chmod(0o644, paywall_color)
+  File.write(paywall_color, patched)
+  File.chmod(0o444, paywall_color)
+  Pod::UI.puts '[Roamie] Applied Xcode 27 PaywallColor compatibility patch (purchases-ios PR #6949, RevenueCat 5.51.1).'
+end
+
 post_install do |installer|
   assertDeploymentTarget(installer)
   enforce_ios_deployment_target(installer, MIN_IOS_DEPLOYMENT_TARGET)
   suppress_third_party_build_noise(installer)
+  patch_revenuecat_paywall_color_for_xcode27(installer)
 end

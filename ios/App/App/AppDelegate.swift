@@ -131,10 +131,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         RoamieNativeLog.debug("⚡️ [Roamie] RUNTIME=device model=\(UIDevice.current.model) ios=\(UIDevice.current.systemVersion)")
         #endif
         RoamieBundledWebProbe.logPackagedIndexHtml()
-        if let window = window {
-            window.backgroundColor = UIColor(red: 253 / 255, green: 245 / 255, blue: 234 / 255, alpha: 1)
-        }
         return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let config = UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
+        config.delegateClass = SceneDelegate.self
+        return config
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
@@ -150,17 +157,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
-    }
-
-    func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
-        if url.scheme == "roamie" {
-            RoamieNativeLog.debug("⚡️ [Roamie] OPEN_URL scheme=roamie url=\(url.absoluteString)")
-        }
-        return ApplicationDelegateProxy.shared.application(app, open: url, options: options)
-    }
-
-    func application(_ application: UIApplication, continue userActivity: NSUserActivity, restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) -> Bool {
-        return ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
     }
 
     /// iPhone: portrait only. iPad: all orientations declared in Info.plist (App Store requirement).

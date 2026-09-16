@@ -18,6 +18,7 @@
 		A11CE1061FED79650016851F /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = A11CE1001FED79650016851F /* InfoPlist.strings */; };
 		B8F3A1012FED79650016851F /* RoamieWebKitMitigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8F3A1002FED79650016851F /* RoamieWebKitMitigation.swift */; };
 		B8F3A1032FED79650016851F /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B8F3A1022FED79650016851F /* PrivacyInfo.xcprivacy */; };
+		B8F3A1052FED79650016851F /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8F3A1042FED79650016851F /* SceneDelegate.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +39,7 @@
 		AF51FD2D460BCFE21FA515B2 /* Pods-App.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-App.release.xcconfig"; path = "Pods/Target Support Files/Pods-App/Pods-App.release.xcconfig"; sourceTree = "<group>"; };
 		B8F3A1002FED79650016851F /* RoamieWebKitMitigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoamieWebKitMitigation.swift; sourceTree = "<group>"; };
 		B8F3A1022FED79650016851F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		B8F3A1042FED79650016851F /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		FC68EB0AF532CFC21C3344DD /* Pods-App.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-App.debug.xcconfig"; path = "Pods/Target Support Files/Pods-App/Pods-App.debug.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -84,6 +86,7 @@
 			children = (
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
+				B8F3A1042FED79650016851F /* SceneDelegate.swift */,
 				B8F3A1002FED79650016851F /* RoamieWebKitMitigation.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
@@ -262,6 +265,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
+				B8F3A1052FED79650016851F /* SceneDelegate.swift in Sources */,
 				B8F3A1012FED79650016851F /* RoamieWebKitMitigation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
