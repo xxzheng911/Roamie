@@ -1,3 +1,4 @@
+import { readAvatarAuthority } from "@/lib/avatar-authority";
 import { withCacheBust } from "@/lib/media-display-url";
 
 const MEDIA_KEY = "roamie:profile-media-persisted";
@@ -78,7 +79,15 @@ export function readCachedProfile(
   if (!row) return null;
   const resolvedUserId = userId ?? readLastCachedProfileUserId();
   if (resolvedUserId && row.userId !== resolvedUserId) return null;
-  return row;
+  return applyAvatarAuthority(row);
+}
+
+function applyAvatarAuthority(row: CachedProfile): CachedProfile {
+  const authority = readAvatarAuthority(row.userId);
+  return authority ? {
+    ...row, avatarUrl: authority.url, hasCustomAvatar: Boolean(authority.url),
+    avatarUpdatedAt: new Date(Number(authority.version)).toISOString(),
+  } : row;
 }
 
 export function writeCachedProfile(
@@ -114,8 +123,9 @@ export function writeCachedProfile(
           : (prev?.hasCustomCover ?? (prev?.coverImageUrl ? true : null)),
     cachedAt: Date.now(),
   };
-  writeRaw(next);
-  return next;
+  const authoritative = applyAvatarAuthority(next);
+  writeRaw(authoritative);
+  return authoritative;
 }
 
 export function readPersistedAvatarUrl(userId?: string | null): string | null {

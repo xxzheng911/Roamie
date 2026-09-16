@@ -1,3 +1,4 @@
+import { withAvatarProfileAuthority } from "@/lib/avatar-authority";
 import type { UserProfile } from "@/lib/profile-storage";
 import { preloadAvatarImage } from "@/lib/profile-avatar-preload";
 import { writePersistedProfileMedia } from "@/lib/profile-persisted-cache";
@@ -15,10 +16,11 @@ const PROFILE_NETWORK_REUSE_MS = 60_000;
 export function readProfileSessionCache(userId?: string | null): UserProfile | null {
   if (!cachedProfile) return null;
   if (userId && cachedUserId && userId !== cachedUserId) return null;
-  return cachedProfile;
+  return withAvatarProfileAuthority(userId ?? cachedUserId, cachedProfile);
 }
 
 export function writeProfileSessionCache(profile: UserProfile, userId?: string | null): void {
+  profile = withAvatarProfileAuthority(userId, profile);
   cachedProfile = profile;
   if (userId) cachedUserId = userId;
   if (userId) {
@@ -66,6 +68,7 @@ export function patchProfileSessionCache(
 ): UserProfile | null {
   if (!cachedProfile) return null;
   if (userId && cachedUserId && userId !== cachedUserId) return null;
+  patch = withAvatarProfileAuthority(userId ?? cachedUserId, patch);
   cachedProfile = { ...cachedProfile, ...patch };
   const uid = userId ?? cachedUserId;
   if (uid) {
@@ -89,7 +92,7 @@ export function patchProfileSessionCache(
       patch.profileUpdatedAt ?? cachedProfile.profileUpdatedAt,
     );
   }
-  return cachedProfile;
+  return withAvatarProfileAuthority(userId ?? cachedUserId, cachedProfile);
 }
 
 export function clearProfileSessionCache(): void {

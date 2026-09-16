@@ -1,3 +1,4 @@
+import { readAvatarAuthority, isAvatarMediaCurrent, subscribeAvatarAuthority } from "@/lib/avatar-authority";
 /**
  * Shared UserMediaStore — single source of truth for avatar / cover display URIs.
  * Stale-while-revalidate: disk/memory first, remote validate in background.
@@ -14,6 +15,7 @@ import { readCachedProfile, writeCachedProfile } from "@/lib/profile-persisted-c
 import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
 import {
   buildUserMediaCacheKey,
+  deleteUserAvatarDisk,
   findLatestUserMediaDisk,
   readUserMediaDisk,
   stableMediaUrl,
@@ -92,6 +94,12 @@ function emit(): void {
 }
 
 function setSnapshot(patch: Partial<UserMediaSnapshot>): void {
+  const owner = patch.userId ?? snapshot.userId;
+  const authority = readAvatarAuthority(owner);
+  if (authority?.url === null) {
+    patch = { ...patch, avatarUrl: null, avatarLocalUri: null, avatarCacheKey: null,
+      avatarVersion: null, avatarStatus: "none", hasCustomAvatar: false, isAvatarReady: true };
+  }
   const next = { ...snapshot, ...patch };
   // Keep hasCustomAvatar ↔ avatarStatus in sync when either is patched.
   if (patch.avatarStatus != null && patch.hasCustomAvatar === undefined) {
@@ -177,6 +185,7 @@ async function hydrateFromDisk(
     ? await readUserMediaDisk(preferredKey)
     : await findLatestUserMediaDisk({ userId, kind });
   if (!entry?.blob) return null;
+  if (kind === "avatar" && !isAvatarMediaCurrent(userId, entry.version, entry.remoteUrl)) return null;
   const uri = rememberObjectUrl(entry.cacheKey, entry.blob);
   return {
     uri,
@@ -298,6 +307,7 @@ async function runHydrateUserMediaFromCache(resolved: string | null): Promise<Us
     return snapshot;
   }
 
+  const avatarHydrateToken = readAvatarAuthority(resolved)?.token;
   // Same-user hydrate must never clear a good memory/disk paint first.
   const keepLocalAvatar = snapshot.userId === resolved && Boolean(snapshot.avatarLocalUri);
 
@@ -327,15 +337,18 @@ async function runHydrateUserMediaFromCache(resolved: string | null): Promise<Us
 
   // Always probe disk — even when metadata lacks avatarUrl (disk-only warm boot).
   const [avatarDisk, coverDisk] = await Promise.all([
-    hydrateFromDisk(resolved, "avatar", preferredAvatarKey),
+    readAvatarAuthority(resolved)?.url === null ? Promise.resolve(null) : hydrateFromDisk(resolved, "avatar", preferredAvatarKey),
     coverUrl || preferredCoverKey
       ? hydrateFromDisk(resolved, "cover", preferredCoverKey)
       : hydrateFromDisk(resolved, "cover"),
   ]);
 
-  const avatarFallback = !avatarDisk ? await hydrateFromDisk(resolved, "avatar") : null;
+  const avatarFallback = !avatarDisk && readAvatarAuthority(resolved)?.url !== null ? await hydrateFromDisk(resolved, "avatar") : null;
   const coverFallback = !coverDisk ? await hydrateFromDisk(resolved, "cover") : null;
 
+  if (avatarHydrateToken !== readAvatarAuthority(resolved)?.token) {
+    return runHydrateUserMediaFromCache(resolved);
+  }
   const avatarHit = avatarDisk ?? avatarFallback;
   const coverHit = coverDisk ?? coverFallback;
   const elapsed = Math.round(performance.now() - t0);
@@ -454,6 +467,12 @@ export async function ensureRemoteMediaCached(params: {
 }): Promise<string | null> {
   const stable = stableMediaUrl(params.remoteUrl);
   if (!stable) return null;
+  const avatarToken = readAvatarAuthority(params.userId)?.token;
+  const current = () => params.kind !== "avatar" || (
+    avatarToken === readAvatarAuthority(params.userId)?.token &&
+    isAvatarMediaCurrent(params.userId, params.version, stable)
+  );
+  if (!current()) return null;
 
   const pathOrId =
     params.pathOrId ??
@@ -475,6 +494,7 @@ export async function ensureRemoteMediaCached(params: {
   }
 
   const disk = await readUserMediaDisk(cacheKey);
+  if (!current()) return null;
   if (disk?.blob) {
     const uri = rememberObjectUrl(cacheKey, disk.blob);
     applyKindReady(params.kind, {
@@ -506,6 +526,7 @@ export async function ensureRemoteMediaCached(params: {
     try {
       const raw = await fetchBlob(stable);
       const display = await downscaleImageBlob(raw, displayMaxEdgeForKind(params.kind));
+      if (!current()) return null;
       await writeUserMediaDisk({
         cacheKey,
         userId: params.userId,
@@ -515,7 +536,13 @@ export async function ensureRemoteMediaCached(params: {
         mimeType: display.type || "image/jpeg",
         blob: display,
       });
+      if (!current()) return null;
       const uri = rememberObjectUrl(cacheKey, display);
+      if (!current()) {
+        revokeUri(uri);
+        objectUrls.delete(cacheKey);
+        return null;
+      }
       const elapsed = Math.round(performance.now() - t0);
       applyKindReady(params.kind, {
         cacheKey,
@@ -561,6 +588,7 @@ function applyKindReady(
     params.elapsedMs ?? (started != null ? Math.round(performance.now() - started) : undefined);
 
   if (kind === "avatar") {
+    if (!isAvatarMediaCurrent(params.userId, params.version, params.remoteUrl)) return;
     const prevKey = snapshot.avatarCacheKey;
     const sameVersion = prevKey === params.cacheKey;
     logUserMedia("USER_AVATAR_READY", {
@@ -628,6 +656,10 @@ export async function validateUserMediaRemote(params: {
   confirmAvatarRemoved?: boolean;
 }): Promise<void> {
   const t0 = performance.now();
+  const authority = readAvatarAuthority(params.userId);
+  if (authority) params = { ...params, avatarUrl: authority.url,
+    avatarUpdatedAt: new Date(Number(authority.version)).toISOString(),
+    confirmAvatarRemoved: authority.url === null };
   const avatarUrl = stableMediaUrl(params.avatarUrl);
   const coverUrl = stableMediaUrl(params.coverUrl);
   const avatarVersion = versionOf(params.avatarUpdatedAt ?? params.profileUpdatedAt);
@@ -791,9 +823,17 @@ export async function applyLocalUserMediaBlob(params: {
   remoteUrl: string;
   version?: string;
 }): Promise<string> {
-  const version = params.version ?? String(Date.now());
+  const authority = params.kind === "avatar" ? readAvatarAuthority(params.userId) : null;
+  const token = authority?.token;
+  const version = authority?.version ?? params.version ?? String(Date.now());
+  const current = () => params.kind !== "avatar" || (
+    token === readAvatarAuthority(params.userId)?.token &&
+    isAvatarMediaCurrent(params.userId, version, params.remoteUrl)
+  );
+  if (!current()) return "";
   const stable = stableMediaUrl(params.remoteUrl) ?? params.remoteUrl;
   const display = await downscaleImageBlob(params.blob, displayMaxEdgeForKind(params.kind));
+  if (!current()) return "";
   const cacheKey = buildUserMediaCacheKey({
     userId: params.userId,
     kind: params.kind,
@@ -809,7 +849,13 @@ export async function applyLocalUserMediaBlob(params: {
     mimeType: display.type || "image/jpeg",
     blob: display,
   });
+  if (!current()) return "";
   const uri = rememberObjectUrl(cacheKey, display);
+  if (!current()) {
+    revokeUri(uri);
+    objectUrls.delete(cacheKey);
+    return "";
+  }
 
   writeCachedProfile({
     userId: params.userId,
@@ -877,3 +923,32 @@ export function resetUserMediaStore(): void {
   snapshot = { ...EMPTY };
   emit();
 }
+
+/** The authority is committed only after a confirmed DB mutation. */
+function clearAvatarMemory(userId: string): void {
+  for (const [key, uri] of objectUrls) {
+    if (key.startsWith(`${userId}|avatar|`)) {
+      revokeUri(uri);
+      objectUrls.delete(key);
+      inflightDownload.delete(key);
+    }
+  }
+  if (snapshot.userId === userId || !snapshot.userId) {
+    setSnapshot({ userId, avatarUrl: null, avatarLocalUri: null, avatarCacheKey: null,
+      avatarVersion: null, avatarStatus: "none", hasCustomAvatar: false, isAvatarReady: true });
+  }
+}
+
+export async function clearRemovedAvatarMedia(userId: string): Promise<void> {
+  clearAvatarMemory(userId);
+  writeCachedProfile({
+    userId,
+    avatarUrl: null,
+    hasCustomAvatar: false,
+  });
+  await deleteUserAvatarDisk(userId);
+}
+
+subscribeAvatarAuthority((userId, authority) => {
+  if (authority.url === null) clearAvatarMemory(userId);
+});

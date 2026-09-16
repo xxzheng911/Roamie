@@ -1,3 +1,4 @@
+import { readAvatarAuthority, acceptAvatarProfileRead, withAvatarProfileAuthority } from "@/lib/avatar-authority";
 import { supabase } from "@/lib/supabase";
 import {
   BUDGET_MODE_LABELS,
@@ -277,6 +278,7 @@ export async function getUserProfile(
     if (inflight) return inflight;
   }
 
+  const avatarReadToken = readAvatarAuthority(userId)?.token;
   const fetchPromise = (async () => {
   const guestSettings = readGuestSettings();
 
@@ -331,7 +333,8 @@ export async function getUserProfile(
   };
 
   const profile = gatePlusPersonaFields(raw, hasPlusAccess);
-  const hydrated = mergeProfileWithTravelPrefCache(profile, userId);
+  acceptAvatarProfileRead(userId, avatarReadToken, profile.avatarUrl, profile.profileUpdatedAt ?? null);
+  const hydrated = withAvatarProfileAuthority(userId, mergeProfileWithTravelPrefCache(profile, userId));
   if (hydrated.prefs.onboarded) {
     writeTravelPrefResultCache(
       buildTravelPrefResultSnapshot(hydrated.prefs, {

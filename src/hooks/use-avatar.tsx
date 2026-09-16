@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
+import { hasCanonicalCustomAvatar, subscribeAvatarAuthority } from "@/lib/avatar-authority";
 import { DEFAULT_USER_AVATAR } from "@/lib/default-avatar";
 import { getUserProfile } from "@/lib/profile-storage";
 import { AVATAR_UPDATED_EVENT, type AvatarUpdatedDetail } from "@/lib/avatar-events";
@@ -35,6 +36,7 @@ import {
 
 type AvatarCtx = {
   avatarUrl: string | null;
+  hasCustomAvatar: boolean;
   displayName: string;
   profileMediaLoaded: boolean;
   avatarDisplaySrc: string | null;
@@ -83,6 +85,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
     () => bootCachedProfile(bootUserId)?.displayName ?? "",
   );
   const [preview, setPreviewState] = useState<string | null>(null);
+  const [avatarAuthorityEpoch, setAvatarAuthorityEpoch] = useState(0);
   const [metadataLoaded, setMetadataLoaded] = useState(
     () => Boolean(bootCachedProfile(bootUserId)) || hasProfileSessionCache(bootUserId),
   );
@@ -102,6 +105,10 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
 
   const pathname = readBrowserPathname();
   const skipProfileFetch = shouldUseLightStartupShell(pathname, Boolean(user), authLoading);
+
+  useEffect(() => subscribeAvatarAuthority((id) => {
+    if (id === bootUserId) setAvatarAuthorityEpoch((value) => value + 1);
+  }), [bootUserId]);
 
   useLayoutEffect(() => {
     console.info("[AVATAR_RENDER_STAGE]", {
@@ -268,6 +275,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onUpdate = (e: Event) => {
       const detail = (e as CustomEvent<AvatarUpdatedDetail | string | null>).detail;
+      if (detail && typeof detail === "object" && detail.userId && detail.userId !== userId) return;
       const url =
         detail && typeof detail === "object" && "url" in detail
           ? detail.url
@@ -354,6 +362,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
   const ctx = useMemo(
     () => ({
       avatarUrl: mediaOwnerMatches ? media.avatarUrl : null,
+      hasCustomAvatar: hasCanonicalCustomAvatar(bootUserId, persistedProfile?.avatarUrl),
       displayName,
       profileMediaLoaded: metadataLoaded || media.isAvatarReady || media.avatarStatus !== "unknown",
       avatarDisplaySrc,
@@ -393,6 +402,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
       displayName,
       effectiveAvatarStatus,
       authLoading,
+      avatarAuthorityEpoch,
       bootUserId,
       media.avatarStatus,
       media.avatarLocalUri,
@@ -402,6 +412,7 @@ export function AvatarProvider({ children }: { children: ReactNode }) {
       mediaOwnerMatches,
       metadataLoaded,
       persistedAvatarSrc,
+      persistedProfile?.avatarUrl,
       persistedProfile?.hasCustomAvatar,
       refresh,
       setPreview,

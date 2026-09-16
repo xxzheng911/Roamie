@@ -22,7 +22,7 @@ import { ProfileCover } from "@/components/ProfileCover";
 import { AvatarCropSheet } from "@/components/profile/AvatarCropSheet";
 import { ProfileImageCropSheet } from "@/components/profile/ProfileImageCropSheet";
 import { COVER_UPDATED_EVENT, broadcastCoverUpdate } from "@/lib/cover-events";
-import { broadcastAvatarUpdate } from "@/lib/avatar-events";
+import { removeProfileAvatar } from "@/lib/remove-profile-avatar";
 import { BUDGET_MODE_LABELS, readCachedPreferencesSync, resolveBudgetMode } from "@/lib/preferences-storage";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { logAvatarFileReadSuccess } from "@/lib/avatar-upload-log";
@@ -102,6 +102,7 @@ function Profile() {
   const userEmail = user?.email;
   const { t, locale } = useI18n();
   const {
+    hasCustomAvatar,
     setPreview: setAvatarPreview,
     syncFromProfile: syncAvatarFromProfile,
   } = useAvatar();
@@ -130,6 +131,11 @@ function Profile() {
   const [avatarSourceOpen, setAvatarSourceOpen] = useState(false);
   const [avatarCropFile, setAvatarCropFile] = useState<File | null>(null);
   const [avatarApplying, setAvatarApplying] = useState(false);
+  const [avatarRemoving, setAvatarRemoving] = useState(false);
+  const [avatarPicking, setAvatarPicking] = useState(false);
+  const avatarMutationRef = useRef(false);
+  const avatarBusy = avatarApplying || avatarRemoving;
+
   const initialCachedProfile = readProfileSessionCache(userId);
   const initialTravelPref = getTravelPrefResultSnapshot(userId);
   const initialProfileFromTravelPref = initialTravelPref
@@ -694,20 +700,43 @@ function Profile() {
     }
   };
 
-  const handleAvatarPick = (file: File) => {
+  const handleAvatarPick = useCallback((file: File) => {
+    if (avatarMutationRef.current) return;
     if (!validateImageFile(file)) return;
     console.info("[IMAGE_PICK]", "avatar", `bytes=${file.size}`, `type=${file.type}`);
     const u = URL.createObjectURL(file);
     setAvatarPreview(u);
     setAvatarCropFile(file);
-  };
+  }, [setAvatarPreview]);
 
   const handleAvatarCancel = () => {
+    if (avatarMutationRef.current) return;
     setAvatarPreview(null);
     setAvatarCropFile(null);
   };
 
+  const handleAvatarRemove = async () => {
+    if (avatarMutationRef.current || avatarPicking || avatarCropFile || !hasCustomAvatar) return;
+    avatarMutationRef.current = true;
+    setAvatarRemoving(true);
+    try {
+      const result = await removeProfileAvatar();
+      setAvatarPreview(null);
+      setAvatarCropFile(null);
+      if (profileSnapshotRef.current) profileSnapshotRef.current = { ...profileSnapshotRef.current, avatarUrl: null };
+      toast.success(t("profile.avatarRemoved"));
+      if (result.cleanupPending) toast.info(t("profile.avatarCleanupPending"));
+    } catch {
+      toast.error(t("profile.avatarRemoveFailed"));
+    } finally {
+      avatarMutationRef.current = false;
+      setAvatarRemoving(false);
+    }
+  };
+
   const handleAvatarConfirm = async (blob: Blob) => {
+    if (avatarMutationRef.current || avatarPicking) return;
+    avatarMutationRef.current = true;
     setAvatarApplying(true);
     try {
       const session = await getClientAuthSession();
@@ -721,16 +750,7 @@ function Profile() {
         userId: session.user.id,
       });
       console.info("[IMAGE_UPLOAD]", "avatar", `bytes=${blob.size}`);
-      const finalUrl = await applyProfileAvatar(blob);
-      const revision = Date.now();
-      await applyLocalUserMediaBlob({
-        userId: session.user.id,
-        kind: "avatar",
-        blob,
-        remoteUrl: finalUrl,
-        version: String(revision),
-      });
-      broadcastAvatarUpdate(finalUrl, revision);
+      await applyProfileAvatar(blob);
       setAvatarPreview(null);
       setAvatarCropFile(null);
       toast.success("頭像已更新");
@@ -742,6 +762,7 @@ function Profile() {
         toast.error(msg);
       }
     } finally {
+      avatarMutationRef.current = false;
       setAvatarApplying(false);
     }
   };
@@ -810,20 +831,20 @@ function Profile() {
           <div className="absolute -top-14 left-0 z-20 h-[6.75rem] w-[6.75rem]">
             <button
               type="button"
-              onClick={() => !avatarApplying && setAvatarSourceOpen(true)}
-              disabled={avatarApplying}
+              onClick={() => !avatarBusy && !avatarPicking && setAvatarSourceOpen(true)}
+              disabled={avatarBusy || avatarPicking}
               className="group relative block h-full w-full shrink-0 overflow-hidden rounded-full border-[3px] border-card bg-secondary shadow-soft disabled:opacity-90"
               aria-label={t("profile.editAvatar")}
             >
               <ProfileAvatar self priority className="absolute inset-0 h-full w-full" />
               <div
                 className={`pointer-events-none absolute inset-0 rounded-full transition duration-200 ${
-                  avatarApplying
+                  avatarBusy
                     ? "bg-card/45"
                     : "bg-foreground/0 group-hover:bg-foreground/10 group-active:bg-foreground/15"
                 }`}
               />
-              {avatarApplying && (
+              {avatarBusy && (
                 <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <span className="flex h-8 w-8 items-center justify-center rounded-full bg-card/95 shadow-soft backdrop-blur-sm">
                     <Loader2 className="h-3.5 w-3.5 animate-spin text-clay" aria-hidden />
@@ -836,8 +857,14 @@ function Profile() {
           <ImageSourceSheet
             open={avatarSourceOpen}
             onOpenChange={setAvatarSourceOpen}
-            title="更換頭像"
+            title={t("profile.editAvatar")}
             onPickFile={handleAvatarPick}
+            showRemove={hasCustomAvatar}
+            onRemove={() => void handleAvatarRemove()}
+            removing={avatarRemoving}
+            disabled={avatarBusy || avatarPicking || !!avatarCropFile}
+            removeLabel={t("profile.removeAvatar")}
+            onPickerBusyChange={setAvatarPicking}
             cameraFacing="user"
           />
 

@@ -26,6 +26,9 @@ type Props = {
   onRemove?: () => void;
   removing?: boolean;
   showRemove?: boolean;
+  removeLabel?: string;
+  disabled?: boolean;
+  onPickerBusyChange?: (busy: boolean) => void;
   cameraFacing?: "user" | "environment";
   albumLabel?: string;
   cameraLabel?: string;
@@ -48,6 +51,9 @@ export function ImageSourceSheet({
   onRemove,
   removing = false,
   showRemove = false,
+  removeLabel = "刪除",
+  disabled = false,
+  onPickerBusyChange,
   cameraFacing = "environment",
   albumLabel = "從相簿選取",
   cameraLabel = "拍照",
@@ -121,9 +127,10 @@ export function ImageSourceSheet({
         }
       } finally {
         pickerOpeningRef.current = false;
+        onPickerBusyChange?.(false);
       }
     },
-    [cameraFacing, deliverFile, pickLogPrefix],
+    [cameraFacing, deliverFile, pickLogPrefix, onPickerBusyChange],
   );
 
   const openWebFileInput = useCallback(
@@ -133,6 +140,7 @@ export function ImageSourceSheet({
         if (pickLogPrefix === "[TRIP_COVER_PICK]") {
           console.info("[TRIP_COVER_PICK_ERROR]", "picker input missing");
         }
+        onPickerBusyChange?.(false);
         toast.error("無法開啟圖片選擇器，請稍後再試");
         return;
       }
@@ -144,10 +152,11 @@ export function ImageSourceSheet({
         if (pickLogPrefix === "[TRIP_COVER_PICK]") {
           console.info("[TRIP_COVER_PICK_ERROR]", msg);
         }
+        onPickerBusyChange?.(false);
         toast.error("無法開啟相簿，請稍後再試");
       });
     },
-    [pickLogPrefix],
+    [pickLogPrefix, onPickerBusyChange],
   );
 
   useEffect(() => {
@@ -168,22 +177,25 @@ export function ImageSourceSheet({
   }, [open, openCapacitorPicker, openWebFileInput]);
 
   const queuePick = (source: ImagePickSource) => {
-    if (preparingRef.current || pickerOpeningRef.current) return;
+    if (disabled || preparingRef.current || pickerOpeningRef.current) return;
     if (pickLogPrefix) {
       console.info(`${pickLogPrefix} source=${source}`);
     }
+    onPickerBusyChange?.(true);
     pendingSourceRef.current = source;
     onOpenChange(false);
   };
 
   const handleWebFile = async (file: File | undefined, source: ImagePickSource) => {
     if (!file) {
+      onPickerBusyChange?.(false);
       if (pickLogPrefix === "[TRIP_COVER_PICK]") {
         console.info("[TRIP_COVER_PICK_CANCELLED]");
       }
       return;
     }
     if (!file.name?.trim() && file.size <= 0) {
+      onPickerBusyChange?.(false);
       if (pickLogPrefix === "[TRIP_COVER_PICK]") {
         console.info("[TRIP_COVER_PICK_ERROR]", "empty file");
       }
@@ -192,7 +204,7 @@ export function ImageSourceSheet({
     if (pickLogPrefix === "[TRIP_COVER_PICK]") {
       console.info("[TRIP_COVER_PICK_SUCCESS]");
     }
-    await deliverFile(file, source);
+    try { await deliverFile(file, source); } finally { onPickerBusyChange?.(false); }
   };
 
   return (
@@ -206,6 +218,7 @@ export function ImageSourceSheet({
             tabIndex={-1}
             aria-hidden
             className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
+            onCancel={() => onPickerBusyChange?.(false)}
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = "";
@@ -220,6 +233,7 @@ export function ImageSourceSheet({
             tabIndex={-1}
             aria-hidden
             className="pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
+            onCancel={() => onPickerBusyChange?.(false)}
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = "";
@@ -242,7 +256,7 @@ export function ImageSourceSheet({
           <div className="grid grid-cols-2 gap-3">
             <button
               type="button"
-              disabled={preparing}
+              disabled={preparing || disabled}
               onClick={() => queuePick("library")}
               className="flex flex-col items-center gap-2 rounded-2xl border border-border bg-card py-4 text-sm disabled:opacity-50"
             >
@@ -255,7 +269,7 @@ export function ImageSourceSheet({
             </button>
             <button
               type="button"
-              disabled={preparing}
+              disabled={preparing || disabled}
               onClick={() => queuePick("camera")}
               className="flex flex-col items-center gap-2 rounded-2xl border border-border bg-card py-4 text-sm disabled:opacity-50"
             >
@@ -271,8 +285,8 @@ export function ImageSourceSheet({
           {showRemove && onRemove && (
             <button
               type="button"
-              onClick={() => onRemove()}
-              disabled={removing}
+              onClick={() => { if (!disabled && !removing) onRemove(); }}
+              disabled={removing || disabled}
               className="mt-3 flex w-full items-center justify-center gap-2 rounded-full border border-border py-3 text-sm text-muted-foreground disabled:opacity-50"
             >
               {removing ? (
@@ -280,7 +294,7 @@ export function ImageSourceSheet({
               ) : (
                 <Trash2 className="h-4 w-4" />
               )}
-              刪除
+              {removeLabel}
             </button>
           )}
         </SheetContent>

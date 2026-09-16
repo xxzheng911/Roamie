@@ -1,3 +1,5 @@
+import { commitAvatarAuthority, withAvatarMutation } from "@/lib/avatar-authority";
+import { broadcastAvatarUpdate } from "@/lib/avatar-events";
 import { supabase } from "@/lib/supabase";
 import { requireAuthenticatedUser } from "@/lib/auth-session";
 import {
@@ -105,19 +107,27 @@ export async function deleteProfileMedia(userId: string, kind: ProfileMediaKind)
 /** 上傳並寫入 profiles.avatar_url */
 export async function applyProfileAvatar(blob: Blob): Promise<string> {
   const { id } = await requireAuthenticatedUser();
-  await ensureUserProfile(id);
-  const url = await uploadProfileMedia(id, "avatar", blob);
-
-  logProfileAvatarUpdateStarted(id);
-  const { error } = await supabase.from("profiles").update({ avatar_url: url }).eq("id", id);
-  if (error) {
-    logProfileAvatarUpdateFailed({ userId: id, message: error.message });
-    throw new Error(formatProfileUpdateError(error.message));
-  }
-
-  logProfileAvatarUpdateSuccess(id);
-  console.info("[PROFILE_UPDATED]", "avatar_url");
-  return url;
+  return withAvatarMutation(id, async () => {
+    if ((await requireAuthenticatedUser()).id !== id) throw new Error("avatar_identity_changed");
+    await ensureUserProfile(id);
+    const url = await uploadProfileMedia(id, "avatar", blob);
+    logProfileAvatarUpdateStarted(id);
+    const { data, error } = await supabase.from("profiles").update({ avatar_url: url })
+      .eq("id", id).select("avatar_url, updated_at").maybeSingle();
+    if (error || !data || data.avatar_url !== url) {
+      const message = error?.message ?? "avatar_update_not_confirmed";
+      logProfileAvatarUpdateFailed({ userId: id, message });
+      throw new Error(formatProfileUpdateError(message));
+    }
+    const authority = commitAvatarAuthority(id, url, data.updated_at);
+    const { applyLocalUserMediaBlob } = await import("@/lib/user-media/user-media-store");
+    await applyLocalUserMediaBlob({ userId: id, kind: "avatar", blob, remoteUrl: url, version: authority.version });
+    broadcastAvatarUpdate(url, Number(authority.version), id);
+    // Cleanup failure signals are diagnostic only; a replacement must never trigger an old delete.
+    try { localStorage.removeItem(`roamie:avatar-cleanup:${id}`); } catch { /* noop */ }
+    logProfileAvatarUpdateSuccess(id);
+    return url;
+  });
 }
 
 /** 上傳並寫入 profiles.cover_image_url */

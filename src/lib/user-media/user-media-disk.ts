@@ -1,3 +1,4 @@
+import { isAvatarMediaCurrent } from "@/lib/avatar-authority";
 /**
  * User media (avatar / cover / trip cover) disk + memory cache.
  * IndexedDB stores image bytes; display uses blob: object URLs.
@@ -116,6 +117,7 @@ export async function writeUserMediaDisk(
 ): Promise<void> {
   try {
     const db = await openDb();
+    if (entry.kind === "avatar" && !isAvatarMediaCurrent(entry.userId, entry.version, entry.remoteUrl)) return;
     const row: UserMediaDiskEntry = {
       ...entry,
       savedAt: entry.savedAt ?? Date.now(),
@@ -126,6 +128,9 @@ export async function writeUserMediaDisk(
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+    if (entry.kind === "avatar" && !isAvatarMediaCurrent(entry.userId, entry.version, entry.remoteUrl)) {
+      await deleteUserMediaDisk(entry.cacheKey);
+    }
   } catch {
     /* quota / private mode */
   }
@@ -143,4 +148,24 @@ export async function deleteUserMediaDisk(cacheKey: string): Promise<void> {
   } catch {
     /* ignore */
   }
+}
+
+/** Delete every avatar version for this owner only; unlike best-effort writes, report failure. */
+export async function deleteUserAvatarDisk(userId: string): Promise<void> {
+  if (typeof indexedDB === "undefined") return;
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const request = tx.objectStore(STORE).openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      const row = cursor.value as UserMediaDiskEntry;
+      if (row.userId === userId && row.kind === "avatar") cursor.delete();
+      cursor.continue();
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error("avatar_cache_delete_aborted"));
+  });
 }
