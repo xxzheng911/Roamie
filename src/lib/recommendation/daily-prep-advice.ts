@@ -1,4 +1,5 @@
 import type { Locale } from "@/lib/i18n/types";
+import { translate } from "@/lib/i18n/translate";
 import { classifyWeatherScene } from "@/lib/weather-scene";
 import type { WeatherSummary } from "@/lib/weather-types";
 import type { DailyPrepAdvice } from "@/lib/recommendation/types";
@@ -146,10 +147,18 @@ function logOutfitSourceOnce(key: string, payload: Record<string, unknown>): voi
   console.info("[OUTFIT_SOURCE]", payload);
 }
 
+// Weather's exact legacy sentinel denotes current location, not a place name.
+// Project on read so persisted weather remains valid across locale changes.
+function locationDisplay(city: string | undefined, locale: Locale): string | undefined {
+  return city === translate("zh-TW", "uiCoverage.weatherCurrentLocation")
+    ? translate(locale, "uiCoverage.weatherCurrentLocation")
+    : city;
+}
+
 function defaultPrepAdvice(locale: Locale, city?: string): DailyPrepAdvice {
   const loc = locale in COPY ? locale : "en";
   const block = COPY[loc].fair;
-  const cityPrefix = city?.trim();
+  const cityPrefix = locationDisplay(city, locale)?.trim();
   return {
     headline: cityPrefix ? `${cityPrefix} · ${block.headline}` : block.headline,
     bullets: block.bullets,
@@ -200,7 +209,7 @@ export function buildDailyPrepAdvice(
     },
   );
   return {
-    headline: cityPrefix ? `${cityPrefix} · ${block.headline}` : block.headline,
+    headline: cityPrefix ? `${locationDisplay(cityPrefix, locale)} · ${block.headline}` : block.headline,
     bullets: block.bullets,
     source: "rules",
   };

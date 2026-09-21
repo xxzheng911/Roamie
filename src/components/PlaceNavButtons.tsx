@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { MapPin, Navigation, Route } from "lucide-react";
 import {
   buildDirectionsUrl,
@@ -28,6 +29,8 @@ export function PlaceNavButtons({
   routeOnly = false,
   onAction,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   const hasCoords = lat != null && lng != null && !Number.isNaN(lat) && !Number.isNaN(lng);
   const label = placeName ?? address ?? "目的地";
   const mapsUrl = hasCoords
@@ -64,7 +67,7 @@ export function PlaceNavButtons({
           }}
         >
           <Route className="h-3.5 w-3.5" />
-          查看路線
+          {uiT("productionUi.p4e6e23af51")}
         </button>
       </div>
     );
@@ -82,11 +85,11 @@ export function PlaceNavButtons({
         <>
           <button type="button" className={btnClass} onClick={() => openExternal(navUrl)}>
             <Route className="h-3 w-3" />
-            查看路線
+            {uiT("productionUi.p4e6e23af51")}
           </button>
           <button type="button" className={btnClass} onClick={() => openExternal(navUrl)}>
             <Navigation className="h-3 w-3" />
-            地圖導航
+            {uiT("productionUi.pd4aaa2eb40")}
           </button>
         </>
       )}

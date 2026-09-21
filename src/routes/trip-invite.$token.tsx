@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
@@ -16,6 +17,8 @@ export const Route = createFileRoute("/trip-invite/$token")({
 });
 
 function TripInviteAcceptPage() {
+  const { t: uiT } = useI18n();
+
   const { token } = Route.useParams();
   const navigate = useNavigate();
   const { session, loading: authLoading } = useAuth();
@@ -44,7 +47,7 @@ function TripInviteAcceptPage() {
         clearStashedTripInviteToken();
         setStatus("done");
         setMessage("已加入共同編輯");
-        toast.success("已加入共同編輯行程");
+        toast.success(uiT("productionUi.p0a85582906"));
         window.dispatchEvent(new Event(SAVED_TRIPS_CHANGED_EVENT));
         navigate({ to: "/saved/$tripId", params: { tripId }, replace: true });
       })
@@ -52,7 +55,7 @@ function TripInviteAcceptPage() {
         setStatus("error");
         setMessage(e instanceof Error ? e.message : "無法接受邀請");
       });
-  }, [authLoading, session, token, navigate]);
+  }, [uiT, authLoading, session, token, navigate]);
 
   return (
     <MobileFrame>
@@ -67,7 +70,7 @@ function TripInviteAcceptPage() {
             className="rounded-full bg-primary px-6 py-2 text-sm text-primary-foreground"
             onClick={() => navigate({ to: "/saved", search: { tab: "trips" }, replace: true })}
           >
-            回到收藏
+            {uiT("productionUi.pa4f10ec72f")}
           </button>
         ) : null}
       </div>

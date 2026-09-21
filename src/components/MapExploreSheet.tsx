@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import {
   forwardRef,
   useCallback,
@@ -67,6 +68,7 @@ export const MapExploreSheet = forwardRef<MapExploreSheetHandle, Props>(function
 ) {
   const sheetRef = useRef<HTMLDivElement>(null);
   const headerWrapRef = useRef<HTMLDivElement>(null);
+  const { t } = useI18n();
   const bodyInnerRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragSession | null>(null);
@@ -100,7 +102,11 @@ export const MapExploreSheet = forwardRef<MapExploreSheetHandle, Props>(function
         10,
       );
       if (pinned > 0) {
-        h = pinned + parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--safe-area-top") || "0");
+        h =
+          pinned +
+          parseFloat(
+            getComputedStyle(document.documentElement).getPropertyValue("--safe-area-top") || "0",
+          );
       }
     }
     if (h > 0) setPageH(h);
@@ -195,13 +201,10 @@ export const MapExploreSheet = forwardRef<MapExploreSheetHandle, Props>(function
     [collapsedH, expandedH, open],
   );
 
-  const snapTo = useCallback(
-    (nextOpen: boolean) => {
-      if (nextOpen) setCollapsedOverride(null);
-      setOpen(nextOpen);
-    },
-    [],
-  );
+  const snapTo = useCallback((nextOpen: boolean) => {
+    if (nextOpen) setCollapsedOverride(null);
+    setOpen(nextOpen);
+  }, []);
 
   const clearDragSession = useCallback(() => {
     dragRef.current = null;
@@ -328,7 +331,7 @@ export const MapExploreSheet = forwardRef<MapExploreSheetHandle, Props>(function
     <div
       ref={sheetRef}
       role="dialog"
-      aria-label="推薦地點"
+      aria-label={t("uiCoverage.exploreAll")}
       aria-expanded={open || detailOpen}
       data-map-explore-sheet="true"
       data-map-sheet-dragging={isDragging ? "true" : undefined}
@@ -351,10 +354,7 @@ export const MapExploreSheet = forwardRef<MapExploreSheetHandle, Props>(function
         <div
           ref={handleRef}
           data-sheet-drag-handle
-          className={cn(
-            "cursor-grab select-none bg-cream",
-            isDragging && "cursor-grabbing",
-          )}
+          className={cn("cursor-grab select-none bg-cream", isDragging && "cursor-grabbing")}
           style={{
             touchAction: "none",
             backgroundColor: "var(--cream)",

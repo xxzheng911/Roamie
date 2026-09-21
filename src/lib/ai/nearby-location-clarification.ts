@@ -1,4 +1,6 @@
 import { userExplicitlyWantsNearbyPlaces, type NearbyPlaceIntent } from "@/lib/ai/chat-intent";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import type { Locale } from "@/lib/i18n/types";
 import { parsePlaceRecommendationIntent } from "@/lib/ai/place-recommendation-intent/parse";
 import type { TripLocation } from "@/lib/location/types";
 
@@ -178,9 +180,10 @@ export function resolveNearbyClarificationSemantics(
 export function buildNearbyLocationClarificationCopy(
   originalQuery: string,
   intent: NearbyPlaceIntent,
+  locale?: Locale,
 ): { categoryLabel: string; renderedCopy: string } {
   const categoryLabel = resolveNearbyClarificationSemantics(originalQuery, intent).categoryLabel;
-  return { categoryLabel, renderedCopy: NEARBY_LOCATION_CLARIFICATION_COPY };
+  return { categoryLabel, renderedCopy: chatRuntimeCopy("nearbyWhere", locale) };
 }
 
 export function normalizeNearbyClarificationQuery(rawQuery: string): string {

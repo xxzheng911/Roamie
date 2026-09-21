@@ -1,3 +1,5 @@
+import { destinationEditorialMessages } from "@/lib/i18n/destination-editorial";
+import { translate } from "@/lib/i18n/translate";
 /**
  * Combination theme titles keyed by App locale (effectiveAppLocale).
  * Titles are product copy — never AI / destination-language generated.
@@ -138,6 +140,10 @@ export function combinationThemeTitle(
   locale: Locale = effectiveAppLocale(),
 ): string {
   const trimmed = themeKeyOrZhTitle.trim();
+  const editorialKey = Object.keys(destinationEditorialMessages["zh-TW"]).find(
+    (key) => key.startsWith("theme_") && destinationEditorialMessages["zh-TW"][key] === trimmed,
+  );
+  if (editorialKey) return translate(locale, `destinationEditorial.${editorialKey}`);
   if (MECHANICAL_TITLE_RE.test(trimmed)) {
     return THEME_TITLES.attraction?.[locale] ?? THEME_TITLES.attraction!["zh-TW"];
   }
@@ -238,4 +244,9 @@ export function deriveCombinationThemeTitle(
 
 export function isMechanicalCombinationTitle(title: string): boolean {
   return MECHANICAL_TITLE_RE.test(title.trim());
+}
+
+/** Legacy semantic title used by matching/nearby policy. Never localize before those checks. */
+export function canonicalEditorialTheme(key: string): string {
+  return translate("zh-TW", `destinationEditorial.${key}`);
 }

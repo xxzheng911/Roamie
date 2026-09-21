@@ -1,6 +1,6 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
-import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
+import { getLocalizedPlaceCategoryLabel } from "@/lib/place-category";
 import type { SavedPlace } from "@/lib/places-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -23,12 +23,21 @@ export type HomePlusCopySource = "profile" | "recent_intent" | "combined" | "fal
 
 const homeSessionInsights = new Map<string, string>();
 
-export function readHomeSessionPlusInsight(sessionKey: string | null): string | null {
-  return sessionKey ? (homeSessionInsights.get(sessionKey) ?? null) : null;
+export function readHomeSessionPlusInsight(
+  sessionKey: string | null,
+  locale: Locale = "zh-TW",
+): string | null {
+  return sessionKey
+    ? (homeSessionInsights.get(JSON.stringify([sessionKey, locale])) ?? null)
+    : null;
 }
 
-export function writeHomeSessionPlusInsight(sessionKey: string, insight: string): string {
-  homeSessionInsights.set(sessionKey, insight);
+export function writeHomeSessionPlusInsight(
+  sessionKey: string,
+  insight: string,
+  locale: Locale = "zh-TW",
+): string {
+  homeSessionInsights.set(JSON.stringify([sessionKey, locale]), insight);
   return insight;
 }
 
@@ -37,9 +46,9 @@ export function resolveHomeSessionPlusInsight(
   ready: boolean,
   input: HomePersonalizationInsightInput,
 ): string | null {
-  const existing = readHomeSessionPlusInsight(sessionKey);
+  const existing = readHomeSessionPlusInsight(sessionKey, input.locale);
   if (existing || !ready) return existing;
-  return writeHomeSessionPlusInsight(sessionKey, buildHomePlusInsight(input));
+  return writeHomeSessionPlusInsight(sessionKey, buildHomePlusInsight(input), input.locale);
 }
 
 export function resolveHomePlusCopySource(
@@ -58,20 +67,23 @@ export function resolveHomePlusCopySource(
   return "fallback";
 }
 
-function topSavedCategories(saved: SavedPlace[], limit = 2): string[] {
+function topSavedCategories(saved: SavedPlace[], locale: Locale, limit = 2): string[] {
   const counts = new Map<string, number>();
   for (const p of saved) {
     const metadata = p.metadata ?? {};
     const types = Array.isArray(metadata.types)
       ? metadata.types.filter((value): value is string => typeof value === "string")
       : [];
-    const displayLabel = getExploreCategoryDisplayLabel({
-      name: p.name,
-      address: p.address,
-      primaryType: typeof metadata.primaryType === "string" ? metadata.primaryType : p.category,
-      types,
-    });
-    const key = displayLabel === "其他" ? "地點" : displayLabel;
+    const displayLabel = getLocalizedPlaceCategoryLabel(
+      {
+        name: p.name,
+        address: p.address,
+        primaryType: typeof metadata.primaryType === "string" ? metadata.primaryType : p.category,
+        types,
+      },
+      locale,
+    );
+    const key = displayLabel;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return [...counts.entries()]
@@ -105,12 +117,12 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
     locale = "zh-TW",
   } = input;
 
-  const savedCats = topSavedCategories(savedPlaces);
+  const savedCats = topSavedCategories(savedPlaces, locale);
   const nearbyTypes = [
     ...new Set(
       nearbyPicks
         .slice(0, 5)
-        .map((p) => getExploreCategoryDisplayLabel(p))
+        .map((p) => getLocalizedPlaceCategoryLabel(p, locale))
         .filter(Boolean),
     ),
   ].slice(0, 2);
@@ -132,38 +144,53 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
 
   if (chatHint && (paceLabel || vibeLabel || interests.length || avoids.length)) {
     const profileFacts = [
-      paceLabel ? `${paceLabel}的步調` : "",
-      vibeLabel ? `${vibeLabel}的氛圍` : "",
-      interests.length ? `你喜歡的${interests.join("、")}` : "",
-      avoids.length ? `避開${avoids.join("、")}` : "",
+      paceLabel ? t(locale, "uiCoverage.paceFact", { value: paceLabel }) : "",
+      vibeLabel ? t(locale, "uiCoverage.vibeFact", { value: vibeLabel }) : "",
+      interests.length ? t(locale, "uiCoverage.likeFact", { value: interests.join(", ") }) : "",
+      avoids.length ? t(locale, "uiCoverage.avoidFact", { value: avoids.join(", ") }) : "",
     ].filter(Boolean);
-    return `你最近提到「${chatHint}」。我會依照${profileFacts.join("、")}來安排今天的建議。`;
+    return t(locale, "uiCoverage.insightProfile", {
+      chat: chatHint,
+      facts: profileFacts.join(", "),
+    });
   }
 
   if (interests.length || avoids.length) {
-    const liked = interests.length ? `優先找${interests.join("、")}` : "";
-    const avoided = avoids.length ? `避開${avoids.join("、")}` : "";
-    return `我記得你希望${[liked, avoided].filter(Boolean).join("，並")}，今天的推薦會照這些條件篩選。`;
+    const liked = interests.length
+      ? t(locale, "uiCoverage.likeFact", { value: interests.join(", ") })
+      : "";
+    const avoided = avoids.length
+      ? t(locale, "uiCoverage.avoidFact", { value: avoids.join(", ") })
+      : "";
+    return t(locale, "uiCoverage.insightPreferences", {
+      facts: [liked, avoided].filter(Boolean).join(", "),
+    });
   }
 
   if (selectedMood && savedCats.length) {
-    return `你選了「${selectedMood}」，又常收藏${savedCats.join("、")}類地點——今天很適合照這個節奏慢慢走。`;
+    return t(locale, "uiCoverage.insightMoodSaved", {
+      mood: selectedMood,
+      categories: savedCats.join(", "),
+    });
   }
 
   if (savedCats.length >= 2) {
-    return `依照你最近收藏的${savedCats.join("與")}，今天很適合慢步調、留一點空白的小旅行。`;
+    return t(locale, "uiCoverage.insightSaved", { categories: savedCats.join(", ") });
   }
 
   if (savedCats.length === 1 && nearbyTypes.length) {
-    return `依照你收藏的${savedCats[0]}與附近的${nearbyTypes.join("、")}，今天可以串成一條剛剛好的路線。`;
+    return t(locale, "uiCoverage.insightNearbySaved", {
+      saved: savedCats[0],
+      nearby: nearbyTypes.join(", "),
+    });
   }
 
   if (chatHint && selectedMood) {
-    return `記得你剛才提到「${chatHint}」，配上「${selectedMood}」的心情，我們可以從輕鬆的一步開始規劃。`;
+    return t(locale, "uiCoverage.insightChatMood", { chat: chatHint, mood: selectedMood });
   }
 
   if (chatHint) {
-    return `你最近提到「${chatHint}」。今天可以從這個明確需求繼續找地點、調整路線。`;
+    return t(locale, "uiCoverage.insightChat", { chat: chatHint });
   }
 
   if (prefs?.vibe && prefs.pace) {
@@ -177,28 +204,28 @@ export function buildHomePlusInsight(input: HomePersonalizationInsightInput): st
       prefs.personalitySummary.length > 28
         ? `${prefs.personalitySummary.slice(0, 28)}…`
         : prefs.personalitySummary;
-    return `${short}——我會把這個風格放進今天的推薦裡。`;
+    return t(locale, "uiCoverage.insightPersonality", { summary: short });
   }
 
   if (latestTripTitle?.trim()) {
-    return `你最近在規劃「${latestTripTitle}」——要不要順著這個方向，聊聊今天想怎麼過？`;
+    return t(locale, "uiCoverage.insightTrip", { title: latestTripTitle });
   }
 
   if (rainy) {
-    return "外面可能會下雨，今天很適合室內咖啡、展覽，或能躲雨的巷弄散步。";
+    return t(locale, "uiCoverage.insightRain");
   }
 
   if (evening && nearbyTypes.length) {
-    return `入夜了，附近的${nearbyTypes.join("與")}很適合今晚慢慢走、不用趕行程。`;
+    return t(locale, "uiCoverage.insightEvening", { categories: nearbyTypes.join(", ") });
   }
 
   if (selectedMood) {
-    return `照著「${selectedMood}」的心情，我們可以從一個小問題開始，慢慢聊出適合你的路線。`;
+    return t(locale, "uiCoverage.insightMood", { mood: selectedMood });
   }
 
   if (nearbyTypes.length) {
-    return `附近現在有${nearbyTypes.join("、")}的選擇——跟我說你今天想怎麼過，我來幫你收斂。`;
+    return t(locale, "uiCoverage.insightNearby", { categories: nearbyTypes.join(", ") });
   }
 
-  return "我會記住你的收藏、偏好與對話節奏——跟我聊聊，我們一起把今天排得剛剛好。";
+  return t(locale, "uiCoverage.insightDefault");
 }

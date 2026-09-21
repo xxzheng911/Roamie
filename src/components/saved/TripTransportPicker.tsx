@@ -1,3 +1,5 @@
+import { itineraryTransportDisplay } from "@/lib/native-qa-display";
+import { useI18n } from "@/hooks/use-i18n";
 import { ChevronDown, Route as RouteIcon } from "lucide-react";
 import { useState } from "react";
 import { RoamiePickerSheet } from "@/components/pickers/RoamiePickerSheet";
@@ -15,12 +17,9 @@ type Props = {
   className?: string;
 };
 
-export function TripTransportPicker({
-  value,
-  onChange,
-  variant = "global",
-  className,
-}: Props) {
+export function TripTransportPicker({ value, onChange, variant = "global", className }: Props) {
+  const { t: uiT, locale } = useI18n();
+
   const [open, setOpen] = useState(false);
   const display = value.trim() || "步行";
 
@@ -36,14 +35,14 @@ export function TripTransportPicker({
           )}
         >
           <RouteIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate">{display}</span>
+          <span className="truncate">{itineraryTransportDisplay(display, locale)}</span>
           <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
         </button>
         <RoamiePickerSheet
           open={open}
           onOpenChange={setOpen}
-          title="選擇交通方式"
-          description="選擇此段行程的交通方式"
+          title={uiT("productionUi.pf0fab85822")}
+          description={uiT("productionUi.p34b2e1fa46")}
           onConfirm={() => setOpen(false)}
           hideFooter
         >
@@ -70,15 +69,15 @@ export function TripTransportPicker({
         )}
       >
         <RouteIcon className="h-3.5 w-3.5 text-muted-foreground" />
-        <span className="text-muted-foreground">交通方式</span>
-        <span className="font-medium">{display}</span>
+        <span className="text-muted-foreground">{uiT("productionUi.pc122178ce4")}</span>
+        <span className="font-medium">{itineraryTransportDisplay(display, locale)}</span>
         <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
       </button>
       <RoamiePickerSheet
         open={open}
         onOpenChange={setOpen}
-        title="選擇交通方式"
-        description="選擇整趟行程的預設交通方式"
+        title={uiT("productionUi.pf0fab85822")}
+        description={uiT("productionUi.pacbb54805b")}
         onConfirm={() => setOpen(false)}
         hideFooter
       >
@@ -101,11 +100,12 @@ function TransportOptionList({
   value: string;
   onPick: (label: TripTransportOptionLabel) => void;
 }) {
+  const { locale } = useI18n();
   return (
     <div className="flex flex-col gap-1">
       {TRIP_TRANSPORT_OPTIONS.map((opt) => (
         <button
-          key={opt.label}
+          key={itineraryTransportDisplay(opt.label, locale)}
           type="button"
           onClick={() => onPick(opt.label)}
           className={cn(
@@ -115,7 +115,7 @@ function TransportOptionList({
               : "bg-secondary/60 text-foreground",
           )}
         >
-          {opt.label}
+          {itineraryTransportDisplay(opt.label, locale)}
         </button>
       ))}
     </div>

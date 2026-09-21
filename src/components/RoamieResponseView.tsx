@@ -1,3 +1,5 @@
+import { chatMoodDisplay } from "@/lib/chat-runtime-copy";
+import { useI18n } from "@/hooks/use-i18n";
 import type { KeyboardEvent, MouseEvent } from "react";
 import { MapPin, Sparkles, Heart, Loader2, Star, Plus } from "lucide-react";
 import type { RoamieItineraryItem, RoamieRecommendationItem } from "@/lib/ai/types";
@@ -19,6 +21,8 @@ function ItineraryByDate({
   items: RoamieItineraryItem[];
   outfitAdvice?: OutfitAdvicePayload;
 }) {
+  const { t: uiT } = useI18n();
+
   const groups = new Map<string, RoamieItineraryItem[]>();
   for (const item of items) {
     const key = item.date?.trim() || "未指定日期";
@@ -44,14 +48,16 @@ function ItineraryByDate({
   return (
     <div className="space-y-4 pt-1">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[11px] uppercase tracking-wider text-muted-foreground">行程</p>
+        <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+          {uiT("productionUi.p1fcc0ccba7")}
+        </p>
         {routeUrl && (
           <button
             type="button"
             onClick={() => openExternal(routeUrl)}
             className="rounded-full border border-border bg-card px-2.5 py-1 text-[10px]"
           >
-            查看整段路線
+            {uiT("productionUi.pdf3814d157")}
           </button>
         )}
       </div>
@@ -150,6 +156,9 @@ export function RoamieResponseView({
   onRecommendationEngage,
   selectionMode = false,
 }: Props) {
+  const { t: uiT, locale } = useI18n();
+
+  const moodBadge = data.moodTag ? chatMoodDisplay(data.moodTag, locale) : "";
   const summary = data.summary?.trim();
   const recs = recommendationsPreFiltered
     ? (data.recommendations ?? [])
@@ -160,11 +169,11 @@ export function RoamieResponseView({
 
   return (
     <div className="space-y-3">
-      {data.moodTag && (
+      {moodBadge ? (
         <span className="inline-block rounded-full bg-sage/15 px-2.5 py-0.5 text-[11px] text-foreground/80">
-          {data.moodTag}
+          {moodBadge}
         </span>
-      )}
+      ) : null}
       {summary && (
         <p
           className={`whitespace-pre-wrap text-left leading-relaxed ${
@@ -186,7 +195,7 @@ export function RoamieResponseView({
         <div className="space-y-2" data-chat-place-cards>
           {!compact && (
             <p className="flex items-center gap-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-              <Sparkles className="h-3 w-3 text-clay" /> 推薦
+              <Sparkles className="h-3 w-3 text-clay" /> {uiT("productionUi.p042d7d5a05")}
             </p>
           )}
           {recs.map((r, i) => {
@@ -288,7 +297,11 @@ export function RoamieResponseView({
                         }}
                         disabled={savingPlaceName === r.name}
                         className="flex h-7 w-7 items-center justify-center rounded-full bg-card disabled:opacity-50"
-                        aria-label={savedPlaceNames?.has(r.name) ? "已收藏" : "收藏"}
+                        aria-label={
+                          savedPlaceNames?.has(r.name)
+                            ? uiT("productionUi.p471dd4d7f8")
+                            : uiT("productionUi.p60a53514eb")
+                        }
                       >
                         {savingPlaceName === r.name ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -310,6 +323,7 @@ export function RoamieResponseView({
                   <p className="mt-1.5 text-xs text-foreground/75">{r.reason}</p>
                 )}
                 <PlaceHoursBadge
+                  place={r}
                   className="mt-1.5"
                   statusLabel={r.openStatusLabel}
                   todayHoursLabel={r.todayHoursLabel}
@@ -338,7 +352,9 @@ export function RoamieResponseView({
                         className="inline-flex flex-1 items-center justify-center gap-1 rounded-full bg-foreground px-3 py-2 text-[11px] font-medium text-background"
                       >
                         {!(selectionMode && isPicked) && <Plus className="h-3 w-3" />}
-                        {selectionMode && isPicked ? "✓ 已加入" : addToTripLabel}
+                        {selectionMode && isPicked
+                          ? uiT("productionUi.p838cd65a3d")
+                          : addToTripLabel}
                       </button>
                     )}
                     {onSelectPlace && !pickMode && !onAddToTrip && (

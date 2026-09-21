@@ -1,3 +1,6 @@
+import type { Locale } from "@/lib/i18n/types";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { translate } from "@/lib/i18n/translate";
 /** ISO date (YYYY-MM-DD) helpers for Roamie pickers */
 
 export const WEEKDAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"] as const;
@@ -19,23 +22,33 @@ export function parseISODate(iso: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-export function formatMonthYear(d: Date): string {
-  return `${d.getMonth() + 1}月 ${d.getFullYear()}`;
+export function formatMonthYear(d: Date, locale: Locale = effectiveAppLocale()): string {
+  return new Intl.DateTimeFormat(locale, { year: "numeric", month: "long" }).format(d);
 }
 
 /** 5月22日；withYear 時為 2026年5月22日 */
-export function formatDateShort(iso: string, options?: { withYear?: boolean }): string {
+export function formatDateShort(
+  iso: string,
+  options?: { withYear?: boolean; locale?: Locale },
+): string {
   const d = parseISODate(iso);
   if (!d) return iso;
-  const year = options?.withYear ? `${d.getFullYear()}年` : "";
-  return `${year}${d.getMonth() + 1}月${d.getDate()}日`;
+  return new Intl.DateTimeFormat(options?.locale ?? effectiveAppLocale(), {
+    year: options?.withYear ? "numeric" : undefined,
+    month: "short",
+    day: "numeric",
+  }).format(d);
 }
 
 /** 5月22日 週四 */
 export function formatDateWithWeekday(iso: string): string {
   const d = parseISODate(iso);
   if (!d) return iso;
-  return `${formatDateShort(iso)} 週${WEEKDAY_LABELS[d.getDay()]}`;
+  return new Intl.DateTimeFormat(effectiveAppLocale(), {
+    month: "short",
+    day: "numeric",
+    weekday: "short",
+  }).format(d);
 }
 
 export type DateRangeValue = { start: string; end: string };
@@ -43,7 +56,7 @@ export type DateRangeValue = { start: string; end: string };
 export function formatDateRangeLabel(
   start: string,
   end: string,
-  options?: { withYear?: boolean },
+  options?: { withYear?: boolean; locale?: Locale },
 ): string {
   if (!start && !end) return "";
   if (start && end && start !== end) {
@@ -127,12 +140,15 @@ export function formatTimeDisplay(value: string): string {
   return normalizeTime(value);
 }
 
-export function formatDurationMinutes(total: number): string {
+export function formatDurationMinutes(
+  total: number,
+  locale: Locale = effectiveAppLocale(),
+): string {
   const h = Math.floor(total / 60);
   const m = total % 60;
-  if (h <= 0) return `${m} 分鐘`;
-  if (m === 0) return `${h} 小時`;
-  return `${h} 小時 ${m} 分`;
+  if (h <= 0) return translate(locale, "uiCoverage.minutes", { count: m });
+  if (m === 0) return translate(locale, "productionUi.hours", { count: h });
+  return translate(locale, "productionUi.hoursMinutes", { hours: h, minutes: m });
 }
 
 export function parseDurationToMinutes(hours: number, minutes: number): number {

@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Loader2, Share2, Trash2 } from "lucide-react";
@@ -5,6 +6,7 @@ import { toast } from "sonner";
 import { SavedTripItineraryEditor } from "@/components/saved/SavedTripItineraryEditor";
 import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
 import { TripSharePanel } from "@/components/trip/TripSharePanel";
+import { deleteTripDialogLabels } from "@/lib/i18n/delete-trip-dialog";
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { getItinerary, type StoredItinerary } from "@/lib/itinerary-storage";
 import { getTripAccess } from "@/lib/trip/trip-collab";
@@ -28,6 +30,8 @@ type Props = {
  * 唯一正式行程詳情頁：載入 StoredItinerary 並使用可編輯行程編輯器。
  */
 export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: Props) {
+  const { locale, t: uiT } = useI18n();
+
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
   const cachedTrip = tripDetailMemoryCache.get(tripId) ?? null;
@@ -109,11 +113,11 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
     setDeleting(true);
     try {
       await deleteTrip(stored.id);
-      toast.success("已刪除");
+      toast.success(uiT("productionUi.p22dd07b022"));
       setDeleteOpen(false);
       onDeleted?.();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "刪除失敗");
+      toast.error(e instanceof Error ? e.message : uiT("productionUi.p4ce9d7c1e4"));
     } finally {
       setDeleting(false);
     }
@@ -130,7 +134,7 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
   if (error || !stored) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-20 text-center">
-        <p className="text-sm text-muted-foreground">{error ?? "找不到行程"}</p>
+        <p className="text-sm text-muted-foreground">{error ?? uiT("productionUi.p3b14a9fe8c")}</p>
       </div>
     );
   }
@@ -143,7 +147,7 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
         type="button"
         onClick={() => setShareOpen(true)}
         className="flex h-9 w-9 items-center justify-center rounded-full bg-background/80 text-muted-foreground backdrop-blur"
-        aria-label="分享行程"
+        aria-label={uiT("productionUi.pd50e0839b9")}
       >
         <Share2 className="h-4 w-4" />
       </button>
@@ -152,7 +156,7 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
           type="button"
           onClick={() => setDeleteOpen(true)}
           className="flex h-9 w-9 items-center justify-center rounded-full bg-background/80 text-muted-foreground backdrop-blur"
-          aria-label="刪除行程"
+          aria-label={uiT("productionUi.p045efb886f")}
         >
           <Trash2 className="h-4 w-4" />
         </button>
@@ -181,6 +185,7 @@ export function TripDetailScreen({ tripId, navSource, initialDay, onDeleted }: P
         onOpenChange={setDeleteOpen}
         onConfirm={handleDelete}
         confirming={deleting}
+        {...deleteTripDialogLabels(locale)}
       />
     </div>
   );

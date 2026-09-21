@@ -1,3 +1,5 @@
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import type { Locale } from "@/lib/i18n/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import {
@@ -967,6 +969,7 @@ export function buildNextStepAfterAdviceSelection(
   selected: string,
   pending: PendingQuestion,
   ctx: CanonicalTravelContext,
+  locale?: Locale,
 ): { reply: string; pendingQuestion?: PendingQuestion } {
   if (pending.type === "ask_days") {
     const days =
@@ -987,6 +990,7 @@ export function buildNextStepAfterAdviceSelection(
         pending.destinationCountry ?? ctx.destinationCountry,
         {
           weather: ctx.weather,
+          locale,
           context: {
             ...ctx,
             destination: normalizeDestinationLabel(dest),
@@ -997,7 +1001,7 @@ export function buildNextStepAfterAdviceSelection(
     }
     if (!days) {
       return {
-        reply: `好，${dest}是很好的選擇。你這趟大概幾天？`,
+        reply: chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: dest }),
         pendingQuestion: pendingQuestionForAskDays(
           dest,
           pending.destinationCountry ?? ctx.destinationCountry,
@@ -1015,7 +1019,7 @@ export function buildNextStepAfterAdviceSelection(
       dest,
       days,
       pending.destinationCountry ?? ctx.destinationCountry,
-      { weather: ctx.weather, context: { ...ctx, destination: label, days } },
+      { weather: ctx.weather, locale, context: { ...ctx, destination: label, days } },
     );
   }
 
@@ -1028,8 +1032,12 @@ export function buildNextStepAfterAdviceSelection(
     const labelList = titles.length ? titles.join("、") : "建議組合";
     return {
       reply: [
-        `好，我會以${labelList}為主，幫你安排${dest}${ctx.days ? ` ${ctx.days} 天` : ""}行程。`,
-        "我正在確認實際地點、營業時間與順路動線。",
+        chatRuntimeCopy(ctx.days ? "combinationFocusDays" : "combinationFocus", locale, {
+          styles: labelList,
+          destination: dest,
+          days: ctx.days ?? "",
+        }),
+        chatRuntimeCopy("confirmingPlaces", locale),
       ].join("\n"),
       pendingQuestion: undefined,
     };
@@ -1041,7 +1049,7 @@ export function buildNextStepAfterAdviceSelection(
     const style = selected === "都可以" ? "混合" : selected;
     if (!days) {
       return {
-        reply: `好，那我會把${dest}排成${style}方向。你這趟大概幾天？`,
+        reply: chatRuntimeCopy("styleDirectionDaysAsk", locale, { destination: dest, style }),
         pendingQuestion: pendingQuestionForAskDays(
           dest,
           pending.destinationCountry ?? ctx.destinationCountry,
@@ -1050,8 +1058,8 @@ export function buildNextStepAfterAdviceSelection(
     }
     return {
       reply: [
-        `好，那我會把${dest} ${days} 天排成${style}方向。`,
-        "接下來我會先給你幾組行程組合，回覆有興趣的組合，我再幫你生成行程。",
+        chatRuntimeCopy("styleDirectionDaysKnown", locale, { destination: dest, days, style }),
+        chatRuntimeCopy("combinationNext", locale),
       ].join("\n"),
       pendingQuestion: pendingQuestionForCombinationChoice(
         dest,
@@ -1082,9 +1090,9 @@ export function buildNextStepAfterAdviceSelection(
     const durationOptions = guide.durationOptions ?? ["5 天", "7 天", "10 天"];
     return {
       reply: [
-        `好，那我會幫你把${dest}排成${selected}方向。`,
-        `我會先抓${dest}適合${selected}的經典區域，節奏不會排太滿。`,
-        "你這趟大概想排幾天？",
+        chatRuntimeCopy("styleDirectionOpen", locale, { destination: dest, selected }),
+        chatRuntimeCopy("styleRegionPace", locale, { destination: dest, selected }),
+        chatRuntimeCopy("styleDaysAsk", locale),
       ].join("\n"),
       pendingQuestion: {
         type: "duration_choice",
@@ -1122,6 +1130,7 @@ export function buildNextStepAfterAdviceSelection(
       });
       return buildCityDaysConfirmedReply(city, validDays, country, {
         weather: ctx.weather,
+        locale,
         context: { ...cityCtx, days: validDays, planningDaysConfirmed: true },
       });
     }
@@ -1140,6 +1149,7 @@ export function buildNextStepAfterAdviceSelection(
         city === "釜山" || city === "首爾" || city === "濟州"
           ? "korea_city_style_followup"
           : "city_preference_or_style_followup",
+      locale,
     });
   }
 
@@ -1154,6 +1164,7 @@ export function buildNextStepAfterAdviceSelection(
         userText: selected,
         previousPendingType: "city_style_choice",
         blockedLegacyTemplate: "city_style_choice",
+        locale,
       },
     );
   }
@@ -1360,6 +1371,7 @@ export function buildNextStepAfterAdviceSelection(
         pending.destinationCountry ?? ctx.destinationCountry,
         {
           weather: ctx.weather,
+          locale,
           context: {
             ...ctx,
             destination: normalizeDestinationLabel(dest),
@@ -1370,7 +1382,7 @@ export function buildNextStepAfterAdviceSelection(
     }
     if (!days) {
       return {
-        reply: `好，${dest}是很好的選擇。你這趟大概幾天？`,
+        reply: chatRuntimeCopy("cityGoodChoiceDaysAsk", locale, { destination: dest }),
         pendingQuestion: pendingQuestionForAskDays(
           dest,
           pending.destinationCountry ?? ctx.destinationCountry,
@@ -1382,7 +1394,7 @@ export function buildNextStepAfterAdviceSelection(
       dest,
       days,
       pending.destinationCountry ?? ctx.destinationCountry,
-      { weather: ctx.weather, context: { ...ctx, destination: normalizeDestinationLabel(dest), days } },
+      { weather: ctx.weather, locale, context: { ...ctx, destination: normalizeDestinationLabel(dest), days } },
     );
   }
 

@@ -1,3 +1,5 @@
+import { translate } from "@/lib/i18n/translate";
+import type { Locale } from "@/lib/i18n/types";
 /** 探索地圖：依分類決定搜尋半徑與顯示距離（非首頁 nearby） */
 
 export function exploreCategorySearchRadiusMeters(categoryId: string): number {
@@ -30,20 +32,20 @@ export function exploreCategoryMaxDistanceMeters(categoryId: string): number {
   }
 }
 
-export function exploreCategorySheetTitle(categoryId: string): string {
+export function exploreCategorySheetTitle(categoryId: string, locale: Locale = "zh-TW"): string {
   switch (categoryId) {
     case "coffee":
-      return "咖啡推薦";
+      return translate(locale, "uiCoverage.exploreCoffee");
     case "sight":
-      return "景點推薦";
+      return translate(locale, "uiCoverage.exploreSight");
     case "district":
-      return "商圈推薦";
+      return translate(locale, "uiCoverage.exploreDistrict");
     case "food":
-      return "美食推薦";
+      return translate(locale, "uiCoverage.exploreFood");
     case "night":
-      return "夜晚推薦";
+      return translate(locale, "uiCoverage.exploreNight");
     case "all":
     default:
-      return "推薦地點";
+      return translate(locale, "uiCoverage.exploreAll");
   }
 }

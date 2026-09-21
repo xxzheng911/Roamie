@@ -1,3 +1,4 @@
+import { isCurrentGeneratedCopy } from "@/lib/generated-locale";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Loader2, Sparkles, Trash2 } from "lucide-react";
 import { PlaceNavButtons } from "@/components/PlaceNavButtons";
@@ -105,6 +106,8 @@ type Props = {
 };
 
 export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
+  const { t: uiT, locale } = useI18n();
+
   const itineraryItems = coalesceItineraryItems(payload.itinerary);
   const { t } = useI18n();
   const [settings, setSettings] = useState<TripPlanSettings>(
@@ -233,9 +236,9 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
 
   return (
     <div className="space-y-5">
-      <p className="text-sm leading-relaxed text-muted-foreground">{payload.summary}</p>
+      <p className="text-sm leading-relaxed text-muted-foreground">{isCurrentGeneratedCopy(payload, locale) ? payload.summary : uiT("productionUi.savedLocaleNotice")}</p>
 
-      {settings.transportTips && (
+      {isCurrentGeneratedCopy(settings, locale) && settings.transportTips && (
         <p className="rounded-2xl bg-secondary/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
           {settings.transportTips}
         </p>
@@ -243,8 +246,8 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
 
       <RoamieDatePicker
         mode="range"
-        label="旅行日期"
-        title="編輯行程日期"
+        label={uiT("productionUi.p73e9bd80dd")}
+        title={uiT("productionUi.p676483ba9d")}
         value={{
           start: inferTripDates(items, settings).start,
           end: inferTripDates(items, settings).end,
@@ -261,7 +264,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
       />
 
       <label className="block rounded-2xl border border-border bg-card p-3">
-        <span className="text-[11px] text-muted-foreground">預設交通方式</span>
+        <span className="text-[11px] text-muted-foreground">{uiT("productionUi.p9807372872")}</span>
         <select
           value={settings.transport ?? "walk"}
           onChange={(e) => {
@@ -284,7 +287,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
           onClick={() => openExternal(routeUrl)}
           className="w-full rounded-full border border-border bg-card py-2.5 text-sm"
         >
-          整段路線導航（{TRANSPORT_LABEL[settings.transport ?? "walk"]}）
+          {uiT("productionUi.p3e96df7a07", { v0: TRANSPORT_LABEL[settings.transport ?? "walk"] })}
         </button>
       )}
 
@@ -299,7 +302,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                 <RoamieDatePicker
                   mode="single"
                   variant="inline"
-                  title="選擇日期"
+                  title={uiT("productionUi.p55e2f69c1e")}
                   value={
                     /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
                       ? dateKey
@@ -337,7 +340,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                           <div className="mb-2 flex items-center justify-end gap-1">
                             <button
                               type="button"
-                              aria-label="上移"
+                              aria-label={uiT("productionUi.pf853a70b12")}
                               disabled={i === 0}
                               onClick={() => setItems(moveStopInDay(items, dateKey, i, -1))}
                               className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40"
@@ -346,7 +349,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                             </button>
                             <button
                               type="button"
-                              aria-label="下移"
+                              aria-label={uiT("productionUi.pe75e8b4e5c")}
                               disabled={i >= dayItems.length - 1}
                               onClick={() => setItems(moveStopInDay(items, dateKey, i, 1))}
                               className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-card disabled:opacity-40"
@@ -365,7 +368,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
                           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                             <RoamieTimePicker
                               compact
-                              title="抵達時間"
+                              title={uiT("productionUi.p6081a12224")}
                               value={item.time?.slice(0, 5) || "10:00"}
                               onChange={(t) => {
                                 const next = [...items];
@@ -422,7 +425,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
           ) : (
             <Sparkles className="h-4 w-4" />
           )}
-          依交通與停留時間重新規劃路線
+          {uiT("productionUi.p3c310fc98a")}
         </button>
         <button
           type="button"
@@ -430,7 +433,7 @@ export function TripPlanEditor({ payload, onSave, onReplan }: Props) {
           disabled={saving}
           className="w-full rounded-full border border-border bg-card py-3 text-sm disabled:opacity-50"
         >
-          {saving ? "儲存中…" : "儲存調整"}
+          {saving ? uiT("productionUi.p00190ad393") : uiT("productionUi.pf2ae22f70b")}
         </button>
       </div>
     </div>

@@ -1,10 +1,15 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect } from "react";
 import { Link } from "@tanstack/react-router";
 import { Loader2, RotateCcw, Send, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { logChatComposerRender } from "@/lib/chat-keyboard-layout";
 import { isChatKeyboardDebugEnabled, logChatKeyboardDebug } from "@/lib/chat-keyboard-debug";
-import { CHAT_SHORTCUT_PLAN_LABEL, CHAT_SHORTCUT_SEND_CHIPS } from "@/lib/chat-shortcut-chips";
+import {
+  chatShortcutLabel,
+  CHAT_SHORTCUT_PLAN_LABEL,
+  CHAT_SHORTCUT_SEND_CHIPS,
+} from "@/lib/chat-shortcut-chips";
 
 export type ChatComposerProps = {
   text: string;
@@ -36,18 +41,25 @@ function ShortcutChips({
   ChatComposerProps,
   "keyboardOpen" | "generating" | "streaming" | "onChipSend" | "actionChips" | "actionChipsOnly"
 >) {
+  const { locale } = useI18n();
   const chipClass = cn(
     "shrink-0 rounded-full border border-border bg-card text-foreground/80 disabled:opacity-50",
     keyboardOpen ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-xs",
   );
 
   return (
-    <div className={cn("mb-2 flex gap-2 overflow-x-auto no-scrollbar", actionChipsOnly && "justify-center")}>
+    <div
+      className={cn(
+        "mb-2 flex gap-2 overflow-x-auto no-scrollbar",
+        actionChipsOnly && "justify-center",
+      )}
+    >
       {actionChips.map((label) => {
-        const ActionIcon = label === "生成行程" ? Sparkles : label === "再推薦一些" ? RotateCcw : null;
+        const ActionIcon =
+          label === "生成行程" ? Sparkles : label === "再推薦一些" ? RotateCcw : null;
         return (
           <button
-            key={`action:${label}`}
+            key={`action:${chatShortcutLabel(label, locale)}`}
             type="button"
             onClick={() => onChipSend(label)}
             disabled={streaming || generating}
@@ -57,7 +69,7 @@ function ShortcutChips({
             )}
           >
             {ActionIcon ? <ActionIcon aria-hidden="true" className="h-3.5 w-3.5" /> : null}
-            {label}
+            {chatShortcutLabel(label, locale)}
           </button>
         );
       })}
@@ -69,19 +81,19 @@ function ShortcutChips({
             keyboardOpen ? "px-2.5 py-1 text-[11px]" : "px-3 py-1.5 text-xs",
           )}
         >
-          {CHAT_SHORTCUT_PLAN_LABEL}
+          {chatShortcutLabel(CHAT_SHORTCUT_PLAN_LABEL, locale)}
         </Link>
       )}
       {!actionChipsOnly &&
         CHAT_SHORTCUT_SEND_CHIPS.map((label) => (
           <button
-            key={label}
+            key={chatShortcutLabel(label, locale)}
             type="button"
             onClick={() => onChipSend(label)}
             disabled={streaming || generating}
             className={chipClass}
           >
-            {label}
+            {chatShortcutLabel(label, locale)}
           </button>
         ))}
     </div>
@@ -110,6 +122,7 @@ function InputRow({
   | "generating"
   | "inputRef"
 >) {
+  const { t } = useI18n();
   return (
     <div className="chat-input-row flex items-end gap-2 rounded-3xl border border-border bg-card p-2">
       <textarea
@@ -119,7 +132,7 @@ function InputRow({
         onKeyDown={onKeyDown}
         onFocus={onFocus}
         rows={1}
-        placeholder="告訴 Roamie 你的心情…"
+        placeholder={t("uiCoverage.chatPlaceholder")}
         className="flex-1 resize-none bg-transparent px-3 py-2 text-[15px] placeholder:text-muted-foreground focus:outline-none"
         disabled={disabled}
       />
@@ -128,7 +141,7 @@ function InputRow({
         onClick={onSend}
         disabled={disabled || !text.trim()}
         className="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-50"
-        aria-label="送出"
+        aria-label={t("uiCoverage.send")}
       >
         {streaming || generating ? (
           <Loader2 className="h-4 w-4 animate-spin" />

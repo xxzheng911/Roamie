@@ -1,3 +1,5 @@
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import type { Locale } from "@/lib/i18n/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { isDestinationPlanningSession } from "@/lib/ai/chat-conversation-state";
 import { isBudgetRefinementText } from "@/lib/ai/budget-refinement";
@@ -406,8 +408,8 @@ export function shouldFetchNearbyPlaces(
   );
 }
 
-export function restaurantCuisineQuestion(): string {
-  return "你比較想吃日式、燒肉、火鍋、義式，還是不限呢？";
+export function restaurantCuisineQuestion(locale?: Locale): string {
+  return chatRuntimeCopy("cuisineQuestion", locale);
 }
 
 export function applyDiningContextFromText(

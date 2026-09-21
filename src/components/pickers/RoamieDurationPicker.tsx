@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
@@ -7,18 +8,6 @@ import {
 } from "@/lib/picker-utils";
 import { RoamiePickerSheet } from "@/components/pickers/RoamiePickerSheet";
 import { RoamieWheelColumn } from "@/components/pickers/RoamieWheelColumn";
-
-const HOUR_OPTIONS = Array.from({ length: 9 }, (_, i) => ({
-  value: String(i),
-  label: `${i} 小時`,
-}));
-
-const MINUTE_OPTIONS = [
-  { value: "0", label: "00 分" },
-  { value: "15", label: "15 分" },
-  { value: "30", label: "30 分" },
-  { value: "45", label: "45 分" },
-];
 
 type Props = {
   /** 總分鐘數 */
@@ -41,6 +30,16 @@ export function RoamieDurationPicker({
   hideLabel = false,
   inline = false,
 }: Props) {
+  const { t: uiT, locale } = useI18n();
+  const HOUR_OPTIONS = Array.from({ length: 9 }, (_, i) => ({
+    value: String(i),
+    label: uiT("productionUi.hours", { count: i }),
+  }));
+  const MINUTE_OPTIONS = [0, 15, 30, 45].map((value) => ({
+    value: String(value),
+    label: uiT("productionUi.minutes", { count: value }),
+  }));
+
   const [open, setOpen] = useState(false);
   const split = splitDurationMinutes(valueMinutes);
   const [draftH, setDraftH] = useState(String(split.hours));
@@ -70,14 +69,16 @@ export function RoamieDurationPicker({
           className,
         )}
       >
-        {!hideLabel ? <span className="text-muted-foreground">停留</span> : null}
-        <span>{formatDurationMinutes(valueMinutes)}</span>
+        {!hideLabel ? (
+          <span className="text-muted-foreground">{uiT("productionUi.pf317313492")}</span>
+        ) : null}
+        <span>{formatDurationMinutes(valueMinutes, locale)}</span>
       </button>
 
       <RoamiePickerSheet
         open={open}
         onOpenChange={setOpen}
-        title="預計停留時間"
+        title={uiT("productionUi.p6a265bddbb")}
         onConfirm={handleConfirm}
         onCancel={() => {
           const s = splitDurationMinutes(valueMinutes);

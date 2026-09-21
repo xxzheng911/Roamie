@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { Loader2, MapPin } from "lucide-react";
 import type { TripStopSuggestion } from "@/lib/trip-stop-search.functions";
 
@@ -24,6 +25,8 @@ export function MapExploreSearchResults({
   onSelect,
   emptyMessage = "找不到符合的地點",
 }: Props) {
+  const { t: uiT } = useI18n();
+
   if (!open) return null;
 
   return (
@@ -32,7 +35,7 @@ export function MapExploreSearchResults({
         {searching && results.length === 0 ? (
           <li className="flex items-center justify-center gap-2 px-3 py-6 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            搜尋中…
+            {uiT("productionUi.p8fa2f4c685")}
           </li>
         ) : null}
         {!searching && results.length === 0 ? (

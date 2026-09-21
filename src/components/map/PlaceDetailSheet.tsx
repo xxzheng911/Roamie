@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   Car,
@@ -17,13 +18,8 @@ import {
 import { SafeImage } from "@/components/media/SafeImage";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
 import { resolvePlaceDetailOpeningLine } from "@/lib/normalized-opening-status";
-import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
-import {
-  TRANSIT_MVP_NOTICE,
-  TRAVEL_MODE_LABEL,
-  type TravelModeEstimate,
-  type TravelModeId,
-} from "@/lib/estimate-travel-mode";
+import { placeCategoryDisplay } from "@/lib/native-qa-display";
+import { type TravelModeEstimate, type TravelModeId } from "@/lib/estimate-travel-mode";
 import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
 import { displayNameForPlaceLike } from "@/lib/place-display-name";
@@ -94,13 +90,14 @@ export function PlaceDetailSheet({
   onToggleSave,
   onAddToTrip,
   onOpenChat,
-  saveLabel = "收藏",
-  addToTripLabel = "加入行程",
+  saveLabel,
+  addToTripLabel,
   ticketOffers,
   tabelogExternalUrl,
   googleMapsExternalUrl,
-  tabelogLinkLabel = "在 Tabelog 查看",
+  tabelogLinkLabel,
 }: Props) {
+  const { t, locale } = useI18n();
   const [photoIdx, setPhotoIdx] = useState(0);
   const touchStartX = useRef<number | null>(null);
   const photos = imageUrls.length > 0 ? imageUrls : [];
@@ -127,11 +124,11 @@ export function PlaceDetailSheet({
     setPhotoIdx((i) => (i + 1) % photos.length);
   };
 
-  const typeLabel = identityDisplayLabel(resolvePlaceIdentity(place), place);
+  const typeLabel = placeCategoryDisplay(place, locale);
   const navButtonLabel = selectedTransportMode
-    ? `導航・${TRAVEL_MODE_LABEL[selectedTransportMode]}`
-    : "開始導航";
-  const openingLine = resolvePlaceDetailOpeningLine(place);
+    ? t("uiCoverage.navigateMode", { mode: t(`uiCoverage.${selectedTransportMode}`) })
+    : t("uiCoverage.navigate");
+  const openingLine = resolvePlaceDetailOpeningLine(place, locale);
 
   return (
     <div className="flex flex-col" data-no-sheet-drag>
@@ -168,7 +165,7 @@ export function PlaceDetailSheet({
                   type="button"
                   onClick={goPrevPhoto}
                   className="absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-card/90 shadow-soft"
-                  aria-label="上一張"
+                  aria-label={t("uiCoverage.previousPhoto")}
                 >
                   <ChevronLeft className="h-4 w-4" />
                 </button>
@@ -176,7 +173,7 @@ export function PlaceDetailSheet({
                   type="button"
                   onClick={goNextPhoto}
                   className="absolute right-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full bg-card/90 shadow-soft"
-                  aria-label="下一張"
+                  aria-label={t("uiCoverage.nextPhoto")}
                 >
                   <ChevronRight className="h-4 w-4" />
                 </button>
@@ -196,7 +193,7 @@ export function PlaceDetailSheet({
           </>
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            尚無照片
+            {t("uiCoverage.noPhotos")}
           </div>
         )}
         <button
@@ -204,7 +201,7 @@ export function PlaceDetailSheet({
           onClick={onToggleSave}
           disabled={isBusy}
           className="absolute right-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-card/95 shadow-soft disabled:opacity-60"
-          aria-label={isSaved ? "移除收藏" : "收藏"}
+          aria-label={isSaved ? t("uiCoverage.unsave") : t("uiCoverage.save")}
         >
           {isBusy ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -262,7 +259,7 @@ export function PlaceDetailSheet({
                 rel="noopener noreferrer"
                 className="rounded-full border border-border bg-card px-3 py-1 text-foreground"
               >
-                官網
+                {t("uiCoverage.website")}
               </a>
             ) : null}
             {googleMapsExternalUrl ? (
@@ -272,30 +269,36 @@ export function PlaceDetailSheet({
                 className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-card px-3 py-1 text-foreground"
               >
                 <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
-                <span>在 Google Maps 查看</span>
+                <span>{t("uiCoverage.maps")}</span>
               </button>
             ) : null}
             {tabelogExternalUrl ? (
-              <TabelogExternalLink href={tabelogExternalUrl} label={tabelogLinkLabel} />
+              <TabelogExternalLink
+                href={tabelogExternalUrl}
+                label={tabelogLinkLabel ?? t("uiCoverage.tabelog")}
+              />
             ) : null}
           </div>
         )}
 
         <div className="mt-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3">
-          <p className="text-xs font-medium text-muted-foreground">Roamie 推薦理由</p>
+          <p className="text-xs font-medium text-muted-foreground">{t("uiCoverage.reason")}</p>
           <p className="mt-1.5 text-sm leading-relaxed text-foreground/90">{place.reason}</p>
         </div>
 
         <div className="mt-4">
-          <p className="text-xs font-medium text-muted-foreground">交通方式</p>
+          <p className="text-xs font-medium text-muted-foreground">{t("uiCoverage.transport")}</p>
           <div className="mt-2 space-y-2">
             {transportLoading && transportModes.length === 0 ? (
               <div className="flex justify-center py-4">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <Loader2
+                  aria-label={t("uiCoverage.transportLoading")}
+                  className="h-5 w-5 animate-spin text-muted-foreground"
+                />
               </div>
             ) : transportModes.length === 0 ? (
               <p className="rounded-2xl border border-border/60 bg-card/40 px-3.5 py-3 text-sm text-muted-foreground">
-                無法取得目前位置，暫時不能估算交通時間與距離。
+                {t("uiCoverage.locationUnavailable")}
               </p>
             ) : (
               transportModes.map((m) => {
@@ -318,21 +321,23 @@ export function PlaceDetailSheet({
                     <div className="flex items-center justify-between gap-2">
                       <p className="flex items-center gap-2 text-sm font-medium">
                         <TransportModeIcon mode={m.id} />
-                        {m.label}
+                        {t(`uiCoverage.${m.id}`)}
                       </p>
                       {m.recommended && !isSelected && (
                         <span className="shrink-0 rounded-full bg-clay/12 px-2 py-0.5 text-[10px] font-medium text-clay">
-                          推薦
+                          {t("uiCoverage.recommended")}
                         </span>
                       )}
                       {isSelected && (
                         <span className="shrink-0 rounded-full bg-clay/20 px-2 py-0.5 text-[10px] font-medium text-clay">
-                          已選取
+                          {t("uiCoverage.selected")}
                         </span>
                       )}
                     </div>
                     <p className="mt-1 text-sm text-foreground">
-                      {m.available === false ? "不提供估計" : `${m.minutes} 分鐘`}
+                      {m.available === false
+                        ? t("uiCoverage.estimateUnavailable")
+                        : t("uiCoverage.minutes", { count: m.minutes })}
                       <span className="text-muted-foreground"> ・ {m.distanceLabel}</span>
                       {m.costLabel && (
                         <span className="text-muted-foreground"> ・ {m.costLabel}</span>
@@ -346,7 +351,7 @@ export function PlaceDetailSheet({
           </div>
           {selectedTransportMode === "transit" && (
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              {TRANSIT_MVP_NOTICE}
+              {t("uiCoverage.transitNotice")}
             </p>
           )}
         </div>
@@ -377,8 +382,8 @@ export function PlaceDetailSheet({
           isBusy={isBusy}
           onToggleSave={onToggleSave}
           onAddToTrip={onAddToTrip}
-          saveLabel={saveLabel}
-          addLabel={addToTripLabel}
+          saveLabel={saveLabel ?? t("uiCoverage.save")}
+          addLabel={addToTripLabel ?? t("uiCoverage.addTrip")}
         />
 
         <button
@@ -396,7 +401,8 @@ export function PlaceDetailSheet({
           onClick={onOpenChat}
           className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-full border border-border bg-card py-3 text-sm transition active:scale-[0.99]"
         >
-          <MessageCircle className="h-4 w-4" />和 Roamie 聊這裡
+          <MessageCircle className="h-4 w-4" />
+          {t("uiCoverage.chatPlace")}
         </button>
       </div>
     </div>
@@ -404,13 +410,14 @@ export function PlaceDetailSheet({
 }
 
 export function ExploreSubpageHeader({ title, onBack }: { title: string; onBack: () => void }) {
+  const { t, locale } = useI18n();
   return (
     <div className="flex items-center gap-2 px-5 pb-1 pt-0" data-no-sheet-drag>
       <button
         type="button"
         onClick={onBack}
         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-card shadow-soft transition active:scale-95"
-        aria-label="返回"
+        aria-label={t("uiCoverage.back")}
       >
         <ChevronLeft className="h-5 w-5" />
       </button>

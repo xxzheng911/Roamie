@@ -1,3 +1,7 @@
+import { chatLoadingCopy, chatRuntimeCopy, isChatRuntimeCopy, isChatRuntimeCopyPrefix, type ChatLoadingPhase } from "@/lib/chat-runtime-copy";
+import { chatShortcutContract } from "@/lib/chat-shortcut-chips";
+import { chatSessionForLocale } from "@/lib/chat-session";
+import { recommendationDisplayForLocale } from "@/lib/recommendation-display-locale";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { useMessengerChatLayout } from "@/hooks/use-messenger-chat-layout";
@@ -83,7 +87,7 @@ import {
 import {
   logTripAddPlaceMode,
   shouldShowTripAddPlacePlusUpsell,
-  TRIP_ADD_PLACE_EMPTY_HINT,
+  tripAddPlaceEmptyHint,
 } from "@/lib/trip/trip-add-place-mode";
 import {
   buildTripAddPlaceChatMessage,
@@ -109,7 +113,6 @@ import type { RoamiePayloadV2 } from "@/lib/ai/types";
 import {
   coalesceItineraryItems,
   hasValidItineraryStops,
-  ITINERARY_GENERATION_FAILED_MESSAGE,
 } from "@/lib/trip/itinerary-guards";
 import { getRecommendation } from "@/lib/recommendation-storage";
 import { inferDestinationFromPlaces } from "@/lib/itinerary-source";
@@ -244,7 +247,6 @@ import { useAccess } from "@/hooks/use-access";
 import {
   beginPlaceRecommendationCredits,
   fetchCreditAccount,
-  INSUFFICIENT_CREDITS_PLACE_MESSAGE,
   isCreditsFeatureEnabled,
   resolveCreditsGreeting,
   settleCreditsOperation,
@@ -414,7 +416,6 @@ import {
   takeShoppingReserveBatch,
   SHOPPING_DISPLAY_LIMIT,
   SHOPPING_FOLLOWUP_MIN_NEW,
-  SHOPPING_NO_MORE_RECOMMENDATIONS_MESSAGE,
 } from "@/lib/ai/shopping-query-queue";
 import {
   resolveShoppingSearchScope,
@@ -460,7 +461,6 @@ import {
 } from "@/lib/chat-session-lifecycle";
 import {
   applyRefreshRecommendationSession,
-  CHAT_STATE_MACHINE_RECOVERY_MESSAGE,
   collectBlockedCoreNames,
   collectExcludePlaceIds,
   collectHardDuplicatePlaceIds,
@@ -476,7 +476,6 @@ import {
   shouldRefetchPlaces,
 } from "@/lib/ai/chat-recommendation-refresh";
 import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
-import { NO_MORE_RECOMMENDATIONS_MESSAGE } from "@/lib/ai/place-recommendation-rules";
 import {
   isFallbackPlanningPlaceId,
   logPlaceDetailsHttp400Ignored,
@@ -494,6 +493,7 @@ import {
   mergeTripSessionUsedPlacesFromMessages,
 } from "@/lib/ai/trip-planning-follow-up";
 import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
+import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 import { isAddAllToTripIntent } from "@/lib/ai/parse-add-all-to-trip-intent";
 import {
   logAiCreateTripError,
@@ -612,7 +612,11 @@ import {
   isCountryLevelDestination,
   logCountryLevelPlacesBlocked,
 } from "@/lib/ai/destination-scope";
-import { beginPlacesGenerationSession, getPlacesApiCallStats } from "@/lib/places-api-guard";
+import {
+  beginForegroundPlacesRequest,
+  beginPlacesGenerationSession,
+  getPlacesApiCallStats,
+} from "@/lib/places-api-guard";
 import { resetPlacesRateLimitEncountered } from "@/lib/places-classic-landmark-cache";
 import { clearResolvedDestinationScope } from "@/lib/ai/resolved-destination-scope";
 import {
@@ -667,7 +671,6 @@ import {
 import {
   assessPlanningRequiredCapacity,
   logPlanningRequiredIdentityHandoff,
-  REQUIRED_CAPACITY_OVERFLOW_USER_MESSAGE,
   resolvePlanningCandidateContextForGeneration,
   resolvePlanningRequiredAnchorHandoff,
 } from "@/lib/ai/planning-required-anchor-handoff";
@@ -739,6 +742,8 @@ async function getAiPreferences() {
 }
 
 function Chat() {
+  const { t: uiT } = useI18n();
+
   const { t, locale } = useI18n();
   const travelPrefStatus = useTravelPrefStatus();
   const { hasPlusAccess, subscriptionHydrated } = useAccess();
@@ -817,7 +822,7 @@ function Chat() {
   const ensureSubscriptionHydratedForCredits = useCallback(
     (conversation?: ChatMsg[]): boolean => {
       if (subscriptionHydrated) return true;
-      const pendingMessage = "正在同步會員與額度狀態，請稍候再試。";
+      const pendingMessage = uiT("productionUi.p36d3302b3c");
       if (conversation) {
         setMsgs((prev) => {
           const base = prev.length === conversation.length ? conversation : prev;
@@ -834,7 +839,7 @@ function Chat() {
       }
       return false;
     },
-    [subscriptionHydrated],
+    [uiT, subscriptionHydrated],
   );
   const chatBackNavigation = useMemo(() => {
     const tripCtx = session.tripAddPlaceContext;
@@ -1013,7 +1018,7 @@ function Chat() {
   const discoveringLoadingAnimRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const discoveringLoadingRequestIdRef = useRef<string | null>(null);
   const [chatLoading, setChatLoading] = useState<{
-    baseText: string;
+    phase: ChatLoadingPhase;
     requestId: string;
     dots: number;
   } | null>(null);
@@ -1313,10 +1318,10 @@ function Chat() {
   }, []);
 
   const startDiscoveringLoadingAnimation = useCallback(
-    (baseText: string, requestId: string) => {
+    (phase: ChatLoadingPhase, requestId: string) => {
       stopDiscoveringLoadingAnimation();
       discoveringLoadingRequestIdRef.current = requestId;
-      setChatLoading({ baseText, requestId, dots: 1 });
+      setChatLoading({ phase, requestId, dots: 1 });
       logAiPipeline("[CHAT_LOADING_DOTS_STARTED]", `requestId=${requestId}`);
       discoveringLoadingAnimRef.current = setInterval(() => {
         setChatLoading((prev) => {
@@ -1346,7 +1351,7 @@ function Chat() {
       setMsgs(next);
       setText("");
       setStreaming(true);
-      startDiscoveringLoadingAnimation("收到！我整理一下推薦", requestId);
+      startDiscoveringLoadingAnimation("recommendations", requestId);
       logAiPipeline(
         "[CHAT_SUBMIT_UI_COMMITTED]",
         `messageId=user_${submitAt}`,
@@ -1368,7 +1373,7 @@ function Chat() {
   const stripDiscoveringLoadingMessage = useCallback((conversation: ChatMsg[]): ChatMsg[] => {
     // Legacy: strip any leftover discovering loading bubble from older builds.
     const last = conversation[conversation.length - 1];
-    if (last?.role === "assistant" && last.content.startsWith("收到！我整理一下推薦")) {
+    if (last?.role === "assistant" && isChatRuntimeCopyPrefix(last.content, "loading_recommendations")) {
       return conversation.slice(0, -1);
     }
     return conversation;
@@ -1607,7 +1612,7 @@ function Chat() {
       }
       if (turn.advice.triggerItineraryGeneration) {
         const planRequestId = `plan_${Date.now().toString(36)}`;
-        startDiscoveringLoadingAnimation("正在整理並規劃中", planRequestId);
+        startDiscoveringLoadingAnimation("planning", planRequestId);
         setGenerating(true);
         setStreaming(true);
         persistSession({
@@ -1704,7 +1709,7 @@ function Chat() {
                     `${index + 1}. ${rec.name}${rec.reason ? ` — ${rec.reason}` : ""}`,
                 ),
                 "",
-                "想加進行程的話，跟我說你最想先排哪幾個。",
+                uiT("productionUi.p15ca8c2fae"),
               ].join("\n");
               setMsgs([
                 ...conversationBase,
@@ -1713,9 +1718,13 @@ function Chat() {
                   content: summary,
                   roamie: {
                     version: 2,
-                    title: "必去推薦",
+                    title: uiT("productionUi.p3592d2d266"),
                     summary,
-                    moodTag: placeCtx.mood ?? "",
+                    moodTag: resolveDisplayedRecommendationBadge({
+                      session: live,
+                      context: placeCtx,
+                      moodTag: placeCtx.mood ?? "",
+                    }),
                     recommendations: namedRecs,
                     itinerary: [],
                     generatedAt: new Date().toISOString(),
@@ -1744,6 +1753,7 @@ function Chat() {
       }
     },
     [
+      uiT,
       persistPlanningAdviceTurn,
       stopDiscoveringLoadingAnimation,
       stripDiscoveringLoadingMessage,
@@ -1839,7 +1849,7 @@ function Chat() {
 
     setMsgs([
       session.tripAddPlaceHandoffDone
-        ? { role: "assistant", content: TRIP_ADD_PLACE_EMPTY_HINT }
+        ? { role: "assistant", content: tripAddPlaceEmptyHint() }
         : buildTripAddPlaceRenderFallbackMessage(session),
     ]);
   }, [
@@ -1903,7 +1913,7 @@ function Chat() {
             });
             setActiveWorkspaceId(workspace.workspaceId);
             // Open ≠ Update: restore live session only — do not upsert/bump updatedAt.
-            const sessionToSave = session;
+            const sessionToSave = chatSessionForLocale(session, locale);
             setSession(sessionToSave);
             saveChatSession(sessionToSave);
             chatLifecycleEstablishedRef.current = true;
@@ -2039,7 +2049,8 @@ function Chat() {
           (search.from === "recommendations" && !!search.recommendationId);
 
         if (isMoodFlow && search.recommendationId) {
-          const record = await getRecommendation(search.recommendationId);
+          const storedRecommendation = await getRecommendation(search.recommendationId);
+          const record = storedRecommendation ? recommendationDisplayForLocale(storedRecommendation, locale) : null;
           const payload =
             record?.payload && isRoamiePayloadV2(record.payload) ? record.payload : null;
           if (record && payload?.recommendations?.length) {
@@ -2089,7 +2100,7 @@ function Chat() {
 
           if (shouldRunTripAddPlaceHandoff) {
             tripAddPlaceHandoffStartedRef.current = true;
-            setMsgs([buildTripAddPlaceLoadingMessage()]);
+            setMsgs([buildTripAddPlaceLoadingMessage(locale)]);
             setSession(reinforceTripAddPlaceSession(current));
             try {
               await runTripAddPlaceHandoff(current);
@@ -2097,6 +2108,7 @@ function Chat() {
               console.error("[TRIP_ADD_PLACE_HANDOFF_FAILED]", handoffError);
               if (!cancelled) {
                 const fallback = buildTripAddPlaceRenderFallbackMessage(current, {
+                  locale,
                   error:
                     handoffError instanceof Error ? handoffError.message : String(handoffError),
                 });
@@ -2182,7 +2194,7 @@ function Chat() {
                 ),
               ]);
             } else {
-              setMsgs([{ role: "assistant", content: TRIP_ADD_PLACE_EMPTY_HINT }]);
+              setMsgs([{ role: "assistant", content: tripAddPlaceEmptyHint(locale) }]);
             }
           } else if (current.fromTripAddPlace && current.tripAddPlaceContext) {
             const restored = reinforceTripAddPlaceSession(current);
@@ -2196,7 +2208,7 @@ function Chat() {
             if (history.length) {
               setMsgs(mergeTripAddPlaceHistoryWithRecommendations(history, restored));
             } else {
-              setMsgs([{ role: "assistant", content: TRIP_ADD_PLACE_EMPTY_HINT }]);
+              setMsgs([{ role: "assistant", content: tripAddPlaceEmptyHint(locale) }]);
             }
           } else if (search.from === "plan" || search.from === "plan-ai" || search.from === "map") {
             // Handoff-seeded session: prefer live session over durable chat_messages history.
@@ -2223,8 +2235,9 @@ function Chat() {
           });
           setMsgs([
             current.tripAddPlaceHandoffDone
-              ? { role: "assistant", content: TRIP_ADD_PLACE_EMPTY_HINT }
+              ? { role: "assistant", content: tripAddPlaceEmptyHint(locale) }
               : buildTripAddPlaceRenderFallbackMessage(current, {
+                  locale,
                   error: e instanceof Error ? e.message : String(e),
                 }),
           ]);
@@ -2273,7 +2286,7 @@ function Chat() {
       const ctx = session.tripAddPlaceContext;
       if (session.fromTripAddPlace && ctx) {
         if (!isValidUuid(ctx.tripId)) {
-          toast.error("行程 ID 無效，請從行程頁重新進入");
+          toast.error(uiT("productionUi.p44d768cfa9"));
           navigate({ to: "/saved", search: { tab: "trips" } });
           return;
         }
@@ -2284,17 +2297,18 @@ function Chat() {
             { date: ctx.dateKey, position: "end" },
           );
           persistSession(markTripAddPlaceAdded(session, rec));
-          toast.success("已加入行程");
+          toast.success(uiT("productionUi.p15f2ce8fbe"));
           logTripNav("ChatTripAddPlace", ctx.tripId);
           navigate(tripDetailNavigateOptions(ctx.tripId, { day: ctx.selectedDay }));
         } catch (e) {
-          toast.error(e instanceof Error ? e.message : "加入行程失敗");
+          toast.error(e instanceof Error ? e.message : uiT("productionUi.p652e594618"));
         }
         return;
       }
       openAddToTrip(tripPlaceFromRecommendation(rec), "chat");
     },
     [
+      uiT,
       session.fromTripAddPlace,
       session.tripAddPlaceContext,
       navigate,
@@ -2331,12 +2345,12 @@ function Chat() {
         else next.delete(rec.name);
         return next;
       });
-      toast.success(saved ? "已收藏" : "已取消收藏");
+      toast.success(saved ? uiT("productionUi.p471dd4d7f8") : uiT("productionUi.p7fa7b63b0e"));
       if (saved) {
         persistSession(addSelectedPlace(session, roamieRecToChatItem(rec)));
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "收藏失敗");
+      toast.error(e instanceof Error ? e.message : uiT("productionUi.p59ede0ba72"));
     } finally {
       setSavingName(null);
     }
@@ -2460,7 +2474,7 @@ function Chat() {
         locale,
         preferences: prefs,
         planTier,
-        chatInput: overrides?.chatInput ?? userText,
+        chatInput: lastUser?.content ?? overrides?.chatInput ?? userText,
         lastUserIntent: userText || synced.lastUserIntent,
         messages: apiMessages,
         chatPhase: apiPhase,
@@ -2665,7 +2679,7 @@ function Chat() {
         const token = authSession.session?.access_token;
         const dest = handoffSession.tripDestination;
         if (!dest) {
-          toast.error("缺少目的地資訊，請回到規劃頁重新選擇");
+          toast.error(uiT("productionUi.pb109f947e1"));
           return;
         }
 
@@ -2692,7 +2706,7 @@ function Chat() {
             metadata: { path: "planning_selection_initial" },
           });
           if (creditsGate.blocked) {
-            setMsgs([{ role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE }]);
+            setMsgs([{ role: "assistant", content: chatRuntimeCopy("quotaPlaces", locale) }]);
             return;
           }
           let creditsHandle: CreditsOperationHandle | null = creditsGate.handle;
@@ -2709,7 +2723,7 @@ function Chat() {
             });
             const summary = selectionResult.places.length
               ? `我依照你選的「${selectionResult.session.planningSelection?.styles.join("、")}」先找了這些地點。喜歡的就按「＋ 加入這地點」，也可以叫我再推薦一些。`
-              : "目前這批沒有找到合適地點，你可以按「再推薦一些」換一批。";
+              : uiT("productionUi.p22f68c6b8d");
             const nextSession = markPlanHandoffComplete(selectionResult.session);
             setMsgs([
               {
@@ -2842,7 +2856,7 @@ function Chat() {
             failureReason,
             sessionId: handoffSession.planningSelection?.id,
           });
-          const fallback = "推薦結果整理失敗，請再試一次。";
+          const fallback = uiT("productionUi.p50a22d525c");
           setMsgs([{ role: "assistant", content: fallback }]);
           persistSession(markPlanHandoffComplete(handoffSession));
           console.error("[PLANNING_SELECTION_INITIAL_RECOMMENDATION_FAILED]", error);
@@ -2860,6 +2874,7 @@ function Chat() {
       }
     },
     [
+      uiT,
       fetchWeather,
       persistSession,
       locale,
@@ -2928,6 +2943,7 @@ function Chat() {
           recommendations: filteredRecs,
           moodTag: handoffSession.mood ?? ctx.travelStyle ?? "",
           session: sessionWithRecs,
+          locale,
         });
 
         if (!assistantMessage.structuredPlaces?.length && filteredRecs.length) {
@@ -2942,6 +2958,7 @@ function Chat() {
 
         if (!assistantMessage.content.trim() && !assistantMessage.structuredPlaces?.length) {
           const fallback = buildTripAddPlaceRenderFallbackMessage(sessionWithRecs, {
+            locale,
             candidatesCount: recommendationSession?.allCandidates.length ?? filteredRecs.length,
           });
           setMsgs([fallback]);
@@ -2976,6 +2993,7 @@ function Chat() {
       } catch (error) {
         console.error("[TRIP_ADD_PLACE_HANDOFF_FAILED]", error);
         const fallback = buildTripAddPlaceRenderFallbackMessage(handoffSession, {
+          locale,
           error: error instanceof Error ? error.message : String(error),
         });
         setMsgs([fallback]);
@@ -3029,6 +3047,7 @@ function Chat() {
         recommendations: finalRecs,
         moodTag: turn.nextSession.mood ?? tripSession.tripAddPlaceContext?.travelStyle,
         session: nextSession,
+        locale,
       });
       if (!assistantMessage.structuredPlaces?.length && finalRecs.length) {
         logTripAddPlaceRenderEmpty({
@@ -3642,7 +3661,7 @@ function Chat() {
       if (placeCreditsGate.blocked) {
         setMsgs((prev) => {
           const base = prev.length === conversation.length ? conversation : prev;
-          return [...base, { role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE }];
+          return [...base, { role: "assistant", content: chatRuntimeCopy("quotaPlaces", locale) }];
         });
         logRtNearbyPush({
           returned: true,
@@ -3659,6 +3678,7 @@ function Chat() {
       let placeCreditsHandle: CreditsOperationHandle | null = placeCreditsGate.handle;
       const nearbyDiagnosticRequestId =
         placeCreditsGate.handle?.requestId ?? `nearby_${Date.now().toString(36)}`;
+      beginForegroundPlacesRequest(nearbyDiagnosticRequestId);
       if (nearbyFollowup) {
         console.info("[RECOMMENDATION_CONTINUATION_AUTHORITY]", {
           recommendationRequestId: nearbyDiagnosticRequestId,
@@ -3940,6 +3960,7 @@ function Chat() {
                 sessionForSave.excludedCategories ?? merged.context.excludedCategories,
                 resolveNearbyShortcutScene(userText, sessionForSave),
                 resolveHomeShortcutSearchProfile(sessionForSave),
+                locale,
               )
             : displaySummary;
         devVerboseInfo("[CHAT_PLACE_CARDS_RENDER_COUNT]", { count: filteredRecs.length });
@@ -4282,9 +4303,19 @@ function Chat() {
         return true;
       } catch (e) {
         await settleCreditsOperation(placeCreditsHandle, false);
-        console.warn("[CHAT_PLACES_REQUEST] failed", e instanceof Error ? e.message : String(e));
-        const fallbackReason =
-          e instanceof Error && e.message === "places_empty"
+        const failureMessage = e instanceof Error ? e.message : String(e);
+        console.warn("[CHAT_PLACES_REQUEST] failed", failureMessage);
+        const rateLimited = /places_rate_limited/.test(failureMessage);
+        if (rateLimited) {
+          console.info("[PLACES_RATE_LIMIT_UX]", {
+            claimsNoPlaces: false,
+            recoverable: true,
+            finalizeReason: "rate_limited",
+          });
+        }
+        const fallbackReason = rateLimited
+          ? "provider_zero"
+          : e instanceof Error && e.message === "places_empty"
             ? "search_exhausted"
             : nearbyProviderCompleted
               ? "recommendation_processing_failure"
@@ -4440,7 +4471,7 @@ function Chat() {
         setPlanningRenderInProgress(false, flowSessionId);
         setMsgs([
           ...conversation,
-          { role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE },
+          { role: "assistant", content: chatRuntimeCopy("quotaPlaces", locale) },
         ]);
         return true;
       }
@@ -4734,10 +4765,14 @@ function Chat() {
             [],
             {
               version: 2,
-              title: "必去推薦",
+              title: uiT("productionUi.p3592d2d266"),
               summary,
-              moodTag:
-                resolveRecommendationStyleTag(sessionForPlan, placeCtx) || placeCtx.mood || "",
+              moodTag: resolveDisplayedRecommendationBadge({
+                session: sessionForPlan,
+                context: placeCtx,
+                moodTag:
+                  resolveRecommendationStyleTag(sessionForPlan, placeCtx) || placeCtx.mood || "",
+              }),
               recommendations: [],
               itinerary: [],
               generatedAt: new Date().toISOString(),
@@ -4760,16 +4795,20 @@ function Chat() {
                 (rec, index) => `${index + 1}. ${rec.name}${rec.reason ? ` — ${rec.reason}` : ""}`,
               ),
               "",
-              "想加進行程的話，跟我說你最想先排哪幾個。",
+              uiT("productionUi.p15ca8c2fae"),
             ].join("\n")
           : [intro, "", `我暫時沒連上${label}的即時地點資料，你可以稍後再試或換個說法。`].join(
               "\n",
             );
         const payload: RoamiePayloadV2 = {
           version: 2,
-          title: "必去推薦",
+          title: uiT("productionUi.p3592d2d266"),
           summary,
-          moodTag: resolveRecommendationStyleTag(sessionForPlan, placeCtx) || placeCtx.mood || "",
+          moodTag: resolveDisplayedRecommendationBadge({
+            session: sessionForPlan,
+            context: placeCtx,
+            moodTag: resolveRecommendationStyleTag(sessionForPlan, placeCtx) || placeCtx.mood || "",
+          }),
           recommendations: [],
           itinerary: [],
           generatedAt: new Date().toISOString(),
@@ -4789,6 +4828,7 @@ function Chat() {
       }
     },
     [
+      uiT,
       logRtNoMoreReason,
       locale,
       persistSession,
@@ -4825,7 +4865,7 @@ function Chat() {
       if (placeCreditsGate.blocked) {
         setMsgs([
           ...conversation,
-          { role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE },
+          { role: "assistant", content: chatRuntimeCopy("quotaPlaces", locale) },
         ]);
         return true;
       }
@@ -5030,7 +5070,7 @@ function Chat() {
             reserved.batch,
             {
               version: 2,
-              title: "更多推薦",
+              title: uiT("productionUi.pd9d33aed0f"),
               summary,
               moodTag: resolveRecommendationStyleTag(activeSession, placeCtx) || "",
               recommendations: reserved.batch,
@@ -5113,7 +5153,7 @@ function Chat() {
             continued.batch,
             {
               version: 2,
-              title: "更多推薦",
+              title: uiT("productionUi.pd9d33aed0f"),
               summary,
               moodTag: resolveRecommendationStyleTag(activeSession, placeCtx) || "",
               recommendations: continued.batch,
@@ -5271,8 +5311,8 @@ function Chat() {
               ? buildShoppingExhaustedFollowupMessage(
                   shoppingRecForNoMore?.activeSearchCity ?? destination,
                 )
-              : SHOPPING_NO_MORE_RECOMMENDATIONS_MESSAGE
-            : NO_MORE_RECOMMENDATIONS_MESSAGE;
+              : chatRuntimeCopy("shoppingNoMore", locale)
+            : chatRuntimeCopy("noMore", locale);
         const exhaustedAt = new Date().toISOString();
         const exhaustedRecSession = (() => {
           if (!shoppingRecForNoMore || activeCategory !== "shopping") {
@@ -5335,6 +5375,7 @@ function Chat() {
       }
     },
     [
+      uiT,
       logRtNoMoreReason,
       locale,
       persistSession,
@@ -5392,7 +5433,7 @@ function Chat() {
           ...conversation,
           {
             role: "assistant",
-            content: `你指的是哪個地區的${provisionalArea.areaCandidate}？`,
+            content: chatRuntimeCopy("whichRegion", locale, { destination: provisionalArea.areaCandidate }),
           },
         ];
         setMsgs(clarificationMsgs);
@@ -5406,7 +5447,7 @@ function Chat() {
             }),
             activeCategoryIntent: intents[0],
             pendingQuestion: undefined,
-            lastAssistantReply: `你指的是哪個地區的${provisionalArea.areaCandidate}？`,
+            lastAssistantReply: chatRuntimeCopy("whichRegion", locale, { destination: provisionalArea.areaCandidate }),
           },
           clarificationMsgs,
         );
@@ -5435,7 +5476,7 @@ function Chat() {
       if (placeCreditsGate.blocked) {
         setMsgs([
           ...conversation,
-          { role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE },
+          { role: "assistant", content: chatRuntimeCopy("quotaPlaces", locale) },
         ]);
         return true;
       }
@@ -5567,19 +5608,19 @@ function Chat() {
                   .join("\n");
                 const heading =
                   categoryIntent === "shopping"
-                    ? "購物／商圈推薦："
+                    ? uiT("productionUi.p10dbff0071")
                     : categoryIntent === "cafe"
-                      ? "咖啡廳推薦："
+                      ? uiT("productionUi.p46bc54aaf2")
                       : categoryIntent === "restaurant"
-                        ? "餐廳推薦："
-                        : "推薦：";
+                        ? uiT("productionUi.p84d7a9a63b")
+                        : uiT("productionUi.p925108e2c8");
                 return [
-                  `在${destination}，這些地方值得先看看：`,
+                  chatRuntimeCopy("destinationPlaces", locale, { destination: destination ?? "" }),
                   "",
                   heading,
                   list,
                   "",
-                  "想加進行程的話，直接點卡片或跟我說你最想先排哪幾個。",
+                  uiT("productionUi.p34b0e5dbfd"),
                 ].join("\n");
               })()
             : summary;
@@ -5721,12 +5762,12 @@ function Chat() {
                   )
                   .join("\n");
                 return [
-                  `在${destination}，這些地方值得先看看：`,
+                  chatRuntimeCopy("destinationPlaces", locale, { destination: destination ?? "" }),
                   "",
-                  "購物／商圈推薦：",
+                  uiT("productionUi.p10dbff0071"),
                   list,
                   "",
-                  "想加進行程的話，直接點卡片或跟我說你最想先排哪幾個。",
+                  uiT("productionUi.p34b0e5dbfd"),
                 ].join("\n");
               })()
             : displaySummary;
@@ -5795,6 +5836,7 @@ function Chat() {
       }
     },
     [
+      uiT,
       locale,
       persistSession,
       searchNearbyPlaces,
@@ -5889,7 +5931,7 @@ function Chat() {
       if (placeCreditsGate.blocked) {
         setMsgs([
           ...conversation,
-          { role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE },
+          { role: "assistant", content: chatRuntimeCopy("quotaPlaces", locale) },
         ]);
         return true;
       }
@@ -5916,7 +5958,7 @@ function Chat() {
             ...conversation,
             {
               role: "assistant" as const,
-              content: NO_MORE_RECOMMENDATIONS_MESSAGE,
+              content: chatRuntimeCopy("noMore", locale),
             },
           ];
           setMsgs(noMoreMsgs);
@@ -5995,11 +6037,13 @@ function Chat() {
         const summary = result.summary.includes(batchRecs[0]?.name ?? "")
           ? result.summary
           : [
-              `在${activeRec.destinationDisplayName ?? activeRec.destinationName}，依你補充的條件再幫你找：`,
+              chatRuntimeCopy("continuationPlaces", locale, {
+                destination: activeRec.destinationDisplayName ?? activeRec.destinationName,
+              }),
               "",
               list,
               "",
-              "想再調整條件或說「還有嗎」都可以。",
+              uiT("productionUi.p34ff104b91"),
             ].join("\n");
 
         console.info(
@@ -6046,6 +6090,7 @@ function Chat() {
       }
     },
     [
+      uiT,
       locale,
       persistSession,
       searchNearbyPlaces,
@@ -6392,6 +6437,7 @@ function Chat() {
           mergedForAdvice.context,
           mergedForAdvice.session,
           activeUserText,
+          locale,
         );
         if (offline) {
           setMsgs((prev) => {
@@ -6410,6 +6456,8 @@ function Chat() {
         activeUserText,
         mergedForAdvice.session,
         mergedForAdvice.context,
+        undefined,
+        locale,
       );
       if (adviceTurn.advice.reply) {
         if (explicitScope && hasCategoryPlaceQuery(activeUserText)) {
@@ -6682,9 +6730,13 @@ function Chat() {
               role: "assistant",
               content: emptySummary,
               roamie: {
-                title: "Roamie 推薦",
+                title: uiT("productionUi.p920a75e206"),
                 summary: emptySummary,
-                moodTag: scopedSession.mood ?? "",
+                moodTag: resolveDisplayedRecommendationBadge({
+                  session: scopedSession,
+                  context,
+                  moodTag: scopedSession.mood ?? "",
+                }),
                 recommendations: [],
                 itinerary: [],
               },
@@ -6771,6 +6823,7 @@ function Chat() {
       return scopedRecs.length > 0;
     },
     [
+      uiT,
       locale,
       persistSession,
       searchNearbyPlaces,
@@ -6872,7 +6925,7 @@ function Chat() {
 
         if (!full) {
           console.error("[AI_REPLY_RESPONSE] stream_returned_null");
-          throw new Error("AI 沒有回應，請再試一次。");
+          throw new Error(uiT("productionUi.pd6149bc264"));
         }
         devVerboseInfo(
           "[AI_REPLY_SUCCESS]",
@@ -6884,7 +6937,7 @@ function Chat() {
         const summary = full.summary?.trim() ?? "";
         if (isGenericFallbackReply(summary)) {
           console.warn("[CHAT_FALLBACK_BLOCKED] generic_ai_reply");
-          throw new Error("AI 沒有回應，請再試一次。");
+          throw new Error(uiT("productionUi.pd6149bc264"));
         }
         const looksRepeatedClarify =
           /這趟比較想放鬆、拍照，還是吃美食/.test(summary) && /(都有|都可以|都行)/.test(userText);
@@ -6913,7 +6966,10 @@ function Chat() {
               roamie: {
                 title: `${destination} 情侶慢旅行方向`,
                 summary: fallbackSummary,
-                moodTag: (sessionOverride ?? session).mood ?? "",
+                moodTag: resolveDisplayedRecommendationBadge({
+                  session: sessionOverride ?? session,
+                  moodTag: (sessionOverride ?? session).mood ?? "",
+                }),
                 recommendations: [],
                 itinerary: [],
               },
@@ -7006,7 +7062,7 @@ function Chat() {
                 ...trimmedPrev,
                 {
                   role: "assistant",
-                  content: "連線有點久，但我仍會依你的需求幫你找適合的地點。",
+                  content: uiT("productionUi.p57ec46731d"),
                 },
               ];
             });
@@ -7056,6 +7112,7 @@ function Chat() {
               fallbackMerged.context,
               fallbackMerged.session,
               activeUserText,
+              locale,
             );
             if (offline) {
               setMsgs((prev) => {
@@ -7073,6 +7130,8 @@ function Chat() {
             activeUserText,
             fallbackMerged.session,
             fallbackMerged.context,
+            undefined,
+            locale,
           );
           if (fallbackAdviceTurn.advice.reply) {
             const trimmedPrev = conversation.filter(
@@ -7094,6 +7153,7 @@ function Chat() {
                 fallbackMerged.context,
                 fallbackMerged.session,
                 activeUserText,
+                locale,
               ) ?? resolveChatConnectionFallbackMessage(e),
           };
           setMsgs((prev) => {
@@ -7112,6 +7172,7 @@ function Chat() {
       }
     },
     [
+      uiT,
       buildRequest,
       session,
       persistSession,
@@ -7125,17 +7186,17 @@ function Chat() {
   const handleOpenPlaceDetail = (rec: RoamieRecommendationItem) => {
     markShortcutEngaged();
     if (!rec.googlePlaceId?.trim()) {
-      toast.message("此建議尚未完成地點驗證，暫時無法開啟詳情");
+      toast.message(uiT("productionUi.p5f74f64610"));
       return;
     }
     if (rec.lat == null || rec.lng == null) {
-      toast.message("此地點尚無座標，暫時無法開啟地點詳情");
+      toast.message(uiT("productionUi.p275fcd4484"));
       return;
     }
     preserveChatUiForPlaceDetail(msgsRef.current, messagesRef.current?.scrollTop ?? 0);
     const handoff = openRecommendationPlaceDetail(rec);
     if (!handoff) {
-      toast.message("此建議尚未完成地點驗證，暫時無法開啟詳情");
+      toast.message(uiT("productionUi.p5f74f64610"));
       return;
     }
     recordAnalyticsEvent({
@@ -7184,7 +7245,10 @@ function Chat() {
         roamie: {
           title: placeDisplayName(item),
           summary: assistantLine,
-          moodTag: nextSession.mood ?? nextSession.selectedMood ?? "",
+          moodTag: resolveDisplayedRecommendationBadge({
+            session: nextSession,
+            moodTag: nextSession.mood ?? nextSession.selectedMood ?? "",
+          }),
           recommendations: [],
           itinerary: [],
         },
@@ -7207,6 +7271,9 @@ function Chat() {
       rawText,
     });
     const trimmed = rawText.trim();
+    const displayMessage = (opts?.source === "chat_shortcut" || opts?.source === "auto" || opts?.source === "home_mood")
+      ? chatShortcutContract(trimmed, locale).displayMessage
+      : trimmed;
     if (!trimmed || streaming || generating) return;
     if (opts?.source !== "auto") {
       const sessionId =
@@ -7256,7 +7323,7 @@ function Chat() {
           selectedPayloadCount: 0,
         });
       }
-      const conversation: ChatMsg[] = [...msgsRef.current, { role: "user", content: trimmed }];
+      const conversation: ChatMsg[] = [...msgsRef.current, { role: "user", content: displayMessage }];
       setMsgs(conversation);
       setText("");
       if (selectedPlaces.length === 0) {
@@ -7266,7 +7333,7 @@ function Chat() {
         });
         setMsgs([
           ...conversation,
-          { role: "assistant", content: "請先從推薦卡加入至少一個想去的地點，再生成行程。" },
+          { role: "assistant", content: uiT("productionUi.pb6863dae9f") },
         ]);
         return;
       }
@@ -7296,7 +7363,7 @@ function Chat() {
     if (isPlanningSelectionMode(session) && isPlanningSelectionContinuation(trimmed)) {
       if (selectionRecommendationInFlightRef.current) return;
       selectionRecommendationInFlightRef.current = true;
-      const conversation: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+      const conversation: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
       setMsgs(conversation);
       setText("");
       setStreaming(true);
@@ -7311,7 +7378,7 @@ function Chat() {
         if (creditsGate.blocked) {
           setMsgs([
             ...conversation,
-            { role: "assistant", content: INSUFFICIENT_CREDITS_PLACE_MESSAGE },
+            { role: "assistant", content: chatRuntimeCopy("quotaPlaces", locale) },
           ]);
           return;
         }
@@ -7331,8 +7398,8 @@ function Chat() {
           }),
         });
         const summary = result.places.length
-          ? "再幫你找了一批不同的地點；前面看過和已選的都不會重複。"
-          : "目前選擇的風格暫時沒有更多新地點了；你可以先從已推薦的地點中挑選。";
+          ? uiT("productionUi.p21c4a3178b")
+          : uiT("productionUi.p46845c9c9b");
         setMsgs([
           ...conversation,
           {
@@ -7389,7 +7456,7 @@ function Chat() {
         pendingIntent: pendingNearbyLocation.intent,
         reason: "pending_nearby_location_answer",
       });
-      const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+      const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
       setMsgs(next);
       setText("");
       try {
@@ -7577,20 +7644,20 @@ function Chat() {
               logAiPipeline("[NEARBY_FAILURE_REASON]", { reason: "provider_failure" });
               setMsgs([
                 ...next,
-                { role: "assistant", content: "目前無法連線取得附近地點，請稍後再試。" },
+                { role: "assistant", content: uiT("productionUi.p4d0b9e8da5") },
               ]);
               return;
             }
             if (nearbyPushRuntimeRef.current?.reason === "center_mismatch") {
               logAiPipeline("[NEARBY_FAILURE_REASON]", { reason: "search_center_mismatch" });
-              setMsgs([...next, { role: "assistant", content: "位置資訊同步失敗，請再試一次。" }]);
+              setMsgs([...next, { role: "assistant", content: uiT("productionUi.p299a31d20d") }]);
               return;
             }
             if (nearbyPushRuntimeRef.current?.reason === "recommendation_processing_failure") {
               logAiPipeline("[NEARBY_FAILURE_REASON]", {
                 reason: "recommendation_processing_failure",
               });
-              setMsgs([...next, { role: "assistant", content: "推薦結果整理失敗，請再試一次。" }]);
+              setMsgs([...next, { role: "assistant", content: uiT("productionUi.p50a22d525c") }]);
               return;
             }
             logAiPipeline("[NEARBY_FAILURE_REASON]", { reason: "genuine_zero_results" });
@@ -7598,7 +7665,7 @@ function Chat() {
               ...next,
               {
                 role: "assistant",
-                content: "這個地區目前沒有找到符合條件的附近地點，可以換個區域再試。",
+                content: uiT("productionUi.pb306b04bdc"),
               },
             ]);
             return;
@@ -7629,7 +7696,7 @@ function Chat() {
       persistSession(session, next);
       setMsgs([
         ...next,
-        { role: "assistant", content: "我還無法確認這個位置，請再提供城市或地區名稱。" },
+        { role: "assistant", content: uiT("productionUi.pf3f30940f0") },
       ]);
       logAiPipeline("[NEARBY_FAILURE_REASON]", { reason: "location_unresolved" });
       return;
@@ -7697,7 +7764,7 @@ function Chat() {
         session.tripDestination?.city?.trim();
       const days = ctx.days ?? session.tripDays;
       if (!destination || !days) {
-        toast.message("目前還缺少目的地或天數，無法重新整理推薦。");
+        toast.message(uiT("productionUi.p9d3f69840f"));
         return;
       }
       const label = normalizeDestinationLabel(destination);
@@ -7707,7 +7774,7 @@ function Chat() {
       resetPlacesRateLimitEncountered();
       const generationRequestId = `refresh_${label}_${Date.now().toString(36)}`;
       beginPlacesGenerationSession(generationRequestId);
-      const next = commitUserMessageWithDiscoveringLoading(trimmed, msgs);
+      const next = commitUserMessageWithDiscoveringLoading(displayMessage, msgs);
       await yieldToNextPaint();
       try {
         await prepareDestinationCombinations(
@@ -7748,6 +7815,8 @@ function Chat() {
           `${ctx.startDate ?? ""}～${ctx.endDate ?? ""} 要去${label}`.trim(),
           refreshedSession,
           refreshedSession.travelContext!,
+          undefined,
+          locale,
         );
         if (turn.advice.reply) {
           await completeAdviceTurn(turn, refreshedSession, refreshedSession.travelContext!, next);
@@ -7758,7 +7827,7 @@ function Chat() {
           ...stripDiscoveringLoadingMessage(next),
           {
             role: "assistant",
-            content: `目前暫時無法取得${label}的景點資料。\n\n你可以點「重新整理推薦」再試一次。`,
+            content: chatRuntimeCopy("placeFetchFailed", locale, { destination: label }),
           },
         ]);
         setStreaming(false);
@@ -7788,10 +7857,10 @@ function Chat() {
         session.tripDestination?.city?.trim();
       const days = ctx.days ?? session.tripDays;
       if (!destination || !days) {
-        toast.message("目前還缺少目的地或天數，無法重新生成。");
+        toast.message(uiT("productionUi.p2bd0b484fe"));
         return;
       }
-      const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+      const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
       setMsgs(next);
       setText("");
       scrollToUserMessage(next.length - 1);
@@ -7837,7 +7906,7 @@ function Chat() {
     const tripSession = resolveTripAddPlaceChatSession(session, loadChatSession());
     if (tripSession && opts?.source !== "auto") {
       markShortcutEngaged();
-      const userMsg: ChatMsg = { role: "user", content: trimmed };
+      const userMsg: ChatMsg = { role: "user", content: displayMessage };
       const baseConversation = [...msgs, userMsg];
       setMsgs(baseConversation);
       setText("");
@@ -7864,7 +7933,7 @@ function Chat() {
     if (isPlaceDetailChatActive(session)) {
       markShortcutEngaged();
       const followUp = parsePlaceDetailFollowUp(trimmed);
-      const userMsg: ChatMsg = { role: "user", content: trimmed };
+      const userMsg: ChatMsg = { role: "user", content: displayMessage };
       const baseConversation = [...msgs, userMsg];
       setMsgs(baseConversation);
       setText("");
@@ -7888,7 +7957,7 @@ function Chat() {
         }
         const reply =
           buildPlaceDetailFollowUpReply("view_route", session) ??
-          "已為你開啟路線，也可以直接點卡片上的查看路線。";
+          uiT("productionUi.p29b7d8cd97");
         setMsgs([...baseConversation, { role: "assistant", content: reply }]);
         return;
       }
@@ -7919,7 +7988,9 @@ function Chat() {
         const followUpKind = parsePlaceDetailFollowUp(trimmed);
         const preface =
           buildPlaceDetailFollowUpReply(followUpKind, nextSession) ??
-          `好，我以「${placeDisplayName(nextSession.placeDetailFocus!)}」為中心幫你找附近地點。`;
+          chatRuntimeCopy("placeFocusNearby", locale, {
+            place: placeDisplayName(nextSession.placeDetailFocus!),
+          });
         const conversationWithPreface: ChatMsg[] = [
           ...baseConversation,
           { role: "assistant", content: preface },
@@ -7964,7 +8035,7 @@ function Chat() {
             failureReason: result.failureReason ?? "",
           });
           if (!result.applied) {
-            toast.message("暫時找不到附近地點，可以換個描述再試。");
+            toast.message(uiT("productionUi.p20140d61c8"));
           }
         } finally {
           setStreaming(false);
@@ -8137,7 +8208,7 @@ function Chat() {
         nextSession = { ...nextSession, pendingClarification: undefined };
       } else {
         const restored = restorePlaceIntentAfterGeographicClarification(pendingGeographic, trimmed);
-        const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
         setMsgs(next);
         setText("");
         if (restored) {
@@ -8179,7 +8250,7 @@ function Chat() {
             ...next,
             {
               role: "assistant",
-              content: `目前在${restored.destinationLabel}暫時找不到符合的地點，可以換個描述或稍後再試。`,
+              content: chatRuntimeCopy("noResults", locale, { destination: restored.destinationLabel }),
             },
           ];
           setMsgs(emptyMsgs);
@@ -8190,7 +8261,7 @@ function Chat() {
           ...next,
           {
             role: "assistant",
-            content: `你指的是哪個地區的${pendingGeographic.rawGeographicLabel}？`,
+            content: chatRuntimeCopy("whichRegion", locale, { destination: pendingGeographic.rawGeographicLabel }),
           },
         ];
         setMsgs(reaskMsgs);
@@ -8419,8 +8490,8 @@ function Chat() {
         setGenerating(false);
         const failedConversation: ChatMsg[] = [
           ...msgs,
-          { role: "user", content: trimmed },
-          { role: "assistant", content: "這次的行程調整沒有完成，請再送一次。" },
+          { role: "user", content: displayMessage },
+          { role: "assistant", content: uiT("productionUi.p30986276fe") },
         ];
         setMsgs(failedConversation);
         setText("");
@@ -8452,12 +8523,12 @@ function Chat() {
         ?.content.includes("你是指剛剛那組推薦地點嗎");
       const clarificationConversation: ChatMsg[] = [
         ...msgs,
-        { role: "user", content: trimmed },
+        { role: "user", content: displayMessage },
         {
           role: "assistant",
           content: repeatedMissingContextClarification
-            ? "目前找不到上一組推薦內容，請重新提供目的地與天數，我會重新整理選項。"
-            : "你是指剛剛那組推薦地點嗎？我可以保留其他地點並排除你不要的。",
+            ? uiT("productionUi.pa4be97e7b2")
+            : uiT("productionUi.p0bde867c73"),
         },
       ];
       setMsgs(clarificationConversation);
@@ -8483,7 +8554,7 @@ function Chat() {
     if (styleReselect) {
       markShortcutEngaged();
       const regenSession = applyStyleReselectToSession(nextSession, merged.context, styleReselect);
-      const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+      const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
       setMsgs(next);
       setText("");
       scrollToUserMessage(next.length - 1);
@@ -8498,7 +8569,7 @@ function Chat() {
           { forceRegenerate: true, replacePreviousCards: true },
         );
         if (!applied) {
-          toast.message("暫時無法重新生成行程，請稍後再試。");
+          toast.message(uiT("productionUi.pe7df589af2"));
         }
       } finally {
         setStreaming(false);
@@ -8513,8 +8584,8 @@ function Chat() {
         nextSession.chatPlanningState === "waitingStyleSelection")
     ) {
       markShortcutEngaged();
-      const planningTurn = processAdviceTurn(trimmed, nextSession, merged.context);
-      const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+      const planningTurn = processAdviceTurn(trimmed, nextSession, merged.context, undefined, locale);
+      const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
       setMsgs(next);
       setText("");
       scrollToUserMessage(next.length - 1);
@@ -8528,7 +8599,7 @@ function Chat() {
         planningConstraintTurn?.acceptRemainingCandidates === true
       ) {
         markShortcutEngaged();
-        const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
         setMsgs(next);
         setText("");
         scrollToUserMessage(next.length - 1);
@@ -8553,8 +8624,8 @@ function Chat() {
           const acknowledgment: ChatMsg = {
             role: "assistant",
             content: excludedCount
-              ? "好，我會拿掉你排除的地點，保留其他剛才的候選，再用符合條件的真實地點補足行程。"
-              : "好，我會保留你接受的地點作為必去點，再補足並安排完整行程。",
+              ? uiT("productionUi.p1526ddde4a")
+              : uiT("productionUi.p16e118fb34"),
           };
           const generationConversation = [...next, acknowledgment];
           setMsgs(generationConversation);
@@ -8581,12 +8652,12 @@ function Chat() {
         );
         if (!prepared) {
           logAiCreateTripError("prepare_failed");
-          toast.message("目前沒有可加入的推薦地點，請先讓我幫你整理推薦。");
+          toast.message(uiT("productionUi.p85bbdf980a"));
           setMsgs([
             ...next,
             {
               role: "assistant",
-              content: "我還沒整理好可加入的地點，要不要我先幫你生成分天推薦？",
+              content: uiT("productionUi.p14d734dcc3"),
             },
           ]);
           return;
@@ -8601,7 +8672,7 @@ function Chat() {
           );
         } catch (e) {
           logAiCreateTripError(e instanceof Error ? e.message : String(e));
-          toast.error("行程建立失敗，請稍後再試。");
+          toast.error(uiT("productionUi.p510e8f68c5"));
         }
         return;
       }
@@ -8614,7 +8685,7 @@ function Chat() {
         };
         nextSession = { ...nextSession, travelContext: altCtx };
         const excludePlaceIds = collectExcludePlaceIds(nextSession, msgs);
-        const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
         setMsgs(next);
         setText("");
 
@@ -8662,7 +8733,7 @@ function Chat() {
           }
         }
 
-        setMsgs([...next, { role: "assistant", content: CHAT_STATE_MACHINE_RECOVERY_MESSAGE }]);
+        setMsgs([...next, { role: "assistant", content: chatRuntimeCopy("recovery", locale) }]);
         return;
       }
 
@@ -8713,7 +8784,7 @@ function Chat() {
           (!hasDestinationSnapshot || isCurrentLocationShortcutSession) &&
           (sessionHasLocation(nextSession) || Boolean(nextSession.nearbyLocationAuthority))
         ) {
-          const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+          const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
           setMsgs(next);
           setText("");
           logAiPipeline(
@@ -8759,7 +8830,7 @@ function Chat() {
             logRtResponseBranch("no_more");
             const noMoreMsgs = [
               ...next,
-              { role: "assistant" as const, content: NO_MORE_RECOMMENDATIONS_MESSAGE },
+              { role: "assistant" as const, content: chatRuntimeCopy("noMore", locale) },
             ];
             setMsgs(noMoreMsgs);
             persistSession(nextSession, noMoreMsgs);
@@ -8773,7 +8844,7 @@ function Chat() {
           nextSession.recommendationSession ||
           resolveActiveCategoryIntent(nextSession)
         ) {
-          const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+          const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
           setMsgs(next);
           setText("");
           const arbitration = resolveChatIntentArbitration(trimmed, nextSession);
@@ -8833,8 +8904,8 @@ function Chat() {
           logChatMorePlacesNoResultAllowed(true);
           const noMoreCopy =
             activeCategoryOnRefresh === "shopping"
-              ? SHOPPING_NO_MORE_RECOMMENDATIONS_MESSAGE
-              : NO_MORE_RECOMMENDATIONS_MESSAGE;
+              ? chatRuntimeCopy("shoppingNoMore", locale)
+              : chatRuntimeCopy("noMore", locale);
           const noMoreMsgs = [...next, { role: "assistant" as const, content: noMoreCopy }];
           logRtNoMoreReason({
             caller: "send.refetch.active_context",
@@ -8882,7 +8953,7 @@ function Chat() {
         const excludePlaceIds = collectExcludePlaceIds(nextSession, msgs);
         const blockedCoreNames = collectBlockedCoreNames(nextSession, msgs);
 
-        const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
         setMsgs(next);
         setText("");
 
@@ -8917,8 +8988,8 @@ function Chat() {
           logChatMorePlacesNoResultAllowed(true);
           const noMoreCopy =
             activeCategoryOnRefresh === "shopping"
-              ? SHOPPING_NO_MORE_RECOMMENDATIONS_MESSAGE
-              : NO_MORE_RECOMMENDATIONS_MESSAGE;
+              ? chatRuntimeCopy("shoppingNoMore", locale)
+              : chatRuntimeCopy("noMore", locale);
           const noMoreMsgs = [...next, { role: "assistant" as const, content: noMoreCopy }];
           logRtNoMoreReason({
             caller: "send.refetch.preserved_session",
@@ -8979,7 +9050,7 @@ function Chat() {
             ...next,
             {
               role: "assistant",
-              content: "我可以繼續幫你找，先告訴我你想從哪個地區開始。",
+              content: uiT("productionUi.p99c97725d3"),
             },
           ]);
           logRtResponseBranch("destination_clarification");
@@ -8997,7 +9068,7 @@ function Chat() {
           reason: "nearby_push_failed",
         });
         logRtResponseBranch("no_more");
-        setMsgs([...next, { role: "assistant", content: NO_MORE_RECOMMENDATIONS_MESSAGE }]);
+        setMsgs([...next, { role: "assistant", content: chatRuntimeCopy("noMore", locale) }]);
         return;
       }
 
@@ -9028,7 +9099,7 @@ function Chat() {
       );
 
       if (shouldFetchDestinationPlaces(trimmed, refreshedPlaceCtx, nextSession)) {
-        const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
         setMsgs(next);
         setText("");
         const applied = await pushDestinationPlaceRecommendation(
@@ -9101,7 +9172,7 @@ function Chat() {
           `features=`,
           `followUp=false`,
         );
-        const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
         setMsgs(next);
         setText("");
         const applied = await pushDestinationCategoryPlaceRecommendation(
@@ -9129,7 +9200,7 @@ function Chat() {
           ...prev,
           {
             role: "assistant",
-            content: `目前在${destLabel}暫時找不到符合的地點，可以換個描述或稍後再試。`,
+            content: chatRuntimeCopy("noResults", locale, { destination: destLabel }),
           },
         ]);
         return;
@@ -9137,7 +9208,7 @@ function Chat() {
 
       // Active recommendation refinement — before sticky trip / combination planning.
       if (shouldSkipTripPlanningForRefinement(trimmed, nextSession)) {
-        const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+        const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
         setMsgs(next);
         setText("");
         const arbitration = resolveChatIntentArbitration(trimmed, nextSession);
@@ -9240,7 +9311,7 @@ function Chat() {
                 ...next,
                 {
                   role: "assistant",
-                  content: "我可以幫你找附近推薦，先告訴我你現在在哪個地區或城市。",
+                  content: uiT("productionUi.p02e401de8b"),
                 },
               ]);
               persistSession(nextSession);
@@ -9299,7 +9370,7 @@ function Chat() {
               ...next,
               {
                 role: "assistant",
-                content: `目前在${destLabel}暫時找不到符合的地點，可以換個描述或稍後再試。`,
+                content: chatRuntimeCopy("noResults", locale, { destination: destLabel }),
               },
             ]);
             persistSession(nextSession);
@@ -9330,6 +9401,7 @@ function Chat() {
               const clarificationCopy = buildNearbyLocationClarificationCopy(
                 trimmed,
                 pendingNearbyIntent,
+                locale,
               );
               console.info("[CHAT_PENDING_NEARBY_CREATED]", {
                 nearbyIntent: pendingNearbyIntent,
@@ -9349,7 +9421,7 @@ function Chat() {
               ...next,
               {
                 role: "assistant",
-                content: "我可以幫你找附近推薦，先告訴我你現在在哪個地區或城市。",
+                content: uiT("productionUi.p02e401de8b"),
               },
             ]);
             return;
@@ -9374,7 +9446,7 @@ function Chat() {
           ...next,
           {
             role: "assistant",
-            content: NO_MORE_RECOMMENDATIONS_MESSAGE,
+            content: chatRuntimeCopy("noMore", locale),
           },
         ]);
         return;
@@ -9401,7 +9473,7 @@ function Chat() {
         )
       ) {
         const planningCtx = nextSession.travelContext ?? merged.context;
-        const next = commitUserMessageWithDiscoveringLoading(trimmed, msgs);
+        const next = commitUserMessageWithDiscoveringLoading(displayMessage, msgs);
         await yieldToNextPaint();
         try {
           const durationFields = tripDurationFieldsFromContext(planningCtx, nextSession);
@@ -9451,6 +9523,7 @@ function Chat() {
                   userText: trimmed,
                   previousPendingType: nextSession.pendingQuestion?.type,
                   blockedLegacyTemplate: "chat_pipeline_missing_trip_duration",
+                  locale,
                 },
               );
               stopDiscoveringLoadingAnimation("cancelled");
@@ -9498,7 +9571,7 @@ function Chat() {
           ) {
             await prepareDestinationCombinations(planningCtx, nextSession);
           }
-          const earlyPlanningTurn = processAdviceTurn(trimmed, nextSession, planningCtx);
+          const earlyPlanningTurn = processAdviceTurn(trimmed, nextSession, planningCtx, undefined, locale);
           if (earlyPlanningTurn.advice.reply) {
             // Duration → combination options (including theme fallback) must never be
             // overwritten by place-discovery failure copy.
@@ -9544,6 +9617,7 @@ function Chat() {
                 context: planningCtx,
                 userText: trimmed,
                 blockedLegacyTemplate: "post_discovery_missing_trip_duration",
+                locale,
               },
             );
             stopDiscoveringLoadingAnimation("cancelled");
@@ -9592,7 +9666,7 @@ function Chat() {
                 destLabel,
                 discoveryFailure?.reason ?? "destination_resolution_failed",
               )
-            : "目前暫時無法取得足夠的實際地點組合，請稍後回「重新整理推薦」再試一次。";
+            : uiT("productionUi.p7fe9e2ed49");
           // Last resort — keep destination/days, offer refresh (not itinerary failure).
           // Note: destination_state_desync uses the same user-facing retry copy but
           // debug logs above record the true primary failure (not candidate scarcity).
@@ -9603,10 +9677,11 @@ function Chat() {
               role: "assistant",
               content: [
                 buildDestinationDirectionAck({
-                  destination: destLabel || "這趟",
+                  destination: destLabel || chatRuntimeCopy("tripFallback", locale),
                   tripDays: days,
                   startDate: planningCtx.startDate,
                   endDate: planningCtx.endDate,
+                  locale,
                 }),
                 "",
                 failureBody,
@@ -9631,7 +9706,7 @@ function Chat() {
             ...stripDiscoveringLoadingMessage(next),
             {
               role: "assistant",
-              content: "目前暫時無法取得景點資料，請稍後再試。",
+              content: uiT("productionUi.p0798cabfda"),
             },
           ]);
           console.warn("[CHAT_PIPELINE_ERROR]", error);
@@ -9790,7 +9865,7 @@ function Chat() {
 
       persistSession(nextSession);
 
-      const next: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+      const next: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
       setMsgs(next);
       setText("");
 
@@ -9863,7 +9938,7 @@ function Chat() {
               ),
             };
             persistSession(pendingSession, next);
-            const clarificationCopy = buildNearbyLocationClarificationCopy(trimmed, nearbyIntent);
+            const clarificationCopy = buildNearbyLocationClarificationCopy(trimmed, nearbyIntent, locale);
             console.info("[CHAT_PENDING_NEARBY_CREATED]", {
               nearbyIntent,
               originalQuery: trimmed,
@@ -9891,7 +9966,7 @@ function Chat() {
               ...next,
               {
                 role: "assistant",
-                content: "目前無法連線取得附近地點，請稍後再試。",
+                content: uiT("productionUi.p4d0b9e8da5"),
               },
             ]);
             return true;
@@ -9900,7 +9975,7 @@ function Chat() {
             logAiPipeline("[NEARBY_FAILURE_REASON]", {
               reason: "recommendation_processing_failure",
             });
-            setMsgs([...next, { role: "assistant", content: "推薦結果整理失敗，請再試一次。" }]);
+            setMsgs([...next, { role: "assistant", content: uiT("productionUi.p50a22d525c") }]);
             return true;
           }
           logAiPipeline("[NEARBY_FAILURE_REASON]", { reason: "genuine_zero_results" });
@@ -9927,10 +10002,10 @@ function Chat() {
         }
         if (nextSession.selectedPlaces.length < 1) {
           logNearbyDispatchSkip("itinerary_missing_selected_places", "direct_itinerary");
-          toast.message("你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線。");
+          toast.message(uiT("productionUi.pfa307436fa"));
           const hint: ChatMsg = {
             role: "assistant",
-            content: "你可以先選幾個想去的地方，我再幫你把它們排成舒服的路線 ☺️",
+            content: uiT("productionUi.pb9d1658a8d"),
           };
           setMsgs([...next, hint]);
           return;
@@ -9949,7 +10024,7 @@ function Chat() {
         !isFoodPreferenceReply(trimmed)
       ) {
         logNearbyDispatchSkip("restaurant_cuisine_required", "restaurant_cuisine_clarification");
-        const question = restaurantCuisineQuestion();
+        const question = restaurantCuisineQuestion(locale);
         persistSession({ ...nextSession, phase: "recommend" });
         setMsgs([...next, { role: "assistant", content: question }]);
         return;
@@ -9957,7 +10032,7 @@ function Chat() {
 
       if (route.mode === "advice" && route.question) {
         await prepareDestinationCombinations(merged.context, nextSession);
-        const turn = processAdviceTurn(trimmed, nextSession, merged.context);
+        const turn = processAdviceTurn(trimmed, nextSession, merged.context, undefined, locale);
         if (turn.advice.reply) {
           logNearbyDispatchSkip("advice_reply", "advice_route");
           await completeAdviceTurn(turn, nextSession, merged.context, next);
@@ -9968,7 +10043,7 @@ function Chat() {
       if (route.mode === "clarify" && route.question && route.missingKey) {
         if (nextSession.activeChatIntent === "restaurant") {
           logNearbyDispatchSkip("restaurant_clarify", "route_clarification");
-          const question = restaurantCuisineQuestion();
+          const question = restaurantCuisineQuestion(locale);
           persistSession({ ...nextSession, phase: "recommend" });
           setMsgs([...next, { role: "assistant", content: question }]);
           return;
@@ -10027,7 +10102,7 @@ function Chat() {
         if (applied) return;
         if (nearbyIntent === "restaurant") {
           logNearbyDispatchSkip("nearby_dispatch_returned_false", "restaurant_empty_toast");
-          toast.message("暫時找不到附近餐廳，請稍後再試。");
+          toast.message(uiT("productionUi.p4b67a41d14"));
           return;
         }
         if (nearbyIntent === "camping") {
@@ -10095,7 +10170,7 @@ function Chat() {
             reason: "nearby_push_failed",
           });
           logRtResponseBranch("no_more");
-          setMsgs([...next, { role: "assistant", content: NO_MORE_RECOMMENDATIONS_MESSAGE }]);
+          setMsgs([...next, { role: "assistant", content: chatRuntimeCopy("noMore", locale) }]);
           return;
         }
 
@@ -10132,9 +10207,13 @@ function Chat() {
               role: "assistant",
               content: displaySummary,
               roamie: {
-                title: "Roamie 推薦",
+                title: uiT("productionUi.p920a75e206"),
                 summary: displaySummary,
-                moodTag: sessionWithRefine.mood ?? merged.context.mood ?? "",
+                moodTag: resolveDisplayedRecommendationBadge({
+                  session: sessionWithRefine,
+                  context: merged.context,
+                  moodTag: sessionWithRefine.mood ?? merged.context.mood ?? "",
+                }),
                 recommendations: filteredRecs,
                 itinerary: [],
               },
@@ -10158,14 +10237,14 @@ function Chat() {
         if (applied) return;
       } else if (isPlanningTurnActive(nextSession, merged.context)) {
         await prepareDestinationCombinations(merged.context, nextSession);
-        const planningTurn = processAdviceTurn(trimmed, nextSession, merged.context);
+        const planningTurn = processAdviceTurn(trimmed, nextSession, merged.context, undefined, locale);
         if (planningTurn.advice.reply) {
           await completeAdviceTurn(planningTurn, nextSession, merged.context, next);
           return;
         }
         const applied = await applyLocalFallback(nextSession, trimmed, next, "planning_no_reply");
         if (applied) return;
-        const offline = buildPlanningOfflineReply(merged.context, nextSession, trimmed);
+        const offline = buildPlanningOfflineReply(merged.context, nextSession, trimmed, locale);
         if (offline) {
           persistSession(nextSession);
           setMsgs([...next, { role: "assistant", content: offline }]);
@@ -10186,7 +10265,7 @@ function Chat() {
       setStreaming(false);
       setGenerating(false);
 
-      const errorConversation: ChatMsg[] = [...msgs, { role: "user", content: trimmed }];
+      const errorConversation: ChatMsg[] = [...msgs, { role: "user", content: displayMessage }];
       try {
         const fallbackApplied = await applyLocalFallback(
           session,
@@ -10209,14 +10288,14 @@ function Chat() {
         const hasUserTurn = prev.some(
           (m, i) => i === prev.length - 1 && m.role === "user" && m.content === trimmed,
         );
-        const base = hasUserTurn ? prev : [...prev, { role: "user" as const, content: trimmed }];
+        const base = hasUserTurn ? prev : [...prev, { role: "user" as const, content: displayMessage }];
         const last = base[base.length - 1];
-        if (last?.role === "assistant" && last.content === CHAT_STATE_MACHINE_RECOVERY_MESSAGE) {
+        if (last?.role === "assistant" && isChatRuntimeCopy(last.content, "recovery")) {
           return base;
         }
         return [
           ...base,
-          { role: "assistant" as const, content: CHAT_STATE_MACHINE_RECOVERY_MESSAGE },
+          { role: "assistant" as const, content: chatRuntimeCopy("recovery", locale) },
         ];
       });
       setText("");
@@ -10278,7 +10357,7 @@ function Chat() {
         logged: false,
       };
       setGenerating(true);
-      setSelectionGenerationStatus("正在整理你選的地點…");
+      setSelectionGenerationStatus(uiT("productionUi.p8c852818ee"));
     }
     if (isPlanningSelectionMode(activeSession)) {
       const selectedPlaces = resolvePlanningSelectionPlaces(activeSession);
@@ -10835,7 +10914,7 @@ function Chat() {
         logAiState("BUILDING_ITINERARY", `places=${places.length}`);
         logSelectionStage("planner_handoff_start", true);
         logSelectionTiming("planner_input_ready");
-        setSelectionGenerationStatus("正在安排每天的順序…");
+        setSelectionGenerationStatus(uiT("productionUi.p9c248b1b3c"));
         const requiredCapacity = assessPlanningRequiredCapacity(
           requiredAnchors.length,
           effectiveTripDays,
@@ -10853,7 +10932,7 @@ function Chat() {
           logSelectionTiming("server_request_blocked", false, "required_capacity_overflow");
           setMsgs((prev) => [
             ...prev,
-            { role: "assistant", content: REQUIRED_CAPACITY_OVERFLOW_USER_MESSAGE },
+            { role: "assistant", content: chatRuntimeCopy("capacity", locale) },
           ]);
           persistSession(workingSession);
           return;
@@ -10932,7 +11011,7 @@ function Chat() {
         );
       }
       if (isPlanningSelectionMode(activeSession)) {
-        setSelectionGenerationStatus("正在確認路線與行程…");
+        setSelectionGenerationStatus(uiT("productionUi.p9744311f0d"));
       }
 
       const itineraryStops = coalesceItineraryItems(itinerary.itinerary);
@@ -10945,7 +11024,7 @@ function Chat() {
       const routeLegs: Awaited<ReturnType<typeof getTripLegsWithDurations>> = [];
       const weatherSummary = bundle.weather
         ? `${bundle.weather.city} ${bundle.weather.condition} ${bundle.weather.tempC ?? ""}C`
-        : "天氣資料暫不可用";
+        : uiT("productionUi.p30edb219d6");
       const outfitSuggestion = tripDates.hasExplicitDates
         ? generateOutfitSuggestion(
             {
@@ -11036,7 +11115,7 @@ function Chat() {
       );
 
       if (isPlanningSelectionMode(activeSession)) {
-        setSelectionGenerationStatus("快完成了…");
+        setSelectionGenerationStatus(uiT("productionUi.p95ae50c6eb"));
       }
       logSelectionTiming("save_start");
       const saved = await confirmSaveTrip(draftPayload, "chat", {
@@ -11189,7 +11268,7 @@ function Chat() {
         ...prev,
         {
           role: "assistant",
-          content: `${ITINERARY_GENERATION_FAILED_MESSAGE}\n\n點選「重新生成」可沿用目前目的地與日期再試一次。`,
+          content: chatRuntimeCopy("generationFailed", locale),
         },
       ]);
       // Keep a single error surface — chat card only (no duplicate toast).
@@ -11287,9 +11366,9 @@ function Chat() {
           ...conversation,
           {
             role: "assistant",
-            content: prepared.message.includes("重新生成")
+            content: prepared.message.includes("重新生成") || isChatRuntimeCopyPrefix(prepared.message, "retryHint")
               ? prepared.message
-              : `${prepared.message}\n\n點選「重新生成」可沿用目前目的地與日期再試一次。`,
+              : `${prepared.message}\n\n${chatRuntimeCopy("retryHint", locale)}`,
           },
         ]);
         persistSession(failedSession);
@@ -11322,7 +11401,7 @@ function Chat() {
           ...conversation,
           {
             role: "assistant",
-            content: `${ITINERARY_GENERATION_FAILED_MESSAGE}\n\n點選「重新生成」可沿用目前目的地與日期再試一次。`,
+            content: chatRuntimeCopy("generationFailed", locale),
           },
         ]);
       }
@@ -11394,7 +11473,7 @@ function Chat() {
       setText("");
       setClearDialogOpen(false);
     } catch {
-      toast.error("清空失敗");
+      toast.error(uiT("productionUi.p73790da512"));
     } finally {
       setClearing(false);
     }
@@ -11435,9 +11514,9 @@ function Chat() {
           }}
           label={
             chatBackNavigation.entrySource === "trip_detail"
-              ? "返回行程"
+              ? uiT("productionUi.p1300dfa4cc")
               : chatBackNavigation.entrySource === "travel_draft"
-                ? "返回"
+                ? uiT("productionUi.p572cf45ba4")
                 : chatBackNavigation.entrySource === "plan"
                   ? t("chat.backToPlan")
                   : t("chat.backToHome")
@@ -11465,7 +11544,7 @@ function Chat() {
           disabled={streaming || generating || clearing}
           className="relative z-20 flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
           aria-label={t("chat.clearAria")}
-          title="清除對話"
+          title={uiT("productionUi.p5e72860a8c")}
         >
           <Trash2 className="h-5 w-5" />
         </button>
@@ -11474,17 +11553,16 @@ function Chat() {
       <AlertDialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
         <AlertDialogContent className="mx-auto max-w-[calc(100%-2rem)] rounded-2xl sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>要清除這段聊天嗎？</AlertDialogTitle>
+            <AlertDialogTitle>{uiT("productionUi.p0584953a23")}</AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-2 text-left text-sm text-muted-foreground">
-                <p>清除後目前對話內容會被移除，但不會影響已儲存的行程。</p>
+                <p>{uiT("productionUi.p627a51f676")}</p>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-row gap-2 sm:justify-end">
             <AlertDialogCancel disabled={clearing} className="mt-0 flex-1 sm:flex-none">
-              取消
-            </AlertDialogCancel>
+              {uiT("productionUi.p2cd0f3be87")}</AlertDialogCancel>
             <AlertDialogAction
               disabled={clearing}
               className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90 sm:flex-none"
@@ -11493,7 +11571,7 @@ function Chat() {
                 void confirmClearChat();
               }}
             >
-              {clearing ? <Loader2 className="h-4 w-4 animate-spin" /> : "清除"}
+              {clearing ? <Loader2 className="h-4 w-4 animate-spin" /> : uiT("productionUi.pbce2377283")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -11524,16 +11602,16 @@ function Chat() {
             streaming={streaming}
             generating={generating}
             suppressPlaceCards={suppressPlaceCards}
-            loadingIndicator={chatLoading}
+            loadingIndicator={chatLoading ? { ...chatLoading, baseText: chatLoadingCopy(chatLoading.phase, locale) } : null}
             partial={partial}
             selectedNames={selectedNames}
             savedNames={savedNames}
             savingName={savingName}
             addToTripLabel={
               selectionMode
-                ? "加入這地點"
+                ? uiT("productionUi.pe5fbac866d")
                 : session.fromTripAddPlace
-                  ? "加入此行程"
+                  ? uiT("productionUi.pff48c58ecc")
                   : t("chat.addToTrip")
             }
             discussPlaceLabel={t("trip.discussPlace")}
@@ -11565,8 +11643,7 @@ function Chat() {
                 onClick={retry}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs text-foreground/80"
               >
-                <RotateCcw className="h-3 w-3" /> 重新嘗試
-              </button>
+                <RotateCcw className="h-3 w-3" /> {uiT("productionUi.ped82768482")}</button>
             </div>
           )}
           <div ref={bottomAnchorRef} aria-hidden className="h-px w-full shrink-0" />

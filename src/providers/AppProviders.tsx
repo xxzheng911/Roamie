@@ -13,7 +13,6 @@ import { PlusPurchaseProvider } from "@/providers/PlusPurchaseProvider";
 import { assertClientEnv } from "@/constants/env";
 import { markBootPhase } from "@/lib/boot-diagnostics";
 import { isSupabaseConfigured } from "@/integrations/supabase/client";
-import { readBrowserPathname, shouldUseLightStartupShell } from "@/lib/startup-path";
 import { hydrateAppBootCachesAsync, resetAppBootCachesForUserChange } from "@/lib/app-boot-cache";
 import { flushConversationWorkspacesToNative } from "@/lib/conversation-workspace/storage";
 import { pushConversationWorkspacesRemote } from "@/lib/conversation-workspace/remote-sync";
@@ -26,8 +25,8 @@ function bootPhase(phase: string, detail?: string): void {
   markBootPhase(phase, detail);
 }
 
-/** Plus / 加入行程等僅在已登入主殼層需要；登入頁不載入以縮小冷啟動 bundle */
-function AuthenticatedShellProviders({ children }: { children: ReactNode }) {
+/** Shared purchase authority must outlive Welcome → Login → authenticated transitions. */
+function PurchaseShellProviders({ children }: { children: ReactNode }) {
   return (
     <SubscriptionProvider>
       <AccessProvider>
@@ -37,35 +36,6 @@ function AuthenticatedShellProviders({ children }: { children: ReactNode }) {
       </AccessProvider>
     </SubscriptionProvider>
   );
-}
-
-/**
- * 勿使用 useRouterState — router match 未就緒時 production 會拋 Invariant failed。
- * pathname 每次 render 從 window 讀取（導航後父層會 re-render）。
- */
-function ProviderGate({ children }: { children: ReactNode }) {
-  const { user, loading } = useAuth();
-  const pathname = readBrowserPathname();
-  // Welcome contains the formal Plus purchase entry and therefore needs the
-  // canonical subscription/access/purchase provider chain.
-  const light =
-    pathname !== "/welcome" && shouldUseLightStartupShell(pathname, Boolean(user), loading);
-  const phase = light ? "providers:light" : "providers:authed-shell";
-  const detail = `u=${Boolean(user)} l=${loading ? 1 : 0}`;
-  const lastPhaseRef = useRef<string>("");
-
-  useEffect(() => {
-    const key = `${phase}|${detail}`;
-    if (lastPhaseRef.current === key) return;
-    lastPhaseRef.current = key;
-    bootPhase(phase, detail);
-  }, [phase, detail]);
-
-  if (light) {
-    return <>{children}</>;
-  }
-
-  return <AuthenticatedShellProviders>{children}</AuthenticatedShellProviders>;
 }
 
 function BootCacheHydrator() {
@@ -141,11 +111,11 @@ export function AppProviders({ children }: Props) {
         <AuthProvider>
           <I18nProvider>
             <BootCacheHydrator />
-            <ProviderGate>
+            <PurchaseShellProviders>
               <AvatarProvider>
                 <CoverProvider>{children}</CoverProvider>
               </AvatarProvider>
-            </ProviderGate>
+            </PurchaseShellProviders>
           </I18nProvider>
         </AuthProvider>
       </AnalyticsProvider>

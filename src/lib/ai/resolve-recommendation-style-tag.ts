@@ -7,7 +7,11 @@ import {
   tripStyleDisplayTag,
   type TripStyleKey,
 } from "@/lib/ai/ai-trip-style";
-import { resolvePresentableMoodTag, shouldDisplayMoodPresentation } from "@/lib/ai/mood-presentation";
+import {
+  resolvePresentableMoodTag,
+  shouldDisplayMoodPresentation,
+} from "@/lib/ai/mood-presentation";
+import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 
 export function logAiStyleTagResolved(label: string, style: TripStyleKey): void {
   logAiPipeline("[AI_STYLE_TAG_RESOLVED]", `label=${label}`, `style=${style}`);
@@ -24,13 +28,19 @@ export function resolveRecommendationStyleTag(
   const travel = context ?? session.travelContext ?? { interests: [] };
   const inPlanning = hasActiveTripPlanningSession(session, travel);
   const style = resolveTripStyleFromContext(travel, session);
+  const present = (label: string) =>
+    resolveDisplayedRecommendationBadge({
+      session,
+      context: travel,
+      moodTag: label,
+    });
 
   if (inPlanning || travel.planningTripStyle || travel.mustVisitGenerated) {
     if (style) {
       const label = tripStyleDisplayTag(style);
       logAiStyleTagResolved(label, style);
       logAiTagContextSource(inPlanning ? "activePlanningSession" : "planningTripStyle");
-      return label;
+      return present(label);
     }
   }
 
@@ -38,7 +48,7 @@ export function resolveRecommendationStyleTag(
     const label = tripStyleDisplayTag(style);
     logAiStyleTagResolved(label, style);
     logAiTagContextSource("planningTripStyle");
-    return label;
+    return present(label);
   }
 
   if (!inPlanning && !travel.mustVisitGenerated) {
@@ -46,7 +56,7 @@ export function resolveRecommendationStyleTag(
       const mood = resolvePresentableMoodTag(session, travel);
       if (mood) {
         logAiTagContextSource("moodCard");
-        return mood;
+        return present(mood);
       }
     }
   }
@@ -55,16 +65,18 @@ export function resolveRecommendationStyleTag(
     const label = tripStyleDisplayTag(style);
     logAiStyleTagResolved(label, style);
     logAiTagContextSource("tripStyleFallback");
-    return label;
+    return present(label);
   }
 
   logAiTagContextSource("none");
   return "";
 }
 
-export function applyRecommendationStyleTagToPayload<
-  T extends { moodTag?: string },
->(payload: T, session: ChatPlanningSession, context?: CanonicalTravelContext): T {
+export function applyRecommendationStyleTagToPayload<T extends { moodTag?: string }>(
+  payload: T,
+  session: ChatPlanningSession,
+  context?: CanonicalTravelContext,
+): T {
   const tag = resolveRecommendationStyleTag(session, context);
   if (!tag) return payload;
   return { ...payload, moodTag: tag };

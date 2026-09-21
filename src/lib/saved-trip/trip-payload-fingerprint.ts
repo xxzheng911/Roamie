@@ -19,5 +19,6 @@ export function tripPayloadFingerprint(
     weatherSummary: payload.weatherSummary ?? null,
     weatherSource: payload.weatherSource ?? null,
     outfitSuggestionInputKey: payload.outfitSuggestionInputKey ?? null,
+    outfitCopy: payload.outfitCopy ?? null,
   });
 }

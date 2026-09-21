@@ -1,9 +1,10 @@
+import { translate } from "@/lib/i18n/translate";
 import type { RoamiePayloadV2, RoamieRecommendationItem } from "@/lib/ai/types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
 import { notePlacesSearchRateLimit } from "@/lib/places-classic-landmark-cache";
-import { isPlacesRateLimited } from "@/lib/places-api-guard";
+import { isPlacesRateLimited, isStalePlacesGeneration } from "@/lib/places-api-guard";
 import {
   buildStructuredShortcutContext,
   chatResponseModeForIntent,
@@ -23,6 +24,7 @@ import {
   buildShortcutRankBreakdown,
   coffeeCandidateExcludeReason,
   pickShortcutTopPlaces,
+  selectShortcutSceneCandidates,
 } from "@/lib/ai/nearby-shortcut-ranking";
 import { logShortcutRuntime } from "@/lib/ai/shortcut-runtime-diag";
 import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
@@ -70,6 +72,7 @@ import {
   resolvePresentableMoodTag,
   shouldDisplayMoodPresentation,
 } from "@/lib/ai/mood-presentation";
+import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 import {
   attractionTypeRankScore,
   buildAttractionRefreshSearchAttempts,
@@ -218,9 +221,115 @@ export type PlaceSearchExtras = {
   placesRound?: number;
   placesScopeSource?: "clarified_location" | "current_device_location" | "explicit_location";
   placesRecommendationRequestId?: string;
+  /** Already-shown places must not reuse the first page. Identical queries still dedupe. */
+  resultCacheScope?: string;
+  /** Home sea / late-night continuation must observe the live provider page. */
+  bypassResultCache?: boolean;
 };
 
 const RECOMMENDATION_COUNT = 5;
+
+/** One quiet-café / shortcut turn. Does not raise the global 20-call window. */
+export const SHORTCUT_PROVIDER_CALL_BUDGET = 4;
+
+const SHORTCUT_POOL_TTL_MS = 30 * 60 * 1000;
+
+type ShortcutPoolEntry = { at: number; places: PlaceResult[] };
+
+const shortcutCandidatePools = new Map<string, ShortcutPoolEntry>();
+const chatSearchInflight = new Map<
+  string,
+  Promise<{ places: PlaceResult[]; error: string | null; rawCount: number; cacheStatus: string }>
+>();
+const chatSearchResultCache = new Map<
+  string,
+  {
+    at: number;
+    value: { places: PlaceResult[]; error: string | null; rawCount: number; cacheStatus: string };
+  }
+>();
+
+export function shortcutCandidatePoolKey(
+  scene: string,
+  lat: number,
+  lng: number,
+  locale: string,
+): string {
+  return `${scene}|${lat.toFixed(3)}|${lng.toFixed(3)}|${locale}`;
+}
+
+export function resetShortcutProviderOrchestrationForTests(): void {
+  shortcutCandidatePools.clear();
+  chatSearchInflight.clear();
+  chatSearchResultCache.clear();
+}
+
+function rememberShortcutCandidatePool(
+  scene: string,
+  lat: number,
+  lng: number,
+  locale: string,
+  places: PlaceResult[],
+): void {
+  if (!places.length) return;
+  const key = shortcutCandidatePoolKey(scene, lat, lng, locale);
+  const previous = shortcutCandidatePools.get(key);
+  const merged = new Map<string, PlaceResult>();
+  for (const place of [...(previous?.places ?? []), ...places]) {
+    const id = resolveCanonicalPlaceIdentity(place).identityKey;
+    if (!id || merged.has(id)) continue;
+    merged.set(id, place);
+  }
+  shortcutCandidatePools.set(key, { at: Date.now(), places: [...merged.values()] });
+}
+
+function readShortcutCandidatePool(
+  scene: string,
+  lat: number,
+  lng: number,
+  locale: string,
+): PlaceResult[] {
+  const key = shortcutCandidatePoolKey(scene, lat, lng, locale);
+  const entry = shortcutCandidatePools.get(key);
+  if (!entry) return [];
+  if (Date.now() - entry.at > SHORTCUT_POOL_TTL_MS) {
+    shortcutCandidatePools.delete(key);
+    return [];
+  }
+  return entry.places;
+}
+
+export function placesFailureClaimsNoPlaces(message: string): boolean {
+  return !/places_rate_limited|provider_protection|request_budget|runaway|rate_limited/.test(
+    message,
+  );
+}
+
+function chatSearchOrchestrationKey(input: {
+  locale: string;
+  lat: number;
+  lng: number;
+  radius: number | undefined;
+  mode: string;
+  query: string;
+  includedTypes?: string[];
+  nearbyGroups?: string[][];
+  resultCacheScope?: string;
+}): string {
+  const types = [...(input.includedTypes ?? [])].sort().join(",");
+  const groups = (input.nearbyGroups ?? []).map((group) => [...group].sort().join("+")).join("|");
+  return [
+    input.locale,
+    input.lat.toFixed(3),
+    input.lng.toFixed(3),
+    input.radius ?? "",
+    input.mode,
+    input.query.trim(),
+    types,
+    groups,
+    input.resultCacheScope ?? "",
+  ].join("|");
+}
 
 /** Budgeted in actual Google calls: the Stage 1 multi lane costs two calls. */
 export const LATE_NIGHT_STAGE_ONE_PROVIDER_BUDGET = 4;
@@ -744,7 +853,18 @@ function buildSummary(
   excludedCategories?: string[],
   shortcutScene?: ChatShortcutScene | null,
   searchProfile?: HomeShortcutSearchProfile | null,
+  locale: Locale = "zh-TW",
 ): string {
+  if (locale !== "zh-TW")
+    return buildSummaryForRecommendations(
+      intent,
+      picks.map((p) => ({ name: p.name, placeName: p.name })),
+      ctx,
+      excludedCategories,
+      shortcutScene,
+      searchProfile,
+      locale,
+    );
   if (ctx.tripPurpose === "refresh_recommendations") {
     return buildRefreshRecommendationSummary(picks, intent);
   }
@@ -911,6 +1031,50 @@ async function runPlaceSearch(
   caller = "chat.runPlaceSearch",
   extras?: PlaceSearchExtras & { radius?: number; timeoutMs?: number },
 ): Promise<{ places: PlaceResult[]; error: string | null; rawCount: number; cacheStatus: string }> {
+  const orchestrationKey = chatSearchOrchestrationKey({
+    locale,
+    lat,
+    lng,
+    radius: extras?.radius,
+    mode: attempt.mode,
+    query: attempt.query,
+    includedTypes: attempt.includedTypes,
+    nearbyGroups: attempt.nearbyGroups,
+    resultCacheScope: extras?.resultCacheScope,
+  });
+  if (!extras?.bypassResultCache) {
+    const cached = chatSearchResultCache.get(orchestrationKey);
+    if (cached && Date.now() - cached.at <= SHORTCUT_POOL_TTL_MS) return cached.value;
+  }
+  const inflightSearch = chatSearchInflight.get(orchestrationKey);
+  if (inflightSearch) return inflightSearch;
+
+  const promise = runPlaceSearchUncached(
+    searchPlaces,
+    lat,
+    lng,
+    locale,
+    attempt,
+    caller,
+    extras,
+    orchestrationKey,
+  ).finally(() => {
+    chatSearchInflight.delete(orchestrationKey);
+  });
+  chatSearchInflight.set(orchestrationKey, promise);
+  return promise;
+}
+
+async function runPlaceSearchUncached(
+  searchPlaces: PlaceSearchFn,
+  lat: number,
+  lng: number,
+  locale: Locale,
+  attempt: SearchAttempt,
+  caller: string,
+  extras: (PlaceSearchExtras & { radius?: number; timeoutMs?: number }) | undefined,
+  orchestrationKey: string,
+): Promise<{ places: PlaceResult[]; error: string | null; rawCount: number; cacheStatus: string }> {
   const ctxPayload = extras?.searchContext
     ? placesSearchContextPayload(extras.searchContext, extras.intentCategory)
     : {};
@@ -968,7 +1132,11 @@ async function runPlaceSearch(
     skipRetail: skipRetail ? 1 : 0,
   });
   logChatPlacesRawCount(places.length);
-  return { places, error: result.error ?? null, rawCount: rawPlaces.length, cacheStatus };
+  const value = { places, error: result.error ?? null, rawCount: rawPlaces.length, cacheStatus };
+  if (!extras?.bypassResultCache && !value.error && value.places.length > 0) {
+    chatSearchResultCache.set(orchestrationKey, { at: Date.now(), value });
+  }
+  return value;
 }
 
 /** 依序嘗試多組 query，回傳第一組有結果的 places */
@@ -1351,6 +1519,9 @@ async function fetchNearbyPlacesForIntentInner(
     };
     geographicScope?: import("@/lib/ai/nearby-geographic-scope").NearbyGeographicScopeAuthority;
     placeFocusDiagnostics?: PlaceFocusNearbyDiagnostics;
+    fetchPlaceDetails?: (placeId: string) => Promise<PlaceResult | null>;
+    continuationRound?: number;
+    onSearchExecution?: (execution: NearbySearchExecution) => void;
     diagnosticRequestId?: string;
   },
 ): Promise<PlaceResult[]> {
@@ -1512,8 +1683,53 @@ async function fetchNearbyPlacesForIntentInner(
   let lateNightEstimatedProviderCalls = 0;
   const attemptedSearchKeys = new Set<string>();
   let lateNightFinalizeReason = "search_exhausted";
+  let shortcutProviderCalls = 0;
+  const shortcutBudgetApplies = Boolean(shortcutScene) && !homeSpecialProfile;
+  const shortcutFetchedPlaces: PlaceResult[] = [];
+  let reusedShortcutPool = false;
+  let stopForProviderProtection = false;
+
+  if (
+    shortcutBudgetApplies &&
+    shortcutScene &&
+    ((opts?.continuationRound ?? 0) > 0 || isShortcutContinuation)
+  ) {
+    const pooled = readShortcutCandidatePool(shortcutScene, lat, lng, locale);
+    const reusable = applyNearbyPlaceFilters(pooled, {
+      intent,
+      lat,
+      lng,
+      excluded,
+      excludePlaceIds,
+      allowParks,
+      blockedCoreNames: opts?.blockedCoreNames,
+      destinationProfile,
+      allowLodging,
+      searchContext: opts?.searchContext,
+      userText: opts?.userText,
+      maxDistanceKm: opts?.maxDistanceKm ?? maxDistanceKmForIntent(intent, 0),
+      strictCafeGuard: !opts?.placeDetailNearby,
+      placeDetailNearby: opts?.placeDetailNearby,
+      tripAddPlace: isTripAddPlace,
+      shortcutDiagnostics: opts?.shortcutDiagnostics,
+      shortcutScene,
+      structuredContinuation: true,
+      rejectAudit: nearbyRejectAudit,
+    });
+    if (reusable.length >= RECOMMENDATION_COUNT) {
+      best = rankPlaces(reusable, lat, lng, context, plusCtx, shortcutScene);
+      lastRawPlaces = pooled;
+      reusedShortcutPool = true;
+      console.info("[SHORTCUT_POOL_REUSED]", {
+        scene: shortcutScene,
+        unseen: reusable.length,
+        providerCalls: 0,
+      });
+    }
+  }
 
   for (let stepIndex = 0; stepIndex < radiusSteps.length; stepIndex++) {
+    if (reusedShortcutPool || stopForProviderProtection) break;
     const radius = radiusSteps[stepIndex]!;
     const attemptsForStep =
       homeLateNightProfile && stepIndex > 0
@@ -1551,6 +1767,14 @@ async function fetchNearbyPlacesForIntentInner(
       });
       if (attemptedSearchKeys.has(searchKey)) continue;
       attemptedSearchKeys.add(searchKey);
+      if (
+        shortcutBudgetApplies &&
+        (shortcutProviderCalls >= SHORTCUT_PROVIDER_CALL_BUDGET ||
+          isStalePlacesGeneration(opts?.diagnosticRequestId))
+      ) {
+        stopForProviderProtection = isStalePlacesGeneration(opts?.diagnosticRequestId);
+        break;
+      }
       const estimatedProviderCalls = estimatedPlacesProviderCalls(attempt);
       if (
         homeLateNightProfile &&
@@ -1633,12 +1857,25 @@ async function fetchNearbyPlacesForIntentInner(
                 ? "explicit_location"
                 : "current_device_location",
             placesRecommendationRequestId: opts?.diagnosticRequestId,
+            resultCacheScope: [
+              opts?.diagnosticRequestId ?? "",
+              [...excludePlaceIds].sort().join(","),
+            ].join("#"),
+            bypassResultCache: homeSpecialProfile,
             timeoutMs: homeLateNightProfile
               ? Math.max(1, Math.min(CHAT_PLACES_SEARCH_TIMEOUT_MS, remainingMs))
               : undefined,
           },
         );
         if (error) lastError = error;
+        if (shortcutBudgetApplies) {
+          shortcutProviderCalls += 1;
+          shortcutFetchedPlaces.push(...batch);
+        }
+        if (error && /places_rate_limited/.test(error)) {
+          stopForProviderProtection = true;
+          break;
+        }
         lastRawCount = Math.max(lastRawCount, batch.length);
         continuationProviderRaw += attemptRawCount;
         continuationMapped += batch.length;
@@ -1709,6 +1946,13 @@ async function fetchNearbyPlacesForIntentInner(
         }
         // Raw provider count is not admission capacity. Explicit keyword lanes must
         // finish their bounded semantic set before deciding that the batch is full.
+        if (
+          shortcutBudgetApplies &&
+          selectShortcutSceneCandidates(places, shortcutScene, RECOMMENDATION_COUNT).length >=
+            RECOMMENDATION_COUNT
+        ) {
+          break;
+        }
         if (!homeSpecialProfile && !explicitCapacityAttempts && places.length >= poolTarget) break;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -2068,7 +2312,19 @@ async function fetchNearbyPlacesForIntentInner(
       lateNightFinalizeReason = "target_reached";
       break;
     }
+    if (
+      shortcutBudgetApplies &&
+      (stopForProviderProtection ||
+        best.length >= RECOMMENDATION_COUNT ||
+        shortcutProviderCalls >= SHORTCUT_PROVIDER_CALL_BUDGET)
+    ) {
+      break;
+    }
     if (opts?.placeDetailNearby && places.length === 0 && stepIndex >= 1) break;
+  }
+
+  if (shortcutScene && shortcutFetchedPlaces.length) {
+    rememberShortcutCandidatePool(shortcutScene, lat, lng, locale, shortcutFetchedPlaces);
   }
 
   if (homeLateNightProfile) {
@@ -2164,6 +2420,14 @@ async function fetchNearbyPlacesForIntentInner(
   );
   if (opts?.placeFocusDiagnostics) opts.placeFocusDiagnostics.finalCount = best.length;
   logAiPipeline("[NEARBY_REJECT_REASONS]", nearbyRejectAudit);
+  const rateLimitedFailure = /places_rate_limited/.test(lastError);
+  if (rateLimitedFailure) {
+    console.info("[PLACES_RATE_LIMIT_UX]", {
+      claimsNoPlaces: false,
+      recoverable: true,
+      finalizeReason: "rate_limited",
+    });
+  }
   console.info("[RECOMMENDATION_BATCH_FINALIZE]", {
     recommendationRequestId: opts?.diagnosticRequestId ?? "",
     targetCount: poolTarget,
@@ -2174,12 +2438,15 @@ async function fetchNearbyPlacesForIntentInner(
     operationalEligible: best.filter(isPlaceOperationalForRecommendation).length,
     exposureEligible: best.length,
     finalCount: best.length,
-    finalizeReason:
-      best.length >= poolTarget
-        ? "target_reached"
-        : lastError
-          ? "provider_error"
-          : "bounded_search_exhausted",
+    finalizeReason: reusedShortcutPool
+      ? "continuation_pool_reused"
+      : rateLimitedFailure
+        ? "rate_limited"
+        : best.length >= poolTarget
+          ? "target_reached"
+          : lastError
+            ? "provider_error"
+            : "bounded_search_exhausted",
   });
   if (best.length === 0 && continuationProviderRaw === 0 && lastError) {
     throw new Error(`places_search_failed:${lastError}`);
@@ -2211,11 +2478,12 @@ async function fetchNearbyPlacesForIntentInner(
 
 export function buildSummaryForRecommendations(
   intent: NearbyPlaceIntent,
-  recommendations: RoamieRecommendationItem[],
+  recommendations: Array<Pick<RoamieRecommendationItem, "name" | "placeName">>,
   ctx: CanonicalTravelContext,
   excludedCategories?: string[],
   shortcutScene?: ChatShortcutScene | null,
   searchProfile?: HomeShortcutSearchProfile | null,
+  locale: Locale = "zh-TW",
 ): string {
   const picks = recommendations
     .map((item) => ({
@@ -2224,6 +2492,12 @@ export function buildSummaryForRecommendations(
     .filter((p) => p.name);
   const list = picks.map((p, i) => `${i + 1}. ${p.name}`).join("\n");
   const count = picks.length;
+  if (locale !== "zh-TW") {
+    const key =
+      searchProfile === "home_sea" ? "nearbySea" : intent === "cafe" ? "nearbyCafe" : "nearby";
+    const intro = translate(locale, `nativeQa.${key}`, { count });
+    return shortcutScene === "quiet_cafe" ? intro : [intro, "", list].join("\n");
+  }
   const exclusionAck = buildExclusionAcknowledgment(excludedCategories);
 
   if (searchProfile === "home_sea") {
@@ -2602,25 +2876,36 @@ export async function buildNearbyPlaceRecommendation(params: {
       selectionReason: picks.length >= pickCount ? "target_reached" : "eligible_pool_exhausted",
     });
 
+    const recommendationBadge = resolveDisplayedRecommendationBadge({
+      context,
+      intent,
+      shortcutScene: shortcut?.scene ?? null,
+      primaryCategory: intent,
+      moodTag: resolvePresentableMoodTag(undefined, context),
+    });
+
     if (!picks.length) {
       if (excluded.length) {
-        const summary = buildExclusionInsufficientSummary(
-          excluded,
-          intent === "cafe"
-            ? "cafe"
-            : intent === "restaurant"
-              ? "restaurant"
-              : intent === "camping"
-                ? "attraction"
-                : "attraction",
-        );
+        const summary =
+          locale !== "zh-TW"
+            ? translate(locale, "nativeQa.noMatching")
+            : buildExclusionInsufficientSummary(
+                excluded,
+                intent === "cafe"
+                  ? "cafe"
+                  : intent === "restaurant"
+                    ? "restaurant"
+                    : intent === "camping"
+                      ? "attraction"
+                      : "attraction",
+              );
         return {
           summary,
           payload: {
             version: 2,
-            title: "Roamie 推薦",
+            title: translate(locale, "nativeQa.recommendationTitle"),
             summary,
-            moodTag: resolvePresentableMoodTag(undefined, context),
+            moodTag: recommendationBadge,
             recommendations: [],
             itinerary: [],
             generatedAt: new Date().toISOString(),
@@ -2701,18 +2986,34 @@ export async function buildNearbyPlaceRecommendation(params: {
 
     const summary = mealIntent
       ? sanitizeMealSummaryText(
-          buildSummary(intent, picks, context, excluded, shortcut?.scene, params.searchProfile),
+          buildSummary(
+            intent,
+            picks,
+            context,
+            excluded,
+            shortcut?.scene,
+            params.searchProfile,
+            locale,
+          ),
           mealIntent.slot,
         )
-      : buildSummary(intent, picks, context, excluded, shortcut?.scene, params.searchProfile);
+      : buildSummary(
+          intent,
+          picks,
+          context,
+          excluded,
+          shortcut?.scene,
+          params.searchProfile,
+          locale,
+        );
     const mode = chatResponseModeForIntent(intent);
     logAiPipeline(`[CHAT_RESPONSE] mode=${mode}`);
 
     const payload: RoamiePayloadV2 = {
       version: 2,
-      title: "Roamie 推薦",
+      title: translate(locale, "nativeQa.recommendationTitle"),
       summary,
-      moodTag: resolvePresentableMoodTag(undefined, context),
+      moodTag: recommendationBadge,
       recommendations,
       itinerary: [],
       generatedAt: new Date().toISOString(),

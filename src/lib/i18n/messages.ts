@@ -1,3 +1,8 @@
+import { chatRuntimeMessages } from "./chat-runtime";
+import { nativeQaMessages } from "./native-qa";
+import { destinationEditorialMessages } from "./destination-editorial";
+import { productionUiMessages } from "./production-ui";
+import { uiCoverageMessages } from "./ui-coverage";
 import { purchaseLegalTranslations } from "@/content/legal-purchase-translations";
 import { plusPurchaseMessages } from "./plus-purchase";
 import type { Locale } from "@/lib/i18n/types";
@@ -40,6 +45,11 @@ const exploreCategoryKo = {
 
 export const i18nMessages: Record<Locale, Record<string, unknown>> = {
   "zh-TW": {
+    productionUi: productionUiMessages["zh-TW"],
+    destinationEditorial: destinationEditorialMessages["zh-TW"],
+    uiCoverage: uiCoverageMessages["zh-TW"],
+    nativeQa: nativeQaMessages["zh-TW"],
+    chatRuntime: chatRuntimeMessages["zh-TW"],
     plusPurchase: { ...plusPurchaseMessages["zh-TW"], ...purchaseLegalTranslations["zh-TW"] },
     nav: {
       home: "首頁",
@@ -396,6 +406,11 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
     picker: { confirm: "確定", cancel: "取消", selectDate: "選擇日期", dateRangeHint: "點選開始與結束日期；可跨月切換" },
   },
   en: {
+    productionUi: productionUiMessages["en"],
+    destinationEditorial: destinationEditorialMessages["en"],
+    uiCoverage: uiCoverageMessages["en"],
+    nativeQa: nativeQaMessages["en"],
+    chatRuntime: chatRuntimeMessages["en"],
     plusPurchase: { ...plusPurchaseMessages["en"], ...purchaseLegalTranslations["en"] },
     nav: { home: "Home", chat: "Chat", explore: "Explore", saved: "Saved", profile: "Me", main: "Main navigation" },
     common: { dash: "—", nearby: "Nearby", loading: "Loading…", search: "Searching…" },
@@ -633,8 +648,8 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       defaultBio: "A gentle traveler",
       signOut: "Sign out",
       signedOut: "Signed out",
-      editAvatar: "Change avatar",
-      removeAvatar: "Remove",
+      editAvatar: "Change profile photo",
+      removeAvatar: "Delete",
       avatarRemoved: "Avatar removed. You can choose a new photo.",
       avatarCleanupPending: "Your avatar was removed, but some file cleanup is still pending.",
       avatarRemoveFailed: "Couldn’t remove your avatar. Please try again.",
@@ -752,6 +767,11 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
     },
   },
   ja: {
+    productionUi: productionUiMessages["ja"],
+    destinationEditorial: destinationEditorialMessages["ja"],
+    uiCoverage: uiCoverageMessages["ja"],
+    nativeQa: nativeQaMessages["ja"],
+    chatRuntime: chatRuntimeMessages["ja"],
     plusPurchase: { ...plusPurchaseMessages["ja"], ...purchaseLegalTranslations["ja"] },
     nav: { home: "ホーム", chat: "チャット", explore: "探索", saved: "保存", profile: "自分", main: "メインナビ" },
     common: { dash: "—", nearby: "近く", loading: "読み込み中…", search: "検索中…" },
@@ -1088,6 +1108,11 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
     picker: { confirm: "確定", cancel: "キャンセル", selectDate: "日付を選択", dateRangeHint: "開始と終了をタップ。月を切り替えできます" },
   },
   ko: {
+    productionUi: productionUiMessages["ko"],
+    destinationEditorial: destinationEditorialMessages["ko"],
+    uiCoverage: uiCoverageMessages["ko"],
+    nativeQa: nativeQaMessages["ko"],
+    chatRuntime: chatRuntimeMessages["ko"],
     plusPurchase: { ...plusPurchaseMessages["ko"], ...purchaseLegalTranslations["ko"] },
     nav: { home: "홈", chat: "채팅", explore: "탐색", saved: "저장", profile: "나", main: "주요 탐색" },
     common: { dash: "—", nearby: "근처", loading: "불러오는 중…", search: "검색 중…" },
@@ -1310,7 +1335,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
       defaultBio: "천천히 걷는 여행자",
       signOut: "로그아웃",
       signedOut: "로그아웃됨",
-      editAvatar: "아바타 변경",
+      editAvatar: "프로필 사진 변경",
       removeAvatar: "삭제",
       avatarRemoved: "프로필 사진을 삭제했어요. 새 사진을 선택할 수 있어요.",
       avatarCleanupPending: "프로필 사진은 삭제했지만 일부 파일 정리가 아직 완료되지 않았어요.",

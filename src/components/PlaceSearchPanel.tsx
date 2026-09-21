@@ -43,6 +43,8 @@ export function PlaceSearchPanel({
   emptyMessage,
   className,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -79,7 +81,7 @@ export function PlaceSearchPanel({
             type="button"
             onClick={() => onQueryChange("")}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary/80"
-            aria-label="清除"
+            aria-label={uiT("productionUi.pbce2377283")}
           >
             <X className="h-4 w-4" />
           </button>

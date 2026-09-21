@@ -79,6 +79,7 @@ export function MapPlacePreview({
           )}
           <p className="mt-2 text-sm leading-relaxed text-foreground/85">{place.reason}</p>
           <PlaceHoursBadge
+                          place={place}
             className="mt-2"
             statusLabel={place.openStatusLabel}
             todayHoursLabel={place.todayHoursLabel}

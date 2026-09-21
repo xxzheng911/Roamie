@@ -97,8 +97,7 @@ export const FOOD_MERCHANT_DENY_RE =
   /檳榔|槟榔|betel|菸草|烟草|香菸|香烟|雪茄|菸酒|烟酒|菸酒專|烟酒专|酒行|酒庄|酒莊|洋酒|威士忌|啤酒屋|檳榔攤|檳榔店|便利商店|超商|五金|材料行|批發|批发|wholesale|liquor\s*store|tobacco|cigarette/i;
 
 /** 名稱明確為咖啡 */
-const STRICT_CAFE_ALLOW_NAME_RE =
-  /咖啡廳|咖啡館|咖啡店|珈琲|咖啡|coffee|café|cafe|espresso|latte/i;
+const STRICT_CAFE_ALLOW_NAME_RE = /咖啡廳|咖啡館|咖啡店|珈琲|咖啡|coffee|café|cafe|espresso|latte/i;
 
 /** 咖啡分類排除（優先於一切正向條件） */
 const COFFEE_EXCLUDED_NAME_RE =
@@ -233,7 +232,14 @@ const FOOD_TYPES = [
 const FOOD_RESTAURANT_NAME_RE =
   /餐|飯|麵|食|restaurant|kitchen|食堂|小吃|料理|壽司|拉麵|燒肉|火鍋|早餐|brunch|早午餐|bistro|diner|grill|steak|bbq|桶仔雞|桶子雞|鹹酥雞|炸物|熱炒|宵夜|滷味|燴飯|水餃|鍋貼|炒飯|便當|外帶|攤|雞排/i;
 
-const FOOD_DENY_TYPES = ["cafe", "coffee_shop", "bakery", "dessert_shop", "shopping_mall", "department_store"] as const;
+const FOOD_DENY_TYPES = [
+  "cafe",
+  "coffee_shop",
+  "bakery",
+  "dessert_shop",
+  "shopping_mall",
+  "department_store",
+] as const;
 
 const PARK_TYPES = ["park", "national_park", "botanical_garden", "hiking_area"] as const;
 
@@ -481,7 +487,10 @@ function matchesDistrictStrict(place: PlaceLike): boolean {
   }
   if (isStandaloneFoodOrCafeForDistrict(place)) return false;
   if (isDistrictRetailNoise(name) && !DISTRICT_ALLOW_NAME_RE.test(name)) return false;
-  if (/專賣|工作室|材料行|修車|機車行|五金|水電/i.test(name) && !DISTRICT_ALLOW_NAME_RE.test(blob)) {
+  if (
+    /專賣|工作室|材料行|修車|機車行|五金|水電/i.test(name) &&
+    !DISTRICT_ALLOW_NAME_RE.test(blob)
+  ) {
     return false;
   }
 
@@ -501,22 +510,25 @@ function matchesDistrictStrict(place: PlaceLike): boolean {
       );
     }
     if (hasAnyType(types, STRICT_MALL_TYPES)) {
-      if (STRICT_MALL_DENY_NAME_RE.test(name) && !STRICT_MALL_ALLOW_NAME_RE.test(name)) return false;
+      if (STRICT_MALL_DENY_NAME_RE.test(name) && !STRICT_MALL_ALLOW_NAME_RE.test(name))
+        return false;
       return true;
     }
     return true;
   }
 
   if (DISTRICT_ALLOW_NAME_RE.test(name) || DISTRICT_NAME_RE.test(blob)) {
-    if (hasBlockedType(types, [
-      ...STRICT_MALL_DENY_TYPES,
-      "doctor",
-      "dentist",
-      "hospital",
-      "hardware_store",
-      "corporate_office",
-      "office",
-    ])) {
+    if (
+      hasBlockedType(types, [
+        ...STRICT_MALL_DENY_TYPES,
+        "doctor",
+        "dentist",
+        "hospital",
+        "hardware_store",
+        "corporate_office",
+        "office",
+      ])
+    ) {
       return DISTRICT_AGGREGATE_CONTEXT_RE.test(blob);
     }
     return true;
@@ -526,7 +538,10 @@ function matchesDistrictStrict(place: PlaceLike): boolean {
     return true;
   }
 
-  if (DISTRICT_NAME_RE.test(blob) && !hasBlockedType(types, ["doctor", "dentist", "hospital", "hardware_store"])) {
+  if (
+    DISTRICT_NAME_RE.test(blob) &&
+    !hasBlockedType(types, ["doctor", "dentist", "hospital", "hardware_store"])
+  ) {
     return true;
   }
 
@@ -568,7 +583,8 @@ function matchesFoodStrict(place: PlaceLike): boolean {
 function matchesParkStrict(place: PlaceLike): boolean {
   const types = collectPlaceTypes(place);
   if (isGloballyDenied(place)) return false;
-  if (hasBlockedType(types, ["restaurant", "shopping_mall", "department_store", "cafe"])) return false;
+  if (hasBlockedType(types, ["restaurant", "shopping_mall", "department_store", "cafe"]))
+    return false;
   return hasAnyType(types, PARK_TYPES);
 }
 
@@ -757,4 +773,9 @@ export function getExploreCategoryEmptyMessage(categoryId: string, locale: Local
   const key = `explore.empty.${categoryId}`;
   const msg = translate(locale, key);
   return msg === key ? translate(locale, "explore.empty.all") : msg;
+}
+
+/** Display only: preserves the category IDs and strict matching authority above. */
+export function getLocalizedPlaceCategoryLabel(place: PlaceLike, locale: Locale): string {
+  return translate(locale, `uiCoverage.category_${getPlaceCategory(place)}`);
 }

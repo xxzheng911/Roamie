@@ -1,3 +1,4 @@
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { parsePartialRoamieJson } from "./parse-partial";
 import type { RoamieRequestContext } from "./context";
 import { normalizeRoamieResponse, type RoamieResponse as RoamieResponseType } from "./types";
@@ -6,7 +7,7 @@ async function withResolvedPlanTier(ctx: RoamieRequestContext): Promise<RoamieRe
   const { applyTierToAiContext } = await import("@/lib/access/context");
   const { resolveEffectivePlanTierWithProfile } = await import("@/lib/access/resolve");
   const planTier = ctx.planTier ?? (await resolveEffectivePlanTierWithProfile());
-  return applyTierToAiContext({ ...ctx, planTier }, planTier);
+  return applyTierToAiContext({ ...ctx, locale: ctx.locale ?? effectiveAppLocale(), planTier }, planTier);
 }
 
 function validateAssembledJson(raw: string): RoamieResponseType {
@@ -240,7 +241,7 @@ export async function streamRoamieAI(
             const { delta } = JSON.parse(data) as { delta?: string };
             if (delta) {
               assembled += delta;
-              handlers.onPartial?.(parsePartialRoamieJson(assembled));
+              handlers.onPartial?.({ ...parsePartialRoamieJson(assembled), generatedLocale: enriched.locale });
             }
           } catch {
             parseErrorCount += 1;
@@ -292,7 +293,7 @@ export async function streamRoamieAI(
   }
 
   try {
-    const full = finalFromServer ?? validateAssembledJson(assembled);
+    const full = { ...(finalFromServer ?? validateAssembledJson(assembled)), generatedLocale: enriched.locale };
     handlers.onDone?.(full);
     return full;
   } catch (e) {
@@ -337,5 +338,5 @@ export async function fetchRoamieAI(
   const json = (await resp.json()) as { data?: RoamieResponseType; error?: string };
   if (json.error) throw new Error(json.error);
   if (!json.data) throw new Error("AI 回應格式錯誤");
-  return json.data;
+  return { ...json.data, generatedLocale: enriched.locale };
 }

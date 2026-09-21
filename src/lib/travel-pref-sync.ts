@@ -1,3 +1,5 @@
+import { translate } from "@/lib/i18n/translate";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { toast } from "sonner";
 import {
   logPreferencesSyncFailure,
@@ -44,10 +46,7 @@ export function classifyTravelPrefSyncTrigger(source: string): TravelPrefSyncTri
   return "passive_background_retry";
 }
 
-export function shouldShowTravelPrefDeferredSyncToast(
-  source: string,
-  error: unknown,
-): boolean {
+export function shouldShowTravelPrefDeferredSyncToast(source: string, error: unknown): boolean {
   return classifyTravelPrefSyncTrigger(source) === "user_initiated_save" && isTimeoutError(error);
 }
 
@@ -86,7 +85,7 @@ async function runBackgroundTravelPrefSync(
     .catch((error) => {
       const trigger = classifyTravelPrefSyncTrigger(source);
       if (shouldShowTravelPrefDeferredSyncToast(source, error)) {
-        toast.message("已暫存，稍後同步");
+        toast.message(translate(effectiveAppLocale(), "productionUi.pf49155e689"));
       }
       logPreferencesSyncFailure(`${kind} background sync`, error, { source, trigger });
       if (allowRetry) {
@@ -121,10 +120,7 @@ export function scheduleBackgroundTravelPrefSync(
 }
 
 /** 測驗完成後遠端 upsert（含 ai_preferences） */
-export function scheduleBackgroundTravelQuizSync(
-  run: () => Promise<void>,
-  source: string,
-): void {
+export function scheduleBackgroundTravelQuizSync(run: () => Promise<void>, source: string): void {
   void runBackgroundTravelPrefSync("quiz", source, run);
 }
 

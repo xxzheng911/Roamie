@@ -96,6 +96,8 @@ export const Route = createFileRoute("/_app/place")({
 });
 
 function PlaceDetailPage() {
+  const { t: uiT } = useI18n();
+
   useIosInteractiveRoute("place-detail");
   useAppMainScroll();
 
@@ -345,21 +347,21 @@ function PlaceDetailPage() {
   useEffect(() => {
     let cancelled = false;
     void import("@/lib/location-app-gate")
-        .then(({ waitForAppActiveForLocation }) =>
-          waitForAppActiveForLocation().then((active) => {
-            if (!active || cancelled) return;
-            return requestDeviceLocation().then((loc) => {
-              if (cancelled || !loc) return;
-              const resolved = resolvePlaceDetailTransportOrigin({
-                live: loc,
-                cached: getLastKnownDeviceCoords(),
-              });
-              setNavigationOrigin(resolved.origin);
-              console.info(`[PLACE_DETAIL_TRANSPORT_ORIGIN] ${resolved.source}`);
+      .then(({ waitForAppActiveForLocation }) =>
+        waitForAppActiveForLocation().then((active) => {
+          if (!active || cancelled) return;
+          return requestDeviceLocation().then((loc) => {
+            if (cancelled || !loc) return;
+            const resolved = resolvePlaceDetailTransportOrigin({
+              live: loc,
+              cached: getLastKnownDeviceCoords(),
             });
-          }),
-        )
-        .catch(() => {});
+            setNavigationOrigin(resolved.origin);
+            console.info(`[PLACE_DETAIL_TRANSPORT_ORIGIN] ${resolved.source}`);
+          });
+        }),
+      )
+      .catch(() => {});
     void Promise.all([
       getUserProfile(locale).catch(() => null),
       getPreferences().catch(() => ({}) as Awaited<ReturnType<typeof getPreferences>>),
@@ -465,9 +467,7 @@ function PlaceDetailPage() {
   const placeGoogleMapsUrl = useMemo(() => {
     if (!place || place.lat == null || place.lng == null) return null;
     const placeId = isGooglePlaceId(place.id) ? place.id : null;
-    console.info(
-      `[PLACE_DETAIL_MAP_LINK] ${placeId ? "google_place_id" : "latlng_search"}`,
-    );
+    console.info(`[PLACE_DETAIL_MAP_LINK] ${placeId ? "google_place_id" : "latlng_search"}`);
     return buildPlaceMapsUrl(place.lat, place.lng, place.name, placeId);
   }, [place]);
 
@@ -552,7 +552,7 @@ function PlaceDetailPage() {
           coverImageUrl: imageUrls[0] ?? null,
         }),
       );
-      toast.success(didSave ? "已加入收藏" : "已取消收藏");
+      toast.success(didSave ? uiT("productionUi.p4220592340") : uiT("productionUi.p7fa7b63b0e"));
       setSavedNames((prev) => {
         const next = new Set(prev);
         if (didSave) next.add(place.name);
@@ -560,7 +560,7 @@ function PlaceDetailPage() {
         return next;
       });
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "收藏失敗");
+      toast.error(e instanceof Error ? e.message : uiT("productionUi.p59ede0ba72"));
     } finally {
       setBusy(false);
     }
@@ -581,7 +581,7 @@ function PlaceDetailPage() {
     const selected = addSelectedPlace({ ...loadChatSession(), phase: "followup" }, item);
     saveChatSession(enterPlaceDetailChat(selected, item));
     navigate({ to: "/chat", search: { from: "map" } });
-    toast.message(`已帶入「${place.name}」，到聊聊繼續問 Roamie`);
+    toast.message(uiT("productionUi.p83f5388d34", { v0: place.name }));
   };
 
   const handleNavigate = () => {
@@ -599,20 +599,20 @@ function PlaceDetailPage() {
           <ExploreSubpageHeader title={t("map.placeDetail")} onBack={handleBack} />
           <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16">
             <Loader2 className="h-7 w-7 animate-spin text-clay" aria-hidden />
-            <p className="text-sm text-muted-foreground">載入地點資訊…</p>
+            <p className="text-sm text-muted-foreground">{uiT("productionUi.p4547bdec29")}</p>
           </div>
         </div>
       );
     }
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-20 text-center">
-        <p className="text-sm text-muted-foreground">暫時讀不到這個地點，稍後再試一次</p>
+        <p className="text-sm text-muted-foreground">{uiT("productionUi.p4112e29c51")}</p>
         <button
           type="button"
           onClick={handleBack}
           className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground"
         >
-          返回
+          {uiT("productionUi.p572cf45ba4")}
         </button>
       </div>
     );
@@ -624,23 +624,25 @@ function PlaceDetailPage() {
 
       {fetchError && usedFallback && !place.address && place.lat == null ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-16 text-center">
-          <p className="text-sm text-muted-foreground">暫時讀不到這個地點，稍後再試一次</p>
+          <p className="text-sm text-muted-foreground">{uiT("productionUi.p4112e29c51")}</p>
           <button
             type="button"
             onClick={handleBack}
             className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground"
           >
-            返回
+            {uiT("productionUi.p572cf45ba4")}
           </button>
         </div>
       ) : (
         <>
           {usedFallback && fetchError ? (
             <p className="mx-5 mb-1 rounded-2xl bg-secondary/80 px-3 py-2 text-xs text-muted-foreground">
-              部分資訊暫時無法更新，先顯示已知內容
+              {uiT("productionUi.pb08658e733")}
             </p>
           ) : refreshing ? (
-            <p className="mx-5 mb-1 text-xs text-muted-foreground/80">正在更新最新資訊…</p>
+            <p className="mx-5 mb-1 text-xs text-muted-foreground/80">
+              {uiT("productionUi.pc03acf7159")}
+            </p>
           ) : null}
           <PlaceDetailSheet
             place={placeForSheet ?? place}
@@ -657,7 +659,7 @@ function PlaceDetailPage() {
             onToggleSave={() => void handleToggleSave()}
             onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(place), "place_detail")}
             addToTripLabel={t("chat.addToTrip")}
-            saveLabel="收藏"
+            saveLabel={uiT("productionUi.p60a53514eb")}
             onOpenChat={handleOpenChat}
             tabelogExternalUrl={placeTabelogUrl}
             googleMapsExternalUrl={placeGoogleMapsUrl}

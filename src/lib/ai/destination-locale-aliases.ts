@@ -141,6 +141,42 @@ export function applyCityLocaleAlias(label: string): string {
   return raw;
 }
 
+const LATIN_TRAVEL_ALIAS =
+  /\b(?:i['’]d like to go to|i would like to go to|i want to go to|i['’]m going to|let['’]s go to|planning a trip to|plan a trip to|travel to|going to|go to|visit)\s+([a-z][a-z .'-]{0,80})/i;
+
+/**
+ * Existing alias table only. Unknown place names are not guessed or translated.
+ * `surface` is the user's own spelling; `canonical` is the routing label.
+ */
+export function extractKnownAliasDestination(
+  text: string,
+): { canonical: string; surface: string } | undefined {
+  const match = text.match(LATIN_TRAVEL_ALIAS);
+  const tail = match?.[1]?.trim();
+  if (!tail) return undefined;
+  const aliases = Object.keys(CITY_LOCALE_ALIASES)
+    .filter((key) => /^[a-z0-9][a-z0-9 .'-]*$/i.test(key))
+    .sort((a, b) => b.length - a.length);
+  for (const alias of aliases) {
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const found = tail.match(new RegExp(`^${escaped}(?![a-z])`, "i"));
+    const canonical = found ? CITY_LOCALE_ALIASES[alias] : undefined;
+    if (found && canonical) return { canonical, surface: found[0] };
+  }
+  return undefined;
+}
+
+/** Preserve a known Latin alias in non-zh display. Routing stays canonical. */
+export function displayDestinationForCopy(
+  canonical: string,
+  userText: string | undefined,
+  locale: "zh-TW" | "en" | "ja" | "ko",
+): string {
+  if (locale === "zh-TW" || !userText) return canonical;
+  const extracted = extractKnownAliasDestination(userText);
+  return extracted?.canonical === canonical ? extracted.surface : canonical;
+}
+
 export function cityLocaleEvidenceAliases(label: string): string[] {
   const canonical = applyCityLocaleAlias(label);
   const aliases = Object.entries(CITY_LOCALE_ALIASES)

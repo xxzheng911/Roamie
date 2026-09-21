@@ -1,0 +1,139 @@
+{
+  "checks": [
+    {
+      "script": "verify-plus-purchase-ui",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-purchase-ui.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-subscription-account-recreation",
+      "command": "node scripts/verify-subscription-account-recreation.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-legal-subscription-disclosures",
+      "command": "node scripts/verify-legal-subscription-disclosures.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-subscription-hydration-credits-gate",
+      "command": "node scripts/verify-subscription-hydration-credits-gate.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-revenuecat-subscription",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-revenuecat-subscription.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-subscription-restore-canonical",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-subscription-restore-canonical.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-plus-purchase-lifecycle",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-purchase-lifecycle.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-plus-purchase-i18n",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-purchase-i18n.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-plus-entitlement-authority",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-entitlement-authority.mjs",
+      "exit": 1
+    },
+    {
+      "script": "verify-plus-personalization-v1",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-personalization-v1.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-home-personalization-entitlement-ui",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-personalization-entitlement-ui.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-combination-localization",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-combination-localization.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-localization-diversity-hard-gates",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-localization-diversity-hard-gates.mjs",
+      "exit": 1
+    },
+    {
+      "script": "verify-itinerary-localization-runtime",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-localization-runtime.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-transport-copy-consistency",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-transport-copy-consistency.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-ui-language-coverage",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-ui-language-coverage.mjs",
+      "exit": 0
+    },
+    {
+      "script": "verify-production-ui-locales",
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-production-ui-locales.mjs",
+      "exit": 0
+    }
+  ],
+  "providerAuth": {
+    "command": "node scripts/verify-plus-provider-auth.mjs",
+    "exit": 0,
+    "cases": 8
+  },
+  "productionBuild": {
+    "command": "node scripts/production-build.mjs",
+    "exit": 0
+  },
+  "strict": {
+    "command": "vite-node --config scripts/vite.verify.config.mjs scripts/verify-ui-language-coverage.mjs --strict",
+    "exit": 1,
+    "remainingKnownProduction": 253,
+    "remainingManualReview": 7813
+  },
+  "baselineFailures": {
+    "verify-plus-entitlement-authority": {
+      "same": true,
+      "head": {
+        "assertion": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /syncRevenueCatEntitlementWithServer\\(\\)/. Input:",
+        "expected": "/syncRevenueCatEntitlementWithServer\\(\\)/",
+        "actualScalar": []
+      },
+      "working": {
+        "assertion": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /syncRevenueCatEntitlementWithServer\\(\\)/. Input:",
+        "expected": "/syncRevenueCatEntitlementWithServer\\(\\)/",
+        "actualScalar": []
+      }
+    },
+    "verify-localization-diversity-hard-gates": {
+      "same": true,
+      "head": {
+        "assertion": "AssertionError [ERR_ASSERTION]: English fallbacks cannot be delivered in zh-TW",
+        "expected": "0",
+        "actualScalar": [
+          "1"
+        ]
+      },
+      "working": {
+        "assertion": "AssertionError [ERR_ASSERTION]: English fallbacks cannot be delivered in zh-TW",
+        "expected": "0",
+        "actualScalar": [
+          "1"
+        ]
+      }
+    }
+  },
+  "newTypeScriptDiagnostics": 0,
+  "newNonFormattingLint": 0,
+  "diffCheck": "PASS"
+}

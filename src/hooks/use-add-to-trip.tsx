@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import {
   createContext,
   lazy,
@@ -31,6 +32,8 @@ type AddToTripContextValue = {
 const AddToTripContext = createContext<AddToTripContextValue | null>(null);
 
 export function AddToTripProvider({ children }: { children: ReactNode }) {
+  const { t: uiT } = useI18n();
+
   const navigate = useNavigate();
   const [place, setPlace] = useState<TripPlaceInput | null>(null);
   const [sourceSurface, setSourceSurface] = useState<AddToTripSurface>("unknown");
@@ -114,7 +117,7 @@ export function AddToTripProvider({ children }: { children: ReactNode }) {
           failureReason: "",
           itineraryTargetResolved: true,
         });
-        toast.success("已加入行程");
+        toast.success(uiT("productionUi.p15f2ce8fbe"));
         setSheetOpen(false);
         setPlace(null);
         if (result.isDraft) {
@@ -134,12 +137,12 @@ export function AddToTripProvider({ children }: { children: ReactNode }) {
           failureReason: e instanceof InvalidTripPlaceInputError ? e.code : "append_failed",
           itineraryTargetResolved: true,
         });
-        toast.error(e instanceof Error ? e.message : "加入行程失敗");
+        toast.error(e instanceof Error ? e.message : uiT("productionUi.p652e594618"));
       } finally {
         setBusy(false);
       }
     },
-    [place, navigate, sourceSurface],
+    [uiT, place, navigate, sourceSurface],
   );
 
   const value = useMemo(() => ({ openAddToTrip }), [openAddToTrip]);

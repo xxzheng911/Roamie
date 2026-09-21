@@ -1,3 +1,7 @@
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { generatedPlacesForLocale } from "@/lib/generated-display-projection";
+import { isCurrentGeneratedCopy, type GeneratedLocaleContract } from "@/lib/generated-locale";
+import type { Locale } from "@/lib/i18n/types";
 import type { RoamieRecommendationItem, RoamieResponse } from "@/lib/ai/types";
 import type { RoamieLocation } from "@/lib/ai/context";
 import type { WeatherSummary } from "@/lib/weather.functions";
@@ -9,7 +13,7 @@ const SESSION_KEY = "roamie:itinerary-source";
 
 export type ItinerarySourceKind = "recommendations" | "chat" | "manual";
 
-export type ItinerarySourceContext = {
+export type ItinerarySourceContext = GeneratedLocaleContract & {
   source: ItinerarySourceKind;
   recommendationId?: string;
   selectedPlaces: RoamieRecommendationItem[];
@@ -44,12 +48,12 @@ export function clearItinerarySource(): void {
 }
 
 /** Last assistant message that contains recommendations. */
-export function extractPlacesFromChat(msgs: ChatMsg[]): RoamieRecommendationItem[] {
+export function extractPlacesFromChat(msgs: ChatMsg[], locale: Locale = effectiveAppLocale()): RoamieRecommendationItem[] {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
     if (m.role !== "assistant") continue;
     const recs = m.roamie?.recommendations;
-    if (recs?.length) return recs;
+    if (recs?.length) return generatedPlacesForLocale(recs, { generatedLocale: m.generatedLocale ?? m.roamie?.generatedLocale }, locale);
   }
   return [];
 }
@@ -57,7 +61,8 @@ export function extractPlacesFromChat(msgs: ChatMsg[]): RoamieRecommendationItem
 export function extractMoodFromChat(msgs: ChatMsg[]): string | undefined {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i];
-    if (m.role === "assistant" && m.roamie?.moodTag) return m.roamie.moodTag;
+    if (m.role === "assistant" && m.roamie?.moodTag &&
+        isCurrentGeneratedCopy({ generatedLocale: m.generatedLocale ?? m.roamie.generatedLocale }, effectiveAppLocale())) return m.roamie.moodTag;
   }
   return undefined;
 }
@@ -98,6 +103,7 @@ export function buildSourceFromRoamieResponse(
 ): Omit<ItinerarySourceContext, "savedAt"> {
   return {
     source: extra.source,
+    generatedLocale: data.generatedLocale,
     recommendationId: extra.recommendationId,
     selectedPlaces: data.recommendations ?? [],
     moodTag: data.moodTag,
@@ -114,16 +120,17 @@ export async function loadItinerarySource(
 ): Promise<ItinerarySourceContext | null> {
   const cached = getItinerarySource();
   if (cached?.selectedPlaces?.length) {
-    if (!recommendationId || cached.recommendationId === recommendationId) return cached;
+    if (!recommendationId || cached.recommendationId === recommendationId) return itinerarySourceForLocale(cached, effectiveAppLocale());
   }
 
-  if (!recommendationId) return cached;
+  if (!recommendationId) return cached ? itinerarySourceForLocale(cached, effectiveAppLocale()) : null;
 
   const record = await getRecommendation(recommendationId);
-  if (!record?.payload?.recommendations?.length) return cached;
+  if (!record?.payload?.recommendations?.length) return cached ? itinerarySourceForLocale(cached, effectiveAppLocale()) : null;
 
   const ctx: ItinerarySourceContext = {
     source: "recommendations",
+    generatedLocale: record.generatedLocale,
     recommendationId,
     selectedPlaces: record.payload.recommendations,
     moodTag: record.payload.moodTag ?? record.mood ?? undefined,
@@ -131,5 +138,11 @@ export async function loadItinerarySource(
     savedAt: new Date().toISOString(),
   };
   setItinerarySource(ctx);
-  return ctx;
+  return itinerarySourceForLocale(ctx, effectiveAppLocale());
+}
+
+export function itinerarySourceForLocale(source: ItinerarySourceContext, locale: Locale): ItinerarySourceContext {
+  if (source.source === "manual" || isCurrentGeneratedCopy(source, locale)) return source;
+  return { ...source, summary: undefined, moodTag: undefined,
+    selectedPlaces: generatedPlacesForLocale(source.selectedPlaces, source, locale) };
 }

@@ -20,7 +20,10 @@ import {
 } from "@/lib/travel-quiz-save";
 import { readProfileSessionCache, writeProfileSessionCache } from "@/lib/profile-session-cache";
 import { readCachedAuthenticatedUserIdSync } from "@/lib/auth-session";
-import { buildUserProfileFromTravelPrefCache, buildTravelPrefResultSnapshot } from "@/lib/travel-pref-result-cache";
+import {
+  buildUserProfileFromTravelPrefCache,
+  buildTravelPrefResultSnapshot,
+} from "@/lib/travel-pref-result-cache";
 import { detectDeviceLocale } from "@/lib/i18n/detect-locale";
 import type { BudgetMode, TravelPreferences } from "@/lib/preferences-storage";
 
@@ -79,9 +82,10 @@ function describeMissingStepField(step: QuizStepKey): string {
   return STEP_LABELS[step];
 }
 
-function buildPreferencePayload(
-  draft: QuizDraft,
-): { prefs: TravelPreferences; personality: ReturnType<typeof derivePersonality> } {
+function buildPreferencePayload(draft: QuizDraft): {
+  prefs: TravelPreferences;
+  personality: ReturnType<typeof derivePersonality>;
+} {
   const prefs: TravelPreferences = {
     pace: draft.pace,
     avoid: draft.avoid,
@@ -112,6 +116,8 @@ function logFinishQuizError(error: unknown): void {
 }
 
 export function TravelPreferenceQuizPage({ origin = "profile" }: Props) {
+  const { t: uiT } = useI18n();
+
   useIosInteractiveRoute("travel-preference-test");
   const navigate = useNavigate();
   const { t, locale } = useI18n();
@@ -202,7 +208,7 @@ export function TravelPreferenceQuizPage({ origin = "profile" }: Props) {
 
     const missing = describeMissingQuizFields(draft);
     if (missing.length) {
-      toast.message(`請完成測驗：${missing.join("、")}`);
+      toast.message(uiT("productionUi.pe7656e21f5", { v0: missing.join("、") }));
       return;
     }
     if (finishing) {
@@ -258,9 +264,7 @@ export function TravelPreferenceQuizPage({ origin = "profile" }: Props) {
     } catch (error) {
       logFinishQuizError(error);
       const message =
-        error instanceof Error && error.message
-          ? error.message
-          : "儲存失敗，請稍後再試";
+        error instanceof Error && error.message ? error.message : "儲存失敗，請稍後再試";
       toast.error(message);
       return;
     } finally {
@@ -299,7 +303,7 @@ export function TravelPreferenceQuizPage({ origin = "profile" }: Props) {
 
     const missing = describeMissingQuizFields(draft);
     if (missing.length) {
-      toast.message(`請完成測驗：${missing.join("、")}`);
+      toast.message(uiT("productionUi.pe7656e21f5", { v0: missing.join("、") }));
       return;
     }
 
@@ -320,7 +324,9 @@ export function TravelPreferenceQuizPage({ origin = "profile" }: Props) {
             <ArrowLeft className="h-4 w-4" />
           </button>
           <div className="min-w-0 flex-1">
-            <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Plus 旅行偏好</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+              {uiT("productionUi.p4b40d526e8")}
+            </p>
             <p className="truncate text-sm font-medium">
               {stepIndex + 1} / {STEPS.length}
             </p>
@@ -432,13 +438,13 @@ export function TravelPreferenceQuizPage({ origin = "profile" }: Props) {
             {finishing ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                儲存中…
+                {uiT("productionUi.p00190ad393")}
               </>
             ) : isLastStep ? (
-              "完成測驗"
+              uiT("productionUi.pb365eea395")
             ) : (
               <>
-                繼續
+                {uiT("productionUi.pd9d1f08fa5")}
                 <ArrowRight className="h-4 w-4" />
               </>
             )}

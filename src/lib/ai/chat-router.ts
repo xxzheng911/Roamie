@@ -1,3 +1,4 @@
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { isUserConfirmingItinerary } from "@/lib/chat-session";
 import type { ChatPhase } from "@/lib/ai/context";
@@ -82,14 +83,7 @@ function buildClarifyQuestion(
   }
 
   if (locale !== "zh-TW") {
-    const en: Record<TripIntentMissingKey, string> = {
-      destination: "Which city are you in? I can find places nearby.",
-      vibe: "More into relaxing, photos, or food?",
-      setting: "Prefer indoors or outdoors?",
-      companionship: "Solo or with friends/family?",
-      date: "Which day are you heading out?",
-    };
-    return en[key];
+    return chatRuntimeCopy(`clarify_${key}`, locale);
   }
 
   if (key === "destination" && isNearbyPlaceIntent(intent)) {
@@ -185,7 +179,7 @@ export function resolveChatRoute(
     advicePurpose === "seasonal_destination";
 
   if (shouldTryAdvice && !shouldFetchDestinationCategoryPlaces(userText, ctx, session)) {
-    const turn = processAdviceTurn(userText, session, ctx);
+    const turn = processAdviceTurn(userText, session, ctx, undefined, locale);
     if (turn.advice.reply) {
       logAiPipeline("[AI_ROUTE] destination_advice_mode", logTravelContext(ctx));
       return turn.route!;

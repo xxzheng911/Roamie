@@ -9,6 +9,7 @@ import {
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
 import { midMonthIsoDate } from "@/lib/ai/resolve-suggested-trip-dates";
 import { logAiPipeline } from "@/lib/ai/ai-pipeline-log";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 
 type ClimateBits = {
   climate: string;
@@ -285,6 +286,7 @@ export function buildScenicMonthPlanningReply(params: {
   context: CanonicalTravelContext;
   userText: string;
   weather?: WeatherSummary | null;
+  locale?: import("@/lib/i18n/types").Locale;
 }): string {
   return buildScenicMonthPlanningResult(params).reply;
 }
@@ -294,6 +296,7 @@ export function buildScenicMonthPlanningResult(params: {
   context: CanonicalTravelContext;
   userText: string;
   weather?: WeatherSummary | null;
+  locale?: import("@/lib/i18n/types").Locale;
 }): ScenicMonthPlanningResult {
   const label = normalizeDestinationLabel(params.destination);
   const monthLabel = resolveTravelMonthLabel(params.context, params.userText);
@@ -326,7 +329,7 @@ export function buildScenicMonthPlanningResult(params: {
   }
 
   lines.push("");
-  lines.push("你目前有預計的旅行日期或天數嗎？");
+  lines.push(chatRuntimeCopy("dateAskLine", params.locale));
 
   logAiPipeline(
     "[SEASONAL_REPLY_CONTENT]",

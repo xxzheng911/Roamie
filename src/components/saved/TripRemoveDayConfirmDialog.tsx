@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,19 +25,21 @@ export function TripRemoveDayConfirmDialog({
   onOpenChange,
   onConfirm,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>刪除此天？</AlertDialogTitle>
+          <AlertDialogTitle>{uiT("productionUi.pe1cd4adbc2")}</AlertDialogTitle>
           <AlertDialogDescription>
             {stopCount > 0
-              ? `第 ${dayNumber} 天還有 ${stopCount} 個地點，確定要刪除這一天嗎？`
-              : `確定要刪除第 ${dayNumber} 天嗎？`}
+              ? uiT("productionUi.removeDayPlaces", { day: dayNumber, count: stopCount })
+              : uiT("productionUi.removeDayEmpty", { day: dayNumber })}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
+          <AlertDialogCancel>{uiT("productionUi.p2cd0f3be87")}</AlertDialogCancel>
           <AlertDialogAction
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             onClick={(e) => {
@@ -44,7 +47,7 @@ export function TripRemoveDayConfirmDialog({
               onConfirm();
             }}
           >
-            刪除此天
+            {uiT("productionUi.p6298c7d35f")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

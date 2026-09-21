@@ -1,4 +1,5 @@
-import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { localizeWeatherSummary } from "@/lib/weather-scene";
+import { useCallback, useMemo, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import type { Locale } from "@/lib/i18n/types";
 import {
@@ -54,8 +55,12 @@ export function useHomeWeather(locale: Locale) {
     reloadHomeWeatherBootstrap(locale);
   }, [locale]);
 
+  const weather = useMemo(
+    () => localizeWeatherSummary(snapshot.weather, locale),
+    [snapshot.weather, locale],
+  );
   return {
-    weather: snapshot.weather,
+    weather,
     status: snapshot.status,
     error: snapshot.error,
     userLocation: snapshot.userLocation,

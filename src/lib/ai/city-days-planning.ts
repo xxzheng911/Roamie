@@ -1,3 +1,7 @@
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import type { Locale } from "@/lib/i18n/types";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -44,6 +48,7 @@ export function buildDateAndDurationQuestionReply(
   destination: string,
   destinationCountry?: string,
   options?: {
+    locale?: Locale;
     context?: CanonicalTravelContext;
     userText?: string;
     weather?: WeatherSummary | null;
@@ -83,6 +88,8 @@ export function buildDateAndDurationQuestionReply(
     "to=ask_date_or_days",
   );
 
+  const locale = options?.locale ?? effectiveAppLocale();
+  const shownDestination = displayDestinationForCopy(label, options?.userText, locale);
   let reply: string;
   if (options?.context && hasMonth) {
     reply = buildScenicMonthPlanningResult({
@@ -90,17 +97,10 @@ export function buildDateAndDurationQuestionReply(
       context: { ...options.context, destination: label },
       userText: options.userText ?? "",
       weather: options.weather ?? options.context.weather ?? null,
+      locale,
     }).reply;
   } else {
-    reply = [
-      `好的，我們以${label}為主往下規劃。`,
-      "",
-      "你目前有預計的旅行日期或天數嗎？",
-      "例如：",
-      "・3天2夜",
-      "・5天4夜",
-      "・7天以上",
-    ].join("\n");
+    reply = chatRuntimeCopy("dateQuestion", locale, { destination: shownDestination });
   }
 
   return {
@@ -115,6 +115,7 @@ export function buildCityDaysConfirmedReply(
   destinationCountry?: string,
   options?: {
     weather?: WeatherSummary | null;
+    locale?: Locale;
     context?: CanonicalTravelContext;
   },
 ): {
@@ -149,7 +150,7 @@ export function buildCityDaysConfirmedReply(
   const suggestion = buildDestinationCombinationSuggestionPayload(label, days, {
     startDate: hasExactDate ? startDate : undefined,
     endDate: hasExactDate ? endDate : undefined,
-    weatherLine: `好，我先記下 ${label} ${days} 天的行程方向。`,
+    weatherLine: chatRuntimeCopy("directionAckDays", options?.locale, { destination: label, days }),
   });
   if (suggestion) {
     return {

@@ -391,7 +391,7 @@ const composer = readFileSync(
 );
 assert.match(
   chatRoute,
-  /selectionMode\s*\?\s*"加入這地點"/,
+  /selectionMode\s*\?\s*uiT\("productionUi\.pe5fbac866d"\)/,
   "label does not duplicate the rendered Plus icon",
 );
 assert.match(chatRoute, /chips\.push\("生成行程", "再推薦一些"\)/);
@@ -454,7 +454,7 @@ const selectionInitialCredits = chatRoute.slice(
   ),
 );
 assert.match(selectionInitialCredits, /beginPlaceRecommendationCredits/);
-assert.match(selectionInitialCredits, /INSUFFICIENT_CREDITS_PLACE_MESSAGE/);
+assert.match(selectionInitialCredits, /chatRuntimeCopy\("quotaPlaces", locale\)/);
 assert.match(selectionInitialCredits, /settleCreditsOperation\(creditsHandle, delivered\)/);
 
 const selectionContinuationCredits = chatRoute.slice(
@@ -466,7 +466,7 @@ const selectionContinuationCredits = chatRoute.slice(
 );
 assert.match(selectionContinuationCredits, /ensureSubscriptionHydratedForCredits/);
 assert.match(selectionContinuationCredits, /beginPlaceRecommendationCredits/);
-assert.match(selectionContinuationCredits, /INSUFFICIENT_CREDITS_PLACE_MESSAGE/);
+assert.match(selectionContinuationCredits, /chatRuntimeCopy\("quotaPlaces", locale\)/);
 assert.match(selectionContinuationCredits, /settleCreditsOperation\(creditsHandle, delivered\)/);
 assert.match(selectionContinuationCredits, /selectionRecommendationInFlightRef/);
 

@@ -2,24 +2,14 @@
  * Places Rate Protection — when rate-limited / quota near limit,
  * stop new Places calls and force cache-only (no retry).
  */
-import {
-  isPlacesRateLimited,
-  getPlacesApiCallStats,
-} from "@/lib/places-api-guard";
 import { logPlacesRateProtection } from "@/lib/ai/places-cost-cache/log";
 import { logPlacesSearchSkipped } from "@/lib/ai/places-cost-cache/log";
-
-/** Soft quota: if blocked count rises sharply in this generation, lock. */
-const BLOCKED_LOCK_THRESHOLD = 3;
 
 let rateProtectionActive = false;
 let rateProtectionReason = "";
 let rateProtectionUntil = 0;
 
-export function activatePlacesRateProtection(params: {
-  reason: string;
-  ttlMs?: number;
-}): void {
+export function activatePlacesRateProtection(params: { reason: string; ttlMs?: number }): void {
   rateProtectionActive = true;
   rateProtectionReason = params.reason;
   rateProtectionUntil = Date.now() + (params.ttlMs ?? 60_000);
@@ -43,21 +33,9 @@ export function isPlacesRateProtectionActive(now = Date.now()): boolean {
   }
   if (rateProtectionActive) return true;
 
-  // Auto-arm from Places guard signal
-  if (isPlacesRateLimited(now)) {
-    activatePlacesRateProtection({ reason: "PLACES_RATE_LIMIT_BLOCKED", ttlMs: 30_000 });
-    return true;
-  }
-
-  const stats = getPlacesApiCallStats();
-  if (stats.blocked >= BLOCKED_LOCK_THRESHOLD || stats.textRateLimited >= BLOCKED_LOCK_THRESHOLD) {
-    activatePlacesRateProtection({
-      reason: "quota_near_limit",
-      ttlMs: 45_000,
-    });
-    return true;
-  }
-
+  // Client window fullness is admitted in places-api-guard.
+  // A hot window must not sticky-lock the next foreground user action.
+  // HTTP 429 and explicit activatePlacesRateProtection still set this flag.
   return false;
 }
 

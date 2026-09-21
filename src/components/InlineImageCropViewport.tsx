@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { ImageCropErrorFallback } from "@/components/ImageCropErrorFallback";
 import {
@@ -72,6 +73,8 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
     },
     ref,
   ) {
+    const { t: uiT } = useI18n();
+
     const initialTransformRef = useRef(initialTransform);
     initialTransformRef.current = initialTransform;
     const cropFrameRef = useRef(cropFrame);
@@ -312,7 +315,9 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
           setImgSize({ w: prepared.width, h: prepared.height });
           setPreparing(false);
           if (gestureLogPrefixRef.current) {
-            console.info(`${gestureLogPrefixRef.current} ready w=${prepared.width} h=${prepared.height}`);
+            console.info(
+              `${gestureLogPrefixRef.current} ready w=${prepared.width} h=${prepared.height}`,
+            );
           }
 
           requestAnimationFrame(() => {
@@ -507,8 +512,7 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
     const touchDistance = (a: Touch, b: Touch) =>
       Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
 
-    const supportsPointerEvents =
-      typeof window !== "undefined" && "PointerEvent" in window;
+    const supportsPointerEvents = typeof window !== "undefined" && "PointerEvent" in window;
 
     const onTouchStart = (e: React.TouchEvent) => {
       if (supportsPointerEvents && pointerGestureRef.current) return;
@@ -680,7 +684,9 @@ export const InlineImageCropViewport = forwardRef<InlineImageCropHandle, Props>(
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2">
             <span className="h-5 w-5 animate-pulse rounded-full bg-muted-foreground/30" />
             {preparing ? (
-              <span className="text-xs text-muted-foreground/80">準備圖片中…</span>
+              <span className="text-xs text-muted-foreground/80">
+                {uiT("productionUi.pa80519a794")}
+              </span>
             ) : null}
           </div>
         ) : null}

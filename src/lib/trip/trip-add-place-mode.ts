@@ -1,4 +1,7 @@
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { getTripAddPlaceCopy } from "@/lib/i18n/trip-add-place-copy";
+import type { Locale } from "@/lib/i18n/types";
 
 export function isTripAddPlaceMode(session: ChatPlanningSession): boolean {
   return Boolean(
@@ -29,5 +32,6 @@ export function logTripAddPlaceMode(
   });
 }
 
-export const TRIP_ADD_PLACE_EMPTY_HINT =
-  "我可以依照目前行程幫你找順路地點。告訴我想找景點、咖啡廳或餐廳，也可以說「還有嗎」。";
+export function tripAddPlaceEmptyHint(locale: Locale = effectiveAppLocale()): string {
+  return getTripAddPlaceCopy(locale).emptyHint;
+}

@@ -1,8 +1,13 @@
 import type { ChatMsg } from "@/lib/chat-history";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
+import { chatLoadingCopy, type ChatLoadingPhase } from "@/lib/chat-runtime-copy";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { getTripAddPlaceCopy, tripAddPlacePlacesFound } from "@/lib/i18n/trip-add-place-copy";
+import type { Locale } from "@/lib/i18n/types";
 import { isTripAddPlaceMode } from "@/lib/trip/trip-add-place-mode";
 import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
+import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 import {
   createTripAddPlaceDedupRegistry,
   dedupeTripAddPlaceCandidates,
@@ -23,10 +28,19 @@ export type TripAddPlaceStructuredPlace = {
   source: "google_places";
 };
 
-export const TRIP_ADD_PLACE_RENDER_FAILED_MESSAGE =
-  "我找到地點了，但卡片載入失敗，請重新整理。";
+/** Canonical loading identity for itinerary → Chat recommendation. Display is locale-projected. */
+export const TRIP_ADD_PLACE_LOADING_PHASE =
+  "itinerary_route_recommendation" as const satisfies ChatLoadingPhase;
 
-export const TRIP_ADD_PLACE_HANDOFF_LOADING_MESSAGE = "正在依照你的行程找順路地點…";
+export function tripAddPlaceLoadingBubbleText(
+  message: Pick<ChatMsg, "loadingPhase" | "content">,
+  locale: Locale = effectiveAppLocale(),
+): string {
+  if (message.loadingPhase === TRIP_ADD_PLACE_LOADING_PHASE) {
+    return chatLoadingCopy(message.loadingPhase, locale);
+  }
+  return message.content;
+}
 
 function messageIdFromParts(summary: string, count: number): string {
   return `trip-add-${count}-${summary.length}`;
@@ -97,10 +111,7 @@ export function resolveTripAddPlaceMessageRecommendations(
   return [];
 }
 
-export function logTripAddPlaceRenderReady(
-  message: ChatMsg,
-  session: ChatPlanningSession,
-): void {
+export function logTripAddPlaceRenderReady(message: ChatMsg, session: ChatPlanningSession): void {
   const structured = message.structuredPlaces ?? [];
   const recs = message.roamie?.recommendations ?? [];
   console.info("[TRIP_ADD_PLACE_RENDER_READY]", {
@@ -129,10 +140,16 @@ export function buildTripAddPlaceChatMessage(params: {
   recommendations: RoamieRecommendationItem[];
   moodTag?: string;
   session: ChatPlanningSession;
+  locale?: Locale;
 }): ChatMsg {
   const { summary, recommendations, moodTag, session } = params;
-  const resolvedTag =
-    resolveRecommendationStyleTag(session, session.travelContext) || moodTag?.trim() || "";
+  const locale = params.locale ?? effectiveAppLocale();
+  const copy = getTripAddPlaceCopy(locale);
+  const resolvedTag = resolveDisplayedRecommendationBadge({
+    session,
+    context: session.travelContext,
+    moodTag: resolveRecommendationStyleTag(session, session.travelContext) || moodTag?.trim() || "",
+  });
   // 僅在本批訊息內去重；不可對 session shown 狀態再濾，否則 handoff 會把剛選中的卡全刪光
   const deduped = dedupeTripAddPlaceCandidates(
     recommendations,
@@ -144,8 +161,8 @@ export function buildTripAddPlaceChatMessage(params: {
   const text =
     summary.trim() ||
     (structuredPlaces.length > 0
-      ? `我幫你找了 ${structuredPlaces.length} 個順路地點，可以看看哪個最適合加入行程。`
-      : TRIP_ADD_PLACE_RENDER_FAILED_MESSAGE);
+      ? tripAddPlacePlacesFound(structuredPlaces.length, locale)
+      : copy.renderFailed);
 
   const message: ChatMsg = {
     role: "assistant",
@@ -177,8 +194,9 @@ export function buildTripAddPlaceChatMessage(params: {
 
 export function buildTripAddPlaceRenderFallbackMessage(
   session: ChatPlanningSession,
-  opts?: { candidatesCount?: number; error?: string | null },
+  opts?: { candidatesCount?: number; error?: string | null; locale?: Locale },
 ): ChatMsg {
+  const copy = getTripAddPlaceCopy(opts?.locale ?? effectiveAppLocale());
   logTripAddPlaceRenderEmpty({
     reason: opts?.error ? "handoff_error" : "render_failed",
     messagesCount: 0,
@@ -189,22 +207,32 @@ export function buildTripAddPlaceRenderFallbackMessage(
   });
   return {
     role: "assistant",
-    content: TRIP_ADD_PLACE_RENDER_FAILED_MESSAGE,
+    content: copy.renderFailed,
     structuredPlaces: [],
     roamie: {
       title: "Roamie 推薦",
-      summary: TRIP_ADD_PLACE_RENDER_FAILED_MESSAGE,
-      moodTag: resolveRecommendationStyleTag(session, session.travelContext) || session.mood || "",
+      summary: copy.renderFailed,
+      moodTag: resolveDisplayedRecommendationBadge({
+        session,
+        context: session.travelContext,
+        moodTag:
+          resolveRecommendationStyleTag(session, session.travelContext) || session.mood || "",
+      }),
       recommendations: [],
       itinerary: [],
     },
   };
 }
 
-export function buildTripAddPlaceLoadingMessage(): ChatMsg {
-  return {
+export function buildTripAddPlaceLoadingMessage(locale: Locale = effectiveAppLocale()): ChatMsg {
+  const message: ChatMsg = {
     role: "assistant",
-    content: TRIP_ADD_PLACE_HANDOFF_LOADING_MESSAGE,
+    loadingPhase: TRIP_ADD_PLACE_LOADING_PHASE,
+    content: "",
     structuredPlaces: [],
+  };
+  return {
+    ...message,
+    content: tripAddPlaceLoadingBubbleText(message, locale),
   };
 }

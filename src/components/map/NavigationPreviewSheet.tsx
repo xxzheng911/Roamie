@@ -1,6 +1,11 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { ChevronLeft, Loader2, MapPin, Navigation, User } from "lucide-react";
 import { MotorcycleIcon } from "@/components/map/MotorcycleIcon";
-import { TRAVEL_MODE_LABEL, type TravelModeEstimate, type TravelModeId } from "@/lib/estimate-travel-mode";
+import {
+  TRAVEL_MODE_LABEL,
+  type TravelModeEstimate,
+  type TravelModeId,
+} from "@/lib/estimate-travel-mode";
 import { cn } from "@/lib/utils";
 
 const TABS: { id: TravelModeId; label: string }[] = [
@@ -25,7 +30,7 @@ type Props = {
 
 export function NavigationPreviewSheet({
   placeName,
-  originLabel = "我的位置",
+  originLabel,
   modes,
   selectedMode,
   onSelectMode,
@@ -34,6 +39,7 @@ export function NavigationPreviewSheet({
   onBack,
   onStartNavigation,
 }: Props) {
+  const { t } = useI18n();
   const active = modes.find((m) => m.id === selectedMode) ?? modes[0];
 
   return (
@@ -43,15 +49,15 @@ export function NavigationPreviewSheet({
           <div className="flex items-start gap-2 text-sm">
             <User className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
             <div>
-              <p className="text-xs text-muted-foreground">起點</p>
-              <p className="font-medium">{originLabel}</p>
+              <p className="text-xs text-muted-foreground">{t("uiCoverage.origin")}</p>
+              <p className="font-medium">{originLabel ?? t("uiCoverage.myLocation")}</p>
             </div>
           </div>
           <div className="my-2 border-t border-dashed border-border/60" />
           <div className="flex items-start gap-2 text-sm">
             <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-clay" />
             <div>
-              <p className="text-xs text-muted-foreground">終點</p>
+              <p className="text-xs text-muted-foreground">{t("uiCoverage.destination")}</p>
               <p className="font-medium">{placeName}</p>
             </div>
           </div>
@@ -78,7 +84,7 @@ export function NavigationPreviewSheet({
               )}
             >
               {tab.id === "motorcycle" && <MotorcycleIcon className="h-3.5 w-3.5" />}
-              {tab.label}
+              {t(`uiCoverage.${tab.id}`)}
             </button>
           ))}
         </div>
@@ -87,7 +93,10 @@ export function NavigationPreviewSheet({
       <div className="mt-3 min-h-[120px] px-5">
         {loading && modes.length === 0 ? (
           <div className="flex justify-center py-8">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <Loader2
+              aria-label={t("uiCoverage.transportLoading")}
+              className="h-6 w-6 animate-spin text-muted-foreground"
+            />
           </div>
         ) : (
           <div className="space-y-2">
@@ -104,19 +113,17 @@ export function NavigationPreviewSheet({
                 )}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{m.label}</span>
+                  <span className="font-medium">{t(`uiCoverage.${m.id}`)}</span>
                   {m.recommended && (
                     <span className="rounded-full bg-clay/15 px-2 py-0.5 text-[10px] font-medium text-clay">
-                      Roamie 推薦
+                      {t("uiCoverage.recommended")}
                     </span>
                   )}
                 </div>
                 <p className="mt-1 text-sm text-foreground">
-                  {m.minutes} 分鐘
+                  {t("uiCoverage.minutes", { count: m.minutes })}
                   <span className="text-muted-foreground"> ・ {m.distanceLabel}</span>
-                  {m.costLabel && (
-                    <span className="text-muted-foreground"> ・ {m.costLabel}</span>
-                  )}
+                  {m.costLabel && <span className="text-muted-foreground"> ・ {m.costLabel}</span>}
                 </p>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{m.hint}</p>
               </button>
@@ -132,8 +139,8 @@ export function NavigationPreviewSheet({
           className="flex w-full items-center justify-center gap-2 rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground shadow-soft"
         >
           <Navigation className="h-4 w-4" />
-          開始導航
-          {active ? `・${active.label}` : ""}
+          {t("uiCoverage.navigate")}
+          {active ? `・${t(`uiCoverage.${active.id}`)}` : ""}
         </button>
       </div>
     </div>
@@ -141,17 +148,18 @@ export function NavigationPreviewSheet({
 }
 
 export function NavigationPreviewSheetHeader({ onBack }: { onBack: () => void }) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center gap-2 px-5 pb-1 pt-0">
       <button
         type="button"
         onClick={onBack}
         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-card shadow-soft transition active:scale-95"
-        aria-label="返回地點詳情"
+        aria-label={t("uiCoverage.backDetail")}
       >
         <ChevronLeft className="h-5 w-5" />
       </button>
-      <p className="font-display text-lg leading-tight">前往這裡</p>
+      <p className="font-display text-lg leading-tight">{t("uiCoverage.goHere")}</p>
     </div>
   );
 }

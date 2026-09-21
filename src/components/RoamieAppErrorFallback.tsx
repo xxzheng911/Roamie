@@ -1,3 +1,5 @@
+import { translate } from "@/lib/i18n/translate";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { RoamieMascotFigure } from "@/components/onboarding/RoamieMascotFigure";
 
 type Props = {
@@ -12,13 +14,13 @@ type Props = {
 
 /** 全 App 錯誤／啟動失敗時的 Roamie 品牌 fallback（非系統白屏） */
 export function RoamieAppErrorFallback({
-  title = "Roamie 暫時無法啟動",
-  message = "可能是連線或設定問題。你可以重試，或從頭開始載入。",
+  title = translate(effectiveAppLocale(), "productionUi.appStartError"),
+  message = translate(effectiveAppLocale(), "productionUi.appErrorBody"),
   detail = null,
   onRetry,
   onHome,
-  retryLabel = "重新整理",
-  homeLabel = "重新啟動",
+  retryLabel = translate(effectiveAppLocale(), "productionUi.refresh"),
+  homeLabel = translate(effectiveAppLocale(), "productionUi.restart"),
 }: Props) {
   const handleRetry = onRetry ?? (() => window.location.reload());
   const handleHome =

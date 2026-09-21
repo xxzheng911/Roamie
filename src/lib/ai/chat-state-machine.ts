@@ -6,6 +6,7 @@ import {
   resolveDestinationAdvice,
   type DestinationAdviceResult,
 } from "@/lib/ai/destination-advice";
+import type { Locale } from "@/lib/i18n/types";
 import type { PendingQuestion } from "@/lib/ai/destination-pending-question";
 import {
   sessionToUnifiedContext,
@@ -32,9 +33,10 @@ export function processAdviceTurn(
   session: ChatPlanningSession,
   context: CanonicalTravelContext,
   messageId?: string,
+  locale?: Locale,
 ): ChatTurnResult {
   const advice = persistPlanningShownCandidateContext(
-    resolveDestinationAdvice(context, session, userText),
+    resolveDestinationAdvice(context, session, userText, locale),
     session,
   );
   const sessionWithAdvice = applyAdviceResultToSession(session, advice);

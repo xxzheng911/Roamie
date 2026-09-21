@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useMemo, useState } from "react";
 import { Calendar } from "lucide-react";
 import { RoamiePickerSheet } from "@/components/pickers/RoamiePickerSheet";
@@ -46,6 +47,8 @@ export function CrossDayMoveSheet({
   dayOptions,
   onConfirm,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   const selectableDays = useMemo(
     () => dayOptions.filter((d) => d.dateKey !== sourceDateKey),
     [dayOptions, sourceDateKey],
@@ -95,21 +98,20 @@ export function CrossDayMoveSheet({
     <RoamiePickerSheet
       open={open}
       onOpenChange={onOpenChange}
-      title="跨天移動"
-      description={`將「${placeName}」從第 ${sourceDayNumber} 天移至其他天`}
+      title={uiT("productionUi.p718ccfe651")}
+      description={uiT("productionUi.moveDay", { name: placeName, day: sourceDayNumber })}
       onConfirm={handleConfirm}
-      confirmLabel="確認移動"
+      confirmLabel={uiT("productionUi.p746d0da02e")}
     >
       <div className="space-y-5 pb-2">
         <p className="text-center text-sm text-muted-foreground">
-          將「<span className="font-medium text-foreground">{placeName}</span>」從第{" "}
-          {sourceDayNumber} 天移至：
+          {uiT("productionUi.moveDay", { name: placeName, day: sourceDayNumber })}
         </p>
 
         <section>
           <p className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
             <Calendar className="h-3.5 w-3.5" />
-            目標天數
+            {uiT("productionUi.pe65065594f")}
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
             {selectableDays.map((d) => (
@@ -124,27 +126,29 @@ export function CrossDayMoveSheet({
                     : "border-border bg-card",
                 )}
               >
-                第 {d.dayNumber} 天
+                {uiT("productionUi.p64f877ec1a", { v0: d.dayNumber })}
               </button>
             ))}
           </div>
         </section>
 
         <section>
-          <span className="text-xs font-medium text-muted-foreground">插入順序</span>
+          <span className="text-xs font-medium text-muted-foreground">
+            {uiT("productionUi.p8d21c67ad2")}
+          </span>
           <select
             value={positionValue}
             onChange={(e) => setPositionValue(e.target.value as PositionValue)}
             disabled={!targetDay}
             className="mt-1.5 w-full rounded-2xl border border-border bg-card px-3 py-2.5 text-sm disabled:opacity-50"
           >
-            <option value="start">該天最前面</option>
-            <option value="end">該天最後面</option>
+            <option value="start">{uiT("productionUi.p57d35fcd18")}</option>
+            <option value="end">{uiT("productionUi.p33d3945011")}</option>
             {targetStops.map((stop, idx) => {
               const name = stop.localizedDisplayName ?? "";
               return (
                 <option key={`${stop.placeName}-${idx}`} value={`after:${idx}`}>
-                  第 {idx + 1} 個地點（{name}）後
+                  {uiT("productionUi.pbc26d0c8ef", { v0: idx + 1, v1: name })}
                 </option>
               );
             })}

@@ -17,7 +17,7 @@ import type { SavedPlace } from "@/lib/places-storage";
 import type { TravelPreferences } from "@/lib/preferences-storage";
 import type { WeatherSummary } from "@/lib/weather-types";
 
-const FREE_FEATURE_TAGS = ["長期旅行記憶", "個人化推薦", "無限 AI 對話"] as const;
+const FREE_FEATURE_TAGS = ["plusMemory", "plusPersonal", "plusUnlimited"] as const;
 
 type Props = {
   prefs?: TravelPreferences | null;
@@ -43,14 +43,17 @@ export function HomePersonalizationCard({
   className,
 }: Props) {
   const navigate = useNavigate();
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const { hasPlusAccess, subscriptionSource, entitlementDisplayStable } = useAccess();
   const { user } = useAuth();
   const { upgradeToPlus } = usePlusUpgrade();
   const sessionKey = user?.id ?? null;
-  const [plusInsight, setPlusInsight] = useState<string | null>(() =>
-    readHomeSessionPlusInsight(sessionKey),
-  );
+  const insightKey = JSON.stringify([sessionKey, locale]);
+  const [insightState, setInsightState] = useState(() => ({
+    key: insightKey,
+    text: readHomeSessionPlusInsight(sessionKey, locale),
+  }));
+  const plusInsight = insightState.key === insightKey ? insightState.text : null;
   const plusInsightReady = !hasPlusAccess || plusInsight !== null;
   const variant = resolveHomePersonalizationVariant(
     entitlementDisplayStable === true && plusInsightReady,
@@ -65,9 +68,9 @@ export function HomePersonalizationCard({
   }, [hasPlusAccess, subscriptionSource, entitlementDisplayStable]);
 
   useEffect(() => {
-    const cached = readHomeSessionPlusInsight(sessionKey);
-    setPlusInsight(cached);
-  }, [sessionKey]);
+    const cached = readHomeSessionPlusInsight(sessionKey, locale);
+    setInsightState({ key: insightKey, text: cached });
+  }, [sessionKey, locale, insightKey]);
 
   useEffect(() => {
     if (
@@ -79,8 +82,9 @@ export function HomePersonalizationCard({
     ) {
       return;
     }
-    setPlusInsight(
-      resolveHomeSessionPlusInsight(sessionKey, true, {
+    setInsightState({
+      key: insightKey,
+      text: resolveHomeSessionPlusInsight(sessionKey, true, {
         savedPlaces,
         prefs,
         selectedMood,
@@ -90,9 +94,10 @@ export function HomePersonalizationCard({
         chatSession,
         locale,
       }),
-    );
+    });
   }, [
     sessionKey,
+    insightKey,
     hasPlusAccess,
     entitlementDisplayStable,
     personalizationReady,
@@ -159,14 +164,16 @@ export function HomePersonalizationCard({
       <section className={className}>
         <div className="rounded-3xl border border-clay/25 bg-gradient-to-br from-accent/50 via-card to-secondary/40 p-5 shadow-soft">
           <p className="text-[11px] font-medium uppercase tracking-wide text-clay/90">
-            個人化旅遊中心
+            {t("uiCoverage.plusCenter")}
           </p>
           <div className="mt-2 flex items-start gap-3">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-card shadow-soft">
               <Sparkles className="h-5 w-5 text-clay" />
             </span>
             <div className="min-w-0 flex-1">
-              <h3 className="font-display text-[19px] leading-snug">Roamie 正在記住你的旅行節奏</h3>
+              <h3 className="font-display text-[19px] leading-snug">
+                {t("uiCoverage.plusLearning")}
+              </h3>
               <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{plusInsight}</p>
             </div>
           </div>
@@ -176,7 +183,7 @@ export function HomePersonalizationCard({
               onClick={handleStartPlusJourney}
               className="mx-auto w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
             >
-              開始規劃我的旅程
+              {t("uiCoverage.plusStart")}
             </button>
           </div>
         </div>
@@ -192,9 +199,9 @@ export function HomePersonalizationCard({
             <HeartHandshake className="h-5 w-5 text-clay" />
           </span>
           <div className="min-w-0 flex-1">
-            <h3 className="font-display text-[19px] leading-snug">讓 Roamie 更懂你</h3>
+            <h3 className="font-display text-[19px] leading-snug">{t("uiCoverage.plusTitle")}</h3>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              記住你的旅行偏好，讓每次推薦更貼近你。
+              {t("uiCoverage.plusBody")}
             </p>
             <ul className="mt-3 flex flex-wrap gap-1.5">
               {FREE_FEATURE_TAGS.map((tag) => (
@@ -202,7 +209,7 @@ export function HomePersonalizationCard({
                   key={tag}
                   className="rounded-full border border-border/80 bg-background/80 px-2.5 py-1 text-[11px] font-medium text-foreground/85"
                 >
-                  {tag}
+                  {t(`uiCoverage.${tag}`)}
                 </li>
               ))}
             </ul>
@@ -212,7 +219,7 @@ export function HomePersonalizationCard({
                 onClick={handleUpgradePlus}
                 className="w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-[0.99]"
               >
-                升級 Plus
+                {t("uiCoverage.plusUpgrade")}
               </button>
             </div>
           </div>

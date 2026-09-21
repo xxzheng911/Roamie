@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 /// <reference types="google.maps" />
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getGoogleMapsBrowserKeyError } from "@/lib/google-maps-client";
@@ -16,10 +17,7 @@ import {
   isGoogleMapsOverlayReady,
   resolveUserMarkerAvatarSrc,
 } from "@/lib/map-user-location-marker";
-import {
-  applyMapVisiblePadding,
-  type MapVisiblePadding,
-} from "@/lib/map-visible-padding";
+import { applyMapVisiblePadding, type MapVisiblePadding } from "@/lib/map-visible-padding";
 
 const LOG = "[Roamie Maps]";
 
@@ -64,6 +62,8 @@ export function GoogleMap({
   mapPadding,
   onMapClick,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const centerRef = useRef(center);
   centerRef.current = center;
@@ -350,7 +350,7 @@ export function GoogleMap({
     <div
       ref={setContainerRef}
       className={`relative z-0 h-full min-h-[240px] w-full overflow-hidden ${className ?? ""}`}
-      aria-label="Google 地圖"
+      aria-label={uiT("productionUi.p0ef775348c")}
     />
   );
 }

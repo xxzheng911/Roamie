@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
@@ -6,20 +7,10 @@ import { AuthSignInError } from "@/components/auth/AuthSignInError";
 import { finishPostAuthRedirect } from "@/lib/auth-post-redirect";
 import { completeSignInAfterAuth } from "@/lib/complete-sign-in";
 import { resolveAuthenticatedHomePath } from "@/lib/post-auth-navigation";
-import {
-  guardStartupTarget,
-  logStartupNavigationContext,
-} from "@/lib/startup-navigation";
+import { guardStartupTarget, logStartupNavigationContext } from "@/lib/startup-navigation";
 import { getClientAuthSession } from "@/lib/auth-session";
-import {
-  readStashedOAuthRedirectTarget,
-  stripOAuthParamsFromUrl,
-} from "@/lib/auth-oauth";
-import {
-  logAuthCallbackOpened,
-  logAuthError,
-  logAuthSessionResult,
-} from "@/lib/auth-debug";
+import { readStashedOAuthRedirectTarget, stripOAuthParamsFromUrl } from "@/lib/auth-oauth";
+import { logAuthCallbackOpened, logAuthError, logAuthSessionResult } from "@/lib/auth-debug";
 import { resolveSessionFromCallbackUrl } from "@/lib/auth-session-from-url";
 import { clearPendingCallbackPath } from "@/lib/auth-oauth-deep-link";
 import { clearAuthState, resetToLoginScreen } from "@/lib/clear-auth-state";
@@ -47,6 +38,8 @@ export const Route = createFileRoute("/auth/callback")({
 });
 
 function AuthCallback() {
+  const { t: uiT } = useI18n();
+
   const routeSearch = Route.useSearch();
   const navigate = useNavigate();
   const [status, setStatus] = useState("正在完成登入…");
@@ -61,7 +54,11 @@ function AuthCallback() {
         "auth-callback",
       );
     await logStartupNavigationContext("auth-callback", next, { step });
-    finishPostAuthRedirect(next, (opts) => navigate({ to: opts.to, replace: opts.replace }), "auth-callback");
+    finishPostAuthRedirect(
+      next,
+      (opts) => navigate({ to: opts.to, replace: opts.replace }),
+      "auth-callback",
+    );
   };
 
   const runCallback = async () => {
@@ -74,7 +71,10 @@ function AuthCallback() {
 
     const existing = await getClientAuthSession();
     if (existing?.user) {
-      logAuthSessionResult(true, { step: "callback.skip_existing_session", userId: existing.user.id });
+      logAuthSessionResult(true, {
+        step: "callback.skip_existing_session",
+        userId: existing.user.id,
+      });
       clearPendingCallbackPath();
       stripOAuthParamsFromUrl();
       await finishAuthRedirect("skip_existing_session");
@@ -167,14 +167,14 @@ function AuthCallback() {
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-6 px-6 py-10">
           <AuthSignInError
             message={error}
-            hint="請確認 Supabase Redirect URLs 已加入 roamie://auth/callback（與本機開發用 http://localhost:8080/auth/callback）"
+            hint={uiT("productionUi.signInRetryHint")}
             onRetry={() => {
               void resetToLoginScreen({
                 reason: "oauth-callback-return-login",
                 navigate: (opts) => navigate({ to: opts.to, replace: opts.replace ?? true }),
               });
             }}
-            retryLabel="返回登入"
+            retryLabel={uiT("productionUi.pedccf5e77a")}
           />
         </div>
       </MobileFrame>

@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { Heart, Loader2, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +23,8 @@ export function PlaceActionRow({
   className,
   compact,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   return (
     <div className={cn("flex flex-wrap gap-2", className)}>
       <button
@@ -32,7 +35,7 @@ export function PlaceActionRow({
           "inline-flex items-center justify-center gap-1.5 rounded-full border border-border bg-card font-medium transition active:scale-[0.98] disabled:opacity-50",
           compact ? "px-3 py-1.5 text-[11px]" : "px-4 py-2 text-sm",
         )}
-        aria-label={isSaved ? "已收藏" : saveLabel}
+        aria-label={isSaved ? uiT("productionUi.p471dd4d7f8") : saveLabel}
       >
         {isBusy ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />

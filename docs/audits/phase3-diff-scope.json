@@ -1,0 +1,793 @@
+{
+  "head": "62fb6901c59ae16d7d01ec85a5571548fbeba4c9",
+  "initialPaths": 97,
+  "finalPaths": 129,
+  "classification": "One primary category per path; E takes precedence for paths shared with earlier phases.",
+  "counts": {
+    "A": 2,
+    "B": 0,
+    "C": 24,
+    "D": 49,
+    "E": 34,
+    "F": 9,
+    "G": 9,
+    "H": 2,
+    "I": 0
+  },
+  "paths": [
+    {
+      "path": "scripts/verify-home-personalization-entitlement-ui.mjs",
+      "category": "F",
+      "changedThisPhase": false,
+      "reason": "Regression / localization inventory and completeness verification."
+    },
+    {
+      "path": "scripts/verify-plus-purchase-ui.mjs",
+      "category": "F",
+      "changedThisPhase": false,
+      "reason": "Regression / localization inventory and completeness verification."
+    },
+    {
+      "path": "src/components/AppErrorBoundary.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/DayOutfitCard.tsx",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/components/GoogleMap.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/ImageCropErrorFallback.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/ImageSourceSheet.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/InlineImageCropViewport.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/LegalDocumentOverlay.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/LegalDocumentPage.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/MapErrorBoundary.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/MapExploreSheet.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/PlaceActionRow.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/PlaceNavButtons.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/PlaceSearchPanel.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/ProfileCover.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/RoamieAppErrorFallback.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/RoamieResponseView.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/RoamieRoutePending.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/TripPlanEditor.tsx",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/components/chat/ChatComposer.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/home/HomeNearbyPlaceCards.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/home/HomePersonalizationCard.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/home/HomeTripCard.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/map/MapExplorePlaceCards.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/map/MapExploreSearchResults.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/map/MapSearchBarOverlay.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/map/NavigationPreviewSheet.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/map/PlaceDetailSheet.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/components/media/SharedImageCropEditor.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/pickers/RoamieCalendar.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/pickers/RoamieDatePicker.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/pickers/RoamieDurationPicker.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/pickers/RoamiePickerSheet.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/pickers/RoamieTimePicker.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/saved/CrossDayMoveSheet.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/saved/SavedPlaceRemoveConfirmDialog.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/saved/SavedPlacesPickSheet.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/saved/SavedTripCard.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/saved/SavedTripItineraryEditor.tsx",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/components/saved/TripLocationCard.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/saved/TripOutfitCard.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/saved/TripPlaceCard.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/saved/TripRemoveDayConfirmDialog.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/saved/TripTransportPicker.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/travel-preference/TravelPreferenceQuizPage.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/trip/TripAffiliateSection.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/trip/TripDetailScreen.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/components/trip/TripSharePanel.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/generated/app-bundle-meta.ts",
+      "category": "H",
+      "changedThisPhase": false,
+      "reason": "Pre-existing native retest generated metadata/artifact; byte-for-byte unchanged in Phase 3. Duplicate XML matches config.xml and has no Xcode project reference."
+    },
+    {
+      "path": "src/hooks/use-add-to-trip.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/hooks/use-home-weather.ts",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/hooks/use-place-navigation.ts",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/hooks/use-trip-outfit-suggestion.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/ai/combination-theme-titles.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/ai/country-city-options.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/ai/destination-travel-profile.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/ai/stream-client.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/ai/types.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/chat-history.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/chat-session.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/chat-shortcut-chips.ts",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/lib/enrich-roamie-places.server.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/estimate-travel-mode.ts",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/lib/explore-search-radius.ts",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/lib/home-personalization-insight.ts",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/lib/i18n/messages.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/itinerary-source.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/itinerary.functions.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/mood-chat-handoff.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/outfit/build-advice.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/outfit/fallback-outfit.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/outfit/generate-trip-outfit.server.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/outfit/local-trip-outfit-fallback.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/outfit/outfit-ai.server.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/outfit/outfit.functions.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/outfit/types.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/picker-utils.ts",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/lib/place-category.ts",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/lib/recommendation-storage.ts",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/lib/saved-trip/trip-payload-fingerprint.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/transit/build-legs.server.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/travel-pref-sync.ts",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/lib/trip/core-trip.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/weather-scene.ts",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/providers/AppProviders.tsx",
+      "category": "A",
+      "changedThisPhase": false,
+      "reason": "Previously tested Provider/Auth shared hierarchy and route continuation fix; unchanged in Phase 3."
+    },
+    {
+      "path": "src/providers/PlusPurchaseProvider.tsx",
+      "category": "A",
+      "changedThisPhase": false,
+      "reason": "Previously tested Provider/Auth shared hierarchy and route continuation fix; unchanged in Phase 3."
+    },
+    {
+      "path": "src/routes/__root.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/_app.chat.tsx",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/routes/_app.index.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/routes/_app.map.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/routes/_app.place.tsx",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/routes/_app.plan.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/_app.profile.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/_app.recommendations.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/_app.saved.index.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/_app.settings.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/api/chat.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/routes/api/roamie.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/routes/auth.callback.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/login.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/privacy.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/support.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/trip-invite.$token.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/routes/trip.tsx",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "docs/audits/phase2-production-localization.md",
+      "category": "G",
+      "changedThisPhase": false,
+      "reason": "Per-occurrence localization inventory, scope audit or verification evidence."
+    },
+    {
+      "path": "docs/audits/phase2-reachability.json",
+      "category": "G",
+      "changedThisPhase": false,
+      "reason": "Per-occurrence localization inventory, scope audit or verification evidence."
+    },
+    {
+      "path": "docs/audits/phase2-verification-results.json",
+      "category": "G",
+      "changedThisPhase": false,
+      "reason": "Per-occurrence localization inventory, scope audit or verification evidence."
+    },
+    {
+      "path": "docs/audits/phase3-diff-scope.json",
+      "category": "G",
+      "changedThisPhase": true,
+      "reason": "Per-occurrence localization inventory, scope audit or verification evidence."
+    },
+    {
+      "path": "docs/audits/phase3-finalization.md",
+      "category": "G",
+      "changedThisPhase": true,
+      "reason": "Per-occurrence localization inventory, scope audit or verification evidence."
+    },
+    {
+      "path": "docs/audits/phase3-verification-results.json",
+      "category": "G",
+      "changedThisPhase": true,
+      "reason": "Per-occurrence localization inventory, scope audit or verification evidence."
+    },
+    {
+      "path": "docs/audits/ui-chinese-leakage-allowlist.json",
+      "category": "G",
+      "changedThisPhase": true,
+      "reason": "Per-occurrence localization inventory, scope audit or verification evidence."
+    },
+    {
+      "path": "docs/audits/ui-chinese-leakage-remaining.json",
+      "category": "G",
+      "changedThisPhase": true,
+      "reason": "Per-occurrence localization inventory, scope audit or verification evidence."
+    },
+    {
+      "path": "docs/audits/ui-language-coverage.md",
+      "category": "G",
+      "changedThisPhase": false,
+      "reason": "Per-occurrence localization inventory, scope audit or verification evidence."
+    },
+    {
+      "path": "ios/App/App/config 2.xml",
+      "category": "H",
+      "changedThisPhase": false,
+      "reason": "Pre-existing native retest generated metadata/artifact; byte-for-byte unchanged in Phase 3. Duplicate XML matches config.xml and has no Xcode project reference."
+    },
+    {
+      "path": "scripts/audit-ui-chinese-leakage.mjs",
+      "category": "F",
+      "changedThisPhase": true,
+      "reason": "Regression / localization inventory and completeness verification."
+    },
+    {
+      "path": "scripts/classify-ui-reachability.mjs",
+      "category": "F",
+      "changedThisPhase": false,
+      "reason": "Regression / localization inventory and completeness verification."
+    },
+    {
+      "path": "scripts/verify-generated-locale-contract.mjs",
+      "category": "F",
+      "changedThisPhase": true,
+      "reason": "Regression / localization inventory and completeness verification."
+    },
+    {
+      "path": "scripts/verify-plus-provider-auth.mjs",
+      "category": "F",
+      "changedThisPhase": false,
+      "reason": "Regression / localization inventory and completeness verification."
+    },
+    {
+      "path": "scripts/verify-production-ui-locales.mjs",
+      "category": "F",
+      "changedThisPhase": false,
+      "reason": "Regression / localization inventory and completeness verification."
+    },
+    {
+      "path": "scripts/verify-production-ui-reachability.mjs",
+      "category": "F",
+      "changedThisPhase": true,
+      "reason": "Regression / localization inventory and completeness verification."
+    },
+    {
+      "path": "scripts/verify-ui-language-coverage.mjs",
+      "category": "F",
+      "changedThisPhase": false,
+      "reason": "Regression / localization inventory and completeness verification."
+    },
+    {
+      "path": "src/lib/generated-display-projection.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/generated-locale.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/i18n/destination-editorial.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/i18n/production-ui.ts",
+      "category": "D",
+      "changedThisPhase": false,
+      "reason": "Phase 2 production UI / legal / errors / picker / saved-trip locale coverage; existing changes retained."
+    },
+    {
+      "path": "src/lib/i18n/ui-coverage.ts",
+      "category": "C",
+      "changedThisPhase": false,
+      "reason": "Phase 1 Home / chips / transport / Explore canonical locale display and cache projection; existing changes retained."
+    },
+    {
+      "path": "src/lib/outfit/localized-outfit-copy.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    },
+    {
+      "path": "src/lib/recommendation-display-locale.ts",
+      "category": "E",
+      "changedThisPhase": true,
+      "reason": "Phase 3 editorial display projection, generatedLocale persistence/legacy handling, or generated outfit/trip/enrichment copy."
+    }
+  ]
+}

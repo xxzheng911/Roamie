@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useMemo, useState } from "react";
 import { Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -20,7 +21,7 @@ const MINUTES = Array.from({ length: 60 }, (_, i) => {
 type Props = {
   value: string;
   onChange: (value: string) => void;
-  title?: TimePickerTitle;
+  title?: string;
   label?: string;
   placeholder?: string;
   disabled?: boolean;
@@ -35,14 +36,23 @@ type Props = {
 export function RoamieTimePicker({
   value,
   onChange,
-  title = "時間",
+  title,
   label,
-  placeholder = "選擇時間",
+  placeholder,
   disabled,
   className,
   compact,
   inline,
 }: Props) {
+  const { t } = useI18n();
+  const displayTitle =
+    title === "出發時間"
+      ? t("productionUi.departure")
+      : title === "抵達時間"
+        ? t("productionUi.p6081a12224")
+        : title === "時間" || !title
+          ? t("productionUi.time")
+          : title;
   const [open, setOpen] = useState(false);
   const normalized = normalizeTime(value || "10:00");
   const [draftHour, setDraftHour] = useState(normalized.slice(0, 2));
@@ -75,12 +85,12 @@ export function RoamieTimePicker({
             className,
           )}
         >
-          {display || placeholder}
+          {display || placeholder || t("productionUi.chooseTime")}
         </button>
         <RoamiePickerSheet
           open={open}
           onOpenChange={setOpen}
-          title={title}
+          title={displayTitle}
           onConfirm={handleConfirm}
           onCancel={() => {
             const n = normalizeTime(value || "10:00");
@@ -120,16 +130,14 @@ export function RoamieTimePicker({
         )}
       >
         <span className="min-w-0 flex-1">
-          {label && (
-            <span className="block text-[11px] text-muted-foreground">{label}</span>
-          )}
+          {label && <span className="block text-[11px] text-muted-foreground">{label}</span>}
           <span
             className={cn(
               "block text-[15px] font-medium",
               display ? "text-foreground" : "text-muted-foreground",
             )}
           >
-            {display || placeholder}
+            {display || placeholder || t("productionUi.chooseTime")}
           </span>
         </span>
         <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -138,7 +146,7 @@ export function RoamieTimePicker({
       <RoamiePickerSheet
         open={open}
         onOpenChange={setOpen}
-        title={title}
+        title={displayTitle}
         onConfirm={handleConfirm}
         onCancel={() => {
           const n = normalizeTime(value || "10:00");
@@ -153,7 +161,9 @@ export function RoamieTimePicker({
             onChange={setDraftHour}
             resetKey={open}
           />
-          <span className="flex items-center pb-2 text-2xl font-medium text-muted-foreground">:</span>
+          <span className="flex items-center pb-2 text-2xl font-medium text-muted-foreground">
+            :
+          </span>
           <RoamieWheelColumn
             options={MINUTES}
             value={draftMin}

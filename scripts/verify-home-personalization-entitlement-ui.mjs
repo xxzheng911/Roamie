@@ -21,7 +21,7 @@ test("Home renders skeleton until entitlement display state is stable", () => {
   assert.match(card, /if \(variant === "skeleton"\)/);
   const skeleton = card.indexOf('if (variant === "skeleton")');
   const plus = card.indexOf('if (variant === "plus")');
-  const free = card.indexOf("讓 Roamie 更懂你");
+  const free = card.indexOf("uiCoverage.plusTitle");
   assert.ok(skeleton >= 0 && plus > skeleton && free > plus);
 });
 

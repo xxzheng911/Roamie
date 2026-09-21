@@ -1,3 +1,4 @@
+import { encodeGeneratedChatContent } from "@/lib/generated-locale";
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import { parseRoamieRequest, streamRoamieAI } from "@/lib/ai/service.server";
@@ -9,6 +10,7 @@ import {
 import { checkRateLimit, SECURITY_RATE_LIMITS } from "@/lib/rate-limit.server";
 
 const BodySchema = z.object({
+  locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   messages: z
     .array(
       z.object({
@@ -59,6 +61,7 @@ export const Route = createFileRoute("/api/chat")({
         const lastUser = [...body.messages].reverse().find((m) => m.role === "user");
         const ctx = parseRoamieRequest({
           mode: "chat",
+          locale: body.locale,
           messages: body.messages,
           chatInput: lastUser?.content,
           preferences: body.preferences,
@@ -108,7 +111,7 @@ export const Route = createFileRoute("/api/chat")({
               await auth.client.from("chat_messages").insert({
                 user_id: auth.userId,
                 role: "assistant",
-                content: raw.trim(),
+                content: encodeGeneratedChatContent(raw.trim(), ctx.locale ?? "zh-TW"),
               });
             } catch (e) {
               await settleServerCredits(auth, reservation, false);

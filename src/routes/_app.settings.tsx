@@ -53,6 +53,8 @@ function providerLabel(provider: AuthProviderKind | null, t: (key: string) => st
 }
 
 function SettingsPage() {
+  const { t: uiT } = useI18n();
+
   const { t, locale } = useI18n();
   const { user, signOut, loading: authLoading } = useAuth();
   const navigate = useNavigate();
@@ -229,7 +231,7 @@ function SettingsPage() {
         hasSession: false,
         isDeleting: deletingAccount,
       });
-      toast.error("登入狀態已失效，請重新登入後再刪除帳號。");
+      toast.error(uiT("productionUi.p4ed06f54ee"));
       return;
     }
     if (deletingAccount) {
@@ -257,23 +259,23 @@ function SettingsPage() {
         });
         if (result.cancelled) return;
         if (result.code === "recent_auth_required") {
-          toast.error("為了保護帳號，請先登出並重新登入，再立即刪除帳號。");
+          toast.error(uiT("productionUi.p6337422ee2"));
           return;
         }
         toast.error(
           result.code.includes("storage")
-            ? "媒體資料刪除失敗，請重試。帳號尚未刪除。"
-            : "帳號刪除失敗，請稍後重試。",
+            ? uiT("productionUi.p5205642ad8")
+            : uiT("productionUi.p5793dc384c"),
         );
         return;
       }
       setDeleteAccountDialogOpen(false);
       await clearRevenueCatIdentityAfterAccountDeletion().catch(() => undefined);
       await clearDeletedAccountLocalData(user.id);
-      toast.success("Roamie 帳號已永久刪除");
+      toast.success(uiT("productionUi.p1efb89f3a7"));
       await navigate({ to: "/login", replace: true });
     } catch {
-      toast.error("帳號刪除失敗，請確認網路後重試。帳號尚未刪除。");
+      toast.error(uiT("productionUi.p3c605d25a4"));
     } finally {
       setDeletingAccount(false);
     }
@@ -404,7 +406,7 @@ function SettingsPage() {
             onClick={() => setCancelSubscriptionDialogOpen(true)}
             className="px-2 py-1 text-center text-sm leading-5 text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
           >
-            取消訂閱
+            {uiT("productionUi.p8596803a4e")}
           </button>
         ) : null}
 
@@ -414,7 +416,7 @@ function SettingsPage() {
             onClick={() => setDeleteAccountDialogOpen(true)}
             className="px-2 py-1 text-center text-sm leading-5 text-destructive underline-offset-4 hover:underline"
           >
-            刪除帳號
+            {uiT("productionUi.p6768c74aa0")}
           </button>
         ) : null}
       </div>
@@ -425,25 +427,21 @@ function SettingsPage() {
       >
         <AlertDialogContent className="mx-auto max-w-[calc(100%-2rem)] rounded-2xl sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>確定要取消 Roamie Plus 嗎？</AlertDialogTitle>
+            <AlertDialogTitle>{uiT("productionUi.pa7198438d4")}</AlertDialogTitle>
             <AlertDialogDescription className="space-y-2 text-left leading-relaxed">
-              <span className="block">
-                取消後，Plus 功能仍可使用至目前訂閱期限結束。之後將自動回到 Free 方案。
-              </span>
-              <span className="block">
-                你的旅行偏好、收藏與既有資料不會被刪除，之後也可以隨時重新訂閱。
-              </span>
+              <span className="block">{uiT("productionUi.pc4226b00b9")}</span>
+              <span className="block">{uiT("productionUi.p6b4c4d55ab")}</span>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
             <AlertDialogCancel className="mt-0 w-full rounded-full bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground">
-              繼續使用 Plus
+              {uiT("productionUi.p5423f3ae84")}
             </AlertDialogCancel>
             <AlertDialogAction
               className="w-full rounded-full border border-border bg-card text-muted-foreground hover:bg-secondary hover:text-foreground"
               onClick={() => void handleManageSubscription()}
             >
-              前往取消訂閱
+              {uiT("productionUi.p3fbbfba615")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -452,16 +450,11 @@ function SettingsPage() {
       <AlertDialog open={deleteAccountDialogOpen} onOpenChange={setDeleteAccountDialogOpen}>
         <AlertDialogContent className="mx-auto max-w-[calc(100%-2rem)] rounded-2xl sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>確定要刪除帳號嗎？</AlertDialogTitle>
+            <AlertDialogTitle>{uiT("productionUi.p1c72526e0a")}</AlertDialogTitle>
             <AlertDialogDescription className="space-y-3 text-left leading-relaxed">
-              <span className="block">
-                此操作無法復原。刪除後，你的已儲存行程、收藏、聊天紀錄、旅行偏好與帳號資料將被永久刪除。
-              </span>
+              <span className="block">{uiT("productionUi.pe4327fa225")}</span>
               {canManageAppleSubscription ? (
-                <span className="block">
-                  刪除 Roamie 帳號不會自動取消你的 App Store 訂閱。若不希望後續續訂，請先前往 Apple
-                  管理訂閱。
-                </span>
+                <span className="block">{uiT("productionUi.p3fb1f69950")}</span>
               ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -471,12 +464,12 @@ function SettingsPage() {
               className="w-full text-center text-sm text-muted-foreground underline"
               onClick={() => void handleManageSubscription()}
             >
-              管理訂閱
+              {uiT("productionUi.p2b31713e1e")}
             </button>
           ) : null}
           <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
             <AlertDialogCancel className="mt-0 w-full rounded-full" disabled={deletingAccount}>
-              保留我的帳號
+              {uiT("productionUi.p4b057c44d8")}
             </AlertDialogCancel>
             <AlertDialogAction
               className="w-full rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90"
@@ -486,7 +479,7 @@ function SettingsPage() {
                 void handleDeleteAccount();
               }}
             >
-              {deletingAccount ? "正在永久刪除…" : "永久刪除帳號"}
+              {deletingAccount ? uiT("productionUi.p9b95f7ba5c") : uiT("productionUi.p3c15ab37f6")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

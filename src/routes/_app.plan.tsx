@@ -75,6 +75,8 @@ export const Route = createFileRoute("/_app/plan")({
 });
 
 function PlanPage() {
+  const { t: uiT } = useI18n();
+
   const { t, locale } = useI18n();
   const { scrollInputAboveKeyboard } = useFormKeyboardOpen("plan-keyboard-open");
   const search = Route.useSearch();
@@ -111,18 +113,36 @@ function PlanPage() {
     if (!isValidTripPlaceRef(destRef)) {
       logTripPlace("destination", "validation", { reason: "missing_destination" });
       toast.error(t("plan.selectPlaceFromList"));
-      logPlanSubmitValidation({ destinationValid, departureState, blocked: true, blockedReason: "destination_unresolved" });
+      logPlanSubmitValidation({
+        destinationValid,
+        departureState,
+        blocked: true,
+        blockedReason: "destination_unresolved",
+      });
       return false;
     }
     if (departureState === "text_unresolved") {
       logTripPlace("start", "validation", { reason: "text_unresolved" });
       toast.error(t("plan.pickPlaceFromResults"));
-      logPlanDepartureAuthority({ departureText: originText, selectedDeparture: start, source: "stale_rejected" });
-      logPlanSubmitValidation({ destinationValid, departureState, blocked: true, blockedReason: "departure_text_unresolved" });
+      logPlanDepartureAuthority({
+        departureText: originText,
+        selectedDeparture: start,
+        source: "stale_rejected",
+      });
+      logPlanSubmitValidation({
+        destinationValid,
+        departureState,
+        blocked: true,
+        blockedReason: "departure_text_unresolved",
+      });
       return false;
     }
     if (departureState === "omitted") {
-      logPlanDepartureAuthority({ departureText: originText, selectedDeparture: start, source: "visible_empty" });
+      logPlanDepartureAuthority({
+        departureText: originText,
+        selectedDeparture: start,
+        source: "visible_empty",
+      });
       logPlanSubmitValidation({ destinationValid, departureState, blocked: false });
       return true;
     }
@@ -130,7 +150,12 @@ function PlanPage() {
     if (!isValidTripPlaceRef(startRef)) {
       logTripPlace("start", "validation", { reason: "invalid_start" });
       toast.error(t("plan.selectPlaceFromList"));
-      logPlanSubmitValidation({ destinationValid, departureState, blocked: true, blockedReason: "departure_invalid" });
+      logPlanSubmitValidation({
+        destinationValid,
+        departureState,
+        blocked: true,
+        blockedReason: "departure_invalid",
+      });
       return false;
     }
     if (
@@ -140,10 +165,19 @@ function PlanPage() {
     ) {
       logTripPlace("destination", "validation", { reason: "same_as_start" });
       toast.error(t("plan.samePlace"));
-      logPlanSubmitValidation({ destinationValid, departureState, blocked: true, blockedReason: "same_place" });
+      logPlanSubmitValidation({
+        destinationValid,
+        departureState,
+        blocked: true,
+        blockedReason: "same_place",
+      });
       return false;
     }
-    logPlanDepartureAuthority({ departureText: originText, selectedDeparture: start, source: "user_selection" });
+    logPlanDepartureAuthority({
+      departureText: originText,
+      selectedDeparture: start,
+      source: "user_selection",
+    });
     logPlanSubmitValidation({ destinationValid, departureState, blocked: false });
     return true;
   };
@@ -597,6 +631,7 @@ function PlanPage() {
                 }}
                 placeholder={t("plan.datePlaceholder")}
                 disabled={loading}
+                className="min-w-0"
               />
             </div>
           </section>
@@ -608,7 +643,7 @@ function PlanPage() {
 
           <section>
             <label className="text-sm font-medium">{t("plan.travelers")}</label>
-            <div className="mt-2 flex flex-wrap gap-2">
+            <div className="mt-2 flex min-w-0 flex-wrap gap-2">
               {TRAVELER_QUICK.map((n) => (
                 <button
                   key={n}
@@ -618,20 +653,20 @@ function PlanPage() {
                     setTravelersCustom(false);
                     setTravelers(n);
                   }}
-                  className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
+                  className={`max-w-full whitespace-normal rounded-full border px-3.5 py-1.5 text-xs leading-snug transition ${
                     !travelersCustom && travelers === n
                       ? "border-foreground bg-foreground text-background"
                       : "border-border bg-card"
                   }`}
                 >
-                  {n} 人
+                  {uiT("productionUi.p8eb5a6b731", { v0: n })}
                 </button>
               ))}
               <button
                 type="button"
                 disabled={loading}
                 onClick={() => setTravelersCustom(true)}
-                className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
+                className={`max-w-full whitespace-normal rounded-full border px-3.5 py-1.5 text-xs leading-snug transition ${
                   travelersCustom
                     ? "border-foreground bg-foreground text-background"
                     : "border-border bg-card"
@@ -661,23 +696,25 @@ function PlanPage() {
             ) : null}
           </section>
 
-          <section>
+          <section className="min-w-0">
             <label className="text-sm font-medium">{t("plan.budget")}</label>
-            <div className="mt-2 grid grid-cols-4 gap-1.5">
+            <div className="plan-budget-grid mt-2">
               {budgetOptions.map((b) => (
                 <button
                   key={b.value}
                   type="button"
                   onClick={() => setBudgetMode(b.value)}
                   disabled={loading}
-                  className={`flex min-h-[3.25rem] flex-col items-center justify-center rounded-2xl border px-2 py-2 text-center transition ${
+                  className={`flex min-h-11 w-full min-w-0 flex-col items-center justify-center rounded-2xl border px-2.5 py-2 text-center transition ${
                     budgetMode === b.value
                       ? "border-foreground bg-foreground text-background"
                       : "border-border bg-card"
                   }`}
                 >
-                  <span className="block h-5 text-sm font-medium leading-5">{b.label}</span>
-                  <span className="mt-1 block h-3.5 whitespace-nowrap text-[10px] leading-[14px] opacity-70">
+                  <span className="w-full whitespace-normal break-words text-sm font-medium leading-snug">
+                    {b.label}
+                  </span>
+                  <span className="mt-1 w-full whitespace-normal break-words text-xs leading-snug opacity-70">
                     {b.hint}
                   </span>
                 </button>
@@ -685,18 +722,16 @@ function PlanPage() {
             </div>
           </section>
 
-          <section>
+          <section className="min-w-0">
             <label className="text-sm font-medium">{t("plan.transport")}</label>
-            <div className="-mx-1 mt-2 flex max-w-full gap-1 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="mt-2 flex min-w-0 gap-1.5 overflow-x-auto overscroll-x-contain pe-4 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {transportOptions.map((option) => (
                 <button
                   key={option.value}
                   type="button"
-                  onClick={() =>
-                    setTransport(transport === option.value ? "" : option.value)
-                  }
+                  onClick={() => setTransport(transport === option.value ? "" : option.value)}
                   disabled={loading}
-                  className={`min-h-9 shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1.5 text-xs transition ${
+                  className={`inline-flex min-h-11 shrink-0 items-center whitespace-nowrap rounded-full border px-3 py-1.5 text-xs leading-snug transition ${
                     transport === option.value
                       ? "border-foreground bg-foreground text-background"
                       : "border-border bg-card"
@@ -708,16 +743,16 @@ function PlanPage() {
             </div>
           </section>
 
-          <section>
+          <section className="min-w-0">
             <label className="text-sm font-medium">{t("plan.styles")}</label>
-            <div className="mt-2 flex flex-wrap gap-2">
+            <div className="mt-2 flex min-w-0 flex-wrap gap-2">
               {styleOptions.map((s) => (
                 <button
                   key={s}
                   type="button"
                   onClick={() => toggle(styles, s, setStyles)}
                   disabled={loading}
-                  className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
+                  className={`max-w-full whitespace-normal break-words rounded-full border px-3.5 py-1.5 text-left text-xs leading-snug transition ${
                     styles.includes(s)
                       ? "border-foreground bg-foreground text-background"
                       : "border-border bg-card"
@@ -734,23 +769,23 @@ function PlanPage() {
               type="submit"
               disabled={loading || sourceLoading}
               aria-busy={loading}
-              className="flex w-full items-center justify-center rounded-full bg-primary py-4 text-[15px] font-medium text-primary-foreground shadow-lift transition disabled:opacity-60"
+              className="flex w-full min-w-0 items-center justify-center whitespace-normal rounded-full bg-primary px-4 py-4 text-center text-[15px] font-medium text-primary-foreground shadow-lift transition disabled:opacity-60"
             >
               {loading ? (
                 <span
                   key="plan-submit-loading"
-                  className="inline-flex items-center justify-center gap-2.5"
+                  className="inline-flex min-w-0 max-w-full flex-wrap items-center justify-center gap-2.5 text-center"
                 >
                   <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
-                  <span className="leading-none">{t("plan.submitting")}</span>
+                  <span className="min-w-0 leading-snug">{t("plan.submitting")}</span>
                 </span>
               ) : (
                 <span
                   key="plan-submit-idle"
-                  className="inline-flex items-center justify-center gap-2"
+                  className="inline-flex min-w-0 max-w-full flex-wrap items-center justify-center gap-2 text-center"
                 >
                   <Sparkles className="h-4 w-4 shrink-0" aria-hidden />
-                  <span className="leading-none">{t("plan.submit")}</span>
+                  <span className="min-w-0 leading-snug">{t("plan.submit")}</span>
                 </span>
               )}
             </button>
@@ -759,7 +794,7 @@ function PlanPage() {
               type="button"
               disabled={loading || sourceLoading}
               onClick={() => void handleAiAssist()}
-              className="flex w-full items-center justify-center rounded-full border border-border bg-card py-4 text-[15px] font-medium text-foreground transition disabled:opacity-60"
+              className="flex w-full min-w-0 items-center justify-center whitespace-normal rounded-full border border-border bg-card px-4 py-4 text-center text-[15px] font-medium leading-snug text-foreground transition disabled:opacity-60"
             >
               {t("plan.aiAssist")}
             </button>

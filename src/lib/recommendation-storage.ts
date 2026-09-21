@@ -1,3 +1,4 @@
+import type { Locale } from "@/lib/i18n/types";
 import type { RoamiePayloadV2, RoamieResponse } from "@/lib/ai/types";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
 import {
@@ -17,6 +18,8 @@ export type StoredRecommendation = {
   cover_image: string | null;
   created_at: string;
   payload: RoamiePayloadV2;
+  /** Language used when the generated prose was created; absent on legacy records. */
+  generatedLocale?: Locale;
 };
 
 function readGuest(userId: string): StoredRecommendation[] {
@@ -62,7 +65,7 @@ export function toPayloadV2(
  */
 export async function saveRecommendation(
   data: RoamieResponse,
-  extra?: { destination?: string; days?: number; mood?: string },
+  extra?: { destination?: string; days?: number; mood?: string; generatedLocale?: Locale },
 ): Promise<StoredRecommendation> {
   const userId = await getAuthenticatedUserId();
   if (!userId) throw new Error("請先登入");
@@ -75,6 +78,7 @@ export async function saveRecommendation(
     cover_image: null,
     created_at: new Date().toISOString(),
     payload,
+    generatedLocale: extra?.generatedLocale,
   };
 
   const list = readGuest(userId);

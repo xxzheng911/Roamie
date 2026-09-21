@@ -15,7 +15,7 @@ import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
 import { isComboItineraryQuery } from "@/lib/ai/chat-category-place-guard";
 import { extractItineraryDestinationFromText } from "@/lib/ai/itinerary-entity-extraction";
 import { enrichTripDatesInContext } from "@/lib/ai/ai-trip-style";
-import { applyCityLocaleAlias } from "@/lib/ai/destination-locale-aliases";
+import { applyCityLocaleAlias, extractKnownAliasDestination } from "@/lib/ai/destination-locale-aliases";
 import { normalizeDestinationAndDuration } from "@/lib/parse-chinese-duration";
 
 /** A 附近探索 | B 目的地規劃 | C 特定地點 | D 心情推薦 */
@@ -787,6 +787,12 @@ export function parseDestinationFromText(text: string): string | undefined {
 
     const embedded = extractEmbeddedDestinationFromText(t);
     if (embedded) return embedded;
+
+    const alias = extractKnownAliasDestination(t);
+    if (alias) {
+      const accepted = acceptParsedDestination(alias.canonical);
+      if (accepted) return accepted;
+    }
 
     return undefined;
   } catch (e) {

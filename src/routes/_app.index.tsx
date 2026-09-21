@@ -145,6 +145,8 @@ export const Route = createFileRoute("/_app/")({
 });
 
 function Home() {
+  const { t: uiT } = useI18n();
+
   const coldStartAtRef = useRef(Date.now());
   const { t, locale } = useI18n();
   const { hasPlusAccess } = useAccess();
@@ -1004,10 +1006,10 @@ function Home() {
           coverImageUrl: pick.coverImageUrl,
         }),
       );
-      toast.success(didSave ? "已加入收藏" : "已取消收藏");
+      toast.success(didSave ? uiT("productionUi.p4220592340") : uiT("productionUi.p7fa7b63b0e"));
       await refreshSavedNames();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "收藏失敗");
+      toast.error(e instanceof Error ? e.message : uiT("productionUi.p59ede0ba72"));
     } finally {
       setSaveBusyId(null);
     }
@@ -1088,7 +1090,8 @@ function Home() {
             canonicalFetchAttempted: true,
             canonicalFetchNetworkError:
               error instanceof TypeError ||
-              (error instanceof Error && /load failed|failed to fetch|network/i.test(error.message)),
+              (error instanceof Error &&
+                /load failed|failed to fetch|network/i.test(error.message)),
           });
         }
       } finally {
@@ -1177,7 +1180,10 @@ function Home() {
       );
 
       recordRecommendationNames(data.recommendations.map((r) => r.name));
-      const saved = await saveRecommendation(data, { mood: selectedMoodLabel ?? undefined });
+      const saved = await saveRecommendation(data, {
+        mood: selectedMoodLabel ?? undefined,
+        generatedLocale: locale,
+      });
       resetHomeMoodUi();
       navigate({ to: "/recommendations", search: { id: saved.id } });
     } catch (e) {
@@ -1362,6 +1368,8 @@ function Home() {
 }
 
 function SectionTitle({ title, sub }: { title: string; sub?: string }) {
+  const { t: uiT } = useI18n();
+
   return (
     <div className="flex items-end justify-between">
       <div>
@@ -1369,7 +1377,7 @@ function SectionTitle({ title, sub }: { title: string; sub?: string }) {
         {sub && <p className="mt-0.5 text-xs text-muted-foreground">{sub}</p>}
       </div>
       <Link to={HOME_MOOD_MORE_ROUTE} className="text-xs text-muted-foreground">
-        看更多
+        {uiT("productionUi.p23ba000004")}
       </Link>
     </div>
   );

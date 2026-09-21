@@ -23,7 +23,11 @@ import { AvatarCropSheet } from "@/components/profile/AvatarCropSheet";
 import { ProfileImageCropSheet } from "@/components/profile/ProfileImageCropSheet";
 import { COVER_UPDATED_EVENT, broadcastCoverUpdate } from "@/lib/cover-events";
 import { removeProfileAvatar } from "@/lib/remove-profile-avatar";
-import { BUDGET_MODE_LABELS, readCachedPreferencesSync, resolveBudgetMode } from "@/lib/preferences-storage";
+import {
+  BUDGET_MODE_LABELS,
+  readCachedPreferencesSync,
+  resolveBudgetMode,
+} from "@/lib/preferences-storage";
 import { ensureUserProfile } from "@/lib/ensure-user-profile";
 import { logAvatarFileReadSuccess } from "@/lib/avatar-upload-log";
 import {
@@ -39,10 +43,7 @@ import {
   type UserProfile,
 } from "@/lib/profile-storage";
 import { buildCompanionSummary } from "@/lib/personality";
-import {
-  gatePlusPersonaFields,
-  shouldExposePlusPersona,
-} from "@/lib/profile-persona";
+import { gatePlusPersonaFields, shouldExposePlusPersona } from "@/lib/profile-persona";
 import { PREFS_UPDATED_EVENT } from "@/lib/preference-events";
 import { useAppMainScroll } from "@/hooks/use-app-main-scroll";
 import { useAccess } from "@/hooks/use-access";
@@ -52,10 +53,7 @@ import {
   listConversationWorkspaces,
 } from "@/lib/conversation-workspace";
 import { usePlusUpgrade } from "@/hooks/use-plus-upgrade";
-import {
-  readProfileSessionCache,
-  shouldSkipProfileNetworkLoad,
-} from "@/lib/profile-session-cache";
+import { readProfileSessionCache, shouldSkipProfileNetworkLoad } from "@/lib/profile-session-cache";
 import { readPersistedAvatarUrl, readPersistedCoverUrl } from "@/lib/profile-persisted-cache";
 import {
   buildUserProfileFromTravelPrefCache,
@@ -82,19 +80,21 @@ export const Route = createFileRoute("/_app/profile")({
 
 const profileRouteApi = getRouteApi("/_app/profile");
 
-function validateImageFile(file: File): boolean {
+function validateImageFile(file: File, t: (key: string) => string): boolean {
   if (!file.type.startsWith("image/")) {
-    toast.error("請選擇圖片檔案");
+    toast.error(t("productionUi.pdbef31bc6b"));
     return false;
   }
   if (file.size > MAX_IMAGE_BYTES) {
-    toast.error("圖片請小於 8MB");
+    toast.error(t("productionUi.imageTooLarge"));
     return false;
   }
   return true;
 }
 
 function Profile() {
+  const { t: uiT } = useI18n();
+
   const search = profileRouteApi.useSearch();
   const navigate = useNavigate();
   const { user, session, loading: authLoading, signOut } = useAuth();
@@ -238,8 +238,7 @@ function Profile() {
   useAppMainScroll();
 
   const travelPrefStatus = useTravelPrefStatus();
-  const quizCompleted =
-    travelPrefStatus?.preferenceQuizCompleted ?? onboarded;
+  const quizCompleted = travelPrefStatus?.preferenceQuizCompleted ?? onboarded;
   const travelStyleLabel =
     travelPrefStatus?.travelStyleName?.trim() ||
     (quizCompleted && travelStyle.trim() ? travelStyle.trim() : "") ||
@@ -270,42 +269,43 @@ function Profile() {
     return () => window.removeEventListener(COVER_UPDATED_EVENT, onCover);
   }, [revokeCoverPreview]);
 
-  const loadProfile = useCallback(async (options?: { force?: boolean }) => {
-    if (userId && !options?.force) {
-      const skip = shouldSkipProfileNetworkLoad(userId, false);
-      if (skip.skip) {
-        const cached = readProfileSessionCache(userId);
-        if (cached) return cached;
+  const loadProfile = useCallback(
+    async (options?: { force?: boolean }) => {
+      if (userId && !options?.force) {
+        const skip = shouldSkipProfileNetworkLoad(userId, false);
+        if (skip.skip) {
+          const cached = readProfileSessionCache(userId);
+          if (cached) return cached;
+        }
       }
-    }
-    const hadCache = Boolean(userId && readProfileSessionCache(userId));
-    try {
-      const profile = await getUserProfile(undefined, { force: options?.force });
-      if (!hadCache || options?.force) {
-        logProfileLoad({ userId });
+      const hadCache = Boolean(userId && readProfileSessionCache(userId));
+      try {
+        const profile = await getUserProfile(undefined, { force: options?.force });
+        if (!hadCache || options?.force) {
+          logProfileLoad({ userId });
+        }
+        return profile;
+      } catch (firstErr) {
+        if (!userId) throw firstErr;
+        logProfileLoadFail({
+          userId,
+          message: firstErr instanceof Error ? firstErr.message : String(firstErr),
+        });
+        console.warn("[profile] fetch failed, ensuring profile row", firstErr);
+        await ensureUserProfile();
+        const profile = await getUserProfile(undefined, { force: true });
+        logProfileLoad({ userId, recovered: true });
+        return profile;
       }
-      return profile;
-    } catch (firstErr) {
-      if (!userId) throw firstErr;
-      logProfileLoadFail({
-        userId,
-        message: firstErr instanceof Error ? firstErr.message : String(firstErr),
-      });
-      console.warn("[profile] fetch failed, ensuring profile row", firstErr);
-      await ensureUserProfile();
-      const profile = await getUserProfile(undefined, { force: true });
-      logProfileLoad({ userId, recovered: true });
-      return profile;
-    }
-  }, [userId]);
+    },
+    [userId],
+  );
 
   const applyProfileToState = useCallback(
     (profile: UserProfile, options?: { source?: string }) => {
       const status = getTravelPrefStatusSync(userId);
       const cachedTravelPref = status.snapshot ?? getTravelPrefResultSnapshot(userId);
-      const mergedPrefs = status.preferenceQuizCompleted
-        ? status.prefs
-        : profile.prefs;
+      const mergedPrefs = status.preferenceQuizCompleted ? status.prefs : profile.prefs;
       const mergedProfile: UserProfile = {
         ...profile,
         prefs: mergedPrefs,
@@ -316,10 +316,7 @@ function Profile() {
           mergedPrefs.personalityType ||
           "",
         personalityType:
-          status.travelStyleName ||
-          profile.personalityType ||
-          mergedPrefs.personalityType ||
-          "",
+          status.travelStyleName || profile.personalityType || mergedPrefs.personalityType || "",
         personalitySummary:
           status.personalitySummary ||
           profile.personalitySummary ||
@@ -348,8 +345,7 @@ function Profile() {
       setDisplayName((prev) => (prev === gated.displayName ? prev : gated.displayName));
       syncCoverFromProfile(gated.coverImageUrl);
       syncAvatarFromProfile(gated.avatarUrl);
-      const nextTravelStyle =
-        status.travelStyleName || (showPlusPersona ? gated.travelStyle : "");
+      const nextTravelStyle = status.travelStyleName || (showPlusPersona ? gated.travelStyle : "");
       setTravelStyle((prev) => (prev === nextTravelStyle ? prev : nextTravelStyle));
       const nextPersonalityType = showPlusPersona ? gated.personalityType : "";
       setPersonalityType((prev) => (prev === nextPersonalityType ? prev : nextPersonalityType));
@@ -390,25 +386,27 @@ function Profile() {
         cachedTravelPref?.tags?.length && mergedProfile.prefs.onboarded
           ? cachedTravelPref.tags
           : Array.from(
-        new Set(
-          [
-            ...(mergedProfile.prefs.interests ?? []),
-            mergedProfile.prefs.pace === "slow"
-              ? "慢行"
-              : mergedProfile.prefs.pace === "active"
-                ? "探索"
-                : null,
-            mergedProfile.prefs.vibe === "quiet"
-              ? "安靜"
-              : mergedProfile.prefs.vibe === "lively"
-                ? "熱鬧"
-                : "平衡",
-            BUDGET_MODE_LABELS[resolveBudgetMode(mergedProfile.prefs)],
-          ].filter((v): v is string => Boolean(v)),
-        ),
-      ).slice(0, 5);
+              new Set(
+                [
+                  ...(mergedProfile.prefs.interests ?? []),
+                  mergedProfile.prefs.pace === "slow"
+                    ? "慢行"
+                    : mergedProfile.prefs.pace === "active"
+                      ? "探索"
+                      : null,
+                  mergedProfile.prefs.vibe === "quiet"
+                    ? "安靜"
+                    : mergedProfile.prefs.vibe === "lively"
+                      ? "熱鬧"
+                      : "平衡",
+                  BUDGET_MODE_LABELS[resolveBudgetMode(mergedProfile.prefs)],
+                ].filter((v): v is string => Boolean(v)),
+              ),
+            ).slice(0, 5);
       setTravelTags((prev) =>
-        prev.length === tags.length && prev.every((tag, index) => tag === tags[index]) ? prev : tags,
+        prev.length === tags.length && prev.every((tag, index) => tag === tags[index])
+          ? prev
+          : tags,
       );
       if (mergedProfile.prefs.onboarded && options?.source === "boot") {
         console.info("[TRAVEL_PREF_RESULT] loaded", {
@@ -491,77 +489,80 @@ function Profile() {
     return () => window.removeEventListener(PREFS_UPDATED_EVENT, onPrefs);
   }, [applyProfileToState, userId, locale]);
 
-  const refresh = useCallback(async (options?: { force?: boolean }) => {
-    const hadCache = Boolean(readProfileSessionCache(userId));
-    if (!options?.force && userId) {
-      const skip = shouldSkipProfileNetworkLoad(userId, false);
-      if (skip.skip && hadCache) {
-        applyProfileToState(readProfileSessionCache(userId)!);
-        setLoading(false);
-        return;
+  const refresh = useCallback(
+    async (options?: { force?: boolean }) => {
+      const hadCache = Boolean(readProfileSessionCache(userId));
+      if (!options?.force && userId) {
+        const skip = shouldSkipProfileNetworkLoad(userId, false);
+        if (skip.skip && hadCache) {
+          applyProfileToState(readProfileSessionCache(userId)!);
+          setLoading(false);
+          return;
+        }
+        if (!options?.force && isPreferencesRemoteHydrated(userId) && hadCache) {
+          applyProfileToState(readProfileSessionCache(userId)!);
+          setLoading(false);
+          return;
+        }
       }
-      if (!options?.force && isPreferencesRemoteHydrated(userId) && hadCache) {
-        applyProfileToState(readProfileSessionCache(userId)!);
-        setLoading(false);
-        return;
-      }
-    }
-    if (!hadCache) setLoading(true);
-    const hydrationAttempt = ++remoteHydrationAttemptRef.current;
-    const hydrationStartedAt = Date.now();
-    let hydrationSuccess = false;
-    console.info("[profile] loading", { userId, force: options?.force ?? false });
-    try {
-      if (userId) await ensureUserProfile();
-      const profile = await loadProfile({ force: options?.force });
-      applyProfileToState(profile);
-      if (profile.prefs.onboarded && hasPlusAccess) {
-        void syncTravelPreferenceProfileFields({
-          travelStyle: profile.travelStyle || profile.personalityType || "",
-          prefs: profile.prefs,
-        }).catch((e) => {
-          console.warn("[TRAVEL_PREF_TEST] profile fields background sync failed", {
-            message: e instanceof Error ? e.message : String(e),
+      if (!hadCache) setLoading(true);
+      const hydrationAttempt = ++remoteHydrationAttemptRef.current;
+      const hydrationStartedAt = Date.now();
+      let hydrationSuccess = false;
+      console.info("[profile] loading", { userId, force: options?.force ?? false });
+      try {
+        if (userId) await ensureUserProfile();
+        const profile = await loadProfile({ force: options?.force });
+        applyProfileToState(profile);
+        if (profile.prefs.onboarded && hasPlusAccess) {
+          void syncTravelPreferenceProfileFields({
+            travelStyle: profile.travelStyle || profile.personalityType || "",
+            prefs: profile.prefs,
+          }).catch((e) => {
+            console.warn("[TRAVEL_PREF_TEST] profile fields background sync failed", {
+              message: e instanceof Error ? e.message : String(e),
+            });
           });
-        });
+        }
+        console.info("[PROFILE] loaded");
+        hydrationSuccess = true;
+      } catch (e) {
+        if (e instanceof Error && isAuthSessionMissingError(e.message)) return;
+        console.error("[profile] refresh failed", e);
+        const msg = e instanceof Error ? e.message : "";
+        if (msg.includes("請先登入")) return;
+        if (getTravelPrefResultSnapshot(userId)?.quizCompleted) {
+          console.info("[TRAVEL_PREF_RESULT] skipped clearing because cache exists");
+          return;
+        }
+        applyProfileToState({
+          displayName: userEmail?.split("@")[0] || t("profile.defaultName"),
+          bio: "",
+          avatarUrl: null,
+          coverImageUrl: null,
+          travelStyle: "",
+          language: locale,
+          notificationsEnabled: true,
+          authProvider: null,
+          prefs: { onboarded: false },
+          personalityType: "",
+          personalitySummary: "",
+          personalityImpression: "",
+        } as UserProfile);
+        toast.error(msg || t("profile.loadFailed"));
+      } finally {
+        setLoading(false);
+        if (hydrationAttempt === remoteHydrationAttemptRef.current) {
+          console.info("[PROFILE_REMOTE_HYDRATION_SETTLED]", {
+            elapsedMs: Date.now() - hydrationStartedAt,
+            success: hydrationSuccess,
+            source: "remote_profile",
+          });
+        }
       }
-      console.info("[PROFILE] loaded");
-      hydrationSuccess = true;
-    } catch (e) {
-      if (e instanceof Error && isAuthSessionMissingError(e.message)) return;
-      console.error("[profile] refresh failed", e);
-      const msg = e instanceof Error ? e.message : "";
-      if (msg.includes("請先登入")) return;
-      if (getTravelPrefResultSnapshot(userId)?.quizCompleted) {
-        console.info("[TRAVEL_PREF_RESULT] skipped clearing because cache exists");
-        return;
-      }
-      applyProfileToState({
-        displayName: userEmail?.split("@")[0] || t("profile.defaultName"),
-        bio: "",
-        avatarUrl: null,
-        coverImageUrl: null,
-        travelStyle: "",
-        language: locale,
-        notificationsEnabled: true,
-        authProvider: null,
-        prefs: { onboarded: false },
-        personalityType: "",
-        personalitySummary: "",
-        personalityImpression: "",
-      } as UserProfile);
-      toast.error(msg || t("profile.loadFailed"));
-    } finally {
-      setLoading(false);
-      if (hydrationAttempt === remoteHydrationAttemptRef.current) {
-        console.info("[PROFILE_REMOTE_HYDRATION_SETTLED]", {
-          elapsedMs: Date.now() - hydrationStartedAt,
-          success: hydrationSuccess,
-          source: "remote_profile",
-        });
-      }
-    }
-  }, [userId, userEmail, locale, t, loadProfile, applyProfileToState, hasPlusAccess]);
+    },
+    [userId, userEmail, locale, t, loadProfile, applyProfileToState, hasPlusAccess],
+  );
 
   useEffect(() => {
     if (authLoading) return;
@@ -642,7 +643,7 @@ function Profile() {
   };
 
   const handleCoverPick = (file: File) => {
-    if (!validateImageFile(file)) return;
+    if (!validateImageFile(file, uiT)) return;
     console.info("[IMAGE_PICK]", "cover", `bytes=${file.size}`, `type=${file.type}`);
     revokeCoverPreview();
     const u = URL.createObjectURL(file);
@@ -675,7 +676,7 @@ function Profile() {
       broadcastCoverUpdate(finalUrl, revision);
       revokeCoverPreview();
       setCoverCropFile(null);
-      toast.success("封面已更新");
+      toast.success(uiT("productionUi.pebdf4b6990"));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "儲存失敗";
       if (!isAuthSessionMissingError(msg)) toast.error(msg);
@@ -691,7 +692,7 @@ function Profile() {
       broadcastCoverUpdate(null);
       revokeCoverPreview();
       setCoverCropFile(null);
-      toast.success("已移除封面，可繼續選擇新圖片");
+      toast.success(uiT("productionUi.pae653a3847"));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "刪除失敗";
       if (!isAuthSessionMissingError(msg)) toast.error(msg);
@@ -700,14 +701,17 @@ function Profile() {
     }
   };
 
-  const handleAvatarPick = useCallback((file: File) => {
-    if (avatarMutationRef.current) return;
-    if (!validateImageFile(file)) return;
-    console.info("[IMAGE_PICK]", "avatar", `bytes=${file.size}`, `type=${file.type}`);
-    const u = URL.createObjectURL(file);
-    setAvatarPreview(u);
-    setAvatarCropFile(file);
-  }, [setAvatarPreview]);
+  const handleAvatarPick = useCallback(
+    (file: File) => {
+      if (avatarMutationRef.current) return;
+      if (!validateImageFile(file, uiT)) return;
+      console.info("[IMAGE_PICK]", "avatar", `bytes=${file.size}`, `type=${file.type}`);
+      const u = URL.createObjectURL(file);
+      setAvatarPreview(u);
+      setAvatarCropFile(file);
+    },
+    [setAvatarPreview, uiT],
+  );
 
   const handleAvatarCancel = () => {
     if (avatarMutationRef.current) return;
@@ -723,7 +727,8 @@ function Profile() {
       const result = await removeProfileAvatar();
       setAvatarPreview(null);
       setAvatarCropFile(null);
-      if (profileSnapshotRef.current) profileSnapshotRef.current = { ...profileSnapshotRef.current, avatarUrl: null };
+      if (profileSnapshotRef.current)
+        profileSnapshotRef.current = { ...profileSnapshotRef.current, avatarUrl: null };
       toast.success(t("profile.avatarRemoved"));
       if (result.cleanupPending) toast.info(t("profile.avatarCleanupPending"));
     } catch {
@@ -741,7 +746,7 @@ function Profile() {
     try {
       const session = await getClientAuthSession();
       if (!session?.user) {
-        toast.error("請重新登入後再試");
+        toast.error(uiT("productionUi.pcc743a0da0"));
         return;
       }
       logAvatarFileReadSuccess({
@@ -753,11 +758,11 @@ function Profile() {
       await applyProfileAvatar(blob);
       setAvatarPreview(null);
       setAvatarCropFile(null);
-      toast.success("頭像已更新");
+      toast.success(uiT("productionUi.p53770eb7e7"));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "儲存失敗";
       if (isAuthSessionMissingError(msg)) {
-        toast.error("請重新登入後再試");
+        toast.error(uiT("productionUi.pcc743a0da0"));
       } else {
         toast.error(msg);
       }
@@ -778,10 +783,7 @@ function Profile() {
           {
             icon: RouteIcon,
             label: t("trip.travelDraft"),
-            value:
-              travelDrafts.length > 0
-                ? `${travelDrafts.length}`
-                : t("trip.travelDraftEmpty"),
+            value: travelDrafts.length > 0 ? `${travelDrafts.length}` : t("trip.travelDraftEmpty"),
             to: "/travel-drafts" as const,
           },
         ]
@@ -807,7 +809,10 @@ function Profile() {
         <ImageSourceSheet
           open={coverSourceOpen}
           onOpenChange={setCoverSourceOpen}
-          title="更換封面"
+          title={uiT("productionUi.p54fa653aeb")}
+          albumLabel={uiT("productionUi.p30784c6dd2")}
+          cameraLabel={uiT("productionUi.p6e3a10ade7")}
+          removeLabel={t("profile.removeAvatar")}
           onPickFile={handleCoverPick}
           showRemove={!!coverUrl}
           onRemove={() => void handleCoverRemove()}
@@ -858,6 +863,8 @@ function Profile() {
             open={avatarSourceOpen}
             onOpenChange={setAvatarSourceOpen}
             title={t("profile.editAvatar")}
+            albumLabel={uiT("productionUi.p30784c6dd2")}
+            cameraLabel={uiT("productionUi.p6e3a10ade7")}
             onPickFile={handleAvatarPick}
             showRemove={hasCustomAvatar}
             onRemove={() => void handleAvatarRemove()}
@@ -1019,10 +1026,12 @@ function Profile() {
       {showPlusPersona ? (
         <section className="mt-4 rounded-3xl bg-secondary p-5">
           <p className="font-display text-[18px]">
-            {travelStyleLabel || personalityType || "慢步放鬆型"}
+            {travelStyleLabel || personalityType || uiT("productionUi.p22e99830ea")}
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            標籤：{travelTags.length > 0 ? travelTags.join("、") : "安靜、散步、咖啡、自然、慢行"}
+            {uiT("productionUi.p60c90d0a66", {
+              v0: travelTags.length > 0 ? travelTags.join("、") : uiT("productionUi.pe8f8faa0d2"),
+            })}
           </p>
           <p className="mt-2 text-sm leading-relaxed text-foreground/85">
             {quizSyncing ? (
@@ -1031,8 +1040,7 @@ function Profile() {
                 {t("profile.quizSyncing")}
               </span>
             ) : (
-              personalityImpression ||
-              "你適合慢慢走、留一點空白的旅行。Roamie 會優先幫你找安靜、有氛圍、適合散步的地方。"
+              personalityImpression || uiT("productionUi.p493fa5249d")
             )}
           </p>
         </section>

@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useNavigate } from "@tanstack/react-router";
 import { Calendar } from "lucide-react";
 import { TripCoverImage } from "@/components/media/TripCoverImage";
@@ -13,6 +14,8 @@ type Props = {
 
 /** 收藏列表：僅封面、自訂名稱、旅行天數 */
 export function SavedTripCard({ trip, shareSlot, deleteSlot }: Props) {
+  const { t: uiT } = useI18n();
+
   const navigate = useNavigate();
 
   return (
@@ -26,7 +29,7 @@ export function SavedTripCard({ trip, shareSlot, deleteSlot }: Props) {
           navigate(tripDetailNavigateOptions(trip.id));
         }}
         className="block w-full p-4 text-left"
-        aria-label={`查看行程：${resolveCoreTripTitle(trip)}`}
+        aria-label={uiT("productionUi.viewTrip", { name: resolveCoreTripTitle(trip) })}
       >
         <div className="flex gap-3">
           <div className="h-[5.5rem] w-[5.5rem] shrink-0 overflow-hidden rounded-2xl">
@@ -47,7 +50,7 @@ export function SavedTripCard({ trip, shareSlot, deleteSlot }: Props) {
             </p>
             <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
               <Calendar className="h-3 w-3 shrink-0" />
-              <span>{trip.days} 天</span>
+              <span>{uiT("productionUi.pab2b69cb47", { v0: trip.days })}</span>
             </p>
           </div>
         </div>

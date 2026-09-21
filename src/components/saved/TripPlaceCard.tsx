@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { ArrowRightLeft, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 import { TripLocationCard } from "@/components/saved/TripLocationCard";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
@@ -35,6 +36,8 @@ export function TripPlaceCard({
   onDelete,
   onOpenPlaceDetail,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   const legKey = legKeyForItem(item);
   const estimated =
     settings.legMinutes?.[legKey] ??
@@ -80,7 +83,7 @@ export function TripPlaceCard({
         <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
-            aria-label="上移"
+            aria-label={uiT("productionUi.pf853a70b12")}
             disabled={indexInDay === 0}
             onClick={onMoveUp}
             className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 disabled:opacity-40"
@@ -89,7 +92,7 @@ export function TripPlaceCard({
           </button>
           <button
             type="button"
-            aria-label="下移"
+            aria-label={uiT("productionUi.pe75e8b4e5c")}
             disabled={indexInDay >= dayCount - 1}
             onClick={onMoveDown}
             className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 disabled:opacity-40"
@@ -99,7 +102,7 @@ export function TripPlaceCard({
           {onCrossDayMove ? (
             <button
               type="button"
-              aria-label="跨天移動"
+              aria-label={uiT("productionUi.p718ccfe651")}
               disabled={crossDayMoveDisabled}
               onClick={onCrossDayMove}
               className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 text-muted-foreground disabled:opacity-40"
@@ -109,7 +112,7 @@ export function TripPlaceCard({
           ) : null}
           <button
             type="button"
-            aria-label="刪除地點"
+            aria-label={uiT("productionUi.p5101bd1ef7")}
             onClick={onDelete}
             className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background/80 text-muted-foreground hover:text-destructive"
           >

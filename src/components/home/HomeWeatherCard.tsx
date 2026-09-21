@@ -1,3 +1,5 @@
+import { useI18n } from "@/hooks/use-i18n";
+import { homeWeatherMetadata } from "@/lib/home-weather-metadata";
 import { Cloud, MapPin, RefreshCw } from "lucide-react";
 import type { HomeWeatherStatus } from "@/hooks/use-home-weather";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -46,6 +48,7 @@ export function HomeWeatherCard({
   onOpenLocationSettings,
   labels,
 }: HomeWeatherCardProps) {
+  const { locale } = useI18n();
   if (status === "loading") {
     return (
       <div className="mt-8 rounded-3xl bg-secondary p-5">
@@ -62,17 +65,18 @@ export function HomeWeatherCard({
 
   if (status === "ready" && weather && weather.available === true) {
     const temp = formatWeatherTemp(weather);
+    const metadata = homeWeatherMetadata(weather, locale);
     const emoji = weatherSummaryEmoji(weather);
     return (
       <div className="mt-8 rounded-3xl bg-secondary p-5">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span aria-hidden>{emoji}</span>
           <span>
-            {labels.todayLabel} · {weather.city}
+            {labels.todayLabel} · {metadata.city}
             {weather.available && temp
-              ? ` · ${weather.condition} ${temp}`
+              ? ` · ${metadata.condition} ${temp}`
               : weather.available
-                ? ` · ${weather.condition}`
+                ? ` · ${metadata.condition}`
                 : ""}
           </span>
         </div>

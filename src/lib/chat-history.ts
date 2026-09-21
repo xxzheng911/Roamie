@@ -1,10 +1,11 @@
+import { decodeGeneratedChatContent, type GeneratedLocaleContract } from "@/lib/generated-locale";
 import { supabase } from "@/integrations/supabase/client";
 import { getAuthenticatedUserId } from "@/lib/auth-session";
 import { normalizeRoamieResponse, type RoamieResponse } from "@/lib/ai/types";
 
 const GUEST_KEY = "roamie:chat";
 
-export type ChatMsg = {
+export type ChatMsg = GeneratedLocaleContract & {
   /** Stable UI identity; legacy persisted messages fall back to role + list position. */
   id?: string;
   role: "user" | "assistant";
@@ -23,9 +24,14 @@ export type ChatMsg = {
     source: "planning_suggestion";
     candidates: import("@/lib/chat-session").PlanningShownCandidate[];
   };
+  /**
+   * Itinerary-aware recommendation loading identity.
+   * Display is projected from the current locale; content is only a snapshot.
+   */
+  loadingPhase?: "itinerary_route_recommendation";
 };
 
-function parseAssistantContent(content: string): {
+export function parseAssistantContent(content: string): {
   content: string;
   roamie?: Partial<RoamieResponse>;
 } {
@@ -54,8 +60,7 @@ export async function loadChatHistory(limit = 30): Promise<ChatMsg[]> {
   return (data ?? []).reverse().map((r) => {
     const role = r.role as "user" | "assistant";
     if (role === "assistant") {
-      const parsed = parseAssistantContent(r.content);
-      return { role, content: parsed.content, roamie: parsed.roamie };
+      return restoreAssistantChatMessage(r.content);
     }
     return { role, content: r.content };
   });
@@ -68,4 +73,12 @@ export async function clearChatHistory(): Promise<void> {
     return;
   }
   await supabase.from("chat_messages").delete().eq("user_id", uid);
+}
+
+/** Historical content stays in its original language; provenance governs later reuse. */
+export function restoreAssistantChatMessage(content: string): ChatMsg {
+  const stored = decodeGeneratedChatContent(content);
+  const parsed = parseAssistantContent(stored.content);
+  return { role: "assistant", ...parsed, generatedLocale: stored.generatedLocale,
+    ...(parsed.roamie ? { roamie: { ...parsed.roamie, generatedLocale: stored.generatedLocale } } : {}) };
 }

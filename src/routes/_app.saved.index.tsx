@@ -9,6 +9,7 @@ import { SavedTripCard } from "@/components/saved/SavedTripCard";
 import { SavedPlaceCoverThumb } from "@/components/saved/SavedPlaceCoverThumb";
 import { SavedPlaceRemoveConfirmDialog } from "@/components/saved/SavedPlaceRemoveConfirmDialog";
 import { SAVED_TRIPS_CHANGED_EVENT } from "@/lib/itinerary-storage";
+import { deleteTripDialogLabels } from "@/lib/i18n/delete-trip-dialog";
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
 import { TripSharePanel } from "@/components/trip/TripSharePanel";
@@ -47,6 +48,8 @@ export const Route = createFileRoute("/_app/saved/")({
 type Tab = "trips" | "places";
 
 function TripsEmptyState() {
+  const { t: uiT } = useI18n();
+
   const { t } = useI18n();
   return (
     <div className="mt-8 flex flex-col items-center gap-4 rounded-3xl border border-dashed border-border bg-card/60 px-6 py-12 text-center">
@@ -55,7 +58,7 @@ function TripsEmptyState() {
       </div>
       <p className="font-display text-xl">{t("saved.emptyAllTitle")}</p>
       <p className="max-w-[280px] text-sm leading-relaxed text-muted-foreground">
-        還沒有收藏的行程，等你和 Roamie 一起收藏第一段旅程。
+        {uiT("productionUi.p25c0793638")}
       </p>
       <Link
         to="/map"
@@ -92,6 +95,8 @@ function PlacesEmptyState() {
 }
 
 function Saved() {
+  const { locale, t: uiT } = useI18n();
+
   const { t } = useI18n();
   const tt = t as unknown as (key: string, params?: Record<string, unknown>) => string;
   const navigate = useNavigate();
@@ -505,7 +510,7 @@ function Saved() {
                         });
                       }}
                       className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-card/95 text-muted-foreground shadow-soft hover:bg-secondary"
-                      aria-label="分享行程"
+                      aria-label={uiT("productionUi.pd50e0839b9")}
                     >
                       <Share2 className="h-4 w-4" />
                     </button>
@@ -586,6 +591,7 @@ function Saved() {
         }}
         onConfirm={handleConfirmDeleteTrip}
         confirming={deleting}
+        {...deleteTripDialogLabels(locale)}
       />
 
       <TripSharePanel

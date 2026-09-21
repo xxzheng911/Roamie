@@ -11,7 +11,11 @@ import {
   filterCampingPlaces,
 } from "@/lib/ai/activity-camping";
 import { logTravelContext } from "@/lib/ai/travel-context";
-import { resolvePresentableMoodTag, shouldDisplayMoodPresentation } from "@/lib/ai/mood-presentation";
+import {
+  resolvePresentableMoodTag,
+  shouldDisplayMoodPresentation,
+} from "@/lib/ai/mood-presentation";
+import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 import type { Locale } from "@/lib/i18n/types";
 import type { PlaceResult } from "@/lib/place-result";
 
@@ -108,9 +112,11 @@ function buildSummary(
   ].join("\n");
 }
 
-export function generateLocalRecommendationFallback(
-  input: LocalFallbackInput,
-): { summary: string; payload: RoamiePayloadV2; places: ChatPlaceItem[] } {
+export function generateLocalRecommendationFallback(input: LocalFallbackInput): {
+  summary: string;
+  payload: RoamiePayloadV2;
+  places: ChatPlaceItem[];
+} {
   const { context: ctx, session, locale = "zh-TW", places = [] } = input;
   logAiPipeline("[CHAT_FALLBACK_USED]", logTravelContext(ctx));
 
@@ -140,7 +146,11 @@ export function generateLocalRecommendationFallback(
       payload: {
         title: "Roamie 推薦",
         summary,
-        moodTag: resolvePresentableMoodTag(session, ctx),
+        moodTag: resolveDisplayedRecommendationBadge({
+          session,
+          context: ctx,
+          moodTag: resolvePresentableMoodTag(session, ctx),
+        }),
         recommendations: [],
         itinerary: [],
       },
@@ -149,7 +159,11 @@ export function generateLocalRecommendationFallback(
   }
 
   const summary = buildSummary(ctx, candidates.length, places, session);
-  const moodTag = resolvePresentableMoodTag(session, ctx);
+  const moodTag = resolveDisplayedRecommendationBadge({
+    session,
+    context: ctx,
+    moodTag: resolvePresentableMoodTag(session, ctx),
+  });
 
   const payload: RoamiePayloadV2 = {
     title: moodTag ? `${moodTag} 推薦` : "Roamie 推薦",
@@ -159,7 +173,11 @@ export function generateLocalRecommendationFallback(
     itinerary: [],
   };
 
-  logAiPipeline("[AI_RECOMMENDATION] generated", `count=${candidates.length}`, logTravelContext(ctx));
+  logAiPipeline(
+    "[AI_RECOMMENDATION] generated",
+    `count=${candidates.length}`,
+    logTravelContext(ctx),
+  );
 
   return { summary, payload, places: candidates };
 }

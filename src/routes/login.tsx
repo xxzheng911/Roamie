@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import {
   createFileRoute,
   Outlet,
@@ -54,19 +55,17 @@ function LegalDocumentOverlayLazy({
   doc: "terms" | "privacy";
   onClose: () => void;
 }) {
-  const [content, setContent] = useState<string | null>(null);
-  const title = doc === "terms" ? "Roamie 服務條款" : "Roamie 隱私權政策";
+  const { t: uiT } = useI18n();
 
-  useEffect(() => {
-    void import("@/content/legal").then((m) => {
-      setContent(doc === "terms" ? m.TERMS_OF_SERVICE : m.PRIVACY_POLICY);
-    });
-  }, [doc]);
+  const content = uiT(
+    doc === "terms" ? "plusPurchase.termsContent" : "plusPurchase.privacyContent",
+  );
+  const title = uiT(doc === "terms" ? "productionUi.termsTitle" : "productionUi.pace240822b");
 
   if (!content) {
     return (
       <div className="absolute inset-0 z-[200] flex items-center justify-center bg-background/95">
-        <p className="text-sm text-muted-foreground">載入中…</p>
+        <p className="text-sm text-muted-foreground">{uiT("productionUi.p1145661d74")}</p>
       </div>
     );
   }
@@ -103,6 +102,8 @@ export const Route = createFileRoute("/login")({
 });
 
 function Login() {
+  const { t: uiT } = useI18n();
+
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isLegalPage = pathname.replace(/\/+$/, "").startsWith("/login/legal");
@@ -352,10 +353,10 @@ function Login() {
     const { toast } = await import("sonner");
     toast.message(
       provider === "google"
-        ? "正在開啟 Google 登入…"
+        ? uiT("productionUi.p8ea0a4c4a5")
         : provider === "apple"
-          ? "正在使用 Apple 登入…"
-          : "正在登入…",
+          ? uiT("productionUi.pa44c7127ff")
+          : uiT("productionUi.p2ce5e8bfd5"),
     );
 
     try {
@@ -399,7 +400,7 @@ function Login() {
         scheduleIosSnapshotRefreshBurst("apple-sign-in");
 
         const { toast } = await import("sonner");
-        toast.success("登入成功");
+        toast.success(uiT("productionUi.p72233aaf51"));
         redirectedRef.current = true;
         const pendingInvite = readStashedTripInviteToken();
         if (pendingInvite) {
@@ -450,12 +451,12 @@ function Login() {
             </Suspense>
           </div>
           <h1 className="mt-6 font-display text-[28px] leading-tight">
-            慢慢來，
+            {uiT("productionUi.p63dbd6e23d")}
             <br />
-            Roamie 等你。
+            {uiT("productionUi.pd57304146d")}
           </h1>
           <p className="mt-3 max-w-[260px] text-sm leading-relaxed text-muted-foreground">
-            登入後，我會記住你喜歡的步調、安靜的角落，還有那些不想被打擾的下午。
+            {uiT("productionUi.p88c8b9803a")}
           </p>
         </div>
 
@@ -463,19 +464,19 @@ function Login() {
           {authError ? (
             <AuthSignInError
               variant="system"
-              title="登入失敗"
+              title={uiT("productionUi.p82f6be16f3")}
               message={authError}
               onRetry={() => {
                 setAuthError(null);
                 const provider = failedProvider ?? "apple";
                 void signIn(provider);
               }}
-              retryLabel="重新登入"
+              retryLabel={uiT("productionUi.pea9fa4ff9d")}
               onDismiss={() => {
                 setAuthError(null);
                 setFailedProvider(null);
               }}
-              dismissLabel="關閉"
+              dismissLabel={uiT("productionUi.pc7fdddf79e")}
             />
           ) : null}
 
@@ -485,7 +486,8 @@ function Login() {
             disabled={busy !== null}
             className="flex w-full items-center justify-center gap-2 rounded-full bg-ink py-4 text-[15px] font-medium text-background transition active:scale-[0.98] disabled:opacity-50"
           >
-            <AppleIcon /> {busy === "apple" ? "Apple 登入進行中…" : "以 Apple 登入"}
+            <AppleIcon />{" "}
+            {busy === "apple" ? uiT("productionUi.p257a8237f5") : uiT("productionUi.p5a67828809")}
           </button>
 
           <button
@@ -494,25 +496,26 @@ function Login() {
             disabled={busy !== null}
             className="flex w-full items-center justify-center gap-2 rounded-full bg-ink py-4 text-[15px] font-medium text-background transition active:scale-[0.98] disabled:opacity-50"
           >
-            <GoogleIcon /> {busy === "google" ? "Google 登入進行中…" : "使用 Google 繼續"}
+            <GoogleIcon />{" "}
+            {busy === "google" ? uiT("productionUi.pf0e1dfe1aa") : uiT("productionUi.p35663abcf7")}
           </button>
 
           <p className="pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
-            繼續即代表同意 Roamie 的
+            {uiT("productionUi.p8ca8e66be6")}
             <button
               type="button"
               onClick={() => openLegal("terms")}
               className="mx-0.5 text-foreground underline underline-offset-2"
             >
-              服務條款
+              {uiT("productionUi.pafe218eb53")}
             </button>
-            與
+            {uiT("productionUi.p2b30dbf162")}
             <button
               type="button"
               onClick={() => openLegal("privacy")}
               className="mx-0.5 text-foreground underline underline-offset-2"
             >
-              隱私權政策
+              {uiT("productionUi.p5d1a4adc5d")}
             </button>
             。
           </p>
@@ -550,7 +553,7 @@ function Login() {
         <Suspense
           fallback={
             <div className="absolute inset-0 z-[200] flex items-center justify-center bg-background/95">
-              <p className="text-sm text-muted-foreground">載入中…</p>
+              <p className="text-sm text-muted-foreground">{uiT("productionUi.p1145661d74")}</p>
             </div>
           }
         >

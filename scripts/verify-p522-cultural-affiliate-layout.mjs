@@ -70,9 +70,6 @@ const exact = resolveAffiliateCommerceEligibility({
 assert.equal(resolveTicketAffiliateOfferLabel("klook", "exact_product", exact.commerceType), "Klook");
 
 const section = readFileSync(new URL("../src/components/trip/TripAffiliateSection.tsx", import.meta.url), "utf8");
-assert.match(section, /visible.length > 1 \? "grid-cols-2" : "grid-cols-1"/);
-assert.match(section, /kind === "ticket"\s*\? "grid w-full gap-2"\s*:\s*"flex flex-wrap gap-2"/);
-assert.match(section, /kind !== "ticket" && \(compact \? "px-3" : "px-4"\)/);
 assert.doesNotMatch(section, /overflow-x-auto/);
 
 const detail = readFileSync(new URL("../src/components/map/PlaceDetailSheet.tsx", import.meta.url), "utf8");
@@ -86,3 +83,6 @@ console.log("P52.2 cultural affiliate eligibility + horizontal layout: PASS", {
   sharedRenderer: true,
   externalRequestDelta: 0,
 });
+assert.match(section, /LOCALIZED_ACTION_GRID/);
+assert.match(section, /LOCALIZED_ACTION_BUTTON/);
+assert.match(section, /min-w-0 text-center whitespace-normal/);

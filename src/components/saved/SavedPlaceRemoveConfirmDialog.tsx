@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,17 +25,21 @@ export function SavedPlaceRemoveConfirmDialog({
   onConfirm,
   confirming,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>取消收藏？</AlertDialogTitle>
+          <AlertDialogTitle>{uiT("productionUi.p7028a164a2")}</AlertDialogTitle>
           <AlertDialogDescription>
-            確定要從收藏地點移除「{placeName}」嗎？
+            {uiT("productionUi.p5caef69625", { v0: placeName })}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={confirming}>保留</AlertDialogCancel>
+          <AlertDialogCancel disabled={confirming}>
+            {uiT("productionUi.p670ec25af8")}
+          </AlertDialogCancel>
           <AlertDialogAction
             disabled={confirming}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
@@ -43,7 +48,7 @@ export function SavedPlaceRemoveConfirmDialog({
               void onConfirm();
             }}
           >
-            移除
+            {uiT("productionUi.p6135d4159e")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

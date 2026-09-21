@@ -38,6 +38,7 @@ import {
   buildPlacesHttpKey,
   logPlacesCacheHit,
   logPlacesCacheMiss,
+  bucketPlacesCoordinate,
   runPlacesApiDeduped,
 } from "@/lib/places-api-guard";
 import {
@@ -216,6 +217,15 @@ async function getServerMapsKey(): Promise<string> {
   return requireGoogleMapsServerKey();
 }
 
+function placesQueryFamily(callType: string, body: Record<string, unknown>): string {
+  if (callType === "nearby" || callType === "details") {
+    const types = Array.isArray(body.includedTypes) ? body.includedTypes.join("+") : callType;
+    return `${callType}:${types}`.slice(0, 80);
+  }
+  const query = typeof body.textQuery === "string" ? body.textQuery : "";
+  return `text:${query}`.slice(0, 80);
+}
+
 function locationCircle(lat: number, lng: number, radius: number) {
   return {
     circle: {
@@ -261,11 +271,12 @@ async function postPlaces(
       }
     )?.circle;
   const httpKey = buildPlacesHttpKey(callType, {
-    lat: circle?.center?.latitude,
-    lng: circle?.center?.longitude,
+    lat: bucketPlacesCoordinate(circle?.center?.latitude),
+    lng: bucketPlacesCoordinate(circle?.center?.longitude),
     query: typeof body.textQuery === "string" ? body.textQuery : "",
     types: Array.isArray(body.includedTypes) ? body.includedTypes.join(",") : "",
     radius: (circle as { radius?: number } | undefined)?.radius,
+    language: typeof body.languageCode === "string" ? body.languageCode : "",
     destinationName: stats?.destinationName,
     searchMode: stats?.searchMode,
     intentCategory: stats?.intentCategory,
@@ -408,6 +419,10 @@ async function postPlaces(
         priority: ownerSurface === "home_nearby" ? "background" : "foreground",
         requestType: callType === "nearby" ? "searchNearby" : "searchText",
         lane: stats?.lane,
+        generationRequestId: stats?.recommendationRequestId,
+        intent: stats?.intentCategory ?? "",
+        queryFamily: placesQueryFamily(callType, body),
+        attempt: stats?.round ?? 0,
       },
     );
   } catch (error) {

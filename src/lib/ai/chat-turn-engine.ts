@@ -12,6 +12,9 @@ import { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 import { resolveInferredTripDays } from "@/lib/ai/ai-trip-style";
 import { parseDayCountFromText } from "@/lib/parse-chinese-duration";
 import { hasCategoryPlaceQuery } from "@/lib/ai/chat-place-category-types";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 
 export { logChatContextUpdate, logChatNextStep } from "@/lib/ai/chat-debug-log";
 
@@ -136,28 +139,40 @@ export function advanceAfterPendingSelection(
   selected: string,
   pending: PendingQuestion,
   ctx: CanonicalTravelContext,
+  locale?: import("@/lib/i18n/types").Locale,
 ): {
   reply: string;
   pendingQuestion?: PendingQuestion;
   contextPatch?: Partial<CanonicalTravelContext>;
 } {
-  const next = buildNextStepAfterAdviceSelection(selected, pending, ctx);
+  const next = buildNextStepAfterAdviceSelection(selected, pending, ctx, locale);
   if (next.pendingQuestion) {
     logChatNextStep(pendingSlot(next.pendingQuestion) ?? next.pendingQuestion.type);
   }
   return next;
 }
 
-export function buildPlanningContextSummary(ctx: CanonicalTravelContext): string {
+export function buildPlanningContextSummary(
+  ctx: CanonicalTravelContext,
+  locale?: import("@/lib/i18n/types").Locale,
+): string {
   const parts: string[] = [];
   const destination = coerceTravelDestination(ctx.destination);
-  if (destination) parts.push(`目的地：${destination}`);
-  if (ctx.days) parts.push(`天數：${ctx.days}天`);
-  if (ctx.vibe || ctx.travelStyle) parts.push(`偏好：${ctx.vibe ?? ctx.travelStyle}`);
-  if (ctx.selectedInterests?.length) parts.push(`興趣：${ctx.selectedInterests.join("、")}`);
-  if (ctx.budgetLevel) parts.push(`預算：${ctx.budgetLevel}`);
-  if (ctx.companion) parts.push(`同行：${ctx.companion}`);
-  if (ctx.excludedCategories?.length) parts.push(`排除：${ctx.excludedCategories.join("、")}`);
+  if (destination) {
+    parts.push(chatRuntimeCopy("summaryDestination", locale, { destination }));
+  }
+  if (ctx.days) parts.push(chatRuntimeCopy("summaryDays", locale, { days: ctx.days }));
+  if (ctx.vibe || ctx.travelStyle) {
+    parts.push(chatRuntimeCopy("summaryPreference", locale, { value: ctx.vibe ?? ctx.travelStyle ?? "" }));
+  }
+  if (ctx.selectedInterests?.length) {
+    parts.push(chatRuntimeCopy("summaryInterests", locale, { interests: ctx.selectedInterests.join("、") }));
+  }
+  if (ctx.budgetLevel) parts.push(chatRuntimeCopy("summaryBudget", locale, { budget: ctx.budgetLevel }));
+  if (ctx.companion) parts.push(chatRuntimeCopy("summaryCompanion", locale, { companion: ctx.companion }));
+  if (ctx.excludedCategories?.length) {
+    parts.push(chatRuntimeCopy("summaryExcluded", locale, { excluded: ctx.excludedCategories.join("、") }));
+  }
   return parts.join("\n");
 }
 
@@ -166,6 +181,7 @@ export function buildPlanningOfflineReply(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   userText?: string,
+  locale?: import("@/lib/i18n/types").Locale,
 ): string | null {
   const dest = coerceTravelDestination(
     ctx.destination ??
@@ -194,7 +210,7 @@ export function buildPlanningOfflineReply(
     return null;
   }
 
-  const summary = buildPlanningContextSummary(ctx);
+  const summary = buildPlanningContextSummary(ctx, locale);
   const inferredDays = resolveInferredTripDays(ctx, session);
   if (session.pendingQuestion?.type === "ask_days" || (!inferredDays && !session.pendingQuestion)) {
     if (inferredDays) {
@@ -204,7 +220,9 @@ export function buildPlanningOfflineReply(
         `tripDays=${inferredDays}`,
       );
     } else {
-      return [`好，目的地先記成${dest}。`, summary, "", `你這趟大概幾天？`].filter(Boolean).join("\n");
+      const resolvedLocale = locale ?? effectiveAppLocale();
+      const shown = displayDestinationForCopy(dest, userText, resolvedLocale);
+      return [chatRuntimeCopy("destNoted", resolvedLocale, { destination: shown }), summary, "", chatRuntimeCopy("offlineDaysAsk", resolvedLocale)].filter(Boolean).join("\n");
     }
   }
   const constraintAck = buildWeatherConstraintAcknowledgement(ctx, ctx.weather);

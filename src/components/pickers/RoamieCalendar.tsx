@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -33,10 +34,7 @@ const MONTH_OPTIONS = Array.from({ length: 12 }, (_, i) => ({
   label: `${i + 1}月`,
 }));
 
-function resolveViewDate(
-  mode: Props["mode"],
-  value: string | DateRangeValue,
-): Date {
+function resolveViewDate(mode: Props["mode"], value: string | DateRangeValue): Date {
   if (mode === "single" && typeof value === "string" && value) {
     return parseISODate(value) ?? new Date();
   }
@@ -48,6 +46,15 @@ function resolveViewDate(
 }
 
 export function RoamieCalendar({ mode, value, onChange }: Props) {
+  const { t: uiT, locale } = useI18n();
+  const weekdays = Array.from({ length: 7 }, (_, i) =>
+    new Intl.DateTimeFormat(locale, { weekday: "short" }).format(new Date(2024, 0, 7 + i)),
+  );
+  const monthOptions = Array.from({ length: 12 }, (_, i) => ({
+    value: String(i),
+    label: new Intl.DateTimeFormat(locale, { month: "long" }).format(new Date(2024, i, 1)),
+  }));
+
   const today = todayISO();
   const initial = useMemo(() => resolveViewDate(mode, value), [mode, value]);
 
@@ -85,8 +92,7 @@ export function RoamieCalendar({ mode, value, onChange }: Props) {
       return;
     }
 
-    const current =
-      typeof value === "object" ? value : { start: "", end: "" };
+    const current = typeof value === "object" ? value : { start: "", end: "" };
 
     if (!rangeAnchor) {
       setRangeAnchor(iso);
@@ -99,12 +105,13 @@ export function RoamieCalendar({ mode, value, onChange }: Props) {
     onChange({ start, end });
   };
 
-  const rangeStart =
-    mode === "range" && typeof value === "object" ? value.start : "";
+  const rangeStart = mode === "range" && typeof value === "object" ? value.start : "";
   const rangeEnd = mode === "range" && typeof value === "object" ? value.end : "";
   const singleVal = mode === "single" && typeof value === "string" ? value : "";
 
-  const headerLabel = `${viewYear} ｜ ${viewMonth + 1}月`;
+  const headerLabel = new Intl.DateTimeFormat(locale, { year: "numeric", month: "long" }).format(
+    new Date(viewYear, viewMonth, 1),
+  );
 
   return (
     <div className="select-none">
@@ -113,7 +120,7 @@ export function RoamieCalendar({ mode, value, onChange }: Props) {
           type="button"
           onClick={() => shiftMonth(-1)}
           className="flex h-9 w-9 items-center justify-center rounded-full bg-card text-foreground shadow-soft transition active:scale-95"
-          aria-label="上個月"
+          aria-label={uiT("productionUi.pd84db2ffe8")}
         >
           <ChevronLeft className="h-5 w-5" />
         </button>
@@ -122,7 +129,7 @@ export function RoamieCalendar({ mode, value, onChange }: Props) {
           dir="ltr"
           onClick={openMonthYearPicker}
           className="min-w-0 rounded-xl px-2 py-1 font-display text-[17px] font-medium text-foreground transition active:bg-secondary/80"
-          aria-label="選擇年份與月份"
+          aria-label={uiT("productionUi.p02a757d113")}
         >
           {headerLabel}
         </button>
@@ -130,14 +137,14 @@ export function RoamieCalendar({ mode, value, onChange }: Props) {
           type="button"
           onClick={() => shiftMonth(1)}
           className="flex h-9 w-9 items-center justify-center rounded-full bg-card text-foreground shadow-soft transition active:scale-95"
-          aria-label="下個月"
+          aria-label={uiT("productionUi.p5dcf045a24")}
         >
           <ChevronRight className="h-5 w-5" />
         </button>
       </div>
 
       <div className="mb-2 grid grid-cols-7 gap-1 text-center text-[11px] font-medium text-muted-foreground">
-        {WEEKDAY_LABELS.map((w) => (
+        {weekdays.map((w) => (
           <span key={w} className="py-1">
             {w}
           </span>
@@ -158,8 +165,7 @@ export function RoamieCalendar({ mode, value, onChange }: Props) {
                 isSameISO(iso, rangeStart) ||
                 isSameISO(iso, rangeEnd);
           const rangeEdge =
-            mode === "range" &&
-            (isSameISO(iso, rangeStart) || isSameISO(iso, rangeEnd));
+            mode === "range" && (isSameISO(iso, rangeStart) || isSameISO(iso, rangeEnd));
 
           return (
             <button
@@ -182,14 +188,14 @@ export function RoamieCalendar({ mode, value, onChange }: Props) {
 
       {mode === "range" && (
         <p className="mt-3 text-center text-[11px] text-muted-foreground">
-          點選開始與結束日期；可跨月切換
+          {uiT("productionUi.p530737dccf")}
         </p>
       )}
 
       <RoamiePickerSheet
         open={monthYearOpen}
         onOpenChange={setMonthYearOpen}
-        title="選擇年份與月份"
+        title={uiT("productionUi.p02a757d113")}
         className="z-[70]"
         onConfirm={() => {
           setViewYear(draftYear);
@@ -215,7 +221,7 @@ export function RoamieCalendar({ mode, value, onChange }: Props) {
             ｜
           </span>
           <RoamieWheelColumn
-            options={MONTH_OPTIONS}
+            options={monthOptions}
             value={String(draftMonth)}
             onChange={(v) => setDraftMonth(Number(v))}
             resetKey={monthYearOpen ? draftMonth : undefined}

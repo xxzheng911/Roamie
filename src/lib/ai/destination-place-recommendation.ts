@@ -73,6 +73,7 @@ import {
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import type { ChatPlaceCategoryIntent } from "@/lib/ai/chat-place-category-types";
 import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
+import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 import {
   excludeUsedPlacesFromFollowUp,
   logAiFollowupNewResults,
@@ -488,8 +489,7 @@ async function searchShoppingCategoryAttempts(params: {
   places = filterExcludedPlaceIds(places, params.excludePlaceIds ?? []);
   places = places.filter(
     (place) =>
-      Boolean(place.name?.trim() && place.id?.trim()) &&
-      isPlaceOperationalForRecommendation(place),
+      Boolean(place.name?.trim() && place.id?.trim()) && isPlaceOperationalForRecommendation(place),
   );
   return { places, rawPlaces: merged, perQuery, rateLimited, timedOut, budget };
 }
@@ -939,7 +939,10 @@ export async function buildDestinationMustVisitRecommendation(params: {
       payload: {
         title: "Roamie 推薦",
         summary,
-        moodTag: context.mood ?? "",
+        moodTag: resolveDisplayedRecommendationBadge({
+          context,
+          moodTag: context.mood ?? "",
+        }),
         recommendations: [],
         itinerary: [],
       },
@@ -1362,7 +1365,11 @@ function resolvePayloadMoodTag(
   }
   const style = resolveTripStyleFromContext(context);
   if (style) return tripStyleDisplayTag(style);
-  return context.mood ?? "";
+  return resolveDisplayedRecommendationBadge({
+    session,
+    context,
+    moodTag: context.mood ?? "",
+  });
 }
 
 function buildPayload(

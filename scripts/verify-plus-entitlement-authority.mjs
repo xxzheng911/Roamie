@@ -156,11 +156,18 @@ test("runtime authorities call the resolver and production mock never writes pro
 test("subscription refresh cannot delete or mutate grant rows", () => {
   const subscription = read("src/services/subscription/index.ts");
   const provider = read("src/providers/SubscriptionProvider.tsx");
+  const sync = read("src/lib/subscription/revenuecat-sync.ts");
   assert.doesNotMatch(
     subscription + provider,
     /user_plus_entitlements|admin_revoke_plus_entitlement/,
   );
-  assert.match(provider, /syncRevenueCatEntitlementWithServer\(\)/);
+  // Refresh is bound to the active user. A zero-argument sync would skip the session check.
+  assert.match(provider, /const sync = \(\) => syncRevenueCatEntitlementWithServer\(userId\)/);
+  assert.match(
+    sync,
+    /export async function syncRevenueCatEntitlementWithServer\(\s*expectedUserId\?: string/,
+  );
+  assert.match(sync, /if \(expectedUserId && data\.session\?\.user\.id !== expectedUserId\)/);
 });
 
 test("credits and admin dashboard consume the authoritative resolver", () => {

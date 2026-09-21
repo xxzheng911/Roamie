@@ -1,3 +1,5 @@
+import { useI18n } from "@/hooks/use-i18n";
+import { isCurrentGeneratedCopy } from "@/lib/generated-locale";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import type { RoamieItineraryItem, TripPlanSettings } from "@/lib/ai/types";
@@ -25,6 +27,7 @@ type Params = {
 
 function outfitFieldsFingerprint(fields: TripOutfitSuggestionFields): string {
   return JSON.stringify({
+    outfitCopy: fields.outfitCopy ?? null,
     outfitSuggestion: fields.outfitSuggestion ?? null,
     outfitSuggestionUpdatedAt: fields.outfitSuggestionUpdatedAt ?? null,
     weatherSummary: fields.weatherSummary ?? null,
@@ -55,6 +58,7 @@ function normalizeServerOutfitResult(
     generatedAt?: string;
   };
   return {
+    outfitCopy: raw.outfitCopy,
     outfitSuggestion: raw.outfitSuggestion ?? raw.suggestion ?? "",
     weatherSummary: raw.weatherSummary ?? "",
     weatherSource: raw.weatherSource ?? "openweather",
@@ -79,7 +83,7 @@ export function useTripOutfitSuggestion({
   onGenerated,
 }: Params) {
   const fetchSuggestion = useServerFn(generateTripOutfitSuggestion);
-  const generatingRef = useRef(false);
+  const { locale } = useI18n();
   const onGeneratedRef = useRef(onGenerated);
   onGeneratedRef.current = onGenerated;
   const initialFieldsFpRef = useRef(outfitFieldsFingerprint(initialFields));
@@ -91,18 +95,19 @@ export function useTripOutfitSuggestion({
 
   const inputKey = useMemo(
     () =>
-      buildOutfitInputKey({
+      `${locale}|${buildOutfitInputKey({
         destination: resolvedDestination,
         startDate: dateRange.start,
         endDate: dateRange.end,
         dayCount,
-      }),
-    [resolvedDestination, dateRange.start, dateRange.end, dayCount],
+      })}`,
+    [locale, resolvedDestination, dateRange.start, dateRange.end, dayCount],
   );
 
   const itemsSignature = useMemo(() => itemsOutfitSignature(items), [items]);
 
   const [outfitFields, setOutfitFields] = useState<TripOutfitSuggestionFields>(() => ({
+    outfitCopy: initialFields.outfitCopy,
     outfitSuggestion: initialFields.outfitSuggestion,
     weatherSummary: initialFields.weatherSummary,
     weatherSource: initialFields.weatherSource,
@@ -113,25 +118,27 @@ export function useTripOutfitSuggestion({
   const [loading, setLoading] = useState(false);
 
   const isCached =
+    isCurrentGeneratedCopy(outfitFields.outfitCopy ?? {}, locale) &&
     Boolean(outfitFields.outfitSuggestion) &&
     outfitFields.outfitSuggestionInputKey === inputKey;
 
   const pendingRegeneration =
     outfitFields.outfitSuggestionInputKey !== inputKey && Boolean(dateRange.start);
 
-  const displayFields = outfitFields;
+  const displayFields = isCached ? outfitFields : { outfitSuggestion: "", weatherSummary: "" };
 
   const showLoading = loading || (pendingRegeneration && !displayFields.outfitSuggestion);
 
   useEffect(() => {
-    if (!enabled || isCached || generatingRef.current) return;
+    if (!enabled || isCached) return;
     if (!dateRange.start) return;
 
-    generatingRef.current = true;
+    let cancelled = false;
     setLoading(true);
 
     void fetchSuggestion({
       data: {
+        locale,
         destination: resolvedDestination || undefined,
         startDate: dateRange.start,
         endDate: dateRange.end || dateRange.start,
@@ -144,10 +151,13 @@ export function useTripOutfitSuggestion({
       },
     })
       .then((result) => {
+        if (cancelled) return;
+        setLoading(false);
         const nextFields = normalizeServerOutfitResult(result, inputKey);
-        if (!nextFields.outfitSuggestion?.trim()) {
+        if (!nextFields.outfitSuggestion?.trim() || !isCurrentGeneratedCopy(nextFields.outfitCopy ?? {}, locale)) {
           setOutfitFields(
             buildLocalTripOutfitFallback({
+              locale,
               destination: resolvedDestination,
               startDate: dateRange.start,
               endDate: dateRange.end || dateRange.start,
@@ -166,9 +176,12 @@ export function useTripOutfitSuggestion({
         }
       })
       .catch((e) => {
+        if (cancelled) return;
+        setLoading(false);
         console.warn("[useTripOutfitSuggestion] generation failed", e);
         setOutfitFields(
           buildLocalTripOutfitFallback({
+            locale,
             destination: resolvedDestination,
             startDate: dateRange.start,
             endDate: dateRange.end || dateRange.start,
@@ -179,10 +192,11 @@ export function useTripOutfitSuggestion({
         );
       })
       .finally(() => {
-        generatingRef.current = false;
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       });
+    return () => { cancelled = true; };
   }, [
+    locale,
     enabled,
     isCached,
     inputKey,

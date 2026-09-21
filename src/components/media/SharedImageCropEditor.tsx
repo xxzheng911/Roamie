@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -7,17 +8,9 @@ import {
   type InlineImageCropHandle,
 } from "@/components/InlineImageCropViewport";
 import type { CenteredCropRect, CropTransform } from "@/lib/image-crop";
-import {
-  IMAGE_CROP_VARIANTS,
-  type ImageCropVariant,
-} from "@/lib/image-crop-variants";
+import { IMAGE_CROP_VARIANTS, type ImageCropVariant } from "@/lib/image-crop-variants";
 import { cn } from "@/lib/utils";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 
 export type { ImageCropVariant };
 
@@ -54,6 +47,8 @@ export function SharedImageCropEditor({
   overlayClassName,
   gestureLogPrefix,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   const cropRef = useRef<InlineImageCropHandle>(null);
   const viewportWrapRef = useRef<HTMLDivElement>(null);
   const maskRef = useRef<HTMLDivElement>(null);
@@ -111,13 +106,13 @@ export function SharedImageCropEditor({
     }
     try {
       if (!cropRef.current?.isReady()) {
-        toast.error("圖片尚未載入完成，請稍候再按套用");
+        toast.error(uiT("productionUi.p3b223ba4d3"));
         return;
       }
       const result = await cropRef.current.exportCrop();
       if (!result?.blob?.size) {
         logAvatarCropResult({ ok: false, reason: "empty_crop" });
-        toast.error("無法產生裁切圖片，請調整後再試");
+        toast.error(uiT("productionUi.p792ea1af15"));
         return;
       }
       logAvatarCropResult({
@@ -134,7 +129,9 @@ export function SharedImageCropEditor({
     } catch (e) {
       const msg = e instanceof Error ? e.message : "未知錯誤";
       console.error("[SharedImageCropEditor] confirm failed", e);
-      toast.error(variant === "avatar" ? `頭像更新失敗：${msg}` : `封面更新失敗：${msg}`);
+      toast.error(
+        uiT(variant === "avatar" ? "productionUi.avatarFailed" : "productionUi.coverFailed"),
+      );
     }
   };
 

@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -11,6 +12,8 @@ type Props = {
 };
 
 export function SavedPlacesPickSheet({ open, onOpenChange, onPick }: Props) {
+  const { t: uiT } = useI18n();
+
   const [loading, setLoading] = useState(false);
   const [places, setPlaces] = useState<Awaited<ReturnType<typeof listPlaces>>>([]);
 
@@ -36,14 +39,18 @@ export function SavedPlacesPickSheet({ open, onOpenChange, onPick }: Props) {
         side="bottom"
         className="max-h-[70dvh] rounded-t-[1.75rem] border-0 bg-background px-0 pb-8"
       >
-        <SheetTitle className="px-5 text-base font-medium">從收藏選擇地點</SheetTitle>
+        <SheetTitle className="px-5 text-base font-medium">
+          {uiT("productionUi.p454f2ea06e")}
+        </SheetTitle>
         <div className="mt-3 max-h-[50dvh] overflow-y-auto px-5">
           {loading ? (
             <div className="flex justify-center py-8">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
           ) : places.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">尚無收藏地點</p>
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              {uiT("productionUi.p1a7736d2e3")}
+            </p>
           ) : (
             <ul className="space-y-2">
               {places.map((p) => (

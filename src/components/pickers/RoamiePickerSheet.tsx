@@ -1,10 +1,5 @@
 import type { ReactNode } from "react";
-import {
-  Drawer,
-  DrawerContent,
-  DrawerDescription,
-  DrawerTitle,
-} from "@/components/ui/drawer";
+import { Drawer, DrawerContent, DrawerDescription, DrawerTitle } from "@/components/ui/drawer";
 import { useI18n } from "@/hooks/use-i18n";
 import { cn } from "@/lib/utils";
 
@@ -41,8 +36,8 @@ export function RoamiePickerSheet({
   const { t } = useI18n();
   const confirm = confirmLabel ?? t("picker.confirm");
   const cancel = cancelLabel ?? t("picker.cancel");
-  const a11yTitle = title?.trim() || "選擇";
-  const a11yDescription = description?.trim() || title?.trim() || "請選擇一項";
+  const a11yTitle = title?.trim() || t("productionUi.choose");
+  const a11yDescription = description?.trim() || title?.trim() || t("productionUi.chooseOne");
   const handleCancel = () => {
     onCancel?.();
     onOpenChange(false);
@@ -62,10 +57,7 @@ export function RoamiePickerSheet({
         )}
       >
         <>
-          <div
-            className="mx-auto mt-3 h-1 w-10 shrink-0 rounded-full bg-border/80"
-            aria-hidden
-          />
+          <div className="mx-auto mt-3 h-1 w-10 shrink-0 rounded-full bg-border/80" aria-hidden />
           <DrawerTitle
             className={cn(
               "mt-4 text-center font-display text-[17px] font-medium leading-[26px] text-foreground",

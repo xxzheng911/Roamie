@@ -1,7 +1,9 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { Share2, Trash2, MapPin, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { TripDeleteConfirmDialog } from "@/components/saved/TripDeleteConfirmDialog";
+import { deleteTripDialogLabels } from "@/lib/i18n/delete-trip-dialog";
 import { deleteTrip } from "@/lib/saved-trip/delete-trip";
 import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
@@ -95,6 +97,8 @@ function TripScreenShell({
 }
 
 function Trip() {
+  const { locale, t: uiT } = useI18n();
+
   const { id, draft } = Route.useSearch();
   const navigate = useNavigate();
   const generate = useServerFn(generateItinerary);
@@ -173,11 +177,11 @@ function Trip() {
     try {
       const saved = await confirmSaveTrip(trip.payload as RoamiePayloadV2, "chat");
       clearDraftTrip();
-      toast.success("已儲存到收藏");
+      toast.success(uiT("productionUi.p20c5c9a9e5"));
       logTripNav("trip-draft-saved", saved.id);
       navigate({ to: TRIP_DETAIL_ROUTE, params: { tripId: saved.id }, replace: true });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "儲存失敗");
+      toast.error(err instanceof Error ? err.message : uiT("productionUi.p7705406138"));
     }
   };
 
@@ -186,11 +190,11 @@ function Trip() {
     setDeleting(true);
     try {
       await deleteTrip(trip.id);
-      toast.success("已刪除");
+      toast.success(uiT("productionUi.p22dd07b022"));
       setDeleteOpen(false);
       navigate({ to: "/saved", search: { tab: "trips" } });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "刪除失敗");
+      toast.error(err instanceof Error ? err.message : uiT("productionUi.p4ce9d7c1e4"));
     } finally {
       setDeleting(false);
     }
@@ -213,9 +217,9 @@ function Trip() {
     }
     try {
       await navigator.clipboard.writeText(`${text}\n${url}`);
-      toast.success("已複製分享連結");
+      toast.success(uiT("productionUi.ped078f5c3a"));
     } catch {
-      toast.error("分享失敗");
+      toast.error(uiT("productionUi.p88ae66930f"));
     }
   };
 
@@ -224,7 +228,7 @@ function Trip() {
     const updated = await updateItinerary(trip.id, { ...next, recommendations: [], version: 2 });
     if (updated) {
       setTrip(updated);
-      toast.success("已儲存調整");
+      toast.success(uiT("productionUi.p93a3405378"));
     }
   };
 
@@ -291,7 +295,7 @@ function Trip() {
       const updated = await updateItinerary(trip.id, nextPayload);
       if (updated) {
         setTrip(updated);
-        toast.success("路線已重新規劃");
+        toast.success(uiT("productionUi.pd827944d2a"));
       }
     } catch (e) {
       toast.error(formatItineraryUserError(e));
@@ -305,7 +309,7 @@ function Trip() {
           type="button"
           onClick={() => void handleShare()}
           className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
-          aria-label="分享"
+          aria-label={uiT("productionUi.p7e564575eb")}
         >
           <Share2 className="h-4 w-4" />
         </button>
@@ -314,7 +318,7 @@ function Trip() {
             type="button"
             onClick={() => setDeleteOpen(true)}
             className="flex h-9 w-9 items-center justify-center rounded-full bg-secondary"
-            aria-label="刪除"
+            aria-label={uiT("productionUi.p3c8f5b363a")}
           >
             <Trash2 className="h-4 w-4" />
           </button>
@@ -328,7 +332,7 @@ function Trip() {
         <TripScreenShell onScroll={handleScroll}>
           <div className="flex min-h-[50vh] flex-col items-center justify-center gap-3 px-8">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">讀取行程中…</p>
+            <p className="text-sm text-muted-foreground">{uiT("productionUi.p1326a1f4b4")}</p>
           </div>
         </TripScreenShell>
       </MobileFrame>
@@ -340,19 +344,21 @@ function Trip() {
       <MobileFrame>
         <TripScreenShell onScroll={handleScroll}>
           <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-8 text-center">
-            <p className="text-sm text-muted-foreground">{loadError ?? "找不到這個行程"}</p>
+            <p className="text-sm text-muted-foreground">
+              {loadError ?? uiT("productionUi.pb93438d9d6")}
+            </p>
             <Link
               to="/plan"
               className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground"
             >
-              規劃新行程
+              {uiT("productionUi.p699a05f5ee")}
             </Link>
             <Link
               to="/saved"
               search={{ tab: "trips" }}
               className="text-sm text-muted-foreground underline"
             >
-              查看所有行程
+              {uiT("productionUi.pe82971eea1")}
             </Link>
           </div>
         </TripScreenShell>
@@ -370,17 +376,19 @@ function Trip() {
         <div className="px-5 pb-10 pt-5">
           {isDraft && (
             <div className="mb-4 rounded-2xl border border-dashed border-border bg-secondary/50 px-4 py-3 text-sm text-muted-foreground">
-              <p>這是行程草稿，尚未加入收藏。</p>
+              <p>{uiT("productionUi.p8dd08d4ffd")}</p>
               <button
                 type="button"
                 onClick={() => void handleSaveDraft()}
                 className="mt-3 w-full rounded-full bg-primary py-2.5 text-sm font-medium text-primary-foreground"
               >
-                儲存這趟行程
+                {uiT("productionUi.pa4bb8fc5bc")}
               </button>
             </div>
           )}
-          <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">旅行計劃</p>
+          <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">
+            {uiT("productionUi.pb589aa86ad")}
+          </p>
           <h1 className="mt-2 font-display text-[26px] leading-snug">{trip.title}</h1>
 
           {isV2 && itineraryStops.length > 0 ? (
@@ -394,7 +402,7 @@ function Trip() {
                 {payload.days && (
                   <>
                     <span>·</span>
-                    <span>{payload.days} 天</span>
+                    <span>{uiT("productionUi.pab2b69cb47", { v0: payload.days })}</span>
                   </>
                 )}
                 {(trip.mood || payload.moodTag) && (
@@ -421,13 +429,13 @@ function Trip() {
               to="/chat"
               className="flex-1 rounded-full border border-border bg-card py-3.5 text-center text-sm"
             >
-              和 Roamie 調整
+              {uiT("productionUi.p60298897eb")}
             </Link>
             <Link
               to="/saved"
               className="flex-1 rounded-full bg-primary py-3.5 text-center text-sm font-medium text-primary-foreground shadow-lift"
             >
-              查看所有行程
+              {uiT("productionUi.pe82971eea1")}
             </Link>
           </div>
         </div>
@@ -437,12 +445,15 @@ function Trip() {
         onOpenChange={setDeleteOpen}
         onConfirm={handleDelete}
         confirming={deleting}
+        {...deleteTripDialogLabels(locale)}
       />
     </MobileFrame>
   );
 }
 
 function TripLegacy({ it }: { it: Itinerary }) {
+  const { t: uiT } = useI18n();
+
   return (
     <>
       <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
@@ -450,12 +461,10 @@ function TripLegacy({ it }: { it: Itinerary }) {
           <MapPin className="h-3.5 w-3.5" /> {it.destination}
         </span>
         <span>·</span>
-        <span>{it.days} 天</span>
+        <span>{uiT("productionUi.pab2b69cb47", { v0: it.days })}</span>
       </div>
       <p className="mt-4 rounded-2xl bg-secondary p-4 text-sm leading-relaxed">{it.summary}</p>
-      <p className="mt-4 text-sm text-muted-foreground">
-        此為舊版行程格式，建議重新規劃以使用完整時間軸編輯。
-      </p>
+      <p className="mt-4 text-sm text-muted-foreground">{uiT("productionUi.p39fd9fb2aa")}</p>
     </>
   );
 }

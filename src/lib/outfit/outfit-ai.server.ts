@@ -1,3 +1,5 @@
+import type { Locale } from "@/lib/i18n/types";
+import { aiLanguageInstruction } from "@/lib/i18n/ai-instructions";
 import { getOpenAIKey } from "@/lib/env.server";
 import { mapOpenAIError } from "@/lib/ai/errors";
 import type { DailyForecast } from "@/lib/weather.functions";
@@ -25,7 +27,7 @@ const OUTFIT_SCHEMA = {
           outfitSummary: { type: "string", description: "一行穿搭，如 短袖＋薄外套" },
           narrative: {
             type: "string",
-            description: "2-3 句繁體中文，像旅伴提醒，有溫度，不要氣象播報口吻",
+            description: "2–3 warm, practical sentences in the system-requested language.",
           },
           packingReminders: {
             type: "array",
@@ -41,6 +43,7 @@ const OUTFIT_SCHEMA = {
 } as const;
 
 export type OutfitAIInput = {
+  locale?: Locale;
   destination: string;
   fashionStyle?: string;
   mood?: string;
@@ -53,7 +56,7 @@ export type OutfitAIInput = {
   }[];
 };
 
-function buildOutfitSystemPrompt(fashionStyle?: string): string {
+function buildOutfitSystemPrompt(fashionStyle?: string, locale: Locale = "zh-TW"): string {
   const styleBlock = fashionStyle?.trim()
     ? `使用者穿搭風格偏好：${fashionStyle.trim()}。請微調用詞與單品建議（如韓系簡約、日系層次、街頭休閒、文青亞麻、極簡素色），但不要變成時尚雜誌口吻。`
     : "無特定穿搭風格，以舒適、好走、符合天氣為主。";
@@ -69,7 +72,8 @@ ${styleBlock}
 - 下雨要提雨具與鞋款；登山健行要提鞋與機能；海邊要防曬；大量步行要舒適鞋
 - outfitSummary 簡短（約 8–20 字），可用「＋」連接單品
 - packingReminders 1-3 項，每項一句，可含 emoji 開頭如 ☔ 👟
-- 每個 date 都要有一筆 dailyOutfits`;
+- 每個 date 都要有一筆 dailyOutfits
+${aiLanguageInstruction(locale)}`;
 }
 
 function buildOutfitUserMessage(input: OutfitAIInput): string {
@@ -108,7 +112,7 @@ export async function callOutfitAI(input: OutfitAIInput): Promise<OutfitAIItem[]
       max_tokens: 1200,
       temperature: 0.8,
       messages: [
-        { role: "system", content: buildOutfitSystemPrompt(input.fashionStyle) },
+        { role: "system", content: buildOutfitSystemPrompt(input.fashionStyle, input.locale) },
         { role: "user", content: buildOutfitUserMessage(input) },
       ],
       response_format: {

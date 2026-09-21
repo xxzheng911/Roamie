@@ -1460,6 +1460,25 @@ html.chat-route-active .chat-messages {
 html.app-keyboard-open .bottom-nav,
 html.chat-keyboard-open .bottom-nav,
 html.chat-keyboard-open .bottom-nav.chat-nav-keyboard-hide,
+/* Content-sized option grid. Column count follows the container, not locale. */
+.plan-budget-grid {
+  display: grid;
+  align-items: stretch;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.75rem), 1fr));
+}
+
+.plan-budget-grid > * {
+  height: 100%;
+  min-width: 0;
+}
+
+.media-action-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
+}
+
 html.plan-keyboard-open .bottom-nav {
   visibility: hidden !important;
   pointer-events: none !important;

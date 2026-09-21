@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { Link } from "@tanstack/react-router";
 import { Calendar, ChevronRight } from "lucide-react";
 import { TripCoverImage } from "@/components/media/TripCoverImage";
@@ -11,6 +12,8 @@ type Props = {
 
 /** 首頁「繼續你的行程」— 與收藏列表同一筆 trip、同一詳情頁 */
 export function HomeTripCard({ trip }: Props) {
+  const { t: uiT } = useI18n();
+
   return (
     <Link
       to={TRIP_DETAIL_ROUTE}
@@ -32,17 +35,20 @@ export function HomeTripCard({ trip }: Props) {
         />
         <div className="absolute inset-0 bg-gradient-to-t from-ink/55 via-transparent" />
         <div className="absolute bottom-0 left-0 right-0 p-4 text-cream">
-          <p className="text-[11px] uppercase tracking-[0.2em] opacity-80">繼續你的行程</p>
+          <p className="text-[11px] uppercase tracking-[0.2em] opacity-80">
+            {uiT("productionUi.p67c63135f8")}
+          </p>
           <h3 className="mt-1 font-display text-xl">{resolveCoreTripTitle(trip)}</h3>
         </div>
       </div>
       <div className="flex items-center justify-between px-5 py-3.5 text-sm">
         <span className="inline-flex items-center gap-1 text-muted-foreground">
           <Calendar className="h-3.5 w-3.5" />
-          {trip.days} 天
+          {trip.days} {uiT("productionUi.p49da61ceee")}
         </span>
         <span className="inline-flex items-center gap-1 text-foreground">
-          繼續 <ChevronRight className="h-4 w-4" />
+          {uiT("productionUi.pd9d1f08fa5")}
+          <ChevronRight className="h-4 w-4" />
         </span>
       </div>
     </Link>

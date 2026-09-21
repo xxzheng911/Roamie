@@ -1,3 +1,5 @@
+import { translate } from "@/lib/i18n/translate";
+import { localizedAvailabilityCopy } from "@/lib/generated-display-projection";
 import type { RoamieRequestContext } from "@/lib/ai/context";
 import type { RoamieItineraryItem, RoamieRecommendationItem, RoamieResponse } from "@/lib/ai/types";
 import { normalizeRecommendationItem } from "@/lib/ai/types";
@@ -170,10 +172,9 @@ async function enrichRecommendations(
 
   let recommendations = selected.map(({ rec, availability }) => {
     const patched = applyAvailabilityFields(rec, availability);
-    return {
-      ...patched,
-      reason: appendReasonWithHours(patched.reason, availability),
-    };
+    return ctx.locale && ctx.locale !== "zh-TW"
+      ? localizedAvailabilityCopy(patched, ctx.locale, availability.openStatus)
+      : { ...patched, reason: appendReasonWithHours(patched.reason, availability) };
   });
 
   if (sceneFlow && ctx.location && recommendations.length < 3) {
@@ -296,13 +297,17 @@ export async function enrichRoamieResponse(
       finalRecs.length > 0 &&
       (aiRecCount < 2 || /要不要看看夜景|附近大部分店家慢慢休息|適合深夜待著/.test(summary))
     ) {
-      summary = buildLateNightMoodSummary({
+      summary = ctx.locale && ctx.locale !== "zh-TW"
+        ? translate(ctx.locale, "destinationEditorial.late_places", { count: finalRecs.length })
+        : buildLateNightMoodSummary({
         city: ctx.location?.city ?? ctx.weather?.city,
         mood: ctx.mood ?? ctx.selectedMood,
         placeCount: finalRecs.length,
       });
     } else if (lateNightMode && finalRecs.length === 0) {
-      summary = buildLateNightCompanionSummary({
+      summary = ctx.locale && ctx.locale !== "zh-TW"
+        ? translate(ctx.locale, "destinationEditorial.late_empty")
+        : buildLateNightCompanionSummary({
         mood: ctx.mood,
         weather: ctx.weather,
         city: ctx.location?.city ?? ctx.weather?.city,
@@ -314,7 +319,9 @@ export async function enrichRoamieResponse(
       stats.open + stats.closingSoon <= 1 &&
       !/休息|深夜|慢慢/.test(summary)
     ) {
-      summary = `${summary.trim()}\n\n${buildLateNightCompanionSummary({
+      summary = ctx.locale && ctx.locale !== "zh-TW"
+        ? `${summary.trim()}\n\n${translate(ctx.locale, "destinationEditorial.late_check")}`
+        : `${summary.trim()}\n\n${buildLateNightCompanionSummary({
         mood: ctx.mood,
         weather: ctx.weather,
         city: ctx.location?.city,

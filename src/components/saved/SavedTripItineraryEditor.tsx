@@ -1,3 +1,4 @@
+import { LOCALIZED_ACTION_GRID, LOCALIZED_ACTION_BUTTON } from "@/lib/localized-action-layout";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
@@ -235,6 +236,7 @@ function initialOutfitFields(payload: RoamiePayloadV2): TripOutfitSuggestionFiel
     weatherSummary: payload.weatherSummary,
     weatherSource: payload.weatherSource,
     outfitSuggestionInputKey: payload.outfitSuggestionInputKey,
+    outfitCopy: payload.outfitCopy,
   };
 }
 
@@ -285,6 +287,8 @@ type Props = {
 };
 
 export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, initialDay, ignoreRealtimeUntilRef }: Props) {
+  const { t: uiT } = useI18n();
+
   const navigate = useNavigate();
   const { locale } = useI18n();
   const geocodeLocationFn = useServerFn(geocodeTripLocationFromText);
@@ -925,9 +929,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       if (opts.targetDateKey !== sourceDateKey) {
         setActiveDayIndex(opts.targetDayIndex);
       }
-      toast.success(`已將「${item.placeName || item.title}」移至第 ${opts.targetDayNumber} 天`);
+      toast.success(uiT("productionUi.p9b1b564eab", { v0: (item.placeName || item.title), v1: (opts.targetDayNumber) }));
     },
-    [crossDayMove, commitCrossDayScheduleChange],
+    [uiT, crossDayMove, commitCrossDayScheduleChange],
   );
 
   const persistItems = useCallback((next: RoamieItineraryItem[]) => {
@@ -966,10 +970,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         })
         .catch((e) => {
           console.error("[TRIP_DATE_SAVE] failed", e);
-          toast.error(e instanceof Error ? e.message : "行程日期儲存失敗");
+          toast.error(e instanceof Error ? e.message : uiT("productionUi.p1e9b042626"));
         });
     },
-    [stored.id, buildPayload, onStoredChange, cancelPending, markSynced],
+    [uiT, stored.id, buildPayload, onStoredChange, cancelPending, markSynced],
   );
 
   const handleAddDay = () => {
@@ -988,7 +992,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       newStartDate: nextSettings.tripStartDate ?? start,
     });
     scrollToDay(scheduledDayCount);
-    toast.message(`已新增第 ${scheduledDayCount + 1} 天`);
+    toast.message(uiT("productionUi.p58a7976c7f", { v0: (scheduledDayCount + 1) }));
   };
 
   const executeRemoveDay = useCallback(
@@ -1026,9 +1030,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       console.info(
         `[TRIP_DAY_REMOVE] dateKey=${dateKey} dayNumber=${dayNumber} removedStops=${applied.removedStopCount} remainingDays=${scheduledDayCount}`,
       );
-      toast.message(`已刪除第 ${dayNumber} 天`);
+      toast.message(uiT("productionUi.p9081b0dc7a", { v0: (dayNumber) }));
     },
-    [commitTripSchedule, dayGroups, safeDayIndex],
+    [uiT, commitTripSchedule, dayGroups, safeDayIndex],
   );
 
   const handleRemoveDay = (dateKey: string, dayNumber: number) => {
@@ -1038,7 +1042,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
     const removedDayIndex = dayGroups.findIndex((d) => d.dateKey === dateKey);
 
     if (scheduledDayCount <= 1) {
-      toast.message("行程至少需保留一天");
+      toast.message(uiT("productionUi.pac19fd2daa"));
       return;
     }
 
@@ -1077,7 +1081,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       { dayIndex: addDayIndex >= 0 ? addDayIndex : 0 },
     );
     setAddMenuDayIndex(null);
-    toast.success("已新增地點");
+    toast.success(uiT("productionUi.pa0c2f54711"));
   };
 
   const patchSettings = (patch: Partial<TripPlanSettings>) => {
@@ -1497,10 +1501,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         });
         if (updated) onStoredChange?.(updated);
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : "名稱更新失敗");
+        toast.error(e instanceof Error ? e.message : uiT("productionUi.pcad2360e03"));
       }
     },
-    [tripTitle, stored.id, payload, onStoredChange],
+    [uiT, tripTitle, stored.id, payload, onStoredChange],
   );
 
   const openTripCoverEditor = useCallback((file: File) => {
@@ -1520,7 +1524,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       try {
         if (!file?.size) {
           console.info("[COVER_UPLOAD_ERROR]", "picked file empty");
-          toast.error("圖片無效，請重新選擇");
+          toast.error(uiT("productionUi.p23d9649ebd"));
           return;
         }
         openTripCoverEditor(file);
@@ -1530,7 +1534,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         toast.error(msg);
       }
     },
-    [openTripCoverEditor],
+    [uiT, openTripCoverEditor],
   );
 
   const handleCoverCropApply = useCallback(
@@ -1570,7 +1574,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         });
 
         if (!uploadResult.ok) {
-          toast.error(`封面上傳失敗，請稍後再試（${uploadResult.error}）`);
+          toast.error(uiT("productionUi.pcf42e39fd0", { v0: (uploadResult.error) }));
           return;
         }
 
@@ -1611,17 +1615,18 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         }
 
         safeCoverState(() => closeTripCoverEditor());
-        toast.success("封面已更新");
+        toast.success(uiT("productionUi.pebdf4b6990"));
       } catch (e) {
         const msg = e instanceof Error ? e.message : "封面上傳失敗";
         console.info("[COVER_UPLOAD_ERROR]", msg);
-        toast.error(`封面上傳失敗，請稍後再試（${msg}）`);
+        toast.error(uiT("productionUi.pcf42e39fd0", { v0: (msg) }));
       } finally {
         isUploadingCoverRef.current = false;
         safeCoverState(() => setCoverBusy(false));
       }
     },
     [
+      uiT,
       stored,
       ignoreRealtimeUntilRef,
       onStoredChange,
@@ -1710,10 +1715,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       );
 
       if (applied.overflowCount > 0) {
-        toast.message(`已將 ${applied.overflowCount} 個地點移到「未安排」`);
+        toast.message(uiT("productionUi.p8858afeb4d", { v0: (applied.overflowCount) }));
       }
     },
-    [commitTripSchedule],
+    [uiT, commitTripSchedule],
   );
 
   const handleSingleDayDateChange = useCallback(
@@ -1739,6 +1744,11 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
   );
 
   const tripDateRange = inferTripDates(items, settings);
+  // Display projection only: editable payload, user title and notes are untouched.
+  const localizedTripTitle = isTitleCustomized ? tripTitle : uiT("destinationEditorial.generated_trip_title", {
+    destination: tripView.destination === "尚未設定" ? "" : tripView.destination,
+    days: dayGroups.filter((day) => !day.isUnassigned).length || payload.days || 1,
+  }).trim();
 
   return (
     <>
@@ -1787,8 +1797,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
             ) : (
               <Camera className="h-3.5 w-3.5" />
             )}
-            更換封面
-          </button>
+            {uiT("productionUi.p54fa653aeb")}</button>
         </div>
       </div>
 
@@ -1796,7 +1805,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         {editingTitle ? (
           <input
             autoFocus
-            defaultValue={tripTitle}
+            defaultValue={localizedTripTitle}
             onBlur={(e) => void commitTitle(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") void commitTitle(e.currentTarget.value);
@@ -1807,13 +1816,13 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         ) : (
           <div className="mt-1 flex items-start gap-2">
             <h1 className="min-w-0 flex-1 font-display text-[22px] leading-snug">
-              {tripView.displayTitle}
+              {localizedTripTitle}
             </h1>
             <button
               type="button"
               onClick={() => setEditingTitle(true)}
               className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground"
-              aria-label="編輯行程名稱"
+              aria-label={uiT("productionUi.p67795f1a9d")}
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>
@@ -1824,7 +1833,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           <RoamieDatePicker
             mode="range"
             variant="inline"
-            title="編輯行程日期"
+            title={uiT("productionUi.p676483ba9d")}
             rangeDisplay="slash"
             value={{ start: tripDateRange.start, end: tripDateRange.end }}
             onChange={(range) => handleTripDateRangeChange(range.start, range.end)}
@@ -1843,8 +1852,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
             }}
             className="mt-1 text-sm text-muted-foreground underline decoration-dashed underline-offset-4"
           >
-            設定行程日期
-          </button>
+            {uiT("productionUi.pfb6e172294")}</button>
         )}
 
       </header>
@@ -1877,7 +1885,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                     : "border border-border bg-card text-muted-foreground",
                 )}
               >
-                {d.isUnassigned ? "未安排" : `第 ${d.dayNumber} 天`}
+                {d.isUnassigned ? uiT("productionUi.p7c525e53e2") : uiT("productionUi.p64f877ec1a", { v0: d.dayNumber })}
               </button>
             ))}
           </div>
@@ -1887,8 +1895,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
             className="flex shrink-0 items-center gap-1 rounded-full border border-dashed border-border px-3 py-2 text-xs text-muted-foreground"
           >
             <Plus className="h-3.5 w-3.5" />
-            新增一天
-          </button>
+            {uiT("productionUi.p0d719a8f99")}</button>
         </div>
       </div>
 
@@ -1897,14 +1904,14 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
           <>
             <div className="flex items-start justify-between gap-2">
               {activeDay.isUnassigned ? (
-                <h2 className="text-sm font-medium text-foreground/90">未安排</h2>
+                <h2 className="text-sm font-medium text-foreground/90">{uiT("productionUi.p7c525e53e2")}</h2>
               ) : (
                 <div className="flex min-w-0 flex-wrap items-center gap-x-1 text-sm font-medium text-foreground/90">
-                  <span>{`第 ${activeDay.dayNumber} 天 ·`}</span>
+                  <span>{`${uiT("productionUi.p64f877ec1a", { v0: activeDay.dayNumber })} ·`}</span>
                   <RoamieDatePicker
                     mode="single"
                     variant="inline"
-                    title={`第 ${activeDay.dayNumber} 天日期`}
+                    title={uiT("productionUi.dayDate", { day: activeDay.dayNumber })}
                     value={
                       /^\d{4}-\d{2}-\d{2}$/.test(activeDay.dateKey)
                         ? activeDay.dateKey
@@ -1916,15 +1923,14 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                 </div>
               )}
               {activeDay.isUnassigned ? (
-                <p className="shrink-0 text-xs text-muted-foreground">可移回各天或刪除</p>
+                <p className="shrink-0 text-xs text-muted-foreground">{uiT("productionUi.pb796220ad9")}</p>
               ) : dayGroups.filter((d) => !d.isUnassigned).length > 1 ? (
                 <button
                   type="button"
                   onClick={() => handleRemoveDay(activeDay.dateKey, activeDay.dayNumber)}
                   className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
                 >
-                  刪除此天
-                </button>
+                  {uiT("productionUi.p6298c7d35f")}</button>
               ) : null}
             </div>
 
@@ -1943,8 +1949,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
 
             {activeDay.items.length === 0 ? (
               <p className="mt-6 rounded-2xl border border-dashed border-border bg-card/60 px-4 py-8 text-center text-sm text-muted-foreground">
-                這一天還沒有地點，點下方按鈕新增。
-              </p>
+                {uiT("productionUi.pd323ff8521")}</p>
             ) : (
               <div className="relative mt-4 space-y-0">
                 {activeDay.items.map((item, i) => {
@@ -2114,22 +2119,20 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                 }
                 className="mt-3 text-xs text-muted-foreground underline-offset-2 hover:underline"
               >
-                依時間重新排序
-              </button>
+                {uiT("productionUi.p09632a36ed")}</button>
             ) : null}
 
             <div className="mt-6 space-y-3">
               {addMenuDayIndex === activeDay.dayNumber - 1 ? (
                 <div className="space-y-2 rounded-2xl border border-border bg-card/80 p-3">
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className={LOCALIZED_ACTION_GRID}>
                     <button
                       type="button"
                       onClick={() => setSavedPlacesOpen(true)}
-                      className="inline-flex min-w-0 items-center justify-center gap-0.5 whitespace-nowrap rounded-full border border-border bg-background px-1 py-2.5 text-[10px] font-medium sm:gap-1 sm:px-2 sm:text-xs"
+                      className={LOCALIZED_ACTION_BUTTON}
                     >
-                      <Bookmark className="h-3 w-3 shrink-0" />
-                      從收藏新增
-                    </button>
+                      <Bookmark className="h-4 w-4 shrink-0" />
+                      {uiT("productionUi.p36ee0a19b0")}</button>
                     <button
                       type="button"
                       onClick={() => {
@@ -2155,11 +2158,10 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                           },
                         });
                       }}
-                      className="inline-flex min-w-0 items-center justify-center gap-0.5 whitespace-nowrap rounded-full border border-border bg-background px-1 py-2.5 text-[10px] font-medium sm:gap-1 sm:px-2 sm:text-xs"
+                      className={LOCALIZED_ACTION_BUTTON}
                     >
-                      <Sparkles className="h-3 w-3" />
-                      請 Roamie 推薦
-                    </button>
+                      <Sparkles className="h-4 w-4 shrink-0" />
+                      {uiT("productionUi.pc4dc89e225")}</button>
                     <button
                       type="button"
                       onClick={async () => {
@@ -2168,24 +2170,22 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                         try {
                           await saveNow();
                         } catch {
-                          toast.error("行程儲存失敗，請稍後再試");
+                          toast.error(uiT("productionUi.p9dfbfbff93"));
                           return;
                         }
                         void navigate({ to: "/map" });
                       }}
-                      className="inline-flex min-w-0 items-center justify-center gap-0.5 whitespace-nowrap rounded-full border border-border bg-background px-1 py-2.5 text-[10px] font-medium sm:gap-1 sm:px-2 sm:text-xs"
+                      className={LOCALIZED_ACTION_BUTTON}
                     >
-                      <MapIcon className="h-3 w-3 shrink-0" />
-                      去探索看看
-                    </button>
+                      <MapIcon className="h-4 w-4 shrink-0" />
+                      {uiT("productionUi.pb9e3a78c0a")}</button>
                   </div>
                   <button
                     type="button"
                     onClick={() => setAddMenuDayIndex(null)}
-                    className="w-full py-1 text-center text-xs text-muted-foreground"
+                    className="min-h-11 w-full py-2 text-center text-sm text-muted-foreground"
                   >
-                    收合
-                  </button>
+                    {uiT("productionUi.p32605db9ff")}</button>
                 </div>
               ) : (
                 <button
@@ -2197,13 +2197,12 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
                   className="flex w-full items-center justify-center gap-2 rounded-full border border-dashed border-border bg-card/60 py-3 text-sm text-foreground/80"
                 >
                   <Plus className="h-4 w-4" />
-                  新增地點
-                </button>
+                  {uiT("productionUi.p49b9632629")}</button>
               )}
             </div>
           </>
         ) : (
-          <p className="text-sm text-muted-foreground">尚無每日行程內容</p>
+          <p className="text-sm text-muted-foreground">{uiT("productionUi.pebe14c0fab")}</p>
         )}
 
         {hotelAffiliateOffers.length > 0 || flightAffiliateOffers.length > 0 ? (
@@ -2257,9 +2256,9 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
       <ImageSourceSheet
         open={coverSheetOpen}
         onOpenChange={setCoverSheetOpen}
-        title="更換封面"
-        albumLabel="從相簿選擇"
-        cameraLabel="拍照"
+        title={uiT("productionUi.p54fa653aeb")}
+        albumLabel={uiT("productionUi.p30784c6dd2")}
+        cameraLabel={uiT("productionUi.p6e3a10ade7")}
         sheetLogPrefix="[TRIP_COVER_SHEET]"
         pickLogPrefix="[TRIP_COVER_PICK]"
         sheetClassName="z-[70] rounded-t-[1.75rem] px-6 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-2"
@@ -2278,7 +2277,7 @@ export function SavedTripItineraryEditor({ stored, headerRight, onStoredChange, 
         }}
         onConfirm={(blob, transform) => void handleCoverCropApply(blob, transform)}
         applying={coverBusy}
-        doneLabel="儲存封面"
+        doneLabel={uiT("productionUi.p9a2653013d")}
         sheetClassName="z-[90]"
         overlayClassName="z-[90]"
       />

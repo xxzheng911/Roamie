@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import { MobileFrame } from "@/components/MobileFrame";
@@ -33,8 +34,12 @@ type Props = {
  * Full-page legal viewer (iOS Capacitor). Uses document scroll — avoids overlay mirror touch misalignment.
  */
 export function LegalDocumentPage({ doc, onBack }: Props) {
-  const [content, setContent] = useState<string | null>(null);
-  const title = doc === "terms" ? "Roamie 服務條款" : "Roamie 隱私權政策";
+  const { t: uiT } = useI18n();
+
+  const content = uiT(
+    doc === "terms" ? "plusPurchase.termsContent" : "plusPurchase.privacyContent",
+  );
+  const title = uiT(doc === "terms" ? "productionUi.termsTitle" : "productionUi.pace240822b");
 
   useLayoutEffect(() => bindIosInteractiveRoute("legal-page"), []);
 
@@ -45,12 +50,6 @@ export function LegalDocumentPage({ doc, onBack }: Props) {
     };
   }, []);
 
-  useEffect(() => {
-    void import("@/content/legal").then((m) => {
-      setContent(doc === "terms" ? m.TERMS_OF_SERVICE : m.PRIVACY_POLICY);
-    });
-  }, [doc]);
-
   return (
     <MobileFrame>
       <div className="legal-page-root px-5 pb-[max(2.5rem,var(--safe-area-bottom))] pt-[max(0.75rem,var(--safe-area-top))]">
@@ -59,10 +58,10 @@ export function LegalDocumentPage({ doc, onBack }: Props) {
             type="button"
             onClick={onBack}
             className="inline-flex touch-manipulation items-center gap-1 rounded-full px-2 py-1.5 text-sm text-foreground"
-            aria-label="返回登入"
+            aria-label={uiT("productionUi.pedccf5e77a")}
           >
             <ChevronLeft className="h-4 w-4" aria-hidden />
-            返回
+            {uiT("productionUi.p572cf45ba4")}
           </button>
           <h1 className="min-w-0 flex-1 truncate font-display text-base">{title}</h1>
         </header>
@@ -72,7 +71,9 @@ export function LegalDocumentPage({ doc, onBack }: Props) {
             {renderLegalContent(content)}
           </article>
         ) : (
-          <p className="py-10 text-center text-sm text-muted-foreground">載入中…</p>
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            {uiT("productionUi.p1145661d74")}
+          </p>
         )}
       </div>
     </MobileFrame>

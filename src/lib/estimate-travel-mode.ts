@@ -1,3 +1,5 @@
+import { translate } from "@/lib/i18n/translate";
+import type { Locale } from "@/lib/i18n/types";
 import type { UserProfileForReason } from "@/lib/build-place-recommendation-reason";
 import type { LegDurationEstimate } from "@/lib/routes/types";
 import type { WeatherSummary } from "@/lib/weather-types";
@@ -44,14 +46,12 @@ export const WALK_FRIENDLY_MAX_MINUTES = 20;
 export function buildWalkingTransportHint(
   distanceMeters: number,
   walkingMinutes: number,
+  locale: Locale = "zh-TW",
 ): string {
-  if (
-    distanceMeters <= WALK_FRIENDLY_MAX_METERS &&
-    walkingMinutes <= WALK_FRIENDLY_MAX_MINUTES
-  ) {
-    return "距離不遠，適合步行前往。";
+  if (distanceMeters <= WALK_FRIENDLY_MAX_METERS && walkingMinutes <= WALK_FRIENDLY_MAX_MINUTES) {
+    return translate(locale, "uiCoverage.walkNear");
   }
-  return "距離較遠，建議搭乘大眾運輸或其他交通方式前往。";
+  return translate(locale, "uiCoverage.walkFar");
 }
 
 function estimateMotorcycleMinutes(meters: number, driveMin?: number): number {
@@ -85,6 +85,7 @@ function sortModesByOrder(modes: TravelModeEstimate[]): TravelModeEstimate[] {
 export function estimateTravelModesLocal(
   distanceMeters: number,
   durations?: Partial<LegDurationEstimate>,
+  locale: Locale = "zh-TW",
 ): TravelModeEstimate[] {
   const distLabel = formatDistanceLabel(distanceMeters);
   const walkMin = durations?.walk ?? estimateWalkMinutes(distanceMeters);
@@ -99,55 +100,60 @@ export function estimateTravelModesLocal(
   return sortModesByOrder([
     {
       id: "walk",
-      label: "步行",
+      label: translate(locale, "uiCoverage.walk"),
       minutes: walkMin,
       distanceMeters,
       distanceLabel: distLabel,
-      hint: buildWalkingTransportHint(distanceMeters, walkMin),
+      hint: buildWalkingTransportHint(distanceMeters, walkMin, locale),
       durationSource: isLongDistance ? "unavailable" : routeSource(durations?.walk),
       available: !isLongDistance,
     },
     {
       id: "motorcycle",
-      label: "騎車",
+      label: translate(locale, "uiCoverage.motorcycle"),
       minutes: motorcycleMin,
       distanceMeters,
       distanceLabel: distLabel,
-      hint: isLongDistance ? "距離過遠，不建議以騎車前往。" : "適合較短距離移動。",
+      hint: isLongDistance
+        ? translate(locale, "uiCoverage.motorcycleFar")
+        : translate(locale, "uiCoverage.motorcycleShort"),
       durationSource: isLongDistance ? "unavailable" : "estimated",
       available: !isLongDistance,
     },
     {
       id: "drive",
-      label: "開車",
+      label: translate(locale, "uiCoverage.drive"),
       minutes: driveMin,
       distanceMeters,
       distanceLabel: distLabel,
-      hint: "停車方便時較省時間。",
-      durationSource: isLongDistance && durations?.drive == null ? "unavailable" : routeSource(durations?.drive),
+      hint: translate(locale, "uiCoverage.driveParking"),
+      durationSource:
+        isLongDistance && durations?.drive == null ? "unavailable" : routeSource(durations?.drive),
       available: !isLongDistance || durations?.drive != null,
     },
     {
       id: "transit",
-      label: "大眾運輸",
+      label: translate(locale, "uiCoverage.transit"),
       minutes: transitMin,
       distanceMeters,
       distanceLabel: distLabel,
       hint:
         isLongDistance && durations?.transit == null
-          ? "未取得可用的實際大眾運輸路線。"
-          : "比較省體力，適合較長距離。",
+          ? translate(locale, "uiCoverage.transitUnavailable")
+          : translate(locale, "uiCoverage.transitLong"),
       durationSource:
-        isLongDistance && durations?.transit == null ? "unavailable" : routeSource(durations?.transit),
+        isLongDistance && durations?.transit == null
+          ? "unavailable"
+          : routeSource(durations?.transit),
       available: !isLongDistance || durations?.transit != null,
     },
     {
       id: "taxi",
-      label: "計程車",
+      label: translate(locale, "uiCoverage.taxi"),
       minutes: taxiMin,
       distanceMeters,
       distanceLabel: distLabel,
-      hint: "下雨或不想淋雨時較舒適。",
+      hint: translate(locale, "uiCoverage.taxiRain"),
       durationSource: isLongDistance ? "unavailable" : routeSource(durations?.drive),
       available: !isLongDistance,
     },
@@ -157,14 +163,17 @@ export function estimateTravelModesLocal(
 export function mergeTravelDurations(
   local: TravelModeEstimate[],
   durations: LegDurationEstimate,
+  locale: Locale = "zh-TW",
 ): TravelModeEstimate[] {
   return estimateTravelModesLocal(
     durations.distanceMeters || local[0]?.distanceMeters || 0,
     durations,
+    locale,
   );
 }
 
 export type TransportRecommendContext = {
+  locale?: Locale;
   weather?: WeatherSummary | null;
   hour?: number;
   profile?: UserProfileForReason | null;
@@ -186,6 +195,7 @@ function recommendLocalMode(
   dist: number,
   ctx: TransportRecommendContext,
 ): { modeId: TravelModeId; tip: string } | null {
+  const locale = ctx.locale ?? "zh-TW";
   const hour = ctx.hour ?? new Date().getHours();
   const isNight = hour >= 20 || hour < 6;
   const pace = ctx.profile?.pace;
@@ -198,7 +208,7 @@ function recommendLocalMode(
   if (dist < 1000) {
     return {
       modeId: "walk",
-      tip: "距離很近，適合慢慢走過去。",
+      tip: translate(locale, "uiCoverage.walkVeryNear"),
     };
   }
 
@@ -208,18 +218,18 @@ function recommendLocalMode(
       if (isNight) {
         return {
           modeId: "motorcycle",
-          tip: "晚上市區騎車通常比步行快，也適合趕下一個點。",
+          tip: translate(locale, "uiCoverage.motorcycleNight"),
         };
       }
       if (pace === "active" || /趕|密集|效率/i.test(blob)) {
         return {
           modeId: "motorcycle",
-          tip: "行程比較密集，騎車可以省下不少時間。",
+          tip: translate(locale, "uiCoverage.motorcycleBusy"),
         };
       }
       return {
         modeId: "motorcycle",
-        tip: "適合較短距離移動。",
+        tip: translate(locale, "uiCoverage.motorcycleShort"),
       };
     }
   }
@@ -227,11 +237,11 @@ function recommendLocalMode(
   if (dist > 8000) {
     const transit = modes.find((m) => m.id === "transit");
     if (transit) {
-      return { modeId: "transit", tip: "距離較遠，大眾運輸比較省力。" };
+      return { modeId: "transit", tip: translate(locale, "uiCoverage.transitFar") };
     }
     const drive = modes.find((m) => m.id === "drive");
     if (drive) {
-      return { modeId: "drive", tip: "距離較遠，開車或搭車會比較合適。" };
+      return { modeId: "drive", tip: translate(locale, "uiCoverage.driveFar") };
     }
   }
 
@@ -243,18 +253,21 @@ export function recommendTransportMode(
   modes: TravelModeEstimate[],
   ctx: TransportRecommendContext,
 ): { modeId: TravelModeId; tip: string } {
+  const locale = ctx.locale ?? "zh-TW";
   const rain = isRain(ctx.weather);
   const dist = ctx.distanceMeters;
 
   if (dist > LONG_DISTANCE_TRANSPORT_THRESHOLD_METERS) {
-    const routed = modes.find(
-      (mode) => mode.available !== false && mode.durationSource === "route" && mode.id === "transit",
-    ) ?? modes.find((mode) => mode.available !== false && mode.durationSource === "route");
+    const routed =
+      modes.find(
+        (mode) =>
+          mode.available !== false && mode.durationSource === "route" && mode.id === "transit",
+      ) ?? modes.find((mode) => mode.available !== false && mode.durationSource === "route");
     return {
       modeId: routed?.id ?? "transit",
       tip: routed
-        ? "距離較遠，請以實際可用路線與跨境交通安排為準。"
-        : "距離較遠，目前沒有可用的實際路線，請改用航班或跨境交通規劃。",
+        ? translate(locale, "uiCoverage.longRoute")
+        : translate(locale, "uiCoverage.longUnavailable"),
     };
   }
 
@@ -264,7 +277,7 @@ export function recommendTransportMode(
     const pick = taxi ?? drive ?? modes[0];
     return {
       modeId: pick.id,
-      tip: "今天下雨，建議直接搭車比較舒服。",
+      tip: translate(locale, "uiCoverage.rainRide"),
     };
   }
 
@@ -283,7 +296,7 @@ export function recommendTransportMode(
   if (dist < 1000) {
     return {
       modeId: "walk",
-      tip: "這段距離不遠，很適合慢慢散步過去。",
+      tip: translate(locale, "uiCoverage.walkLeisure"),
     };
   }
 
@@ -293,14 +306,14 @@ export function recommendTransportMode(
     const pick = taxi ?? drive ?? modes[0];
     return {
       modeId: pick.id,
-      tip: "夜間移動請依現場路況選擇合適方式。",
+      tip: translate(locale, "uiCoverage.nightTravel"),
     };
   }
 
   if (dist < 2500 && (pace === "slow" || /散步|慢|步行/i.test(blob))) {
     return {
       modeId: "walk",
-      tip: "路程不長，剛好可以順路看看街景。",
+      tip: translate(locale, "uiCoverage.walkStreets"),
     };
   }
 
@@ -309,40 +322,40 @@ export function recommendTransportMode(
     if (transit) {
       return {
         modeId: "transit",
-        tip: "距離稍遠，大眾運輸通常比較省力。",
+        tip: translate(locale, "uiCoverage.transitFurther"),
       };
     }
     const drive = modes.find((m) => m.id === "drive");
     if (drive) {
-      return { modeId: "drive", tip: "開車過去時間較可控，適合趕下一個點。" };
+      return { modeId: "drive", tip: translate(locale, "uiCoverage.driveTime") };
     }
   }
 
   if (/計程車|舒適|不想走/i.test(blob) && dist > 1500) {
-    return { modeId: "taxi", tip: "依你的偏好，搭車會比較輕鬆。" };
+    return { modeId: "taxi", tip: translate(locale, "uiCoverage.taxiPreference") };
   }
 
   const motorcycle = modes.find((m) => m.id === "motorcycle");
   if (motorcycle && dist >= 1000 && dist <= 8000) {
     return {
       modeId: "motorcycle",
-      tip: "這段距離騎車或開車都方便，市區通常騎車較快。",
+      tip: translate(locale, "uiCoverage.motorcycleCity"),
     };
   }
 
   const walk = modes.find((m) => m.id === "walk");
   if (walk && walk.minutes <= 18) {
-    return { modeId: "walk", tip: "大約十幾分鐘路程，散步過去剛好。" };
+    return { modeId: "walk", tip: translate(locale, "uiCoverage.walkMinutes") };
   }
 
   const transit = modes.find((m) => m.id === "transit");
   if (transit && dist > 3000) {
-    return { modeId: "transit", tip: "搭大眾運輸可以省體力，也方便換線。" };
+    return { modeId: "transit", tip: translate(locale, "uiCoverage.transitTransfer") };
   }
 
   return {
     modeId: "drive",
-    tip: "開車過去時間較可控，適合趕下一個點。",
+    tip: translate(locale, "uiCoverage.driveTime"),
   };
 }
 
@@ -357,6 +370,6 @@ export function applyRecommendedMode(
 
 /** 預設選取的交通方式（距離 / 天氣 / 時段 / 地區） */
 export function getDefaultTransportMode(ctx: TransportRecommendContext): TravelModeId {
-  const local = estimateTravelModesLocal(ctx.distanceMeters);
+  const local = estimateTravelModesLocal(ctx.distanceMeters, undefined, ctx.locale);
   return recommendTransportMode(local, ctx).modeId;
 }

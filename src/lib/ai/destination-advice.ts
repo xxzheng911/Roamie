@@ -1,3 +1,4 @@
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import type { ChatPlanningSession, PlanningShownCandidate } from "@/lib/chat-session";
 import type { ChatMsg } from "@/lib/chat-history";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
@@ -490,8 +491,9 @@ function buildCombinationSelectionGenerationAdvice(params: {
   days: number;
   userText: string;
   titleFallback?: string[];
+  locale?: import("@/lib/i18n/types").Locale;
 }): DestinationAdviceResult | null {
-  const { ctx, dest, days, userText, titleFallback } = params;
+  const { ctx, dest, days, userText, titleFallback, locale } = params;
   const allowlist =
     buildCombinationSelectionAllowlist(dest, userText) ??
     (titleFallback?.length ? buildCombinationAllowlistFromTitles(dest, titleFallback) : null);
@@ -538,8 +540,14 @@ function buildCombinationSelectionGenerationAdvice(params: {
   return {
     ...gen,
     reply: [
-      `好，我會以${labelList}為主，幫你安排 ${dest} ${days} 天行程。`,
-      "正在整理並規劃中…",
+      chatRuntimeCopy("combinationFocusDays", locale, {
+        styles: allowlist.allowedTitles.length
+          ? labelList
+          : chatRuntimeCopy("suggestedMix", locale),
+        destination: dest,
+        days,
+      }),
+      chatRuntimeCopy("planningInProgress", locale),
     ].join("\n"),
     // Never render candidate place cards during GENERATING_ITINERARY.
     recommendations: undefined,
@@ -2097,6 +2105,7 @@ export function resolveDestinationAdvice(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   userText: string,
+  locale?: import("@/lib/i18n/types").Locale,
 ): DestinationAdviceResult {
   if (isTripAddPlaceSession(session)) return { reply: null };
 
@@ -2155,6 +2164,7 @@ export function resolveDestinationAdvice(
           days,
           userText,
           titleFallback: resolved.titles,
+          locale,
         });
         if (comboGen) return comboGen;
       }
@@ -2294,6 +2304,7 @@ export function resolveDestinationAdvice(
         context: { ...workingCtx, destination: windowDest },
         userText,
         weather: workingCtx.weather ?? session.weather ?? null,
+        locale,
       });
       return {
         reply: monthResult.reply,
@@ -2313,7 +2324,7 @@ export function resolveDestinationAdvice(
     }
 
     if (shouldAskTripDuration(workingCtx, session, userText)) {
-      return buildAskTripDurationAdviceResult(workingCtx, session);
+      return buildAskTripDurationAdviceResult(workingCtx, session, locale, userText);
     }
 
     // Destination + days ready with known combination templates → skip style A/B/C/D
@@ -2423,6 +2434,7 @@ export function resolveDestinationAdvice(
           days,
           userText,
           titleFallback: titles,
+          locale,
         });
         if (comboGen) return comboGen;
       }
@@ -2439,6 +2451,7 @@ export function resolveDestinationAdvice(
       session.adviceSelectionThisTurn,
       session.lastResolvedPendingQuestion,
       workingCtx,
+      locale,
     );
     const dest = session.lastResolvedPendingQuestion.baseDestination ?? ctx.destination;
     const mustVisit =
@@ -2638,6 +2651,7 @@ export function resolveDestinationAdvice(
               days,
               userText,
               titleFallback: titles,
+              locale,
             });
             if (comboGen) return comboGen;
           }
@@ -2761,6 +2775,7 @@ export function resolveDestinationAdvice(
             days,
             userText,
             titleFallback: titles,
+            locale,
           });
           if (comboGen) {
             return {
@@ -2774,7 +2789,7 @@ export function resolveDestinationAdvice(
         }
 
         const labelList = titles.join("、") || "建議組合";
-        const next = advanceAfterPendingSelection(selected, pending, workingCtx);
+        const next = advanceAfterPendingSelection(selected, pending, workingCtx, locale);
         return {
           reply: next.reply,
           pendingQuestion: next.pendingQuestion,
@@ -2790,7 +2805,7 @@ export function resolveDestinationAdvice(
         };
       }
 
-      const next = advanceAfterPendingSelection(selected, pending, workingCtx);
+      const next = advanceAfterPendingSelection(selected, pending, workingCtx, locale);
       return {
         reply: next.reply,
         pendingQuestion: next.pendingQuestion,
@@ -3000,7 +3015,7 @@ export function resolveDestinationAdvice(
           "[DIRECT_ITINERARY_GENERATION_BLOCKED]",
           "reason=duration_reply_requires_combination_selection",
         );
-        const next = advanceAfterPendingSelection(String(parsedDays), pending, datedCtx);
+        const next = advanceAfterPendingSelection(String(parsedDays), pending, datedCtx, locale);
         if (
           /你想直接排完整行程|先推薦必去景點|這幾天.*適合散步|可以安排：|好，我先記下：|無法取得.*景點資料/.test(
             next.reply,
@@ -3095,7 +3110,7 @@ export function resolveDestinationAdvice(
         );
       }
       return {
-        reply: `好，${dest}是很好的選擇。你這趟大概幾天？例如 5天、6天 都可以。`,
+        reply: chatRuntimeCopy("cityGoodChoiceDaysExample", locale, { destination: dest }),
         pendingQuestion: pending,
       };
     }
@@ -3172,6 +3187,7 @@ export function resolveDestinationAdvice(
           userText,
           previousPendingType: "region_choice",
           blockedLegacyTemplate: "free_form_city_without_days",
+          locale,
         });
         return {
           reply: dateAsk.reply,
@@ -3316,7 +3332,7 @@ export function resolveDestinationAdvice(
         ctx.destinationCountry ?? session.travelContext?.destinationCountry,
       );
       const selected = USE_DEFAULT_ROUTES;
-      const next = advanceAfterPendingSelection(selected, syntheticPending, ctx);
+      const next = advanceAfterPendingSelection(selected, syntheticPending, ctx, locale);
       return {
         reply: next.reply,
         pendingQuestion: next.pendingQuestion,
@@ -3467,6 +3483,7 @@ export function resolveDestinationAdvice(
       context: { ...ctx, destination: scenicLabel },
       userText,
       weather: ctx.weather ?? session.weather ?? null,
+      locale,
     });
     return {
       reply: monthResult.reply,
@@ -3492,7 +3509,7 @@ export function resolveDestinationAdvice(
     return structuredSuggestion;
   }
 
-  const reply = buildDestinationAdviceReplyBody(ctx, session, userText);
+  const reply = buildDestinationAdviceReplyBody(ctx, session, userText, locale);
   if (!reply) return { reply: null };
 
   return {
@@ -3521,6 +3538,7 @@ function buildDestinationAdviceReplyBody(
   ctx: CanonicalTravelContext,
   session: ChatPlanningSession,
   userText: string,
+  locale?: import("@/lib/i18n/types").Locale,
 ): string | null {
   if (isTripAddPlaceSession(session)) return null;
 
@@ -3687,6 +3705,7 @@ function buildDestinationAdviceReplyBody(
           userText,
           previousPendingType: session.pendingQuestion?.type,
           blockedLegacyTemplate: "city_advice_without_days",
+          locale,
         });
         return dateAsk.reply;
       }
@@ -3749,6 +3768,7 @@ function buildDestinationAdviceReplyBody(
         userText,
         previousPendingType: session.pendingQuestion?.type,
         blockedLegacyTemplate: "seasonal_destination_style_question",
+        locale,
       }).reply;
     }
     return null;
@@ -3768,6 +3788,7 @@ function buildDestinationAdviceReplyBody(
         userText,
         previousPendingType: session.pendingQuestion?.type,
         blockedLegacyTemplate: "region_selected_style_fallback",
+        locale,
       }).reply;
     }
     return null;

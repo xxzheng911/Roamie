@@ -1,3 +1,5 @@
+import { productionUiMessages } from "../src/lib/i18n/production-ui.ts";
+import { uiCoverageMessages } from "../src/lib/i18n/ui-coverage.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { withSubscriptionTimeout } from "../src/lib/subscription/async-timeout.ts";
@@ -40,24 +42,24 @@ const geolocationPlugin = read(
 
 assert.match(home, /if \(variant === "skeleton"\)/);
 assert.match(home, /if \(variant === "plus"\)/);
-assert.match(home, /讓 Roamie 更懂你/);
-assert.match(home, /記住你的旅行偏好，讓每次推薦更貼近你。/);
-assert.match(home, /"長期旅行記憶"/);
-assert.match(home, /"個人化推薦"/);
-assert.match(home, /"無限 AI 對話"/);
+assert.match(home, /plusTitle/);
+assert.match(home, /plusBody/);
+assert.match(home, /"plusMemory"/);
+assert.match(home, /"plusPersonal"/);
+assert.match(home, /"plusUnlimited"/);
 assert.doesNotMatch(home, /收藏地點推薦|更深層 AI 對話|個人化行程規劃/);
 assert.doesNotMatch(home, /稍後再說|立即升級 Plus/);
-assert.match(home, /個人化旅遊中心/);
-assert.match(home, /Roamie 正在記住你的旅行節奏/);
-assert.match(home, /開始規劃我的旅程/);
+assert.match(home, /plusCenter/);
+assert.match(home, /plusLearning/);
+assert.match(home, /plusStart/);
 assert.doesNotMatch(home, /返回 Free 模式|handleReturnFree|disablePlusTestMode/);
 assert.match(
   home,
-  /<\/div>\s*<\/div>\s*<div className="mt-4 flex w-full justify-center">[\s\S]*className="mx-auto w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-\[0\.99\]"[\s\S]*開始規劃我的旅程/,
+  /<\/div>\s*<\/div>\s*<div className="mt-4 flex w-full justify-center">[\s\S]*className="mx-auto w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground shadow-soft transition active:scale-\[0\.99\]"[\s\S]*plusStart/,
 );
 assert.match(
   home,
-  /className="w-full rounded-full bg-primary px-3 py-3 text-sm font-medium[^\"]*"[\s\S]*升級 Plus/,
+  /className="w-full rounded-full bg-primary px-3 py-3 text-sm font-medium[^\"]*"[\s\S]*uiCoverage\.plusUpgrade/,
 );
 assert.match(subscriptionProvider, /SUBSCRIPTION_HYDRATION_TIMEOUT_MS/);
 assert.match(subscriptionProvider, /fallback: "free"/);
@@ -80,7 +82,7 @@ assert.match(
 assert.match(quiz, /hasPlusAccess[\s\S]*travel-preference-test/);
 
 assert.match(providers, /<PlusPurchaseProvider>/);
-assert.match(providers, /pathname !== "\/welcome"/);
+assert.doesNotMatch(providers, /ProviderGate|shouldUseLightStartupShell/);
 assert.equal((purchaseProvider.match(/<PlusComingSoonDialog/g) ?? []).length, 1);
 assert.match(purchaseProvider, /openRevenueCatPaywall/);
 assert.match(purchaseProvider, /paywallOpen/);
@@ -136,12 +138,17 @@ assert.match(appDelegate, /activationState == \.foregroundActive/);
 assert.match(appDelegate, /registerPluginInstance\(SubscriptionManagementPlugin\(\)\)/);
 
 assert.match(settings, /hasPlusAccess && plusEntitlementActiveSources\.includes\("app_store"\)/);
-assert.match(settings, /取消訂閱/);
-assert.match(settings, /確定要取消 Roamie Plus 嗎？/);
-assert.match(settings, /取消後，Plus 功能仍可使用至目前訂閱期限結束。之後將自動回到 Free 方案。/);
-assert.match(settings, /你的旅行偏好、收藏與既有資料不會被刪除，之後也可以隨時重新訂閱。/);
-assert.match(settings, /繼續使用 Plus/);
-assert.match(settings, /前往取消訂閱/);
+for (const copy of [
+  "取消訂閱", "確定要取消 Roamie Plus 嗎？",
+  "取消後，Plus 功能仍可使用至目前訂閱期限結束。之後將自動回到 Free 方案。",
+  "你的旅行偏好、收藏與既有資料不會被刪除，之後也可以隨時重新訂閱。",
+  "繼續使用 Plus", "前往取消訂閱",
+]) {
+  const key = Object.keys(productionUiMessages["zh-TW"]).find(key => productionUiMessages["zh-TW"][key] === copy);
+  assert.ok(key, `Missing subscription disclosure: ${copy}`);
+  assert.ok(settings.includes(`productionUi.${key}`), `Settings must render ${key}`);
+  for (const locale of ["en", "ja", "ko"]) assert.ok(productionUiMessages[locale][key]);
+}
 assert.match(
   settings,
   /grid min-h-12 grid-cols-\[minmax\(0,1fr\)_5\.5rem\] items-center gap-3 px-6 py-3\.5[\s\S]*settings\.loginMethod[\s\S]*justify-self-end text-\[15px\] leading-5 text-muted-foreground/,
@@ -206,3 +213,6 @@ assert.match(geolocationPlugin, /requestLocationAuthorisation\(type: \.whenInUse
 assert.doesNotMatch(geolocationPlugin, /requestLocationAuthorisation\(type: \.always\)/);
 
 console.info("Plus purchase UI and hydration regression: PASS");
+
+assert.equal(uiCoverageMessages["zh-TW"].plusTitle, "讓 Roamie 更懂你");
+assert.equal(uiCoverageMessages["zh-TW"].plusBody, "記住你的旅行偏好，讓每次推薦更貼近你。");

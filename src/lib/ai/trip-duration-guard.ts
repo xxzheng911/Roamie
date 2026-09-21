@@ -11,6 +11,8 @@ import {
   canDiscoverDestinationPlaces,
   isCountryLevelDestination,
 } from "@/lib/ai/destination-scope";
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import type { Locale } from "@/lib/i18n/types";
 import { normalizeDestinationLabel } from "@/lib/ai/trip-planning-context";
 import {
   assertDestinationConsistency,
@@ -327,8 +329,9 @@ export function buildDestinationDirectionAck(params: {
   days?: number | null;
   startDate?: string | null;
   endDate?: string | null;
+  locale?: Locale;
 }): string {
-  const label = normalizeDestinationLabel(params.destination) || "這趟";
+  const label = normalizeDestinationLabel(params.destination) || chatRuntimeCopy("tripFallback", params.locale);
   const start = params.startDate?.trim();
   const end = params.endDate?.trim();
   if (start && end && /^\d{4}-\d{2}-\d{2}$/.test(start) && /^\d{4}-\d{2}-\d{2}$/.test(end)) {
@@ -336,11 +339,15 @@ export function buildDestinationDirectionAck(params: {
       const [y, m, d] = iso.split("-");
       return `${y}/${m}/${d}`;
     };
-    return `好，我先記下${label} ${fmt(start)}～${fmt(end)} 的行程方向。`;
+    return chatRuntimeCopy("directionAckRange", params.locale, {
+      destination: label,
+      start: fmt(start),
+      end: fmt(end),
+    });
   }
   const days = resolveValidTripDays(params);
   if (days != null) {
-    return `好，我先記下${label} ${days} 天的行程方向。`;
+    return chatRuntimeCopy("directionAckDays", params.locale, { destination: label, days });
   }
-  return `好的，我們以${label}為主往下規劃。`;
+  return chatRuntimeCopy("directionAckOpen", params.locale, { destination: label });
 }

@@ -456,6 +456,7 @@ function buildFallbackTripPayload(
 ): RoamiePayloadV2 {
   const placeNames = selectedPlaces.map((p) => p.placeName ?? p.name).join("、");
   return {
+    generatedLocale: "zh-TW",
     version: 2,
     title: `${data.destination} ${data.days} 天`,
     summary: `依你選的地點排成 ${data.days} 天節奏：${placeNames}`,
@@ -927,6 +928,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
           },
         });
 
+        aiResponse.generatedLocale = data.locale ?? "zh-TW";
         let rawItinerary = coalesceItineraryItems(aiResponse.itinerary);
         if (rawItinerary.length > 0) {
           const initialIdentityRecovery = recoverItineraryGoogleIdentities({
@@ -2184,6 +2186,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
       try {
         const forecast = await openWeatherGetForecast(lat, lng, data.days);
         outfitAdvice = await buildOutfitAdviceForTrip({
+          locale: data.locale,
           destination: data.destination,
           startDate,
           days: data.days,
@@ -2258,6 +2261,7 @@ export const generateItinerary = createServerFn({ method: "POST" })
         legMinutes: seededLegMinutes,
         transitLegs: Object.fromEntries(transit.legs.map((l) => [l.legKey, l])),
         transportTips: transit.transportTips,
+        generatedLocale: transit.generatedLocale,
       };
     } catch (e) {
       if (data.placeAuthority === "selected_only") {

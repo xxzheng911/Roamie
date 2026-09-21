@@ -1,3 +1,5 @@
+import { translate } from "@/lib/i18n/translate";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect } from "react";
 import {
@@ -80,13 +82,13 @@ function ErrorComponent({ error, reset }: { error: unknown; reset: () => void })
 
   return (
     <RoamieAppErrorFallback
-      title="Roamie 暫時無法載入"
-      message="發生未預期的錯誤。請重試，或重新啟動 App。"
+      title={translate(effectiveAppLocale(), "productionUi.appStartError")}
+      message={translate(effectiveAppLocale(), "productionUi.appStartBody")}
       detail={detail}
       onRetry={() => window.location.reload()}
       onHome={recoverToStartup}
-      retryLabel="重新整理"
-      homeLabel="重新啟動"
+      retryLabel={translate(effectiveAppLocale(), "productionUi.refresh")}
+      homeLabel={translate(effectiveAppLocale(), "productionUi.restart")}
     />
   );
 }

@@ -47,9 +47,7 @@ import {
 } from "@/lib/ai/shopping-query-queue";
 import { resolveShoppingSearchScope } from "@/lib/ai/shopping-search-scope";
 import { resolveDestinationEntity } from "@/lib/ai/destination-entity";
-import {
-  buildCafeRelaxedSearchAttempts,
-} from "@/lib/ai/chat-cafe-search";
+import { buildCafeRelaxedSearchAttempts } from "@/lib/ai/chat-cafe-search";
 import {
   dedupeRecommendationCopy,
   filterRecommendationsForCategoryRender,
@@ -78,6 +76,7 @@ import {
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { resolveRecommendationStyleTag } from "@/lib/ai/resolve-recommendation-style-tag";
 import { resolvePresentableMoodTag } from "@/lib/ai/mood-presentation";
+import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 import { ingestResolvedPlacesIntoCandidatePool } from "@/lib/ai/places-cost-cache";
 import {
   buildMealRecommendationDescription,
@@ -128,24 +127,20 @@ const SINGLE_INTENT_MAX = 6;
 /** Larger pool so「還有嗎」can continue from cursor without re-search */
 const SINGLE_INTENT_POOL_MAX = 24;
 
-function rankCategoryPlaces(
-  places: PlaceResult[],
-  lat: number,
-  lng: number,
-): PlaceResult[] {
+function rankCategoryPlaces(places: PlaceResult[], lat: number, lng: number): PlaceResult[] {
   return [...places].sort((a, b) => {
     const scoreA =
       (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10) -
       (a.lat != null && a.lng != null
         ? distanceMeters({ lat, lng }, { lat: a.lat, lng: a.lng })
         : Number.MAX_SAFE_INTEGER) /
-      50_000;
+        50_000;
     const scoreB =
       (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10) -
       (b.lat != null && b.lng != null
         ? distanceMeters({ lat, lng }, { lat: b.lat, lng: b.lng })
         : Number.MAX_SAFE_INTEGER) /
-      50_000;
+        50_000;
     return scoreB - scoreA;
   });
 }
@@ -187,12 +182,8 @@ async function searchCategoryPlaces(params: {
       : null;
 
   // Shopping: multi-group oversample (street/dept/underground/mall/market) for reserve.
-  const shoppingScope =
-    intent === "shopping"
-      ? resolveShoppingSearchScope({ destination })
-      : null;
-  const shoppingEntity =
-    intent === "shopping" ? resolveDestinationEntity(destination) : null;
+  const shoppingScope = intent === "shopping" ? resolveShoppingSearchScope({ destination }) : null;
+  const shoppingEntity = intent === "shopping" ? resolveDestinationEntity(destination) : null;
   const shoppingSeed =
     intent === "shopping"
       ? buildInitialShoppingSearchAttempts(
@@ -215,9 +206,7 @@ async function searchCategoryPlaces(params: {
   const placeReq = parsePlaceRecommendationIntent(userText);
   const destinationAreaScope = resolveDestinationAreaScope(destination);
   const resolvedSearchCity =
-    destinationAreaScope?.parentCity ??
-    resolveRegionPrimaryCity(destination) ??
-    destination;
+    destinationAreaScope?.parentCity ?? resolveRegionPrimaryCity(destination) ?? destination;
   if (placeReq) {
     logPlaceRequirementParsed({
       ...placeReq,
@@ -240,9 +229,7 @@ async function searchCategoryPlaces(params: {
   }
 
   const minResults = CHAT_DESTINATION_MIN_COUNT;
-  const searchExtras = searchContext
-    ? { searchContext, intentCategory: intent }
-    : undefined;
+  const searchExtras = searchContext ? { searchContext, intentCategory: intent } : undefined;
   let rawCount = 0;
   const usedQueries: string[] = [];
 
@@ -291,9 +278,7 @@ async function searchCategoryPlaces(params: {
       places = filterPlacesByDestinationParentCity(places, destinationAreaScope);
     } else {
       const destinationGuard =
-        isFallback && destinationAreaScope
-            ? destinationAreaScope.parentCity
-            : destination;
+        isFallback && destinationAreaScope ? destinationAreaScope.parentCity : destination;
       places = filterPlacesByDestinationGuard(places, destinationGuard, userText);
     }
     if (diagnostics) {
@@ -343,16 +328,11 @@ async function searchCategoryPlaces(params: {
     // Subtype validation (e.g. sukiyaki) — never pad with unrelated restaurants
     if (intent === "restaurant" && placeReq?.subtypes.length) {
       const matched = places.filter(
-        (p) =>
-          isAcceptableRestaurantPlace(p) &&
-          placeMatchesCuisineRelevance(p, placeReq.subtypes),
+        (p) => isAcceptableRestaurantPlace(p) && placeMatchesCuisineRelevance(p, placeReq.subtypes),
       );
       const rejected = places.length - matched.length;
       for (const p of places) {
-        if (
-          isAcceptableRestaurantPlace(p) &&
-          !placeMatchesCuisineRelevance(p, placeReq.subtypes)
-        ) {
+        if (isAcceptableRestaurantPlace(p) && !placeMatchesCuisineRelevance(p, placeReq.subtypes)) {
           logAiPipeline(
             "[FOOD_INTENT_MATCH]",
             `name=${p.name}`,
@@ -625,9 +605,7 @@ function buildGroupedSummary(
   const label = normalizeDestinationLabel(destination);
   const dish = dishLabel?.trim();
   const sections: string[] = [
-    dish
-      ? `在${label}，這幾間${dish}可以先看看：`
-      : `在${label}，這些地方值得先看看：`,
+    dish ? `在${label}，這幾間${dish}可以先看看：` : `在${label}，這些地方值得先看看：`,
   ];
 
   for (const group of groups) {
@@ -705,7 +683,11 @@ export async function buildDestinationCategoryRecommendations(params: {
       payload: {
         title: "Roamie 推薦",
         summary,
-        moodTag: resolvePresentableMoodTag(undefined, context),
+        moodTag: resolveDisplayedRecommendationBadge({
+          context,
+          intent: intents[0],
+          moodTag: resolvePresentableMoodTag(undefined, context),
+        }),
         recommendations: [],
         itinerary: [],
       },
@@ -766,14 +748,11 @@ export async function buildDestinationCategoryRecommendations(params: {
       destinationLatLng: textOnlyDestinationSearch ? null : { lat, lng },
       textOnlyDestinationSearch,
       destinationCountry: entity.country,
-      destinationCity:
-        areaScope?.parentCity ??
-        (entity.type === "city" ? label : undefined),
+      destinationCity: areaScope?.parentCity ?? (entity.type === "city" ? label : undefined),
     };
 
     const profile = classifyDestinationForPlaceSearch(label, geocoded);
-    const perGroupMax =
-      searchIntents.length > 1 ? PER_GROUP_TARGET : SINGLE_INTENT_POOL_MAX;
+    const perGroupMax = searchIntents.length > 1 ? PER_GROUP_TARGET : SINGLE_INTENT_POOL_MAX;
     const seenIds = new Set<string>();
     const usedQueries: string[] = [];
     const groups: Array<{
@@ -815,9 +794,7 @@ export async function buildDestinationCategoryRecommendations(params: {
       if (places.length) {
         ingestResolvedPlacesIntoCandidatePool({
           sessionId:
-            session?.planningSessionId?.trim() ||
-            session?.conversationId?.trim() ||
-            undefined,
+            session?.planningSessionId?.trim() || session?.conversationId?.trim() || undefined,
           destination: label,
           countryCode: entity.country ?? undefined,
           places,
@@ -841,11 +818,7 @@ export async function buildDestinationCategoryRecommendations(params: {
             )
           : [];
       searchDiagnostics.afterMappedRecommendationCount = recommendations.length;
-      recommendations = filterRecommendationsForCategoryRender(
-        recommendations,
-        intent,
-        userText,
-      );
+      recommendations = filterRecommendationsForCategoryRender(recommendations, intent, userText);
       searchDiagnostics.renderableCount = recommendations.length;
       searchDiagnostics.finalRecommendationCount = recommendations.length;
       logDestinationCategoryPlaceSearchSummary(searchDiagnostics);
@@ -878,7 +851,7 @@ export async function buildDestinationCategoryRecommendations(params: {
     }
 
     // Full pool returned; chat layer paginates via ConversationRecommendationSession
-    let allRecommendations = groups.flatMap((g) => g.recommendations);
+    const allRecommendations = groups.flatMap((g) => g.recommendations);
     logDestinationTextSearchResult(allRecommendations.length);
     let namedFallbackText: string | null = null;
 
@@ -926,9 +899,15 @@ export async function buildDestinationCategoryRecommendations(params: {
       version: 2,
       title: "Roamie 推薦",
       summary,
-      moodTag: session
-        ? resolveRecommendationStyleTag(session, context) || resolvePresentableMoodTag(session, context)
-        : resolvePresentableMoodTag(undefined, context),
+      moodTag: resolveDisplayedRecommendationBadge({
+        session,
+        context,
+        intent: primaryIntent,
+        moodTag: session
+          ? resolveRecommendationStyleTag(session, context) ||
+            resolvePresentableMoodTag(session, context)
+          : resolvePresentableMoodTag(undefined, context),
+      }),
       recommendations: allRecommendations,
       itinerary: [],
       generatedAt: new Date().toISOString(),

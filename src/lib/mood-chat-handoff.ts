@@ -23,6 +23,7 @@ import {
   syncSessionPlaceMemory,
 } from "@/lib/place-planning-memory";
 import { mergeTravelContext } from "@/lib/ai/travel-context";
+import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 
 const MOOD_HANDOFF_DONE_PREFIX = "roamie:mood-handoff-done:";
 
@@ -97,9 +98,7 @@ export function buildInitialChatContext(session: ChatPlanningSession): string {
     `currentTime：${timeLabel}`,
     `userLocation：${locLine}`,
     session.lateNightMode ? "lateNightMode：是" : "",
-    session.weather
-      ? `weather：${session.weather.city} ${session.weather.condition}`
-      : "",
+    session.weather ? `weather：${session.weather.city} ${session.weather.condition}` : "",
   ].filter(Boolean);
 
   if (session.selectedPlaces.length) {
@@ -178,9 +177,14 @@ export function buildContextualMoodHandoffOpening(session: ChatPlanningSession):
     return `剛剛你選了夜晚散策，我先幫你保留幾個適合夜晚走走的地方（${names}）。\n\n接下來可以再接夜景、深夜咖啡廳，或順路的宵夜，把路線串成一小段舒服的夜間散步。${closedNote ? `\n\n${closedNote}` : ""}\n\n${PLANNING_FOLLOWUP}`;
   }
 
-  const candidates = session.recommendedPlaces.map((p) => placeDisplayName(p)).slice(0, 4).join("、");
+  const candidates = session.recommendedPlaces
+    .map((p) => placeDisplayName(p))
+    .slice(0, 4)
+    .join("、");
   const cat = session.selectedCategory ?? mood;
-  const lead = cat ? `照著「${cat}」的心情，我整理了 ${candidates} 幾個地方。` : `我整理了 ${candidates} 幾個地方。`;
+  const lead = cat
+    ? `照著「${cat}」的心情，我整理了 ${candidates} 幾個地方。`
+    : `我整理了 ${candidates} 幾個地方。`;
   return `${lead}\n\n你想先從哪一個有感覺的開始？選好跟我說，我們再往下排。\n\n${PLANNING_FOLLOWUP}`;
 }
 
@@ -218,6 +222,7 @@ export function prepareMoodFlowSession(input: MoodFlowHandoffInput): ChatPlannin
     mood: moodTag,
     selectedMood: moodTag,
     selectedCategory: moodTag,
+    generatedLocale: payload.generatedLocale,
     conversationSummary: payload.summary,
     recommendationTitle: payload.title || record.title,
     recommendedPlaces: recommended,
@@ -326,7 +331,11 @@ export function buildHandoffRoamiePayload(
   return {
     title: synced.recommendationTitle ?? synced.mood ?? "你的慢旅行",
     summary,
-    moodTag: synced.selectedMood ?? synced.mood ?? "",
+    moodTag: resolveDisplayedRecommendationBadge({
+      session: synced,
+      context: synced.travelContext,
+      moodTag: synced.selectedMood ?? synced.mood ?? "",
+    }),
     recommendations: recs,
     itinerary: [],
   };

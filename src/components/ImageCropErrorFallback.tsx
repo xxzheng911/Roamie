@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { ImageOff } from "lucide-react";
 
 type Props = {
@@ -10,6 +11,8 @@ export function ImageCropErrorFallback({
   message = "無法載入這張圖片，請換一張再試",
   className = "",
 }: Props) {
+  const { t: uiT } = useI18n();
+
   return (
     <div
       className={`flex flex-col items-center justify-center gap-2 px-4 text-center ${className}`}
@@ -17,7 +20,7 @@ export function ImageCropErrorFallback({
       <span className="flex h-11 w-11 items-center justify-center rounded-full bg-secondary/90">
         <ImageOff className="h-5 w-5 text-muted-foreground" aria-hidden />
       </span>
-      <p className="font-display text-sm text-foreground/90">Roamie 沒讀到這張圖</p>
+      <p className="font-display text-sm text-foreground/90">{uiT("productionUi.p6463358778")}</p>
       <p className="max-w-[14rem] text-[12px] leading-relaxed text-muted-foreground">{message}</p>
     </div>
   );

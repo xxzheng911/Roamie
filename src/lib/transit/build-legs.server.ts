@@ -1,3 +1,4 @@
+import type { GeneratedLocaleContract } from "@/lib/generated-locale";
 import { fetchLegDurations } from "@/lib/google-directions.server";
 import { enrichTransitLegsWithAI } from "@/lib/transit/transit-ai.server";
 import { recommendLegFromEstimates } from "@/lib/transit/recommend-leg";
@@ -9,7 +10,7 @@ import type {
   TransitWeatherHint,
 } from "@/lib/transit/types";
 
-export type BuildTransitResult = {
+export type BuildTransitResult = GeneratedLocaleContract & {
   legs: TransitLegAdvice[];
   /** 整體交通提示 */
   transportTips: string;
@@ -86,6 +87,7 @@ export async function buildTransitLegsForItinerary(args: {
   }
 
   return {
+    generatedLocale: "zh-TW",
     legs: finalLegs,
     transportTips: buildTransportTips(args.destination, finalLegs.length),
   };

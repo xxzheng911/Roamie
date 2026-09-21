@@ -15,6 +15,7 @@ export function SafeImage({
   src,
   fallbackSrc,
   onError,
+  onLoad,
   className,
   maxWidth,
   loading = "lazy",
@@ -75,7 +76,20 @@ export function SafeImage({
       loading={loading}
       decoding="async"
       className={cn(resolvingSignature && "opacity-0", className)}
+      onLoad={(event) => {
+        if (requiresSignature) console.info("[PLACE_PHOTO_IMAGE]", {
+          placeId: extractGooglePlacePhotoName(rawSrc ?? "")?.split("/")[1] ?? null,
+          surface: "safe-image", imageLoadSucceeded: !usedFallback,
+          imageLoadFailed: false, fallbackLoaded: usedFallback,
+        });
+        onLoad?.(event);
+      }}
       onError={(event) => {
+        if (requiresSignature) console.info("[PLACE_PHOTO_IMAGE]", {
+          placeId: extractGooglePlacePhotoName(rawSrc ?? "")?.split("/")[1] ?? null,
+          surface: "safe-image", imageLoadSucceeded: false,
+          imageLoadFailed: true, fallbackReason: "image_element_error",
+        });
         markImageLoadFailed(displaySrc);
         if (!usedFallback && displaySrc !== fallback && !isImageLoadFailed(fallback)) {
           setUsedFallback(true);

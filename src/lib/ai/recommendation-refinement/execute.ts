@@ -4,6 +4,7 @@
  */
 import type { Locale } from "@/lib/i18n/types";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
+import { resolveDisplayedRecommendationBadge } from "@/lib/ai/recommendation-badge-display";
 import type { RoamieRecommendationItem, RoamiePayloadV2 } from "@/lib/ai/types";
 import type { ChatPlanningSession } from "@/lib/chat-session";
 import { mapPlaceResultsToChatItems } from "@/lib/chat-session";
@@ -114,24 +115,14 @@ export async function buildRecommendationRefinementResults(params: {
 
   const cafeConstraints =
     recCtx.intent === "cafe" &&
-    Boolean(
-      recCtx.quietOnly ||
-        recCtx.atmosphere?.length ||
-        recCtx.preferredKeywords?.length,
-    );
+    Boolean(recCtx.quietOnly || recCtx.atmosphere?.length || recCtx.preferredKeywords?.length);
   const cafeBuilt =
-    recCtx.intent === "cafe" && !cafeConstraints
-      ? buildCafeSearchAttempts(city)
-      : null;
+    recCtx.intent === "cafe" && !cafeConstraints ? buildCafeSearchAttempts(city) : null;
   const usedQuerySet = new Set(
     (recCtx.usedQueries ?? []).map((query) => query.trim().toLocaleLowerCase()).filter(Boolean),
   );
-  const unused = (
-    attempts: ReturnType<typeof buildRefinementSearchAttempts>,
-  ) =>
-    attempts.filter(
-      (attempt) => !usedQuerySet.has(attempt.query.trim().toLocaleLowerCase()),
-    );
+  const unused = (attempts: ReturnType<typeof buildRefinementSearchAttempts>) =>
+    attempts.filter((attempt) => !usedQuerySet.has(attempt.query.trim().toLocaleLowerCase()));
   const attempts = unused(
     cafeBuilt
       ? [...cafeBuilt.primary, ...cafeBuilt.fallback]
@@ -174,10 +165,7 @@ export async function buildRecommendationRefinementResults(params: {
       (entity.type === "city" ? recCtx.destinationName : undefined),
   };
 
-  const runAttempts = async (
-    phaseAttempts: typeof attempts,
-    source: string,
-  ) => {
+  const runAttempts = async (phaseAttempts: typeof attempts, source: string) => {
     if (!phaseAttempts.length) return [];
     executedAttempts.push(...phaseAttempts);
     return fetchPlacesWithSearchAttemptsMerged(
@@ -207,12 +195,8 @@ export async function buildRecommendationRefinementResults(params: {
       displayLabel: `${recCtx.parentCity}${recCtx.area}`,
       searchScope: "area",
     };
-    const areaPrimaryAttempts = cafeBuilt
-      ? unused(cafeBuilt.primary)
-      : attempts.slice(0, 1);
-    const areaRelaxedAttempts = cafeBuilt
-      ? unused(cafeBuilt.fallback)
-      : attempts.slice(1);
+    const areaPrimaryAttempts = cafeBuilt ? unused(cafeBuilt.primary) : attempts.slice(0, 1);
+    const areaRelaxedAttempts = cafeBuilt ? unused(cafeBuilt.fallback) : attempts.slice(1);
     const areaPrimary = await runAttempts(
       areaPrimaryAttempts,
       "chat.recommendationRefinement.areaPrimary",
@@ -249,10 +233,7 @@ export async function buildRecommendationRefinementResults(params: {
       const cityPrimaryUsable = filterPlacesByRecommendationContext(cityPrimary, recCtx).accepted;
       const cityRelaxed =
         areaMatches.length + cityPrimaryUsable.length < TARGET_COUNT
-          ? await runAttempts(
-              cityAttempts.slice(1),
-              "chat.recommendationRefinement.cityRelaxed",
-            )
+          ? await runAttempts(cityAttempts.slice(1), "chat.recommendationRefinement.cityRelaxed")
           : [];
       const cityRaw = [...cityPrimary, ...cityRelaxed];
       const areaCandidates = areaMatches.map((place) => ({
@@ -271,9 +252,7 @@ export async function buildRecommendationRefinementResults(params: {
         .filter((candidate) => candidate.parentCityMatched);
       raw = selectAreaFirstCandidates(areaCandidates, cityCandidates, 24, {
         explicitAreaConstraint: true,
-      }).map(
-        (candidate) => candidate.place,
-      );
+      }).map((candidate) => candidate.place);
     } else {
       raw = areaMatches;
     }
@@ -281,9 +260,7 @@ export async function buildRecommendationRefinementResults(params: {
     raw = await runAttempts(attempts, "chat.recommendationRefinement");
   }
 
-  const excludeSet = new Set(
-    recCtx.previousPlaceIds.map((id) => id.trim()).filter(Boolean),
-  );
+  const excludeSet = new Set(recCtx.previousPlaceIds.map((id) => id.trim()).filter(Boolean));
   const withoutExcludedIds = raw.filter((p) => {
     const id = (p.id ?? "").trim();
     return !id || !excludeSet.has(id);
@@ -305,10 +282,8 @@ export async function buildRecommendationRefinementResults(params: {
   }
 
   const ranked = [...finalPlaces].sort((a, b) => {
-    const scoreA =
-      (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10);
-    const scoreB =
-      (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
+    const scoreA = (a.rating ?? 0) * Math.log10((a.userRatingCount ?? 0) + 10);
+    const scoreB = (b.rating ?? 0) * Math.log10((b.userRatingCount ?? 0) + 10);
     return scoreB - scoreA;
   });
 
@@ -356,7 +331,11 @@ export async function buildRecommendationRefinementResults(params: {
     summary,
     recommendations,
     itinerary: [],
-    moodTag: travelContext.mood ?? "",
+    moodTag: resolveDisplayedRecommendationBadge({
+      context: travelContext,
+      intent: categoryIntent,
+      moodTag: travelContext.mood ?? "",
+    }),
   };
 
   return {

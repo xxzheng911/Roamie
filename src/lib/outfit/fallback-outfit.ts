@@ -72,6 +72,7 @@ export function buildFallbackOutfitAdvice(
     const activities = inferActivityTypesFromDayItems(items);
     const fb = fallbackNarrative(f, activities, opts.fashionStyle);
     return {
+      generatedLocale: "zh-TW",
       date: f.date,
       dayIndex: i + 1,
       weather: snapshotFromForecast(f),

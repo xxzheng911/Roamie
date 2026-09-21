@@ -1,8 +1,8 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, useEffect } from "react";
 import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceCoverImage } from "@/components/media/PlaceCoverImage";
 import { PlaceImage } from "@/components/media/PlaceImage";
-import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
+import { homeNearbyImageUrl } from "@/lib/home-nearby-image";
 import { getExploreCategoryDisplayLabel } from "@/lib/place-category";
 import { homeNearbyOpeningBadgeLabel } from "@/lib/home-nearby-display";
 import type { HomeNearbyPick } from "@/lib/explore-category-search";
@@ -63,8 +63,7 @@ function buildCardDisplay(
   busyId: string | null,
   navigatingPlaceId: string | null,
 ): CardDisplay {
-  const img = place.coverImageUrl ?? place.generatedImageUrl ?? place.fallbackImageUrl;
-  const safeCover = img ? resolvePlaceImageUrl(img, { maxWidth: 480 }) : null;
+  const safeCover = homeNearbyImageUrl(place);
   let distance = "";
   if (canShowDistance) {
     distance =
@@ -115,6 +114,8 @@ const HomeNearbyCardItem = memo(function HomeNearbyCardItem({
   onAddToTrip?: (place: HomeNearbyPick) => void;
   onToggleSave?: (place: HomeNearbyPick) => void;
 }) {
+  const { t: uiT } = useI18n();
+
   const { place: p, isLast, safeCover, distance, typeName, rating, hours, vibe } = display;
   const { isSaved, isBusy, isNavigating, loadImage } = display;
 
@@ -132,7 +133,7 @@ const HomeNearbyCardItem = memo(function HomeNearbyCardItem({
         aria-busy={isNavigating}
         onClick={() => onSelect(p)}
         className="absolute inset-0 z-0 rounded-[1.35rem] transition active:scale-[0.98] disabled:cursor-wait"
-        aria-label={`查看 ${p.name}`}
+        aria-label={uiT("productionUi.viewPlace", { name: p.name })}
       />
 
       <div className="relative z-[1] pointer-events-none">
@@ -210,7 +211,9 @@ const HomeNearbyCardItem = memo(function HomeNearbyCardItem({
               }}
               disabled={isBusy}
               className="pointer-events-auto absolute bottom-3 right-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-card/95 shadow-soft disabled:opacity-60"
-              aria-label={isSaved ? "移除收藏" : "收藏"}
+              aria-label={
+                isSaved ? uiT("productionUi.p179c8a7b4e") : uiT("productionUi.p60a53514eb")
+              }
             >
               {isBusy ? (
                 <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -283,6 +286,15 @@ export function HomeNearbyPlaceCards({
       ),
     );
   }, [places, anchor, canShowDistance, locale, savedNames, goodForNow, busyId, navigatingPlaceId]);
+
+  useEffect(() => {
+    for (const place of places) console.info("[HOME_NEARBY_IMAGE_INPUT]", {
+      placeId: place.id, locale, cacheLayer: "home-card-props", renderState,
+      hasPhotoName: Boolean(place.photoName), hasPhotoUrl: "photoUrl" in place && Boolean(place.photoUrl),
+      hasGeneratedImageUrl: Boolean(place.generatedImageUrl), hasFallbackImageUrl: Boolean(place.fallbackImageUrl),
+      imageSourceSelected: place.photoName ? "google-photo" : homeNearbyImageUrl(place) ? "existing-url" : "async-place-image",
+    });
+  }, [places, locale, renderState]);
 
   if (showSkeleton) {
     return (

@@ -82,10 +82,10 @@ assert.match(
   /<article className="relative rounded-3xl border border-border bg-card p-4 shadow-soft">\s*<div className="flex items-start justify-between gap-3">/,
 );
 assert.match(tripCard, /<TripLocationCard/);
-assert.match(tripCard, /aria-label="上移"/);
-assert.match(tripCard, /aria-label="下移"/);
-assert.match(tripCard, /aria-label="跨天移動"/);
-assert.match(tripCard, /aria-label="刪除地點"/);
+assert.match(tripCard, /aria-label=\{uiT\("productionUi\.pf853a70b12"\)\}/);
+assert.match(tripCard, /aria-label=\{uiT\("productionUi\.pe75e8b4e5c"\)\}/);
+assert.match(tripCard, /aria-label=\{uiT\("productionUi\.p718ccfe651"\)\}/);
+assert.match(tripCard, /aria-label=\{uiT\("productionUi\.p5101bd1ef7"\)\}/);
 assert.match(detail, /fetchPriority=.*high/);
 assert.match(savedRoute, /\{p\.address \|\| ""\}/);
 assert.doesNotMatch(savedRoute, /\[p\.category, p\.city, p\.address\]/);

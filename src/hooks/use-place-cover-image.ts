@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isImageLoadFailed, markImageLoadFailed } from "@/lib/image-url-failure-cache";
+import { markImageLoadFailed } from "@/lib/image-url-failure-cache";
 import { buildPlacePhotoUrl } from "@/lib/google-maps-client";
 import { resolvePlaceImageUrl } from "@/lib/safe-image-url";
 import { logPerfImageLoad } from "@/lib/app-perf";
@@ -79,8 +79,12 @@ export function usePlaceCoverImage(options: Options): {
       let cancelled = false;
       setSrc(null);
       setLoading(true);
-      void getSignedPlacePhotoUrl(photoResource, width).then((signed) => {
+      void getSignedPlacePhotoUrl(photoResource, width, { placeId: placeInput.placeId }).then((signed) => {
         if (cancelled) return;
+        console.info("[PLACE_COVER_IMAGE_RESOLVED]", {
+          placeId: placeInput.placeId ?? null,
+          resolutionResult: signed ? "signed" : "fallback-after-retry",
+        });
         if (signed) {
           if (persistedImageKey) setCachedImage(persistedImageKey, signed);
           setSrc(signed);
@@ -102,21 +106,29 @@ export function usePlaceCoverImage(options: Options): {
     }
     setSrc(fallback);
     setLoading(false);
-  }, [enabled, fallback, photoName, primaryUrl, persistedImageKey, width]);
+  }, [enabled, fallback, photoName, primaryUrl, persistedImageKey, width, placeInput.placeId]);
 
   const onLoad = useCallback(() => {
+    console.info("[PLACE_PHOTO_IMAGE]", {
+      placeId: placeInput.placeId ?? null, imageLoadSucceeded: src !== fallback,
+      imageLoadFailed: false, fallbackLoaded: src === fallback,
+    });
     setLoading(false);
-  }, []);
+  }, [placeInput.placeId, src, fallback]);
 
   const onError = useCallback(() => {
     if (failedRef.current) return;
     failedRef.current = true;
+    console.info("[PLACE_COVER_IMAGE_ERROR]", {
+      placeId: placeInput.placeId ?? null, resolutionResult: "image-load-failed",
+      imageLoadSucceeded: false, imageLoadFailed: true, fallbackReason: "image_element_error",
+    });
     if (primaryUrl) markImageLoadFailed(primaryUrl);
     markImageLoadFailed(src);
     setSrc(fallback);
     setFailed(true);
     setLoading(false);
-  }, [fallback, primaryUrl, src]);
+  }, [fallback, primaryUrl, src, placeInput.placeId]);
 
   return { src, onLoad, onError, loading, failed };
 }

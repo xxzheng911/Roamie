@@ -1,9 +1,7 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { ROAMIE_CONTACT_EMAIL } from "@/constants/contact";
-import {
-  bindIosLegalDocumentOverlay,
-  requestIosSnapshotRefresh,
-} from "@/lib/ios-snapshot-bridge";
+import { bindIosLegalDocumentOverlay, requestIosSnapshotRefresh } from "@/lib/ios-snapshot-bridge";
 
 function renderLegalContent(content: string) {
   const parts = content.split(ROAMIE_CONTACT_EMAIL);
@@ -33,6 +31,8 @@ type Props = {
  * In-tree legal panel. iOS Capacitor: mirror + scroll-synced snapshot (not live compositor).
  */
 export function LegalDocumentOverlay({ title, content, onClose }: Props) {
+  const { t: uiT } = useI18n();
+
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => bindIosLegalDocumentOverlay("legal-overlay"), []);
@@ -92,7 +92,7 @@ export function LegalDocumentOverlay({ title, content, onClose }: Props) {
       <button
         type="button"
         className="min-h-0 flex-1 touch-manipulation bg-black/50"
-        aria-label="關閉"
+        aria-label={uiT("productionUi.pc7fdddf79e")}
         onClick={onClose}
       />
       <div className="relative flex max-h-[min(92dvh,720px)] min-h-0 w-full shrink-0 flex-col rounded-t-[2rem] bg-background px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-6 shadow-lift">
@@ -104,7 +104,7 @@ export function LegalDocumentOverlay({ title, content, onClose }: Props) {
             type="button"
             onClick={onClose}
             className="shrink-0 touch-manipulation rounded-full px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted"
-            aria-label="關閉"
+            aria-label={uiT("productionUi.pc7fdddf79e")}
           >
             ✕
           </button>
@@ -120,7 +120,7 @@ export function LegalDocumentOverlay({ title, content, onClose }: Props) {
           onClick={onClose}
           className="mt-4 w-full shrink-0 touch-manipulation rounded-full bg-primary py-3.5 text-sm font-medium text-primary-foreground"
         >
-          關閉
+          {uiT("productionUi.pc7fdddf79e")}
         </button>
       </div>
     </div>

@@ -1,3 +1,4 @@
+import { isChatRuntimeCopy } from "@/lib/chat-runtime-copy";
 import { matchesContinueRecommendationGrammar } from "@/lib/ai/continue-recommendation-intent";
 import { isExclusionReply } from "@/lib/ai/recommendation-exclusion";
 import {
@@ -42,7 +43,7 @@ const ALTERNATIVE_RECOMMENDATION_OFFER_RE =
 export function isAlternativeRecommendationOffer(content: string | undefined | null): boolean {
   const t = content?.trim() ?? "";
   if (!t) return false;
-  return t === NO_MORE_RECOMMENDATIONS_MESSAGE || ALTERNATIVE_RECOMMENDATION_OFFER_RE.test(t);
+  return isChatRuntimeCopy(t, "noMore") || t === NO_MORE_RECOMMENDATIONS_MESSAGE || ALTERNATIVE_RECOMMENDATION_OFFER_RE.test(t);
 }
 
 /** 使用者同意改推美食 / 咖啡 / 室內（好、可以、嗯、對…） */

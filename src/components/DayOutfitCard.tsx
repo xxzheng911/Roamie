@@ -1,6 +1,7 @@
+import { dailyOutfitDisplay } from "@/lib/outfit/localized-outfit-copy";
+import { useI18n } from "@/hooks/use-i18n";
 import { Shirt, CloudSun } from "lucide-react";
 import type { DailyOutfitAdvice } from "@/lib/outfit/types";
-import { TRIP_ACTIVITY_LABELS } from "@/lib/outfit/types";
 import { formatTempRange, weatherDisplayEmoji } from "@/lib/outfit/weather-icons";
 
 function formatPackingLine(item: string): string {
@@ -17,7 +18,10 @@ type Props = {
   compact?: boolean;
 };
 
-export function DayOutfitCard({ advice, className = "", compact }: Props) {
+export function DayOutfitCard({ advice: storedAdvice, className = "", compact }: Props) {
+  const { t: uiT, locale } = useI18n();
+  const advice = dailyOutfitDisplay(storedAdvice, locale);
+
   const emoji = weatherDisplayEmoji(advice.weather);
   const temp = formatTempRange(advice.weather);
   const diff = advice.weather.diurnalRangeC;
@@ -28,7 +32,7 @@ export function DayOutfitCard({ advice, className = "", compact }: Props) {
     >
       <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
         <CloudSun className="h-3.5 w-3.5 text-clay" />
-        今日穿搭建議
+        {uiT("productionUi.pa6ab935b12")}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
@@ -38,7 +42,9 @@ export function DayOutfitCard({ advice, className = "", compact }: Props) {
           <span className="text-muted-foreground">{advice.weather.condition}</span>
         </span>
         {diff != null && diff >= 6 && (
-          <span className="text-xs text-muted-foreground">溫差約 {Math.round(diff)}°C</span>
+          <span className="text-xs text-muted-foreground">
+            {uiT("productionUi.p54b075bdd3", { v0: Math.round(diff) })}
+          </span>
         )}
       </div>
 
@@ -65,8 +71,9 @@ export function DayOutfitCard({ advice, className = "", compact }: Props) {
 
       {advice.activityTypes.length > 0 && (
         <p className="mt-2.5 text-[11px] text-muted-foreground">
-          今日行程：
-          {advice.activityTypes.map((t) => TRIP_ACTIVITY_LABELS[t]).join(" · ")}
+          {uiT("productionUi.pbc1c91e808", {
+            v0: advice.activityTypes.map((t) => uiT(`destinationEditorial.activity_${t}`)).join(" · "),
+          })}
         </p>
       )}
     </div>

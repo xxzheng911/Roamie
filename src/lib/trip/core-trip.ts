@@ -1,3 +1,8 @@
+import type { GeneratedLocaleContract } from "@/lib/generated-locale";
+import { isCurrentGeneratedCopy } from "@/lib/generated-locale";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import { translate } from "@/lib/i18n/translate";
+import type { Locale } from "@/lib/i18n/types";
 import type { StoredItinerary } from "@/lib/itinerary-storage";
 import { getItinerary, listItineraries } from "@/lib/itinerary-storage";
 import { listOwnedTripIds } from "@/lib/trip/trip-collab";
@@ -18,7 +23,7 @@ export type CoreTripPlace = {
   pointToPointDuration: string;
 };
 
-export type CoreTrip = {
+export type CoreTrip = GeneratedLocaleContract & {
   id: string;
   title: string;
   customTitle: string | null;
@@ -42,8 +47,12 @@ export type CoreTrip = {
   isOwner: boolean;
 };
 
-export function resolveCoreTripTitle(trip: CoreTrip): string {
-  return trip.isTitleCustomized && trip.customTitle ? trip.customTitle : trip.title;
+export function resolveCoreTripTitle(trip: CoreTrip, locale: Locale = effectiveAppLocale()): string {
+  if (trip.isTitleCustomized && trip.customTitle) return trip.customTitle;
+  if (isCurrentGeneratedCopy(trip, locale)) return trip.title;
+  return translate(locale, "destinationEditorial.generated_trip_title", {
+    destination: trip.destinationPlace?.name ?? "", days: trip.days,
+  }).trim();
 }
 
 export function resolveCoreTripCoverImage(trip: CoreTrip): string {
@@ -88,6 +97,7 @@ export function toCoreTrip(row: StoredItinerary, opts?: { isOwner?: boolean }): 
     const tripSettings = payload.tripSettings;
     return {
       id: row.id,
+      generatedLocale: payload.generatedLocale,
       title: row.title,
       customTitle: row.custom_title,
       isTitleCustomized: Boolean(row.is_title_customized),

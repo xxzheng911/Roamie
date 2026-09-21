@@ -1,3 +1,4 @@
+import type { GeneratedLocaleContract } from "@/lib/generated-locale";
 /** 當日行程活動類型（影響穿搭建議） */
 export type TripActivityType =
   | "shopping"
@@ -36,7 +37,7 @@ export type DayWeatherSnapshot = {
 };
 
 /** 每日穿搭建議 — 存入 RoamiePayloadV2.outfitAdvice */
-export type DailyOutfitAdvice = {
+export type DailyOutfitAdvice = GeneratedLocaleContract & {
   date: string;
   dayIndex: number;
   weather: DayWeatherSnapshot;
@@ -51,7 +52,7 @@ export type DailyOutfitAdvice = {
   styleTone?: string;
 };
 
-export type OutfitAdvicePayload = {
+export type OutfitAdvicePayload = GeneratedLocaleContract & {
   destination: string;
   generatedAt: string;
   fashionStyle?: string;
@@ -62,6 +63,8 @@ export type OutfitAdvicePayload = {
 export type TripWeatherSource = "openweather" | "unavailable" | "fallback";
 
 export type TripOutfitSuggestionFields = {
+  /** Provenance for outfitSuggestion and weatherSummary, independent of the trip narrative. */
+  outfitCopy?: GeneratedLocaleContract;
   /** 2–4 句穿搭建議正文 */
   outfitSuggestion?: string;
   outfitSuggestionUpdatedAt?: string;

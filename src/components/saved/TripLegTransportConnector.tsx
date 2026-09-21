@@ -1,9 +1,9 @@
+import { LOCALIZED_ACTION_BUTTON } from "@/lib/localized-action-layout";
 import { TripTransportPicker } from "@/components/saved/TripTransportPicker";
-import { JAPAN_TRANSIT_MAPS_BUTTON_LABEL } from "@/lib/saved-trip/japan-transit-maps";
+import { useI18n } from "@/hooks/use-i18n";
 import type { TripTransportOptionLabel } from "@/lib/saved-trip/transport-options";
 
-const mapsBtnClass =
-  "inline-flex items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[10px]";
+const mapsBtnClass = LOCALIZED_ACTION_BUTTON;
 
 type Props = {
   /** Displayed mode — must be resolvedMode (SoT), not stale preference. */
@@ -22,10 +22,11 @@ export function TripLegTransportConnector({
   onTransportChange,
   onOpenTransitMaps,
 }: Props) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col items-center py-1">
       <div className="h-4 w-px bg-border/80" aria-hidden />
-      <div className="flex flex-col items-center gap-1 py-2">
+      <div className="flex w-full min-w-0 flex-col items-center gap-1 py-2">
         <TripTransportPicker
           variant="leg"
           value={transport}
@@ -36,7 +37,7 @@ export function TripLegTransportConnector({
         ) : null}
         {onOpenTransitMaps ? (
           <button type="button" className={mapsBtnClass} onClick={onOpenTransitMaps}>
-            {JAPAN_TRANSIT_MAPS_BUTTON_LABEL}
+            {t("nativeQa.route")}
           </button>
         ) : null}
         {walkFallbackHint ? (

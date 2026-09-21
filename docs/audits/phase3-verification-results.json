@@ -1,0 +1,168 @@
+{
+  "requiredRegressions": [
+    {
+      "command": "npm run verify:plus-purchase-ui",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-1.log"
+    },
+    {
+      "command": "npm run verify:subscription-account-recreation",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-2.log"
+    },
+    {
+      "command": "npm run verify:legal-subscription-disclosures",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-3.log"
+    },
+    {
+      "command": "node scripts/verify-subscription-hydration-credits-gate.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-4.log"
+    },
+    {
+      "command": "npm run verify:revenuecat-subscription",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-5.log"
+    },
+    {
+      "command": "npm run verify:subscription-restore-canonical",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-6.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-purchase-lifecycle.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-7.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-purchase-i18n.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-8.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-ui-language-coverage.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-9.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-production-ui-locales.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-10.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-combination-localization.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-11.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-itinerary-localization-runtime.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-12.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-transport-copy-consistency.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-13.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-home-personalization-entitlement-ui.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-14.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-plus-personalization-v1.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-regression-15.log"
+    }
+  ],
+  "finalChecks": [
+    {
+      "command": "node scripts/audit-ui-chinese-leakage.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-final-0.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-ui-language-coverage.mjs --strict",
+      "exitCode": 0,
+      "log": "/tmp/phase3-final-1.log"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-production-ui-locales.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-final-2.log"
+    },
+    {
+      "command": "node scripts/production-build.mjs",
+      "exitCode": 0,
+      "log": "/tmp/phase3-final-3.log"
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0,
+      "log": "/tmp/phase3-final-4.log"
+    }
+  ],
+  "provider": {
+    "command": "node scripts/verify-plus-provider-auth.mjs",
+    "result": "PASS",
+    "cases": 8
+  },
+  "baselineSignatures": {
+    "verify-plus-entitlement-authority": {
+      "same": true,
+      "head": {
+        "assertion": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /syncRevenueCatEntitlementWithServer\\(\\)/. Input:",
+        "expected": "/syncRevenueCatEntitlementWithServer\\(\\)/",
+        "actualScalar": []
+      },
+      "current": {
+        "assertion": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /syncRevenueCatEntitlementWithServer\\(\\)/. Input:",
+        "expected": "/syncRevenueCatEntitlementWithServer\\(\\)/",
+        "actualScalar": []
+      }
+    },
+    "verify-localization-diversity-hard-gates": {
+      "same": true,
+      "head": {
+        "assertion": "AssertionError [ERR_ASSERTION]: English fallbacks cannot be delivered in zh-TW",
+        "expected": "0",
+        "actualScalar": [
+          "1"
+        ]
+      },
+      "current": {
+        "assertion": "AssertionError [ERR_ASSERTION]: English fallbacks cannot be delivered in zh-TW",
+        "expected": "0",
+        "actualScalar": [
+          "1"
+        ]
+      }
+    }
+  },
+  "additionalChecks": [
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-country-city-discovery.mjs",
+      "result": "PASS"
+    },
+    {
+      "command": "./node_modules/.bin/vite-node --config scripts/vite.verify.config.mjs scripts/verify-country-city-combination-flow.mjs",
+      "result": "BASELINE FAIL",
+      "headAndCurrentFailures": [
+        "A3 no Seoul places failure",
+        "A3 shows combinations",
+        "A3 pending=combination_choice"
+      ],
+      "newFailures": 0
+    }
+  ],
+  "typescript": {
+    "head": 334,
+    "current": 334,
+    "new": 0
+  },
+  "lint": {
+    "newNonFormatting": 0,
+    "newFormatting": 1298
+  }
+}

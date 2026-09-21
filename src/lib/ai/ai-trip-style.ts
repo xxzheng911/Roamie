@@ -1,3 +1,7 @@
+import { chatRuntimeCopy } from "@/lib/chat-runtime-copy";
+import { displayDestinationForCopy } from "@/lib/ai/destination-locale-aliases";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
+import type { Locale } from "@/lib/i18n/types";
 import type { ChatPlanningSession, PlanningShownCandidate } from "@/lib/chat-session";
 import type { CanonicalTravelContext } from "@/lib/ai/travel-context";
 import type { RoamieRecommendationItem } from "@/lib/ai/types";
@@ -330,22 +334,21 @@ export function pendingQuestionForAskTripDuration(
 export function buildAskTripDurationReply(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
+  locale?: Locale,
+  userText?: string,
 ): string {
-  const destination = resolveConversationDestination(ctx, session) ?? "這趟";
+  const resolvedLocale = locale ?? effectiveAppLocale();
+  const destination = resolveConversationDestination(ctx, session) ?? chatRuntimeCopy("tripFallback", resolvedLocale);
   const label = normalizeDestinationLabel(destination);
-  return [
-    `你預計去${label}玩幾天呢？`,
-    "例如：",
-    "• 一日遊",
-    "• 2天1夜",
-    "• 3天2夜",
-    "• 4天以上",
-  ].join("\n");
+  const shown = displayDestinationForCopy(label, userText, resolvedLocale);
+  return chatRuntimeCopy("durationQuestion", resolvedLocale, { destination: shown });
 }
 
 export function buildAskTripDurationAdviceResult(
   ctx: CanonicalTravelContext,
   session?: ChatPlanningSession,
+  locale?: Locale,
+  userText?: string,
 ): {
   reply: string;
   pendingQuestion: PendingQuestion;
@@ -353,7 +356,7 @@ export function buildAskTripDurationAdviceResult(
 } {
   const destination = resolveConversationDestination(ctx, session)!;
   return {
-    reply: buildAskTripDurationReply(ctx, session),
+    reply: buildAskTripDurationReply(ctx, session, locale, userText),
     pendingQuestion: pendingQuestionForAskTripDuration(
       destination,
       ctx.destinationCountry ?? session?.travelContext?.destinationCountry,

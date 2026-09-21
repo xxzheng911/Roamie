@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
@@ -7,8 +8,6 @@ import {
   estimateTravelModesLocal,
   mergeTravelDurations,
   recommendTransportMode,
-  TAXI_NAV_TOAST,
-  TRAVEL_MODE_LABEL,
   type TravelModeEstimate,
   type TravelModeId,
 } from "@/lib/estimate-travel-mode";
@@ -64,6 +63,7 @@ export function usePlaceNavigation({
   profile,
   enabled = true,
 }: Args) {
+  const { locale, t: tr } = useI18n();
   const fetchDurations = useServerFn(fetchPlaceTravelDurations);
   const [modes, setModes] = useState<TravelModeEstimate[]>([]);
   const [selectedMode, setSelectedModeState] = useState<TravelModeId | null>(
@@ -86,12 +86,12 @@ export function usePlaceNavigation({
   const applyDefaultSelection = useCallback(
     (nextModes: TravelModeEstimate[], dist: number) => {
       const hour = new Date().getHours();
-      const ctx = { weather, hour, profile, distanceMeters: dist, inTaiwan };
+      const ctx = { weather, hour, profile, distanceMeters: dist, inTaiwan, locale };
       const rec = recommendTransportMode(nextModes, ctx);
       setModes(applyRecommendedMode(nextModes, rec.modeId));
       setAiTip(rec.tip);
     },
-    [weather, profile, inTaiwan],
+    [weather, profile, inTaiwan, locale],
   );
 
   const setSelectedMode = useCallback((mode: TravelModeId) => {
@@ -112,7 +112,7 @@ export function usePlaceNavigation({
     }
 
     let cancelled = false;
-    const local = estimateTravelModesLocal(distM);
+    const local = estimateTravelModesLocal(distM, undefined, locale);
     applyDefaultSelection(local, distM);
 
     setLoading(true);
@@ -127,7 +127,7 @@ export function usePlaceNavigation({
       .then((res) => {
         if (cancelled) return;
         if (res.durations) {
-          const merged = mergeTravelDurations(local, res.durations);
+          const merged = mergeTravelDurations(local, res.durations, locale);
           applyDefaultSelection(merged, res.durations.distanceMeters || distM);
         }
       })
@@ -143,6 +143,7 @@ export function usePlaceNavigation({
     };
   }, [
     enabled,
+    locale,
     destination?.lat,
     destination?.lng,
     origin?.lat,
@@ -163,12 +164,12 @@ export function usePlaceNavigation({
       return;
     }
     if (selectedMode === "taxi") {
-      toast.message(TAXI_NAV_TOAST, { duration: 5000 });
+      toast.message(tr("uiCoverage.taxiNotice"), { duration: 5000 });
     }
     void openExternal(url);
-  }, [destination, origin, selectedMode]);
+  }, [destination, origin, selectedMode, tr]);
 
-  const selectedModeLabel = selectedMode ? TRAVEL_MODE_LABEL[selectedMode] : null;
+  const selectedModeLabel = selectedMode ? tr(`uiCoverage.${selectedMode}`) : null;
 
   return {
     modes,

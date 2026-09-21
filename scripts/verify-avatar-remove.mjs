@@ -58,7 +58,10 @@ assert.match(sheet, /showRemove && onRemove/);
 assert.match(sheet, /Trash2/);
 assert.match(sheet, /removing \? \(/);
 assert.match(sheet, /Loader2/);
-assert.match(sheet, /removeLabel = "刪除"/);
+assert.match(sheet, /resolvedRemoveLabel = removeLabel \?\? uiT\("profile.removeAvatar"\)/);
+assert.match(sheet, /resolvedAlbumLabel = albumLabel \?\? uiT\("productionUi.p30784c6dd2"\)/);
+assert.match(sheet, /resolvedCameraLabel = cameraLabel \?\? uiT\("productionUi.p6e3a10ade7"\)/);
+assert.doesNotMatch(sheet, /removeLabel = "刪除"|albumLabel = "從相簿選取"|cameraLabel = "拍照"/);
 assert.match(sheet, /disabled = false/);
 assert.match(sheet, /if \(disabled \|\| preparingRef\.current \|\| pickerOpeningRef\.current\) return/);
 assert.match(sheet, /disabled=\{removing \|\| disabled\}/);
@@ -69,7 +72,10 @@ const coverSheet = sourceBetween(profile, "<ImageSourceSheet\n          open={co
 assert.match(coverSheet, /showRemove=\{\!\!coverUrl\}/);
 assert.match(coverSheet, /onRemove=\{\(\) => void handleCoverRemove\(\)\}/);
 assert.match(coverSheet, /removing=\{coverRemoving\}/);
-assert.doesNotMatch(coverSheet, /removeLabel|disabled=|onPickerBusyChange/);
+assert.match(coverSheet, /albumLabel=\{uiT\("productionUi.p30784c6dd2"\)\}/);
+assert.match(coverSheet, /cameraLabel=\{uiT\("productionUi.p6e3a10ade7"\)\}/);
+assert.match(coverSheet, /removeLabel=\{t\("profile.removeAvatar"\)\}/);
+assert.doesNotMatch(coverSheet, /disabled=|onPickerBusyChange/);
 
 const avatarSheet = sourceBetween(profile, "<ImageSourceSheet\n            open={avatarSourceOpen}", "<AvatarCropSheet");
 assert.match(avatarSheet, /showRemove=\{hasCustomAvatar\}/);
@@ -93,7 +99,7 @@ for (const key of ["removeAvatar:", "avatarRemoved:", "avatarCleanupPending:", "
   assert.equal([...messages.matchAll(new RegExp(key.replace(":", "\\s*:"), "g"))].length, 4, key);
 }
 assert.match(messages, /removeAvatar: "刪除"/);
-assert.match(messages, /removeAvatar: "Remove"/);
+assert.match(messages, /removeAvatar: "Delete"/);
 assert.match(messages, /removeAvatar: "削除"/);
 assert.match(messages, /removeAvatar: "삭제"/);
 

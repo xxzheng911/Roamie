@@ -1,6 +1,6 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo } from "react";
-import { PRIVACY_POLICY } from "@/content/legal";
 import { ROAMIE_CONTACT_EMAIL } from "@/constants/contact";
 
 export const Route = createFileRoute("/privacy")({
@@ -35,7 +35,9 @@ function renderPrivacyContent(content: string) {
 }
 
 function PrivacyPage() {
-  const content = useMemo(() => renderPrivacyContent(PRIVACY_POLICY), []);
+  const { t: uiT } = useI18n();
+
+  const content = useMemo(() => renderPrivacyContent(uiT("plusPurchase.privacyContent")), [uiT]);
 
   return (
     <main className="min-h-screen bg-background px-5 py-10 text-foreground sm:px-8 sm:py-16">
@@ -45,17 +47,17 @@ function PrivacyPage() {
             Roamie Travel
           </p>
           <h1 className="font-display text-4xl font-semibold tracking-tight sm:text-5xl">
-            隱私權政策
+            {uiT("productionUi.p5d1a4adc5d")}
           </h1>
           <p className="mt-4 text-base leading-8 text-muted-foreground sm:text-lg">
-            Roamie 隱私權政策與資料使用說明。
+            {uiT("productionUi.paa5ef727e9")}
           </p>
           <div className="mt-6">
             <Link
               to="/support"
               className="inline-flex items-center rounded-full border border-border/70 px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted/60"
             >
-              返回支援頁
+              {uiT("productionUi.p3b4e3260c0")}
             </Link>
           </div>
         </header>

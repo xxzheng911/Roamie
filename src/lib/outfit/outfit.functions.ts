@@ -15,6 +15,7 @@ const ItemSchema = z.object({
 });
 
 const InputSchema = z.object({
+  locale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   destination: z.string().optional(),
   startDate: z.string(),
   endDate: z.string(),

@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { CloudSun, Loader2, Moon, Shirt, Sun, Umbrella } from "lucide-react";
 import { ROAMIE_WEATHER_UNAVAILABLE_MESSAGE } from "@/lib/weather/constants";
 import { formatTripDateRangeLabel } from "@/lib/outfit/trip-outfit-context";
@@ -46,6 +47,8 @@ export function TripOutfitCard({
   loading,
   className,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   const dateLabel = formatTripDateRangeLabel(dateRange.start, dateRange.end);
   const unavailable = weatherSource === "unavailable";
   const showWeatherSummary = !isRedundantWeatherSummary(weatherSummary, weatherSource);
@@ -60,7 +63,7 @@ export function TripOutfitCard({
     >
       <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
         <Shirt className="h-3.5 w-3.5 text-clay" />
-        這趟旅程怎麼穿？
+        {uiT("productionUi.pcde45d51ba")}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -76,7 +79,7 @@ export function TripOutfitCard({
       {loading ? (
         <div className="mt-4 flex items-start gap-2 text-sm text-muted-foreground">
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-clay" />
-          <p className="leading-relaxed">正在依照目的地與天氣整理穿搭建議…</p>
+          <p className="leading-relaxed">{uiT("productionUi.p7ec3554264")}</p>
         </div>
       ) : (
         <>
@@ -103,7 +106,7 @@ export function TripOutfitCard({
             </p>
           ) : (
             <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-              正在依照目的地與天氣整理穿搭建議…
+              {uiT("productionUi.p7ec3554264")}
             </p>
           )}
         </>

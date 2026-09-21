@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { Clock, Route } from "lucide-react";
 import { RoamieDurationPicker, RoamieTimePicker } from "@/components/pickers";
 import {
@@ -28,6 +29,8 @@ export function TripLocationCard({
   onSetArrivalTime,
   onSetDurationMinutes,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   const hasCoords = lat != null && lng != null && !Number.isNaN(lat) && !Number.isNaN(lng);
   const label = placeName ?? address ?? "目的地";
   const navUrl = hasCoords
@@ -41,11 +44,11 @@ export function TripLocationCard({
       <div className="flex min-w-0 items-center gap-2">
         <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-secondary/70 px-3 py-1.5 text-xs">
           <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="shrink-0 text-muted-foreground">抵達</span>
+          <span className="shrink-0 text-muted-foreground">{uiT("productionUi.p7b80d07823")}</span>
           <RoamieTimePicker
             compact
             inline
-            title="抵達時間"
+            title={uiT("productionUi.p6081a12224")}
             value={arrivalTime}
             onChange={onSetArrivalTime}
             className="font-medium text-foreground"
@@ -53,7 +56,7 @@ export function TripLocationCard({
         </div>
 
         <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-secondary/70 px-3 py-1.5 text-xs text-muted-foreground">
-          <span className="shrink-0">停留</span>
+          <span className="shrink-0">{uiT("productionUi.pf317313492")}</span>
           <RoamieDurationPicker
             inline
             hideLabel
@@ -71,7 +74,7 @@ export function TripLocationCard({
           onClick={() => openExternal(navUrl)}
         >
           <Route className="h-3.5 w-3.5" />
-          查看路線
+          {uiT("productionUi.p4e6e23af51")}
         </button>
       ) : null}
     </div>

@@ -1,3 +1,4 @@
+import { encodeGeneratedChatContent } from "@/lib/generated-locale";
 import { createFileRoute } from "@tanstack/react-router";
 import { callRoamieAI, parseRoamieRequest, streamRoamieAI } from "@/lib/ai/service.server";
 import { applyTierToAiContext } from "@/lib/access/context";
@@ -169,7 +170,7 @@ export const Route = createFileRoute("/api/roamie")({
               await auth.client.from("chat_messages").insert({
                 user_id: auth.userId,
                 role: "assistant",
-                content: JSON.stringify(data),
+                content: encodeGeneratedChatContent(JSON.stringify(data), ctx.locale ?? "zh-TW"),
               });
             }
             return new Response(JSON.stringify({ data }), {
@@ -245,7 +246,7 @@ export const Route = createFileRoute("/api/roamie")({
               await auth.client.from("chat_messages").insert({
                 user_id: auth.userId,
                 role: "assistant",
-                content: raw.trim(),
+                content: encodeGeneratedChatContent(raw.trim(), ctx.locale ?? "zh-TW"),
               });
             },
           });

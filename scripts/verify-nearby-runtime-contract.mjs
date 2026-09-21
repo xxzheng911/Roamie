@@ -18,6 +18,7 @@ import { shouldFetchNearbyPlaces } from "../src/lib/ai/chat-dining-flow.ts";
 import {
   buildNearbyPlaceRecommendation,
   fetchNearbyPlacesForIntent,
+  resetShortcutProviderOrchestrationForTests,
 } from "../src/lib/ai/chat-place-recommendation.ts";
 import {
   continueRecommendation,
@@ -176,7 +177,7 @@ assert.equal(breakfastPending.mealSlot, "breakfast");
 const lateNightPending = createPendingNearbyLocationRequest("restaurant", "我想找附近宵夜店");
 assert.equal(lateNightPending.mealSlot, "late_night");
 assert.equal(lateNightPending.originalQuery, "我想找附近宵夜店");
-assert.deepEqual(buildNearbyLocationClarificationCopy("我想找附近早餐店", "restaurant"), {
+assert.deepEqual(buildNearbyLocationClarificationCopy("我想找附近早餐店", "restaurant", "zh-TW"), {
   categoryLabel: "早餐店",
   renderedCopy: "你是指哪個地區的呢？",
 });
@@ -191,7 +192,7 @@ for (const [query, intent] of [
   ["附近居酒屋", "restaurant"],
 ]) {
   assert.equal(
-    buildNearbyLocationClarificationCopy(query, intent).renderedCopy,
+    buildNearbyLocationClarificationCopy(query, intent, "zh-TW").renderedCopy,
     "你是指哪個地區的呢？",
   );
 }
@@ -419,6 +420,7 @@ const expanded = await fetchNearbyPlacesForIntent(
 );
 assert.equal(expanded[0]?.id, "restaurant-expanded", "eligible-empty first wave must expand");
 
+resetShortcutProviderOrchestrationForTests();
 await assert.rejects(
   fetchNearbyPlacesForIntent(
     "restaurant",

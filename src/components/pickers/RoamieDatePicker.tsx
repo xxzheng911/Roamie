@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useEffect, useState } from "react";
 import { Calendar } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -57,9 +58,10 @@ function displayLabel(props: RoamieDatePickerProps): string {
 
 /** 月曆式日期選擇（單日或區間） */
 export function RoamieDatePicker(props: RoamieDatePickerProps) {
+  const { t } = useI18n();
   const {
     label,
-    placeholder = "選擇日期",
+    placeholder = t("productionUi.p55e2f69c1e"),
     title,
     disabled,
     className,
@@ -79,9 +81,14 @@ export function RoamieDatePicker(props: RoamieDatePickerProps) {
     } else {
       setDraft({ start: props.value.start, end: props.value.end });
     }
-  }, [open, props.mode, props.mode === "single" ? props.value : props.value.start, props.mode === "single" ? "" : props.value.end]);
+  }, [
+    open,
+    props.mode,
+    props.mode === "single" ? props.value : props.value.start,
+    props.mode === "single" ? "" : props.value.end,
+  ]);
 
-  const sheetTitle = title ?? (props.mode === "range" ? undefined : "選擇日期");
+  const sheetTitle = title ?? (props.mode === "range" ? undefined : t("productionUi.p55e2f69c1e"));
 
   const handleConfirm = () => {
     if (props.mode === "single") {
@@ -128,9 +135,7 @@ export function RoamieDatePicker(props: RoamieDatePickerProps) {
           )}
         >
           <span className="min-w-0 flex-1">
-            {label && (
-              <span className="block text-[11px] text-muted-foreground">{label}</span>
-            )}
+            {label && <span className="block text-[11px] text-muted-foreground">{label}</span>}
             <span
               className={cn(
                 "block text-[15px] font-medium",
@@ -152,9 +157,7 @@ export function RoamieDatePicker(props: RoamieDatePickerProps) {
         }}
         title={sheetTitle}
         onConfirm={handleConfirm}
-        onCancel={() =>
-          setDraft(props.mode === "single" ? props.value : { ...props.value })
-        }
+        onCancel={() => setDraft(props.mode === "single" ? props.value : { ...props.value })}
       >
         {props.mode === "single" ? (
           <RoamieCalendar

@@ -1,3 +1,4 @@
+import { recommendationDisplayForLocale } from "@/lib/recommendation-display-locale";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Loader2, Sparkles, MessageCircle } from "lucide-react";
 import { BackButton } from "@/components/BackButton";
@@ -34,12 +35,15 @@ export const Route = createFileRoute("/_app/recommendations")({
 });
 
 function RecommendationsPage() {
-  const { t } = useI18n();
+  const { t: uiT } = useI18n();
+
+  const { t, locale } = useI18n();
   const { openAddToTrip } = useAddToTrip();
   const { id } = Route.useSearch();
   const navigate = useNavigate();
   const fetchWeather = useServerFn(getWeather);
-  const [record, setRecord] = useState<StoredRecommendation | null>(null);
+  const [storedRecord, setRecord] = useState<StoredRecommendation | null>(null);
+  const record = storedRecord ? recommendationDisplayForLocale(storedRecord, locale) : null;
   const [loading, setLoading] = useState(!!id);
   const [savedNames, setSavedNames] = useState<Set<string>>(new Set());
   const [savingName, setSavingName] = useState<string | null>(null);
@@ -65,35 +69,35 @@ function RecommendationsPage() {
           if (stored.length) setPickedNames(new Set(stored));
         }
       })
-      .catch(() => toast.error("讀取推薦失敗"))
+      .catch(() => toast.error(uiT("productionUi.p66610fd11f")))
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [uiT, id]);
 
   const data = record?.payload && isRoamiePayloadV2(record.payload) ? record.payload : null;
 
   const handleOpenPlaceDetail = useCallback(
     (rec: RoamieRecommendationItem) => {
       if (!rec.googlePlaceId?.trim()) {
-        toast.message("此建議尚未完成地點驗證，暫時無法開啟地圖詳情");
+        toast.message(uiT("productionUi.pefb7c5f5c4"));
         return;
       }
       if (rec.lat == null || rec.lng == null) {
-        toast.message("此地點尚無座標，暫時無法開啟地圖詳情");
+        toast.message(uiT("productionUi.pc631c41bc7"));
         return;
       }
       const snapshot = openRecommendationOnMap(rec);
       if (!snapshot) {
-        toast.message("此建議尚未完成地點驗證，暫時無法開啟地圖詳情");
+        toast.message(uiT("productionUi.pefb7c5f5c4"));
         return;
       }
       navigate({ to: "/map" });
     },
-    [navigate],
+    [uiT, navigate],
   );
 
   const handleTogglePick = useCallback(
@@ -113,7 +117,7 @@ function RecommendationsPage() {
   const handleContinueInChat = async () => {
     if (!record || !data) return;
     if (!data.recommendations?.length) {
-      toast.message("沒有推薦地點，請先和 Roamie 聊聊");
+      toast.message(uiT("productionUi.p6e555512c7"));
       navigate({ to: "/chat" });
       return;
     }
@@ -137,7 +141,7 @@ function RecommendationsPage() {
       });
     } catch (e) {
       console.error("[recommendations] chat handoff failed", e);
-      toast.error("無法進入聊天");
+      toast.error(uiT("productionUi.pc7fbc3beff"));
     }
   };
 
@@ -145,8 +149,8 @@ function RecommendationsPage() {
     return (
       <div className="flex min-h-[400px] flex-col items-center justify-center gap-3 px-8 text-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <p className="font-display text-lg">Roamie 正在幫你想…</p>
-        <p className="text-sm text-muted-foreground">根據你的心情與天氣挑選中</p>
+        <p className="font-display text-lg">{uiT("productionUi.p091e209a6a")}</p>
+        <p className="text-sm text-muted-foreground">{uiT("productionUi.p1b973b5676")}</p>
       </div>
     );
   }
@@ -154,9 +158,12 @@ function RecommendationsPage() {
   if (!record || !data) {
     return (
       <div className="flex min-h-[400px] flex-col items-center justify-center gap-4 px-8 text-center">
-        <p className="text-sm text-muted-foreground">找不到推薦結果</p>
-        <Link to="/" className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground">
-          回首頁
+        <p className="text-sm text-muted-foreground">{uiT("productionUi.pb319943c13")}</p>
+        <Link
+          to="/"
+          className="rounded-full bg-primary px-5 py-2.5 text-sm text-primary-foreground"
+        >
+          {uiT("productionUi.pd75d02a93c")}
         </Link>
       </div>
     );
@@ -188,9 +195,9 @@ function RecommendationsPage() {
         else next.delete(rec.name);
         return next;
       });
-      toast.success(saved ? "已收藏" : "已取消收藏");
+      toast.success(saved ? uiT("productionUi.p471dd4d7f8") : uiT("productionUi.p7fa7b63b0e"));
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "收藏失敗");
+      toast.error(e instanceof Error ? e.message : uiT("productionUi.p59ede0ba72"));
     } finally {
       setSavingName(null);
     }
@@ -209,9 +216,7 @@ function RecommendationsPage() {
       </header>
 
       <div className="px-5 pt-5">
-        <p className="mb-3 text-xs text-muted-foreground">
-          點一下卡片選取想去的地方；點「查看地圖」可開啟地點詳情。選好後再進入聊天繼續規劃。
-        </p>
+        <p className="mb-3 text-xs text-muted-foreground">{uiT("productionUi.p9057494540")}</p>
         <RoamieResponseView
           data={data}
           showItinerary={data.itinerary.length > 0}
@@ -235,14 +240,14 @@ function RecommendationsPage() {
           >
             <MessageCircle className="h-4 w-4" />
             {pickCount > 0
-              ? `進入聊天繼續規劃（已選 ${pickCount} 處）`
-              : "進入聊天繼續規劃"}
+              ? uiT("productionUi.continueSelected", { count: pickCount })
+              : uiT("productionUi.pcb3f34e459")}
           </button>
           <Link
             to="/plan"
             className="block rounded-full border border-dashed border-border py-2.5 text-center text-xs text-muted-foreground"
           >
-            進階：手動填寫行程表單
+            {uiT("productionUi.p531267ef15")}
           </Link>
         </div>
       </div>

@@ -2,7 +2,11 @@ import { memo, useEffect, useMemo, useRef } from "react";
 import { Loader2 } from "lucide-react";
 import type { ChatMsg } from "@/lib/chat-history";
 import type { RoamieResponse, RoamieRecommendationItem } from "@/lib/ai/types";
-import { resolveTripAddPlaceMessageRecommendations } from "@/lib/trip/trip-add-place-render";
+import {
+  tripAddPlaceLoadingBubbleText,
+  resolveTripAddPlaceMessageRecommendations,
+} from "@/lib/trip/trip-add-place-render";
+import { useI18n } from "@/hooks/use-i18n";
 import { RoamieAssistantAvatar } from "@/components/RoamieAssistantAvatar";
 import { RoamieResponseView } from "@/components/RoamieResponseView";
 import { cn } from "@/lib/utils";
@@ -59,6 +63,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   onOpenPlaceDetail,
   onDiscussPlace,
 }: RowProps) {
+  const { locale } = useI18n();
   const hideCards = generating || suppressPlaceCards;
   const showStreamingPartial = streaming && isLast && partial.summary;
   const structuredRecs = hideCards ? [] : resolveTripAddPlaceMessageRecommendations(m);
@@ -118,7 +123,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
     });
   }, [cardCount, groupKey, recommendationSessionId]);
 
-  const textContent = m.content || (hideCards ? m.roamie?.summary : undefined) || "";
+  const textContent =
+    (m.loadingPhase ? tripAddPlaceLoadingBubbleText(m, locale) : "") ||
+    m.content ||
+    (hideCards ? m.roamie?.summary : undefined) ||
+    "";
 
   return (
     <div

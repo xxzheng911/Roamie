@@ -9,7 +9,19 @@ import {
 } from "../src/lib/trip/trip-add-place-handoff.ts";
 import { createEmptySession } from "../src/lib/chat-session.ts";
 
-import { buildTripAddPlaceChatMessage } from "../src/lib/trip/trip-add-place-render.ts";
+import {
+  buildTripAddPlaceChatMessage,
+  buildTripAddPlaceLoadingMessage,
+  buildTripAddPlaceRenderFallbackMessage,
+  tripAddPlaceLoadingBubbleText,
+} from "../src/lib/trip/trip-add-place-render.ts";
+import { tripAddPlaceEmptyHint } from "../src/lib/trip/trip-add-place-mode.ts";
+import { resetShortcutProviderOrchestrationForTests } from "../src/lib/ai/chat-place-recommendation.ts";
+import { chatLoadingCopy, chatMoodDisplay } from "../src/lib/chat-runtime-copy.ts";
+import { placeOpeningStatusLabel } from "../src/lib/normalized-opening-status.ts";
+import { openingCopyDisplay } from "../src/lib/native-qa-display.ts";
+import { translate } from "../src/lib/i18n/translate.ts";
+import { resolvePlannerStyleKey } from "../src/lib/ai/ai-day-plan-source.ts";
 import { processTripAddPlaceUserMessage } from "../src/lib/trip/trip-add-place-recommendation-engine.ts";
 import { buildTripAddPlaceBatchSummary } from "../src/lib/trip/trip-add-place-recommendation-session.ts";
 import { getTripAddPlaceCopy } from "../src/lib/i18n/trip-add-place-copy.ts";
@@ -269,6 +281,7 @@ assert(
   "later continuation excludes every shown batch",
 );
 
+resetShortcutProviderOrchestrationForTests();
 for (const locale of ["zh-TW", "en", "ja", "ko"]) {
   const copy = getTripAddPlaceCopy(locale);
   const localized = await fetchTripAddPlaceRecommendations({ ctx, searchPlaces, locale });
@@ -283,6 +296,7 @@ for (const locale of ["zh-TW", "en", "ja", "ko"]) {
       `${locale}/${intent}: concise continuation`,
     );
   }
+  resetShortcutProviderOrchestrationForTests();
   const empty = await fetchTripAddPlaceRecommendations({
     ctx,
     searchPlaces: async () => ({ places: [] }),
@@ -306,6 +320,7 @@ for (const locale of ["zh-TW", "en", "ja", "ko"]) {
     `${locale}: missing context does not claim success`,
   );
 }
+resetShortcutProviderOrchestrationForTests();
 const failedSearch = await fetchTripAddPlaceRecommendations({
   ctx,
   searchPlaces: async () => {
@@ -317,6 +332,97 @@ assert(
   failedSearch.recommendations.length === 0 &&
     failedSearch.summary === getTripAddPlaceCopy("zh-TW").empty,
   "existing search error-to-empty handling never claims success",
+);
+
+assert(ctx.travelStyle === "慢旅行", "handoff keeps slow-travel semantic, not a localized label");
+assert(
+  !JSON.stringify(ctx).includes("Slow travel"),
+  "handoff payload does not store English badge display",
+);
+assert(
+  !JSON.stringify(ctx).includes("Finding places that fit"),
+  "handoff payload does not store loading display",
+);
+assert(
+  resolvePlannerStyleKey("慢旅行") === "slow_nature",
+  "slow-travel routing semantic unchanged",
+);
+
+const locales = ["zh-TW", "en", "ja", "ko"];
+for (const locale of locales) {
+  const loading = buildTripAddPlaceLoadingMessage(locale);
+  assert(
+    loading.loadingPhase === "itinerary_route_recommendation",
+    `${locale}: loading phase is canonical`,
+  );
+  assert(
+    tripAddPlaceLoadingBubbleText(loading, locale) ===
+      chatLoadingCopy("itinerary_route_recommendation", locale),
+    `${locale}: loading bubble projects from phase`,
+  );
+  assert(
+    tripAddPlaceLoadingBubbleText(
+      { loadingPhase: "itinerary_route_recommendation", content: "正在依照你的行程找順路地點…" },
+      locale,
+    ) === chatLoadingCopy("itinerary_route_recommendation", locale),
+    `${locale}: stale Chinese loading snapshot is not the display authority`,
+  );
+  const tagged = buildTripAddPlaceChatMessage({
+    summary: getTripAddPlaceCopy(locale).opening,
+    recommendations: first.recommendations.slice(0, 1),
+    moodTag: "慢旅行",
+    session,
+    locale,
+  });
+  assert(tagged.roamie.moodTag === "慢旅行", `${locale}: stored badge semantic stays 慢旅行`);
+  assert(
+    tagged.content === getTripAddPlaceCopy(locale).opening,
+    `${locale}: intro stays localized opening`,
+  );
+  assert(
+    chatMoodDisplay(tagged.roamie.moodTag, locale) === chatMoodDisplay("slow_travel", locale),
+    `${locale}: badge projects slow travel`,
+  );
+  if (locale !== "zh-TW") {
+    assert(!loading.content.includes("正在依照你的行程"), `${locale}: loading bubble is not zh-TW`);
+    assert(
+      !chatMoodDisplay(tagged.roamie.moodTag, locale).includes("慢旅行"),
+      `${locale}: badge is not zh-TW`,
+    );
+  }
+  const failedCards = buildTripAddPlaceRenderFallbackMessage(session, { locale });
+  assert(
+    failedCards.content === getTripAddPlaceCopy(locale).renderFailed,
+    `${locale}: render failure copy`,
+  );
+  assert(
+    tripAddPlaceEmptyHint(locale) === getTripAddPlaceCopy(locale).emptyHint,
+    `${locale}: empty hint`,
+  );
+  assert(
+    placeOpeningStatusLabel({ openStatus: "open" }, locale) === translate(locale, "place.open"),
+    `${locale}: place open state`,
+  );
+  assert(
+    openingCopyDisplay("今日營業中", locale) === translate(locale, "nativeQa.todayOpen"),
+    `${locale}: today-open hours authority unchanged`,
+  );
+  assert(
+    translate(locale, "productionUi.pff48c58ecc").trim().length > 0,
+    `${locale}: add-to-itinerary action`,
+  );
+}
+assert(
+  chatMoodDisplay("慢旅行", "en") === "Slow travel",
+  "zh-TW itinerary mood projects to English on a new handoff",
+);
+assert(
+  buildTripAddPlaceLoadingMessage("en").content.startsWith("Finding places that fit naturally"),
+  "en handoff loading",
+);
+assert(
+  translate("en", "nativeQa.todayHours", { time: "Open 24 hours" }) === "Today Open 24 hours",
+  "hours line authority unchanged",
 );
 
 if (failed > 0) process.exit(1);

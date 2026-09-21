@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { createFileRoute } from "@tanstack/react-router";
 import { ROAMIE_CONTACT_EMAIL } from "@/constants/contact";
 
@@ -56,6 +57,8 @@ function SupportSection({ title, children }: { title: string; children: React.Re
 }
 
 function SupportPage() {
+  const { t: uiT } = useI18n();
+
   return (
     <main className="min-h-screen bg-background px-5 py-10 text-foreground sm:px-8 sm:py-16">
       <div className="mx-auto w-full max-w-3xl">
@@ -64,17 +67,17 @@ function SupportPage() {
             Roamie Travel
           </p>
           <h1 className="font-display text-4xl font-semibold tracking-tight sm:text-5xl">
-            Roamie 支援
+            {uiT("productionUi.pf9905ed894")}
           </h1>
           <p className="mt-5 max-w-2xl text-base leading-8 text-muted-foreground sm:text-lg">
-            如果你在使用 Roamie 時遇到問題，可以透過以下方式取得協助。
+            {uiT("productionUi.pcd69bbcab7")}
           </p>
         </header>
 
         <div className="space-y-5 sm:space-y-6">
-          <SupportSection title="聯絡我們">
+          <SupportSection title={uiT("productionUi.pae305ba895")}>
             <p>
-              客服信箱：
+              {uiT("productionUi.p38514140e3")}
               <a
                 className="font-medium text-primary underline decoration-primary/30 underline-offset-4 transition-colors hover:decoration-primary"
                 href={`mailto:${ROAMIE_CONTACT_EMAIL}`}
@@ -84,24 +87,24 @@ function SupportPage() {
             </p>
           </SupportSection>
 
-          <SupportSection title="訂閱與 Roamie Plus">
+          <SupportSection title={uiT("productionUi.pb2fecc9d50")}>
             <ul className="list-disc space-y-2 pl-5 marker:text-primary">
-              <li>Roamie Plus 透過 Apple App Store 訂閱。</li>
-              <li>已購買的訂閱可在 App 內使用「恢復購買」。</li>
-              <li>若更換帳號，可使用相同 App Store 購買身分恢復有效訂閱。</li>
-              <li>若訂閱已取消，Plus 權益會持續到目前付費期間結束。</li>
+              <li>{uiT("productionUi.pba9333853a")}</li>
+              <li>{uiT("productionUi.p85a6c42ad4")}</li>
+              <li>{uiT("productionUi.p0b52230bce")}</li>
+              <li>{uiT("productionUi.p1916b3bada")}</li>
             </ul>
           </SupportSection>
 
-          <SupportSection title="帳號與資料">
+          <SupportSection title={uiT("productionUi.pa6733c3559")}>
             <ul className="list-disc space-y-2 pl-5 marker:text-primary">
-              <li>使用者可直接在 App 內刪除帳號。</li>
-              <li>刪除帳號會移除行程、收藏、個人偏好、頭像等 Roamie 帳號資料。</li>
-              <li>Apple App Store 訂閱不會因刪除 Roamie 帳號自動取消。</li>
+              <li>{uiT("productionUi.pac93b4b669")}</li>
+              <li>{uiT("productionUi.pf8a8a7b329")}</li>
+              <li>{uiT("productionUi.p7db3f60c0a")}</li>
             </ul>
           </SupportSection>
 
-          <SupportSection title="常見問題">
+          <SupportSection title={uiT("productionUi.pf92d99c762")}>
             <div className="divide-y divide-border/70">
               {frequentlyAskedQuestions.map((item) => (
                 <div className="py-4 first:pt-0 last:pb-0" key={item.title}>
@@ -112,14 +115,14 @@ function SupportPage() {
             </div>
           </SupportSection>
 
-          <SupportSection title="隱私權政策">
+          <SupportSection title={uiT("productionUi.p5d1a4adc5d")}>
             <p>
-              關於資料蒐集、使用與帳號刪除方式，請參閱
+              {uiT("productionUi.pa99818b942")}
               <a
                 className="ml-1 font-medium text-primary underline decoration-primary/30 underline-offset-4 transition-colors hover:decoration-primary"
                 href={PRIVACY_POLICY_URL}
               >
-                Roamie 隱私權政策
+                {uiT("productionUi.pace240822b")}
               </a>
               。
             </p>

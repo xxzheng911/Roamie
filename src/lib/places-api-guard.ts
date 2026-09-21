@@ -16,6 +16,12 @@ export const PLACES_MIN_LOCATION_MOVE_M = 500;
 const RATE_WINDOW_MS = 60_000;
 /** Soft client budget — wait for window, never hard-fail mid-generation. */
 const RATE_MAX_CALLS = 20;
+/**
+ * One new foreground user action may finish while the shared window is already hot.
+ * This does not raise the global threshold. A third hot-window grant is runaway.
+ */
+export const FOREGROUND_REQUEST_PROVIDER_BUDGET = 4;
+export const MAX_FOREGROUND_GRANTS_WHILE_HOT = 2;
 const MAX_RETRIES = 2;
 const MAX_CONCURRENT = 2;
 const BACKOFF_MS = [1000, 2000] as const;
@@ -32,6 +38,29 @@ const concurrencyWaiters: Array<() => void> = [];
 /** Pause new Places requests until this timestamp (rate-limit cooldown). */
 let generationCooldownUntil = 0;
 let activeGenerationRequestId: string | null = null;
+/** Extra admitted calls for the active foreground request while the shared window is hot. */
+let foregroundAllowanceRemaining = 0;
+let foregroundGrantsWhileHot = 0;
+let runawayProtectionActive = false;
+
+export type PlacesCallLedgerEntry = {
+  requestId: string;
+  recommendationRequestId: string;
+  surface: string;
+  intent: string;
+  lane: string;
+  requestType: string;
+  queryFamily: string;
+  attempt: number;
+  deduped: boolean;
+  blocked: boolean;
+  counted: boolean;
+  callWindowCount: number;
+  blockedReason: string;
+};
+
+const callLedger: PlacesCallLedgerEntry[] = [];
+const CALL_LEDGER_LIMIT = 40;
 
 /** Log dedupe: only print blocked once per key+blockedUntil window. */
 let lastLoggedBlocked: { key: string; until: number } | null = null;
@@ -75,7 +104,41 @@ export type PlacesRequestOwner = {
   priority: "foreground" | "background";
   requestType: "searchNearby" | "searchText" | "details";
   lane?: string;
+  generationRequestId?: string;
+  intent?: string;
+  queryFamily?: string;
+  attempt?: number;
 };
+
+function pushPlacesCallLedger(
+  owner: PlacesRequestOwner | undefined,
+  state: {
+    deduped: boolean;
+    blocked: boolean;
+    blockedReason?: string;
+    counted: boolean;
+  },
+): void {
+  pruneRateWindow(Date.now());
+  const entry: PlacesCallLedgerEntry = {
+    requestId: owner?.requestId ?? "",
+    recommendationRequestId: owner?.generationRequestId ?? "",
+    surface: owner?.surface ?? "",
+    intent: owner?.intent ?? "",
+    lane: owner?.lane ?? "",
+    requestType: owner?.requestType ?? "",
+    queryFamily: (owner?.queryFamily ?? "").slice(0, 80),
+    attempt: owner?.attempt ?? 0,
+    deduped: state.deduped,
+    blocked: state.blocked,
+    counted: state.counted,
+    callWindowCount: recentCallAt.length,
+    blockedReason: state.blockedReason ?? "",
+  };
+  callLedger.push(entry);
+  if (callLedger.length > CALL_LEDGER_LIMIT) callLedger.shift();
+  console.info("[PLACES_CALL_LEDGER]", entry);
+}
 
 function logPlacesRequestOwner(
   owner: PlacesRequestOwner | undefined,
@@ -84,15 +147,22 @@ function logPlacesRequestOwner(
     blocked: boolean;
     blockedReason?: string;
     providerProtectionActive?: boolean;
+    counted?: boolean;
   },
 ): void {
+  pushPlacesCallLedger(owner, {
+    deduped: state.deduped,
+    blocked: state.blocked,
+    blockedReason: state.blockedReason,
+    counted: state.counted ?? false,
+  });
   if (!owner) return;
   console.info("[PLACES_REQUEST_OWNER]", { ...owner, ...state });
   console.info("[PLACES_RATE_LIMIT_STATE]", {
     callsInWindow: recentCallAt.length,
     inflightCount: activeCount,
     cooldownActive: generationCooldownUntil > Date.now(),
-    providerProtectionActive: state.providerProtectionActive ?? false,
+    providerProtectionActive: state.providerProtectionActive ?? runawayProtectionActive,
     triggeringSurface: owner.surface,
   });
   console.info("[PLACES_REQUEST_WINDOW_CONTEXT]", {
@@ -174,10 +244,148 @@ function pruneRateWindow(now: number): void {
   }
 }
 
-export function isPlacesRateLimited(now = Date.now()): boolean {
-  if (now < generationCooldownUntil) return true;
+export function isPlacesRateWindowFull(now = Date.now()): boolean {
   pruneRateWindow(now);
   return recentCallAt.length >= RATE_MAX_CALLS;
+}
+
+export function getPlacesRateWindowCount(now = Date.now()): number {
+  pruneRateWindow(now);
+  return recentCallAt.length;
+}
+
+export function isPlacesRateLimited(now = Date.now()): boolean {
+  if (now < generationCooldownUntil) return true;
+  return isPlacesRateWindowFull(now);
+}
+
+export function isPlacesRunawayProtectionActive(): boolean {
+  return runawayProtectionActive;
+}
+
+export function isStalePlacesGeneration(generationRequestId: string | undefined): boolean {
+  if (!generationRequestId || !activeGenerationRequestId) return false;
+  return generationRequestId !== activeGenerationRequestId;
+}
+
+export type PlacesProviderAdmission = {
+  admit: boolean;
+  bypassWindow: boolean;
+  blockedReason?: "provider_protection" | "request_budget" | "runaway" | "stale_generation";
+  providerProtectionActive: boolean;
+};
+
+/**
+ * Shared 60s window stays the runaway detector.
+ * A matching foreground grant may admit a bounded continuation while that window is hot.
+ * Explicit provider cooldown and runaway grants are not bypassed.
+ */
+export function evaluatePlacesProviderAdmission(
+  owner?: Pick<PlacesRequestOwner, "generationRequestId" | "priority">,
+  now = Date.now(),
+): PlacesProviderAdmission {
+  if (isStalePlacesGeneration(owner?.generationRequestId)) {
+    return {
+      admit: false,
+      bypassWindow: false,
+      blockedReason: "stale_generation",
+      providerProtectionActive: runawayProtectionActive,
+    };
+  }
+  if (now < generationCooldownUntil) {
+    return {
+      admit: false,
+      bypassWindow: false,
+      blockedReason: "provider_protection",
+      providerProtectionActive: true,
+    };
+  }
+  if (!isPlacesRateWindowFull(now)) {
+    return { admit: true, bypassWindow: false, providerProtectionActive: runawayProtectionActive };
+  }
+  const granted =
+    owner?.priority === "foreground" &&
+    Boolean(owner.generationRequestId) &&
+    owner.generationRequestId === activeGenerationRequestId &&
+    foregroundAllowanceRemaining > 0 &&
+    !runawayProtectionActive;
+  if (granted) {
+    return { admit: true, bypassWindow: true, providerProtectionActive: false };
+  }
+  if (runawayProtectionActive || foregroundGrantsWhileHot >= MAX_FOREGROUND_GRANTS_WHILE_HOT) {
+    return {
+      admit: false,
+      bypassWindow: false,
+      blockedReason: "runaway",
+      providerProtectionActive: true,
+    };
+  }
+  return {
+    admit: false,
+    bypassWindow: false,
+    blockedReason: owner?.priority === "foreground" ? "request_budget" : "provider_protection",
+    providerProtectionActive: true,
+  };
+}
+
+export function beginForegroundPlacesRequest(
+  requestId: string,
+  budget = FOREGROUND_REQUEST_PROVIDER_BUDGET,
+): {
+  grantedBudget: number;
+  windowHot: boolean;
+  blocked: boolean;
+  blockedReason?: "provider_quota" | "runaway";
+} {
+  const now = Date.now();
+  pruneRateWindow(now);
+  activeGenerationRequestId = requestId;
+  if (now < generationCooldownUntil) {
+    foregroundAllowanceRemaining = 0;
+    return { grantedBudget: 0, windowHot: true, blocked: true, blockedReason: "provider_quota" };
+  }
+  if (recentCallAt.length < RATE_MAX_CALLS) {
+    foregroundGrantsWhileHot = 0;
+    runawayProtectionActive = false;
+    foregroundAllowanceRemaining = 0;
+    return { grantedBudget: budget, windowHot: false, blocked: false };
+  }
+  if (runawayProtectionActive || foregroundGrantsWhileHot >= MAX_FOREGROUND_GRANTS_WHILE_HOT) {
+    runawayProtectionActive = true;
+    foregroundAllowanceRemaining = 0;
+    return { grantedBudget: 0, windowHot: true, blocked: true, blockedReason: "runaway" };
+  }
+  foregroundGrantsWhileHot += 1;
+  foregroundAllowanceRemaining = budget;
+  return { grantedBudget: budget, windowHot: true, blocked: false };
+}
+
+/** Test-only window fill. Production call accounting stays in runPlacesApiDeduped. */
+export function notePlacesWindowCallForTests(now = Date.now()): void {
+  recordPlacesApiCall(now);
+}
+
+export function resetPlacesProviderLimiterForTests(): void {
+  recentCallAt.length = 0;
+  foregroundAllowanceRemaining = 0;
+  foregroundGrantsWhileHot = 0;
+  runawayProtectionActive = false;
+  activeGenerationRequestId = null;
+  generationCooldownUntil = 0;
+  pending.clear();
+  blockedUntilByKey.clear();
+  callLedger.length = 0;
+  activeCount = 0;
+  concurrencyWaiters.length = 0;
+}
+
+export function getPlacesCallLedger(): readonly PlacesCallLedgerEntry[] {
+  return callLedger;
+}
+
+export function bucketPlacesCoordinate(value: number | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "";
+  return value.toFixed(3);
 }
 
 /**
@@ -236,6 +444,7 @@ export async function waitForPlacesGenerationCooldown(): Promise<void> {
 
 export function beginPlacesGenerationSession(generationRequestId: string): void {
   activeGenerationRequestId = generationRequestId;
+  foregroundAllowanceRemaining = 0;
   generationCooldownUntil = 0;
   blockedUntilByKey.clear();
   lastLoggedBlocked = null;
@@ -425,20 +634,14 @@ export async function runPlacesApiDeduped<T>(
 ): Promise<T | null> {
   const now = Date.now();
 
-  // Rate protection → stop new Places (force cache)
-  try {
-    const { shouldBlockNewPlacesCalls } = await import("@/lib/ai/places-cost-cache");
-    if (shouldBlockNewPlacesCalls({ query: key, logSkip: true })) {
-      logPlacesRequestOwner(owner, {
-        deduped: false,
-        blocked: true,
-        blockedReason: "provider_protection",
-        providerProtectionActive: true,
-      });
-      return null;
-    }
-  } catch {
-    /* ignore */
+  if (isStalePlacesGeneration(owner?.generationRequestId)) {
+    logPlacesRequestOwner(owner, {
+      deduped: false,
+      blocked: true,
+      blockedReason: "stale_generation",
+      providerProtectionActive: runawayProtectionActive,
+    });
+    return null;
   }
 
   const keyBlockedUntil = blockedUntilByKey.get(key) ?? 0;
@@ -455,48 +658,97 @@ export async function runPlacesApiDeduped<T>(
   const inflight = pending.get(key);
   if (inflight) {
     logPlacesDedupePending(key);
-    logPlacesRequestOwner(owner, { deduped: true, blocked: false });
+    logPlacesRequestOwner(owner, { deduped: true, blocked: false, counted: false });
     return inflight as Promise<T>;
   }
 
-  // 5s same-query cooldown (after in-flight share so concurrent callers still join)
-  try {
-    const { isPlacesQueryOnCooldown, logPlacesSearchSkipped, PLACES_QUERY_COOLDOWN_MS } =
-      await import("@/lib/ai/places-cost-cache");
-    if (isPlacesQueryOnCooldown(key)) {
-      logPlacesSearchSkipped({
-        reason: "query_cooldown",
-        query: key,
-        cooldownMs: PLACES_QUERY_COOLDOWN_MS,
-      });
+  const admission = evaluatePlacesProviderAdmission(owner, now);
+  if (!admission.admit) {
+    logPlacesRequestOwner(owner, {
+      deduped: false,
+      blocked: true,
+      blockedReason: admission.blockedReason ?? "provider_protection",
+      providerProtectionActive: admission.providerProtectionActive,
+    });
+    return null;
+  }
+  if (admission.bypassWindow)
+    foregroundAllowanceRemaining = Math.max(0, foregroundAllowanceRemaining - 1);
+
+  const promise = (async () => {
+    try {
+      const { shouldBlockNewPlacesCalls } = await import("@/lib/ai/places-cost-cache");
+      if (shouldBlockNewPlacesCalls({ query: key, logSkip: true })) {
+        logPlacesRequestOwner(owner, {
+          deduped: false,
+          blocked: true,
+          blockedReason: "provider_protection",
+          providerProtectionActive: true,
+        });
+        return null;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      const { isPlacesQueryOnCooldown, logPlacesSearchSkipped, PLACES_QUERY_COOLDOWN_MS } =
+        await import("@/lib/ai/places-cost-cache");
+      if (isPlacesQueryOnCooldown(key)) {
+        logPlacesSearchSkipped({
+          reason: "query_cooldown",
+          query: key,
+          cooldownMs: PLACES_QUERY_COOLDOWN_MS,
+        });
+        logPlacesRequestOwner(owner, {
+          deduped: false,
+          blocked: true,
+          blockedReason: "query_cooldown",
+        });
+        return null;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    if (isStalePlacesGeneration(owner?.generationRequestId)) {
       logPlacesRequestOwner(owner, {
         deduped: false,
         blocked: true,
-        blockedReason: "query_cooldown",
+        blockedReason: "stale_generation",
       });
       return null;
     }
-  } catch {
-    /* ignore */
-  }
-
-  const promise = (async () => {
-    const waitResult = await waitForRateWindow(key);
-    if (waitResult === "cooldown" || isPlacesRateLimited()) {
-      const until = Math.max(generationCooldownUntil, Date.now() + BACKOFF_MS[0]!);
-      blockedUntilByKey.set(key, until);
-      logPlacesRateLimitBlocked(key, until);
-      notePlacesRateLimited({ attemptIndex: 0, requestKey: key });
-      logPlacesRequestOwner(owner, { deduped: false, blocked: true, blockedReason: "rate_window" });
-      return null;
+    if (!admission.bypassWindow) {
+      const waitResult = await waitForRateWindow(key);
+      if (waitResult === "cooldown" || isPlacesRateLimited()) {
+        const until = Math.max(generationCooldownUntil, Date.now() + BACKOFF_MS[0]!);
+        blockedUntilByKey.set(key, until);
+        logPlacesRateLimitBlocked(key, until);
+        notePlacesRateLimited({ attemptIndex: 0, requestKey: key });
+        logPlacesRequestOwner(owner, {
+          deduped: false,
+          blocked: true,
+          blockedReason: "rate_window",
+        });
+        return null;
+      }
     }
 
     await acquireConcurrencySlot();
     try {
-      logPlacesRequestOwner(owner, { deduped: false, blocked: false });
+      if (isStalePlacesGeneration(owner?.generationRequestId)) {
+        logPlacesRequestOwner(owner, {
+          deduped: false,
+          blocked: true,
+          blockedReason: "stale_generation",
+        });
+        return null;
+      }
+      recordPlacesApiCall();
+      logPlacesRequestOwner(owner, { deduped: false, blocked: false, counted: true });
       logPlacesApiCall(type, key);
       bumpCallStat(type);
-      recordPlacesApiCall();
       void import("@/lib/ai/places-cost-cache")
         .then((m) => {
           m.notePlacesQueryCooldown(key);

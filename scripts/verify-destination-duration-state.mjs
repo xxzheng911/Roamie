@@ -98,17 +98,17 @@ assert(resolveValidTripDays({ startDate: "2026-09-05", endDate: "2026-09-10" }) 
 
 // --- Copy: never render empty day slot ---
 assert(
-  !buildDestinationDirectionAck({ destination: "福岡" }).includes("福岡 天"),
+  !buildDestinationDirectionAck({ destination: "福岡", locale: "zh-TW" }).includes("福岡 天"),
   "ack without days has no empty day slot",
 );
 assert(
-  !buildDestinationDirectionAck({ destination: "福岡", tripDays: undefined }).includes(
+  !buildDestinationDirectionAck({ destination: "福岡", tripDays: undefined, locale: "zh-TW" }).includes(
     "undefined",
   ),
   "ack without days has no undefined",
 );
 assert(
-  buildDestinationDirectionAck({ destination: "福岡", tripDays: 6 }).includes("6 天"),
+  buildDestinationDirectionAck({ destination: "福岡", tripDays: 6, locale: "zh-TW" }).includes("6 天"),
   "ack with days mentions 6",
 );
 assert(
@@ -116,6 +116,7 @@ assert(
     destination: "福岡",
     startDate: "2026-09-05",
     endDate: "2026-09-10",
+    locale: "zh-TW",
   }).includes("2026/09/05"),
   "ack with dates formats range",
 );
@@ -175,7 +176,7 @@ assert(
   "T2 marks destination selection",
 );
 
-const turn2 = processAdviceTurn("福岡", t2.session, t2.context);
+const turn2 = processAdviceTurn("福岡", t2.session, t2.context, undefined, "zh-TW");
 assert(Boolean(turn2.advice.reply), "T2 advice has reply");
 assert(
   /旅行日期或天數|大概幾天|玩幾天/.test(turn2.advice.reply ?? ""),

@@ -1,15 +1,11 @@
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-  type PointerEvent,
-} from "react";
+import { useI18n } from "@/hooks/use-i18n";
+import { forwardRef, useEffect, useImperativeHandle, useRef, type PointerEvent } from "react";
 import { useScrollPerfMonitor } from "@/hooks/use-scroll-perf-monitor";
 import { Heart, Loader2, Plus, Star } from "lucide-react";
 import { PlaceCoverImage } from "@/components/media/PlaceCoverImage";
 import { PlaceHoursBadge } from "@/components/PlaceHoursBadge";
-import { identityDisplayLabel, resolvePlaceIdentity } from "@/lib/place-identity";
+import { placeCategoryDisplay } from "@/lib/native-qa-display";
+import { placeOpeningStatusLabel } from "@/lib/normalized-opening-status";
 import { cn } from "@/lib/utils";
 import type { PlaceResult } from "@/lib/place-result";
 import {
@@ -66,10 +62,7 @@ type Props = {
   savedNames: Set<string>;
   userLocation: { lat: number; lng: number } | null;
   formatDistance: (meters: number) => string;
-  distanceMeters: (
-    from: { lat: number; lng: number },
-    to: { lat: number; lng: number },
-  ) => number;
+  distanceMeters: (from: { lat: number; lng: number }, to: { lat: number; lng: number }) => number;
   imageUrl: (photoName: string | null) => string | null;
   categoryKey: string;
   emptyMessage?: string | null;
@@ -99,10 +92,11 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
       onSelect,
       onToggleSave,
       onAddToTrip,
-      addToTripLabel = "加入行程",
+      addToTripLabel,
     },
     ref,
   ) {
+    const { t, locale } = useI18n();
     const scrollRef = useRef<HTMLDivElement>(null);
     const loggedDistanceDisplaysRef = useRef(new Set<string>());
     useScrollPerfMonitor("map-cards", scrollRef);
@@ -200,7 +194,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
             data-sheet-cards-scroll
             data-no-sheet-drag
             role="list"
-            aria-label="推薦地點卡片"
+            aria-label={t("uiCoverage.placeCardsAria")}
             onPointerDown={onCarouselPointerDown}
             onPointerMove={onCarouselPointerMove}
             onPointerUp={endCarouselPointer}
@@ -233,7 +227,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                 });
               }
               const typeLabel =
-                p.displayCategory ?? identityDisplayLabel(resolvePlaceIdentity(p), p);
+                placeCategoryDisplay(p, locale);
               const isLast = i === places.length - 1;
               return (
                 <article
@@ -276,7 +270,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                       }}
                       disabled={isBusy}
                       className="absolute bottom-2 right-2 flex h-9 w-9 items-center justify-center rounded-full bg-card/95 shadow-soft disabled:opacity-60"
-                      aria-label={isSaved ? "移除收藏" : "收藏"}
+                      aria-label={isSaved ? t("uiCoverage.unsave") : t("uiCoverage.save")}
                     >
                       {isBusy ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -297,7 +291,9 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                           {p.name}
                         </h3>
                         <span className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-muted-foreground">
-                          {distLabel ? <span className="whitespace-nowrap">{distLabel}</span> : null}
+                          {distLabel ? (
+                            <span className="whitespace-nowrap">{distLabel}</span>
+                          ) : null}
                           {p.rating !== null && (
                             <span className="flex items-center gap-0.5 whitespace-nowrap">
                               <Star className="h-3 w-3 fill-clay text-clay" />
@@ -314,8 +310,9 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                       </p>
                       <div className="min-h-[1rem] shrink-0">
                         <PlaceHoursBadge
+                          place={p}
                           compact
-                          statusLabel={p.openStatusLabel}
+                          statusLabel={placeOpeningStatusLabel(p, locale)}
                           todayHoursLabel={p.todayHoursLabel}
                           closingSoonNote={p.closingSoonNote}
                           nextOpenHint={p.nextOpenHint}
@@ -332,7 +329,7 @@ export const MapExplorePlaceCards = forwardRef<MapExploreCardsHandle, Props>(
                         className="mt-2 flex h-9 w-full shrink-0 items-center justify-center gap-1 rounded-full bg-foreground text-[11px] font-medium text-background"
                       >
                         <Plus className="h-3 w-3" />
-                        {addToTripLabel}
+                        {addToTripLabel ?? t("uiCoverage.addTrip")}
                       </button>
                     ) : null}
                   </div>

@@ -1,3 +1,5 @@
+import { generatedPlacesForLocale } from "@/lib/generated-display-projection";
+import { isCurrentGeneratedCopy, type GeneratedLocaleContract } from "@/lib/generated-locale";
 import {
   normalizeRecommendationItem,
   type RoamiePayloadV2,
@@ -212,7 +214,7 @@ export type SelectedPlaceRecord = {
   googleMapsUrl?: string;
 };
 
-export type ChatPlanningSession = {
+export type ChatPlanningSession = GeneratedLocaleContract & {
   mood?: string;
   /** 心情卡片類別（與 mood 相同或延伸標籤） */
   selectedCategory?: string;
@@ -603,14 +605,14 @@ export function isUserConfirmingItinerary(text: string): boolean {
 
 export function loadChatSession(): ChatPlanningSession {
   if (typeof window === "undefined") return createEmptySession();
-  if (memoryChatSession) return syncSessionPlaceMemory(memoryChatSession);
+  if (memoryChatSession) return chatSessionForLocale(syncSessionPlaceMemory(memoryChatSession), effectiveAppLocale());
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
     if (!raw) return createEmptySession();
-    return syncSessionPlaceMemory({
+    return chatSessionForLocale(syncSessionPlaceMemory({
       ...createEmptySession(),
       ...JSON.parse(raw),
-    } as ChatPlanningSession);
+    } as ChatPlanningSession), effectiveAppLocale());
   } catch {
     return createEmptySession();
   }
@@ -815,6 +817,9 @@ export function mapPlaceResultToChatItem(
     rating: p.rating,
     userRatingCount: p.userRatingCount,
     businessStatus: p.businessStatus,
+    normalizedOpeningStatus: p.normalizedOpeningStatus,
+    openStatus: p.openStatus,
+    openNow: p.openNow,
     openStatusLabel: p.openStatusLabel || undefined,
     todayHoursLabel: p.todayHoursLabel || undefined,
     closingSoonNote: p.closingSoonNote || undefined,
@@ -904,9 +909,10 @@ export function roamieRecToChatItem(rec: RoamieRecommendationItem): ChatPlaceIte
 
 export function mergeSessionFromRoamie(
   session: ChatPlanningSession,
-  data: { moodTag?: string; recommendations?: RoamieRecommendationItem[]; summary?: string },
+  data: GeneratedLocaleContract & { moodTag?: string; recommendations?: RoamieRecommendationItem[]; summary?: string },
   phase: ChatPhase = session.phase,
 ): ChatPlanningSession {
+  session = chatSessionForLocale(session, data.generatedLocale ?? effectiveAppLocale());
   const aiRecs = (data.recommendations ?? []).map(roamieRecToChatItem);
   const mergedRecs =
     session.selectedPlaces.length > 0
@@ -925,6 +931,7 @@ export function mergeSessionFromRoamie(
 
   return syncSessionPlaceMemory({
     ...session,
+    generatedLocale: data.generatedLocale,
     mood: data.moodTag || session.mood,
     recommendedPlaces: mergedRecs,
     phase,
@@ -1106,4 +1113,17 @@ export function initSessionFromRecommendation(payload: {
   };
   session.initialChatContext = buildInitialChatContext(session);
   return session;
+}
+
+/** Current handoff/UI view only. Historical workspace messages stay untouched. */
+export function chatSessionForLocale(session: ChatPlanningSession, locale: Locale): ChatPlanningSession {
+  if (isCurrentGeneratedCopy(session, locale)) return session;
+  return { ...session,
+    conversationSummary: undefined, recommendationTitle: undefined,
+    lastAssistantReply: undefined, plusHomeInsight: undefined,
+    recommendedPlaces: generatedPlacesForLocale(session.recommendedPlaces, session, locale),
+    // Selection identity and user input are retained; only generated recommendation prose is projected.
+    selectedPlaces: generatedPlacesForLocale(session.selectedPlaces, session, locale),
+    plannedStops: session.plannedStops ? generatedPlacesForLocale(session.plannedStops, session, locale) : undefined,
+  };
 }

@@ -1,3 +1,5 @@
+import { translate } from "@/lib/i18n/translate";
+import { effectiveAppLocale } from "@/lib/i18n/effective-app-locale";
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { RoamieAppErrorFallback } from "@/components/RoamieAppErrorFallback";
 import { formatErrorDetail, logAppError, logAppErrorDetail } from "@/lib/log-error";
@@ -41,8 +43,8 @@ export class AppErrorBoundary extends Component<Props, State> {
 
       return (
         <RoamieAppErrorFallback
-          title="Roamie 暫時無法啟動"
-          message="App 初始化時發生錯誤。請重試，或重新啟動。"
+          title={translate(effectiveAppLocale(), "productionUi.appStartError")}
+          message={translate(effectiveAppLocale(), "productionUi.appStartBody")}
           detail={detail}
           onRetry={() => this.setState({ error: null }, () => window.location.reload())}
           onHome={() => {

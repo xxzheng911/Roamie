@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Copy, Loader2, Users } from "lucide-react";
 import { toast } from "sonner";
@@ -62,9 +63,7 @@ function MemberAvatar({ member, displayName }: { member: TripMemberRow; displayN
       `[TRIP_MEMBER_RENDER_PROFILE] userId=${member.user_id} name=${displayName} avatarUrl=(none)`,
     );
   } else {
-    console.info(
-      `[TRIP_MEMBER_RENDER_FALLBACK] reason=missing_profile userId=${member.user_id}`,
-    );
+    console.info(`[TRIP_MEMBER_RENDER_FALLBACK] reason=missing_profile userId=${member.user_id}`);
   }
 
   return (
@@ -81,6 +80,8 @@ function MemberAvatar({ member, displayName }: { member: TripMemberRow; displayN
 }
 
 export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerProp }: Props) {
+  const { t: uiT } = useI18n();
+
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [copying, setCopying] = useState(false);
   const [loadingMembers, setLoadingMembers] = useState(false);
@@ -97,12 +98,12 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
       const rows = await listTripMembers(tripId);
       setCollaborators(rows.filter((m) => !m.is_owner));
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "無法載入成員");
+      toast.error(e instanceof Error ? e.message : uiT("productionUi.p5381107860"));
       setCollaborators([]);
     } finally {
       setLoadingMembers(false);
     }
-  }, [tripId]);
+  }, [uiT, tripId]);
 
   useEffect(() => {
     setResolvedIsOwner(isOwnerProp);
@@ -165,7 +166,7 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
       const token = await ensureInviteToken();
       const result = await copyInviteToClipboard(token);
       if (result === "copied") {
-        toast.success("邀請連結已複製");
+        toast.success(uiT("productionUi.peac081dac9"));
       } else {
         toast.error(COPY_MANUAL_HINT);
       }
@@ -210,14 +211,14 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
     try {
       await removeTripMember(tripId, memberId);
       setCollaborators((prev) => prev.filter((m) => m.user_id !== memberId));
-      toast.success(`已將「${memberDisplayName(removeTarget)}」移出此行程`);
+      toast.success(uiT("productionUi.p5136a44492", { v0: memberDisplayName(removeTarget) }));
       console.info(`[TRIP_MEMBER_REMOVE_SUCCESS] tripId=${tripId} memberId=${memberId}`);
       setRemoveTarget(null);
       void refreshMembers();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       console.error(`[TRIP_MEMBER_REMOVE_ERROR] error=${message}`);
-      toast.error(e instanceof Error ? e.message : "移除旅伴失敗");
+      toast.error(e instanceof Error ? e.message : uiT("productionUi.p6600502ecf"));
     } finally {
       setRemoving(false);
     }
@@ -232,7 +233,7 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
         >
           <SheetTitle className="flex items-center gap-2 px-5 text-base font-medium">
             <Users className="h-4 w-4 shrink-0" />
-            邀請共編
+            {uiT("productionUi.peb328f809b")}
           </SheetTitle>
 
           <div className="pointer-events-auto relative z-10 mx-5 mt-4 overflow-hidden rounded-2xl border border-border bg-card">
@@ -241,7 +242,9 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
               </div>
             ) : collaborators.length === 0 ? (
-              <p className="px-4 py-8 text-center text-sm text-muted-foreground">尚未有人加入</p>
+              <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+                {uiT("productionUi.pb50c4dae63")}
+              </p>
             ) : (
               <ul className="divide-y divide-border">
                 {collaborators.map((member) => {
@@ -250,7 +253,7 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
                     <li key={member.id} className="relative">
                       <button
                         type="button"
-                        aria-label={`${name}，點按以管理成員`}
+                        aria-label={uiT("productionUi.manageMember", { name })}
                         onClick={() => handleMemberPress(member)}
                         onTouchEnd={(e) => {
                           e.stopPropagation();
@@ -287,7 +290,7 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
                 ) : (
                   <Copy className="h-4 w-4" />
                 )}
-                複製邀請連結
+                {uiT("productionUi.peb3fc2c71f")}
               </button>
             </div>
           ) : null}
@@ -305,9 +308,13 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
           className="z-[100] max-w-[min(100%,22rem)] rounded-3xl"
         >
           <AlertDialogHeader>
-            <AlertDialogTitle className="font-display text-lg">移除旅伴？</AlertDialogTitle>
+            <AlertDialogTitle className="font-display text-lg">
+              {uiT("productionUi.pc52331f090")}
+            </AlertDialogTitle>
             <AlertDialogDescription className="text-left text-sm leading-relaxed">
-              確定要將「{removeTarget ? memberDisplayName(removeTarget) : ""}」從此行程移除嗎？
+              {uiT("productionUi.pf973fc5980", {
+                v0: removeTarget ? memberDisplayName(removeTarget) : "",
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
@@ -318,10 +325,10 @@ export function TripSharePanel({ open, onOpenChange, tripId, isOwner: isOwnerPro
                 void handleConfirmRemove();
               }}
             >
-              {removing ? "移除中…" : "移除"}
+              {removing ? uiT("productionUi.p19c4ca651c") : uiT("productionUi.p6135d4159e")}
             </AlertDialogAction>
             <AlertDialogCancel className="mt-0 w-full rounded-full" disabled={removing}>
-              取消
+              {uiT("productionUi.p2cd0f3be87")}
             </AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>

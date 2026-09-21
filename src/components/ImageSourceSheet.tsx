@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, ImageIcon, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -7,16 +8,8 @@ import {
   type ImagePickSource,
 } from "@/lib/capacitor-image-picker";
 import { isImagePickFile, normalizeImageFileForUpload } from "@/lib/image-crop";
-import {
-  NATIVE_IMAGE_PICKER_DELAY_MS,
-  safeTriggerFileInput,
-} from "@/lib/native-image-picker";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { NATIVE_IMAGE_PICKER_DELAY_MS, safeTriggerFileInput } from "@/lib/native-image-picker";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 
 type Props = {
   open: boolean;
@@ -51,17 +44,23 @@ export function ImageSourceSheet({
   onRemove,
   removing = false,
   showRemove = false,
-  removeLabel = "刪除",
+  removeLabel,
   disabled = false,
   onPickerBusyChange,
   cameraFacing = "environment",
-  albumLabel = "從相簿選取",
-  cameraLabel = "拍照",
+  albumLabel,
+  cameraLabel,
   sheetClassName,
   overlayClassName,
   sheetLogPrefix,
   pickLogPrefix,
 }: Props) {
+  const { t: uiT } = useI18n();
+  const resolvedAlbumLabel = albumLabel ?? uiT("productionUi.p30784c6dd2");
+  const resolvedCameraLabel = cameraLabel ?? uiT("productionUi.p6e3a10ade7");
+  const resolvedRemoveLabel = removeLabel ?? uiT("profile.removeAvatar");
+  const resolvedCloseLabel = uiT("productionUi.pc7fdddf79e");
+
   const albumRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const pendingSourceRef = useRef<ImagePickSource | null>(null);
@@ -81,7 +80,7 @@ export function ImageSourceSheet({
         if (pickLogPrefix === "[TRIP_COVER_PICK]") {
           console.info("[TRIP_COVER_PICK_ERROR]", "invalid file type");
         }
-        toast.error("請選擇圖片檔案");
+        toast.error(uiT("productionUi.pdbef31bc6b"));
         return;
       }
       if (preparingRef.current) return;
@@ -105,7 +104,7 @@ export function ImageSourceSheet({
         setPreparing(false);
       }
     },
-    [onPickFile, pickLogPrefix],
+    [uiT, onPickFile, pickLogPrefix],
   );
 
   const openCapacitorPicker = useCallback(
@@ -141,7 +140,7 @@ export function ImageSourceSheet({
           console.info("[TRIP_COVER_PICK_ERROR]", "picker input missing");
         }
         onPickerBusyChange?.(false);
-        toast.error("無法開啟圖片選擇器，請稍後再試");
+        toast.error(uiT("productionUi.p7c548b9128"));
         return;
       }
       if (pickLogPrefix === "[TRIP_COVER_PICK]") {
@@ -153,10 +152,10 @@ export function ImageSourceSheet({
           console.info("[TRIP_COVER_PICK_ERROR]", msg);
         }
         onPickerBusyChange?.(false);
-        toast.error("無法開啟相簿，請稍後再試");
+        toast.error(uiT("productionUi.pd4ac493f15"));
       });
     },
-    [pickLogPrefix, onPickerBusyChange],
+    [uiT, pickLogPrefix, onPickerBusyChange],
   );
 
   useEffect(() => {
@@ -204,7 +203,11 @@ export function ImageSourceSheet({
     if (pickLogPrefix === "[TRIP_COVER_PICK]") {
       console.info("[TRIP_COVER_PICK_SUCCESS]");
     }
-    try { await deliverFile(file, source); } finally { onPickerBusyChange?.(false); }
+    try {
+      await deliverFile(file, source);
+    } finally {
+      onPickerBusyChange?.(false);
+    }
   };
 
   return (
@@ -247,54 +250,66 @@ export function ImageSourceSheet({
         <SheetContent
           side="bottom"
           overlayClassName={overlayClassName}
-          className={sheetClassName ?? "rounded-t-[1.75rem] px-6 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-2"}
+          closeLabel={resolvedCloseLabel}
+          className={
+            sheetClassName ??
+            "rounded-t-[1.75rem] px-6 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-2"
+          }
         >
           <SheetHeader className="pb-2">
-            <SheetTitle className="font-display text-left text-base">{title}</SheetTitle>
+            <SheetTitle className="pr-8 text-left font-display text-base leading-snug">
+              {title}
+            </SheetTitle>
           </SheetHeader>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="media-action-grid">
             <button
               type="button"
               disabled={preparing || disabled}
               onClick={() => queuePick("library")}
-              className="flex flex-col items-center gap-2 rounded-2xl border border-border bg-card py-4 text-sm disabled:opacity-50"
+              className="flex min-h-11 min-w-0 flex-col items-center justify-center gap-2 rounded-2xl border border-border bg-card px-3 py-4 text-center text-sm leading-snug disabled:opacity-50"
             >
               {preparing ? (
-                <Loader2 className="h-5 w-5 animate-spin text-clay" />
+                <Loader2 className="h-5 w-5 shrink-0 animate-spin text-clay" />
               ) : (
-                <ImageIcon className="h-5 w-5 text-clay" />
+                <ImageIcon className="h-5 w-5 shrink-0 text-clay" />
               )}
-              {preparing ? "處理圖片中…" : albumLabel}
+              <span className="w-full min-w-0 whitespace-normal break-words">
+                {preparing ? uiT("productionUi.p90486f8748") : resolvedAlbumLabel}
+              </span>
             </button>
             <button
               type="button"
               disabled={preparing || disabled}
               onClick={() => queuePick("camera")}
-              className="flex flex-col items-center gap-2 rounded-2xl border border-border bg-card py-4 text-sm disabled:opacity-50"
+              className="flex min-h-11 min-w-0 flex-col items-center justify-center gap-2 rounded-2xl border border-border bg-card px-3 py-4 text-center text-sm leading-snug disabled:opacity-50"
             >
               {preparing ? (
-                <Loader2 className="h-5 w-5 animate-spin text-clay" />
+                <Loader2 className="h-5 w-5 shrink-0 animate-spin text-clay" />
               ) : (
-                <Camera className="h-5 w-5 text-clay" />
+                <Camera className="h-5 w-5 shrink-0 text-clay" />
               )}
-              {cameraLabel}
+              <span className="w-full min-w-0 whitespace-normal break-words">
+                {resolvedCameraLabel}
+              </span>
             </button>
           </div>
 
           {showRemove && onRemove && (
             <button
               type="button"
-              onClick={() => { if (!disabled && !removing) onRemove(); }}
+              onClick={() => {
+                if (!disabled && !removing) onRemove();
+              }}
               disabled={removing || disabled}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-full border border-border py-3 text-sm text-muted-foreground disabled:opacity-50"
+              className="mt-3 flex min-h-11 w-full min-w-0 items-center justify-center gap-2 rounded-full border border-border px-4 py-3 text-center text-sm leading-snug text-muted-foreground disabled:opacity-50"
             >
               {removing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
               ) : (
-                <Trash2 className="h-4 w-4" />
+                <Trash2 className="h-4 w-4 shrink-0" />
               )}
-              {removeLabel}
+              <span className="min-w-0 whitespace-normal break-words">{resolvedRemoveLabel}</span>
             </button>
           )}
         </SheetContent>

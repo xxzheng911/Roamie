@@ -1,3 +1,5 @@
+import type { Locale } from "@/lib/i18n/types";
+import { dailyOutfitDisplay } from "./localized-outfit-copy";
 import type { RoamieItineraryItem } from "@/lib/ai/types";
 import type { DailyForecast } from "@/lib/weather.functions";
 import { buildFallbackOutfitAdvice } from "@/lib/outfit/fallback-outfit";
@@ -34,6 +36,7 @@ function mergeForecastWithAI(
   itemsByDate: Map<string, RoamieItineraryItem[]>,
   allItems: RoamieItineraryItem[],
   fashionStyle?: string,
+  locale: Locale = "zh-TW",
 ): DailyOutfitAdvice[] {
   const aiByDate = new Map(aiItems.map((a) => [a.date, a]));
 
@@ -58,6 +61,7 @@ function mergeForecastWithAI(
         uvi: f.uvi ?? null,
       },
       activityTypes: activities,
+      generatedLocale: ai?.outfitSummary && ai.narrative ? locale : undefined,
       outfitSummary: ai?.outfitSummary ?? "舒適好走的日常穿搭",
       narrative: ai?.narrative ?? "記得依天氣多帶一層，讓自己走得舒服。",
       packingReminders: ai?.packingReminders?.length ? ai.packingReminders : [],
@@ -67,6 +71,7 @@ function mergeForecastWithAI(
 }
 
 export async function buildOutfitAdviceForTrip(params: {
+  locale?: Locale;
   destination: string;
   startDate: string;
   days: number;
@@ -75,6 +80,7 @@ export async function buildOutfitAdviceForTrip(params: {
   fashionStyle?: string;
   mood?: string;
 }): Promise<OutfitAdvicePayload> {
+  const locale = params.locale ?? "zh-TW";
   const { callOutfitAI, buildScheduleSummary } = await import("@/lib/outfit/outfit-ai.server");
   const itemsByDate = groupItineraryByDate(params.itinerary);
   const forecast =
@@ -83,6 +89,7 @@ export async function buildOutfitAdviceForTrip(params: {
   if (!forecast.length) {
     return {
       destination: params.destination,
+      generatedLocale: locale,
       generatedAt: new Date().toISOString(),
       fashionStyle: params.fashionStyle,
       days: [],
@@ -103,12 +110,14 @@ export async function buildOutfitAdviceForTrip(params: {
   try {
     const aiItems = await callOutfitAI({
       destination: params.destination,
+      locale,
       fashionStyle: params.fashionStyle,
       mood: params.mood,
       days: dayInputs,
     });
     return {
       destination: params.destination,
+      generatedLocale: locale,
       generatedAt: new Date().toISOString(),
       fashionStyle: params.fashionStyle,
       days: mergeForecastWithAI(
@@ -117,18 +126,20 @@ export async function buildOutfitAdviceForTrip(params: {
         itemsByDate,
         params.itinerary,
         params.fashionStyle,
-      ),
+        locale,
+      ).map((day) => ({ ...dailyOutfitDisplay(day, locale), generatedLocale: locale })),
     };
   } catch (e) {
     console.warn("[Roamie Outfit] AI failed, using fallback", e);
     return {
       destination: params.destination,
+      generatedLocale: locale,
       generatedAt: new Date().toISOString(),
       fashionStyle: params.fashionStyle,
       days: buildFallbackOutfitAdvice(forecast, itemsByDate, {
         fashionStyle: params.fashionStyle,
         startDate: params.startDate,
-      }),
+      }).map((day) => ({ ...dailyOutfitDisplay(day, locale), generatedLocale: locale })),
     };
   }
 }

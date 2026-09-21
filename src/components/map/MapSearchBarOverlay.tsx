@@ -1,10 +1,8 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { Loader2, Navigation, Search } from "lucide-react";
 import { forwardRef, useImperativeHandle, useRef, type ReactNode } from "react";
 import { isCapacitorNativeShell } from "@/lib/capacitor-native-shell";
-import {
-  enterMapSearchKeyboardMode,
-  exitMapSearchKeyboardMode,
-} from "@/lib/map-search-keyboard";
+import { enterMapSearchKeyboardMode, exitMapSearchKeyboardMode } from "@/lib/map-search-keyboard";
 
 export type MapSearchBarOverlayHandle = {
   dismiss: () => void;
@@ -36,6 +34,8 @@ export const MapSearchBarOverlay = forwardRef<MapSearchBarOverlayHandle, Props>(
     },
     ref,
   ) {
+    const { t: uiT } = useI18n();
+
     const inputRef = useRef<HTMLInputElement>(null);
     const keyboardEngagedRef = useRef(false);
     const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -102,7 +102,7 @@ export const MapSearchBarOverlay = forwardRef<MapSearchBarOverlayHandle, Props>(
                   disengageKeyboardLayout();
                 }, 150);
               }}
-              placeholder={placeholder ?? "想去哪裡走走？"}
+              placeholder={placeholder ?? uiT("productionUi.p3bd5d45b41")}
               className="min-w-0 flex-1 bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none"
               autoComplete="off"
             />
@@ -112,7 +112,7 @@ export const MapSearchBarOverlay = forwardRef<MapSearchBarOverlayHandle, Props>(
             onClick={onLocate}
             disabled={locating}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border/90 bg-card/95 shadow-soft backdrop-blur-sm disabled:opacity-60"
-            aria-label="我的位置"
+            aria-label={uiT("productionUi.p1f29e4a7db")}
           >
             {locating ? (
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />

@@ -141,6 +141,7 @@ import { isBrowserOnline, subscribeBrowserConnectivity } from "@/lib/network-con
 import { resolveUserMarkerAvatarSrc } from "@/lib/map-user-location-marker";
 import { useI18n } from "@/hooks/use-i18n";
 import type { Locale } from "@/lib/i18n/types";
+import { translate } from "@/lib/i18n/translate";
 import { type MapExploreHandoff, consumeMapExploreHandoff } from "@/lib/map-explore-handoff";
 import { captureMapLayoutHeight, resetMapSearchKeyboardMode } from "@/lib/map-search-keyboard";
 import { normalizedLocationKey } from "@/lib/location-key";
@@ -191,7 +192,7 @@ function mockMapCards(center: { lat: number; lng: number }, cat: ExploreCategory
   return pool.map((p) => ({ ...p, googleMapsUrl: undefined }));
 }
 
-function savedToPlaceResult(s: SavedPlace): PlaceResult {
+function savedToPlaceResult(s: SavedPlace, locale: Locale): PlaceResult {
   return {
     id: `saved-${s.id}`,
     name: s.name,
@@ -206,7 +207,7 @@ function savedToPlaceResult(s: SavedPlace): PlaceResult {
     businessStatus: null,
     openStatus: "unknown",
     openStatusLabel: "",
-    todayHoursLabel: "營業時間待確認",
+    todayHoursLabel: translate(locale, "uiCoverage.hoursUnknown"),
     closingSoonNote: "",
     nextOpenHint: "",
   };
@@ -407,7 +408,7 @@ function MapView() {
   } | null>(null);
   const [primaryPlace, setPrimaryPlace] = useState<MapPlaceCard | null>(null);
   const primaryPlaceRef = useRef<MapPlaceCard | null>(null);
-  const [locationLabel, setLocationLabel] = useState("附近");
+  const [locationLabel, setLocationLabel] = useState(() => t("common.nearby"));
   const [results, setResults] = useState<MapPlaceCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1012,7 +1013,7 @@ function MapView() {
                 ),
               )
               .map((s) => {
-                const base = savedToPlaceResult(s);
+                const base = savedToPlaceResult(s, locale);
                 const card = buildUnifiedPlaceCard({
                   place: base,
                   categoryId: filterCat.id,
@@ -1237,7 +1238,7 @@ function MapView() {
         );
         setSearchingPlaces(false);
         if (error && suggestions.length === 0) {
-          setError(error ?? "找不到符合的地點");
+          setError(error ?? t("uiCoverage.noResults"));
         }
       })().catch((e) => {
         if (requestId !== exploreSearchRequestRef.current) return;
@@ -2036,9 +2037,11 @@ function MapView() {
           />
         ) : geoReady ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-cream px-8 text-center">
-            <p className="font-display text-base text-foreground">地圖暫時無法顯示</p>
+            <p className="font-display text-base text-foreground">
+              {t("uiCoverage.mapUnavailable")}
+            </p>
             <p className="max-w-xs text-sm text-muted-foreground">
-              仍可透過下方推薦列表探索附近地點
+              {t("uiCoverage.mapListFallback")}
             </p>
           </div>
         ) : (
@@ -2072,7 +2075,7 @@ function MapView() {
                   searching={searchingPlaces}
                   resolvingId={resolvingSearchId}
                   onSelect={(item) => void handleExploreSearchSelect(item)}
-                  emptyMessage="找不到符合的地點"
+                  emptyMessage={t("uiCoverage.noResults")}
                 />
               ) : null
             }
@@ -2101,13 +2104,15 @@ function MapView() {
               <>
                 <div className="px-5 pb-2">
                   <p className="font-display text-lg leading-tight">
-                    {exploreCategorySheetTitle(cat.id)}
+                    {exploreCategorySheetTitle(cat.id, locale)}
                   </p>
                   <p className="mt-0.5 text-xs text-muted-foreground">
                     {searchSelectedCenter
-                      ? `「${searchSelectedCenter.label}」· ${loading ? t("common.search") : tt("map.placesCount", { count: displayResults.length })}`
-                      : `${loading ? t("common.search") : tt("map.placesCount", { count: displayResults.length })}`}
-                    {saved.length > 0 ? ` · 已收藏 ${saved.length}` : ""}
+                      ? `「${searchSelectedCenter.label}」· ${loading ? t("common.search") : t("uiCoverage.resultCount", { count: displayResults.length })}`
+                      : `${loading ? t("common.search") : t("uiCoverage.resultCount", { count: displayResults.length })}`}
+                    {saved.length > 0
+                      ? ` · ${t("uiCoverage.savedCount", { count: saved.length })}`
+                      : ""}
                   </p>
                   {locationHint && (
                     <p className="mt-1 text-xs text-muted-foreground/90">{locationHint}</p>
@@ -2182,7 +2187,7 @@ function MapView() {
                 onToggleSave={() => void handleToggleSave(selectedPlace)}
                 onAddToTrip={() => openAddToTrip(tripPlaceFromPlaceResult(selectedPlace), "map")}
                 addToTripLabel={t("chat.addToTrip")}
-                saveLabel="收藏"
+                saveLabel={t("uiCoverage.save")}
                 onOpenChat={() => openInChat(selectedPlace)}
                 googleMapsExternalUrl={
                   selectedPlace.lat != null && selectedPlace.lng != null

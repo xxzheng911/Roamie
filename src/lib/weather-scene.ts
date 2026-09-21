@@ -1,14 +1,9 @@
+import { translate } from "@/lib/i18n/translate";
+import type { Locale } from "@/lib/i18n/types";
 import type { WeatherSummary } from "@/lib/weather-types";
 import { ROAMIE_WEATHER_UNAVAILABLE_MESSAGE } from "@/lib/weather/constants";
 
-export type WeatherScene =
-  | "rainy"
-  | "sunny"
-  | "cloudy"
-  | "hot"
-  | "cold"
-  | "night"
-  | "fair";
+export type WeatherScene = "rainy" | "sunny" | "cloudy" | "hot" | "cold" | "night" | "fair";
 
 export type WeatherSceneInput = {
   tempC?: number | null;
@@ -62,7 +57,10 @@ export function classifyWeatherScene(input: WeatherSceneInput): WeatherScene {
   return "fair";
 }
 
-export function buildWeatherRecommendation(input: WeatherSceneInput): {
+export function buildWeatherRecommendation(
+  input: WeatherSceneInput,
+  locale: Locale = "zh-TW",
+): {
   rec: WeatherSummary["recommendation"];
   text: string;
   scene: WeatherScene;
@@ -74,44 +72,44 @@ export function buildWeatherRecommendation(input: WeatherSceneInput): {
       return {
         scene,
         rec: "indoor",
-        text: "今天可能下雨，適合一間能待整個下午的咖啡廳、書店或美術館。",
+        text: translate(locale, "uiCoverage.weatherRainy"),
       };
     case "night":
       return {
         scene,
         rec: "evening",
-        text: "夜晚適合夜景、河岸散步，或找一間舒服的小酒吧坐坐。",
+        text: translate(locale, "uiCoverage.weatherNight"),
       };
     case "hot":
       return {
         scene,
         rec: "cool_indoor",
-        text: "今天很熱，建議下午躲冷氣、百貨或室內景點，傍晚再出門；記得補水與防曬。",
+        text: translate(locale, "uiCoverage.weatherHot"),
       };
     case "cold":
       return {
         scene,
         rec: "indoor",
-        text: "外面有點冷，書店、咖啡館、室內展覽或溫泉都很適合。",
+        text: translate(locale, "uiCoverage.weatherCold"),
       };
     case "cloudy":
       return {
         scene,
         rec: "outdoor",
-        text: "陰天涼爽，適合巷弄散步，或找一間舒服的室內小店。",
+        text: translate(locale, "uiCoverage.weatherCloudy"),
       };
     case "sunny":
       return {
         scene,
         rec: "outdoor",
-        text: "天氣晴朗，很適合公園、河堤或戶外散步；紫外線偏強時記得防曬。",
+        text: translate(locale, "uiCoverage.weatherSunny"),
       };
     case "fair":
     default:
       return {
         scene: "fair",
         rec: "outdoor",
-        text: "天氣不錯，適合在巷弄裡慢慢走走。",
+        text: translate(locale, "uiCoverage.weatherFair"),
       };
   }
 }
@@ -139,4 +137,18 @@ export function buildUnavailableWeatherSummary(city = "目前位置"): WeatherSu
     fetchedAt: new Date().toISOString(),
     available: false,
   };
+}
+
+/** Rebuild display copy from semantic scene data; never reuse cached localized prose. */
+export function localizeWeatherSummary(
+  weather: WeatherSummary | null,
+  locale: Locale,
+): WeatherSummary | null {
+  if (!weather) return null;
+  const scene = weather.scene ?? classifyWeatherScene(weather);
+  const key =
+    weather.available === false || weather.source === "unavailable"
+      ? "weatherUnavailable"
+      : `weather${scene[0].toUpperCase()}${scene.slice(1)}`;
+  return { ...weather, recommendationText: translate(locale, `uiCoverage.${key}`) };
 }

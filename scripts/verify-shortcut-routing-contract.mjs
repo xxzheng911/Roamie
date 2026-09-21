@@ -1,3 +1,7 @@
+import { chatShortcutContract, CHAT_SHORTCUT_SEND_CHIPS } from "../src/lib/chat-shortcut-chips.ts";
+import { createRecommendationSession, continueRecommendation, extendRecommendationPool } from "../src/lib/ai/conversation-recommendation-session.ts";
+import { isPlanningSelectionMode, isPlanningSelectionContinuation } from "../src/lib/planning-selection.ts";
+import { hasNearbyContinuationAuthority } from "../src/lib/ai/home-shortcut-handoff.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { beginHomeMoodShortcutSession } from "../src/lib/home-mood-shortcut-session.ts";
@@ -290,33 +294,67 @@ function withNearbyLocation(session) {
     /isCurrentLocationShortcutSession[\s\S]*pushNearbyPlaceRecommendation[\s\S]*send\.refetch\.structured_nearby_continuation/,
     "structured shortcut continuation must fetch nearby before exhausted/no-more",
   );
-  for (const tag of [
-    "RT_CONTINUATION_INPUT",
-    "RT_CONTINUATION_CONTEXT",
-    "RT_CONTINUATION_FETCH",
-    "RT_CONTINUATION_RESULT",
-    "RT_CONTINUATION_BRANCH",
-    "RT_REFINEMENT_COPY",
-    "RT_CONTINUATION_SEARCH_ATTEMPT",
-    "RT_CONTINUATION_SEARCH_SUMMARY",
-    "RT_CONTINUATION_EXCLUSIONS",
-    "RT_CONTINUATION_CANDIDATE_IDENTITY",
-    "RT_CONTINUATION_HANDOFF",
-    "RT_CONTINUATION_STAGE",
-    "RT_CONTINUATION_DROP",
-    "RT_PLACE_ENRICHMENT",
-  ]) {
-    const diagnosticSources =
-      chatSource +
-      readFileSync(new URL("../src/lib/ai/recommendation-exclusion.ts", import.meta.url), "utf8") +
-      readFileSync(new URL("../src/lib/ai/shortcut-runtime-diag.ts", import.meta.url), "utf8") +
-      readFileSync(new URL("../src/lib/ai/chat-place-recommendation.ts", import.meta.url), "utf8") +
-      readFileSync(new URL("../src/lib/place-planning-memory.ts", import.meta.url), "utf8");
-    assert.match(diagnosticSources, new RegExp(tag));
-  }
+  // 247381d retired continuation audit telemetry after device acceptance.
+  // Semantic continuation/exhaustion/selection coverage below replaces tag-presence checks.
   const displayStage = chatSource.indexOf('stage: "before_display_policy"');
   const memoryCommit = chatSource.indexOf("const sessionWithCommittedNearbyContext");
   assert.ok(displayStage >= 0 && memoryCommit > displayStage, "current IDs commit only after display");
 }
 
+// Exercise production authorities, not diagnostic text. Display text never routes.
+for (const locale of ["zh-TW", "en", "ja", "ko"]) {
+  for (const payload of CHAT_SHORTCUT_SEND_CHIPS) {
+    const contract = chatShortcutContract(payload, locale);
+    const baselineContract = chatShortcutContract(payload, "zh-TW");
+    assert.equal(contract.canonicalIntent, baselineContract.canonicalIntent);
+    assert.equal(contract.routingPayload, baselineContract.routingPayload);
+    if (locale !== "zh-TW") assert.notEqual(contract.displayMessage, payload);
+    let session = withNearbyLocation(applyQuickChipContext(contract.routingPayload, createEmptySession()));
+    session.normalizedShortcutRequest = resolveNormalizedShortcutRequestFromText(contract.routingPayload, "chat_shortcut");
+    assert.equal(resolveChatIntentArbitration(contract.routingPayload, session).route, "NEW_RECOMMENDATION");
+    const scene = resolveNearbyShortcutScene(payload, session);
+    assert.equal(contract.canonicalIntent, scene);
+    const intent = session.activeChatIntent;
+    const pool = Array.from({length: 6}, (_, i) => ({name: `Place ${i}`, placeName: `Place ${i}`, googlePlaceId: `ChIJFixture${i}`}));
+    const initial = createRecommendationSession({destination:"Taipei", topic:intent, pool, batchSize:2});
+    assert.equal(initial.batch.length,2);
+    session = {...session, recommendedPlaces:initial.batch, recommendationSession:initial.session,
+      activeRecommendationContext:ensureActiveRecommendationContext(session,{destination:"Taipei",intent,places:initial.batch,searchScope:"current_location",shortcutScene:scene})};
+    assert.ok(hasNearbyContinuationAuthority(session));
+    const more = chatShortcutContract("再推薦一些", locale);
+    assert.equal(more.routingPayload,"再推薦一些");
+    assert.equal(more.canonicalIntent,"more_recommendations");
+    assert.equal(resolveChatIntentArbitration(more.routingPayload,session).route,"MORE_RECOMMENDATIONS");
+    assert.equal(resolveNearbyShortcutScene(more.routingPayload,session),scene);
+    const second=continueRecommendation(initial.session,2);
+    assert.deepEqual(second.batch.map(p=>p.googlePlaceId),["ChIJFixture2","ChIJFixture3"]);
+    assert.equal(second.exhausted,false);
+    const third=continueRecommendation(second.session,2);
+    assert.equal(third.batch.length,2);
+    const exhausted=continueRecommendation(third.session,2);
+    assert.equal(exhausted.batch.length,0);
+    assert.equal(exhausted.exhausted,true);
+    const emptyFetch=extendRecommendationPool(exhausted.session,[],2);
+    assert.equal(emptyFetch.batch.length,0);
+    assert.equal(emptyFetch.exhausted,true,"no-more only after no unseen pool/refetch candidates");
+    assert.equal(resolveChatIntentArbitration(more.routingPayload,{...session,recommendationSession:emptyFetch.session}).route,"MORE_RECOMMENDATIONS","exhaustion must not restart initial shortcut");
+    const selection={...session,planningSelection:{mode:"planning_selection"}};
+    assert.ok(isPlanningSelectionMode(selection));
+    assert.ok(isPlanningSelectionContinuation(more.routingPayload));
+  }
+  console.log(`PASS ${locale}: initial, continuation, exhaustion, canonical routing, selection guard`);
+}
+// Production dispatch must consume selection before generic shortcut arbitration.
+{
+ const source=readFileSync(new URL("../src/routes/_app.chat.tsx",import.meta.url),"utf8");
+ const send=source.slice(source.indexOf("  const send = async ("));
+ const selection=send.indexOf("isPlanningSelectionMode(session) && isPlanningSelectionContinuation(trimmed)");
+ const arbitration=send.indexOf("const rtArbitration = resolveChatIntentArbitration");
+ assert.ok(selection>=0&&selection<arbitration);
+ const body=send.slice(selection,arbitration);
+ assert.match(body,/fetchPlanningSelectionRecommendations/);
+ assert.match(body,/return;/);
+ assert.match(source,/continueRecommendation\([\s\S]*?continued\.batch\.length/);
+ assert.match(source,/exhaustedRecSession[\s\S]*?persistSession\([\s\S]*?recommendationSession: exhaustedRecSession[\s\S]*?return true;/);
+}
 console.log("verify-shortcut-routing-contract: ok");

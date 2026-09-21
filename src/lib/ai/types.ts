@@ -1,3 +1,4 @@
+import { readGeneratedLocale } from "@/lib/generated-locale";
 import { z } from "zod";
 import type { OutfitAdvicePayload, TripOutfitSuggestionFields } from "@/lib/outfit/types";
 import type { TransitLegAdvice } from "@/lib/transit/types";
@@ -23,6 +24,9 @@ export const RoamieRecommendationItemSchema = z.object({
   rating: z.number().nullable().optional(),
   userRatingCount: z.number().nullable().optional(),
   businessStatus: z.string().nullable().optional(),
+  normalizedOpeningStatus: z.enum(["open", "closed", "unknown"]).optional(),
+  openStatus: z.enum(["open", "closing_soon", "closed_now", "permanently_closed", "temporarily_closed", "unknown"]).optional(),
+  openNow: z.boolean().nullable().optional(),
   openStatusLabel: z.string().optional(),
   todayHoursLabel: z.string().optional(),
   closingSoonNote: z.string().optional(),
@@ -101,6 +105,9 @@ export const RoamieItineraryItemSchema = z.object({
   rating: z.number().nullable().optional(),
   userRatingCount: z.number().nullable().optional(),
   businessStatus: z.string().nullable().optional(),
+  normalizedOpeningStatus: z.enum(["open", "closed", "unknown"]).optional(),
+  openStatus: z.enum(["open", "closing_soon", "closed_now", "permanently_closed", "temporarily_closed", "unknown"]).optional(),
+  openNow: z.boolean().nullable().optional(),
   openStatusLabel: z.string().optional(),
   todayHoursLabel: z.string().optional(),
   website: z.string().optional(),
@@ -117,6 +124,7 @@ export const RoamieItineraryItemSchema = z.object({
 });
 
 export const RoamieResponseSchema = z.object({
+  generatedLocale: z.enum(["zh-TW", "en", "ja", "ko"]).optional(),
   title: z.string(),
   summary: z.string(),
   moodTag: z.string(),
@@ -131,6 +139,8 @@ export type RoamieResponse = z.infer<typeof RoamieResponseSchema>;
 export type TripTransportMode = "walk" | "scooter" | "drive" | "transit";
 
 export type TripPlanSettings = {
+  /** Provenance for generated transportTips, separate from editable trip notes. */
+  generatedLocale?: import("@/lib/i18n/types").Locale;
   startTime?: string;
   /** 整趟旅程開始／結束（ISO YYYY-MM-DD） */
   tripStartDate?: string;
@@ -243,6 +253,9 @@ export function normalizeItineraryItem(
     rating: raw.rating,
     userRatingCount: raw.userRatingCount,
     businessStatus: raw.businessStatus,
+    ...(raw.normalizedOpeningStatus !== undefined ? { normalizedOpeningStatus: raw.normalizedOpeningStatus } : {}),
+    ...(raw.openStatus !== undefined ? { openStatus: raw.openStatus } : {}),
+    ...(raw.openNow !== undefined ? { openNow: raw.openNow } : {}),
     openStatusLabel: raw.openStatusLabel,
     todayHoursLabel: raw.todayHoursLabel,
     website: raw.website,
@@ -270,6 +283,7 @@ export function normalizeRoamieResponse(raw: Record<string, unknown>): RoamieRes
       )
     : [];
   return RoamieResponseSchema.parse({
+    generatedLocale: readGeneratedLocale(raw.generatedLocale),
     title: raw.title ?? "",
     summary: raw.summary ?? "",
     moodTag: raw.moodTag ?? "",
@@ -311,6 +325,9 @@ export function normalizeRecommendationItem(
     rating: raw.rating ?? null,
     userRatingCount: raw.userRatingCount ?? null,
     businessStatus: raw.businessStatus ?? null,
+    ...(raw.normalizedOpeningStatus !== undefined ? { normalizedOpeningStatus: raw.normalizedOpeningStatus } : {}),
+    ...(raw.openStatus !== undefined ? { openStatus: raw.openStatus } : {}),
+    ...(raw.openNow !== undefined ? { openNow: raw.openNow } : {}),
     openStatusLabel: raw.openStatusLabel,
     todayHoursLabel: raw.todayHoursLabel,
     closingSoonNote: raw.closingSoonNote,

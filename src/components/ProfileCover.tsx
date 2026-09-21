@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { Loader2 } from "lucide-react";
 import { memo } from "react";
 import { useUserMediaStore } from "@/hooks/use-user-media-store";
@@ -34,11 +35,12 @@ export const ProfileCover = memo(function ProfileCover({
   onPress,
   priority = true,
 }: Props) {
+  const { t: uiT } = useI18n();
+
   const media = useUserMediaStore();
   // Prefer shared local blob over remote URL to avoid CDN round-trip.
   const preferred =
-    (!pending && media.coverLocalUri) ||
-    (displaySrc && !pending ? displaySrc : null);
+    (!pending && media.coverLocalUri) || (displaySrc && !pending ? displaySrc : null);
   const resolvedCover = preferred ? resolveCoverImageSrc(preferred) : null;
   const stableKey = media.coverCacheKey ?? "profile-cover";
 
@@ -48,7 +50,9 @@ export const ProfileCover = memo(function ProfileCover({
       onClick={onPress}
       disabled={busy}
       className="group relative block w-full overflow-hidden rounded-t-[2rem] focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/20 disabled:opacity-90"
-      aria-label={displaySrc && !pending ? "更換封面" : "設定封面"}
+      aria-label={
+        displaySrc && !pending ? uiT("productionUi.p54fa653aeb") : uiT("productionUi.p0a76721c5a")
+      }
     >
       <div className="relative aspect-[3/2] w-full min-h-[11rem] max-h-[16rem] shrink-0 overflow-hidden bg-gradient-to-br from-[hsl(var(--accent))] via-secondary to-[hsl(38_42%_94%)]">
         {resolvedCover ? (

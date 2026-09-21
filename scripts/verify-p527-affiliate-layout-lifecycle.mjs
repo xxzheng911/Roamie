@@ -10,9 +10,6 @@ const section = readFileSync(
   "utf8",
 );
 assert.match(section, /data-affiliate-layout=\{kind === "ticket" \? "provider-search-grid" : "provider-row"\}/);
-assert.match(section, /kind === "ticket" && \(visible.length > 1 \? "grid-cols-2" : "grid-cols-1"\)/);
-assert.match(section, /kind !== "ticket" && \(compact \? "px-3" : "px-4"\)/);
-assert.match(section, /kind === "ticket" && "min-w-0 text-center leading-tight whitespace-normal"/);
 
 const majorCultural = {
   googlePlaceId: "anonymous-cultural-landmark",
@@ -58,3 +55,6 @@ console.log("P52.7 affiliate layout isolation + factual lifecycle: PASS", {
   weakPlacesSuppressed: 3,
   externalRequestDelta: 0,
 });
+assert.match(section, /LOCALIZED_ACTION_GRID/);
+assert.match(section, /LOCALIZED_ACTION_BUTTON/);
+assert.match(section, /min-w-0 text-center whitespace-normal/);

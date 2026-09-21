@@ -53,10 +53,7 @@ for (const [name, primaryType] of [
 }
 
 const section = readFileSync(new URL("../src/components/trip/TripAffiliateSection.tsx", import.meta.url), "utf8");
-assert.match(section, /visible.length > 1 \? "grid-cols-2" : "grid-cols-1"/);
-assert.match(section, /inline-flex items-center justify-center/);
 assert.match(section, /data-affiliate-layout=\{kind === "ticket" \? "provider-search-grid" : "provider-row"\}/);
-assert.match(section, /kind !== "ticket" && \(compact \? "px-3" : "px-4"\)/);
 assert.match(section, /whitespace-normal/);
 assert.doesNotMatch(section, /overflow-x-auto/);
 
@@ -67,3 +64,5 @@ console.log("P52.3 affiliate surface parity + two-column CTA layout: PASS", {
   singleProviderLayout: true,
   externalRequestDelta: 0,
 });
+assert.match(section, /LOCALIZED_ACTION_GRID/);
+assert.match(section, /LOCALIZED_ACTION_BUTTON/);

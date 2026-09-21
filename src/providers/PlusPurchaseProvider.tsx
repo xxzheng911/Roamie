@@ -36,7 +36,9 @@ const PlusPurchaseContext = createContext<PlusPurchaseContextValue | null>(null)
 export function PlusPurchaseProvider({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const navigate = useNavigate();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const pathname = useRouterState({
+    select: (state) => (state.status === "pending" ? null : state.location.pathname),
+  });
   const { user, loading: authLoading } = useAuth();
   const beginOperation = useSubscriptionOperation(user?.id);
   const { restore } = useSubscription();
@@ -44,6 +46,16 @@ export function PlusPurchaseProvider({ children }: { children: ReactNode }) {
   const [paywallOwner, setPaywallOwner] = useState<string | undefined>();
   const [paywallOpen, setPaywallOpen] = useState(false);
   const onCloseRef = useRef<(() => void) | undefined>(undefined);
+  const previousUserId = useRef(user?.id);
+  useEffect(() => {
+    if (previousUserId.current === user?.id) return;
+    // Preserve a fresh anonymous login intent, but never carry an account's intent to another user.
+    if (previousUserId.current) clearPlusPurchaseContinuation();
+    previousUserId.current = user?.id;
+    setPaywallOpen(false);
+    setPaywallOwner(undefined);
+    onCloseRef.current = undefined;
+  }, [user?.id]);
   const canInstantUpgrade = canBypassSubscriptionBilling(user?.email ?? null);
 
   const openAuthenticatedPaywall = useCallback(
@@ -76,7 +88,7 @@ export function PlusPurchaseProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    if (authLoading) return;
+    if (authLoading || !pathname) return;
     const onAuthRoute = pathname === "/login" || pathname.startsWith("/auth/");
     if (!user?.id) {
       // Returning to Welcome after cancelling login makes cancellation explicit
