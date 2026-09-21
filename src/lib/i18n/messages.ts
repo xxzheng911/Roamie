@@ -1,3 +1,5 @@
+import { purchaseLegalTranslations } from "@/content/legal-purchase-translations";
+import { plusPurchaseMessages } from "./plus-purchase";
 import type { Locale } from "@/lib/i18n/types";
 
 const exploreCategory = {
@@ -38,6 +40,7 @@ const exploreCategoryKo = {
 
 export const i18nMessages: Record<Locale, Record<string, unknown>> = {
   "zh-TW": {
+    plusPurchase: { ...plusPurchaseMessages["zh-TW"], ...purchaseLegalTranslations["zh-TW"] },
     nav: {
       home: "首頁",
       chat: "聊聊",
@@ -393,6 +396,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
     picker: { confirm: "確定", cancel: "取消", selectDate: "選擇日期", dateRangeHint: "點選開始與結束日期；可跨月切換" },
   },
   en: {
+    plusPurchase: { ...plusPurchaseMessages["en"], ...purchaseLegalTranslations["en"] },
     nav: { home: "Home", chat: "Chat", explore: "Explore", saved: "Saved", profile: "Me", main: "Main navigation" },
     common: { dash: "—", nearby: "Nearby", loading: "Loading…", search: "Searching…" },
     explore: {
@@ -748,6 +752,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
     },
   },
   ja: {
+    plusPurchase: { ...plusPurchaseMessages["ja"], ...purchaseLegalTranslations["ja"] },
     nav: { home: "ホーム", chat: "チャット", explore: "探索", saved: "保存", profile: "自分", main: "メインナビ" },
     common: { dash: "—", nearby: "近く", loading: "読み込み中…", search: "検索中…" },
     explore: {
@@ -1083,6 +1088,7 @@ export const i18nMessages: Record<Locale, Record<string, unknown>> = {
     picker: { confirm: "確定", cancel: "キャンセル", selectDate: "日付を選択", dateRangeHint: "開始と終了をタップ。月を切り替えできます" },
   },
   ko: {
+    plusPurchase: { ...plusPurchaseMessages["ko"], ...purchaseLegalTranslations["ko"] },
     nav: { home: "홈", chat: "채팅", explore: "탐색", saved: "저장", profile: "나", main: "주요 탐색" },
     common: { dash: "—", nearby: "근처", loading: "불러오는 중…", search: "검색 중…" },
     explore: {

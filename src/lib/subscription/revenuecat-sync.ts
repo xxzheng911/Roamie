@@ -1,3 +1,4 @@
+import { withSubscriptionTimeout } from "./async-timeout";
 import { supabase } from "@/lib/supabase";
 import { isApiUrlError, resolveApiUrl } from "@/lib/api-url";
 
@@ -21,8 +22,43 @@ export function isCanonicalRestoreConfirmed(
   return customerInfoActive && syncResult.ok && syncResult.active === true;
 }
 
-export async function syncRevenueCatEntitlementWithServer(): Promise<SubscriptionServerSyncResult> {
+export const SUBSCRIPTION_SYNC_TIMEOUT_MS = 12_000;
+
+/** Includes session hydration, HTTP and response body; never rejects after a successful payment. */
+export async function syncRevenueCatEntitlementWithServer(
+  expectedUserId?: string,
+): Promise<SubscriptionServerSyncResult> {
+  const controller = new AbortController();
+  try {
+    return await withSubscriptionTimeout(
+      performServerSync(controller.signal, expectedUserId),
+      SUBSCRIPTION_SYNC_TIMEOUT_MS,
+      "subscription_sync_timeout",
+    );
+  } catch (cause) {
+    return {
+      ok: false,
+      active: null,
+      expiresAt: null,
+      errorCode:
+        cause instanceof Error && cause.message === "subscription_sync_timeout"
+          ? "subscription_sync_timeout"
+          : "subscription_sync_network_failed",
+    };
+  } finally {
+    controller.abort();
+  }
+}
+
+async function performServerSync(
+  signal: AbortSignal,
+  expectedUserId?: string,
+): Promise<SubscriptionServerSyncResult> {
   const { data } = await supabase.auth.getSession();
+  signal.throwIfAborted();
+  if (expectedUserId && data.session?.user.id !== expectedUserId) {
+    return { ok: false, active: null, expiresAt: null, errorCode: "subscription_session_missing" };
+  }
   const token = data.session?.access_token;
   if (!token) {
     console.info("[REVENUECAT_CANONICAL_SYNC]", {
@@ -39,6 +75,7 @@ export async function syncRevenueCatEntitlementWithServer(): Promise<Subscriptio
   try {
     response = await fetch(resolveApiUrl("/api/subscription/sync"), {
       method: "POST",
+      signal,
       headers: { Authorization: `Bearer ${token}` },
     });
   } catch {
@@ -103,20 +140,45 @@ export async function syncRevenueCatEntitlementAfterRestore(options?: {
   const wait =
     options?.wait ??
     ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
-  const delays = [0, 500, 1_500] as const;
-  let result: SubscriptionServerSyncResult = { ok: false, active: null, expiresAt: null };
-  for (const delay of delays) {
-    if (delay) await wait(delay);
-    result = await sync();
-    if (result.active === true) return result;
-    if (
-      !result.ok &&
-      /configuration_missing|session_missing|unauthorized/i.test(result.errorCode ?? "")
-    ) {
-      return result;
+  let stopped = false;
+  const retry = async () => {
+    const delays = [0, 500, 1_500] as const;
+    let result: SubscriptionServerSyncResult = { ok: false, active: null, expiresAt: null };
+    for (const delay of delays) {
+      if (delay) await wait(delay);
+      if (stopped) return result;
+      result = await sync();
+      if (result.ok && result.active === true) return result;
+      if (
+        !result.ok &&
+        /configuration_missing|session_missing|unauthorized|timeout|network_failed/i.test(
+          result.errorCode ?? "",
+        )
+      )
+        return result;
     }
+    return result;
+  };
+  try {
+    // One total UI deadline, including retry delays. A late completion cannot start another retry.
+    return await withSubscriptionTimeout(
+      retry(),
+      SUBSCRIPTION_SYNC_TIMEOUT_MS,
+      "subscription_sync_timeout",
+    );
+  } catch (cause) {
+    return {
+      ok: false,
+      active: null,
+      expiresAt: null,
+      errorCode:
+        cause instanceof Error && cause.message === "subscription_sync_timeout"
+          ? "subscription_sync_timeout"
+          : "subscription_sync_failed",
+    };
+  } finally {
+    stopped = true;
   }
-  return result;
 }
 
 /** CustomerInfo listeners must not leak a background sync rejection globally. */

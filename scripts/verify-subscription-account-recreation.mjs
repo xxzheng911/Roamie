@@ -14,8 +14,9 @@ assert.match(
   "new identity must reconcile the App Store receipt",
 );
 assert.match(adapter, /storePurchasesReconciledUserId === userId/);
+assert.match(provider, /adapter\s*\.reconcile\?\.\(user\.id\)/);
 assert.match(provider, /adapter\.getStatus\(user\.id\)/);
-assert.match(provider, /syncRevenueCatEntitlementWithServer\(\)/);
+assert.match(provider, /syncRevenueCatEntitlementWithServer\(userId\)/);
 assert.match(deletion, /deleteRevenueCatCustomerV2/);
 assert.doesNotMatch(adapter, /plan_tier|subscription_status/);
 

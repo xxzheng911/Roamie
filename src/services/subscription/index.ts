@@ -11,7 +11,11 @@ import type {
   SubscriptionStatus,
 } from "./types";
 
-type PurchasesError = Error & { userCancelled?: boolean; code?: string | number };
+import { classifyPurchaseError } from "./purchase-outcome";
+import {
+  SUBSCRIPTION_OFFERINGS_TIMEOUT_MS,
+  withSubscriptionTimeout,
+} from "@/lib/subscription/async-timeout";
 
 export function statusFromCustomerInfo(info: CustomerInfo): SubscriptionStatus {
   return statusFromRevenueCatCustomerInfo(info);
@@ -36,6 +40,8 @@ function mapPackage(pkg: PurchasesPackage): SubscriptionPackage {
 let configured = false;
 let configuredUserId: string | null = null;
 let packages = new Map<string, PurchasesPackage>();
+let packagesUserId: string | null = null;
+let packagesRequest = 0;
 let storePurchasesReconciledUserId: string | null = null;
 function purchasesModule() {
   return import("@revenuecat/purchases-capacitor");
@@ -63,16 +69,16 @@ const configurationAuthority = createSubscriptionConfigurationAuthority(async (u
     await Purchases.configure({ apiKey, appUserID: userId });
     configured = true;
   } else if (configuredUserId !== userId) {
-    if (configuredUserId) await Purchases.logOut();
+    if (configuredUserId) {
+      await Purchases.logOut();
+      configuredUserId = null;
+    }
     await Purchases.logIn({ appUserID: userId });
   }
   configuredUserId = userId;
-  try {
-    await reconcileStorePurchasesForIdentity(userId, () => Purchases.syncPurchases());
-  } catch {
-    // Keep RevenueCat usable and leave the explicit Restore Purchases action available.
-    console.warn("[REVENUECAT_STATE]", { event: "store_reconciliation_failed" });
-  }
+  packages.clear();
+  packagesUserId = null;
+  packagesRequest += 1;
   console.info("[REVENUECAT_STATE]", { event: "configured", appUserIdBound: true });
 });
 
@@ -103,8 +109,8 @@ export const localSubscriptionAdapter: SubscriptionAdapter = {
 
 export const revenueCatAdapter: SubscriptionAdapter = {
   id: "revenuecat",
-  async configure(userId) {
-    await configurationAuthority.ensureConfigured(userId);
+  async configure(userId, signal) {
+    await configurationAuthority.ensureConfigured(userId, signal);
   },
   async logOut() {
     await configurationAuthority.clearConfiguredIdentity(async () => {
@@ -112,67 +118,93 @@ export const revenueCatAdapter: SubscriptionAdapter = {
       const { Purchases } = await purchasesModule();
       await Purchases.logOut();
       configuredUserId = null;
+      packages.clear();
+      packagesUserId = null;
+      packagesRequest += 1;
+      storePurchasesReconciledUserId = null;
     });
-    packages.clear();
   },
   async getStatus(userId) {
-    await configurationAuthority.ensureConfigured(userId);
-    const { Purchases } = await purchasesModule();
-    return statusFromCustomerInfo((await Purchases.getCustomerInfo()).customerInfo);
-  },
-  async getPackages(userId) {
-    await configurationAuthority.ensureConfigured(userId);
-    const { Purchases } = await purchasesModule();
-    const offerings = await Purchases.getOfferings();
-    const available = offerings.current?.availablePackages ?? [];
-    packages = new Map(available.map((pkg) => [pkg.identifier, pkg]));
-    console.info("[REVENUECAT_STATE]", {
-      event: "offering_loaded",
-      packageCount: available.length,
+    return configurationAuthority.runForIdentity(userId, async () => {
+      const { Purchases } = await purchasesModule();
+      return statusFromCustomerInfo((await Purchases.getCustomerInfo()).customerInfo);
     });
-    return available.map(mapPackage);
+  },
+  async getPackages(userId, signal) {
+    // The deadline starts inside the identity lease, immediately before the SDK fetch.
+    return configurationAuthority.runForIdentity(
+      userId,
+      async () => {
+        const request = ++packagesRequest;
+        signal?.throwIfAborted();
+        const { Purchases } = await purchasesModule();
+        const offerings = await withSubscriptionTimeout(
+          Purchases.getOfferings(),
+          SUBSCRIPTION_OFFERINGS_TIMEOUT_MS,
+          "offerings_timeout",
+        );
+        signal?.throwIfAborted();
+        const available = (offerings.current?.availablePackages ?? []).filter(
+          (pkg) => pkg?.identifier && pkg.product?.identifier && pkg.product.priceString,
+        );
+        if (request === packagesRequest) {
+          packages = new Map(available.map((pkg) => [pkg.identifier, pkg]));
+          packagesUserId = userId;
+        }
+        return available.map(mapPackage);
+      },
+      signal,
+    );
+  },
+  async reconcile(userId) {
+    await configurationAuthority.runForIdentity(userId, async () => {
+      const { Purchases } = await purchasesModule();
+      await reconcileStorePurchasesForIdentity(userId, () => Purchases.syncPurchases());
+    });
   },
   async getUsage() {
     return readLocalUsage();
   },
   async purchase(packageId, userId): Promise<SubscriptionActionResult> {
-    await configurationAuthority.ensureConfigured(userId);
-    const pkg = packages.get(packageId);
-    if (!pkg) throw new Error("revenuecat_package_not_loaded");
-    try {
-      const { Purchases } = await purchasesModule();
-      const result = await Purchases.purchasePackage({ aPackage: pkg });
-      return { outcome: "success", status: statusFromCustomerInfo(result.customerInfo) };
-    } catch (error) {
-      const purchaseError = error as PurchasesError;
-      if (purchaseError.userCancelled)
-        return { outcome: "cancelled", status: await revenueCatAdapter.getStatus(userId) };
-      if (String(purchaseError.code).toLowerCase().includes("payment_pending"))
-        return { outcome: "pending", status: await revenueCatAdapter.getStatus(userId) };
-      throw error;
-    }
+    return configurationAuthority.runForIdentity(userId, async () => {
+      const pkg = packagesUserId === userId ? packages.get(packageId) : undefined;
+      if (!pkg) throw new Error("revenuecat_package_not_loaded");
+      try {
+        const { Purchases } = await purchasesModule();
+        const result = await Purchases.purchasePackage({ aPackage: pkg });
+        return { outcome: "success", status: statusFromCustomerInfo(result.customerInfo) };
+      } catch (error) {
+        const outcome = classifyPurchaseError(error);
+        // Do not turn cancellation/pending into a failure via a second network request.
+        if (outcome !== "failure") return { outcome, status: null };
+        throw error;
+      }
+    });
   },
   async restore(userId) {
-    await configurationAuthority.ensureConfigured(userId);
-    const { Purchases } = await purchasesModule();
-    const result = await Purchases.restorePurchases();
-    const status = statusFromCustomerInfo(result.customerInfo);
-    if (status.isActive) await Purchases.syncPurchases();
-    const currentIdentity = await Purchases.getAppUserID();
-    console.info("[REVENUECAT_RESTORE_AUTHORITY]", {
-      activePremium: status.isActive,
-      hasProduct: Boolean(status.productId),
-      hasExpiration: Boolean(status.expiresAt),
-      currentIdentityMatchesSupabase: currentIdentity.appUserID === userId,
-      originalIdentityMatchesCurrent: result.customerInfo.originalAppUserId === userId,
+    return configurationAuthority.runForIdentity(userId, async () => {
+      const { Purchases } = await purchasesModule();
+      const result = await Purchases.restorePurchases();
+      const status = statusFromCustomerInfo(result.customerInfo);
+      // restorePurchases already posts the receipt. Do not block its result on a second sync.
+      const currentIdentity = await Purchases.getAppUserID();
+      console.info("[REVENUECAT_RESTORE_AUTHORITY]", {
+        activePremium: status.isActive,
+        hasProduct: Boolean(status.productId),
+        hasExpiration: Boolean(status.expiresAt),
+        currentIdentityMatchesSupabase: currentIdentity.appUserID === userId,
+        originalIdentityMatchesCurrent: result.customerInfo.originalAppUserId === userId,
+      });
+      return { outcome: "success", status } as const;
     });
-    return { outcome: "success", status };
   },
   async addStatusListener(listener, userId) {
     await configurationAuthority.ensureConfigured(userId);
     const { Purchases } = await purchasesModule();
-    const listenerId = await Purchases.addCustomerInfoUpdateListener((info) =>
-      listener(statusFromCustomerInfo(info)),
+    const listenerId = await Purchases.addCustomerInfoUpdateListener(
+      (info) =>
+        configurationAuthority.getConfiguredUserId() === userId &&
+        listener(statusFromCustomerInfo(info)),
     );
     return () => {
       void Purchases.removeCustomerInfoUpdateListener({ listenerToRemove: listenerId });

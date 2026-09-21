@@ -69,7 +69,7 @@ assert.match(provider, /isCanonicalRestoreConfirmed/);
 assert.match(provider, /setCanonicalRevision\(\(revision\) => revision \+ 1\)/);
 assert.match(access, /canonicalRevision/);
 assert.match(access, /\[userId, revenueCatLoading, canonicalRevision, hydrateFromSupabase\]/);
-assert.match(dialog, /訂閱已找到，但同步失敗/);
-assert.match(dialog, /找不到可恢復的 Plus 訂閱/);
+assert.match(dialog, /plusPurchase\.restoreSyncPending/);
+assert.match(dialog, /plusPurchase\.nothingToRestore/);
 
 console.log("subscription restore canonical regression: PASS");

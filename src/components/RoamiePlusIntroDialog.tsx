@@ -1,3 +1,5 @@
+import { useSubscriptionOperation } from "@/hooks/use-subscription-operation";
+import { resolveRestoreOutcome } from "@/services/subscription/purchase-outcome";
 import { Link } from "@tanstack/react-router";
 import { Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
@@ -13,24 +15,25 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useAccess } from "@/hooks/use-access";
+import { useI18n } from "@/hooks/use-i18n";
 import { isDeveloperBuildEnabled } from "@/lib/access/developer";
 import { useSubscription } from "@/providers/SubscriptionProvider";
 import { openSubscriptionManagement } from "@/lib/open-subscription-settings";
-import { PRIVACY_POLICY, TERMS_OF_SERVICE } from "@/content/legal";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAuth } from "@/hooks/use-auth";
 
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   feature?: "quiz" | "memory" | "personalized" | "general";
-  /** 成功啟用 Plus 後（開發模式或正式訂閱） */
   onUpgraded?: () => void;
 };
 
-/**
- * Plus 功能介紹 + TestFlight 測試模式切換（不接真實付款）。
- */
+/** One localized paywall for all Plus entry points. Prices belong to StoreKit. */
 export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props) {
+  const { t } = useI18n();
+  const { user } = useAuth();
+  const beginOperation = useSubscriptionOperation(user?.id);
   const {
     isPlusUser,
     devPlusMode,
@@ -38,218 +41,310 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
     enablePlusTestMode,
     disablePlusTestMode,
   } = useAccess();
-  const { packages, offeringsLoading, error, loadOfferings, purchase, restore } = useSubscription();
+  const {
+    packages,
+    offeringsLoading,
+    offeringsState,
+    offeringsPhase,
+    initializationError,
+    offeringsError,
+    canonicalSyncError,
+    canonicalSyncLoading,
+    loadOfferings,
+    purchase,
+    restore,
+    refresh,
+  } = useSubscription();
   const [busyPackage, setBusyPackage] = useState<string | null>(null);
+  const [recovery, setRecovery] = useState<
+    "purchaseSyncPending" | "restoreSyncPending" | "entitlementPending" | null
+  >(null);
   const [legalDoc, setLegalDoc] = useState<"privacy" | "terms" | null>(null);
+  const busy = useRef(false);
   const showTestControls =
     import.meta.env.DEV && (isDeveloperBuildEnabled() || canShowDeveloperTools);
 
+  useEffect(() => {
+    setRecovery(null);
+    setBusyPackage(null);
+    busy.current = false;
+  }, [user?.id]);
   useEffect(() => {
     if (open && !isPlusUser) void loadOfferings();
   }, [open, isPlusUser, loadOfferings]);
 
   const handlePurchase = async (packageId: string) => {
+    if (busy.current) return;
+    busy.current = true;
+    const isCurrent = beginOperation();
     setBusyPackage(packageId);
+    setRecovery(null);
     try {
       const result = await purchase(packageId);
-      if (result.outcome === "cancelled") return;
+      if (!isCurrent() || result.outcome === "cancelled") return;
       if (result.outcome === "pending") {
-        toast.message("購買仍在等待 Apple 確認");
+        toast.message(t("plusPurchase.pending"));
         return;
       }
-      if (!result.status.isActive) {
-        toast.error("購買完成，但 Plus entitlement 尚未生效");
+      if (!result.status.isActive || !result.canonicalSynced) {
+        const message = result.status.isActive ? "purchaseSyncPending" : "entitlementPending";
+        setRecovery(message);
+        toast.message(t(`plusPurchase.${message}`));
         return;
       }
-      toast.success("Roamie Plus 已啟用");
+      toast.success(t("plusPurchase.active"));
       onUpgraded?.();
       onOpenChange(false);
     } catch {
-      toast.error("目前無法完成購買，請稍後再試");
+      if (isCurrent()) toast.error(t("plusPurchase.purchaseFailed"));
     } finally {
-      setBusyPackage(null);
+      if (isCurrent()) {
+        setBusyPackage(null);
+        busy.current = false;
+      }
     }
   };
-
   const handleRestore = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    const isCurrent = beginOperation();
     setBusyPackage("restore");
+    setRecovery(null);
     try {
       const result = await restore();
-      if (result.status.isActive) {
-        toast.success("已恢復 Roamie Plus");
+      if (!isCurrent()) return;
+      const outcome = resolveRestoreOutcome(result);
+      if (outcome === "ignored") return;
+      if (outcome === "restoreSyncPending") {
+        setRecovery("restoreSyncPending");
+        toast.message(t("plusPurchase.restoreSyncPending"));
+      } else if (outcome === "restored") {
+        toast.success(t("plusPurchase.restored"));
         onUpgraded?.();
         onOpenChange(false);
-      } else toast.message("找不到可恢復的 Plus 訂閱");
-    } catch (error) {
-      toast.error(
-        error instanceof Error && error.message === "subscription_canonical_sync_failed"
-          ? "訂閱已找到，但同步失敗，請稍後再試"
-          : "恢復購買失敗，請稍後再試",
-      );
+      } else toast.message(t("plusPurchase.nothingToRestore"));
+    } catch {
+      if (isCurrent()) toast.error(t("plusPurchase.restoreFailed"));
     } finally {
-      setBusyPackage(null);
+      if (isCurrent()) {
+        setBusyPackage(null);
+        busy.current = false;
+      }
     }
   };
-
-  const handleEnableTest = () => {
-    enablePlusTestMode();
-    toast.success("已開啟 Plus 測試模式");
-    onUpgraded?.();
-    onOpenChange(false);
+  const handleSync = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    const isCurrent = beginOperation();
+    setBusyPackage("sync");
+    try {
+      const confirmed = await refresh();
+      if (isCurrent() && confirmed) {
+        setRecovery(null);
+        toast.success(t("plusPurchase.synced"));
+      }
+    } finally {
+      if (isCurrent()) {
+        setBusyPackage(null);
+        busy.current = false;
+      }
+    }
   };
-
-  const handleDisableTest = () => {
-    disablePlusTestMode();
-    toast.message("已切換回 Free（收藏與行程資料仍保留）");
-    onOpenChange(false);
-  };
-
+  const buttonClass =
+    "h-auto min-h-11 w-full whitespace-normal break-words rounded-full px-4 py-3 text-sm leading-relaxed";
+  const offeringMessage =
+    offeringsState === "timeout"
+      ? "timeout"
+      : offeringsState === "empty"
+        ? "empty"
+        : offeringsError
+          ? "unavailable"
+          : offeringsState === "idle" && initializationError
+            ? "initializationFailed"
+            : null;
   return (
     <>
       <AlertDialog open={open} onOpenChange={onOpenChange}>
-        <AlertDialogContent className="max-w-[min(100%,22rem)] rounded-3xl border-border">
+        <AlertDialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-sm overflow-y-auto overscroll-contain break-words rounded-3xl border-border">
           <AlertDialogCancel
-            aria-label="關閉"
-            className="absolute right-4 top-4 mt-0 h-8 w-8 rounded-full border-0 bg-transparent p-0 text-muted-foreground shadow-none hover:bg-secondary"
+            aria-label={t("plusPurchase.close")}
+            className="absolute right-3 top-3 mt-0 h-11 w-11 rounded-full border-0 bg-transparent p-0 shadow-none"
           >
             <X className="h-4 w-4" aria-hidden="true" />
-            <span className="sr-only">關閉</span>
+            <span className="sr-only">{t("plusPurchase.close")}</span>
           </AlertDialogCancel>
           <AlertDialogHeader>
             <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-2xl bg-accent">
               <Sparkles className="h-6 w-6 text-clay" />
             </div>
-            <AlertDialogTitle className="text-center font-display text-xl leading-snug">
-              {isPlusUser ? "Roamie Plus 已啟用" : "升級 Roamie Plus"}
+            <AlertDialogTitle className="px-4 text-center font-display text-xl leading-snug">
+              {t(isPlusUser ? "plusPurchase.active" : "plusPurchase.heading")}
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-3 text-left text-sm leading-relaxed text-muted-foreground">
-                {isPlusUser ? (
+                <p>
+                  {t(
+                    isPlusUser
+                      ? devPlusMode
+                        ? "plusPurchase.testDescription"
+                        : "plusPurchase.activeDescription"
+                      : "plusPurchase.description",
+                  )}
+                </p>
+                {isPlusUser && (
                   <>
-                    {devPlusMode ? (
-                      <p className="rounded-2xl bg-secondary/80 px-3 py-2 text-xs text-foreground/85">
-                        目前為 <span className="font-medium">Plus 測試模式</span>
-                        。關閉後會立即恢復 Free
-                        體驗（長期記憶與深層個人化關閉；收藏、偏好與行程仍保留）。
-                      </p>
-                    ) : (
-                      <p>已啟用 Roamie Plus：旅行偏好、收藏記憶與個人化推薦。</p>
-                    )}
                     <Link
                       to="/travel-preference-test"
                       search={{ from: "home" }}
                       onClick={() => onOpenChange(false)}
-                      className="block w-full rounded-full bg-primary py-3 text-center text-sm font-medium text-primary-foreground"
+                      className={`block bg-primary text-center text-primary-foreground ${buttonClass}`}
                     >
-                      管理我的旅行偏好
+                      {t("plusPurchase.managePreferences")}
                     </Link>
                     <button
                       type="button"
-                      className="w-full text-center text-xs underline"
+                      className={`${buttonClass} underline`}
                       onClick={() => void openSubscriptionManagement()}
                     >
-                      管理訂閱
+                      {t("plusPurchase.manageSubscription")}
                     </button>
                   </>
-                ) : (
-                  <p>讓 Roamie 記住你的旅行偏好，提供更貼近你的推薦與行程。</p>
                 )}
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
+          <AlertDialogFooter className="flex-col gap-2 sm:flex-col sm:space-x-0">
+            {(canonicalSyncError ||
+              recovery ||
+              busyPackage === "sync" ||
+              (canonicalSyncLoading && busyPackage !== null)) && (
+              <div className="space-y-2 text-center text-sm" role="status" aria-live="polite">
+                <p>
+                  {t(
+                    `plusPurchase.${busyPackage === "sync" || (canonicalSyncLoading && busyPackage !== null) ? "syncing" : (recovery ?? "syncPending")}`,
+                  )}
+                </p>
+                <button
+                  type="button"
+                  className={`${buttonClass} underline`}
+                  disabled={busyPackage !== null || canonicalSyncLoading}
+                  onClick={() => void handleSync()}
+                >
+                  {t("plusPurchase.syncRetry")}
+                </button>
+              </div>
+            )}
             {isPlusUser ? (
               <>
-                {showTestControls ? (
-                  <AlertDialogAction
-                    className="w-full rounded-full border border-border bg-card py-3 text-sm font-medium text-foreground hover:bg-secondary"
-                    onClick={handleDisableTest}
-                  >
-                    {devPlusMode ? "取消 Plus 測試模式" : "切換回 Free"}
-                  </AlertDialogAction>
-                ) : null}
-                {showTestControls && !devPlusMode ? (
-                  <AlertDialogCancel
-                    className="mt-0 w-full rounded-full border-clay/40 bg-accent py-3 text-sm font-medium text-foreground"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      handleEnableTest();
+                {showTestControls && (
+                  <button
+                    type="button"
+                    className={buttonClass}
+                    onClick={() => {
+                      disablePlusTestMode();
+                      toast.message(t("plusPurchase.switchedFree"));
+                      onOpenChange(false);
                     }}
                   >
-                    開啟 Plus 測試模式
-                  </AlertDialogCancel>
-                ) : null}
-                <AlertDialogCancel className="mt-0 w-full rounded-full py-3 text-sm">
-                  關閉
+                    {t(devPlusMode ? "plusPurchase.testDisable" : "plusPurchase.switchFree")}
+                  </button>
+                )}
+                {showTestControls && !devPlusMode && (
+                  <button
+                    type="button"
+                    className={buttonClass}
+                    onClick={() => {
+                      enablePlusTestMode();
+                      toast.success(t("plusPurchase.testEnabled"));
+                      onUpgraded?.();
+                      onOpenChange(false);
+                    }}
+                  >
+                    {t("plusPurchase.testEnable")}
+                  </button>
+                )}
+                <AlertDialogCancel className={`mt-0 ${buttonClass}`}>
+                  {t("plusPurchase.close")}
                 </AlertDialogCancel>
               </>
             ) : (
               <>
-                {offeringsLoading ? (
-                  <p className="py-2 text-center text-sm text-muted-foreground">正在載入方案…</p>
-                ) : null}
+                <div
+                  className="min-h-6 text-center text-sm text-muted-foreground"
+                  role="status"
+                  aria-live="polite"
+                >
+                  {offeringsLoading
+                    ? t(
+                        offeringsPhase === "initializing"
+                          ? "plusPurchase.initializing"
+                          : offeringsState === "retrying"
+                            ? "plusPurchase.retrying"
+                            : "plusPurchase.loading",
+                      )
+                    : null}
+                </div>
                 {packages.map((pkg) => (
                   <AlertDialogAction
                     key={pkg.identifier}
-                    className="w-full rounded-full bg-primary py-3 text-sm font-medium"
-                    disabled={busyPackage !== null}
-                    onClick={(e) => {
-                      e.preventDefault();
+                    className={`${buttonClass} bg-primary font-medium`}
+                    disabled={busyPackage !== null || Boolean(recovery) || offeringsLoading}
+                    onClick={(event) => {
+                      event.preventDefault();
                       void handlePurchase(pkg.identifier);
                     }}
                   >
                     {busyPackage === pkg.identifier
-                      ? "正在連接 App Store…"
-                      : `${pkg.period === "yearly" ? "年繳" : pkg.period === "monthly" ? "月繳" : pkg.title} · ${pkg.priceString}`}
+                      ? t("plusPurchase.purchasing")
+                      : `${pkg.period === "yearly" ? t("plusPurchase.yearly") : pkg.period === "monthly" ? t("plusPurchase.monthly") : pkg.title} · ${pkg.priceString}`}
                   </AlertDialogAction>
                 ))}
-                {error ? (
-                  <div className="space-y-2 text-center">
-                    <p className="text-xs text-destructive">目前無法載入訂閱方案</p>
+                {offeringMessage && (
+                  <div className="space-y-2 text-center" role="status">
+                    <p className="text-sm text-destructive">
+                      {t(`plusPurchase.${offeringMessage}`)}
+                    </p>
                     <button
                       type="button"
-                      className="text-sm font-medium underline"
+                      className={`${buttonClass} underline`}
                       disabled={offeringsLoading || busyPackage !== null}
                       onClick={() => void loadOfferings()}
                     >
-                      重新載入方案
+                      {t("plusPurchase.retry")}
                     </button>
                   </div>
-                ) : null}
+                )}
                 <button
                   type="button"
-                  className="w-full py-2 text-center text-sm underline"
+                  className={`${buttonClass} underline`}
                   disabled={busyPackage !== null}
                   onClick={() => void handleRestore()}
                 >
-                  恢復購買
+                  {t(busyPackage === "restore" ? "plusPurchase.restoring" : "plusPurchase.restore")}
                 </button>
-                <div className="space-y-1 px-1 pt-1 text-center text-[11px] leading-relaxed text-muted-foreground">
-                  <p>
-                    訂閱會自動續訂，除非依 Apple 規則於目前訂閱期結束前取消；可在 Apple
-                    帳號中管理訂閱。價格與週期以 Apple 顯示為準。
-                  </p>
+                <div className="space-y-1 px-1 pt-1 text-center text-xs leading-relaxed text-muted-foreground">
+                  <p>{t("plusPurchase.disclosure")}</p>
                   <p>
                     <button
                       type="button"
-                      className="underline underline-offset-2"
+                      className="min-h-11 underline underline-offset-2"
                       onClick={() => {
                         onOpenChange(false);
                         setLegalDoc("privacy");
                       }}
                     >
-                      隱私權政策
+                      {t("plusPurchase.privacy")}
                     </button>
                     <span aria-hidden> · </span>
                     <button
                       type="button"
-                      className="underline underline-offset-2"
+                      className="min-h-11 underline underline-offset-2"
                       onClick={() => {
                         onOpenChange(false);
                         setLegalDoc("terms");
                       }}
                     >
-                      服務條款／EULA
+                      {t("plusPurchase.terms")}
                     </button>
                   </p>
                 </div>
@@ -263,8 +358,11 @@ export function RoamiePlusIntroDialog({ open, onOpenChange, onUpgraded }: Props)
         onOpenChange={(nextOpen) => {
           if (!nextOpen) setLegalDoc(null);
         }}
-        title={legalDoc === "privacy" ? "Roamie 隱私權政策" : "Roamie 服務條款"}
-        content={legalDoc === "privacy" ? PRIVACY_POLICY : TERMS_OF_SERVICE}
+        title={t(legalDoc === "privacy" ? "plusPurchase.privacyTitle" : "plusPurchase.termsTitle")}
+        content={t(
+          legalDoc === "privacy" ? "plusPurchase.privacyContent" : "plusPurchase.termsContent",
+        )}
+        closeLabel={t("plusPurchase.close")}
       />
     </>
   );

@@ -53,7 +53,7 @@ assert.match(
 assert.match(apiUrl, /"\/api\/subscription\/sync"/);
 assert.match(
   provider,
-  /syncRevenueCatEntitlementInBackground\(\)/,
+  /void syncCanonical\(user.id, next.isActive\)/,
   "CustomerInfo listener contains background sync failures",
 );
 assert.match(clientSync, /void sync\(\)\.catch/);
@@ -151,11 +151,11 @@ assert.equal(
   "logout and account switch are serialized",
 );
 
-assert.match(provider, /adapter\.getPackages\(user\.id\)/);
+assert.match(provider, /adapter\.getPackages\(userId, request\.signal\)/);
 assert.match(provider, /adapter\.getStatus\(user\.id\)/);
-assert.match(provider, /adapter\.purchase\(packageId, user\.id\)/);
-assert.match(provider, /adapter\.restore\(user\.id\)/);
-assert.match(adapter, /ensureConfigured\(userId\)[\s\S]*Purchases\.getOfferings\(\)/);
+assert.match(provider, /adapter\.purchase\(packageId, userId\)/);
+assert.match(provider, /adapter\.restore\(userId\)/);
+assert.match(adapter, /runForIdentity\([\s\S]*userId,[\s\S]*Purchases\.getOfferings\(\)/);
 assert.match(purchaseProvider, /if \(!user\?\.id\)[\s\S]*savePlusPurchaseContinuation/);
 assert.match(purchaseProvider, /if \(!user\?\.id\)[\s\S]*navigate\(\{ to: "\/login" \}\)/);
 assert.doesNotMatch(

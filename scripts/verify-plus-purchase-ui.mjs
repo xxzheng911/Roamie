@@ -68,11 +68,11 @@ for (const source of [home, profile, quiz, drafts]) {
 }
 assert.match(profile, /openRevenueCatPaywall\(\)/);
 assert.doesNotMatch(profile, /feature="quiz"/);
-assert.match(profile, />\s*Plus 旅行偏好測驗\s*</);
-assert.match(profile, />\s*讓 Roamie 更懂你的旅行偏好\s*</);
-assert.match(profile, /完成幾個小問題，之後推薦地點與行程時會更貼近你。/);
-assert.match(profile, /完成測驗並獲得更貼近你的行程及地點推薦/);
-assert.match(profile, /升級 Plus 解鎖/);
+assert.match(profile, /plusPurchase\.profileLabel/);
+assert.match(profile, /plusPurchase\.profileHeading/);
+assert.match(profile, /plusPurchase\.profileActiveBody/);
+assert.match(profile, /plusPurchase\.profileBody/);
+assert.match(profile, /plusPurchase\.unlock/);
 assert.match(
   profile,
   /className="mt-4 w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground"/,
@@ -180,17 +180,17 @@ assert.match(
 );
 
 assert.match(paywall, /packages\.map/);
-assert.match(paywall, /升級 Roamie Plus/);
-assert.match(paywall, /讓 Roamie 記住你的旅行偏好，提供更貼近你的推薦與行程。/);
+assert.match(paywall, /plusPurchase\.heading/);
+assert.match(paywall, /plusPurchase\.description/);
 assert.doesNotMatch(paywall, /旅行性格測驗 — Plus/);
 assert.doesNotMatch(paywall, /長期記住旅行偏好與收藏|更深度的個人化推薦|情境式對話與行程整理/);
 assert.match(paywall, /pkg\.period === "yearly"/);
 assert.match(paywall, /pkg\.period === "monthly"/);
-assert.match(paywall, /重新載入方案/);
+assert.match(paywall, /plusPurchase\.retry/);
 assert.match(paywall, /result\.status\.isActive/);
 assert.match(paywall, /onOpenChange\(false\)/);
 assert.doesNotMatch(paywall, /繼續使用免費版/);
-assert.match(paywall, /aria-label="關閉"/);
+assert.match(paywall, /aria-label=\{t\("plusPurchase\.close"\)\}/);
 assert.match(paywall, /<X className="h-4 w-4"/);
 
 assert.equal(await withSubscriptionTimeout(Promise.resolve("ok"), 20, "timeout"), "ok");

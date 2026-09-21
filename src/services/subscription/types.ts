@@ -31,9 +31,9 @@ export type SubscriptionPackage = {
 };
 
 export type SubscriptionActionResult =
-  | { outcome: "success"; status: SubscriptionStatus }
-  | { outcome: "cancelled"; status: SubscriptionStatus }
-  | { outcome: "pending"; status: SubscriptionStatus };
+  | { outcome: "success"; status: SubscriptionStatus; canonicalSynced?: boolean }
+  | { outcome: "cancelled"; status: null }
+  | { outcome: "pending"; status: null };
 
 export type UsageCounters = {
   aiChatsToday: number;
@@ -44,10 +44,10 @@ export type UsageCounters = {
 
 export type SubscriptionAdapter = {
   id: string;
-  configure(userId: string): Promise<void>;
+  configure(userId: string, signal?: AbortSignal): Promise<void>;
   logOut(): Promise<void>;
   getStatus(userId: string): Promise<SubscriptionStatus>;
-  getPackages(userId: string): Promise<SubscriptionPackage[]>;
+  getPackages(userId: string, signal?: AbortSignal): Promise<SubscriptionPackage[]>;
   getUsage(): Promise<UsageCounters>;
   purchase(packageId: string, userId: string): Promise<SubscriptionActionResult>;
   restore(userId: string): Promise<SubscriptionActionResult>;
@@ -55,6 +55,7 @@ export type SubscriptionAdapter = {
     listener: (status: SubscriptionStatus) => void,
     userId: string,
   ): Promise<() => void>;
+  reconcile?(userId: string): Promise<void>;
   sync(): Promise<void>;
 };
 

@@ -1,3 +1,4 @@
+import { useI18n } from "@/hooks/use-i18n";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { ArrowRight, Crown, Loader2, Sparkles } from "lucide-react";
@@ -38,25 +39,13 @@ export const Route = createFileRoute("/welcome")({
   component: Welcome,
 });
 
-const INTRO_STEPS = [
-  {
-    title: "不是規劃旅行，\n而是有人開始理解你想怎麼旅行。",
-    body: "Roamie 會依照你的心情、節奏與旅行習慣，\n陪你慢慢找到適合現在的目的地。",
-    cta: "開始旅程",
-  },
-  {
-    title: "有時候，\n你只是想有人幫你少想一點。",
-    body: "不論是突然想散心、\n不知道吃什麼、\n還是只想放空一下。\n\nRoamie 都會陪你一起找到答案。",
-    cta: "繼續",
-  },
-  {
-    title: "每個人的旅行方式，\n其實都不太一樣。",
-    body: "有人喜歡慢慢散步，\n有人喜歡塞滿行程。\n\n有人想逃離人群，\n有人喜歡熱鬧與新鮮感。\n\nRoamie 會慢慢認識你。",
-    cta: "繼續",
-  },
-] as const;
-
 function Welcome() {
+  const { t, tList } = useI18n();
+  const INTRO_STEPS = [1, 2, 3].map((index) => ({
+    title: t(`plusPurchase.intro${index}Title`),
+    body: t(`plusPurchase.intro${index}Body`),
+    cta: t(index === 1 ? "plusPurchase.start" : "plusPurchase.continue"),
+  }));
   const navigate = useNavigate();
   useIosInteractiveRoute("welcome");
   const access = useAccessOptional();
@@ -102,7 +91,7 @@ function Welcome() {
       await goNextAfterOnboarding();
     } catch (e) {
       console.error("[welcome] companion mode selection failed", e);
-      toast.error(e instanceof Error ? e.message : "無法完成設定，請再試一次");
+      toast.error(t("plusPurchase.setupError"));
       setFinishing(false);
     }
   };
@@ -129,11 +118,11 @@ function Welcome() {
               void resetOnboardingState().then(() => window.location.reload());
             }}
           >
-            [Dev] 重置教學
+            {t("plusPurchase.resetIntro")}
           </button>
         ) : null}
         {!isTierStep ? (
-          <div className="flex min-h-0 flex-1 flex-col px-8 pb-[max(2rem,var(--safe-area-bottom))] pt-[max(1.5rem,var(--safe-area-top))]">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-8 pb-[max(2rem,var(--safe-area-bottom))] pt-[max(1.5rem,var(--safe-area-top))]">
             <div className="flex justify-center gap-1.5 pb-2">
               {INTRO_STEPS.map((_, i) => (
                 <span
@@ -167,44 +156,42 @@ function Welcome() {
             <div className="welcome-tier-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain no-scrollbar">
               <div className="animate-rise px-8 pb-[max(2rem,env(safe-area-inset-bottom,0px))] pt-[max(1.5rem,var(--safe-area-top))]">
                 <p className="text-xs uppercase tracking-[0.25em] text-muted-foreground">
-                  陪伴方式
+                  {t("plusPurchase.tierLabel")}
                 </p>
                 <h1 className="mt-3 font-display text-[26px] leading-snug">
-                  選擇適合你的旅行陪伴方式
+                  {t("plusPurchase.tierHeading")}
                 </h1>
                 <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
-                  你可以自由使用 Roamie，
-                  <br />
-                  也可以讓 AI 更深入認識你。
+                  {t("plusPurchase.tierBody")}
                 </p>
 
                 <div className="mt-8 space-y-4">
                   <div className="rounded-3xl border border-border bg-card/80 p-5 shadow-soft">
                     <div className="flex items-center gap-2">
                       <Sparkles className="h-4 w-4 text-clay" />
-                      <p className="font-display text-lg">Roamie Free</p>
+                      <p className="font-display text-lg">{t("plusPurchase.freeName")}</p>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">輕量旅遊陪伴</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t("plusPurchase.freeTagline")}
+                    </p>
                     <ul className="mt-4 space-y-2 text-sm text-foreground/90">
-                      <li>· 基本 AI 旅遊對話</li>
-                      <li>· 行程與地點推薦</li>
-                      <li>· 地圖導航</li>
-                      <li>· 收藏地點</li>
-                      <li>· 即時探索附近靈感</li>
+                      {tList("plusPurchase.freeFeatures").map((item) => (
+                        <li key={item}>· {item}</li>
+                      ))}
                     </ul>
                     <button
                       type="button"
                       disabled={finishing}
                       onClick={() => void completeSelection("free")}
-                      className="relative z-10 mt-5 w-full touch-manipulation rounded-full border border-foreground bg-foreground py-3.5 text-sm font-medium text-background disabled:opacity-50"
+                      className="relative z-10 mt-5 w-full whitespace-normal break-words px-4 touch-manipulation rounded-full border border-foreground bg-foreground py-3.5 text-sm font-medium text-background disabled:opacity-50"
                     >
                       {finishing ? (
                         <span className="inline-flex items-center gap-2">
                           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                          設定中…
+                          {t("plusPurchase.settingUp")}
                         </span>
                       ) : (
-                        "先體驗使用 Free"
+                        t("plusPurchase.tryFree")
                       )}
                     </button>
                   </div>
@@ -214,30 +201,31 @@ function Welcome() {
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-clay/12 ring-1 ring-clay/20">
                         <Crown className="h-4 w-4 text-clay" strokeWidth={1.75} />
                       </span>
-                      <p className="font-display text-lg leading-tight">Roamie Plus</p>
+                      <p className="font-display text-lg leading-tight">
+                        {t("plusPurchase.title")}
+                      </p>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">更懂你的 AI 旅伴</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {t("plusPurchase.plusTagline")}
+                    </p>
                     <ul className="mt-4 space-y-2 text-sm text-foreground/90">
-                      <li>· AI 長期記住你的旅行偏好</li>
-                      <li>· 更深度的個人化推薦</li>
-                      <li>· 旅行人格與心情分析</li>
-                      <li>· 情境式旅程安排</li>
-                      <li>· 回憶整理與旅行紀錄</li>
-                      <li>· 更貼近你的對話體驗</li>
+                      {tList("plusPurchase.plusFeatures").map((item) => (
+                        <li key={item}>· {item}</li>
+                      ))}
                     </ul>
                     <button
                       type="button"
                       disabled={finishing}
                       onClick={() => void completeSelection("plus")}
-                      className="relative z-10 mt-5 w-full touch-manipulation rounded-full border border-clay/40 bg-card/95 py-3.5 text-sm font-semibold text-foreground shadow-soft ring-1 ring-clay/10 transition active:scale-[0.99] disabled:opacity-50"
+                      className="relative z-10 mt-5 w-full whitespace-normal break-words px-4 touch-manipulation rounded-full border border-clay/40 bg-card/95 py-3.5 text-sm font-semibold text-foreground shadow-soft ring-1 ring-clay/10 transition active:scale-[0.99] disabled:opacity-50"
                     >
                       {finishing ? (
                         <span className="inline-flex items-center gap-2">
                           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                          設定中…
+                          {t("plusPurchase.settingUp")}
                         </span>
                       ) : (
-                        "立即升級 Plus"
+                        t("plusPurchase.upgrade")
                       )}
                     </button>
                   </div>

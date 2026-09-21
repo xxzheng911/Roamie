@@ -983,15 +983,13 @@ function Profile() {
       <section className="mt-5 rounded-3xl border border-border bg-card p-5 shadow-soft">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Sparkles className="h-3.5 w-3.5 text-clay" />
-          Plus 旅行偏好測驗
+          {t("plusPurchase.profileLabel")}
         </div>
         <p className="mt-2 font-display text-[18px] leading-snug">
-          讓 Roamie 更懂你的旅行偏好
+          {t("plusPurchase.profileHeading")}
         </p>
         <p className="mt-1.5 text-sm text-muted-foreground">
-          {hasPlusAccess
-            ? "完成幾個小問題，之後推薦地點與行程時會更貼近你。"
-            : "完成測驗並獲得更貼近你的行程及地點推薦"}
+          {hasPlusAccess ? t("plusPurchase.profileActiveBody") : t("plusPurchase.profileBody")}
         </p>
         {hasPlusAccess ? (
           <button
@@ -1002,7 +1000,7 @@ function Profile() {
             }}
             className="mt-4 w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground"
           >
-            {quizCompleted ? "重新測驗" : "開始測驗"}
+            {quizCompleted ? t("plusPurchase.quizRetry") : t("plusPurchase.quizStart")}
           </button>
         ) : (
           <button
@@ -1013,7 +1011,7 @@ function Profile() {
             }}
             className="mt-4 w-full rounded-full bg-primary px-3 py-3 text-sm font-medium text-primary-foreground"
           >
-            升級 Plus 解鎖
+            {t("plusPurchase.unlock")}
           </button>
         )}
       </section>

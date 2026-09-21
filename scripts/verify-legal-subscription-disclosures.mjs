@@ -1,3 +1,4 @@
+import { plusPurchaseMessages } from "../src/lib/i18n/plus-purchase.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
@@ -12,7 +13,16 @@ for (const phrase of [
   "服務條款／EULA",
   "價格與週期以 Apple 顯示為準",
 ])
-  assert.match(paywall, new RegExp(phrase));
+  assert.match(
+    plusPurchaseMessages["zh-TW"].disclosure +
+      plusPurchaseMessages["zh-TW"].privacy +
+      plusPurchaseMessages["zh-TW"].terms,
+    new RegExp(phrase),
+  );
+for (const key of ["disclosure", "privacy", "terms", "restore"]) {
+  assert.match(paywall, new RegExp(`plusPurchase\\.${key}`));
+  for (const messages of Object.values(plusPurchaseMessages)) assert.ok(messages[key].trim());
+}
 assert.match(paywall, /purchase\(packageId\)/);
 assert.match(paywall, /restore\(\)/);
 assert.match(paywall, /LegalDocumentSheet/);
